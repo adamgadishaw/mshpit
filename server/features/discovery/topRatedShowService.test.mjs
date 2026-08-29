@@ -88,6 +88,25 @@ test("regional top-rated projection uses real provider identity and one latest r
   assert.equal(result.some((row) => row.artist === "US Night"), false);
 });
 
+test("regional top-rated projection resolves a Portugal provider code without a country name", () => {
+  const rows = [post({
+    id: "lisbon-review", userId: "lisbon-fan", artist: "Lisbon Night",
+    venue: "Altice Arena", city: "Lisbon", overall: 4.5,
+  })];
+  const locations = [{
+    ...provider({
+      artist: "Lisbon Night", id: "pt-arena", country: "", countryCode: "PT",
+      city: "Lisbon", venue: "Altice Arena",
+    }),
+    place: "Lisbon",
+  }];
+
+  const result = projectTopRatedShows(rows, locations, { country: "Portugal", limit: 10 });
+  assert.equal(result.length, 1);
+  assert.equal(result[0].venueCountry, "Portugal");
+  assert.equal(result[0].venueCountryCode, "PT");
+});
+
 function fixture() {
   const database = new DatabaseSync(":memory:");
   database.exec(`

@@ -30,12 +30,15 @@ const DAY = 86400000;
 const LAST_REFRESH_KEY = "tourdates:last-refresh:v1";
 const INGESTION_REVISION_KEY = "tourdates:ingestion-revision";
 const ARTIST_CURSOR_KEY = "tourdates:artist-cursor:v1";
-const COUNTRY_CURSOR_KEY = "tourdates:ticketmaster-country-cursor:v1";
+// Version the cursor whenever the default rotation order materially changes.
+// A fresh key makes the first deployment run start at the new priority markets
+// instead of inheriting an offset into an older, shorter country list.
+const COUNTRY_CURSOR_KEY = "tourdates:ticketmaster-country-cursor:v2";
 const MARKET_COVERAGE_KEY_PREFIX = "tourdates:ticketmaster-market-coverage:v1:";
 // Bump this only when a deployed collector materially changes what it can
 // discover. The persisted value makes that release run once even when the
 // ordinary freshness clock is still recent, without replaying on every deploy.
-export const TOURDATE_INGESTION_REVISION = "live-catalog-demand-partitioned-90d-v2";
+export const TOURDATE_INGESTION_REVISION = "live-catalog-demand-partitioned-90d-v3";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const slugId = (p, n, v, d) => `${p}_${n}_${v}_${d}`.toLowerCase().replace(/[^a-z0-9]+/g, "_").slice(0, 120);
 const norm = (value) => String(value || "").trim().toLowerCase();
@@ -86,10 +89,17 @@ export function ticketmasterActiveAndFutureRange(at = Date.now(), horizonDays = 
 // allowing operators to narrow it without a deploy. The local-member-city lane
 // below remains separate and continues to give active communities priority.
 export const DEFAULT_TICKETMASTER_COUNTRIES = Object.freeze([
-  "GB", "DE", "FR", "ES", "IT", "NL", "SE", "PL", "AU", "NZ",
-  "JP", "KR", "SG", "IN", "BR", "AR", "MX", "ZA", "AE", "IE",
-  "AT", "BE", "CH", "DK", "FI", "NO", "PT", "CZ", "GR", "HU",
-  "RO", "TR", "CA", "US",
+  // Portugal and Spain lead the first bounded deployment batch, followed by
+  // a representative set of EU markets. All country codes below are listed
+  // by Ticketmaster's Discovery API; Russia is intentionally excluded.
+  "PT", "ES", "FR", "DE", "IT", "NL", "BE", "AT", "IE", "PL",
+  "GB", "CH", "SE", "DK", "NO", "FI", "CZ", "GR", "HU", "RO",
+  "AD", "AZ", "BG", "HR", "CY", "EE", "FO", "GE", "GI", "IS",
+  "IL", "LV", "LT", "LU", "MT", "MC", "ME", "RS", "SK", "SI",
+  "TR", "UA",
+  // Preserve the existing global sweep after the expanded Europe rotation.
+  "AU", "NZ", "JP", "KR", "SG", "IN", "BR", "AR", "MX", "ZA",
+  "AE", "CA", "US",
 ]);
 
 function boundedInteger(value, fallback, { min, max }) {

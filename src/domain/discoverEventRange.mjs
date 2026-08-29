@@ -3,19 +3,15 @@ import {
   compareCurrentAndUpcomingLiveEvents,
   isCurrentOrUpcomingLiveEvent,
 } from "./eventLifecycle.mjs";
-import { discoverRowMatchesRegion } from "./discoverScene.mjs";
+import {
+  discoverCountryCode as canonicalDiscoverCountryCode,
+  discoverRowMatchesRegion,
+} from "./discoverScene.mjs";
 
 export const DISCOVER_RANGE_DAYS = Object.freeze([30, 60, 90]);
 export const DISCOVER_RANGE_BATCH = 4;
 export const DISCOVER_RANGE_REQUEST_LIMIT = 250;
 export const DISCOVER_RANGE_MAX_EVENTS = 500;
-
-const COUNTRY_CODES = Object.freeze({
-  Argentina: "AR", Australia: "AU", Brazil: "BR", Canada: "CA", France: "FR",
-  Germany: "DE", Ireland: "IE", Japan: "JP", Mexico: "MX", Netherlands: "NL",
-  "New Zealand": "NZ", Singapore: "SG", "South Korea": "KR", Spain: "ES",
-  Sweden: "SE", "United Kingdom": "GB", "United States": "US",
-});
 
 const clean = (value, max = 180) => typeof value === "string"
   ? value.replace(/[\u0000-\u001f\u007f]/g, "").replace(/\s+/g, " ").trim().slice(0, max)
@@ -48,7 +44,7 @@ export function discoverCountryCode(value) {
   const country = clean(value, 80);
   if (country.toLocaleLowerCase() === "worldwide") return null;
   if (/^[a-z]{2}$/i.test(country)) return country.toLocaleUpperCase();
-  return COUNTRY_CODES[country] || country || null;
+  return canonicalDiscoverCountryCode(country) || country || null;
 }
 
 export function tourDateRangeRequestPath({ days = 30, limit = DISCOVER_RANGE_REQUEST_LIMIT, after, country } = {}) {

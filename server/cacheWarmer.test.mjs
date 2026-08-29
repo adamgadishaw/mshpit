@@ -697,11 +697,31 @@ test("provider dedupe preserves distinct same-day shows and removes only repeate
 
 test("Ticketmaster global countries rotate deterministically within a bounded batch", () => {
   assert.deepEqual(ticketmasterCountryCodes(" gb,JP,gb,invalid,de, br "), ["GB", "JP", "DE", "BR"]);
-  assert.ok(DEFAULT_TICKETMASTER_COUNTRIES.includes("GB"));
-  assert.ok(DEFAULT_TICKETMASTER_COUNTRIES.includes("JP"));
-  assert.ok(DEFAULT_TICKETMASTER_COUNTRIES.includes("AU"));
-  assert.ok(DEFAULT_TICKETMASTER_COUNTRIES.includes("BR"));
-  assert.ok(DEFAULT_TICKETMASTER_COUNTRIES.includes("ZA"));
+  const supportedEuropeanCountries = [
+    "AD", "AT", "AZ", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FO", "FI",
+    "FR", "GE", "DE", "GI", "GB", "GR", "HU", "IS", "IE", "IL", "IT", "LV",
+    "LT", "LU", "MT", "MC", "ME", "NL", "NO", "PL", "PT", "RO", "RS", "SK",
+    "SI", "ES", "SE", "CH", "TR", "UA",
+  ];
+  for (const countryCode of supportedEuropeanCountries) {
+    assert.ok(DEFAULT_TICKETMASTER_COUNTRIES.includes(countryCode),
+      `default Ticketmaster sweep should include ${countryCode}`);
+    const url = new URL(ticketmasterEventSearchUrl({ apiKey: "test-key", countryCode }));
+    assert.equal(url.searchParams.get("countryCode"), countryCode);
+    assert.equal(url.searchParams.get("locale"), "*");
+  }
+  assert.equal(new Set(DEFAULT_TICKETMASTER_COUNTRIES).size, DEFAULT_TICKETMASTER_COUNTRIES.length,
+    "the expanded rotation should not spend quota on duplicate markets");
+  assert.ok(!DEFAULT_TICKETMASTER_COUNTRIES.includes("RU"));
+  for (const countryCode of ["JP", "AU", "BR", "ZA", "CA", "US"]) {
+    assert.ok(DEFAULT_TICKETMASTER_COUNTRIES.includes(countryCode),
+      `expanded Europe coverage should preserve global market ${countryCode}`);
+  }
+
+  const deploymentBatch = ticketmasterCountryRotation(DEFAULT_TICKETMASTER_COUNTRIES, 0, undefined);
+  assert.deepEqual(deploymentBatch.countries,
+    ["PT", "ES", "FR", "DE", "IT", "NL", "BE", "AT", "IE", "PL"],
+    "a reset cursor should cover Portugal, Spain, and a broad EU set immediately");
 
   const first = ticketmasterCountryRotation(["GB", "JP", "AU", "BR"], 3, 3);
   assert.deepEqual(first, { countries: ["BR", "GB", "JP"], nextCursor: 2 });

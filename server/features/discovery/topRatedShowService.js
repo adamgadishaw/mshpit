@@ -1,5 +1,9 @@
 import { activeAccountSql } from "../../accountVisibility.js";
-import { discoverCountryIdentity } from "../../../src/domain/discoverScene.mjs";
+import {
+  discoverCountryCode,
+  discoverCountryIdentity,
+  discoverCountryLabel,
+} from "../../../src/domain/discoverScene.mjs";
 
 const POST_CANDIDATE_LIMIT = 5_000;
 const PROVIDER_LOCATION_LIMIT = 5_000;
@@ -14,24 +18,6 @@ const boundedLimit = (value, fallback = 24, maximum = 30) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? Math.max(1, Math.min(maximum, Math.trunc(parsed))) : fallback;
 };
-
-const COUNTRY_CODE_NAMES = Object.freeze({
-  AU: "Australia",
-  CA: "Canada",
-  DE: "Germany",
-  ES: "Spain",
-  FR: "France",
-  GB: "United Kingdom",
-  IE: "Ireland",
-  JP: "Japan",
-  MX: "Mexico",
-  NL: "Netherlands",
-  NZ: "New Zealand",
-  SE: "Sweden",
-  SG: "Singapore",
-  US: "United States",
-});
-const EXPLICIT_COUNTRY_IDENTITIES = new Set(Object.values(COUNTRY_CODE_NAMES).map(discoverCountryIdentity));
 
 function artistIdentity(row) {
   return identityPart(row?.artist_key) || identityPart(row?.artist);
@@ -51,15 +37,14 @@ function providerCountry(row) {
   const country = clean(row?.venue_country, 80);
   if (country) return country;
   const code = clean(row?.venue_country_code, 8).toLocaleUpperCase("en");
-  return COUNTRY_CODE_NAMES[code] || (code.length === 2 ? code : "");
+  return discoverCountryLabel(code) || (code.length === 2 ? code : "");
 }
 
 function explicitCountryFromPlace(value) {
   const parts = clean(value, 300).split(",").map((part) => part.trim()).filter(Boolean);
   if (parts.length < 2) return "";
   const last = parts.at(-1);
-  const identity = discoverCountryIdentity(last);
-  if (parts.length >= 3 || EXPLICIT_COUNTRY_IDENTITIES.has(identity) || /^[A-Z]{2}$/u.test(last)) return last;
+  if (parts.length >= 3 || discoverCountryCode(last) || /^[A-Z]{2}$/u.test(last)) return last;
   return "";
 }
 

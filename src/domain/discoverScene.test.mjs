@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  discoverCountryCode,
   discoverCountryIdentity,
   discoverEventCountryFacets,
   discoverRowMatchesRegion,
@@ -13,6 +14,10 @@ import {
 const NOW = Date.UTC(2026, 7, 28, 12);
 
 test("Discover scene country matching handles provider codes, names, and city-only community rows", () => {
+  assert.equal(discoverCountryCode("Portugal"), "PT");
+  assert.equal(discoverCountryCode("Spain"), "ES");
+  assert.equal(discoverCountryCode("Great Britain"), "GB");
+  assert.equal(discoverCountryCode("pt"), "PT");
   assert.equal(discoverCountryIdentity("USA"), "united states");
   assert.equal(discoverRowMatchesRegion({ place: "Toronto, Ontario, Canada" }, "Canada"), true);
   assert.equal(discoverRowMatchesRegion({ venueCountryCode: "US" }, "United States"), true);

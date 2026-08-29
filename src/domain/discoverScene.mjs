@@ -8,28 +8,45 @@ const text = (value, max = 180) => typeof value === "string"
   : "";
 
 const COUNTRY_CODE_NAMES = Object.freeze({
+  AD: "Andorra",
   AE: "United Arab Emirates",
   AR: "Argentina",
   AT: "Austria",
   AU: "Australia",
+  AZ: "Azerbaijan",
   BE: "Belgium",
+  BG: "Bulgaria",
   BR: "Brazil",
   CA: "Canada",
   CH: "Switzerland",
+  CY: "Cyprus",
   CZ: "Czechia",
   DE: "Germany",
   DK: "Denmark",
+  EE: "Estonia",
   ES: "Spain",
   FI: "Finland",
+  FO: "Faroe Islands",
   FR: "France",
+  GE: "Georgia",
   GB: "United Kingdom",
+  GI: "Gibraltar",
   GR: "Greece",
+  HR: "Croatia",
   HU: "Hungary",
   IE: "Ireland",
+  IL: "Israel",
   IN: "India",
+  IS: "Iceland",
   IT: "Italy",
   JP: "Japan",
   KR: "South Korea",
+  LT: "Lithuania",
+  LU: "Luxembourg",
+  LV: "Latvia",
+  MC: "Monaco",
+  ME: "Montenegro",
+  MT: "Malta",
   MX: "Mexico",
   NL: "Netherlands",
   NO: "Norway",
@@ -37,9 +54,13 @@ const COUNTRY_CODE_NAMES = Object.freeze({
   PL: "Poland",
   PT: "Portugal",
   RO: "Romania",
+  RS: "Serbia",
   SE: "Sweden",
   SG: "Singapore",
+  SI: "Slovenia",
+  SK: "Slovakia",
   TR: "Turkey",
+  UA: "Ukraine",
   US: "United States",
   ZA: "South Africa",
 });
@@ -76,6 +97,8 @@ const normalizedCountryText = (value) => text(value, 80)
 
 const COUNTRY_LABELS = new Map(Object.values(COUNTRY_CODE_NAMES)
   .map((label) => [normalizedCountryText(label), label]));
+const COUNTRY_CODES = new Map(Object.entries(COUNTRY_CODE_NAMES)
+  .map(([code, label]) => [normalizedCountryText(label), code]));
 for (const [alias, identity] of COUNTRY_ALIASES) {
   const label = COUNTRY_LABELS.get(identity);
   if (label) COUNTRY_LABELS.set(alias, label);
@@ -87,6 +110,17 @@ export function discoverCountryIdentity(value) {
   return COUNTRY_ALIASES.get(normalized) || normalized;
 }
 
+// Country labels and provider country codes share one canonical directory.
+// Requests import this resolver so a newly supported region cannot appear in
+// Discover while silently falling back to an incompatible server filter.
+export function discoverCountryCode(value) {
+  const source = text(value, 80);
+  if (!source || discoverCountryIdentity(source) === "worldwide") return null;
+  const direct = source.toLocaleUpperCase("en");
+  if (/^[A-Z]{2}$/.test(direct)) return direct;
+  return COUNTRY_CODES.get(discoverCountryIdentity(source)) || null;
+}
+
 const canonicalCountryLabel = (value) => {
   const source = text(value, 80);
   if (!source) return "";
@@ -94,6 +128,10 @@ const canonicalCountryLabel = (value) => {
   if (codeLabel) return codeLabel;
   return COUNTRY_LABELS.get(discoverCountryIdentity(source)) || "";
 };
+
+export function discoverCountryLabel(value) {
+  return canonicalCountryLabel(value);
+}
 
 export function discoverRowCountryLabel(row, { countryForCity } = {}) {
   if (!row || typeof row !== "object") return "";

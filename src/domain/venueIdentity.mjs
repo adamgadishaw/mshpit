@@ -11,6 +11,177 @@ const VENUE_ALIAS_GROUPS = Object.freeze([
     canonical: "history",
     aliases: Object.freeze(["history", "history toronto"]),
   }),
+  Object.freeze({
+    canonical: "meo arena",
+    aliases: Object.freeze(["meo arena", "altice arena", "pavilhão atlântico", "pavilhao atlantico"]),
+  }),
+  Object.freeze({
+    canonical: "super bock arena",
+    aliases: Object.freeze([
+      "super bock arena",
+      "super bock arena - pavilhão rosa mota",
+      "pavilhão rosa mota",
+      "pavilhao rosa mota",
+    ]),
+  }),
+  Object.freeze({
+    canonical: "riyadh air metropolitano",
+    aliases: Object.freeze([
+      "riyadh air metropolitano",
+      "cívitas metropolitano",
+      "civitas metropolitano",
+      "wanda metropolitano",
+    ]),
+  }),
+  Object.freeze({
+    canonical: "movistar arena madrid",
+    aliases: Object.freeze([
+      "movistar arena madrid",
+      "wizink center",
+      "barclaycard center madrid",
+      "palacio de deportes de la comunidad de madrid",
+    ]),
+  }),
+  Object.freeze({
+    canonical: "spotify camp nou",
+    aliases: Object.freeze(["spotify camp nou", "camp nou", "nou camp"]),
+  }),
+  Object.freeze({
+    canonical: "estadio la cartuja",
+    aliases: Object.freeze([
+      "estadio la cartuja",
+      "estadio olímpico de sevilla",
+      "estadio olimpico de sevilla",
+      "estadio olímpico de la cartuja",
+      "estadio olimpico de la cartuja",
+    ]),
+  }),
+  Object.freeze({
+    canonical: "the o2 arena",
+    aliases: Object.freeze(["the o2 arena", "the o2 london"]),
+  }),
+  Object.freeze({
+    canonical: "ao arena",
+    aliases: Object.freeze([
+      "ao arena",
+      "manchester arena",
+      "men arena",
+      "phones 4u arena",
+    ]),
+  }),
+  Object.freeze({
+    canonical: "ovo hydro",
+    aliases: Object.freeze(["ovo hydro", "the ovo hydro", "sse hydro", "the sse hydro"]),
+  }),
+  Object.freeze({
+    canonical: "3arena dublin",
+    aliases: Object.freeze(["3arena dublin", "the o2 dublin"]),
+  }),
+  Object.freeze({
+    canonical: "paris la défense arena",
+    aliases: Object.freeze(["paris la défense arena", "paris la defense arena", "u arena"]),
+  }),
+  Object.freeze({
+    canonical: "accor arena",
+    aliases: Object.freeze([
+      "accor arena",
+      "accorhotels arena",
+      "palais omnisports de paris-bercy",
+      "paris-bercy",
+    ]),
+  }),
+  Object.freeze({
+    canonical: "groupama stadium",
+    aliases: Object.freeze(["groupama stadium", "parc olympique lyonnais"]),
+  }),
+  Object.freeze({
+    canonical: "uber arena",
+    aliases: Object.freeze([
+      "uber arena",
+      "mercedes-benz arena berlin",
+      "o2 world berlin",
+    ]),
+  }),
+  Object.freeze({
+    canonical: "barclays arena",
+    aliases: Object.freeze([
+      "barclays arena",
+      "barclaycard arena hamburg",
+      "o2 world hamburg",
+      "color line arena",
+    ]),
+  }),
+  Object.freeze({
+    canonical: "merkur spiel-arena",
+    aliases: Object.freeze(["merkur spiel-arena", "esprit arena", "ltu arena"]),
+  }),
+  Object.freeze({
+    canonical: "veltins-arena",
+    aliases: Object.freeze(["veltins-arena", "arena aufschalke", "arena auf schalke"]),
+  }),
+  Object.freeze({
+    canonical: "stadio san siro",
+    aliases: Object.freeze([
+      "stadio san siro",
+      "san siro",
+      "stadio giuseppe meazza",
+      "giuseppe meazza",
+    ]),
+  }),
+  Object.freeze({
+    canonical: "unipol forum",
+    aliases: Object.freeze(["unipol forum", "mediolanum forum", "forum di assago"]),
+  }),
+  Object.freeze({
+    canonical: "inalpi arena",
+    aliases: Object.freeze(["inalpi arena", "pala alpitour", "palaolimpico", "palasport olimpico"]),
+  }),
+  Object.freeze({
+    canonical: "johan cruijff arena",
+    aliases: Object.freeze([
+      "johan cruijff arena",
+      "johan cruyff arena",
+      "amsterdam arena",
+    ]),
+  }),
+  Object.freeze({
+    canonical: "afas dome",
+    aliases: Object.freeze([
+      "afas dome",
+      "sportpaleis antwerpen",
+      "antwerps sportpaleis",
+      "antwerp sportpaleis",
+    ]),
+  }),
+  Object.freeze({
+    canonical: "ing arena",
+    aliases: Object.freeze(["ing arena", "palais 12", "paleis 12"]),
+  }),
+  Object.freeze({
+    canonical: "strawberry arena",
+    aliases: Object.freeze(["strawberry arena", "friends arena"]),
+  }),
+  Object.freeze({
+    canonical: "3arena stockholm",
+    aliases: Object.freeze(["3arena stockholm", "tele2 arena"]),
+  }),
+  Object.freeze({
+    canonical: "unity arena",
+    aliases: Object.freeze(["unity arena", "telenor arena"]),
+  }),
+  Object.freeze({
+    canonical: "pge narodowy",
+    aliases: Object.freeze([
+      "pge narodowy",
+      "stadion narodowy",
+      "stadion narodowy w warszawie",
+      "national stadium warsaw",
+    ]),
+  }),
+  Object.freeze({
+    canonical: "o2 arena prague",
+    aliases: Object.freeze(["o2 arena prague", "o2 arena praha", "sazka arena"]),
+  }),
 ]);
 
 export function normalizeVenueKey(value) {

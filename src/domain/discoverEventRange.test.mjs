@@ -57,8 +57,6 @@ test("Discover range parses legacy and paged server responses defensively", () =
   const path = tourDateRangeRequestPath({ days: 90, limit: 250, after: "next cursor/+", city: "Toronto", country: "Canada" });
   assert.match(path, /^\/api\/tourdates\?days=90&limit=250&after=next\+cursor%2F%2B&country=CA$/);
   assert.doesNotMatch(path, /[?&]city=/);
-  const fullCountryPath = tourDateRangeRequestPath({ days: 60, country: "Italy" });
-  assert.match(fullCountryPath, /[?&]country=Italy(?:&|$)/);
   assert.doesNotMatch(tourDateRangeRequestPath({ days: 90, country: "Worldwide" }), /[?&]country=/);
   assert.equal(
     discoverySidebarRangeRequestPath({ days: 90, city: "Toronto", country: "Canada" }),
@@ -68,6 +66,21 @@ test("Discover range parses legacy and paged server responses defensively", () =
     parseTourDateRangeResponse({ upcomingEvents: [{ id: "nearby" }] }),
     { tourDates: [{ id: "nearby" }], nextCursor: null, through: null },
   );
+});
+
+test("Discover range sends supported European country names as ISO filters", () => {
+  const europeanCountries = {
+    Austria: "AT", Belgium: "BE", Czechia: "CZ", Denmark: "DK", Finland: "FI",
+    France: "FR", Germany: "DE", Greece: "GR", Hungary: "HU", Ireland: "IE",
+    Italy: "IT", Netherlands: "NL", Norway: "NO", Poland: "PL", Portugal: "PT",
+    Romania: "RO", Spain: "ES", Sweden: "SE", Switzerland: "CH", Turkey: "TR",
+    "United Kingdom": "GB",
+  };
+  for (const [country, code] of Object.entries(europeanCountries)) {
+    const url = new URL(tourDateRangeRequestPath({ days: 60, country }), "https://pit.test");
+    assert.equal(url.searchParams.get("country"), code, `${country} must use its ISO country code`);
+    assert.doesNotMatch(url.search, new RegExp(`country=${encodeURIComponent(country)}(?:&|$)`));
+  }
 });
 
 test("Discover range uses a UTC calendar boundary on every device", () => {

@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
  * Active venue scraper — pulls REAL venues (with real coordinates) for every
- * major US + Canada city from MusicBrainz (CC0, keyless). This job imports venue
+ * major North American and European touring city from MusicBrainz (CC0, keyless).
+ * This job imports venue
  * facts only. Performances must come from a provider that supplies a real event
  * id (Ticketmaster/Bandsintown), never from generated artist pairings. Artists
  * and provider-backed tour dates already in the catalog are preserved.
@@ -73,6 +74,31 @@ const CITIES = [
   ["Winnipeg", "Winnipeg", "Manitoba", "Canada", 49.8951, -97.1384],
   ["Quebec City", "Quebec City", "Quebec", "Canada", 46.8139, -71.208],
   ["Victoria", "Victoria", "British Columbia", "Canada", 48.4284, -123.3656],
+  ["Lisbon", "Lisbon", "Lisbon", "Portugal", 38.7223, -9.1393],
+  ["Porto", "Porto", "Porto", "Portugal", 41.1579, -8.6291],
+  ["Madrid", "Madrid", "Madrid", "Spain", 40.4168, -3.7038],
+  ["Barcelona", "Barcelona", "Catalonia", "Spain", 41.3874, 2.1686],
+  ["London", "London", "England", "United Kingdom", 51.5074, -0.1278],
+  ["Manchester", "Manchester", "England", "United Kingdom", 53.4808, -2.2426],
+  ["Dublin", "Dublin", "Leinster", "Ireland", 53.3498, -6.2603],
+  ["Paris", "Paris", "Île-de-France", "France", 48.8566, 2.3522],
+  ["Berlin", "Berlin", "Berlin", "Germany", 52.52, 13.405],
+  ["Munich", "Munich", "Bavaria", "Germany", 48.1351, 11.582],
+  ["Amsterdam", "Amsterdam", "North Holland", "Netherlands", 52.3676, 4.9041],
+  ["Brussels", "Brussels", "Brussels", "Belgium", 50.8503, 4.3517],
+  ["Vienna", "Vienna", "Vienna", "Austria", 48.2082, 16.3738],
+  ["Zürich", "Zürich", "Zürich", "Switzerland", 47.3769, 8.5417],
+  ["Milan", "Milan", "Lombardy", "Italy", 45.4642, 9.19],
+  ["Rome", "Rome", "Lazio", "Italy", 41.9028, 12.4964],
+  ["Copenhagen", "Copenhagen", "Capital Region", "Denmark", 55.6761, 12.5683],
+  ["Stockholm", "Stockholm", "Stockholm", "Sweden", 59.3293, 18.0686],
+  ["Oslo", "Oslo", "Oslo", "Norway", 59.9139, 10.7522],
+  ["Helsinki", "Helsinki", "Uusimaa", "Finland", 60.1699, 24.9384],
+  ["Warsaw", "Warsaw", "Masovia", "Poland", 52.2297, 21.0122],
+  ["Prague", "Prague", "Prague", "Czechia", 50.0755, 14.4378],
+  ["Athens", "Athens", "Attica", "Greece", 37.9838, 23.7275],
+  ["Budapest", "Budapest", "Budapest", "Hungary", 47.4979, 19.0402],
+  ["Bucharest", "Bucharest", "Bucharest", "Romania", 44.4268, 26.1025],
 ];
 
 // Include Stadiums + Indoor arenas + Amphitheatres, not just "Venue" — the big
