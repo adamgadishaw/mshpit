@@ -2320,6 +2320,183 @@ test("artist search ignores punctuation and spacing for phone-friendly lookup", 
   assert.equal(result.artists[0]?.name, "J. Cole Search Test");
 });
 
+test("exact signed-in artist reads enqueue durable refresh demand without exposing or awaiting it", () => {
+  resetRateLimitsForTests();
+  const previousKey = process.env.TICKETMASTER_KEY;
+  process.env.TICKETMASTER_KEY = "integration-test-key";
+  const viewer = addUser(
+    "u_artist_tour_demand",
+    "artist-tour-demand@example.com",
+    "artisttourdemand",
+  );
+  artistStmts.upsert.run(artistRow("demand refresh artist", {
+    name: "Demand Refresh Artist",
+    popularity: 98,
+  }, "test"));
+  const catalog = artistStmts.byNorm.get("demand refresh artist");
+  db.prepare("DELETE FROM artist_tourdate_refresh_queue WHERE artist_key=?").run(catalog.norm);
+  try {
+    const anonymous = routes["GET /api/artists"]({
+      query: { q: "Demand Refresh Artist", limit: 5 },
+    });
+    assert.equal(anonymous.artists[0]?.name, "Demand Refresh Artist");
+    assert.equal(
+      db.prepare("SELECT COUNT(*) count FROM artist_tourdate_refresh_queue WHERE artist_key=?")
+        .get(catalog.norm).count,
+      0,
+      "anonymous search cannot spend provider quota",
+    );
+
+    routes["GET /api/artists"]({
+      user: viewer,
+      query: { q: "Demand Refresh", limit: 5 },
+    });
+    assert.equal(
+      db.prepare("SELECT COUNT(*) count FROM artist_tourdate_refresh_queue WHERE artist_key=?")
+        .get(catalog.norm).count,
+      0,
+      "partial type-ahead cannot enqueue fuzzy provider work",
+    );
+
+    const response = routes["GET /api/artists"]({
+      user: viewer,
+      query: { q: "Demand Refresh Artist", limit: 5 },
+    });
+    assert.equal(response.artists[0]?.name, "Demand Refresh Artist");
+    assert.equal("refresh" in response || "queued" in response, false,
+      "background maintenance stays out of the public response contract");
+    const queued = db.prepare("SELECT * FROM artist_tourdate_refresh_queue WHERE artist_key=?")
+      .get(catalog.norm);
+    assert.equal(queued.status, "pending");
+    assert.equal(Object.values(queued).includes(viewer.id), false,
+      "the queue stores no requester identity");
+
+    db.prepare("DELETE FROM artist_tourdate_refresh_queue WHERE artist_key=?").run(catalog.norm);
+    routes["GET /api/artists/:key/profile"]({
+      user: viewer,
+      params: { key: catalog.public_slug },
+    });
+    assert.equal(
+      db.prepare("SELECT status FROM artist_tourdate_refresh_queue WHERE artist_key=?")
+        .get(catalog.norm).status,
+      "pending",
+      "a stable public artist URL resolves back to the canonical queue key",
+    );
+  } finally {
+    db.prepare("DELETE FROM artist_tourdate_refresh_queue WHERE artist_key=?").run(catalog.norm);
+    resetRateLimitsForTests();
+    if (previousKey === undefined) delete process.env.TICKETMASTER_KEY;
+    else process.env.TICKETMASTER_KEY = previousKey;
+  }
+});
+
+test("banned and suspended accounts cannot enqueue artist tour-date refresh demand", () => {
+  resetRateLimitsForTests();
+  const previousKey = process.env.TICKETMASTER_KEY;
+  process.env.TICKETMASTER_KEY = "integration-test-key";
+  const bannedSeed = addUser(
+    "u_artist_demand_banned",
+    "artist-demand-banned@example.com",
+    "artistdemandbanned",
+  );
+  const suspendedSeed = addUser(
+    "u_artist_demand_suspended",
+    "artist-demand-suspended@example.com",
+    "artistdemandsuspended",
+  );
+  db.prepare("UPDATE users SET is_banned=1 WHERE id=?").run(bannedSeed.id);
+  db.prepare("UPDATE users SET suspended_until=? WHERE id=?")
+    .run(Date.now() + 60_000, suspendedSeed.id);
+  const banned = q.userById.get(bannedSeed.id);
+  const suspended = q.userById.get(suspendedSeed.id);
+  const artists = [
+    { key: "banned demand artist", name: "Banned Demand Artist" },
+    { key: "suspended demand artist", name: "Suspended Demand Artist" },
+  ];
+  for (const artist of artists) {
+    artistStmts.upsert.run(artistRow(artist.key, {
+      name: artist.name,
+      popularity: 90,
+    }, "test"));
+    db.prepare("DELETE FROM artist_tourdate_refresh_queue WHERE artist_key=?").run(artist.key);
+  }
+  try {
+    const searchResponse = routes["GET /api/artists"]({
+      user: banned,
+      query: { q: "Banned Demand Artist", limit: 5 },
+    });
+    assert.equal(searchResponse.artists[0]?.name, "Banned Demand Artist",
+      "a maintenance admission denial must not fail the artist read");
+    const profileResponse = routes["GET /api/artists/:key/profile"]({
+      user: suspended,
+      params: { key: "suspended demand artist" },
+    });
+    assert.equal(profileResponse.profile, null,
+      "a maintenance admission denial must preserve the profile response");
+    for (const artist of artists) {
+      assert.equal(
+        db.prepare("SELECT COUNT(*) count FROM artist_tourdate_refresh_queue WHERE artist_key=?")
+          .get(artist.key).count,
+        0,
+        `${artist.name} must not be queued by an inactive account`,
+      );
+    }
+  } finally {
+    for (const artist of artists) {
+      db.prepare("DELETE FROM artist_tourdate_refresh_queue WHERE artist_key=?").run(artist.key);
+    }
+    resetRateLimitsForTests();
+    if (previousKey === undefined) delete process.env.TICKETMASTER_KEY;
+    else process.env.TICKETMASTER_KEY = previousKey;
+  }
+});
+
+test("artist tour-date refresh demand is silently capped at twelve admissions per account per hour", () => {
+  resetRateLimitsForTests();
+  const previousKey = process.env.TICKETMASTER_KEY;
+  process.env.TICKETMASTER_KEY = "integration-test-key";
+  const viewer = addUser(
+    "u_artist_demand_admission_limit",
+    "artist-demand-admission-limit@example.com",
+    "artistdemandadmissionlimit",
+  );
+  const artistKeys = [];
+  for (let index = 1; index <= 13; index += 1) {
+    const key = `admission limit artist ${String(index).padStart(2, "0")}`;
+    artistKeys.push(key);
+    artistStmts.upsert.run(artistRow(key, {
+      name: `Admission Limit Artist ${String(index).padStart(2, "0")}`,
+      popularity: 80 - index,
+    }, "test"));
+    db.prepare("DELETE FROM artist_tourdate_refresh_queue WHERE artist_key=?").run(key);
+  }
+  try {
+    for (const key of artistKeys) {
+      const response = routes["GET /api/artists/:key/profile"]({
+        user: viewer,
+        params: { key },
+      });
+      assert.equal(response.profile, null,
+        "exhausting maintenance admission must not reject a public profile read");
+    }
+    const queued = db.prepare(`SELECT artist_key FROM artist_tourdate_refresh_queue
+      WHERE artist_key LIKE 'admission limit artist %' ORDER BY artist_key`).all();
+    assert.equal(queued.length, 12);
+    assert.deepEqual(
+      queued.map((row) => row.artist_key),
+      artistKeys.slice(0, 12),
+      "the thirteenth distinct artist does not enter the shared queue",
+    );
+  } finally {
+    for (const key of artistKeys) {
+      db.prepare("DELETE FROM artist_tourdate_refresh_queue WHERE artist_key=?").run(key);
+    }
+    resetRateLimitsForTests();
+    if (previousKey === undefined) delete process.env.TICKETMASTER_KEY;
+    else process.env.TICKETMASTER_KEY = previousKey;
+  }
+});
+
 test("artist-owned profile UGC honors blocks in both directions without hiding catalog metadata", () => {
   const owner = addUser("u_artist_block_owner", "artist-block-owner@example.com", "artistblockowner");
   const viewer = addUser("u_artist_block_viewer", "artist-block-viewer@example.com", "artistblockviewer");

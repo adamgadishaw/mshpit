@@ -21,14 +21,22 @@ const {
   collectNamedTourProviderResults,
   collectTicketmasterCityPages,
   collectTicketmasterCountryPages,
+  collectTicketmasterMarketPartitions,
   collectTourProviderResults,
+  dedupeTourProviderRows,
   DEFAULT_TICKETMASTER_COUNTRIES,
   hasSuccessfulTourProviderWork,
   isTourDateSchedulerEnabled,
   reconcileStaleProviderTourDates,
+  reconcileStaleProviderTourDatesForArtists,
+  readTicketmasterMarketCoverageState,
   runTourDateJobSafely,
+  selectTourDateRefreshArtists,
+  shouldRefreshTourDateIngestion,
   shouldRefreshTourDates,
   sourcesEligibleForStaleReconciliation,
+  TOURDATE_INGESTION_REVISION,
+  tourDateArtistRotationSize,
   ticketmasterArtistPageSize,
   ticketmasterActiveAndFutureRange,
   ticketmasterCountryBatchSize,
@@ -39,6 +47,7 @@ const {
   ticketmasterFutureBoundary,
   ticketmasterRequestDelayMs,
   ticketmasterRows,
+  persistTicketmasterMarketResult,
   upsertProviderTourDateRows,
 } = await import("./tourdates.js");
 const { visibleTourDateRowsFrom } = await import("./tourDateVisibility.js");
@@ -145,6 +154,201 @@ test("tour-date restarts skip provider fan-out while the persisted refresh is fr
   assert.equal(shouldRefreshTourDates(now - 13 * 60 * 60 * 1000, now, 12), true);
 });
 
+test("a material collector revision forces one safe refresh despite a fresh clock", () => {
+  const now = Date.UTC(2026, 7, 28, 12);
+  const fresh = now - 60 * 60 * 1000;
+  assert.equal(shouldRefreshTourDateIngestion({
+    lastRefreshAt: fresh,
+    storedRevision: "previous-collector",
+    now,
+    refreshHours: 12,
+  }), true, "a materially newer deployed collector must not wait for stale cache age");
+  assert.equal(shouldRefreshTourDateIngestion({
+    lastRefreshAt: fresh,
+    storedRevision: TOURDATE_INGESTION_REVISION,
+    now,
+    refreshHours: 12,
+  }), false, "recording the current revision prevents a replay on the next restart");
+  assert.equal(shouldRefreshTourDateIngestion({
+    lastRefreshAt: now - 13 * 60 * 60 * 1000,
+    storedRevision: TOURDATE_INGESTION_REVISION,
+    now,
+    refreshHours: 12,
+  }), true, "the ordinary refresh interval still applies after the forced run");
+});
+
+test("tour-date artist lane uses live non-private demand and never private attendance", () => {
+  seed([
+    { name: "Famous Artist", popularity: 99, tracks: [] },
+    { name: "Other Artist", popularity: 80, tracks: [] },
+    { name: "Demanded Artist", popularity: 1, tracks: [] },
+    { name: "Private Artist", popularity: 0, tracks: [] },
+  ]);
+  db.prepare("DELETE FROM show_attendance").run();
+  db.prepare("DELETE FROM shows").run();
+  db.prepare("DELETE FROM posts").run();
+  db.prepare("DELETE FROM fan_club_members").run();
+  db.prepare("DELETE FROM artist_profiles").run();
+  db.prepare("DELETE FROM missing_artists").run();
+  db.prepare("INSERT OR IGNORE INTO users (id,email,name,handle,pass_hash,created_at) VALUES (?,?,?,?,?,?)")
+    .run("u_tour_public", "tour-public@example.com", "Public", "tourpublic", "x", 1);
+  db.prepare("INSERT OR IGNORE INTO users (id,email,name,handle,pass_hash,created_at) VALUES (?,?,?,?,?,?)")
+    .run("u_tour_private", "tour-private@example.com", "Private", "tourprivate", "x", 1);
+  db.prepare(`INSERT INTO shows
+    (id,canonical_key,artist,artist_key,venue,date,lifecycle,public_eligible,created_at,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?)`)
+    .run("show_tour_public", "tour-public", "Demanded Artist", "demanded artist", "Hall", "2099-01-01", "upcoming", 1, 1, 1);
+  db.prepare(`INSERT INTO shows
+    (id,canonical_key,artist,artist_key,venue,date,lifecycle,public_eligible,created_at,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?)`)
+    .run("show_tour_private", "tour-private", "Private Artist", "private artist", "Hall", "2099-01-02", "upcoming", 1, 1, 1);
+  db.prepare(`INSERT INTO show_attendance
+    (show_id,user_id,state,visibility,created_at,updated_at) VALUES (?,?,?,?,?,?)`)
+    .run("show_tour_public", "u_tour_public", "going", "members", 1, 1);
+  db.prepare(`INSERT INTO show_attendance
+    (show_id,user_id,state,visibility,created_at,updated_at) VALUES (?,?,?,?,?,?)`)
+    .run("show_tour_private", "u_tour_private", "going", "private", 1, 1);
+
+  const selected = selectTourDateRefreshArtists(db, {
+    limit: 3,
+    rotationSize: 0,
+    fallbackArtists: [{ name: "Bundled Only", popularity: 1000 }],
+  }).artists.map((artist) => artist.name);
+  assert.deepEqual(selected, ["Demanded Artist", "Famous Artist", "Other Artist"]);
+  assert.equal(selected.includes("Private Artist"), false);
+  assert.equal(selected.includes("Bundled Only"), false, "a populated live catalogue outranks the bundled safety net");
+});
+
+test("restricted accounts cannot influence any user-owned tour-date demand signal", () => {
+  const activeAt = Date.UTC(2026, 7, 28, 12);
+  const allowed = [
+    { name: "Allowed One", popularity: 100, tracks: [] },
+    { name: "Allowed Two", popularity: 99, tracks: [] },
+    { name: "Allowed Three", popularity: 98, tracks: [] },
+    { name: "Allowed Four", popularity: 97, tracks: [] },
+    { name: "Allowed Five", popularity: 96, tracks: [] },
+    { name: "Allowed Six", popularity: 95, tracks: [] },
+  ];
+  const restricted = [
+    { name: "Banned Post Artist", popularity: 0, tracks: [] },
+    { name: "Suspended Fan Artist", popularity: 0, tracks: [] },
+    { name: "Banned Attendance Artist", popularity: 0, tracks: [] },
+    { name: "Suspended Profile Artist", popularity: 0, tracks: [] },
+  ];
+  seed([...allowed, ...restricted]);
+  db.prepare("DELETE FROM show_attendance").run();
+  db.prepare("DELETE FROM shows").run();
+  db.prepare("DELETE FROM posts").run();
+  db.prepare("DELETE FROM fan_club_members").run();
+  db.prepare("DELETE FROM artist_profiles").run();
+  db.prepare("DELETE FROM missing_artists").run();
+
+  const insertUser = db.prepare(
+    "INSERT OR IGNORE INTO users (id,email,name,handle,pass_hash,created_at) VALUES (?,?,?,?,?,?)",
+  );
+  insertUser.run("u_tour_banned_signal", "tour-banned-signal@example.com", "Banned", "tourbannedsignal", "x", 1);
+  insertUser.run("u_tour_suspended_signal", "tour-suspended-signal@example.com", "Suspended", "toursuspendedsignal", "x", 1);
+  db.prepare("UPDATE users SET is_banned=1,suspended_until=0 WHERE id=?").run("u_tour_banned_signal");
+  db.prepare("UPDATE users SET is_banned=0,suspended_until=? WHERE id=?")
+    .run(activeAt + 60_000, "u_tour_suspended_signal");
+
+  db.prepare(`INSERT INTO posts
+    (id,user_id,artist,artist_key,venue,city,date,overall,removed,created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?)`).run(
+    "post_tour_banned_signal",
+    "u_tour_banned_signal",
+    "Banned Post Artist",
+    "banned post artist",
+    "Hall",
+    "Toronto",
+    "2026-09-01",
+    5,
+    0,
+    activeAt,
+  );
+  db.prepare("INSERT INTO fan_club_members (artist,user_id) VALUES (?,?)")
+    .run("suspended fan artist", "u_tour_suspended_signal");
+  db.prepare(`INSERT INTO shows
+    (id,canonical_key,artist,artist_key,venue,date,lifecycle,public_eligible,created_at,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?)`).run(
+    "show_tour_banned_signal",
+    "tour-banned-signal",
+    "Banned Attendance Artist",
+    "banned attendance artist",
+    "Hall",
+    "2026-09-02",
+    "upcoming",
+    1,
+    activeAt,
+    activeAt,
+  );
+  db.prepare(`INSERT INTO show_attendance
+    (show_id,user_id,state,visibility,created_at,updated_at) VALUES (?,?,?,?,?,?)`)
+    .run("show_tour_banned_signal", "u_tour_banned_signal", "going", "members", activeAt, activeAt);
+  db.prepare(`INSERT INTO artist_profiles
+    (artist_key,owner_id,removed,updated_at) VALUES (?,?,0,?)`)
+    .run("suspended profile artist", "u_tour_suspended_signal", activeAt);
+
+  const selected = selectTourDateRefreshArtists(db, {
+    limit: allowed.length,
+    rotationSize: 0,
+    now: activeAt,
+  }).artists.map((artist) => artist.name);
+  assert.deepEqual(selected, allowed.map((artist) => artist.name));
+  for (const artist of restricted) {
+    assert.equal(selected.includes(artist.name), false, `${artist.name} must not be demand-ranked`);
+  }
+});
+
+test("tour-date artist rotation is restart-stable and converges across the live catalogue", () => {
+  seed([
+    { name: "Alpha", popularity: 10, tracks: [] },
+    { name: "Beta", popularity: 20, tracks: [] },
+    { name: "Gamma", popularity: 30, tracks: [] },
+    { name: "Delta", popularity: 40, tracks: [] },
+    { name: "Epsilon", popularity: 90, tracks: [] },
+    { name: "Zeta", popularity: 100, tracks: [] },
+  ]);
+  db.prepare("DELETE FROM show_attendance").run();
+  db.prepare("DELETE FROM shows").run();
+  db.prepare("DELETE FROM posts").run();
+  db.prepare("DELETE FROM fan_club_members").run();
+  db.prepare("DELETE FROM artist_profiles").run();
+  db.prepare("DELETE FROM missing_artists").run();
+
+  assert.equal(tourDateArtistRotationSize(undefined, 150), 100);
+  const first = selectTourDateRefreshArtists(db, { limit: 4, rotationSize: 2, cursor: "" });
+  const restarted = selectTourDateRefreshArtists(db, { limit: 4, rotationSize: 2, cursor: "" });
+  assert.deepEqual(restarted, first, "an uncommitted cursor repeats the same provider slice after restart");
+  assert.deepEqual(first.artists.map((artist) => artist.name), ["Zeta", "Epsilon", "Alpha", "Beta"]);
+  assert.equal(first.nextCursor, "beta");
+
+  const second = selectTourDateRefreshArtists(db, { limit: 4, rotationSize: 2, cursor: first.nextCursor });
+  assert.deepEqual(second.artists.map((artist) => artist.name), ["Zeta", "Epsilon", "Delta", "Gamma"]);
+  assert.equal(second.nextCursor, "gamma");
+  assert.deepEqual(new Set([...first.artists, ...second.artists].map((artist) => artist.name)),
+    new Set(["Alpha", "Beta", "Gamma", "Delta", "Epsilon", "Zeta"]));
+});
+
+test("tour-date artist selection tolerates optional demand tables during isolated startup", () => {
+  const minimalDatabase = {
+    prepare(sql) {
+      if (/FROM artists\s+WHERE length\(TRIM\(name\)\)/.test(sql)) {
+        return { all: () => [{ name: "Live Minimal", popularity: 2, rank_score: 3, demand_score: 0 }] };
+      }
+      throw new Error("no such table: optional_signal");
+    },
+  };
+  assert.deepEqual(selectTourDateRefreshArtists(minimalDatabase, {
+    limit: 2,
+    rotationSize: 0,
+    fallbackArtists: [{ name: "Bundled Fallback", popularity: 1 }],
+  }).artists, [
+    { name: "Live Minimal", popularity: 2 },
+    { name: "Bundled Fallback", popularity: 1 },
+  ]);
+});
+
 test("the paused product keeps catalogue enrichment available without YouTube playback warming", () => {
   assert.equal(isCacheWarmSchedulerEnabled({}), true, "keyless catalogue enrichment remains available locally");
   assert.equal(isYouTubePlaybackWarmEnabled({ YOUTUBE_API_KEY: "configured" }), false);
@@ -171,9 +375,9 @@ test("Ticketmaster searches request all locales and keep artist pages bounded", 
   assert.equal(url.searchParams.get("size"), "200");
   assert.equal(url.searchParams.get("sort"), "date,asc");
   assert.equal(url.searchParams.get("apikey"), "test-key");
-  assert.equal(ticketmasterArtistPageSize(undefined), 50);
+  assert.equal(ticketmasterArtistPageSize(undefined), 200);
   assert.equal(ticketmasterArtistPageSize(1), 8);
-  assert.equal(ticketmasterArtistPageSize("not-a-number"), 50);
+  assert.equal(ticketmasterArtistPageSize("not-a-number"), 200);
   assert.equal(ticketmasterArtistIdentity("Beyoncé"), "beyonce");
   assert.equal(ticketmasterArtistIdentity("P!nk"), "p nk");
   assert.equal(ticketmasterArtistIdentity("Simon & Garfunkel"), "simon and garfunkel");
@@ -284,6 +488,94 @@ test("country ingestion pages until it proves 90-day coverage", async () => {
   assert.deepEqual(result.rows.map((row) => row.provider_event_id), ["country-near", "country-day-90"]);
 });
 
+test("partitioned market integration issues bounded dated country queries", async () => {
+  const requests = [];
+  const result = await collectTicketmasterMarketPartitions({
+    apiKey: "test-key",
+    countryCode: "pt",
+    now: Date.parse("2026-08-28T12:00:00Z"),
+    horizonDays: 7,
+    defaultWindowDays: 7,
+    maxRequests: 1,
+    fetchJson: async (value) => {
+      const url = new URL(value);
+      requests.push({
+        countryCode: url.searchParams.get("countryCode"),
+        city: url.searchParams.get("city"),
+        range: url.searchParams.get("startEndDateTime"),
+        page: url.searchParams.get("page"),
+        size: url.searchParams.get("size"),
+      });
+      return ticketmasterPage(0, 1, [ticketmasterPageEvent("portugal-window", "2026-09-01")]);
+    },
+    wait: async () => {},
+  });
+
+  assert.deepEqual(requests, [{
+    countryCode: "PT",
+    city: null,
+    range: "2026-08-28T00:00:00Z,2026-09-03T23:59:59Z",
+    page: "0",
+    size: "200",
+  }]);
+  assert.equal(result.requestComplete, true);
+  assert.equal(result.cycleComplete, true);
+  assert.equal(result.coverageComplete, true);
+  assert.equal(result.complete, false,
+    "one market window must remain ineligible for whole-provider stale cleanup");
+  assert.deepEqual(result.rows.map((row) => row.provider_event_id), ["portugal-window"]);
+});
+
+test("market progress advances atomically after empty success and not after a partial request", () => {
+  const market = { countryCode: "PT" };
+  db.prepare("DELETE FROM app_meta WHERE key LIKE 'tourdates:ticketmaster-market-coverage:%'").run();
+  db.prepare("DELETE FROM tour_dates WHERE id='tm_partition_partial'").run();
+  const firstState = {
+    version: 1,
+    cursorDate: "2026-09-04",
+    windowDays: 7,
+    cycleStartedDate: "2026-08-28",
+    lastCycleCompletedAt: null,
+    lastCompleteThrough: null,
+    gaps: [],
+  };
+  const emptySuccess = persistTicketmasterMarketResult(db, {
+    market,
+    result: { rows: [], requestComplete: true, nextState: firstState },
+    seenAt: 1000,
+  });
+  assert.deepEqual(emptySuccess, { changed: 0, stateAdvanced: true });
+  assert.deepEqual(readTicketmasterMarketCoverageState(db, market), firstState,
+    "an empty provider window is still durable coverage progress");
+
+  const secondState = { ...firstState, cursorDate: "2026-09-11" };
+  const partial = persistTicketmasterMarketResult(db, {
+    market,
+    result: {
+      rows: [{
+        id: "tm_partition_partial",
+        artist: "Partition Artist",
+        venue: "Partition Hall",
+        place: "Lisbon, Portugal",
+        date: "2026-09-05",
+        source: "ticketmaster",
+        provider_event_id: "partition-partial",
+        event_kind: "concert",
+        music_qualified: 1,
+      }],
+      requestComplete: false,
+      nextState: secondState,
+    },
+    seenAt: 2000,
+  });
+  assert.equal(partial.changed, 1, "verified partial rows remain useful catalogue data");
+  assert.equal(partial.stateAdvanced, false);
+  assert.equal(db.prepare("SELECT provider_event_id FROM tour_dates WHERE id='tm_partition_partial'").get().provider_event_id,
+    "partition-partial");
+  assert.deepEqual(readTicketmasterMarketCoverageState(db, market), firstState,
+    "a failed page cannot skip the unproven market window");
+});
+
 test("dense city pagination stops at Ticketmaster's five-page budget", async () => {
   const requests = [];
   const result = await collectTicketmasterCityPages({
@@ -342,6 +634,65 @@ test("a later city page failure keeps verified rows but blocks Ticketmaster stal
   ]);
   assert.deepEqual(sourcesEligibleForStaleReconciliation(providerStats), ["bandsintown"],
     "a partial Ticketmaster page cannot authorize source-wide stale cleanup");
+});
+
+test("successful market slices are healthy requests but remain stale-reconciliation ineligible", async () => {
+  const collected = await collectNamedTourProviderResults([{
+    source: "ticketmaster",
+    run: async () => ({
+      rows: [],
+      complete: false,
+      requestComplete: true,
+      coverageComplete: false,
+    }),
+  }]);
+  assert.equal(collected.successes, 1);
+  assert.equal(collected.failures, 0,
+    "an intentionally bounded slice must not manufacture a provider outage");
+  assert.deepEqual(collected.outcomes, [{ source: "ticketmaster", ok: false }],
+    "the same slice still cannot authorize stale cleanup outside its proven scope");
+});
+
+test("an incomplete zero-row provider result cannot suppress total-outage retry", async () => {
+  const collected = await collectNamedTourProviderResults([{
+    source: "ticketmaster",
+    run: async () => ({
+      rows: [],
+      complete: false,
+      requestComplete: false,
+    }),
+  }]);
+  assert.equal(collected.successes, 0);
+  assert.equal(collected.failures, 1);
+  assert.deepEqual(collected.outcomes, [{ source: "ticketmaster", ok: false }]);
+  assert.equal(hasSuccessfulTourProviderWork(collected.successes), false,
+    "a page-zero outage must leave the worldwide refresh immediately due");
+});
+
+test("provider dedupe preserves distinct same-day shows and removes only repeated stable identities", () => {
+  const early = {
+    id: "tm_early",
+    provider_event_id: "early",
+    source: "ticketmaster",
+    artist: "Two Show Artist",
+    venue: "Same Hall",
+    date: "2026-09-16",
+    start_local_time: "14:00:00",
+  };
+  const late = {
+    id: "tm_late",
+    provider_event_id: "late",
+    source: "ticketmaster",
+    artist: "Two Show Artist",
+    venue: "Same Hall",
+    date: "2026-09-16",
+    start_local_time: "20:00:00",
+  };
+  const repeatedEarly = { ...early, ticket_url: "https://example.com/repeated-copy" };
+
+  const deduped = dedupeTourProviderRows([early, late, repeatedEarly]);
+  assert.deepEqual(deduped, [early, late],
+    "provider identity, not venue plus date, distinguishes separate performances");
 });
 
 test("Ticketmaster global countries rotate deterministically within a bounded batch", () => {
@@ -538,6 +889,24 @@ test("tour reconciliation is isolated by provider and preserves rows as inactive
   assert.equal(db.prepare("SELECT provider_active FROM tour_dates WHERE id='tour_reconcile_bit_stale'").get().provider_active, 0);
 });
 
+test("rotating artist refresh only reconciles exact successful artist scopes", () => {
+  const insert = db.prepare(`INSERT OR REPLACE INTO tour_dates
+    (id,artist,source,updated_at,last_seen_at,provider_active,owner_id) VALUES (?,?,?,?,?,?,?)`);
+  insert.run("tour_scope_seen", "Seen Artist", "bandsintown", 1000, 1000, 1, null);
+  insert.run("tour_scope_unvisited", "Unvisited Artist", "bandsintown", 1000, 1000, 1, null);
+  insert.run("tour_scope_ticketmaster", "Seen Artist", "ticketmaster", 1000, 1000, 1, null);
+
+  assert.equal(reconcileStaleProviderTourDatesForArtists(db, {
+    sourceArtists: new Map([["bandsintown", new Set(["Seen Artist"])]]),
+    staleBefore: 2000,
+  }), 1);
+  assert.equal(db.prepare("SELECT provider_active FROM tour_dates WHERE id='tour_scope_seen'").get().provider_active, 0);
+  assert.equal(db.prepare("SELECT provider_active FROM tour_dates WHERE id='tour_scope_unvisited'").get().provider_active, 1,
+    "an artist outside this rotating slice must stay active");
+  assert.equal(db.prepare("SELECT provider_active FROM tour_dates WHERE id='tour_scope_ticketmaster'").get().provider_active, 1,
+    "an exact Bandsintown success cannot reconcile Ticketmaster rows");
+});
+
 test("provider upserts persist the durable fields and reactivate a returned event", () => {
   const row = {
     id: "tm_foundation_upsert",
@@ -574,7 +943,8 @@ test("provider upserts persist the durable fields and reactivate a returned even
   };
 
   assert.equal(upsertProviderTourDateRows(db, [row], { seenAt: 5000 }), 1);
-  db.prepare("INSERT OR IGNORE INTO artists (norm,name,data,rank_score,source,updated_at) VALUES (?,?,?,?,?,?)").run("radiohead", row.artist, "{}", 0, "test", 1);
+  db.prepare("INSERT OR IGNORE INTO artists (norm,name,data,rank_score,source,created_at,updated_at) VALUES (?,?,?,?,?,?,?)")
+    .run("radiohead", row.artist, "{}", 0, "test", 1, 1);
   assert.equal(upsertProviderTourDateRows(db, [row], { seenAt: 5000 }), 1);
   const inserted = db.prepare("SELECT * FROM tour_dates WHERE id=?").get(row.id);
   for (const field of [

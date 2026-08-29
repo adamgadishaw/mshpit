@@ -14,6 +14,10 @@ import { canonicalTicketUrl } from "../src/domain/ticketLinks.mjs";
 import { bandsintownMusicEvent, ticketmasterMusicEvent } from "./musicEventClassification.js";
 import { selectTicketmasterEventImage } from "./providerEventImage.js";
 import { deriveTourNameFromEventTitle } from "./tourDateMetadata.js";
+import {
+  collectTicketmasterPartitionedMarket,
+  ticketmasterMarketCoverageKey,
+} from "./ticketmasterMarketCoverage.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CATALOG = join(HERE, "..", "src", "seed", "catalog.generated.json");
@@ -24,7 +28,14 @@ const CITY_LIMIT = Number(process.env.TOURDATE_CITY_LIMIT) || 50;
 const REFRESH_H = Number(process.env.TOURDATE_REFRESH_H) || 12;
 const DAY = 86400000;
 const LAST_REFRESH_KEY = "tourdates:last-refresh:v1";
+const INGESTION_REVISION_KEY = "tourdates:ingestion-revision";
+const ARTIST_CURSOR_KEY = "tourdates:artist-cursor:v1";
 const COUNTRY_CURSOR_KEY = "tourdates:ticketmaster-country-cursor:v1";
+const MARKET_COVERAGE_KEY_PREFIX = "tourdates:ticketmaster-market-coverage:v1:";
+// Bump this only when a deployed collector materially changes what it can
+// discover. The persisted value makes that release run once even when the
+// ordinary freshness clock is still recent, without replaying on every deploy.
+export const TOURDATE_INGESTION_REVISION = "live-catalog-demand-partitioned-90d-v2";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const slugId = (p, n, v, d) => `${p}_${n}_${v}_${d}`.toLowerCase().replace(/[^a-z0-9]+/g, "_").slice(0, 120);
 const norm = (value) => String(value || "").trim().toLowerCase();
@@ -88,7 +99,9 @@ function boundedInteger(value, fallback, { min, max }) {
 }
 
 export function ticketmasterArtistPageSize(value) {
-  return boundedInteger(value, 50, { min: 8, max: 200 });
+  // One provider call costs the same at 200 rows and prevents prolific touring
+  // artists from being permanently truncated after their first 50 dates.
+  return boundedInteger(value, 200, { min: 8, max: 200 });
 }
 
 export function ticketmasterCountryBatchSize(value) {
@@ -101,6 +114,11 @@ export function ticketmasterRequestDelayMs(value) {
   // a long global sweep cannot turn a harmless documentation mismatch into a
   // provider-wide 429 burst.
   return boundedInteger(value, 550, { min: 500, max: 5000 });
+}
+
+export function tourDateArtistRotationSize(value, limit = LIMIT) {
+  const safeLimit = boundedInteger(limit, LIMIT, { min: 1, max: 1000 });
+  return boundedInteger(value, Math.max(1, Math.floor(safeLimit * 2 / 3)), { min: 0, max: safeLimit });
 }
 
 export function ticketmasterCountryCodes(value, fallback = DEFAULT_TICKETMASTER_COUNTRIES) {
@@ -170,6 +188,7 @@ const ARTIST_PAGE_SIZE = ticketmasterArtistPageSize(process.env.TOURDATE_ARTIST_
 const COUNTRY_BATCH_SIZE = ticketmasterCountryBatchSize(process.env.TOURDATE_COUNTRY_BATCH);
 const COUNTRY_CODES = ticketmasterCountryCodes(process.env.TOURDATE_COUNTRIES);
 const TM_REQUEST_DELAY_MS = ticketmasterRequestDelayMs(process.env.TOURDATE_REQUEST_DELAY_MS);
+const ARTIST_ROTATION_SIZE = tourDateArtistRotationSize(process.env.TOURDATE_ROTATION_SIZE, LIMIT);
 
 // Hosted instances opt in explicitly. The full refresh performs one provider
 // request per artist, so replaying it after every ephemeral cold start can make
@@ -200,13 +219,40 @@ export function shouldRefreshTourDates(lastRefreshAt, now = Date.now(), refreshH
   return !last || now - last >= interval;
 }
 
+export function shouldRefreshTourDateIngestion({
+  lastRefreshAt,
+  storedRevision,
+  now = Date.now(),
+  refreshHours = REFRESH_H,
+  currentRevision = TOURDATE_INGESTION_REVISION,
+} = {}) {
+  const expected = optionalText(currentRevision);
+  const completed = optionalText(storedRevision);
+  return (expected && completed !== expected)
+    || shouldRefreshTourDates(lastRefreshAt, now, refreshHours);
+}
+
 function storedLastRefreshAt() {
   return db.prepare("SELECT value FROM app_meta WHERE key=?").get(LAST_REFRESH_KEY)?.value || 0;
 }
 
-function markRefreshed(at = Date.now()) {
-  db.prepare("INSERT INTO app_meta (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
-    .run(LAST_REFRESH_KEY, String(at));
+function storedIngestionRevision() {
+  return db.prepare("SELECT value FROM app_meta WHERE key=?").get(INGESTION_REVISION_KEY)?.value || "";
+}
+
+function storedArtistCursor() {
+  return db.prepare("SELECT value FROM app_meta WHERE key=?").get(ARTIST_CURSOR_KEY)?.value || "";
+}
+
+function markRefreshComplete(at = Date.now(), artistCursor = null) {
+  const timestamp = Number(at);
+  if (!Number.isSafeInteger(timestamp) || timestamp < 0) throw new TypeError("refresh completion time must be a non-negative integer");
+  const write = db.prepare("INSERT INTO app_meta (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value");
+  db.transaction(() => {
+    write.run(LAST_REFRESH_KEY, String(timestamp));
+    write.run(INGESTION_REVISION_KEY, TOURDATE_INGESTION_REVISION);
+    if (typeof artistCursor === "string") write.run(ARTIST_CURSOR_KEY, artistCursor);
+  })();
 }
 
 function storedCountryCursor() {
@@ -218,6 +264,36 @@ function markCountryCursor(cursor) {
     .run(COUNTRY_CURSOR_KEY, String(cursor));
 }
 
+export function ticketmasterMarketCoverageMetaKey(market) {
+  const key = ticketmasterMarketCoverageKey(market);
+  return key ? `${MARKET_COVERAGE_KEY_PREFIX}${key}` : null;
+}
+
+export function readTicketmasterMarketCoverageState(database, market) {
+  if (!database?.prepare) throw new TypeError("market coverage state requires a database");
+  const key = ticketmasterMarketCoverageMetaKey(market);
+  if (!key) return null;
+  const value = database.prepare("SELECT value FROM app_meta WHERE key=?").get(key)?.value;
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function writeTicketmasterMarketCoverageState(database, market, state) {
+  if (!database?.prepare) throw new TypeError("market coverage state requires a database");
+  const key = ticketmasterMarketCoverageMetaKey(market);
+  if (!key || !state || typeof state !== "object" || Array.isArray(state)) return false;
+  const value = JSON.stringify(state);
+  if (value.length > 100_000) throw new RangeError("market coverage state is unexpectedly large");
+  database.prepare("INSERT INTO app_meta (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+    .run(key, value);
+  return true;
+}
+
 async function getJSON(url) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), 15000);
@@ -226,6 +302,185 @@ async function getJSON(url) {
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     return await r.json();
   } finally { clearTimeout(t); }
+}
+
+// Provider capacity is deliberately bounded, so spend the artist lane on the
+// live catalogue rather than the much smaller bundled seed. Ranking uses only
+// canonical public artist names and aggregate non-private product demand. Private attendance,
+// listening history, saved favourites, member ids, and profile fields never
+// leave the database or affect this provider work queue.
+export function selectTourDateRefreshArtists(database, {
+  limit = LIMIT,
+  rotationSize,
+  cursor = "",
+  fallbackArtists = [],
+  now = Date.now(),
+} = {}) {
+  if (!database?.prepare) throw new TypeError("tour-date artist selection requires a database");
+  const safeLimit = boundedInteger(limit, LIMIT, { min: 1, max: 1000 });
+  const safeRotationSize = tourDateArtistRotationSize(rotationSize, safeLimit);
+  const priorityLimit = safeLimit - safeRotationSize;
+  const candidateLimit = Math.min(4000, safeLimit * 4);
+  const signalWindow = Math.min(20000, Math.max(1000, safeLimit * 100));
+  const requestedAt = Number(now);
+  const activeAt = Number.isFinite(requestedAt) && requestedAt >= 0
+    ? Math.floor(requestedAt)
+    : Date.now();
+  const optionalRows = (sql, ...args) => {
+    try { return database.prepare(sql).all(...args); }
+    catch (error) {
+      if (/no such (?:table|column)/i.test(String(error?.message || ""))) return [];
+      throw error;
+    }
+  };
+  const demanded = priorityLimit > 0 ? [
+    ...optionalRows(`
+      SELECT a.name,a.popularity,a.rank_score,COUNT(*) * 40 demand_score
+      FROM (SELECT p.artist_key,p.artist FROM posts p
+        JOIN users demand_user ON demand_user.id=p.user_id
+        WHERE p.removed=0 AND length(TRIM(p.artist))>0
+          AND demand_user.is_banned=0
+          AND (demand_user.suspended_until IS NULL OR demand_user.suspended_until<=?)
+        ORDER BY p.created_at DESC LIMIT ?) p
+      JOIN artists a ON a.norm=COALESCE(NULLIF(TRIM(p.artist_key),''),LOWER(TRIM(p.artist)))
+      GROUP BY a.norm,a.name,a.popularity,a.rank_score
+      ORDER BY demand_score DESC LIMIT ?`, activeAt, signalWindow, candidateLimit),
+    ...optionalRows(`
+      SELECT a.name,a.popularity,a.rank_score,COUNT(*) * 60 demand_score
+      FROM (SELECT f.artist FROM fan_club_members f
+        JOIN users demand_user ON demand_user.id=f.user_id
+        WHERE length(TRIM(f.artist))>0
+          AND demand_user.is_banned=0
+          AND (demand_user.suspended_until IS NULL OR demand_user.suspended_until<=?)
+        LIMIT ?) f
+      JOIN artists a ON a.norm=LOWER(TRIM(f.artist))
+      GROUP BY a.norm,a.name,a.popularity,a.rank_score
+      ORDER BY demand_score DESC LIMIT ?`, activeAt, signalWindow, candidateLimit),
+    ...optionalRows(`
+      SELECT a.name,a.popularity,a.rank_score,COUNT(*) * 80 demand_score
+      FROM (SELECT attendance.show_id,attendance.legacy_artist FROM show_attendance attendance
+        JOIN users demand_user ON demand_user.id=attendance.user_id
+        WHERE attendance.visibility<>'private'
+          AND attendance.state IN ('interested','going','here','went')
+          AND demand_user.is_banned=0
+          AND (demand_user.suspended_until IS NULL OR demand_user.suspended_until<=?)
+        LIMIT ?) sa
+      JOIN shows s ON s.id=sa.show_id
+      JOIN artists a ON a.norm=COALESCE(NULLIF(TRIM(s.artist_key),''),LOWER(TRIM(COALESCE(NULLIF(s.artist,''),sa.legacy_artist))))
+      GROUP BY a.norm,a.name,a.popularity,a.rank_score
+      ORDER BY demand_score DESC LIMIT ?`, activeAt, signalWindow, candidateLimit),
+    ...optionalRows(`
+      SELECT a.name,a.popularity,a.rank_score,COUNT(*) * 120 demand_score
+      FROM (SELECT profile.artist_key FROM artist_profiles profile
+        JOIN users demand_user ON demand_user.id=profile.owner_id
+        WHERE profile.removed=0
+          AND demand_user.is_banned=0
+          AND (demand_user.suspended_until IS NULL OR demand_user.suspended_until<=?)
+        LIMIT ?) ap
+      JOIN artists a ON a.norm=TRIM(ap.artist_key)
+      GROUP BY a.norm,a.name,a.popularity,a.rank_score
+      ORDER BY demand_score DESC LIMIT ?`, activeAt, signalWindow, candidateLimit),
+    ...optionalRows(`
+      SELECT a.name,a.popularity,a.rank_score,15 demand_score
+      FROM (SELECT artist_key,artist FROM tour_dates
+        WHERE provider_active=1 AND owner_id IS NULL AND date>=? LIMIT ?) td
+      JOIN artists a ON a.norm=COALESCE(NULLIF(TRIM(td.artist_key),''),LOWER(TRIM(td.artist)))
+      GROUP BY a.norm,a.name,a.popularity,a.rank_score
+      ORDER BY a.popularity DESC,a.rank_score DESC LIMIT ?`,
+    new Date(activeAt).toISOString().slice(0, 10), signalWindow, candidateLimit),
+  ] : [];
+  const popular = priorityLimit > 0 ? optionalRows(`
+    SELECT name,popularity,rank_score,0 demand_score
+    FROM artists
+    WHERE length(TRIM(name)) BETWEEN 1 AND 160
+    ORDER BY COALESCE(popularity,0) DESC,rank_score DESC,name COLLATE NOCASE
+    LIMIT ?
+  `, candidateLimit) : [];
+
+  const candidates = new Map();
+  const add = (row) => {
+    const name = optionalText(row?.name);
+    const key = ticketmasterArtistIdentity(name);
+    if (!name || name.length > 160 || !key) return;
+    const prior = candidates.get(key);
+    const candidate = {
+      name,
+      demandScore: Number(row?.demand_score) || 0,
+      popularity: Number(row?.popularity) || 0,
+      rankScore: Number(row?.rank_score) || 0,
+    };
+    if (!prior) candidates.set(key, candidate);
+    else candidates.set(key, {
+      name: candidate.popularity > prior.popularity ? candidate.name : prior.name,
+      demandScore: prior.demandScore + candidate.demandScore,
+      popularity: Math.max(prior.popularity, candidate.popularity),
+      rankScore: Math.max(prior.rankScore, candidate.rankScore),
+    });
+  };
+  for (const row of demanded) add(row);
+  for (const row of popular) add(row);
+
+  const ranked = [...candidates.values()].sort((left, right) =>
+    right.demandScore - left.demandScore
+    || right.popularity - left.popularity
+    || right.rankScore - left.rankScore
+    || left.name.localeCompare(right.name));
+  const selected = ranked.slice(0, priorityLimit);
+  const selectedKeys = new Set(selected.map((artist) => ticketmasterArtistIdentity(artist.name)));
+
+  // The second lane advances through the canonical live catalogue by norm. Its
+  // cursor is returned to the caller and is persisted only after a successful
+  // refresh, so restarts repeat the same safe slice instead of skipping work.
+  const cursorText = optionalText(cursor) || "";
+  let nextCursor = cursorText;
+  if (safeRotationSize > 0) {
+    const rotationScanLimit = Math.min(4000, Math.max(safeLimit * 4, safeRotationSize * 4));
+    const after = optionalRows(`SELECT norm,name,popularity,rank_score FROM artists
+      WHERE norm>? AND length(TRIM(name)) BETWEEN 1 AND 160 ORDER BY norm LIMIT ?`, cursorText, rotationScanLimit);
+    const wrapLimit = rotationScanLimit - after.length;
+    const wrapped = cursorText && wrapLimit > 0
+      ? optionalRows(`SELECT norm,name,popularity,rank_score FROM artists
+          WHERE norm<=? AND length(TRIM(name)) BETWEEN 1 AND 160 ORDER BY norm LIMIT ?`, cursorText, wrapLimit)
+      : [];
+    let rotatingAdded = 0;
+    for (const row of [...after, ...wrapped]) {
+      const rowCursor = optionalText(row?.norm);
+      if (rowCursor) nextCursor = rowCursor;
+      const name = optionalText(row?.name);
+      const key = ticketmasterArtistIdentity(name);
+      if (!name || name.length > 160 || !key || selectedKeys.has(key)) continue;
+      selectedKeys.add(key);
+      selected.push({
+        name,
+        popularity: Number(row.popularity) || 0,
+        rankScore: Number(row.rank_score) || 0,
+        demandScore: 0,
+      });
+      rotatingAdded += 1;
+      if (rotatingAdded >= safeRotationSize) break;
+    }
+  }
+
+  // The generated catalogue remains a startup/offline safety net only. It can
+  // fill an unusually sparse database, but it can never displace live demand.
+  if (selected.length < safeLimit) {
+    const fallback = (Array.isArray(fallbackArtists) ? fallbackArtists : Object.values(fallbackArtists || {}))
+      .filter((artist) => optionalText(artist?.name))
+      .sort((left, right) => (Number(right?.popularity) || 0) - (Number(left?.popularity) || 0));
+    for (const artist of fallback) {
+      if (selected.length >= safeLimit) break;
+      const name = optionalText(artist.name);
+      const key = ticketmasterArtistIdentity(name);
+      if (!name || name.length > 160 || !key || selectedKeys.has(key)) continue;
+      selectedKeys.add(key);
+      selected.push({ name, popularity: Number(artist.popularity) || 0, rankScore: 0, demandScore: 0 });
+    }
+  }
+
+  return {
+    artists: selected.map(({ name, popularity }) => ({ name, popularity })),
+    nextCursor,
+  };
 }
 
 export function ticketmasterRows(data, { requestedArtist = null } = {}) {
@@ -414,6 +669,53 @@ export function collectTicketmasterCountryPages(options = {}) {
   return collectTicketmasterRangePages(options);
 }
 
+export async function collectTicketmasterMarketPartitions({
+  apiKey,
+  city,
+  countryCode,
+  state,
+  fetchJson = getJSON,
+  wait = sleep,
+  requestDelayMs = TM_REQUEST_DELAY_MS,
+  now = Date.now(),
+  horizonDays,
+  defaultWindowDays,
+  maxRequests,
+  pageSize,
+} = {}) {
+  if (!apiKey || (!city && !countryCode)) {
+    return {
+      rows: [],
+      complete: false,
+      requestComplete: false,
+      cycleComplete: false,
+      coverageComplete: false,
+      requestsUsed: 0,
+      nextState: state || null,
+    };
+  }
+  return collectTicketmasterPartitionedMarket({
+    state,
+    now,
+    horizonDays,
+    defaultWindowDays,
+    maxRequests,
+    pageSize,
+    fetchJson,
+    wait,
+    requestDelayMs,
+    buildUrl: ({ startEndDateTime, size, page }) => ticketmasterEventSearchUrl({
+      apiKey,
+      city,
+      countryCode,
+      startEndDateTime,
+      size,
+      page,
+    }),
+    rowsFromResponse: ticketmasterRows,
+  });
+}
+
 async function tmDates(name) {
   if (!KEY) return [];
   const data = await getJSON(ticketmasterEventSearchUrl({
@@ -431,7 +733,11 @@ async function tmDates(name) {
 // request per distinct member city gives the local rail useful coverage.
 async function tmCityDates(city) {
   if (!KEY || !city) return [];
-  return collectTicketmasterCityPages({ apiKey: KEY, city });
+  return collectTicketmasterMarketPartitions({
+    apiKey: KEY,
+    city,
+    state: readTicketmasterMarketCoverageState(db, { city }),
+  });
 }
 
 // A small rotating country batch gives Pit representative worldwide coverage
@@ -439,7 +745,11 @@ async function tmCityDates(city) {
 // several scheduled runs, and the cursor survives restarts on the same disk.
 async function tmCountryDates(countryCode) {
   if (!KEY || !countryCode) return [];
-  return collectTicketmasterCountryPages({ apiKey: KEY, countryCode });
+  return collectTicketmasterMarketPartitions({
+    apiKey: KEY,
+    countryCode,
+    state: readTicketmasterMarketCoverageState(db, { countryCode }),
+  });
 }
 
 export function bandsintownRows(data, { requestedArtist = null } = {}) {
@@ -523,18 +833,33 @@ export async function collectNamedTourProviderResults(providers) {
   const active = (providers || []).filter((provider) => provider && typeof provider.run === "function");
   const settled = await Promise.allSettled(active.map((provider) => provider.run()));
   const normalized = settled.map((result) => {
-    if (result.status !== "fulfilled") return { rows: [], complete: false };
-    if (Array.isArray(result.value)) return { rows: result.value, complete: true };
+    if (result.status !== "fulfilled") return { rows: [], complete: false, requestComplete: false };
+    if (Array.isArray(result.value)) return { rows: result.value, complete: true, requestComplete: true };
     if (result.value && typeof result.value === "object" && Array.isArray(result.value.rows)) {
-      return { rows: result.value.rows, complete: result.value.complete !== false };
+      const complete = result.value.complete !== false;
+      return {
+        rows: result.value.rows,
+        complete,
+        // A deliberately partial market slice can complete every request while
+        // remaining ineligible for stale reconciliation. Legacy collectors that
+        // only return complete:false still count as a request failure.
+        requestComplete: result.value.requestComplete === true || complete,
+      };
     }
-    return { rows: [], complete: true };
+    return { rows: [], complete: true, requestComplete: true };
   });
+  const useful = normalized.map((result, index) => (
+    settled[index].status === "fulfilled"
+      && (result.requestComplete || result.rows.length > 0)
+  ));
   return {
     rows: normalized.flatMap((result) => result.rows),
-    successes: settled.filter((result) => result.status === "fulfilled").length,
+    // A partial page with verified rows is useful durable work even though it
+    // also remains a failure for retry/reconciliation purposes. An incomplete
+    // zero-row response proves nothing and must not suppress total-outage retry.
+    successes: useful.filter(Boolean).length,
     failures: settled.filter((result) => result.status === "rejected").length
-      + normalized.filter((result, index) => settled[index].status === "fulfilled" && !result.complete).length,
+      + normalized.filter((result, index) => settled[index].status === "fulfilled" && !result.requestComplete).length,
     outcomes: settled.map((result, index) => ({
       source: active[index].source,
       ok: result.status === "fulfilled" && normalized[index].complete,
@@ -571,17 +896,38 @@ export function reconcileStaleProviderTourDates(database, {
   }
 }
 
+export function dedupeTourProviderRows(rows) {
+  const byIdentity = new Map();
+  for (const row of rows || []) {
+    const source = norm(row?.source) || "unknown";
+    const providerEventId = optionalText(row?.provider_event_id);
+    const stableId = optionalText(row?.id);
+    const identity = providerEventId
+      ? JSON.stringify(["provider", source, providerEventId])
+      : stableId
+        ? JSON.stringify(["id", source, stableId])
+        : JSON.stringify([
+          "composite",
+          source,
+          ticketmasterArtistIdentity(row?.artist),
+          norm(row?.venue),
+          optionalText(row?.date),
+          optionalText(row?.start_date_time),
+          optionalText(row?.start_local_time),
+          optionalText(row?.event_name),
+          optionalText(row?.ticket_url),
+        ]);
+    if (!byIdentity.has(identity)) byIdentity.set(identity, row);
+  }
+  return [...byIdentity.values()];
+}
+
 async function fetchDates(name) {
   const result = await collectNamedTourProviderResults([
     KEY ? { source: "ticketmaster", run: () => tmDates(name) } : null,
     BIT ? { source: "bandsintown", run: () => bitDates(name) } : null,
   ]);
-  const byGig = new Map();
-  for (const row of result.rows) {
-    const k = `${(row.venue || "").toLowerCase()}|${row.date}`;
-    if (!byGig.has(k)) byGig.set(k, row);
-  }
-  return { ...result, rows: [...byGig.values()] };
+  return { ...result, rows: dedupeTourProviderRows(result.rows) };
 }
 
 const PROVIDER_TOUR_DATE_UPSERT_SQL = `
@@ -717,6 +1063,38 @@ function providerTourDateWrite(row, seenAt, artistKey) {
   };
 }
 
+export function reconcileStaleProviderTourDatesForArtists(database, {
+  sourceArtists,
+  staleBefore,
+} = {}) {
+  const cutoff = Number(staleBefore);
+  if (!Number.isSafeInteger(cutoff) || cutoff < 0) return 0;
+  const entries = sourceArtists instanceof Map
+    ? [...sourceArtists]
+    : Object.entries(sourceArtists || {});
+  const scopes = entries
+    .filter(([source]) => /^(ticketmaster|bandsintown)$/.test(source))
+    .map(([source, artists]) => [source, [...new Set([...(artists || [])].map(norm).filter(Boolean))].slice(0, 1000)])
+    .filter(([, artists]) => artists.length);
+  if (!scopes.length) return 0;
+  const deactivate = database.prepare(`UPDATE tour_dates SET provider_active=0
+    WHERE owner_id IS NULL AND source=? AND provider_active<>0
+      AND lower(trim(artist))=? AND COALESCE(last_seen_at,updated_at)<?`);
+  let deactivated = 0;
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    for (const [source, artists] of scopes) {
+      for (const artist of artists) deactivated += Number(deactivate.run(source, artist, cutoff).changes) || 0;
+    }
+    database.exec("COMMIT");
+    return deactivated;
+  } catch (error) {
+    try { database.exec("ROLLBACK"); }
+    catch { /* architecture: allow-empty-catch -- preserve the original scoped provider reconciliation failure */ }
+    throw error;
+  }
+}
+
 export function upsertProviderTourDateRows(database, rows, { seenAt = Date.now() } = {}) {
   const timestamp = Number(seenAt);
   if (!Number.isSafeInteger(timestamp) || timestamp < 0) throw new TypeError("seenAt must be a non-negative integer");
@@ -731,6 +1109,34 @@ export function upsertProviderTourDateRows(database, rows, { seenAt = Date.now()
   return changed;
 }
 
+export function persistTicketmasterMarketResult(database, {
+  market,
+  result,
+  seenAt = Date.now(),
+} = {}) {
+  if (!database?.exec || !database?.prepare) throw new TypeError("market result persistence requires a database");
+  const providerResult = result && typeof result === "object" ? result : { rows: [] };
+  let changed = 0;
+  let stateAdvanced = false;
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    changed = upsertProviderTourDateRows(database, providerResult.rows, { seenAt });
+    // Empty successful windows still prove date coverage. Advance the cursor in
+    // the same transaction as row writes so a failed upsert can never skip a
+    // market window. Failed/partial HTTP work keeps its useful rows but retries
+    // the same coverage cursor later.
+    if (providerResult.requestComplete === true && providerResult.nextState) {
+      stateAdvanced = writeTicketmasterMarketCoverageState(database, market, providerResult.nextState);
+    }
+    database.exec("COMMIT");
+    return { changed, stateAdvanced };
+  } catch (error) {
+    try { database.exec("ROLLBACK"); }
+    catch { /* architecture: allow-empty-catch -- preserve the original market persistence failure */ }
+    throw error;
+  }
+}
+
 let running = false;
 async function refresh() {
   if (running || (!KEY && !BIT)) return;
@@ -738,20 +1144,28 @@ async function refresh() {
   const t0 = Date.now();
   try {
     const cat = JSON.parse(readFileSync(CATALOG, "utf8"));
-    const artists = Object.values(cat.artists || {})
-      .filter((a) => a.name)
-      .sort((x, y) => (y.popularity || 0) - (x.popularity || 0))
-      .slice(0, LIMIT);
+    const artistSelection = selectTourDateRefreshArtists(db, {
+      limit: LIMIT,
+      rotationSize: ARTIST_ROTATION_SIZE,
+      cursor: storedArtistCursor(),
+      fallbackArtists: Object.values(cat.artists || {}),
+    });
+    const artists = artistSelection.artists;
     const countryBatch = KEY
       ? ticketmasterCountryRotation(COUNTRY_CODES, storedCountryCursor(), COUNTRY_BATCH_SIZE)
       : { countries: [], nextCursor: 0 };
     let total = 0, providerSuccesses = 0, providerFailures = 0;
-    const providerStats = new Map();
-    const recordOutcomes = (outcomes) => {
+    const successfulArtistScopes = new Map();
+    const recordOutcomes = (outcomes, artistName = null) => {
       for (const outcome of outcomes || []) {
-        const stats = providerStats.get(outcome.source) || { successes: 0, failures: 0 };
-        stats[outcome.ok ? "successes" : "failures"] += 1;
-        providerStats.set(outcome.source, stats);
+        // Bandsintown's exact-artist endpoint returns the complete upcoming
+        // list, so a successful call can safely reconcile only that artist.
+        // Ticketmaster artist pages and market partitions are bounded and must
+        // never authorize source-wide cleanup.
+        if (!artistName || !outcome.ok || outcome.source !== "bandsintown") continue;
+        const artists = successfulArtistScopes.get(outcome.source) || new Set();
+        artists.add(artistName);
+        successfulArtistScopes.set(outcome.source, artists);
       }
     };
     for (const a of artists) {
@@ -759,7 +1173,7 @@ async function refresh() {
         const result = await fetchDates(a.name);
         providerSuccesses += result.successes;
         providerFailures += result.failures;
-        recordOutcomes(result.outcomes);
+        recordOutcomes(result.outcomes, a.name);
         const now = Date.now();
         db.exec("BEGIN");
         upsertProviderTourDateRows(db, result.rows, { seenAt: now });
@@ -777,14 +1191,23 @@ async function refresh() {
       GROUP BY lower(trim(home_city)) ORDER BY members DESC LIMIT ?`).all(CITY_LIMIT);
     for (const { city } of cities) {
       try {
-        const result = await collectNamedTourProviderResults([KEY ? { source: "ticketmaster", run: () => tmCityDates(city) } : null]);
+        let marketResult = null;
+        const result = await collectNamedTourProviderResults([KEY ? {
+          source: "ticketmaster",
+          run: async () => {
+            marketResult = await tmCityDates(city);
+            return marketResult;
+          },
+        } : null]);
         providerSuccesses += result.successes;
         providerFailures += result.failures;
         recordOutcomes(result.outcomes);
         const now = Date.now();
-        db.exec("BEGIN");
-        upsertProviderTourDateRows(db, result.rows, { seenAt: now });
-        db.exec("COMMIT");
+        if (marketResult) persistTicketmasterMarketResult(db, {
+          market: { city },
+          result: marketResult,
+          seenAt: now,
+        });
         total += result.rows.length;
       } catch (e) {
         try { db.exec("ROLLBACK"); }
@@ -795,16 +1218,25 @@ async function refresh() {
     }
     for (const countryCode of countryBatch.countries) {
       try {
+        let marketResult = null;
         const result = await collectNamedTourProviderResults([
-          { source: "ticketmaster", run: () => tmCountryDates(countryCode) },
+          {
+            source: "ticketmaster",
+            run: async () => {
+              marketResult = await tmCountryDates(countryCode);
+              return marketResult;
+            },
+          },
         ]);
         providerSuccesses += result.successes;
         providerFailures += result.failures;
         recordOutcomes(result.outcomes);
         const now = Date.now();
-        db.exec("BEGIN");
-        upsertProviderTourDateRows(db, result.rows, { seenAt: now });
-        db.exec("COMMIT");
+        if (marketResult) persistTicketmasterMarketResult(db, {
+          market: { countryCode },
+          result: marketResult,
+          seenAt: now,
+        });
         total += result.rows.length;
       } catch (e) {
         try { db.exec("ROLLBACK"); }
@@ -817,20 +1249,19 @@ async function refresh() {
     if (!hasSuccessfulTourProviderWork(providerSuccesses)) {
       throw new Error(`Every configured tour provider request failed (${providerFailures} failures); existing dates were kept and the refresh remains due.`);
     }
-    // Reconcile only a provider that completed EVERY attempted call. Never let
-    // one healthy API deactivate another provider's cache, and never touch member or
-    // staff-authored rows (`owner_id` is non-null).
-    const successfulSources = sourcesEligibleForStaleReconciliation(providerStats);
-    reconcileStaleProviderTourDates(db, {
-      successfulSources,
+    // A rotating artist lane can never prove source-wide completeness. Reconcile
+    // only exact Bandsintown artists whose complete request succeeded this run;
+    // provider and member rows outside that scope remain untouched.
+    reconcileStaleProviderTourDatesForArtists(db, {
+      sourceArtists: successfulArtistScopes,
       staleBefore: Date.now() - 30 * DAY,
     });
     // A partial provider outage must not turn Render restarts into an immediate
     // replay of the entire worldwide sweep. Successful rows are durable and
-    // stale deactivation is already isolated to sources with zero failures, so any
+    // stale deactivation is isolated to exact successful artist scopes, so any
     // useful provider work advances the normal interval. A total outage still
     // throws above and intentionally leaves the refresh due.
-    markRefreshed();
+    markRefreshComplete(Date.now(), artistSelection.nextCursor);
     console.log(`[pit] tour dates refreshed: ${total} dates / ${artists.length} artists + ${cities.length} member cities + ${countryBatch.countries.length} global markets (${providerSuccesses} provider calls ok, ${providerFailures} failed) in ${Math.round((Date.now() - t0) / 1000)}s`);
   } catch (e) {
     console.error(`[pit] tour-date refresh failed cause=${privateErrorLabel(e)}`);
@@ -852,7 +1283,10 @@ export function startTourDateScheduler() {
     // Freshness is checked only after this job owns the shared slot. That way a
     // queued timer can cheaply skip work made unnecessary while it was waiting.
     void runTourDateJobSafely(() => runBackgroundJob(async () => {
-      if (!shouldRefreshTourDates(storedLastRefreshAt())) return;
+      if (!shouldRefreshTourDateIngestion({
+        lastRefreshAt: storedLastRefreshAt(),
+        storedRevision: storedIngestionRevision(),
+      })) return;
       await refresh();
     }));
   };

@@ -306,6 +306,7 @@ test("legacy posts, attendance, tour-date, and campaign tables gain safe additiv
     DROP INDEX idx_tourdates_provider_venue;
     DROP INDEX idx_tourdates_provider_venue_public_slug;
     DROP INDEX idx_tourdates_provider_visibility;
+    DROP TABLE artist_tourdate_refresh_queue;
     ALTER TABLE posts DROP COLUMN attendance_ticket;
     ALTER TABLE going DROP COLUMN created_at;
     ALTER TABLE tour_dates DROP COLUMN access_start_approximate;
@@ -353,6 +354,10 @@ test("legacy posts, attendance, tour-date, and campaign tables gain safe additiv
   const goingIndexes = new Set(upgraded.db.prepare("PRAGMA index_list(going)").all().map((row) => row.name));
   const tourIndexes = new Set(upgraded.db.prepare("PRAGMA index_list(tour_dates)").all().map((row) => row.name));
   const artistIndexes = new Set(upgraded.db.prepare("PRAGMA index_list(artists)").all().map((row) => row.name));
+  const demandQueueColumns = new Set(upgraded.db
+    .prepare("PRAGMA table_info(artist_tourdate_refresh_queue)").all().map((row) => row.name));
+  const demandQueueIndexes = new Set(upgraded.db
+    .prepare("PRAGMA index_list(artist_tourdate_refresh_queue)").all().map((row) => row.name));
 
   assert.ok(goingColumns.has("created_at"));
   assert.ok(postColumns.has("attendance_ticket"));
@@ -372,6 +377,19 @@ test("legacy posts, attendance, tour-date, and campaign tables gain safe additiv
   assert.ok(campaignColumns.has("tested_revision"));
   assert.ok(playColumns.has("provider"));
   assert.ok(playColumns.has("source_id"));
+  assert.deepEqual(
+    [...demandQueueColumns].sort(),
+    [
+      "artist_key", "attempt_count", "attempted_at", "last_error_code", "not_before",
+      "bandsintown_refresh_completed", "claim_token", "requested_at", "status", "succeeded_at",
+      "ticketmaster_attraction_id", "ticketmaster_coverage_limited",
+      "ticketmaster_scan_completed", "ticketmaster_scan_cursor_date",
+      "ticketmaster_scan_horizon_date", "ticketmaster_window_days", "updated_at",
+    ].sort(),
+    "upgrade creates the durable privacy-safe exact-artist refresh queue",
+  );
+  assert.ok(demandQueueIndexes.has("idx_artist_tourdate_refresh_due"));
+  assert.ok(demandQueueIndexes.has("idx_artist_tourdate_refresh_retention"));
   assert.equal(upgraded.db.prepare("SELECT artist_key FROM tour_dates WHERE id=?").get("seo_exact_event").artist_key, "radiohead");
   assert.equal(upgraded.db.prepare("SELECT artist_key FROM tour_dates WHERE id=?").get("seo_ambiguous_event").artist_key, null);
   assert.ok(artistIndexes.has("idx_artists_trimmed_name_lookup"));

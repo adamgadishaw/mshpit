@@ -529,6 +529,53 @@ CREATE INDEX IF NOT EXISTS idx_artists_name_nocase ON artists(name COLLATE NOCAS
 -- artists. Keep that lookup indexed so existing production catalogues do not
 -- turn the one-time backfill into an artists x events table scan.
 CREATE INDEX IF NOT EXISTS idx_artists_trimmed_name_lookup ON artists(lower(trim(name)),norm);
+
+-- Exact artist lookups can request a provider refresh without making the read
+-- itself wait on Ticketmaster/Bandsintown. This queue deliberately stores only
+-- the canonical public catalog key: no raw search query, account, IP address,
+-- or requester identity is retained. Rows double as bounded cooldown records,
+-- and a running lease lets a replacement Render process recover work after a
+-- deploy without overlapping the process that was interrupted.
+CREATE TABLE IF NOT EXISTS artist_tourdate_refresh_queue (
+  artist_key       TEXT PRIMARY KEY REFERENCES artists(norm) ON DELETE CASCADE,
+  status           TEXT NOT NULL CHECK (status IN ('pending','running','cooldown')),
+  requested_at     INTEGER NOT NULL CHECK (requested_at >= 0),
+  not_before       INTEGER NOT NULL CHECK (not_before >= 0),
+  attempted_at     INTEGER CHECK (attempted_at IS NULL OR attempted_at >= 0),
+  succeeded_at     INTEGER CHECK (succeeded_at IS NULL OR succeeded_at >= 0),
+  attempt_count    INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count BETWEEN 0 AND 20),
+  ticketmaster_attraction_id TEXT CHECK (
+                         ticketmaster_attraction_id IS NULL OR (
+                           length(ticketmaster_attraction_id) BETWEEN 1 AND 100 AND
+                           ticketmaster_attraction_id NOT GLOB '*[^A-Za-z0-9_-]*'
+                         )
+                       ),
+  claim_token      TEXT CHECK (claim_token IS NULL OR length(claim_token) BETWEEN 1 AND 100),
+  ticketmaster_scan_cursor_date TEXT CHECK (
+                         ticketmaster_scan_cursor_date IS NULL OR length(ticketmaster_scan_cursor_date) = 10
+                       ),
+  ticketmaster_scan_horizon_date TEXT CHECK (
+                         ticketmaster_scan_horizon_date IS NULL OR length(ticketmaster_scan_horizon_date) = 10
+                       ),
+  ticketmaster_window_days INTEGER CHECK (
+                         ticketmaster_window_days IS NULL OR ticketmaster_window_days BETWEEN 1 AND 1098
+                       ),
+  ticketmaster_coverage_limited INTEGER NOT NULL DEFAULT 0 CHECK (
+                         ticketmaster_coverage_limited IN (0,1)
+                       ),
+  ticketmaster_scan_completed INTEGER NOT NULL DEFAULT 0 CHECK (
+                         ticketmaster_scan_completed IN (0,1)
+                       ),
+  bandsintown_refresh_completed INTEGER NOT NULL DEFAULT 0 CHECK (
+                         bandsintown_refresh_completed IN (0,1)
+                       ),
+  last_error_code  TEXT CHECK (last_error_code IS NULL OR length(last_error_code) <= 64),
+  updated_at       INTEGER NOT NULL CHECK (updated_at >= 0)
+);
+CREATE INDEX IF NOT EXISTS idx_artist_tourdate_refresh_due
+  ON artist_tourdate_refresh_queue(status, not_before, requested_at, artist_key);
+CREATE INDEX IF NOT EXISTS idx_artist_tourdate_refresh_retention
+  ON artist_tourdate_refresh_queue(updated_at, artist_key);
 -- A single cheap revision lets Discover cache the evidence-aware projection
 -- without rescanning/parsing every rich artist blob on every request. Triggers
 -- advance it only when a field that can change public genre membership changes.
@@ -1391,6 +1438,19 @@ const additiveMigrations = [
   // older process can ignore the column, while this release fills every row
   // deterministically before publishing the unique lookup index below.
   "ALTER TABLE artists ADD COLUMN public_slug TEXT",
+  // Stable provider identity makes subsequent exact-artist scans deterministic.
+  // Nullable preserves rolling deploy/rollback compatibility, while the
+  // additive guard upgrades a database created by an earlier process.
+  "ALTER TABLE artist_tourdate_refresh_queue ADD COLUMN ticketmaster_attraction_id TEXT CHECK (ticketmaster_attraction_id IS NULL OR (length(ticketmaster_attraction_id) BETWEEN 1 AND 100 AND ticketmaster_attraction_id NOT GLOB '*[^A-Za-z0-9_-]*'))",
+  // Durable scan state makes the exact-artist lane converge across deploys and
+  // claim tokens prevent an expired worker from committing after replacement.
+  "ALTER TABLE artist_tourdate_refresh_queue ADD COLUMN claim_token TEXT CHECK (claim_token IS NULL OR length(claim_token) BETWEEN 1 AND 100)",
+  "ALTER TABLE artist_tourdate_refresh_queue ADD COLUMN ticketmaster_scan_cursor_date TEXT CHECK (ticketmaster_scan_cursor_date IS NULL OR length(ticketmaster_scan_cursor_date) = 10)",
+  "ALTER TABLE artist_tourdate_refresh_queue ADD COLUMN ticketmaster_scan_horizon_date TEXT CHECK (ticketmaster_scan_horizon_date IS NULL OR length(ticketmaster_scan_horizon_date) = 10)",
+  "ALTER TABLE artist_tourdate_refresh_queue ADD COLUMN ticketmaster_window_days INTEGER CHECK (ticketmaster_window_days IS NULL OR ticketmaster_window_days BETWEEN 1 AND 1098)",
+  "ALTER TABLE artist_tourdate_refresh_queue ADD COLUMN ticketmaster_coverage_limited INTEGER NOT NULL DEFAULT 0 CHECK (ticketmaster_coverage_limited IN (0,1))",
+  "ALTER TABLE artist_tourdate_refresh_queue ADD COLUMN ticketmaster_scan_completed INTEGER NOT NULL DEFAULT 0 CHECK (ticketmaster_scan_completed IN (0,1))",
+  "ALTER TABLE artist_tourdate_refresh_queue ADD COLUMN bandsintown_refresh_completed INTEGER NOT NULL DEFAULT 0 CHECK (bandsintown_refresh_completed IN (0,1))",
   // The artist's YouTube channel. Since June 2026 search.list has its own
   // 100-call/day bucket; catalogue endpoints use the separate general bucket.
   // Provenance distinguishes a CC0 Wikidata identity from YouTube API data, and

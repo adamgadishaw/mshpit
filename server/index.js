@@ -39,6 +39,10 @@ import {
   sweepExpiredSessions,
 } from "./auth.js";
 import { startTourDateScheduler } from "./tourdates.js";
+import {
+  startArtistTourDateDemandRefresh,
+  stopArtistTourDateDemandRefresh,
+} from "./artistTourDateDemandRefresh.js";
 import { startCacheWarmScheduler } from "./cacheWarmer.js";
 import { startBackupScheduler } from "./backupScheduler.js";
 import { startMediaDeletionScheduler } from "./mediaDeletion.js";
@@ -681,6 +685,7 @@ function shutdown(exitCode = 0) {
   const campaignStop = emailCampaignScheduler?.stop() || Promise.resolve();
   const founderOperationsStop = founderOperationsScheduler?.stop() || Promise.resolve();
   const legacyImageRecoveryStop = legacyImageRecoveryScheduler?.stop() || Promise.resolve();
+  const artistTourDateRefreshStop = stopArtistTourDateDemandRefresh({ abortActive: true });
   stopVideoVerifierHealthScheduler({ abortActive: true });
   if (privateMediaIsolationTimer) clearInterval(privateMediaIsolationTimer);
   if (sitemapRefreshTimer) clearInterval(sitemapRefreshTimer);
@@ -694,6 +699,8 @@ function shutdown(exitCode = 0) {
     catch (error) { console.error(`[health] founder operations shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     try { await legacyImageRecoveryStop; }
     catch (error) { console.error(`[media] legacy image recovery shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
+    try { await artistTourDateRefreshStop; }
+    catch (error) { console.error(`[pit] exact artist refresh shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     try { await sitemapRefreshStop; }
     catch (error) { console.error(`[seo] sitemap refresh shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     try { db.close(); }
@@ -818,6 +825,7 @@ async function startServer() {
       console.log("[mail] automatic campaign recovery disabled; resume only after privacy replay and restore review.");
     }
     startTourDateScheduler(); // scrapes tour dates into the DB on a timer (no cron/redeploy)
+    startArtistTourDateDemandRefresh(); // drains durable exact-artist demand without delaying reads
     startCacheWarmScheduler(); // runs keyless catalogue enrichment; provider playback warming obeys the shared product gate
     startBackupScheduler(); // verified daily SQLite snapshot on /data; private off-host copy when configured
     startMediaDeletionScheduler({ database: db }); // bounded, durable cleanup of active user-media objects only

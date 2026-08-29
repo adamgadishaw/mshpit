@@ -149,6 +149,10 @@ import { canonicalVenueKey, resolveVenueCatalogKey, venueLookupKeys } from "../s
 import { publicVenueFanPhotos } from "./venueGallery.js";
 import { accountIsPublic, activeAccountSql } from "./accountVisibility.js";
 import { visibleTourDateRows } from "./tourDateVisibility.js";
+import {
+  enqueueArtistTourDateDemandRefresh,
+  exactCatalogArtistForDemandRefresh,
+} from "./artistTourDateDemandRefresh.js";
 import { artistHasPublishedMemorial } from "./artistMemorialTourDateVisibility.js";
 import {
   isCurrentOrUpcomingLiveEvent,
@@ -202,6 +206,8 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const VIDEO_VERIFY_USER_HOURLY_LIMIT = 240;
 const VIDEO_VERIFY_IP_HOURLY_LIMIT = 480;
 const VIDEO_VERIFY_GLOBAL_HOURLY_LIMIT = 2_000;
+const ARTIST_TOURDATE_DEMAND_USER_HOURLY_LIMIT = 12;
+const ARTIST_TOURDATE_DEMAND_USER_WINDOW_MS = 60 * 60 * 1000;
 const MUSICBRAINZ_ARTIST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const MUSICBRAINZ_ARTIST_LOOKUP_TIMEOUT_MS = 12_000;
 const VIDEO_CACHED_FINALIZE_WAIT_MS = 18_000;
@@ -356,6 +362,29 @@ function limit(ctx, name, max, windowMs) {
   // same carrier/proxy do not consume one shared posting or messaging bucket.
   const actor = ctx.user?.id ? `user:${ctx.user.id}` : `ip:${ctx.ip}`;
   if (!rateLimit(`${name}:${actor}`, max, windowMs)) throw new ApiError(429, "Too many requests, slow down and try again.", "RATE_LIMITED");
+}
+
+function maybeEnqueueArtistTourDateDemandRefresh(ctx, artistKey) {
+  const user = ctx.user;
+  // Provider refreshes are maintenance triggered by an ordinary read. Only an
+  // active signed-in account may create that demand, and hitting this separate
+  // allowance must never turn a public artist read into a 429 response.
+  if (!accountIsPublic(user, now())) return false;
+  try {
+    if (!rateLimit(
+      `artist-tourdate-demand:user:${user.id}`,
+      ARTIST_TOURDATE_DEMAND_USER_HOURLY_LIMIT,
+      ARTIST_TOURDATE_DEMAND_USER_WINDOW_MS,
+    )) return false;
+    return !!enqueueArtistTourDateDemandRefresh({
+      artistKey,
+      authenticated: true,
+    })?.queued;
+  } catch {
+    // A queue/provider-maintenance failure cannot break artist discovery. The
+    // scheduled catalog refresh remains the fallback path.
+    return false;
+  }
 }
 
 function limitAuthentication(ctx, name, {
@@ -3545,6 +3574,15 @@ export const routes = {
       rows = prefixRows.length
         ? prefixRows
         : artistStmts.search.all(`%${literal}%`, folded ? `%${folded}%` : "\u0000", term, folded, lim);
+    }
+    // A signed-in exact catalog lookup may queue a provider refresh, but this
+    // read never waits for it. Anonymous/type-ahead/partial searches cannot
+    // spend provider quota or fill the durable queue.
+    if (ctx.user?.id && term) {
+      const exactArtist = exactCatalogArtistForDemandRefresh(rows, term);
+      if (exactArtist) {
+        maybeEnqueueArtistTourDateDemandRefresh(ctx, exactArtist.norm);
+      }
     }
     const artistMbids = new Map(rows.map((row) => [row.norm, row.mbid]));
     const memorials = artistMemorialService.readPublicForArtistKeys({
@@ -7336,6 +7374,15 @@ export const routes = {
   },
   "GET /api/artists/:key/profile": (ctx) => {
     const key = decodedPathParam(ctx, "key", { max: 200, label: "artist link" }).toLowerCase();
+    // Artist pages can use an immutable public slug while the queue is keyed by
+    // canonical catalog identity. Only authenticated reads enqueue, and no raw
+    // path/query/requester data is persisted.
+    if (ctx.user?.id) {
+      const catalogArtist = artistStmts.byNorm.get(key) || artistStmts.byPublicSlug.get(key);
+      if (catalogArtist) {
+        maybeEnqueueArtistTourDateDemandRefresh(ctx, catalogArtist.norm);
+      }
+    }
     const p = db.prepare("SELECT * FROM artist_profiles WHERE artist_key=?").get(key);
     const blocked = blockedIdSet(ctx.user?.id);
     // Owner overrides are ordinary user-authored UGC. A block must hide them in

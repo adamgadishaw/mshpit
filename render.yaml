@@ -187,10 +187,18 @@ services:
         sync: false                    # self-assigned string; developer.bandsintown.com
       - key: TOURDATE_REFRESH_ENABLED
         value: "true"                  # production owns the quota-safe worldwide refresh
+      - key: TOURDATE_DEMAND_REFRESH_ENABLED
+        value: "true"                  # exact signed-in artist lookups enqueue a durable background refresh
+      - key: TOURDATE_DEMAND_QUEUE_LIMIT
+        value: "128"                   # service-wide pending work, never a per-member content limit
+      - key: TOURDATE_DEMAND_HOURLY_LIMIT
+        value: "12"                    # leaves headroom for scheduled market coverage
       - key: TOURDATE_LIMIT
-        value: "150"                   # top artists polled per refresh
+        value: "150"                   # fixed provider budget: priority demand plus a rotating catalogue slice
+      - key: TOURDATE_ROTATION_SIZE
+        value: "100"                   # 100 new catalogue artists per pass; the other 50 stay demand-led
       - key: TOURDATE_ARTIST_PAGE_SIZE
-        value: "50"                    # one larger page; no extra provider request
+        value: "200"                   # provider maximum in the same single request
       - key: TOURDATE_COUNTRY_BATCH
         value: "10"                    # persisted round-robin global markets per pass
       - key: TOURDATE_REQUEST_DELAY_MS
@@ -384,6 +392,8 @@ services:
       - key: CACHE_WARM_ENABLED
         value: "false"
       - key: TOURDATE_REFRESH_ENABLED
+        value: "false"
+      - key: TOURDATE_DEMAND_REFRESH_ENABLED
         value: "false"
       - key: YOUTUBE_API_KEY
         sync: false
