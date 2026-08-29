@@ -204,6 +204,30 @@ test("event nation options pin a selected low-volume country and keep worldwide 
   assert.equal(emptySelected[0].count, 1_395, "the synthetic zero-count selection must not inflate Worldwide");
 });
 
+test("supported event countries remain selectable with honest zero counts before ingestion", () => {
+  const countries = discoverNationOptions([], {
+    homeCountry: "Canada",
+    supportedCountries: ["Portugal", "Spain", "France", "Portugal"],
+    limit: 10,
+  });
+  assert.deepEqual(countries, [
+    { country: "Worldwide", count: 0 },
+    { country: "Canada", count: null },
+    { country: "Portugal", count: 0 },
+    { country: "Spain", count: 0 },
+    { country: "France", count: 0 },
+  ]);
+
+  const selected = discoverNationOptions([], {
+    homeCountry: "Canada",
+    selectedRegion: "PT",
+    supportedCountries: ["Portugal", "Spain"],
+    limit: 10,
+  });
+  assert.ok(selected.some((row) => row.country === "Portugal" && row.count === 0));
+  assert.equal(selected[0].count, 0, "zero-count supported choices must not inflate Worldwide");
+});
+
 test("genre exploration defaults to the first verified genre and preserves a valid choice", () => {
   const genres = [{ genre: "Hip-Hop" }, { genre: "Other" }, { genre: "R&B" }];
   assert.equal(selectDefaultDiscoverGenre(genres, null), "Hip-Hop");

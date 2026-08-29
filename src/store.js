@@ -8,6 +8,7 @@ import { requestAccountExport, updateAnnouncementEmailPreference, updateProfileS
 import { requestFreshDeezerPreview } from "./lib/playbackApi";
 import { clearStoredTheme, setTheme as applyTheme, storedThemeSelection, syncThemeFromAccount } from "./theme";
 import { artistMeta, installIngestedCatalog } from "./seed/ingested";
+import { arenaVenues } from "./seed/arenas";
 import { ACHIEVEMENTS } from "./domain/badges.mjs";
 import { ENABLE_DEMO_DATA, remoteIdentityValidationEnabled } from "./config/runtime.mjs";
 import { MUSIC_PLAYER_ENABLED } from "./domain/musicPlayerAvailability.mjs";
@@ -15,6 +16,7 @@ import { isUpcomingEventDate, PERSISTED_FEED_LIMIT, persistedTourDateCache, publ
 import { toIsoDate } from "./domain/dates.mjs";
 import { createTicketRegistry } from "./domain/latestWins.mjs";
 import { recentSongTrack, withoutBlockedPersonSearches } from "./domain/unifiedSearch.mjs";
+import { memoizedUnifiedVenueSearchIndex, searchUnifiedVenueIndex } from "./domain/unifiedLocationSearch.mjs";
 import {
   createRecommendationPreferenceCoordinator,
   recommendationPreferenceMutationKey,
@@ -5119,6 +5121,10 @@ export function StoreProvider({ children }) {
   const venueTopPhotos = (venueName, n = 20) => venueReviewsFor(venueName)
     .flatMap((r) => r.photos.map((p) => ({ uri: p, by: r.name, venueReviewId: r.id, ownerId: r.userId })))
     .slice(0, n);
+  const venueCatalogEntry = (venueName) => {
+    const key = norm(venueName);
+    return catalogVenues[key] || arenaVenues[key] || null;
+  };
   // All photos for a venue's widget, self-healing like the artist gallery:
   //   1. fan-uploaded review photos
   //   2. relevance-checked Commons photos mirrored to MSHpit storage with attribution
@@ -5129,7 +5135,10 @@ export function StoreProvider({ children }) {
   const venueCatalogKey = (venueName) => {
     const canonical = canonicalVenueKey(venueName);
     if (!canonical) return null;
-    const catalogMatch = resolveVenueCatalogKey(canonical, Object.keys(catalogVenues));
+    const catalogMatch = resolveVenueCatalogKey(canonical, [
+      ...Object.keys(arenaVenues),
+      ...Object.keys(catalogVenues),
+    ]);
     if (catalogMatch) return canonicalVenueKey(catalogMatch);
     // Production venue media is resolved by the server and does not require a
     // bundled catalogue row merely to form its normalized lookup key.
@@ -5504,7 +5513,7 @@ export function StoreProvider({ children }) {
         && norm(t.venue) === key
         && (t.releaseAt <= Date.now() || isStaff(session?.role) || t.createdBy === session?.id))
       .map((t) => ({ ...t, scheduled: t.releaseAt > Date.now() }));
-    const cat = catalogVenues[key];
+    const cat = venueCatalogEntry(key);
     const place = (cat && cat.place) || nights.find((n) => n.city)?.city || upcoming.find((u) => u.place)?.place || "";
     const catalogPhoto = venueCatalogPhotoFields(cat);
     return {
@@ -5525,6 +5534,14 @@ export function StoreProvider({ children }) {
 
   // --- Location & recommendation layer ---------------------------------------
   const home = session?.home && session.home.lat != null ? session.home : null;
+  const venueSearchIndex = memoizedUnifiedVenueSearchIndex({
+    tourDates,
+    // These curated public venue facts are production data, not demo shows.
+    // The mutable generated catalogue remains demo-only below.
+    curatedVenues: arenaVenues,
+    catalogVenues,
+    ratedShows,
+  });
 
   const artistGenre = (name) => {
     const k = norm(name);
@@ -5538,7 +5555,7 @@ export function StoreProvider({ children }) {
 
   const venueCoord = (name) => {
     const k = norm(name);
-    const cat = catalogVenues[k];
+    const cat = venueCatalogEntry(k);
     if (cat && cat.lat != null) return { lat: cat.lat, lng: cat.lng };
     const rs = ratedShows.find((r) => norm(r.venue) === k);
     if (rs) return { lat: rs.lat, lng: rs.lng };
@@ -5551,8 +5568,15 @@ export function StoreProvider({ children }) {
     const add = (name, place) => {
       const k = norm(name);
       if (!k || map[k]) return;
-      map[k] = { name: catalogVenues[k]?.name || name, place: catalogVenues[k]?.place || place || "", coord: venueCoord(name) };
+      const cat = venueCatalogEntry(k);
+      map[k] = {
+        name: cat?.name || name,
+        place: cat?.place || place || "",
+        coord: venueCoord(name),
+        capacity: cat?.capacity || null,
+      };
     };
+    Object.values(arenaVenues).forEach((v) => add(v.name, v.place));
     Object.values(catalogVenues).forEach((v) => add(v.name, v.place));
     ratedShows.forEach((r) => add(r.venue, r.city));
     tourDates.forEach((t) => add(t.venue, t.place));
@@ -5756,7 +5780,7 @@ export function StoreProvider({ children }) {
   const discoverStats = () => ({
     members: memberCount,
     artists: Object.keys(catalogArtists || {}).length,
-    venues: Object.keys(catalogVenues || {}).length,
+    venues: new Set([...Object.keys(arenaVenues), ...Object.keys(catalogVenues || {})]).size,
     countries: catalogCountries(1).length,
     genres: new Set(Object.values(catalogArtists || {}).map((a) => a.genre).filter(Boolean)).size,
   });
@@ -5798,19 +5822,7 @@ export function StoreProvider({ children }) {
   // Free-text venue search across the WHOLE catalog (not just venues that happen
   // to have a logged show). This is what makes "Toronto" surface all 22 rooms.
   const searchVenues = (query, limit = 50) => {
-    const q = norm(query);
-    if (!q) return [];
-    const upcomingByVenue = new Map();
-    for (const event of tourDates) {
-      if (!isUpcomingEventDate(event) || event.releaseAt > Date.now()) continue;
-      const key = norm(event.venue);
-      if (key) upcomingByVenue.set(key, (upcomingByVenue.get(key) || 0) + 1);
-    }
-    return allVenues()
-      .filter((v) => norm(v.name).includes(q) || norm(v.place).includes(q))
-      .map((v) => ({ ...v, upcoming: upcomingByVenue.get(norm(v.name)) || 0 }))
-      .sort((a, b) => b.upcoming - a.upcoming || a.name.localeCompare(b.name))
-      .slice(0, limit);
+    return searchUnifiedVenueIndex(venueSearchIndex, query, { limit });
   };
 
   // Every known venue grouped by city, with venue + upcoming counts. Powers the

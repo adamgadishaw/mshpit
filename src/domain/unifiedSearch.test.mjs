@@ -174,7 +174,9 @@ test("local catalogue work shares the debounced query and show rows open the sho
   const source = readFileSync(new URL("../screens/SearchScreen.jsx", import.meta.url), "utf8");
   assert.match(source, /setTimeout\(\(\) => setSettledQuery\(query\), 250\)/);
   assert.match(source, /searchVenues\(settledQuery, 24\)/);
-  assert.match(source, /includes\(settledQuery\)/);
+  assert.match(source, /createUnifiedEventSearchIndex\(tourDates\)/);
+  assert.match(source, /searchUnifiedEventIndex\(eventSearchIndex, settledQuery, \{ limit: 24 \}\)/);
+  assert.doesNotMatch(source, /tourDates\.filter\(\(t\) => `\$\{t\.artist\}/, "queries reuse the memoized event text index");
   assert.doesNotMatch(source, /searchVenues\(query, 24\)/);
   assert.match(source, /<EventRow[\s\S]*?onOpenShow=\{onOpen\}/);
   assert.match(source, /onPress=\{\(\) => onOpenShow\?\.\(t\)\}/);

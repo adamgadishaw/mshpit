@@ -22,6 +22,7 @@ import {
 } from "../domain/unifiedSearch.mjs";
 import { searchLiveAnnouncement } from "../domain/searchAccessibility.mjs";
 import { accountTargetScope, isCurrentScreenRequest, scopedScreenValue } from "../domain/screenScope.mjs";
+import { createUnifiedEventSearchIndex, searchUnifiedEventIndex } from "../domain/unifiedLocationSearch.mjs";
 import { openTicketLink } from "../lib/ticketLinks";
 import { recordGuestSearch } from "../features/analytics/services/guestSearchAnalyticsApi.mjs";
 import { ENABLE_DEMO_DATA, ENABLE_MUSIC_PLAYER } from "../config/runtime.mjs";
@@ -257,8 +258,11 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
   // analytics. Previously venue/event/club matching ran again after the remote
   // branches settled, which doubled the most expensive catalog work on every
   // successful search.
+  const eventSearchIndex = useMemo(() => createUnifiedEventSearchIndex(tourDates), [tourDates]);
   const searchedVenues = useMemo(() => (settledQuery ? searchVenues(settledQuery, 24) : []), [settledQuery, tourDates]);
-  const searchedEvents = useMemo(() => (settledQuery ? tourDates.filter((t) => `${t.artist} ${t.venue} ${t.place || t.city || ""}`.toLowerCase().includes(settledQuery)).slice(0, 24) : []), [settledQuery, tourDates]);
+  const searchedEvents = useMemo(() => (settledQuery
+    ? searchUnifiedEventIndex(eventSearchIndex, settledQuery, { limit: 24 })
+    : []), [eventSearchIndex, settledQuery]);
   const searchedClubs = useMemo(() => {
     if (!settledQuery) return [];
     return fanClubsDirectory().filter((c) => c.artist.toLowerCase().includes(settledQuery)).slice(0, 12);

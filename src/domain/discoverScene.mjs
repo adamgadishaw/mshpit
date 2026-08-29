@@ -65,6 +65,21 @@ const COUNTRY_CODE_NAMES = Object.freeze({
   ZA: "South Africa",
 });
 
+// These are stable browse destinations, not proof that an event currently
+// exists in the loaded client window. Keep provider-priority European markets
+// first, then expose every other country in the canonical directory. Discover
+// can therefore offer Portugal (and the rest of the supported rotation) before
+// the first background ingestion row arrives without inventing an event.
+const DISCOVER_EVENT_COUNTRY_PRIORITY_CODES = Object.freeze([
+  "PT", "ES", "FR", "DE", "IT", "NL", "BE", "AT", "IE", "PL",
+  "GB", "CH", "SE", "DK", "NO", "FI", "CZ", "GR", "HU", "RO",
+]);
+const DISCOVER_EVENT_COUNTRY_PRIORITY_SET = new Set(DISCOVER_EVENT_COUNTRY_PRIORITY_CODES);
+export const DISCOVER_SUPPORTED_EVENT_COUNTRIES = Object.freeze([
+  ...DISCOVER_EVENT_COUNTRY_PRIORITY_CODES,
+  ...Object.keys(COUNTRY_CODE_NAMES).filter((code) => !DISCOVER_EVENT_COUNTRY_PRIORITY_SET.has(code)),
+].map((code) => COUNTRY_CODE_NAMES[code]).filter(Boolean));
+
 const COUNTRY_ALIASES = new Map([
   ["ca", "canada"],
   ["can", "canada"],
@@ -107,6 +122,8 @@ for (const [alias, identity] of COUNTRY_ALIASES) {
 export function discoverCountryIdentity(value) {
   const normalized = normalizedCountryText(value);
   if (!normalized) return "";
+  const codeLabel = COUNTRY_CODE_NAMES[text(value, 8).toLocaleUpperCase("en")];
+  if (codeLabel) return normalizedCountryText(codeLabel);
   return COUNTRY_ALIASES.get(normalized) || normalized;
 }
 

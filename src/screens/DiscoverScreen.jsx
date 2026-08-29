@@ -24,6 +24,7 @@ import {
   syncDiscoverAreaChoice,
 } from "../domain/discoverArea.mjs";
 import {
+  DISCOVER_SUPPORTED_EVENT_COUNTRIES,
   discoverCountryIdentity,
   discoverEventCountryFacets,
   filterDiscoverSceneRows,
@@ -92,6 +93,7 @@ export default function DiscoverScreen({
     discoverySidebar,
     discoverySidebarStatus,
     tourDates,
+    searchVenues,
     myAttendance = [],
   } = useStore();
   const { width } = useWindowDimensions();
@@ -218,11 +220,19 @@ export default function DiscoverScreen({
     limit: 4,
   }), [blockedIds, eventBannerMedia, visibleLiveEvents]);
   const homeSceneSelected = discoverCountryIdentity(region) === discoverCountryIdentity(homeCountry);
-  const venueRows = sceneProjection.venues.length
+  const knownSceneVenues = region === "Worldwide" ? [] : searchVenues(region, 3);
+  const venueRowsSource = sceneProjection.venues.length
+    ? "events"
+    : knownSceneVenues.length
+      ? "catalog"
+      : "none";
+  const venueRows = venueRowsSource === "events"
     ? sceneProjection.venues.slice(0, 3)
-    : (!tourDates.length && homeSceneSelected && Array.isArray(discoverySidebar?.trendingVenues)
-      ? discoverySidebar.trendingVenues.slice(0, 3)
-      : []);
+    : venueRowsSource === "catalog"
+      ? knownSceneVenues
+      : (!tourDates.length && homeSceneSelected && Array.isArray(discoverySidebar?.trendingVenues)
+        ? discoverySidebar.trendingVenues.slice(0, 3)
+        : []);
   const loungeRows = useMemo(() => filterDiscoverSceneRows(
     projectPopularLounges(discoverySidebar?.popularLounges, { limit: 12 }),
     { region, countryForCity, limit: 4 },
@@ -400,9 +410,11 @@ export default function DiscoverScreen({
   const countries = discoverNationOptions(eventCountryFacets, {
     homeCountry,
     selectedRegion: region,
-    limit: 12,
+    supportedCountries: DISCOVER_SUPPORTED_EVENT_COUNTRIES,
+    limit: DISCOVER_SUPPORTED_EVENT_COUNTRIES.length + 2,
   });
-  const sceneCountries = visibleDiscoverCountries(countries, region, { compact, expanded: sceneExpanded, limit: 3 });
+  const sceneChoiceLimit = compact ? 3 : 12;
+  const sceneCountries = visibleDiscoverCountries(countries, region, { compact: true, expanded: sceneExpanded, limit: sceneChoiceLimit });
   const hiddenSceneCount = Math.max(0, countries.length - sceneCountries.length);
   const selectedCountryRow = overview.countries.find((row) => discoverCountryIdentity(row.country) === discoverCountryIdentity(region));
   const sceneArtistTotal = region === "Worldwide"
@@ -463,9 +475,9 @@ export default function DiscoverScreen({
               </Pressable>
             );
           })}
-          {compact && countries.length > 3 && (
+          {countries.length > sceneChoiceLimit && (
             <Pressable
-              style={[styles.regionChip, styles.moreScenesChip, styles.regionChipCompact, veryCompact && styles.regionChipVeryCompact]}
+              style={[styles.regionChip, styles.moreScenesChip, compact && styles.regionChipCompact, veryCompact && styles.regionChipVeryCompact]}
               onPress={() => setSceneExpanded((value) => !value)}
               accessibilityRole="button"
               accessibilityState={{ expanded: sceneExpanded }}
@@ -621,7 +633,9 @@ export default function DiscoverScreen({
           title="Venues"
           detail={region === "Worldwide"
             ? "Browse venues, cities, and upcoming lineups."
-            : `Venues with upcoming events in ${region}.`}
+            : venueRowsSource === "catalog"
+              ? `Known venues in ${region}. New shows appear here when they are listed.`
+              : `Venues with upcoming events in ${region}.`}
           action={(
             <Pressable style={styles.sectionAction} onPress={() => onOpenVenues?.(region)} accessibilityRole="button" accessibilityLabel="Browse all venues">
               <Text style={styles.sectionActionText}>Browse all</Text>
@@ -639,7 +653,11 @@ export default function DiscoverScreen({
           <View style={styles.venueHeroIcon}><Icon name="pin" size={24} color={colors.cool} /></View>
           <View style={styles.venueHeroCopy}>
             <Text style={styles.venueHeroTitle}>Find a venue</Text>
-            <Text style={styles.venueHeroDetail}>{region === "Worldwide" ? "Browse venues around the world." : `Browse venues and upcoming events in ${region}.`}</Text>
+            <Text style={styles.venueHeroDetail}>{region === "Worldwide"
+              ? "Browse venues around the world."
+              : venueRowsSource === "catalog"
+                ? `Browse known venues in ${region} and check for new listings.`
+                : `Browse venues and upcoming events in ${region}.`}</Text>
           </View>
           <Icon name="chevron-right" size={21} color={colors.cool} />
         </Pressable>

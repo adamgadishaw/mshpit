@@ -33,7 +33,10 @@ test("unified search reuses local matches and production does not scan the demo 
   assert.match(search, /const localResultCount = localResultCountRef\.current/);
   assert.match(search, /\+ localResultCount/);
   assert.match(search, /if \(ENABLE_DEMO_DATA\) Object\.values\(ingestedArtists\)/);
-  assert.match(store, /const upcomingByVenue = new Map\(\)/);
+  assert.match(store, /memoizedUnifiedVenueSearchIndex\(\{[\s\S]*?tourDates,[\s\S]*?curatedVenues: arenaVenues,[\s\S]*?catalogVenues,[\s\S]*?ratedShows/);
+  assert.match(store, /searchUnifiedVenueIndex\(venueSearchIndex, query, \{ limit \}\)/);
+  assert.match(store, /Object\.values\(arenaVenues\)\.forEach\(\(v\) => add\(v\.name, v\.place\)\)/);
+  assert.doesNotMatch(store, /const upcomingByVenue = new Map\(\)/, "venue queries reuse one snapshot index");
   assert.match(database, /searchPrefix: db\.prepare/);
   assert.match(server, /artistStmts\.searchPrefix\.all/);
 });

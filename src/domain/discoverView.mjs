@@ -177,14 +177,15 @@ export function normalizeDiscoverOverview(payload, requestedSource = "popularity
 export function orderDiscoverCountries(countries, homeCountry, limit = 12) {
   const source = Array.isArray(countries) ? countries : [];
   const home = text(homeCountry);
+  const homeIdentity = discoverCountryIdentity(home);
   const ordered = [{ country: "Worldwide", count: null }];
-  const homeRow = source.find((row) => text(row?.country).toLocaleLowerCase() === home.toLocaleLowerCase());
+  const homeRow = source.find((row) => discoverCountryIdentity(row?.country) === homeIdentity);
   if (home) ordered.push(homeRow || { country: home, count: null });
-  ordered.push(...source.filter((row) => text(row?.country).toLocaleLowerCase() !== home.toLocaleLowerCase()));
+  ordered.push(...source.filter((row) => discoverCountryIdentity(row?.country) !== homeIdentity));
   const seen = new Set();
   return ordered.filter((row) => {
     const country = text(row?.country);
-    const identity = country.toLocaleLowerCase();
+    const identity = discoverCountryIdentity(country);
     if (!country || seen.has(identity)) return false;
     seen.add(identity);
     return true;
@@ -194,16 +195,26 @@ export function orderDiscoverCountries(countries, homeCountry, limit = 12) {
 export function discoverNationOptions(facets, {
   homeCountry = "",
   selectedRegion = "Worldwide",
+  supportedCountries = [],
   limit = 12,
 } = {}) {
   const source = Array.isArray(facets) ? facets : [];
+  const available = [...source];
+  const known = new Set(source.map((row) => discoverCountryIdentity(row?.country)).filter(Boolean));
+  for (const country of Array.isArray(supportedCountries) ? supportedCountries : []) {
+    const label = text(typeof country === "string" ? country : country?.country);
+    const identity = discoverCountryIdentity(label);
+    if (!label || !identity || identity === "worldwide" || known.has(identity)) continue;
+    known.add(identity);
+    available.push({ country: label, count: 0 });
+  }
   const selectedIdentity = discoverCountryIdentity(selectedRegion);
-  const selected = source.find((row) => discoverCountryIdentity(row?.country) === selectedIdentity);
+  const selected = available.find((row) => discoverCountryIdentity(row?.country) === selectedIdentity);
   const pinned = selectedIdentity && selectedIdentity !== "worldwide"
-    ? [selected || { country: text(selectedRegion) || "Worldwide", count: 0 }, ...source.filter((row) => (
+    ? [selected || { country: text(selectedRegion) || "Worldwide", count: 0 }, ...available.filter((row) => (
       discoverCountryIdentity(row?.country) !== selectedIdentity
     ))]
-    : source;
+    : available;
   const total = source.reduce((sum, row) => sum + finiteCount(row?.count), 0);
   return orderDiscoverCountries(pinned, homeCountry, limit).map((row) => (
     row.country === "Worldwide" ? { ...row, count: total } : row
@@ -214,10 +225,10 @@ export function visibleDiscoverCountries(countries, selectedCountry, { compact =
   const source = Array.isArray(countries) ? countries : [];
   if (!compact || expanded || source.length <= limit) return source;
   const maximum = Math.max(1, Math.trunc(Number(limit) || 3));
-  const selected = text(selectedCountry).toLocaleLowerCase();
+  const selected = discoverCountryIdentity(selectedCountry);
   const visible = source.slice(0, maximum);
-  const selectedRow = source.find((row) => text(row?.country).toLocaleLowerCase() === selected);
-  if (selectedRow && !visible.some((row) => text(row?.country).toLocaleLowerCase() === selected)) {
+  const selectedRow = source.find((row) => discoverCountryIdentity(row?.country) === selected);
+  if (selectedRow && !visible.some((row) => discoverCountryIdentity(row?.country) === selected)) {
     visible[visible.length - 1] = selectedRow;
   }
   return visible;

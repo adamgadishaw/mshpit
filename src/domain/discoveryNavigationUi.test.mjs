@@ -41,6 +41,10 @@ test("Discover leads with upcoming events, then Near you, then Venues, while ret
   assert.doesNotMatch(source, /regionChoice|liveScopeChoice/);
   assert.match(source, /discoverEventCountryFacets\(tourDates/);
   assert.match(source, /discoverNationOptions\(eventCountryFacets/);
+  assert.match(source, /supportedCountries: DISCOVER_SUPPORTED_EVENT_COUNTRIES/);
+  assert.match(source, /const sceneChoiceLimit = compact \? 3 : 12/);
+  assert.match(source, /const knownSceneVenues = region === "Worldwide" \? \[\] : searchVenues\(region, 3\)/);
+  assert.match(source, /Known venues in \$\{region\}\. New shows appear here when they are listed\./);
   assert.match(source, />\{compactDiscoverNumber\(country\.count\)\} upcoming</);
   assert.match(source, /worldLabel=\{region\}/);
   assert.match(source, /key=\{`events:\$\{liveScope\}:\$\{discoverCountryIdentity\(region\)\}`\}/);

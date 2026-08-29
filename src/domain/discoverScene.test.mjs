@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  DISCOVER_SUPPORTED_EVENT_COUNTRIES,
   discoverCountryCode,
   discoverCountryIdentity,
   discoverEventCountryFacets,
@@ -10,6 +11,19 @@ import {
   filterDiscoverSceneRows,
   projectDiscoverScene,
 } from "./discoverScene.mjs";
+
+test("Discover exposes canonical supported country choices before events are ingested", () => {
+  assert.deepEqual(DISCOVER_SUPPORTED_EVENT_COUNTRIES.slice(0, 4), [
+    "Portugal",
+    "Spain",
+    "France",
+    "Germany",
+  ]);
+  assert.ok(DISCOVER_SUPPORTED_EVENT_COUNTRIES.includes("Czechia"));
+  assert.ok(DISCOVER_SUPPORTED_EVENT_COUNTRIES.includes("Canada"));
+  assert.equal(new Set(DISCOVER_SUPPORTED_EVENT_COUNTRIES).size, DISCOVER_SUPPORTED_EVENT_COUNTRIES.length);
+  assert.equal(discoverCountryIdentity("PT"), discoverCountryIdentity("Portugal"));
+});
 
 const NOW = Date.UTC(2026, 7, 28, 12);
 
