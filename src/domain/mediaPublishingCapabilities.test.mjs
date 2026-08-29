@@ -77,7 +77,7 @@ test("the composer exposes honest capability copy while leaving upload admission
   assert.match(source, /allowLivePhotoVideo: true/);
   assert.doesNotMatch(source, /mediaPublishingSelection/);
   assert.match(source, /void refreshMediaPublishingCapabilities\(\{ force: true, background: true \}\)/);
-  assert.match(source, /uploadStudioMediaAsset\(\{/);
+  assert.match(source, /uploadOriginalMediaAsset\(\{/);
   assert.match(source, /mediaPublishingAvailabilityCopy\(mediaPublishingCapabilities\)/);
   assert.match(source, /accessibilityLabel="Check media upload availability again"/);
 });

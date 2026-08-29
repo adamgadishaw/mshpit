@@ -10,7 +10,7 @@ export function postMediaPickerOptions({
 }) {
   // The composer owns the shared post capacity and passes only the open
   // slots. Do not add a smaller picker-only ceiling: it made an empty post
-  // stop early even though Studio and publishing had more open slots.
+  // stop early even though publishing had more open slots.
   const selectionLimit = Math.max(1, Math.min(MEDIA_POST_MAX_ATTACHMENTS, Math.floor(Number(remaining) || 1)));
   const mediaTypes = [
     ...(allowPhotos === true ? ["images"] : []),
@@ -26,7 +26,7 @@ export function postMediaPickerOptions({
     // valid SDK option for direct helper callers.
     mediaTypes: mediaTypes.length ? mediaTypes : ["images"],
     // Expo preserves animated GIF bytes on Android only at quality 1 with its
-    // editor disabled. Compression/normalization belongs after selection,
+    // system editor disabled. Compression/normalization belongs after selection,
     // where PIT can sniff the actual bytes and retain the original safely.
     quality: 1,
     allowsEditing: false,
@@ -34,7 +34,7 @@ export function postMediaPickerOptions({
     allowsMultipleSelection: true,
     selectionLimit,
     // SDK 56 only guarantees the user's multi-select order on iOS when this
-    // flag is enabled. PIT preserves that order through Studio and publishing.
+    // flag is enabled. Mshpit preserves that order through publishing.
     ...(platform === "ios" ? {
       orderedSelection: true,
       // SDK 56 otherwise leaves iCloud-only assets remote and unreadable.

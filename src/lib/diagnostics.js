@@ -1,6 +1,7 @@
 import { load, remove, save, setPersistErrorHandler } from "./persist";
 import { catalogEntry, catalogueCode, safeRouteTemplate } from "./errorCatalog.mjs";
 import { diagnosticsStorageKey, LEGACY_DIAGNOSTICS_STORAGE_KEY } from "../domain/accountLocalPrivacy.mjs";
+import { shouldToastDeviceStorageFailure } from "../domain/deviceStoragePolicy.mjs";
 
 const HISTORY_LIMIT = 75;
 const listeners = new Set();
@@ -230,6 +231,8 @@ setPersistErrorHandler((error, { operation, key } = {}) => {
     context: operation === "read" ? "Restoring saved device state" : "Saving device state",
     source: "device-storage",
     severity: "warning",
-    toast: operation !== "read",
+    // Recoverable server caches should never interrupt a member. Surface this
+    // warning only when genuinely device-authored recovery state did not save.
+    toast: shouldToastDeviceStorageFailure({ operation, key }),
   });
 });

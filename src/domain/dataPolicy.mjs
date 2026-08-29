@@ -6,6 +6,11 @@ import { MUSIC_PLAYER_ENABLED } from "./musicPlayerAvailability.mjs";
 const DEMO_USER_IDS = new Set(["u_demo", "u_artist", "u_mara", "u_devon", "u_priya"]);
 const DEMO_FEED_IDS = new Set(["log_1", "log_2", "log_3"]);
 export const PERSISTED_FEED_LIMIT = 80;
+export const PERSISTED_TOUR_DATE_LIMIT = 400;
+// localStorage is commonly limited to a few MiB per origin and usually counts
+// JavaScript strings as UTF-16. Reserve most of that space for drafts and other
+// small continuity state instead of letting one catalogue cache consume it.
+export const PERSISTED_TOUR_DATE_CHARACTER_BUDGET = 384 * 1024;
 
 const isObject = (value) => value != null && typeof value === "object" && !Array.isArray(value);
 const asArray = (value) => (Array.isArray(value) ? value : []);
@@ -171,4 +176,45 @@ export function isUpcomingEventDate(event, now = Date.now()) {
   // back to the one-day rule so stale rows cannot linger indefinitely.
   if (endKey != null && endKey > startKey) return endKey >= todayKey;
   return startKey >= todayKey;
+}
+
+// The live catalogue may contain thousands of provider rows. Persist only the
+// nearest public dates needed to avoid a blank first paint; the API remains the
+// complete source of truth and replaces this projection after startup.
+export function persistedTourDateCache(value, {
+  at = Date.now(),
+  demoEnabled = false,
+  limit = PERSISTED_TOUR_DATE_LIMIT,
+  characterBudget = PERSISTED_TOUR_DATE_CHARACTER_BUDGET,
+} = {}) {
+  const maximum = Math.max(0, Math.min(PERSISTED_TOUR_DATE_LIMIT, Math.trunc(Number(limit) || 0)));
+  const budget = Math.max(2, Math.min(
+    PERSISTED_TOUR_DATE_CHARACTER_BUDGET,
+    Math.trunc(Number(characterBudget) || 0),
+  ));
+  const candidates = sanitizeTourDates(value, demoEnabled)
+    .filter((event) => {
+      const releaseAt = Number(event?.releaseAt);
+      return (!Number.isFinite(releaseAt) || releaseAt <= at)
+        && isUpcomingEventDate(event, at);
+    })
+    .sort((a, b) => {
+      const byDate = (calendarDateKey(a?.date) || Number.MAX_SAFE_INTEGER)
+        - (calendarDateKey(b?.date) || Number.MAX_SAFE_INTEGER);
+      return byDate || String(a?.id || "").localeCompare(String(b?.id || ""));
+    })
+    .slice(0, maximum);
+  const saved = [];
+  let characters = 2; // JSON array brackets
+  for (const event of candidates) {
+    let serialized;
+    try { serialized = JSON.stringify(event); }
+    catch { continue; }
+    if (!serialized) continue;
+    const nextCharacters = characters + serialized.length + (saved.length ? 1 : 0);
+    if (nextCharacters > budget) continue;
+    saved.push(event);
+    characters = nextCharacters;
+  }
+  return saved;
 }

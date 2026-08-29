@@ -1,5 +1,5 @@
 import { MEDIA_POST_MAX_ATTACHMENTS } from "./mediaUploadPolicy.mjs";
-import { mediaDraftAssetFromPicker, normalizeMediaDraftAsset } from "./mediaEdit.mjs";
+import { defaultMediaEdit, mediaDraftAssetFromPicker, normalizeMediaDraftAsset } from "./mediaEdit.mjs";
 import { isPersistableMediaDraftUri } from "./mediaDraftStaging.mjs";
 import { mediaDisplayItems, mediaDisplayKind } from "./postMediaDisplay.mjs";
 
@@ -83,6 +83,18 @@ function publishablePickerAsset(asset, { allowLivePhotoVideo = true } = {}) {
     posterUri: asset.uri || null,
     posterTimeMs: 0,
   };
+}
+
+// Post media is published exactly as selected. This explicitly discards any
+// stale Studio recipe that may survive in an older recoverable draft while
+// preserving accessibility copy and the server-verified video poster flow.
+// The source bytes still go through normal upload and verifier admission.
+export function originalMediaProjectAsset(value = {}, index = 0) {
+  const asset = normalizeMediaProjectAsset(value, index);
+  return normalizeMediaProjectAsset({
+    ...asset,
+    edit: defaultMediaEdit(asset.kind, { durationMs: asset.durationMs }),
+  }, index);
 }
 
 export function mediaProjectFromPicker(assets, nonce = Date.now().toString(36), options = {}) {

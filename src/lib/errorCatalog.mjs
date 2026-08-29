@@ -222,7 +222,7 @@ export const ERROR_CATALOG = Object.freeze({
     category: "storage",
     severity: "warning",
     title: "The saved copy missed a beat",
-    message: "Pit could not save this change on this device.",
+    message: "Mshpit could not save this change on this device.",
     failurePoint: "Device storage",
     guidance: "Check available storage, then retry.",
     retryable: true,

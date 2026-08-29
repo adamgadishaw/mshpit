@@ -11,11 +11,13 @@ import {
   mediaProjectReady,
   moveMediaProjectAsset,
   normalizeMediaProject,
+  originalMediaProjectAsset,
   patchMediaProjectAsset,
   reconcileMediaProjectSelection,
   serializableMediaProject,
   transitionMediaProjectAsset,
 } from "./mediaProject.mjs";
+import { defaultMediaEdit, videoEditRequiresExport } from "./mediaEdit.mjs";
 
 test("picker projects are bounded, ordered and strip opaque picker objects", () => {
   const picked = Array.from({ length: MEDIA_PROJECT_MAX_ASSETS + 1 }, (_, index) => ({
@@ -50,6 +52,52 @@ test("iOS Live Photos publish their motion pair while retaining the still as tra
   assert.equal(project.assets[0].uri, "file:///live-motion.mov");
   assert.equal(project.assets[0].posterUri, "file:///live-still.heic");
   assert.equal(project.assets[0].durationMs, 2_800);
+});
+
+test("original publishing preserves asset identity and accessibility metadata while removing every edit operation", () => {
+  const runtimeFile = { size: 2_400_000, type: "video/mp4" };
+  const durableLocalUri = "file:///data/user/0/app/files/pit-studio/u/post/clip.mp4";
+  const original = originalMediaProjectAsset({
+    id: "local:duration-drift:1",
+    assetId: "ma_durationdrift1234",
+    kind: "video",
+    uri: durableLocalUri,
+    durableLocalUri,
+    runtimeFile,
+    status: "selected",
+    durationMs: 12_034,
+    width: 1080,
+    height: 1920,
+    posterUri: "file:///camera-roll/poster.jpg",
+    posterTimeMs: 4_200,
+    altText: "Stage lights above the crowd",
+    // This is the stale recipe that produced the false “video has a filter”
+    // rejection when picker and hydrated durations differed by 34ms.
+    edit: {
+      ...defaultMediaEdit("video", { durationMs: 12_000 }),
+      filter: "neon",
+      muted: true,
+      trimStartMs: 500,
+      trimEndMs: 12_000,
+      aspect: "square",
+      zoom: 1.5,
+      rotation: 90,
+      flipX: true,
+      coverMode: "manual",
+      coverMs: 4_200,
+    },
+  });
+
+  assert.equal(original.id, "local:duration-drift:1");
+  assert.equal(original.assetId, "ma_durationdrift1234");
+  assert.equal(original.runtimeFile, runtimeFile);
+  assert.equal(original.uri, durableLocalUri);
+  assert.equal(original.durableLocalUri, durableLocalUri);
+  assert.equal(original.altText, "Stage lights above the crowd");
+  assert.equal(original.posterUri, "file:///camera-roll/poster.jpg");
+  assert.equal(original.posterTimeMs, 4_200);
+  assert.deepEqual(original.edit, defaultMediaEdit("video", { durationMs: 12_034 }));
+  assert.equal(videoEditRequiresExport(original.edit), false);
 });
 
 test("a Live Photo remains a still when video publishing is unavailable", () => {

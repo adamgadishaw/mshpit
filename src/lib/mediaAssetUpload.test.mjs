@@ -3,22 +3,41 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 const source = await readFile(new URL("./mediaAssetUpload.js", import.meta.url), "utf8");
+const upload = source.slice(source.indexOf("export async function uploadOriginalMediaAsset"));
+const includes = (text, needle) => assert.ok(text.includes(needle), `Expected source to include: ${needle}`);
+const excludes = (text, needle) => assert.ok(!text.includes(needle), `Expected source not to include: ${needle}`);
 
-test("stable upload reconciles mutable recipe and alt text after source finalize", () => {
+test("the client uploader is original-only and cannot accept any media transformation", () => {
+  includes(upload, "export async function uploadOriginalMediaAsset");
+  includes(upload, "const sourceRecipe = defaultMediaEdit(kind, { durationMs: asset.durationMs })");
+  excludes(upload, "renderedAsset");
+  excludes(upload, "asset.edit");
+  excludes(upload, "videoEditRequiresExport");
+  excludes(upload, "mediaImageRequiresRender");
+  excludes(upload, "createAndUploadRenderVariant");
+  excludes(upload, "stableMediaUploadToken");
+  excludes(source, "uploadStudioMediaAsset");
+});
+
+test("verifier-measured duration is authoritative when the constant original recipe is saved", () => {
+  const recipe = source.indexOf("const sourceRecipe = defaultMediaEdit(kind, { durationMs: asset.durationMs })");
   const finalizeBody = source.indexOf("const sourceFinalizeBody =");
-  const finalize = source.indexOf("result = await finalizeMediaSourceV1", source.indexOf("verifying-source"));
+  const finalize = source.indexOf("result = await finalizeMediaSourceV1", source.indexOf('onStage?.("verifying-source")'));
   const patch = source.indexOf('method: "PATCH"', finalize);
-  const variants = source.indexOf("result = await createAndUploadRenderVariant", patch);
-  assert.ok(finalizeBody >= 0 && finalizeBody < finalize, "source finalize body is assembled before finalization");
-  assert.ok(finalize >= 0, "source finalize call is present");
-  assert.ok(patch > finalize, "owner metadata PATCH follows source finalization");
-  assert.ok(variants > patch, "derived variants are created only after metadata reconciliation");
-  assert.match(source.slice(finalizeBody, finalize), /editRecipe:\s*edit/,
-    "the chosen coverMs inside the normalized edit recipe reaches initial source finalization");
-  assert.match(source.slice(finalizeBody, finalize), /altText:/);
-  assert.match(source.slice(finalize, patch), /body:\s*sourceFinalizeBody/);
-  assert.match(source.slice(patch, variants), /editRecipe:\s*edit/);
-  assert.match(source.slice(patch, variants), /altText:/);
+  assert.ok(recipe >= 0 && recipe < finalizeBody);
+  assert.ok(finalizeBody < finalize);
+  assert.ok(patch > finalize);
+  includes(source.slice(finalizeBody, finalize), "editRecipe: sourceRecipe");
+  includes(source.slice(finalizeBody, finalize), 'deliveryMode: "server"');
+  includes(source.slice(finalizeBody, finalize), "altText:");
+  includes(source.slice(finalize, patch), "body: sourceFinalizeBody");
+  const authoritativeDuration = source.indexOf("const authoritativeDurationMs =", finalize);
+  const authoritativeRecipe = source.indexOf("const authoritativeOriginalRecipe =", authoritativeDuration);
+  assert.ok(authoritativeDuration > finalize && authoritativeDuration < patch);
+  assert.ok(authoritativeRecipe > authoritativeDuration && authoritativeRecipe < patch);
+  includes(source.slice(authoritativeDuration, patch), "result?.asset?.durationMs ?? sourceDurationMs ?? asset.durationMs");
+  includes(source.slice(authoritativeDuration, patch), "defaultMediaEdit(kind, { durationMs: authoritativeDurationMs })");
+  includes(source.slice(patch), "editRecipe: authoritativeOriginalRecipe");
 });
 
 test("unknown picker dimensions and duration are omitted instead of fabricated", () => {
@@ -26,71 +45,37 @@ test("unknown picker dimensions and duration are omitted instead of fabricated",
     source.indexOf("const sourceFinalizeBody ="),
     source.indexOf("let assetId =", source.indexOf("const sourceFinalizeBody =")),
   );
-  assert.match(finalizeBody, /sourceWidth === null \? \{\} : \{ width: sourceWidth \}/);
-  assert.match(finalizeBody, /sourceHeight === null \? \{\} : \{ height: sourceHeight \}/);
-  assert.match(finalizeBody, /sourceDurationMs !== null \? \{ durationMs: sourceDurationMs \}/);
-  assert.match(finalizeBody, /kind === "image" \? \{ deliveryMode: needsPhotoRender \? "client" : "server" \}/,
-    "unedited photos explicitly request the server-authored sanitized delivery path");
-  assert.doesNotMatch(finalizeBody, /Math\.max\(1/);
-  assert.match(source, /assetId,\s*kind,\s*signal,\s*body: sourceFinalizeBody/);
+  includes(finalizeBody, "sourceWidth === null ? {} : { width: sourceWidth }");
+  includes(finalizeBody, "sourceHeight === null ? {} : { height: sourceHeight }");
+  includes(finalizeBody, "sourceDurationMs !== null ? { durationMs: sourceDurationMs }");
+  excludes(finalizeBody, "Math.max(1");
+  includes(source, "body: sourceFinalizeBody");
 });
 
-test("verified recipe derivatives are reused after an ambiguous response unless a staged replacement is pending", () => {
-  assert.match(source, /const photoRevisionPending =/);
-  assert.match(source, /result\?\.revisionPending/);
-  assert.match(source, /result\?\.asset\?\.revisionPending/);
-  assert.match(source, /result\?\.recipeChanged/);
-  assert.match(source, /renderPrepared && \(photoRevisionPending \|\| !\(result\?\.asset\?\.renderState === "ready" && result\?\.asset\?\.url\)\)/);
-  assert.match(source, /renderState === "ready" && result\?\.asset\?\.url/);
-  assert.match(source, /clientVariantId: stableMediaUploadToken\(`\$\{localId\}:render`, "studio-render"\)/);
-});
-
-test("reopening a stable asset reconciles by asset id without re-reading the device source", () => {
+test("an interrupted upload resumes by stable asset id without re-reading the device source", () => {
   const branch = source.slice(source.indexOf("if (assetId)"), source.indexOf("} else {", source.indexOf("if (assetId)")));
-  assert.match(branch, /resumeExistingMediaSourceV1/);
-  assert.doesNotMatch(branch, /prepareAsset/);
-  assert.match(source, /sourceFinalizeBody/);
+  includes(branch, "resumeExistingMediaSourceV1");
+  excludes(branch, "prepareAsset");
 });
 
 test("verified uploads stop drafts from pointing at released staging files", () => {
-  assert.match(source, /durableLocalUri:\s*null/);
-  assert.match(source, /draftManaged:\s*false/);
+  includes(source, "durableLocalUri: null");
+  includes(source, "draftManaged: false");
+  includes(source, "edit: authoritativeOriginalRecipe");
 });
 
-test("verified clips fail closed before cover PATCH or client-poster replacement", () => {
-  assert.match(source, /resumeExistingMediaSourceV1/);
-  assert.doesNotMatch(source, /prepareAsset\(posterAsset/);
-  assert.doesNotMatch(source, /role:\s*"poster"/);
-});
-
-test("source and photo-render transfers forward byte progress", () => {
-  assert.match(source, /onProgress:\s*\(progress\) => onProgress\?\.\(\{ \.\.\.progress, stage: "uploading-source" \}\)/);
-  assert.match(source, /onProgress:\s*\(progress\) => onProgress\?\.\(\{ \.\.\.progress, stage: "uploading-render" \}\)/);
-  assert.match(source, /onProgress,\s*apiCall,\s*uploadPrepared/);
-});
-
-test("new remote drafts are exposed before transfer so explicit cancellation can retire them", () => {
+test("source transfer forwards byte progress and exposes cancellable remote draft identity", () => {
+  includes(source, 'onProgress: (progress) => onProgress?.({ ...progress, stage: "uploading-source" })');
   const created = source.indexOf("assetId = created.asset.id");
-  const upload = source.indexOf("await uploadPrepared(sourcePrepared", created);
-  assert.ok(created >= 0 && upload > created);
-  assert.match(source.slice(created, upload), /created\.asset\.status !== "ready"/);
-  assert.match(source.slice(created, upload), /onRemoteDraft\?\.\(\{ assetId, duplicate: !!created\.duplicate, sourceUploaded: false \}\)/);
-  assert.match(source.slice(upload), /onRemoteDraft\?\.\(\{ assetId, duplicate: !!created\.duplicate, sourceUploaded: true \}\)/);
+  const transfer = source.indexOf("await uploadPrepared(sourcePrepared", created);
+  assert.ok(created >= 0 && transfer > created);
+  includes(source.slice(created, transfer), 'created.asset.status !== "ready"');
+  includes(source.slice(created, transfer), "onRemoteDraft?.({ assetId, duplicate: !!created.duplicate, sourceUploaded: false })");
+  includes(source.slice(transfer), "onRemoteDraft?.({ assetId, duplicate: !!created.duplicate, sourceUploaded: true })");
 });
 
-test("client-authored renders consume only the sanitized finalized variant URL", () => {
-  const finalize = source.indexOf("const finalized = await apiCall", source.indexOf("async function createAndUploadRenderVariant"));
-  const end = source.indexOf("\n}\n", finalize);
-  const boundary = source.slice(finalize, end);
-  assert.match(boundary, /const sanitizedUrl = finalized\?\.variant\?\.url/);
-  assert.match(boundary, /finalized\?\.variant\?\.status !== "verified"/);
-  assert.match(boundary, /asset: \{ \.\.\.finalized\.asset, url: sanitizedUrl \}/);
-});
-
-test("video publication depends on the verifier poster, never a local preview artifact", () => {
-  const upload = source.slice(source.indexOf("export async function uploadStudioMediaAsset"));
-  assert.doesNotMatch(upload, /posterAsset/);
-  assert.match(upload, /editRecipe:\s*edit/);
-  assert.match(upload, /kind === "video" && !finalAsset\.posterUrl/);
-  assert.match(upload, /posterTimeMs:\s*finalAsset\.posterTimeMs \?\? edit\.coverMs \?\? 0/);
+test("video publication still requires the server verifier's durable poster", () => {
+  excludes(upload, "posterAsset");
+  includes(upload, 'kind === "video" && !finalAsset.posterUrl');
+  includes(upload, "posterTimeMs: finalAsset.posterTimeMs ?? authoritativeOriginalRecipe.coverMs ?? 0");
 });

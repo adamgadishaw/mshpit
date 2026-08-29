@@ -417,10 +417,6 @@
       "count": 3,
       "fingerprint": "64b8c4beaff4f10c859c"
     },
-    "src/screens/LogScreen.jsx": {
-      "count": 2,
-      "fingerprint": "081d06c475ad75a4382f"
-    },
     "src/screens/LoungeScreen.jsx": {
       "count": 1,
       "fingerprint": "d92b8b82bec0ba614760"
@@ -472,8 +468,8 @@
       "fingerprint": "08ed2f55e311cce2a9aa"
     },
     "src/screens/LogScreen.jsx": {
-      "count": 3,
-      "fingerprint": "228cada39b0efa3698bd"
+      "count": 1,
+      "fingerprint": "d8a69abbdb411b4492fa"
     },
     "src/screens/LoungeScreen.jsx": {
       "count": 1,

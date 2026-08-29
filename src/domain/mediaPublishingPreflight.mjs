@@ -15,13 +15,13 @@ const issue = (code, message) => ({ code, message });
 // Picker metadata is only an early UX boundary. The server still measures the
 // immutable upload and authoritatively verifies video duration/dimensions and
 // codecs before publishing. This check prevents known-dead-end files from
-// entering Studio while allowing native staging to measure a missing size.
+// entering the upload queue while allowing native staging to measure a missing size.
 export function mediaPublishingPreflightIssue(asset = {}) {
   const kind = asset?.kind === "video" ? "video" : "image";
   if (!mediaSourceSizeAllowed(asset)) {
     return kind === "video"
-      ? issue(MEDIA_PREFLIGHT_CODES.videoTooLarge, ("That clip is over the " + mediaUploadLimitLabel(MEDIA_VIDEO_SOURCE_MAX_BYTES) + " upload limit. Export a shorter or smaller MP4 before opening it in the photo and video editor."))
-      : issue(MEDIA_PREFLIGHT_CODES.imageTooLarge, ("That photo is over the " + mediaUploadLimitLabel(MEDIA_PHOTO_SOURCE_MAX_BYTES) + " upload limit. Export a smaller copy before opening it in the photo and video editor."));
+      ? issue(MEDIA_PREFLIGHT_CODES.videoTooLarge, ("That clip is over the " + mediaUploadLimitLabel(MEDIA_VIDEO_SOURCE_MAX_BYTES) + " upload limit. Choose a shorter or smaller copy before uploading it."))
+      : issue(MEDIA_PREFLIGHT_CODES.imageTooLarge, ("That photo is over the " + mediaUploadLimitLabel(MEDIA_PHOTO_SOURCE_MAX_BYTES) + " upload limit. Choose a smaller copy before uploading it."));
   }
 
   if (kind === "image") {
@@ -50,6 +50,6 @@ export function mediaPublishingPreflightSelection(assets, options) {
 export function mediaPublishingPreflightMessage(rejected) {
   const failures = Array.isArray(rejected) ? rejected : [];
   if (!failures.length) return "";
-  const first = failures[0]?.message || "That media item is not ready for the photo and video editor.";
+  const first = failures[0]?.message || "That media item is not ready to upload.";
   return failures.length === 1 ? first : `${first} ${failures.length} selected items were skipped.`;
 }

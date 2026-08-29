@@ -11,7 +11,7 @@ import { artistMeta, installIngestedCatalog } from "./seed/ingested";
 import { ACHIEVEMENTS } from "./domain/badges.mjs";
 import { ENABLE_DEMO_DATA, remoteIdentityValidationEnabled } from "./config/runtime.mjs";
 import { MUSIC_PLAYER_ENABLED } from "./domain/musicPlayerAvailability.mjs";
-import { isUpcomingEventDate, PERSISTED_FEED_LIMIT, publicProfileCacheEntry, sanitizePersistedStoreValue, sanitizeTourDates } from "./domain/dataPolicy.mjs";
+import { isUpcomingEventDate, PERSISTED_FEED_LIMIT, persistedTourDateCache, publicProfileCacheEntry, sanitizePersistedStoreValue, sanitizeTourDates } from "./domain/dataPolicy.mjs";
 import { toIsoDate } from "./domain/dates.mjs";
 import { createTicketRegistry } from "./domain/latestWins.mjs";
 import { recentSongTrack, withoutBlockedPersonSearches } from "./domain/unifiedSearch.mjs";
@@ -615,12 +615,12 @@ export function StoreProvider({ children }) {
   // refresh/account boundary through device storage.
   const [tourDates, setTourDates] = useState(() => ENABLE_DEMO_DATA
     ? sanitizeTourDates(load("pit.tourDates", seedTourDates), true)
-    : publicTourDateCache(load("pit.tourDates", [])));
+    : persistedTourDateCache(load("pit.tourDates", [])));
   const tourDatesRef = useRef(tourDates);
   tourDatesRef.current = tourDates;
   const tourDateReadRef = useRef({ sequence: 0, accountId: session?.id || null, demoCatalogApplied: false });
   useEffect(() => {
-    save("pit.tourDates", publicTourDateCache(tourDates));
+    save("pit.tourDates", persistedTourDateCache(tourDates, { demoEnabled: ENABLE_DEMO_DATA }));
     if (!ENABLE_DEMO_DATA) return undefined;
     let active = true;
     // Metro emits this as a separate web chunk. Production never requests it;

@@ -6,6 +6,9 @@ import {
   calendarDateKey,
   isUpcomingEventDate,
   PERSISTED_FEED_LIMIT,
+  PERSISTED_TOUR_DATE_CHARACTER_BUDGET,
+  PERSISTED_TOUR_DATE_LIMIT,
+  persistedTourDateCache,
   publicProfileCacheEntry,
   sanitizePersistedStoreValue,
   sanitizeTourDates,
@@ -119,4 +122,38 @@ test("calendar filtering includes today and excludes past or invalid dates", () 
   assert.equal(isUpcomingEventDate({ date: "2026-07-01", eventEndDate: "2026-07-11" }, localNoon), false);
   assert.equal(isUpcomingEventDate({ date: "2026-07-13", eventEndDate: "2026-07-01" }, localNoon), true);
   assert.equal(isUpcomingEventDate({ date: "TBA" }, localNoon), false);
+});
+
+test("persisted tour-date continuity is public, upcoming, chronological, and bounded", () => {
+  const at = new Date(2026, 7, 29, 12).getTime();
+  const rows = Array.from({ length: PERSISTED_TOUR_DATE_LIMIT + 25 }, (_, index) => ({
+    id: `tm_${index}`,
+    date: `2026-09-${String((index % 28) + 1).padStart(2, "0")}`,
+    artist: `Artist ${index}`,
+  })).reverse();
+  rows.push(
+    { id: "past", date: "2026-08-01" },
+    { id: "unreleased", date: "2026-09-01", releaseAt: at + 1 },
+    { id: "g_t_generated", date: "2026-09-01" },
+  );
+
+  const saved = persistedTourDateCache(rows, { at });
+  assert.equal(saved.length, PERSISTED_TOUR_DATE_LIMIT);
+  assert.equal(saved.some(({ id }) => id === "past" || id === "unreleased" || id === "g_t_generated"), false);
+  assert.ok(saved.every((row, index) => index === 0
+    || calendarDateKey(saved[index - 1].date) <= calendarDateKey(row.date)));
+  assert.ok(JSON.stringify(saved).length <= PERSISTED_TOUR_DATE_CHARACTER_BUDGET);
+  assert.deepEqual(Object.keys(saved[0]).sort(), ["artist", "date", "id"],
+    "the real server row shape remains usable on first paint");
+});
+
+test("one abnormal provider row cannot consume the tour-date cache budget", () => {
+  const at = new Date(2026, 7, 29, 12).getTime();
+  const saved = persistedTourDateCache([
+    { id: "oversized", date: "2026-09-01", providerPayload: "x".repeat(500_000) },
+    { id: "normal", date: "2026-09-02", artist: "Bryson Tiller", venue: "Scotiabank Arena" },
+  ], { at });
+  assert.deepEqual(saved, [
+    { id: "normal", date: "2026-09-02", artist: "Bryson Tiller", venue: "Scotiabank Arena" },
+  ]);
 });

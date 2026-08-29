@@ -1,16 +1,14 @@
 import { api } from "./api";
 import { isDurableMediaUrl, prepareMediaUploadAsset, uploadPreparedMediaAsset } from "./mediaUpload";
 import { finalizeMediaSourceV1, resumeExistingMediaSourceV1 } from "./mediaAssetFinalize.mjs";
-import { mediaEditFingerprint, mediaImageRequiresRender, normalizeMediaEdit, videoEditRequiresExport } from "../domain/mediaEdit.mjs";
-import { mediaSourceClientAssetId, stableMediaUploadToken } from "../domain/mediaUploadIdentity.mjs";
+import { defaultMediaEdit } from "../domain/mediaEdit.mjs";
+import { mediaSourceClientAssetId } from "../domain/mediaUploadIdentity.mjs";
 
 function mediaPipelineError(code, message, cause) {
   const error = new Error(message, cause ? { cause } : undefined);
   error.code = code;
   return error;
 }
-
-const safeDimension = (value) => Math.max(1, Math.min(32_768, Math.round(Number(value) || 1)));
 
 const optionalSourceDimension = (value) => {
   const numeric = Number(value);
@@ -24,70 +22,17 @@ const optionalSourceDuration = (value) => {
   return Number.isFinite(numeric) && numeric > 0 ? Math.round(numeric) : null;
 };
 
-async function createAndUploadRenderVariant({
-  assetId,
-  localId,
-  prepared,
-  dimensions,
-  signal,
-  onStage,
-  onProgress,
-  apiCall,
-  uploadPrepared,
-}) {
-  onStage?.("uploading-render");
-  const created = await apiCall(`/api/media/assets/${encodeURIComponent(assetId)}/variants`, {
-    method: "POST",
-    context: "Preparing the edited photo",
-    signal,
-    body: {
-      // Identity follows the logical edit/cover revision rather than an
-      // encoder's nondeterministic byte size. Retrying the same recipe can
-      // safely replace an unfinished variant instead of colliding forever.
-      clientVariantId: stableMediaUploadToken(`${localId}:render`, "studio-render"),
-      role: "render",
-      contentType: prepared.contentType,
-      fileSize: prepared.fileSize,
-      name: prepared.name,
-    },
-  });
-  if (!created?.variant?.id) throw mediaPipelineError("MEDIA_VARIANT_INVALID", "PIT could not prepare that media rendition.");
-  if (created.upload) {
-    await uploadPrepared(prepared, created.upload, {
-      signal,
-      context: "Uploading the edited photo",
-      onProgress: (progress) => onProgress?.({ ...progress, stage: "uploading-render" }),
-    });
-  }
-  onStage?.("verifying-render");
-  const finalized = await apiCall(`/api/media/assets/${encodeURIComponent(assetId)}/variants/${encodeURIComponent(created.variant.id)}/finalize`, {
-    method: "POST",
-    context: "Verifying the edited photo",
-    signal,
-    body: {
-      width: safeDimension(dimensions?.width),
-      height: safeDimension(dimensions?.height),
-    },
-  });
-  const sanitizedUrl = finalized?.variant?.url;
-  if (finalized?.variant?.status !== "verified" || !isDurableMediaUrl(sanitizedUrl)) {
-    throw mediaPipelineError("MEDIA_VARIANT_INVALID", "PIT did not return a verified media rendition.");
-  }
-  if (finalized?.asset?.url && finalized.asset.url !== sanitizedUrl) {
-    throw mediaPipelineError("MEDIA_VARIANT_INVALID", "PIT returned mismatched photo rendition identities.");
-  }
-  return { ...finalized, asset: { ...finalized.asset, url: sanitizedUrl } };
-}
-
 /**
- * Upload and HEAD-verify one PIT Studio asset plus any required derivative.
- * Edited photos require rendered bytes. A local video poster is preview-only:
- * source finalization sends coverMs to the private verifier, which produces
- * and verifies the durable poster beside the sanitized delivery video.
+ * Upload and verify one original camera-roll asset.
+ *
+ * This entry point intentionally has no editing or rendered-asset arguments.
+ * It never accepts a caller-authored transform recipe: the only recipe sent to
+ * the server is a fresh original recipe derived from authoritative hydrated
+ * metadata. Server byte sniffing, image normalization, video transcoding and
+ * durable poster generation remain mandatory.
  */
-export async function uploadStudioMediaAsset({
+export async function uploadOriginalMediaAsset({
   asset,
-  renderedAsset = null,
   signal,
   onStage,
   onProgress,
@@ -96,23 +41,12 @@ export async function uploadStudioMediaAsset({
   const apiCall = services.apiCall || api;
   const prepareAsset = services.prepareAsset || prepareMediaUploadAsset;
   const uploadPrepared = services.uploadPrepared || uploadPreparedMediaAsset;
-  if (!asset?.id || !asset?.uri) throw mediaPipelineError("MEDIA_SOURCE_INVALID", "Choose that media again before uploading.");
-  const kind = asset.kind === "video" ? "video" : "image";
-  const edit = normalizeMediaEdit(asset.edit, { kind, durationMs: asset.durationMs });
-  const needsPhotoRender = mediaImageRequiresRender(asset, edit);
-  if (kind === "video" && videoEditRequiresExport(edit)) {
-    throw mediaPipelineError("VIDEO_RENDERER_UNAVAILABLE", "PIT can publish a chosen cover now, but this video edit needs the authoritative encoder.");
+  if (!asset?.id || !asset?.uri) {
+    throw mediaPipelineError("MEDIA_SOURCE_INVALID", "Choose that media again before uploading.");
   }
-  if (needsPhotoRender && !renderedAsset) {
-    throw mediaPipelineError("PHOTO_RENDER_REQUIRED", "Render the edited photo before uploading it.");
-  }
-  // Validate every local output before creating any remote ticket. A broken
-  // render therefore cannot leave an avoidable orphan source in object storage.
-  const renderPrepared = needsPhotoRender
-    ? await prepareAsset(renderedAsset, { optimizeWeb: false, context: "Preparing the edited photo" })
-    : null;
 
-  const recipeFingerprint = mediaEditFingerprint(edit, { kind, durationMs: asset.durationMs });
+  const kind = asset.kind === "video" ? "video" : "image";
+  const sourceRecipe = defaultMediaEdit(kind, { durationMs: asset.durationMs });
   const sourceWidth = optionalSourceDimension(asset.width);
   const sourceHeight = optionalSourceDimension(asset.height);
   const sourceDurationMs = optionalSourceDuration(asset.durationMs);
@@ -120,17 +54,17 @@ export async function uploadStudioMediaAsset({
     ...(sourceWidth === null ? {} : { width: sourceWidth }),
     ...(sourceHeight === null ? {} : { height: sourceHeight }),
     ...(kind === "video" && sourceDurationMs !== null ? { durationMs: sourceDurationMs } : {}),
-    ...(kind === "image" ? { deliveryMode: needsPhotoRender ? "client" : "server" } : {}),
+    ...(kind === "image" ? { deliveryMode: "server" } : {}),
     orientation: [0, 90, 180, 270].includes(Number(asset.orientation)) ? Number(asset.orientation) : 0,
-    editRecipe: edit,
+    editRecipe: sourceRecipe,
     altText: typeof asset.altText === "string" ? asset.altText : "",
   };
+
   let assetId = asset.assetId || null;
   let result = null;
   if (assetId) {
-    // Reopening an already uploaded, still-unattached Studio asset must never
-    // require the original device file again. Reconcile its owner-only server
-    // descriptor, then mutate only the reversible recipe/derived rendition.
+    // Resume an interrupted source verification without reading or uploading
+    // the same private device file again.
     result = await resumeExistingMediaSourceV1({
       apiCall,
       asset,
@@ -144,9 +78,6 @@ export async function uploadStudioMediaAsset({
       optimizeWeb: false,
       context: "Preparing the original media",
     });
-    // The immutable source is independent from any reversible recipe. Changing
-    // a filter or alt text must not upload the same original bytes as a new
-    // source asset.
     const clientAssetId = mediaSourceClientAssetId({
       localId: asset.id,
       fileSize: sourcePrepared.fileSize,
@@ -156,7 +87,7 @@ export async function uploadStudioMediaAsset({
     onStage?.("preparing-source");
     const created = await apiCall("/api/media/assets", {
       method: "POST",
-      context: "Preparing your PIT media",
+      context: "Preparing your Mshpit media",
       signal,
       body: {
         clientAssetId,
@@ -166,13 +97,11 @@ export async function uploadStudioMediaAsset({
         name: sourcePrepared.name,
       },
     });
-    if (!created?.asset?.id) throw mediaPipelineError("MEDIA_ASSET_INVALID", "PIT could not prepare that media item.");
+    if (!created?.asset?.id) {
+      throw mediaPipelineError("MEDIA_ASSET_INVALID", "Mshpit could not prepare that media item.");
+    }
     assetId = created.asset.id;
     if (created.asset.status !== "ready") {
-      // Surface the owner-only draft identity before the potentially long PUT
-      // and decoder pass. The composer can then retire the exact source when a
-      // user explicitly cancels or discards, without persisting the capability
-      // in the recoverable local draft.
       onRemoteDraft?.({ assetId, duplicate: !!created.duplicate, sourceUploaded: false });
     }
     if (created.upload) {
@@ -182,9 +111,6 @@ export async function uploadStudioMediaAsset({
         context: "Uploading the original media",
         onProgress: (progress) => onProgress?.({ ...progress, stage: "uploading-source" }),
       });
-      // Persist resumability only after the PUT succeeds. Before this point the
-      // opaque id is retained for explicit cancellation, but a retry must mint
-      // a fresh signed PUT and replace any partial object bytes.
       onRemoteDraft?.({ assetId, duplicate: !!created.duplicate, sourceUploaded: true });
     }
 
@@ -198,64 +124,43 @@ export async function uploadStudioMediaAsset({
     });
   }
 
-  // Source finalization seals only the immutable bytes/declared dimensions.
-  // Recipe and alt text are owner-mutable while the asset is unattached, so a
-  // lost-response retry or a changed caption cannot strand the same source on
-  // stale metadata. Attached media remains deliberately view-only; re-editing
-  // it requires a fresh source/version rather than mutating a live post.
+  // The verifier owns the real duration. Rebase the constant original recipe
+  // onto that measured value before saving metadata, so picker/hydration drift
+  // can never become a trim operation.
+  const authoritativeDurationMs = result?.asset?.durationMs ?? sourceDurationMs ?? asset.durationMs;
+  const authoritativeOriginalRecipe = defaultMediaEdit(kind, { durationMs: authoritativeDurationMs });
   result = await apiCall(`/api/media/assets/${encodeURIComponent(assetId)}`, {
     method: "PATCH",
-    context: "Saving your PIT media edits",
+    context: "Saving original media details",
     signal,
     body: {
-      editRecipe: edit,
+      editRecipe: authoritativeOriginalRecipe,
       altText: typeof asset.altText === "string" ? asset.altText : "",
     },
   });
 
-  // A re-edit keeps the prior verified rendition live while the replacement is
-  // staged. `ready + url` can therefore describe the safe fallback, not proof
-  // that the newly PATCHed recipe already has matching pixels. The revision
-  // flags make retries resume the staged output instead of incorrectly reusing
-  // the old public image.
-  const photoRevisionPending = !!(result?.revisionPending || result?.asset?.revisionPending || result?.recipeChanged);
-  if (renderPrepared && (photoRevisionPending || !(result?.asset?.renderState === "ready" && result?.asset?.url))) {
-    result = await createAndUploadRenderVariant({
-      assetId,
-      localId: `${asset.id}:${recipeFingerprint}`,
-      prepared: renderPrepared,
-      dimensions: renderedAsset,
-      signal,
-      onStage,
-      onProgress,
-      apiCall,
-      uploadPrepared,
-    });
-  }
   const finalAsset = result?.asset || (await apiCall(`/api/media/assets/${encodeURIComponent(assetId)}`, {
-    context: "Checking your PIT media",
+    context: "Checking your Mshpit media",
     signal,
   }))?.asset;
-  if (!finalAsset?.id || finalAsset.status !== "ready" || !finalAsset.url) {
-    throw mediaPipelineError(finalAsset?.renderState === "unavailable" ? "VIDEO_RENDERER_UNAVAILABLE" : "MEDIA_FINALIZE_PENDING", "PIT is still preparing that media item. Try the final step again.");
+  if (!finalAsset?.id || finalAsset.status !== "ready" || !isDurableMediaUrl(finalAsset.url)) {
+    throw mediaPipelineError("MEDIA_FINALIZE_PENDING", "Mshpit is still preparing that media item. Try the final step again.");
   }
   if (kind === "video" && !finalAsset.posterUrl) {
-    throw mediaPipelineError("VIDEO_POSTER_REQUIRED", "The video cover was not verified. Try that step again.");
+    throw mediaPipelineError("VIDEO_POSTER_REQUIRED", "The video preview was not verified. Try that upload again.");
   }
   onStage?.("ready");
   return {
     ...asset,
+    edit: authoritativeOriginalRecipe,
     assetId: finalAsset.id,
-    // Keep the owner's immutable source as the live editing input while the
-    // legacy post projection uses only the verified public rendition. A page
-    // reload can recover the same source through the owner-only asset route.
     uri: finalAsset.sourceUrl || asset.uri,
     durableLocalUri: null,
     draftManaged: false,
     sourceUrl: finalAsset.url,
     posterUri: finalAsset.posterUrl || null,
     posterUrl: finalAsset.posterUrl || null,
-    posterTimeMs: finalAsset.posterTimeMs ?? edit.coverMs ?? 0,
+    posterTimeMs: finalAsset.posterTimeMs ?? authoritativeOriginalRecipe.coverMs ?? 0,
     width: finalAsset.width || asset.width,
     height: finalAsset.height || asset.height,
     durationMs: finalAsset.durationMs ?? asset.durationMs,

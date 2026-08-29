@@ -28,7 +28,7 @@ test("video cover preview is allowed to shrink with its measured Studio stage", 
   assert.doesNotMatch(source, /minHeight:\s*220/);
 });
 
-test("PIT Studio traps web focus and restores the opener when its modal closes", async () => {
+test("the dormant legacy Studio keeps focus hygiene while posting no longer mounts it", async () => {
   const workspace = await readFile(new URL("../components/media-editor/MediaEditorWorkspace.jsx", import.meta.url), "utf8");
   const composer = await readFile(new URL("../screens/LogScreen.jsx", import.meta.url), "utf8");
   assert.match(workspace, /modalRootRef/);
@@ -36,7 +36,5 @@ test("PIT Studio traps web focus and restores the opener when its modal closes",
   assert.match(workspace, /element\.getAttribute\?\.\("aria-hidden"\) !== "true"/);
   assert.match(workspace, /!element\.closest\?\.\('\[aria-hidden="true"\]'\)/);
   assert.match(workspace, /if \(!returnFocusRef && previous\?\.isConnected\)/);
-  assert.match(composer, /studioReturnFocusRef\.current\s*=\s*\{[\s\S]*element,[\s\S]*label:/);
-  assert.match(composer, /requestAnimationFrame\(\(\) => \{[\s\S]*requestAnimationFrame\(\(\) => \{[\s\S]*target\.focus\(\)/);
-  assert.match(composer, /returnFocusRef=\{studioReturnFocusRef\}/);
+  assert.doesNotMatch(composer, /studioReturnFocusRef|MediaEditorWorkspace|returnFocusRef=\{/);
 });
