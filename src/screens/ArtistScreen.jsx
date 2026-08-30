@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { View, Text, StyleSheet, ScrollView, Pressable, Image, TextInput, ActivityIndicator, useWindowDimensions } from "react-native";
-import { colors, focusRing, mono, radius, shadow, space } from "../theme";
+import { colors, displayFont, focusRing, mono, radius, shadow, space } from "../theme";
 import { useStore, isStaff } from "../store";
 import { artistMeta } from "../seed/ingested";
 import { SONGS } from "../seed/songs";

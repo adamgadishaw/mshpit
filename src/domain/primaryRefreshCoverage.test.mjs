@@ -18,7 +18,6 @@ const matrix = Object.freeze([
   { name: "Discover", testID: "discover-refresh", handler: "refreshDiscover", scope: /accountId/ },
   { name: "Calendar", testID: "calendar-refresh", handler: "refreshCalendar", scope: /session\?\.id/ },
   { name: "You", testID: "you-refresh", handler: "refreshDashboard", scope: /session\?\.id/ },
-  { name: "RightRail", testID: "right-rail-refresh", handler: "refreshRail", scope: /accountId/ },
 ]);
 
 function functionSlice(source, name, nextMarker = "\n  const ") {
@@ -49,7 +48,7 @@ test("each pull awaits its bounded current-surface loaders and keeps existing co
   assert.match(feed, /await onRefresh\(\{ signal: controller\.signal \}\)/);
   assert.match(feed, /setRefreshError/);
 
-  const home = functionSlice(sources.App, "refreshHomeFeedData", "\n  const refreshRightRailData");
+  const home = functionSlice(sources.App, "refreshHomeFeedData", "\n  // iOS Safari");
   assert.match(home, /Promise\.allSettled/);
   assert.match(home, /refreshFeed/);
   assert.match(home, /refreshDiscoverySidebar/);
@@ -87,9 +86,12 @@ test("each pull awaits its bounded current-surface loaders and keeps existing co
   assert.match(dashboard, /loadInboxThreads/);
   assert.match(dashboard, /refreshNotifications/);
 
-  const rail = functionSlice(sources.RightRail, "refreshRail", "\n\n  const chooseEventScope");
-  assert.match(rail, /await onRefreshData/);
-  assert.match(rail, /signal: controller\.signal/);
+});
+
+test("desktop right rail has no in-app refresh owner", () => {
+  assert.doesNotMatch(sources.RightRail, /VinylRefreshBoundary|right-rail-refresh|onRefreshData|refreshRail/);
+  assert.doesNotMatch(sources.App, /refreshRightRailData|onRefreshData=\{refreshRightRailData\}/);
+  assert.match(sources.RightRail, /<ScrollView[\s\S]*styles\.right/);
 });
 
 test("refresh is deliberate rather than focus polling, and the shared UI never fetches data", () => {

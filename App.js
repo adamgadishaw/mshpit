@@ -383,16 +383,6 @@ function Root() {
       || result.value === false
       || result.value == null);
   };
-  const refreshRightRailData = async ({ signal } = {}) => {
-    const results = await Promise.allSettled([
-      refreshDiscoverySidebar?.({ signal }),
-      refreshTourDates?.({ signal }),
-      session ? refreshMyAttendance?.({ signal }) : true,
-    ]);
-    return !results.some((result) => result.status === "rejected"
-      || result.value === false
-      || result.value == null);
-  };
   // iOS Safari zooms the whole page in when you focus a text field smaller than
   // 16px, and does not cleanly zoom back out. Many of the app's inputs are 13-15px
   // by design, so every search/compose box was jerking the viewport on a phone,
@@ -1334,7 +1324,7 @@ function Root() {
           />
           <Suspense fallback={<ScreenLoading />}>{overlay || tabScreens}</Suspense>
         </View>
-        {showRightRail && <RightRail railWidth={rightRailLayout.width} topArtists={topArtists} artistsAlphabetical={artistsAlphabetical} upcomingEvents={upcomingEvents} discoverySidebar={discoverySidebar} discoverySidebarStatus={discoverySidebarStatus} accountId={session?.id || null} homeCity={session?.home?.city} countdownPlan={homeCountdown} onOpenCountdown={openShow} onViewAllCountdown={() => go({ calendar: true })} onRefreshData={refreshRightRailData} onOpenArtist={openArtist} onOpenLounge={(lounge) => go({ lounge })} onOpenDiscover={() => switchTab("discover")} onOpenEvent={openShow} />}
+        {showRightRail && <RightRail railWidth={rightRailLayout.width} topArtists={topArtists} artistsAlphabetical={artistsAlphabetical} upcomingEvents={upcomingEvents} discoverySidebar={discoverySidebar} discoverySidebarStatus={discoverySidebarStatus} accountId={session?.id || null} homeCity={session?.home?.city} countdownPlan={homeCountdown} onOpenCountdown={openShow} onViewAllCountdown={() => go({ calendar: true })} onOpenArtist={openArtist} onOpenLounge={(lounge) => go({ lounge })} onOpenDiscover={() => switchTab("discover")} onOpenEvent={openShow} />}
       </View>
     </View>
   );

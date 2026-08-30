@@ -17,6 +17,9 @@ import { useProfileHistory } from "../features/profileHistory/useProfileHistory"
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+const REFRESH_RETRY_HINT = Platform.OS === "web"
+  ? "Reload this page to try again."
+  : "Pull down to try again.";
 const DOW = [
   { short: "Sun", full: "Sunday" },
   { short: "Mon", full: "Monday" },
@@ -294,7 +297,7 @@ export default function CalendarScreen({ initialDate = null, initialView = CALEN
             accessibilityLiveRegion={refreshError ? "assertive" : "polite"}
             accessibilityRole={refreshError ? "alert" : "text"}
           >
-            {refreshing ? "Refreshing your calendar…" : "Some calendar details could not refresh. Pull down to try again."}
+            {refreshing ? "Refreshing your calendar…" : `Some calendar details could not refresh. ${REFRESH_RETRY_HINT}`}
           </Text>
         ) : null}
         <View style={styles.viewTabs} accessibilityRole="tablist" accessibilityLabel="Calendar show period">

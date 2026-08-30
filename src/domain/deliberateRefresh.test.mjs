@@ -46,6 +46,13 @@ test("Calendar refresh is explicit and reports its state accessibly", () => {
   assert.match(calendarScreen, /accessibilityLiveRegion/);
 });
 
+test("refresh recovery copy points web to browser reload and native to pull down", () => {
+  for (const source of [feedScreen, calendarScreen]) {
+    assert.match(source, /Platform\.OS === "web"\s*\? "Reload this page to try again\."\s*:\s*"Pull down to try again\."/);
+    assert.match(source, /\$\{REFRESH_RETRY_HINT\}/);
+  }
+});
+
 test("home countdown ticks locally and moves between responsive top and empty-bottom placements", () => {
   assert.match(countdown, /setInterval/);
   assert.doesNotMatch(countdown, /\bapi\s*\(|\bfetch\s*\(/);

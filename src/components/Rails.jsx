@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { Platform, View, Text, StyleSheet, Pressable, ScrollView } from "react-native";
 import { colors, displayFont, focusRing, font, mono, radius, roleColor, shadow } from "../theme";
 import Avatar from "./Avatar";
@@ -7,7 +7,6 @@ import { UpcomingEventCard } from "./VenueDiscoveryCards";
 import { PopularLoungeCard } from "./LiveDiscoveryCards";
 import { PublicPressableLink } from "./PublicWebLinks";
 import HomeShowCountdown from "./HomeShowCountdown";
-import VinylRefreshBoundary from "./VinylRefreshBoundary";
 import {
   RIGHT_RAIL_EVENT_SCOPE,
   reconcileRightRailScopeChoice,
@@ -232,7 +231,6 @@ export function RightRail({
   onOpenEvent,
   onOpenCountdown,
   onViewAllCountdown,
-  onRefreshData,
 }) {
   const [artistMode, setArtistMode] = useState("top"); // 'top' | 'az'
   const eventScopeIdentity = rightRailScopeIdentity({ accountId, homeCity });
@@ -240,9 +238,6 @@ export function RightRail({
   const [eventScopeChoice, setEventScopeChoice] = useState(
     () => reconcileRightRailScopeChoice(null, { accountId, homeCity }),
   );
-  const [refreshing, setRefreshing] = useState(false);
-  const [refreshError, setRefreshError] = useState(false);
-  const refreshControllerRef = useRef(null);
   const eventScope = eventScopeChoice.identity === eventScopeIdentity
     ? eventScopeChoice.value
     : defaultEventScope;
@@ -250,34 +245,6 @@ export function RightRail({
   useEffect(() => {
     setEventScopeChoice((current) => reconcileRightRailScopeChoice(current, { accountId, homeCity }));
   }, [accountId, defaultEventScope, eventScopeIdentity, homeCity]);
-
-  useEffect(() => {
-    refreshControllerRef.current?.abort();
-    refreshControllerRef.current = null;
-    setRefreshing(false);
-    setRefreshError(false);
-    return () => refreshControllerRef.current?.abort();
-  }, [accountId]);
-
-  const refreshRail = async () => {
-    if (!onRefreshData || refreshControllerRef.current) return false;
-    const controller = new AbortController();
-    refreshControllerRef.current = controller;
-    setRefreshing(true);
-    setRefreshError(false);
-    let result = false;
-    try {
-      result = await onRefreshData({ signal: controller.signal });
-    } catch {
-      result = false;
-    }
-    if (controller.signal.aborted || refreshControllerRef.current !== controller) return false;
-    const failed = result === false || result == null;
-    setRefreshError(failed);
-    setRefreshing(false);
-    refreshControllerRef.current = null;
-    return !failed;
-  };
 
   const chooseEventScope = (value) => {
     setEventScopeChoice({ identity: eventScopeIdentity, value, touched: true });
@@ -296,7 +263,7 @@ export function RightRail({
   const listingEmpty = discoverySidebarStatus === "loading"
     ? "Finding shows near you..."
     : discoverySidebarStatus === "error"
-      ? "The local lineup missed a beat. Try refreshing."
+      ? "The local lineup missed a beat. Reload the page to try again."
       : discoverySidebar.source?.providerConfigured === false
         ? "Live listings are waiting for a ticket provider."
         : `No upcoming shows${localLabel} yet.`;
@@ -310,24 +277,13 @@ export function RightRail({
     : (discoverySidebar.location?.city ? `Near ${discoverySidebar.location.city}` : "Near you");
 
   return (
-    <VinylRefreshBoundary
-      refreshing={refreshing}
-      onRefresh={refreshRail}
-      enabled={!!onRefreshData}
-      accessibilityLabel="Refresh home sidebar"
+    <ScrollView
       style={[styles.right, { width: railWidth, flexBasis: railWidth }]}
-      indicatorOffset={8}
-      testID="right-rail-refresh"
+      contentContainerStyle={styles.rightContent}
+      showsVerticalScrollIndicator={false}
     >
-    <ScrollView style={styles.rightScroll} contentContainerStyle={styles.rightContent} showsVerticalScrollIndicator={false}>
       {accountId && countdownPlan ? (
         <HomeShowCountdown compact plan={countdownPlan} onOpen={onOpenCountdown || onOpenEvent} onViewAll={onViewAllCountdown} />
-      ) : null}
-
-      {refreshError ? (
-        <Text style={styles.railRefreshError} accessibilityRole="alert" accessibilityLiveRegion="assertive">
-          Some sidebar details could not refresh. The current lineup is still here.
-        </Text>
       ) : null}
 
       {/* Artists, Top / A-Z toggle */}
@@ -438,7 +394,6 @@ export function RightRail({
         <HomeShowCountdown compact onFindShow={onOpenDiscover} />
       ) : null}
     </ScrollView>
-    </VinylRefreshBoundary>
   );
 }
 
@@ -538,10 +493,8 @@ const styles = StyleSheet.create({
 
   // right rail, RNW gives ScrollView a default flex:1, so pin it rigid or it
   // grows past its width and starves the feed column.
-  right: { width: 340, flexGrow: 0, flexShrink: 0, flexBasis: 340 },
-  rightScroll: { flex: 1, minHeight: 0 },
+  right: { width: 340, minHeight: 0, flexGrow: 0, flexShrink: 0, flexBasis: 340 },
   rightContent: { padding: 16, gap: 14 },
-  railRefreshError: { color: colors.danger, fontFamily: font, fontSize: 11.5, lineHeight: 16, textAlign: "center" },
   card: { backgroundColor: colors.surface, borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderColor: colors.line, padding: 14, ...shadow.card },
   cardHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 10 },
   cardTitle: { color: colors.textFaint, fontFamily: displayFont, fontSize: 11, letterSpacing: 1.35, fontWeight: "800" },

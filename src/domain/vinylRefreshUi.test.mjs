@@ -39,20 +39,16 @@ test("reduced motion, theming, and refresh status are first-class", () => {
   assert.match(nativeSource, /accessibilityValue=\{\{ text: "Refreshing" \}\}/);
 });
 
-test("web has a compact keyboard-accessible refresh fallback", () => {
-  assert.match(webSource, /accessibilityRole="button"/);
-  assert.match(webSource, /Press Enter or Space to refresh/);
-  assert.match(webSource, /accessibilityState=\{\{ disabled: !canRefresh \|\| refreshing, busy: !!refreshing \}\}/);
-  assert.match(webSource, /focused && focusRing/);
-  assert.match(webSource, /minHeight: 44/);
+test("web keeps the shared boundary transparent and owns no refresh control", () => {
+  assert.match(webSource, /function VinylRefreshBoundary\(\{ children, style, testID \}\)/);
   assert.match(webSource, /Children\.only\(children\)/);
-  assert.match(webSource, /Animated\.loop\([\s\S]*Animated\.timing/);
-  assert.match(webSource, /useReducedMotion\(\)/);
-  assert.match(webSource, /accessibilityRole="progressbar"/);
+  assert.match(webSource, /\{child\}/);
+  assert.doesNotMatch(webSource, /\bPressable\b|<RefreshControl|accessibilityRole="button"/);
+  assert.doesNotMatch(webSource, /\bonRefresh\b|\brequestRefresh\b|\bcanRefresh\b|\brefreshing\b/);
 });
 
-test("the web boundary avoids native animation runtime and network work", () => {
-  assert.doesNotMatch(webSource, /react-native-reanimated|<RefreshControl/);
+test("the web boundary cannot animate or initiate network work", () => {
+  assert.doesNotMatch(webSource, /react-native-reanimated|\bAnimated\b|\bEasing\b|useReducedMotion/);
   assert.doesNotMatch(webSource, /fetch\(|api\(|setInterval|setTimeout/);
   assert.doesNotMatch(nativeSource, /process\.env\.EXPO_OS|webButton/);
 });

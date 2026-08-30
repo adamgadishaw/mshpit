@@ -13,6 +13,9 @@ import HomeShowCountdown from "../components/HomeShowCountdown";
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 
 const PAGE = 8; // load the feed in pages, like the big apps - never all at once
+const REFRESH_RETRY_HINT = Platform.OS === "web"
+  ? "Reload this page to try again."
+  : "Pull down to try again.";
 
 export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, accountId = null, homeCity, unread = 0, notifUnread = 0, newUser = false, hideHeaderActions = false, onRefresh, onLoadMore, hasMore = false, loadingMore = false, countdownPlan = null, showHomeCountdown = false, onOpenCountdown, onViewAllCountdown, onOpen, onImpression, onDwell, onNotInterested, onUndoNotInterested, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onOpenNearby, onOpenInbox, onOpenNotifications, onOpenMenu, onOpenClips, onReport, onEdit, onOpenPhotos, onPlay, onRemoveMyPostTag, onLogShow, onOpenDiscover }) {
   const { width } = useWindowDimensions();
@@ -245,7 +248,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
               accessibilityLiveRegion={refreshError ? "assertive" : "polite"}
               accessibilityRole={refreshError ? "alert" : "text"}
             >
-              {refreshing ? "Refreshing your feed…" : "The feed could not refresh. Pull down to try again."}
+              {refreshing ? "Refreshing your feed…" : `The feed could not refresh. ${REFRESH_RETRY_HINT}`}
             </Text>
           ) : null}
 
