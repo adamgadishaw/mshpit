@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
@@ -248,13 +248,25 @@ test("a verified memorial makes only its canonical artist page crawlable", () =>
 });
 
 test("crawlable HTML contains semantic content and keeps the interactive bundle", () => {
-  const shell = `<!doctype html><html><head><title>Pit</title></head><body><div id="root"></div><script src="/app.js" defer></script></body></html>`;
+  const template = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
+  const shell = template.replace(
+    "</body>",
+    '<script src="/_expo/static/js/web/index-test.js" defer></script>\n</body>',
+  );
   const html = injectHead(shell, "/");
   assert.match(html, /<h1>The shows you saw\.<br \/><em>The taste you built\.<\/em><\/h1>/);
   assert.match(html, /REMEMBER THE NIGHT\. FIND WHAT&#39;S NEXT\./);
-  assert.match(html, /<script src="\/app\.js" defer><\/script>/);
+  assert.match(html, /<script src="\/mshpit-web-boot-v1\.js"><\/script>/);
+  assert.match(html, /<script src="\/_expo\/static\/js\/web\/index-test\.js" defer><\/script>/);
   assert.match(html, /https:\/\/www\.example\.com\/og\.png/);
   assert.match(html, /data-mshpit-public-document/);
+  assert.match(html, /<link rel="canonical" href="https:\/\/www\.example\.com\/" \/>/);
+  assert.match(html, /<script type="application\/ld\+json">[\s\S]*?"@type":"WebSite"/);
+  assert.match(html, /<a href="\/artists">Artists<\/a>/);
+  assert.match(html, /<a href="\/events">Events<\/a>/);
+  assert.match(html, /<div class="seo-document">/);
+  assert.doesNotMatch(html, /<html[^>]*data-mshpit-web-boot/i);
+  assert.doesNotMatch(html, /<div class="seo-document"[^>]*(?:hidden|aria-hidden)/i);
   assert.doesNotMatch(html, /You need to enable JavaScript/);
 });
 

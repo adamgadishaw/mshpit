@@ -155,6 +155,11 @@ function prepareAvailableNavigationFrame(candidate) {
 }
 
 export default function App() {
+  useLayoutEffect(() => {
+    if (Platform.OS !== "web" || typeof globalThis === "undefined") return;
+    globalThis.__MSHPIT_WEB_BOOT__?.complete?.();
+  }, []);
+
   return (
     <SafeAreaProvider>
       <ErrorBoundary>
