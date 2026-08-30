@@ -101,8 +101,9 @@ test("Artist HQ launches the artist-only campaign composer and the feed renders 
   assert.match(feedCard, /autoplay=\{!reduceMotion\}/);
   assert.match(feedCard, /FEATURED ARTIST POST|campaignTreatment\.eyebrow\.toUpperCase\(\)/);
   assert.match(feedCard, /campaignTouchTarget: \{ minWidth: 44, minHeight: 44 \}/);
-  assert.match(afterparty, /palette\?\.mutedTextColor/);
-  assert.match(afterparty, /campaignSend: \{ width: 44, height: 44/);
+  assert.match(afterparty, /palette\.mutedTextColor/);
+  assert.match(afterparty, /campaignBubble/);
+  assert.doesNotMatch(afterparty, /TextInput|loadComments|addComment|campaignSend/);
   assert.match(hub, /Featured feed posts still appear in the main feed\./);
 });
 

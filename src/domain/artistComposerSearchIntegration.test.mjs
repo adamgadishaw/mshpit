@@ -62,5 +62,8 @@ test("official provider titles remain distinct while clear tour names prefill th
   assert.match(card, /performanceCard: \{ overflow: "hidden",[^}]*backgroundColor: colors\.bgElev \}/);
   assert.doesNotMatch(card, /performanceCard: \{[^}]*\.\.\.shadow\.card/);
   assert.match(card, /<PublicTextLink href=\{artistHref\}[\s\S]*?\{performanceTitle\}<\/PublicTextLink>/);
+  assert.match(card, />View this show<\/Text>/);
+  assert.match(card, /Compare \{postContext\.artist\} shows/);
+  assert.match(card, /onOpenArtistArchive/);
   for (const field of ["log.artist", "log.venue", "log.city", "log.date"]) assert.ok(card.includes(field));
 });

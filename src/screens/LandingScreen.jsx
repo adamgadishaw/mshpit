@@ -23,6 +23,7 @@ import {
   rotateLandingFallbacks,
 } from "../domain/landingShowcase.mjs";
 import { liveEventTitle } from "../domain/liveDiscovery.mjs";
+import { HOME_JOURNEY_LINE } from "../domain/homeJourney.mjs";
 
 // ----------------------------------------------------------------------------
 // The opening act, the way real music apps do it: full-bleed live-show
@@ -482,6 +483,15 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse, onSuggestio
             />
           </View>
 
+          <View
+            style={[styles.journeyRail, compact && styles.journeyRailCompact]}
+            accessibilityLabel={`${HOME_JOURNEY_LINE}. Find a show, attend it, log the night, share the memory, then connect with fans around that show.`}
+          >
+            <Text style={styles.journeyEyebrow}>HOW MSHPIT WORKS</Text>
+            <Text style={[styles.journeyLine, compact && styles.journeyLineCompact]}>{HOME_JOURNEY_LINE}</Text>
+            <Text style={styles.journeyDetail}>Choose a show, remember what it felt like, and meet the fans who were part of the night.</Text>
+          </View>
+
           <View style={[styles.proofRail, compact && styles.proofRailCompact]} accessibilityLabel="Mshpit artist, venue, and rating features">
             {proofItems.map((item, index) => (
               <View
@@ -678,6 +688,24 @@ const styles = StyleSheet.create({
   actionPrimaryText: { color: "#1A1206" },
   actionGhostText: { color: "#F4EFE7" },
   actionLoginText: { fontSize: 14 },
+
+  journeyRail: {
+    width: "100%",
+    maxWidth: 700,
+    marginTop: 20,
+    paddingHorizontal: 16,
+    paddingVertical: 13,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: "rgba(242,166,90,0.38)",
+    backgroundColor: "rgba(5,6,11,0.62)",
+    gap: 3,
+  },
+  journeyRailCompact: { maxWidth: 360, paddingHorizontal: 14, paddingVertical: 12 },
+  journeyEyebrow: { color: "#F2A65A", fontFamily: mono, fontSize: 9, lineHeight: 13, fontWeight: "900", letterSpacing: 1.35 },
+  journeyLine: { color: "#FFFFFF", fontFamily: displayFont, fontSize: 17, lineHeight: 22, fontWeight: "900", letterSpacing: -0.2 },
+  journeyLineCompact: { fontSize: 14.5, lineHeight: 20, letterSpacing: -0.1 },
+  journeyDetail: { color: "rgba(244,239,231,0.72)", fontSize: 12, lineHeight: 17 },
 
   proofRail: {
     width: "100%",

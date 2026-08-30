@@ -11,8 +11,11 @@ test("venue photo widget remains parseable and scopes failed deliveries to the a
   assert.match(source, /const attemptScope = venuePhotoAttemptScope\(venueName, photos\)/);
   assert.match(source, /useEffect\(\(\) => \{\s*setAttempt\(\{\}\);\s*setI\(0\);\s*\}, \[attemptScope\]\)/s);
   assert.match(source, /const retryPhotos = \(\) => \{\s*setAttempt\(\{\}\);\s*setI\(0\);/s);
-  assert.match(source, /const appActive = useAppActive\(\)/);
-  assert.match(source, /if \(!appActive \|\| slides\.length < 2 \|\| paused \|\| reduceMotion\) return undefined/);
+  assert.doesNotMatch(source, /useAppActive|setInterval|setTimeout|autoplay|slideshow/i);
+  assert.match(source, /accessibilityLabel="Previous venue photo"/);
+  assert.match(source, /accessibilityLabel="Next venue photo"/);
+  assert.match(source, /style=\{styles\.photoCounter\}/);
+  assert.match(source, /else if \(onPress\) onPress\(slides\[cur\], cur\)/);
 });
 
 test("venue photo widget uses shared display compatibility and never leaves an empty dark frame", () => {
@@ -22,17 +25,18 @@ test("venue photo widget uses shared display compatibility and never leaves an e
   assert.match(source, /Photos could not be displayed - tap to retry/);
 });
 
-test("venue photo credits use validated provenance and safe accessible external links", () => {
+test("venue photos use one compact source action while the viewer retains full provenance", () => {
   assert.doesNotThrow(() => parse(viewerSource, { sourceType: "module", plugins: ["jsx"] }));
   for (const componentSource of [source, viewerSource]) {
     assert.match(componentSource, /venuePhotoAttribution/);
     assert.match(componentSource, /verifiedHttpsUrl/);
     assert.match(componentSource, /hrefAttrs:\s*\{\s*target:\s*"_blank",\s*rel:\s*"noopener noreferrer"\s*\}/s);
     assert.match(componentSource, /accessibilityRole="link"/);
-    assert.match(componentSource, /modificationNotice/);
   }
-  assert.match(source, /Open original source in browser/);
-  assert.match(source, /license terms in browser/);
+  assert.match(source, /<Text style=\{styles\.sourceButtonText\}>SOURCE<\/Text>/);
+  assert.match(source, /Photo source:/);
+  assert.doesNotMatch(source, /Photo by|>LICENSE<|attributionCard/);
+  assert.match(viewerSource, /modificationNotice/);
   assert.match(viewerSource, /Open original source in browser/);
   assert.match(viewerSource, /license terms in browser/);
 });

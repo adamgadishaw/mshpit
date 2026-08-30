@@ -27,6 +27,7 @@ test("cinematic artist media stays user-driven, reduced-motion aware, and decode
   assert.match(carousel, /useReducedMotion\(\)/);
   assert.match(carousel, /artistCinematicMedia\(\{ bannerUri, profileUri, gallery \}, 5\)/);
   assert.match(carousel, /const current = slides\[index\] \|\| null/);
+  assert.match(carousel, /width >= 1180 \? 320 : width >= 760 \? 270 : 210/);
   assert.match(carousel, /reduceMotion \? 0|if \(reduceMotion\)/);
   assert.doesNotMatch(carousel, /setInterval|setTimeout|autoplay/);
   assert.match(carousel, /accessibilityLabel=\{`Previous \$\{artistName\} photo`\}/);
@@ -42,6 +43,15 @@ test("artist gallery previews do not present a capped projection as the total", 
   assert.match(artist, /<Text style=\{styles\.sectionLabel\}>PHOTOS & FAN GALLERY<\/Text>/);
   assert.doesNotMatch(artist, /PHOTOS & FAN GALLERY\{gallery\.length/);
   assert.doesNotMatch(artist, /See all \$\{gallery\.length\} media items/);
+});
+
+test("artist overview stays bounded while full sections remain explicit", () => {
+  assert.match(artist, /limit: ARTIST_OVERVIEW_LIMITS\.reviews/);
+  assert.match(artist, /limit: ARTIST_OVERVIEW_LIMITS\.gallery/);
+  assert.match(artist, /visibleTopReviews\.map\(\(review, index\) =>/);
+  assert.match(artist, /artistPageSynopsis\(bio, \{ condensed: sectionModel\.condensed && !bioExpanded \}\)/);
+  assert.match(artist, /sectionModel\.active === "live"/);
+  assert.match(artist, /Read full bio/);
 });
 
 test("dedicated gallery consumes only the bounded store projection and virtualizes media", () => {

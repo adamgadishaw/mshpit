@@ -1,14 +1,14 @@
 import { useState } from "react";
 import { Linking, Pressable, StyleSheet, Text, View } from "react-native";
 import { colors, radius } from "../theme";
-import { afterpartySearches } from "../lib/afterparty";
+import { afterpartySearches as nearbyShowSearches } from "../lib/afterparty";
 import Icon from "./Icon";
 
 const typeIcon = (type) => (type === "food" ? "food" : type === "activity" ? "star" : "drink");
 
 export default function NearbyAfterparty({ log, coord }) {
   const [mapsError, setMapsError] = useState("");
-  const nearbySearches = afterpartySearches(coord);
+  const nearbySearches = nearbyShowSearches(coord);
 
   const openSearch = async (url) => {
     setMapsError("");
@@ -21,12 +21,12 @@ export default function NearbyAfterparty({ log, coord }) {
 
   return (
     <View>
-      <Text style={styles.title}>AFTER THE SHOW</Text>
-      <Text style={styles.sub}>EXPLORE NEAR THE VENUE</Text>
+      <Text style={styles.title}>AFTER THE SHOW NEARBY</Text>
+      <Text style={styles.sub}>SPOTS NEAR THE VENUE</Text>
       {nearbySearches.length > 0 ? (
         <>
           <Text style={styles.nearbyNote}>
-            Opens live Google Maps results. Verify hours, distance, age rules, and accessibility before you go.
+            Opens current Google Maps results. Verify hours, distance, age rules, and accessibility before you go.
           </Text>
           {nearbySearches.map((search) => (
             <Pressable

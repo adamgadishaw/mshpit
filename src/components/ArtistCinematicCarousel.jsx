@@ -30,7 +30,7 @@ export default function ArtistCinematicCarousel({
     [bannerUri, gallery, profileUri],
   );
   const current = slides[index] || null;
-  const heroHeight = width >= 1180 ? 420 : width >= 760 ? 340 : 260;
+  const heroHeight = width >= 1180 ? 320 : width >= 760 ? 270 : 210;
   const previewWidth = width >= 760 ? 1400 : 760;
 
   useEffect(() => {

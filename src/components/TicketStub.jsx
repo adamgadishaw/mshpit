@@ -7,7 +7,7 @@ import Icon from "./Icon";
 import Avatar from "./Avatar";
 import RatingBars from "./RatingBars";
 import SpinStar from "./SpinStar";
-import AfterpartyPreview from "./AfterpartyPreview";
+import CommentPreview from "./AfterpartyPreview";
 import PostMediaGrid from "./PostMediaGrid";
 import SongAttachment from "./SongAttachment";
 import { useStore } from "../store";
@@ -20,10 +20,11 @@ import { normalizeTaggedPeople } from "../domain/postFriendTags.mjs";
 import { ENABLE_MUSIC_PLAYER } from "../config/runtime.mjs";
 import useReducedMotion from "../hooks/useReducedMotion";
 import { PublicPressableLink, PublicTextLink } from "./PublicWebLinks";
-import { artistPath, postPath, profilePath, venuePath } from "../domain/urls.mjs";
+import { artistPath, profilePath, venuePath } from "../domain/urls.mjs";
 import { buildAttendanceTicketPreview } from "../domain/attendanceTicket.mjs";
 import { calendarShowFromPost } from "../domain/calendarShows.mjs";
 import ConcertTicketCard from "./ConcertTicketCard";
+import { concertPostContext } from "../domain/concertPostContext.mjs";
 
 // "3rd time in the pit" needs a real ordinal, not "3th".
 const ordinal = (n) => {
@@ -123,19 +124,28 @@ function NotForMeButton({ onPress, palette = null }) {
 
 // Review-forward feed card: the review is the centerpiece. Artist / venue / date
 // sit on a ticket-stub line below, the score reads at a glance, and the footer
-// opens the Afterparty (like + comments) for that concert.
-export default function TicketStub({ log, mediaViewable = null, onOpen, onOpenShow, onNotInterested, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenVenue, onReport, onEdit, onDelete, onOpenPhotos, onPlay, onRemoveMyPostTag, onSelfTagRemoved, showComments = true }) {
+// opens the post's comments. Lounge is reserved for the exact show's shared
+// conversation so the two spaces never look like duplicate features.
+export default function TicketStub({ log, mediaViewable = null, onOpen, onOpenShow, onNotInterested, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onReport, onEdit, onDelete, onOpenPhotos, onPlay, onRemoveMyPostTag, onSelfTagRemoved, showComments = true }) {
   const openComments = () => (onComment || onOpen)?.(log);
   const { userById, likeInfo, toggleLike, commentsFor, session, userBadges, deleteOwnPost } = useStore();
   const author = userById?.(log.userId) || { initials: log.user?.initials, name: log.user?.name, handle: log.user?.handle };
   const authorHref = author?.handle ? profilePath(author.handle) : null;
-  const canonicalPostHref = postPath(log.id);
+  const postContext = concertPostContext(log);
+  const canonicalPostHref = postContext.showHref;
   const artistHref = log.artist ? artistPath(log.artist, log.artistPublicSlug || log.artist_public_slug || null) : null;
   const venueHref = log.venue ? venuePath({
     name: log.venue,
     providerVenueId: log.providerVenueId || log.venue_provider_id || null,
     source: log.source || null,
   }) : null;
+  const canCompareArtistShows = !!postContext.artistConcertsHref
+    && (Platform.OS === "web" || !!onOpenArtistArchive);
+  const openArtistShows = () => onOpenArtistArchive?.(
+    postContext.artist,
+    postContext.artistKey,
+    postContext.artistPublicSlug,
+  );
   const [revealed, setRevealed] = useState(!log.inTourWindow);
   const [whyOpen, setWhyOpen] = useState(false);
   const reduceMotion = useReducedMotion();
@@ -296,6 +306,19 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onOpenSh
             accessibilityHint={attendanceTicketShow && onOpenShow ? "Open the exact show or event page" : undefined}
           />
         ) : null}
+        {attendanceTicketCard && canCompareArtistShows ? (
+          <View style={[styles.contextActions, styles.statusContextActions]}>
+            <PublicPressableLink
+              href={postContext.artistConcertsHref}
+              onNavigate={openArtistShows}
+              style={({ pressed }) => [styles.contextAction, styles.contextActionSecondary, pressed && styles.contextActionPressed]}
+              accessibilityLabel={`Compare scores across ${postContext.artist} concerts`}
+            >
+              <Icon name="archive" size={15} color={campaignPresentation ? campaignTreatment.accentColor : colors.cool} />
+              <Text style={[styles.contextActionText, campaignPresentation && { color: campaignTreatment.textColor }]} numberOfLines={1}>Compare {postContext.artist} shows</Text>
+            </PublicPressableLink>
+          </View>
+        ) : null}
 
         {!!log.review && (
           <PublicPressableLink href={canonicalPostHref} onNavigate={() => (onComment || onOpen)?.(log)} accessibilityLabel="Open post and comments"><Text style={[styles.statusText, campaignPresentation && { color: campaignTreatment.textColor }]}>{log.review}</Text></PublicPressableLink>
@@ -320,7 +343,7 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onOpenSh
           </PublicPressableLink>
         </View>
 
-        {showComments && <AfterpartyPreview log={log} onOpen={onComment || onOpen} palette={campaignTreatment} />}
+        {showComments && <CommentPreview log={log} onOpen={onComment || onOpen} palette={campaignTreatment} />}
         </View>
       </View>
     );
@@ -399,6 +422,29 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onOpenSh
         </View>
       </View>
 
+      <View style={styles.contextActions}>
+        <PublicPressableLink
+          href={canonicalPostHref}
+          onNavigate={() => (onOpenShow || onOpen)?.(log)}
+          style={({ pressed }) => [styles.contextAction, pressed && styles.contextActionPressed]}
+          accessibilityLabel={`View ${log.artist || "this"} show`}
+        >
+          <Icon name="ticket" size={15} color={colors.amber} />
+          <Text style={styles.contextActionText}>View this show</Text>
+        </PublicPressableLink>
+        {canCompareArtistShows && (
+          <PublicPressableLink
+            href={postContext.artistConcertsHref}
+            onNavigate={openArtistShows}
+            style={({ pressed }) => [styles.contextAction, styles.contextActionSecondary, pressed && styles.contextActionPressed]}
+            accessibilityLabel={`Compare scores across ${postContext.artist} concerts`}
+          >
+            <Icon name="archive" size={15} color={colors.cool} />
+            <Text style={styles.contextActionText} numberOfLines={1}>Compare {postContext.artist} shows</Text>
+          </PublicPressableLink>
+        )}
+      </View>
+
       {/* Score analytics: the template every review shares. The twirling star +
           per-dimension bars show exactly why the night earned its score. */}
       {statsOpen && (
@@ -468,20 +514,17 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onOpenSh
 
       <RecommendationWhy recommendation={recommendation} expanded={whyOpen} onToggle={() => setWhyOpen((current) => !current)} />
 
-      {/* footer → the Afterparty */}
+      {/* Post reactions and comments. Show-wide conversation lives in Lounge. */}
       <View style={styles.footer}>
         <NotForMeButton onPress={onNotInterested ? () => onNotInterested(log) : undefined} />
         <Pressable style={({ pressed }) => [styles.fBtn, pressed && styles.controlPressed]} onPress={() => (session ? toggleLike(log.id, log.likes || 0) : onOpen?.(log))} hitSlop={8} accessibilityRole="button" accessibilityLabel={`${liked ? "Unlike" : "Like"}, ${likeCount} likes`}>
           <Icon name="heart" size={18} color={liked ? colors.magenta : colors.textDim} filled={liked} />
           <Text style={[styles.fCount, liked && { color: colors.magenta }]}>{likeCount}</Text>
         </Pressable>
-        <PublicPressableLink href={canonicalPostHref} onNavigate={openComments} style={({ pressed }) => [styles.fBtn, pressed && styles.controlPressed]} hitSlop={8} accessibilityLabel={`Comments, ${commentCount}`}>
+        <PublicPressableLink href={canonicalPostHref} onNavigate={openComments} style={({ pressed }) => [styles.commentAction, pressed && styles.controlPressed]} hitSlop={8} accessibilityLabel={`Comments, ${commentCount}`}>
           <Icon name="comment" size={17} color={colors.textDim} />
+          <Text style={styles.commentActionText}>Comments</Text>
           <Text style={styles.fCount}>{commentCount}</Text>
-        </PublicPressableLink>
-        <PublicPressableLink href={canonicalPostHref} onNavigate={() => onOpen?.(log)} style={({ pressed }) => [styles.afterLink, pressed && styles.afterPressed]} hitSlop={8} accessibilityLabel="Open the afterparty discussion">
-          <Text style={styles.afterTxt}>Afterparty</Text>
-          <Icon name="chevron-right" size={14} color={colors.amber} />
         </PublicPressableLink>
         <View style={{ flex: 1 }} />
         {canEdit && (
@@ -501,7 +544,7 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onOpenSh
         )}
       </View>
 
-      {showComments && <AfterpartyPreview log={log} onOpen={onOpen} />}
+      {showComments && <CommentPreview log={log} onOpen={onComment || onOpen} />}
     </View>
   );
 }
@@ -565,6 +608,12 @@ const styles = StyleSheet.create({
   performanceArtist: { color: colors.text, fontWeight: "800" },
   performanceVenue: { color: colors.cool, fontWeight: "800" },
   performanceDate: { color: colors.amber, fontFamily: mono, fontSize: 11.5 },
+  contextActions: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 10 },
+  statusContextActions: { marginTop: 8, marginBottom: 2 },
+  contextAction: { minHeight: 44, maxWidth: "100%", flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7, paddingHorizontal: 12, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.amber + "80", backgroundColor: colors.surfaceAlt },
+  contextActionSecondary: { flexShrink: 1, borderColor: colors.cool + "70" },
+  contextActionPressed: { opacity: 0.8, transform: [{ scale: 0.98 }] },
+  contextActionText: { flexShrink: 1, color: colors.text, fontSize: 12, fontWeight: "800" },
 
   reviewWrap: { borderLeftWidth: 3, borderLeftColor: colors.amber, paddingLeft: 12, marginTop: 10 },
   review: { color: colors.text, fontFamily: font, fontSize: 16, lineHeight: 24, fontWeight: "500" },
@@ -597,6 +646,8 @@ const styles = StyleSheet.create({
 
   footer: { flexDirection: "row", alignItems: "center", gap: 12, marginTop: 16 },
   fBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, minWidth: 32, minHeight: 32, paddingHorizontal: 4, borderRadius: radius.sm },
+  commentAction: { minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingHorizontal: 8, borderRadius: radius.sm },
+  commentActionText: { color: colors.textDim, fontSize: 12, fontWeight: "800" },
   fCount: { color: colors.textDim, fontSize: 13, fontFamily: mono },
   notForMe: { flexDirection: "row", alignItems: "center", gap: 4, minHeight: 32, paddingHorizontal: 6, borderRadius: radius.sm },
   notForMeTxt: { color: colors.textDim, fontSize: 11, fontWeight: "700" },
@@ -606,7 +657,4 @@ const styles = StyleSheet.create({
   whyAction: { color: colors.amber, fontSize: 11.5, fontWeight: "800" },
   whyDetail: { color: colors.textDim, fontSize: 12, lineHeight: 17, marginTop: 7 },
   controlPressed: { backgroundColor: colors.surfaceAlt, transform: [{ scale: 0.96 }] },
-  afterLink: { flexDirection: "row", alignItems: "center", gap: 2, backgroundColor: colors.surfaceAlt, borderRadius: radius.pill, borderWidth: 1, borderBottomWidth: 2, borderColor: colors.line, paddingHorizontal: 10, minHeight: 32, ...shadow.control },
-  afterPressed: { transform: [{ translateY: 1 }], boxShadow: "inset 0 1px 2px rgba(0,0,0,0.16)" },
-  afterTxt: { color: colors.amber, fontFamily: displayFont, fontSize: 13, fontWeight: "800" },
 });

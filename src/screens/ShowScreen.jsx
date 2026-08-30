@@ -41,7 +41,7 @@ const ATTENDANCE_STATE_LABELS = Object.freeze({ going: "Going", here: "Here", we
 // The "performance page" - ONE artist, ONE venue, ONE date. This is the night
 // itself, not the room (that's the venue page): a ticket-style hero owns the
 // top, and the page runs in one of two modes. An UPCOMING night gets a live
-// countdown, tickets, Going and the lounge; a night that happened gets the
+// countdown, tickets, Going and its one persistent Lounge; a night that happened gets the
 // community score and the setlist. It must render for ANY event shape - a
 // logged review, a bare tour date from the calendar, a lounge link - so every
 // field is guarded; a tour date has no score and that's a mode, not a crash.
@@ -490,7 +490,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
           />
         ) : null}
 
-        {/* The lounge remains a quick social action in every lifecycle. */}
+        {/* One persistent Lounge belongs to this exact show in every lifecycle. */}
         <View style={styles.socialRow}>
           {!lifecycleView.trusted && presentation.allowGoing ? <Pressable
             style={[styles.goingBtn, going && styles.goingOn, goingBusy && styles.goingBusy]}
@@ -504,12 +504,13 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
             )}
             <Text style={[styles.goingTxt, going && { color: "#1A1206" }]}>{goingBusy ? "Saving…" : going ? "Going" : "I'm going"}</Text>
           </Pressable> : null}
-          <Pressable style={styles.loungeBtn} onPress={() => onOpenLounge?.(norm)} accessibilityRole="button" accessibilityLabel={`Open concert lounge, ${social.messageCount} messages`}>
+          <Pressable style={styles.loungeBtn} onPress={() => onOpenLounge?.(norm)} accessibilityRole="button" accessibilityLabel={`Open this show's Lounge, ${social.messageCount} messages`}>
             <Icon name="comment" size={16} color={colors.amber} />
             <Text style={styles.loungeTxt}>Lounge</Text>
             <View style={styles.loungeCount}><Text style={styles.loungeCountTxt}>{social.messageCount}</Text></View>
           </Pressable>
         </View>
+        <Text style={styles.loungeHint}>One Lounge for this exact show — open before, during, or after.</Text>
         {goingTicketPrompt && tourDateId ? (
           <GoingTicketComposer
             event={ticketEvent}
@@ -698,12 +699,13 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
         </View>
 
         {/* PostScreen owns the full composer/thread. This concert page only
-            explains that destination so Lounge and post comments stay distinct. */}
+            explains that destination so post comments stay distinct from the
+            one Lounge shared by this exact show. */}
         {discussionAvailable ? <View style={styles.discussionCard}>
           <View style={styles.discussionCopy}>
-            <Text style={styles.discussionLabel}>POST DISCUSSION</Text>
-            <Text style={styles.discussionTitle}>Comments on this fan post</Text>
-            <Text style={styles.discussionText}>Open the original post for the full thread, replies, and moderation tools.</Text>
+            <Text style={styles.discussionLabel}>COMMENTS</Text>
+            <Text style={styles.discussionTitle}>Comments on this post</Text>
+            <Text style={styles.discussionText}>Open the original post to read or add comments and replies.</Text>
           </View>
           <Pressable
             style={({ pressed }) => [styles.discussionCta, pressed && styles.discussionCtaPressed]}
@@ -782,6 +784,7 @@ const styles = StyleSheet.create({
   loungeTxt: { color: colors.text, fontSize: 14, fontWeight: "700" },
   loungeCount: { backgroundColor: colors.amber, borderRadius: 999, minWidth: 20, paddingHorizontal: 6, paddingVertical: 1, alignItems: "center" },
   loungeCountTxt: { color: "#1A1206", fontSize: 11, fontWeight: "800", fontFamily: mono },
+  loungeHint: { color: colors.textFaint, fontSize: 11.5, lineHeight: 17, marginTop: 7 },
   attendeesCard: { backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, marginTop: 10, padding: 12, gap: 10 },
   crowdHeader: { flexDirection: "row", alignItems: "center", gap: 10 },
   crowdKicker: { color: colors.amber, fontFamily: mono, fontSize: 9, fontWeight: "900", letterSpacing: 1.5, marginBottom: 3 },

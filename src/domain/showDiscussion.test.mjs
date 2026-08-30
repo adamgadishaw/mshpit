@@ -94,8 +94,8 @@ test("comment projections rotate synchronously at every account identity boundar
   assert.ok(rotateAt >= 0 && rotateAt < feedEarlyReturnAt, "comments must rotate before the feed account early return");
 });
 
-test("nearby afterparty stays a Maps-only discovery surface", () => {
-  assert.match(nearbyAfterparty, /afterpartySearches\(coord\)/);
+test("nearby post-show spots stay a Maps-only discovery surface", () => {
+  assert.match(nearbyAfterparty, /nearbyShowSearches\(coord\)/);
   assert.match(nearbyAfterparty, /Google Maps/);
   assert.match(nearbyAfterparty, /Verify hours, distance, age rules, and accessibility/);
   assert.doesNotMatch(nearbyAfterparty, /useStore|TextInput|addComment|deleteOwnComment|loadComments|toggleLike/);

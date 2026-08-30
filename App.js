@@ -68,13 +68,21 @@ const WelcomeScreen = lazyWithRetry(() => import("./src/screens/WelcomeScreen"),
 const FollowListScreen = lazyWithRetry(() => import("./src/screens/FollowListScreen"), "FollowListScreen");
 import LandingScreen from "./src/screens/LandingScreen";
 import { load, remove, save } from "./src/lib/persist";
-import { api } from "./src/lib/api";
 import { configureDiagnosticsIdentity } from "./src/lib/diagnostics";
 import { getPendingImagePickerResult } from "./src/lib/imagePickerRecovery";
 import { lazyWithRetry } from "./src/lib/lazyWithRetry";
-import { artistPath, concertPath, eventPath, venuePath, postPath, profilePath, parsePath, isPublicEntityPath } from "./src/domain/urls.mjs";
+import { artistPath, eventPath, parsePath, isPublicEntityPath } from "./src/domain/urls.mjs";
 import { shouldRestorePersistedStack } from "./src/domain/browserNavigation.mjs";
 import { publicNavigationLinks, shouldShowMobilePublicTrail } from "./src/domain/publicNavigationLinks.mjs";
+import {
+  publicCollectionHydration,
+  publicFramePath,
+  resolvedPublicCollectionFrame,
+} from "./src/domain/publicFrameNavigation.mjs";
+import {
+  readPublicPost,
+  resolvePublicEntity,
+} from "./src/features/publicNavigation/publicNavigationService";
 import {
   composerNavigationTransition,
   isActiveComposer,
@@ -98,7 +106,7 @@ import { analyticsDwellBucket } from "./src/domain/analyticsPolicy.mjs";
 import { ownedPlayerEnvelope, playerQueueWithEntryIds, restoreOwnedPlayerState } from "./src/domain/player-session.mjs";
 import { playerLookupIntent } from "./src/domain/playback.mjs";
 import { profileManagementAction, publicIdentityTarget } from "./src/domain/artistWorkspace.mjs";
-import { prepareShowNavigation, showNavigationPostId } from "./src/domain/showNavigation.mjs";
+import { prepareShowNavigation } from "./src/domain/showNavigation.mjs";
 import { readSensitiveFragmentToken, readSensitiveLinkToken, scrubSensitiveLinkToken } from "./src/domain/sensitiveLinkTokens.mjs";
 import { verifiedMutationDecision } from "./src/domain/emailVerificationUx.mjs";
 import { desktopRightRailLayout } from "./src/domain/desktopRailLayout.mjs";
@@ -474,28 +482,10 @@ function Root() {
   // settings, moderation) deliberately has no URL: those are sheets over the
   // page you were on, not destinations, and giving them addresses would put
   // half-finished drafts in someone's history.
-  const pathForFrame = (frame) => {
-    if (!frame) return null;
-    if (frame.directory === "artists" || frame.directory === "events") return `/${frame.directory}`;
-    if (frame.artistName) {
-      const publicSlug = frame.artistPublicSlug || remoteArtistMeta?.(frame.artistName)?.publicSlug || null;
-      // A display name is not a durable identity: punctuation and collisions
-      // can produce a different catalog row. Leave history untouched until an
-      // API projection or resolved link supplies the authoritative slug.
-      return publicSlug ? artistPath(frame.artistName, publicSlug) : null;
-    }
-    if (frame.venueName) return venuePath(frame.venue || frame.venueName);
-    if (frame.post?.id) return postPath(frame.post.id);
-    const showPostId = showNavigationPostId(frame.openLog);
-    if (showPostId) return postPath(showPostId);
-    if (frame.openLog?.archiveShowKey) return concertPath(frame.openLog.archiveShowKey);
-    if (frame.openLog?.performanceEvent && frame.openLog?.id) return eventPath(frame.openLog.id);
-    if (frame.profileId) {
-      const user = userById?.(frame.profileId);
-      return user?.handle ? profilePath(user.handle) : null;
-    }
-    return null;
-  };
+  const pathForFrame = (frame) => publicFramePath(frame, {
+    resolveArtistMeta: remoteArtistMeta,
+    resolveUser: userById,
+  });
 
   // Push a fresh screen onto the stack. On web we mirror it into browser history
   // so the hardware/browser Back button pops the same stack the in-app back
@@ -756,6 +746,24 @@ function Root() {
     let cancelled = false;
     const path = window.location.pathname;
     if (!path || path === "/") return;
+    const collectionHydration = publicCollectionHydration(path);
+    if (collectionHydration) {
+      setLanding(false);
+      (async () => {
+        try {
+          const entity = await resolvePublicEntity(collectionHydration.resolvePath);
+          const frame = resolvedPublicCollectionFrame(collectionHydration, entity);
+          if (cancelled || !frame) return;
+          setStack([{}, frame]);
+          try { window.history.pushState({ pit: "nav" }, "", path); } catch {
+            // architecture: allow-empty-catch -- app state already owns the resolved public archive.
+          }
+        } catch {
+          // architecture: allow-empty-catch -- server-rendered archive content remains visible when client hydration is unavailable.
+        }
+      })();
+      return () => { cancelled = true; };
+    }
     if (path === "/artists" || path === "/events") {
       setLanding(false);
       setTab("discover");
@@ -768,7 +776,7 @@ function Root() {
     if (!isPublicEntityPath(path)) return;
     (async () => {
       try {
-        const { entity } = await api(`/api/resolve?path=${encodeURIComponent(path)}`);
+        const entity = await resolvePublicEntity(path);
         if (cancelled || !entity) return;
         // Land inside the app, not on the marketing page: someone following a
         // link to a band wants the band.
@@ -800,7 +808,7 @@ function Root() {
           if (!cancelled) setStack([{}, publicIdentityFrame(entity.id, resolvedUser)]);
         }
         else if (entity.kind === "show") {
-          const post = await api(`/api/posts/${encodeURIComponent(entity.id)}`).then((r) => r.post).catch(() => null);
+          const post = await readPublicPost(entity.id).catch(() => null);
           if (!cancelled && post) setStack([{}, post.kind === "status" ? { post } : { openLog: post }]);
         }
         else if (entity.kind === "event" || entity.kind === "concert") {
@@ -950,10 +958,11 @@ function Root() {
       ...(payload?.publicSlug ? { artistPublicSlug: payload.publicSlug } : {}),
     });
   };
-  const openArtistArchive = (name, artistKey = null) => {
+  const openArtistArchive = (name, artistKey = null, publicSlug = null) => {
     if (!name) return;
     track("view_artist_archive");
-    go({ artistArchive: { name, artistKey } });
+    const resolvedPublicSlug = publicSlug || remoteArtistMeta?.(name)?.publicSlug || null;
+    go({ artistArchive: { name, artistKey, ...(resolvedPublicSlug ? { publicSlug: resolvedPublicSlug } : {}) } });
   };
   const openArtistTour = (name, artistKey, tour) => {
     if (!name || !tour?.key) return;
@@ -1089,7 +1098,7 @@ function Root() {
   else if (nav.notifications) overlay = <NotificationsScreen onClose={back} onOpenProfile={openProfile} onOpenThread={openThread} onOpen={openShow} onOpenPost={openPost} />;
   else if (nav.calendar) overlay = <CalendarScreen initialDate={nav.calendarDate} initialView={nav.calendarView} onClose={back} onOpen={openShow} onOpenArtist={openArtist} />;
   else if (ENABLE_CLIPS && nav.clips) overlay = <ClipsScreen onClose={back} onOpenPost={openPost} onOpenProfile={openProfile} onOpenArtist={openArtist} onRequireAuth={() => go({ auth: true })} />;
-  else if (nav.profileId) overlay = <ProfileScreen userId={nav.profileId} onClose={back} onOpenShow={openShow} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenVenue={openVenue} onManageProfile={openProfileManagement} onPreview={musicPreviewAction} onMessage={openThread} onReport={openReport} onEditPost={openPostEditor} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onRemoveMyPostTag={removePostTag} onOpenFollowList={openFollowList} onOpenBadges={openBadges} />;
+  else if (nav.profileId) overlay = <ProfileScreen userId={nav.profileId} onClose={back} onOpenShow={openShow} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenArtistArchive={openArtistArchive} onOpenVenue={openVenue} onManageProfile={openProfileManagement} onPreview={musicPreviewAction} onMessage={openThread} onReport={openReport} onEditPost={openPostEditor} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onRemoveMyPostTag={removePostTag} onOpenFollowList={openFollowList} onOpenBadges={openBadges} />;
   else if (nav.fanClub) overlay = <FanClubScreen artist={nav.fanClub} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} onReport={openReport} />;
   else if (nav.artistHub) overlay = <ArtistHubScreen onClose={back} onPreview={(name) => name && go({ artistPreview: name })} onEditPage={(name) => name && requireVerifiedMutation("artist", () => go({ editArtist: name }))} onEditAccount={() => requireVerifiedMutation("profile", () => go({ editProfile: true }))} onTourDates={() => requireVerifiedMutation("artist", () => go({ bulk: true }))} onCampaignPost={() => requireVerifiedMutation("artist", () => go({ logging: true, postMode: "campaign" }))} onPlay={musicPlayerAction} />;
   else if (nav.artistGallery) overlay = <ArtistGalleryScreen artistName={nav.artistGallery.name} artistKey={nav.artistGallery.artistKey} onClose={back} onOpenPhotos={openPhotos} />;
@@ -1110,7 +1119,7 @@ function Root() {
   else if (nav.terms) overlay = <TermsScreen onClose={back} />;
   else if (nav.lounge) overlay = <LoungeScreen log={nav.lounge} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} onReport={openReport} />;
   else if (nav.openLog) overlay = <ShowScreen log={nav.openLog} onClose={back} onPreview={musicPreviewAction} onReview={reviewShow} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenArchive={openArtistArchive} onOpenVenue={openVenue} onOpenLounge={(log) => go({ lounge: log })} onOpenPost={openPost} onOpenPhotos={openPhotos} onRequireAuth={() => go({ auth: true })} />;
-  else if (nav.post) overlay = <PostScreen log={nav.post} onClose={back} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenShow={openShow} onReport={openReport} onEdit={openPostEditor} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onRemoveMyPostTag={removePostTag} />;
+  else if (nav.post) overlay = <PostScreen log={nav.post} onClose={back} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenArtistArchive={openArtistArchive} onOpenVenue={openVenue} onOpenShow={openShow} onReport={openReport} onEdit={openPostEditor} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onRemoveMyPostTag={removePostTag} />;
   else if (nav.badges) overlay = <BadgeLegendScreen userId={nav.badges.userId} onClose={back} />;
   else if (nav.topRated) overlay = <TopRatedScreen initialRegion={nav.discoverRegion} onClose={back} onOpen={openShow} />;
   else if (nav.admin) overlay = <AdminScreen onClose={back} />;
@@ -1217,6 +1226,7 @@ function Root() {
                   onPreview={musicPreviewAction}
                   onOpenProfile={openProfile}
                   onOpenArtist={openArtist}
+                  onOpenArtistArchive={openArtistArchive}
                   onOpenVenue={openVenue}
                   onOpenNearby={() => go({ nearby: true })}
                   onOpenMenu={() => go({ menu: true })}

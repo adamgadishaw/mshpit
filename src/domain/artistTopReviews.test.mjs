@@ -70,7 +70,8 @@ test("artist top reviews bound invalid limits without throwing", () => {
 test("artist page renders ranked review cards beside the fan gallery", () => {
   assert.match(artistScreen, /useArtistTopReviews\(\{/);
   assert.match(artistScreen, /selectArtistReviewsPresentation\(topReviewsResource, a\.nights, \{ limit: 3 \}\)/);
-  assert.match(artistScreen, /TOP REVIEWS · \{topReviews\.length\}/);
+  assert.match(artistScreen, /sectionModel\.condensed \? "TOP REVIEW" : `TOP REVIEWS · \$\{topReviews\.length\}`/);
+  assert.match(artistScreen, /visibleTopReviews\.map\(\(review, index\) =>/);
   assert.match(artistScreen, /DEVICE COPY/);
   assert.match(artistScreen, /accessibilityLabel="Retry loading live artist reviews"/);
   assert.match(artistScreen, /href=\{review\.user\?\.handle \? profilePath\(review\.user\.handle\) : null\}/);

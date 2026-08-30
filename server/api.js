@@ -2281,7 +2281,25 @@ function reportableTargetFor(user, targetType, targetId) {
   unavailableReportTarget();
 }
 
+const publicArtistSlugByPostKey = db.prepare("SELECT public_slug FROM artists WHERE norm=?");
+const positivePostArtistSlugCache = new Map();
+
+function publicArtistSlugForPost(post) {
+  const projected = typeof post?.artist_public_slug === "string" ? post.artist_public_slug.trim() : "";
+  if (projected) return projected;
+  const artistKey = typeof post?.artist_key === "string" ? post.artist_key.trim() : "";
+  if (!artistKey) return null;
+  const cached = positivePostArtistSlugCache.get(artistKey);
+  if (cached) return cached;
+  const publicSlug = String(publicArtistSlugByPostKey.get(artistKey)?.public_slug || "").trim();
+  // Public slugs are immutable. Cache only positive reads so a free-text post
+  // can gain its canonical link later if that artist is legitimately ingested.
+  if (publicSlug) positivePostArtistSlugCache.set(artistKey, publicSlug);
+  return publicSlug || null;
+}
+
 function postJson(p, viewerId) {
+  const artistPublicSlug = publicArtistSlugForPost(p);
   const stableMedia = postMediaState(db, p.id, { ownerId: viewerId || null });
   const storedPhotos = parseJsonArray(p.photos);
   const stableByUrl = new Map(stableMedia.assets.map((asset) => [asset.url, asset]));
@@ -2331,7 +2349,7 @@ function postJson(p, viewerId) {
     kind: p.kind || "review",
     user: { name: p.u_name, handle: p.u_handle, initials: p.u_initials, avatarUri: safePublicProfileImage(p.user_id, p.u_avatar), avatarColor: p.u_color },
     artist: p.artist, venue: p.venue, city: p.city, date: p.date,
-    artistKey: p.artist_key || null, artistMbid: p.artist_mbid || null, venueKey: p.venue_key || null,
+    artistKey: p.artist_key || null, artistPublicSlug, artistMbid: p.artist_mbid || null, venueKey: p.venue_key || null,
     // Guarded, like `song` below and like publicUser: one malformed column must
     // degrade that field, not throw while building the page and take the whole
     // feed down with it.

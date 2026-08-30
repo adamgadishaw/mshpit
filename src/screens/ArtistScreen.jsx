@@ -29,7 +29,7 @@ import ArtistCinematicCarousel from "../components/ArtistCinematicCarousel";
 import { useArtistMemorial } from "../features/artistMemorials/useArtistMemorial";
 import { PublicPressableLink } from "../components/PublicWebLinks";
 import { eventPath, postPath, profilePath } from "../domain/urls.mjs";
-import { ARTIST_PAGE_SECTIONS, artistPagePreview, artistPageSectionModel } from "../domain/artistPageSections.mjs";
+import { ARTIST_OVERVIEW_LIMITS, ARTIST_PAGE_SECTIONS, artistPagePreview, artistPageSectionModel, artistPageSynopsis } from "../domain/artistPageSections.mjs";
 import { ENABLE_MUSIC_PLAYER } from "../config/runtime.mjs";
 
 const cap = (s) => (s ? s.replace(/\b\w/g, (c) => c.toUpperCase()) : s);
@@ -232,7 +232,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
   // every public post photo ever, not just posts sitting in this device's feed.
   useEffect(() => { loadArtistPhotos(a.name, a.profileKey); }, [a.name, a.profileKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const gallery = artistGallery(a.name, 12, a.profileKey);
-  const visibleGallery = artistPagePreview(gallery, { condensed: sectionModel.condensed, limit: 6 });
+  const visibleGallery = artistPagePreview(gallery, { condensed: sectionModel.condensed, limit: ARTIST_OVERVIEW_LIMITS.gallery });
   const { resource: topReviewsResource, reload: retryTopReviews } = useArtistTopReviews({
     accountId: session?.id || null,
     name: a.name,
@@ -241,6 +241,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
   });
   const topReviewsPresentation = selectArtistReviewsPresentation(topReviewsResource, a.nights, { limit: 3 });
   const topReviews = topReviewsPresentation.reviews;
+  const visibleTopReviews = artistPagePreview(topReviews, { condensed: sectionModel.condensed, limit: ARTIST_OVERVIEW_LIMITS.reviews });
   const { resource: liveArchiveResource } = useArtistEventArchive({
     accountId: session?.id || null,
     name: a.name,
@@ -282,18 +283,20 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
     ? []
     : previewAsFan ? a.upcoming.filter((date) => !date.scheduled) : a.upcoming;
   const [showAllUpcoming, setShowAllUpcoming] = useState(false);
+  const [bioExpanded, setBioExpanded] = useState(false);
   const upcomingPresentation = selectArtistUpcomingShows(upcoming, { expanded: showAllUpcoming });
   const visibleUpcoming = sectionModel.condensed
-    ? artistPagePreview(upcoming, { condensed: true, limit: 3 })
+    ? artistPagePreview(upcoming, { condensed: true, limit: ARTIST_OVERVIEW_LIMITS.upcoming })
     : upcomingPresentation.shows;
   const bio = a.ownerBio || meta?.bio;
+  const bioPresentation = artistPageSynopsis(bio, { condensed: sectionModel.condensed && !bioExpanded });
   const bannerUri = a.banner || meta?.photo || null;
   const profileAvatarPhotos = a.profileAvatarUri && a.ownerId
     ? [{ uri: a.profileAvatarUri, ownerId: a.ownerId, artistProfileKey: a.profileKey, by: a.name }]
     : null;
   const avatarUser = { avatarUri: a.photo || meta?.photo || null, initials: a.name.slice(0, 2).toUpperCase(), avatarColor: colors.amber };
   const posts = artistPostsFor(a.name);
-  const visiblePosts = artistPagePreview(posts.slice(0, 10), { condensed: sectionModel.condensed, limit: 1 });
+  const visiblePosts = artistPagePreview(posts.slice(0, 10), { condensed: sectionModel.condensed, limit: ARTIST_OVERVIEW_LIMITS.posts });
 
   // Full discography (albums + tracklists) from Deezer, so the page has real depth:
   // open an album, see every song, rate them, play them in the top bar.
@@ -433,6 +436,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
     setShowAllSongs(false);
     setShowAllReleases(false);
     setShowAllUpcoming(false);
+    setBioExpanded(false);
     setIdentityOpen(false);
     setCandidates(null);
     setCandidatesLoading(false);
@@ -917,7 +921,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
         )}
 
         {/* Artist posts are read-only here. Creation and removal live in Artist HQ. */}
-        {sectionModel.showCommunity && (a.feedEnabled || canManagePublicPage) && (
+        {sectionModel.showCommunity && (a.feedEnabled || canManagePublicPage) && (posts.length > 0 || !sectionModel.condensed) && (
           <>
             <View style={styles.feedHead}>
               <Text style={styles.sectionLabel}>ARTIST POSTS{posts.length ? ` · ${posts.length}` : ""}</Text>
@@ -1047,21 +1051,25 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
             )}
           </>
         )}
-        <Text style={styles.sectionLabel}>LIVE ARCHIVE</Text>
-        <Pressable
-          style={({ pressed, focused }) => [styles.archiveCard, pressed && styles.archivePressed, focused && focusRing]}
-          onPress={() => onOpenArchive?.(a.name, a.profileKey)}
-          accessibilityRole="button"
-          accessibilityLabel={`Open ${a.name} live archive`}
-          accessibilityHint="Shows the top rated performances, tours, photos, and every fan review"
-        >
-          <View style={styles.archiveMark}><Icon name="archive" size={20} color={colors.amber} /></View>
-          <View style={styles.archiveCopy}>
-            <Text style={styles.archiveTitle}>Every tour. Every night.</Text>
-            <Text style={styles.archiveText}>Explore the top three fan-rated shows, tour galleries, and the full review history.</Text>
-          </View>
-          <View style={styles.archiveArrow}><Icon name="chevron-right" size={17} color={colors.amber} /></View>
-        </Pressable>
+        {sectionModel.active === "live" ? (
+          <>
+            <Text style={styles.sectionLabel}>LIVE ARCHIVE</Text>
+            <Pressable
+              style={({ pressed, focused }) => [styles.archiveCard, pressed && styles.archivePressed, focused && focusRing]}
+              onPress={() => onOpenArchive?.(a.name, a.profileKey)}
+              accessibilityRole="button"
+              accessibilityLabel={`Open ${a.name} live archive`}
+              accessibilityHint="Shows the top rated performances, tours, photos, and every fan review"
+            >
+              <View style={styles.archiveMark}><Icon name="archive" size={20} color={colors.amber} /></View>
+              <View style={styles.archiveCopy}>
+                <Text style={styles.archiveTitle}>Every tour. Every night.</Text>
+                <Text style={styles.archiveText}>Explore the top three fan-rated shows, tour galleries, and the full review history.</Text>
+              </View>
+              <View style={styles.archiveArrow}><Icon name="chevron-right" size={17} color={colors.amber} /></View>
+            </Pressable>
+          </>
+        ) : null}
         </>)}
 
         {/* The writing fans keep passing around, paired with its public media. */}
@@ -1069,8 +1077,8 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
           <>
             <View style={styles.topReviewsHeading}>
               <View style={{ flex: 1 }}>
-                <Text style={styles.sectionLabel}>TOP REVIEWS · {topReviews.length}</Text>
-                <Text style={styles.topReviewsIntro}>The fan takes with the strongest signal across every night.</Text>
+                <Text style={styles.sectionLabel}>{sectionModel.condensed ? "TOP REVIEW" : `TOP REVIEWS · ${topReviews.length}`}</Text>
+                <Text style={styles.topReviewsIntro}>{sectionModel.condensed ? "One fan take worth starting with." : "The fan takes with the strongest signal across every night."}</Text>
               </View>
               <View style={styles.topReviewsSeal} accessibilityLabel="Fan favorites">
                 <Icon name="heart" size={12} color={colors.magenta} />
@@ -1105,7 +1113,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
               </View>
             )}
             <View style={styles.topReviewsList}>
-              {topReviews.map((review, index) => (
+              {visibleTopReviews.map((review, index) => (
                 <TopReviewCard
                   key={review.id}
                   review={review}
@@ -1117,16 +1125,22 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
                 />
               ))}
             </View>
+            {sectionModel.condensed && topReviews.length > visibleTopReviews.length ? (
+              <Pressable style={styles.showAllBtn} onPress={() => setActiveSection("community")} accessibilityRole="button" accessibilityLabel={`Read all top ${a.name} reviews`}>
+                <Text style={styles.showAllTxt}>Read more fan reviews</Text>
+                <Icon name="chevron-right" size={15} color={colors.amber} />
+              </Pressable>
+            ) : null}
           </>
         )}
 
         {/* Public photos and clips, with a dedicated bounded gallery route. */}
-        {sectionModel.showCommunity && (
+        {sectionModel.showCommunity && (gallery.length > 0 || !sectionModel.condensed) && (
           <>
             <View style={styles.galleryHeading}>
               <View style={{ flex: 1, minWidth: 0 }}>
                 <Text style={styles.sectionLabel}>PHOTOS & FAN GALLERY</Text>
-                <Text style={styles.bio}>Public fan shots and clips, alongside artist imagery. Private and moderated media stays out.</Text>
+                <Text style={styles.bio}>{sectionModel.condensed ? "A quick look at public fan moments." : "Public fan shots and clips, alongside artist imagery. Private and moderated media stays out."}</Text>
               </View>
               {onOpenGallery ? (
                 <Pressable
@@ -1163,12 +1177,6 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
                 <Text style={styles.galleryEmptyText}>No public fan media yet. Shared concert photos will build this archive.</Text>
               </View>
             )}
-            {gallery.length > visibleGallery.length && onOpenGallery ? (
-              <Pressable style={styles.showAllBtn} onPress={() => onOpenGallery(a.name, a.profileKey)} accessibilityRole="button" accessibilityLabel={`Open the full ${a.name} media gallery`}>
-                <Text style={styles.showAllTxt}>Open the full fan gallery</Text>
-                <Icon name="chevron-right" size={15} color={colors.amber} />
-              </Pressable>
-            ) : null}
           </>
         )}
 
@@ -1176,7 +1184,19 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
         {sectionModel.showAbout && !!bio && (
           <>
             <Text style={styles.sectionLabel}>ABOUT</Text>
-            <Text style={styles.bio}>{bio}</Text>
+            <Text style={styles.bio}>{bioPresentation.text}</Text>
+            {bioPresentation.truncated || bioExpanded ? (
+              <Pressable
+                style={styles.bioToggle}
+                onPress={() => setBioExpanded((value) => !value)}
+                accessibilityRole="button"
+                accessibilityState={{ expanded: bioExpanded }}
+                accessibilityLabel={bioExpanded ? `Show a shorter ${a.name} biography` : `Read the full ${a.name} biography`}
+              >
+                <Text style={styles.bioToggleText}>{bioExpanded ? "Show less" : "Read full bio"}</Text>
+                <Icon name={bioExpanded ? "chevron-up" : "chevron-down"} size={14} color={colors.amber} />
+              </Pressable>
+            ) : null}
           </>
         )}
 
@@ -1390,14 +1410,14 @@ const styles = StyleSheet.create({
   statusChip: { alignSelf: "flex-start", borderWidth: 1, borderColor: colors.textFaint, borderRadius: radius.pill, paddingHorizontal: 12, paddingVertical: 4 },
   statusTxt: { color: colors.textDim, fontSize: 11, letterSpacing: 1, fontWeight: "800" },
 
-  repCard: { backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 18, marginTop: 20 },
+  repCard: { backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 15, marginTop: 14 },
   repLabel: { color: colors.textFaint, fontSize: 11, letterSpacing: 1.5, fontWeight: "700", marginBottom: 12 },
   repRow: { flexDirection: "row", alignItems: "center", gap: 16 },
   bigScore: { color: colors.gold, fontFamily: mono, fontSize: 44, fontWeight: "800", lineHeight: 46 },
   repSub: { color: colors.textFaint, fontSize: 12, marginTop: 6 },
   note: { color: colors.textFaint, fontSize: 12, lineHeight: 17, marginTop: 12, fontStyle: "italic" },
 
-  sectionLabel: { color: colors.textFaint, fontSize: 11, letterSpacing: 1.5, fontWeight: "700", marginTop: space(6), marginBottom: space(2) },
+  sectionLabel: { color: colors.textFaint, fontSize: 11, letterSpacing: 1.5, fontWeight: "700", marginTop: space(5), marginBottom: space(2) },
   feedHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   feedOff: { color: colors.textFaint, fontSize: 11, fontStyle: "italic", marginTop: 14 },
   postCard: { backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 14, marginBottom: 8 },
@@ -1406,12 +1426,14 @@ const styles = StyleSheet.create({
   postTs: { color: colors.textFaint, fontFamily: mono, fontSize: 11, marginTop: 1 },
   artistPostReport: { width: 36, height: 36, borderRadius: 18, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.lineSoft },
   postText: { color: colors.textDim, fontSize: 14, lineHeight: 20 },
-  artistActions: { flexDirection: "row", gap: 10, marginTop: 16 },
+  artistActions: { flexDirection: "row", gap: 8, marginTop: 12 },
   fcBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, backgroundColor: colors.amberStrong, borderRadius: radius.md, paddingVertical: 13, borderBottomWidth: 3, borderBottomColor: "#B65E1F" },
   fcTxt: { color: "#1A1206", fontSize: 14, fontWeight: "800" },
   listenBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, paddingVertical: 13 },
   listenTxt: { color: colors.amber, fontSize: 14, fontWeight: "700" },
   bio: { color: colors.textDim, fontSize: 14, lineHeight: 21 },
+  bioToggle: { alignSelf: "flex-start", minHeight: 44, flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 2 },
+  bioToggleText: { color: colors.amber, fontSize: 12.5, fontWeight: "900" },
   metaLine: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6, marginTop: 12 },
   metaItem: { color: colors.textDim, fontSize: 13 },
   catalogIdentity: { flexDirection: "row", alignItems: "center", gap: 10, marginTop: 14, paddingHorizontal: 12, paddingVertical: 10, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surface },

@@ -12,10 +12,12 @@ import SmartImage from "../components/SmartImage";
 import { UpcomingEventCard } from "../components/VenueDiscoveryCards";
 import { formatDate } from "../domain/dates.mjs";
 import { venueRowWindow } from "../domain/venueDiscovery.mjs";
+import { VENUE_PAGE_SECTIONS, venuePagePreview, venuePageSectionModel, venuePhotoViewerIndex } from "../domain/venuePageSections.mjs";
 import { openTicketLink } from "../lib/ticketLinks";
 
 const REVIEW_BATCH = 8;
 const HISTORY_BATCH = 12;
+const UPCOMING_BATCH = 6;
 
 export default function VenueScreen({ venueName, onClose, onOpenShow, onOpenArtist, onReviewVenue, onOpenProfile, onOpenPhotos, onReport }) {
   const { width } = useWindowDimensions();
@@ -31,25 +33,36 @@ export default function VenueScreen({ venueName, onClose, onOpenShow, onOpenArti
   const reviews = venueReviewsFor(venue.name);
   const [visibleReviewCount, setVisibleReviewCount] = useState(REVIEW_BATCH);
   const [visibleHistoryCount, setVisibleHistoryCount] = useState(HISTORY_BATCH);
+  const [visibleUpcomingCount, setVisibleUpcomingCount] = useState(UPCOMING_BATCH);
+  const [sectionSelection, setSectionSelection] = useState(() => ({ venueName: venue.name, section: "overview" }));
+  const activeSection = sectionSelection.venueName === venue.name ? sectionSelection.section : "overview";
+  const sectionModel = venuePageSectionModel(activeSection);
+  const setActiveSection = (section) => setSectionSelection({ venueName: venue.name, section });
 
   useEffect(() => {
     setVisibleReviewCount(REVIEW_BATCH);
     setVisibleHistoryCount(HISTORY_BATCH);
+    setVisibleUpcomingCount(UPCOMING_BATCH);
     loadVenueReviews(venue.name);
     void loadVenuePhotos(venue.name).catch(() => { /* architecture: allow-empty-catch -- the venue page retains its licensed empty state and visible retry control */ });
   }, [venue.name, venuePhotoPrivacyRevision]);
 
   const fanRating = venueRating(venue.name);
-  const gridPhotos = venueTopPhotos(venue.name, wide ? 24 : 18);
+  const fullGridPhotos = venueTopPhotos(venue.name, wide ? 24 : 18);
+  const gridPhotos = venuePagePreview(fullGridPhotos, { condensed: sectionModel.condensed, limit: wide ? 4 : 3 });
   const reviewWindow = venueRowWindow(reviews, visibleReviewCount, REVIEW_BATCH);
   const historyWindow = venueRowWindow(venue.nights, visibleHistoryCount, HISTORY_BATCH);
-  const visibleReviews = reviewWindow.rows;
+  const upcomingWindow = venueRowWindow(venue.upcoming, visibleUpcomingCount, UPCOMING_BATCH);
+  const visibleReviews = venuePagePreview(reviewWindow.rows, { condensed: sectionModel.condensed, limit: 2 });
   const visibleNights = historyWindow.rows;
+  const visibleUpcoming = venuePagePreview(upcomingWindow.rows, { condensed: sectionModel.condensed, limit: 3 });
   const onMention = (handle) => {
     const user = userByHandle(handle);
     if (user) onOpenProfile?.(user.id);
   };
-  const openPhotoWidget = photos.length ? () => onOpenPhotos?.(photos, 0) : undefined;
+  const openPhotoWidget = photos.length
+    ? (photo, fallbackIndex = 0) => onOpenPhotos?.(photos, venuePhotoViewerIndex(photos, photo, fallbackIndex))
+    : undefined;
 
   return (
     <View style={styles.wrap}>
@@ -86,30 +99,47 @@ export default function VenueScreen({ venueName, onClose, onOpenShow, onOpenArti
           <Metric value={venue.upcoming.length} label="UPCOMING" icon="calendar" accent={venue.upcoming.length > 0} />
         </View>
 
-        {venue.upcoming.length > 0 ? (
-          <Section title="Coming to this stage" kicker="UPCOMING HERE" count={venue.upcoming.length}>
-            <View style={styles.stack}>
-              {venue.upcoming.map((event) => (
-                <UpcomingEventCard
-                  key={event.id}
-                  event={event}
-                  onOpenArtist={() => onOpenArtist?.(event.artist)}
-                  onOpenEvent={() => onOpenShow?.(event)}
-                  onTickets={() => { void openTicketLink(event.ticketUrl); }}
-                />
-              ))}
-            </View>
-          </Section>
-        ) : (
-          <View style={styles.noUpcoming}>
-            <View style={styles.noUpcomingIcon}><Icon name="calendar" size={22} color={colors.textFaint} /></View>
-            <View style={styles.flexCopy}>
-              <Text style={styles.noUpcomingTitle}>No announced shows yet</Text>
-              <Text style={styles.noUpcomingBody}>This venue has no released upcoming dates in the catalog.</Text>
-            </View>
-          </View>
-        )}
+        <VenuePageSectionNav active={activeSection} onChange={setActiveSection} />
 
+        {sectionModel.showUpcoming ? (
+          venue.upcoming.length > 0 ? (
+            <Section title="Coming to this stage" kicker="UPCOMING HERE" count={venue.upcoming.length}>
+              <View style={styles.stack}>
+                {visibleUpcoming.map((event) => (
+                  <UpcomingEventCard
+                    key={event.id}
+                    event={event}
+                    onOpenArtist={() => onOpenArtist?.(event.artist)}
+                    onOpenEvent={() => onOpenShow?.(event)}
+                    onTickets={() => { void openTicketLink(event.ticketUrl); }}
+                  />
+                ))}
+                {sectionModel.condensed && venue.upcoming.length > visibleUpcoming.length ? (
+                  <SectionSwitchButton
+                    label={`See all ${venue.upcoming.length} upcoming shows`}
+                    onPress={() => setActiveSection("shows")}
+                  />
+                ) : !sectionModel.condensed && upcomingWindow.remaining > 0 ? (
+                  <MoreButton
+                    label={`Show ${Math.min(UPCOMING_BATCH, upcomingWindow.remaining)} more upcoming shows`}
+                    remaining={upcomingWindow.remaining}
+                    onPress={() => setVisibleUpcomingCount(upcomingWindow.nextCount)}
+                  />
+                ) : null}
+              </View>
+            </Section>
+          ) : (
+            <View style={styles.noUpcoming}>
+              <View style={styles.noUpcomingIcon}><Icon name="calendar" size={22} color={colors.textFaint} /></View>
+              <View style={styles.flexCopy}>
+                <Text style={styles.noUpcomingTitle}>No announced shows yet</Text>
+                <Text style={styles.noUpcomingBody}>This venue has no released upcoming dates in the catalog.</Text>
+              </View>
+            </View>
+          )
+        ) : null}
+
+        {sectionModel.showReputation ? (
         <Section title="The room, according to fans" kicker="ROOM REPUTATION">
           <View style={[styles.reputationGrid, wide && styles.reputationGridWide]}>
             <View style={styles.scorePanel}>
@@ -136,9 +166,10 @@ export default function VenueScreen({ venueName, onClose, onOpenShow, onOpenArti
             <Text style={styles.reviewButtonText}>{reviews.length ? "Add your take" : "Write the first review"}</Text>
           </Pressable>
         </Section>
+        ) : null}
 
-        {gridPhotos.length > 0 ? (
-          <Section title="From the crowd" kicker="FAN PHOTOS" count={gridPhotos.length}>
+        {sectionModel.showPhotos && gridPhotos.length > 0 ? (
+          <Section title="From the crowd" kicker="FAN PHOTOS" count={fullGridPhotos.length}>
             <View style={styles.photoGrid}>
               {gridPhotos.map((photo, index) => (
                 <SmartImage
@@ -148,13 +179,17 @@ export default function VenueScreen({ venueName, onClose, onOpenShow, onOpenArti
                   contain={false}
                   previewWidth={420}
                   accessibilityLabel={`Open fan photo ${index + 1} from ${venue.name}`}
-                  onPress={() => onOpenPhotos?.(gridPhotos, index)}
+                  onPress={() => onOpenPhotos?.(fullGridPhotos, index)}
                 />
               ))}
             </View>
+            {sectionModel.condensed && fullGridPhotos.length > gridPhotos.length ? (
+              <SectionSwitchButton label="See every fan photo" onPress={() => setActiveSection("reviews")} />
+            ) : null}
           </Section>
         ) : null}
 
+        {sectionModel.showReviews ? (
         <Section title="Fan notes" kicker="REVIEWS" count={reviews.length}>
           {reviews.length ? (
             <View style={styles.stack}>
@@ -207,7 +242,12 @@ export default function VenueScreen({ venueName, onClose, onOpenShow, onOpenArti
                   ) : null}
                 </View>
               ))}
-              {reviewWindow.remaining > 0 ? (
+              {sectionModel.condensed && reviews.length > visibleReviews.length ? (
+                <SectionSwitchButton
+                  label={`Read all ${reviews.length} fan notes`}
+                  onPress={() => setActiveSection("reviews")}
+                />
+              ) : !sectionModel.condensed && reviewWindow.remaining > 0 ? (
                 <MoreButton
                   label={`Show ${Math.min(REVIEW_BATCH, reviewWindow.remaining)} more reviews`}
                   remaining={reviewWindow.remaining}
@@ -223,7 +263,9 @@ export default function VenueScreen({ venueName, onClose, onOpenShow, onOpenArti
             </View>
           )}
         </Section>
+        ) : null}
 
+        {sectionModel.showHistory ? (
         <Section title="Concert history" kicker="SHOWS HERE" count={venue.nights.length}>
           {venue.nights.length ? (
             <View style={styles.stack}>
@@ -259,7 +301,36 @@ export default function VenueScreen({ venueName, onClose, onOpenShow, onOpenArti
             <Text style={styles.historyEmpty}>No concert history has been logged here yet.</Text>
           )}
         </Section>
+        ) : null}
       </ScrollView>
+    </View>
+  );
+}
+
+function VenuePageSectionNav({ active, onChange }) {
+  return (
+    <View style={styles.sectionNav} accessibilityRole="tablist" accessibilityLabel="Venue page sections">
+      {VENUE_PAGE_SECTIONS.map((section) => {
+        const selected = active === section.key;
+        return (
+          <Pressable
+            key={section.key}
+            style={({ pressed, focused }) => [
+              styles.sectionNavItem,
+              selected && styles.sectionNavItemOn,
+              pressed && styles.buttonPressed,
+              focused && focusRing,
+            ]}
+            onPress={() => onChange(section.key)}
+            accessibilityRole="tab"
+            accessibilityState={{ selected }}
+            accessibilityLabel={`${section.label} venue page section`}
+          >
+            <Icon name={section.icon} size={14} color={selected ? colors.amber : colors.textFaint} />
+            <Text style={[styles.sectionNavText, selected && styles.sectionNavTextOn]}>{section.label}</Text>
+          </Pressable>
+        );
+      })}
     </View>
   );
 }
@@ -289,6 +360,20 @@ function Section({ title, kicker, count, children }) {
   );
 }
 
+function SectionSwitchButton({ label, onPress }) {
+  return (
+    <Pressable
+      style={({ pressed, focused }) => [styles.moreButton, pressed && styles.buttonPressed, focused && focusRing]}
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+    >
+      <Text style={styles.moreButtonText}>{label}</Text>
+      <Icon name="chevron-right" size={16} color={colors.amber} />
+    </Pressable>
+  );
+}
+
 function MoreButton({ label, remaining, onPress }) {
   return (
     <Pressable
@@ -305,19 +390,24 @@ function MoreButton({ label, remaining, onPress }) {
 
 const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: colors.bg },
-  content: { width: "100%", maxWidth: 980, alignSelf: "center", padding: 16, paddingBottom: 64, gap: 18 },
-  heroShell: { padding: 8, borderRadius: radius.lg, borderCurve: "continuous", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, ...shadow.card },
-  heroMeta: { minHeight: 48, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12, paddingHorizontal: 8, paddingTop: 7 },
+  content: { width: "100%", maxWidth: 980, alignSelf: "center", padding: 16, paddingBottom: 64, gap: 14 },
+  heroShell: { padding: 7, borderRadius: radius.lg, borderCurve: "continuous", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, ...shadow.card },
+  heroMeta: { minHeight: 42, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12, paddingHorizontal: 8, paddingTop: 5 },
   placeRow: { flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: 7 },
   place: { flexShrink: 1, color: colors.textDim, fontSize: 12 },
   capacity: { color: colors.textFaint, fontFamily: mono, fontSize: 9, fontWeight: "900", letterSpacing: 0.8 },
-  metrics: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
-  metric: { flexGrow: 1, flexBasis: 150, minHeight: 82, alignItems: "center", justifyContent: "center", padding: 10, borderRadius: radius.md, borderCurve: "continuous", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft },
-  metricValue: { color: colors.text, fontFamily: mono, fontSize: 21, fontWeight: "900", fontVariant: ["tabular-nums"], marginTop: 3 },
+  metrics: { flexDirection: "row", flexWrap: "wrap", gap: 7 },
+  metric: { flexGrow: 1, flexBasis: 128, minHeight: 64, alignItems: "center", justifyContent: "center", padding: 8, borderRadius: radius.md, borderCurve: "continuous", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft },
+  metricValue: { color: colors.text, fontFamily: mono, fontSize: 18, fontWeight: "900", fontVariant: ["tabular-nums"], marginTop: 2 },
   metricValueAccent: { color: colors.amber },
   metricLabel: { color: colors.textFaint, fontFamily: mono, fontSize: 8, fontWeight: "900", letterSpacing: 0.8, marginTop: 2 },
-  section: { gap: 12 },
-  sectionHeader: { minHeight: 46, flexDirection: "row", alignItems: "flex-end", gap: 12 },
+  sectionNav: { flexDirection: "row", alignItems: "stretch", gap: 5, padding: 4, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.bgElev },
+  sectionNavItem: { flex: 1, minWidth: 0, minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingHorizontal: 8, borderRadius: radius.sm },
+  sectionNavItemOn: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.amber },
+  sectionNavText: { color: colors.textFaint, fontSize: 11.5, fontWeight: "800" },
+  sectionNavTextOn: { color: colors.amber },
+  section: { gap: 10 },
+  sectionHeader: { minHeight: 40, flexDirection: "row", alignItems: "flex-end", gap: 12 },
   sectionKicker: { color: colors.textFaint, fontFamily: mono, fontSize: 9, fontWeight: "900", letterSpacing: 1.5 },
   sectionTitle: { color: colors.text, fontFamily: displayFont, fontSize: 21, fontWeight: "900", letterSpacing: -0.4, marginTop: 3 },
   countPill: { minWidth: 30, height: 28, alignItems: "center", justifyContent: "center", paddingHorizontal: 8, borderRadius: 14, backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.line },
@@ -327,17 +417,17 @@ const styles = StyleSheet.create({
   noUpcomingIcon: { width: 46, height: 46, alignItems: "center", justifyContent: "center", borderRadius: 15, backgroundColor: colors.bgElev },
   noUpcomingTitle: { color: colors.text, fontFamily: displayFont, fontSize: 15, fontWeight: "900" },
   noUpcomingBody: { color: colors.textDim, fontSize: 12, lineHeight: 17, marginTop: 3 },
-  reputationGrid: { gap: 10 },
+  reputationGrid: { flexDirection: "row", gap: 8 },
   reputationGridWide: { flexDirection: "row" },
-  scorePanel: { minWidth: 190, alignItems: "center", justifyContent: "center", padding: 18, borderRadius: radius.md, backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.line },
-  scoreValue: { color: colors.cool, fontFamily: mono, fontSize: 43, lineHeight: 47, fontWeight: "900", fontVariant: ["tabular-nums"] },
+  scorePanel: { minWidth: 106, alignItems: "center", justifyContent: "center", padding: 12, borderRadius: radius.md, backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.line },
+  scoreValue: { color: colors.cool, fontFamily: mono, fontSize: 32, lineHeight: 36, fontWeight: "900", fontVariant: ["tabular-nums"] },
   scoreLabel: { color: colors.textFaint, fontFamily: mono, fontSize: 8, fontWeight: "900", letterSpacing: 0.8, marginTop: 7 },
-  reputationCopy: { flex: 1, justifyContent: "center", padding: 18, borderRadius: radius.md, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft },
-  reputationTitle: { color: colors.text, fontFamily: displayFont, fontSize: 17, fontWeight: "900" },
-  reputationBody: { color: colors.textDim, fontSize: 13, lineHeight: 19, marginTop: 6 },
+  reputationCopy: { flex: 1, minWidth: 0, justifyContent: "center", padding: 12, borderRadius: radius.md, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft },
+  reputationTitle: { color: colors.text, fontFamily: displayFont, fontSize: 15, fontWeight: "900" },
+  reputationBody: { color: colors.textDim, fontSize: 12, lineHeight: 17, marginTop: 4 },
   reviewSignal: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 12 },
   reviewSignalText: { color: colors.textFaint, fontSize: 11 },
-  reviewButton: { minHeight: 48, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingHorizontal: 16, borderRadius: radius.md, backgroundColor: colors.amberStrong, borderWidth: 1, borderBottomWidth: 3, borderColor: colors.amber, borderBottomColor: colors.accentEdge, ...shadow.control, ...Platform.select({ web: { cursor: "pointer" } }) },
+  reviewButton: { minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingHorizontal: 16, borderRadius: radius.md, backgroundColor: colors.amberStrong, borderWidth: 1, borderBottomWidth: 3, borderColor: colors.amber, borderBottomColor: colors.accentEdge, ...shadow.control, ...Platform.select({ web: { cursor: "pointer" } }) },
   reviewButtonText: { color: "#1A1206", fontFamily: displayFont, fontSize: 14, fontWeight: "900" },
   buttonPressed: { transform: [{ scale: 0.99 }], opacity: 0.9 },
   photoGrid: { flexDirection: "row", flexWrap: "wrap", gap: 7 },

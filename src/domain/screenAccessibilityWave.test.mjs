@@ -67,12 +67,13 @@ test("Settings distinguishes actionable rows and exposes selection and busy stat
   assert.match(source.settings, /accessibilityState=\{\{ busy: exporting \}\}/);
 });
 
-test("venue photos respect Reduce Motion and provide explicit carousel controls", () => {
-  assert.match(source.venuePhotos, /AccessibilityInfo\.isReduceMotionEnabled\(\)/);
-  assert.match(source.venuePhotos, /paused \|\| reduceMotion/);
+test("venue photos stay user-driven and provide explicit manual controls", () => {
+  assert.doesNotMatch(source.venuePhotos, /setInterval|setTimeout|autoplay|slideshow/i);
   assert.match(source.venuePhotos, /accessibilityLabel="Previous venue photo"/);
   assert.match(source.venuePhotos, /accessibilityLabel="Next venue photo"/);
-  assert.match(source.venuePhotos, /Pause venue photo slideshow/);
+  assert.match(source.venuePhotos, /accessibilityLiveRegion="polite"/);
+  assert.match(source.venuePhotos, /accessibilityRole="link"/);
+  assert.match(source.venuePhotos, />SOURCE<\/Text>/);
 });
 
 test("feed cards share one native Reduce Motion subscription", () => {

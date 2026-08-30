@@ -4,6 +4,7 @@ import { colors, mono, radius, shadow, displayFont, space } from "../theme";
 import Icon from "../components/Icon";
 import Avatar from "../components/Avatar";
 import SmartImage from "../components/SmartImage";
+import ConcertMemoryModal from "../components/ConcertMemoryModal";
 import { BadgeRow } from "../components/Badge";
 import { useStore, isStaff, isMod } from "../store";
 import { formatDate } from "../domain/dates.mjs";
@@ -40,6 +41,8 @@ export default function YouScreen({ onLogin, onLogout, onManageProfile, onSettin
   const unread = session ? inboxUnread() : 0;
   const profileAction = profileManagementAction(session);
   const [memoryStatus, setMemoryStatus] = useState("");
+  const [memorySelection, setMemorySelection] = useState(null);
+  const selectedMemory = memorySelection?.accountId === session?.id ? memorySelection.memory : null;
 
   // ---- concert analytics, from this account's live-music history ----
   const live = useMemo(() => {
@@ -67,6 +70,10 @@ export default function YouScreen({ onLogin, onLogout, onManageProfile, onSettin
     } catch {
       setMemoryStatus("That concert memory could not be shared. Please try again.");
     }
+  };
+  const openMemoryBreakdown = (log) => {
+    setMemorySelection(null);
+    onOpen?.(log);
   };
 
   if (!session) {
@@ -109,6 +116,7 @@ export default function YouScreen({ onLogin, onLogout, onManageProfile, onSettin
   ].filter(Boolean);
 
   return (
+    <>
     <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
       {/* ---- HERO: the profile card (banner, avatar, identity, real stats) ---- */}
       <Reveal delay={0}>
@@ -198,7 +206,7 @@ export default function YouScreen({ onLogin, onLogout, onManageProfile, onSettin
       {memories.length > 0 && (
         <Reveal delay={70}>
           <Text style={styles.sectionLabel}>CONCERT MEMORIES</Text>
-          <Text style={styles.scopeCopy}>From your still-visible concert history. You choose whether to open or share each memory.</Text>
+          <Text style={styles.scopeCopy}>Tap a memory for a quick look without leaving this page.</Text>
           <View style={styles.memoryGrid}>
             {memories.map((memory) => (
               <View key={memory.id} style={styles.memoryCard}>
@@ -212,8 +220,8 @@ export default function YouScreen({ onLogin, onLogout, onManageProfile, onSettin
                 <Text style={styles.memoryArtist} numberOfLines={1}>{memory.artist}</Text>
                 <Text style={styles.memoryVenue} numberOfLines={2}>{memory.venue}{memory.city ? ` · ${memory.city}` : ""} · {formatDate(memory.date, memory.date)}</Text>
                 <View style={styles.memoryActions}>
-                  <Pressable style={[styles.memoryAction, !onOpen && styles.memoryActionDisabled]} onPress={() => onOpen?.(memory.log)} disabled={!onOpen} accessibilityRole="button" accessibilityLabel={`Open memory for ${memory.artist}`} accessibilityState={{ disabled: !onOpen }}>
-                    <Icon name="external" size={13} color={colors.amber} />
+                  <Pressable style={styles.memoryAction} onPress={() => setMemorySelection({ accountId: session.id, memory })} accessibilityRole="button" accessibilityLabel={`Open memory for ${memory.artist}`}>
+                    <Icon name="ticket" size={13} color={colors.amber} />
                     <Text style={styles.memoryActionText}>Open memory</Text>
                   </Pressable>
                   <Pressable style={styles.memoryAction} onPress={() => shareMemory(memory)} accessibilityRole="button" accessibilityLabel={`Share memory for ${memory.artist}`}>
@@ -245,6 +253,13 @@ export default function YouScreen({ onLogin, onLogout, onManageProfile, onSettin
       </Reveal>
 
     </ScrollView>
+    <ConcertMemoryModal
+      memory={selectedMemory}
+      onClose={() => setMemorySelection(null)}
+      onOpenFull={onOpen ? openMemoryBreakdown : null}
+      onShare={shareMemory}
+    />
+    </>
   );
 }
 
@@ -297,7 +312,6 @@ const styles = StyleSheet.create({
   memoryVenue: { color: colors.textDim, fontSize: 11.5, lineHeight: 16 },
   memoryActions: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 2 },
   memoryAction: { minHeight: 44, flexGrow: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingHorizontal: 10, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.amber, backgroundColor: colors.bgElev },
-  memoryActionDisabled: { opacity: 0.45 },
   memoryActionText: { color: colors.amber, fontSize: 11.5, fontWeight: "800" },
   actionStatus: { color: colors.textDim, fontSize: 11.5, marginTop: 8 },
   historyLink: { minHeight: 68, flexDirection: "row", alignItems: "center", gap: 11, marginBottom: 10, padding: 11, borderRadius: radius.md, borderWidth: 1, borderColor: colors.amber, backgroundColor: colors.bgElev },

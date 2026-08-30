@@ -13,8 +13,9 @@ import { accountTargetScope, scopedScreenValue } from "../domain/screenScope.mjs
 
 const EMPTY_LOUNGE_ACTIONS = Object.freeze({ enteredRoom: null, entering: false, sending: false, text: "" });
 
-// The Concert Lounge - a Discord/YouTube-style chat for everyone at a show.
-// Gated: you have to tap in, so it feels like a room you enter.
+// One persistent Lounge belongs to this exact show before, during, and after.
+// Gated: you have to tap in, so conversation reads and polling stay off until
+// the member deliberately enters the room.
 export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfileByHandle, onReport }) {
   const {
     session, chatAuthEpoch, concertKey, loungeFor, enterLounge, addLoungeMessage,
@@ -107,14 +108,14 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
           <View style={styles.gateIcon}><Icon name="comment" size={30} color={colors.amber} /></View>
           <Text style={styles.gateTitle}>Concert Lounge</Text>
           <Text style={styles.gateSub}>
-            A live chat for everyone at{"\n"}
+            One room for this exact show — before, during, and after.{"\n"}
             <Text style={{ color: colors.text, fontWeight: "700" }}>{log.artist}</Text> · {log.venue}
           </Text>
           <Text style={styles.gateMeta}>{currentGateMeta?.messageCount ?? messages.length} messages · {currentGateMeta?.attendeeCount ?? attendees.length} going</Text>
           <Pressable style={[styles.enterBtn, (entering || !session) && { opacity: 0.65 }]} onPress={enter} disabled={entering || !session} accessibilityRole="button" accessibilityState={{ disabled: entering || !session, busy: entering }}>
-            <Text style={styles.enterTxt}>{!session ? "Log in to enter the lounge" : entering ? "Saving your spot…" : "I'm going - enter the lounge"}</Text>
+            <Text style={styles.enterTxt}>{!session ? "Log in to enter the Lounge" : entering ? "Saving your spot…" : "I'm going — enter this show's Lounge"}</Text>
           </Pressable>
-          <Text style={styles.gateNote}>Be decent. Mods can remove anyone.</Text>
+          <Text style={styles.gateNote}>This is the only Lounge for this show. Be decent; moderators can remove messages.</Text>
         </View>
       </View>
     );

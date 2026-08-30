@@ -8,10 +8,11 @@ import { filteredFeedNextAction } from "../domain/feedPagination.mjs";
 import { feedFilterStorageKey, feedFooterState, normalizeFeedFilter } from "../domain/feedExperience.mjs";
 import { nextVisibleMediaPostIds } from "../domain/posterVisibility.mjs";
 import { JOURNEY_TAGLINE } from "../domain/menuJourney.mjs";
+import { HOME_JOURNEY_LINE, homeGuideStorageKey } from "../domain/homeJourney.mjs";
 
 const PAGE = 8; // load the feed in pages, like the big apps - never all at once
 
-export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, accountId = null, homeCity, unread = 0, notifUnread = 0, newUser = false, hideHeaderActions = false, onLoadMore, hasMore = false, loadingMore = false, onOpen, onImpression, onDwell, onNotInterested, onUndoNotInterested, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenVenue, onOpenNearby, onOpenInbox, onOpenNotifications, onOpenMenu, onOpenClips, onReport, onEdit, onOpenPhotos, onPlay, onRemoveMyPostTag, onLogShow, onOpenDiscover }) {
+export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, accountId = null, homeCity, unread = 0, notifUnread = 0, newUser = false, hideHeaderActions = false, onLoadMore, hasMore = false, loadingMore = false, onOpen, onImpression, onDwell, onNotInterested, onUndoNotInterested, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onOpenNearby, onOpenInbox, onOpenNotifications, onOpenMenu, onOpenClips, onReport, onEdit, onOpenPhotos, onPlay, onRemoveMyPostTag, onLogShow, onOpenDiscover }) {
   const { width } = useWindowDimensions();
   const phone = width < 700;
   const filterScope = feedFilterStorageKey(accountId);
@@ -29,10 +30,15 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
   const [undoBusy, setUndoBusy] = useState(false);
   const [undoError, setUndoError] = useState(null);
   const [visibleMediaPostIds, setVisibleMediaPostIds] = useState(() => new Set());
-  const [gsDone, setGsDone] = useState(() => load("pit.gsDismissed", false));
+  const guideScope = homeGuideStorageKey(accountId);
+  const [guideState, setGuideState] = useState(() => ({ scope: guideScope, dismissed: load(guideScope, false) }));
+  const guideDismissed = guideState.scope === guideScope ? guideState.dismissed : load(guideScope, false);
   const visibleSince = useRef(new Map());
   const seenImpressions = useRef(new Set());
-  const dismissGs = () => { setGsDone(true); save("pit.gsDismissed", true); };
+  const dismissGuide = () => {
+    setGuideState({ scope: guideScope, dismissed: true });
+    save(guideScope, true);
+  };
   const full = filter === "following" ? followingFeed : filter === "local" ? localFeed : feed;
   const data = full.slice(0, count);
   const filteredPageLoading = loadingMore && count >= full.length;
@@ -49,7 +55,8 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
     setUndoItem(null);
     setUndoError(null);
     setVisibleMediaPostIds(new Set());
-  }, [filterScope, loggedIn]);
+    setGuideState({ scope: guideScope, dismissed: load(guideScope, false) });
+  }, [filterScope, guideScope, loggedIn]);
 
   const onViewableItemsChanged = useRef(({ changed }) => {
     const at = Date.now();
@@ -204,15 +211,20 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
             </Pressable>
           )}
 
-          {loggedIn && newUser && !gsDone && (
+          {loggedIn && newUser && !guideDismissed && (
             <View style={styles.gs}>
               <View style={styles.gsHead}>
-                <Text style={styles.gsTitle}>Get started on Mshpit</Text>
-                <Pressable onPress={dismissGs} hitSlop={10}><Icon name="x" size={16} color={colors.textDim} /></Pressable>
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={styles.gsTitle}>Your first night on Mshpit</Text>
+                  <Text style={styles.gsJourney}>{HOME_JOURNEY_LINE}</Text>
+                </View>
+                <Pressable onPress={dismissGuide} hitSlop={10} accessibilityRole="button" accessibilityLabel="Dismiss getting started guide"><Icon name="x" size={16} color={colors.textDim} /></Pressable>
               </View>
-              <GsStep n="1" icon="plus" label="Log your first show" sub="Rate the band and the room" onPress={onLogShow} />
-              <GsStep n="2" icon="discover" label="See what fans thought" sub="Reviews, photos, and top-rated nights" onPress={onOpenDiscover} />
-              <GsStep n="3" icon="pin" label="Find your next show" sub="Local venues & upcoming gigs" onPress={onOpenNearby} />
+              <Text style={styles.gsSub}>Find a show, save the night, then come back to rate it, share the memory, and meet other fans.</Text>
+              <View style={styles.gsActions}>
+                <HomeAction icon="discover" label="Find a show" onPress={onOpenDiscover} />
+                <HomeAction icon="plus" label="Log a show" onPress={onLogShow} primary />
+              </View>
             </View>
           )}
 
@@ -263,6 +275,10 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
               ? (hasMore ? "Load one older page at a time to look for nearby concert posts." : "Be the first to log a show in your city, tap the + to post one.")
               : "Log the first show, tap the + to rate the band and the room."}
           </Text>
+          <View style={styles.emptyActions}>
+            <HomeAction icon="discover" label="Find a show" onPress={onOpenDiscover} />
+            <HomeAction icon="plus" label="Log a show" onPress={onLogShow} primary />
+          </View>
         </View>
       }
       ListFooterComponent={footer.kind === "reveal" || footer.kind === "fetch" || footer.kind === "loading" ? (
@@ -286,7 +302,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
         </View>
       ) : null}
       renderItem={({ item, index: itemIndex }) => (
-        <TicketStub log={item} mediaViewable={visibleMediaPostIds.has(String(item.id)) ? true : null} onOpen={(_unused) => onOpen?.(item, { surface, position: itemIndex })} onOpenShow={(show) => onOpen?.(show, { surface, position: itemIndex })} onNotInterested={surface === "everyone" && item.recommendation ? hideRecommendation : undefined} onComment={onComment} onPreview={onPreview} onOpenProfile={onOpenProfile} onOpenArtist={onOpenArtist} onOpenVenue={onOpenVenue} onReport={onReport} onEdit={onEdit} onOpenPhotos={onOpenPhotos} onPlay={onPlay} onRemoveMyPostTag={onRemoveMyPostTag} />
+        <TicketStub log={item} mediaViewable={visibleMediaPostIds.has(String(item.id)) ? true : null} onOpen={(_unused) => onOpen?.(item, { surface, position: itemIndex })} onOpenShow={(show) => onOpen?.(show, { surface, position: itemIndex })} onNotInterested={surface === "everyone" && item.recommendation ? hideRecommendation : undefined} onComment={onComment} onPreview={onPreview} onOpenProfile={onOpenProfile} onOpenArtist={onOpenArtist} onOpenArtistArchive={onOpenArtistArchive} onOpenVenue={onOpenVenue} onReport={onReport} onEdit={onEdit} onOpenPhotos={onOpenPhotos} onPlay={onPlay} onRemoveMyPostTag={onRemoveMyPostTag} />
       )}
     />
   );
@@ -306,32 +322,40 @@ function Seg({ label, on, onPress }) {
   );
 }
 
-function GsStep({ n, icon, label, sub, onPress }) {
+function HomeAction({ icon, label, onPress, primary = false }) {
   return (
-    <Pressable style={styles.gsStep} onPress={onPress}>
-      <View style={styles.gsIcon}><Icon name={icon} size={16} color={colors.amber} /></View>
-      <View style={{ flex: 1 }}>
-        <Text style={styles.gsLabel}>{label}</Text>
-        <Text style={styles.gsSub}>{sub}</Text>
-      </View>
-      <Icon name="chevron-right" size={16} color={colors.textDim} />
+    <Pressable
+      style={({ pressed }) => [styles.homeAction, primary && styles.homeActionPrimary, pressed && styles.homeActionPressed]}
+      onPress={onPress}
+      disabled={!onPress}
+      accessibilityRole="button"
+      accessibilityState={{ disabled: !onPress }}
+      accessibilityLabel={label}
+    >
+      <Icon name={icon} size={15} color={primary ? "#1A1206" : colors.amber} />
+      <Text style={[styles.homeActionText, primary && styles.homeActionTextPrimary]}>{label}</Text>
     </Pressable>
   );
 }
 
 const styles = StyleSheet.create({
   content: { padding: 16, paddingBottom: 40, ...(Platform.OS === "web" ? { width: "100%", maxWidth: 900, alignSelf: "center" } : null) },
-  gs: { backgroundColor: colors.bgElev, borderRadius: radius.md, borderWidth: 1, borderColor: colors.amber, padding: 14, marginBottom: 14 },
-  gsHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 10 },
+  gs: { backgroundColor: colors.bgElev, borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderColor: colors.amber, padding: 13, marginBottom: 14, gap: 8 },
+  gsHead: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 10 },
   gsTitle: { color: colors.text, fontSize: 16, fontWeight: "800" },
-  gsStep: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 9 },
-  gsIcon: { width: 34, height: 34, borderRadius: 17, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },
-  gsLabel: { color: colors.text, fontSize: 14, fontWeight: "700" },
-  gsSub: { color: colors.textDim, fontSize: 12, marginTop: 1 },
+  gsJourney: { color: colors.amber, fontFamily: mono, fontSize: 9.5, lineHeight: 14, fontWeight: "900", letterSpacing: 0.65, marginTop: 2 },
+  gsSub: { color: colors.textDim, fontSize: 12, lineHeight: 17 },
+  gsActions: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   emptyBox: { alignItems: "center", paddingTop: 40, paddingHorizontal: 30, gap: 6 },
   emptyIcon: { width: 56, height: 56, borderRadius: 28, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center", marginBottom: 6 },
   emptyTitle: { color: colors.text, fontSize: 17, fontWeight: "800", textAlign: "center" },
   emptySub: { color: colors.textDim, fontSize: 14, lineHeight: 20, textAlign: "center" },
+  emptyActions: { flexDirection: "row", flexWrap: "wrap", justifyContent: "center", gap: 9, marginTop: 12 },
+  homeAction: { minHeight: 42, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7, paddingHorizontal: 14, paddingVertical: 9, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
+  homeActionPrimary: { borderColor: colors.amberStrong, backgroundColor: colors.amberStrong },
+  homeActionPressed: { opacity: 0.78 },
+  homeActionText: { color: colors.text, fontSize: 13, lineHeight: 18, fontWeight: "800" },
+  homeActionTextPrimary: { color: "#1A1206" },
   olderBtn: { alignSelf: "center", marginTop: 18, paddingHorizontal: 18, paddingVertical: 11, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
   olderBtnOff: { opacity: 0.55 },
   olderTxt: { color: colors.text, fontSize: 14, fontWeight: "800" },

@@ -329,10 +329,6 @@
       "count": 1,
       "fingerprint": "ac94f628a8f0ddbb7256"
     },
-    "src/components/VenuePhotoWidget.jsx": {
-      "count": 1,
-      "fingerprint": "96d79dad00e0b88777ec"
-    },
     "src/components/media-editor/MediaEditorWorkspace.jsx": {
       "count": 4,
       "fingerprint": "d146935235c7292a1477"
@@ -435,10 +431,6 @@
     }
   },
   "legacyDirectApiCallsByFile": {
-    "App.js": {
-      "count": 2,
-      "fingerprint": "1260a8ea1cb87ee324c2"
-    },
     "src/components/BadgeConsole.jsx": {
       "count": 4,
       "fingerprint": "c7ebca0b59658c196273"

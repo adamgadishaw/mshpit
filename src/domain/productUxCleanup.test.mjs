@@ -27,8 +27,9 @@ test("the feed uses the Mshpit brand and separates For You from Discover", () =>
   assert.match(feed, /<Text style=\{styles\.wordmark\}>MSHPIT<\/Text>/);
   assert.match(feed, /<Seg label="For You"/);
   assert.doesNotMatch(feed, /<Seg label="Discover"/);
-  assert.match(feed, /Log your first show[\s\S]*See what fans thought[\s\S]*Find your next show/);
-  assert.match(feed, /label="See what fans thought"[\s\S]*onPress=\{onOpenDiscover\}/);
+  assert.match(feed, /homeGuideStorageKey\(accountId\)/);
+  assert.match(feed, /label="Find a show" onPress=\{onOpenDiscover\}/);
+  assert.match(feed, /label="Log a show" onPress=\{onLogShow\}/);
   assert.match(app, /onOpenDiscover=\{\(\) => switchTab\("discover"\)\}/);
 });
 

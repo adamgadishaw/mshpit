@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  ARTIST_OVERVIEW_LIMITS,
   ARTIST_PAGE_SECTIONS,
   artistPagePreview,
   artistPageSectionModel,
+  artistPageSynopsis,
   normalizeArtistPageSection,
 } from "./artistPageSections.mjs";
 
@@ -32,4 +34,29 @@ test("artist overview previews are bounded without mutating complete section row
   assert.deepEqual(artistPagePreview(rows, { condensed: true, limit: 2 }), [1, 2]);
   assert.strictEqual(artistPagePreview(rows), rows);
   assert.deepEqual(artistPagePreview(null, { condensed: true }), []);
+  assert.deepEqual(ARTIST_OVERVIEW_LIMITS, {
+    posts: 1,
+    upcoming: 3,
+    reviews: 1,
+    gallery: 3,
+    synopsisCharacters: 220,
+  });
+});
+
+test("artist overview synopsis is compact and full copy remains available on demand", () => {
+  assert.deepEqual(artistPageSynopsis("  A short artist story.  ", { condensed: true }), {
+    text: "A short artist story.",
+    truncated: false,
+  });
+
+  const long = "Artist story ".repeat(30);
+  const compact = artistPageSynopsis(long, { condensed: true, limit: 40 });
+  assert.equal([...compact.text].length <= 40, true);
+  assert.equal(compact.text.endsWith("…"), true);
+  assert.equal(compact.truncated, true);
+
+  assert.deepEqual(artistPageSynopsis(long), {
+    text: long.trim(),
+    truncated: false,
+  });
 });

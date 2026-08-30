@@ -3877,7 +3877,7 @@ export function StoreProvider({ children }) {
     setComments((m) => ({ ...m, [id]: [...(m[id] || []), c] }));
     // Write-through + adopt the server id so a later loadComments() dedupes it
     // instead of showing my comment twice.
-    return api(`/api/posts/${id}/comments`, { method: "POST", body: { text: t, parentId: parentId || null }, context: "Adding your afterparty comment", expectedAccountId: claim.accountId })
+    return api(`/api/posts/${id}/comments`, { method: "POST", body: { text: t, parentId: parentId || null }, context: "Adding your post comment", expectedAccountId: claim.accountId })
       .then(({ id: sid }) => {
         if (!commentClaimIsCurrent(claim)) return { ok: false, stale: true };
         const published = { ...c, id: sid || localId, pending: false, createdAt: c.at };
@@ -4310,7 +4310,7 @@ export function StoreProvider({ children }) {
       channelKey: key,
       target: key,
       endpoint: `/api/lounges/${encodeURIComponent(key)}/messages`,
-      context: "Sending your afterparty message",
+      context: "Sending your Lounge message",
       clientMutationId,
       status: "queued",
       userId: actor.id,

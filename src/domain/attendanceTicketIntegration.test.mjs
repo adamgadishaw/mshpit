@@ -98,6 +98,7 @@ test("the shared post renderer owns ticket presentation and disables generic edi
   const post = source("../screens/PostScreen.jsx");
   const profile = source("../screens/ProfileScreen.jsx");
   const app = source("../../App.js");
+  const publicFrameNavigation = source("./publicFrameNavigation.mjs");
   assert.match(card, /buildAttendanceTicketPreview/);
   assert.match(card, /calendarShowFromPost/);
   assert.match(card, /<ConcertTicketCard/);
@@ -109,7 +110,9 @@ test("the shared post renderer owns ticket presentation and disables generic edi
   assert.match(post, /onOpenShow=\{onOpenShow\}/);
   assert.match(profile, /onOpenShow=\{onOpenShow\}/);
   assert.match(app, /log\.kind === "status" && log\.performanceEvent !== true/);
-  assert.match(app, /frame\.openLog\?\.performanceEvent && frame\.openLog\?\.id\) return eventPath\(frame\.openLog\.id\)/);
+  assert.ok(app.includes("publicFramePath(frame"), "App delegates canonical history serialization to the tested public-frame helper");
+  assert.ok(publicFrameNavigation.includes('frame.openLog?.performanceEvent && frame.openLog?.id'));
+  assert.ok(publicFrameNavigation.includes("eventPath(frame.openLog.id)"));
 });
 
 test("the show surface keeps provider access distinct from verified venue doors", () => {
