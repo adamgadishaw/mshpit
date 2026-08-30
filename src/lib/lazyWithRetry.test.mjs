@@ -16,6 +16,24 @@ function harness() {
   return { storage, reload: () => { reloads += 1; }, reloadCount: () => reloads, delay: () => Promise.resolve(), store };
 }
 
+function elementText(node) {
+  if (node == null || typeof node === "boolean") return "";
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  const children = node?.props?.children;
+  return (Array.isArray(children) ? children : [children]).map(elementText).join(" ");
+}
+
+function findElement(node, predicate) {
+  if (!node || typeof node !== "object") return null;
+  if (predicate(node)) return node;
+  const children = node?.props?.children;
+  for (const child of (Array.isArray(children) ? children : [children])) {
+    const found = findElement(child, predicate);
+    if (found) return found;
+  }
+  return null;
+}
+
 test("a chunk that loads first try returns it and leaves no reload guard", async () => {
   const h = harness();
   const mod = await loadChunk(async () => ({ default: "Screen" }), { name: "Ok", ...h });
@@ -42,8 +60,69 @@ test("a stale chunk after a deploy reloads exactly once", async () => {
   const alwaysFails = async () => { throw new Error("Loading chunk failed: 404"); };
   const mod = await loadChunk(alwaysFails, { name: "Admin", ...h });
   assert.equal(h.reloadCount(), 1, "reloads to get fresh HTML");
-  assert.equal(typeof mod.default, "function", "renders nothing while the reload happens");
-  assert.equal(mod.default(), null);
+  assert.equal(h.store.get("pit.chunkReload.Admin"), "1", "persists the guard before reloading");
+  assert.equal(typeof mod.default, "function");
+  const fallback = mod.default();
+  assert.equal(fallback.props.role, "status");
+  assert.equal(fallback.props["aria-live"], "polite");
+  assert.match(elementText(fallback), /Updating Mshpit…/);
+});
+
+test("a reload that returns normally leaves an accessible manual escape", async () => {
+  const h = harness();
+  const stale = async () => { throw new Error("Loading chunk failed: 404"); };
+  const mod = await loadChunk(stale, { name: "NoNavigation", ...h });
+  assert.equal(h.reloadCount(), 1, "the automatic path still runs only once");
+
+  const fallback = mod.default();
+  assert.equal(fallback.props["aria-atomic"], "true");
+  const button = findElement(fallback, (node) => node.type === "button");
+  assert.ok(button, "fallback has a keyboard-focusable native button");
+  assert.equal(button.props["aria-label"], "Reload Mshpit");
+  assert.equal(elementText(button), "Try again");
+  button.props.onClick();
+  assert.equal(h.reloadCount(), 2, "another reload happens only after explicit user action");
+  assert.equal(h.store.get("pit.chunkReload.NoNavigation"), "1", "manual escape does not clear the loop guard");
+});
+
+test("a stale chunk surfaces its error when session storage is unavailable", async () => {
+  const h = harness();
+  const stale = async () => { throw new Error("Loading chunk failed: 404"); };
+
+  await assert.rejects(() => loadChunk(stale, {
+    name: "NoStorage",
+    ...h,
+    storage: null,
+  }), /Loading chunk failed: 404/);
+  assert.equal(h.reloadCount(), 0, "cannot safely reload without a persistent guard");
+});
+
+test("a stale chunk surfaces its error when writing the reload guard throws", async () => {
+  const h = harness();
+  const stale = async () => { throw new Error("Loading chunk failed: 404"); };
+  const storage = {
+    getItem: () => null,
+    setItem: () => { throw new Error("storage denied"); },
+    removeItem: () => {},
+  };
+
+  await assert.rejects(() => loadChunk(stale, { name: "Denied", ...h, storage }), /Loading chunk failed: 404/);
+  assert.equal(h.reloadCount(), 0, "a failed guard write must not reload");
+});
+
+test("a stale chunk surfaces its error when the reload guard cannot be read back", async () => {
+  const h = harness();
+  const stale = async () => { throw new Error("Loading chunk failed: 404"); };
+  let stored = null;
+  const storage = {
+    getItem: () => stored === "1" ? "mismatch" : stored,
+    setItem: (_key, value) => { stored = String(value); },
+    removeItem: () => { stored = null; },
+  };
+
+  await assert.rejects(() => loadChunk(stale, { name: "Mismatch", ...h, storage }), /Loading chunk failed: 404/);
+  assert.equal(stored, "1", "the attempted write occurred");
+  assert.equal(h.reloadCount(), 0, "an unconfirmed guard must not reload");
 });
 
 test("repeated cellular fetch failures never hard-reload the app", async () => {

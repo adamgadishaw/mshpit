@@ -261,10 +261,6 @@
       "count": 8,
       "fingerprint": "ae99386bb46507007763"
     },
-    "server/analyticsService.js": {
-      "count": 1,
-      "fingerprint": "4d294d2c104ee633de31"
-    },
     "server/api.js": {
       "count": 12,
       "fingerprint": "034ef4f6beaee35898a9"
@@ -414,8 +410,8 @@
       "fingerprint": "63f3e01614e95e19d122"
     },
     "src/theme.js": {
-      "count": 5,
-      "fingerprint": "99a890fb99aed55833ee"
+      "count": 4,
+      "fingerprint": "bc3afe0a33ce341a2fab"
     }
   },
   "legacyDirectApiCallsByFile": {

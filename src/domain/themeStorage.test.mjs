@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { writeThemePair, themeBelongsTo } from "./themeStorage.mjs";
@@ -17,6 +18,7 @@ function fakeStorage({ failOnWrite = 0 } = {}) {
       if (failOnWrite && writes === failOnWrite) throw new Error("QuotaExceededError");
       data.set(k, v);
     },
+    getItem(k) { return data.get(k) ?? null; },
     removeItem(k) { data.delete(k); },
   };
 }
@@ -57,6 +59,7 @@ test("a failed write cannot resurrect a previous account's theme", () => {
   const failing = {
     data: s.data,
     setItem(k, v) { if (k === KEYS.ownerKey) throw new Error("QuotaExceededError"); s.data.set(k, v); },
+    getItem(k) { return s.data.get(k) ?? null; },
     removeItem(k) { s.data.delete(k); },
   };
   assert.equal(writeThemePair(failing, KEYS, "neon", "u_new"), false);
@@ -66,14 +69,52 @@ test("a failed write cannot resurrect a previous account's theme", () => {
 });
 
 test("missing or unusable storage is refused, not thrown", () => {
-  for (const bad of [null, undefined, {}, { setItem: "nope" }]) {
+  for (const bad of [null, undefined, {}, { setItem: "nope" }, { setItem() {} }]) {
     assert.equal(writeThemePair(bad, KEYS, "neon", "u_1"), false);
   }
 });
 
 test("storage that also fails to roll back still reports failure", () => {
-  const hostile = { setItem() { throw new Error("nope"); }, removeItem() { throw new Error("nope"); } };
+  const hostile = { setItem() { throw new Error("nope"); }, getItem() { return null; }, removeItem() { throw new Error("nope"); } };
   assert.equal(writeThemePair(hostile, KEYS, "neon", "u_1"), false);
+});
+
+test("a no-op storage write is not treated as persisted", () => {
+  const ignored = { setItem() {}, getItem() { return null; }, removeItem() {} };
+  assert.equal(writeThemePair(ignored, KEYS, "neon", "u_1"), false);
+});
+
+test("a failed readback does not remove a newer same-account theme from another tab", () => {
+  const data = new Map([[KEYS.themeKey, "stage"], [KEYS.ownerKey, "u_1"]]);
+  let reads = 0;
+  const concurrent = {
+    setItem(key, value) { data.set(key, value); },
+    getItem(key) {
+      reads += 1;
+      // The first two reads snapshot the previous pair. Before this attempt can
+      // verify its writes, another tab saves a newer valid choice for the same
+      // account. Rollback must compare the whole pair and leave it alone.
+      if (reads === 3) {
+        data.set(KEYS.themeKey, "forest");
+        data.set(KEYS.ownerKey, "u_1");
+      }
+      return data.get(key) ?? null;
+    },
+    removeItem(key) { data.delete(key); },
+  };
+  assert.equal(writeThemePair(concurrent, KEYS, "neon", "u_1"), false);
+  assert.equal(data.get(KEYS.themeKey), "forest");
+  assert.equal(data.get(KEYS.ownerKey), "u_1");
+});
+
+test("account theme sync cannot reload when verified persistence fails", () => {
+  const source = readFileSync(new URL("../theme.js", import.meta.url), "utf8");
+  const start = source.indexOf("export function syncThemeFromAccount");
+  const end = source.indexOf("// Official positions", start);
+  assert.ok(start >= 0 && end > start);
+  const sync = source.slice(start, end);
+  assert.match(sync, /if \(persistTheme\(next, ownerId\) && next !== key\) window\.location\.reload\(\);/);
+  assert.doesNotMatch(sync, /if \(next !== key\)/, "reload must not be independent of persistence success");
 });
 
 test("a stored theme only applies to the account that saved it", () => {

@@ -1,6 +1,7 @@
 // One privacy boundary shared by the Expo client and the API. Product analytics
 // intentionally records categorical behavior and internal content identifiers,
-// never reviews, searches, messages, media URLs, artist/title names, or other
+// never authored post/review text, search terms, message content, media URLs,
+// artist/title names, or other
 // user-authored strings. The server remains authoritative; client sanitizing is
 // defense in depth and also keeps forbidden data out of the durable retry queue.
 import { MEDIA_POST_MAX_ATTACHMENTS } from "./mediaUploadPolicy.mjs";

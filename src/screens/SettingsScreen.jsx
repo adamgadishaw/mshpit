@@ -93,7 +93,7 @@ export default function SettingsScreen({ onClose, onManageProfile, onOpenProfile
     const optingOut = analyticsEnabled;
     const result = await setAnalyticsEnabled(!optingOut);
     setAnalyticsResult(result?.ok
-      ? (optingOut ? "Product analytics are off and your prior product events were deleted." : "Product analytics are on for this account.")
+      ? (optingOut ? "Product analytics are off and your raw product events were deleted. Aggregate counts from normal account activity, such as posts, may remain." : "Product analytics are on for this account.")
       : "That preference did not save. Please try again.");
     setSavingAnalytics(false);
   };
@@ -181,7 +181,7 @@ export default function SettingsScreen({ onClose, onManageProfile, onOpenProfile
               label="Product analytics"
               sub={!analyticsEnabled
                 ? "Off. Pit will not record product-usage events for this account."
-                : "On. Helps improve Pit using a limited set of account activity events."}
+                : "On. Shares limited account-linked usage events. They do not include the contents of authored posts or reviews, search terms, messages, or uploaded media. IP addresses are not stored with these analytics events."}
               onPress={toggleAnalytics}
               disabled={savingAnalytics}
               accessibilityRole="switch"

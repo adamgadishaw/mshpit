@@ -257,11 +257,11 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) 
         )}
 
         {mode === "signup" && (
-          <Pressable style={styles.consent} onPress={() => setAnalyticsConsent((value) => !value)} disabled={authBusy} accessibilityRole="checkbox" accessibilityState={{ checked: analyticsConsent, disabled: authBusy }} accessibilityLabel="Share optional usage data with personal details removed">
+          <Pressable style={styles.consent} onPress={() => setAnalyticsConsent((value) => !value)} disabled={authBusy} accessibilityRole="checkbox" accessibilityState={{ checked: analyticsConsent, disabled: authBusy }} accessibilityLabel="Share optional limited account usage data">
             <View style={[styles.box, analyticsConsent && styles.boxOn]}>
               {analyticsConsent ? <Icon name="check" size={14} color="#1A1206" strokeWidth={3} /> : null}
             </View>
-            <Text style={styles.consentTxt}>Optional: share limited app usage data with personal details removed. This helps Mshpit fix problems and improve recommendations. You can change this any time in Settings.</Text>
+            <Text style={styles.consentTxt}>Optional: share limited app usage events linked to your account. These events do not include the contents of authored posts or reviews, search terms, messages, or uploaded media. IP addresses are not stored with these analytics events. This helps Mshpit fix problems and improve recommendations. You can change this any time in Settings.</Text>
           </Pressable>
         )}
 

@@ -12,22 +12,50 @@
 /**
  * Write the theme/owner pair atomically.
  *
- * @param storage a Storage-like object (setItem/removeItem). May throw.
- * @returns true only when BOTH keys were written.
+ * @param storage a Storage-like object (getItem/setItem/removeItem). May throw.
+ * @returns true only when BOTH keys were written and read back exactly.
  */
 export function writeThemePair(storage, { themeKey, ownerKey }, theme, ownerId) {
-  if (!storage || typeof storage.setItem !== "function") return false;
+  if (!storage || typeof storage.setItem !== "function" || typeof storage.getItem !== "function") return false;
+  const readPair = () => ({
+    theme: storage.getItem(themeKey),
+    owner: storage.getItem(ownerKey),
+  });
+  const samePair = (left, right) => left.theme === right.theme && left.owner === right.owner;
+  let previous;
+  try {
+    previous = readPair();
+  } catch {
+    return false;
+  }
+  const owner = ownerId || "guest";
+  const attempted = { theme, owner };
+  let themeWritten = false;
+  let ownerWritten = false;
   try {
     storage.setItem(themeKey, theme);
-    storage.setItem(ownerKey, ownerId || "guest");
+    themeWritten = true;
+    storage.setItem(ownerKey, owner);
+    ownerWritten = true;
+    if (!samePair(readPair(), attempted)) {
+      throw new Error("Theme persistence could not be verified.");
+    }
     return true;
   } catch {
-    // Roll back to a consistent state instead of leaving half a pair behind.
-    // Falling back to the default theme is recoverable; silently wearing
-    // someone else's theme is not.
+    // Only clean up the exact state this attempt can have produced. Another
+    // browser tab may have saved a newer valid pair between our write and
+    // readback; compare-before-remove keeps that newer choice intact.
     try {
-      storage.removeItem?.(themeKey);
-      storage.removeItem?.(ownerKey);
+      const expected = ownerWritten
+        ? attempted
+        : (themeWritten ? { theme, owner: previous.owner } : null);
+      if (expected && samePair(readPair(), expected)) {
+        storage.removeItem?.(themeKey);
+        const afterThemeRemoval = readPair();
+        if (afterThemeRemoval.theme == null && afterThemeRemoval.owner === expected.owner) {
+          storage.removeItem?.(ownerKey);
+        }
+      }
     } catch { /* storage is fully unavailable; nothing left to undo */ }
     return false;
   }

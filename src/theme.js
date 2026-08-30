@@ -188,10 +188,9 @@ export function setTheme(next, ownerId = null) {
 // reload it triggers: after the reload themeKey === next and this returns early.
 export function syncThemeFromAccount(next, ownerId) {
   if (!next || !PRESETS[next]) return;
-  try { persistTheme(next, ownerId); } catch {}
-  if (next !== key) {
-    try { if (typeof window !== "undefined") window.location.reload(); } catch {}
-  }
+  try {
+    if (persistTheme(next, ownerId) && next !== key) window.location.reload();
+  } catch {}
 }
 
 // Official positions get a colored @handle so they're unmistakable (Discord-

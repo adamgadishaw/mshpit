@@ -13,7 +13,7 @@ export const ANALYTICS_MAX_ROWS_PER_ACCOUNT = Math.max(1_000, Math.min(10_000, N
 const ANALYTICS_PRUNE_CHUNK = 5_000;
 let lastPruneAt = 0;
 
-export function pruneAnalyticsData({ database = db, at = Date.now() } = {}) {
+export function pruneAnalyticsData({ database = db, at = Date.now(), advanceClock = true } = {}) {
   const aged = database.prepare("DELETE FROM events WHERE created_at < ?").run(at - RETENTION_MS);
   let count = database.prepare("SELECT COUNT(*) count FROM events").get().count;
   let overflowRows = 0;
@@ -25,7 +25,7 @@ export function pruneAnalyticsData({ database = db, at = Date.now() } = {}) {
     if (!changes) break;
     count -= changes;
   }
-  lastPruneAt = at;
+  if (advanceClock) lastPruneAt = at;
   return { agedRows: Number(aged?.changes) || 0, overflowRows };
 }
 
@@ -51,13 +51,10 @@ function durableEventId(userId, clientId) {
 }
 
 export function ingestAnalyticsBatch({ user, events, requireIds = false, at = Date.now() }) {
-  if (!analyticsEnabledFor(user)) return { ok: true, received: 0, accepted: 0, stored: 0, duplicates: 0, rejected: 0 };
+  const empty = { ok: true, received: 0, accepted: 0, stored: 0, duplicates: 0, rejected: 0 };
+  if (!user?.id) return empty;
   const incoming = Array.isArray(events) ? events.slice(0, ANALYTICS_BATCH_LIMIT) : [];
-  if (!incoming.length) return { ok: true, received: 0, accepted: 0, stored: 0, duplicates: 0, rejected: 0 };
-
-  if (at - lastPruneAt >= 60 * 60 * 1000) {
-    pruneAnalyticsData({ at });
-  }
+  if (!incoming.length) return empty;
 
   const accepted = [];
   for (const input of incoming) {
@@ -84,6 +81,16 @@ export function ingestAnalyticsBatch({ user, events, requireIds = false, at = Da
   let stored = 0;
   db.exec("BEGIN IMMEDIATE");
   try {
+    // The HTTP request context is captured before its body finishes streaming.
+    // Re-read consent after taking the write lock so an opt-out that completed
+    // during that wait cannot be followed by an insert from the stale snapshot.
+    const currentUser = db.prepare("SELECT id,extras FROM users WHERE id=?").get(user.id);
+    if (!analyticsEnabledFor(currentUser)) {
+      db.exec("COMMIT");
+      return empty;
+    }
+    const shouldPrune = at - lastPruneAt >= 60 * 60 * 1000;
+    if (shouldPrune) pruneAnalyticsData({ at, advanceClock: false });
     for (const event of canonical) {
       stored += Number(insert.run(event.storageId, user.id, event.name, JSON.stringify(event.props), at).changes) || 0;
     }
@@ -100,8 +107,9 @@ export function ingestAnalyticsBatch({ user, events, requireIds = false, at = Da
       db.prepare(`DELETE FROM events WHERE id IN (SELECT id FROM events ORDER BY created_at,id LIMIT ?)` ).run(overflow);
     }
     db.exec("COMMIT");
+    if (shouldPrune) lastPruneAt = at;
   } catch (error) {
-    try { db.exec("ROLLBACK"); } catch {}
+    try { db.exec("ROLLBACK"); } catch {} // architecture: allow-empty-catch -- rollback is best-effort after the transaction has already failed.
     throw error;
   }
 

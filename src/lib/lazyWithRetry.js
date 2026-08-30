@@ -1,4 +1,4 @@
-import { lazy } from "react";
+import { createElement, lazy } from "react";
 
 // Code-split screens are loaded on demand with import(). That has a failure mode
 // the whole-bundle build never had: after a deploy, a browser still running the
@@ -69,6 +69,72 @@ export async function confirmMissingDynamicChunk(error, {
   }
 }
 
+function updatingMshpitFallback(reload) {
+  return function UpdatingMshpitFallback() {
+    const manualReload = () => {
+      try { reload?.(); } catch { /* The visible escape remains available. */ }
+    };
+    return createElement(
+      "div",
+      {
+        role: "status",
+        "aria-live": "polite",
+        "aria-atomic": "true",
+        style: {
+          minHeight: "100vh",
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 12,
+          padding: 28,
+          boxSizing: "border-box",
+          background: "#07090F",
+          color: "#F4EFE7",
+          fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+          textAlign: "center",
+        },
+      },
+      createElement("div", {
+        style: {
+          color: "#FF8C42",
+          fontFamily: "'SFMono-Regular', Consolas, monospace",
+          fontSize: 13,
+          fontWeight: 900,
+          letterSpacing: 4,
+        },
+      }, "MSHPIT"),
+      createElement("h1", { style: { margin: 0, fontSize: 24 } }, "Updating Mshpit…"),
+      createElement(
+        "p",
+        { style: { maxWidth: 420, margin: 0, color: "#9AA0B6", lineHeight: 1.5 } },
+        "A newer version is ready. Reload once more if this screen stays here.",
+      ),
+      createElement(
+        "button",
+        {
+          type: "button",
+          onClick: manualReload,
+          "aria-label": "Reload Mshpit",
+          style: {
+            minHeight: 44,
+            marginTop: 8,
+            padding: "10px 22px",
+            border: 0,
+            borderRadius: 999,
+            background: "#FF8C42",
+            color: "#1A1206",
+            font: "inherit",
+            fontWeight: 800,
+            cursor: "pointer",
+          },
+        },
+        "Try again",
+      ),
+    );
+  };
+}
+
 export async function loadChunk(factory, {
   name = "chunk",
   storage = (typeof window !== "undefined" ? window.sessionStorage : null),
@@ -81,7 +147,17 @@ export async function loadChunk(factory, {
 } = {}) {
   const key = `pit.chunkReload.${name}`;
   const read = () => { try { return storage?.getItem(key); } catch { return null; } };
-  const write = (v) => { try { storage?.setItem(key, v); } catch { /* private mode */ } };
+  const writeAndConfirm = (v) => {
+    try {
+      if (!storage) return false;
+      storage.setItem(key, v);
+      return storage.getItem(key) === String(v);
+    } catch {
+      // A storage-denied/private session cannot retain the one-shot guard. Do
+      // not reload without it, or the same stale chunk could reload forever.
+      return false;
+    }
+  };
   const clear = () => { try { storage?.removeItem(key); } catch { /* private mode */ } };
 
   try {
@@ -101,11 +177,11 @@ export async function loadChunk(factory, {
       // post; reloading in that case destroys unsaved composer state.
       const stale = isStaleChunkError(secondError)
         || await confirmMissingDynamicChunk(secondError, { probe, online, baseUrl });
-      if (stale && read() !== "1" && reload) {
-        write("1");
+      if (stale && read() !== "1" && reload && writeAndConfirm("1")) {
         reload();
-        // Render nothing during the sliver before unload.
-        return { default: () => null };
+        // Navigation can be delayed or ignored by mobile Safari. Keep a visible
+        // manual escape instead of resolving the lazy screen to a blank app.
+        return { default: updatingMshpitFallback(reload) };
       }
       throw secondError;
     }

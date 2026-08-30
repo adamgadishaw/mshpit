@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { analyticsDurationBucket, analyticsDwellBucket, sanitizeAnalyticsEvent } from "./analyticsPolicy.mjs";
 
@@ -40,6 +41,20 @@ test("analytics policy rejects unknown names and malformed idempotency identifie
     name: "screen_view",
     props: { screen: "tab_feed" },
   });
+});
+
+test("consent copy describes account linkage and raw-event deletion without promising anonymity", () => {
+  const auth = readFileSync(new URL("../screens/AuthScreen.jsx", import.meta.url), "utf8");
+  const settings = readFileSync(new URL("../screens/SettingsScreen.jsx", import.meta.url), "utf8");
+  assert.match(auth, /usage events linked to your account/);
+  assert.match(auth, /do not include the contents of authored posts or reviews, search terms, messages, or uploaded media/);
+  assert.match(auth, /IP addresses are not stored with these analytics events/);
+  assert.doesNotMatch(auth, /personal details removed/i);
+  assert.match(settings, /raw product events were deleted/);
+  assert.match(settings, /Aggregate counts from normal account activity[^"]*may remain/);
+  assert.match(settings, /account-linked usage events/);
+  assert.match(settings, /do not include the contents of authored posts or reviews, search terms, messages, or uploaded media/);
+  assert.match(settings, /IP addresses are not stored with these analytics events/);
 });
 
 test("artist workspace and fan preview screen views survive the shared analytics allowlist", () => {
