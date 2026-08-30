@@ -67,23 +67,38 @@ test("artist top reviews bound invalid limits without throwing", () => {
   assert.deepEqual(topArtistReviews(null), []);
 });
 
-test("artist page renders ranked review cards beside the fan gallery", () => {
+test("artist page keeps fan posts and exact shows as separate explicit destinations", () => {
   assert.match(artistScreen, /useArtistTopReviews\(\{/);
-  assert.match(artistScreen, /selectArtistReviewsPresentation\(topReviewsResource, a\.nights, \{ limit: 3 \}\)/);
+  assert.match(artistScreen, /selectArtistReviewsPresentation\(topReviewsResource, a\.nights, \{ limit: 3, memorialMode: deceased \}\)/);
   assert.match(artistScreen, /sectionModel\.condensed \? "TOP REVIEW" : `TOP REVIEWS · \$\{topReviews\.length\}`/);
   assert.match(artistScreen, /visibleTopReviews\.map\(\(review, index\) =>/);
   assert.match(artistScreen, /DEVICE COPY/);
-  assert.match(artistScreen, /accessibilityLabel="Retry loading live artist reviews"/);
+  assert.match(artistScreen, /accessibilityLabel=\{`Retry loading \$\{deceased \? "artist fan memories" : "live artist reviews"\}`\}/);
   assert.match(artistScreen, /href=\{review\.user\?\.handle \? profilePath\(review\.user\.handle\) : null\}/);
   assert.match(artistScreen, /onNavigate=\{\(\) => onOpenProfile\(review\.userId\)\}/);
-  assert.match(artistScreen, /accessibilityHint="Opens the concert night and full review"/);
-  assert.match(artistScreen, /href=\{postPath\(review\.id\)\}/);
+  assert.match(artistScreen, /onNavigate=\{\(\) => onOpenPost\?\.\(review\)\}/);
+  assert.match(artistScreen, />Read fan post<\/Text>/);
+  assert.match(artistScreen, /href=\{concertPath\(review\.archiveShowKey\)\}/);
   assert.match(artistScreen, /onNavigate=\{\(\) => onOpenShow\?\.\(review\)\}/);
+  assert.match(artistScreen, />View show<\/Text>/);
+  assert.doesNotMatch(artistScreen, /Open comments|Comment on this fan post/);
   assert.match(artistScreen, /review\.photosPublic === true \|\| Number\(review\.photosPublic\) === 1/);
   assert.match(artistScreen, /onPress=\{\(\) => onOpenPhotos\?\.\(publicMedia, 0, review\.id\)\}/);
   assert.match(artistScreen, /topReviewMain: \{ flex: 1, minHeight: 150/);
   assert.match(artistScreen, /topReviewAuthorAction: \{ flex: 1, minWidth: 0, minHeight: 44/);
-  assert.match(artistScreen, /topReviewBodyAction: \{ flex: 1, minHeight: 76/);
+  assert.match(artistScreen, /topReviewActions: \{ flexDirection: "row", flexWrap: "wrap"/);
   assert.match(artistScreen, /topReviewMedia: \{ width: 108, minHeight: 150/);
   assert.equal((appSource.match(/<ArtistScreen[^;]+onOpenProfile=\{openProfile\}/g) || []).length, 2);
+  assert.equal((appSource.match(/<ArtistScreen[^;]+onOpenPost=\{openPost\}/g) || []).length, 2);
+});
+
+test("memorial fan memories never use historical rating as a visible or hidden tie-breaker", () => {
+  const rows = [
+    review("old-five", { overall: 5, date: "2026-06-01", createdAt: 10 }),
+    review("new-one", { overall: 1, date: "2020-01-01", createdAt: 20 }),
+  ];
+  assert.deepEqual(topArtistReviews(rows, { limit: 2, memorialMode: true }).map(({ id }) => id), [
+    "new-one",
+    "old-five",
+  ]);
 });

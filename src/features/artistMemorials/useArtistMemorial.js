@@ -9,6 +9,7 @@ import {
 } from "../../domain/loadState.mjs";
 import {
   artistMemorialAdminScope,
+  artistMemorialAvailability,
   artistMemorialScope,
   EMPTY_ARTIST_MEMORIALS,
   mergeArtistMemorial,
@@ -52,8 +53,10 @@ export function useArtistMemorial({ accountId = null, artistKey = null, enabled 
     };
   }, [accountId, artistKey, enabled, revision, scope]);
 
+  const projected = projectArtistMemorial(resource, { accountId, artistKey });
   return {
-    resource: projectArtistMemorial(resource, { accountId, artistKey }),
+    resource: projected,
+    availability: artistMemorialAvailability(projected, { artistKey, enabled }),
     reload: useCallback(() => setRevision((current) => current + 1), []),
   };
 }

@@ -1,4 +1,5 @@
 import { normalizeTaggedPeople } from "../../../src/domain/postFriendTags.mjs";
+import { archiveShowKey, isArchiveDate } from "../artistArchive/artistArchiveKeys.js";
 
 const boundedLimit = (value) => {
   const requested = Number(value);
@@ -9,10 +10,15 @@ const list = (value) => Array.isArray(value) ? value : [];
 
 function artistReviewProjection(post) {
   const publicMedia = post.photosPublic === true || Number(post.photosPublic) === 1;
+  const artistIdentity = String(post.artistKey || post.artist || "").trim();
+  const venueIdentity = String(post.venueKey || post.venue || "").trim();
+  const exactShowKey = post.kind !== "status" && artistIdentity && venueIdentity && isArchiveDate(post.date)
+    ? archiveShowKey({ artistIdentity, venueIdentity, date: post.date })
+    : null;
   return {
     id: post.id,
     userId: post.userId,
-    kind: "review",
+    kind: post.kind === "status" ? "memory" : "review",
     user: post.user,
     artist: post.artist,
     venue: post.venue,
@@ -21,6 +27,7 @@ function artistReviewProjection(post) {
     artistKey: post.artistKey || null,
     artistMbid: post.artistMbid || null,
     venueKey: post.venueKey || null,
+    archiveShowKey: exactShowKey,
     overall: post.overall,
     band: post.band ?? null,
     room: post.room ?? null,

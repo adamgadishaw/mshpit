@@ -155,7 +155,9 @@ test("Store keeps same-account foreground validation mounted and skips account h
   assert.match(validation, /createSessionValidationCoordinator\(\{/);
   assert.match(validation, /coordinator\.resume\(\)/);
   assert.match(validation, /hydrateAccount: false/);
-  assert.match(validation, /feedRefreshRef\.current\.wake\(\)/);
+  assert.match(validation, /void revalidateCachedFeed\(\)/);
+  assert.doesNotMatch(validation, /feedRefreshRef\.current\.wake\(\)/);
+  assert.doesNotMatch(validation, /hydrateFeed\(/);
   assert.match(validation, /strict: true, reason: "auth-epoch"/);
   assert.match(validation, /context\.isSuperseded\(\)/);
   assert.match(validation, /outcome\.kind === "invalid-response"/);

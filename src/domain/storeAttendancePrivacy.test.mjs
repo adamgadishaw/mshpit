@@ -20,7 +20,10 @@ test("canonical attendance is memory-only and exposed through an account-scoped 
   assert.match(state, /if \(!goingRef\.attendance\) \{[\s\S]*goingRef\.attendance = \{ accountId: session\?\.id \|\| null, rows: \[\] \};/);
   assert.match(state, /const myAttendance = accountScopedRows\([\s\S]*goingRef\.attendance\.rows,[\s\S]*goingRef\.attendance\.accountId,[\s\S]*activeAccountId/);
   assert.doesNotMatch(state, /useState|useRef|usePrivateEphemeral|usePersisted|\bsave\(/);
-  assert.match(store, /goingFor, myAttendance, isGoing/);
+  assert.match(
+    store,
+    /goingFor, myAttendance, refreshMyAttendance, applyMyAttendanceMutation, isGoing/,
+  );
 });
 
 test("an account transition clears attendance before the new identity can adopt data", () => {
@@ -37,15 +40,25 @@ test("attendance hydration rejects stale accounts and mutations before adopting 
     "// The same response also carries canonical private attendance history.",
     "// Server-backed notifications",
   );
+  const adoption = storeSlice(
+    "const adoptAttendanceSnapshot =",
+    "const refreshMyAttendance =",
+  );
 
   assert.match(hydration, /\.then\(\(\{ going: rows, attendance: attendanceRows \}\) => \{/);
-  assert.match(hydration, /sessionRef\.current\?\.id !== su\.id/);
-  assert.match(hydration, /goingMutationRevisionRef\.current !== goingHydrationRevision/);
-  assert.match(hydration, /goingRef\.attendance\.accountId !== su\.id/);
-  assert.match(hydration, /Array\.isArray\(attendanceRows\) \? attendanceRows : \[\]/);
-  assert.match(hydration, /goingRef\.attendance = nextAttendanceState;/);
+  assert.match(hydration, /adoptAttendanceSnapshot\(su\.id, rows, attendanceRows, goingHydrationRevision\)/);
+  assert.match(adoption, /sessionRef\.current\?\.id !== accountId/);
+  assert.match(adoption, /goingMutationRevisionRef\.current !== mutationRevision/);
+  assert.match(adoption, /goingRef\.attendance\.accountId !== accountId/);
+  assert.match(adoption, /Array\.isArray\(attendanceRows\) \? attendanceRows : \[\]/);
+  assert.match(adoption, /goingRef\.attendance = \{ accountId, rows: canonicalAttendance \};/);
   assert.ok(
-    hydration.indexOf("goingRef.attendance = nextAttendanceState;")
+    adoption.indexOf("goingRef.attendance = { accountId, rows: canonicalAttendance };")
+      < adoption.indexOf("return next;"),
+    "the synchronous attendance ref must update before the helper returns",
+  );
+  assert.ok(
+    hydration.indexOf("adoptAttendanceSnapshot(su.id, rows, attendanceRows, goingHydrationRevision)")
       < hydration.indexOf("setGoing(next);"),
     "the synchronous attendance ref must update before the existing Going rerender",
   );

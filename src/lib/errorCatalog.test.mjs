@@ -30,6 +30,7 @@ test("server failure codes normalize to stable PIT references", () => {
     FORBIDDEN: "PIT-AUTH-002",
     FAN_CLUB_MEMBERSHIP_REQUIRED: "PIT-CHAT-001",
     LOUNGE_ATTENDANCE_REQUIRED: "PIT-CHAT-002",
+    LOUNGE_CLOSED: "PIT-CHAT-003",
     CONTENT_REJECTED: "PIT-SAFE-001",
     ACTION_REQUIRED: "PIT-REQ-001",
     VALIDATION_FAILED: "PIT-REQ-001",
@@ -38,6 +39,7 @@ test("server failure codes normalize to stable PIT references", () => {
     NOT_FOUND: "PIT-REQ-002",
     CONFLICT: "PIT-REQ-003",
     ARTIST_MEMORIALIZED: "PIT-REQ-003",
+    ARTIST_MEMORIAL_REQUIRED: "PIT-REQ-003",
     CHECK_IN_UNAVAILABLE: "PIT-SHOW-001",
     IDEMPOTENCY_MISMATCH: "PIT-REQ-003",
     IDENTITY_CHANGED: "PIT-AUTH-004",
@@ -94,4 +96,12 @@ test("closed live check-ins have specific safe recovery copy", () => {
   assert.equal(entry.retryable, false);
   assert.match(entry.message, /Going or Went/);
   assert.doesNotMatch(`${entry.message} ${entry.guidance}`, /provider|timezone|lifecycle|database/i);
+});
+
+test("closed Lounges route members toward the artist community without suggesting a retry", () => {
+  assert.equal(catalogueCode({ serverCode: "LOUNGE_CLOSED", status: 410 }), "PIT-CHAT-003");
+  const entry = catalogEntry("PIT-CHAT-003");
+  assert.equal(entry.retryable, false);
+  assert.match(`${entry.message} ${entry.guidance}`, /24 hours after doors/);
+  assert.match(entry.guidance, /Fan Club/);
 });

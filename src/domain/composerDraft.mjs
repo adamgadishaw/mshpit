@@ -29,7 +29,7 @@ const normalizedDims = (value) => {
  */
 export function normalizeComposerDraft(value = {}) {
   const panels = value.panels && typeof value.panels === "object" ? value.panels : {};
-  const postType = value.postType === "status" ? "status" : "show";
+  const postType = value.postType === "status" || value.postType === "memory" ? value.postType : "show";
   const legacyPhotos = Array.isArray(value.photos) ? value.photos.filter((uri) => typeof uri === "string").slice(0, MEDIA_POST_MAX_ATTACHMENTS) : [];
   const normalizedProject = value.mediaProject
     ? normalizeMediaProject(value.mediaProject)
@@ -98,6 +98,7 @@ export function composerDraftHasContent(value) {
 
 export function composerDraftTitle(value) {
   const draft = normalizeComposerDraft(value);
+  if (draft.postType === "memory") return draft.review.trim() || `${draft.artist.trim() || "Artist"} fan memory`;
   if (draft.postType === "status") return draft.review.trim() || (draft.campaign ? "Featured post draft" : "Post draft");
   return `${draft.artist.trim() || "Untitled show"}${draft.venue.trim() ? ` ${String.fromCharCode(183)} ${draft.venue.trim()}` : ""}`;
 }

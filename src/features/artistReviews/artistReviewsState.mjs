@@ -17,7 +17,7 @@ export function projectArtistReviewsResource(resource, options = {}) {
   return projectLoadState(resource, artistReviewsScope(options), EMPTY_ARTIST_REVIEWS);
 }
 
-export function selectArtistReviewsPresentation(resource, hydratedReviews, { limit = 3 } = {}) {
+export function selectArtistReviewsPresentation(resource, hydratedReviews, { limit = 3, memorialMode = false } = {}) {
   const hasAuthoritativeSnapshot = resource?.updatedAt != null;
   const requested = Math.trunc(Number(limit) || 0);
   const take = Math.max(0, Math.min(10, requested));
@@ -25,7 +25,7 @@ export function selectArtistReviewsPresentation(resource, hydratedReviews, { lim
   return Object.freeze({
     reviews: hasAuthoritativeSnapshot
       ? authoritative
-      : topArtistReviews(hydratedReviews, { limit: take }),
+      : topArtistReviews(hydratedReviews, { limit: take, memorialMode }),
     source: hasAuthoritativeSnapshot ? "authoritative" : "hydrated",
     initialError: resource?.status === "error" && !hasAuthoritativeSnapshot,
     refreshError: resource?.status === "error" && hasAuthoritativeSnapshot,

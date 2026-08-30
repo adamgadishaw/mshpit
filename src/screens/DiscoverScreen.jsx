@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View, useWindowDimensions } from "react-native";
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import { colors, displayFont, focusRing, font, mono, radius, shadow } from "../theme";
 import { useStore } from "../store";
 import { countryForCity } from "../geo";
@@ -12,6 +12,7 @@ import { MetricTile, OverviewState, QuickAction, SectionHeading } from "../compo
 import { UpcomingEventCard, VenueDiscoveryCard } from "../components/VenueDiscoveryCards";
 import { EventScopeToggle, PopularLoungeCard } from "../components/LiveDiscoveryCards";
 import { PublicPressableLink } from "../components/PublicWebLinks";
+import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import { eventPath } from "../domain/urls.mjs";
 import { buildDiscoverEventBannerSlides } from "../domain/discoverEventBanner.mjs";
 import {
@@ -93,6 +94,8 @@ export default function DiscoverScreen({
     discoverySidebar,
     discoverySidebarStatus,
     tourDates,
+    refreshTourDates,
+    refreshDiscoverySidebar,
     searchVenues,
     myAttendance = [],
   } = useStore();
@@ -125,6 +128,8 @@ export default function DiscoverScreen({
   const [genreStatus, setGenreStatus] = useState("idle");
   const [eventRange, setEventRange] = useState(EMPTY_EVENT_RANGE);
   const [visibleEventCount, setVisibleEventCount] = useState(DISCOVER_RANGE_BATCH);
+  const [pullRefreshing, setPullRefreshing] = useState(false);
+  const [pullRefreshError, setPullRefreshError] = useState(false);
   const overviewLoaderRef = useRef(loadDiscoverOverview);
   overviewLoaderRef.current = loadDiscoverOverview;
   const genreLoaderRef = useRef(loadDiscoverGenre);
@@ -134,6 +139,7 @@ export default function DiscoverScreen({
   const overviewRequestRef = useRef({ sequence: 0, controller: null });
   const genreRequestRef = useRef({ sequence: 0, controller: null });
   const rangeRequestRef = useRef({ sequence: 0, controller: null });
+  const pullRefreshControllerRef = useRef(null);
   const openArtist = useLatestCallback(onOpenArtist);
   const openPhotos = useLatestCallback(onOpenPhotos);
 
@@ -253,18 +259,20 @@ export default function DiscoverScreen({
       setOverview((current) => normalizeDiscoverOverview({ countries: current.countries }));
       setOverviewStatus("loading");
     }
-    overviewLoaderRef.current({ by: "popularity", country: region, signal: controller.signal, force })
+    return overviewLoaderRef.current({ by: "popularity", country: region, signal: controller.signal, force })
       .then((payload) => {
-        if (controller.signal.aborted || overviewRequestRef.current.sequence !== sequence) return;
+        if (controller.signal.aborted || overviewRequestRef.current.sequence !== sequence) return null;
         const normalized = normalizeDiscoverOverview(payload, "popularity");
         normalized.countries = orderDiscoverCountries(normalized.countries, homeCountry);
         setOverview(normalized);
         setOverviewStatus("ready");
+        return true;
       })
       .catch(() => {
-        if (!controller.signal.aborted && overviewRequestRef.current.sequence === sequence) setOverviewStatus("error");
+        if (controller.signal.aborted || overviewRequestRef.current.sequence !== sequence) return null;
+        setOverviewStatus("error");
+        return false;
       });
-    return controller;
   }, [homeCountry, region]);
 
   const requestGenre = useCallback(({ force = false } = {}) => {
@@ -272,23 +280,25 @@ export default function DiscoverScreen({
     if (!selectedGenre) {
       setGenreResult({ genre: null, region: null, rows: [] });
       setGenreStatus("idle");
-      return null;
+      return Promise.resolve(true);
     }
     const controller = new AbortController();
     const sequence = genreRequestRef.current.sequence + 1;
     genreRequestRef.current = { sequence, controller };
     setGenreResult({ genre: selectedGenre, region, rows: [] });
     setGenreStatus("loading");
-    genreLoaderRef.current({ genre: selectedGenre, country: region, limit: 12, signal: controller.signal, force })
+    return genreLoaderRef.current({ genre: selectedGenre, country: region, limit: 12, signal: controller.signal, force })
       .then((result) => {
-        if (controller.signal.aborted || genreRequestRef.current.sequence !== sequence) return;
+        if (controller.signal.aborted || genreRequestRef.current.sequence !== sequence) return null;
         setGenreResult({ genre: selectedGenre, region, rows: normalizeDiscoverArtistRows(result?.rows, 12) });
         setGenreStatus("ready");
+        return true;
       })
       .catch(() => {
-        if (!controller.signal.aborted && genreRequestRef.current.sequence === sequence) setGenreStatus("error");
+        if (controller.signal.aborted || genreRequestRef.current.sequence !== sequence) return null;
+        setGenreStatus("error");
+        return false;
       });
-    return controller;
   }, [region, selectedGenre]);
 
   const requestEventRange = useCallback((days, { after = null, append = false } = {}) => {
@@ -307,7 +317,7 @@ export default function DiscoverScreen({
     const worldwideIdentity = discoverCountryIdentity("Worldwide");
     const local = liveScope === LIVE_EVENT_SCOPE.LOCAL;
     const requestCountry = local || discoverCountryIdentity(region) === worldwideIdentity ? undefined : region;
-    rangeLoaderRef.current({
+    return rangeLoaderRef.current({
       days,
       limit: DISCOVER_RANGE_REQUEST_LIMIT,
       after,
@@ -315,7 +325,7 @@ export default function DiscoverScreen({
       local,
       signal: controller.signal,
     }).then(({ tourDates: rows, nextCursor, through }) => {
-      if (controller.signal.aborted || rangeRequestRef.current.sequence !== sequence) return;
+      if (controller.signal.aborted || rangeRequestRef.current.sequence !== sequence) return null;
       setEventRange((current) => ({
         scopeKey: rangeScopeKey,
         days,
@@ -326,10 +336,11 @@ export default function DiscoverScreen({
         nextCursor,
         status: "ready",
       }));
+      return true;
     }).catch(() => {
-      if (!controller.signal.aborted && rangeRequestRef.current.sequence === sequence) {
-        setEventRange((current) => ({ ...current, scopeKey: rangeScopeKey, days, status: "error" }));
-      }
+      if (controller.signal.aborted || rangeRequestRef.current.sequence !== sequence) return null;
+      setEventRange((current) => ({ ...current, scopeKey: rangeScopeKey, days, status: "error" }));
+      return false;
     });
   }, [liveScope, rangeScopeKey, region]);
 
@@ -379,6 +390,14 @@ export default function DiscoverScreen({
   }, [accountId, homeCity, homeCountry]);
 
   useEffect(() => {
+    pullRefreshControllerRef.current?.abort();
+    pullRefreshControllerRef.current = null;
+    setPullRefreshing(false);
+    setPullRefreshError(false);
+    return () => pullRefreshControllerRef.current?.abort();
+  }, [accountId, rangeScopeKey]);
+
+  useEffect(() => {
     const nextGenre = selectDefaultDiscoverGenre(overview.genres, selectedGenre);
     if (nextGenre !== selectedGenre) setSelectedGenre(nextGenre);
   }, [overview.genres, selectedGenre]);
@@ -404,6 +423,32 @@ export default function DiscoverScreen({
   };
   const retryGenre = useCallback(() => requestGenre({ force: true }), [requestGenre]);
 
+  const refreshDiscover = useCallback(async () => {
+    if (pullRefreshControllerRef.current) return false;
+    const controller = new AbortController();
+    pullRefreshControllerRef.current = controller;
+    setPullRefreshing(true);
+    setPullRefreshError(false);
+    const refreshLoadedRange = eventRange.scopeKey === rangeScopeKey && eventRange.status !== "idle"
+      ? requestEventRange(eventRange.days || selectedRangeDays)
+      : Promise.resolve(true);
+    const results = await Promise.allSettled([
+      requestOverview({ preserve: true, force: true }),
+      selectedGenre ? requestGenre({ force: true }) : Promise.resolve(true),
+      refreshTourDates?.({ signal: controller.signal }),
+      refreshDiscoverySidebar?.({ signal: controller.signal }),
+      refreshLoadedRange,
+    ]);
+    if (controller.signal.aborted || pullRefreshControllerRef.current !== controller) return false;
+    const failed = results.some((result) => result.status === "rejected"
+      || result.value === false
+      || result.value == null);
+    setPullRefreshError(failed);
+    setPullRefreshing(false);
+    pullRefreshControllerRef.current = null;
+    return !failed;
+  }, [eventRange.days, eventRange.scopeKey, eventRange.status, rangeScopeKey, refreshDiscoverySidebar, refreshTourDates, requestEventRange, requestGenre, requestOverview, selectedGenre, selectedRangeDays]);
+
   const overviewState = discoverSectionState({ status: overviewStatus, rows: overview.chart.rows });
   const showOverviewContent = hasDiscoverOverviewContent(overview)
     && (overviewStatus === "ready" || overviewStatus === "refreshing" || overviewStatus === "error");
@@ -428,13 +473,23 @@ export default function DiscoverScreen({
   ];
 
   return (
+    <VinylRefreshBoundary
+      refreshing={pullRefreshing}
+      onRefresh={refreshDiscover}
+      accessibilityLabel="Refresh Discover"
+      testID="discover-refresh"
+    >
     <ScrollView
       contentContainerStyle={[styles.content, compact && styles.contentCompact]}
       showsVerticalScrollIndicator={false}
       contentInsetAdjustmentBehavior="automatic"
       keyboardShouldPersistTaps="handled"
-      refreshControl={<RefreshControl refreshing={overviewStatus === "refreshing"} onRefresh={() => requestOverview({ preserve: true, force: true })} tintColor={colors.amber} colors={[colors.amber]} />}
     >
+      {pullRefreshError ? (
+        <Text style={styles.pullRefreshError} accessibilityRole="alert" accessibilityLiveRegion="assertive">
+          Some Discover details could not refresh. Your current results are still here.
+        </Text>
+      ) : null}
       <View style={[styles.hero, compact && styles.heroCompact]}>
         <View style={styles.heroCopy}>
           <Text style={styles.kicker}>FIND MUSIC AND SHOWS</Text>
@@ -735,12 +790,14 @@ export default function DiscoverScreen({
         />
       ) : null}
     </ScrollView>
+    </VinylRefreshBoundary>
   );
 }
 
 const styles = StyleSheet.create({
   content: { width: "100%", maxWidth: 1040, alignSelf: "center", paddingHorizontal: 24, paddingTop: 24, paddingBottom: 56, gap: 18 },
   contentCompact: { paddingHorizontal: 14, paddingTop: 16, paddingBottom: 40, gap: 14 },
+  pullRefreshError: { color: colors.danger, fontFamily: font, fontSize: 12, lineHeight: 17, textAlign: "center" },
   hero: { minHeight: 150, borderRadius: radius.lg, borderCurve: "continuous", padding: 24, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft, flexDirection: "row", alignItems: "flex-end", justifyContent: "space-between", gap: 20, ...shadow.card },
   heroCompact: { minHeight: 0, padding: 18, alignItems: "flex-start", flexDirection: "column" },
   heroCopy: { flex: 1, maxWidth: 650 },

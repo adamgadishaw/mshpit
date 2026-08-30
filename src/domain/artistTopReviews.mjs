@@ -27,16 +27,17 @@ export const artistReviewEngagement = (review) =>
 
 export function isEligibleArtistTopReview(review) {
   if (!review || typeof review !== "object") return false;
-  if (review.kind && review.kind !== "review") return false;
+  if (review.kind && review.kind !== "review" && review.kind !== "memory") return false;
   if (String(review.date || "").trim().toLowerCase() === "aggregate") return false;
   if (review.removed === true || Number(review.removed) === 1) return false;
-  return String(review.review || "").trim().length > 0;
+  return String(review.review || "").trim().length > 0
+    || (review.kind === "memory" && (Array.isArray(review.media) ? review.media.length : 0) > 0);
 }
 
 // Rank the real fan writing already available on an artist page. Engagement is
 // the strongest signal; score and the performance date break ties before the
 // immutable post id makes identical rows deterministic across clients.
-export function topArtistReviews(reviews, { limit = 3 } = {}) {
+export function topArtistReviews(reviews, { limit = 3, memorialMode = false } = {}) {
   const take = Math.max(0, Math.min(10, Math.trunc(Number(limit) || 0)));
   if (!take || !Array.isArray(reviews)) return [];
 
@@ -47,14 +48,23 @@ export function topArtistReviews(reviews, { limit = 3 } = {}) {
       const engagement = artistReviewEngagement(b) - artistReviewEngagement(a);
       if (engagement) return engagement;
 
-      const score = finiteCount(b.overall) - finiteCount(a.overall);
-      if (score) return score;
+      if (!memorialMode) {
+        const score = finiteCount(b.overall) - finiteCount(a.overall);
+        if (score) return score;
+      }
+
+      if (memorialMode) {
+        const publicationRecency = postTime(b) - postTime(a);
+        if (publicationRecency) return publicationRecency;
+      }
 
       const performanceRecency = showTime(b) - showTime(a);
       if (performanceRecency) return performanceRecency;
 
-      const publicationRecency = postTime(b) - postTime(a);
-      if (publicationRecency) return publicationRecency;
+      if (!memorialMode) {
+        const publicationRecency = postTime(b) - postTime(a);
+        if (publicationRecency) return publicationRecency;
+      }
 
       return stableIdCompare(a, b);
     })

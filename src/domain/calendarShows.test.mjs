@@ -122,6 +122,24 @@ test("calendar past shows use real logs and Here/Went history, never Interested 
   assert.equal(rows[2].attendanceState, "went");
 });
 
+test("calendar upcoming includes canonical Interested and Going without promoting them to past attendance", () => {
+  const rows = calendarShowsForView({
+    today,
+    attendance: [
+      show("interested", "2026-09-02", { state: "interested" }),
+      show("going", "2026-09-03", { state: "going" }),
+      show("past-interested", "2026-08-20", { state: "interested" }),
+      show("future-went", "2026-09-04", { state: "went" }),
+    ],
+  });
+
+  assert.deepEqual(rows.map(({ id }) => id), ["interested", "going"]);
+  assert.equal(rows[0].interested, true);
+  assert.equal(rows[0].going, false);
+  assert.equal(rows[1].going, true);
+  assert.equal(rows[1].attendanceState, "going");
+});
+
 test("calendar past deduplicates a logged night and attendance without mutating inputs", () => {
   const attendance = [{ artist: "Earl Sweatshirt", venue: "History", city: "Toronto", date: "2026-08-20", state: "went" }];
   const logs = [{ artist: "Earl Sweatshirt", venue: "History", city: "Toronto", date: "2026-08-20", review: "A night", kind: "review" }];

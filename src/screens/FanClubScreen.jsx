@@ -12,6 +12,9 @@ import useLiveChat from "../lib/useLiveChat";
 import useChatScroll from "../lib/useChatScroll";
 import { api } from "../lib/api";
 import { accountTargetScope, scopedScreenValue } from "../domain/screenScope.mjs";
+import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
+import useScopedRefresh from "../hooks/useScopedRefresh";
+import { refreshScope } from "../domain/scopedRefresh.mjs";
 
 const EMPTY_FAN_ACTIONS = Object.freeze({ text: "", joining: false, sending: false });
 
@@ -39,6 +42,12 @@ export default function FanClubScreen({ artist, onClose, onOpenProfile, onOpenPr
     ({ after, signal }) => loadFanClub(artist, { after, signal }),
     { channelKey: `fan-club:${chatAuthEpoch}:${session?.id || "guest"}:${artist}`, enabled: !!artist && member },
   );
+  const fanClubRefreshScope = refreshScope(session?.id, "fan-club", `${chatAuthEpoch}:${artistKey}`);
+  const { refresh: refreshFanClub, refreshing: fanClubRefreshing } = useScopedRefresh({
+    scope: fanClubRefreshScope,
+    enabled: !!artistKey && member,
+    task: ({ signal }) => loadFanClub(artist, { signal, strict: true }),
+  });
   const currentGateMeta = gateMeta?.key === artistKey ? gateMeta : null;
 
   useEffect(() => {
@@ -122,6 +131,11 @@ export default function FanClubScreen({ artist, onClose, onOpenProfile, onOpenPr
     <KeyboardAvoidingView style={styles.wrap} behavior={Platform.OS === "ios" ? "padding" : undefined}>
       <ScreenHeader kicker={`FAN CLUB · ${fanClubCount(artist)} members`} title={artist} onBack={onClose}
         right={<Pressable onPress={toggleMembership} disabled={joining}><Text style={styles.leave}>{joining ? "leaving…" : "leave"}</Text></Pressable>} />
+      <VinylRefreshBoundary
+        refreshing={fanClubRefreshing}
+        onRefresh={refreshFanClub}
+        accessibilityLabel={`Refresh the ${artist} Fan Club`}
+      >
       <ScrollView ref={scrollRef} contentContainerStyle={styles.chat} showsVerticalScrollIndicator={false}
         onScroll={onScroll} onContentSizeChange={onContentSizeChange} scrollEventThrottle={100}>
         {messages.length === 0 && <Text style={styles.empty}>Be the first to post.</Text>}
@@ -172,6 +186,7 @@ export default function FanClubScreen({ artist, onClose, onOpenProfile, onOpenPr
           );
         })}
       </ScrollView>
+      </VinylRefreshBoundary>
       {session && (
         <View style={styles.inputBar}>
           <TextInput style={styles.input} placeholder={`Message the ${artist} fan club…`} placeholderTextColor={colors.textFaint} value={text} onChangeText={(value) => updateActions({ text: value })} onSubmitEditing={send} returnKeyType="send" maxLength={1000} />

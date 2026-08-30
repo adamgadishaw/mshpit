@@ -110,7 +110,8 @@ test("Artist HQ launches the artist-only campaign composer and the feed renders 
 test("fan preview hides ownership affordances and unreleased dates", () => {
   assert.match(artist, /previewAsFan = false/);
   assert.match(artist, /const canManagePublicPage = ownsArtistPage && !previewAsFan/);
-  assert.match(artist, /const upcoming = memorial\?\.deceased[\s\S]*\? \[\][\s\S]*previewAsFan \? a\.upcoming\.filter\(\(date\) => !date\.scheduled\) : a\.upcoming/);
+  assert.match(artist, /const liveAvailable = memorialAvailability === "living"/);
+  assert.match(artist, /const upcoming = liveAvailable[\s\S]*\? \(previewAsFan \? a\.upcoming\.filter\(\(date\) => !date\.scheduled\) : a\.upcoming\)[\s\S]*: \[\]/);
   assert.match(artist, /FAN PREVIEW/);
   assert.match(artist, /Owner controls and scheduled dates are hidden\./);
   assert.match(artist, /!ownsArtistPage && a\.ownerId && onReport/);

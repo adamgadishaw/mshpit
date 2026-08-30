@@ -3,6 +3,7 @@ import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { createArtistReviewRepository } from "./artistReviewRepository.js";
 import { artistReviewRoutes } from "./artistReviewRoutes.js";
+import { archiveShowKey } from "../artistArchive/artistArchiveKeys.js";
 
 function createDatabase() {
   const database = new DatabaseSync(":memory:");
@@ -47,6 +48,12 @@ function createDatabase() {
     CREATE TABLE likes (post_id TEXT NOT NULL, user_id TEXT NOT NULL, PRIMARY KEY (post_id,user_id));
     CREATE TABLE comments (id TEXT PRIMARY KEY, post_id TEXT NOT NULL, user_id TEXT NOT NULL, removed INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE blocks (blocker_id TEXT NOT NULL, blocked_id TEXT NOT NULL, PRIMARY KEY (blocker_id,blocked_id));
+    CREATE TABLE post_media (post_id TEXT NOT NULL, asset_id TEXT NOT NULL);
+    CREATE TABLE artist_memorials (
+      artist_key TEXT PRIMARY KEY,
+      artist_mbid TEXT,
+      status TEXT NOT NULL
+    );
     CREATE INDEX idx_likes_post ON likes(post_id,user_id);
     CREATE INDEX idx_comments_post ON comments(post_id,removed,user_id);
   `);
@@ -75,6 +82,8 @@ function addPost(database, {
   authorId = "author",
   artist = "Alpha",
   artistKey = "alpha",
+  artistMbid = null,
+  venueKey = null,
   venue = "History",
   date = "2026-06-01",
   overall = 4,
@@ -86,9 +95,9 @@ function addPost(database, {
   photosPublic = false,
 } = {}) {
   database.prepare(`INSERT INTO posts
-    (id,user_id,artist,artist_key,venue,city,date,overall,band,room,dims,review,photos,photos_public,setlist,tags,kind,removed,created_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
-    id, authorId, artist, artistKey, venue, "Toronto", date, overall, overall, overall,
+    (id,user_id,artist,artist_key,artist_mbid,venue_key,venue,city,date,overall,band,room,dims,review,photos,photos_public,setlist,tags,kind,removed,created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    id, authorId, artist, artistKey, artistMbid, venueKey, venue, "Toronto", date, overall, overall, overall,
     "{}", review, JSON.stringify(photos), photosPublic ? 1 : 0, "[]", "[]", kind, removed ? 1 : 0, createdAt,
   );
 }
@@ -230,6 +239,22 @@ test("repository includes matching legacy-unbound reviews without mixing canonic
   }
 });
 
+test("memorial review ordering ignores historical scores and uses engagement then recency", () => {
+  const database = createDatabase();
+  try {
+    addAccount(database, "author");
+    addPost(database, { id: "older-five", overall: 5, date: "2026-08-01", createdAt: 10 });
+    addPost(database, { id: "newer-one", overall: 1, date: "2020-01-01", createdAt: 20 });
+    database.prepare("INSERT INTO artist_memorials (artist_key,artist_mbid,status) VALUES (?,?,?)")
+      .run("alpha", "11111111-1111-4111-8111-111111111111", "published");
+
+    const rows = createArtistReviewRepository(database).findTopReviews({ artistKey: "alpha", name: "Alpha", limit: 10 });
+    assert.deepEqual(rows.map((row) => row.id), ["newer-one", "older-five"]);
+  } finally {
+    database.close();
+  }
+});
+
 test("route bounds the read, validates identity, and fails closed for non-gallery media", () => {
   const database = createDatabase();
   try {
@@ -261,6 +286,11 @@ test("route bounds the read, validates identity, and fails closed for non-galler
     assert.equal(response.reviews.length, 10);
     assert.equal(response.reviews[0].id, "post-00");
     assert.equal(response.reviews[0].liked, true);
+    assert.equal(response.reviews[0].archiveShowKey, archiveShowKey({
+      artistIdentity: "alpha",
+      venueIdentity: "History",
+      date: "2026-06-01",
+    }));
     assert.equal(response.reviews[1].liked, false);
     assert.deepEqual(response.reviews[0].photos, []);
     assert.deepEqual(response.reviews[0].media, []);

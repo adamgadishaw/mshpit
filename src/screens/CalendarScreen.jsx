@@ -14,6 +14,7 @@ import {
   nextCalendarHistoryLimit,
 } from "../domain/calendarHistoryWindow.mjs";
 import { useProfileHistory } from "../features/profileHistory/useProfileHistory";
+import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const DOW = [
@@ -41,7 +42,7 @@ const dateFromKey = (key) => {
 // real month grid. "Today" comes from the server clock (GET /api/time) so it's right
 // regardless of the device's clock. Tap a day to see its shows; tap a show to open it.
 export default function CalendarScreen({ initialDate = null, initialView = CALENDAR_SHOW_VIEW.UPCOMING, onClose, onOpen, onOpenArtist }) {
-  const { session, upcomingEvents, goingFor, myAttendance, serverTime } = useStore();
+  const { session, upcomingEvents, goingFor, myAttendance, refreshMyAttendance, refreshTourDates, serverTime } = useStore();
   const { width: viewportWidth } = useWindowDimensions();
   const [view, setView] = useState(initialView === CALENDAR_SHOW_VIEW.PAST
     ? CALENDAR_SHOW_VIEW.PAST
@@ -99,10 +100,21 @@ export default function CalendarScreen({ initialDate = null, initialView = CALEN
   const [cursor, setCursor] = useState(() => { const [y, m] = initial.split("-").map(Number); return { y, m: m - 1 }; });
   const [selected, setSelected] = useState(initial);
   const [calendarNotice, setCalendarNotice] = useState(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState(false);
+  const refreshControllerRef = useRef(null);
   const [exportingKey, setExportingKey] = useState("");
   const dayRefs = useRef(new Map());
   const pendingFocusKey = useRef(null);
   const pendingPastPosition = useRef(false);
+
+  useEffect(() => {
+    refreshControllerRef.current?.abort();
+    refreshControllerRef.current = null;
+    setRefreshing(false);
+    setRefreshError(false);
+    return () => refreshControllerRef.current?.abort();
+  }, [session?.id]);
 
   const { y, m } = cursor;
   const daysInMonth = new Date(y, m + 1, 0).getDate();
@@ -227,6 +239,36 @@ export default function CalendarScreen({ initialDate = null, initialView = CALEN
     return history.retry();
   };
 
+  const refreshCalendar = async () => {
+    if (refreshControllerRef.current) return false;
+    const accountId = session?.id || null;
+    const controller = new AbortController();
+    refreshControllerRef.current = controller;
+    setRefreshing(true);
+    setRefreshError(false);
+    const results = await Promise.allSettled([
+      refreshTourDates?.({ signal: controller.signal }),
+      session ? refreshMyAttendance?.({ signal: controller.signal }) : true,
+      session ? history.retry() : true,
+      serverTime(),
+    ]);
+    if (controller.signal.aborted || refreshControllerRef.current !== controller
+      || (session?.id || null) !== accountId) return false;
+    const timeResult = results[3];
+    if (timeResult.status === "fulfilled" && timeResult.value?.now) {
+      setToday(new Date(timeResult.value.now));
+      if (timeResult.value.tz) setTz(timeResult.value.tz);
+    }
+    const failed = results.some((result, index) => result.status === "rejected"
+      || result.value === false
+      || result.value == null
+      || (index === 2 && result.value?.status === "error"));
+    setRefreshError(failed);
+    setRefreshing(false);
+    refreshControllerRef.current = null;
+    return !failed;
+  };
+
   return (
     <View style={styles.wrap}>
       <ScreenHeader
@@ -235,7 +277,26 @@ export default function CalendarScreen({ initialDate = null, initialView = CALEN
         onBack={onClose}
         right={<Pressable style={styles.todayTarget} onPress={() => { setCursor({ y: today.getFullYear(), m: today.getMonth() }); setSelected(todayKey); }} accessibilityRole="button" accessibilityLabel="Go to today"><Text style={styles.todayBtn}>Today</Text></Pressable>}
       />
-      <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
+      <VinylRefreshBoundary
+        refreshing={refreshing}
+        onRefresh={refreshCalendar}
+        accessibilityLabel="Refresh your calendar"
+        style={styles.refreshBoundary}
+        testID="calendar-refresh"
+      >
+      <ScrollView
+        contentContainerStyle={styles.scroll}
+        showsVerticalScrollIndicator={false}
+      >
+        {refreshing || refreshError ? (
+          <Text
+            style={[styles.refreshStatus, refreshError && styles.refreshStatusError]}
+            accessibilityLiveRegion={refreshError ? "assertive" : "polite"}
+            accessibilityRole={refreshError ? "alert" : "text"}
+          >
+            {refreshing ? "Refreshing your calendar…" : "Some calendar details could not refresh. Pull down to try again."}
+          </Text>
+        ) : null}
         <View style={styles.viewTabs} accessibilityRole="tablist" accessibilityLabel="Calendar show period">
           {[
             [CALENDAR_SHOW_VIEW.UPCOMING, "Upcoming"],
@@ -281,10 +342,14 @@ export default function CalendarScreen({ initialDate = null, initialView = CALEN
                 const isToday = k === todayKey;
                 const isSel = k === selected;
                 const hasGoing = evs?.some((event) => view === CALENDAR_SHOW_VIEW.PAST ? event.attended : event.going);
+                const hasInterested = view === CALENDAR_SHOW_VIEW.UPCOMING && evs?.some((event) => event.interested);
                 const goingCount = view === CALENDAR_SHOW_VIEW.UPCOMING
                   ? evs?.filter((event) => event.going).length || 0
                   : 0;
-                const label = `${prettyDay(k)}${isToday ? ", today" : ""}${evs ? `, ${evs.length} show${evs.length === 1 ? "" : "s"}` : ", no shows"}${goingCount ? `, going to ${goingCount}` : ""}`;
+                const interestedCount = view === CALENDAR_SHOW_VIEW.UPCOMING
+                  ? evs?.filter((event) => event.interested).length || 0
+                  : 0;
+                const label = `${prettyDay(k)}${isToday ? ", today" : ""}${evs ? `, ${evs.length} show${evs.length === 1 ? "" : "s"}` : ", no shows"}${goingCount ? `, going to ${goingCount}` : ""}${interestedCount ? `, interested in ${interestedCount}` : ""}`;
                 return (
                   <Pressable
                     key={k}
@@ -297,7 +362,7 @@ export default function CalendarScreen({ initialDate = null, initialView = CALEN
                     accessibilityState={{ selected: isSel }}
                   >
                     <Text style={[styles.cellNum, isSel && styles.cellNumSel, isToday && !isSel && styles.cellNumToday]}>{d}</Text>
-                    {evs ? <View style={[styles.dot, { backgroundColor: hasGoing ? colors.amber : colors.textFaint }, isSel && { backgroundColor: "#1A1206" }]} /> : <View style={styles.dotEmpty} />}
+                    {evs ? <View style={[styles.dot, { backgroundColor: hasGoing ? colors.amber : hasInterested ? colors.magenta : colors.textFaint }, isSel && { backgroundColor: "#1A1206" }]} /> : <View style={styles.dotEmpty} />}
                   </Pressable>
                 );
               })}
@@ -309,6 +374,7 @@ export default function CalendarScreen({ initialDate = null, initialView = CALEN
           {view === CALENDAR_SHOW_VIEW.UPCOMING ? (
             <>
               <View style={styles.legendItem}><View style={[styles.dot, { backgroundColor: colors.amber }]} /><Text style={styles.legendTxt}>You're going</Text></View>
+              <View style={styles.legendItem}><View style={[styles.dot, { backgroundColor: colors.magenta }]} /><Text style={styles.legendTxt}>Interested</Text></View>
               <View style={styles.legendItem}><View style={[styles.dot, { backgroundColor: colors.textFaint }]} /><Text style={styles.legendTxt}>Upcoming show</Text></View>
             </>
           ) : (
@@ -410,7 +476,7 @@ export default function CalendarScreen({ initialDate = null, initialView = CALEN
                   : historyWindow.hasMore
                     ? "Load earlier shows above to keep looking through your history."
                   : "Shows you log or mark Went appear here on the night they happened."
-              : "Tour dates land here automatically as they're announced. Tap “Going” on any show to pin your own plans."}</Text>
+              : "Tour dates land here automatically as they're announced. Mark a show Interested or Going to pin your own plans."}</Text>
           </View>
         ) : selectedEvents.length === 0 ? (
           <View style={styles.empty}>
@@ -426,8 +492,9 @@ export default function CalendarScreen({ initialDate = null, initialView = CALEN
                   <Text style={styles.eventVenue} numberOfLines={1}>{[ev.venue, ev.place || ev.city].filter(Boolean).join(" · ") || "Venue TBA"}</Text>
                 </View>
                 {view === CALENDAR_SHOW_VIEW.UPCOMING && ev.going ? <View style={styles.goingTag}><Text style={styles.goingTagTxt}>GOING</Text></View> : null}
-                {view === CALENDAR_SHOW_VIEW.UPCOMING && !ev.going && ev.logged ? <View style={styles.goingTag}><Text style={styles.goingTagTxt}>LOGGED</Text></View> : null}
-                {view === CALENDAR_SHOW_VIEW.UPCOMING && !ev.going && !ev.logged && ev.posted ? <View style={styles.goingTag}><Text style={styles.goingTagTxt}>POSTED</Text></View> : null}
+                {view === CALENDAR_SHOW_VIEW.UPCOMING && !ev.going && ev.interested ? <View style={styles.interestedTag}><Text style={styles.interestedTagTxt}>INTERESTED</Text></View> : null}
+                {view === CALENDAR_SHOW_VIEW.UPCOMING && !ev.going && !ev.interested && ev.logged ? <View style={styles.goingTag}><Text style={styles.goingTagTxt}>LOGGED</Text></View> : null}
+                {view === CALENDAR_SHOW_VIEW.UPCOMING && !ev.going && !ev.interested && !ev.logged && ev.posted ? <View style={styles.goingTag}><Text style={styles.goingTagTxt}>POSTED</Text></View> : null}
                 {view === CALENDAR_SHOW_VIEW.PAST && ev.logged ? <View style={styles.goingTag}><Text style={styles.goingTagTxt}>LOGGED</Text></View> : null}
                 {view === CALENDAR_SHOW_VIEW.PAST && !ev.logged && ev.attended ? <View style={styles.goingTag}><Text style={styles.goingTagTxt}>WENT</Text></View> : null}
                 {ev.soldOut ? <View style={styles.soldTag}><Text style={styles.soldTagTxt}>SOLD OUT</Text></View> : null}
@@ -458,13 +525,17 @@ export default function CalendarScreen({ initialDate = null, initialView = CALEN
         )}
         <View style={{ height: 40 }} />
       </ScrollView>
+      </VinylRefreshBoundary>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
+  refreshBoundary: { flex: 1 },
   wrap: { flex: 1, backgroundColor: colors.bg },
   scroll: { padding: space(4), paddingTop: 8 },
+  refreshStatus: { color: colors.textDim, fontSize: 11.5, lineHeight: 17, marginBottom: 8 },
+  refreshStatusError: { color: colors.danger },
   todayTarget: { minWidth: 44, minHeight: 44, alignItems: "center", justifyContent: "center" },
   todayBtn: { color: colors.amber, fontSize: 13, fontWeight: "800" },
 
@@ -523,6 +594,8 @@ const styles = StyleSheet.create({
   eventVenue: { color: colors.textDim, fontSize: 12, marginTop: 2 },
   goingTag: { backgroundColor: "rgba(242,166,90,0.14)", borderRadius: radius.pill, paddingHorizontal: 8, paddingVertical: 3 },
   goingTagTxt: { color: colors.amber, fontSize: 9.5, fontWeight: "900", letterSpacing: 0.8 },
+  interestedTag: { backgroundColor: "rgba(187,84,142,0.12)", borderRadius: radius.pill, borderWidth: 1, borderColor: colors.magenta, paddingHorizontal: 8, paddingVertical: 3 },
+  interestedTagTxt: { color: colors.magenta, fontSize: 9, fontWeight: "900", letterSpacing: 0.65 },
   soldTag: { backgroundColor: "rgba(224,108,108,0.14)", borderRadius: radius.pill, paddingHorizontal: 8, paddingVertical: 3 },
   soldTagTxt: { color: colors.danger, fontSize: 9.5, fontWeight: "900", letterSpacing: 0.8 },
   eventActions: { flexDirection: "row", alignItems: "center", gap: 6 },

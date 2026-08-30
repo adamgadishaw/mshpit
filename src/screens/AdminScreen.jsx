@@ -2,7 +2,6 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import { ActivityIndicator, View, Text, StyleSheet, ScrollView, Pressable, TextInput } from "react-native";
 import { colors, mono, radius, space } from "../theme";
 import { useStore, isStaff, isMod } from "../store";
-import { api } from "../lib/api";
 import Icon from "../components/Icon";
 import Avatar from "../components/Avatar";
 import SheetHeader from "../components/SheetHeader";
@@ -11,13 +10,26 @@ import BadgeConsole from "../components/BadgeConsole";
 import ModerationConsole from "../components/moderation/ModerationConsole";
 import SuggestionInbox from "../components/moderation/SuggestionInbox";
 import ArtistMemorialConsole from "../components/moderation/ArtistMemorialConsole";
+import ArtistDeathWatchPanel from "../components/moderation/ArtistDeathWatchPanel";
 import { normalizeAdminMemberQuery } from "../domain/moderationConsole.mjs";
 import { staffScopeFor } from "../domain/staffReadCoordinator.mjs";
 import { readAdminHealth } from "../features/admin/services/adminHealthApi.mjs";
+import {
+  readAdminAnalytics,
+  readAdminBadges,
+  readAdminErrors,
+  readAdminMemberAnalytics,
+  sendAdminErrorTestAlert,
+  updateAdminUserBadge,
+} from "../features/admin/services/adminConsoleApi.mjs";
 import { listSuggestions, updateSuggestionStatus } from "../features/suggestions/suggestionService";
 import { useArtistMemorialAdmin } from "../features/artistMemorials/useArtistMemorial";
+import useArtistDeathWatchAdmin from "../features/artistDeathWatch/useArtistDeathWatchAdmin";
 import useAppActive from "../lib/useAppActive";
 import { captureAppError } from "../lib/diagnostics";
+import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
+import useScopedRefresh from "../hooks/useScopedRefresh";
+import { refreshScope } from "../domain/scopedRefresh.mjs";
 
 const ADMIN_ONLY_TABS = new Set([
   "overview", "analytics", "catalog", "email", "badges", "suggestions", "memorials", "requests",
@@ -25,7 +37,7 @@ const ADMIN_ONLY_TABS = new Set([
 
 // Privacy-bounded first-party product analytics for operator diagnosis. Public
 // content trends are kept separate from consented raw interaction counters.
-function AdInsights({ adminMembers = [], adminMemberDirectory = {}, loadAdminMembersStrict, session }) {
+function AdInsights({ adminMembers = [], adminMemberDirectory = {}, loadAdminMembersStrict, session, refreshRegistry }) {
   const sessionScope = staffScopeFor(session);
   const [analyticsState, setAnalyticsState] = useState({ scope: null, data: null, error: "" });
   const [memberQuery, setMemberQuery] = useState("");
@@ -34,19 +46,53 @@ function AdInsights({ adminMembers = [], adminMemberDirectory = {}, loadAdminMem
   const [memberLoading, setMemberLoading] = useState(false);
   const memberSearchController = useRef(null);
   const memberInspectController = useRef(null);
+  const analyticsSequence = useRef(0);
   const memberLoaderRef = useRef(loadAdminMembersStrict);
   memberLoaderRef.current = loadAdminMembersStrict;
   const normalizedMemberQuery = normalizeAdminMemberQuery(memberQuery);
 
+  const loadAnalytics = async ({ signal, strict = false, retainData = false } = {}) => {
+    if (!sessionScope) return { ok: false, unavailable: true };
+    const sequence = ++analyticsSequence.current;
+    setAnalyticsState((current) => ({
+      scope: sessionScope,
+      data: retainData && current.scope === sessionScope ? current.data : null,
+      error: "",
+    }));
+    try {
+      const data = await readAdminAnalytics({ signal });
+      if (signal?.aborted || analyticsSequence.current !== sequence) return { ok: false, stale: true };
+      setAnalyticsState({ scope: sessionScope, data, error: "" });
+      return { ok: true, data };
+    } catch (error) {
+      if (signal?.aborted || analyticsSequence.current !== sequence) return { ok: false, stale: true };
+      setAnalyticsState((current) => ({
+        scope: sessionScope,
+        data: retainData && current.scope === sessionScope ? current.data : null,
+        error: error?.message || "Audience data could not be loaded.",
+      }));
+      if (strict) throw error;
+      return { ok: false, error };
+    }
+  };
+
   useEffect(() => {
     if (!sessionScope) return undefined;
     const controller = new AbortController();
-    setAnalyticsState({ scope: sessionScope, data: null, error: "" });
-    api("/api/admin/analytics", { signal: controller.signal, silent: true, context: "Loading audience analytics" })
-      .then((data) => { if (!controller.signal.aborted) setAnalyticsState({ scope: sessionScope, data, error: "" }); })
-      .catch((error) => { if (!controller.signal.aborted && error?.name !== "AbortError") setAnalyticsState({ scope: sessionScope, data: null, error: error?.message || "Audience data could not be loaded." }); });
+    void loadAnalytics({ signal: controller.signal });
     return () => controller.abort();
+    // Staff scope is the request owner; the helper is intentionally recreated.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionScope]);
+  useEffect(() => {
+    if (!refreshRegistry) return undefined;
+    const refresh = ({ signal }) => loadAnalytics({ signal, strict: true, retainData: true });
+    refreshRegistry.current.analytics = refresh;
+    return () => {
+      if (refreshRegistry.current.analytics === refresh) delete refreshRegistry.current.analytics;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshRegistry, sessionScope]);
 
   useEffect(() => {
     memberSearchController.current?.abort();
@@ -101,7 +147,7 @@ function AdInsights({ adminMembers = [], adminMemberDirectory = {}, loadAdminMem
     setMemberLoading(true);
     setMemberDataState({ scope: sessionScope, data: null, error: "" });
     try {
-      const memberData = await api(`/api/admin/analytics/users/${user.id}`, { signal: controller.signal, silent: true, context: "Loading member activity" });
+      const memberData = await readAdminMemberAnalytics(user.id, { signal: controller.signal });
       if (!controller.signal.aborted && memberInspectController.current === controller) setMemberDataState({ scope: sessionScope, data: memberData, error: "" });
     } catch (error) {
       if (!controller.signal.aborted && error?.name !== "AbortError" && memberInspectController.current === controller) setMemberDataState({ scope: sessionScope, data: null, error: error?.message || "Member activity could not be loaded." });
@@ -242,16 +288,19 @@ function AdInsights({ adminMembers = [], adminMemberDirectory = {}, loadAdminMem
   );
 }
 
-function SuggestionsPanel({ session }) {
+function SuggestionsPanel({ session, refreshRegistry }) {
   const scope = staffScopeFor(session);
   const [state, setState] = useState({ scope, suggestions: [], nextCursor: null, loading: true, loadingMore: false, error: "" });
   const [busyId, setBusyId] = useState(null);
   const requestRef = useRef(null);
 
-  const load = async ({ append = false } = {}) => {
-    if (!scope) return;
+  const load = async ({ append = false, signal: externalSignal, strict = false } = {}) => {
+    if (!scope) return { ok: false, unavailable: true };
     requestRef.current?.abort();
     const controller = new AbortController();
+    const abortFromParent = () => controller.abort(externalSignal?.reason);
+    if (externalSignal?.aborted) abortFromParent();
+    else externalSignal?.addEventListener("abort", abortFromParent, { once: true });
     requestRef.current = controller;
     const before = append && state.scope === scope ? state.nextCursor : null;
     setState((current) => ({
@@ -262,7 +311,7 @@ function SuggestionsPanel({ session }) {
     }));
     try {
       const result = await listSuggestions({ before, limit: 50, signal: controller.signal });
-      if (controller.signal.aborted || requestRef.current !== controller) return;
+      if (controller.signal.aborted || requestRef.current !== controller) return { ok: false, stale: true };
       setState((current) => ({
         scope,
         suggestions: append ? [...current.suggestions, ...(result.suggestions || [])] : (result.suggestions || []),
@@ -271,10 +320,14 @@ function SuggestionsPanel({ session }) {
         loadingMore: false,
         error: "",
       }));
+      return { ok: true, data: result };
     } catch (error) {
-      if (controller.signal.aborted || requestRef.current !== controller) return;
+      if (controller.signal.aborted || requestRef.current !== controller) return { ok: false, stale: true };
       setState((current) => ({ ...current, scope, loading: false, loadingMore: false, error: error?.message || "Suggestions could not be loaded." }));
+      if (strict) throw error;
+      return { ok: false, error };
     } finally {
+      externalSignal?.removeEventListener("abort", abortFromParent);
       if (requestRef.current === controller) requestRef.current = null;
     }
   };
@@ -287,6 +340,15 @@ function SuggestionsPanel({ session }) {
     // reset when that identity or role changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scope]);
+  useEffect(() => {
+    if (!refreshRegistry) return undefined;
+    const refresh = ({ signal }) => load({ signal, strict: true });
+    refreshRegistry.current.suggestions = refresh;
+    return () => {
+      if (refreshRegistry.current.suggestions === refresh) delete refreshRegistry.current.suggestions;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshRegistry, scope]);
 
   const changeStatus = async (id, status) => {
     if (busyId || !scope) return;
@@ -363,6 +425,10 @@ export default function AdminScreen({ onClose }) {
       }));
     },
   });
+  const deathWatch = useArtistDeathWatchAdmin({
+    accountId: session?.id || null,
+    enabled: isMod(session?.role),
+  });
   const artistRequestActionRef = useRef({ sequence: 0, scope: artistRequestScope, requestId: null, action: null, controller: null });
   const [artistRequestAction, setArtistRequestAction] = useState({ scope: artistRequestScope, requestId: null, action: null, status: "idle", error: null });
   const scopedArtistRequestAction = artistRequestAction.scope === artistRequestScope
@@ -416,13 +482,22 @@ export default function AdminScreen({ onClose }) {
   // Catalog queue: thin artists + searched-but-not-found names, seed on demand.
   const [catalog, setCatalog] = useState({ thin: [], missing: [], thinTotal: 0 });
   const [seeding, setSeeding] = useState(false);
-  const refreshCatalog = () => adminArtistQueue().then(setCatalog);
+  const refreshCatalog = ({ signal, strict = false } = {}) => adminArtistQueue({ signal, strict }).then((next) => {
+    if (next) setCatalog(next);
+    return next;
+  });
   // Background "grow catalog to N" job: kick it off + poll live progress.
   const [seedJob, setSeedJob] = useState(null);
   const [seedAdd, setSeedAdd] = useState(10000);
   const [seedRuns, setSeedRuns] = useState([]);
-  const refreshSeed = () => catalogSeedStatus().then((s) => s && setSeedJob(s));
-  const refreshRuns = () => catalogSeedRuns().then(setSeedRuns);
+  const refreshSeed = ({ signal, strict = false } = {}) => catalogSeedStatus({ signal, strict }).then((s) => {
+    if (s) setSeedJob(s);
+    return s;
+  });
+  const refreshRuns = ({ signal, strict = false } = {}) => catalogSeedRuns({ signal, strict }).then((runs) => {
+    setSeedRuns(runs);
+    return runs;
+  });
   useEffect(() => {
     if (appActive && activeTab === "catalog") {
       refreshCatalog();
@@ -433,18 +508,22 @@ export default function AdminScreen({ onClose }) {
   useEffect(() => {
     if (activeTab !== "members" || !iAmAdmin) return;
     let cancelled = false;
-    api("/api/admin/badges")
+    readAdminBadges()
       .then((r) => { if (!cancelled) setGrantableBadges((r.badges || []).filter((b) => !b.archived)); })
-      .catch(() => {});
+      .catch((error) => {
+        if (!cancelled) captureAppError(error, { code: "PIT-ADMIN-BADGES-001", context: "Loading moderation badges", source: "admin-console", severity: "warning", toast: false });
+      });
     return () => { cancelled = true; };
   }, [activeTab, iAmAdmin]);
 
   useEffect(() => {
     if (activeTab !== "overview" || !iAmAdmin) return;
     let cancelled = false;
-    api("/api/admin/errors")
+    readAdminErrors()
       .then((r) => { if (!cancelled) setErrorLog(r); })
-      .catch(() => {});
+      .catch((error) => {
+        if (!cancelled) captureAppError(error, { code: "PIT-ADMIN-ERRORS-001", context: "Loading site errors", source: "admin-console", severity: "warning", toast: false });
+      });
     return () => { cancelled = true; };
   }, [activeTab, iAmAdmin]);
 
@@ -452,16 +531,14 @@ export default function AdminScreen({ onClose }) {
   // errors, so a clean window correctly sends nothing and says so.
   const sendTestAlert = async () => {
     try {
-      const r = await api("/api/admin/errors/test-alert", { method: "POST", body: {}, context: "Sending a test alert" });
+      const r = await sendAdminErrorTestAlert();
       setErrorLog((prev) => ({ ...prev, testResult: r.sent ? "Sent." : `Not sent: ${r.reason}` }));
     } catch { setErrorLog((prev) => ({ ...prev, testResult: "That didn't work." })); }
   };
 
   const toggleMemberBadge = async (userId, slug, held) => {
     try {
-      const r = await api(`/api/admin/users/${userId}/badges`, {
-        method: "POST", body: { slug, revoke: held }, context: held ? "Removing a badge" : "Granting a badge",
-      });
+      const r = await updateAdminUserBadge(userId, { slug, revoke: held });
       setMemberBadges((prev) => ({ ...prev, [userId]: r.badges || [] }));
       return true;
     } catch { return false; }
@@ -515,6 +592,7 @@ export default function AdminScreen({ onClose }) {
   // Keep the authenticated operational-health request active for server-side
   // diagnostics even while its dormant media-specific card is not rendered.
   const [, setHealth] = useState(null);
+  const adminRefreshRegistry = useRef({});
   useEffect(() => {
     if (activeTab !== "overview" || !artistRequestScope) {
       setHealth(null);
@@ -533,6 +611,49 @@ export default function AdminScreen({ onClose }) {
     });
     return () => controller.abort();
   }, [activeTab, artistRequestScope]);
+  const adminPullTabs = new Set(["overview", "analytics", "reports", "members", "catalog", "suggestions"]);
+  const adminRefreshScope = refreshScope(session?.id, "moderation", activeTab);
+  const { refresh: refreshAdmin, refreshing: adminRefreshing } = useScopedRefresh({
+    scope: adminRefreshScope,
+    enabled: !!artistRequestScope && adminPullTabs.has(activeTab),
+    task: async ({ signal }) => {
+      const registered = adminRefreshRegistry.current[activeTab];
+      if (typeof registered === "function") return registered({ signal });
+      if (activeTab === "reports") return loadModerationConsole({ signal });
+      if (activeTab === "members") {
+        const [members, badges] = await Promise.all([
+          loadAdminMembersStrict({ signal }),
+          readAdminBadges({ signal }),
+        ]);
+        if (!signal.aborted && staffScopeFor(activeStaffSession.current) === artistRequestScope) {
+          setGrantableBadges((badges?.badges || []).filter((badge) => !badge.archived));
+        }
+        return { members, badges };
+      }
+      if (activeTab === "catalog") {
+        const [catalogResult, seedResult, runResult] = await Promise.all([
+          refreshCatalog({ signal, strict: true }),
+          refreshSeed({ signal, strict: true }),
+          refreshRuns({ signal, strict: true }),
+        ]);
+        return { catalogResult, seedResult, runResult };
+      }
+      if (activeTab === "overview") {
+        const [moderation, members, health, errors] = await Promise.all([
+          loadModerationConsole({ signal }),
+          loadAdminMembersStrict({ signal }),
+          readAdminHealth({ signal }),
+          readAdminErrors({ signal }),
+        ]);
+        if (!signal.aborted && staffScopeFor(activeStaffSession.current) === artistRequestScope) {
+          setHealth(health);
+          setErrorLog(errors);
+        }
+        return { moderation, members, health, errors };
+      }
+      return { ok: false, unsupported: true };
+    },
+  });
 
   const TABS = [
     { key: "overview", label: "Overview", icon: "discover", admin: true },
@@ -544,6 +665,7 @@ export default function AdminScreen({ onClose }) {
     { key: "email", label: "Email", icon: "feed", admin: true },
     { key: "badges", label: "Badges", icon: "star", admin: true },
     { key: "suggestions", label: "Suggestions", icon: "comment", admin: true },
+    { key: "artist_alerts", label: "Artist alerts", icon: "dove", badge: Number(deathWatch.data?.counts?.pending) || undefined },
     { key: "memorials", label: "Memorials", icon: "dove", admin: true },
     { key: "requests", label: "Requests", icon: "shield", badge: pending.length, admin: true },
   ].filter((t) => iAmAdmin || !t.admin);
@@ -587,6 +709,12 @@ export default function AdminScreen({ onClose }) {
         ))}
       </View>
 
+      <VinylRefreshBoundary
+        refreshing={adminRefreshing}
+        onRefresh={refreshAdmin}
+        accessibilityLabel={`Refresh ${activeTab} moderation data`}
+        enabled={adminPullTabs.has(activeTab)}
+      >
       <ScrollView
         automaticallyAdjustKeyboardInsets
         contentContainerStyle={[styles.column, styles.content]}
@@ -670,7 +798,7 @@ export default function AdminScreen({ onClose }) {
         )}
 
         {/* ---- PRIVACY-BOUNDED PRODUCT ANALYTICS ---- */}
-        {activeTab === "analytics" && <AdInsights adminMembers={adminMembers} adminMemberDirectory={adminMemberDirectory} loadAdminMembersStrict={loadAdminMembersStrict} session={session} />}
+        {activeTab === "analytics" && <AdInsights adminMembers={adminMembers} adminMemberDirectory={adminMemberDirectory} loadAdminMembersStrict={loadAdminMembersStrict} session={session} refreshRegistry={adminRefreshRegistry} />}
 
         {/* ---- REPORTS ---- */}
         {activeTab === "reports" && (
@@ -938,7 +1066,11 @@ export default function AdminScreen({ onClose }) {
 
         {activeTab === "badges" && <BadgeConsole />}
 
-        {activeTab === "suggestions" && <SuggestionsPanel session={session} />}
+        {activeTab === "suggestions" && <SuggestionsPanel session={session} refreshRegistry={adminRefreshRegistry} />}
+
+        {activeTab === "artist_alerts" && (
+          <ArtistDeathWatchPanel watch={deathWatch} isAdmin={iAmAdmin} />
+        )}
 
         {activeTab === "memorials" && iAmAdmin && (
           <ArtistMemorialConsole
@@ -1014,6 +1146,7 @@ export default function AdminScreen({ onClose }) {
           </>
         )}
       </ScrollView>
+      </VinylRefreshBoundary>
     </View>
   );
 }

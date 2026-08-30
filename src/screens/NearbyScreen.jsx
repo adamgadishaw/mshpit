@@ -7,18 +7,32 @@ import ConcertMap from "../components/ConcertMap";
 import LocationPicker from "../components/LocationPicker";
 import ScreenHeader from "../components/ScreenHeader";
 import { UpcomingEventCard, VenueDiscoveryCard } from "../components/VenueDiscoveryCards";
+import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
+import { refreshScope } from "../domain/scopedRefresh.mjs";
 import { nearestMapPoints } from "../domain/venueDiscovery.mjs";
+import useScopedRefresh from "../hooks/useScopedRefresh";
 import { openTicketLink } from "../lib/ticketLinks";
 
 const RADII = [25, 50, 75, 150];
 const MAP_POINT_LIMIT = 60;
 
 export default function NearbyScreen({ onClose, onOpenVenue, onOpenArtist }) {
-  const { session, localVenues, regionShows, venueSummary, locationCenter } = useStore();
+  const { session, localVenues, regionShows, venueSummary, locationCenter, refreshTourDates } = useStore();
   const [center, setCenter] = useState(session?.home || null);
   const [km, setKm] = useState(75);
   const [tab, setTab] = useState("venues");
   const [pickingCity, setPickingCity] = useState(false);
+  const [refreshError, setRefreshError] = useState(false);
+  const nearbyRefreshTarget = [center?.lat ?? "none", center?.lng ?? "none", km, tab].join(":");
+  const nearbyRefreshScope = refreshScope(session?.id, "nearby", nearbyRefreshTarget);
+  const { refresh: refreshNearby, refreshing: nearbyRefreshing } = useScopedRefresh({
+    scope: nearbyRefreshScope,
+    task: async ({ signal }) => {
+      setRefreshError(false);
+      return refreshTourDates({ signal });
+    },
+    onError: () => setRefreshError(true),
+  });
 
   if (pickingCity) {
     return (
@@ -75,6 +89,11 @@ export default function NearbyScreen({ onClose, onOpenVenue, onOpenArtist }) {
   return (
     <View style={styles.wrap}>
       <ScreenHeader kicker="LOCAL LINEUP" title="Near you" onBack={onClose} />
+      <VinylRefreshBoundary
+        refreshing={nearbyRefreshing}
+        onRefresh={refreshNearby}
+        accessibilityLabel="Refresh nearby venues and shows"
+      >
       <FlatList
         key={tab}
         data={data}
@@ -89,6 +108,9 @@ export default function NearbyScreen({ onClose, onOpenVenue, onOpenArtist }) {
         windowSize={7}
         ListHeaderComponent={(
           <View style={styles.headerContent}>
+            {refreshError ? (
+              <Text style={styles.refreshError} accessibilityRole="alert">Nearby results could not refresh. Your current city, radius, and results are unchanged.</Text>
+            ) : null}
             <View style={styles.locationHero}>
               <View style={styles.heroGlow} />
               <Text style={styles.eyebrow}>EXPLORE AROUND YOU</Text>
@@ -169,6 +191,7 @@ export default function NearbyScreen({ onClose, onOpenVenue, onOpenArtist }) {
           </View>
         ) : null}
       />
+      </VinylRefreshBoundary>
     </View>
   );
 }
@@ -208,6 +231,7 @@ const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: colors.bg },
   content: { width: "100%", maxWidth: 980, alignSelf: "center", paddingHorizontal: 16, paddingBottom: 56 },
   headerContent: { gap: 14, paddingTop: 12, paddingBottom: 14 },
+  refreshError: { color: colors.danger, fontSize: 12.5, lineHeight: 18 },
   locationHero: { overflow: "hidden", padding: 22, borderRadius: radius.lg, borderCurve: "continuous", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, ...shadow.card },
   heroGlow: { position: "absolute", width: 270, height: 270, borderRadius: 135, top: -160, right: -50, backgroundColor: colors.cool, opacity: 0.14, ...Platform.select({ web: { filter: "blur(12px)" } }) },
   eyebrow: { color: colors.cool, fontFamily: mono, fontSize: 9, fontWeight: "900", letterSpacing: 1.7 },

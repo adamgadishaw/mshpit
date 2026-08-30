@@ -7,6 +7,7 @@ import { useStore } from "../store";
 import Icon from "../components/Icon";
 import Avatar from "../components/Avatar";
 import Badge from "../components/Badge";
+import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import { formatDate } from "../domain/dates.mjs";
 import {
   recentSongSearchEntry,
@@ -162,7 +163,7 @@ function searchResultBucket(count) {
 }
 
 export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpenFanClub, onOpenProfile, onPlay, onAddToPlaylist }) {
-  const { tourDates, searchVenues, artistsAlphabetical, fanClubsDirectory, fanClubDirectoryStatus, loadFanClubsDirectory, track,
+  const { tourDates, refreshTourDates, searchVenues, artistsAlphabetical, fanClubsDirectory, fanClubDirectoryStatus, loadFanClubsDirectory, track,
     session, blockedIds, isFollowing, follow, unfollow, searchPeople, searchArtistsApi, resolveArtist,
     recentSearches, addRecentSearch, removeRecentSearch, clearRecentSearches, searchSongsApi } = useStore();
   const searchAccountScope = accountTargetScope(session?.id, "search");
@@ -181,9 +182,13 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState("");
   const [searchRevision, setSearchRevision] = useState(0);
+  const [surfaceRefreshing, setSurfaceRefreshing] = useState(false);
+  const [surfaceRefreshError, setSurfaceRefreshError] = useState(false);
   const query = q.trim().toLowerCase();
   const [settledQuery, setSettledQuery] = useState(query);
   const activeSearchControllerRef = useRef(null);
+  const surfaceRefreshControllerRef = useRef(null);
+  const searchRefreshWaiterRef = useRef(null);
   const previousQueryRef = useRef(query);
   const lookupScope = accountTargetScope(session?.id, `search:${query}`);
   const remoteSearchScope = accountTargetScope(session?.id, `search:${settledQuery}`);
@@ -217,6 +222,15 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
   fanClubDirectoryLoaderRef.current = loadFanClubsDirectory;
 
   useEffect(() => {
+    surfaceRefreshControllerRef.current?.abort();
+    surfaceRefreshControllerRef.current = null;
+    if (searchRefreshWaiterRef.current) {
+      const waiter = searchRefreshWaiterRef.current;
+      searchRefreshWaiterRef.current = null;
+      waiter.resolve(false);
+    }
+    setSurfaceRefreshing(false);
+    setSurfaceRefreshError(false);
     setQueryState({ scope: searchAccountScope, value: "" });
     setFocused(false);
     setActiveCategory("all");
@@ -224,6 +238,12 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
     setLookupState({ scope: accountTargetScope(session?.id, "search:"), value: EMPTY_LOOKUP_STATE });
   }, [searchAccountScope, session?.id]);
   useEffect(() => () => {
+    surfaceRefreshControllerRef.current?.abort();
+    if (searchRefreshWaiterRef.current) {
+      const waiter = searchRefreshWaiterRef.current;
+      searchRefreshWaiterRef.current = null;
+      waiter.resolve(false);
+    }
     const active = lookupRequestRef.current;
     lookupRequestRef.current = { sequence: active.sequence + 1, scope: null, target: null };
   }, []);
@@ -283,17 +303,28 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
   // beneath newly typed text while its replacement is debouncing.
   useEffect(() => {
     let live = true;
+    let requestSucceeded = false;
     const controller = new AbortController();
     activeSearchControllerRef.current = controller;
     const requestOptions = unifiedSearchRequestOptions(controller);
     const requestScope = remoteSearchScope;
     const searchQuery = settledQuery;
+    const effectRevision = searchRevision;
+    const settleRefreshWaiter = (succeeded) => {
+      const waiter = searchRefreshWaiterRef.current;
+      if (!waiter || waiter.revision !== effectRevision || waiter.scope !== requestScope) return;
+      searchRefreshWaiterRef.current = null;
+      waiter.resolve(succeeded);
+    };
     if (!searchQuery) {
       setSearchLoading(false);
       setSearchError("");
       searchArtistsApi("", requestOptions)
         .then((rows) => {
-          if (live && !controller.signal.aborted) setArtistCache({ scope: requestScope, rows: rows || [] });
+          if (live && !controller.signal.aborted) {
+            setArtistCache({ scope: requestScope, rows: rows || [] });
+            requestSucceeded = true;
+          }
         })
         .catch((error) => {
           if (live && !controller.signal.aborted && error?.name !== "AbortError") {
@@ -302,11 +333,13 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
         })
         .finally(() => {
           if (activeSearchControllerRef.current === controller) activeSearchControllerRef.current = null;
+          settleRefreshWaiter(requestSucceeded);
         });
       return () => {
         live = false;
         controller.abort();
         if (activeSearchControllerRef.current === controller) activeSearchControllerRef.current = null;
+        settleRefreshWaiter(false);
       };
     }
     setSearchLoading(true);
@@ -321,6 +354,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
           songs: ENABLE_MUSIC_PLAYER ? searchSongsApi(searchQuery, requestOptions) : null,
         });
         if (!live || controller.signal.aborted || remote.aborted) return;
+        requestSucceeded = remote.failures.length === 0 && remote.succeeded > 0;
         setPeopleCache({ scope: peopleScope, query: searchQuery, rows: remote.people });
         setArtistCache({ scope: requestScope, rows: remote.artists });
         setSongCache({ scope: requestScope, rows: remote.songs });
@@ -362,6 +396,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
       } finally {
         if (live && !controller.signal.aborted) setSearchLoading(false);
         if (activeSearchControllerRef.current === controller) activeSearchControllerRef.current = null;
+        settleRefreshWaiter(requestSucceeded);
       }
     };
     void run();
@@ -369,8 +404,38 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
       live = false;
       controller.abort();
       if (activeSearchControllerRef.current === controller) activeSearchControllerRef.current = null;
+      settleRefreshWaiter(false);
     };
   }, [peopleScope, remoteSearchScope, searchRevision, session?.id, settledQuery]);
+
+  const refreshSearch = async () => {
+    if (surfaceRefreshControllerRef.current) return false;
+    const controller = new AbortController();
+    surfaceRefreshControllerRef.current = controller;
+    setSurfaceRefreshing(true);
+    setSurfaceRefreshError(false);
+    const targetRevision = searchRevision + 1;
+    const targetScope = remoteSearchScope;
+    const searchResult = new Promise((resolve) => {
+      if (searchRefreshWaiterRef.current) searchRefreshWaiterRef.current.resolve(false);
+      searchRefreshWaiterRef.current = { revision: targetRevision, scope: targetScope, resolve };
+    });
+    setSearchRevision(targetRevision);
+    const results = await Promise.allSettled([
+      searchResult,
+      refreshTourDates?.({ signal: controller.signal }),
+      loadFanClubsDirectory?.({ signal: controller.signal }),
+    ]);
+    if (controller.signal.aborted || surfaceRefreshControllerRef.current !== controller) return false;
+    const failed = results.some((result, index) => result.status === "rejected"
+      || result.value === false
+      || result.value == null
+      || (index === 2 && result.value?.ok === false));
+    setSurfaceRefreshError(failed);
+    setSurfaceRefreshing(false);
+    surfaceRefreshControllerRef.current = null;
+    return !failed;
+  };
 
   const mine = session?.id;
   // People are pure type-ahead (like every social app): never a full list, always
@@ -545,7 +610,18 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
         )}
       </View>
 
+      <VinylRefreshBoundary
+        refreshing={surfaceRefreshing}
+        onRefresh={refreshSearch}
+        accessibilityLabel="Refresh search results"
+        testID="search-refresh"
+      >
       <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.list} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+        {surfaceRefreshError ? (
+          <Text style={styles.surfaceRefreshError} accessibilityRole="alert" accessibilityLiveRegion="assertive">
+            Some search sources could not refresh. Your current results are still here.
+          </Text>
+        ) : null}
         {showBrowse && (
           <Text style={styles.browseHint}>
             {ENABLE_MUSIC_PLAYER
@@ -668,6 +744,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
           <Text style={styles.empty}>No {activeCategory === "all" ? "matches" : activeCategoryLabel.toLowerCase()} for “{q}”.</Text>
         )}
       </ScrollView>
+      </VinylRefreshBoundary>
     </View>
   );
 }
@@ -691,6 +768,7 @@ const styles = StyleSheet.create({
   retrySearchText: { color: colors.amber, fontSize: 12, fontWeight: "800" },
 
   list: { paddingHorizontal: 16, paddingBottom: 32, maxWidth: 640, width: "100%", alignSelf: "center" },
+  surfaceRefreshError: { color: colors.danger, fontSize: 12, lineHeight: 17, marginBottom: 10, textAlign: "center" },
   browseHint: { color: colors.textDim, fontSize: 12, marginBottom: 8, fontWeight: "600" },
   loading: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 9, paddingVertical: 14 },
   loadingText: { color: colors.textDim, fontSize: 12.5, fontWeight: "600" },

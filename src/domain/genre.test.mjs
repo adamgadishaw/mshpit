@@ -3,9 +3,36 @@ import test from "node:test";
 
 import {
   classifyStoredGenre, displayGenre, genreClaim, isCrawlLabel,
-  isUnverifiedGenre, mergeGenre, providerGenreFields, resolveGenre,
+  hasMusicBrainzGenreEvidence, isUnverifiedGenre, mergeGenre,
+  musicBrainzGenreFields, providerGenreFields, resolveGenre,
   projectArtistGenre, storedClaims, upsertClaim, withoutSource,
 } from "./genre.mjs";
+
+const ARTIST_MBID = "11111111-1111-4111-8111-111111111111";
+const HIP_HOP_MBID = "22222222-2222-4222-8222-222222222222";
+const POP_MBID = "33333333-3333-4333-8333-333333333333";
+
+function musicBrainzEvidence({
+  artistMbid = ARTIST_MBID,
+  counts = [
+    { genre: "Hip Hop", id: HIP_HOP_MBID, count: 5 },
+    { genre: "Pop", id: POP_MBID, count: 2 },
+  ],
+  genre = "Hip Hop",
+  genreId = HIP_HOP_MBID,
+  supportingCount = 5,
+} = {}) {
+  return {
+    genre,
+    genreId,
+    provider: "musicbrainz",
+    basis: "artist-genres-v1",
+    artistMbid,
+    supportingCount,
+    counts,
+    checkedAt: 1_000,
+  };
+}
 
 // The artists the owner actually complained about. Each was discovered under a
 // MusicBrainz crawl bucket that has nothing to do with their music.
@@ -23,6 +50,51 @@ test("a crawl bucket is never stated as an artist's genre", () => {
     assert.equal(stored.source, "tag_hint", `${artist}: ${bucket} should read as a hint`);
     assert.equal(displayGenre(resolveGenre([stored])), null, `${artist} must not display "${bucket}"`);
     assert.equal(isUnverifiedGenre(resolveGenre([stored])), true, `${artist} keeps the hint for staff review`);
+  }
+});
+
+test("a Spotify identity beside a crawler label does not authenticate that label", () => {
+  for (const [artist, bucket] of [["Eminem", "Hardcore"], ["Michael Jackson", "Hip-Hop"]]) {
+    const projected = projectArtistGenre({ spotifyId: `spotify-${artist}` }, bucket);
+    assert.equal(projected.genre, null, `${artist}: the adjacent identity cannot promote ${bucket}`);
+    assert.equal(projected.genreHint, bucket);
+  }
+});
+
+test("exact-MBID MusicBrainz genre votes create a reversible display claim", () => {
+  const data = { mbid: ARTIST_MBID };
+  const evidence = musicBrainzEvidence();
+  assert.equal(hasMusicBrainzGenreEvidence({ ...data, musicBrainzGenreEvidence: evidence }, "Hip Hop"), true);
+
+  const fields = musicBrainzGenreFields(data, "Hardcore", evidence, 1_000);
+  assert.equal(fields.genre, "Hip Hop");
+  assert.equal(fields.genreClaims.find((claim) => claim.source === "musicbrainz_genre")?.value, "Hip Hop");
+  assert.equal(projectArtistGenre({ ...data, ...fields }, fields.genre).genre, "Hip Hop");
+});
+
+test("MusicBrainz evidence fails closed for identity mismatch, ties, and weak votes", () => {
+  const rejects = [
+    musicBrainzEvidence({ artistMbid: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }),
+    musicBrainzEvidence({
+      counts: [
+        { genre: "Hip Hop", id: HIP_HOP_MBID, count: 4 },
+        { genre: "Pop", id: POP_MBID, count: 4 },
+      ],
+      supportingCount: 4,
+    }),
+    musicBrainzEvidence({
+      counts: [{ genre: "Hip Hop", id: HIP_HOP_MBID, count: 1 }],
+      supportingCount: 1,
+    }),
+  ];
+  for (const evidence of rejects) {
+    const data = {
+      mbid: ARTIST_MBID,
+      musicBrainzGenreEvidence: evidence,
+      genreClaims: [{ value: "Hip Hop", source: "musicbrainz_genre", at: 1_000 }],
+    };
+    assert.equal(hasMusicBrainzGenreEvidence(data, "Hip Hop"), false);
+    assert.equal(projectArtistGenre(data, "Hip Hop").genre, null);
   }
 });
 

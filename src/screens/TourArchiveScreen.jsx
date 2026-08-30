@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { useStore } from "../store";
 import { colors, displayFont, focusRing, mono, radius, shadow, space } from "../theme";
@@ -7,6 +7,7 @@ import Icon from "../components/Icon";
 import ScreenHeader from "../components/ScreenHeader";
 import SmartImage from "../components/SmartImage";
 import Stars from "../components/Stars";
+import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import {
   archiveCoverMedia,
   archiveDateLabel,
@@ -19,7 +20,9 @@ import {
   showsForArchiveTour,
 } from "../domain/artistEventArchive.mjs";
 import { mediaDisplayKind, mediaPosterUri } from "../domain/postMediaDisplay.mjs";
+import { refreshScope } from "../domain/scopedRefresh.mjs";
 import { useArtistEventArchive, useArtistEventReviews } from "../features/artistEvents/useArtistEventArchive";
+import useScopedRefresh from "../hooks/useScopedRefresh";
 
 function TourHero({ artistName, tour, cover, fallbackName, onOpenPhotos, onOpenProfile }) {
   const media = archiveCoverMedia(cover);
@@ -202,8 +205,29 @@ export default function TourArchiveScreen({ artistName, artistKey, tourKey, tour
   const { width } = useWindowDimensions();
   const wide = width >= 820;
   const accountId = session?.id || null;
-  const { resource: archiveResource, reload: reloadArchive } = useArtistEventArchive({ accountId, name: artistName, artistKey });
-  const { resource: reviewsResource, reload: reloadReviews, loadMore } = useArtistEventReviews({ accountId, name: artistName, artistKey, tourKey, limit: 30 });
+  const { resource: archiveResource, reload: reloadArchive, refresh: refreshArchive } = useArtistEventArchive({ accountId, name: artistName, artistKey });
+  const { resource: reviewsResource, reload: reloadReviews, refresh: refreshReviews, loadMore } = useArtistEventReviews({ accountId, name: artistName, artistKey, tourKey, limit: 30 });
+  const [refreshError, setRefreshError] = useState("");
+  const tourArchiveRefreshScope = refreshScope(
+    accountId,
+    "tour-archive",
+    `${artistKey || artistName || "unknown"}:${tourKey || "unknown"}`,
+  );
+  const { refresh: refreshTourArchive, refreshing } = useScopedRefresh({
+    scope: tourArchiveRefreshScope,
+    task: async ({ signal }) => {
+      setRefreshError("");
+      const results = await Promise.allSettled([
+        refreshArchive({ signal }),
+        refreshReviews({ signal }),
+      ]);
+      if (signal.aborted) return null;
+      const failed = results.find((result) => result.status === "rejected");
+      if (failed) throw failed.reason;
+      return results.map((result) => result.value);
+    },
+    onError: () => setRefreshError("The tour could not fully refresh. The last complete details remain on screen."),
+  });
   const archive = archiveResource.data;
   const tour = selectArchiveTour(archive, tourKey);
   const shows = useMemo(() => showsForArchiveTour(archive, tourKey), [archive, tourKey]);
@@ -216,10 +240,6 @@ export default function TourArchiveScreen({ artistName, artistKey, tourKey, tour
   const loadingMore = reviewsResource.data?.loadingMore === true;
   const nextCursor = reviewsResource.data?.nextCursor || null;
 
-  const refresh = () => {
-    reloadArchive();
-    reloadReviews();
-  };
   const renderRow = ({ item }) => {
     if (item.type === "section") return <SectionRow {...item} />;
     if (item.type === "show") return <TourShowRow show={item.show} wide={wide} onOpenShow={onOpenShow} onOpenPhotos={onOpenPhotos} onOpenProfile={onOpenProfile} />;
@@ -257,7 +277,13 @@ export default function TourArchiveScreen({ artistName, artistKey, tourKey, tour
           <Text style={styles.stateTitle}>Opening the tour archive…</Text>
           <Text style={styles.stateText}>Gathering recorded nights, fan ratings, and tour media.</Text>
         </View>
-      ) : <FlatList
+      ) : <VinylRefreshBoundary
+        refreshing={refreshing}
+        onRefresh={refreshTourArchive}
+        accessibilityLabel={`Refresh ${tour?.name || tourName || artistName || "tour"} archive`}
+        testID="tour-archive-refresh"
+      >
+      <FlatList
         data={rows}
         renderItem={renderRow}
         keyExtractor={(item) => item.key}
@@ -267,6 +293,12 @@ export default function TourArchiveScreen({ artistName, artistKey, tourKey, tour
         ListHeaderComponent={(
           <>
             <TourHero artistName={artistName} tour={tour} cover={tour?.cover} fallbackName={tourName} onOpenPhotos={onOpenPhotos} onOpenProfile={onOpenProfile} />
+            {!!refreshError && (
+              <View style={styles.archiveWarning} accessibilityLiveRegion="assertive">
+                <Text style={styles.errorText} selectable>{refreshError}</Text>
+                <Pressable style={({ pressed, focused }) => [styles.inlineRetry, pressed && styles.pressed, focused && focusRing]} onPress={refreshTourArchive} accessibilityRole="button" accessibilityLabel="Retry refreshing tour archive"><Text style={styles.inlineRetryText}>Retry refresh</Text></Pressable>
+              </View>
+            )}
             {initialArchiveError && (
               <View style={styles.archiveWarning} accessibilityLiveRegion="assertive">
                 <Text style={styles.errorText} selectable>Tour details could not refresh. Reviews may still be available.</Text>
@@ -276,14 +308,13 @@ export default function TourArchiveScreen({ artistName, artistKey, tourKey, tour
           </>
         )}
         ListFooterComponent={<View style={styles.footer}>{footer}</View>}
-        refreshing={(archiveResource.status === "refreshing" || reviewsResource.status === "refreshing") && !loadingMore}
-        onRefresh={refresh}
         onEndReached={() => { if (nextCursor && !loadingMore && reviewsResource.status !== "error") void loadMore(); }}
         onEndReachedThreshold={0.35}
         initialNumToRender={12}
         maxToRenderPerBatch={10}
         windowSize={7}
-      />}
+      />
+      </VinylRefreshBoundary>}
     </View>
   );
 }

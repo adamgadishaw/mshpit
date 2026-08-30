@@ -48,3 +48,18 @@ test("stale account completion cannot delete an artist update or clear notificat
   assert.equal(artistPosts.slowdive.length, 1);
   assert.equal(notifications[0].read, false);
 });
+
+test("a profile save completion or rollback from A can never overwrite active account B", async () => {
+  const pending = captureAccountMutation("account-a", 12);
+  let activeSession = { id: "account-b", name: "B stays signed in" };
+  const applyProfileProjection = (profile) => {
+    if (!accountMutationIsCurrent(pending, activeSession.id, 13)) return { ok: false, stale: true };
+    activeSession = profile;
+    return { ok: true };
+  };
+
+  assert.deepEqual(applyProfileProjection({ id: "account-a", name: "A server response" }), { ok: false, stale: true });
+  assert.deepEqual(activeSession, { id: "account-b", name: "B stays signed in" });
+  assert.deepEqual(applyProfileProjection({ id: "account-a", name: "A rollback snapshot" }), { ok: false, stale: true });
+  assert.deepEqual(activeSession, { id: "account-b", name: "B stays signed in" });
+});

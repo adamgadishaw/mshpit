@@ -10,6 +10,9 @@ import useLiveChat from "../lib/useLiveChat";
 import useChatScroll from "../lib/useChatScroll";
 import { accountTargetScope, scopedScreenValue } from "../domain/screenScope.mjs";
 import { latestIncomingDirectMessageId } from "../domain/directMessageRead.mjs";
+import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
+import useScopedRefresh from "../hooks/useScopedRefresh";
+import { refreshScope } from "../domain/scopedRefresh.mjs";
 
 const EMPTY_COMPOSER = Object.freeze({ text: "", sending: false });
 
@@ -40,6 +43,21 @@ export default function ThreadScreen({ otherId, onClose, onOpenProfile, onOpenPr
     ({ after, signal }) => loadThread(otherId, { after, signal }),
     { channelKey: `dm:${chatAuthEpoch}:${session?.id || "guest"}:${otherId}`, enabled: !!session && !!otherId },
   );
+  const threadRefreshScope = refreshScope(session?.id, "message-thread", `${chatAuthEpoch}:${otherId || ""}`);
+  const { refresh: refreshThread, refreshing: threadRefreshing } = useScopedRefresh({
+    scope: threadRefreshScope,
+    enabled: !!session && !!otherId,
+    task: async ({ signal }) => {
+      const [threadResult, userResult] = await Promise.all([
+        loadThread(otherId, { signal, strict: true }),
+        loadUser(otherId, { signal }),
+      ]);
+      if (userResult?.status === "error") {
+        throw userResult.error instanceof Error ? userResult.error : new Error(userResult.error || "This member could not be refreshed.");
+      }
+      return { threadResult, userResult };
+    },
+  });
   // A DM notification can open a chat with someone this device never cached;
   // fetch them so the name + avatar resolve instead of a nameless "Chat".
   useEffect(() => { if (otherId && !userById(otherId)) loadUser(otherId); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [otherId]);
@@ -82,6 +100,11 @@ export default function ThreadScreen({ otherId, onClose, onOpenProfile, onOpenPr
       <ScreenHeader kicker="DIRECT MESSAGE" title={other?.name || "Chat"} onBack={onClose}
         right={<Pressable onPress={() => onOpenProfile?.(otherId)}><Avatar user={other} size={32} /></Pressable>} />
 
+      <VinylRefreshBoundary
+        refreshing={threadRefreshing}
+        onRefresh={refreshThread}
+        accessibilityLabel={`Refresh messages with ${other?.name || "this member"}`}
+      >
       <ScrollView ref={scrollRef} contentContainerStyle={styles.chat} showsVerticalScrollIndicator={false}
         onScroll={onScroll} onContentSizeChange={onContentSizeChange} scrollEventThrottle={100}>
         {messages.length === 0 && <Text style={styles.empty}>Say hi to {other?.name?.split(" ")[0]}.</Text>}
@@ -129,6 +152,7 @@ export default function ThreadScreen({ otherId, onClose, onOpenProfile, onOpenPr
           );
         })}
       </ScrollView>
+      </VinylRefreshBoundary>
 
       {session ? (
         <View style={styles.inputBar}>

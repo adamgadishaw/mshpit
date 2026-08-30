@@ -57,7 +57,10 @@ test("saving a memorial refreshes the canonical tour-date snapshot in the same s
   assert.match(adminScreen, /prepareMemorialArtist, refreshTourDates/);
   assert.match(adminScreen, /onSaved: \(\) => \{[\s\S]*?refreshTourDates\(\)/);
   assert.match(store, /const refreshTourDates = async/);
-  assert.match(store, /refreshTourDates, visibleTourDates/);
+  assert.match(
+    store,
+    /loadDiscoverTourDateRange,[\s\S]{0,800}?refreshTourDates,[\s\S]{0,800}?visibleTourDates,[\s\S]{0,800}?localVenues,/,
+  );
 });
 
 test("the memorial console recovers empty catalog searches without manual artist keys or auto-publishing", () => {
@@ -77,4 +80,6 @@ test("the memorial console recovers empty catalog searches without manual artist
   assert.doesNotMatch(artistKeyField, /onChangeText=/);
   assert.match(consoleSource, /status: "draft"/);
   assert.match(consoleSource, /never publishes automatically/);
+  assert.match(consoleSource, /publishedExisting && status === "draft"/);
+  assert.match(consoleSource, /This memorial is permanently published/);
 });

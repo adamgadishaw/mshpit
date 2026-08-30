@@ -12,7 +12,9 @@ import { applyPostLocalOverride, withRemovedSelfPostTag } from "../domain/postLo
 import { accountTargetScope } from "../domain/screenScope.mjs";
 import { PublicTextLink } from "../components/PublicWebLinks";
 import { profilePath } from "../domain/urls.mjs";
-import useAppActive from "../lib/useAppActive";
+import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
+import useScopedRefresh from "../hooks/useScopedRefresh";
+import { refreshScope } from "../domain/scopedRefresh.mjs";
 
 const ago = (ts) => {
   if (!ts) return "";
@@ -115,28 +117,21 @@ export default function PostScreen({ log, onClose, onOpenProfile, onOpenArtist, 
     error: null,
   }));
   const scrollRef = useRef(null);
-  const appActive = useAppActive();
-  const forcedCommentRevisionRef = useRef(-1);
+  const commentScopeRef = useRef(commentScope);
+  commentScopeRef.current = commentScope;
 
-  // Live comments: hydrate + poll while this screen is actually visible. A
-  // tab/app return restarts this effect once instead of spending requests in
-  // the background or stacking multiple catch-up refreshes.
+  // Hydrate once on open (and on an explicit retry). Comments are not a live
+  // chat, so this detail screen no longer spends a request every 15 seconds.
   useEffect(() => {
-    if (!appActive) return undefined;
-    let active = true;
+    const controller = new AbortController();
     const scope = commentScope;
     const hasCachedComments = flat.length > 0;
-    const forceInitialRefresh = forcedCommentRevisionRef.current !== commentRequestVersion;
-    if (forceInitialRefresh) forcedCommentRevisionRef.current = commentRequestVersion;
-    const refresh = async ({ background = false, force = false } = {}) => {
-      if (!background) {
-        setCommentResource((current) => {
-          const loaded = current.scope === scope ? current.loaded : hasCachedComments;
-          return { scope, status: loaded ? "refreshing" : "loading", loaded, error: null };
-        });
-      }
-      const result = await loadComments(log.id, { limit: 50, force });
-      if (!active) return;
+    setCommentResource((current) => {
+      const loaded = current.scope === scope ? current.loaded : hasCachedComments;
+      return { scope, status: loaded ? "refreshing" : "loading", loaded, error: null };
+    });
+    void loadComments(log.id, { limit: 50, force: true, signal: controller.signal }).then((result) => {
+      if (controller.signal.aborted || commentScopeRef.current !== scope) return;
       setCommentResource((current) => {
         const loaded = current.scope === scope && current.loaded;
         if (result?.ok) return { scope, status: "ready", loaded: true, error: null };
@@ -147,19 +142,38 @@ export default function PostScreen({ log, onClose, onOpenProfile, onOpenArtist, 
           error: result?.error || new Error("Comments could not be loaded."),
         };
       });
-    };
-    // First open and explicit retries remain authoritative. A tab/app return can
-    // reuse the Store's 30-second freshness and in-flight guards, while the live
-    // interval still performs its intentional server refresh every 15 seconds.
-    void refresh({ force: forceInitialRefresh });
-    const t = setInterval(() => void refresh({ background: true, force: true }), 15_000);
-    return () => {
-      active = false;
-      clearInterval(t);
-    };
+    });
+    return () => controller.abort();
     // Store actions are intentionally excluded: they are recreated as store state changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [appActive, commentScope, commentRequestVersion]);
+  }, [commentScope, commentRequestVersion]);
+
+  const postRefreshScope = refreshScope(session?.id, "post", log.id);
+  const { refresh: refreshPost, refreshing: postRefreshing } = useScopedRefresh({
+    scope: postRefreshScope,
+    task: async ({ signal }) => {
+      const scope = commentScope;
+      setCommentResource((current) => ({
+        scope,
+        status: current.scope === scope && current.loaded ? "refreshing" : "loading",
+        loaded: current.scope === scope && current.loaded,
+        error: null,
+      }));
+      const result = await loadComments(log.id, { limit: 50, force: true, signal });
+      if (signal.aborted || commentScopeRef.current !== scope) return { stale: true };
+      setCommentResource((current) => {
+        const loaded = result?.ok || (current.scope === scope && current.loaded);
+        return {
+          scope,
+          status: result?.ok ? "ready" : loaded ? "stale" : "error",
+          loaded,
+          error: result?.ok ? null : result?.error || new Error("Comments could not be loaded."),
+        };
+      });
+      if (!result?.ok && result?.error) throw result.error;
+      return result;
+    },
+  });
 
   // Never present another post's request state while navigation swaps the post
   // prop on this mounted screen.
@@ -211,7 +225,18 @@ export default function PostScreen({ log, onClose, onOpenProfile, onOpenArtist, 
 
   return (
     <View style={styles.wrap}>
-      <ScreenHeader kicker="POST" title="Comments" onBack={onClose} />
+      <ScreenHeader
+        kicker={activeLog.review ? "FAN REVIEW" : "POST"}
+        title="Original post"
+        onBack={onClose}
+        backLabel="Leave the original post"
+        backHint="Returns to the show, artist, or feed you came from"
+      />
+      <VinylRefreshBoundary
+        refreshing={postRefreshing}
+        onRefresh={refreshPost}
+        accessibilityLabel="Refresh post and comments"
+      >
       <ScrollView ref={scrollRef} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
         <TicketStub log={activeLog} showComments={false} onOpen={() => onOpenShow?.(activeLog)} onOpenShow={onOpenShow} onOpenProfile={onOpenProfile} onOpenArtist={onOpenArtist} onOpenArtistArchive={onOpenArtistArchive} onOpenVenue={onOpenVenue} onReport={onReport} onEdit={onEdit} onDelete={removePost} onOpenPhotos={onOpenPhotos} onPlay={onPlay} onRemoveMyPostTag={onRemoveMyPostTag} onSelfTagRemoved={reconcileSelfTagRemoval} />
 
@@ -246,6 +271,7 @@ export default function PostScreen({ log, onClose, onOpenProfile, onOpenArtist, 
         )) : null}
         <View style={{ height: 20 }} />
       </ScrollView>
+      </VinylRefreshBoundary>
 
       {!commentsUsable ? (
         <View style={styles.composerWrap}>

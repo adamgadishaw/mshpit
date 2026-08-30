@@ -191,6 +191,13 @@ export function transitionArtistMemorial(current, input, { at = Date.now() } = {
   const parsed = parseArtistMemorialAdminPayload(input, { at: timestamp });
   if (!parsed.valid) return parsed;
 
+  // Publication is the durable deceased-state boundary. A spotlight may end
+  // and the prose may be corrected, but an ordinary console edit must never
+  // make a confirmed death disappear and silently restore live-rating UI.
+  if (normalizedStatus(current?.status) === "published" && parsed.payload.status !== "published") {
+    return invalid("status", "Published memorials are permanent. You can edit the tribute, but cannot return it to draft.");
+  }
+
   const { restartSpotlight } = parsed.payload;
   // Keep command attestations out of the durable record by rebuilding the
   // persistence shape instead of relying on callers to omit them.

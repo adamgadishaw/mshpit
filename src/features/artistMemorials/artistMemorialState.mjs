@@ -20,6 +20,19 @@ export function projectArtistMemorial(resource, options = {}) {
   return projectLoadState(resource, artistMemorialScope(options), null);
 }
 
+// Public memorial reads are deliberately tri-state. `null` is meaningful only
+// after a successful response (the artist is not memorialized); before that,
+// loading and errors must not be mistaken for permission to show live-rating
+// or upcoming-show actions. A known deceased payload remains authoritative
+// during refreshes and refresh failures.
+export function artistMemorialAvailability(resource, { artistKey = null, enabled = true } = {}) {
+  if (resource?.data?.deceased === true) return "deceased";
+  if (!enabled || !String(artistKey || "").trim()) return "unavailable";
+  if (resource?.status === "ready" && resource.updatedAt != null) return "living";
+  if (resource?.status === "error") return "unavailable";
+  return "checking";
+}
+
 export function projectArtistMemorialAdmin(resource, options = {}) {
   return projectLoadState(resource, artistMemorialAdminScope(options), EMPTY_ARTIST_MEMORIALS);
 }

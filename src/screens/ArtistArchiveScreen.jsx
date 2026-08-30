@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { useStore } from "../store";
 import { colors, displayFont, focusRing, mono, radius, shadow, space } from "../theme";
@@ -6,6 +6,7 @@ import ScreenHeader from "../components/ScreenHeader";
 import SmartImage from "../components/SmartImage";
 import Stars from "../components/Stars";
 import Icon from "../components/Icon";
+import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import {
   archiveCoverMedia,
   archiveDateLabel,
@@ -13,7 +14,9 @@ import {
   archiveRatingLabel,
   compactArchiveCount,
 } from "../domain/artistEventArchive.mjs";
+import { refreshScope } from "../domain/scopedRefresh.mjs";
 import { useArtistEventArchive } from "../features/artistEvents/useArtistEventArchive";
+import useScopedRefresh from "../hooks/useScopedRefresh";
 import { openTicketLink } from "../lib/ticketLinks";
 
 const list = (value) => Array.isArray(value) ? value : [];
@@ -238,7 +241,18 @@ export default function ArtistArchiveScreen({ artistName, artistKey, onClose, on
   const { session } = useStore();
   const { width } = useWindowDimensions();
   const wide = width >= 820;
-  const { resource, reload } = useArtistEventArchive({ accountId: session?.id || null, name: artistName, artistKey });
+  const accountId = session?.id || null;
+  const { resource, refresh: refreshArchive } = useArtistEventArchive({ accountId, name: artistName, artistKey });
+  const [refreshError, setRefreshError] = useState("");
+  const artistArchiveRefreshScope = refreshScope(accountId, "artist-archive", artistKey || artistName || "unknown");
+  const { refresh: refreshArchiveView, refreshing } = useScopedRefresh({
+    scope: artistArchiveRefreshScope,
+    task: async ({ signal }) => {
+      setRefreshError("");
+      return refreshArchive({ signal });
+    },
+    onError: () => setRefreshError("The archive could not refresh. Showing the last complete view."),
+  });
   const archive = resource.data;
   const rows = useMemo(() => buildRows(archive), [archive]);
   const initialLoading = resource.status === "loading" && resource.updatedAt == null;
@@ -264,9 +278,15 @@ export default function ArtistArchiveScreen({ artistName, artistKey, onClose, on
           <Icon name="archive" size={27} color={colors.textFaint} />
           <Text style={styles.stateTitle}>The archive could not be loaded</Text>
           <Text style={styles.errorText} selectable>{resource.error?.message || "Check your connection and try again."}</Text>
-          <Pressable style={({ focused, pressed }) => [styles.retry, pressed && styles.pressed, focused && focusRing]} onPress={reload} accessibilityRole="button" accessibilityLabel="Retry loading artist live archive"><Text style={styles.retryText}>Try again</Text></Pressable>
+          <Pressable style={({ focused, pressed }) => [styles.retry, pressed && styles.pressed, focused && focusRing]} onPress={refreshArchiveView} accessibilityRole="button" accessibilityLabel="Retry loading artist live archive"><Text style={styles.retryText}>Try again</Text></Pressable>
         </View>
       ) : (
+        <VinylRefreshBoundary
+          refreshing={refreshing}
+          onRefresh={refreshArchiveView}
+          accessibilityLabel={`Refresh ${artistName || "artist"} live archive`}
+          testID="artist-archive-refresh"
+        >
         <FlatList
           data={rows}
           renderItem={renderRow}
@@ -277,21 +297,20 @@ export default function ArtistArchiveScreen({ artistName, artistKey, onClose, on
           ListHeaderComponent={(
             <>
               <Hero artistName={archive?.artist?.name || artistName} archive={archive} />
-              {resource.status === "error" && resource.updatedAt != null && (
+              {(refreshError || (resource.status === "error" && resource.updatedAt != null)) && (
                 <View style={styles.refreshWarning} accessibilityLiveRegion="assertive">
-                  <Text style={styles.refreshWarningText} selectable>The archive could not refresh. Showing the last complete view.</Text>
-                  <Pressable style={({ focused, pressed }) => [styles.inlineRetry, pressed && styles.pressed, focused && focusRing]} onPress={reload} accessibilityRole="button" accessibilityLabel="Retry refreshing artist live archive"><Text style={styles.inlineRetryText}>Retry</Text></Pressable>
+                  <Text style={styles.refreshWarningText} selectable>{refreshError || "The archive could not refresh. Showing the last complete view."}</Text>
+                  <Pressable style={({ focused, pressed }) => [styles.inlineRetry, pressed && styles.pressed, focused && focusRing]} onPress={refreshArchiveView} accessibilityRole="button" accessibilityLabel="Retry refreshing artist live archive"><Text style={styles.inlineRetryText}>Retry</Text></Pressable>
                 </View>
               )}
             </>
           )}
           ListFooterComponent={<View style={styles.listEnd}><Icon name="star" size={12} color={colors.gold} /><Text style={styles.listEndText}>Built from fan ratings and public media on Pit.</Text></View>}
-          refreshing={resource.status === "refreshing"}
-          onRefresh={reload}
           initialNumToRender={12}
           maxToRenderPerBatch={10}
           windowSize={7}
         />
+        </VinylRefreshBoundary>
       )}
     </View>
   );

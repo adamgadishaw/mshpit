@@ -35,8 +35,22 @@ export function normalizeShowAttendees(rows, limit = 200) {
 export function normalizeLoungeMeta(payload) {
   const attendeeCount = finiteCount(payload?.attendeeCount);
   const messageCount = finiteCount(payload?.messageCount);
-  if (attendeeCount == null && messageCount == null) return null;
-  return { attendeeCount, messageCount };
+  const status = payload?.status === "closed" ? "closed" : "open";
+  const cutoffAt = finiteCount(payload?.cutoffAt);
+  const cutoffSource = payload?.cutoffSource === "doors_open" || payload?.cutoffSource === "show_start"
+    ? payload.cutoffSource
+    : null;
+  const fanClubArtist = text(payload?.fanClubArtist) || null;
+  if (attendeeCount == null && messageCount == null && !payload?.status) return null;
+  return {
+    attendeeCount,
+    messageCount,
+    status,
+    timingKnown: payload?.timingKnown === true,
+    cutoffAt,
+    cutoffSource,
+    fanClubArtist,
+  };
 }
 
 export function showSocialView({
@@ -62,9 +76,14 @@ export function showSocialView({
   }
 
   const authoritativeMessageCount = finiteCount(current?.loungeMeta?.messageCount);
+  const loungeMeta = current?.loungeMeta || null;
   return {
     attendees,
     messageCount: authoritativeMessageCount ?? finiteCount(localMessageCount) ?? 0,
+    loungeStatus: loungeMeta?.status === "closed" ? "closed" : "open",
+    loungeCutoffAt: finiteCount(loungeMeta?.cutoffAt),
+    loungeCutoffSource: loungeMeta?.cutoffSource || null,
+    fanClubArtist: text(loungeMeta?.fanClubArtist) || null,
     loading: current?.status === "loading",
     authoritative: !!current && current.status === "ready",
   };

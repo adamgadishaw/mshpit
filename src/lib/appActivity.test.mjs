@@ -19,19 +19,22 @@ test("native activity follows AppState and treats an unknown startup state as ac
   assert.equal(appActivityIsActive({ platform: "android", appState: null }), true);
 });
 
-test("recurring screen work is gated by the shared application activity hook", () => {
+test("only necessary recurring screen work uses the shared application activity hook", () => {
   const post = source("../screens/PostScreen.jsx");
   const admin = source("../screens/AdminScreen.jsx");
   const hook = source("./useAppActive.js");
 
-  assert.match(hook, /useSyncExternalStore\(subscribe, readSnapshot, readServerSnapshot\)/);
-  assert.match(hook, /document\.addEventListener\("visibilitychange", onVisibilityChange\)/);
-  assert.match(hook, /window\.addEventListener\("pagehide", onPageHide\)/);
-  assert.match(hook, /window\.addEventListener\("pageshow", onPageShow\)/);
+  assert.ok(hook.includes("useSyncExternalStore(subscribe, readSnapshot, readServerSnapshot)"));
+  assert.ok(hook.includes('document.addEventListener("visibilitychange", onVisibilityChange)'));
+  assert.ok(hook.includes('window.addEventListener("pagehide", onPageHide)'));
+  assert.ok(hook.includes('window.addEventListener("pageshow", onPageShow)'));
 
-  assert.match(post, /const appActive = useAppActive\(\)/);
-  assert.match(post, /if \(!appActive\) return undefined;[\s\S]*setInterval\(\(\) => void refresh\(\{ background: true, force: true \}\), 15_000\)/);
+  assert.doesNotMatch(post, /useAppActive|setInterval/);
+  assert.match(post, /useScopedRefresh/);
+  assert.match(post, /VinylRefreshBoundary/);
+  assert.ok(post.includes("loadComments(log.id, { limit: 50, force: true, signal"));
 
-  assert.match(admin, /const appActive = useAppActive\(\)/);
-  assert.match(admin, /if \(!appActive \|\| activeTab !== "catalog" \|\| !seedJob\?\.running\) return undefined;[\s\S]*setInterval\(refreshSeed, 3000\)/);
+  assert.ok(admin.includes("const appActive = useAppActive()"));
+  assert.ok(admin.includes('if (!appActive || activeTab !== "catalog" || !seedJob?.running) return undefined'));
+  assert.ok(admin.includes("setInterval(refreshSeed, 3000)"));
 });

@@ -5,6 +5,7 @@ import Icon from "../components/Icon";
 import Avatar from "../components/Avatar";
 import SmartImage from "../components/SmartImage";
 import ConcertMemoryModal from "../components/ConcertMemoryModal";
+import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import { BadgeRow } from "../components/Badge";
 import { useStore, isStaff, isMod } from "../store";
 import { formatDate } from "../domain/dates.mjs";
@@ -32,7 +33,18 @@ function Reveal({ delay = 0, children, style }) {
 // The You tab is the private dashboard for memories, nearby activity, and
 // account tools. The public Profile screen owns live history, media, and posts.
 export default function YouScreen({ onLogin, onLogout, onManageProfile, onSettings, onAdmin, onRequestArtist, onOpenProfile, onOpen, onActivity, onInbox, onCalendar, onOpenNearby, homeCity }) {
-  const { session, logsByUser, unreadNotifications, inboxUnread, genreOfArtist, userBadges, userPoints } = useStore();
+  const {
+    session,
+    logsByUser,
+    unreadNotifications,
+    inboxUnread,
+    genreOfArtist,
+    userBadges,
+    userPoints,
+    loadRewards,
+    loadInboxThreads,
+    refreshNotifications,
+  } = useStore();
   const history = useProfileHistory({ accountId: session?.id, targetId: session?.id, enabled: !!session });
   const cachedMine = session ? logsByUser(session.id) : [];
   const mine = session && (history.posts.length || history.status === "ready") ? history.posts : cachedMine;
@@ -42,7 +54,44 @@ export default function YouScreen({ onLogin, onLogout, onManageProfile, onSettin
   const profileAction = profileManagementAction(session);
   const [memoryStatus, setMemoryStatus] = useState("");
   const [memorySelection, setMemorySelection] = useState(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState(false);
+  const refreshControllerRef = useRef(null);
   const selectedMemory = memorySelection?.accountId === session?.id ? memorySelection.memory : null;
+
+  useEffect(() => {
+    refreshControllerRef.current?.abort();
+    refreshControllerRef.current = null;
+    setRefreshing(false);
+    setRefreshError(false);
+    return () => refreshControllerRef.current?.abort();
+  }, [session?.id]);
+
+  const refreshDashboard = async () => {
+    const accountId = session?.id;
+    if (!accountId || refreshing) return false;
+    refreshControllerRef.current?.abort();
+    const controller = new AbortController();
+    refreshControllerRef.current = controller;
+    setRefreshing(true);
+    setRefreshError(false);
+    const results = await Promise.allSettled([
+      history.retry(),
+      loadRewards(accountId, { signal: controller.signal }),
+      loadInboxThreads({ signal: controller.signal, strict: true }),
+      refreshNotifications({ signal: controller.signal }),
+    ]);
+    if (controller.signal.aborted || refreshControllerRef.current !== controller
+      || session?.id !== accountId) return false;
+    const failed = results.some((result, index) => result.status === "rejected"
+      || result.value === false
+      || result.value == null
+      || (index === 0 && result.value?.status === "error"));
+    setRefreshError(failed);
+    setRefreshing(false);
+    refreshControllerRef.current = null;
+    return !failed;
+  };
 
   // ---- concert analytics, from this account's live-music history ----
   const live = useMemo(() => {
@@ -117,7 +166,19 @@ export default function YouScreen({ onLogin, onLogout, onManageProfile, onSettin
 
   return (
     <>
+    <VinylRefreshBoundary
+      refreshing={refreshing}
+      onRefresh={refreshDashboard}
+      accessibilityLabel="Refresh your dashboard"
+      style={styles.refreshBoundary}
+      testID="you-refresh"
+    >
     <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      {refreshError ? (
+        <Text style={styles.refreshError} accessibilityRole="alert" accessibilityLiveRegion="assertive">
+          Some dashboard details could not refresh. Your existing information is still here.
+        </Text>
+      ) : null}
       {/* ---- HERO: the profile card (banner, avatar, identity, real stats) ---- */}
       <Reveal delay={0}>
         <View style={styles.hero}>
@@ -253,6 +314,7 @@ export default function YouScreen({ onLogin, onLogout, onManageProfile, onSettin
       </Reveal>
 
     </ScrollView>
+    </VinylRefreshBoundary>
     <ConcertMemoryModal
       memory={selectedMemory}
       onClose={() => setMemorySelection(null)}
@@ -264,6 +326,8 @@ export default function YouScreen({ onLogin, onLogout, onManageProfile, onSettin
 }
 
 const styles = StyleSheet.create({
+  refreshBoundary: { flex: 1 },
+  refreshError: { color: colors.danger, fontSize: 12, lineHeight: 17, marginBottom: 10 },
   content: { padding: 16, paddingBottom: 40 },
   loggedOut: { alignItems: "center", marginTop: 60, gap: 6 },
   loggedOutAvatar: { width: 64, height: 64, borderRadius: 32, backgroundColor: colors.surfaceAlt, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.line },

@@ -43,9 +43,14 @@ test("each exact show has one lifecycle-spanning Lounge and nearby maps are labe
   assert.match(lounge, /One room for this exact show — before, during, and after/);
   assert.match(lounge, /This is the only Lounge for this show/);
   assert.doesNotMatch(lounge, /afterparty/i);
-  assert.match(show, /One Lounge for this exact show — open before, during, or after/);
-  assert.match(show, /<Text style=\{styles\.discussionLabel\}>COMMENTS<\/Text>/);
-  assert.doesNotMatch(show, />POST DISCUSSION<\/Text>/);
+  assert.match(show, /One Lounge for this exact show — available before, during, and until 24 hours after doors open/);
+  assert.match(lounge, /enabled: !!key && entered && loungeOpen/);
+  assert.match(lounge, /This show's Lounge has closed/);
+  assert.match(lounge, /Continue in the artist Fan Club/);
+  assert.match(lounge, /clearLounge\(key\)/);
+  assert.match(show, /<Text style=\{styles\.originalPostLabel\}>FAN POST<\/Text>/);
+  assert.match(show, />Open the original fan post<\/Text>/);
+  assert.doesNotMatch(show, /Comments on this post|Open comments|>POST DISCUSSION<\/Text>/);
   assert.match(nearby, />AFTER THE SHOW NEARBY<\/Text>/);
   assert.match(nearby, />SPOTS NEAR THE VENUE<\/Text>/);
 });

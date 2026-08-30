@@ -65,6 +65,8 @@ import { showAttendanceRoutes } from "./features/shows/showAttendanceRoutes.js";
 import { showRoutes } from "./features/shows/showRoutes.js";
 import { createShowAttendanceRepository } from "./features/shows/showAttendanceRepository.js";
 import { normalizeShowAliasKey, normalizeTourDateId } from "./features/shows/showIdentity.js";
+import { createLoungeLifecycleService } from "./features/lounges/loungeLifecycleService.js";
+import { loungeArchiveRoutes } from "./features/lounges/loungeArchiveRoutes.js";
 import {
   enqueueAllOwnedMedia,
   enqueueOwnedMediaKeys,
@@ -141,6 +143,9 @@ import { suggestionRoutes } from "./features/suggestions/suggestionRoutes.js";
 import { artistMemorialRoutes } from "./features/artistMemorials/artistMemorialRoutes.js";
 import { createArtistMemorialRepository } from "./features/artistMemorials/artistMemorialRepository.js";
 import { createArtistMemorialService } from "./features/artistMemorials/artistMemorialService.js";
+import { artistDeathWatchRoutes } from "./features/artistDeathWatch/artistDeathWatchRoutes.js";
+import { createArtistDeathWatchRepository } from "./features/artistDeathWatch/artistDeathWatchRepository.js";
+import { createArtistDeathWatchService } from "./features/artistDeathWatch/artistDeathWatchService.js";
 import { recommendedFeedPage } from "./recommendationService.js";
 import { hasTrustedLandingImage, landingCommunityMedia, landingTotals } from "./landingMedia.js";
 import { createSuccessfulReadinessCache } from "./healthAvailability.js";
@@ -184,8 +189,16 @@ export { ApiError } from "./errors.js";
 
 const now = () => Date.now();
 const showAttendanceRepository = createShowAttendanceRepository(db);
+const loungeLifecycleService = createLoungeLifecycleService({
+  database: db,
+  attendanceRepository: showAttendanceRepository,
+  atomicWrite,
+});
 const artistMemorialService = createArtistMemorialService({
   repository: createArtistMemorialRepository(db),
+});
+export const artistDeathWatchService = createArtistDeathWatchService({
+  repository: createArtistDeathWatchRepository(db),
 });
 ensureLegacyMediaFinalizeSchema(db);
 const uid = (p) => `${p}_${randomUUID().slice(0, 12)}`;
@@ -1488,6 +1501,24 @@ function cleanArtistCampaign(value, {
   };
 }
 
+function assertArtistAcceptsLiveRating({ artistKey = null, artist = null } = {}) {
+  if (!artistHasPublishedMemorial(db, { artistKey, artist })) return;
+  throw new ApiError(
+    409,
+    "This artist is remembered through posts and concert history, but new live ratings are closed.",
+    "ARTIST_MEMORIALIZED",
+  );
+}
+
+function assertArtistAcceptsMemorialMemory({ artistKey = null, artist = null } = {}) {
+  if (artistKey && artistHasPublishedMemorial(db, { artistKey, artist })) return;
+  throw new ApiError(
+    409,
+    "Fan memories without a rating are available only on a verified memorial page.",
+    "ARTIST_MEMORIAL_REQUIRED",
+  );
+}
+
 const ATTENDANCE_TICKET_TOP_LEVEL_FIELDS = new Set([
   "kind", "clientMutationId", "review", "note", "attendanceTicket",
 ]);
@@ -1920,17 +1951,21 @@ function canonicalCreateRequest(user, body, storedPost = null) {
     committedIds: storedPostTaggedUserIds(storedPost?.tagged_user_ids),
     postId: storedPost?.id || null,
   });
-  if (source.kind === "status") {
+  const memorialMemory = source.kind === "memory";
+  if (source.kind === "status" || memorialMemory) {
     const [errs, v] = shape(source, {
+      ...(memorialMemory ? { artist: { required: true, parse: (x) => clean(x, { max: LIMITS.artist }) || undefined } } : {}),
       review: { parse: (x) => clean(x, { max: LIMITS.review, newlines: true }) },
       photos: { parse: (x) => cleanStringArray(x, { maxItems: MEDIA_POST_MAX_ATTACHMENTS, maxLen: 2000 }) },
       photosPublic: { parse: (x) => typeof x === "boolean" ? (x ? 1 : 0) : x === 0 || x === 1 ? x : undefined },
       song: { parse: cleanSong },
     });
     if (errs.length) throw new ApiError(400, errs[0]);
-    const playlist = playlistSnapshotForPost(user, source.playlistId, parsedStoredObject(storedPost?.playlist));
+    const binding = memorialMemory ? resolveArtistBinding(v.artist, source.artistKey) : null;
+    if (memorialMemory) assertArtistAcceptsMemorialMemory({ artistKey: binding?.artist_key, artist: v.artist });
+    const playlist = memorialMemory ? null : playlistSnapshotForPost(user, source.playlistId, parsedStoredObject(storedPost?.playlist));
     if (!stableMedia) rejectNewLegacyMediaUrls(v.photos || [], parseJsonArray(storedPost?.photos));
-    const campaign = cleanArtistCampaign(source.campaign, {
+    const campaign = memorialMemory ? null : cleanArtistCampaign(source.campaign, {
       user,
       mediaRows: stableMedia,
       committedCampaign: parsedStoredObject(storedPost?.campaign),
@@ -1946,6 +1981,9 @@ function canonicalCreateRequest(user, body, storedPost = null) {
       campaign,
       taggedUserIds,
       mediaSelection: stableMedia,
+      memorialMemory,
+      artist: memorialMemory ? v.artist : "",
+      binding,
     };
     assertSafeAuthoredFields({
       post: values.review,
@@ -1959,9 +1997,9 @@ function canonicalCreateRequest(user, body, storedPost = null) {
       kind: "status",
       values,
       canonical: {
-        kind: "status",
-        artist: "",
-        artistKey: null,
+        kind: memorialMemory ? "memory" : "status",
+        artist: memorialMemory ? v.artist : "",
+        artistKey: memorialMemory ? binding.artist_key : null,
         venue: "",
         venueKey: null,
         city: "",
@@ -2087,15 +2125,16 @@ function parsedStoredObject(value) {
 
 function canonicalStoredPost(row) {
   const kind = row?.kind === "status" ? "status" : "review";
+  const memorialMemory = kind === "status" && !!row?.artist_key && !!row?.artist_mbid && !!clean(row?.artist, { max: LIMITS.artist });
   const song = cleanSong(parsedStoredObject(row?.song));
   const playlist = parsedStoredObject(row?.playlist);
   const campaign = kind === "status" ? normalizeArtistCampaign(parsedStoredObject(row?.campaign)) : null;
   const attendanceTicket = kind === "status" ? storedAttendanceTicket(row?.attendance_ticket) : null;
   const dims = cleanPostRatingDims(parsedStoredObject(row?.dims) || {}) || {};
   return {
-    kind,
-    artist: kind === "status" ? "" : clean(row?.artist, { max: LIMITS.artist }),
-    artistKey: kind === "status" ? null : row?.artist_key || null,
+    kind: memorialMemory ? "memory" : kind,
+    artist: kind === "status" && !memorialMemory ? "" : clean(row?.artist, { max: LIMITS.artist }),
+    artistKey: kind === "status" && !memorialMemory ? null : row?.artist_key || null,
     venue: kind === "status" ? "" : clean(row?.venue, { max: LIMITS.venue }),
     venueKey: kind === "status" ? null : row?.venue_key || venueBinding(row?.venue),
     city: kind === "status" ? "" : clean(row?.city, { max: LIMITS.city }),
@@ -2237,7 +2276,8 @@ function reportableTargetFor(user, targetType, targetId) {
   if (targetType === "lounge_message") {
     const row = db.prepare("SELECT lounge_id,user_id,removed FROM lounge_messages WHERE id=?").get(targetId);
     const attendee = row && showAttendanceRepository.hasAttendeeAccess(user.id, row.lounge_id);
-    if (!row || row.removed || !attendee || !publicAccountOrNull(row.user_id)
+    const lifecycle = row ? loungeLifecycleService.snapshot(row.lounge_id, now()) : null;
+    if (!row || row.removed || !attendee || lifecycle?.status === "closed" || !publicAccountOrNull(row.user_id)
       || blockedEitherWay(user.id, row.user_id)) unavailableReportTarget();
     preventSelfReport(row.user_id, user.id);
     return { authorId: row.user_id, photos: [] };
@@ -3251,6 +3291,16 @@ export const routes = {
     decodeShowKey: (ctx) => decodedPathParam(ctx, "key", { max: 300, label: "show link" }),
     requireUser,
   }),
+  ...loungeArchiveRoutes({
+    database: db,
+    ApiError,
+    decodeKey: (ctx) => decodedPathParam(ctx, "key", { max: 300, label: "lounge link" }).toLowerCase(),
+    finishPage,
+    lifecycleService: loungeLifecycleService,
+    now,
+    pageRequest,
+    requireModerator,
+  }),
   ...guestSearchAnalyticsRoutes({
     database: db,
     ApiError,
@@ -3279,6 +3329,18 @@ export const routes = {
     recordModerationAction: moderationRecord,
     requireAdmin,
     resolveArtist: (key) => artistStmts.byNorm.get(key) || null,
+    deathWatchService: artistDeathWatchService,
+  }),
+  ...artistDeathWatchRoutes({
+    database: db,
+    ApiError,
+    decodeArtistKey: (ctx) => decodedPathParam(ctx, "key", { max: 200, label: "artist alert link" }),
+    now,
+    rateLimit: limit,
+    recordModerationAction: moderationRecord,
+    requireAdmin,
+    requireModerator,
+    service: artistDeathWatchService,
   }),
   ...ownerApprovalRoutes({
     database: db,
@@ -5142,18 +5204,21 @@ export const routes = {
           assertGoingAttendanceForTicket(u.id, v.attendanceTicket);
           assertNoActiveAttendanceTicketPost(u.id, v.attendanceTicket);
         }
-        postRow.run(id, u.id, "", "", "", "", 0, null, null,
+        if (v.memorialMemory) assertArtistAcceptsMemorialMemory({ artistKey: v.binding?.artist_key, artist: v.artist });
+        postRow.run(id, u.id, v.memorialMemory ? v.artist : "", "", "", "", 0, null, null,
           "{}", v.review, JSON.stringify(v.photos), v.photosPublic, 0, v.campaign ? JSON.stringify(v.campaign) : null, "[]", null,
-          "[]", JSON.stringify(transactionTaggedUserIds), "status", v.song ? JSON.stringify(v.song) : null, v.playlist ? JSON.stringify(v.playlist) : null, null, null, null, mutationId, mutationHash, now());
+          "[]", JSON.stringify(transactionTaggedUserIds), "status", v.song ? JSON.stringify(v.song) : null, v.playlist ? JSON.stringify(v.playlist) : null,
+          v.memorialMemory ? v.binding.artist_key : null, v.memorialMemory ? v.binding.artist_mbid : null, null, mutationId, mutationHash, now());
         if (v.attendanceTicket) postAttendanceTicket.run(JSON.stringify(v.attendanceTicket), id, u.id);
         markOwnedMediaAssociated(db, { ownerId: u.id, urls: v.photos, at: now() });
         if (v.mediaSelection) attachPostMedia(db, { postId: id, ownerId: u.id, selection: v.mediaSelection, at: now() });
-        addPostTagNotifications(transactionTaggedUserIds, u.id, id);
+        addPostTagNotifications(transactionTaggedUserIds, u.id, id, v.memorialMemory ? v.artist : null);
       });
       return { id, post: postJson(feedPostById.get(id), u.id) };
     }
 
     const v = request.values;
+    assertArtistAcceptsLiveRating({ artistKey: v.binding.artist_key, artist: v.artist });
     const id = uid("p");
     atomicWrite(() => {
       const transactionTaggedUserIds = validatedPostTaggedUserIds(u, v.taggedUserIds);
@@ -5203,6 +5268,10 @@ export const routes = {
     }
 
     const next = { ...current };
+    const currentMemorialMemory = current.kind === "status" && !!current.artist_key && !!current.artist_mbid && !!current.artist;
+    if (currentMemorialMemory && ["artist", "artistKey", "venue", "city", "date", "overall", "band", "room", "dims", "setlist", "tour", "tags", "landingShowcase"].some(has)) {
+      throw new ApiError(400, "A memorial fan memory can edit its words, people, song, and media, but it cannot become a live rating.", "VALIDATION_FAILED");
+    }
     const previousTaggedUserIds = storedPostTaggedUserIds(current.tagged_user_ids);
     const textField = (key, max, { required = false, newlines = false } = {}) => {
       if (!has(key)) return;
@@ -5300,6 +5369,7 @@ export const routes = {
       next.song = song ? JSON.stringify(song) : null;
     }
     if (has("playlistId")) {
+      if (currentMemorialMemory) throw new ApiError(400, "Playlists cannot be attached to a memorial fan memory.", "VALIDATION_FAILED");
       if (current.kind !== "status") throw new ApiError(400, "Playlists can only be attached to regular posts.", "VALIDATION_FAILED");
       let currentSnapshot = null;
       try { currentSnapshot = current.playlist ? JSON.parse(current.playlist) : null; } catch {}
@@ -5360,6 +5430,7 @@ export const routes = {
       ? artistCampaignMediaRows(editedMediaSelection)
       : currentPostCampaignMediaRows(current.id, u.id);
     if (has("campaign")) {
+      if (currentMemorialMemory) throw new ApiError(400, "Featured styling cannot be added to a memorial fan memory.", "VALIDATION_FAILED");
       if (current.kind !== "status") {
         throw new ApiError(400, "Artist drops can only style regular feed posts.", "VALIDATION_FAILED");
       }
@@ -5392,8 +5463,13 @@ export const routes = {
     // review to that artist's page, and retyping it as free text must drop the
     // binding rather than leave the post pointing at the previous entity.
     const editBinding = current.kind === "status"
-      ? { artist_key: null, artist_mbid: null }
+      ? currentMemorialMemory
+        ? { artist_key: current.artist_key, artist_mbid: current.artist_mbid }
+        : { artist_key: null, artist_mbid: null }
       : resolveArtistBinding(next.artist, has("artistKey") ? body.artistKey : current.artist_key);
+    if (current.kind !== "status" && ["artist", "artistKey", "overall", "band", "room", "dims"].some(has)) {
+      assertArtistAcceptsLiveRating({ artistKey: editBinding.artist_key, artist: next.artist });
+    }
     const nextTaggedUserIds = storedPostTaggedUserIds(next.tagged_user_ids);
     atomicWrite(() => {
       const transactionCurrent = db.prepare(`SELECT tagged_user_ids,COALESCE(updated_at,created_at) AS version
@@ -5419,7 +5495,7 @@ export const routes = {
       if (Number(updated.changes || 0) !== 1) {
         throw new ApiError(409, "This review changed on another screen. Refresh before saving again.", "CONFLICT");
       }
-      addPostTagNotifications(transactionNewlyTaggedUserIds, u.id, current.id, current.kind === "status" ? null : next.artist);
+      addPostTagNotifications(transactionNewlyTaggedUserIds, u.id, current.id, currentMemorialMemory || current.kind !== "status" ? next.artist : null);
       retireLegacyVideoPosters(db, {
         postId: current.id,
         ownerId: u.id,
@@ -5927,11 +6003,34 @@ export const routes = {
   "GET /api/lounges/:key/meta": (ctx) => {
     const key = decodedPathParam(ctx, "key", { max: 300, label: "lounge link" }).toLowerCase();
     if (!key) throw new ApiError(400, "Bad lounge.", "VALIDATION_FAILED");
+    ctx.setHeader?.("Cache-Control", "no-store");
+    const register = !!ctx.user && accountIsPublic(ctx.user)
+      && showAttendanceRepository.hasAttendeeAccess(ctx.user.id, key);
+    const lifecycle = loungeLifecycleService.snapshot(key, now(), { register });
     const attendeeCount = db.prepare(`SELECT COUNT(*) c FROM going g JOIN users u ON u.id=g.user_id
       WHERE g.concert_key=? AND ${activeAccountSql("u")}`).get(key).c;
+    if (lifecycle.status === "closed") {
+      return {
+        attendeeCount,
+        messageCount: 0,
+        status: "closed",
+        timingKnown: lifecycle.timingKnown,
+        cutoffAt: lifecycle.cutoffAt,
+        cutoffSource: lifecycle.cutoffSource,
+        fanClubArtist: lifecycle.artist || null,
+      };
+    }
     const messageCount = db.prepare(`SELECT COUNT(*) c FROM lounge_messages m JOIN users u ON u.id=m.user_id
       WHERE m.lounge_id=? AND m.removed=0 AND ${activeAccountSql("u")}`).get(key).c;
-    return { attendeeCount, messageCount };
+    return {
+      attendeeCount,
+      messageCount,
+      status: "open",
+      timingKnown: lifecycle.timingKnown,
+      cutoffAt: lifecycle.cutoffAt,
+      cutoffSource: lifecycle.cutoffSource,
+      fanClubArtist: lifecycle.artist || null,
+    };
   },
 
   "GET /api/lounges/:key/messages": (ctx) => {
@@ -5940,6 +6039,10 @@ export const routes = {
     if (!key) throw new ApiError(400, "Bad lounge.", "VALIDATION_FAILED");
     const attendee = showAttendanceRepository.hasAttendeeAccess(u.id, key);
     if (!attendee) throw new ApiError(403, "Join this show's Going list before opening the lounge.", "LOUNGE_ATTENDANCE_REQUIRED");
+    const lifecycle = loungeLifecycleService.snapshot(key, now(), { register: true });
+    if (lifecycle.status === "closed") {
+      throw new ApiError(410, "This show's Lounge has closed. Keep the conversation going in the artist Fan Club.", "LOUNGE_CLOSED");
+    }
     const { cursor, limit } = pageRequest(ctx, 300, 300);
     const after = decodeCursor(ctx.query?.after);
     if (cursor && after) throw new ApiError(400, "Use either before or after, not both.", "VALIDATION_FAILED");
@@ -5990,7 +6093,12 @@ export const routes = {
       : null;
     if (existing) {
       assertChatRetryMatches(existing, { lounge_id: key, text });
+      loungeLifecycleService.snapshot(key, now(), { register: true });
       return { id: existing.id, duplicate: true };
+    }
+    const lifecycle = loungeLifecycleService.snapshot(key, now(), { register: true });
+    if (lifecycle.status === "closed") {
+      throw new ApiError(410, "This show's Lounge has closed. Keep the conversation going in the artist Fan Club.", "LOUNGE_CLOSED");
     }
     limit(ctx, "loungemsg", 90, 60 * 60 * 1000);
     const id = uid("lm");

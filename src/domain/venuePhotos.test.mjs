@@ -231,7 +231,7 @@ test("the Store rotates venue-photo privacy state on account, block, and unblock
     store.indexOf("const blockedUsers =", store.indexOf("const blockUser =")),
   );
   const venueRead = store.slice(
-    store.indexOf("const loadVenuePhotos ="),
+    store.indexOf("const waitForVenuePhotoRequest ="),
     store.indexOf("const venuePhotos =", store.indexOf("const loadVenuePhotos =")),
   );
 
@@ -245,6 +245,10 @@ test("the Store rotates venue-photo privacy state on account, block, and unblock
   assert.match(venueRead, /venuePhotoScopedCacheKey\(venueKey, viewerScope\)/u);
   assert.match(venueRead, /currentVenuePhotoViewerScope\(\) !== viewerScope/u,
     "a late response from the previous viewer scope must never commit");
+  assert.ok(venueRead.includes("if (active) return waitForVenuePhotoRequest(active.promise, signal)"),
+    "a second screen must share the in-flight transport while keeping its own cancellation");
+  assert.ok(!venueRead.includes('signal?.addEventListener("abort", abortRequest'),
+    "one screen's AbortSignal must never abort a transport another screen shares");
   assert.match(store, /const fan = privacy\.pendingMutations\?\.size \? \[\] : \[/u,
     "fan photos must remain hidden while a block or unblock write is unsettled");
 });

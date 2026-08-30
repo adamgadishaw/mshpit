@@ -117,7 +117,7 @@ function mediaGallery(media, label, { primary = false } = {}) {
   return items.length ? `<div class="media-grid">${items.join("")}</div>` : "";
 }
 
-function compactPost(post, { full = false, showShowDetails = full } = {}) {
+function compactPost(post, { full = false, showShowDetails = full, hideRating = false } = {}) {
   if (!post) return "";
   const author = post.author?.path
     ? link(post.author.path, post.author.handle ? `@${post.author.handle}` : post.author.name)
@@ -139,8 +139,8 @@ function compactPost(post, { full = false, showShowDetails = full } = {}) {
     : "";
   return `<article class="post-card${full ? " post-full" : ""}">
     <header>
-      <div><p class="eyebrow">${post.kind === "review" ? "Live review" : "From the community"}</p><h${full ? "1" : "3"}>${title}</h${full ? "1" : "3"}></div>
-      ${post.rating != null && post.kind === "review" ? `<p class="rating" aria-label="Rated ${esc(post.rating)} out of 5">${esc(Number(post.rating).toFixed(1))}<span>/5</span></p>` : ""}
+      <div><p class="eyebrow">${post.kind === "review" ? hideRating ? "Fan memory" : "Live review" : "From the community"}</p><h${full ? "1" : "3"}>${title}</h${full ? "1" : "3"}></div>
+      ${!hideRating && post.rating != null && post.kind === "review" ? `<p class="rating" aria-label="Rated ${esc(post.rating)} out of 5">${esc(Number(post.rating).toFixed(1))}<span>/5</span></p>` : ""}
     </header>
     <p class="byline">By ${author}${showDate ? ` · <time datetime="${esc(post.showDate)}">${esc(showDate)}</time>` : published ? ` · <time datetime="${esc(published.iso)}">${esc(published.label)}</time>` : ""}</p>
     <div class="post-copy">${body}</div>
@@ -197,14 +197,15 @@ function searchMain(document) {
 
 function artistMain(document) {
   const { artist, stats } = document;
+  const memorialMode = !!document.memorial;
   const events = document.events.map((event) => `<li><time datetime="${esc(event.startDateTime || event.date)}"><strong>${esc(dateLabel(event.date))}</strong>${event.localTime ? `<small>${esc(event.localTime)}</small>` : ""}</time><div><h3>${link(event.path, event.name)}</h3><p>${link(event.venuePath, event.venue)}${event.place ? ` · ${esc(event.place)}` : ""}</p></div>${event.soldOut ? '<span class="pill">Sold out</span>' : event.statusLabel !== "scheduled" ? `<span class="pill">${esc(event.statusLabel)}</span>` : ""}</li>`).join("");
-  const concerts = (document.concerts || []).map((concert) => `<li><time datetime="${esc(concert.date)}"><strong>${esc(dateLabel(concert.date))}</strong></time><div><h3>${link(concert.path, concert.venue)}</h3>${concert.city ? `<p>${esc(concert.city)}</p>` : ""}</div><span class="archive-score">${concert.averageRating != null ? `${esc(concert.averageRating.toFixed(1))}/5 · ` : ""}${esc(concert.ratingCount)} ${concert.ratingCount === 1 ? "rating" : "ratings"}</span></li>`).join("");
+  const concerts = (document.concerts || []).map((concert) => `<li><time datetime="${esc(concert.date)}"><strong>${esc(dateLabel(concert.date))}</strong></time><div><h3>${link(concert.path, concert.venue)}</h3>${concert.city ? `<p>${esc(concert.city)}</p>` : ""}</div><span class="archive-score">${memorialMode ? `${esc(concert.reviewCount)} ${concert.reviewCount === 1 ? "fan memory" : "fan memories"}` : `${concert.averageRating != null ? `${esc(concert.averageRating.toFixed(1))}/5 · ` : ""}${esc(concert.ratingCount)} ${concert.ratingCount === 1 ? "rating" : "ratings"}`}</span></li>`).join("");
   const archiveLink = document.archivePath && Number(document.archiveTotal) > 3 ? link(document.archivePath, "View full concert archive") : "";
   const updates = document.updates.map((update) => {
     const date = dateTimeLabel(update.publishedAt);
     return `<article class="update"><p>${esc(update.text)}</p>${date ? `<time datetime="${esc(date.iso)}">${esc(date.label)}</time>` : ""}</article>`;
   }).join("");
-  const reviews = document.reviews.map((review) => compactPost(review)).join("");
+  const reviews = document.reviews.map((review) => compactPost(review, { hideRating: memorialMode })).join("");
   const memorialDate = longDateLabel(document.memorial?.deathDate);
   const memorialSource = publicHttpsUrl(document.memorial?.citation?.url);
   const memorialAccomplishments = (Array.isArray(document.memorial?.accomplishments)
@@ -225,17 +226,17 @@ function artistMain(document) {
   return `<main id="main">
     ${breadcrumbs(document)}
     <section class="profile-hero">
-      <p class="eyebrow">Artist on Mshpit</p>
+      <p class="eyebrow">${memorialMode ? "In memory" : "Artist on Mshpit"}</p>
       <h1>${esc(artist.name)}</h1>
       ${artist.genres.length ? `<p class="genres">${esc(artist.genres.join(" · "))}</p>` : ""}
       ${artist.bio ? `<div class="bio">${paragraphs(artist.bio)}</div>` : ""}
-      <dl class="stats"><div><dt>Fan reviews</dt><dd>${esc(stats.reviewCount)}</dd></div>${stats.averageRating != null ? `<div><dt>Live rating</dt><dd>${esc(stats.averageRating.toFixed(1))}<small>/5</small></dd></div>` : `<div><dt>Live rating</dt><dd>No live rating yet</dd></div>`}${artist.formed ? `<div><dt>Active since</dt><dd>${esc(artist.formed)}</dd></div>` : ""}</dl>
+      <dl class="stats"><div><dt>${memorialMode ? "Fan memories" : "Fan reviews"}</dt><dd>${esc(stats.reviewCount)}</dd></div>${memorialMode ? `<div><dt>Concert history</dt><dd>${esc(document.archiveTotal || document.concerts.length)} nights</dd></div>` : stats.averageRating != null ? `<div><dt>Live rating</dt><dd>${esc(stats.averageRating.toFixed(1))}<small>/5</small></dd></div>` : `<div><dt>Live rating</dt><dd>No live rating yet</dd></div>`}${!memorialMode && artist.formed ? `<div><dt>Active since</dt><dd>${esc(artist.formed)}</dd></div>` : ""}</dl>
     </section>
     ${memorial}
-    ${events ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">On the road</p><h2>Upcoming shows</h2></div></div><ol class="event-list">${events}</ol></section>` : ""}
-    ${concerts ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">From the archive</p><h2>Top-rated concert nights</h2></div>${archiveLink}</div><ol class="event-list archive-list">${concerts}</ol></section>` : ""}
+    ${!memorialMode && events ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">On the road</p><h2>Upcoming shows</h2></div></div><ol class="event-list">${events}</ol></section>` : ""}
+    ${concerts ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">From the archive</p><h2>${memorialMode ? "Concert history" : "Top-rated concert nights"}</h2></div>${archiveLink}</div><ol class="event-list archive-list">${concerts}</ol></section>` : ""}
     ${updates ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">Official notes</p><h2>From ${esc(artist.name)}</h2></div></div><div class="updates">${updates}</div></section>` : ""}
-    ${reviews ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">People who were there</p><h2>Top live reviews</h2></div></div><div class="post-list">${reviews}</div></section>` : ""}
+    ${reviews ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">People who were there</p><h2>${memorialMode ? "Fan memories" : "Top live reviews"}</h2></div></div><div class="post-list">${reviews}</div></section>` : ""}
   </main>`;
 }
 

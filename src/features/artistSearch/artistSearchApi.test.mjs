@@ -7,6 +7,7 @@ import {
   attachArtistSuggestion,
   fetchArtistSuggestions,
   mergeArtistSearchCacheEntry,
+  refreshArtistCatalogEntry,
 } from "./artistSearchApi.mjs";
 
 test("composer artist lookup uses the catalog first and only falls back remotely on a miss", async () => {
@@ -80,6 +81,25 @@ test("settled artist lookups are cached per API client while cancellation and fo
   assert.equal(calls, 2, "an explicit refresh bypasses the settled-result cache");
 });
 
+test("artist metadata refresh bypasses the client cache without starting provider resolution", async () => {
+  const calls = [];
+  let artist = { key: "alpha", name: "Alpha", genre: null };
+  const apiClient = async (path) => {
+    calls.push(path);
+    return { artists: [artist] };
+  };
+
+  await fetchArtistSuggestions("Alpha", { apiClient, limit: COMPOSER_ARTIST_SEARCH_LIMIT });
+  artist = { key: "alpha", name: "Alpha", genre: "Soul", genreSource: "staff" };
+  const refreshed = await refreshArtistCatalogEntry("Alpha", { apiClient });
+
+  assert.equal(refreshed.genre, "Soul");
+  assert.equal(calls.length, 2, "refresh must bypass the settled search cache");
+  assert.ok(calls.every((path) => path.startsWith("/api/artists?")));
+  assert.equal(calls.some((path) => path.includes("/resolve")), false,
+    "refreshing an open page must never duplicate MusicBrainz work");
+});
+
 test("choosing a transient result performs one verified mutation and returns a durable binding", async () => {
   const calls = [];
   const controller = new AbortController();
@@ -134,4 +154,13 @@ test("artist search summaries cannot downgrade richer cached artist metadata", (
   assert.deepEqual(resolved.albums, full.albums);
   assert.deepEqual(resolved.topTracks, full.topTracks);
   assert.equal(resolved.searchSummary, undefined);
+
+  const refreshedGenre = mergeArtistSearchCacheEntry(resolved, {
+    key: "cache-safe-artist",
+    name: "Cache Safe Artist",
+    genre: "Soul",
+    genreSource: "staff",
+    searchSummary: true,
+  });
+  assert.equal(refreshedGenre.genre, "Soul", "a fresh catalog projection replaces stale genre metadata");
 });

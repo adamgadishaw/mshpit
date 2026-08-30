@@ -3,10 +3,13 @@ import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, useWindowDime
 import Icon from "../components/Icon";
 import ScreenHeader from "../components/ScreenHeader";
 import SmartImage from "../components/SmartImage";
+import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import { boundedArtistGalleryMedia } from "../domain/artistGalleryMedia.mjs";
 import { mediaDisplayKind, mediaPosterUri } from "../domain/postMediaDisplay.mjs";
+import { refreshScope } from "../domain/scopedRefresh.mjs";
 import { isStaff, useStore } from "../store";
 import { colors, focusRing, mono, radius } from "../theme";
+import useScopedRefresh from "../hooks/useScopedRefresh";
 
 const pageStep = (columns) => columns * 3;
 
@@ -20,18 +23,38 @@ export default function ArtistGalleryScreen({ artistName, artistKey = null, onCl
   const availableWidth = Math.min(width, 1120) - 32;
   const tileWidth = Math.max(132, Math.floor((availableWidth - ((columns - 1) * 8)) / columns));
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
   const [visibleCount, setVisibleCount] = useState(() => pageStep(columns));
+  const accountId = session?.id || null;
+  const artistGalleryRefreshScope = refreshScope(accountId, "artist-gallery", resolvedKey || resolvedName);
+  const { refresh: refreshGallery, refreshing } = useScopedRefresh({
+    scope: artistGalleryRefreshScope,
+    task: async ({ signal }) => {
+      setLoadError("");
+      const result = await loadArtistPhotos(resolvedName, resolvedKey, { signal });
+      if (signal.aborted) return null;
+      if (!result?.ok) throw result?.error || new Error("Artist photos could not be refreshed.");
+      return result;
+    },
+    onError: () => setLoadError("The gallery could not refresh. Public photos already on screen remain available."),
+  });
 
   useEffect(() => {
-    let active = true;
+    const controller = new AbortController();
     setLoading(true);
-    Promise.resolve(loadArtistPhotos(resolvedName, resolvedKey))
-      .finally(() => { if (active) setLoading(false); });
-    return () => { active = false; };
+    setLoadError("");
+    Promise.resolve(loadArtistPhotos(resolvedName, resolvedKey, { signal: controller.signal }))
+      .then((result) => {
+        if (!controller.signal.aborted && !result?.ok) {
+          setLoadError("The gallery could not load. Check your connection and try again.");
+        }
+      })
+      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    return () => controller.abort();
     // The store function changes with its provider render; artist identity is
     // the request boundary and avoids duplicate fetches for the same page.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resolvedKey, resolvedName]);
+  }, [artistGalleryRefreshScope]);
 
   useEffect(() => setVisibleCount(pageStep(columns)), [columns, resolvedKey, resolvedName]);
 
@@ -49,6 +72,13 @@ export default function ArtistGalleryScreen({ artistName, artistKey = null, onCl
   return (
     <View style={styles.wrap}>
       <ScreenHeader kicker="ARTIST PHOTOS" title={resolvedName} onBack={onClose} />
+      <VinylRefreshBoundary
+        refreshing={refreshing}
+        onRefresh={refreshGallery}
+        accessibilityLabel={`Refresh ${resolvedName} gallery`}
+        enabled={!loading}
+        testID="artist-gallery-refresh"
+      >
       <FlatList
         key={`artist-gallery-${columns}`}
         data={visibleRows}
@@ -66,19 +96,38 @@ export default function ArtistGalleryScreen({ artistName, artistKey = null, onCl
         onEndReachedThreshold={0.35}
         showsVerticalScrollIndicator={false}
         ListHeaderComponent={(
-          <View style={styles.intro}>
-            <View style={styles.introIcon}><Icon name="photo" size={20} color={colors.amber} /></View>
-            <View style={styles.introCopy}>
-              <Text style={styles.eyebrow}>THE FAN LENS</Text>
-              <Text style={styles.introTitle}>A living visual archive.</Text>
-              <Text style={styles.introText}>Public fan photos and clips sit beside artist imagery. Private, removed, blocked, or moderated media never appears here.</Text>
+          <>
+            <View style={styles.intro}>
+              <View style={styles.introIcon}><Icon name="photo" size={20} color={colors.amber} /></View>
+              <View style={styles.introCopy}>
+                <Text style={styles.eyebrow}>THE FAN LENS</Text>
+                <Text style={styles.introTitle}>A living visual archive.</Text>
+                <Text style={styles.introText}>Public fan photos and clips sit beside artist imagery. Private, removed, blocked, or moderated media never appears here.</Text>
+              </View>
             </View>
-          </View>
+            {!!loadError && rows.length > 0 && (
+              <View style={styles.refreshWarning} accessibilityLiveRegion="assertive">
+                <Text style={styles.refreshWarningText} selectable>{loadError}</Text>
+                <Pressable style={({ pressed, focused }) => [styles.warningRetry, pressed && styles.pressed, focused && focusRing]} onPress={refreshGallery} accessibilityRole="button" accessibilityLabel={`Retry refreshing ${resolvedName} gallery`}>
+                  <Text style={styles.warningRetryText}>Retry</Text>
+                </Pressable>
+              </View>
+            )}
+          </>
         )}
         ListEmptyComponent={loading ? (
           <View style={styles.empty} accessibilityRole="progressbar" accessibilityLabel={`Loading ${resolvedName} photos`}>
             <ActivityIndicator color={colors.amber} />
             <Text style={styles.emptyTitle}>Loading the gallery</Text>
+          </View>
+        ) : loadError ? (
+          <View style={styles.empty} accessibilityLiveRegion="assertive">
+            <View style={styles.emptyIcon}><Icon name="photo" size={28} color={colors.textFaint} /></View>
+            <Text style={styles.emptyTitle}>The gallery could not load</Text>
+            <Text style={styles.emptyText} selectable>{loadError}</Text>
+            <Pressable style={({ pressed, focused }) => [styles.moreButton, pressed && styles.pressed, focused && focusRing]} onPress={refreshGallery} accessibilityRole="button" accessibilityLabel={`Retry loading ${resolvedName} gallery`}>
+              <Text style={styles.moreText}>TRY AGAIN</Text>
+            </Pressable>
           </View>
         ) : (
           <View style={styles.empty} accessible accessibilityLabel={`No public photos for ${resolvedName} yet`}>
@@ -128,6 +177,7 @@ export default function ArtistGalleryScreen({ artistName, artistKey = null, onCl
           </Pressable>
         ) : rows.length ? <Text style={styles.endText}>END OF PUBLIC GALLERY · {rows.length} ITEMS</Text> : null}
       />
+      </VinylRefreshBoundary>
     </View>
   );
 }
@@ -143,6 +193,10 @@ const styles = StyleSheet.create({
   eyebrow: { color: colors.amber, fontFamily: mono, fontSize: 9, fontWeight: "900", letterSpacing: 1.8 },
   introTitle: { color: colors.text, fontSize: 21, lineHeight: 25, fontWeight: "900", letterSpacing: -0.4, marginTop: 3 },
   introText: { maxWidth: 720, color: colors.textDim, fontSize: 12.5, lineHeight: 18, marginTop: 4 },
+  refreshWarning: { flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 14, padding: 12, borderRadius: radius.md, borderWidth: 1, borderColor: colors.danger, backgroundColor: colors.surface },
+  refreshWarningText: { flex: 1, color: colors.danger, fontSize: 12, lineHeight: 17 },
+  warningRetry: { minHeight: 44, justifyContent: "center", paddingHorizontal: 13, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.amber },
+  warningRetryText: { color: colors.amber, fontSize: 11, fontWeight: "900" },
   tile: { flexGrow: 0, aspectRatio: 0.86, overflow: "hidden", marginBottom: 8, borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surfaceAlt },
   image: { ...StyleSheet.absoluteFillObject },
   tileScrim: { position: "absolute", left: 0, right: 0, bottom: 0, height: "38%", backgroundColor: "rgba(3,5,9,0.58)" },

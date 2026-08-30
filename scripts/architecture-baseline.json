@@ -389,10 +389,6 @@
       "count": 10,
       "fingerprint": "e2192c0aa04e191bbea1"
     },
-    "src/screens/AdminScreen.jsx": {
-      "count": 2,
-      "fingerprint": "c88e6350620482ddcc69"
-    },
     "src/screens/ClipsScreen.jsx": {
       "count": 4,
       "fingerprint": "a95a9c366db7b96909f2"
@@ -401,17 +397,9 @@
       "count": 1,
       "fingerprint": "04da77a68c2704ec8842"
     },
-    "src/screens/FanClubsScreen.jsx": {
-      "count": 1,
-      "fingerprint": "a417a5dee13d207d4348"
-    },
     "src/screens/LandingScreen.jsx": {
       "count": 3,
       "fingerprint": "64b8c4beaff4f10c859c"
-    },
-    "src/screens/LoungeScreen.jsx": {
-      "count": 1,
-      "fingerprint": "d92b8b82bec0ba614760"
     },
     "src/screens/PolicyScreen.jsx": {
       "count": 1,
@@ -422,8 +410,8 @@
       "fingerprint": "7d3665c557f4c1a593ee"
     },
     "src/store.js": {
-      "count": 23,
-      "fingerprint": "c14e85360118da11f6b9"
+      "count": 20,
+      "fingerprint": "63f3e01614e95e19d122"
     },
     "src/theme.js": {
       "count": 5,
@@ -438,10 +426,6 @@
     "src/components/EmailConsole.jsx": {
       "count": 11,
       "fingerprint": "ba27e78ba749ad2976e0"
-    },
-    "src/screens/AdminScreen.jsx": {
-      "count": 6,
-      "fingerprint": "e24f99a3d8bd141abe21"
     },
     "src/screens/ArtistScreen.jsx": {
       "count": 1,
@@ -472,8 +456,8 @@
       "fingerprint": "01e0028f751a5ee02884"
     },
     "src/store.js": {
-      "count": 120,
-      "fingerprint": "3812b958a8428d308156"
+      "count": 118,
+      "fingerprint": "4f7026349498eb35a808"
     }
   },
   "legacyClientContractShapesByFile": {
@@ -524,8 +508,8 @@
       "fingerprint": "d24b0a7960ea22a7f0ec"
     },
     "src/store.js": {
-      "count": 40,
-      "fingerprint": "6a4bfacabdff63d5300b"
+      "count": 39,
+      "fingerprint": "80f3c63aa0b9c0bb5498"
     }
   },
   "allowedUnusedCanonicalExports": []

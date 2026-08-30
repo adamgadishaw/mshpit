@@ -134,6 +134,28 @@ export async function fetchArtistSuggestions(query, {
   return rows;
 }
 
+// Re-read one already-known artist from MSHpit's catalog. This intentionally
+// disables the MusicBrainz fallback: pull-to-refresh is cache invalidation, not
+// a second provider-resolution path. The forced read lets a background genre
+// verification become visible during a long-running app session.
+export async function refreshArtistCatalogEntry(name, {
+  signal,
+  apiClient,
+} = {}) {
+  const term = cleanQuery(name);
+  if (!term) return null;
+  const identity = term.toLocaleLowerCase();
+  const rows = await fetchArtistSuggestions(term, {
+    signal,
+    apiClient,
+    limit: COMPOSER_ARTIST_SEARCH_LIMIT,
+    remoteFallback: false,
+    force: true,
+  });
+  return rows.find((artist) => cleanQuery(artist?.name).toLocaleLowerCase() === identity
+    || cleanQuery(artist?.key).toLocaleLowerCase() === identity) || null;
+}
+
 export async function attachArtistSuggestion(artist, {
   signal,
   apiClient,

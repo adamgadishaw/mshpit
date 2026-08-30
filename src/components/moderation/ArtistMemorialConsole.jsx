@@ -468,7 +468,7 @@ export default function ArtistMemorialConsole({
   }
 
   const externalError = errorMessage(error);
-  const publishedExisting = selectedKey && rows.find((item) => item.artistKey === selectedKey)?.status === "published";
+  const publishedExisting = !!selectedKey && rows.find((item) => item.artistKey === selectedKey)?.status === "published";
   const restartDisabled = busy || form.status !== "published" || !publishedExisting;
 
   return (
@@ -615,15 +615,18 @@ export default function ArtistMemorialConsole({
 
         <View style={styles.field} accessibilityRole="radiogroup" accessibilityLabel="Memorial publication status">
           <Text style={styles.fieldLabel}>Status</Text>
-          <Text style={styles.fieldHint}>Drafts are private to staff. Published memorials appear permanently on the artist page.</Text>
+          <Text style={styles.fieldHint}>{publishedExisting
+            ? "This memorial is permanently published. You can correct its tribute or source, but cannot return the artist to a living profile."
+            : "Drafts are private to staff. Published memorials appear permanently on the artist page."}</Text>
           <View style={styles.choices}>
             {ARTIST_MEMORIAL_STATUSES.map((status) => (
               <Choice
                 key={status}
                 label={STATUS_LABELS[status]}
                 selected={form.status === status}
-                disabled={busy}
+                disabled={busy || (publishedExisting && status === "draft")}
                 onPress={() => {
+                  if (publishedExisting && status === "draft") return;
                   update("status", status);
                   if (status !== "published") update("restartSpotlight", false);
                 }}

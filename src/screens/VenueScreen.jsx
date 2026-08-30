@@ -14,6 +14,9 @@ import { formatDate } from "../domain/dates.mjs";
 import { venueRowWindow } from "../domain/venueDiscovery.mjs";
 import { VENUE_PAGE_SECTIONS, venuePagePreview, venuePageSectionModel, venuePhotoViewerIndex } from "../domain/venuePageSections.mjs";
 import { openTicketLink } from "../lib/ticketLinks";
+import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
+import useScopedRefresh from "../hooks/useScopedRefresh";
+import { refreshScope } from "../domain/scopedRefresh.mjs";
 
 const REVIEW_BATCH = 8;
 const HISTORY_BATCH = 12;
@@ -40,11 +43,13 @@ export default function VenueScreen({ venueName, onClose, onOpenShow, onOpenArti
   const setActiveSection = (section) => setSectionSelection({ venueName: venue.name, section });
 
   useEffect(() => {
+    const controller = new AbortController();
     setVisibleReviewCount(REVIEW_BATCH);
     setVisibleHistoryCount(HISTORY_BATCH);
     setVisibleUpcomingCount(UPCOMING_BATCH);
-    loadVenueReviews(venue.name);
-    void loadVenuePhotos(venue.name).catch(() => { /* architecture: allow-empty-catch -- the venue page retains its licensed empty state and visible retry control */ });
+    void loadVenueReviews(venue.name, { signal: controller.signal });
+    void loadVenuePhotos(venue.name, { signal: controller.signal }).catch(() => { /* architecture: allow-empty-catch -- the venue page retains its licensed empty state and visible retry control */ });
+    return () => controller.abort();
   }, [venue.name, venuePhotoPrivacyRevision]);
 
   const fanRating = venueRating(venue.name);
@@ -63,10 +68,27 @@ export default function VenueScreen({ venueName, onClose, onOpenShow, onOpenArti
   const openPhotoWidget = photos.length
     ? (photo, fallbackIndex = 0) => onOpenPhotos?.(photos, venuePhotoViewerIndex(photos, photo, fallbackIndex))
     : undefined;
+  const venueRefreshScope = refreshScope(session?.id, "venue", venue.name);
+  const { refresh: refreshVenue, refreshing: venueRefreshing } = useScopedRefresh({
+    scope: venueRefreshScope,
+    task: async ({ signal }) => {
+      const [reviewResult, refreshedPhotos] = await Promise.all([
+        loadVenueReviews(venue.name, { signal }),
+        loadVenuePhotos(venue.name, { force: true, signal }),
+      ]);
+      if (reviewResult?.ok === false && reviewResult?.error) throw reviewResult.error;
+      return { reviewResult, refreshedPhotos };
+    },
+  });
 
   return (
     <View style={styles.wrap}>
       <ScreenHeader kicker="VENUE GUIDE" title={venue.name} onBack={onClose} />
+      <VinylRefreshBoundary
+        refreshing={venueRefreshing}
+        onRefresh={refreshVenue}
+        accessibilityLabel={`Refresh ${venue.name} venue page`}
+      >
       <ScrollView
         contentContainerStyle={styles.content}
         contentInsetAdjustmentBehavior="automatic"
@@ -303,6 +325,7 @@ export default function VenueScreen({ venueName, onClose, onOpenShow, onOpenArti
         </Section>
         ) : null}
       </ScrollView>
+      </VinylRefreshBoundary>
     </View>
   );
 }

@@ -35,3 +35,23 @@ test("lounge metadata supplies the pre-open message count and degrades to local 
   assert.equal(showSocialView({ read: null, concertKey: key, accountId: null, localMessageCount: 2 }).messageCount, 2);
   assert.equal(normalizeLoungeMeta({ attendeeCount: "bad", messageCount: null }), null);
 });
+
+test("closed Lounge metadata never falls back to locally cached message counts", () => {
+  const key = "artist|venue|date";
+  const meta = normalizeLoungeMeta({
+    attendeeCount: 4,
+    messageCount: 0,
+    status: "closed",
+    timingKnown: true,
+    cutoffAt: 1234,
+    cutoffSource: "doors_open",
+    fanClubArtist: "Artist",
+  });
+  const read = { identity: showSocialIdentity(key, "fan"), status: "ready", attendees: [], loungeMeta: meta };
+  const view = showSocialView({ read, concertKey: key, accountId: "fan", localMessageCount: 9 });
+  assert.equal(view.messageCount, 0);
+  assert.equal(view.loungeStatus, "closed");
+  assert.equal(view.loungeCutoffAt, 1234);
+  assert.equal(view.loungeCutoffSource, "doors_open");
+  assert.equal(view.fanClubArtist, "Artist");
+});

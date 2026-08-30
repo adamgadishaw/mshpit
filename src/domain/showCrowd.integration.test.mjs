@@ -26,7 +26,7 @@ test("ShowScreen exposes privacy-filtered Crowd views without local identity fal
   assert.match(showScreen, /viewerAttendance: attendanceReady \? attendance\.viewerAttendance : null/);
   assert.match(showScreen, /\[key, accountId, crowdScope, goingBusy, attendanceRefreshVersion\]/);
   assert.match(showScreen, /attendance\.scope === crowdScope/);
-  assert.match(showScreen, /controller\.signal\.aborted/);
+  assert.match(showScreen, /signal\?\.aborted \|\| showSocialRequestRef\.current !== request/);
   assert.match(showScreen, /ENABLE_CANONICAL_SHOW_READ/);
   assert.match(showScreen, /readShowDocument/);
   assert.match(showScreen, /showDocumentIdentity\(key, accountId\)/);

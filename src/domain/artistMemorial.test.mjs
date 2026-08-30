@@ -104,12 +104,12 @@ test("first publication starts a 90-day spotlight and ordinary edits do not rene
   assert.equal(restarted.record.publishedAt, NOW);
   assert.equal(restarted.record.spotlightStartedAt, later);
 
-  const draft = transitionArtistMemorial(restarted.record, payload({ status: "draft" }), { at: later + 1 });
-  assert.equal(draft.record.publishedAt, null);
-  assert.equal(draft.record.spotlightStartedAt, null);
-  const republished = transitionArtistMemorial(draft.record, payload(), { at: later + 2 });
-  assert.equal(republished.record.publishedAt, later + 2);
-  assert.equal(republished.record.spotlightStartedAt, later + 2);
+  const draftRegression = transitionArtistMemorial(restarted.record, payload({ status: "draft" }), { at: later + 1 });
+  assert.deepEqual(draftRegression, {
+    valid: false,
+    field: "status",
+    message: "Published memorials are permanent. You can edit the tribute, but cannot return it to draft.",
+  });
 
   const repaired = transitionArtistMemorial({
     ...first.record,
@@ -149,4 +149,15 @@ test("drafts and malformed stored records have no public projection", () => {
   assert.equal(projectArtistMemorialPublic(draft, { at: NOW }), null);
   assert.equal(projectArtistMemorialPublic({ ...draft, status: "published", sourceUrl: "javascript:alert(1)" }, { at: NOW }), null);
   assert.throws(() => parseArtistMemorialAdminPayload(payload(), { at: "not-a-time" }), /valid timestamp/i);
+});
+
+test("a private draft can be published, but publication cannot be reversed", () => {
+  const draft = transitionArtistMemorial(null, payload({ status: "draft" }), { at: NOW });
+  assert.equal(draft.valid, true);
+  assert.equal(draft.record.status, "draft");
+  const published = transitionArtistMemorial(draft.record, payload(), { at: NOW + 1 });
+  assert.equal(published.valid, true);
+  assert.equal(published.record.status, "published");
+  assert.equal(published.record.publishedAt, NOW + 1);
+  assert.equal(transitionArtistMemorial(published.record, payload({ status: "draft" }), { at: NOW + 2 }).valid, false);
 });

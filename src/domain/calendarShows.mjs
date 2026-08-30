@@ -31,6 +31,7 @@ function mergeShow(previous, incoming) {
     if (value !== null && value !== undefined && value !== "") next[key] = value;
   }
   next.going = previous.going === true || incoming.going === true;
+  next.interested = previous.interested === true || incoming.interested === true;
   next.attended = previous.attended === true || incoming.attended === true;
   next.logged = previous.logged === true || incoming.logged === true;
   next.posted = previous.posted === true || incoming.posted === true;
@@ -155,8 +156,17 @@ export function memberCalendarModel({
   for (const show of Array.isArray(going) ? going : []) add(show, { going: true }, { upcomingOnly: true });
   for (const show of Array.isArray(attendance) ? attendance : []) {
     const state = text(show?.state).toLocaleLowerCase();
-    if (state !== "here" && state !== "went") continue;
-    add(show, { attended: true, attendanceState: state }, { pastOnly: true });
+    if (state === "interested" || state === "going") {
+      add(show, {
+        interested: state === "interested",
+        going: state === "going",
+        attendanceState: state,
+      }, { upcomingOnly: true });
+      continue;
+    }
+    if (state === "here" || state === "went") {
+      add(show, { attended: true, attendanceState: state }, { pastOnly: true });
+    }
   }
 
   const upcomingRows = sortCalendarRows([...rows[CALENDAR_SHOW_VIEW.UPCOMING].values()], CALENDAR_SHOW_VIEW.UPCOMING);
@@ -174,7 +184,8 @@ export function memberCalendarModel({
 
 /**
  * Calendar is a personal planning/history surface, not a second global archive.
- * Upcoming combines the released live catalogue with the member's Going rows.
+ * Upcoming combines the released live catalogue with the member's Interested
+ * and Going rows.
  * Past combines durable Here/Went attendance with the member's own concert logs.
  * A stale past Going/Interested row is not silently promoted to attendance.
  */

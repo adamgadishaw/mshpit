@@ -64,13 +64,21 @@ test("lounge metadata uses the same identity guard and normalizes its public cou
   const lounge = await readShowLoungeMeta({ concertKey: "artist|venue|date", accountId: null }, {
     apiCall: async (path, options) => {
       calls.push({ path, options });
-      return { attendeeCount: "8", messageCount: "13" };
+      return { attendeeCount: "8", messageCount: "13", status: "open", timingKnown: true, cutoffAt: 99, cutoffSource: "show_start" };
     },
   });
 
   assert.equal(calls[0].path, "/api/lounges/artist%7Cvenue%7Cdate/meta");
   assert.equal(calls[0].options.expectedAccountId, null);
-  assert.deepEqual(lounge, { attendeeCount: 8, messageCount: 13 });
+  assert.deepEqual(lounge, {
+    attendeeCount: 8,
+    messageCount: 13,
+    status: "open",
+    timingKnown: true,
+    cutoffAt: 99,
+    cutoffSource: "show_start",
+    fanClubArtist: null,
+  });
 });
 
 test("invalid Crowd requests fail before transport", async () => {

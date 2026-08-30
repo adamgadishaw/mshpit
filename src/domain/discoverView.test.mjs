@@ -274,6 +274,20 @@ test("genre artist spotlight prioritizes recent attendance, deduplicates, and fa
   assert.equal(fallback.source, "recent");
 });
 
+test("an unclassified catalogue still shows honest recent/popular artists instead of an empty genre frame", () => {
+  const fallback = buildDiscoverArtistSpotlight({
+    genreRows: [],
+    fallbackRows: [{ name: "Doechii", photo: "doechii.jpg" }, { name: "SZA" }],
+    attendanceRows: [],
+    selectedGenre: null,
+    limit: 4,
+  });
+  assert.deepEqual(fallback.rows.map((row) => row.name), ["Doechii", "SZA"]);
+  assert.deepEqual(fallback.rows.map((row) => row.discoveryReason), ["Popular now", "Popular now"]);
+  assert.equal(fallback.rows.some((row) => row.genre), false, "fallback must not invent a genre");
+  assert.equal(fallback.source, "popular");
+});
+
 test("genre artist spotlight preserves global artist names outside Latin script", () => {
   const spotlight = buildDiscoverArtistSpotlight({
     attendanceRows: [

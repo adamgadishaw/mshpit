@@ -4,7 +4,10 @@ import { colors, mono, radius, space } from "../theme";
 import { useStore } from "../store";
 import ScreenHeader from "../components/ScreenHeader";
 import Icon from "../components/Icon";
+import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import { fanClubSearchResults } from "../domain/fanClubDirectory.mjs";
+import { refreshScope } from "../domain/scopedRefresh.mjs";
+import useScopedRefresh from "../hooks/useScopedRefresh";
 
 // Fan clubs, front and center: a browsable directory of every club (most members
 // first) plus type-to-find across ALL artists, so any club is one search away
@@ -17,10 +20,21 @@ export default function FanClubsScreen({ onClose, onOpenFanClub }) {
   // Re-read on every store render so a completed join/leave updates the
   // directory immediately instead of being frozen to the mount-time snapshot.
   const active = fanClubsDirectory();
+  const directoryRefreshScope = refreshScope(session?.id, "fan-club-directory", "all");
+  const { refresh: refreshDirectory, refreshing: directoryRefreshing } = useScopedRefresh({
+    scope: directoryRefreshScope,
+    task: async ({ signal }) => {
+      const result = await loadFanClubsDirectory({ signal });
+      if (!result?.ok && !result?.stale) throw new Error("Fan clubs could not be refreshed.");
+      return result;
+    },
+  });
 
   useEffect(() => {
     const controller = new AbortController();
-    loadFanClubsDirectory({ signal: controller.signal }).catch(() => {});
+    void loadFanClubsDirectory({ signal: controller.signal }).catch(() => {
+      // Initial hydration cancellation is expected when account scope changes.
+    });
     return () => controller.abort();
   }, [session?.id]);
 
@@ -62,6 +76,11 @@ export default function FanClubsScreen({ onClose, onOpenFanClub }) {
         </View>
       </View>
 
+      <VinylRefreshBoundary
+        refreshing={directoryRefreshing}
+        onRefresh={refreshDirectory}
+        accessibilityLabel="Refresh fan clubs"
+      >
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
         {query ? (
           <>
@@ -78,6 +97,7 @@ export default function FanClubsScreen({ onClose, onOpenFanClub }) {
           </>
         )}
       </ScrollView>
+      </VinylRefreshBoundary>
     </View>
   );
 }

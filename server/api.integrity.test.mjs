@@ -2929,7 +2929,15 @@ test("group-chat reads require membership or attendance while gate metadata stay
   const fanMeta = routes["GET /api/fanclubs/:artist/meta"]({ params: { artist: "Gate%20Artist" } });
   assert.deepEqual(fanMeta, { members: 1, messageCount: 2 });
   const loungeMeta = routes["GET /api/lounges/:key/meta"]({ params: { key: encodeURIComponent(loungeKey) } });
-  assert.deepEqual(loungeMeta, { attendeeCount: 1, messageCount: 2 });
+  assert.deepEqual(loungeMeta, {
+    attendeeCount: 1,
+    messageCount: 2,
+    status: "open",
+    timingKnown: false,
+    cutoffAt: null,
+    cutoffSource: null,
+    fanClubArtist: "Gate Artist",
+  });
 
   const fanRead = (user) => routes["GET /api/fanclubs/:artist/messages"]({ user, params: { artist: "Gate%20Artist" } });
   const loungeRead = (user) => routes["GET /api/lounges/:key/messages"]({ user, params: { key: encodeURIComponent(loungeKey) } });
@@ -2949,6 +2957,65 @@ test("group-chat reads require membership or attendance while gate metadata stay
   db.prepare("DELETE FROM going WHERE concert_key=? AND user_id=?").run(loungeKey, member.id);
   assert.throws(() => fanRead(member), (error) => error.code === "FAN_CLUB_MEMBERSHIP_REQUIRED");
   assert.throws(() => loungeRead(member), (error) => error.code === "LOUNGE_ATTENDANCE_REQUIRED");
+});
+
+test("closed Lounges hide archives from members while moderator legal access remains no-store", () => {
+  const member = verifiedUser("u_closed_lounge_member", "closed-lounge@example.com", "closedlounge");
+  verifiedUser("u_closed_lounge_mod", "closed-lounge-mod@example.com", "closedloungemod");
+  db.prepare("UPDATE users SET role='moderator' WHERE id=?").run("u_closed_lounge_mod");
+  const moderator = q.userById.get("u_closed_lounge_mod");
+  const key = "closed artist|closed venue|2026-08-20";
+  const showId = "show-closed-lounge";
+  const showStart = Date.now() - 24 * 60 * 60 * 1000 - 2_000;
+  db.prepare(`INSERT INTO shows
+    (id,canonical_key,artist,venue,date,start_at,identity_source,public_eligible,created_at,updated_at)
+    VALUES (?,?,?,?,?,?,'ticketmaster',1,?,?)`)
+    .run(showId, "tour_date_closed_lounge", "Closed Artist", "Closed Venue", "2026-08-20", showStart, showStart, showStart);
+  db.prepare("INSERT INTO show_aliases (alias_type,alias_value,show_id,created_at) VALUES ('legacy_concert_key',?,?,?)")
+    .run(key, showId, showStart);
+  db.prepare("INSERT INTO going (user_id,concert_key,artist,venue,date,created_at) VALUES (?,?,?,?,?,?)")
+    .run(member.id, key, "Closed Artist", "Closed Venue", "2026-08-20", showStart);
+  db.prepare("INSERT INTO lounge_messages (id,lounge_id,user_id,text,created_at) VALUES (?,?,?,?,?)")
+    .run("lm_closed_archive", key, member.id, "protected archive text", showStart + 1);
+
+  const headers = new Map();
+  const meta = routes["GET /api/lounges/:key/meta"]({
+    user: member,
+    params: { key: encodeURIComponent(key) },
+    setHeader: (name, value) => headers.set(name, value),
+  });
+  assert.equal(headers.get("Cache-Control"), "no-store");
+  assert.equal(meta.status, "closed");
+  assert.equal(meta.messageCount, 0);
+  assert.equal(meta.cutoffSource, "show_start");
+  assert.equal(meta.fanClubArtist, "Closed Artist");
+  assert.equal(JSON.stringify(meta).includes("protected archive text"), false);
+  assert.throws(
+    () => routes["GET /api/lounges/:key/messages"]({ user: member, params: { key: encodeURIComponent(key) }, query: {} }),
+    (error) => error.status === 410 && error.code === "LOUNGE_CLOSED",
+  );
+  assert.throws(
+    () => routes["POST /api/lounges/:key/messages"]({ user: member, ip: "closed-lounge", params: { key: encodeURIComponent(key) }, body: { text: "too late" } }),
+    (error) => error.status === 410 && error.code === "LOUNGE_CLOSED",
+  );
+  assert.throws(
+    () => routes["GET /api/mod/lounges/:key/archive"]({ user: member, params: { key: encodeURIComponent(key) }, query: {} }),
+    (error) => error.status === 403 && error.code === "FORBIDDEN",
+  );
+
+  const archiveHeaders = new Map();
+  const archive = routes["GET /api/mod/lounges/:key/archive"]({
+    user: moderator,
+    params: { key: encodeURIComponent(key) },
+    query: {},
+    setHeader: (name, value) => archiveHeaders.set(name, value),
+  });
+  assert.equal(archiveHeaders.get("Cache-Control"), "no-store");
+  assert.equal(archive.lifecycle.status, "closed");
+  assert.equal(archive.lifecycle.archived, true);
+  assert.equal(archive.lifecycle.retentionPolicyKey, "approval-pending");
+  assert.deepEqual(archive.messages.map((message) => message.text), ["protected archive text"]);
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM lounge_messages WHERE lounge_id=?").get(key).count, 1);
 });
 
 test("desired-state social mutations are idempotent and old toggle calls still work", () => {

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { View, Text, StyleSheet, Pressable, Platform, FlatList, useWindowDimensions } from "react-native";
+import { View, Text, StyleSheet, Pressable, Platform, FlatList, ScrollView, useWindowDimensions } from "react-native";
 import { useEvent } from "expo";
 import { useVideoPlayer, VideoView } from "expo-video";
 import { colors, mono, radius, shadow } from "../theme";
@@ -9,9 +9,12 @@ import { clipKeyboardTarget, clipPageIndex, clipPageNeedsMore, clipRenderWindow 
 import { mediaDescriptorForUri, mediaPosterUri } from "../domain/postMediaDisplay.mjs";
 import { claimClipPlaybackFailure, pendingVideoMilestones } from "../domain/mediaAnalytics.mjs";
 import { videoViewerWebFrameReady } from "../domain/mediaViewer.mjs";
+import { refreshScope } from "../domain/scopedRefresh.mjs";
 import Icon from "../components/Icon";
 import Avatar from "../components/Avatar";
 import ClipPoster from "../components/ClipPoster";
+import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
+import useScopedRefresh from "../hooks/useScopedRefresh";
 import { useStore } from "../store";
 
 const web = Platform.OS === "web";
@@ -253,7 +256,7 @@ export default function ClipsScreen({ onClose, onOpenPost, onOpenProfile, onOpen
   const [done, setDone] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
-  const [reloadKey, setReloadKey] = useState(0);
+  const [refreshError, setRefreshError] = useState("");
   const [reelHeight, setReelHeight] = useState(0);
   const [active, setActive] = useState(0);
   // Audible autoplay is blocked by desktop browsers. Begin muted there so the
@@ -262,6 +265,7 @@ export default function ClipsScreen({ onClose, onOpenPost, onOpenProfile, onOpen
   const [muted, setMuted] = useState(web);
   const scrollRef = useRef(null);
   const loadingMoreRef = useRef(false);
+  const loadMoreControllerRef = useRef(null);
   const reportedPlaybackErrorsRef = useRef(new Set());
   const trackRef = useRef(track);
   trackRef.current = track;
@@ -284,15 +288,43 @@ export default function ClipsScreen({ onClose, onOpenPost, onOpenProfile, onOpen
     };
   }));
 
+  const clipsRefreshScope = refreshScope(session?.id, "clips");
+  const { refresh: refreshClips, refreshing } = useScopedRefresh({
+    scope: clipsRefreshScope,
+    task: async ({ signal }) => {
+      setRefreshError("");
+      loadMoreControllerRef.current?.abort();
+      loadMoreControllerRef.current = null;
+      loadingMoreRef.current = false;
+      const result = await loadClips({ signal });
+      if (signal.aborted) return null;
+      if (!result?.ok) throw result?.error || new Error("Concert clips could not be refreshed.");
+      const nextPages = flatten(result.clips);
+      const currentPage = pages[active];
+      const currentKey = currentPage ? `${currentPage.post.id}:${currentPage.uri}` : "";
+      const preservedIndex = currentKey
+        ? nextPages.findIndex((page) => `${page.post.id}:${page.uri}` === currentKey)
+        : 0;
+      setPages(nextPages);
+      setCursor(result.nextCursor);
+      setDone(!result.nextCursor);
+      setActive(preservedIndex >= 0 ? preservedIndex : 0);
+      return result;
+    },
+    onError: () => setRefreshError("Clips could not refresh. The reel already on screen is still available."),
+  });
+
   useEffect(() => {
-    let ok = true;
+    const controller = new AbortController();
     setLoading(true);
     setLoadError("");
+    setRefreshError("");
+    setPages([]);
+    setActive(0);
     (async () => {
-      const result = await loadClips();
-      if (!ok) return;
+      const result = await loadClips({ signal: controller.signal });
+      if (controller.signal.aborted) return;
       if (!result?.ok) {
-        setPages([]);
         setLoadError("PIT could not load clips. Check your connection and try again.");
         setLoading(false);
         return;
@@ -302,16 +334,22 @@ export default function ClipsScreen({ onClose, onOpenPost, onOpenProfile, onOpen
       setDone(!result.nextCursor);
       setLoading(false);
     })();
-    return () => { ok = false; };
+    return () => {
+      controller.abort();
+      loadMoreControllerRef.current?.abort();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reloadKey]);
+  }, [clipsRefreshScope]);
 
   const loadMore = async () => {
     if (loadingMoreRef.current || done || !cursor) return;
     loadingMoreRef.current = true;
+    const controller = new AbortController();
+    loadMoreControllerRef.current = controller;
     setLoadError("");
     try {
-      const result = await loadClips({ before: cursor });
+      const result = await loadClips({ before: cursor, signal: controller.signal });
+      if (controller.signal.aborted) return;
       if (!result?.ok) {
         setLoadError("More clips missed the beat. Tap to retry.");
         return;
@@ -323,6 +361,7 @@ export default function ClipsScreen({ onClose, onOpenPost, onOpenProfile, onOpen
       setCursor(result.nextCursor);
       setDone(!result.nextCursor);
     } finally {
+      if (loadMoreControllerRef.current === controller) loadMoreControllerRef.current = null;
       loadingMoreRef.current = false;
     }
   };
@@ -365,23 +404,39 @@ export default function ClipsScreen({ onClose, onOpenPost, onOpenProfile, onOpen
           if (next && next !== reelHeight) setReelHeight(next);
         }}
       >
-      {loading ? (
+      {loading || pages.length === 0 ? (
+        <VinylRefreshBoundary
+          refreshing={refreshing}
+          onRefresh={refreshClips}
+          enabled={!loading}
+          accessibilityLabel="Refresh concert clips"
+          testID="clips-empty-refresh"
+        >
+        <ScrollView
+          contentContainerStyle={styles.emptyScroll}
+          showsVerticalScrollIndicator={false}
+          contentInsetAdjustmentBehavior="automatic"
+        >
+        {loading ? (
         <View style={styles.center}><Text style={styles.emptyTxt}>Loading clips…</Text></View>
-      ) : loadError && pages.length === 0 ? (
-        <View style={styles.center}>
+      ) : loadError || refreshError ? (
+        <View style={styles.center} accessibilityLiveRegion="assertive">
           <Icon name="flag" size={28} color={colors.danger} />
           <Text style={styles.emptyTitle}>Clips could not load</Text>
-          <Text style={styles.emptyTxt}>{loadError}</Text>
-          <Pressable style={styles.retryBtn} onPress={() => setReloadKey((value) => value + 1)} accessibilityRole="button" accessibilityLabel="Retry loading clips">
+          <Text style={styles.emptyTxt} selectable>{loadError || refreshError}</Text>
+          <Pressable style={styles.retryBtn} onPress={refreshClips} accessibilityRole="button" accessibilityLabel="Retry loading clips">
             <Text style={styles.retryText}>Try again</Text>
           </Pressable>
         </View>
-      ) : pages.length === 0 ? (
+      ) : (
         <View style={styles.center}>
           <Icon name="play" size={30} color={colors.textFaint} />
           <Text style={styles.emptyTitle}>No clips yet</Text>
           <Text style={styles.emptyTxt}>Post a video on a review and it shows up here. Swipe through concert clips from everyone.</Text>
         </View>
+        )}
+        </ScrollView>
+        </VinylRefreshBoundary>
       ) : (
         <ClipReel
           reelRef={scrollRef}
@@ -398,8 +453,15 @@ export default function ClipsScreen({ onClose, onOpenPost, onOpenProfile, onOpen
           onOpenArtist={onOpenArtist}
           onTrack={track}
           onPlaybackError={reportClipPlaybackError}
+          refreshing={refreshing}
+          onRefresh={refreshClips}
         />
       )}
+      {!loading && pages.length > 0 && refreshError ? (
+        <Pressable style={styles.refreshError} onPress={refreshClips} accessibilityRole="button" accessibilityLabel="Retry refreshing concert clips">
+          <Text style={styles.loadMoreErrorText}>{refreshError}</Text>
+        </Pressable>
+      ) : null}
       {!loading && pages.length > 0 && loadError ? (
         <Pressable style={styles.loadMoreError} onPress={loadMore} accessibilityRole="button" accessibilityLabel="Retry loading more clips">
           <Text style={styles.loadMoreErrorText}>{loadError}</Text>
@@ -440,8 +502,14 @@ function ClipReelPage({ pg, index, pageH, active, muted, onToggleMute, onLike, o
 // scroll gestures, which previously stranded iOS and Android on the first clip.
 // Only the active page mounts a decoder; the adjacent pages retain lightweight
 // durable posters so swipes never reveal a black rectangle.
-function NativeReel({ reelRef, pages, pageH, active, muted, onScroll, onToggleMute, onLike, onOpenPost, onOpenProfile, onOpenArtist, onTrack, onPlaybackError }) {
+function NativeReel({ reelRef, pages, pageH, active, muted, onScroll, onToggleMute, onLike, onOpenPost, onOpenProfile, onOpenArtist, onTrack, onPlaybackError, refreshing, onRefresh }) {
   return (
+    <VinylRefreshBoundary
+      refreshing={refreshing}
+      onRefresh={onRefresh}
+      accessibilityLabel="Refresh concert clips"
+      testID="clips-reel-refresh"
+    >
     <FlatList
       ref={reelRef}
       data={pages}
@@ -469,7 +537,8 @@ function NativeReel({ reelRef, pages, pageH, active, muted, onScroll, onToggleMu
       snapToAlignment="start"
       disableIntervalMomentum
       decelerationRate="fast"
-      bounces={false}
+      bounces
+      alwaysBounceVertical
       showsVerticalScrollIndicator={false}
       scrollEventThrottle={16}
       onScroll={onScroll}
@@ -481,31 +550,23 @@ function NativeReel({ reelRef, pages, pageH, active, muted, onScroll, onToggleMu
       contentInsetAdjustmentBehavior="never"
       accessibilityLabel="Concert clips"
     />
+    </VinylRefreshBoundary>
   );
 }
 
 // Web reel uses CSS scroll-snap because React Native Web's FlatList does not
 // provide native-style paging and expo-video renders a real HTML video element.
-function WebReel({ reelRef, pages, pageH, active, muted, onOffset, onToggleMute, onLike, onOpenPost, onOpenProfile, onOpenArtist, onTrack, onPlaybackError }) {
+function WebReel({ reelRef, pages, pageH, active, muted, onOffset, onToggleMute, onLike, onOpenPost, onOpenProfile, onOpenArtist, onTrack, onPlaybackError, refreshing, onRefresh }) {
   const localRef = useRef(null);
   const ref = reelRef || localRef;
   const previousPageHeightRef = useRef(pageH);
-  useEffect(() => {
-    if (!web) return;
-    const el = ref.current;
-    if (!el || !el.addEventListener) return;
-    const adaptScroll = (event) => onOffset?.(event.currentTarget?.scrollTop || event.target?.scrollTop || 0);
-    el.addEventListener("scroll", adaptScroll, { passive: true });
-    return () => el.removeEventListener("scroll", adaptScroll);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [onOffset]);
 
   useEffect(() => {
     const el = ref.current;
     const previous = previousPageHeightRef.current;
     previousPageHeightRef.current = pageH;
     if (!el || previous === pageH) return;
-    el.scrollTo?.({ top: active * pageH, behavior: "auto" });
+    el.scrollTo?.({ y: active * pageH, animated: false });
   }, [active, pageH, ref]);
 
   useEffect(() => {
@@ -521,7 +582,7 @@ function WebReel({ reelRef, pages, pageH, active, muted, onOffset, onToggleMute,
       if (target == null) return;
       event.preventDefault?.();
       if (target === active) return;
-      ref.current?.scrollTo?.({ top: target * pageH, behavior: "smooth" });
+      ref.current?.scrollTo?.({ y: target * pageH, animated: true });
     };
     globalThis.window.addEventListener("keydown", onKeyDown);
     return () => globalThis.window.removeEventListener("keydown", onKeyDown);
@@ -530,9 +591,18 @@ function WebReel({ reelRef, pages, pageH, active, muted, onOffset, onToggleMute,
   const renderWindow = clipRenderWindow(active, pages.length);
   const visiblePages = pages.slice(renderWindow.start, renderWindow.end);
   return (
-    <View
+    <VinylRefreshBoundary
+      refreshing={refreshing}
+      onRefresh={onRefresh}
+      accessibilityLabel="Refresh concert clips"
+      testID="clips-reel-refresh"
+    >
+    <ScrollView
       ref={ref}
       style={styles.reelInner}
+      onScroll={(event) => onOffset?.(event?.nativeEvent?.contentOffset?.y || 0)}
+      scrollEventThrottle={16}
+      showsVerticalScrollIndicator={false}
       // scroll-snap keeps every swipe on one clip.
       {...(web ? { dataSet: { pitReel: "1" } } : {})}
       accessible
@@ -560,13 +630,15 @@ function WebReel({ reelRef, pages, pageH, active, muted, onOffset, onToggleMute,
         </View>
       );})}
       {renderWindow.end < pages.length ? <View style={{ height: (pages.length - renderWindow.end) * pageH, flexShrink: 0 }} /> : null}
-    </View>
+    </ScrollView>
+    </VinylRefreshBoundary>
   );
 }
 
 const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: "#04050a" },
   reelHost: { flex: 1, minHeight: 0 },
+  emptyScroll: { flexGrow: 1 },
   topBar: { height: 52, flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 10, borderBottomWidth: 1, borderBottomColor: "rgba(255,255,255,0.06)" },
   topBtn: { width: 40, height: 40, alignItems: "center", justifyContent: "center" },
   topTitle: { color: "#fff", fontFamily: mono, fontSize: 13, fontWeight: "800", letterSpacing: 3 },
@@ -587,6 +659,7 @@ const styles = StyleSheet.create({
   retryBtn: { minHeight: 44, justifyContent: "center", marginTop: 3, paddingHorizontal: 18, borderRadius: 22, borderCurve: "continuous", borderWidth: 1, borderColor: "rgba(242,166,90,0.65)", backgroundColor: "rgba(242,166,90,0.12)" },
   retryText: { color: colors.amber, fontFamily: mono, fontSize: 11, fontWeight: "900", letterSpacing: 1.1, textTransform: "uppercase" },
   loadMoreError: { position: "absolute", left: 16, right: 16, bottom: 18, zIndex: 8, minHeight: 44, justifyContent: "center", alignItems: "center", paddingHorizontal: 14, borderRadius: radius.pill, borderWidth: 1, borderColor: "rgba(242,166,90,0.72)", backgroundColor: "rgba(5,7,12,0.92)" },
+  refreshError: { position: "absolute", left: 16, right: 16, top: 12, zIndex: 8, minHeight: 44, justifyContent: "center", alignItems: "center", paddingHorizontal: 14, borderRadius: radius.pill, borderWidth: 1, borderColor: "rgba(242,166,90,0.72)", backgroundColor: "rgba(5,7,12,0.92)" },
   loadMoreErrorText: { color: colors.amber, fontFamily: mono, fontSize: 10, fontWeight: "800", textAlign: "center" },
 
   overlayBottom: { position: "absolute", left: 0, right: 0, bottom: 0, flexDirection: "row", alignItems: "flex-end", padding: 16, gap: 12 },

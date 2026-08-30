@@ -10,6 +10,8 @@ import { clearStoredTheme, setTheme as applyTheme, storedThemeSelection, syncThe
 import { artistMeta, installIngestedCatalog } from "./seed/ingested";
 import { arenaVenues } from "./seed/arenas";
 import { ACHIEVEMENTS } from "./domain/badges.mjs";
+import { verifiedArtistGenre } from "./domain/genre.mjs";
+import { buildArtistSummary } from "./domain/artistSummary.mjs";
 import { ENABLE_DEMO_DATA, remoteIdentityValidationEnabled } from "./config/runtime.mjs";
 import { MUSIC_PLAYER_ENABLED } from "./domain/musicPlayerAvailability.mjs";
 import { isUpcomingEventDate, PERSISTED_FEED_LIMIT, persistedTourDateCache, publicProfileCacheEntry, sanitizePersistedStoreValue, sanitizeTourDates } from "./domain/dataPolicy.mjs";
@@ -83,6 +85,7 @@ import {
 import { canonicalVenueKey, resolveVenueCatalogKey } from "./domain/venueIdentity.mjs";
 import { fetchVenuePhotos } from "./features/venuePhotos/venuePhotoApi.mjs";
 import { fetchDiscoverTourDateRange } from "./features/discovery/tourDateRangeApi.mjs";
+import { fetchMyShowPlans } from "./features/showPlanning/showPlanningService";
 import { venueCatalogPhotoFields } from "./domain/venuePhotoProvenance.mjs";
 import {
   mediaReactionsForAccountTransition,
@@ -98,7 +101,7 @@ import { normalizeTaggedPeople, taggedUserIdsFromPeople } from "./domain/postFri
 import { writeDirectMessageRead } from "./features/chat/services/dmReadApi.mjs";
 import { removeMyPostTagRequest } from "./features/postTags/services/postTagApi.mjs";
 import { searchPeopleRequest } from "./features/people/services/peopleSearchApi.mjs";
-import { attachArtistSuggestion, fetchArtistSuggestions, mergeArtistSearchCacheEntry } from "./features/artistSearch/artistSearchApi.mjs";
+import { attachArtistSuggestion, fetchArtistSuggestions, mergeArtistSearchCacheEntry, refreshArtistCatalogEntry } from "./features/artistSearch/artistSearchApi.mjs";
 import { useAccountCommentCache } from "./features/comments/useAccountCommentCache";
 import { useAccountArtistPageCache } from "./features/artistPage/useAccountArtistPageCache";
 import { artistMemorialPreparationName } from "./domain/artistMemorialCandidate.mjs";
@@ -118,6 +121,7 @@ import {
   startPrivateListening,
 } from "./domain/privateListening.mjs";
 import { createGoingIntentCoordinator, goingIntentKey } from "./domain/goingIntent.mjs";
+import { reconcileAttendancePlan } from "./domain/attendancePlanCache.mjs";
 import { accountMutationIsCurrent, captureAccountMutation } from "./domain/accountMutation.mjs";
 import { commandFailure, commandSuccess } from "./domain/commandResult.mjs";
 import {
@@ -271,8 +275,6 @@ const ago = (ms) => {
 };
 
 const FEED_PAGE_LIMIT = 20;
-const FEED_REFRESH_MS = 45_000;
-const FEED_REFRESH_MAX_BACKOFF_MS = 120_000;
 const AUTH_EPOCH_STORAGE_KEY = "pit.auth.epoch.v1";
 const broadcastAuthEpoch = () => {
   if (Platform.OS !== "web" || typeof window === "undefined") return;
@@ -482,6 +484,10 @@ export function StoreProvider({ children }) {
   const activeDiscoverySidebarScope = discoverySidebarScopeFor(session);
   const discoverySidebarScopeRef = useRef(activeDiscoverySidebarScope);
   discoverySidebarScopeRef.current = activeDiscoverySidebarScope;
+  // Keep request sequencing on the existing scope ref. The legacy Store is at
+  // its hook ceiling, so a deliberate refresh must not add another lifecycle
+  // owner just to guard this already-scoped resource.
+  if (!Number.isSafeInteger(discoverySidebarScopeRef.sequence)) discoverySidebarScopeRef.sequence = 0;
   // Effects clear and reload the resource after a location/account transition,
   // while this projection closes the preceding render so account B (or guest)
   // can never receive account A's personalized rows or location label.
@@ -590,11 +596,11 @@ export function StoreProvider({ children }) {
   const feedRef = useRef(feed);
   feedRef.current = feed;
   const feedAccountIdRef = useRef(session?.id || null);
-  // Polling and mutations can finish out of order. A revision invalidates a
+  // Reads and mutations can finish out of order. A revision invalidates a
   // response that started before a local create/edit/like, while the request
-  // state prevents overlapping refreshes from racing each other.
+  // state prevents overlapping deliberate refreshes from racing each other.
   const feedMutationRevisionRef = useRef(0);
-  const feedRefreshRef = useRef({ inFlight: false, sequence: 0, wake: () => {} });
+  const feedRefreshRef = useRef({ inFlight: false, sequence: 0 });
   const feedModeRef = useRef("for-you");
   const feedAlgorithmRef = useRef("global-personal-v1");
   const feedSnapshotIdentityRef = useRef(null);
@@ -1108,7 +1114,7 @@ export function StoreProvider({ children }) {
       }
       const { posts, nextCursor } = payload || {};
       // A create/edit/like that happened after this read began is newer than the
-      // response. Ignore the response and let the next poll reconcile it.
+      // response. Ignore it; the next explicit refresh will reconcile safely.
       if (signal?.aborted || sequence !== refresh.sequence || mutationRevision !== feedMutationRevisionRef.current) return null;
       // The initial server page is authoritative for a production cache. Demo
       // mode keeps its bundled cards alongside the live page for prototyping.
@@ -1117,8 +1123,8 @@ export function StoreProvider({ children }) {
       const snapshotIdentity = feedModeRef.current === "for-you" && Number.isFinite(snapshotAt)
         ? `for-you:${snapshotAt}`
         : `legacy:${Array.isArray(posts) && posts[0]?.id ? posts[0].id : "empty"}`;
-      // Quiet polls reuse the immutable snapshot and must not rewind somebody
-      // who has loaded older pages. A genuinely new head adopts its matching
+      // A deliberate head refresh must not rewind somebody who has loaded older
+      // pages. A genuinely new head adopts its matching
       // cursor atomically, making newly published posts visible without a reload
       // while keeping subsequent pagination inside one snapshot.
       if (resetPagination || feedSnapshotIdentityRef.current !== snapshotIdentity) {
@@ -1238,6 +1244,12 @@ export function StoreProvider({ children }) {
     }
   };
 
+  const refreshFeed = async ({ signal } = {}) => {
+    const refreshed = await hydrateFeed({ resetPagination: true, signal });
+    if (refreshed !== true) return refreshed;
+    return revalidateCachedFeed({ signal });
+  };
+
   // Clips reel (the vertical swipe-through of posted videos). Cursor-paginated
   // off the same feed ordering; `reset` reloads from the top, otherwise it
   // appends the next page. Returns the merged list so the screen can swap in
@@ -1250,53 +1262,17 @@ export function StoreProvider({ children }) {
     } catch (error) { return { ok: false, clips: [], nextCursor: before || null, error }; }
   };
 
-  // Keep the public feed fresh without requiring a browser reload. Refreshes
-  // pause in the background, abort on unmount, back off after failures, and do
-  // not reset the older-page cursor after the initial load.
+  // Load once for the confirmed account scope. New head content is deliberately
+  // user-triggered through pull-to-refresh; tab changes and idle time must not
+  // create a hidden request loop or move somebody's reading position.
   useEffect(() => {
     // Production starts with an untrusted guest-shaped client state while the
     // HttpOnly cookie is validated. Starting a personalized feed in that window
     // only guarantees that a confirmed account will abort and repeat the work.
     if (!authReady) return undefined;
-    let stopped = false;
-    let timer = null;
-    let delay = FEED_REFRESH_MS;
     const controller = new AbortController();
-    const canRefresh = () => {
-      if (Platform.OS === "web" && typeof document !== "undefined" && document.hidden) return false;
-      return Platform.OS === "web" || AppState.currentState == null || AppState.currentState === "active";
-    };
-    const schedule = (ms) => {
-      if (stopped) return;
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(() => run(false), ms);
-    };
-    const run = async (initial) => {
-      if (stopped) return;
-      if (!canRefresh()) {
-        schedule(delay);
-        return;
-      }
-      // Re-read the head as well as tombstoning cached IDs. The server reuses a
-      // quiet snapshot cheaply and creates a fresh one only after a post is
-      // published, so an open session can receive new community activity.
-      let result = await hydrateFeed({ resetPagination: initial, signal: controller.signal });
-      if (!initial && result === true) {
-        const revalidated = await revalidateCachedFeed({ signal: controller.signal });
-        if (revalidated !== true) result = revalidated;
-      }
-      if (stopped) return;
-      if (result === true) delay = FEED_REFRESH_MS;
-      else if (result === false) delay = Math.min(delay * 2, FEED_REFRESH_MAX_BACKOFF_MS);
-      schedule(delay);
-    };
-    const wake = () => schedule(0);
-    feedRefreshRef.current.wake = wake;
-    run(true);
+    void hydrateFeed({ resetPagination: true, signal: controller.signal });
     return () => {
-      stopped = true;
-      if (feedRefreshRef.current.wake === wake) feedRefreshRef.current.wake = () => {};
-      if (timer) clearTimeout(timer);
       controller.abort();
       feedRefreshRef.current.sequence += 1;
       feedRefreshRef.current.inFlight = false;
@@ -1313,7 +1289,12 @@ export function StoreProvider({ children }) {
     const accountId = session?.id || null;
     const sequence = ++tourDateReadRef.current.sequence;
     tourDateReadRef.current.accountId = accountId;
-    const { tourDates: live } = await api("/api/tourdates", { signal, silent: true, context: "Loading tour dates" });
+    const { tourDates: live } = await api("/api/tourdates", {
+      signal,
+      silent: true,
+      context: "Loading tour dates",
+      expectedAccountId: accountId,
+    });
     if (signal?.aborted || tourDateReadRef.current.sequence !== sequence
       || tourDateReadRef.current.accountId !== accountId
       || (sessionRef.current?.id || null) !== accountId) return null;
@@ -1349,46 +1330,59 @@ export function StoreProvider({ children }) {
 
   // The server ranks real provider dates against the signed-in account's saved
   // location and widens gracefully if the exact city has no upcoming listings.
+  // Both first paint and an explicit rail/Discover pull use this one stale-safe
+  // request owner; retaining data keeps a manual refresh from blanking the rail.
+  const refreshDiscoverySidebar = async ({ signal, retainData = true } = {}) => {
+    // architecture: allow-ambiguous-result -- this optional sidebar read retains its last good snapshot when stale, aborted, or offline
+    if (!authReady) return null;
+    const requestScope = activeDiscoverySidebarScope;
+    const sequence = ++discoverySidebarScopeRef.sequence;
+    setDiscoverySidebarResource((current) => beginLoadState(current, {
+      scope: requestScope,
+      emptyData: EMPTY_DISCOVERY_SIDEBAR,
+      retainData,
+    }));
+    try {
+      const data = await api("/api/discovery/sidebar", {
+        context: "Loading your local concert lineup",
+        silent: true,
+        signal,
+      });
+      if (signal?.aborted || discoverySidebarScopeRef.sequence !== sequence
+        || discoverySidebarScopeRef.current !== requestScope) return null;
+      const next = {
+        topArtists: Array.isArray(data?.topArtists) ? data.topArtists : [],
+        trendingVenues: Array.isArray(data?.trendingVenues) ? data.trendingVenues : [],
+        upcomingEvents: Array.isArray(data?.upcomingEvents) ? data.upcomingEvents : [],
+        popularLounges: Array.isArray(data?.popularLounges) ? data.popularLounges : [],
+        location: data?.location || null,
+        source: data?.source || null,
+      };
+      setDiscoverySidebarResource(resolveLoadState({ scope: requestScope, data: next }));
+      return next;
+    } catch (error) {
+      // architecture: allow-ambiguous-result -- this optional sidebar read retains its last good snapshot when stale, aborted, or offline
+      if (signal?.aborted || discoverySidebarScopeRef.sequence !== sequence
+        || discoverySidebarScopeRef.current !== requestScope) return null;
+      setDiscoverySidebarResource((current) => rejectLoadState(current, {
+          scope: requestScope,
+          error,
+          emptyData: EMPTY_DISCOVERY_SIDEBAR,
+          retainData,
+        }));
+      return false;
+    }
+  };
+
   useEffect(() => {
     // Wait for the cookie handshake so this request is born in its final account
     // scope instead of doing a guest read that login immediately throws away.
     if (!authReady) return undefined;
-    let active = true;
     const controller = new AbortController();
-    const requestScope = activeDiscoverySidebarScope;
-    setDiscoverySidebarResource((current) => beginLoadState(current, {
-      scope: requestScope,
-      emptyData: EMPTY_DISCOVERY_SIDEBAR,
-      retainData: false,
-    }));
-    api("/api/discovery/sidebar", {
-      context: "Loading your local concert lineup",
-      silent: true,
-      signal: controller.signal,
-    })
-      .then((data) => {
-        if (!active || discoverySidebarScopeRef.current !== requestScope) return;
-        const next = {
-          topArtists: Array.isArray(data?.topArtists) ? data.topArtists : [],
-          trendingVenues: Array.isArray(data?.trendingVenues) ? data.trendingVenues : [],
-          upcomingEvents: Array.isArray(data?.upcomingEvents) ? data.upcomingEvents : [],
-          popularLounges: Array.isArray(data?.popularLounges) ? data.popularLounges : [],
-          location: data?.location || null,
-          source: data?.source || null,
-        };
-        setDiscoverySidebarResource(resolveLoadState({ scope: requestScope, data: next }));
-      })
-      .catch((error) => {
-        if (active && discoverySidebarScopeRef.current === requestScope) setDiscoverySidebarResource((current) => rejectLoadState(current, {
-          scope: requestScope,
-          error,
-          emptyData: EMPTY_DISCOVERY_SIDEBAR,
-          retainData: false,
-        }));
-      });
+    void refreshDiscoverySidebar({ signal: controller.signal, retainData: false });
     return () => {
-      active = false;
       controller.abort();
+      discoverySidebarScopeRef.sequence += 1;
     };
   }, [activeDiscoverySidebarScope, authReady]);
 
@@ -1622,6 +1616,14 @@ export function StoreProvider({ children }) {
       // architecture: allow-ambiguous-result -- legacy browse callers treat catalog suggestions as optional; measured search opts into strict errors
       return [];
     }
+  };
+  // Pull-to-refresh needs the latest DB projection (including a newly verified
+  // genre) without asking MusicBrainz to resolve the artist again. The normal
+  // catalog search is read-only; `force` bypasses only the short client cache.
+  const refreshArtistCatalogMetadata = async (name, { signal } = {}) => {
+    const artist = await refreshArtistCatalogEntry(name, { signal, apiClient: api });
+    if (artist) cacheArtists([artist]);
+    return artist;
   };
   const attachArtistSuggestionApi = async (artist, { signal } = {}) => {
     const attached = await attachArtistSuggestion(artist, { apiClient: api, signal });
@@ -2152,7 +2154,10 @@ export function StoreProvider({ children }) {
 
   // --- Listening algorithm (drives autoplay "up next") -----------------------
   // Favorite genre = the genre you play most (falls back to your picked genres).
-  const genreOfArtist = (name) => remoteArtists[norm(name)]?.genre || catalogArtists[norm(name)]?.genre || artistMeta(name)?.genre || null;
+  const genreOfArtist = (name) => {
+    const key = norm(name);
+    return verifiedArtistGenre(remoteArtists[key], catalogArtists[key], artistMeta(name));
+  };
   const favoriteGenre = () => {
     return favoriteGenreFromHistory(scopedPlayHistory, genreOfArtist, session?.genres?.[0] || null);
   };
@@ -2462,45 +2467,22 @@ export function StoreProvider({ children }) {
     // stays memory-only and powers owner-visible personalization without ever
     // entering a public/cacheable API.
     const goingHydrationRevision = goingMutationRevisionRef.current;
-    api("/api/me/going")
+    fetchMyShowPlans({ accountId: su.id })
       .then(({ going: rows, attendance: attendanceRows }) => {
-        if (sessionRef.current?.id !== su.id || !Array.isArray(rows)
-          || goingMutationRevisionRef.current !== goingHydrationRevision
-          || goingRef.attendance.accountId !== su.id) return;
-        const canonicalAttendance = Array.isArray(attendanceRows) ? attendanceRows : [];
-        const exactGoingRows = canonicalAttendance.filter((entry) => entry?.state === "going"
-          && typeof entry?.tourDateId === "string" && entry.tourDateId.trim());
-        const exactDisplayKeys = new Set(exactGoingRows
-          .map((entry) => entry.key || concertKey(entry))
-          .filter(Boolean));
-        const hydratedGoingRows = rows.filter((entry) => goingTourDateId(entry)
-          || !exactDisplayKeys.has(entry?.key));
-        exactGoingRows.forEach((entry) => {
-          const identity = goingEntryIdentity(entry);
-          if (!hydratedGoingRows.some((candidate) => goingEntryIdentity(candidate) === identity)) {
-            hydratedGoingRows.push(entry);
-          }
-        });
-        const nextAttendanceState = { accountId: su.id, rows: canonicalAttendance };
-        goingRef.attendance = nextAttendanceState;
-        const next = { ...goingRef.current, [su.id]: hydratedGoingRows };
-        goingRef.current = next;
-        hydratedGoingRows.forEach((entry) => goingConfirmedRef.current.set(
-          goingIntentKey(su.id, goingEntryIdentity(entry)),
-          true,
-        ));
+        const next = adoptAttendanceSnapshot(su.id, rows, attendanceRows, goingHydrationRevision);
+        if (!next) return;
         setGoing(next);
       })
-      .catch(() => {});
+      .catch((error) => captureAppError(error, {
+        code: "PIT-STORE-ATTENDANCE-HYDRATE",
+        context: "Loading private show plans after sign-in",
+        source: "show-planning",
+        severity: "warning",
+        toast: false,
+      }));
     // Server-backed notifications: replace MY notifications with the authoritative
     // server list (keep local welcome/system ones), so activity is real cross-device.
-    api("/api/me/notifications")
-      .then(({ notifications: rows }) => {
-        if (sessionRef.current?.id !== su.id || !Array.isArray(rows)) return;
-        const mine = rows.map((r) => ({ ...r, userId: su.id }));
-        setNotifications((all) => [...mine, ...all.filter((n) => n.userId !== su.id || n.type === "welcome")]);
-      })
-      .catch(() => {});
+    void refreshNotifications({ accountId: su.id });
     // Staff queue hydration uses the same normalized, account-scoped loader as
     // the console. The legacy endpoint remains on the server for old clients.
     if (isMod(su.role)) {
@@ -2601,7 +2583,9 @@ export function StoreProvider({ children }) {
           // fan-club, attendance, notification, or staff hydrations.
           absorbServerUser(user, { hydrateAccount: false });
           identityHasBeenConfirmed = true;
-          feedRefreshRef.current.wake();
+          // Long resumes still reconcile moderation/block removals, but do not
+          // refetch the feed head or disturb the member's reading position.
+          void revalidateCachedFeed();
           return { authoritative: true, outcome: outcome.kind };
         }
         if (outcome.kind === "invalid-response") {
@@ -2627,7 +2611,7 @@ export function StoreProvider({ children }) {
 
         if (outcome.departingAccountId && !context.isStrict()) lockIdentity();
         publishAuthoritativeGuest(outcome.departingAccountId);
-        if (confirmedBeforeValidation && !outcome.departingAccountId) feedRefreshRef.current.wake();
+        if (confirmedBeforeValidation && !outcome.departingAccountId) void revalidateCachedFeed();
         return { authoritative: true, outcome: outcome.kind };
       } catch (error) {
         if (context.isSuperseded() || stopped || sequence !== authValidationSequenceRef.current) {
@@ -2660,8 +2644,9 @@ export function StoreProvider({ children }) {
     void coordinator.validate({ force: true, reason: "cold-start" });
 
     const resume = () => {
-      // Brief returns deliberately do no auth or feed work. A longer return
-      // wakes the feed only after the identity check succeeds in runValidation.
+      // Brief returns deliberately do no work. A longer return validates the
+      // cookie identity and, after success, performs only the bounded safety
+      // reconciliation above. New feed content remains pull-to-refresh.
       void coordinator.resume();
     };
     const appStateSubscription = AppState.addEventListener("change", (state) => {
@@ -3120,24 +3105,26 @@ export function StoreProvider({ children }) {
   };
 
   const updateProfile = (patch) => {
-    if (!session) return Promise.resolve({ ok: false });
-    const previousSession = session;
+    const actor = sessionRef.current;
+    if (!actor) return Promise.resolve({ ok: false });
+    const previousSession = actor;
+    const accountMutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
     // Sanitize the free-text fields; pass structured fields (home, songs) through.
     const safe = { ...patch };
-    if ("name" in safe) safe.name = cleanName(safe.name) || session.name;
+    if ("name" in safe) safe.name = cleanName(safe.name) || actor.name;
     if ("bio" in safe) safe.bio = clean(safe.bio, { max: LIMITS.bio, newlines: true });
     if ("handle" in safe) {
       const h = cleanHandle(safe.handle);
       // only accept a valid, unused handle; otherwise keep the current one
-      safe.handle = h.length >= 3 && !users.some((u) => u.handle === h && u.id !== session.id) ? h : session.handle;
+      safe.handle = h.length >= 3 && !users.some((u) => u.handle === h && u.id !== actor.id) ? h : actor.handle;
     }
     if (Array.isArray(safe.genres)) safe.genres = safe.genres.map((g) => clean(g, { max: 30 })).filter(Boolean).slice(0, 12);
     if (Array.isArray(safe.favoriteArtists)) safe.favoriteArtists = safe.favoriteArtists.map((n) => clean(n, { max: 80 })).filter(Boolean).slice(0, 50);
     if ("name" in safe) safe.initials = (safe.name.match(/\p{L}|\p{N}/gu) || ["?"]).slice(0, 2).join("").toUpperCase();
-    setUsers((all) => all.map((u) => (u.id === session.id
+    setUsers((all) => all.map((u) => (u.id === actor.id
       ? (ENABLE_DEMO_DATA ? { ...u, ...safe } : publicProfileCacheEntry({ ...u, ...safe }))
       : u)));
-    setSession((s) => ({ ...s, ...safe }));
+    setSession((current) => current?.id === actor.id ? { ...current, ...safe } : current);
     // Persist to the server so profile edits (incl. your @handle) survive sign-out
     // and follow you to a new device. The server is the authority on handle
     // uniqueness, re-absorb its response so a taken handle reverts cleanly.
@@ -3157,8 +3144,11 @@ export function StoreProvider({ children }) {
     }
     if (!Object.keys(body).length) return Promise.resolve({ ok: true, patch: safe });
 
-    return api("/api/me", { method: "PATCH", body, context: "Saving your profile" })
+    return api("/api/me", { method: "PATCH", body, context: "Saving your profile", expectedAccountId: actor.id })
       .then(({ user }) => {
+        if (!accountMutationIsCurrent(accountMutation, sessionRef.current?.id, accountMutationEpochRef.current)) {
+          return { ok: false, stale: true };
+        }
         if (user) {
           setUsers((all) => all.map((u) => (u.id === user.id
             ? (ENABLE_DEMO_DATA ? { ...u, ...user } : publicProfileCacheEntry({ ...u, ...user }))
@@ -3168,6 +3158,9 @@ export function StoreProvider({ children }) {
         return { ok: true, user, patch: safe };
       })
       .catch((error) => {
+        if (!accountMutationIsCurrent(accountMutation, sessionRef.current?.id, accountMutationEpochRef.current)) {
+          return { ok: false, stale: true, error };
+        }
         // Server rejected something (e.g. handle taken / cooldown / role tag).
         // Restore the last server-backed snapshot instead of leaving a false save.
         setUsers((all) => all.map((u) => (u.id === previousSession.id
@@ -3182,7 +3175,8 @@ export function StoreProvider({ children }) {
     const localId = log.id || "p_local_" + Date.now();
     // A plain status/update post ("post whatever") shares this path with a show
     // review; it just carries no artist/venue/rating and renders as a social card.
-    const kind = log.kind === "status" ? "status" : "review";
+    const memorialMemory = log.kind === "memory";
+    const kind = log.kind === "status" || memorialMemory ? "status" : "review";
     const safe = {
       ...log,
       id: localId,
@@ -3214,7 +3208,9 @@ export function StoreProvider({ children }) {
     // id so likes/comments on it key correctly. Best-effort (offline keeps local).
     if (session) {
       const body = kind === "status"
-        ? safe.attendanceTicket
+        ? memorialMemory
+          ? { clientMutationId: localId, kind: "memory", artist: safe.artist, artistKey: safe.artistKey, review: safe.review, taggedUserIds: taggedUserIdsFromPeople(safe.taggedPeople), song: safe.song || null, photos: safe.photos || [], ...(Array.isArray(safe.mediaAssetIds) ? { mediaAssetIds: safe.mediaAssetIds } : {}), photosPublic: safe.photosPublic === false ? 0 : 1 }
+          : safe.attendanceTicket
           ? {
             clientMutationId: localId,
             kind: "status",
@@ -3233,7 +3229,7 @@ export function StoreProvider({ children }) {
         : buildReviewCreateBody(safe);
       return api("/api/posts", {
         method: "POST",
-        context: kind === "status" ? "Posting your update" : "Posting your concert review",
+        context: memorialMemory ? "Sharing your fan memory" : kind === "status" ? "Posting your update" : "Posting your concert review",
         body,
         silent,
         })
@@ -3567,6 +3563,28 @@ export function StoreProvider({ children }) {
   ]);
   const myNotifications = () => (session ? notifications.filter((n) => n.userId === session.id).sort((a, b) => b.ts - a.ts) : []);
   const unreadNotifications = () => myNotifications().filter((n) => !n.read).length;
+  const refreshNotifications = async ({ signal, accountId = sessionRef.current?.id || null } = {}) => {
+    // architecture: allow-ambiguous-result -- this optional activity read preserves the current account snapshot on stale, abort, or offline failure
+    if (!accountId || sessionRef.current?.id !== accountId) return null;
+    try {
+      const { notifications: rows } = await api("/api/me/notifications", {
+        context: "Refreshing activity",
+        silent: true,
+        signal,
+      });
+      if (signal?.aborted || sessionRef.current?.id !== accountId || !Array.isArray(rows)) return null;
+      const mine = rows.map((row) => ({ ...row, userId: accountId }));
+      setNotifications((all) => [
+        ...mine,
+        ...all.filter((notification) => notification.userId !== accountId || notification.type === "welcome"),
+      ]);
+      return mine;
+    } catch (error) {
+      // architecture: allow-ambiguous-result -- this optional activity read preserves the current account snapshot on stale, abort, or offline failure
+      if (signal?.aborted) return null;
+      return false;
+    }
+  };
   const markNotificationsRead = async ({ signal } = {}) => {
     const actor = sessionRef.current;
     const context = "Marking activity as read";
@@ -3634,12 +3652,25 @@ export function StoreProvider({ children }) {
   const followerCount = (id) => userStats[id]?.followers ?? Object.values(follows).filter((arr) => arr.includes(id)).length;
   const followingCount = (id) => userStats[id]?.following ?? (follows[id] || []).length;
   // The people lists behind those numbers (server-truth, absorbed so rows resolve).
-  const followersOf = async (id) => {
-    try { const { users: list } = await api(`/api/users/${id}/followers`); absorbUsers(list); return list || []; } catch { return []; }
+  const readFollowDirectory = async (id, kind, { signal, strict = false } = {}) => {
+    const accountId = sessionRef.current?.id || null;
+    try {
+      const { users: list } = await api(`/api/users/${id}/${kind}`, {
+        signal,
+        silent: true,
+        context: `Loading ${kind}`,
+        expectedAccountId: accountId,
+      });
+      if (signal?.aborted || (sessionRef.current?.id || null) !== accountId) return null;
+      absorbUsers(list);
+      return list || [];
+    } catch (error) {
+      if (strict) throw error;
+      return [];
+    }
   };
-  const followingOf = async (id) => {
-    try { const { users: list } = await api(`/api/users/${id}/following`); absorbUsers(list); return list || []; } catch { return []; }
-  };
+  const followersOf = (id, options) => readFollowDirectory(id, "followers", options);
+  const followingOf = (id, options) => readFollowDirectory(id, "following", options);
 
   // --- Blocks: a real block, not a mute. Server severs follows both ways, stops
   // DMs, hides posts; locally we mirror the list so the UI reacts instantly. ---
@@ -3821,7 +3852,7 @@ export function StoreProvider({ children }) {
   // guard stops the same post being fetched twice at once (card + PostScreen).
   // Slice 3: pull a post's comments from the server and merge them in (dedupe by
   // id). For bundled demo posts the server has none, so the seed comments stand.
-  const loadComments = (id, { limit = 50, force = false } = {}) => {
+  const loadComments = (id, { limit = 50, force = false, signal } = {}) => {
     const safeLimit = Math.max(1, Math.min(100, Number(limit) || 50));
     if (!id) return Promise.resolve({ ok: false, error: new Error("A post is required to load comments.") });
     const claim = commentCache.capture();
@@ -3836,6 +3867,7 @@ export function StoreProvider({ children }) {
       silent: true,
       context: "Loading comments",
       expectedAccountId: claim.accountId,
+      signal,
     })
       .then(({ comments: rows, removedIds = [] }) => {
         if (!commentClaimIsCurrent(claim)) return { ok: false, stale: true };
@@ -4106,6 +4138,75 @@ export function StoreProvider({ children }) {
     return !goingTourDateId(entry) && entry?.key === key;
   };
 
+  const adoptAttendanceSnapshot = (accountId, rows, attendanceRows, mutationRevision) => {
+    if (!accountId || sessionRef.current?.id !== accountId || !Array.isArray(rows)
+      || goingMutationRevisionRef.current !== mutationRevision
+      || goingRef.attendance.accountId !== accountId) return false;
+    const canonicalAttendance = Array.isArray(attendanceRows) ? attendanceRows : [];
+    const exactGoingRows = canonicalAttendance.filter((entry) => entry?.state === "going"
+      && typeof entry?.tourDateId === "string" && entry.tourDateId.trim());
+    const exactDisplayKeys = new Set(exactGoingRows
+      .map((entry) => entry.key || concertKey(entry))
+      .filter(Boolean));
+    const hydratedGoingRows = rows.filter((entry) => goingTourDateId(entry)
+      || !exactDisplayKeys.has(entry?.key));
+    exactGoingRows.forEach((entry) => {
+      const identity = goingEntryIdentity(entry);
+      if (!hydratedGoingRows.some((candidate) => goingEntryIdentity(candidate) === identity)) {
+        hydratedGoingRows.push(entry);
+      }
+    });
+    goingRef.attendance = { accountId, rows: canonicalAttendance };
+    const next = { ...goingRef.current, [accountId]: hydratedGoingRows };
+    goingRef.current = next;
+    hydratedGoingRows.forEach((entry) => goingConfirmedRef.current.set(
+      goingIntentKey(accountId, goingEntryIdentity(entry)),
+      true,
+    ));
+    return next;
+  };
+
+  const refreshMyAttendance = async ({ signal } = {}) => {
+    const actor = sessionRef.current;
+    if (!actor?.id) return false;
+    const mutationRevision = goingMutationRevisionRef.current;
+    try {
+      const { going: rows, attendance: attendanceRows } = await fetchMyShowPlans({ accountId: actor.id, signal });
+      if (signal?.aborted) return null;
+      const next = adoptAttendanceSnapshot(actor.id, rows, attendanceRows, mutationRevision);
+      if (!next) return false;
+      setGoing(next);
+      return true;
+    } catch (error) {
+      if (!signal?.aborted) captureAppError(error, {
+        code: "PIT-STORE-ATTENDANCE-REFRESH",
+        context: "Refreshing private show plans",
+        source: "show-planning",
+        severity: "warning",
+        toast: false,
+      });
+      return signal?.aborted ? null : false;
+    }
+  };
+
+  const applyMyAttendanceMutation = (show, result) => {
+    const actor = sessionRef.current;
+    if (!actor?.id || !show || !result?.showId || goingRef.attendance.accountId !== actor.id) return false;
+    const reconciled = reconcileAttendancePlan({
+      attendanceRows: goingRef.attendance.rows,
+      goingRows: goingRef.current[actor.id] || [],
+      show,
+      result,
+    });
+    if (!reconciled) return false;
+    goingMutationRevisionRef.current += 1;
+    goingRef.attendance = { accountId: actor.id, rows: reconciled.attendanceRows };
+    const next = { ...goingRef.current, [actor.id]: reconciled.goingRows };
+    goingRef.current = next;
+    setGoing(next);
+    return true;
+  };
+
   const commitGoingState = (accountId, entry, desired) => {
     const current = goingRef.current;
     const mine = current[accountId] || [];
@@ -4251,6 +4352,18 @@ export function StoreProvider({ children }) {
   };
 
   // --- Concert Lounge (gated attendee chat, now server-backed + live) ---
+  const clearLounge = (key) => {
+    if (!key) return;
+    setLounge((all) => {
+      if (!Object.prototype.hasOwnProperty.call(all, key)) return all;
+      const next = { ...all };
+      delete next[key];
+      return next;
+    });
+    commitChatOutbox((current) => current.filter((item) => !(
+      item.kind === "lounge" && item.channelKey === key
+    )));
+  };
   const loungeFor = (key) => mergeChatMessages(
     lounge[key] || [],
     chatOutboxFor(chatOutbox, { ownerId: session?.id, kind: "lounge", channelKey: key }),
@@ -4259,7 +4372,7 @@ export function StoreProvider({ children }) {
   );
   // Pull a lounge's messages from the server and merge by id (dedup-safe, so this
   // can be polled while the screen is open to get live chat like the fan clubs).
-  const loadLounge = (key, { after, signal } = {}) => {
+  const loadLounge = (key, { after, signal, strict = false } = {}) => {
     const read = key ? chatReadsRef.current.claim(`lounge:${key}`, sessionRef.current) : null;
     if (!read) return Promise.resolve({ syncCursor: after || null, hasMore: false });
     const query = after ? `?after=${encodeURIComponent(after)}` : "";
@@ -4282,6 +4395,12 @@ export function StoreProvider({ children }) {
       })
       .catch((error) => {
         if (signal?.aborted) throw error;
+        if ((error?.status === 410 || error?.serverCode === "LOUNGE_CLOSED")
+          && chatReadsRef.current.isCurrent(read, sessionRef.current)) {
+          clearLounge(key);
+          return { syncCursor: after || null, hasMore: false, closed: true };
+        }
+        if (strict) throw error;
         return { syncCursor: after || null, hasMore: false };
       });
   };
@@ -4427,7 +4546,9 @@ export function StoreProvider({ children }) {
   const loadFanClubsDirectory = ({ signal } = {}) => {
     const accountId = sessionRef.current?.id || null;
     const claim = fanClubDirectoryReadsRef.current.claim(accountId);
-    setFanClubDirectoryStatus("loading");
+    setFanClubDirectoryStatus((current) => (
+      current === "ready" || current === "refreshing" ? "refreshing" : "loading"
+    ));
     return api("/api/fanclubs", { signal, silent: true, context: "Refreshing fan clubs" })
       .then(({ clubs }) => {
         if (signal?.aborted || !fanClubDirectoryReadsRef.current.isCurrent(claim, sessionRef.current?.id || null)) {
@@ -4440,7 +4561,7 @@ export function StoreProvider({ children }) {
       })
       .catch((error) => {
         if (!signal?.aborted && fanClubDirectoryReadsRef.current.isCurrent(claim, sessionRef.current?.id || null)) {
-          setFanClubDirectoryStatus("error");
+          setFanClubDirectoryStatus((current) => current === "refreshing" ? "ready" : "error");
         }
         if (signal?.aborted) throw error;
         return { ok: false };
@@ -4448,7 +4569,7 @@ export function StoreProvider({ children }) {
   };
   // Slice 5: pull a club's messages + real member count from the server, merging
   // messages by id. No-op offline; bundled seed clubs keep their seed chatter.
-  const loadFanClub = (artist, { after, signal } = {}) => {
+  const loadFanClub = (artist, { after, signal, strict = false } = {}) => {
     const key = fcKey(artist);
     const read = key ? chatReadsRef.current.claim(`fan:${key}`, sessionRef.current) : null;
     if (!read) return Promise.resolve({ syncCursor: after || null, hasMore: false });
@@ -4472,6 +4593,7 @@ export function StoreProvider({ children }) {
       })
       .catch((error) => {
         if (signal?.aborted) throw error;
+        if (strict) throw error;
         return { syncCursor: after || null, hasMore: false };
       });
   };
@@ -4545,7 +4667,12 @@ export function StoreProvider({ children }) {
   // Directory of fan clubs, most members first, powers the Fan clubs screen and
   // the Community search pane so clubs are findable, not buried on artist pages.
   const fanClubsDirectory = () => {
-    if (fanClubDirectoryStatus === "ready") {
+    // Keep the last server-confirmed rows visible during refreshes and failures.
+    // Loading state must never replace an established directory with the much
+    // smaller device-local membership graph.
+    if (fanClubDirectoryStatus === "ready"
+      || fanClubDirectoryStatus === "refreshing"
+      || fanClubDirectorySnapshot.length > 0) {
       return fanClubDirectorySnapshot.map((club) => ({
         ...club,
         artist: remoteArtists[fcKey(club.artist)]?.name || catalogArtists[fcKey(club.artist)]?.name || club.artist.replace(/\b\w/g, (character) => character.toUpperCase()),
@@ -4931,7 +5058,14 @@ export function StoreProvider({ children }) {
   };
   // Catalog queue (admin): thin/blank artists + searched-but-not-found names, and
   // the on-demand seed + purge actions.
-  const adminArtistQueue = async () => { try { return await api("/api/admin/artist-queue"); } catch { return { thin: [], missing: [], thinTotal: 0 }; } };
+  const adminArtistQueue = async ({ signal, strict = false } = {}) => {
+    try {
+      return await api("/api/admin/artist-queue", { signal, silent: true, context: "Refreshing the artist catalog queue" });
+    } catch (error) {
+      if (signal?.aborted || strict) throw error;
+      return { thin: [], missing: [], thinTotal: 0 };
+    }
+  };
   const enrichArtists = async (names) => { try { const r = await api("/api/admin/artists/enrich", { method: "POST", body: { names } }); return r.enriched || 0; } catch { return 0; } };
   const purgeArtist = async (norm) => { try { await api("/api/admin/artists/purge", { method: "POST", body: { norm } }); } catch {} };
   // Kick off / poll the background "grow the catalog to N artists" job (admin).
@@ -4939,11 +5073,25 @@ export function StoreProvider({ children }) {
     const body = typeof addOrOpts === "object" && addOrOpts ? addOrOpts : { add: addOrOpts };
     try { return await api("/api/admin/catalog/seed", { method: "POST", body }); } catch { return { started: false }; }
   };
-  const catalogSeedStatus = async () => { try { return await api("/api/admin/catalog/seed"); } catch { return null; } };
+  const catalogSeedStatus = async ({ signal, strict = false } = {}) => {
+    try {
+      return await api("/api/admin/catalog/seed", { signal, silent: true, context: "Refreshing catalog progress" });
+    } catch (error) {
+      if (signal?.aborted || strict) throw error;
+      return null;
+    }
+  };
   const stopCatalogSeed = async () => { try { return await api("/api/admin/catalog/seed", { method: "DELETE" }); } catch { return null; } };
   // Durable job history, so the console can show what a run actually did even
   // after a restart (an in-memory "done" once hid a run that added nothing).
-  const catalogSeedRuns = async () => { try { return (await api("/api/admin/catalog/runs"))?.runs || []; } catch { return []; } };
+  const catalogSeedRuns = async ({ signal, strict = false } = {}) => {
+    try {
+      return (await api("/api/admin/catalog/runs", { signal, silent: true, context: "Refreshing catalog job history" }))?.runs || [];
+    } catch (error) {
+      if (signal?.aborted || strict) throw error;
+      return [];
+    }
+  };
 
   // moderation: drop a single chat/lounge/comment message (staff)
   const removeLoungeMessage = (key, msgId) => moderateContent("lounge_message", msgId, true)
@@ -5074,15 +5222,20 @@ export function StoreProvider({ children }) {
   // Slice 7: hydrate a venue's reviews from the server. This is an
   // authoritative snapshot, including an empty array after moderation; merging
   // would preserve removed/blocked photos forever in the local cache.
-  const loadVenueReviews = (venueName) => {
+  const loadVenueReviews = (venueName, { signal } = {}) => {
     const venueKey = norm(venueName);
     const enc = encodeURIComponent(venueKey);
     const accountId = sessionRef.current?.id || null;
     const privacyRevision = venuePhotoCacheRef.current.privacy.revision;
-    api(`/api/venues/${enc}/reviews`)
+    return api(`/api/venues/${enc}/reviews`, {
+      signal,
+      silent: true,
+      context: "Refreshing venue reviews",
+      expectedAccountId: accountId,
+    })
       .then(({ reviews }) => {
         if (!Array.isArray(reviews) || (sessionRef.current?.id || null) !== accountId
-          || venuePhotoCacheRef.current.privacy.revision !== privacyRevision) return;
+          || venuePhotoCacheRef.current.privacy.revision !== privacyRevision) return { ok: false, stale: true };
         const blocked = new Set(blockedIdsRef.current);
         const snapshot = reviews
           .filter((r) => !blocked.has(r.userId))
@@ -5097,8 +5250,11 @@ export function StoreProvider({ children }) {
             ts: ago(r.createdAt),
           }));
         setVenueReviews((m) => replaceVenueReviewSnapshot(m, venueKey, snapshot));
+        return { ok: true, reviews: snapshot };
       })
-      .catch(() => { /* architecture: allow-empty-catch -- venue reviews are optional continuity data and the licensed venue gallery remains usable */ });
+      .catch((error) => (isLoadCancellation(error, signal)
+        ? { ok: false, aborted: true }
+        : { ok: false, error }));
   };
   const addVenueReview = (venueName, { rating, text, photos, photosPublic = false }) => {
     if (!session) return Promise.resolve({ ok: false });
@@ -5163,7 +5319,24 @@ export function StoreProvider({ children }) {
   // Concurrent VenueScreen/ShowScreen opens share one request. Results live in a
   // small viewer-scoped LRU. Personalized JSON bypasses browser caches, while
   // the separately hosted image bytes retain their own safe cache policy.
-  const loadVenuePhotos = (venueName, { force = false } = {}) => {
+  const waitForVenuePhotoRequest = (promise, signal) => {
+    if (!signal) return promise;
+    if (signal.aborted) {
+      const error = new Error("Venue photo request cancelled.", signal.reason instanceof Error ? { cause: signal.reason } : undefined);
+      error.name = "AbortError";
+      return Promise.reject(error);
+    }
+    return new Promise((resolve, reject) => {
+      const abortConsumer = () => {
+        const error = new Error("Venue photo request cancelled.", signal.reason instanceof Error ? { cause: signal.reason } : undefined);
+        error.name = "AbortError";
+        reject(error);
+      };
+      signal.addEventListener("abort", abortConsumer, { once: true });
+      promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", abortConsumer));
+    });
+  };
+  const loadVenuePhotos = (venueName, { force = false, signal } = {}) => {
     const venueKey = venueCatalogKey(venueName);
     if (!venueKey) return Promise.resolve([]);
     const viewerScope = currentVenuePhotoViewerScope();
@@ -5174,7 +5347,7 @@ export function StoreProvider({ children }) {
       return Promise.resolve(cached.photos);
     }
     const active = venuePhotoInflightRef.current.get(cacheKey);
-    if (active) return active.promise;
+    if (active) return waitForVenuePhotoRequest(active.promise, signal);
 
     const controller = new AbortController();
     commitVenuePhotoEntry(cacheKey, {
@@ -5214,7 +5387,7 @@ export function StoreProvider({ children }) {
         if (venuePhotoInflightRef.current.get(cacheKey)?.promise === promise) venuePhotoInflightRef.current.delete(cacheKey);
       });
     venuePhotoInflightRef.current.set(cacheKey, { controller, promise });
-    return promise;
+    return waitForVenuePhotoRequest(promise, signal);
   };
 
   const venuePhotos = (venueName) => {
@@ -5233,7 +5406,7 @@ export function StoreProvider({ children }) {
 
   // --- Direct messages + inbox ---
   const dmKey = (a, b) => [a, b].sort().join("__");
-  const loadInboxThreads = ({ signal } = {}) => {
+  const loadInboxThreads = ({ signal, strict = false } = {}) => {
     const read = chatReadsRef.current.claim("dm-inbox", sessionRef.current);
     if (!read) return Promise.resolve([]);
     const accountId = read.scope;
@@ -5271,6 +5444,7 @@ export function StoreProvider({ children }) {
       })
       .catch((error) => {
         if (signal?.aborted) throw error;
+        if (strict) throw error;
         return [];
       });
   };
@@ -5286,7 +5460,7 @@ export function StoreProvider({ children }) {
   };
   // Slice 4: pull a thread's messages from the server and merge them (dedupe by
   // id, keeping any optimistic local-only message not yet echoed back).
-  const loadThread = (otherId, { after, signal } = {}) => {
+  const loadThread = (otherId, { after, signal, strict = false } = {}) => {
     const read = otherId ? chatReadsRef.current.claim(`dm-thread:${otherId}`, sessionRef.current) : null;
     if (!read) return Promise.resolve({ syncCursor: after || null, hasMore: false });
     const key = dmKey(read.scope, otherId);
@@ -5313,6 +5487,7 @@ export function StoreProvider({ children }) {
       })
       .catch((error) => {
         if (signal?.aborted) throw error;
+        if (strict) throw error;
         return { syncCursor: after || null, hasMore: false };
       });
   };
@@ -5443,33 +5618,21 @@ export function StoreProvider({ children }) {
         inTourWindow: false,
       }));
     const nights = [...liveLogs, ...aggregateNights];
-    const avg = (sel) => (nights.length ? nights.reduce((s, n) => s + sel(n), 0) / nights.length : 0);
     const upcoming = tourDates
       .filter((t) => isUpcomingEventDate(t)
         && norm(t.artist) === key
         && (t.releaseAt <= Date.now() || isStaff(session?.role) || t.createdBy === session?.id))
       .map((t) => ({ ...t, scheduled: t.releaseAt > Date.now() }));
-    const totalRatings = nights.reduce((s, n) => s + (n.likes || 0), 0);
-    const cat = remoteArtists[key] || catalogArtists[key];
     const prof = artistProfiles[key] || {};
-    return {
+    return buildArtistSummary({
       name,
-      genre: nights.find((n) => n.genre)?.genre || cat?.genre || "-",
-      photo: prof.avatarUri || cat?.photo || null,
-      profileAvatarUri: prof.avatarUri || null,
-      photoCredit: prof.avatarUri ? null : cat?.photoCredit || null,
-      banner: prof.banner || null,
-      ownerBio: prof.bio || null,
-      ownerId: prof.ownerId || null,
-      profileKey: key,
-      feedEnabled: !!prof.feedEnabled,
+      key,
       nights,
       upcoming,
-      avgOverall: avg((n) => n.overall),
-      avgBand: avg((n) => n.band),
-      avgRoom: avg((n) => n.room),
-      totalRatings,
-    };
+      remoteArtist: remoteArtists[key],
+      catalogArtist: catalogArtists[key],
+      profile: prof,
+    });
   };
 
   // Public sees released dates; the creating team + admins also see scheduled.
@@ -5545,12 +5708,7 @@ export function StoreProvider({ children }) {
 
   const artistGenre = (name) => {
     const k = norm(name);
-    return remoteArtists[k]?.genre
-      || catalogArtists[k]?.genre
-      || ratedShows.find((r) => norm(r.artist) === k)?.genre
-      || feed.find((l) => norm(l.artist) === k)?.genre
-      || artistMeta(name)?.genre
-      || null;
+    return verifiedArtistGenre(remoteArtists[k], catalogArtists[k], artistMeta(name));
   };
 
   const venueCoord = (name) => {
@@ -5592,6 +5750,19 @@ export function StoreProvider({ children }) {
       && t.releaseAt <= Date.now()).length;
 
   // --- Sidebar data (desktop rails) ------------------------------------------
+  const artistMetadataRows = () => {
+    const rows = new Map();
+    for (const artist of Object.values(catalogArtists || {})) {
+      if (artist?.name) rows.set(norm(artist.name), artist);
+    }
+    for (const artist of Object.values(remoteArtists || {})) {
+      if (!artist?.name) continue;
+      const key = norm(artist.name);
+      rows.set(key, { ...(rows.get(key) || {}), ...artist });
+    }
+    return [...rows.values()];
+  };
+
   // Every artist we know of, from the scraped catalog + rated shows + tour dates.
   const allArtists = () => {
     const map = {};
@@ -5600,9 +5771,10 @@ export function StoreProvider({ children }) {
       if (!k || map[k]) return;
       map[k] = { name, genre: genre || null };
     };
-    Object.values(catalogArtists).forEach((a) => add(a.name, a.genre));
-    ratedShows.forEach((r) => add(r.artist, r.genre));
-    tourDates.forEach((t) => add(t.artist, t.genre));
+    Object.values(remoteArtists).forEach((artist) => add(artist.name, verifiedArtistGenre(artist)));
+    Object.values(catalogArtists).forEach((artist) => add(artist.name, verifiedArtistGenre(artist)));
+    ratedShows.forEach((show) => add(show.artist, artistGenre(show.artist)));
+    tourDates.forEach((date) => add(date.artist, artistGenre(date.artist)));
     return Object.values(map);
   };
 
@@ -5612,12 +5784,12 @@ export function StoreProvider({ children }) {
     const agg = {};
     ratedShows.forEach((r) => {
       const k = norm(r.artist);
-      (agg[k] ||= { name: r.artist, genre: r.genre, sum: 0, reviews: 0, nights: 0 });
+      (agg[k] ||= { name: r.artist, sum: 0, reviews: 0, nights: 0 });
       agg[k].sum += (r.rating || 0) * (r.reviews || 1);
       agg[k].reviews += r.reviews || 1;
       agg[k].nights += 1;
     });
-    const rows = Object.values(agg).map((a) => ({ name: a.name, genre: a.genre, nights: a.nights, reviews: a.reviews, avg: a.reviews ? a.sum / a.reviews : 0 }));
+    const rows = Object.values(agg).map((a) => ({ name: a.name, genre: artistGenre(a.name), nights: a.nights, reviews: a.reviews, avg: a.reviews ? a.sum / a.reviews : 0 }));
     const C = 40; // prior weight
     const M = rows.length ? rows.reduce((s, a) => s + a.avg, 0) / rows.length : 4;
     const ranked = rows
@@ -5625,11 +5797,11 @@ export function StoreProvider({ children }) {
       .sort((a, b) => b.score - a.score)
       .slice(0, n);
     if (ranked.length) return ranked;
-    return Object.values(catalogArtists || {})
+    return artistMetadataRows()
       .filter((artist) => artist?.name)
       .sort((a, b) => (b.popularity ?? -1) - (a.popularity ?? -1) || (b.followers || 0) - (a.followers || 0) || a.name.localeCompare(b.name))
       .slice(0, n)
-      .map((artist) => ({ name: artist.name, genre: artist.genre || null, avg: 0, popularity: artist.popularity ?? null }));
+      .map((artist) => ({ name: artist.name, genre: verifiedArtistGenre(artist), avg: 0, popularity: artist.popularity ?? null }));
   };
 
   const artistsAlphabetical = (n = 12) =>
@@ -5688,10 +5860,11 @@ export function StoreProvider({ children }) {
   };
   const userAchievements = (u) => rewardProfiles[u?.id]?.earnedIds || (() => { const s = activityStats(u); return ACHIEVEMENTS.filter((a) => a.test(s)).map((a) => a.id); })();
   const userPoints = (u) => rewardProfiles[u?.id]?.points ?? (() => { const s = activityStats(u); return ACHIEVEMENTS.reduce((sum, a) => sum + (a.test(s) ? a.points : 0), 0); })();
-  const loadRewards = async (userId) => {
+  const loadRewards = async (userId, { signal } = {}) => {
     if (!userId) return null;
     try {
-      const rewards = await api(`/api/users/${userId}/rewards`, { context: "Loading badge progress", silent: true });
+      const rewards = await api(`/api/users/${userId}/rewards`, { context: "Loading badge progress", silent: true, signal });
+      if (signal?.aborted) return null;
       setRewardProfiles((all) => ({ ...all, [userId]: rewards }));
       return rewards;
     } catch { return null; }
@@ -5704,7 +5877,7 @@ export function StoreProvider({ children }) {
   // podium always has a top 3 even before the popularity scrape has run.
   const CHART_SOURCE = "spotify-popularity"; // future: "billboard-hot-100" | "in-app-score"
   const chartTop = (n = 10) => {
-    const arts = Object.values(catalogArtists || {});
+    const arts = artistMetadataRows();
     const withPop = arts.filter((a) => a.popularity != null);
     let ranked, basis;
     if (withPop.length >= 3) {
@@ -5717,25 +5890,26 @@ export function StoreProvider({ children }) {
     }
     return ranked.slice(0, n).map((a, i) => {
       const meta = artistMeta(a.name) || a;
-      return { rank: i + 1, name: a.name, genre: a.genre || meta.genre || null, popularity: a.popularity ?? null, followers: a.followers ?? null, rating: a.avg ?? null, photo: meta.photo || null, basis };
+      return { rank: i + 1, name: a.name, genre: verifiedArtistGenre(remoteArtists[norm(a.name)], a, meta), popularity: a.popularity ?? null, followers: a.followers ?? null, rating: a.avg ?? null, photo: meta.photo || null, basis };
     });
   };
   const chartInfo = () => {
-    const withPop = Object.values(catalogArtists || {}).filter((a) => a.popularity != null).length;
+    const withPop = artistMetadataRows().filter((a) => a.popularity != null).length;
     return { source: CHART_SOURCE, live: withPop >= 3, label: withPop >= 3 ? "By popularity" : "By fan reputation" };
   };
 
   // Genre distribution, optionally scoped to one country, the region pies.
   const catalogCountries = (min = 12) => {
     const c = {};
-    Object.values(catalogArtists || {}).forEach((a) => { if (a.country) c[a.country] = (c[a.country] || 0) + 1; });
+    artistMetadataRows().forEach((a) => { if (a.country) c[a.country] = (c[a.country] || 0) + 1; });
     return Object.entries(c).filter(([, v]) => v >= min).sort((a, b) => b[1] - a[1]).map(([country, count]) => ({ country, count }));
   };
   const topGenres = (country, n = 10) => {
     const g = {};
-    Object.values(catalogArtists || {}).forEach((a) => {
+    artistMetadataRows().forEach((a) => {
       if (country && a.country !== country) return;
-      if (a.genre) g[a.genre] = (g[a.genre] || 0) + 1;
+      const genre = verifiedArtistGenre(a);
+      if (genre) g[genre] = (g[genre] || 0) + 1;
     });
     const rows = Object.entries(g).sort((a, b) => b[1] - a[1]);
     const total = rows.reduce((s, [, v]) => s + v, 0) || 1;
@@ -5750,7 +5924,8 @@ export function StoreProvider({ children }) {
   const topArtistsBy = ({ genre, country, n = 12 } = {}) => {
     const g = genre ? norm(genre) : null;
     const c = country && country !== "Worldwide" ? country : null;
-    return Object.values(catalogArtists || {})
+    return artistMetadataRows()
+      .map((artist) => ({ ...artist, genre: verifiedArtistGenre(artist) }))
       .filter((a) => a.popularity != null && (!g || norm(a.genre) === g) && (!c || a.country === c))
       .sort((x, y) => (y.popularity || 0) - (x.popularity || 0))
       .slice(0, n)
@@ -5761,7 +5936,8 @@ export function StoreProvider({ children }) {
   const topSongsBy = ({ genre, country, n = 12 } = {}) => {
     const g = genre ? norm(genre) : null;
     const c = country && country !== "Worldwide" ? country : null;
-    const arts = Object.values(catalogArtists || {})
+    const arts = artistMetadataRows()
+      .map((artist) => ({ ...artist, genre: verifiedArtistGenre(artist) }))
       .filter((a) => a.popularity != null && (a.topTracks || []).length && (!g || norm(a.genre) === g) && (!c || a.country === c))
       .sort((x, y) => (y.popularity || 0) - (x.popularity || 0))
       .slice(0, n);
@@ -5779,10 +5955,10 @@ export function StoreProvider({ children }) {
 
   const discoverStats = () => ({
     members: memberCount,
-    artists: Object.keys(catalogArtists || {}).length,
+    artists: artistMetadataRows().length,
     venues: new Set([...Object.keys(arenaVenues), ...Object.keys(catalogVenues || {})]).size,
     countries: catalogCountries(1).length,
-    genres: new Set(Object.values(catalogArtists || {}).map((a) => a.genre).filter(Boolean)).size,
+    genres: new Set(artistMetadataRows().map((artist) => verifiedArtistGenre(artist)).filter(Boolean)).size,
   });
 
   // Soonest released upcoming dates across the whole catalog.
@@ -5921,15 +6097,28 @@ export function StoreProvider({ children }) {
   // so a just-posted photo appears instantly before the next server load.
   const [artistPhotosSrv, setArtistPhotosSrv] = useState({});
   const artistPhotoCacheKey = (name, artistKey = null) => artistGalleryIdentityKey(name, artistKey);
-  const loadArtistPhotos = async (name, artistKey = null) => {
+  const loadArtistPhotos = async (name, artistKey = null, { signal } = {}) => {
     const k = artistPhotoCacheKey(name, artistKey);
-    if (!k) return;
+    if (!k) return { ok: false, missing: true };
+    const accountId = sessionRef.current?.id || null;
     try {
       const query = new URLSearchParams({ name: String(name || "") });
       if (artistKey) query.set("artistKey", String(artistKey));
-      const { photos } = await api(`/api/artists/photos?${query.toString()}`, { silent: true });
-      if (Array.isArray(photos)) setArtistPhotosSrv((m) => ({ ...m, [k]: photos.map((p) => ({ ...p, uri: p.uri, by: p.by, postId: p.postId, ownerId: p.userId, source: "fan" })) }));
-    } catch {}
+      const { photos } = await api(`/api/artists/photos?${query.toString()}`, {
+        signal,
+        silent: true,
+        context: "Refreshing artist photos",
+        expectedAccountId: accountId,
+      });
+      if (!Array.isArray(photos) || (sessionRef.current?.id || null) !== accountId) return { ok: false, stale: true };
+      const snapshot = photos.map((p) => ({ ...p, uri: p.uri, by: p.by, postId: p.postId, ownerId: p.userId, source: "fan" }));
+      setArtistPhotosSrv((m) => ({ ...m, [k]: snapshot }));
+      return { ok: true, photos: snapshot };
+    } catch (error) {
+      return isLoadCancellation(error, signal)
+        ? { ok: false, aborted: true }
+        : { ok: false, error };
+    }
   };
   const artistFanPhotos = (name, artistKey = null) => {
     const k = artistPhotoCacheKey(name, artistKey);
@@ -5980,7 +6169,7 @@ export function StoreProvider({ children }) {
     recentSearches, addRecentSearch, removeRecentSearch, clearRecentSearches,
     loadUser, followersOf, followingOf,
     isBlocked, blockUser, unblockUser, blockedUsers, exportMyData,
-    searchArtistsApi, attachArtistSuggestionApi, resolveArtist, remoteArtistMeta, artistDiscography, resolveYouTube, invalidateYouTube, youtubeVideoRejected, youtubeLookupStatus, resolveDeezerPreview,
+    searchArtistsApi, refreshArtistCatalogMetadata, attachArtistSuggestionApi, resolveArtist, remoteArtistMeta, artistDiscography, resolveYouTube, invalidateYouTube, youtubeVideoRejected, youtubeLookupStatus, resolveDeezerPreview,
     discoverChart, discoverGenres, discoverCountries, loadDiscoverOverview, loadDiscoverGenre, serverTime,
     artistSeenCount, reportTrack, adminSetTrackVideo, trackOverridesList, removeTrackOverride, loadModerationQueue, loadModerationConsole, loadMoreModerationConsole, moderateReport,
     mediaReactions, loadMediaReactions, toggleMediaReaction,
@@ -5990,7 +6179,7 @@ export function StoreProvider({ children }) {
     favoriteGenre, genreOfArtist, recommendTracks, autoplayQueue, searchSongsApi, myPlaylists: scopedMyPlaylists, myPlaylistsAccountId, myPlaylistsStatus: scopedMyPlaylistsStatus, loadMyPlaylists, loadPlaylist, createPlaylist, addToPlaylist, updatePlaylist, deletePlaylist,
     drafts: draftsForAccount(drafts, session?.id), saveDraft, deleteDraft,
     loadDiscoverTourDateRange,
-    visibleFeed, followingFeed, loadMoreFeed, feedHasMore, feedLoadingMore, loadClips, notInterested, undoNotInterested, refreshTourDates, visibleTourDates, artistSummary, venueSummary,
+    visibleFeed, followingFeed, refreshFeed, loadMoreFeed, feedHasMore, feedLoadingMore, loadClips, notInterested, undoNotInterested, refreshTourDates, refreshDiscoverySidebar, visibleTourDates, artistSummary, venueSummary,
     localVenues, regionShows, localFeed, recommendedShows, venueCoord, locationCenter,
     searchVenues, venuesByCity, venueUpcomingCount,
     allArtists, topArtists, artistsAlphabetical, upcomingEvents, trendingVenues,
@@ -5998,7 +6187,7 @@ export function StoreProvider({ children }) {
     activityStats, userAchievements, userPoints, loadRewards,
     chartTop, chartInfo, catalogCountries, topGenres, topPhotos, discoverStats, topArtistsBy, topSongsBy,
     commentsFor, addComment, deleteOwnComment, deleteOwnPost, removeMyPostTag, loadComments, likeInfo, toggleLike,
-    concertKey, loungeFor, enterLounge, addLoungeMessage, loadLounge,
+    concertKey, loungeFor, enterLounge, addLoungeMessage, loadLounge, clearLounge,
     albumRating, songRating, rateAlbum, rateSong, loadRating,
     fanClubFor, loadFanClub, loadFanClubsDirectory, fanClubDirectoryStatus, addFanClubMessage, isFanClubMember, joinFanClub, fanClubCount, fanClubsDirectory,
     isArtistOwner, artistProfile, loadArtistPage, updateArtistProfile, artistFeedEnabled,
@@ -6006,14 +6195,14 @@ export function StoreProvider({ children }) {
     artistPostsFor, addArtistPost, removeArtistPost,
     accountStatus, banUser, unbanUser, suspendUser, liftSuspension, setUserRole, setVerified, markEmailVerified, setSponsor, loadAdminMembers, loadAdminMembersStrict, loadMoreAdminMembersStrict, adminStats, prepareMemorialArtist, adminArtistQueue, enrichArtists, purgeArtist, startCatalogSeed, catalogSeedStatus, stopCatalogSeed, catalogSeedRuns, removeLoungeMessage, removeComment, removeFanClubMessage,
     comments: scopedComments, fanClubMsgs, lounge,
-    goingFor, myAttendance, isGoing, isGoingBusy, toggleGoing, attendeesFor,
+    goingFor, myAttendance, refreshMyAttendance, applyMyAttendanceMutation, isGoing, isGoingBusy, toggleGoing, attendeesFor,
     venueReviewsFor, loadVenueReviews, addVenueReview, venueRating, venueTopPhotos,
     venuePhotos, venuePhotoState, loadVenuePhotos, venuePhotoPrivacyRevision, artistFanPhotos, loadArtistPhotos,
     artistGallery, isPhotoRemoved, removePhoto, restorePhoto,
     chatAuthEpoch, retryChatMessage, cancelChatMessage,
     threadMessages, sendDM, loadThread, loadInboxThreads, markThreadRead, inboxThreads, mainThreads, requestThreads, inboxUnread, requestCount,
     track,
-    myNotifications, unreadNotifications, markNotificationsRead,
+    myNotifications, unreadNotifications, refreshNotifications, markNotificationsRead,
   };
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>;

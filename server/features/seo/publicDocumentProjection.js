@@ -796,9 +796,9 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       const name = cleanLine(source.name, 160);
       const bio = cleanBody(raw.profile?.bio || source.bio, 2_000);
       const reviewCount = count(raw.stats?.review_count);
-      const averageRating = rating(raw.stats?.average_rating);
+      const averageRating = memorial ? null : rating(raw.stats?.average_rating);
       const description = summary(memorial?.summary || bio || `${name} live reviews, fan photos, artist updates and upcoming performances on Mshpit.`);
-      const events = (raw.events || []).map((event) => eventCard(event, publicPaths)).filter(Boolean);
+      const events = memorial ? [] : (raw.events || []).map((event) => eventCard(event, publicPaths)).filter(Boolean);
       const concerts = (raw.concerts || []).flatMap((concert) => {
         const date = validDate(concert.date);
         const venue = cleanLine(concert.venue, 180);
@@ -815,9 +815,9 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
           venuePath: canonicalVenuePath(publicPaths, concert),
           city: cleanLine(concert.city, 120) || null,
           date,
-          ratingCount: count(concert.rating_count),
+          ratingCount: memorial ? null : count(concert.rating_count),
           reviewCount: count(concert.review_count),
-          averageRating: rating(concert.average_rating),
+          averageRating: memorial ? null : rating(concert.average_rating),
           modifiedAt: timestamp(concert.latest_at),
         })];
       });

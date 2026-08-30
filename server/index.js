@@ -12,7 +12,7 @@ import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { join, extname, normalize, dirname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { db, q, publicUser, pruneMissingArtists } from "./db.js";
-import { routes } from "./api.js";
+import { artistDeathWatchService, routes } from "./api.js";
 import { ApiError, errorEnvelope } from "./errors.js";
 import { assertExpectedAccount } from "./identityBinding.js";
 import { maybeAlert, pruneErrors, recordError } from "./errorLog.js";
@@ -45,6 +45,10 @@ import {
   startArtistTourDateDemandRefresh,
   stopArtistTourDateDemandRefresh,
 } from "./artistTourDateDemandRefresh.js";
+import {
+  startMusicBrainzGenreRefreshScheduler,
+  stopMusicBrainzGenreRefreshScheduler,
+} from "./musicBrainzGenreRefresh.js";
 import { startCacheWarmScheduler } from "./cacheWarmer.js";
 import { startBackupScheduler } from "./backupScheduler.js";
 import { startMediaDeletionScheduler } from "./mediaDeletion.js";
@@ -59,6 +63,7 @@ import { pruneAnalyticsData } from "./analyticsService.js";
 import { pruneGuestSearchAnalytics } from "./guestSearchAnalytics.js";
 import { pruneProductSuggestions } from "./features/suggestions/suggestionRetention.js";
 import { pruneExpiredAccountSecrets } from "./accountSecretRetention.js";
+import { startArtistDeathWatchScheduler } from "./features/artistDeathWatch/artistDeathWatchScheduler.js";
 import { missingStaticAssetResponse } from "./staticPolicy.js";
 import { publicPageFor, renderPublicPage } from "./publicPages.js";
 import { staticAssetCacheControl } from "./staticAssetCache.js";
@@ -678,6 +683,7 @@ let emailCampaignScheduler = null;
 let founderOperationsScheduler = null;
 let legacyVideoPosterScheduler = null;
 let legacyImageRecoveryScheduler = null;
+let artistDeathWatchScheduler = null;
 let privateMediaIsolationTimer = null;
 let sitemapRefreshTimer = null;
 let sitemapRetryTimer = null;
@@ -688,7 +694,9 @@ function shutdown(exitCode = 0) {
   const campaignStop = emailCampaignScheduler?.stop() || Promise.resolve();
   const founderOperationsStop = founderOperationsScheduler?.stop() || Promise.resolve();
   const legacyImageRecoveryStop = legacyImageRecoveryScheduler?.stop() || Promise.resolve();
+  const artistDeathWatchStop = artistDeathWatchScheduler?.stop() || Promise.resolve();
   const artistTourDateRefreshStop = stopArtistTourDateDemandRefresh({ abortActive: true });
+  const artistGenreRefreshStop = stopMusicBrainzGenreRefreshScheduler({ abortActive: true });
   stopVideoVerifierHealthScheduler({ abortActive: true });
   if (privateMediaIsolationTimer) clearInterval(privateMediaIsolationTimer);
   if (sitemapRefreshTimer) clearInterval(sitemapRefreshTimer);
@@ -702,8 +710,12 @@ function shutdown(exitCode = 0) {
     catch (error) { console.error(`[health] founder operations shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     try { await legacyImageRecoveryStop; }
     catch (error) { console.error(`[media] legacy image recovery shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
+    try { await artistDeathWatchStop; }
+    catch (error) { console.error(`[memorial-watch] shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     try { await artistTourDateRefreshStop; }
     catch (error) { console.error(`[pit] exact artist refresh shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
+    try { await artistGenreRefreshStop; }
+    catch (error) { console.error(`[pit] artist genre refresh shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     try { await sitemapRefreshStop; }
     catch (error) { console.error(`[seo] sitemap refresh shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     try { db.close(); }
@@ -832,6 +844,8 @@ async function startServer() {
     }
     startTourDateScheduler(); // scrapes tour dates into the DB on a timer (no cron/redeploy)
     startArtistTourDateDemandRefresh(); // drains durable exact-artist demand without delaying reads
+    startMusicBrainzGenreRefreshScheduler(); // exact-MBID genre evidence, bounded and never on a foreground read
+    artistDeathWatchScheduler = startArtistDeathWatchScheduler({ service: artistDeathWatchService });
     startCacheWarmScheduler(); // runs keyless catalogue enrichment; provider playback warming obeys the shared product gate
     startBackupScheduler(); // verified daily SQLite snapshot on /data; private off-host copy when configured
     startMediaDeletionScheduler({ database: db }); // bounded, durable cleanup of active user-media objects only

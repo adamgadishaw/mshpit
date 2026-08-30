@@ -8,6 +8,9 @@ import Icon from "../components/Icon";
 import useLiveChat from "../lib/useLiveChat";
 import { unifiedSearchRequestOptions } from "../domain/unifiedSearch.mjs";
 import { accountTargetScope, scopedScreenValue } from "../domain/screenScope.mjs";
+import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
+import useScopedRefresh from "../hooks/useScopedRefresh";
+import { refreshScope } from "../domain/scopedRefresh.mjs";
 
 const EMPTY_PEOPLE_SEARCH = Object.freeze({ status: "idle", rows: [], error: "" });
 
@@ -32,6 +35,12 @@ export default function InboxScreen({ onClose, onOpenThread }) {
     ({ signal }) => loadInboxThreads({ signal }),
     { channelKey: `inbox:${chatAuthEpoch}:${session?.id || "guest"}`, enabled: !!session, intervalMs: 8000 },
   );
+  const inboxRefreshScope = refreshScope(session?.id, "inbox", chatAuthEpoch);
+  const { refresh: refreshInbox, refreshing: inboxRefreshing } = useScopedRefresh({
+    scope: inboxRefreshScope,
+    enabled: !!session,
+    task: ({ signal }) => loadInboxThreads({ signal, strict: true }),
+  });
 
   useEffect(() => {
     const controller = new AbortController();
@@ -146,6 +155,12 @@ export default function InboxScreen({ onClose, onOpenThread }) {
         </View>
       )}
 
+      <VinylRefreshBoundary
+        refreshing={inboxRefreshing}
+        onRefresh={refreshInbox}
+        accessibilityLabel="Refresh inbox"
+        enabled={!!session}
+      >
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         {!session && <Text style={styles.empty}>Log in to message people.</Text>}
 
@@ -163,6 +178,7 @@ export default function InboxScreen({ onClose, onOpenThread }) {
 
         {threads.map(Row)}
       </ScrollView>
+      </VinylRefreshBoundary>
     </View>
   );
 }

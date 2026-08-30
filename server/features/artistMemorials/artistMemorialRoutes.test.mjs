@@ -133,6 +133,8 @@ function routeFixture({
   at = NOW,
   recordModerationAction,
   resolveArtist,
+  deathWatchService,
+  logger,
 } = {}) {
   const database = createDatabase();
   const calls = { admins: 0, safeText: [], limits: [], audits: [] };
@@ -158,6 +160,8 @@ function routeFixture({
       status: "dissolved",
       endYear: 2024,
     })),
+    deathWatchService,
+    logger,
   });
   return {
     database,
@@ -277,6 +281,18 @@ test("service owns draft, publish, edit, restart, and permanent-marker semantics
     assert.equal(published.memorial.spotlightStartedAt, publishedAt);
     assert.equal(ARTIST_MEMORIAL_SPOTLIGHT_DAYS, 90);
     assert.equal(published.memorial.spotlightEndsAt, publishedAt + ARTIST_MEMORIAL_SPOTLIGHT_MS);
+
+    const draftRegression = service.upsert(command({ status: "draft" }), {
+      artistKey: "the artist",
+      artistName: "The Artist",
+      artistMbid: ARTIST_MBID,
+      at: publishedAt + 1,
+      audit: (entry) => audit.push(entry),
+    });
+    assert.equal(draftRegression.ok, false);
+    assert.equal(draftRegression.field, "status");
+    assert.match(draftRegression.message, /permanent/u);
+    assert.equal(repository.findByArtistKey("the artist").status, "published");
 
     const publicMemorial = service.readPublic({
       artistKey: "the artist", artistMbid: ARTIST_MBID, at: publishedAt + DAY_MS,
@@ -487,6 +503,16 @@ test("routes require admin plus an exact MBID catalog row and audit no prose, UR
       () => routes["PUT /api/admin/artist-memorials/:key"](context({
         user: { id: "u_admin", role: "admin" },
         params: { key: "the%20artist" },
+        body: command({ status: "draft" }),
+      })),
+      (error) => error.status === 400 && error.code === "VALIDATION_FAILED" && /permanent/u.test(error.message),
+    );
+    assert.equal(database.prepare("SELECT status FROM artist_memorials WHERE artist_key=?").get("the artist").status, "published");
+
+    assert.throws(
+      () => routes["PUT /api/admin/artist-memorials/:key"](context({
+        user: { id: "u_admin", role: "admin" },
+        params: { key: "the%20artist" },
         body: command({ expectedArtistMbid: REASSIGNED_MBID }),
       })),
       (error) => error.status === 409 && error.code === "CONFLICT" && /changed since you selected/u.test(error.message),
@@ -507,6 +533,32 @@ test("routes require admin plus an exact MBID catalog row and audit no prose, UR
       })),
       (error) => error.status === 409 && error.code === "CONFLICT" && /different MusicBrainz identity/u.test(error.message),
     );
+  } finally {
+    database.close();
+  }
+});
+
+test("a published memorial succeeds when private alert reconciliation is temporarily unavailable", () => {
+  const errors = [];
+  const { database, routes } = routeFixture({
+    deathWatchService: {
+      markMemorialized() {
+        throw Object.assign(new Error("database busy"), { code: "SQLITE_BUSY" });
+      },
+    },
+    logger: { error: (...args) => errors.push(args) },
+  });
+  try {
+    const saved = routes["PUT /api/admin/artist-memorials/:key"](context({
+      user: { id: "u_admin", role: "admin" },
+      params: { key: "the%20artist" },
+      body: command(),
+    }));
+    assert.equal(saved.memorial.status, "published");
+    assert.equal(database.prepare("SELECT status FROM artist_memorials WHERE artist_key=?")
+      .get("the artist").status, "published");
+    assert.equal(errors.length, 1);
+    assert.deepEqual(errors[0][1], { artistKey: "the artist", errorCode: "SQLITE_BUSY" });
   } finally {
     database.close();
   }

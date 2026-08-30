@@ -163,12 +163,15 @@ export default function LogScreen({
     ? drafts.find((draft) => draft?.id === initialDraftId) || null
     : null);
   const [draftRestoreReady, setDraftRestoreReady] = useState(!initialRecoveryDraftRef.current);
-  // Two kinds of post share this composer: a full show review, or a plain
-  // status update ("post whatever": text and/or photos, no artist/rating).
+  // A memorial memory uses the lightweight status composer while retaining one
+  // server-verified artist identity and never opening the rating controls.
   const [postType, setPostType] = useState(
-    editing ? (editing.kind === "status" ? "status" : "show") : (prefill?.artist ? "show" : defaultMode === "campaign" ? "status" : defaultMode)
+    editing ? (editing.kind === "status" ? "status" : "show")
+      : defaultMode === "memory" && prefill?.artist ? "memory"
+        : prefill?.artist ? "show" : defaultMode === "campaign" ? "status" : defaultMode
   );
-  const isStatus = postType === "status";
+  const isMemorialMemory = postType === "memory";
+  const isStatus = postType === "status" || isMemorialMemory;
   const artistCampaignAllowed = user?.role === "artist" && !!String(user?.artistName || "").trim();
   const [campaign, setCampaign] = useState(() => {
     const existing = editing?.kind === "status" ? normalizeArtistCampaign(editing?.campaign) : null;
@@ -1080,7 +1083,8 @@ export default function LogScreen({
       if (isStatus) {
         const result = await onPost?.({
           id: submissionIdRef.current,
-          kind: "status",
+          kind: isMemorialMemory ? "memory" : "status",
+          ...(isMemorialMemory ? { artist: artist.trim(), artistKey } : {}),
           user: editing?.user || (user
             ? { name: user.name, handle: user.handle, initials: user.initials }
             : { name: "You", handle: "you", initials: "YOU" }),
@@ -1155,11 +1159,11 @@ export default function LogScreen({
 
   return (
     <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-      <SheetHeader title={editing ? (isCampaign ? "Edit featured post" : "Edit post") : isCampaign ? "New featured post" : isStatus ? "New post" : "Log a show"} onClose={onCancel} leadDisabled={submitBusy} action={{ label: posting ? (editing ? "Saving..." : "Posting...") : uploadingPhotos ? "Uploading..." : resolvingSong ? "Checking..." : editing ? "Save" : "Post", onPress: submit, disabled: !canPost || submitBusy }} />
+      <SheetHeader title={editing ? (isCampaign ? "Edit featured post" : "Edit post") : isMemorialMemory ? "Share a fan memory" : isCampaign ? "New featured post" : isStatus ? "New post" : "Log a show"} onClose={onCancel} leadDisabled={submitBusy} action={{ label: posting ? (editing ? "Saving..." : "Posting...") : uploadingPhotos ? "Uploading..." : resolvingSong ? "Checking..." : editing ? "Save" : "Post", onPress: submit, disabled: !canPost || submitBusy }} />
 
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         {!!postError && <View style={styles.postErrorBox}><Icon name="flag" size={14} color={colors.danger} /><Text style={styles.postErrorTxt}>{postError}</Text></View>}
-        {!editing && (
+        {!editing && !isMemorialMemory && (
           <View style={styles.modeRow}>
             <Pressable style={[styles.modeBtn, isStatus && !isCampaign && styles.modeBtnOn]} onPress={() => { setPostType("status"); setCampaign(null); }} accessibilityRole="button" accessibilityState={{ selected: isStatus && !isCampaign }} accessibilityLabel="Create a regular post">
               <Icon name="edit" size={15} color={isStatus && !isCampaign ? "#1A1206" : colors.textDim} />
@@ -1199,6 +1203,15 @@ export default function LogScreen({
 
         {isStatus ? (
           <>
+          {isMemorialMemory ? (
+            <View style={styles.memorialMemoryNotice} accessible accessibilityLabel={`Fan memory for ${artist}. No rating will be added.`}>
+              <Icon name="dove" size={19} color={colors.gold} strokeWidth={1.6} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.memorialMemoryTitle}>A fan memory for {artist}</Text>
+                <Text style={styles.memorialMemoryText}>Share words, photos, or video. This stays a social post and never becomes a live rating.</Text>
+              </View>
+            </View>
+          ) : null}
           <View style={[styles.composerCard, isCampaign && styles.campaignComposerCard]}>
             <View style={styles.authorRow}>
               <Avatar user={user || { name: "You", initials: "YOU" }} size={44} />
@@ -1212,7 +1225,7 @@ export default function LogScreen({
             </View>
             <TextInput
               style={styles.statusBox}
-              placeholder="Write about music, a show, or what you plan to see next..."
+              placeholder={isMemorialMemory ? `What do you remember about ${artist}?` : "Write about music, a show, or what you plan to see next..."}
               placeholderTextColor={colors.textFaint}
               value={review}
               onChangeText={setReview}
@@ -1716,6 +1729,9 @@ const styles = StyleSheet.create({
   publicChip: { flexDirection: "row", alignItems: "center", alignSelf: "flex-start", gap: 4, marginTop: 3, paddingHorizontal: 8, paddingVertical: 3, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.bgElev },
   publicTxt: { color: colors.textDim, fontFamily: mono, fontSize: 9.5, fontWeight: "800", letterSpacing: 0.6 },
   statusBox: { minHeight: 120, textAlignVertical: "top", fontSize: 17, lineHeight: 24, color: colors.text, padding: 0 },
+  memorialMemoryNotice: { flexDirection: "row", alignItems: "center", gap: 11, marginBottom: 12, padding: 13, borderRadius: radius.md, borderWidth: 1, borderColor: `${colors.gold}66`, backgroundColor: `${colors.gold}0D` },
+  memorialMemoryTitle: { color: colors.text, fontSize: 14, fontWeight: "900" },
+  memorialMemoryText: { color: colors.textDim, fontSize: 11.5, lineHeight: 17, marginTop: 2 },
   campaignStudio: { marginTop: 12, padding: 14, borderRadius: radius.lg, borderCurve: "continuous", borderWidth: 1, backgroundColor: colors.bgElev, ...shadow.card },
   campaignStudioHead: { flexDirection: "row", alignItems: "center", gap: 10 },
   campaignStudioIcon: { width: 38, height: 38, borderRadius: 19, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(242,166,90,0.12)", borderWidth: 1, borderColor: "rgba(242,166,90,0.34)" },

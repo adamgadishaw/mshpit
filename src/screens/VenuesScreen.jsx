@@ -5,14 +5,18 @@ import { useStore } from "../store";
 import ScreenHeader from "../components/ScreenHeader";
 import Icon from "../components/Icon";
 import { VenueDiscoveryCard } from "../components/VenueDiscoveryCards";
+import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import { venueDirectoryTotals, venueHomePlaceId } from "../domain/venueDiscovery.mjs";
 import { discoverRowMatchesRegion } from "../domain/discoverScene.mjs";
+import { refreshScope } from "../domain/scopedRefresh.mjs";
 import { countryForCity } from "../geo";
+import useScopedRefresh from "../hooks/useScopedRefresh";
 
 export default function VenuesScreen({ initialRegion = "Worldwide", onClose, onOpenVenue }) {
-  const { venuesByCity, searchVenues, session, tourDates } = useStore();
+  const { venuesByCity, searchVenues, session, tourDates, refreshTourDates } = useStore();
   const [q, setQ] = useState("");
   const [city, setCity] = useState(null); // complete place identity, not ambiguous city text
+  const [refreshError, setRefreshError] = useState(false);
   const query = q.trim();
   // The core catalog is static, but upcoming dates hydrate after mount. Rebuild
   // only when that source changes so counts/order cannot remain stuck at zero.
@@ -37,6 +41,16 @@ export default function VenuesScreen({ initialRegion = "Worldwide", onClose, onO
   const mode = query ? "search" : selected ? "city" : "cities";
   const data = mode === "search" ? venueResults : mode === "city" ? selected.venues : cityList;
   const title = mode === "search" ? "Venue search" : selected?.city || (region === "Worldwide" ? "Find venues" : `Venues in ${region}`);
+  const venueRefreshTarget = [region, city || "all", query || "browse"].join(":");
+  const venueRefreshScope = refreshScope(session?.id, "venue-directory", venueRefreshTarget);
+  const { refresh: refreshVenues, refreshing: venuesRefreshing } = useScopedRefresh({
+    scope: venueRefreshScope,
+    task: async ({ signal }) => {
+      setRefreshError(false);
+      return refreshTourDates({ signal });
+    },
+    onError: () => setRefreshError(true),
+  });
 
   const goBack = () => {
     if (query) setQ("");
@@ -78,6 +92,11 @@ export default function VenuesScreen({ initialRegion = "Worldwide", onClose, onO
   return (
     <View style={styles.wrap}>
       <ScreenHeader kicker="VENUES" title={title} onBack={goBack} />
+      <VinylRefreshBoundary
+        refreshing={venuesRefreshing}
+        onRefresh={refreshVenues}
+        accessibilityLabel="Refresh venues and upcoming shows"
+      >
       <FlatList
         key={mode}
         data={data}
@@ -93,6 +112,9 @@ export default function VenuesScreen({ initialRegion = "Worldwide", onClose, onO
         windowSize={7}
         ListHeaderComponent={(
           <View style={styles.headerContent}>
+            {refreshError ? (
+              <Text style={styles.refreshError} accessibilityRole="alert">Venues could not refresh. Your current city, search, and results are unchanged.</Text>
+            ) : null}
             {mode === "cities" ? (
               <View style={styles.hero}>
                 <View style={styles.heroGlow} />
@@ -157,6 +179,7 @@ export default function VenuesScreen({ initialRegion = "Worldwide", onClose, onO
           </View>
         )}
       />
+      </VinylRefreshBoundary>
     </View>
   );
 }
@@ -178,6 +201,7 @@ const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: colors.bg },
   content: { width: "100%", maxWidth: 980, alignSelf: "center", paddingHorizontal: 16, paddingBottom: 56 },
   headerContent: { gap: 16, paddingTop: 12, paddingBottom: 14 },
+  refreshError: { color: colors.danger, fontSize: 12.5, lineHeight: 18 },
   hero: { minHeight: 250, justifyContent: "flex-end", overflow: "hidden", padding: 24, borderRadius: radius.lg, borderCurve: "continuous", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, ...shadow.card },
   heroGlow: { position: "absolute", width: 300, height: 300, borderRadius: 150, top: -170, right: -55, backgroundColor: colors.amber, opacity: 0.13, ...Platform.select({ web: { filter: "blur(12px)" } }) },
   eyebrow: { color: colors.amber, fontFamily: mono, fontSize: 10, fontWeight: "900", letterSpacing: 1.8 },

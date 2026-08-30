@@ -132,13 +132,13 @@ test("memorial writes and reads never create or change product analytics", () =>
     routes["PUT /api/admin/artist-memorials/:key"](context({
       user: admin,
       params: { key: "the%20artist" },
-      body: command({ status: "draft" }),
+      body: command({ summary: `${command().summary} Updated once.` }),
     }));
     clock += 1;
     routes["PUT /api/admin/artist-memorials/:key"](context({
       user: admin,
       params: { key: "the%20artist" },
-      body: command(),
+      body: command({ summary: `${command().summary} Updated twice.` }),
     }));
 
     assert.deepEqual(analyticsSnapshot(database), before);

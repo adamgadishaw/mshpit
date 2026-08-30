@@ -137,7 +137,13 @@ export function createPublicDocumentRepository(database, { venueReviews = null }
     WHERE ap.artist_key=? AND ap.removed=0 AND ${activeAccountSql("owner")} LIMIT 1`);
   const artistReviews = database.prepare(`SELECT ${PUBLIC_POST_COLUMNS}
     FROM posts p JOIN users u ON u.id=p.user_id
-    WHERE p.removed=0 AND COALESCE(p.kind,'review')='review'
+    WHERE p.removed=0 AND (COALESCE(p.kind,'review')='review' OR (
+        p.kind='status' AND p.artist_key IS NOT NULL AND p.artist_mbid IS NOT NULL AND p.overall=0
+        AND EXISTS (SELECT 1 FROM artist_memorials memory_memorial
+          WHERE memory_memorial.artist_key=p.artist_key
+            AND lower(memory_memorial.artist_mbid)=lower(p.artist_mbid)
+            AND memory_memorial.status='published')
+      ))
       AND (LENGTH(TRIM(COALESCE(p.review,'')))>=40 OR (
         p.photos_public=1 AND EXISTS (SELECT 1 FROM post_media media WHERE media.post_id=p.id)
       ))
@@ -148,8 +154,16 @@ export function createPublicDocumentRepository(database, { venueReviews = null }
   const artistReviewStats = database.prepare(`SELECT COUNT(*) AS review_count,AVG(CASE WHEN p.overall BETWEEN 1 AND 5 THEN p.overall END) AS average_rating,
       MAX(COALESCE(p.updated_at,p.created_at)) AS latest_at
     FROM posts p JOIN users u ON u.id=p.user_id
-    WHERE p.removed=0 AND COALESCE(p.kind,'review')='review'
-      AND LENGTH(TRIM(COALESCE(p.review,'')))>=40
+    WHERE p.removed=0 AND (COALESCE(p.kind,'review')='review' OR (
+        p.kind='status' AND p.artist_key IS NOT NULL AND p.artist_mbid IS NOT NULL AND p.overall=0
+        AND EXISTS (SELECT 1 FROM artist_memorials memory_memorial
+          WHERE memory_memorial.artist_key=p.artist_key
+            AND lower(memory_memorial.artist_mbid)=lower(p.artist_mbid)
+            AND memory_memorial.status='published')
+      ))
+      AND (LENGTH(TRIM(COALESCE(p.review,'')))>=40 OR (
+        p.photos_public=1 AND EXISTS (SELECT 1 FROM post_media media WHERE media.post_id=p.id)
+      ))
       AND ${artistPostIdentity("p")} AND ${activeAccountSql("u")}`);
   const artistUpdates = database.prepare(`SELECT post.id,post.user_id,post.text,post.created_at,
       author.name AS u_name,author.handle AS u_handle

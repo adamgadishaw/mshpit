@@ -10,6 +10,9 @@ import { isCurrentNotificationPostRequest, normalizeFetchedNotificationPost, not
 import { bundleNotifications } from "../domain/notification-bundles.mjs";
 import { accountTargetScope } from "../domain/screenScope.mjs";
 import { postTagNotificationCopy, postTagNotificationPhrase } from "../domain/postTagNotification.mjs";
+import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
+import useScopedRefresh from "../hooks/useScopedRefresh";
+import { refreshScope } from "../domain/scopedRefresh.mjs";
 
 const ago = (ts) => {
   const s = Math.max(1, Math.floor((Date.now() - ts) / 1000));
@@ -41,7 +44,7 @@ function notificationCopy(notification, actorName) {
 // The activity feed, the social heartbeat that connects follows, likes, comments
 // and DMs into one place instead of leaving them scattered across the app.
 export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThread, onOpen, onOpenPost }) {
-  const { myNotifications, markNotificationsRead, feed, session } = useStore();
+  const { myNotifications, refreshNotifications, markNotificationsRead, feed, session } = useStore();
   const items = myNotifications();
   const accountId = session?.id || null;
   const accountIdRef = useRef(accountId);
@@ -61,10 +64,17 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
     ? bundles.map((bundle) => ({ key: bundle.id, notification: bundle.primary, bundle }))
     : items.map((notification) => ({ key: notification.id, notification, bundle: null }));
 
-  const readCurrentNotifications = async () => {
-    if (!accountIdRef.current || notificationReadRequestRef.current.controller) return;
+  const readCurrentNotifications = async ({ signal: externalSignal, replace = false } = {}) => {
+    if (!accountIdRef.current) return null;
+    if (notificationReadRequestRef.current.controller) {
+      if (!replace) return null;
+      notificationReadRequestRef.current.controller.abort();
+    }
     const scope = accountTargetScope(accountIdRef.current, "notifications:read");
     const controller = new AbortController();
+    const abortFromParent = () => controller.abort(externalSignal?.reason);
+    if (externalSignal?.aborted) abortFromParent();
+    else externalSignal?.addEventListener("abort", abortFromParent, { once: true });
     const operation = {
       sequence: notificationReadRequestRef.current.sequence + 1,
       scope,
@@ -75,16 +85,19 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
     try {
       const result = await markNotificationsRead({ signal: controller.signal });
       if (notificationReadRequestRef.current !== operation
-        || accountTargetScope(accountIdRef.current, "notifications:read") !== scope) return;
+        || accountTargetScope(accountIdRef.current, "notifications:read") !== scope) return null;
       setNotificationReadState(result.ok
         ? { scope, status: "ready", error: null }
         : { scope, status: "error", error: result.error });
+      return result;
     } catch (error) {
       if (!controller.signal.aborted && notificationReadRequestRef.current === operation
         && accountTargetScope(accountIdRef.current, "notifications:read") === scope) {
         setNotificationReadState({ scope, status: "error", error });
       }
+      return controller.signal.aborted ? null : false;
     } finally {
+      externalSignal?.removeEventListener("abort", abortFromParent);
       if (notificationReadRequestRef.current === operation) {
         notificationReadRequestRef.current = { ...operation, controller: null };
       }
@@ -112,6 +125,19 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
     setOpeningNotificationId(null);
     setUnavailableNotice(null);
   }, [accountId]);
+
+  const activityRefreshScope = refreshScope(accountId, "activity");
+  const { refresh: refreshActivity, refreshing: activityRefreshing } = useScopedRefresh({
+    scope: activityRefreshScope,
+    enabled: !!accountId,
+    task: async ({ signal }) => {
+      const rows = await refreshNotifications({ signal, accountId });
+      if (rows === false) throw new Error("Activity could not be refreshed.");
+      if (signal.aborted || rows == null) return { stale: true };
+      const readResult = await readCurrentNotifications({ signal, replace: true });
+      return { rows, readResult };
+    },
+  });
 
   // Tapping the ROW goes to the thing the notification is about; tapping the
   // AVATAR always goes to the person who did it.
@@ -171,6 +197,12 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
   return (
     <View style={styles.wrap}>
       <ScreenHeader kicker="SOCIAL" title="Activity" onBack={onClose} />
+      <VinylRefreshBoundary
+        refreshing={activityRefreshing}
+        onRefresh={refreshActivity}
+        accessibilityLabel="Refresh activity"
+        enabled={!!accountId}
+      >
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         {scopedNotificationReadState.status === "error" && (
           <View style={styles.readNotice} accessibilityRole="alert" accessibilityLiveRegion="assertive">
@@ -272,6 +304,7 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
           );
         })}
       </ScrollView>
+      </VinylRefreshBoundary>
     </View>
   );
 }

@@ -78,12 +78,13 @@ test("the Store scopes viewer-derived caches and projects discovery at render ti
   assert.match(source, /const discoverySidebar = scopedDiscoverySidebarResource\.data/);
   assert.match(source, /setDiscoverySidebarResource\(\(current\) => beginLoadState\(current, \{/);
   assert.match(source, /setDiscoverySidebarResource\(resolveLoadState\(\{ scope: requestScope, data: next \}\)\)/);
-  const feedRefreshStart = source.indexOf("// Keep the public feed fresh");
+  const feedRefreshStart = source.indexOf("// Load once for the confirmed account scope.");
   const feedRefreshEnd = source.indexOf("// Canonical server snapshot", feedRefreshStart);
   assert.ok(feedRefreshStart >= 0 && feedRefreshEnd > feedRefreshStart);
   const feedRefresh = source.slice(feedRefreshStart, feedRefreshEnd);
   assert.match(feedRefresh, /if \(!authReady\) return undefined;/, "feed startup must wait for the cookie identity handshake");
   assert.match(feedRefresh, /\}, \[authReady, session\?\.id\]\);/, "auth readiness must restart the feed exactly once in its confirmed scope");
+  assert.doesNotMatch(feedRefresh, /setInterval|setTimeout|AppState|visibilitychange/, "feed freshness must remain deliberate rather than polling on focus");
   const sidebarStart = source.indexOf("// The server ranks real provider dates");
   const sidebarEnd = source.indexOf("// --- Privacy-safe first-party product analytics", sidebarStart);
   assert.ok(sidebarStart >= 0 && sidebarEnd > sidebarStart);

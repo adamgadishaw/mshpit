@@ -20,6 +20,9 @@ import { selectConcertReviews, selectProfileTimeline } from "../domain/profileTi
 import { memberCalendarModel } from "../domain/calendarShows.mjs";
 import { useProfileHistory } from "../features/profileHistory/useProfileHistory";
 import useAppActive from "../lib/useAppActive";
+import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
+import useScopedRefresh from "../hooks/useScopedRefresh";
+import { refreshScope } from "../domain/scopedRefresh.mjs";
 
 const EMPTY_PROFILE_STATE = Object.freeze({ status: "loading", user: null, error: "" });
 
@@ -74,7 +77,12 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenProfi
   const user = profileView.status === "missing" || !mayRenderProfile
     ? null
     : session?.id === userId ? { ...cachedUser, ...session } : cachedUser;
-  useEffect(() => { if (userId) loadRewards(userId); }, [userId]);
+  useEffect(() => {
+    if (!userId) return undefined;
+    const controller = new AbortController();
+    void loadRewards(userId, { signal: controller.signal });
+    return () => controller.abort();
+  }, [userId]);
   // Always refresh from the server: fills real follower counts, and makes profiles
   // we've never cached (a follower from a notification) open instead of blanking.
   useEffect(() => {
@@ -107,6 +115,36 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenProfi
     return () => controller.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profileScope, profileRevision, userId]);
+  const profileRefreshScope = refreshScope(session?.id, "profile", userId);
+  const { refresh: refreshProfile, refreshing: profileRefreshing } = useScopedRefresh({
+    scope: profileRefreshScope,
+    enabled: !!userId,
+    task: async ({ signal }) => {
+      const requestScope = profileScope;
+      const [outcome, historyOutcome, rewards] = await Promise.all([
+        loadUser(userId, { signal }),
+        history.retry(),
+        loadRewards(userId, { signal }),
+      ]);
+      if (signal.aborted || profileScopeRef.current !== requestScope) return { stale: true };
+      setProfileState({
+        scope: requestScope,
+        value: {
+          status: outcome?.status || "error",
+          user: outcome?.user || null,
+          error: typeof outcome?.error === "string"
+            ? outcome.error
+            : outcome?.error?.message || "",
+        },
+      });
+      if (outcome?.status === "error") {
+        throw outcome?.error instanceof Error
+          ? outcome.error
+          : new Error(outcome?.error || "This profile could not be refreshed.");
+      }
+      return { outcome, historyOutcome, rewards };
+    },
+  });
   if (!user) {
     const missing = profileView.status === "missing";
     const failed = profileView.status === "error";
@@ -208,6 +246,11 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenProfi
         ) : <View style={{ width: 40 }} />}
       </View>
 
+      <VinylRefreshBoundary
+        refreshing={profileRefreshing}
+        onRefresh={refreshProfile}
+        accessibilityLabel={`Refresh ${user.name || "member"} profile`}
+      >
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         {profileView.status === "stale" && (
           <View style={styles.staleProfile} accessibilityRole="alert" accessibilityLiveRegion="polite">
@@ -448,6 +491,7 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenProfi
         )}
 
       </ScrollView>
+      </VinylRefreshBoundary>
     </View>
   );
 }

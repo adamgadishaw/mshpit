@@ -9,10 +9,12 @@ import { feedFilterStorageKey, feedFooterState, normalizeFeedFilter } from "../d
 import { nextVisibleMediaPostIds } from "../domain/posterVisibility.mjs";
 import { JOURNEY_TAGLINE } from "../domain/menuJourney.mjs";
 import { HOME_JOURNEY_LINE, homeGuideStorageKey } from "../domain/homeJourney.mjs";
+import HomeShowCountdown from "../components/HomeShowCountdown";
+import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 
 const PAGE = 8; // load the feed in pages, like the big apps - never all at once
 
-export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, accountId = null, homeCity, unread = 0, notifUnread = 0, newUser = false, hideHeaderActions = false, onLoadMore, hasMore = false, loadingMore = false, onOpen, onImpression, onDwell, onNotInterested, onUndoNotInterested, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onOpenNearby, onOpenInbox, onOpenNotifications, onOpenMenu, onOpenClips, onReport, onEdit, onOpenPhotos, onPlay, onRemoveMyPostTag, onLogShow, onOpenDiscover }) {
+export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, accountId = null, homeCity, unread = 0, notifUnread = 0, newUser = false, hideHeaderActions = false, onRefresh, onLoadMore, hasMore = false, loadingMore = false, countdownPlan = null, showHomeCountdown = false, onOpenCountdown, onViewAllCountdown, onOpen, onImpression, onDwell, onNotInterested, onUndoNotInterested, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onOpenNearby, onOpenInbox, onOpenNotifications, onOpenMenu, onOpenClips, onReport, onEdit, onOpenPhotos, onPlay, onRemoveMyPostTag, onLogShow, onOpenDiscover }) {
   const { width } = useWindowDimensions();
   const phone = width < 700;
   const filterScope = feedFilterStorageKey(accountId);
@@ -30,6 +32,9 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
   const [undoBusy, setUndoBusy] = useState(false);
   const [undoError, setUndoError] = useState(null);
   const [visibleMediaPostIds, setVisibleMediaPostIds] = useState(() => new Set());
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState(false);
+  const refreshControllerRef = useRef(null);
   const guideScope = homeGuideStorageKey(accountId);
   const [guideState, setGuideState] = useState(() => ({ scope: guideScope, dismissed: load(guideScope, false) }));
   const guideDismissed = guideState.scope === guideScope ? guideState.dismissed : load(guideScope, false);
@@ -48,6 +53,10 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
   analyticsRef.current = { surface, onImpression, onDwell };
 
   useEffect(() => {
+    refreshControllerRef.current?.abort();
+    refreshControllerRef.current = null;
+    setRefreshing(false);
+    setRefreshError(false);
     setFilterState((current) => current.scope === filterScope
       ? current
       : { scope: filterScope, value: normalizeFeedFilter(load(filterScope, "everyone"), { loggedIn }) });
@@ -56,6 +65,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
     setUndoError(null);
     setVisibleMediaPostIds(new Set());
     setGuideState({ scope: guideScope, dismissed: load(guideScope, false) });
+    return () => refreshControllerRef.current?.abort();
   }, [filterScope, guideScope, loggedIn]);
 
   const onViewableItemsChanged = useRef(({ changed }) => {
@@ -156,10 +166,39 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
       setUndoBusy(false);
     }
   };
+  const refresh = async () => {
+    if (refreshControllerRef.current || !onRefresh) return false;
+    const controller = new AbortController();
+    refreshControllerRef.current = controller;
+    setRefreshing(true);
+    setRefreshError(false);
+    try {
+      const result = await onRefresh({ signal: controller.signal });
+      if (controller.signal.aborted || refreshControllerRef.current !== controller) return false;
+      const failed = result === false || result == null;
+      setRefreshError(failed);
+      return !failed;
+    } catch {
+      // architecture: allow-ambiguous-result -- this UI refresh keeps the current feed visible and reports its optional revalidation failure in place
+      if (!controller.signal.aborted && refreshControllerRef.current === controller) setRefreshError(true);
+      return false;
+    } finally {
+      if (refreshControllerRef.current === controller) {
+        refreshControllerRef.current = null;
+        setRefreshing(false);
+      }
+    }
+  };
 
   // Concert cards are tall and media-heavy. Stage them gently on phones so
   // image decoding and comment-preview mounts do not all hit one frame.
   return (
+    <VinylRefreshBoundary
+      refreshing={refreshing}
+      onRefresh={refresh}
+      accessibilityLabel="Refresh your feed"
+      testID="feed-refresh"
+    >
     <FlatList
       data={data}
       extraData={visibleMediaPostIds}
@@ -199,6 +238,22 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
             </View>}
           </View>
           <Text style={styles.tag}>{JOURNEY_TAGLINE}</Text>
+
+          {refreshing || refreshError ? (
+            <Text
+              style={[styles.refreshStatus, refreshError && styles.refreshStatusError]}
+              accessibilityLiveRegion={refreshError ? "assertive" : "polite"}
+              accessibilityRole={refreshError ? "alert" : "text"}
+            >
+              {refreshing ? "Refreshing your feed…" : "The feed could not refresh. Pull down to try again."}
+            </Text>
+          ) : null}
+
+          {loggedIn && showHomeCountdown && countdownPlan ? (
+            <View style={styles.countdownTop}>
+              <HomeShowCountdown plan={countdownPlan} onOpen={onOpenCountdown} onViewAll={onViewAllCountdown} />
+            </View>
+          ) : null}
 
           {loggedIn && (
             <Pressable style={styles.nearBtn} onPress={onOpenNearby}>
@@ -281,30 +336,40 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
           </View>
         </View>
       }
-      ListFooterComponent={footer.kind === "reveal" || footer.kind === "fetch" || footer.kind === "loading" ? (
-        <Pressable
-          style={[styles.olderBtn, filteredPageLoading && styles.olderBtnOff]}
-          onPress={advanceFeed}
-          disabled={filteredPageLoading}
-          accessibilityRole="button"
-          accessibilityLabel={footer.label}
-          accessibilityState={{ disabled: filteredPageLoading }}
-        >
-          <Text style={styles.olderTxt}>{footer.label}</Text>
-        </Pressable>
-      ) : footer.kind === "caught-up" ? (
-        <View style={styles.caughtUp} accessibilityRole="summary">
-          <Icon name="check" size={17} color={colors.good} />
-          <View style={{ flex: 1 }}>
-            <Text style={styles.caughtTitle}>You're caught up</Text>
-            <Text style={styles.caughtSub}>Pit will keep your place. Come back when the community has something new.</Text>
-          </View>
+      ListFooterComponent={(
+        <View>
+          {footer.kind === "reveal" || footer.kind === "fetch" || footer.kind === "loading" ? (
+            <Pressable
+              style={[styles.olderBtn, filteredPageLoading && styles.olderBtnOff]}
+              onPress={advanceFeed}
+              disabled={filteredPageLoading}
+              accessibilityRole="button"
+              accessibilityLabel={footer.label}
+              accessibilityState={{ disabled: filteredPageLoading }}
+            >
+              <Text style={styles.olderTxt}>{footer.label}</Text>
+            </Pressable>
+          ) : footer.kind === "caught-up" ? (
+            <View style={styles.caughtUp} accessibilityRole="summary">
+              <Icon name="check" size={17} color={colors.good} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.caughtTitle}>You're caught up</Text>
+                <Text style={styles.caughtSub}>Pit will keep your place. Come back when the community has something new.</Text>
+              </View>
+            </View>
+          ) : null}
+          {loggedIn && showHomeCountdown && !countdownPlan ? (
+            <View style={styles.countdownBottom}>
+              <HomeShowCountdown compact onFindShow={onOpenDiscover} />
+            </View>
+          ) : null}
         </View>
-      ) : null}
+      )}
       renderItem={({ item, index: itemIndex }) => (
         <TicketStub log={item} mediaViewable={visibleMediaPostIds.has(String(item.id)) ? true : null} onOpen={(_unused) => onOpen?.(item, { surface, position: itemIndex })} onOpenShow={(show) => onOpen?.(show, { surface, position: itemIndex })} onNotInterested={surface === "everyone" && item.recommendation ? hideRecommendation : undefined} onComment={onComment} onPreview={onPreview} onOpenProfile={onOpenProfile} onOpenArtist={onOpenArtist} onOpenArtistArchive={onOpenArtistArchive} onOpenVenue={onOpenVenue} onReport={onReport} onEdit={onEdit} onOpenPhotos={onOpenPhotos} onPlay={onPlay} onRemoveMyPostTag={onRemoveMyPostTag} />
       )}
     />
+    </VinylRefreshBoundary>
   );
 }
 
@@ -372,6 +437,10 @@ const styles = StyleSheet.create({
   inboxBadge: { position: "absolute", top: -2, right: -2, minWidth: 18, height: 18, borderRadius: 9, backgroundColor: colors.magenta, alignItems: "center", justifyContent: "center", paddingHorizontal: 5, borderWidth: 2, borderColor: colors.bg },
   inboxBadgeTxt: { color: "#fff", fontSize: 10, fontWeight: "800", fontFamily: mono },
   tag: { color: colors.textDim, fontSize: 13, marginTop: 4 },
+  refreshStatus: { color: colors.textDim, fontSize: 11.5, lineHeight: 17, marginTop: 8 },
+  refreshStatusError: { color: colors.danger },
+  countdownTop: { marginTop: 14 },
+  countdownBottom: { marginTop: 20 },
   nearBtn: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: colors.bgElev, borderRadius: 14, borderWidth: 1, borderColor: colors.amber, paddingHorizontal: 14, paddingVertical: 13, marginTop: 16 },
   nearTxt: { flex: 1, color: colors.text, fontSize: 14, fontWeight: "700" },
   nearSub: { color: colors.textDim, fontWeight: "400" },

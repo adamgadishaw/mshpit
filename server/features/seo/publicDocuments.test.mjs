@@ -36,7 +36,7 @@ function createDatabase() {
       )
     );
     CREATE TABLE posts (
-      id TEXT PRIMARY KEY,user_id TEXT NOT NULL,artist TEXT NOT NULL,artist_key TEXT,venue TEXT NOT NULL,
+      id TEXT PRIMARY KEY,user_id TEXT NOT NULL,artist TEXT NOT NULL,artist_key TEXT,artist_mbid TEXT,venue TEXT NOT NULL,
       venue_key TEXT,city TEXT,date TEXT,overall REAL,review TEXT,setlist TEXT NOT NULL DEFAULT '[]',tour TEXT,photos TEXT NOT NULL DEFAULT '[]',
       photos_public INTEGER NOT NULL DEFAULT 0,kind TEXT DEFAULT 'review',removed INTEGER NOT NULL DEFAULT 0,
       like_count INTEGER NOT NULL DEFAULT 0,comment_count INTEGER NOT NULL DEFAULT 0,
@@ -581,12 +581,30 @@ test("canonical artist documents expose only an identity-bound published memoria
   const database = createDatabase();
   try {
     addArtist(database, { bio: "" });
+    addUser(database, "active", { name: "Archive Fan", handle: "archivefan" });
+    addPost(database, {
+      id: "memorial-rated-history",
+      review: "A detailed memory of the songs, the room, and the people who shared that historical concert night.",
+      overall: 4.5,
+      date: "2026-08-20",
+      venue: "Archive Hall",
+    });
     assert.equal(saveMemorial(database, {
       summary: "A generous <script>songwriter</script> whose work gave generations a place to gather and remember.",
       thankYou: "Thank you for the <strong>songs</strong> and the rooms they filled.",
       accomplishments: ["A <b>lasting</b> songbook", "Decades of memorable performances"],
       sourceTitle: "Verified <public> & announcement",
     }).ok, true);
+    addPost(database, {
+      id: "memorial-ratingless-memory",
+      kind: "status",
+      review: "A permanent fan memory about how these songs became part of our lives and brought people together.",
+      overall: 0,
+      date: "",
+      venue: "",
+    });
+    database.prepare("UPDATE posts SET artist_mbid=? WHERE id=?")
+      .run(ARTIST_MBID, "memorial-ratingless-memory");
     database.prepare(`INSERT INTO tour_dates
       (id,artist,artist_key,venue,place,date,ticket_url,source,updated_at,release_at,provider_active)
       VALUES (?,?,?,?,?,?,?,?,?,?,1)`).run(
@@ -606,6 +624,12 @@ test("canonical artist documents expose only an identity-bound published memoria
     const canonical = documents.artistDocument({ artistKey: "alpha", at: NOW });
     const html = documents.render(canonical);
     assert.deepEqual(canonical.events, [], "a memorialized artist has no future tour dates");
+    assert.equal(canonical.stats.averageRating, null, "the memorial profile does not project a live score");
+    assert.equal(canonical.stats.reviewCount, 2, "historical writing and ratingless memories remain visible");
+    assert.equal(canonical.concerts[0].averageRating, null);
+    assert.equal(canonical.concerts[0].ratingCount, null);
+    assert.equal(canonical.concerts[0].reviewCount, 1);
+    assert.equal(canonical.reviews.some((post) => post.id === "memorial-ratingless-memory" && post.kind === "status" && post.rating == null), true);
     assert.equal(documents.eventDocument({ id: "memorial-future", today: "2026-08-25", at: NOW }), null);
     assert.ok(documents.eventDocument({ id: "memorial-past", today: "2026-08-25", at: NOW }),
       "historical event documents remain available");
@@ -633,6 +657,19 @@ test("canonical artist documents expose only an identity-bound published memoria
     assert.match(html, /\\u003cscript\\u003esongwriter\\u003c\/script\\u003e/);
     assert.doesNotMatch(html, /<script>songwriter<\/script>|<strong>songs<\/strong>|<b>lasting<\/b>/);
     assert.doesNotMatch(html, /PRIVATE REVIEWER AND AUDIT MATERIAL|restartSpotlight|spotlightStartedAt/);
+    assert.match(html, /<p class="eyebrow">In memory<\/p>/);
+    assert.match(html, /<h2>Concert history<\/h2>/);
+    assert.match(html, /<h2>Fan memories<\/h2>/);
+    assert.match(html, /A permanent fan memory about how these songs/);
+    assert.doesNotMatch(html, /Live rating|Top-rated concert nights|Top live reviews|Rated 4\.5 out of 5|4\.5<span>\/5<\/span>/);
+
+    const historicalConcert = documents.concertDocument({
+      showKey: canonical.concerts[0].key,
+      today: "2026-08-25",
+      at: NOW,
+    });
+    assert.equal(historicalConcert.concert.averageRating, 4.5,
+      "the exact historical concert retains its real rating outside the memorial profile rollup");
 
     const nonCanonical = documents.artistDocument({
       artistKey: "alpha", canonicalPath: "/alpha", at: NOW,

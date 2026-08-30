@@ -5,6 +5,9 @@ import { useStore } from "../store";
 import Stars from "../components/Stars";
 import Icon from "../components/Icon";
 import SheetHeader from "../components/SheetHeader";
+import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
+import { refreshScope } from "../domain/scopedRefresh.mjs";
+import useScopedRefresh from "../hooks/useScopedRefresh";
 import {
   normalizeTopRatedShows,
   topRatedShowCities,
@@ -13,33 +16,50 @@ import {
 } from "../domain/topRatedShows.mjs";
 
 export default function TopRatedScreen({ initialRegion = "Worldwide", onClose, onOpen }) {
-  const { loadDiscoverOverview } = useStore();
+  const { loadDiscoverOverview, session } = useStore();
   const requestedRegion = String(initialRegion || "Worldwide").trim() || "Worldwide";
   const loaderRef = useRef(loadDiscoverOverview);
   loaderRef.current = loadDiscoverOverview;
-  const requestRef = useRef({ sequence: 0, controller: null });
+  const requestRef = useRef({ sequence: 0 });
   const [resource, setResource] = useState({ status: "loading", rows: [] });
   const [retryRevision, setRetryRevision] = useState(0);
   const [loc, setLoc] = useState("");
 
+  const readTopRated = async ({ signal, force }) => {
+    const sequence = requestRef.current.sequence + 1;
+    requestRef.current = { sequence };
+    setResource((current) => ({ status: current.rows.length ? "refreshing" : "loading", rows: current.rows }));
+    try {
+      const payload = await loaderRef.current({ country: requestedRegion, signal, force });
+      if (signal.aborted || requestRef.current.sequence !== sequence) return { stale: true };
+      const rows = normalizeTopRatedShows(payload?.topRatedShows);
+      setResource({ status: "ready", rows });
+      return rows;
+    } catch (error) {
+      if (!signal.aborted && requestRef.current.sequence === sequence) {
+        setResource((current) => ({ ...current, status: "error" }));
+      }
+      throw error;
+    }
+  };
+  const topRatedRefreshScope = refreshScope(session?.id, "top-rated-shows", requestedRegion);
+  const { refresh: refreshTopRated, refreshing: topRatedRefreshing } = useScopedRefresh({
+    scope: topRatedRefreshScope,
+    task: ({ signal }) => readTopRated({ signal, force: true }),
+  });
+
+  useEffect(() => {
+    setLoc("");
+  }, [requestedRegion]);
+
   useEffect(() => {
     const controller = new AbortController();
-    const sequence = requestRef.current.sequence + 1;
-    requestRef.current.controller?.abort();
-    requestRef.current = { sequence, controller };
-    setLoc("");
-    setResource((current) => ({ status: current.rows.length ? "refreshing" : "loading", rows: current.rows }));
-    loaderRef.current({ country: requestedRegion, signal: controller.signal, force: retryRevision > 0 })
-      .then((payload) => {
-        if (controller.signal.aborted || requestRef.current.sequence !== sequence) return;
-        setResource({ status: "ready", rows: normalizeTopRatedShows(payload?.topRatedShows) });
-      })
-      .catch(() => {
-        if (!controller.signal.aborted && requestRef.current.sequence === sequence) {
-          setResource((current) => ({ ...current, status: "error" }));
-        }
-      });
+    void readTopRated({ signal: controller.signal, force: retryRevision > 0 }).catch(() => {
+      // The resource already retains visible rows and exposes its retry state.
+    });
     return () => controller.abort();
+    // Store actions are intentionally accessed through loaderRef.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [requestedRegion, retryRevision]);
 
   const cityNames = useMemo(() => topRatedShowCities(resource.rows), [resource.rows]);
@@ -63,6 +83,11 @@ export default function TopRatedScreen({ initialRegion = "Worldwide", onClose, o
     <View style={styles.wrap}>
       <SheetHeader title="Top-rated shows" onBack={onClose} />
 
+      <VinylRefreshBoundary
+        refreshing={topRatedRefreshing}
+        onRefresh={refreshTopRated}
+        accessibilityLabel="Refresh top-rated shows"
+      >
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
         <Text style={styles.h1}>{requestedRegion === "Worldwide" ? "Top-rated shows" : `Top-rated shows in ${requestedRegion}`}</Text>
 
@@ -145,6 +170,7 @@ export default function TopRatedScreen({ initialRegion = "Worldwide", onClose, o
           </Text>
         )}
       </ScrollView>
+      </VinylRefreshBoundary>
     </View>
   );
 }

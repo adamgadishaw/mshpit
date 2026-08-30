@@ -10,16 +10,21 @@ import useLiveChat from "../lib/useLiveChat";
 import useChatScroll from "../lib/useChatScroll";
 import { api } from "../lib/api";
 import { accountTargetScope, scopedScreenValue } from "../domain/screenScope.mjs";
+import { normalizeLoungeMeta } from "../domain/showSocial.mjs";
+import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
+import useScopedRefresh from "../hooks/useScopedRefresh";
+import { refreshScope } from "../domain/scopedRefresh.mjs";
 
 const EMPTY_LOUNGE_ACTIONS = Object.freeze({ enteredRoom: null, entering: false, sending: false, text: "" });
 
 // One persistent Lounge belongs to this exact show before, during, and after.
 // Gated: you have to tap in, so conversation reads and polling stay off until
 // the member deliberately enters the room.
-export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfileByHandle, onReport }) {
+export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfileByHandle, onOpenFanClub, onReport }) {
   const {
     session, chatAuthEpoch, concertKey, loungeFor, enterLounge, addLoungeMessage,
     retryChatMessage, cancelChatMessage, loadLounge, attendeesFor, userById, removeLoungeMessage,
+    clearLounge,
   } = useStore();
   const staff = isStaff(session?.role);
   const key = concertKey(log);
@@ -35,16 +40,36 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
   }));
   const entered = !!roomIdentity && enteredRoom === roomIdentity;
   const [gateMeta, setGateMeta] = useState(null);
+  const [metaRefresh, setMetaRefresh] = useState(0);
   const { scrollRef, onScroll, onContentSizeChange } = useChatScroll();
-
-  useLiveChat(
-    ({ after, signal }) => loadLounge(key, { after, signal }),
-    { channelKey: `lounge:${chatAuthEpoch}:${session?.id || "guest"}:${key}`, enabled: !!key && entered },
-  );
-
   const messages = loungeFor(key);
   const attendees = attendeesFor(key);
   const currentGateMeta = gateMeta?.key === key ? gateMeta : null;
+  const loungeOpen = currentGateMeta?.status === "open";
+
+  const readLoungeMessages = async ({ after, signal, strict = false }) => {
+      const result = await loadLounge(key, { after, signal, strict });
+      if (result?.closed && !signal?.aborted) {
+        clearLounge(key);
+        setGateMeta((current) => current?.key === key
+          ? { ...current, status: "closed", messageCount: 0 }
+          : current);
+      }
+      return result;
+  };
+  useLiveChat(
+    readLoungeMessages,
+    {
+      channelKey: `lounge:${chatAuthEpoch}:${session?.id || "guest"}:${key}`,
+      enabled: !!key && entered && loungeOpen,
+    },
+  );
+  const loungeRefreshScope = refreshScope(session?.id, "lounge", `${chatAuthEpoch}:${key}`);
+  const { refresh: refreshLounge, refreshing: loungeRefreshing } = useScopedRefresh({
+    scope: loungeRefreshScope,
+    enabled: !!key && entered && loungeOpen,
+    task: ({ signal }) => readLoungeMessages({ signal, strict: true }),
+  });
 
   useEffect(() => {
     setActionState({ scope: actionScope, value: EMPTY_LOUNGE_ACTIONS });
@@ -53,28 +78,87 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
   // The gate reads aggregate-only metadata. Conversation polling remains off
   // until this account's attendance write has been confirmed by the server.
   useEffect(() => {
-    if (!key || entered) return undefined;
+    if (!key) return undefined;
     const controller = new AbortController();
+    setGateMeta({ key, status: "loading" });
     api(`/api/lounges/${encodeURIComponent(key)}/meta`, {
       signal: controller.signal,
       silent: true,
       context: "Loading concert-lounge details",
     })
-      .then(({ attendeeCount, messageCount }) => {
-        if (!controller.signal.aborted) setGateMeta({ key, attendeeCount, messageCount });
+      .then((payload) => {
+        if (controller.signal.aborted) return;
+        const meta = normalizeLoungeMeta(payload);
+        if (!meta) {
+          setGateMeta({ key, status: "error" });
+          return;
+        }
+        const alreadyClosed = meta.cutoffAt != null && Date.now() >= meta.cutoffAt;
+        setGateMeta({ ...meta, key, status: alreadyClosed ? "closed" : meta.status });
       })
-      .catch(() => {});
+      .catch(() => {
+        if (!controller.signal.aborted) setGateMeta({ key, status: "error" });
+      });
     return () => controller.abort();
-  }, [key, entered]);
+  }, [key, entered, metaRefresh, session?.id]);
+
+  // The server is authoritative, while this timer closes an already-open screen
+  // at the exact same instant and disables useLiveChat before another poll can
+  // be scheduled. Long-future rooms use one bounded native timer, not an interval.
+  useEffect(() => {
+    if (!key || currentGateMeta?.status !== "open" || currentGateMeta.cutoffAt == null) return undefined;
+    let timer;
+    const arm = () => {
+      const remaining = currentGateMeta.cutoffAt - Date.now();
+      if (remaining <= 0) {
+        clearLounge(key);
+        setGateMeta((current) => current?.key === key
+          ? { ...current, status: "closed", messageCount: 0 }
+          : current);
+        return;
+      }
+      timer = setTimeout(arm, Math.min(remaining, 2_147_000_000));
+    };
+    arm();
+    return () => clearTimeout(timer);
+  }, [clearLounge, currentGateMeta?.cutoffAt, currentGateMeta?.status, key]);
 
   const enter = async () => {
-    if (entering || !session || !roomIdentity) return;
+    if (entering || !session || !roomIdentity || !loungeOpen) return;
     const requestScope = actionScope;
     updateActions({ entering: true });
     const result = await enterLounge(log);
     if (actionScopeRef.current !== requestScope) return;
     updateActions({ enteredRoom: result?.ok && !result?.guest ? roomIdentity : null, entering: false });
   };
+
+  if (currentGateMeta?.status === "closed") {
+    const fanClubArtist = currentGateMeta.fanClubArtist || log.artist;
+    const fallbackCopy = currentGateMeta.cutoffSource === "show_start"
+      ? "Doors time was not available, so this Lounge closed 24 hours after show start."
+      : "This Lounge closed 24 hours after doors opened.";
+    return (
+      <View style={styles.wrap}>
+        <ScreenHeader kicker="LOUNGE CLOSED" title={log.artist} onBack={onClose} />
+        <View style={styles.gate} accessibilityRole="summary">
+          <View style={styles.gateIcon}><Icon name="lock" size={30} color={colors.amber} /></View>
+          <Text style={styles.gateTitle}>This show's Lounge has closed</Text>
+          <Text style={styles.gateSub}>{fallbackCopy}</Text>
+          <Text style={styles.gateNote}>The conversation is no longer public. Moderation records stay protected for authorized review.</Text>
+          {fanClubArtist && onOpenFanClub ? (
+            <Pressable
+              style={styles.enterBtn}
+              onPress={() => onOpenFanClub(fanClubArtist)}
+              accessibilityRole="button"
+              accessibilityLabel={`Open the ${fanClubArtist} Fan Club`}
+            >
+              <Text style={styles.enterTxt}>Continue in the artist Fan Club</Text>
+            </Pressable>
+          ) : null}
+        </View>
+      </View>
+    );
+  }
 
   const send = async () => {
     const submitted = text;
@@ -111,10 +195,18 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
             One room for this exact show — before, during, and after.{"\n"}
             <Text style={{ color: colors.text, fontWeight: "700" }}>{log.artist}</Text> · {log.venue}
           </Text>
-          <Text style={styles.gateMeta}>{currentGateMeta?.messageCount ?? messages.length} messages · {currentGateMeta?.attendeeCount ?? attendees.length} going</Text>
-          <Pressable style={[styles.enterBtn, (entering || !session) && { opacity: 0.65 }]} onPress={enter} disabled={entering || !session} accessibilityRole="button" accessibilityState={{ disabled: entering || !session, busy: entering }}>
-            <Text style={styles.enterTxt}>{!session ? "Log in to enter the Lounge" : entering ? "Saving your spot…" : "I'm going — enter this show's Lounge"}</Text>
-          </Pressable>
+          {currentGateMeta?.status === "error" ? (
+            <Pressable style={styles.retryBtn} onPress={() => setMetaRefresh((value) => value + 1)} accessibilityRole="button">
+              <Text style={styles.retryTxt}>Try checking the Lounge again</Text>
+            </Pressable>
+          ) : (
+            <>
+              <Text style={styles.gateMeta}>{currentGateMeta?.messageCount ?? messages.length} messages · {currentGateMeta?.attendeeCount ?? attendees.length} going</Text>
+              <Pressable style={[styles.enterBtn, (entering || !session || !loungeOpen) && { opacity: 0.65 }]} onPress={enter} disabled={entering || !session || !loungeOpen} accessibilityRole="button" accessibilityState={{ disabled: entering || !session || !loungeOpen, busy: entering }}>
+                <Text style={styles.enterTxt}>{!session ? "Log in to enter the Lounge" : !loungeOpen ? "Checking this Lounge…" : entering ? "Saving your spot…" : "I'm going — enter this show's Lounge"}</Text>
+              </Pressable>
+            </>
+          )}
           <Text style={styles.gateNote}>This is the only Lounge for this show. Be decent; moderators can remove messages.</Text>
         </View>
       </View>
@@ -124,6 +216,11 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
   return (
     <KeyboardAvoidingView style={styles.wrap} behavior={Platform.OS === "ios" ? "padding" : undefined}>
       <ScreenHeader kicker={`LOUNGE · ${log.venue}`} title={log.artist} onBack={onClose} />
+      <VinylRefreshBoundary
+        refreshing={loungeRefreshing}
+        onRefresh={refreshLounge}
+        accessibilityLabel={`Refresh the ${log.artist} concert Lounge`}
+      >
       <ScrollView ref={scrollRef} contentContainerStyle={styles.chat} showsVerticalScrollIndicator={false}
         onScroll={onScroll} onContentSizeChange={onContentSizeChange} scrollEventThrottle={100}>
         {messages.length === 0 && <Text style={styles.empty}>No messages yet - say hi.</Text>}
@@ -179,6 +276,7 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
           );
         })}
       </ScrollView>
+      </VinylRefreshBoundary>
 
       {session ? (
         <View style={styles.inputBar}>
@@ -211,6 +309,8 @@ const styles = StyleSheet.create({
   enterBtn: { backgroundColor: colors.amberStrong, borderRadius: radius.md, paddingVertical: 15, paddingHorizontal: 28, marginTop: 18 },
   enterTxt: { color: "#1A1206", fontSize: 15, fontWeight: "800", letterSpacing: 0.5 },
   gateNote: { color: colors.textFaint, fontSize: 12, marginTop: 8 },
+  retryBtn: { minHeight: 44, borderRadius: radius.md, borderWidth: 1, borderColor: colors.amber, paddingHorizontal: 18, alignItems: "center", justifyContent: "center", marginTop: 12 },
+  retryTxt: { color: colors.amber, fontSize: 14, fontWeight: "800" },
 
   chat: { padding: 16, paddingBottom: 24, gap: 12 },
   empty: { color: colors.textDim, fontSize: 13, fontStyle: "italic", textAlign: "center", marginTop: 20 },

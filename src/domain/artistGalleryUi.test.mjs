@@ -41,8 +41,18 @@ test("artist hero copy stays clear of the profile-avatar punch-through", () => {
 
 test("artist gallery previews do not present a capped projection as the total", () => {
   assert.match(artist, /<Text style=\{styles\.sectionLabel\}>PHOTOS & FAN GALLERY<\/Text>/);
+  assert.equal((artist.match(/PHOTOS & FAN GALLERY/g) || []).length, 1, "the gallery preview renders once");
   assert.doesNotMatch(artist, /PHOTOS & FAN GALLERY\{gallery\.length/);
   assert.doesNotMatch(artist, /See all \$\{gallery\.length\} media items/);
+});
+
+test("artist photos sit directly between Live Reputation and the primary artist actions", () => {
+  const reputationAt = artist.indexOf('<View style={styles.repCard}>');
+  const galleryAt = artist.indexOf("<Text style={styles.sectionLabel}>PHOTOS & FAN GALLERY</Text>");
+  const actionsAt = artist.indexOf('<View style={styles.artistActions}>');
+  assert.ok(reputationAt >= 0, "Live Reputation must render");
+  assert.ok(galleryAt > reputationAt, "gallery must follow Live Reputation");
+  assert.ok(actionsAt > galleryAt, "gallery must appear before Fan Club and Live archive actions");
 });
 
 test("artist overview stays bounded while full sections remain explicit", () => {

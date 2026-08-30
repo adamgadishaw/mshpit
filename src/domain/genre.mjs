@@ -21,6 +21,10 @@ export const GENRE_SOURCES = {
   consensus: { rank: 2, confidence: 0.7, evidence: true },
   // Several distinct releases from one provider agreeing by a clear majority.
   release_consensus: { rank: 2, confidence: 0.7, evidence: true },
+  // MusicBrainz genres attached to one exact artist MBID. A claim is accepted
+  // only when the top positive community vote is unique and has at least two
+  // votes; the evidence validator below enforces that contract on every read.
+  musicbrainz_genre: { rank: 2, confidence: 0.7, evidence: true },
   // A provider stating the artist's genre directly, rather than a release-level
   // label or a search/crawl inference.
   provider: { rank: 3, confidence: 0.8, evidence: true },
@@ -66,10 +70,55 @@ export function hasReleaseConsensusEvidence(data, value) {
     && Math.abs((supportingCount / sampleCount) - share) <= 0.0001;
 }
 
+const MUSICBRAINZ_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+
+export function hasMusicBrainzGenreEvidence(data, value) {
+  const evidence = data?.musicBrainzGenreEvidence;
+  const artistMbid = String(evidence?.artistMbid || "").trim().toLowerCase();
+  const storedMbid = String(data?.mbid || "").trim().toLowerCase();
+  const evidenceGenre = String(evidence?.genre || "").trim().toLocaleLowerCase("en-US");
+  const claimGenre = String(value || "").trim().toLocaleLowerCase("en-US");
+  if (!evidence || evidence.provider !== "musicbrainz" || evidence.basis !== "artist-genres-v1") return false;
+  if (!MUSICBRAINZ_ID.test(artistMbid) || artistMbid !== storedMbid || evidenceGenre !== claimGenre) return false;
+  if (!Array.isArray(evidence.counts) || !evidence.counts.length || evidence.counts.length > 12) return false;
+
+  const names = new Set();
+  const ids = new Set();
+  let winningCount = -1;
+  let winningRows = 0;
+  let claimedCount = 0;
+  let claimedId = "";
+  for (const item of evidence.counts) {
+    const genre = typeof item?.genre === "string" ? item.genre.trim() : "";
+    const key = genre.toLocaleLowerCase("en-US");
+    const id = String(item?.id || "").trim().toLowerCase();
+    const count = item?.count;
+    if (!key || genre.length > 40 || !MUSICBRAINZ_ID.test(id)
+      || !Number.isSafeInteger(count) || count <= 0 || names.has(key) || ids.has(id)) return false;
+    names.add(key);
+    ids.add(id);
+    if (count > winningCount) { winningCount = count; winningRows = 1; }
+    else if (count === winningCount) winningRows += 1;
+    if (key === claimGenre) { claimedCount = count; claimedId = id; }
+  }
+  return !!claimGenre
+    && winningCount >= 2
+    && winningRows === 1
+    && claimedCount === winningCount
+    && claimedId === String(evidence.genreId || "").trim().toLowerCase()
+    && Number.isSafeInteger(evidence.supportingCount)
+    && evidence.supportingCount === winningCount
+    && Number.isSafeInteger(evidence.checkedAt)
+    && evidence.checkedAt >= 0;
+}
+
 function storedClaim(data, claim) {
   if (!claim?.value || !GENRE_SOURCES[claim.source]) return null;
   if (claim.source === "release_consensus") {
     return hasReleaseConsensusEvidence(data, claim.value) ? claim : { ...claim, source: "release_hint" };
+  }
+  if (claim.source === "musicbrainz_genre") {
+    return hasMusicBrainzGenreEvidence(data, claim.value) ? claim : null;
   }
   if (claim.source === "provider" && data?.deezerId) {
     return { ...claim, source: hasReleaseConsensusEvidence(data, claim.value) ? "release_consensus" : "release_hint" };
@@ -206,6 +255,15 @@ export function providerGenreFields(data, columnGenre, value, at = Date.now()) {
   return genreFieldsForClaim(data, columnGenre, value, "provider", at);
 }
 
+export function musicBrainzGenreFields(data, columnGenre, evidence, at = Date.now()) {
+  const prepared = { ...data, musicBrainzGenreEvidence: evidence };
+  if (!hasMusicBrainzGenreEvidence(prepared, evidence?.genre)) return {};
+  return {
+    ...genreFieldsForClaim(prepared, columnGenre, evidence.genre, "musicbrainz_genre", at),
+    musicBrainzGenreEvidence: evidence,
+  };
+}
+
 // What the interface is allowed to state as the artist's genre. Below the
 // threshold the honest answer is nothing: a bucket guess presented as fact is
 // what made Discover look broken.
@@ -235,4 +293,18 @@ export function projectArtistGenre(data, columnGenre) {
 // silently dropping the only signal there is.
 export function isUnverifiedGenre(record) {
   return !!(record && record.value && !displayGenre(record));
+}
+
+// Client-facing artist objects returned by the API still carry the structured
+// claim/evidence fields used by `projectArtistGenre`. Re-run that projection at
+// the screen/store boundary instead of trusting a nearby bare `genre` string:
+// bundled crawl rows and old cached objects can otherwise reintroduce the exact
+// labels this policy intentionally hides. The first evidenced candidate wins.
+export function verifiedArtistGenre(...artists) {
+  for (const artist of artists) {
+    if (!artist || typeof artist !== "object" || Array.isArray(artist)) continue;
+    const genre = projectArtistGenre(artist, artist.genre).genre;
+    if (genre && genre !== "-") return genre;
+  }
+  return null;
 }

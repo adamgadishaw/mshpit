@@ -43,10 +43,15 @@ test("only persisted posts can open a PostScreen discussion", () => {
   assert.equal(hasPostDiscussion(null), false);
 });
 
-test("ShowScreen delegates the full thread to PostScreen", () => {
+test("ShowScreen links to one original post without presenting a second comment destination", () => {
   assert.match(showScreen, /onOpenPost/);
   assert.match(showScreen, /onOpenPost\?\.\(norm\)/);
-  assert.match(showScreen, /\{discussionAvailable \? <View style=\{styles\.discussionCard\}>/);
+  assert.match(showScreen, /style=\{\(\{ pressed \}\) => \[styles\.originalPostCard/);
+  assert.match(showScreen, /<Text style=\{styles\.originalPostLabel\}>FAN POST<\/Text>/);
+  assert.match(showScreen, /<Text style=\{styles\.originalPostTitle\}>Open the original fan post<\/Text>/);
+  assert.doesNotMatch(showScreen, /Comments on this post|Open comments|discussionCount/);
+  assert.match(postScreen, /kicker=\{activeLog\.review \? "FAN REVIEW" : "POST"\}/);
+  assert.match(postScreen, /title="Original post"/);
   assert.match(showScreen, /<NearbyAfterparty\s+log=\{norm\}\s+coord=\{coord\}/);
   assert.doesNotMatch(showScreen, /AfterpartySection|TextInput|addComment|deleteOwnComment|loadComments|commentsFor/);
   assert.equal(existsSync(new URL("../components/AfterpartySection.jsx", import.meta.url)), false);
@@ -62,16 +67,15 @@ test("aggregate show review pagination keeps loaded reviews and exposes retry fe
 
 test("PostScreen scopes comment reads and exposes honest loading failure recovery", () => {
   assert.match(postScreen, /const commentScope = accountTargetScope\(session\?\.id, `post-comments:\$\{String\(log\.id \|\| ""\)\}`\)/);
-  assert.match(postScreen, /const forcedCommentRevisionRef = useRef\(-1\)/);
-  assert.match(postScreen, /const result = await loadComments\(log\.id, \{ limit: 50, force \}\)/);
-  assert.match(postScreen, /void refresh\(\{ force: forceInitialRefresh \}\)/);
-  assert.match(postScreen, /setInterval\(\(\) => void refresh\(\{ background: true, force: true \}\), 15_000\)/);
+  assert.match(postScreen, /const postRefreshScope = refreshScope\(session\?\.id, "post", log\.id\)/);
+  assert.match(postScreen, /useScopedRefresh\(\{/);
+  assert.match(postScreen, /const result = await loadComments\(log\.id, \{ limit: 50, force: true, signal \}\)/);
+  assert.match(postScreen, /<VinylRefreshBoundary[\s\S]*?accessibilityLabel="Refresh post and comments"/);
+  assert.doesNotMatch(postScreen, /setInterval|useAppActive/);
   assert.match(postScreen, /commentResource\.scope === commentScope/);
   assert.match(postScreen, /commentsUsable && tree\.length === 0/);
   assert.match(postScreen, /accessibilityLabel="Retry loading comments"/);
   assert.match(postScreen, /setCommentRequestVersion\(\(version\) => version \+ 1\)/);
-  assert.match(postScreen, /if \(!appActive\) return undefined/);
-  assert.match(postScreen, /\}, \[appActive, commentScope, commentRequestVersion\]\)/);
 
   assert.match(store, /const commentCache = useAccountCommentCache\(session\?\.id \|\| null\)/);
   assert.match(store, /commentRequestCacheKey\(claim\.accountId, id, safeLimit\)/);

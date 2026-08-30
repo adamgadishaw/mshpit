@@ -25,6 +25,25 @@ function evidencedGenre(value, extra = {}) {
   });
 }
 
+function musicBrainzEvidencedGenre(value = "Hip Hop") {
+  const artistMbid = "11111111-1111-4111-8111-111111111111";
+  const genreId = "22222222-2222-4222-8222-222222222222";
+  return JSON.stringify({
+    mbid: artistMbid,
+    genreClaims: [{ value, source: "musicbrainz_genre", at: 1 }],
+    musicBrainzGenreEvidence: {
+      genre: value,
+      genreId,
+      provider: "musicbrainz",
+      basis: "artist-genres-v1",
+      artistMbid,
+      supportingCount: 4,
+      counts: [{ genre: value, id: genreId, count: 4 }],
+      checkedAt: 1,
+    },
+  });
+}
+
 function fixture() {
   const database = new DatabaseSync(":memory:");
   database.exec(`
@@ -97,6 +116,7 @@ test("Discover hides crawl hints and only filters or aggregates evidenced genres
         { value: "contemporary r&b", source: "provider", at: 2 },
       ],
     }));
+    addArtist.run("musicbrainz-evidence", "MusicBrainz Evidence", "Hip Hop", "Canada", 94, 10, null, musicBrainzEvidencedGenre());
 
     const service = createDiscoverService({ database });
     const chart = service.chart({ country: "Canada", limit: 10 });
@@ -105,13 +125,15 @@ test("Discover hides crawl hints and only filters or aggregates evidenced genres
     assert.equal(byName["Legacy Alternative"].genre, null, "an unlisted bare legacy label must also fail closed");
     assert.equal(byName["Malformed Crawl"].genre, null, "malformed rich data must fail closed around a crawl label");
     assert.equal(byName["Provider Evidence"].genre, "R&B", "provider evidence should display and canonicalize");
+    assert.equal(byName["MusicBrainz Evidence"].genre, "Hip-Hop", "exact-MBID genre evidence should reach Discover rows");
 
     const genres = service.genres({ country: "Canada", limit: 12 });
     assert.equal(genres.genres.some((row) => row.genre === "Hardcore"), false);
     assert.equal(genres.genres.some((row) => row.genre === "Alternative"), false);
     assert.equal(genres.genres.some((row) => row.genre === "House"), false, "the stale raw column must not be counted");
     assert.equal(genres.genres.find((row) => row.genre === "R&B")?.count, 1);
-    assert.equal(genres.total, 3, "only the two existing provider genres and new provider claim are factual");
+    assert.equal(genres.genres.find((row) => row.genre === "Hip-Hop")?.count, 2);
+    assert.equal(genres.total, 4, "only evidence-backed genres are included in the genre section");
 
     assert.deepEqual(service.chart({ genre: "Hardcore", country: "Canada", limit: 10 }).rows, []);
     assert.deepEqual(

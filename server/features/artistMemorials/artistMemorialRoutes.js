@@ -17,6 +17,8 @@ export function artistMemorialRoutes({
   recordModerationAction,
   requireAdmin,
   resolveArtist,
+  deathWatchService = null,
+  logger = console,
 }) {
   if (typeof ApiError !== "function" || typeof assertSafeAuthoredText !== "function"
     || typeof decodeArtistKey !== "function"
@@ -72,7 +74,7 @@ export function artistMemorialRoutes({
     },
 
     "PUT /api/admin/artist-memorials/:key": (ctx) => {
-      requireAdmin(ctx);
+      const actor = requireAdmin(ctx);
       noStore(ctx);
       const artist = canonicalArtist(artistKey(ctx));
       const body = ctx.body && typeof ctx.body === "object" && !Array.isArray(ctx.body) ? ctx.body : {};
@@ -123,6 +125,24 @@ export function artistMemorialRoutes({
           throw new ApiError(409, result.message || "Review the artist identity and try again.", "CONFLICT");
         }
         throw new ApiError(400, result.message || "Check the memorial details and try again.", "VALIDATION_FAILED");
+      }
+      if (result.memorial?.status === "published") {
+        try {
+          deathWatchService?.markMemorialized?.({
+            artistKey: artist.key,
+            artistMbid: artist.mbid,
+            reviewerId: actor.id,
+            at: now(),
+          });
+        } catch (error) {
+          // Publishing the permanent memorial is authoritative. The private
+          // queue also excludes/reconciles this exact published identity, so a
+          // transient follow-up failure must not roll back a public tribute.
+          logger?.error?.("Artist death alert reconciliation deferred", {
+            artistKey: artist.key,
+            errorCode: typeof error?.code === "string" ? error.code : "reconciliation_failed",
+          });
+        }
       }
       return { changed: result.changed, memorial: result.memorial };
     },

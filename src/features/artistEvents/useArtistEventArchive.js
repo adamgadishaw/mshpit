@@ -22,40 +22,85 @@ export function useArtistEventArchive({ accountId = null, name = null, artistKey
   const identity = artistEventIdentity({ artistKey, name });
   const scope = artistEventArchiveScope({ accountId, artistKey, name });
   const [resource, setResource] = useState(() => createLoadState({ data: EMPTY_ARTIST_EVENT_ARCHIVE }));
-  const [revision, setRevision] = useState(0);
+  const resourceRef = useRef(resource);
+  resourceRef.current = resource;
   const requestSequence = useRef(0);
+  const activeRequest = useRef(null);
+  const scopeRef = useRef(scope);
+  scopeRef.current = scope;
 
-  useEffect(() => {
-    const sequence = requestSequence.current + 1;
-    requestSequence.current = sequence;
+  const runArchive = useCallback(async ({ signal: externalSignal } = {}) => {
+    activeRequest.current?.controller.abort();
+    const sequence = ++requestSequence.current;
     if (!enabled || !identity) {
-      setResource(resolveLoadState({ scope, data: EMPTY_ARTIST_EVENT_ARCHIVE }));
-      return undefined;
+      const next = resolveLoadState({ scope, data: EMPTY_ARTIST_EVENT_ARCHIVE });
+      resourceRef.current = next;
+      setResource(next);
+      activeRequest.current = null;
+      return next;
     }
 
     const controller = new AbortController();
-    setResource((current) => beginLoadState(current, { scope, emptyData: EMPTY_ARTIST_EVENT_ARCHIVE }));
-    readArtistEventArchive({ accountId, name, artistKey, signal: controller.signal })
-      .then((archive) => {
-        if (controller.signal.aborted || requestSequence.current !== sequence) return;
-        setResource((current) => current.scope === scope ? resolveLoadState({ scope, data: archive }) : current);
-      })
-      .catch((error) => {
-        if (isLoadCancellation(error, controller.signal) || requestSequence.current !== sequence) return;
-        setResource((current) => current.scope === scope
-          ? rejectLoadState(current, { scope, error, emptyData: EMPTY_ARTIST_EVENT_ARCHIVE })
-          : current);
+    const relayAbort = () => controller.abort();
+    if (externalSignal?.aborted) relayAbort();
+    else externalSignal?.addEventListener?.("abort", relayAbort, { once: true });
+    const request = { controller, scope, sequence };
+    activeRequest.current = request;
+    const loading = beginLoadState(resourceRef.current, { scope, emptyData: EMPTY_ARTIST_EVENT_ARCHIVE });
+    resourceRef.current = loading;
+    setResource(loading);
+    try {
+      const archive = await readArtistEventArchive({ accountId, name, artistKey, signal: controller.signal });
+      if (controller.signal.aborted || scopeRef.current !== scope || activeRequest.current !== request) {
+        return resourceRef.current;
+      }
+      const next = resolveLoadState({ scope, data: archive });
+      resourceRef.current = next;
+      setResource(next);
+      return next;
+    } catch (error) {
+      if (isLoadCancellation(error, controller.signal)
+        || scopeRef.current !== scope
+        || activeRequest.current !== request) {
+        return resourceRef.current;
+      }
+      const next = rejectLoadState(resourceRef.current, {
+        scope,
+        error,
+        emptyData: EMPTY_ARTIST_EVENT_ARCHIVE,
       });
+      resourceRef.current = next;
+      setResource(next);
+      return next;
+    } finally {
+      externalSignal?.removeEventListener?.("abort", relayAbort);
+      if (activeRequest.current === request) activeRequest.current = null;
+    }
+  }, [accountId, artistKey, enabled, identity, name, scope]);
 
+  useEffect(() => {
+    void runArchive();
     return () => {
-      if (requestSequence.current === sequence) requestSequence.current += 1;
-      controller.abort();
+      if (activeRequest.current?.scope === scope) {
+        activeRequest.current.controller.abort();
+        activeRequest.current = null;
+      }
     };
-  }, [accountId, artistKey, enabled, identity, name, revision, scope]);
+  }, [runArchive, scope]);
+
+  const refresh = useCallback(async ({ signal } = {}) => {
+    const next = await runArchive({ signal });
+    if (signal?.aborted) {
+      throw Object.assign(new Error("Artist archive refresh was cancelled."), { name: "AbortError" });
+    }
+    if (next.status === "error") throw next.error;
+    return next.data;
+  }, [runArchive]);
 
   return {
     resource: projectArtistEventArchive(resource, { accountId, artistKey, name }),
-    reload: useCallback(() => setRevision((current) => current + 1), []),
+    reload: runArchive,
+    refresh,
   };
 }
 
@@ -128,6 +173,50 @@ export function useArtistEventReviews({
   // catches a load-more request that began after the initial effect settled.
   useEffect(() => () => activeRequest.current?.controller.abort(), []);
 
+  const refresh = useCallback(async ({ signal: externalSignal } = {}) => {
+    activeRequest.current?.controller.abort();
+    const ticket = ++sequence.current;
+    const controller = new AbortController();
+    const relayAbort = () => controller.abort();
+    if (externalSignal?.aborted) relayAbort();
+    else externalSignal?.addEventListener?.("abort", relayAbort, { once: true });
+    activeRequest.current = { controller, scope, ticket };
+    const current = projectArtistEventReviews(resourceRef.current, options);
+    const loading = beginLoadState(current, { scope, emptyData: EMPTY_ARTIST_EVENT_REVIEWS });
+    resourceRef.current = loading;
+    setResource(loading);
+    try {
+      const page = await readArtistEventReviews({ ...options, limit, signal: controller.signal });
+      if (controller.signal.aborted || scopeRef.current !== scope || activeRequest.current?.ticket !== ticket) {
+        throw Object.assign(new Error("Artist review refresh was cancelled."), { name: "AbortError" });
+      }
+      const next = resolveLoadState({
+        scope,
+        data: { ...page, loadingMore: false },
+      });
+      resourceRef.current = next;
+      setResource(next);
+      return page;
+    } catch (error) {
+      if (isLoadCancellation(error, controller.signal)
+        || scopeRef.current !== scope
+        || activeRequest.current?.ticket !== ticket) {
+        throw error;
+      }
+      const rejected = rejectLoadState(resourceRef.current, {
+        scope,
+        error,
+        emptyData: EMPTY_ARTIST_EVENT_REVIEWS,
+      });
+      resourceRef.current = rejected;
+      setResource(rejected);
+      throw error;
+    } finally {
+      externalSignal?.removeEventListener?.("abort", relayAbort);
+      if (activeRequest.current?.ticket === ticket) activeRequest.current = null;
+    }
+  }, [accountId, artistKey, enabled, identity, limit, name, scope, selection, showKey, tourKey]);
+
   const loadMore = useCallback(async () => {
     const current = projectArtistEventReviews(resourceRef.current, options);
     const data = current.data || EMPTY_ARTIST_EVENT_REVIEWS;
@@ -170,6 +259,7 @@ export function useArtistEventReviews({
   return {
     resource: projectArtistEventReviews(resource, options),
     reload: useCallback(() => setRevision((current) => current + 1), []),
+    refresh,
     loadMore,
   };
 }

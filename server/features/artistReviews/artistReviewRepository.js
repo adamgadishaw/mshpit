@@ -22,15 +22,23 @@ function reviewQuery(identitySql) {
         WHERE c.post_id=p.id AND c.removed=0 AND ${activeAccountSql("cu")}) AS comment_count
     FROM posts p JOIN users u ON u.id=p.user_id
     WHERE p.removed=0
-      AND COALESCE(p.kind,'review')='review'
-      AND length(trim(p.review))>0
+      AND (COALESCE(p.kind,'review')='review' OR (
+        p.kind='status' AND p.artist_key IS NOT NULL AND p.artist_mbid IS NOT NULL AND p.overall=0
+        AND EXISTS (SELECT 1 FROM artist_memorials memory_memorial
+          WHERE memory_memorial.artist_key=p.artist_key
+            AND lower(memory_memorial.artist_mbid)=lower(p.artist_mbid)
+            AND memory_memorial.status='published')
+      ))
+      AND (length(trim(p.review))>0 OR (p.photos_public=1
+        AND EXISTS (SELECT 1 FROM post_media memory_media WHERE memory_media.post_id=p.id)))
       AND ${identitySql}
       AND ${activeAccountSql("u")}
       ${BLOCK_FILTER}
   )
   SELECT * FROM candidates
   ORDER BY (like_count+comment_count) DESC,
-    overall DESC,
+    CASE WHEN ?=1 THEN 0 ELSE overall END DESC,
+    CASE WHEN ?=1 THEN created_at ELSE 0 END DESC,
     CASE WHEN date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' THEN date ELSE '' END DESC,
     created_at DESC,
     id ASC
@@ -46,6 +54,8 @@ export function createArtistReviewRepository(database) {
     "(p.artist_key=? OR (p.artist_key IS NULL AND LOWER(p.artist)=LOWER(?)))",
   ));
   const byArtistName = database.prepare(reviewQuery("LOWER(p.artist)=LOWER(?)"));
+  const publishedMemorial = database.prepare(`SELECT 1 present FROM artist_memorials
+    WHERE artist_key=? AND status='published' LIMIT 1`);
 
   return Object.freeze({
     findTopReviews({ artistKey = null, name = null, viewerId = null, limit = 3 } = {}) {
@@ -54,7 +64,8 @@ export function createArtistReviewRepository(database) {
       const statement = artistKey ? byArtistKey : byArtistName;
       const scopedViewer = viewerId ? String(viewerId) : null;
       const identityArgs = artistKey ? [artistKey, name || null] : [name];
-      return statement.all(...identityArgs, scopedViewer, scopedViewer, scopedViewer, limit);
+      const memorialMode = !!artistKey && !!publishedMemorial.get(artistKey);
+      return statement.all(...identityArgs, scopedViewer, scopedViewer, scopedViewer, memorialMode ? 1 : 0, memorialMode ? 1 : 0, limit);
     },
   });
 }

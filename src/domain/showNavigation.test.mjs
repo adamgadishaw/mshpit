@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { prepareShowNavigation, showNavigationPostId } from "./showNavigation.mjs";
 import { calendarShowFromPost } from "./calendarShows.mjs";
+import { publicFramePath } from "./publicFrameNavigation.mjs";
 
 test("provider and artist-created tour dates stay performance events", () => {
   for (const event of [
@@ -40,6 +41,22 @@ test("persisted Pit review posts preserve post navigation and analytics identity
   assert.equal(navigation.destination, post);
   assert.equal(navigation.postId, "post_42");
   assert.equal(showNavigationPostId(post), "post_42");
+});
+
+test("an exact archived review opens its concert archive instead of post analytics", () => {
+  const navigation = prepareShowNavigation({
+    id: "post_42",
+    userId: "fan-1",
+    kind: "review",
+    artist: "Alpha",
+    venue: "Arena",
+    archiveShowKey: "show.opaque-key",
+  });
+  assert.equal(navigation.kind, "performance");
+  assert.equal(navigation.postId, null);
+  assert.equal(navigation.destination.performanceEvent, true);
+  assert.equal(showNavigationPostId(navigation.destination), null);
+  assert.equal(publicFramePath({ openLog: navigation.destination }), "/concert/show.opaque-key");
 });
 
 test("restored performance tags cannot be upgraded into post routes", () => {

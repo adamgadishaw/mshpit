@@ -98,8 +98,27 @@ test("candidate scans defer compact genre reads until after filtering", () => {
     genre: "Classical",
     genreClaims: [{ value: "Classical", source: "staff", at: 1 }],
   }, "staff"));
+  const musicBrainzArtistMbid = "11111111-1111-4111-8111-111111111111";
+  const musicBrainzGenreId = "22222222-2222-4222-8222-222222222222";
+  artistStmts.upsert.run(artistRow("compact musicbrainz genre", {
+    name: "Compact MusicBrainz Genre",
+    genre: "Hip Hop",
+    mbid: musicBrainzArtistMbid,
+    genreClaims: [{ value: "Hip Hop", source: "musicbrainz_genre", at: 1 }],
+    musicBrainzGenreEvidence: {
+      genre: "Hip Hop",
+      genreId: musicBrainzGenreId,
+      provider: "musicbrainz",
+      basis: "artist-genres-v1",
+      artistMbid: musicBrainzArtistMbid,
+      supportingCount: 3,
+      counts: [{ genre: "Hip Hop", id: musicBrainzGenreId, count: 3 }],
+      checkedAt: 1,
+    },
+  }, "musicbrainz"));
 
   const select = db.prepare(`SELECT ${ARTIST_GENRE_SQL_COLUMNS} FROM artists a WHERE a.norm=?`);
   assert.equal(projectArtistGenreColumns(select.get("compact legacy genre")), null);
   assert.equal(projectArtistGenreColumns(select.get("compact verified genre")), "Classical");
+  assert.equal(projectArtistGenreColumns(select.get("compact musicbrainz genre")), "Hip Hop");
 });

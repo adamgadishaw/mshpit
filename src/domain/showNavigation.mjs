@@ -22,6 +22,7 @@ export function prepareShowNavigation(log) {
   } : log;
   const performanceEvent = archiveAggregate
     || adapted.performanceEvent === true
+    || !!adapted.archiveShowKey
     || !hasPostDiscussion(adapted);
 
   return Object.freeze({
