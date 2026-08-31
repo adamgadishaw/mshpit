@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { View, Text, StyleSheet, Pressable, Animated, Easing, useWindowDimensions, Platform, ScrollView, AccessibilityInfo } from "react-native";
-import { Image as ExpoImage } from "expo-image";
 import Svg, { Defs, LinearGradient, Stop, Rect } from "react-native-svg";
 import { displayFont, focusRing, mono, radius } from "../theme";
+import BrandMark from "../components/BrandMark";
 import Icon from "../components/Icon";
 import { useStore } from "../store";
 import {
@@ -198,7 +198,7 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse, onSuggestio
       {/* ---- top bar: brand + login ---- */}
       <View style={[styles.topbar, scrollPitch && styles.topbarScrolled, compact && styles.topbarCompact, styles.boxNonePointerEvents]}>
         <View style={styles.brandLockup} accessibilityRole="text" accessibilityLabel="Mshpit, live music remembered">
-          <ExpoImage source={require("../../assets/pit-favicon-v1.png")} style={styles.brandMark} contentFit="cover" accessible={false} />
+          <BrandMark size={34} color="#F4EFE7" />
           <View>
             <Text style={styles.brand}>MSHPIT</Text>
             {!compact && <Text style={styles.brandSub}>LIVE MUSIC, REMEMBERED</Text>}
@@ -388,7 +388,6 @@ const styles = StyleSheet.create({
   publicNavCompact: { alignSelf: "center", marginLeft: 0, marginRight: 0, marginTop: 2, marginBottom: 2 },
   publicNavLink: { color: "rgba(244,239,231,0.86)", fontFamily: mono, fontSize: 11, lineHeight: 18, fontWeight: "800", letterSpacing: 1.1, textDecorationLine: "none" },
   brandLockup: { flexDirection: "row", alignItems: "center", gap: 10 },
-  brandMark: { width: 34, height: 34, borderRadius: 9 },
   brand: {
     color: "#F4EFE7", fontFamily: mono, fontSize: 22, lineHeight: 23, fontWeight: "900", letterSpacing: 5,
     ...(Platform.OS === "web" ? { textShadow: "0 1px 12px rgba(0,0,0,0.7)" } : { textShadowColor: "rgba(0,0,0,0.7)", textShadowRadius: 12 }),

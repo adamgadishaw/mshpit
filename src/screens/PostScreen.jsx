@@ -15,6 +15,7 @@ import { profilePath } from "../domain/urls.mjs";
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import useScopedRefresh from "../hooks/useScopedRefresh";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
+import { resolvePostAuthor } from "../domain/postAuthor.mjs";
 
 const ago = (ts) => {
   if (!ts) return "";
@@ -28,7 +29,7 @@ const ago = (ts) => {
 // One comment row + its nested replies. A reply-to-comment is indented and shows
 // who it answers, so the thread reads like a forum, not a flat list.
 function CommentNode({ c, replies, depth, onReply, onDelete, onReport, sessionId, onOpenProfile, userById, userBadges }) {
-  const author = userById?.(c.userId) || { name: c.name, initials: c.initials, avatarUri: c.avatarUri, avatarColor: c.avatarColor, role: c.role, verified: c.verified };
+  const author = resolvePostAuthor({ userId: c.userId, cached: userById?.(c.userId), embedded: { name: c.name, initials: c.initials, avatarUri: c.avatarUri, avatarColor: c.avatarColor, role: c.role, verified: c.verified, profileUpdatedAt: c.profileUpdatedAt } });
   const own = !c.deleted && !!sessionId && c.userId === sessionId;
   return (
     <View style={depth > 0 ? (depth <= 3 ? styles.replyWrap : styles.deepReplyWrap) : null}>

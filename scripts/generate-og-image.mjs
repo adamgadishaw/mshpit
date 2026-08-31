@@ -25,7 +25,7 @@ const textLayer = Buffer.from(`<svg width="${width}" height="${height}" xmlns="h
   <text x="540" y="478" fill="#f3b61f" font-family="Arial, Helvetica, sans-serif" font-size="22" font-weight="700" letter-spacing="2">MSHPIT.COM</text>
 </svg>`);
 
-const logo = await sharp(join(root, "assets", "pit-icon-v1.png"))
+const logo = await sharp(join(root, "assets", "pit-icon-v2.png"))
   .resize(420, 420, { fit: "cover" })
   .png()
   .toBuffer();

@@ -1,12 +1,26 @@
-import { View, Text, Image, Pressable, StyleSheet } from "react-native";
+import { useEffect, useState } from "react";
+import { View, Text, Pressable, StyleSheet } from "react-native";
+import { Image as ExpoImage } from "expo-image";
 import { colors, focusRing, mono } from "../theme";
 
 // Shows the user's uploaded photo if set, else initials on their colour.
 // Tappable to open a profile.
 export default function Avatar({ user, size = 36, onPress }) {
   const profileName = user?.name || user?.username || "member";
-  const inner = user?.avatarUri ? (
-    <Image accessible={false} source={{ uri: user.avatarUri }} style={{ width: size, height: size, borderRadius: size / 2 }} />
+  const [failedUri, setFailedUri] = useState(null);
+  useEffect(() => setFailedUri(null), [user?.avatarUri]);
+  const avatarUri = user?.avatarUri && failedUri !== user.avatarUri ? user.avatarUri : null;
+  const inner = avatarUri ? (
+    <ExpoImage
+      accessible={false}
+      source={{ uri: avatarUri }}
+      style={{ width: size, height: size, borderRadius: size / 2 }}
+      contentFit="cover"
+      cachePolicy="memory-disk"
+      recyclingKey={`avatar:${user?.id || user?.handle || "member"}:${avatarUri}`}
+      transition={80}
+      onError={() => setFailedUri(avatarUri)}
+    />
   ) : (
     <View
       style={[

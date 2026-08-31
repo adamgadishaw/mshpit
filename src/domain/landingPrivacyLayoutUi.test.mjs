@@ -42,5 +42,6 @@ test("landing startup makes no showcase or automatic remote-media request", () =
   assert.doesNotMatch(landing, /buildLandingSlideDeck|landingSlideFrame|landingVisibleSlideIndices/);
   assert.doesNotMatch(landing, /source=\{\{\s*uri:/);
   assert.match(landing, /<Svg width="100%" height="100%"/);
-  assert.match(landing, /source=\{require\("\.\.\/\.\.\/assets\/pit-favicon-v1\.png"\)\}/);
+  assert.match(landing, /<BrandMark size=\{34\} color="#F4EFE7" \/>/);
+  assert.doesNotMatch(landing, /pit-favicon-v1/);
 });

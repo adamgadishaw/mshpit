@@ -4363,6 +4363,8 @@ test("public UGC surfaces share one banned and live-suspension visibility rule",
 test("For You is global-first, cursor-stable, and an allegation alone cannot suppress a post", () => {
   const author = addUser("u_for_you_author", "for-you-author@example.com", "foryouauthor");
   const reporter = addUser("u_for_you_reporter", "for-you-reporter@example.com", "foryoureporter");
+  const authorProfileUpdatedAt = 1_725_000_000_000;
+  db.prepare("UPDATE users SET profile_updated_at=? WHERE id=?").run(authorProfileUpdatedAt, author.id);
   for (let index = 1; index <= 6; index++) {
     db.prepare("INSERT INTO posts (id,user_id,artist,venue,city,overall,review,photos,created_at) VALUES (?,?,?,?,?,?,?,?,?)")
       .run(`p_for_you_${index}`, author.id, `Global Artist ${index}`, "Global Venue", "Toronto", 4, "A complete public concert review that gives the ranking useful quality context.", "[]", Date.now() - (7 - index) * 1000);
@@ -4387,14 +4389,21 @@ test("For You is global-first, cursor-stable, and an allegation alone cannot sup
   // Traverse the snapshot instead of assuming a reported post must rank in the
   // first six among unrelated test fixtures. The policy under test is
   // eligibility: an allegation alone must not erase otherwise-live content.
-  const snapshotIds = [...first.posts.map((post) => post.id)];
+  const snapshotPosts = [...first.posts];
+  const snapshotIds = [...snapshotPosts.map((post) => post.id)];
   let cursor = first.nextCursor;
   while (cursor) {
     const page = routes["GET /api/feed/for-you"]({ user: null, ip: "for-you-test", query: { limit: "50", cursor } });
+    snapshotPosts.push(...page.posts);
     snapshotIds.push(...page.posts.map((post) => post.id));
     cursor = page.nextCursor;
   }
   assert.ok(snapshotIds.includes("p_for_you_6"), "an open report is an allegation, not a moderation state");
+  assert.equal(
+    snapshotPosts.find((post) => post.id === "p_for_you_6")?.user?.profileUpdatedAt,
+    authorProfileUpdatedAt,
+    "For You author snapshots retain the avatar freshness version",
+  );
 
   db.prepare("INSERT INTO posts (id,user_id,artist,venue,city,overall,review,photos,created_at) VALUES (?,?,?,?,?,?,?,?,?)")
     .run("p_for_you_fresh", author.id, "Fresh Global Artist", "Global Venue", "Toronto", 5, "A newly published review must enter an already-open feed on its next head refresh.", "[]", Date.now());

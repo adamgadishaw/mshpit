@@ -20,7 +20,7 @@ export function publicProfileCacheEntry(user) {
   if (!isObject(user) || !user.id) return null;
   const keys = [
     "id", "name", "handle", "role", "verified", "sponsor", "artistName",
-    "bio", "avatarUri", "avatarColor", "banner", "initials",
+    "bio", "avatarUri", "avatarColor", "banner", "initials", "profileUpdatedAt",
     ...(MUSIC_PLAYER_ENABLED ? ["nowPlaying"] : []),
   ];
   const projected = Object.fromEntries(keys.filter((key) => user[key] !== undefined).map((key) => [key, user[key]]));

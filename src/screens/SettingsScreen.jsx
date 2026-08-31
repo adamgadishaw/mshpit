@@ -57,7 +57,7 @@ function Toggle({ value, busy = false }) {
 }
 
 export default function SettingsScreen({ onClose, onManageProfile, onOpenProfile, onOpenPrivacy, onOpenTerms, onOpenDiagnostics, onOpenDeleteAccount, onLogout }) {
-  const { session, chooseTheme, blockedUsers, unblockUser, exportMyData, setAnalyticsEnabled, setProfileSearchIndexingEnabled, setAnnouncementEmailsEnabled } = useStore();
+  const { session, chooseTheme, blockedUsers, unblockUser, blockedDirectoryStatus, refreshBlockedDirectory, isBlockMutationPending, exportMyData, setAnalyticsEnabled, setProfileSearchIndexingEnabled, setAnnouncementEmailsEnabled } = useStore();
   const blocked = session ? blockedUsers() : [];
   const [exporting, setExporting] = useState(false);
   const [exportResult, setExportResult] = useState(null);
@@ -70,6 +70,7 @@ export default function SettingsScreen({ onClose, onManageProfile, onOpenProfile
   const [announcementResult, setAnnouncementResult] = useState(null);
   const [supportError, setSupportError] = useState(null);
   const [showMoreThemes, setShowMoreThemes] = useState(false);
+  const [blockListMessage, setBlockListMessage] = useState(null);
   const analyticsEnabled = !!(session?.analyticsConsentAt || session?.consentAt) && !session?.analyticsOptOut;
   const profileSearchIndexingEnabled = session?.searchIndexingOptOut !== true;
   const announcementsEnabled = !session?.marketingOptOut;
@@ -237,7 +238,16 @@ export default function SettingsScreen({ onClose, onManageProfile, onOpenProfile
               </Text>
             )}
             <Text style={[styles.hint, { marginTop: 6 }]}>BLOCKED ACCOUNTS{blocked.length ? ` · ${blocked.length}` : ""}</Text>
-            {blocked.length === 0 && <Text style={styles.blockedEmpty}>No one blocked. Block someone from their profile and they can't message you, follow you, or see your posts.</Text>}
+            {blockedDirectoryStatus === "loading" && blocked.length === 0 && <Text style={styles.blockedEmpty}>Loading blocked accounts...</Text>}
+            {blockedDirectoryStatus === "error" && (
+              <View style={styles.blockedErrorRow}>
+                <Text style={styles.blockedErrorText}>Your block list couldn't load. Existing blocks are still enforced.</Text>
+                <Pressable style={({ focused }) => [styles.retryBtn, focused && focusRing]} onPress={() => refreshBlockedDirectory()} accessibilityRole="button" accessibilityLabel="Retry loading blocked accounts">
+                  <Text style={styles.retryTxt}>Retry</Text>
+                </Pressable>
+              </View>
+            )}
+            {blockedDirectoryStatus === "ready" && blocked.length === 0 && <Text style={styles.blockedEmpty}>No one blocked. Block someone from their profile and they can't message you, follow you, or see your posts.</Text>}
             {blocked.map((u) => (
               <View key={u.id} style={styles.blockedRow}>
                 <Avatar user={u} size={36} />
@@ -245,11 +255,23 @@ export default function SettingsScreen({ onClose, onManageProfile, onOpenProfile
                   <Text style={styles.rowLabel} numberOfLines={1}>{u.name}</Text>
                   <Text style={styles.rowSub} numberOfLines={1}>@{u.handle}</Text>
                 </View>
-                <Pressable style={({ focused }) => [styles.unblockBtn, focused && focusRing]} onPress={() => unblockUser(u.id)} accessibilityRole="button" accessibilityLabel={`Unblock ${u.name}`}>
-                  <Text style={styles.unblockTxt}>Unblock</Text>
+                <Pressable
+                  style={({ focused }) => [styles.unblockBtn, isBlockMutationPending(u.id) && styles.rowDisabled, focused && focusRing]}
+                  onPress={async () => {
+                    setBlockListMessage(null);
+                    const result = await unblockUser(u.id);
+                    setBlockListMessage(result?.ok ? `${u.name} is unblocked.` : `${u.name} could not be unblocked. Try again.`);
+                  }}
+                  disabled={isBlockMutationPending(u.id)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Unblock ${u.name}`}
+                  accessibilityState={{ disabled: isBlockMutationPending(u.id), busy: isBlockMutationPending(u.id) }}
+                >
+                  <Text style={styles.unblockTxt}>{isBlockMutationPending(u.id) ? "Unblocking..." : "Unblock"}</Text>
                 </Pressable>
               </View>
             ))}
+            {!!blockListMessage && <Text style={styles.blockListMessage} accessibilityRole="alert" accessibilityLiveRegion="polite">{blockListMessage}</Text>}
           </>
         )}
 
@@ -298,6 +320,11 @@ const styles = StyleSheet.create({
   rowIcon: { width: 36, height: 36, borderRadius: 10, backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },
   rowLabel: { color: colors.text, fontSize: 15, fontWeight: "700" },
   rowSub: { color: colors.textDim, fontSize: 12, marginTop: 2 },
+  blockedErrorRow: { gap: 9, padding: 12, marginBottom: 10, borderRadius: radius.md, borderWidth: 1, borderColor: colors.danger, backgroundColor: colors.surface },
+  blockedErrorText: { color: colors.textDim, fontSize: 12.5, lineHeight: 18 },
+  retryBtn: { alignSelf: "flex-start", minHeight: 40, justifyContent: "center", paddingHorizontal: 14, borderRadius: radius.pill, backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.line },
+  retryTxt: { color: colors.amber, fontSize: 12, fontWeight: "800" },
+  blockListMessage: { color: colors.textDim, fontSize: 12, marginTop: 4, marginBottom: 8 },
   ver: { color: colors.textFaint, fontFamily: mono, fontSize: 13 },
   blockedRow: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 12, marginBottom: 8 },
   blockedEmpty: { color: colors.textFaint, fontSize: 12.5, lineHeight: 18, marginBottom: 8 },

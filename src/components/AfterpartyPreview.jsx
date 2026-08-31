@@ -4,6 +4,7 @@ import { colors, font, radius } from "../theme";
 import { useStore } from "../store";
 import Avatar from "./Avatar";
 import { inlineCommentPreview } from "../domain/commentPreview.mjs";
+import { resolvePostAuthor } from "../domain/postAuthor.mjs";
 
 // Feed cards show only the bounded preview already bundled with the post. They
 // never start a comments request and never mount a composer; the complete
@@ -23,12 +24,13 @@ export default function CommentPreview({ log, onOpen, max = 1, palette = null })
   return (
     <View style={styles.wrap}>
       {latest.map((comment) => {
-        const author = userById?.(comment.userId) || {
+        const author = resolvePostAuthor({ userId: comment.userId, cached: userById?.(comment.userId), embedded: {
           name: comment.name,
           initials: comment.initials,
           avatarUri: comment.avatarUri,
           avatarColor: comment.avatarColor,
-        };
+          profileUpdatedAt: comment.profileUpdatedAt,
+        } });
         return (
           <Pressable
             key={comment.id}

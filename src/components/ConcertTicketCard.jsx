@@ -4,6 +4,7 @@ import { Image as ExpoImage } from "expo-image";
 import { colors, displayFont, focusRing, font, mono, radius, shadow, space } from "../theme";
 import { buildAttendanceTicketPreview } from "../domain/attendanceTicket.mjs";
 import useReducedMotion from "../hooks/useReducedMotion";
+import BrandMark from "./BrandMark";
 
 const WIDE_BREAKPOINT = 620;
 const PHONE_BREAKPOINT = 430;
@@ -14,11 +15,6 @@ const ticketFocusRing = Platform.select({
   web: { ...focusRing, outlineOffset: -3 },
   default: focusRing,
 });
-// Reuse the small mark already loaded by the public landing page. Pulling the
-// 1024px App Store source into a feed card would add hundreds of kilobytes to
-// the web asset graph for a 28px decorative lockup.
-const TICKET_BRAND_MARK = require("../../assets/pit-favicon-v1.png");
-
 const isPreview = (value) =>
   value?.kind === "attendance-ticket"
   && value?.version === 1
@@ -160,7 +156,7 @@ export default function ConcertTicketCard({
       ]}>
         <View style={styles.brandLockup}>
           <View style={styles.brandMark} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
-            <ExpoImage source={TICKET_BRAND_MARK} style={styles.brandMarkImage} contentFit="cover" />
+            <BrandMark size={20} />
           </View>
           <Text style={styles.brandText}>MSHPIT / GOING</Text>
         </View>
@@ -363,11 +359,9 @@ const styles = StyleSheet.create({
     borderRadius: 7,
     overflow: "hidden",
     backgroundColor: colors.bg,
+    alignItems: "center",
+    justifyContent: "center",
     transform: [{ rotate: "-2deg" }],
-  },
-  brandMarkImage: {
-    width: "100%",
-    height: "100%",
   },
   brandText: {
     flexShrink: 1,

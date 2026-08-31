@@ -25,6 +25,7 @@ import { buildAttendanceTicketPreview } from "../domain/attendanceTicket.mjs";
 import { calendarShowFromPost } from "../domain/calendarShows.mjs";
 import ConcertTicketCard from "./ConcertTicketCard";
 import { concertPostContext } from "../domain/concertPostContext.mjs";
+import { resolvePostAuthor } from "../domain/postAuthor.mjs";
 
 // "3rd time in the pit" needs a real ordinal, not "3th".
 const ordinal = (n) => {
@@ -52,7 +53,7 @@ function TagRow({ tags, center = false }) {
   );
 }
 
-function TaggedPeopleRow({ people, onOpenProfile, selfId, onRemoveSelf, palette = null }) {
+function TaggedPeopleRow({ people, onOpenProfile, selfId, onRemoveSelf, palette = null, concertContext = false }) {
   const tagged = normalizeTaggedPeople(people);
   if (!tagged.length) return null;
   const textColor = palette?.textColor || colors.text;
@@ -60,7 +61,7 @@ function TaggedPeopleRow({ people, onOpenProfile, selfId, onRemoveSelf, palette 
   return (
     <View style={styles.taggedPeopleRow} accessibilityLabel={`With ${tagged.map((person) => person.name).join(", ")}`}>
       <Icon name="you" size={14} color={palette?.accentColor || colors.amber} />
-      <Text style={[styles.taggedPeopleLead, { color: palette?.mutedTextColor || colors.textDim }]}>with</Text>
+      <Text style={[styles.taggedPeopleLead, { color: palette?.mutedTextColor || colors.textDim }]}>{concertContext ? "went with" : "with"}</Text>
       {tagged.map((person) => (
         <View key={person.id} style={[styles.taggedPersonChip, { borderColor }]}>
           <PublicPressableLink
@@ -129,7 +130,7 @@ function NotForMeButton({ onPress, palette = null }) {
 export default function TicketStub({ log, mediaViewable = null, onOpen, onOpenShow, onNotInterested, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onReport, onEdit, onDelete, onOpenPhotos, onPlay, onRemoveMyPostTag, onSelfTagRemoved, showComments = true }) {
   const openComments = () => (onComment || onOpen)?.(log);
   const { userById, likeInfo, toggleLike, commentsFor, session, userBadges, deleteOwnPost } = useStore();
-  const author = userById?.(log.userId) || { initials: log.user?.initials, name: log.user?.name, handle: log.user?.handle };
+  const author = resolvePostAuthor({ userId: log.userId, cached: userById?.(log.userId), embedded: log.user });
   const authorHref = author?.handle ? profilePath(author.handle) : null;
   const postContext = concertPostContext(log);
   const canonicalPostHref = postContext.showHref;
@@ -323,7 +324,7 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onOpenSh
         {!!log.review && (
           <PublicPressableLink href={canonicalPostHref} onNavigate={() => (onComment || onOpen)?.(log)} accessibilityLabel="Open post and comments"><Text style={[styles.statusText, campaignPresentation && { color: campaignTreatment.textColor }]}>{log.review}</Text></PublicPressableLink>
         )}
-        <TaggedPeopleRow people={taggedPeople} onOpenProfile={onOpenProfile} selfId={session?.id} onRemoveSelf={onRemoveMyPostTag ? removeSelfTag : undefined} palette={campaignTreatment} />
+        <TaggedPeopleRow people={taggedPeople} onOpenProfile={onOpenProfile} selfId={session?.id} onRemoveSelf={onRemoveMyPostTag ? removeSelfTag : undefined} palette={campaignTreatment} concertContext={!!attendanceTicketCard} />
         {!!log.song && <SongAttachment song={log.song} onPlay={ENABLE_MUSIC_PLAYER ? onPlay : undefined} />}
         {statusMedia.length > 0 && (
           <PostMediaGrid media={statusMedia} viewable={mediaViewable} openerScope={log.id} onOpen={onOpenPhotos ? (i, opener) => onOpenPhotos(postMedia, postMedia.indexOf(statusMedia[i]), log.id, opener) : undefined} />
@@ -474,7 +475,7 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onOpenSh
           <Text style={styles.noReview}>Logged this show - no review yet. Tap to open.</Text>
         )}
       </PublicPressableLink>
-      <TaggedPeopleRow people={taggedPeople} onOpenProfile={onOpenProfile} selfId={session?.id} onRemoveSelf={onRemoveMyPostTag ? removeSelfTag : undefined} />
+      <TaggedPeopleRow people={taggedPeople} onOpenProfile={onOpenProfile} selfId={session?.id} onRemoveSelf={onRemoveMyPostTag ? removeSelfTag : undefined} concertContext />
       {!!log.song && <SongAttachment song={log.song} onPlay={ENABLE_MUSIC_PLAYER ? onPlay : undefined} />}
       {postMedia.length > 0 && (
         <PostMediaGrid media={postMedia} viewable={mediaViewable} openerScope={log.id} onOpen={onOpenPhotos ? (i, opener) => onOpenPhotos(postMedia, i, log.id, opener) : undefined} />

@@ -1450,11 +1450,13 @@ export default function LogScreen({
         <View style={styles.attachBar}>
           <AttachChip icon="camera" label={mediaAttachmentLabel} active={showPhotos || photos.length > 0 || pendingMediaAssets.length > 0} count={photos.length + pendingMediaAssets.length} onPress={toggleMediaPanel} disabled={submitBusy} />
           <AttachChip icon="play" label="YouTube" active={showSong || !!song?.videoId} onPress={() => setShowSong((v) => !v)} disabled={submitBusy} />
-          <AttachChip icon="you" label="Friends" active={showPeople || taggedPeople.length > 0} count={taggedPeople.length} onPress={() => setShowPeople((v) => !v)} disabled={submitBusy} />
+          <AttachChip icon="you" label={isStatus ? "Friends" : "People with you"} active={showPeople || taggedPeople.length > 0} count={taggedPeople.length} onPress={() => setShowPeople((v) => !v)} disabled={submitBusy} />
         </View>
         {(showPeople || taggedPeople.length > 0) && (
           <View style={styles.attachPanel}>
-            <Text style={styles.attachHint}>You can tag friends who follow you back. Their names link to their Mshpit profiles, and they can remove their tag at any time.</Text>
+            <Text style={styles.attachHint}>{isStatus
+              ? "Tag friends who follow you back. Their names link to their Mshpit profiles, and they can remove their tag at any time."
+              : "Tag the people who went to this show with you. You must follow each other, and anyone tagged can remove their own tag."}</Text>
             {!!taggedPeople.length && (
               <View style={styles.peopleSelected}>
                 {taggedPeople.map((person) => (
@@ -1477,7 +1479,7 @@ export default function LogScreen({
               <>
                 <TextInput
                   style={[styles.input, styles.peopleInput]}
-                  placeholder="Search your friends"
+                  placeholder={isStatus ? "Search your friends" : "Search people you went with"}
                   placeholderTextColor={colors.textFaint}
                   value={peopleQuery}
                   onChangeText={setPeopleQuery}
@@ -1601,7 +1603,7 @@ export default function LogScreen({
             return (
             <View key={`${uri}:${i}`} style={[styles.thumb, isCampaignBackground && styles.campaignThumbSelected]}>
               {/* SmartImage renders clips as a play tile and HEIC via transcode. */}
-              <SmartImage uri={uri} posterUri={mediaPosterUri(descriptor)} mediaKind={mediaDisplayKind(descriptor || uri)} style={StyleSheet.absoluteFill} contain={false} accessibilityLabel={descriptor?.altText || `Media ${i + 1}`} />
+              <SmartImage uri={uri} posterUri={mediaPosterUri(descriptor)} mediaKind={mediaDisplayKind(descriptor || uri)} style={StyleSheet.absoluteFill} contain={false} cachePolicy="memory" accessibilityLabel={descriptor?.altText || `Media ${i + 1}`} />
               {canBeCampaignBackground && (
                 <Pressable
                   style={[styles.useBackground, isCampaignBackground && styles.useBackgroundSelected]}
@@ -1627,6 +1629,7 @@ export default function LogScreen({
                 mediaKind={mediaDisplayKind(asset)}
                 style={StyleSheet.absoluteFill}
                 contain={false}
+                cachePolicy="memory"
                 accessibilityLabel={asset.altText || `Selected media ${photos.length + index + 1}`}
               />
               <View style={styles.pendingThumbBadge}><Text style={styles.pendingThumbBadgeText}>WAITING</Text></View>

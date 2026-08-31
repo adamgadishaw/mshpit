@@ -68,6 +68,7 @@ test("persisted public users use an exact privacy allowlist", () => {
     name: "Real Member",
     role: "fan",
     verified: true,
+    profileUpdatedAt: 456,
     emailVerified: true,
     isBanned: true,
     suspendedUntil: 123,
@@ -86,12 +87,13 @@ test("persisted public users use an exact privacy allowlist", () => {
     name: "Real Member",
     role: "fan",
     verified: true,
+    profileUpdatedAt: 456,
     genres: ["Indie", "Jazz"],
     favoriteArtists: ["Turnstile", "Beyoncé"],
     home: { city: "Toronto" },
   });
-  assert.deepEqual(publicProfileCacheEntry({ id: "u_x", name: "X", email: "secret", home: { city: "Ottawa", lat: 1 } }), {
-    id: "u_x", name: "X", home: { city: "Ottawa" },
+  assert.deepEqual(publicProfileCacheEntry({ id: "u_x", name: "X", profileUpdatedAt: 789, email: "secret", home: { city: "Ottawa", lat: 1 } }), {
+    id: "u_x", name: "X", profileUpdatedAt: 789, home: { city: "Ottawa" },
   });
   const bounded = publicProfileCacheEntry({
     id: "u_many",

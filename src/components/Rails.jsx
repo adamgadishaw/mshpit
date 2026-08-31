@@ -15,7 +15,7 @@ import {
   rightRailScopeIdentity,
 } from "../domain/rightRailEvents.mjs";
 import { liveEventTitle, localDiscoveryEvents } from "../domain/liveDiscovery.mjs";
-import { artistPath, eventPath } from "../domain/urls.mjs";
+import { artistPath, eventPath, profilePath } from "../domain/urls.mjs";
 
 const NAV = [
   { key: "feed", label: "Feed", icon: "feed" },
@@ -226,6 +226,10 @@ export function RightRail({
   homeCity,
   countdownPlan = null,
   onOpenArtist,
+  onOpenProfile,
+  onFollowUser,
+  isFollowing,
+  isBlocked,
   onOpenLounge,
   onOpenDiscover,
   onOpenEvent,
@@ -253,6 +257,9 @@ export function RightRail({
     ? (discoverySidebar.topArtists?.length ? discoverySidebar.topArtists.slice(0, 8) : topArtists(8))
     : artistsAlphabetical(10);
   const lounges = Array.isArray(discoverySidebar.popularLounges) ? discoverySidebar.popularLounges.slice(0, 5) : [];
+  const suggestedUsers = (Array.isArray(discoverySidebar.suggestedUsers) ? discoverySidebar.suggestedUsers : [])
+    .filter((suggestion) => suggestion?.user?.id && !isFollowing?.(suggestion.user.id) && !isBlocked?.(suggestion.user.id))
+    .slice(0, 5);
   const events = rightRailEventsForScope({
     scope: eventScope,
     nearEvents: localDiscoveryEvents(discoverySidebar.upcomingEvents, { limit: 6 }),
@@ -284,6 +291,54 @@ export function RightRail({
     >
       {accountId && countdownPlan ? (
         <HomeShowCountdown compact plan={countdownPlan} onOpen={onOpenCountdown || onOpenEvent} onViewAll={onViewAllCountdown} />
+      ) : null}
+
+      {accountId && (suggestedUsers.length > 0 || discoverySidebarStatus === "loading") ? (
+        <View style={styles.card} accessibilityLabel={homeCity ? "People near you" : "People to follow"}>
+          <View style={styles.peopleCardHead}>
+            <View style={styles.peopleCardTitleWrap}>
+              <Text style={styles.cardTitle}>{homeCity ? "PEOPLE NEAR YOU" : "PEOPLE TO FOLLOW"}</Text>
+              <Text style={styles.peopleCardSub}>{homeCity ? "Fans nearby and fans with similar taste" : "Active fans with similar taste"}</Text>
+            </View>
+            <View style={styles.peopleMark}><Icon name="you" size={15} color={colors.amber} /></View>
+          </View>
+          {discoverySidebarStatus === "loading" && suggestedUsers.length === 0 ? (
+            <Text style={styles.empty}>Finding fans you may like...</Text>
+          ) : (
+            <View style={styles.peopleList}>
+              {suggestedUsers.map((suggestion) => {
+                const person = suggestion.user;
+                return (
+                  <View key={person.id} style={styles.personRow}>
+                    <PublicPressableLink
+                      href={person.handle ? profilePath(person.handle) : null}
+                      onNavigate={() => onOpenProfile?.(person.id)}
+                      style={({ pressed, hovered, focused }) => [styles.personIdentity, hovered && styles.rowHover, pressed && styles.rowPressed, focused && focusRing]}
+                      accessibilityLabel={`Open ${person.name}'s profile`}
+                    >
+                      <Avatar user={person} size={38} />
+                      <View style={styles.personCopy}>
+                        <Text style={styles.personName} numberOfLines={1}>{person.name}</Text>
+                        <Text style={styles.personHandle} numberOfLines={1}>@{person.handle}</Text>
+                        <Text style={styles.personReason} numberOfLines={1}>{suggestion.reason}</Text>
+                      </View>
+                    </PublicPressableLink>
+                    <Pressable
+                      style={({ pressed, focused }) => [styles.followButton, pressed && styles.itemPressed, focused && focusRing]}
+                      onPress={() => onFollowUser?.(person.id)}
+                      disabled={!onFollowUser}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Follow ${person.name}`}
+                      accessibilityState={{ disabled: !onFollowUser }}
+                    >
+                      <Text style={styles.followButtonText}>Follow</Text>
+                    </Pressable>
+                  </View>
+                );
+              })}
+            </View>
+          )}
+        </View>
       ) : null}
 
       {/* Artists, Top / A-Z toggle */}
@@ -498,6 +553,19 @@ const styles = StyleSheet.create({
   card: { backgroundColor: colors.surface, borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderColor: colors.line, padding: 14, ...shadow.card },
   cardHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 10 },
   cardTitle: { color: colors.textFaint, fontFamily: displayFont, fontSize: 11, letterSpacing: 1.35, fontWeight: "800" },
+  peopleCardHead: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 10, marginBottom: 10 },
+  peopleCardTitleWrap: { flex: 1, minWidth: 0 },
+  peopleCardSub: { color: colors.textDim, fontSize: 10.5, lineHeight: 14, marginTop: 3 },
+  peopleMark: { width: 30, height: 30, borderRadius: 10, alignItems: "center", justifyContent: "center", backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.line },
+  peopleList: { gap: 6 },
+  personRow: { minHeight: 52, flexDirection: "row", alignItems: "center", gap: 7 },
+  personIdentity: { minWidth: 0, flex: 1, flexDirection: "row", alignItems: "center", gap: 9, paddingVertical: 4, paddingHorizontal: 4, marginLeft: -4, borderRadius: radius.sm },
+  personCopy: { flex: 1, minWidth: 0 },
+  personName: { color: colors.text, fontFamily: displayFont, fontSize: 12.5, fontWeight: "800" },
+  personHandle: { color: colors.textDim, fontSize: 10.5, marginTop: 1 },
+  personReason: { color: colors.textFaint, fontSize: 9.5, marginTop: 2 },
+  followButton: { minHeight: 36, alignItems: "center", justifyContent: "center", paddingHorizontal: 10, borderRadius: radius.pill, backgroundColor: colors.amberStrong, borderWidth: 1, borderColor: colors.amber },
+  followButtonText: { color: "#1A1206", fontFamily: displayFont, fontSize: 10.5, fontWeight: "900" },
   seeAll: { color: colors.amber, fontSize: 12, fontWeight: "700" },
   toggle: { flexDirection: "row", backgroundColor: colors.bgElev, borderRadius: radius.pill, padding: 3, borderWidth: 1, borderColor: colors.line, boxShadow: "inset 0 1px 3px rgba(0,0,0,0.15)" },
   tgBtn: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: radius.pill },

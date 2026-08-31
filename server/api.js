@@ -140,6 +140,8 @@ import { ANALYTICS_MAX_RAW_ROWS, ANALYTICS_MAX_ROWS_PER_ACCOUNT, ANALYTICS_RETEN
 import { readGuestSearchAnalytics } from "./guestSearchAnalytics.js";
 import { guestSearchAnalyticsRoutes } from "./features/guestSearchAnalytics/guestSearchAnalyticsRoutes.js";
 import { suggestionRoutes } from "./features/suggestions/suggestionRoutes.js";
+import { createPeopleSuggestionService } from "./features/people/peopleSuggestionService.js";
+import { peopleSuggestionRoutes } from "./features/people/peopleSuggestionRoutes.js";
 import { artistMemorialRoutes } from "./features/artistMemorials/artistMemorialRoutes.js";
 import { createArtistMemorialRepository } from "./features/artistMemorials/artistMemorialRepository.js";
 import { createArtistMemorialService } from "./features/artistMemorials/artistMemorialService.js";
@@ -1226,6 +1228,7 @@ const SEEN_ORDINAL_SQL = `(SELECT COUNT(*) FROM posts s
       AND (s.created_at < p.created_at OR (s.created_at = p.created_at AND s.id <= p.id))) AS seen_ordinal`;
 const feedPostById = db.prepare(`
   SELECT p.*, u.name AS u_name, u.handle AS u_handle, u.initials AS u_initials, u.avatar_uri AS u_avatar, u.avatar_color AS u_color,
+    u.profile_updated_at AS u_profile_updated_at,
     u.role AS u_role,u.artist_name AS u_artist_name,
     (SELECT COUNT(*) FROM likes l JOIN users lu ON lu.id=l.user_id WHERE l.post_id=p.id AND ${activeAccountSql("lu")}) AS like_count,
     (SELECT COUNT(*) FROM comments c JOIN users cu ON cu.id=c.user_id
@@ -2387,7 +2390,7 @@ function postJson(p, viewerId) {
     id: p.id,
     userId: p.user_id,
     kind: p.kind || "review",
-    user: { name: p.u_name, handle: p.u_handle, initials: p.u_initials, avatarUri: safePublicProfileImage(p.user_id, p.u_avatar), avatarColor: p.u_color },
+    user: { name: p.u_name, handle: p.u_handle, initials: p.u_initials, avatarUri: safePublicProfileImage(p.user_id, p.u_avatar), avatarColor: p.u_color, profileUpdatedAt: Number(p.u_profile_updated_at) || 0 },
     artist: p.artist, venue: p.venue, city: p.city, date: p.date,
     artistKey: p.artist_key || null, artistPublicSlug, artistMbid: p.artist_mbid || null, venueKey: p.venue_key || null,
     // Guarded, like `song` below and like publicUser: one malformed column must
@@ -2450,7 +2453,7 @@ function withCommentPreviews(posts, viewerId) {
   const rows = db.prepare(`
     SELECT * FROM (
       SELECT c.post_id,c.id,c.user_id,c.text,c.parent_id,c.created_at,
-        u.name,u.initials,u.avatar_uri,u.avatar_color,u.role,u.verified,
+        u.name,u.initials,u.avatar_uri,u.avatar_color,u.role,u.verified,u.profile_updated_at,
         ROW_NUMBER() OVER (PARTITION BY c.post_id ORDER BY c.created_at DESC,c.id DESC) AS preview_rank
       FROM comments c JOIN users u ON u.id=c.user_id
       WHERE c.post_id IN (${placeholders}) AND c.removed=0 AND ${activeAccountSql("u")} ${blockSql}
@@ -2466,6 +2469,7 @@ function withCommentPreviews(posts, viewerId) {
       initials: comment.initials,
       avatarUri: safePublicProfileImage(comment.user_id, comment.avatar_uri),
       avatarColor: comment.avatar_color,
+      profileUpdatedAt: Number(comment.profile_updated_at) || 0,
       role: comment.role,
       verified: !!comment.verified,
       text: comment.text,
@@ -2975,6 +2979,8 @@ function publicHealthProjection(ctx) {
   };
 }
 
+const peopleSuggestionService = createPeopleSuggestionService(db, { projectUser: publicUser });
+
 function deploymentReadinessProjection() {
   // General liveness deliberately survives an optional media outage. Render's
   // release gate is stricter: once production explicitly enables video, a new
@@ -3183,6 +3189,11 @@ async function searchYouTubeTrack(ctx, input) {
 
 // route table: "METHOD /path" -> handler(ctx) ; :params exposed as ctx.params
 export const routes = {
+  ...peopleSuggestionRoutes({
+    service: peopleSuggestionService,
+    requireUser,
+    rateLimit: limit,
+  }),
   ...mediaAssetRoutes({ database: db, requireUser, now, cancelFinalizeJob: cancelVideoFinalizeJob }),
   ...mediaLegacyFinalizeRoutes({ database: db, requireUser, now }),
   ...artistArchiveRoutes({
@@ -4541,8 +4552,8 @@ export const routes = {
     const postTagEligibleOnly = ctx.query.scope === "post_tag";
     const viewer = requireUser(ctx);
     if (!postTagEligibleOnly) limit(ctx, "people-search", 120, 10 * 60 * 1000);
-    const cols = "id,name,handle,initials,avatar_uri,avatar_color,verified,role,home_city";
-    const map = (r) => ({ id: r.id, name: r.name, handle: r.handle, initials: r.initials, avatarUri: safePublicProfileImage(r.id, r.avatar_uri), avatarColor: r.avatar_color, verified: !!r.verified, role: r.role, home: { city: r.home_city } });
+    const cols = "id,name,handle,initials,avatar_uri,avatar_color,verified,role,home_city,profile_updated_at";
+    const map = (r) => ({ id: r.id, name: r.name, handle: r.handle, initials: r.initials, avatarUri: safePublicProfileImage(r.id, r.avatar_uri), avatarColor: r.avatar_color, verified: !!r.verified, role: r.role, home: { city: r.home_city }, profileUpdatedAt: Number(r.profile_updated_at) || 0 });
     if (postTagEligibleOnly) {
       limit(ctx, "post-tag-people", 120, 10 * 60 * 1000);
       let postId = null;
@@ -4799,10 +4810,10 @@ export const routes = {
 
   // ---- authoritative tour dates (provider imports + artist/admin batches) ----
   "GET /api/discovery/sidebar": (ctx) => {
+    if (ctx.user) limit(ctx, "discovery-sidebar", 120, 10 * 60 * 1000);
     const timestamp = now();
     const range = tourDateRangeRequest(ctx, timestamp);
-    if (!range) return discoverySidebar(ctx.user, { at: timestamp });
-    return discoverySidebar(ctx.user, {
+    const sidebar = !range ? discoverySidebar(ctx.user, { at: timestamp }) : discoverySidebar(ctx.user, {
       at: timestamp,
       eventLimit: range.limit,
       through: range.through,
@@ -4810,6 +4821,10 @@ export const routes = {
       countryCode: range.countryCode,
       country: range.country,
     });
+    return {
+      ...sidebar,
+      suggestedUsers: ctx.user ? peopleSuggestionService.list(ctx.user, { limit: 5 }) : [],
+    };
   },
 
   "GET /api/tourdates": (ctx) => {
@@ -4912,6 +4927,7 @@ export const routes = {
     const flagSql = staff ? `, (SELECT COUNT(*) FROM reports r WHERE r.target_type = 'post' AND r.target_id = p.id AND r.status = 'open') AS open_reports` : "";
     const found = db.prepare(`
       SELECT p.*, u.name AS u_name, u.handle AS u_handle, u.initials AS u_initials, u.avatar_uri AS u_avatar, u.avatar_color AS u_color,
+        u.profile_updated_at AS u_profile_updated_at,
         u.role AS u_role,u.artist_name AS u_artist_name,
         (SELECT COUNT(*) FROM likes l JOIN users lu ON lu.id=l.user_id WHERE l.post_id=p.id AND ${activeAccountSql("lu")}) AS like_count,
         (SELECT COUNT(*) FROM comments c JOIN users cu ON cu.id=c.user_id
@@ -5070,6 +5086,7 @@ export const routes = {
       args.push(batchLimit);
       return db.prepare(`
         SELECT p.*, u.name AS u_name, u.handle AS u_handle, u.initials AS u_initials, u.avatar_uri AS u_avatar, u.avatar_color AS u_color,
+          u.profile_updated_at AS u_profile_updated_at,
           u.role AS u_role,u.artist_name AS u_artist_name,
           EXISTS (SELECT 1 FROM post_media pm JOIN media_assets ma ON ma.id=pm.asset_id
             WHERE pm.post_id=p.id AND ma.kind='video') AS has_stable_video,
@@ -5137,6 +5154,7 @@ export const routes = {
     args.push(pageLimit + 1);
     const found = db.prepare(`
       SELECT p.*, u.name AS u_name, u.handle AS u_handle, u.initials AS u_initials, u.avatar_uri AS u_avatar, u.avatar_color AS u_color,
+        u.profile_updated_at AS u_profile_updated_at,
         u.role AS u_role,u.artist_name AS u_artist_name,
         (SELECT COUNT(*) FROM likes l JOIN users lu ON lu.id=l.user_id WHERE l.post_id=p.id AND ${activeAccountSql("lu")}) AS like_count,
         (SELECT COUNT(*) FROM comments c JOIN users cu ON cu.id=c.user_id
@@ -5622,7 +5640,7 @@ export const routes = {
     if (viewerId) args.push(viewerId, viewerId);
     if (cursor) args.push(cursor.createdAt, cursor.createdAt, cursor.id);
     args.push(limit + 1);
-    const found = db.prepare(`SELECT c.*, u.name, u.initials, u.avatar_uri, u.avatar_color, u.role, u.verified FROM comments c JOIN users u ON u.id=c.user_id
+    const found = db.prepare(`SELECT c.*, u.name, u.initials, u.avatar_uri, u.avatar_color, u.role, u.verified, u.profile_updated_at FROM comments c JOIN users u ON u.id=c.user_id
                              WHERE c.post_id=? AND c.removed=0 AND ${activeAccountSql("u")} ${blockSql} ${cursorSql}
                              ORDER BY c.created_at DESC, c.id DESC LIMIT ?`).all(...args);
     const { rows, nextCursor } = finishPage(found, limit);
@@ -5637,7 +5655,7 @@ export const routes = {
       const ids = [...new Set(pending.filter((id) => !byId.has(id)))].slice(0, 100);
       if (!ids.length) break;
       const placeholders = ids.map(() => "?").join(",");
-      const parents = db.prepare(`SELECT c.*,u.name,u.initials,u.avatar_uri,u.avatar_color,u.role,u.verified,u.is_banned,u.suspended_until
+      const parents = db.prepare(`SELECT c.*,u.name,u.initials,u.avatar_uri,u.avatar_color,u.role,u.verified,u.profile_updated_at,u.is_banned,u.suspended_until
         FROM comments c JOIN users u ON u.id=c.user_id
         WHERE c.post_id=? AND c.id IN (${placeholders})`).all(ctx.params.id, ...ids);
       pending = [];
@@ -5657,7 +5675,7 @@ export const routes = {
       } : {
         id: c.id, userId: c.user_id, name: c.name, initials: c.initials,
         avatarUri: safePublicProfileImage(c.user_id, c.avatar_uri), avatarColor: c.avatar_color, role: c.role,
-        verified: !!c.verified, text: c.text, deleted: false,
+        verified: !!c.verified, profileUpdatedAt: Number(c.profile_updated_at) || 0, text: c.text, deleted: false,
         parentId: c.parent_id || null, createdAt: c.created_at,
       });
     const removedIds = db.prepare("SELECT id FROM comments WHERE post_id=? AND removed=1 ORDER BY created_at DESC LIMIT 500")
@@ -5933,7 +5951,7 @@ export const routes = {
       .all(artist).map((row) => row.id);
 
     if (after) {
-      const found = db.prepare(`SELECT m.*, u.name, u.initials FROM fan_club_messages m JOIN users u ON u.id=m.user_id
+      const found = db.prepare(`SELECT m.*, u.name, u.initials, u.avatar_uri, u.avatar_color, u.profile_updated_at FROM fan_club_messages m JOIN users u ON u.id=m.user_id
                                WHERE m.artist=? AND m.removed=0 AND ${activeAccountSql("u")}
                                  AND NOT EXISTS (SELECT 1 FROM blocks b WHERE
                                    (b.blocker_id=? AND b.blocked_id=m.user_id) OR (b.blocker_id=m.user_id AND b.blocked_id=?))
@@ -5944,7 +5962,7 @@ export const routes = {
       const rows = hasMore ? found.slice(0, limit) : found;
       return {
         members,
-        messages: rows.map((m) => ({ id: m.id, userId: m.user_id, name: m.name, initials: m.initials, text: m.text, createdAt: m.created_at })),
+        messages: rows.map((m) => ({ id: m.id, userId: m.user_id, name: m.name, initials: m.initials, avatarUri: safePublicProfileImage(m.user_id, m.avatar_uri), avatarColor: m.avatar_color, profileUpdatedAt: Number(m.profile_updated_at) || 0, text: m.text, createdAt: m.created_at })),
         nextCursor: null,
         syncCursor: rows.length ? encodeCursor(rows.at(-1)) : String(ctx.query.after),
         hasMore,
@@ -5954,14 +5972,14 @@ export const routes = {
 
     const cursorSql = cursor ? "AND (m.created_at < ? OR (m.created_at = ? AND m.id < ?))" : "";
     const args = cursor ? [artist, u.id, u.id, cursor.createdAt, cursor.createdAt, cursor.id, limit + 1] : [artist, u.id, u.id, limit + 1];
-    const found = db.prepare(`SELECT m.*, u.name, u.initials FROM fan_club_messages m JOIN users u ON u.id=m.user_id
+    const found = db.prepare(`SELECT m.*, u.name, u.initials, u.avatar_uri, u.avatar_color, u.profile_updated_at FROM fan_club_messages m JOIN users u ON u.id=m.user_id
                              WHERE m.artist=? AND m.removed=0 AND ${activeAccountSql("u")}
                                AND NOT EXISTS (SELECT 1 FROM blocks b WHERE
                                  (b.blocker_id=? AND b.blocked_id=m.user_id) OR (b.blocker_id=m.user_id AND b.blocked_id=?))
                                ${cursorSql} ORDER BY m.created_at DESC, m.id DESC LIMIT ?`).all(...args);
     const { rows, nextCursor } = finishPage(found, limit);
     const syncCursor = !cursor && rows.length ? encodeCursor(rows[0]) : null;
-    return { members, messages: rows.reverse().map((m) => ({ id: m.id, userId: m.user_id, name: m.name, initials: m.initials, text: m.text, createdAt: m.created_at })), nextCursor, syncCursor, hasMore: false, removedIds };
+    return { members, messages: rows.reverse().map((m) => ({ id: m.id, userId: m.user_id, name: m.name, initials: m.initials, avatarUri: safePublicProfileImage(m.user_id, m.avatar_uri), avatarColor: m.avatar_color, profileUpdatedAt: Number(m.profile_updated_at) || 0, text: m.text, createdAt: m.created_at })), nextCursor, syncCursor, hasMore: false, removedIds };
   },
 
   "POST /api/fanclubs/:artist/messages": (ctx) => {
@@ -6050,7 +6068,7 @@ export const routes = {
       .all(key).map((row) => row.id);
 
     if (after) {
-      const found = db.prepare(`SELECT m.*, u.name, u.initials, u.avatar_uri, u.avatar_color, u.role FROM lounge_messages m JOIN users u ON u.id=m.user_id
+      const found = db.prepare(`SELECT m.*, u.name, u.initials, u.avatar_uri, u.avatar_color, u.role, u.profile_updated_at FROM lounge_messages m JOIN users u ON u.id=m.user_id
                                WHERE m.lounge_id=? AND m.removed=0 AND ${activeAccountSql("u")}
                                  AND NOT EXISTS (SELECT 1 FROM blocks b WHERE
                                    (b.blocker_id=? AND b.blocked_id=m.user_id) OR (b.blocker_id=m.user_id AND b.blocked_id=?))
@@ -6060,7 +6078,7 @@ export const routes = {
       const hasMore = found.length > limit;
       const rows = hasMore ? found.slice(0, limit) : found;
       return {
-        messages: rows.map((m) => ({ id: m.id, userId: m.user_id, name: m.name, initials: m.initials, avatarUri: safePublicProfileImage(m.user_id, m.avatar_uri), avatarColor: m.avatar_color, role: m.role, text: m.text, createdAt: m.created_at })),
+        messages: rows.map((m) => ({ id: m.id, userId: m.user_id, name: m.name, initials: m.initials, avatarUri: safePublicProfileImage(m.user_id, m.avatar_uri), avatarColor: m.avatar_color, role: m.role, profileUpdatedAt: Number(m.profile_updated_at) || 0, text: m.text, createdAt: m.created_at })),
         nextCursor: null,
         syncCursor: rows.length ? encodeCursor(rows.at(-1)) : String(ctx.query.after),
         hasMore,
@@ -6070,14 +6088,14 @@ export const routes = {
 
     const cursorSql = cursor ? "AND (m.created_at < ? OR (m.created_at = ? AND m.id < ?))" : "";
     const args = cursor ? [key, u.id, u.id, cursor.createdAt, cursor.createdAt, cursor.id, limit + 1] : [key, u.id, u.id, limit + 1];
-    const found = db.prepare(`SELECT m.*, u.name, u.initials, u.avatar_uri, u.avatar_color, u.role FROM lounge_messages m JOIN users u ON u.id=m.user_id
+    const found = db.prepare(`SELECT m.*, u.name, u.initials, u.avatar_uri, u.avatar_color, u.role, u.profile_updated_at FROM lounge_messages m JOIN users u ON u.id=m.user_id
                              WHERE m.lounge_id=? AND m.removed=0 AND ${activeAccountSql("u")}
                                AND NOT EXISTS (SELECT 1 FROM blocks b WHERE
                                  (b.blocker_id=? AND b.blocked_id=m.user_id) OR (b.blocker_id=m.user_id AND b.blocked_id=?))
                                ${cursorSql} ORDER BY m.created_at DESC, m.id DESC LIMIT ?`).all(...args);
     const { rows, nextCursor } = finishPage(found, limit);
     const syncCursor = !cursor && rows.length ? encodeCursor(rows[0]) : null;
-    return { messages: rows.reverse().map((m) => ({ id: m.id, userId: m.user_id, name: m.name, initials: m.initials, avatarUri: safePublicProfileImage(m.user_id, m.avatar_uri), avatarColor: m.avatar_color, role: m.role, text: m.text, createdAt: m.created_at })), nextCursor, syncCursor, hasMore: false, removedIds };
+    return { messages: rows.reverse().map((m) => ({ id: m.id, userId: m.user_id, name: m.name, initials: m.initials, avatarUri: safePublicProfileImage(m.user_id, m.avatar_uri), avatarColor: m.avatar_color, role: m.role, profileUpdatedAt: Number(m.profile_updated_at) || 0, text: m.text, createdAt: m.created_at })), nextCursor, syncCursor, hasMore: false, removedIds };
   },
   "POST /api/lounges/:key/messages": (ctx) => {
     const u = requireUser(ctx);

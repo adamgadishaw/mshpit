@@ -230,6 +230,10 @@ test("the Store rotates venue-photo privacy state on account, block, and unblock
     store.indexOf("const blockUser ="),
     store.indexOf("const blockedUsers =", store.indexOf("const blockUser =")),
   );
+  const blockHydrationBoundary = store.slice(
+    store.indexOf("const refreshBlockedDirectory ="),
+    store.indexOf("const blockUser =", store.indexOf("const refreshBlockedDirectory =")),
+  );
   const venueRead = store.slice(
     store.indexOf("const waitForVenuePhotoRequest ="),
     store.indexOf("const venuePhotos =", store.indexOf("const loadVenuePhotos =")),
@@ -240,7 +244,7 @@ test("the Store rotates venue-photo privacy state on account, block, and unblock
     "both block directions must hide fan photos before their writes begin");
   assert.ok((blockBoundary.match(/finishVenuePhotoPrivacyMutation\(id\)/gu) || []).length >= 4,
     "both confirmed writes and both rollback paths must refetch the authoritative graph");
-  assert.match(store, /blockedIdsRef\.current = ids;\s+setVenueReviews\([\s\S]*?rotateVenuePhotoPrivacyScope\(\{ accountId: su\.id, blockGraphAuthoritative: true \}\);\s+setBlockedIds\(ids\)/u,
+  assert.match(blockHydrationBoundary, /blockedIdsRef\.current = ids;\s+setVenueReviews\([\s\S]*?rotateVenuePhotoPrivacyScope\(\{ accountId, blockGraphAuthoritative: true \}\);\s+setBlockedIds\(ids\)/u,
     "authoritative block hydration must invalidate a pool fetched before hydration completed");
   assert.match(venueRead, /venuePhotoScopedCacheKey\(venueKey, viewerScope\)/u);
   assert.match(venueRead, /currentVenuePhotoViewerScope\(\) !== viewerScope/u,

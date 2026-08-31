@@ -39,10 +39,11 @@ during this preparation pass.
 - Native preview playback uses the SDK 56 `expo-audio` package on iOS/Android;
   the config disables microphone, recording, and background-audio capabilities.
   Web playback keeps its existing YouTube/HTML-audio path.
-- PIT-branded gold/black icon, splash, Android adaptive, monochrome, and favicon
-  assets are wired through the SDK 56 splash plugin. The generated v1 artwork
-  has provenance notes in `assets/PIT_BRAND_ASSETS.md` and still needs the
-  owner's final brand/trademark approval before a store upload.
+- MSHpit's white circular community mark on near-black icon, splash, Android
+  adaptive, monochrome, and favicon assets are wired through the SDK 56 splash
+  plugin. The v2 artwork has provenance notes in
+  `assets/PIT_BRAND_ASSETS.md` and still needs the owner's final
+  brand/trademark approval before a store upload.
 - Standalone, crawler-readable, unauthenticated HTML is implemented for
   `/privacy`, `/terms`, `/support`, and `/account-deletion`, including canonical
   metadata, sitemap entries, and matching in-app policy decisions.
@@ -81,9 +82,9 @@ during this preparation pass.
 These must be completed before the first external TestFlight review or App
 Store submission.
 
-1. **Approve or replace the v1 PIT artwork.** The repository no longer ships the
-   Expo starter art: generated PIT icon/splash/adaptive assets are configured and
-   mechanically tested. The owner must approve the design and confirm brand and
+1. **Approve the v2 MSHpit community mark.** The repository no longer ships the
+   Expo starter art: the owner-selected circular icon/splash/adaptive assets are
+   configured and mechanically tested. The owner must confirm brand and
    trademark rights, or replace it with final owned artwork before the first
    store upload. Keep the App Store icon square, opaque, 1024-by-1024, and without
    pre-rounded corners; visually inspect the signed build's icon and splash.

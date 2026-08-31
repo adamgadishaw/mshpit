@@ -12,6 +12,7 @@ import { api } from "../lib/api";
 import { accountTargetScope, scopedScreenValue } from "../domain/screenScope.mjs";
 import { normalizeLoungeMeta } from "../domain/showSocial.mjs";
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
+import { resolvePostAuthor } from "../domain/postAuthor.mjs";
 import useScopedRefresh from "../hooks/useScopedRefresh";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
 
@@ -226,7 +227,7 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
         {messages.length === 0 && <Text style={styles.empty}>No messages yet - say hi.</Text>}
         {messages.map((m) => {
           const mine = m.userId === session?.id;
-          const u = userById(m.userId) || { initials: m.initials, name: m.name };
+          const u = resolvePostAuthor({ userId: m.userId, cached: userById(m.userId), embedded: m });
           return (
             <View key={m.id} style={[styles.msgRow, mine && styles.msgRowMine]}>
               {!mine && <Avatar user={u} size={30} onPress={() => onOpenProfile?.(m.userId)} />}

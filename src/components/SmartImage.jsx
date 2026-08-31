@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { View, Image, StyleSheet, Pressable, Text } from "react-native";
+import { View, StyleSheet, Pressable, Text } from "react-native";
+import { Image as ExpoImage } from "expo-image";
 import { colors, mono } from "../theme";
 import Icon from "./Icon";
 import ClipPoster from "./ClipPoster";
@@ -13,7 +14,7 @@ import { proxied, isHttp, displaySrc, isVideoUrl } from "../lib/img";
 // Descriptor-declared clips (plus URL-only historical videos) render a play
 // tile instead of a broken image in every grid/wall/strip; tapping still opens
 // the viewer, which actually plays them.
-export default function SmartImage({ uri, posterUri = null, mediaKind = null, viewable = null, style, contain = true, onPress, previewWidth = 0, accessibilityLabel = "Open image", accessible = true }) {
+export default function SmartImage({ uri, posterUri = null, mediaKind = null, viewable = null, style, contain = true, onPress, previewWidth = 0, cachePolicy = "memory-disk", accessibilityLabel = "Open image", accessible = true }) {
   const [stage, setStage] = useState(0); // 0 preferred source, 1 fallback, 2 dead
   useEffect(() => setStage(0), [uri, previewWidth]);
   const fail = () => setStage((s) => s + 1);
@@ -37,9 +38,19 @@ export default function SmartImage({ uri, posterUri = null, mediaKind = null, vi
     </View>
   ) : (
     <>
-      {contain && <Image source={{ uri: src }} style={StyleSheet.absoluteFill} resizeMode="cover" blurRadius={28} accessible={false} />}
+      {contain && <ExpoImage source={{ uri: src }} style={StyleSheet.absoluteFill} contentFit="cover" blurRadius={28} cachePolicy={cachePolicy} recyclingKey={`smart-image-background:${src}`} accessible={false} />}
       {contain && <View style={[StyleSheet.absoluteFill, styles.scrim]} />}
-      <Image source={{ uri: src }} style={StyleSheet.absoluteFill} resizeMode={contain ? "contain" : "cover"} onError={fail} accessible={accessible} accessibilityLabel={accessible ? accessibilityLabel : undefined} />
+      <ExpoImage
+        source={{ uri: src }}
+        style={StyleSheet.absoluteFill}
+        contentFit={contain ? "contain" : "cover"}
+        cachePolicy={cachePolicy}
+        recyclingKey={`smart-image:${src}`}
+        transition={80}
+        onError={fail}
+        accessible={accessible}
+        accessibilityLabel={accessible ? accessibilityLabel : undefined}
+      />
     </>
   );
   if (onPress) return <Pressable style={[styles.base, style]} onPress={onPress} accessibilityRole="button" accessibilityLabel={accessibilityLabel}>{inner}</Pressable>;

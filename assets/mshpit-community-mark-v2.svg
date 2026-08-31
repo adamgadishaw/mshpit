@@ -1,7 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
   <title id="title">MSHpit community mark</title>
-  <desc id="desc">Two circles of concert fans gathered around a shared center.</desc>
-  <rect width="1024" height="1024" fill="#0d0b09"/>
+  <desc id="desc">A circle of concert fans gathered around a shared center.</desc>
   <defs>
     <g id="outer-person" fill="#ffffff">
       <circle cx="0" cy="-44" r="24"/>

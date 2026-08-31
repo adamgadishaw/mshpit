@@ -176,7 +176,7 @@ function Root() {
   const {
     session, authReady, addLog, editLog, userById, loadUser, visibleFeed, followingFeed, localFeed, refreshFeed, loadMoreFeed,
     feedHasMore, feedLoadingMore, notInterested, undoNotInterested, logout, exportMyData, userByHandle,
-    searchPeople, inboxUnread, accountStatus, track, unreadNotifications, recordPlay, playHistory,
+    searchPeople, inboxUnread, accountStatus, track, unreadNotifications, recordPlay, playHistory, isFollowing, follow, isBlocked,
     loadPlayHistory, saveQueueAsPlaylist, autoplayQueue, followingCount, resendEmailVerification,
     topArtists, artistsAlphabetical, upcomingEvents, discoverySidebar, discoverySidebarStatus, refreshDiscoverySidebar, refreshTourDates, tourDates, goingFor, myAttendance, refreshMyAttendance,
     remoteArtistMeta,
@@ -1329,7 +1329,7 @@ function Root() {
           />
           <Suspense fallback={<ScreenLoading />}>{overlay || tabScreens}</Suspense>
         </View>
-        {showRightRail && <RightRail railWidth={rightRailLayout.width} topArtists={topArtists} artistsAlphabetical={artistsAlphabetical} upcomingEvents={upcomingEvents} discoverySidebar={discoverySidebar} discoverySidebarStatus={discoverySidebarStatus} accountId={session?.id || null} homeCity={session?.home?.city} countdownPlan={homeCountdown} onOpenCountdown={openShow} onViewAllCountdown={() => go({ calendar: true })} onOpenArtist={openArtist} onOpenLounge={(lounge) => go({ lounge })} onOpenDiscover={() => switchTab("discover")} onOpenEvent={openShow} />}
+        {showRightRail && <RightRail railWidth={rightRailLayout.width} topArtists={topArtists} artistsAlphabetical={artistsAlphabetical} upcomingEvents={upcomingEvents} discoverySidebar={discoverySidebar} discoverySidebarStatus={discoverySidebarStatus} accountId={session?.id || null} homeCity={session?.home?.city} countdownPlan={homeCountdown} onOpenCountdown={openShow} onViewAllCountdown={() => go({ calendar: true })} onOpenArtist={openArtist} onOpenProfile={openProfile} onFollowUser={follow} isFollowing={isFollowing} isBlocked={isBlocked} onOpenLounge={(lounge) => go({ lounge })} onOpenDiscover={() => switchTab("discover")} onOpenEvent={openShow} />}
       </View>
     </View>
   );

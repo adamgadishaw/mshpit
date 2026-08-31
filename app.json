@@ -6,7 +6,7 @@
     "version": "1.0.0",
     "scheme": "mshpit",
     "orientation": "portrait",
-    "icon": "./assets/pit-icon-v1.png",
+    "icon": "./assets/pit-icon-v2.png",
     "userInterfaceStyle": "dark",
     "backgroundColor": "#0d0b09",
     "plugins": [
@@ -36,7 +36,7 @@
         "expo-splash-screen",
         {
           "backgroundColor": "#0d0b09",
-          "image": "./assets/pit-splash-icon-v1.png",
+          "image": "./assets/pit-splash-icon-v2.png",
           "imageWidth": 220,
           "resizeMode": "contain"
         }
@@ -97,13 +97,13 @@
       "versionCode": 1,
       "adaptiveIcon": {
         "backgroundColor": "#0d0b09",
-        "foregroundImage": "./assets/pit-android-foreground-v1.png",
-        "backgroundImage": "./assets/pit-android-background-v1.png",
-        "monochromeImage": "./assets/pit-android-monochrome-v1.png"
+        "foregroundImage": "./assets/pit-android-foreground-v2.png",
+        "backgroundImage": "./assets/pit-android-background-v2.png",
+        "monochromeImage": "./assets/pit-android-monochrome-v2.png"
       }
     },
     "web": {
-      "favicon": "./assets/pit-favicon-v1.png"
+      "favicon": "./assets/pit-favicon-v2.png"
     }
   }
 }

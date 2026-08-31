@@ -235,6 +235,7 @@ const EMPTY_DISCOVERY_SIDEBAR = Object.freeze({
   trendingVenues: Object.freeze([]),
   upcomingEvents: Object.freeze([]),
   popularLounges: Object.freeze([]),
+  suggestedUsers: Object.freeze([]),
   location: null,
   source: null,
 });
@@ -694,6 +695,11 @@ export function StoreProvider({ children }) {
     sanitizePersistedStoreValue("pit.blocked", load("pit.blocked", []), ENABLE_DEMO_DATA));
   const blockedIdsRef = useRef(blockedIds);
   blockedIdsRef.current = blockedIds;
+  if (blockedIdsRef.accountId === undefined) blockedIdsRef.accountId = session?.id || null;
+  if (!blockedIdsRef.status) blockedIdsRef.status = ENABLE_DEMO_DATA || !session?.id ? "ready" : "loading";
+  const blockedDirectoryStatus = blockedIdsRef.accountId === (session?.id || null)
+    ? blockedIdsRef.status
+    : session?.id ? "loading" : "ready";
   // This existing social-boundary ref also carries the current multi-account
   // follows payload, avoiding another lifecycle hook in the legacy Store.
   blockedIdsRef.follows = follows;
@@ -913,6 +919,8 @@ export function StoreProvider({ children }) {
       accountId: nextAccountId,
       blockGraphAuthoritative: ENABLE_DEMO_DATA || !nextAccountId,
     });
+    blockedIdsRef.accountId = nextAccountId || null;
+    blockedIdsRef.status = ENABLE_DEMO_DATA || !nextAccountId ? "ready" : "loading";
     accountMutationEpochRef.current += 1;
     // Rating aggregates include the viewer's `mine` field. Drop them at the
     // synchronous identity boundary instead of waiting for a passive effect.
@@ -1355,9 +1363,11 @@ export function StoreProvider({ children }) {
         trendingVenues: Array.isArray(data?.trendingVenues) ? data.trendingVenues : [],
         upcomingEvents: Array.isArray(data?.upcomingEvents) ? data.upcomingEvents : [],
         popularLounges: Array.isArray(data?.popularLounges) ? data.popularLounges : [],
+        suggestedUsers: Array.isArray(data?.suggestedUsers) ? data.suggestedUsers : [],
         location: data?.location || null,
         source: data?.source || null,
       };
+      absorbUsers(next.suggestedUsers.map((suggestion) => suggestion?.user).filter(Boolean));
       setDiscoverySidebarResource(resolveLoadState({ scope: requestScope, data: next }));
       return next;
     } catch (error) {
@@ -2410,17 +2420,7 @@ export function StoreProvider({ children }) {
       .then(({ following }) => { if (sessionRef.current?.id === su.id && Array.isArray(following)) setFollows((f) => ({ ...f, [su.id]: following })); })
       .catch(() => {});
     // Hydrate who this account has blocked (drives feed/DM/profile filtering).
-    api("/api/me/blocked")
-      .then(({ users: list }) => {
-        if (sessionRef.current?.id !== su.id || !Array.isArray(list)) return;
-        const ids = list.map((x) => x.id);
-        blockedIdsRef.current = ids;
-        setVenueReviews((groups) => withoutVenueReviewsByUsers(groups, ids));
-        rotateVenuePhotoPrivacyScope({ accountId: su.id, blockGraphAuthoritative: true });
-        setBlockedIds(ids);
-        absorbUsers(list);
-      })
-      .catch(() => {});
+    void refreshBlockedDirectory({ accountId: su.id });
     // The account-scoped feed effect restarts after setSession and owns the one
     // initial hydrate. Avoid a second request racing that immutable snapshot.
     // Slice 4: hydrate my DM threads (+ absorb the people I've messaged so their
@@ -3675,9 +3675,39 @@ export function StoreProvider({ children }) {
   // --- Blocks: a real block, not a mute. Server severs follows both ways, stops
   // DMs, hides posts; locally we mirror the list so the UI reacts instantly. ---
   const isBlocked = (id) => blockedIds.includes(id);
+  const isBlockMutationPending = (id) => venuePhotoCacheRef.current.privacy.pendingMutations.has(String(id));
+  const refreshBlockedDirectory = async ({ accountId = sessionRef.current?.id } = {}) => {
+    if (!accountId) return { ok: false };
+    blockedIdsRef.accountId = accountId;
+    blockedIdsRef.status = "loading";
+    setBlockedIds((current) => [...current]);
+    try {
+      const { users: list } = await api("/api/me/blocked", {
+        silent: true,
+        context: "Loading blocked accounts",
+        expectedAccountId: accountId,
+      });
+      if (sessionRef.current?.id !== accountId || !Array.isArray(list)) return { ok: false, stale: true };
+      const ids = list.map((user) => user.id).filter(Boolean);
+      blockedIdsRef.accountId = accountId;
+      blockedIdsRef.status = "ready";
+      blockedIdsRef.current = ids;
+      setVenueReviews((groups) => withoutVenueReviewsByUsers(groups, ids));
+      rotateVenuePhotoPrivacyScope({ accountId, blockGraphAuthoritative: true });
+      setBlockedIds(ids);
+      absorbUsers(list);
+      return { ok: true, users: list };
+    } catch (error) {
+      if (sessionRef.current?.id !== accountId) return { ok: false, stale: true };
+      blockedIdsRef.accountId = accountId;
+      blockedIdsRef.status = "error";
+      setBlockedIds((current) => [...current]);
+      return { ok: false, error };
+    }
+  };
   const blockUser = (id) => {
     if (!session || !id || isBlocked(id)
-      || venuePhotoCacheRef.current.privacy.pendingMutations.has(String(id))) return;
+      || isBlockMutationPending(id)) return Promise.resolve({ ok: false });
     const accountId = session.id;
     const mineBefore = follows[accountId] || [];
     const theirsBefore = follows[id] || [];
@@ -3685,6 +3715,7 @@ export function StoreProvider({ children }) {
     blockedIdsRef.current = nextBlocked;
     beginVenuePhotoPrivacyMutation(id);
     setBlockedIds(nextBlocked);
+    track("block");
     // Artist page snapshots are personalized by this block graph. Clear them
     // before React can render the optimistic boundary and reject older reads.
     invalidateArtistPageCache();
@@ -3692,7 +3723,7 @@ export function StoreProvider({ children }) {
     setVenueReviews((groups) => withoutVenueReviewsByUser(groups, id));
     // Sever locally the way the server does.
     setFollows((f) => ({ ...f, [accountId]: (f[accountId] || []).filter((x) => x !== id), [id]: (f[id] || []).filter((x) => x !== accountId) }));
-    api(`/api/users/${id}/block`, { method: "POST", body: { blocked: true }, context: "Blocking this account" })
+    return api(`/api/users/${id}/block`, { method: "POST", body: { blocked: true }, context: "Blocking this account" })
       .then(() => {
         scrubBlockedProfileHistoryPerson(accountId, id);
         if (sessionRef.current?.id !== accountId) return;
@@ -3711,26 +3742,27 @@ export function StoreProvider({ children }) {
         setLounge((groups) => Object.fromEntries(Object.entries(groups).map(([key, rows]) => [key, rows.filter((row) => row.userId !== id)])));
         setDms((threads) => { const next = { ...threads }; delete next[dmKey(accountId, id)]; return next; });
         setNotifications((rows) => rows.filter((notification) => notification.actorId !== id));
+        return { ok: true };
       })
-      .catch(() => {
+      .catch((error) => {
         if (sessionRef.current?.id !== accountId) return;
         const restored = blockedIdsRef.current.filter((x) => x !== id);
         blockedIdsRef.current = restored;
         finishVenuePhotoPrivacyMutation(id);
         setBlockedIds(restored);
         setFollows((f) => ({ ...f, [accountId]: mineBefore, [id]: theirsBefore }));
+        return { ok: false, error };
       });
-    track("block");
   };
   const unblockUser = (id) => {
     if (!session || !isBlocked(id)
-      || venuePhotoCacheRef.current.privacy.pendingMutations.has(String(id))) return;
+      || isBlockMutationPending(id)) return Promise.resolve({ ok: false });
     const accountId = session.id;
     const nextBlocked = blockedIdsRef.current.filter((x) => x !== id);
     blockedIdsRef.current = nextBlocked;
     beginVenuePhotoPrivacyMutation(id);
     setBlockedIds(nextBlocked);
-    api(`/api/users/${id}/block`, { method: "POST", body: { blocked: false }, context: "Unblocking this account" })
+    return api(`/api/users/${id}/block`, { method: "POST", body: { blocked: false }, context: "Unblocking this account" })
       .then(() => {
         // A block scrub leaves privacy tombstones in optimistic overlays. The
         // confirmed unblock must drop that account cache so the next visit can
@@ -3740,13 +3772,15 @@ export function StoreProvider({ children }) {
           finishVenuePhotoPrivacyMutation(id);
           invalidateArtistPageCache();
         }
+        return { ok: true };
       })
-      .catch(() => {
+      .catch((error) => {
         if (sessionRef.current?.id !== accountId) return;
         const restored = [...new Set([...blockedIdsRef.current, id])];
         blockedIdsRef.current = restored;
         finishVenuePhotoPrivacyMutation(id);
         setBlockedIds(restored);
+        return { ok: false, error };
       });
   };
   const blockedUsers = () => blockedIds.map((id) => userById(id)).filter(Boolean);
@@ -6168,7 +6202,7 @@ export function StoreProvider({ children }) {
     isFollowing, follow, unfollow, followerCount, followingCount, absorbUsers, searchPeople, loadMembers, memberCount,
     recentSearches, addRecentSearch, removeRecentSearch, clearRecentSearches,
     loadUser, followersOf, followingOf,
-    isBlocked, blockUser, unblockUser, blockedUsers, exportMyData,
+    isBlocked, blockUser, unblockUser, blockedUsers, blockedDirectoryStatus, refreshBlockedDirectory, isBlockMutationPending, exportMyData,
     searchArtistsApi, refreshArtistCatalogMetadata, attachArtistSuggestionApi, resolveArtist, remoteArtistMeta, artistDiscography, resolveYouTube, invalidateYouTube, youtubeVideoRejected, youtubeLookupStatus, resolveDeezerPreview,
     discoverChart, discoverGenres, discoverCountries, loadDiscoverOverview, loadDiscoverGenre, serverTime,
     artistSeenCount, reportTrack, adminSetTrackVideo, trackOverridesList, removeTrackOverride, loadModerationQueue, loadModerationConsole, loadMoreModerationConsole, moderateReport,

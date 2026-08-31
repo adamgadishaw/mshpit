@@ -49,6 +49,7 @@ export const RECOMMENDATION_SIGNAL_SQL = Object.freeze({
 const POST_SELECT = `
   SELECT p.*, u.name AS u_name, u.handle AS u_handle, u.initials AS u_initials,
     u.avatar_uri AS u_avatar, u.avatar_color AS u_color,
+    u.profile_updated_at AS u_profile_updated_at,
     u.role AS u_role,u.artist_name AS u_artist_name,
     (SELECT COUNT(*) FROM likes l JOIN users lu ON lu.id=l.user_id
       WHERE l.post_id=p.id AND ${activeAccountSql("lu")}) AS like_count,

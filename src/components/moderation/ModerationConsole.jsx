@@ -248,7 +248,7 @@ function ReportCard({ row, selfId, canBan, busy, confirmation, onRequest, onConf
             {reportedVideo ? (
               <View style={styles.reportedVideoPreview}><Icon name="play" size={24} color={colors.amber} /></View>
             ) : (
-              <SmartImage uri={reportedMedia} style={styles.reportedMediaPreview} contain={false} accessibilityLabel="Reported attachment preview" />
+              <SmartImage uri={reportedMedia} style={styles.reportedMediaPreview} contain={false} cachePolicy="none" accessibilityLabel="Reported attachment preview" />
             )}
             <Pressable
               accessibilityRole="link"

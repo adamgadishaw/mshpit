@@ -83,8 +83,9 @@ test("ticket composition reads like a concert keepsake instead of a generic acti
   assert.match(source, /colorRegister/);
   assert.match(source, /statusStamp/);
   assert.match(source, /keepsakeDateParts/);
-  assert.match(source, /TICKET_BRAND_MARK = require\("\.\.\/\.\.\/assets\/pit-favicon-v1\.png"\)/);
-  assert.match(source, /source=\{TICKET_BRAND_MARK\}/);
+  assert.match(source, /import BrandMark from "\.\/BrandMark"/);
+  assert.match(source, /<BrandMark size=\{20\} \/>/);
+  assert.doesNotMatch(source, /pit-favicon-v1|TICKET_BRAND_MARK/);
   assert.doesNotMatch(source, /brandMarkText|>M<\/Text>/);
   assert.doesNotMatch(source, /fontStyle: "italic"/);
   assert.match(source, /borderRadius: radius\.sm/);

@@ -1,29 +1,37 @@
-# PIT app icon asset record
+# MSHpit community-mark asset record
 
-Prepared: **2026-08-14**
+Prepared: **2026-08-31**
 
-These versioned files replace the Expo starter artwork in the native and web
-configuration:
+The v2 identity replaces the earlier P-shaped monogram with MSHpit's circular
+community mark: two rings of people surrounding an open center. The mark is a
+clean geometric vector reconstruction based on the visual reference supplied by
+the product owner on 2026-08-31. The compressed JPEG reference itself is not
+shipped in the application.
 
-- `pit-icon-v1.png` - opaque 1024 x 1024 App Store icon source.
-- `pit-splash-icon-v1.png` - transparent 1024 x 1024 splash foreground.
-- `pit-android-foreground-v1.png` - transparent adaptive-icon foreground.
-- `pit-android-background-v1.png` - solid `#0d0b09` adaptive background.
-- `pit-android-monochrome-v1.png` - alpha-only themed-icon mask.
-- `pit-favicon-v1.png` - 48 x 48 web favicon.
+Source artwork:
 
-The source mark was generated specifically for PIT with OpenAI image generation
-and then resized/converted locally. It does not incorporate a supplied
-third-party logo or stock photograph. The selected prompt was:
+- `mshpit-community-mark-v2.svg` - full transparent vector master.
+- `mshpit-community-mark-small-v2.svg` - simplified small-size vector master.
 
-> Make an ultra-simple geometric PIT icon: one bold gold P-shaped monogram
-> where the bowl is a circular concert pit and a single diagonal negative-space
-> spotlight cuts through it. Use only two or three flat shapes. Use a full-bleed
-> opaque near-black background and warm PIT gold. Keep it centered, legible at
-> 32 px, and safely padded for iOS masks. Do not add text, people, instruments,
-> rounded corners, borders, mockups, or watermarks.
+Generated platform assets:
 
-This record is engineering provenance, not trademark clearance. The owner must
-approve the mark and confirm the PIT name/mark before the first public store
-submission. A release-build device check is still required because Expo Go and
-development builds do not exactly reproduce the native splash screen.
+- `pit-community-mark-v2.png` - transparent 1024 x 1024 full mark.
+- `pit-community-mark-small-v2.png` - transparent 256 x 256 small mark.
+- `pit-icon-v2.png` - opaque 1024 x 1024 App Store icon source.
+- `pit-splash-icon-v2.png` - transparent 1024 x 1024 splash foreground.
+- `pit-android-foreground-v2.png` - transparent adaptive-icon foreground.
+- `pit-android-background-v2.png` - solid `#0d0b09` adaptive background.
+- `pit-android-monochrome-v2.png` - alpha-only themed-icon mask.
+- `pit-favicon-v2.png` - opaque 48 x 48 web favicon.
+
+The vector masters and all raster derivatives are reproducible with
+`node scripts/generate-brand-assets.mjs`. The social share card is reproducible
+with `node scripts/generate-og-image.mjs`. The stable public `/logo.svg` URL uses
+the same community geometry so existing indexed pages and structured-data links
+do not need to migrate.
+
+This record documents engineering provenance; it is not trademark clearance.
+The product owner supplied and selected the reference and must still confirm
+that MSHpit owns or is licensed to use the final mark before a public store
+submission. A release-build device check remains required because Expo Go and
+development builds do not exactly reproduce native icons or the splash screen.

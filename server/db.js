@@ -2743,6 +2743,9 @@ export function publicUser(u, { self = false, badges = false } = {}) {
     avatarColor: u.avatar_color,
     banner: u.banner,
     initials: u.initials,
+    // Public profile snapshots carry a monotonic version so clients can choose
+    // the freshest avatar/banner projection without cache-busting media URLs.
+    profileUpdatedAt: Number(u.profile_updated_at) || 0,
     genres: parseJsonArray(u.genres),
     favoriteArtists: parseJsonArray(u.favorite_artists),
     // Email verification is PRIVATE account state, unlike `verified` above which
