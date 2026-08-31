@@ -11,6 +11,7 @@ import { artistMeta, installIngestedCatalog } from "./seed/ingested";
 import { arenaVenues } from "./seed/arenas";
 import { ACHIEVEMENTS } from "./domain/badges.mjs";
 import { verifiedArtistGenre } from "./domain/genre.mjs";
+import { projectDiscoveryCatalogTotals, resolveDiscoveryCatalogTotal } from "./domain/discoveryCatalogTotals.mjs";
 import { buildArtistSummary } from "./domain/artistSummary.mjs";
 import { ENABLE_DEMO_DATA, remoteIdentityValidationEnabled } from "./config/runtime.mjs";
 import { MUSIC_PLAYER_ENABLED } from "./domain/musicPlayerAvailability.mjs";
@@ -236,6 +237,8 @@ const EMPTY_DISCOVERY_SIDEBAR = Object.freeze({
   upcomingEvents: Object.freeze([]),
   popularLounges: Object.freeze([]),
   suggestedUsers: Object.freeze([]),
+  landingMedia: Object.freeze([]),
+  catalogTotals: null,
   location: null,
   source: null,
 });
@@ -1364,6 +1367,8 @@ export function StoreProvider({ children }) {
         upcomingEvents: Array.isArray(data?.upcomingEvents) ? data.upcomingEvents : [],
         popularLounges: Array.isArray(data?.popularLounges) ? data.popularLounges : [],
         suggestedUsers: Array.isArray(data?.suggestedUsers) ? data.suggestedUsers : [],
+        landingMedia: Array.isArray(data?.landingMedia) ? data.landingMedia : [],
+        catalogTotals: projectDiscoveryCatalogTotals(data?.catalogTotals),
         location: data?.location || null,
         source: data?.source || null,
       };
@@ -5989,8 +5994,11 @@ export function StoreProvider({ children }) {
 
   const discoverStats = () => ({
     members: memberCount,
-    artists: artistMetadataRows().length,
-    venues: new Set([...Object.keys(arenaVenues), ...Object.keys(catalogVenues || {})]).size,
+    artists: resolveDiscoveryCatalogTotal(discoverySidebar?.catalogTotals?.artists, artistMetadataRows().length),
+    venues: resolveDiscoveryCatalogTotal(
+      discoverySidebar?.catalogTotals?.venues,
+      new Set([...Object.keys(arenaVenues), ...Object.keys(catalogVenues || {})]).size,
+    ),
     countries: catalogCountries(1).length,
     genres: new Set(artistMetadataRows().map((artist) => verifiedArtistGenre(artist)).filter(Boolean)).size,
   });

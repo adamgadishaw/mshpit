@@ -5,14 +5,16 @@ import { colors, mono } from "../theme";
 // separately from "the room" (sound/venue/crowd) so a bad-sounding room never
 // drags down an artist's live reputation.
 function Meter({ label, value, color }) {
+  const score = Number(value);
+  const saved = Number.isFinite(score) && score > 0;
   return (
     <View style={styles.meter}>
       <View style={styles.row}>
         <Text style={styles.label}>{label}</Text>
-        <Text style={[styles.val, { color }]}>{value.toFixed(1)}</Text>
+        <Text style={[styles.val, { color }]}>{saved ? score.toFixed(1) : "—"}</Text>
       </View>
       <View style={styles.track}>
-        <View style={[styles.fill, { width: `${(value / 5) * 100}%`, backgroundColor: color }]} />
+        <View style={[styles.fill, { width: `${saved ? (score / 5) * 100 : 0}%`, backgroundColor: color }]} />
       </View>
     </View>
   );

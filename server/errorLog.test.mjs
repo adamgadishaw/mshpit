@@ -130,6 +130,11 @@ test("stats count occurrences and distinct kinds", () => {
   assert.deepEqual(errorStats(Date.now() + 60_000), { occurrences: 0, kinds: 0 });
 });
 
+test("stable hyphenated public support codes are preserved", () => {
+  recordError({ code: "PIT-APP-001", status: 0, method: "POST", route: "/client/artist", cause: "RenderError.Web" });
+  assert.equal(recentErrors()[0].code, "PIT-APP-001");
+});
+
 test("windowed stats do not report a fingerprint's lifetime count as today's volume", () => {
   const currentHour = Math.floor(Date.now() / 3_600_000) * 3_600_000;
   const old = currentHour - 10 * 24 * 60 * 60 * 1000;

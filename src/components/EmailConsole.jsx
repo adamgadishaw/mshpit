@@ -28,7 +28,7 @@ const REASON_COPY = {
 };
 
 const TEMPLATE_LABELS = {
-  error_alert: "Server error digest",
+  error_alert: "App and server error digest",
   owner_approval_requested: "Owner approval request",
   owner_approval_receipt: "Owner security receipt",
   site_health_digest: "Site health digest",

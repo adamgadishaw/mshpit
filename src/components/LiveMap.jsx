@@ -34,6 +34,10 @@ const DARK_STYLE = [
   { featureType: "water", elementType: "geometry", stylers: [{ color: "#0a1626" }] },
   { featureType: "water", elementType: "labels.text.fill", stylers: [{ color: "#5b83a8" }] },
   { featureType: "administrative", elementType: "geometry", stylers: [{ color: "#28303f" }] },
+  // Country labels can land across Lake Ontario at the local zoom and read as
+  // though the lake itself is the United States. Keep city/neighborhood labels
+  // while removing that misleading large-area label.
+  { featureType: "administrative.country", elementType: "labels", stylers: [{ visibility: "off" }] },
   // City/town names, the important ones, brightest of all.
   { featureType: "administrative.locality", elementType: "labels.text.fill", stylers: [{ color: "#eef1f6" }] },
   { featureType: "administrative.neighborhood", elementType: "labels.text.fill", stylers: [{ color: "#aab2c2" }] },
@@ -107,8 +111,14 @@ export default function LiveMap({ points = [], highlight, focalName, label, onOp
   const [failed, setFailed] = useState(false);
   const [hover, setHover] = useState(null); // { x, y, point }
 
-  const clean = points.filter((p) => p && p.lat != null && p.lng != null);
-  const all = highlight && highlight.lat != null ? [...clean, { ...highlight, name: focalName, focal: true }] : clean;
+  const finitePoint = (point) => {
+    const lat = Number(point?.lat);
+    const lng = Number(point?.lng);
+    return Number.isFinite(lat) && Number.isFinite(lng) ? { ...point, lat, lng } : null;
+  };
+  const clean = (Array.isArray(points) ? points : []).map(finitePoint).filter(Boolean);
+  const focal = finitePoint(highlight);
+  const all = focal ? [...clean, { ...focal, name: focalName, focal: true }] : clean;
   // A signature that changes when the plotted set changes, so we re-fit.
   const sig = all.map((p) => `${p.name}:${p.lat.toFixed(4)},${p.lng.toFixed(4)}`).join("|");
 

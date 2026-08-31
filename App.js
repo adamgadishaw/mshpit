@@ -8,6 +8,7 @@ import { colors, mono, radius, themeIsDark } from "./src/theme";
 import { StoreProvider, useStore, isMod, isStaff } from "./src/store";
 import Icon from "./src/components/Icon";
 import ErrorBoundary from "./src/components/ErrorBoundary";
+import RuntimeErrorMonitor from "./src/components/RuntimeErrorMonitor";
 import FeedbackHost from "./src/components/FeedbackHost";
 import VerifyEmailBanner from "./src/components/VerifyEmailBanner";
 import { DesktopTopNav, RightRail } from "./src/components/Rails";
@@ -164,9 +165,12 @@ export default function App() {
   return (
     <SafeAreaProvider>
       <ErrorBoundary>
-        <StoreProvider>
-          <Root />
-        </StoreProvider>
+        <>
+          <RuntimeErrorMonitor />
+          <StoreProvider>
+            <Root />
+          </StoreProvider>
+        </>
       </ErrorBoundary>
     </SafeAreaProvider>
   );
@@ -1286,6 +1290,7 @@ function Root() {
                   onSettings={() => go({ settings: true })}
                   onOpenProfile={openProfile}
                   onOpen={openShow}
+                  onOpenPost={openPost}
                   onActivity={openNotifications}
                   onInbox={openInbox}
                   onCalendar={() => go({ calendar: true })}

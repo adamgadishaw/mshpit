@@ -764,11 +764,11 @@ export default function AdminScreen({ onClose }) {
               <View style={styles.stat}><Text style={[styles.statN, bannedCount ? { color: colors.danger } : null]}>{bannedCount}</Text><Text style={styles.statL}>banned</Text></View>
             </View>
 
-            {/* Aggregated server errors. One row per distinct problem, so the
+            {/* Aggregated app and server errors. One row per distinct problem, so the
                 count is the volume and the list is the work. */}
             {errorLog && (
               <View style={[styles.healthCard, errorLog.last24h?.occurrences > 0 && styles.healthCardBad]}>
-                <Text style={styles.healthTitle}>ERRORS</Text>
+                <Text style={styles.healthTitle}>APP + SERVER ERRORS</Text>
                 <Text style={[styles.healthState, { color: errorLog.last24h?.occurrences > 0 ? colors.danger : colors.good }]}>
                   {errorLog.last24h?.occurrences
                     ? `${errorLog.last24h.occurrences} in the last 24h across ${errorLog.last24h.kinds} kind${errorLog.last24h.kinds === 1 ? "" : "s"}.`

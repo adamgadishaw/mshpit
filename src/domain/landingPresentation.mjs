@@ -3,6 +3,12 @@ const boundedCount = (value) => {
   return Number.isFinite(number) ? Math.max(0, Math.trunc(number)) : 0;
 };
 
+const optionalCount = (value) => {
+  if (value == null || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.max(0, Math.trunc(number)) : null;
+};
+
 // PIT's landing voice should describe the actual product in a way another
 // music app could not borrow unchanged: remember the shows, express taste,
 // and find the next night through the people around them. Keep these lines in
@@ -44,18 +50,20 @@ export function landingLayoutMode({ width, height, fontScale = 1 } = {}) {
 // There is deliberately no account/member metric here: PIT should earn trust
 // by explaining the product, not by turning its signup total into social proof.
 export function landingProofItems({ venues, artists } = {}) {
+  const venueCount = optionalCount(venues);
+  const artistCount = optionalCount(artists);
   return [
     {
       key: "venues",
       icon: "pin",
       title: "VENUES",
-      detail: `${boundedCount(venues).toLocaleString("en-US")} concert venues`,
+      detail: venueCount == null ? "Concert venues to explore" : `${venueCount.toLocaleString("en-US")} concert venues`,
     },
     {
       key: "artists",
       icon: "music",
       title: "ARTISTS",
-      detail: `${boundedCount(artists).toLocaleString("en-US")} artists`,
+      detail: artistCount == null ? "Artists to explore" : `${artistCount.toLocaleString("en-US")} artists`,
     },
     {
       key: "ratings",

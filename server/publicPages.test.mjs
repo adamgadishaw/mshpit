@@ -87,7 +87,7 @@ test("trust-page metadata is canonical, brand-consistent, and does not invent po
 
   const privacyPage = structuredGraph(renderPublicPage("/privacy"))
     .find((node) => node["@id"].endsWith("#page"));
-  assert.equal(privacyPage.dateModified, "2026-08-27", "an exact published policy day is safe to expose");
+  assert.equal(privacyPage.dateModified, "2026-08-31", "an exact published policy day is safe to expose");
 
   for (const path of ["/community-guidelines", "/ratings-methodology", "/terms"]) {
     const html = renderPublicPage(path);
@@ -101,11 +101,14 @@ test("trust-page metadata is canonical, brand-consistent, and does not invent po
 
 test("privacy and terms mirror the dated in-app policies and expose support", () => {
   const privacy = renderPublicPage("/privacy");
-  assert.match(privacy, /Last updated August 27, 2026/);
+  assert.match(privacy, /Last updated August 31, 2026/);
   assert.match(privacy, /rolling 30-day period/);
   assert.match(privacy, /product analytics enabled/);
   assert.match(privacy, /daily aggregate counters/);
   assert.match(privacy, /cannot identify a unique visitor/);
+  assert.match(privacy, /Crash and reliability monitoring/);
+  assert.match(privacy, /does not contain the error message or stack trace/);
+  assert.match(privacy, /separate from optional product analytics/);
   assert.match(privacy, /suggestion box accepts an anonymous category/);
   assert.match(privacy, /Aggregate guest-search counters are retained for up to 90 days/);
   assert.match(privacy, /YouTube links shared in posts/);

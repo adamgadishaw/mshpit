@@ -1,5 +1,6 @@
 import { db, parseJsonArray } from "./db.js";
 import { postMediaStateByPost } from "./mediaAssets.js";
+import { catalogTotals } from "./catalogTotals.js";
 
 export const LANDING_MEDIA_DEFAULT_LIMIT = 8;
 export const LANDING_MEDIA_MAX_LIMIT = 12;
@@ -96,6 +97,13 @@ export function projectLandingMedia(rows, { limit, mediaBaseUrl } = {}) {
   return media;
 }
 
+const PUBLIC_LANDING_POST_ID = /^[A-Za-z0-9_-]{1,180}$/;
+
+export function landingMediaPublicPath(postId) {
+  const id = typeof postId === "string" ? postId.trim() : "";
+  return PUBLIC_LANDING_POST_ID.test(id) ? `/media/landing/${encodeURIComponent(id)}` : null;
+}
+
 export function landingCommunityMedia({ viewerId = null, limit, at = Date.now(), mediaBaseUrl = process.env.MEDIA_PUBLIC_BASE_URL } = {}) {
   const max = boundedLimit(limit);
   if (!mediaBaseUrl) return [];
@@ -161,24 +169,77 @@ export function landingCommunityMedia({ viewerId = null, limit, at = Date.now(),
   return projectLandingMedia(verifiedRows, { limit: max, mediaBaseUrl });
 }
 
+// Public responses carry only a first-party path. The underlying storage URL
+// stays server-side and is re-authorized when the bytes are requested.
+export function publicLandingCommunityMedia(options = {}) {
+  return landingCommunityMedia(options).flatMap(({ uri: _storageUrl, postId, ...item }) => {
+    const path = landingMediaPublicPath(postId);
+    return path ? [{ ...item, postId, path }] : [];
+  });
+}
+
+// Byte delivery repeats the publication checks instead of treating a URL from
+// an earlier JSON response as permanent authority. Turning showcase consent
+// off, making photos private, deleting/reporting the post, restricting the
+// account, or blocking the author therefore stops this first-party route.
+export function landingCommunityMediaSource({
+  postId,
+  viewerId = null,
+  at = Date.now(),
+  mediaBaseUrl = process.env.MEDIA_PUBLIC_BASE_URL,
+} = {}) {
+  const id = typeof postId === "string" ? postId.trim() : "";
+  if (!PUBLIC_LANDING_POST_ID.test(id) || !mediaBaseUrl) return null;
+  const timestamp = Number.isFinite(Number(at)) ? Number(at) : Date.now();
+  const viewer = viewerId ? String(viewerId) : null;
+  const blockSql = viewer ? `AND NOT EXISTS (
+    SELECT 1 FROM blocks b WHERE
+      (b.blocker_id=? AND b.blocked_id=p.user_id) OR
+      (b.blocker_id=p.user_id AND b.blocked_id=?)
+  )` : "";
+  const args = [id, timestamp];
+  if (viewer) args.push(viewer, viewer);
+  const row = db.prepare(`
+    SELECT p.id,p.user_id
+    FROM posts p JOIN users u ON u.id=p.user_id
+    WHERE p.id=? AND p.removed=0 AND p.photos_public=1 AND p.landing_showcase=1
+      AND p.kind='review'
+      AND EXISTS (
+        SELECT 1
+        FROM post_media pm
+        JOIN media_assets a ON a.id=pm.asset_id
+        JOIN media_objects source_ledger
+          ON source_ledger.owner_id=a.owner_id AND source_ledger.object_key=a.source_key
+        JOIN media_variants rv
+          ON rv.id=a.render_variant_id AND rv.asset_id=a.id
+        JOIN media_objects render_ledger
+          ON render_ledger.owner_id=a.owner_id AND render_ledger.object_key=rv.object_key
+        WHERE pm.post_id=p.id AND a.owner_id=p.user_id
+          AND a.kind='image' AND a.status='ready' AND a.render_state='ready'
+          AND source_ledger.status IN ('issued','associated')
+          AND rv.status='verified' AND rv.verification_origin='private_derivative_v1'
+          AND rv.public_url!=''
+          AND render_ledger.storage_scope='public'
+          AND render_ledger.status IN ('issued','associated')
+      )
+      AND u.email_verified_at>0
+      AND u.is_banned=0 AND (u.suspended_until IS NULL OR u.suspended_until<=?)
+      AND NOT EXISTS (SELECT 1 FROM reports r
+        WHERE r.target_type='post' AND r.target_id=p.id AND r.status='open')
+      ${blockSql}
+    LIMIT 1`).get(...args);
+  if (!row) return null;
+
+  const stableMedia = postMediaStateByPost(db, [row.id]);
+  const asset = (stableMedia.assetsByPost.get(row.id) || [])
+    .find((candidate) => candidate.kind === "image");
+  const url = trustedLandingImageUrl(asset?.url, {
+    authorId: row.user_id,
+    mediaBaseUrl,
+  });
+  return url ? { postId: row.id, url } : null;
+}
+
 export function landingTotals() {
-  const artistRow = db.prepare("SELECT COUNT(*) AS artists FROM artists").get();
-  // Count server-known public rooms rather than shipping the entire venue seed
-  // to every landing-page visitor for one number. Released event listings and
-  // visible concert posts are both legitimate evidence that a room is in PIT.
-  const venueRow = db.prepare(`
-    SELECT COUNT(*) AS venues FROM (
-      SELECT lower(trim(venue)) AS venue_key
-      FROM tour_dates
-      WHERE release_at<=? AND trim(coalesce(venue,''))!=''
-      UNION
-      SELECT lower(trim(venue)) AS venue_key
-      FROM posts
-      WHERE removed=0 AND trim(coalesce(venue,''))!=''
-    )
-  `).get(Date.now());
-  return {
-    artists: Math.max(0, Number(artistRow?.artists) || 0),
-    venues: Math.max(0, Number(venueRow?.venues) || 0),
-  };
+  return catalogTotals();
 }

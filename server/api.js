@@ -59,6 +59,7 @@ import { postTagRoutes } from "./postTagRoutes.js";
 import { artistReviewRoutes } from "./features/artistReviews/artistReviewRoutes.js";
 import { artistResolveRoutes } from "./features/artistSearch/artistResolveRoutes.js";
 import { artistArchiveRoutes } from "./features/artistArchive/artistArchiveRoutes.js";
+import { archiveShowKeyForPost } from "./features/artistArchive/postArchiveIdentity.js";
 import { accountPrivacyRoutes } from "./features/accountPrivacy/accountPrivacyRoutes.js";
 import { artistDiscographyRoutes } from "./features/artistDiscography/artistDiscographyRoutes.js";
 import { showAttendanceRoutes } from "./features/shows/showAttendanceRoutes.js";
@@ -149,7 +150,7 @@ import { artistDeathWatchRoutes } from "./features/artistDeathWatch/artistDeathW
 import { createArtistDeathWatchRepository } from "./features/artistDeathWatch/artistDeathWatchRepository.js";
 import { createArtistDeathWatchService } from "./features/artistDeathWatch/artistDeathWatchService.js";
 import { recommendedFeedPage } from "./recommendationService.js";
-import { hasTrustedLandingImage, landingCommunityMedia, landingTotals } from "./landingMedia.js";
+import { hasTrustedLandingImage, landingTotals, publicLandingCommunityMedia } from "./landingMedia.js";
 import { createSuccessfulReadinessCache } from "./healthAvailability.js";
 import { assertSafeAuthoredFields, assertSafeAuthoredText } from "./contentSafety.js";
 import { canonicalProfileExtras } from "./profileExtras.js";
@@ -186,6 +187,8 @@ import {
   emailOwnerApprovalRequest,
 } from "./ownerApprovals.js";
 import { ownerApprovalRoutes } from "./features/ownerApprovals/ownerApprovalRoutes.js";
+import { clientErrorRoutes } from "./features/clientErrors/clientErrorRoutes.js";
+import { createAlertDrainScheduler } from "./alertDrainScheduler.js";
 
 export { ApiError } from "./errors.js";
 
@@ -2393,6 +2396,7 @@ function postJson(p, viewerId) {
     user: { name: p.u_name, handle: p.u_handle, initials: p.u_initials, avatarUri: safePublicProfileImage(p.user_id, p.u_avatar), avatarColor: p.u_color, profileUpdatedAt: Number(p.u_profile_updated_at) || 0 },
     artist: p.artist, venue: p.venue, city: p.city, date: p.date,
     artistKey: p.artist_key || null, artistPublicSlug, artistMbid: p.artist_mbid || null, venueKey: p.venue_key || null,
+    archiveShowKey: archiveShowKeyForPost(p),
     // Guarded, like `song` below and like publicUser: one malformed column must
     // degrade that field, not throw while building the page and take the whole
     // feed down with it.
@@ -2979,6 +2983,12 @@ function publicHealthProjection(ctx) {
   };
 }
 
+// A crash storm owns one deferred digest drain, not one timer per browser.
+const clientCrashAlertDrain = createAlertDrainScheduler({ drain: () => maybeAlert() });
+function scheduleClientCrashAlert() {
+  clientCrashAlertDrain.schedule();
+}
+
 const peopleSuggestionService = createPeopleSuggestionService(db, { projectUser: publicUser });
 
 function deploymentReadinessProjection() {
@@ -3189,6 +3199,12 @@ async function searchYouTubeTrack(ctx, input) {
 
 // route table: "METHOD /path" -> handler(ctx) ; :params exposed as ctx.params
 export const routes = {
+  ...clientErrorRoutes({
+    ApiError,
+    onRecorded: scheduleClientCrashAlert,
+    rateLimit: limit,
+    recordError,
+  }),
   ...peopleSuggestionRoutes({
     service: peopleSuggestionService,
     requireUser,
@@ -4033,7 +4049,7 @@ export const routes = {
   "GET /api/landing/media": (ctx) => {
     ctx.setHeader?.("Cache-Control", "private, max-age=60");
     const timestamp = now();
-    const media = landingCommunityMedia({
+    const media = publicLandingCommunityMedia({
       viewerId: ctx.user?.id || null,
       limit: ctx.query?.limit,
       at: timestamp,
@@ -4825,6 +4841,10 @@ export const routes = {
     return {
       ...sidebar,
       suggestedUsers: ctx.user ? peopleSuggestionService.list(ctx.user, { limit: 5 }) : [],
+      // The logged-out landing reuses this already-required startup response.
+      // Only the explicit, safety-filtered homepage showcase projection is included;
+      // signed-in app surfaces do not download an unused hero reel.
+      landingMedia: ctx.user ? [] : publicLandingCommunityMedia({ viewerId: null, limit: 6, at: timestamp }),
     };
   },
 
@@ -6949,7 +6969,7 @@ export const routes = {
   // Full member directory for the admin console (includes banned) + live counts and
   // a per-region (home city) breakdown. This is what makes every real signup show
   // up in the Members tab so it can be verified / moderated.
-  // Aggregated server errors. Deduplicated by problem, so `count` is the volume
+  // Aggregated app and server errors. Deduplicated by problem, so `count` is the volume
   // and each row is one thing to fix.
   "GET /api/admin/errors": (ctx) => {
     requireAdmin(ctx);

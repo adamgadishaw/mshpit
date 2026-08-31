@@ -367,7 +367,7 @@ export function collectSiteHealthDigest(database, {
     `Backups: scheduled ${yesNo(backupEnabled)}; latest verified local snapshot age ${backupAgeHours === null ? "unavailable" : `${backupAgeHours}h`}; private off-host destination configured ${yesNo(offhostConfigured)}`,
     `Media: public and private storage configured ${yesNo(publicMediaConfigured && privateVideoConfigured)}; private-source privacy proof ready ${yesNo(privateIsolation.ready)}; video verifier ready ${yesNo(verifier.ready)}`,
     `Cleanup: retrying ${numberOrUnavailable(mediaRetry)}; dead-letter ${numberOrUnavailable(mediaDead)}`,
-    `Server faults: ${numberOrUnavailable(serverFaults24h?.occurrences)} occurrence(s) across ${numberOrUnavailable(serverFaults24h?.kinds)} serious pattern(s) in the hourly-bucketed last 24h`,
+    `App and server faults: ${numberOrUnavailable(serverFaults24h?.occurrences)} occurrence(s) across ${numberOrUnavailable(serverFaults24h?.kinds)} serious pattern(s) in the hourly-bucketed last 24h`,
     `Owner approvals: ${numberOrUnavailable(pendingOwnerApprovals)} pending`,
     `Attention codes: ${issues.length ? issues.join(", ") : "none"}${warnings.length ? `; watch codes: ${warnings.join(", ")}` : ""}`,
     "Coverage limit: this in-process check cannot prove public DNS, Render control-plane/build status, Google Workspace delivery, or reachability while the app is down. Keep external Render and uptime notifications enabled.",

@@ -90,7 +90,7 @@ This readout contains privacy-safe operational aggregates only. It excludes memb
     cta_url: "{{origin}}",
   },
   error_alert: {
-    subject: "Pit: errors on the server",
+    subject: "Pit: app and server errors",
     body: `{{summary}} since the last alert.
 
 {{detail}}

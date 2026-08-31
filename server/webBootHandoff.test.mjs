@@ -6,6 +6,7 @@ import test from "node:test";
 const template = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
 const bootSource = readFileSync(new URL("../public/mshpit-web-boot-v1.js", import.meta.url), "utf8");
 const appSource = readFileSync(new URL("../App.js", import.meta.url), "utf8");
+const entrySource = readFileSync(new URL("../index.js", import.meta.url), "utf8");
 
 function bootHarness() {
   const attributes = new Map();
@@ -138,4 +139,11 @@ test("the top-level Expo app completes the handoff in a layout effect", () => {
   assert.match(appBlock, /Platform\.OS !== "web"/);
   assert.match(appBlock, /__MSHPIT_WEB_BOOT__\?\.complete\?\.\(\)/);
   assert.match(appBlock, /\}, \[\]\);/);
+});
+
+test("the Expo entry removes only the injected SEO document before mounting", () => {
+  const clearAt = entrySource.indexOf("clearInjectedPublicDocument(document)");
+  const mountAt = entrySource.indexOf("registerRootComponent(App)");
+  assert.ok(clearAt >= 0 && mountAt > clearAt);
+  assert.match(entrySource, /typeof document !== "undefined"/);
 });

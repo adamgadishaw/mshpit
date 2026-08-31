@@ -53,7 +53,7 @@ const shaped = (value, pattern, fallback, max) => {
 // "SqliteError", "AbortError/SQLITE_BUSY" — an error identity, never a message.
 const CAUSE_RE = /^[A-Za-z][A-Za-z0-9_.]{0,38}(\/[A-Za-z0-9_.]{1,38})?$/;
 // A stable catalogue code.
-const CODE_RE = /^[A-Za-z][A-Za-z0-9_]{0,38}$/;
+const CODE_RE = /^[A-Za-z][A-Za-z0-9_-]{0,38}$/;
 // A route PATTERN. No query string, so no search terms or tokens can ride along.
 const ROUTE_RE = /^[A-Za-z0-9/:._-]{1,80}$/;
 const METHOD_RE = /^[A-Z]{3,7}$/;

@@ -18,6 +18,10 @@ test("concert memories remain parseable as an in-context accessible sheet", () =
   assert.match(modal, /accessibilityViewIsModal/);
   assert.match(modal, /onAccessibilityEscape=\{onClose\}/);
   assert.match(modal, /<SafeAreaView[\s\S]*?edges=\{\["bottom"\]\}/);
+  assert.match(modal, /useWindowDimensions\(\)/);
+  assert.match(modal, /desktop && styles\.overlayDesktop/);
+  assert.match(modal, /overlayDesktop:\s*\{[^}]*justifyContent:\s*"center"/s);
+  assert.match(modal, /sheetDesktop:\s*\{[^}]*borderRadius:\s*radius\.lg[^}]*borderBottomWidth:\s*1/s);
 });
 
 test("opening a memory stays on You until the member explicitly asks for the full show", () => {
@@ -26,16 +30,30 @@ test("opening a memory stays on You until the member explicitly asks for the ful
   assert.match(you, /onPress=\{\(\) => setMemorySelection\(\{ accountId: session\.id, memory \}\)\}/);
   assert.doesNotMatch(you, /onPress=\{\(\) => onOpen\?\.\(memory\.log\)\}/);
   assert.match(you, /onOpenFull=\{onOpen \? openMemoryBreakdown : null\}/);
+  assert.match(you, /onOpenPost=\{onOpenPost \? openMemoryPost : null\}/);
   assert.match(modal, />Full show breakdown<\/Text>/);
+  assert.match(modal, />Open your post<\/Text>/);
 });
 
-test("the memory sheet shows genuine summary, rating, review, and available media without loading show data", () => {
-  assert.match(modal, /mediaDisplayItems\(log\)\[0\]/);
+test("the memory sheet shows the owner post, full ratings, and manually browsed event media", () => {
+  assert.match(modal, /mediaDisplayItems\(log\)/);
+  assert.doesNotMatch(modal, /mediaDisplayItems\(log\)\[0\]/);
+  assert.match(modal, /accessibilityLabel="Previous event photo"/);
+  assert.match(modal, /accessibilityLabel="Next event photo"/);
+  assert.match(modal, /\{activeMediaIndex \+ 1\} \/ \{mediaCount\}/);
+  assert.doesNotMatch(modal, /setInterval|setTimeout/);
   assert.match(modal, /<Stars value=\{rating\}/);
   assert.match(modal, /text\(log\.review\)/);
   assert.match(modal, /<SmartImage/);
+  assert.match(modal, />YOUR POST<\/Text>/);
+  assert.match(modal, />YOUR RATING BREAKDOWN<\/Text>/);
+  assert.match(modal, /<RatingBreakdown dims=\{ratingDims\}/);
+  assert.match(modal, /<RatingSplit band=\{bandRating\} room=\{roomRating\}/);
   assert.match(modal, />Share<\/Text>/);
-  assert.doesNotMatch(modal, /useStore|\bapi\(|fetch\(/);
+  assert.match(you, /useArtistEventReviews\(\{/);
+  assert.match(you, /enabled:\s*!!selectedMemory && !!selectedArchiveShowKey/);
+  assert.match(you, /limit:\s*12/);
+  assert.match(you, /concertMemoryGallery\(selectedMemoryLog, selectedMemoryReviews\.data\?\.reviews, \{ limit: 12 \}\)/);
 });
 
 test("each exact show has one lifecycle-spanning Lounge and nearby maps are labeled plainly", () => {

@@ -88,11 +88,14 @@ test("landing keeps one stable scroll and owned-art shell while live discovery r
   const source = await read("../screens/LandingScreen.jsx");
   assert.equal((source.match(/<ScrollView\b/g) || []).length, 1);
   assert.doesNotMatch(source, /const Pitch =|<Pitch|landingScrollPitch|landingOverlayCredit/);
-  assert.match(source, /const \{ discoverStats, discoverySidebar \} = useStore\(\)/);
+  assert.match(source, /const \{ discoverySidebar \} = useStore\(\)/);
+  assert.doesNotMatch(source, /const catalogTotals = discoverStats\(\)/);
   assert.match(source, /discoverySidebar\?\.upcomingEvents/);
   assert.doesNotMatch(source, /setLandingLive|live\?\.upcomingEvents|\{ media, totals, live \}/);
   assert.match(source, /<Svg width="100%" height="100%"/);
-  assert.doesNotMatch(source, /\/api\/landing\/media|landingSlideUri|ExpoImage\.prefetch|styles\.inlineFoot/);
+  assert.doesNotMatch(source, /\/api\/landing\/media|landingSlideUri|styles\.inlineFoot/);
+  assert.equal((source.match(/ExpoImage\.prefetch\(/g) || []).length, 1,
+    "the landing may warm only the next first-party member photo");
   assert.match(source, /styles\.topbar, scrollPitch && styles\.topbarScrolled/);
 });
 

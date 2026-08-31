@@ -32,6 +32,7 @@ const GOOGLE_DARK_STYLE = [
   { feature: "water", element: "geometry", color: "0x0e1f31" },
   { feature: "water", element: "labels.text.fill", color: "0x1c3a55" },
   { feature: "administrative", element: "geometry", color: "0x2a3148" },
+  { feature: "administrative.country", element: "labels", visibility: "off" },
   { feature: "administrative.land_parcel", color: "0x0f131c" },
 ];
 

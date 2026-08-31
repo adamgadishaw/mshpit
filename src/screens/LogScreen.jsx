@@ -1700,7 +1700,7 @@ export default function LogScreen({
             return next;
           })}>
             <View style={[styles.check, landingShowcase && styles.checkOn]}>{landingShowcase && <Icon name="check" size={13} color="#1A1206" />}</View>
-            <Text style={styles.consentTxt}>Allow one of these public photos to appear in Mshpit community highlights or on the homepage. This also turns on public artist-page sharing. Mshpit will email you first, run safety checks, and credit your handle, the artist, and the venue.</Text>
+            <Text style={styles.consentTxt}>Allow one of these public photos to appear in Mshpit community highlights or on the homepage. This also turns on public artist-page sharing. Mshpit runs safety checks and credits your handle, the artist, and the venue. You can turn this off by editing the post.</Text>
           </Pressable>
         )}
         </View>

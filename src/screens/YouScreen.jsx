@@ -10,9 +10,11 @@ import { BadgeRow } from "../components/Badge";
 import { useStore, isStaff, isMod } from "../store";
 import { formatDate } from "../domain/dates.mjs";
 import { concertMemoryShareText, selectConcertMemories } from "../domain/concertMemories.mjs";
+import { concertMemoryGallery } from "../domain/concertMemoryGallery.mjs";
 import { profileManagementAction } from "../domain/artistWorkspace.mjs";
 import { selectConcertReviews } from "../domain/profileTimeline.mjs";
 import { useProfileHistory } from "../features/profileHistory/useProfileHistory";
+import { useArtistEventReviews } from "../features/artistEvents/useArtistEventArchive";
 
 const web = Platform.OS === "web";
 
@@ -32,7 +34,7 @@ function Reveal({ delay = 0, children, style }) {
 
 // The You tab is the private dashboard for memories, nearby activity, and
 // account tools. The public Profile screen owns live history, media, and posts.
-export default function YouScreen({ onLogin, onLogout, onManageProfile, onSettings, onAdmin, onRequestArtist, onOpenProfile, onOpen, onActivity, onInbox, onCalendar, onOpenNearby, homeCity }) {
+export default function YouScreen({ onLogin, onLogout, onManageProfile, onSettings, onAdmin, onRequestArtist, onOpenProfile, onOpen, onOpenPost, onActivity, onInbox, onCalendar, onOpenNearby, homeCity }) {
   const {
     session,
     logsByUser,
@@ -58,6 +60,22 @@ export default function YouScreen({ onLogin, onLogout, onManageProfile, onSettin
   const [refreshError, setRefreshError] = useState(false);
   const refreshControllerRef = useRef(null);
   const selectedMemory = memorySelection?.accountId === session?.id ? memorySelection.memory : null;
+  const selectedMemoryLog = selectedMemory?.log || null;
+  const selectedArchiveShowKey = selectedMemoryLog?.archiveShowKey || null;
+  const { resource: selectedMemoryReviews } = useArtistEventReviews({
+    accountId: session?.id || null,
+    name: selectedMemory?.artist || null,
+    artistKey: selectedMemoryLog?.artistKey || null,
+    showKey: selectedArchiveShowKey,
+    limit: 12,
+    enabled: !!selectedMemory && !!selectedArchiveShowKey,
+  });
+  const selectedMemoryGallery = useMemo(
+    () => concertMemoryGallery(selectedMemoryLog, selectedMemoryReviews.data?.reviews, { limit: 12 }),
+    [selectedMemoryLog, selectedMemoryReviews.data?.reviews],
+  );
+  const selectedMemoryGalleryLoading = !!selectedArchiveShowKey
+    && ["idle", "loading", "refreshing"].includes(selectedMemoryReviews.status);
 
   useEffect(() => {
     refreshControllerRef.current?.abort();
@@ -123,6 +141,10 @@ export default function YouScreen({ onLogin, onLogout, onManageProfile, onSettin
   const openMemoryBreakdown = (log) => {
     setMemorySelection(null);
     onOpen?.(log);
+  };
+  const openMemoryPost = (log) => {
+    setMemorySelection(null);
+    onOpenPost?.(log);
   };
 
   if (!session) {
@@ -317,8 +339,11 @@ export default function YouScreen({ onLogin, onLogout, onManageProfile, onSettin
     </VinylRefreshBoundary>
     <ConcertMemoryModal
       memory={selectedMemory}
+      gallery={selectedMemoryGallery}
+      galleryLoading={selectedMemoryGalleryLoading}
       onClose={() => setMemorySelection(null)}
       onOpenFull={onOpen ? openMemoryBreakdown : null}
+      onOpenPost={onOpenPost ? openMemoryPost : null}
       onShare={shareMemory}
     />
     </>

@@ -2,6 +2,7 @@ import { Component } from "react";
 import { View, Text, StyleSheet, Pressable, Platform, ScrollView } from "react-native";
 import { colors, focusRing, mono, radius } from "../theme";
 import { captureAppError } from "../lib/diagnostics";
+import { reportClientCrash } from "../lib/clientCrashReporter";
 
 // App-wide crash net. React unmounts a subtree when a render throws; without this
 // the user gets a blank/white screen and a refresh just re-runs the same crash
@@ -24,6 +25,7 @@ export default class ErrorBoundary extends Component {
       source: "react-boundary",
       toast: false,
     });
+    void reportClientCrash({ kind: "render" });
     this.setState({ appError });
   }
 

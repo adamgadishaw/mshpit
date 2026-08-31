@@ -100,6 +100,10 @@ import {
   isDisabledMusicPlayerApiRequest,
   MUSIC_PLAYER_ENABLED,
 } from "../src/domain/musicPlayerAvailability.mjs";
+import {
+  landingMediaPostIdFromPath,
+  serveLandingMediaRequest,
+} from "./landingMediaDelivery.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 3000;
@@ -510,6 +514,29 @@ const server = createServer(async (req, res) => {
         });
       }
       return serveCrawlerFile(req, res, pathname);
+    }
+
+    if (landingMediaPostIdFromPath(pathname)) {
+      routePattern = "/media/landing/:postId";
+      const token = parseCookies(req.headers.cookie)[ACTIVE_SESSION_COOKIE];
+      const sess = getSession(token);
+      const viewer = sess ? q.userById.get(sess.user_id) : null;
+      const mediaViewer = viewer?.id || `ip:${clientIp(req)}`;
+      if (!rateLimit(`landing-media:${mediaViewer}`, 180, 60 * 1000)) {
+        return send(res, 429, "Too many requests.", {
+          "Content-Type": "text/plain; charset=utf-8",
+          "Cache-Control": "no-store",
+          "Retry-After": "60",
+        });
+      }
+      return serveLandingMediaRequest({
+        req,
+        res,
+        pathname,
+        viewerId: viewer?.id || null,
+        signal: requestAbort.signal,
+        securityHeaders: HEADERS,
+      });
     }
 
     if (pathname.startsWith("/api/")) {

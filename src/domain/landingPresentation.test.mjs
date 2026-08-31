@@ -54,6 +54,13 @@ test("landing proof is truthful product context and never a member count", () =>
   assert.equal(/\busers?\b/.test(copy), false);
 });
 
+test("landing proof never turns an unknown loading state into a false zero", () => {
+  const items = landingProofItems();
+  assert.equal(items[0].detail, "Concert venues to explore");
+  assert.equal(items[1].detail, "Artists to explore");
+  assert.doesNotMatch(JSON.stringify(items), /\b0 (?:artists|concert venues)\b/);
+});
+
 test("landing identity describes the product in plain language", () => {
   assert.equal(landingKicker(false), "REMEMBER THE NIGHT. FIND WHAT'S NEXT.");
   assert.equal(landingKicker(true), "REMEMBER. RATE. DISCOVER.");

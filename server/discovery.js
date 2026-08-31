@@ -13,6 +13,7 @@ import {
 import { publicTicketmasterEventImage } from "./providerEventImage.js";
 import { publicTourDateVenueFields } from "./publicTourDateVenueProjection.js";
 import { publicTourDateProviderFields } from "./tourDateMetadata.js";
+import { catalogTotals } from "./catalogTotals.js";
 
 const norm = (value) => String(value || "").trim().toLowerCase();
 const radians = (degrees) => degrees * Math.PI / 180;
@@ -263,6 +264,7 @@ export function discoverySidebar(viewer, {
     upcomingEvents: events,
     trendingVenues,
     popularLounges: viewer ? popularLounges({ limit: loungeLimit, at: timestamp }) : [],
+    catalogTotals: catalogTotals({ at: timestamp }),
     location: home ? { city: home.city, lat: Number.isFinite(home.lat) ? home.lat : null, lng: Number.isFinite(home.lng) ? home.lng : null } : null,
     source: {
       tourDates: rows.length,

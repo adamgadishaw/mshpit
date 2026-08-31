@@ -1,6 +1,7 @@
 import PolicyScreen from "./PolicyScreen";
 import {
   ANNOUNCEMENT_EMAIL_DISCLOSURE,
+  CRASH_MONITORING_DISCLOSURE,
   MEDIA_AND_SESSION_SECURITY_DISCLOSURE,
   PRIVACY_POLICY_UPDATED,
   PROFILE_SEARCH_INDEXING_DISCLOSURE,
@@ -20,6 +21,7 @@ export default function PrivacyScreen({ onClose }) {
       sections={[
         { h: "Information you give us", p: "Account details (name, email, password, and the city you choose), your profile (bio, avatar, genres, and favorite artists), feed preferences such as Not for me, and everything you create on Pit: reviews, ratings, photos, comments, fan-club and lounge messages, direct messages, follows, and other content or settings you save. The suggestion box accepts an anonymous category, message, and optional general area of Pit; Pit does not attach the suggestion to an account or ask for contact details." },
         { h: "Information we collect automatically", p: "For signed-in accounts that have product analytics enabled, Pit records a limited, server-approved set of categorical events such as screen and feed usage, internal post impressions, opening content, time-range buckets, following, liking, and posting. Separately, when a guest searches, Pit increments daily aggregate counters for the search category, success or failure, and a coarse result-count range. These guest counters do not contain typed words, account or device identifiers, cookies, URLs, IP addresses, user agents, or exact request times, and cannot identify a unique visitor. Like every web service, Pit receives an IP address and basic request details when a device connects; those details may be processed briefly for security and rate limiting, but raw IP addresses are not retained in product analytics or suggestion records." },
+        { h: CRASH_MONITORING_DISCLOSURE.heading, p: CRASH_MONITORING_DISCLOSURE.paragraphs.join(" ") },
         { h: "Cookies & similar technologies", p: "Pit uses first-party session cookies and local storage to keep you signed in, restore navigation, remember preferences, and make the app work. Links to third-party services are governed by those services' own privacy and cookie policies when you open them. Most browsers let you clear or block stored data, though sign-in and other features may stop working." },
         { h: "How we use your data", p: "To provide and secure the service; deliver your feed, messages, local discovery, recommendations, search, and account support; understand aggregate feature health; develop new features; detect abuse and enforce our Terms; and communicate with you when needed." },
         { h: ANNOUNCEMENT_EMAIL_DISCLOSURE.heading, p: ANNOUNCEMENT_EMAIL_DISCLOSURE.paragraphs.join(" ") },

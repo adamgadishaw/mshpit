@@ -18,7 +18,13 @@ process.env.MEDIA_SECRET_ACCESS_KEY = "test-secret";
 const { db, q } = await import("./db.js");
 const { hashPassword } = await import("./auth.js");
 const { routes } = await import("./api.js");
-const { hasTrustedLandingImage, projectLandingMedia, trustedLandingImageUrl } = await import("./landingMedia.js");
+const {
+  hasTrustedLandingImage,
+  landingCommunityMediaSource,
+  landingMediaPublicPath,
+  projectLandingMedia,
+  trustedLandingImageUrl,
+} = await import("./landingMedia.js");
 const {
   attachPostMedia,
   createMediaAsset,
@@ -236,7 +242,26 @@ test("landing route requires verified stable images and excludes private, remove
   assert.equal(Object.hasOwn(result.totals, "members"), false);
   assert.equal(headers.get("Cache-Control"), "private, max-age=60");
   assert.ok(result.media.length <= 12);
-  assert.deepEqual(Object.keys(result.media[0]).sort(), ["artist", "credit", "id", "postId", "uri", "venue"]);
+  assert.deepEqual(Object.keys(result.media[0]).sort(), ["artist", "credit", "id", "path", "postId", "venue"]);
+  assert.equal(result.media.every((item) => item.path === landingMediaPublicPath(item.postId)), true);
+  assert.equal(result.media.some((item) => Object.hasOwn(item, "uri")), false);
+
+  const guestSidebar = routes["GET /api/discovery/sidebar"]({
+    user: null,
+    query: {},
+    setHeader() {},
+  });
+  assert.ok(Array.isArray(guestSidebar.landingMedia));
+  assert.equal(guestSidebar.landingMedia.every((item) => item.path.startsWith("/media/landing/")), true);
+  assert.equal(guestSidebar.landingMedia.some((item) => Object.hasOwn(item, "uri")), false);
+
+  assert.equal(
+    landingCommunityMediaSource({ postId: "landing_visible", viewerId: viewer.id })?.url,
+    verifiedMedia.url,
+  );
+  db.prepare("UPDATE posts SET landing_showcase=0 WHERE id=?").run("landing_visible");
+  assert.equal(landingCommunityMediaSource({ postId: "landing_visible", viewerId: viewer.id }), null);
+  db.prepare("UPDATE posts SET landing_showcase=1 WHERE id=?").run("landing_visible");
 });
 
 test("raw post floods cannot hide an older verified image before candidate ranking", async () => {

@@ -4,6 +4,7 @@
 // JavaScript, an account, local storage, or a working API.
 import {
   ANNOUNCEMENT_EMAIL_DISCLOSURE,
+  CRASH_MONITORING_DISCLOSURE,
   MEDIA_AND_SESSION_SECURITY_DISCLOSURE,
   PRIVACY_POLICY_UPDATED,
   PROFILE_SEARCH_INDEXING_DISCLOSURE,
@@ -173,6 +174,10 @@ const PAGES = Object.freeze({
           "Separately, when a guest searches, Pit increments daily aggregate counters for the search category, success or failure, and a coarse result-count range. These counters do not contain typed words, account or device identifiers, cookies, URLs, IP addresses, user agents, or exact request times, and cannot identify a unique visitor.",
           "Like every web service, Pit receives an IP address and basic request details when a device connects. Those details may be processed briefly for security and rate limiting, but raw IP addresses are not retained in product analytics or suggestion records.",
         ],
+      },
+      {
+        heading: CRASH_MONITORING_DISCLOSURE.heading,
+        paragraphs: [...CRASH_MONITORING_DISCLOSURE.paragraphs],
       },
       {
         heading: "Cookies and similar technologies",
