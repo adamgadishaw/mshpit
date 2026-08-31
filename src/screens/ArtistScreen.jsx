@@ -160,7 +160,7 @@ function TopReviewCard({ review, rank, artistName, onOpenPost, onOpenShow, onOpe
           </View>
         </View>
 
-        <Text style={styles.topReviewExcerpt} numberOfLines={3}>{String(review.review || "").trim() || "Shared a moment from the archive."}</Text>
+        <Text style={styles.topReviewExcerpt} numberOfLines={3}>{String(review.review || "").trim() || "Shared a concert memory."}</Text>
 
         <View style={styles.topReviewFooter}>
           {!memorialMode ? (
@@ -1090,7 +1090,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
             <View style={styles.galleryHeading}>
               <View style={{ flex: 1, minWidth: 0 }}>
                 <Text style={styles.sectionLabel}>PHOTOS & FAN GALLERY</Text>
-                <Text style={styles.bio}>{sectionModel.condensed ? "A quick look at public fan moments." : "Public fan shots and clips, alongside artist imagery. Private and moderated media stays out."}</Text>
+                <Text style={styles.bio}>{sectionModel.condensed ? "A quick look at public fan photos and videos." : "Public fan photos and videos, along with artist images. Private and moderated media is not shown."}</Text>
               </View>
               {onOpenGallery ? (
                 <Pressable

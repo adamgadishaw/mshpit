@@ -84,14 +84,15 @@ test("logged-out landing labels events worldwide and explains lounges without ac
   assert.doesNotMatch(source, /attendeeCount/);
 });
 
-test("landing keeps one stable scroll and credit shell while live discovery reveals inside it", async () => {
+test("landing keeps one stable scroll and owned-art shell while live discovery reveals inside it", async () => {
   const source = await read("../screens/LandingScreen.jsx");
   assert.equal((source.match(/<ScrollView\b/g) || []).length, 1);
   assert.doesNotMatch(source, /const Pitch =|<Pitch|landingScrollPitch|landingOverlayCredit/);
   assert.match(source, /const \{ discoverStats, discoverySidebar \} = useStore\(\)/);
   assert.match(source, /discoverySidebar\?\.upcomingEvents/);
   assert.doesNotMatch(source, /setLandingLive|live\?\.upcomingEvents|\{ media, totals, live \}/);
-  assert.match(source, /<View style=\{styles\.inlineFoot\}>/);
+  assert.match(source, /<Svg width="100%" height="100%"/);
+  assert.doesNotMatch(source, /\/api\/landing\/media|landingSlideUri|ExpoImage\.prefetch|styles\.inlineFoot/);
   assert.match(source, /styles\.topbar, scrollPitch && styles\.topbarScrolled/);
 });
 

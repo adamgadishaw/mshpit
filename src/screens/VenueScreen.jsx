@@ -125,7 +125,7 @@ export default function VenueScreen({ venueName, onClose, onOpenShow, onOpenArti
 
         {sectionModel.showUpcoming ? (
           venue.upcoming.length > 0 ? (
-            <Section title="Coming to this stage" kicker="UPCOMING HERE" count={venue.upcoming.length}>
+            <Section title="Upcoming shows" kicker="UPCOMING HERE" count={venue.upcoming.length}>
               <View style={styles.stack}>
                 {visibleUpcoming.map((event) => (
                   <UpcomingEventCard
@@ -191,7 +191,7 @@ export default function VenueScreen({ venueName, onClose, onOpenShow, onOpenArti
         ) : null}
 
         {sectionModel.showPhotos && gridPhotos.length > 0 ? (
-          <Section title="From the crowd" kicker="FAN PHOTOS" count={fullGridPhotos.length}>
+          <Section title="Fan photos" kicker="FAN PHOTOS" count={fullGridPhotos.length}>
             <View style={styles.photoGrid}>
               {gridPhotos.map((photo, index) => (
                 <SmartImage

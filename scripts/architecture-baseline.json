@@ -394,8 +394,8 @@
       "fingerprint": "04da77a68c2704ec8842"
     },
     "src/screens/LandingScreen.jsx": {
-      "count": 3,
-      "fingerprint": "64b8c4beaff4f10c859c"
+      "count": 1,
+      "fingerprint": "805f4cf2510a0fbb9e66"
     },
     "src/screens/PolicyScreen.jsx": {
       "count": 1,
@@ -430,10 +430,6 @@
     "src/screens/FanClubScreen.jsx": {
       "count": 1,
       "fingerprint": "141b6604603e8da6b251"
-    },
-    "src/screens/LandingScreen.jsx": {
-      "count": 1,
-      "fingerprint": "08ed2f55e311cce2a9aa"
     },
     "src/screens/LogScreen.jsx": {
       "count": 1,
@@ -498,10 +494,6 @@
     "src/screens/AdminScreen.jsx": {
       "count": 1,
       "fingerprint": "039cbb3caffd0e821ab6"
-    },
-    "src/screens/LandingScreen.jsx": {
-      "count": 1,
-      "fingerprint": "d24b0a7960ea22a7f0ec"
     },
     "src/store.js": {
       "count": 39,

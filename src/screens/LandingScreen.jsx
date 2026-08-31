@@ -4,88 +4,20 @@ import { Image as ExpoImage } from "expo-image";
 import Svg, { Defs, LinearGradient, Stop, Rect } from "react-native-svg";
 import { displayFont, focusRing, mono, radius } from "../theme";
 import Icon from "../components/Icon";
-import { api } from "../lib/api";
 import { useStore } from "../store";
-import { ENABLE_DEMO_DATA } from "../config/runtime.mjs";
-import { landingSlideUri, landingVisibleSlideIndices } from "../domain/menuJourney.mjs";
 import {
   LANDING_IDENTITY_COPY,
   landingKicker,
   landingLayoutMode,
   landingProofItems,
 } from "../domain/landingPresentation.mjs";
-import {
-  buildLandingSlideDeck,
-  landingCommunityAdvanceDelay,
-  landingCommunityFrameReady,
-  landingSlideFrame,
-  landingStockStartIndex,
-  rotateLandingFallbacks,
-} from "../domain/landingShowcase.mjs";
 import { liveEventTitle } from "../domain/liveDiscovery.mjs";
 import { HOME_JOURNEY_LINE } from "../domain/homeJourney.mjs";
 
 // ----------------------------------------------------------------------------
-// The opening act, the way real music apps do it: full-bleed live-show
-// photography with a slow cinematic drift, layered scrims for legibility, and
-// editorial type. Explicitly opted-in, safety-filtered community photos join the reel
-// after a dependable credited Unsplash first frame and fallback set.
+// The opening art is the owned SVG/gradient. Community media stays disabled
+// until Mshpit has a same-origin browser byte-serving route for those files.
 // ----------------------------------------------------------------------------
-
-const STOCK_SLIDES = [
-  {
-    id: "danny-howe-crowd",
-    uri: "https://images.unsplash.com/photo-1501386761578-eac5c94b800a?auto=format&fit=crop&w=2000&q=85",
-    credit: "Danny Howe · Unsplash",
-  },
-  {
-    id: "anthony-delanoix-stage",
-    uri: "https://images.unsplash.com/photo-1429962714451-bb934ecdc4ec?auto=format&fit=crop&w=2000&q=85",
-    credit: "Anthony Delanoix · Unsplash",
-  },
-  {
-    id: "yvette-de-wit-festival",
-    uri: "https://images.unsplash.com/photo-1470229722913-7c0e2dbbafd3?auto=format&fit=crop&w=2000&q=85",
-    credit: "Yvette de Wit · Unsplash",
-  },
-  {
-    id: "nicholas-green-concert",
-    uri: "https://images.unsplash.com/photo-1459749411175-04bf5292ceea?auto=format&fit=crop&w=1920&q=80",
-    credit: "Nicholas Green · Unsplash",
-  },
-  {
-    id: "aditya-chinchure-lights",
-    uri: "https://images.unsplash.com/photo-1516450360452-9312f5e86fc7?auto=format&fit=crop&w=1920&q=80",
-    credit: "Aditya Chinchure · Unsplash",
-  },
-  {
-    id: "vishnu-nair-stage",
-    uri: "https://images.unsplash.com/photo-1533174072545-7a4b6ad7a6c3?auto=format&fit=crop&w=1920&q=80",
-    credit: "Vishnu R Nair · Unsplash",
-  },
-  {
-    id: "aranxa-esteve-crowd",
-    uri: "https://images.unsplash.com/photo-1524368535928-5b5e00ddc76b?auto=format&fit=crop&w=1920&q=80",
-    credit: "Aranxa Esteve · Unsplash",
-  },
-  {
-    id: "yvette-de-wit-arena",
-    uri: "https://images.unsplash.com/photo-1540039155733-5bb30b53aa14?auto=format&fit=crop&w=1920&q=80",
-    credit: "Yvette de Wit · Unsplash",
-  },
-];
-const LANDING_SLIDE_COUNT = 8;
-const LANDING_SESSION_SEED = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-const SESSION_STOCK_SLIDES = rotateLandingFallbacks(STOCK_SLIDES, landingStockStartIndex({
-  at: Date.now(),
-  sessionSeed: LANDING_SESSION_SEED,
-  total: STOCK_SLIDES.length,
-}));
-const SLIDE_MS = 7000;
-const FADE_MS = 1600;
-const AnimatedExpoImage = Animated.createAnimatedComponent(ExpoImage);
-// Web-only GPU hints so the zoom is buttery (no-op on native).
-const WEB_SMOOTH = Platform.OS === "web" ? { willChange: "transform, opacity", backfaceVisibility: "hidden" } : null;
 
 function LandingAction({ kind = "ghost", title, icon, onPress, accessibilityHint, fullWidth = false }) {
   const [hovered, setHovered] = useState(false);
@@ -129,22 +61,6 @@ function WebPublicNav({ hidden = false, compact = false }) {
       <Text href="/artists" accessibilityRole="link" style={styles.publicNavLink}>Artists</Text>
       <Text href="/events" accessibilityRole="link" style={styles.publicNavLink}>Events</Text>
       <Text href="/about" accessibilityRole="link" style={styles.publicNavLink}>About</Text>
-    </View>
-  );
-}
-
-function LandingAttribution({ frame, caption, inline = false }) {
-  const community = frame?.source === "community";
-  return (
-    <View style={[styles.creditBlock, inline && styles.creditBlockInline]}>
-      {community && (
-        <View style={styles.communitySource}>
-          <View style={styles.communitySourceDot} />
-          <Text style={styles.communitySourceText}>FROM THE PIT</Text>
-        </View>
-      )}
-      {!!caption && <Text style={[styles.communityCaption, inline && styles.communityCaptionInline]} numberOfLines={2}>{caption}</Text>}
-      <Text style={styles.credit}>{frame?.credit || "MSHPIT"}</Text>
     </View>
   );
 }
@@ -193,9 +109,6 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse, onSuggestio
   const { width, height, fontScale } = useWindowDimensions();
   const { wide, compact, scrollPitch } = landingLayoutMode({ width, height, fontScale });
   const [reduceMotion, setReduceMotion] = useState(false);
-  const reduceMotionRef = useRef(reduceMotion);
-  const mountedAtRef = useRef(Date.now());
-  reduceMotionRef.current = reduceMotion;
 
   useEffect(() => {
     let mounted = true;
@@ -207,30 +120,7 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse, onSuggestio
     return () => { mounted = false; subscription?.remove?.(); };
   }, []);
 
-  // ---- slideshow: crossfade + Ken Burns drift ----
-  const [idx, setIdx] = useState(0);
-  const [hasAdvanced, setHasAdvanced] = useState(false);
-  const [slides, setSlides] = useState(() => buildLandingSlideDeck([], SESSION_STOCK_SLIDES, LANDING_SLIDE_COUNT));
-  const [failedCommunityIds, setFailedCommunityIds] = useState(() => new Set());
-  const idxRef = useRef(idx);
-  const hasAdvancedRef = useRef(hasAdvanced);
-  idxRef.current = idx;
-  hasAdvancedRef.current = hasAdvanced;
-  const fades = useRef(Array.from({ length: LANDING_SLIDE_COUNT }, (_, i) => new Animated.Value(i === 0 ? 1 : 0))).current;
-  const zooms = useRef(Array.from({ length: LANDING_SLIDE_COUNT }, () => new Animated.Value(0))).current;
   const pulse = useRef(new Animated.Value(0)).current;
-
-  // Advance one full interval after whichever frame became current. A recursive
-  // timeout (rather than a mount-anchored interval) means an early, prefetched
-  // community frame cannot be replaced again a few hundred milliseconds later.
-  useEffect(() => {
-    if (reduceMotion) return undefined;
-    const timer = setTimeout(() => {
-      setHasAdvanced(true);
-      setIdx((cur) => (cur + 1) % LANDING_SLIDE_COUNT);
-    }, SLIDE_MS);
-    return () => clearTimeout(timer);
-  }, [idx, reduceMotion]);
 
   // The headline glow is independent of slide timing, so resetting a slide's
   // deadline never tears down and recreates this animation.
@@ -248,98 +138,13 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse, onSuggestio
     return () => glow.stop();
   }, [pulse, reduceMotion]);
 
-  // Crossfade to the current slide (and slow push-in), reacting to idx AFTER render.
-  useEffect(() => {
-    if (reduceMotion) {
-      zooms[idx].setValue(0);
-      fades.forEach((fade, index) => fade.setValue(index === idx ? 1 : 0));
-      return;
-    }
-    zooms[idx].setValue(0);
-    Animated.timing(zooms[idx], { toValue: 1, duration: SLIDE_MS + FADE_MS + 600, easing: Easing.linear, useNativeDriver: Platform.OS !== "web" }).start();
-    fades.forEach((f, i) => {
-      Animated.timing(f, { toValue: i === idx ? 1 : 0, duration: FADE_MS + (i === idx ? 0 : 300), useNativeDriver: Platform.OS !== "web" }).start();
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [idx, reduceMotion]);
-
-  // Keep only the visible crossfade layers mounted. Once the current frame is
-  // settled, warm one correctly-sized next image rather than decoding the
-  // entire eight-photo reel on a phone's first render.
-  useEffect(() => {
-    const next = (idx + 1) % slides.length;
-    const frame = landingSlideFrame(slides[next], failedCommunityIds);
-    const timer = setTimeout(() => {
-      if (frame?.uri) void ExpoImage.prefetch(landingSlideUri(frame.uri, width), "disk").catch(() => {});
-    }, 900);
-    return () => clearTimeout(timer);
-  }, [failedCommunityIds, idx, slides, width]);
-
   const glowOp = pulse.interpolate({ inputRange: [0, 1], outputRange: [0.58, 1] });
-  // Production catalogue totals are server-owned. Account totals are
-  // intentionally not requested or presented as landing-page social proof.
-  const [catalogTotals, setCatalogTotals] = useState({ artists: 0, venues: 0 });
-  useEffect(() => {
-    const controller = new AbortController();
-    let earlyAdvanceTimer = null;
-    api("/api/landing/media?limit=7", { signal: controller.signal, silent: true, context: "Loading the community spotlight" })
-      .then(async ({ media, totals }) => {
-        if (controller.signal.aborted) return;
-        const nextDeck = buildLandingSlideDeck(media, SESSION_STOCK_SLIDES, LANDING_SLIDE_COUNT);
-        setSlides((current) => {
-          if (!hasAdvancedRef.current) return nextDeck;
-          // A very slow response must not replace the full-screen frame someone
-          // is already looking at. Preserve that slot and update the rest.
-          const visible = idxRef.current;
-          return nextDeck.map((slide, index) => index === visible ? (current[index] || slide) : slide);
-        });
-        const hasCommunity = nextDeck[1]?.source === "community";
-        setCatalogTotals({
-          artists: typeof totals?.artists === "number" ? totals.artists : 0,
-          venues: typeof totals?.venues === "number" ? totals.venues : 0,
-        });
-        const delay = landingCommunityAdvanceDelay({
-          mountedAt: mountedAtRef.current,
-          hasAdvanced: hasAdvancedRef.current,
-          hasCommunity,
-        });
-        if (delay == null) return;
-
-        const frame = nextDeck[1];
-        const minimumWindow = new Promise((resolve) => {
-          earlyAdvanceTimer = setTimeout(resolve, delay);
-          controller.signal.addEventListener("abort", resolve, { once: true });
-        });
-        const prefetchSucceeded = await ExpoImage
-          .prefetch(landingSlideUri(frame.uri, width), "disk")
-          .then(Boolean)
-          .catch(() => false);
-        if (controller.signal.aborted) return;
-        if (!prefetchSucceeded) {
-          setFailedCommunityIds((current) => current.has(frame.id) ? current : new Set([...current, frame.id]));
-          return;
-        }
-        await minimumWindow;
-        if (!landingCommunityFrameReady({
-          frame,
-          prefetchSucceeded,
-          aborted: controller.signal.aborted,
-          hasAdvanced: hasAdvancedRef.current,
-          reduceMotion: reduceMotionRef.current,
-        })) return;
-        setHasAdvanced(true);
-        setIdx(1);
-      })
-      .catch(() => {});
-    return () => {
-      controller.abort();
-      if (earlyAdvanceTimer) clearTimeout(earlyAdvanceTimer);
-    };
-  }, []);
-  const demoTotals = ENABLE_DEMO_DATA ? discoverStats() : null;
+  // Reuse the StoreProvider's already-loaded, bounded public projection. The
+  // landing screen itself performs no showcase or remote-media startup request.
+  const catalogTotals = discoverStats();
   const proofItems = landingProofItems({
-    artists: catalogTotals.artists || demoTotals?.artists || 0,
-    venues: catalogTotals.venues || demoTotals?.venues || 0,
+    artists: catalogTotals?.artists || 0,
+    venues: catalogTotals?.venues || 0,
   });
   // Discovery is already loaded once by StoreProvider. Reusing that bounded,
   // public projection avoids a second event-catalogue query during startup.
@@ -355,43 +160,11 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse, onSuggestio
   // It is always scrollable, while the viewport alone decides its alignment.
   const pitchContentStyle = wide
     ? (scrollPitch ? styles.scrollWideShort : styles.scrollWideHero)
-    : styles.scrollNarrow;
-  const currentFrame = landingSlideFrame(slides[idx], failedCommunityIds);
-  const currentCaption = currentFrame?.source === "community"
-    ? [currentFrame.artist, currentFrame.venue].filter(Boolean).join(" · ")
-    : "";
+    : [styles.scrollNarrow, compact && styles.scrollNarrowCompact];
 
   return (
     <View style={styles.wrap}>
-      {/* ---- photography ---- */}
-      {landingVisibleSlideIndices(idx, slides.length, hasAdvanced).map((i) => {
-        const slot = slides[i];
-        const s = landingSlideFrame(slot, failedCommunityIds);
-        if (!s) return null;
-        const scale = reduceMotion ? 1 : zooms[i].interpolate({ inputRange: [0, 1], outputRange: [1.02, 1.12] });
-        const drift = reduceMotion ? 0 : zooms[i].interpolate({ inputRange: [0, 1], outputRange: [0, i % 2 ? -18 : 18] });
-        return (
-          <AnimatedExpoImage
-            key={i}
-            source={{ uri: landingSlideUri(s.uri, width) }}
-            contentFit="cover"
-            cachePolicy="memory-disk"
-            priority={i === idx ? "high" : "low"}
-            recyclingKey={s.id}
-            transition={reduceMotion ? 0 : 180}
-            accessible={false}
-            onError={() => {
-              if (slot?.source !== "community") return;
-              setFailedCommunityIds((current) => current.has(slot.id) ? current : new Set([...current, slot.id]));
-            }}
-            // willChange/backfaceVisibility promote the layer to the GPU so the
-            // Ken Burns zoom composites smoothly instead of repainting each frame.
-            style={[StyleSheet.absoluteFill, WEB_SMOOTH, { opacity: fades[i], transform: [{ perspective: 1000 }, { scale }, { translateX: drift }] }]}
-          />
-        );
-      })}
-
-      {/* ---- scrims: readable type without killing the photo ---- */}
+      {/* ---- owned base art ---- */}
       <Svg width="100%" height="100%" style={[StyleSheet.absoluteFill, styles.noPointerEvents]}>
         <Defs>
           <LinearGradient id="scrimV" x1="0" y1="0" x2="0" y2="1">
@@ -442,10 +215,12 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse, onSuggestio
 
       {/* ---- the pitch ---- */}
       <ScrollView
-        style={[styles.content, styles.boxNonePointerEvents]}
+        style={styles.content}
         contentContainerStyle={pitchContentStyle}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
+        contentInsetAdjustmentBehavior="automatic"
+        automaticallyAdjustsScrollIndicatorInsets
       >
         <View style={wide ? styles.blockWide : styles.blockNarrow}>
           <View style={[styles.kickerRow, !wide && styles.kickerRowNarrow]}>
@@ -485,11 +260,11 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse, onSuggestio
 
           <View
             style={[styles.journeyRail, compact && styles.journeyRailCompact]}
-            accessibilityLabel={`${HOME_JOURNEY_LINE}. Find a show, attend it, log the night, share the memory, then connect with fans around that show.`}
+            accessibilityLabel={HOME_JOURNEY_LINE}
           >
             <Text style={styles.journeyEyebrow}>HOW MSHPIT WORKS</Text>
             <Text style={[styles.journeyLine, compact && styles.journeyLineCompact]}>{HOME_JOURNEY_LINE}</Text>
-            <Text style={styles.journeyDetail}>Choose a show, remember what it felt like, and meet the fans who were part of the night.</Text>
+            <Text style={styles.journeyDetail}>Artist and venue ratings stay separate, so your recommendations are clearer.</Text>
           </View>
 
           <View style={[styles.proofRail, compact && styles.proofRailCompact]} accessibilityLabel="Mshpit artist, venue, and rating features">
@@ -499,7 +274,10 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse, onSuggestio
                 style={[
                   styles.proofItem,
                   compact && styles.proofItemCompact,
-                  index > 0 && (compact ? styles.proofItemDividerCompact : styles.proofItemDivider),
+                  compact && index === 2 && styles.proofItemCompactFull,
+                  index > 0 && (compact
+                    ? (index === 2 ? styles.proofItemDividerCompactFull : styles.proofItemDividerCompactSide)
+                    : styles.proofItemDivider),
                 ]}
               >
                 <View style={styles.proofIcon}>
@@ -518,7 +296,7 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse, onSuggestio
               <View style={styles.liveRailHead}>
                 <View>
                   <Text style={styles.liveRailEyebrow}>HAPPENING ON MSHPIT</Text>
-                  <Text style={styles.liveRailTitle}>Shows ahead. Rooms waiting.</Text>
+                  <Text style={styles.liveRailTitle}>Upcoming concerts and show discussions</Text>
                 </View>
                 <View style={styles.worldPill}>
                   <Icon name="globe" size={12} color="#F2A65A" />
@@ -575,7 +353,7 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse, onSuggestio
               ]}
               onPress={onSuggestion}
               accessibilityRole="button"
-              accessibilityLabel="Tell Pit what would make you come back"
+              accessibilityLabel="Tell Mshpit what would make you come back"
               accessibilityHint="Opens the anonymous suggestion box"
             >
               <Icon name="comment" size={14} color="#F2A65A" />
@@ -584,12 +362,6 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse, onSuggestio
             </Pressable>
           )}
 
-          <View style={styles.inlineFoot}>
-            <View style={styles.slideRail} accessible={false}>
-              {slides.map((slide, index) => <View key={`${slide.id}:${index}`} style={[styles.slideDot, index === idx && styles.slideDotActive]} />)}
-            </View>
-            <LandingAttribution frame={currentFrame} caption={currentCaption} inline />
-          </View>
         </View>
       </ScrollView>
     </View>
@@ -597,7 +369,7 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse, onSuggestio
 }
 
 const styles = StyleSheet.create({
-  wrap: { flex: 1, backgroundColor: "#05060B", overflow: "hidden" },
+  wrap: { flex: 1, minHeight: 0, backgroundColor: "#05060B" },
 
   topbar: {
     position: "absolute", top: 0, left: 0, right: 0, zIndex: 5,
@@ -623,10 +395,11 @@ const styles = StyleSheet.create({
   },
   brandSub: { color: "rgba(244,239,231,0.58)", fontFamily: mono, fontSize: 8, lineHeight: 12, letterSpacing: 1.8, fontWeight: "800" },
 
-  content: { flex: 1, zIndex: 4 },
+  content: { flex: 1, minHeight: 0, zIndex: 4 },
   // grows to center the pitch when it fits, scrolls when large text makes it tall;
   // top padding always clears the brand/login bar.
-  scrollNarrow: { flexGrow: 1, justifyContent: "center", alignItems: "center", paddingHorizontal: 20, paddingTop: 96, paddingBottom: 26 },
+  scrollNarrow: { flexGrow: 1, justifyContent: "flex-start", alignItems: "center", paddingHorizontal: 20, paddingTop: 96, paddingBottom: 64 },
+  scrollNarrowCompact: { paddingBottom: 128 },
   scrollWideShort: { flexGrow: 1, justifyContent: "center", alignItems: "flex-start", paddingHorizontal: 72, paddingTop: 102, paddingBottom: 30 },
   scrollWideHero: { flexGrow: 1, justifyContent: "flex-end", alignItems: "flex-start", paddingHorizontal: 72, paddingTop: 102, paddingBottom: 30 },
   blockWide: { width: "100%", maxWidth: 720 },
@@ -720,11 +493,13 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     ...Platform.select({ web: { backdropFilter: "blur(14px)", boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04), 0 12px 30px rgba(0,0,0,0.24)" } }),
   },
-  proofRailCompact: { maxWidth: 360, flexDirection: "column" },
+  proofRailCompact: { maxWidth: 360, flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between" },
   proofItem: { flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 15, paddingVertical: 14 },
-  proofItemCompact: { flex: 0, width: "100%", minHeight: 56, paddingHorizontal: 14, paddingVertical: 11 },
+  proofItemCompact: { flexGrow: 0, flexShrink: 0, flexBasis: "48%", minWidth: 0, minHeight: 72, paddingHorizontal: 10, paddingVertical: 11 },
+  proofItemCompactFull: { flexBasis: "100%" },
   proofItemDivider: { borderLeftWidth: 1, borderLeftColor: "rgba(244,239,231,0.11)" },
-  proofItemDividerCompact: { borderTopWidth: 1, borderTopColor: "rgba(244,239,231,0.11)" },
+  proofItemDividerCompactSide: { borderLeftWidth: 1, borderLeftColor: "rgba(244,239,231,0.11)" },
+  proofItemDividerCompactFull: { borderTopWidth: 1, borderTopColor: "rgba(244,239,231,0.11)" },
   proofIcon: { width: 30, height: 30, borderRadius: 10, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(242,166,90,0.12)" },
   proofCopy: { flex: 1, minWidth: 0 },
   proofTitle: { color: "#F4EFE7", fontFamily: mono, fontSize: 10, lineHeight: 14, letterSpacing: 1.15, fontWeight: "900" },
@@ -766,25 +541,6 @@ const styles = StyleSheet.create({
   feedbackLinkFocused: { borderColor: "#F2A65A", borderWidth: 2 },
   feedbackLinkText: { color: "rgba(244,239,231,0.76)", fontSize: 12, fontWeight: "800" },
 
-  inlineFoot: { width: "100%", maxWidth: 360, alignItems: "center", marginTop: 22, gap: 12 },
-  slideRail: { flexDirection: "row", alignItems: "center", gap: 5 },
-  slideDot: { width: 4, height: 4, borderRadius: 4, backgroundColor: "rgba(244,239,231,0.27)" },
-  slideDotActive: { width: 24, backgroundColor: "#F2A65A" },
-  creditBlock: { alignItems: "flex-end", maxWidth: 360, gap: 2 },
-  creditBlockInline: { alignItems: "center", maxWidth: "100%" },
-  communitySource: { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 2 },
-  communitySourceDot: { width: 5, height: 5, borderRadius: 5, backgroundColor: "#F2A65A" },
-  communitySourceText: { color: "#F2A65A", fontFamily: mono, fontSize: 9, lineHeight: 12, letterSpacing: 1.5, fontWeight: "900" },
-  communityCaption: { color: "rgba(244,239,231,0.88)", fontFamily: displayFont, fontSize: 12, lineHeight: 16, fontWeight: "800", textAlign: "right" },
-  communityCaptionInline: { textAlign: "center" },
-  credit: { color: "rgba(215,218,228,0.78)", fontFamily: mono, fontSize: 10, lineHeight: 14, letterSpacing: 0.35 },
-
   noPointerEvents: { pointerEvents: "none" },
   boxNonePointerEvents: { pointerEvents: "box-none" },
-
-  foot: {
-    position: "absolute", bottom: 0, left: 0, right: 0, zIndex: 5,
-    flexDirection: "row", alignItems: "flex-end", justifyContent: "space-between",
-    paddingHorizontal: 28, paddingBottom: 16,
-  },
 });

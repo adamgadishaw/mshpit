@@ -368,7 +368,7 @@ export default function ArtistMemorialConsole({
       const artist = await artistResolveRef.current(query, { signal: controller.signal });
       if (controller.signal.aborted || resolveSequence.current !== sequence || scopeRef.current !== operationScope) return;
       if (!isMemorialDraftCandidate(artist)) {
-        throw new TypeError("Pit could not confirm a valid MusicBrainz identity for that artist. Check the full stage name and try again.");
+        throw new TypeError("Mshpit could not find an exact MusicBrainz match for that artist. Check the full stage name and try again.");
       }
       chooseCatalogArtist(artist);
       setResolveState({ scope: operationScope, query, status: "ready", error: "" });
@@ -672,7 +672,7 @@ export default function ArtistMemorialConsole({
         />
         <FormField
           label="Thank-you"
-          hint={`3-${ARTIST_MEMORIAL_LIMITS.thankYou} characters, written from the Pit community.`}
+          hint={`3-${ARTIST_MEMORIAL_LIMITS.thankYou} characters, shown as the tribute's closing message.`}
           value={form.thankYou}
           onChangeText={(value) => update("thankYou", value)}
           editable={!busy}

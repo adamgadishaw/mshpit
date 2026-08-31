@@ -177,7 +177,7 @@ export default function NearbyScreen({ onClose, onOpenVenue, onOpenArtist }) {
                 </View>
                 <View style={styles.sectionHead}>
                   <Text style={styles.sectionKicker}>{tab === "venues" ? "ROOMS IN RANGE" : "YOUR LOCAL LINEUP"}</Text>
-                  <Text style={styles.sectionTitle}>{tab === "venues" ? "Closest stages first" : "Shows worth leaving home for"}</Text>
+                  <Text style={styles.sectionTitle}>{tab === "venues" ? "Closest venues first" : "Upcoming shows near you"}</Text>
                 </View>
               </>
             )}

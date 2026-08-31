@@ -95,7 +95,7 @@ export default function ArtistCinematicCarousel({
       <View pointerEvents="none" style={styles.bottomScrim} />
 
       <View pointerEvents="none" style={styles.copy}>
-        <Text style={styles.kicker}>{current?.source === "fan" ? "FROM THE CROWD" : "FEATURED ARTIST"}</Text>
+        <Text style={styles.kicker}>{current?.source === "fan" ? "MSHPIT MEMBER PHOTO" : "FEATURED ARTIST"}</Text>
         <Text style={styles.credit} numberOfLines={1}>
           {current?.by ? `Photo by ${current.by}` : current ? "Artist imagery" : "More photos are on the way"}
         </Text>

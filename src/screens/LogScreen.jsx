@@ -339,7 +339,7 @@ export default function LogScreen({
         .catch(() => {
           if (!controller.signal.aborted && sequence === peopleRequestRef.current) {
             setPeopleHits([]);
-            setPeopleError("Friend search missed a beat. Try again.");
+            setPeopleError("Couldn't search for friends. Try again.");
           }
         })
         .finally(() => {
@@ -750,7 +750,7 @@ export default function LogScreen({
       const staged = pendingMediaAssets.filter((asset) => asset.durableLocalUri && !asset.assetId);
       const recoverableStaged = await recoverMediaDraftAssets(staged);
       if (recoverableStaged.length !== staged.length) {
-        throw new Error("A staged media file was removed by the device. Choose that item again before continuing.");
+        throw new Error("A selected photo or video is no longer available on this device. Choose it again before continuing.");
       }
       const recoveredIds = new Set(recoverableStaged.map((asset) => asset.id));
       const originals = pendingMediaAssets
@@ -785,7 +785,7 @@ export default function LogScreen({
       setSongUrl(result.song.url || url);
     } catch {
       setSong(null);
-      setSongError("That link missed the cue. Paste a YouTube watch, Shorts, or youtu.be link.");
+      setSongError("That YouTube link isn't supported. Paste a YouTube watch, Shorts, or youtu.be link.");
     } finally {
       setResolvingSong(false);
     }
@@ -947,7 +947,7 @@ export default function LogScreen({
     if (restoredPending.length) {
       void recoverMediaDraftAssets(restoredPending).then((recoverable) => {
         setPendingMediaAssets(recoverable.map((asset, index) => originalMediaProjectAsset(asset, index)));
-        if (recoverable.length < restoredPending.length) setMediaError("One staged media file was removed by the device. The rest of your draft is safe; choose that item again.");
+        if (recoverable.length < restoredPending.length) setMediaError("One selected photo or video is no longer available on this device. The rest of your draft is safe; choose that item again.");
       });
     }
     setShowSong(restored.panels.song); setShowPhotos(restored.panels.photos); setShowPeople(restored.panels.people || restored.taggedPeople.length > 0);

@@ -263,7 +263,7 @@ export function RightRail({
   const listingEmpty = discoverySidebarStatus === "loading"
     ? "Finding shows near you..."
     : discoverySidebarStatus === "error"
-      ? "The local lineup missed a beat. Reload the page to try again."
+      ? "Couldn't load nearby shows. Reload the page to try again."
       : discoverySidebar.source?.providerConfigured === false
         ? "Live listings are waiting for a ticket provider."
         : `No upcoming shows${localLabel} yet.`;

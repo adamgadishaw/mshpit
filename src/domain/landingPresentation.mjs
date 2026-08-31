@@ -14,8 +14,8 @@ export const LANDING_IDENTITY_COPY = Object.freeze({
   headline: "The shows you saw.",
   headlineAccent: "The taste you built.",
   body: "Remember every show with photos, ratings, and the people who were there. Discover your next night through fans whose taste you trust.",
-  signupAction: "Join the PIT",
-  browseAction: "Explore the PIT",
+  signupAction: "Create an account",
+  browseAction: "Browse shows and artists",
 });
 
 export function landingKicker(compact = false) {
@@ -49,19 +49,19 @@ export function landingProofItems({ venues, artists } = {}) {
       key: "venues",
       icon: "pin",
       title: "VENUES",
-      detail: `${boundedCount(venues).toLocaleString("en-US")} rooms in the PIT`,
+      detail: `${boundedCount(venues).toLocaleString("en-US")} concert venues`,
     },
     {
       key: "artists",
       icon: "music",
       title: "ARTISTS",
-      detail: `${boundedCount(artists).toLocaleString("en-US")} artists in the PIT`,
+      detail: `${boundedCount(artists).toLocaleString("en-US")} artists`,
     },
     {
       key: "ratings",
       icon: "star",
-      title: "BAND + ROOM",
-      detail: "Rate each separately",
+      title: "ARTIST + VENUE",
+      detail: "Rate the artist and venue separately",
     },
   ];
 }

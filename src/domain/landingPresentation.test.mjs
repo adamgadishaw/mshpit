@@ -43,22 +43,22 @@ test("landing uses scrolling, inline attribution on short and narrow viewports",
 
 test("landing proof is truthful product context and never a member count", () => {
   const items = landingProofItems({ venues: 123.9, artists: 456 });
-  assert.deepEqual(items.map(({ title }) => title), ["VENUES", "ARTISTS", "BAND + ROOM"]);
+  assert.deepEqual(items.map(({ title }) => title), ["VENUES", "ARTISTS", "ARTIST + VENUE"]);
   assert.deepEqual(items.map(({ detail }) => detail), [
-    "123 rooms in the PIT",
-    "456 artists in the PIT",
-    "Rate each separately",
+    "123 concert venues",
+    "456 artists",
+    "Rate the artist and venue separately",
   ]);
   const copy = JSON.stringify(items).toLowerCase();
   assert.equal(/\bmembers?\b/.test(copy), false);
   assert.equal(/\busers?\b/.test(copy), false);
 });
 
-test("landing identity is PIT-native rather than generic diary copy", () => {
+test("landing identity describes the product in plain language", () => {
   assert.equal(landingKicker(false), "REMEMBER THE NIGHT. FIND WHAT'S NEXT.");
   assert.equal(landingKicker(true), "REMEMBER. RATE. DISCOVER.");
-  assert.equal(LANDING_IDENTITY_COPY.signupAction, "Join the PIT");
-  assert.equal(LANDING_IDENTITY_COPY.browseAction, "Explore the PIT");
+  assert.equal(LANDING_IDENTITY_COPY.signupAction, "Create an account");
+  assert.equal(LANDING_IDENTITY_COPY.browseAction, "Browse shows and artists");
   assert.match(LANDING_IDENTITY_COPY.body, /remember every show/i);
   assert.match(LANDING_IDENTITY_COPY.body, /photos, ratings/i);
   assert.match(LANDING_IDENTITY_COPY.body, /fans whose taste you trust/i);

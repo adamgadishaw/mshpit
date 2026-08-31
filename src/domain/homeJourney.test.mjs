@@ -3,7 +3,7 @@ import test from "node:test";
 import { HOME_JOURNEY_LINE, HOME_JOURNEY_STEPS, homeGuideStorageKey } from "./homeJourney.mjs";
 
 test("the home journey teaches the complete concert-social loop in plain order", () => {
-  assert.equal(HOME_JOURNEY_LINE, "Find → Attend → Log → Share → Connect");
+  assert.equal(HOME_JOURNEY_LINE, "Find a show, log and rate it, share a review or photo, and connect with other fans.");
   assert.deepEqual(HOME_JOURNEY_STEPS.map((step) => step.key), ["find", "attend", "log", "share", "connect"]);
   assert.ok(HOME_JOURNEY_STEPS.every((step) => step.label && step.detail));
 });

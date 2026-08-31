@@ -727,7 +727,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
             ) : null}
             {archiveReviewResource.status === "error" && archiveReviews.length === 0 ? (
               <Pressable style={styles.archiveReviewRetry} onPress={reloadArchiveReviews} accessibilityRole="button">
-                <Text style={styles.archiveReviewRetryText}>Reviews missed a beat. Try again</Text>
+                <Text style={styles.archiveReviewRetryText}>Couldn't load reviews. Try again</Text>
               </Pressable>
             ) : null}
             {archiveReviews.map((review) => {

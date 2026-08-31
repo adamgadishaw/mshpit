@@ -96,7 +96,7 @@ function TributeCopy({ tribute, artistName, expanded = false, onOpenSource, sour
 
       {expanded ? (
         <View style={styles.thankYouCard}>
-          <Text style={styles.sectionLabel}>FROM THE PIT COMMUNITY</Text>
+          <Text style={styles.sectionLabel}>TRIBUTE MESSAGE</Text>
           <Text selectable style={styles.thankYou}>{tribute.thankYou}</Text>
         </View>
       ) : null}
@@ -106,7 +106,7 @@ function TributeCopy({ tribute, artistName, expanded = false, onOpenSource, sour
           onPress={onOpenSource}
           accessibilityRole="link"
           accessibilityLabel={`Open memorial source${tribute.citation.title ? `: ${tribute.citation.title}` : ""}`}
-          accessibilityHint="Opens the verified source outside Pit"
+          accessibilityHint="Opens the verified source outside Mshpit"
           style={({ pressed, focused }) => [styles.source, pressed && styles.pressed, focused && focusRing]}
         >
           <Icon name="external" size={16} color={colors.cool} />

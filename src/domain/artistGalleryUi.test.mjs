@@ -32,6 +32,7 @@ test("cinematic artist media stays user-driven, reduced-motion aware, and decode
   assert.doesNotMatch(carousel, /setInterval|setTimeout|autoplay/);
   assert.match(carousel, /accessibilityLabel=\{`Previous \$\{artistName\} photo`\}/);
   assert.match(carousel, /accessibilityLabel=\{`Next \$\{artistName\} photo`\}/);
+  assert.match(carousel, /current\?\.source === "fan" \? "MSHPIT MEMBER PHOTO" : "FEATURED ARTIST"/);
 });
 
 test("artist hero copy stays clear of the profile-avatar punch-through", () => {

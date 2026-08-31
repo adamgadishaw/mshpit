@@ -5026,7 +5026,7 @@ export const routes = {
   "GET /api/posts/:id": (ctx) => {
     const row = feedPostById.get(ctx.params.id);
     if (!row || row.removed || blockedEitherWay(ctx.user?.id, row.user_id)) {
-      throw new ApiError(404, "That post left the stage.", "NOT_FOUND");
+      throw new ApiError(404, "That post is unavailable.", "NOT_FOUND");
     }
     const projected = attachViewerLikes(
       db,
@@ -5238,7 +5238,7 @@ export const routes = {
     const u = requireUser(ctx);
     limit(ctx, "post-edit", 60, 60 * 60 * 1000);
     const current = db.prepare("SELECT * FROM posts WHERE id=? AND removed=0").get(ctx.params.id);
-    if (!current) throw new ApiError(404, "That post left the stage. Refresh the feed and try again.", "NOT_FOUND");
+    if (!current) throw new ApiError(404, "That post is unavailable. Refresh the feed and try again.", "NOT_FOUND");
     // Author-only, deliberately including admins: a review is someone's own
     // words, and moderation removes content, it never rewrites it.
     if (current.user_id !== u.id) {

@@ -140,9 +140,9 @@ function JourneyHero({ session, onProfile, onLogin, wide }) {
           style={({ pressed, focused }) => [styles.loginButton, pressed && styles.pressed, focused && focusRing]}
           onPress={onLogin}
           accessibilityRole="button"
-          accessibilityLabel="Log in or sign up to start your musical journey"
+          accessibilityLabel="Log in or sign up to start using Mshpit"
         >
-          <Text style={styles.loginText}>Start your journey</Text>
+          <Text style={styles.loginText}>Get started</Text>
           <Icon name="chevron-right" size={18} color="#1A1206" />
         </Pressable>
       )}
@@ -180,7 +180,7 @@ export default function MenuScreen({ onClose, onNear, onVenues, onFanClubs, onTo
 
   return (
     <View style={styles.wrap}>
-      <ScreenHeader kicker="MENU" title="Your journey" onBack={onClose} />
+      <ScreenHeader kicker="MENU" title="Menu" onBack={onClose} />
       <ScrollView
         contentInsetAdjustmentBehavior="automatic"
         contentContainerStyle={styles.content}

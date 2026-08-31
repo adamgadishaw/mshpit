@@ -33,7 +33,7 @@ export default function ConcertMemoryModal({ memory, onClose, onShare, onOpenFul
           <View style={styles.handle} />
           <View style={styles.topbar}>
             <View style={styles.topbarCopy}>
-              <Text style={styles.kicker}>{memory.kind === "anniversary" ? "ANNIVERSARY" : "BACK IN THE CROWD"}</Text>
+              <Text style={styles.kicker}>{memory.kind === "anniversary" ? "ANNIVERSARY" : "CONCERT MEMORY"}</Text>
               <Text style={styles.detail}>{memory.detail}</Text>
             </View>
             <Pressable accessibilityLabel="Close concert memory" accessibilityRole="button" hitSlop={10}

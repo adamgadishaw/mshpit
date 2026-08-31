@@ -14,7 +14,7 @@ export const HOME_JOURNEY_STEPS = Object.freeze([
   Object.freeze({ key: "connect", label: "Connect", detail: "Meet fans around the show." }),
 ]);
 
-export const HOME_JOURNEY_LINE = HOME_JOURNEY_STEPS.map((step) => step.label).join(" → ");
+export const HOME_JOURNEY_LINE = "Find a show, log and rate it, share a review or photo, and connect with other fans.";
 
 export function homeGuideStorageKey(accountId) {
   return `pit.home.guide.v1.${accountScope(accountId)}`;

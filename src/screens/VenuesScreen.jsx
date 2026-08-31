@@ -119,7 +119,7 @@ export default function VenuesScreen({ initialRegion = "Worldwide", onClose, onO
               <View style={styles.hero}>
                 <View style={styles.heroGlow} />
                 <Text style={styles.eyebrow}>YOUR NEXT FAVOURITE ROOM</Text>
-                <Text style={styles.heroTitle}>Find the stage before the lights go down.</Text>
+                <Text style={styles.heroTitle}>Find concert venues and upcoming shows.</Text>
                 <Text style={styles.heroBody}>Explore rooms by city, see where shows are landing, and learn which venues fans trust.</Text>
                 <View style={styles.statsRow}>
                   <DirectoryStat value={totals.venues} label="VENUES" />

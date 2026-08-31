@@ -351,7 +351,7 @@ export default function ClipsScreen({ onClose, onOpenPost, onOpenProfile, onOpen
       const result = await loadClips({ before: cursor, signal: controller.signal });
       if (controller.signal.aborted) return;
       if (!result?.ok) {
-        setLoadError("More clips missed the beat. Tap to retry.");
+        setLoadError("Couldn't load more clips. Tap to retry.");
         return;
       }
       setPages((prev) => {

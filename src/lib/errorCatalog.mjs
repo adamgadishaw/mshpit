@@ -50,8 +50,8 @@ export const ERROR_CATALOG = Object.freeze({
   "PIT-AUTH-004": Object.freeze({
     category: "authentication",
     severity: "warning",
-    title: "Your account changed stages",
-    message: "Pit stopped this request because the signed-in account changed while it was running.",
+    title: "Your signed-in account changed",
+    message: "Mshpit stopped this request because the signed-in account changed while it was running.",
     failurePoint: "Account identity",
     guidance: "Refresh, confirm the active account, then repeat the action.",
     retryable: false,
@@ -104,7 +104,7 @@ export const ERROR_CATALOG = Object.freeze({
   "PIT-REQ-002": Object.freeze({
     category: "not_found",
     severity: "warning",
-    title: "That act left the stage",
+    title: "This item is unavailable",
     message: "This item is no longer available, or the link is out of date.",
     failurePoint: "Requested record",
     guidance: "Go back and refresh the latest list.",
@@ -140,7 +140,7 @@ export const ERROR_CATALOG = Object.freeze({
   "PIT-RATE-001": Object.freeze({
     category: "rate_limit",
     severity: "warning",
-    title: "Give the crowd a beat",
+    title: "Please wait before trying again",
     message: "Too many requests arrived at once. Your next try should work after a short pause.",
     failurePoint: "Request limit",
     guidance: "Wait briefly before retrying.",
@@ -149,19 +149,19 @@ export const ERROR_CATALOG = Object.freeze({
   "PIT-SVC-001": Object.freeze({
     category: "service",
     severity: "error",
-    title: "Backstage hit a snag",
-    message: "Pit could not finish that action. Your error reference is ready for support.",
-    failurePoint: "Pit service",
+    title: "Something went wrong",
+    message: "Mshpit could not finish that action. Your error reference is ready for support.",
+    failurePoint: "Mshpit service",
     guidance: "Retry once. If it repeats, share the error code and request ID.",
     retryable: true,
   }),
   "PIT-SVC-002": Object.freeze({
     category: "provider",
     severity: "warning",
-    title: "A guest performer missed the cue",
+    title: "A connected service is unavailable",
     message: "A music or ticket provider is temporarily unavailable.",
     failurePoint: "External provider",
-    guidance: "Try again later; the rest of Pit should remain available.",
+    guidance: "Try again later; the rest of Mshpit should remain available.",
     retryable: true,
   }),
   "PIT-API-001": Object.freeze({
@@ -185,10 +185,10 @@ export const ERROR_CATALOG = Object.freeze({
   "PIT-UPLOAD-002": Object.freeze({
     category: "upload",
     severity: "warning",
-    title: "That format missed the guest list",
-    message: "Pit does not support this type of media yet.",
+    title: "This media type isn't supported",
+    message: "Mshpit does not support this type of media yet.",
     failurePoint: "Media validation",
-    guidance: "Choose a supported image format and try again.",
+    guidance: "Choose a supported media file and try again.",
     retryable: false,
   }),
   "PIT-UPLOAD-003": Object.freeze({
@@ -221,7 +221,7 @@ export const ERROR_CATALOG = Object.freeze({
   "PIT-STORE-001": Object.freeze({
     category: "storage",
     severity: "warning",
-    title: "The saved copy missed a beat",
+    title: "This change was not saved",
     message: "Mshpit could not save this change on this device.",
     failurePoint: "Device storage",
     guidance: "Check available storage, then retry.",
@@ -257,7 +257,7 @@ export const ERROR_CATALOG = Object.freeze({
   "PIT-APP-001": Object.freeze({
     category: "application",
     severity: "fatal",
-    title: "The stage lights went out",
+    title: "This screen stopped working",
     message: "This screen stopped unexpectedly. Your account data remains on the server.",
     failurePoint: "App rendering",
     guidance: "Try the screen again, reload, or share the error reference.",
@@ -266,8 +266,8 @@ export const ERROR_CATALOG = Object.freeze({
   "PIT-UNK-001": Object.freeze({
     category: "unknown",
     severity: "error",
-    title: "Something missed the beat",
-    message: "Pit could not complete that action, and saved a diagnostic reference.",
+    title: "Mshpit couldn't complete that action",
+    message: "Mshpit could not complete that action, and saved a diagnostic reference.",
     failurePoint: "Unknown client failure",
     guidance: "Retry once. If it repeats, share the error reference.",
     retryable: true,
