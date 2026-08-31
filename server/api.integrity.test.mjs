@@ -3634,7 +3634,12 @@ test("discovery sidebar returns real top artists and local-first shows and venue
     "Hamilton", "Ontario", "CA", "Ontario Summer Fair", "fair", 1,
     "ticketmaster:classification:music", '["Regional Artist"]', "2099-09-05", "America/Toronto");
 
-  const result = routes["GET /api/discovery/sidebar"]({ user });
+  const sidebarHeaders = {};
+  const result = routes["GET /api/discovery/sidebar"]({
+    user,
+    setHeader: (name, value) => { sidebarHeaders[name] = value; },
+  });
+  assert.equal(sidebarHeaders["Cache-Control"], "private, no-store");
   assert.ok(result.topArtists.length >= 3);
   assert.equal(result.upcomingEvents[0].id, "tm_sidebar_local");
   assert.equal(result.upcomingEvents[0].local, true);

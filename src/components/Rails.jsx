@@ -16,6 +16,7 @@ import {
 } from "../domain/rightRailEvents.mjs";
 import { liveEventTitle, localDiscoveryEvents } from "../domain/liveDiscovery.mjs";
 import { artistPath, eventPath, profilePath } from "../domain/urls.mjs";
+import { visibleSuggestedPitters } from "../domain/suggestedPitters.mjs";
 
 const NAV = [
   { key: "feed", label: "Feed", icon: "feed" },
@@ -257,9 +258,7 @@ export function RightRail({
     ? (discoverySidebar.topArtists?.length ? discoverySidebar.topArtists.slice(0, 8) : topArtists(8))
     : artistsAlphabetical(10);
   const lounges = Array.isArray(discoverySidebar.popularLounges) ? discoverySidebar.popularLounges.slice(0, 5) : [];
-  const suggestedUsers = (Array.isArray(discoverySidebar.suggestedUsers) ? discoverySidebar.suggestedUsers : [])
-    .filter((suggestion) => suggestion?.user?.id && !isFollowing?.(suggestion.user.id) && !isBlocked?.(suggestion.user.id))
-    .slice(0, 5);
+  const suggestedUsers = visibleSuggestedPitters(discoverySidebar.suggestedUsers, { isFollowing, isBlocked });
   const events = rightRailEventsForScope({
     scope: eventScope,
     nearEvents: localDiscoveryEvents(discoverySidebar.upcomingEvents, { limit: 6 }),

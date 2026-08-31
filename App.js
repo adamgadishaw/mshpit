@@ -1230,6 +1230,12 @@ function Root() {
                   loadingMore={feedLoadingMore}
                   countdownPlan={homeCountdown}
                   showHomeCountdown={!!session && !showRightRail}
+                  suggestedUsers={discoverySidebar?.suggestedUsers || []}
+                  suggestedUsersLoading={discoverySidebarStatus === "loading"}
+                  showSuggestedPitters={!!session && !showRightRail}
+                  onFollowUser={follow}
+                  isFollowing={isFollowing}
+                  isBlocked={isBlocked}
                   onOpenCountdown={openShow}
                   onViewAllCountdown={() => go({ calendar: true })}
                   onLogShow={() => requireVerifiedMutation("review", () => go({ logging: true }))}

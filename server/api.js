@@ -4810,6 +4810,7 @@ export const routes = {
 
   // ---- authoritative tour dates (provider imports + artist/admin batches) ----
   "GET /api/discovery/sidebar": (ctx) => {
+    ctx.setHeader?.("Cache-Control", "private, no-store");
     if (ctx.user) limit(ctx, "discovery-sidebar", 120, 10 * 60 * 1000);
     const timestamp = now();
     const range = tourDateRangeRequest(ctx, timestamp);
