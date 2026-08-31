@@ -73,6 +73,7 @@ import { getPendingImagePickerResult } from "./src/lib/imagePickerRecovery";
 import { lazyWithRetry } from "./src/lib/lazyWithRetry";
 import { artistPath, eventPath, parsePath, isPublicEntityPath } from "./src/domain/urls.mjs";
 import { shouldRestorePersistedStack } from "./src/domain/browserNavigation.mjs";
+import { initialLandingState, landingRenderSurface } from "./src/domain/landingStartup.mjs";
 import { publicNavigationLinks, shouldShowMobilePublicTrail } from "./src/domain/publicNavigationLinks.mjs";
 import {
   publicCollectionHydration,
@@ -469,17 +470,16 @@ function Root() {
   const scrubOwnerApprovalUrl = () => scrubSensitiveUrl("ownerApproval");
   const clearOwnerApprovalUrl = () => { scrubOwnerApprovalUrl(); setOwnerApprovalToken(null); };
   useEffect(() => { if (ownerApprovalToken) scrubOwnerApprovalUrl(); }, [ownerApprovalToken]);
-  // The concert opening screen: fresh visitors (and anyone who logs out) see it;
-  // "browse as guest" or logging in dismisses it. Guest choice persists.
-  const [landing, setLanding] = useState(() => (
-    !(web && (
-      isPublicEntityPath(window.location.pathname)
-      || window.location.pathname === "/artists"
-      || window.location.pathname === "/events"
-    ))
-    && !load("pit.entered", false)
-    && (ENABLE_DEMO_DATA ? !load("pit.session", null) : true)
-  ));
+  // A full web load of canonical `/` always begins at the opening screen until
+  // the cookie handshake confirms an account. Explicit public entity URLs still
+  // hydrate inside the app, and an Explore gesture dismisses landing for this
+  // mounted visit. Native keeps its existing persisted continuity behavior.
+  const [landing, setLanding] = useState(() => initialLandingState({
+    web,
+    pathname: web ? window.location.pathname : "",
+    demoEnabled: ENABLE_DEMO_DATA,
+    readPersisted: load,
+  }));
   const lastAnalyticsScreenRef = useRef({ accountId: null, screen: null });
   useEffect(() => {
     const screen = analyticsScreenKey({ landing, tab, nav });
@@ -1339,15 +1339,16 @@ function Root() {
   // music player at its current position and require an explicit Play afterward
   // instead of auto-resuming two audio surfaces on viewer close.
   const playerObscured = !!resetToken || !!ownerApprovalToken || !!welcome || !!nav.photos || (ENABLE_CLIPS && !!nav.clips);
+  const landingSurface = landingRenderSurface({ authReady, session, landing });
 
   return (
     <View style={styles.root}>
       <SafeAreaView style={styles.safe}>
         <StatusBar style={themeIsDark ? "light" : "dark"} />
 
-        {!authReady ? (
+        {landingSurface === "pending" ? (
           <ScreenLoading />
-        ) : landing && !session ? (
+        ) : landingSurface === "landing" ? (
           <LandingScreen
             onLogin={() => { enter(); go({ auth: true, authMode: "login" }); }}
             onSignup={() => { enter(); go({ auth: true, authMode: "signup" }); }}
