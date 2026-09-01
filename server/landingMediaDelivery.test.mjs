@@ -122,3 +122,21 @@ test("landing image delivery rejects an oversized verified derivative before str
   assert.equal(recorder.stream.status, 502);
   assert.equal(recorder.stream.headers["Cache-Control"], "no-store");
 });
+
+test("landing image delivery times out a stalled upstream request", async () => {
+  const recorder = responseRecorder();
+  await serveLandingMediaRequest({
+    req: { method: "GET", headers: {} },
+    res: recorder.stream,
+    pathname: "/media/landing/post_stalled",
+    resolveSource: () => ({ url: "https://media.example/users/u/post/stalled.jpg" }),
+    timeoutMs: 15,
+    fetchImpl: async (_url, { signal }) => new Promise((resolve, reject) => {
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    }),
+  });
+  await recorder.ended;
+  assert.equal(recorder.stream.status, 502);
+  assert.equal(recorder.stream.headers["Cache-Control"], "no-store");
+  assert.equal(recorder.body().toString(), "Photo unavailable.");
+});

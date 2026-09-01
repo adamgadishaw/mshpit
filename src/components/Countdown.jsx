@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Text } from "react-native";
 
 import { fmtCountdown } from "../lib/showTime";
@@ -13,18 +13,32 @@ import { fmtCountdown } from "../lib/showTime";
 // only thing React re-renders each second is this one Text node.
 //
 // `target` is the show's start in epoch ms, or null when it is unknown.
-export default function Countdown({ target, style, tonightLabel = "TONIGHT", fallback = "", active = true }) {
+export default function Countdown({ target, style, tonightLabel = "TONIGHT", fallback = "", active = true, onComplete }) {
   const [now, setNow] = useState(() => Date.now());
+  const onCompleteRef = useRef(onComplete);
+  const completedTargetRef = useRef(null);
+
+  // Keep the latest callback without making its identity part of the timer
+  // lifecycle. A parent render must not tear down and recreate this interval.
+  onCompleteRef.current = onComplete;
 
   useEffect(() => {
     if (!active || target == null) return undefined;
-    // Once the show has started there is nothing left to count, so the timer
-    // stops rather than ticking forever behind a static label.
-    if (target - Date.now() <= 0) return undefined;
+    const notifyIfComplete = (currentTime) => {
+      if (currentTime < target || completedTargetRef.current === target) return false;
+      completedTargetRef.current = target;
+      onCompleteRef.current?.();
+      return true;
+    };
+    const currentTime = Date.now();
+    setNow(currentTime);
+    // Once the show has started there is nothing left to count. Notify the
+    // owner once so it can advance to the next phase, then stay asleep.
+    if (notifyIfComplete(currentTime)) return undefined;
     const id = setInterval(() => {
-      const currentTime = Date.now();
-      setNow(currentTime);
-      if (currentTime >= target) clearInterval(id);
+      const tickTime = Date.now();
+      setNow(tickTime);
+      if (notifyIfComplete(tickTime)) clearInterval(id);
     }, 1000);
     return () => clearInterval(id);
   }, [active, target]);

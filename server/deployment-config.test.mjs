@@ -55,12 +55,17 @@ test("the test runner cannot inherit Render's hosted runtime or bootstrap approv
   assert.match(source, /env:\s*testEnvironment/);
 });
 
-test("Render promotes web releases only through the dependency-aware readiness contract", async () => {
+test("Render health checks stay core-only while manual release verification remains strict", async () => {
   const source = await readFile(new URL("render.yaml", ROOT), "utf8");
   const healthPaths = [...source.matchAll(/^\s*healthCheckPath:\s*(\S+)$/gm)].map((match) => match[1]);
-  assert.deepEqual(healthPaths, ["/api/readiness", "/api/readiness"]);
-  assert.doesNotMatch(source, /^\s*healthCheckPath:\s*\/api\/health$/m,
-    "general liveness must not promote a release before enabled video dependencies are ready");
+  assert.deepEqual(healthPaths, ["/api/health", "/api/health"]);
+  assert.doesNotMatch(source, /^\s*healthCheckPath:\s*\/api\/readiness$/m,
+    "an optional R2 or verifier outage must not restart the web service");
+
+  const api = await readFile(new URL("server/api.js", ROOT), "utf8");
+  assert.match(api, /"GET \/api\/readiness": \(\) => deploymentReadinessProjection\(\)/);
+  assert.match(api, /if \(videoRequired && runtimeMediaPublishingCapabilities\(\)\.videos !== true\) \{\s*throw new ApiError\(503/,
+    "manual release verification must retain the strict media dependency gate");
 });
 
 test("runtime bootstrap fails closed while production alone owns the bounded tour refresh", async () => {

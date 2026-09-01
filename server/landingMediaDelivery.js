@@ -5,6 +5,7 @@ import { landingCommunityMediaSource } from "./landingMedia.js";
 const LANDING_MEDIA_PATH = /^\/media\/landing\/([A-Za-z0-9_-]{1,180})$/;
 const LANDING_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 const LANDING_IMAGE_MAX_BYTES = 12 * 1024 * 1024;
+const LANDING_MEDIA_TIMEOUT_MS = 10_000;
 
 export function landingMediaPostIdFromPath(pathname) {
   const match = LANDING_MEDIA_PATH.exec(typeof pathname === "string" ? pathname : "");
@@ -36,6 +37,7 @@ export async function serveLandingMediaRequest({
   securityHeaders = {},
   fetchImpl = globalThis.fetch,
   resolveSource = landingCommunityMediaSource,
+  timeoutMs = LANDING_MEDIA_TIMEOUT_MS,
 } = {}) {
   const method = String(req?.method || "GET").toUpperCase();
   const postId = landingMediaPostIdFromPath(pathname);
@@ -62,12 +64,15 @@ export async function serveLandingMediaRequest({
   const ifNoneMatch = req?.headers?.["if-none-match"];
   if (typeof ifNoneMatch === "string" && ifNoneMatch.length <= 200) requestHeaders["If-None-Match"] = ifNoneMatch;
   let upstream;
+  const boundedTimeoutMs = Math.max(10, Math.min(LANDING_MEDIA_TIMEOUT_MS, Number(timeoutMs) || LANDING_MEDIA_TIMEOUT_MS));
+  const timeoutSignal = AbortSignal.timeout(boundedTimeoutMs);
+  const requestSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
   try {
     upstream = await fetchImpl(source.url, {
       method,
       headers: requestHeaders,
       redirect: "error",
-      signal,
+      signal: requestSignal,
     });
   } catch (error) {
     if (signal?.aborted) throw error;
@@ -122,7 +127,7 @@ export async function serveLandingMediaRequest({
   }
 
   res.writeHead(200, responseHeaders);
-  const stream = Readable.fromWeb(upstream.body);
+  const stream = Readable.fromWeb(upstream.body, { signal: requestSignal });
   let streamedBytes = 0;
   const byteLimit = new Transform({
     transform(chunk, _encoding, callback) {

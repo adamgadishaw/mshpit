@@ -42,6 +42,32 @@ test("a failed backup prevents the server module from loading", async () => {
   assert.equal(loaded, false);
 });
 
+test("a timed-out backup is killed and prevents the server module from loading", async () => {
+  let loaded = false;
+  let spawnOptions;
+  const timeoutError = Object.assign(new Error("backup timed out"), { code: "ETIMEDOUT" });
+  await assert.rejects(
+    startProduction({
+      env: {
+        NODE_ENV: "production",
+        PIT_DATA_DIR: "/data",
+        PIT_ALLOW_EMPTY_DB_BOOTSTRAP: "false",
+        BACKUP_PROCESS_TIMEOUT_MS: "1",
+      },
+      exists: () => true,
+      spawn: (_command, _args, options) => {
+        spawnOptions = options;
+        return { error: timeoutError, status: null, signal: "SIGKILL" };
+      },
+      loadServer: async () => { loaded = true; },
+    }),
+    /backup timed out after 30000ms; refusing to start/,
+  );
+  assert.equal(spawnOptions.timeout, 30_000, "the configurable timeout is clamped to its safe minimum");
+  assert.equal(spawnOptions.killSignal, "SIGKILL");
+  assert.equal(loaded, false);
+});
+
 test("a verified backup completes before the server module loads", async () => {
   const order = [];
   const plan = await startProduction({
@@ -76,4 +102,19 @@ test("the backup subprocess receives only its least-privilege environment", () =
   assert.equal(Object.hasOwn(call[2].env, "RESEND_API_KEY"), false);
   assert.equal(Object.hasOwn(call[2].env, "MEDIA_SECRET_ACCESS_KEY"), false);
   assert.equal(call[2].stdio, "inherit");
+  assert.equal(call[2].timeout, 10 * 60 * 1000);
+  assert.equal(call[2].killSignal, "SIGKILL");
+});
+
+test("the startup backup timeout is capped at thirty minutes", () => {
+  let options;
+  runStartupBackup({
+    env: { BACKUP_PROCESS_TIMEOUT_MS: String(24 * 60 * 60 * 1000) },
+    spawn: (_command, _args, spawnOptions) => {
+      options = spawnOptions;
+      return { status: 0 };
+    },
+  });
+  assert.equal(options.timeout, 30 * 60 * 1000);
+  assert.equal(options.killSignal, "SIGKILL");
 });

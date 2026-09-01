@@ -85,7 +85,7 @@ import {
 } from "./domain/venuePhotos.mjs";
 import { canonicalVenueKey, resolveVenueCatalogKey } from "./domain/venueIdentity.mjs";
 import { fetchVenuePhotos } from "./features/venuePhotos/venuePhotoApi.mjs";
-import { fetchDiscoverTourDateRange } from "./features/discovery/tourDateRangeApi.mjs";
+import { fetchDiscoverTourDateRange, fetchStartupTourDates } from "./features/discovery/tourDateRangeApi.mjs";
 import { fetchMyShowPlans } from "./features/showPlanning/showPlanningService";
 import { venueCatalogPhotoFields } from "./domain/venuePhotoProvenance.mjs";
 import {
@@ -99,7 +99,7 @@ import {
 import { mediaDisplayItems, sameMediaDisplayItems } from "./domain/postMediaDisplay.mjs";
 import { normalizeArtistCampaign } from "./domain/artistCampaignPost.mjs";
 import { normalizeTaggedPeople, taggedUserIdsFromPeople } from "./domain/postFriendTags.mjs";
-import { writeDirectMessageRead } from "./features/chat/services/dmReadApi.mjs";
+import { fetchDirectMessageSummaries, writeDirectMessageRead } from "./features/chat/services/dmReadApi.mjs";
 import { removeMyPostTagRequest } from "./features/postTags/services/postTagApi.mjs";
 import { searchPeopleRequest } from "./features/people/services/peopleSearchApi.mjs";
 import { attachArtistSuggestion, fetchArtistSuggestions, mergeArtistSearchCacheEntry, refreshArtistCatalogEntry } from "./features/artistSearch/artistSearchApi.mjs";
@@ -1300,10 +1300,11 @@ export function StoreProvider({ children }) {
     const accountId = session?.id || null;
     const sequence = ++tourDateReadRef.current.sequence;
     tourDateReadRef.current.accountId = accountId;
-    const { tourDates: live } = await api("/api/tourdates", {
+    // Keep the shared startup catalogue aligned with the product's 30-day live
+    // window. Longer discovery ranges are loaded explicitly by the screens that
+    // need them instead of making every signed-in device parse the full archive.
+    const { tourDates: live } = await fetchStartupTourDates({
       signal,
-      silent: true,
-      context: "Loading tour dates",
       expectedAccountId: accountId,
     });
     if (signal?.aborted || tourDateReadRef.current.sequence !== sequence
@@ -2428,10 +2429,11 @@ export function StoreProvider({ children }) {
     void refreshBlockedDirectory({ accountId: su.id });
     // The account-scoped feed effect restarts after setSession and owns the one
     // initial hydrate. Avoid a second request racing that immutable snapshot.
-    // Slice 4: hydrate my DM threads (+ absorb the people I've messaged so their
-    // names/avatars resolve in the inbox). Bucket/unread stay computed client-side.
+    // Hydrate only one summary row per conversation at startup. Full message
+    // history is fetched when a thread opens; downloading every message here made
+    // sign-in slower in direct proportion to an account's chat history.
     const dmHydrationRead = chatReadsRef.current.claim("dm-inbox", sessionRef.current);
-    api("/api/me/threads")
+    fetchDirectMessageSummaries({ expectedAccountId: su.id })
       .then(({ threads, removedIds = [] }) => {
         if (!chatReadsRef.current.isCurrent(dmHydrationRead, sessionRef.current) || !Array.isArray(threads)) return;
         setUsers((all) => {

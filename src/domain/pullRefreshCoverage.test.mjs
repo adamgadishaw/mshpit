@@ -54,7 +54,7 @@ test("remote directory pulls await their real loaders and retain current views o
     assert.match(source, /return refreshTourDates\(\{ signal \}\)/);
     assert.match(source, /results are unchanged|results are unchanged\./);
   }
-  assert.match(store, /api\("\/api\/tourdates",[\s\S]{0,240}?expectedAccountId: accountId/);
+  assert.match(store, /fetchStartupTourDates\(\{[\s\S]{0,160}?expectedAccountId: accountId/);
 
   assert.match(topRated, /readTopRated\(\{ signal, force: true \}\)/);
   assert.match(topRated, /status: current\.rows\.length \? "refreshing" : "loading", rows: current\.rows/);

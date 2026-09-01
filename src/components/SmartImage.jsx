@@ -21,6 +21,7 @@ export default function SmartImage({ uri, posterUri = null, mediaKind = null, vi
   const original = displaySrc(uri);
   const preview = previewWidth > 0 && isHttp(uri) ? proxied(uri, previewWidth) : original;
   const src = stage === 1 ? (preview === original && isHttp(uri) ? proxied(uri) : original) : preview;
+  const backdropUri = contain && isHttp(uri) ? proxied(uri, 96) : null;
   if (mediaKind === "video" || (!mediaKind && isVideoUrl(uri))) {
     const clip = <ClipPoster uri={uri} posterUri={posterUri} viewable={viewable} style={StyleSheet.absoluteFill} contain={contain} compact={!previewWidth} accessible={accessible} />;
     if (onPress) return <Pressable style={[styles.base, style]} onPress={onPress} accessibilityRole="button" accessibilityLabel={accessibilityLabel === "Open image" ? "Play video clip" : accessibilityLabel}>{clip}</Pressable>;
@@ -38,7 +39,7 @@ export default function SmartImage({ uri, posterUri = null, mediaKind = null, vi
     </View>
   ) : (
     <>
-      {contain && <ExpoImage source={{ uri: src }} style={StyleSheet.absoluteFill} contentFit="cover" blurRadius={28} cachePolicy={cachePolicy} recyclingKey={`smart-image-background:${src}`} accessible={false} />}
+      {backdropUri && <ExpoImage source={{ uri: backdropUri }} style={StyleSheet.absoluteFill} contentFit="cover" blurRadius={28} cachePolicy={cachePolicy} recyclingKey={`smart-image-background:${backdropUri}`} accessible={false} />}
       {contain && <View style={[StyleSheet.absoluteFill, styles.scrim]} />}
       <ExpoImage
         source={{ uri: src }}

@@ -2993,9 +2993,10 @@ const peopleSuggestionService = createPeopleSuggestionService(db, { projectUser:
 
 function deploymentReadinessProjection() {
   // General liveness deliberately survives an optional media outage. Render's
-  // release gate is stricter: once production explicitly enables video, a new
-  // web release cannot be promoted until the exact signed verifier contract,
-  // durable media storage, and private-source isolation are all proven live.
+  // continuous health check therefore uses /api/health. This manual release
+  // verification gate is stricter: once production explicitly enables video,
+  // operators can verify the exact signed verifier contract, durable media
+  // storage, and private-source isolation before deliberately promoting it.
   runtimeReadiness();
   const production = process.env.NODE_ENV === "production";
   const videoRequired = production && mediaPublishingCapabilitiesForRuntime(process.env).videos === true;

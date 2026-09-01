@@ -9,6 +9,7 @@ import { spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { backupChildEnvironment } from "../server/backupScheduler.js";
+import { boundedBackupTimeout } from "./backup-db-verification.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..");
@@ -41,14 +42,30 @@ export function startupBackupPlan({ env = process.env, exists = existsSync } = {
 }
 
 export function runStartupBackup({ env = process.env, spawn = spawnSync } = {}) {
+  const timeoutMs = boundedBackupTimeout(env.BACKUP_PROCESS_TIMEOUT_MS, 10 * 60 * 1000, {
+    min: 30_000,
+    max: 30 * 60 * 1000,
+  });
   const result = spawn(process.execPath, [BACKUP_SCRIPT], {
     cwd: ROOT,
     // The pre-migration path gets the same least-privilege environment as the
     // scheduled backup worker—never admin, mail, provider, or media secrets.
     env: backupChildEnvironment(env),
     stdio: "inherit",
+    // VACUUM/integrity verification is intentionally a hard startup gate, but
+    // a wedged child must not leave the persistent-disk service down forever.
+    timeout: timeoutMs,
+    killSignal: "SIGKILL",
   });
+  if (result.error?.code === "ETIMEDOUT") {
+    throw new Error(`The pre-migration backup timed out after ${timeoutMs}ms; refusing to start.`, {
+      cause: result.error,
+    });
+  }
   if (result.error) throw new Error("The pre-migration backup process could not start.", { cause: result.error });
+  if (result.signal) {
+    throw new Error(`The pre-migration backup was terminated by ${result.signal}; refusing to start.`);
+  }
   if (result.status !== 0) {
     throw new Error(`The pre-migration backup failed with exit code ${result.status ?? "unknown"}; refusing to start.`);
   }

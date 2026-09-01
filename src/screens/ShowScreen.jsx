@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator } from "react-native";
 import { colors, displayFont, mono, radius, shadow, space } from "../theme";
 import Stars from "../components/Stars";
@@ -10,8 +10,9 @@ import VenuePhotoWidget from "../components/VenuePhotoWidget";
 import ScreenHeader from "../components/ScreenHeader";
 import Avatar from "../components/Avatar";
 import SmartImage from "../components/SmartImage";
+import Countdown from "../components/Countdown";
 import { useStore } from "../store";
-import { showDateMs, fmtCountdown } from "../lib/showTime";
+import { showDateMs } from "../lib/showTime";
 import { formatDate } from "../domain/dates.mjs";
 import { normalizeShowAttendees, showSocialIdentity, showSocialView } from "../domain/showSocial.mjs";
 import {
@@ -341,13 +342,19 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
     norm,
   );
   const presentation = showPresentationModel(lifecycleView);
-  const [nowTick, setNowTick] = useState(() => Date.now());
+  const [, setCountdownRevision] = useState(0);
+  const handleCountdownComplete = useCallback(() => {
+    // Doors, access, and showtime are separate phases. The label owns the
+    // second-by-second clock; the page only renders once when a phase ends.
+    setCountdownRevision((revision) => revision + 1);
+  }, []);
+  const countdownNowMs = Date.now();
   const verifiedDoorsMs = norm.doorsVerified === true ? Date.parse(norm.doorsAt || "") : NaN;
   const providerAccessMs = Date.parse(norm.accessStartDateTime || "");
   const countdownTimingKind = presentation.showCountdown
-    && Number.isFinite(verifiedDoorsMs) && verifiedDoorsMs > nowTick
+    && Number.isFinite(verifiedDoorsMs) && verifiedDoorsMs > countdownNowMs
     ? "doors"
-    : presentation.showCountdown && Number.isFinite(providerAccessMs) && providerAccessMs > nowTick
+    : presentation.showCountdown && Number.isFinite(providerAccessMs) && providerAccessMs > countdownNowMs
       ? "access"
       : null;
   const targetMs = countdownTimingKind === "doors"
@@ -356,19 +363,6 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
   const hasExplicitShowTime = Number.isFinite(Number(trustedShow?.startsAt))
     || !!String(norm.startDateTime || norm.startLocalTime || "").trim();
   const hasAuthenticCountdownTarget = !!countdownTimingKind || hasExplicitShowTime;
-  useEffect(() => {
-    if (!appActive || !presentation.showCountdown || !hasAuthenticCountdownTarget || targetMs == null) return;
-    if (targetMs <= Date.now()) return;
-    const id = setInterval(() => {
-      const currentTime = Date.now();
-      setNowTick(currentTime);
-      // The label is static after the doors/access/show target. Stop waking and
-      // rerendering the entire show page once the countdown has completed.
-      if (currentTime >= targetMs) clearInterval(id);
-    }, 1000);
-    return () => clearInterval(id);
-  }, [appActive, hasAuthenticCountdownTarget, presentation.showCountdown, targetMs]);
-  const msLeft = targetMs != null ? targetMs - nowTick : null;
 
   // Setlists are spoiler-gated while a show sits inside the artist's active tour
   // window: nobody wants the surprise ruined before their own night. Hidden by
@@ -472,11 +466,11 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
               {log.soldOut ? <Text style={styles.soldOut}>SOLD OUT</Text> : null}
             </View>
           </View>
-          {liveActionsAvailable && presentation.showCountdown && hasAuthenticCountdownTarget && msLeft != null && (
+          {liveActionsAvailable && presentation.showCountdown && hasAuthenticCountdownTarget && targetMs != null && (
             <View style={styles.countdownStrip}>
               <Icon name="clock" size={14} color={colors.amber} />
-              <Text style={styles.countdownTxt}>{msLeft <= 0 ? "TONIGHT" : fmtCountdown(msLeft)}</Text>
-              {msLeft > 0 && <Text style={styles.countdownSub}>{countdownTimingKind === "doors"
+              <Countdown target={targetMs} active={appActive} onComplete={handleCountdownComplete} style={styles.countdownTxt} />
+              {targetMs > countdownNowMs && <Text style={styles.countdownSub}>{countdownTimingKind === "doors"
                 ? "until verified doors"
                 : countdownTimingKind === "access" ? "until event access" : "until showtime"}</Text>}
             </View>

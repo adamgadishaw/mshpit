@@ -6,6 +6,11 @@ const DESKTOP_MEDIA_MIN_HEIGHT = 240;
 const DESKTOP_MEDIA_VIEWPORT_FRACTION = 0.58;
 const MIN_SINGLE_MEDIA_RATIO = 4 / 5;
 const MAX_SINGLE_MEDIA_RATIO = 16 / 9;
+const MOBILE_MEDIA_PREVIEW_MAX_WIDTH = 768;
+const DESKTOP_MEDIA_PREVIEW_MAX_WIDTH = 1200;
+const MEDIA_PREVIEW_MIN_WIDTH = 320;
+const MEDIA_PREVIEW_ROUNDING_STEP = 64;
+const MEDIA_PREVIEW_MAX_SCALE = 2;
 
 function positiveNumber(value) {
   const parsed = Number(value);
@@ -23,6 +28,28 @@ function desktopHeightCap(viewportHeight) {
 
 function widthWithinHeight(widthCap, heightCap, aspectRatio) {
   return Math.max(1, Math.floor(Math.min(widthCap, heightCap * aspectRatio)));
+}
+
+// Feed thumbnails should match the pixels a tile can actually display. Using the
+// whole viewport for every tile made a two- or four-photo phone collage download
+// and decode desktop-sized images. Desktop uses the already height-bounded grid
+// width, while device scale is capped so a 3x phone cannot request oversized
+// derivatives that add memory pressure without a visible benefit.
+export function postMediaPreviewWidth({
+  viewportWidth,
+  scale = 1,
+  desktopMaxWidth = null,
+  tileFraction = 1,
+} = {}) {
+  const viewport = positiveNumber(viewportWidth) || MEDIA_PREVIEW_MIN_WIDTH;
+  const desktopWidth = positiveNumber(desktopMaxWidth);
+  const gridWidth = desktopWidth ? Math.min(viewport, desktopWidth) : viewport;
+  const deviceScale = Math.max(1, Math.min(MEDIA_PREVIEW_MAX_SCALE, positiveNumber(scale) || 1));
+  const fraction = Math.max(0.1, Math.min(1, positiveNumber(tileFraction) || 1));
+  const rounded = Math.ceil((gridWidth * fraction * deviceScale) / MEDIA_PREVIEW_ROUNDING_STEP)
+    * MEDIA_PREVIEW_ROUNDING_STEP;
+  const maximum = desktopWidth ? DESKTOP_MEDIA_PREVIEW_MAX_WIDTH : MOBILE_MEDIA_PREVIEW_MAX_WIDTH;
+  return Math.max(MEDIA_PREVIEW_MIN_WIDTH, Math.min(maximum, rounded));
 }
 
 // Desktop feed columns can be much wider than a phone. Letting a single 4:5

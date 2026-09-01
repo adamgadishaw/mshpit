@@ -203,6 +203,10 @@ CREATE TABLE IF NOT EXISTS dms (
 );
 CREATE INDEX IF NOT EXISTS idx_dms_pair ON dms(from_id, to_id);
 CREATE INDEX IF NOT EXISTS idx_dms_cursor ON dms(from_id, to_id, created_at DESC, id DESC);
+-- Inbox and unread reads are bidirectional. Mirror the cursor index with to_id
+-- first so SQLite does not scan the entire DM table for messages received by a
+-- user when evaluating the bidirectional sender/recipient predicate.
+CREATE INDEX IF NOT EXISTS idx_dms_recipient_cursor ON dms(to_id, from_id, created_at DESC, id DESC);
 
 -- Read positions belong on the server so opening a conversation survives a
 -- reload and carries across devices. The timestamp + id tuple uses the same

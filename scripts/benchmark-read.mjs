@@ -42,14 +42,14 @@ const profiles = {
     ["/api/discovery/sidebar", 20],
     ["/api/discover/overview?by=popularity&country=Worldwide", 15],
     ["/api/artists?q=cole&limit=12", 15],
-    ["/api/tourdates", 10],
+    ["/api/tourdates?days=30&limit=500", 10],
   ],
   legacy: [
     ["/api/feed?limit=30", 40],
     ["/api/discovery/sidebar", 20],
     ["/api/discover/overview?by=popularity&country=Worldwide", 15],
     ["/api/artists?q=cole&limit=12", 15],
-    ["/api/tourdates", 10],
+    ["/api/tourdates?days=30&limit=500", 10],
   ],
 };
 const profile = profiles[profileName];

@@ -41,6 +41,16 @@ const insertNotification = db.prepare(
   "INSERT INTO notifications (id,user_id,actor_id,type,post_id,text,created_at) VALUES (?,?,?,?,?,?,?)",
 );
 
+test("direct-message reads have cursor indexes in both directions", () => {
+  const indexes = new Set(db.prepare("PRAGMA index_list(dms)").all().map((row) => row.name));
+  assert.ok(indexes.has("idx_dms_cursor"), "sent-message cursor index should exist");
+  assert.ok(indexes.has("idx_dms_recipient_cursor"), "received-message cursor index should exist");
+  assert.deepEqual(
+    db.prepare("PRAGMA index_info(idx_dms_recipient_cursor)").all().map((row) => row.name),
+    ["to_id", "from_id", "created_at", "id"],
+  );
+});
+
 test("opening a DM thread durably clears only messages through its read cursor", () => {
   insertDm.run("dm_read_a", sender.id, recipient.id, "first", 100);
   insertDm.run("dm_read_b", sender.id, recipient.id, "second", 100);

@@ -17,3 +17,13 @@ export async function fetchDiscoverTourDateRange({ days, limit, after, country, 
   });
   return parseTourDateRangeResponse(payload);
 }
+
+export async function fetchStartupTourDates({ signal, expectedAccountId } = {}) {
+  const payload = await api(tourDateRangeRequestPath({ days: 30, limit: DISCOVER_RANGE_MAX_EVENTS }), {
+    signal,
+    silent: true,
+    context: "Loading tour dates",
+    expectedAccountId,
+  });
+  return parseTourDateRangeResponse(payload);
+}

@@ -85,11 +85,13 @@ test("ShowScreen supplies the full event range and kind to presentation helpers"
   assert.match(source, /showLifecycleView\(\s*trustedShow,\s*showDateMs\(norm\.startDateTime \|\| norm\.startLocalTime \|\| norm\.date\),\s*overall != null,\s*Date\.now\(\),\s*norm,/);
   assert.match(source, /norm\.doorsVerified === true \? Date\.parse\(norm\.doorsAt \|\| ""\) : NaN/);
   assert.match(source, /const providerAccessMs = Date\.parse\(norm\.accessStartDateTime \|\| ""\)/);
+  assert.match(source, /const countdownNowMs = Date\.now\(\)/);
   assert.match(source, /const hasAuthenticCountdownTarget = !!countdownTimingKind \|\| hasExplicitShowTime/);
-  assert.match(source, /presentation\.showCountdown && hasAuthenticCountdownTarget && msLeft != null/);
-  assert.match(source, /if \(targetMs <= Date\.now\(\)\) return/);
-  assert.match(source, /if \(currentTime >= targetMs\) clearInterval\(id\)/);
-  assert.match(source, /if \(!appActive \|\| !presentation\.showCountdown/);
+  assert.match(source, /presentation\.showCountdown && hasAuthenticCountdownTarget && targetMs != null/);
+  assert.match(source, /<Countdown target=\{targetMs\} active=\{appActive\} onComplete=\{handleCountdownComplete\} style=\{styles\.countdownTxt\} \/>/);
+  assert.doesNotMatch(source, /\bnowTick\b/);
+  assert.doesNotMatch(source, /\bsetInterval\s*\(/);
+  assert.doesNotMatch(source, /\bfmtCountdown\b/);
   assert.match(source, /countdownTimingKind === "doors"\s*\? "until verified doors"\s*:\s*countdownTimingKind === "access" \? "until event access" : "until showtime"/);
 });
 

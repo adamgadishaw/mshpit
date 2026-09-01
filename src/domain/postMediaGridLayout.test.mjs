@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { postMediaGridLayout } from "./postMediaGridLayout.mjs";
+import { postMediaGridLayout, postMediaPreviewWidth } from "./postMediaGridLayout.mjs";
 
 const postMediaGrid = readFileSync(new URL("../components/PostMediaGrid.jsx", import.meta.url), "utf8");
+const smartImage = readFileSync(new URL("../components/SmartImage.jsx", import.meta.url), "utf8");
 
 test("mobile media keeps the existing full-width collage", () => {
   assert.deepEqual(postMediaGridLayout({ viewportWidth: 430, viewportHeight: 900, count: 1, width: 1080, height: 1350 }), {
@@ -58,6 +59,38 @@ test("short desktop viewports also bound multi-item collages", () => {
     aspectRatio: null,
     containSingle: false,
   });
+});
+
+test("feed preview derivatives follow mobile density and each tile's actual share", () => {
+  assert.equal(postMediaPreviewWidth({ viewportWidth: 390, scale: 3, tileFraction: 1 }), 768,
+    "a 3x phone remains capped at the mobile derivative ceiling");
+  assert.equal(postMediaPreviewWidth({ viewportWidth: 390, scale: 3, tileFraction: 1 / 2 }), 448,
+    "half-width phone tiles do not decode a full-width derivative");
+  assert.equal(postMediaPreviewWidth({ viewportWidth: 390, scale: 3, tileFraction: 1 / 3 }), 320,
+    "small collage tiles retain a useful minimum derivative");
+  assert.equal(postMediaPreviewWidth({ viewportWidth: 360, scale: 1.5, tileFraction: 1 }), 576,
+    "requests round up to the next 64-pixel bucket");
+});
+
+test("desktop previews use the bounded grid width rather than the browser viewport", () => {
+  assert.equal(postMediaPreviewWidth({ viewportWidth: 1440, scale: 2, desktopMaxWidth: 356 }), 768);
+  assert.equal(postMediaPreviewWidth({ viewportWidth: 1600, scale: 1, desktopMaxWidth: 693 }), 704);
+  assert.equal(postMediaPreviewWidth({ viewportWidth: 1600, scale: 3, desktopMaxWidth: 760 }), 1200,
+    "desktop density is capped at 2x and the desktop derivative ceiling");
+});
+
+test("the grid passes per-tile previews and contained media decodes the main source once", () => {
+  assert.doesNotMatch(postMediaGrid, /previewWidth=\{1200\}/);
+  assert.match(postMediaGrid, /width: viewportWidth, height: viewportHeight, scale/);
+  assert.match(postMediaGrid, /desktopMaxWidth: desktopLayout\.desktop \? desktopLayout\.maxWidth : null/);
+  assert.match(postMediaGrid, /previewWidth=\{previewWidthFor\(2 \/ 3\)\}/);
+  assert.match(postMediaGrid, /previewWidth=\{previewWidthFor\(1 \/ 3\)\}/);
+
+  assert.match(smartImage, /backdropUri = contain && isHttp\(uri\) \? proxied\(uri, 96\) : null/);
+  assert.equal((smartImage.match(/source=\{\{ uri: src \}\}/g) || []).length, 1,
+    "the full feed derivative must not be mounted as both backdrop and foreground");
+  assert.match(smartImage, /\{contain && <View style=\{\[StyleSheet\.absoluteFill, styles\.scrim\]\} \/>\}/,
+    "non-http contained media keeps the stable background scrim without another image decode");
 });
 
 test("post media semantics describe the action only when the tile is interactive", () => {

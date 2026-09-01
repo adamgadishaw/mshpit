@@ -19,10 +19,11 @@ services:
     # failed snapshot stops startup before migration (persistent-disk deploys
     # can be unavailable until the operator fixes the backup or rolls back).
     startCommand: node scripts/start-production.mjs
-    # Keep general liveness available to members, but do not promote a release
-    # whose explicitly enabled video pipeline has not completed its signed
-    # verifier and private-storage readiness proofs yet.
-    healthCheckPath: /api/readiness
+    # Render probes this path continuously and restarts an unhealthy instance.
+    # Keep it core-only: an optional R2 or verifier outage must disable media
+    # publishing without restarting the web/API service. /api/readiness remains
+    # the strict manual release-verification endpoint.
+    healthCheckPath: /api/health
     autoDeploy: true
     disk:
       name: pit-data
@@ -291,7 +292,9 @@ services:
     branch: staging
     buildCommand: npm ci && mkdir -p /tmp/pit-build-data && PIT_DATA_DIR=/tmp/pit-build-data PIT_ALLOW_EMPTY_DB_BOOTSTRAP=true npm run check:deploy
     startCommand: node scripts/start-production.mjs
-    healthCheckPath: /api/readiness
+    # Match production's core-only liveness policy. Optional staging media
+    # dependencies are verified manually through the strict /api/readiness gate.
+    healthCheckPath: /api/health
     autoDeploy: true
     disk:
       name: pit-staging-data           # a DIFFERENT disk; never point at pit-data
