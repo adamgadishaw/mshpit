@@ -10,13 +10,13 @@ shipped in the application.
 
 Source artwork:
 
-- `mshpit-community-mark-v2.svg` - full transparent vector master.
-- `mshpit-community-mark-small-v2.svg` - simplified small-size vector master.
+- `mshpit-community-mark-v2.svg` - the single transparent vector master.
 
 Generated platform assets:
 
 - `pit-community-mark-v2.png` - transparent 1024 x 1024 full mark.
-- `pit-community-mark-small-v2.png` - transparent 256 x 256 small mark.
+- `pit-community-mark-small-v2.png` - transparent 256 x 256 raster of the
+  exact full mark for efficient interface rendering.
 - `pit-icon-v2.png` - opaque 1024 x 1024 App Store icon source.
 - `pit-splash-icon-v2.png` - transparent 1024 x 1024 splash foreground.
 - `pit-android-foreground-v2.png` - transparent adaptive-icon foreground.
@@ -24,11 +24,12 @@ Generated platform assets:
 - `pit-android-monochrome-v2.png` - alpha-only themed-icon mask.
 - `pit-favicon-v2.png` - opaque 48 x 48 web favicon.
 
-The vector masters and all raster derivatives are reproducible with
+The vector master and all raster derivatives are reproducible with
 `node scripts/generate-brand-assets.mjs`. The social share card is reproducible
 with `node scripts/generate-og-image.mjs`. The stable public `/logo.svg` URL uses
 the same community geometry so existing indexed pages and structured-data links
-do not need to migrate.
+do not need to migrate. Every active size uses the same two-ring geometry; there
+is no alternate small glyph.
 
 This record documents engineering provenance; it is not trademark clearance.
 The product owner supplied and selected the reference and must still confirm

@@ -3,9 +3,9 @@ import { Image as ExpoImage } from "expo-image";
 const COMMUNITY_MARK = require("../../assets/pit-community-mark-small-v2.png");
 
 /**
- * The shared Mshpit community mark used in small interface lockups.
- * The bundled source is an opacity mask, so one asset can follow the
- * surrounding surface without downloading or decoding a second variant.
+ * The one Mshpit community mark used throughout interface lockups. This is a
+ * smaller raster of the exact two-ring master, never a simplified glyph. Its
+ * opacity mask can follow the surrounding surface without a second variant.
  */
 export default function BrandMark({
   size = 32,

@@ -8,7 +8,6 @@ const ASSETS = join(ROOT, "assets");
 const INK = { r: 13, g: 11, b: 9 };
 
 const fullMark = await readFile(join(ASSETS, "mshpit-community-mark-v2.svg"));
-const smallMark = await readFile(join(ASSETS, "mshpit-community-mark-small-v2.svg"));
 
 function transparentCanvas(size) {
   return sharp({
@@ -55,7 +54,9 @@ await sharp(fullMark, { density: 384 })
   .png({ compressionLevel: 9 })
   .toFile(join(ASSETS, "pit-community-mark-v2.png"));
 
-await sharp(smallMark, { density: 384 })
+// Small UI assets keep the exact same two-ring geometry as the master. Only
+// the raster dimensions change; MSHpit has no alternate or simplified glyph.
+await sharp(fullMark, { density: 384 })
   .resize(256, 256, { fit: "contain" })
   .png({ compressionLevel: 9 })
   .toFile(join(ASSETS, "pit-community-mark-small-v2.png"));
@@ -95,7 +96,7 @@ await centeredComposite({
 
 await centeredComposite({
   canvas: opaqueCanvas(48),
-  svg: smallMark,
+  svg: fullMark,
   artSize: 44,
   output: "pit-favicon-v2.png",
   opaque: true,

@@ -288,7 +288,7 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse, onSuggestio
       {/* ---- top bar: brand + login ---- */}
       <View style={[styles.topbar, scrollPitch && styles.topbarScrolled, compact && styles.topbarCompact, styles.boxNonePointerEvents]}>
         <View style={styles.brandLockup} accessibilityRole="text" accessibilityLabel="Mshpit, live music remembered">
-          <BrandMark size={34} color="#F4EFE7" />
+          <BrandMark size={34} />
           <View>
             <Text style={styles.brand}>MSHPIT</Text>
             {!compact && <Text style={styles.brandSub}>LIVE MUSIC, REMEMBERED</Text>}

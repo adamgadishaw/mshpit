@@ -15,6 +15,10 @@ const playerSource = readFileSync(join(ROOT, "src", "components", "PlayerBar.jsx
 const playerResolutionSource = readFileSync(join(ROOT, "src", "domain", "playerSourceResolution.mjs"), "utf8");
 const nativeAudioSource = readFileSync(join(ROOT, "src", "lib", "audioPreview.native.js"), "utf8");
 const webAudioSource = readFileSync(join(ROOT, "src", "lib", "audioPreview.js"), "utf8");
+const brandMarkSource = readFileSync(join(ROOT, "src", "components", "BrandMark.jsx"), "utf8");
+const brandGeneratorSource = readFileSync(join(ROOT, "scripts", "generate-brand-assets.mjs"), "utf8");
+const brandMasterSource = readFileSync(join(ROOT, "assets", "mshpit-community-mark-v2.svg"), "utf8");
+const publicLogoSource = readFileSync(join(ROOT, "public", "logo.svg"), "utf8");
 
 function pngHeader(relativePath) {
   const absolutePath = join(ROOT, relativePath.replace(/^\.\//, ""));
@@ -30,6 +34,7 @@ function pngHeader(relativePath) {
 }
 
 test("native application identifiers and versions are explicit", () => {
+  assert.equal(app.name, "Mshpit");
   assert.match(app.version, /^\d+\.\d+\.\d+$/);
   assert.equal(app.scheme, "mshpit");
   assert.equal(app.ios.bundleIdentifier, "com.mshpit.app");
@@ -82,6 +87,18 @@ test("the signed app uses owned Pit artwork instead of the Expo starter assets",
   assert.deepEqual([pngHeader(adaptive.backgroundImage).width, pngHeader(adaptive.backgroundImage).height], [512, 512]);
   assert.deepEqual([pngHeader(adaptive.monochromeImage).width, pngHeader(adaptive.monochromeImage).height], [432, 432]);
   assert.deepEqual([pngHeader(app.web.favicon).width, pngHeader(app.web.favicon).height], [48, 48]);
+});
+
+test("every active logo size comes from the requested full two-ring community mark", () => {
+  assert.equal((brandMasterSource.match(/<use\s/g) || []).length, 20,
+    "the master keeps all twelve outer and eight inner people");
+  assert.equal((publicLogoSource.match(/<use\s/g) || []).length, 20,
+    "the public SEO logo uses the same two-ring geometry");
+  assert.match(brandMarkSource, /pit-community-mark-small-v2\.png/);
+  assert.match(brandMarkSource, /color\s*=\s*"#FFFFFF"/);
+  assert.doesNotMatch(brandGeneratorSource, /smallMark|mshpit-community-mark-small-v2\.svg/);
+  assert.match(brandGeneratorSource, /sharp\(fullMark[\s\S]*pit-community-mark-small-v2\.png/);
+  assert.match(brandGeneratorSource, /svg:\s*fullMark,[\s\S]*output:\s*"pit-favicon-v2\.png"/);
 });
 
 test("the forced-dark SDK 56 splash and native root are explicitly branded", () => {

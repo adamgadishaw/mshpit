@@ -57,7 +57,8 @@ test("landing reuses one first-party community photo layer without a duplicate s
   assert.match(landing, /\[appActive, landingMediaRevision\]/);
   assert.doesNotMatch(landing, /images\.unsplash\.com|STOCK_SLIDES/);
   assert.match(landing, /<Svg width="100%" height="100%"/);
-  assert.match(landing, /<BrandMark size=\{34\} color="#F4EFE7" \/>/);
+  assert.match(landing, /<BrandMark size=\{34\} \/>/);
+  assert.doesNotMatch(landing, /<BrandMark[^>]*\bcolor=/);
   assert.doesNotMatch(landing, /pit-favicon-v1/);
 });
 

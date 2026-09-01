@@ -45,7 +45,8 @@ test("candidate projection exposes source evidence but no reviewer identity", ()
   assert.equal(candidate.artistKey, "alpha");
   assert.equal(candidate.reviewedBy, undefined);
   assert.deepEqual(candidate.evidence, artistDeathEvidenceUrls({ artistMbid: MBID, wikidataId: "Q42" }));
-  assert.equal(projectArtistDeathCandidate({ ...candidate, deathDate: "2026-09-01" }), null);
+  const futureDate = new Date(Date.now() + (2 * 86_400_000)).toISOString().slice(0, 10);
+  assert.equal(projectArtistDeathCandidate({ ...candidate, deathDate: futureDate }), null);
 });
 
 test("settings projection keeps operational state bounded and public-safe", () => {
