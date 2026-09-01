@@ -53,3 +53,18 @@ test("notification read is server-first and never clears uncaptured rows", () =>
   assert.match(notifications, /notificationReadState\.scope === notificationReadScope/);
   assert.match(notifications, /unread badge is unchanged/);
 });
+
+test("a post response cannot enter a different account's local feed", () => {
+  const source = mutationSlice("const addLog =", "const reconcileEditedPost =");
+  const success = source.slice(source.indexOf(".then(({ id, post })"), source.indexOf(".catch((error)"));
+  const failure = source.slice(source.indexOf(".catch((error)"));
+
+  assert.match(source, /const postingMutation = postingActor[\s\S]*captureAccountMutation\(postingActor\.id, accountMutationEpochRef\.current\)/);
+  assert.match(source, /expectedAccountId: postingActor\.id/);
+  assert.ok(success.indexOf("accountMutationIsCurrent(") < success.indexOf("setFeed("),
+    "a stale success must be rejected before adopting the canonical post");
+  assert.ok(failure.indexOf("accountMutationIsCurrent(") < failure.indexOf("setFeed("),
+    "a stale failure must not remove content from the next account's feed");
+  assert.match(success, /return \{ ok: true, id: id \|\| localId, post: null, stale: true \}/);
+  assert.match(failure, /return \{ ok: false, error, stale: true \}/);
+});

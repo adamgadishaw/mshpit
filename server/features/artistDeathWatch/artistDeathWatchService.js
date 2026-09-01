@@ -38,6 +38,34 @@ function safeErrorCode(error) {
   return /^[a-z][a-z0-9_]{1,60}$/u.test(raw) ? raw : "provider_error";
 }
 
+const WIKIDATA_FAILURE_CODES = new Set([
+  "wikidata_timeout",
+  "wikidata_network",
+  "wikidata_rate_limited",
+  "wikidata_unavailable",
+  "wikidata_rejected",
+  "wikidata_response",
+]);
+
+function recoverableWikidataFailure(error) {
+  return WIKIDATA_FAILURE_CODES.has(safeErrorCode(error));
+}
+
+function exactCachedEvidenceCount(rows, repository, at) {
+  let count = 0;
+  for (const row of rows) {
+    const artist = exactArtist(row);
+    const candidate = artist ? repository.findCandidateByKey(artist.artistKey) : null;
+    if (!candidate) continue;
+    if (String(candidate.artist_key || "") !== artist.artistKey
+      || canonicalArtistMbid(candidate.artist_mbid) !== artist.artistMbid
+      || !canonicalWikidataId(candidate.wikidata_id)
+      || !canonicalDeathDate(candidate.death_date, { at })) continue;
+    count += 1;
+  }
+  return count;
+}
+
 export function createArtistDeathWatchService({
   repository,
   recentWikidataReader = readRecentWikidataDeaths,
@@ -61,6 +89,7 @@ export function createArtistDeathWatchService({
 
   let activeScan = null;
   let activeScanStartedAt = null;
+  let lastProviderStatus = null;
 
   function snapshot() {
     repository.reconcilePublishedMemorials();
@@ -90,6 +119,15 @@ export function createArtistDeathWatchService({
         total: eligibleArtists,
         percent: eligibleArtists > 0 ? Math.round((checked / eligibleArtists) * 100) : 100,
         complete: passComplete,
+      }),
+      providerStatus: lastProviderStatus || Object.freeze({
+        state: settings.lastErrorCode
+          ? (settings.lastScanAt != null && settings.lastScanAt === settings.lastSuccessAt
+            ? "degraded" : "unavailable")
+          : "idle",
+        errorCode: settings.lastErrorCode,
+        catalog: null,
+        recent: null,
       }),
       providerPolicy: Object.freeze({
         identity: "exact-mbid-and-wikidata",
@@ -122,6 +160,12 @@ export function createArtistDeathWatchService({
     let reopened = 0;
     let recentMatched = 0;
     let warningCode = null;
+    let catalogError = null;
+    let catalogBatchesChecked = 0;
+    let cachedEvidence = 0;
+    let recentState = "skipped";
+    let recentError = null;
+    let scanProviderStatus = null;
 
     try {
       const confirm = async (signal) => {
@@ -170,7 +214,20 @@ export function createArtistDeathWatchService({
           seenMbids.add(artist.artistMbid);
           return true;
         });
-        const wikidataSignals = await wikidataReader(artists, { at: scanAt, fetchImpl });
+        let wikidataSignals;
+        try {
+          wikidataSignals = await wikidataReader(artists, { at: scanAt, fetchImpl });
+          catalogBatchesChecked += 1;
+        } catch (error) {
+          if (!recoverableWikidataFailure(error)) throw error;
+          catalogError = error;
+          warningCode = safeErrorCode(error);
+          // These rows were already corroborated by both providers in an earlier
+          // run. They can support a truthful degraded result, but are never used
+          // to create or mutate a candidate and the failed batch cursor does not move.
+          cachedEvidence = exactCachedEvidenceCount(rows, repository, scanAt);
+          break;
+        }
         let stoppedAtConfirmationLimit = false;
 
         for (const row of rows) {
@@ -223,6 +280,7 @@ export function createArtistDeathWatchService({
             ? lookbackFloor : current.lastSuccessAt - 24 * 60 * 60 * 1000;
           const since = new Date(Math.max(0, lookbackFloor, priorSuccess)).toISOString().slice(0, 10);
           const recentSignalsResult = await recentWikidataReader({ since, limit: 100, at: scanAt, fetchImpl });
+          recentState = "available";
           const recentSignals = Array.isArray(recentSignalsResult) ? recentSignalsResult : [];
           for (const rawSignal of recentSignals) {
             const row = repository.catalogArtistForSignal(rawSignal);
@@ -241,14 +299,46 @@ export function createArtistDeathWatchService({
             if (!(await confirm(signal))) break;
           }
         } catch (error) {
-          warningCode = safeErrorCode(error);
+          if (!recoverableWikidataFailure(error)) throw error;
+          recentError = error;
+          recentState = "unavailable";
+          warningCode ||= safeErrorCode(error);
         }
       }
+
+      const hasLiveAuthoritativeCoverage = !catalogError
+        || catalogBatchesChecked > 0
+        || recentState === "available";
+      const hasTruthfulPartial = hasLiveAuthoritativeCoverage || cachedEvidence > 0;
+      const catalogState = catalogError
+        ? (catalogBatchesChecked > 0 || cachedEvidence > 0 ? "degraded" : "unavailable")
+        : "available";
+      const state = warningCode
+        ? (hasTruthfulPartial ? "degraded" : "unavailable")
+        : "available";
+      scanProviderStatus = Object.freeze({
+        state,
+        errorCode: warningCode,
+        catalog: Object.freeze({
+          state: catalogState,
+          errorCode: catalogError ? safeErrorCode(catalogError) : null,
+          batchesChecked: catalogBatchesChecked,
+          cachedEvidence,
+        }),
+        recent: Object.freeze({
+          state: recentState,
+          errorCode: recentError ? safeErrorCode(recentError) : null,
+        }),
+      });
+      lastProviderStatus = scanProviderStatus;
+      // Do not suppress a total outage. A successful independent channel,
+      // completed catalogue batch, or exact saved evidence is required.
+      if (!hasTruthfulPartial) throw catalogError || recentError;
 
       repository.recordScan({
         cursorArtistKey,
         lastScanAt: scanAt,
-        lastSuccessAt: scanAt,
+        lastSuccessAt: hasLiveAuthoritativeCoverage ? scanAt : current.lastSuccessAt,
         nextScanAt: scanAt + ARTIST_DEATH_WATCH_INTERVAL_MS,
         lastErrorCode: warningCode,
         at: scanAt,
@@ -263,9 +353,28 @@ export function createArtistDeathWatchService({
         recentMatched,
         wrapped,
         warningCode,
+        degraded: warningCode != null,
+        cachedEvidence,
         ...snapshot(),
       };
     } catch (error) {
+      if (!scanProviderStatus) {
+        const errorCode = safeErrorCode(error);
+        lastProviderStatus = Object.freeze({
+          state: "unavailable",
+          errorCode,
+          catalog: catalogError ? Object.freeze({
+            state: catalogBatchesChecked > 0 || cachedEvidence > 0 ? "degraded" : "unavailable",
+            errorCode: safeErrorCode(catalogError),
+            batchesChecked: catalogBatchesChecked,
+            cachedEvidence,
+          }) : null,
+          recent: recentError ? Object.freeze({
+            state: "unavailable",
+            errorCode: safeErrorCode(recentError),
+          }) : null,
+        });
+      }
       const retryAt = Number.isSafeInteger(Number(error?.retryAt)) && Number(error.retryAt) > scanAt
         ? Number(error.retryAt) : scanAt + ARTIST_DEATH_WATCH_INTERVAL_MS;
       repository.recordScan({

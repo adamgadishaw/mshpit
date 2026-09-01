@@ -127,14 +127,14 @@ export function pruneErrors(now = Date.now()) {
 }
 
 export function recentErrors(limit = 50) {
-  try { return errorStmts.recent.all(Math.min(Math.max(1, limit), 200)); }
+  try { return errorStmts.recentGeneral.all(Math.min(Math.max(1, limit), 200)); }
   catch { return []; }
 }
 
 export function errorStats(sinceMs) {
   if (Number(sinceMs) > Date.now()) return { occurrences: 0, kinds: 0 };
   try {
-    const totals = errorStmts.totalSince.get(hourStart(sinceMs));
+    const totals = errorStmts.totalSinceGeneral.get(hourStart(sinceMs));
     return { occurrences: totals.c, kinds: totals.kinds };
   } catch { return { occurrences: 0, kinds: 0 }; }
 }
@@ -156,7 +156,7 @@ export async function maybeAlert({ now = Date.now(), force = false } = {}) {
 
   const windowStart = alertedThrough || now - alertCooldownMs();
   let rows;
-  try { rows = errorStmts.since.all(hourStart(windowStart), 20); }
+  try { rows = errorStmts.sinceGeneral.all(hourStart(windowStart), 20); }
   catch { return { sent: false, reason: "unavailable" }; }
   // Only server faults page anybody. A 404 or a validation error is not news.
   const serious = rows.filter((r) => r.level === "fatal" || r.status === 0 || r.status >= 500);

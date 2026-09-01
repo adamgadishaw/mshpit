@@ -5614,11 +5614,13 @@ export const routes = {
         // Author deletion is irreversible content deletion, unlike a moderator's
         // reversible soft hide. Keep only the row identity/ownership/timestamps
         // required for foreign keys and the audit trail; authored copy, entity
-        // bindings, ratings, media and request fingerprints are scrubbed.
+        // bindings, ratings, media and the content-derived request hash are
+        // scrubbed. Retain only the opaque mutation id so a lost/stale create
+        // retry can never resurrect this irreversibly deleted post.
         db.prepare(`UPDATE posts SET removed=1,artist='',venue='',city='',date='',overall=0,
           band=NULL,room=NULL,dims='{}',review='',photos='[]',photos_public=0,landing_showcase=0,campaign=NULL,
           setlist='[]',tour=NULL,tags='[]',tagged_user_ids='[]',song=NULL,playlist=NULL,artist_key=NULL,artist_mbid=NULL,
-          venue_key=NULL,client_mutation_id=NULL,client_mutation_hash=NULL${postAttendanceTicketScrubSql},updated_at=?
+          venue_key=NULL,client_mutation_hash=NULL${postAttendanceTicketScrubSql},updated_at=?
           WHERE id=? AND user_id=?`).run(now(), post.id, u.id);
         retireLegacyVideoPosters(db, { postId: post.id, ownerId: u.id, at: now() });
         const deletable = unreferencedOwnedMediaUrls(db, { ownerId: u.id, urls: attached });
@@ -7274,6 +7276,8 @@ export const routes = {
 
     let enriched = 0;
     const artists = [];
+    const providerFailures = [];
+    let firstProviderFailure = null;
     for (const name of names) {
       let expectedMbid = null;
       let artistKey = normName(name);
@@ -7288,7 +7292,15 @@ export const routes = {
       try {
         if (await enrichArtistFromDeezer(enrichmentName)) enriched += 1;
       } catch (error) {
-        if (!(requireExactIdentity && error instanceof ProviderError)) throw error;
+        if (ctx.signal?.aborted) throw ctx.signal.reason || error;
+        if (!(error instanceof ProviderError)) throw error;
+        firstProviderFailure ||= error;
+        providerFailures.push({
+          artist: enrichmentName,
+          provider: error.provider,
+          code: error.code,
+          retryable: error.retryable === true,
+        });
       }
 
       const row = artistStmts.byNorm.get(artistKey);
@@ -7306,7 +7318,19 @@ export const routes = {
         artists.push(publicArtist(row));
       }
     }
-    return { enriched, requested: names.length, artists };
+    // Deezer enriches an identity; it does not create one. If every requested
+    // artist lacks verified local state, preserve the provider failure instead
+    // of returning an empty success that could be mistaken for artist data.
+    if (!artists.length && firstProviderFailure) throw firstProviderFailure;
+    const degraded = providerFailures.length > 0;
+    return {
+      enriched,
+      requested: names.length,
+      artists,
+      status: degraded ? "degraded" : "ok",
+      degraded,
+      providerFailures,
+    };
   },
   // Staff correction for a genre. This is the top of the provenance hierarchy:
   // once set it outranks every automated run, so a re-crawl cannot put Justin

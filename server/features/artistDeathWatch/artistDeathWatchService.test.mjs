@@ -10,6 +10,12 @@ import { createArtistDeathWatchService } from "./artistDeathWatchService.js";
 const AT = Date.parse("2026-08-30T12:00:00.000Z");
 const mbid = (index) => `${String(index).padStart(8, "0")}-1111-4111-8111-${String(index).padStart(12, "0")}`;
 
+function providerFailure(code) {
+  const error = new Error(code);
+  error.code = code;
+  return error;
+}
+
 function fakeRepository(artists = []) {
   let settings = {
     enabled: 1,
@@ -243,6 +249,127 @@ test("a recent-provider timeout is a warning and does not erase catalogue progre
   assert.equal(result.warningCode, "wikidata_timeout");
   assert.equal(result.settings.lastSuccessAt, AT);
   assert.equal(result.settings.lastErrorCode, "wikidata_timeout");
+});
+
+test("a failed first catalog batch uses recent Wikidata and does not advance the cursor", async () => {
+  const artists = Array.from({ length: 45 }, (_, index) => ({
+    artist_key: `artist-${String(index).padStart(3, "0")}`,
+    artist_name: `Artist ${index}`,
+    artist_mbid: mbid(index + 700),
+  }));
+  const target = artists[44];
+  const repository = fakeRepository(artists);
+  repository.recordScan({
+    cursorArtistKey: "artist-039", lastScanAt: AT - 2, lastSuccessAt: AT - 2,
+    nextScanAt: null, lastErrorCode: null, at: AT - 2,
+  });
+  const service = createArtistDeathWatchService({
+    repository,
+    wikidataReader: async () => { throw providerFailure("wikidata_timeout"); },
+    recentWikidataReader: async () => [{
+      artistMbid: target.artist_mbid, wikidataId: "Q700", deathDate: "2026-08-29",
+    }],
+    musicBrainzReader: async (signal) => ({
+      artistMbid: signal.artistMbid, deathDate: signal.deathDate, artistType: "Person",
+    }),
+    sleep: async () => {},
+  });
+
+  const result = await service.scan({ at: AT, force: true });
+  assert.equal(result.degraded, true);
+  assert.equal(result.warningCode, "wikidata_timeout");
+  assert.equal(result.scanned, 0);
+  assert.equal(result.inserted, 1);
+  assert.equal(result.providerStatus.catalog.state, "unavailable");
+  assert.equal(result.providerStatus.recent.state, "available");
+  assert.equal(result.settings.lastSuccessAt, AT);
+  assert.equal(repository.readSettings().cursor_artist_key, "artist-039",
+    "the failed historical batch remains the next batch to retry");
+});
+
+test("a total Wikidata outage without exact saved evidence fails closed", async () => {
+  const artist = { artist_key: "alpha", artist_name: "Alpha", artist_mbid: mbid(702) };
+  const repository = fakeRepository([artist]);
+  const service = createArtistDeathWatchService({
+    repository,
+    wikidataReader: async () => { throw providerFailure("wikidata_timeout"); },
+    recentWikidataReader: async () => { throw providerFailure("wikidata_unavailable"); },
+    musicBrainzReader: async () => { throw new Error("must not run"); },
+    sleep: async () => {},
+  });
+
+  await assert.rejects(service.scan({ at: AT, force: true }), /wikidata_timeout/u);
+  assert.equal(repository.candidates.size, 0);
+  assert.equal(repository.readSettings().cursor_artist_key, null);
+  assert.equal(repository.readSettings().last_success_at, null);
+  assert.equal(repository.readSettings().last_error_code, "wikidata_timeout");
+  assert.equal(service.readSnapshot().providerStatus.state, "unavailable");
+  assert.equal(service.readSnapshot().providerStatus.catalog.errorCode, "wikidata_timeout");
+  assert.equal(service.readSnapshot().providerStatus.recent.errorCode, "wikidata_unavailable");
+});
+
+test("exact saved evidence allows a cache-only degraded result without a false live success", async () => {
+  const artist = { artist_key: "alpha", artist_name: "Alpha", artist_mbid: mbid(701) };
+  const repository = fakeRepository([artist]);
+  repository.saveConfirmedCandidate({
+    artistKey: artist.artist_key, artistName: artist.artist_name,
+    artistMbid: artist.artist_mbid, wikidataId: "Q701",
+    deathDate: "2026-08-29", at: AT - 10,
+  });
+  repository.recordScan({
+    cursorArtistKey: null, lastScanAt: AT - 5, lastSuccessAt: AT - 5,
+    nextScanAt: null, lastErrorCode: null, at: AT - 5,
+  });
+  let confirmations = 0;
+  const service = createArtistDeathWatchService({
+    repository,
+    wikidataReader: async () => { throw providerFailure("wikidata_timeout"); },
+    recentWikidataReader: async () => { throw providerFailure("wikidata_timeout"); },
+    musicBrainzReader: async () => { confirmations += 1; return null; },
+    sleep: async () => {},
+  });
+
+  const result = await service.scan({ at: AT, force: true });
+  assert.equal(result.degraded, true);
+  assert.equal(result.cachedEvidence, 1);
+  assert.equal(result.inserted, 0);
+  assert.equal(confirmations, 0, "saved corroboration is not silently re-labelled as a live check");
+  assert.equal(result.providerStatus.catalog.state, "degraded");
+  assert.equal(result.providerStatus.recent.state, "unavailable");
+  assert.equal(result.settings.lastSuccessAt, AT - 5,
+    "a cache-only result must preserve the last live provider success");
+  assert.equal(repository.candidates.size, 1);
+  assert.equal(repository.readSettings().cursor_artist_key, null);
+});
+
+test("a later catalog timeout keeps completed-batch progress and retries the failed batch", async () => {
+  const artists = Array.from({ length: 45 }, (_, index) => ({
+    artist_key: `artist-${String(index).padStart(3, "0")}`,
+    artist_name: `Artist ${index}`,
+    artist_mbid: mbid(index + 800),
+  }));
+  const repository = fakeRepository(artists);
+  let batch = 0;
+  const service = createArtistDeathWatchService({
+    repository,
+    wikidataReader: async () => {
+      batch += 1;
+      if (batch === 2) throw providerFailure("wikidata_timeout");
+      return new Map();
+    },
+    recentWikidataReader: async () => { throw providerFailure("wikidata_timeout"); },
+    musicBrainzReader: async () => null,
+    sleep: async () => {},
+  });
+
+  const result = await service.scan({ at: AT, force: true });
+  assert.equal(result.degraded, true);
+  assert.equal(result.scanned, 40);
+  assert.equal(repository.readSettings().cursor_artist_key, "artist-039");
+  assert.equal(result.providerStatus.catalog.state, "degraded");
+  assert.equal(result.providerStatus.catalog.batchesChecked, 1);
+  assert.equal(result.settings.lastSuccessAt, AT,
+    "a completed authoritative batch is a truthful partial live success");
 });
 
 test("one scheduled run checks multiple bounded catalogue batches", async () => {

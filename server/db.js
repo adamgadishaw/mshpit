@@ -2245,6 +2245,9 @@ export const errorStmts = {
     ON CONFLICT(fingerprint) DO UPDATE SET count=count+1, last_seen=excluded.last_seen,
       last_request_id=COALESCE(excluded.last_request_id,error_events.last_request_id)`),
   recent: db.prepare("SELECT * FROM error_events ORDER BY last_seen DESC LIMIT ?"),
+  recentGeneral: db.prepare(`SELECT * FROM error_events
+    WHERE NOT (method='GET' AND route='/api/readiness' AND status=503 AND code='MEDIA_STORAGE_UNAVAILABLE')
+    ORDER BY last_seen DESC LIMIT ?`),
   recordBucket: db.prepare(`INSERT INTO error_occurrence_buckets (fingerprint,hour_start,count)
     VALUES (?,?,1) ON CONFLICT(fingerprint,hour_start) DO UPDATE SET count=count+1`),
   since: db.prepare(`SELECT e.fingerprint,e.level,e.code,e.status,e.method,e.route,e.cause,
@@ -2252,8 +2255,19 @@ export const errorStmts = {
     FROM error_occurrence_buckets b JOIN error_events e ON e.fingerprint=b.fingerprint
     WHERE b.hour_start>=? GROUP BY e.fingerprint
     ORDER BY count DESC,e.last_seen DESC LIMIT ?`),
+  sinceGeneral: db.prepare(`SELECT e.fingerprint,e.level,e.code,e.status,e.method,e.route,e.cause,
+      e.last_request_id,e.first_seen,e.last_seen,SUM(b.count) count
+    FROM error_occurrence_buckets b JOIN error_events e ON e.fingerprint=b.fingerprint
+    WHERE b.hour_start>=?
+      AND NOT (e.method='GET' AND e.route='/api/readiness' AND e.status=503 AND e.code='MEDIA_STORAGE_UNAVAILABLE')
+    GROUP BY e.fingerprint
+    ORDER BY count DESC,e.last_seen DESC LIMIT ?`),
   totalSince: db.prepare(`SELECT COALESCE(SUM(count),0) c,COUNT(DISTINCT fingerprint) kinds
     FROM error_occurrence_buckets WHERE hour_start>=?`),
+  totalSinceGeneral: db.prepare(`SELECT COALESCE(SUM(b.count),0) c,COUNT(DISTINCT b.fingerprint) kinds
+    FROM error_occurrence_buckets b JOIN error_events e ON e.fingerprint=b.fingerprint
+    WHERE b.hour_start>=?
+      AND NOT (e.method='GET' AND e.route='/api/readiness' AND e.status=503 AND e.code='MEDIA_STORAGE_UNAVAILABLE')`),
   // Anything not seen recently is noise once it stops happening. Pruning by age
   // keeps the table bounded without a background job.
   prune: db.prepare("DELETE FROM error_events WHERE last_seen < ?"),

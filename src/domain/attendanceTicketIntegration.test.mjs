@@ -57,14 +57,14 @@ test("a lost-response retry reuses the same per-event ticket mutation id", () =>
     "a server-owned ticket cannot briefly appear published before exact-event authorization succeeds");
 });
 
-test("ticket share owns one safe error message while ordinary posts keep global feedback", () => {
+test("ticket share uses the retry-safe post delivery path and owns one safe error message", () => {
   const show = source("../screens/ShowScreen.jsx");
   const store = source("../store.js");
   const composer = source("../components/GoingTicketComposer.jsx");
 
-  assert.match(store, /const addLog = \(log, \{ silent = false \} = \{\}\) =>/,
-    "ordinary post writes keep the existing global feedback by default");
-  assert.match(store, /return api\("\/api\/posts", \{[\s\S]*?body,[\s\S]*?silent,[\s\S]*?\}\)/);
+  assert.match(store, /import \{ deliverPostCreate \} from "\.\/domain\/postDelivery\.mjs"/);
+  assert.match(store, /return deliverPostCreate\(\{[\s\S]*?apiCall: api,[\s\S]*?body,[\s\S]*?expectedAccountId: postingActor\.id,[\s\S]*?\}\)/,
+    "all post types reuse the same immutable body and account binding when a response is lost");
   assert.match(show, /onPost=\{\(post\) => addLog\(post, \{ silent: true \}\)\}/,
     "the ticket composer suppresses only the duplicate global toast");
   assert.doesNotMatch(composer, /result\?\.error\?\.message/,

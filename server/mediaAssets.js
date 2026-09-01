@@ -2939,7 +2939,7 @@ export function cleanMediaAssetIds(value, { optional = true } = {}) {
   return ids;
 }
 
-export function mediaSelection(database, { ownerId, assetIds, currentPostId = null, at = Date.now() } = {}) {
+export function mediaSelection(database, { ownerId, assetIds, currentPostId = null } = {}) {
   const ids = cleanMediaAssetIds(assetIds, { optional: false });
   const rows = [];
   for (const id of ids) {
@@ -2971,14 +2971,11 @@ export function mediaSelection(database, { ownerId, assetIds, currentPostId = nu
     }
     rows.push({ row, url });
   }
-  // Selecting an owned ready draft is an explicit authenticated resume lease.
-  // Touch only after the whole selection validates, then attach revalidates the
-  // same ledgers under its writer transaction before publishing.
-  for (const { row } of rows) {
-    touchLiveLedger(database, ownerId, row.source_key, at);
-    if (row.render_state === "ready") touchLiveLedger(database, ownerId, row.render_key, at);
-    if (row.kind === "video") touchLiveLedger(database, ownerId, row.durable_poster_key, at);
-  }
+  // Pre-publish selection is deliberately read-only. A request may still fail
+  // content validation or rate limiting after this point, and such a rejection
+  // must not extend an unattached draft's cleanup lease. attachPostMedia reloads
+  // the same rows under the post writer transaction and associates every object
+  // only when the post itself can commit.
   return { ids, rows, photos: rows.map((entry) => entry.url) };
 }
 
@@ -2988,7 +2985,7 @@ export function attachPostMedia(database, { postId, ownerId, selection, at = Dat
   // Selection normally occurs before the post transaction begins. Reload every
   // descriptor and ledger here under the writer lock so an orphan cleanup or
   // deletion queue cannot win between validation and association.
-  const fresh = mediaSelection(database, { ownerId, assetIds: selection?.ids || [], currentPostId: postId, at });
+  const fresh = mediaSelection(database, { ownerId, assetIds: selection?.ids || [], currentPostId: postId });
   for (let position = 0; position < fresh.rows.length; position += 1) {
     const asset = fresh.rows[position].row;
     database.prepare("INSERT INTO post_media (post_id,asset_id,position,created_at) VALUES (?,?,?,?)")

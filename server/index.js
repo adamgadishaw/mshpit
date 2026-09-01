@@ -74,6 +74,7 @@ import { applyHttpServerLimits } from "./httpServerPolicy.js";
 import { safeRequestFailureContext } from "./safeLogging.js";
 import { assertAccountMutationAccess } from "./accountMutationAccess.js";
 import { healthRateLimitPolicy } from "./healthAvailability.js";
+import { shouldRecordGeneralRequestFailure } from "./requestFailureObservability.js";
 import { crawlerFileRateLimitPolicy } from "./crawlerFileRateLimit.js";
 import {
   allowedUnsafeRequestOrigins,
@@ -643,8 +644,15 @@ const server = createServer(async (req, res) => {
     if (e instanceof ApiError) {
       if (e.status >= 500) {
         console.error(`[pit] ${e.status} ${requestId} on ${failure.method} ${failure.route} (${Date.now() - started}ms): code=${e.code} cause=${failure.cause}`);
-        recordError({ level: "error", code: e.code, status: e.status, method: failure.method, route: routePattern, cause: failure.cause, requestId });
-        scheduleAlert();
+        if (shouldRecordGeneralRequestFailure({
+          method: failure.method,
+          route: routePattern,
+          status: e.status,
+          code: e.code,
+        })) {
+          recordError({ level: "error", code: e.code, status: e.status, method: failure.method, route: routePattern, cause: failure.cause, requestId });
+          scheduleAlert();
+        }
       }
       return sendApiError(res, e, requestId, cors);
     }

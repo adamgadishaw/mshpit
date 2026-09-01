@@ -56,6 +56,7 @@ import { MEDIA_POST_MAX_ATTACHMENTS } from "./domain/mediaUploadPolicy.mjs";
 import { buildReviewCreateBody, buildReviewEditBody, cleanArtistKey } from "./domain/post-payload.mjs";
 import { mergeEditedPost, resolvePostEditTarget } from "./domain/postEditTarget.mjs";
 import { postMatchesEditIntent, shouldReconcileEditFailure } from "./domain/postReconciliation.mjs";
+import { deliverPostCreate } from "./domain/postDelivery.mjs";
 import { activeYouTubeLookupStatus, classifyResolve, requestYouTubeTrackOnce, shouldUseYouTubeLookupCache, CACHE_MS } from "./domain/playback.mjs";
 import { recommendTracks as recommendFromCandidates } from "./domain/recommend.mjs";
 import { trackKey, trackMetadataKey, trackTupleKey, youtubeLookupCacheKey } from "./domain/trackIdentity.mjs";
@@ -3180,6 +3181,10 @@ export function StoreProvider({ children }) {
 
   const addLog = (log, { silent = false } = {}) => {
     const localId = log.id || "p_local_" + Date.now();
+    const postingActor = session;
+    const postingMutation = postingActor
+      ? captureAccountMutation(postingActor.id, accountMutationEpochRef.current)
+      : null;
     // A plain status/update post ("post whatever") shares this path with a show
     // review; it just carries no artist/venue/rating and renders as a social card.
     const memorialMemory = log.kind === "memory";
@@ -3201,7 +3206,7 @@ export function StoreProvider({ children }) {
         ? log.attendanceTicket : null,
       taggedPeople: normalizeTaggedPeople(log.taggedPeople),
       createdAt: Number(log.createdAt) > 0 ? Number(log.createdAt) : Date.now(),
-      userId: session?.id,
+      userId: postingActor?.id,
     };
     feedMutationRevisionRef.current += 1;
     // Ticket cards carry a server-owned event snapshot. Do not flash the client
@@ -3209,11 +3214,11 @@ export function StoreProvider({ children }) {
     // ordinary posts keep their existing optimistic publishing experience.
     if (!safe.attendanceTicket) {
       setFeed((f) => [safe, ...f]);
-      if (session?.id) upsertProfileHistoryPost(session.id, session.id, safe);
+      if (postingActor?.id) upsertProfileHistoryPost(postingActor.id, postingActor.id, safe);
     }
     // Slice 2 write-through: persist the post server-side, then adopt the server
     // id so likes/comments on it key correctly. Best-effort (offline keeps local).
-    if (session) {
+    if (postingActor) {
       const body = kind === "status"
         ? memorialMemory
           ? { clientMutationId: localId, kind: "memory", artist: safe.artist, artistKey: safe.artistKey, review: safe.review, taggedUserIds: taggedUserIdsFromPeople(safe.taggedPeople), song: safe.song || null, photos: safe.photos || [], ...(Array.isArray(safe.mediaAssetIds) ? { mediaAssetIds: safe.mediaAssetIds } : {}), photosPublic: safe.photosPublic === false ? 0 : 1 }
@@ -3234,13 +3239,18 @@ export function StoreProvider({ children }) {
           }
           : { clientMutationId: localId, kind: "status", review: safe.review, taggedUserIds: taggedUserIdsFromPeople(safe.taggedPeople), song: safe.song || null, photos: safe.photos || [], ...(Array.isArray(safe.mediaAssetIds) ? { mediaAssetIds: safe.mediaAssetIds } : {}), photosPublic: safe.photosPublic === false ? 0 : 1, ...(log.playlistId ? { playlistId: log.playlistId } : {}), campaign: safe.campaign }
         : buildReviewCreateBody(safe);
-      return api("/api/posts", {
-        method: "POST",
+      return deliverPostCreate({
+        apiCall: api,
         context: memorialMemory ? "Sharing your fan memory" : kind === "status" ? "Posting your update" : "Posting your concert review",
         body,
-        silent,
-        })
+        expectedAccountId: postingActor.id,
+      })
         .then(({ id, post }) => {
+          if (!accountMutationIsCurrent(
+            postingMutation,
+            sessionRef.current?.id,
+            accountMutationEpochRef.current,
+          )) return { ok: true, id: id || localId, post: null, stale: true };
           feedMutationRevisionRef.current += 1;
           let canonicalPost = null;
           if (post) {
@@ -3250,11 +3260,11 @@ export function StoreProvider({ children }) {
             // while the original POST response was lost. Collapse both IDs so
             // an idempotent retry cannot render the same post twice.
             setFeed((f) => [published, ...f.filter((l) => l.id !== localId && l.id !== published.id)]);
-            upsertProfileHistoryPost(session.id, session.id, published, { previousId: localId });
+            upsertProfileHistoryPost(postingActor.id, postingActor.id, published, { previousId: localId });
           } else if (id && id !== localId) {
             const published = { ...safe, id };
             setFeed((f) => [published, ...f.filter((l) => l.id !== localId && l.id !== id)]);
-            upsertProfileHistoryPost(session.id, session.id, published, { previousId: localId });
+            upsertProfileHistoryPost(postingActor.id, postingActor.id, published, { previousId: localId });
           }
           track("post", { kind: kind === "status" ? "status" : "review", mediaCount: Array.isArray(safe.photos) ? safe.photos.length : 0 });
           // Calendar focus is allowed only from the server projection. Older
@@ -3263,15 +3273,35 @@ export function StoreProvider({ children }) {
           return { ok: true, id: id || localId, post: canonicalPost };
         })
         .catch((error) => {
+          if (!accountMutationIsCurrent(
+            postingMutation,
+            sessionRef.current?.id,
+            accountMutationEpochRef.current,
+          )) return { ok: false, error, stale: true };
           feedMutationRevisionRef.current += 1;
           // A failed write must not remain looking published on this device.
           setFeed((f) => f.filter((l) => l.id !== localId));
-          removeProfileHistoryPost(session.id, session.id, localId);
+          removeProfileHistoryPost(postingActor.id, postingActor.id, localId);
           return { ok: false, error };
         });
     }
-    track("post", { kind: kind === "status" ? "status" : "review", mediaCount: Array.isArray(safe.photos) ? safe.photos.length : 0 });
-    return Promise.resolve({ ok: true, localOnly: true });
+    if (ENABLE_DEMO_DATA) {
+      track("post", { kind: kind === "status" ? "status" : "review", mediaCount: Array.isArray(safe.photos) ? safe.photos.length : 0 });
+      return Promise.resolve({ ok: true, localOnly: true });
+    }
+    // A vanished/expired session must never look like a successful publish.
+    // The composer retains its durable draft so the member can sign back in
+    // and submit the same mutation safely.
+    setFeed((f) => f.filter((l) => l.id !== localId));
+    return Promise.resolve({
+      ok: false,
+      error: new AppError("Sign in again to publish this post.", {
+        status: 401,
+        serverCode: "AUTH_REQUIRED",
+        context: kind === "status" ? "Posting your update" : "Posting your concert review",
+        source: "post-delivery",
+      }),
+    });
   };
 
   const reconcileEditedPost = async (id, body, error) => {

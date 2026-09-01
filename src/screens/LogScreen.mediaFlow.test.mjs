@@ -56,6 +56,52 @@ test("original upload leaves admission to the authenticated route and keeps prog
   includes(source, "mediaUploadProgressCopy(uploadProgress)");
 });
 
+test("an invalid album item is retired while systemic failures still stop the upload batch", () => {
+  const upload = source.slice(source.indexOf("async function uploadOriginalMedia"), source.indexOf("async function stageSelectedAssets"));
+  includes(source, 'import { shouldContinueMediaBatch } from "../domain/mediaBatchPolicy.mjs"');
+  includes(upload, "const completedSelections = []");
+  includes(upload, "const rejectedAssets = []");
+  includes(upload, "if (!operationIsActive() || !shouldContinueMediaBatch(error)) throw error");
+  includes(upload, "rejectedAssets.push({ asset, error })");
+  includes(upload, "void retireRemoteDrafts([asset.id])");
+  includes(upload, "await releaseMediaDraftAsset(asset)");
+  includes(upload, "continue;");
+  includes(upload, "completedSelections.push(asset)");
+  includes(upload, "completedSelections,\n          completedAssets");
+  excludes(upload, "selected.slice(0, completedAssets.length)");
+});
+
+test("pending local videos render a picker still or lightweight tile without starting SmartImage video work", () => {
+  const preview = source.slice(source.indexOf("function PendingMediaPreview"), source.indexOf("function Stepper"));
+  includes(preview, 'if (kind === "video")');
+  includes(preview, "const posterUri = mediaPosterUri(asset)");
+  includes(preview, "uri={posterUri}");
+  includes(preview, 'mediaKind="image"');
+  includes(preview, "styles.pendingVideoPreview");
+  excludes(preview, 'mediaKind="video"');
+  excludes(preview, "posterUri={");
+  const pendingGrid = source.slice(source.indexOf("pendingMediaAssets.map"), source.indexOf("photos.length + pendingMediaAssets.length <"));
+  includes(pendingGrid, "<PendingMediaPreview");
+  excludes(pendingGrid, "<SmartImage");
+});
+
+test("submit claims a synchronous lock and checkpoints its exact id before either post request", () => {
+  includes(source, "const submitOperationRef = useRef(false)");
+  const submit = source.slice(source.indexOf("const submit = async () =>"), source.indexOf("\n\n  return (", source.indexOf("const submit = async () =>")));
+  includes(submit, "if (!canPost || submitBusy || submitOperationRef.current) return");
+  const claim = submit.indexOf("submitOperationRef.current = true");
+  const posting = submit.indexOf("setPosting(true)");
+  const checkpoint = submit.indexOf("persistDraftSnapshot(normalizeComposerDraft({");
+  const submissionIdentity = submit.indexOf("submissionId: submissionIdRef.current", checkpoint);
+  const request = submit.indexOf("await onPost?.(");
+  assert.ok(claim >= 0 && posting > claim, "submit lock must be claimed before posting state is scheduled");
+  assert.ok(checkpoint > posting && submissionIdentity > checkpoint && request > submissionIdentity, "the exact draft identity must be saved before onPost");
+  includes(submit, "} finally {");
+  const release = submit.lastIndexOf("submitOperationRef.current = false");
+  const postingDone = submit.lastIndexOf("setPosting(false)");
+  assert.ok(release > request && postingDone > release, "the synchronous lock must be released from finally");
+});
+
 test("composer exposes no filter, crop, cover, trim, or media-editor entry point", () => {
   for (const removed of [
     "photo and video editor",

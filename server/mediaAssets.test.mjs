@@ -53,6 +53,33 @@ function addUser(id) {
   return q.userById.get(id);
 }
 
+function addReadyPostImage(ownerId, suffix, at = 1_000) {
+  const assetId = `ma_lease_${suffix}`;
+  const variantId = `mv_lease_${suffix}`;
+  const sourceKey = `users/${ownerId}/post/${suffix}-source.jpg`;
+  const renderKey = `users/${ownerId}/post/${suffix}-safe.jpg`;
+  const renderUrl = `https://media.example.com/cdn/${renderKey}`;
+  db.prepare(`INSERT INTO media_objects
+    (object_key,owner_id,storage_scope,purpose,byte_size,status,created_at,updated_at)
+    VALUES (?,?,?,?,?,'issued',?,?)`).run(sourceKey, ownerId, "private", "post", 4_096, at, at);
+  db.prepare(`INSERT INTO media_objects
+    (object_key,owner_id,storage_scope,purpose,byte_size,status,created_at,updated_at)
+    VALUES (?,?,?,?,?,'issued',?,?)`).run(renderKey, ownerId, "public", "post", 2_048, at, at);
+  db.prepare(`INSERT INTO media_assets
+    (id,owner_id,client_asset_id,create_hash,purpose,kind,source_key,source_url,source_storage_scope,
+      original_name,mime_type,byte_size,width,height,orientation,metadata_status,codec_status,status,
+      edit_recipe,recipe_version,finalize_hash,source_verified_at,render_state,render_variant_id,created_at,updated_at)
+    VALUES (?,?,?,?,?,'image',?,?,?,'lease.jpg','image/jpeg',4096,1200,1500,0,'declared','not_applicable','ready','{}',1,?,?,'ready',?,?,?)`)
+    .run(assetId, ownerId, `client_${suffix}`, "a".repeat(64), "post", sourceKey, `pit-private:${sourceKey}`, "private",
+      "b".repeat(64), at, variantId, at, at);
+  db.prepare(`INSERT INTO media_variants
+    (id,asset_id,client_variant_id,create_hash,role,object_key,public_url,mime_type,byte_size,width,height,
+      status,finalize_hash,verified_at,verification_origin,created_at,updated_at)
+    VALUES (?,?,?,?,'render',?,?,'image/jpeg',2048,1200,1500,'verified',?,?,'private_derivative_v1',?,?)`)
+    .run(variantId, assetId, `client_${variantId}`, "c".repeat(64), renderKey, renderUrl, "d".repeat(64), at, at, at);
+  return { assetId, sourceKey, renderKey, renderUrl };
+}
+
 function sourceBody(overrides = {}) {
   return {
     clientAssetId: "asset-retry-0001",
@@ -2658,4 +2685,75 @@ test("new URL-only videos are blocked while historical clips are grandfathered a
   }).photos;
   assert.deepEqual(exactArtist.map((item) => item.postId), [],
     "raw URL-only rows stay hidden even when an exact catalog identity is requested");
+});
+
+test("rejected and rate-limited creates cannot renew drafts while a committed post associates them", () => {
+  const create = routes["POST /api/posts"];
+  const leaseTimes = (media) => db.prepare(`SELECT object_key,updated_at FROM media_objects
+    WHERE object_key IN (?,?) ORDER BY object_key`).all(media.sourceKey, media.renderKey)
+    .map((row) => ({ ...row }));
+
+  const successfulOwner = addUser("media_lease_success_owner");
+  const successfulMedia = addReadyPostImage(successfulOwner.id, "successful0001");
+  const untouched = leaseTimes(successfulMedia);
+  assert.throws(
+    () => create({
+      user: successfulOwner,
+      ip: "media-lease-rejected",
+      body: {
+        kind: "status",
+        review: "This request must fail after media preflight",
+        photosPublic: "not-a-boolean",
+        mediaAssetIds: [successfulMedia.assetId],
+        clientMutationId: "media_lease_rejected_0001",
+      },
+    }),
+    (error) => error.status === 400,
+  );
+  assert.deepEqual(leaseTimes(successfulMedia), untouched,
+    "content validation after media preflight must not renew an unattached draft");
+  assert.equal(db.prepare("SELECT 1 FROM post_media WHERE asset_id=?").get(successfulMedia.assetId), undefined);
+
+  const published = create({
+    user: successfulOwner,
+    ip: "media-lease-success",
+    body: {
+      kind: "status",
+      review: "This one commits with its media",
+      mediaAssetIds: [successfulMedia.assetId],
+      clientMutationId: "media_lease_success_0001",
+    },
+  });
+  assert.equal(db.prepare("SELECT post_id FROM post_media WHERE asset_id=?").get(successfulMedia.assetId).post_id, published.id);
+  assert.deepEqual(db.prepare(`SELECT status FROM media_objects WHERE object_key IN (?,?) ORDER BY object_key`)
+    .all(successfulMedia.sourceKey, successfulMedia.renderKey).map((row) => row.status), ["associated", "associated"]);
+
+  const limitedOwner = addUser("media_lease_limited_owner");
+  const limitedMedia = addReadyPostImage(limitedOwner.id, "limited000001");
+  for (let index = 0; index < 20; index += 1) {
+    create({
+      user: limitedOwner,
+      ip: "media-lease-quota",
+      body: { kind: "status", review: `Quota post ${index}` },
+    });
+  }
+  db.prepare("UPDATE media_objects SET updated_at=? WHERE object_key IN (?,?)")
+    .run(2_000, limitedMedia.sourceKey, limitedMedia.renderKey);
+  const limitedLease = leaseTimes(limitedMedia);
+  assert.throws(
+    () => create({
+      user: limitedOwner,
+      ip: "media-lease-quota",
+      body: {
+        kind: "status",
+        review: "This request is over quota",
+        mediaAssetIds: [limitedMedia.assetId],
+        clientMutationId: "media_lease_limited_0001",
+      },
+    }),
+    (error) => error.status === 429 && error.code === "RATE_LIMITED",
+  );
+  assert.deepEqual(leaseTimes(limitedMedia), limitedLease,
+    "rate limiting after media preflight must not renew an unattached draft");
+  assert.equal(db.prepare("SELECT 1 FROM post_media WHERE asset_id=?").get(limitedMedia.assetId), undefined);
 });

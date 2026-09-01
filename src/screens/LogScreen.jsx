@@ -30,6 +30,7 @@ import {
 import { composerCloseDecision } from "../domain/composerClosePolicy.mjs";
 import { PENDING_COMPOSER_PICKER_KEY } from "../domain/composerRecovery.mjs";
 import { postMediaPickerOptions } from "../domain/mediaPickerOptions.mjs";
+import { shouldContinueMediaBatch } from "../domain/mediaBatchPolicy.mjs";
 import { MEDIA_POST_MAX_ATTACHMENTS } from "../domain/mediaUploadPolicy.mjs";
 import {
   DEFAULT_MEDIA_PUBLISHING_CAPABILITIES,
@@ -94,6 +95,50 @@ function AttachChip({ icon, label, active, count, onPress, disabled }) {
       <Text style={[styles.attachChipTxt, active && styles.attachChipTxtOn]} numberOfLines={1}>{label}</Text>
       {count > 0 && <Text style={styles.attachChipCount}>{count}</Text>}
     </Pressable>
+  );
+}
+
+function PendingMediaPreview({ asset, accessibilityLabel }) {
+  const kind = mediaDisplayKind(asset);
+  if (kind === "video") {
+    const posterUri = mediaPosterUri(asset);
+    // Never hand a pending local video URI to SmartImage. That path can mount
+    // the clip poster pipeline while the same original is already uploading
+    // and being verified. A picker-provided still is safe to render as a plain
+    // image; otherwise a lightweight tile keeps the composer responsive.
+    if (posterUri) {
+      return (
+        <SmartImage
+          uri={posterUri}
+          mediaKind="image"
+          style={StyleSheet.absoluteFill}
+          contain={false}
+          cachePolicy="memory"
+          accessibilityLabel={accessibilityLabel}
+        />
+      );
+    }
+    return (
+      <View
+        style={[StyleSheet.absoluteFill, styles.pendingVideoPreview]}
+        accessible
+        accessibilityRole="image"
+        accessibilityLabel={accessibilityLabel}
+      >
+        <Icon name="play" size={22} color={colors.amber} />
+        <Text style={styles.pendingVideoPreviewText}>VIDEO</Text>
+      </View>
+    );
+  }
+  return (
+    <SmartImage
+      uri={asset.uri || asset.durableLocalUri}
+      mediaKind="image"
+      style={StyleSheet.absoluteFill}
+      contain={false}
+      cachePolicy="memory"
+      accessibilityLabel={accessibilityLabel}
+    />
   );
 }
 
@@ -391,6 +436,7 @@ export default function LogScreen({
   const uploadOperationRef = useRef(null);
   const remoteDraftAssetIdsRef = useRef(new Map());
   const submissionIdRef = useRef(editing?.id || submissionId());
+  const submitOperationRef = useRef(false);
   useEffect(() => () => {
     uploadControllerRef.current?.abort();
     uploadOperationRef.current = null;
@@ -541,6 +587,8 @@ export default function LogScreen({
     setMediaError("");
     progressPublisher.publish({ current: 1, total: selected.length, completed: 0, stage: "preparing" }, { immediate: true });
     const completedAssets = [];
+    const completedSelections = [];
+    const rejectedAssets = [];
     // A URL-only historical post cannot safely mix attachment identity models
     // in one PATCH. New additions fail closed until the legacy attachments are
     // removed; every accepted upload uses stable IDs and verified derivatives.
@@ -553,56 +601,70 @@ export default function LogScreen({
         const asset = selected[index];
         progressPublisher.publish({ current: index + 1, total: selected.length, completed: completedAssets.length, stage: "preparing" }, { immediate: true });
         let ready;
-        ready = await uploadOriginalMediaAsset({
-          asset,
-          signal: controller.signal,
-          onStage: (stage) => {
-            if (!operationIsActive()) return;
-            progressPublisher.publish({
-              current: index + 1,
-              total: selected.length,
-              completed: completedAssets.length,
-              stage,
-              fraction: stage === "ready" ? 1 : 0,
-            }, { immediate: true });
-          },
-          onProgress: (progress) => {
-            if (!operationIsActive()) return;
-            progressPublisher.publish({
-              current: index + 1,
-              total: selected.length,
-              completed: completedAssets.length,
-              stage: progress.stage,
-              bytesSent: progress.bytesSent,
-              totalBytes: progress.totalBytes,
-              fraction: progress.fraction,
-            });
-          },
-          onRemoteDraft: ({ assetId, sourceUploaded }) => {
-            if (operationIsActive() && assetId) {
-              remoteDraftAssetIdsRef.current.set(asset.id, assetId);
-              if (sourceUploaded !== true) return;
-              // Keep the opaque server identity in the recoverable upload
-              // draft once its PUT succeeds. A retry can then GET/finalize the
-              // same private source, while a failed partial PUT still mints a
-              // fresh upload capability instead of trusting incomplete bytes.
-              setPendingMediaAssets((current) => current.map((candidate, candidateIndex) => (
-                candidate.id === asset.id
-                  ? originalMediaProjectAsset({ ...candidate, assetId }, candidateIndex)
-                  : candidate
-              )));
-            }
-          },
-        });
+        try {
+          ready = await uploadOriginalMediaAsset({
+            asset,
+            signal: controller.signal,
+            onStage: (stage) => {
+              if (!operationIsActive()) return;
+              progressPublisher.publish({
+                current: index + 1,
+                total: selected.length,
+                completed: completedAssets.length,
+                stage,
+                fraction: stage === "ready" ? 1 : 0,
+              }, { immediate: true });
+            },
+            onProgress: (progress) => {
+              if (!operationIsActive()) return;
+              progressPublisher.publish({
+                current: index + 1,
+                total: selected.length,
+                completed: completedAssets.length,
+                stage: progress.stage,
+                bytesSent: progress.bytesSent,
+                totalBytes: progress.totalBytes,
+                fraction: progress.fraction,
+              });
+            },
+            onRemoteDraft: ({ assetId, sourceUploaded }) => {
+              if (operationIsActive() && assetId) {
+                remoteDraftAssetIdsRef.current.set(asset.id, assetId);
+                if (sourceUploaded !== true) return;
+                // Keep the opaque server identity in the recoverable upload
+                // draft once its PUT succeeds. A retry can then GET/finalize the
+                // same private source, while a failed partial PUT still mints a
+                // fresh upload capability instead of trusting incomplete bytes.
+                setPendingMediaAssets((current) => current.map((candidate, candidateIndex) => (
+                  candidate.id === asset.id
+                    ? originalMediaProjectAsset({ ...candidate, assetId }, candidateIndex)
+                    : candidate
+                )));
+              }
+            },
+          });
+        } catch (error) {
+          // Invalid size/type is scoped to this original, so discard only that
+          // selection and keep moving through the album. Any auth, network,
+          // timeout, rate-limit, storage, or service failure remains systemic
+          // and stops immediately so we do not repeat doomed work.
+          if (!operationIsActive() || !shouldContinueMediaBatch(error)) throw error;
+          rejectedAssets.push({ asset, error });
+          setPendingMediaAssets((current) => current.filter((item) => item.id !== asset.id));
+          void retireRemoteDrafts([asset.id]);
+          await releaseMediaDraftAsset(asset);
+          continue;
+        }
         if (!operationIsActive()) return { ok: false, stale: true };
         remoteDraftAssetIdsRef.current.delete(asset.id);
+        completedSelections.push(asset);
         completedAssets.push(ready);
         // Commit each verified asset immediately. If a later item fails, a
         // retry resumes with only the unfinished selections instead of
         // orphaning completed uploads or uploading them twice.
         const committedProject = reconcileMediaProjectSelection(
           mediaProject,
-          selected.slice(0, completedAssets.length),
+          completedSelections,
           completedAssets,
         );
         setMediaProject(committedProject);
@@ -611,6 +673,17 @@ export default function LogScreen({
         // The verified owner source is now recoverable from the server. Remove
         // only PIT's private staged copy; the helper refuses arbitrary paths.
         await releaseMediaDraftAsset(asset);
+      }
+      if (rejectedAssets.length) {
+        const noun = rejectedAssets.length === 1 ? "item" : "items";
+        if (ownsOperation()) {
+          setMediaError(`${rejectedAssets.length} selected ${noun} could not be attached because its file type or size was not accepted. The rest finished.`);
+        }
+        return {
+          ok: completedAssets.length > 0,
+          partial: completedAssets.length > 0,
+          rejected: rejectedAssets.map(({ asset }) => asset.id),
+        };
       }
       return { ok: true };
     } catch (error) {
@@ -1072,10 +1145,22 @@ export default function LogScreen({
   }, [closeGuardRef]);
 
   const submit = async () => {
-    if (!canPost || submitBusy) return;
-    setPosting(true);
-    setPostError("");
+    if (!canPost || submitBusy || submitOperationRef.current) return;
+    // React state does not update until the next render. Claim the operation
+    // synchronously so a fast second tap cannot launch another request with
+    // the same submission id before `posting` becomes visible.
+    submitOperationRef.current = true;
     try {
+      setPosting(true);
+      setPostError("");
+      // Checkpoint the exact submission identity and current fields before the
+      // network boundary. If the app is suspended or the request outcome is
+      // uncertain, reopening the composer retries the same idempotent post
+      // instead of losing the latest keystroke or minting a duplicate.
+      persistDraftSnapshot(normalizeComposerDraft({
+        ...currentDraft,
+        submissionId: submissionIdRef.current,
+      }));
       const durablePhotos = photos.filter(isDurableMediaUrl);
       const stableMediaAssetIds = mediaAssetIdsMatchingPhotos(mediaProject, durablePhotos);
       const publishedMedia = mediaProjectPublishedMedia(mediaProject)
@@ -1153,6 +1238,7 @@ export default function LogScreen({
     } catch (error) {
       setPostError(postErrorMessage(error));
     } finally {
+      submitOperationRef.current = false;
       setPosting(false);
     }
   };
@@ -1623,13 +1709,8 @@ export default function LogScreen({
           );})}
           {pendingMediaAssets.map((asset, index) => (
             <View key={asset.id} style={[styles.thumb, styles.pendingThumb]}>
-              <SmartImage
-                uri={asset.uri || asset.durableLocalUri}
-                posterUri={mediaPosterUri(asset)}
-                mediaKind={mediaDisplayKind(asset)}
-                style={StyleSheet.absoluteFill}
-                contain={false}
-                cachePolicy="memory"
+              <PendingMediaPreview
+                asset={asset}
                 accessibilityLabel={asset.altText || `Selected media ${photos.length + index + 1}`}
               />
               <View style={styles.pendingThumbBadge}><Text style={styles.pendingThumbBadgeText}>WAITING</Text></View>
@@ -1837,6 +1918,8 @@ const styles = StyleSheet.create({
   pendingMediaRetryText: { color: "#1A1206", fontSize: 12, fontWeight: "900" },
   thumb: { width: 76, height: 76, borderRadius: 10, overflow: "hidden", borderWidth: 1, borderColor: colors.line },
   pendingThumb: { opacity: 0.8, borderColor: colors.amber },
+  pendingVideoPreview: { alignItems: "center", justifyContent: "center", gap: 4, backgroundColor: colors.surfaceAlt },
+  pendingVideoPreviewText: { color: colors.textDim, fontFamily: mono, fontSize: 8, fontWeight: "900", letterSpacing: 1 },
   pendingThumbBadge: { position: "absolute", left: 3, bottom: 3, paddingHorizontal: 5, paddingVertical: 3, borderRadius: 5, backgroundColor: "rgba(7,9,15,0.84)" },
   pendingThumbBadgeText: { color: "#fff", fontFamily: mono, fontSize: 7.5, fontWeight: "900", letterSpacing: 0.6 },
   campaignThumbSelected: { borderWidth: 2, borderColor: colors.amber },

@@ -183,6 +183,25 @@ test("only server faults alert; a 404 storm is not news", async () => {
   assert.equal(alertCount(), 0);
 });
 
+test("strict readiness polling stays out of general error lists, totals, and alerts", async () => {
+  const at = Date.now();
+  for (let i = 0; i < 127; i += 1) {
+    recordError({
+      code: "MEDIA_STORAGE_UNAVAILABLE",
+      status: 503,
+      method: "GET",
+      route: "/api/readiness",
+      cause: "ApiError",
+      at,
+    });
+  }
+  assert.equal(recentErrors().length, 0);
+  assert.deepEqual(errorStats(at - 1_000), { occurrences: 0, kinds: 0 });
+  const result = await maybeAlert({ now: at + 1 });
+  assert.equal(result.sent, false);
+  assert.equal(result.reason, "nothing-serious");
+});
+
 test("a fatal process error is serious even with no status", async () => {
   recordError({ level: "fatal", code: "PROCESS", status: 0, route: "uncaughtException", cause: "TypeError" });
   const result = await maybeAlert();

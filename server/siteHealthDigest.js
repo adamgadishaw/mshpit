@@ -248,7 +248,11 @@ function seriousErrorStats(database, since) {
         COUNT(DISTINCT b.fingerprint) kinds
       FROM error_occurrence_buckets b
       JOIN error_events e ON e.fingerprint=b.fingerprint
-      WHERE b.hour_start>=? AND (e.level='fatal' OR e.status=0 OR e.status>=500)`).get(bucketStart);
+      WHERE b.hour_start>=? AND (e.level='fatal' OR e.status=0 OR e.status>=500)
+        AND NOT (
+          e.method='GET' AND e.route='/api/readiness'
+          AND e.status=503 AND e.code='MEDIA_STORAGE_UNAVAILABLE'
+        )`).get(bucketStart);
     return {
       occurrences: Math.max(0, Number(row?.occurrences) || 0),
       kinds: Math.max(0, Number(row?.kinds) || 0),

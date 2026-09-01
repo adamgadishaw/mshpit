@@ -28,11 +28,11 @@ test("successful dated logs navigate to their canonical Calendar date while plai
   assert.match(app, /else \{[\s\S]*commitClear\(\);\s*setTab\("feed"\);/);
   assert.match(app, /<CalendarScreen initialDate=\{nav\.calendarDate\} initialView=\{nav\.calendarView\}/);
 
-  assert.match(store, /upsertProfileHistoryPost\(session\.id, session\.id, safe\)/,
+  assert.match(store, /upsertProfileHistoryPost\(postingActor\.id, postingActor\.id, safe\)/,
     "the optimistic dated post should be visible without an extra calendar write");
-  assert.match(store, /upsertProfileHistoryPost\(session\.id, session\.id, published, \{ previousId: localId \}\)/,
+  assert.match(store, /upsertProfileHistoryPost\(postingActor\.id, postingActor\.id, published, \{ previousId: localId \}\)/,
     "the canonical server post must replace the optimistic row");
-  assert.match(store, /removeProfileHistoryPost\(session\.id, session\.id, localId\)/,
+  assert.match(store, /removeProfileHistoryPost\(postingActor\.id, postingActor\.id, localId\)/,
     "a failed publish must also disappear from the derived calendar");
   assert.match(store, /return \{ ok: true, id: id \|\| localId, post: canonicalPost \}/,
     "navigation must classify the canonical saved post rather than client copies");

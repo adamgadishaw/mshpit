@@ -192,3 +192,30 @@ test("catalog enrichment changes do not invalidate an identical post retry", () 
     "a duplicate retry never rewrites the immutable stored post",
   );
 });
+
+test("author deletion retains only the opaque mutation tombstone and cannot be resurrected by retry", () => {
+  const user = addUser("deletedretry");
+  const body = {
+    clientMutationId: "deleted_retry_tombstone_001",
+    kind: "status",
+    review: "Delete this post permanently",
+  };
+  const created = routes["POST /api/posts"]({ user, ip: "deleted-retry-create", body });
+  assert.match(db.prepare("SELECT client_mutation_hash hash FROM posts WHERE id=?").get(created.id).hash, /^[a-f0-9]{64}$/);
+
+  routes["DELETE /api/posts/:id"]({ user, ip: "deleted-retry-delete", params: { id: created.id } });
+  const tombstone = db.prepare(`SELECT removed,review,client_mutation_id,client_mutation_hash
+    FROM posts WHERE id=?`).get(created.id);
+  assert.deepEqual({ ...tombstone }, {
+    removed: 1,
+    review: "",
+    client_mutation_id: body.clientMutationId,
+    client_mutation_hash: null,
+  });
+  assert.throws(
+    () => routes["POST /api/posts"]({ user, ip: "deleted-retry-replay", body }),
+    (error) => error instanceof ApiError && error.status === 409 && error.code === "POST_REMOVED",
+  );
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM posts WHERE user_id=? AND client_mutation_id=?")
+    .get(user.id, body.clientMutationId).count, 1);
+});

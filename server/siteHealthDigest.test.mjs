@@ -274,6 +274,22 @@ test("health content is aggregate-only and states what the process cannot verify
   assert.match(digest.detail, /does not retain independent proof of the latest remote upload/u);
 });
 
+test("strict readiness polling is component state, not 127 app crashes", () => {
+  const at = Date.parse("2026-01-17T14:00:00Z");
+  const hour = Math.floor((at - 1000) / 3_600_000) * 3_600_000;
+  const insertEvent = db.prepare("INSERT INTO error_events (fingerprint,level,code,status,method,route,cause,last_request_id,count,first_seen,last_seen) VALUES (?,?,?,?,?,?,?,?,?,?,?)");
+  const insertBucket = db.prepare("INSERT INTO error_occurrence_buckets (fingerprint,hour_start,count) VALUES (?,?,?)");
+  insertEvent.run("readiness-probe", "error", "MEDIA_STORAGE_UNAVAILABLE", 503, "GET", "/api/readiness", "ApiError", null, 127, at - 1000, at - 1000);
+  insertBucket.run("readiness-probe", hour, 127);
+  insertEvent.run("real-media-failure", "error", "MEDIA_STORAGE_UNAVAILABLE", 503, "POST", "/api/media/assets/:id/finalize", "ApiError", null, 2, at - 1000, at - 1000);
+  insertBucket.run("real-media-failure", hour, 2);
+
+  const digest = collectSiteHealthDigest(db, { env: productionEnv, at, uptimeSeconds: 77 });
+  assert.equal(digest.aggregate.activeServerErrorKinds, 1);
+  assert.equal(digest.aggregate.activeServerErrorOccurrences, 2);
+  assert.equal(digest.aggregate.warnings.includes("server_error_patterns"), true);
+});
+
 test("live deployment stamps are production-only and use a bounded commit readout", async () => {
   const calls = [];
   const env = { ...productionEnv, RENDER_GIT_COMMIT: "ABCDEF0123456789abcdef" };
