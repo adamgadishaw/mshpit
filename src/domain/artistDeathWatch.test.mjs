@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   ARTIST_DEATH_WATCH_BATCH_SIZE,
+  ARTIST_DEATH_WATCH_BATCHES_PER_RUN,
   ARTIST_DEATH_WATCH_MAX_CONFIRMATIONS,
   artistDeathEvidenceUrls,
   canonicalArtistMbid,
@@ -27,6 +28,8 @@ test("death-watch identifiers and exact dates fail closed", () => {
   assert.equal(parseDeathCandidateReview("dismissed"), "dismissed");
   assert.equal(parseDeathCandidateReview("memorialized"), null);
   assert.ok(ARTIST_DEATH_WATCH_BATCH_SIZE <= 50);
+  assert.ok(ARTIST_DEATH_WATCH_BATCHES_PER_RUN <= 5);
+  assert.ok(ARTIST_DEATH_WATCH_BATCH_SIZE * ARTIST_DEATH_WATCH_BATCHES_PER_RUN <= 200);
   assert.ok(ARTIST_DEATH_WATCH_MAX_CONFIRMATIONS <= 5);
 });
 

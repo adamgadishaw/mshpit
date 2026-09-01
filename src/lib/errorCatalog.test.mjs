@@ -83,6 +83,8 @@ test("diagnostic routes discard query values and private identifiers", () => {
   );
   assert.equal(safeRouteTemplate("/api/users/user-secret-123/followers"), "/api/users/:id/followers");
   assert.equal(safeRouteTemplate("/api/posts/998812/comments?token=secret"), "/api/posts/:id/comments");
+  assert.equal(safeRouteTemplate("/api/admin/artists/enrich"), "/api/admin/artists/enrich");
+  assert.equal(safeRouteTemplate("/api/admin/artists/private-artist-key"), "/api/admin/artists/:id");
 });
 
 test("paused built-in playback incidents stay out of the general feedback catalog", () => {

@@ -98,6 +98,86 @@ function schemaTypes(documents) {
   return found;
 }
 
+function structuredNodes(documents) {
+  const nodes = [];
+  function visit(value, relationship = null) {
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item, relationship);
+      return;
+    }
+    if (!value || typeof value !== "object") return;
+    nodes.push({ value, relationship });
+    for (const [property, nested] of Object.entries(value)) visit(nested, property);
+  }
+  visit(documents);
+  return nodes;
+}
+
+function structuredTypes(node) {
+  const raw = node?.["@type"];
+  return (Array.isArray(raw) ? raw : [raw])
+    .filter((type) => typeof type === "string" && type.trim())
+    .map((type) => type.trim());
+}
+
+function nonemptyStructuredText(value) {
+  return typeof value === "string" && Boolean(value.trim());
+}
+
+/**
+ * Fail production verification when a page creates an Event node that Google
+ * can recognize but that does not contain its required visible facts.
+ *
+ * Schema properties such as MusicVenue.event have an Event range even when a
+ * bare reference omits @type. Resolve same-document @id references, but reject
+ * cross-document phantom Event nodes because Google validates the current
+ * page's graph independently.
+ */
+export function validateEventStructuredData(documents) {
+  const nodes = structuredNodes(documents);
+  const definitions = new Map();
+  for (const { value } of nodes) {
+    const id = nonemptyStructuredText(value?.["@id"]) ? value["@id"].trim() : "";
+    if (!id) continue;
+    const current = definitions.get(id);
+    if (!current || Object.keys(value).length > Object.keys(current).length) definitions.set(id, value);
+  }
+
+  for (const { value, relationship } of nodes) {
+    const types = structuredTypes(value);
+    const explicitlyEvent = types.some((type) => /Event$/u.test(type));
+    if (!explicitlyEvent && relationship !== "event") continue;
+
+    const id = nonemptyStructuredText(value?.["@id"]) ? value["@id"].trim() : "";
+    const event = id && definitions.get(id) !== value ? definitions.get(id) : value;
+    const eventTypes = structuredTypes(event);
+    if (relationship === "event" && !eventTypes.some((type) => /Event$/u.test(type))) {
+      throw new Error("JSON-LD contains an undefined Event reference");
+    }
+
+    const missing = [];
+    if (!nonemptyStructuredText(event?.name)) missing.push("name");
+    if (!nonemptyStructuredText(event?.startDate)) missing.push("startDate");
+    const location = event?.location;
+    if (!location || typeof location !== "object" || Array.isArray(location)) {
+      missing.push("location");
+    } else {
+      const locationTypes = structuredTypes(location);
+      const address = location.address;
+      if (!locationTypes.includes("Place")
+        || !nonemptyStructuredText(location.name)
+        || !address || typeof address !== "object" || Array.isArray(address)
+        || !nonemptyStructuredText(address.streetAddress)
+        || !nonemptyStructuredText(address.addressLocality)
+        || !nonemptyStructuredText(address.addressCountry)) {
+        missing.push("location");
+      }
+    }
+    if (missing.length) throw new Error(`JSON-LD Event is missing required ${missing.join(", ")}`);
+  }
+  return true;
+}
+
 function hasSchemaContext(documents) {
   return documents.some((document) => {
     const contexts = Array.isArray(document?.["@context"]) ? document["@context"] : [document?.["@context"]];
@@ -605,6 +685,7 @@ function verifyHtmlMetadata(response, html, origin, path, expectedTypes) {
 
   const documents = parseJsonLd(html);
   if (!documents.length || !hasSchemaContext(documents)) throw new Error(`${path} has no schema.org JSON-LD context`);
+  validateEventStructuredData(documents);
   const types = schemaTypes(documents);
   for (const expectedType of expectedTypes) {
     if (!types.has(expectedType)) throw new Error(`${path} JSON-LD is missing ${expectedType}`);

@@ -551,20 +551,37 @@ export default function AdminScreen({ onClose }) {
   // When a job stops running, pull the durable record of what it actually did.
   const wasRunning = useRef(false);
   useEffect(() => {
-    if (wasRunning.current && !seedJob?.running) refreshRuns();
+    if (wasRunning.current && !seedJob?.running) {
+      refreshRuns();
+      if (seedJob?.mode === "photos") refreshCatalog();
+    }
     wasRunning.current = !!seedJob?.running;
   }, [seedJob?.running]);
   const startSeed = async () => { const r = await startCatalogSeed(seedAdd); if (r?.status) setSeedJob(r.status); refreshSeed(); };
   const refreshSongs = async () => { const r = await startCatalogSeed({ mode: "refresh" }); if (r?.status) setSeedJob(r.status); refreshSeed(); };
+  const fillMissingPhotos = async () => {
+    const r = await startCatalogSeed({ mode: "photos" });
+    if (r?.status) setSeedJob(r.status);
+    refreshSeed();
+  };
   const stopSeed = async () => { const s = await stopCatalogSeed(); if (s) setSeedJob(s); };
-  const seedNames = async (names) => {
-    if (!names.length) return;
+  const seedName = async (name) => {
+    if (!name || seeding) return;
     setSeeding(true);
-    await enrichArtists(names.slice(0, 40));
-    setSeeding(false);
-    refreshCatalog();
+    try {
+      await enrichArtists([name]);
+      await refreshCatalog();
+    } finally {
+      setSeeding(false);
+    }
   };
   const purge = async (norm) => { await purgeArtist(norm); refreshCatalog(); };
+  const seedProgressDone = seedJob?.mode === "photos"
+    ? Number(seedJob?.attempted || 0)
+    : Number(seedJob?.added || 0);
+  const seedProgressTotal = seedJob?.mode === "photos"
+    ? Number(seedJob?.target || 0)
+    : Number(seedJob?.add || 0);
 
   const pending = requests.filter((r) => r.status === "pending");
   const openReports = reports.filter((r) => r.status === "open");
@@ -950,6 +967,8 @@ export default function AdminScreen({ onClose }) {
                     <Text style={styles.seedRunTxt}>
                       {seedJob.note === "stopping"
                         ? "Stopping..."
+                        : seedJob.mode === "photos"
+                        ? `Filling missing artist photos... ${(seedJob.attempted || 0).toLocaleString()} checked, ${(seedJob.filled || 0).toLocaleString()} filled`
                         : seedJob.phase === "songs"
                         ? `Filling songs & genres... ${seedJob.ranked.toLocaleString()} done`
                         : seedJob.phase === "enrich"
@@ -962,9 +981,15 @@ export default function AdminScreen({ onClose }) {
                     </Pressable>
                   </View>
                   <View style={styles.seedBar}>
-                    <View style={[styles.seedBarFill, { width: `${Math.max(3, Math.min(100, Math.round((seedJob.added / (seedJob.add || 1)) * 100)))}%` }]} />
+                    <View style={[styles.seedBarFill, { width: `${Math.max(3, Math.min(100, Math.round((seedProgressDone / (seedProgressTotal || 1)) * 100)))}%` }]} />
                   </View>
-                  <Text style={styles.catHint}>+{(seedJob.added || 0).toLocaleString()} of {(seedJob.add || 0).toLocaleString()} new. Safe to leave or close this tab, it keeps going. Stopping keeps everything already added.</Text>
+                  <Text style={styles.catHint}>
+                    {seedJob.mode === "photos"
+                      ? `${(seedJob.attempted || 0).toLocaleString()} of ${(seedJob.target || 0).toLocaleString()} checked; ${(seedJob.filled || 0).toLocaleString()} photos filled.`
+                      : seedJob.mode === "refresh"
+                      ? `${(seedJob.ranked || 0).toLocaleString()} artist profiles updated.`
+                      : `+${(seedJob.added || 0).toLocaleString()} of ${(seedJob.add || 0).toLocaleString()} new.`} Safe to leave or close this tab; the job keeps going. Stopping keeps completed work.
+                  </Text>
                 </View>
               ) : (
                 <>
@@ -984,7 +1009,7 @@ export default function AdminScreen({ onClose }) {
                     <Text style={styles.refreshTxt}>Refresh songs & genres</Text>
                   </Pressable>
                   <Text style={styles.catHint}>Fills in the top song + genre for ranked artists that don't have one yet (fixes blank "top song"s on Discover). Background job, most-popular first.</Text>
-                  {(seedJob?.phase === "done" || seedJob?.phase === "stopped") && <Text style={styles.growDone}>{seedJob.phase === "stopped" ? "Stopped" : "Last run"}: {seedJob.mode === "refresh" ? `${seedJob.ranked.toLocaleString()} songs filled.` : `+${seedJob.added.toLocaleString()} added, ${seedJob.ranked.toLocaleString()} ranked.`} Run again to resume.</Text>}
+                  {(seedJob?.phase === "done" || seedJob?.phase === "stopped") && <Text style={styles.growDone}>{seedJob.phase === "stopped" ? "Stopped" : "Last run"}: {seedJob.mode === "photos" ? `${(seedJob.attempted || 0).toLocaleString()} checked, ${(seedJob.filled || 0).toLocaleString()} photos filled, ${(seedJob.remaining || 0).toLocaleString()} still missing.` : seedJob.mode === "refresh" ? `${seedJob.ranked.toLocaleString()} songs filled.` : `+${seedJob.added.toLocaleString()} added, ${seedJob.ranked.toLocaleString()} ranked.`} Run again to resume.</Text>}
                   {/* A grow that adds nothing used to render NOTHING here, so the
                       button looked like it worked. Say so plainly instead. */}
                   {seedJob?.phase === "exhausted" && (
@@ -1004,8 +1029,8 @@ export default function AdminScreen({ onClose }) {
                         <View key={r.id} style={styles.runRow}>
                           <View style={[styles.runDot, { backgroundColor: r.status === "done" ? colors.good : r.status === "exhausted" ? colors.gold : r.status === "error" || r.status === "interrupted" ? colors.danger : colors.textFaint }]} />
                           <Text style={styles.runTxt} numberOfLines={1}>
-                            {r.mode === "refresh" ? "Songs & genres" : "Grow"} / {r.status}
-                            {r.mode === "refresh" ? ` / ${(r.enriched || 0).toLocaleString()} filled` : ` / +${(r.added || 0).toLocaleString()} added`}
+                            {r.mode === "photos" ? "Artist photos" : r.mode === "refresh" ? "Songs & genres" : "Grow"} / {r.status}
+                            {r.mode === "photos" ? ` / ${(r.added || 0).toLocaleString()} checked / ${(r.enriched || 0).toLocaleString()} filled` : r.mode === "refresh" ? ` / ${(r.enriched || 0).toLocaleString()} filled` : ` / +${(r.added || 0).toLocaleString()} added`}
                             {r.errorCode ? ` / ${r.errorCode}` : ""}
                           </Text>
                           <Text style={styles.runWhen}>{r.startedAt ? new Date(r.startedAt).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : ""}</Text>
@@ -1019,13 +1044,8 @@ export default function AdminScreen({ onClose }) {
 
             <View style={styles.catHead}>
               <Text style={styles.catTitle}>NOT FOUND / {catalog.missing.length}</Text>
-              {catalog.missing.length > 0 && (
-                <Pressable style={[styles.seedBtn, seeding && styles.pillDisabled]} disabled={seeding} onPress={() => seedNames(catalog.missing.map((m) => m.name))}>
-                  <Icon name="music" size={13} color="#1A1206" /><Text style={styles.seedTxt}>{seeding ? "Seeding..." : "Seed all"}</Text>
-                </Pressable>
-              )}
             </View>
-            <Text style={styles.catHint}>Searched, but MusicBrainz had nothing. Seeding checks Deezer.</Text>
+            <Text style={styles.catHint}>Searched, but MusicBrainz had nothing. Use Seed beside one artist to check Deezer without starting a long browser request.</Text>
             {catalog.missing.length === 0 && <Text style={styles.empty}>Nothing missing right now.</Text>}
             {catalog.missing.map((m) => (
               <View key={m.norm} style={styles.catRow}>
@@ -1033,7 +1053,7 @@ export default function AdminScreen({ onClose }) {
                   <Text style={styles.catName} numberOfLines={1}>{m.name}</Text>
                   <Text style={styles.catSub}>{m.searches} search{m.searches === 1 ? "" : "es"}</Text>
                 </View>
-                <Pressable style={styles.catAction} onPress={() => seedNames([m.name])}><Icon name="music" size={13} color={colors.good} /><Text style={[styles.catActionTxt, { color: colors.good }]}>Seed</Text></Pressable>
+                <Pressable style={[styles.catAction, seeding && styles.pillDisabled]} disabled={seeding} onPress={() => seedName(m.name)}><Icon name="music" size={13} color={colors.good} /><Text style={[styles.catActionTxt, { color: colors.good }]}>Seed</Text></Pressable>
                 <Pressable style={styles.catAction} onPress={() => purge(m.norm)}><Icon name="trash" size={13} color={colors.danger} /></Pressable>
               </View>
             ))}
@@ -1041,12 +1061,12 @@ export default function AdminScreen({ onClose }) {
             <View style={styles.catHead}>
               <Text style={styles.catTitle}>THIN PROFILES / {catalog.thinTotal}</Text>
               {catalog.thin.length > 0 && (
-                <Pressable style={[styles.seedBtn, seeding && styles.pillDisabled]} disabled={seeding} onPress={() => seedNames(catalog.thin.map((t) => t.name))}>
-                  <Icon name="music" size={13} color="#1A1206" /><Text style={styles.seedTxt}>{seeding ? "Seeding..." : "Seed top"}</Text>
+                <Pressable style={[styles.seedBtn, (seeding || seedJob?.running) && styles.pillDisabled]} disabled={seeding || seedJob?.running} onPress={fillMissingPhotos}>
+                  <Icon name="music" size={13} color="#1A1206" /><Text style={styles.seedTxt}>Fill missing photos</Text>
                 </Pressable>
               )}
             </View>
-            <Text style={styles.catHint}>In the catalog but no photo yet, most-searched first. Seeding fills them in.</Text>
+            <Text style={styles.catHint}>In the catalog but no photo yet. This checks up to 40 profiles in the background and resumes from the last completed artist.</Text>
             {catalog.thin.length === 0 && <Text style={styles.empty}>Every profile has a photo.</Text>}
             {catalog.thin.map((t) => (
               <View key={t.norm} style={styles.catRow}>
@@ -1054,7 +1074,7 @@ export default function AdminScreen({ onClose }) {
                   <Text style={styles.catName} numberOfLines={1}>{t.name}</Text>
                   <Text style={styles.catSub}>{t.genre ? t.genre + " / " : ""}{t.searches} search{t.searches === 1 ? "" : "es"}</Text>
                 </View>
-                <Pressable style={styles.catAction} onPress={() => seedNames([t.name])}><Icon name="music" size={13} color={colors.good} /><Text style={[styles.catActionTxt, { color: colors.good }]}>Seed</Text></Pressable>
+                <Pressable style={[styles.catAction, (seeding || seedJob?.running) && styles.pillDisabled]} disabled={seeding || seedJob?.running} onPress={() => seedName(t.name)}><Icon name="music" size={13} color={colors.good} /><Text style={[styles.catActionTxt, { color: colors.good }]}>Seed</Text></Pressable>
                 <Pressable style={styles.catAction} onPress={() => purge(t.norm)}><Icon name="trash" size={13} color={colors.danger} /></Pressable>
               </View>
             ))}

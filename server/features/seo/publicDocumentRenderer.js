@@ -291,6 +291,9 @@ function eventDetails(event) {
 function eventMain(document) {
   const { event } = document;
   const posts = document.posts.map((post) => compactPost(post)).join("");
+  const providerImageUrl = publicMediaUrl(event.providerImage?.url);
+  const providerImageSource = publicHttpsUrl(event.providerImage?.sourcePage);
+  const providerImage = providerImageUrl ? `<div class="media-grid event-cover"><figure class="media-item"><img src="${esc(providerImageUrl)}" alt="${esc(`${event.name} event image`)}" loading="eager" decoding="async" fetchpriority="high"${event.providerImage.width ? ` width="${esc(event.providerImage.width)}"` : ""}${event.providerImage.height ? ` height="${esc(event.providerImage.height)}"` : ""} /><figcaption>${esc(event.providerImage.attribution || "Event image")}${providerImageSource ? ` · <a href="${esc(providerImageSource)}" rel="nofollow noopener noreferrer">Source</a>` : ""}</figcaption></figure></div>` : "";
   return `<main id="main">
     ${breadcrumbs(document)}
     <section class="profile-hero event-hero">
@@ -298,6 +301,7 @@ function eventMain(document) {
       <h1>${esc(event.name)}</h1>
       <p class="hero-copy">${link(event.artistPath, event.artist)} · ${link(event.venuePath, event.venue)}</p>
       ${event.billedArtists?.length > 1 ? `<p class="hero-copy"><strong>Lineup:</strong> ${event.billedArtists.map(esc).join(" · ")}</p>` : ""}
+      ${providerImage}
       ${eventDetails(event)}
     </section>
     ${posts ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">People who were there</p><h2>Fan memories from this show</h2></div></div><div class="post-list">${posts}</div></section>` : `<section class="section empty-state"><p class="eyebrow">The archive starts here</p><h2>No fan memories have been shared for this date yet.</h2><p>After the show, fans can log a review and choose which photos appear in public galleries.</p></section>`}

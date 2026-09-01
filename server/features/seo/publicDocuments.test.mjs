@@ -65,7 +65,9 @@ function createDatabase() {
       venue_postal_code TEXT,venue_country_code TEXT,venue_country TEXT,
       provider_active INTEGER NOT NULL DEFAULT 1,last_seen_at INTEGER,
       event_kind TEXT NOT NULL DEFAULT 'concert',music_qualified INTEGER NOT NULL DEFAULT 1,
-      music_evidence TEXT,billed_artists TEXT NOT NULL DEFAULT '[]',event_end_date TEXT
+      music_evidence TEXT,billed_artists TEXT NOT NULL DEFAULT '[]',event_end_date TEXT,
+      event_source_url TEXT,event_image_url TEXT,event_image_attribution TEXT,
+      event_image_width INTEGER,event_image_height INTEGER
     );
     CREATE TABLE media_objects (
       object_key TEXT PRIMARY KEY,owner_id TEXT NOT NULL,storage_scope TEXT NOT NULL,
@@ -938,6 +940,11 @@ test("event ticket offers require a supported future purchasable state and missi
     const scheduledHtml = documents.render(scheduled);
 
     assert.equal(scheduled.jsonLd[0]["@type"], "MusicEvent");
+    assert.equal(scheduled.jsonLd[0].location["@type"], "Place");
+    assert.deepEqual(scheduled.jsonLd[0].performer, [{
+      "@type": "MusicGroup",
+      name: "Unlisted Touring Artist",
+    }]);
     assert.equal(scheduled.jsonLd[0].offers.url, "https://www.ticketmaster.ca/event/100");
     assert.equal(Object.hasOwn(scheduled.jsonLd[0].offers, "availability"), false);
     assert.equal(scheduled.event.ticketUrl, "https://www.ticketmaster.ca/event/100");
@@ -982,13 +989,17 @@ test("provider-evidenced festivals expose cohesive visible and structured event 
     database.prepare(`INSERT INTO tour_dates
       (id,artist,venue,place,date,start_date_time,event_name,event_kind,music_qualified,
         music_evidence,billed_artists,event_end_date,venue_address_line1,venue_city,
-        venue_country_code,source,provider_event_id,release_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)`).run(
+        venue_country_code,source,provider_event_id,ticket_url,event_image_url,
+        event_image_attribution,event_image_width,event_image_height,release_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)`).run(
       "festival-event", "Headliner One", "Festival Park", "Chicago, IL",
       "2026-09-01", "2026-09-01T16:00:00-05:00", "Lollapalooza",
       "festival", 1, "ticketmaster:classification:music",
       JSON.stringify(["Headliner One", "Headliner Two"]), "2026-09-04",
       "1 Festival Way", "Chicago", "US", "ticketmaster", "tm-festival-1",
+      "https://www.ticketmaster.com/event/tm-festival-1",
+      "https://s1.ticketm.net/dam/a/festival.jpg", "Ticketmaster / promoter",
+      1920, 1080,
     );
     const documents = service(database);
     const document = documents.eventDocument({
@@ -1001,10 +1012,19 @@ test("provider-evidenced festivals expose cohesive visible and structured event 
     assert.deepEqual(document.event.billedArtists, ["Headliner One", "Headliner Two"]);
     assert.equal(schema.name, "Lollapalooza");
     assert.equal(schema.endDate, "2026-09-04");
-    assert.equal(Object.hasOwn(schema, "performer"), false,
-      "performer type stays omitted until provider evidence distinguishes people from groups");
+    assert.equal(schema.location["@type"], "Place");
+    assert.deepEqual(schema.performer, [
+      { "@type": "MusicGroup", name: "Headliner One" },
+      { "@type": "MusicGroup", name: "Headliner Two" },
+    ]);
+    assert.deepEqual(schema.image, ["https://s1.ticketm.net/dam/a/festival.jpg"]);
+    assert.equal(document.image, "https://s1.ticketm.net/dam/a/festival.jpg");
+    assert.equal(document.imageWidth, 1920);
+    assert.equal(document.imageHeight, 1080);
     assert.match(html, /<h1>Lollapalooza<\/h1>/);
     assert.match(html, /Lineup:<\/strong> Headliner One · Headliner Two/);
+    assert.match(html, /src="https:\/\/s1\.ticketm\.net\/dam\/a\/festival\.jpg"/);
+    assert.match(html, /Ticketmaster \/ promoter · <a href="https:\/\/www\.ticketmaster\.com\/event\/tm-festival-1"/);
 
     database.prepare("UPDATE tour_dates SET music_qualified=0 WHERE id=?").run("festival-event");
     assert.equal(documents.eventDocument({ id: "festival-event", today: "2026-08-25", at: NOW }), null);
@@ -1157,6 +1177,77 @@ test("Discover is a substantive public hub while Search stays useful and noindex
     assert.match(searchHtml, /Search across the whole community/);
     assert.match(searchHtml, /name="robots" content="noindex,follow"/);
     assert.doesNotMatch(searchHtml, /rel="canonical"/);
+  } finally {
+    database.close();
+  }
+});
+
+test("artist and event directories reject impossible future dates before pagination", () => {
+  const database = createDatabase();
+  try {
+    const substantiveBio = "A substantive artist biography covering recordings, tours, live performance history, collaborators, and fan context.";
+    addArtist(database, {
+      key: "valid-directory-artist",
+      name: "Valid Directory Artist",
+      bio: substantiveBio,
+      mbid: OTHER_MBID,
+    });
+    addArtist(database, {
+      key: "invalid-date-only",
+      name: "Invalid Date Only",
+      bio: "",
+      mbid: null,
+    });
+
+    const insertEvent = database.prepare(`INSERT INTO tour_dates
+      (id,artist,artist_key,venue,place,date,source,venue_provider_id,venue_city,
+        venue_country_code,venue_address_line1,release_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+    for (let index = 1; index <= 12; index += 1) {
+      const day = String(index).padStart(2, "0");
+      insertEvent.run(
+        `valid-directory-event-${day}`,
+        "Valid Directory Artist",
+        "valid-directory-artist",
+        `Valid Hall ${day}`,
+        "Toronto, Canada",
+        `2026-09-${day}`,
+        "ticketmaster",
+        `valid-provider-${day}`,
+        "Toronto",
+        "CA",
+        `${index} Music Way`,
+        0,
+        NOW + index,
+      );
+    }
+    insertEvent.run(
+      "invalid-future-date",
+      "Invalid Date Only",
+      "invalid-date-only",
+      "Impossible Future Hall",
+      "Toronto, Canada",
+      "2037-02-31",
+      "ticketmaster",
+      "invalid-future-provider",
+      "Toronto",
+      "CA",
+      "31 Invalid Road",
+      0,
+      NOW + 100,
+    );
+
+    const documents = service(database);
+    const eventPageOne = documents.directoryDocument({ kind: "events", page: 1, at: NOW, today: "2026-08-25" });
+    assert.equal(eventPageOne.events.length, 12);
+    assert.equal(eventPageOne.hasNext, false);
+    assert.equal(eventPageOne.nextPath, null);
+    assert.equal(documents.directoryDocument({ kind: "events", page: 2, at: NOW, today: "2026-08-25" }), null);
+    assert.equal(eventPageOne.events.some((event) => event.id === "invalid-future-date"), false);
+
+    const artistDirectory = documents.directoryDocument({ kind: "artists", page: 1, at: NOW, today: "2026-08-25" });
+    assert.equal(artistDirectory.artists.some((artist) => artist.name === "Valid Directory Artist"), true);
+    assert.equal(artistDirectory.artists.some((artist) => artist.name === "Invalid Date Only"), false);
   } finally {
     database.close();
   }
@@ -1419,6 +1510,9 @@ test("venue schema never promotes a free-form post city into a postal address", 
     const structured = documents.venueDocument(request);
     const structuredHtml = documents.render(structured);
     assert.equal(structured.jsonLd[0].address["@type"], "PostalAddress");
+    assert.equal(Object.hasOwn(structured.jsonLd[0], "event"), false,
+      "venue schema must not create incomplete cross-page Event nodes");
+    assert.equal(structured.jsonLd[1].hasPart[0]["@id"], "https://www.example.com/event/structured-venue-event#page");
     assert.equal(structuredHtml.includes("10 Music Avenue, Level 2"), true);
     assert.equal(structuredHtml.includes("Toronto, Ontario M5V 1A1"), true);
     assert.equal(structuredHtml.includes(">CA<"), true);

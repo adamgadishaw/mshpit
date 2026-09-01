@@ -1,6 +1,7 @@
 import {
   ARTIST_DEATH_CANDIDATE_STATUSES,
   ARTIST_DEATH_WATCH_BATCH_SIZE,
+  ARTIST_DEATH_WATCH_BATCHES_PER_RUN,
   ARTIST_DEATH_WATCH_INTERVAL_MS,
   ARTIST_DEATH_WATCH_MAX_CONFIRMATIONS,
   canonicalArtistMbid,
@@ -45,7 +46,9 @@ export function createArtistDeathWatchService({
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 } = {}) {
   if (!repository?.readSettings || !repository?.setEnabled || !repository?.recordScan
-    || !repository?.eligibleArtistsAfter || !repository?.eligibleArtistCount || !repository?.catalogArtistForSignal
+    || !repository?.eligibleArtistsAfter || !repository?.eligibleArtistCount
+    || !repository?.catalogArtistCount || !repository?.eligibleArtistProgress
+    || !repository?.catalogArtistForSignal
     || !repository?.findCandidateByKey
     || !repository?.saveConfirmedCandidate || !repository?.listCandidates
     || !repository?.candidateCounts || !repository?.reconcilePublishedMemorials
@@ -57,26 +60,45 @@ export function createArtistDeathWatchService({
   }
 
   let activeScan = null;
+  let activeScanStartedAt = null;
 
   function snapshot() {
     repository.reconcilePublishedMemorials();
-    const settings = projectArtistDeathWatchSettings(repository.readSettings());
+    const rawSettings = repository.readSettings();
+    const settings = projectArtistDeathWatchSettings(rawSettings);
     if (!settings) throw new Error("Artist death watch settings are unavailable");
     const counts = repository.candidateCounts();
+    const eligibleArtists = repository.eligibleArtistCount();
+    const passComplete = eligibleArtists === 0
+      || (!rawSettings?.cursor_artist_key && settings.lastSuccessAt != null);
+    const checked = passComplete
+      ? eligibleArtists
+      : Math.min(eligibleArtists, repository.eligibleArtistProgress(rawSettings?.cursor_artist_key));
     return Object.freeze({
       settings,
+      running: activeScan != null,
+      startedAt: activeScanStartedAt,
       counts: Object.freeze({
         pending: Number(counts.pending) || 0,
         dismissed: Number(counts.dismissed) || 0,
         memorialized: Number(counts.memorialized) || 0,
       }),
-      eligibleArtists: repository.eligibleArtistCount(),
+      catalogArtists: repository.catalogArtistCount(),
+      eligibleArtists,
+      scanProgress: Object.freeze({
+        checked,
+        total: eligibleArtists,
+        percent: eligibleArtists > 0 ? Math.round((checked / eligibleArtists) * 100) : 100,
+        complete: passComplete,
+      }),
       providerPolicy: Object.freeze({
         identity: "exact-mbid-and-wikidata",
         artistType: "Person",
         corroboration: "wikidata-and-musicbrainz",
         autoPublishes: false,
         batchSize: ARTIST_DEATH_WATCH_BATCH_SIZE,
+        batchesPerRun: ARTIST_DEATH_WATCH_BATCHES_PER_RUN,
+        maxCatalogChecksPerRun: ARTIST_DEATH_WATCH_BATCH_SIZE * ARTIST_DEATH_WATCH_BATCHES_PER_RUN,
         maxConfirmationsPerRun: ARTIST_DEATH_WATCH_MAX_CONFIRMATIONS,
       }),
     });
@@ -91,36 +113,17 @@ export function createArtistDeathWatchService({
       return { skipped: true, reason: "not_due", ...snapshot() };
     }
 
-    let rows = repository.eligibleArtistsAfter({
-      cursorArtistKey: repository.readSettings()?.cursor_artist_key || "",
-      limit: ARTIST_DEATH_WATCH_BATCH_SIZE,
-    });
+    let cursorArtistKey = repository.readSettings()?.cursor_artist_key || null;
     let wrapped = false;
-    if (!rows.length) {
-      wrapped = true;
-      rows = repository.eligibleArtistsAfter({ cursorArtistKey: "", limit: ARTIST_DEATH_WATCH_BATCH_SIZE });
-    }
-    const artists = [];
-    const seenMbids = new Set();
-    for (const row of rows) {
-      const artist = exactArtist(row);
-      if (!artist || seenMbids.has(artist.artistMbid)) continue;
-      seenMbids.add(artist.artistMbid);
-      artists.push(artist);
-    }
+    let scanned = 0;
+    let confirmations = 0;
+    let inserted = 0;
+    let reconfirmed = 0;
+    let reopened = 0;
+    let recentMatched = 0;
+    let warningCode = null;
 
     try {
-      const lookbackFloor = scanAt - 90 * 24 * 60 * 60 * 1000;
-      const priorSuccess = current.lastSuccessAt == null ? lookbackFloor : current.lastSuccessAt - 24 * 60 * 60 * 1000;
-      const since = new Date(Math.max(0, lookbackFloor, priorSuccess)).toISOString().slice(0, 10);
-      const recentSignalsResult = await recentWikidataReader({ since, limit: 100, at: scanAt, fetchImpl });
-      const recentSignals = Array.isArray(recentSignalsResult) ? recentSignalsResult : [];
-      const wikidataSignals = await wikidataReader(artists, { at: scanAt, fetchImpl });
-      let confirmations = 0;
-      let inserted = 0;
-      let reconfirmed = 0;
-      let reopened = 0;
-      let recentMatched = 0;
       const confirm = async (signal) => {
         if (confirmations >= ARTIST_DEATH_WATCH_MAX_CONFIRMATIONS) return false;
         if (confirmations > 0) await sleep(1_100);
@@ -138,62 +141,135 @@ export function createArtistDeathWatchService({
         return true;
       };
 
-      // Primary detector: a single bounded query for recent human deaths with a
-      // MusicBrainz ID. Intersect both stable IDs locally before the much
-      // smaller exact MusicBrainz corroboration step.
-      for (const rawSignal of recentSignals) {
-        const row = repository.catalogArtistForSignal(rawSignal);
-        const artist = exactArtist(row);
-        if (!artist) continue;
-        const signal = {
-          ...artist,
-          wikidataId: canonicalWikidataId(rawSignal.wikidataId),
-          deathDate: rawSignal.deathDate,
-        };
-        if (!signal.wikidataId) continue;
-        const existing = repository.findCandidateByKey(artist.artistKey);
-        if (existing && String(existing.artist_mbid).toLowerCase() === artist.artistMbid
-          && existing.wikidata_id === signal.wikidataId && existing.death_date === signal.deathDate) continue;
-        recentMatched += 1;
-        if (!(await confirm(signal))) break;
+      // Exact catalogue batches are the source of truth. They run first so a
+      // slow global provider query cannot stop progress through Mshpit artists.
+      for (let batchIndex = 0; batchIndex < ARTIST_DEATH_WATCH_BATCHES_PER_RUN; batchIndex += 1) {
+        let rows = repository.eligibleArtistsAfter({
+          cursorArtistKey: cursorArtistKey || "",
+          limit: ARTIST_DEATH_WATCH_BATCH_SIZE,
+        });
+        if (!rows.length) {
+          // A persisted cursor may point at the exact final row from an older
+          // release. Wrap only before this run has processed anything; wrapping
+          // after a full batch would query the first rows again and double-scan
+          // catalogues whose eligible count is an exact multiple of batch size.
+          if (cursorArtistKey && !wrapped && scanned === 0) {
+            cursorArtistKey = null;
+            wrapped = true;
+            rows = repository.eligibleArtistsAfter({
+              cursorArtistKey: "",
+              limit: ARTIST_DEATH_WATCH_BATCH_SIZE,
+            });
+          }
+          if (!rows.length) break;
+        }
+
+        const seenMbids = new Set();
+        const artists = rows.map(exactArtist).filter((artist) => {
+          if (!artist || seenMbids.has(artist.artistMbid)) return false;
+          seenMbids.add(artist.artistMbid);
+          return true;
+        });
+        const wikidataSignals = await wikidataReader(artists, { at: scanAt, fetchImpl });
+        let stoppedAtConfirmationLimit = false;
+
+        for (const row of rows) {
+          const artist = exactArtist(row);
+          if (artist) {
+            const signal = wikidataSignals.get(artist.artistKey);
+            if (signal) {
+              const existing = repository.findCandidateByKey(artist.artistKey);
+              if (!existing || String(existing.artist_mbid).toLowerCase() !== artist.artistMbid
+                || existing.wikidata_id !== signal.wikidataId || existing.death_date !== signal.deathDate) {
+                if (!(await confirm(signal))) {
+                  stoppedAtConfirmationLimit = true;
+                  break;
+                }
+              }
+            }
+          }
+          cursorArtistKey = typeof row?.artist_key === "string" ? row.artist_key : cursorArtistKey;
+          scanned += 1;
+        }
+
+        if (stoppedAtConfirmationLimit) break;
+        if (rows.length < ARTIST_DEATH_WATCH_BATCH_SIZE) {
+          cursorArtistKey = null;
+          wrapped = true;
+          break;
+        }
+        // A full batch is not proof that another row exists. Probe the ordered
+        // cursor directly so exact 40/80/200-row passes finish at 100% instead
+        // of wrapping and rescanning from the beginning (or leaving a false
+        // 100%-but-incomplete cursor after the five-batch budget).
+        const hasSuccessor = repository.eligibleArtistsAfter({
+          cursorArtistKey: cursorArtistKey || "",
+          limit: 1,
+        }).length > 0;
+        if (!hasSuccessor) {
+          cursorArtistKey = null;
+          wrapped = true;
+          break;
+        }
       }
 
-      let cursorArtistKey = wrapped ? null : (repository.readSettings()?.cursor_artist_key || null);
-      for (const artist of artists) {
-        const signal = wikidataSignals.get(artist.artistKey);
-        if (signal) {
-          const existing = repository.findCandidateByKey(artist.artistKey);
-          if (!existing || String(existing.artist_mbid).toLowerCase() !== artist.artistMbid
-            || existing.wikidata_id !== artist.wikidataId || existing.death_date !== signal.deathDate) {
+      // This global query accelerates very recent alerts, but it is capped and
+      // provider-dependent. Its failure is a warning, not a failed catalogue
+      // sweep, and never rolls back already confirmed candidates.
+      if (confirmations < ARTIST_DEATH_WATCH_MAX_CONFIRMATIONS) {
+        try {
+          const lookbackFloor = scanAt - 90 * 24 * 60 * 60 * 1000;
+          const priorSuccess = current.lastSuccessAt == null
+            ? lookbackFloor : current.lastSuccessAt - 24 * 60 * 60 * 1000;
+          const since = new Date(Math.max(0, lookbackFloor, priorSuccess)).toISOString().slice(0, 10);
+          const recentSignalsResult = await recentWikidataReader({ since, limit: 100, at: scanAt, fetchImpl });
+          const recentSignals = Array.isArray(recentSignalsResult) ? recentSignalsResult : [];
+          for (const rawSignal of recentSignals) {
+            const row = repository.catalogArtistForSignal(rawSignal);
+            const artist = exactArtist(row);
+            if (!artist) continue;
+            const signal = {
+              ...artist,
+              wikidataId: canonicalWikidataId(rawSignal.wikidataId),
+              deathDate: rawSignal.deathDate,
+            };
+            if (!signal.wikidataId) continue;
+            const existing = repository.findCandidateByKey(artist.artistKey);
+            if (existing && String(existing.artist_mbid).toLowerCase() === artist.artistMbid
+              && existing.wikidata_id === signal.wikidataId && existing.death_date === signal.deathDate) continue;
+            recentMatched += 1;
             if (!(await confirm(signal))) break;
           }
+        } catch (error) {
+          warningCode = safeErrorCode(error);
         }
-        cursorArtistKey = artist.artistKey;
       }
+
       repository.recordScan({
         cursorArtistKey,
         lastScanAt: scanAt,
         lastSuccessAt: scanAt,
         nextScanAt: scanAt + ARTIST_DEATH_WATCH_INTERVAL_MS,
-        lastErrorCode: null,
+        lastErrorCode: warningCode,
         at: scanAt,
       });
       return {
         skipped: false,
-        scanned: artists.length,
+        scanned,
         confirmations,
         inserted,
         reconfirmed,
         reopened,
         recentMatched,
         wrapped,
+        warningCode,
         ...snapshot(),
       };
     } catch (error) {
       const retryAt = Number.isSafeInteger(Number(error?.retryAt)) && Number(error.retryAt) > scanAt
         ? Number(error.retryAt) : scanAt + ARTIST_DEATH_WATCH_INTERVAL_MS;
       repository.recordScan({
-        cursorArtistKey: repository.readSettings()?.cursor_artist_key || null,
+        cursorArtistKey,
         lastScanAt: scanAt,
         lastSuccessAt: current.lastSuccessAt,
         nextScanAt: retryAt,
@@ -233,8 +309,14 @@ export function createArtistDeathWatchService({
 
     scan(options) {
       if (activeScan) return activeScan;
+      const requestedAt = Number(options?.at);
+      activeScanStartedAt = Number.isSafeInteger(requestedAt) && requestedAt >= 0
+        ? requestedAt : Date.now();
       const pending = performScan(options).finally(() => {
-        if (activeScan === pending) activeScan = null;
+        if (activeScan === pending) {
+          activeScan = null;
+          activeScanStartedAt = null;
+        }
       });
       activeScan = pending;
       return pending;

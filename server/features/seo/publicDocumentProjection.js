@@ -16,6 +16,7 @@ import { LANDING_IDENTITY_COPY } from "../../../src/domain/landingPresentation.m
 import { postMediaStateByPost } from "../../mediaAssets.js";
 import { verifiedFinalizedLegacyMedia } from "../../mediaLegacyFinalize.js";
 import { safeOwnedReadyMediaUrl } from "../../publicMedia.js";
+import { publicTicketmasterEventImage } from "../../providerEventImage.js";
 import { archiveShowKey } from "../artistArchive/artistArchiveKeys.js";
 import { isStrictCalendarDate, isStrictIsoDateTime } from "./publicEntityPolicy.js";
 
@@ -504,6 +505,7 @@ function eventCard(row, paths) {
     ? row.event_kind
     : "concert";
   const endDate = providerEvidence ? validDate(row.event_end_date) : null;
+  const providerImage = publicTicketmasterEventImage(row);
   return Object.freeze({
     id: String(row.id),
     providerEventId: cleanLine(row.provider_event_id, 180) || null,
@@ -528,33 +530,61 @@ function eventCard(row, paths) {
     eventKind,
     billedArtists,
     address: eventAddress(row),
+    providerImage: providerImage ? Object.freeze({
+      url: providerImage.uri,
+      attribution: providerImage.attribution,
+      width: providerImage.width,
+      height: providerImage.height,
+      sourcePage: providerImage.sourcePage,
+    }) : null,
     updatedAt: timestamp(row.updated_at),
   });
 }
 
 function eventSchema(event, origin, { image = null, description = null, today = null } = {}) {
+  const name = cleanLine(event?.name, 220);
+  const venue = cleanLine(event?.venue, 180);
+  const path = cleanLine(event?.path, 500);
   const startDate = completeDateTime(event?.startDateTime);
   const address = event?.address;
-  if (!startDate || !cleanLine(address?.streetAddress, 260)
+  if (!name || !venue || !path || !startDate || !cleanLine(address?.streetAddress, 260)
     || !cleanLine(address?.addressLocality, 120)
     || !cleanLine(address?.addressCountry, 100)) return null;
+  const performerNames = [...new Map(
+    [...(event.billedArtists || []), event.artist]
+      .map((candidate) => cleanLine(candidate, 160))
+      .filter(Boolean)
+      .map((candidate) => [candidate.toLocaleLowerCase("en"), candidate]),
+  ).values()];
   const location = {
-    "@type": "MusicVenue",
-    name: event.venue,
+    // Google Event rich results require a Place here. The standalone venue
+    // page remains the more specific MusicVenue entity.
+    "@type": "Place",
+    name: venue,
     ...(event.venuePath ? { url: absolute(origin, event.venuePath) } : {}),
     ...(event.address ? { address: event.address } : {}),
   };
   return {
     "@context": "https://schema.org",
     "@type": "MusicEvent",
-    "@id": `${absolute(origin, event.path)}#event`,
-    name: event.name,
-    url: absolute(origin, event.path),
+    "@id": `${absolute(origin, path)}#event`,
+    name,
+    url: absolute(origin, path),
     startDate,
     ...(event.endDate ? { endDate: event.endDate } : {}),
     ...(event.status ? { eventStatus: event.status } : {}),
     eventAttendanceMode: "https://schema.org/OfflineEventAttendanceMode",
     location,
+    ...(performerNames.length ? {
+      // Schema.org MusicGroup explicitly covers both groups and solo
+      // musicians, so this remains truthful without guessing artist type.
+      performer: performerNames.map((performerName) => ({
+        "@type": "MusicGroup",
+        name: performerName,
+        ...(performerName.toLocaleLowerCase("en") === cleanLine(event.artist, 160).toLocaleLowerCase("en") && event.artistPath
+          ? { url: absolute(origin, event.artistPath) } : {}),
+      })),
+    } : {}),
     ...(description ? { description } : {}),
     ...(image ? { image: [image] } : {}),
     ...(eventAllowsTicketOffer(event, today) ? {
@@ -1091,7 +1121,8 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       const mediaByPost = publicMediaForRows(database, raw.posts || [], { galleryOnly: true, maxPerPost: 3 });
       const posts = (raw.posts || []).map((row) => postCard(row, mediaByPost.get(row.id), publicPaths));
       const primaryAsset = posts.flatMap((post) => post.media).find((asset) => asset.kind === "image" || asset.posterUrl) || null;
-      const image = primaryAsset?.kind === "image" ? primaryAsset.url : primaryAsset?.posterUrl || null;
+      const fanImage = primaryAsset?.kind === "image" ? primaryAsset.url : primaryAsset?.posterUrl || null;
+      const image = event.providerImage?.url || fanImage;
       const description = summary(
         posts.find((post) => substantiveText(post.text, 40))?.text
           || `${event.name} brings live music to ${event.venue}${event.place ? ` in ${event.place}` : ""} on ${event.date}. Find event details and fan memories on Mshpit.`,
@@ -1129,9 +1160,9 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         canonicalPath: path,
         canonicalUrl: absolute(publicOrigin, path),
         image,
-        imageWidth: primaryAsset?.kind === "image" ? primaryAsset.width : null,
-        imageHeight: primaryAsset?.kind === "image" ? primaryAsset.height : null,
-        imageMimeType: primaryAsset?.kind === "image" ? primaryAsset.mimeType : null,
+        imageWidth: event.providerImage?.url ? event.providerImage.width : primaryAsset?.kind === "image" ? primaryAsset.width : null,
+        imageHeight: event.providerImage?.url ? event.providerImage.height : primaryAsset?.kind === "image" ? primaryAsset.height : null,
+        imageMimeType: event.providerImage?.url ? null : primaryAsset?.kind === "image" ? primaryAsset.mimeType : null,
         event: publicEvent,
         posts,
         breadcrumbs,
@@ -1309,7 +1340,6 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         url: absolute(publicOrigin, path),
         ...(address ? { address } : {}),
         ...(image ? { image } : {}),
-        ...(events.some((event) => event.address) ? { event: events.filter((event) => event.address).slice(0, 12).map((event) => ({ "@id": `${absolute(publicOrigin, event.path)}#event` })) } : {}),
       };
       return Object.freeze({
         kind: "venue",
@@ -1435,7 +1465,12 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
           modifiedAt: timestamp(row.latest_at),
         })];
       }) : [];
-      if ((raw.kind === "venues" && !venues.length) || (raw.kind === "concerts" && !concerts.length)) return null;
+      if (
+        (raw.kind === "artists" && !artists.length)
+        || (raw.kind === "events" && !events.length)
+        || (raw.kind === "venues" && !venues.length)
+        || (raw.kind === "concerts" && !concerts.length)
+      ) return null;
       const isArtists = raw.kind === "artists";
       const isVenues = raw.kind === "venues";
       const isConcerts = raw.kind === "concerts";

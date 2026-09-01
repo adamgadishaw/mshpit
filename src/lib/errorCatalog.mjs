@@ -362,9 +362,10 @@ export function safeRouteTemplate(path = "") {
     "users", "posts", "playlists", "dms", "lounges", "fanclubs", "venues",
     "artists", "reports", "comments",
   ]);
+  const fixedResourceActions = new Set(["artists/enrich"]);
   return `/${parts.map((part, index) => {
     const previous = parts[index - 1];
-    if (resourcesWithPrivateKeys.has(previous)) return ":id";
+    if (resourcesWithPrivateKeys.has(previous) && !fixedResourceActions.has(`${previous}/${part}`)) return ":id";
     if (/^\d+$/.test(part) || /^[0-9a-f]{16,}$/i.test(part) || part.length > 48) return ":id";
     return part.replace(/[^a-zA-Z0-9._~-]/g, "_").slice(0, 48);
   }).join("/")}`;

@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import test from "node:test";
 
-import { formatReport, parseArguments, verifyPublicSeo } from "./verify-public-seo.mjs";
+import {
+  formatReport,
+  parseArguments,
+  validateEventStructuredData,
+  verifyPublicSeo,
+} from "./verify-public-seo.mjs";
 
 function page(origin, path, { shell = false, problem = "" } = {}) {
   const isHome = path === "/";
@@ -152,6 +157,45 @@ test("argument parsing is strict, sanitized, and accepts a trailing slash", () =
   assert.throws(() => parseArguments(["--origin", "https://user:secret@example.com"]), /credentials/);
   assert.throws(() => parseArguments(["--origin", "https://example.com/private"]), /path/);
   assert.throws(() => parseArguments(["--unknown=secret"]), /^Error: unknown argument$/);
+});
+
+test("Event verification rejects phantom and incomplete nodes but resolves a complete same-page event", () => {
+  const eventId = "https://www.example.com/event/one#event";
+  assert.throws(() => validateEventStructuredData([{
+    "@context": "https://schema.org",
+    "@type": "MusicVenue",
+    event: { "@id": eventId },
+  }]), /undefined Event reference/);
+
+  assert.throws(() => validateEventStructuredData([{
+    "@context": "https://schema.org",
+    "@type": "MusicEvent",
+    "@id": eventId,
+    name: "Example Artist Live",
+  }]), /startDate, location/);
+
+  const complete = {
+    "@context": "https://schema.org",
+    "@type": "MusicEvent",
+    "@id": eventId,
+    name: "Example Artist Live",
+    startDate: "2030-09-01T20:00:00-04:00",
+    location: {
+      "@type": "Place",
+      name: "Example Hall",
+      address: {
+        "@type": "PostalAddress",
+        streetAddress: "1 Music Way",
+        addressLocality: "Toronto",
+        addressCountry: "CA",
+      },
+    },
+  };
+  assert.equal(validateEventStructuredData([{
+    "@context": "https://schema.org",
+    "@type": "MusicVenue",
+    event: { "@id": eventId },
+  }, complete]), true);
 });
 
 test("the full public SEO contract passes and ignores off-origin media locs", async (context) => {

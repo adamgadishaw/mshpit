@@ -13,10 +13,14 @@ export async function readArtistDeathWatch({ accountId, signal, status = "pendin
     expectedAccountId: accountId,
   });
   return {
+    ...(response && typeof response === "object" ? response : {}),
     settings: response?.settings || null,
     counts: response?.counts || { pending: 0, dismissed: 0, memorialized: 0 },
     eligibleArtists: Number(response?.eligibleArtists) || 0,
     providerPolicy: response?.providerPolicy || null,
+    running: response?.running === true,
+    startedAt: Number.isSafeInteger(Number(response?.startedAt)) && Number(response.startedAt) >= 0
+      ? Number(response.startedAt) : null,
     candidates: (Array.isArray(response?.candidates) ? response.candidates : []).map(candidate).filter(Boolean),
   };
 }

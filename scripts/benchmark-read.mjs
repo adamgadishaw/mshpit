@@ -3,6 +3,11 @@
 //
 //   node scripts/benchmark-read.mjs --url http://127.0.0.1:3130 --concurrency 12 --seconds 20
 //
+// Start the isolated server with RENDER=true and loopback in
+// PIT_TRUSTED_PROXY_CIDRS. That enables the same verified CF-Connecting-IP
+// boundary used in production, so virtual visitors do not share one local IP
+// rate-limit bucket.
+//
 // This intentionally refuses production and never calls a mutating endpoint.
 // X-Forwarded-For rotates across virtual visitors so the benchmark measures the
 // application instead of one guest tripping the legitimate 300/min flood guard.
@@ -75,6 +80,11 @@ async function runWindow(durationMs, record) {
         const response = await fetch(`${baseUrl}${path}`, {
           headers: {
             Accept: "application/json",
+            // Production trusts Render's single-value edge header after the
+            // socket ingress is verified. Send the same header in this strictly
+            // localhost-only probe so virtual visitors exercise independent
+            // anti-abuse buckets instead of collapsing into the loopback IP.
+            "CF-Connecting-IP": `198.18.${Math.floor(visitor / 250)}.${(visitor % 250) + 1}`,
             "X-Forwarded-For": `198.18.${Math.floor(visitor / 250)}.${(visitor % 250) + 1}`,
             "User-Agent": `pit-capacity-probe/${worker}`,
           },
@@ -114,6 +124,9 @@ console.log(`load         ${concurrency} concurrent for ${elapsedSeconds.toFixed
 console.log(`throughput   ${(rows.length / elapsedSeconds).toFixed(1)} req/s, ${(totalBytes / elapsedSeconds / 1024 / 1024).toFixed(1)} MiB/s JSON`);
 console.log(`latency      p50 ${percentile(latencies, 0.50).toFixed(1)}ms  p95 ${percentile(latencies, 0.95).toFixed(1)}ms  p99 ${percentile(latencies, 0.99).toFixed(1)}ms  max ${(latencies.at(-1) || 0).toFixed(1)}ms`);
 console.log(`outcomes     2xx ${successes}  429 ${rateLimited}  5xx ${serverErrors}  network ${networkErrors}`);
+if (rateLimited) {
+  console.log("rate-limit   Verify the isolated server uses RENDER=true and trusts only its loopback benchmark ingress.");
+}
 
 for (const [path] of profile) {
   const subset = rows.filter((row) => row.path === path).map((row) => row.latency).sort((a, b) => a - b);

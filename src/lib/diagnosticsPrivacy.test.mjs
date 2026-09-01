@@ -42,6 +42,14 @@ test("diagnostic routes remove query values and every opaque path identifier", (
     diagnosticRouteTemplate("/api/admin/email/templates/welcome"),
     "/api/admin/email/templates/:id",
   );
+  assert.equal(
+    diagnosticRouteTemplate("/api/admin/artists/enrich"),
+    "/api/admin/artists/enrich",
+  );
+  assert.equal(
+    diagnosticRouteTemplate("/api/admin/artists/private-artist-key"),
+    "/api/admin/artists/:id",
+  );
   assert.equal(diagnosticRouteTemplate("/api/discover/chart"), "/api/discover/chart");
 });
 

@@ -23,7 +23,7 @@ import { deezerEnrichmentGenreFields } from "./deezerGenre.js";
 import { ARTIST_GENRE_SQL_COLUMNS, projectArtistGenreColumns } from "./artistGenreProjection.js";
 import { hashPassword, verifyPassword, verifyPasswordForUser, createSession, destroySession, rateLimit, reserveRateLimits } from "./auth.js";
 import { createRecoveryResponseFloor } from "./authResponseFloor.js";
-import { startCatalogSeed, catalogSeedStatus, stopCatalogSeed, deezerEnrich } from "./catalogSeed.js";
+import { startCatalogSeed, catalogSeedStatus, stopCatalogSeed, deezerEnrich, catalogSeedRequestOptions } from "./catalogSeed.js";
 import { clean, cleanEmail, isEmail, cleanName, isName, cleanHandle, isPassword, clampRating, cleanStringArray, cleanDate, shape, LIMITS } from "./validate.js";
 import { ApiError, privateErrorLabel } from "./errors.js";
 import {
@@ -7357,10 +7357,7 @@ export const routes = {
   // GET for live progress. No bundle change, nothing to deploy.
   "POST /api/admin/catalog/seed": (ctx) => {
     requireAdmin(ctx);
-    const mode = ctx.body?.mode === "refresh" ? "refresh" : "grow";
-    if (mode === "refresh") return startCatalogSeed({ mode });
-    const add = Math.max(100, Math.min(20000, Number(ctx.body?.add) || 2000));
-    return startCatalogSeed({ add });
+    return startCatalogSeed(catalogSeedRequestOptions(ctx.body));
   },
   "GET /api/admin/catalog/seed": (ctx) => {
     requireAdmin(ctx);

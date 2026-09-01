@@ -39,6 +39,9 @@ function fakeRepository(artists = []) {
     eligibleArtistsAfter: ({ cursorArtistKey = "", limit }) => artists
       .filter((artist) => artist.artist_key > cursorArtistKey).slice(0, limit),
     eligibleArtistCount: () => artists.length,
+    catalogArtistCount: () => artists.length,
+    eligibleArtistProgress: (cursorArtistKey) => cursorArtistKey
+      ? artists.filter((artist) => artist.artist_key <= cursorArtistKey).length : 0,
     catalogArtistForSignal: ({ artistMbid }) => artists.find((artist) => artist.artist_mbid === artistMbid) || null,
     findCandidateByKey: (key) => candidates.get(key) || null,
     saveConfirmedCandidate: (candidate) => {
@@ -179,4 +182,166 @@ test("a dismissed alert stays dismissed for identical evidence and reopens when 
   const changed = await service.scan({ at: AT + 3, force: true });
   assert.equal(changed.reopened, 1);
   assert.equal(repository.candidates.get("alpha").status, "pending");
+});
+
+test("matching historical evidence does not repeatedly consume confirmation capacity", async () => {
+  const artist = { artist_key: "alpha", artist_name: "Alpha", artist_mbid: mbid(5) };
+  const repository = fakeRepository([artist]);
+  repository.saveConfirmedCandidate({
+    artistKey: "alpha",
+    artistName: "Alpha",
+    artistMbid: artist.artist_mbid,
+    wikidataId: "Q46",
+    deathDate: "2026-08-29",
+    at: AT - 1,
+  });
+  let confirmations = 0;
+  const service = createArtistDeathWatchService({
+    repository,
+    recentWikidataReader: async () => [],
+    wikidataReader: async () => new Map([["alpha", {
+      artistKey: "alpha",
+      artistName: "Alpha",
+      artistMbid: artist.artist_mbid,
+      wikidataId: "Q46",
+      deathDate: "2026-08-29",
+    }]]),
+    musicBrainzReader: async () => {
+      confirmations += 1;
+      return null;
+    },
+    sleep: async () => {},
+  });
+
+  const result = await service.scan({ at: AT, force: true });
+  assert.equal(result.scanned, 1);
+  assert.equal(result.confirmations, 0);
+  assert.equal(confirmations, 0);
+});
+
+test("a recent-provider timeout is a warning and does not erase catalogue progress", async () => {
+  const artists = Array.from({ length: 3 }, (_, index) => ({
+    artist_key: `artist-${index}`,
+    artist_name: `Artist ${index}`,
+    artist_mbid: mbid(index + 20),
+  }));
+  const repository = fakeRepository(artists);
+  const service = createArtistDeathWatchService({
+    repository,
+    recentWikidataReader: async () => {
+      const error = new Error("slow provider");
+      error.code = "wikidata_timeout";
+      throw error;
+    },
+    wikidataReader: async () => new Map(),
+    musicBrainzReader: async () => null,
+    sleep: async () => {},
+  });
+
+  const result = await service.scan({ at: AT, force: true });
+  assert.equal(result.scanned, 3);
+  assert.equal(result.warningCode, "wikidata_timeout");
+  assert.equal(result.settings.lastSuccessAt, AT);
+  assert.equal(result.settings.lastErrorCode, "wikidata_timeout");
+});
+
+test("one scheduled run checks multiple bounded catalogue batches", async () => {
+  const artists = Array.from({ length: 95 }, (_, index) => ({
+    artist_key: `artist-${String(index).padStart(3, "0")}`,
+    artist_name: `Artist ${index}`,
+    artist_mbid: mbid(index + 100),
+  }));
+  const repository = fakeRepository(artists);
+  const batchSizes = [];
+  const service = createArtistDeathWatchService({
+    repository,
+    recentWikidataReader: async () => [],
+    wikidataReader: async (batch) => {
+      batchSizes.push(batch.length);
+      return new Map();
+    },
+    musicBrainzReader: async () => null,
+    sleep: async () => {},
+  });
+
+  const result = await service.scan({ at: AT, force: true });
+  assert.equal(result.scanned, 95);
+  assert.deepEqual(batchSizes, [40, 40, 15]);
+  assert.equal(result.wrapped, true);
+  assert.deepEqual(result.scanProgress, {
+    checked: 95,
+    total: 95,
+    percent: 100,
+    complete: true,
+  });
+});
+
+for (const eligibleCount of [40, 80, 200]) {
+  test(`an exact ${eligibleCount}-artist pass completes without rescanning its first batch`, async () => {
+    const artists = Array.from({ length: eligibleCount }, (_, index) => ({
+      artist_key: `artist-${String(index).padStart(3, "0")}`,
+      artist_name: `Artist ${index}`,
+      artist_mbid: mbid(index + 1_000),
+    }));
+    const repository = fakeRepository(artists);
+    const checkedKeys = [];
+    const batchSizes = [];
+    const service = createArtistDeathWatchService({
+      repository,
+      recentWikidataReader: async () => [],
+      wikidataReader: async (batch) => {
+        batchSizes.push(batch.length);
+        checkedKeys.push(...batch.map((artist) => artist.artistKey));
+        return new Map();
+      },
+      musicBrainzReader: async () => null,
+      sleep: async () => {},
+    });
+
+    const result = await service.scan({ at: AT, force: true });
+
+    assert.equal(result.scanned, eligibleCount);
+    assert.deepEqual(batchSizes, Array(eligibleCount / 40).fill(40));
+    assert.equal(checkedKeys.length, eligibleCount);
+    assert.equal(new Set(checkedKeys).size, eligibleCount, "no artist is checked twice in one run");
+    assert.equal(repository.readSettings().cursor_artist_key, null);
+    assert.deepEqual(result.scanProgress, {
+      checked: eligibleCount,
+      total: eligibleCount,
+      percent: 100,
+      complete: true,
+    });
+  });
+}
+
+test("confirmation cap preserves the first unchecked artist for the next run", async () => {
+  const artists = Array.from({ length: 7 }, (_, index) => ({
+    artist_key: `artist-${index}`,
+    artist_name: `Artist ${index}`,
+    artist_mbid: mbid(index + 300),
+  }));
+  const repository = fakeRepository(artists);
+  const service = createArtistDeathWatchService({
+    repository,
+    recentWikidataReader: async () => [],
+    wikidataReader: async (batch) => new Map(batch.map((artist, index) => [artist.artistKey, {
+      ...artist,
+      wikidataId: `Q${index + 500}`,
+      deathDate: "2026-08-29",
+    }])),
+    musicBrainzReader: async (signal) => ({
+      artistMbid: signal.artistMbid,
+      deathDate: signal.deathDate,
+      artistType: "Person",
+    }),
+    sleep: async () => {},
+  });
+
+  const result = await service.scan({ at: AT, force: true });
+  assert.equal(result.confirmations, ARTIST_DEATH_WATCH_MAX_CONFIRMATIONS);
+  assert.equal(result.scanned, ARTIST_DEATH_WATCH_MAX_CONFIRMATIONS);
+  assert.equal(repository.readSettings().cursor_artist_key, "artist-4");
+  assert.equal(repository.candidates.has("artist-5"), false);
+  assert.equal(result.scanProgress.checked, ARTIST_DEATH_WATCH_MAX_CONFIRMATIONS);
+  assert.equal(result.scanProgress.complete, false);
 });

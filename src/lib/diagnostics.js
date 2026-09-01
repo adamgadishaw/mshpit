@@ -13,6 +13,9 @@ const ROUTE_ID_PARENTS = new Set([
   "content", "dms", "fanclubs", "going", "lounges", "playlists", "posts",
   "preferences", "reports", "templates", "users", "variants", "venues",
 ]);
+// Fixed endpoint actions are not artist identifiers. Preserve the useful action
+// name in staff diagnostics while still redacting every actual child identifier.
+const ROUTE_LITERAL_CHILDREN = new Set(["artists/enrich"]);
 const UUID_SEGMENT = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 const PREFIXED_ID_SEGMENT = /^[a-z][a-z0-9]{0,10}_[a-z0-9_-]+$/i;
 const HIGH_ENTROPY_SEGMENT = /^(?=[a-z0-9_-]{12,}$)(?=.*[a-z])(?=.*\d)[a-z0-9_-]+$/i;
@@ -46,7 +49,7 @@ export function diagnosticRouteTemplate(path = "") {
   const projected = parts.map((part, index) => {
     if (part === ":id") return part;
     const previous = parts[index - 1];
-    if (ROUTE_ID_PARENTS.has(previous)) return ":id";
+    if (ROUTE_ID_PARENTS.has(previous) && !ROUTE_LITERAL_CHILDREN.has(`${previous}/${part}`)) return ":id";
     if (UUID_SEGMENT.test(part) || PREFIXED_ID_SEGMENT.test(part) || HIGH_ENTROPY_SEGMENT.test(part)) return ":id";
     return part;
   });

@@ -389,6 +389,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null }
           AND ${tourDateHasNoPublishedMemorialSql("td")}
           AND COALESCE(td.music_qualified,1)=1
           AND td.date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+          AND date(td.date)=td.date
           AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1)
           AND (td.owner_id IS NULL OR EXISTS (
             SELECT 1 FROM users event_owner WHERE event_owner.id=td.owner_id
@@ -406,6 +407,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null }
       AND ${tourDateHasNoPublishedMemorialSql("td")}
       AND COALESCE(td.music_qualified,1)=1
       AND td.date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+      AND date(td.date)=td.date
       AND TRIM(COALESCE(td.artist,''))<>'' AND TRIM(COALESCE(td.venue,''))<>''
       AND (td.owner_id IS NULL OR ${activeAccountSql("owner")})
       AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1)

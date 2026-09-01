@@ -38,7 +38,22 @@ export function createArtistDeathWatchRepository(database) {
   const eligibleCount = database.prepare(`SELECT COUNT(*) AS count FROM artists
     WHERE mbid IS NOT NULL
       AND (SELECT COUNT(*) FROM artists same_identity
-        WHERE lower(same_identity.mbid)=lower(artists.mbid))=1`);
+        WHERE lower(same_identity.mbid)=lower(artists.mbid))=1
+      AND NOT EXISTS (
+        SELECT 1 FROM artist_memorials memorial
+        WHERE memorial.artist_key=artists.norm AND memorial.artist_mbid=lower(artists.mbid)
+          AND memorial.status='published'
+      )`);
+  const catalogCount = database.prepare(`SELECT COUNT(*) AS count FROM artists`);
+  const eligibleProgress = database.prepare(`SELECT COUNT(*) AS count FROM artists
+    WHERE norm<=? AND mbid IS NOT NULL
+      AND (SELECT COUNT(*) FROM artists same_identity
+        WHERE lower(same_identity.mbid)=lower(artists.mbid))=1
+      AND NOT EXISTS (
+        SELECT 1 FROM artist_memorials memorial
+        WHERE memorial.artist_key=artists.norm AND memorial.artist_mbid=lower(artists.mbid)
+          AND memorial.status='published'
+      )`);
   const catalogByMbid = database.prepare(`SELECT norm AS artist_key,name AS artist_name,
       lower(mbid) AS artist_mbid
     FROM artists
@@ -114,6 +129,15 @@ export function createArtistDeathWatchRepository(database) {
 
     eligibleArtistCount() {
       return Number(eligibleCount.get()?.count) || 0;
+    },
+
+    catalogArtistCount() {
+      return Number(catalogCount.get()?.count) || 0;
+    },
+
+    eligibleArtistProgress(cursorArtistKey) {
+      const cursor = typeof cursorArtistKey === "string" ? cursorArtistKey.trim() : "";
+      return cursor ? Number(eligibleProgress.get(cursor)?.count) || 0 : 0;
     },
 
     catalogArtistForSignal({ artistMbid }) {

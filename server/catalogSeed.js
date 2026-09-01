@@ -36,6 +36,7 @@ const PAGE = 100; // MusicBrainz hard max per request
 const UA = "PitConcertApp/1.0 (https://mshpit.com)";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const popFromFans = (n) => Math.max(1, Math.min(100, Math.round(Math.log10((n || 0) + 1) * 12.5)));
+export const PHOTO_FILL_LIMIT = 40;
 
 // Broad genre coverage: each tag pulls real artists from MusicBrainz (keyless).
 export const GENRE_TAGS = [
@@ -236,6 +237,142 @@ export async function enrichSongs({ shouldStop = () => false, tick = () => {} } 
   return filled;
 }
 
+// Missing-photo repair is deliberately separate from the catalog crawl and the
+// songs/genre refresh. The old moderation action sent as many as 40 artists
+// through one browser request, so its sequential provider work routinely outlived
+// the 30-second request deadline. This cursor makes the same useful repair a
+// bounded background pass that survives restarts and never repeats artists that
+// were already checked in the current catalog cycle.
+const PHOTO_FILL_CURSOR_KEY = "catalog_photo_fill_cursor_v1";
+const photoFillCursorGet = db.prepare("SELECT value FROM app_meta WHERE key=?");
+const photoFillCursorSet = db.prepare(`INSERT INTO app_meta (key,value) VALUES (?,?)
+  ON CONFLICT(key) DO UPDATE SET value=excluded.value`);
+const photoFillPendingCount = db.prepare("SELECT COUNT(*) c FROM artists WHERE photo IS NULL");
+const photoFillAfterCursor = db.prepare(`SELECT norm,name,genre,photo,mbid,country,formed,popularity,data,source
+  FROM artists WHERE photo IS NULL AND norm > ? ORDER BY norm LIMIT ?`);
+const photoFillFromStart = db.prepare(`SELECT norm,name,genre,photo,mbid,country,formed,popularity,data,source
+  FROM artists WHERE photo IS NULL ORDER BY norm LIMIT ?`);
+const photoFillThroughCursor = db.prepare(`SELECT norm,name,genre,photo,mbid,country,formed,popularity,data,source
+  FROM artists WHERE photo IS NULL AND norm <= ? ORDER BY norm LIMIT ?`);
+
+function loadPhotoFillBatch(cursor, limit) {
+  const bounded = Math.max(1, Math.min(PHOTO_FILL_LIMIT, Number(limit) || PHOTO_FILL_LIMIT));
+  if (!cursor) {
+    return {
+      rows: photoFillFromStart.all(bounded),
+      total: Number(photoFillPendingCount.get()?.c) || 0,
+      wrapped: false,
+    };
+  }
+  const after = photoFillAfterCursor.all(cursor, bounded);
+  const remaining = bounded - after.length;
+  const before = remaining > 0 ? photoFillThroughCursor.all(cursor, remaining) : [];
+  return {
+    rows: [...after, ...before],
+    total: Number(photoFillPendingCount.get()?.c) || 0,
+    wrapped: before.length > 0,
+  };
+}
+
+export function mergePhotoFillData(row, data, enriched) {
+  if (!enriched?.deezerId) return null;
+  return {
+    ...data,
+    name: row.name,
+    ...deezerEnrichmentGenreFields(data, row.genre, enriched),
+    mbid: row.mbid || data.mbid || null,
+    country: row.country || data.country || null,
+    beginYear: row.formed || data.beginYear || data.formed || null,
+    popularity: row.popularity ?? data.popularity ?? enriched.popularity ?? null,
+    followers: data.followers ?? enriched.followers ?? null,
+    deezerId: enriched.deezerId,
+    photo: data.photo || row.photo || enriched.photo || null,
+    photoCredit: data.photo || row.photo
+      ? data.photoCredit || null
+      : enriched.photo
+        ? "Deezer"
+        : data.photoCredit || null,
+    topTracks: Array.isArray(data.topTracks) && data.topTracks.length
+      ? data.topTracks
+      : enriched.topTracks || [],
+  };
+}
+
+function persistPhotoFill(row, enriched) {
+  let data = {};
+  try { data = JSON.parse(row.data || "{}"); } catch { /* Corrupt metadata is repaired from typed/provider fields. */ }
+  const merged = mergePhotoFillData(row, data, enriched);
+  if (!merged) return false;
+  artistStmts.upsert.run(artistRow(row.norm, merged, row.source || "deezer"));
+  return !!merged.photo;
+}
+
+function providerFailureCode(error) {
+  if (error?.code === "rate_limited") return "CATALOG_PHOTOS_RATE_LIMITED";
+  return "CATALOG_PHOTOS_PROVIDER_UNAVAILABLE";
+}
+
+export async function fillMissingArtistPhotos({
+  shouldStop = () => false,
+  tick = () => {},
+  limit = PHOTO_FILL_LIMIT,
+  readCursor = () => photoFillCursorGet.get(PHOTO_FILL_CURSOR_KEY)?.value || "",
+  writeCursor = (value) => photoFillCursorSet.run(PHOTO_FILL_CURSOR_KEY, value),
+  loadBatch = loadPhotoFillBatch,
+  enrichArtist = deezerEnrich,
+  persistArtist = persistPhotoFill,
+  pause = sleep,
+} = {}) {
+  const bounded = Math.max(1, Math.min(PHOTO_FILL_LIMIT, Number(limit) || PHOTO_FILL_LIMIT));
+  const initialCursor = String(readCursor() || "");
+  const batch = loadBatch(initialCursor, bounded) || {};
+  const rows = Array.isArray(batch.rows) ? batch.rows.slice(0, bounded) : [];
+  let attempted = 0;
+  let filled = 0;
+  let noMatch = 0;
+  let lastAttempted = initialCursor;
+  let providerFailure = null;
+
+  for (const row of rows) {
+    if (shouldStop()) break;
+    let enriched;
+    try {
+      enriched = await enrichArtist(row.name);
+    } catch (error) {
+      if (!(error instanceof ProviderError)) throw error;
+      providerFailure = {
+        code: providerFailureCode(error),
+        provider: String(error.provider || "provider"),
+      };
+      break;
+    }
+
+    const savedPhoto = enriched ? !!persistArtist(row, enriched) : false;
+    attempted += 1;
+    if (savedPhoto) filled += 1;
+    else noMatch += 1;
+    lastAttempted = row.norm;
+    writeCursor(lastAttempted);
+    tick({ phase: "photos", attempted, filled, noMatch, failed: 0, of: rows.length });
+    await pause(80);
+  }
+
+  const stopped = shouldStop();
+  tick({ phase: "photos", attempted, filled, noMatch, failed: providerFailure ? 1 : 0, of: rows.length });
+  return {
+    attempted,
+    filled,
+    noMatch,
+    failed: providerFailure ? 1 : 0,
+    providerFailure,
+    stopped,
+    cursor: lastAttempted,
+    pendingAtStart: Number(batch.total) || rows.length,
+    batchSize: rows.length,
+    wrapped: !!batch.wrapped,
+  };
+}
+
 // ---- In-process background job (admin console) ----
 // `add` is a DELTA: grow the catalog BY this many artists (target = current + add).
 // It is NOT guaranteed to add anything: once every genre tag has been crawled to
@@ -339,6 +476,12 @@ export function growOutcome({ added, reachedTarget, stopRequested }) {
 // preview URLs on 2026-07-14 and made playback progressively worse.
 export const shouldEnrichAfterCrawl = ({ enrich, added, stopRequested }) => !!enrich && added > 0 && !stopRequested;
 
+export function catalogSeedRequestOptions(body = {}) {
+  if (body?.mode === "refresh" || body?.mode === "photos") return { mode: body.mode };
+  const add = Math.max(100, Math.min(20000, Number(body?.add) || 2000));
+  return { add };
+}
+
 let state = { runId: null, running: false, stopRequested: false, mode: "grow", phase: "idle", add: 0, target: 0, startTotal: 0, added: 0, ranked: 0, total: 0, startedAt: 0, finishedAt: 0, error: null, errorCode: null, note: "" };
 
 const reportDetachedSeedFailure = (error, runId) => {
@@ -387,6 +530,65 @@ export function startCatalogSeed({ add = 2000, perTag = null, enrich = false, mo
   if (state.running) return { started: false, reason: "already-running", status: catalogSeedStatus() };
   const startTotal = artistStmts.count.get().c;
   const shouldStop = () => state.stopRequested;
+
+  if (mode === "photos") {
+    const runId = `seed_${randomUUID().slice(0, 12)}`;
+    const pending = Number(photoFillPendingCount.get()?.c) || 0;
+    const target = Math.min(PHOTO_FILL_LIMIT, pending);
+    state = {
+      runId, running: true, stopRequested: false, mode, phase: "photos",
+      add: 0, target, startTotal, added: 0, ranked: 0, total: startTotal,
+      attempted: 0, filled: 0, failed: 0, remaining: pending,
+      startedAt: Date.now(), finishedAt: 0, error: null, errorCode: null,
+      note: pending ? `Checking up to ${target} profiles missing photos.` : "No artist profiles are missing photos.",
+    };
+    seedRunInsert.run(runId, mode, "running", startTotal, target, 0, 0, null, state.note, state.startedAt, null);
+    void (async () => {
+      try {
+        const result = await fillMissingArtistPhotos({
+          shouldStop,
+          tick: ({ attempted, filled, failed, of }) => {
+            state.added = attempted;
+            state.ranked = filled;
+            state.attempted = attempted;
+            state.filled = filled;
+            state.failed = failed;
+            state.target = of;
+          },
+        });
+        state.added = result.attempted;
+        state.ranked = result.filled;
+        state.attempted = result.attempted;
+        state.filled = result.filled;
+        state.failed = result.failed;
+        state.target = result.batchSize;
+        state.remaining = Number(photoFillPendingCount.get()?.c) || 0;
+        if (result.stopped) {
+          state.phase = "stopped";
+          state.note = `Stopped after ${result.attempted} checked; ${result.filled} photos filled.`;
+        } else if (result.providerFailure) {
+          state.phase = "error";
+          state.errorCode = result.providerFailure.code;
+          state.error = "The photo provider became unavailable. Run this job again to resume.";
+          state.note = `Saved ${result.filled} photos before the provider became unavailable; ${state.remaining} profiles still need photos.`;
+        } else {
+          state.phase = "done";
+          state.note = `Checked ${result.attempted}; filled ${result.filled} photos; ${state.remaining} profiles still need photos.`;
+        }
+        state.finishedAt = Date.now();
+      } catch (error) {
+        state.error = "The missing-photo job could not finish. Run it again to resume.";
+        state.errorCode = error instanceof ProviderError ? providerFailureCode(error) : "CATALOG_JOB_FAILED";
+        state.phase = "error";
+        state.finishedAt = Date.now();
+      } finally {
+        state.running = false;
+        state.stopRequested = false;
+        seedRunUpdate.run(state.phase, state.added, state.ranked, state.errorCode, state.note, state.finishedAt || Date.now(), runId);
+      }
+    })().catch((error) => reportDetachedSeedFailure(error, runId));
+    return { started: true, status: catalogSeedStatus() };
+  }
 
   // "refresh" mode: no crawl. Songs and genres are separate bounded phases:
   // an artist can already have tracks while still lacking a verified genre.

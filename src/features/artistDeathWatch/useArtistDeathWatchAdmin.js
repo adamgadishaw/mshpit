@@ -14,11 +14,24 @@ import {
   runArtistDeathWatch,
   setArtistDeathWatchEnabled,
 } from "./artistDeathWatchApi.mjs";
+import {
+  normalizeArtistDeathWatchFilter,
+  shouldPollArtistDeathWatch,
+} from "../../domain/artistDeathWatchPresentation.mjs";
 
-const EMPTY = Object.freeze({ settings: null, counts: { pending: 0, dismissed: 0, memorialized: 0 }, candidates: [], eligibleArtists: 0 });
+const EMPTY = Object.freeze({
+  settings: null,
+  counts: { pending: 0, dismissed: 0, memorialized: 0 },
+  candidates: [],
+  eligibleArtists: 0,
+  running: false,
+  startedAt: null,
+});
+const RUNNING_POLL_MS = 2_000;
 
 export default function useArtistDeathWatchAdmin({ accountId, enabled }) {
-  const scope = enabled && accountId ? `artist-death-watch:${accountId}` : null;
+  const [status, setStatusState] = useState("pending");
+  const scope = enabled && accountId ? `artist-death-watch:${accountId}:${status}` : null;
   const [resource, setResource] = useState(() => createLoadState({ data: EMPTY }));
   const [revision, setRevision] = useState(0);
   const actionRef = useRef(null);
@@ -32,7 +45,7 @@ export default function useArtistDeathWatchAdmin({ accountId, enabled }) {
     }
     const controller = new AbortController();
     setResource((current) => beginLoadState(current, { scope, emptyData: EMPTY }));
-    readArtistDeathWatch({ accountId, signal: controller.signal })
+    readArtistDeathWatch({ accountId, signal: controller.signal, status })
       .then((data) => {
         if (!controller.signal.aborted && scopeRef.current === scope) {
           setResource((current) => current.scope === scope ? resolveLoadState({ scope, data }) : current);
@@ -46,7 +59,7 @@ export default function useArtistDeathWatchAdmin({ accountId, enabled }) {
         }
       });
     return () => controller.abort();
-  }, [accountId, enabled, revision, scope]);
+  }, [accountId, enabled, revision, scope, status]);
 
   useEffect(() => () => actionRef.current?.abort(), []);
 
@@ -74,11 +87,22 @@ export default function useArtistDeathWatchAdmin({ accountId, enabled }) {
   }, [accountId, scope]);
 
   const projected = projectLoadState(resource, scope, EMPTY);
+  useEffect(() => {
+    if (!enabled || !accountId || !shouldPollArtistDeathWatch({
+      running: projected.data?.running,
+      resourceStatus: projected.status,
+    })) return undefined;
+    const timer = setTimeout(() => setRevision((current) => current + 1), RUNNING_POLL_MS);
+    return () => clearTimeout(timer);
+  }, [accountId, enabled, projected.data?.running, projected.status]);
+
   return {
     data: projected.data || EMPTY,
     loading: projected.status === "loading" || projected.status === "refreshing",
     error: projected.error,
     reload: useCallback(() => setRevision((current) => current + 1), []),
+    status,
+    setStatus: useCallback((value) => setStatusState(normalizeArtistDeathWatchFilter(value)), []),
     setEnabled: useCallback((value) => action((signal) => setArtistDeathWatchEnabled(value, { accountId, signal })), [accountId, action]),
     runNow: useCallback(() => action((signal) => runArtistDeathWatch({ accountId, signal })), [accountId, action]),
     review: useCallback((artistKey, status) => action((signal) => reviewArtistDeathCandidate(artistKey, status, { accountId, signal })), [accountId, action]),

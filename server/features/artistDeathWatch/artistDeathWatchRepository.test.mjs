@@ -38,6 +38,9 @@ test("repository covers MBID-only artists and excludes ambiguous duplicate ident
       artist_mbid: MBID,
     }]);
     assert.equal(repository.eligibleArtistCount(), 1);
+    assert.equal(repository.catalogArtistCount(), 3);
+    assert.equal(repository.eligibleArtistProgress("alpha"), 1);
+    assert.equal(repository.eligibleArtistProgress(null), 0);
     assert.equal(repository.catalogArtistForSignal({ artistMbid: MBID }).artist_key, "alpha");
     assert.equal(repository.catalogArtistForSignal({ artistMbid: DUPLICATE_MBID }), null);
   } finally {
@@ -118,6 +121,7 @@ test("published memorial identities are reconciled out of the actionable queue",
     assert.deepEqual(repository.listCandidates({ status: "pending", limit: 10 }), []);
     assert.equal(repository.findCandidateByKey("alpha").status, "memorialized");
     assert.equal(repository.candidateCounts().memorialized, 1);
+    assert.equal(repository.eligibleArtistCount(), 0);
   } finally {
     db.close();
   }

@@ -1,11 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  crawlerGenreFields, growOutcome, refreshSongsAndGenres,
-  deezerEnrich, mergeGenreBackfillData, rotateRowsAfterCursor, shouldEnrichAfterCrawl,
+  catalogSeedRequestOptions, crawlerGenreFields, fillMissingArtistPhotos, growOutcome, refreshSongsAndGenres,
+  deezerEnrich, mergeGenreBackfillData, mergePhotoFillData, rotateRowsAfterCursor, shouldEnrichAfterCrawl,
 } from "./catalogSeed.js";
 import { displayGenre, resolveGenre, storedClaims } from "../src/domain/genre.mjs";
 import { artistRow, artistStmts } from "./db.js";
+import { ProviderError } from "./musicProviders.js";
 
 // Regression cover for the 2026-07-14 incident. "Grow by 10k" added zero artists
 // (every genre cursor had reached the end of its results) yet reported success and
@@ -51,6 +52,101 @@ test("enrichment runs only for artists this crawl actually added", () => {
   assert.equal(shouldEnrichAfterCrawl({ enrich: true, added: 12, stopRequested: false }), true);
   assert.equal(shouldEnrichAfterCrawl({ enrich: false, added: 12, stopRequested: false }), false);
   assert.equal(shouldEnrichAfterCrawl({ enrich: true, added: 12, stopRequested: true }), false);
+});
+
+test("catalog seed requests keep missing-photo repair distinct from grow and refresh", () => {
+  assert.deepEqual(catalogSeedRequestOptions({ mode: "photos" }), { mode: "photos" });
+  assert.deepEqual(catalogSeedRequestOptions({ mode: "refresh" }), { mode: "refresh" });
+  assert.deepEqual(catalogSeedRequestOptions({ add: 5000 }), { add: 5000 });
+  assert.deepEqual(catalogSeedRequestOptions({ mode: "unknown", add: 10 }), { add: 100 });
+});
+
+test("missing-photo repair resumes from its durable cursor and records each completed artist", async () => {
+  const cursorWrites = [];
+  const persisted = [];
+  const result = await fillMissingArtistPhotos({
+    readCursor: () => "artist-a",
+    writeCursor: (value) => cursorWrites.push(value),
+    loadBatch: (cursor, limit) => {
+      assert.equal(cursor, "artist-a");
+      assert.equal(limit, 40);
+      return {
+        rows: [{ norm: "artist-b", name: "Artist B" }, { norm: "artist-c", name: "Artist C" }],
+        total: 12,
+        wrapped: false,
+      };
+    },
+    enrichArtist: async (name) => name === "Artist B" ? { deezerId: 2, photo: "https://example.com/b.jpg" } : null,
+    persistArtist: (row) => { persisted.push(row.norm); return true; },
+    pause: async () => {},
+  });
+  assert.deepEqual(cursorWrites, ["artist-b", "artist-c"]);
+  assert.deepEqual(persisted, ["artist-b"]);
+  assert.equal(result.attempted, 2);
+  assert.equal(result.filled, 1);
+  assert.equal(result.noMatch, 1);
+  assert.equal(result.pendingAtStart, 12);
+  assert.equal(result.cursor, "artist-c");
+});
+
+test("missing-photo repair preserves partial success and does not advance past a provider failure", async () => {
+  const cursorWrites = [];
+  const result = await fillMissingArtistPhotos({
+    readCursor: () => "",
+    writeCursor: (value) => cursorWrites.push(value),
+    loadBatch: () => ({
+      rows: [{ norm: "artist-a", name: "Artist A" }, { norm: "artist-b", name: "Artist B" }, { norm: "artist-c", name: "Artist C" }],
+      total: 3,
+      wrapped: false,
+    }),
+    enrichArtist: async (name) => {
+      if (name === "Artist B") throw new ProviderError("Deezer", 429, "rate limited", { code: "rate_limited" });
+      return { deezerId: 1, photo: "https://example.com/a.jpg" };
+    },
+    persistArtist: () => true,
+    pause: async () => {},
+  });
+  assert.deepEqual(cursorWrites, ["artist-a"]);
+  assert.equal(result.attempted, 1);
+  assert.equal(result.filled, 1);
+  assert.equal(result.failed, 1);
+  assert.equal(result.providerFailure.code, "CATALOG_PHOTOS_RATE_LIMITED");
+  assert.equal(result.cursor, "artist-a", "the failed artist remains next after restart");
+});
+
+test("missing-photo repair stays bounded and stops only at an artist boundary", async () => {
+  let stop = false;
+  const cursorWrites = [];
+  const result = await fillMissingArtistPhotos({
+    shouldStop: () => stop,
+    writeCursor: (value) => cursorWrites.push(value),
+    loadBatch: (_cursor, limit) => ({
+      rows: Array.from({ length: limit + 20 }, (_, index) => ({ norm: `artist-${index}`, name: `Artist ${index}` })),
+      total: 1000,
+      wrapped: false,
+    }),
+    enrichArtist: async () => ({ deezerId: 1, photo: "https://example.com/photo.jpg" }),
+    persistArtist: () => { stop = true; return true; },
+    pause: async () => {},
+  });
+  assert.equal(result.batchSize, 40, "one run cannot exceed the fixed provider-work budget");
+  assert.equal(result.attempted, 1);
+  assert.equal(result.stopped, true);
+  assert.deepEqual(cursorWrites, ["artist-0"]);
+});
+
+test("photo enrichment preserves existing provider data while filling the missing image", () => {
+  const merged = mergePhotoFillData(
+    { name: "Photo Fixture", genre: "Rock", mbid: "mbid-1", country: "Canada", formed: "2001", popularity: 55, photo: null },
+    { bio: "Keep this biography", topTracks: [{ title: "Keep This" }] },
+    { deezerId: 42, photo: "https://example.com/photo.jpg", popularity: 70, followers: 1000, topTracks: [{ title: "Replacement" }] },
+  );
+  assert.equal(merged.photo, "https://example.com/photo.jpg");
+  assert.equal(merged.photoCredit, "Deezer");
+  assert.equal(merged.popularity, 55);
+  assert.equal(merged.bio, "Keep this biography");
+  assert.deepEqual(merged.topTracks, [{ title: "Keep This" }]);
+  assert.equal(merged.mbid, "mbid-1");
 });
 
 test("crawler buckets persist as review hints, never as factual genres", () => {

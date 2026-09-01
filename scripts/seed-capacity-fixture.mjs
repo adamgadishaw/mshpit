@@ -3,8 +3,11 @@
 // The script refuses the real server data directory and owns only `bench_*`
 // records, making the capacity report repeatable without touching real content.
 
+import { existsSync, realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { resolve, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { registerPitSqliteFunctions } from "../server/sqliteFunctions.js";
 
 const args = process.argv.slice(2);
 const valueFor = (name) => {
@@ -19,7 +22,12 @@ if (!databasePath) {
   process.exit(2);
 }
 
-const resolved = resolve(databasePath);
+const resolved = realpathSync(resolve(databasePath));
+const repositoryDatabase = fileURLToPath(new URL("../server/data/pit.db", import.meta.url));
+if (existsSync(repositoryDatabase) && resolved === realpathSync(repositoryDatabase)) {
+  console.error("Refusing to seed the repository database. Use a disposable capacity fixture.");
+  process.exit(2);
+}
 const normalized = resolved.toLowerCase();
 if (!normalized.includes(`${sep}.tmp${sep}capacity-`) || !normalized.endsWith(`${sep}pit.db`)) {
   console.error("Refusing to seed outside a .tmp/capacity-*/pit.db fixture.");
@@ -27,6 +35,7 @@ if (!normalized.includes(`${sep}.tmp${sep}capacity-`) || !normalized.endsWith(`$
 }
 
 const database = new DatabaseSync(resolved);
+registerPitSqliteFunctions(database);
 database.exec("PRAGMA foreign_keys=ON; PRAGMA wal_checkpoint(TRUNCATE);");
 const users = database.prepare("SELECT id FROM users ORDER BY id").all().map((row) => row.id);
 const artists = database.prepare("SELECT norm,name FROM artists WHERE length(name)>0 ORDER BY rank_score DESC,name LIMIT 80").all();
