@@ -174,6 +174,11 @@ import { calendarDateKey } from "../src/domain/dataPolicy.mjs";
 import { safeOwnedReadyMediaUrl } from "./publicMedia.js";
 import { normalizeArtistCampaign } from "../src/domain/artistCampaignPost.mjs";
 import { normalizeTaggedUserIds } from "../src/domain/postFriendTags.mjs";
+import {
+  canonicalYouTubeReviewLink,
+  cleanExperienceType,
+  projectedOnlineReviewFields,
+} from "./onlineReviews.js";
 import { canonicalTicketUrl, projectedTourDateTicketUrl } from "../src/domain/ticketLinks.mjs";
 import { publicTicketmasterEventImage } from "./providerEventImage.js";
 import {
@@ -934,8 +939,8 @@ function cleanPostRatingDims(value) {
   return out;
 }
 
-const postRow = db.prepare(`INSERT INTO posts (id,user_id,artist,venue,city,date,overall,band,room,dims,review,photos,photos_public,landing_showcase,campaign,setlist,tour,tags,tagged_user_ids,kind,song,playlist,artist_key,artist_mbid,venue_key,client_mutation_id,client_mutation_hash,created_at)
-                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+const postRow = db.prepare(`INSERT INTO posts (id,user_id,artist,venue,city,date,overall,band,room,dims,review,photos,photos_public,landing_showcase,campaign,setlist,tour,tags,tagged_user_ids,kind,song,playlist,artist_key,artist_mbid,venue_key,experience_type,online_title,youtube_url,youtube_video_id,client_mutation_id,client_mutation_hash,created_at)
+                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
 const postByClientMutation = db.prepare("SELECT id,removed,client_mutation_hash FROM posts WHERE user_id=? AND client_mutation_id=? LIMIT 1");
 const postColumns = new Set(db.prepare("PRAGMA table_info(posts)").all().map(({ name }) => name));
 const postAttendanceTicketScrubSql = postColumns.has("attendance_ticket") ? ",attendance_ticket=NULL" : "";
@@ -1226,9 +1231,11 @@ function playlistPostProjection(value) {
 }
 // How many times the author has logged this artist up to and including this
 // post: powers the "3rd time in the pit" marker on the card.
-const SEEN_ORDINAL_SQL = `(SELECT COUNT(*) FROM posts s
+const SEEN_ORDINAL_SQL = `(CASE WHEN COALESCE(p.kind,'review')='review'
+    AND COALESCE(p.experience_type,'in_person')='in_person' THEN (SELECT COUNT(*) FROM posts s
     WHERE s.user_id = p.user_id AND LOWER(s.artist) = LOWER(p.artist) AND s.removed = 0
-      AND (s.created_at < p.created_at OR (s.created_at = p.created_at AND s.id <= p.id))) AS seen_ordinal`;
+      AND COALESCE(s.kind,'review')='review' AND COALESCE(s.experience_type,'in_person')='in_person'
+      AND (s.created_at < p.created_at OR (s.created_at = p.created_at AND s.id <= p.id))) ELSE NULL END) AS seen_ordinal`;
 const feedPostById = db.prepare(`
   SELECT p.*, u.name AS u_name, u.handle AS u_handle, u.initials AS u_initials, u.avatar_uri AS u_avatar, u.avatar_color AS u_color,
     u.profile_updated_at AS u_profile_updated_at,
@@ -1940,6 +1947,10 @@ function canonicalAttendanceTicketCreateRequest(user, source, storedPost) {
       playlistId: null,
       campaign: null,
       attendanceTicket: ticket,
+      experienceType: "in_person",
+      onlineTitle: null,
+      youtubeUrl: null,
+      youtubeVideoId: null,
     },
   };
 }
@@ -2026,13 +2037,20 @@ function canonicalCreateRequest(user, body, storedPost = null) {
         song: values.song,
         playlistId: playlist?.id || null,
         campaign,
+        experienceType: "in_person",
+        onlineTitle: null,
+        youtubeUrl: null,
+        youtubeVideoId: null,
       },
     };
   }
 
+  const experienceType = cleanExperienceType(source.experienceType);
+  if (!experienceType) throw new ApiError(400, "Choose an in-person or online concert review.", "VALIDATION_FAILED");
+  const onlineReview = experienceType === "online";
   const [errs, v] = shape(source, {
     artist: { required: true, parse: (x) => clean(x, { max: LIMITS.artist }) || undefined },
-    venue: { required: true, parse: (x) => clean(x, { max: LIMITS.venue }) || undefined },
+    venue: { parse: (x) => clean(x, { max: LIMITS.venue }) },
     city: { parse: (x) => clean(x, { max: LIMITS.city }) },
     date: { parse: cleanDate },
     overall: { required: true, parse: (x) => { const r = clampRating(x); return r > 0 ? r : undefined; } },
@@ -2047,8 +2065,23 @@ function canonicalCreateRequest(user, body, storedPost = null) {
     tour: { parse: (x) => clean(x, { max: 80 }) || null },
     tags: { parse: cleanPostTags },
     song: { parse: cleanSong },
+    onlineTitle: { parse: (x) => clean(x, { max: 160 }) || null },
   });
   if (errs.length) throw new ApiError(400, errs[0]);
+  if (!onlineReview && !v.venue) throw new ApiError(400, "venue is required", "VALIDATION_FAILED");
+  const onlineLink = canonicalYouTubeReviewLink({
+    youtubeUrl: source.youtubeUrl,
+    youtubeVideoId: source.youtubeVideoId,
+  });
+  if (onlineLink === undefined) {
+    throw new ApiError(400, "Add a valid YouTube watch, Shorts, Live, or youtu.be link.", "VALIDATION_FAILED");
+  }
+  if (onlineReview && !onlineLink) {
+    throw new ApiError(400, "Add the YouTube link for this online concert.", "VALIDATION_FAILED");
+  }
+  if (!onlineReview && (v.onlineTitle || onlineLink)) {
+    throw new ApiError(400, "YouTube concert details can only be added to an online review.", "VALIDATION_FAILED");
+  }
   const binding = resolveArtistBinding(v.artist, source.artistKey);
   if (!stableMedia) rejectNewLegacyMediaUrls(v.photos || [], parseJsonArray(storedPost?.photos));
   const photos = stableMedia ? stableMedia.photos : (v.photos || []);
@@ -2059,23 +2092,28 @@ function canonicalCreateRequest(user, body, storedPost = null) {
   }) ? 1 : 0;
   const values = {
     ...v,
-    city: v.city || "",
-    date: v.date || "",
-    band: v.band ?? null,
-    room: v.room ?? null,
-    dims: v.dims || {},
+    experienceType,
+    onlineTitle: onlineReview ? v.onlineTitle : null,
+    youtubeUrl: onlineReview ? onlineLink?.youtubeUrl || null : null,
+    youtubeVideoId: onlineReview ? onlineLink?.youtubeVideoId || null : null,
+    venue: onlineReview ? "" : v.venue,
+    city: onlineReview ? "" : (v.city || ""),
+    date: onlineReview ? "" : (v.date || ""),
+    band: onlineReview ? null : (v.band ?? null),
+    room: onlineReview ? null : (v.room ?? null),
+    dims: onlineReview ? {} : (v.dims || {}),
     review: v.review || "",
     photos,
     // A direct API caller cannot create an impossible permission state. An
     // explicit private choice wins; otherwise enabling the showcase also makes
     // the photos available on their ordinary public artist surface.
     photosPublic: v.photosPublic === 0 ? 0 : v.landingShowcase ? 1 : (v.photosPublic ?? 0),
-    landingShowcase,
-    setlist: v.setlist || [],
-    tour: v.tour || null,
-    tags: v.tags || [],
+    landingShowcase: onlineReview ? 0 : landingShowcase,
+    setlist: onlineReview ? [] : (v.setlist || []),
+    tour: onlineReview ? null : (v.tour || null),
+    tags: onlineReview ? [] : (v.tags || []),
     taggedUserIds,
-    song: v.song || null,
+    song: onlineReview ? null : (v.song || null),
     binding,
     mediaSelection: stableMedia,
   };
@@ -2089,6 +2127,7 @@ function canonicalCreateRequest(user, body, storedPost = null) {
     tag: values.tags,
     "tagged song title": values.song?.title,
     "tagged song artist": values.song?.artist,
+    "online concert title": values.onlineTitle,
   });
   return {
     kind: "review",
@@ -2098,7 +2137,7 @@ function canonicalCreateRequest(user, body, storedPost = null) {
       artist: values.artist,
       artistKey: binding.artist_key || null,
       venue: values.venue,
-      venueKey: venueBinding(values.venue),
+      venueKey: onlineReview ? null : venueBinding(values.venue),
       city: values.city,
       date: values.date,
       overall: values.overall,
@@ -2117,6 +2156,10 @@ function canonicalCreateRequest(user, body, storedPost = null) {
       song: values.song,
       playlistId: null,
       campaign: null,
+      experienceType: values.experienceType,
+      onlineTitle: values.onlineTitle,
+      youtubeUrl: values.youtubeUrl,
+      youtubeVideoId: values.youtubeVideoId,
     },
   };
 }
@@ -2137,30 +2180,35 @@ function canonicalStoredPost(row) {
   const campaign = kind === "status" ? normalizeArtistCampaign(parsedStoredObject(row?.campaign)) : null;
   const attendanceTicket = kind === "status" ? storedAttendanceTicket(row?.attendance_ticket) : null;
   const dims = cleanPostRatingDims(parsedStoredObject(row?.dims) || {}) || {};
+  const online = projectedOnlineReviewFields(row);
   return {
     kind: memorialMemory ? "memory" : kind,
     artist: kind === "status" && !memorialMemory ? "" : clean(row?.artist, { max: LIMITS.artist }),
     artistKey: kind === "status" && !memorialMemory ? null : row?.artist_key || null,
-    venue: kind === "status" ? "" : clean(row?.venue, { max: LIMITS.venue }),
-    venueKey: kind === "status" ? null : row?.venue_key || venueBinding(row?.venue),
-    city: kind === "status" ? "" : clean(row?.city, { max: LIMITS.city }),
-    date: kind === "status" ? "" : cleanDate(row?.date) || "",
+    venue: kind === "status" || online.experienceType === "online" ? "" : clean(row?.venue, { max: LIMITS.venue }),
+    venueKey: kind === "status" || online.experienceType === "online" ? null : row?.venue_key || venueBinding(row?.venue),
+    city: kind === "status" || online.experienceType === "online" ? "" : clean(row?.city, { max: LIMITS.city }),
+    date: kind === "status" || online.experienceType === "online" ? "" : cleanDate(row?.date) || "",
     overall: kind === "status" ? 0 : clampRating(row?.overall),
-    band: kind === "status" || row?.band == null ? null : clampRating(row.band),
-    room: kind === "status" || row?.room == null ? null : clampRating(row.room),
-    dims: kind === "status" ? {} : dims,
+    band: kind === "status" || online.experienceType === "online" || row?.band == null ? null : clampRating(row.band),
+    room: kind === "status" || online.experienceType === "online" || row?.room == null ? null : clampRating(row.room),
+    dims: kind === "status" || online.experienceType === "online" ? {} : dims,
     review: clean(row?.review, { max: LIMITS.review, newlines: true }),
     photos: cleanStringArray(parseJsonArray(row?.photos), { maxItems: MEDIA_POST_MAX_ATTACHMENTS, maxLen: 2000 }),
     mediaAssetIds: row?.id ? postMediaAssetIds(db, row.id) : [],
     photosPublic: row?.photos_public ? 1 : 0,
-    landingShowcase: kind === "review" && row?.landing_showcase ? 1 : 0,
-    setlist: kind === "status" ? [] : cleanStringArray(parseJsonArray(row?.setlist), { maxItems: 40, maxLen: 120 }),
-    tour: kind === "status" ? null : clean(row?.tour, { max: 80 }) || null,
-    tags: kind === "status" ? [] : cleanPostTags(parseJsonArray(row?.tags)) || [],
+    landingShowcase: kind === "review" && online.experienceType !== "online" && row?.landing_showcase ? 1 : 0,
+    setlist: kind === "status" || online.experienceType === "online" ? [] : cleanStringArray(parseJsonArray(row?.setlist), { maxItems: 40, maxLen: 120 }),
+    tour: kind === "status" || online.experienceType === "online" ? null : clean(row?.tour, { max: 80 }) || null,
+    tags: kind === "status" || online.experienceType === "online" ? [] : cleanPostTags(parseJsonArray(row?.tags)) || [],
     taggedUserIds: storedPostTaggedUserIds(row?.tagged_user_ids),
-    song: song || null,
+    song: online.experienceType === "online" ? null : song || null,
     playlistId: kind === "status" ? playlist?.id || null : null,
     campaign,
+    experienceType: kind === "status" ? "in_person" : online.experienceType,
+    onlineTitle: kind === "status" ? null : online.onlineTitle,
+    youtubeUrl: kind === "status" ? null : online.youtubeUrl,
+    youtubeVideoId: kind === "status" ? null : online.youtubeVideoId,
     ...(attendanceTicket ? { attendanceTicket } : {}),
   };
 }
@@ -2346,6 +2394,7 @@ function publicArtistSlugForPost(post) {
 
 function postJson(p, viewerId) {
   const artistPublicSlug = publicArtistSlugForPost(p);
+  const online = projectedOnlineReviewFields(p);
   const stableMedia = postMediaState(db, p.id, { ownerId: viewerId || null });
   const storedPhotos = parseJsonArray(p.photos);
   const stableByUrl = new Map(stableMedia.assets.map((asset) => [asset.url, asset]));
@@ -2394,13 +2443,22 @@ function postJson(p, viewerId) {
     userId: p.user_id,
     kind: p.kind || "review",
     user: { name: p.u_name, handle: p.u_handle, initials: p.u_initials, avatarUri: safePublicProfileImage(p.user_id, p.u_avatar), avatarColor: p.u_color, profileUpdatedAt: Number(p.u_profile_updated_at) || 0 },
-    artist: p.artist, venue: p.venue, city: p.city, date: p.date,
-    artistKey: p.artist_key || null, artistPublicSlug, artistMbid: p.artist_mbid || null, venueKey: p.venue_key || null,
+    artist: p.artist,
+    venue: online.experienceType === "online" ? "" : p.venue,
+    city: online.experienceType === "online" ? "" : p.city,
+    date: online.experienceType === "online" ? "" : p.date,
+    artistKey: p.artist_key || null, artistPublicSlug, artistMbid: p.artist_mbid || null,
+    venueKey: online.experienceType === "online" ? null : p.venue_key || null,
+    ...online,
     archiveShowKey: archiveShowKeyForPost(p),
     // Guarded, like `song` below and like publicUser: one malformed column must
     // degrade that field, not throw while building the page and take the whole
     // feed down with it.
-    overall: p.overall, band: p.band, room: p.room, dims: parseJsonObject(p.dims), review: p.review,
+    overall: p.overall,
+    band: online.experienceType === "online" ? null : p.band,
+    room: online.experienceType === "online" ? null : p.room,
+    dims: online.experienceType === "online" ? {} : parseJsonObject(p.dims),
+    review: p.review,
     // A stable descriptor is the publication authority. If its verified
     // rendition/source becomes unavailable, do not let the denormalized legacy
     // URL column bypass that fail-closed state. Historical URL-only rows are
@@ -2416,16 +2474,16 @@ function postJson(p, viewerId) {
     // composer assets and must never be sent back through mediaAssetIds.
     mediaAssetIds: stableMedia.assets.map((asset) => asset.id),
     // Separate homepage consent is owner-only account state, not social proof.
-    ...(viewerId === p.user_id ? { landingShowcase: !!p.landing_showcase } : {}),
-    setlist: parseJsonArray(p.setlist),
-    tour: p.tour || null,
-    tags: parseJsonArray(p.tags),
+    ...(viewerId === p.user_id ? { landingShowcase: online.experienceType === "online" ? false : !!p.landing_showcase } : {}),
+    setlist: online.experienceType === "online" ? [] : parseJsonArray(p.setlist),
+    tour: online.experienceType === "online" ? null : p.tour || null,
+    tags: online.experienceType === "online" ? [] : parseJsonArray(p.tags),
     taggedPeople: projectedPostTaggedPeople(p, viewerId),
-    song: p.song ? (() => { try { return JSON.parse(p.song); } catch { return null; } })() : null,
+    song: online.experienceType === "online" ? null : p.song ? (() => { try { return JSON.parse(p.song); } catch { return null; } })() : null,
     // Feed pages receive a bounded preview. The full immutable song list is
     // loaded only when somebody presses Play, keeping 50-card feeds lightweight.
-    playlist: playlistPostProjection(p.playlist),
-    campaign,
+    playlist: online.experienceType === "online" ? null : playlistPostProjection(p.playlist),
+    campaign: online.experienceType === "online" ? null : campaign,
     ...(attendanceTicket ? { attendanceTicket } : {}),
     seen: p.seen_ordinal ?? null,
     ...(p.open_reports != null ? { flags: p.open_reports } : {}),
@@ -3926,7 +3984,9 @@ export const routes = {
     const u = requireUser(ctx);
     const name = clean(ctx.query.name, { max: 120 });
     if (!name) throw new ApiError(400, "Missing name.");
-    const row = db.prepare("SELECT COUNT(*) c, MAX(date) last FROM posts WHERE user_id=? AND LOWER(artist)=LOWER(?) AND removed=0").get(u.id, name);
+    const row = db.prepare(`SELECT COUNT(*) c, MAX(date) last FROM posts
+      WHERE user_id=? AND LOWER(artist)=LOWER(?) AND removed=0
+        AND COALESCE(kind,'review')='review' AND COALESCE(experience_type,'in_person')='in_person'`).get(u.id, name);
     return { count: row?.c || 0, last: row?.last || null };
   },
 
@@ -5248,7 +5308,8 @@ export const routes = {
         postRow.run(id, u.id, v.memorialMemory ? v.artist : "", "", "", "", 0, null, null,
           "{}", v.review, JSON.stringify(v.photos), v.photosPublic, 0, v.campaign ? JSON.stringify(v.campaign) : null, "[]", null,
           "[]", JSON.stringify(transactionTaggedUserIds), "status", v.song ? JSON.stringify(v.song) : null, v.playlist ? JSON.stringify(v.playlist) : null,
-          v.memorialMemory ? v.binding.artist_key : null, v.memorialMemory ? v.binding.artist_mbid : null, null, mutationId, mutationHash, now());
+          v.memorialMemory ? v.binding.artist_key : null, v.memorialMemory ? v.binding.artist_mbid : null, null,
+          "in_person", null, null, null, mutationId, mutationHash, now());
         if (v.attendanceTicket) postAttendanceTicket.run(JSON.stringify(v.attendanceTicket), id, u.id);
         markOwnedMediaAssociated(db, { ownerId: u.id, urls: v.photos, at: now() });
         if (v.mediaSelection) attachPostMedia(db, { postId: id, ownerId: u.id, selection: v.mediaSelection, at: now() });
@@ -5266,7 +5327,8 @@ export const routes = {
       postRow.run(id, u.id, v.artist, v.venue, v.city, v.date, v.overall, v.band, v.room,
         JSON.stringify(v.dims), v.review, JSON.stringify(v.photos), v.photosPublic, v.landingShowcase, null, JSON.stringify(v.setlist), v.tour,
         JSON.stringify(v.tags), JSON.stringify(transactionTaggedUserIds), "review", v.song ? JSON.stringify(v.song) : null, null,
-        v.binding.artist_key, v.binding.artist_mbid, venueBinding(v.venue), mutationId, mutationHash, now());
+        v.binding.artist_key, v.binding.artist_mbid, v.experienceType === "online" ? null : venueBinding(v.venue),
+        v.experienceType, v.onlineTitle, v.youtubeUrl, v.youtubeVideoId, mutationId, mutationHash, now());
       markOwnedMediaAssociated(db, { ownerId: u.id, urls: v.photos, at: now() });
       if (v.mediaSelection) attachPostMedia(db, { postId: id, ownerId: u.id, selection: v.mediaSelection, at: now() });
       addPostTagNotifications(transactionTaggedUserIds, u.id, id, v.artist);
@@ -5294,7 +5356,7 @@ export const routes = {
 
     const body = ctx.body && typeof ctx.body === "object" && !Array.isArray(ctx.body) ? ctx.body : {};
     const has = (key) => Object.prototype.hasOwnProperty.call(body, key);
-    const editable = ["artist", "artistKey", "venue", "city", "date", "overall", "band", "room", "dims", "review", "photos", "mediaAssetIds", "photosPublic", "landingShowcase", "setlist", "tour", "tags", "taggedUserIds", "song", "playlistId", "campaign"];
+    const editable = ["artist", "artistKey", "venue", "city", "date", "overall", "band", "room", "dims", "review", "photos", "mediaAssetIds", "photosPublic", "landingShowcase", "setlist", "tour", "tags", "taggedUserIds", "song", "playlistId", "campaign", "experienceType", "onlineTitle", "youtubeUrl", "youtubeVideoId"];
     if (!editable.some(has)) throw new ApiError(400, "Make a change before saving this post.", "VALIDATION_FAILED");
 
     // Optimistic concurrency prevents two devices (or an old open edit sheet)
@@ -5309,8 +5371,11 @@ export const routes = {
 
     const next = { ...current };
     const currentMemorialMemory = current.kind === "status" && !!current.artist_key && !!current.artist_mbid && !!current.artist;
-    if (currentMemorialMemory && ["artist", "artistKey", "venue", "city", "date", "overall", "band", "room", "dims", "setlist", "tour", "tags", "landingShowcase"].some(has)) {
+    if (currentMemorialMemory && ["artist", "artistKey", "venue", "city", "date", "overall", "band", "room", "dims", "setlist", "tour", "tags", "landingShowcase", "experienceType", "onlineTitle", "youtubeUrl", "youtubeVideoId"].some(has)) {
       throw new ApiError(400, "A memorial fan memory can edit its words, people, song, and media, but it cannot become a live rating.", "VALIDATION_FAILED");
+    }
+    if (current.kind === "status" && ["experienceType", "onlineTitle", "youtubeUrl", "youtubeVideoId"].some(has)) {
+      throw new ApiError(400, "Online concert details can only be added to a review.", "VALIDATION_FAILED");
     }
     const previousTaggedUserIds = storedPostTaggedUserIds(current.tagged_user_ids);
     const textField = (key, max, { required = false, newlines = false } = {}) => {
@@ -5331,7 +5396,7 @@ export const routes = {
     };
 
     textField("artist", LIMITS.artist, { required: true });
-    textField("venue", LIMITS.venue, { required: true });
+    textField("venue", LIMITS.venue);
     textField("city", LIMITS.city);
     // Stored ISO, same as create. A post still holding a legacy display-format
     // or mangled date is repaired by this rather than rejected, since the value
@@ -5396,6 +5461,37 @@ export const routes = {
       if (!tags) throw new ApiError(400, "tags is invalid", "VALIDATION_FAILED");
       next.tags = JSON.stringify(tags);
     }
+    const currentOnline = projectedOnlineReviewFields(current);
+    // Re-project stored fields through the same canonicalizer on every edit.
+    // A malformed legacy row must require a corrected link rather than keeping
+    // an unsafe URL merely because this edit changed only its title or text.
+    next.online_title = currentOnline.onlineTitle;
+    next.youtube_url = currentOnline.youtubeUrl;
+    next.youtube_video_id = currentOnline.youtubeVideoId;
+    const nextExperienceType = has("experienceType")
+      ? cleanExperienceType(body.experienceType, currentOnline.experienceType)
+      : currentOnline.experienceType;
+    if (!nextExperienceType) {
+      throw new ApiError(400, "Choose an in-person or online concert review.", "VALIDATION_FAILED");
+    }
+    next.experience_type = nextExperienceType;
+    if (has("onlineTitle")) {
+      if (body.onlineTitle !== null && typeof body.onlineTitle !== "string") {
+        throw new ApiError(400, "onlineTitle is invalid", "VALIDATION_FAILED");
+      }
+      next.online_title = body.onlineTitle === null ? null : clean(body.onlineTitle, { max: 160 }) || null;
+    }
+    if (has("youtubeUrl") || has("youtubeVideoId")) {
+      const link = canonicalYouTubeReviewLink({
+        youtubeUrl: has("youtubeUrl") ? body.youtubeUrl : null,
+        youtubeVideoId: has("youtubeVideoId") ? body.youtubeVideoId : null,
+      });
+      if (link === undefined) {
+        throw new ApiError(400, "Add a valid YouTube watch, Shorts, Live, or youtu.be link.", "VALIDATION_FAILED");
+      }
+      next.youtube_url = link?.youtubeUrl || null;
+      next.youtube_video_id = link?.youtubeVideoId || null;
+    }
     if (has("taggedUserIds")) {
       next.tagged_user_ids = JSON.stringify(validatedPostTaggedUserIds(u, body.taggedUserIds, {
         committedIds: previousTaggedUserIds,
@@ -5407,6 +5503,37 @@ export const routes = {
       const song = cleanSong(body.song);
       if (song === undefined) throw new ApiError(400, "song is invalid", "VALIDATION_FAILED");
       next.song = song ? JSON.stringify(song) : null;
+    }
+
+    if (current.kind !== "status" && next.experience_type === "online") {
+      if (!next.youtube_url || !next.youtube_video_id) {
+        throw new ApiError(400, "Add the YouTube link for this online concert.", "VALIDATION_FAILED");
+      }
+      // Online reviews stay readable social/artist posts, but cannot retain any
+      // physical show identity through a forged or stale edit payload.
+      next.venue = "";
+      next.city = "";
+      next.date = "";
+      next.band = null;
+      next.room = null;
+      next.dims = "{}";
+      next.setlist = "[]";
+      next.tour = null;
+      next.tags = "[]";
+      next.landing_showcase = 0;
+      next.song = null;
+      next.playlist = null;
+      next.campaign = null;
+    } else if (current.kind !== "status") {
+      if (!clean(next.venue, { max: LIMITS.venue })) {
+        throw new ApiError(400, "venue is required", "VALIDATION_FAILED");
+      }
+      if ((has("onlineTitle") && next.online_title) || (has("youtubeUrl") && body.youtubeUrl) || (has("youtubeVideoId") && body.youtubeVideoId)) {
+        throw new ApiError(400, "YouTube concert details can only be added to an online review.", "VALIDATION_FAILED");
+      }
+      next.online_title = null;
+      next.youtube_url = null;
+      next.youtube_video_id = null;
     }
     if (has("playlistId")) {
       if (currentMemorialMemory) throw new ApiError(400, "Playlists cannot be attached to a memorial fan memory.", "VALIDATION_FAILED");
@@ -5431,6 +5558,7 @@ export const routes = {
       tag: has("tags") ? cleanPostTags(body.tags) : undefined,
       "tagged song title": editedSong?.title,
       "tagged song artist": editedSong?.artist,
+      "online concert title": has("onlineTitle") ? next.online_title : undefined,
     });
 
     let storedPhotos = [];
@@ -5507,7 +5635,8 @@ export const routes = {
         ? { artist_key: current.artist_key, artist_mbid: current.artist_mbid }
         : { artist_key: null, artist_mbid: null }
       : resolveArtistBinding(next.artist, has("artistKey") ? body.artistKey : current.artist_key);
-    if (current.kind !== "status" && ["artist", "artistKey", "overall", "band", "room", "dims"].some(has)) {
+    if (current.kind !== "status"
+      && ["artist", "artistKey", "overall", "band", "room", "dims", "experienceType"].some(has)) {
       assertArtistAcceptsLiveRating({ artistKey: editBinding.artist_key, artist: next.artist });
     }
     const nextTaggedUserIds = storedPostTaggedUserIds(next.tagged_user_ids);
@@ -5528,10 +5657,13 @@ export const routes = {
       });
       const transactionNewlyTaggedUserIds = transactionTaggedUserIds.filter((id) => !transactionCommittedIdSet.has(id));
       assertPostTagRecipientBudget(u.id, transactionNewlyTaggedUserIds, { postId: current.id });
-      const updated = db.prepare(`UPDATE posts SET artist=?,venue=?,city=?,date=?,overall=?,band=?,room=?,dims=?,review=?,photos=?,photos_public=?,landing_showcase=?,campaign=?,setlist=?,tour=?,tags=?,tagged_user_ids=?,song=?,playlist=?,artist_key=?,artist_mbid=?,venue_key=?,updated_at=?
+      const updated = db.prepare(`UPDATE posts SET artist=?,venue=?,city=?,date=?,overall=?,band=?,room=?,dims=?,review=?,photos=?,photos_public=?,landing_showcase=?,campaign=?,setlist=?,tour=?,tags=?,tagged_user_ids=?,song=?,playlist=?,artist_key=?,artist_mbid=?,venue_key=?,experience_type=?,online_title=?,youtube_url=?,youtube_video_id=?,updated_at=?
         WHERE id=? AND user_id=? AND removed=0 AND COALESCE(updated_at,created_at)=?`)
         .run(next.artist, next.venue, next.city, next.date, next.overall, next.band, next.room, next.dims, next.review, next.photos, next.photos_public, next.landing_showcase, next.campaign, next.setlist, next.tour, next.tags, JSON.stringify(transactionTaggedUserIds), next.song, next.playlist,
-          editBinding.artist_key, editBinding.artist_mbid, current.kind === "status" ? null : venueBinding(next.venue), editedAt, current.id, u.id, currentVersion);
+          editBinding.artist_key, editBinding.artist_mbid, current.kind === "status" || next.experience_type === "online" ? null : venueBinding(next.venue),
+          current.kind === "status" ? "in_person" : next.experience_type, current.kind === "status" ? null : next.online_title,
+          current.kind === "status" ? null : next.youtube_url, current.kind === "status" ? null : next.youtube_video_id,
+          editedAt, current.id, u.id, currentVersion);
       if (Number(updated.changes || 0) !== 1) {
         throw new ApiError(409, "This review changed on another screen. Refresh before saving again.", "CONFLICT");
       }
@@ -5620,7 +5752,8 @@ export const routes = {
         db.prepare(`UPDATE posts SET removed=1,artist='',venue='',city='',date='',overall=0,
           band=NULL,room=NULL,dims='{}',review='',photos='[]',photos_public=0,landing_showcase=0,campaign=NULL,
           setlist='[]',tour=NULL,tags='[]',tagged_user_ids='[]',song=NULL,playlist=NULL,artist_key=NULL,artist_mbid=NULL,
-          venue_key=NULL,client_mutation_hash=NULL${postAttendanceTicketScrubSql},updated_at=?
+          venue_key=NULL,experience_type='in_person',online_title=NULL,youtube_url=NULL,youtube_video_id=NULL,
+          client_mutation_hash=NULL${postAttendanceTicketScrubSql},updated_at=?
           WHERE id=? AND user_id=?`).run(now(), post.id, u.id);
         retireLegacyVideoPosters(db, { postId: post.id, ownerId: u.id, at: now() });
         const deletable = unreferencedOwnedMediaUrls(db, { ownerId: u.id, urls: attached });
@@ -6292,7 +6425,9 @@ export const routes = {
       topArtists: all(`SELECT artist label,COUNT(*) count FROM posts
         WHERE removed=0 AND length(artist)>0 GROUP BY lower(artist) ORDER BY count DESC,label LIMIT 12`),
       topVenues: all(`SELECT venue label,COUNT(*) count FROM posts
-        WHERE removed=0 AND length(venue)>0 GROUP BY lower(venue) ORDER BY count DESC,label LIMIT 12`),
+        WHERE removed=0 AND length(venue)>0 AND COALESCE(kind,'review')='review'
+          AND COALESCE(experience_type,'in_person')='in_person'
+        GROUP BY lower(venue) ORDER BY count DESC,label LIMIT 12`),
       topGenres,
       topSearches: [],
       postKeywords,

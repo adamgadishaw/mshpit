@@ -18,6 +18,7 @@ const post = ({
   review = "A real review",
   createdAt = 1,
   tour = null,
+  experienceType = "in_person",
 }) => ({
   id,
   user_id: userId,
@@ -32,6 +33,7 @@ const post = ({
   tour,
   created_at: createdAt,
   updated_at: null,
+  experience_type: experienceType,
 });
 
 const provider = ({
@@ -116,7 +118,8 @@ function fixture() {
     CREATE TABLE posts (
       id TEXT PRIMARY KEY,user_id TEXT NOT NULL,artist TEXT NOT NULL,artist_key TEXT,
       venue TEXT NOT NULL,venue_key TEXT,city TEXT,date TEXT,overall REAL,review TEXT,
-      tour TEXT,kind TEXT,removed INTEGER NOT NULL DEFAULT 0,created_at INTEGER,updated_at INTEGER
+      tour TEXT,kind TEXT,experience_type TEXT NOT NULL DEFAULT 'in_person',
+      removed INTEGER NOT NULL DEFAULT 0,created_at INTEGER,updated_at INTEGER
     );
     CREATE TABLE tour_dates (
       id TEXT PRIMARY KEY,artist TEXT,artist_key TEXT,venue TEXT,place TEXT,date TEXT,
@@ -126,11 +129,12 @@ function fixture() {
     INSERT INTO users VALUES
       ('active',0,NULL),('banned',1,NULL),('suspended',0,4102444800000);
     INSERT INTO posts VALUES
-      ('active-post','active','Visible Artist','visible artist','The Hall','the hall','Toronto','2026-08-01',4.5,'Visible review','World Tour','review',0,10,NULL),
-      ('banned-post','banned','Banned Artist','banned artist','The Hall','the hall','Toronto','2026-08-01',5,'Hidden','World Tour','review',0,11,NULL),
-      ('suspended-post','suspended','Suspended Artist','suspended artist','The Hall','the hall','Toronto','2026-08-01',5,'Hidden','World Tour','review',0,12,NULL),
-      ('removed-post','active','Removed Artist','removed artist','The Hall','the hall','Toronto','2026-08-01',5,'Hidden','World Tour','review',1,13,NULL),
-      ('status-post','active','Status Artist','status artist','The Hall','the hall','Toronto','2026-08-01',5,'Hidden','World Tour','status',0,14,NULL);
+      ('active-post','active','Visible Artist','visible artist','The Hall','the hall','Toronto','2026-08-01',4.5,'Visible review','World Tour','review','in_person',0,10,NULL),
+      ('online-post','active','Visible Artist','visible artist','The Hall','the hall','Toronto','2026-08-01',5,'Online review',NULL,'review','online',0,15,NULL),
+      ('banned-post','banned','Banned Artist','banned artist','The Hall','the hall','Toronto','2026-08-01',5,'Hidden','World Tour','review','in_person',0,11,NULL),
+      ('suspended-post','suspended','Suspended Artist','suspended artist','The Hall','the hall','Toronto','2026-08-01',5,'Hidden','World Tour','review','in_person',0,12,NULL),
+      ('removed-post','active','Removed Artist','removed artist','The Hall','the hall','Toronto','2026-08-01',5,'Hidden','World Tour','review','in_person',1,13,NULL),
+      ('status-post','active','Status Artist','status artist','The Hall','the hall','Toronto','2026-08-01',5,'Hidden','World Tour','status','in_person',0,14,NULL);
     INSERT INTO tour_dates VALUES
       ('venue','Visible Artist','visible artist','The Hall','Toronto, Ontario, Canada','2026-08-01',
         'ticketmaster','tm-ca-hall','Toronto','Ontario','CA','Canada',NULL,20);
@@ -152,6 +156,7 @@ test("server-backed read excludes moderated accounts and caches bounded public r
     const first = service.read({ country: "Canada", limit: 60 });
     const second = service.read({ country: "Canada", limit: 60 });
     assert.deepEqual(first.map((row) => row.artist), ["Visible Artist"]);
+    assert.equal(first[0].ratingCount, 1, "online reviews never enter physical-show rankings");
     assert.equal(first.length <= 30, true);
     assert.equal(second, first, "same-region reads reuse the short-lived immutable snapshot");
     assert.equal(reads, 1);

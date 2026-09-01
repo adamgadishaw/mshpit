@@ -96,6 +96,7 @@ export default function PostScreen({ log, onClose, onOpenProfile, onOpenArtist, 
     postLocalOverrides,
     session?.id || null,
   );
+  const isOnlineReview = activeLog.experienceType === "online" || activeLog.experience_type === "online";
   const reconcileSelfTagRemoval = (result) => {
     if (!result?.userId || !result?.id) return;
     setPostLocalOverrides((current) => withRemovedSelfPostTag(current, {
@@ -227,11 +228,11 @@ export default function PostScreen({ log, onClose, onOpenProfile, onOpenArtist, 
   return (
     <View style={styles.wrap}>
       <ScreenHeader
-        kicker={activeLog.review ? "FAN REVIEW" : "POST"}
+        kicker={isOnlineReview ? "ONLINE CONCERT REVIEW" : activeLog.review ? "FAN REVIEW" : "POST"}
         title="Original post"
         onBack={onClose}
         backLabel="Leave the original post"
-        backHint="Returns to the show, artist, or feed you came from"
+        backHint={isOnlineReview ? "Returns to the page or feed you came from" : "Returns to the show, artist, or feed you came from"}
       />
       <VinylRefreshBoundary
         refreshing={postRefreshing}
@@ -239,7 +240,7 @@ export default function PostScreen({ log, onClose, onOpenProfile, onOpenArtist, 
         accessibilityLabel="Refresh post and comments"
       >
       <ScrollView ref={scrollRef} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-        <TicketStub log={activeLog} showComments={false} onOpen={() => onOpenShow?.(activeLog)} onOpenShow={onOpenShow} onOpenProfile={onOpenProfile} onOpenArtist={onOpenArtist} onOpenArtistArchive={onOpenArtistArchive} onOpenVenue={onOpenVenue} onReport={onReport} onEdit={onEdit} onDelete={removePost} onOpenPhotos={onOpenPhotos} onPlay={onPlay} onRemoveMyPostTag={onRemoveMyPostTag} onSelfTagRemoved={reconcileSelfTagRemoval} />
+        <TicketStub log={activeLog} showComments={false} onOpen={isOnlineReview ? undefined : () => onOpenShow?.(activeLog)} onOpenShow={isOnlineReview ? undefined : onOpenShow} onOpenProfile={onOpenProfile} onOpenArtist={onOpenArtist} onOpenArtistArchive={isOnlineReview ? undefined : onOpenArtistArchive} onOpenVenue={isOnlineReview ? undefined : onOpenVenue} onReport={onReport} onEdit={onEdit} onDelete={removePost} onOpenPhotos={onOpenPhotos} onPlay={onPlay} onRemoveMyPostTag={onRemoveMyPostTag} onSelfTagRemoved={reconcileSelfTagRemoval} />
 
         <Text style={styles.sectionLabel}>
           {commentsUsable ? `${flat.length} COMMENT${flat.length === 1 ? "" : "S"}` : "COMMENTS"}

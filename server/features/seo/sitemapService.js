@@ -293,7 +293,8 @@ function visiblePostCandidates(database, limit = -1, { maximumRows = SITEMAP_MAX
   const readLimit = Number.isSafeInteger(limit) && limit > 0 ? limit : null;
   const rows = [];
   const statement = database.prepare(`SELECT p.id,p.user_id,p.artist,p.artist_key,p.venue,p.venue_key,p.city,p.date,
-      p.kind,p.overall,p.review,p.photos_public,p.created_at,p.updated_at,u.name AS author_name,u.handle AS author_handle
+      p.kind,p.experience_type,p.online_title,p.youtube_url,p.youtube_video_id,p.overall,p.review,p.photos_public,
+      p.created_at,p.updated_at,u.name AS author_name,u.handle AS author_handle
     FROM posts p JOIN users u ON u.id=p.user_id
     WHERE p.removed=0 AND ${activeAccountSql("u")}
       AND (LENGTH(TRIM(COALESCE(p.review,'')))>=40
@@ -603,6 +604,7 @@ function eligibleFanEvidenceByEvent(posts) {
   const evidence = new Map();
   for (const row of posts || []) {
     if (row.kind != null && row.kind !== "review") continue;
+    if ((row.experience_type || "in_person") !== "in_person") continue;
     if (!row.meaningfulText && !(row.photos_public && row.readyMedia?.length)) continue;
     const key = eventEvidenceKey(row);
     if (key) evidence.set(key, newest(evidence.get(key), row.updated_at, row.created_at));
@@ -659,7 +661,8 @@ function publicConcertCandidates(database, { now = Date.now(), candidates = null
     locationRowsByShow.get(showKey).push(tourRow);
   }
   for (const row of posts) {
-    if (row.kind === "status" || !isStrictCalendarDate(row.date) || row.date > today) continue;
+    if (row.kind === "status" || (row.experience_type || "in_person") !== "in_person"
+      || !isStrictCalendarDate(row.date) || row.date > today) continue;
     if (!row.artist || !row.venue || (!row.meaningfulText && !(row.photos_public && row.readyMedia.length))) continue;
     if (hasStructuredShowLocationCollision(locationRowsByShow.get(showLocationKey(row)))) continue;
     const key = archiveShowKey({
@@ -693,7 +696,8 @@ export function venueSitemapEntries(database, options = {}) {
   const upcomingById = new Map(visibleUpcomingEvents(database, options).map((row) => [row.id, row]));
   const publicPostRows = options.candidates?.posts || visiblePostCandidates(database);
   const publicPostsById = new Map(publicPostRows
-    .filter((row) => row.kind !== "status" && (row.meaningfulText || (row.photos_public && row.readyMedia.length)))
+    .filter((row) => row.kind !== "status" && (row.experience_type || "in_person") === "in_person"
+      && (row.meaningfulText || (row.photos_public && row.readyMedia.length)))
     .map((row) => [row.id, row]));
   const routeCandidates = {
     events: options.candidates?.tourDates || visibleTourDateCandidates(database, options),

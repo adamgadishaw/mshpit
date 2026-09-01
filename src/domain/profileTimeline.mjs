@@ -12,7 +12,8 @@ function timestampDay(value) {
 
 export function isConcertReview(post) {
   if (!post || typeof post !== "object") return false;
-  return (post.kind || "review") === "review";
+  return (post.kind || "review") === "review"
+    && (post.experienceType || post.experience_type || "in_person") !== "online";
 }
 
 export function selectConcertReviews(posts) {

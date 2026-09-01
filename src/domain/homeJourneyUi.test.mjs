@@ -52,7 +52,7 @@ test("concert posts link to the exact post and the canonical artist concert arch
 
 test("artist archive navigation reaches feed, direct post, and member profile cards", () => {
   assert.ok(feed.includes("onOpenArtistArchive={onOpenArtistArchive}"));
-  assert.ok(post.includes("onOpenArtistArchive={onOpenArtistArchive}"));
+  assert.ok(post.includes("onOpenArtistArchive={isOnlineReview ? undefined : onOpenArtistArchive}"));
   assert.ok(profile.includes("onOpenArtistArchive={onOpenArtistArchive}"));
   assert.ok(app.split("onOpenArtistArchive={openArtistArchive}").length - 1 >= 3);
 });

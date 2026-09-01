@@ -59,6 +59,12 @@ test("production route registration uses canonical post projection and targeted 
     "review",
     100,
   );
+  db.prepare(`INSERT INTO posts
+    (id,user_id,artist,artist_key,venue,overall,review,kind,experience_type,online_title,youtube_url,youtube_video_id,created_at)
+    VALUES (?,?,?,?,?,?,?,'review','online',?,?,?,?)`).run(
+    "review-online-route", author.id, "Alpha", "alpha", "", 5, "Online concert review",
+    "Studio concert", "https://www.youtube.com/watch?v=dQw4w9WgXcQ", "dQw4w9WgXcQ", 101,
+  );
 
   const read = routes["GET /api/artists/reviews"];
   assert.equal(typeof read, "function");
@@ -83,4 +89,10 @@ test("production route registration uses canonical post projection and targeted 
   const indexes = new Set(db.prepare("PRAGMA index_list(posts)").all().map((entry) => entry.name));
   assert.equal(indexes.has("idx_posts_artist_reviews"), true);
   assert.equal(indexes.has("idx_posts_artist_name_reviews"), true);
+  const plan = db.prepare(`EXPLAIN QUERY PLAN SELECT p.id FROM posts p
+    WHERE p.removed=0 AND COALESCE(p.kind,'review')='review'
+      AND COALESCE(p.experience_type,'in_person')='in_person'
+      AND length(trim(p.review))>0 AND p.artist_key=?
+    ORDER BY p.created_at DESC,p.id LIMIT 3`).all("alpha");
+  assert.match(plan.map((row) => row.detail).join(" "), /idx_posts_artist_reviews/);
 });

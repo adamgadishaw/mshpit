@@ -63,3 +63,66 @@ test("review edits sanitize and explicitly send the selected artist key", () => 
   assert.equal(Object.prototype.hasOwnProperty.call(body, "artistKey"), true);
   assert.equal(buildReviewEditBody({ artist: "Local act", artistKey: null }).artistKey, null);
 });
+
+test("online review payloads keep the YouTube source and clear physical-show identity", () => {
+  const body = buildReviewCreateBody({
+    id: "post_online_001",
+    experienceType: "online",
+    artist: "Beyonce",
+    artistKey: "beyonce",
+    venue: "Should be removed",
+    city: "Toronto",
+    date: "2026-09-01",
+    tour: "A physical tour",
+    overall: 4.5,
+    band: 5,
+    room: 4,
+    dims: { performance: 5 },
+    onlineTitle: "  Homecoming  ",
+    youtubeUrl: "https://youtu.be/dQw4w9WgXcQ?t=30",
+    photos: [],
+    taggedPeople: [],
+    photosPublic: true,
+    landingShowcase: true,
+    setlist: ["Song"],
+    tags: ["High energy"],
+    song: { videoId: "dQw4w9WgXcQ" },
+  });
+  assert.equal(body.experienceType, "online");
+  assert.equal(body.onlineTitle, "Homecoming");
+  assert.equal(body.youtubeUrl, "https://www.youtube.com/watch?v=dQw4w9WgXcQ");
+  assert.deepEqual({ venue: body.venue, city: body.city, date: body.date, tour: body.tour }, {
+    venue: "", city: "", date: "", tour: null,
+  });
+  assert.deepEqual(body.dims, {});
+  assert.deepEqual(body.setlist, []);
+  assert.deepEqual(body.tags, []);
+  assert.equal(body.landingShowcase, 0);
+  assert.equal(body.song, null);
+});
+
+test("online review edits also clear physical quick tags", () => {
+  const body = buildReviewEditBody({
+    experienceType: "online",
+    artist: "Beyonce",
+    overall: 4.5,
+    youtubeUrl: "https://youtu.be/dQw4w9WgXcQ",
+    tags: ["Crowd interaction"],
+  });
+  assert.deepEqual(body.tags, []);
+});
+
+test("editing back to an in-person review explicitly clears online-only fields", () => {
+  const body = buildReviewEditBody({
+    experienceType: "in_person",
+    artist: "Beyonce",
+    venue: "Rogers Centre",
+    overall: 5,
+    onlineTitle: "Hidden",
+    youtubeUrl: "https://youtu.be/dQw4w9WgXcQ",
+  });
+  assert.equal(body.experienceType, "in_person");
+  assert.equal(body.onlineTitle, null);
+  assert.equal(body.youtubeUrl, null);
+  assert.equal(body.venue, "Rogers Centre");
+});

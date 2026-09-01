@@ -24,3 +24,14 @@ test("tour labels never manufacture tour or artist archive URLs", () => {
   assert.equal(context.artistConcertsHref, null);
   assert.equal(context.showHref, "/post/1");
 });
+
+test("online reviews keep their standalone post but never claim a physical concert archive", () => {
+  const context = concertPostContext({
+    id: "online-1",
+    experienceType: "online",
+    artist: "Little Simz",
+    artistPublicSlug: "little-simz",
+  });
+  assert.equal(context.showHref, "/post/online-1");
+  assert.equal(context.artistConcertsHref, null);
+});

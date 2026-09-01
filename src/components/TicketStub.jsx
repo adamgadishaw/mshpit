@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { View, Text, StyleSheet, Pressable, Alert, Platform } from "react-native";
+import { View, Text, StyleSheet, Pressable, Alert, Linking, Platform } from "react-native";
 import { Image as ExpoImage } from "expo-image";
 import { colors, displayFont, font, mono, radius, shadow, roleColor } from "../theme";
 import Stars from "./Stars";
@@ -26,6 +26,7 @@ import { calendarShowFromPost } from "../domain/calendarShows.mjs";
 import ConcertTicketCard from "./ConcertTicketCard";
 import { concertPostContext } from "../domain/concertPostContext.mjs";
 import { resolvePostAuthor } from "../domain/postAuthor.mjs";
+import { canonicalYouTubeReviewUrl, ONLINE_REVIEW_EXPERIENCE } from "../domain/onlineReview.mjs";
 
 // "3rd time in the pit" needs a real ordinal, not "3th".
 const ordinal = (n) => {
@@ -127,13 +128,22 @@ function NotForMeButton({ onPress, palette = null }) {
 // sit on a ticket-stub line below, the score reads at a glance, and the footer
 // opens the post's comments. Lounge is reserved for the exact show's shared
 // conversation so the two spaces never look like duplicate features.
-export default function TicketStub({ log, mediaViewable = null, onOpen, onOpenShow, onNotInterested, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onReport, onEdit, onDelete, onOpenPhotos, onPlay, onRemoveMyPostTag, onSelfTagRemoved, showComments = true }) {
-  const openComments = () => (onComment || onOpen)?.(log);
+export default function TicketStub({ log, mediaViewable = null, onOpen, onOpenShow, onOpenPost, onNotInterested, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onReport, onEdit, onDelete, onOpenPhotos, onPlay, onRemoveMyPostTag, onSelfTagRemoved, showComments = true }) {
+  const openPostDetail = () => (onOpenPost || onComment || onOpen)?.(log);
+  const openComments = () => (onComment || onOpenPost || onOpen)?.(log);
   const { userById, likeInfo, toggleLike, commentsFor, session, userBadges, deleteOwnPost } = useStore();
   const author = resolvePostAuthor({ userId: log.userId, cached: userById?.(log.userId), embedded: log.user });
   const authorHref = author?.handle ? profilePath(author.handle) : null;
   const postContext = concertPostContext(log);
   const canonicalPostHref = postContext.showHref;
+  const isOnlineReview = (log.experienceType || log.experience_type) === ONLINE_REVIEW_EXPERIENCE;
+  const onlineTitle = String(log.onlineTitle || log.online_title || "").trim();
+  const youtubeUrl = isOnlineReview
+    ? canonicalYouTubeReviewUrl(
+      log.youtubeUrl || log.youtube_url,
+      log.youtubeVideoId || log.youtube_video_id,
+    )
+    : "";
   const artistHref = log.artist ? artistPath(log.artist, log.artistPublicSlug || log.artist_public_slug || null) : null;
   const venueHref = log.venue ? venuePath({
     name: log.venue,
@@ -215,8 +225,10 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onOpenSh
   const commentCount = commentsFor(log.id).length || log.comments || 0;
   // Server posts can arrive with null scores (photo-only posts); never crash the feed.
   const band = log.band ?? 0, room = log.room ?? 0, overall = log.overall ?? 0;
-  const performanceTitle = String(log.tour || "").trim() || log.artist || "Live show";
-  const titledPerformance = !!String(log.tour || "").trim()
+  const performanceTitle = isOnlineReview
+    ? onlineTitle || log.artist || "Online concert"
+    : String(log.tour || "").trim() || log.artist || "Live show";
+  const titledPerformance = !isOnlineReview && !!String(log.tour || "").trim()
     && String(log.tour).trim().toLowerCase() !== String(log.artist || "").trim().toLowerCase();
   const factors = log.dims
     ? `Band ${band.toFixed(1)} · Room ${room.toFixed(1)} · Night ${(((log.dims.crowd || 0) + (log.dims.experience || 0)) / 2 || overall).toFixed(1)}`
@@ -397,11 +409,13 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onOpenSh
           </View>
           <View style={styles.performanceCardBody}>
             <View style={styles.performanceTopline}>
-              <Text style={styles.performanceEyebrow}>{titledPerformance ? "CONCERT / TOUR" : "LIVE SHOW"}</Text>
-              <Text style={styles.performanceArchiveMark}>MSHPIT / LIVE MEMORY</Text>
+              <Text style={styles.performanceEyebrow}>{isOnlineReview ? "ONLINE CONCERT" : titledPerformance ? "CONCERT / TOUR" : "LIVE SHOW"}</Text>
+              <Text style={styles.performanceArchiveMark}>{isOnlineReview ? "MSHPIT / ONLINE REVIEW" : "MSHPIT / LIVE MEMORY"}</Text>
             </View>
             <Text style={styles.performanceTitle} numberOfLines={3}>
-              {titledPerformance
+              {isOnlineReview && onlineTitle
+                ? performanceTitle
+                : titledPerformance
                 ? performanceTitle
                 : <PublicTextLink href={artistHref} onNavigate={() => onOpenArtist?.(log.artist)} style={styles.performanceTitle}>{performanceTitle}</PublicTextLink>}
             </Text>
@@ -410,29 +424,60 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onOpenSh
               <View style={styles.performancePerforationDot} />
               <View style={styles.performancePerforationLine} />
             </View>
-            <Text style={styles.performanceMeta}>
-              {titledPerformance ? (
-                <><PublicTextLink href={artistHref} onNavigate={() => onOpenArtist?.(log.artist)} style={styles.performanceArtist}>{log.artist}</PublicTextLink><Text style={styles.dim}> · </Text></>
-              ) : null}
-              <PublicTextLink href={venueHref} onNavigate={() => onOpenVenue?.(log.venue)} style={styles.performanceVenue}>{log.venue}</PublicTextLink>
-              {!!log.city && <Text style={styles.dim}> · {log.city}</Text>}
-              {!!log.date && <Text style={styles.performanceDate}> · {formatDate(log.date, log.date)}</Text>}
-            </Text>
-            {log.seen > 1 ? <Text style={styles.seenTxt}>{ordinal(log.seen)} time in the pit</Text> : null}
+            {isOnlineReview ? (
+              <Text style={styles.performanceMeta}>
+                {!!log.artist && <PublicTextLink href={artistHref} onNavigate={() => onOpenArtist?.(log.artist)} style={styles.performanceArtist}>{log.artist}</PublicTextLink>}
+                {!!log.artist && <Text style={styles.dim}> · </Text>}
+                <Text style={styles.performanceDate}>WATCHED ONLINE</Text>
+              </Text>
+            ) : (
+              <>
+                <Text style={styles.performanceMeta}>
+                  {titledPerformance ? (
+                    <><PublicTextLink href={artistHref} onNavigate={() => onOpenArtist?.(log.artist)} style={styles.performanceArtist}>{log.artist}</PublicTextLink><Text style={styles.dim}> · </Text></>
+                  ) : null}
+                  <PublicTextLink href={venueHref} onNavigate={() => onOpenVenue?.(log.venue)} style={styles.performanceVenue}>{log.venue}</PublicTextLink>
+                  {!!log.city && <Text style={styles.dim}> · {log.city}</Text>}
+                  {!!log.date && <Text style={styles.performanceDate}> · {formatDate(log.date, log.date)}</Text>}
+                </Text>
+                {log.seen > 1 ? <Text style={styles.seenTxt}>{ordinal(log.seen)} time in the pit</Text> : null}
+              </>
+            )}
           </View>
         </View>
       </View>
 
       <View style={styles.contextActions}>
-        <PublicPressableLink
-          href={canonicalPostHref}
-          onNavigate={() => (onOpenShow || onOpen)?.(log)}
-          style={({ pressed }) => [styles.contextAction, pressed && styles.contextActionPressed]}
-          accessibilityLabel={`View ${log.artist || "this"} show`}
-        >
-          <Icon name="ticket" size={15} color={colors.amber} />
-          <Text style={styles.contextActionText}>View this show</Text>
-        </PublicPressableLink>
+        {isOnlineReview ? (
+          youtubeUrl ? (
+            <PublicPressableLink
+              href={youtubeUrl}
+              onNavigate={Platform.OS === "web" ? undefined : () => {
+                void Linking.openURL(youtubeUrl).catch(() => {
+                  Alert.alert("Link not opened", "YouTube could not be opened on this device.");
+                });
+              }}
+              target={Platform.OS === "web" ? "_blank" : undefined}
+              rel={Platform.OS === "web" ? "ugc nofollow noopener noreferrer" : undefined}
+              style={({ pressed }) => [styles.contextAction, styles.youtubeAction, pressed && styles.contextActionPressed]}
+              accessibilityLabel="Watch this online concert on YouTube"
+              accessibilityHint="Opens YouTube outside Mshpit"
+            >
+              <Icon name="external" size={15} color={colors.text} />
+              <Text style={styles.contextActionText}>Watch on YouTube</Text>
+            </PublicPressableLink>
+          ) : null
+        ) : (
+          <PublicPressableLink
+            href={canonicalPostHref}
+            onNavigate={() => (onOpenShow || onOpen)?.(log)}
+            style={({ pressed }) => [styles.contextAction, pressed && styles.contextActionPressed]}
+            accessibilityLabel={`View ${log.artist || "this"} show`}
+          >
+            <Icon name="ticket" size={15} color={colors.amber} />
+            <Text style={styles.contextActionText}>View this show</Text>
+          </PublicPressableLink>
+        )}
         {canCompareArtistShows && (
           <PublicPressableLink
             href={postContext.artistConcertsHref}
@@ -454,16 +499,18 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onOpenSh
             <SpinStar size={40} />
             <View style={{ flex: 1 }}>
               <Text style={styles.statsScore}>{overall.toFixed(1)} <Text style={styles.statsOutOf}>/ 5</Text></Text>
-              <Text style={styles.statsSub}>{log.dims && Object.values(log.dims).some((v) => v > 0) ? "How the night broke down" : "Band vs room"}</Text>
+              <Text style={styles.statsSub}>{isOnlineReview ? "Your online concert score" : log.dims && Object.values(log.dims).some((v) => v > 0) ? "How the night broke down" : "Band vs room"}</Text>
             </View>
           </View>
-          <RatingBars dims={log.dims} band={band} room={room} />
+          {isOnlineReview
+            ? <Text style={styles.onlineRatingNote}>Rating for the online concert</Text>
+            : <RatingBars dims={log.dims} band={band} room={room} />}
           <TagRow tags={tags} />
         </View>
       )}
 
       {/* THE REVIEW - the main event */}
-      <PublicPressableLink href={canonicalPostHref} onNavigate={() => onOpen?.(log)} accessibilityLabel={`Open ${log.artist || "concert"} post`}>
+      <PublicPressableLink href={canonicalPostHref} onNavigate={isOnlineReview ? openPostDetail : () => onOpen?.(log)} accessibilityLabel={`Open ${isOnlineReview ? "online concert review" : log.artist || "concert post"}`}>
         {log.review ? (
           <View style={styles.reviewWrap}>
             <Text style={styles.review}>{log.review}</Text>
@@ -472,44 +519,48 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onOpenSh
           // The no-writing template: the reviewer said it in tag words instead.
           <TagRow tags={tags} />
         ) : (
-          <Text style={styles.noReview}>Logged this show - no review yet. Tap to open.</Text>
+          <Text style={styles.noReview}>{isOnlineReview ? "Rated this online concert - no review yet. Tap to open." : "Logged this show - no review yet. Tap to open."}</Text>
         )}
       </PublicPressableLink>
-      <TaggedPeopleRow people={taggedPeople} onOpenProfile={onOpenProfile} selfId={session?.id} onRemoveSelf={onRemoveMyPostTag ? removeSelfTag : undefined} concertContext />
+      <TaggedPeopleRow people={taggedPeople} onOpenProfile={onOpenProfile} selfId={session?.id} onRemoveSelf={onRemoveMyPostTag ? removeSelfTag : undefined} concertContext={!isOnlineReview} />
       {!!log.song && <SongAttachment song={log.song} onPlay={ENABLE_MUSIC_PLAYER ? onPlay : undefined} />}
       {postMedia.length > 0 && (
         <PostMediaGrid media={postMedia} viewable={mediaViewable} openerScope={log.id} onOpen={onOpenPhotos ? (i, opener) => onOpenPhotos(postMedia, i, log.id, opener) : undefined} />
       )}
 
-      {/* perforated ticket-stub line */}
-      <View style={styles.perfWrap}>
-        <View style={[styles.notch, { left: -8 }]} />
-        <View style={styles.dashed} />
-        <View style={[styles.notch, { right: -8 }]} />
-      </View>
-
-      <Pressable onPress={() => onOpen?.(log)}>
-        <View style={styles.stubRow}>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.venueLine}>
-              <PublicTextLink href={venueHref} onNavigate={() => onOpenVenue?.(log.venue)} style={styles.venueLink}>{log.venue}</PublicTextLink>
-              <Text style={styles.dim}> · {log.city}</Text>
-            </Text>
-            <Text style={styles.factors}>{factors}</Text>
+      {!isOnlineReview && (
+        <>
+          {/* perforated ticket-stub line */}
+          <View style={styles.perfWrap}>
+            <View style={[styles.notch, { left: -8 }]} />
+            <View style={styles.dashed} />
+            <View style={[styles.notch, { right: -8 }]} />
           </View>
-          <Text style={styles.date}>{formatDate(log.date, log.date)}</Text>
-        </View>
-      </Pressable>
+
+          <Pressable onPress={() => onOpen?.(log)}>
+            <View style={styles.stubRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.venueLine}>
+                  <PublicTextLink href={venueHref} onNavigate={() => onOpenVenue?.(log.venue)} style={styles.venueLink}>{log.venue}</PublicTextLink>
+                  <Text style={styles.dim}> · {log.city}</Text>
+                </Text>
+                <Text style={styles.factors}>{factors}</Text>
+              </View>
+              <Text style={styles.date}>{formatDate(log.date, log.date)}</Text>
+            </View>
+          </Pressable>
+        </>
+      )}
 
       {/* setlist - de-emphasized, collapsible */}
-      {setlist.length > 0 && (
+      {!isOnlineReview && setlist.length > 0 && (
         <Pressable style={styles.setRow} onPress={() => setRevealed((v) => !v)}>
           <Icon name={revealed ? "chevron-down" : "chevron-right"} size={15} color={colors.textFaint} />
           <Text style={styles.setTitle}>SETLIST · {setlist.length}</Text>
           {!revealed && <Text style={styles.lock}>tap to reveal</Text>}
         </Pressable>
       )}
-      {revealed && setlist.length > 0 && (
+      {!isOnlineReview && revealed && setlist.length > 0 && (
         <Text style={styles.setBody}>{setlist.join("  ·  ")}</Text>
       )}
 
@@ -518,7 +569,7 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onOpenSh
       {/* Post reactions and comments. Show-wide conversation lives in Lounge. */}
       <View style={styles.footer}>
         <NotForMeButton onPress={onNotInterested ? () => onNotInterested(log) : undefined} />
-        <Pressable style={({ pressed }) => [styles.fBtn, pressed && styles.controlPressed]} onPress={() => (session ? toggleLike(log.id, log.likes || 0) : onOpen?.(log))} hitSlop={8} accessibilityRole="button" accessibilityLabel={`${liked ? "Unlike" : "Like"}, ${likeCount} likes`}>
+        <Pressable style={({ pressed }) => [styles.fBtn, pressed && styles.controlPressed]} onPress={() => (session ? toggleLike(log.id, log.likes || 0) : isOnlineReview ? openPostDetail() : onOpen?.(log))} hitSlop={8} accessibilityRole="button" accessibilityLabel={`${liked ? "Unlike" : "Like"}, ${likeCount} likes`}>
           <Icon name="heart" size={18} color={liked ? colors.magenta : colors.textDim} filled={liked} />
           <Text style={[styles.fCount, liked && { color: colors.magenta }]}>{likeCount}</Text>
         </Pressable>
@@ -580,6 +631,7 @@ const styles = StyleSheet.create({
   statsScore: { color: colors.gold, fontFamily: mono, fontSize: 22, fontWeight: "900", lineHeight: 24 },
   statsOutOf: { color: colors.textFaint, fontSize: 13, fontWeight: "700" },
   statsSub: { color: colors.textFaint, fontSize: 11, marginTop: 1 },
+  onlineRatingNote: { color: colors.textDim, fontSize: 12, lineHeight: 18 },
 
   tagRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 12, alignItems: "center" },
   tagChip: { borderWidth: 1.5, borderRadius: radius.sm, borderCurve: "continuous", paddingHorizontal: 10, paddingVertical: 5, backgroundColor: colors.surfaceAlt },
@@ -612,6 +664,7 @@ const styles = StyleSheet.create({
   contextActions: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 10 },
   statusContextActions: { marginTop: 8, marginBottom: 2 },
   contextAction: { minHeight: 44, maxWidth: "100%", flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7, paddingHorizontal: 12, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.amber + "80", backgroundColor: colors.surfaceAlt },
+  youtubeAction: { borderColor: "#FF0033", backgroundColor: "rgba(255,0,51,0.10)" },
   contextActionSecondary: { flexShrink: 1, borderColor: colors.cool + "70" },
   contextActionPressed: { opacity: 0.8, transform: [{ scale: 0.98 }] },
   contextActionText: { flexShrink: 1, color: colors.text, fontSize: 12, fontWeight: "800" },

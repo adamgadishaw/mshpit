@@ -57,15 +57,16 @@ function insertPost(id, authorId, overrides = {}) {
     photosPublic: 1,
     landingShowcase: 1,
     kind: "review",
+    experienceType: "in_person",
     removed: 0,
     createdAt: Date.now(),
     ...overrides,
   };
   db.prepare(`INSERT INTO posts
-    (id,user_id,artist,venue,overall,photos,photos_public,landing_showcase,kind,removed,created_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(
+    (id,user_id,artist,venue,overall,photos,photos_public,landing_showcase,kind,experience_type,removed,created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(
     id, authorId, row.artist, row.venue, 4.5, row.photos,
-    row.photosPublic, row.landingShowcase, row.kind, row.removed, row.createdAt,
+    row.photosPublic, row.landingShowcase, row.kind, row.experienceType, row.removed, row.createdAt,
   );
 }
 
@@ -198,6 +199,12 @@ test("landing route requires verified stable images and excludes private, remove
   const verifiedMedia = await stablePostImage(visible);
   insertPost("landing_visible", visible.id, { photos: JSON.stringify([verifiedMedia.url]) });
   attachStablePostImage("landing_visible", visible, verifiedMedia);
+  const onlineMedia = await stablePostImage(visible);
+  insertPost("landing_online", visible.id, {
+    photos: JSON.stringify([onlineMedia.url]),
+    experienceType: "online",
+  });
+  attachStablePostImage("landing_online", visible, onlineMedia);
   const staleCompatibilityMedia = await stablePostImage(staleCompatibility);
   insertPost("landing_stale_compatibility", staleCompatibility.id, {
     photos: "[]",
@@ -259,6 +266,7 @@ test("landing route requires verified stable images and excludes private, remove
     landingCommunityMediaSource({ postId: "landing_visible", viewerId: viewer.id })?.url,
     verifiedMedia.url,
   );
+  assert.equal(landingCommunityMediaSource({ postId: "landing_online", viewerId: viewer.id }), null);
   db.prepare("UPDATE posts SET landing_showcase=0 WHERE id=?").run("landing_visible");
   assert.equal(landingCommunityMediaSource({ postId: "landing_visible", viewerId: viewer.id }), null);
   db.prepare("UPDATE posts SET landing_showcase=1 WHERE id=?").run("landing_visible");

@@ -1,5 +1,6 @@
 import { db } from "./db.js";
 import { ACHIEVEMENTS } from "../src/domain/badges.mjs";
+import { inPersonReviewSql } from "./onlineReviews.js";
 
 const emptyStats = () => ({ shows: 0, reviews: 0, likes: 0, photos: 0, cities: 0, artists: 0, follows: 0, fanClubs: 0 });
 const REWARD_DEFINITION_VERSION = 2;
@@ -13,8 +14,8 @@ export function rewardStats(userId) {
       COALESCE(SUM(json_array_length(photos)), 0) photos,
       COUNT(DISTINCT CASE WHEN trim(city) <> '' THEN lower(trim(city)) END) cities,
       COUNT(DISTINCT CASE WHEN trim(artist) <> '' THEN lower(trim(artist)) END) artists
-    FROM posts
-    WHERE user_id=? AND removed=0 AND kind='review'`).get(userId);
+    FROM posts p
+    WHERE user_id=? AND removed=0 AND ${inPersonReviewSql("p")}`).get(userId);
   // Tastemaker deliberately counts appreciation across every kind of post. The
   // remaining post-derived stats above describe logged concerts specifically;
   // `review` is also the status-text column, so `kind` is the authority.

@@ -17,6 +17,7 @@ import { postMediaStateByPost } from "../../mediaAssets.js";
 import { verifiedFinalizedLegacyMedia } from "../../mediaLegacyFinalize.js";
 import { safeOwnedReadyMediaUrl } from "../../publicMedia.js";
 import { publicTicketmasterEventImage } from "../../providerEventImage.js";
+import { projectedOnlineReviewFields } from "../../onlineReviews.js";
 import { archiveShowKey } from "../artistArchive/artistArchiveKeys.js";
 import { isStrictCalendarDate, isStrictIsoDateTime } from "./publicEntityPolicy.js";
 
@@ -332,6 +333,8 @@ function profileImageSchema(media, name) {
 function postCard(row, media, paths, { textLimit = 8_000 } = {}) {
   const authorName = cleanLine(row.u_name, 100) || "A Mshpit member";
   const handle = cleanLine(row.u_handle, 40).replace(/^@+/, "");
+  const online = projectedOnlineReviewFields(row);
+  const onlineReview = online.experienceType === "online";
   return Object.freeze({
     id: String(row.id),
     path: canonicalPostPath(paths, row),
@@ -343,14 +346,15 @@ function postCard(row, media, paths, { textLimit = 8_000 } = {}) {
     kind: row.kind === "status" ? "status" : "review",
     artist: cleanLine(row.artist, 160) || null,
     artistPath: cleanLine(row.artist, 160) ? relatedArtistPath(paths, row) : null,
-    venue: cleanLine(row.venue, 180) || null,
-    venuePath: cleanLine(row.venue, 180) ? canonicalVenuePath(paths, row) : null,
-    city: cleanLine(row.city, 120) || null,
-    showDate: validDate(row.date),
+    venue: onlineReview ? null : cleanLine(row.venue, 180) || null,
+    venuePath: onlineReview ? null : cleanLine(row.venue, 180) ? canonicalVenuePath(paths, row) : null,
+    city: onlineReview ? null : cleanLine(row.city, 120) || null,
+    showDate: onlineReview ? null : validDate(row.date),
     rating: rating(row.overall),
     text: cleanBody(row.review, textLimit),
-    setlist: Object.freeze(setlistItems(row.setlist)),
-    tour: cleanLine(row.tour, 180) || null,
+    setlist: onlineReview ? Object.freeze([]) : Object.freeze(setlistItems(row.setlist)),
+    tour: onlineReview ? null : cleanLine(row.tour, 180) || null,
+    ...online,
     media: Array.isArray(media) ? media : [],
     likes: count(row.like_count),
     comments: count(row.comment_count),
@@ -1041,8 +1045,11 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       // can prove only the filtered list it renders, so its visible/schema count
       // is derived from that same list.
       const card = Object.freeze({ ...projectedCard, comments: count(raw.commentCount) });
+      const isOnlineReview = card.kind === "review" && card.experienceType === "online";
       const isReview = card.kind === "review" && !!card.artist;
-      const headline = isReview
+      const headline = isOnlineReview
+        ? `${card.onlineTitle || card.artist || "Online concert"} — ${card.author.name}'s online concert review`
+        : isReview
         ? `${card.artist}${card.venue ? ` at ${card.venue}` : ""} — ${card.author.name}'s review`
         : `${card.author.name}: ${summary(card.text, 72) || "a music update"}`;
       const description = summary(card.text || `${headline}.`);
@@ -1086,7 +1093,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       const breadcrumbs = Object.freeze([
         Object.freeze({ name: "Mshpit", path: "/" }),
         ...(card.artist && card.artistPath ? [Object.freeze({ name: card.artist, path: card.artistPath })] : []),
-        Object.freeze({ name: isReview ? "Fan review" : "Community post", path }),
+        Object.freeze({ name: isOnlineReview ? "Online concert review" : isReview ? "Fan review" : "Community post", path }),
       ]);
       const primaryAsset = media[0] || null;
       return Object.freeze({

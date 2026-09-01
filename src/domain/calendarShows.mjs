@@ -50,6 +50,9 @@ function attendanceTicketFromPost(post) {
  */
 export function calendarShowFromPost(post) {
   if (!post || typeof post !== "object" || Array.isArray(post)) return null;
+  // An online concert review is social activity, not proof that the member
+  // attended a physical performance. It must never create a calendar night.
+  if (text(post.experienceType || post.experience_type).toLocaleLowerCase() === "online") return null;
   const kind = text(post.kind || "review").toLocaleLowerCase();
   const ticket = attendanceTicketFromPost(post);
   const source = ticket || post;

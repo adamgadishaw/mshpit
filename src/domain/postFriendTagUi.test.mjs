@@ -9,7 +9,7 @@ test("composer people search is abortable, bounded, recoverable, and submitted",
   assert.match(composer, /const controller = new AbortController\(\)/);
   assert.match(composer, /searchPeople\(query, \{[\s\S]*?postTagEligibleOnly: true,[\s\S]*?postId: editing\?\.id \|\| null/);
   assert.match(composer, /taggedPeople\.length >= MAX_POST_TAGGED_PEOPLE/);
-  assert.match(composer, /label=\{isStatus \? "Friends" : "People with you"\}/);
+  assert.match(composer, /label=\{isStatus \|\| isOnlineReview \? "Friends" : "People with you"\}/);
   assert.match(composer, /Search people you went with/);
   assert.match(composer, /No matching friends found\./);
   assert.match(composer, /accessibilityLiveRegion="polite"/);

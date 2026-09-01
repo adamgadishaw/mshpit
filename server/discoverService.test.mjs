@@ -73,7 +73,8 @@ function fixture() {
     CREATE TABLE posts (
       id TEXT PRIMARY KEY,user_id TEXT NOT NULL,artist TEXT NOT NULL,artist_key TEXT,
       venue TEXT NOT NULL,venue_key TEXT,city TEXT,date TEXT,overall REAL,review TEXT,
-      tour TEXT,kind TEXT,removed INTEGER NOT NULL DEFAULT 0,created_at INTEGER,updated_at INTEGER
+      tour TEXT,kind TEXT,experience_type TEXT NOT NULL DEFAULT 'in_person',
+      removed INTEGER NOT NULL DEFAULT 0,created_at INTEGER,updated_at INTEGER
     );
     CREATE TABLE tour_dates (
       id TEXT PRIMARY KEY,artist TEXT,artist_key TEXT,venue TEXT,place TEXT,date TEXT,

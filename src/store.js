@@ -54,6 +54,7 @@ import {
 } from "./domain/draftPolicy.mjs";
 import { MEDIA_POST_MAX_ATTACHMENTS } from "./domain/mediaUploadPolicy.mjs";
 import { buildReviewCreateBody, buildReviewEditBody, cleanArtistKey } from "./domain/post-payload.mjs";
+import { isInPersonConcertReview } from "./domain/onlineReview.mjs";
 import { mergeEditedPost, resolvePostEditTarget } from "./domain/postEditTarget.mjs";
 import { postMatchesEditIntent, shouldReconcileEditFailure } from "./domain/postReconciliation.mjs";
 import { deliverPostCreate } from "./domain/postDelivery.mjs";
@@ -1431,6 +1432,7 @@ export function StoreProvider({ children }) {
   const userById = (id) => users.find((u) => u.id === id);
   const userByHandle = (h) => users.find((u) => u.handle === h);
   const logsByUser = (id) => feed.filter((l) => l.userId === id);
+  const inPersonConcertLogsByUser = (id) => logsByUser(id).filter(isInPersonConcertReview);
 
   // Shared attendance: shows YOU and another user have BOTH logged (same exact
   // performance: artist + venue + date). The overlap tracker: "this person's been
@@ -1440,12 +1442,12 @@ export function StoreProvider({ children }) {
     const me = session?.id;
     if (!me || !otherId || me === otherId) return { shows: [], artists: [] };
     const mine = new Map();
-    logsByUser(me).forEach((l) => mine.set(concertKey(l), l));
+    inPersonConcertLogsByUser(me).forEach((l) => mine.set(concertKey(l), l));
     const shows = [];
     const seen = new Set();
     const artists = new Set();
-    const myArtists = new Set(logsByUser(me).map((l) => norm(l.artist)));
-    logsByUser(otherId).forEach((l) => {
+    const myArtists = new Set(inPersonConcertLogsByUser(me).map((l) => norm(l.artist)));
+    inPersonConcertLogsByUser(otherId).forEach((l) => {
       const k = concertKey(l);
       if (mine.has(k) && !seen.has(k)) { seen.add(k); shows.push(mine.get(k)); }
       if (myArtists.has(norm(l.artist))) artists.add(l.artist);
@@ -3365,7 +3367,9 @@ export function StoreProvider({ children }) {
     }
 
     const safe = buildReviewEditBody(changes);
-    if (!safe.artist || !safe.venue || safe.overall <= 0) return { ok: false };
+    const editingOnlineReview = safe.experienceType === "online";
+    if (!safe.artist || safe.overall <= 0
+      || (editingOnlineReview ? !safe.youtubeUrl : !safe.venue)) return { ok: false };
     const version = previous.version ?? previous.editedAt ?? previous.createdAt;
     feedMutationRevisionRef.current += 1;
     try {
@@ -5665,7 +5669,10 @@ export function StoreProvider({ children }) {
 
   const artistSummary = (name) => {
     const key = norm(name);
-    const liveLogs = feed.filter((l) => !removedIds.includes(l.id) && !blockedIds.includes(l.userId) && norm(l.artist) === key);
+    const liveLogs = feed.filter((l) => isInPersonConcertReview(l)
+      && !removedIds.includes(l.id)
+      && !blockedIds.includes(l.userId)
+      && norm(l.artist) === key);
     const venues = new Set(liveLogs.map((l) => norm(l.venue)));
     // community aggregate nights for venues not already covered by a real log
     const aggregateNights = ratedShows
@@ -5917,7 +5924,7 @@ export function StoreProvider({ children }) {
     const logs = logsByUser(u.id);
     // Legacy concert logs predate `kind`, so a missing value remains a review.
     // Plain status posts can earn social likes, but never concert achievements.
-    const concertLogs = logs.filter((log) => (log.kind || "review") === "review");
+    const concertLogs = logs.filter(isInPersonConcertReview);
     return {
       shows: concertLogs.length,
       reviews: concertLogs.filter((l) => (l.review || "").trim().length > 0).length,

@@ -1,6 +1,7 @@
 import { db, parseJsonArray } from "./db.js";
 import { postMediaStateByPost } from "./mediaAssets.js";
 import { catalogTotals } from "./catalogTotals.js";
+import { inPersonReviewSql } from "./onlineReviews.js";
 
 export const LANDING_MEDIA_DEFAULT_LIMIT = 8;
 export const LANDING_MEDIA_MAX_LIMIT = 12;
@@ -126,7 +127,7 @@ export function landingCommunityMedia({ viewerId = null, limit, at = Date.now(),
         ) AS author_rank
       FROM posts p JOIN users u ON u.id=p.user_id
       WHERE p.removed=0 AND p.photos_public=1 AND p.landing_showcase=1
-        AND p.kind='review'
+        AND ${inPersonReviewSql("p")}
         AND EXISTS (
           SELECT 1
           FROM post_media pm
@@ -203,7 +204,7 @@ export function landingCommunityMediaSource({
     SELECT p.id,p.user_id
     FROM posts p JOIN users u ON u.id=p.user_id
     WHERE p.id=? AND p.removed=0 AND p.photos_public=1 AND p.landing_showcase=1
-      AND p.kind='review'
+      AND ${inPersonReviewSql("p")}
       AND EXISTS (
         SELECT 1
         FROM post_media pm

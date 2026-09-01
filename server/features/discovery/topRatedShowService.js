@@ -1,4 +1,5 @@
 import { activeAccountSql } from "../../accountVisibility.js";
+import { inPersonReviewSql } from "../../onlineReviews.js";
 import {
   discoverCountryCode,
   discoverCountryIdentity,
@@ -97,6 +98,7 @@ function projectShows(postRows, providerRows, { country = "Worldwide", limit = 2
   // Rows arrive newest first. The first valid rating for an account+show is the
   // one public score that counts, matching the artist archive''s integrity rule.
   for (const row of Array.isArray(postRows) ? postRows : []) {
+    if ((row?.experience_type ?? row?.experienceType ?? "in_person") !== "in_person") continue;
     const rating = Number(row?.overall);
     if (!Number.isFinite(rating) || rating < 1 || rating > 5) continue;
     const providerLocation = providerLocations.get(providerShowIdentity(row)) || null;
@@ -191,7 +193,7 @@ export function createTopRatedShowService({ database, clock = Date.now } = {}) {
         p.overall,p.review,p.tour,p.created_at,p.updated_at
       FROM posts p
       JOIN users author ON author.id=p.user_id
-      WHERE p.removed=0 AND COALESCE(p.kind,'review')='review'
+      WHERE p.removed=0 AND ${inPersonReviewSql("p")}
         AND TRIM(p.artist)<>'''' AND TRIM(p.venue)<>'''' AND TRIM(p.date)<>''''
         AND p.overall BETWEEN 1 AND 5
         AND ${activeAccountSql("author")}

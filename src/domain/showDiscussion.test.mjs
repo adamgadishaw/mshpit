@@ -50,7 +50,7 @@ test("ShowScreen links to one original post without presenting a second comment 
   assert.match(showScreen, /<Text style=\{styles\.originalPostLabel\}>FAN POST<\/Text>/);
   assert.match(showScreen, /<Text style=\{styles\.originalPostTitle\}>Open the original fan post<\/Text>/);
   assert.doesNotMatch(showScreen, /Comments on this post|Open comments|discussionCount/);
-  assert.match(postScreen, /kicker=\{activeLog\.review \? "FAN REVIEW" : "POST"\}/);
+  assert.match(postScreen, /kicker=\{isOnlineReview \? "ONLINE CONCERT REVIEW" : activeLog\.review \? "FAN REVIEW" : "POST"\}/);
   assert.match(postScreen, /title="Original post"/);
   assert.match(showScreen, /<NearbyAfterparty\s+log=\{norm\}\s+coord=\{coord\}/);
   assert.doesNotMatch(showScreen, /AfterpartySection|TextInput|addComment|deleteOwnComment|loadComments|commentsFor/);

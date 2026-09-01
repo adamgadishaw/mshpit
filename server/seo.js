@@ -43,6 +43,7 @@ import { decodeArchiveShowKey } from "./features/artistArchive/artistArchiveKeys
 import { isStrictCalendarDate } from "./features/seo/publicEntityPolicy.js";
 import { effectiveTourDateEndSql } from "./tourDateLifecycle.js";
 import { tourDateHasNoPublishedMemorialSql } from "./artistMemorialTourDateVisibility.js";
+import { inPersonReviewSql } from "./onlineReviews.js";
 
 const SITE_NAME = "Mshpit";
 const DEFAULT_TITLE = "Mshpit — Concert reviews, photos and live music discovery";
@@ -99,7 +100,7 @@ const publicEventIdentity = db.prepare(`SELECT td.id,td.event_name,td.artist,td.
 const publicConcertIdentity = db.prepare(`SELECT p.artist,p.artist_key,p.venue,p.venue_key,p.city,p.date,
     AVG(p.overall) AS average_rating,COUNT(DISTINCT p.user_id) AS rating_count
   FROM posts p JOIN users u ON u.id=p.user_id
-  WHERE p.removed=0 AND COALESCE(p.kind,'review')='review'
+  WHERE p.removed=0 AND ${inPersonReviewSql("p")}
     AND pit_archive_identity(COALESCE(NULLIF(TRIM(p.artist_key),''),p.artist))=?
     AND pit_archive_identity(COALESCE(NULLIF(TRIM(p.venue_key),''),p.venue))=?
     AND p.date=? AND ${activeAccountSql("u")}
@@ -139,6 +140,7 @@ const venuePostIdentitiesByNameSlug = db.prepare(`SELECT LOWER(TRIM(p.venue)) AS
     pit_public_slug(p.city) AS location_identity
   FROM posts p JOIN users u ON u.id=p.user_id
   WHERE pit_public_slug(p.venue)=? AND p.removed=0
+    AND ${inPersonReviewSql("p")}
     AND TRIM(COALESCE(p.venue,''))<>'' AND ${activeAccountSql("u")}
   GROUP BY venue_identity,location_identity
   ORDER BY MAX(COALESCE(p.updated_at,p.created_at)) DESC,venue_identity,location_identity LIMIT 2`);
@@ -152,6 +154,7 @@ const venuePostByNameSlug = db.prepare(`SELECT p.venue,p.venue_key,p.city,
     NULL AS source,NULL AS venue_provider_id,COALESCE(p.updated_at,p.created_at) AS updated_at
   FROM posts p JOIN users u ON u.id=p.user_id
   WHERE pit_public_slug(p.venue)=? AND p.removed=0
+    AND ${inPersonReviewSql("p")}
     AND TRIM(COALESCE(p.venue,''))<>'' AND ${activeAccountSql("u")}
   ORDER BY COALESCE(p.updated_at,p.created_at) DESC,p.id DESC LIMIT 1`);
 

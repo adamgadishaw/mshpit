@@ -41,6 +41,7 @@ function createDatabase() {
       tour TEXT,
       tags TEXT NOT NULL DEFAULT '[]',
       kind TEXT NOT NULL DEFAULT 'review',
+      experience_type TEXT NOT NULL DEFAULT 'in_person',
       removed INTEGER NOT NULL DEFAULT 0,
       updated_at INTEGER,
       created_at INTEGER NOT NULL
@@ -89,16 +90,17 @@ function addPost(database, {
   overall = 4,
   review = `Review ${id}`,
   kind = "review",
+  experienceType = "in_person",
   removed = false,
   createdAt = 1,
   photos = [],
   photosPublic = false,
 } = {}) {
   database.prepare(`INSERT INTO posts
-    (id,user_id,artist,artist_key,artist_mbid,venue_key,venue,city,date,overall,band,room,dims,review,photos,photos_public,setlist,tags,kind,removed,created_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    (id,user_id,artist,artist_key,artist_mbid,venue_key,venue,city,date,overall,band,room,dims,review,photos,photos_public,setlist,tags,kind,experience_type,removed,created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
     id, authorId, artist, artistKey, artistMbid, venueKey, venue, "Toronto", date, overall, overall, overall,
-    "{}", review, JSON.stringify(photos), photosPublic ? 1 : 0, "[]", "[]", kind, removed ? 1 : 0, createdAt,
+    "{}", review, JSON.stringify(photos), photosPublic ? 1 : 0, "[]", "[]", kind, experienceType, removed ? 1 : 0, createdAt,
   );
 }
 
@@ -177,6 +179,7 @@ test("repository ranks all eligible history by engagement, score, show date, pub
     addPost(database, { id: "same-a", overall: 5, date: "2026-02-01", createdAt: 20 });
     addPost(database, { id: "same-b", overall: 5, date: "2026-02-01", createdAt: 20 });
     addPost(database, { id: "status", kind: "status", overall: 5 });
+    addPost(database, { id: "online", experienceType: "online", overall: 5, createdAt: 100 });
     addPost(database, { id: "blank", review: "   ", overall: 5 });
     addPost(database, { id: "removed", removed: true, overall: 5 });
     addPost(database, { id: "banned-author", authorId: "banned-author", overall: 5 });

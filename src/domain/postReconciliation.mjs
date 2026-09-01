@@ -3,11 +3,13 @@ import { toIsoDate } from "./dates.mjs";
 import { clean, clampRating, LIMITS } from "./validation.mjs";
 import { normalizeArtistCampaign } from "./artistCampaignPost.mjs";
 import { normalizeTaggedPeople, normalizeTaggedUserIds } from "./postFriendTags.mjs";
+import { canonicalYouTubeReviewUrl, normalizeReviewExperienceType } from "./onlineReview.mjs";
 
 const DIMENSION_KEYS = ["performance", "setlist", "sound", "venue", "crowd", "experience"];
 const EDITABLE_KEYS = new Set([
   "artist", "artistKey", "venue", "city", "date", "overall", "band", "room", "dims",
   "review", "photos", "mediaAssetIds", "photosPublic", "landingShowcase", "setlist", "tour", "tags", "taggedUserIds", "song", "playlistId", "campaign",
+  "experienceType", "onlineTitle", "youtubeUrl",
 ]);
 const INVALID_STORED_VALUE = Symbol("invalid-stored-post-value");
 
@@ -64,6 +66,9 @@ function cleanSong(value) {
 function intendedValue(key, value) {
   switch (key) {
     case "artist": return clean(value, { max: LIMITS.artist });
+    case "experienceType": return normalizeReviewExperienceType(value);
+    case "onlineTitle": return clean(value, { max: 160 }) || null;
+    case "youtubeUrl": return value ? canonicalYouTubeReviewUrl(value) : null;
     case "artistKey": return clean(value, { max: 120 }) || null;
     case "venue": return clean(value, { max: LIMITS.venue });
     case "city": return clean(value, { max: LIMITS.city });
@@ -106,6 +111,13 @@ function storedValue(post, key) {
     case "date":
     case "review":
       if (typeof value !== "string") return INVALID_STORED_VALUE;
+      break;
+    case "experienceType":
+      if (value !== "in_person" && value !== "online") return INVALID_STORED_VALUE;
+      break;
+    case "onlineTitle":
+    case "youtubeUrl":
+      if (value !== null && value !== undefined && typeof value !== "string") return INVALID_STORED_VALUE;
       break;
     case "artistKey":
     case "tour":

@@ -8,12 +8,13 @@ const text = (value) => String(value ?? "").trim();
 export function concertPostContext(log = {}) {
   const artist = text(log.artist);
   const artistPublicSlug = text(log.artistPublicSlug || log.artist_public_slug);
+  const online = log.experienceType === "online" || log.experience_type === "online";
   return Object.freeze({
     showHref: postPath(log.id),
     artist: artist || null,
     artistKey: log.artistKey || log.artist_key || null,
     artistPublicSlug: artistPublicSlug || null,
-    artistConcertsHref: artist && artistPublicSlug
+    artistConcertsHref: !online && artist && artistPublicSlug
       ? artistConcertsPath({ name: artist, publicSlug: artistPublicSlug })
       : null,
   });

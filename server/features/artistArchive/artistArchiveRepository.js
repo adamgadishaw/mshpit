@@ -1,6 +1,7 @@
 import { activeAccountSql } from "../../accountVisibility.js";
 import { visibleTourDateRowsFrom } from "../../tourDateVisibility.js";
 import { archiveIdentityPart, normalizeArchivePart } from "./artistArchiveKeys.js";
+import { inPersonReviewSql } from "../../onlineReviews.js";
 
 const VIEWER = "(SELECT viewer_id FROM archive_scope)";
 const visibleActor = (actorSql) => `(${VIEWER} IS NULL OR NOT EXISTS (
@@ -22,7 +23,7 @@ function reviewQuery(identitySql, { filterSql = "", cursor = false } = {}) {
       (SELECT COUNT(*) FROM comments c JOIN users cu ON cu.id=c.user_id
         WHERE c.post_id=p.id AND c.removed=0 AND ${activeAccountSql("cu")} AND ${visibleActor("c.user_id")}) AS comment_count
     FROM posts p JOIN users u ON u.id=p.user_id
-    WHERE p.removed=0 AND COALESCE(p.kind,'review')='review'
+    WHERE p.removed=0 AND ${inPersonReviewSql("p")}
       AND p.date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
       AND ${identitySql} AND ${activeAccountSql("u")} AND ${visibleActor("p.user_id")}
       ${filterSql} ${cursorSql}
@@ -32,7 +33,7 @@ function reviewQuery(identitySql, { filterSql = "", cursor = false } = {}) {
 function reviewCountQuery(identitySql, filterSql) {
   return `WITH archive_scope(viewer_id) AS (VALUES (?))
     SELECT COUNT(*) count FROM posts p JOIN users u ON u.id=p.user_id
-    WHERE p.removed=0 AND COALESCE(p.kind,'review')='review'
+    WHERE p.removed=0 AND ${inPersonReviewSql("p")}
       AND p.date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
       AND ${identitySql} AND ${activeAccountSql("u")} AND ${visibleActor("p.user_id")}
       ${filterSql}`;

@@ -39,6 +39,7 @@ function createDatabase() {
       id TEXT PRIMARY KEY,user_id TEXT NOT NULL,artist TEXT NOT NULL,artist_key TEXT,artist_mbid TEXT,venue TEXT NOT NULL,
       venue_key TEXT,city TEXT,date TEXT,overall REAL,review TEXT,setlist TEXT NOT NULL DEFAULT '[]',tour TEXT,photos TEXT NOT NULL DEFAULT '[]',
       photos_public INTEGER NOT NULL DEFAULT 0,kind TEXT DEFAULT 'review',removed INTEGER NOT NULL DEFAULT 0,
+      experience_type TEXT NOT NULL DEFAULT 'in_person',online_title TEXT,youtube_url TEXT,youtube_video_id TEXT,
       like_count INTEGER NOT NULL DEFAULT 0,comment_count INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL,updated_at INTEGER
     );
@@ -156,13 +157,19 @@ function addPost(database, {
   overall = 4.5,
   date = "2026-08-20",
   city = "Toronto",
+  experienceType = "in_person",
+  onlineTitle = null,
+  youtubeUrl = null,
+  youtubeVideoId = null,
 } = {}) {
   database.prepare(`INSERT INTO posts
-    (id,user_id,artist,artist_key,venue,venue_key,city,date,overall,review,setlist,tour,photos,photos_public,kind,removed,created_at,updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    (id,user_id,artist,artist_key,venue,venue_key,city,date,overall,review,setlist,tour,photos,photos_public,kind,removed,
+      experience_type,online_title,youtube_url,youtube_video_id,created_at,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
     id, userId, artist, artistKey, venue, venue.toLowerCase(), city, date, overall, review,
     typeof setlist === "string" ? setlist : JSON.stringify(setlist), tour,
-    JSON.stringify(photos), photosPublic ? 1 : 0, kind, removed ? 1 : 0, createdAt, createdAt + 1,
+    JSON.stringify(photos), photosPublic ? 1 : 0, kind, removed ? 1 : 0,
+    experienceType, onlineTitle, youtubeUrl, youtubeVideoId, createdAt, createdAt + 1,
   );
 }
 
@@ -978,6 +985,57 @@ test("event ticket offers require a supported future purchasable state and missi
     assert.equal(Object.hasOwn(past.jsonLd[0], "offers"), false);
     assert.equal(past.event.ticketUrl, null);
     assert.doesNotMatch(documents.render(past), /Buy tickets/);
+  } finally {
+    database.close();
+  }
+});
+
+test("online concert reviews stay standalone and never become physical show or venue evidence", () => {
+  const database = createDatabase();
+  try {
+    addUser(database, "active", { name: "Online Fan", handle: "onlinefan" });
+    addArtist(database, { bio: "A detailed public artist biography with enough real information for this focused projection test." });
+    addPost(database, {
+      id: "online-review",
+      experienceType: "online",
+      onlineTitle: "Live from the Basement",
+      youtubeUrl: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+      youtubeVideoId: "dQw4w9WgXcQ",
+      review: "A thoughtful online concert review covering the performance, arrangement, and camera direction.",
+      venue: "Should Never Render",
+      city: "Nowhere",
+      date: "2026-08-20",
+      setlist: ["Should not become a physical setlist"],
+      tour: "Should not become a physical tour",
+    });
+
+    const documents = service(database);
+    const post = documents.postDocument({ id: "online-review" });
+    const html = documents.render(post);
+    assert.equal(post.post.experienceType, "online");
+    assert.equal(post.post.onlineTitle, "Live from the Basement");
+    assert.equal(post.post.youtubeUrl, "https://www.youtube.com/watch?v=dQw4w9WgXcQ");
+    assert.equal(post.post.venue, null);
+    assert.equal(post.post.venuePath, null);
+    assert.equal(post.post.city, null);
+    assert.equal(post.post.showDate, null);
+    assert.deepEqual(post.post.setlist, []);
+    assert.equal(post.post.tour, null);
+    assert.match(post.title, /Live from the Basement.*online concert review/i);
+    assert.match(html, />Online concert</);
+    assert.match(html, />Watch on YouTube</);
+    assert.match(html, /target="_blank" rel="ugc nofollow noopener noreferrer"/);
+    assert.doesNotMatch(html, /Should Never Render|Should not become a physical|MusicEvent|startDate|MusicVenue/);
+    assert.equal(documents.concertDocument({
+      showKey: archiveShowKey({ artistIdentity: "alpha", venueIdentity: "should never render", date: "2026-08-20" }),
+      today: "2026-08-25",
+    }), null);
+
+    const artist = documents.artistDocument({ artistKey: "alpha", at: NOW });
+    assert.equal(artist.reviews.some((review) => review.id === "online-review"), true,
+      "online reviews remain useful artist fan activity");
+    assert.equal(artist.stats.reviewCount, 0,
+      "online scores never enter the artist's physical live rating");
   } finally {
     database.close();
   }

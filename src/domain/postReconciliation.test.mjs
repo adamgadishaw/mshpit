@@ -104,3 +104,26 @@ test("only ambiguous edit failures trigger a canonical read", () => {
   assert.equal(shouldReconcileEditFailure({ status: 403 }), false);
   assert.equal(shouldReconcileEditFailure({ status: 404 }), false);
 });
+
+test("online review identity participates in ambiguous edit reconciliation", () => {
+  const online = {
+    ...canonical,
+    experienceType: "online",
+    onlineTitle: "Tiny Desk Concert",
+    youtubeUrl: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    venue: "",
+    city: "",
+    date: "",
+  };
+  assert.equal(postMatchesEditIntent(online, {
+    experienceType: "online",
+    onlineTitle: " Tiny Desk Concert ",
+    youtubeUrl: "https://youtu.be/dQw4w9WgXcQ?t=30",
+    version: 100,
+  }), true);
+  assert.equal(postMatchesEditIntent(online, {
+    experienceType: "online",
+    youtubeUrl: "https://youtu.be/aaaaaaaaaaa",
+    version: 100,
+  }), false);
+});

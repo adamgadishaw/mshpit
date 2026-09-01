@@ -3,6 +3,7 @@ import { archiveIdentityPart } from "../artistArchive/artistArchiveKeys.js";
 import { isStrictCalendarDate, structuredShowLocationKey } from "./publicEntityPolicy.js";
 import { currentOrUpcomingTourDateSql, effectiveTourDateEndSql } from "../../tourDateLifecycle.js";
 import { tourDateHasNoPublishedMemorialSql } from "../../artistMemorialTourDateVisibility.js";
+import { inPersonReviewSql } from "../../onlineReviews.js";
 
 const bounded = (value, fallback, maximum) => {
   const parsed = Number(value);
@@ -10,7 +11,8 @@ const bounded = (value, fallback, maximum) => {
 };
 
 export const PUBLIC_POST_COLUMNS = `p.id,p.user_id,p.artist,p.artist_key,p.venue,p.city,p.date,p.overall,
-  p.venue_key,p.review,p.setlist,p.tour,p.photos,p.photos_public,p.kind,p.created_at,p.updated_at,
+  p.venue_key,p.review,p.setlist,p.tour,p.photos,p.photos_public,p.kind,
+  p.experience_type,p.online_title,p.youtube_url,p.youtube_video_id,p.created_at,p.updated_at,
   COALESCE(
     (SELECT canonical.public_slug FROM artists canonical WHERE canonical.norm=p.artist_key LIMIT 1),
     (SELECT legacy.public_slug FROM artists legacy
@@ -91,7 +93,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null }
 
   const homeArtists = database.prepare(`SELECT a.norm,a.name,a.public_slug,a.genre,a.data,a.bio,a.country,a.formed,a.updated_at,
       (SELECT COUNT(*) FROM posts rp JOIN users reviewer ON reviewer.id=rp.user_id
-        WHERE rp.removed=0 AND COALESCE(rp.kind,'review')='review'
+        WHERE rp.removed=0 AND ${inPersonReviewSql("rp")}
           AND (rp.artist_key=a.norm OR (rp.artist_key IS NULL AND LOWER(rp.artist)=LOWER(a.name)
             AND (SELECT COUNT(*) FROM artists home_review_identity
               WHERE home_review_identity.name=rp.artist COLLATE NOCASE)=1))
@@ -100,7 +102,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null }
     WHERE LENGTH(TRIM(a.name))>0 AND (
       LENGTH(TRIM(COALESCE(a.bio,'')))>=80 OR EXISTS (
         SELECT 1 FROM posts ep JOIN users eu ON eu.id=ep.user_id
-        WHERE ep.removed=0 AND COALESCE(ep.kind,'review')='review'
+        WHERE ep.removed=0 AND ${inPersonReviewSql("ep")}
           AND LENGTH(TRIM(COALESCE(ep.review,'')))>=40
           AND (ep.artist_key=a.norm OR (ep.artist_key IS NULL AND LOWER(ep.artist)=LOWER(a.name)
             AND (SELECT COUNT(*) FROM artists home_evidence_identity
@@ -154,7 +156,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null }
   const artistReviewStats = database.prepare(`SELECT COUNT(*) AS review_count,AVG(CASE WHEN p.overall BETWEEN 1 AND 5 THEN p.overall END) AS average_rating,
       MAX(COALESCE(p.updated_at,p.created_at)) AS latest_at
     FROM posts p JOIN users u ON u.id=p.user_id
-    WHERE p.removed=0 AND (COALESCE(p.kind,'review')='review' OR (
+    WHERE p.removed=0 AND (${inPersonReviewSql("p")} OR (
         p.kind='status' AND p.artist_key IS NOT NULL AND p.artist_mbid IS NOT NULL AND p.overall=0
         AND EXISTS (SELECT 1 FROM artist_memorials memory_memorial
           WHERE memory_memorial.artist_key=p.artist_key
@@ -197,7 +199,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null }
       pit_archive_identity(COALESCE(NULLIF(TRIM(p.venue_key),''),p.venue)) AS show_venue,
       COALESCE(p.updated_at,p.created_at) AS changed_at
     FROM posts p JOIN users u ON u.id=p.user_id
-    WHERE p.removed=0 AND COALESCE(p.kind,'review')='review'
+    WHERE p.removed=0 AND ${inPersonReviewSql("p")}
       AND p.date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' AND date(p.date)=p.date AND p.date<=?
       AND (LENGTH(TRIM(COALESCE(p.review,'')))>=40 OR (
         p.photos_public=1 AND ${PUBLIC_READY_MEDIA_EVIDENCE_SQL}
@@ -258,7 +260,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null }
 
   const eventRelatedPosts = database.prepare(`SELECT ${PUBLIC_POST_COLUMNS}
     FROM posts p JOIN users u ON u.id=p.user_id
-    WHERE p.removed=0 AND COALESCE(p.kind,'review')='review'
+    WHERE p.removed=0 AND ${inPersonReviewSql("p")}
       AND (p.artist_key=? OR (p.artist_key IS NULL AND LOWER(p.artist)=LOWER(?)
         AND (SELECT COUNT(*) FROM artists related_artist_identity
           WHERE related_artist_identity.name=p.artist COLLATE NOCASE)<=1))
@@ -270,7 +272,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null }
 
   const concertReviews = database.prepare(`SELECT ${PUBLIC_POST_COLUMNS}
     FROM posts p JOIN users u ON u.id=p.user_id
-    WHERE p.removed=0 AND COALESCE(p.kind,'review')='review'
+    WHERE p.removed=0 AND ${inPersonReviewSql("p")}
       AND pit_archive_identity(COALESCE(NULLIF(TRIM(p.artist_key),''),p.artist))=?
       AND pit_archive_identity(COALESCE(NULLIF(TRIM(p.venue_key),''),p.venue))=?
       AND p.date=? AND ${activeAccountSql("u")}
@@ -286,7 +288,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null }
     SELECT p.id,p.user_id,p.overall,
       COALESCE(p.updated_at,p.created_at) AS changed_at
     FROM posts p JOIN users u ON u.id=p.user_id
-    WHERE p.removed=0 AND COALESCE(p.kind,'review')='review'
+    WHERE p.removed=0 AND ${inPersonReviewSql("p")}
       AND pit_archive_identity(COALESCE(NULLIF(TRIM(p.artist_key),''),p.artist))=?
       AND pit_archive_identity(COALESCE(NULLIF(TRIM(p.venue_key),''),p.venue))=?
       AND p.date=? AND ${activeAccountSql("u")}
@@ -337,7 +339,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null }
 
   const venuePostsByName = database.prepare(`SELECT ${PUBLIC_POST_COLUMNS}
     FROM posts p JOIN users u ON u.id=p.user_id
-    WHERE p.removed=0 AND COALESCE(p.kind,'review')='review'
+    WHERE p.removed=0 AND ${inPersonReviewSql("p")}
       AND (p.venue_key=? OR (p.venue_key IS NULL AND LOWER(p.venue)=LOWER(?)))
       AND (LENGTH(TRIM(COALESCE(p.review,'')))>=40 OR EXISTS (
         SELECT 1 FROM post_media media WHERE media.post_id=p.id
@@ -372,7 +374,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null }
     WHERE a.public_slug IS NOT NULL AND TRIM(a.public_slug)<>'' AND (
       LENGTH(TRIM(COALESCE(a.bio,'')))>=80 OR EXISTS (
         SELECT 1 FROM posts p JOIN users reviewer ON reviewer.id=p.user_id
-        WHERE p.removed=0 AND COALESCE(p.kind,'review')='review'
+        WHERE p.removed=0 AND ${inPersonReviewSql("p")}
           AND (LENGTH(TRIM(COALESCE(p.review,'')))>=40 OR (
             p.photos_public=1 AND EXISTS (SELECT 1 FROM post_media media WHERE media.post_id=p.id)
           ))
@@ -499,7 +501,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null }
     FROM posts p
     JOIN users author ON author.id=p.user_id
     LEFT JOIN artists a ON a.norm=p.artist_key
-    WHERE p.removed=0 AND COALESCE(p.kind,'review')='review'
+    WHERE p.removed=0 AND ${inPersonReviewSql("p")}
       AND TRIM(COALESCE(p.venue,''))<>''
       AND (LENGTH(TRIM(COALESCE(p.review,'')))>=40 OR
         (p.photos_public=1 AND ${PUBLIC_READY_MEDIA_EVIDENCE_SQL}))
@@ -533,7 +535,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null }
       pit_archive_identity(COALESCE(NULLIF(TRIM(p.venue_key),''),p.venue)) AS show_venue,
       COALESCE(p.updated_at,p.created_at) AS changed_at
     FROM posts p JOIN users author ON author.id=p.user_id
-    WHERE p.removed=0 AND COALESCE(p.kind,'review')='review'
+    WHERE p.removed=0 AND ${inPersonReviewSql("p")}
       AND p.date<=? AND date(p.date)=p.date
       AND TRIM(COALESCE(p.artist,''))<>'' AND TRIM(COALESCE(p.venue,''))<>''
       AND (LENGTH(TRIM(COALESCE(p.review,'')))>=40 OR

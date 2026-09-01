@@ -70,6 +70,13 @@ import {
 } from "../domain/artistCampaignPost.mjs";
 import { MAX_POST_TAGGED_PEOPLE, normalizeTaggedPeople } from "../domain/postFriendTags.mjs";
 import { COMPOSER_ARTIST_SEARCH_LIMIT } from "../features/artistSearch/artistSearchApi.mjs";
+import {
+  IN_PERSON_REVIEW_EXPERIENCE,
+  ONLINE_REVIEW_EXPERIENCE,
+  isValidYouTubeSourceUrl,
+  normalizeOnlineRating,
+  normalizeReviewExperienceType,
+} from "../domain/onlineReview.mjs";
 
 const GROUP_COLOR = { "THE BAND": colors.amber, "THE ROOM": colors.cool, "THE NIGHT": colors.magenta };
 const GROUPS = ["THE BAND", "THE ROOM", "THE NIGHT"];
@@ -217,6 +224,11 @@ export default function LogScreen({
   );
   const isMemorialMemory = postType === "memory";
   const isStatus = postType === "status" || isMemorialMemory;
+  const initialExperienceType = normalizeReviewExperienceType(
+    editing?.experienceType ?? editing?.experience_type ?? prefill?.experienceType ?? prefill?.experience_type,
+  );
+  const [experienceType, setExperienceType] = useState(initialExperienceType);
+  const isOnlineReview = !isStatus && experienceType === ONLINE_REVIEW_EXPERIENCE;
   const artistCampaignAllowed = user?.role === "artist" && !!String(user?.artistName || "").trim();
   const [campaign, setCampaign] = useState(() => {
     const existing = editing?.kind === "status" ? normalizeArtistCampaign(editing?.campaign) : null;
@@ -230,9 +242,14 @@ export default function LogScreen({
   const [draftId, setDraftId] = useState(null);
   const [savedDraftFingerprint, setSavedDraftFingerprint] = useState(null);
   const [artist, setArtist] = useState(editing?.artist || prefill?.artist || "");
-  const [venue, setVenue] = useState(editing?.venue || prefill?.venue || "");
-  const [city, setCity] = useState(editing?.city || prefill?.city || "");
-  const [tour, setTour] = useState(editing?.tour || prefill?.tour || "");
+  const [venue, setVenue] = useState(initialExperienceType === ONLINE_REVIEW_EXPERIENCE ? "" : editing?.venue || prefill?.venue || "");
+  const [city, setCity] = useState(initialExperienceType === ONLINE_REVIEW_EXPERIENCE ? "" : editing?.city || prefill?.city || "");
+  const [tour, setTour] = useState(initialExperienceType === ONLINE_REVIEW_EXPERIENCE ? "" : editing?.tour || prefill?.tour || "");
+  const [onlineTitle, setOnlineTitle] = useState(editing?.onlineTitle || editing?.online_title || prefill?.onlineTitle || prefill?.online_title || "");
+  const [youtubeUrl, setYoutubeUrl] = useState(editing?.youtubeUrl || editing?.youtube_url || prefill?.youtubeUrl || prefill?.youtube_url || "");
+  const [onlineRating, setOnlineRating] = useState(() => normalizeOnlineRating(
+    initialExperienceType === ONLINE_REVIEW_EXPERIENCE ? editing?.overall ?? prefill?.overall : 0,
+  ));
   const officialEventName = !editing && typeof prefill?.officialEventName === "string"
     ? prefill.officialEventName.trim()
     : "";
@@ -337,7 +354,9 @@ export default function LogScreen({
     const id = setTimeout(() => setVenueHits(searchVenues(q, 6)), 120);
     return () => clearTimeout(id);
   }, [venue, venuePicked]);
-  const [dims, setDims] = useState(() => editing ? postDims(editing) : { performance: 0, setlist: 0, sound: 0, venue: 0, crowd: 0, experience: 0 });
+  const [dims, setDims] = useState(() => editing && initialExperienceType !== ONLINE_REVIEW_EXPERIENCE
+    ? postDims(editing)
+    : { performance: 0, setlist: 0, sound: 0, venue: 0, crowd: 0, experience: 0 });
   const [ratingsDirty, setRatingsDirty] = useState(false);
   const [review, setReview] = useState(editing?.review || "");
   const [song, setSong] = useState(editing?.song || null);
@@ -556,13 +575,25 @@ export default function LogScreen({
   const PAST_YEARS = Array.from({ length: today.getFullYear() - 1999 }, (_, i) => today.getFullYear() - i);
   // An existing post may still hold a legacy display-format date, so normalize
   // on open: editing a show must not rewrite which performance it belongs to.
-  const [date, setDate] = useState(initialComposerDate({
+  const [date, setDate] = useState(initialExperienceType === ONLINE_REVIEW_EXPERIENCE ? "" : initialComposerDate({
     editing: !!editing,
     editingDate: editing?.date,
     prefillDate: prefill?.date,
     today: todayStr,
   }));
   const [showDate, setShowDate] = useState(false);
+
+  const chooseReviewExperience = (nextValue) => {
+    const next = normalizeReviewExperienceType(nextValue);
+    if (next === experienceType) return;
+    setExperienceType(next);
+    setPostError("");
+    // Keep both modes' unfinished values in memory. The normalized draft and
+    // request payload still strip incompatible fields, but an accidental tap
+    // no longer destroys a venue review or an online review in progress.
+    setShowDate(false);
+    if (next === IN_PERSON_REVIEW_EXPERIENCE && !date) setDate(todayStr);
+  };
 
   async function uploadOriginalMedia(selectedAssets) {
     const selected = (Array.isArray(selectedAssets) ? selectedAssets : [])
@@ -873,8 +904,13 @@ export default function LogScreen({
         room: editing.room == null ? computed.room : Number(editing.room),
       }
     : computed;
+  const youtubeUrlValid = isValidYouTubeSourceUrl(youtubeUrl);
   const canPostStatus = !!(review.trim() || photos.filter(isDurableMediaUrl).length || song?.videoId);
-  const canPostBase = isStatus ? canPostStatus : (artist.trim() && venue.trim() && computed.overall > 0);
+  const canPostBase = isStatus
+    ? canPostStatus
+    : isOnlineReview
+      ? artist.trim() && onlineRating > 0 && youtubeUrlValid
+      : artist.trim() && venue.trim() && computed.overall > 0;
   const canPost = !!canPostBase && pendingMediaAssets.length === 0;
   const submitBusy = uploadingPhotos || resolvingSong || posting || artistAttaching;
 
@@ -891,12 +927,16 @@ export default function LogScreen({
     submissionId: submissionIdRef.current,
     postType,
     campaign: isStatus ? campaign : null,
+    experienceType,
     artist,
     artistKey: artistPicked ? artistKey : null,
     venue,
     city,
     tour,
     date,
+    onlineTitle,
+    youtubeUrl,
+    onlineRating,
     dims,
     review,
     tags,
@@ -908,9 +948,9 @@ export default function LogScreen({
     photos: photos.filter(isDurableMediaUrl),
     mediaProject: draftMediaProject,
     photosPublic,
-    landingShowcase: photosPublic && landingShowcase && hasLandingCompatiblePhoto,
+    landingShowcase: !isOnlineReview && photosPublic && landingShowcase && hasLandingCompatiblePhoto,
     panels: { song: showSong, photos: showPhotos, people: showPeople },
-  }), [draftId, postType, isStatus, campaign, artist, artistPicked, artistKey, venue, city, tour, date, dims, review, tags, tagDraft, taggedPeople, song, songUrl, preservedPlaylist, photos, draftMediaProject, photosPublic, landingShowcase, hasLandingCompatiblePhoto, showSong, showPhotos, showPeople]);
+  }), [draftId, postType, isStatus, isOnlineReview, campaign, experienceType, artist, artistPicked, artistKey, venue, city, tour, date, onlineTitle, youtubeUrl, onlineRating, dims, review, tags, tagDraft, taggedPeople, song, songUrl, preservedPlaylist, photos, draftMediaProject, photosPublic, landingShowcase, hasLandingCompatiblePhoto, showSong, showPhotos, showPeople]);
   const draftFingerprint = useMemo(() => composerDraftFingerprint(currentDraft), [currentDraft]);
   const hasContent = useMemo(() => composerDraftHasContent(currentDraft), [currentDraft]);
   const hasPendingMedia = pendingMediaAssets.length > 0;
@@ -1009,6 +1049,7 @@ export default function LogScreen({
     submissionIdRef.current = restored.submissionId || submissionIdRef.current;
     setPostType(restored.postType);
     setCampaign(restored.campaign);
+    setExperienceType(restored.experienceType);
     setArtist(restored.artist); setArtistPicked(!!restored.artistKey); setArtistKey(restored.artistKey); setVenue(restored.venue); setVenuePicked(!!restored.venue); setCity(restored.city);
     const restoredPhotos = restored.photos.filter(isDurableMediaUrl);
     const restoredProject = normalizeMediaProject(restored.mediaProject);
@@ -1016,7 +1057,7 @@ export default function LogScreen({
       .filter((asset) => asset.status !== "ready" && (asset.durableLocalUri || asset.assetId))
       .map((asset, index) => originalMediaProjectAsset(asset, index));
     const restoredReady = restoredProject.assets.filter((asset) => !!asset.sourceUrl && !restoredPending.some((pending) => pending.id === asset.id));
-    setTour(restored.tour); setDate(toIsoDate(restored.date) || restored.date || todayStr); setDims(restored.dims); setReview(restored.review); setTags(restored.tags); setTagDraft(restored.tagDraft); setTaggedPeople(restored.taggedPeople); setSong(restored.song); setSongUrl(restored.songUrl); setPreservedPlaylist(restored.playlist); setPhotos(restoredPhotos); setMediaProject(normalizeMediaProject({ assets: restoredReady })); setPendingMediaAssets(restoredPending); setPhotosPublic(restored.photosPublic); setLandingShowcase(restored.landingShowcase && hasLandingCompatibleImage(restoredPhotos));
+    setTour(restored.tour); setDate(restored.experienceType === ONLINE_REVIEW_EXPERIENCE ? "" : toIsoDate(restored.date) || restored.date || todayStr); setOnlineTitle(restored.onlineTitle); setYoutubeUrl(restored.youtubeUrl); setOnlineRating(restored.onlineRating); setDims(restored.dims); setReview(restored.review); setTags(restored.tags); setTagDraft(restored.tagDraft); setTaggedPeople(restored.taggedPeople); setSong(restored.song); setSongUrl(restored.songUrl); setPreservedPlaylist(restored.playlist); setPhotos(restoredPhotos); setMediaProject(normalizeMediaProject({ assets: restoredReady })); setPendingMediaAssets(restoredPending); setPhotosPublic(restored.photosPublic); setLandingShowcase(restored.landingShowcase && hasLandingCompatibleImage(restoredPhotos));
     if (restoredPending.length) {
       void recoverMediaDraftAssets(restoredPending).then((recoverable) => {
         setPendingMediaAssets(recoverable.map((asset, index) => originalMediaProjectAsset(asset, index)));
@@ -1204,27 +1245,36 @@ export default function LogScreen({
         timeAgo: editing?.timeAgo || "now",
         artist: artist.trim(),
         artistKey: artistPicked ? artistKey : null,
-        venue: venue.trim(),
-        city: city.trim(),
-        tour: tour.trim() || null,
-        date,
+        ...(isOnlineReview ? {
+          experienceType: ONLINE_REVIEW_EXPERIENCE,
+          onlineTitle: onlineTitle.trim() || null,
+          youtubeUrl: youtubeUrl.trim(),
+          overall: onlineRating,
+        } : {
+          venue: venue.trim(),
+          city: city.trim(),
+          tour: tour.trim() || null,
+          date,
+          overall: submittedRatings.overall,
+          band: submittedRatings.band || submittedRatings.overall,
+          room: submittedRatings.room || submittedRatings.overall,
+          dims,
+          setlist: editing?.setlist || [],
+          inTourWindow: editing?.inTourWindow || false,
+        }),
         media: publishedMedia,
         photos: durablePhotos,
         ...(stableMediaAssetIds ? { mediaAssetIds: stableMediaAssetIds } : {}),
         photosPublic,
-        landingShowcase: photosPublic && landingShowcase && hasLandingCompatibleImage(durablePhotos),
-        overall: submittedRatings.overall,
-        band: submittedRatings.band || submittedRatings.overall,
-        room: submittedRatings.room || submittedRatings.overall,
-        dims,
+        landingShowcase: !isOnlineReview && photosPublic && landingShowcase && hasLandingCompatibleImage(durablePhotos),
         review: review.trim(),
         taggedPeople,
-        song,
-        tags: tagDraft.trim() && tags.length < 5 && !tags.some((t) => t.toLowerCase() === tagDraft.trim().toLowerCase()) ? [...tags, tagDraft.trim()] : tags,
-        setlist: editing?.setlist || [],
+        song: isOnlineReview ? null : song,
+        tags: isOnlineReview
+          ? []
+          : tagDraft.trim() && tags.length < 5 && !tags.some((t) => t.toLowerCase() === tagDraft.trim().toLowerCase()) ? [...tags, tagDraft.trim()] : tags,
         likes: editing?.likes || 0,
         comments: editing?.comments || 0,
-        inTourWindow: editing?.inTourWindow || false,
       });
       // Failed posts stay fully editable and retain any saved draft, and now say
       // WHY: previously a rejected post silently left the composer open with no
@@ -1245,7 +1295,7 @@ export default function LogScreen({
 
   return (
     <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-      <SheetHeader title={editing ? (isCampaign ? "Edit featured post" : "Edit post") : isMemorialMemory ? "Share a fan memory" : isCampaign ? "New featured post" : isStatus ? "New post" : "Log a show"} onClose={onCancel} leadDisabled={submitBusy} action={{ label: posting ? (editing ? "Saving..." : "Posting...") : uploadingPhotos ? "Uploading..." : resolvingSong ? "Checking..." : editing ? "Save" : "Post", onPress: submit, disabled: !canPost || submitBusy }} />
+      <SheetHeader title={editing ? (isCampaign ? "Edit featured post" : isOnlineReview ? "Edit online review" : "Edit post") : isMemorialMemory ? "Share a fan memory" : isCampaign ? "New featured post" : isStatus ? "New post" : isOnlineReview ? "Review an online concert" : "Log a show"} onClose={onCancel} leadDisabled={submitBusy} action={{ label: posting ? (editing ? "Saving..." : "Posting...") : uploadingPhotos ? "Uploading..." : resolvingSong ? "Checking..." : editing ? "Save" : "Post", onPress: submit, disabled: !canPost || submitBusy }} />
 
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         {!!postError && <View style={styles.postErrorBox}><Icon name="flag" size={14} color={colors.danger} /><Text style={styles.postErrorTxt}>{postError}</Text></View>}
@@ -1278,7 +1328,7 @@ export default function LogScreen({
                   <Icon name={stored.postType === "status" ? "feed" : "edit"} size={14} color={colors.amber} />
                   <Pressable style={{ flex: 1 }} onPress={() => resume(d)} accessibilityRole="button" accessibilityLabel={`Resume ${composerDraftTitle(stored)}`}>
                     <Text style={styles.draftName} numberOfLines={1}>{composerDraftTitle(stored)}</Text>
-                    <Text style={styles.draftSub} numberOfLines={1}>{stored.postType === "status" ? "Post" : [stored.city, formatDate(stored.date, "")].filter(Boolean).join(" · ") || "Concert review"}</Text>
+                    <Text style={styles.draftSub} numberOfLines={1}>{stored.postType === "status" ? "Post" : stored.experienceType === ONLINE_REVIEW_EXPERIENCE ? "Online concert review" : [stored.city, formatDate(stored.date, "")].filter(Boolean).join(" · ") || "Concert review"}</Text>
                   </Pressable>
                   <Pressable onPress={() => deleteDraft(d.id)} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Delete ${composerDraftTitle(stored)}`}><Icon name="x" size={14} color={colors.textFaint} /></Pressable>
                 </View>
@@ -1365,7 +1415,32 @@ export default function LogScreen({
           </>
         ) : (
           <>
-        <Text style={styles.fieldLabel}>WHO DID YOU SEE?</Text>
+        <Text style={styles.fieldLabel}>HOW DID YOU EXPERIENCE IT?</Text>
+        <View style={styles.experienceModeRow} accessibilityRole="tablist">
+          <Pressable
+            style={[styles.experienceModeButton, experienceType === IN_PERSON_REVIEW_EXPERIENCE && styles.experienceModeButtonOn]}
+            onPress={() => chooseReviewExperience(IN_PERSON_REVIEW_EXPERIENCE)}
+            disabled={submitBusy}
+            accessibilityRole="tab"
+            accessibilityState={{ selected: experienceType === IN_PERSON_REVIEW_EXPERIENCE, disabled: submitBusy }}
+            accessibilityLabel="In person concert review"
+          >
+            <Icon name="ticket" size={15} color={experienceType === IN_PERSON_REVIEW_EXPERIENCE ? "#1A1206" : colors.textDim} />
+            <Text style={[styles.experienceModeText, experienceType === IN_PERSON_REVIEW_EXPERIENCE && styles.experienceModeTextOn]}>In person</Text>
+          </Pressable>
+          <Pressable
+            style={[styles.experienceModeButton, isOnlineReview && styles.experienceModeButtonOn]}
+            onPress={() => chooseReviewExperience(ONLINE_REVIEW_EXPERIENCE)}
+            disabled={submitBusy}
+            accessibilityRole="tab"
+            accessibilityState={{ selected: isOnlineReview, disabled: submitBusy }}
+            accessibilityLabel="Online concert review"
+          >
+            <Icon name="play" size={15} color={isOnlineReview ? "#1A1206" : colors.textDim} />
+            <Text style={[styles.experienceModeText, isOnlineReview && styles.experienceModeTextOn]}>Watched online</Text>
+          </Pressable>
+        </View>
+        <Text style={styles.fieldLabel}>{isOnlineReview ? "WHO DID YOU WATCH?" : "WHO DID YOU SEE?"}</Text>
         <View>
           <TextInput
             style={styles.input}
@@ -1404,6 +1479,46 @@ export default function LogScreen({
             <View style={styles.linked}><Icon name="check" size={12} color={colors.good} /><Text style={styles.linkedTxt}>{artist.trim()} added to this post</Text></View>
           )}
         </View>
+        {isOnlineReview ? (
+          <>
+            <Text style={styles.fieldLabel}>CONCERT OR VIDEO TITLE <Text style={styles.optional}>optional</Text></Text>
+            <TextInput
+              style={styles.input}
+              placeholder="e.g. Tiny Desk Concert"
+              placeholderTextColor={colors.textFaint}
+              value={onlineTitle}
+              onChangeText={setOnlineTitle}
+              maxLength={120}
+              accessibilityLabel="Online concert or video title"
+            />
+
+            <Text style={styles.fieldLabel}>YOUTUBE LINK</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="https://youtube.com/watch?v=..."
+              placeholderTextColor={colors.textFaint}
+              value={youtubeUrl}
+              onChangeText={(value) => { setYoutubeUrl(value); setPostError(""); }}
+              autoCapitalize="none"
+              autoCorrect={false}
+              keyboardType="url"
+              accessibilityLabel="YouTube link for the online concert"
+            />
+            <Text style={styles.onlineSourceHint}>Paste the link to the YouTube concert you are reviewing.</Text>
+            {!!youtubeUrl.trim() && !youtubeUrlValid && (
+              <Text style={styles.songError} accessibilityLiveRegion="polite">Paste a YouTube watch, Shorts, live, or youtu.be link.</Text>
+            )}
+
+            <View style={styles.onlineRatingCard}>
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text style={styles.onlineRatingLabel}>YOUR RATING</Text>
+                <TapStars value={onlineRating} onChange={(value) => { setRatingsDirty(true); setOnlineRating(normalizeOnlineRating(value)); }} size={28} gap={5} color={colors.amber} />
+              </View>
+              <Text style={styles.onlineRatingValue}>{onlineRating ? onlineRating.toFixed(1) : "-"}</Text>
+            </View>
+          </>
+        ) : (
+          <>
         <View style={{ flexDirection: "row", gap: 10 }}>
           <View style={{ flex: 1.4 }}>
             <TextInput style={styles.input} placeholder="Venue" placeholderTextColor={colors.textFaint} value={venue} onChangeText={(text) => { setVenue(text); setVenuePicked(false); }} />
@@ -1489,44 +1604,50 @@ export default function LogScreen({
             ))}
           </View>
         ))}
+          </>
+        )}
 
-        <Text style={[styles.fieldLabel, { marginTop: 22 }]}>YOUR REVIEW <Text style={styles.optional}>· optional, use quick tags if you do not want to write</Text></Text>
+        <Text style={[styles.fieldLabel, { marginTop: 22 }]}>YOUR REVIEW <Text style={styles.optional}>{isOnlineReview ? "· optional" : "· optional, use quick tags if you do not want to write"}</Text></Text>
         <TextInput
           style={[styles.input, styles.multiline]}
-          placeholder="What made the night? Be honest - this is what people read."
+          placeholder={isOnlineReview ? "What stood out about this concert?" : "What made the night? Be honest - this is what people read."}
           placeholderTextColor={colors.textFaint}
           value={review}
           onChangeText={setReview}
           multiline
         />
 
-        {/* Tag words: post without writing a review. Up to five loud little
-            descriptors that render as word-art chips on the card. */}
-        <Text style={[styles.fieldLabel, { marginTop: 22 }]}>QUICK TAGS <Text style={styles.optional}>· up to 5, shown with your rating</Text></Text>
-        {tags.length > 0 && (
-          <View style={styles.tagEditRow}>
-            {tags.map((t, i) => (
-              <Pressable key={t + i} style={styles.tagEditChip} onPress={() => setTags((all) => all.filter((_, idx) => idx !== i))} accessibilityRole="button" accessibilityLabel={`Remove tag ${t}`}>
-                <Text style={styles.tagEditTxt}>{t.toUpperCase()}</Text>
-                <Icon name="x" size={11} color={colors.textDim} />
-              </Pressable>
-            ))}
-          </View>
-        )}
-        {tags.length < 5 && (
-          <TextInput
-            style={styles.input}
-            placeholder={tags.length ? "Add another (press Enter or comma)" : "High energy, loud, emotional (press Enter or comma)"}
-            placeholderTextColor={colors.textFaint}
-            value={tagDraft}
-            onChangeText={(text) => {
-              if (/[,\n]/.test(text)) { commitTag(text); return; }
-              setTagDraft(text);
-            }}
-            onSubmitEditing={() => commitTag(tagDraft)}
-            onBlur={() => commitTag(tagDraft)}
-            maxLength={24}
-          />
+        {!isOnlineReview && (
+          <>
+            {/* These describe live-show factors and feed the physical concert
+                consensus, so they are intentionally unavailable online. */}
+            <Text style={[styles.fieldLabel, { marginTop: 22 }]}>QUICK TAGS <Text style={styles.optional}>· up to 5, shown with your rating</Text></Text>
+            {tags.length > 0 && (
+              <View style={styles.tagEditRow}>
+                {tags.map((t, i) => (
+                  <Pressable key={t + i} style={styles.tagEditChip} onPress={() => setTags((all) => all.filter((_, idx) => idx !== i))} accessibilityRole="button" accessibilityLabel={`Remove tag ${t}`}>
+                    <Text style={styles.tagEditTxt}>{t.toUpperCase()}</Text>
+                    <Icon name="x" size={11} color={colors.textDim} />
+                  </Pressable>
+                ))}
+              </View>
+            )}
+            {tags.length < 5 && (
+              <TextInput
+                style={styles.input}
+                placeholder={tags.length ? "Add another (press Enter or comma)" : "High energy, loud, emotional (press Enter or comma)"}
+                placeholderTextColor={colors.textFaint}
+                value={tagDraft}
+                onChangeText={(text) => {
+                  if (/[,\n]/.test(text)) { commitTag(text); return; }
+                  setTagDraft(text);
+                }}
+                onSubmitEditing={() => commitTag(tagDraft)}
+                onBlur={() => commitTag(tagDraft)}
+                maxLength={24}
+              />
+            )}
+          </>
         )}
 
           </>
@@ -1535,12 +1656,12 @@ export default function LogScreen({
         <Text style={styles.attachLabel}>ADD TO YOUR POST</Text>
         <View style={styles.attachBar}>
           <AttachChip icon="camera" label={mediaAttachmentLabel} active={showPhotos || photos.length > 0 || pendingMediaAssets.length > 0} count={photos.length + pendingMediaAssets.length} onPress={toggleMediaPanel} disabled={submitBusy} />
-          <AttachChip icon="play" label="YouTube" active={showSong || !!song?.videoId} onPress={() => setShowSong((v) => !v)} disabled={submitBusy} />
-          <AttachChip icon="you" label={isStatus ? "Friends" : "People with you"} active={showPeople || taggedPeople.length > 0} count={taggedPeople.length} onPress={() => setShowPeople((v) => !v)} disabled={submitBusy} />
+          {!isOnlineReview && <AttachChip icon="play" label="YouTube" active={showSong || !!song?.videoId} onPress={() => setShowSong((v) => !v)} disabled={submitBusy} />}
+          <AttachChip icon="you" label={isStatus || isOnlineReview ? "Friends" : "People with you"} active={showPeople || taggedPeople.length > 0} count={taggedPeople.length} onPress={() => setShowPeople((v) => !v)} disabled={submitBusy} />
         </View>
         {(showPeople || taggedPeople.length > 0) && (
           <View style={styles.attachPanel}>
-            <Text style={styles.attachHint}>{isStatus
+            <Text style={styles.attachHint}>{isStatus || isOnlineReview
               ? "Tag friends who follow you back. Their names link to their Mshpit profiles, and they can remove their tag at any time."
               : "Tag the people who went to this show with you. You must follow each other, and anyone tagged can remove their own tag."}</Text>
             {!!taggedPeople.length && (
@@ -1565,7 +1686,7 @@ export default function LogScreen({
               <>
                 <TextInput
                   style={[styles.input, styles.peopleInput]}
-                  placeholder={isStatus ? "Search your friends" : "Search people you went with"}
+                  placeholder={isStatus || isOnlineReview ? "Search your friends" : "Search people you went with"}
                   placeholderTextColor={colors.textFaint}
                   value={peopleQuery}
                   onChangeText={setPeopleQuery}
@@ -1625,7 +1746,7 @@ export default function LogScreen({
           </View>
         )}
 
-        {(showSong || song?.videoId) && (
+        {!isOnlineReview && (showSong || song?.videoId) && (
         <View style={styles.attachPanel}>
         <Text style={styles.attachHint}>Add a YouTube link to a song, review, interview, lesson, or performance. People can watch the exact video you choose.</Text>
         {song?.videoId ? (
@@ -1768,7 +1889,7 @@ export default function LogScreen({
             <Text style={styles.consentTxt}>Show these photos on {artist || "the artist"}'s public page. The most-liked photos may appear first. You can change this later.</Text>
           </Pressable>
         )}
-        {!isStatus && hasLandingCompatiblePhoto && (
+        {!isStatus && !isOnlineReview && hasLandingCompatiblePhoto && (
           <Pressable
             style={styles.consent}
             accessibilityRole="checkbox"
@@ -1805,6 +1926,15 @@ const styles = StyleSheet.create({
   modeBtnOn: { backgroundColor: colors.amberStrong },
   modeTxt: { color: colors.textDim, fontSize: 13.5, fontWeight: "800" },
   modeTxtOn: { color: "#1A1206" },
+  experienceModeRow: { flexDirection: "row", gap: 8, padding: 4, marginBottom: 18, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.bgElev },
+  experienceModeButton: { flex: 1, minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7, paddingHorizontal: 10, borderRadius: radius.pill },
+  experienceModeButtonOn: { backgroundColor: colors.amberStrong },
+  experienceModeText: { color: colors.textDim, fontSize: 13, fontWeight: "800" },
+  experienceModeTextOn: { color: "#1A1206" },
+  onlineSourceHint: { color: colors.textDim, fontSize: 11.5, lineHeight: 17, marginTop: -6, marginBottom: 12 },
+  onlineRatingCard: { flexDirection: "row", alignItems: "center", gap: 14, marginTop: 18, padding: 16, borderRadius: radius.lg, borderCurve: "continuous", borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface, ...shadow.card },
+  onlineRatingLabel: { color: colors.textFaint, fontFamily: mono, fontSize: 10, fontWeight: "900", letterSpacing: 1.4, marginBottom: 8 },
+  onlineRatingValue: { minWidth: 44, color: colors.amber, fontFamily: displayFont, fontSize: 28, fontWeight: "900", textAlign: "right", fontVariant: ["tabular-nums"] },
   // Status composer: an author card like the big social apps.
   composerCard: { backgroundColor: colors.surface, borderRadius: radius.lg, borderCurve: "continuous", borderWidth: 1, borderColor: colors.line, padding: 14, ...shadow.card },
   campaignComposerCard: { borderColor: colors.amber, boxShadow: "0 0 0 1px rgba(242,166,90,0.12), 0 14px 34px rgba(0,0,0,0.24)" },

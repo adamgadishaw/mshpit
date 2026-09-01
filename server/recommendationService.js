@@ -55,8 +55,12 @@ const POST_SELECT = `
       WHERE l.post_id=p.id AND ${activeAccountSql("lu")}) AS like_count,
     (SELECT COUNT(*) FROM comments c JOIN users cu ON cu.id=c.user_id
       WHERE c.post_id=p.id AND c.removed=0 AND ${activeAccountSql("cu")}) AS comment_count,
-    (SELECT COUNT(*) FROM posts seen WHERE seen.user_id=p.user_id AND LOWER(seen.artist)=LOWER(p.artist)
-      AND seen.removed=0 AND (seen.created_at<p.created_at OR (seen.created_at=p.created_at AND seen.id<=p.id))) AS seen_ordinal,
+    CASE WHEN COALESCE(p.kind,'review')='review' AND COALESCE(p.experience_type,'in_person')='in_person'
+      THEN (SELECT COUNT(*) FROM posts seen WHERE seen.user_id=p.user_id AND LOWER(seen.artist)=LOWER(p.artist)
+        AND seen.removed=0 AND COALESCE(seen.kind,'review')='review'
+        AND COALESCE(seen.experience_type,'in_person')='in_person'
+        AND (seen.created_at<p.created_at OR (seen.created_at=p.created_at AND seen.id<=p.id)))
+      ELSE NULL END AS seen_ordinal,
     a.genre AS artist_genre
   FROM posts p
   JOIN users u ON u.id=p.user_id

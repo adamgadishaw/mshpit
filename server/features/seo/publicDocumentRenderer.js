@@ -1,4 +1,5 @@
 import { LANDING_IDENTITY_COPY, landingKicker } from "../../../src/domain/landingPresentation.mjs";
+import { canonicalYouTubeReviewLink } from "../../onlineReviews.js";
 
 const esc = (value) => String(value ?? "")
   .replace(/&/g, "&amp;")
@@ -119,6 +120,10 @@ function mediaGallery(media, label, { primary = false } = {}) {
 
 function compactPost(post, { full = false, showShowDetails = full, hideRating = false } = {}) {
   if (!post) return "";
+  const onlineReview = post.kind === "review" && post.experienceType === "online";
+  const youtube = onlineReview
+    ? canonicalYouTubeReviewLink({ youtubeUrl: post.youtubeUrl, youtubeVideoId: post.youtubeVideoId })
+    : null;
   const author = post.author?.path
     ? link(post.author.path, post.author.handle ? `@${post.author.handle}` : post.author.name)
     : esc(post.author?.name || "Mshpit member");
@@ -126,11 +131,13 @@ function compactPost(post, { full = false, showShowDetails = full, hideRating = 
   const showDate = dateLabel(post.showDate);
   const published = dateTimeLabel(post.publishedAt);
   const venue = post.venue && post.venuePath ? link(post.venuePath, post.venue) : esc(post.venue || "");
-  const title = post.kind === "review" && post.artist
+  const title = onlineReview
+    ? `<span>${esc(post.onlineTitle || post.artist || "Online concert")}</span>${post.onlineTitle && post.artist ? ` <span class="muted">· ${artist}</span>` : ""}`
+    : post.kind === "review" && post.artist
     ? `${artist}${post.venue ? ` <span class="muted">at ${venue}</span>` : ""}`
     : `<span>${author} shared an update</span>`;
   const body = full ? paragraphs(post.text) : `<p>${esc(post.text)}</p>`;
-  const showDetails = post.kind === "review" && showShowDetails;
+  const showDetails = post.kind === "review" && !onlineReview && showShowDetails;
   const tour = showDetails && post.tour
     ? `<p class="post-show-details"><strong>Tour</strong> ${esc(post.tour)}</p>`
     : "";
@@ -139,12 +146,13 @@ function compactPost(post, { full = false, showShowDetails = full, hideRating = 
     : "";
   return `<article class="post-card${full ? " post-full" : ""}">
     <header>
-      <div><p class="eyebrow">${post.kind === "review" ? hideRating ? "Fan memory" : "Live review" : "From the community"}</p><h${full ? "1" : "3"}>${title}</h${full ? "1" : "3"}></div>
-      ${!hideRating && post.rating != null && post.kind === "review" ? `<p class="rating" aria-label="Rated ${esc(post.rating)} out of 5">${esc(Number(post.rating).toFixed(1))}<span>/5</span></p>` : ""}
+      <div><p class="eyebrow">${onlineReview ? "Online concert" : post.kind === "review" ? hideRating ? "Fan memory" : "Live review" : "From the community"}</p><h${full ? "1" : "3"}>${title}</h${full ? "1" : "3"}></div>
+      ${!hideRating && post.rating != null && post.kind === "review" ? `<p class="rating" aria-label="Rated ${onlineReview ? "online concert " : ""}${esc(post.rating)} out of 5">${esc(Number(post.rating).toFixed(1))}<span>/5</span></p>` : ""}
     </header>
     <p class="byline">By ${author}${showDate ? ` · <time datetime="${esc(post.showDate)}">${esc(showDate)}</time>` : published ? ` · <time datetime="${esc(published.iso)}">${esc(published.label)}</time>` : ""}</p>
     <div class="post-copy">${body}</div>
     ${tour}${setlist}
+    ${youtube ? `<p><a class="button" href="${esc(youtube.youtubeUrl)}" target="_blank" rel="ugc nofollow noopener noreferrer">Watch on YouTube</a></p>` : ""}
     ${mediaGallery(post.media, post.artist || "Concert post", { primary: full })}
     <footer><span>${esc(post.likes)} likes</span><span>${esc(post.comments)} comments</span>${!full && post.path ? link(post.path, "Read the full post", "text-link") : ""}</footer>
   </article>`;
@@ -269,7 +277,7 @@ function postMain(document) {
   return `<main id="main" class="post-page">
     ${breadcrumbs(document)}
     ${compactPost(document.post, { full: true })}
-    <section class="section comments"><div class="section-heading"><div><p class="eyebrow">After the show</p><h2>Comments</h2></div><span>${esc(document.post.comments)}</span></div>${comments ? `<ol>${comments}</ol>` : '<p class="empty">No public comments yet.</p>'}</section>
+    <section class="section comments"><div class="section-heading"><div><p class="eyebrow">${document.post.experienceType === "online" ? "Discussion" : "After the show"}</p><h2>Comments</h2></div><span>${esc(document.post.comments)}</span></div>${comments ? `<ol>${comments}</ol>` : '<p class="empty">No public comments yet.</p>'}</section>
   </main>`;
 }
 

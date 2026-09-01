@@ -109,6 +109,7 @@ import { ownedPlayerEnvelope, playerQueueWithEntryIds, restoreOwnedPlayerState }
 import { playerLookupIntent } from "./src/domain/playback.mjs";
 import { profileManagementAction, publicIdentityTarget } from "./src/domain/artistWorkspace.mjs";
 import { prepareShowNavigation } from "./src/domain/showNavigation.mjs";
+import { isOnlineReview } from "./src/domain/onlineReview.mjs";
 import { readSensitiveFragmentToken, readSensitiveLinkToken, scrubSensitiveLinkToken } from "./src/domain/sensitiveLinkTokens.mjs";
 import { verifiedMutationDecision } from "./src/domain/emailVerificationUx.mjs";
 import { desktopRightRailLayout } from "./src/domain/desktopRailLayout.mjs";
@@ -838,7 +839,7 @@ function Root() {
         }
         else if (entity.kind === "show") {
           const post = await readPublicPost(entity.id).catch(() => null);
-          if (!cancelled && post) setStack([{}, post.kind === "status" ? { post } : { openLog: post }]);
+          if (!cancelled && post) setStack([{}, post.kind === "status" || isOnlineReview(post) ? { post } : { openLog: post }]);
         }
         else if (entity.kind === "event" || entity.kind === "concert") {
           setStack([{}, { openLog: { ...entity, performanceEvent: true } }]);
@@ -957,7 +958,7 @@ function Root() {
   // the exact performance projection produced by calendarShowFromPost.
   const openShow = (log, analytics = {}) => {
     if (!log) return;
-    if (log.kind === "status" && log.performanceEvent !== true) return openPost(log, analytics);
+    if ((log.kind === "status" && log.performanceEvent !== true) || isOnlineReview(log)) return openPost(log, analytics);
     const navigation = prepareShowNavigation(log);
     if (!navigation) return;
     const { destination } = navigation;
@@ -1127,7 +1128,7 @@ function Root() {
   else if (nav.notifications) overlay = <NotificationsScreen onClose={back} onOpenProfile={openProfile} onOpenThread={openThread} onOpen={openShow} onOpenPost={openPost} />;
   else if (nav.calendar) overlay = <CalendarScreen initialDate={nav.calendarDate} initialView={nav.calendarView} onClose={back} onOpen={openShow} onOpenArtist={openArtist} />;
   else if (ENABLE_CLIPS && nav.clips) overlay = <ClipsScreen onClose={back} onOpenPost={openPost} onOpenProfile={openProfile} onOpenArtist={openArtist} onRequireAuth={() => go({ auth: true })} />;
-  else if (nav.profileId) overlay = <ProfileScreen userId={nav.profileId} onClose={back} onOpenShow={openShow} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenArtistArchive={openArtistArchive} onOpenVenue={openVenue} onManageProfile={openProfileManagement} onPreview={musicPreviewAction} onMessage={openThread} onReport={openReport} onEditPost={openPostEditor} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onRemoveMyPostTag={removePostTag} onOpenFollowList={openFollowList} onOpenBadges={openBadges} />;
+  else if (nav.profileId) overlay = <ProfileScreen userId={nav.profileId} onClose={back} onOpenShow={openShow} onOpenPost={openPost} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenArtistArchive={openArtistArchive} onOpenVenue={openVenue} onManageProfile={openProfileManagement} onPreview={musicPreviewAction} onMessage={openThread} onReport={openReport} onEditPost={openPostEditor} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onRemoveMyPostTag={removePostTag} onOpenFollowList={openFollowList} onOpenBadges={openBadges} />;
   else if (nav.fanClub) overlay = <FanClubScreen artist={nav.fanClub} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} onReport={openReport} />;
   else if (nav.artistHub) overlay = <ArtistHubScreen onClose={back} onPreview={(name) => name && go({ artistPreview: name })} onEditPage={(name) => name && requireVerifiedMutation("artist", () => go({ editArtist: name }))} onEditAccount={() => requireVerifiedMutation("profile", () => go({ editProfile: true }))} onTourDates={() => requireVerifiedMutation("artist", () => go({ bulk: true }))} onCampaignPost={() => requireVerifiedMutation("artist", () => go({ logging: true, postMode: "campaign" }))} onPlay={musicPlayerAction} />;
   else if (nav.artistGallery) overlay = <ArtistGalleryScreen artistName={nav.artistGallery.name} artistKey={nav.artistGallery.artistKey} onClose={back} onOpenPhotos={openPhotos} />;

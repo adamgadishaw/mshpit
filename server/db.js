@@ -116,6 +116,10 @@ CREATE TABLE IF NOT EXISTS posts (
   landing_showcase INTEGER NOT NULL DEFAULT 0,
   campaign      TEXT,
   attendance_ticket TEXT,
+  experience_type TEXT NOT NULL DEFAULT 'in_person' CHECK (experience_type IN ('in_person','online')),
+  online_title  TEXT CHECK (online_title IS NULL OR length(online_title) <= 160),
+  youtube_url   TEXT CHECK (youtube_url IS NULL OR length(youtube_url) <= 200),
+  youtube_video_id TEXT CHECK (youtube_video_id IS NULL OR length(youtube_video_id) = 11),
   tagged_user_ids TEXT NOT NULL DEFAULT '[]',
   setlist       TEXT NOT NULL DEFAULT '[]',
   client_mutation_id TEXT,
@@ -1540,6 +1544,13 @@ const additiveMigrations = [
   // Versioned ticket-card metadata for an explicitly shared attendance post.
   // Nullable keeps old clients and rolling rollbacks compatible.
   "ALTER TABLE posts ADD COLUMN attendance_ticket TEXT",
+  // Online reviews remain social posts about a streamed concert, never proof of
+  // physical attendance or input to live-show/venue aggregates. Legacy rows are
+  // explicitly in-person so every existing URL and count keeps its old meaning.
+  "ALTER TABLE posts ADD COLUMN experience_type TEXT NOT NULL DEFAULT 'in_person' CHECK (experience_type IN ('in_person','online'))",
+  "ALTER TABLE posts ADD COLUMN online_title TEXT CHECK (online_title IS NULL OR length(online_title) <= 160)",
+  "ALTER TABLE posts ADD COLUMN youtube_url TEXT CHECK (youtube_url IS NULL OR length(youtube_url) <= 200)",
+  "ALTER TABLE posts ADD COLUMN youtube_video_id TEXT CHECK (youtube_video_id IS NULL OR length(youtube_video_id) = 11)",
   "ALTER TABLE posts ADD COLUMN tagged_user_ids TEXT NOT NULL DEFAULT '[]'", // structured account ids; distinct from descriptive review tags
   "ALTER TABLE posts ADD COLUMN song TEXT", // JSON of a tagged YouTube song {videoId,title,artist,url,thumb}
   "ALTER TABLE posts ADD COLUMN playlist TEXT", // immutable playlist snapshot attached to a post
@@ -1854,7 +1865,8 @@ END;
 -- (distinct from a moderator's reversible removed=1) and clear the new
 -- authored campaign/tag fields too. Updating tagged_user_ids also invokes the
 -- synchronization trigger above, so no normalized association survives.
-CREATE TRIGGER IF NOT EXISTS trg_posts_legacy_author_tombstone
+DROP TRIGGER IF EXISTS trg_posts_legacy_author_tombstone;
+CREATE TRIGGER trg_posts_legacy_author_tombstone
 AFTER UPDATE OF removed ON posts
 WHEN OLD.removed=0 AND NEW.removed=1
   AND NEW.artist='' AND NEW.venue='' AND NEW.city='' AND NEW.date=''
@@ -1864,9 +1876,12 @@ WHEN OLD.removed=0 AND NEW.removed=1
   AND NEW.song IS NULL AND NEW.playlist IS NULL
   AND NEW.artist_key IS NULL AND NEW.artist_mbid IS NULL AND NEW.venue_key IS NULL
   AND NEW.client_mutation_id IS NULL AND NEW.client_mutation_hash IS NULL
-  AND (NEW.campaign IS NOT NULL OR NEW.tagged_user_ids<>'[]')
+  AND (NEW.campaign IS NOT NULL OR NEW.tagged_user_ids<>'[]'
+    OR NEW.experience_type<>'in_person' OR NEW.online_title IS NOT NULL
+    OR NEW.youtube_url IS NOT NULL OR NEW.youtube_video_id IS NOT NULL)
 BEGIN
-  UPDATE posts SET campaign=NULL,tagged_user_ids='[]' WHERE id=NEW.id;
+  UPDATE posts SET campaign=NULL,tagged_user_ids='[]',experience_type='in_person',
+    online_title=NULL,youtube_url=NULL,youtube_video_id=NULL WHERE id=NEW.id;
 END;
 
 -- A pre-upgrade account-erasure process does not know to rewrite the legacy
@@ -2006,10 +2021,12 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_posts_artist_name_reviews
 db.exec(`CREATE INDEX IF NOT EXISTS idx_posts_artist_archive
   ON posts(artist_key, date DESC, created_at DESC, id DESC)
   WHERE removed=0 AND COALESCE(kind,'review')='review'
+    AND COALESCE(experience_type,'in_person')='in_person'
     AND date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_posts_artist_name_archive
   ON posts(lower(artist), date DESC, created_at DESC, id DESC)
   WHERE removed=0 AND COALESCE(kind,'review')='review'
+    AND COALESCE(experience_type,'in_person')='in_person'
     AND date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'`);
 db.exec("CREATE INDEX IF NOT EXISTS idx_dms_visible_cursor ON dms(from_id, to_id, removed, created_at DESC, id DESC)");
 // The queue is drained by "next pending for this campaign" on every iteration,

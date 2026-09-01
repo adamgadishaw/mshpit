@@ -3,6 +3,7 @@ import { verifiedFinalizedLegacyMedia } from "./mediaLegacyFinalize.js";
 import { postMediaStateByPost } from "./mediaAssets.js";
 import { safeOwnedReadyMediaUrl } from "./publicMedia.js";
 import { venueLookupKeys, venueLookupSlugs } from "../src/domain/venueIdentity.mjs";
+import { inPersonReviewSql } from "./onlineReviews.js";
 
 export const VENUE_FAN_PHOTO_LIMIT = 12;
 const VENUE_FAN_PHOTO_CANDIDATE_LIMIT = 96;
@@ -53,7 +54,7 @@ function visiblePostCandidates(database, {
   args.push(limit);
   return database.prepare(`SELECT p.id,p.user_id,p.photos,p.created_at
     FROM posts p INDEXED BY ${indexName} JOIN users u ON u.id=p.user_id
-    WHERE p.removed=0 AND p.photos_public=1 AND COALESCE(p.kind,'review')='review'
+    WHERE p.removed=0 AND p.photos_public=1 AND ${inPersonReviewSql("p")}
       AND ${identitySql} AND ${activeAccountSql("u")}
       AND NOT EXISTS (SELECT 1 FROM reports report
         WHERE report.target_type='post' AND report.target_id=p.id AND report.status='open')

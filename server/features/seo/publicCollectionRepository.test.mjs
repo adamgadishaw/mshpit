@@ -29,7 +29,8 @@ function createDatabase() {
     CREATE TABLE posts (
       id TEXT PRIMARY KEY,user_id TEXT NOT NULL,artist TEXT NOT NULL,artist_key TEXT,venue TEXT NOT NULL,
       venue_key TEXT,city TEXT,date TEXT,overall REAL,review TEXT,photos_public INTEGER NOT NULL DEFAULT 0,
-      kind TEXT DEFAULT 'review',removed INTEGER NOT NULL DEFAULT 0,created_at INTEGER NOT NULL,updated_at INTEGER
+      kind TEXT DEFAULT 'review',experience_type TEXT NOT NULL DEFAULT 'in_person',
+      removed INTEGER NOT NULL DEFAULT 0,created_at INTEGER NOT NULL,updated_at INTEGER
     );
     CREATE TABLE media_objects (
       object_key TEXT PRIMARY KEY,owner_id TEXT NOT NULL,storage_scope TEXT NOT NULL,status TEXT NOT NULL
@@ -78,13 +79,13 @@ function addTour(db,{
 function addPost(db,{
   id,userId = "active",artist = "Alpha",artistKey = "alpha",venue = "Hall A",
   venueKey = null,date = "2026-08-01",review = LONG_REVIEW,overall = 4,
-  photosPublic = false,removed = false,kind = "review",createdAt = NOW,
+  photosPublic = false,removed = false,kind = "review",experienceType = "in_person",createdAt = NOW,
 } = {}) {
   db.prepare(`INSERT INTO posts
-    (id,user_id,artist,artist_key,venue,venue_key,city,date,overall,review,photos_public,kind,removed,created_at,updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    (id,user_id,artist,artist_key,venue,venue_key,city,date,overall,review,photos_public,kind,experience_type,removed,created_at,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
     id,userId,artist,artistKey,venue,venueKey || venue.toLowerCase(),"USER AUTHORED CITY MUST NOT IDENTIFY",date,
-    overall,review,photosPublic ? 1 : 0,kind,removed ? 1 : 0,createdAt,createdAt + 1,
+    overall,review,photosPublic ? 1 : 0,kind,experienceType,removed ? 1 : 0,createdAt,createdAt + 1,
   );
 }
 function addReadyImage(db,{ postId,ownerId = "active",assetId = `asset-${postId}` }) {
@@ -211,6 +212,7 @@ test("artist archives paginate without overlap and accept only substantive text 
     addReadyImage(db,{ postId:"private-choice" });
     addPost(db,{ id:"ready-media",venue:"Gallery",date:"2026-06-05",review:"",photosPublic:true });
     addReadyImage(db,{ postId:"ready-media",assetId:"ready-gallery" });
+    addPost(db,{ id:"online-review",venue:"Online Is Not A Room",date:"2026-06-06",experienceType:"online" });
 
     const repo = createPublicCollectionRepository(db);
     const first = repo.readArtistConcerts({ publicSlug:"alpha",page:1,at:NOW,today:TODAY });
@@ -224,7 +226,7 @@ test("artist archives paginate without overlap and accept only substantive text 
     const firstKeys = new Set(first.concerts.map((row) => `${row.show_venue}|${row.date}`));
     assert.equal(second.concerts.some((row) => firstKeys.has(`${row.show_venue}|${row.date}`)),false);
     assert.equal(second.concerts.some((row) => row.venue === "Gallery"),true);
-    assert.equal(second.concerts.some((row) => ["Pending","Private","Invalid","Removed","Banned"].includes(row.venue)),false);
+    assert.equal(second.concerts.some((row) => ["Pending","Private","Invalid","Removed","Banned","Online Is Not A Room"].includes(row.venue)),false);
     assert.equal(repo.readArtistConcerts({ publicSlug:"alpha",page:3,at:NOW,today:TODAY }),null);
   } finally { db.close(); }
 });

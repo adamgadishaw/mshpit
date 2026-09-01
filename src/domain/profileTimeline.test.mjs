@@ -80,3 +80,10 @@ test("concert review counts exclude statuses but retain legacy review rows", () 
   );
   assert.deepEqual(selectConcertReviews(null), []);
 });
+
+test("online concert reviews remain social posts but are not concert attendance", () => {
+  const online = { id: "online", kind: "review", experienceType: "online", createdAt: 20 };
+  const inPerson = { id: "venue", kind: "review", experienceType: "in_person", createdAt: 10 };
+  assert.deepEqual(selectConcertReviews([online, inPerson]), [inPerson]);
+  assert.deepEqual(selectProfileTimeline([online, inPerson]), [online, inPerson]);
+});

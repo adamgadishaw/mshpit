@@ -4009,6 +4009,12 @@ test("account export covers owned social data without secrets or raw IP addresse
     VALUES (?,?,?,?,?,?,?,?,?)`).run(
     "post_export_campaign", user.id, "status", "", "", 0, "New music tonight", JSON.stringify(exportedCampaign), 19,
   );
+  db.prepare(`INSERT INTO posts
+    (id,user_id,artist,venue,overall,review,experience_type,online_title,youtube_url,youtube_video_id,created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(
+    "post_export_online", user.id, "The Band", "", 4.5, "Stream review", "online", "Studio concert",
+    "https://www.youtube.com/watch?v=dQw4w9WgXcQ", "dQw4w9WgXcQ", 19,
+  );
   db.prepare(`INSERT INTO posts (id,user_id,artist,venue,overall,tagged_user_ids,created_at)
     VALUES (?,?,?,?,?,?,?)`).run("post_export_tagged", other.id, "The Band", "The Venue", 4, JSON.stringify([user.id]), 20);
   db.prepare("INSERT INTO posts (id,user_id,artist,venue,overall,created_at) VALUES (?,?,?,?,?,?)")
@@ -4050,6 +4056,17 @@ test("account export covers owned social data without secrets or raw IP addresse
     updatedAt: 18,
   }]);
   assert.deepEqual(data.posts.find((post) => post.id === "post_export_campaign").campaign, exportedCampaign);
+  assert.deepEqual(
+    (({ experienceType, onlineTitle, youtubeUrl, youtubeVideoId }) => ({ experienceType, onlineTitle, youtubeUrl, youtubeVideoId }))(
+      data.posts.find((post) => post.id === "post_export_online"),
+    ),
+    {
+      experienceType: "online",
+      onlineTitle: "Studio concert",
+      youtubeUrl: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+      youtubeVideoId: "dQw4w9WgXcQ",
+    },
+  );
   assert.deepEqual(data.taggedInPosts.find((post) => post.postId === "post_export_tagged"), {
     postId: "post_export_tagged",
     authorId: other.id,

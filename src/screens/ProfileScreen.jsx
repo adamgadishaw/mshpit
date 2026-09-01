@@ -56,7 +56,7 @@ function ProfileMediaTile({ item, index, onOpen }) {
 }
 
 // Public member profile: musical identity, live history, media, plans, and posts.
-export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onManageProfile, onMessage, onReport, onEditPost, onOpenPhotos, onRemoveMyPostTag, onOpenFollowList, onOpenBadges }) {
+export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenPost, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onManageProfile, onMessage, onReport, onEditPost, onOpenPhotos, onRemoveMyPostTag, onOpenFollowList, onOpenBadges }) {
   const appActive = useAppActive();
   const { session, userById, logsByUser, isFollowing, follow, unfollow, followerCount, followingCount, goingFor, myAttendance, userBadges, sharedShows, loadUser, isBlocked, blockUser, unblockUser, userPoints, userAchievements, loadRewards, deleteOwnPost } = useStore();
   const profileScope = accountTargetScope(session?.id, `profile:${userId || ""}`);
@@ -458,6 +458,7 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenProfi
               log={l}
               onOpen={onOpenShow}
               onOpenShow={onOpenShow}
+              onOpenPost={onOpenPost}
               onOpenProfile={onOpenProfile}
               onOpenArtist={onOpenArtist}
               onOpenArtistArchive={onOpenArtistArchive}

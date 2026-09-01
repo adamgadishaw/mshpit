@@ -3,6 +3,7 @@ import { slugify } from "../../../src/domain/urls.mjs";
 import { archiveIdentityPart } from "../artistArchive/artistArchiveKeys.js";
 import { currentOrUpcomingTourDateSql, effectiveTourDateEndSql } from "../../tourDateLifecycle.js";
 import { tourDateHasNoPublishedMemorialSql } from "../../artistMemorialTourDateVisibility.js";
+import { inPersonReviewSql } from "../../onlineReviews.js";
 import {
   PUBLIC_ENTITY_THRESHOLDS,
   isStrictCalendarDate,
@@ -195,7 +196,7 @@ export function createPublicCollectionRepository(database) {
               WHERE city_artist.name=p.artist COLLATE NOCASE)))
       )
     JOIN users author ON author.id=p.user_id
-    WHERE p.removed=0 AND COALESCE(p.kind,'review')='review'
+    WHERE p.removed=0 AND ${inPersonReviewSql("p")}
       AND ${validCalendarDateSql("p")} AND p.date<=?2 AND ${activeAccountSql("author")}
       AND ${eligiblePostSql("p")}
   ), ranked AS (
@@ -248,7 +249,7 @@ export function createPublicCollectionRepository(database) {
     SELECT p.*,pit_archive_identity(COALESCE(NULLIF(TRIM(p.venue_key),''),p.venue)) AS show_venue,
       COALESCE(p.updated_at,p.created_at) AS changed_at
     FROM posts p JOIN users author ON author.id=p.user_id
-    WHERE p.removed=0 AND COALESCE(p.kind,'review')='review'
+    WHERE p.removed=0 AND ${inPersonReviewSql("p")}
       AND ${validCalendarDateSql("p")} AND p.date<=?3
       AND (p.artist_key=?1 OR (p.artist_key IS NULL AND LOWER(p.artist)=LOWER(?2)
         AND (SELECT COUNT(*) FROM artists legacy_match WHERE legacy_match.name=p.artist COLLATE NOCASE)=1))

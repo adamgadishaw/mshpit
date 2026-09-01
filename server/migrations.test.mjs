@@ -306,8 +306,17 @@ test("legacy posts, attendance, tour-date, and campaign tables gain safe additiv
     DROP INDEX idx_tourdates_provider_venue;
     DROP INDEX idx_tourdates_provider_venue_public_slug;
     DROP INDEX idx_tourdates_provider_visibility;
+    DROP INDEX idx_posts_artist_reviews;
+    DROP INDEX idx_posts_artist_name_reviews;
+    DROP INDEX idx_posts_artist_archive;
+    DROP INDEX idx_posts_artist_name_archive;
+    DROP TRIGGER trg_posts_legacy_author_tombstone;
     DROP TABLE artist_tourdate_refresh_queue;
     ALTER TABLE posts DROP COLUMN attendance_ticket;
+    ALTER TABLE posts DROP COLUMN youtube_video_id;
+    ALTER TABLE posts DROP COLUMN youtube_url;
+    ALTER TABLE posts DROP COLUMN online_title;
+    ALTER TABLE posts DROP COLUMN experience_type;
     ALTER TABLE going DROP COLUMN created_at;
     ALTER TABLE tour_dates DROP COLUMN access_start_approximate;
     ALTER TABLE tour_dates DROP COLUMN access_start_date_time;
@@ -361,6 +370,13 @@ test("legacy posts, attendance, tour-date, and campaign tables gain safe additiv
 
   assert.ok(goingColumns.has("created_at"));
   assert.ok(postColumns.has("attendance_ticket"));
+  for (const column of ["experience_type", "online_title", "youtube_url", "youtube_video_id"]) {
+    assert.ok(postColumns.has(column), `posts should add ${column}`);
+  }
+  const onlineExperienceColumn = upgraded.db.prepare("PRAGMA table_info(posts)").all()
+    .find((row) => row.name === "experience_type");
+  assert.equal(onlineExperienceColumn.notnull, 1);
+  assert.equal(onlineExperienceColumn.dflt_value, "'in_person'");
   assert.ok(tourColumns.has("owner_id"));
   assert.ok(tourColumns.has("artist_key"));
   assert.ok(tourColumns.has("release_at"));
@@ -510,12 +526,14 @@ test("legacy post friend-tag JSON backfills an indexed rolling-deploy relation",
       "migration-tag-left",
     );
 
-    // The previous release's author-delete statement cannot name campaign or
-    // tagged_user_ids. The database recognizes its complete irreversible scrub
-    // signature and clears this release's fields plus normalized relation.
+    // The previous release's author-delete statement cannot name campaign,
+    // tagged_user_ids, or online-review columns. The database recognizes its
+    // complete irreversible scrub signature and clears this release's fields
+    // plus the normalized relation.
     upgraded.db.prepare(`INSERT INTO posts
-      (id,user_id,kind,artist,venue,overall,review,campaign,tagged_user_ids,created_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?)`).run(
+      (id,user_id,kind,artist,venue,overall,review,campaign,tagged_user_ids,
+        experience_type,online_title,youtube_url,youtube_video_id,created_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
       "migration-tag-old-author-delete",
       "migration-tag-author",
       "status",
@@ -525,6 +543,10 @@ test("legacy post friend-tag JSON backfills an indexed rolling-deploy relation",
       "Legacy process will scrub this copy",
       JSON.stringify({ version: 1, treatment: "spotlight", artistKey: "migration act" }),
       JSON.stringify(["migration-tag-left"]),
+      "online",
+      "Legacy streamed show",
+      "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+      "dQw4w9WgXcQ",
       125,
     );
     upgraded.db.prepare(`UPDATE posts SET removed=1,artist='',venue='',city='',date='',overall=0,
@@ -533,17 +555,26 @@ test("legacy post friend-tag JSON backfills an indexed rolling-deploy relation",
       venue_key=NULL,client_mutation_id=NULL,client_mutation_hash=NULL,updated_at=?
       WHERE id=? AND user_id=?`).run(126, "migration-tag-old-author-delete", "migration-tag-author");
     assert.deepEqual(
-      { ...upgraded.db.prepare(`SELECT campaign,tagged_user_ids,
+      { ...upgraded.db.prepare(`SELECT campaign,tagged_user_ids,experience_type,online_title,youtube_url,youtube_video_id,
         (SELECT COUNT(*) FROM post_user_tags WHERE post_id=posts.id) AS relation_count
         FROM posts WHERE id=?`).get("migration-tag-old-author-delete") },
-      { campaign: null, tagged_user_ids: "[]", relation_count: 0 },
+      {
+        campaign: null,
+        tagged_user_ids: "[]",
+        experience_type: "in_person",
+        online_title: null,
+        youtube_url: null,
+        youtube_video_id: null,
+        relation_count: 0,
+      },
     );
 
     // Moderator hides remain reversible and therefore must not be mistaken for
     // the legacy author's destructive tombstone.
     upgraded.db.prepare(`INSERT INTO posts
-      (id,user_id,kind,artist,venue,overall,review,campaign,tagged_user_ids,created_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?)`).run(
+      (id,user_id,kind,artist,venue,overall,review,campaign,tagged_user_ids,
+        experience_type,online_title,youtube_url,youtube_video_id,created_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
       "migration-tag-moderator-hide",
       "migration-tag-author",
       "status",
@@ -553,14 +584,22 @@ test("legacy post friend-tag JSON backfills an indexed rolling-deploy relation",
       "Keep this for a reversible moderation restore",
       JSON.stringify({ version: 1, treatment: "spotlight", artistKey: "migration act" }),
       JSON.stringify(["migration-tag-left"]),
+      "online",
+      "Moderated streamed show",
+      "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+      "dQw4w9WgXcQ",
       127,
     );
     upgraded.db.prepare("UPDATE posts SET removed=1 WHERE id=?").run("migration-tag-moderator-hide");
-    const hidden = upgraded.db.prepare(`SELECT campaign,tagged_user_ids,
+    const hidden = upgraded.db.prepare(`SELECT campaign,tagged_user_ids,experience_type,online_title,youtube_url,youtube_video_id,
       (SELECT COUNT(*) FROM post_user_tags WHERE post_id=posts.id) AS relation_count
       FROM posts WHERE id=?`).get("migration-tag-moderator-hide");
     assert.ok(hidden.campaign);
     assert.equal(hidden.tagged_user_ids, JSON.stringify(["migration-tag-left"]));
+    assert.equal(hidden.experience_type, "online");
+    assert.equal(hidden.online_title, "Moderated streamed show");
+    assert.equal(hidden.youtube_url, "https://www.youtube.com/watch?v=dQw4w9WgXcQ");
+    assert.equal(hidden.youtube_video_id, "dQw4w9WgXcQ");
     assert.equal(hidden.relation_count, 1);
 
     // Simulate the previous release's account erasure: it deletes the user

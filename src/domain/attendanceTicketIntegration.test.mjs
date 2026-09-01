@@ -107,7 +107,7 @@ test("the shared post renderer owns ticket presentation and disables generic edi
   assert.match(card, /onPress=\{attendanceTicketShow && onOpenShow \? \(\) => onOpenShow\(attendanceTicketShow\) : undefined\}/);
   assert.doesNotMatch(card, /onPress=\{\(\) => onOpen\?\.\(log\)\}\s*accessibilityHint="Open this Going post and its comments"/);
   assert.match(feed, /onOpenShow=\{\(show\) => onOpen\?\.\(show, \{ surface, position: itemIndex \}\)\}/);
-  assert.match(post, /onOpenShow=\{onOpenShow\}/);
+  assert.match(post, /onOpenShow=\{isOnlineReview \? undefined : onOpenShow\}/);
   assert.match(profile, /onOpenShow=\{onOpenShow\}/);
   assert.match(app, /log\.kind === "status" && log\.performanceEvent !== true/);
   assert.ok(app.includes("publicFramePath(frame"), "App delegates canonical history serialization to the tested public-frame helper");

@@ -1,4 +1,5 @@
 import { activeAccountSql } from "../../accountVisibility.js";
+import { inPersonReviewSql } from "../../onlineReviews.js";
 
 const BLOCK_FILTER = `AND (? IS NULL OR NOT EXISTS (
   SELECT 1 FROM blocks b
@@ -22,7 +23,7 @@ function reviewQuery(identitySql) {
         WHERE c.post_id=p.id AND c.removed=0 AND ${activeAccountSql("cu")}) AS comment_count
     FROM posts p JOIN users u ON u.id=p.user_id
     WHERE p.removed=0
-      AND (COALESCE(p.kind,'review')='review' OR (
+      AND (${inPersonReviewSql("p")} OR (
         p.kind='status' AND p.artist_key IS NOT NULL AND p.artist_mbid IS NOT NULL AND p.overall=0
         AND EXISTS (SELECT 1 FROM artist_memorials memory_memorial
           WHERE memory_memorial.artist_key=p.artist_key

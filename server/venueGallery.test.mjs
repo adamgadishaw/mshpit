@@ -75,13 +75,14 @@ function addPost(owner, {
   venue = "History",
   venueKey = "history",
   photosPublic = 1,
+  experienceType = "in_person",
   removed = 0,
   createdAt = Date.now(),
 } = {}) {
   db.prepare(`INSERT INTO posts
-    (id,user_id,kind,artist,venue,venue_key,overall,photos,photos_public,removed,created_at)
-    VALUES (?,?,'review','Venue Gallery Artist',?,?,4,?,?,?,?)`)
-    .run(id, owner.id, venue, venueKey, JSON.stringify(image ? [image.url] : []), photosPublic, removed, createdAt);
+    (id,user_id,kind,artist,venue,venue_key,overall,photos,photos_public,experience_type,removed,created_at)
+    VALUES (?,?,'review','Venue Gallery Artist',?,?,4,?,?,?,?,?)`)
+    .run(id, owner.id, venue, venueKey, JSON.stringify(image ? [image.url] : []), photosPublic, experienceType, removed, createdAt);
   if (image) {
     db.prepare("INSERT INTO post_media (post_id,asset_id,position,created_at) VALUES (?,?,0,?)")
       .run(id, image.id, createdAt);
@@ -115,6 +116,7 @@ test("venue gallery adds only public, ready, unreported, unmoderated and block-v
   const banned = addUser("gallery-banned");
   const reviewer = addUser("gallery-reviewer");
   const privateReviewer = addUser("gallery-private-reviewer");
+  const online = addUser("gallery-online");
 
   const visibleImage = readyImage(visible, "visible");
   const aliasImage = readyImage(alias, "alias");
@@ -125,6 +127,7 @@ test("venue gallery adds only public, ready, unreported, unmoderated and block-v
   const bannedImage = readyImage(banned, "banned");
   const reviewImage = readyImage(reviewer, "review", "venue");
   const privateReviewImage = readyImage(privateReviewer, "private-review", "venue");
+  const onlineImage = readyImage(online, "online");
   const base = Date.now();
   addPost(visible, { id: "vg_visible", image: visibleImage, createdAt: base + 1 });
   addPost(alias, { id: "vg_alias", image: aliasImage, venue: "History Toronto", venueKey: "history toronto", createdAt: base + 2 });
@@ -133,6 +136,7 @@ test("venue gallery adds only public, ready, unreported, unmoderated and block-v
   addPost(removed, { id: "vg_removed", image: removedImage, removed: 1, createdAt: base + 5 });
   addPost(reported, { id: "vg_reported", image: reportedImage, createdAt: base + 6 });
   addPost(banned, { id: "vg_banned", image: bannedImage, createdAt: base + 7 });
+  addPost(online, { id: "vg_online", image: onlineImage, experienceType: "online", createdAt: base + 8 });
   db.prepare("UPDATE users SET is_banned=1 WHERE id=?").run(banned.id);
   db.prepare(`INSERT INTO reports (id,target_type,target_id,reason,reporter_id,status,created_at)
     VALUES ('vg_report','post','vg_reported','media report',?,'open',?)`).run(viewer.id, base + 8);
@@ -151,7 +155,7 @@ test("venue gallery adds only public, ready, unreported, unmoderated and block-v
   assert.equal(guestUris.has(aliasImage.url), true);
   assert.equal(guestUris.has(blockedImage.url), true);
   assert.equal(guestUris.has(reviewImage.url), true);
-  for (const excluded of [hiddenImage, removedImage, reportedImage, bannedImage]) {
+  for (const excluded of [hiddenImage, removedImage, reportedImage, bannedImage, onlineImage]) {
     assert.equal(guestUris.has(excluded.url), false);
   }
 

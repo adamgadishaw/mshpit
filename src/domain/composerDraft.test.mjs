@@ -75,6 +75,65 @@ test("default mode, date, and opened panels alone do not create empty drafts", (
   assert.equal(composerDraftHasContent({ postType: "status", date: "2026-08-13", panels: { photos: true } }), false);
 });
 
+test("online review drafts keep their YouTube identity and remove live-show identity", () => {
+  const draft = normalizeComposerDraft({
+    postType: "show",
+    experienceType: "online",
+    artist: "Little Simz",
+    artistKey: "little-simz",
+    venue: "This must not survive",
+    city: "Toronto",
+    tour: "Live tour",
+    date: "2026-08-09",
+    onlineTitle: "Tiny Desk Concert",
+    youtubeUrl: "https://youtu.be/dQw4w9WgXcQ",
+    onlineRating: 4.5,
+    tags: ["High energy"],
+    tagDraft: "Loud",
+  });
+
+  assert.equal(draft.experienceType, "online");
+  assert.equal(draft.onlineTitle, "Tiny Desk Concert");
+  assert.equal(draft.youtubeUrl, "https://youtu.be/dQw4w9WgXcQ");
+  assert.equal(draft.onlineRating, 4.5);
+  assert.equal(draft.venue, "");
+  assert.equal(draft.city, "");
+  assert.equal(draft.tour, "");
+  assert.equal(draft.date, "");
+  assert.deepEqual(draft.tags, []);
+  assert.equal(draft.tagDraft, "");
+  assert.equal(composerDraftHasContent(draft), true);
+  assert.equal(composerDraftTitle(draft), "Tiny Desk Concert");
+});
+
+test("in-person drafts discard online-only identity", () => {
+  const draft = normalizeComposerDraft({
+    postType: "show",
+    experienceType: "in_person",
+    artist: "Little Simz",
+    onlineTitle: "Old title",
+    youtubeUrl: "https://youtu.be/dQw4w9WgXcQ",
+    onlineRating: 5,
+  });
+  assert.equal(draft.onlineTitle, "");
+  assert.equal(draft.youtubeUrl, "");
+  assert.equal(draft.onlineRating, 0);
+});
+
+test("online drafts restore database-style field names", () => {
+  const draft = normalizeComposerDraft({
+    experience_type: "online",
+    artist: "Little Simz",
+    online_title: "Festival stream",
+    youtube_url: "https://youtu.be/dQw4w9WgXcQ",
+    overall: 4,
+  });
+  assert.equal(draft.experienceType, "online");
+  assert.equal(draft.onlineTitle, "Festival stream");
+  assert.equal(draft.youtubeUrl, "https://youtu.be/dQw4w9WgXcQ");
+  assert.equal(draft.onlineRating, 4);
+});
+
 test("selected friends survive drafts and participate in dirty fingerprints", () => {
   const taggedPeople = [{ id: "u_friend", name: "Mara", handle: "mara" }];
   assert.equal(composerDraftHasContent({ postType: "show", taggedPeople }), true);

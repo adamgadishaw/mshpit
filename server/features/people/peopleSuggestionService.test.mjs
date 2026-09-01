@@ -14,7 +14,8 @@ function fixture() {
     );
     CREATE TABLE follows (follower_id TEXT,followee_id TEXT,PRIMARY KEY(follower_id,followee_id));
     CREATE TABLE blocks (blocker_id TEXT,blocked_id TEXT,PRIMARY KEY(blocker_id,blocked_id));
-    CREATE TABLE posts (id TEXT PRIMARY KEY,user_id TEXT,kind TEXT,artist TEXT,venue TEXT,date TEXT,removed INTEGER DEFAULT 0);
+    CREATE TABLE posts (id TEXT PRIMARY KEY,user_id TEXT,kind TEXT,artist TEXT,venue TEXT,date TEXT,
+      removed INTEGER DEFAULT 0,experience_type TEXT NOT NULL DEFAULT 'in_person');
   `);
   const insert = database.prepare(`INSERT INTO users
     (id,name,handle,initials,avatar_uri,home_city,home_lat,home_lng,genres,favorite_artists,is_banned,suspended_until)
@@ -29,8 +30,11 @@ function fixture() {
   database.prepare("INSERT INTO follows VALUES (?,?)").run("me", "followed");
   database.prepare("INSERT INTO blocks VALUES (?,?)").run("blocked", "me");
   database.prepare("INSERT INTO blocks VALUES (?,?)").run("me", "mineblocked");
-  database.prepare("INSERT INTO posts VALUES (?,?,?,?,?,?,0)").run("post-1", "match", "review", "Bryson Tiller", "Arena", "2026-09-16");
-  database.prepare("INSERT INTO posts VALUES (?,?,?,?,?,?,0)").run("post-2", "match", "review", "Bryson Tiller", "Arena", "2026-09-16");
+  const insertPost = database.prepare(`INSERT INTO posts
+    (id,user_id,kind,artist,venue,date,removed,experience_type) VALUES (?,?,?,?,?,?,0,?)`);
+  insertPost.run("post-1", "match", "review", "Bryson Tiller", "Arena", "2026-09-16", "in_person");
+  insertPost.run("post-2", "match", "review", "Bryson Tiller", "Arena", "2026-09-16", "in_person");
+  insertPost.run("post-online", "match", "review", "Bryson Tiller", "", "", "online");
   const projectUser = (row) => ({
     id: row.id, name: row.name, handle: row.handle, initials: row.initials,
     avatarUri: row.avatar_uri, avatarColor: row.avatar_color, verified: !!row.verified,
@@ -47,7 +51,7 @@ test("people suggestion service excludes follows, blocks, inactive accounts, and
     const result = service.list(viewer, { limit: 5 });
     assert.deepEqual(result.map((entry) => entry.user.id), ["match", "far"]);
     assert.equal(result[0].user.avatarUri, "https://media.test/match.jpg");
-    assert.equal(result[0].showCount, 1);
+    assert.equal(result[0].showCount, 1, "online reviews do not increase concert counts");
     assert.equal("home_lat" in result[0].user, false);
     assert.equal("lat" in (result[0].user.home || {}), false);
     assert.equal("distanceKm" in result[0], false);

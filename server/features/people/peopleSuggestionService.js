@@ -1,5 +1,6 @@
 import { activeAccountSql } from "../../accountVisibility.js";
 import { rankPeopleSuggestions } from "../../../src/domain/peopleSuggestions.mjs";
+import { inPersonReviewSql } from "../../onlineReviews.js";
 
 const candidateLimit = (limit) => Math.max(50, Math.min(200, Number(limit) * 40 || 200));
 const finite = (value) => (value == null || value === "" || !Number.isFinite(Number(value)) ? null : Number(value));
@@ -69,7 +70,7 @@ export function createPeopleSuggestionService(database, { projectUser } = {}) {
     const counts = database.prepare(`SELECT history.user_id,
       COUNT(DISTINCT lower(trim(history.artist)) || char(31) || lower(trim(history.venue)) || char(31) || trim(history.date)) AS show_count
       FROM posts history
-      WHERE history.removed=0 AND history.kind<>'status' AND history.user_id IN (${placeholders})
+      WHERE history.removed=0 AND ${inPersonReviewSql("history")} AND history.user_id IN (${placeholders})
       GROUP BY history.user_id`).all(...ids);
     return new Map(counts.map((row) => [row.user_id, Number(row.show_count) || 0]));
   }

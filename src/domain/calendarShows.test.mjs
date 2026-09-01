@@ -69,6 +69,18 @@ test("dated concert posts land in the correct period while unrelated statuses st
   assert.equal(calendarFocusForPost({ id: "plain", kind: "status", review: "hello" }, today), null);
 });
 
+test("online concert reviews never become attended calendar shows", () => {
+  assert.equal(calendarShowFromPost(show("online", "2026-08-25", {
+    kind: "review",
+    experienceType: "online",
+    venue: "YouTube",
+  })), null);
+  assert.equal(calendarShowFromPost(show("legacy-online", "2026-08-25", {
+    kind: "review",
+    experience_type: "online",
+  })), null);
+});
+
 test("a server-owned Going post merges with its catalogue and private Going row once", () => {
   const ticketPost = {
     id: "post-ticket",

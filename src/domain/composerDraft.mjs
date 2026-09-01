@@ -7,6 +7,11 @@ import {
 } from "./mediaProject.mjs";
 import { normalizeArtistCampaign } from "./artistCampaignPost.mjs";
 import { normalizeTaggedPeople } from "./postFriendTags.mjs";
+import {
+  ONLINE_REVIEW_EXPERIENCE,
+  normalizeOnlineRating,
+  normalizeReviewExperienceType,
+} from "./onlineReview.mjs";
 
 const text = (value) => value == null ? "" : String(value);
 
@@ -30,6 +35,10 @@ const normalizedDims = (value) => {
 export function normalizeComposerDraft(value = {}) {
   const panels = value.panels && typeof value.panels === "object" ? value.panels : {};
   const postType = value.postType === "status" || value.postType === "memory" ? value.postType : "show";
+  const experienceType = postType === "show"
+    ? normalizeReviewExperienceType(value.experienceType ?? value.experience_type)
+    : "in_person";
+  const isOnlineReview = experienceType === ONLINE_REVIEW_EXPERIENCE;
   const legacyPhotos = Array.isArray(value.photos) ? value.photos.filter((uri) => typeof uri === "string").slice(0, MEDIA_POST_MAX_ATTACHMENTS) : [];
   const normalizedProject = value.mediaProject
     ? normalizeMediaProject(value.mediaProject)
@@ -42,17 +51,21 @@ export function normalizeComposerDraft(value = {}) {
     submissionId: text(value.submissionId) || null,
     postType,
     campaign: postType === "status" ? normalizeArtistCampaign(value.campaign) : null,
+    experienceType,
     artist: text(value.artist),
     artistKey: value.artistKey == null || value.artistKey === "" ? null : String(value.artistKey),
-    venue: text(value.venue),
-    city: text(value.city),
-    tour: text(value.tour),
-    date: text(value.date),
+    venue: isOnlineReview ? "" : text(value.venue),
+    city: isOnlineReview ? "" : text(value.city),
+    tour: isOnlineReview ? "" : text(value.tour),
+    date: isOnlineReview ? "" : text(value.date),
+    onlineTitle: isOnlineReview ? text(value.onlineTitle ?? value.online_title) : "",
+    youtubeUrl: isOnlineReview ? text(value.youtubeUrl ?? value.youtube_url) : "",
+    onlineRating: isOnlineReview ? normalizeOnlineRating(value.onlineRating ?? value.overall) : 0,
     dims: normalizedDims(value.dims),
     review: text(value.review),
     taggedPeople: normalizeTaggedPeople(value.taggedPeople),
-    tags: Array.isArray(value.tags) ? value.tags.filter((tag) => typeof tag === "string").slice(0, 5) : [],
-    tagDraft: text(value.tagDraft),
+    tags: isOnlineReview ? [] : Array.isArray(value.tags) ? value.tags.filter((tag) => typeof tag === "string").slice(0, 5) : [],
+    tagDraft: isOnlineReview ? "" : text(value.tagDraft),
     song: value.song && typeof value.song === "object" ? value.song : null,
     songUrl: text(value.songUrl || value.song?.url),
     playlist: value.playlist && typeof value.playlist === "object" ? value.playlist : null,
@@ -83,6 +96,9 @@ export function composerDraftHasContent(value) {
     || draft.venue.trim()
     || draft.city.trim()
     || draft.tour.trim()
+    || draft.onlineTitle.trim()
+    || draft.youtubeUrl.trim()
+    || draft.onlineRating > 0
     || draft.review.trim()
     || draft.taggedPeople.length
     || draft.tags.length
@@ -100,6 +116,9 @@ export function composerDraftTitle(value) {
   const draft = normalizeComposerDraft(value);
   if (draft.postType === "memory") return draft.review.trim() || `${draft.artist.trim() || "Artist"} fan memory`;
   if (draft.postType === "status") return draft.review.trim() || (draft.campaign ? "Featured post draft" : "Post draft");
+  if (draft.experienceType === ONLINE_REVIEW_EXPERIENCE) {
+    return draft.onlineTitle.trim() || `${draft.artist.trim() || "Untitled artist"} online review`;
+  }
   return `${draft.artist.trim() || "Untitled show"}${draft.venue.trim() ? ` ${String.fromCharCode(183)} ${draft.venue.trim()}` : ""}`;
 }
 

@@ -19,6 +19,8 @@ test("review projections receive a stable exact-show archive key", () => {
 
 test("status and incomplete posts never manufacture exact-show keys", () => {
   assert.equal(archiveShowKeyForPost({ kind: "status", artist: "A", venue: "V", date: "2026-08-31" }), null);
+  assert.equal(archiveShowKeyForPost({ kind: "review", experience_type: "online", artist: "A", venue: "V", date: "2026-08-31" }), null);
+  assert.equal(archiveShowKeyForPost({ kind: "review", experienceType: "online", artist: "A", venue: "V", date: "2026-08-31" }), null);
   assert.equal(archiveShowKeyForPost({ kind: "review", artist: "A", venue: "V", date: "soon" }), null);
   assert.equal(archiveShowKeyForPost({ kind: "review", artist: "", venue: "V", date: "2026-08-31" }), null);
 });

@@ -133,7 +133,7 @@ const PAGES = Object.freeze({
     sections: [
       {
         heading: "The rating scale",
-        paragraphs: ["Members rate live experiences on a five-point scale. A higher number means the member reported a stronger experience. Written reviews, tags, photos, the artist, venue, and concert date provide context that a number alone cannot capture."],
+        paragraphs: ["Members rate in-person live experiences on a five-point scale. A higher number means the member reported a stronger experience. Written reviews, tags, photos, the artist, venue, and concert date provide context that a number alone cannot capture. Reviews of concerts watched online are clearly labelled and their ratings do not change the artist's live-show score."],
       },
       {
         heading: "What an average represents",
@@ -286,7 +286,7 @@ const PAGES = Object.freeze({
       },
       {
         heading: "Acceptable use",
-        paragraphs: ["Only log and review shows you actually attended. Don't post spam, hate speech, harassment, threats, illegal content, or anyone's private information; don't impersonate others, manipulate ratings, scrape the service, interfere with its operation, or attempt to access it in unauthorized ways. You agree to follow all applicable laws while using Pit."],
+        paragraphs: ["Only mark a physical show as attended when you were actually there. If you review a concert watched online, use the online-review option and link the YouTube video you watched. Don't post spam, hate speech, harassment, threats, illegal content, or anyone's private information; don't impersonate others, manipulate ratings, scrape the service, interfere with its operation, or attempt to access it in unauthorized ways. You agree to follow all applicable laws while using Pit."],
       },
       {
         heading: "Your content and licence",
