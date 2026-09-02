@@ -11,7 +11,7 @@
     "expo-asset": "~56.0.22",
     "expo-audio": "~56.0.13",
     "expo-constants": "~56.0.23",
-    "expo-file-system": "~56.0.9",
+    "expo-file-system": "~57.0.6",
     "expo-image": "~56.0.12",
     "expo-image-manipulator": "~56.0.26",
     "expo-image-picker": "~56.0.25",
