@@ -26,7 +26,8 @@
           ],
           "android": [
             "com.instagram.android",
-            "com.facebook.katana"
+            "com.facebook.katana",
+            "com.twitter.android"
           ]
         }
       ],

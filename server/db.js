@@ -2662,10 +2662,66 @@ export function artistRow(key, a, source = "musicbrainz") {
 }
 
 // Public projection, merges the rich `data` blob with the typed columns.
+function spotifyCdnArtistImage(value) {
+  try {
+    const url = new URL(String(value || ""));
+    return url.protocol === "https:"
+      && !url.username
+      && !url.password
+      && !url.port
+      && url.hostname === "i.scdn.co"
+      && /^\/image\/[A-Za-z0-9]+$/u.test(url.pathname)
+      && !url.search
+      && !url.hash
+      ? url.href
+      : "";
+  } catch {
+    return "";
+  }
+}
+
+function spotifyCdnHostedUrl(value) {
+  try {
+    const url = new URL(String(value || ""));
+    return url.protocol === "https:"
+      && !url.username
+      && !url.password
+      && !url.port
+      && url.hostname === "i.scdn.co";
+  } catch {
+    return false;
+  }
+}
+
+const publicSpotifyId = (value) => {
+  const id = String(value || "").trim();
+  return /^[A-Za-z0-9]{22}$/u.test(id) ? id : "";
+};
+
 export function publicArtist(r) {
   if (!r) return null;
   let data = {};
-  try { data = r.data ? JSON.parse(r.data) : {}; } catch {}
+  try { data = r.data ? JSON.parse(r.data) : {}; }
+  catch {
+    // architecture: allow-empty-catch -- corrupt legacy metadata contributes no optional public fields.
+  }
+  const projectedData = { ...data };
+  for (const key of ["spotifyPhotoCheckedAt", "spotifyPhotoNoMatchSince", "spotifyPhotoLastResult"]) {
+    delete projectedData[key];
+  }
+  const spotifyId = publicSpotifyId(r.spotify_id || data.spotifyId);
+  const legacySpotifyPhoto = spotifyCdnArtistImage(r.photo) || spotifyCdnArtistImage(data.photo);
+  const attributedSpotifyPhoto = data.photoSource === "spotify" ? spotifyCdnArtistImage(data.spotifyPhoto) : "";
+  const spotifyPhoto = attributedSpotifyPhoto || (spotifyId ? legacySpotifyPhoto : "");
+  if (spotifyCdnHostedUrl(projectedData.photo)) delete projectedData.photo;
+  if (Array.isArray(projectedData.photos)) {
+    projectedData.photos = projectedData.photos
+      .filter((item) => !spotifyCdnHostedUrl(typeof item === "string" ? item : item?.uri));
+  }
+  if (Array.isArray(projectedData.galleryPool)) {
+    projectedData.galleryPool = projectedData.galleryPool
+      .filter((item) => !spotifyCdnHostedUrl(typeof item === "string" ? item : item?.uri));
+  }
   // A genre is a claim with a source, and only claims backed by evidence are
   // stated as fact. `data.genreRecord` is written by enrichment and by staff
   // corrections; rows that predate it are classified by shape. An unverified
@@ -2679,14 +2735,26 @@ export function publicArtist(r) {
     // `key` is the catalog's stable identity. The composer sends it back when a
     // suggestion is picked, so a review binds to this artist rather than to
     // whatever string was typed.
-    ...data, key: r.norm, name: r.name, publicSlug: r.public_slug || null,
-    photo: r.photo, bio: r.bio, mbid: r.mbid, spotifyId: r.spotify_id,
+    ...projectedData, key: r.norm, name: r.name, publicSlug: r.public_slug || null,
+    photo: spotifyCdnHostedUrl(r.photo) ? null : r.photo, bio: r.bio, mbid: r.mbid, spotifyId: spotifyId || null,
     formed: r.formed || null,
     country: r.country, popularity: r.popularity,
     genre: projectedGenre.genre,
     genreHint: projectedGenre.genreHint,
     genreSource: projectedGenre.genreSource,
     genreConfidence: projectedGenre.genreConfidence,
+    // Spotify artwork remains a separate, provider-attributed field. It must
+    // never flow through the generic photo/avatar path, which crops and proxies
+    // images. The artist page renders this URL directly with an adjacent link.
+    spotifyPhoto: spotifyPhoto || null,
+    spotifyPhotoWidth: attributedSpotifyPhoto ? data.spotifyPhotoWidth ?? null : null,
+    spotifyPhotoHeight: attributedSpotifyPhoto ? data.spotifyPhotoHeight ?? null : null,
+    photoSource: spotifyPhoto ? "spotify" : data.photoSource || null,
+    spotifyArtistUrl: spotifyPhoto && spotifyId
+      ? `https://open.spotify.com/artist/${spotifyId}`
+      : null,
+    photoCredit: spotifyPhoto ? "Spotify" : data.photoCredit === "Spotify" ? null : data.photoCredit || null,
+    photoDisplayPolicy: spotifyPhoto ? "original" : data.photoDisplayPolicy || null,
   };
 }
 
@@ -2695,13 +2763,34 @@ function objectData(value) {
   return value;
 }
 
+function withoutBundledSpotifyGenericImages(value) {
+  const incoming = { ...objectData(value) };
+  if (spotifyCdnHostedUrl(incoming.photo)) delete incoming.photo;
+  if (Array.isArray(incoming.photos)) {
+    incoming.photos = incoming.photos
+      .filter((item) => !spotifyCdnHostedUrl(typeof item === "string" ? item : item?.uri));
+  }
+  if (Array.isArray(incoming.galleryPool)) {
+    incoming.galleryPool = incoming.galleryPool
+      .filter((item) => !spotifyCdnHostedUrl(typeof item === "string" ? item : item?.uri));
+  }
+  if (incoming.photoCredit === "Spotify") delete incoming.photoCredit;
+  return incoming;
+}
+
 // Bundled rows are a useful baseline, but they are not newer than production
 // enrichment. Keep the DB-rich fields authoritative and only fill gaps from the
 // bundle. This prevents every server boot from restoring stale tracks/previews.
 export function mergeBundledArtist(existingRow, bundled) {
-  const incoming = objectData(bundled);
+  // The generated legacy bundle predates provider-aware rendering. Keep its
+  // exact Spotify identity for a current server refresh, but never resurrect
+  // its stale CDN image in generic fields that crop and omit attribution.
+  const incoming = withoutBundledSpotifyGenericImages(bundled);
   let existingData = {};
-  try { existingData = objectData(JSON.parse(existingRow?.data || "{}")); } catch {}
+  try { existingData = objectData(JSON.parse(existingRow?.data || "{}")); }
+  catch {
+    // architecture: allow-empty-catch -- corrupt legacy metadata contributes no optional bundle overrides.
+  }
   const merged = { ...incoming, ...existingData };
   for (const field of ["albums", "topTracks", "photos", "galleryPool"]) {
     const current = existingData[field];

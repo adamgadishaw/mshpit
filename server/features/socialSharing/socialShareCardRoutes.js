@@ -28,7 +28,7 @@ function exactBodyKeys(body, allowed) {
 function internalArtworkPaths(document) {
   const entity = document?.kind === "post" ? document.post
     : document?.kind === "event" ? document.event : null;
-  return [...new Set([entity?.artistPath, entity?.venuePath]
+  return [...new Set([entity?.concertPath, entity?.artistPath, entity?.venuePath]
     .filter((path) => typeof path === "string" && path.startsWith("/") && !path.startsWith("//") && path.length <= 500))];
 }
 
@@ -41,6 +41,9 @@ function projectedOfficialArtwork(document, env) {
   if (document?.kind === "event") {
     if (document.imageProvenance !== "provider") return null;
     return trustedArtworkCandidate(document.event?.providerImage?.url, "ticketmaster", env);
+  }
+  if (document?.kind === "concert") {
+    return trustedArtworkCandidate(document.concert?.providerImage?.url, "ticketmaster", env);
   }
   if (document?.kind !== "artist" || !document.artist
     || document.imageProvenance !== "entity-profile" || !document.image) return null;
@@ -78,10 +81,19 @@ function persistedAttendanceArtwork(ticket, env, resolveCurrentArtistProfileImag
   if (providerArtwork) return providerArtwork;
   const persistedArtwork = trustedArtworkCandidate(ticket?.artistPhotoUri, "owned-media", env);
   if (!persistedArtwork || typeof resolveCurrentArtistProfileImage !== "function") return null;
-  const currentArtwork = trustedArtworkCandidate(resolveCurrentArtistProfileImage({
-    artist: ticket.artist,
-    artistKey: ticket.artistKey,
-  }), "owned-media", env);
+  let currentProfileImage = null;
+  try {
+    currentProfileImage = resolveCurrentArtistProfileImage({
+      artist: ticket.artist,
+      artistKey: ticket.artistKey,
+    });
+  } catch {
+    // Profile state is the revocation authority for owned media. If it cannot
+    // be read, fail closed to the branded no-photo card instead of reviving a
+    // deleted upload or failing the entire share request.
+    return null;
+  }
+  const currentArtwork = trustedArtworkCandidate(currentProfileImage, "owned-media", env);
   return currentArtwork?.url === persistedArtwork.url ? persistedArtwork : null;
 }
 

@@ -49,6 +49,10 @@ import {
   startMusicBrainzGenreRefreshScheduler,
   stopMusicBrainzGenreRefreshScheduler,
 } from "./musicBrainzGenreRefresh.js";
+import {
+  startArtistPhotoSeedScheduler,
+  stopArtistPhotoSeedScheduler,
+} from "./artistPhotoSeedScheduler.js";
 import { startCacheWarmScheduler } from "./cacheWarmer.js";
 import { startBackupScheduler } from "./backupScheduler.js";
 import { startMediaDeletionScheduler } from "./mediaDeletion.js";
@@ -760,6 +764,7 @@ function shutdown(exitCode = 0) {
   const artistDeathWatchStop = artistDeathWatchScheduler?.stop() || Promise.resolve();
   const artistTourDateRefreshStop = stopArtistTourDateDemandRefresh({ abortActive: true });
   const artistGenreRefreshStop = stopMusicBrainzGenreRefreshScheduler({ abortActive: true });
+  const artistPhotoSeedStop = stopArtistPhotoSeedScheduler({ abortActive: true });
   stopVideoVerifierHealthScheduler({ abortActive: true });
   if (privateMediaIsolationTimer) clearInterval(privateMediaIsolationTimer);
   if (sitemapRefreshTimer) clearInterval(sitemapRefreshTimer);
@@ -779,6 +784,8 @@ function shutdown(exitCode = 0) {
     catch (error) { console.error(`[pit] exact artist refresh shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     try { await artistGenreRefreshStop; }
     catch (error) { console.error(`[pit] artist genre refresh shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
+    try { await artistPhotoSeedStop; }
+    catch (error) { console.error(`[pit] artist photo seed shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     try { await sitemapRefreshStop; }
     catch (error) { console.error(`[seo] sitemap refresh shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     try { db.close(); }
@@ -910,6 +917,7 @@ async function startServer() {
     startTourDateScheduler(); // scrapes tour dates into the DB on a timer (no cron/redeploy)
     startArtistTourDateDemandRefresh(); // drains durable exact-artist demand without delaying reads
     startMusicBrainzGenreRefreshScheduler(); // exact-MBID genre evidence, bounded and never on a foreground read
+    startArtistPhotoSeedScheduler(); // Spotify artist-page images, bounded and never on a foreground read
     artistDeathWatchScheduler = startArtistDeathWatchScheduler({ service: artistDeathWatchService });
     startCacheWarmScheduler(); // runs keyless catalogue enrichment; provider playback warming obeys the shared product gate
     startBackupScheduler(); // verified daily SQLite snapshot on /data; private off-host copy when configured

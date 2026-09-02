@@ -35,6 +35,14 @@ export default function TermsScreen({ onClose }) {
             { label: "Deezer Privacy Policy", url: "https://www.deezer.com/legal/personal-datas" },
           ],
         },
+        {
+          h: "Spotify artist data and images",
+          p: "Pit may display public artist metadata and Spotify-hosted artist images obtained through the Spotify Platform. Spotify, its affiliates, and its licensors retain their rights in the Spotify Platform, Spotify Service, and Spotify Content; the source link beside an image opens the corresponding artist page on Spotify. Neither Mshpit nor its users make warranties or representations on Spotify's behalf. To the fullest extent permitted by law, all implied warranties concerning the Spotify Platform, Spotify Service, and Spotify Content are disclaimed, including merchantability, fitness for a particular purpose, and non-infringement. You must not modify or create derivative works based on the Spotify Platform, Spotify Service, or Spotify Content, or decompile, reverse-engineer, disassemble, or otherwise reduce any of them to source code or another human-perceivable form, to the fullest extent allowed by law. Mshpit is solely responsible for Pit and its products and services. Spotify is not responsible for Pit and has no liability in connection with it. Spotify is an intended third-party beneficiary of these Terms and the Privacy policy and may directly enforce these Terms.",
+          links: [
+            { label: "Spotify Developer Terms", url: "https://developer.spotify.com/terms" },
+            { label: "Spotify Privacy Policy", url: "https://www.spotify.com/legal/privacy-policy/" },
+          ],
+        },
         { h: "Disclaimers & liability", p: "Pit is provided \"as is\" and \"as available,\" without warranties of any kind. Ratings and recommendations are community-driven and offered without guarantees. To the fullest extent permitted by law, Pit isn't liable for indirect, incidental, or consequential damages, and our total liability is limited to the amount you paid us (which for a free account is zero)." },
         { h: "Termination", p: "You can stop using Pit and delete your account at any time. We may suspend or end your access if you break these terms or if we discontinue the service. Sections meant to survive termination (licences already granted, disclaimers, and limits of liability) continue to apply." },
         { h: "Changes & governing law", p: "We may update these terms as Pit develops and will change the date above when we do; continuing to use Pit means you accept the changes. These terms are governed by the laws applicable where Pit operates, and disputes will be handled by the courts with jurisdiction there, except where local consumer law gives you other rights." },

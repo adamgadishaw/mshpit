@@ -223,7 +223,7 @@ const PAGES = Object.freeze({
       {
         heading: "How we share data",
         paragraphs: [
-          "We share information with service providers that host, secure, deliver email for, and operate Pit on our behalf; with YouTube when a signed-in member asks Pit to validate a YouTube link for a post; with Deezer when Pit resolves public music-catalogue metadata; with other users according to the feature you use (for example, a public review is public while a direct message is shown to its participants); and when required by law or reasonably necessary to protect people and the service. A business transfer may include data subject to appropriate safeguards.",
+          "We share information with service providers that host, secure, deliver email for, and operate Pit on our behalf; with YouTube when a signed-in member asks Pit to validate a YouTube link for a post; with Deezer when Pit resolves public music-catalogue metadata; and with Spotify when Pit's server resolves public artist metadata, image URLs, and source links. Spotify lookups send only a known Spotify artist ID, not Pit member information. We also share information with other users according to the feature you use (for example, a public review is public while a direct message is shown to its participants), and when required by law or reasonably necessary to protect people and the service. A business transfer may include data subject to appropriate safeguards.",
         ],
       },
       {
@@ -242,6 +242,17 @@ const PAGES = Object.freeze({
           "Pit uses Deezer catalogue information to help identify artists and tracks and to display available public metadata such as titles, artwork, genres, rankings, and top tracks. Pit's server may send an artist or track search term to Deezer to resolve that metadata. Pit does not receive a Deezer password or download or provide Deezer recordings.",
         ],
         links: [link("Deezer privacy policy", "https://www.deezer.com/legal/personal-datas")],
+      },
+      {
+        heading: "Spotify artist imagery",
+        paragraphs: [
+          "Pit uses a server-side Spotify developer application to look up public artist metadata. Pit sends only a known Spotify artist ID to Spotify, then stores the returned public artist name and ID, Spotify-hosted artist image URL, Spotify artist-page source link, and the time Pit last checked the record. Pit uses those fields to fill missing artist images, show the source link, and schedule refreshes; it periodically rechecks results and updates or removes stale data.",
+          "This feature does not connect a member's Spotify account, request Spotify Personal Data or information about what a member plays, or give Pit access to a Spotify password. Pit does not set or use Spotify cookies for this feature, and its server-side lookup does not place Spotify cookies in Pit. A device that displays a Spotify-hosted image or opens its source link makes a request to Spotify or its content-delivery service, which Spotify handles under its privacy policy.",
+        ],
+        links: [
+          link("Spotify Developer Terms", "https://developer.spotify.com/terms"),
+          link("Spotify Privacy Policy", "https://www.spotify.com/legal/privacy-policy/"),
+        ],
       },
       {
         heading: "Your choices and rights",
@@ -336,6 +347,19 @@ const PAGES = Object.freeze({
         links: [
           link("Deezer developer terms", "https://developers.deezer.com/termsofuse"),
           link("Deezer privacy policy", "https://www.deezer.com/legal/personal-datas"),
+        ],
+      },
+      {
+        heading: "Spotify artist data and images",
+        paragraphs: [
+          "Pit may display public artist metadata and Spotify-hosted artist images obtained through the Spotify Platform. Spotify, its affiliates, and its licensors retain their rights in the Spotify Platform, Spotify Service, and Spotify Content; the source link beside an image opens the corresponding artist page on Spotify.",
+          "Neither Mshpit nor its users make warranties or representations on Spotify's behalf. To the fullest extent permitted by law, all implied warranties concerning the Spotify Platform, Spotify Service, and Spotify Content are disclaimed, including merchantability, fitness for a particular purpose, and non-infringement.",
+          "You must not modify or create derivative works based on the Spotify Platform, Spotify Service, or Spotify Content, or decompile, reverse-engineer, disassemble, or otherwise reduce any of them to source code or another human-perceivable form, to the fullest extent allowed by law.",
+          "Mshpit is solely responsible for Pit and its products and services. Spotify is not responsible for Pit and has no liability in connection with it. Spotify is an intended third-party beneficiary of these Terms and the Privacy policy and may directly enforce these Terms.",
+        ],
+        links: [
+          link("Spotify Developer Terms", "https://developer.spotify.com/terms"),
+          link("Spotify Privacy Policy", "https://www.spotify.com/legal/privacy-policy/"),
         ],
       },
       {

@@ -271,9 +271,16 @@ export default function SocialShareStudio({ accountId = null, model, onClose }) 
   const shareToStory = () => run(
     "instagram",
     () => shareCardToInstagramStory(model, { preparedAsset: assetState.asset }),
-    (result) => result?.mode === "instagram-story"
-      ? "Instagram opened a Story draft. Nothing was posted automatically."
-      : "The 9:16 Story card was downloaded. Add it to an Instagram Story.",
+    (result) => {
+      if (result?.mode === "instagram-story") {
+        return "Instagram opened a Story draft. Nothing was posted automatically.";
+      }
+      if (result?.mode === "dismissed") return "Share options closed. Nothing was posted.";
+      if (result?.mode === "web-share-sheet") {
+        return "Your share options opened with the card and Mshpit link. Choose an available app and post when ready.";
+      }
+      return "The Story card download started. Add it to Instagram when ready.";
+    },
   );
   const shareTo = (platform) => {
     const url = socialShareIntentUrl(platform, model);
@@ -283,9 +290,12 @@ export default function SocialShareStudio({ accountId = null, model, onClose }) 
       platform,
       () => shareCardToSocialPlatform(platform, model, { preparedAsset: assetState.asset, intentUrl: url }),
       (result) => {
-        if (result?.mode === "dismissed") return "Share sheet closed. Nothing was posted.";
+        if (result?.mode === "dismissed") return "Share options closed. Nothing was posted.";
         if (Platform.OS === "web") {
-          return `${label} opened and the card download started. Attach the downloaded PNG before posting.`;
+          if (result?.mode === "web-share-sheet") {
+            return "Your share options opened with the card and Mshpit link. Choose an available app and post when ready.";
+          }
+          return `${label}’s web composer opened and the card download started. Attach the downloaded card before posting.`;
         }
         if (result?.mode === "native-share-sheet") {
           return "Your share sheet opened with the card and Mshpit link. Choose an app, review it, and post when ready.";
@@ -300,17 +310,17 @@ export default function SocialShareStudio({ accountId = null, model, onClose }) 
     () => downloadShareCard(model, { preparedAsset: assetState.asset }),
     "Share card download started.",
   );
-  const instagramLabel = nativeStory ? "Instagram Story" : "Save Instagram Story";
+  const instagramLabel = "Instagram Story";
   const instagramDetail = nativeStory
     ? storyConfigured
       ? "Open this card in Instagram’s Story editor"
-      : "Needs the Meta App ID in this app build"
-    : "Download a 9:16 card to add to your Story";
+      : "Instagram Story sharing is unavailable in this app build"
+    : "Open your share options with this card, or save it to add to Instagram";
   const socialDetail = (platform) => Platform.OS === "web"
-    ? `Download this card, then open ${platform}. Attach it before posting`
-    : platform === "Facebook" && Platform.OS === "android"
-      ? "Open Facebook, or your share sheet if Facebook is unavailable"
-      : "Open your share sheet with this card and the Mshpit link";
+    ? `Open your share options with this card, or use ${platform}’s web composer`
+    : Platform.OS === "android"
+      ? `Open ${platform} with this card and the Mshpit link`
+      : "Open the iPhone share sheet with this card and the Mshpit link";
 
   return (
     <Modal
@@ -361,7 +371,7 @@ export default function SocialShareStudio({ accountId = null, model, onClose }) 
               {assetState.status === "loading"
                 ? "Preparing the final share card…"
                 : assetState.status === "ready"
-                  ? "Final 9:16 Story artwork ready"
+                  ? "Share artwork ready"
                   : "The artwork is unavailable right now. You can still copy the link."}
             </Text>
 
@@ -417,7 +427,7 @@ export default function SocialShareStudio({ accountId = null, model, onClose }) 
               ) : null}
             </View>
             <Text style={styles.platformNote}>
-              On iPhone and Android, Mshpit opens Instagram’s Story editor. Nothing posts until you confirm it in Instagram. Browsers download the Story card instead.
+              The iPhone and Android apps can open Instagram’s Story editor. Supported browsers open your device’s share options. Browsers cannot choose a destination or post automatically; other browsers download the card and open the X or Facebook web composer.
             </Text>
             {feedback ? (
               <Text

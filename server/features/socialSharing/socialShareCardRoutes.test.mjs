@@ -230,15 +230,22 @@ test("persisted owned Going artwork must still be the current public artist prof
     resolveCurrentArtistProfileImage: () => null,
     resolvePublicDocument,
   });
+  const unreadable = fixture({
+    ticket: JSON.stringify(rawTicket),
+    resolveCurrentArtistProfileImage: () => { throw new Error("profile lookup unavailable"); },
+    resolvePublicDocument,
+  });
 
   await current.route(context({ kind: "post", postId: "going_post" }));
   await replaced.route(context({ kind: "post", postId: "going_post" }));
   await removed.route(context({ kind: "post", postId: "going_post" }));
+  await unreadable.route(context({ kind: "post", postId: "going_post" }));
 
   assert.deepEqual(seenIdentities, [{ artist: "The Example", artistKey: "the example" }]);
   assert.deepEqual(current.renderedModels[0].artwork, [{ url: previousPhoto, source: "owned-media" }]);
   assert.deepEqual(replaced.renderedModels[0].artwork, []);
   assert.deepEqual(removed.renderedModels[0].artwork, []);
+  assert.deepEqual(unreadable.renderedModels[0].artwork, []);
   assert.notEqual(
     socialShareCardEtag(current.renderedModels[0]),
     socialShareCardEtag(replaced.renderedModels[0]),
@@ -253,6 +260,16 @@ test("persisted owned Going artwork must still be the current public artist prof
     resolveCurrentArtistProfileImage: () => { throw new Error("provider art must not use profile validation"); },
   });
   assert.deepEqual(providerSnapshot.fallbackArtwork, [{ url: providerPhoto, source: "ticketmaster" }]);
+  const providerWithoutProfileResolver = publicAttendanceTicketShareSnapshot({
+    ...rawTicket,
+    artistPhotoUri: providerPhoto,
+  }, {
+    resolveCurrentArtistProfileImage: null,
+  });
+  assert.deepEqual(providerWithoutProfileResolver.fallbackArtwork, [{
+    url: providerPhoto,
+    source: "ticketmaster",
+  }], "persisted provider art remains usable when the current artist profile has no photo resolver");
 });
 
 test("Going-post fallback rejects an impossible legacy calendar date", () => {
@@ -375,6 +392,45 @@ test("review artwork rejects cross-user artist and venue gallery fallbacks", asy
   await fallbackFixture.route(context({ kind: "post", postId: "review_fallback" }));
   assert.deepEqual(fallbackFixture.renderedModels[0].artwork, []);
   assert.deepEqual(fallbackPaths, ["/post/review_fallback", "/artist/the-example", "/venue/massey-hall"]);
+});
+
+test("review artwork can use the exact public concert's Ticketmaster image", async () => {
+  const providerUrl = "https://s1.ticketm.net/dam/a/review-concert.jpg";
+  const document = reviewDocument("review_provider_fallback");
+  document.post.concertPath = "/concert/show.review-provider";
+  document.post.artistPath = "/artist/the-example";
+  const fallbackPaths = [];
+  const providerFixture = fixture({
+    resolvePublicDocument: async (path) => {
+      fallbackPaths.push(path);
+      if (path === "/post/review_provider_fallback") return document;
+      if (path === "/concert/show.review-provider") {
+        return {
+          kind: "concert",
+          concert: {
+            providerImage: {
+              url: providerUrl,
+              attribution: "Ticketmaster / promoter",
+              sourcePage: "https://www.ticketmaster.com/event/provider-review",
+            },
+          },
+        };
+      }
+      return null;
+    },
+  });
+
+  await providerFixture.route(context({ kind: "post", postId: "review_provider_fallback" }));
+
+  assert.deepEqual(providerFixture.renderedModels[0].artwork, [{
+    url: providerUrl,
+    source: "ticketmaster",
+  }]);
+  assert.deepEqual(fallbackPaths, [
+    "/post/review_provider_fallback",
+    "/concert/show.review-provider",
+    "/artist/the-example",
+  ]);
 });
 
 test("event artwork keeps Ticketmaster art, strips fan-gallery primaries, and can fall back to an official artist profile", async () => {

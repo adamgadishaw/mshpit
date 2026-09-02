@@ -10,6 +10,7 @@ const INSTAGRAM_PACKAGE = "com.instagram.android";
 const INSTAGRAM_STORY_SCHEME = "instagram-stories://share";
 const SOCIAL_PLATFORMS = new Set(["x", "facebook"]);
 const DIRECT_ANDROID_TARGETS = Object.freeze({
+  x: Object.freeze({ androidPackage: "com.twitter.android", socialKey: "TWITTER" }),
   facebook: Object.freeze({ androidPackage: "com.facebook.katana", socialKey: "FACEBOOK" }),
 });
 
@@ -93,10 +94,11 @@ export async function shareCardToSocialPlatform(platform, model, { preparedAsset
     useInternalStorage: true,
   };
 
-  if (target && await socialTargetAvailable(RNShare, target)) {
+  const directSocial = target ? RNShare.Social?.[target.socialKey] : null;
+  if (directSocial && await socialTargetAvailable(RNShare, target)) {
     const result = await RNShare.shareSingle({
       ...options,
-      social: RNShare.Social[target.socialKey],
+      social: directSocial,
     });
     if (result?.success === false) throw new Error("SOCIAL_SHARE_NOT_OPENED");
     return { mode: "targeted-social", platform };

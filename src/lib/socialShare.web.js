@@ -4,7 +4,43 @@ import { socialShareFileName } from "../domain/socialShareCard.mjs";
 import { openHttpsSharePopup } from "../domain/socialSharePopup.mjs";
 import { apiBinary } from "./api";
 
+const SOCIAL_PLATFORMS = new Set(["x", "facebook"]);
+
 export const instagramStorySharingConfigured = () => false;
+
+function socialShareMessage(model) {
+  return [...new Set([model?.shareText, model?.url]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean))]
+    .join("\n\n");
+}
+
+function browserCanShareFile(preparedAsset) {
+  if (typeof navigator === "undefined"
+    || typeof navigator.share !== "function"
+    || typeof navigator.canShare !== "function"
+    || !preparedAsset?.file) return false;
+  try {
+    return navigator.canShare({ files: [preparedAsset.file] });
+  } catch {
+    return false;
+  }
+}
+
+async function openBrowserShareSheet(model, preparedAsset, platform) {
+  if (!browserCanShareFile(preparedAsset)) return null;
+  try {
+    await navigator.share({
+      files: [preparedAsset.file],
+      text: socialShareMessage(model),
+      title: `Share ${model?.title || "from Mshpit"}`,
+    });
+    return { mode: "web-share-sheet", platform };
+  } catch (error) {
+    if (error?.name === "AbortError") return { mode: "dismissed", platform };
+    throw new Error("SOCIAL_SHARE_NOT_OPENED");
+  }
+}
 
 export async function createShareCardAsset(model, { accountId, signal } = {}) {
   if (!accountId || !model?.renderRequest || typeof File !== "function") return null;
@@ -43,9 +79,11 @@ export function openExternalShareUrl(url) {
 }
 
 export async function shareCardToSocialPlatform(platform, model, { preparedAsset = null, intentUrl = null } = {}) {
-  if (!["x", "facebook"].includes(platform) || !model?.url || !preparedAsset?.previewUri || !intentUrl) {
+  if (!SOCIAL_PLATFORMS.has(platform) || !model?.url || !preparedAsset?.previewUri || !intentUrl) {
     throw new Error("SOCIAL_ARTWORK_UNAVAILABLE");
   }
+  const shared = await openBrowserShareSheet(model, preparedAsset, platform);
+  if (shared) return shared;
   // Keep both browser actions inside the original tap. Public social intents cannot receive a private Blob attachment.
   const composer = openExternalShareUrl(intentUrl);
   const download = downloadShareCard(model, { preparedAsset });
@@ -65,6 +103,8 @@ export async function downloadShareCard(model, { preparedAsset = null } = {}) {
 }
 
 export async function shareCardToInstagramStory(model, options = {}) {
+  const shared = await openBrowserShareSheet(model, options.preparedAsset, "instagram");
+  if (shared) return shared;
   await downloadShareCard(model, options);
   return { mode: "story-download" };
 }

@@ -277,10 +277,6 @@
       "count": 1,
       "fingerprint": "9c955b19e0848f2eae7a"
     },
-    "server/db.js": {
-      "count": 2,
-      "fingerprint": "d9021a2e1c977168b764"
-    },
     "server/emailQueue.js": {
       "count": 2,
       "fingerprint": "8854f47205573bead399"

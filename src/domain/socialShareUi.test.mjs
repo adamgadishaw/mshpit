@@ -21,7 +21,7 @@ test("posts and exact event attendance share through one reusable studio", () =>
   assert.match(attendance, /const shareState = accountId && !pending/,
     "Attendance sharing waits for the canonical saved state instead of exposing the optimistic mutation");
   assert.match(show, /<ShowAttendanceControls[\s\S]*?account=\{session\}/);
-  assert.match(studio, /Mshpit opens Instagram’s Story editor/);
+  assert.match(studio, /apps can open Instagram’s Story editor/);
   assert.match(studio, /assetState\.status !== "ready"/,
     "Instagram Story sharing stays disabled until its PNG exists");
   assert.match(studio, /nativeStory && !storyConfigured/,
@@ -54,7 +54,7 @@ test("share artwork is created only after an explicit share action and stays pri
   assert.match(api, /new Uint8Array\(buffer\)/);
 });
 
-test("Instagram uses only the Story composer while web downloads a Story card", () => {
+test("Instagram uses the Story composer in native builds and an honest browser share fallback", () => {
   const studio = source("../components/SocialShareStudio.jsx");
   const native = source("../lib/socialShare.native.js");
   const web = source("../lib/socialShare.web.js");
@@ -67,9 +67,12 @@ test("Instagram uses only the Story composer while web downloads a Story card", 
   assert.match(native, /INSTAGRAM_NOT_INSTALLED/);
   assert.doesNotMatch(native, /Sharing\.shareAsync|\bShare\.share\(/,
     "Story sharing must never fall back to a feed-capable generic share sheet");
-  assert.match(web, /shareCardToInstagramStory[\s\S]*downloadShareCard\(model, options\)/);
-  assert.doesNotMatch(web, /navigator\.share/,
-    "The website downloads the Story card instead of pretending it can target Instagram");
+  assert.match(web, /navigator\.canShare\(\{ files: \[preparedAsset\.file\] \}\)/,
+    "The browser checks whether the prepared image file can be shared");
+  assert.match(web, /navigator\.share\(\{[\s\S]*files: \[preparedAsset\.file\][\s\S]*text: socialShareMessage\(model\)[\s\S]*\}\)/,
+    "Supported browsers open the system share sheet with the image and Mshpit text/link");
+  assert.match(web, /shareCardToInstagramStory[\s\S]*openBrowserShareSheet\(model, options\.preparedAsset, "instagram"\)[\s\S]*downloadShareCard\(model, options\)/,
+    "Unsupported browsers download the Instagram card without claiming to target the app");
   assert.match(web, /anchor\.download = socialShareFileName\(model\)/);
   assert.match(native, /Clipboard\.setStringAsync/);
   assert.match(web, /Clipboard\.setStringAsync/);
@@ -79,17 +82,21 @@ test("Instagram uses only the Story composer while web downloads a Story card", 
 
   const plugin = app.plugins.find((entry) => Array.isArray(entry) && entry[0] === "react-native-share");
   assert.deepEqual(plugin?.[1]?.ios, ["instagram-stories"]);
-  assert.deepEqual(plugin?.[1]?.android, ["com.instagram.android", "com.facebook.katana"]);
+  assert.deepEqual(plugin?.[1]?.android, ["com.instagram.android", "com.facebook.katana", "com.twitter.android"]);
+  assert.doesNotMatch(studio, /9:16|photo frame|frame size/i,
+    "Share controls describe the action without exposing artwork dimensions");
 });
 
-test("X and Facebook receive each finished card without claiming the website attached it", () => {
+test("X and Facebook share the finished card when supported and retain the desktop fallback", () => {
   const studio = source("../components/SocialShareStudio.jsx");
   const native = source("../lib/socialShare.native.js");
   const web = source("../lib/socialShare.web.js");
 
   assert.match(studio, /shareCardToSocialPlatform\(platform, model, \{ preparedAsset: assetState\.asset, intentUrl: url \}\)/);
-  assert.match(studio, /card download started\. Attach the downloaded PNG before posting\./,
-    "Web success feedback must explain the public composer cannot attach the private Blob");
+  assert.match(studio, /Your share options opened with the card and Mshpit link\. Choose an available app and post when ready\./,
+    "Browser share feedback does not claim a specific app opened or that anything was posted");
+  assert.match(studio, /web composer opened and the card download started\. Attach the downloaded card before posting\./,
+    "Desktop fallback feedback explains that the user still needs to attach the downloaded card");
   assert.match(studio, /Choose an app, review it, and post when ready\./,
     "A generic share sheet must not promise that an unavailable requested app can be chosen");
   assert.match(studio, /Share card download started\./,
@@ -100,17 +107,19 @@ test("X and Facebook receive each finished card without claiming the website att
   assert.match(native, /model\?\.shareText, model\?\.url/,
     "Native share text includes both the action detail and canonical Mshpit URL");
   assert.match(native, /url: preparedAsset\.fileUri/);
-  assert.match(native, /RNShare\.Social\[target\.socialKey\]/);
+  assert.match(native, /RNShare\.Social\?\.\[target\.socialKey\]/);
   assert.match(native, /RNShare\.open\(\{ \.\.\.options, failOnCancel: false \}\)/,
     "Native sharing preserves an image-capable system share-sheet fallback");
-  assert.doesNotMatch(native, /com\.twitter\.android/,
-    "Android X remains on the supported system image share sheet instead of unsupported shareSingle targeting");
+  assert.match(native, /x:\s*Object\.freeze\(\{ androidPackage: "com\.twitter\.android", socialKey: "TWITTER" \}\)/,
+    "Android sends the prepared PNG and message directly to the installed X package");
   assert.match(native, /com\.facebook\.katana/);
   assert.match(native, /if \(Platform\.OS !== "android"\) return false;/,
-    "iOS avoids react-native-share's retired Social-framework single-share path and uses the image-capable share sheet");
+    "iOS avoids react-native-share's retired Social-framework target and keeps the image-capable share sheet");
 
   assert.match(web, /const composer = openExternalShareUrl\(intentUrl\);\s*const download = downloadShareCard\(model, \{ preparedAsset \}\);\s*await Promise\.all\(\[composer, download\]\);/s,
     "The composer popup opens before any awaited boundary, followed by the PNG download in the same tap");
+  assert.match(web, /const shared = await openBrowserShareSheet\(model, preparedAsset, platform\);\s*if \(shared\) return shared;/,
+    "A supported browser uses the image-capable system share sheet before the composer/download fallback");
   assert.match(web, /openHttpsSharePopup\(url\)/,
     "Web sharing delegates popup behavior to the unit-tested synchronous helper");
   assert.doesNotMatch(web, /anchor\.target\s*=/,

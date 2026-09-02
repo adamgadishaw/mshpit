@@ -1093,6 +1093,46 @@ test("provider-evidenced festivals expose cohesive visible and structured event 
     database.close();
   }
 });
+
+test("a public review links to its concert projection without copying provider art into the post", () => {
+  const database = createDatabase();
+  try {
+    addUser(database, "active", { name: "Active Fan", handle: "activefan" });
+    addArtist(database);
+    addPost(database, {
+      id: "provider-art-review",
+      review: "A detailed review of a memorable set with enough public context for the concert archive.",
+      date: "2026-08-20",
+    });
+    database.prepare(`INSERT INTO tour_dates
+      (id,artist,artist_key,venue,place,date,source,provider_event_id,ticket_url,
+        event_image_url,event_image_attribution,event_image_width,event_image_height,
+        venue_city,venue_country_code,release_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)`).run(
+      "provider-art-event", "Alpha", "alpha", "History", "Toronto, Ontario, Canada",
+      "2026-08-20", "ticketmaster", "tm-provider-art",
+      "https://www.ticketmaster.com/event/tm-provider-art",
+      "https://s1.ticketm.net/dam/a/provider-art.jpg", "Ticketmaster / promoter",
+      1920, 1080, "Toronto", "CA",
+    );
+    const documents = service(database);
+    const post = documents.postDocument({ id: "provider-art-review" });
+    const key = archiveShowKey({ artistIdentity: "alpha", venueIdentity: "history", date: "2026-08-20" });
+    assert.equal(post.post.concertPath, `/concert/${encodeURIComponent(key)}`);
+    assert.equal(post.image, null, "provider art is not misrepresented as media uploaded with the review");
+
+    const concert = documents.concertDocument({ showKey: key, today: "2026-08-25" });
+    assert.deepEqual(concert.concert.providerImage, {
+      url: "https://s1.ticketm.net/dam/a/provider-art.jpg",
+      attribution: "Ticketmaster / promoter",
+      width: 1920,
+      height: 1080,
+      sourcePage: "https://www.ticketmaster.com/event/tm-provider-art",
+    });
+  } finally {
+    database.close();
+  }
+});
 test("a verified prominent clip emits matching VideoObject, Open Graph, dimensions, and visible HTML", () => {
   const database = createDatabase();
   try {

@@ -1,17 +1,73 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { parse } from "@babel/parser";
+import { spotifyArtistPhotoModel } from "./spotifyArtistPhoto.mjs";
 
 const app = readFileSync(new URL("../../App.js", import.meta.url), "utf8");
 const artist = readFileSync(new URL("../screens/ArtistScreen.jsx", import.meta.url), "utf8");
 const gallery = readFileSync(new URL("../screens/ArtistGalleryScreen.jsx", import.meta.url), "utf8");
 const carousel = readFileSync(new URL("../components/ArtistCinematicCarousel.jsx", import.meta.url), "utf8");
+const spotifyPhoto = readFileSync(new URL("../components/SpotifyArtistPhoto.jsx", import.meta.url), "utf8");
+const spotifyLogo = readFileSync(new URL("../components/SpotifyFullLogo.jsx", import.meta.url), "utf8");
+const icon = readFileSync(new URL("../components/Icon.jsx", import.meta.url), "utf8");
 
 test("artist cinematic and gallery modules remain parseable", () => {
-  for (const [name, source] of Object.entries({ app, artist, gallery, carousel })) {
+  for (const [name, source] of Object.entries({ app, artist, gallery, carousel, spotifyPhoto, spotifyLogo })) {
     assert.doesNotThrow(() => parse(source, { sourceType: "module", plugins: ["jsx"] }), `${name} must parse`);
   }
+});
+
+test("Spotify artist imagery is fixed-host, unaltered, attributed, and limited to the artist page", () => {
+  const model = spotifyArtistPhotoModel({
+    spotifyPhoto: "https://i.scdn.co/image/trusted123",
+    spotifyArtistUrl: "https://open.spotify.com/artist/1234567890ABCDEFGHIJKL",
+    photoSource: "spotify",
+    photoCredit: "Spotify",
+    photoDisplayPolicy: "original",
+  });
+  assert.equal(model?.credit, "Spotify");
+  assert.equal(spotifyArtistPhotoModel({
+    ...model,
+    spotifyPhoto: "https://attacker.example/photo.jpg",
+    spotifyArtistUrl: model?.sourceUrl,
+    photoSource: "spotify",
+    photoCredit: "Spotify",
+    photoDisplayPolicy: "original",
+  }), null);
+  assert.match(spotifyPhoto, /<Image/);
+  assert.match(spotifyPhoto, /resizeMode="contain"/);
+  assert.match(spotifyPhoto, /borderRadius:\s*4/);
+  assert.doesNotMatch(spotifyPhoto, /borderRadius:\s*radius\.lg/);
+  assert.match(spotifyPhoto, />SOURCE</);
+  assert.match(spotifyPhoto, /<SpotifyFullLogo width=\{70\}/);
+  assert.match(spotifyPhoto, /minHeight:\s*34/);
+  assert.match(spotifyPhoto, /justifyContent:\s*"space-between"/);
+  assert.doesNotMatch(spotifyPhoto, />OPEN SPOTIFY</);
+  assert.match(spotifyPhoto, /useEffect\(\(\) => \{\s*setFailed\(false\);\s*\}, \[photo\?\.uri\]\)/);
+  assert.doesNotMatch(spotifyPhoto, /SmartImage|proxied\(/);
+  assert.match(spotifyLogo, /viewBox="0 0 823\.46 225\.25"/);
+  assert.match(spotifyLogo, /Math\.max\(70,/);
+  const logoPaths = [...spotifyLogo.matchAll(/<Path fill="#fff" d="([^"]+)"/g)].map((match) => match[1]);
+  assert.deepEqual(logoPaths.map((path) => ({
+    length: path.length,
+    sha256: createHash("sha256").update(path).digest("hex"),
+  })), [
+    { length: 1040, sha256: "bec4de8cd1bbd5193ac867d70a0878b25fd17a3d664d3a9aa7f6a21511a308e4" },
+    { length: 2280, sha256: "ba54b42eb72388b93b2783a8db6996ccf4f2bc18cb13fa730ecc326085086f93" },
+    { length: 634, sha256: "59b9c10559b28ee9081f33f979deabf9c801461252a1a64be3b734b76e1738be" },
+    { length: 273, sha256: "4c8576b51c00d4acc339412334173e106471534cc3f63fd10bcb4d6f1c565355" },
+  ], "the supplied full-white Spotify logo remains byte-exact");
+  assert.doesNotMatch(spotifyLogo, /stroke=|fill=\{color\}/);
+  assert.match(spotifyPhoto, /backgroundColor: "#07090D"/);
+  assert.match(spotifyPhoto, /creditText:\s*\{\s*color: colors\.textFaint/);
+  assert.doesNotMatch(icon, /case "spotify":/,
+    "generic icons must not imitate Spotify's supplied mark");
+  assert.match(artist, /<SpotifyArtistPhoto artist=\{meta\} artistName=\{a\.name\}/);
+  assert.match(artist, /if \(!remoteArtistMeta\(a\.name\)\) resolveArtist\(a\.name\)/,
+    "bundled artists still load their current server-side Spotify provenance");
+  assert.doesNotMatch(carousel, /spotifyPhoto|Spotify/);
 });
 
 test("artist gallery is a stable in-app subroute linked from owner and fan previews", () => {

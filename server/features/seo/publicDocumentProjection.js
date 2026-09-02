@@ -335,6 +335,16 @@ function postCard(row, media, paths, { textLimit = 8_000 } = {}) {
   const handle = cleanLine(row.u_handle, 40).replace(/^@+/, "");
   const online = projectedOnlineReviewFields(row);
   const onlineReview = online.experienceType === "online";
+  const artist = cleanLine(row.artist, 160);
+  const venue = onlineReview ? "" : cleanLine(row.venue, 180);
+  const showDate = onlineReview ? null : validDate(row.date);
+  const reviewConcertPath = row.kind !== "status" && artist && venue && showDate
+    ? canonicalConcertPath(paths, archiveShowKey({
+        artistIdentity: cleanLine(row.artist_key, 200) || artist,
+        venueIdentity: cleanLine(row.venue_key, 200) || venue,
+        date: showDate,
+      }))
+    : null;
   return Object.freeze({
     id: String(row.id),
     path: canonicalPostPath(paths, row),
@@ -344,12 +354,13 @@ function postCard(row, media, paths, { textLimit = 8_000 } = {}) {
       path: handle ? canonicalMemberPath(paths, row) : null,
     }),
     kind: row.kind === "status" ? "status" : "review",
-    artist: cleanLine(row.artist, 160) || null,
-    artistPath: cleanLine(row.artist, 160) ? relatedArtistPath(paths, row) : null,
-    venue: onlineReview ? null : cleanLine(row.venue, 180) || null,
-    venuePath: onlineReview ? null : cleanLine(row.venue, 180) ? canonicalVenuePath(paths, row) : null,
+    artist: artist || null,
+    artistPath: artist ? relatedArtistPath(paths, row) : null,
+    venue: venue || null,
+    venuePath: venue ? canonicalVenuePath(paths, row) : null,
+    concertPath: reviewConcertPath,
     city: onlineReview ? null : cleanLine(row.city, 120) || null,
-    showDate: onlineReview ? null : validDate(row.date),
+    showDate,
     rating: rating(row.overall),
     text: cleanBody(row.review, textLimit),
     setlist: onlineReview ? Object.freeze([]) : Object.freeze(setlistItems(row.setlist)),
@@ -1290,7 +1301,19 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         imageWidth: primaryAsset?.kind === "image" ? primaryAsset.width : null,
         imageHeight: primaryAsset?.kind === "image" ? primaryAsset.height : null,
         imageMimeType: primaryAsset?.kind === "image" ? primaryAsset.mimeType : null,
-        concert: Object.freeze({ artist, artistPath: artistCanonicalPath, venue, venuePath: venueCanonicalPath, city: cleanLine(first.city, 120) || null, date, averageRating, ratingCount, reviewCount, address: concertEvent?.location?.address ? Object.freeze({ ...concertEvent.location.address }) : null }),
+        concert: Object.freeze({
+          artist,
+          artistPath: artistCanonicalPath,
+          venue,
+          venuePath: venueCanonicalPath,
+          city: cleanLine(first.city, 120) || null,
+          date,
+          averageRating,
+          ratingCount,
+          reviewCount,
+          providerImage: historicalEvent?.providerImage || null,
+          address: concertEvent?.location?.address ? Object.freeze({ ...concertEvent.location.address }) : null,
+        }),
         reviews,
         breadcrumbs,
         jsonLd: [concertEvent ? Object.freeze(concertEvent) : null, Object.freeze(collectionPage), Object.freeze(breadcrumbNode(publicOrigin, breadcrumbs))].filter(Boolean),

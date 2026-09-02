@@ -24,6 +24,9 @@ test("share artwork accepts only the fixed Ticketmaster host or configured publi
   );
   for (const candidate of [
     { url: "https://attacker.example/photo.jpg", source: "ticketmaster" },
+    { url: "https://s1.ticketm.net.attacker.example/photo.jpg", source: "ticketmaster" },
+    { url: "https://cdn.s1.ticketm.net/photo.jpg", source: "ticketmaster" },
+    { url: "https://s1-ticketm.net/photo.jpg", source: "ticketmaster" },
     { url: "https://media.mshpit.test/private/source.jpg", source: "owned-media" },
     { url: "https://media.mshpit.test/publicity/not-inside.jpg", source: "owned-media" },
     { url: "https://media.mshpit.test/public/photo.jpg#secret", source: "owned-media" },

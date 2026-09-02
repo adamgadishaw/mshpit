@@ -200,6 +200,16 @@ services:
         value: "true"                  # exact-MBID evidence only; outside request paths and <=1 provider call/sec
       - key: ARTIST_GENRE_REFRESH_BATCH
         value: "30"                    # <=30 exact-ID calls/5m (~33s active); current first pass ~4.6h
+      - key: SPOTIFY_CLIENT_ID
+        sync: false                    # server-only Client Credentials identity; never EXPO_PUBLIC
+      - key: SPOTIFY_CLIENT_SECRET
+        sync: false                    # server-only secret; never sent to the app or browser
+      - key: ARTIST_PHOTO_SEED_ENABLED
+        value: "true"                  # runs only when both Spotify credentials are present
+      - key: ARTIST_PHOTO_SEED_BATCH
+        value: "20"                    # at most 20 sequential exact artist lookups every 15 minutes
+      - key: ARTIST_PHOTO_PURGE_REQUESTED
+        value: "false"                 # set true only for an intentional one-time provider-data purge
       - key: TOURDATE_DEMAND_REFRESH_ENABLED
         value: "true"                  # exact signed-in artist lookups enqueue a durable background refresh
       - key: TOURDATE_DEMAND_QUEUE_LIMIT
@@ -412,6 +422,8 @@ services:
         value: "false"                # staging must not duplicate production provider checks
       - key: ARTIST_GENRE_REFRESH_ENABLED
         value: "false"                # production alone owns the paced MusicBrainz evidence pass
+      - key: ARTIST_PHOTO_SEED_ENABLED
+        value: "false"                # staging must not duplicate production Spotify work
       - key: TOURDATE_DEMAND_REFRESH_ENABLED
         value: "false"
       - key: YOUTUBE_API_KEY

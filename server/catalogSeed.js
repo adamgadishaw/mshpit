@@ -14,6 +14,14 @@ import {
 } from "./deezerGenre.js";
 import { genreFieldsForClaim, resolveGenre, storedClaims } from "../src/domain/genre.mjs";
 import { privateErrorLabel } from "./errors.js";
+import { runBackgroundJob } from "./backgroundJobCoordinator.js";
+import {
+  findSpotifyArtistPhoto,
+  safeSpotifyArtistId,
+  safeSpotifyArtistImageUrl,
+  safeSpotifyArtistPageUrl,
+  spotifyArtistPhotoConfigured,
+} from "./spotifyArtistPhotos.js";
 
 // Enrichment used to do `row.genre || e.genre`, which let a stale crawl-bucket
 // label outrank real provider evidence: Deezer knew Justin Bieber was pop, but
@@ -37,6 +45,8 @@ const UA = "PitConcertApp/1.0 (https://mshpit.com)";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const popFromFans = (n) => Math.max(1, Math.min(100, Math.round(Math.log10((n || 0) + 1) * 12.5)));
 export const PHOTO_FILL_LIMIT = 40;
+export const SPOTIFY_PHOTO_RECHECK_MS = 7 * 24 * 60 * 60 * 1000;
+export const SPOTIFY_PHOTO_NO_MATCH_GRACE_MS = 30 * 24 * 60 * 60 * 1000;
 
 // Broad genre coverage: each tag pulls real artists from MusicBrainz (keyless).
 export const GENRE_TAGS = [
@@ -244,37 +254,342 @@ export async function enrichSongs({ shouldStop = () => false, tick = () => {} } 
 // bounded background pass that survives restarts and never repeats artists that
 // were already checked in the current catalog cycle.
 const PHOTO_FILL_CURSOR_KEY = "catalog_photo_fill_cursor_v1";
+const SPOTIFY_PHOTO_BACKOFF_KEY = "spotify_artist_photo_backoff_v1";
 const photoFillCursorGet = db.prepare("SELECT value FROM app_meta WHERE key=?");
 const photoFillCursorSet = db.prepare(`INSERT INTO app_meta (key,value) VALUES (?,?)
   ON CONFLICT(key) DO UPDATE SET value=excluded.value`);
-const photoFillPendingCount = db.prepare("SELECT COUNT(*) c FROM artists WHERE photo IS NULL");
-const photoFillAfterCursor = db.prepare(`SELECT norm,name,genre,photo,mbid,country,formed,popularity,data,source
-  FROM artists WHERE photo IS NULL AND norm > ? ORDER BY norm LIMIT ?`);
-const photoFillFromStart = db.prepare(`SELECT norm,name,genre,photo,mbid,country,formed,popularity,data,source
-  FROM artists WHERE photo IS NULL ORDER BY norm LIMIT ?`);
-const photoFillThroughCursor = db.prepare(`SELECT norm,name,genre,photo,mbid,country,formed,popularity,data,source
-  FROM artists WHERE photo IS NULL AND norm <= ? ORDER BY norm LIMIT ?`);
+const spotifyPhotoBackoffDelete = db.prepare("DELETE FROM app_meta WHERE key=?");
+const missingPhotoPredicate = `photo IS NULL
+AND (
+  (length(spotify_id)=22 AND spotify_id NOT GLOB '*[^A-Za-z0-9]*')
+  OR (
+    data IS NOT NULL AND json_valid(data)=1
+    AND length(json_extract(data,'$.spotifyId'))=22
+    AND json_extract(data,'$.spotifyId') NOT GLOB '*[^A-Za-z0-9]*'
+  )
+)
+AND (
+  EXISTS (SELECT 1 FROM posts p WHERE p.artist_key=artists.norm AND p.removed=0)
+  OR EXISTS (SELECT 1 FROM artist_profiles ap WHERE ap.artist_key=artists.norm AND ap.removed=0)
+  OR EXISTS (SELECT 1 FROM fan_club_members fcm WHERE fcm.artist=artists.norm)
+  OR EXISTS (SELECT 1 FROM tour_dates td WHERE td.artist_key=artists.norm AND td.provider_active=1)
+  OR EXISTS (SELECT 1 FROM artist_tourdate_refresh_queue arq WHERE arq.artist_key=artists.norm)
+)
+AND (
+  data IS NULL OR json_valid(data)=0
+  OR COALESCE(CAST(json_extract(data,'$.spotifyPhotoCheckedAt') AS INTEGER),0) < ?
+)`;
+const photoFillPendingCount = db.prepare(`SELECT COUNT(*) c FROM artists WHERE ${missingPhotoPredicate}`);
+const photoFillColumns = "norm,name,genre,photo,mbid,spotify_id,country,formed,popularity,data,source";
+const photoFillAfterCursor = db.prepare(`SELECT ${photoFillColumns}
+  FROM artists WHERE ${missingPhotoPredicate} AND norm > ? ORDER BY norm LIMIT ?`);
+const photoFillFromStart = db.prepare(`SELECT ${photoFillColumns}
+  FROM artists WHERE ${missingPhotoPredicate} ORDER BY norm LIMIT ?`);
+const photoFillThroughCursor = db.prepare(`SELECT ${photoFillColumns}
+  FROM artists WHERE ${missingPhotoPredicate} AND norm <= ? ORDER BY norm LIMIT ?`);
+
+export const photoFillRefreshBefore = (at = Date.now()) => Number(at) - SPOTIFY_PHOTO_RECHECK_MS;
+
+export function readSpotifyPhotoProviderBackoff(at = Date.now()) {
+  let record = null;
+  try { record = JSON.parse(photoFillCursorGet.get(SPOTIFY_PHOTO_BACKOFF_KEY)?.value || "null"); } catch { /* Invalid state fails open once and is replaced on the next 429. */ }
+  const until = Number(record?.until);
+  if (!Number.isFinite(until) || until <= Number(at)) {
+    if (record) spotifyPhotoBackoffDelete.run(SPOTIFY_PHOTO_BACKOFF_KEY);
+    return null;
+  }
+  const code = record?.code === "quota_exceeded" ? "quota_exceeded" : "rate_limited";
+  return { until, code };
+}
+
+export function writeSpotifyPhotoProviderBackoff({ until, code } = {}, at = Date.now()) {
+  const deadline = Number(until);
+  if (!Number.isFinite(deadline) || deadline <= Number(at)) return false;
+  photoFillCursorSet.run(SPOTIFY_PHOTO_BACKOFF_KEY, JSON.stringify({
+    until: deadline,
+    code: code === "quota_exceeded" ? "quota_exceeded" : "rate_limited",
+  }));
+  return true;
+}
+
+export function clearSpotifyPhotoProviderBackoff() {
+  spotifyPhotoBackoffDelete.run(SPOTIFY_PHOTO_BACKOFF_KEY);
+}
+
+const spotifyPhotoPurgeRows = db.prepare(`SELECT norm,photo,spotify_id,data FROM artists
+  WHERE spotify_id IS NOT NULL
+    OR (
+      data IS NOT NULL AND json_valid(data)=1 AND (
+        json_type(data,'$.spotifyId') IS NOT NULL
+        OR json_type(data,'$.spotifyPhoto') IS NOT NULL
+        OR json_type(data,'$.spotifyPhotoCheckedAt') IS NOT NULL
+        OR json_type(data,'$.spotifyPhotoNoMatchSince') IS NOT NULL
+        OR json_type(data,'$.spotifyPhotoLastResult') IS NOT NULL
+        OR json_extract(data,'$.photoSource')='spotify'
+        OR json_extract(data,'$.photoCredit')='Spotify'
+        OR json_extract(data,'$.photoSourceUrl') LIKE 'https://open.spotify.com/artist/%'
+      )
+    )`);
+const spotifyPhotoExpiredRows = db.prepare(`SELECT norm,photo,spotify_id,data FROM artists
+  WHERE data IS NOT NULL AND json_valid(data)=1
+    AND COALESCE(CAST(json_extract(data,'$.spotifyPhotoCheckedAt') AS INTEGER),0) > 0
+    AND CAST(json_extract(data,'$.spotifyPhotoCheckedAt') AS INTEGER) < ?`);
+const spotifyPhotoPurgeUpdate = db.prepare(`UPDATE artists
+  SET photo=?,spotify_id=?,data=?,updated_at=? WHERE norm=?`);
+const spotifyPhotoLegacyRows = db.prepare(`SELECT norm,photo,spotify_id,data FROM artists
+  WHERE photo LIKE 'https://i.scdn.co/image/%'
+    OR (
+      data IS NOT NULL AND json_valid(data)=1 AND (
+        json_extract(data,'$.photo') LIKE 'https://i.scdn.co/image/%'
+        OR EXISTS (
+          SELECT 1 FROM json_each(data,'$.photos') item
+          WHERE item.value LIKE 'https://i.scdn.co/image/%'
+        )
+        OR EXISTS (
+          SELECT 1 FROM json_each(data,'$.galleryPool') item
+          WHERE CASE WHEN item.type='object' THEN json_extract(item.value,'$.uri') ELSE item.value END
+            LIKE 'https://i.scdn.co/image/%'
+        )
+      )
+    )`);
+const spotifyPhotoLegacyUpdate = db.prepare(`UPDATE artists
+  SET photo=?,spotify_id=?,data=?,updated_at=? WHERE norm=?`);
+
+const spotifyCdnHostedUrl = (value) => {
+  try {
+    const url = new URL(String(value || ""));
+    return url.protocol === "https:"
+      && !url.username
+      && !url.password
+      && !url.port
+      && url.hostname === "i.scdn.co";
+  } catch {
+    return false;
+  }
+};
+
+const withoutSpotifyImageEntries = (items) => Array.isArray(items)
+  ? items.filter((item) => !spotifyCdnHostedUrl(typeof item === "string" ? item : item?.uri))
+  : items;
+
+export function stripSpotifyArtistPhotoData(data, genericPhoto = null, {
+  preserveIdentity = false,
+  typedSpotifyId = null,
+} = {}) {
+  const next = data && typeof data === "object" && !Array.isArray(data) ? { ...data } : {};
+  const retainedSpotifyId = preserveIdentity ? safeSpotifyArtistId(typedSpotifyId || next.spotifyId) : "";
+  const spotifySourceUrl = safeSpotifyArtistPageUrl(next.photoSourceUrl);
+  // i.scdn.co is Spotify's fixed content host, not a Pit upload destination.
+  // Explicit provider purge must remove those URLs even when a legacy row lost
+  // its credit/source fields but retained the typed Spotify identity.
+  if (spotifyCdnHostedUrl(next.photo)) delete next.photo;
+  if (Array.isArray(next.photos)) next.photos = withoutSpotifyImageEntries(next.photos);
+  if (Array.isArray(next.galleryPool)) next.galleryPool = withoutSpotifyImageEntries(next.galleryPool);
+  for (const key of [
+    "spotifyId", "spotifyPhoto", "spotifyPhotoWidth", "spotifyPhotoHeight",
+    "spotifyPhotoCheckedAt", "spotifyPhotoNoMatchSince", "spotifyPhotoLastResult",
+  ]) delete next[key];
+  if (next.photoSource === "spotify" || next.photoCredit === "Spotify" || spotifySourceUrl) {
+    delete next.photoSource;
+    delete next.photoCredit;
+    delete next.photoSourceUrl;
+    delete next.photoDisplayPolicy;
+  }
+  if (retainedSpotifyId) next.spotifyId = retainedSpotifyId;
+  return {
+    data: next,
+    photo: spotifyCdnHostedUrl(genericPhoto) ? null : genericPhoto,
+    spotifyId: retainedSpotifyId || null,
+  };
+}
+
+export function normalizeLegacySpotifyArtistPhotoData(data, genericPhoto = null, typedSpotifyId = null, checkedAt = Date.now()) {
+  const source = data && typeof data === "object" && !Array.isArray(data) ? data : {};
+  const spotifyId = safeSpotifyArtistId(typedSpotifyId || source.spotifyId);
+  const providerOwned = source.photoSource === "spotify"
+    || source.photoCredit === "Spotify"
+    || !!safeSpotifyArtistPageUrl(source.photoSourceUrl, spotifyId || null);
+  const legacyPhoto = safeSpotifyArtistImageUrl(genericPhoto)
+    || safeSpotifyArtistImageUrl(source.photo)
+    || (Array.isArray(source.photos) ? source.photos.map(safeSpotifyArtistImageUrl).find(Boolean) : "")
+    || (Array.isArray(source.galleryPool)
+      ? source.galleryPool.map((item) => safeSpotifyArtistImageUrl(typeof item === "string" ? item : item?.uri)).find(Boolean)
+      : "");
+  const containsProviderCdnPhoto = providerOwned && (
+    spotifyCdnHostedUrl(genericPhoto)
+    || spotifyCdnHostedUrl(source.photo)
+    || (Array.isArray(source.photos) && source.photos.some((item) => spotifyCdnHostedUrl(typeof item === "string" ? item : item?.uri)))
+    || (Array.isArray(source.galleryPool) && source.galleryPool.some((item) => spotifyCdnHostedUrl(typeof item === "string" ? item : item?.uri)))
+  );
+  if (!containsProviderCdnPhoto) return { data: { ...source }, photo: genericPhoto, spotifyId: spotifyId || null };
+  const clean = stripSpotifyArtistPhotoData(source, genericPhoto);
+  if (!spotifyId || !legacyPhoto) return { ...clean, spotifyId: spotifyId || null };
+  return {
+    photo: clean.photo,
+    spotifyId,
+    data: {
+      ...clean.data,
+      spotifyId,
+      spotifyPhoto: legacyPhoto,
+      photoSource: "spotify",
+      photoCredit: "Spotify",
+      photoSourceUrl: `https://open.spotify.com/artist/${spotifyId}`,
+      photoDisplayPolicy: "original",
+      spotifyPhotoCheckedAt: Number.isFinite(Number(checkedAt)) ? Number(checkedAt) : Date.now(),
+    },
+  };
+}
+
+function updateSpotifyRows(rows, transform, at) {
+  let changed = 0;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    for (const row of rows) {
+      let data = {};
+      try { data = JSON.parse(row.data || "{}"); } catch { /* Corrupt metadata is replaced only for provider-specific fields. */ }
+      const clean = transform(row, data);
+      spotifyPhotoPurgeUpdate.run(clean.photo, clean.spotifyId || null, JSON.stringify(clean.data), at, row.norm);
+      changed += 1;
+    }
+    db.exec("COMMIT");
+    return changed;
+  } catch (error) {
+    try { db.exec("ROLLBACK"); } catch { /* Preserve the original migration error. */ }
+    throw error;
+  }
+}
+
+export function purgeSpotifyArtistPhotoData({ at = Date.now() } = {}) {
+  const clock = Number.isFinite(Number(at)) ? Number(at) : Date.now();
+  const changed = updateSpotifyRows(
+    spotifyPhotoPurgeRows.all(),
+    (row, data) => stripSpotifyArtistPhotoData(data, row.photo),
+    clock,
+  );
+  clearSpotifyPhotoProviderBackoff();
+  return changed;
+}
+
+export function purgeExpiredSpotifyArtistPhotoData(at = Date.now()) {
+  const clock = Number.isFinite(Number(at)) ? Number(at) : Date.now();
+  return updateSpotifyRows(
+    spotifyPhotoExpiredRows.all(clock - SPOTIFY_PHOTO_NO_MATCH_GRACE_MS),
+    (row, data) => stripSpotifyArtistPhotoData(data, row.photo, {
+      preserveIdentity: true,
+      typedSpotifyId: row.spotify_id,
+    }),
+    clock,
+  );
+}
+
+export function migrateLegacySpotifyArtistPhotoData(at = Date.now()) {
+  const clock = Number.isFinite(Number(at)) ? Number(at) : Date.now();
+  const rows = spotifyPhotoLegacyRows.all();
+  let changed = 0;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    for (const row of rows) {
+      let data = {};
+      try { data = JSON.parse(row.data || "{}"); } catch { /* Invalid legacy metadata cannot supply an identity. */ }
+      const normalized = normalizeLegacySpotifyArtistPhotoData(data, row.photo, row.spotify_id, clock);
+      spotifyPhotoLegacyUpdate.run(
+        normalized.photo,
+        normalized.spotifyId,
+        JSON.stringify(normalized.data),
+        clock,
+        row.norm,
+      );
+      changed += 1;
+    }
+    db.exec("COMMIT");
+    return changed;
+  } catch (error) {
+    try { db.exec("ROLLBACK"); } catch { /* Preserve the original migration error. */ }
+    throw error;
+  }
+}
+
+export function photoFillPendingTotal(at = Date.now()) {
+  return Number(photoFillPendingCount.get(photoFillRefreshBefore(at))?.c) || 0;
+}
 
 function loadPhotoFillBatch(cursor, limit) {
   const bounded = Math.max(1, Math.min(PHOTO_FILL_LIMIT, Number(limit) || PHOTO_FILL_LIMIT));
+  const refreshBefore = photoFillRefreshBefore();
   if (!cursor) {
     return {
-      rows: photoFillFromStart.all(bounded),
-      total: Number(photoFillPendingCount.get()?.c) || 0,
+      rows: photoFillFromStart.all(refreshBefore, bounded),
+      total: photoFillPendingTotal(),
       wrapped: false,
     };
   }
-  const after = photoFillAfterCursor.all(cursor, bounded);
+  const after = photoFillAfterCursor.all(refreshBefore, cursor, bounded);
   const remaining = bounded - after.length;
-  const before = remaining > 0 ? photoFillThroughCursor.all(cursor, remaining) : [];
+  const before = remaining > 0 ? photoFillThroughCursor.all(refreshBefore, cursor, remaining) : [];
   return {
     rows: [...after, ...before],
-    total: Number(photoFillPendingCount.get()?.c) || 0,
+    total: photoFillPendingTotal(),
     wrapped: before.length > 0,
   };
 }
 
 export function mergePhotoFillData(row, data, enriched) {
+  if (enriched?.provider === "spotify") {
+    if (enriched.noMatch === true) {
+      const checkedAt = Number(enriched.spotifyPhotoCheckedAt) || Date.now();
+      const priorNoMatchSince = Number(data.spotifyPhotoNoMatchSince);
+      const noMatchSince = Number.isFinite(priorNoMatchSince) && priorNoMatchSince > 0
+        ? priorNoMatchSince
+        : checkedAt;
+      const next = {
+        ...data,
+        name: row.name,
+        mbid: row.mbid || data.mbid || null,
+        country: row.country || data.country || null,
+        beginYear: row.formed || data.beginYear || data.formed || null,
+        popularity: row.popularity ?? data.popularity ?? null,
+        spotifyPhotoCheckedAt: checkedAt,
+        spotifyPhotoNoMatchSince: noMatchSince,
+        spotifyPhotoLastResult: "no_match",
+      };
+      if (checkedAt - noMatchSince >= SPOTIFY_PHOTO_NO_MATCH_GRACE_MS) {
+        delete next.spotifyPhoto;
+        delete next.spotifyPhotoWidth;
+        delete next.spotifyPhotoHeight;
+        if (data.photoSource === "spotify") {
+          delete next.photoSource;
+          delete next.photoCredit;
+          delete next.photoSourceUrl;
+          delete next.photoDisplayPolicy;
+        }
+      }
+      return next;
+    }
+    const spotifyId = String(enriched.spotifyId || "").trim();
+    const spotifyPhoto = safeSpotifyArtistImageUrl(enriched.spotifyPhoto);
+    const photoSourceUrl = safeSpotifyArtistPageUrl(enriched.photoSourceUrl, spotifyId);
+    if (!spotifyId || !spotifyPhoto || !photoSourceUrl) return null;
+    const next = {
+      ...data,
+      name: row.name,
+      mbid: row.mbid || data.mbid || null,
+      spotifyId,
+      country: row.country || data.country || null,
+      beginYear: row.formed || data.beginYear || data.formed || null,
+      popularity: row.popularity ?? data.popularity ?? null,
+      spotifyPhoto,
+      spotifyPhotoWidth: enriched.spotifyPhotoWidth ?? null,
+      spotifyPhotoHeight: enriched.spotifyPhotoHeight ?? null,
+      photoSource: "spotify",
+      photoCredit: "Spotify",
+      photoSourceUrl,
+      photoDisplayPolicy: "original",
+      spotifyPhotoCheckedAt: Number(enriched.spotifyPhotoCheckedAt) || Date.now(),
+    };
+    delete next.spotifyPhotoNoMatchSince;
+    delete next.spotifyPhotoLastResult;
+    return next;
+  }
   if (!enriched?.deezerId) return null;
   return {
     ...data,
@@ -304,22 +619,81 @@ function persistPhotoFill(row, enriched) {
   const merged = mergePhotoFillData(row, data, enriched);
   if (!merged) return false;
   artistStmts.upsert.run(artistRow(row.norm, merged, row.source || "deezer"));
-  return !!merged.photo;
+  if (enriched?.provider === "spotify" && enriched.noMatch === true) return false;
+  return !!(merged.photo || merged.spotifyPhoto);
+}
+
+export async function enrichCatalogArtistPhoto(name, {
+  row = null,
+  signal,
+  spotifyConfigured = spotifyArtistPhotoConfigured(),
+  findSpotify = findSpotifyArtistPhoto,
+  enrichDeezer = deezerEnrich,
+  clock = Date.now,
+  readProviderBackoff = readSpotifyPhotoProviderBackoff,
+  writeProviderBackoff = writeSpotifyPhotoProviderBackoff,
+  clearProviderBackoff = clearSpotifyPhotoProviderBackoff,
+} = {}) {
+  let data = {};
+  try { data = JSON.parse(row?.data || "{}"); } catch { /* Invalid legacy metadata supplies no provider identity hint. */ }
+  if (spotifyConfigured) {
+    const checkedAt = Number(clock()) || Date.now();
+    const existingSpotifyId = safeSpotifyArtistId(row?.spotify_id || data.spotifyId || null);
+    if (!existingSpotifyId) return {
+      provider: "spotify",
+      noMatch: true,
+      spotifyPhotoCheckedAt: checkedAt,
+    };
+    const blocked = readProviderBackoff(checkedAt);
+    if (blocked) {
+      const error = new ProviderError("Spotify", 429, "Spotify artist photo enrichment is temporarily unavailable.", {
+        retryable: true,
+        code: blocked.code,
+      });
+      error.blockedUntil = blocked.until;
+      error.retryAfterMs = blocked.until - checkedAt;
+      throw error;
+    }
+    let spotify;
+    try {
+      spotify = await findSpotify(name, { existingSpotifyId, signal });
+    } catch (error) {
+      if (error instanceof ProviderError && error.status === 429 && Number(error.blockedUntil) > checkedAt) {
+        writeProviderBackoff({ until: Number(error.blockedUntil), code: error.code }, checkedAt);
+      }
+      throw error;
+    }
+    clearProviderBackoff();
+    if (spotify) return spotify;
+    return {
+      provider: "spotify",
+      noMatch: true,
+      spotifyPhotoCheckedAt: checkedAt,
+    };
+  }
+  return enrichDeezer(name);
 }
 
 function providerFailureCode(error) {
   if (error?.code === "rate_limited") return "CATALOG_PHOTOS_RATE_LIMITED";
+  if (error?.code === "quota_exceeded") return "CATALOG_PHOTOS_QUOTA_EXCEEDED";
+  // A bad or temporarily stale credential is an operator configuration fault,
+  // not proof that Spotify revoked access. Retain current attributed photos;
+  // only an explicit revoked response may activate the provider-data purge.
+  if (error?.code === "authentication_failed") return "CATALOG_PHOTOS_AUTHENTICATION_FAILED";
+  if (error?.code === "access_revoked") return "CATALOG_PHOTOS_AUTH_REVOKED";
   return "CATALOG_PHOTOS_PROVIDER_UNAVAILABLE";
 }
 
 export async function fillMissingArtistPhotos({
   shouldStop = () => false,
+  signal,
   tick = () => {},
   limit = PHOTO_FILL_LIMIT,
   readCursor = () => photoFillCursorGet.get(PHOTO_FILL_CURSOR_KEY)?.value || "",
   writeCursor = (value) => photoFillCursorSet.run(PHOTO_FILL_CURSOR_KEY, value),
   loadBatch = loadPhotoFillBatch,
-  enrichArtist = deezerEnrich,
+  enrichArtist = enrichCatalogArtistPhoto,
   persistArtist = persistPhotoFill,
   pause = sleep,
 } = {}) {
@@ -334,10 +708,10 @@ export async function fillMissingArtistPhotos({
   let providerFailure = null;
 
   for (const row of rows) {
-    if (shouldStop()) break;
+    if (shouldStop() || signal?.aborted) break;
     let enriched;
     try {
-      enriched = await enrichArtist(row.name);
+      enriched = await enrichArtist(row.name, { row, signal });
     } catch (error) {
       if (!(error instanceof ProviderError)) throw error;
       providerFailure = {
@@ -347,7 +721,8 @@ export async function fillMissingArtistPhotos({
       break;
     }
 
-    const savedPhoto = enriched ? !!persistArtist(row, enriched) : false;
+    const persistedPhoto = enriched ? !!persistArtist(row, enriched) : false;
+    const savedPhoto = enriched?.noMatch === true ? false : persistedPhoto;
     attempted += 1;
     if (savedPhoto) filled += 1;
     else noMatch += 1;
@@ -357,7 +732,7 @@ export async function fillMissingArtistPhotos({
     await pause(80);
   }
 
-  const stopped = shouldStop();
+  const stopped = shouldStop() || !!signal?.aborted;
   tick({ phase: "photos", attempted, filled, noMatch, failed: providerFailure ? 1 : 0, of: rows.length });
   return {
     attempted,
@@ -533,7 +908,7 @@ export function startCatalogSeed({ add = 2000, perTag = null, enrich = false, mo
 
   if (mode === "photos") {
     const runId = opaqueId("seed");
-    const pending = Number(photoFillPendingCount.get()?.c) || 0;
+    const pending = photoFillPendingTotal();
     const target = Math.min(PHOTO_FILL_LIMIT, pending);
     state = {
       runId, running: true, stopRequested: false, mode, phase: "photos",
@@ -543,7 +918,7 @@ export function startCatalogSeed({ add = 2000, perTag = null, enrich = false, mo
       note: pending ? `Checking up to ${target} profiles missing photos.` : "No artist profiles are missing photos.",
     };
     seedRunInsert.run(runId, mode, "running", startTotal, target, 0, 0, null, state.note, state.startedAt, null);
-    void (async () => {
+    void runBackgroundJob(async () => {
       try {
         const result = await fillMissingArtistPhotos({
           shouldStop,
@@ -562,7 +937,7 @@ export function startCatalogSeed({ add = 2000, perTag = null, enrich = false, mo
         state.filled = result.filled;
         state.failed = result.failed;
         state.target = result.batchSize;
-        state.remaining = Number(photoFillPendingCount.get()?.c) || 0;
+        state.remaining = photoFillPendingTotal();
         if (result.stopped) {
           state.phase = "stopped";
           state.note = `Stopped after ${result.attempted} checked; ${result.filled} photos filled.`;
@@ -586,7 +961,7 @@ export function startCatalogSeed({ add = 2000, perTag = null, enrich = false, mo
         state.stopRequested = false;
         seedRunUpdate.run(state.phase, state.added, state.ranked, state.errorCode, state.note, state.finishedAt || Date.now(), runId);
       }
-    })().catch((error) => reportDetachedSeedFailure(error, runId));
+    }).catch((error) => reportDetachedSeedFailure(error, runId));
     return { started: true, status: catalogSeedStatus() };
   }
 
@@ -596,7 +971,7 @@ export function startCatalogSeed({ add = 2000, perTag = null, enrich = false, mo
     const runId = opaqueId("seed");
     state = { runId, running: true, stopRequested: false, mode, phase: "songs", add: 0, target: startTotal, startTotal, added: 0, ranked: 0, total: startTotal, startedAt: Date.now(), finishedAt: 0, error: null, errorCode: null, note: "songs & genres" };
     seedRunInsert.run(runId, mode, "running", startTotal, startTotal, 0, 0, null, state.note, state.startedAt, null);
-    void (async () => {
+    void runBackgroundJob(async () => {
       try {
         const refresh = await refreshSongsAndGenres({
           shouldStop,
@@ -619,7 +994,7 @@ export function startCatalogSeed({ add = 2000, perTag = null, enrich = false, mo
         state.running = false; state.stopRequested = false;
         seedRunUpdate.run(state.phase, state.added, state.ranked, state.errorCode, state.note, state.finishedAt || Date.now(), runId);
       }
-    })().catch((error) => reportDetachedSeedFailure(error, runId));
+    }).catch((error) => reportDetachedSeedFailure(error, runId));
     return { started: true, status: catalogSeedStatus() };
   }
 
@@ -630,7 +1005,7 @@ export function startCatalogSeed({ add = 2000, perTag = null, enrich = false, mo
   const runId = opaqueId("seed");
   state = { runId, running: true, stopRequested: false, mode: "grow", phase: "crawl", add, target, startTotal, added: 0, ranked: 0, total: startTotal, startedAt: Date.now(), finishedAt: 0, error: null, errorCode: null, note: `crawl depth ${crawlDepth}` };
   seedRunInsert.run(runId, mode, "running", startTotal, target, 0, 0, null, state.note, state.startedAt, null);
-  void (async () => {
+  void runBackgroundJob(async () => {
     try {
       const result = await crawlArtists({ target, perTag: crawlDepth, shouldStop, tick: ({ added, total, note }) => { state.added = added; state.total = total; if (note) state.note = note; } });
       state.added = result.added; state.total = result.total;
@@ -651,6 +1026,6 @@ export function startCatalogSeed({ add = 2000, perTag = null, enrich = false, mo
       state.running = false; state.stopRequested = false;
       seedRunUpdate.run(state.phase, state.added, state.ranked, state.errorCode, state.note, state.finishedAt || Date.now(), runId);
     }
-  })().catch((error) => reportDetachedSeedFailure(error, runId));
+  }).catch((error) => reportDetachedSeedFailure(error, runId));
   return { started: true, status: catalogSeedStatus() };
 }

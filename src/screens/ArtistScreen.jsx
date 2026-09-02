@@ -26,6 +26,8 @@ import { useArtistEventArchive } from "../features/artistEvents/useArtistEventAr
 import { selectArtistUpcomingShows } from "../domain/artistUpcomingShows.mjs";
 import ArtistMemorialTribute from "../components/artist/ArtistMemorialTribute";
 import ArtistCinematicCarousel from "../components/ArtistCinematicCarousel";
+import SpotifyArtistPhoto from "../components/SpotifyArtistPhoto";
+import { artistCinematicMedia } from "../domain/artistGalleryMedia.mjs";
 import { useArtistMemorial } from "../features/artistMemorials/useArtistMemorial";
 import { PublicPressableLink } from "../components/PublicWebLinks";
 import { concertPath, eventPath, postPath, profilePath } from "../domain/urls.mjs";
@@ -259,13 +261,24 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
   const badges = artistBadges(a.name);
   // Metadata: bundled catalog first, else the DB catalog (resolved from
   // MusicBrainz on demand if we've never seen this artist, no empty pages).
-  const meta = artistMeta(a.name) || remoteArtistMeta(a.name);
+  const bundledMeta = artistMeta(a.name);
+  const resolvedMeta = remoteArtistMeta(a.name);
+  const meta = bundledMeta && resolvedMeta
+    ? {
+      ...bundledMeta,
+      ...resolvedMeta,
+      photo: resolvedMeta.photo || bundledMeta.photo || null,
+      albums: Array.isArray(resolvedMeta.albums) && resolvedMeta.albums.length
+        ? resolvedMeta.albums
+        : bundledMeta.albums || [],
+    }
+    : resolvedMeta || bundledMeta;
   // Releases come from the live discography endpoint. Bundled releases are no
   // longer shipped (see src/seed/ingested.js), so this is empty for a remote
   // artist until that request lands, which is the state the branch below already
   // handled.
   const bundledAlbums = meta?.albums || [];
-  useEffect(() => { if (!artistMeta(a.name) && !remoteArtistMeta(a.name)) resolveArtist(a.name); }, [a.name]);
+  useEffect(() => { if (!remoteArtistMeta(a.name)) resolveArtist(a.name); }, [a.name]);
   // Pull the artist's fan photos from the server so the rolling gallery shows
   // every public post photo ever, not just posts sitting in this device's feed.
   useEffect(() => {
@@ -334,6 +347,11 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
   const bio = a.ownerBio || meta?.bio;
   const bioPresentation = artistPageSynopsis(bio, { condensed: sectionModel.condensed && !bioExpanded });
   const bannerUri = a.banner || meta?.photo || null;
+  const hasRegularHeroImage = artistCinematicMedia({
+    bannerUri,
+    profileUri: a.photo || meta?.photo || null,
+    gallery,
+  }, 1).length > 0;
   const profileAvatarPhotos = a.profileAvatarUri && a.ownerId
     ? [{ uri: a.profileAvatarUri, ownerId: a.ownerId, artistProfileKey: a.profileKey, by: a.name }]
     : null;
@@ -767,13 +785,17 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
         )}
         {/* One decoded frame at a time: artist-owned imagery leads, followed by
             public fan photos. Motion is user-driven and respects Reduce Motion. */}
-        <ArtistCinematicCarousel
-          artistName={a.name}
-          bannerUri={bannerUri}
-          profileUri={a.photo || meta?.photo || null}
-          gallery={gallery}
-          onOpenMedia={onOpenPhotos}
-        />
+        {hasRegularHeroImage || !meta?.spotifyPhoto ? (
+          <ArtistCinematicCarousel
+            artistName={a.name}
+            bannerUri={bannerUri}
+            profileUri={a.photo || meta?.photo || null}
+            gallery={gallery}
+            onOpenMedia={onOpenPhotos}
+          />
+        ) : (
+          <SpotifyArtistPhoto artist={meta} artistName={a.name} />
+        )}
 
         <View style={styles.headRow}>
           <View style={styles.avatarWrap}>
