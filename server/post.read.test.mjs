@@ -46,3 +46,18 @@ test("single-post read returns canonical state and hides removed or blocked post
     (error) => error instanceof ApiError && error.status === 404 && error.code === "NOT_FOUND",
   );
 });
+
+test("status posts do not grant artist-page photo reuse when consent is omitted", () => {
+  const owner = addUser("statusprivate");
+  const created = routes["POST /api/posts"]({
+    user: owner,
+    ip: "post-read-private-default",
+    body: { kind: "status", review: "A plain status without secondary-use consent" },
+  });
+
+  assert.equal(created.post.photosPublic, false);
+  assert.equal(
+    db.prepare("SELECT photos_public FROM posts WHERE id=?").get(created.id).photos_public,
+    0,
+  );
+});

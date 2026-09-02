@@ -5,6 +5,7 @@ export const FEED_IMPRESSION_BATCH_MAX = 50;
 export const FEED_IMPRESSION_DEDUPE_MS = 5 * 60_000;
 export const FEED_IMPRESSION_RECEIPT_RETENTION_MS = 7 * 24 * 60 * 60_000;
 export const FEED_IMPRESSION_RECEIPT_ACCOUNT_MAX = 5_000;
+export const FEED_IMPRESSION_HISTORY_RETENTION_MS = 180 * 24 * 60 * 60_000;
 
 const POST_ID = /^p_[A-Za-z0-9_-]{1,77}$/;
 const EVENT_ID = /^[A-Za-z0-9_-]{8,100}$/;
@@ -50,14 +51,39 @@ function visiblePostIds(database, userId, postIds) {
 function pruneReceipts(database, userId, at) {
   const globalPrune = at - lastReceiptPruneAt >= 60 * 60_000;
   if (globalPrune) {
-    database.prepare("DELETE FROM post_impression_receipts WHERE created_at<?")
-      .run(Math.max(0, at - FEED_IMPRESSION_RECEIPT_RETENTION_MS));
+    pruneExpiredRows(database, at);
   }
   database.prepare(`DELETE FROM post_impression_receipts WHERE user_id=? AND event_id IN (
     SELECT event_id FROM post_impression_receipts WHERE user_id=?
     ORDER BY created_at DESC,event_id DESC LIMIT -1 OFFSET ?
   )`).run(userId, userId, FEED_IMPRESSION_RECEIPT_ACCOUNT_MAX);
   return globalPrune;
+}
+
+function pruneExpiredRows(database, at) {
+  const receiptsDeleted = database.prepare("DELETE FROM post_impression_receipts WHERE created_at<?")
+    .run(Math.max(0, at - FEED_IMPRESSION_RECEIPT_RETENTION_MS)).changes;
+  // A user's per-post history exists only to rotate and explain their own
+  // feed. Age it independently from anonymous aggregate view totals.
+  const historyDeleted = database.prepare("DELETE FROM post_impressions WHERE last_seen_at<?")
+    .run(Math.max(0, at - FEED_IMPRESSION_HISTORY_RETENTION_MS)).changes;
+  return { receiptsDeleted, historyDeleted };
+}
+
+export function pruneExpiredFeedImpressionHistory(database, { at = Date.now() } = {}) {
+  if (!database?.prepare) throw new TypeError("A database is required");
+  const instant = Number.isSafeInteger(at) && at >= 0 ? at : Date.now();
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    const result = pruneExpiredRows(database, instant);
+    database.exec("COMMIT");
+    lastReceiptPruneAt = Math.max(lastReceiptPruneAt, instant);
+    return result;
+  } catch (error) {
+    try { database.exec("ROLLBACK"); }
+    catch { /* architecture: allow-empty-catch -- preserve the original retention failure */ }
+    throw error;
+  }
 }
 
 export function recordFeedImpressions(database, { userId, impressions, at = Date.now() } = {}) {

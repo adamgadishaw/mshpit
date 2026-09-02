@@ -455,7 +455,7 @@ export function profileSitemapEntries(database, { candidates = null } = {}) {
     latestPostByUser.set(row.user_id, newest(latestPostByUser.get(row.user_id), row.updated_at, row.created_at));
   }
   return database.prepare(`SELECT u.id,u.handle,u.bio,u.created_at,u.profile_updated_at${imageProjection}
-      FROM users u WHERE ${activeAccountSql("u")} AND ${profileAllowsSearchIndexingSql("u")} AND (
+      FROM users u WHERE ${activeAccountSql("u")} AND u.profile_audience='everyone' AND ${profileAllowsSearchIndexingSql("u")} AND (
         LENGTH(TRIM(COALESCE(u.bio,'')))>=60 OR EXISTS (
           SELECT 1 FROM posts eligible
           WHERE eligible.user_id=u.id AND eligible.removed=0 AND (

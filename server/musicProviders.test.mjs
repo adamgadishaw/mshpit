@@ -24,6 +24,7 @@ const {
   parseYouTubeVideoId,
   playbackUrlExpiry,
   persistDeezerIdentity,
+  providerJson,
   pruneExpiredProviderData,
   getFreshDeezerPreview,
   resolveYouTubeTrack,
@@ -272,6 +273,29 @@ test("Deezer preview cancellation reaches the active provider request", async ()
   callerAbort.abort(new DOMException("listener skipped", "AbortError"));
   await assert.rejects(() => pending, (error) => error?.code === "network" && error?.cause?.name === "AbortError");
   assert.equal(providerSignal.aborted, true);
+});
+
+test("provider JSON rejects an oversized declaration before reading its body", async () => {
+  let bodyRead = false;
+  await assert.rejects(
+    providerJson("Deezer", "https://api.deezer.com/search", {
+      fetchImpl: async () => ({
+        ok: true,
+        status: 200,
+        headers: new Headers({ "content-length": String(2 * 1024 * 1024 + 1) }),
+        body: {
+          async cancel() {},
+          getReader() {
+            bodyRead = true;
+            throw new Error("oversized body must not be read");
+          },
+        },
+      }),
+    }),
+    (error) => error?.code === "invalid_json"
+      && error?.cause?.code === "response_too_large",
+  );
+  assert.equal(bodyRead, false);
 });
 
 function youtubeCandidate(id, title, channel, { embeddable = true, madeForKids = false, licensed = true, duration = "PT3M30S", views = "1000000" } = {}) {

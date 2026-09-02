@@ -26,19 +26,21 @@ export function createPeopleSuggestionService(database, { projectUser } = {}) {
       candidate.home_city,candidate.home_lat,candidate.home_lng,candidate.genres,
       candidate.favorite_artists,candidate.profile_updated_at
     FROM users candidate
-    WHERE candidate.id<>? AND ${activeAccountSql("candidate")}
+    WHERE candidate.id<>? AND ${activeAccountSql("candidate")} AND candidate.profile_audience<>'only_me'
       AND NOT EXISTS (SELECT 1 FROM follows followed
         WHERE followed.follower_id=? AND followed.followee_id=candidate.id)
       AND NOT EXISTS (SELECT 1 FROM blocks mine
         WHERE mine.blocker_id=? AND mine.blocked_id=candidate.id)
       AND NOT EXISTS (SELECT 1 FROM blocks theirs
-        WHERE theirs.blocker_id=candidate.id AND theirs.blocked_id=?)`;
+        WHERE theirs.blocker_id=candidate.id AND theirs.blocked_id=?)
+      AND NOT EXISTS (SELECT 1 FROM account_mutes muted
+        WHERE muted.muter_id=? AND muted.muted_id=candidate.id)`;
 
   function candidatesFor(viewer, limit) {
     const lat = finite(viewer?.home_lat);
     const lng = finite(viewer?.home_lng);
     const city = String(viewer?.home_city || "").trim();
-    const args = [viewer.id, viewer.id, viewer.id, viewer.id];
+    const args = [viewer.id, viewer.id, viewer.id, viewer.id, viewer.id];
     let ordering;
     if (lat != null && lng != null) {
       ordering = `ORDER BY

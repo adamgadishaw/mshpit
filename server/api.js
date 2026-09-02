@@ -1,4 +1,5 @@
 import { MEDIA_POST_MAX_ATTACHMENTS } from "../src/domain/mediaUploadPolicy.mjs";
+import { LEGAL_ACCEPTANCE_VERSION } from "../src/domain/privacyDisclosures.mjs";
 import { MUSIC_PLAYER_ENABLED } from "../src/domain/musicPlayerAvailability.mjs";
 // API routes. Conventions that keep this hard to crash and easy to fix:
 // - every route: authenticate -> rate-limit -> validate (shape) -> act -> respond
@@ -20,6 +21,12 @@ import { BADGE_COLORS, BADGE_GLYPHS, BADGE_KINDS, validateBadge } from "../src/d
 import { alertCooldownMs, alertRecipient, alertsEnabled, errorStats, maybeAlert, recentErrors, recordError } from "./errorLog.js";
 import { genreClaim, resolveGenre, storedClaims, upsertClaim, withoutSource } from "../src/domain/genre.mjs";
 import { profileGenreSelection } from "../src/domain/genrePreferences.mjs";
+import {
+  DIRECT_MESSAGE_POLICIES,
+  accountAgeBand,
+  isClassifiedAccountAgeBand,
+  mayStartDirectMessage,
+} from "./directMessageSafety.js";
 import { deezerEnrichmentGenreFields } from "./deezerGenre.js";
 import { ARTIST_GENRE_SQL_COLUMNS, projectArtistGenreColumns } from "./artistGenreProjection.js";
 import { hashPassword, verifyPassword, verifyPasswordForUser, createSession, destroySession, rateLimit, reserveRateLimits } from "./auth.js";
@@ -124,7 +131,7 @@ import {
 import { sameTrackOverrideIdentity } from "./trackIdentity.js";
 import { wikidataProviderStatus } from "./wikidataChannels.js";
 import { backgroundJobEnabled } from "./backgroundJobs.js";
-import { backupSchedulerEnabled, offhostBackupConfigured } from "./backupScheduler.js";
+import { backupOperationalStatus, backupSchedulerEnabled } from "./backupScheduler.js";
 import {
   mediaPublishingCapabilitiesForRuntime,
 } from "../src/domain/mediaPublishingCapabilities.mjs";
@@ -148,6 +155,7 @@ import { readGuestSearchAnalytics } from "./guestSearchAnalytics.js";
 import { guestSearchAnalyticsRoutes } from "./features/guestSearchAnalytics/guestSearchAnalyticsRoutes.js";
 import { suggestionRoutes } from "./features/suggestions/suggestionRoutes.js";
 import { createPeopleSuggestionService } from "./features/people/peopleSuggestionService.js";
+import { accountMuteRoutes } from "./features/accountMute/accountMuteRoutes.js";
 import { peopleSuggestionRoutes } from "./features/people/peopleSuggestionRoutes.js";
 import { createArtistRecommendationService } from "./features/artistRecommendations/artistRecommendationService.js";
 import { artistRecommendationRoutes } from "./features/artistRecommendations/artistRecommendationRoutes.js";
@@ -162,13 +170,14 @@ import { invalidateRecommendationSnapshotForViewer, recommendedFeedPage } from "
 import { attachPostImpressionStats } from "./feedImpressions.js";
 import { hasTrustedLandingImage, landingTotals, publicLandingCommunityMedia } from "./landingMedia.js";
 import { createSuccessfulReadinessCache } from "./healthAvailability.js";
+import { PROVIDER_JSON_LIMITS, readBoundedJsonResponse } from "./boundedJsonResponse.js";
 import { assertSafeAuthoredFields, assertSafeAuthoredText } from "./contentSafety.js";
 import { canonicalProfileExtras } from "./profileExtras.js";
 import { licensedVenuePhoto, verifiedHttpsUrl } from "../src/domain/venuePhotoProvenance.mjs";
 import { canonicalVenueKey, resolveVenueCatalogKey, venueLookupKeys } from "../src/domain/venueIdentity.mjs";
 import { publicVenueFanPhotos } from "./venueGallery.js";
 import { attachViewerLikes } from "./postViewerLikes.js";
-import { accountIsPublic, activeAccountSql } from "./accountVisibility.js";
+import { accountIsPublic, activeAccountSql, PROFILE_AUDIENCES, profileAudienceAllows } from "./accountVisibility.js";
 import { visibleTourDateRows } from "./tourDateVisibility.js";
 import {
   enqueueArtistTourDateDemandRefresh,
@@ -223,7 +232,7 @@ export const artistDeathWatchService = createArtistDeathWatchService({
 ensureLegacyMediaFinalizeSchema(db);
 const uid = (prefix) => opaqueId(prefix);
 const PROFILE_EXTRAS_MAX_BYTES = 8000;
-const CURRENT_TERMS_VERSION = "2026-08";
+const CURRENT_TERMS_VERSION = LEGAL_ACCEPTANCE_VERSION;
 const CURRENT_MARKETING_CONSENT_VERSION = "2026-08";
 // This response combines licensed inventory with fan media filtered by the
 // viewer's two-way block graph. Keep it out of shared and browser-private HTTP
@@ -398,6 +407,19 @@ function limit(ctx, name, max, windowMs) {
   // same carrier/proxy do not consume one shared posting or messaging bucket.
   const actor = ctx.user?.id ? `user:${ctx.user.id}` : `ip:${ctx.ip}`;
   if (!rateLimit(`${name}:${actor}`, max, windowMs)) throw new ApiError(429, "Too many requests, slow down and try again.", "RATE_LIMITED");
+}
+function visibleProfileOrNull(id, viewer = null) {
+  const user = q.userById.get(id);
+  return profileAudienceAllows(user, viewer) ? user : null;
+}
+function requireVerifiedMediaPublisher(ctx) {
+  const user = requireUser(ctx);
+  if (user.email_verified_at || user.role === "admin") return user;
+  throw new ApiError(
+    403,
+    "Confirm your email before starting a new photo or video upload. You can still view media and keep working with uploads you already started.",
+    "MEDIA_EMAIL_VERIFICATION_REQUIRED",
+  );
 }
 
 function maybeEnqueueArtistTourDateDemandRefresh(ctx, artistKey) {
@@ -952,6 +974,10 @@ function cleanPostRatingDims(value) {
 const postRow = db.prepare(`INSERT INTO posts (id,user_id,artist,venue,city,date,overall,band,room,dims,review,photos,photos_public,landing_showcase,campaign,setlist,tour,tags,tagged_user_ids,kind,song,playlist,artist_key,artist_mbid,venue_key,experience_type,online_title,youtube_url,youtube_video_id,client_mutation_id,client_mutation_hash,created_at)
                             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
 const postByClientMutation = db.prepare("SELECT id,removed,client_mutation_hash FROM posts WHERE user_id=? AND client_mutation_id=? LIMIT 1");
+const postReceiptByClientMutation = db.prepare("SELECT post_id AS id,state,client_mutation_hash FROM post_create_receipts WHERE user_id=? AND client_mutation_id=? LIMIT 1");
+const insertPostCreateReceipt = db.prepare(`INSERT OR IGNORE INTO post_create_receipts
+  (user_id,client_mutation_id,client_mutation_hash,post_id,state,created_at,updated_at)
+  VALUES (?,?,?,?, 'active',?,?)`);
 const postColumns = new Set(db.prepare("PRAGMA table_info(posts)").all().map(({ name }) => name));
 const postAttendanceTicketScrubSql = postColumns.has("attendance_ticket") ? ",attendance_ticket=NULL" : "";
 // Rolling deploys may briefly run this API before the additive post column has
@@ -1905,7 +1931,7 @@ function canonicalAttendanceTicketCreateRequest(user, source, storedPost) {
   const values = {
     review,
     photos: [],
-    photosPublic: 1,
+    photosPublic: 0,
     landingShowcase: 0,
     song: null,
     playlist: null,
@@ -1932,7 +1958,7 @@ function canonicalAttendanceTicketCreateRequest(user, source, storedPost) {
       review,
       photos: [],
       mediaAssetIds: [],
-      photosPublic: 1,
+      photosPublic: 0,
       landingShowcase: 0,
       setlist: [],
       tour: null,
@@ -1986,7 +2012,9 @@ function canonicalCreateRequest(user, body, storedPost = null) {
     const values = {
       review: v.review || "",
       photos: stableMedia ? stableMedia.photos : (v.photos || []),
-      photosPublic: v.photosPublic ?? 1,
+      // Reusing a memorial/status photo on an artist page requires a separate,
+      // explicit opt-in. Omitted and legacy requests fail closed.
+      photosPublic: v.photosPublic ?? 0,
       landingShowcase: 0,
       song: v.song || null,
       playlist,
@@ -2213,6 +2241,7 @@ const postTagNotifRow = db.prepare("INSERT OR IGNORE INTO notifications (id,user
 function addNotif(recipientId, actorId, type, extra = {}) {
   if (!recipientId || recipientId === actorId) return;
   if (actorId && blockedEitherWay(recipientId, actorId)) return; // no pings across a block
+  if (actorId && mutedBy(recipientId, actorId)) return; // private, one-way social silence
   notifRow.run(uid("n"), recipientId, actorId, type, extra.postId ?? null, extra.artist ?? null, extra.text ?? null, now());
 }
 
@@ -2224,7 +2253,7 @@ function blockedEitherWay(a, b) {
 }
 function addPostTagNotifications(recipientIds, actorId, postId, artist = null) {
   for (const recipientId of normalizeTaggedUserIds(recipientIds) || []) {
-    if (!recipientId || recipientId === actorId || blockedEitherWay(recipientId, actorId)) continue;
+    if (!recipientId || recipientId === actorId || blockedEitherWay(recipientId, actorId) || mutedBy(recipientId, actorId)) continue;
     postTagNotifRow.run(uid("n"), recipientId, actorId, "post_tag", postId, artist || null, null, now());
   }
 }
@@ -2385,6 +2414,16 @@ function publicArtistSlugForPost(post) {
   // can gain its canonical link later if that artist is legitimately ingested.
   if (publicSlug) positivePostArtistSlugCache.set(artistKey, publicSlug);
   return publicSlug || null;
+}
+const muteCheck = db.prepare("SELECT 1 FROM account_mutes WHERE muter_id=? AND muted_id=?");
+const mutedIdsStmt = db.prepare("SELECT muted_id id FROM account_mutes WHERE muter_id=?");
+function mutedBy(viewerId, actorId) {
+  if (!viewerId || !actorId) return false;
+  return !!muteCheck.get(viewerId, actorId);
+}
+function mutedIdSet(userId) {
+  if (!userId) return new Set();
+  return new Set(mutedIdsStmt.all(userId).map((row) => row.id));
 }
 
 function postJson(p, viewerId) {
@@ -2590,11 +2629,13 @@ async function readMusicBrainzArtistCandidates(name, { signal } = {}) {
     + encodeURIComponent(query)
     + "&fmt=json&limit=5";
   let response;
+  let requestSignal;
   try {
     const timeoutSignal = AbortSignal.timeout(MUSICBRAINZ_ARTIST_LOOKUP_TIMEOUT_MS);
+    requestSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
     response = await fetch(url, {
       headers: { "User-Agent": "Pit/1.0 (https://mshpit.com)", Accept: "application/json" },
-      signal: signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal,
+      signal: requestSignal,
     });
   } catch (error) {
     if (signal?.aborted) throw signal.reason || error;
@@ -2610,8 +2651,12 @@ async function readMusicBrainzArtistCandidates(name, { signal } = {}) {
   }
   let payload;
   try {
-    payload = await response.json();
+    payload = await readBoundedJsonResponse(response, {
+      maxBytes: PROVIDER_JSON_LIMITS.musicBrainz,
+      signal: requestSignal,
+    });
   } catch (error) {
+    if (signal?.aborted) throw signal.reason || error;
     throw new ProviderError("MusicBrainz", 502, "MusicBrainz returned unreadable data.", {
       code: "invalid_json",
       cause: error,
@@ -2981,7 +3026,7 @@ function observeBackgroundVideoFinalizeFailure(error) {
 
 function requireVideoPublishingActor(user) {
   if (user?.email_verified_at || user?.role === "admin") return;
-  throw new ApiError(403, "Verify your email before publishing clips.", "FORBIDDEN");
+  throw new ApiError(403, "Confirm your email before uploading a video.", "MEDIA_EMAIL_VERIFICATION_REQUIRED");
 }
 
 export function reserveVideoPublishingDemand(ctx, user, phase) {
@@ -3055,6 +3100,20 @@ function postJsonWithImpressions(p, viewerId) {
 
 function resolvePostCreateRetry(userId, mutationId, mutationHash) {
   if (!mutationId) return null;
+  const receipt = postReceiptByClientMutation.get(userId, mutationId);
+  if (receipt?.state === "removed") {
+    throw new ApiError(409, "That post was already removed. Start a new post to publish again.", "POST_REMOVED");
+  }
+  if (receipt) {
+    if (receipt.client_mutation_hash !== mutationHash) {
+      throw new ApiError(409, "That retry belongs to an earlier version of this post. Reopen it before publishing your new changes.", "POST_MUTATION_CONFLICT");
+    }
+    const stored = feedPostById.get(receipt.id);
+    if (!stored || stored.removed) {
+      throw new ApiError(409, "That post was already removed. Start a new post to publish again.", "POST_REMOVED");
+    }
+    return { id: receipt.id, post: postJsonWithImpressions(stored, userId), duplicate: true };
+  }
   const existing = postByClientMutation.get(userId, mutationId);
   if (!existing) return null;
   if (existing.removed) {
@@ -3075,6 +3134,7 @@ function resolvePostCreateRetry(userId, mutationId, mutationHash) {
     db.prepare("UPDATE posts SET client_mutation_hash=? WHERE id=? AND user_id=?")
       .run(mutationHash, existing.id, userId);
   }
+  insertPostCreateReceipt.run(userId, mutationId, mutationHash, existing.id, now(), now());
   return {
     id: existing.id,
     post: postJsonWithImpressions(feedPostById.get(existing.id), userId),
@@ -3110,6 +3170,7 @@ function deploymentReadinessProjection() {
 function staffHealthProjection(actor) {
   const readiness = runtimeReadiness();
   const allowance = youtubeColdSearchActorAllowance(actor);
+  const backupOperations = backupOperationalStatus(process.env, { now: now() });
   const actorAllowance = {
     version: allowance.version,
     day: allowance.day,
@@ -3155,7 +3216,9 @@ function staffHealthProjection(actor) {
         tourDateRefreshEnabled: backgroundJobEnabled(process.env, "TOURDATE_REFRESH_ENABLED"),
         backupEnabled: backupSchedulerEnabled(process.env),
         legacyImageRecoveryEnabled: legacyImageRecoveryEnabled(process.env),
-        offhostBackupConfigured: offhostBackupConfigured(process.env),
+        offhostBackupConfigured: backupOperations.offhostConfigured,
+        offhostBackupStatus: backupOperations.offhostStatus,
+        offhostBackupAgeHours: backupOperations.offhostAgeHours,
       },
       mailConfigured: mailConfigured(),
       mail: mailDiagnostics(),
@@ -3312,6 +3375,17 @@ export const routes = {
     requireUser,
     rateLimit: limit,
   }),
+  ...accountMuteRoutes({
+    database: db,
+    ApiError,
+    requireUser,
+    rateLimit: limit,
+    now,
+    desiredState,
+    userById: (id) => q.userById.get(id),
+    projectUser: publicUser,
+    invalidateRecommendations: invalidateRecommendationSnapshotForViewer,
+  }),
   ...artistRecommendationRoutes({
     service: artistRecommendationService,
     requireUser,
@@ -3327,7 +3401,7 @@ export const routes = {
     reserveVolume: rateLimit,
   }),
   ...mediaAssetRoutes({ database: db, requireUser, now, cancelFinalizeJob: cancelVideoFinalizeJob }),
-  ...mediaLegacyFinalizeRoutes({ database: db, requireUser, now }),
+  ...mediaLegacyFinalizeRoutes({ database: db, requireUser, requireVerifiedMediaPublisher, now }),
   ...artistArchiveRoutes({
     database: db,
     ApiError,
@@ -3511,10 +3585,13 @@ export const routes = {
   // The server mints both the stable asset identity and its original source
   // location; a caller can never register an arbitrary public URL as PIT media.
   "POST /api/media/assets": (ctx) => {
-    const u = requireUser(ctx);
-    // Stable asset creation has no per-member count bucket. Outstanding object
-    // accounting and service-wide circuit breakers bound abandoned/corrupt
-    // work, while video additionally has IP/global incident admission below.
+    // This check deliberately precedes type validation, quota reservation,
+    // ledger creation, and object signing. Direct/stale clients therefore
+    // cannot spend storage work before proving ownership of their email.
+    const u = requireVerifiedMediaPublisher(ctx);
+    // A newly selected source consumes one member rolling ticket. Every source
+    // and server-generated derivative also remains subject to outstanding and
+    // service-wide circuit breakers; video has IP/global incident admission below.
     const video = videoRequestBody(ctx.body);
     const requestedType = normalizedRequestedMediaType(ctx.body);
     const mediaCapabilities = video ? runtimeMediaPublishingCapabilities() : null;
@@ -3707,7 +3784,9 @@ export const routes = {
   },
 
   "POST /api/media/assets/:id/variants": (ctx) => {
-    const u = requireUser(ctx);
+    // A rendition/poster request also returns a fresh signed writer, so it is
+    // governed by the same email-ownership boundary as the original source.
+    const u = requireVerifiedMediaPublisher(ctx);
     return createMediaVariant(db, {
       ownerId: u.id,
       assetId: ctx.params.id,
@@ -4270,7 +4349,7 @@ export const routes = {
   "GET /api/users/:id/playlists": (ctx) => {
     if (ctx.user?.id !== ctx.params.id && blockedEitherWay(ctx.user?.id, ctx.params.id)) throw new ApiError(404, "This profile isn't available.", "NOT_FOUND");
     const self = ctx.user?.id === ctx.params.id;
-    if (!self && !publicAccountOrNull(ctx.params.id)) throw new ApiError(404, "This profile isn't available.", "NOT_FOUND");
+    if (!self && !visibleProfileOrNull(ctx.params.id, ctx.user)) throw new ApiError(404, "This profile isn't available.", "NOT_FOUND");
     const rows = db.prepare(`SELECT p.*, u.name AS u_name, u.handle AS u_handle FROM playlists p JOIN users u ON u.id=p.user_id
       WHERE p.user_id=? ${self ? "" : "AND p.visibility='public'"} ORDER BY COALESCE(p.updated_at,p.created_at) DESC, p.id DESC LIMIT 50`).all(ctx.params.id);
     return { playlists: rows.map(playlistProjection) };
@@ -4278,7 +4357,7 @@ export const routes = {
   "GET /api/playlists/:id": (ctx) => {
     const row = db.prepare(`SELECT p.*, u.name AS u_name, u.handle AS u_handle FROM playlists p JOIN users u ON u.id=p.user_id WHERE p.id=?`).get(ctx.params.id);
     if (!row || blockedEitherWay(ctx.user?.id, row.user_id)) throw new ApiError(404, "That playlist isn't available.", "NOT_FOUND");
-    if (ctx.user?.id !== row.user_id && !publicAccountOrNull(row.user_id)) throw new ApiError(404, "That playlist isn't available.", "NOT_FOUND");
+    if (ctx.user?.id !== row.user_id && !visibleProfileOrNull(row.user_id, ctx.user)) throw new ApiError(404, "That playlist isn't available.", "NOT_FOUND");
     if (row.visibility === "private" && ctx.user?.id !== row.user_id) throw new ApiError(404, "That playlist isn't available.", "NOT_FOUND");
     return { playlist: playlistProjection(row) };
   },
@@ -4354,6 +4433,10 @@ export const routes = {
       genres: { required: true, parse: () => genreSelection.genres },
       analyticsConsent: { required: false, parse: (x) => typeof x === "boolean" ? x : undefined },
       termsVersion: { required: false, parse: (x) => clean(x, { max: 32 }) || undefined },
+      // The server enforces the same coarse safety choice as current clients.
+      // Accepting omission here would let a modified client create an account
+      // that has not entered the teen-safe first-contact policy.
+      ageBand: { required: true, parse: (x) => (isClassifiedAccountAgeBand(x) ? x : undefined) },
     });
     if (errs.length) throw new ApiError(400, errs[0]);
     assertSafeAuthoredFields({ "profile name": v.name, city: v.city });
@@ -4382,6 +4465,7 @@ export const routes = {
             ...(v.analyticsConsent ? { analyticsConsentAt: createdAt } : {}),
           }), id);
           db.prepare("UPDATE users SET genres=? WHERE id=?").run(JSON.stringify(v.genres), id);
+          db.prepare("UPDATE users SET age_band=?, dm_policy='mutuals' WHERE id=?").run(v.ageBand, id);
         });
         created = q.userById.get(id);
       } catch (error) {
@@ -4540,7 +4624,7 @@ export const routes = {
   // Standalone so profiles can show badges without widening the bulk user list,
   // where one query per row would be an N+1 on every feed render.
   "GET /api/users/:id/badges": (ctx) => {
-    if (!publicAccountOrNull(ctx.params.id)) throw new ApiError(404, "No such member.", "NOT_FOUND");
+    if (!visibleProfileOrNull(ctx.params.id, ctx.user)) throw new ApiError(404, "No such member.", "NOT_FOUND");
     if (ctx.user?.id !== ctx.params.id && blockedEitherWay(ctx.user?.id, ctx.params.id)) {
       throw new ApiError(404, "No such member.", "NOT_FOUND");
     }
@@ -4566,6 +4650,9 @@ export const routes = {
     const hasExtras = Object.prototype.hasOwnProperty.call(ctx.body || {}, "extras");
     const hasSearchIndexingOptOut = Object.prototype.hasOwnProperty.call(ctx.body || {}, "searchIndexingOptOut");
     const hasGenres = Object.prototype.hasOwnProperty.call(ctx.body || {}, "genres");
+    const hasDirectMessagePolicy = Object.prototype.hasOwnProperty.call(ctx.body || {}, "directMessagePolicy");
+    const hasProfileAudience = Object.prototype.hasOwnProperty.call(ctx.body || {}, "profileAudience");
+    const hasAgeBand = Object.prototype.hasOwnProperty.call(ctx.body || {}, "ageBand");
     const incomingGenres = hasGenres ? profileGenreSelection(ctx.body.genres) : null;
     if (hasGenres && !incomingGenres.valid) {
       throw new ApiError(400, incomingGenres.error, "VALIDATION_FAILED");
@@ -4573,6 +4660,20 @@ export const routes = {
     if (hasSearchIndexingOptOut && typeof ctx.body.searchIndexingOptOut !== "boolean") {
       throw new ApiError(400, "searchIndexingOptOut must be a boolean.", "VALIDATION_FAILED");
     }
+    if (hasDirectMessagePolicy && !DIRECT_MESSAGE_POLICIES.includes(ctx.body.directMessagePolicy)) {
+      throw new ApiError(400, "Choose who can message you.", "VALIDATION_FAILED");
+    }
+    if (hasProfileAudience && !PROFILE_AUDIENCES.includes(ctx.body.profileAudience)) {
+      throw new ApiError(400, "Choose who can see your profile.", "VALIDATION_FAILED");
+    }
+    if (hasAgeBand && !isClassifiedAccountAgeBand(ctx.body.ageBand)) {
+      throw new ApiError(400, "Choose 13-17 or 18 or older.", "VALIDATION_FAILED");
+    }
+    const storedAgeBand = accountAgeBand(u.age_band);
+    if (hasAgeBand && isClassifiedAccountAgeBand(storedAgeBand) && ctx.body.ageBand !== storedAgeBand) {
+      throw new ApiError(409, "Your age group is already saved. Contact support if it is incorrect.", "CONFLICT");
+    }
+    const ageBandClassificationPending = hasAgeBand && storedAgeBand === "unknown";
     const incomingExtras = hasExtras ? canonicalProfileExtras(ctx.body.extras, { strict: true }) : null;
     let serializedExtras = hasExtras && incomingExtras.valid ? serializeProfileExtras(incomingExtras.value) : undefined;
     if (hasExtras && (!incomingExtras.valid || serializedExtras === null)) {
@@ -4606,6 +4707,9 @@ export const routes = {
       lng: { parse: cleanLongitude },
       genres: { parse: () => incomingGenres?.genres },
       favoriteArtists: { parse: (x) => cleanStringArray(x, { maxItems: 50, maxLen: 80 }) },
+      directMessagePolicy: { parse: (x) => (DIRECT_MESSAGE_POLICIES.includes(x) ? x : undefined) },
+      profileAudience: { parse: (x) => (PROFILE_AUDIENCES.includes(x) ? x : undefined) },
+      ageBand: { parse: (x) => (isClassifiedAccountAgeBand(x) ? x : undefined) },
       // Keep this server allow-list aligned with theme.js. If it falls behind,
       // newer themes get silently rejected here, the server then re-hydrates the
       // stale theme on /api/me and the client "snaps back" to a previous theme.
@@ -4656,6 +4760,9 @@ export const routes = {
     if (v.city !== undefined) { sets.push("home_city = ?", "home_lat = ?", "home_lng = ?"); args.push(v.city, v.lat ?? null, v.lng ?? null); }
     if (v.genres) { sets.push("genres = ?"); args.push(JSON.stringify(v.genres)); }
     if (v.favoriteArtists) { sets.push("favorite_artists = ?"); args.push(JSON.stringify(v.favoriteArtists)); }
+    if (v.directMessagePolicy) { sets.push("dm_policy = ?"); args.push(v.directMessagePolicy); }
+    if (v.profileAudience) { sets.push("profile_audience = ?"); args.push(v.profileAudience); }
+    if (ageBandClassificationPending) { sets.push("age_band = ?"); args.push(v.ageBand); }
     // Theme is stored inside the extras blob, so it survives sign-out and follows
     // the account. Merge it with an extras patch when both arrive together.
     if (v.theme || v.searchIndexingOptOut !== undefined) {
@@ -4681,7 +4788,13 @@ export const routes = {
         [u.banner, u.avatar_uri],
         ["banner", "avatar"],
       );
-      if (sets.length) db.prepare(`UPDATE users SET ${sets.join(", ")} WHERE id = ?`).run(...args, u.id);
+      if (sets.length) {
+        const ageBandGuard = ageBandClassificationPending ? " AND age_band='unknown'" : "";
+        const updated = db.prepare(`UPDATE users SET ${sets.join(", ")} WHERE id = ?${ageBandGuard}`).run(...args, u.id);
+        if (ageBandClassificationPending && !updated.changes) {
+          throw new ApiError(409, "Your age group was already saved on another device. Refresh Settings.", "CONFLICT");
+        }
+      }
       markOwnedMediaAssociated(db, { ownerId: u.id, urls: [v.banner, v.avatarUri], at: now() });
       const deletable = unreferencedOwnedMediaUrls(db, { ownerId: u.id, urls: replacedProfileMedia });
       enqueueOwnedMediaUrls(db, { ownerId: u.id, urls: deletable, at: now() });
@@ -4724,13 +4837,15 @@ export const routes = {
       const eligibleFrom = `FROM follows mine
         JOIN follows theirs ON theirs.follower_id=mine.followee_id AND theirs.followee_id=mine.follower_id
         JOIN users ON users.id=mine.followee_id
-        WHERE mine.follower_id=? AND users.id<>? AND ${activeAccountSql("users")}
+        WHERE mine.follower_id=? AND users.id<>? AND ${activeAccountSql("users")} AND users.profile_audience<>'only_me'
           AND NOT EXISTS (SELECT 1 FROM blocks mine_block
             WHERE mine_block.blocker_id=? AND mine_block.blocked_id=users.id)
           AND NOT EXISTS (SELECT 1 FROM blocks their_block
             WHERE their_block.blocker_id=users.id AND their_block.blocked_id=?)
+          AND NOT EXISTS (SELECT 1 FROM account_mutes muted
+            WHERE muted.muter_id=? AND muted.muted_id=users.id)
           ${rejectionSql}`;
-      const eligibleArgs = [viewer.id, viewer.id, viewer.id, viewer.id, ...(postId ? [postId] : [])];
+      const eligibleArgs = [viewer.id, viewer.id, viewer.id, viewer.id, viewer.id, ...(postId ? [postId] : [])];
       const total = db.prepare(`SELECT COUNT(*) c ${eligibleFrom}`).get(...eligibleArgs).c;
       if (term.length < 1) {
         const rows = db.prepare(`SELECT ${cols} ${eligibleFrom} ORDER BY name COLLATE NOCASE LIMIT 40`).all(...eligibleArgs);
@@ -4742,12 +4857,14 @@ export const routes = {
         .all(...eligibleArgs, term, term, term, term);
       return { users: rows.map(map), total };
     }
-    const visibleFrom = `FROM users WHERE ${activeAccountSql("users")} AND users.id<>?
+    const visibleFrom = `FROM users WHERE ${activeAccountSql("users")} AND users.id<>? AND users.profile_audience<>'only_me'
       AND NOT EXISTS (SELECT 1 FROM blocks mine_block
         WHERE mine_block.blocker_id=? AND mine_block.blocked_id=users.id)
       AND NOT EXISTS (SELECT 1 FROM blocks their_block
-        WHERE their_block.blocker_id=users.id AND their_block.blocked_id=?)`;
-    const visibleArgs = [viewer.id, viewer.id, viewer.id];
+        WHERE their_block.blocker_id=users.id AND their_block.blocked_id=?)
+      AND NOT EXISTS (SELECT 1 FROM account_mutes muted
+        WHERE muted.muter_id=? AND muted.muted_id=users.id)`;
+    const visibleArgs = [viewer.id, viewer.id, viewer.id, viewer.id];
     if (term.length < 1) {
       const rows = db.prepare(`SELECT ${cols} ${visibleFrom} ORDER BY name COLLATE NOCASE,id LIMIT 40`).all(...visibleArgs);
       return { users: rows.map(map) };
@@ -4760,7 +4877,7 @@ export const routes = {
 
   "GET /api/users/:id": (ctx) => {
     if (ctx.user?.id !== ctx.params.id && blockedEitherWay(ctx.user?.id, ctx.params.id)) throw new ApiError(404, "This profile isn't available.", "NOT_FOUND");
-    const u = publicAccountOrNull(ctx.params.id);
+    const u = visibleProfileOrNull(ctx.params.id, ctx.user);
     if (!u) throw new ApiError(404, "No such user.");
     const followers = db.prepare(`SELECT COUNT(*) c FROM follows f JOIN users actor ON actor.id=f.follower_id
       WHERE f.followee_id=? AND ${activeAccountSql("actor")}`).get(u.id).c;
@@ -4774,25 +4891,25 @@ export const routes = {
   // clickable follow list like any social platform.
   "GET /api/users/:id/followers": (ctx) => {
     if (ctx.user?.id !== ctx.params.id && blockedEitherWay(ctx.user?.id, ctx.params.id)) throw new ApiError(404, "This profile isn't available.", "NOT_FOUND");
-    if (!publicAccountOrNull(ctx.params.id)) throw new ApiError(404, "This profile isn't available.", "NOT_FOUND");
+    if (!visibleProfileOrNull(ctx.params.id, ctx.user)) throw new ApiError(404, "This profile isn't available.", "NOT_FOUND");
     const hidden = blockedIdSet(ctx.user?.id);
     const rows = db.prepare(`
       SELECT u.* FROM follows f JOIN users u ON u.id = f.follower_id
       WHERE f.followee_id = ? AND ${activeAccountSql("u")} ORDER BY u.name COLLATE NOCASE LIMIT 500`).all(ctx.params.id);
-    return { users: rows.filter((r) => !hidden.has(r.id)).map((r) => publicUser(r)) };
+    return { users: rows.filter((r) => !hidden.has(r.id) && profileAudienceAllows(r, ctx.user)).map((r) => publicUser(r)) };
   },
   "GET /api/users/:id/following": (ctx) => {
     if (ctx.user?.id !== ctx.params.id && blockedEitherWay(ctx.user?.id, ctx.params.id)) throw new ApiError(404, "This profile isn't available.", "NOT_FOUND");
-    if (!publicAccountOrNull(ctx.params.id)) throw new ApiError(404, "This profile isn't available.", "NOT_FOUND");
+    if (!visibleProfileOrNull(ctx.params.id, ctx.user)) throw new ApiError(404, "This profile isn't available.", "NOT_FOUND");
     const hidden = blockedIdSet(ctx.user?.id);
     const rows = db.prepare(`
       SELECT u.* FROM follows f JOIN users u ON u.id = f.followee_id
       WHERE f.follower_id = ? AND ${activeAccountSql("u")} ORDER BY u.name COLLATE NOCASE LIMIT 500`).all(ctx.params.id);
-    return { users: rows.filter((r) => !hidden.has(r.id)).map((r) => publicUser(r)) };
+    return { users: rows.filter((r) => !hidden.has(r.id) && profileAudienceAllows(r, ctx.user)).map((r) => publicUser(r)) };
   },
 
   "GET /api/users/:id/rewards": (ctx) => {
-    if (!publicAccountOrNull(ctx.params.id)) throw new ApiError(404, "No such user.", "NOT_FOUND");
+    if (!visibleProfileOrNull(ctx.params.id, ctx.user)) throw new ApiError(404, "No such user.", "NOT_FOUND");
     if (ctx.user?.id !== ctx.params.id && blockedEitherWay(ctx.user?.id, ctx.params.id)) throw new ApiError(404, "This profile isn't available.", "NOT_FOUND");
     return userRewards(ctx.params.id);
   },
@@ -4801,7 +4918,7 @@ export const routes = {
     const u = requireUser(ctx);
     limit(ctx, "follow", 60, 10 * 60 * 1000);
     if (u.id === ctx.params.id) throw new ApiError(400, "You can't follow yourself.");
-    if (!publicAccountOrNull(ctx.params.id)) throw new ApiError(404, "No such user.");
+    if (!visibleProfileOrNull(ctx.params.id, u)) throw new ApiError(404, "No such user.");
     if (blockedEitherWay(u.id, ctx.params.id)) throw new ApiError(403, "You can't follow this account.");
     const has = !!db.prepare("SELECT 1 FROM follows WHERE follower_id=? AND followee_id=?").get(u.id, ctx.params.id);
     const following = desiredState(ctx.body, "following", has);
@@ -4980,6 +5097,7 @@ export const routes = {
     };
   },
 
+
   "GET /api/tourdates": (ctx) => {
     // The legacy client snapshot is upcoming-only. Historical truth now lives
     // in the artist archive; letting expired provider rows consume this bounded
@@ -5067,11 +5185,11 @@ export const routes = {
     const viewer = ctx.user?.id;
     const blockSql = viewer ? `AND NOT EXISTS (
       SELECT 1 FROM blocks b WHERE (b.blocker_id=? AND b.blocked_id=p.user_id) OR (b.blocker_id=p.user_id AND b.blocked_id=?)
-    )` : "";
+    ) AND NOT EXISTS (SELECT 1 FROM account_mutes mute WHERE mute.muter_id=? AND mute.muted_id=p.user_id)` : "";
     const cursorSql = cursor ? "AND (p.created_at < ? OR (p.created_at = ? AND p.id < ?))" : "";
     const args = [];
     if (cursor) args.push(cursor.createdAt, cursor.createdAt, cursor.id);
-    if (viewer) args.push(viewer, viewer);
+    if (viewer) args.push(viewer, viewer, viewer);
     args.push(lim + 1);
     if (!cursor) args.push(off);
     // Moderators see which cards carry open reports right on the feed, so
@@ -5114,9 +5232,11 @@ export const routes = {
       limit: pageSize,
       at: now(),
     });
+    const muted = mutedIdSet(ctx.user?.id);
+    const visibleRecommendedRows = result.rows.filter((row) => !muted.has(row.user_id));
     const projectedRows = attachPostImpressionStats(db, attachViewerLikes(
       db,
-      withTaggedPeople(withCommentPreviews(result.rows, ctx.user?.id), ctx.user?.id),
+      withTaggedPeople(withCommentPreviews(visibleRecommendedRows, ctx.user?.id), ctx.user?.id),
       ctx.user?.id,
     ), ctx.user?.id);
     const projected = projectedRows.map((row) => ({
@@ -5139,12 +5259,13 @@ export const routes = {
     if (!postIds.length) return { invalidPostIds: [] };
     const placeholders = postIds.map(() => "?").join(",");
     const blockSql = ctx.user?.id ? `AND NOT EXISTS (SELECT 1 FROM blocks b WHERE
-      (b.blocker_id=? AND b.blocked_id=p.user_id) OR (b.blocker_id=p.user_id AND b.blocked_id=?))` : "";
+      (b.blocker_id=? AND b.blocked_id=p.user_id) OR (b.blocker_id=p.user_id AND b.blocked_id=?))
+      AND NOT EXISTS (SELECT 1 FROM account_mutes mute WHERE mute.muter_id=? AND mute.muted_id=p.user_id)` : "";
     const preferenceSql = ctx.user?.id
       ? "AND NOT EXISTS (SELECT 1 FROM recommendation_preferences rp WHERE rp.user_id=? AND rp.post_id=p.id)"
       : "";
     const args = [...postIds, now()];
-    if (ctx.user?.id) args.push(ctx.user.id, ctx.user.id, ctx.user.id);
+    if (ctx.user?.id) args.push(ctx.user.id, ctx.user.id, ctx.user.id, ctx.user.id);
     const live = new Set(db.prepare(`SELECT p.id FROM posts p JOIN users u ON u.id=p.user_id
       WHERE p.id IN (${placeholders}) AND p.removed=0 AND u.is_banned=0
         AND (u.suspended_until IS NULL OR u.suspended_until<=?)
@@ -5293,7 +5414,7 @@ export const routes = {
 
   "GET /api/users/:id/posts": (ctx) => {
     if (ctx.user?.id !== ctx.params.id && blockedEitherWay(ctx.user?.id, ctx.params.id)) throw new ApiError(404, "This profile isn't available.", "NOT_FOUND");
-    if (!publicAccountOrNull(ctx.params.id)) throw new ApiError(404, "This profile isn't available.", "NOT_FOUND");
+    if (!visibleProfileOrNull(ctx.params.id, ctx.user)) throw new ApiError(404, "This profile isn't available.", "NOT_FOUND");
     // Shipped clients called this endpoint without pagination and received the
     // newest 100 posts. Preserve that compatibility window; current clients
     // explicitly request 30 and page with the new cursor contract (capped 50).
@@ -5331,8 +5452,9 @@ export const routes = {
   "POST /api/posts": (ctx) => {
     const u = requireUser(ctx);
     const mutationId = clientMutationId(ctx.body?.clientMutationId);
-    const existing = mutationId ? postByClientMutation.get(u.id, mutationId) : null;
-    if (existing?.removed) {
+    const receipt = mutationId ? postReceiptByClientMutation.get(u.id, mutationId) : null;
+    const existing = mutationId ? (receipt || postByClientMutation.get(u.id, mutationId)) : null;
+    if (receipt?.state === "removed" || existing?.removed) {
       throw new ApiError(409, "That post was already removed. Start a new post to publish again.", "POST_REMOVED");
     }
     const stored = existing ? feedPostById.get(existing.id) : null;
@@ -5372,6 +5494,7 @@ export const routes = {
           "[]", JSON.stringify(transactionTaggedUserIds), "status", v.song ? JSON.stringify(v.song) : null, v.playlist ? JSON.stringify(v.playlist) : null,
           v.memorialMemory ? v.binding.artist_key : null, v.memorialMemory ? v.binding.artist_mbid : null, null,
           "in_person", null, null, null, mutationId, mutationHash, now());
+        if (mutationId) insertPostCreateReceipt.run(u.id, mutationId, mutationHash, id, now(), now());
         if (v.attendanceTicket) postAttendanceTicket.run(JSON.stringify(v.attendanceTicket), id, u.id);
         markOwnedMediaAssociated(db, { ownerId: u.id, urls: v.photos, at: now() });
         if (v.mediaSelection) attachPostMedia(db, { postId: id, ownerId: u.id, selection: v.mediaSelection, at: now() });
@@ -5395,6 +5518,7 @@ export const routes = {
         JSON.stringify(v.tags), JSON.stringify(transactionTaggedUserIds), "review", v.song ? JSON.stringify(v.song) : null, null,
         v.binding.artist_key, v.binding.artist_mbid, v.experienceType === "online" ? null : venueBinding(v.venue),
         v.experienceType, v.onlineTitle, v.youtubeUrl, v.youtubeVideoId, mutationId, mutationHash, now());
+      if (mutationId) insertPostCreateReceipt.run(u.id, mutationId, mutationHash, id, now(), now());
       markOwnedMediaAssociated(db, { ownerId: u.id, urls: v.photos, at: now() });
       if (v.mediaSelection) attachPostMedia(db, { postId: id, ownerId: u.id, selection: v.mediaSelection, at: now() });
       addPostTagNotifications(transactionTaggedUserIds, u.id, id, v.artist);
@@ -6075,6 +6199,28 @@ export const routes = {
       assertChatRetryMatches(existing, { to_id: other, text });
       return { id: existing.id, duplicate: true };
     }
+    const priorConversation = !!db.prepare(`SELECT 1 FROM dms
+      WHERE (from_id=? AND to_id=?) OR (from_id=? AND to_id=?) LIMIT 1`).get(u.id, other, other, u.id);
+    const recipient = q.userById.get(other);
+    const senderFollowsRecipient = !!db.prepare("SELECT 1 FROM follows WHERE follower_id=? AND followee_id=?").get(u.id, other);
+    const recipientFollowsSender = !!db.prepare("SELECT 1 FROM follows WHERE follower_id=? AND followee_id=?").get(other, u.id);
+    const permission = mayStartDirectMessage({
+      conversationExists: priorConversation,
+      recipientPolicy: recipient.dm_policy,
+      senderAgeBand: u.age_band,
+      recipientAgeBand: recipient.age_band,
+      senderFollowsRecipient,
+      recipientFollowsSender,
+    });
+    if (!permission.allowed) {
+      const message = permission.reason === "age_classification_required"
+        ? "Choose your age group in Settings before sending a message."
+        : "This account isn't accepting messages from you.";
+      throw new ApiError(403, message, "CONTACT_NOT_ALLOWED");
+    }
+    if (!priorConversation) {
+      limit(ctx, "dm-first-contact", 5, 60 * 60 * 1000);
+    }
     limit(ctx, "dm", 120, 10 * 60 * 1000);
     const id = uid("dm");
     if (mutationId) {
@@ -6098,6 +6244,7 @@ export const routes = {
   "GET /api/me/notifications": (ctx) => {
     const u = requireUser(ctx);
     const hidden = blockedIdSet(u.id);
+    const muted = mutedIdSet(u.id);
     const { cursor, limit } = pageRequest(ctx, 100, 100);
     const cursorSql = cursor ? "AND (n.created_at < ? OR (n.created_at = ? AND n.id < ?))" : "";
     const args = cursor ? [u.id, cursor.createdAt, cursor.createdAt, cursor.id, limit + 1] : [u.id, limit + 1];
@@ -6107,7 +6254,7 @@ export const routes = {
       WHERE n.user_id = ? ${cursorSql} ORDER BY n.created_at DESC, n.id DESC LIMIT ?`).all(...args);
     const { rows, nextCursor } = finishPage(found, limit);
     return {
-      notifications: rows.filter((n) => !n.actor_id || !hidden.has(n.actor_id)).map((n) => ({
+      notifications: rows.filter((n) => !n.actor_id || (!hidden.has(n.actor_id) && !muted.has(n.actor_id))).map((n) => ({
         id: n.id, type: n.type, actorId: n.actor_id,
         actorName: n.actor_name || "Someone", actorInitials: n.actor_initials || "?",
         actorUri: safePublicProfileImage(n.actor_id, n.actor_uri), actorColor: n.actor_color,
@@ -6117,6 +6264,8 @@ export const routes = {
       unread: db.prepare(`SELECT COUNT(*) c FROM notifications n WHERE n.user_id=? AND n.read=0
         AND (n.actor_id IS NULL OR NOT EXISTS (
           SELECT 1 FROM blocks b WHERE (b.blocker_id=n.user_id AND b.blocked_id=n.actor_id) OR (b.blocker_id=n.actor_id AND b.blocked_id=n.user_id)
+        )) AND (n.actor_id IS NULL OR NOT EXISTS (
+          SELECT 1 FROM account_mutes mute WHERE mute.muter_id=n.user_id AND mute.muted_id=n.actor_id
         ))`).get(u.id).c,
       nextCursor,
     };
@@ -6552,6 +6701,10 @@ export const routes = {
       targetType: { required: true, parse: (x) => (REPORTABLE_TARGET_TYPES.has(x) ? x : undefined) },
       targetId: { required: true, parse: (x) => clean(x, { max: 240 }) || undefined },
       reason: { parse: (x) => clean(x, { max: LIMITS.note }) },
+      // Optional during rolling deployment so an older installed client can
+      // still report abuse; current clients always send a structured category.
+      category: { parse: (x) => (["harassment", "hate", "threats", "sexual_exploitation", "intimate_image", "self_harm", "doxxing", "impersonation", "spam", "illegal", "copyright", "other"].includes(x) ? x : undefined) },
+      details: { parse: (x) => clean(x, { max: 500, newlines: true }) },
       // Optional exact attachment identity. It is verified against the target's
       // stored media. A one-based human hint and a stable SHA-256 fingerprint
       // are persisted; the URL itself is not. Authorized no-store moderation
@@ -6579,8 +6732,8 @@ export const routes = {
     const existing = db.prepare("SELECT id FROM reports WHERE reporter_id=? AND target_type=? AND target_id=? AND status='open'").get(u.id, v.targetType, v.targetId);
     if (existing) return { id: existing.id, targetType: v.targetType, targetId: v.targetId, duplicate: true };
     const id = uid("r");
-    db.prepare("INSERT INTO reports (id,target_type,target_id,reason,reporter_id,media_index,media_fingerprint,created_at) VALUES (?,?,?,?,?,?,?,?)")
-      .run(id, v.targetType, v.targetId, reason, u.id, mediaIndex, mediaFingerprint, now());
+    db.prepare("INSERT INTO reports (id,target_type,target_id,reason,category,details,reporter_id,media_index,media_fingerprint,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)")
+      .run(id, v.targetType, v.targetId, reason, v.category || "other", v.details || null, u.id, mediaIndex, mediaFingerprint, now());
     return { id, targetType: v.targetType, targetId: v.targetId, duplicate: false };
   },
 

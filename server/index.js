@@ -63,9 +63,11 @@ import { pruneAnalyticsData } from "./analyticsService.js";
 import { pruneGuestSearchAnalytics } from "./guestSearchAnalytics.js";
 import { pruneProductSuggestions } from "./features/suggestions/suggestionRetention.js";
 import { pruneExpiredAccountSecrets } from "./accountSecretRetention.js";
+import { pruneExpiredFeedImpressionHistory } from "./feedImpressions.js";
 import { startArtistDeathWatchScheduler } from "./features/artistDeathWatch/artistDeathWatchScheduler.js";
 import { missingStaticAssetResponse } from "./staticPolicy.js";
 import { publicPageFor, renderPublicPage } from "./publicPages.js";
+import { SECURITY_TXT_PATH, securityTxtResponse } from "./securityTxt.js";
 import { staticAssetCacheControl } from "./staticAssetCache.js";
 import { randomUUID } from "node:crypto";
 import { createApiResponseHeaders, createApiResponseHeaderSetter } from "./responseHeaders.js";
@@ -157,7 +159,7 @@ const HEADERS = {
     "default-src 'self'",
     "img-src 'self' https: data: blob:",
     "media-src 'self' https: blob:",
-    // Expo SDK 56's export uses external bundles; its inline shell content is
+    // Expo SDK 57's export uses external bundles; its inline shell content is
     // CSS. User-shared YouTube links are validated server-side, so the browser
     // needs provider script origins only when the built-in player is enabled.
     `script-src 'self' https://*.googleapis.com https://*.gstatic.com${MUSIC_PLAYER_ENABLED ? " https://www.youtube.com https://s.ytimg.com" : ""}`,
@@ -275,6 +277,11 @@ function serveCrawlerFile(req, res, pathname) {
   });
   if (req.method === "HEAD") return res.end();
   res.end(body);
+}
+
+function serveSecurityFile(req, res) {
+  const security = securityTxtResponse(req.method);
+  return sendCrawlerText(req, res, security.status, security.body, security.headers);
 }
 
 // App stores, search engines, and signed-out people need legal/support pages
@@ -505,6 +512,17 @@ const server = createServer(async (req, res) => {
   if (req.method === "OPTIONS") return send(res, 204, "", createApiResponseHeaders(cors));
 
   try {
+    if (pathname === SECURITY_TXT_PATH) {
+      const crawlerLimit = crawlerFileRateLimitPolicy(clientIp(req));
+      if (!rateLimit(crawlerLimit.key, crawlerLimit.max, crawlerLimit.windowMs)) {
+        return sendCrawlerText(req, res, 429, "Too many security-file requests.\n", {
+          "Cache-Control": "no-store",
+          "Retry-After": String(Math.ceil(crawlerLimit.windowMs / 1000)),
+        });
+      }
+      return serveSecurityFile(req, res);
+    }
+
     if (pathname === "/robots.txt" || pathname === "/sitemap.xml" || pathname.startsWith("/sitemaps/")) {
       const crawlerLimit = crawlerFileRateLimitPolicy(clientIp(req));
       if (!rateLimit(crawlerLimit.key, crawlerLimit.max, crawlerLimit.windowMs)) {
@@ -697,6 +715,8 @@ setInterval(() => {
   catch (error) { console.error(`[pit] suggestion retention sweep failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
   try { pruneExpiredAccountSecrets(db); }
   catch (error) { console.error(`[pit] account-secret retention sweep failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
+  try { pruneExpiredFeedImpressionHistory(db); }
+  catch (error) { console.error("[pit] feed-history retention sweep failed safely: cause=" + safeRequestFailureContext({ error }).cause); }
   try { expireLegacyMediaUploads(db); }
   catch (error) { console.error(`[media] legacy staging-expiry sweep failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
 }, 60 * 60 * 1000).unref();
@@ -870,6 +890,8 @@ async function startServer() {
     catch (error) { console.error(`[pit] startup suggestion retention sweep failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     try { pruneExpiredAccountSecrets(db); }
     catch (error) { console.error(`[pit] startup account-secret retention sweep failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
+    try { pruneExpiredFeedImpressionHistory(db); }
+    catch (error) { console.error("[pit] startup feed-history retention sweep failed safely: cause=" + safeRequestFailureContext({ error }).cause); }
     try { expireLegacyMediaUploads(db); }
     catch (error) { console.error(`[media] startup legacy staging-expiry sweep failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     if (emailCampaignRecoveryEnabled()) {

@@ -72,6 +72,9 @@ CREATE TABLE IF NOT EXISTS users (
   suspended_until INTEGER,
   handle_changed_at INTEGER NOT NULL DEFAULT 0,
   profile_updated_at INTEGER NOT NULL DEFAULT 0,
+  age_band        TEXT NOT NULL DEFAULT 'unknown' CHECK (age_band IN ('13_17','18_plus','unknown')),
+  dm_policy       TEXT NOT NULL DEFAULT 'mutuals' CHECK (dm_policy IN ('nobody','people_i_follow','mutuals')),
+  profile_audience TEXT NOT NULL DEFAULT 'everyone' CHECK (profile_audience IN ('everyone','members','only_me')),
   created_at      INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_users_created ON users(created_at DESC, id DESC);
@@ -133,6 +136,21 @@ CREATE INDEX IF NOT EXISTS idx_posts_created ON posts(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_posts_cursor ON posts(created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_posts_user_history ON posts(user_id, removed, created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_posts_recommendation_candidates ON posts(removed, created_at DESC, id DESC);
+
+-- A create token belongs to one logical post permanently. Keeping the receipt
+-- outside the authored post row lets deletion scrub every content-derived
+-- field without freeing the token or relying on a removed post payload.
+CREATE TABLE IF NOT EXISTS post_create_receipts (
+  user_id             TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  client_mutation_id  TEXT NOT NULL,
+  client_mutation_hash TEXT,
+  post_id             TEXT NOT NULL,
+  state               TEXT NOT NULL DEFAULT 'active' CHECK (state IN ('active','removed')),
+  created_at          INTEGER NOT NULL,
+  updated_at          INTEGER NOT NULL,
+  PRIMARY KEY (user_id, client_mutation_id)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS idx_post_create_receipts_post ON post_create_receipts(post_id);
 
 -- Structured friend tags are a relationship, not an opaque post attribute.
 -- Keep the legacy JSON column on posts for rolling-deploy/read compatibility,
@@ -230,6 +248,8 @@ CREATE TABLE IF NOT EXISTS reports (
   target_type TEXT NOT NULL,
   target_id   TEXT NOT NULL,
   reason      TEXT NOT NULL DEFAULT '',
+  category    TEXT,
+  details     TEXT,
   reporter_id TEXT REFERENCES users(id) ON DELETE SET NULL,
   media_index INTEGER,
   media_fingerprint TEXT,
@@ -491,6 +511,8 @@ CREATE TABLE IF NOT EXISTS post_impressions (
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS idx_post_impressions_user_recent
   ON post_impressions(user_id,last_seen_at DESC,post_id);
+CREATE INDEX IF NOT EXISTS idx_post_impressions_retention
+  ON post_impressions(last_seen_at,user_id,post_id);
 
 CREATE TABLE IF NOT EXISTS post_impression_totals (
   post_id       TEXT PRIMARY KEY REFERENCES posts(id) ON DELETE CASCADE,
@@ -744,6 +766,16 @@ CREATE TABLE IF NOT EXISTS blocks (
   PRIMARY KEY (blocker_id, blocked_id)
 );
 CREATE INDEX IF NOT EXISTS idx_blocks_blocked ON blocks(blocked_id);
+
+-- A private, one-way attention control. Unlike a block it preserves follows,
+-- profile access, and messaging; only the muter's discovery/activity views use it.
+CREATE TABLE IF NOT EXISTS account_mutes (
+  muter_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  muted_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (muter_id, muted_id)
+);
+CREATE INDEX IF NOT EXISTS idx_account_mutes_muted ON account_mutes(muted_id);
 
 -- Durable achievement ledger. Progress is computed from authoritative tables;
 -- earned rows remain as a historical record and cannot be duplicated.
@@ -1001,6 +1033,8 @@ CREATE TABLE IF NOT EXISTS media_objects (
   object_key    TEXT PRIMARY KEY,
   owner_id      TEXT NOT NULL,
   storage_scope TEXT NOT NULL DEFAULT 'public' CHECK (storage_scope IN ('public','private')),
+  accounting_class TEXT NOT NULL DEFAULT 'member_source'
+                  CHECK (accounting_class IN ('member_source','service_generated')),
   purpose       TEXT NOT NULL,
   byte_size     INTEGER NOT NULL DEFAULT 0 CHECK (byte_size >= 0),
   status        TEXT NOT NULL DEFAULT 'issued'
@@ -1016,15 +1050,20 @@ CREATE INDEX IF NOT EXISTS idx_media_objects_owner ON media_objects(owner_id, st
 -- capabilities. Keep that reservation-time query off the full object ledger.
 CREATE INDEX IF NOT EXISTS idx_media_objects_status_bytes ON media_objects(status, byte_size);
 
--- Every returned upload ticket consumes the owner's rolling upload allowance.
--- This history intentionally outlives media_objects deletion for 24 hours, so
--- rapidly uploading and deleting cannot reset the bandwidth/storage budget.
+-- Every returned upload ticket consumes the service-wide rolling circuit
+-- breaker. Only member_source rows consume the disclosed per-account allowance;
+-- service-generated safe copies, covers, and delivery objects do not count as
+-- another member-selected upload. This history intentionally outlives
+-- media_objects deletion for 24 hours, so rapidly uploading and deleting cannot
+-- reset either applicable bandwidth/storage budget.
 -- Account erasure removes it through the owner FK; old events are pruned by the
 -- media cleanup worker and opportunistically before each new reservation.
 CREATE TABLE IF NOT EXISTS media_upload_issuances (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   owner_id   TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   object_key TEXT NOT NULL,
+  accounting_class TEXT NOT NULL DEFAULT 'member_source'
+                CHECK (accounting_class IN ('member_source','service_generated')),
   byte_size  INTEGER NOT NULL CHECK (byte_size > 0),
   issued_at  INTEGER NOT NULL
 );
@@ -1519,6 +1558,11 @@ db.exec(`PRAGMA application_id = ${PIT_SQLITE_APPLICATION_ID}`);
 // actual table before altering it: a real migration failure must stop startup,
 // while an already-present column is safely skipped on every boot.
 const additiveMigrations = [
+  "ALTER TABLE users ADD COLUMN profile_audience TEXT NOT NULL DEFAULT 'everyone' CHECK (profile_audience IN ('everyone','members','only_me'))",
+  "ALTER TABLE users ADD COLUMN age_band TEXT NOT NULL DEFAULT 'unknown' CHECK (age_band IN ('13_17','18_plus','unknown'))",
+  "ALTER TABLE users ADD COLUMN dm_policy TEXT NOT NULL DEFAULT 'mutuals' CHECK (dm_policy IN ('nobody','people_i_follow','mutuals'))",
+  "ALTER TABLE reports ADD COLUMN category TEXT",
+  "ALTER TABLE reports ADD COLUMN details TEXT",
   "ALTER TABLE users ADD COLUMN handle_changed_at INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE users ADD COLUMN profile_updated_at INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE users ADD COLUMN verified INTEGER NOT NULL DEFAULT 0",
@@ -1710,6 +1754,11 @@ const additiveMigrations = [
   // Existing ledger rows predate byte-accounting and are safely grandfathered
   // at zero. Every newly returned ticket records its measured byte count.
   "ALTER TABLE media_objects ADD COLUMN byte_size INTEGER NOT NULL DEFAULT 0",
+  // Existing rows conservatively remain member-selected sources. New server
+  // derivatives opt into their separate class at reservation time, so a
+  // rolling deploy never grants extra allowance to historical upload work.
+  "ALTER TABLE media_objects ADD COLUMN accounting_class TEXT NOT NULL DEFAULT 'member_source' CHECK (accounting_class IN ('member_source','service_generated'))",
+  "ALTER TABLE media_upload_issuances ADD COLUMN accounting_class TEXT NOT NULL DEFAULT 'member_source' CHECK (accounting_class IN ('member_source','service_generated'))",
   "ALTER TABLE media_owner_sweeps ADD COLUMN not_before_at INTEGER NOT NULL DEFAULT 0",
   // Keep exact-prefix verification alive after the first empty listing. S3
   // validates a presigned PUT when the request starts, so a slow transfer may
@@ -1846,6 +1895,10 @@ try {
   ensureShowSchema(db);
   ensureLoungeSchema(db);
   ensureArtistPublicSlugs(db);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_media_objects_owner_accounting_status_bytes
+    ON media_objects(owner_id,accounting_class,status,byte_size)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_media_upload_issuances_owner_accounting_at_bytes
+    ON media_upload_issuances(owner_id,accounting_class,issued_at,byte_size)`);
   db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_artists_public_slug
     ON artists(lower(public_slug)) WHERE public_slug IS NOT NULL AND public_slug<>''`);
   db.exec(`CREATE TRIGGER IF NOT EXISTS trg_artists_public_slug_immutable
@@ -1919,6 +1972,18 @@ BEGIN
     online_title=NULL,youtube_url=NULL,youtube_video_id=NULL WHERE id=NEW.id;
 END;
 
+CREATE TRIGGER IF NOT EXISTS trg_posts_create_receipt_removed
+AFTER UPDATE OF removed ON posts
+WHEN OLD.removed=0 AND NEW.removed=1 AND NEW.client_mutation_id IS NOT NULL
+BEGIN
+  INSERT INTO post_create_receipts
+    (user_id,client_mutation_id,client_mutation_hash,post_id,state,created_at,updated_at)
+  VALUES
+    (NEW.user_id,NEW.client_mutation_id,NEW.client_mutation_hash,NEW.id,'removed',NEW.created_at,COALESCE(NEW.updated_at,NEW.created_at))
+  ON CONFLICT(user_id,client_mutation_id) DO UPDATE SET
+    state='removed',updated_at=excluded.updated_at;
+END;
+
 -- A pre-upgrade account-erasure process does not know to rewrite the legacy
 -- JSON column before deleting a recipient. Do that at the database boundary
 -- while the recipient and indexed relation still exist. The post tag UPDATE
@@ -1985,6 +2050,14 @@ if (!db.prepare("SELECT 1 FROM app_meta WHERE key=?").get(postUserTagBackfillMar
 }
 
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_posts_client_mutation ON posts(user_id, client_mutation_id) WHERE client_mutation_id IS NOT NULL");
+db.exec(`INSERT OR IGNORE INTO post_create_receipts
+  (user_id,client_mutation_id,client_mutation_hash,post_id,state,created_at,updated_at)
+  SELECT user_id,client_mutation_id,client_mutation_hash,id,
+    CASE WHEN removed=1 THEN 'removed' ELSE 'active' END,
+    created_at,COALESCE(updated_at,created_at)
+  FROM posts
+  WHERE client_mutation_id IS NOT NULL
+    AND (removed=1 OR client_mutation_hash IS NOT NULL)`);
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_dms_client_mutation ON dms(from_id, client_mutation_id) WHERE client_mutation_id IS NOT NULL");
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_fcm_client_mutation ON fan_club_messages(user_id, client_mutation_id) WHERE client_mutation_id IS NOT NULL");
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_lounge_client_mutation ON lounge_messages(user_id, client_mutation_id) WHERE client_mutation_id IS NOT NULL");
@@ -2825,6 +2898,9 @@ export function publicUser(u, { self = false, badges = false } = {}) {
     ...(badges ? { badges: customBadgesFor(u.id) } : {}),
     ...(self ? {
       email: u.email,
+      ageBand: u.age_band || "unknown",
+      directMessagePolicy: u.dm_policy || "mutuals",
+      profileAudience: u.profile_audience || "everyone",
       emailVerified: !!u.email_verified_at,
       marketingOptOut: !!u.marketing_opt_out || !u.marketing_consent_at,
       marketingConsentAt: u.marketing_consent_at || null,

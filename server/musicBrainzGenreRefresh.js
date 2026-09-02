@@ -13,6 +13,7 @@ import { backgroundJobEnabled } from "./backgroundJobs.js";
 import { runBackgroundJob } from "./backgroundJobCoordinator.js";
 import { privateErrorLabel } from "./errors.js";
 import { runMusicBrainzRequest } from "./musicBrainzRequestThrottle.js";
+import { PROVIDER_JSON_LIMITS, readBoundedJsonResponse } from "./boundedJsonResponse.js";
 import {
   musicBrainzGenreFields,
   projectArtistGenre,
@@ -129,7 +130,10 @@ export async function fetchExactMusicBrainzArtistGenres(mbid, {
         error.status = Number(response?.status) || 502;
         throw error;
       }
-      return await response.json();
+      return await readBoundedJsonResponse(response, {
+        maxBytes: PROVIDER_JSON_LIMITS.musicBrainz,
+        signal: controller.signal,
+      });
     } finally {
       clearTimeout(timeout);
       signal?.removeEventListener("abort", abort);

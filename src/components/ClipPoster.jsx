@@ -14,7 +14,7 @@ import Icon from "./Icon";
 // Cross-platform clip cover:
 // - iOS/Android generate a native image reference at a representative time.
 // - Web decodes and scores representative frames into a bounded JPEG because
-//   expo-video does not support generateThumbnailsAsync there in SDK 56.
+//   expo-video does not support generateThumbnailsAsync there in SDK 57.
 // Until a frame is actually visible, a branded loading/error cover prevents the
 // browser or native decoder's black surface from leaking into the feed.
 export default function ClipPoster({
@@ -233,23 +233,22 @@ export default function ClipPoster({
       ) : null}
       {phase !== "ready" ? (
         <View style={styles.cover} pointerEvents="none">
-          <View style={[styles.glow, compact && styles.glowCompact]} />
-          <View style={[styles.playRing, compact && styles.playRingCompact]}>
+          {showPlayBadge ? <View style={[styles.playBadge, compact && styles.playBadgeCompact]}>
             {phase === "loading" && enabled ? (
-              <ActivityIndicator size="small" color={colors.amber} />
+              <ActivityIndicator size="small" color="#1A1206" />
             ) : (
-              <Icon name="play" size={compact ? 13 : 17} color={colors.amber} />
+              <Icon name="play" size={compact ? 13 : 17} color="#1A1206" />
             )}
-          </View>
-          {!compact ? (
+          </View> : null}
+          {!compact && showPlayBadge ? (
             <Text style={styles.label}>{phase === "error" ? "PREVIEW UNAVAILABLE" : phase === "idle" ? "CLIP" : "LOADING CLIP"}</Text>
           ) : null}
         </View>
       ) : null}
       {phase === "ready" ? <View style={styles.readabilityScrim} pointerEvents="none" /> : null}
       {phase === "ready" && showPlayBadge ? (
-        <View style={[styles.readyBadge, compact && styles.readyBadgeCompact]} pointerEvents="none">
-          <Icon name="play" size={compact ? 13 : 17} color="#fff" />
+        <View style={[styles.playBadge, styles.readyBadge, compact && styles.playBadgeCompact, compact && styles.readyBadgeCompact]} pointerEvents="none">
+          <Icon name="play" size={compact ? 13 : 17} color="#1A1206" />
         </View>
       ) : null}
     </View>
@@ -259,12 +258,10 @@ export default function ClipPoster({
 const styles = StyleSheet.create({
   base: { overflow: "hidden", backgroundColor: "#11131a" },
   cover: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center", gap: 7, backgroundColor: "#11131a" },
-  glow: { position: "absolute", width: 180, height: 180, borderRadius: 90, backgroundColor: "rgba(242,166,90,0.10)", transform: [{ scaleX: 1.7 }] },
-  glowCompact: { width: 90, height: 90, borderRadius: 45 },
-  playRing: { width: 44, height: 44, borderRadius: 22, borderCurve: "continuous", borderWidth: 1, borderColor: "rgba(242,166,90,0.72)", backgroundColor: "rgba(8,9,14,0.68)", alignItems: "center", justifyContent: "center", paddingLeft: 2 },
-  playRingCompact: { width: 34, height: 34, borderRadius: 17 },
+  playBadge: { width: 48, height: 48, borderRadius: 24, borderCurve: "continuous", backgroundColor: colors.amberStrong, alignItems: "center", justifyContent: "center", paddingLeft: 3 },
+  playBadgeCompact: { width: 36, height: 36, borderRadius: 18, paddingLeft: 2 },
   label: { color: "rgba(255,255,255,0.62)", fontFamily: mono, fontSize: 9, fontWeight: "800", letterSpacing: 1.5 },
   readabilityScrim: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(4,5,10,0.08)" },
-  readyBadge: { position: "absolute", left: "50%", top: "50%", marginLeft: -24, marginTop: -24, width: 48, height: 48, borderRadius: 24, borderCurve: "continuous", backgroundColor: "rgba(5,7,12,0.64)", borderWidth: 1, borderColor: "rgba(255,255,255,0.72)", alignItems: "center", justifyContent: "center", paddingLeft: 3 },
-  readyBadgeCompact: { width: 34, height: 34, borderRadius: 17, marginLeft: -17, marginTop: -17 },
+  readyBadge: { position: "absolute", left: "50%", top: "50%", marginLeft: -24, marginTop: -24 },
+  readyBadgeCompact: { marginLeft: -18, marginTop: -18 },
 });

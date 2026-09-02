@@ -16,7 +16,7 @@ npm run check
 ```
 
 `npm run check` regenerates the split catalogue, runs all tests and syntax
-checks, and exports the Expo SDK 56 web build to `dist/`.
+checks, and exports the Expo SDK 57 web build to `dist/`.
 
 The production command is:
 
@@ -81,6 +81,16 @@ The scheduler adds `--upload` only when the private endpoint, bucket, access key
 and secret are all present and the bucket differs from `MEDIA_BUCKET`. If that
 configuration is incomplete, the run succeeds on the persistent disk only and
 logs that no off-host copy was made. Treat that state as a release gap.
+
+After a scheduled child both uploads and publishes a new verified snapshot, the
+server writes a credential-free receipt in the persistent backup directory.
+Production startup logs an explicit warning when off-host storage is
+unconfigured, has no valid successful-upload receipt, is more than 26 hours old,
+or is stale after 36 hours. The staff health response and founder health digest
+report the same evidence status and age. These are observability signals, not a
+readiness gate, and development remains unaffected. The receipt proves that an
+upload completed at that time; it does not prove that the remote object still
+exists, so operators must still test provider retention and restores.
 
 Before broad traffic, migrate to managed Postgres with point-in-time recovery.
 

@@ -8,3 +8,13 @@ export function activeAccountSql(alias = "u") {
 export function accountIsPublic(user, at = Date.now()) {
   return !!user && !user.is_banned && !(user.suspended_until && user.suspended_until > at);
 }
+
+export const PROFILE_AUDIENCES = Object.freeze(["everyone", "members", "only_me"]);
+
+export function profileAudienceAllows(user, viewer = null) {
+  if (!accountIsPublic(user)) return false;
+  if (viewer?.id === user.id) return true;
+  const audience = PROFILE_AUDIENCES.includes(user.profile_audience) ? user.profile_audience : "everyone";
+  if (audience === "only_me") return false;
+  return audience === "everyone" || !!viewer?.id;
+}

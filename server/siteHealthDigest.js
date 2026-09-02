@@ -9,9 +9,9 @@
 import { randomUUID } from "node:crypto";
 
 import {
+  backupOperationalStatus,
   backupSchedulerEnabled,
   latestBackupAt,
-  offhostBackupConfigured,
 } from "./backupScheduler.js";
 import { sendTemplate } from "./emailService.js";
 import { isProduction } from "./environment.js";
@@ -311,7 +311,9 @@ export function collectSiteHealthDigest(database, {
   let backupAgeHours = null;
   try { backupAgeHours = ageHours(at, latestBackupAt(env)); }
   catch { backupAgeHours = null; }
-  const offhostConfigured = offhostBackupConfigured(env);
+  const backupOperations = backupOperationalStatus(env, { now: at });
+  const offhostConfigured = backupOperations.offhostConfigured;
+  const offhostBackupAgeHours = backupOperations.offhostAgeHours;
 
   const mailFrom = parseMailFrom(env?.MAIL_FROM);
   const mailConfigured = !!String(env?.RESEND_API_KEY || "").trim() && mailFrom.ok;
@@ -342,7 +344,15 @@ export function collectSiteHealthDigest(database, {
   else if (backupAgeHours === null) issues.push("backup_missing");
   else if (backupEnabled && backupAgeHours > 36) issues.push("backup_stale");
   else if (backupEnabled && backupAgeHours > 26) warnings.push("backup_aging");
-  if (backupEnabled && !offhostConfigured) warnings.push("offhost_backup_unconfigured");
+  if (backupEnabled && backupOperations.offhostStatus === "unconfigured") {
+    warnings.push("offhost_backup_unconfigured");
+  } else if (backupEnabled && backupOperations.offhostStatus === "unverified") {
+    warnings.push("offhost_backup_unverified");
+  } else if (backupEnabled && backupOperations.offhostStatus === "stale") {
+    warnings.push("offhost_backup_stale");
+  } else if (backupEnabled && backupOperations.offhostStatus === "aging") {
+    warnings.push("offhost_backup_aging");
+  }
   if (!publicMediaConfigured || !privateVideoConfigured) issues.push("media_storage_unconfigured");
   else if (!privateIsolation.ready) issues.push("private_media_unverified");
   if (publishingEnabled(env) && !verifier.ready) issues.push("video_verifier_not_ready");
@@ -368,14 +378,14 @@ export function collectSiteHealthDigest(database, {
     `Release: ${commit || "unavailable"}; process uptime: ${Math.max(0, Math.floor(Number(uptimeSeconds) || 0))} seconds`,
     `Core: database ready ${yesNo(databaseReady)}; persistent data directory configured ${yesNo(persistentStorageConfigured)}`,
     `Mail: configured ${yesNo(mailConfigured)}; reply routing valid ${yesNo(replyToValid)}; last 24h sent ${numberOrUnavailable(mail24h?.sent)}, failed ${numberOrUnavailable(mail24h?.failed)}, skipped ${numberOrUnavailable(mail24h?.skipped)}`,
-    `Backups: scheduled ${yesNo(backupEnabled)}; latest verified local snapshot age ${backupAgeHours === null ? "unavailable" : `${backupAgeHours}h`}; private off-host destination configured ${yesNo(offhostConfigured)}`,
+    `Backups: scheduled ${yesNo(backupEnabled)}; latest verified local snapshot age ${backupAgeHours === null ? "unavailable" : `${backupAgeHours}h`}; private off-host destination configured ${yesNo(offhostConfigured)}; latest confirmed off-host upload age ${offhostBackupAgeHours === null ? "unavailable" : `${offhostBackupAgeHours}h`}; off-host evidence ${backupOperations.offhostStatus}`,
     `Media: public and private storage configured ${yesNo(publicMediaConfigured && privateVideoConfigured)}; private-source privacy proof ready ${yesNo(privateIsolation.ready)}; video verifier ready ${yesNo(verifier.ready)}`,
     `Cleanup: retrying ${numberOrUnavailable(mediaRetry)}; dead-letter ${numberOrUnavailable(mediaDead)}`,
     `App and server faults: ${numberOrUnavailable(serverFaults24h?.occurrences)} occurrence(s) across ${numberOrUnavailable(serverFaults24h?.kinds)} serious pattern(s) in the hourly-bucketed last 24h`,
     `Owner approvals: ${numberOrUnavailable(pendingOwnerApprovals)} pending`,
     `Attention codes: ${issues.length ? issues.join(", ") : "none"}${warnings.length ? `; watch codes: ${warnings.join(", ")}` : ""}`,
     "Coverage limit: this in-process check cannot prove public DNS, Render control-plane/build status, Google Workspace delivery, or reachability while the app is down. Keep external Render and uptime notifications enabled.",
-    `Off-host note: configuration is reported, but the current runtime does not retain independent proof of the latest remote upload.`,
+    "Off-host note: a local receipt is written only after the backup child confirms a private remote upload; it proves that upload completed then, not that the remote object still exists now.",
   ].join("\n");
 
   return Object.freeze({
@@ -394,6 +404,8 @@ export function collectSiteHealthDigest(database, {
       backupEnabled,
       backupAgeHours,
       offhostConfigured,
+      offhostBackupAgeHours,
+      offhostBackupStatus: backupOperations.offhostStatus,
       publicMediaConfigured,
       privateVideoConfigured,
       privateMediaReady: !!privateIsolation.ready,

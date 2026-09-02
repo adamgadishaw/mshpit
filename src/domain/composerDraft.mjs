@@ -73,10 +73,12 @@ export function normalizeComposerDraft(value = {}) {
     playlist: value.playlist && typeof value.playlist === "object" ? value.playlist : null,
     photos,
     mediaProject,
-    photosPublic: value.photosPublic !== false,
+    // Missing consent is not consent. Preserve only an explicit opt-in when a
+    // draft is restored, including drafts created by older app versions.
+    photosPublic: value.photosPublic === true,
     // Marketing-surface permission is deliberately separate from artist-page
     // sharing and defaults off for every historical or newly opened draft.
-    landingShowcase: value.photosPublic !== false && value.landingShowcase === true,
+    landingShowcase: value.photosPublic === true && value.landingShowcase === true,
     panels: {
       song: !!(panels.song ?? value.showSong ?? value.song),
       photos: !!(panels.photos ?? value.showPhotos ?? (photos.length || mediaProject.assets.length)),

@@ -151,28 +151,32 @@ services:
       - key: MEDIA_LEGACY_RECOVERY_ENABLED
         value: "true"
       - key: MEDIA_ORPHAN_TTL_MS
-        value: "604800000"             # 7 days; code bounds this to 1-30 days
-      # These are high emergency abuse ceilings, not member upload-plan caps.
-      # They keep a compromised account from minting unbounded storage
-      # capabilities while staying far above ordinary creator use.
+        value: "172800000"             # 48 hours; unused staging objects are then deleted
+      # Per-account limits count original member-selected source tickets only.
+      # Sanitized copies, covers, and delivery renditions are instead protected
+      # by the all-object service circuit breakers immediately below.
       - key: MEDIA_UPLOAD_OUTSTANDING_OBJECTS
-        value: "256"
+        value: "40"                     # unfinished member-selected originals
       - key: MEDIA_UPLOAD_OUTSTANDING_BYTES
-        value: "34359738368"            # 32 GiB: above one max 20-clip source + delivery composition
+        value: "6442450944"             # 6 GiB of unfinished originals at once
       - key: MEDIA_UPLOAD_24H_BYTES
-        value: "68719476736"            # 64 GiB of upload tickets per member
+        value: "6442450944"             # 6 GiB of original files per rolling 24 hours
       - key: MEDIA_UPLOAD_24H_TICKETS
-        value: "4096"
-      # Service-wide incident circuit breakers. These are intentionally far
-      # above member-scale use and are not upload-plan limits.
+        value: "120"                    # original upload tickets per rolling 24 hours
+      # Service-wide incident circuit breakers include sources and every
+      # server/verifier-generated object, across all accounts.
       - key: MEDIA_UPLOAD_GLOBAL_OUTSTANDING_OBJECTS
-        value: "100000"
+        value: "10000"
       - key: MEDIA_UPLOAD_GLOBAL_OUTSTANDING_BYTES
-        value: "2199023255552"          # 2 TiB unfinished across the service
+        value: "137438953472"           # 128 GiB unfinished across the service
       - key: MEDIA_UPLOAD_GLOBAL_24H_BYTES
-        value: "8796093022208"          # 8 TiB of tickets across the service
+        value: "549755813888"           # 512 GiB in a rolling 24-hour window
       - key: MEDIA_UPLOAD_GLOBAL_24H_TICKETS
-        value: "1000000"
+        value: "100000"
+      - key: LANDING_MEDIA_MAX_IN_FLIGHT
+        value: "24"
+      - key: LANDING_MEDIA_60S_BYTES
+        value: "268435456"             # 256 MiB/minute first-party landing proxy brake
       - key: EXPO_PUBLIC_GOOGLE_MAPS_KEY
         # Referrer-locked (mshpit.com/*) + Maps Static API only. Safe to commit:
         # EXPO_PUBLIC_* vars are inlined into the public web bundle on every build,
@@ -381,23 +385,23 @@ services:
       - key: MEDIA_LEGACY_RECOVERY_ENABLED
         value: "true"
       - key: MEDIA_ORPHAN_TTL_MS
-        value: "604800000"
+        value: "172800000"
       - key: MEDIA_UPLOAD_OUTSTANDING_OBJECTS
-        value: "256"
+        value: "40"
       - key: MEDIA_UPLOAD_OUTSTANDING_BYTES
-        value: "34359738368"
+        value: "6442450944"
       - key: MEDIA_UPLOAD_24H_BYTES
-        value: "68719476736"
+        value: "6442450944"
       - key: MEDIA_UPLOAD_24H_TICKETS
-        value: "4096"
+        value: "120"
       - key: MEDIA_UPLOAD_GLOBAL_OUTSTANDING_OBJECTS
-        value: "100000"
+        value: "10000"
       - key: MEDIA_UPLOAD_GLOBAL_OUTSTANDING_BYTES
-        value: "2199023255552"
+        value: "137438953472"
       - key: MEDIA_UPLOAD_GLOBAL_24H_BYTES
-        value: "8796093022208"
+        value: "549755813888"
       - key: MEDIA_UPLOAD_GLOBAL_24H_TICKETS
-        value: "1000000"
+        value: "100000"
       # Provider fan-out stays off on staging: it would burn production's shared
       # YouTube and Ticketmaster quotas for data nobody looks at.
       - key: CACHE_WARM_ENABLED

@@ -4,7 +4,7 @@ import { seedFeed, ratedShows, haversineKm, installDemoCatalogShows } from "./da
 import { clean, cleanEmail, isEmail, cleanName, isName, cleanHandle, isPassword, clampRating, LIMITS } from "./domain/validation.mjs";
 import { load, remove, save } from "./lib/persist";
 import { api, AppError, captureAppError, configureApiIdentity } from "./lib/api";
-import { requestAccountExport, updateAnnouncementEmailPreference, updateProfileSearchIndexingPreference } from "./lib/accountPrivacyApi";
+import { classifyAccountAgeBand, requestAccountExport, updateAnnouncementEmailPreference, updateDirectMessagePreference, updateProfileAudience, updateProfileSearchIndexingPreference } from "./lib/accountPrivacyApi";
 import { requestFreshDeezerPreview } from "./lib/playbackApi";
 import { clearStoredTheme, setTheme as applyTheme, storedThemeSelection, syncThemeFromAccount } from "./theme";
 import { artistMeta, installIngestedCatalog } from "./seed/ingested";
@@ -55,6 +55,7 @@ import {
   upsertAccountDraft,
 } from "./domain/draftPolicy.mjs";
 import { MEDIA_POST_MAX_ATTACHMENTS } from "./domain/mediaUploadPolicy.mjs";
+import { LEGAL_ACCEPTANCE_VERSION } from "./domain/privacyDisclosures.mjs";
 import { buildReviewCreateBody, buildReviewEditBody, cleanArtistKey } from "./domain/post-payload.mjs";
 import { isInPersonConcertReview } from "./domain/onlineReview.mjs";
 import { mergeEditedPost, resolvePostEditTarget } from "./domain/postEditTarget.mjs";
@@ -91,6 +92,7 @@ import { canonicalVenueKey, resolveVenueCatalogKey } from "./domain/venueIdentit
 import { fetchVenuePhotos } from "./features/venuePhotos/venuePhotoApi.mjs";
 import { fetchDiscoverTourDateRange, fetchStartupTourDates } from "./features/discovery/tourDateRangeApi.mjs";
 import { fetchMyShowPlans } from "./features/showPlanning/showPlanningService";
+import { fetchMutedAccounts, saveAccountMute } from "./features/accountMute/accountMuteService";
 import { venueCatalogPhotoFields } from "./domain/venuePhotoProvenance.mjs";
 import {
   mediaReactionsForAccountTransition,
@@ -119,7 +121,11 @@ import {
   upsertProfileHistoryPost,
 } from "./features/profileHistory/profileHistoryClient.mjs";
 import { artistGalleryIdentityKey, mergeArtistGalleryMedia, postMatchesArtistGallery } from "./domain/artistGalleryMedia.mjs";
-import { deleteMediaDraftsForOwner, releaseMediaDraftAssets } from "./lib/mediaDraftStaging";
+import {
+  deleteMediaDraftsForOwner,
+  pruneStaleMediaDraftAssets,
+  releaseMediaDraftAssets,
+} from "./lib/mediaDraftStaging";
 import {
   privateListeningActive as isPrivateListeningActive,
   privateListeningStorageKey,
@@ -409,7 +415,7 @@ export const roleBadge = (role) =>
 
 // Bump when the Terms/Privacy change materially, so we can tell who consented to
 // which version (recorded on the account at sign-up).
-export const TERMS_VERSION = "2026-08";
+export const TERMS_VERSION = LEGAL_ACCEPTANCE_VERSION;
 
 const StoreContext = createContext(null);
 export const useStore = () => useContext(StoreContext);
@@ -532,7 +538,16 @@ export function StoreProvider({ children }) {
   useEffect(() => {
     if ((session?.id || null) === playHistoryAccountId) save(playHistoryStorageKey(playHistoryAccountId), playHistory);
   }, [session?.id, playHistoryAccountId, playHistory]);
-  useEffect(() => { save("pit.snapshots", []); }, []); // retire the unused legacy queue-snapshot cache
+  useEffect(() => {
+    save("pit.snapshots", []); // retire the unused legacy queue-snapshot cache
+    void pruneStaleMediaDraftAssets().catch((error) => captureAppError(error, {
+      code: "PIT-STORE-002",
+      context: "Aging private media drafts on this device",
+      source: "device-storage",
+      severity: "warning",
+      toast: false,
+    }));
+  }, []);
   useEffect(() => {
     const key = privateListeningStorageKey(session?.id);
     setPrivateListeningUntil(key ? Number(load(key, 0)) || 0 : 0);
@@ -704,6 +719,14 @@ export function StoreProvider({ children }) {
     sanitizePersistedStoreValue("pit.blocked", load("pit.blocked", []), ENABLE_DEMO_DATA));
   const blockedIdsRef = useRef(blockedIds);
   blockedIdsRef.current = blockedIds;
+  if (!Array.isArray(blockedIdsRef.mutedIds)) blockedIdsRef.mutedIds = [];
+  const mutedIds = blockedIdsRef.mutedIds;
+  const setMutedIds = (updater) => {
+    const current = blockedIdsRef.mutedIds;
+    const next = typeof updater === "function" ? updater(current) : updater;
+    blockedIdsRef.mutedIds = Array.isArray(next) ? next : [];
+    setBlockedIds((ids) => [...ids]);
+  };
   if (blockedIdsRef.accountId === undefined) blockedIdsRef.accountId = session?.id || null;
   if (!blockedIdsRef.status) blockedIdsRef.status = ENABLE_DEMO_DATA || !session?.id ? "ready" : "loading";
   const blockedDirectoryStatus = blockedIdsRef.accountId === (session?.id || null)
@@ -986,6 +1009,7 @@ export function StoreProvider({ children }) {
     setMyLikes({});
     blockedIdsRef.current = [];
     setBlockedIds([]);
+    setMutedIds([]);
     if (!ENABLE_DEMO_DATA) {
       setRequests([]);
       setLounge({});
@@ -2434,6 +2458,18 @@ export function StoreProvider({ children }) {
       .catch(() => {});
     // Hydrate who this account has blocked (drives feed/DM/profile filtering).
     void refreshBlockedDirectory({ accountId: su.id });
+    fetchMutedAccounts(su.id)
+      .then(({ users: list }) => {
+        if (sessionRef.current?.id !== su.id || !Array.isArray(list)) return;
+        absorbUsers(list);
+        const ids = list.map((user) => user.id).filter(Boolean);
+        setMutedIds(ids);
+        setFeed((rows) => rows.filter((post) => !ids.includes(post.userId)));
+        setNotifications((rows) => rows.filter((notification) => !ids.includes(notification.actorId)));
+      })
+      .catch(() => {
+        // architecture: allow-empty-catch -- mute hydration is best-effort; the server still enforces it on every personalized read.
+      });
     // The account-scoped feed effect restarts after setSession and owns the one
     // initial hydrate. Avoid a second request racing that immutable snapshot.
     // Hydrate only one summary row per conversation at startup. Full message
@@ -2837,7 +2873,7 @@ export function StoreProvider({ children }) {
     return candidate;
   };
 
-  const signup = async ({ name, email, password, city, location = null, genres = [], agreedToTerms, analyticsConsent = false }) => {
+  const signup = async ({ name, email, password, city, location = null, genres = [], ageBand, agreedToTerms, analyticsConsent = false }) => {
     const nm = cleanName(name);
     const em = cleanEmail(email);
     if (!isName(nm)) return { ok: false, error: "Enter a name (letters or numbers, up to 40 chars)." };
@@ -2847,6 +2883,7 @@ export function StoreProvider({ children }) {
     const genreSelection = profileGenreSelection(genres);
     if (!genreSelection.valid) return { ok: false, error: genreSelection.error };
     if (!agreedToTerms) return { ok: false, error: "Please agree to the Terms & Conditions and Privacy policy." };
+    if (!["13_17", "18_plus"].includes(ageBand)) return { ok: false, error: "Choose your age group." };
     // Record consent to the current Terms/Privacy at the moment of sign-up.
     const acceptedAt = Date.now();
     const consent = { termsAcceptedAt: acceptedAt, termsVersion: TERMS_VERSION, ...(analyticsConsent ? { analyticsConsentAt: acceptedAt } : {}) };
@@ -2856,7 +2893,7 @@ export function StoreProvider({ children }) {
       try {
         const response = await api("/api/signup", {
           method: "POST",
-          body: { name: nm, email: em, password, city, lat: srvCoords?.lat, lng: srvCoords?.lng, genres: genreSelection.genres, analyticsConsent: !!analyticsConsent, termsVersion: TERMS_VERSION },
+          body: { name: nm, email: em, password, city, lat: srvCoords?.lat, lng: srvCoords?.lng, genres: genreSelection.genres, ageBand, analyticsConsent: !!analyticsConsent, termsVersion: TERMS_VERSION },
           context: "Creating your Pit account",
           silent: true,
           skipIdentityCheck: true,
@@ -2884,6 +2921,8 @@ export function StoreProvider({ children }) {
       avatarColor: AV[Math.floor(Math.random() * AV.length)],
       avatarUri: null,
       bio: "",
+      ageBand,
+      directMessagePolicy: "mutuals",
       genres: genreSelection.genres,
       favoriteArtists: [],
       playlists: [],
@@ -3415,13 +3454,13 @@ export function StoreProvider({ children }) {
   // Reports write through before appearing locally: a safety report must never
   // look filed when the server did not receive it. The same boundary handles
   // posts, people, comments, private messages and gated community messages.
-  const reportContent = async (targetId, reason, targetType = "post", { mediaUri = null } = {}) => {
+  const reportContent = async (targetId, reason, targetType = "post", { mediaUri = null, category = "other", details = "" } = {}) => {
     const r = clean(reason, { max: LIMITS.note });
     if (!session) return { ok: false, error: "Log in to send this to the moderators." };
     try {
       const result = await api("/api/reports", {
         method: "POST",
-        body: { targetType, targetId, reason: r, ...(mediaUri ? { mediaUri } : {}) },
+        body: { targetType, targetId, reason: r, category, details: clean(details, { max: 500, newlines: true }), ...(mediaUri ? { mediaUri } : {}) },
         context: "Sending your report",
         silent: true, // the screen shows a specific message, not a generic toast
       });
@@ -3844,7 +3883,34 @@ export function StoreProvider({ children }) {
       });
   };
   const blockedUsers = () => blockedIds.map((id) => userById(id)).filter(Boolean);
-
+  const mutedUsers = () => mutedIds.map((id) => userById(id)).filter(Boolean);
+  const isMuted = (id) => mutedIds.includes(id);
+  const muteUser = async (id) => {
+    if (!session || !id || id === session.id || isMuted(id)) return { ok: false };
+    const accountId = session.id;
+    setMutedIds((ids) => [...new Set([...ids, id])]);
+    setFeed((rows) => rows.filter((post) => post.userId !== id));
+    setNotifications((rows) => rows.filter((notification) => notification.actorId !== id));
+    try {
+      await saveAccountMute(id, true);
+      return { ok: true };
+    } catch (error) {
+      if (sessionRef.current?.id === accountId) setMutedIds((ids) => ids.filter((value) => value !== id));
+      return { ok: false, error };
+    }
+  };
+  const unmuteUser = async (id) => {
+    if (!session || !isMuted(id)) return { ok: false };
+    const accountId = session.id;
+    setMutedIds((ids) => ids.filter((value) => value !== id));
+    try {
+      await saveAccountMute(id, false);
+      return { ok: true };
+    } catch (error) {
+      if (sessionRef.current?.id === accountId) setMutedIds((ids) => [...new Set([...ids, id])]);
+      return { ok: false, error };
+    }
+  };
   // Personal data backup: pull the server's portable account export and hand it
   // to the user as a downloadable JSON file.
   const exportMyData = async (password) => {
@@ -3916,6 +3982,49 @@ export function StoreProvider({ children }) {
     } catch (error) {
       return { ok: false, error };
     }
+  };
+
+  const setDirectMessagePolicy = async (policy) => {
+    if (!session?.id || !["nobody", "people_i_follow", "mutuals"].includes(policy)) return { ok: false };
+    const accountId = session.id;
+    try {
+      const { user } = await updateDirectMessagePreference(policy);
+      if (!user || sessionRef.current?.id !== accountId) return { ok: false };
+      const merged = { ...sessionRef.current, ...user };
+      sessionRef.current = merged;
+      setSession(merged);
+      return { ok: true, user: merged };
+    } catch (error) {
+      return { ok: false, error };
+    }
+  };
+
+  const setAgeBandClassification = async (ageBand) => {
+    if (!session?.id || (session.ageBand || "unknown") !== "unknown" || !["13_17", "18_plus"].includes(ageBand)) return { ok: false };
+    const accountId = session.id;
+    try {
+      const { user } = await classifyAccountAgeBand(ageBand);
+      if (!user || sessionRef.current?.id !== accountId) return { ok: false };
+      const merged = { ...sessionRef.current, ...user };
+      sessionRef.current = merged;
+      setSession(merged);
+      return { ok: true, user: merged };
+    } catch (error) {
+      return { ok: false, error };
+    }
+  };
+
+  const setProfileAudience = async (audience) => {
+    if (!session?.id || !["everyone", "members", "only_me"].includes(audience)) return { ok: false };
+    const accountId = session.id;
+    try {
+      const { user } = await updateProfileAudience(audience);
+      if (!user || sessionRef.current?.id !== accountId) return { ok: false };
+      const merged = { ...sessionRef.current, ...user };
+      sessionRef.current = merged;
+      setSession(merged);
+      return { ok: true, user: merged };
+    } catch (error) { return { ok: false, error }; }
   };
 
   const setAnnouncementEmailsEnabled = async (enabled) => {
@@ -4197,6 +4306,7 @@ export function StoreProvider({ children }) {
   const visibleFeed = (staff) =>
     (staff ? feed : feed.filter((l) => !removedIds.includes(l.id)))
       .filter((l) => !l.userId || !blockedIds.includes(l.userId))
+      .filter((l) => !l.userId || !mutedIds.includes(l.userId))
       .filter((l) => staff || !recommendationHiddenIds.has(l.id));
 
   // Feed of only the people you follow (plus yourself).
@@ -6292,14 +6402,15 @@ export function StoreProvider({ children }) {
   const value = {
     users, adminMembers, adminMemberDirectory, session, authReady, feed, removedIds, blockedIds, requests, tourDates, reports, moderationConsole, follows, discoverySidebar, discoverySidebarStatus,
     userById, userByHandle, logsByUser, sharedShows,
-    login, signup, logout, deleteAccount, forgotPassword, resetPassword, confirmEmailVerification, resendEmailVerification, updateProfile, setAnalyticsEnabled, setProfileSearchIndexingEnabled, setAnnouncementEmailsEnabled, chooseTheme,
+    login, signup, logout, deleteAccount, forgotPassword, resetPassword, confirmEmailVerification, resendEmailVerification, updateProfile, setAnalyticsEnabled, setProfileSearchIndexingEnabled, setDirectMessagePolicy, setAgeBandClassification, setProfileAudience, setAnnouncementEmailsEnabled, chooseTheme,
     addLog, editLog, reportContent, actionReport, dismissReport, removeContent, restoreContent,
     requestArtist, approveArtist, rejectArtist,
     addTourDatesBatch,
     isFollowing, follow, unfollow, followerCount, followingCount, absorbUsers, searchPeople, loadMembers, memberCount,
     recentSearches, addRecentSearch, removeRecentSearch, clearRecentSearches,
     loadUser, followersOf, followingOf,
-    isBlocked, blockUser, unblockUser, blockedUsers, blockedDirectoryStatus, refreshBlockedDirectory, isBlockMutationPending, exportMyData,
+    isBlocked, blockUser, unblockUser, blockedUsers, blockedDirectoryStatus, refreshBlockedDirectory, isBlockMutationPending,
+    isMuted, muteUser, unmuteUser, mutedUsers, exportMyData,
     searchArtistsApi, refreshArtistCatalogMetadata, attachArtistSuggestionApi, resolveArtist, remoteArtistMeta, artistDiscography, resolveYouTube, invalidateYouTube, youtubeVideoRejected, youtubeLookupStatus, resolveDeezerPreview,
     discoverChart, discoverGenres, discoverCountries, loadDiscoverOverview, loadDiscoverGenre, serverTime,
     artistSeenCount, reportTrack, adminSetTrackVideo, trackOverridesList, removeTrackOverride, loadModerationQueue, loadModerationConsole, loadMoreModerationConsole, moderateReport,

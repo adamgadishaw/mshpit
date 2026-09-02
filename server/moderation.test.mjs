@@ -19,6 +19,7 @@ after(() => {
 
 function addUser(id, role = "fan") {
   q.insertUser.run(id, `${id}@example.com`, id, id, "test-hash", role, "Toronto", 43.65, -79.38, "TU", "#123456", Date.now());
+  db.prepare("UPDATE users SET age_band='18_plus' WHERE id=?").run(id);
   return q.userById.get(id);
 }
 
@@ -410,6 +411,8 @@ test("direct remove and restore stay atomic and record only real state changes",
 test("reported direct messages are tombstoned exactly, evicted from participant reads, and restore without re-alerting", () => {
   const sender = addUser("moderation_dm_sender");
   const recipient = addUser("moderation_dm_recipient");
+  db.prepare("INSERT INTO follows (follower_id,followee_id) VALUES (?,?), (?,?)")
+    .run(sender.id, recipient.id, recipient.id, sender.id);
   const send = routes["POST /api/dms/:otherId"];
   const target = send({
     user: sender, ip: "moderation-dm-sender", params: { otherId: recipient.id },
@@ -479,6 +482,8 @@ test("reported direct messages are tombstoned exactly, evicted from participant 
 test("direct-message tombstone and notification scrub roll back if its audit cannot commit", () => {
   const sender = addUser("moderation_dm_atomic_sender");
   const recipient = addUser("moderation_dm_atomic_recipient");
+  db.prepare("INSERT INTO follows (follower_id,followee_id) VALUES (?,?), (?,?)")
+    .run(sender.id, recipient.id, recipient.id, sender.id);
   const target = routes["POST /api/dms/:otherId"]({
     user: sender, ip: "moderation-dm-atomic", params: { otherId: recipient.id },
     body: { text: "Atomic moderation evidence" },

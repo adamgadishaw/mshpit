@@ -21,6 +21,7 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) 
   const [genres, setGenres] = useState([]);
   const [pickingCity, setPickingCity] = useState(false);
   const [agreed, setAgreed] = useState(false); // signup: consent to Terms + Privacy
+  const [ageBand, setAgeBand] = useState(null); // coarse safety band; no birth date is collected
   const [analyticsConsent, setAnalyticsConsent] = useState(false); // optional, default off
   const [viewing, setViewing] = useState(null); // "terms" | "privacy", inline reader
   const [error, setError] = useState("");
@@ -36,6 +37,10 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) 
       setError("Please agree to the Terms & Conditions and Privacy policy to create your account.");
       return;
     }
+    if (mode === "signup" && !ageBand) {
+      setError("Choose your age group to continue.");
+      return;
+    }
     const genreSelection = profileGenreSelection(genres);
     if (mode === "signup" && !genreSelection.valid) {
       setError(genreSelection.error);
@@ -46,7 +51,7 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) 
     try {
       const res = mode === "login"
         ? await login(email.trim(), password)
-        : await signup({ name, email: email.trim(), password, city: city?.city, location: city, genres: genreSelection.genres, agreedToTerms: true, analyticsConsent });
+        : await signup({ name, email: email.trim(), password, city: city?.city, location: city, genres: genreSelection.genres, ageBand, agreedToTerms: true, analyticsConsent });
       if (res?.ok && mode === "signup" && res?.pending) setSignupSubmitted(true);
       else if (res?.ok) onDone?.(mode);
       else setError(res?.error || "That request did not complete. Please try again.");
@@ -202,6 +207,20 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) 
           />
         )}
         {mode === "signup" && (
+          <View style={styles.ageSection} accessibilityRole="radiogroup" accessibilityLabel="Age group">
+            <Text style={styles.genreLabel}>AGE GROUP</Text>
+            <Text style={styles.genreHint}>Used only for account safety. We do not ask for your birth date.</Text>
+            <View style={styles.ageChoices}>
+              {[["13_17", "13–17"], ["18_plus", "18+"]].map(([value, label]) => (
+                <Pressable key={value} style={[styles.ageChoice, ageBand === value && styles.genreChipSelected]} onPress={() => setAgeBand(value)} accessibilityRole="radio" accessibilityState={{ selected: ageBand === value }}>
+                  <Text style={[styles.genreChipText, ageBand === value && styles.genreChipTextSelected]}>{label}</Text>
+                </Pressable>
+              ))}
+            </View>
+          </View>
+        )}
+
+        {mode === "signup" && (
           <Pressable
             style={[styles.cityPick, authBusy && styles.primaryOff]}
             onPress={() => setPickingCity(true)}
@@ -284,13 +303,13 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) 
             disabled={authBusy}
             accessibilityRole="checkbox"
             accessibilityState={{ checked: agreed, disabled: authBusy }}
-            accessibilityLabel="I am 13 or older and agree to the Terms and Privacy policy"
+            accessibilityLabel="I agree to the Terms and Privacy policy"
           >
             <View style={[styles.box, agreed && styles.boxOn]}>
               {agreed ? <Icon name="check" size={14} color="#1A1206" strokeWidth={3} /> : null}
             </View>
             <Text style={styles.consentTxt}>
-              I'm 13+ and agree to the{" "}
+              I agree to the{" "}
               <Text style={styles.link}>Terms & Conditions</Text> and Privacy policy. Use the links below to review them first.
             </Text>
           </Pressable>
@@ -380,6 +399,9 @@ const styles = StyleSheet.create({
   genreChipSelected: { borderColor: colors.amber, backgroundColor: colors.bgElev },
   genreChipText: { color: colors.textDim, fontSize: 12.5, fontWeight: "600" },
   genreChipTextSelected: { color: colors.amber, fontWeight: "800" },
+  ageSection: { gap: 8, marginTop: 8, marginBottom: 4 },
+  ageChoices: { flexDirection: "row", gap: 8 },
+  ageChoice: { minHeight: 44, minWidth: 96, alignItems: "center", justifyContent: "center", borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
   error: { color: colors.danger, fontSize: 13, marginBottom: 8 },
   consent: { minHeight: 44, flexDirection: "row", alignItems: "flex-start", gap: 10, marginTop: 14, marginBottom: 4, paddingVertical: 6 },
   policyLinks: { flexDirection: "row", flexWrap: "wrap", gap: 18, marginLeft: 44, marginTop: 3, marginBottom: 4 },

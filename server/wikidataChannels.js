@@ -9,6 +9,7 @@
 
 import { db, artistStmts } from "./db.js";
 import { youtubeJson } from "./musicProviders.js";
+import { PROVIDER_JSON_LIMITS, readBoundedJsonResponse } from "./boundedJsonResponse.js";
 
 const WIKIDATA_SPARQL = "https://query.wikidata.org/sparql";
 const USER_AGENT = process.env.WIKIDATA_USER_AGENT
@@ -144,6 +145,7 @@ async function wikidataBatch(mbids, fetchImpl, timeoutMs) {
   }
 
   let response;
+  const requestSignal = AbortSignal.timeout(timeoutMs);
   try {
     response = await fetchImpl(`${WIKIDATA_SPARQL}?query=${encodeURIComponent(buildSparql(mbids))}&format=json`, {
       headers: {
@@ -151,7 +153,7 @@ async function wikidataBatch(mbids, fetchImpl, timeoutMs) {
         Accept: "application/sparql-results+json",
         "Accept-Encoding": "gzip, deflate",
       },
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: requestSignal,
     });
   } catch (error) {
     throw new WikidataRequestError("Wikidata could not be reached.", {
@@ -177,7 +179,10 @@ async function wikidataBatch(mbids, fetchImpl, timeoutMs) {
   }
 
   try {
-    return parseWikidataChannels(await response.json());
+    return parseWikidataChannels(await readBoundedJsonResponse(response, {
+      maxBytes: PROVIDER_JSON_LIMITS.wikidata,
+      signal: requestSignal,
+    }));
   } catch {
     throw new WikidataRequestError("Wikidata returned an unreadable response.", { code: "wikidata_response" });
   }

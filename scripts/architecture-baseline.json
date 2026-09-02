@@ -266,8 +266,8 @@
       "fingerprint": "034ef4f6beaee35898a9"
     },
     "server/backupScheduler.js": {
-      "count": 3,
-      "fingerprint": "aef2d1e668207a011d4a"
+      "count": 2,
+      "fingerprint": "eb917afbf97916eac81a"
     },
     "server/cacheWarmer.js": {
       "count": 1,
@@ -488,8 +488,8 @@
       "fingerprint": "039cbb3caffd0e821ab6"
     },
     "src/lib/mediaDraftStaging.native.js": {
-      "count": 3,
-      "fingerprint": "39b514a38dea7cafc475"
+      "count": 2,
+      "fingerprint": "ce6ab9e843619473e8c8"
     },
     "src/screens/AdminScreen.jsx": {
       "count": 1,

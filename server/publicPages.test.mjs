@@ -3,6 +3,11 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
+  LEGAL_ACCEPTANCE_VERSION,
+  PRIVACY_POLICY_UPDATED,
+  TERMS_POLICY_UPDATED,
+} from "../src/domain/privacyDisclosures.mjs";
+import {
   PUBLIC_PAGE_PATHS,
   SUPPORT_EMAIL,
   publicPageFor,
@@ -87,9 +92,9 @@ test("trust-page metadata is canonical, brand-consistent, and does not invent po
 
   const privacyPage = structuredGraph(renderPublicPage("/privacy"))
     .find((node) => node["@id"].endsWith("#page"));
-  assert.equal(privacyPage.dateModified, "2026-08-31", "an exact published policy day is safe to expose");
+  assert.equal(privacyPage.dateModified, "2026-09-02", "an exact published policy day is safe to expose");
 
-  for (const path of ["/community-guidelines", "/ratings-methodology", "/terms"]) {
+  for (const path of ["/community-guidelines", "/ratings-methodology"]) {
     const html = renderPublicPage(path);
     const page = structuredGraph(html).find((node) => node["@id"].endsWith("#page"));
     assert.match(html, /Last updated August 2026/);
@@ -97,12 +102,23 @@ test("trust-page metadata is canonical, brand-consistent, and does not invent po
       `${path} must not turn a month-only display label into a fabricated first day`);
     assert.doesNotMatch(html, /"dateModified":"2026-08-01"/);
   }
+  const terms = renderPublicPage("/terms");
+  const termsPage = structuredGraph(terms).find((node) => node["@id"].endsWith("#page"));
+  assert.match(terms, /Last updated September 2, 2026/);
+  assert.equal(termsPage.dateModified, "2026-09-02");
 });
 
 test("privacy and terms mirror the dated in-app policies and expose support", () => {
   const privacy = renderPublicPage("/privacy");
-  assert.match(privacy, /Last updated August 31, 2026/);
+  assert.match(privacy, /Last updated September 2, 2026/);
   assert.match(privacy, /rolling 30-day period/);
+  assert.match(privacy, /rolling 180-day period/);
+  assert.match(privacy, /Unused server-side staged photo and video uploads are normally deleted after about 48 hours/);
+  assert.match(privacy, /new unfinished draft media is kept in device cache/);
+  assert.match(privacy, /older app version in its private documents area are migrated or aged out under the same rule/);
+  assert.match(privacy, /automatically ages out after 7 days/);
+  assert.match(privacy, /anonymous post totals remain/);
+  assert.match(privacy, /artist-page sharing control\. It is off by default/);
   assert.match(privacy, /product analytics enabled/);
   assert.match(privacy, /daily aggregate counters/);
   assert.match(privacy, /cannot identify a unique visitor/);
@@ -122,8 +138,15 @@ test("privacy and terms mirror the dated in-app policies and expose support", ()
   assert.match(privacy, new RegExp(`mailto:${SUPPORT_EMAIL.replace(".", "\\.")}`));
 
   const terms = renderPublicPage("/terms");
-  assert.match(terms, /Last updated August 2026/);
+  assert.match(terms, /Last updated September 2, 2026/);
   assert.match(terms, /Your content and licence/);
+  assert.match(terms, /120 original photo or video uploads/);
+  assert.match(terms, /6 GiB/);
+  assert.match(terms, /rolling 24-hour period/);
+  assert.match(terms, /selected from its device/);
+  assert.match(terms, /safe copies, video covers, and delivery versions do not count again/);
+  assert.match(terms, /online-review option/);
+  assert.match(terms, /both stay off unless you turn them on/);
   assert.match(terms, /Moderation and enforcement/);
   assert.match(terms, /YouTube Terms of Service/);
   assert.match(terms, /Deezer developer terms/);
@@ -133,6 +156,15 @@ test("privacy and terms mirror the dated in-app policies and expose support", ()
   assert.match(terms, /may in the future display advertising/);
   assert.doesNotMatch(terms, /is free and supported by advertising/);
   assert.doesNotMatch(terms, /building interest profiles and targeting/);
+});
+
+test("legal acceptance version stays aligned with both material policy dates", () => {
+  assert.equal(PRIVACY_POLICY_UPDATED, TERMS_POLICY_UPDATED);
+  for (const path of ["/privacy", "/terms"]) {
+    const page = structuredGraph(renderPublicPage(path))
+      .find((node) => node["@id"].endsWith("#page"));
+    assert.equal(page.dateModified, LEGAL_ACCEPTANCE_VERSION);
+  }
 });
 
 test("in-app legal copy matches the public provider disclosure and support route", async () => {
@@ -145,10 +177,23 @@ test("in-app legal copy matches the public provider disclosure and support route
   assert.match(privacySource, /Deezer Privacy Policy/);
   assert.doesNotMatch(privacySource, /embedded YouTube player|preview audio|playback milestones/i);
   assert.match(privacySource, /durably queued for active object-storage deletion/);
+  assert.match(privacySource, /rolling 180-day period/);
+  assert.match(renderPublicPage("/privacy"), /Feed history and post view counts/);
+  assert.match(renderPublicPage("/privacy"), /Turning product analytics off does not disable this core feed-history feature/);
+  assert.match(privacySource, /deleted after about 48 hours/);
+  assert.match(privacySource, /new unfinished draft media is kept in device cache/);
+  assert.match(privacySource, /older app version in its private documents area are migrated or aged out under the same rule/);
+  assert.match(privacySource, /ages out after 7 days/);
+  assert.match(privacySource, /It is off by default/);
   assert.match(privacySource, /PROFILE_SEARCH_INDEXING_DISCLOSURE/);
-  assert.match(termsSource, /updated="August 2026"/);
+  assert.match(termsSource, /updated=\{TERMS_POLICY_UPDATED\}/);
   assert.match(termsSource, /YouTube links in posts/);
   assert.match(termsSource, /Music catalogue metadata/);
+  assert.match(termsSource, /online-review option/);
+  assert.match(termsSource, /120 original photo or video uploads/);
+  assert.match(termsSource, /6 GiB/);
+  assert.match(termsSource, /do not count again toward that account allowance/);
+  assert.match(termsSource, /both stay off unless you turn them on/);
   assert.match(termsSource, /Deezer Developer Terms/);
   assert.doesNotMatch(termsSource, /YouTube playback|preview recordings|full recordings/i);
   assert.match(termsSource, /Open Support from Settings/);

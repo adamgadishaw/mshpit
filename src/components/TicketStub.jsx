@@ -78,17 +78,15 @@ function RecommendationWhy({ recommendation, expanded, onToggle, palette = null 
         style={({ pressed }) => [styles.whyButton, palette && styles.campaignTouchTarget, pressed && (palette ? styles.campaignControlPressed : styles.controlPressed)]}
         onPress={onToggle}
         accessibilityRole="button"
-        accessibilityLabel={`${recommendation.label}. ${expanded ? "Hide" : "Show"} why this was recommended.`}
+        accessibilityLabel={`${recommendation.label}. ${expanded ? "Hide" : "Show"} more information.`}
         accessibilityState={{ expanded }}
       >
         <Icon name="discover" size={14} color={accent} />
         <Text style={[styles.whyLabel, { color: text }]} numberOfLines={1}>{recommendation.label}</Text>
-        <Text style={[styles.whyAction, { color: accent }]}>{expanded ? "Hide why" : "Why this?"}</Text>
+        <Text style={[styles.whyAction, { color: accent }]}>{expanded ? "Hide" : "About this post"}</Text>
       </Pressable>
       {expanded && (
-        <Text style={[styles.whyDetail, { color: muted }]} accessibilityLiveRegion="polite">
-          {recommendation.detail} {recommendation.personalized ? "This recommendation uses your Pit preferences." : "This recommendation is community-based."}
-        </Text>
+        <Text style={[styles.whyDetail, { color: muted }]} accessibilityLiveRegion="polite">{recommendation.detail}</Text>
       )}
     </View>
   );
@@ -113,7 +111,7 @@ function ViewTally({ count, palette = null }) {
       style={styles.viewTally}
       accessible
       accessibilityRole="text"
-      accessibilityLabel={`${value} unique member ${value === 1 ? "view" : "views"}`}
+      accessibilityLabel={`${value} member ${value === 1 ? "view" : "views"}`}
     >
       <Icon name="eye" size={16} color={color} />
       <Text style={[styles.viewTallyText, { color }]}>{value}</Text>

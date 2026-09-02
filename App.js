@@ -263,7 +263,7 @@ function Root() {
     else remove(ACTIVE_COMPOSER_KEY);
   }, [web, stack]);
 
-  // SDK 56 documents that Android may destroy MainActivity while the system
+  // SDK 57 documents that Android may destroy MainActivity while the system
   // picker is open. The shell is always mounted, so it owns recovery and hands
   // the result only to the exact composer that launched that picker.
   useEffect(() => {

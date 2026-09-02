@@ -16,6 +16,7 @@ import {
   ticketmasterRows,
   upsertProviderTourDateRows,
 } from "./tourdates.js";
+import { PROVIDER_JSON_LIMITS, readBoundedJsonResponse } from "./boundedJsonResponse.js";
 
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
@@ -216,7 +217,10 @@ export async function fetchTourProviderJson(url, {
       error.status = response.status;
       throw error;
     }
-    return await response.json();
+    return await readBoundedJsonResponse(response, {
+      maxBytes: PROVIDER_JSON_LIMITS.tourDates,
+      signal: controller.signal,
+    });
   } finally {
     clearTimeout(timeout);
     signal?.removeEventListener("abort", abort);

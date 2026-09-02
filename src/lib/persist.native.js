@@ -1,4 +1,4 @@
-// SDK 56's SQLite key-value store keeps the account-scoped draft identity and
+// SDK 57's SQLite key-value store keeps the account-scoped draft identity and
 // drafts across process death while preserving this project's synchronous API.
 // Large feed/user caches intentionally remain memory-only: synchronously writing
 // those on every poll would trade data safety for exactly the phone jank this

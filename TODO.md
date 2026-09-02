@@ -191,7 +191,7 @@ and keep songs/releases on demand rather than rebundling full discographies.
 
 The compliant YouTube IFrame path is web-only. Native currently relies on honest
 preview/open behavior rather than feature-equivalent full playback. Decide and
-implement the Expo SDK 56 native contract: preview/audio through the supported
+implement the Expo SDK 57 native contract: preview/audio through the supported
 native audio path and a focused, visible YouTube web surface where policy and
 platform behavior permit it. Never hide the video to simulate an audio-only
 YouTube service.

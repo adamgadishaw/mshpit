@@ -30,12 +30,15 @@ function addUser(id) {
     "#123456",
     Date.now(),
   );
+  db.prepare("UPDATE users SET age_band='18_plus' WHERE id=?").run(id);
   return q.userById.get(id);
 }
 
 const sender = addUser("chat_sender");
 const recipient = addUser("chat_recipient");
 const alternate = addUser("chat_alternate");
+db.prepare("INSERT INTO follows (follower_id,followee_id) VALUES (?,?), (?,?)")
+  .run(sender.id, recipient.id, recipient.id, sender.id);
 
 test("DM retries return one row and reject mutation-token reuse", () => {
   const send = routes["POST /api/dms/:otherId"];

@@ -58,7 +58,7 @@ function ProfileMediaTile({ item, index, onOpen }) {
 // Public member profile: musical identity, live history, media, plans, and posts.
 export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenPost, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onManageProfile, onMessage, onReport, onEditPost, onOpenPhotos, onRemoveMyPostTag, onOpenFollowList, onOpenBadges }) {
   const appActive = useAppActive();
-  const { session, userById, logsByUser, isFollowing, follow, unfollow, followerCount, followingCount, goingFor, myAttendance, userBadges, sharedShows, loadUser, isBlocked, blockUser, unblockUser, userPoints, userAchievements, loadRewards, deleteOwnPost } = useStore();
+  const { session, userById, logsByUser, isFollowing, follow, unfollow, followerCount, followingCount, goingFor, myAttendance, userBadges, sharedShows, loadUser, isBlocked, blockUser, unblockUser, isMuted, muteUser, unmuteUser, userPoints, userAchievements, loadRewards, deleteOwnPost } = useStore();
   const profileScope = accountTargetScope(session?.id, `profile:${userId || ""}`);
   const profileScopeRef = useRef(profileScope);
   profileScopeRef.current = profileScope;
@@ -303,6 +303,9 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenPost,
                   <Icon name="comment" size={15} color={colors.amber} />
                   <Text style={styles.msgTxt}>Message</Text>
                 </Pressable>
+                <Pressable style={styles.muteBtn} onPress={() => (isMuted(user.id) ? unmuteUser(user.id) : muteUser(user.id))} accessibilityRole="button" accessibilityLabel={`${isMuted(user.id) ? "Unmute" : "Mute"} ${user.name}`}>
+                  <Text style={styles.muteTxt}>{isMuted(user.id) ? "Unmute" : "Mute"}</Text>
+                </Pressable>
                 <Pressable style={styles.blockBtn} onPress={() => blockUser(user.id)} hitSlop={6} accessibilityLabel="Block user">
                   <Icon name="lock" size={15} color={colors.danger} />
                 </Pressable>
@@ -538,6 +541,8 @@ const styles = StyleSheet.create({
   msgBtn: { flexDirection: "row", alignItems: "center", gap: 7, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, paddingHorizontal: 18, paddingVertical: 10 },
   msgTxt: { color: colors.amber, fontSize: 14, fontWeight: "700" },
   blockBtn: { width: 40, height: 40, borderRadius: 20, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },
+  muteBtn: { minHeight: 40, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, paddingHorizontal: 12, alignItems: "center", justifyContent: "center" },
+  muteTxt: { color: colors.textDim, fontSize: 12, fontWeight: "800" },
   blockedBox: { alignItems: "center", gap: 10, marginTop: 14, paddingHorizontal: 20 },
   blockedTxt: { color: colors.textDim, fontSize: 13, textAlign: "center", lineHeight: 19 },
   unblockBtn: { borderRadius: radius.pill, borderWidth: 1, borderColor: colors.danger, paddingHorizontal: 20, paddingVertical: 9 },

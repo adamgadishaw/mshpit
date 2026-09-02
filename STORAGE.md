@@ -2,7 +2,7 @@
 
 > **HISTORICAL PROPOSAL — NOT CURRENT ARCHITECTURE.** This document predates the
 > server-authoritative SQLite API, split startup catalogue, server-only venue
-> photo pools, and SDK 56 native SQLite key-value persistence for critical
+> photo pools, and SDK 57 native SQLite key-value persistence for critical
 > session/draft keys. Do not execute the installation/migration steps below.
 > Use `STATUS.md`, `AUDIT_AND_REMEDIATION_2026-08-13.md`, and `CLAUDE.md` for the
 > current architecture and backlog.

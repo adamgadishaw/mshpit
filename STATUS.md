@@ -1,12 +1,23 @@
 # Pit current status
 
 Last production reconciliation: **2026-08-13**. Local working-tree review:
-**2026-08-21**. This is the source of truth for current code, release, and
+**2026-09-02**. This is the source of truth for current code, release, and
 production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
-## 2026-08-21 pre-push audit
+## 2026-09-02 native runtime remediation
+
+- The project is aligned to Expo SDK 57.0.19, React Native 0.86.3,
+  React Native Reanimated 4.5.1, and Worklets 0.10.1.
+- `expo install --check` reports compatible dependencies and Expo Doctor passes
+  **21/21** checks. The earlier SDK 56 Hermes V1 memory-regression blocker is
+  removed from the dependency graph.
+- Physical iOS and Android device acceptance remains required before submitting
+  a signed native build; a passing dependency check or web export is not that
+  acceptance test.
+
+## 2026-08-21 pre-push audit (historical)
 
 - The accumulated feature branch passes the exact `npm run check` gate:
   **880/880 tests**, **135** Node files in the syntax sweep, and a fresh web

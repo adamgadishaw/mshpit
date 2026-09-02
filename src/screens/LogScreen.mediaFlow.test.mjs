@@ -167,3 +167,12 @@ test("verified media remains attached without exposing a second transformation w
   excludes(source, "Make more changes before you publish");
   includes(source, "posterUri={mediaPosterUri(descriptor)}");
 });
+
+test("artist-page media reuse is an independent opt-in for reviews and memorial memories", () => {
+  includes(source, 'const [photosPublic, setPhotosPublic] = useState(editing?.photosPublic === true)');
+  includes(source, "photosPublic: isMemorialMemory && photosPublic");
+  includes(source, "(!isStatus || isMemorialMemory) && photos.length > 0");
+  includes(source, "Artist-page photo sharing is optional and stays off unless you turn it on above.");
+  excludes(source, "photosPublic: true,");
+  excludes(source, "Public artist-page photo sharing is on by default");
+});

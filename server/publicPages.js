@@ -8,6 +8,7 @@ import {
   MEDIA_AND_SESSION_SECURITY_DISCLOSURE,
   PRIVACY_POLICY_UPDATED,
   PROFILE_SEARCH_INDEXING_DISCLOSURE,
+  TERMS_POLICY_UPDATED,
 } from "../src/domain/privacyDisclosures.mjs";
 import { SUPPORT_EMAIL } from "../src/domain/contact.mjs";
 
@@ -164,7 +165,7 @@ const PAGES = Object.freeze({
       {
         heading: "Information you give us",
         paragraphs: [
-          "Account details (name, email, password, and the city you choose), your profile (bio, avatar, genres, and favorite artists), feed preferences such as Not for me, and everything you create on Pit: reviews, ratings, photos, comments, fan-club and lounge messages, direct messages, follows, and other content or settings you save. The suggestion box accepts an anonymous category, message, and optional general area of Pit; Pit does not attach the suggestion to an account or ask for contact details.",
+          "Account details (name, email, password, the city you choose, and whether you are 13-17 or 18 or older), your profile (bio, avatar, genres, and favorite artists), feed and message privacy choices, and everything you create on Pit: reviews, ratings, photos, comments, fan-club and lounge messages, direct messages, follows, and other content or settings you save. Pit stores only the age group used for safety, not your birth date. The suggestion box accepts an anonymous category, message, and optional general area of Pit; Pit does not attach the suggestion to an account or ask for contact details.",
         ],
       },
       {
@@ -173,6 +174,12 @@ const PAGES = Object.freeze({
           "For signed-in accounts that have product analytics enabled, Pit records a limited, server-approved set of categorical events such as screen and feed usage, internal post impressions, opening content, time-range buckets, following, liking, and posting.",
           "Separately, when a guest searches, Pit increments daily aggregate counters for the search category, success or failure, and a coarse result-count range. These counters do not contain typed words, account or device identifiers, cookies, URLs, IP addresses, user agents, or exact request times, and cannot identify a unique visitor.",
           "Like every web service, Pit receives an IP address and basic request details when a device connects. Those details may be processed briefly for security and rate limiting, but raw IP addresses are not retained in product analytics or suggestion records.",
+        ],
+      },
+      {
+        heading: "Feed history and post view counts",
+        paragraphs: [
+          "When you are signed in, Pit privately records that your account has seen a post and the first and most recent time it was seen. This core feed history is separate from optional product analytics: it lowers recently seen posts when you refresh so your For You feed does not repeat the same cards. A post can show an aggregate member-view count, but Pit does not show authors or other members a viewer list, your viewing times, or your private feed history. An account normally adds one aggregate count while its private history record exists. If that private record ages out after 180 days without another view, a later view can add another count. Author self-views, guests, blocked relationships, and unavailable posts are not counted. Turning product analytics off does not disable this core feed-history feature.",
         ],
       },
       {
@@ -192,13 +199,19 @@ const PAGES = Object.freeze({
         ],
       },
       {
+        heading: "Direct-message safety",
+        paragraphs: [
+          "You can choose whether new direct messages may come from nobody, people you follow, or mutual follows. Pit stores only the age group you choose, not your birth date, and requires that choice before you send. Teen accounts, and conversations involving an account that has not chosen yet, require mutual follows before either person can send. Existing message history stays readable unless it is removed or an account is blocked, but sending in an existing chat can pause when those safety requirements are not met. Pit limits how many new people one account can contact in a short period. When you report a message, the selected reason and optional context are sent to moderators; you can also block the account immediately.",
+        ],
+      },
+      {
         heading: ANNOUNCEMENT_EMAIL_DISCLOSURE.heading,
         paragraphs: [...ANNOUNCEMENT_EMAIL_DISCLOSURE.paragraphs],
       },
       {
-        heading: "Community photo spotlights",
+        heading: "Artist pages and community photo spotlights",
         paragraphs: [
-          "Concert-review photos can be shared on an artist page when you enable public photo sharing. A separate, default-off control lets you make one eligible photo available for Pit community spotlights, including the logged-out homepage. A spotlight may show your public handle plus the artist and venue. You can turn this permission off by editing the post, make the photos private, or delete the post. Pit applies account and safety checks and may remove featured content.",
+          "Photos from a concert review, online review, or artist memorial post can be reused on that artist's page only when you turn on the separate artist-page sharing control. It is off by default. A second, default-off control lets you make one eligible in-person concert photo available for Pit community spotlights, including the logged-out homepage. A spotlight may show your public handle plus the artist and venue. You can turn either permission off by editing the post, make the photos private, or delete the post. Pit applies account and safety checks and may remove featured content.",
         ],
       },
       {
@@ -233,7 +246,7 @@ const PAGES = Object.freeze({
       {
         heading: "Your choices and rights",
         paragraphs: [
-          "You can edit your profile, download a portable account backup, delete content, block accounts, turn product analytics off, or permanently delete your account from Settings. Turning analytics off deletes that account's existing product-event rows and prevents new ones from being recorded.",
+          "You can edit your profile; choose whether everyone, signed-in members, or only you can see your profile, history, follows, rewards, and playlists; download a portable account backup; delete content; block accounts; turn product analytics off; or permanently delete your account from Settings. Public posts can remain visible independently, but do not expose those profile-only details. Turning analytics off deletes that account's existing product-event rows and prevents new ones from being recorded.",
           PROFILE_SEARCH_INDEXING_DISCLOSURE,
           "Depending on where you live, additional access, correction, deletion, objection, or restriction rights may apply. Email us to make a privacy request. We may need to verify that the request belongs to you before acting on it.",
         ],
@@ -245,7 +258,7 @@ const PAGES = Object.freeze({
       {
         heading: "Data retention and security",
         paragraphs: [
-          `Account and content data is kept while needed to operate the account and service. Raw first-party product analytics is automatically limited to a rolling 30-day period by default and is deleted earlier when you opt out or delete your account. Aggregate guest-search counters are retained for up to 90 days. Closed suggestion records are pruned after 90 days and unresolved suggestions after one year. If an artist search returns no match, the submitted artist name may remain in a bounded staff enrichment queue for up to 30 days. ${MEDIA_AND_SESSION_SECURITY_DISCLOSURE} Passwords are hashed, signed-in requests use HTTPS in production, and access is limited, but no online service can promise perfect security.`,
+          `Account and content data is kept while needed to operate the account and service. Account-linked feed viewing history used to rotate posts is limited to a rolling 180-day period; anonymous post totals remain. Raw first-party product analytics is automatically limited to a rolling 30-day period by default and is deleted earlier when you opt out or delete your account. Aggregate guest-search counters are retained for up to 90 days. Closed suggestion records are pruned after 90 days and unresolved suggestions after one year. If an artist search returns no match, the submitted artist name may remain in a bounded staff enrichment queue for up to 30 days. Unused server-side staged photo and video uploads are normally deleted after about 48 hours. In the mobile app, new unfinished draft media is kept in device cache and automatically ages out after 7 days; drafts made by an older app version in its private documents area are migrated or aged out under the same rule. The device may reclaim cache sooner. ${MEDIA_AND_SESSION_SECURITY_DISCLOSURE} Passwords are hashed, signed-in requests use HTTPS in production, and access is limited, but no online service can promise perfect security.`,
           "When you delete content or your account, active database records are removed or scrubbed and Pit-owned uploads are durably queued for active object-storage deletion. That cleanup retries automatically and can take additional time. Separate backup copies remain until the configured retention period ends, or longer when legally required.",
         ],
       },
@@ -272,7 +285,7 @@ const PAGES = Object.freeze({
   "/terms": {
     title: "Terms and conditions",
     description: "The rules and conditions that apply when you create an account or use Mshpit.",
-    updated: "August 2026",
+    updated: TERMS_POLICY_UPDATED,
     intro: "Welcome to Mshpit, branded as PIT in the app and referred to below as Pit. By creating an account or using Pit you agree to these Terms and Conditions and to our Privacy policy, which explains how we collect and use your data. Please read both carefully.",
     note: "These terms form a binding agreement between you and Mshpit. If you don't agree with them, don't use Pit.",
     sections: [
@@ -290,7 +303,11 @@ const PAGES = Object.freeze({
       },
       {
         heading: "Your content and licence",
-        paragraphs: ["You keep ownership of the reviews, photos, messages, and other content you create. By posting, you grant Pit a worldwide, non-exclusive, royalty-free licence to host, store, reproduce, adapt, display, and distribute that content to operate, promote, and improve the service (for example in feeds, discovery surfaces, and previews). This licence ends when you delete the content or your account, except for copies retained for backups, legal reasons, or where already shared with others."],
+        paragraphs: ["You keep ownership of the reviews, photos, messages, and other content you create. By posting, you grant Pit a worldwide, non-exclusive, royalty-free licence to host, store, reproduce, adapt, display, and distribute that content to operate and improve the service, consistent with the audience and reuse settings you choose. Artist-page photo reuse and community or homepage spotlights require their separate controls; both stay off unless you turn them on. This licence ends when you delete the content or your account, except for copies retained for backups, legal reasons, or where already shared with others."],
+      },
+      {
+        heading: "Photo and video upload limits",
+        paragraphs: ["To keep posting reliable for everyone, an account can start up to 120 original photo or video uploads selected from its device and upload up to 6 GiB of those original files during any rolling 24-hour period. Pit-generated safe copies, video covers, and delivery versions do not count again toward that account allowance. A photo can be up to 30 MiB. A video can be up to 500 MiB and 10 minutes long. One post can include up to 20 attachments. Failed or retried original uploads can count because the service still has to receive or process them. These limits move with the previous 24 hours instead of resetting at midnight. Pit may apply a lower temporary limit when needed to protect members or keep the service working."],
       },
       {
         heading: "User inputs and accuracy",
@@ -302,7 +319,7 @@ const PAGES = Object.freeze({
       },
       {
         heading: "Moderation and enforcement",
-        paragraphs: ["Content is public when posted; the community can report it and moderators act on reports. We may remove content, limit features, or suspend or terminate accounts that break these terms or harm the community or service, and we keep a record of moderation actions. Where practical we'll explain enforcement, but we may act immediately in serious cases."],
+        paragraphs: ["Content is shared with the audience you choose. People who can see it may report it, and moderators act on reports. We may remove content, limit features, or suspend or terminate accounts that break these terms or harm the community or service, and we keep a record of moderation actions. Where practical we'll explain enforcement, but we may act immediately in serious cases."],
       },
       {
         heading: "Tickets and third parties",

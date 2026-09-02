@@ -431,7 +431,9 @@ export default function LogScreen({
   const [photos, setPhotos] = useState(() => (editing?.photos || []).filter(isDurableMediaUrl));
   const [mediaProject, setMediaProject] = useState(() => mediaProjectForPost(editing));
   const [pendingMediaAssets, setPendingMediaAssets] = useState([]);
-  const [photosPublic, setPhotosPublic] = useState(editing ? editing.photosPublic !== false : true);
+  // Artist-page reuse is a separate, explicit permission. New posts and older
+  // posts without a stored choice fail closed; editing preserves a real opt-in.
+  const [photosPublic, setPhotosPublic] = useState(editing?.photosPublic === true);
   const [landingShowcase, setLandingShowcase] = useState(editing?.landingShowcase === true && hasLandingCompatibleImage(editing?.photos));
   const hasLandingCompatiblePhoto = useMemo(() => hasLandingCompatibleImage(photos), [photos]);
   useEffect(() => {
@@ -775,7 +777,7 @@ export default function LogScreen({
     let res;
     let pickerRequestId = null;
     try {
-      // SDK 56 requires library permission to return an original iOS video via
+      // SDK 57 requires library permission to return an original iOS video via
       // Passthrough. Ask before opening Photos so the prompt never appears only
       // after someone has already made a selection.
       if (Platform.OS === "ios") {
@@ -1227,7 +1229,7 @@ export default function LogScreen({
           photos: durablePhotos,
           ...(stableMediaAssetIds ? { mediaAssetIds: stableMediaAssetIds } : {}),
           media: publishedMedia,
-          photosPublic: true,
+          photosPublic: isMemorialMemory && photosPublic,
           campaign: isCampaign ? campaign : null,
           likes: editing?.likes || 0,
           comments: editing?.comments || 0,
@@ -1842,7 +1844,7 @@ export default function LogScreen({
         )}
         {!!mediaError && <Text style={styles.songError}>{mediaError}</Text>}
 
-        {!isStatus && photos.length > 0 && (
+        {(!isStatus || isMemorialMemory) && photos.length > 0 && (
           <Pressable
             style={styles.consent}
             accessibilityRole="checkbox"
@@ -1883,7 +1885,7 @@ export default function LogScreen({
             <View style={{ flex: 1, minWidth: 0 }}>
               <Text style={styles.engagementPromptTitle}>{engagementPrompt.title}</Text>
               <Text style={styles.engagementPromptText}>{engagementPrompt.body}</Text>
-              {!isStatus && <Text style={styles.engagementPromptFoot}>Choose the artist from search to link the post. Public artist-page photo sharing is on by default and can be turned off above.</Text>}
+              {!isStatus && <Text style={styles.engagementPromptFoot}>Choose the artist from search to link the post. Artist-page photo sharing is optional and stays off unless you turn it on above.</Text>}
             </View>
           </View>
         ) : null}

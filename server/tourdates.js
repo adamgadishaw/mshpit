@@ -18,6 +18,7 @@ import {
   collectTicketmasterPartitionedMarket,
   ticketmasterMarketCoverageKey,
 } from "./ticketmasterMarketCoverage.js";
+import { PROVIDER_JSON_LIMITS, readBoundedJsonResponse } from "./boundedJsonResponse.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CATALOG = join(HERE, "..", "src", "seed", "catalog.generated.json");
@@ -310,7 +311,10 @@ async function getJSON(url) {
   try {
     const r = await fetch(url, { signal: ctrl.signal, headers: { "User-Agent": "mshpit.com" } });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    return await r.json();
+    return await readBoundedJsonResponse(r, {
+      maxBytes: PROVIDER_JSON_LIMITS.tourDates,
+      signal: ctrl.signal,
+    });
   } finally { clearTimeout(t); }
 }
 

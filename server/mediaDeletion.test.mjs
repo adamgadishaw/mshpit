@@ -31,8 +31,8 @@ const {
   MEDIA_OWNER_SWEEP_QUIET_WINDOW_MS,
   MEDIA_OWNER_SWEEP_RECHECK_MS,
   MEDIA_DELETION_DEAD_REDRIVE_MS,
+  MEDIA_UPLOAD_ACCOUNTING_CLASS,
   MEDIA_UPLOAD_SETTLE_BUFFER_MS,
-  MEDIA_MAX_COMPOSITION_OUTSTANDING_BYTES,
   recordMediaObjectTicket,
   reserveMediaUploadTicket,
   redriveMediaDeletionDeadLetters,
@@ -51,6 +51,12 @@ const mediaUrl = (owner, purpose, name, extension = "jpg") =>
 
 function addUser(id, password = "delete-password") {
   q.insertUser.run(id, `${id}@example.com`, id, id, hashPassword(password), "fan", "Toronto", 43.65, -79.38, "MD", "#123456", Date.now());
+  db.prepare("UPDATE users SET email_verified_at=? WHERE id=?").run(Date.now(), id);
+  return q.userById.get(id);
+}
+
+function addUnverifiedUser(id, role = "fan") {
+  q.insertUser.run(id, `${id}@example.com`, id, id, hashPassword("delete-password"), role, "Toronto", 43.65, -79.38, "MD", "#123456", Date.now());
   return q.userById.get(id);
 }
 
@@ -70,21 +76,21 @@ function enqueueTicket(owner, key, at = Date.now()) {
   return enqueueAllOwnedMedia(db, { ownerId: owner, at });
 }
 
-test("default media allowances are creator-scale emergency ceilings, not product-plan caps", () => {
+test("default media allowances fit ordinary social posting and bound abandoned work", () => {
   const limits = mediaUploadQuotaLimits({});
   assert.deepEqual(limits, {
-    outstandingObjects: 256,
-    outstandingBytes: 32 * 1024 * 1024 * 1024,
-    rollingBytes: 64 * 1024 * 1024 * 1024,
-    rollingTickets: 4_096,
+    outstandingObjects: 40,
+    outstandingBytes: 6 * 1024 * 1024 * 1024,
+    rollingBytes: 6 * 1024 * 1024 * 1024,
+    rollingTickets: 120,
   });
-  assert.ok(limits.outstandingBytes > MEDIA_MAX_COMPOSITION_OUTSTANDING_BYTES,
-    "one maximum valid 20-video composition must fit before attachment");
+  assert.ok(limits.rollingTickets >= 5 * 20,
+    "a member can still publish several maximum-photo-count posts in a rolling day");
   assert.deepEqual(mediaUploadGlobalCircuitBreakerLimits({}), {
-    outstandingObjects: 100_000,
-    outstandingBytes: 2 * 1024 * 1024 * 1024 * 1024,
-    rollingBytes: 8 * 1024 * 1024 * 1024 * 1024,
-    rollingTickets: 1_000_000,
+    outstandingObjects: 10_000,
+    outstandingBytes: 128 * 1024 * 1024 * 1024,
+    rollingBytes: 512 * 1024 * 1024 * 1024,
+    rollingTickets: 100_000,
   });
   assert.ok(db.prepare("PRAGMA index_list('media_objects')").all()
     .some((index) => index.name === "idx_media_objects_status_bytes"),
@@ -94,6 +100,126 @@ test("default media allowances are creator-scale emergency ceilings, not product
     ["issued_at", "byte_size"],
     "the global rolling-byte aggregate is covered without table-row fetches",
   );
+  assert.deepEqual(
+    db.prepare("PRAGMA index_info('idx_media_objects_owner_accounting_status_bytes')").all().map((column) => column.name),
+    ["owner_id", "accounting_class", "status", "byte_size"],
+    "member outstanding accounting uses a covering source-class index",
+  );
+  assert.deepEqual(
+    db.prepare("PRAGMA index_info('idx_media_upload_issuances_owner_accounting_at_bytes')").all().map((column) => column.name),
+    ["owner_id", "accounting_class", "issued_at", "byte_size"],
+    "member rolling accounting uses a covering source-class index",
+  );
+});
+
+test("service-generated objects bypass member limits but remain inside every global breaker", () => {
+  clearMediaTables();
+  const owner = addUser("media_generated_breaker_owner");
+  const env = {
+    ...process.env,
+    MEDIA_UPLOAD_OUTSTANDING_OBJECTS: "1",
+    MEDIA_UPLOAD_OUTSTANDING_BYTES: String(1024 * 1024),
+    MEDIA_UPLOAD_24H_TICKETS: "1",
+    MEDIA_UPLOAD_24H_BYTES: String(1024 * 1024),
+    MEDIA_UPLOAD_GLOBAL_OUTSTANDING_OBJECTS: "2",
+    MEDIA_UPLOAD_GLOBAL_OUTSTANDING_BYTES: String(10 * 1024 * 1024),
+    MEDIA_UPLOAD_GLOBAL_24H_TICKETS: "2",
+    MEDIA_UPLOAD_GLOBAL_24H_BYTES: String(10 * 1024 * 1024),
+  };
+  const reserve = (name, at, accountingClass) => reserveMediaUploadTicket(db, {
+    ownerId: owner.id,
+    objectKey: `users/${owner.id}/post/${name}.jpg`,
+    byteSize: 512 * 1024,
+    accountingClass,
+    at,
+    env,
+  });
+
+  reserve("original", 1_000, MEDIA_UPLOAD_ACCOUNTING_CLASS.MEMBER_SOURCE);
+  reserve("safe-copy", 2_000, MEDIA_UPLOAD_ACCOUNTING_CLASS.SERVICE_GENERATED);
+  assert.throws(
+    () => reserve("blocked-outstanding", 3_000, MEDIA_UPLOAD_ACCOUNTING_CLASS.SERVICE_GENERATED),
+    (error) => error.status === 503 && error.code === "MEDIA_STORAGE_UNAVAILABLE",
+    "generated work cannot exceed the all-object global outstanding brake",
+  );
+  db.prepare("UPDATE media_objects SET status='associated' WHERE owner_id=?").run(owner.id);
+  assert.throws(
+    () => reserve("blocked-rolling", 4_000, MEDIA_UPLOAD_ACCOUNTING_CLASS.SERVICE_GENERATED),
+    (error) => error.status === 503 && error.code === "MEDIA_STORAGE_UNAVAILABLE",
+    "associating objects cannot erase generated work from the global rolling brake",
+  );
+  assert.deepEqual(db.prepare(`SELECT accounting_class,COUNT(*) count,SUM(byte_size) bytes
+    FROM media_upload_issuances WHERE owner_id=? GROUP BY accounting_class ORDER BY accounting_class`).all(owner.id)
+    .map((row) => ({ ...row })), [
+    { accounting_class: "member_source", count: 1, bytes: 512 * 1024 },
+    { accounting_class: "service_generated", count: 1, bytes: 512 * 1024 },
+  ]);
+});
+
+test("reissues keep their first accounting class and cannot relabel a source around member limits", () => {
+  clearMediaTables();
+  const owner = addUser("media_accounting_reissue_owner");
+  const env = {
+    ...process.env,
+    MEDIA_UPLOAD_OUTSTANDING_OBJECTS: "10",
+    MEDIA_UPLOAD_OUTSTANDING_BYTES: String(10 * 1024 * 1024),
+    MEDIA_UPLOAD_24H_TICKETS: "10",
+    MEDIA_UPLOAD_24H_BYTES: String(10 * 1024 * 1024),
+    MEDIA_UPLOAD_GLOBAL_OUTSTANDING_OBJECTS: "10",
+    MEDIA_UPLOAD_GLOBAL_OUTSTANDING_BYTES: String(20 * 1024 * 1024),
+    MEDIA_UPLOAD_GLOBAL_24H_TICKETS: "10",
+    MEDIA_UPLOAD_GLOBAL_24H_BYTES: String(20 * 1024 * 1024),
+  };
+  const sourceKey = `users/${owner.id}/post/original.jpg`;
+  const generatedKey = `users/${owner.id}/post/safe-copy.jpg`;
+  reserveMediaUploadTicket(db, {
+    ownerId: owner.id, objectKey: sourceKey, byteSize: 600 * 1024,
+    accountingClass: MEDIA_UPLOAD_ACCOUNTING_CLASS.MEMBER_SOURCE, at: 1_000, env,
+  });
+  const relabelAttempt = reserveMediaUploadTicket(db, {
+    ownerId: owner.id, objectKey: sourceKey, byteSize: 600 * 1024,
+    accountingClass: MEDIA_UPLOAD_ACCOUNTING_CLASS.SERVICE_GENERATED, at: 2_000, env,
+  });
+  assert.equal(relabelAttempt.accountingClass, MEDIA_UPLOAD_ACCOUNTING_CLASS.MEMBER_SOURCE,
+    "the durable object class wins over a later caller label");
+  reserveMediaUploadTicket(db, {
+    ownerId: owner.id, objectKey: generatedKey, byteSize: 300 * 1024,
+    accountingClass: MEDIA_UPLOAD_ACCOUNTING_CLASS.SERVICE_GENERATED, at: 3_000, env,
+  });
+  const generatedRetry = reserveMediaUploadTicket(db, {
+    ownerId: owner.id, objectKey: generatedKey, byteSize: 300 * 1024,
+    accountingClass: MEDIA_UPLOAD_ACCOUNTING_CLASS.SERVICE_GENERATED, at: 4_000, env,
+  });
+  assert.equal(generatedRetry.duplicate, true);
+  assert.deepEqual(db.prepare(`SELECT accounting_class,COUNT(*) count
+    FROM media_upload_issuances WHERE owner_id=? GROUP BY accounting_class ORDER BY accounting_class`).all(owner.id)
+    .map((row) => ({ ...row })), [
+    { accounting_class: "member_source", count: 2 },
+    { accounting_class: "service_generated", count: 2 },
+  ]);
+  assert.throws(
+    () => reserveMediaUploadTicket(db, {
+      ownerId: owner.id, objectKey: generatedKey, byteSize: 300 * 1024 + 1,
+      accountingClass: MEDIA_UPLOAD_ACCOUNTING_CLASS.SERVICE_GENERATED, at: 5_000, env,
+    }),
+    (error) => error.status === 409 && error.code === "CONFLICT",
+    "accounting separation does not weaken exact-byte reissue binding",
+  );
+});
+
+test("legacy ledger inserts default conservatively to member-selected source accounting", () => {
+  clearMediaTables();
+  const owner = addUser("media_accounting_legacy_owner");
+  const key = `users/${owner.id}/post/legacy.jpg`;
+  db.prepare(`INSERT INTO media_objects
+    (object_key,owner_id,storage_scope,purpose,byte_size,status,created_at,updated_at)
+    VALUES (?,?,'public','post',1024,'issued',1,1)`).run(key, owner.id);
+  db.prepare(`INSERT INTO media_upload_issuances (owner_id,object_key,byte_size,issued_at)
+    VALUES (?,?,1024,1)`).run(owner.id, key);
+  assert.equal(db.prepare("SELECT accounting_class FROM media_objects WHERE object_key=?").get(key).accounting_class,
+    MEDIA_UPLOAD_ACCOUNTING_CLASS.MEMBER_SOURCE);
+  assert.equal(db.prepare("SELECT accounting_class FROM media_upload_issuances WHERE object_key=?").get(key).accounting_class,
+    MEDIA_UPLOAD_ACCOUNTING_CLASS.MEMBER_SOURCE);
 });
 
 test("service-wide upload breakers atomically aggregate outstanding capabilities across owners", () => {
@@ -537,6 +663,34 @@ test("stale never-associated tickets are queued after a bounded TTL", async () =
   assert.equal(final.deleted, 1);
   assert.equal(final.deletionRechecks, 0);
   assert.equal(db.prepare("SELECT 1 FROM media_objects WHERE object_key=?").get(key), undefined);
+});
+
+test("legacy photo presign requires verified email before any storage ledger write and permits admins", () => {
+  clearMediaTables();
+  const user = addUnverifiedUser("legacy_unverified_owner");
+  assert.throws(
+    () => routes["POST /api/media/presign"]({
+      user,
+      ip: "legacy-unverified-owner",
+      body: { purpose: "avatar", contentType: "image/jpeg", fileSize: 1234, name: "blocked.jpg" },
+    }),
+    (error) => error.status === 403 && error.code === "MEDIA_EMAIL_VERIFICATION_REQUIRED" && /email/i.test(error.message),
+  );
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM media_objects WHERE owner_id=?").get(user.id).count, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM media_upload_issuances WHERE owner_id=?").get(user.id).count, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM legacy_media_finalize_descriptors WHERE owner_id=?").get(user.id).count, 0);
+
+  const admin = addUnverifiedUser("legacy_unverified_admin", "admin");
+  const ticket = routes["POST /api/media/presign"]({
+    user: admin,
+    ip: "legacy-unverified-admin",
+    body: { purpose: "avatar", contentType: "image/jpeg", fileSize: 1234, name: "admin.jpg" },
+  });
+  assert.equal(typeof ticket.uploadUrl, "string");
+});
+
+test("abandoned uploads default to a 48-hour staging window", () => {
+  assert.equal(mediaOrphanTtlMs({}), 2 * 24 * 60 * 60_000);
 });
 
 test("legacy owner-prefix sweep paginates safely and ignores every foreign or malformed returned key", async () => {

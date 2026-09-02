@@ -18,13 +18,13 @@ test("profile image contracts keep avatar and banner renditions bounded at their
   assert.equal(profileImageContract("review"), null);
 });
 
-test("SDK 56 picker options never open the square iOS editor for a banner", () => {
+test("SDK 57 picker options never open the square iOS editor for a banner", () => {
   const avatar = profileImagePickerOptions("avatar", { platform: "ios" });
   const banner = profileImagePickerOptions("banner", { platform: "ios" });
   assert.equal(avatar.allowsEditing, true);
   assert.equal(banner.allowsEditing, false);
-  assert.equal(Object.hasOwn(avatar, "aspect"), false, "aspect is Android-only in Expo SDK 56");
-  assert.equal(Object.hasOwn(banner, "aspect"), false, "aspect is Android-only in Expo SDK 56");
+  assert.equal(Object.hasOwn(avatar, "aspect"), false, "aspect is Android-only in Expo SDK 57");
+  assert.equal(Object.hasOwn(banner, "aspect"), false, "aspect is Android-only in Expo SDK 57");
   assert.equal(avatar.quality, 0.85);
   assert.equal(banner.quality, 0.85);
   assert.equal(avatar.shouldDownloadFromNetwork, true);

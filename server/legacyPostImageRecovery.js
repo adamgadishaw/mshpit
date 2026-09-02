@@ -26,7 +26,9 @@ import {
 } from "./media.js";
 import {
   enqueueOwnedMediaKeys,
+  MEDIA_UPLOAD_ACCOUNTING_CLASS,
   recordMediaObjectTicket,
+  reserveMediaUploadTicket,
   trustedMediaQueueKey,
   trustedOwnedMediaKey,
 } from "./mediaDeletion.js";
@@ -102,19 +104,20 @@ function reserveDeterministicRecoveryTicket(database, {
   purpose,
   byteSize,
   at,
+  env = process.env,
 }) {
   const existing = database.prepare(`SELECT owner_id,storage_scope,purpose,byte_size,status
     FROM media_objects WHERE object_key=?`).get(objectKey);
   if (!existing) {
-    const inserted = recordMediaObjectTicket(database, {
+    reserveMediaUploadTicket(database, {
       ownerId,
       objectKey,
       storageScope,
+      accountingClass: MEDIA_UPLOAD_ACCOUNTING_CLASS.SERVICE_GENERATED,
       byteSize,
       at,
-      expiresAt: null,
+      env,
     });
-    if (!inserted) throw new ApiError(409, "Recovered photo storage changed before reservation.", "CONFLICT");
     return;
   }
   if (existing.owner_id !== ownerId || existing.storage_scope !== storageScope

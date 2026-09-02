@@ -82,6 +82,13 @@ test("create retries compare the validated canonical post, not raw JSON represen
 
   assert.equal(retry.duplicate, true);
   assert.equal(retry.id, first.id);
+  assert.match(first.id, /^p_[a-f0-9]{32}$/, "post ids keep 128 bits of random entropy");
+  assert.deepEqual({ ...db.prepare(`SELECT post_id,state,client_mutation_hash FROM post_create_receipts
+    WHERE user_id=? AND client_mutation_id=?`).get(user.id, clientMutationId) }, {
+    post_id: first.id,
+    state: "active",
+    client_mutation_hash: db.prepare("SELECT client_mutation_hash hash FROM posts WHERE id=?").get(first.id).hash,
+  });
   assert.deepEqual(first.post.tags, []);
   assert.equal(db.prepare("SELECT tags FROM posts WHERE id=?").get(first.id).tags, "[]");
   assert.equal(
@@ -220,4 +227,34 @@ test("author deletion retains only the opaque mutation tombstone and cannot be r
   );
   assert.equal(db.prepare("SELECT COUNT(*) count FROM posts WHERE user_id=? AND client_mutation_id=?")
     .get(user.id, body.clientMutationId).count, 1);
+  assert.equal(db.prepare("SELECT state FROM post_create_receipts WHERE user_id=? AND client_mutation_id=?")
+    .get(user.id, body.clientMutationId).state, "removed");
+});
+
+test("moderation removal tombstones the receipt and a replay cannot recreate the post", () => {
+  const user = addUser("moderatedretry");
+  const body = { clientMutationId: "moderated_retry_tombstone_001", kind: "status", review: "Moderate this" };
+  const created = routes["POST /api/posts"]({ user, ip: "moderated-create", body });
+  db.prepare("UPDATE posts SET removed=1,updated_at=? WHERE id=?").run(Date.now(), created.id);
+
+  assert.equal(db.prepare("SELECT state FROM post_create_receipts WHERE user_id=? AND client_mutation_id=?")
+    .get(user.id, body.clientMutationId).state, "removed");
+  assert.throws(
+    () => routes["POST /api/posts"]({ user, ip: "moderated-replay", body }),
+    (error) => error instanceof ApiError && error.code === "POST_REMOVED",
+  );
+});
+
+test("a receipt committed by a competing creator resolves as duplicate or payload conflict", () => {
+  const user = addUser("racereceipt");
+  const create = routes["POST /api/posts"];
+  const body = { clientMutationId: "race_receipt_001", kind: "status", review: "Winning payload" };
+  const winner = create({ user, ip: "race-winner", body });
+  const duplicate = create({ user, ip: "race-loser-same", body });
+  assert.equal(duplicate.duplicate, true);
+  assert.equal(duplicate.id, winner.id);
+  assert.throws(
+    () => create({ user, ip: "race-loser-conflict", body: { ...body, review: "Losing payload" } }),
+    (error) => error instanceof ApiError && error.code === "POST_MUTATION_CONFLICT",
+  );
 });

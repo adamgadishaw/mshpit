@@ -57,8 +57,9 @@ function Toggle({ value, busy = false }) {
 }
 
 export default function SettingsScreen({ onClose, onManageProfile, onOpenProfile, onOpenPrivacy, onOpenTerms, onOpenDiagnostics, onOpenDeleteAccount, onLogout }) {
-  const { session, chooseTheme, blockedUsers, unblockUser, blockedDirectoryStatus, refreshBlockedDirectory, isBlockMutationPending, exportMyData, setAnalyticsEnabled, setProfileSearchIndexingEnabled, setAnnouncementEmailsEnabled } = useStore();
+  const { session, chooseTheme, blockedUsers, unblockUser, blockedDirectoryStatus, refreshBlockedDirectory, isBlockMutationPending, mutedUsers, unmuteUser, exportMyData, setAnalyticsEnabled, setProfileSearchIndexingEnabled, setDirectMessagePolicy, setAgeBandClassification, setProfileAudience, setAnnouncementEmailsEnabled } = useStore();
   const blocked = session ? blockedUsers() : [];
+  const muted = session ? mutedUsers() : [];
   const [exporting, setExporting] = useState(false);
   const [exportResult, setExportResult] = useState(null);
   const [exportPassword, setExportPassword] = useState("");
@@ -67,6 +68,12 @@ export default function SettingsScreen({ onClose, onManageProfile, onOpenProfile
   const [savingSearchIndexing, setSavingSearchIndexing] = useState(false);
   const [searchIndexingResult, setSearchIndexingResult] = useState(null);
   const [savingAnnouncements, setSavingAnnouncements] = useState(false);
+  const [savingMessagePolicy, setSavingMessagePolicy] = useState(false);
+  const [messagePolicyResult, setMessagePolicyResult] = useState(null);
+  const [savingAgeBand, setSavingAgeBand] = useState(false);
+  const [ageBandResult, setAgeBandResult] = useState(null);
+  const [savingProfileAudience, setSavingProfileAudience] = useState(false);
+  const [profileAudienceResult, setProfileAudienceResult] = useState(null);
   const [announcementResult, setAnnouncementResult] = useState(null);
   const [supportError, setSupportError] = useState(null);
   const [showMoreThemes, setShowMoreThemes] = useState(false);
@@ -121,6 +128,32 @@ export default function SettingsScreen({ onClose, onManageProfile, onOpenProfile
       : "That email preference did not save. Please try again.");
     setSavingAnnouncements(false);
   };
+  const chooseMessagePolicy = async (policy) => {
+    if (!session || savingMessagePolicy || policy === session.directMessagePolicy) return;
+    setSavingMessagePolicy(true);
+    setMessagePolicyResult(null);
+    const result = await setDirectMessagePolicy(policy);
+    setMessagePolicyResult(result?.ok ? "Your message privacy setting was saved." : "That message setting did not save. Please try again.");
+    setSavingMessagePolicy(false);
+  };
+  const chooseAgeBand = async (ageBand) => {
+    if (!session || savingAgeBand || (session.ageBand || "unknown") !== "unknown") return;
+    setSavingAgeBand(true);
+    setAgeBandResult(null);
+    const result = await setAgeBandClassification(ageBand);
+    setAgeBandResult(result?.ok
+      ? "Your age group was saved."
+      : "That age group did not save. Please try again.");
+    setSavingAgeBand(false);
+  };
+  const chooseProfileAudience = async (audience) => {
+    if (!session || savingProfileAudience || audience === session.profileAudience) return;
+    setSavingProfileAudience(true);
+    setProfileAudienceResult(null);
+    const result = await setProfileAudience(audience);
+    setProfileAudienceResult(result?.ok ? "Your profile audience was saved." : "That profile setting did not save. Please try again.");
+    setSavingProfileAudience(false);
+  };
 
   return (
     <View style={styles.wrap}>
@@ -160,6 +193,58 @@ export default function SettingsScreen({ onClose, onManageProfile, onOpenProfile
         {session && (
           <>
             <Text style={styles.section}>PRIVACY & SAFETY</Text>
+            {(session.ageBand || "unknown") === "unknown" ? (
+              <View style={styles.messagePolicy} accessibilityRole="radiogroup" accessibilityLabel="Choose your age group for account safety">
+                <Text style={styles.messagePolicyTitle}>Choose your age group</Text>
+                <Text style={styles.messagePolicyHint}>Pit does not ask for your birth date. Choose once so the right message safety rules apply. You must make this choice before starting a new chat.</Text>
+                {[["13_17", "13-17"], ["18_plus", "18 or older"]].map(([value, label]) => (
+                  <Pressable key={value} style={styles.messagePolicyRow} onPress={() => chooseAgeBand(value)} disabled={savingAgeBand} accessibilityRole="radio" accessibilityState={{ selected: false, disabled: savingAgeBand }}>
+                    <View style={styles.radio} />
+                    <Text style={styles.rowLabel}>{label}</Text>
+                  </Pressable>
+                ))}
+                <Text style={styles.messagePolicyHint}>If you choose the wrong group, contact support rather than sharing a birth date in a message.</Text>
+                {!!ageBandResult && <Text style={[styles.exportStatus, ageBandResult.startsWith("That") && styles.exportError]} accessibilityRole="alert" accessibilityLiveRegion="polite">{ageBandResult}</Text>}
+              </View>
+            ) : (
+              <Row
+                icon="shield"
+                label="Age group for account safety"
+                sub={`${session.ageBand === "13_17" ? "13-17" : "18 or older"}. Pit does not store your birth date.`}
+              />
+            )}
+            <View style={styles.messagePolicy} accessibilityRole="radiogroup" accessibilityLabel="Who can see my profile">
+              <Text style={styles.messagePolicyTitle}>Who can see my profile?</Text>
+              <Text style={styles.messagePolicyHint}>Public posts can still appear in the feed. This controls your profile, history, follows, rewards, and playlists.</Text>
+              {[["everyone", "Everyone"], ["members", "Signed-in members"], ["only_me", "Only me"]].map(([value, label]) => {
+                const selected = (session.profileAudience || "everyone") === value;
+                return (
+                  <Pressable key={value} style={styles.messagePolicyRow} onPress={() => chooseProfileAudience(value)} disabled={savingProfileAudience} accessibilityRole="radio" accessibilityState={{ selected, disabled: savingProfileAudience }}>
+                    <View style={[styles.radio, selected && styles.radioOn]}>{selected ? <View style={styles.radioDot} /> : null}</View>
+                    <Text style={styles.rowLabel}>{label}</Text>
+                  </Pressable>
+                );
+              })}
+              {!!profileAudienceResult && <Text style={[styles.exportStatus, profileAudienceResult.startsWith("That") && styles.exportError]} accessibilityLiveRegion="polite">{profileAudienceResult}</Text>}
+            </View>
+            <View style={styles.messagePolicy} accessibilityRole="radiogroup" accessibilityLabel="Who can send me a new direct message">
+              <Text style={styles.messagePolicyTitle}>Who can message me?</Text>
+              <Text style={styles.messagePolicyHint}>{(session.ageBand || "unknown") === "unknown" ? "Choose your age group above before sending a message. Your existing chat history stays readable." : "This controls new conversations. Existing chat history stays readable. Teen accounts always require mutual follows before either person can send."}</Text>
+              {[
+                ["nobody", "Nobody"],
+                ["people_i_follow", "People I follow"],
+                ["mutuals", "Mutuals"],
+              ].map(([value, label]) => {
+                const selected = (session.directMessagePolicy || "mutuals") === value;
+                return (
+                  <Pressable key={value} style={styles.messagePolicyRow} onPress={() => chooseMessagePolicy(value)} disabled={savingMessagePolicy} accessibilityRole="radio" accessibilityState={{ selected, disabled: savingMessagePolicy }}>
+                    <View style={[styles.radio, selected && styles.radioOn]}>{selected ? <View style={styles.radioDot} /> : null}</View>
+                    <Text style={styles.rowLabel}>{label}</Text>
+                  </Pressable>
+                );
+              })}
+              {!!messagePolicyResult && <Text style={[styles.exportStatus, messagePolicyResult.startsWith("That") && styles.exportError]} accessibilityLiveRegion="polite">{messagePolicyResult}</Text>}
+            </View>
             <Row
               icon="search"
               label="Show my profile in search engines"
@@ -272,6 +357,29 @@ export default function SettingsScreen({ onClose, onManageProfile, onOpenProfile
               </View>
             ))}
             {!!blockListMessage && <Text style={styles.blockListMessage} accessibilityRole="alert" accessibilityLiveRegion="polite">{blockListMessage}</Text>}
+            <Text style={[styles.hint, { marginTop: 18 }]}>MUTED ACCOUNTS{muted.length ? ` · ${muted.length}` : ""}</Text>
+            {muted.length === 0 && <Text style={styles.blockedEmpty}>No muted accounts. Muting hides their posts and suggestions and silences their activity notifications. They are not notified, and you can still view their profile or message them.</Text>}
+            {muted.map((u) => (
+              <View key={u.id} style={styles.blockedRow}>
+                <Avatar user={u} size={36} />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.rowLabel} numberOfLines={1}>{u.name}</Text>
+                  <Text style={styles.rowSub} numberOfLines={1}>@{u.handle}</Text>
+                </View>
+                <Pressable
+                  style={({ focused }) => [styles.unblockBtn, focused && focusRing]}
+                  onPress={async () => {
+                    setBlockListMessage(null);
+                    const result = await unmuteUser(u.id);
+                    setBlockListMessage(result?.ok ? `${u.name} is unmuted.` : `${u.name} could not be unmuted. Try again.`);
+                  }}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Unmute ${u.name}`}
+                >
+                  <Text style={styles.unblockTxt}>Unmute</Text>
+                </Pressable>
+              </View>
+            ))}
           </>
         )}
 
@@ -320,6 +428,13 @@ const styles = StyleSheet.create({
   rowIcon: { width: 36, height: 36, borderRadius: 10, backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },
   rowLabel: { color: colors.text, fontSize: 15, fontWeight: "700" },
   rowSub: { color: colors.textDim, fontSize: 12, marginTop: 2 },
+  messagePolicy: { backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 14, marginBottom: 8 },
+  messagePolicyTitle: { color: colors.text, fontSize: 15, fontWeight: "700" },
+  messagePolicyHint: { color: colors.textDim, fontSize: 12, lineHeight: 17, marginTop: 3, marginBottom: 6 },
+  messagePolicyRow: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: 10 },
+  radio: { width: 22, height: 22, borderRadius: 11, borderWidth: 2, borderColor: colors.line, alignItems: "center", justifyContent: "center" },
+  radioOn: { borderColor: colors.amber },
+  radioDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: colors.amberStrong },
   blockedErrorRow: { gap: 9, padding: 12, marginBottom: 10, borderRadius: radius.md, borderWidth: 1, borderColor: colors.danger, backgroundColor: colors.surface },
   blockedErrorText: { color: colors.textDim, fontSize: 12.5, lineHeight: 18 },
   retryBtn: { alignSelf: "flex-start", minHeight: 40, justifyContent: "center", paddingHorizontal: 14, borderRadius: radius.pill, backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.line },

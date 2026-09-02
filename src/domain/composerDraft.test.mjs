@@ -59,7 +59,9 @@ test("show drafts preserve posting identity, entity binding, ratings, and consen
   assert.equal(composerDraftTitle(draft), "J. Cole \u00b7 Scotiabank Arena");
 });
 
-test("homepage showcase consent defaults off for legacy and new drafts", () => {
+test("artist-page and homepage reuse consent default off for legacy and new drafts", () => {
+  assert.equal(normalizeComposerDraft({}).photosPublic, false);
+  assert.equal(normalizeComposerDraft({ photosPublic: true }).photosPublic, true);
   assert.equal(normalizeComposerDraft({}).landingShowcase, false);
   assert.equal(normalizeComposerDraft({ photosPublic: true, landingShowcase: true }).landingShowcase, true);
 });

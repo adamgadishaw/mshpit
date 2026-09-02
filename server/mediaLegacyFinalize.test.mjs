@@ -332,7 +332,9 @@ test("expired and malformed legacy descriptors fail closed and retire private st
 });
 
 test("legacy API route stages privately, finalizes, and gates profile association on the sanitized result", async () => {
-  const owner = addUser("legacy_finalize_route_owner");
+  const unverifiedOwner = addUser("legacy_finalize_route_owner");
+  db.prepare("UPDATE users SET email_verified_at=? WHERE id=?").run(Date.now(), unverifiedOwner.id);
+  const owner = q.userById.get(unverifiedOwner.id);
   const storage = memoryObjectStorage();
   const source = await sharp({
     create: { width: 18, height: 14, channels: 3, background: "#552299" },

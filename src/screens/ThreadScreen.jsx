@@ -132,7 +132,7 @@ export default function ThreadScreen({ otherId, onClose, onOpenProfile, onOpenPr
   return (
     <KeyboardAvoidingView style={styles.wrap} behavior={Platform.OS === "ios" ? "padding" : undefined}>
       <ScreenHeader kicker="DIRECT MESSAGE" title={other?.name || "Chat"} onBack={onClose}
-        right={<Pressable onPress={() => onOpenProfile?.(otherId)}><Avatar user={other} size={32} /></Pressable>} />
+        right={<Pressable style={styles.profileButton} onPress={() => onOpenProfile?.(otherId)} accessibilityRole="button" accessibilityLabel={`View ${other?.name || "member"} profile`}><Avatar user={other} size={32} /></Pressable>} />
 
       <VinylRefreshBoundary
         refreshing={threadRefreshing}
@@ -172,10 +172,10 @@ export default function ThreadScreen({ otherId, onClose, onOpenProfile, onOpenPr
                   {mine && m.failed ? (
                     <View style={styles.deliveryActions}>
                       <Text style={styles.deliveryFailed} accessibilityRole="alert" accessibilityLiveRegion="assertive" accessibilityLabel="Direct message not sent">not sent</Text>
-                      <Pressable onPress={() => retry(m)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Retry direct message">
+                      <Pressable style={styles.deliveryButton} onPress={() => retry(m)} accessibilityRole="button" accessibilityLabel="Retry direct message">
                         <Text style={styles.deliveryAction}>retry</Text>
                       </Pressable>
-                      <Pressable onPress={() => cancelChatMessage(m.id)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Cancel failed direct message">
+                      <Pressable style={styles.deliveryButton} onPress={() => cancelChatMessage(m.id)} accessibilityRole="button" accessibilityLabel="Cancel failed direct message">
                         <Text style={styles.deliveryAction}>cancel</Text>
                       </Pressable>
                     </View>
@@ -208,7 +208,7 @@ export default function ThreadScreen({ otherId, onClose, onOpenProfile, onOpenPr
 
       {session ? (
         <View style={styles.inputBar}>
-          <TextInput style={styles.input} placeholder={`Message ${other?.name?.split(" ")[0] || ""}…  (use @ to tag)`} placeholderTextColor={colors.textFaint} value={text} onChangeText={(value) => updateComposer({ text: value })} onSubmitEditing={send} returnKeyType="send" maxLength={1000} />
+          <TextInput style={styles.input} placeholder={`Message ${other?.name?.split(" ")[0] || ""}…  (use @ to tag)`} placeholderTextColor={colors.textFaint} value={text} onChangeText={(value) => updateComposer({ text: value })} onSubmitEditing={send} returnKeyType="send" maxLength={1000} accessibilityLabel={`Message ${other?.name || "this member"}`} />
           <Pressable
             style={[styles.sendBtn, sending && { opacity: 0.65 }]}
             onPress={send}
@@ -248,9 +248,11 @@ const styles = StyleSheet.create({
   deliveryActions: { flexDirection: "row", alignItems: "center", gap: 8 },
   deliveryFailed: { color: "#7B1836", fontSize: 10, fontFamily: mono, fontWeight: "800" },
   deliveryAction: { color: "#1A1206", fontSize: 11, fontWeight: "900", textDecorationLine: "underline" },
-  reportBtn: { minWidth: 28, minHeight: 28, alignItems: "center", justifyContent: "center", marginVertical: -4, marginRight: -5 },
+  deliveryButton: { minWidth: 44, minHeight: 44, alignItems: "center", justifyContent: "center", marginVertical: -10 },
+  reportBtn: { minWidth: 44, minHeight: 44, alignItems: "center", justifyContent: "center", marginVertical: -10, marginRight: -5 },
+  profileButton: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
   inputBar: { flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 16, paddingTop: 8, paddingBottom: Platform.OS === "ios" ? 24 : 12, borderTopWidth: 1, borderTopColor: colors.lineSoft, backgroundColor: colors.bgElev },
   input: { flex: 1, backgroundColor: colors.surface, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, color: colors.text, paddingHorizontal: 16, paddingVertical: 11, fontSize: 15 },
-  sendBtn: { width: 42, height: 42, borderRadius: 21, backgroundColor: colors.amberStrong, alignItems: "center", justifyContent: "center" },
+  sendBtn: { width: 44, height: 44, borderRadius: 22, backgroundColor: colors.amberStrong, alignItems: "center", justifyContent: "center" },
   login: { color: colors.textDim, textAlign: "center", padding: 16, fontStyle: "italic" },
 });

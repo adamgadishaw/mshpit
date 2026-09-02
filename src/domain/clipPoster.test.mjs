@@ -55,3 +55,12 @@ test("ClipPoster keeps its cover until generated artwork paints and handles imag
   assert.match(source, /if \(!releaseThumbnail\(\{ uri, asset: generatedPoster \}\)\) return/);
   assert.doesNotMatch(source, /: !!generatedPoster/);
 });
+
+test("ClipPoster uses one solid play badge without a decorative oval or nested ring", () => {
+  const source = readFileSync(new URL("../components/ClipPoster.jsx", import.meta.url), "utf8");
+  assert.match(source, /styles\.playBadge/);
+  assert.match(source, /backgroundColor: colors\.amberStrong/);
+  assert.match(source, /phase !== "ready"[\s\S]*showPlayBadge \? <View style=\{\[styles\.playBadge/);
+  assert.match(source, /phase === "ready" && showPlayBadge[\s\S]*styles\.playBadge, styles\.readyBadge/);
+  assert.doesNotMatch(source, /styles\.glow|glowCompact|playRing|borderColor: "rgba\(255,255,255/);
+});

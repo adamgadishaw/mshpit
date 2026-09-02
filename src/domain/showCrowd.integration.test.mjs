@@ -57,6 +57,12 @@ test("trusted Show attendance is lifecycle-gated, stable-ID bound, and never cal
   assert.match(attendanceControls, /activeIdentityRef\.current !== claim/);
   assert.match(attendanceControls, /writeShowAttendance/);
   assert.match(attendanceControls, /Live check-ins start Only me/);
+  assert.match(attendanceControls, /useState\("private"\)/);
+  assert.match(attendanceControls, /setNewVisibility\("private"\)/);
+  assert.match(attendanceControls, /attendance\?\.visibility \|\| newVisibility/);
+  assert.match(attendanceControls, /Choose this before saving your show status/);
+  assert.match(attendanceControls, /visibility: attendance\?\.visibility \|\| newVisibility/);
+  assert.match(attendanceControls, /\{accountId \? \(/);
   assert.match(attendanceControls, /This records your status\. It does not verify attendance\./);
   assert.match(attendanceControls, /accessibilityRole="radiogroup"/);
   assert.match(showSocialApi, /requiredStableShowId\(showId\)/);

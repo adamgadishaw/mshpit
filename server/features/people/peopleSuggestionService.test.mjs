@@ -10,10 +10,11 @@ function fixture() {
       id TEXT PRIMARY KEY,name TEXT,handle TEXT,initials TEXT,avatar_uri TEXT,avatar_color TEXT,
       verified INTEGER DEFAULT 0,role TEXT DEFAULT 'fan',home_city TEXT,home_lat REAL,home_lng REAL,
       genres TEXT DEFAULT '[]',favorite_artists TEXT DEFAULT '[]',is_banned INTEGER DEFAULT 0,
-      suspended_until INTEGER,profile_updated_at INTEGER DEFAULT 0
+      suspended_until INTEGER,profile_updated_at INTEGER DEFAULT 0,profile_audience TEXT DEFAULT 'everyone'
     );
     CREATE TABLE follows (follower_id TEXT,followee_id TEXT,PRIMARY KEY(follower_id,followee_id));
     CREATE TABLE blocks (blocker_id TEXT,blocked_id TEXT,PRIMARY KEY(blocker_id,blocked_id));
+    CREATE TABLE account_mutes (muter_id TEXT,muted_id TEXT,PRIMARY KEY(muter_id,muted_id));
     CREATE TABLE posts (id TEXT PRIMARY KEY,user_id TEXT,kind TEXT,artist TEXT,venue TEXT,date TEXT,
       removed INTEGER DEFAULT 0,experience_type TEXT NOT NULL DEFAULT 'in_person');
   `);
@@ -67,6 +68,19 @@ test("people suggestion service is authenticated by construction and capped at f
     assert.deepEqual(service.list(null), []);
     const viewer = database.prepare("SELECT * FROM users WHERE id='me'").get();
     assert.ok(service.list(viewer, { limit: 999 }).length <= 5);
+  } finally {
+    database.close();
+  }
+});
+
+test("people suggestions honor the viewer's private one-way mute list", () => {
+  const { database, service } = fixture();
+  try {
+    database.prepare("INSERT INTO account_mutes VALUES (?,?)").run("me", "match");
+    const viewer = database.prepare("SELECT * FROM users WHERE id='me'").get();
+    const result = service.list(viewer, { limit: 5 });
+    assert.equal(result.some((entry) => entry.user.id === "match"), false);
+    assert.equal(result.some((entry) => entry.user.id === "far"), true);
   } finally {
     database.close();
   }

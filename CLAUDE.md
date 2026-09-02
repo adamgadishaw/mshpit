@@ -2,7 +2,7 @@
 
 Read these files before editing:
 
-1. `AGENTS.md` — requires the exact Expo SDK 56 documentation.
+1. `AGENTS.md` — requires the exact Expo SDK 57 documentation.
 2. `BRIEF.md` — product vision and the Performance/Artist/Venue data spine.
 3. `STATUS.md` — current branch/release/production truth and remaining blockers.
    `HANDOFF.md` is a historical implementation journal only.
@@ -22,9 +22,9 @@ performance ID instead of reconstructing identity from display strings.
 
 ## Current stack
 
-- Expo SDK 56, React 19.2, React Native 0.85, React Native Web 0.21.
+- Expo SDK 57, React 19.2, React Native 0.86, React Native Web 0.21.
 - SDK-matched native modules include Image Picker for uploads and FileSystem +
-  Sharing for portable account exports. Check the exact SDK 56 page before using
+  Sharing for portable account exports. Check the exact SDK 57 page before using
   a newer/legacy API; `File`/`Paths` is the current filesystem surface.
 - JavaScript/JSX and `StyleSheet`; no TypeScript or UI framework yet.
 - `App.js` owns the existing overlay navigation and screen wiring.

@@ -83,7 +83,7 @@ const publicDocuments = createPublicDocumentService({
 });
 
 const memberByHandle = db.prepare(`SELECT u.id,u.name,u.handle,u.extras FROM users u
-  WHERE u.handle=? AND ${activeAccountSql("u")} LIMIT 1`);
+  WHERE u.handle=? AND u.profile_audience='everyone' AND ${activeAccountSql("u")} LIMIT 1`);
 const publicPostIdentity = db.prepare(`SELECT p.id FROM posts p JOIN users u ON u.id=p.user_id
   WHERE p.id=? AND p.removed=0 AND ${activeAccountSql("u")} LIMIT 1`);
 const publicEventIdentity = db.prepare(`SELECT td.id,td.event_name,td.artist,td.venue,td.place,td.date,

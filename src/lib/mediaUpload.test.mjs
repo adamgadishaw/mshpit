@@ -4,7 +4,7 @@ import test from "node:test";
 
 const source = await readFile(new URL("./mediaUpload.js", import.meta.url), "utf8");
 
-test("SDK 56 native uploads use a foreground cancellable progress task", () => {
+test("SDK 57 native uploads use a foreground cancellable progress task", () => {
   assert.match(source, /prepared\.body\.createUploadTask\(ticket\.uploadUrl/);
   assert.match(source, /sessionType:\s*"foreground"/);
   assert.match(source, /signal:\s*deadline\.signal/);

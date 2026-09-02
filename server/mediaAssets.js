@@ -33,8 +33,8 @@ import {
 } from "./media.js";
 import {
   enqueueOwnedMediaKeys,
+  MEDIA_UPLOAD_ACCOUNTING_CLASS,
   MEDIA_UPLOAD_TICKET_MS,
-  recordMediaObjectTicket,
   reserveMediaUploadTicket,
   trustedMediaQueueKey,
 } from "./mediaDeletion.js";
@@ -169,6 +169,7 @@ function reserveAndSign(database, {
   env,
   at,
   storageScope = "public",
+  accountingClass = MEDIA_UPLOAD_ACCOUNTING_CLASS.MEMBER_SOURCE,
 } = {}) {
   const file = validateMediaRequest(body);
   const key = expectedObjectKey({ ownerId, purpose: file.purpose, objectId, extension: file.extension });
@@ -180,6 +181,7 @@ function reserveAndSign(database, {
     expiresAt: at + MEDIA_UPLOAD_TICKET_MS,
     env,
     storageScope,
+    accountingClass,
   });
   const ticket = createMediaPresign({
     userId: ownerId,
@@ -230,6 +232,7 @@ function assetUploadTicket(row, { env, now }) {
     env,
     at: now,
     storageScope: row.source_storage_scope || "public",
+    accountingClass: MEDIA_UPLOAD_ACCOUNTING_CLASS.MEMBER_SOURCE,
   };
 }
 
@@ -794,6 +797,7 @@ function prepareAuthoritativeDelivery(database, { ownerId, assetId, sourceEtag, 
         ownerId,
         objectKey,
         storageScope: "public",
+        accountingClass: MEDIA_UPLOAD_ACCOUNTING_CLASS.SERVICE_GENERATED,
         byteSize: MAX_VIDEO_BYTES,
         at,
         expiresAt: at + VIDEO_DELIVERY_CAPABILITY_MS,
@@ -902,34 +906,23 @@ function reserveImmutableProcessorTicket(database, {
   byteSize,
   at,
   env,
-  serverRecovery = false,
 }) {
   const existing = database.prepare(`SELECT owner_id,storage_scope,purpose,byte_size,status
     FROM media_objects WHERE object_key=?`).get(objectKey);
   if (!existing) {
-    if (serverRecovery) {
-      const inserted = recordMediaObjectTicket(database, {
-        ownerId,
-        objectKey,
-        storageScope: "public",
-        byteSize,
-        at,
-        expiresAt: null,
-      });
-      if (!inserted) {
-        throw new ApiError(409, "That recovered photo rendition changed while it was being sanitized.", "CONFLICT");
-      }
-    } else {
-      reserveMediaUploadTicket(database, {
-        ownerId,
-        objectKey,
-        storageScope: "public",
-        byteSize,
-        at,
-        expiresAt: at + MEDIA_UPLOAD_TICKET_MS,
-        env,
-      });
-    }
+    // Recovery uses the same service-generated admission path as an ordinary
+    // sanitizer. Its capability never counts as a member-selected source, but
+    // it must still fit the global outstanding and rolling incident brakes.
+    reserveMediaUploadTicket(database, {
+      ownerId,
+      objectKey,
+      storageScope: "public",
+      accountingClass: MEDIA_UPLOAD_ACCOUNTING_CLASS.SERVICE_GENERATED,
+      byteSize,
+      at,
+      expiresAt: at + MEDIA_UPLOAD_TICKET_MS,
+      env,
+    });
     return;
   }
   if (existing.owner_id !== ownerId || existing.storage_scope !== "public"
@@ -956,7 +949,6 @@ function immutableProcessorImageUploadTicket(database, {
     byteSize,
     at,
     env,
-    serverRecovery,
   });
   return createMediaProcessorImageUploadCapability({
     objectKey,
@@ -2126,6 +2118,7 @@ function variantUploadRequest(asset, variant, { env, at }) {
     at,
     objectId: objectIdFromKey(variant.object_key),
     storageScope: asset.kind === "image" ? "private" : "public",
+    accountingClass: MEDIA_UPLOAD_ACCOUNTING_CLASS.SERVICE_GENERATED,
   };
 }
 
@@ -2204,6 +2197,7 @@ function createPendingPhotoRevisionVariant(database, {
     at,
     objectId,
     storageScope: "private",
+    accountingClass: MEDIA_UPLOAD_ACCOUNTING_CLASS.SERVICE_GENERATED,
   });
   database.prepare(`UPDATE media_asset_revisions SET
       variant_id=?,client_variant_id=?,create_hash=?,object_key=?,public_url=?,mime_type=?,byte_size=?,
@@ -2290,6 +2284,7 @@ export function createMediaVariant(database, {
         at,
         objectId,
         storageScope: "private",
+        accountingClass: MEDIA_UPLOAD_ACCOUNTING_CLASS.SERVICE_GENERATED,
       });
       database.prepare(`INSERT INTO media_variants
         (id,asset_id,client_variant_id,create_hash,role,object_key,public_url,mime_type,byte_size,status,created_at,updated_at)

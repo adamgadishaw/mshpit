@@ -115,7 +115,7 @@ async function optimizedWebImage(file) {
 }
 
 async function bodyFor(asset, { optimizeWeb = true } = {}) {
-  // SDK 56 exposes the browser's original File on web. On native, pass an Expo
+  // SDK 57 exposes the browser's original File on web. On native, pass an Expo
   // File directly to expo/fetch: this streams the local URI and avoids expanding
   // a large clip into a JS Blob (the source of intermittent mobile upload stalls).
   if (Platform.OS === "web" && asset?.file && typeof asset.file.size === "number") {
@@ -200,7 +200,7 @@ export async function uploadPreparedMediaAsset(prepared, ticket, {
       });
       status = response.status;
     } else {
-      // SDK 56's task API reports native bytes and honors AbortSignal. A
+      // SDK 57's task API reports native bytes and honors AbortSignal. A
       // foreground session prevents a cancelled Studio action from continuing
       // invisibly after the JS UI has returned to an editable state.
       const task = prepared.body.createUploadTask(ticket.uploadUrl, {

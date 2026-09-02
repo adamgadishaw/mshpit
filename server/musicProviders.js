@@ -5,6 +5,7 @@ import {
   normalizeTrackIdentityText,
   trackOverrideIdentityKey,
 } from "./trackIdentity.js";
+import { PROVIDER_JSON_LIMITS, readBoundedJsonResponse } from "./boundedJsonResponse.js";
 
 const DEEZER_DISCOGRAPHY_TTL_MS = 24 * 60 * 60 * 1000;
 const DEEZER_PREVIEW_MAX_TTL_MS = 5 * 60 * 1000;
@@ -618,11 +619,13 @@ function providerMessage(provider, status) {
 
 export async function providerJson(provider, url, { timeoutMs = 10_000, fetchImpl = fetch, signal } = {}) {
   let response;
+  let requestSignal;
   try {
     const timeoutSignal = AbortSignal.timeout(timeoutMs);
+    requestSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
     response = await fetchImpl(url, {
       headers: { Accept: "application/json", "User-Agent": "PitConcertApp/1.0 (https://mshpit.com)" },
-      signal: signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal,
+      signal: requestSignal,
     });
   } catch (error) {
     throw new ProviderError(provider, 502, `${provider} could not be reached.`, { code: "network", cause: error });
@@ -634,7 +637,12 @@ export async function providerJson(provider, url, { timeoutMs = 10_000, fetchImp
     });
   }
   let data;
-  try { data = await response.json(); }
+  try {
+    data = await readBoundedJsonResponse(response, {
+      maxBytes: PROVIDER_JSON_LIMITS.standard,
+      signal: requestSignal,
+    });
+  }
   catch (error) { throw new ProviderError(provider, 502, `${provider} returned unreadable data.`, { code: "invalid_json", cause: error }); }
   if (data?.error) {
     const code = Number(data.error.code) || 502;

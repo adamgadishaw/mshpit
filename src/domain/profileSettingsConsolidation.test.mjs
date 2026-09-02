@@ -35,7 +35,11 @@ test("Settings owns a server-confirmed member search-indexing opt-out", () => {
   assert.match(store, /updateProfileSearchIndexingPreference\(enabled\)/);
   assert.match(accountPrivacyApi, /body: \{ searchIndexingOptOut: !enabled \}/);
   assert.match(store, /sessionRef\.current = merged;\s+setSession\(merged\)/);
-  assert.match(store, /setProfileSearchIndexingEnabled, setAnnouncementEmailsEnabled/);
+  assert.match(
+    store,
+    /const value = \{[\s\S]*?\bsetProfileSearchIndexingEnabled\b[\s\S]*?\n\s*\};\s*\n\s*return <StoreContext\.Provider/,
+    "the search-indexing setter must remain available through the shared store",
+  );
 });
 
 test("Edit Profile clearly owns the personal profile without duplicating appearance", () => {

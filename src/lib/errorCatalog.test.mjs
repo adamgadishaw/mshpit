@@ -26,11 +26,14 @@ test("server failure codes normalize to stable PIT references", () => {
   const expected = {
     AUTH_REQUIRED: "PIT-AUTH-001",
     EMAIL_VERIFICATION_REQUIRED: "PIT-AUTH-005",
+    MEDIA_EMAIL_VERIFICATION_REQUIRED: "PIT-UPLOAD-006",
     AUTH_INVALID: "PIT-AUTH-003",
     FORBIDDEN: "PIT-AUTH-002",
+    CONTACT_NOT_ALLOWED: "PIT-CHAT-004",
     FAN_CLUB_MEMBERSHIP_REQUIRED: "PIT-CHAT-001",
     LOUNGE_ATTENDANCE_REQUIRED: "PIT-CHAT-002",
     LOUNGE_CLOSED: "PIT-CHAT-003",
+    CONTACT_NOT_ALLOWED: "PIT-CHAT-004",
     CONTENT_REJECTED: "PIT-SAFE-001",
     ACTION_REQUIRED: "PIT-REQ-001",
     VALIDATION_FAILED: "PIT-REQ-001",
@@ -62,6 +65,35 @@ test("server failure codes normalize to stable PIT references", () => {
     assert.equal(catalogueCode({ serverCode, status: 500 }), pitCode);
     assert.ok(ERROR_CATALOG[pitCode]);
   }
+});
+
+test("email verification failures keep account access and media upload guidance distinct", () => {
+  const accountAccess = catalogEntry(catalogueCode({
+    serverCode: "EMAIL_VERIFICATION_REQUIRED",
+    status: 403,
+  }));
+  const mediaUpload = catalogEntry(catalogueCode({
+    serverCode: "MEDIA_EMAIL_VERIFICATION_REQUIRED",
+    status: 403,
+  }));
+
+  assert.equal(accountAccess.category, "permission");
+  assert.doesNotMatch(accountAccess.message, /photo or video upload/i);
+  assert.equal(mediaUpload.category, "upload");
+  assert.match(mediaUpload.message, /photo or video upload/i);
+  assert.match(mediaUpload.message, /finish or remove an upload you already started/i);
+});
+
+test("direct-message contact policy failures explain the age and privacy boundary", () => {
+  const contactPolicy = catalogEntry(catalogueCode({
+    serverCode: "CONTACT_NOT_ALLOWED",
+    status: 403,
+  }));
+
+  assert.equal(contactPolicy.category, "permission");
+  assert.match(contactPolicy.message, /age or contact privacy rule/i);
+  assert.match(contactPolicy.guidance, /age group.*message preferences.*mutual-follow/is);
+  assert.equal(contactPolicy.retryable, false);
 });
 
 test("network, response, and HTTP failures normalize predictably", () => {
@@ -106,4 +138,12 @@ test("closed Lounges route members toward the artist community without suggestin
   assert.equal(entry.retryable, false);
   assert.match(`${entry.message} ${entry.guidance}`, /24 hours after doors/);
   assert.match(entry.guidance, /Fan Club/);
+});
+
+test("direct-message safety refusals explain age and contact boundaries without suggesting a retry", () => {
+  assert.equal(catalogueCode({ serverCode: "CONTACT_NOT_ALLOWED", status: 403 }), "PIT-CHAT-004");
+  const entry = catalogEntry("PIT-CHAT-004");
+  assert.equal(entry.retryable, false);
+  assert.match(`${entry.message} ${entry.guidance}`, /age group/i);
+  assert.match(`${entry.message} ${entry.guidance}`, /privacy|message preferences|mutual-follow/i);
 });

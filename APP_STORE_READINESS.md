@@ -36,11 +36,11 @@ during this preparation pass.
 - The photo-library permission explains the concert/profile media use. Camera
   and microphone permissions are disabled because Pit selects existing media
   and does not expose capture/recording controls.
-- Native preview playback uses the SDK 56 `expo-audio` package on iOS/Android;
+- Native preview playback uses the SDK 57 `expo-audio` package on iOS/Android;
   the config disables microphone, recording, and background-audio capabilities.
   Web playback keeps its existing YouTube/HTML-audio path.
 - MSHpit's white circular community mark on near-black icon, splash, Android
-  adaptive, monochrome, and favicon assets are wired through the SDK 56 splash
+  adaptive, monochrome, and favicon assets are wired through the SDK 57 splash
   plugin. The v2 artwork has provenance notes in
   `assets/PIT_BRAND_ASSETS.md` and still needs the owner's final
   brand/trademark approval before a store upload.
@@ -147,14 +147,12 @@ Store submission.
    affected asset, datum, and playback path. Store screenshots must use only
    independently cleared content. This is an owner/legal rights gate, not a fact
    that a passing build or short-preview duration can establish.
-7. **Resolve the SDK 56 Hermes V1 memory-regression gate.** Current Expo Doctor
-   reports 21/22 checks because Expo 56.0.20 / React Native 0.85.3 contains the
-   known Hermes V1 memory regression; its suggested fixed line begins with Expo
-   57.0.9 / React Native 0.86.2. Do not ship a native distribution on the strength
-   of a JavaScript export alone. Treat a separately planned SDK 57 upgrade (with
-   exact versioned-doc review and full regression/device testing) or an upstream
-   SDK 56 resolution as the engineering gate. The current web release does not
-   need to wait on that native-runtime upgrade.
+7. **Validate the upgraded native runtime on devices.** The dependency upgrade is
+   complete at Expo 57.0.19 / React Native 0.86.3, `expo install --check` passes,
+   and Expo Doctor reports 21/21 checks. This removes the earlier SDK 56 Hermes
+   V1 memory-regression dependency from the graph. Do not ship a native
+   distribution on the strength of dependency checks or a JavaScript export
+   alone; complete the physical-device acceptance gate below.
 8. **Complete physical-device acceptance.** Test account creation, email
    verification, login/session persistence, password reset, account deletion,
    media selection/upload (including long concert clips), feed/player lifecycle,
@@ -224,9 +222,9 @@ npx.cmd expo config --type introspect
 npx.cmd expo export -p ios --output-dir .tmp\ios-store-export
 ```
 
-This preparation pass verified Expo dependencies as aligned. Expo Doctor is
-21/22 solely because of the SDK 56 Hermes V1 memory-regression warning described
-above; do not waive it as a store-readiness check. The iOS JavaScript export
+This preparation pass verified Expo dependencies as aligned. Expo Doctor passes
+21/21 checks on SDK 57; the prior SDK 56 Hermes V1 memory-regression warning is
+no longer in the dependency graph. The iOS JavaScript export
 produced a 6.5 MB Hermes bundle and is a bundle/config gate only. After the
 native-distribution blockers above are resolved, the first signed candidate
 should go to internal TestFlight testers, then external TestFlight review, and

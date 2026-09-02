@@ -77,7 +77,7 @@ export default function InboxScreen({ onClose, onOpenThread }) {
   const Row = (t) => {
     const relationshipChips = messageRelationshipChips(t.relationshipContext).slice(0, 3);
     return (
-      <Pressable key={t.otherId} style={styles.row} onPress={() => onOpenThread?.(t.otherId)}>
+      <Pressable key={t.otherId} style={styles.row} onPress={() => onOpenThread?.(t.otherId)} accessibilityRole="button" accessibilityLabel={`Open conversation with ${t.otherUser?.name || "member"}${t.unread ? `, ${t.unread} unread` : ""}`}>
         <Avatar user={t.otherUser} size={48} />
         <View style={{ flex: 1, minWidth: 0 }}>
           <Text style={styles.name}>{t.otherUser?.name}</Text>
@@ -158,10 +158,10 @@ export default function InboxScreen({ onClose, onOpenThread }) {
 
       {session && (
         <View style={styles.tabs}>
-          <Pressable style={[styles.tab, tab === "main" && styles.tabOn]} onPress={() => setTab("main")}>
+          <Pressable style={[styles.tab, tab === "main" && styles.tabOn]} onPress={() => setTab("main")} accessibilityRole="tab" accessibilityState={{ selected: tab === "main" }} accessibilityLabel="Messages">
             <Text style={[styles.tabTxt, tab === "main" && styles.tabTxtOn]}>Messages</Text>
           </Pressable>
-          <Pressable style={[styles.tab, tab === "requests" && styles.tabOn]} onPress={() => setTab("requests")}>
+          <Pressable style={[styles.tab, tab === "requests" && styles.tabOn]} onPress={() => setTab("requests")} accessibilityRole="tab" accessibilityState={{ selected: tab === "requests" }} accessibilityLabel={`Message requests${requests.length ? `, ${requests.length}` : ""}`}>
             <Text style={[styles.tabTxt, tab === "requests" && styles.tabTxtOn]}>Requests</Text>
             {requests.length > 0 && <View style={styles.tabCount}><Text style={styles.tabCountTxt}>{requests.length}</Text></View>}
           </Pressable>
@@ -199,7 +199,7 @@ export default function InboxScreen({ onClose, onOpenThread }) {
 const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: colors.bg },
   composeBar: { flexDirection: "row", justifyContent: "flex-end", paddingHorizontal: 16, paddingTop: 12 },
-  composeBtn: { flexDirection: "row", alignItems: "center", gap: 7, backgroundColor: colors.amberStrong, borderRadius: radius.pill, paddingHorizontal: 14, paddingVertical: 9 },
+  composeBtn: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: 7, backgroundColor: colors.amberStrong, borderRadius: radius.pill, paddingHorizontal: 14, paddingVertical: 9 },
   composeBtnOn: { backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.line },
   composeBtnTxt: { color: "#1A1206", fontSize: 13, fontWeight: "900" },
   composeBtnTxtOn: { color: colors.text },
@@ -211,10 +211,10 @@ const styles = StyleSheet.create({
   searchErrorText: { color: colors.danger, fontSize: 12.5, lineHeight: 18 },
   retrySearch: { minHeight: 44, alignSelf: "flex-start", justifyContent: "center", paddingHorizontal: 14, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.amber },
   retrySearchText: { color: colors.amber, fontSize: 12.5, fontWeight: "800" },
-  personRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 4, paddingVertical: 10, borderTopWidth: 1, borderTopColor: colors.lineSoft },
+  personRow: { minHeight: 52, flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 4, paddingVertical: 10, borderTopWidth: 1, borderTopColor: colors.lineSoft },
   personHandle: { color: colors.textDim, fontSize: 12, marginTop: 2 },
   tabs: { flexDirection: "row", gap: 8, paddingHorizontal: 16, paddingTop: 12 },
-  tab: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7, flex: 1, paddingVertical: 10, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
+  tab: { minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7, flex: 1, paddingVertical: 10, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
   tabOn: { borderColor: colors.amber, backgroundColor: colors.bgElev },
   tabTxt: { color: colors.textDim, fontSize: 13.5, fontWeight: "700" },
   tabTxtOn: { color: colors.amber, fontWeight: "800" },

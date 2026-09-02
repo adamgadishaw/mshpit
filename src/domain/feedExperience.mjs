@@ -18,24 +18,14 @@ export function feedFooterState({ visibleCount = 0, loadedCount = 0, hasMore = f
   return { kind: "empty", label: "" };
 }
 
-const EXPLANATIONS = {
-  followed_creator: "You follow this member. Following stays chronological; Discover can also surface their strongest recent posts.",
-  artist_affinity: "You have saved, followed, seen live, or interacted with this artist or related concert posts. Pit uses that signal without exposing anyone else's activity.",
-  genre_affinity: "This matches genres saved on your profile or reflected in your recent activity.",
-  local: "This concert is connected to your saved home city.",
-  global_momentum: "This recent post is receiving likes and discussion across Mshpit.",
-  fresh_global: "This is a recent community post added to keep discovery from becoming repetitive.",
-};
+const SUGGESTED_POST_LABEL = "Suggested post";
+const SUGGESTED_POST_DETAIL = "Pit mixes recent posts from across the community to keep your feed fresh. Suggestions change over time.";
 
 export function recommendationDisclosure(recommendation) {
   if (!recommendation || typeof recommendation !== "object") return null;
-  const reason = typeof recommendation.reason === "string" && recommendation.reason.trim()
-    ? recommendation.reason.trim()
-    : "Recommended by Pit";
-  const reasonCode = typeof recommendation.reasonCode === "string" ? recommendation.reasonCode : "";
   return {
-    label: reason,
-    detail: EXPLANATIONS[reasonCode] || "Pit ranks recent community posts, then adds bounded taste and diversity signals.",
+    label: SUGGESTED_POST_LABEL,
+    detail: SUGGESTED_POST_DETAIL,
     personalized: recommendation.personalized === true,
     algorithm: typeof recommendation.algorithm === "string" ? recommendation.algorithm : null,
   };

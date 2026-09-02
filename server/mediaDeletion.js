@@ -1,7 +1,3 @@
-import {
-  MEDIA_POST_MAX_ATTACHMENTS,
-  MEDIA_VIDEO_SOURCE_MAX_BYTES,
-} from "../src/domain/mediaUploadPolicy.mjs";
 import { getMediaConfig, mediaBucketForScope, mediaConfigured, presignS3Request } from "./media.js";
 import { withImmediateWrite as withWrite } from "./databaseTransaction.js";
 import { ApiError } from "./errors.js";
@@ -18,28 +14,28 @@ const PEBIBYTE = 1024 * TEBIBYTE;
 
 export const MEDIA_UPLOAD_TICKET_MS = 10 * 60_000;
 export const MEDIA_UPLOAD_ROLLING_WINDOW_MS = DAY_MS;
-export const MEDIA_MAX_COMPOSITION_OUTSTANDING_BYTES =
-  MEDIA_POST_MAX_ATTACHMENTS * MEDIA_VIDEO_SOURCE_MAX_BYTES * 2;
-
+export const MEDIA_UPLOAD_ACCOUNTING_CLASS = Object.freeze({
+  MEMBER_SOURCE: "member_source",
+  SERVICE_GENERATED: "service_generated",
+});
+const MEDIA_UPLOAD_ACCOUNTING_CLASSES = new Set(Object.values(MEDIA_UPLOAD_ACCOUNTING_CLASS));
 const DEFAULT_UPLOAD_QUOTAS = Object.freeze({
-  // These are emergency abuse/cleanup bounds, not product-plan limits. A
-  // normal member can publish hundreds of clips in a day without meeting
-  // them, while a compromised account still cannot mint an unbounded number
-  // of storage capabilities or leave an unbounded private staging backlog.
-  outstandingObjects: 256,
-  outstandingBytes: 32 * 1024 * MEBIBYTE,
-  rollingBytes: 64 * 1024 * MEBIBYTE,
-  rollingTickets: 4_096,
+  // Transparent limits apply only to original files selected by a member.
+  // Server-generated safe copies, covers, and delivery objects are accounted
+  // below by the service-wide breakers instead of charging the member twice.
+  outstandingObjects: 40,
+  outstandingBytes: 6 * 1024 * MEBIBYTE,
+  rollingBytes: 6 * 1024 * MEBIBYTE,
+  rollingTickets: 120,
 });
 
 const DEFAULT_UPLOAD_GLOBAL_CIRCUIT_BREAKERS = Object.freeze({
-  // Service-wide incident brakes are deliberately orders of magnitude above
-  // ordinary creator use. They are not member plans or daily upload limits;
-  // they bound damage if many accounts or credentials are compromised at once.
-  outstandingObjects: 100_000,
-  outstandingBytes: 2 * TEBIBYTE,
-  rollingBytes: 8 * TEBIBYTE,
-  rollingTickets: 1_000_000,
+  // Service-wide incident brakes protect the shared storage budget if many
+  // accounts or credentials are compromised at once.
+  outstandingObjects: 10_000,
+  outstandingBytes: 128 * 1024 * MEBIBYTE,
+  rollingBytes: 512 * 1024 * MEBIBYTE,
+  rollingTickets: 100_000,
 });
 
 export const MEDIA_DELETION_MAX_ATTEMPTS = 5;
@@ -190,6 +186,7 @@ export function recordMediaObjectTicket(database, {
   ownerId,
   objectKey,
   storageScope = "public",
+  accountingClass = MEDIA_UPLOAD_ACCOUNTING_CLASS.MEMBER_SOURCE,
   byteSize = 0,
   at = Date.now(),
   expiresAt,
@@ -199,25 +196,30 @@ export function recordMediaObjectTicket(database, {
   const match = key ? OBJECT_KEY.exec(key) : null;
   if (!owner || !match) return false;
   const bytes = Number(byteSize);
-  if (!Number.isSafeInteger(bytes) || bytes < 0 || !new Set(["public", "private"]).has(storageScope)) return false;
+  if (!Number.isSafeInteger(bytes) || bytes < 0 || !new Set(["public", "private"]).has(storageScope)
+      || !MEDIA_UPLOAD_ACCOUNTING_CLASSES.has(accountingClass)) return false;
   const uploadExpiresAt = normalizedTicketExpiry(expiresAt, at);
   return Number(database.prepare(`INSERT OR IGNORE INTO media_objects
-    (object_key,owner_id,storage_scope,purpose,byte_size,status,created_at,upload_expires_at,updated_at)
-    VALUES (?,?,?,?,?,'issued',?,?,?)`).run(key, owner, storageScope, match[2], bytes, at, uploadExpiresAt, at).changes || 0) === 1;
+    (object_key,owner_id,storage_scope,accounting_class,purpose,byte_size,status,created_at,upload_expires_at,updated_at)
+    VALUES (?,?,?,?,?,?,'issued',?,?,?)`).run(key, owner, storageScope, accountingClass,
+    match[2], bytes, at, uploadExpiresAt, at).changes || 0) === 1;
 }
 
 /**
- * Atomically reserve one returned PUT ticket against both outstanding storage
- * and rolling 24-hour issuance budgets. Reissuing the same owner/key does not
- * consume another outstanding object, but does consume rolling bytes because
- * the client can upload the body again. Callers must not return/significantly
- * expose a ticket unless this reservation commits.
+ * Atomically reserve one returned PUT ticket. Every ticket is covered by the
+ * service-wide outstanding/rolling circuit breakers. Only member_source work
+ * also consumes the disclosed per-account outstanding and rolling allowance.
+ * Reissuing the same owner/key preserves its original accounting class, does
+ * not consume another outstanding object, and does consume another applicable
+ * rolling ticket/byte reservation because its body can be uploaded again.
+ * Callers must not return or expose a ticket unless this reservation commits.
  */
 export function reserveMediaUploadTicket(database, {
   ownerId,
   objectKey,
   byteSize,
   storageScope = "public",
+  accountingClass = MEDIA_UPLOAD_ACCOUNTING_CLASS.MEMBER_SOURCE,
   at = Date.now(),
   expiresAt = at + MEDIA_UPLOAD_TICKET_MS,
   env = process.env,
@@ -226,7 +228,8 @@ export function reserveMediaUploadTicket(database, {
   const key = trustedMediaQueueKey(objectKey, owner);
   const match = key ? OBJECT_KEY.exec(key) : null;
   const bytes = Number(byteSize);
-  if (!owner || !match || !Number.isSafeInteger(bytes) || bytes < 1) {
+  if (!owner || !match || !Number.isSafeInteger(bytes) || bytes < 1
+      || !MEDIA_UPLOAD_ACCOUNTING_CLASSES.has(accountingClass)) {
     throw new ApiError(400, "Media upload reservation is invalid.", "VALIDATION_FAILED");
   }
   const uploadExpiresAt = normalizedTicketExpiry(expiresAt, at);
@@ -239,7 +242,7 @@ export function reserveMediaUploadTicket(database, {
     database.prepare("DELETE FROM media_upload_issuances WHERE issued_at<=?")
       .run(at - (2 * MEDIA_UPLOAD_ROLLING_WINDOW_MS));
 
-    const existing = database.prepare(`SELECT owner_id,storage_scope,purpose,byte_size,status
+    const existing = database.prepare(`SELECT owner_id,storage_scope,accounting_class,purpose,byte_size,status
       FROM media_objects WHERE object_key=?`).get(key);
     if (!new Set(["public", "private"]).has(storageScope)
         || (existing && (existing.owner_id !== owner || existing.storage_scope !== storageScope || existing.purpose !== match[2]
@@ -247,22 +250,34 @@ export function reserveMediaUploadTicket(database, {
       throw new ApiError(409, "That media upload ticket belongs to different bytes.", "CONFLICT");
     }
 
-    const outstanding = database.prepare(`SELECT COUNT(*) object_count,COALESCE(SUM(byte_size),0) byte_count
-      FROM media_objects WHERE owner_id=? AND status IN ('issued','delete_queued','deletion_dead')`).get(owner);
-    const rolling = database.prepare(`SELECT COUNT(*) ticket_count,COALESCE(SUM(byte_size),0) byte_count
-      FROM media_upload_issuances WHERE owner_id=? AND issued_at>?`).get(owner, rollingCutoff);
+    // An existing row owns its accounting class. A reissue cannot relabel a
+    // source as a derivative to evade the member limit; pre-migration rows keep
+    // their conservative member_source default as documented by the schema.
+    const effectiveAccountingClass = existing?.accounting_class || accountingClass;
+    const memberSource = effectiveAccountingClass === MEDIA_UPLOAD_ACCOUNTING_CLASS.MEMBER_SOURCE;
+    const outstanding = memberSource
+      ? database.prepare(`SELECT COUNT(*) object_count,COALESCE(SUM(byte_size),0) byte_count
+        FROM media_objects WHERE owner_id=? AND accounting_class='member_source'
+          AND status IN ('issued','delete_queued','deletion_dead')`).get(owner)
+      : { object_count: 0, byte_count: 0 };
+    const rolling = memberSource
+      ? database.prepare(`SELECT COUNT(*) ticket_count,COALESCE(SUM(byte_size),0) byte_count
+        FROM media_upload_issuances WHERE owner_id=? AND accounting_class='member_source' AND issued_at>?`)
+        .get(owner, rollingCutoff)
+      : { ticket_count: 0, byte_count: 0 };
     const newObject = !existing;
     const existingOutstanding = !!existing && new Set(["issued", "delete_queued", "deletion_dead"]).has(existing.status);
-    const outstandingByteDelta = newObject
+    const globalOutstandingByteDelta = newObject
       ? bytes
       : existingOutstanding ? Math.max(0, bytes - Number(existing.byte_size || 0)) : 0;
-    const nextObjectCount = Number(outstanding?.object_count || 0) + (newObject ? 1 : 0);
-    const nextOutstandingBytes = Number(outstanding?.byte_count || 0) + outstandingByteDelta;
+    const nextObjectCount = Number(outstanding?.object_count || 0) + (newObject && memberSource ? 1 : 0);
+    const nextOutstandingBytes = Number(outstanding?.byte_count || 0)
+      + (memberSource ? globalOutstandingByteDelta : 0);
     const nextRollingTickets = Number(rolling?.ticket_count || 0) + 1;
     const nextRollingBytes = Number(rolling?.byte_count || 0) + bytes;
-    if (nextObjectCount > limits.outstandingObjects || nextOutstandingBytes > limits.outstandingBytes
-        || nextRollingTickets > limits.rollingTickets || nextRollingBytes > limits.rollingBytes) {
-      throw new ApiError(429, "Your media upload allowance is full. Finish or remove pending media, then try again.", "MEDIA_UPLOAD_QUOTA_EXCEEDED");
+    if (memberSource && (nextObjectCount > limits.outstandingObjects || nextOutstandingBytes > limits.outstandingBytes
+        || nextRollingTickets > limits.rollingTickets || nextRollingBytes > limits.rollingBytes)) {
+      throw new ApiError(429, "You reached the rolling 24-hour original upload limit or still have unfinished originals. Remove unfinished media or try again later.", "MEDIA_UPLOAD_QUOTA_EXCEEDED");
     }
 
     const globalOutstanding = database.prepare(`SELECT COUNT(*) object_count,COALESCE(SUM(byte_size),0) byte_count
@@ -270,7 +285,7 @@ export function reserveMediaUploadTicket(database, {
     const globalRolling = database.prepare(`SELECT COUNT(*) ticket_count,COALESCE(SUM(byte_size),0) byte_count
       FROM media_upload_issuances WHERE issued_at>?`).get(rollingCutoff);
     const nextGlobalObjectCount = Number(globalOutstanding?.object_count || 0) + (newObject ? 1 : 0);
-    const nextGlobalOutstandingBytes = Number(globalOutstanding?.byte_count || 0) + outstandingByteDelta;
+    const nextGlobalOutstandingBytes = Number(globalOutstanding?.byte_count || 0) + globalOutstandingByteDelta;
     const nextGlobalRollingTickets = Number(globalRolling?.ticket_count || 0) + 1;
     const nextGlobalRollingBytes = Number(globalRolling?.byte_count || 0) + bytes;
     if (nextGlobalObjectCount > globalLimits.outstandingObjects
@@ -286,6 +301,7 @@ export function reserveMediaUploadTicket(database, {
         ownerId: owner,
         objectKey: key,
         storageScope,
+        accountingClass,
         byteSize: bytes,
         at,
         expiresAt: uploadExpiresAt,
@@ -301,9 +317,10 @@ export function reserveMediaUploadTicket(database, {
         throw new ApiError(409, "That upload is already being removed. Start again.", "CONFLICT");
       }
     }
-    database.prepare(`INSERT INTO media_upload_issuances (owner_id,object_key,byte_size,issued_at)
-      VALUES (?,?,?,?)`).run(owner, key, bytes, at);
-    return { key, duplicate: !!existing, expiresAt: uploadExpiresAt };
+    database.prepare(`INSERT INTO media_upload_issuances
+      (owner_id,object_key,accounting_class,byte_size,issued_at)
+      VALUES (?,?,?,?,?)`).run(owner, key, effectiveAccountingClass, bytes, at);
+    return { key, duplicate: !!existing, expiresAt: uploadExpiresAt, accountingClass: effectiveAccountingClass };
   });
 }
 
@@ -457,7 +474,7 @@ export function enqueueOwnerMediaSweep(database, { ownerId, at = Date.now() } = 
 
 export function mediaOrphanTtlMs(env = process.env) {
   const requested = Number(env?.MEDIA_ORPHAN_TTL_MS);
-  if (!Number.isFinite(requested)) return 7 * DAY_MS;
+  if (!Number.isFinite(requested)) return 2 * DAY_MS;
   return Math.max(DAY_MS, Math.min(30 * DAY_MS, Math.trunc(requested)));
 }
 

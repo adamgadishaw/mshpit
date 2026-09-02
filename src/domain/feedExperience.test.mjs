@@ -23,7 +23,7 @@ test("feed footer creates deliberate stopping points", () => {
   assert.deepEqual(feedFooterState({ loading: true }), { kind: "loading", label: "Loading older posts..." });
 });
 
-test("recommendation disclosures are deterministic and avoid invented claims", () => {
+test("post recommendation disclosures stay neutral while ranking signals remain internal", () => {
   assert.deepEqual(recommendationDisclosure(null), null);
   const disclosure = recommendationDisclosure({
     reasonCode: "local",
@@ -31,8 +31,9 @@ test("recommendation disclosures are deterministic and avoid invented claims", (
     personalized: true,
     algorithm: "global-personal-v1",
   });
-  assert.equal(disclosure.label, "Popular near you");
-  assert.match(disclosure.detail, /saved home city/i);
+  assert.equal(disclosure.label, "Suggested post");
+  assert.equal(disclosure.detail, "Pit mixes recent posts from across the community to keep your feed fresh. Suggestions change over time.");
+  assert.doesNotMatch(`${disclosure.label} ${disclosure.detail}`, /popular near you|saved home city|follow|genre|artist activity|likes|discussion/i);
   assert.equal(disclosure.personalized, true);
 });
 
@@ -47,5 +48,8 @@ test("recommended status cards expose the same explanation and feedback as revie
   assert.match(statusBranch, /<NotForMeButton\b/);
   assert.match(statusBranch, /<ViewTally count=\{viewCount\}/);
   assert.match(reviewBranch, /<ViewTally count=\{viewCount\}/);
-  assert.match(source, /unique member/);
+  assert.match(source, /"About this post"/);
+  assert.doesNotMatch(source, /This recommendation uses your Pit preferences|This recommendation is community-based/);
+  assert.match(source, /accessibilityLabel=\{`\$\{value\} member /);
+  assert.doesNotMatch(source, /unique member/);
 });

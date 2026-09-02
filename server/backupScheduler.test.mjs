@@ -7,9 +7,14 @@ import test from "node:test";
 import {
   backupDirectory,
   backupChildEnvironment,
+  backupOperationalStatus,
   backupSchedulerEnabled,
+  backupStartupWarnings,
   latestBackupAt,
+  latestBackupSnapshot,
+  offhostBackupReceipt,
   offhostBackupConfigured,
+  recordOffhostBackupReceipt,
   runScheduledBackup,
   scheduledBackupArgs,
   shouldRunScheduledBackup,
@@ -60,6 +65,91 @@ test("off-host upload requires a complete private bucket and controls the CLI fl
   assert.equal(offhostBackupConfigured({ ...complete, BACKUP_S3_BUCKET: "pit-public-media" }), false);
   assert.equal(offhostBackupConfigured({ ...complete, BACKUP_S3_ENDPOINT: "http://private.example" }), false);
   assert.equal(scheduledBackupArgs({}).includes("--upload"), false);
+});
+
+test("off-host receipts report only confirmed, bounded freshness evidence", () => {
+  const root = mkdtempSync(join(tmpdir(), "pit-backup-receipt-"));
+  const complete = {
+    NODE_ENV: "production",
+    PIT_DATA_DIR: root,
+    BACKUP_S3_ENDPOINT: "https://private.example",
+    BACKUP_S3_BUCKET: "pit-private-backups",
+    BACKUP_S3_ACCESS_KEY_ID: "id",
+    BACKUP_S3_SECRET_ACCESS_KEY: "secret",
+    MEDIA_BUCKET: "pit-public-media",
+  };
+  try {
+    mkdirSync(backupDirectory(complete));
+    const uploadedAt = Date.parse("2026-08-31T00:00:00Z");
+    writeFileSync(join(backupDirectory(complete), "pit-20260831-000000.db"), "verified snapshot");
+    recordOffhostBackupReceipt(complete, {
+      backupName: "pit-20260831-000000.db",
+      uploadedAt,
+    });
+    assert.deepEqual(offhostBackupReceipt(complete), {
+      version: 1,
+      backupName: "pit-20260831-000000.db",
+      uploadedAt,
+    });
+    assert.deepEqual(backupOperationalStatus(complete, { now: uploadedAt + 2 * 60 * 60 * 1000 }), {
+      schedulerEnabled: true,
+      offhostConfigured: true,
+      offhostStatus: "current",
+      offhostAgeHours: 2,
+      latestOffhostBackupAt: uploadedAt,
+      latestOffhostBackupName: "pit-20260831-000000.db",
+    });
+    const stale = backupOperationalStatus(complete, { now: uploadedAt + 37 * 60 * 60 * 1000 });
+    assert.equal(stale.offhostStatus, "stale");
+    assert.equal(stale.offhostAgeHours, 37);
+    assert.match(backupStartupWarnings(complete, { now: uploadedAt + 37 * 60 * 60 * 1000 })[0], /37 hours old/);
+    assert.deepEqual(backupStartupWarnings({ ...complete, NODE_ENV: "development" }), []);
+    assert.deepEqual(backupStartupWarnings({ ...complete, PIT_ENV: "staging" }), []);
+    assert.throws(
+      () => recordOffhostBackupReceipt(complete, { backupName: "../pit.db", uploadedAt }),
+      /published snapshot name/,
+    );
+    assert.throws(
+      () => recordOffhostBackupReceipt(complete, { backupName: "pit-20260830-000000.db", uploadedAt }),
+      /published local snapshot/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a successful scheduled off-host child records the newly published snapshot", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pit-backup-upload-observed-"));
+  const env = {
+    NODE_ENV: "production",
+    PIT_DATA_DIR: root,
+    BACKUP_S3_ENDPOINT: "https://private.example",
+    BACKUP_S3_BUCKET: "pit-private-backups",
+    BACKUP_S3_ACCESS_KEY_ID: "id",
+    BACKUP_S3_SECRET_ACCESS_KEY: "secret",
+    MEDIA_BUCKET: "pit-public-media",
+  };
+  try {
+    mkdirSync(backupDirectory(env));
+    const fakeSpawn = () => {
+      const child = new EventEmitter();
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      queueMicrotask(() => {
+        writeFileSync(join(backupDirectory(env), "pit-20260901-010203.db"), "verified snapshot");
+        child.stdout.emit("data", "uploaded verified private off-host copy");
+        child.emit("close", 0);
+      });
+      return child;
+    };
+    const result = await runScheduledBackup({ env, spawnProcess: fakeSpawn });
+    assert.equal(result.uploaded, true);
+    assert.equal(latestBackupSnapshot(env).name, "pit-20260901-010203.db");
+    assert.equal(offhostBackupReceipt(env).backupName, "pit-20260901-010203.db");
+    assert.equal(backupOperationalStatus(env).offhostStatus, "current");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("backup subprocess receives only the secrets it needs", () => {

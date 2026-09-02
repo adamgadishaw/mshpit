@@ -3,9 +3,43 @@ import { PassThrough } from "node:stream";
 import test from "node:test";
 
 import {
+  createLandingMediaCircuitBreaker,
+  landingMediaCircuitBreakerLimits,
   landingMediaPostIdFromPath,
   serveLandingMediaRequest,
 } from "./landingMediaDelivery.js";
+
+test("landing media atomically reserves concurrent bytes and uses a sliding window", () => {
+  assert.deepEqual(landingMediaCircuitBreakerLimits({}), {
+    maxInFlight: 24,
+    rollingBytes: 256 * 1024 * 1024,
+  });
+  const breaker = createLandingMediaCircuitBreaker();
+  const env = { LANDING_MEDIA_MAX_IN_FLIGHT: "1", LANDING_MEDIA_60S_BYTES: String(12 * 1024 * 1024) };
+  const first = breaker.reserve({ at: 1_000, env });
+  assert.ok(first);
+  assert.equal(breaker.reserve({ at: 1_001, env }), null);
+  assert.equal(first.reserveBytes(12 * 1024 * 1024, 1_002), true);
+  assert.equal(first.record(12 * 1024 * 1024, 1_003), true);
+  first.release();
+  assert.equal(breaker.reserve({ at: 1_004, env }), null, "the rolling byte breaker remains active after release");
+  assert.ok(breaker.reserve({ at: 61_004, env }), "the expired byte event restores delivery");
+
+  const shared = createLandingMediaCircuitBreaker();
+  const sharedEnv = { LANDING_MEDIA_MAX_IN_FLIGHT: "4", LANDING_MEDIA_60S_BYTES: String(12 * 1024 * 1024) };
+  const a = shared.reserve({ at: 10_000, env: sharedEnv });
+  const b = shared.reserve({ at: 10_001, env: sharedEnv });
+  assert.equal(a.reserveBytes(8 * 1024 * 1024, 10_002), true);
+  assert.equal(b.reserveBytes(5 * 1024 * 1024, 10_003), false,
+    "a second lease cannot overbook bytes reserved by the first");
+  assert.equal(b.reserveBytes(4 * 1024 * 1024, 10_004), true);
+  assert.equal(a.record(8 * 1024 * 1024, 10_005), true);
+  assert.equal(b.record(4 * 1024 * 1024, 40_005), true);
+  a.release();
+  b.release();
+  assert.equal(shared.snapshot(70_006).streamedBytes, 4 * 1024 * 1024,
+    "a sliding window retains the newer event when the older event expires");
+});
 
 function responseRecorder() {
   const stream = new PassThrough();

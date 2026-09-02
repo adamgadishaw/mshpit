@@ -1,4 +1,5 @@
 const MAX_URI = 3_000;
+export const MEDIA_DRAFT_CACHE_RETENTION_MS = 7 * 24 * 60 * 60_000;
 const EXTENSION_BY_MIME = Object.freeze({
   "image/jpeg": "jpg",
   "image/png": "png",
@@ -19,12 +20,15 @@ function extensionFromPath(value) {
 }
 
 export function safeMediaDraftSegment(value, fallback = "item") {
-  const cleaned = String(value || "")
+  const cleanSegment = (candidate) => String(candidate || "")
     .normalize("NFKC")
-    .replace(/[^A-Za-z0-9._-]+/g, "-")
+    .replace(/[^A-Za-z0-9_-]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 80);
-  return cleaned || fallback;
+  const cleaned = cleanSegment(value);
+  if (cleaned) return cleaned;
+  const cleanedFallback = cleanSegment(fallback);
+  return cleanedFallback || (fallback === "" ? "" : "item");
 }
 
 export function mediaDraftFileName(asset = {}, index = 0, { detectedMimeType } = {}) {
@@ -42,7 +46,7 @@ export function mediaDraftFileName(asset = {}, index = 0, { detectedMimeType } =
 
 // Only app-owned native draft files are eligible for persistence. This is a
 // serialization boundary, not an authorization check: the native deletion
-// helper independently proves the URI is below the actual Paths.document root
+// helper independently proves the URI is below the actual Paths.cache root
 // before touching a file.
 export function isPersistableMediaDraftUri(value) {
   if (typeof value !== "string" || value.length < 12 || value.length > MAX_URI) return false;
@@ -53,4 +57,17 @@ export function isPersistableMediaDraftUri(value) {
   if (!/(?:^|\/)pit-studio(?:\/|$)/i.test(normalized)) return false;
   if (normalized.split("/").some((segment) => segment === "..")) return false;
   return true;
+}
+
+export function mediaDraftDirectoryIsStale(info, {
+  at = Date.now(),
+  retentionMs = MEDIA_DRAFT_CACHE_RETENTION_MS,
+} = {}) {
+  const timestamp = Number(info?.modificationTime ?? info?.creationTime);
+  const now = Number(at);
+  const retention = Number(retentionMs);
+  return Number.isFinite(timestamp) && timestamp > 0
+    && Number.isFinite(now) && now >= timestamp
+    && Number.isFinite(retention) && retention > 0
+    && now - timestamp >= retention;
 }

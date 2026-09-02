@@ -7,10 +7,12 @@ import {
 // Legacy profile/review pickers stage camera bytes in private object storage.
 // A second owner-bound call decodes and re-encodes them server-side; only that
 // sanitized public result may be associated with an account-visible field.
-export function mediaLegacyFinalizeRoutes({ database, requireUser, now }) {
+export function mediaLegacyFinalizeRoutes({ database, requireUser, requireVerifiedMediaPublisher, now }) {
   return {
     "POST /api/media/presign": (ctx) => {
-      const user = requireUser(ctx);
+      // Keep this legacy image path behind the same pre-storage verification
+      // boundary as stable photo/video assets.
+      const user = requireVerifiedMediaPublisher(ctx);
       // Upload volume is governed by the durable per-owner ledger and global
       // storage circuit breakers, not a member-facing request count bucket.
       const legacyPurpose = String(ctx.body?.purpose || "").trim().toLowerCase();

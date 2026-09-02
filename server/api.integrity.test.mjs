@@ -618,12 +618,32 @@ test("public video capability requires exact private-derivative negotiation plus
       name: `${clientAssetId}.mp4`,
     });
     const unverified = addUser("u_video_route_unverified", "video-route-unverified@example.com", "videorouteunverified");
+    const unverifiedMediaBefore = {
+      assets: db.prepare("SELECT COUNT(*) count FROM media_assets WHERE owner_id=?").get(unverified.id).count,
+      objects: db.prepare("SELECT COUNT(*) count FROM media_objects WHERE owner_id=?").get(unverified.id).count,
+      issuances: db.prepare("SELECT COUNT(*) count FROM media_upload_issuances WHERE owner_id=?").get(unverified.id).count,
+    };
     assert.throws(() => routes["POST /api/media/assets"]({
       user: unverified,
       ip: "video-route-unverified-ip",
       body: videoBody("video-route-unverified"),
-    }), (error) => error.status === 403 && error.code === "FORBIDDEN");
-    assert.equal(db.prepare("SELECT COUNT(*) count FROM media_assets WHERE owner_id=?").get(unverified.id).count, 0);
+    }), (error) => error.status === 403 && error.code === "MEDIA_EMAIL_VERIFICATION_REQUIRED" && /email/i.test(error.message));
+    assert.throws(() => routes["POST /api/media/assets"]({
+      user: unverified,
+      ip: "photo-route-unverified-ip",
+      body: {
+        clientAssetId: "photo-route-unverified",
+        purpose: "post",
+        contentType: "image/jpeg",
+        fileSize: 2_048,
+        name: "photo-route-unverified.jpg",
+      },
+    }), (error) => error.status === 403 && error.code === "MEDIA_EMAIL_VERIFICATION_REQUIRED" && /photo or video/i.test(error.message));
+    assert.deepEqual({
+      assets: db.prepare("SELECT COUNT(*) count FROM media_assets WHERE owner_id=?").get(unverified.id).count,
+      objects: db.prepare("SELECT COUNT(*) count FROM media_objects WHERE owner_id=?").get(unverified.id).count,
+      issuances: db.prepare("SELECT COUNT(*) count FROM media_upload_issuances WHERE owner_id=?").get(unverified.id).count,
+    }, unverifiedMediaBefore, "unverified photo and video requests fail before storage or ledger work");
 
     const legacyAdminSeed = addUser("u_video_route_admin", "video-route-admin@example.com", "videorouteadmin");
     db.prepare("UPDATE users SET role='admin' WHERE id=?").run(legacyAdminSeed.id);
@@ -2000,7 +2020,7 @@ test("source-scoped moderation repairs one exact recording without affecting its
 });
 
 test("stable media creation rejects disabled video before reserving a ticket and leaves photos available", () => {
-  const user = addUser("u_media_capability_route", "media-capability-route@example.com", "mediacaproute");
+  const user = verifiedUser("u_media_capability_route", "media-capability-route@example.com", "mediacaproute");
   const environmentKeys = [
     "PIT_VIDEO_PUBLISHING_ENABLED",
     "MEDIA_ENDPOINT",
@@ -2071,6 +2091,32 @@ test("stable media creation rejects disabled video before reserving a ticket and
     assert.equal(count("media_assets"), before.assets + 1);
     assert.equal(count("media_objects"), before.objects + 1);
     assert.equal(count("media_upload_issuances"), before.issuances + 1);
+
+    db.prepare(`UPDATE media_assets SET status='render_pending',render_state='pending',finalize_hash=?,
+      width=1,height=1,orientation=0,metadata_status='declared',updated_at=? WHERE id=? AND owner_id=?`)
+      .run("verification-variant-finalize", Date.now(), photo.asset.id, user.id);
+    const beforeVariant = {
+      variants: db.prepare("SELECT COUNT(*) count FROM media_variants WHERE asset_id=?").get(photo.asset.id).count,
+      objects: count("media_objects"),
+      issuances: count("media_upload_issuances"),
+    };
+    assert.throws(() => routes["POST /api/media/assets/:id/variants"]({
+      user: { ...user, email_verified_at: 0 },
+      ip: "media-capability-unverified-variant",
+      params: { id: photo.asset.id },
+      body: {
+        clientVariantId: "media-capability-unverified-variant",
+        role: "render",
+        contentType: "image/jpeg",
+        fileSize: 1_024,
+        name: "blocked-render.jpg",
+      },
+    }), (error) => error.status === 403 && error.code === "MEDIA_EMAIL_VERIFICATION_REQUIRED");
+    assert.deepEqual({
+      variants: db.prepare("SELECT COUNT(*) count FROM media_variants WHERE asset_id=?").get(photo.asset.id).count,
+      objects: count("media_objects"),
+      issuances: count("media_upload_issuances"),
+    }, beforeVariant, "unverified rendition requests fail before a variant, object, or issuance is written");
   } finally {
     for (const [key, value] of previous) {
       if (value === undefined) delete process.env[key];
@@ -2080,7 +2126,7 @@ test("stable media creation rejects disabled video before reserving a ticket and
 });
 
 test("owner media polling isolates, joins, completes, safely fails, and resumes after coordinator restart", async () => {
-  const owner = addUser("u_video_finalize_poll", "video-finalize-poll@example.com", "videofinalizepoll");
+  const owner = verifiedUser("u_video_finalize_poll", "video-finalize-poll@example.com", "videofinalizepoll");
   const stranger = addUser("u_video_finalize_stranger", "video-finalize-stranger@example.com", "videofinalizestranger");
   const keys = [
     "MEDIA_ENDPOINT", "MEDIA_BUCKET", "MEDIA_SOURCE_BUCKET", "MEDIA_REGION",
@@ -2199,8 +2245,8 @@ test("owner media polling isolates, joins, completes, safely fails, and resumes 
   }
 });
 
-test("normal media preparation routes have no hidden per-member count buckets", async () => {
-  const user = addUser("u_media_count_free", "media-count-free@example.com", "mediacountfree");
+test("ordinary max-photo preparation fits quotas while non-minting media actions have no hidden count buckets", async () => {
+  const user = verifiedUser("u_media_count_free", "media-count-free@example.com", "mediacountfree");
   const keys = [
     "MEDIA_ENDPOINT", "MEDIA_BUCKET", "MEDIA_SOURCE_BUCKET", "MEDIA_REGION",
     "MEDIA_ACCESS_KEY_ID", "MEDIA_SECRET_ACCESS_KEY", "MEDIA_PUBLIC_BASE_URL",
@@ -2219,7 +2265,7 @@ test("normal media preparation routes have no hidden per-member count buckets", 
     });
     resetRateLimitsForTests();
     const renderVariants = [];
-    for (let index = 0; index < 40; index += 1) {
+    for (let index = 0; index < 20; index += 1) {
       const created = routes["POST /api/media/assets"]({
         user,
         ip: `media-count-create-${index}`,
@@ -2247,7 +2293,7 @@ test("normal media preparation routes have no hidden per-member count buckets", 
         },
       }));
     }
-    assert.equal(renderVariants.length, 40, "more than thirty normal photo renders are admitted");
+    assert.equal(renderVariants.length, 20, "the maximum attachments for one normal photo post are admitted");
     assert.equal(renderVariants.every((entry) => entry.variant.status === "upload_pending"), true);
 
     // PATCH is part of every normal upload, reads are the async video polling
@@ -2272,6 +2318,11 @@ test("normal media preparation routes have no hidden per-member count buckets", 
         params: { id: patchAsset },
       }).asset.id, patchAsset);
     }
+
+    // Simulate those source/render objects becoming attached to the completed
+    // post. This releases the documented outstanding-work boundary before a
+    // later upload, without erasing rolling issuance history.
+    db.prepare("UPDATE media_objects SET status='associated' WHERE owner_id=?").run(user.id);
 
     globalThis.fetch = async () => new Response(null, { status: 503 });
     const sourceFinalizeAsset = routes["POST /api/media/assets"]({
@@ -2709,7 +2760,8 @@ test("signup records Terms separately while optional analytics defaults off", ()
       password: "privatepass123",
       city: "Toronto",
       genres: ["R&B", "Hip-Hop"],
-      termsVersion: "2026-08",
+      ageBand: "18_plus",
+      termsVersion: "2026-09-02",
       analyticsConsent: false,
     },
     setSession: (value) => { sessionCookie = value; },
@@ -2718,19 +2770,19 @@ test("signup records Terms separately while optional analytics defaults off", ()
   assert.equal(sessionCookie, undefined);
   assert.deepEqual(result, { ok: true, pending: true });
   assert.ok(created.termsAcceptedAt);
-  assert.equal(created.termsVersion, "2026-08");
+  assert.equal(created.termsVersion, "2026-09-02");
   assert.equal(created.analyticsConsentAt, undefined);
   assert.equal(created.consentAt, undefined);
   assert.deepEqual(created.genres, ["R&B", "Hip-Hop"]);
   assert.throws(() => routes["POST /api/signup"]({
     ip: "signup-genres-test", ua: "integrity-test", body: {
       name: "No Genres", email: "no-genres@example.com", password: "privatepass123", city: "Toronto",
-      genres: [], termsVersion: "2026-08",
+      genres: [], ageBand: "18_plus", termsVersion: "2026-09-02",
     }, setSession: () => {},
   }), (error) => error.status === 400 && error.code === "VALIDATION_FAILED");
   assert.throws(() => routes["POST /api/signup"]({
     ip: "signup-consent-test-2", ua: "integrity-test", body: {
-      name: "No Terms", email: "no-terms@example.com", password: "privatepass123", city: "Toronto", genres: ["Rock"],
+      name: "No Terms", email: "no-terms@example.com", password: "privatepass123", city: "Toronto", genres: ["Rock"], ageBand: "18_plus",
     }, setSession: () => {},
   }), (error) => error.status === 400);
 });
@@ -2927,7 +2979,9 @@ test("group-chat writes require membership and attendance, then succeed on retry
   const goingContext = { user, ip: "chat-integrity", body: { key: "artist|venue|2026-07-15", artist: "Artist", venue: "Venue", date: "2026-07-15", going: true } };
   assert.equal(markGoing(goingContext).going, true);
   assert.equal(markGoing(goingContext).going, true);
-  assert.equal(db.prepare("SELECT COUNT(*) c FROM going WHERE user_id=? AND concert_key=?").get(user.id, "artist|venue|2026-07-15").c, 1);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM going WHERE user_id=? AND concert_key=?").get(user.id, "artist|venue|2026-07-15").c, 0,
+    "private-by-default attendance must not enter the visibility-blind legacy table");
+  assert.equal(db.prepare("SELECT visibility FROM show_attendance WHERE user_id=?").get(user.id).visibility, "private");
   assert.ok(loungeMessage(loungeContext("in the room")).id);
   assert.equal(db.prepare("SELECT COUNT(*) c FROM lounge_messages WHERE user_id=?").get(user.id).c, 1);
 });
@@ -4644,6 +4698,47 @@ test("admin exact identity enrichment persists a missing artist and keeps its MB
   assert.equal(data.mbid, mbid, "Deezer enrichment must retain the exact MusicBrainz identity in rich data");
   assert.equal(data.deezerId, 919);
   assert.equal(data.country, "Canada");
+});
+
+test("account mute is private, one-way, reversible, and independent from follows, profiles, and blocks", () => {
+  const viewer = verifiedUser("u_mute_viewer", "mute-viewer@example.com", "muteviewer");
+  const author = verifiedUser("u_mute_author", "mute-author@example.com", "muteauthor");
+  db.prepare("INSERT INTO follows (follower_id,followee_id) VALUES (?,?)").run(viewer.id, author.id);
+  db.prepare("INSERT INTO posts (id,user_id,kind,artist,venue,overall,created_at) VALUES (?,?,?,?,?,?,?)")
+    .run("p_mute_author", author.id, "memory", "Muted Artist", "Muted Venue", 4, Date.now());
+  db.prepare("INSERT INTO posts (id,user_id,kind,artist,venue,overall,created_at) VALUES (?,?,?,?,?,?,?)")
+    .run("p_mute_viewer", viewer.id, "memory", "Viewer Artist", "Viewer Venue", 4, Date.now() - 1);
+
+  const viewerFeed = () => routes["GET /api/feed"]({ user: viewer, query: { limit: 20 } }).posts.map((post) => post.id);
+  assert.equal(viewerFeed().includes("p_mute_author"), true);
+  assert.deepEqual(routes["POST /api/users/:id/mute"]({
+    user: viewer, ip: "mute-create", params: { id: author.id }, body: { muted: true },
+  }), { muted: true });
+  assert.equal(viewerFeed().includes("p_mute_author"), false);
+  assert.equal(routes["GET /api/feed"]({ user: author, query: { limit: 20 } }).posts.some((post) => post.id === "p_mute_viewer"), true,
+    "muting is one-way and is not exposed to the muted account");
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM follows WHERE follower_id=? AND followee_id=?").get(viewer.id, author.id).count, 1,
+    "mute never unfollows");
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM blocks WHERE blocker_id=? AND blocked_id=?").get(viewer.id, author.id).count, 0,
+    "mute never creates a block");
+  assert.equal(routes["GET /api/users/:id"]({ user: viewer, params: { id: author.id } }).user.id, author.id,
+    "muted profiles remain accessible");
+  assert.deepEqual(routes["GET /api/me/muted"]({ user: viewer }).users.map((user) => user.id), [author.id]);
+  assert.equal(routes["GET /api/people"]({ user: viewer, query: { q: "muteauthor" } }).users.some((user) => user.id === author.id), false);
+
+  routes["POST /api/users/:id/follow"]({ user: author, ip: "mute-notification-suppressed", params: { id: viewer.id }, body: { following: true } });
+  assert.equal(routes["GET /api/me/notifications"]({ user: viewer, query: {} }).notifications.some((row) => row.actorId === author.id), false,
+    "new social notifications from a muted actor are not created or projected");
+
+  assert.deepEqual(routes["POST /api/users/:id/mute"]({
+    user: viewer, ip: "mute-remove", params: { id: author.id }, body: { muted: false },
+  }), { muted: false });
+  assert.equal(viewerFeed().includes("p_mute_author"), true);
+  assert.deepEqual(routes["GET /api/me/muted"]({ user: viewer }).users, []);
+  routes["POST /api/users/:id/follow"]({ user: author, ip: "mute-follow-reset", params: { id: viewer.id }, body: { following: false } });
+  routes["POST /api/users/:id/follow"]({ user: author, ip: "mute-notification-restored", params: { id: viewer.id }, body: { following: true } });
+  assert.equal(routes["GET /api/me/notifications"]({ user: viewer, query: {} }).notifications.some((row) => row.actorId === author.id), true,
+    "unmuting restores later social notifications");
 });
 
 test("a verified composer selection persists an exact MusicBrainz identity before post binding", async () => {

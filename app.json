@@ -95,6 +95,7 @@
     "android": {
       "package": "com.mshpit.app",
       "versionCode": 1,
+      "allowBackup": false,
       "adaptiveIcon": {
         "backgroundColor": "#0d0b09",
         "foregroundImage": "./assets/pit-android-foreground-v2.png",

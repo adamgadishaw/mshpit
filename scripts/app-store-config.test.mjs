@@ -101,9 +101,9 @@ test("every active logo size comes from the requested full two-ring community ma
   assert.match(brandGeneratorSource, /svg:\s*fullMark,[\s\S]*output:\s*"pit-favicon-v2\.png"/);
 });
 
-test("the forced-dark SDK 56 splash and native root are explicitly branded", () => {
-  assert.match(pkg.dependencies["expo-splash-screen"], /^~56\.0\./);
-  assert.match(pkg.dependencies["expo-system-ui"], /^~56\.0\./);
+test("the forced-dark SDK 57 splash and native root are explicitly branded", () => {
+  assert.match(pkg.dependencies["expo-splash-screen"], /^~57\.0\./);
+  assert.match(pkg.dependencies["expo-system-ui"], /^~57\.0\./);
   assert.equal(app.plugins.includes("expo-system-ui"), true,
     "expo-system-ui must run as a config plugin so introspection writes the requested native appearance");
   assert.equal(app.userInterfaceStyle, "dark");
@@ -127,7 +127,7 @@ test("media permission copy is scoped to features the app actually exposes", () 
   assert.equal(imagePicker[1].microphonePermission, false);
 
   const audio = app.plugins.find((entry) => Array.isArray(entry) && entry[0] === "expo-audio");
-  assert.match(pkg.dependencies["expo-audio"], /^~56\.0\./);
+  assert.match(pkg.dependencies["expo-audio"], /^~57\.0\./);
   assert.ok(audio, "expo-audio must have explicit playback-only configuration");
   assert.equal(audio[1].microphonePermission, false);
   assert.equal(audio[1].recordAudioAndroid, false);

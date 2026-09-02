@@ -26,3 +26,30 @@ export function updateProfileSearchIndexingPreference(enabled) {
     silent: true,
   });
 }
+
+export function updateDirectMessagePreference(directMessagePolicy) {
+  return api("/api/me", {
+    method: "PATCH",
+    body: { directMessagePolicy },
+    context: "Updating who can message you",
+    silent: true,
+  });
+}
+
+export function classifyAccountAgeBand(ageBand) {
+  return api("/api/me", {
+    method: "PATCH",
+    body: { ageBand },
+    context: "Saving your age group for account safety",
+    silent: true,
+  });
+}
+
+export function updateProfileAudience(profileAudience) {
+  return api("/api/me", {
+    method: "PATCH",
+    body: { profileAudience },
+    context: "Updating who can see your profile",
+    silent: true,
+  });
+}

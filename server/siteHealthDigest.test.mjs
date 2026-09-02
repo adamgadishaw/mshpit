@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -23,6 +23,7 @@ const {
   siteHealthDigestSlot,
 } = await import("./siteHealthDigest.js");
 const { ownerIdentityDeliveryScope } = await import("./ownerApprovals.js");
+const { backupDirectory, recordOffhostBackupReceipt } = await import("./backupScheduler.js");
 const { db, q } = await import("./db.js");
 
 const markerPattern = "operations.site_health_digest.v1:*";
@@ -271,7 +272,45 @@ test("health content is aggregate-only and states what the process cannot verify
     "private-source-bucket", "private-access-key", "private-media-secret", "resend-secret-value",
   ]) assert.equal(serialized.includes(forbidden), false, `digest leaked ${forbidden}`);
   assert.match(digest.detail, /cannot prove public DNS, Render control-plane\/build status, Google Workspace delivery/u);
-  assert.match(digest.detail, /does not retain independent proof of the latest remote upload/u);
+  assert.match(digest.detail, /local receipt is written only after the backup child confirms a private remote upload/u);
+});
+
+test("health digest distinguishes unconfigured, current, and stale off-host backup evidence", () => {
+  const at = Date.parse("2026-09-02T12:00:00Z");
+  const unconfigured = collectSiteHealthDigest(db, { env: productionEnv, at });
+  assert.equal(unconfigured.aggregate.offhostBackupStatus, "unconfigured");
+  assert.equal(unconfigured.aggregate.offhostBackupAgeHours, null);
+  assert.equal(unconfigured.aggregate.warnings.includes("offhost_backup_unconfigured"), true);
+
+  const root = mkdtempSync(join(tmpdir(), "pit-site-health-offhost-"));
+  const configured = {
+    ...productionEnv,
+    PIT_DATA_DIR: root,
+    BACKUP_S3_ENDPOINT: "https://private.example",
+    BACKUP_S3_BUCKET: "pit-private-backups",
+    BACKUP_S3_ACCESS_KEY_ID: "backup-id",
+    BACKUP_S3_SECRET_ACCESS_KEY: "backup-secret",
+    MEDIA_BUCKET: "pit-public-media",
+  };
+  try {
+    mkdirSync(backupDirectory(configured));
+    writeFileSync(join(backupDirectory(configured), "pit-20260902-060000.db"), "verified snapshot");
+    recordOffhostBackupReceipt(configured, {
+      backupName: "pit-20260902-060000.db",
+      uploadedAt: at - 6 * 60 * 60 * 1000,
+    });
+    const current = collectSiteHealthDigest(db, { env: configured, at });
+    assert.equal(current.aggregate.offhostBackupStatus, "current");
+    assert.equal(current.aggregate.offhostBackupAgeHours, 6);
+    assert.equal(current.aggregate.warnings.some((code) => code.startsWith("offhost_backup_")), false);
+
+    const stale = collectSiteHealthDigest(db, { env: configured, at: at + 37 * 60 * 60 * 1000 });
+    assert.equal(stale.aggregate.offhostBackupStatus, "stale");
+    assert.equal(stale.aggregate.offhostBackupAgeHours, 43);
+    assert.equal(stale.aggregate.warnings.includes("offhost_backup_stale"), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("strict readiness polling is component state, not 127 app crashes", () => {

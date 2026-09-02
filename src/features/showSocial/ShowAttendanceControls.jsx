@@ -42,6 +42,7 @@ export default function ShowAttendanceControls({
   const inFlightIdentityRef = useRef(null);
   activeIdentityRef.current = identity;
   const [mutation, setMutation] = useState(null);
+  const [newVisibility, setNewVisibility] = useState("private");
   const scopedMutation = mutation?.identity === identity ? mutation : null;
   const attendance = scopedMutation?.attendance !== undefined
     ? scopedMutation.attendance
@@ -50,6 +51,11 @@ export default function ShowAttendanceControls({
 
   useEffect(() => () => {
     if (activeIdentityRef.current === identity) activeIdentityRef.current = null;
+  }, [identity]);
+  useEffect(() => {
+    // Audience choices are scoped to one account and one exact show. Never
+    // carry a wider unsaved choice into the next show during client routing.
+    setNewVisibility("private");
   }, [identity]);
 
   if (!attendanceControlsVisible({
@@ -138,7 +144,12 @@ export default function ShowAttendanceControls({
                 pressed && styles.pressed,
                 pending && styles.disabled,
               ]}
-              onPress={() => { if (!selected) void save({ state }); }}
+              onPress={() => {
+                if (!selected) void save({
+                  state,
+                  visibility: attendance?.visibility || newVisibility,
+                });
+              }}
               disabled={pending}
               accessibilityRole="radio"
               accessibilityLabel={copy.label}
@@ -159,7 +170,7 @@ export default function ShowAttendanceControls({
         })}
       </View> : null}
 
-      {attendance && accountId ? (
+      {accountId ? (
         <View style={styles.privacy}>
           <View style={styles.privacyHeading}>
             <Icon name="lock" size={14} color={colors.textDim} />
@@ -167,7 +178,7 @@ export default function ShowAttendanceControls({
           </View>
           <View style={styles.visibilityOptions} accessibilityRole="radiogroup" accessibilityLabel="Attendance visibility">
             {Object.entries(VISIBILITY_COPY).map(([visibility, copy]) => {
-              const selected = attendance.visibility === visibility;
+              const selected = (attendance?.visibility || newVisibility) === visibility;
               return (
                 <Pressable
                   key={visibility}
@@ -177,7 +188,11 @@ export default function ShowAttendanceControls({
                     pressed && styles.pressed,
                     pending && styles.disabled,
                   ]}
-                  onPress={() => { if (!selected) void save({ state: attendance.state, visibility }); }}
+                  onPress={() => {
+                    if (selected) return;
+                    if (attendance) void save({ state: attendance.state, visibility });
+                    else setNewVisibility(visibility);
+                  }}
                   disabled={pending}
                   accessibilityRole="radio"
                   accessibilityLabel={copy.label}
@@ -190,18 +205,20 @@ export default function ShowAttendanceControls({
             })}
           </View>
           <Text style={styles.privacyDetail}>
-            {attendance.state === "here" && attendance.visibility === "private"
-              ? "Live check-ins start Only me. Share this only if you want your attendance visible."
-              : visibilityCopy?.detail || "You control this show's visibility."}
+            {!attendance
+              ? `${VISIBILITY_COPY[newVisibility].detail}. Choose this before saving your show status.`
+              : attendance.state === "here" && attendance.visibility === "private"
+                ? "Live check-ins start Only me. Share this only if you want your attendance visible."
+                : visibilityCopy?.detail || "You control this show's visibility."}
           </Text>
-          {attendance.verified ? (
+          {attendance?.verified ? (
             <View style={styles.verified} accessibilityRole="text" accessibilityLabel="Verified attendance">
               <Icon name="check" size={12} color={colors.good} />
               <Text style={styles.verifiedText}>Verified attendance</Text>
             </View>
-          ) : (
+          ) : attendance ? (
             <Text style={styles.unverified}>This records your status. It does not verify attendance.</Text>
-          )}
+          ) : null}
         </View>
       ) : null}
 

@@ -6,6 +6,7 @@ import { ApiError } from "./errors.js";
 import { getMediaConfig, presignS3Request } from "./media.js";
 import {
   enqueueOwnedMediaKeys,
+  MEDIA_UPLOAD_ACCOUNTING_CLASS,
   recordMediaObjectTicket,
   trustedMediaQueueKey,
   trustedOwnedMediaKey,
@@ -190,6 +191,7 @@ function registerPosterLedger(database, entry, at) {
   recordMediaObjectTicket(database, {
     ownerId: entry.ownerId,
     objectKey: entry.posterKey,
+    accountingClass: MEDIA_UPLOAD_ACCOUNTING_CLASS.SERVICE_GENERATED,
     byteSize: entry.byteSize,
     at,
     expiresAt: null,

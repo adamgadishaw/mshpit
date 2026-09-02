@@ -648,13 +648,32 @@ test("attendance removal never creates a canonical Show for an absent or legacy-
   }
 });
 
-test("new writes dual-write legacy Going while richer states and check-ins remain canonical", () => {
+test("new Going, Interested, and Went states default private until an audience is chosen", () => {
+  const { database, routes } = fixture();
+  try {
+    for (const state of ["going", "interested", "went"]) {
+      const member = addUser(database, `private_default_${state}`);
+      const result = routes["POST /api/going"](context({
+        user: member,
+        body: { ...show, state },
+      }));
+      assert.equal(result.attendance.state, state);
+      assert.equal(result.attendance.visibility, "private");
+    }
+    assert.equal(database.prepare("SELECT COUNT(*) count FROM going").get().count, 0,
+      "private attendance must not enter the visibility-blind legacy table");
+  } finally {
+    database.close();
+  }
+});
+
+test("explicit Members Going dual-writes legacy state while richer states and check-ins remain canonical", () => {
   const { database, routes, calls, setNow } = fixture();
   try {
     const member = addUser(database, "state_member");
     const post = (body) => routes["POST /api/going"](context({ user: member, body: { ...show, ...body } }));
 
-    const going = post({ going: true });
+    const going = post({ going: true, visibility: "members" });
     assert.equal(going.going, true);
     assert.equal(going.attendance.state, "going");
     assert.equal(going.attendance.visibility, "members");

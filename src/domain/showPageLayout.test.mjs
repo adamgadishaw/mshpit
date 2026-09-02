@@ -7,11 +7,18 @@ const venuePhotoSource = readFileSync(new URL("../components/VenuePhotoWidget.js
 
 test("the show page uses compact responsive sections and contained review slideshows", () => {
   assert.match(showSource, /function ReviewMediaTile/);
-  assert.match(showSource, /reviewTileWidth/);
+  assert.match(showSource, /const tabletLayout = width >= 720/);
+  assert.match(showSource, /archiveReviewTileStyle/);
+  assert.match(showSource, /showSummaryWide/);
+  assert.match(showSource, /showSummaryMediaColumnWide/);
+  assert.match(showSource, /presentation\.showPostEvent && tabletLayout/);
   assert.match(showSource, /archiveReviewGrid/);
+  assert.match(showSource, /archiveReviewCardHalf/);
+  assert.match(showSource, /archiveReviewCardThird/);
   assert.match(showSource, /heroGridWide/);
   assert.match(showSource, /contain/);
   assert.match(showSource, /!archiveShowKey/);
+  assert.match(showSource, />Fan reviews<\/Text>/);
   assert.match(venuePhotoSource, /compact/);
 });
 

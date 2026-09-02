@@ -26,7 +26,7 @@ only makes it harder to repair.
    unavailable-track handling, and authoritative history totals.
 5. **Music identity:** carry provider/source ID and duration end to end; page
    discographies instead of truncating or blocking initial render.
-6. **Native acceptance:** define the Expo SDK 56 playback contract and test real
+6. **Native acceptance:** define the Expo SDK 57 playback contract and test real
    iOS/Android interruption, backgrounding, safe areas, orientation, and media.
 7. **Client profiling:** measure real low/mid-range phones before splitting the
    broad store context and reducing the initial catalogue/core bundle further.

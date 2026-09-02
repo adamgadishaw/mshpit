@@ -33,11 +33,11 @@ export function postMediaPickerOptions({
     videoQuality: 1,
     allowsMultipleSelection: true,
     selectionLimit,
-    // SDK 56 only guarantees the user's multi-select order on iOS when this
+    // SDK 57 only guarantees the user's multi-select order on iOS when this
     // flag is enabled. Mshpit preserves that order through publishing.
     ...(platform === "ios" ? {
       orderedSelection: true,
-      // SDK 56 otherwise leaves iCloud-only assets remote and unreadable.
+      // SDK 57 otherwise leaves iCloud-only assets remote and unreadable.
       shouldDownloadFromNetwork: true,
       // Keep the exact representation selected in Photos. The authenticated
       // media pipeline sniffs and normalizes the original bytes after upload;
@@ -46,7 +46,7 @@ export function postMediaPickerOptions({
         ? { preferredAssetRepresentationMode: iosCurrentRepresentation }
         : {}),
     } : {}),
-    // SDK 56 Passthrough returns the original without an eager H.264 export.
+    // SDK 57 Passthrough returns the original without an eager H.264 export.
     // The server verifier owns codec compatibility and public derivatives.
     ...(platform === "ios" && allowVideos === true && iosPassthroughPreset != null
       ? { videoExportPreset: iosPassthroughPreset }

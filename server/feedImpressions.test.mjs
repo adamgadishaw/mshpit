@@ -11,6 +11,8 @@ const { db, q } = await import("./db.js");
 const { ApiError, routes } = await import("./api.js");
 const {
   cleanFeedImpressionBatch,
+  FEED_IMPRESSION_HISTORY_RETENTION_MS,
+  pruneExpiredFeedImpressionHistory,
   recordFeedImpressions,
   resetFeedImpressionPruneClockForTests,
 } = await import("./feedImpressions.js");
@@ -79,7 +81,7 @@ test("impression batches are authenticated, idempotent, private, and exclude ine
 
   const memberPost = routes["GET /api/feed"]({ user: viewer, query: { limit: "20" } }).posts
     .find((post) => post.id === "p_impression_live");
-  assert.equal(memberPost.viewCount, 1, "public viewCount is unique viewers, not raw callbacks");
+  assert.equal(memberPost.viewCount, 1, "repeat callbacks do not inflate a current member-view count");
   assert.equal(memberPost.viewerSeen.count, 1);
   assert.equal(Number.isInteger(memberPost.viewerSeen.firstSeenAt), true);
   assert.equal(Number.isInteger(memberPost.viewerSeen.lastSeenAt), true);
@@ -120,6 +122,7 @@ test("impression batches are authenticated, idempotent, private, and exclude ine
 
 test("return views rotate privately, repair a missing aggregate, and cascade at privacy boundaries", () => {
   const viewer = q.userById.get("impviewer");
+  const author = q.userById.get("impauthor");
   const before = db.prepare(`SELECT last_seen_at FROM post_impressions
     WHERE user_id=? AND post_id=?`).get(viewer.id, "p_impression_live");
   const later = Number(before.last_seen_at) + 5 * 60_000 + 1;
@@ -132,7 +135,7 @@ test("return views rotate privately, repair a missing aggregate, and cascade at 
   assert.equal(db.prepare(`SELECT seen_count FROM post_impressions
     WHERE user_id=? AND post_id=?`).get(viewer.id, "p_impression_live").seen_count, 2);
   assert.equal(db.prepare("SELECT view_count FROM post_impression_totals WHERE post_id=?")
-    .get("p_impression_live").view_count, 1, "return sessions do not change unique-view count");
+    .get("p_impression_live").view_count, 1, "return sessions do not change member reach while private history exists");
 
   db.prepare("DELETE FROM post_impression_totals WHERE post_id=?").run("p_impression_live");
   const repaired = recordFeedImpressions(db, {
@@ -144,16 +147,49 @@ test("return views rotate privately, repair a missing aggregate, and cascade at 
   assert.equal(db.prepare("SELECT view_count FROM post_impression_totals WHERE post_id=?")
     .get("p_impression_live").view_count, 1, "repair does not claim a second counted session");
 
-  resetFeedImpressionPruneClockForTests();
+  addPost("p_impression_aged", author.id);
+  db.prepare(`INSERT INTO post_impressions
+    (user_id,post_id,seen_count,first_seen_at,last_seen_at) VALUES (?,?,1,1,1)`)
+    .run(viewer.id, "p_impression_aged");
+  db.prepare(`INSERT INTO post_impression_totals
+    (post_id,view_count,first_seen_at,last_seen_at) VALUES (?,1,1,1)`)
+    .run("p_impression_aged");
   db.prepare(`INSERT INTO post_impression_receipts
     (user_id,event_id,post_id,created_at) VALUES (?,?,?,?)`)
     .run(viewer.id, "event_expired_1", "p_impression_live", 1);
-  recordFeedImpressions(db, {
-    userId: viewer.id,
-    at: later + 8 * 24 * 60 * 60_000,
-    impressions: [{ postId: "p_impression_live", eventId: "event_prune_001" }],
-  });
+  const pruneAt = FEED_IMPRESSION_HISTORY_RETENTION_MS + 2;
+  assert.deepEqual(pruneExpiredFeedImpressionHistory(db, { at: pruneAt }), {
+    receiptsDeleted: 1,
+    historyDeleted: 1,
+  }, "retention runs independently even when nobody records a new impression");
   assert.equal(db.prepare("SELECT 1 FROM post_impression_receipts WHERE event_id='event_expired_1'").get(), undefined);
+  assert.equal(db.prepare("SELECT 1 FROM post_impressions WHERE post_id='p_impression_aged'").get(), undefined,
+    "private personalization history ages out automatically");
+  assert.equal(db.prepare("SELECT view_count FROM post_impression_totals WHERE post_id='p_impression_aged'").get().view_count, 1,
+    "aging private history does not rewrite the anonymous post tally");
+  assert.equal(FEED_IMPRESSION_HISTORY_RETENTION_MS, 180 * 24 * 60 * 60_000);
+  db.prepare("DELETE FROM posts WHERE id='p_impression_aged'").run();
+
+  addPost("p_impression_recount", author.id);
+  db.prepare(`INSERT INTO post_impressions
+    (user_id,post_id,seen_count,first_seen_at,last_seen_at) VALUES (?,?,1,1,1)`)
+    .run(viewer.id, "p_impression_recount");
+  db.prepare(`INSERT INTO post_impression_totals
+    (post_id,view_count,first_seen_at,last_seen_at) VALUES (?,1,1,1)`)
+    .run("p_impression_recount");
+  assert.deepEqual(pruneExpiredFeedImpressionHistory(db, { at: pruneAt }), {
+    receiptsDeleted: 0,
+    historyDeleted: 1,
+  });
+  assert.deepEqual(recordFeedImpressions(db, {
+    userId: viewer.id,
+    at: pruneAt + 1,
+    impressions: [{ postId: "p_impression_recount", eventId: "event_recount_01" }],
+  }), { recorded: 1, counted: 1 });
+  assert.equal(db.prepare("SELECT view_count FROM post_impression_totals WHERE post_id=?")
+    .get("p_impression_recount").view_count, 2,
+  "a later view can count again after the private dedupe history ages out, as disclosed");
+  db.prepare("DELETE FROM posts WHERE id='p_impression_recount'").run();
 
   db.prepare("DELETE FROM users WHERE id=?").run(viewer.id);
   assert.equal(db.prepare("SELECT COUNT(*) c FROM post_impressions WHERE user_id=?").get(viewer.id).c, 0);
@@ -162,6 +198,14 @@ test("return views rotate privately, repair a missing aggregate, and cascade at 
     .get("p_impression_live").view_count, 1, "the anonymous aggregate can survive account erasure");
   db.prepare("DELETE FROM posts WHERE id=?").run("p_impression_live");
   assert.equal(db.prepare("SELECT 1 FROM post_impression_totals WHERE post_id='p_impression_live'").get(), undefined);
+});
+
+test("feed-impression retention has an index led by the expiry timestamp", () => {
+  const indexes = db.prepare("PRAGMA index_list('post_impressions')").all();
+  assert.ok(indexes.some((row) => row.name === "idx_post_impressions_retention"));
+  const columns = db.prepare("PRAGMA index_info('idx_post_impressions_retention')").all();
+  assert.deepEqual(columns.map((row) => row.name), ["last_seen_at", "user_id", "post_id"]);
+  resetFeedImpressionPruneClockForTests();
 });
 
 test("a recorded view invalidates only the next head snapshot and rotates the seen post down", () => {

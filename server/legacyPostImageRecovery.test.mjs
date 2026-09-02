@@ -393,9 +393,13 @@ test("a failed create-only delivery leaves the post untouched and retries the sa
   );
   assert.equal(db.prepare("SELECT 1 FROM post_media WHERE post_id=?").get(postId), undefined);
   assert.equal(parsePhotos(postId)[0], sourceUrl);
-  const issuanceCount = () => Number(db.prepare("SELECT COUNT(*) count FROM media_upload_issuances WHERE owner_id=?")
-    .get(owner.id).count);
-  assert.equal(issuanceCount(), 0);
+  const issuanceCount = (accountingClass) => Number(db.prepare(`SELECT COUNT(*) count
+    FROM media_upload_issuances WHERE owner_id=? AND accounting_class=?`)
+    .get(owner.id, accountingClass).count);
+  assert.equal(issuanceCount("member_source"), 0,
+    "server recovery never consumes the member-visible original-upload allowance");
+  assert.equal(issuanceCount("service_generated"), 2,
+    "the private recovery copy and sanitized public copy both remain globally accounted");
 
   const recovered = await recoverLegacyPostImage(db, candidate, {
     fetchImpl: storage.fetchImpl,
@@ -407,7 +411,10 @@ test("a failed create-only delivery leaves the post untouched and retries the sa
     && request.identity.includes("_recovered_source_"));
   assert.equal(privatePuts.length, 2, "retry reuses the same create-only private generation");
   assert.equal(new Set(privatePuts.map((request) => request.identity)).size, 1);
-  assert.equal(issuanceCount(), 0, "server-only immutable recovery never consumes browser upload quota");
+  assert.equal(issuanceCount("member_source"), 0,
+    "server-only immutable recovery never consumes the member-visible original-upload allowance");
+  assert.equal(issuanceCount("service_generated"), 2,
+    "a deterministic retry does not mint duplicate generated-object issuances");
 });
 
 test("candidate scanning cannot be starved by more than 96 earlier non-candidates", () => {
@@ -486,9 +493,12 @@ test("profile candidates dedupe shared exact owner references, skip external URL
   assert.equal(artist.banner, external);
   assert.deepEqual({ ...db.prepare("SELECT status,byte_size FROM media_objects WHERE object_key=?")
     .get(keyFor(sourceUrl)) }, { status: "delete_queued", byte_size: profileSourceBytes.length });
-  assert.equal(db.prepare("SELECT COUNT(*) count FROM media_upload_issuances WHERE owner_id=?")
-    .get(owner.id).count, 1,
-  "quota-exhausted recovery records both private and public objects without charging new upload issuances");
+  assert.deepEqual(db.prepare(`SELECT accounting_class,COUNT(*) count
+    FROM media_upload_issuances WHERE owner_id=? GROUP BY accounting_class ORDER BY accounting_class`)
+    .all(owner.id).map((row) => ({ ...row })), [
+    { accounting_class: "member_source", count: 1 },
+    { accounting_class: "service_generated", count: 2 },
+  ], "quota-exhausted recovery bypasses member limits while both generated objects stay globally accounted");
   assert.deepEqual(new Set(db.prepare(`SELECT storage_scope FROM media_objects
     WHERE owner_id=? AND object_key<>?`).all(owner.id, keyFor(sourceUrl)).map((row) => row.storage_scope)),
   new Set(["private", "public"]));

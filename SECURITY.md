@@ -153,12 +153,13 @@ to be completed.
 
 ### Supply chain and architecture
 
-- Production dependency audit currently has no known advisories. Expo SDK 56
+- Production dependency audit currently has no known advisories. Expo SDK 57
   dependencies are pinned to compatible patched versions and are checked with
   `expo install --check`.
-- Expo Doctor still identifies the upstream SDK 56 / React Native 0.85 Hermes V1
-  memory regression. The fixed runtime requires a separately tested SDK 57 /
-  React Native 0.86+ migration before a production native-store release.
+- Expo Doctor passes 21/21 checks on Expo 57.0.19 / React Native 0.86.3. The
+  earlier SDK 56 Hermes V1 memory-regression dependency has been removed. Real
+  iOS and Android device acceptance is still required before a native-store
+  release.
 - CI actions are pinned to immutable commit SHAs and checkout does not persist a
   repository credential.
 - Repository privacy tests reject committed SQLite databases, WAL/SHM files,

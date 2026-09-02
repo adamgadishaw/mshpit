@@ -1,4 +1,8 @@
-export const PRIVACY_POLICY_UPDATED = "August 31, 2026";
+export const PRIVACY_POLICY_UPDATED = "September 2, 2026";
+export const TERMS_POLICY_UPDATED = "September 2, 2026";
+// Sent by current clients and persisted with account creation so an acceptance
+// record identifies the exact materially revised Terms + Privacy pair.
+export const LEGAL_ACCEPTANCE_VERSION = "2026-09-02";
 
 export const ANNOUNCEMENT_EMAIL_DISCLOSURE = Object.freeze({
   heading: "Email and announcement choices",

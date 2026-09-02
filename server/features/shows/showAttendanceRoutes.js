@@ -168,7 +168,7 @@ export function showAttendanceRoutes({
         const freshLiveTransition = state === "here" && current?.state !== "here";
         const visibility = !removal && hasVisibility
           ? requestedVisibility
-          : (freshLiveTransition ? "private" : (current?.visibility || "members"));
+          : (freshLiveTransition ? "private" : (current?.visibility || "private"));
 
         // Privacy self-service remains available when email verification or
         // active-account gates would otherwise trap an existing relationship.

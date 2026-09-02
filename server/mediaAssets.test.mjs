@@ -5,7 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
 
-import { MEDIA_VIDEO_MAX_DURATION_MS } from "../src/domain/mediaUploadPolicy.mjs";
+import {
+  MEDIA_VIDEO_MAX_DURATION_MS,
+  MEDIA_VIDEO_SOURCE_MAX_BYTES,
+} from "../src/domain/mediaUploadPolicy.mjs";
 
 const dataDir = mkdtempSync(join(tmpdir(), "pit-media-assets-"));
 process.env.PIT_DATA_DIR = dataDir;
@@ -33,6 +36,7 @@ const {
   finalizeMediaVariant: finalizeMediaVariantRuntime,
   mediaSelection,
   ownedMediaAsset,
+  stageSanitizedPublicImage,
   updateMediaAsset,
 } = await import("./mediaAssets.js");
 const {
@@ -866,6 +870,71 @@ test("unedited photos are normalized once on the server and publish only a sanit
   });
   assert.equal(duplicate.duplicate, true);
   assert.equal(sanitizes, 1);
+  const render = db.prepare("SELECT object_key FROM media_variants WHERE asset_id=? AND role='render'")
+    .get(created.asset.id);
+  assert.deepEqual(db.prepare(`SELECT object_key,accounting_class FROM media_objects
+    WHERE object_key IN (?,?) ORDER BY accounting_class`).all(created.upload.key, render.object_key)
+    .map((row) => ({ ...row })), [
+    { object_key: created.upload.key, accounting_class: "member_source" },
+    { object_key: render.object_key, accounting_class: "service_generated" },
+  ]);
+  assert.deepEqual(db.prepare(`SELECT accounting_class,COUNT(*) count,SUM(byte_size) bytes
+    FROM media_upload_issuances WHERE owner_id=? GROUP BY accounting_class ORDER BY accounting_class`).all(user.id)
+    .map((row) => ({ ...row })), [
+    { accounting_class: "member_source", count: 1, bytes: 8_192 },
+    { accounting_class: "service_generated", count: 1, bytes: safeBytes.byteLength },
+  ], "one selected photo consumes one member ticket while its sanitized delivery remains globally accounted");
+});
+
+test("server-recovery image generation fails closed when the all-object global breaker is full", async () => {
+  const user = addUser("media_recovery_global_breaker_owner");
+  const at = Date.now();
+  const globalOutstanding = db.prepare(`SELECT COUNT(*) count,COALESCE(SUM(byte_size),0) bytes
+    FROM media_objects WHERE status IN ('issued','delete_queued','deletion_dead')`).get();
+  const globalRolling = db.prepare(`SELECT COUNT(*) count,COALESCE(SUM(byte_size),0) bytes
+    FROM media_upload_issuances WHERE issued_at>?`).get(at - (24 * 60 * 60_000));
+  const env = {
+    ...process.env,
+    MEDIA_UPLOAD_OUTSTANDING_OBJECTS: "10",
+    MEDIA_UPLOAD_OUTSTANDING_BYTES: String(10 * 1024 * 1024),
+    MEDIA_UPLOAD_24H_TICKETS: "10",
+    MEDIA_UPLOAD_24H_BYTES: String(10 * 1024 * 1024),
+    MEDIA_UPLOAD_GLOBAL_OUTSTANDING_OBJECTS: String(Number(globalOutstanding.count) + 1),
+    MEDIA_UPLOAD_GLOBAL_OUTSTANDING_BYTES: String(Number(globalOutstanding.bytes) + (10 * 1024 * 1024)),
+    MEDIA_UPLOAD_GLOBAL_24H_TICKETS: String(Number(globalRolling.count) + 10),
+    MEDIA_UPLOAD_GLOBAL_24H_BYTES: String(Number(globalRolling.bytes) + (10 * 1024 * 1024)),
+  };
+  const source = createMediaAsset(db, {
+    ownerId: user.id,
+    body: sourceBody({ clientAssetId: "recovery-breaker-source-0001", fileSize: 4_096 }),
+    assetId: "ma_recovery_breaker_000001",
+    sourceObjectId: "ms_recovery_breaker_000001",
+    at,
+    env,
+  });
+  let fetchCalls = 0;
+  await assert.rejects(stageSanitizedPublicImage(db, {
+    ownerId: user.id,
+    purpose: "post",
+    publicIdentity: "recovery_public_000001",
+    stagingKey: source.upload.key,
+    sourceBinding: { objectKey: source.upload.key, etag: '"recovery-source"' },
+    output: {
+      bytes: imageFixture(2_048, "image/jpeg", 320, 240),
+      byteSize: 2_048,
+      mimeType: "image/jpeg",
+      width: 320,
+      height: 240,
+    },
+    env,
+    at: at + 1,
+    serverRecovery: true,
+    fetchImpl: async () => { fetchCalls += 1; throw new Error("global rejection must precede storage"); },
+  }), (error) => error.status === 503 && error.code === "MEDIA_STORAGE_UNAVAILABLE");
+  assert.equal(fetchCalls, 0);
+  assert.equal(db.prepare(`SELECT COUNT(*) count FROM media_upload_issuances
+    WHERE owner_id=? AND accounting_class='service_generated'`).get(user.id).count, 0,
+  "a rejected recovery creates neither a generated issuance nor an object ledger");
 });
 
 test("concurrent exact photo source finalizers share one generation-bound GET and conflicting edits do no work", async () => {
@@ -2264,6 +2333,28 @@ test("production clips stay decode-gated while decoder-approved fixtures exercis
   });
   assert.equal(withPoster.asset.posterUrl, poster.public_url);
   assert.equal(withPoster.asset.posterTimeMs, 8_000);
+  const accountedDelivery = db.prepare("SELECT object_key FROM media_variants WHERE asset_id=? AND role='render'")
+    .get(coverOnly.asset.id);
+  assert.deepEqual(db.prepare(`SELECT object_key,accounting_class FROM media_objects
+    WHERE object_key IN (?,?,?) ORDER BY accounting_class,object_key`)
+    .all(coverOnly.upload.key, accountedDelivery.object_key, poster.object_key)
+    .map((row) => ({ ...row })), [
+    { object_key: coverOnly.upload.key, accounting_class: "member_source" },
+    ...[accountedDelivery.object_key, poster.object_key].sort().map((object_key) => ({
+      object_key,
+      accounting_class: "service_generated",
+    })),
+  ]);
+  assert.deepEqual(db.prepare(`SELECT object_key,accounting_class,byte_size FROM media_upload_issuances
+    WHERE object_key IN (?,?,?) ORDER BY accounting_class,object_key`)
+    .all(coverOnly.upload.key, accountedDelivery.object_key, poster.object_key)
+    .map((row) => ({ ...row })), [
+    { object_key: coverOnly.upload.key, accounting_class: "member_source", byte_size: 5_000_000 },
+    ...[
+      { object_key: accountedDelivery.object_key, accounting_class: "service_generated", byte_size: MEDIA_VIDEO_SOURCE_MAX_BYTES },
+      { object_key: poster.object_key, accounting_class: "service_generated", byte_size: poster.byte_size },
+    ].sort((a, b) => a.object_key.localeCompare(b.object_key)),
+  ], "one selected video consumes one member ticket while delivery and poster use only global generated allowance");
   const published = routes["POST /api/posts"]({
     user,
     ip: "video-with-poster",
@@ -2348,7 +2439,9 @@ test("production clips stay decode-gated while decoder-approved fixtures exercis
 });
 
 test("post creation projects stable media and grandfathers stored URL-only media", async () => {
-  const user = addUser("media_asset_post_owner");
+  let user = addUser("media_asset_post_owner");
+  db.prepare("UPDATE users SET email_verified_at=? WHERE id=?").run(Date.now(), user.id);
+  user = q.userById.get(user.id);
   assert.throws(
     () => routes["POST /api/media/presign"]({
       user,
