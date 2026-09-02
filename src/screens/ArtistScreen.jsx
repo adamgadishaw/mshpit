@@ -105,7 +105,7 @@ function AlbumArt({ uri }) {
 
 function TopReviewCard({ review, rank, artistName, onOpenPost, onOpenShow, onOpenPhotos, onOpenProfile, memorialMode = false }) {
   const author = review.user?.name || "A Pit fan";
-  const handle = review.user?.handle ? `@${review.user.handle}` : "Fan review";
+  const handle = review.user?.handle ? `@${review.user.handle}` : "Review";
   const score = Number(review.overall) || 0;
   const likes = Math.max(0, Number(review.likes) || 0);
   const date = formatDate(review.date, review.date || "Night logged");
@@ -1306,7 +1306,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
               onPress={() => onOpenArchive?.(a.name, a.profileKey)}
               accessibilityRole="button"
               accessibilityLabel={`Open ${a.name} ${deceased ? "concert history" : "live archive"}`}
-              accessibilityHint={deceased ? "Shows historical concerts, tours, photos, and fan memories" : "Shows the top rated performances, tours, photos, and every fan review"}
+              accessibilityHint={deceased ? "Shows historical concerts, tours, photos, and fan memories" : "Shows the top rated performances, tours, photos, and every review"}
             >
               <View style={styles.archiveMark}><Icon name="archive" size={20} color={colors.amber} /></View>
               <View style={styles.archiveCopy}>
@@ -1386,7 +1386,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
             </View>
             {sectionModel.condensed && topReviews.length > visibleTopReviews.length ? (
               <Pressable style={styles.showAllBtn} onPress={() => setActiveSection("community")} accessibilityRole="button" accessibilityLabel={`Read all top ${a.name} reviews`}>
-                <Text style={styles.showAllTxt}>{deceased ? "Read more fan memories" : "Read more fan reviews"}</Text>
+                <Text style={styles.showAllTxt}>{deceased ? "Read more fan memories" : "Read more reviews"}</Text>
                 <Icon name="chevron-right" size={15} color={colors.amber} />
               </Pressable>
             ) : null}

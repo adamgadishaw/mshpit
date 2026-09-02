@@ -783,15 +783,15 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
             <View style={styles.archiveReviewsHead}>
               <View style={styles.archiveReviewsHeadingCopy}>
                 <Text style={styles.archiveReviewsKicker}>FROM THIS SHOW · {archiveReviewData.total || archiveReviews.length}</Text>
-                <Text style={styles.archiveReviewsTitle} accessibilityRole="header">Fan reviews</Text>
-                <Text style={styles.archiveReviewsIntro}>Fan photos and reviews from this exact show. Tap a photo to see the full set.</Text>
+                <Text style={styles.archiveReviewsTitle} accessibilityRole="header">Reviews</Text>
+                <Text style={styles.archiveReviewsIntro}>Photos and reviews from this exact show. Tap a photo to see the full set.</Text>
               </View>
               <View style={styles.archiveReviewsIcon} accessible={false}>
                 <Icon name="archive" size={19} color={colors.amber} />
               </View>
             </View>
             {archiveReviewResource.status === "loading" && archiveReviews.length === 0 ? (
-              <View style={styles.archiveReviewState}><ActivityIndicator color={colors.amber} /><Text style={styles.archiveReviewStateText}>Loading fan reviews…</Text></View>
+              <View style={styles.archiveReviewState}><ActivityIndicator color={colors.amber} /><Text style={styles.archiveReviewStateText}>Loading reviews…</Text></View>
             ) : null}
             {archiveReviewResource.status === "error" && archiveReviews.length === 0 ? (
               <Pressable style={styles.archiveReviewRetry} onPress={reloadArchiveReviews} accessibilityRole="button">
@@ -827,8 +827,8 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
             </View>
             {archiveLoadMoreFailed ? (
               <View style={styles.archiveReviewMoreError} accessibilityLiveRegion="assertive">
-                <Text style={styles.archiveReviewMoreErrorText} selectable>More fan reviews could not be loaded. The reviews already on screen are still available.</Text>
-                <Pressable style={styles.archiveReviewMoreRetry} onPress={() => { void loadMoreArchiveReviewsWithFeedback(); }} accessibilityRole="button" accessibilityLabel="Retry loading more fan reviews">
+                <Text style={styles.archiveReviewMoreErrorText} selectable>More reviews could not be loaded. The reviews already on screen are still available.</Text>
+                <Pressable style={styles.archiveReviewMoreRetry} onPress={() => { void loadMoreArchiveReviewsWithFeedback(); }} accessibilityRole="button" accessibilityLabel="Retry loading more reviews">
                   <Icon name="plus" size={14} color={colors.amber} />
                   <Text style={styles.archiveReviewMoreRetryText}>Try again</Text>
                 </Pressable>
@@ -836,7 +836,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
             ) : archiveReviewData.nextCursor ? (
               <Pressable style={styles.archiveReviewMore} onPress={() => { void loadMoreArchiveReviewsWithFeedback(); }} disabled={archiveReviewData.loadingMore} accessibilityRole="button" accessibilityState={{ busy: !!archiveReviewData.loadingMore }}>
                 {archiveReviewData.loadingMore ? <ActivityIndicator size="small" color={colors.amber} /> : <Icon name="plus" size={14} color={colors.amber} />}
-                <Text style={styles.archiveReviewMoreText}>{archiveReviewData.loadingMore ? "Loading…" : "Load more fan reviews"}</Text>
+                <Text style={styles.archiveReviewMoreText}>{archiveReviewData.loadingMore ? "Loading…" : "Load more reviews"}</Text>
               </Pressable>
             ) : null}
           </>

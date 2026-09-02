@@ -18,7 +18,7 @@ test("the show page uses compact responsive sections and contained review slides
   assert.match(showSource, /heroGridWide/);
   assert.match(showSource, /contain/);
   assert.match(showSource, /!archiveShowKey/);
-  assert.match(showSource, />Fan reviews<\/Text>/);
+  assert.match(showSource, />Reviews<\/Text>/);
   assert.match(venuePhotoSource, /compact/);
 });
 

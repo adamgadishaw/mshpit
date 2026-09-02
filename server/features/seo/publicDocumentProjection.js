@@ -731,7 +731,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       // because gallery/showcase consent is narrower than publishing a post.
       const posts = (raw.posts || []).slice(0, 16)
         .map((row) => postCard(row, [], publicPaths, { textLimit: 520 }));
-      const title = "Discover live music, concerts and fan reviews | Mshpit";
+      const title = "Discover live music, concerts and reviews | Mshpit";
       const description = "Explore artists, upcoming concerts worldwide and honest live reviews from the Mshpit community.";
       const breadcrumbs = Object.freeze([
         Object.freeze({ name: "Mshpit", path: "/" }),
@@ -931,6 +931,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         canonicalPath: path,
         canonicalUrl: absolute(publicOrigin, path),
         image: socialProfileImage?.url || fanImage,
+        imageProvenance: socialProfileImage?.url ? "entity-profile" : fanImage ? "fan-gallery" : null,
         imageWidth: socialProfileImage?.width || null,
         imageHeight: socialProfileImage?.height || null,
         imageMimeType: socialProfileImage?.mimeType || null,
@@ -1093,7 +1094,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       const breadcrumbs = Object.freeze([
         Object.freeze({ name: "Mshpit", path: "/" }),
         ...(card.artist && card.artistPath ? [Object.freeze({ name: card.artist, path: card.artistPath })] : []),
-        Object.freeze({ name: isOnlineReview ? "Online concert review" : isReview ? "Fan review" : "Community post", path }),
+        Object.freeze({ name: isOnlineReview ? "Online concert review" : isReview ? "Review" : "Community post", path }),
       ]);
       const primaryAsset = media[0] || null;
       return Object.freeze({
@@ -1104,6 +1105,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         canonicalPath: path,
         canonicalUrl: absolute(publicOrigin, path),
         image: imageUrls[0] || null,
+        imageProvenance: imageUrls[0] ? "same-post" : null,
         imageWidth: primaryAsset?.kind === "image" ? primaryAsset.width : null,
         imageHeight: primaryAsset?.kind === "image" ? primaryAsset.height : null,
         imageMimeType: primaryAsset?.kind === "image" ? primaryAsset.mimeType : null,
@@ -1130,6 +1132,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       const primaryAsset = posts.flatMap((post) => post.media).find((asset) => asset.kind === "image" || asset.posterUrl) || null;
       const fanImage = primaryAsset?.kind === "image" ? primaryAsset.url : primaryAsset?.posterUrl || null;
       const image = event.providerImage?.url || fanImage;
+      const imageProvenance = event.providerImage?.url ? "provider" : fanImage ? "fan-gallery" : null;
       const description = summary(
         posts.find((post) => substantiveText(post.text, 40))?.text
           || `${event.name} brings live music to ${event.venue}${event.place ? ` in ${event.place}` : ""} on ${event.date}. Find event details and fan memories on Mshpit.`,
@@ -1167,6 +1170,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         canonicalPath: path,
         canonicalUrl: absolute(publicOrigin, path),
         image,
+        imageProvenance,
         imageWidth: event.providerImage?.url ? event.providerImage.width : primaryAsset?.kind === "image" ? primaryAsset.width : null,
         imageHeight: event.providerImage?.url ? event.providerImage.height : primaryAsset?.kind === "image" ? primaryAsset.height : null,
         imageMimeType: event.providerImage?.url ? null : primaryAsset?.kind === "image" ? primaryAsset.mimeType : null,
@@ -1198,7 +1202,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       const historicalEvent = raw.event ? eventCard(raw.event, publicPaths) : null;
       const description = summary(
         reviews.find((review) => substantiveText(review.text, 40))?.text
-          || `Fan reviews and photos from ${artist} at ${venue} on ${date}.`,
+          || `Reviews and photos from ${artist} at ${venue} on ${date}.`,
       );
       const pageUrl = absolute(publicOrigin, path);
       const currentDate = validDate(today) || new Date(Number.isFinite(Number(at)) ? Number(at) : Date.now()).toISOString().slice(0, 10);
@@ -1278,7 +1282,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       return Object.freeze({
         kind: "concert",
         siteName: SITE_NAME,
-        title: `${artist} at ${venue} — fan reviews from ${date} | Mshpit`,
+        title: `${artist} at ${venue} — reviews from ${date} | Mshpit`,
         description,
         canonicalPath: path,
         canonicalUrl: pageUrl,
@@ -1333,7 +1337,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       const image = primaryAsset?.kind === "image" ? primaryAsset.url : primaryAsset?.posterUrl || null;
       const place = events.find((event) => event.place)?.place || posts.find((post) => post.city)?.city || null;
       const address = events.find((event) => event.address)?.address || null;
-      const description = summary(`${name}${place ? ` in ${place}` : ""}: upcoming concerts, fan reviews and live music photos on Mshpit.`);
+      const description = summary(`${name}${place ? ` in ${place}` : ""}: upcoming concerts, reviews and live music photos on Mshpit.`);
       const breadcrumbs = Object.freeze([
         Object.freeze({ name: "Mshpit", path: "/" }),
         Object.freeze({ name: "Venues", path: "/venues" }),
@@ -1356,6 +1360,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         canonicalPath: path,
         canonicalUrl: absolute(publicOrigin, path),
         image,
+        imageProvenance: image ? "fan-gallery" : null,
         imageWidth: primaryAsset?.kind === "image" ? primaryAsset.width : null,
         imageHeight: primaryAsset?.kind === "image" ? primaryAsset.height : null,
         imageMimeType: primaryAsset?.kind === "image" ? primaryAsset.mimeType : null,
@@ -1486,7 +1491,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
           : isConcerts ? "Fan-rated concert archive" : "Upcoming concerts around the world";
       const title = titleBase + (page > 1 ? ' — Page ' + page : '') + ' | Mshpit';
       const description = isArtists
-        ? "Browse artist pages with fan reviews, concert photos, upcoming shows and historical live archives on Mshpit."
+        ? "Browse artist pages with reviews, concert photos, upcoming shows and historical live archives on Mshpit."
         : isVenues
           ? "Browse established live music venues with real upcoming shows and Mshpit fan activity."
           : isConcerts

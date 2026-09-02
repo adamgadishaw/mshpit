@@ -6,6 +6,7 @@ import test, { after } from "node:test";
 import { createArtistMemorialRepository } from "./features/artistMemorials/artistMemorialRepository.js";
 import { createArtistMemorialService } from "./features/artistMemorials/artistMemorialService.js";
 import { archiveShowKey } from "./features/artistArchive/artistArchiveKeys.js";
+import { renderPublicDocumentMain } from "./features/seo/publicDocumentRenderer.js";
 
 const dataDir = mkdtempSync(join(tmpdir(), "pit-seo-visibility-"));
 process.env.PIT_DATA_DIR = dataDir;
@@ -33,6 +34,22 @@ function addPost(id, userId, { artist, venue, overall, room, createdAt }) {
     .run(id, userId, artist, venue, normName(venue), "Toronto", "2026-08-20", overall, room,
       `${artist} review by ${userId}, with enough first-hand detail to be useful.`, createdAt);
 }
+
+test("home artist cards call review counts reviews", () => {
+  const html = renderPublicDocumentMain({
+    kind: "home",
+    artists: [{
+      name: "Clear Copy Artist",
+      path: "/artist/clear-copy-artist",
+      genre: [],
+      description: "",
+      reviewCount: 2,
+    }],
+    posts: [],
+  });
+  assert.match(html, />2 reviews<\/p>/u);
+  assert.doesNotMatch(html, /fan reviews?/iu);
+});
 
 test("SEO metadata, entity routing, and sitemap exclude restricted authors", async () => {
   const active = addUser("u_seo_active", "seoactive");
@@ -81,7 +98,7 @@ test("SEO metadata, entity routing, and sitemap exclude restricted authors", asy
   const artistMeta = metadataFor(artistPath(artist));
   assert.match(artistMeta.description, /catalogue-owned artist biography/i);
   const artistShell = injectHead("<html><head><title>Pit</title></head><body><div id=\"root\"></div></body></html>", artistPath(artist));
-  assert.match(artistShell, /Fan reviews<\/dt><dd>1<\/dd>/,
+  assert.match(artistShell, /Reviews<\/dt><dd>1<\/dd>/,
     "artist aggregates count only active authors");
   assert.doesNotMatch(artistShell, /SEO Suspended Secret Hall|SEO Banned Hall/);
 

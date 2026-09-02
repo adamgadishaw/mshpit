@@ -193,7 +193,7 @@ function buildRows(shows, reviews, reviewState, total) {
   const rows = [{ type: "section", key: "section-shows", eyebrow: "THE TOUR MAP", title: "Recorded nights", copy: "Each performance combines the crowd’s ratings and public media.", count: shows.length }];
   if (shows.length) shows.forEach((show) => rows.push({ type: "show", key: `show:${show.key}`, show }));
   else rows.push({ type: "empty", key: "empty-shows", title: "No nights found", copy: "This tour does not have a recorded performance in the current archive yet." });
-  rows.push({ type: "section", key: "section-reviews", eyebrow: "FROM THE PIT", title: "Every fan review", copy: "The complete review stream for this tour, newest first.", count: total });
+  rows.push({ type: "section", key: "section-reviews", eyebrow: "FROM THE PIT", title: "Every review", copy: "The complete review stream for this tour, newest first.", count: total });
   if (reviews.length) reviews.forEach((review) => rows.push({ type: "review", key: `review:${review.id}`, review }));
   else if (reviewState === "loading") rows.push({ type: "loading", key: "loading-reviews" });
   else if (reviewState !== "error") rows.push({ type: "empty", key: "empty-reviews", title: "No reviews yet", copy: "The first fan to log this tour will start the conversation." });
@@ -244,7 +244,7 @@ export default function TourArchiveScreen({ artistName, artistKey, tourKey, tour
     if (item.type === "section") return <SectionRow {...item} />;
     if (item.type === "show") return <TourShowRow show={item.show} wide={wide} onOpenShow={onOpenShow} onOpenPhotos={onOpenPhotos} onOpenProfile={onOpenProfile} />;
     if (item.type === "review") return <ReviewRow review={item.review} shows={shows} wide={wide} onOpenShow={onOpenShow} onOpenPost={onOpenPost} onOpenPhotos={onOpenPhotos} onOpenProfile={onOpenProfile} />;
-    if (item.type === "loading") return <View style={styles.loadingRow} accessibilityLiveRegion="polite"><ActivityIndicator color={colors.amber} /><Text style={styles.stateText}>Loading every fan review…</Text></View>;
+    if (item.type === "loading") return <View style={styles.loadingRow} accessibilityLiveRegion="polite"><ActivityIndicator color={colors.amber} /><Text style={styles.stateText}>Loading every review…</Text></View>;
     if (item.type === "empty") return <EmptyRow title={item.title} copy={item.copy} />;
     return null;
   };

@@ -50,7 +50,7 @@ test("ShowScreen links to one original post without presenting a second comment 
   assert.match(showScreen, /<Text style=\{styles\.originalPostLabel\}>FAN POST<\/Text>/);
   assert.match(showScreen, /<Text style=\{styles\.originalPostTitle\}>Open the original fan post<\/Text>/);
   assert.doesNotMatch(showScreen, /Comments on this post|Open comments|discussionCount/);
-  assert.match(postScreen, /kicker=\{isOnlineReview \? "ONLINE CONCERT REVIEW" : activeLog\.review \? "FAN REVIEW" : "POST"\}/);
+  assert.match(postScreen, /kicker=\{isOnlineReview \? "ONLINE CONCERT REVIEW" : activeLog\.review \? "REVIEW" : "POST"\}/);
   assert.match(postScreen, /title="Original post"/);
   assert.match(showScreen, /<NearbyAfterparty\s+log=\{norm\}\s+coord=\{coord\}/);
   assert.doesNotMatch(showScreen, /AfterpartySection|TextInput|addComment|deleteOwnComment|loadComments|commentsFor/);
@@ -62,7 +62,7 @@ test("aggregate show review pagination keeps loaded reviews and exposes retry fe
   assert.match(showScreen, /const result = await loadMoreArchiveReviews\(\)/);
   assert.match(showScreen, /result\?\.status === "error"/);
   assert.match(showScreen, /The reviews already on screen are still available/);
-  assert.match(showScreen, /accessibilityLabel="Retry loading more fan reviews"/);
+  assert.match(showScreen, /accessibilityLabel="Retry loading more reviews"/);
 });
 
 test("PostScreen scopes comment reads and exposes honest loading failure recovery", () => {

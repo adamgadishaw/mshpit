@@ -57,6 +57,7 @@ test("a Review share keeps its public summary concise and uses a video poster as
   }, { author: { handle: "pitfan" } });
 
   assert.equal(model.kind, "review");
+  assert.equal(model.eyebrow, "REVIEW");
   assert.equal(model.url, "https://www.mshpit.com/post/review_42");
   assert.deepEqual(model.renderRequest, { kind: "post", postId: "review_42" });
   assert.equal(model.rating, 4.75);

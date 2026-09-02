@@ -7,6 +7,7 @@ import {
   reviewShareCardModel,
   SocialShareCardBusyError,
 } from "./socialShareCardRenderer.js";
+import { trustedShareArtworkUrl } from "./socialShareArtwork.js";
 import { eventPath, postPath } from "../../../src/domain/urls.mjs";
 
 const TEN_MINUTES = 10 * 60 * 1000;
@@ -24,7 +25,70 @@ function exactBodyKeys(body, allowed) {
   return Object.keys(body).every((key) => allowed.has(key));
 }
 
-export function publicAttendanceTicketShareSnapshot(value) {
+function internalArtworkPaths(document) {
+  const entity = document?.kind === "post" ? document.post
+    : document?.kind === "event" ? document.event : null;
+  return [...new Set([entity?.artistPath, entity?.venuePath]
+    .filter((path) => typeof path === "string" && path.startsWith("/") && !path.startsWith("//") && path.length <= 500))];
+}
+
+function trustedArtworkCandidate(url, source, env) {
+  const trusted = trustedShareArtworkUrl({ url, source }, { env });
+  return trusted ? Object.freeze({ url: trusted, source }) : null;
+}
+
+function projectedOfficialArtwork(document, env) {
+  if (document?.kind === "event") {
+    if (document.imageProvenance !== "provider") return null;
+    return trustedArtworkCandidate(document.event?.providerImage?.url, "ticketmaster", env);
+  }
+  if (document?.kind !== "artist" || !document.artist
+    || document.imageProvenance !== "entity-profile" || !document.image) return null;
+  return trustedArtworkCandidate(document.image, "owned-media", env);
+}
+
+function eventDocumentForShare(document, env) {
+  if (document?.kind !== "event" || !document.event) return document;
+  const providerArtwork = projectedOfficialArtwork(document, env);
+  return Object.freeze({
+    ...document,
+    image: providerArtwork?.url || null,
+    event: Object.freeze({
+      ...document.event,
+      providerImage: providerArtwork
+        ? Object.freeze({ ...document.event.providerImage, url: providerArtwork.url })
+        : null,
+    }),
+  });
+}
+
+async function projectedArtworkFallbacks(document, resolvePublicDocument, env) {
+  const candidates = [];
+  for (const path of internalArtworkPaths(document)) {
+    const fallback = await resolvePublicDocument(path);
+    const candidate = projectedOfficialArtwork(fallback, env);
+    if (candidate) candidates.push(candidate);
+    if (candidates.length >= 2) break;
+  }
+  return candidates;
+}
+
+function persistedAttendanceArtwork(ticket, env, resolveCurrentArtistProfileImage) {
+  const providerArtwork = trustedArtworkCandidate(ticket?.artistPhotoUri, "ticketmaster", env);
+  if (providerArtwork) return providerArtwork;
+  const persistedArtwork = trustedArtworkCandidate(ticket?.artistPhotoUri, "owned-media", env);
+  if (!persistedArtwork || typeof resolveCurrentArtistProfileImage !== "function") return null;
+  const currentArtwork = trustedArtworkCandidate(resolveCurrentArtistProfileImage({
+    artist: ticket.artist,
+    artistKey: ticket.artistKey,
+  }), "owned-media", env);
+  return currentArtwork?.url === persistedArtwork.url ? persistedArtwork : null;
+}
+
+export function publicAttendanceTicketShareSnapshot(value, {
+  env = process.env,
+  resolveCurrentArtistProfileImage = null,
+} = {}) {
   let ticket = null;
   try { ticket = typeof value === "string" ? JSON.parse(value) : value; }
   catch { return null; }
@@ -38,10 +102,16 @@ export function publicAttendanceTicketShareSnapshot(value) {
       .replace(/\s+/gu, " ").trim().slice(0, max);
   };
   const artist = safe(ticket.artist, 160);
+  const artistKey = safe(ticket.artistKey, 120);
   const venue = safe(ticket.venue, 180);
   const date = safe(ticket.date, 10);
   if (!id || !artist || !venue || !isStrictCalendarDate(date)) return null;
   const eventName = safe(ticket.eventName || ticket.tourName, 180);
+  const persistedArtwork = persistedAttendanceArtwork({
+    artist,
+    artistKey,
+    artistPhotoUri: ticket.artistPhotoUri,
+  }, env, resolveCurrentArtistProfileImage);
   return Object.freeze({
     kind: "event",
     event: Object.freeze({
@@ -53,6 +123,7 @@ export function publicAttendanceTicketShareSnapshot(value) {
       date,
       localTime: safe(ticket.startLocalTime || ticket.startDateTime, 40),
     }),
+    fallbackArtwork: Object.freeze(persistedArtwork ? [persistedArtwork] : []),
   });
 }
 
@@ -64,7 +135,9 @@ export function socialShareCardRoutes({
   rateLimit,
   requireUser,
   resolvePublicDocument,
+  resolveCurrentArtistProfileImage = null,
   renderer = createSocialShareCardRenderer(),
+  artworkEnv = process.env,
 } = {}) {
   if (!database?.prepare || typeof ApiError !== "function" || !attendanceRepository?.ownExactAttendance
     || typeof blockedEitherWay !== "function"
@@ -99,18 +172,32 @@ export function socialShareCardRoutes({
         if (document?.kind !== "post") {
           throw new ApiError(404, "That post is not available to share.", "NOT_FOUND");
         }
-        model = reviewShareCardModel(document);
+        model = document.post?.kind === "review"
+          ? reviewShareCardModel(document, {
+              fallbackArtwork: await projectedArtworkFallbacks(
+                document,
+                resolvePublicDocument,
+                artworkEnv,
+              ),
+            })
+          : null;
         if (!model && document.post?.kind === "status") {
           const ticketDocument = publicAttendanceTicketShareSnapshot(
             postBoundary.attendance_ticket,
+            { env: artworkEnv, resolveCurrentArtistProfileImage },
           );
           const eventId = ticketDocument?.event?.id || null;
-          const eventDocument = eventId
+          const resolvedEventDocument = eventId
             ? (await resolvePublicDocument(eventPath(eventId)) || ticketDocument)
             : null;
+          const eventDocument = eventDocumentForShare(resolvedEventDocument, artworkEnv);
           model = eventShareCardModel(eventDocument, "going", {
             postId,
             authorName: document.post?.author?.name,
+            fallbackArtwork: [
+              ...(ticketDocument?.fallbackArtwork || []),
+              ...await projectedArtworkFallbacks(eventDocument, resolvePublicDocument, artworkEnv),
+            ],
           });
         }
         filename = model?.variant === "review" ? "mshpit-review.png" : "mshpit-going.png";
@@ -131,8 +218,14 @@ export function socialShareCardRoutes({
             "CONFLICT",
           );
         }
-        const document = await resolvePublicDocument(eventPath(eventId));
-        model = eventShareCardModel(document, intent, { authorName: user.name });
+        const document = eventDocumentForShare(
+          await resolvePublicDocument(eventPath(eventId)),
+          artworkEnv,
+        );
+        model = eventShareCardModel(document, intent, {
+          authorName: user.name,
+          fallbackArtwork: await projectedArtworkFallbacks(document, resolvePublicDocument, artworkEnv),
+        });
         filename = `mshpit-${intent}.png`;
       } else {
         throw new ApiError(400, "Choose a review, Going event, or Interested event to share.", "VALIDATION_FAILED");
@@ -141,7 +234,7 @@ export function socialShareCardRoutes({
       if (!model) throw new ApiError(404, "That item is not available to share.", "NOT_FOUND");
       let rendered;
       try {
-        rendered = await renderer.render(model);
+        rendered = await renderer.render(model, { signal: ctx.signal || null });
       } catch (error) {
         if (!(error instanceof SocialShareCardBusyError)) throw error;
         throw new ApiError(

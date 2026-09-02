@@ -3,6 +3,8 @@ import test from "node:test";
 
 import sharp from "sharp";
 
+import { loadShareArtwork } from "./socialShareArtwork.js";
+
 import {
   createSocialShareCardRenderer,
   eventShareCardModel,
@@ -64,6 +66,8 @@ test("event and review models accept only public projection fields and canonical
 
   assert.equal(event.canonicalUrl, "https://www.mshpit.com/event/ticketmaster-event_123");
   assert.equal(review.canonicalUrl, "https://www.mshpit.com/post/post_123");
+  assert.equal(review.label, "REVIEW");
+  assert.equal(review.kicker, "Alex");
   assert.equal(
     eventShareCardModel(eventDocument(), "interested", { authorName: "Alex" }).kicker,
     "Alex IS INTERESTED",
@@ -73,6 +77,36 @@ test("event and review models accept only public projection fields and canonical
     "PRIVATE-SECTION", "PRIVATE-ORDER", "PRIVATE-BARCODE",
     "tickets.example", "tracker.example", "private@example.com", "visibility",
   ]) assert.doesNotMatch(serialized, new RegExp(secret, "iu"));
+});
+
+test("share models preserve only projected artwork provenance and keep each share type visually distinct", () => {
+  const eventDocumentWithImage = eventDocument({
+    providerImage: { url: "https://s1.ticketm.net/dam/a/show.jpg" },
+  });
+  eventDocumentWithImage.image = "https://s1.ticketm.net/dam/a/show.jpg";
+  const going = eventShareCardModel(eventDocumentWithImage, "going");
+  const interested = eventShareCardModel(eventDocumentWithImage, "interested");
+  const review = reviewShareCardModel(reviewDocument({
+    media: [{
+      kind: "video",
+      url: "https://media.mshpit.test/public/review.mp4",
+      posterUrl: "https://media.mshpit.test/public/review-poster.jpg",
+    }],
+  }));
+
+  assert.deepEqual(going.artwork, [{
+    url: "https://s1.ticketm.net/dam/a/show.jpg",
+    source: "ticketmaster",
+  }]);
+  assert.deepEqual(review.artwork, [{
+    url: "https://media.mshpit.test/public/review-poster.jpg",
+    source: "owned-media",
+  }]);
+  assert.match(socialShareCardSvg(going), /data-layout="attendance-ticket"/u);
+  assert.match(socialShareCardSvg(interested), /data-layout="attendance-ticket"/u);
+  assert.match(socialShareCardSvg(review), /data-layout="review-photo"/u);
+  assert.notEqual(socialShareCardSvg(going), socialShareCardSvg(interested));
+  assert.doesNotMatch(socialShareCardSvg(review), /FAN REVIEW/u);
 });
 
 test("share models never normalize impossible calendar dates into a different day", () => {
@@ -108,6 +142,44 @@ test("SVG artwork bounds pathological words, escapes authored text, and uses one
   assert.doesNotMatch(eventSvg, /OPEN THE REVIEW ON MSHPIT/u);
 });
 
+test("photo attendance layout keeps worst-case authored text above the ticket perforation", async () => {
+  const model = eventShareCardModel(eventDocument({
+    name: "The Extremely Long Farewell Celebration and Final Stadium Experience",
+    artist: "WWWWWWWWWWWWWWWWWWWW WWWWWWWWWWWWWWWWWWWW",
+    venue: "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+    place: "A Very Long Metropolitan Region, Ontario, Canada",
+  }), "going", {
+    authorName: "A Member With An Intentionally Long Display Name",
+  });
+  const svg = socialShareCardSvg(model, {
+    artworkDataUri: "data:image/jpeg;base64,/9j/2Q==",
+  });
+  const body = /data-section="attendance-body" data-statement-y="(\d+)" data-subtitle-y="(\d+)" data-subtitle-lines="(\d+)" data-artist-y="(\d+)" data-artist-lines="(\d+)"/u.exec(svg);
+  const schedule = /data-section="attendance-schedule" data-schedule-y="(\d+)"/u.exec(svg);
+  assert.ok(body);
+  assert.ok(schedule);
+  const [, statementY, subtitleY, subtitleLineCount, artistY, artistLineCount] = body.map(Number);
+  const scheduleY = Number(schedule[1]);
+  assert.ok(Number(statementY) < Number(subtitleY));
+  assert.ok(Number(artistY) > Number(subtitleY) + ((subtitleLineCount - 1) * 32) + 26);
+  assert.ok(scheduleY > Number(artistY) + ((artistLineCount - 1) * 68) + 18);
+  assert.ok(scheduleY + 158 < 1350);
+  assert.match(svg, /clip-path="url\(#attendanceBody\)"/u);
+  assert.match(svg, /clip-path="url\(#attendanceVenue\)"/u);
+  assert.match(svg, /…/u);
+  const photo = await sharp({
+    create: {
+      width: 1_200,
+      height: 800,
+      channels: 3,
+      background: { r: 60, g: 80, b: 120 },
+    },
+  }).jpeg().toBuffer();
+  const output = await renderSocialShareCardPng(model, { artworkBytes: photo });
+  const metadata = await sharp(output).metadata();
+  assert.deepEqual([metadata.width, metadata.height], [1080, 1920]);
+});
+
 test("renderer emits a bounded 1080 by 1920 Instagram Story PNG", async () => {
   const model = eventShareCardModel(eventDocument(), "interested");
   const bytes = await renderSocialShareCardPng(model);
@@ -119,6 +191,120 @@ test("renderer emits a bounded 1080 by 1920 Instagram Story PNG", async () => {
   assert.equal(metadata.width, 1080);
   assert.equal(metadata.height, 1920);
   assert.equal(metadata.format, "png");
+});
+
+test("renderer composites a real photo and degrades invalid image bytes to the clean no-photo card", async () => {
+  const model = reviewShareCardModel(reviewDocument());
+  const photo = await sharp({
+    create: {
+      width: 1_200,
+      height: 800,
+      channels: 3,
+      background: { r: 240, g: 20, b: 30 },
+    },
+  }).jpeg().toBuffer();
+  const withPhoto = await renderSocialShareCardPng(model, { artworkBytes: photo });
+  const sample = await sharp(withPhoto)
+    .extract({ left: 500, top: 500, width: 1, height: 1 })
+    .removeAlpha()
+    .raw()
+    .toBuffer();
+  assert.ok(sample[0] > sample[1] + 100, "the projected photo should occupy the review hero");
+
+  const withoutPhoto = await renderSocialShareCardPng(model, {
+    artworkBytes: Buffer.from("not an image"),
+  });
+  const metadata = await sharp(withoutPhoto).metadata();
+  assert.equal(metadata.width, 1080);
+  assert.equal(metadata.height, 1920);
+});
+
+test("renderer rejects unsupported decoded formats and artwork above the pixel ceiling", async () => {
+  const model = reviewShareCardModel(reviewDocument());
+  const oversized = await sharp({
+    create: {
+      width: 4_001,
+      height: 3_000,
+      channels: 3,
+      background: { r: 240, g: 20, b: 30 },
+    },
+  }).jpeg({ quality: 20 }).toBuffer();
+  const unsupported = await sharp({
+    create: {
+      width: 320,
+      height: 240,
+      channels: 3,
+      background: { r: 240, g: 20, b: 30 },
+    },
+  }).gif().toBuffer();
+  assert.ok(oversized.length < socialShareCardConstants.artworkInputBytes);
+  assert.ok(4_001 * 3_000 > socialShareCardConstants.artworkInputPixels);
+
+  for (const artworkBytes of [oversized, unsupported]) {
+    const output = await renderSocialShareCardPng(model, { artworkBytes });
+    const sample = await sharp(output)
+      .extract({ left: 500, top: 500, width: 1, height: 1 })
+      .removeAlpha()
+      .raw()
+      .toBuffer();
+    assert.ok(sample[0] < 100, "rejected artwork must use the dark no-photo hero");
+  }
+});
+
+test("renderer skips a MIME-valid corrupt image and uses the next trusted candidate", async () => {
+  const validPhoto = await sharp({
+    create: {
+      width: 640,
+      height: 480,
+      channels: 3,
+      background: { r: 30, g: 180, b: 90 },
+    },
+  }).jpeg().toBuffer();
+  const corruptJpeg = Buffer.from([
+    0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46,
+    0x49, 0x46, 0x00, 0x01, 0x01, 0x00, 0xff, 0xd9,
+  ]);
+  const requested = [];
+  let renderedArtworkDataUri = "";
+  const renderer = createSocialShareCardRenderer({
+    loadArtwork: (candidates, options) => loadShareArtwork(candidates, {
+      ...options,
+      fetchImpl: async (url) => {
+        requested.push(url);
+        const body = url.includes("corrupt") ? corruptJpeg : validPhoto;
+        return new Response(body, {
+          headers: { "content-type": "image/jpeg", "content-length": String(body.length) },
+        });
+      },
+    }),
+    renderPng: async (_model, { artworkDataUri }) => {
+      renderedArtworkDataUri = artworkDataUri;
+      return {
+        bytes: Buffer.concat([
+          Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+          Buffer.alloc(120, 4),
+        ]),
+        artworkApplied: !!artworkDataUri,
+      };
+    },
+  });
+  const document = eventDocument({
+    providerImage: { url: "https://s1.ticketm.net/dam/a/corrupt.jpg" },
+  });
+  const model = eventShareCardModel(document, "going", {
+    fallbackArtwork: [{
+      url: "https://s1.ticketm.net/dam/a/valid.jpg",
+      source: "ticketmaster",
+    }],
+  });
+
+  const result = await renderer.render(model);
+  assert.deepEqual(requested, [
+    "https://s1.ticketm.net/dam/a/corrupt.jpg",
+    "https://s1.ticketm.net/dam/a/valid.jpg",
+  ]);
+  assert.match(renderedArtworkDataUri, /^data:image\/jpeg;base64,/u);
+  assert.equal(result.bytes[8], 4);
 });
 
 test("renderer coalesces and caches equal cards while bounding unique concurrent work", async () => {
@@ -148,4 +334,116 @@ test("renderer coalesces and caches equal cards while bounding unique concurrent
   const cached = await renderer.render(model);
   assert.equal(calls, 1);
   assert.equal(cached.bytes, a.bytes);
+});
+
+test("a missing-artwork fallback is cached briefly before artwork is retried", async () => {
+  let loads = 0;
+  let renders = 0;
+  let clock = 10_000;
+  let loadOptions = "not-called";
+  const renderer = createSocialShareCardRenderer({
+    loadArtwork: async (_candidates, options) => {
+      loads += 1;
+      loadOptions = options;
+      return loads === 1 ? null : Buffer.from([
+        0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46,
+        0x49, 0x46, 0x00, 0x01, 0x01, 0x00, 0xff, 0xd9,
+      ]);
+    },
+    renderPng: async (_model, { artworkBytes }) => {
+      renders += 1;
+      return Buffer.concat([
+        Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+        Buffer.alloc(120, artworkBytes ? 2 : 1),
+      ]);
+    },
+    degradedCacheTtlMs: 15_000,
+    now: () => clock,
+  });
+  const document = eventDocument({
+    providerImage: { url: "https://s1.ticketm.net/dam/a/show.jpg" },
+  });
+  document.image = "https://s1.ticketm.net/dam/a/show.jpg";
+  const model = eventShareCardModel(document, "going");
+
+  const fallback = await renderer.render(model);
+  const cachedFallback = await renderer.render(model);
+  clock += 15_001;
+  const photo = await renderer.render(model);
+  clock += 60_000;
+  const cachedPhoto = await renderer.render(model);
+  assert.equal(fallback.bytes[8], 1);
+  assert.equal(cachedFallback.bytes, fallback.bytes);
+  assert.equal(photo.bytes[8], 2);
+  assert.equal(loads, 2);
+  assert.equal(renders, 2);
+  assert.equal(cachedPhoto.bytes, photo.bytes);
+  assert.equal(typeof loadOptions.acceptBytes, "function");
+  assert.equal(loadOptions.signal, undefined, "shared work must not inherit a caller request signal");
+});
+
+test("remote artwork waiting does not occupy the Sharp render admission slot", async () => {
+  let markArtworkStarted;
+  let releaseArtwork;
+  const artworkStarted = new Promise((resolve) => { markArtworkStarted = resolve; });
+  const artworkWaiting = new Promise((resolve) => { releaseArtwork = resolve; });
+  const renderOrder = [];
+  const renderer = createSocialShareCardRenderer({
+    maxConcurrentRenders: 1,
+    loadArtwork: async () => {
+      markArtworkStarted();
+      await artworkWaiting;
+      return null;
+    },
+    renderPng: async (model) => {
+      renderOrder.push(model.canonicalUrl);
+      return Buffer.concat([
+        Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+        Buffer.alloc(120, model.canonicalUrl.endsWith("456") ? 6 : 5),
+      ]);
+    },
+  });
+  const artworkDocument = eventDocument({
+    providerImage: { url: "https://s1.ticketm.net/dam/a/show.jpg" },
+  });
+  const waitingForArtwork = renderer.render(eventShareCardModel(artworkDocument, "going"));
+  await artworkStarted;
+
+  const noArtworkModel = eventShareCardModel(eventDocument({ id: "ticketmaster-event_456" }), "going");
+  const noArtwork = await renderer.render(noArtworkModel);
+  assert.equal(noArtwork.bytes[8], 6);
+  releaseArtwork();
+  const fallback = await waitingForArtwork;
+  assert.equal(fallback.bytes[8], 5);
+  assert.deepEqual(renderOrder, [
+    "https://www.mshpit.com/event/ticketmaster-event_456",
+    "https://www.mshpit.com/event/ticketmaster-event_123",
+  ]);
+});
+
+test("the first caller aborting does not cancel a coalesced renderer request", async () => {
+  let markStarted;
+  let release;
+  const started = new Promise((resolve) => { markStarted = resolve; });
+  const waiting = new Promise((resolve) => { release = resolve; });
+  const renderer = createSocialShareCardRenderer({
+    renderPng: async () => {
+      markStarted();
+      await waiting;
+      return Buffer.concat([
+        Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+        Buffer.alloc(120, 3),
+      ]);
+    },
+  });
+  const model = eventShareCardModel(eventDocument(), "going");
+  const controller = new AbortController();
+  const first = renderer.render(model, { signal: controller.signal });
+  await started;
+  const second = renderer.render(model);
+  controller.abort(new DOMException("first caller left", "AbortError"));
+  await assert.rejects(first, (error) => error?.name === "AbortError");
+  release();
+  const completed = await second;
+  assert.equal(completed.bytes[8], 3);
 });

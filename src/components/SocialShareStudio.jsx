@@ -8,9 +8,9 @@ import {
   createShareCardAsset,
   downloadShareCard,
   instagramStorySharingConfigured,
-  openExternalShareUrl,
   releaseShareCardAsset,
   shareCardToInstagramStory,
+  shareCardToSocialPlatform,
 } from "../lib/socialShare";
 import { socialShareIntentUrl } from "../domain/socialShareCard.mjs";
 import { colors, displayFont, font, mono, radius, shadow, space } from "../theme";
@@ -41,6 +41,12 @@ function shareErrorMessage(error) {
   }
   if (error?.message === "STORY_ARTWORK_UNAVAILABLE") {
     return "The Story card is not ready yet. Copy the link or try again.";
+  }
+  if (error?.message === "SOCIAL_ARTWORK_UNAVAILABLE") {
+    return "The finished share card is not ready. Wait a moment and try again.";
+  }
+  if (error?.message === "SOCIAL_SHARE_UNAVAILABLE" || error?.message === "SOCIAL_SHARE_NOT_OPENED") {
+    return "That app or share sheet did not open. Nothing was posted.";
   }
   return "That share option did not open. Copy the link and try again.";
 }
@@ -272,13 +278,27 @@ export default function SocialShareStudio({ accountId = null, model, onClose }) 
   const shareTo = (platform) => {
     const url = socialShareIntentUrl(platform, model);
     if (!url) return;
-    void run(platform, () => openExternalShareUrl(url), `Opened ${platform === "x" ? "X" : "Facebook"}.`);
+    const label = platform === "x" ? "X" : "Facebook";
+    void run(
+      platform,
+      () => shareCardToSocialPlatform(platform, model, { preparedAsset: assetState.asset, intentUrl: url }),
+      (result) => {
+        if (result?.mode === "dismissed") return "Share sheet closed. Nothing was posted.";
+        if (Platform.OS === "web") {
+          return `${label} opened and the card download started. Attach the downloaded PNG before posting.`;
+        }
+        if (result?.mode === "native-share-sheet") {
+          return "Your share sheet opened with the card and Mshpit link. Choose an app, review it, and post when ready.";
+        }
+        return `${label} opened with the card and Mshpit link. Review it there—nothing was posted automatically.`;
+      },
+    );
   };
   const copyLink = () => run("copy", () => copyShareLink(model.url), "Link copied.");
   const download = () => run(
     "download",
     () => downloadShareCard(model, { preparedAsset: assetState.asset }),
-    "Share card opened for download.",
+    "Share card download started.",
   );
   const instagramLabel = nativeStory ? "Instagram Story" : "Save Instagram Story";
   const instagramDetail = nativeStory
@@ -286,6 +306,11 @@ export default function SocialShareStudio({ accountId = null, model, onClose }) 
       ? "Open this card in Instagram’s Story editor"
       : "Needs the Meta App ID in this app build"
     : "Download a 9:16 card to add to your Story";
+  const socialDetail = (platform) => Platform.OS === "web"
+    ? `Download this card, then open ${platform}. Attach it before posting`
+    : platform === "Facebook" && Platform.OS === "android"
+      ? "Open Facebook, or your share sheet if Facebook is unavailable"
+      : "Open your share sheet with this card and the Mshpit link";
 
   return (
     <Modal
@@ -337,7 +362,7 @@ export default function SocialShareStudio({ accountId = null, model, onClose }) 
                 ? "Preparing the final share card…"
                 : assetState.status === "ready"
                   ? "Final 9:16 Story artwork ready"
-                  : "The artwork is unavailable right now. Link sharing still works."}
+                  : "The artwork is unavailable right now. You can still copy the link."}
             </Text>
 
             <View style={styles.actionsGrid}>
@@ -355,8 +380,8 @@ export default function SocialShareStudio({ accountId = null, model, onClose }) 
               <ShareAction
                 accent={colors.text}
                 active={busyAction === "x"}
-                detail="Post the public Mshpit link"
-                disabled={!!busyAction}
+                detail={socialDetail("X")}
+                disabled={!!busyAction || assetState.status !== "ready"}
                 label="X"
                 mark="X"
                 onPress={() => shareTo("x")}
@@ -364,8 +389,8 @@ export default function SocialShareStudio({ accountId = null, model, onClose }) 
               <ShareAction
                 accent={colors.cool}
                 active={busyAction === "facebook"}
-                detail="Share the public Mshpit page"
-                disabled={!!busyAction}
+                detail={socialDetail("Facebook")}
+                disabled={!!busyAction || assetState.status !== "ready"}
                 label="Facebook"
                 mark="f"
                 onPress={() => shareTo("facebook")}

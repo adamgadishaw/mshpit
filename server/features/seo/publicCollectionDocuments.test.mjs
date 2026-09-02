@@ -158,7 +158,7 @@ test("artist archive documents use the known artist identity, exact pagination, 
   const second = documents.artistConcertsDocument({ publicSlug:"bruno-mars",page:2 });
 
   assert.notEqual(first.title,second.title);
-  assert.equal(second.title,"Bruno Mars Concert Archive & Fan Reviews - Page 2 | Mshpit");
+  assert.equal(second.title,"Bruno Mars Concert Archive & Reviews - Page 2 | Mshpit");
   assert.equal(second.canonicalPath,"/artist/bruno-mars/concerts/page/2");
   assert.equal(second.previousPath,"/artist/bruno-mars/concerts");
   assert.equal(second.nextPath,null);

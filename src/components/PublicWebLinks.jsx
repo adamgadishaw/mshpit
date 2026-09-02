@@ -91,7 +91,7 @@ const directoryCopy = (directory, region = "Worldwide") => directory === "artist
   ? {
     eyebrow: "ARTIST DIRECTORY",
     title: "Find the artists fans are talking about",
-    body: "Open public artist profiles for live ratings, fan reviews, tour dates, photos, and career archives.",
+    body: "Open public artist profiles for live ratings, reviews, tour dates, photos, and career archives.",
   }
   : {
     eyebrow: "GLOBAL EVENT DIRECTORY",

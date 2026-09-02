@@ -163,7 +163,7 @@ function homeMain(document) {
     <p class="eyebrow">${artist.genre.length ? esc(artist.genre.slice(0, 2).join(" · ")) : "Artist page"}</p>
     <h3>${link(artist.path, artist.name)}</h3>
     ${artist.description ? `<p>${esc(artist.description)}</p>` : ""}
-    ${artist.reviewCount ? `<p class="micro">${esc(artist.reviewCount)} fan ${artist.reviewCount === 1 ? "review" : "reviews"}</p>` : ""}
+    ${artist.reviewCount ? `<p class="micro">${esc(artist.reviewCount)} ${artist.reviewCount === 1 ? "review" : "reviews"}</p>` : ""}
   </li>`).join("");
   const posts = document.posts.map((post) => compactPost(post)).join("");
   return `<main id="main">
@@ -191,7 +191,7 @@ function discoverMain(document) {
     <section class="directory-hero"><p class="eyebrow">Explore the live archive</p><h1>Discover music through the people who were there.</h1><p>${esc(document.description)}</p><div class="actions"><a class="button primary" href="/events">Browse upcoming concerts</a><a class="button" href="/artists">Explore artists</a></div></section>
     ${artists ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">Artists on Mshpit</p><h2>Live pages worth exploring</h2></div><a href="/artists">Browse the artist directory</a></div><ul class="artist-grid">${artists}</ul></section>` : ""}
     ${events ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">Coming up</p><h2>Concerts around the world</h2></div><a href="/events">Browse all upcoming concerts</a></div><ol class="event-list">${events}</ol></section>` : ""}
-    ${posts ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">From the crowd</p><h2>Fan reviews people are responding to</h2></div></div><div class="post-list">${posts}</div></section>` : ""}
+    ${posts ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">From the crowd</p><h2>Reviews people are responding to</h2></div></div><div class="post-list">${posts}</div></section>` : ""}
   </main>`;
 }
 
@@ -238,7 +238,7 @@ function artistMain(document) {
       <h1>${esc(artist.name)}</h1>
       ${artist.genres.length ? `<p class="genres">${esc(artist.genres.join(" · "))}</p>` : ""}
       ${artist.bio ? `<div class="bio">${paragraphs(artist.bio)}</div>` : ""}
-      <dl class="stats"><div><dt>${memorialMode ? "Fan memories" : "Fan reviews"}</dt><dd>${esc(stats.reviewCount)}</dd></div>${memorialMode ? `<div><dt>Concert history</dt><dd>${esc(document.archiveTotal || document.concerts.length)} nights</dd></div>` : stats.averageRating != null ? `<div><dt>Live rating</dt><dd>${esc(stats.averageRating.toFixed(1))}<small>/5</small></dd></div>` : `<div><dt>Live rating</dt><dd>No live rating yet</dd></div>`}${!memorialMode && artist.formed ? `<div><dt>Active since</dt><dd>${esc(artist.formed)}</dd></div>` : ""}</dl>
+      <dl class="stats"><div><dt>${memorialMode ? "Fan memories" : "Reviews"}</dt><dd>${esc(stats.reviewCount)}</dd></div>${memorialMode ? `<div><dt>Concert history</dt><dd>${esc(document.archiveTotal || document.concerts.length)} nights</dd></div>` : stats.averageRating != null ? `<div><dt>Live rating</dt><dd>${esc(stats.averageRating.toFixed(1))}<small>/5</small></dd></div>` : `<div><dt>Live rating</dt><dd>No live rating yet</dd></div>`}${!memorialMode && artist.formed ? `<div><dt>Active since</dt><dd>${esc(artist.formed)}</dd></div>` : ""}</dl>
     </section>
     ${memorial}
     ${!memorialMode && events ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">On the road</p><h2>Upcoming shows</h2></div></div><ol class="event-list">${events}</ol></section>` : ""}
@@ -356,7 +356,7 @@ function venueMain(document) {
     <section class="profile-hero"><p class="eyebrow">Live music venue</p><h1>${esc(venue.name)}</h1>${venue.place ? `<p class="hero-copy">${esc(venue.place)}</p>` : ""}${address}<p class="hero-copy venue-rating">${rating} · ${publicReviewCount}</p></section>
     ${events ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">On the calendar</p><h2>Upcoming concerts</h2></div></div><ol class="event-list">${events}</ol></section>` : ""}
     ${venueReviews ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">About the room</p><h2>Recent venue reviews</h2></div><span>${publicReviewCount}</span></div><div class="post-list">${venueReviews}</div></section>` : `<section class="section empty-state"><p class="eyebrow">About the room</p><h2>No public venue reviews yet.</h2><p>Be the first to share what the sound, sightlines and atmosphere were like.</p></section>`}
-    ${posts ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">From the floor</p><h2>Fan reviews and photos</h2></div></div><div class="post-list">${posts}</div></section>` : ""}
+    ${posts ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">From the floor</p><h2>Reviews and photos</h2></div></div><div class="post-list">${posts}</div></section>` : ""}
   </main>`;
 }
 
@@ -368,9 +368,9 @@ function directoryMain(document) {
     const featured = venue.featuredEvent
       ? `<p>Next: ${link(venue.featuredEvent.path, venue.featuredEvent.name)} · ${link(venue.featuredEvent.artistPath, venue.featuredEvent.artist)}</p>`
       : venue.featuredArtist ? `<p>Recently documented with ${link(venue.featuredArtistPath, venue.featuredArtist)}</p>` : "";
-    return `<li class="artist-card"><p class="eyebrow">Live music venue</p><h2>${link(venue.path, venue.name)}</h2>${venue.place ? `<p>${esc(venue.place)}</p>` : ""}${featured}${venue.reviewCount ? `<p class="micro">${esc(venue.reviewCount)} fan ${venue.reviewCount === 1 ? "review" : "reviews"}</p>` : ""}</li>`;
+    return `<li class="artist-card"><p class="eyebrow">Live music venue</p><h2>${link(venue.path, venue.name)}</h2>${venue.place ? `<p>${esc(venue.place)}</p>` : ""}${featured}${venue.reviewCount ? `<p class="micro">${esc(venue.reviewCount)} ${venue.reviewCount === 1 ? "review" : "reviews"}</p>` : ""}</li>`;
   }).join("");
-  const concerts = (document.concerts || []).map((concert) => `<li><time datetime="${esc(concert.date)}"><strong>${esc(dateLabel(concert.date))}</strong></time><div><h2>${link(concert.path, `${concert.artist} at ${concert.venue}`)}</h2><p>${link(concert.artistPath, concert.artist)} · ${link(concert.venuePath, concert.venue)}${concert.city ? ` · ${esc(concert.city)}` : ""}</p></div><span class="archive-score">${concert.averageRating != null ? `${esc(concert.averageRating.toFixed(1))}/5 · ` : "No rating yet · "}${esc(concert.reviewCount)} ${concert.reviewCount === 1 ? "fan review" : "fan reviews"}</span></li>`).join("");
+  const concerts = (document.concerts || []).map((concert) => `<li><time datetime="${esc(concert.date)}"><strong>${esc(dateLabel(concert.date))}</strong></time><div><h2>${link(concert.path, `${concert.artist} at ${concert.venue}`)}</h2><p>${link(concert.artistPath, concert.artist)} · ${link(concert.venuePath, concert.venue)}${concert.city ? ` · ${esc(concert.city)}` : ""}</p></div><span class="archive-score">${concert.averageRating != null ? `${esc(concert.averageRating.toFixed(1))}/5 · ` : "No rating yet · "}${esc(concert.reviewCount)} ${concert.reviewCount === 1 ? "review" : "reviews"}</span></li>`).join("");
   const pageSuffix = document.page > 1 ? ` — Page ${esc(document.page)}` : "";
   const heading = kind === "artists" ? "Artists in the live archive"
     : kind === "venues" ? "Concert venues on Mshpit"

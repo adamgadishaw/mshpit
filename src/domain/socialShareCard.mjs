@@ -121,7 +121,7 @@ const makeModel = ({
   return Object.freeze({
     kind,
     id: cleanText(id, 240),
-    eyebrow: kind === "review" ? "FAN REVIEW" : kind.toUpperCase(),
+    eyebrow: kind === "review" ? "REVIEW" : kind.toUpperCase(),
     title: safeTitle,
     contextTitle: safeContext || null,
     venue: safeVenue || null,

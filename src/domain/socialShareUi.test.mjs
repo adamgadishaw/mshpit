@@ -79,5 +79,40 @@ test("Instagram uses only the Story composer while web downloads a Story card", 
 
   const plugin = app.plugins.find((entry) => Array.isArray(entry) && entry[0] === "react-native-share");
   assert.deepEqual(plugin?.[1]?.ios, ["instagram-stories"]);
-  assert.deepEqual(plugin?.[1]?.android, ["com.instagram.android"]);
+  assert.deepEqual(plugin?.[1]?.android, ["com.instagram.android", "com.facebook.katana"]);
+});
+
+test("X and Facebook receive each finished card without claiming the website attached it", () => {
+  const studio = source("../components/SocialShareStudio.jsx");
+  const native = source("../lib/socialShare.native.js");
+  const web = source("../lib/socialShare.web.js");
+
+  assert.match(studio, /shareCardToSocialPlatform\(platform, model, \{ preparedAsset: assetState\.asset, intentUrl: url \}\)/);
+  assert.match(studio, /card download started\. Attach the downloaded PNG before posting\./,
+    "Web success feedback must explain the public composer cannot attach the private Blob");
+  assert.match(studio, /Choose an app, review it, and post when ready\./,
+    "A generic share sheet must not promise that an unavailable requested app can be chosen");
+  assert.match(studio, /Share card download started\./,
+    "Browser code can observe that a download began, not that it completed");
+  assert.ok((studio.match(/disabled=\{!!busyAction \|\| assetState\.status !== "ready"\}/g) || []).length >= 2,
+    "X and Facebook stay disabled until the unique PNG is ready");
+
+  assert.match(native, /model\?\.shareText, model\?\.url/,
+    "Native share text includes both the action detail and canonical Mshpit URL");
+  assert.match(native, /url: preparedAsset\.fileUri/);
+  assert.match(native, /RNShare\.Social\[target\.socialKey\]/);
+  assert.match(native, /RNShare\.open\(\{ \.\.\.options, failOnCancel: false \}\)/,
+    "Native sharing preserves an image-capable system share-sheet fallback");
+  assert.doesNotMatch(native, /com\.twitter\.android/,
+    "Android X remains on the supported system image share sheet instead of unsupported shareSingle targeting");
+  assert.match(native, /com\.facebook\.katana/);
+  assert.match(native, /if \(Platform\.OS !== "android"\) return false;/,
+    "iOS avoids react-native-share's retired Social-framework single-share path and uses the image-capable share sheet");
+
+  assert.match(web, /const composer = openExternalShareUrl\(intentUrl\);\s*const download = downloadShareCard\(model, \{ preparedAsset \}\);\s*await Promise\.all\(\[composer, download\]\);/s,
+    "The composer popup opens before any awaited boundary, followed by the PNG download in the same tap");
+  assert.match(web, /openHttpsSharePopup\(url\)/,
+    "Web sharing delegates popup behavior to the unit-tested synchronous helper");
+  assert.doesNotMatch(web, /anchor\.target\s*=/,
+    "The Blob download must not compete with the social composer for a second popup");
 });

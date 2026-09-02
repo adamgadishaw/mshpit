@@ -25,7 +25,8 @@
             "instagram-stories"
           ],
           "android": [
-            "com.instagram.android"
+            "com.instagram.android",
+            "com.facebook.katana"
           ]
         }
       ],

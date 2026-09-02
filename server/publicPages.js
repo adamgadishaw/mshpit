@@ -49,12 +49,12 @@ const PAGES = Object.freeze({
       },
       {
         heading: "Discovery through real live-music taste",
-        paragraphs: ["Mshpit connects artist pages, upcoming event information, venue pages, and fan reviews. The goal is to make discovery feel human: not only what is popular, but what moved people whose taste you trust."],
+        paragraphs: ["Mshpit connects artist pages, upcoming event information, venue pages, and reviews. The goal is to make discovery feel human: not only what is popular, but what moved people whose taste you trust."],
         links: [link("Browse artists", "/artists"), link("Browse upcoming concerts", "/events")],
       },
       {
         heading: "Fan voices and artist voices",
-        paragraphs: ["Fan reviews remain attributed to the members who wrote them. Verified artist accounts can manage artist-facing information and share official updates. A verified badge identifies an account status; it does not turn fan opinion into an artist endorsement."],
+        paragraphs: ["Reviews remain attributed to the members who wrote them. Verified artist accounts can manage artist-facing information and share official updates. A verified badge identifies an account status; it does not turn fan opinion into an artist endorsement."],
       },
       {
         heading: "How public information is handled",

@@ -432,6 +432,8 @@ test("artist document uses only active UGC and references Event leaf pages witho
     assert.equal(document.reviews[0].media[0].url, safeUrl);
     assert.deepEqual(document.reviews[1].media, [], "artist aggregation honors the author's public-photo consent");
     assert.equal(document.image, avatarUrl);
+    assert.equal(document.imageProvenance, "entity-profile");
+    assert.equal(documents.postDocument({ id: "visible" }).imageProvenance, "same-post");
     assert.match(html, /media\.example\/public\/visible\.jpg/);
     assert.doesNotMatch(html, /attacker\.example|HIDDEN REVIEW|HIDDEN UPDATE|Secret Hall/);
     assert.doesNotMatch(html, /MusicEvent/, "the artist collection references the canonical event page instead of duplicating it");
@@ -1077,6 +1079,7 @@ test("provider-evidenced festivals expose cohesive visible and structured event 
     ]);
     assert.deepEqual(schema.image, ["https://s1.ticketm.net/dam/a/festival.jpg"]);
     assert.equal(document.image, "https://s1.ticketm.net/dam/a/festival.jpg");
+    assert.equal(document.imageProvenance, "provider");
     assert.equal(document.imageWidth, 1920);
     assert.equal(document.imageHeight, 1080);
     assert.match(html, /<h1>Lollapalooza<\/h1>/);
@@ -1623,6 +1626,7 @@ test("venue pages show real public ratings and safely render only eligible recen
     assert.deepEqual(document.venueReviewStats, { reviewCount: 1, ratingCount: 1, averageRating: 4.5 });
     assert.equal(document.venueReviews.length, 1);
     assert.deepEqual(document.venueReviews[0].photos, [verifiedUrl]);
+    assert.equal(document.imageProvenance, null);
     assert.match(html, /4\.5<small>\/5<\/small><\/strong> from 1 rating/);
     assert.match(html, /1 public review/);
     assert.match(html, /Recent venue reviews/);

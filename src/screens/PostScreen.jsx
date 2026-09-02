@@ -228,7 +228,7 @@ export default function PostScreen({ log, onClose, onOpenProfile, onOpenArtist, 
   return (
     <View style={styles.wrap}>
       <ScreenHeader
-        kicker={isOnlineReview ? "ONLINE CONCERT REVIEW" : activeLog.review ? "FAN REVIEW" : "POST"}
+        kicker={isOnlineReview ? "ONLINE CONCERT REVIEW" : activeLog.review ? "REVIEW" : "POST"}
         title="Original post"
         onBack={onClose}
         backLabel="Leave the original post"

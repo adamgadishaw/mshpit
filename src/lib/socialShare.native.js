@@ -8,15 +8,37 @@ import { apiBinary } from "./api";
 const INSTAGRAM_STORY_APP_ID = String(process.env.EXPO_PUBLIC_META_APP_ID || "").trim();
 const INSTAGRAM_PACKAGE = "com.instagram.android";
 const INSTAGRAM_STORY_SCHEME = "instagram-stories://share";
+const SOCIAL_PLATFORMS = new Set(["x", "facebook"]);
+const DIRECT_ANDROID_TARGETS = Object.freeze({
+  facebook: Object.freeze({ androidPackage: "com.facebook.katana", socialKey: "FACEBOOK" }),
+});
 
 export const instagramStorySharingConfigured = () => /^\d{5,32}$/u.test(INSTAGRAM_STORY_APP_ID);
 
-async function loadInstagramStoryShare() {
+async function loadNativeShare(errorCode = "SOCIAL_SHARE_UNAVAILABLE") {
   try {
     return (await import("react-native-share")).default;
   } catch {
-    throw new Error("INSTAGRAM_STORY_UNAVAILABLE");
+    throw new Error(errorCode);
   }
+}
+
+function socialShareMessage(model) {
+  return [...new Set([model?.shareText, model?.url].map((value) => String(value || "").trim()).filter(Boolean))].join("\n\n");
+}
+
+async function socialTargetAvailable(RNShare, target) {
+  // react-native-share 12.3.1 routes iOS X/Facebook single-share through the retired
+  // Social framework, which cannot reliably carry this PNG. Use the image-capable
+  // system share sheet on iOS and reserve direct targeting for Android packages.
+  if (Platform.OS !== "android") return false;
+  try {
+    const installed = await RNShare.isPackageInstalled(target.androidPackage);
+    return !!installed?.isInstalled;
+  } catch {
+    // architecture: allow-empty-catch -- app detection can fail on restricted devices; the system share sheet is the safe fallback.
+  }
+  return false;
 }
 
 export async function createShareCardAsset(model, { accountId, signal } = {}) {
@@ -56,10 +78,38 @@ export async function openExternalShareUrl(url) {
   return { mode: "external" };
 }
 
+export async function shareCardToSocialPlatform(platform, model, { preparedAsset = null } = {}) {
+  if (!SOCIAL_PLATFORMS.has(platform) || !model?.url || !preparedAsset?.fileUri) {
+    throw new Error("SOCIAL_ARTWORK_UNAVAILABLE");
+  }
+  const target = DIRECT_ANDROID_TARGETS[platform] || null;
+  const RNShare = await loadNativeShare();
+  const options = {
+    filename: socialShareFileName(model),
+    message: socialShareMessage(model),
+    title: `Share ${model?.title || "from Mshpit"}`,
+    type: "image/png",
+    url: preparedAsset.fileUri,
+    useInternalStorage: true,
+  };
+
+  if (target && await socialTargetAvailable(RNShare, target)) {
+    const result = await RNShare.shareSingle({
+      ...options,
+      social: RNShare.Social[target.socialKey],
+    });
+    if (result?.success === false) throw new Error("SOCIAL_SHARE_NOT_OPENED");
+    return { mode: "targeted-social", platform };
+  }
+
+  const result = await RNShare.open({ ...options, failOnCancel: false });
+  return { mode: result?.dismissedAction ? "dismissed" : "native-share-sheet", platform };
+}
+
 export async function shareCardToInstagramStory(model, { preparedAsset = null } = {}) {
   if (!instagramStorySharingConfigured()) throw new Error("INSTAGRAM_STORY_NOT_CONFIGURED");
   if (!preparedAsset?.fileUri) throw new Error("STORY_ARTWORK_UNAVAILABLE");
-  const RNShare = await loadInstagramStoryShare();
+  const RNShare = await loadNativeShare("INSTAGRAM_STORY_UNAVAILABLE");
 
   if (Platform.OS === "ios") {
     const installed = await Linking.canOpenURL(INSTAGRAM_STORY_SCHEME);

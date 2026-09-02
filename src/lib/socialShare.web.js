@@ -1,6 +1,7 @@
 import * as Clipboard from "expo-clipboard";
 
 import { socialShareFileName } from "../domain/socialShareCard.mjs";
+import { openHttpsSharePopup } from "../domain/socialSharePopup.mjs";
 import { apiBinary } from "./api";
 
 export const instagramStorySharingConfigured = () => false;
@@ -37,11 +38,19 @@ export async function copyShareLink(url) {
   return { mode: "copied" };
 }
 
-export async function openExternalShareUrl(url) {
-  if (typeof window === "undefined") throw new Error("WINDOW_UNAVAILABLE");
-  const opened = window.open(url, "_blank", "noopener,noreferrer");
-  if (!opened) throw new Error("POPUP_BLOCKED");
-  return { mode: "external" };
+export function openExternalShareUrl(url) {
+  return openHttpsSharePopup(url);
+}
+
+export async function shareCardToSocialPlatform(platform, model, { preparedAsset = null, intentUrl = null } = {}) {
+  if (!["x", "facebook"].includes(platform) || !model?.url || !preparedAsset?.previewUri || !intentUrl) {
+    throw new Error("SOCIAL_ARTWORK_UNAVAILABLE");
+  }
+  // Keep both browser actions inside the original tap. Public social intents cannot receive a private Blob attachment.
+  const composer = openExternalShareUrl(intentUrl);
+  const download = downloadShareCard(model, { preparedAsset });
+  await Promise.all([composer, download]);
+  return { mode: "composer-download", platform };
 }
 
 export async function downloadShareCard(model, { preparedAsset = null } = {}) {
@@ -49,8 +58,6 @@ export async function downloadShareCard(model, { preparedAsset = null } = {}) {
   const anchor = document.createElement("a");
   anchor.href = preparedAsset.previewUri;
   anchor.download = socialShareFileName(model);
-  anchor.target = "_blank";
-  anchor.rel = "noopener noreferrer";
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();

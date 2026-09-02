@@ -1706,14 +1706,25 @@ function storedAttendanceTicket(value) {
   };
 }
 
-function attendanceTicketArtistPhoto(row) {
-  const key = normName(row.artist_key || row.artist);
+function attendanceTicketArtistProfilePhoto({ artistKey, artist } = {}) {
+  const key = normName(artistKey || artist);
   if (!key) return null;
   const profile = ticketArtistProfile.get(key);
   if (profile?.owner_id && !profile.removed && publicAccountOrNull(profile.owner_id)) {
     const profilePhoto = safePublicProfileImage(profile.owner_id, profile.avatar_uri);
     if (profilePhoto) return profilePhoto;
   }
+  return null;
+}
+
+function attendanceTicketArtistPhoto(row) {
+  const profilePhoto = attendanceTicketArtistProfilePhoto({
+    artist: row.artist,
+    artistKey: row.artist_key,
+  });
+  if (profilePhoto) return profilePhoto;
+  const key = normName(row.artist_key || row.artist);
+  if (!key) return null;
   // This is the same lower-priority provider/catalog fallback the Artist page
   // uses. Ticketmaster event artwork is deliberately not substituted: a tour
   // poster is not necessarily the artist's profile identity.
@@ -3511,6 +3522,7 @@ export const routes = {
     rateLimit: limit,
     requireUser,
     resolvePublicDocument: publicDocumentForPath,
+    resolveCurrentArtistProfileImage: attendanceTicketArtistProfilePhoto,
   }),
   ...showRoutes({
     database: db,

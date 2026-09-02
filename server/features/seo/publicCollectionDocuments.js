@@ -225,7 +225,7 @@ export function createPublicCollectionDocumentService({ database,origin = DEFAUL
         .map((row) => concertItem(row,{ city })).filter(Boolean));
       if (!concerts.length) return null;
       const context = `${city}, ${country}`;
-      const title = `Concerts in ${context}: Fan Reviews & Ratings${pageSuffix(page)} | Mshpit`;
+      const title = `Concerts in ${context}: Reviews & Ratings${pageSuffix(page)} | Mshpit`;
       const description = `Explore real concert nights in ${context} documented by Mshpit fans with reviews and live-performance ratings${page > 1 ? ` on page ${page}` : ""}.`;
       const breadcrumbs = freezeRows([
         { name:"Mshpit",path:"/" },
@@ -252,7 +252,7 @@ export function createPublicCollectionDocumentService({ database,origin = DEFAUL
       const concerts = freezeRows((raw.concerts || []).slice(0,12)
         .map((row) => concertItem(row,{ knownArtist:raw.artist })).filter(Boolean));
       if (!concerts.length) return null;
-      const title = `${artistName} Concert Archive & Fan Reviews${pageSuffix(page)} | Mshpit`;
+      const title = `${artistName} Concert Archive & Reviews${pageSuffix(page)} | Mshpit`;
       const description = `Browse ${artistName}'s real concert history documented by Mshpit fans, including live reviews and ratings${page > 1 ? ` on page ${page}` : ""}.`;
       const breadcrumbs = freezeRows([
         { name:"Mshpit",path:"/" },

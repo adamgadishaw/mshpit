@@ -46,7 +46,7 @@ function SocialProof({ proof, onOpenProfile }) {
 function RecommendationCard({ recommendation, index, width, onOpenArtist, onOpenProfile }) {
   const { artist, nextDate, reason } = recommendation;
   const rating = recommendation.reviewCount > 0 && recommendation.liveRating
-    ? `${recommendation.liveRating.toFixed(1)} ★ · ${recommendation.reviewCount} fan review${recommendation.reviewCount === 1 ? "" : "s"}`
+    ? `${recommendation.liveRating.toFixed(1)} ★ · ${recommendation.reviewCount} review${recommendation.reviewCount === 1 ? "" : "s"}`
     : null;
   const nextDateLine = nextDate
     ? [formatDate(nextDate.date, nextDate.date), nextDate.venue, nextDate.city].filter(Boolean).join(" · ")
