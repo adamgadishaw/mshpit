@@ -15,6 +15,8 @@ import Avatar from "../components/Avatar";
 import ClipPoster from "../components/ClipPoster";
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import useScopedRefresh from "../hooks/useScopedRefresh";
+import useAppActive from "../lib/useAppActive";
+import { recordFeedImpressionForSession } from "../features/feedImpressions/feedImpressionService";
 import { useStore } from "../store";
 
 const web = Platform.OS === "web";
@@ -250,6 +252,7 @@ function RailBtn({ icon, filled, tint, label, onPress, a11y }) {
 // swipe-to-skip. One clip per post (its first video); the rest live on the post.
 export default function ClipsScreen({ onClose, onOpenPost, onOpenProfile, onOpenArtist, onRequireAuth }) {
   const { session, loadClips, toggleLike, track } = useStore();
+  const appActive = useAppActive();
   const { height: winH } = useWindowDimensions();
   const [pages, setPages] = useState([]);
   const [cursor, setCursor] = useState(null);
@@ -269,6 +272,23 @@ export default function ClipsScreen({ onClose, onOpenPost, onOpenProfile, onOpen
   const reportedPlaybackErrorsRef = useRef(new Set());
   const trackRef = useRef(track);
   trackRef.current = track;
+  const activePost = pages[active]?.post || null;
+
+  useEffect(() => {
+    if (!appActive || !session?.id || !activePost?.id) return undefined;
+    const timer = setTimeout(() => {
+      recordFeedImpressionForSession(session, { postId: activePost.id, surface: "clips" });
+      trackRef.current?.("feed_impression", {
+        postId: activePost.id,
+        position: active,
+        surface: "clips",
+        algorithm: activePost.recommendation?.algorithm || "chronological-v1",
+        algorithmVersion: activePost.recommendation?.algorithmVersion || 1,
+        reasonCode: activePost.recommendation?.reasonCode,
+      });
+    }, 1_000);
+    return () => clearTimeout(timer);
+  }, [active, activePost?.id, appActive, session?.id]);
 
   const reportClipPlaybackError = useCallback((failure) => {
     if (!claimClipPlaybackFailure(reportedPlaybackErrorsRef.current, failure)) return;

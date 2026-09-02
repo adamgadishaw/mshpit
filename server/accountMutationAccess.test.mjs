@@ -10,6 +10,7 @@ test("unverified sessions can browse and exercise account rights", () => {
     ["POST", "/api/verify-email"],
     ["POST", "/api/verify-email/resend"],
     ["POST", "/api/logout"],
+    ["POST", "/api/feed/impressions"],
     ["POST", "/api/me/email-preferences"],
     ["POST", "/api/suggestions"],
     ["DELETE", "/api/me"],

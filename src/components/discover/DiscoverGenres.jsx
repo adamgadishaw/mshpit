@@ -14,7 +14,12 @@ const initialsOf = (name = "") => name.split(/\s+/).filter(Boolean).slice(0, 2).
 const artistUser = (row) => ({ avatarUri: row?.photo && isHttp(row.photo) ? proxied(row.photo, 240) : row?.photo || null, initials: initialsOf(row?.name), avatarColor: colors.amber });
 
 function GenreArtist({ row, index, onOpen, onPlay, onAdd }) {
-  const detail = [row.discoveryReason, row.topTrack?.title].filter(Boolean).join(" · ") || row.genre || "Artist";
+  const ratingCount = Math.max(0, Number(row?.ratingCount) || 0);
+  const reviewCount = Math.max(0, Number(row?.reviewCount) || 0);
+  const liveRating = Number(row?.avgRating);
+  const detail = row?.rankingGroup === "top-reviewed" && ratingCount && Number.isFinite(liveRating)
+    ? `${liveRating.toFixed(1)}/5 live · ${ratingCount} rating${ratingCount === 1 ? "" : "s"}${reviewCount ? ` · ${reviewCount} written review${reviewCount === 1 ? "" : "s"}` : ""}`
+    : [row.discoveryReason, row.topTrack?.title].filter(Boolean).join(" · ") || row.genre || "Artist";
   return (
     <View style={[styles.artistRow, index > 0 && styles.artistBorder]}>
       <View style={styles.artistRank}><Text style={styles.artistRankText}>{index + 1}</Text></View>
@@ -28,6 +33,22 @@ function GenreArtist({ row, index, onOpen, onPlay, onAdd }) {
           {onAdd && <Pressable style={styles.trackButton} onPress={() => onAdd(row)} accessibilityRole="button" accessibilityLabel={"Add " + row.topTrack.title + " by " + row.name + " to a playlist"} hitSlop={4}><Icon name="plus" size={14} color={colors.textDim} /></Pressable>}
           {onPlay && <Pressable style={[styles.trackButton, styles.playButton]} onPress={() => onPlay(row)} accessibilityRole="button" accessibilityLabel={"Play " + row.topTrack.title + " by " + row.name} hitSlop={4}><Icon name="play" size={12} color={colors.amber} /></Pressable>}
         </View>
+      )}
+    </View>
+  );
+}
+
+function GenreArtistGroup({ eyebrow, detail, rows, empty, onOpenArtist, onPlay, onAdd }) {
+  return (
+    <View style={styles.artistGroup}>
+      <Text style={styles.groupEyebrow}>{eyebrow}</Text>
+      <Text style={styles.groupDetail}>{detail}</Text>
+      {rows.length ? (
+        <View style={styles.artistList}>
+          {rows.map((row, index) => <GenreArtist key={row.name + "_" + index} row={row} index={index} onOpen={onOpenArtist} onPlay={onPlay} onAdd={onAdd} />)}
+        </View>
+      ) : (
+        <Text style={styles.groupEmpty}>{empty}</Text>
       )}
     </View>
   );
@@ -70,12 +91,21 @@ function DiscoverGenres({
     selectedGenre: selected,
     limit: 6,
   }), [attendanceRows, fallbackRows, rows, selected]);
+  const reviewedRows = useMemo(() => (Array.isArray(rows) ? rows : [])
+    .filter((row) => row?.rankingGroup === "top-reviewed"), [rows]);
+  const popularRows = useMemo(() => (Array.isArray(rows) ? rows : [])
+    .filter((row) => row?.rankingGroup === "popular"), [rows]);
+  const hasRankedGenreRows = !!selected && (reviewedRows.length > 0 || popularRows.length > 0);
   const hasGenres = chartData.length > 0;
   const loadingArtists = !!selected && (status === "idle" || status === "loading") && !rows?.length;
-  const spotlightTitle = spotlight.recentCount
+  const spotlightTitle = hasRankedGenreRows
+    ? `Best reviewed and popular ${selected} artists`
+    : spotlight.recentCount
     ? "From shows you attended"
     : selected ? "Popular in " + selected : "Popular now";
-  const spotlightDetail = spotlight.recentCount
+  const spotlightDetail = hasRankedGenreRows
+    ? "MSHpit live ratings and catalog popularity are shown separately."
+    : spotlight.recentCount
     ? "Starts with artists from your recent shows, then adds popular artists."
     : selected ? "Popular artists in " + selected + "." : "Popular artists to start with.";
 
@@ -155,7 +185,7 @@ function DiscoverGenres({
               <Text style={styles.spotlightTitle}>{spotlightTitle}</Text>
               <Text style={styles.spotlightDetail}>{spotlightDetail}</Text>
             </View>
-            {!!spotlight.recentCount && <View style={styles.personalPill}><Text style={styles.personalPillText}>FROM YOUR SHOWS</Text></View>}
+            {!!spotlight.recentCount && !hasRankedGenreRows && <View style={styles.personalPill}><Text style={styles.personalPillText}>FROM YOUR SHOWS</Text></View>}
           </View>
 
           {loadingArtists ? (
@@ -164,6 +194,27 @@ function DiscoverGenres({
             <View style={styles.genreLoading} accessibilityLiveRegion="assertive">
               <Text style={styles.emptyCopy} selectable>Could not load this genre right now.</Text>
               <Pressable style={styles.retryButton} onPress={onRetry} accessibilityRole="button" accessibilityLabel={"Retry loading " + selected}><Text style={styles.retryText}>Try again</Text></Pressable>
+            </View>
+          ) : hasRankedGenreRows ? (
+            <View style={styles.rankedGroups}>
+              <GenreArtistGroup
+                eyebrow="TOP REVIEWED LIVE"
+                detail="Ranked with real MSHpit ratings and sample size, so one perfect score does not automatically win."
+                rows={reviewedRows}
+                empty={`No ${selected} artist has a qualifying live rating yet.`}
+                onOpenArtist={onOpenArtist}
+                onPlay={onPlay}
+                onAdd={onAdd}
+              />
+              <GenreArtistGroup
+                eyebrow={`POPULAR IN ${selected.toUpperCase()}`}
+                detail="Popular catalog artists with a verified genre."
+                rows={popularRows}
+                empty={`No additional popular ${selected} artists are available yet.`}
+                onOpenArtist={onOpenArtist}
+                onPlay={onPlay}
+                onAdd={onAdd}
+              />
             </View>
           ) : spotlight.rows.length ? (
             <View style={styles.artistList}>
@@ -208,6 +259,11 @@ const styles = StyleSheet.create({
   personalPill: { minHeight: 26, paddingHorizontal: 8, alignItems: "center", justifyContent: "center", borderRadius: radius.pill, backgroundColor: colors.good + "18", borderWidth: 1, borderColor: colors.good + "55" },
   personalPillText: { color: colors.good, fontFamily: mono, fontSize: 8, fontWeight: "900", letterSpacing: 0.8 },
   artistList: { borderRadius: radius.md, overflow: "hidden", borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surface },
+  rankedGroups: { gap: 16 },
+  artistGroup: { gap: 7 },
+  groupEyebrow: { color: colors.amber, fontFamily: mono, fontSize: 9, fontWeight: "900", letterSpacing: 1.1 },
+  groupDetail: { color: colors.textDim, fontFamily: font, fontSize: 10.5, lineHeight: 15 },
+  groupEmpty: { color: colors.textDim, fontFamily: font, fontSize: 11.5, lineHeight: 17, padding: 12, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surface },
   artistRow: { minHeight: 64, flexDirection: "row", alignItems: "center", gap: 9, paddingHorizontal: 10, paddingVertical: 7 },
   artistBorder: { borderTopWidth: 1, borderTopColor: colors.lineSoft },
   artistRank: { width: 24, height: 24, borderRadius: 12, alignItems: "center", justifyContent: "center", backgroundColor: colors.amber + "12", borderWidth: 1, borderColor: colors.amber + "44" },

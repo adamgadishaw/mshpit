@@ -44,7 +44,7 @@ function Slide({ photo, idx, viaProxy, onError }) {
   );
 }
 
-export default function VenuePhotoWidget({ photos = [], venueName, city, coord, loading = false, error = false, onRetry, onPress }) {
+export default function VenuePhotoWidget({ photos = [], venueName, city, coord, loading = false, error = false, compact = false, onRetry, onPress }) {
   const { width } = useWindowDimensions();
   // Some hosts block browser loads (hotlink/CORS) even when the URL is alive.
   // Retry ladder per URL: direct -> wsrv.nl proxy -> drop. Only when every photo
@@ -117,7 +117,11 @@ export default function VenuePhotoWidget({ photos = [], venueName, city, coord, 
 
   return (
     <View>
-      <View style={[styles.frame, { height: width >= 1180 ? 300 : width >= 760 ? 260 : 190 }]}>
+      <View style={[styles.frame, {
+        height: compact
+          ? width >= 900 ? 214 : 180
+          : width >= 1180 ? 300 : width >= 760 ? 260 : 190,
+      }]}>
         <Pressable
           style={StyleSheet.absoluteFill}
           onPress={activatePhoto}

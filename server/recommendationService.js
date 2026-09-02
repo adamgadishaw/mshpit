@@ -1,10 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { db, parseJsonArray } from "./db.js";
 import { ApiError } from "./errors.js";
-import { rankRecommendations, RECOMMENDATION_ALGORITHM, recommendationKey } from "./recommendationRanking.js";
+import {
+  rankRecommendations,
+  RECOMMENDATION_ALGORITHM,
+  RECOMMENDATION_ALGORITHM_VERSION,
+  recommendationKey,
+} from "./recommendationRanking.js";
 import { activeAccountSql } from "./accountVisibility.js";
 import { projectArtistGenre } from "../src/domain/genre.mjs";
 import { ARTIST_GENRE_SQL_COLUMNS, projectArtistGenreColumns } from "./artistGenreProjection.js";
+import { viewerPostImpressionMap } from "./feedImpressions.js";
 
 const CANDIDATE_LIMIT = Math.max(200, Math.min(1200, Number(process.env.RECOMMENDATION_CANDIDATE_LIMIT) || 600));
 const CANDIDATE_SCAN_LIMIT = Math.min(2400, CANDIDATE_LIMIT * 4);
@@ -40,6 +46,12 @@ export const RECOMMENDATION_CANDIDATE_SELECT = `
 // benchmarks exercise the exact signal reads used by production ranking.
 export const RECOMMENDATION_SIGNAL_SQL = Object.freeze({
   fanClubs: "SELECT artist FROM fan_club_members INDEXED BY idx_fan_club_members_user_artist WHERE user_id=? LIMIT 200",
+  attendance: `SELECT COALESCE(NULLIF(a.legacy_artist,''),s.artist) artist,a.state
+    FROM show_attendance a INDEXED BY idx_show_attendance_user_updated JOIN shows s ON s.id=a.show_id
+    WHERE a.user_id=? AND length(COALESCE(NULLIF(a.legacy_artist,''),s.artist))>0
+    ORDER BY a.updated_at DESC LIMIT 250`,
+  legacyGoing: `SELECT artist FROM going WHERE user_id=? AND length(artist)>0
+    ORDER BY created_at DESC LIMIT 200`,
   likes: `SELECT p.artist FROM likes l INDEXED BY idx_likes_user_post JOIN posts p ON p.id=l.post_id
     WHERE l.user_id=? AND p.removed=0 AND length(p.artist)>0 ORDER BY p.created_at DESC LIMIT 250`,
   comments: `SELECT p.artist FROM comments c INDEXED BY idx_comments_user_recent JOIN posts p ON p.id=c.post_id
@@ -80,9 +92,16 @@ function addArtistWeight(weights, artist, amount) {
 function recommendationSignals(viewer, at) {
   if (!viewer?.id) return { artistWeights: new Map(), followedUserIds: new Set(), genres: new Set(), city: "" };
   const artistWeights = new Map();
-  for (const artist of safeJsonArray(viewer.favorite_artists)) addArtistWeight(artistWeights, artist, 5);
-  for (const row of db.prepare(RECOMMENDATION_SIGNAL_SQL.fanClubs).all(viewer.id)) addArtistWeight(artistWeights, row.artist, 6);
-  for (const row of db.prepare("SELECT artist FROM posts WHERE user_id=? AND removed=0 AND length(artist)>0 ORDER BY created_at DESC LIMIT 200").all(viewer.id)) addArtistWeight(artistWeights, row.artist, 3);
+  for (const artist of safeJsonArray(viewer.favorite_artists)) addArtistWeight(artistWeights, artist, 8);
+  for (const row of db.prepare(RECOMMENDATION_SIGNAL_SQL.fanClubs).all(viewer.id)) addArtistWeight(artistWeights, row.artist, 7);
+  for (const row of db.prepare("SELECT artist FROM posts WHERE user_id=? AND removed=0 AND length(artist)>0 ORDER BY created_at DESC LIMIT 200").all(viewer.id)) addArtistWeight(artistWeights, row.artist, 5);
+  for (const row of db.prepare(RECOMMENDATION_SIGNAL_SQL.attendance).all(viewer.id)) {
+    addArtistWeight(artistWeights, row.artist,
+      row.state === "went" || row.state === "here" ? 6 : row.state === "going" ? 4 : 2);
+  }
+  for (const row of db.prepare(RECOMMENDATION_SIGNAL_SQL.legacyGoing).all(viewer.id)) {
+    addArtistWeight(artistWeights, row.artist, 2);
+  }
   for (const row of db.prepare(RECOMMENDATION_SIGNAL_SQL.likes).all(viewer.id)) addArtistWeight(artistWeights, row.artist, 3);
   for (const row of db.prepare(RECOMMENDATION_SIGNAL_SQL.comments).all(viewer.id)) addArtistWeight(artistWeights, row.artist, 2);
   for (const row of db.prepare("SELECT artist FROM plays WHERE user_id=? AND length(artist)>0 ORDER BY created_at DESC LIMIT 250").all(viewer.id)) addArtistWeight(artistWeights, row.artist, 1);
@@ -158,9 +177,15 @@ function candidateRows(viewer, at, hiddenIds = new Set()) {
     return true;
   }).slice(0, CANDIDATE_LIMIT);
   const genres = candidateGenreMap(candidates);
+  const impressions = viewer?.id
+    ? viewerPostImpressionMap(db, viewer.id, candidates.map((row) => row.id))
+    : new Map();
   return candidates.map((row) => ({
     ...row,
     verified_artist_genre: genres.get(row.artist_key) ?? null,
+    viewer_seen_count: Number(impressions.get(row.id)?.seen_count) || 0,
+    viewer_first_seen_at: impressions.get(row.id)?.first_seen_at ?? null,
+    viewer_last_seen_at: impressions.get(row.id)?.last_seen_at ?? null,
   }));
 }
 
@@ -187,6 +212,8 @@ function rankingCandidate(row) {
     mediaCount: Number(row.media_count) || 0,
     reviewLength: Number(row.review_length) || 0,
     kind: row.kind || "review",
+    viewerSeenCount: Number(row.viewer_seen_count) || 0,
+    viewerLastSeenAt: row.viewer_last_seen_at ?? null,
   };
 }
 
@@ -229,12 +256,24 @@ function createSnapshot(viewer, at, hiddenIds) {
     ids: ranked.map((entry) => entry.candidate.id),
     recommendations: new Map(ranked.map((entry) => [entry.candidate.id, {
       algorithm: RECOMMENDATION_ALGORITHM,
-      algorithmVersion: 1,
+      algorithmVersion: RECOMMENDATION_ALGORITHM_VERSION,
       candidateSource: "global",
       reasonCode: entry.reason.code,
       reason: entry.reason.label,
       feedContext: `discover:${entry.reason.code}`,
       personalized: !!viewer?.id && entry.personalScore !== 0,
+      signals: [
+        entry.parts.affinity > 0 && "artist",
+        entry.parts.following > 0 && "follow",
+        entry.parts.genre > 0 && "genre",
+        entry.parts.local > 0 && "local",
+        entry.parts.seenPenalty < 0 && "seen_rotation",
+      ].filter(Boolean),
+      rotation: {
+        alreadySeen: entry.parts.viewerSeenCount > 0,
+        seenCount: entry.parts.viewerSeenCount,
+        lastSeenAt: entry.parts.viewerLastSeenAt || null,
+      },
     }])),
   };
   snapshots.set(id, snapshot);
@@ -309,12 +348,24 @@ export function recommendedFeedPage({ viewer = null, cursor = null, limit = 20, 
     nextCursor: consumed < snapshot.ids.length ? encodePageCursor(snapshot.id, consumed) : null,
     algorithm: {
       id: RECOMMENDATION_ALGORITHM,
-      version: 1,
+      version: RECOMMENDATION_ALGORITHM_VERSION,
       candidateSource: "global",
       personalized: !!viewer?.id,
       snapshotAt: snapshot.at,
+      rankingSignals: [
+        "music_affinity", "follow_relationship", "verified_genre", "home_city",
+        "freshness", "conversation", "post_completeness", "seen_rotation",
+      ],
+      seenRotation: "Recently seen posts are lowered, not hidden.",
     },
   };
+}
+
+// A recorded impression affects only the next head refresh. Existing cursors
+// retain their immutable snapshot, so cards never jump while somebody scrolls.
+export function invalidateRecommendationSnapshotForViewer(viewerId) {
+  const viewerKey = String(viewerId || "");
+  if (viewerKey) activeSnapshotByViewer.delete(viewerKey);
 }
 
 export function clearRecommendationSnapshotsForTests() {

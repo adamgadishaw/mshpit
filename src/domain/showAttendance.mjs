@@ -2,6 +2,8 @@ export const ATTENDANCE_STATES = Object.freeze(["interested", "going", "here", "
 export const ATTENDANCE_VISIBILITIES = Object.freeze(["members", "followers", "private"]);
 export const CROWD_SCOPES = Object.freeze(["everyone", "following", "friends"]);
 const STABLE_SHOW_ID_PATTERN = /^show_[a-f0-9]{64}$/u;
+const DAY_MS = 24 * 60 * 60 * 1_000;
+const DEFAULT_SHOW_DURATION_MS = 4 * 60 * 60 * 1_000;
 
 const finiteCount = (value) => {
   const numeric = Number(value);
@@ -34,6 +36,49 @@ export function normalizeStableShowId(value) {
 
 export function isAttendeeState(value) {
   return value === "going" || value === "here" || value === "went";
+}
+
+const parsedTime = (value) => {
+  if (value == null || value === "" || typeof value === "boolean") return null;
+  const numeric = Number(value);
+  if (Number.isFinite(numeric) && numeric > 0) return numeric;
+  const parsed = Date.parse(String(value));
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+// The display cutoff is deliberately conservative. An explicit end wins. If
+// only a real start is known, use a four-hour show window. Date-only records do
+// not become Attended until a full day after that calendar day has ended.
+export function postShowAttendanceCutoff(show) {
+  if (!show || typeof show !== "object") return null;
+  const explicitEnd = [
+    show.endAt, show.endsAt, show.endDateTime, show.eventEndDateTime,
+  ].map(parsedTime).find((value) => value != null);
+  if (explicitEnd != null) return explicitEnd + DAY_MS;
+
+  const start = [
+    show.startsAt, show.startAt, show.startDateTime, show.showStartDateTime,
+  ].map(parsedTime).find((value) => value != null);
+  if (start != null) return start + DEFAULT_SHOW_DURATION_MS + DAY_MS;
+
+  const finalDate = [show.eventEndDate, show.localDate, show.date]
+    .find((value) => typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/u.test(value.trim()));
+  if (!finalDate) return null;
+  const endOfDate = Date.parse(`${finalDate.trim()}T23:59:59.999Z`);
+  return Number.isFinite(endOfDate) ? endOfDate + DAY_MS : null;
+}
+
+export function attendanceStateDisplayLabel(state, { show = null, now = Date.now(), cutoffAt } = {}) {
+  const normalized = normalizeAttendanceState(state);
+  if (!normalized) return null;
+  if (normalized === "interested") return "Interested";
+  if (normalized === "went") return "Attended";
+  const cutoff = parsedTime(cutoffAt) ?? postShowAttendanceCutoff(show);
+  if ((normalized === "going" || normalized === "here") && cutoff != null && Number(now) >= cutoff) {
+    return "Attended";
+  }
+  if (normalized === "here") return "Here";
+  return "Going";
 }
 
 export function normalizeAttendanceVisibility(value, fallback = "members") {

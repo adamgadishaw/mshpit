@@ -85,6 +85,12 @@ test("a paused web video with decoded current-frame data can retire its poster o
   assert.equal(videoViewerWebFrameReady(null), false);
 });
 
+test("the video viewer exposes one play affordance instead of stacking two icons", async () => {
+  const viewer = await readFile(new URL("../components/PhotoViewer.jsx", import.meta.url), "utf8");
+  assert.match(viewer, /<ClipPoster[^>]*showPlayBadge=\{false\}/);
+  assert.equal((viewer.match(/<Text style=\{styles\.videoStartText\}>Play video<\/Text>/g) || []).length, 1);
+});
+
 test("gallery arrows do not steal seeking keys from focused video controls", () => {
   assert.equal(galleryKeyAction({ key: "ArrowLeft", tagName: "VIDEO" }), null);
   assert.equal(galleryKeyAction({ key: "ArrowRight", tagName: "input" }), null);

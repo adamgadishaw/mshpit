@@ -57,7 +57,7 @@ test("every public or social authored write rejects unsafe text before persisten
 
   const cases = [
     ["signup profile name", () => routes["POST /api/signup"](ctx(null, "signup", {
-      name: "White Power", email: "new-safety@example.com", password: "SafetyPass123", termsVersion: "2026-08",
+      name: "White Power", email: "new-safety@example.com", password: "SafetyPass123", genres: ["Rock"], termsVersion: "2026-08",
     }))],
     ["profile handle", () => routes["PATCH /api/me"](ctx(member, "profile", { handle: "whitepower" }))],
     ["post body", () => routes["POST /api/posts"](ctx(member, "post-body", {

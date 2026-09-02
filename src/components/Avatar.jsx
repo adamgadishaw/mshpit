@@ -1,27 +1,21 @@
 import { useEffect, useState } from "react";
-import { View, Text, Pressable, StyleSheet } from "react-native";
+import { View, Text, Pressable, StyleSheet, PixelRatio } from "react-native";
 import { Image as ExpoImage } from "expo-image";
 import { colors, focusRing, mono } from "../theme";
+import { displaySrc, previewSrc } from "../lib/img";
 
 // Shows the user's uploaded photo if set, else initials on their colour.
 // Tappable to open a profile.
-export default function Avatar({ user, size = 36, onPress }) {
+export default function Avatar({ user, size = 36, onPress, priority = "normal" }) {
   const profileName = user?.name || user?.username || "member";
-  const [failedUri, setFailedUri] = useState(null);
-  useEffect(() => setFailedUri(null), [user?.avatarUri]);
-  const avatarUri = user?.avatarUri && failedUri !== user.avatarUri ? user.avatarUri : null;
-  const inner = avatarUri ? (
-    <ExpoImage
-      accessible={false}
-      source={{ uri: avatarUri }}
-      style={{ width: size, height: size, borderRadius: size / 2 }}
-      contentFit="cover"
-      cachePolicy="memory-disk"
-      recyclingKey={`avatar:${user?.id || user?.handle || "member"}:${avatarUri}`}
-      transition={80}
-      onError={() => setFailedUri(avatarUri)}
-    />
-  ) : (
+  const previewWidth = Math.max(96, Math.min(384, Math.ceil((size * PixelRatio.get()) / 32) * 32));
+  const originalUri = user?.avatarUri ? displaySrc(user.avatarUri, previewWidth) : null;
+  const previewUri = user?.avatarUri ? previewSrc(user.avatarUri, previewWidth) : null;
+  const sources = [...new Set([previewUri, originalUri].filter(Boolean))];
+  const [sourceIndex, setSourceIndex] = useState(0);
+  useEffect(() => setSourceIndex(0), [user?.avatarUri, previewWidth]);
+  const avatarUri = sources[sourceIndex] || null;
+  const fallback = (
     <View
       style={[
         styles.fallback,
@@ -31,6 +25,27 @@ export default function Avatar({ user, size = 36, onPress }) {
       <Text style={[styles.txt, { fontSize: size * 0.34, color: user?.avatarColor || colors.amber }]}>
         {user?.initials || "?"}
       </Text>
+    </View>
+  );
+  const inner = (
+    <View style={{ width: size, height: size, borderRadius: size / 2, overflow: "hidden" }}>
+      {fallback}
+      {!!avatarUri && (
+        <ExpoImage
+          accessible={false}
+          source={{ uri: avatarUri }}
+          style={StyleSheet.absoluteFill}
+          contentFit="cover"
+          cachePolicy="memory-disk"
+          priority={priority}
+          loading={priority === "high" ? "eager" : "lazy"}
+          allowDownscaling
+          enforceEarlyResizing
+          recyclingKey={`avatar:${user?.id || user?.handle || "member"}:${avatarUri}`}
+          transition={80}
+          onError={() => setSourceIndex((current) => current + 1)}
+        />
+      )}
     </View>
   );
 

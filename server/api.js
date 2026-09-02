@@ -6,7 +6,7 @@ import { MUSIC_PLAYER_ENABLED } from "../src/domain/musicPlayerAvailability.mjs"
 //   message, stableCode) is the ONLY sanctioned way to fail; anything else is a
 //   clean INTERNAL_ERROR with a request ID and no internal details
 // - responses only ever contain public projections (publicUser), never raw rows
-import { randomUUID, randomBytes, createHash } from "node:crypto";
+import { randomBytes, createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { mailConfigured, mailDiagnostics } from "./mailer.js";
 import { DEFAULT_TEMPLATES, availableTokens, isCodeOwnedTemplate, renderEmail, safeUrl } from "./emails.js";
@@ -19,12 +19,17 @@ import { db, DATABASE_PATH, q, emailStmts, badgeStmts, customBadgesFor, publicUs
 import { BADGE_COLORS, BADGE_GLYPHS, BADGE_KINDS, validateBadge } from "../src/domain/badgeArt.mjs";
 import { alertCooldownMs, alertRecipient, alertsEnabled, errorStats, maybeAlert, recentErrors, recordError } from "./errorLog.js";
 import { genreClaim, resolveGenre, storedClaims, upsertClaim, withoutSource } from "../src/domain/genre.mjs";
+import { profileGenreSelection } from "../src/domain/genrePreferences.mjs";
 import { deezerEnrichmentGenreFields } from "./deezerGenre.js";
 import { ARTIST_GENRE_SQL_COLUMNS, projectArtistGenreColumns } from "./artistGenreProjection.js";
 import { hashPassword, verifyPassword, verifyPasswordForUser, createSession, destroySession, rateLimit, reserveRateLimits } from "./auth.js";
+import { opaqueId } from "./ids.js";
 import { createRecoveryResponseFloor } from "./authResponseFloor.js";
 import { startCatalogSeed, catalogSeedStatus, stopCatalogSeed, deezerEnrich, catalogSeedRequestOptions } from "./catalogSeed.js";
-import { clean, cleanEmail, isEmail, cleanName, isName, cleanHandle, isPassword, clampRating, cleanStringArray, cleanDate, shape, LIMITS } from "./validate.js";
+import {
+  clean, cleanEmail, isEmail, cleanName, isName, cleanHandle, isPassword,
+  clampRating, cleanStringArray, cleanDate, cleanLatitude, cleanLongitude, shape, LIMITS,
+} from "./validate.js";
 import { ApiError, privateErrorLabel } from "./errors.js";
 import {
   mediaConfigured,
@@ -55,6 +60,7 @@ import {
 import { mediaAssetRoutes } from "./mediaAssetRoutes.js";
 import { mediaLegacyFinalizeRoutes } from "./mediaLegacyFinalizeRoutes.js";
 import { directMessageReadProjection, dmReadRoutes } from "./dmReadRoutes.js";
+import { createMessageRelationshipContextService } from "./features/messaging/messageRelationshipContext.js";
 import { postTagRoutes } from "./postTagRoutes.js";
 import { artistReviewRoutes } from "./features/artistReviews/artistReviewRoutes.js";
 import { artistResolveRoutes } from "./features/artistSearch/artistResolveRoutes.js";
@@ -143,13 +149,17 @@ import { guestSearchAnalyticsRoutes } from "./features/guestSearchAnalytics/gues
 import { suggestionRoutes } from "./features/suggestions/suggestionRoutes.js";
 import { createPeopleSuggestionService } from "./features/people/peopleSuggestionService.js";
 import { peopleSuggestionRoutes } from "./features/people/peopleSuggestionRoutes.js";
+import { createArtistRecommendationService } from "./features/artistRecommendations/artistRecommendationService.js";
+import { artistRecommendationRoutes } from "./features/artistRecommendations/artistRecommendationRoutes.js";
 import { artistMemorialRoutes } from "./features/artistMemorials/artistMemorialRoutes.js";
 import { createArtistMemorialRepository } from "./features/artistMemorials/artistMemorialRepository.js";
 import { createArtistMemorialService } from "./features/artistMemorials/artistMemorialService.js";
 import { artistDeathWatchRoutes } from "./features/artistDeathWatch/artistDeathWatchRoutes.js";
 import { createArtistDeathWatchRepository } from "./features/artistDeathWatch/artistDeathWatchRepository.js";
 import { createArtistDeathWatchService } from "./features/artistDeathWatch/artistDeathWatchService.js";
-import { recommendedFeedPage } from "./recommendationService.js";
+import { feedImpressionRoutes } from "./features/feedImpressions/feedImpressionRoutes.js";
+import { invalidateRecommendationSnapshotForViewer, recommendedFeedPage } from "./recommendationService.js";
+import { attachPostImpressionStats } from "./feedImpressions.js";
 import { hasTrustedLandingImage, landingTotals, publicLandingCommunityMedia } from "./landingMedia.js";
 import { createSuccessfulReadinessCache } from "./healthAvailability.js";
 import { assertSafeAuthoredFields, assertSafeAuthoredText } from "./contentSafety.js";
@@ -211,7 +221,7 @@ export const artistDeathWatchService = createArtistDeathWatchService({
   repository: createArtistDeathWatchRepository(db),
 });
 ensureLegacyMediaFinalizeSchema(db);
-const uid = (p) => `${p}_${randomUUID().slice(0, 12)}`;
+const uid = (prefix) => opaqueId(prefix);
 const PROFILE_EXTRAS_MAX_BYTES = 8000;
 const CURRENT_TERMS_VERSION = "2026-08";
 const CURRENT_MARKETING_CONSENT_VERSION = "2026-08";
@@ -1246,21 +1256,6 @@ const feedPostById = db.prepare(`
     ${SEEN_ORDINAL_SQL}
   FROM posts p JOIN users u ON u.id = p.user_id
   WHERE p.id = ? AND ${activeAccountSql("u")}`);
-// Short word-art descriptors on a review ("RAW", "wall of sound"). Word-ish
-// only, capped hard, so they can't become a second review or a slur vector for
-// markup injection.
-function cleanPostTags(value) {
-  if (value == null) return [];
-  if (!Array.isArray(value)) return null;
-  const out = [];
-  for (const raw of value.slice(0, 12)) {
-    const tag = clean(String(raw ?? ""), { max: 24 }).replace(/[^\p{L}\p{N} '&.!-]/gu, "").replace(/\s+/g, " ").trim();
-    if (tag && !out.some((t) => t.toLowerCase() === tag.toLowerCase())) out.push(tag);
-    if (out.length >= 5) break;
-  }
-  return out;
-}
-
 function privateSignupHandle() {
   // An email local-part is private identity data, not a public username. Use a
   // neutral random base and let the user choose a meaningful handle later.
@@ -2063,7 +2058,6 @@ function canonicalCreateRequest(user, body, storedPost = null) {
     landingShowcase: { parse: (x) => typeof x === "boolean" ? (x ? 1 : 0) : x === 0 || x === 1 ? x : undefined },
     setlist: { parse: (x) => cleanStringArray(x, { maxItems: 40, maxLen: 120 }) },
     tour: { parse: (x) => clean(x, { max: 80 }) || null },
-    tags: { parse: cleanPostTags },
     song: { parse: cleanSong },
     onlineTitle: { parse: (x) => clean(x, { max: 160 }) || null },
   });
@@ -2111,7 +2105,9 @@ function canonicalCreateRequest(user, body, storedPost = null) {
     landingShowcase: onlineReview ? 0 : landingShowcase,
     setlist: onlineReview ? [] : (v.setlist || []),
     tour: onlineReview ? null : (v.tour || null),
-    tags: onlineReview ? [] : (v.tags || []),
+    // Descriptive review tags are retired. User companions remain a separate,
+    // structured relationship in taggedUserIds.
+    tags: [],
     taggedUserIds,
     song: onlineReview ? null : (v.song || null),
     binding,
@@ -2124,7 +2120,6 @@ function canonicalCreateRequest(user, body, storedPost = null) {
     review: values.review,
     "setlist entry": values.setlist,
     tour: values.tour,
-    tag: values.tags,
     "tagged song title": values.song?.title,
     "tagged song artist": values.song?.artist,
     "online concert title": values.onlineTitle,
@@ -2200,7 +2195,7 @@ function canonicalStoredPost(row) {
     landingShowcase: kind === "review" && online.experienceType !== "online" && row?.landing_showcase ? 1 : 0,
     setlist: kind === "status" || online.experienceType === "online" ? [] : cleanStringArray(parseJsonArray(row?.setlist), { maxItems: 40, maxLen: 120 }),
     tour: kind === "status" || online.experienceType === "online" ? null : clean(row?.tour, { max: 80 }) || null,
-    tags: kind === "status" || online.experienceType === "online" ? [] : cleanPostTags(parseJsonArray(row?.tags)) || [],
+    tags: [],
     taggedUserIds: storedPostTaggedUserIds(row?.tagged_user_ids),
     song: online.experienceType === "online" ? null : song || null,
     playlistId: kind === "status" ? playlist?.id || null : null,
@@ -2477,7 +2472,7 @@ function postJson(p, viewerId) {
     ...(viewerId === p.user_id ? { landingShowcase: online.experienceType === "online" ? false : !!p.landing_showcase } : {}),
     setlist: online.experienceType === "online" ? [] : parseJsonArray(p.setlist),
     tour: online.experienceType === "online" ? null : p.tour || null,
-    tags: online.experienceType === "online" ? [] : parseJsonArray(p.tags),
+    tags: [],
     taggedPeople: projectedPostTaggedPeople(p, viewerId),
     song: online.experienceType === "online" ? null : p.song ? (() => { try { return JSON.parse(p.song); } catch { return null; } })() : null,
     // Feed pages receive a bounded preview. The full immutable song list is
@@ -2486,6 +2481,15 @@ function postJson(p, viewerId) {
     campaign: online.experienceType === "online" ? null : campaign,
     ...(attendanceTicket ? { attendanceTicket } : {}),
     seen: p.seen_ordinal ?? null,
+    // The public tally contains only unique signed-in non-author viewers. The
+    // private timing/count state is returned solely to its authenticated owner;
+    // a post projection never contains viewer identities.
+    viewCount: Math.max(0, Number(p.impression_view_count) || 0),
+    ...(viewerId ? { viewerSeen: {
+      count: Math.max(0, Number(p.viewer_seen_count) || 0),
+      firstSeenAt: p.viewer_first_seen_at ?? null,
+      lastSeenAt: p.viewer_last_seen_at ?? null,
+    } } : {}),
     ...(p.open_reports != null ? { flags: p.open_reports } : {}),
     likes: p.like_count ?? 0, comments: p.comment_count ?? 0,
     ...(p.comment_preview != null ? { commentPreview: parseJsonArray(p.comment_preview) } : {}),
@@ -3041,6 +3045,43 @@ function publicHealthProjection(ctx) {
   };
 }
 
+// A write response returns one post rather than a page. Preserve its existing
+// tally/private state so an optimistic client does not replace a live feed card
+// with zero views after an edit or an idempotent create retry.
+function postJsonWithImpressions(p, viewerId) {
+  const attached = attachPostImpressionStats(db, p ? [p] : [], viewerId)[0];
+  return postJson(attached || p, viewerId);
+}
+
+function resolvePostCreateRetry(userId, mutationId, mutationHash) {
+  if (!mutationId) return null;
+  const existing = postByClientMutation.get(userId, mutationId);
+  if (!existing) return null;
+  if (existing.removed) {
+    // A retry token identifies one logical create forever. Returning its
+    // soft-deleted payload makes removed or moderated content appear to have
+    // published again on the originating device.
+    throw new ApiError(409, "That post was already removed. Start a new post to publish again.", "POST_REMOVED");
+  }
+  const stored = feedPostById.get(existing.id);
+  const storedHash = stored ? postMutationHash(canonicalStoredPost(stored)) : null;
+  if (!storedHash || storedHash !== mutationHash) {
+    throw new ApiError(409, "That retry belongs to an earlier version of this post. Reopen it before publishing your new changes.", "POST_MUTATION_CONFLICT");
+  }
+  // Rows created before canonical hashing may contain a raw-payload hash or
+  // NULL. Heal only after proving the stored post means exactly the same
+  // thing as this request; never guess that a missing hash implies success.
+  if (existing.client_mutation_hash !== mutationHash) {
+    db.prepare("UPDATE posts SET client_mutation_hash=? WHERE id=? AND user_id=?")
+      .run(mutationHash, existing.id, userId);
+  }
+  return {
+    id: existing.id,
+    post: postJsonWithImpressions(feedPostById.get(existing.id), userId),
+    duplicate: true,
+  };
+}
+
 // A crash storm owns one deferred digest drain, not one timer per browser.
 const clientCrashAlertDrain = createAlertDrainScheduler({ drain: () => maybeAlert() });
 function scheduleClientCrashAlert() {
@@ -3048,6 +3089,8 @@ function scheduleClientCrashAlert() {
 }
 
 const peopleSuggestionService = createPeopleSuggestionService(db, { projectUser: publicUser });
+const artistRecommendationService = createArtistRecommendationService(db);
+const messageRelationshipContextService = createMessageRelationshipContextService(db);
 
 function deploymentReadinessProjection() {
   // General liveness deliberately survives an optional media outage. Render's
@@ -3268,6 +3311,20 @@ export const routes = {
     service: peopleSuggestionService,
     requireUser,
     rateLimit: limit,
+  }),
+  ...artistRecommendationRoutes({
+    service: artistRecommendationService,
+    requireUser,
+    rateLimit: limit,
+  }),
+  ...feedImpressionRoutes({
+    ApiError,
+    database: db,
+    invalidateRecommendationSnapshotForViewer,
+    now,
+    rateLimit: limit,
+    requireUser,
+    reserveVolume: rateLimit,
   }),
   ...mediaAssetRoutes({ database: db, requireUser, now, cancelFinalizeJob: cancelVideoFinalizeJob }),
   ...mediaLegacyFinalizeRoutes({ database: db, requireUser, now }),
@@ -4283,13 +4340,18 @@ export const routes = {
       target: ctx.body?.email,
       targetMax: 5,
     });
+    const genreSelection = profileGenreSelection(ctx.body?.genres);
+    if (!genreSelection.valid) {
+      throw new ApiError(400, genreSelection.error, "VALIDATION_FAILED");
+    }
     const [errs, v] = shape(ctx.body, {
       name: { required: true, parse: (x) => (isName(x) ? cleanName(x) : undefined) },
       email: { required: true, parse: (x) => (isEmail(x) ? cleanEmail(x) : undefined) },
       password: { required: true, parse: (x) => (isPassword(x) ? x : undefined) },
       city: { required: false, parse: (x) => clean(x, { max: LIMITS.city }) || undefined },
-      lat: { required: false, parse: (x) => (Number.isFinite(Number(x)) ? Number(x) : undefined) },
-      lng: { required: false, parse: (x) => (Number.isFinite(Number(x)) ? Number(x) : undefined) },
+      lat: { required: false, parse: cleanLatitude },
+      lng: { required: false, parse: cleanLongitude },
+      genres: { required: true, parse: () => genreSelection.genres },
       analyticsConsent: { required: false, parse: (x) => typeof x === "boolean" ? x : undefined },
       termsVersion: { required: false, parse: (x) => clean(x, { max: 32 }) || undefined },
     });
@@ -4319,6 +4381,7 @@ export const routes = {
             termsVersion: CURRENT_TERMS_VERSION,
             ...(v.analyticsConsent ? { analyticsConsentAt: createdAt } : {}),
           }), id);
+          db.prepare("UPDATE users SET genres=? WHERE id=?").run(JSON.stringify(v.genres), id);
         });
         created = q.userById.get(id);
       } catch (error) {
@@ -4502,6 +4565,11 @@ export const routes = {
     // can leave an account with malformed data that breaks every projection.
     const hasExtras = Object.prototype.hasOwnProperty.call(ctx.body || {}, "extras");
     const hasSearchIndexingOptOut = Object.prototype.hasOwnProperty.call(ctx.body || {}, "searchIndexingOptOut");
+    const hasGenres = Object.prototype.hasOwnProperty.call(ctx.body || {}, "genres");
+    const incomingGenres = hasGenres ? profileGenreSelection(ctx.body.genres) : null;
+    if (hasGenres && !incomingGenres.valid) {
+      throw new ApiError(400, incomingGenres.error, "VALIDATION_FAILED");
+    }
     if (hasSearchIndexingOptOut && typeof ctx.body.searchIndexingOptOut !== "boolean") {
       throw new ApiError(400, "searchIndexingOptOut must be a boolean.", "VALIDATION_FAILED");
     }
@@ -4527,16 +4595,16 @@ export const routes = {
       });
     }
 
-    const [, v] = shape(ctx.body, {
+    const [profileErrors, v] = shape(ctx.body, {
       name: { parse: (x) => (isName(x) ? cleanName(x) : undefined) },
       handle: { parse: (x) => { const h = cleanHandle(x); return h && h.length >= 3 ? h : undefined; } },
       bio: { parse: (x) => clean(x, { max: LIMITS.bio, newlines: true }) },
       banner: { parse: (x) => clean(x, { max: 2000 }) },
       avatarUri: { parse: (x) => clean(x, { max: 2000 }) },
       city: { parse: (x) => clean(x, { max: LIMITS.city }) || undefined },
-      lat: { parse: (x) => (Number.isFinite(Number(x)) ? Number(x) : undefined) },
-      lng: { parse: (x) => (Number.isFinite(Number(x)) ? Number(x) : undefined) },
-      genres: { parse: (x) => cleanStringArray(x, { maxItems: 12, maxLen: 30 }) },
+      lat: { parse: cleanLatitude },
+      lng: { parse: cleanLongitude },
+      genres: { parse: () => incomingGenres?.genres },
       favoriteArtists: { parse: (x) => cleanStringArray(x, { maxItems: 50, maxLen: 80 }) },
       // Keep this server allow-list aligned with theme.js. If it falls behind,
       // newer themes get silently rejected here, the server then re-hydrates the
@@ -4545,6 +4613,9 @@ export const routes = {
       searchIndexingOptOut: { parse: (x) => (typeof x === "boolean" ? x : undefined) },
       extras: { parse: () => serializedExtras },
     });
+    if (profileErrors.length) {
+      throw new ApiError(400, profileErrors[0], "VALIDATION_FAILED");
+    }
     assertSafeAuthoredFields({
       "profile name": v.name,
       username: v.handle,
@@ -5019,11 +5090,11 @@ export const routes = {
       WHERE p.removed=0 AND ${activeAccountSql("u")} ${cursorSql} ${blockSql}
       ORDER BY p.created_at DESC, p.id DESC LIMIT ?${cursor ? "" : " OFFSET ?"}`).all(...args);
     const { rows, nextCursor } = finishPage(found, lim);
-    const projectedRows = attachViewerLikes(
+    const projectedRows = attachPostImpressionStats(db, attachViewerLikes(
       db,
       withTaggedPeople(withCommentPreviews(rows, viewer), viewer),
       viewer,
-    );
+    ), viewer);
     return { posts: projectedRows.map((p) => postJson(p, viewer)), nextCursor };
   },
 
@@ -5043,11 +5114,11 @@ export const routes = {
       limit: pageSize,
       at: now(),
     });
-    const projectedRows = attachViewerLikes(
+    const projectedRows = attachPostImpressionStats(db, attachViewerLikes(
       db,
       withTaggedPeople(withCommentPreviews(result.rows, ctx.user?.id), ctx.user?.id),
       ctx.user?.id,
-    );
+    ), ctx.user?.id);
     const projected = projectedRows.map((row) => ({
       ...postJson(row, ctx.user?.id),
       recommendation: result.recommendations.get(row.id),
@@ -5126,11 +5197,11 @@ export const routes = {
     if (!row || row.removed || blockedEitherWay(ctx.user?.id, row.user_id)) {
       throw new ApiError(404, "That post is unavailable.", "NOT_FOUND");
     }
-    const projected = attachViewerLikes(
+    const projected = attachPostImpressionStats(db, attachViewerLikes(
       db,
       withTaggedPeople(withCommentPreviews([row], ctx.user?.id), ctx.user?.id),
       ctx.user?.id,
-    )[0];
+    ), ctx.user?.id)[0];
     return { post: postJson(projected, ctx.user?.id) };
   },
 
@@ -5195,11 +5266,11 @@ export const routes = {
       // DB lookups per row even though none can ever enter the reel.
       const plausible = found.filter((row) => row.has_stable_video
         || parseJsonArray(row.photos).some((uri) => isLegacyVideoUrl(uri)));
-      const projectedCandidates = attachViewerLikes(
+      const projectedCandidates = attachPostImpressionStats(db, attachViewerLikes(
         db,
         withTaggedPeople(withCommentPreviews(plausible, viewer), viewer),
         viewer,
-      );
+      ), viewer);
       for (const p of projectedCandidates) {
         const projected = postJson(p, viewer); // photos already parsed here
         const descriptorClips = new Set((projected.media || [])
@@ -5247,11 +5318,11 @@ export const routes = {
       ORDER BY p.created_at DESC, p.id DESC LIMIT ?`).all(...args);
     const { rows, nextCursor } = finishPage(found, pageLimit);
     return {
-      posts: attachViewerLikes(
+      posts: attachPostImpressionStats(db, attachViewerLikes(
         db,
         withTaggedPeople(withCommentPreviews(rows, ctx.user?.id), ctx.user?.id),
         ctx.user?.id,
-      )
+      ), ctx.user?.id)
         .map((p) => postJson(p, ctx.user?.id)),
       nextCursor,
     };
@@ -5262,27 +5333,13 @@ export const routes = {
     const mutationId = clientMutationId(ctx.body?.clientMutationId);
     const existing = mutationId ? postByClientMutation.get(u.id, mutationId) : null;
     if (existing?.removed) {
-      // A retry token identifies one logical create forever. Returning its
-      // soft-deleted payload makes removed or moderated content appear to have
-      // published again on the originating device.
       throw new ApiError(409, "That post was already removed. Start a new post to publish again.", "POST_REMOVED");
     }
     const stored = existing ? feedPostById.get(existing.id) : null;
     const request = canonicalCreateRequest(u, ctx.body, stored);
     const mutationHash = mutationId ? postMutationHash(request.canonical) : null;
-    if (existing) {
-      const storedHash = stored ? postMutationHash(canonicalStoredPost(stored)) : null;
-      if (!storedHash || storedHash !== mutationHash) {
-        throw new ApiError(409, "That retry belongs to an earlier version of this post. Reopen it before publishing your new changes.", "POST_MUTATION_CONFLICT");
-      }
-      // Rows created before canonical hashing may contain a raw-payload hash or
-      // NULL. Heal only after proving the stored post means exactly the same
-      // thing as this request; never guess that a missing hash implies success.
-      if (existing.client_mutation_hash !== mutationHash) {
-        db.prepare("UPDATE posts SET client_mutation_hash=? WHERE id=? AND user_id=?").run(mutationHash, existing.id, u.id);
-      }
-      return { id: existing.id, post: postJson(feedPostById.get(existing.id), u.id), duplicate: true };
-    }
+    const duplicate = resolvePostCreateRetry(u.id, mutationId, mutationHash);
+    if (duplicate) return duplicate;
     limit(ctx, "post", 20, 60 * 60 * 1000);
 
     // A plain status/update ("post whatever", not a concert review) shares the
@@ -5291,7 +5348,12 @@ export const routes = {
       const v = request.values;
       if (v.campaign) limit(ctx, "artist-campaign", 2, 24 * 60 * 60 * 1000);
       const id = uid("p");
-      atomicWrite(() => {
+      const racedDuplicate = atomicWrite(() => {
+        // BEGIN IMMEDIATE waits out another writer. Rechecking the key while
+        // holding that lock turns simultaneous retries into the same response
+        // instead of leaking a SQLite uniqueness failure as a 500.
+        const raced = resolvePostCreateRetry(u.id, mutationId, mutationHash);
+        if (raced) return raced;
         // Re-read consent/account/block state while holding SQLite's write lock.
         // The earlier validation shapes a friendly response quickly; this one
         // closes the gap before the durable post + notification write.
@@ -5314,14 +5376,18 @@ export const routes = {
         markOwnedMediaAssociated(db, { ownerId: u.id, urls: v.photos, at: now() });
         if (v.mediaSelection) attachPostMedia(db, { postId: id, ownerId: u.id, selection: v.mediaSelection, at: now() });
         addPostTagNotifications(transactionTaggedUserIds, u.id, id, v.memorialMemory ? v.artist : null);
+        return null;
       });
-      return { id, post: postJson(feedPostById.get(id), u.id) };
+      if (racedDuplicate) return racedDuplicate;
+      return { id, post: postJsonWithImpressions(feedPostById.get(id), u.id) };
     }
 
     const v = request.values;
     assertArtistAcceptsLiveRating({ artistKey: v.binding.artist_key, artist: v.artist });
     const id = uid("p");
-    atomicWrite(() => {
+    const racedDuplicate = atomicWrite(() => {
+      const raced = resolvePostCreateRetry(u.id, mutationId, mutationHash);
+      if (raced) return raced;
       const transactionTaggedUserIds = validatedPostTaggedUserIds(u, v.taggedUserIds);
       assertPostTagRecipientBudget(u.id, transactionTaggedUserIds);
       postRow.run(id, u.id, v.artist, v.venue, v.city, v.date, v.overall, v.band, v.room,
@@ -5332,8 +5398,10 @@ export const routes = {
       markOwnedMediaAssociated(db, { ownerId: u.id, urls: v.photos, at: now() });
       if (v.mediaSelection) attachPostMedia(db, { postId: id, ownerId: u.id, selection: v.mediaSelection, at: now() });
       addPostTagNotifications(transactionTaggedUserIds, u.id, id, v.artist);
+      return null;
     });
-    return { id, post: postJson(feedPostById.get(id), u.id) };
+    if (racedDuplicate) return racedDuplicate;
+    return { id, post: postJsonWithImpressions(feedPostById.get(id), u.id) };
   },
 
   "PATCH /api/posts/:id": (ctx) => {
@@ -5370,6 +5438,7 @@ export const routes = {
     }
 
     const next = { ...current };
+    if (current.kind !== "status") next.tags = "[]";
     const currentMemorialMemory = current.kind === "status" && !!current.artist_key && !!current.artist_mbid && !!current.artist;
     if (currentMemorialMemory && ["artist", "artistKey", "venue", "city", "date", "overall", "band", "room", "dims", "setlist", "tour", "tags", "landingShowcase", "experienceType", "onlineTitle", "youtubeUrl", "youtubeVideoId"].some(has)) {
       throw new ApiError(400, "A memorial fan memory can edit its words, people, song, and media, but it cannot become a live rating.", "VALIDATION_FAILED");
@@ -5457,9 +5526,9 @@ export const routes = {
       next.tour = body.tour === null ? null : clean(body.tour, { max: 80 }) || null;
     }
     if (has("tags")) {
-      const tags = cleanPostTags(body.tags);
-      if (!tags) throw new ApiError(400, "tags is invalid", "VALIDATION_FAILED");
-      next.tags = JSON.stringify(tags);
+      // Rolling clients may still submit the retired field. Ignore its content
+      // and clear any historical descriptors instead of reviving them.
+      next.tags = "[]";
     }
     const currentOnline = projectedOnlineReviewFields(current);
     // Re-project stored fields through the same canonicalizer on every edit.
@@ -5555,7 +5624,6 @@ export const routes = {
       review: has("review") ? next.review : undefined,
       "setlist entry": has("setlist") ? cleanStringArray(body.setlist, { maxItems: 40, maxLen: 120 }) : undefined,
       tour: has("tour") ? next.tour : undefined,
-      tag: has("tags") ? cleanPostTags(body.tags) : undefined,
       "tagged song title": editedSong?.title,
       "tagged song artist": editedSong?.artist,
       "online concert title": has("onlineTitle") ? next.online_title : undefined,
@@ -5708,7 +5776,7 @@ export const routes = {
       const deleteReaction = db.prepare("DELETE FROM media_reactions WHERE media_url=?");
       for (const mediaUrl of new Set([...deletable, ...deletableAssetUrls])) deleteReaction.run(mediaUrl);
     });
-    return { post: postJson(feedPostById.get(current.id), u.id) };
+    return { post: postJsonWithImpressions(feedPostById.get(current.id), u.id) };
   },
 
   "POST /api/posts/:id/like": (ctx) => {
@@ -5899,20 +5967,32 @@ export const routes = {
           ) AS row_number
         FROM dms WHERE removed=0 AND (from_id=? OR to_id=?)
       ) WHERE row_number=1 ORDER BY created_at DESC,id DESC LIMIT 200`).all(u.id, u.id, u.id, u.id);
-      return { threads: latest.filter((message) => !hidden.has(message.other_id)).map((message) => {
+      const visibleLatest = latest.filter((message) => !hidden.has(message.other_id));
+      const relationshipContexts = messageRelationshipContextService.forPeers(
+        u.id,
+        visibleLatest.map((message) => message.other_id),
+        { activeAt: now() },
+      );
+      return { threads: visibleLatest.map((message) => {
         const other = q.userById.get(message.other_id);
         return other ? {
           otherId: message.other_id,
           otherUser: publicUser(other),
           messages: [{ id: message.id, from: message.from_id, text: message.text, createdAt: message.created_at }],
+          relationshipContext: relationshipContexts.get(message.other_id) || null,
           ...readProjection.forOther(message.other_id),
         } : null;
       }).filter(Boolean), removedIds: removedDmIdsFor(u.id) };
     }
     const others = db.prepare(`SELECT DISTINCT CASE WHEN from_id = ? THEN to_id ELSE from_id END AS other
                                FROM dms WHERE removed=0 AND (from_id = ? OR to_id = ?)`).all(u.id, u.id, u.id);
-    const threads = others.map((o) => {
-      if (hidden.has(o.other)) return null; // blocked conversations disappear
+    const visibleOthers = others.filter((entry) => !hidden.has(entry.other));
+    const relationshipContexts = messageRelationshipContextService.forPeers(
+      u.id,
+      visibleOthers.map((entry) => entry.other),
+      { activeAt: now() },
+    );
+    const threads = visibleOthers.map((o) => {
       const other = q.userById.get(o.other);
       if (!other) return null;
       const msgs = db.prepare(`SELECT id, from_id, text, created_at FROM dms
@@ -5922,6 +6002,7 @@ export const routes = {
         otherId: o.other,
         otherUser: publicUser(other),
         messages: msgs.reverse().map((m) => ({ id: m.id, from: m.from_id, text: m.text, createdAt: m.created_at })),
+        relationshipContext: relationshipContexts.get(o.other) || null,
         ...readProjection.forOther(o.other),
       };
     }).filter(Boolean);
@@ -5935,6 +6016,9 @@ export const routes = {
     const { cursor, limit } = pageRequest(ctx, 500, 500);
     const after = decodeCursor(ctx.query?.after);
     if (cursor && after) throw new ApiError(400, "Use either before or after, not both.", "VALIDATION_FAILED");
+    const relationshipContext = String(ctx.query?.context || "1") === "0"
+      ? undefined
+      : messageRelationshipContextService.forPair(u.id, other, { activeAt: now() });
 
     // Live-chat polling walks forward from the newest row the client has seen.
     // Keep the existing `before` cursor untouched for loading older history.
@@ -5952,6 +6036,7 @@ export const routes = {
         syncCursor: rows.length ? encodeCursor(rows.at(-1)) : String(ctx.query.after),
         hasMore,
         removedIds: removedDmIdsFor(u.id, other),
+        ...(relationshipContext !== undefined ? { relationshipContext } : {}),
       };
     }
 
@@ -5963,7 +6048,14 @@ export const routes = {
       WHERE removed=0 AND ((from_id=? AND to_id=?) OR (from_id=? AND to_id=?)) ${cursorSql} ORDER BY created_at DESC, id DESC LIMIT ?`).all(...args);
     const { rows, nextCursor } = finishPage(found, limit);
     const syncCursor = !cursor && rows.length ? encodeCursor(rows[0]) : null;
-    return { messages: rows.reverse().map((m) => ({ id: m.id, from: m.from_id, text: m.text, createdAt: m.created_at })), nextCursor, syncCursor, hasMore: false, removedIds: removedDmIdsFor(u.id, other) };
+    return {
+      messages: rows.reverse().map((m) => ({ id: m.id, from: m.from_id, text: m.text, createdAt: m.created_at })),
+      nextCursor,
+      syncCursor,
+      hasMore: false,
+      removedIds: removedDmIdsFor(u.id, other),
+      ...(relationshipContext !== undefined ? { relationshipContext } : {}),
+    };
   },
 
   "POST /api/dms/:otherId": (ctx) => {

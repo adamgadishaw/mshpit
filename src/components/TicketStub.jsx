@@ -35,25 +35,6 @@ const ordinal = (n) => {
   return `${n}${["th", "st", "nd", "rd"][Math.min(n % 10, 4)] || "th"}`;
 };
 
-// Word-art tag chips: skewed, loud, but on-theme (no rainbow WordArt). Colors
-// rotate through the stage-light palette so a row reads as designed, not random.
-const TAG_COLORS = [colors.amber, colors.cool, colors.magenta, colors.gold];
-function TagRow({ tags, center = false }) {
-  if (!tags?.length) return null;
-  return (
-    <View style={[styles.tagRow, center && { justifyContent: "center" }]}>
-      {tags.map((tag, i) => {
-        const tint = TAG_COLORS[i % TAG_COLORS.length];
-        return (
-          <View key={tag + i} style={[styles.tagChip, { borderColor: tint, transform: [{ skewX: i % 2 ? "4deg" : "-4deg" }, { rotate: i % 2 ? "1.2deg" : "-1.2deg" }] }]}>
-            <Text style={[styles.tagTxt, { color: tint }]}>{tag.toUpperCase()}</Text>
-          </View>
-        );
-      })}
-    </View>
-  );
-}
-
 function TaggedPeopleRow({ people, onOpenProfile, selfId, onRemoveSelf, palette = null, concertContext = false }) {
   const tagged = normalizeTaggedPeople(people);
   if (!tagged.length) return null;
@@ -124,11 +105,28 @@ function NotForMeButton({ onPress, palette = null }) {
   );
 }
 
+function ViewTally({ count, palette = null }) {
+  const value = Math.max(0, Math.trunc(Number(count) || 0));
+  const color = palette?.mutedTextColor || colors.textFaint;
+  return (
+    <View
+      style={styles.viewTally}
+      accessible
+      accessibilityRole="text"
+      accessibilityLabel={`${value} unique member ${value === 1 ? "view" : "views"}`}
+    >
+      <Icon name="eye" size={16} color={color} />
+      <Text style={[styles.viewTallyText, { color }]}>{value}</Text>
+    </View>
+  );
+}
+
 // Review-forward feed card: the review is the centerpiece. Artist / venue / date
 // sit on a ticket-stub line below, the score reads at a glance, and the footer
 // opens the post's comments. Lounge is reserved for the exact show's shared
 // conversation so the two spaces never look like duplicate features.
 export default function TicketStub({ log, mediaViewable = null, onOpen, onOpenShow, onOpenPost, onNotInterested, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onReport, onEdit, onDelete, onOpenPhotos, onPlay, onRemoveMyPostTag, onSelfTagRemoved, showComments = true }) {
+  const avatarPriority = mediaViewable === true ? "high" : "normal";
   const openPostDetail = () => (onOpenPost || onComment || onOpen)?.(log);
   const openComments = () => (onComment || onOpenPost || onOpen)?.(log);
   const { userById, likeInfo, toggleLike, commentsFor, session, userBadges, deleteOwnPost } = useStore();
@@ -182,7 +180,6 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onOpenSh
   const isStaffViewer = session && (session.role === "admin" || session.role === "moderator");
   const setlist = Array.isArray(log.setlist) ? log.setlist : [];
   const timeLabel = log.timeAgo || relativeTime(log.createdAt);
-  const tags = Array.isArray(log.tags) ? log.tags : [];
   const taggedPeople = normalizeTaggedPeople(log.taggedPeople);
   const removeSelfTag = async () => {
     const result = await onRemoveMyPostTag?.(log.id);
@@ -216,13 +213,12 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onOpenSh
   const attendanceTicketShow = log.attendanceTicket?.tourDateId
     ? calendarShowFromPost(log)
     : null;
-  // Score analytics: tap the star pill to see WHY the night got its score;
-  // hovering it (web) previews the reviewer's tag words.
+  // Score analytics: tap the star pill to see why the night got its score.
   const [statsOpen, setStatsOpen] = useState(false);
-  const [hoverTags, setHoverTags] = useState(false);
 
   const { count: likeCount, liked } = likeInfo(log.id, log.likes || 0);
   const commentCount = commentsFor(log.id).length || log.comments || 0;
+  const viewCount = Math.max(0, Math.trunc(Number(log.viewCount) || 0));
   // Server posts can arrive with null scores (photo-only posts); never crash the feed.
   const band = log.band ?? 0, room = log.room ?? 0, overall = log.overall ?? 0;
   const performanceTitle = isOnlineReview
@@ -240,7 +236,14 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onOpenSh
     const campaignTreatment = campaignPresentation?.treatment;
     const campaignArtUri = campaignBackground?.url || campaignBackground?.uri || campaignBackground?.sourceUrl || null;
     return (
-      <View style={[styles.card, campaignPresentation && styles.campaignCard, campaignTreatment && { backgroundColor: campaignTreatment.backgroundColor }]}>
+      <View style={[styles.card, statusMedia.length > 0 && !campaignPresentation && styles.mediaStatusCard, campaignPresentation && styles.campaignCard, campaignTreatment && { backgroundColor: campaignTreatment.backgroundColor }]}>
+        {statusMedia.length > 0 && !campaignPresentation ? (
+          <View style={styles.mediaStatusRegister} pointerEvents="none" accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+            <View style={styles.mediaStatusRegisterAmber} />
+            <View style={styles.mediaStatusRegisterMagenta} />
+            <View style={styles.mediaStatusRegisterCool} />
+          </View>
+        ) : null}
         {campaignArtUri && (
           <ExpoImage
             source={{ uri: campaignArtUri }}
@@ -280,7 +283,7 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onOpenSh
         )}
         <View style={campaignPresentation ? [styles.campaignContent, { backgroundColor: campaignTreatment.contentSurfaceColor }] : null}>
         <View style={styles.header}>
-          <Avatar user={author} size={40} onPress={log.userId ? () => onOpenProfile?.(log.userId) : undefined} />
+          <Avatar user={author} size={40} priority={avatarPriority} onPress={log.userId ? () => onOpenProfile?.(log.userId) : undefined} />
           <Pressable style={{ flex: 1 }} onPress={log.userId ? () => onOpenProfile?.(log.userId) : undefined}>
             <View style={styles.nameRow}>
               <Text style={[styles.name, campaignPresentation && { color: campaignTreatment.textColor }]}>{author.name}</Text>
@@ -354,6 +357,7 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onOpenSh
             <Icon name="comment" size={17} color={campaignPresentation ? campaignTreatment.mutedTextColor : colors.textDim} />
             <Text style={[styles.fCount, campaignPresentation && { color: campaignTreatment.mutedTextColor }]}>{commentCount}</Text>
           </PublicPressableLink>
+          <ViewTally count={viewCount} palette={campaignTreatment} />
         </View>
 
         {showComments && <CommentPreview log={log} onOpen={onComment || onOpen} palette={campaignTreatment} />}
@@ -366,7 +370,7 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onOpenSh
     <View style={styles.card}>
       {/* who + score */}
       <View style={styles.header}>
-        <Avatar user={author} size={38} onPress={log.userId ? () => onOpenProfile?.(log.userId) : undefined} />
+        <Avatar user={author} size={38} priority={avatarPriority} onPress={log.userId ? () => onOpenProfile?.(log.userId) : undefined} />
         <Pressable style={{ flex: 1 }} onPress={log.userId ? () => onOpenProfile?.(log.userId) : undefined}>
           <View style={styles.nameRow}>
             <Text style={styles.name}>{author.name}</Text>
@@ -377,8 +381,6 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onOpenSh
         <Pressable
           style={[styles.scorePill, statsOpen && styles.scorePillOpen]}
           onPress={() => setStatsOpen((v) => !v)}
-          onHoverIn={() => setHoverTags(true)}
-          onHoverOut={() => setHoverTags(false)}
           accessibilityRole="button"
           accessibilityState={{ expanded: statsOpen }}
           accessibilityLabel={`Overall ${overall.toFixed(1)} out of 5. ${statsOpen ? "Hide" : "Show"} the rating breakdown.`}
@@ -387,11 +389,6 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onOpenSh
           <Stars value={overall} size={11} gap={1} />
         </Pressable>
       </View>
-
-      {/* Hovering the score previews the reviewer's tag words (web only). */}
-      {hoverTags && !statsOpen && tags.length > 0 && (
-        <View style={styles.hoverTags} pointerEvents="none"><TagRow tags={tags} /></View>
-      )}
 
       {isStaffViewer && log.flags > 0 && (
         <View style={styles.flaggedChip} accessibilityLabel={`Reported content, ${log.flags} open ${log.flags === 1 ? "report" : "reports"}`}>
@@ -505,7 +502,6 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onOpenSh
           {isOnlineReview
             ? <Text style={styles.onlineRatingNote}>Rating for the online concert</Text>
             : <RatingBars dims={log.dims} band={band} room={room} />}
-          <TagRow tags={tags} />
         </View>
       )}
 
@@ -515,9 +511,6 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onOpenSh
           <View style={styles.reviewWrap}>
             <Text style={styles.review}>{log.review}</Text>
           </View>
-        ) : tags.length > 0 ? (
-          // The no-writing template: the reviewer said it in tag words instead.
-          <TagRow tags={tags} />
         ) : (
           <Text style={styles.noReview}>{isOnlineReview ? "Rated this online concert - no review yet. Tap to open." : "Logged this show - no review yet. Tap to open."}</Text>
         )}
@@ -578,6 +571,7 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onOpenSh
           <Text style={styles.commentActionText}>Comments</Text>
           <Text style={styles.fCount}>{commentCount}</Text>
         </PublicPressableLink>
+        <ViewTally count={viewCount} />
         <View style={{ flex: 1 }} />
         {canEdit && (
           <Pressable style={({ pressed }) => [styles.fBtn, pressed && styles.controlPressed]} hitSlop={8} onPress={() => onEdit?.(log)} accessibilityRole="button" accessibilityLabel="Edit post">
@@ -603,6 +597,11 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onOpenSh
 
 const styles = StyleSheet.create({
   card: { backgroundColor: colors.surface, borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderColor: colors.line, padding: 16, marginBottom: 16, ...shadow.card },
+  mediaStatusCard: { overflow: "hidden", borderColor: colors.lineSoft },
+  mediaStatusRegister: { height: 4, flexDirection: "row", marginTop: -16, marginHorizontal: -16, marginBottom: 14 },
+  mediaStatusRegisterAmber: { flex: 2, backgroundColor: colors.amberStrong },
+  mediaStatusRegisterMagenta: { flex: 1, backgroundColor: colors.magenta },
+  mediaStatusRegisterCool: { flex: 1, backgroundColor: colors.cool },
   campaignCard: { minHeight: 340, overflow: "hidden", padding: 12, borderColor: "rgba(242,166,90,0.42)", boxShadow: "0 18px 48px rgba(0,0,0,0.34)" },
   campaignBackdrop: { ...StyleSheet.absoluteFillObject, overflow: "hidden" },
   campaignGlowLarge: { position: "absolute", width: 390, height: 390, borderRadius: 195, left: -150, top: -170 },
@@ -622,7 +621,6 @@ const styles = StyleSheet.create({
   scoreNum: { color: colors.gold, fontFamily: mono, fontSize: 18, fontWeight: "800", lineHeight: 20 },
   seenTxt: { color: colors.amber, fontFamily: mono, fontSize: 11, fontWeight: "800", letterSpacing: 0.4 },
 
-  hoverTags: { position: "absolute", top: 56, right: 14, zIndex: 20, backgroundColor: colors.bgElev, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, paddingHorizontal: 10, paddingVertical: 8, ...shadow.sheet },
   flaggedChip: { flexDirection: "row", alignItems: "center", alignSelf: "flex-start", gap: 5, marginTop: 10, paddingHorizontal: 9, paddingVertical: 4, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.danger, backgroundColor: "rgba(224,108,108,0.10)" },
   flaggedTxt: { color: colors.danger, fontFamily: mono, fontSize: 10, fontWeight: "900", letterSpacing: 1 },
 
@@ -633,9 +631,6 @@ const styles = StyleSheet.create({
   statsSub: { color: colors.textFaint, fontSize: 11, marginTop: 1 },
   onlineRatingNote: { color: colors.textDim, fontSize: 12, lineHeight: 18 },
 
-  tagRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 12, alignItems: "center" },
-  tagChip: { borderWidth: 1.5, borderRadius: radius.sm, borderCurve: "continuous", paddingHorizontal: 10, paddingVertical: 5, backgroundColor: colors.surfaceAlt },
-  tagTxt: { fontFamily: displayFont, fontSize: 12.5, fontWeight: "900", letterSpacing: 1.4 },
   taggedPeopleRow: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6, marginTop: 12 },
   taggedPeopleLead: { fontSize: 11.5, fontWeight: "700" },
   taggedPersonChip: { minHeight: 44, maxWidth: "100%", flexDirection: "row", alignItems: "center", borderWidth: 1, borderRadius: radius.pill, backgroundColor: "rgba(0,0,0,0.12)" },
@@ -703,6 +698,8 @@ const styles = StyleSheet.create({
   commentAction: { minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingHorizontal: 8, borderRadius: radius.sm },
   commentActionText: { color: colors.textDim, fontSize: 12, fontWeight: "800" },
   fCount: { color: colors.textDim, fontSize: 13, fontFamily: mono },
+  viewTally: { minHeight: 32, flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 4 },
+  viewTallyText: { fontSize: 12, fontFamily: mono },
   notForMe: { flexDirection: "row", alignItems: "center", gap: 4, minHeight: 32, paddingHorizontal: 6, borderRadius: radius.sm },
   notForMeTxt: { color: colors.textDim, fontSize: 11, fontWeight: "700" },
   whyWrap: { marginTop: 14, padding: 10, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.bgElev },

@@ -6,7 +6,7 @@
 // Deezer fills fan-count popularity + photo + the rank_score that orders search.
 // Songs/albums stay on-demand (the artist page pulls its Deezer discography with
 // previews when opened), so every seeded artist is playable without a song scrape.
-import { randomUUID } from "node:crypto";
+import { opaqueId } from "./ids.js";
 import { artistStmts, artistRow, normName, db } from "./db.js";
 import { findDeezerArtist, providerJson, ProviderError } from "./musicProviders.js";
 import {
@@ -532,7 +532,7 @@ export function startCatalogSeed({ add = 2000, perTag = null, enrich = false, mo
   const shouldStop = () => state.stopRequested;
 
   if (mode === "photos") {
-    const runId = `seed_${randomUUID().slice(0, 12)}`;
+    const runId = opaqueId("seed");
     const pending = Number(photoFillPendingCount.get()?.c) || 0;
     const target = Math.min(PHOTO_FILL_LIMIT, pending);
     state = {
@@ -593,7 +593,7 @@ export function startCatalogSeed({ add = 2000, perTag = null, enrich = false, mo
   // "refresh" mode: no crawl. Songs and genres are separate bounded phases:
   // an artist can already have tracks while still lacking a verified genre.
   if (mode === "refresh") {
-    const runId = `seed_${randomUUID().slice(0, 12)}`;
+    const runId = opaqueId("seed");
     state = { runId, running: true, stopRequested: false, mode, phase: "songs", add: 0, target: startTotal, startTotal, added: 0, ranked: 0, total: startTotal, startedAt: Date.now(), finishedAt: 0, error: null, errorCode: null, note: "songs & genres" };
     seedRunInsert.run(runId, mode, "running", startTotal, startTotal, 0, 0, null, state.note, state.startedAt, null);
     void (async () => {
@@ -627,7 +627,7 @@ export function startCatalogSeed({ add = 2000, perTag = null, enrich = false, mo
   const currentMax = db.prepare("SELECT COALESCE(MAX(next_off),0) n FROM seed_cursor").get().n;
   const calculatedDepth = currentMax + Math.max(600, Math.ceil(add / Math.max(1, GENRE_TAGS.length) / PAGE) * PAGE + 400);
   const crawlDepth = Number.isSafeInteger(perTag) && perTag > currentMax ? perTag : calculatedDepth;
-  const runId = `seed_${randomUUID().slice(0, 12)}`;
+  const runId = opaqueId("seed");
   state = { runId, running: true, stopRequested: false, mode: "grow", phase: "crawl", add, target, startTotal, added: 0, ranked: 0, total: startTotal, startedAt: Date.now(), finishedAt: 0, error: null, errorCode: null, note: `crawl depth ${crawlDepth}` };
   seedRunInsert.run(runId, mode, "running", startTotal, target, 0, 0, null, state.note, state.startedAt, null);
   void (async () => {

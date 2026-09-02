@@ -38,8 +38,23 @@ test("personal boosts are bounded and explainable", () => {
     city: "toronto",
   };
   const score = scoreRecommendation(post, signals, { snapshotAt: NOW, seed: "u_viewer" });
-  assert.equal(score.personalScore, 24);
-  assert.equal(score.reason.code, "followed_creator");
+  assert.equal(score.personalScore, 36);
+  assert.equal(score.reason.code, "artist_affinity");
+});
+
+test("seen rotation decays and never removes a candidate", () => {
+  const base = candidate("seen", { viewerSeenCount: 3, viewerLastSeenAt: NOW });
+  const recent = scoreRecommendation(base, {}, { snapshotAt: NOW, seed: "viewer" });
+  const old = scoreRecommendation({
+    ...base,
+    viewerLastSeenAt: NOW - 120 * 24 * 60 * 60_000,
+  }, {}, { snapshotAt: NOW, seed: "viewer" });
+  assert.ok(recent.parts.seenPenalty < -20);
+  assert.ok(Math.abs(old.parts.seenPenalty) < 0.1);
+  assert.deepEqual(
+    rankRecommendations([base], {}, { snapshotAt: NOW, seed: "viewer" }).map((entry) => entry.candidate.id),
+    ["seen"],
+  );
 });
 
 test("diversity prevents one author from filling the opening run", () => {

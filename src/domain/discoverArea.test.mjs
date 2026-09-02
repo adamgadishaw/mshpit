@@ -182,6 +182,7 @@ test("a nation selection changes the rendered live-event IDs without falling bac
       localEvents,
       worldwideEvents: projection.events,
       limit: 4,
+      now: NOW,
     });
   };
 

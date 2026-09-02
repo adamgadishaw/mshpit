@@ -2635,6 +2635,29 @@ test("PATCH /api/me schemas extras, filters public song text, and keeps trusted 
     () => handler({ user, ip: "profile-test", body: { extras: { nowPlaying: { title: "white power", artist: "Unsafe" } } } }),
     (error) => error instanceof ApiError && error.status === 422 && error.code === "CONTENT_REJECTED",
   );
+  assert.throws(
+    () => handler({ user, ip: "profile-test", body: { genres: [] } }),
+    (error) => error instanceof ApiError && error.status === 400 && error.code === "VALIDATION_FAILED",
+  );
+  assert.throws(
+    () => handler({ user, ip: "profile-test", body: { genres: ["Rock", "Pop", "Jazz", "Punk"] } }),
+    (error) => error instanceof ApiError && error.status === 400 && error.code === "VALIDATION_FAILED",
+  );
+  assert.throws(
+    () => handler({ user, ip: "profile-test", body: { city: "Toronto", lat: 90.0001, lng: -79.38 } }),
+    (error) => error instanceof ApiError && error.status === 400 && error.code === "VALIDATION_FAILED",
+  );
+  assert.throws(
+    () => handler({ user, ip: "profile-test", body: { city: "Toronto", lat: 43.65, lng: -180.0001 } }),
+    (error) => error instanceof ApiError && error.status === 400 && error.code === "VALIDATION_FAILED",
+  );
+
+  const boundedLocation = handler({ user, ip: "profile-test", body: { city: "Edge", lat: 90, lng: -180 } });
+  assert.equal(boundedLocation.user.home.lat, 90);
+  assert.equal(boundedLocation.user.home.lng, -180);
+
+  const tastes = handler({ user, ip: "profile-test", body: { genres: [" R&B ", "Hip-Hop", "r&b"] } });
+  assert.deepEqual(tastes.user.genres, ["R&B", "Hip-Hop"]);
 
   const result = handler({ user, ip: "profile-test", body: {
     extras: { theme: "stage", nowPlaying: { title: "  Safe Song  ", artist: " Safe Artist " }, consentAt: 123, termsAcceptedAt: 123 },
@@ -2685,6 +2708,7 @@ test("signup records Terms separately while optional analytics defaults off", ()
       email,
       password: "privatepass123",
       city: "Toronto",
+      genres: ["R&B", "Hip-Hop"],
       termsVersion: "2026-08",
       analyticsConsent: false,
     },
@@ -2697,9 +2721,16 @@ test("signup records Terms separately while optional analytics defaults off", ()
   assert.equal(created.termsVersion, "2026-08");
   assert.equal(created.analyticsConsentAt, undefined);
   assert.equal(created.consentAt, undefined);
+  assert.deepEqual(created.genres, ["R&B", "Hip-Hop"]);
+  assert.throws(() => routes["POST /api/signup"]({
+    ip: "signup-genres-test", ua: "integrity-test", body: {
+      name: "No Genres", email: "no-genres@example.com", password: "privatepass123", city: "Toronto",
+      genres: [], termsVersion: "2026-08",
+    }, setSession: () => {},
+  }), (error) => error.status === 400 && error.code === "VALIDATION_FAILED");
   assert.throws(() => routes["POST /api/signup"]({
     ip: "signup-consent-test-2", ua: "integrity-test", body: {
-      name: "No Terms", email: "no-terms@example.com", password: "privatepass123", city: "Toronto",
+      name: "No Terms", email: "no-terms@example.com", password: "privatepass123", city: "Toronto", genres: ["Rock"],
     }, setSession: () => {},
   }), (error) => error.status === 400);
 });
@@ -4017,6 +4048,9 @@ test("account export covers owned social data without secrets or raw IP addresse
   );
   db.prepare(`INSERT INTO posts (id,user_id,artist,venue,overall,tagged_user_ids,created_at)
     VALUES (?,?,?,?,?,?,?)`).run("post_export_tagged", other.id, "The Band", "The Venue", 4, JSON.stringify([user.id]), 20);
+  db.prepare(`INSERT INTO post_impressions
+    (user_id,post_id,seen_count,first_seen_at,last_seen_at) VALUES (?,?,?,?,?)`)
+    .run(user.id, "post_export_tagged", 2, 21, 22);
   db.prepare("INSERT INTO posts (id,user_id,artist,venue,overall,created_at) VALUES (?,?,?,?,?,?)")
     .run("post_export_rejected", other.id, "The Band", "The Venue", 4, 21);
   db.prepare("INSERT INTO post_tag_rejections (post_id,user_id,created_at) VALUES (?,?,?)")
@@ -4077,6 +4111,19 @@ test("account export covers owned social data without secrets or raw IP addresse
     postId: "post_export_rejected",
     createdAt: 22,
   });
+  assert.deepEqual(data.feedImpressions.summary, {
+    posts: 1,
+    seenCount: 2,
+    firstSeenAt: 21,
+    lastSeenAt: 22,
+  });
+  assert.deepEqual(data.feedImpressions.recent, [{
+    postId: "post_export_tagged",
+    seenCount: 2,
+    firstSeenAt: 21,
+    lastSeenAt: 22,
+  }]);
+  assert.ok(data.exportNotes.some((note) => note.includes("5,000 recently viewed posts")));
   assert.ok(data.exportNotes.some((note) => note.includes("1,000 posts tagging you") && note.includes("1,000 tags you removed")));
   assert.ok(data.exportNotes.some((note) => note.includes("stable internal ids only") && note.includes("blocks")));
   const encoded = JSON.stringify(data);
@@ -4400,9 +4447,9 @@ test("For You is global-first, cursor-stable, and an allegation alone cannot sup
   const ids = [...first.posts, ...second.posts].map((post) => post.id);
   assert.equal(new Set(ids).size, ids.length, "snapshot pages never duplicate a post");
   assert.equal(first.algorithm.candidateSource, "global");
-  assert.equal(first.algorithm.version, 1);
+  assert.equal(first.algorithm.version, 2);
   assert.equal(first.posts.every((post) => post.recommendation?.algorithm === first.algorithm.id), true);
-  assert.equal(first.posts.every((post) => post.recommendation?.algorithmVersion === 1 && post.recommendation?.feedContext?.startsWith("discover:")), true);
+  assert.equal(first.posts.every((post) => post.recommendation?.algorithmVersion === 2 && post.recommendation?.feedContext?.startsWith("discover:")), true);
 
   const repeated = routes["GET /api/feed/for-you"]({ user: null, ip: "for-you-test", query: { limit: "3" } });
   assert.deepEqual(repeated.posts.map((post) => post.id), first.posts.map((post) => post.id), "unexpired guest snapshot is reused");

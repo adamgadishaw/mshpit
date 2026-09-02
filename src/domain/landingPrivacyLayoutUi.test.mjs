@@ -43,16 +43,25 @@ test("landing copy names the exact actions and removes theatrical placeholders",
   assert.doesNotMatch(combined, /Shows ahead\. Rooms waiting\.|Find → Attend → Log → Share → Connect|rooms in the PIT|Explore the PIT/);
 });
 
-test("landing reuses one first-party community photo layer without a duplicate startup request", () => {
+test("landing uses one bounded community photo layer with a direct fallback", () => {
   assert.doesNotMatch(landing, /\/api\/landing\/media/);
   assert.match(landing, /discoverySidebar\?\.landingMedia/);
   assert.match(landing, /normalizeLandingCommunityMedia\([^)]*discoverySidebar\?\.landingMedia[\s\S]*resolvePath:\s*resolveLandingMediaPath/);
   assert.equal((landing.match(/<ExpoImage\b/g) || []).length, 1);
-  assert.match(landing, /source=\{\{\s*uri:\s*currentLandingPhoto\.uri\s*\}\}/);
+  assert.match(landing, /source=\{\{\s*uri:\s*currentLandingUri\s*\}\}/);
+  assert.match(landing, /previewSrc\(currentLandingPhoto\.uri, landingPreviewWidth\)/);
+  assert.match(landing, /landingSourceStage === 0[\s\S]*setPhotoSourceState\(\{ scope: landingSourceScope, stage: 1 \}\)/);
   assert.match(landing, /cachePolicy="memory-disk"/);
+  assert.match(landing, /priority="high"/);
+  assert.match(landing, /loading="eager"/);
+  assert.match(landing, /allowDownscaling/);
+  assert.match(landing, /enforceEarlyResizing/);
+  assert.match(landing, /onDisplay=\{\(\) => setDisplayedPhotoId\(currentLandingPhoto\.id\)\}/);
   assert.match(landing, /const appActive = useAppActive\(\)/);
   assert.match(landing, /if\s*\(!appActive\s*\|\|\s*reduceMotion\s*\|\|\s*visibleLandingMedia\.length\s*<\s*2\)\s*return undefined;[\s\S]*setPhotoIndex[\s\S]*7000/);
-  assert.match(landing, /if\s*\(!appActive\s*\|\|\s*reduceMotion\s*\|\|\s*!wide\s*\|\|\s*visibleLandingMedia\.length\s*<\s*2\)\s*return undefined;[\s\S]*ExpoImage\.prefetch\(next\.uri,\s*"disk"\)/);
+  assert.match(landing, /visibleLandingMedia\.length\s*<\s*2[\s\S]*displayedPhotoId\s*!==\s*currentLandingPhoto\?\.id\)\s*return undefined;[\s\S]*ExpoImage\.prefetch\(previewSrc\(next\.uri, landingPreviewWidth\),\s*"disk"\)/);
+  assert.doesNotMatch(landing, /reduceMotion\s*\|\|\s*!wide/,
+    "phones warm only the next frame after the current photo is displayed");
   assert.match(landing, /setTimeout\(\(\) => setFailedPhotoIds\(new Set\(\)\),\s*30_000\)/);
   assert.match(landing, /\[appActive, landingMediaRevision\]/);
   assert.doesNotMatch(landing, /images\.unsplash\.com|STOCK_SLIDES/);

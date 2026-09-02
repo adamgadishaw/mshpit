@@ -26,6 +26,8 @@ export default function ClipPoster({
   contain = false,
   compact = false,
   showPlayBadge = true,
+  priority = "normal",
+  loading = "eager",
   accessibilityLabel = "Video clip preview",
   accessible = true,
 }) {
@@ -187,6 +189,10 @@ export default function ClipPoster({
           style={StyleSheet.absoluteFill}
           contentFit={fit}
           cachePolicy="memory-disk"
+          priority={priority}
+          loading={loading}
+          allowDownscaling
+          enforceEarlyResizing
           recyclingKey={`durable:${posterUri}`}
           transition={120}
           onDisplay={() => handleDurablePosterDisplay(durablePosterState.retryVersion)}
@@ -200,6 +206,10 @@ export default function ClipPoster({
           style={StyleSheet.absoluteFill}
           contentFit={fit}
           cachePolicy="memory"
+          priority={priority}
+          loading={loading}
+          allowDownscaling
+          enforceEarlyResizing
           recyclingKey={`generated:${uri}:${generatedPoster?.uri || "frame"}`}
           transition={120}
           onDisplay={() => setGeneratedPosterState((current) => (

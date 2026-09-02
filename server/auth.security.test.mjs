@@ -824,6 +824,7 @@ test("signup never derives the public handle from a private email local-part", (
       name: "Private Handle Test",
       email,
       password: "private-handle-password1",
+      genres: ["Rock"],
       termsVersion: "2026-08",
     },
     ip: `signup-private-handle-${distinctive}`,
@@ -908,6 +909,7 @@ test("auth limits stay bound to the IP even when the caller supplies rotating ac
         name: `Rotation User ${attempt}`,
         email,
         password: "rotation-test-password1",
+        genres: ["Rock"],
         termsVersion: "2026-08",
       },
       ip: sharedIp,
@@ -924,6 +926,7 @@ test("auth limits stay bound to the IP even when the caller supplies rotating ac
         name: "Rotation User Six",
         email: `rotation-six-${Date.now()}@example.test`,
         password: "rotation-test-password1",
+        genres: ["Rock"],
         termsVersion: "2026-08",
       },
       ip: sharedIp,
@@ -941,6 +944,7 @@ test("signup returns the same body and cookie behavior for new and registered ad
     name: "Enumeration Test",
     email,
     password: "enumeration-password1",
+    genres: ["Rock"],
     termsVersion: "2026-08",
   };
   let newSession = null;

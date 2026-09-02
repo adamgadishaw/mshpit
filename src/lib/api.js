@@ -6,10 +6,16 @@ import { Platform } from "react-native";
 import { AppError, captureAppError } from "./diagnostics";
 import { createRequestControl } from "./requestControl.mjs";
 import { apiIdentityBarrierDecision } from "../domain/apiIdentityState.mjs";
+import { apiBaseForRuntime } from "../domain/apiOrigin.mjs";
 
 const DEV_WEB = Platform.OS === "web" && typeof window !== "undefined" && window.location.port === "8081";
 const CONFIGURED_ORIGIN = (process.env.EXPO_PUBLIC_API_URL || "").replace(/\/+$/, "");
-const BASE = CONFIGURED_ORIGIN || (DEV_WEB ? "http://localhost:3000" : Platform.OS === "web" ? "" : "https://www.mshpit.com");
+const BASE = apiBaseForRuntime({
+  platform: Platform.OS,
+  configuredOrigin: CONFIGURED_ORIGIN,
+  development: typeof __DEV__ !== "undefined" && __DEV__ === true,
+  devWeb: DEV_WEB,
+});
 
 // Cookies are origin-wide on the web, while React state is tab-local. Bind every
 // account-scoped request to the identity the tab believes it owns so a login in

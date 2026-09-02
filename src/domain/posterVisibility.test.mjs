@@ -70,6 +70,10 @@ test("feed viewability is threaded to the actual ClipPoster generation boundary"
   const poster = readFileSync(new URL("../components/ClipPoster.jsx", import.meta.url), "utf8");
 
   assert.match(feed, /setVisibleMediaPostIds\(\(current\) => nextVisibleMediaPostIds\(current, changed\)\)/);
+  assert.match(feed, /viewabilityConfigCallbackPairs=/);
+  assert.match(feed, /viewAreaCoveragePercentThreshold: 50, minimumViewTime: 1_000/);
+  assert.match(feed, /itemVisiblePercentThreshold: 10/);
+  assert.match(feed, /if \(!activityRef\.current\) return/);
   assert.match(feed, /extraData=\{visibleMediaPostIds\}/);
   assert.match(feed, /mediaViewable=\{visibleMediaPostIds\.has\(String\(item\.id\)\) \? true : null\}/);
   assert.match(ticket, /<PostMediaGrid media=\{postMedia\} viewable=\{mediaViewable\}/);

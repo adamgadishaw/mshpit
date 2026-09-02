@@ -31,7 +31,7 @@ export const ANALYTICS_EVENT_SPECS = Object.freeze({
   },
   feed_request: {
     surface: enums("everyone", "following", "local", "clips"),
-    algorithm: enums("global-personal-v1", "chronological-v1"),
+    algorithm: enums("music-affinity-v2", "global-personal-v1", "chronological-v1"),
     page: integer(1, 100),
     fallback: bool,
   },
@@ -39,7 +39,7 @@ export const ANALYTICS_EVENT_SPECS = Object.freeze({
     postId: id,
     position: integer(0, 500),
     surface: enums("everyone", "following", "local", "clips"),
-    algorithm: enums("global-personal-v1", "chronological-v1"),
+    algorithm: enums("music-affinity-v2", "global-personal-v1", "chronological-v1"),
     algorithmVersion: integer(1, 100),
     reasonCode: enums("followed_creator", "artist_affinity", "genre_affinity", "local", "global_momentum", "fresh_global"),
   },

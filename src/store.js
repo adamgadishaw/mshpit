@@ -11,6 +11,7 @@ import { artistMeta, installIngestedCatalog } from "./seed/ingested";
 import { arenaVenues } from "./seed/arenas";
 import { ACHIEVEMENTS } from "./domain/badges.mjs";
 import { verifiedArtistGenre } from "./domain/genre.mjs";
+import { profileGenreSelection } from "./domain/genrePreferences.mjs";
 import { projectDiscoveryCatalogTotals, resolveDiscoveryCatalogTotal } from "./domain/discoveryCatalogTotals.mjs";
 import { buildArtistSummary } from "./domain/artistSummary.mjs";
 import { ENABLE_DEMO_DATA, remoteIdentityValidationEnabled } from "./config/runtime.mjs";
@@ -34,6 +35,7 @@ import {
 import { createDiscoverCache, discoverGenreCacheKey, discoverOverviewCacheKey } from "./domain/discoverCache.mjs";
 import { mergeUniquePage, reconcileMemberMutationPage } from "./domain/pageMerge.mjs";
 import { mergeChatMessages, reconcileRemovedDirectMessages } from "./domain/chatMessages.mjs";
+import { normalizeMessageRelationshipContext } from "./domain/messageRelationshipContext.mjs";
 import {
   chatOutboxFor,
   chatOutboxMessageId,
@@ -321,6 +323,8 @@ const sameServerPost = (a, b) => !!a && !!b
   && a.comments === b.comments
   && a.liked === b.liked
   && a.flags === b.flags
+  && a.viewCount === b.viewCount
+  && JSON.stringify(a.viewerSeen || null) === JSON.stringify(b.viewerSeen || null)
   && JSON.stringify(a.recommendation || null) === JSON.stringify(b.recommendation || null)
   && JSON.stringify(a.commentPreview || null) === JSON.stringify(b.commentPreview || null)
   && JSON.stringify(a.user || null) === JSON.stringify(b.user || null)
@@ -1113,7 +1117,7 @@ export function StoreProvider({ children }) {
           signal,
         });
         feedModeRef.current = "for-you";
-        feedAlgorithmRef.current = payload?.algorithm?.id || "global-personal-v1";
+        feedAlgorithmRef.current = payload?.algorithm?.id || "music-affinity-v2";
       } catch (error) {
         if (signal?.aborted) throw error;
         fallback = true;
@@ -2451,7 +2455,16 @@ export function StoreProvider({ children }) {
           const n = { ...reconcileRemovedDirectMessages(d, su.id, removedIds) };
           threads.forEach((t) => {
             const key = dmKey(su.id, t.otherId);
-            const incoming = t.messages.map((m) => ({ id: m.id, from: m.from, text: m.text, at: m.createdAt, ts: ago(m.createdAt), server: true }));
+            const relationshipContext = normalizeMessageRelationshipContext(t.relationshipContext);
+            const incoming = t.messages.map((m) => ({
+              id: m.id,
+              from: m.from,
+              text: m.text,
+              at: m.createdAt,
+              ts: ago(m.createdAt),
+              server: true,
+              relationshipContext,
+            }));
             n[key] = mergeChatMessages(n[key] || [], incoming, removedIds, 750);
           });
           return n;
@@ -2824,13 +2837,15 @@ export function StoreProvider({ children }) {
     return candidate;
   };
 
-  const signup = async ({ name, email, password, city, location = null, agreedToTerms, analyticsConsent = false }) => {
+  const signup = async ({ name, email, password, city, location = null, genres = [], agreedToTerms, analyticsConsent = false }) => {
     const nm = cleanName(name);
     const em = cleanEmail(email);
     if (!isName(nm)) return { ok: false, error: "Enter a name (letters or numbers, up to 40 chars)." };
     if (!isEmail(em)) return { ok: false, error: "Enter a valid email address." };
     if (!isPassword(password)) return { ok: false, error: "Password needs 8+ characters with letters and numbers." };
     if (!city) return { ok: false, error: "Pick your city - it powers your local feed." };
+    const genreSelection = profileGenreSelection(genres);
+    if (!genreSelection.valid) return { ok: false, error: genreSelection.error };
     if (!agreedToTerms) return { ok: false, error: "Please agree to the Terms & Conditions and Privacy policy." };
     // Record consent to the current Terms/Privacy at the moment of sign-up.
     const acceptedAt = Date.now();
@@ -2841,7 +2856,7 @@ export function StoreProvider({ children }) {
       try {
         const response = await api("/api/signup", {
           method: "POST",
-          body: { name: nm, email: em, password, city, lat: srvCoords?.lat, lng: srvCoords?.lng, analyticsConsent: !!analyticsConsent, termsVersion: TERMS_VERSION },
+          body: { name: nm, email: em, password, city, lat: srvCoords?.lat, lng: srvCoords?.lng, genres: genreSelection.genres, analyticsConsent: !!analyticsConsent, termsVersion: TERMS_VERSION },
           context: "Creating your Pit account",
           silent: true,
           skipIdentityCheck: true,
@@ -2869,7 +2884,7 @@ export function StoreProvider({ children }) {
       avatarColor: AV[Math.floor(Math.random() * AV.length)],
       avatarUri: null,
       bio: "",
-      genres: [],
+      genres: genreSelection.genres,
       favoriteArtists: [],
       playlists: [],
       home: { ...pickedLocation, city, lat: coords?.lat ?? null, lng: coords?.lng ?? null },
@@ -3121,6 +3136,11 @@ export function StoreProvider({ children }) {
     const accountMutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
     // Sanitize the free-text fields; pass structured fields (home, songs) through.
     const safe = { ...patch };
+    if (Object.prototype.hasOwnProperty.call(safe, "genres")) {
+      const genreSelection = profileGenreSelection(safe.genres);
+      if (!genreSelection.valid) return Promise.resolve({ ok: false, error: genreSelection.error });
+      safe.genres = genreSelection.genres;
+    }
     if ("name" in safe) safe.name = cleanName(safe.name) || actor.name;
     if ("bio" in safe) safe.bio = clean(safe.bio, { max: LIMITS.bio, newlines: true });
     if ("handle" in safe) {
@@ -3128,7 +3148,6 @@ export function StoreProvider({ children }) {
       // only accept a valid, unused handle; otherwise keep the current one
       safe.handle = h.length >= 3 && !users.some((u) => u.handle === h && u.id !== actor.id) ? h : actor.handle;
     }
-    if (Array.isArray(safe.genres)) safe.genres = safe.genres.map((g) => clean(g, { max: 30 })).filter(Boolean).slice(0, 12);
     if (Array.isArray(safe.favoriteArtists)) safe.favoriteArtists = safe.favoriteArtists.map((n) => clean(n, { max: 80 })).filter(Boolean).slice(0, 50);
     if ("name" in safe) safe.initials = (safe.name.match(/\p{L}|\p{N}/gu) || ["?"]).slice(0, 2).join("").toUpperCase();
     setUsers((all) => all.map((u) => (u.id === actor.id
@@ -4183,7 +4202,9 @@ export function StoreProvider({ children }) {
   // Feed of only the people you follow (plus yourself).
   const followingFeed = (staff) => {
     const ids = new Set([...(follows[session?.id] || []), session?.id]);
-    return visibleFeed(staff).filter((l) => ids.has(l.userId));
+    return visibleFeed(staff)
+      .filter((l) => ids.has(l.userId))
+      .sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0) || String(b.id).localeCompare(String(a.id)));
   };
 
   // Roll a single artist's live reputation up across every logged night +
@@ -5493,6 +5514,7 @@ export function StoreProvider({ children }) {
           const next = { ...reconcileRemovedDirectMessages(all, accountId, removedIds) };
           for (const thread of threads) {
             const key = dmKey(accountId, thread.otherId);
+            const relationshipContext = normalizeMessageRelationshipContext(thread.relationshipContext);
             const incoming = (thread.messages || []).map((message) => ({
               id: message.id,
               from: message.from,
@@ -5500,6 +5522,7 @@ export function StoreProvider({ children }) {
               at: message.createdAt,
               ts: ago(message.createdAt),
               server: true,
+              relationshipContext,
             }));
             next[key] = mergeChatMessages(next[key] || [], incoming, removedIds, 750);
           }
@@ -5535,30 +5558,53 @@ export function StoreProvider({ children }) {
   };
   // Slice 4: pull a thread's messages from the server and merge them (dedupe by
   // id, keeping any optimistic local-only message not yet echoed back).
-  const loadThread = (otherId, { after, signal, strict = false } = {}) => {
+  const loadThread = (otherId, { after, signal, strict = false, includeContext = true } = {}) => {
     const read = otherId ? chatReadsRef.current.claim(`dm-thread:${otherId}`, sessionRef.current) : null;
     if (!read) return Promise.resolve({ syncCursor: after || null, hasMore: false });
     const key = dmKey(read.scope, otherId);
-    const query = after ? `?after=${encodeURIComponent(after)}` : "";
+    const queryParams = new URLSearchParams();
+    if (after) queryParams.set("after", after);
+    if (!includeContext) queryParams.set("context", "0");
+    const queryString = queryParams.toString();
+    const query = queryString ? `?${queryString}` : "";
     return api(`/api/dms/${encodeURIComponent(otherId)}${query}`, {
       signal,
       silent: true,
       context: "Refreshing direct messages",
     })
-      .then(({ messages, removedIds = [], syncCursor, hasMore }) => {
+      .then(({ messages, removedIds = [], syncCursor, hasMore, relationshipContext }) => {
         if (signal?.aborted || !chatReadsRef.current.isCurrent(read, sessionRef.current)) {
           return { syncCursor: after || null, hasMore: false, stale: true };
         }
         if (!Array.isArray(messages)) return { syncCursor: after || null, hasMore: false };
+        const hasRelationshipContext = relationshipContext !== undefined;
+        const normalizedRelationshipContext = hasRelationshipContext
+          ? normalizeMessageRelationshipContext(relationshipContext)
+          : null;
         setDms((d) => {
-          const incoming = messages.map((m) => ({ id: m.id, from: m.from, text: m.text, at: m.createdAt, ts: ago(m.createdAt), server: true }));
-          const live = mergeChatMessages(d[key] || [], incoming, removedIds, 750);
+          const existing = hasRelationshipContext
+            ? (d[key] || []).map((message) => ({ ...message, relationshipContext: normalizedRelationshipContext }))
+            : (d[key] || []);
+          const incoming = messages.map((m) => ({
+            id: m.id,
+            from: m.from,
+            text: m.text,
+            at: m.createdAt,
+            ts: ago(m.createdAt),
+            server: true,
+            ...(hasRelationshipContext ? { relationshipContext: normalizedRelationshipContext } : {}),
+          }));
+          const live = mergeChatMessages(existing, incoming, removedIds, 750);
           const next = { ...d };
           if (live.length) next[key] = live;
           else delete next[key];
           return next;
         });
-        return { syncCursor: syncCursor || after || null, hasMore: !!hasMore };
+        return {
+          syncCursor: syncCursor || after || null,
+          hasMore: !!hasMore,
+          ...(hasRelationshipContext ? { relationshipContext: normalizedRelationshipContext } : {}),
+        };
       })
       .catch((error) => {
         if (signal?.aborted) throw error;
@@ -5644,6 +5690,8 @@ export function StoreProvider({ children }) {
         );
         const otherId = k.split("__").find((id) => id !== session.id);
         const last = msgs[msgs.length - 1];
+        const relationshipContext = [...msgs].reverse()
+          .find((message) => message?.relationshipContext)?.relationshipContext || null;
         const marker = dmRead[k];
         const unread = directMessageUnreadCount(msgs, {
           accountId: session.id,
@@ -5656,7 +5704,7 @@ export function StoreProvider({ children }) {
         const iReplied = msgs.some((m) => m.from === session.id);
         const bucket = (isFollowing(otherId) || iReplied) ? "main" : "requests";
         const lastAt = Number(last?.at || last?.createdAt) || 0;
-        return { otherId, otherUser: userById(otherId), last, lastAt, unread, count: msgs.length, bucket };
+        return { otherId, otherUser: userById(otherId), last, lastAt, unread, count: msgs.length, bucket, relationshipContext };
       })
       .sort((a, b) => b.lastAt - a.lastAt);
   };
@@ -6133,7 +6181,9 @@ export function StoreProvider({ children }) {
     const city = home?.city;
     if (!city) return [];
     const localIds = new Set(users.filter((u) => u.home?.city === city).map((u) => u.id));
-    return visibleFeed(staff).filter((l) => localIds.has(l.userId));
+    return visibleFeed(staff)
+      .filter((l) => localIds.has(l.userId))
+      .sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0) || String(b.id).localeCompare(String(a.id)));
   };
 
   // Push relevant content: rank upcoming shows by the artists you PICKED at

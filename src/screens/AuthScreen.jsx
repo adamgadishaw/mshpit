@@ -7,6 +7,8 @@ import SheetHeader from "../components/SheetHeader";
 import LocationPicker from "../components/LocationPicker";
 import PrivacyScreen from "./PrivacyScreen";
 import TermsScreen from "./TermsScreen";
+import { GENRES } from "../data";
+import { PROFILE_GENRE_MAX, profileGenreSelection } from "../domain/genrePreferences.mjs";
 
 export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) {
   const { login, signup, forgotPassword } = useStore();
@@ -16,6 +18,7 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [city, setCity] = useState(null); // complete LocationPicker place identity
+  const [genres, setGenres] = useState([]);
   const [pickingCity, setPickingCity] = useState(false);
   const [agreed, setAgreed] = useState(false); // signup: consent to Terms + Privacy
   const [analyticsConsent, setAnalyticsConsent] = useState(false); // optional, default off
@@ -33,12 +36,17 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) 
       setError("Please agree to the Terms & Conditions and Privacy policy to create your account.");
       return;
     }
+    const genreSelection = profileGenreSelection(genres);
+    if (mode === "signup" && !genreSelection.valid) {
+      setError(genreSelection.error);
+      return;
+    }
     setError("");
     setBusyAction("auth");
     try {
       const res = mode === "login"
         ? await login(email.trim(), password)
-        : await signup({ name, email: email.trim(), password, city: city?.city, location: city, agreedToTerms: true, analyticsConsent });
+        : await signup({ name, email: email.trim(), password, city: city?.city, location: city, genres: genreSelection.genres, agreedToTerms: true, analyticsConsent });
       if (res?.ok && mode === "signup" && res?.pending) setSignupSubmitted(true);
       else if (res?.ok) onDone?.(mode);
       else setError(res?.error || "That request did not complete. Please try again.");
@@ -57,6 +65,18 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) 
       />
     );
   }
+
+  const toggleGenre = (genre) => {
+    setGenres((current) => {
+      if (current.includes(genre)) return current.filter((value) => value !== genre);
+      if (current.length >= PROFILE_GENRE_MAX) {
+        setError("Choose up to 3 music genres.");
+        return current;
+      }
+      setError("");
+      return [...current, genre];
+    });
+  };
 
   // Let people actually read what they're agreeing to, without leaving sign-up.
   if (viewing === "terms") return <TermsScreen onClose={() => setViewing(null)} />;
@@ -196,6 +216,33 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) 
             <Icon name="chevron-right" size={16} color={colors.textDim} />
           </Pressable>
         )}
+        {mode === "signup" && (
+          <View style={styles.genreSection}>
+            <View style={styles.genreHeading}>
+              <Text style={styles.genreLabel}>MUSIC YOU LIKE</Text>
+              <Text style={styles.genreCount}>{genres.length}/3 selected</Text>
+            </View>
+            <Text style={styles.genreHint}>Choose 1 to 3 genres. This starts your artist, show, and feed recommendations.</Text>
+            <View style={styles.genreChips}>
+              {GENRES.map((genre) => {
+                const selected = genres.includes(genre);
+                return (
+                  <Pressable
+                    key={genre}
+                    style={[styles.genreChip, selected && styles.genreChipSelected]}
+                    onPress={() => toggleGenre(genre)}
+                    disabled={authBusy}
+                    accessibilityRole="checkbox"
+                    accessibilityState={{ checked: selected, disabled: authBusy }}
+                    accessibilityLabel={genre}
+                  >
+                    <Text style={[styles.genreChipText, selected && styles.genreChipTextSelected]}>{genre}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </View>
+        )}
         <TextInput
           style={styles.input}
           placeholder="Email"
@@ -274,11 +321,11 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) 
         {!!error && <Text style={styles.error} accessibilityRole="alert" accessibilityLiveRegion="assertive">{error}</Text>}
 
         <Pressable
-          style={[styles.primary, (authBusy || (mode === "signup" && !agreed)) && styles.primaryOff]}
+          style={[styles.primary, (authBusy || (mode === "signup" && (!agreed || !profileGenreSelection(genres).valid))) && styles.primaryOff]}
           onPress={submit}
-          disabled={authBusy || (mode === "signup" && !agreed)}
+          disabled={authBusy || (mode === "signup" && (!agreed || !profileGenreSelection(genres).valid))}
           accessibilityRole="button"
-          accessibilityState={{ disabled: authBusy || (mode === "signup" && !agreed), busy: authBusy }}
+          accessibilityState={{ disabled: authBusy || (mode === "signup" && (!agreed || !profileGenreSelection(genres).valid)), busy: authBusy }}
         >
           <Text style={styles.primaryTxt}>{authBusy ? (mode === "login" ? "LOGGING IN..." : "CREATING ACCOUNT...") : mode === "login" ? "LOG IN" : "CREATE ACCOUNT"}</Text>
         </Pressable>
@@ -323,6 +370,16 @@ const styles = StyleSheet.create({
   cityPick: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: colors.surface, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.line, paddingHorizontal: 14, paddingVertical: 13, marginBottom: 10 },
   cityTxt: { flex: 1, color: colors.text, fontSize: 15 },
   cityPlaceholder: { color: colors.textFaint },
+  genreSection: { gap: 8, paddingVertical: 8, marginBottom: 4 },
+  genreHeading: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 },
+  genreLabel: { color: colors.textFaint, fontFamily: mono, fontSize: 10, fontWeight: "800", letterSpacing: 1.3 },
+  genreCount: { color: colors.amber, fontSize: 11.5, fontWeight: "700" },
+  genreHint: { color: colors.textDim, fontSize: 12, lineHeight: 17 },
+  genreChips: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  genreChip: { minHeight: 44, justifyContent: "center", paddingHorizontal: 12, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
+  genreChipSelected: { borderColor: colors.amber, backgroundColor: colors.bgElev },
+  genreChipText: { color: colors.textDim, fontSize: 12.5, fontWeight: "600" },
+  genreChipTextSelected: { color: colors.amber, fontWeight: "800" },
   error: { color: colors.danger, fontSize: 13, marginBottom: 8 },
   consent: { minHeight: 44, flexDirection: "row", alignItems: "flex-start", gap: 10, marginTop: 14, marginBottom: 4, paddingVertical: 6 },
   policyLinks: { flexDirection: "row", flexWrap: "wrap", gap: 18, marginLeft: 44, marginTop: 3, marginBottom: 4 },

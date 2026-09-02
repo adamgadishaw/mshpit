@@ -15,6 +15,11 @@ import {
   profileImagePickerOptions,
   profileImageSelectionHint,
 } from "../domain/profileImagePolicy.mjs";
+import {
+  PROFILE_GENRE_MAX,
+  profileGenreOptions,
+  profileGenreSelection,
+} from "../domain/genrePreferences.mjs";
 
 const AVATAR_IMAGE_HINT = profileImageSelectionHint("avatar");
 const BANNER_IMAGE_HINT = profileImageSelectionHint("banner");
@@ -31,6 +36,7 @@ export default function EditProfileScreen({ onClose }) {
   const [avatarUri, setAvatarUri] = useState(isDurableMediaUrl(session?.avatarUri) ? session.avatarUri : null);
   const [banner, setBanner] = useState(isDurableMediaUrl(session?.banner) ? session.banner : null);
   const [genres, setGenres] = useState(session?.genres || []);
+  const [genreError, setGenreError] = useState("");
   const [home, setHome] = useState(session?.home || null);
   const [pickingCity, setPickingCity] = useState(false);
   const [pickingArtists, setPickingArtists] = useState(false);
@@ -100,16 +106,33 @@ export default function EditProfileScreen({ onClose }) {
     }
   };
 
-  const toggleGenre = (g) => setGenres((gs) => (gs.includes(g) ? gs.filter((x) => x !== g) : [...gs, g]));
+  const genreOptions = profileGenreOptions(genres, GENRES);
+  const genreSelection = profileGenreSelection(genres);
+  const toggleGenre = (genre) => setGenres((current) => {
+    if (current.includes(genre)) {
+      setGenreError("");
+      return current.filter((value) => value !== genre);
+    }
+    if (current.length >= PROFILE_GENRE_MAX) {
+      setGenreError("Choose up to 3 music genres.");
+      return current;
+    }
+    setGenreError("");
+    return [...current, genre];
+  });
 
   const mediaBusy = uploadingAvatar || uploadingBanner;
   const save = async () => {
     if (mediaBusy || saving) return;
+    if (!genreSelection.valid) {
+      setGenreError(genreSelection.error);
+      return;
+    }
     const initials = (name.trim() || "?").split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase();
     setSaving(true);
     try {
       const result = await Promise.resolve(updateProfile({
-        name: name.trim() || session.name, bio: bio.trim(), avatarUri, banner, genres, initials, home,
+        name: name.trim() || session.name, bio: bio.trim(), avatarUri, banner, genres: genreSelection.genres, initials, home,
         ...(handleChanged && !handleTaken && !handleTooShort ? { handle } : {}),
       }));
       if (result?.ok !== false) onClose?.();
@@ -124,7 +147,7 @@ export default function EditProfileScreen({ onClose }) {
 
   return (
     <View style={styles.wrap}>
-      <SheetHeader title="Edit your profile" onClose={onClose} action={{ label: saving ? "Saving..." : mediaBusy ? "Uploading..." : "Save", onPress: save, disabled: mediaBusy || saving }} />
+      <SheetHeader title="Edit your profile" onClose={onClose} action={{ label: saving ? "Saving..." : mediaBusy ? "Uploading..." : "Save", onPress: save, disabled: mediaBusy || saving || !genreSelection.valid }} />
 
       <ScrollView style={saving ? styles.savingLock : null} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <Text style={styles.profileScope}>This is the profile people see for your personal account. Artist page, promotion, and show tools are in Artist HQ.</Text>
@@ -213,19 +236,24 @@ export default function EditProfileScreen({ onClose }) {
           <Icon name="chevron-right" size={16} color={colors.textDim} />
         </Pressable>
 
-        <Text style={styles.label}>FAVORITE GENRES</Text>
-        <View style={styles.chips}>
-          {GENRES.map((g) => {
+        <View style={styles.genreHeading}>
+          <Text style={styles.label}>MUSIC GENRES</Text>
+          <Text style={styles.genreCount}>{genres.length}/3 selected</Text>
+        </View>
+        <Text style={styles.genreHint}>Choose 1 to 3. These choices tune your artist, show, and feed recommendations.</Text>
+        <View style={styles.chips} accessibilityLabel="Music genres">
+          {genreOptions.map((g) => {
             const on = genres.includes(g);
             return (
-              <Pressable key={g} style={[styles.chip, on && styles.chipOn]} onPress={() => toggleGenre(g)}>
+              <Pressable key={g} style={[styles.chip, on && styles.chipOn]} onPress={() => toggleGenre(g)} accessibilityRole="checkbox" accessibilityState={{ checked: on }}>
                 <Text style={[styles.chipTxt, on && styles.chipTxtOn]}>{g}</Text>
               </Pressable>
             );
           })}
         </View>
+        {!!genreError && <Text style={styles.genreError} accessibilityRole="alert" accessibilityLiveRegion="assertive">{genreError}</Text>}
 
-        <Button title={saving ? "Saving profile..." : mediaBusy ? "Uploading photo..." : "Save profile"} icon="check" onPress={save} disabled={mediaBusy || saving} style={{ marginTop: 28 }} />
+        <Button title={saving ? "Saving profile..." : mediaBusy ? "Uploading photo..." : "Save profile"} icon="check" onPress={save} disabled={mediaBusy || saving || !genreSelection.valid} style={{ marginTop: 28 }} />
       </ScrollView>
     </View>
   );
@@ -270,6 +298,10 @@ const styles = StyleSheet.create({
   songFieldEmpty: { color: colors.textFaint },
   artistsBtn: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: colors.surface, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.line, paddingHorizontal: 14, paddingVertical: 13 },
   artistsBtnTxt: { flex: 1, color: colors.text, fontSize: 14, fontWeight: "600" },
+  genreHeading: { flexDirection: "row", alignItems: "flex-end", justifyContent: "space-between", gap: 12 },
+  genreCount: { color: colors.amber, fontSize: 11.5, fontWeight: "700", marginBottom: 8, marginTop: 20 },
+  genreHint: { color: colors.textDim, fontSize: 12, lineHeight: 17, marginTop: -2, marginBottom: 10 },
+  genreError: { color: colors.danger, fontSize: 12.5, lineHeight: 18, marginTop: 8 },
   chips: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   chip: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
   chipOn: { borderColor: colors.amber, backgroundColor: colors.bgElev },

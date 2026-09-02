@@ -15,6 +15,8 @@ import { profileManagementAction } from "../domain/artistWorkspace.mjs";
 import { selectConcertReviews } from "../domain/profileTimeline.mjs";
 import { useProfileHistory } from "../features/profileHistory/useProfileHistory";
 import { useArtistEventReviews } from "../features/artistEvents/useArtistEventArchive";
+import ArtistRecommendationsRail from "../features/artistRecommendations/ArtistRecommendationsRail";
+import { useArtistRecommendations } from "../features/artistRecommendations/useArtistRecommendations";
 
 const web = Platform.OS === "web";
 
@@ -34,7 +36,7 @@ function Reveal({ delay = 0, children, style }) {
 
 // The You tab is the private dashboard for memories, nearby activity, and
 // account tools. The public Profile screen owns live history, media, and posts.
-export default function YouScreen({ onLogin, onLogout, onManageProfile, onSettings, onAdmin, onRequestArtist, onOpenProfile, onOpen, onOpenPost, onActivity, onInbox, onCalendar, onOpenNearby, homeCity }) {
+export default function YouScreen({ onLogin, onLogout, onManageProfile, onSettings, onAdmin, onRequestArtist, onOpenProfile, onOpenArtist, onOpen, onOpenPost, onActivity, onInbox, onCalendar, onOpenNearby, homeCity }) {
   const {
     session,
     logsByUser,
@@ -48,6 +50,12 @@ export default function YouScreen({ onLogin, onLogout, onManageProfile, onSettin
     refreshNotifications,
   } = useStore();
   const history = useProfileHistory({ accountId: session?.id, targetId: session?.id, enabled: !!session });
+  const artistRecommendations = useArtistRecommendations({
+    accountId: session?.id,
+    enabled: !!session,
+    limit: 6,
+    profileRevision: session?.profileUpdatedAt || 0,
+  });
   const cachedMine = session ? logsByUser(session.id) : [];
   const mine = session && (history.posts.length || history.status === "ready") ? history.posts : cachedMine;
   const concertLogs = selectConcertReviews(mine);
@@ -98,6 +106,7 @@ export default function YouScreen({ onLogin, onLogout, onManageProfile, onSettin
       loadRewards(accountId, { signal: controller.signal }),
       loadInboxThreads({ signal: controller.signal, strict: true }),
       refreshNotifications({ signal: controller.signal }),
+      artistRecommendations.refresh({ signal: controller.signal }),
     ]);
     if (controller.signal.aborted || refreshControllerRef.current !== controller
       || session?.id !== accountId) return false;
@@ -285,6 +294,16 @@ export default function YouScreen({ onLogin, onLogout, onManageProfile, onSettin
           </Pressable>
         </Reveal>
       )}
+
+      <Reveal delay={65}>
+        <ArtistRecommendationsRail
+          resource={artistRecommendations.resource}
+          onOpenArtist={onOpenArtist}
+          onOpenProfile={onOpenProfile}
+          onManageTaste={onManageProfile}
+          onRetry={artistRecommendations.retry}
+        />
+      </Reveal>
 
       {memories.length > 0 && (
         <Reveal delay={70}>

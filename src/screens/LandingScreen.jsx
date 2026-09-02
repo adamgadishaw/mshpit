@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { View, Text, StyleSheet, Pressable, Animated, Easing, useWindowDimensions, Platform, ScrollView, AccessibilityInfo } from "react-native";
+import { View, Text, StyleSheet, Pressable, Animated, Easing, useWindowDimensions, Platform, ScrollView, AccessibilityInfo, PixelRatio } from "react-native";
 import { Image as ExpoImage } from "expo-image";
 import Svg, { Defs, LinearGradient, Stop, Rect } from "react-native-svg";
 import { displayFont, focusRing, mono, radius } from "../theme";
@@ -20,6 +20,7 @@ import {
 import { HOME_JOURNEY_LINE } from "../domain/homeJourney.mjs";
 import { resolveLandingMediaPath } from "../features/landing/landingMediaService";
 import useAppActive from "../lib/useAppActive";
+import { previewSrc } from "../lib/img";
 
 // ----------------------------------------------------------------------------
 // The opening art is made from explicitly opted-in, safety-filtered member
@@ -147,6 +148,8 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse, onSuggestio
   const pulse = useRef(new Animated.Value(0)).current;
   const [photoIndex, setPhotoIndex] = useState(0);
   const [failedPhotoIds, setFailedPhotoIds] = useState(() => new Set());
+  const [displayedPhotoId, setDisplayedPhotoId] = useState(null);
+  const [photoSourceState, setPhotoSourceState] = useState({ scope: "", stage: 0 });
   const landingMedia = useMemo(
     () => normalizeLandingCommunityMedia(discoverySidebar?.landingMedia, 6, { resolvePath: resolveLandingMediaPath }),
     [discoverySidebar?.landingMedia],
@@ -162,6 +165,15 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse, onSuggestio
   const currentLandingPhoto = visibleLandingMedia.length
     ? visibleLandingMedia[photoIndex % visibleLandingMedia.length]
     : null;
+  const landingPreviewWidth = Math.max(800, Math.min(2000, Math.ceil(width * PixelRatio.get() / 160) * 160));
+  const landingSourceScope = `${currentLandingPhoto?.id || "none"}:${landingPreviewWidth}`;
+  const landingSourceStage = photoSourceState.scope === landingSourceScope ? photoSourceState.stage : 0;
+  const preferredLandingUri = currentLandingPhoto?.uri
+    ? previewSrc(currentLandingPhoto.uri, landingPreviewWidth)
+    : null;
+  const currentLandingUri = landingSourceStage > 0
+    ? currentLandingPhoto?.uri
+    : preferredLandingUri;
 
   useEffect(() => {
     setPhotoIndex((current) => visibleLandingMedia.length ? current % visibleLandingMedia.length : 0);
@@ -187,15 +199,16 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse, onSuggestio
   }, [appActive, photoIndex, reduceMotion, visibleLandingMedia.length]);
 
   useEffect(() => {
-    if (!appActive || reduceMotion || !wide || visibleLandingMedia.length < 2) return undefined;
+    if (!appActive || reduceMotion || visibleLandingMedia.length < 2
+      || displayedPhotoId !== currentLandingPhoto?.id) return undefined;
     const next = visibleLandingMedia[(photoIndex + 1) % visibleLandingMedia.length];
     const timer = setTimeout(() => {
-      if (next?.uri) void ExpoImage.prefetch(next.uri, "disk").catch(() => {
+      if (next?.uri) void ExpoImage.prefetch(previewSrc(next.uri, landingPreviewWidth), "disk").catch(() => {
         // architecture: allow-empty-catch -- warming the next optional photo is best-effort and must not interrupt the landing page.
       });
-    }, 900);
+    }, wide ? 900 : 1400);
     return () => clearTimeout(timer);
-  }, [appActive, photoIndex, reduceMotion, visibleLandingMedia, wide]);
+  }, [appActive, currentLandingPhoto?.id, displayedPhotoId, landingPreviewWidth, photoIndex, reduceMotion, visibleLandingMedia, wide]);
 
   // The headline glow is independent of slide timing, so resetting a slide's
   // deadline never tears down and recreates this animation.
@@ -242,16 +255,27 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse, onSuggestio
       {/* ---- member photography, then owned readability scrims ---- */}
       {!!currentLandingPhoto && (
         <ExpoImage
-          source={{ uri: currentLandingPhoto.uri }}
+          source={{ uri: currentLandingUri }}
           contentFit="cover"
           cachePolicy="memory-disk"
           priority="high"
-          recyclingKey={currentLandingPhoto.id}
+          loading="eager"
+          allowDownscaling
+          enforceEarlyResizing
+          recyclingKey={`${currentLandingPhoto.id}:${currentLandingUri}`}
           transition={reduceMotion ? 0 : 450}
           accessible={false}
-          onError={() => setFailedPhotoIds((current) => current.has(currentLandingPhoto.id)
-            ? current
-            : new Set([...current, currentLandingPhoto.id]))}
+          onLoadStart={() => setDisplayedPhotoId(null)}
+          onDisplay={() => setDisplayedPhotoId(currentLandingPhoto.id)}
+          onError={() => {
+            if (landingSourceStage === 0 && preferredLandingUri !== currentLandingPhoto.uri) {
+              setPhotoSourceState({ scope: landingSourceScope, stage: 1 });
+              return;
+            }
+            setFailedPhotoIds((current) => current.has(currentLandingPhoto.id)
+              ? current
+              : new Set([...current, currentLandingPhoto.id]));
+          }}
           style={[StyleSheet.absoluteFill, styles.photoLayer]}
         />
       )}

@@ -86,11 +86,19 @@ test("the grid passes per-tile previews and contained media decodes the main sou
   assert.match(postMediaGrid, /previewWidth=\{previewWidthFor\(2 \/ 3\)\}/);
   assert.match(postMediaGrid, /previewWidth=\{previewWidthFor\(1 \/ 3\)\}/);
 
-  assert.match(smartImage, /backdropUri = contain && isHttp\(uri\) \? proxied\(uri, 96\) : null/);
+  assert.doesNotMatch(smartImage, /backdropUri|smart-image-background|blurRadius=\{28\}/,
+    "contained media must not issue a second request for a blurred copy");
   assert.equal((smartImage.match(/source=\{\{ uri: src \}\}/g) || []).length, 1,
     "the full feed derivative must not be mounted as both backdrop and foreground");
+  assert.match(smartImage, /styles\.containBackdrop/);
   assert.match(smartImage, /\{contain && <View style=\{\[StyleSheet\.absoluteFill, styles\.scrim\]\} \/>\}/,
     "non-http contained media keeps the stable background scrim without another image decode");
+  assert.match(smartImage, /priority=\{priority\}/);
+  assert.match(smartImage, /loading=\{loading\}/);
+  assert.match(smartImage, /allowDownscaling/);
+  assert.match(smartImage, /enforceEarlyResizing/);
+  assert.match(postMediaGrid, /priority=\{index === 0 && viewable === true \? "high" : "normal"\}/);
+  assert.match(postMediaGrid, /loading=\{viewable === true \? "eager" : "lazy"\}/);
 });
 
 test("post media semantics describe the action only when the tile is interactive", () => {

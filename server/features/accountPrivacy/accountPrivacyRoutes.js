@@ -86,7 +86,7 @@ export function accountPrivacyRoutes({
           "Password hashes, reset credentials, provider tokens, session cookies, raw IP addresses, and user-agent strings are intentionally excluded.",
           "Uploaded media files are represented by attached URLs and stable media descriptors; storage-provider audit metadata is not part of the account export.",
           "Other accounts are represented by stable internal ids only; live names and handles are excluded so an export cannot bypass blocks or profile visibility.",
-          "This synchronous export includes all current feed preferences plus up to 300 plays, 1,000 sent and received messages, 200 notifications, 5,000 activity events, 1,000 posts tagging you, and 1,000 tags you removed. A queued archive job is required before production-scale launch.",
+          "This synchronous export includes all current feed preferences plus up to 5,000 recently viewed posts, 300 plays, 1,000 sent and received messages, 200 notifications, 5,000 activity events, 1,000 posts tagging you, and 1,000 tags you removed. A queued archive job is required before production-scale launch.",
         ],
         profile: projectSelf(user),
         posts: database.prepare("SELECT * FROM posts WHERE user_id=? ORDER BY created_at DESC").all(user.id)
@@ -110,6 +110,28 @@ export function accountPrivacyRoutes({
         blocked: database.prepare("SELECT blocked_id id FROM blocks WHERE blocker_id=?").all(user.id).map((row) => accountReference(row.id)),
         feedPreferences: database.prepare("SELECT post_id,action,created_at FROM recommendation_preferences WHERE user_id=? ORDER BY created_at DESC").all(user.id)
           .map((row) => ({ postId: row.post_id, action: row.action, createdAt: row.created_at })),
+        feedImpressions: {
+          summary: (() => {
+            const row = database.prepare(`SELECT COUNT(*) post_count,COALESCE(SUM(seen_count),0) seen_count,
+              MIN(first_seen_at) first_seen_at,MAX(last_seen_at) last_seen_at
+              FROM post_impressions WHERE user_id=?`).get(user.id);
+            return {
+              posts: Number(row.post_count) || 0,
+              seenCount: Number(row.seen_count) || 0,
+              firstSeenAt: row.first_seen_at ?? null,
+              lastSeenAt: row.last_seen_at ?? null,
+            };
+          })(),
+          recent: database.prepare(`SELECT post_id,seen_count,first_seen_at,last_seen_at
+            FROM post_impressions WHERE user_id=?
+            ORDER BY last_seen_at DESC,post_id DESC LIMIT 5000`).all(user.id)
+            .map((row) => ({
+              postId: row.post_id,
+              seenCount: row.seen_count,
+              firstSeenAt: row.first_seen_at,
+              lastSeenAt: row.last_seen_at,
+            })),
+        },
         playlists: database.prepare("SELECT id,name,tracks,visibility,created_at,updated_at FROM playlists WHERE user_id=? ORDER BY created_at DESC").all(user.id)
           .map((row) => ({ id: row.id, name: row.name, tracks: parseJson(row.tracks, []), visibility: row.visibility || "public", createdAt: row.created_at, updatedAt: row.updated_at || null })),
         listeningHistory: database.prepare("SELECT title,artist,url,video_id,provider,source_id,created_at FROM plays WHERE user_id=? ORDER BY created_at DESC LIMIT 300").all(user.id)

@@ -477,6 +477,41 @@ CREATE TABLE IF NOT EXISTS recommendation_preferences (
 CREATE INDEX IF NOT EXISTS idx_recommendation_preferences_user_created
   ON recommendation_preferences(user_id, created_at DESC, post_id);
 
+-- Durable first-party feed rotation. Per-member state is core product state,
+-- independent of optional analytics. The post total is anonymous and public;
+-- retry receipts are short-lived and bounded.
+CREATE TABLE IF NOT EXISTS post_impressions (
+  user_id       TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  post_id       TEXT NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+  seen_count    INTEGER NOT NULL DEFAULT 1
+                  CHECK (typeof(seen_count)='integer' AND seen_count BETWEEN 1 AND 2147483647),
+  first_seen_at INTEGER NOT NULL CHECK (first_seen_at >= 0),
+  last_seen_at  INTEGER NOT NULL CHECK (last_seen_at >= first_seen_at),
+  PRIMARY KEY (user_id,post_id)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS idx_post_impressions_user_recent
+  ON post_impressions(user_id,last_seen_at DESC,post_id);
+
+CREATE TABLE IF NOT EXISTS post_impression_totals (
+  post_id       TEXT PRIMARY KEY REFERENCES posts(id) ON DELETE CASCADE,
+  view_count    INTEGER NOT NULL DEFAULT 0
+                  CHECK (typeof(view_count)='integer' AND view_count BETWEEN 0 AND 2147483647),
+  first_seen_at INTEGER NOT NULL CHECK (first_seen_at >= 0),
+  last_seen_at  INTEGER NOT NULL CHECK (last_seen_at >= first_seen_at)
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS post_impression_receipts (
+  user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  event_id   TEXT NOT NULL CHECK (length(event_id) BETWEEN 8 AND 100),
+  post_id    TEXT NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL CHECK (created_at >= 0),
+  PRIMARY KEY (user_id,event_id)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS idx_post_impression_receipts_expiry
+  ON post_impression_receipts(created_at,user_id,event_id);
+CREATE INDEX IF NOT EXISTS idx_post_impression_receipts_user_recent
+  ON post_impression_receipts(user_id,created_at DESC,event_id);
+
 -- ---- Notifications / activity (server-backed, cross-device) -----------------
 -- Addressed to a recipient (user_id) when someone (actor_id) acts on their stuff.
 CREATE TABLE IF NOT EXISTS notifications (

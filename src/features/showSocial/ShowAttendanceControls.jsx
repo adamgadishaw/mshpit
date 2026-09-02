@@ -6,6 +6,7 @@ import {
   attendanceControlsVisible,
   attendanceMutationIdentity,
   attendanceOptionsForPhase,
+  attendanceStateDisplayLabel,
   optimisticViewerAttendance,
 } from "../../domain/showAttendance.mjs";
 import { colors, mono, radius } from "../../theme";
@@ -15,7 +16,7 @@ const STATE_COPY = Object.freeze({
   interested: { label: "Interested", detail: "Keep this night on your radar", icon: "star" },
   going: { label: "Going", detail: "Plan to be in the Crowd", icon: "calendar" },
   here: { label: "Here", detail: "Quick live check-in", icon: "pin" },
-  went: { label: "Went", detail: "Add it to your live history", icon: "check" },
+  went: { label: "Attended", detail: "Add it to your live history", icon: "check" },
 });
 
 const VISIBILITY_COPY = Object.freeze({
@@ -93,7 +94,11 @@ export default function ShowAttendanceControls({
     }
   };
 
-  const currentStateCopy = attendance?.state ? STATE_COPY[attendance.state] : null;
+  const baseStateCopy = attendance?.state ? STATE_COPY[attendance.state] : null;
+  const currentStateLabel = attendanceStateDisplayLabel(attendance?.state, { show });
+  const currentStateCopy = baseStateCopy && currentStateLabel
+    ? { ...baseStateCopy, label: currentStateLabel }
+    : baseStateCopy;
   const visibilityCopy = attendance?.visibility ? VISIBILITY_COPY[attendance.visibility] : null;
   return (
     <View style={styles.card} accessibilityLabel="Your attendance for this show">

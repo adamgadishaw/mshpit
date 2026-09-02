@@ -1,6 +1,9 @@
 # Pit security and privacy readiness
 
-Last reviewed: 2026-08-24
+Last reviewed: 2026-09-01
+
+The detailed evidence, fixes, residual risk, and release gates for this review are
+recorded in `SECURITY_PRIVACY_TECHNICAL_AUDIT_2026-09-01.md`.
 
 ## Current status
 
@@ -153,6 +156,9 @@ to be completed.
 - Production dependency audit currently has no known advisories. Expo SDK 56
   dependencies are pinned to compatible patched versions and are checked with
   `expo install --check`.
+- Expo Doctor still identifies the upstream SDK 56 / React Native 0.85 Hermes V1
+  memory regression. The fixed runtime requires a separately tested SDK 57 /
+  React Native 0.86+ migration before a production native-store release.
 - CI actions are pinned to immutable commit SHAs and checkout does not persist a
   repository credential.
 - Repository privacy tests reject committed SQLite databases, WAL/SHM files,
@@ -223,6 +229,15 @@ that the replay completed.
   example Google Maps) by exact host and exact API at the provider.
 - Replace the capped synchronous portability export with a complete queued,
   encrypted, expiring archive for large accounts.
+- Add account-level profile visibility and apply it to direct profiles, social
+  lists, recommendations, search, sharing, and SEO. Search-engine opt-out alone
+  is not an access-control policy.
+- Move durable work out of authenticated GET routes. Artist refresh demand,
+  lease renewal, and Lounge lifecycle registration should be explicit commands
+  or background maintenance, not a side effect of reads or prefetches.
+- Require post/chat idempotency tokens and edit versions after compatibility
+  telemetry confirms legacy clients are retired, and approve an enforceable
+  deletion deadline for closed Lounge archives.
 - Narrow broad Google CSP domains as provider requirements allow and repeat
   authorization tests whenever a new public or staff route is added.
 

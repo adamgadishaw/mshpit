@@ -28,6 +28,8 @@ function Tile({ item, index, onOpen, openerId, style, more = 0, contain = false,
         style={StyleSheet.absoluteFill}
         contain={contain}
         previewWidth={previewWidth}
+        priority={index === 0 && viewable === true ? "high" : "normal"}
+        loading={viewable === true ? "eager" : "lazy"}
         accessible={false}
       />
       {!!more && (

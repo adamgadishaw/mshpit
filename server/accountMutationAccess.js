@@ -11,6 +11,9 @@ const UNVERIFIED_MUTATION_ALLOWLIST = new Set([
   "POST /api/verify-email/resend",
   "POST /api/unsubscribe",
   "POST /api/me/analytics-consent",
+  // Private feed rotation state is part of browsing, not a public social
+  // mutation. An unverified member may browse the same feed they can read.
+  "POST /api/feed/impressions",
   "POST /api/me/email-preferences",
   "POST /api/me/export",
   // Product suggestions are anonymous and never mutate account/public state;

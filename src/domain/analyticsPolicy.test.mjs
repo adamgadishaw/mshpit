@@ -43,6 +43,31 @@ test("analytics policy rejects unknown names and malformed idempotency identifie
   });
 });
 
+test("music-affinity v2 impression metadata survives without authored music data", () => {
+  assert.deepEqual(sanitizeAnalyticsEvent({
+    name: "feed_impression",
+    props: {
+      postId: "p_12345678",
+      position: 1,
+      surface: "everyone",
+      algorithm: "music-affinity-v2",
+      algorithmVersion: 2,
+      reasonCode: "artist_affinity",
+      artist: "must not be retained",
+    },
+  }), {
+    name: "feed_impression",
+    props: {
+      postId: "p_12345678",
+      position: 1,
+      surface: "everyone",
+      algorithm: "music-affinity-v2",
+      algorithmVersion: 2,
+      reasonCode: "artist_affinity",
+    },
+  });
+});
+
 test("consent copy describes account linkage and raw-event deletion without promising anonymity", () => {
   const auth = readFileSync(new URL("../screens/AuthScreen.jsx", import.meta.url), "utf8");
   const settings = readFileSync(new URL("../screens/SettingsScreen.jsx", import.meta.url), "utf8");

@@ -4,7 +4,7 @@ import { Image as ExpoImage } from "expo-image";
 import { colors, mono } from "../theme";
 import Icon from "./Icon";
 import ClipPoster from "./ClipPoster";
-import { proxied, isHttp, displaySrc, isVideoUrl } from "../lib/img";
+import { proxied, previewSrc, isHttp, displaySrc, isVideoUrl } from "../lib/img";
 
 // Fits any image (portrait or landscape) without ugly cropping: a blurred,
 // zoomed copy fills the frame behind the real image shown in full. Apple/Spotify
@@ -14,16 +14,15 @@ import { proxied, isHttp, displaySrc, isVideoUrl } from "../lib/img";
 // Descriptor-declared clips (plus URL-only historical videos) render a play
 // tile instead of a broken image in every grid/wall/strip; tapping still opens
 // the viewer, which actually plays them.
-export default function SmartImage({ uri, posterUri = null, mediaKind = null, viewable = null, style, contain = true, onPress, previewWidth = 0, cachePolicy = "memory-disk", accessibilityLabel = "Open image", accessible = true }) {
+export default function SmartImage({ uri, posterUri = null, mediaKind = null, viewable = null, style, contain = true, onPress, previewWidth = 0, cachePolicy = "memory-disk", priority = "normal", loading = "eager", accessibilityLabel = "Open image", accessible = true }) {
   const [stage, setStage] = useState(0); // 0 preferred source, 1 fallback, 2 dead
   useEffect(() => setStage(0), [uri, previewWidth]);
   const fail = () => setStage((s) => s + 1);
   const original = displaySrc(uri);
-  const preview = previewWidth > 0 && isHttp(uri) ? proxied(uri, previewWidth) : original;
+  const preview = previewWidth > 0 ? previewSrc(uri, previewWidth) : original;
   const src = stage === 1 ? (preview === original && isHttp(uri) ? proxied(uri) : original) : preview;
-  const backdropUri = contain && isHttp(uri) ? proxied(uri, 96) : null;
   if (mediaKind === "video" || (!mediaKind && isVideoUrl(uri))) {
-    const clip = <ClipPoster uri={uri} posterUri={posterUri} viewable={viewable} style={StyleSheet.absoluteFill} contain={contain} compact={!previewWidth} accessible={accessible} />;
+    const clip = <ClipPoster uri={uri} posterUri={posterUri} viewable={viewable} style={StyleSheet.absoluteFill} contain={contain} compact={!previewWidth} priority={priority} loading={loading} accessible={accessible} />;
     if (onPress) return <Pressable style={[styles.base, style]} onPress={onPress} accessibilityRole="button" accessibilityLabel={accessibilityLabel === "Open image" ? "Play video clip" : accessibilityLabel}>{clip}</Pressable>;
     return <View style={[styles.base, style]}>{clip}</View>;
   }
@@ -39,13 +38,17 @@ export default function SmartImage({ uri, posterUri = null, mediaKind = null, vi
     </View>
   ) : (
     <>
-      {backdropUri && <ExpoImage source={{ uri: backdropUri }} style={StyleSheet.absoluteFill} contentFit="cover" blurRadius={28} cachePolicy={cachePolicy} recyclingKey={`smart-image-background:${backdropUri}`} accessible={false} />}
+      {contain && <View style={[StyleSheet.absoluteFill, styles.containBackdrop]} />}
       {contain && <View style={[StyleSheet.absoluteFill, styles.scrim]} />}
       <ExpoImage
         source={{ uri: src }}
         style={StyleSheet.absoluteFill}
         contentFit={contain ? "contain" : "cover"}
         cachePolicy={cachePolicy}
+        priority={priority}
+        loading={loading}
+        allowDownscaling
+        enforceEarlyResizing
         recyclingKey={`smart-image:${src}`}
         transition={80}
         onError={fail}
@@ -60,6 +63,7 @@ export default function SmartImage({ uri, posterUri = null, mediaKind = null, vi
 
 const styles = StyleSheet.create({
   base: { overflow: "hidden", backgroundColor: colors.bgElev },
+  containBackdrop: { backgroundColor: "#11131a" },
   scrim: { backgroundColor: "rgba(0,0,0,0.28)" },
   fallback: { alignItems: "center", justifyContent: "center", gap: 8, backgroundColor: colors.bgElev },
   fallbackText: { color: colors.textFaint, fontFamily: mono, fontSize: 9, fontWeight: "800", letterSpacing: 1.2 },

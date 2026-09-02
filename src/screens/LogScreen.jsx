@@ -69,6 +69,7 @@ import {
   normalizeArtistCampaign,
 } from "../domain/artistCampaignPost.mjs";
 import { MAX_POST_TAGGED_PEOPLE, normalizeTaggedPeople } from "../domain/postFriendTags.mjs";
+import { composerEngagementPrompt } from "../domain/postCompleteness.mjs";
 import { COMPOSER_ARTIST_SEARCH_LIMIT } from "../features/artistSearch/artistSearchApi.mjs";
 import {
   IN_PERSON_REVIEW_EXPERIENCE,
@@ -378,7 +379,7 @@ export default function LogScreen({
     const query = peopleQuery.trim();
     const sequence = ++peopleRequestRef.current;
     const controller = new AbortController();
-    if (!showPeople || query.length < 2 || taggedPeople.length >= MAX_POST_TAGGED_PEOPLE) {
+    if (isStatus || isOnlineReview || !showPeople || query.length < 2 || taggedPeople.length >= MAX_POST_TAGGED_PEOPLE) {
       setPeopleHits([]);
       setPeopleLoading(false);
       setPeopleError("");
@@ -414,7 +415,7 @@ export default function LogScreen({
     // Store actions are recreated by the legacy Context facade; the query and
     // selection are the stable inputs, and each request is abortable/latest-only.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showPeople, peopleQuery, taggedPeople, user?.id, editing?.id]);
+  }, [isStatus, isOnlineReview, showPeople, peopleQuery, taggedPeople, user?.id, editing?.id]);
   const chooseTaggedPerson = (person) => {
     const normalized = normalizeTaggedPeople([person])[0];
     if (!normalized) return;
@@ -427,14 +428,6 @@ export default function LogScreen({
   };
   const [songError, setSongError] = useState("");
   const [postError, setPostError] = useState("");
-  const [tags, setTags] = useState(() => (Array.isArray(editing?.tags) ? editing.tags.slice(0, 5) : []));
-  const [tagDraft, setTagDraft] = useState("");
-  const commitTag = (raw) => {
-    const tag = String(raw || "").replace(/[,\n]/g, " ").replace(/\s+/g, " ").trim().slice(0, 24);
-    setTagDraft("");
-    if (!tag) return;
-    setTags((all) => (all.length >= 5 || all.some((t) => t.toLowerCase() === tag.toLowerCase()) ? all : [...all, tag]));
-  };
   const [photos, setPhotos] = useState(() => (editing?.photos || []).filter(isDurableMediaUrl));
   const [mediaProject, setMediaProject] = useState(() => mediaProjectForPost(editing));
   const [pendingMediaAssets, setPendingMediaAssets] = useState([]);
@@ -913,6 +906,19 @@ export default function LogScreen({
       : artist.trim() && venue.trim() && computed.overall > 0;
   const canPost = !!canPostBase && pendingMediaAssets.length === 0;
   const submitBusy = uploadingPhotos || resolvingSong || posting || artistAttaching;
+  const engagementPrompt = useMemo(() => composerEngagementPrompt({
+    kind: isStatus ? "status" : "review",
+    experienceType,
+    canPost: !!canPostBase,
+    artistLinked: artistPicked,
+    city,
+    tour,
+    title: onlineTitle,
+    review,
+    media: photos,
+    song,
+    taggedPeople: isStatus || isOnlineReview ? [] : taggedPeople,
+  }), [isStatus, isOnlineReview, experienceType, canPostBase, artistPicked, city, tour, onlineTitle, review, photos, song, taggedPeople]);
 
   const draftMediaProject = useMemo(() => normalizeMediaProject({
     assets: [
@@ -939,9 +945,9 @@ export default function LogScreen({
     onlineRating,
     dims,
     review,
-    tags,
-    tagDraft,
-    taggedPeople,
+    tags: [],
+    tagDraft: "",
+    taggedPeople: isStatus || isOnlineReview ? [] : taggedPeople,
     song,
     songUrl,
     playlist: preservedPlaylist,
@@ -949,8 +955,8 @@ export default function LogScreen({
     mediaProject: draftMediaProject,
     photosPublic,
     landingShowcase: !isOnlineReview && photosPublic && landingShowcase && hasLandingCompatiblePhoto,
-    panels: { song: showSong, photos: showPhotos, people: showPeople },
-  }), [draftId, postType, isStatus, isOnlineReview, campaign, experienceType, artist, artistPicked, artistKey, venue, city, tour, date, onlineTitle, youtubeUrl, onlineRating, dims, review, tags, tagDraft, taggedPeople, song, songUrl, preservedPlaylist, photos, draftMediaProject, photosPublic, landingShowcase, hasLandingCompatiblePhoto, showSong, showPhotos, showPeople]);
+    panels: { song: showSong, photos: showPhotos, people: !isStatus && !isOnlineReview && showPeople },
+  }), [draftId, postType, isStatus, isOnlineReview, campaign, experienceType, artist, artistPicked, artistKey, venue, city, tour, date, onlineTitle, youtubeUrl, onlineRating, dims, review, taggedPeople, song, songUrl, preservedPlaylist, photos, draftMediaProject, photosPublic, landingShowcase, hasLandingCompatiblePhoto, showSong, showPhotos, showPeople]);
   const draftFingerprint = useMemo(() => composerDraftFingerprint(currentDraft), [currentDraft]);
   const hasContent = useMemo(() => composerDraftHasContent(currentDraft), [currentDraft]);
   const hasPendingMedia = pendingMediaAssets.length > 0;
@@ -1057,14 +1063,14 @@ export default function LogScreen({
       .filter((asset) => asset.status !== "ready" && (asset.durableLocalUri || asset.assetId))
       .map((asset, index) => originalMediaProjectAsset(asset, index));
     const restoredReady = restoredProject.assets.filter((asset) => !!asset.sourceUrl && !restoredPending.some((pending) => pending.id === asset.id));
-    setTour(restored.tour); setDate(restored.experienceType === ONLINE_REVIEW_EXPERIENCE ? "" : toIsoDate(restored.date) || restored.date || todayStr); setOnlineTitle(restored.onlineTitle); setYoutubeUrl(restored.youtubeUrl); setOnlineRating(restored.onlineRating); setDims(restored.dims); setReview(restored.review); setTags(restored.tags); setTagDraft(restored.tagDraft); setTaggedPeople(restored.taggedPeople); setSong(restored.song); setSongUrl(restored.songUrl); setPreservedPlaylist(restored.playlist); setPhotos(restoredPhotos); setMediaProject(normalizeMediaProject({ assets: restoredReady })); setPendingMediaAssets(restoredPending); setPhotosPublic(restored.photosPublic); setLandingShowcase(restored.landingShowcase && hasLandingCompatibleImage(restoredPhotos));
+    setTour(restored.tour); setDate(restored.experienceType === ONLINE_REVIEW_EXPERIENCE ? "" : toIsoDate(restored.date) || restored.date || todayStr); setOnlineTitle(restored.onlineTitle); setYoutubeUrl(restored.youtubeUrl); setOnlineRating(restored.onlineRating); setDims(restored.dims); setReview(restored.review); setTaggedPeople(restored.postType === "review" && restored.experienceType !== ONLINE_REVIEW_EXPERIENCE ? restored.taggedPeople : []); setSong(restored.song); setSongUrl(restored.songUrl); setPreservedPlaylist(restored.playlist); setPhotos(restoredPhotos); setMediaProject(normalizeMediaProject({ assets: restoredReady })); setPendingMediaAssets(restoredPending); setPhotosPublic(restored.photosPublic); setLandingShowcase(restored.landingShowcase && hasLandingCompatibleImage(restoredPhotos));
     if (restoredPending.length) {
       void recoverMediaDraftAssets(restoredPending).then((recoverable) => {
         setPendingMediaAssets(recoverable.map((asset, index) => originalMediaProjectAsset(asset, index)));
         if (recoverable.length < restoredPending.length) setMediaError("One selected photo or video is no longer available on this device. The rest of your draft is safe; choose that item again.");
       });
     }
-    setShowSong(restored.panels.song); setShowPhotos(restored.panels.photos); setShowPeople(restored.panels.people || restored.taggedPeople.length > 0);
+    setShowSong(restored.panels.song); setShowPhotos(restored.panels.photos); setShowPeople(restored.postType === "review" && restored.experienceType !== ONLINE_REVIEW_EXPERIENCE && (restored.panels.people || restored.taggedPeople.length > 0));
   };
 
   useEffect(() => {
@@ -1216,7 +1222,7 @@ export default function LogScreen({
             : { name: "You", handle: "you", initials: "YOU" }),
           timeAgo: editing?.timeAgo || "now",
           review: review.trim(),
-          taggedPeople,
+          taggedPeople: [],
           song,
           photos: durablePhotos,
           ...(stableMediaAssetIds ? { mediaAssetIds: stableMediaAssetIds } : {}),
@@ -1268,11 +1274,9 @@ export default function LogScreen({
         photosPublic,
         landingShowcase: !isOnlineReview && photosPublic && landingShowcase && hasLandingCompatibleImage(durablePhotos),
         review: review.trim(),
-        taggedPeople,
+        taggedPeople: isOnlineReview ? [] : taggedPeople,
         song: isOnlineReview ? null : song,
-        tags: isOnlineReview
-          ? []
-          : tagDraft.trim() && tags.length < 5 && !tags.some((t) => t.toLowerCase() === tagDraft.trim().toLowerCase()) ? [...tags, tagDraft.trim()] : tags,
+        tags: [],
         likes: editing?.likes || 0,
         comments: editing?.comments || 0,
       });
@@ -1476,7 +1480,7 @@ export default function LogScreen({
           {artistAttaching && <Text style={styles.lookupStatus} accessibilityLiveRegion="polite">Adding this artist to the post...</Text>}
           {!!artistError && <Text style={styles.lookupError} accessibilityLiveRegion="assertive">{artistError}</Text>}
           {artistPicked && !!artist.trim() && (
-            <View style={styles.linked}><Icon name="check" size={12} color={colors.good} /><Text style={styles.linkedTxt}>{artist.trim()} added to this post</Text></View>
+            <View style={styles.linked}><Icon name="check" size={12} color={colors.good} /><Text style={styles.linkedTxt}>{artist.trim()} linked. This review can be considered for the artist page.</Text></View>
           )}
         </View>
         {isOnlineReview ? (
@@ -1607,7 +1611,7 @@ export default function LogScreen({
           </>
         )}
 
-        <Text style={[styles.fieldLabel, { marginTop: 22 }]}>YOUR REVIEW <Text style={styles.optional}>{isOnlineReview ? "· optional" : "· optional, use quick tags if you do not want to write"}</Text></Text>
+        <Text style={[styles.fieldLabel, { marginTop: 22 }]}>YOUR REVIEW <Text style={styles.optional}>· optional</Text></Text>
         <TextInput
           style={[styles.input, styles.multiline]}
           placeholder={isOnlineReview ? "What stood out about this concert?" : "What made the night? Be honest - this is what people read."}
@@ -1617,39 +1621,6 @@ export default function LogScreen({
           multiline
         />
 
-        {!isOnlineReview && (
-          <>
-            {/* These describe live-show factors and feed the physical concert
-                consensus, so they are intentionally unavailable online. */}
-            <Text style={[styles.fieldLabel, { marginTop: 22 }]}>QUICK TAGS <Text style={styles.optional}>· up to 5, shown with your rating</Text></Text>
-            {tags.length > 0 && (
-              <View style={styles.tagEditRow}>
-                {tags.map((t, i) => (
-                  <Pressable key={t + i} style={styles.tagEditChip} onPress={() => setTags((all) => all.filter((_, idx) => idx !== i))} accessibilityRole="button" accessibilityLabel={`Remove tag ${t}`}>
-                    <Text style={styles.tagEditTxt}>{t.toUpperCase()}</Text>
-                    <Icon name="x" size={11} color={colors.textDim} />
-                  </Pressable>
-                ))}
-              </View>
-            )}
-            {tags.length < 5 && (
-              <TextInput
-                style={styles.input}
-                placeholder={tags.length ? "Add another (press Enter or comma)" : "High energy, loud, emotional (press Enter or comma)"}
-                placeholderTextColor={colors.textFaint}
-                value={tagDraft}
-                onChangeText={(text) => {
-                  if (/[,\n]/.test(text)) { commitTag(text); return; }
-                  setTagDraft(text);
-                }}
-                onSubmitEditing={() => commitTag(tagDraft)}
-                onBlur={() => commitTag(tagDraft)}
-                maxLength={24}
-              />
-            )}
-          </>
-        )}
-
           </>
         )}
 
@@ -1657,13 +1628,11 @@ export default function LogScreen({
         <View style={styles.attachBar}>
           <AttachChip icon="camera" label={mediaAttachmentLabel} active={showPhotos || photos.length > 0 || pendingMediaAssets.length > 0} count={photos.length + pendingMediaAssets.length} onPress={toggleMediaPanel} disabled={submitBusy} />
           {!isOnlineReview && <AttachChip icon="play" label="YouTube" active={showSong || !!song?.videoId} onPress={() => setShowSong((v) => !v)} disabled={submitBusy} />}
-          <AttachChip icon="you" label={isStatus || isOnlineReview ? "Friends" : "People with you"} active={showPeople || taggedPeople.length > 0} count={taggedPeople.length} onPress={() => setShowPeople((v) => !v)} disabled={submitBusy} />
+          {!isStatus && !isOnlineReview ? <AttachChip icon="you" label="People with you" active={showPeople || taggedPeople.length > 0} count={taggedPeople.length} onPress={() => setShowPeople((v) => !v)} disabled={submitBusy} /> : null}
         </View>
-        {(showPeople || taggedPeople.length > 0) && (
+        {!isStatus && !isOnlineReview && (showPeople || taggedPeople.length > 0) && (
           <View style={styles.attachPanel}>
-            <Text style={styles.attachHint}>{isStatus || isOnlineReview
-              ? "Tag friends who follow you back. Their names link to their Mshpit profiles, and they can remove their tag at any time."
-              : "Tag the people who went to this show with you. You must follow each other, and anyone tagged can remove their own tag."}</Text>
+            <Text style={styles.attachHint}>Tag the people who went to this show with you. You must follow each other, and anyone tagged can remove their own tag.</Text>
             {!!taggedPeople.length && (
               <View style={styles.peopleSelected}>
                 {taggedPeople.map((person) => (
@@ -1686,7 +1655,7 @@ export default function LogScreen({
               <>
                 <TextInput
                   style={[styles.input, styles.peopleInput]}
-                  placeholder={isStatus || isOnlineReview ? "Search your friends" : "Search people you went with"}
+                  placeholder="Search people you went with"
                   placeholderTextColor={colors.textFaint}
                   value={peopleQuery}
                   onChangeText={setPeopleQuery}
@@ -1908,7 +1877,17 @@ export default function LogScreen({
         </View>
         )}
 
-        <Button title={posting ? (editing ? "Saving changes..." : "Posting...") : uploadingPhotos ? "Uploading media..." : resolvingSong ? "Checking video..." : editing ? "Save changes" : isStatus ? "Post" : "Post to feed"} icon="check" onPress={submit} disabled={!canPost || submitBusy} style={{ marginTop: 28 }} />
+        {engagementPrompt ? (
+          <View style={styles.engagementPrompt} accessible accessibilityRole="summary" accessibilityLabel={`${engagementPrompt.title}. ${engagementPrompt.body}`}>
+            <View style={styles.engagementPromptIcon}><Icon name="star" size={15} color={colors.amber} /></View>
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text style={styles.engagementPromptTitle}>{engagementPrompt.title}</Text>
+              <Text style={styles.engagementPromptText}>{engagementPrompt.body}</Text>
+              {!isStatus && <Text style={styles.engagementPromptFoot}>Choose the artist from search to link the post. Public artist-page photo sharing is on by default and can be turned off above.</Text>}
+            </View>
+          </View>
+        ) : null}
+        <Button title={posting ? (editing ? "Saving changes..." : "Posting...") : uploadingPhotos ? "Uploading media..." : resolvingSong ? "Checking video..." : editing ? "Save changes" : isStatus ? "Post" : "Post to feed"} icon="check" onPress={submit} disabled={!canPost || submitBusy} style={{ marginTop: engagementPrompt ? 14 : 28 }} />
         {!editing && hasContent && (
           <Pressable style={styles.saveDraft} onPress={stash} disabled={submitBusy}>
             <Icon name="edit" size={14} color={colors.textDim} />
@@ -1930,6 +1909,11 @@ const styles = StyleSheet.create({
   experienceModeButton: { flex: 1, minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7, paddingHorizontal: 10, borderRadius: radius.pill },
   experienceModeButtonOn: { backgroundColor: colors.amberStrong },
   experienceModeText: { color: colors.textDim, fontSize: 13, fontWeight: "800" },
+  engagementPrompt: { flexDirection: "row", gap: 10, marginTop: 22, padding: 13, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.bgElev },
+  engagementPromptIcon: { width: 32, height: 32, borderRadius: 16, alignItems: "center", justifyContent: "center", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line },
+  engagementPromptTitle: { color: colors.text, fontSize: 13.5, fontWeight: "900" },
+  engagementPromptText: { color: colors.textDim, fontSize: 12, lineHeight: 17, marginTop: 2 },
+  engagementPromptFoot: { color: colors.textFaint, fontSize: 10.5, lineHeight: 15, marginTop: 5 },
   experienceModeTextOn: { color: "#1A1206" },
   onlineSourceHint: { color: colors.textDim, fontSize: 11.5, lineHeight: 17, marginTop: -6, marginBottom: 12 },
   onlineRatingCard: { flexDirection: "row", alignItems: "center", gap: 14, marginTop: 18, padding: 16, borderRadius: radius.lg, borderCurve: "continuous", borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface, ...shadow.card },
@@ -1998,9 +1982,6 @@ const styles = StyleSheet.create({
   personResultCopy: { flex: 1, minWidth: 0 },
   personResultName: { color: colors.text, fontSize: 13.5, fontWeight: "800" },
   personResultHandle: { color: colors.textDim, fontFamily: mono, fontSize: 10.5, marginTop: 2 },
-  tagEditRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 8 },
-  tagEditChip: { flexDirection: "row", alignItems: "center", gap: 6, borderWidth: 1.5, borderColor: colors.amber, borderRadius: radius.sm, paddingHorizontal: 10, paddingVertical: 6, backgroundColor: colors.surfaceAlt },
-  tagEditTxt: { color: colors.amber, fontSize: 12, fontWeight: "900", letterSpacing: 1.2 },
   topbar: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, paddingBottom: 12 },
   cancel: { color: colors.textDim, fontSize: 15 },
   topTitle: { color: colors.textFaint, fontSize: 11, letterSpacing: 2, fontWeight: "700" },

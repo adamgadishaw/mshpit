@@ -23,12 +23,21 @@ test("shared profile media uses disk caching, recycling, and a visible fallback"
   const avatar = read("../components/Avatar.jsx");
   const smartImage = read("../components/SmartImage.jsx");
   assert.match(avatar, /from "expo-image"/);
+  assert.match(avatar, /PixelRatio/);
+  assert.match(avatar, /previewSrc\(user\.avatarUri, previewWidth\)/);
   assert.match(avatar, /cachePolicy="memory-disk"/);
+  assert.match(avatar, /priority=\{priority\}/);
+  assert.match(avatar, /loading=\{priority === "high" \? "eager" : "lazy"\}/);
+  assert.match(avatar, /allowDownscaling/);
+  assert.match(avatar, /enforceEarlyResizing/);
   assert.match(avatar, /recyclingKey=/);
-  assert.match(avatar, /onError=\{\(\) => setFailedUri/);
+  assert.match(avatar, /onError=\{\(\) => setSourceIndex/);
+  assert.match(avatar, /\{fallback\}[\s\S]*!!avatarUri/,
+    "initials remain painted underneath a loading or failed network photo");
   assert.match(smartImage, /from "expo-image"/);
   assert.match(smartImage, /cachePolicy = "memory-disk"/);
-  assert.ok((smartImage.match(/cachePolicy=\{cachePolicy\}/g) || []).length >= 2);
+  assert.equal((smartImage.match(/cachePolicy=\{cachePolicy\}/g) || []).length, 1,
+    "a shared photo tile owns one decoded image instead of a duplicate blurred request");
   assert.match(smartImage, /recyclingKey=/);
   assert.match(smartImage, /PHOTO UNAVAILABLE/);
   const moderation = read("../components/moderation/ModerationConsole.jsx");

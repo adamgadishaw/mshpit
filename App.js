@@ -72,6 +72,8 @@ import { load, remove, save } from "./src/lib/persist";
 import { configureDiagnosticsIdentity } from "./src/lib/diagnostics";
 import { getPendingImagePickerResult } from "./src/lib/imagePickerRecovery";
 import { lazyWithRetry } from "./src/lib/lazyWithRetry";
+import { recordFeedImpressionForSession } from "./src/features/feedImpressions/feedImpressionService";
+import useFeedImpressionSession from "./src/features/feedImpressions/useFeedImpressionSession";
 import { artistPath, eventPath, parsePath, isPublicEntityPath } from "./src/domain/urls.mjs";
 import { shouldRestorePersistedStack } from "./src/domain/browserNavigation.mjs";
 import { initialLandingState, landingRenderSurface } from "./src/domain/landingStartup.mjs";
@@ -189,6 +191,7 @@ function Root() {
     youtubeLookupStatus, mediaReactions, loadMediaReactions, toggleMediaReaction,
     removeMyPostTag,
   } = useStore();
+  useFeedImpressionSession(session);
   const staff = isStaff(session?.role);
   const canViewDiagnostics = isMod(session?.role);
   const feed = visibleFeed(staff);
@@ -1248,14 +1251,20 @@ function Root() {
                   onOpenInbox={openInbox}
                   onOpenNotifications={openNotifications}
                   onOpen={openShow}
-                  onImpression={(log, position, surface) => track("feed_impression", {
-                    postId: log?.id,
-                    position,
-                    surface,
-                    algorithm: log?.recommendation?.algorithm || "chronological-v1",
-                    algorithmVersion: log?.recommendation?.algorithmVersion || 1,
-                    reasonCode: log?.recommendation?.reasonCode,
-                  })}
+                  onImpression={(log, position, surface) => {
+                    recordFeedImpressionForSession(session, {
+                      postId: log?.id,
+                      surface: surface === "everyone" ? "for_you" : surface,
+                    });
+                    track("feed_impression", {
+                      postId: log?.id,
+                      position,
+                      surface,
+                      algorithm: log?.recommendation?.algorithm || "chronological-v1",
+                      algorithmVersion: log?.recommendation?.algorithmVersion || 1,
+                      reasonCode: log?.recommendation?.reasonCode,
+                    });
+                  }}
                   onDwell={(log, milliseconds, surface) => track("content_dwell", {
                     postId: log?.id,
                     durationBucket: analyticsDwellBucket(milliseconds),
@@ -1290,6 +1299,7 @@ function Root() {
                   onManageProfile={openProfileManagement}
                   onSettings={() => go({ settings: true })}
                   onOpenProfile={openProfile}
+                  onOpenArtist={openArtist}
                   onOpen={openShow}
                   onOpenPost={openPost}
                   onActivity={openNotifications}

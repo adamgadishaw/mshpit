@@ -13,6 +13,11 @@ import { latestIncomingDirectMessageId } from "../domain/directMessageRead.mjs";
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import useScopedRefresh from "../hooks/useScopedRefresh";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
+import {
+  messageRelationshipChips,
+  messageRelationshipSummary,
+  normalizeMessageRelationshipContext,
+} from "../domain/messageRelationshipContext.mjs";
 
 const EMPTY_COMPOSER = Object.freeze({ text: "", sending: false });
 
@@ -26,6 +31,10 @@ export default function ThreadScreen({ otherId, onClose, onOpenProfile, onOpenPr
   const composerScopeRef = useRef(composerScope);
   composerScopeRef.current = composerScope;
   const [composerState, setComposerState] = useState(() => ({ scope: composerScope, value: EMPTY_COMPOSER }));
+  const [relationshipState, setRelationshipState] = useState(() => ({ scope: composerScope, value: null }));
+  const relationshipScopeRef = useRef(composerScope);
+  relationshipScopeRef.current = composerScope;
+  const relationshipLoadedRef = useRef(false);
   const { text, sending } = scopedScreenValue(composerState, composerScope, EMPTY_COMPOSER);
   const updateComposer = (changes) => setComposerState((current) => ({
     scope: composerScope,
@@ -34,13 +43,38 @@ export default function ThreadScreen({ otherId, onClose, onOpenProfile, onOpenPr
   const { scrollRef, onScroll, onContentSizeChange } = useChatScroll();
   const messages = threadMessages(otherId);
   const incomingReadTarget = latestIncomingDirectMessageId(messages, session?.id);
+  const messageRelationshipContext = [...messages].reverse()
+    .find((message) => message?.relationshipContext)?.relationshipContext || null;
+  const relationshipContext = normalizeMessageRelationshipContext(
+    scopedScreenValue(relationshipState, composerScope, null) || messageRelationshipContext,
+  );
+  const relationshipChips = messageRelationshipChips(relationshipContext);
+  const relationshipSummary = messageRelationshipSummary(relationshipContext);
+
+  const loadRelationshipThread = async ({ after, signal, strict = false, forceContext = false } = {}) => {
+    const requestScope = relationshipScopeRef.current;
+    const includeContext = forceContext || !relationshipLoadedRef.current;
+    const result = await loadThread(otherId, { after, signal, strict, includeContext });
+    if (relationshipScopeRef.current === requestScope
+      && result
+      && Object.prototype.hasOwnProperty.call(result, "relationshipContext")) {
+      relationshipLoadedRef.current = true;
+      setRelationshipState({
+        scope: requestScope,
+        value: normalizeMessageRelationshipContext(result.relationshipContext),
+      });
+    }
+    return result;
+  };
 
   useEffect(() => {
     setComposerState({ scope: composerScope, value: EMPTY_COMPOSER });
+    setRelationshipState({ scope: composerScope, value: null });
+    relationshipLoadedRef.current = false;
   }, [composerScope]);
 
   useLiveChat(
-    ({ after, signal }) => loadThread(otherId, { after, signal }),
+    ({ after, signal }) => loadRelationshipThread({ after, signal }),
     { channelKey: `dm:${chatAuthEpoch}:${session?.id || "guest"}:${otherId}`, enabled: !!session && !!otherId },
   );
   const threadRefreshScope = refreshScope(session?.id, "message-thread", `${chatAuthEpoch}:${otherId || ""}`);
@@ -49,7 +83,7 @@ export default function ThreadScreen({ otherId, onClose, onOpenProfile, onOpenPr
     enabled: !!session && !!otherId,
     task: async ({ signal }) => {
       const [threadResult, userResult] = await Promise.all([
-        loadThread(otherId, { signal, strict: true }),
+        loadRelationshipThread({ signal, strict: true, forceContext: true }),
         loadUser(otherId, { signal }),
       ]);
       if (userResult?.status === "error") {
@@ -107,6 +141,24 @@ export default function ThreadScreen({ otherId, onClose, onOpenProfile, onOpenPr
       >
       <ScrollView ref={scrollRef} contentContainerStyle={styles.chat} showsVerticalScrollIndicator={false}
         onScroll={onScroll} onContentSizeChange={onContentSizeChange} scrollEventThrottle={100}>
+        {(relationshipChips.length > 0 || relationshipSummary) && (
+          <View
+            style={styles.relationshipCard}
+            accessible
+            accessibilityLabel={[`About ${other?.name || "this member"}`, ...relationshipChips.map((chip) => chip.label), relationshipSummary].filter(Boolean).join(". ")}
+          >
+            {relationshipChips.length > 0 && (
+              <View style={styles.relationshipChips}>
+                {relationshipChips.map((chip) => (
+                  <View key={chip.key} style={styles.relationshipChip}>
+                    <Text style={styles.relationshipChipText}>{chip.label}</Text>
+                  </View>
+                ))}
+              </View>
+            )}
+            {!!relationshipSummary && <Text style={styles.relationshipSummary}>{relationshipSummary}</Text>}
+          </View>
+        )}
         {messages.length === 0 && <Text style={styles.empty}>Say hi to {other?.name?.split(" ")[0]}.</Text>}
         {messages.map((m) => {
           const mine = m.from === session?.id;
@@ -178,6 +230,11 @@ export default function ThreadScreen({ otherId, onClose, onOpenProfile, onOpenPr
 const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: colors.bg },
   chat: { padding: 16, paddingBottom: 24, gap: 10 },
+  relationshipCard: { alignSelf: "stretch", gap: 7, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.bgElev, paddingHorizontal: 12, paddingVertical: 10 },
+  relationshipChips: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
+  relationshipChip: { borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface, paddingHorizontal: 8, paddingVertical: 3 },
+  relationshipChipText: { color: colors.amber, fontSize: 10, fontWeight: "800" },
+  relationshipSummary: { color: colors.textDim, fontSize: 12, lineHeight: 17 },
   empty: { color: colors.textDim, fontSize: 13, fontStyle: "italic", textAlign: "center", marginTop: 20 },
   row: { maxWidth: "82%", alignSelf: "flex-start" },
   rowMine: { alignSelf: "flex-end" },

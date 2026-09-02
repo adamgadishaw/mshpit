@@ -64,8 +64,10 @@ export function normalizeComposerDraft(value = {}) {
     dims: normalizedDims(value.dims),
     review: text(value.review),
     taggedPeople: normalizeTaggedPeople(value.taggedPeople),
-    tags: isOnlineReview ? [] : Array.isArray(value.tags) ? value.tags.filter((tag) => typeof tag === "string").slice(0, 5) : [],
-    tagDraft: isOnlineReview ? "" : text(value.tagDraft),
+    // Descriptive tags are retired. Do not revive them from an older saved
+    // draft; people who attended together remain in taggedPeople.
+    tags: [],
+    tagDraft: "",
     song: value.song && typeof value.song === "object" ? value.song : null,
     songUrl: text(value.songUrl || value.song?.url),
     playlist: value.playlist && typeof value.playlist === "object" ? value.playlist : null,
@@ -101,8 +103,6 @@ export function composerDraftHasContent(value) {
     || draft.onlineRating > 0
     || draft.review.trim()
     || draft.taggedPeople.length
-    || draft.tags.length
-    || draft.tagDraft.trim()
     || draft.song?.videoId
     || draft.songUrl.trim()
     || draft.playlist

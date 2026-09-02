@@ -11,6 +11,7 @@ import { accountTargetScope, scopedScreenValue } from "../domain/screenScope.mjs
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import useScopedRefresh from "../hooks/useScopedRefresh";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
+import { messageRelationshipChips } from "../domain/messageRelationshipContext.mjs";
 
 const EMPTY_PEOPLE_SEARCH = Object.freeze({ status: "idle", rows: [], error: "" });
 
@@ -73,21 +74,33 @@ export default function InboxScreen({ onClose, onOpenThread }) {
   const closeComposer = () => { setComposing(false); setQuery(""); };
   const openPerson = (person) => { closeComposer(); onOpenThread?.(person.id); };
 
-  const Row = (t) => (
-    <Pressable key={t.otherId} style={styles.row} onPress={() => onOpenThread?.(t.otherId)}>
-      <Avatar user={t.otherUser} size={48} />
-      <View style={{ flex: 1 }}>
-        <Text style={styles.name}>{t.otherUser?.name}</Text>
-        <Text style={[styles.snippet, t.unread > 0 && styles.snippetUnread]} numberOfLines={1}>
-          {t.last?.failed ? "Not sent: " : t.last?.from === session.id ? "You: " : ""}{t.last?.text}
-        </Text>
-      </View>
-      <View style={{ alignItems: "flex-end", gap: 6 }}>
-        <Text style={styles.ts}>{t.last?.ts}</Text>
-        {t.unread > 0 && <View style={styles.badge}><Text style={styles.badgeTxt}>{t.unread}</Text></View>}
-      </View>
-    </Pressable>
-  );
+  const Row = (t) => {
+    const relationshipChips = messageRelationshipChips(t.relationshipContext).slice(0, 3);
+    return (
+      <Pressable key={t.otherId} style={styles.row} onPress={() => onOpenThread?.(t.otherId)}>
+        <Avatar user={t.otherUser} size={48} />
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text style={styles.name}>{t.otherUser?.name}</Text>
+          {relationshipChips.length > 0 && (
+            <View style={styles.contextChips}>
+              {relationshipChips.map((chip) => (
+                <View key={chip.key} style={styles.contextChip}>
+                  <Text style={styles.contextChipText} numberOfLines={1}>{chip.label}</Text>
+                </View>
+              ))}
+            </View>
+          )}
+          <Text style={[styles.snippet, t.unread > 0 && styles.snippetUnread]} numberOfLines={1}>
+            {t.last?.failed ? "Not sent: " : t.last?.from === session.id ? "You: " : ""}{t.last?.text}
+          </Text>
+        </View>
+        <View style={{ alignItems: "flex-end", gap: 6 }}>
+          <Text style={styles.ts}>{t.last?.ts}</Text>
+          {t.unread > 0 && <View style={styles.badge}><Text style={styles.badgeTxt}>{t.unread}</Text></View>}
+        </View>
+      </Pressable>
+    );
+  };
 
   return (
     <View style={styles.wrap}>
@@ -212,6 +225,9 @@ const styles = StyleSheet.create({
   empty: { color: colors.textDim, fontSize: 14, lineHeight: 21, fontStyle: "italic", marginTop: 8 },
   row: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 12, marginBottom: 10 },
   name: { color: colors.text, fontSize: 15, fontWeight: "700" },
+  contextChips: { flexDirection: "row", flexWrap: "wrap", gap: 5, marginTop: 5 },
+  contextChip: { maxWidth: "100%", borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.bgElev, paddingHorizontal: 7, paddingVertical: 2 },
+  contextChipText: { color: colors.amber, fontSize: 9.5, fontWeight: "800" },
   snippet: { color: colors.textDim, fontSize: 13, marginTop: 3 },
   snippetUnread: { color: colors.text, fontWeight: "600" },
   ts: { color: colors.textFaint, fontSize: 11, fontFamily: mono },

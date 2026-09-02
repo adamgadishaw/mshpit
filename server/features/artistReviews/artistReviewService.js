@@ -39,7 +39,7 @@ function artistReviewProjection(post) {
     mediaAssetIds: publicMedia ? list(post.mediaAssetIds) : [],
     setlist: list(post.setlist),
     tour: post.tour || null,
-    tags: list(post.tags),
+    tags: [],
     taggedPeople: normalizeTaggedPeople(post.taggedPeople),
     song: post.song ?? null,
     likes: Math.max(0, Number(post.likes) || 0),

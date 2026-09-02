@@ -1,17 +1,20 @@
 // One bounded boundary for the staff moderation queue and its state changes.
 // api.js owns HTTP authentication/validation; this module owns the database
 // reads, transactions, desired-state semantics, and append-only audit history.
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
+import { opaqueId } from "./ids.js";
 
 import { db } from "./db.js";
 import { ApiError } from "./errors.js";
 import { assetObjectRecords, deleteMediaAssets, postMediaAssetIds } from "./mediaAssets.js";
+import { verifiedFinalizedLegacyMedia } from "./mediaLegacyFinalize.js";
 import { enqueueOwnedMediaKeys, enqueueOwnedMediaUrls, trustedOwnedMediaKey } from "./mediaDeletion.js";
 import {
   deleteLegacyVideoPosterMappings,
   legacyVideoPosterObjectRecords,
 } from "./legacyVideoPosters.js";
 import { MEDIA_POST_MAX_ATTACHMENTS } from "../src/domain/mediaUploadPolicy.mjs";
+import { safeOwnedReadyMediaUrl } from "./publicMedia.js";
 import { clean, LIMITS } from "./validate.js";
 
 export const MODERATABLE_CONTENT = Object.freeze({
@@ -58,6 +61,11 @@ function boundedText(value, max = 280) {
   return clean(value, { max, newlines: true });
 }
 
+function safeStaffAvatar(ownerId, value) {
+  return safeOwnedReadyMediaUrl(db, { ownerId, url: value, kind: "image" })
+    || (verifiedFinalizedLegacyMedia(db, { ownerId, publicUrl: value }) ? value : null);
+}
+
 function publicPerson(row, prefix = "author") {
   const id = row?.[`${prefix}_id`];
   if (!id) return null;
@@ -66,7 +74,9 @@ function publicPerson(row, prefix = "author") {
     name: row[`${prefix}_name`] || "",
     handle: row[`${prefix}_handle`] || "",
     initials: row[`${prefix}_initials`] || null,
-    avatarUri: row[`${prefix}_avatar_uri`] || null,
+    // Staff pages must not fetch a legacy external URL controlled by the
+    // reported account. Project only server-verified, owner-bound media.
+    avatarUri: safeStaffAvatar(id, row[`${prefix}_avatar_uri`]),
     avatarColor: row[`${prefix}_avatar_color`] || null,
     role: row[`${prefix}_role`] || "fan",
     isBanned: !!row[`${prefix}_is_banned`],
@@ -237,7 +247,7 @@ function contextsFor(reports) {
         type, exists: true,
         user: {
           id: row.id, name: row.name || "", handle: row.handle || "", initials: row.initials || null,
-          avatarUri: row.avatar_uri || null, avatarColor: row.avatar_color || null, role: row.role || "fan",
+          avatarUri: safeStaffAvatar(row.id, row.avatar_uri), avatarColor: row.avatar_color || null, role: row.role || "fan",
           isBanned: !!row.is_banned, suspendedUntil: row.suspended_until || null,
         },
         restricted: !!row.is_banned || Number(row.suspended_until || 0) > Date.now(),
@@ -356,7 +366,7 @@ export function moderationOverview({ at = Date.now(), cursor = null, limit = 50,
 
 export function recordModerationAction(ctx, action, targetType, targetId, reason = "", prior = {}, next = {}) {
   insertAudit.run(
-    `ma_${randomUUID().slice(0, 12)}`,
+    opaqueId("ma"),
     ctx.user?.id || null,
     action,
     targetType,

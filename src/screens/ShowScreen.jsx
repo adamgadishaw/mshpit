@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator } from "react-native";
+import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, useWindowDimensions } from "react-native";
 import { colors, displayFont, mono, radius, shadow, space } from "../theme";
 import Stars from "../components/Stars";
 import RatingSplit from "../components/RatingSplit";
@@ -19,7 +19,8 @@ import {
   isNamedSpecialEvent, showDocumentIdentity, showLifecycleView, showPresentationModel,
 } from "../domain/showDocument.mjs";
 import {
-  CROWD_SCOPES, attendanceTotalForView, viewerGoingForCrowd,
+  CROWD_SCOPES, attendanceStateDisplayLabel, attendanceTotalForView,
+  postShowAttendanceCutoff, viewerGoingForCrowd,
 } from "../domain/showAttendance.mjs";
 import { hasPostDiscussion } from "../domain/showDiscussion.mjs";
 import { liveEventLineupLabel, liveEventTitle } from "../domain/liveDiscovery.mjs";
@@ -35,13 +36,47 @@ import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import useScopedRefresh from "../hooks/useScopedRefresh";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
 import { useArtistMemorial } from "../features/artistMemorials/useArtistMemorial";
+import { normalizeAttendanceTicketShow } from "../domain/attendanceTicket.mjs";
 
 const CROWD_FILTER_LABELS = Object.freeze({
   everyone: "Everyone",
   following: "Following",
   friends: "Friends",
 });
-const ATTENDANCE_STATE_LABELS = Object.freeze({ going: "Going", here: "Here", went: "Went" });
+function ReviewMediaTile({ media, author, postId, onOpenPhotos }) {
+  const [index, setIndex] = useState(0);
+  const items = Array.isArray(media) ? media : [];
+  useEffect(() => setIndex(0), [postId]);
+  if (!items.length) return null;
+  const current = items[index % items.length];
+  const move = (delta) => setIndex((value) => (value + delta + items.length) % items.length);
+  return (
+    <View style={styles.archiveReviewMediaFrame}>
+      <SmartImage
+        uri={current.uri}
+        posterUri={current.posterUri}
+        mediaKind={current.kind}
+        style={styles.archiveReviewMedia}
+        contain
+        accessibilityLabel={`Open media ${index + 1} of ${items.length} from ${author}'s review`}
+        onPress={() => onOpenPhotos?.(items, index, postId)}
+      />
+      {items.length > 1 ? (
+        <>
+          <Pressable style={[styles.reviewMediaArrow, styles.reviewMediaArrowLeft]} onPress={() => move(-1)} accessibilityRole="button" accessibilityLabel="Previous review photo">
+            <Icon name="chevron-left" size={16} color="#FFFFFF" />
+          </Pressable>
+          <Pressable style={[styles.reviewMediaArrow, styles.reviewMediaArrowRight]} onPress={() => move(1)} accessibilityRole="button" accessibilityLabel="Next review photo">
+            <Icon name="chevron-right" size={16} color="#FFFFFF" />
+          </Pressable>
+          <View style={styles.reviewMediaCount} pointerEvents="none">
+            <Text style={styles.reviewMediaCountText}>{index + 1} / {items.length}</Text>
+          </View>
+        </>
+      ) : null}
+    </View>
+  );
+}
 
 // The "performance page" - ONE artist, ONE venue, ONE date. This is the night
 // itself, not the room (that's the venue page): a ticket-style hero owns the
@@ -51,6 +86,9 @@ const ATTENDANCE_STATE_LABELS = Object.freeze({ going: "Going", here: "Here", we
 // logged review, a bare tour date from the calendar, a lounge link - so every
 // field is guarded; a tour date has no score and that's a mode, not a crash.
 export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenProfile, onOpenArtist, onOpenArchive, onOpenVenue, onOpenLounge, onOpenPost, onOpenPhotos, onRequireAuth }) {
+  const { width } = useWindowDimensions();
+  const wideLayout = width >= 900;
+  const reviewTileWidth = width >= 1100 ? "32%" : width >= 720 ? "48.5%" : "100%";
   const appActive = useAppActive();
   const {
     venueCoord, venuePhotos, venuePhotoState, loadVenuePhotos, venuePhotoPrivacyRevision,
@@ -120,6 +158,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
     imageUri: artistPhotoUri,
     artistPhotoUri,
   }), [artist, artistPhotoUri, eventTitle, norm]);
+  const ticketShow = useMemo(() => normalizeAttendanceTicketShow(ticketEvent), [ticketEvent]);
   const coord = venueCoord(venue);
   const photos = venuePhotos(venue);
   const photoState = venuePhotoState(venue);
@@ -363,6 +402,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
   const hasExplicitShowTime = Number.isFinite(Number(trustedShow?.startsAt))
     || !!String(norm.startDateTime || norm.startLocalTime || "").trim();
   const hasAuthenticCountdownTarget = !!countdownTimingKind || hasExplicitShowTime;
+  const attendanceCutoffAt = postShowAttendanceCutoff({ ...norm, ...(trustedShow || {}) });
 
   // Setlists are spoiler-gated while a show sits inside the artist's active tour
   // window: nobody wants the surprise ruined before their own night. Hidden by
@@ -419,6 +459,8 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
         {/* Ticket-style hero: this is what makes a NIGHT read differently from
             a venue. Artist headline, then a perforated stub strip carrying the
             room + the date, like the ticket you'd have kept. */}
+        <View style={[styles.heroGrid, wideLayout && styles.heroGridWide]}>
+          <View style={styles.heroTicketColumn}>
         <View style={styles.ticket}>
           <Text style={styles.ticketKicker}>{presentation.ticketKicker}</Text>
           {isNamedLiveEvent ? (
@@ -466,6 +508,16 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
               {log.soldOut ? <Text style={styles.soldOut}>SOLD OUT</Text> : null}
             </View>
           </View>
+          {ticketShow?.timing?.length ? (
+            <View style={styles.timingRow}>
+              {ticketShow.timing.map((timing) => (
+                <View key={timing.kind} style={styles.timingItem}>
+                  <Text style={styles.stubLabel}>{timing.kind === "doors" ? "DOORS OPEN" : timing.label}</Text>
+                  <Text style={styles.timingValue}>{timing.value}</Text>
+                </View>
+              ))}
+            </View>
+          ) : null}
           {liveActionsAvailable && presentation.showCountdown && hasAuthenticCountdownTarget && targetMs != null && (
             <View style={styles.countdownStrip}>
               <Icon name="clock" size={14} color={colors.amber} />
@@ -475,6 +527,21 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
                 : countdownTimingKind === "access" ? "until event access" : "until showtime"}</Text>}
             </View>
           )}
+        </View>
+          </View>
+          <View style={styles.heroVenueColumn}>
+            <VenuePhotoWidget
+              compact
+              photos={photos}
+              venueName={venue}
+              city={city}
+              coord={coord}
+              loading={photoState.status === "idle" || photoState.status === "loading"}
+              error={photoState.status === "error"}
+              onRetry={() => { void loadVenuePhotos(venue, { force: true }).catch(() => {}); }}
+              onPress={() => onOpenVenue?.(venue)}
+            />
+          </View>
         </View>
 
         {archiveCover ? (
@@ -494,38 +561,27 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
           </View>
         ) : null}
 
-        <View style={{ marginTop: 16 }}>
-          <VenuePhotoWidget
-            photos={photos}
-            venueName={venue}
-            city={city}
-            coord={coord}
-            loading={photoState.status === "idle" || photoState.status === "loading"}
-            error={photoState.status === "error"}
-            onRetry={() => { void loadVenuePhotos(venue, { force: true }).catch(() => {}); }}
-            onPress={() => onOpenVenue?.(venue)}
-          />
-        </View>
-
         {/* A night that happened gets its community score. An upcoming night
             gets tickets instead: never a fabricated 0.0. */}
         {presentation.showPostEvent && overall != null && (
-          <View style={styles.scoreCard}>
-            <View style={{ alignItems: "center", marginBottom: 14 }}>
+          <View style={[styles.scoreCard, wideLayout && styles.scoreCardWide]}>
+            <View style={[styles.scoreSummary, wideLayout && styles.scoreSummaryWide]}>
               <Text style={styles.bigScore}>{overall.toFixed(1)}</Text>
-              <Stars value={overall} size={20} />
+              <Stars value={overall} size={18} />
               <Text style={styles.scoreSub}>community score · {log.ratingCount ?? ((log.likes || 0) + (log.comments || 0))} {log.ratingCount === 1 ? "rating" : "ratings"}</Text>
             </View>
-            {log.dims && Object.values(log.dims).some((v) => v > 0)
-              ? <RatingBreakdown dims={log.dims} />
-              : !archiveShowKey && (log.band || log.room)
-                ? <RatingSplit band={log.band || 0} room={log.room || 0} />
-                : null}
-            <Text style={styles.note}>
-              {archiveShowKey
-                ? "Each account counts once in this performance score. Pit balances the average with review confidence so one perfect rating cannot overpower a crowd."
-                : `Weighted across six factors - the band, the room, and the night. Room scores aggregate to ${venue}, not the artist.`}
-            </Text>
+            <View style={styles.scoreDetails}>
+              {log.dims && Object.values(log.dims).some((v) => v > 0)
+                ? <RatingBreakdown dims={log.dims} />
+                : !archiveShowKey && (log.band || log.room)
+                  ? <RatingSplit band={log.band || 0} room={log.room || 0} />
+                  : null}
+              <Text style={styles.note}>
+                {archiveShowKey
+                  ? "Each account counts once. A few perfect ratings cannot outweigh a larger crowd."
+                  : `Artist and venue ratings stay separate. This venue score belongs to ${venue}.`}
+              </Text>
+            </View>
           </View>
         )}
         {presentation.showPostEvent && overall == null && (
@@ -643,8 +699,8 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
                     <Avatar user={attendee} size={30} />
                     <View style={styles.attendeeCopy}>
                       <Text style={styles.attendeeName} numberOfLines={1}>{attendee.name}</Text>
-                      {ATTENDANCE_STATE_LABELS[attendee.state] ? (
-                        <Text style={styles.attendeeState}>{ATTENDANCE_STATE_LABELS[attendee.state]}{attendee.verifiedAttendance ? " · Verified" : ""}</Text>
+                      {attendanceStateDisplayLabel(attendee.state, { cutoffAt: attendanceCutoffAt, now: countdownNowMs }) ? (
+                        <Text style={styles.attendeeState}>{attendanceStateDisplayLabel(attendee.state, { cutoffAt: attendanceCutoffAt, now: countdownNowMs })}{attendee.verifiedAttendance ? " · Verified" : ""}</Text>
                       ) : null}
                     </View>
                   </Pressable>
@@ -695,7 +751,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
           </View>
         ) : null}
 
-        {!!log.review && (
+        {!!log.review && !archiveShowKey && (
           <>
             <Text style={styles.sectionLabel}>TOP REVIEW</Text>
             <View style={styles.reviewCard}>
@@ -712,53 +768,45 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
             <View style={styles.archiveReviewsHead}>
               <View style={{ flex: 1 }}>
                 <Text style={styles.sectionLabel}>FAN REVIEWS · {archiveReviewData.total || archiveReviews.length}</Text>
-                <Text style={styles.archiveReviewsIntro}>Every eligible fan log tied to this performance. Open one for its comments.</Text>
+                <Text style={styles.archiveReviewsIntro}>Fan photos and reviews from this exact show. Tap a photo to see the full set.</Text>
               </View>
               <Icon name="archive" size={18} color={colors.amber} />
             </View>
             {archiveReviewResource.status === "loading" && archiveReviews.length === 0 ? (
-              <View style={styles.archiveReviewState}><ActivityIndicator color={colors.amber} /><Text style={styles.archiveReviewStateText}>Pulling the crowd together…</Text></View>
+              <View style={styles.archiveReviewState}><ActivityIndicator color={colors.amber} /><Text style={styles.archiveReviewStateText}>Loading fan reviews…</Text></View>
             ) : null}
             {archiveReviewResource.status === "error" && archiveReviews.length === 0 ? (
               <Pressable style={styles.archiveReviewRetry} onPress={reloadArchiveReviews} accessibilityRole="button">
                 <Text style={styles.archiveReviewRetryText}>Couldn't load reviews. Try again</Text>
               </Pressable>
             ) : null}
-            {archiveReviews.map((review) => {
-              const media = archiveReviewMedia(review);
-              const author = review.user?.name || "A Pit fan";
-              return (
-                <View key={review.id} style={styles.archiveReviewCard}>
-                  <View style={styles.archiveReviewTop}>
-                    <Pressable style={styles.archiveReviewAuthor} onPress={() => review.userId && onOpenProfile?.(review.userId)} accessibilityRole="button" accessibilityLabel={`Open ${author}'s profile`}>
-                      <Avatar user={review.user || { name: author, initials: "PF" }} size={34} />
-                      <View style={{ flex: 1, minWidth: 0 }}>
-                        <Text style={styles.archiveReviewName} numberOfLines={1}>{author}</Text>
-                        <Text style={styles.archiveReviewMeta}>{review.user?.handle ? `@${review.user.handle} · ` : ""}{formatDate(review.date, review.date)}</Text>
-                      </View>
+            <View style={styles.archiveReviewGrid}>
+              {archiveReviews.map((review) => {
+                const media = archiveReviewMedia(review);
+                const author = review.user?.name || "A Pit fan";
+                return (
+                  <View key={review.id} style={[styles.archiveReviewCard, { width: reviewTileWidth }]}>
+                    <View style={styles.archiveReviewTop}>
+                      <Pressable style={styles.archiveReviewAuthor} onPress={() => review.userId && onOpenProfile?.(review.userId)} accessibilityRole="button" accessibilityLabel={`Open ${author}'s profile`}>
+                        <Avatar user={review.user || { name: author, initials: "PF" }} size={30} />
+                        <View style={{ flex: 1, minWidth: 0 }}>
+                          <Text style={styles.archiveReviewName} numberOfLines={1}>{author}</Text>
+                          <Text style={styles.archiveReviewMeta} numberOfLines={1}>{review.user?.handle ? `@${review.user.handle} · ` : ""}{formatDate(review.date, review.date)}</Text>
+                        </View>
+                      </Pressable>
+                      <View style={styles.archiveReviewScore}><Icon name="star" size={11} color={colors.gold} /><Text style={styles.archiveReviewScoreText}>{Number(review.overall || 0).toFixed(1)}</Text></View>
+                    </View>
+                    <ReviewMediaTile media={media} author={author} postId={review.id} onOpenPhotos={onOpenPhotos} />
+                    {!!review.review && <Text style={styles.archiveReviewText} numberOfLines={4}>{review.review}</Text>}
+                    <Pressable style={styles.archiveReviewOpen} onPress={() => onOpenPost?.(review)} accessibilityRole="button" accessibilityLabel={`Open ${author}'s review and comments`}>
+                      <Text style={styles.archiveReviewOpenText}>Open review</Text>
+                      <View style={styles.archiveReviewSignals}><Icon name="heart" size={11} color={colors.magenta} /><Text style={styles.archiveReviewSignalText}>{review.likes || 0}</Text><Icon name="comment" size={11} color={colors.textDim} /><Text style={styles.archiveReviewSignalText}>{review.comments || 0}</Text></View>
+                      <Icon name="chevron-right" size={14} color={colors.amber} />
                     </Pressable>
-                    <View style={styles.archiveReviewScore}><Icon name="star" size={11} color={colors.gold} /><Text style={styles.archiveReviewScoreText}>{Number(review.overall || 0).toFixed(1)}</Text></View>
                   </View>
-                  {!!review.review && <Text style={styles.archiveReviewText}>{review.review}</Text>}
-                  {media[0] ? (
-                    <SmartImage
-                      uri={media[0].uri}
-                      posterUri={media[0].posterUri}
-                      mediaKind={media[0].kind}
-                      style={styles.archiveReviewMedia}
-                      contain={false}
-                      accessibilityLabel={`Open media from ${author}'s review`}
-                      onPress={() => onOpenPhotos?.(media, 0, review.id)}
-                    />
-                  ) : null}
-                  <Pressable style={styles.archiveReviewOpen} onPress={() => onOpenPost?.(review)} accessibilityRole="button" accessibilityLabel={`Open ${author}'s review and comments`}>
-                    <Text style={styles.archiveReviewOpenText}>Open review</Text>
-                    <View style={styles.archiveReviewSignals}><Icon name="heart" size={11} color={colors.magenta} /><Text style={styles.archiveReviewSignalText}>{review.likes || 0}</Text><Icon name="comment" size={11} color={colors.textDim} /><Text style={styles.archiveReviewSignalText}>{review.comments || 0}</Text></View>
-                    <Icon name="chevron-right" size={14} color={colors.amber} />
-                  </Pressable>
-                </View>
-              );
-            })}
+                );
+              })}
+            </View>
             {archiveLoadMoreFailed ? (
               <View style={styles.archiveReviewMoreError} accessibilityLiveRegion="assertive">
                 <Text style={styles.archiveReviewMoreErrorText} selectable>More fan reviews could not be loaded. The reviews already on screen are still available.</Text>
@@ -863,7 +911,11 @@ const styles = StyleSheet.create({
   backBtn: { flexDirection: "row", alignItems: "center", width: 56 },
   back: { color: colors.amber, fontSize: 15 },
   topTitle: { color: colors.textFaint, fontSize: 11, letterSpacing: 2, fontWeight: "700" },
-  content: { padding: 16, paddingBottom: 48 },
+  content: { width: "100%", maxWidth: 1200, alignSelf: "center", padding: 16, paddingBottom: 48 },
+  heroGrid: { gap: 12 },
+  heroGridWide: { flexDirection: "row", alignItems: "flex-start" },
+  heroTicketColumn: { flex: 1.05, minWidth: 0 },
+  heroVenueColumn: { flex: 0.95, minWidth: 0 },
   socialRow: { flexDirection: "row", gap: 10, marginTop: 16 },
   goingBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, borderRadius: radius.md, borderWidth: 1, borderColor: colors.amber, backgroundColor: colors.bgElev, paddingVertical: 14 },
   goingOn: { backgroundColor: colors.amberStrong, borderColor: colors.amberStrong },
@@ -912,6 +964,9 @@ const styles = StyleSheet.create({
   stubLabel: { color: colors.textFaint, fontFamily: mono, fontSize: 9, letterSpacing: 1.5, fontWeight: "800", marginBottom: 3 },
   stubCity: { color: colors.textDim, fontSize: 12, marginTop: 2 },
   stubDivider: { width: 1, height: 34, backgroundColor: colors.line },
+  timingRow: { flexDirection: "row", flexWrap: "wrap", gap: 14, marginTop: 12, paddingTop: 11, borderTopWidth: 1, borderTopColor: colors.lineSoft },
+  timingItem: { minWidth: 92, flexGrow: 1 },
+  timingValue: { color: colors.text, fontFamily: mono, fontSize: 12.5, fontWeight: "900" },
   soldOut: { color: colors.danger, fontFamily: mono, fontSize: 10, fontWeight: "900", letterSpacing: 1, marginTop: 3 },
   countdownStrip: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 14, backgroundColor: colors.bgElev, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.lineSoft, paddingHorizontal: 12, paddingVertical: 9 },
   countdownTxt: { color: colors.amber, fontFamily: mono, fontSize: 16, fontWeight: "900", letterSpacing: 0.5, fontVariant: ["tabular-nums"] },
@@ -926,7 +981,7 @@ const styles = StyleSheet.create({
   reviewUnavailableRetryText: { color: colors.gold, fontSize: 11.5, fontWeight: "900" },
   noScoreTitle: { color: colors.text, fontFamily: displayFont, fontSize: 16, fontWeight: "800" },
 
-  artist: { color: colors.text, fontFamily: displayFont, fontSize: 30, fontWeight: "900", letterSpacing: -0.5 },
+  artist: { color: colors.text, fontFamily: displayFont, fontSize: 26, fontWeight: "900", letterSpacing: -0.4 },
   eventLineup: { color: colors.textDim, fontFamily: mono, fontSize: 10, lineHeight: 16, letterSpacing: 0.7, marginTop: 6 },
   artistLink: { color: colors.amber, fontSize: 12, marginTop: 4, fontWeight: "600" },
   seeRow: { flexDirection: "row", gap: 10, marginTop: 16 },
@@ -949,12 +1004,16 @@ const styles = StyleSheet.create({
     borderRadius: radius.md,
     borderWidth: 1,
     borderColor: colors.lineSoft,
-    padding: 18,
-    marginTop: 20,
+    padding: 14,
+    marginTop: 14,
   },
-  bigScore: { color: colors.gold, fontFamily: mono, fontSize: 44, fontWeight: "800", lineHeight: 48 },
-  scoreSub: { color: colors.textFaint, fontSize: 12, marginTop: 8 },
-  note: { color: colors.textFaint, fontSize: 12, marginTop: 14, lineHeight: 17, fontStyle: "italic" },
+  scoreCardWide: { flexDirection: "row", alignItems: "stretch", gap: 18 },
+  scoreSummary: { alignItems: "center", marginBottom: 12 },
+  scoreSummaryWide: { width: 190, justifyContent: "center", marginBottom: 0, paddingRight: 18, borderRightWidth: 1, borderRightColor: colors.lineSoft },
+  scoreDetails: { flex: 1, minWidth: 0, justifyContent: "center" },
+  bigScore: { color: colors.gold, fontFamily: mono, fontSize: 36, fontWeight: "800", lineHeight: 40 },
+  scoreSub: { color: colors.textFaint, fontSize: 11, marginTop: 6, textAlign: "center" },
+  note: { color: colors.textFaint, fontSize: 11.5, marginTop: 10, lineHeight: 16 },
 
   sectionLabel: { color: colors.textFaint, fontSize: 11, letterSpacing: 1.5, fontWeight: "700", marginTop: space(6), marginBottom: space(2) },
   reviewCard: {
@@ -966,7 +1025,7 @@ const styles = StyleSheet.create({
   },
   review: { color: colors.text, fontSize: 15, lineHeight: 22 },
   byline: { color: colors.textDim, fontSize: 13, marginTop: 12 },
-  archiveHero: { height: 230, marginTop: 16, borderRadius: radius.md, overflow: "hidden", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft, ...shadow.card },
+  archiveHero: { height: 180, marginTop: 12, borderRadius: radius.md, overflow: "hidden", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft, ...shadow.card },
   archiveHeroImage: { width: "100%", height: "100%" },
   archiveHeroCredit: { position: "absolute", left: 10, bottom: 10, maxWidth: "80%", paddingHorizontal: 9, paddingVertical: 5, borderRadius: radius.pill, backgroundColor: "rgba(8,8,10,0.82)" },
   archiveHeroCreditText: { color: "#fff", fontFamily: mono, fontSize: 9, fontWeight: "800", letterSpacing: 0.8 },
@@ -976,15 +1035,22 @@ const styles = StyleSheet.create({
   archiveReviewStateText: { color: colors.textDim, fontSize: 12.5 },
   archiveReviewRetry: { minHeight: 52, alignItems: "center", justifyContent: "center", borderRadius: radius.md, borderWidth: 1, borderColor: colors.danger, backgroundColor: colors.surface },
   archiveReviewRetryText: { color: colors.danger, fontSize: 12.5, fontWeight: "800" },
-  archiveReviewCard: { marginBottom: 10, padding: 14, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surface, ...shadow.card },
+  archiveReviewGrid: { flexDirection: "row", flexWrap: "wrap", alignItems: "flex-start", gap: 10 },
+  archiveReviewCard: { maxWidth: "100%", padding: 12, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surface, ...shadow.card },
   archiveReviewTop: { flexDirection: "row", alignItems: "center", gap: 10 },
   archiveReviewAuthor: { flex: 1, minWidth: 0, minHeight: 44, flexDirection: "row", alignItems: "center", gap: 9 },
   archiveReviewName: { color: colors.text, fontSize: 13.5, fontWeight: "800" },
   archiveReviewMeta: { color: colors.textFaint, fontFamily: mono, fontSize: 10, marginTop: 2 },
   archiveReviewScore: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 9, paddingVertical: 5, borderRadius: radius.pill, backgroundColor: colors.bgElev },
   archiveReviewScoreText: { color: colors.gold, fontFamily: mono, fontSize: 12, fontWeight: "900" },
-  archiveReviewText: { color: colors.text, fontSize: 14, lineHeight: 21, marginTop: 10 },
-  archiveReviewMedia: { width: "100%", height: 190, borderRadius: radius.sm, marginTop: 12, backgroundColor: colors.surfaceAlt },
+  archiveReviewText: { color: colors.text, fontSize: 13, lineHeight: 18, marginTop: 9 },
+  archiveReviewMediaFrame: { width: "100%", aspectRatio: 4 / 3, marginTop: 9, borderRadius: radius.sm, overflow: "hidden", backgroundColor: colors.bgElev },
+  archiveReviewMedia: { width: "100%", height: "100%", backgroundColor: colors.bgElev },
+  reviewMediaArrow: { position: "absolute", top: "50%", width: 36, height: 36, marginTop: -18, borderRadius: 18, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(5,6,10,0.72)", borderWidth: 1, borderColor: "rgba(255,255,255,0.25)" },
+  reviewMediaArrowLeft: { left: 7 },
+  reviewMediaArrowRight: { right: 7 },
+  reviewMediaCount: { position: "absolute", top: 7, right: 7, minHeight: 24, justifyContent: "center", paddingHorizontal: 8, borderRadius: radius.pill, backgroundColor: "rgba(5,6,10,0.78)" },
+  reviewMediaCountText: { color: "#FFFFFF", fontFamily: mono, fontSize: 9, fontWeight: "900" },
   archiveReviewOpen: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: 8, marginTop: 9, borderTopWidth: 1, borderTopColor: colors.lineSoft, paddingTop: 9 },
   archiveReviewOpenText: { flex: 1, color: colors.amber, fontSize: 12, fontWeight: "800" },
   archiveReviewSignals: { flexDirection: "row", alignItems: "center", gap: 4 },

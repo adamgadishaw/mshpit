@@ -1,4 +1,5 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomBytes } from "node:crypto";
+import { opaqueId } from "./ids.js";
 import { hashPassword, verifyPassword } from "./auth.js";
 import {
   OWNER_IDENTITY_KEY,
@@ -78,7 +79,7 @@ export function reconcileAdminAccount({
   env = process.env,
   production = env?.NODE_ENV === "production",
   log = console,
-  createId = () => `u_${randomUUID().slice(0, 12)}`,
+  createId = () => opaqueId("u"),
   createDevelopmentPassword = () => randomBytes(18).toString("base64url"),
   now = Date.now,
 } = {}) {

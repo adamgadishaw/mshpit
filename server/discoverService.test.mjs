@@ -197,6 +197,39 @@ test("popularity chart filters by canonical genre and country", () => {
   }
 });
 
+test("genre artists put confidence-ranked MSHpit live ratings before separate popularity rows", () => {
+  const database = fixture();
+  try {
+    const addArtist = database.prepare("INSERT INTO artists VALUES (?,?,?,?,?,?,?,?)");
+    addArtist.run("echo", "Echo", "Hip Hop", "Canada", 96, 9, null, evidencedGenre("Hip Hop"));
+    addArtist.run("foxtrot", "Foxtrot", "Hip Hop", "Canada", 95, 8, null, evidencedGenre("Hip Hop"));
+    const addPost = database.prepare(`INSERT INTO posts
+      (id,user_id,artist,artist_key,venue,venue_key,city,date,overall,review,tour,kind,experience_type,removed,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+    // The newest rating from one member for one exact show wins; the older 1.0
+    // cannot drag Alpha down or inflate its sample count.
+    addPost.run("alpha-old", "member-1", "Alpha", "alpha", "Hall A", "hall-a", "Toronto, Canada", "2026-01-01", 1, "old", null, "review", "in_person", 0, 1, 1);
+    addPost.run("alpha-new", "member-1", "Alpha", "alpha", "Hall A", "hall-a", "Toronto, Canada", "2026-01-01", 4.5, "Excellent live show", null, "review", "in_person", 0, 4, 4);
+    addPost.run("alpha-two", "member-2", "Alpha", "alpha", "Hall B", "hall-b", "Toronto, Canada", "2026-02-01", 4.5, "", null, "review", "in_person", 0, 3, 3);
+    addPost.run("echo-one", "member-1", "Echo", "echo", "Hall C", "hall-c", "Toronto, Canada", "2026-03-01", 5, "Perfect night", null, "review", "in_person", 0, 2, 2);
+    addPost.run("echo-online", "member-2", "Echo", "echo", "YouTube", "youtube", "Online", "2026-03-02", 5, "Stream review", null, "review", "online", 0, 5, 5);
+
+    const result = createDiscoverService({ database }).chart({ genre: "Hip-Hop", country: "Canada", limit: 12 });
+    assert.deepEqual(result.ratedRows.map((row) => row.name), ["Alpha", "Echo"], "sample confidence beats a lone perfect rating");
+    assert.deepEqual(
+      result.ratedRows.map((row) => ({ name: row.name, ratingCount: row.ratingCount, reviewCount: row.reviewCount, avgRating: row.avgRating })),
+      [
+        { name: "Alpha", ratingCount: 2, reviewCount: 1, avgRating: 4.5 },
+        { name: "Echo", ratingCount: 1, reviewCount: 1, avgRating: 5 },
+      ],
+    );
+    assert.deepEqual(result.popularRows.map((row) => row.name), ["Foxtrot"], "provider popularity remains a separate, deduplicated group");
+    assert.deepEqual(result.rows.map((row) => row.rankingGroup), ["top-reviewed", "top-reviewed", "popular"]);
+  } finally {
+    database.close();
+  }
+});
+
 test("plays chart honors genre and country instead of returning an unfiltered global list", () => {
   const database = fixture();
   try {

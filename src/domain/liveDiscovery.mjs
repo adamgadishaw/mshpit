@@ -64,11 +64,13 @@ export function upcomingEventsForScope({
   localEvents = [],
   worldwideEvents = [],
   limit = 6,
+  now = Date.now(),
 } = {}) {
   const source = scope === LIVE_EVENT_SCOPE.WORLDWIDE ? worldwideEvents : localEvents;
   if (!Array.isArray(source)) return [];
   const max = boundedLimit(limit);
   if (max <= 0) return [];
+  const at = Number.isFinite(Number(now)) ? Number(now) : Date.now();
   const seen = new Set();
   const rows = [];
   for (const event of source) {
@@ -79,7 +81,7 @@ export function upcomingEventsForScope({
     rows.push(event);
   }
   return rows
-    .sort((left, right) => compareCurrentAndUpcomingLiveEvents(left, right))
+    .sort((left, right) => compareCurrentAndUpcomingLiveEvents(left, right, at))
     .slice(0, max);
 }
 

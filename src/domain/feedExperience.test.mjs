@@ -42,6 +42,10 @@ test("recommended status cards expose the same explanation and feedback as revie
   const reviewStart = source.indexOf("\n  return (", statusStart);
   assert.ok(statusStart >= 0 && reviewStart > statusStart, "status render branch remains discoverable");
   const statusBranch = source.slice(statusStart, reviewStart);
+  const reviewBranch = source.slice(reviewStart);
   assert.match(statusBranch, /<RecommendationWhy\b/);
   assert.match(statusBranch, /<NotForMeButton\b/);
+  assert.match(statusBranch, /<ViewTally count=\{viewCount\}/);
+  assert.match(reviewBranch, /<ViewTally count=\{viewCount\}/);
+  assert.match(source, /unique member/);
 });

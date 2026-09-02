@@ -108,21 +108,17 @@ export default function PickArtistsScreen({ onDone, onSkip, showTheme = true, on
       return;
     }
     const favoriteArtists = [...picked];
-    // fold the picks' genres into the profile so genre affinity works instantly
-    const genres = new Set(session?.genres || []);
-    const artistsByName = new Map(all.map((artist) => [artist.name.toLowerCase(), artist]));
-    favoriteArtists.forEach((n) => { const g = artistsByName.get(n.toLowerCase())?.genre; if (g) genres.add(g); });
     setSaving(true);
     setSaveError("");
     try {
-      const result = await updateProfile({ favoriteArtists, genres: [...genres] });
+      const result = await updateProfile({ favoriteArtists });
       if (result?.ok === false) {
         setSaveError(result?.error || "Your artist picks did not save. Please try again.");
         return;
       }
       // Keep the theme local until the profile mutation succeeds. Applying it
       // earlier reloads this StyleSheet-based app and can discard unsaved picks.
-      if (showTheme && theme && theme !== themeKey) await chooseTheme(theme, result?.patch || { favoriteArtists, genres: [...genres] });
+      if (showTheme && theme && theme !== themeKey) await chooseTheme(theme, result?.patch || { favoriteArtists });
       else onDone?.();
     } catch {
       setSaveError("Your artist picks did not save. Please try again.");

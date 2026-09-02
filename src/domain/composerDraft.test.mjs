@@ -32,7 +32,7 @@ test("status drafts preserve playlist, unresolved song input, media, and panel s
   assert.equal(composerDraftTitle(draft), "J. Cole was unreal");
 });
 
-test("show drafts preserve posting identity, entity binding, ratings, consent, and unfinished tags", () => {
+test("show drafts preserve posting identity, entity binding, ratings, and consent while retiring descriptive tags", () => {
   const draft = normalizeComposerDraft({
     submissionId: "post_retry_identity",
     postType: "show",
@@ -41,7 +41,8 @@ test("show drafts preserve posting identity, entity binding, ratings, consent, a
     venue: "Scotiabank Arena",
     date: "2026-08-09",
     dims: { performance: 5, crowd: 4.5 },
-    tagDraft: "no skips",
+    tags: ["no skips"],
+    tagDraft: "high energy",
     photosPublic: false,
     landingShowcase: true,
   });
@@ -50,7 +51,8 @@ test("show drafts preserve posting identity, entity binding, ratings, consent, a
   assert.equal(draft.artistKey, "j-cole");
   assert.equal(draft.dims.performance, 5);
   assert.equal(draft.dims.crowd, 4.5);
-  assert.equal(draft.tagDraft, "no skips");
+  assert.deepEqual(draft.tags, []);
+  assert.equal(draft.tagDraft, "");
   assert.equal(draft.photosPublic, false);
   assert.equal(draft.landingShowcase, false);
   assert.equal(composerDraftHasContent(draft), true);

@@ -52,11 +52,12 @@ test("mode switching preserves unfinished work while payload normalization strip
   assert.equal(transition.includes("setPendingMediaAssets("), false);
 });
 
-test("online mode hides physical quick tags and uses neutral friend language", () => {
+test("online mode has no descriptive or companion tags while in-person keeps people who went", () => {
   includes(source, "{!isOnlineReview && (");
-  includes(source, "tags: isOnlineReview");
+  includes(source, "tags: []");
   includes(source, '? "WHO DID YOU WATCH?" : "WHO DID YOU SEE?"');
-  includes(source, 'placeholder={isStatus || isOnlineReview ? "Search your friends" : "Search people you went with"}');
+  includes(source, '{!isStatus && !isOnlineReview ? <AttachChip icon="you" label="People with you"');
+  includes(source, 'placeholder="Search people you went with"');
 });
 
 test("online identity and rating participate in checkpointing and draft restoration", () => {

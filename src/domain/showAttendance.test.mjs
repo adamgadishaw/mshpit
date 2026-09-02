@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  attendanceControlsVisible, attendanceMutationIdentity, attendanceOptionsForPhase, attendanceTotalForView,
+  attendanceControlsVisible, attendanceMutationIdentity, attendanceOptionsForPhase, attendanceStateDisplayLabel, attendanceTotalForView,
   normalizeAttendanceMutation, normalizeAttendanceSnapshot, normalizeAttendanceState,
   normalizeAttendanceVisibility, normalizeStableShowId, normalizeViewerAttendance,
-  optimisticViewerAttendance, viewerGoingForCrowd,
+  optimisticViewerAttendance, postShowAttendanceCutoff, viewerGoingForCrowd,
 } from "./showAttendance.mjs";
 
 test("attendance snapshot keeps the authoritative total beyond the bounded page", () => {
@@ -153,4 +153,22 @@ test("Crowd reconciliation trusts canonical Here/Went membership except during a
       authoritativeReady: true, serverViewerGoing: true,
     }), false, "filtered scopes never add the viewer implicitly");
   }
+});
+
+test("Going becomes Attended only after the conservative post-show cutoff", () => {
+  const startsAt = Date.parse("2026-09-16T23:00:00.000Z");
+  const cutoff = postShowAttendanceCutoff({ startsAt });
+  assert.equal(cutoff, startsAt + (4 * 60 * 60 * 1_000) + (24 * 60 * 60 * 1_000));
+  assert.equal(attendanceStateDisplayLabel("going", { cutoffAt: cutoff, now: cutoff - 1 }), "Going");
+  assert.equal(attendanceStateDisplayLabel("going", { cutoffAt: cutoff, now: cutoff }), "Attended");
+  assert.equal(attendanceStateDisplayLabel("here", { cutoffAt: cutoff, now: cutoff }), "Attended");
+  assert.equal(attendanceStateDisplayLabel("went", { now: 0 }), "Attended");
+  assert.equal(attendanceStateDisplayLabel("interested", { now: cutoff + 1 }), "Interested");
+});
+
+test("date-only shows wait until the following day has fully passed", () => {
+  const cutoff = postShowAttendanceCutoff({ date: "2026-09-16" });
+  assert.equal(cutoff, Date.parse("2026-09-17T23:59:59.999Z"));
+  assert.equal(attendanceStateDisplayLabel("going", { show: { date: "2026-09-16" }, now: cutoff - 1 }), "Going");
+  assert.equal(attendanceStateDisplayLabel("going", { show: { date: "2026-09-16" }, now: cutoff }), "Attended");
 });

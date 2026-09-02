@@ -41,7 +41,7 @@ test("artist onboarding defers theme application and exposes artist choices", ()
 test("authentication forms expose autofill, live errors, and real pending locks", () => {
   for (const value of ["email", "current-password", "new-password"]) assert.ok(source.auth.includes(value));
   assert.match(source.auth, /const \[busyAction, setBusyAction\]/);
-  assert.match(source.auth, /disabled=\{authBusy \|\| \(mode === "signup" && !agreed\)\}/);
+  assert.match(source.auth, /disabled=\{authBusy \|\| \(mode === "signup" && \(!agreed \|\| !profileGenreSelection\(genres\)\.valid\)\)\}/);
   assert.match(source.auth, /accessibilityLiveRegion="assertive"/);
   assert.match(source.reset, /autoComplete="new-password"/);
   assert.match(source.reset, /if \(busy\) return;/);

@@ -1,4 +1,5 @@
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
+import { opaqueId } from "./ids.js";
 
 import { sendTemplate } from "./emailService.js";
 import { publicOrigin } from "./emailService.js";
@@ -129,7 +130,7 @@ export function createOwnerApprovalRequest(database, {
       SET status='superseded',token_hash=NULL,decided_at=?
       WHERE kind=? AND status='pending' AND COALESCE(target_user_id,'')=COALESCE(?, '')`)
       .run(at, kind, targetUserId);
-    const id = `oa_${randomUUID().slice(0, 16)}`;
+    const id = opaqueId("oa");
     database.prepare(`INSERT INTO owner_approval_requests
       (id,kind,status,requested_by,target_user_id,safe_summary,payload,payload_hash,token_hash,
        requested_at,expires_at,request_id)
@@ -181,7 +182,7 @@ function insertReceipt(database, input) {
   const previous = database.prepare(`SELECT stamp FROM owner_approval_receipts
     ORDER BY created_at DESC,id DESC LIMIT 1`).get()?.stamp || RECEIPT_ZERO;
   const row = {
-    id: input.id || `or_${randomUUID().slice(0, 16)}`,
+    id: input.id || opaqueId("or"),
     request_id: input.requestId || null,
     kind: input.kind,
     decision: input.decision,

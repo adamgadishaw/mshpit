@@ -36,6 +36,19 @@ export const isDate = isValidDate;
 // Returns the canonical ISO date, or undefined so `shape()` reports it invalid.
 export const cleanDate = (s) => toIsoDate(clean(s, { max: LIMITS.date })) || undefined;
 
+// Geographic coordinates are public profile inputs, not trusted map data.
+// Keep the parser strict and shared so signup and later profile edits cannot
+// persist values outside the ranges accepted by mapping providers.
+export function cleanLatitude(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= -90 && parsed <= 90 ? parsed : undefined;
+}
+
+export function cleanLongitude(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= -180 && parsed <= 180 ? parsed : undefined;
+}
+
 // Bounded string array (photos, setlist, genres…): every item cleaned + capped.
 export function cleanStringArray(v, { maxItems = 20, maxLen = 300 } = {}) {
   if (!Array.isArray(v)) return [];

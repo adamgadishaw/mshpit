@@ -170,7 +170,7 @@ function ClipPlayer({ uri, posterUri, postId, onRetry, onTrack, onVideoSize, alt
         importantForAccessibility={hasFirstFrame ? "auto" : "no-hide-descendants"}
       />
       {posterVisible && (
-        <ClipPoster uri={uri} posterUri={posterUri} viewable style={styles.videoStatus} contain accessibilityLabel={altText || "Video preview; use the player controls to play"} accessible={false} />
+        <ClipPoster uri={uri} posterUri={posterUri} viewable style={styles.videoStatus} contain showPlayBadge={false} accessibilityLabel={altText || "Video preview; use the player controls to play"} accessible={false} />
       )}
       {phase !== "error" && !hasStarted ? (
         <Pressable

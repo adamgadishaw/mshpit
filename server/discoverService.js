@@ -1,6 +1,10 @@
-import { db } from "./db.js";
+import { db, normName } from "./db.js";
 import { projectArtistGenre } from "../src/domain/genre.mjs";
 import { createTopRatedShowService } from "./features/discovery/topRatedShowService.js";
+import { activeAccountSql } from "./accountVisibility.js";
+import { inPersonReviewSql } from "./onlineReviews.js";
+
+const ARTIST_RATING_CANDIDATE_LIMIT = 5_000;
 
 const GENRE_ALIAS = {
   "hip hop": "Hip-Hop", hiphop: "Hip-Hop", "hip-hop": "Hip-Hop", rap: "Hip-Hop", trap: "Hip-Hop", "conscious hip hop": "Hip-Hop",
@@ -95,6 +99,80 @@ export function createDiscoverService({ database = db, clock = Date.now } = {}) 
       .map((row) => row.norm);
   }
 
+  function topReviewedArtistsForGenre(artistNorms, limit = 6) {
+    const eligible = new Set((Array.isArray(artistNorms) ? artistNorms : []).map(normName).filter(Boolean));
+    if (!eligible.size) return [];
+    const identities = JSON.stringify([...eligible]);
+    const posts = database.prepare(`
+      SELECT p.id,p.user_id,p.artist,p.artist_key,p.venue,p.venue_key,p.date,
+        p.overall,p.review,p.created_at,p.updated_at
+      FROM posts p
+      JOIN users author ON author.id=p.user_id
+      WHERE p.removed=0 AND ${inPersonReviewSql("p")}
+        AND p.overall BETWEEN 1 AND 5
+        AND TRIM(COALESCE(p.venue,''))<>'' AND TRIM(COALESCE(p.date,''))<>''
+        AND ${activeAccountSql("author")}
+        AND (
+          p.artist_key IN (SELECT value FROM json_each(?))
+          OR (p.artist_key IS NULL AND LOWER(TRIM(p.artist)) IN (SELECT value FROM json_each(?)))
+        )
+      ORDER BY p.created_at DESC,p.id DESC
+      LIMIT ?
+    `).all(identities, identities, ARTIST_RATING_CANDIDATE_LIMIT);
+
+    const latestReviewerShow = new Set();
+    const totals = new Map();
+    for (const post of posts) {
+      const artistNorm = normName(post.artist_key || post.artist);
+      if (!eligible.has(artistNorm)) continue;
+      const venueIdentity = normName(post.venue_key || post.venue);
+      const reviewerShow = `${post.user_id}\u0000${artistNorm}\u0000${venueIdentity}\u0000${post.date}`;
+      if (!post.user_id || !venueIdentity || latestReviewerShow.has(reviewerShow)) continue;
+      latestReviewerShow.add(reviewerShow);
+      const current = totals.get(artistNorm) || {
+        artistNorm,
+        ratingTotal: 0,
+        ratingCount: 0,
+        reviewCount: 0,
+        newestAt: 0,
+      };
+      current.ratingTotal += Number(post.overall);
+      current.ratingCount += 1;
+      if (text(post.review, 4_000)) current.reviewCount += 1;
+      current.newestAt = Math.max(current.newestAt, Number(post.updated_at) || Number(post.created_at) || 0);
+      totals.set(artistNorm, current);
+    }
+
+    const ranked = [...totals.values()].map((row) => {
+      const avgRating = row.ratingTotal / row.ratingCount;
+      const priorRating = 3.8;
+      const priorWeight = 5;
+      const confidenceRating = ((avgRating * row.ratingCount) + (priorRating * priorWeight)) / (row.ratingCount + priorWeight);
+      const sampleDepth = Math.min(1, Math.log1p(row.ratingCount) / Math.log(30));
+      return { ...row, avgRating, rankScore: ((confidenceRating / 5) * 0.8 + sampleDepth * 0.2) * 100 };
+    }).sort((left, right) => right.rankScore - left.rankScore
+      || right.ratingCount - left.ratingCount
+      || right.avgRating - left.avgRating
+      || right.newestAt - left.newestAt
+      || left.artistNorm.localeCompare(right.artistNorm))
+      .slice(0, limitBetween(limit, 6, 1, 12));
+    if (!ranked.length) return [];
+
+    const byNorm = new Map(database.prepare("SELECT * FROM artists WHERE norm IN (SELECT value FROM json_each(?))")
+      .all(JSON.stringify(ranked.map((row) => row.artistNorm)))
+      .map((artist) => [artist.norm, artist]));
+    return ranked.map((row, index) => {
+      const artist = byNorm.get(row.artistNorm);
+      if (!artist) return null;
+      return chartRow(artist.name, artist, index + 1, {
+        rankingGroup: "top-reviewed",
+        avgRating: Number(row.avgRating.toFixed(2)),
+        ratingCount: row.ratingCount,
+        reviewCount: row.reviewCount,
+      });
+    }).filter(Boolean);
+  }
+
   function chart({ by = "popularity", country = "", genre = "", limit = 24 } = {}) {
     const source = by === "plays" ? "plays" : "popularity";
     const rowLimit = limitBetween(limit, 24, 3, 60);
@@ -152,9 +230,27 @@ export function createDiscoverService({ database = db, clock = Date.now } = {}) 
       params.push(JSON.stringify(artistNorms));
     }
     sql += " ORDER BY popularity DESC, rank_score DESC, name LIMIT ?";
-    params.push(rowLimit);
+    params.push(genreFilter ? Math.min(60, rowLimit * 2) : rowLimit);
     const rows = database.prepare(sql).all(...params);
-    return { source, label, live: true, rows: rows.map((row, index) => chartRow(row.name, row, index + 1)) };
+    const popularRows = rows.map((row, index) => chartRow(row.name, row, index + 1, {
+      ...(genreFilter ? { rankingGroup: "popular" } : {}),
+    }));
+    if (!genreFilter) return { source, label, live: true, rows: popularRows };
+
+    const ratedRows = topReviewedArtistsForGenre(artistNorms, Math.min(6, rowLimit));
+    const ratedNames = new Set(ratedRows.map((row) => normName(row.name)));
+    const distinctPopular = popularRows
+      .filter((row) => !ratedNames.has(normName(row.name)))
+      .slice(0, Math.min(6, rowLimit));
+
+    return {
+      source,
+      label: `Top reviewed live and popular in ${genreFilter}`,
+      live: true,
+      rows: [...ratedRows, ...distinctPopular].slice(0, rowLimit),
+      ratedRows,
+      popularRows: distinctPopular,
+    };
   }
 
   function genres({ country = "", limit = 8 } = {}) {

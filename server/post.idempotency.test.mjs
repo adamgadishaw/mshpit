@@ -82,6 +82,8 @@ test("create retries compare the validated canonical post, not raw JSON represen
 
   assert.equal(retry.duplicate, true);
   assert.equal(retry.id, first.id);
+  assert.deepEqual(first.post.tags, []);
+  assert.equal(db.prepare("SELECT tags FROM posts WHERE id=?").get(first.id).tags, "[]");
   assert.equal(
     db.prepare("SELECT COUNT(*) AS count FROM posts WHERE user_id=? AND client_mutation_id=?").get(user.id, clientMutationId).count,
     1,

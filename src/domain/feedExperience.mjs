@@ -20,10 +20,10 @@ export function feedFooterState({ visibleCount = 0, loadedCount = 0, hasMore = f
 
 const EXPLANATIONS = {
   followed_creator: "You follow this member. Following stays chronological; Discover can also surface their strongest recent posts.",
-  artist_affinity: "You have engaged with this artist or related concert posts. Pit uses that signal without exposing anyone else's activity.",
+  artist_affinity: "You have saved, followed, seen live, or interacted with this artist or related concert posts. Pit uses that signal without exposing anyone else's activity.",
   genre_affinity: "This matches genres saved on your profile or reflected in your recent activity.",
   local: "This concert is connected to your saved home city.",
-  global_momentum: "This recent post is receiving likes and discussion across Pit.",
+  global_momentum: "This recent post is receiving likes and discussion across Mshpit.",
   fresh_global: "This is a recent community post added to keep discovery from becoming repetitive.",
 };
 

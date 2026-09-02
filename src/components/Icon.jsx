@@ -83,6 +83,13 @@ function paths(name, { stroke, solid, color, filled }) {
           {...stroke}
         />
       );
+    case "eye":
+      return (
+        <>
+          <Path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12z" {...stroke} />
+          <Circle cx="12" cy="12" r="2.5" {...stroke} />
+        </>
+      );
     case "share":
       return (
         <>

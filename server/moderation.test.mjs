@@ -137,6 +137,8 @@ test("reported media keeps a stable identity and only projects the exact canonic
 
 test("moderation never projects an attacker-controlled external reported-media URL", () => {
   const hostile = "https://attacker.example/moderator-tracker.gif";
+  db.prepare("UPDATE users SET avatar_uri=? WHERE id IN (?,?,?)")
+    .run(hostile, author.id, fan.id, moderator.id);
   db.prepare(`INSERT INTO posts (id,user_id,artist,venue,overall,review,photos,created_at)
     VALUES (?,?,?,?,?,?,?,?)`).run(
     "moderation_external_media_post", author.id, "J. Cole", "Scotiabank Arena", 4,
@@ -155,6 +157,15 @@ test("moderation never projects an attacker-controlled external reported-media U
   assert.equal(report.content.reportedMediaTrusted, undefined);
   assert.equal(report.content.reportedMediaUnavailable, true);
   assert.equal(JSON.stringify(report).includes("attacker.example"), false);
+  assert.equal(report.content.author.avatarUri, null);
+  assert.equal(report.reporter.avatarUri, null);
+
+  routes["POST /api/admin/moderation/actions"](staffCtx(moderator, {
+    body: { action: "dismiss", reportId: report.id, reason: "Regression coverage" },
+  }));
+  const refreshed = routes["GET /api/admin/moderation"](staffCtx(moderator));
+  assert.equal(refreshed.recentActions[0].actor.avatarUri, null);
+  assert.equal(JSON.stringify(refreshed.recentActions[0]).includes("attacker.example"), false);
 });
 
 test("artist profiles are actionable report targets with exact private-by-default media context", () => {

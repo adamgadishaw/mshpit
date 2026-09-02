@@ -35,11 +35,14 @@ test("recommendation signal indexes keep the viewer id as their leading key", ()
   assert.deepEqual(indexColumns("idx_comments_user_recent"), ["user_id", "removed", "created_at", "post_id"]);
   assert.deepEqual(indexColumns("idx_comments_post_distinct_users"), ["post_id", "removed", "user_id"]);
   assert.deepEqual(indexColumns("idx_fan_club_members_user_artist"), ["user_id", "artist"]);
+  assert.deepEqual(indexColumns("idx_post_impressions_user_recent"), ["user_id", "last_seen_at", "post_id"]);
+  assert.deepEqual(indexColumns("idx_post_impression_receipts_expiry"), ["created_at", "user_id", "event_id"]);
 });
 
 test("production recommendation signal queries use viewer-first index paths", () => {
   const cases = [
     ["fan clubs", RECOMMENDATION_SIGNAL_SQL.fanClubs, "idx_fan_club_members_user_artist"],
+    ["show attendance", RECOMMENDATION_SIGNAL_SQL.attendance, "idx_show_attendance_user_updated"],
     ["likes", RECOMMENDATION_SIGNAL_SQL.likes, "idx_likes_user_post"],
     ["comments", RECOMMENDATION_SIGNAL_SQL.comments, "idx_comments_user_recent"],
   ];
@@ -51,6 +54,13 @@ test("production recommendation signal queries use viewer-first index paths", ()
       `${label} must seek by viewer through ${indexName}: ${plan.join(" | ")}`,
     );
   }
+});
+
+test("viewer impression reads seek by the viewer/post primary key", () => {
+  const sql = `SELECT post_id,seen_count,first_seen_at,last_seen_at FROM post_impressions
+    WHERE user_id=? AND post_id IN (?,?)`;
+  const plan = queryPlan(sql, "viewer-query-plan", "p_one", "p_two");
+  assert.ok(plan.some((detail) => /post_impressions.*user_id=\?.*post_id=\?/i.test(detail)), plan.join(" | "));
 });
 
 test("candidate momentum counts distinct non-author commenters, not author volume", () => {

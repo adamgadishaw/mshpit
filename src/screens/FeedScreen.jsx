@@ -12,6 +12,7 @@ import { HOME_JOURNEY_LINE, homeGuideStorageKey } from "../domain/homeJourney.mj
 import HomeShowCountdown from "../components/HomeShowCountdown";
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import SuggestedPittersRail from "../components/SuggestedPittersRail";
+import useAppActive from "../lib/useAppActive";
 
 const PAGE = 8; // load the feed in pages, like the big apps - never all at once
 const REFRESH_RETRY_HINT = Platform.OS === "web"
@@ -20,6 +21,7 @@ const REFRESH_RETRY_HINT = Platform.OS === "web"
 
 export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, accountId = null, homeCity, unread = 0, notifUnread = 0, newUser = false, hideHeaderActions = false, onRefresh, onLoadMore, hasMore = false, loadingMore = false, countdownPlan = null, showHomeCountdown = false, suggestedUsers = [], suggestedUsersLoading = false, showSuggestedPitters = false, onFollowUser, isFollowing, isBlocked, onOpenCountdown, onViewAllCountdown, onOpen, onImpression, onDwell, onNotInterested, onUndoNotInterested, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onOpenNearby, onOpenInbox, onOpenNotifications, onOpenMenu, onOpenClips, onReport, onEdit, onOpenPhotos, onPlay, onRemoveMyPostTag, onLogShow, onOpenDiscover }) {
   const { width } = useWindowDimensions();
+  const appActive = useAppActive();
   const phone = width < 700;
   const filterScope = feedFilterStorageKey(accountId);
   const [filterState, setFilterState] = useState(() => ({
@@ -44,6 +46,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
   const guideDismissed = guideState.scope === guideScope ? guideState.dismissed : load(guideScope, false);
   const visibleSince = useRef(new Map());
   const seenImpressions = useRef(new Set());
+  const activityRef = useRef(appActive);
   const dismissGuide = () => {
     setGuideState({ scope: guideScope, dismissed: true });
     save(guideScope, true);
@@ -53,8 +56,8 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
   const filteredPageLoading = loadingMore && count >= full.length;
   const surface = filter === "following" ? "following" : filter === "local" ? "local" : "everyone";
   const analyticsRef = useRef({ surface, onImpression, onDwell });
-  const viewabilityConfig = useRef({ itemVisiblePercentThreshold: 60, minimumViewTime: 750 }).current;
   analyticsRef.current = { surface, onImpression, onDwell };
+  activityRef.current = appActive;
 
   useEffect(() => {
     refreshControllerRef.current?.abort();
@@ -68,20 +71,27 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
     setUndoItem(null);
     setUndoError(null);
     setVisibleMediaPostIds(new Set());
+    visibleSince.current.clear();
+    seenImpressions.current.clear();
     setGuideState({ scope: guideScope, dismissed: load(guideScope, false) });
     return () => refreshControllerRef.current?.abort();
   }, [filterScope, guideScope, loggedIn]);
 
-  const onViewableItemsChanged = useRef(({ changed }) => {
-    const at = Date.now();
+  const onMediaViewableItemsChanged = useRef(({ changed }) => {
+    if (!activityRef.current) return;
     setVisibleMediaPostIds((current) => nextVisibleMediaPostIds(current, changed));
+  }).current;
+
+  const onQualifiedViewableItemsChanged = useRef(({ changed }) => {
+    if (!activityRef.current) return;
+    const at = Date.now();
     for (const token of changed || []) {
       const item = token?.item;
       if (!item?.id) continue;
       if (token.isViewable) {
         const viewedSurface = analyticsRef.current.surface;
         visibleSince.current.set(item.id, { item, startedAt: at, surface: viewedSurface });
-        const impressionKey = `${viewedSurface}:${item.id}`;
+        const impressionKey = String(item.id);
         if (!seenImpressions.current.has(impressionKey)) {
           seenImpressions.current.add(impressionKey);
           analyticsRef.current.onImpression?.(item, Number.isSafeInteger(token.index) ? token.index : 0, viewedSurface);
@@ -93,6 +103,31 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
       }
     }
   }).current;
+  const viewabilityConfigCallbackPairs = useRef([
+    {
+      // Media may warm as soon as a real slice is visible. This remains
+      // separate from the stricter post-view qualification below.
+      viewabilityConfig: { itemVisiblePercentThreshold: 10 },
+      onViewableItemsChanged: onMediaViewableItemsChanged,
+    },
+    {
+      // Viewport coverage works for tall concert cards that can never be 60%
+      // visible as an item. React Native enforces the continuous one-second
+      // dwell before this callback qualifies the post.
+      viewabilityConfig: { viewAreaCoveragePercentThreshold: 50, minimumViewTime: 1_000 },
+      onViewableItemsChanged: onQualifiedViewableItemsChanged,
+    },
+  ]).current;
+
+  useEffect(() => {
+    if (appActive) return;
+    const at = Date.now();
+    for (const { item, startedAt, surface: viewedSurface } of visibleSince.current.values()) {
+      analyticsRef.current.onDwell?.(item, at - startedAt, viewedSurface);
+    }
+    visibleSince.current.clear();
+    setVisibleMediaPostIds(new Set());
+  }, [appActive]);
 
   useEffect(() => () => {
     const at = Date.now();
@@ -215,8 +250,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
       maxToRenderPerBatch={phone ? 2 : PAGE}
       updateCellsBatchingPeriod={phone ? 75 : 50}
       windowSize={phone ? 3 : 7}
-      viewabilityConfig={viewabilityConfig}
-      onViewableItemsChanged={onViewableItemsChanged}
+      viewabilityConfigCallbackPairs={viewabilityConfigCallbackPairs}
       ListHeaderComponent={
         <View style={styles.head}>
           <View style={styles.wordmarkRow}>

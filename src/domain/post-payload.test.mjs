@@ -32,6 +32,20 @@ test("a selected J. Cole catalog key survives the review create payload", () => 
   assert.equal(body.date, "2026-07-27");
   assert.equal(body.landingShowcase, 1);
   assert.deepEqual(body.mediaAssetIds, ["ma_abcdefgh12345678"]);
+  assert.deepEqual(body.tags, []);
+  assert.deepEqual(body.taggedUserIds, ["u_friend"]);
+});
+
+test("descriptive tags stay retired while concert companion tags remain", () => {
+  const body = buildReviewEditBody({
+    artist: "J. Cole",
+    venue: "Scotiabank Arena",
+    overall: 5,
+    tags: ["hip-hop", "high energy"],
+    taggedPeople: [{ id: "u_friend", name: "Mara" }],
+  });
+
+  assert.deepEqual(body.tags, []);
   assert.deepEqual(body.taggedUserIds, ["u_friend"]);
 });
 

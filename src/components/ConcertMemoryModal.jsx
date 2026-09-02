@@ -50,7 +50,6 @@ export default function ConcertMemoryModal({
   const hasDetailedRatings = Object.values(ratingDims).some((value) => Number(value) > 0);
   const bandRating = Number(log.band) > 0 ? Number(log.band) : 0;
   const roomRating = Number(log.room) > 0 ? Number(log.room) : 0;
-  const tags = Array.isArray(log.tags) ? log.tags.map(text).filter(Boolean).slice(0, 5) : [];
   const previousMedia = () => setMediaIndex((current) => (current - 1 + mediaCount) % mediaCount);
   const nextMedia = () => setMediaIndex((current) => (current + 1) % mediaCount);
 
@@ -128,11 +127,6 @@ export default function ConcertMemoryModal({
                   {review
                     ? <Text style={styles.review}>{review}</Text>
                     : <Text style={styles.quietNote}>You logged this show without a written review.</Text>}
-                  {tags.length ? (
-                    <View style={styles.tagRow}>
-                      {tags.map((tag) => <View key={tag} style={styles.tag}><Text style={styles.tagText}>{tag}</Text></View>)}
-                    </View>
-                  ) : null}
                   <Text style={styles.postSignals}>
                     {Math.max(0, Number(log.likes) || 0)} likes · {Math.max(0, Number(log.comments) || 0)} comments
                   </Text>
@@ -212,9 +206,6 @@ const styles = StyleSheet.create({
   tourName: { color: colors.amber, fontSize: 12.5, fontWeight: "800", marginTop: 7 },
   review: { color: colors.text, fontSize: 15, lineHeight: 22, marginTop: 7 },
   quietNote: { color: colors.textDim, fontSize: 12.5, lineHeight: 18, marginTop: 18 },
-  tagRow: { flexDirection: "row", flexWrap: "wrap", gap: 7, marginTop: 12 },
-  tag: { borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, paddingHorizontal: 9, paddingVertical: 5, backgroundColor: colors.surfaceAlt },
-  tagText: { color: colors.textDim, fontSize: 10.5, fontWeight: "700" },
   postSignals: { color: colors.textFaint, fontFamily: mono, fontSize: 9.5, marginTop: 12 },
   openPost: { minHeight: 44, alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 5, marginTop: 6 },
   openPostText: { color: colors.amber, fontSize: 12.5, fontWeight: "900" },

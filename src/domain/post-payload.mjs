@@ -50,7 +50,9 @@ export function buildReviewCreateBody(post) {
     landingShowcase: !online && post.photosPublic && post.landingShowcase ? 1 : 0,
     setlist: online ? [] : post.setlist,
     tour: online ? null : post.tour || null,
-    tags: online ? [] : Array.isArray(post.tags) ? post.tags : [],
+    // Descriptive post tags are retired. Concert companion tagging remains a
+    // separate, structured user relationship in taggedUserIds.
+    tags: [],
     song: online ? null : post.song || null,
   };
 }
@@ -78,7 +80,7 @@ export function buildReviewEditBody(changes) {
     landingShowcase: !online && !!changes.photosPublic && !!changes.landingShowcase,
     setlist: !online && Array.isArray(changes.setlist) ? changes.setlist.filter((item) => typeof item === "string").slice(0, 40) : [],
     tour: online ? null : clean(changes.tour, { max: 80 }) || null,
-    tags: online ? [] : Array.isArray(changes.tags) ? changes.tags.filter((item) => typeof item === "string").slice(0, 5) : [],
+    tags: [],
     song: !online && changes.song?.videoId ? changes.song : null,
   };
 }

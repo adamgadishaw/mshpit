@@ -1,4 +1,5 @@
-export const RECOMMENDATION_ALGORITHM = "global-personal-v1";
+export const RECOMMENDATION_ALGORITHM = "music-affinity-v2";
+export const RECOMMENDATION_ALGORITHM_VERSION = 2;
 
 export function recommendationKey(value) {
   return String(value || "")
@@ -31,21 +32,23 @@ function mediaCount(value) {
 }
 
 function reasonFor(parts) {
+  if (parts.affinity >= 8) return { code: "artist_affinity", label: "Matches artists you care about" };
   if (parts.following > 0) return { code: "followed_creator", label: "From someone you follow" };
-  if (parts.affinity >= 8) return { code: "artist_affinity", label: "Matches artists you engage with" };
   if (parts.genre > 0) return { code: "genre_affinity", label: "Matches your music taste" };
-  if (parts.local > 0) return { code: "local", label: "Popular near you" };
-  if (parts.engagement >= 10) return { code: "global_momentum", label: "Getting attention across Pit" };
-  return { code: "fresh_global", label: "Fresh from the Pit community" };
+  if (parts.local > 0) return { code: "local", label: "From your music community" };
+  if (parts.engagement >= 8) return { code: "global_momentum", label: "Fans are talking about this" };
+  return { code: "fresh_global", label: "New from the Mshpit community" };
 }
 
 export function scoreRecommendation(candidate, signals = {}, { snapshotAt = Date.now(), seed = "guest" } = {}) {
   const createdAt = Number(candidate.createdAt) || 0;
   const ageHours = Math.max(0, snapshotAt - createdAt) / 3_600_000;
-  const freshness = 44 * Math.pow(0.5, ageHours / 96);
+  const freshness = 40 * Math.pow(0.5, ageHours / 96);
   const likes = Math.max(0, Number(candidate.likes) || 0);
   const comments = Math.max(0, Number(candidate.comments) || 0);
-  const engagement = Math.min(30, Math.log2(1 + likes) * 4.5 + Math.log2(1 + comments) * 6.5);
+  // Engagement finds a real conversation, but is capped below music and
+  // relationship relevance so the feed does not turn into engagement bait.
+  const engagement = Math.min(20, Math.log2(1 + likes) * 3 + Math.log2(1 + comments) * 4.5);
   const textLength = Math.max(0, Number(candidate.reviewLength) || String(candidate.review || "").length);
   const completeness = Math.min(7, mediaCount(candidate.mediaCount ?? candidate.photos) * 3.5)
     + (textLength >= 120 ? 4 : textLength >= 40 ? 2 : 0)
@@ -56,19 +59,30 @@ export function scoreRecommendation(candidate, signals = {}, { snapshotAt = Date
   const candidateGenre = recommendationKey(candidate.genre);
   const candidateCity = recommendationKey(candidate.city);
   const affinityPoints = Number(signals.artistWeights?.get?.(artistKey)) || 0;
-  const affinity = Math.min(14, Math.max(0, affinityPoints) * 2);
-  const following = signals.followedUserIds?.has?.(candidate.userId) ? 10 : 0;
-  const genre = candidateGenre && signals.genres?.has?.(candidateGenre) ? 6 : 0;
-  const local = candidateCity && candidateCity === signals.city ? 4 : 0;
-  const positivePersonal = Math.min(24, affinity + following + genre + local);
+  const affinity = Math.min(24, Math.max(0, affinityPoints) * 1.5);
+  const following = signals.followedUserIds?.has?.(candidate.userId) ? 12 : 0;
+  const genre = candidateGenre && signals.genres?.has?.(candidateGenre) ? 7 : 0;
+  const local = candidateCity && candidateCity === signals.city ? 3 : 0;
+  const positivePersonal = Math.min(36, affinity + following + genre + local);
   const selfPenalty = signals.viewerId && signals.viewerId === candidate.userId ? -18 : 0;
 
-  const parts = { freshness, engagement, completeness, exploration, affinity, following, genre, local, selfPenalty };
+  // A recently seen card rotates down, never out. This penalty decays to
+  // almost zero, allowing an old post to resurface when it is relevant again.
+  const viewerSeenCount = Math.max(0, Number(candidate.viewerSeenCount) || 0);
+  const viewerLastSeenAt = Math.max(0, Number(candidate.viewerLastSeenAt) || 0);
+  const seenAgeHours = viewerLastSeenAt ? Math.max(0, snapshotAt - viewerLastSeenAt) / 3_600_000 : Infinity;
+  const seenStrength = Math.min(34, 18 + Math.log2(1 + viewerSeenCount) * 6);
+  const seenPenalty = viewerSeenCount ? -seenStrength * Math.pow(0.5, seenAgeHours / (14 * 24)) : 0;
+
+  const parts = {
+    freshness, engagement, completeness, exploration, affinity, following,
+    genre, local, selfPenalty, seenPenalty, viewerSeenCount, viewerLastSeenAt,
+  };
   const reason = reasonFor(parts);
   return {
-    score: freshness + engagement + completeness + exploration + positivePersonal + selfPenalty,
+    score: freshness + engagement + completeness + exploration + positivePersonal + selfPenalty + seenPenalty,
     globalScore: freshness + engagement + completeness + exploration,
-    personalScore: positivePersonal + selfPenalty,
+    personalScore: positivePersonal + selfPenalty + seenPenalty,
     parts,
     reason,
   };
