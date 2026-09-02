@@ -206,6 +206,158 @@ export async function api(path, { method = "GET", body, context, silent = false,
   return data;
 }
 
+// Binary responses still cross the exact same account and diagnostics boundary
+// as JSON requests. This is intentionally narrow: the share-card renderer is
+// the only client route that returns bytes, and callers receive a bounded
+// Uint8Array rather than a Response whose body could be consumed later under a
+// different account identity.
+export async function apiBinary(path, {
+  method = "GET",
+  body,
+  context,
+  silent = false,
+  signal,
+  headers,
+  timeoutMs,
+  expectedAccountId,
+  skipIdentityCheck = false,
+  cache = "no-store",
+  acceptedContentTypes = ["image/png"],
+  maxBytes = 8 * 1024 * 1024,
+} = {}) {
+  const verb = String(method || "GET").toUpperCase();
+  const operation = context || operationContext(verb);
+  const identityAtInvocation = apiIdentity;
+  const barrierDecision = apiIdentityBarrierDecision(identityAtInvocation, { skipIdentityCheck, expectedAccountId });
+  if (barrierDecision === "reject") {
+    const err = new AppError("Your account is being revalidated. Try again in a moment.", {
+      status: 409, serverCode: "IDENTITY_CHANGED", context: operation, source: "api",
+    });
+    throw apiFailure(err, { path, method: verb, context: operation, silent });
+  }
+  if (barrierDecision === "wait") {
+    if (signal?.aborted) throw signal.reason || new DOMException("Aborted", "AbortError");
+    await Promise.race([
+      identityReady,
+      signal ? new Promise((_, reject) => signal.addEventListener("abort", () => reject(signal.reason || new DOMException("Aborted", "AbortError")), { once: true })) : new Promise(() => {}),
+    ]);
+  }
+
+  let payload;
+  try {
+    payload = body === undefined ? undefined : JSON.stringify(body);
+  } catch (error) {
+    const invalidBody = new AppError(undefined, { code: "PIT-REQ-001", context: operation, source: "api", cause: error });
+    throw apiFailure(invalidBody, { path, method: verb, context: operation, silent });
+  }
+
+  const control = createRequestControl({ method: verb, timeoutMs, callerSignal: signal });
+  const identityAtStart = apiIdentity;
+  const explicitExpected = expectedAccountId !== undefined ? (expectedAccountId ? String(expectedAccountId) : null) : undefined;
+  const requestIdentity = explicitExpected !== undefined
+    ? { accountId: explicitExpected, ready: true, generation: identityAtStart.generation }
+    : identityAtStart;
+  const identityHeaders = !skipIdentityCheck && requestIdentity.ready
+    ? { "X-Pit-Expected-Account": requestIdentity.accountId || "guest" }
+    : {};
+  let res;
+  try {
+    res = await fetch(BASE + path, {
+      method: verb,
+      credentials: "include",
+      headers: payload !== undefined
+        ? { "Content-Type": "application/json", ...identityHeaders, ...headers }
+        : { ...identityHeaders, ...headers },
+      body: payload,
+      signal: control.signal,
+      cache,
+    });
+  } catch (error) {
+    const kind = control.didTimeout() ? "timeout" : signal?.aborted || error?.name === "AbortError" ? "abort" : "network";
+    control.cleanup();
+    if (signal?.aborted && kind === "abort") throw error;
+    throw apiFailure(error, { path, method: verb, context: operation, silent, kind });
+  }
+
+  const requestId = res.headers?.get?.("x-request-id")
+    || res.headers?.get?.("x-render-request-id")
+    || undefined;
+  if (!res.ok) {
+    let errorText = "";
+    try {
+      errorText = await res.text();
+    } catch (error) {
+      if (signal?.aborted && !control.didTimeout()) {
+        control.cleanup();
+        throw error;
+      }
+      const kind = control.didTimeout() ? "timeout" : signal?.aborted || error?.name === "AbortError" ? "abort" : "network";
+      control.cleanup();
+      throw apiFailure(error, { path, method: verb, context: operation, silent, kind, status: res.status, requestId });
+    }
+    let data = {};
+    try {
+      if (errorText) data = JSON.parse(errorText);
+    } catch {
+      // architecture: allow-empty-catch -- non-2xx bodies may be empty or non-JSON; the HTTP status remains the authoritative safe failure.
+    }
+    control.cleanup();
+    const serverCode = typeof data?.code === "string" ? data.code : undefined;
+    const message = res.status < 500 && typeof data?.error === "string" ? data.error : undefined;
+    const err = new AppError(message, {
+      status: res.status,
+      requestId,
+      serverCode,
+      retryable: typeof data?.retryable === "boolean" ? data.retryable : undefined,
+      context: operation,
+      source: "api",
+    });
+    throw apiFailure(err, { path, method: verb, context: operation, silent });
+  }
+
+  const contentType = String(res.headers?.get?.("content-type") || "").split(";")[0].trim().toLowerCase();
+  const allowed = Array.isArray(acceptedContentTypes)
+    && acceptedContentTypes.some((value) => String(value || "").trim().toLowerCase() === contentType);
+  const declaredLength = Number(res.headers?.get?.("content-length"));
+  if (!allowed || (Number.isFinite(declaredLength) && declaredLength > maxBytes)) {
+    control.cleanup();
+    const err = new AppError(undefined, {
+      kind: "invalid_response", status: res.status, requestId, context: operation, source: "api",
+    });
+    throw apiFailure(err, { path, method: verb, context: operation, silent });
+  }
+
+  let buffer;
+  try {
+    buffer = await res.arrayBuffer();
+  } catch (error) {
+    const kind = control.didTimeout() ? "timeout" : signal?.aborted || error?.name === "AbortError" ? "abort" : "network";
+    control.cleanup();
+    if (signal?.aborted && kind === "abort") throw error;
+    throw apiFailure(error, { path, method: verb, context: operation, silent, kind, status: res.status, requestId });
+  }
+  control.cleanup();
+  if (!buffer.byteLength || buffer.byteLength > maxBytes) {
+    const err = new AppError(undefined, {
+      kind: "invalid_response", status: res.status, requestId, context: operation, source: "api",
+    });
+    throw apiFailure(err, { path, method: verb, context: operation, silent });
+  }
+  if (!skipIdentityCheck && expectedAccountId === undefined && identityAtStart.generation !== apiIdentity.generation) {
+    const err = new AppError("Your account changed while that request was running. Try again.", {
+      status: 409, serverCode: "IDENTITY_CHANGED", context: operation, source: "api",
+    });
+    throw apiFailure(err, { path, method: verb, context: operation, silent });
+  }
+  return {
+    bytes: new Uint8Array(buffer),
+    contentType,
+    contentDisposition: res.headers?.get?.("content-disposition") || null,
+    canonicalLink: res.headers?.get?.("link") || null,
+    requestId,
+  };
+}
+
 // True when the backend is reachable, lets the store fall back to local-only
 // mode in dev instead of hard-failing when the server isn't running.
 export async function serverUp() {

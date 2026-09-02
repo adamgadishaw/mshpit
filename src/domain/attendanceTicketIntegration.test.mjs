@@ -102,6 +102,10 @@ test("the shared post renderer owns ticket presentation and disables generic edi
   assert.match(card, /buildAttendanceTicketPreview/);
   assert.match(card, /calendarShowFromPost/);
   assert.match(card, /<ConcertTicketCard/);
+  assert.match(card, /style=\{styles\.attendanceTicketCard\}/,
+    "feed tickets keep a deliberate boundary below the author identity row");
+  assert.match(card, /attendanceTicketCard:\s*\{\s*marginTop:\s*space\(5\)\s*\}/,
+    "the author-to-ticket boundary uses shared spacing rather than a fragile inline gap");
   assert.match(card, /&& !log\.attendanceTicket/);
   assert.match(card, /seatLocation: log\.attendanceTicket\.seat \|\| log\.attendanceTicket\.seatLocation/);
   assert.match(card, /onPress=\{attendanceTicketShow && onOpenShow \? \(\) => onOpenShow\(attendanceTicketShow\) : undefined\}/);

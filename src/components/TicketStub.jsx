@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { View, Text, StyleSheet, Pressable, Alert, Linking, Platform } from "react-native";
 import { Image as ExpoImage } from "expo-image";
-import { colors, displayFont, font, mono, radius, shadow, roleColor } from "../theme";
+import { colors, displayFont, font, mono, radius, shadow, roleColor, space } from "../theme";
 import Stars from "./Stars";
 import Icon from "./Icon";
 import Avatar from "./Avatar";
@@ -24,9 +24,11 @@ import { artistPath, profilePath, venuePath } from "../domain/urls.mjs";
 import { buildAttendanceTicketPreview } from "../domain/attendanceTicket.mjs";
 import { calendarShowFromPost } from "../domain/calendarShows.mjs";
 import ConcertTicketCard from "./ConcertTicketCard";
+import { SocialShareButton } from "./SocialShareStudio";
 import { concertPostContext } from "../domain/concertPostContext.mjs";
 import { resolvePostAuthor } from "../domain/postAuthor.mjs";
 import { canonicalYouTubeReviewUrl, ONLINE_REVIEW_EXPERIENCE } from "../domain/onlineReview.mjs";
+import { buildPostShareModel } from "../domain/socialShareCard.mjs";
 
 // "3rd time in the pit" needs a real ordinal, not "3th".
 const ordinal = (n) => {
@@ -211,6 +213,10 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onOpenSh
   const attendanceTicketShow = log.attendanceTicket?.tourDateId
     ? calendarShowFromPost(log)
     : null;
+  const shareModel = useMemo(
+    () => buildPostShareModel(log, { author }),
+    [author, log],
+  );
   // Score analytics: tap the star pill to see why the night got its score.
   const [statsOpen, setStatsOpen] = useState(false);
 
@@ -316,6 +322,7 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onOpenSh
         {attendanceTicketCard ? (
           <ConcertTicketCard
             ticket={attendanceTicketCard}
+            style={styles.attendanceTicketCard}
             onPress={attendanceTicketShow && onOpenShow ? () => onOpenShow(attendanceTicketShow) : undefined}
             accessibilityHint={attendanceTicketShow && onOpenShow ? "Open the exact show or event page" : undefined}
           />
@@ -356,6 +363,11 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onOpenSh
             <Text style={[styles.fCount, campaignPresentation && { color: campaignTreatment.mutedTextColor }]}>{commentCount}</Text>
           </PublicPressableLink>
           <ViewTally count={viewCount} palette={campaignTreatment} />
+          <SocialShareButton
+            accountId={session?.id || null}
+            color={campaignPresentation ? campaignTreatment.mutedTextColor : colors.textDim}
+            model={shareModel}
+          />
         </View>
 
         {showComments && <CommentPreview log={log} onOpen={onComment || onOpen} palette={campaignTreatment} />}
@@ -570,6 +582,7 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onOpenSh
           <Text style={styles.fCount}>{commentCount}</Text>
         </PublicPressableLink>
         <ViewTally count={viewCount} />
+        <SocialShareButton accountId={session?.id || null} model={shareModel} />
         <View style={{ flex: 1 }} />
         {canEdit && (
           <Pressable style={({ pressed }) => [styles.fBtn, pressed && styles.controlPressed]} hitSlop={8} onPress={() => onEdit?.(log)} accessibilityRole="button" accessibilityLabel="Edit post">
@@ -611,6 +624,7 @@ const styles = StyleSheet.create({
   campaignArtworkText: { color: "#FFF8EE", fontSize: 10.5, fontWeight: "800" },
   campaignContent: { zIndex: 2, padding: 14, borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderColor: "rgba(255,255,255,0.14)", boxShadow: "0 14px 34px rgba(0,0,0,0.3)" },
   header: { flexDirection: "row", alignItems: "center", gap: 10 },
+  attendanceTicketCard: { marginTop: space(5) },
   nameRow: { flexDirection: "row", alignItems: "center", gap: 4 },
   name: { color: colors.text, fontFamily: displayFont, fontWeight: "800", fontSize: 14, letterSpacing: -0.1 },
   sub: { color: colors.textFaint, fontFamily: font, fontSize: 12, marginTop: 1 },
@@ -669,7 +683,7 @@ const styles = StyleSheet.create({
   // Status (Facebook/Twitter-style) card pieces.
   iconBtn: { width: 34, height: 34, borderRadius: 17, alignItems: "center", justifyContent: "center" },
   statusText: { color: colors.text, fontFamily: font, fontSize: 16, lineHeight: 23, marginTop: 12 },
-  statusFooter: { flexDirection: "row", alignItems: "center", gap: 14, marginTop: 14, paddingTop: 4, borderTopWidth: 1, borderTopColor: colors.lineSoft },
+  statusFooter: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 8, rowGap: 2, marginTop: 14, paddingTop: 4, borderTopWidth: 1, borderTopColor: colors.lineSoft },
   campaignFooter: { borderTopColor: "rgba(255,255,255,0.12)" },
   campaignTouchTarget: { minWidth: 44, minHeight: 44 },
   campaignWhyWrap: { borderColor: "rgba(255,255,255,0.14)", backgroundColor: "rgba(255,255,255,0.06)" },
@@ -691,7 +705,7 @@ const styles = StyleSheet.create({
   lock: { color: colors.textFaint, fontSize: 11, marginLeft: 4 },
   setBody: { color: colors.textDim, fontSize: 12, lineHeight: 18, marginTop: 8 },
 
-  footer: { flexDirection: "row", alignItems: "center", gap: 12, marginTop: 16 },
+  footer: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 8, rowGap: 2, marginTop: 16 },
   fBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, minWidth: 32, minHeight: 32, paddingHorizontal: 4, borderRadius: radius.sm },
   commentAction: { minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingHorizontal: 8, borderRadius: radius.sm },
   commentActionText: { color: colors.textDim, fontSize: 12, fontWeight: "800" },

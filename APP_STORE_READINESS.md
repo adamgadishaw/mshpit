@@ -39,6 +39,13 @@ during this preparation pass.
 - Native preview playback uses the SDK 57 `expo-audio` package on iOS/Android;
   the config disables microphone, recording, and background-audio capabilities.
   Web playback keeps its existing YouTube/HTML-audio path.
+- Instagram sharing uses the dedicated native Story composer and never labels
+  the generic system share sheet as a Story action. Set the public
+  `EXPO_PUBLIC_META_APP_ID` for preview and production builds, then verify the
+  handoff with Instagram installed on a current iPhone and Android phone. The
+  website downloads the 9:16 Story card because browsers cannot reliably choose
+  Instagram's Story destination. Adding this native module requires a new app
+  binary; Expo Go and a web or over-the-air update cannot provide it.
 - MSHpit's white circular community mark on near-black icon, splash, Android
   adaptive, monochrome, and favicon assets are wired through the SDK 57 splash
   plugin. The v2 artwork has provenance notes in

@@ -620,6 +620,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
             the exact single Going toggle until they have trusted identity. */}
         {liveActionsAvailable && lifecycleView.trusted ? (
           <ShowAttendanceControls
+            account={session}
             accountId={accountId}
             currentAttendance={readMatches
               ? scopedSocialRead.viewerAttendance

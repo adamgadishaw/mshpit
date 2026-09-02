@@ -8,6 +8,11 @@ credentials in the deployment provider or an untracked `.env` file.
 NODE_ENV=development
 PUBLIC_ORIGIN=http://localhost:8081
 
+# Public Meta app identifier used by signed iOS/Android builds to open
+# Instagram's Story editor. This is not an App Secret and must never be
+# replaced with one. A new native build is required after changing it.
+EXPO_PUBLIC_META_APP_ID=
+
 # The locked Owner receives protected approvals and daily health readouts.
 # During the legacy ADMIN_EMAIL migration, set both values to the same address.
 OWNER_EMAIL=

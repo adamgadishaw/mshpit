@@ -71,6 +71,7 @@ import { SECURITY_TXT_PATH, securityTxtResponse } from "./securityTxt.js";
 import { staticAssetCacheControl } from "./staticAssetCache.js";
 import { randomUUID } from "node:crypto";
 import { createApiResponseHeaders, createApiResponseHeaderSetter } from "./responseHeaders.js";
+import { binaryApiResponsePayload } from "./binaryApiResponse.js";
 import { reconcileAdminAccount } from "./adminBootstrap.js";
 import { applyHttpServerLimits } from "./httpServerPolicy.js";
 import { safeRequestFailureContext } from "./safeLogging.js";
@@ -507,7 +508,7 @@ const server = createServer(async (req, res) => {
   const cors = !PROD && origin && DEV_ORIGINS.has(origin)
     ? { "Access-Control-Allow-Origin": origin, "Access-Control-Allow-Credentials": "true",
         "Access-Control-Allow-Methods": "GET,POST,PATCH,DELETE,OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type, X-Request-Id, X-Pit-Expected-Account", "Access-Control-Expose-Headers": "X-Request-Id" }
+        "Access-Control-Allow-Headers": "Content-Type, X-Request-Id, X-Pit-Expected-Account", "Access-Control-Expose-Headers": "X-Request-Id, Link, Content-Disposition" }
     : {};
   if (req.method === "OPTIONS") return send(res, 204, "", createApiResponseHeaders(cors));
 
@@ -636,6 +637,13 @@ const server = createServer(async (req, res) => {
           "Referrer-Policy": "no-referrer",
         });
         return res.end();
+      }
+      const binary = binaryApiResponsePayload(result);
+      if (binary) {
+        // Do not start a binary response after the caller has disconnected.
+        // The route may have completed bounded image work after the abort.
+        if (requestAbort.signal.aborted || res.destroyed) return;
+        return send(res, 200, binary.bytes, { ...extra, ...binary.headers });
       }
       return send(res, 200, withRequestId(result ?? { ok: true }, requestId), extra);
     }

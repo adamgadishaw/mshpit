@@ -79,6 +79,7 @@ import { showAttendanceRoutes } from "./features/shows/showAttendanceRoutes.js";
 import { showRoutes } from "./features/shows/showRoutes.js";
 import { createShowAttendanceRepository } from "./features/shows/showAttendanceRepository.js";
 import { normalizeShowAliasKey, normalizeTourDateId } from "./features/shows/showIdentity.js";
+import { socialShareCardRoutes } from "./features/socialSharing/socialShareCardRoutes.js";
 import { createLoungeLifecycleService } from "./features/lounges/loungeLifecycleService.js";
 import { loungeArchiveRoutes } from "./features/lounges/loungeArchiveRoutes.js";
 import {
@@ -108,7 +109,7 @@ import {
   legacyImageRecoveryHealth,
 } from "./legacyPostImageRecovery.js";
 import { discoverySidebar } from "./discovery.js";
-import { resolveEntity, sitemapSnapshotHealth } from "./seo.js";
+import { publicDocumentForPath, resolveEntity, sitemapSnapshotHealth } from "./seo.js";
 import { userRewards } from "./rewards.js";
 import { beginVerification, completeVerification, resendVerification, sendWelcomeOnce, verificationEnabled } from "./verification.js";
 import {
@@ -3501,6 +3502,15 @@ export const routes = {
     requireVerifiedUser,
     resolveTourDateShow: exactAttendanceTourDateShow,
     userById: q.userById,
+  }),
+  ...socialShareCardRoutes({
+    database: db,
+    ApiError,
+    attendanceRepository: showAttendanceRepository,
+    blockedEitherWay,
+    rateLimit: limit,
+    requireUser,
+    resolvePublicDocument: publicDocumentForPath,
   }),
   ...showRoutes({
     database: db,

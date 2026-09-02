@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
 
 import Icon from "../../components/Icon";
+import { SocialShareButton } from "../../components/SocialShareStudio";
 import {
   attendanceControlsVisible,
   attendanceMutationIdentity,
@@ -10,6 +11,7 @@ import {
   optimisticViewerAttendance,
 } from "../../domain/showAttendance.mjs";
 import { colors, mono, radius } from "../../theme";
+import { buildAttendanceShareModel } from "../../domain/socialShareCard.mjs";
 import { writeShowAttendance } from "./showSocialService";
 
 const STATE_COPY = Object.freeze({
@@ -29,6 +31,7 @@ const attendanceErrorMessage = (error) => error?.userMessage
   || "Your attendance was not changed. Try again.";
 
 export default function ShowAttendanceControls({
+  account = null,
   accountId,
   currentAttendance,
   lifecycle,
@@ -48,6 +51,14 @@ export default function ShowAttendanceControls({
     ? scopedMutation.attendance
     : currentAttendance || null;
   const pending = scopedMutation?.status === "saving";
+  const shareState = accountId && !pending
+    && (attendance?.state === "going" || attendance?.state === "interested")
+    ? attendance.state
+    : null;
+  const shareModel = useMemo(
+    () => shareState ? buildAttendanceShareModel({ show, state: shareState, author: account }) : null,
+    [account, shareState, show],
+  );
 
   useEffect(() => () => {
     if (activeIdentityRef.current === identity) activeIdentityRef.current = null;
@@ -222,6 +233,22 @@ export default function ShowAttendanceControls({
         </View>
       ) : null}
 
+      {shareModel ? (
+        <View style={styles.shareRow}>
+          <View style={styles.shareCopy}>
+            <Text style={styles.shareTitle}>Share this plan</Text>
+            <Text style={styles.shareDetail}>Creates a share card. It does not change your saved audience or post anything.</Text>
+          </View>
+          <SocialShareButton
+            accountId={accountId}
+            color={colors.amber}
+            label={`Share ${currentStateCopy?.label || attendance.state}`}
+            model={shareModel}
+            showLabel
+          />
+        </View>
+      ) : null}
+
       {scopedMutation?.status === "error" ? (
         <Text selectable style={styles.error} accessibilityRole="alert" accessibilityLiveRegion="assertive">
           {attendanceErrorMessage(scopedMutation.error)}
@@ -259,6 +286,10 @@ const styles = StyleSheet.create({
   visibilityLabel: { color: colors.textDim, fontSize: 11, fontWeight: "800" },
   visibilityLabelSelected: { color: colors.amber },
   privacyDetail: { color: colors.textDim, fontSize: 11, lineHeight: 16 },
+  shareRow: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 10, borderTopWidth: 1, borderTopColor: colors.lineSoft, paddingTop: 12 },
+  shareCopy: { flex: 1, minWidth: 180 },
+  shareTitle: { color: colors.text, fontSize: 12.5, fontWeight: "900" },
+  shareDetail: { color: colors.textDim, fontSize: 10.5, lineHeight: 15, marginTop: 2 },
   verified: { flexDirection: "row", alignItems: "center", gap: 5 },
   verifiedText: { color: colors.good, fontFamily: mono, fontSize: 9.5, fontWeight: "800" },
   unverified: { color: colors.textFaint, fontSize: 10.5, lineHeight: 15 },

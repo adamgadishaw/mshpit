@@ -557,6 +557,14 @@ export function seoHttpPlan(pathname) {
   return publicRoute(pathname);
 }
 
+// Authenticated server features may reuse the exact public-page projection
+// without copying its privacy and publication rules. Redirects, unavailable
+// reads, app-only routes, and non-canonical paths deliberately return null.
+export function publicDocumentForPath(pathname) {
+  const plan = publicRoute(pathname);
+  return plan?.type === "document" ? plan.document : null;
+}
+
 function legacyMetadata(resolution) {
   if (!resolution) return null;
   const { document, entity } = resolution;

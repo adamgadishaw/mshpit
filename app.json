@@ -18,6 +18,17 @@
           "microphonePermission": false
         }
       ],
+      [
+        "react-native-share",
+        {
+          "ios": [
+            "instagram-stories"
+          ],
+          "android": [
+            "com.instagram.android"
+          ]
+        }
+      ],
       "expo-sharing",
       "expo-video",
       "expo-sqlite",
@@ -41,7 +52,8 @@
           "resizeMode": "contain"
         }
       ],
-      "expo-asset"
+      "expo-asset",
+      "expo-build-properties"
     ],
     "ios": {
       "bundleIdentifier": "com.mshpit.app",
