@@ -18,7 +18,7 @@
     "expo-sharing": "~56.0.26",
     "expo-splash-screen": "~56.0.15",
     "expo-sqlite": "~56.0.6",
-    "expo-status-bar": "~56.0.4",
+    "expo-status-bar": "~57.0.1",
     "expo-system-ui": "~56.0.5",
     "expo-video": "~56.1.4",
     "heic-decode": "2.1.0",
