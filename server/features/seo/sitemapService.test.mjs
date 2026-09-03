@@ -197,15 +197,27 @@ test("URL sets shard deterministically at Google's uncompressed limits", () => {
 test("static discovery and pagination respect content and router bounds", () => {
   assert.equal(pageSitemapEntries({ includeDiscover: false }).some((row) => row.path === "/discover"), false);
   assert.equal(pageSitemapEntries({ includeDiscover: true }).some((row) => row.path === "/discover"), true);
+  // A sitemap advertises the collection's entry point, not every slice. Emitting
+  // page 2 onward previously put 1,640 near-duplicate pages into the index, with
+  // identical descriptions and titles reading "Page 485", which took the site's
+  // sitelinks away from real content. Later pages stay crawlable through in-page
+  // rel=next and are marked noindex,follow by the directory document.
   const pages = paginationEntries({
     itemCount: 50_000,
     includeFirst: true,
     pathFor: (page) => page === 1 ? "/events" : `/events/page/${page}`,
   });
-  assert.equal(pages.length, 1_000);
+  assert.equal(pages.length, 1);
   assert.equal(pages[0].path, "/events");
-  assert.equal(pages.at(-1).path, "/events/page/1000");
-  assert.equal(pages.some((row) => row.path === "/events/page/1001"), false);
+  assert.equal(pages.some((row) => row.path.includes("/page/")), false,
+    "no /page/N URL may be advertised in a sitemap");
+
+  // An empty collection still advertises nothing at all.
+  assert.deepEqual(paginationEntries({
+    itemCount: 0,
+    includeFirst: true,
+    pathFor: (page) => page === 1 ? "/events" : `/events/page/${page}`,
+  }), []);
 });
 
 test("candidate keysets preserve more than fifty thousand rows and fail closed before unsafe accumulation", () => {
@@ -753,23 +765,23 @@ test("qualified collection, city, and artist archive pages are complete, canonic
   for (const root of ["/artists", "/events", "/venues", "/concerts"]) {
     assert.ok(paths("pages").includes(root), `${root} is present when its eligible collection is nonempty`);
   }
-  assert.ok(paths("pages").includes("/artists/page/2"));
-  assert.ok(paths("pages").includes("/events/page/2"));
-  assert.ok(paths("pages").includes("/venues/page/2"));
-  assert.ok(paths("pages").includes("/concerts/page/2"));
-  assert.equal(paths("pages").some((path) => path.endsWith("/page/1")), false);
+  // Only the entry point of each collection is advertised. Slices stay crawlable
+  // via in-page rel=next and are marked noindex,follow by the directory document,
+  // so the crawler still reaches every leaf without 1,640 near-duplicate URLs
+  // competing for the site's sitelinks.
+  assert.equal(paths("pages").some((path) => path.includes("/page/")), false,
+    "no collection slice may be advertised in a sitemap");
 
   assert.ok(paths("cities").includes("/venues/ca/toronto"));
-  assert.ok(paths("cities").includes("/venues/ca/toronto/page/2"));
   assert.ok(paths("cities").includes("/venues/ca/ottawa"));
-  assert.equal(paths("cities").includes("/venues/ca/ottawa/page/2"), false,
-    "event volume cannot create a dead second venue page when only two venues render");
   assert.ok(paths("cities").includes("/concerts/ca/toronto"));
-  assert.ok(paths("cities").includes("/concerts/ca/toronto/page/2"));
+  assert.equal(paths("cities").some((path) => path.includes("/page/")), false,
+    "city collections advertise their entry point only");
   assert.equal(paths("cities").includes("/concerts/ca/north-collision"), false);
   assert.equal(paths("cities").includes("/concerts/us/south-collision"), false);
   assert.ok(paths("concerts").includes("/artist/directory-scale-artist/concerts"));
-  assert.ok(paths("concerts").includes("/artist/directory-scale-artist/concerts/page/2"));
+  assert.equal(paths("concerts").some((path) => path.includes("/concerts/page/")), false,
+    "artist archives advertise their entry point only");
 
   const impossibleKey = archiveShowKey({
     artistIdentity: artistKey,
@@ -985,7 +997,9 @@ test("collection sitemaps use exact qualified totals and every emitted page is n
     const first = directoryRepository.readDirectory({
       kind, page: 1, at: options.now, today: "2026-08-25",
     });
-    const expectedPages = Math.min(1_000, Math.ceil(first.total / 12));
+    // Only the entry point is advertised now, so a nonempty collection
+    // contributes exactly one URL regardless of how many rows it holds.
+    const expectedPages = first.total > 0 ? 1 : 0;
     const emitted = pagePaths.filter((path) => parsePublicCollectionPath(path)?.type === kind);
     assert.equal(emitted.length, expectedPages, kind + " pagination comes from exact rendered rows");
     for (const path of emitted) {
@@ -1006,7 +1020,7 @@ test("collection sitemaps use exact qualified totals and every emitted page is n
     "post-only venue leaf candidates outnumber the stricter upcoming venue directory");
   assert.equal(
     pagePaths.filter((path) => parsePublicCollectionPath(path)?.type === "venues").length,
-    Math.ceil(exactVenueTotal / 12),
+    exactVenueTotal > 0 ? 1 : 0,
     "broader leaf candidates never manufacture an empty venue page",
   );
 

@@ -423,7 +423,9 @@ function publicRoute(pathname) {
     if (document.canonicalPath !== canonicalPath || path !== document.canonicalPath) {
       return { type: "redirect", status: 301, location: document.canonicalPath || canonicalPath };
     }
-    return { type: "document", status: 200, canonicalPath, indexable: true, document };
+    // The document decides. A paginated collection marks page 2 onward
+    // noindex,follow, and hardcoding true here silently overrode that.
+    return { type: "document", status: 200, canonicalPath, indexable: document.indexable !== false, document };
   }
 
   if (collection && ["city-venues", "city-concerts", "artist-concerts"].includes(collection.type)) {
@@ -454,7 +456,9 @@ function publicRoute(pathname) {
     if (document.canonicalPath !== canonicalPath || path !== document.canonicalPath) {
       return { type: "redirect", status: 301, location: document.canonicalPath || canonicalPath };
     }
-    return { type: "document", status: 200, canonicalPath, indexable: true, document };
+    // The document decides. A paginated collection marks page 2 onward
+    // noindex,follow, and hardcoding true here silently overrode that.
+    return { type: "document", status: 200, canonicalPath, indexable: document.indexable !== false, document };
   }
 
   if (!collection && (/^\/(?:venues|concerts)(?:\/|$)/iu.test(path)

@@ -86,7 +86,7 @@ function collectionNode({ origin,path,name,description,items }) {
     }),
   });
 }
-function metadata({ origin,path,title,description }) {
+function metadata({ origin,path,title,description,page = 1 }) {
   return {
     siteName: SITE_NAME,
     title,
@@ -94,7 +94,13 @@ function metadata({ origin,path,title,description }) {
     canonicalPath: path,
     canonicalUrl: absolute(origin,path),
     image: null,
-    indexable: true,
+    // Page 1 is the collection's canonical entry point. Later slices repeat the
+    // same title and description over a different window of rows, and indexing
+    // them produced 1,640 near-duplicate pages whose "Page 485" titles took the
+    // site's sitelinks away from real content. noindex,follow keeps the crawler
+    // walking the list through to every leaf entity while dropping the slices
+    // from the index. Mirrors the directory document in publicDocumentProjection.
+    indexable: (Number(page) || 1) <= 1,
   };
 }
 
@@ -166,7 +172,7 @@ function baseDirectory({ kind,page,hasNext,path,pathFor,origin,title,description
     hasNext,
     previousPath,
     nextPath,
-    ...metadata({ origin,path,title,description }),
+    ...metadata({ origin,path,title,description,page }),
     artists: Object.freeze([]),
     events: Object.freeze([]),
     venues: kind === "venues" ? items : Object.freeze([]),

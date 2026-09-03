@@ -1217,6 +1217,21 @@ test("verified post images are ImageObjects and the public artist directory is s
     assert.equal(secondPage.previousPath, "/artists");
     assert.notEqual(firstPage.artists[0].name, secondPage.artists[0].name);
     assert.match(documents.render(secondPage), /href="\/artists">Previous page<\/a>/);
+
+    // Page 1 is the collection's canonical entry point; every later slice is the
+    // same boilerplate title and description over a different window of rows.
+    // Indexing them produced 1,640 near-duplicate pages whose "Page 485" titles
+    // won the site's sitelinks away from real content. noindex,follow keeps the
+    // crawler walking the list through to each leaf while dropping the slices.
+    assert.equal(firstPage.indexable, true);
+    assert.equal(secondPage.indexable, false);
+    const firstHtml = documents.render(firstPage);
+    const secondHtml = documents.render(secondPage);
+    assert.match(firstHtml, /name="robots" content="index,follow/);
+    assert.match(secondHtml, /name="robots" content="noindex,follow"/);
+    // `follow` is what keeps every leaf entity reachable from the slice.
+    assert.doesNotMatch(secondHtml, /content="noindex,nofollow"/);
+
     assert.equal(directory.artists.some((artist) => artist.name === "thin-only"), false);
     for (const artist of directory.artists.slice(0, 3)) {
       const resolved = documents.artistDocument({ artistKey: artist.name, at: NOW });

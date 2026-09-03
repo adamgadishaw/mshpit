@@ -549,7 +549,11 @@ test("artist and event directory pages are canonical, crawlable, and fail closed
     const plan = seoHttpPlan(pagePath);
     assert.equal(plan.type, "document");
     assert.equal(plan.status, 200);
-    assert.equal(plan.indexable, true);
+    // Page 2 onward is served and crawlable but not indexed. Indexing every
+    // slice produced 1,640 near-duplicate pages whose "Page 485" titles took the
+    // site's sitelinks from real content; `follow` keeps the crawler walking
+    // through to every leaf entity.
+    assert.equal(plan.indexable, false);
     assert.equal(plan.canonicalPath, pagePath);
     assert.equal(plan.document.canonicalUrl, `https://www.example.com${pagePath}`);
     const html = injectHead(
@@ -558,8 +562,15 @@ test("artist and event directory pages are canonical, crawlable, and fail closed
       plan,
       { PIT_ENV: "production" },
     );
-    assert.match(html, new RegExp(`<link rel="canonical" href="https://www\\.example\\.com${pagePath}"`));
-    assert.match(html, /name="robots" content="index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1"/);
+    // A noindex document emits no canonical, matching every other noindex page
+    // on the site. The slice is excluded from the index outright, so there is
+    // nothing left for a canonical to consolidate.
+    assert.doesNotMatch(html, /<link rel="canonical"/);
+    assert.match(html, /name="robots" content="noindex,follow"/);
+    assert.doesNotMatch(html, /content="noindex,nofollow"/);
+    // The entry point stays fully indexable with its canonical intact.
+    const rootPlan = seoHttpPlan(rootPath);
+    assert.equal(rootPlan.indexable, true);
     assert.match(html, new RegExp(`href="${rootPath}"[^>]*>Previous page</a>`));
     assert.match(html, kind === "artists" ? /href="\/artist\// : /href="\/event\//,
       "the server HTML contains ordinary crawlable entity anchors");

@@ -767,9 +767,21 @@ export function venueSitemapEntries(database, options = {}) {
   return [...entries.values()];
 }
 
+// A sitemap advertises the canonical entry point of a collection, not every
+// slice of it. Submitting /events/page/2..1000 put 1,640 near-duplicate thin
+// pages into Google's index: identical meta descriptions, titles that read
+// "Page 485", and enough of them to win the site's sitelinks away from real
+// content. It also spent crawl budget on pagination instead of the 31,565 event
+// pages that actually deserve indexing.
+//
+// Page 2 onward stays crawlable and reachable through in-page rel=next links,
+// and the directory document marks it noindex,follow, so the crawler still walks
+// through to every leaf entity. Only the sitemap advertisement stops here.
+const SITEMAP_MAX_COLLECTION_PAGE = 1;
+
 export function paginationEntries({ itemCount, lastmod, pathFor, includeFirst = false }) {
   const pages = Math.min(
-    1_000,
+    SITEMAP_MAX_COLLECTION_PAGE,
     Math.ceil(Math.max(0, Number(itemCount) || 0) / PUBLIC_ENTITY_THRESHOLDS.collectionPageSize),
   );
   const first = includeFirst ? 1 : 2;

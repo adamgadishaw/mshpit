@@ -1536,6 +1536,13 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         kind: "directory",
         directoryKind: raw.kind,
         page,
+        // Page 1 is the collection's canonical entry point. Every later slice is
+        // the same boilerplate title and description over a different window of
+        // rows, so indexing them created 1,640 near-duplicate pages that beat the
+        // real content to the site's sitelinks. noindex,follow keeps the crawler
+        // walking the list through to each leaf entity while removing the slices
+        // themselves from the index. The renderer turns this into the robots tag.
+        indexable: page <= 1,
         hasNext: raw.hasNext === true,
         previousPath: page > 1 ? collectionPath(page - 1) : null,
         nextPath: raw.hasNext === true ? collectionPath(page + 1) : null,
