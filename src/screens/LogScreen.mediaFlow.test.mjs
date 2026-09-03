@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const source = await readFile(new URL("./LogScreen.jsx", import.meta.url), "utf8");
+// Normalize line endings before matching. Several assertions below embed a
+// literal newline escape, and git checks this file out with CRLF on Windows and
+// in CI. Without this the suite passes on a working copy that happens to hold LF
+// at that spot and fails on any clean checkout, including the deploy build.
+const source = (await readFile(new URL("./LogScreen.jsx", import.meta.url), "utf8"))
+  .replace(/\r\n/gu, "\n");
 const includes = (text, needle) => assert.ok(text.includes(needle), `Expected source to include: ${needle}`);
 const excludes = (text, needle) => assert.ok(!text.includes(needle), `Expected source not to include: ${needle}`);
 
