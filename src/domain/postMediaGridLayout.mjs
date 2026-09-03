@@ -84,3 +84,19 @@ export function postMediaGridLayout({ viewportWidth, viewportHeight, count = 0, 
     containSingle: true,
   };
 }
+
+// A video poster is a preview of playable content, not a collage crop. Both
+// players render clips with contentFit="contain" (ClipsScreen, PhotoViewer), so
+// a cover-cropped poster promises a framing the player will not deliver.
+//
+// Phone tiles are close to square, so cover barely crops and the existing look
+// is kept. Desktop tiles are much wider: covering a 9:16 clip into a 16/9 tile
+// scales it to roughly 2.4x the tile height and shows only a middle sliver.
+// That is the reported "extremely zoomed in on computer, perfect on mobile".
+//
+// `explicit` always wins so a caller that has already decided (the full-screen
+// viewer, the single-attachment desktop layout) is never second-guessed.
+export function videoPosterContain({ viewportWidth, explicit = null } = {}) {
+  if (typeof explicit === "boolean") return explicit;
+  return (positiveNumber(viewportWidth) || 0) >= DESKTOP_MEDIA_BREAKPOINT;
+}

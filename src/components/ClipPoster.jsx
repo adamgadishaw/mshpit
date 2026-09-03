@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { Image } from "expo-image";
 import { clipPosterPhase, durablePosterEventOwnsInstance, durablePosterFailurePlan } from "../domain/clipPoster.mjs";
 import { posterGenerationEnabled } from "../domain/posterVisibility.mjs";
+import { videoPosterContain } from "../domain/postMediaGridLayout.mjs";
 import { generateVideoPosterAsset, releaseVideoPosterAsset } from "../lib/videoPoster";
 import { scheduleVideoPosterGeneration } from "../lib/videoPosterScheduler.mjs";
 import { sharedVideoPosterRetryPolicy } from "../lib/videoPosterRetryPolicy.mjs";
@@ -23,7 +24,9 @@ export default function ClipPoster({
   style,
   enabled = true,
   viewable = null,
-  contain = false,
+  // null means "decide from the viewport": cover on phone tiles, contain on the
+  // much wider desktop tiles. A boolean from the caller always wins.
+  contain = null,
   compact = false,
   showPlayBadge = true,
   priority = "normal",
@@ -31,6 +34,7 @@ export default function ClipPoster({
   accessibilityLabel = "Video clip preview",
   accessible = true,
 }) {
+  const { width: viewportWidth } = useWindowDimensions();
   const { targetRef, autoViewable, onLayout } = usePosterViewability(viewable);
   const generationEnabled = posterGenerationEnabled({
     enabled: !!(enabled && uri),
@@ -144,7 +148,7 @@ export default function ClipPoster({
     error: thumbnailError,
     status: enabled ? "loading" : "idle",
   });
-  const fit = contain ? "contain" : "cover";
+  const fit = videoPosterContain({ viewportWidth, explicit: contain }) ? "contain" : "cover";
   const showDurablePoster = useDurablePoster && !durablePosterState.retrying;
 
   const handleDurablePosterDisplay = (expectedRetryVersion) => {

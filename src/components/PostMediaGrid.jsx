@@ -26,7 +26,10 @@ function Tile({ item, index, onOpen, openerId, style, more = 0, contain = false,
         mediaKind={mediaKind}
         viewable={viewable}
         style={StyleSheet.absoluteFill}
-        contain={contain}
+        // Photos keep the collage crop. A video poster forwards `null` instead
+        // of a hard `false` so ClipPoster can letterbox it on wide desktop
+        // tiles, where covering a portrait clip hides most of the frame.
+        contain={video && contain !== true ? null : contain}
         previewWidth={previewWidth}
         priority={index === 0 && viewable === true ? "high" : "normal"}
         loading={viewable === true ? "eager" : "lazy"}

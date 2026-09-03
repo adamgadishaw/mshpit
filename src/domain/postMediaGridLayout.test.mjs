@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { postMediaGridLayout, postMediaPreviewWidth } from "./postMediaGridLayout.mjs";
+import { postMediaGridLayout, postMediaPreviewWidth, videoPosterContain } from "./postMediaGridLayout.mjs";
 
 const postMediaGrid = readFileSync(new URL("../components/PostMediaGrid.jsx", import.meta.url), "utf8");
 const smartImage = readFileSync(new URL("../components/SmartImage.jsx", import.meta.url), "utf8");
@@ -106,4 +106,42 @@ test("post media semantics describe the action only when the tile is interactive
   assert.match(postMediaGrid, /if \(!interactive\)[\s\S]*accessibilityRole="image"/);
   assert.match(postMediaGrid, /accessibilityHint=\{`\$\{video \? "Opens the video player\." : "Opens the full-size photo\."\}/);
   assert.doesNotMatch(postMediaGrid, /Double tap/);
+});
+
+test("a video poster letterboxes on wide tiles and keeps the phone collage crop", () => {
+  // The reported bug: a portrait clip covering a wide desktop tile is scaled to
+  // roughly 2.4x the tile height, so only a middle sliver is visible.
+  assert.equal(videoPosterContain({ viewportWidth: 1440 }), true);
+  assert.equal(videoPosterContain({ viewportWidth: 768 }), true, "the desktop breakpoint is inclusive");
+  assert.equal(videoPosterContain({ viewportWidth: 390 }), false, "phone tiles stay as they are today");
+  assert.equal(videoPosterContain({ viewportWidth: 767 }), false);
+});
+
+test("an explicit caller decision always wins over the viewport default", () => {
+  // PhotoViewer and ClipsScreen already know they want contain; the single
+  // attachment desktop layout already computed containSingle. Neither may be
+  // second-guessed by the width.
+  assert.equal(videoPosterContain({ viewportWidth: 390, explicit: true }), true);
+  assert.equal(videoPosterContain({ viewportWidth: 1440, explicit: false }), false);
+  // Only a real boolean counts as a decision; null/undefined mean "auto".
+  assert.equal(videoPosterContain({ viewportWidth: 1440, explicit: null }), true);
+  assert.equal(videoPosterContain({ viewportWidth: 1440 }), true);
+});
+
+test("a missing or malformed viewport width never claims desktop", () => {
+  for (const viewportWidth of [undefined, null, 0, -1, Number.NaN, "abc", {}]) {
+    assert.equal(videoPosterContain({ viewportWidth }), false);
+  }
+});
+
+test("the grid forwards video posters as auto rather than a hard cover", () => {
+  // A plain contain={contain} here would pin every collage video to cover and
+  // silently reintroduce the crop.
+  assert.match(postMediaGrid, /contain=\{video && contain !== true \? null : contain\}/);
+});
+
+test("ClipPoster resolves its own fit from the shared helper", () => {
+  const clipPoster = readFileSync(new URL("../components/ClipPoster.jsx", import.meta.url), "utf8");
+  assert.match(clipPoster, /videoPosterContain\(\{ viewportWidth, explicit: contain \}\)/);
+  assert.match(clipPoster, /contain = null/, "the default must be auto, not cover");
 });
