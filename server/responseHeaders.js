@@ -3,6 +3,8 @@
 // route code access to security headers, cookies, or arbitrary response state.
 const ALLOWED_API_RESPONSE_HEADERS = new Map([
   ["cache-control", "Cache-Control"],
+  ["link", "Link"],
+  ["x-pit-results-truncated", "X-Pit-Results-Truncated"],
 ]);
 
 export function createApiResponseHeaders(initial = {}) {
@@ -17,6 +19,8 @@ export function createApiResponseHeaderSetter(target) {
     const canonical = ALLOWED_API_RESPONSE_HEADERS.get(String(name || "").trim().toLowerCase());
     const text = String(value ?? "").trim();
     if (!canonical || !text || text.length > 512 || /[\r\n]/.test(text)) return false;
+    if (canonical === "X-Pit-Results-Truncated" && !/^(?:true|false)$/.test(text)) return false;
+    if (canonical === "Link" && !/^<\/api\/[A-Za-z0-9_/?=&.%+-]+>; rel="next"$/.test(text)) return false;
     target[canonical] = text;
     return true;
   };

@@ -180,6 +180,7 @@ import { canonicalVenueKey, venueLookupKeys } from "../src/domain/venueIdentity.
 import { publicVenueFanPhotos } from "./venueGallery.js";
 import { publicVenuePhotoPool } from "./venuePhotoCatalog.js";
 import { attachViewerLikes } from "./postViewerLikes.js";
+import { attachPostMediaPageProjection, preloadedPostMedia } from "./postMediaPageProjection.js";
 import { accountIsPublic, activeAccountSql, PROFILE_AUDIENCES, profileAudienceAllows } from "./accountVisibility.js";
 import { visibleTourDateRows } from "./tourDateVisibility.js";
 import {
@@ -215,6 +216,7 @@ import {
 } from "./ownerApprovals.js";
 import { ownerApprovalRoutes } from "./features/ownerApprovals/ownerApprovalRoutes.js";
 import { clientErrorRoutes } from "./features/clientErrors/clientErrorRoutes.js";
+import { capacityHandshakeRoutes } from "./features/capacity/capacityHandshakeRoutes.js";
 import { createAlertDrainScheduler } from "./alertDrainScheduler.js";
 
 export { ApiError } from "./errors.js";
@@ -643,9 +645,17 @@ const TOUR_DATE_RANGE_DEFAULT_DAYS = 90;
 const TOUR_DATE_RANGE_MAX_DAYS = 90;
 const TOUR_DATE_RANGE_DEFAULT_LIMIT = 250;
 const TOUR_DATE_RANGE_MAX_LIMIT = 500;
+// Pre-range clients still call this route without query parameters. Keep their
+// response shape intact, but never make a phone download and parse the former
+// 5,000-row (about 4 MB in production) catalogue snapshot. Current clients use
+// the explicit range/cursor contract below and can page beyond this
+// compatibility window deliberately.
+const TOUR_DATE_LEGACY_MAX_LIMIT = 500;
 const TOUR_DATE_RANGE_SCAN_BATCH = 500;
 const TOUR_DATE_RANGE_MAX_RAW_SCAN = 5000;
 const TOUR_DATE_RANGE_QUERY_KEYS = Object.freeze(["days", "limit", "after", "city", "country"]);
+const TOUR_DATE_ALL_UPCOMING_SCOPE = "all-upcoming";
+const TOUR_DATE_ALL_UPCOMING_QUERY_KEYS = new Set(["scope", "limit", "after"]);
 const SPECIAL_EVENT_KINDS = new Set(["festival", "fair", "rodeo", "multi_day"]);
 
 function encodeTourDateCursor(row) {
@@ -665,6 +675,40 @@ function decodeTourDateCursor(value) {
   } catch {
     throw new ApiError(400, "That concert page link is invalid. Refresh and try again.", "VALIDATION_FAILED");
   }
+}
+
+function tourDateAllUpcomingRequest(ctx) {
+  const query = ctx.query || {};
+  if (!Object.prototype.hasOwnProperty.call(query, "scope")) return null;
+  if (query.scope !== TOUR_DATE_ALL_UPCOMING_SCOPE
+    || Object.keys(query).some((key) => !TOUR_DATE_ALL_UPCOMING_QUERY_KEYS.has(key))) {
+    throw new ApiError(400, "That concert catalogue page is invalid. Refresh and try again.", "VALIDATION_FAILED");
+  }
+  const requestedLimit = query.limit == null || query.limit === ""
+    ? TOUR_DATE_LEGACY_MAX_LIMIT : Number(query.limit);
+  if (!Number.isSafeInteger(requestedLimit) || requestedLimit <= 0) {
+    throw new ApiError(400, "Choose a valid number of concerts to load.", "VALIDATION_FAILED");
+  }
+  return {
+    limit: Math.min(requestedLimit, TOUR_DATE_RANGE_MAX_LIMIT),
+    through: null,
+    city: null,
+    countryCode: null,
+    country: null,
+    after: decodeTourDateCursor(query.after),
+  };
+}
+
+function setAllUpcomingTourDateHeaders(ctx, nextCursor, limit) {
+  const truncated = !!nextCursor;
+  ctx.setHeader?.("X-Pit-Results-Truncated", truncated ? "true" : "false");
+  if (!truncated) return;
+  const query = new URLSearchParams({
+    scope: TOUR_DATE_ALL_UPCOMING_SCOPE,
+    limit: String(limit),
+    after: nextCursor,
+  });
+  ctx.setHeader?.("Link", `</api/tourdates?${query.toString()}>; rel="next"`);
 }
 
 function tourDateRangeRequest(ctx, at) {
@@ -2495,10 +2539,13 @@ function mutedIdSet(userId) {
 function postJson(p, viewerId) {
   const artistPublicSlug = publicArtistSlugForPost(p);
   const online = projectedOnlineReviewFields(p);
-  const stableMedia = postMediaState(db, p.id, { ownerId: viewerId || null });
+  const preloadedMedia = preloadedPostMedia(p);
+  const stableMedia = preloadedMedia?.stable
+    || postMediaState(db, p.id, { ownerId: viewerId || null });
   const storedPhotos = parseJsonArray(p.photos);
   const stableByUrl = new Map(stableMedia.assets.map((asset) => [asset.url, asset]));
-  const legacyDescriptors = legacyVideoPosterDescriptors(db, { postId: p.id, photos: storedPhotos });
+  const legacyDescriptors = preloadedMedia?.legacy
+    || legacyVideoPosterDescriptors(db, { postId: p.id, photos: storedPhotos });
   const legacyByUrl = new Map(legacyDescriptors.map((asset) => [asset.url, asset]));
   const photos = [];
   const seenPhotos = new Set();
@@ -2623,6 +2670,11 @@ function postJson(p, viewerId) {
     editedAt: p.updated_at || null,
     version: p.updated_at || p.created_at,
   };
+}
+
+function projectPostPage(posts, viewerId) {
+  return attachPostMediaPageProjection(db, posts, { ownerId: viewerId || null })
+    .map((post) => postJson(post, viewerId));
 }
 
 // Feed cards need only the latest two comments. Fetch them for the whole page in
@@ -3496,6 +3548,10 @@ async function searchYouTubeTrack(ctx, input) {
 
 // route table: "METHOD /path" -> handler(ctx) ; :params exposed as ctx.params
 export const routes = {
+  ...capacityHandshakeRoutes({
+    ApiError,
+    databasePath: DATABASE_PATH,
+  }),
   ...clientErrorRoutes({
     ApiError,
     onRecorded: scheduleClientCrashAlert,
@@ -3593,6 +3649,7 @@ export const routes = {
     clean,
     normName,
     projectPost: postJson,
+    projectPosts: projectPostPage,
     rateLimit: limit,
     resolveArtistName: (key) => artistStmts.byNorm.get(key)?.name || null,
   }),
@@ -5267,6 +5324,15 @@ export const routes = {
     // in the artist archive; letting expired provider rows consume this bounded
     // 5,000-row window would hide current worldwide dates as coverage grows.
     const timestamp = now();
+    const allUpcoming = tourDateAllUpcomingRequest(ctx);
+    if (allUpcoming) {
+      const result = tourDateRangePage(ctx.user, allUpcoming, timestamp);
+      setAllUpcomingTourDateHeaders(ctx, result.nextCursor, allUpcoming.limit);
+      return {
+        tourDates: result.rows.map(tourDateJson),
+        nextCursor: result.nextCursor,
+      };
+    }
     const range = tourDateRangeRequest(ctx, timestamp);
     if (range) {
       const result = tourDateRangePage(ctx.user, range, timestamp);
@@ -5281,17 +5347,17 @@ export const routes = {
         },
       };
     }
-    const rows = visibleTourDateRows(ctx.user, {
-      today: liveEventQueryFloorDate(timestamp),
-      at: timestamp,
-      limit: 5000,
-    }).filter((row) => isCurrentOrUpcomingLiveEvent({
-      date: row.date,
-      eventEndDate: row.event_end_date,
-      eventTimezone: row.event_timezone,
-    }, timestamp));
+    const result = tourDateRangePage(ctx.user, {
+      limit: TOUR_DATE_LEGACY_MAX_LIMIT,
+      through: null,
+      city: null,
+      countryCode: null,
+      country: null,
+      after: null,
+    }, timestamp);
+    setAllUpcomingTourDateHeaders(ctx, result.nextCursor, TOUR_DATE_LEGACY_MAX_LIMIT);
     return {
-      tourDates: rows.map(tourDateJson),
+      tourDates: result.rows.map(tourDateJson),
     };
   },
 
@@ -5377,7 +5443,7 @@ export const routes = {
       withTaggedPeople(withCommentPreviews(rows, viewer), viewer),
       viewer,
     ), viewer);
-    return { posts: projectedRows.map((p) => postJson(p, viewer)), nextCursor };
+    return { posts: projectPostPage(projectedRows, viewer), nextCursor };
   },
 
   // Global-first For You feed. A bounded worldwide candidate pool is scored for
@@ -5403,9 +5469,9 @@ export const routes = {
       withTaggedPeople(withCommentPreviews(visibleRecommendedRows, ctx.user?.id), ctx.user?.id),
       ctx.user?.id,
     ), ctx.user?.id);
-    const projected = projectedRows.map((row) => ({
-      ...postJson(row, ctx.user?.id),
-      recommendation: result.recommendations.get(row.id),
+    const projected = projectPostPage(projectedRows, ctx.user?.id).map((post) => ({
+      ...post,
+      recommendation: result.recommendations.get(post.id),
     }));
     return { posts: projected, nextCursor: result.nextCursor, algorithm: result.algorithm };
   },
@@ -5551,11 +5617,11 @@ export const routes = {
       // DB lookups per row even though none can ever enter the reel.
       const plausible = found.filter((row) => row.has_stable_video
         || parseJsonArray(row.photos).some((uri) => isLegacyVideoUrl(uri)));
-      const projectedCandidates = attachPostImpressionStats(db, attachViewerLikes(
+      const projectedCandidates = attachPostMediaPageProjection(db, attachPostImpressionStats(db, attachViewerLikes(
         db,
         withTaggedPeople(withCommentPreviews(plausible, viewer), viewer),
         viewer,
-      ), viewer);
+      ), viewer), { ownerId: viewer || null });
       for (const p of projectedCandidates) {
         const projected = postJson(p, viewer); // photos already parsed here
         const descriptorClips = new Set((projected.media || [])
@@ -5603,12 +5669,11 @@ export const routes = {
       ORDER BY p.created_at DESC, p.id DESC LIMIT ?`).all(...args);
     const { rows, nextCursor } = finishPage(found, pageLimit);
     return {
-      posts: attachPostImpressionStats(db, attachViewerLikes(
+      posts: projectPostPage(attachPostImpressionStats(db, attachViewerLikes(
         db,
         withTaggedPeople(withCommentPreviews(rows, ctx.user?.id), ctx.user?.id),
         ctx.user?.id,
-      ), ctx.user?.id)
-        .map((p) => postJson(p, ctx.user?.id)),
+      ), ctx.user?.id), ctx.user?.id),
       nextCursor,
     };
   },

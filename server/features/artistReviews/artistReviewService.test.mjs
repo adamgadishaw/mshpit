@@ -61,3 +61,37 @@ test("service attaches viewer likes once to the ordered review page before canon
     { id: "review-b", liked: false },
   ]);
 });
+
+test("service can project the artist review page as one batch", () => {
+  const rows = [
+    { id: "review-a", review: "First", photos_public: 1 },
+    { id: "review-b", review: "Second", photos_public: 1 },
+  ];
+  const pageCalls = [];
+  const service = createArtistReviewService({
+    repository: { findTopReviews: () => rows },
+    attachViewerLikes: (page) => page,
+    projectPost() {
+      throw new Error("the per-row fallback must not run when a page projector is supplied");
+    },
+    projectPosts(page, viewerId) {
+      pageCalls.push({ page, viewerId });
+      return page.map((row) => ({
+        id: row.id,
+        review: row.review,
+        photosPublic: true,
+        photos: [],
+        media: [],
+        mediaAssetIds: [],
+      }));
+    },
+  });
+
+  assert.deepEqual(service.readTopReviews({ artistKey: "alpha", viewerId: "viewer" }).map((row) => row.id), [
+    "review-a",
+    "review-b",
+  ]);
+  assert.equal(pageCalls.length, 1);
+  assert.equal(pageCalls[0].page, rows);
+  assert.equal(pageCalls[0].viewerId, "viewer");
+});

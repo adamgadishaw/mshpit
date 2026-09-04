@@ -240,7 +240,7 @@ export default function PostScreen({ log, onClose, onOpenProfile, onOpenArtist, 
         accessibilityLabel="Refresh post and comments"
       >
       <ScrollView ref={scrollRef} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-        <TicketStub log={activeLog} showComments={false} onOpen={isOnlineReview ? undefined : () => onOpenShow?.(activeLog)} onOpenShow={isOnlineReview ? undefined : onOpenShow} onOpenProfile={onOpenProfile} onOpenArtist={onOpenArtist} onOpenArtistArchive={isOnlineReview ? undefined : onOpenArtistArchive} onOpenVenue={isOnlineReview ? undefined : onOpenVenue} onReport={onReport} onEdit={onEdit} onDelete={removePost} onOpenPhotos={onOpenPhotos} onPlay={onPlay} onRemoveMyPostTag={onRemoveMyPostTag} onSelfTagRemoved={reconcileSelfTagRemoval} />
+        <TicketStub log={activeLog} compactContent={false} showComments={false} onOpen={isOnlineReview ? undefined : () => onOpenShow?.(activeLog)} onOpenShow={isOnlineReview ? undefined : onOpenShow} onOpenProfile={onOpenProfile} onOpenArtist={onOpenArtist} onOpenArtistArchive={isOnlineReview ? undefined : onOpenArtistArchive} onOpenVenue={isOnlineReview ? undefined : onOpenVenue} onReport={onReport} onEdit={onEdit} onDelete={removePost} onOpenPhotos={onOpenPhotos} onPlay={onPlay} onRemoveMyPostTag={onRemoveMyPostTag} onSelfTagRemoved={reconcileSelfTagRemoval} />
 
         <Text style={styles.sectionLabel}>
           {commentsUsable ? `${flat.length} COMMENT${flat.length === 1 ? "" : "S"}` : "COMMENTS"}

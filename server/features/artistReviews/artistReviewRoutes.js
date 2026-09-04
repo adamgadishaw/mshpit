@@ -4,7 +4,16 @@ import { createArtistReviewService } from "./artistReviewService.js";
 
 const TEN_MINUTES = 10 * 60 * 1000;
 
-export function artistReviewRoutes({ database, ApiError, clean, normName, projectPost, rateLimit, resolveArtistName }) {
+export function artistReviewRoutes({
+  database,
+  ApiError,
+  clean,
+  normName,
+  projectPost,
+  projectPosts = null,
+  rateLimit,
+  resolveArtistName,
+}) {
   if (typeof ApiError !== "function" || typeof clean !== "function" || typeof normName !== "function"
     || typeof rateLimit !== "function" || typeof resolveArtistName !== "function") {
     throw new TypeError("Artist review routes require the API boundary dependencies");
@@ -13,6 +22,7 @@ export function artistReviewRoutes({ database, ApiError, clean, normName, projec
   const service = createArtistReviewService({
     repository,
     projectPost,
+    projectPosts,
     attachViewerLikes: (rows, viewerId) => attachViewerLikes(database, rows, viewerId),
   });
 

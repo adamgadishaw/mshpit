@@ -20,6 +20,7 @@ test("venue page sections keep one compact overview and explicit full sections",
 
   const overview = venuePageSectionModel("overview");
   assert.equal(overview.condensed, true);
+  assert.equal(overview.showGuide, true);
   assert.equal(overview.showUpcoming, true);
   assert.equal(overview.showReviews, true);
   assert.equal(overview.showHistory, false);
@@ -27,6 +28,7 @@ test("venue page sections keep one compact overview and explicit full sections",
   const shows = venuePageSectionModel("shows");
   assert.equal(shows.condensed, false);
   assert.equal(shows.showUpcoming, true);
+  assert.equal(shows.showGuide, false);
   assert.equal(shows.showHistory, true);
   assert.equal(shows.showReviews, false);
 
@@ -59,11 +61,18 @@ test("venue photo previews open the matching item in the complete gallery", () =
 test("venue screen renders bounded previews instead of every show at once", () => {
   assert.doesNotThrow(() => parse(venueScreen, { sourceType: "module", plugins: ["jsx"] }));
   assert.match(venueScreen, /<VenuePageSectionNav active=\{activeSection\} onChange=\{setActiveSection\} \/>/);
+  assert.match(venueScreen, /sectionModel\.showGuide/);
+  assert.match(venueScreen, /<VenueVisitGuide/);
   assert.match(venueScreen, /venuePagePreview\(upcomingWindow\.rows, \{ condensed: sectionModel\.condensed, limit: 3 \}\)/);
   assert.match(venueScreen, /venuePagePreview\(reviewWindow\.rows, \{ condensed: sectionModel\.condensed, limit: 2 \}\)/);
   assert.match(venueScreen, /visibleUpcoming\.map\(\(event\) =>/);
   assert.doesNotMatch(venueScreen, /venue\.upcoming\.map\(\(event\) =>/);
+  assert.match(venueScreen, /venuePagePreview\(fullGridPhotos, \{ condensed: true, limit: 3 \}\)/);
   assert.match(venueScreen, /onOpenPhotos\?\.\(fullGridPhotos, index\)/);
+  assert.match(venueScreen, /See all \$\{fullGridPhotos\.length\} fan photos/);
+  assert.match(venueScreen, /reviewPhotoViewerItems\.slice\(0, 3\)/);
+  assert.match(venueScreen, /onOpenPhotos\?\.\(reviewPhotoViewerItems, index\)/);
+  assert.match(venueScreen, /renderText=\{\(\{ text, accessibilityLabel \}\) =>/);
   assert.match(venueScreen, /venuePhotoViewerIndex\(photos, photo, fallbackIndex\)/);
   assert.match(venueScreen, /sectionModel\.showHistory/);
   assert.match(venueScreen, /accessibilityRole="tab"/);

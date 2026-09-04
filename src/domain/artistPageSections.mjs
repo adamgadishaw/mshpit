@@ -55,3 +55,18 @@ export function artistPageSynopsis(value, { condensed = false, limit = ARTIST_OV
     truncated: true,
   };
 }
+
+const cleanFact = (value) => String(value ?? "").replace(/\s+/gu, " ").trim();
+
+export function artistPageHighlights({ upcomingCount = 0, hometown = null, country = null, formed = null, memorialMode = false } = {}) {
+  const highlights = [];
+  const count = Math.max(0, Math.trunc(Number(upcomingCount) || 0));
+  if (!memorialMode && count > 0) {
+    highlights.push(Object.freeze({ key: "upcoming", label: "Upcoming", value: `${count} ${count === 1 ? "show" : "shows"}`, icon: "calendar" }));
+  }
+  const location = cleanFact(hometown) || cleanFact(country);
+  if (location) highlights.push(Object.freeze({ key: "from", label: "From", value: location, icon: "pin" }));
+  const year = cleanFact(formed).match(/^(?:18|19|20)\d{2}$/u)?.[0] || "";
+  if (year) highlights.push(Object.freeze({ key: "started", label: "Started", value: year, icon: "clock" }));
+  return Object.freeze(highlights.slice(0, 3));
+}

@@ -1,12 +1,19 @@
 # Scaling Pit from Alpha to millions
 
-Last reconciled: **2026-07-26**.
+Last reconciled: **2026-09-04**.
 
 Pit's current single Node process, SQLite database, bounded polling, and
 in-process schedulers are reasonable for Alpha validation. They are not a
 million-user architecture. The goal is to preserve the current product and
 screen contracts while replacing stateful single-instance internals in measured
 stages.
+
+Production currently uses Render `1c-2g` ($25 Standard-equivalent: 1 CPU,
+2 GiB RAM) with one attached SQLite disk. The larger plan removes the former
+512 MiB memory pressure but does not make SQLite horizontally scalable. The API
+therefore remains one instance and one process, serializes heavy maintenance,
+and bounds compatibility reads: the old no-query tour-date route is capped at
+500 rows instead of returning the measured approximately 4 MB/5,000-row payload.
 
 ## Stage 0: finish authoritative Alpha behavior
 

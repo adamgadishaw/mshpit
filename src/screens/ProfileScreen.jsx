@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, View, Text, StyleSheet, ScrollView, Pressable } from "react-native";
 import { colors, mono, radius, roleColor, space } from "../theme";
 import { useStore } from "../store";
@@ -11,7 +11,7 @@ import { showDateMs } from "../lib/showTime";
 import Countdown from "../components/Countdown";
 import SmartImage from "../components/SmartImage";
 import ClipPoster from "../components/ClipPoster";
-import { formatDate } from "../domain/dates.mjs";
+import { formatDate, localCalendarIso } from "../domain/dates.mjs";
 import { profileMediaItems } from "../domain/profileMedia.mjs";
 import { mediaDisplayKind, mediaPosterUri } from "../domain/postMediaDisplay.mjs";
 import { accountTargetScope, scopedScreenValue } from "../domain/screenScope.mjs";
@@ -23,8 +23,11 @@ import useAppActive from "../lib/useAppActive";
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import useScopedRefresh from "../hooks/useScopedRefresh";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
+import ExpandableText from "../components/ExpandableText";
 
 const EMPTY_PROFILE_STATE = Object.freeze({ status: "loading", user: null, error: "" });
+const EMPTY_LIST = Object.freeze([]);
+const EMPTY_CALENDAR = Object.freeze({ upcoming: EMPTY_LIST, past: EMPTY_LIST });
 
 function Stat({ value, label, onPress }) {
   return (
@@ -35,13 +38,14 @@ function Stat({ value, label, onPress }) {
   );
 }
 
-function ProfileMediaTile({ item, index, onOpen }) {
+const ProfileMediaTile = memo(function ProfileMediaTile({ item, index, viewerItems, onOpenPhotos }) {
   const video = mediaDisplayKind(item) === "video";
   const authoredAlt = typeof item.altText === "string" ? item.altText.trim() : "";
+  const open = useCallback(() => onOpenPhotos?.(viewerItems, index, item.postId), [index, item.postId, onOpenPhotos, viewerItems]);
   return (
     <Pressable
       style={styles.galleryCell}
-      onPress={onOpen}
+      onPress={open}
       accessibilityRole="button"
       accessibilityLabel={authoredAlt || `Open profile ${video ? "video" : "photo"} ${index + 1}`}
       accessibilityHint={video ? "Opens the video player" : "Opens the full-size photo"}
@@ -53,7 +57,52 @@ function ProfileMediaTile({ item, index, onOpen }) {
       )}
     </Pressable>
   );
-}
+});
+
+const ProfileTicketRow = memo(function ProfileTicketRow({ log, actionsRef, capabilities }) {
+  const openShow = useCallback((...args) => actionsRef.current.onOpenShow?.(...args), [actionsRef]);
+  const openPost = useCallback((...args) => actionsRef.current.onOpenPost?.(...args), [actionsRef]);
+  const openProfile = useCallback((...args) => actionsRef.current.onOpenProfile?.(...args), [actionsRef]);
+  const openArtist = useCallback((...args) => actionsRef.current.onOpenArtist?.(...args), [actionsRef]);
+  const openArtistArchive = useCallback((...args) => actionsRef.current.onOpenArtistArchive?.(...args), [actionsRef]);
+  const openVenue = useCallback((...args) => actionsRef.current.onOpenVenue?.(...args), [actionsRef]);
+  const report = useCallback((...args) => actionsRef.current.onReport?.(...args), [actionsRef]);
+  const edit = useCallback((...args) => actionsRef.current.onEditPost?.(...args), [actionsRef]);
+  const openPhotos = useCallback((...args) => actionsRef.current.onOpenPhotos?.(...args), [actionsRef]);
+  const removeMyPostTag = useCallback((...args) => actionsRef.current.onRemoveMyPostTag?.(...args), [actionsRef]);
+  const deletePost = useCallback(async (postId) => {
+    const result = await actionsRef.current.deleteOwnPost?.(postId);
+    if (result?.ok) actionsRef.current.removeHistoryPost?.(postId);
+    return result;
+  }, [actionsRef]);
+  const selfTagRemoved = useCallback(({ id, version, userId: removedUserId }) => {
+    actionsRef.current.updateHistoryPost?.(id, (post) => ({
+      ...post,
+      taggedPeople: (Array.isArray(post.taggedPeople) ? post.taggedPeople : []).filter((person) => person?.id !== removedUserId),
+      ...(Number.isSafeInteger(version) ? { version, editedAt: version } : {}),
+    }));
+  }, [actionsRef]);
+
+  return (
+    <TicketStub
+      log={log}
+      onOpen={capabilities.openShow ? openShow : undefined}
+      onOpenShow={capabilities.openShow ? openShow : undefined}
+      onOpenPost={capabilities.openPost ? openPost : undefined}
+      onOpenProfile={capabilities.openProfile ? openProfile : undefined}
+      onOpenArtist={capabilities.openArtist ? openArtist : undefined}
+      onOpenArtistArchive={capabilities.openArtistArchive ? openArtistArchive : undefined}
+      onOpenVenue={capabilities.openVenue ? openVenue : undefined}
+      onReport={capabilities.report ? report : undefined}
+      onEdit={capabilities.edit ? edit : undefined}
+      onDelete={deletePost}
+      onRemoveMyPostTag={capabilities.removeMyPostTag ? removeMyPostTag : undefined}
+      onSelfTagRemoved={selfTagRemoved}
+      onOpenPhotos={capabilities.openPhotos ? openPhotos : undefined}
+      compactContent
+    />
+  );
+});
 
 // Public member profile: musical identity, live history, media, plans, and posts.
 export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenPost, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onManageProfile, onMessage, onReport, onEditPost, onOpenPhotos, onRemoveMyPostTag, onOpenFollowList, onOpenBadges }) {
@@ -62,6 +111,7 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenPost,
   const profileScope = accountTargetScope(session?.id, `profile:${userId || ""}`);
   const profileScopeRef = useRef(profileScope);
   profileScopeRef.current = profileScope;
+  const postActionsRef = useRef({});
   const [profileRevision, setProfileRevision] = useState(0);
   const [profileState, setProfileState] = useState(() => ({ scope: profileScope, value: EMPTY_PROFILE_STATE }));
   const profileView = scopedScreenValue(profileState, profileScope, EMPTY_PROFILE_STATE);
@@ -77,6 +127,66 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenPost,
   const user = profileView.status === "missing" || !mayRenderProfile
     ? null
     : session?.id === userId ? { ...cachedUser, ...session } : cachedUser;
+  const isSelf = !!user && session?.id === user.id;
+  const historyOwnsLogs = history.posts.length > 0 || history.status === "ready";
+  const cachedLogs = user && !historyOwnsLogs ? logsByUser(user.id) : EMPTY_LIST;
+  const logs = user ? (historyOwnsLogs ? history.posts : cachedLogs) : EMPTY_LIST;
+  const reviews = useMemo(() => selectConcertReviews(logs), [logs]);
+  const timeline = useMemo(() => selectProfileTimeline(logs), [logs]);
+  const going = user && isSelf ? goingFor(user.id) : EMPTY_LIST;
+  const calendarDay = localCalendarIso(Date.now());
+  const profileCalendar = useMemo(() => user ? memberCalendarModel({
+    today: new Date(),
+    going,
+    attendance: isSelf ? myAttendance : EMPTY_LIST,
+    posts: logs,
+  }) : EMPTY_CALENDAR, [calendarDay, going, isSelf, logs, myAttendance, user?.id]);
+  const planned = profileCalendar.upcoming;
+  const pastShows = profileCalendar.past;
+  const pastShowPreview = useMemo(() => pastShows.slice(0, 3), [pastShows]);
+  const gallery = useMemo(() => profileMediaItems(logs, { isSelf }), [isSelf, logs]);
+  const galleryPreview = useMemo(() => gallery.slice(0, 3), [gallery]);
+  const galleryViewerItems = useMemo(
+    () => gallery.map((item) => ({ ...item, by: user?.name, ownerId: user?.id })),
+    [gallery, user?.id, user?.name],
+  );
+  const canEditPosts = typeof onEditPost === "function";
+  const canOpenArtist = typeof onOpenArtist === "function";
+  const canOpenArtistArchive = typeof onOpenArtistArchive === "function";
+  const canOpenPhotos = typeof onOpenPhotos === "function";
+  const canOpenPost = typeof onOpenPost === "function";
+  const canOpenProfile = typeof onOpenProfile === "function";
+  const canOpenShow = typeof onOpenShow === "function";
+  const canOpenVenue = typeof onOpenVenue === "function";
+  const canRemoveMyPostTag = typeof onRemoveMyPostTag === "function";
+  const canReportPosts = typeof onReport === "function";
+  const profilePostCapabilities = useMemo(() => ({
+    edit: canEditPosts,
+    openArtist: canOpenArtist,
+    openArtistArchive: canOpenArtistArchive,
+    openPhotos: canOpenPhotos,
+    openPost: canOpenPost,
+    openProfile: canOpenProfile,
+    openShow: canOpenShow,
+    openVenue: canOpenVenue,
+    removeMyPostTag: canRemoveMyPostTag,
+    report: canReportPosts,
+  }), [canEditPosts, canOpenArtist, canOpenArtistArchive, canOpenPhotos, canOpenPost, canOpenProfile, canOpenShow, canOpenVenue, canRemoveMyPostTag, canReportPosts]);
+  postActionsRef.current = {
+    deleteOwnPost,
+    onEditPost,
+    onOpenArtist,
+    onOpenArtistArchive,
+    onOpenPhotos,
+    onOpenPost,
+    onOpenProfile,
+    onOpenShow,
+    onOpenVenue,
+    onRemoveMyPostTag,
+    onReport,
+    removeHistoryPost: history.removePost,
+    updateHistoryPost: history.updatePost,
+  };
   useEffect(() => {
     if (!userId) return undefined;
     const controller = new AbortController();
@@ -183,30 +293,8 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenPost,
     );
   }
 
-  const cachedLogs = logsByUser(user.id);
-  const logs = history.posts.length || history.status === "ready" ? history.posts : cachedLogs;
-  const reviews = selectConcertReviews(logs);
-  const timeline = selectProfileTimeline(logs);
-  const isSelf = session?.id === user.id;
-  // Private plans and attendance are owner-only; another member's profile can
-  // derive calendar summaries only from posts that its public-history endpoint
-  // already allowed this viewer to read.
-  const profileCalendar = memberCalendarModel({
-    today: new Date(),
-    going: isSelf ? goingFor(user.id) : [],
-    attendance: isSelf ? myAttendance : [],
-    posts: logs,
-  });
-  const planned = profileCalendar.upcoming;
-  const pastShows = profileCalendar.past;
-  const pastShowPreview = pastShows.slice(0, 3);
   const historyLoading = history.status === "idle" || history.status === "loading" || history.status === "refreshing";
   const historyCount = (value) => `${value}${history.complete ? "" : "+"}`;
-  const deleteHistoryPost = async (postId) => {
-    const result = await deleteOwnPost(postId);
-    if (result?.ok) history.removePost(postId);
-    return result;
-  };
   // Shared attendance: shows both accounts intentionally logged, never a claim
   // that the people met or were physically near each other at the venue.
   const crossed = !isSelf && session ? sharedShows(user.id) : { shows: [], artists: [] };
@@ -215,8 +303,6 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenPost,
   // Media gallery, every public photo or clip this person attached, newest first.
   // On someone else's profile we only show ones they marked public; you always
   // see all of your own. Stable descriptors keep posters, edits, and alt text.
-  const gallery = profileMediaItems(logs, { isSelf });
-  const galleryViewerItems = gallery.map((item) => ({ ...item, by: user.name, ownerId: user.id }));
   const following = isFollowing(user.id);
   const roleLabel = user.role === "admin" ? "ADMIN" : user.role === "artist" ? "VERIFIED ARTIST" : "FAN";
   return (
@@ -273,7 +359,16 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenPost,
           </View>
           <Text style={[styles.handle, roleColor(user.role) && { color: roleColor(user.role), fontWeight: "800" }]}>@{user.handle}</Text>
           <View style={styles.roleBadge}><Text style={styles.roleTxt}>{roleLabel}</Text></View>
-          {!!user.bio && <Text style={styles.bio}>{user.bio}</Text>}
+          {!!user.bio && (
+            <ExpandableText
+              text={user.bio}
+              style={styles.bio}
+              containerStyle={styles.bioPreview}
+              toggleStyle={styles.bioToggle}
+              moreAccessibilityLabel={`Read the full ${user.name} biography`}
+              lessAccessibilityLabel={`Show a shorter ${user.name} biography`}
+            />
+          )}
 
           {isSelf ? (
             <Pressable
@@ -391,10 +486,21 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenPost,
           <>
             <Text style={styles.sectionLabel}>MEDIA · {historyCount(gallery.length)}</Text>
             <View style={styles.gallery}>
-              {gallery.map((g, i) => (
-                <ProfileMediaTile key={g.id || `${g.postId || "post"}:${g.uri}:${i}`} item={g} index={i} onOpen={() => onOpenPhotos?.(galleryViewerItems, i, g.postId)} />
+              {galleryPreview.map((g, i) => (
+                <ProfileMediaTile key={g.id || `${g.postId || "post"}:${g.uri}:${i}`} item={g} index={i} viewerItems={galleryViewerItems} onOpenPhotos={onOpenPhotos} />
               ))}
             </View>
+            {gallery.length > galleryPreview.length && onOpenPhotos ? (
+              <Pressable
+                style={styles.gallerySeeAll}
+                onPress={() => onOpenPhotos(galleryViewerItems, 0, gallery[0]?.postId || null)}
+                accessibilityRole="button"
+                accessibilityLabel={`See all ${gallery.length} media items from ${user.name}`}
+              >
+                <Text style={styles.gallerySeeAllText}>See all media</Text>
+                <Icon name="chevron-right" size={15} color={colors.amber} />
+              </Pressable>
+            ) : null}
           </>
         )}
 
@@ -456,26 +562,11 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenPost,
         )}
         <View style={styles.postsWrap}>
           {timeline.map((l) => (
-            <TicketStub
+            <ProfileTicketRow
               key={l.id}
               log={l}
-              onOpen={onOpenShow}
-              onOpenShow={onOpenShow}
-              onOpenPost={onOpenPost}
-              onOpenProfile={onOpenProfile}
-              onOpenArtist={onOpenArtist}
-              onOpenArtistArchive={onOpenArtistArchive}
-              onOpenVenue={onOpenVenue}
-              onReport={onReport}
-              onEdit={onEditPost}
-              onDelete={deleteHistoryPost}
-              onRemoveMyPostTag={onRemoveMyPostTag}
-              onSelfTagRemoved={({ id, version, userId: removedUserId }) => history.updatePost(id, (post) => ({
-                ...post,
-                taggedPeople: (Array.isArray(post.taggedPeople) ? post.taggedPeople : []).filter((person) => person?.id !== removedUserId),
-                ...(Number.isSafeInteger(version) ? { version, editedAt: version } : {}),
-              }))}
-              onOpenPhotos={onOpenPhotos}
+              actionsRef={postActionsRef}
+              capabilities={profilePostCapabilities}
             />
           ))}
         </View>
@@ -534,6 +625,8 @@ const styles = StyleSheet.create({
   roleBadge: { marginTop: 10, borderWidth: 1, borderColor: colors.amber, borderRadius: radius.pill, paddingHorizontal: 12, paddingVertical: 4 },
   roleTxt: { color: colors.amber, fontSize: 10, letterSpacing: 1.5, fontWeight: "800" },
   bio: { color: colors.textDim, fontSize: 14, lineHeight: 20, textAlign: "center", marginTop: 12 },
+  bioPreview: { width: "100%", alignItems: "center" },
+  bioToggle: { alignSelf: "center" },
   editBtn: { flexDirection: "row", alignItems: "center", gap: 7, borderWidth: 1, borderColor: colors.line, borderRadius: radius.pill, paddingHorizontal: 18, paddingVertical: 9, marginTop: 16 },
   editTxt: { color: colors.amber, fontSize: 14, fontWeight: "600" },
   actionRow: { flexDirection: "row", gap: 10, marginTop: 16 },
@@ -588,6 +681,8 @@ const styles = StyleSheet.create({
   empty: { color: colors.textDim, fontSize: 13, fontStyle: "italic", marginHorizontal: 16 },
   gallery: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginHorizontal: 16 },
   galleryCell: { width: "32%", aspectRatio: 1, backgroundColor: colors.surfaceAlt, borderRadius: 8, overflow: "hidden", borderWidth: 1, borderColor: colors.lineSoft },
+  gallerySeeAll: { minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, marginHorizontal: 16, marginTop: 6, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
+  gallerySeeAllText: { color: colors.amber, fontSize: 13, fontWeight: "800" },
   topRow: { flexDirection: "row", gap: 12, marginHorizontal: 16 },
   tb: { flex: 1, alignItems: "center", backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, padding: 14 },
   tbKind: { fontSize: 10, letterSpacing: 2, fontWeight: "800" },

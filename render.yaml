@@ -7,7 +7,10 @@ services:
   - type: web
     name: mshpit
     runtime: node
-    plan: starter                      # $7/mo; has persistent disk support
+    # The paid Standard-equivalent service is 1 CPU / 2 GiB. Use Render's
+    # current resource-shaped ID so the Blueprint cannot silently put a new
+    # production service back on the old 0.5 CPU / 512 MiB Starter plan.
+    plan: 1c-2g                        # $25/mo Standard-equivalent compute
     branch: master
     # The persistent disk is not mounted during builds. Give the quality gate a
     # throwaway, explicitly bootstrapped database; these command-scoped values do
@@ -25,7 +28,9 @@ services:
     # publishing without restarting the web/API service. /api/readiness remains
     # the strict manual release-verification endpoint.
     healthCheckPath: /api/health
-    autoDeploy: true
+    # Build only after the immutable GitHub Quality gate for master passes.
+    # This replaces the deprecated commit-immediate autoDeploy switch.
+    autoDeployTrigger: checksPass
     disk:
       name: pit-data
       mountPath: /data                 # PIT_DATA_DIR points here → pit.db survives deploys
@@ -243,14 +248,25 @@ services:
     name: pit-video-verifier
     runtime: docker
     # Video normalization is CPU/memory work, not ordinary request serving.
-    # Standard provides 1 CPU / 2 GiB so bounded iPhone HEVC clips do not starve
+    # 1c-2g provides 1 CPU / 2 GiB so bounded iPhone HEVC clips do not starve
     # or OOM the verifier's single isolated slot.
-    plan: standard
+    plan: 1c-2g
     region: oregon
     branch: master
     dockerfilePath: ./Dockerfile.video-verifier
     dockerContext: .
-    autoDeploy: true
+    autoDeployTrigger: checksPass
+    # Do not rebuild FFmpeg for an artist, venue, SEO, or other web-only edit.
+    # These are the complete runtime inputs copied by Dockerfile.video-verifier.
+    buildFilter:
+      paths:
+        - Dockerfile.video-verifier
+        - package.json
+        - render.yaml
+        - server/mediaDeliveryPolicy.js
+        - server/videoVerifierProtocol.js
+        - server/videoVerifierService.js
+        - src/domain/mediaUploadPolicy.mjs
     maxShutdownDelaySeconds: 60
     envVars:
       - key: PORT

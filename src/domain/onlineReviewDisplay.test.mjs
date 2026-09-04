@@ -29,7 +29,7 @@ test("online and festival cards make the artist the primary linked title without
     card.indexOf(") : (", card.indexOf("{isOnlineReview ? (", card.indexOf("<View style={styles.performancePerforation}"))),
   );
 
-  assert.match(card, /const performance = reviewCardPerformance\(log\)/);
+  assert.match(card, /const performance = useMemo\(\(\) => reviewCardPerformance\(log\), \[log\]\)/);
   assert.match(titleBlock, /performance\.primaryIsArtist[\s\S]*?<PublicTextLink href=\{artistHref\}/);
   assert.match(titleBlock, /performance\.secondary/);
   assert.doesNotMatch(onlineMetaBlock, /performanceArtist|onOpenArtist|artistHref/);
@@ -39,7 +39,8 @@ test("online review cards never present physical show, venue, attendance, or arc
   const card = source("../components/TicketStub.jsx");
   const postScreen = source("../screens/PostScreen.jsx");
   assert.match(card, /isOnlineReview \? "ONLINE CONCERT"/);
-  assert.match(card, /isOnlineReview \? \([\s\S]*?Watch on YouTube[\s\S]*?\) : \([\s\S]*?View this show/);
+  assert.match(card, /!isOnlineReview \? \([\s\S]*?<TicketActionRail/);
+  assert.match(card, /isOnlineReview && youtubeUrl \? \([\s\S]*?Watch on YouTube/);
   assert.match(card, /!isOnlineReview && \([\s\S]*?styles\.perfWrap/);
   assert.match(card, /!isOnlineReview && setlist\.length/);
   assert.match(card, /concertContext=\{!isOnlineReview\}/);
@@ -55,8 +56,10 @@ test("online cards and public links route to post detail instead of the physical
   const app = source("../../App.js");
   assert.match(card, /onOpenPost/);
   assert.match(card, /onNavigate=\{isOnlineReview \? openPostDetail/);
-  assert.match(feed, /onOpenPost=\{onComment\}/);
-  assert.match(profile, /onOpenPost=\{onOpenPost\}/);
+  assert.match(feed, /onOpenPost=\{capabilities\.comment \? comment : undefined\}/);
+  assert.match(feed, /onComment,/);
+  assert.match(profile, /onOpenPost=\{capabilities\.openPost \? openPost : undefined\}/);
+  assert.match(profile, /onOpenPost,/);
   assert.match(app, /isOnlineReview\(log\)\) return openPost\(log, analytics\)/);
   assert.match(app, /post\.kind === "status" \|\| isOnlineReview\(post\) \? \{ post \} : \{ openLog: post \}/);
   assert.match(app, /<ProfileScreen[^>]*onOpenPost=\{openPost\}/);

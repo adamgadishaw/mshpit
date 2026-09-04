@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   ARTIST_OVERVIEW_LIMITS,
   ARTIST_PAGE_SECTIONS,
+  artistPageHighlights,
   artistPagePreview,
   artistPageSectionModel,
   artistPageSynopsis,
@@ -59,4 +60,21 @@ test("artist overview synopsis is compact and full copy remains available on dem
     text: long.trim(),
     truncated: false,
   });
+});
+
+test("artist highlights stay factual, compact, and suppress future dates in memorial mode", () => {
+  assert.deepEqual(artistPageHighlights({
+    upcomingCount: 4,
+    hometown: "  Fayetteville, North Carolina ",
+    country: "United States",
+    formed: "2007",
+  }), [
+    { key: "upcoming", label: "Upcoming", value: "4 shows", icon: "calendar" },
+    { key: "from", label: "From", value: "Fayetteville, North Carolina", icon: "pin" },
+    { key: "started", label: "Started", value: "2007", icon: "clock" },
+  ]);
+  assert.deepEqual(artistPageHighlights({ upcomingCount: 1, country: "Canada", formed: "unknown", memorialMode: true }), [
+    { key: "from", label: "From", value: "Canada", icon: "pin" },
+  ]);
+  assert.deepEqual(artistPageHighlights(), []);
 });

@@ -88,13 +88,15 @@ test("the grid passes per-tile previews and contained media decodes the main sou
 
   assert.doesNotMatch(smartImage, /backdropUri|smart-image-background|blurRadius=\{28\}/,
     "contained media must not issue a second request for a blurred copy");
-  assert.equal((smartImage.match(/source=\{\{ uri: src \}\}/g) || []).length, 1,
+  assert.equal((smartImage.match(/source=\{source\}/g) || []).length, 1,
     "the full feed derivative must not be mounted as both backdrop and foreground");
+  assert.match(smartImage, /useMemo\(\(\) => \(\{ uri: src, cacheKey: src \}\), \[src\]\)/,
+    "counter updates reuse the exact Expo Image source object and cache identity");
   assert.match(smartImage, /styles\.containBackdrop/);
   assert.match(smartImage, /\{contain && <View style=\{\[StyleSheet\.absoluteFill, styles\.scrim\]\} \/>\}/,
     "non-http contained media keeps the stable background scrim without another image decode");
-  assert.match(smartImage, /priority=\{priority\}/);
-  assert.match(smartImage, /loading=\{loading\}/);
+  assert.match(smartImage, /priority=\{policy\.priority\}/);
+  assert.match(smartImage, /loading=\{policy\.loading\}/);
   assert.match(smartImage, /allowDownscaling/);
   assert.match(smartImage, /enforceEarlyResizing/);
   assert.match(postMediaGrid, /priority=\{index === 0 && viewable === true \? "high" : "normal"\}/);
@@ -106,6 +108,16 @@ test("post media semantics describe the action only when the tile is interactive
   assert.match(postMediaGrid, /if \(!interactive\)[\s\S]*accessibilityRole="image"/);
   assert.match(postMediaGrid, /accessibilityHint=\{`\$\{video \? "Opens the video player\." : "Opens the full-size photo\."\}/);
   assert.doesNotMatch(postMediaGrid, /Double tap/);
+});
+
+test("feed cards mount at most three media previews while retaining the full gallery", () => {
+  assert.match(postMediaGrid, /if \(items\.length >= 3\)/);
+  assert.match(postMediaGrid, /item=\{items\[2\]\}[\s\S]*more=\{Math\.max\(0, items\.length - 3\)\}[\s\S]*total=\{items\.length\}/);
+  assert.doesNotMatch(postMediaGrid, /item=\{items\[3\]\}/);
+  assert.doesNotMatch(postMediaGrid, /styles\.four/);
+  assert.match(postMediaGrid, />SEE ALL<\/Text>/);
+  assert.match(postMediaGrid, /onOpen\(index, openerRef\.current\)/,
+    "the third preview still opens the original full media array in PhotoViewer");
 });
 
 test("a video poster letterboxes on wide tiles and keeps the phone collage crop", () => {

@@ -8,8 +8,11 @@ import test, { after } from "node:test";
 const dataDir = mkdtempSync(join(tmpdir(), "pit-api-integrity-"));
 process.env.PIT_DATA_DIR = dataDir;
 
-const { db, q, publicUser, artistStmts, artistRow, publicArtist, pruneMissingArtists } = await import("./db.js");
+const {
+  db, DATABASE_PATH, q, publicUser, artistStmts, artistRow, publicArtist, pruneMissingArtists,
+} = await import("./db.js");
 const { ApiError, reserveVideoPublishingDemand, routes } = await import("./api.js");
+const { capacityDatabaseProof } = await import("./capacityHandshake.js");
 const { discoverySidebar } = await import("./discovery.js");
 const {
   YOUTUBE_MATCH_CACHE_VERSION,
@@ -2372,6 +2375,31 @@ test("artist search ignores punctuation and spacing for phone-friendly lookup", 
   assert.equal(result.artists[0]?.name, "J. Cole Search Test");
 });
 
+test("capacity binding proof is one-use, validates its header, and is hidden in production", () => {
+  const route = routes["GET /api/dev/capacity-handshake"];
+  const previousEnvironment = process.env.NODE_ENV;
+  const challenge = "a".repeat(64);
+  try {
+    process.env.NODE_ENV = "test";
+    assert.deepEqual(route({ capacityChallenge: challenge }), {
+      proof: capacityDatabaseProof(DATABASE_PATH, challenge),
+    });
+    assert.throws(
+      () => route({ capacityChallenge: "not-a-challenge" }),
+      (error) => error instanceof ApiError && error.status === 400 && error.code === "VALIDATION_FAILED",
+    );
+
+    process.env.NODE_ENV = "production";
+    assert.throws(
+      () => route({ capacityChallenge: challenge }),
+      (error) => error instanceof ApiError && error.status === 404 && error.code === "NOT_FOUND",
+    );
+  } finally {
+    if (previousEnvironment === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = previousEnvironment;
+  }
+});
+
 test("exact signed-in artist reads enqueue durable refresh demand without exposing or awaiting it", () => {
   resetRateLimitsForTests();
   const previousKey = process.env.TICKETMASTER_KEY;
@@ -3431,6 +3459,8 @@ test("tour-date range browsing is bounded, cursor-paged, canonical-location scop
     const route = routes["GET /api/tourdates"];
     assert.deepEqual(Object.keys(route({})), ["tourDates"],
       "the no-query response shape remains backward compatible");
+    assert.ok(route({}).tourDates.length <= 500,
+      "legacy clients never receive the former 5,000-row multi-megabyte snapshot");
 
     const first = route({ query: { days: "90", limit: "2", city: "Rangeville", country: "Canada" } });
     assert.deepEqual(first.tourDates.map((row) => row.id), [ids[0], ids[1]],
@@ -3521,6 +3551,76 @@ test("tour-date range pagination fills pages after the timezone safety overlap",
     try { db.exec("ROLLBACK"); }
     catch { /* test cleanup: the committed fixture has no active transaction */ }
     db.prepare("DELETE FROM tour_dates WHERE id LIKE 'range_scan_expired_%' OR id LIKE 'range_scan_future_%'").run();
+  }
+});
+
+test("legacy tour-date snapshots advertise and follow an all-upcoming continuation without duplicates", () => {
+  const ids = Array.from({ length: 502 }, (_, index) => `legacy_page_${String(index).padStart(3, "0")}`);
+  const date = new Date(Date.now() + 180 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const insert = db.prepare(`INSERT INTO tour_dates (
+    id,artist,venue,place,date,ticket_url,sold_out,source,updated_at,release_at,
+    venue_city,venue_region,venue_country_code,venue_country,music_qualified,provider_active,
+    event_kind,event_timezone
+  ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+  const page = (query) => {
+    const headers = {};
+    const body = routes["GET /api/tourdates"]({
+      ...(query ? { query } : {}),
+      setHeader(name, value) {
+        headers[name] = value;
+        return true;
+      },
+    });
+    return { body, headers };
+  };
+  const queryFromLink = (link) => {
+    const target = String(link || "").match(/^<([^>]+)>; rel="next"$/)?.[1];
+    assert.ok(target, "a truncated page carries a valid rel=next link");
+    return Object.fromEntries(new URL(target, "https://example.test").searchParams);
+  };
+
+  try {
+    db.exec("BEGIN");
+    ids.forEach((id) => insert.run(
+      id, `Legacy Artist ${id}`, "Legacy Paging Hall", "Toronto, Ontario, Canada", date, "", 0,
+      "ticketmaster", Date.now(), 0, "Toronto", "Ontario", "CA", "Canada",
+      1, 1, "concert", "America/Toronto",
+    ));
+    db.exec("COMMIT");
+
+    let current = page();
+    assert.deepEqual(Object.keys(current.body), ["tourDates"],
+      "the no-query compatibility body does not gain pagination metadata");
+    assert.equal(current.body.tourDates.length, 500);
+    assert.equal(current.headers["X-Pit-Results-Truncated"], "true");
+    assert.match(current.headers.Link, /scope=all-upcoming/);
+
+    const seen = new Set();
+    let pages = 0;
+    while (true) {
+      for (const row of current.body.tourDates) {
+        assert.equal(seen.has(row.id), false, `tour date ${row.id} was repeated across continuation pages`);
+        seen.add(row.id);
+      }
+      pages += 1;
+      assert.ok(pages < 50, "the all-upcoming continuation must make bounded forward progress");
+      if (current.headers["X-Pit-Results-Truncated"] === "false") {
+        assert.equal(current.headers.Link, undefined);
+        break;
+      }
+      const query = queryFromLink(current.headers.Link);
+      assert.equal(query.scope, "all-upcoming");
+      current = page(query);
+      assert.deepEqual(Object.keys(current.body), ["tourDates", "nextCursor"]);
+      assert.equal(current.body.nextCursor || null,
+        current.headers["X-Pit-Results-Truncated"] === "true" ? queryFromLink(current.headers.Link).after : null);
+    }
+    assert.equal(ids.every((id) => seen.has(id)), true,
+      "following rel=next recovers every date omitted from the legacy compatibility page");
+  } finally {
+    try { db.exec("ROLLBACK"); }
+    catch { /* test cleanup: the committed fixture has no active transaction */ }
+    db.prepare("DELETE FROM tour_dates WHERE id LIKE 'legacy_page_%'").run();
   }
 });
 

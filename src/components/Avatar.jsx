@@ -1,20 +1,46 @@
-import { useEffect, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { View, Text, Pressable, StyleSheet, PixelRatio } from "react-native";
 import { Image as ExpoImage } from "expo-image";
 import { colors, focusRing, mono } from "../theme";
 import { displaySrc, previewSrc } from "../lib/img";
+import { imageLoadPolicy, versionedImageCacheKey } from "../domain/imageLoadPolicy.mjs";
 
 // Shows the user's uploaded photo if set, else initials on their colour.
 // Tappable to open a profile.
 export default function Avatar({ user, size = 36, onPress, priority = "normal" }) {
   const profileName = user?.name || user?.username || "member";
   const previewWidth = Math.max(96, Math.min(384, Math.ceil((size * PixelRatio.get()) / 32) * 32));
-  const originalUri = user?.avatarUri ? displaySrc(user.avatarUri, previewWidth) : null;
-  const previewUri = user?.avatarUri ? previewSrc(user.avatarUri, previewWidth) : null;
-  const sources = [...new Set([previewUri, originalUri].filter(Boolean))];
-  const [sourceIndex, setSourceIndex] = useState(0);
-  useEffect(() => setSourceIndex(0), [user?.avatarUri, previewWidth]);
+  const rawAvatarUri = user?.avatarUri || null;
+  const sources = useMemo(() => {
+    if (!rawAvatarUri) return [];
+    return [...new Set([
+      previewSrc(rawAvatarUri, previewWidth),
+      displaySrc(rawAvatarUri, previewWidth),
+    ].filter(Boolean))];
+  }, [previewWidth, rawAvatarUri]);
+  const requestScope = `${String(rawAvatarUri || "")}|${previewWidth}`;
+  const activeScopeRef = useRef(requestScope);
+  activeScopeRef.current = requestScope;
+  const [loadState, setLoadState] = useState({ scope: requestScope, index: 0 });
+  const sourceIndex = loadState.scope === requestScope ? loadState.index : 0;
   const avatarUri = sources[sourceIndex] || null;
+  const cacheKey = versionedImageCacheKey({
+    namespace: "avatar",
+    id: user?.id || user?.handle,
+    version: user?.profileUpdatedAt,
+    variant: `${previewWidth}:${sourceIndex}`,
+    uri: avatarUri,
+  });
+  const source = useMemo(() => avatarUri ? { uri: avatarUri, cacheKey } : null, [avatarUri, cacheKey]);
+  const policy = imageLoadPolicy({ priority });
+  const fail = useCallback(() => {
+    setLoadState((current) => {
+      if (activeScopeRef.current !== requestScope) return current;
+      const currentIndex = current.scope === requestScope ? current.index : 0;
+      if (currentIndex >= sources.length) return current.scope === requestScope ? current : { scope: requestScope, index: sources.length };
+      return { scope: requestScope, index: currentIndex + 1 };
+    });
+  }, [requestScope, sources.length]);
   const fallback = (
     <View
       style={[
@@ -33,17 +59,18 @@ export default function Avatar({ user, size = 36, onPress, priority = "normal" }
       {!!avatarUri && (
         <ExpoImage
           accessible={false}
-          source={{ uri: avatarUri }}
+          source={source}
           style={StyleSheet.absoluteFill}
           contentFit="cover"
           cachePolicy="memory-disk"
-          priority={priority}
-          loading={priority === "high" ? "eager" : "lazy"}
+          priority={policy.priority}
+          loading={policy.loading}
+          autoplay={false}
           allowDownscaling
           enforceEarlyResizing
-          recyclingKey={`avatar:${user?.id || user?.handle || "member"}:${avatarUri}`}
+          recyclingKey={`avatar:${cacheKey}`}
           transition={80}
-          onError={() => setSourceIndex((current) => current + 1)}
+          onError={fail}
         />
       )}
     </View>

@@ -31,6 +31,32 @@ test("the production Render service gates deployment on deterministic checks in 
   for (const gate of ["test", "check:syntax", "check:architecture", "build:web"]) {
     assert.match(packageJson.scripts["check:deploy"], new RegExp(`npm run ${gate.replace(":", "\\:")}`));
   }
+
+  const servicePlans = [...source.matchAll(/^\s*plan:\s*(\S+)/gm)].map((match) => match[1]);
+  assert.deepEqual(servicePlans, ["1c-2g", "1c-2g"],
+    "web and verifier must codify the paid 1 CPU / 2 GiB plan instead of relying on dashboard drift");
+  assert.equal([...source.matchAll(/^\s*autoDeployTrigger:\s*checksPass\s*$/gm)].length, 2,
+    "both runtime services must wait for the master Quality check");
+  assert.doesNotMatch(source, /^\s*autoDeploy:\s*/m,
+    "the deprecated commit-immediate deploy switch must not return");
+});
+
+test("the expensive verifier rebuilds only when one of its complete runtime inputs changes", async () => {
+  const source = (await readFile(new URL("render.yaml", ROOT), "utf8")).replace(/\r\n/g, "\n");
+  const verifier = source.slice(source.indexOf("  - type: pserv\n    name: pit-video-verifier\n"));
+  for (const runtimeInput of [
+    "Dockerfile.video-verifier",
+    "package.json",
+    "render.yaml",
+    "server/mediaDeliveryPolicy.js",
+    "server/videoVerifierProtocol.js",
+    "server/videoVerifierService.js",
+    "src/domain/mediaUploadPolicy.mjs",
+  ]) {
+    assert.ok(verifier.split("\n").some((line) => line.trim() === `- ${runtimeInput}`),
+      `${runtimeInput} must trigger a verifier image build`);
+  }
+  assert.match(verifier, /^\s*buildFilter:\s*\n\s*paths:\s*$/m);
 });
 
 test("the production Render service verifies a persistent-disk snapshot before migrations", async () => {

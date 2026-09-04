@@ -1,6 +1,6 @@
 # Pit Alpha launch and deployment runbook
 
-Last reconciled: **2026-08-13**. Production is a single Node process that serves
+Last reconciled: **2026-09-04**. Production is a single Node process that serves
 the Expo web export and `/api/*` from one origin, with a persistent SQLite disk.
 This is the current Alpha deployment shape, not the millions-user target in
 `SCALING.md`.
@@ -25,13 +25,21 @@ NODE_ENV=production PORT=3000 npm run server
 ```
 
 The server runs additive SQLite migrations on boot, serves `dist/`, and exposes
-the same-origin API. A push to `master` auto-deploys on Render, so a brief restart
-is expected; failed gates must stop the push.
+the same-origin API. A push to `master` deploys only after the GitHub Quality
+check passes.
+
+Render's current `1c-2g` plan ID codifies the $25 Standard-equivalent web
+service: one CPU and 2 GiB RAM. The attached SQLite disk keeps production at
+one instance. Render cannot horizontally scale a disk-backed service, so do not
+add web workers or replicas that pretend this is distributed storage.
 
 The Blueprint intentionally declares only the production web service and its
 private video verifier. There is no standing staging deployment. Treat every
 `master` push as a direct production release: require the complete local/CI
 gate, a verified recovery point, and an explicit post-deploy health check.
+The verifier has an exact build filter for the Dockerfile and its copied runtime
+inputs, so ordinary artist, venue, SEO, and other web-only edits no longer
+rebuild FFmpeg.
 
 ## 2. Persistent storage and backups
 
@@ -46,8 +54,9 @@ be torn or stale.
 `npm run backup` implements this correctly. It takes a consistent snapshot with
 `VACUUM INTO` (no downtime; a consistent read lock, not an exclusive/write
 lock), then opens the snapshot as a separate database and runs
-`PRAGMA integrity_check` plus row counts against the source before calling it
-good. Retention defaults to 7, override with `BACKUP_KEEP`. Local CLI snapshots
+`PRAGMA integrity_check`, `PRAGMA foreign_key_check`, and row counts against
+the source before calling it good. Retention defaults to 7, override with
+`BACKUP_KEEP`. Local CLI snapshots
 land in the gitignored `backups/`; production snapshots default to
 `$PIT_DATA_DIR/backups` on the persistent disk.
 
@@ -65,6 +74,18 @@ Prove a restore rather than assuming one:
 ```bash
 npm run backup:verify -- backups/pit-YYYYMMDD-HHMMSS.db
 ```
+
+Recovery verification intentionally requires the current core schema
+(`schema_version`, accounts, posts, artists, tour dates, artist profiles, venue
+reviews, and app metadata), a valid Pit application identity (including the
+bounded legacy proof for older marked-zero snapshots), full SQLite page
+integrity, and zero foreign-key violations. This is fail-closed: an older valid
+Pit snapshot that predates one of those tables will not pass directly. Upgrade
+that snapshot only on an isolated clone with the matching historical code,
+apply the current additive migrations to the clone, create a new verified
+`VACUUM INTO` snapshot, and then use that new snapshot for production recovery.
+Never weaken the current verifier or set `PIT_ALLOW_EMPTY_DB_BOOTSTRAP` to make
+an old recovery artifact boot.
 
 For the full proof, copy a snapshot to an empty directory as `pit.db`, start the
 server with `PIT_DATA_DIR` pointed at it, and confirm `/api/health` reports
@@ -191,6 +212,17 @@ first. Restore the database from a snapshot (section 2), then roll back the code
 because the old code cannot read the changed schema.
 
 ## 6. Post-deploy Alpha smoke test
+
+First run the repeatable read-only gate:
+
+```bash
+npm run verify:production
+```
+
+It proves core and strict readiness, server time, artist search, discovery,
+bounded 30-day and legacy tour-date responses, private video publishing, robots,
+sitemaps, canonical metadata, and structured data. It never creates a member,
+post, or upload. A failure blocks release sign-off.
 
 Run this sequence after a schema/provider/social batch:
 

@@ -5,7 +5,7 @@ import SmartImage from "./SmartImage";
 import { mediaDisplayItems, mediaDisplayKind, mediaDisplayUri, mediaPosterUri } from "../domain/postMediaDisplay.mjs";
 import { postMediaGridLayout, postMediaPreviewWidth } from "../domain/postMediaGridLayout.mjs";
 
-function Tile({ item, index, onOpen, openerId, style, more = 0, contain = false, viewable = null, previewWidth }) {
+function Tile({ item, index, onOpen, openerId, style, more = 0, total = 0, contain = false, viewable = null, previewWidth }) {
   const openerRef = useRef(null);
   const uri = mediaDisplayUri(item);
   const mediaKind = mediaDisplayKind(item);
@@ -37,7 +37,8 @@ function Tile({ item, index, onOpen, openerId, style, more = 0, contain = false,
       />
       {!!more && (
         <View style={styles.moreScrim} pointerEvents="none">
-          <Text style={styles.moreText}>+{more}</Text>
+          <Text style={styles.moreLabel}>SEE ALL</Text>
+          <Text style={styles.moreText}>{total || index + more + 1}</Text>
         </View>
       )}
     </>
@@ -113,30 +114,17 @@ export default function PostMediaGrid({ media = [], onOpen, openerScope = null, 
     );
   }
 
-  if (items.length === 3) {
+  if (items.length >= 3) {
     return (
       <View style={[styles.grid, styles.three, styles.row, desktopGridStyle]}>
         <Tile item={items[0]} index={0} onOpen={onOpen} openerId={openerIdFor(0)} style={styles.hero} viewable={viewable} previewWidth={previewWidthFor(2 / 3)} />
         <View style={styles.stack}>
           <Tile item={items[1]} index={1} onOpen={onOpen} openerId={openerIdFor(1)} style={styles.flex} viewable={viewable} previewWidth={previewWidthFor(1 / 3)} />
-          <Tile item={items[2]} index={2} onOpen={onOpen} openerId={openerIdFor(2)} style={styles.flex} viewable={viewable} previewWidth={previewWidthFor(1 / 3)} />
+          <Tile item={items[2]} index={2} onOpen={onOpen} openerId={openerIdFor(2)} style={styles.flex} more={Math.max(0, items.length - 3)} total={items.length} viewable={viewable} previewWidth={previewWidthFor(1 / 3)} />
         </View>
       </View>
     );
   }
-
-  return (
-    <View style={[styles.grid, styles.four, desktopGridStyle]}>
-      <View style={styles.row}>
-        <Tile item={items[0]} index={0} onOpen={onOpen} openerId={openerIdFor(0)} style={styles.flex} viewable={viewable} previewWidth={previewWidthFor(1 / 2)} />
-        <Tile item={items[1]} index={1} onOpen={onOpen} openerId={openerIdFor(1)} style={styles.flex} viewable={viewable} previewWidth={previewWidthFor(1 / 2)} />
-      </View>
-      <View style={styles.row}>
-        <Tile item={items[2]} index={2} onOpen={onOpen} openerId={openerIdFor(2)} style={styles.flex} viewable={viewable} previewWidth={previewWidthFor(1 / 2)} />
-        <Tile item={items[3]} index={3} onOpen={onOpen} openerId={openerIdFor(3)} style={styles.flex} more={Math.max(0, items.length - 4)} viewable={viewable} previewWidth={previewWidthFor(1 / 2)} />
-      </View>
-    </View>
-  );
 }
 
 const styles = StyleSheet.create({
@@ -154,7 +142,6 @@ const styles = StyleSheet.create({
   one: { aspectRatio: 4 / 3 },
   two: { aspectRatio: 16 / 9 },
   three: { aspectRatio: 4 / 3 },
-  four: { aspectRatio: 4 / 3 },
   row: { flexDirection: "row", flex: 1, gap: 2 },
   stack: { flex: 1, gap: 2 },
   flex: { flex: 1 },
@@ -162,5 +149,6 @@ const styles = StyleSheet.create({
   fill: { ...StyleSheet.absoluteFillObject },
   tile: { minWidth: 0, minHeight: 0, overflow: "hidden", backgroundColor: colors.bgElev },
   moreScrim: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(5,7,12,0.62)" },
+  moreLabel: { color: "#fff", fontFamily: mono, fontSize: 10, fontWeight: "900", letterSpacing: 1.4 },
   moreText: { color: "#fff", fontFamily: mono, fontSize: 30, fontWeight: "900", textShadowColor: "rgba(0,0,0,0.45)", textShadowRadius: 8 },
 });

@@ -258,8 +258,8 @@
   ],
   "unexplainedEmptyCatchSignaturesByFile": {
     "App.js": {
-      "count": 8,
-      "fingerprint": "ae99386bb46507007763"
+      "count": 7,
+      "fingerprint": "16db71068a9761bf536c"
     },
     "server/api.js": {
       "count": 12,

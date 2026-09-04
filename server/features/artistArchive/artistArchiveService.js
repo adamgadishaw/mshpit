@@ -4,6 +4,7 @@ import {
   archiveShowKey,
   archiveTourIdentity,
   archiveTourKey,
+  canonicalArchiveTourIdentity,
   decodeArchiveReviewCursor,
   decodeArchiveShowKey,
   decodeArchiveTourKey,
@@ -59,7 +60,36 @@ function rowMatchesShow(row, decoded) {
 
 function rowMatchesTour(row, decoded) {
   return normalizeArchivePart(row.artist_key || row.artist) === normalizeArchivePart(decoded.artistIdentity)
-    && archiveTourIdentity(row).identity === decoded.tourIdentity;
+    && archiveTourIdentity(row).identity === canonicalArchiveTourIdentity(decoded.tourIdentity, row.artist);
+}
+
+function tourLabelQuality(value) {
+  const label = String(value || "").trim();
+  let score = /\btour\s*$/iu.test(label) ? 80 : 0;
+  if (/^The\b/u.test(label)) score += 20;
+  if (/[a-z]/u.test(label) && /[A-Z]/u.test(label)) score += 10;
+  if (/[-\u2010-\u2015]/u.test(label)) score += 5;
+  return score;
+}
+
+function tourDisplayVariant(value) {
+  return String(value || "").normalize("NFKC").replace(/\s+/gu, " ").trim();
+}
+
+function preferredTour(rows) {
+  const variants = new Map();
+  rows.forEach((row, index) => {
+    const candidate = archiveTourIdentity(row);
+    const variantKey = `${candidate.identity}\0${tourDisplayVariant(candidate.label)}`;
+    const vote = variants.get(variantKey) || { ...candidate, count: 0, firstIndex: index };
+    vote.count += 1;
+    variants.set(variantKey, vote);
+  });
+  return [...variants.values()].sort((a, b) => tourLabelQuality(b.label) - tourLabelQuality(a.label)
+    || b.count - a.count
+    || b.label.length - a.label.length
+    || a.firstIndex - b.firstIndex || a.identity.localeCompare(b.identity))[0]
+    || archiveTourIdentity(rows[0]);
 }
 
 function reviewProjection(row, media, projectReviewUser) {
@@ -156,15 +186,7 @@ function showSummary(rows, mediaByPost, reactionCounts, artistIdentity) {
   const confidenceRating = ((avgRating * ratingCount) + (prior * priorWeight)) / (ratingCount + priorWeight);
   const depth = Math.min(1, Math.log1p(ratingCount + likes * 0.2 + comments * 0.4) / Math.log(30));
   const mediaSignal = Math.min(1, Math.log1p(mediaCount + mediaReactions) / Math.log(16));
-  const tourVotes = new Map();
-  reviewerRows.forEach((row, index) => {
-    const candidate = archiveTourIdentity(row);
-    const vote = tourVotes.get(candidate.identity) || { ...candidate, count: 0, firstIndex: index };
-    vote.count += 1;
-    tourVotes.set(candidate.identity, vote);
-  });
-  const tour = [...tourVotes.values()].sort((a, b) => b.count - a.count || a.firstIndex - b.firstIndex || a.identity.localeCompare(b.identity))[0]
-    || archiveTourIdentity(first);
+  const tour = preferredTour(reviewerRows);
   const venueIdentity = first.venue_key || first.venue;
   return Object.freeze({
     key: archiveShowKey({ artistIdentity, venueIdentity, date: first.date }),
@@ -193,9 +215,22 @@ function tourSummary(tourKey, shows) {
   const covers = shows.map((show) => show.cover).filter(Boolean).sort((a, b) =>
     Number(b.kind === "image") - Number(a.kind === "image") || b.reactions - a.reactions || b.engagement - a.engagement);
   const dates = shows.map((show) => show.date).sort();
+  const labelVotes = new Map();
+  shows.forEach((show, index) => {
+    const label = tourDisplayVariant(show.tourName) || "Live archive";
+    const key = label;
+    const vote = labelVotes.get(key) || { label, count: 0, firstIndex: index };
+    vote.count += Math.max(1, number(show.ratingCount));
+    labelVotes.set(key, vote);
+  });
+  const name = [...labelVotes.values()].sort((a, b) => tourLabelQuality(b.label) - tourLabelQuality(a.label)
+    || b.count - a.count
+    || b.label.length - a.label.length
+    || a.firstIndex - b.firstIndex || a.label.localeCompare(b.label))[0]?.label
+    || "Live archive";
   return Object.freeze({
     key: tourKey,
-    name: shows[0]?.tourName || "Live archive",
+    name,
     showCount: shows.length,
     reviewCount: shows.reduce((sum, show) => sum + show.reviewCount, 0),
     ratingCount,

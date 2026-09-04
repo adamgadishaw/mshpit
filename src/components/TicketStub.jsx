@@ -8,6 +8,7 @@ import Avatar from "./Avatar";
 import RatingBars from "./RatingBars";
 import SpinStar from "./SpinStar";
 import CommentPreview from "./AfterpartyPreview";
+import ExpandableText from "./ExpandableText";
 import PostMediaGrid from "./PostMediaGrid";
 import SongAttachment from "./SongAttachment";
 import { useStore } from "../store";
@@ -126,18 +127,67 @@ function ViewTally({ count, palette = null }) {
   );
 }
 
+function TicketActionRail({ showHref, onOpenShow, compareHref, onCompare, artist, palette = null }) {
+  if (!showHref && !compareHref) return null;
+  const accent = palette?.accentColor || colors.amber;
+  const secondary = palette?.accentColor || colors.cool;
+  const textColor = palette?.textColor || colors.text;
+  return (
+    <View
+      style={[
+        styles.ticketActionRail,
+        palette && {
+          backgroundColor: palette.contentSurfaceColor,
+          borderColor: palette.accentColor + "72",
+        },
+      ]}
+      accessibilityLabel="Show links"
+    >
+      {showHref ? (
+        <PublicPressableLink
+          href={showHref}
+          onNavigate={onOpenShow}
+          style={({ pressed }) => [styles.ticketAction, pressed && styles.ticketActionPressed]}
+          accessibilityLabel={`View ${artist || "this"} show`}
+        >
+          <Icon name="ticket" size={15} color={accent} />
+          <Text style={[styles.ticketActionText, { color: textColor }]} numberOfLines={2}>View this show</Text>
+          <Icon name="chevron-right" size={13} color={accent} />
+        </PublicPressableLink>
+      ) : null}
+      {showHref && compareHref ? <View style={[styles.ticketActionDivider, palette && { backgroundColor: palette.accentColor + "52" }]} /> : null}
+      {compareHref ? (
+        <PublicPressableLink
+          href={compareHref}
+          onNavigate={onCompare}
+          style={({ pressed }) => [styles.ticketAction, pressed && styles.ticketActionPressed]}
+          accessibilityLabel={`Compare scores across ${artist} concerts`}
+        >
+          <Icon name="archive" size={15} color={secondary} />
+          <Text style={[styles.ticketActionText, { color: textColor }]} numberOfLines={2}>Compare {artist} shows</Text>
+          <Icon name="chevron-right" size={13} color={secondary} />
+        </PublicPressableLink>
+      ) : null}
+    </View>
+  );
+}
+
 // Review-forward feed card: the review is the centerpiece. Artist / venue / date
 // sit on a ticket-stub line below, the score reads at a glance, and the footer
 // opens the post's comments. Lounge is reserved for the exact show's shared
 // conversation so the two spaces never look like duplicate features.
-export default function TicketStub({ log, mediaViewable = null, onOpen, onOpenShow, onOpenPost, onNotInterested, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onReport, onEdit, onDelete, onOpenPhotos, onPlay, onRemoveMyPostTag, onSelfTagRemoved, showComments = true }) {
+export default function TicketStub({ log, mediaViewable = null, compactContent = false, onOpen, onOpenShow, onOpenPost, onNotInterested, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onReport, onEdit, onDelete, onOpenPhotos, onPlay, onRemoveMyPostTag, onSelfTagRemoved, showComments = true }) {
   const avatarPriority = mediaViewable === true ? "high" : "normal";
   const openPostDetail = () => (onOpenPost || onComment || onOpen)?.(log);
   const openComments = () => (onComment || onOpenPost || onOpen)?.(log);
   const { userById, likeInfo, toggleLike, commentsFor, session, userBadges, deleteOwnPost } = useStore();
-  const author = resolvePostAuthor({ userId: log.userId, cached: userById?.(log.userId), embedded: log.user });
+  const cachedAuthor = userById?.(log.userId);
+  const author = useMemo(
+    () => resolvePostAuthor({ userId: log.userId, cached: cachedAuthor, embedded: log.user }),
+    [cachedAuthor, log.user, log.userId],
+  );
   const authorHref = author?.handle ? profilePath(author.handle) : null;
-  const postContext = concertPostContext(log);
+  const postContext = useMemo(() => concertPostContext(log), [log]);
   const canonicalPostHref = postContext.showHref;
   const isOnlineReview = (log.experienceType || log.experience_type) === ONLINE_REVIEW_EXPERIENCE;
   const youtubeUrl = isOnlineReview
@@ -163,7 +213,7 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onOpenSh
   const [revealed, setRevealed] = useState(!log.inTourWindow);
   const [whyOpen, setWhyOpen] = useState(false);
   const reduceMotion = useReducedMotion();
-  const recommendation = recommendationDisclosure(log.recommendation);
+  const recommendation = useMemo(() => recommendationDisclosure(log.recommendation), [log.recommendation]);
   // Editing is the author's alone. Admins moderate (remove/mute/ban); they
   // never rewrite someone's review, so no admin bypass here.
   const canEdit = !!onEdit && !!session && session.id === log.userId && !log.attendanceTicket;
@@ -183,29 +233,32 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onOpenSh
     ]);
   };
   const isStaffViewer = session && (session.role === "admin" || session.role === "moderator");
-  const setlist = Array.isArray(log.setlist) ? log.setlist : [];
+  const setlist = useMemo(() => Array.isArray(log.setlist) ? log.setlist : [], [log.setlist]);
   const timeLabel = log.timeAgo || relativeTime(log.createdAt);
-  const taggedPeople = normalizeTaggedPeople(log.taggedPeople);
+  const taggedPeople = useMemo(() => normalizeTaggedPeople(log.taggedPeople), [log.taggedPeople]);
   const removeSelfTag = async () => {
     const result = await onRemoveMyPostTag?.(log.id);
     if (result?.ok === false) Alert.alert("Tag not removed", result.error?.message || "Refresh the post and try again.");
     else if (result?.ok) onSelfTagRemoved?.(result);
   };
-  const postMedia = mediaDisplayItems(log).map((item) => ({
+  const postMedia = useMemo(() => mediaDisplayItems(log).map((item) => ({
     ...item,
     by: log.user?.name,
     postId: log.id,
     ownerId: log.userId,
-  }));
-  const campaignPresentation = artistCampaignPresentation(log.campaign, postMedia);
+  })), [log]);
+  const campaignPresentation = useMemo(
+    () => artistCampaignPresentation(log.campaign, postMedia),
+    [log.campaign, postMedia],
+  );
   const campaignBackground = campaignPresentation?.background || null;
   const campaignBackgroundIndex = campaignBackground
     ? postMedia.findIndex((item) => (item.id || item.assetId) === (campaignBackground.id || campaignBackground.assetId))
     : -1;
-  const statusMedia = campaignBackground
+  const statusMedia = useMemo(() => campaignBackground
     ? postMedia.filter((_, index) => index !== campaignBackgroundIndex)
-    : postMedia;
-  const attendanceTicketCard = log.attendanceTicket?.kind === "attendance-ticket"
+    : postMedia, [campaignBackground, campaignBackgroundIndex, postMedia]);
+  const attendanceTicketCard = useMemo(() => log.attendanceTicket?.kind === "attendance-ticket"
     ? log.attendanceTicket
     : log.attendanceTicket
       ? buildAttendanceTicketPreview({
@@ -214,10 +267,10 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onOpenSh
         seatLocation: log.attendanceTicket.seat || log.attendanceTicket.seatLocation,
         shareSeatLocation: !!(log.attendanceTicket.seat || log.attendanceTicket.seatLocation),
       })
-      : null;
-  const attendanceTicketShow = log.attendanceTicket?.tourDateId
+      : null, [author, log.attendanceTicket]);
+  const attendanceTicketShow = useMemo(() => log.attendanceTicket?.tourDateId
     ? calendarShowFromPost(log)
-    : null;
+    : null, [log]);
   const shareModel = useMemo(
     () => buildPostShareModel(log, { author }),
     [author, log],
@@ -230,7 +283,7 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onOpenSh
   const viewCount = Math.max(0, Math.trunc(Number(log.viewCount) || 0));
   // Server posts can arrive with null scores (photo-only posts); never crash the feed.
   const band = log.band ?? 0, room = log.room ?? 0, overall = log.overall ?? 0;
-  const performance = reviewCardPerformance(log);
+  const performance = useMemo(() => reviewCardPerformance(log), [log]);
   const performanceTitle = performance.primary;
   const titledPerformance = performance.showArtistInMeta;
   const factors = log.dims
@@ -323,29 +376,36 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onOpenSh
         )}
 
         {attendanceTicketCard ? (
-          <ConcertTicketCard
-            ticket={attendanceTicketCard}
-            style={styles.attendanceTicketCard}
-            onPress={attendanceTicketShow && onOpenShow ? () => onOpenShow(attendanceTicketShow) : undefined}
-            accessibilityHint={attendanceTicketShow && onOpenShow ? "Open the exact show or event page" : undefined}
-          />
-        ) : null}
-        {attendanceTicketCard && canCompareArtistShows ? (
-          <View style={[styles.contextActions, styles.statusContextActions]}>
-            <PublicPressableLink
-              href={postContext.artistConcertsHref}
-              onNavigate={openArtistShows}
-              style={({ pressed }) => [styles.contextAction, styles.contextActionSecondary, pressed && styles.contextActionPressed]}
-              accessibilityLabel={`Compare scores across ${postContext.artist} concerts`}
-            >
-              <Icon name="archive" size={15} color={campaignPresentation ? campaignTreatment.accentColor : colors.cool} />
-              <Text style={[styles.contextActionText, campaignPresentation && { color: campaignTreatment.textColor }]} numberOfLines={1}>Compare {postContext.artist} shows</Text>
-            </PublicPressableLink>
-          </View>
+          <>
+            <ConcertTicketCard
+              ticket={attendanceTicketCard}
+              style={styles.attendanceTicketCard}
+              onPress={attendanceTicketShow && onOpenShow ? () => onOpenShow(attendanceTicketShow) : undefined}
+              accessibilityHint={attendanceTicketShow && onOpenShow ? "Open the exact show or event page" : undefined}
+            />
+            <TicketActionRail
+              showHref={canonicalPostHref}
+              onOpenShow={attendanceTicketShow && onOpenShow ? () => onOpenShow(attendanceTicketShow) : () => onOpen?.(log)}
+              compareHref={canCompareArtistShows ? postContext.artistConcertsHref : null}
+              onCompare={openArtistShows}
+              artist={postContext.artist}
+              palette={campaignTreatment}
+            />
+          </>
         ) : null}
 
         {!!log.review && (
-          <PublicPressableLink href={canonicalPostHref} onNavigate={() => (onComment || onOpen)?.(log)} accessibilityLabel="Open post and comments"><Text style={[styles.statusText, campaignPresentation && { color: campaignTreatment.textColor }]}>{log.review}</Text></PublicPressableLink>
+          <ExpandableText
+            key={`status-copy:${log.id}`}
+            text={log.review}
+            compact={compactContent}
+            toggleTextStyle={campaignPresentation ? { color: campaignTreatment.accentColor } : null}
+            renderText={({ text, accessibilityLabel }) => (
+              <PublicPressableLink href={canonicalPostHref} onNavigate={() => (onComment || onOpen)?.(log)} accessibilityLabel={`${accessibilityLabel}. Open post and comments.`}>
+                <Text accessibilityLabel={accessibilityLabel} style={[styles.statusText, campaignPresentation && { color: campaignTreatment.textColor }]}>{text}</Text>
+              </PublicPressableLink>
+            )}
+          />
         )}
         <TaggedPeopleRow people={taggedPeople} onOpenProfile={onOpenProfile} selfId={session?.id} onRemoveSelf={onRemoveMyPostTag ? removeSelfTag : undefined} palette={campaignTreatment} concertContext={!!attendanceTicketCard} />
         {!!log.song && <SongAttachment song={log.song} onPlay={ENABLE_MUSIC_PLAYER ? onPlay : undefined} />}
@@ -411,7 +471,7 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onOpenSh
       )}
 
       <View style={styles.performanceCardShadow}>
-        <View style={styles.performanceCard}>
+        <View style={[styles.performanceCard, !isOnlineReview && styles.performanceCardAttached]}>
           <View style={styles.performanceRegister} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
             <View style={styles.performanceRegisterAmber} />
             <View style={styles.performanceRegisterMagenta} />
@@ -452,11 +512,19 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onOpenSh
             )}
           </View>
         </View>
+        {!isOnlineReview ? (
+          <TicketActionRail
+            showHref={canonicalPostHref}
+            onOpenShow={() => (onOpenShow || onOpen)?.(log)}
+            compareHref={canCompareArtistShows ? postContext.artistConcertsHref : null}
+            onCompare={openArtistShows}
+            artist={postContext.artist}
+          />
+        ) : null}
       </View>
 
-      <View style={styles.contextActions}>
-        {isOnlineReview ? (
-          youtubeUrl ? (
+      {isOnlineReview && youtubeUrl ? (
+        <View style={styles.contextActions}>
             <PublicPressableLink
               href={youtubeUrl}
               onNavigate={Platform.OS === "web" ? undefined : () => {
@@ -486,30 +554,8 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onOpenSh
                 <Text style={styles.youtubePreviewActionText}>Watch on YouTube</Text>
               </View>
             </PublicPressableLink>
-          ) : null
-        ) : (
-          <PublicPressableLink
-            href={canonicalPostHref}
-            onNavigate={() => (onOpenShow || onOpen)?.(log)}
-            style={({ pressed }) => [styles.contextAction, pressed && styles.contextActionPressed]}
-            accessibilityLabel={`View ${log.artist || "this"} show`}
-          >
-            <Icon name="ticket" size={15} color={colors.amber} />
-            <Text style={styles.contextActionText}>View this show</Text>
-          </PublicPressableLink>
-        )}
-        {canCompareArtistShows && (
-          <PublicPressableLink
-            href={postContext.artistConcertsHref}
-            onNavigate={openArtistShows}
-            style={({ pressed }) => [styles.contextAction, styles.contextActionSecondary, pressed && styles.contextActionPressed]}
-            accessibilityLabel={`Compare scores across ${postContext.artist} concerts`}
-          >
-            <Icon name="archive" size={15} color={colors.cool} />
-            <Text style={styles.contextActionText} numberOfLines={1}>Compare {postContext.artist} shows</Text>
-          </PublicPressableLink>
-        )}
-      </View>
+        </View>
+      ) : null}
 
       {/* Score analytics: the template every review shares. The twirling star +
           per-dimension bars show exactly why the night earned its score. */}
@@ -529,15 +575,23 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onOpenSh
       )}
 
       {/* THE REVIEW - the main event */}
-      <PublicPressableLink href={canonicalPostHref} onNavigate={isOnlineReview ? openPostDetail : () => onOpen?.(log)} accessibilityLabel={`Open ${isOnlineReview ? "online concert review" : log.artist || "concert post"}`}>
-        {log.review ? (
-          <View style={styles.reviewWrap}>
-            <Text style={styles.review}>{log.review}</Text>
-          </View>
-        ) : (
+      {log.review ? (
+        <ExpandableText
+          key={`review-copy:${log.id}`}
+          text={log.review}
+          compact={compactContent}
+          containerStyle={styles.reviewWrap}
+          renderText={({ text, accessibilityLabel }) => (
+            <PublicPressableLink href={canonicalPostHref} onNavigate={isOnlineReview ? openPostDetail : () => onOpen?.(log)} accessibilityLabel={`${accessibilityLabel}. Open ${isOnlineReview ? "online concert review" : log.artist || "concert post"}.`}>
+              <Text accessibilityLabel={accessibilityLabel} style={styles.review}>{text}</Text>
+            </PublicPressableLink>
+          )}
+        />
+      ) : (
+        <PublicPressableLink href={canonicalPostHref} onNavigate={isOnlineReview ? openPostDetail : () => onOpen?.(log)} accessibilityLabel={`Open ${isOnlineReview ? "online concert review" : log.artist || "concert post"}`}>
           <Text style={styles.noReview}>{isOnlineReview ? "Rated this online concert - no review yet. Tap to open." : "Logged this show - no review yet. Tap to open."}</Text>
-        )}
-      </PublicPressableLink>
+        </PublicPressableLink>
+      )}
       <TaggedPeopleRow people={taggedPeople} onOpenProfile={onOpenProfile} selfId={session?.id} onRemoveSelf={onRemoveMyPostTag ? removeSelfTag : undefined} concertContext={!isOnlineReview} />
       {!!log.song && <SongAttachment song={log.song} onPlay={ENABLE_MUSIC_PLAYER ? onPlay : undefined} />}
       {postMedia.length > 0 && (
@@ -665,6 +719,7 @@ const styles = StyleSheet.create({
 
   performanceCardShadow: { marginTop: 12, borderRadius: radius.md, borderCurve: "continuous", ...shadow.card },
   performanceCard: { overflow: "hidden", borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderColor: colors.line, backgroundColor: colors.bgElev },
+  performanceCardAttached: { borderBottomLeftRadius: 4, borderBottomRightRadius: 4 },
   performanceRegister: { height: 4, flexDirection: "row" },
   performanceRegisterAmber: { flex: 2, backgroundColor: colors.amberStrong },
   performanceRegisterMagenta: { flex: 1, backgroundColor: colors.magenta },
@@ -683,8 +738,12 @@ const styles = StyleSheet.create({
   performanceVenue: { color: colors.cool, fontWeight: "800" },
   performanceDate: { color: colors.amber, fontFamily: mono, fontSize: 11.5 },
   contextActions: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 10 },
-  statusContextActions: { marginTop: 8, marginBottom: 2 },
   contextAction: { minHeight: 44, maxWidth: "100%", flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7, paddingHorizontal: 12, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.amber + "80", backgroundColor: colors.surfaceAlt },
+  ticketActionRail: { minHeight: 48, flexDirection: "row", alignItems: "stretch", marginTop: -1, marginHorizontal: 12, overflow: "hidden", borderWidth: 1, borderTopWidth: 0, borderColor: colors.line, borderBottomLeftRadius: radius.md, borderBottomRightRadius: radius.md, backgroundColor: colors.surfaceAlt },
+  ticketAction: { minWidth: 0, minHeight: 48, flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingHorizontal: 10, paddingVertical: 7 },
+  ticketActionDivider: { width: 1, marginVertical: 8, backgroundColor: colors.line },
+  ticketActionText: { minWidth: 0, flexShrink: 1, color: colors.text, fontSize: 11.5, lineHeight: 15, fontWeight: "900", textAlign: "center" },
+  ticketActionPressed: { opacity: 0.78, backgroundColor: colors.bgElev },
   youtubePreview: { width: "100%", maxWidth: 640, aspectRatio: 16 / 9, overflow: "hidden", borderRadius: radius.lg, borderWidth: 1, borderColor: "#FF003380", backgroundColor: colors.surfaceAlt },
   youtubeThumbnail: { width: "100%", height: "100%", backgroundColor: colors.bgElev },
   youtubePreviewScrim: { position: "absolute", top: 0, right: 0, bottom: 0, left: 0, backgroundColor: "rgba(4,4,8,0.18)" },

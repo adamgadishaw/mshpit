@@ -17,6 +17,7 @@ export function venuePageSectionModel(value) {
   return Object.freeze({
     active,
     condensed: overview,
+    showGuide: overview,
     showUpcoming: overview || active === "shows",
     showReputation: overview || active === "reviews",
     showPhotos: overview || active === "reviews",

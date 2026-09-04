@@ -13,9 +13,10 @@ test("Calendar and Profile share the canonical member calendar projection", () =
   assert.match(calendar, /enabled:\s*!!session\?\.id/,
     "future authored show posts must hydrate in Upcoming, not only in Past");
 
-  assert.match(profile, /const profileCalendar = memberCalendarModel\(\{/);
-  assert.match(profile, /going:\s*isSelf \? goingFor\(user\.id\) : \[\]/);
-  assert.match(profile, /attendance:\s*isSelf \? myAttendance : \[\]/);
+  assert.match(profile, /const going = user && isSelf \? goingFor\(user\.id\) : EMPTY_LIST/);
+  assert.match(profile, /const profileCalendar = useMemo\(\(\) => user \? memberCalendarModel\(\{/);
+  assert.match(profile, /going,\s*attendance:/);
+  assert.match(profile, /attendance:\s*isSelf \? myAttendance : EMPTY_LIST/);
   assert.match(profile, /posts:\s*logs/);
 });
 

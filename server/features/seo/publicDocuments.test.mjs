@@ -397,8 +397,9 @@ test("artist titles identify ambiguous names as music artists", () => {
       assert.equal(document.title, `${name} — music artist reviews, photos & tour dates | Mshpit`);
       assert.equal(
         document.description,
-        `${name} is a music artist on Mshpit. See concert reviews, fan photos, ratings and tour dates.`,
+        `Music artist page for ${name} on Mshpit: concert reviews, fan photos, ratings and upcoming tour dates. 4.5/5 live rating from 1 review.`,
       );
+      assert.equal(document.description.length <= 160, true);
       assert.doesNotMatch(document.title, new RegExp(`^${name.replace(".", "\\.")} live\\b`, "iu"));
       assert.match(documents.render(document), /music artist reviews/);
     }
@@ -452,6 +453,9 @@ test("artist document uses only active UGC and references Event leaf pages witho
 
     assert.equal(document.jsonLd[0]["@type"], "CollectionPage");
     assert.equal(document.jsonLd[0].about["@type"], "Thing");
+    assert.equal(document.jsonLd[0].about["@id"], "https://www.example.com/artist/alpha#artist");
+    assert.equal(document.jsonLd[0].about.disambiguatingDescription, "Music artist");
+    assert.deepEqual(document.jsonLd[0].mainEntity, { "@id": "https://www.example.com/artist/alpha#artist" });
     assert.deepEqual(document.jsonLd[0].about.sameAs, [`https://musicbrainz.org/artist/${ARTIST_MBID}`]);
     assert.equal(Object.hasOwn(invalidMbidDocument.jsonLd[0].about, "sameAs"), false);
     assert.deepEqual(document.reviews.map((review) => review.id), ["visible", "private-gallery"]);
@@ -466,6 +470,9 @@ test("artist document uses only active UGC and references Event leaf pages witho
     assert.doesNotMatch(html, /attacker\.example|HIDDEN REVIEW|HIDDEN UPDATE|Secret Hall/);
     assert.doesNotMatch(html, /MusicEvent/, "the artist collection references the canonical event page instead of duplicating it");
     assert.match(html, /event-public/);
+    assert.match(html, /class="stats artist-facts"/);
+    assert.match(html, /<dt>Upcoming<\/dt><dd>1 show<\/dd>/);
+    assert.match(html, /class="artist-next"[\s\S]*?Next show[\s\S]*?Global Hall/);
     assert.equal(document.jsonLd[0].hasPart[0]["@id"], "https://www.example.com/event/event-public#page");
     assert.equal(eventDocument.jsonLd[0]["@type"], "WebPage");
     assert.equal(eventDocument.event.address.addressLocality, "London");
@@ -1683,6 +1690,57 @@ test("venue schema never promotes a free-form post city into a postal address", 
   }
 });
 
+test("venue pages expose only verified capacity and coordinates with practical visit links", () => {
+  const database = createDatabase();
+  try {
+    const documents = service(database);
+    const document = documents.venueDocument({
+      name: "Scotiabank Arena",
+      venueKey: "scotiabank arena",
+      at: NOW,
+    });
+    const html = documents.render(document);
+    const schema = document.jsonLd.find((node) => node["@type"] === "MusicVenue");
+
+    assert.equal(document.venue.place, "Toronto, Ontario, Canada");
+    assert.equal(document.venue.capacity, 19_800);
+    assert.deepEqual(document.venue.coord, { lat: 43.6435, lng: -79.3791 });
+    assert.equal(document.venue.guide.actions.length, 3);
+    assert.equal(schema.maximumAttendeeCapacity, 19_800);
+    assert.deepEqual(schema.geo, {
+      "@type": "GeoCoordinates",
+      latitude: 43.6435,
+      longitude: -79.3791,
+    });
+    assert.match(schema.hasMap, /^https:\/\/www\.google\.com\/maps\/dir\//u);
+    assert.equal(schema.mainEntityOfPage["@id"], "https://www.example.com/venue/scotiabank-arena#page");
+    assert.match(document.title, /concert venue guide/u);
+    assert.match(document.description, /listed capacity of 19,800/u);
+    assert.match(html, /Seating, parking and transport/u);
+    assert.match(html, /19,800 listed capacity/u);
+    assert.match(html, />Parking nearby</u);
+    assert.match(html, />Public transit</u);
+    assert.doesNotMatch(html, /parking lot|parking price|open 24 hours/iu);
+
+    const unverifiedProvider = documents.venueDocument({
+      name: "Scotiabank Arena",
+      venueKey: "provider:ticketmaster:unlocated-room",
+      source: "ticketmaster",
+      providerVenueId: "unlocated-room",
+      at: NOW,
+    });
+    const unverifiedSchema = unverifiedProvider.jsonLd.find((node) => node["@type"] === "MusicVenue");
+    assert.equal(unverifiedProvider.venue.capacity, null);
+    assert.equal(unverifiedProvider.venue.coord, null);
+    assert.deepEqual(unverifiedProvider.venue.guide.actions, []);
+    assert.equal(Object.hasOwn(unverifiedSchema, "maximumAttendeeCapacity"), false);
+    assert.equal(Object.hasOwn(unverifiedSchema, "geo"), false);
+    assert.equal(Object.hasOwn(unverifiedSchema, "hasMap"), false);
+  } finally {
+    database.close();
+  }
+});
+
 test("venue pages show real public ratings and safely render only eligible recent reviews", () => {
   const database = createDatabase();
   try {
@@ -1723,10 +1781,15 @@ test("venue pages show real public ratings and safely render only eligible recen
       at: NOW,
     });
     const html = documents.render(document);
+    const venueSchema = document.jsonLd.find((node) => node["@type"] === "MusicVenue");
 
     assert.deepEqual(document.venueReviewStats, { reviewCount: 1, ratingCount: 1, averageRating: 4.5 });
     assert.equal(document.venueReviews.length, 1);
     assert.deepEqual(document.venueReviews[0].photos, [verifiedUrl]);
+    assert.equal(venueSchema.review.length, 1);
+    assert.equal(venueSchema.review[0].author.name, "Cloe <script>alert(1)</script>");
+    assert.equal(venueSchema.review[0].reviewRating.ratingValue, 4.5);
+    assert.equal(venueSchema.review[0].itemReviewed["@id"], venueSchema["@id"]);
     assert.equal(document.imageProvenance, null);
     assert.match(html, /4\.5<small>\/5<\/small><\/strong> from 1 rating/);
     assert.match(html, /1 public review/);

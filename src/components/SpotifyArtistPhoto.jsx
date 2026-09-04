@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
-import { Image, Linking, Pressable, StyleSheet, Text, View } from "react-native";
+import { useEffect, useMemo, useState } from "react";
+import { Linking, Pressable, StyleSheet, Text, View } from "react-native";
+import { Image } from "expo-image";
 import { spotifyArtistPhotoModel } from "../domain/spotifyArtistPhoto.mjs";
 import { colors, focusRing, mono, shadow } from "../theme";
 import SpotifyFullLogo from "./SpotifyFullLogo";
@@ -7,6 +8,7 @@ import SpotifyFullLogo from "./SpotifyFullLogo";
 export default function SpotifyArtistPhoto({ artist, artistName }) {
   const [failed, setFailed] = useState(false);
   const photo = spotifyArtistPhotoModel(artist);
+  const source = useMemo(() => photo?.uri ? { uri: photo.uri, cacheKey: photo.uri } : null, [photo?.uri]);
 
   useEffect(() => {
     setFailed(false);
@@ -21,9 +23,17 @@ export default function SpotifyArtistPhoto({ artist, artistName }) {
   return (
     <View style={styles.shell}>
       <Image
-        source={{ uri: photo.uri }}
+        source={source}
         style={styles.image}
-        resizeMode="contain"
+        contentFit="contain"
+        cachePolicy="memory-disk"
+        priority="normal"
+        loading="lazy"
+        autoplay={false}
+        allowDownscaling
+        enforceEarlyResizing
+        recyclingKey={`spotify-artist:${photo.uri}`}
+        transition={80}
         onError={() => setFailed(true)}
         accessibilityRole="image"
         accessibilityLabel={`${artistName} image from Spotify`}

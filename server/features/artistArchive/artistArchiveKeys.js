@@ -14,6 +14,34 @@ export function normalizeArchivePart(value) {
     .trim();
 }
 
+const TOUR_SUFFIX_VARIANTS = new Set(["tour", "tours", "tourr", "tuor", "toru"]);
+
+// A tour name is entered independently by every fan. Keep the meaningful title
+// exact while folding presentation-only differences: punctuation/spacing, an
+// optional leading artist or "The", and common terminal "(World) Tour" text.
+// Joining the remaining tokens also makes "Fall-Off" and "Falloff" agree.
+export function archiveTourNameIdentity(value, artist = null) {
+  let tokens = normalizeArchivePart(value).split(" ").filter(Boolean);
+  if (!tokens.length) return "";
+  const artistTokens = normalizeArchivePart(artist).split(" ").filter(Boolean);
+  if (artistTokens.length && tokens.length > artistTokens.length
+    && artistTokens.every((token, index) => tokens[index] === token)) {
+    tokens = tokens.slice(artistTokens.length);
+  }
+  if (tokens.length > 1 && tokens[0] === "the") tokens = tokens.slice(1);
+  if (TOUR_SUFFIX_VARIANTS.has(tokens.at(-1))) tokens[tokens.length - 1] = "tour";
+  const fallback = tokens.join("");
+  if (tokens.at(-1) === "tour") tokens = tokens.slice(0, -1);
+  if (tokens.length > 1 && tokens.at(-1) === "world") tokens = tokens.slice(0, -1);
+  return tokens.join("") || fallback;
+}
+
+export function canonicalArchiveTourIdentity(value, artist = null) {
+  const raw = String(value ?? "").trim().replace(/^tour:/iu, "");
+  const identity = archiveTourNameIdentity(raw, artist);
+  return identity ? `tour:${identity}` : "";
+}
+
 function encodeKey(kind, parts) {
   const payload = Buffer.from(JSON.stringify(parts.map(cleanPart)), "utf8").toString("base64url");
   return `${kind}.${payload}`;
@@ -45,7 +73,7 @@ export function decodeArchiveShowKey(value) {
 }
 
 export function archiveTourIdentity(row = {}) {
-  const explicit = normalizeArchivePart(row.tour);
+  const explicit = archiveTourNameIdentity(row.tour, row.artist);
   if (explicit) return Object.freeze({ identity: `tour:${explicit}`, label: cleanPart(row.tour) });
   const year = /^\d{4}/.test(String(row.date || "")) ? String(row.date).slice(0, 4) : "Undated";
   return Object.freeze({ identity: `year:${year}`, label: `Other shows · ${year}` });
@@ -57,7 +85,10 @@ export function archiveTourKey({ artistIdentity, tourIdentity } = {}) {
   // raw label here would split one normalized tour into several archive cards.
   // Keep the third field for backwards-compatible decoding of already-issued
   // keys while new keys derive solely from the stable normalized identity.
-  return encodeKey("tour", [archiveIdentityPart(artistIdentity), cleanPart(tourIdentity), ""]);
+  const identity = String(tourIdentity || "").startsWith("year:")
+    ? cleanPart(tourIdentity)
+    : canonicalArchiveTourIdentity(tourIdentity);
+  return encodeKey("tour", [archiveIdentityPart(artistIdentity), identity, ""]);
 }
 
 export function decodeArchiveTourKey(value) {

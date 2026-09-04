@@ -37,7 +37,12 @@ test("Spotify artist imagery is fixed-host, unaltered, attributed, and limited t
     photoDisplayPolicy: "original",
   }), null);
   assert.match(spotifyPhoto, /<Image/);
-  assert.match(spotifyPhoto, /resizeMode="contain"/);
+  assert.match(spotifyPhoto, /from "expo-image"/);
+  assert.match(spotifyPhoto, /contentFit="contain"/);
+  assert.match(spotifyPhoto, /cachePolicy="memory-disk"/);
+  assert.match(spotifyPhoto, /loading="lazy"/);
+  assert.match(spotifyPhoto, /allowDownscaling/);
+  assert.match(spotifyPhoto, /enforceEarlyResizing/);
   assert.match(spotifyPhoto, /borderRadius:\s*4/);
   assert.doesNotMatch(spotifyPhoto, /borderRadius:\s*radius\.lg/);
   assert.match(spotifyPhoto, />SOURCE</);
@@ -114,11 +119,13 @@ test("artist photos sit directly between Live Reputation and the primary artist 
 
 test("artist overview stays bounded while full sections remain explicit", () => {
   assert.match(artist, /limit: ARTIST_OVERVIEW_LIMITS\.reviews/);
-  assert.match(artist, /limit: ARTIST_OVERVIEW_LIMITS\.gallery/);
+  assert.match(artist, /artistPagePreview\(gallery, \{ condensed: true, limit: ARTIST_OVERVIEW_LIMITS\.gallery \}\)/);
   assert.match(artist, /visibleTopReviews\.map\(\(review, index\) =>/);
-  assert.match(artist, /artistPageSynopsis\(bio, \{ condensed: sectionModel\.condensed && !bioExpanded \}\)/);
+  assert.match(artist, /<ExpandableText[\s\S]*?text=\{bio\}/);
+  assert.match(artist, /<ExpandableText[\s\S]*?text=\{p\.text\}/);
   assert.match(artist, /sectionModel\.active === "live"/);
-  assert.match(artist, /Read full bio/);
+  assert.match(artist, /moreAccessibilityLabel=\{`Read the full \$\{a\.name\} biography`\}/);
+  assert.doesNotMatch(artist, /visibleGallery\.map[\s\S]*?veryWidePage/);
 });
 
 test("dedicated gallery consumes only the bounded store projection and virtualizes media", () => {

@@ -14,8 +14,8 @@ import VerifyEmailBanner from "./src/components/VerifyEmailBanner";
 import { DesktopTopNav, RightRail } from "./src/components/Rails";
 import { PublicDirectoryPanel, PublicWebTrail } from "./src/components/PublicWebLinks";
 import FeedScreen from "./src/screens/FeedScreen";
-import SearchScreen from "./src/screens/SearchScreen";
-import YouScreen from "./src/screens/YouScreen";
+const SearchScreen = lazyWithRetry(() => import("./src/screens/SearchScreen"), "SearchScreen");
+const YouScreen = lazyWithRetry(() => import("./src/screens/YouScreen"), "YouScreen");
 const DiscoverScreen = lazyWithRetry(() => import("./src/screens/DiscoverScreen"), "DiscoverScreen");
 const ShowScreen = lazyWithRetry(() => import("./src/screens/ShowScreen"), "ShowScreen");
 const LoungeScreen = lazyWithRetry(() => import("./src/screens/LoungeScreen"), "LoungeScreen");
@@ -630,7 +630,9 @@ function Root() {
     // first-load bundle, but start its guarded chunk request in the same user
     // gesture that selects the tab so the suspense state is as short as the
     // connection allows.
-    if (key === "discover") DiscoverScreen.preload?.().catch(() => {});
+    if (key === "search") SearchScreen.preload?.().catch(() => { /* architecture: allow-empty-catch -- Tab intent warming is optional; Suspense owns visible loading and retry. */ });
+    if (key === "discover") DiscoverScreen.preload?.().catch(() => { /* architecture: allow-empty-catch -- Tab intent warming is optional; Suspense owns visible loading and retry. */ });
+    if (key === "you") YouScreen.preload?.().catch(() => { /* architecture: allow-empty-catch -- Tab intent warming is optional; Suspense owns visible loading and retry. */ });
     setTab(key);
     commitClear();
   });

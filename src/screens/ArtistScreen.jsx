@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { View, Text, StyleSheet, ScrollView, Pressable, Image, TextInput, ActivityIndicator, useWindowDimensions } from "react-native";
+import { View, Text, StyleSheet, ScrollView, Pressable, Image, TextInput, ActivityIndicator } from "react-native";
 import { colors, displayFont, focusRing, mono, radius, shadow, space } from "../theme";
 import { useStore, isStaff } from "../store";
 import { artistMeta } from "../seed/ingested";
@@ -31,12 +31,13 @@ import { artistCinematicMedia } from "../domain/artistGalleryMedia.mjs";
 import { useArtistMemorial } from "../features/artistMemorials/useArtistMemorial";
 import { PublicPressableLink } from "../components/PublicWebLinks";
 import { concertPath, eventPath, postPath, profilePath } from "../domain/urls.mjs";
-import { ARTIST_OVERVIEW_LIMITS, ARTIST_PAGE_SECTIONS, artistPagePreview, artistPageSectionModel, artistPageSynopsis } from "../domain/artistPageSections.mjs";
+import { ARTIST_OVERVIEW_LIMITS, ARTIST_PAGE_SECTIONS, artistPageHighlights, artistPagePreview, artistPageSectionModel } from "../domain/artistPageSections.mjs";
 import { useArtistFollowFanClub } from "../features/artistFollow/useArtistFollowFanClub";
 import { ENABLE_MUSIC_PLAYER } from "../config/runtime.mjs";
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import useScopedRefresh from "../hooks/useScopedRefresh";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
+import ExpandableText from "../components/ExpandableText";
 
 const compactCount = (value) => {
   const count = Number(value) || 0;
@@ -123,6 +124,8 @@ function TopReviewCard({ review, rank, artistName, onOpenPost, onOpenShow, onOpe
   const thumbnail = publicMedia[0] || null;
   const canOpenAuthor = !!review.userId && typeof onOpenProfile === "function";
   const canOpenExactShow = review.kind !== "memory" && !!String(review.archiveShowKey || "").trim();
+  const reviewText = String(review.review || "");
+  const reviewBody = reviewText.trim() ? reviewText : "Shared a concert memory.";
   const authorIdentity = (
     <>
       <Avatar user={review.user || { name: author, initials: "PF" }} size={34} />
@@ -162,7 +165,13 @@ function TopReviewCard({ review, rank, artistName, onOpenPost, onOpenShow, onOpe
           </View>
         </View>
 
-        <Text style={styles.topReviewExcerpt} numberOfLines={3}>{String(review.review || "").trim() || "Shared a concert memory."}</Text>
+        <ExpandableText
+          text={reviewBody}
+          style={styles.topReviewExcerpt}
+          toggleStyle={styles.topReviewExcerptToggle}
+          moreAccessibilityLabel={`Read the full review from ${author}`}
+          lessAccessibilityLabel={`Show a shorter review from ${author}`}
+        />
 
         <View style={styles.topReviewFooter}>
           {!memorialMode ? (
@@ -239,11 +248,8 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
     artistDiscography, artistSeenCount, reportTrack, updateProfile, isFanClubMember, joinFanClub,
     refreshArtistCatalogMetadata } = useStore();
   const a = artistSummary(artistName);
-  const { width } = useWindowDimensions();
   const playerEnabled = ENABLE_MUSIC_PLAYER && typeof onPlay === "function";
   const playlistEnabled = ENABLE_MUSIC_PLAYER && typeof onAddToPlaylist === "function";
-  const widePage = width >= 760;
-  const veryWidePage = width >= 1180;
   const [sectionSelection, setSectionSelection] = useState(() => ({ artistKey: a.profileKey, section: "overview" }));
   const activeSection = sectionSelection.artistKey === a.profileKey ? sectionSelection.section : "overview";
   const sectionModel = artistPageSectionModel(activeSection);
@@ -288,7 +294,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [a.name, a.profileKey]);
   const gallery = artistGallery(a.name, 12, a.profileKey);
-  const visibleGallery = artistPagePreview(gallery, { condensed: sectionModel.condensed, limit: ARTIST_OVERVIEW_LIMITS.gallery });
+  const visibleGallery = artistPagePreview(gallery, { condensed: true, limit: ARTIST_OVERVIEW_LIMITS.gallery });
   const { resource: topReviewsResource, reload: retryTopReviews } = useArtistTopReviews({
     accountId: session?.id || null,
     name: a.name,
@@ -338,14 +344,19 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
   const upcoming = liveAvailable
     ? (previewAsFan ? a.upcoming.filter((date) => !date.scheduled) : a.upcoming)
     : [];
+  const highlights = artistPageHighlights({
+    upcomingCount: upcoming.length,
+    hometown: meta?.hometown,
+    country: meta?.country,
+    formed: meta?.formed,
+    memorialMode: deceased,
+  });
   const [showAllUpcoming, setShowAllUpcoming] = useState(false);
-  const [bioExpanded, setBioExpanded] = useState(false);
   const upcomingPresentation = selectArtistUpcomingShows(upcoming, { expanded: showAllUpcoming });
   const visibleUpcoming = sectionModel.condensed
     ? artistPagePreview(upcoming, { condensed: true, limit: ARTIST_OVERVIEW_LIMITS.upcoming })
     : upcomingPresentation.shows;
   const bio = a.ownerBio || meta?.bio;
-  const bioPresentation = artistPageSynopsis(bio, { condensed: sectionModel.condensed && !bioExpanded });
   const bannerUri = a.banner || meta?.photo || null;
   const hasRegularHeroImage = artistCinematicMedia({
     bannerUri,
@@ -961,11 +972,17 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
           </View>
         )}
 
-        {/* age / hometown / genre line */}
-        {(meta?.hometown || meta?.formed) && (
-          <View style={styles.metaLine}>
-            {!!meta?.hometown && <Text style={styles.metaItem}><Icon name="pin" size={12} color={colors.textDim} /> {meta.hometown}</Text>}
-            {!!meta?.formed && <Text style={styles.metaItem}>· since {meta.formed}</Text>}
+        {highlights.length > 0 && (
+          <View style={styles.artistFacts} accessibilityLabel={highlights.map((fact) => `${fact.label}: ${fact.value}`).join(". ")}>
+            {highlights.map((fact) => (
+              <View key={fact.key} style={styles.artistFact}>
+                <Icon name={fact.icon} size={13} color={colors.amber} />
+                <View style={styles.artistFactCopy}>
+                  <Text style={styles.artistFactLabel}>{fact.label}</Text>
+                  <Text style={styles.artistFactValue} numberOfLines={2}>{fact.value}</Text>
+                </View>
+              </View>
+            ))}
           </View>
         )}
 
@@ -1129,7 +1146,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
             {gallery.length ? (
               <View style={styles.fanGrid}>
                 {visibleGallery.map((p, i) => (
-                  <View key={p.uri || i} style={[styles.fanTile, { width: veryWidePage ? "19.2%" : widePage ? "23.8%" : "31.8%" }]}>
+                  <View key={p.uri || i} style={styles.fanTile}>
                     <SmartImage uri={p.uri} posterUri={mediaPosterUri(p)} mediaKind={mediaDisplayKind(p)} accessibilityLabel={p.altText || `Open media from ${a.name}`} style={StyleSheet.absoluteFill} contain={false}
                       onPress={() => onOpenPhotos?.(gallery.map((x) => ({ ...x, uri: x.uri, by: x.by, postId: x.postId, ownerId: x.ownerId })), i, p.postId || null)} />
                     {p.source !== "fan" && !!p.by && (
@@ -1224,7 +1241,12 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
                     </Pressable>
                   ) : null}
                 </View>
-                <Text style={styles.postText}>{p.text}</Text>
+                <ExpandableText
+                  text={p.text}
+                  style={styles.postText}
+                  moreAccessibilityLabel={`Read the full ${a.name} artist update`}
+                  lessAccessibilityLabel={`Show a shorter ${a.name} artist update`}
+                />
               </View>
             ))}
             {sectionModel.condensed && posts.length > visiblePosts.length && (
@@ -1418,19 +1440,14 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
         {sectionModel.showAbout && !!bio && (
           <>
             <Text style={styles.sectionLabel}>ABOUT</Text>
-            <Text style={styles.bio}>{bioPresentation.text}</Text>
-            {bioPresentation.truncated || bioExpanded ? (
-              <Pressable
-                style={styles.bioToggle}
-                onPress={() => setBioExpanded((value) => !value)}
-                accessibilityRole="button"
-                accessibilityState={{ expanded: bioExpanded }}
-                accessibilityLabel={bioExpanded ? `Show a shorter ${a.name} biography` : `Read the full ${a.name} biography`}
-              >
-                <Text style={styles.bioToggleText}>{bioExpanded ? "Show less" : "Read full bio"}</Text>
-                <Icon name={bioExpanded ? "chevron-up" : "chevron-down"} size={14} color={colors.amber} />
-              </Pressable>
-            ) : null}
+            <ExpandableText
+              text={bio}
+              style={styles.bio}
+              toggleStyle={styles.bioToggle}
+              toggleTextStyle={styles.bioToggleText}
+              moreAccessibilityLabel={`Read the full ${a.name} biography`}
+              lessAccessibilityLabel={`Show a shorter ${a.name} biography`}
+            />
           </>
         )}
 
@@ -1697,8 +1714,11 @@ const styles = StyleSheet.create({
   bio: { color: colors.textDim, fontSize: 14, lineHeight: 21 },
   bioToggle: { alignSelf: "flex-start", minHeight: 44, flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 2 },
   bioToggleText: { color: colors.amber, fontSize: 12.5, fontWeight: "900" },
-  metaLine: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6, marginTop: 12 },
-  metaItem: { color: colors.textDim, fontSize: 13 },
+  artistFacts: { flexDirection: "row", alignItems: "stretch", gap: 1, marginTop: 12, overflow: "hidden", borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.lineSoft },
+  artistFact: { minWidth: 0, minHeight: 58, flex: 1, flexDirection: "row", alignItems: "center", gap: 7, paddingHorizontal: 10, paddingVertical: 8, backgroundColor: colors.surface },
+  artistFactCopy: { minWidth: 0, flex: 1 },
+  artistFactLabel: { color: colors.textFaint, fontFamily: mono, fontSize: 8.5, fontWeight: "900", letterSpacing: 0.8, textTransform: "uppercase" },
+  artistFactValue: { color: colors.text, fontSize: 11.5, lineHeight: 15, fontWeight: "800", marginTop: 2 },
   catalogIdentity: { flexDirection: "row", alignItems: "center", gap: 10, marginTop: 14, paddingHorizontal: 12, paddingVertical: 10, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surface },
   catalogIdentityIcon: { width: 32, height: 32, borderRadius: 16, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(242,166,90,0.10)" },
   catalogIdentityLabel: { color: colors.textFaint, fontFamily: mono, fontSize: 9, letterSpacing: 1.1, fontWeight: "800" },
@@ -1753,6 +1773,7 @@ const styles = StyleSheet.create({
   topReviewRankText: { color: colors.textDim, fontFamily: mono, fontSize: 9, fontWeight: "900", letterSpacing: 0.8 },
   topReviewRankTextLead: { color: colors.gold },
   topReviewExcerpt: { color: colors.text, fontSize: 14, lineHeight: 20, fontWeight: "600" },
+  topReviewExcerptToggle: { marginTop: -2 },
   topReviewFooter: { minHeight: 24, flexDirection: "row", alignItems: "center", gap: 9 },
   topReviewSignal: { flexDirection: "row", alignItems: "center", gap: 3 },
   topReviewScore: { color: colors.gold, fontFamily: mono, fontSize: 11.5, fontWeight: "900", fontVariant: ["tabular-nums"] },

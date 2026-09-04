@@ -55,9 +55,9 @@ test("tag removal is injected through Root instead of deepening TicketStub's Sto
   assert.match(app, /<FeedScreen[\s\S]*?onRemoveMyPostTag=\{removePostTag\}[\s\S]*?\/>/);
   assert.match(app, /<PostScreen[^>]*onRemoveMyPostTag=\{removePostTag\}/);
   assert.match(app, /<ProfileScreen[^>]*onRemoveMyPostTag=\{removePostTag\}/);
-  assert.match(feed, /<TicketStub[\s\S]*?onRemoveMyPostTag=\{onRemoveMyPostTag\}[\s\S]*?\/>/);
+  assert.match(feed, /<TicketStub[\s\S]*?onRemoveMyPostTag=\{capabilities\.removeMyPostTag \? removeMyPostTag : undefined\}[\s\S]*?\/>/);
   assert.match(postScreen, /<TicketStub[\s\S]*?onRemoveMyPostTag=\{onRemoveMyPostTag\}[\s\S]*?\/>/);
-  assert.match(profile, /<TicketStub[\s\S]*?onRemoveMyPostTag=\{onRemoveMyPostTag\}/);
+  assert.match(profile, /<TicketStub[\s\S]*?onRemoveMyPostTag=\{capabilities\.removeMyPostTag \? removeMyPostTag : undefined\}/);
 });
 
 test("notification-fetched post details resolve server-confirmed local tag overrides", () => {
@@ -74,6 +74,7 @@ test("profile-wall friend chips receive a real profile-navigation callback", () 
   const app = source("../../App.js");
   const profile = source("../screens/ProfileScreen.jsx");
   assert.match(app, /<ProfileScreen[^>]*onOpenProfile=\{openProfile\}/);
-  assert.match(profile, /onOpenProfile=\{onOpenProfile\}/);
+  assert.match(profile, /onOpenProfile=\{capabilities\.openProfile \? openProfile : undefined\}/);
+  assert.match(profile, /onOpenProfile,/);
   assert.doesNotMatch(profile, /onOpenProfile=\{\(\) => \{\}\}/);
 });

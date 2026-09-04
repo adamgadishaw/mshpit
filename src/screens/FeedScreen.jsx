@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { View, Text, StyleSheet, FlatList, Platform, Pressable, useWindowDimensions } from "react-native";
 import { colors, mono, radius, shadow } from "../theme";
 import { load, save } from "../lib/persist";
@@ -18,6 +18,52 @@ const PAGE = 8; // load the feed in pages, like the big apps - never all at once
 const REFRESH_RETRY_HINT = Platform.OS === "web"
   ? "Reload this page to try again."
   : "Pull down to try again.";
+
+const feedKeyExtractor = (item) => String(item.id);
+
+// Keep mounted feed cards insulated from viewport bookkeeping and unrelated
+// header state. The ref-backed handlers always call the latest screen props,
+// while stable row callbacks let React skip cards whose post and visibility did
+// not change.
+const FeedTicketRow = memo(function FeedTicketRow({ item, itemIndex, mediaViewable, surface, actionsRef, capabilities }) {
+  const open = useCallback((_unused) => actionsRef.current.onOpen?.(item, { surface, position: itemIndex }), [actionsRef, item, itemIndex, surface]);
+  const openShow = useCallback((show) => actionsRef.current.onOpen?.(show, { surface, position: itemIndex }), [actionsRef, itemIndex, surface]);
+  const comment = useCallback((...args) => actionsRef.current.onComment?.(...args), [actionsRef]);
+  const preview = useCallback((...args) => actionsRef.current.onPreview?.(...args), [actionsRef]);
+  const openProfile = useCallback((...args) => actionsRef.current.onOpenProfile?.(...args), [actionsRef]);
+  const openArtist = useCallback((...args) => actionsRef.current.onOpenArtist?.(...args), [actionsRef]);
+  const openArtistArchive = useCallback((...args) => actionsRef.current.onOpenArtistArchive?.(...args), [actionsRef]);
+  const openVenue = useCallback((...args) => actionsRef.current.onOpenVenue?.(...args), [actionsRef]);
+  const report = useCallback((...args) => actionsRef.current.onReport?.(...args), [actionsRef]);
+  const edit = useCallback((...args) => actionsRef.current.onEdit?.(...args), [actionsRef]);
+  const openPhotos = useCallback((...args) => actionsRef.current.onOpenPhotos?.(...args), [actionsRef]);
+  const play = useCallback((...args) => actionsRef.current.onPlay?.(...args), [actionsRef]);
+  const removeMyPostTag = useCallback((...args) => actionsRef.current.onRemoveMyPostTag?.(...args), [actionsRef]);
+  const hideRecommendation = useCallback((...args) => actionsRef.current.hideRecommendation?.(...args), [actionsRef]);
+
+  return (
+    <TicketStub
+      log={item}
+      compactContent
+      mediaViewable={mediaViewable}
+      onOpen={open}
+      onOpenShow={openShow}
+      onOpenPost={capabilities.comment ? comment : undefined}
+      onNotInterested={surface === "everyone" && item.recommendation && capabilities.notInterested ? hideRecommendation : undefined}
+      onComment={capabilities.comment ? comment : undefined}
+      onPreview={capabilities.preview ? preview : undefined}
+      onOpenProfile={capabilities.openProfile ? openProfile : undefined}
+      onOpenArtist={capabilities.openArtist ? openArtist : undefined}
+      onOpenArtistArchive={capabilities.openArtistArchive ? openArtistArchive : undefined}
+      onOpenVenue={capabilities.openVenue ? openVenue : undefined}
+      onReport={capabilities.report ? report : undefined}
+      onEdit={capabilities.edit ? edit : undefined}
+      onOpenPhotos={capabilities.openPhotos ? openPhotos : undefined}
+      onPlay={capabilities.play ? play : undefined}
+      onRemoveMyPostTag={capabilities.removeMyPostTag ? removeMyPostTag : undefined}
+    />
+  );
+});
 
 export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, accountId = null, homeCity, unread = 0, notifUnread = 0, newUser = false, hideHeaderActions = false, onRefresh, onLoadMore, hasMore = false, loadingMore = false, countdownPlan = null, showHomeCountdown = false, suggestedUsers = [], suggestedUsersLoading = false, showSuggestedPitters = false, onFollowUser, isFollowing, isBlocked, onOpenCountdown, onViewAllCountdown, onOpen, onImpression, onDwell, onNotInterested, onUndoNotInterested, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onOpenNearby, onOpenInbox, onOpenNotifications, onOpenMenu, onOpenClips, onReport, onEdit, onOpenPhotos, onPlay, onRemoveMyPostTag, onLogShow, onOpenDiscover }) {
   const { width } = useWindowDimensions();
@@ -41,6 +87,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState(false);
   const refreshControllerRef = useRef(null);
+  const rowActionsRef = useRef({});
   const guideScope = homeGuideStorageKey(accountId);
   const [guideState, setGuideState] = useState(() => ({ scope: guideScope, dismissed: load(guideScope, false) }));
   const guideDismissed = guideState.scope === guideScope ? guideState.dismissed : load(guideScope, false);
@@ -52,7 +99,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
     save(guideScope, true);
   };
   const full = filter === "following" ? followingFeed : filter === "local" ? localFeed : feed;
-  const data = full.slice(0, count);
+  const data = useMemo(() => full.slice(0, count), [count, full]);
   const filteredPageLoading = loadingMore && count >= full.length;
   const surface = filter === "following" ? "following" : filter === "local" ? "local" : "everyone";
   const analyticsRef = useRef({ surface, onImpression, onDwell });
@@ -229,6 +276,58 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
     }
   };
 
+  rowActionsRef.current = {
+    hideRecommendation,
+    onComment,
+    onEdit,
+    onOpen,
+    onOpenArtist,
+    onOpenArtistArchive,
+    onOpenPhotos,
+    onOpenProfile,
+    onOpenVenue,
+    onPlay,
+    onPreview,
+    onRemoveMyPostTag,
+    onReport,
+  };
+  const canComment = typeof onComment === "function";
+  const canEdit = typeof onEdit === "function";
+  const canOpenArtist = typeof onOpenArtist === "function";
+  const canOpenArtistArchive = typeof onOpenArtistArchive === "function";
+  const canOpenPhotos = typeof onOpenPhotos === "function";
+  const canOpenProfile = typeof onOpenProfile === "function";
+  const canOpenVenue = typeof onOpenVenue === "function";
+  const canPlay = typeof onPlay === "function";
+  const canPreview = typeof onPreview === "function";
+  const canRemoveMyPostTag = typeof onRemoveMyPostTag === "function";
+  const canReport = typeof onReport === "function";
+  const canHideRecommendation = typeof onNotInterested === "function";
+  const rowCapabilities = useMemo(() => ({
+    comment: canComment,
+    edit: canEdit,
+    notInterested: canHideRecommendation,
+    openArtist: canOpenArtist,
+    openArtistArchive: canOpenArtistArchive,
+    openPhotos: canOpenPhotos,
+    openProfile: canOpenProfile,
+    openVenue: canOpenVenue,
+    play: canPlay,
+    preview: canPreview,
+    removeMyPostTag: canRemoveMyPostTag,
+    report: canReport,
+  }), [canComment, canEdit, canHideRecommendation, canOpenArtist, canOpenArtistArchive, canOpenPhotos, canOpenProfile, canOpenVenue, canPlay, canPreview, canRemoveMyPostTag, canReport]);
+  const renderFeedItem = useCallback(({ item, index: itemIndex }) => (
+    <FeedTicketRow
+      item={item}
+      itemIndex={itemIndex}
+      mediaViewable={visibleMediaPostIds.has(String(item.id)) ? true : null}
+      surface={surface}
+      actionsRef={rowActionsRef}
+      capabilities={rowCapabilities}
+    />
+  ), [rowCapabilities, surface, visibleMediaPostIds]);
+
   // Concert cards are tall and media-heavy. Stage them gently on phones so
   // image decoding and comment-preview mounts do not all hit one frame.
   return (
@@ -241,7 +340,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
     <FlatList
       data={data}
       extraData={visibleMediaPostIds}
-      keyExtractor={(item) => item.id}
+      keyExtractor={feedKeyExtractor}
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}
       keyboardShouldPersistTaps="handled"
@@ -416,9 +515,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
           ) : null}
         </View>
       )}
-      renderItem={({ item, index: itemIndex }) => (
-        <TicketStub log={item} mediaViewable={visibleMediaPostIds.has(String(item.id)) ? true : null} onOpen={(_unused) => onOpen?.(item, { surface, position: itemIndex })} onOpenShow={(show) => onOpen?.(show, { surface, position: itemIndex })} onOpenPost={onComment} onNotInterested={surface === "everyone" && item.recommendation ? hideRecommendation : undefined} onComment={onComment} onPreview={onPreview} onOpenProfile={onOpenProfile} onOpenArtist={onOpenArtist} onOpenArtistArchive={onOpenArtistArchive} onOpenVenue={onOpenVenue} onReport={onReport} onEdit={onEdit} onOpenPhotos={onOpenPhotos} onPlay={onPlay} onRemoveMyPostTag={onRemoveMyPostTag} />
-      )}
+      renderItem={renderFeedItem}
     />
     </VinylRefreshBoundary>
   );

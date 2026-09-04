@@ -75,6 +75,7 @@ import { SECURITY_TXT_PATH, securityTxtResponse } from "./securityTxt.js";
 import { staticAssetCacheControl } from "./staticAssetCache.js";
 import { randomUUID } from "node:crypto";
 import { createApiResponseHeaders, createApiResponseHeaderSetter } from "./responseHeaders.js";
+import { CAPACITY_CHALLENGE_HEADER } from "./capacityHandshake.js";
 import { binaryApiResponsePayload } from "./binaryApiResponse.js";
 import { reconcileAdminAccount } from "./adminBootstrap.js";
 import { applyHttpServerLimits } from "./httpServerPolicy.js";
@@ -518,7 +519,8 @@ async function handleRequest(req, res) {
   const cors = !PROD && origin && DEV_ORIGINS.has(origin)
     ? { "Access-Control-Allow-Origin": origin, "Access-Control-Allow-Credentials": "true",
         "Access-Control-Allow-Methods": "GET,POST,PATCH,DELETE,OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type, X-Request-Id, X-Pit-Expected-Account", "Access-Control-Expose-Headers": "X-Request-Id, Link, Content-Disposition" }
+        "Access-Control-Allow-Headers": `Content-Type, X-Request-Id, X-Pit-Expected-Account, ${CAPACITY_CHALLENGE_HEADER}`,
+        "Access-Control-Expose-Headers": "X-Request-Id, Link, Content-Disposition, X-Pit-Results-Truncated" }
     : {};
   if (req.method === "OPTIONS") return send(res, 204, "", createApiResponseHeaders(cors));
 
@@ -616,6 +618,9 @@ async function handleRequest(req, res) {
       const expectedAccountHeader = req.headers["x-pit-expected-account"];
       const expectedAccount = Array.isArray(expectedAccountHeader) ? expectedAccountHeader[0] : expectedAccountHeader;
       assertExpectedAccount(expectedAccount, user);
+      const capacityChallengeHeader = req.headers["x-pit-capacity-challenge"];
+      const capacityChallenge = Array.isArray(capacityChallengeHeader)
+        ? capacityChallengeHeader[0] : capacityChallengeHeader;
 
       const setCookies = [];
       const responseHeaders = createApiResponseHeaders();
@@ -628,6 +633,7 @@ async function handleRequest(req, res) {
           : {},
         query, params: match.params, ip, ua: req.headers["user-agent"], token, user,
         host: req.headers.host, proto, origin: `${proto}://${req.headers.host}`, requestId,
+        capacityChallenge,
         signal: requestAbort.signal,
         setCookie: (c) => setCookies.push(c),
         setSession: (s) => setCookies.push(...sessionCookieHeaders(s.token, s.expiresAt, PROD)),

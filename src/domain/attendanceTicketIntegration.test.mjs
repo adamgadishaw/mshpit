@@ -104,15 +104,18 @@ test("the shared post renderer owns ticket presentation and disables generic edi
   assert.match(card, /<ConcertTicketCard/);
   assert.match(card, /style=\{styles\.attendanceTicketCard\}/,
     "feed tickets keep a deliberate boundary below the author identity row");
+  assert.match(card, /<ConcertTicketCard[\s\S]*?<TicketActionRail[\s\S]*?showHref=\{canonicalPostHref\}/,
+    "show links hang from the attendance ticket instead of floating as separate pills");
   assert.match(card, /attendanceTicketCard:\s*\{\s*marginTop:\s*space\(5\)\s*\}/,
     "the author-to-ticket boundary uses shared spacing rather than a fragile inline gap");
   assert.match(card, /&& !log\.attendanceTicket/);
   assert.match(card, /seatLocation: log\.attendanceTicket\.seat \|\| log\.attendanceTicket\.seatLocation/);
   assert.match(card, /onPress=\{attendanceTicketShow && onOpenShow \? \(\) => onOpenShow\(attendanceTicketShow\) : undefined\}/);
   assert.doesNotMatch(card, /onPress=\{\(\) => onOpen\?\.\(log\)\}\s*accessibilityHint="Open this Going post and its comments"/);
-  assert.match(feed, /onOpenShow=\{\(show\) => onOpen\?\.\(show, \{ surface, position: itemIndex \}\)\}/);
+  assert.match(feed, /const openShow = useCallback\(\(show\) => actionsRef\.current\.onOpen\?\.\(show, \{ surface, position: itemIndex \}\)/);
+  assert.match(feed, /onOpenShow=\{openShow\}/);
   assert.match(post, /onOpenShow=\{isOnlineReview \? undefined : onOpenShow\}/);
-  assert.match(profile, /onOpenShow=\{onOpenShow\}/);
+  assert.match(profile, /onOpenShow=\{capabilities\.openShow \? openShow : undefined\}/);
   assert.match(app, /log\.kind === "status" && log\.performanceEvent !== true/);
   assert.ok(app.includes("publicFramePath(frame"), "App delegates canonical history serialization to the tested public-frame helper");
   assert.ok(publicFrameNavigation.includes('frame.openLog?.performanceEvent && frame.openLog?.id'));

@@ -113,7 +113,7 @@ test("production archive routes aggregate complete history with privacy-safe med
   assert.equal(historyShow.cover, null,
     "URL-only historical media cannot become an archive cover without a verified PIT asset");
   assert.equal(response.archive.tours.length, 1, "normalized tour identity prevents punctuation variants from splitting the tour");
-  assert.equal(response.archive.tours[0].name, "NEON-WORLD TOUR", "the archive keeps a real fan-entered display label");
+  assert.equal(response.archive.tours[0].name, "Neon World Tour", "the cleanest real fan-entered label represents the merged tour");
   assert.equal(response.archive.upcoming[0].venue, "Tokyo Dome");
 
   const reviewPage = routes["GET /api/artists/archive/reviews"]({

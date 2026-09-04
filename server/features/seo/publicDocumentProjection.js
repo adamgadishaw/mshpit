@@ -20,6 +20,8 @@ import { publicTicketmasterEventImage } from "../../providerEventImage.js";
 import { publicVenuePhotoPool } from "../../venuePhotoCatalog.js";
 import { projectedOnlineReviewFields } from "../../onlineReviews.js";
 import { archiveShowKey } from "../artistArchive/artistArchiveKeys.js";
+import { venueCoordinates, venueGuideModel } from "../../../src/domain/venueGuide.mjs";
+import { publicVenueFacts } from "../../venueFacts.js";
 import {
   isIndexableMusicEventRecord,
   isStrictCalendarDate,
@@ -571,6 +573,7 @@ function eventCard(row, paths) {
     venuePath: canonicalVenuePath(paths, row),
     providerVenueId: cleanLine(row.venue_provider_id, 180) || null,
     place: cleanLine(row.place, 180) || cleanLine([row.venue_city, row.venue_region, row.venue_country].filter(Boolean).join(", "), 180) || null,
+    coord: venueCoordinates(row),
     date,
     endDate: endDate && endDate >= date ? endDate : null,
     startDateTime,
@@ -886,8 +889,16 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       const reviewCount = count(raw.stats?.review_count);
       const averageRating = memorial ? null : rating(raw.stats?.average_rating);
       const events = memorial ? [] : (raw.events || []).map((event) => eventCard(event, publicPaths)).filter(Boolean);
-      const description = summary(memorial?.summary || bio
-        || `${name} is a music artist on Mshpit. See concert reviews, fan photos, ratings and tour dates.`);
+      const artistSignals = [
+        events.length ? `${events.length} upcoming ${events.length === 1 ? "show" : "shows"}` : "",
+        averageRating != null && reviewCount > 0
+          ? `${averageRating.toFixed(1)}/5 live rating from ${reviewCount} ${reviewCount === 1 ? "review" : "reviews"}`
+          : reviewCount > 0 ? `${reviewCount} concert ${reviewCount === 1 ? "review" : "reviews"}` : "",
+      ].filter(Boolean);
+      const description = summary(memorial?.summary || [
+        bio || `Music artist page for ${name} on Mshpit: concert reviews, fan photos, ratings and upcoming tour dates.`,
+        artistSignals.length ? `${artistSignals.join("; ")}.` : "",
+      ].filter(Boolean).join(" "));
       const concerts = (raw.concerts || []).flatMap((concert) => {
         const date = validDate(concert.date);
         const venue = cleanLine(concert.venue, 180);
@@ -936,7 +947,9 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         // published record; that workflow requires an explicit individual
         // attestation before it can write anything public.
         "@type": memorial ? "Person" : "Thing",
+        "@id": `${absolute(publicOrigin, path)}#artist`,
         name,
+        disambiguatingDescription: "Music artist",
         url: absolute(publicOrigin, path),
         ...(musicBrainzUrl ? { sameAs: [musicBrainzUrl] } : {}),
         ...((bio || memorial?.summary) ? { description: bio || memorial.summary } : {}),
@@ -970,6 +983,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         description,
         ...(isoTimestamp(modifiedAt) ? { dateModified: isoTimestamp(modifiedAt) } : {}),
         about: entity,
+        mainEntity: { "@id": entity["@id"] },
         isPartOf: siteReference(publicOrigin),
         publisher: organizationReference(publicOrigin),
         ...(events.length ? {
@@ -1422,30 +1436,80 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         modificationNotice: null,
       }) : null);
       const image = heroPhoto?.url || null;
-      const place = events.find((event) => event.place)?.place || posts.find((post) => post.city)?.city || null;
+      const contentPlace = events.find((event) => event.place)?.place || posts.find((post) => post.city)?.city || null;
+      const curatedFacts = publicVenueFacts({
+        name,
+        place: contentPlace,
+        providerVenueId: raw.venue?.providerVenueId,
+      });
+      const place = contentPlace || curatedFacts?.place || null;
       const address = events.find((event) => event.address)?.address || null;
-      const description = summary(`${name}${place ? ` in ${place}` : ""}: upcoming concerts, reviews and live music photos on Mshpit.`);
+      const coord = events.find((event) => event.coord)?.coord || curatedFacts?.coord || null;
+      const capacity = curatedFacts?.capacity || null;
+      const guide = venueGuideModel({ name, place, capacity, coord });
+      const descriptionDetails = [
+        guide.capacityLabel ? `a listed capacity of ${guide.capacityLabel}` : null,
+        events.length ? `${events.length} upcoming ${events.length === 1 ? "concert" : "concerts"}` : null,
+        reviewCount ? `${reviewCount} public ${reviewCount === 1 ? "review" : "reviews"}` : null,
+        guide.actions.length ? "live directions, parking and transit searches" : null,
+        "event-specific seating guidance",
+      ].filter(Boolean).join(", ");
+      const description = summary(`${name}${place ? ` in ${place}` : ""} concert venue guide: ${descriptionDetails}.`);
       const breadcrumbs = Object.freeze([
         Object.freeze({ name: "Mshpit", path: "/" }),
         Object.freeze({ name: "Venues", path: "/venues" }),
         Object.freeze({ name, path }),
       ]);
+      const venueUrl = absolute(publicOrigin, path);
+      const venueEntityId = `${venueUrl}#venue`;
+      const venueReviewNodes = venueReviews.flatMap((review) => {
+        if (!review.text && review.rating == null) return [];
+        return [{
+          "@type": "Review",
+          "@id": `${venueUrl}#venue-review-${encodeURIComponent(review.id)}`,
+          author: {
+            "@type": "Person",
+            name: review.author.name,
+            ...(review.author.handle ? { alternateName: `@${review.author.handle}` } : {}),
+          },
+          itemReviewed: { "@id": venueEntityId },
+          ...(review.text ? { reviewBody: review.text } : {}),
+          ...(review.rating != null ? {
+            reviewRating: { "@type": "Rating", ratingValue: review.rating, bestRating: 5, worstRating: 1 },
+          } : {}),
+          ...(isoTimestamp(review.createdAt) ? { datePublished: isoTimestamp(review.createdAt) } : {}),
+        }];
+      });
       const venueEntity = {
         "@context": "https://schema.org",
         "@type": "MusicVenue",
-        "@id": `${absolute(publicOrigin, path)}#venue`,
+        "@id": venueEntityId,
         name,
-        url: absolute(publicOrigin, path),
+        url: venueUrl,
+        description,
+        mainEntityOfPage: { "@id": `${absolute(publicOrigin, path)}#page` },
         ...(address ? { address } : {}),
+        ...(coord ? {
+          geo: {
+            "@type": "GeoCoordinates",
+            latitude: coord.lat,
+            longitude: coord.lng,
+          },
+        } : {}),
+        ...(capacity ? { maximumAttendeeCapacity: capacity } : {}),
+        ...(guide.actions.find((action) => action.id === "directions")?.url
+          ? { hasMap: guide.actions.find((action) => action.id === "directions").url }
+          : {}),
         ...(licensedVenuePhoto ? { image: venuePhotoSchema(licensedVenuePhoto, name) } : fanImage ? { image: fanImage } : {}),
+        ...(venueReviewNodes.length ? { review: venueReviewNodes } : {}),
       };
       return Object.freeze({
         kind: "venue",
         siteName: SITE_NAME,
-        title: `${name} concert venue — upcoming shows, reviews & photos | Mshpit`,
+        title: `${name} concert venue guide — shows, seating & reviews | Mshpit`,
         description,
         canonicalPath: path,
-        canonicalUrl: absolute(publicOrigin, path),
+        canonicalUrl: venueUrl,
         image,
         imageProvenance: licensedVenuePhoto ? "licensed-venue"
           : fanImage ? "fan-gallery" : null,
@@ -1455,7 +1519,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
           : fanImage && primaryAsset?.kind === "image" ? primaryAsset.height : null,
         imageMimeType: licensedVenuePhoto ? null
           : fanImage && primaryAsset?.kind === "image" ? primaryAsset.mimeType : null,
-        venue: Object.freeze({ name, place, address, heroPhoto }),
+        venue: Object.freeze({ name, place, address, heroPhoto, capacity, coord, guide }),
         venuePhotos: licensedVenuePhotos,
         venueReviewStats: Object.freeze({ reviewCount, ratingCount, averageRating }),
         venueReviews: Object.freeze(venueReviews),
@@ -1465,11 +1529,12 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         jsonLd: [Object.freeze(venueEntity), Object.freeze({
           "@context": "https://schema.org",
           "@type": "CollectionPage",
-          "@id": `${absolute(publicOrigin, path)}#page`,
+          "@id": `${venueUrl}#page`,
           name: `${name} on Mshpit`,
-          url: absolute(publicOrigin, path),
+          url: venueUrl,
           description,
-          about: { "@id": `${absolute(publicOrigin, path)}#venue` },
+          about: { "@id": venueEntityId },
+          mainEntity: { "@id": venueEntityId },
           ...(events.length ? { hasPart: events.slice(0, 12).map((event) => ({ "@id": `${absolute(publicOrigin, event.path)}#page` })) } : {}),
           isPartOf: siteReference(publicOrigin),
           publisher: organizationReference(publicOrigin),

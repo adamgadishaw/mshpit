@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   archiveShowKey,
+  archiveTourNameIdentity,
   archiveTourKey,
   decodeArchiveShowKey,
   decodeArchiveTourKey,
@@ -12,6 +13,8 @@ import { createArtistArchiveService } from "./artistArchiveService.js";
 function row({
   id,
   userId = id,
+  artist = "Alpha",
+  artistKey = "alpha",
   venue = "History Hall",
   city = "Toronto",
   date = "2024-06-01",
@@ -31,8 +34,8 @@ function row({
     u_initials: "FN",
     u_avatar: null,
     u_color: "#123456",
-    artist: "Alpha",
-    artist_key: "alpha",
+    artist,
+    artist_key: artistKey,
     venue,
     venue_key: venue.toLowerCase().replaceAll(" ", "-"),
     city,
@@ -55,7 +58,8 @@ function fixture(rows, { mediaForId, upcomingRows } = {}) {
     if (show) return entry.date === show.date
       && entry.venue_key.toLowerCase() === show.venueIdentity.toLowerCase();
     if (tour.tourIdentity.startsWith("year:")) return !entry.tour && entry.date.startsWith(tour.tourIdentity.slice(5));
-    return normalizeArchivePart(entry.tour) === normalizeArchivePart(String(tour.tourIdentity || "").slice(5));
+    return archiveTourNameIdentity(entry.tour, entry.artist)
+      === archiveTourNameIdentity(String(tour.tourIdentity || "").slice(5), entry.artist);
   });
   const repository = {
     findReviewRows: () => rows,
@@ -101,7 +105,7 @@ test("archive keys are opaque, reversible, typed, and reject malformed input", (
   });
   assert.equal(show, archiveShowKey({ artistIdentity: "alpha", venueIdentity: "history-hall", city: "San Francisco", date: "2024-06-01" }));
   const tour = archiveTourKey({ artistIdentity: "alpha", tourIdentity: "tour:neon world tour", tourLabel: "Neon World Tour" });
-  assert.deepEqual(decodeArchiveTourKey(tour), { artistIdentity: "alpha", tourIdentity: "tour:neon world tour", tourLabel: "" });
+  assert.deepEqual(decodeArchiveTourKey(tour), { artistIdentity: "alpha", tourIdentity: "tour:neon", tourLabel: "" });
   assert.equal(decodeArchiveShowKey(tour), null);
   assert.equal(decodeArchiveTourKey("tour.not-base64"), null);
   const longShow = archiveShowKey({
@@ -204,6 +208,41 @@ test("tour identity collapses case and punctuation variants without losing their
   const page = service.readReviews({ artistKey: "alpha", name: "Alpha", tourKey: archive.tours[0].key, limit: 20 });
   assert.deepEqual(page.reviews.map((review) => review.id), ["new-display", "punctuation", "extra-spaces"]);
   assert.equal(page.total, 3);
+});
+
+test("J. Cole Fall-Off labels amalgamate across fans while K.O.D stays a distinct tour", () => {
+  const rows = [
+    row({ id: "adam", userId: "adam", artist: "J. Cole", artistKey: "j-cole", venue: "Scotiabank Arena", date: "2026-07-27", tour: "The Fall-Off Tour", createdAt: 6 }),
+    row({ id: "buddy", userId: "buddy", artist: "J. Cole", artistKey: "j-cole", venue: "Scotiabank Arena", date: "2026-07-27", tour: "The Fall off", createdAt: 5 }),
+    row({ id: "cloe", userId: "cloe", artist: "J. Cole", artistKey: "j-cole", venue: "Scotiabank Arena", date: "2026-07-27", tour: "The fall-off", createdAt: 4 }),
+    row({ id: "andrew", userId: "andrew", artist: "J. Cole", artistKey: "j-cole", venue: "Scotiabank Arena", date: "2026-07-28", tour: "The Fall Off World Tour", createdAt: 3 }),
+    row({ id: "kod", userId: "kod-fan", artist: "J. Cole", artistKey: "j-cole", venue: "History Hall", date: "2018-10-04", tour: "K.O.D", createdAt: 2 }),
+  ];
+  const service = fixture(rows);
+  const archive = service.readArchive({ artistKey: "j-cole", name: "J. Cole" });
+
+  assert.equal(archive.tours.length, 2, "only safe presentation and generic suffix variants merge");
+  const fallOff = archive.tours.find((tour) => tour.showCount === 2);
+  assert.equal(fallOff?.name, "The Fall-Off Tour", "the cleanest label represents the merged tour");
+  assert.equal(fallOff?.ratingCount, 4);
+  const page = service.readReviews({ artistKey: "j-cole", name: "J. Cole", tourKey: fallOff.key, limit: 20 });
+  assert.deepEqual(page.reviews.map((review) => review.id), ["adam", "buddy", "cloe", "andrew"]);
+  assert.equal(page.total, 4);
+  assert.equal(archive.tours.find((tour) => tour.name === "K.O.D")?.showCount, 1);
+});
+
+test("tour identity keeps meaningful title words distinct", () => {
+  const archive = fixture([
+    row({ id: "base", venue: "Arena One", date: "2025-06-01", tour: "The Fall-Off Tour" }),
+    row({ id: "arena", venue: "Arena Two", date: "2025-06-02", tour: "The Fall-Off Arena Tour" }),
+    row({ id: "after", venue: "Arena Three", date: "2025-06-03", tour: "The Fall-Off After Hours Tour" }),
+  ]).readArchive({ artistKey: "alpha", name: "Alpha" });
+
+  assert.deepEqual(archive.tours.map((tour) => tour.name).sort(), [
+    "The Fall-Off After Hours Tour",
+    "The Fall-Off Arena Tour",
+    "The Fall-Off Tour",
+  ]);
 });
 
 test("one performance merges city aliases and keeps a representative city label", () => {

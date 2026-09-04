@@ -24,14 +24,18 @@ test("shared profile media uses disk caching, recycling, and a visible fallback"
   const smartImage = read("../components/SmartImage.jsx");
   assert.match(avatar, /from "expo-image"/);
   assert.match(avatar, /PixelRatio/);
-  assert.match(avatar, /previewSrc\(user\.avatarUri, previewWidth\)/);
+  assert.match(avatar, /previewSrc\(rawAvatarUri, previewWidth\)/);
   assert.match(avatar, /cachePolicy="memory-disk"/);
-  assert.match(avatar, /priority=\{priority\}/);
-  assert.match(avatar, /loading=\{priority === "high" \? "eager" : "lazy"\}/);
+  assert.match(avatar, /priority=\{policy\.priority\}/);
+  assert.match(avatar, /loading=\{policy\.loading\}/);
+  assert.match(avatar, /versionedImageCacheKey/);
+  assert.match(avatar, /source=\{source\}/);
   assert.match(avatar, /allowDownscaling/);
   assert.match(avatar, /enforceEarlyResizing/);
   assert.match(avatar, /recyclingKey=/);
-  assert.match(avatar, /onError=\{\(\) => setSourceIndex/);
+  assert.match(avatar, /onError=\{fail\}/);
+  assert.match(avatar, /activeScopeRef\.current !== requestScope/,
+    "a late failure from a recycled avatar cannot advance the new member's fallback ladder");
   assert.match(avatar, /\{fallback\}[\s\S]*!!avatarUri/,
     "initials remain painted underneath a loading or failed network photo");
   assert.match(smartImage, /from "expo-image"/);

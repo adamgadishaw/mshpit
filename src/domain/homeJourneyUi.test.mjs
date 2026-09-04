@@ -37,22 +37,27 @@ test("concert posts link to the exact post and the canonical artist concert arch
   assert.ok(card.includes("concertPostContext(log)"));
   assert.ok(card.includes("href={canonicalPostHref}"));
   assert.ok(card.includes(">View this show</Text>"));
-  assert.ok(card.includes("href={postContext.artistConcertsHref}"));
-  assert.ok(card.split("href={postContext.artistConcertsHref}").length - 1 >= 2);
-  assert.ok(card.includes("attendanceTicketCard && canCompareArtistShows"));
+  assert.ok(card.includes("function TicketActionRail"));
+  assert.ok(card.split("<TicketActionRail").length - 1 >= 2);
+  assert.ok(card.split("compareHref={canCompareArtistShows ? postContext.artistConcertsHref : null}").length - 1 >= 2);
+  assert.ok(card.includes("ticketActionRail"));
+  assert.ok(card.includes("borderTopWidth: 0"), "the action rail hangs directly from the ticket edge");
+  assert.ok(!card.includes("statusContextActions"));
   const callback = card.slice(card.indexOf("onOpenArtistArchive?.("));
   const artist = callback.indexOf("postContext.artist,");
   const artistKey = callback.indexOf("postContext.artistKey,");
   const publicSlug = callback.indexOf("postContext.artistPublicSlug");
   assert.ok(artist >= 0 && artist < artistKey && artistKey < publicSlug);
-  assert.ok(card.includes("Compare {postContext.artist} shows"));
+  assert.ok(card.includes("Compare {artist} shows"));
   assert.ok(!card.includes("tourPath"));
   assert.ok(!card.includes("tourHref"));
 });
 
 test("artist archive navigation reaches feed, direct post, and member profile cards", () => {
-  assert.ok(feed.includes("onOpenArtistArchive={onOpenArtistArchive}"));
+  assert.ok(feed.includes("onOpenArtistArchive={capabilities.openArtistArchive ? openArtistArchive : undefined}"));
+  assert.ok(feed.includes("onOpenArtistArchive,"));
   assert.ok(post.includes("onOpenArtistArchive={isOnlineReview ? undefined : onOpenArtistArchive}"));
-  assert.ok(profile.includes("onOpenArtistArchive={onOpenArtistArchive}"));
+  assert.ok(profile.includes("onOpenArtistArchive={capabilities.openArtistArchive ? openArtistArchive : undefined}"));
+  assert.ok(profile.includes("onOpenArtistArchive,"));
   assert.ok(app.split("onOpenArtistArchive={openArtistArchive}").length - 1 >= 3);
 });

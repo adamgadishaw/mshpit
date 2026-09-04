@@ -1,10 +1,22 @@
 import { DatabaseSync } from "node:sqlite";
 import { existsSync } from "node:fs";
 import { registerPitSqliteFunctions } from "../server/sqliteFunctions.js";
+import { PIT_SQLITE_APPLICATION_ID } from "../server/dataDirectory.js";
 
-// Tables whose absence means a snapshot is unusable even when SQLite's page
-// structure itself is valid.
-export const CRITICAL_BACKUP_TABLES = Object.freeze(["users", "posts", "artists"]);
+// These tables contain the irreplaceable product graph. A SQLite file can pass
+// page integrity while still being the wrong or partially initialized Pit
+// database, so recovery proof covers artist profiles/photos, venue reviews,
+// tour coverage, and app metadata in addition to accounts and posts.
+export const CRITICAL_BACKUP_TABLES = Object.freeze([
+  "schema_version",
+  "users",
+  "posts",
+  "artists",
+  "tour_dates",
+  "artist_profiles",
+  "venue_reviews",
+  "app_meta",
+]);
 
 export function backupRetentionCount(value, fallback = 7) {
   const raw = value == null || String(value).trim() === "" ? fallback : Number(value);
@@ -45,10 +57,28 @@ export function verifyBackupSnapshot(path, expected = null) {
     const integrity = snapshot.prepare("PRAGMA integrity_check").get();
     const verdict = String(Object.values(integrity)[0] || "");
     if (verdict !== "ok") throw new Error(`integrity_check failed: ${verdict}`);
+    const foreignKeyFailures = snapshot.prepare("PRAGMA foreign_key_check").all();
+    if (foreignKeyFailures.length) {
+      // Do not print table/row samples: recovery output can be copied into
+      // third-party incident tickets. The count is enough to reject the copy.
+      throw new Error(`foreign_key_check failed (${foreignKeyFailures.length} violation(s))`);
+    }
+
+    const applicationId = Number(snapshot.prepare("PRAGMA application_id").get()?.application_id || 0);
+    if (applicationId !== 0 && applicationId !== PIT_SQLITE_APPLICATION_ID) {
+      throw new Error(`unexpected SQLite application_id: ${applicationId}`);
+    }
 
     const got = backupTableCounts(snapshot);
     for (const table of CRITICAL_BACKUP_TABLES) {
       if (got[table] === null) throw new Error(`${table} is missing from the snapshot`);
+    }
+    if (got.schema_version < 1) throw new Error("schema_version is empty in the snapshot");
+    if (got.users < 1 || got.artists < 1) {
+      throw new Error("critical account or artist catalogue data is empty in the snapshot");
+    }
+    if (applicationId === 0 && got.posts < 1) {
+      throw new Error("unmarked legacy snapshot has no posts");
     }
 
     if (expected) {

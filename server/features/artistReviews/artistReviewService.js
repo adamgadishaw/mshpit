@@ -52,10 +52,20 @@ function artistReviewProjection(post) {
   };
 }
 
-export function createArtistReviewService({ repository, projectPost, attachViewerLikes }) {
+export function createArtistReviewService({
+  repository,
+  projectPost,
+  projectPosts = null,
+  attachViewerLikes,
+}) {
   if (!repository?.findTopReviews) throw new TypeError("Artist reviews require a repository");
   if (typeof projectPost !== "function") throw new TypeError("Artist reviews require the canonical post projector");
+  if (projectPosts != null && typeof projectPosts !== "function") {
+    throw new TypeError("Artist review page projector must be a function");
+  }
   if (typeof attachViewerLikes !== "function") throw new TypeError("Artist reviews require the viewer-like page projector");
+  const projectPage = projectPosts
+    || ((rows, viewerId) => rows.map((row) => projectPost(row, viewerId)));
 
   return Object.freeze({
     readTopReviews({ artistKey = null, name = null, viewerId = null, limit = 3 } = {}) {
@@ -66,7 +76,7 @@ export function createArtistReviewService({ repository, projectPost, attachViewe
         limit: boundedLimit(limit),
       });
       const rowsWithViewerLikes = attachViewerLikes(rows, viewerId);
-      return rowsWithViewerLikes.map((row) => artistReviewProjection(projectPost(row, viewerId)));
+      return projectPage(rowsWithViewerLikes, viewerId).map(artistReviewProjection);
     },
   });
 }

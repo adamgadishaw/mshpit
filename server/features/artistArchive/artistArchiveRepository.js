@@ -1,6 +1,6 @@
 import { activeAccountSql } from "../../accountVisibility.js";
 import { visibleTourDateRowsFrom } from "../../tourDateVisibility.js";
-import { archiveIdentityPart, normalizeArchivePart } from "./artistArchiveKeys.js";
+import { archiveIdentityPart, archiveTourNameIdentity } from "./artistArchiveKeys.js";
 import { inPersonReviewSql } from "../../onlineReviews.js";
 
 const VIEWER = "(SELECT viewer_id FROM archive_scope)";
@@ -44,7 +44,10 @@ export function createArtistArchiveRepository(database) {
   // Use the exact same normalization at aggregation and SQL selection time.
   // SQLite's LOWER/TRIM cannot collapse punctuation or handle all Unicode case
   // variants, which could otherwise make a tour card omit matching reviews.
-  database.function("pit_archive_normalize", { deterministic: true }, normalizeArchivePart);
+  // Keep two declared parameters so node:sqlite registers a two-argument SQL
+  // function; the defaulted JS helper itself reports a length of one.
+  database.function("pit_archive_tour_identity", { deterministic: true },
+    (tour, artist) => archiveTourNameIdentity(tour, artist));
   database.function("pit_archive_identity", { deterministic: true }, archiveIdentityPart);
   const byArtistKey = database.prepare(reviewQuery(
     "(p.artist_key=? OR (p.artist_key IS NULL AND LOWER(p.artist)=LOWER(?)))",
@@ -58,7 +61,7 @@ export function createArtistArchiveRepository(database) {
       )),
       tour: database.prepare(reviewQuery(
         "(p.artist_key=? OR (p.artist_key IS NULL AND LOWER(p.artist)=LOWER(?)))",
-        { filterSql: "AND pit_archive_normalize(p.tour)=?", cursor: true },
+        { filterSql: "AND pit_archive_tour_identity(p.tour,p.artist)=?", cursor: true },
       )),
       year: database.prepare(reviewQuery(
         "(p.artist_key=? OR (p.artist_key IS NULL AND LOWER(p.artist)=LOWER(?)))",
@@ -67,19 +70,19 @@ export function createArtistArchiveRepository(database) {
     },
     name: {
       show: database.prepare(reviewQuery("LOWER(p.artist)=LOWER(?)", { filterSql: "AND p.date=? AND pit_archive_identity(COALESCE(NULLIF(TRIM(p.venue_key),''),p.venue))=?", cursor: true })),
-      tour: database.prepare(reviewQuery("LOWER(p.artist)=LOWER(?)", { filterSql: "AND pit_archive_normalize(p.tour)=?", cursor: true })),
+      tour: database.prepare(reviewQuery("LOWER(p.artist)=LOWER(?)", { filterSql: "AND pit_archive_tour_identity(p.tour,p.artist)=?", cursor: true })),
       year: database.prepare(reviewQuery("LOWER(p.artist)=LOWER(?)", { filterSql: "AND COALESCE(TRIM(p.tour),'')='' AND SUBSTR(p.date,1,4)=?", cursor: true })),
     },
   };
   const countQueries = {
     key: {
       show: database.prepare(reviewCountQuery("(p.artist_key=? OR (p.artist_key IS NULL AND LOWER(p.artist)=LOWER(?)))", "AND p.date=? AND pit_archive_identity(COALESCE(NULLIF(TRIM(p.venue_key),''),p.venue))=?")),
-      tour: database.prepare(reviewCountQuery("(p.artist_key=? OR (p.artist_key IS NULL AND LOWER(p.artist)=LOWER(?)))", "AND pit_archive_normalize(p.tour)=?")),
+      tour: database.prepare(reviewCountQuery("(p.artist_key=? OR (p.artist_key IS NULL AND LOWER(p.artist)=LOWER(?)))", "AND pit_archive_tour_identity(p.tour,p.artist)=?")),
       year: database.prepare(reviewCountQuery("(p.artist_key=? OR (p.artist_key IS NULL AND LOWER(p.artist)=LOWER(?)))", "AND COALESCE(TRIM(p.tour),'')='' AND SUBSTR(p.date,1,4)=?")),
     },
     name: {
       show: database.prepare(reviewCountQuery("LOWER(p.artist)=LOWER(?)", "AND p.date=? AND pit_archive_identity(COALESCE(NULLIF(TRIM(p.venue_key),''),p.venue))=?")),
-      tour: database.prepare(reviewCountQuery("LOWER(p.artist)=LOWER(?)", "AND pit_archive_normalize(p.tour)=?")),
+      tour: database.prepare(reviewCountQuery("LOWER(p.artist)=LOWER(?)", "AND pit_archive_tour_identity(p.tour,p.artist)=?")),
       year: database.prepare(reviewCountQuery("LOWER(p.artist)=LOWER(?)", "AND COALESCE(TRIM(p.tour),'')='' AND SUBSTR(p.date,1,4)=?")),
     },
   };
@@ -90,7 +93,7 @@ export function createArtistArchiveRepository(database) {
       return { identityArgs, kind: "year", filterArgs: [String(tour.tourIdentity).slice(5)] };
     }
     const normalizedTourIdentity = String(tour?.tourIdentity || "").startsWith("tour:")
-      ? normalizeArchivePart(String(tour.tourIdentity).slice(5))
+      ? archiveTourNameIdentity(String(tour.tourIdentity).slice(5), name)
       : "";
     return { identityArgs, kind: "tour", filterArgs: [normalizedTourIdentity] };
   }
