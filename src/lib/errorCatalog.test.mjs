@@ -53,6 +53,7 @@ test("server failure codes normalize to stable PIT references", () => {
     DATABASE_UNAVAILABLE: "PIT-SVC-001",
     STORAGE_UNAVAILABLE: "PIT-SVC-001",
     MEDIA_STORAGE_UNAVAILABLE: "PIT-UPLOAD-001",
+    SHARE_ARTWORK_REQUIRED: "PIT-SHARE-001",
     SHARE_RENDER_UNAVAILABLE: "PIT-SVC-001",
     REQUEST_TOO_LARGE: "PIT-REQ-005",
     MEDIA_TYPE_UNSUPPORTED: "PIT-UPLOAD-002",
@@ -66,6 +67,14 @@ test("server failure codes normalize to stable PIT references", () => {
     assert.equal(catalogueCode({ serverCode, status: 500 }), pitCode);
     assert.ok(ERROR_CATALOG[pitCode]);
   }
+});
+
+test("missing share artwork has specific non-retryable guidance", () => {
+  assert.equal(catalogueCode({ serverCode: "SHARE_ARTWORK_REQUIRED", status: 409 }), "PIT-SHARE-001");
+  const entry = catalogEntry("PIT-SHARE-001");
+  assert.equal(entry.retryable, false);
+  assert.match(entry.message, /rights-cleared artist photo/i);
+  assert.match(entry.guidance, /admin or verified artist.*artist page/i);
 });
 
 test("email verification failures keep account access and media upload guidance distinct", () => {

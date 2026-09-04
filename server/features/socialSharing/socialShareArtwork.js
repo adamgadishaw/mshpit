@@ -45,7 +45,7 @@ export function trustedShareArtworkUrl(candidate, { env = process.env } = {}) {
   if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return null;
   const parsed = cleanUrl(candidate.url);
   if (!parsed) return null;
-  if (candidate.source !== "owned-media") return null;
+  if (!["owned-media", "licensed-media"].includes(candidate.source)) return null;
 
   const base = ownedMediaBase(env);
   if (!base || parsed.origin !== base.origin || !pathIsWithinBase(parsed.pathname, base.pathname)) return null;

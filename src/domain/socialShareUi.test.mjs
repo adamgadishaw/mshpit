@@ -63,6 +63,21 @@ test("share artwork is created only after an explicit share action and stays pri
   assert.match(api, /new Uint8Array\(buffer\)/);
 });
 
+test("a missing rights-cleared attendance photo explains the required fix without offering a pointless retry", () => {
+  const studio = source("../components/SocialShareStudio.jsx");
+
+  assert.match(studio, /setAssetState\(\{ status: "unavailable", asset: null, error \}\)/,
+    "the share modal preserves the typed API failure instead of flattening every failure into one state");
+  assert.match(studio, /assetState\.error\?\.serverCode === "SHARE_ARTWORK_REQUIRED"/,
+    "missing eligible artwork is distinguished from a temporary renderer failure");
+  assert.match(studio, /This ticket needs a rights-cleared artist photo\./);
+  assert.match(studio, /A Mshpit admin or verified artist can add one on the artist page\./);
+  assert.match(studio, /assetState\.status === "unavailable" && !shareArtworkRequired/,
+    "Retry remains available for temporary failures but is hidden when no eligible photo exists");
+  assert.match(studio, /disabled=\{!!busyAction\}\s*icon="external"\s*label="Copy link"/s,
+    "Copy link remains available even when artwork cannot be generated");
+});
+
 test("Instagram uses the Story composer in native builds and an honest browser share fallback", () => {
   const studio = source("../components/SocialShareStudio.jsx");
   const native = source("../lib/socialShare.native.js");

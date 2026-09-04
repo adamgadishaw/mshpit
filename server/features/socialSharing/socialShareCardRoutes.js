@@ -42,6 +42,49 @@ function trustedArtworkCandidate(url, source, env) {
   return trusted ? Object.freeze({ url: trusted, source }) : null;
 }
 
+function boundedAttributionText(value, max) {
+  if (typeof value !== "string") return null;
+  const text = value.normalize("NFKC")
+    .replace(/[\u0000-\u001f\u007f-\u009f]/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+  return text && text.length <= max ? text : null;
+}
+
+function boundedAttributionUrl(value) {
+  if (typeof value !== "string" || !value.trim() || value.length > 2_048) return null;
+  try {
+    const parsed = new URL(value.trim());
+    if (parsed.protocol !== "https:" || parsed.username || parsed.password
+      || parsed.port || parsed.hash) return null;
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
+function licensedArtistArtworkCandidate(photo, env) {
+  if (!photo || typeof photo !== "object" || Array.isArray(photo)) return null;
+  const transport = trustedArtworkCandidate(photo.uri, "licensed-media", env);
+  const title = boundedAttributionText(photo.title, 240);
+  const creator = boundedAttributionText(photo.creator, 120);
+  const license = boundedAttributionText(photo.license, 40);
+  const licenseUrl = boundedAttributionUrl(photo.licenseUrl);
+  const sourcePage = boundedAttributionUrl(photo.sourcePage);
+  const modificationNotice = boundedAttributionText(photo.modificationNotice, 160);
+  if (!transport || !title || !creator || !license || !licenseUrl
+    || !sourcePage || !modificationNotice) return null;
+  return Object.freeze({
+    ...transport,
+    title,
+    creator,
+    license,
+    licenseUrl,
+    sourcePage,
+    modificationNotice,
+  });
+}
+
 function projectedOfficialArtwork(document, env) {
   if (["event", "concert"].includes(document?.kind)) return null;
   if (document?.kind !== "artist" || !document.artist
@@ -111,7 +154,12 @@ async function projectedAttendanceArtwork(document, resolvePublicDocument, env) 
   return Object.freeze(result);
 }
 
-function attendanceArtworkCandidates(ticket, env, resolveCurrentArtistProfileImage) {
+function attendanceArtworkCandidates(
+  ticket,
+  env,
+  resolveCurrentArtistProfileImage,
+  resolveCurrentLicensedArtistPhoto,
+) {
   const persistedArtwork = trustedArtworkCandidate(ticket?.artistPhotoUri, "owned-media", env);
   let currentProfileImage = null;
   if (typeof resolveCurrentArtistProfileImage === "function") {
@@ -128,6 +176,20 @@ function attendanceArtworkCandidates(ticket, env, resolveCurrentArtistProfileIma
   }
   const currentArtwork = trustedArtworkCandidate(currentProfileImage, "owned-media", env);
   if (currentArtwork) return [currentArtwork];
+  let licensedPhoto = null;
+  if (typeof resolveCurrentLicensedArtistPhoto === "function") {
+    try {
+      licensedPhoto = resolveCurrentLicensedArtistPhoto({
+        artist: ticket.artist,
+        artistKey: ticket.artistKey,
+      });
+    } catch {
+      // A licensed catalogue is a fallback. If it cannot prove both identity
+      // and rights, the export remains unavailable instead of using provider art.
+    }
+  }
+  const licensedArtwork = licensedArtistArtworkCandidate(licensedPhoto, env);
+  if (licensedArtwork) return [licensedArtwork];
   // A persisted first-party URL without a readable current profile cannot be
   // checked for revocation, so fail closed rather than resurrecting it.
   if (persistedArtwork) return [];
@@ -137,6 +199,7 @@ function attendanceArtworkCandidates(ticket, env, resolveCurrentArtistProfileIma
 export function publicAttendanceTicketShareSnapshot(value, {
   env = process.env,
   resolveCurrentArtistProfileImage = null,
+  resolveCurrentLicensedArtistPhoto = null,
 } = {}) {
   let ticket = null;
   try { ticket = typeof value === "string" ? JSON.parse(value) : value; }
@@ -160,7 +223,7 @@ export function publicAttendanceTicketShareSnapshot(value, {
     artist,
     artistKey,
     artistPhotoUri: ticket.artistPhotoUri,
-  }, env, resolveCurrentArtistProfileImage);
+  }, env, resolveCurrentArtistProfileImage, resolveCurrentLicensedArtistPhoto);
   return Object.freeze({
     kind: "event",
     event: Object.freeze({
@@ -185,6 +248,7 @@ export function socialShareCardRoutes({
   requireUser,
   resolvePublicDocument,
   resolveCurrentArtistProfileImage = null,
+  resolveCurrentLicensedArtistPhoto = null,
   renderer = createSocialShareCardRenderer(),
   artworkEnv = process.env,
 } = {}) {
@@ -233,7 +297,11 @@ export function socialShareCardRoutes({
         if (!model && document.post?.kind === "status") {
           const ticketDocument = publicAttendanceTicketShareSnapshot(
             postBoundary.attendance_ticket,
-            { env: artworkEnv, resolveCurrentArtistProfileImage },
+            {
+              env: artworkEnv,
+              resolveCurrentArtistProfileImage,
+              resolveCurrentLicensedArtistPhoto,
+            },
           );
           const eventId = ticketDocument?.event?.id || null;
           const resolvedEventDocument = eventId
@@ -289,7 +357,7 @@ export function socialShareCardRoutes({
         const currentArtistArtwork = attendanceArtworkCandidates({
           artist: document?.event?.artist,
           artistKey: document?.event?.artistKey,
-        }, artworkEnv, resolveCurrentArtistProfileImage)[0]
+        }, artworkEnv, resolveCurrentArtistProfileImage, resolveCurrentLicensedArtistPhoto)[0]
           || (typeof resolveCurrentArtistProfileImage !== "function" ? relatedArtwork.artist : null);
         model = eventShareCardModel(document, intent, {
           authorName: user.name,
@@ -305,6 +373,14 @@ export function socialShareCardRoutes({
       }
 
       if (!model) throw new ApiError(404, "That item is not available to share.", "NOT_FOUND");
+      const requiresArtwork = model.variant === "going" || model.variant === "interested";
+      if (requiresArtwork && (!Array.isArray(model.artwork) || model.artwork.length === 0)) {
+        throw new ApiError(
+          409,
+          "This ticket needs a rights-cleared artist photo before it can be shared.",
+          "SHARE_ARTWORK_REQUIRED",
+        );
+      }
       let rendered;
       try {
         rendered = await renderer.render(model, { signal: ctx.signal || null });

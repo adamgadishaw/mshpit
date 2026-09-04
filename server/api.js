@@ -17,6 +17,7 @@ import {
 } from "./emailService.js";
 import { AUDIENCES, audienceSize, campaignProgress, drainCampaign, pauseCampaign, startCampaign } from "./emailQueue.js";
 import { db, DATABASE_PATH, q, emailStmts, badgeStmts, customBadgesFor, publicUser as storedPublicUser, parseJsonArray, parseJsonObject, artistStmts, publicArtist, artistRow, artistSearchKey, normName, pruneMissingArtists } from "./db.js";
+import { publicArtistPhoto } from "./artistPhotoCatalog.js";
 import { BADGE_COLORS, BADGE_GLYPHS, BADGE_KINDS, validateBadge } from "../src/domain/badgeArt.mjs";
 import { alertCooldownMs, alertRecipient, alertsEnabled, errorStats, maybeAlert, recentErrors, recordError } from "./errorLog.js";
 import { genreClaim, resolveGenre, storedClaims, upsertClaim, withoutSource } from "../src/domain/genre.mjs";
@@ -1646,6 +1647,21 @@ function ticketText(value, max) {
   return clean(raw, { max }) || null;
 }
 
+function attendanceTicketLicensedArtistAttribution(photo) {
+  if (!photo || typeof photo !== "object") return null;
+  const attribution = {
+    source: photo.source === "licensed-media" || photo.source === "licensed"
+      ? "licensed-media" : null,
+    title: ticketText(photo.title, 240),
+    creator: ticketText(photo.creator, 120),
+    license: ticketText(photo.license, 40),
+    licenseUrl: verifiedHttpsUrl(photo.licenseUrl),
+    sourcePage: verifiedHttpsUrl(photo.sourcePage),
+    modificationNotice: ticketText(photo.modificationNotice, 160),
+  };
+  return Object.values(attribution).every(Boolean) ? attribution : null;
+}
+
 function storedAttendanceTicket(value) {
   const raw = parsedStoredObject(value);
   if (!raw || Number(raw.version) !== 1 || raw.state !== "going") return null;
@@ -1667,6 +1683,7 @@ function storedAttendanceTicket(value) {
   );
   const accessApproximateValue = raw.accessStartApproximate
     ?? (!doorsVerified ? raw.doorsApproximate : null);
+  const artistPhotoAttribution = attendanceTicketLicensedArtistAttribution(raw.artistPhotoAttribution);
   return {
     version: 1,
     state: "going",
@@ -1692,6 +1709,7 @@ function storedAttendanceTicket(value) {
     doorsAt,
     doorsVerified: doorsAt ? true : null,
     artistPhotoUri: verifiedHttpsUrl(raw.artistPhotoUri),
+    ...(artistPhotoAttribution ? { artistPhotoAttribution } : {}),
     eventImageUri: provider === "ticketmaster" ? verifiedHttpsUrl(raw.eventImageUri) : null,
     seat: storedAttendanceTicketSeat(raw.seat),
   };
@@ -1706,18 +1724,39 @@ function attendanceTicketArtistProfilePhoto({ artistKey, artist } = {}) {
   return safePublicArtistProfileImage(profile, "avatar");
 }
 
-function attendanceTicketArtistPhoto(row) {
+function attendanceTicketLicensedArtistPhoto({ artistKey, artist } = {}) {
+  const key = normName(artistKey || artist);
+  if (!key) return null;
+  const artistRecord = artistStmts.byNorm.get(key);
+  return publicArtistPhoto(key, {
+    artistMbid: artistRecord?.mbid || null,
+  });
+}
+
+function attendanceTicketArtistArtwork(row) {
   const profilePhoto = attendanceTicketArtistProfilePhoto({
     artist: row.artist,
     artistKey: row.artist_key,
   });
-  if (profilePhoto) return profilePhoto;
+  if (profilePhoto) return { uri: profilePhoto };
   const key = normName(row.artist_key || row.artist);
   if (!key) return null;
+  const licensedPhoto = attendanceTicketLicensedArtistPhoto({
+    artist: row.artist,
+    artistKey: key,
+  });
+  const licensedUri = verifiedHttpsUrl(licensedPhoto?.uri);
+  const attribution = attendanceTicketLicensedArtistAttribution(licensedPhoto);
+  if (licensedUri && attribution) return { uri: licensedUri, attribution };
   // This is the same lower-priority provider/catalog fallback the Artist page
   // uses. Ticketmaster event artwork is deliberately not substituted: a tour
   // poster is not necessarily the artist's profile identity.
-  return verifiedHttpsUrl(publicArtist(artistStmts.byNorm.get(key))?.photo) || null;
+  const providerUri = verifiedHttpsUrl(publicArtist(artistStmts.byNorm.get(key))?.photo);
+  return providerUri ? { uri: providerUri } : null;
+}
+
+function attendanceTicketArtistPhoto(row) {
+  return attendanceTicketArtistArtwork(row)?.uri || null;
 }
 
 function attendanceTicketEventProviderPhoto(row) {
@@ -1738,6 +1777,7 @@ function attendanceTicketSnapshot(row, seat) {
     throw new ApiError(404, "That event is not available to share.", "NOT_FOUND");
   }
   const provider = ticketText(row.source, 40)?.toLowerCase() || null;
+  const artistArtwork = attendanceTicketArtistArtwork(row);
   const snapshot = {
     version: 1,
     state: "going",
@@ -1762,7 +1802,8 @@ function attendanceTicketSnapshot(row, seat) {
     accessStartDateTime: providerFields.accessStartDateTime,
     accessStartApproximate: providerFields.accessStartDateTime
       ? providerFields.accessStartApproximate : null,
-    artistPhotoUri: attendanceTicketArtistPhoto(row),
+    artistPhotoUri: artistArtwork?.uri || null,
+    ...(artistArtwork?.attribution ? { artistPhotoAttribution: artistArtwork.attribution } : {}),
     eventImageUri: attendanceTicketEventProviderPhoto(row),
     seat,
   };
@@ -2486,13 +2527,20 @@ function postJson(p, viewerId) {
   // while presentation follows the current safe artist image. This lets an
   // older Going post gain staff-seeded artwork (or stop showing revoked art)
   // without rewriting what the member originally submitted.
-  const attendanceTicket = storedTicket ? {
-    ...storedTicket,
-    artistPhotoUri: attendanceTicketArtistPhoto({
+  const currentTicketArtwork = storedTicket ? attendanceTicketArtistArtwork({
       artist: storedTicket.artist,
       artist_key: storedTicket.artistKey,
-    }) || null,
-  } : null;
+    }) : null;
+  const attendanceTicket = storedTicket ? (() => {
+    const { artistPhotoAttribution: _storedAttribution, ...publicTicket } = storedTicket;
+    return {
+      ...publicTicket,
+      artistPhotoUri: currentTicketArtwork?.uri || null,
+      ...(currentTicketArtwork?.attribution
+        ? { artistPhotoAttribution: currentTicketArtwork.attribution }
+        : {}),
+    };
+  })() : null;
   // Official presentation is a live authorization claim, not a permanent
   // visual badge embedded in authored JSON. Every row source feeding this
   // projector supplies current role/artist identity aliases; an old or custom
@@ -3595,6 +3643,7 @@ export const routes = {
     requireUser,
     resolvePublicDocument: publicDocumentForPath,
     resolveCurrentArtistProfileImage: attendanceTicketArtistProfilePhoto,
+    resolveCurrentLicensedArtistPhoto: attendanceTicketLicensedArtistPhoto,
     resolveCurrentEventProviderImage: attendanceTicketEventProviderPhotoById,
   }),
   ...showRoutes({

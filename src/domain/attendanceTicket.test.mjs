@@ -150,6 +150,29 @@ test("artist artwork accepts safe explicit URIs and never falls back to event ar
   }).artistImageUri, "https://profiles.example/sza.jpg");
 });
 
+test("licensed artist artwork preserves complete bounded attribution and fails closed when incomplete", () => {
+  const attribution = {
+    source: "licensed-media",
+    title: "BrysonTiller.png",
+    creator: "ThamasLamar",
+    license: "CC-BY-3.0",
+    sourcePage: "https://commons.wikimedia.org/wiki/File:BrysonTiller.png",
+    licenseUrl: "https://creativecommons.org/licenses/by/3.0/",
+    modificationNotice: "Cropped, resized and converted to WebP.",
+  };
+  const preview = buildAttendanceTicketPreview({
+    artist: "Bryson Tiller",
+    artistPhotoUri: "https://media.example/bryson.webp",
+    artistPhotoAttribution: attribution,
+  });
+  assert.deepEqual(preview.artistPhotoAttribution, attribution);
+  assert.equal(buildAttendanceTicketPreview({
+    artist: "Bryson Tiller",
+    artistPhotoUri: "https://media.example/bryson.webp",
+    artistPhotoAttribution: { ...attribution, title: "" },
+  }).artistPhotoAttribution, undefined);
+});
+
 test("special live events use the official event as the attendance object", () => {
   const preview = buildAttendanceTicketPreview({
     author: { displayName: "Nia" },

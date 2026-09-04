@@ -15,6 +15,7 @@ const DEFAULT_SOURCE_HOSTS = Object.freeze(["upload.wikimedia.org", "thumb.wikim
 const INPUT_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 const DELIVERY_TYPE = "image/webp";
 const DELIVERY_NOTICE = "Converted to WebP and resized when needed by MSHpit for delivery.";
+const ARTIST_DELIVERY_NOTICE = "Cropped, resized and converted to WebP.";
 const MODIFICATION_NOTICE_MAX = 240;
 
 export class VenuePhotoMirrorError extends Error {
@@ -169,7 +170,7 @@ async function fetchLicensedSource(photo, { fetchImpl, env, sourceMaxBytes, sour
   throw new VenuePhotoMirrorError("SOURCE_FETCH_FAILED", "The licensed photo could not be downloaded.");
 }
 
-async function sanitizedDelivery(sourceBytes, outputMaxBytes) {
+async function sanitizedDelivery(sourceBytes, outputMaxBytes, photoKind = "venue") {
   let result;
   try {
     result = await sharp(sourceBytes, { failOn: "warning", limitInputPixels: 40_000_000, animated: false })
@@ -184,18 +185,22 @@ async function sanitizedDelivery(sourceBytes, outputMaxBytes) {
   const height = Number(result.info?.height);
   if (!Number.isSafeInteger(width) || width < 1 || !Number.isSafeInteger(height) || height < 1
       || result.data.byteLength < 1 || result.data.byteLength > outputMaxBytes) {
-    throw new VenuePhotoMirrorError("DELIVERY_INVALID", "The sanitized venue photo exceeds the delivery limits.");
+    throw new VenuePhotoMirrorError("DELIVERY_INVALID", `The sanitized ${photoKind} photo exceeds the delivery limits.`);
   }
   return { bytes: result.data, width, height, contentType: DELIVERY_TYPE, digest: sha256(result.data) };
 }
 
-function venueObjectSegment(venueKey) {
-  const identity = String(venueKey || "").normalize("NFKC").trim();
+function licensedPhotoObjectSegment(value, {
+  errorCode = "VENUE_KEY_INVALID",
+  errorMessage = "A stable venue key is required for mirroring.",
+  fallback = "venue",
+} = {}) {
+  const identity = String(value || "").normalize("NFKC").trim();
   if (!identity || identity.length > 300 || /[\u0000-\u001f\u007f]/u.test(identity)) {
-    throw new VenuePhotoMirrorError("VENUE_KEY_INVALID", "A stable venue key is required for mirroring.");
+    throw new VenuePhotoMirrorError(errorCode, errorMessage);
   }
   const slug = identity.normalize("NFKD").replace(/[\u0300-\u036f]/gu, "").toLowerCase()
-    .replace(/[^a-z0-9]+/gu, "-").replace(/^-+|-+$/gu, "").slice(0, 48) || "venue";
+    .replace(/[^a-z0-9]+/gu, "-").replace(/^-+|-+$/gu, "").slice(0, 48) || fallback;
   return `${slug}-${sha256(identity).slice(0, 12)}`;
 }
 
@@ -215,12 +220,18 @@ function publicObjectUrl(base, objectKey) {
   return `${base.origin}${prefix}/${objectKey.split("/").map(encodePathPart).join("/")}`;
 }
 
-function storageUpload(delivery, venueKey, { env, now }) {
+function storageUpload(delivery, entityKey, {
+  env,
+  now,
+  namespace = "venues",
+  photoKind = "venue",
+  identityOptions,
+}) {
   const config = getMediaConfig(env);
   if (!config.configured) {
-    throw new VenuePhotoMirrorError("STORAGE_UNCONFIGURED", "Public media storage is not configured for venue-photo mirroring.");
+    throw new VenuePhotoMirrorError("STORAGE_UNCONFIGURED", `Public media storage is not configured for ${photoKind}-photo mirroring.`);
   }
-  const key = `venues/licensed/${venueObjectSegment(venueKey)}/${delivery.digest.slice(0, 48)}.webp`;
+  const key = `${namespace}/licensed/${licensedPhotoObjectSegment(entityKey, identityOptions)}/${delivery.digest.slice(0, 48)}.webp`;
   const headers = {
     "Cache-Control": PUBLIC_MEDIA_CACHE_CONTROL,
     "Content-Length": String(delivery.bytes.byteLength),
@@ -263,22 +274,25 @@ async function verifyExistingObject(upload, delivery, { fetchImpl, now, storageT
   }
 }
 
-function mirroredModificationNotice(photo) {
+function mirroredModificationNotice(photo, deliveryNotice = DELIVERY_NOTICE) {
   const prior = String(photo.modificationNotice || "").trim();
-  if (!prior) return DELIVERY_NOTICE;
-  if (prior.endsWith(DELIVERY_NOTICE)) return prior;
-  const prefixLimit = MODIFICATION_NOTICE_MAX - DELIVERY_NOTICE.length - 1;
-  if (prior.length <= prefixLimit) return `${prior} ${DELIVERY_NOTICE}`;
+  if (!prior) return deliveryNotice;
+  if (prior.endsWith(deliveryNotice)) return prior;
+  const prefixLimit = MODIFICATION_NOTICE_MAX - deliveryNotice.length - 1;
+  if (prior.length <= prefixLimit) return `${prior} ${deliveryNotice}`;
   let prefix = prior.slice(0, Math.max(0, prefixLimit - 1));
   // Do not leave a dangling UTF-16 high surrogate when truncating a creator-
   // supplied notice. The validator applies the same 240-code-unit ceiling.
   if (/[\uD800-\uDBFF]$/u.test(prefix)) prefix = prefix.slice(0, -1);
   prefix = prefix.trimEnd();
-  return prefix ? `${prefix}… ${DELIVERY_NOTICE}` : DELIVERY_NOTICE;
+  return prefix ? `${prefix}… ${deliveryNotice}` : deliveryNotice;
 }
 
-export async function mirrorLicensedVenuePhoto({
-  venueKey,
+async function mirrorLicensedEntityPhoto({
+  entityKey,
+  namespace,
+  photoKind,
+  identityOptions,
   photo,
   env = process.env,
   fetchImpl = globalThis.fetch,
@@ -287,16 +301,17 @@ export async function mirrorLicensedVenuePhoto({
   outputMaxBytes = OUTPUT_MAX_BYTES,
   sourceTimeoutMs = SOURCE_TIMEOUT_MS,
   storageTimeoutMs = STORAGE_TIMEOUT_MS,
+  deliveryNotice = DELIVERY_NOTICE,
 } = {}) {
   const licensed = licensedVenuePhoto(photo);
   if (!licensed) {
     throw new VenuePhotoMirrorError("PROVENANCE_INVALID", "Only complete, validator-approved licensed photos can be mirrored.");
   }
   if (typeof fetchImpl !== "function") {
-    throw new VenuePhotoMirrorError("FETCH_UNAVAILABLE", "Venue-photo mirroring requires a fetch implementation.");
+    throw new VenuePhotoMirrorError("FETCH_UNAVAILABLE", `${photoKind[0].toUpperCase()}${photoKind.slice(1)}-photo mirroring requires a fetch implementation.`);
   }
   if (!venuePhotoMirrorConfigured(env)) {
-    throw new VenuePhotoMirrorError("STORAGE_UNCONFIGURED", "Public media storage is not configured for venue-photo mirroring.");
+    throw new VenuePhotoMirrorError("STORAGE_UNCONFIGURED", `Public media storage is not configured for ${photoKind}-photo mirroring.`);
   }
   const boundedSourceBytes = boundedPositiveInteger(sourceMaxBytes, SOURCE_MAX_BYTES, SOURCE_MAX_BYTES);
   const boundedOutputBytes = boundedPositiveInteger(outputMaxBytes, OUTPUT_MAX_BYTES, OUTPUT_MAX_BYTES);
@@ -305,8 +320,10 @@ export async function mirrorLicensedVenuePhoto({
   const sourceBytes = await fetchLicensedSource(licensed, {
     fetchImpl, env, sourceMaxBytes: boundedSourceBytes, sourceTimeoutMs: boundedSourceTimeout,
   });
-  const delivery = await sanitizedDelivery(sourceBytes, boundedOutputBytes);
-  const upload = storageUpload(delivery, venueKey, { env, now });
+  const delivery = await sanitizedDelivery(sourceBytes, boundedOutputBytes, photoKind);
+  const upload = storageUpload(delivery, entityKey, {
+    env, now, namespace, photoKind, identityOptions,
+  });
   const timeout = withTimeout(boundedStorageTimeout);
   let response;
   try {
@@ -316,7 +333,7 @@ export async function mirrorLicensedVenuePhoto({
     });
   } catch (error) {
     throw new VenuePhotoMirrorError(timeout.signal.aborted ? "STORAGE_TIMEOUT" : "STORAGE_UPLOAD_FAILED",
-      "The sanitized venue photo could not be stored.", error);
+      `The sanitized ${photoKind} photo could not be stored.`, error);
   } finally {
     timeout.clear();
   }
@@ -326,7 +343,7 @@ export async function mirrorLicensedVenuePhoto({
       fetchImpl, now, storageTimeoutMs: boundedStorageTimeout,
     });
     if (!reused) {
-      throw new VenuePhotoMirrorError("STORAGE_CONFLICT", "An existing venue-photo object did not match the sanitized source.");
+      throw new VenuePhotoMirrorError("STORAGE_CONFLICT", `An existing ${photoKind}-photo object did not match the sanitized source.`);
     }
   } else if (![200, 201, 204].includes(response.status)) {
     throw new VenuePhotoMirrorError("STORAGE_HTTP_ERROR", `Public media storage returned HTTP ${response.status}.`);
@@ -335,7 +352,7 @@ export async function mirrorLicensedVenuePhoto({
   return {
     ...licensed,
     uri: upload.publicUrl,
-    modificationNotice: mirroredModificationNotice(licensed),
+    modificationNotice: mirroredModificationNotice(licensed, deliveryNotice),
     mirroredFrom: licensed.uri,
     mirror: {
       objectKey: upload.key,
@@ -347,4 +364,35 @@ export async function mirrorLicensedVenuePhoto({
       reused,
     },
   };
+}
+
+export async function mirrorLicensedVenuePhoto(options = {}) {
+  const { venueKey, ...rest } = options;
+  return mirrorLicensedEntityPhoto({
+    ...rest,
+    entityKey: venueKey,
+    namespace: "venues",
+    photoKind: "venue",
+    identityOptions: {
+      errorCode: "VENUE_KEY_INVALID",
+      errorMessage: "A stable venue key is required for mirroring.",
+      fallback: "venue",
+    },
+  });
+}
+
+export async function mirrorLicensedArtistPhoto(options = {}) {
+  const { artistKey, ...rest } = options;
+  return mirrorLicensedEntityPhoto({
+    ...rest,
+    entityKey: artistKey,
+    namespace: "artists",
+    photoKind: "artist",
+    identityOptions: {
+      errorCode: "ARTIST_KEY_INVALID",
+      errorMessage: "A stable artist key is required for mirroring.",
+      fallback: "artist",
+    },
+    deliveryNotice: ARTIST_DELIVERY_NOTICE,
+  });
 }

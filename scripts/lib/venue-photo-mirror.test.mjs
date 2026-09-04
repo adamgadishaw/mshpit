@@ -2,7 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import sharp from "sharp";
 import { licensedVenuePhoto } from "../../src/domain/venuePhotoProvenance.mjs";
-import { mirrorLicensedVenuePhoto, venuePhotoMirrorConfigured, venuePhotoMirrorSourceHosts, VenuePhotoMirrorError } from "./venue-photo-mirror.mjs";
+import {
+  mirrorLicensedArtistPhoto,
+  mirrorLicensedVenuePhoto,
+  venuePhotoMirrorConfigured,
+  venuePhotoMirrorSourceHosts,
+  VenuePhotoMirrorError,
+} from "./venue-photo-mirror.mjs";
 
 const ENV = Object.freeze({
   MEDIA_ENDPOINT: "https://example-account.r2.cloudflarestorage.com",
@@ -14,6 +20,7 @@ const ENV = Object.freeze({
 });
 
 const PHOTO = Object.freeze({
+  title: "Test_Hall.jpg",
   uri: "https://upload.wikimedia.org/wikipedia/commons/a/ab/Test_Hall.jpg",
   sourcePage: "https://commons.wikimedia.org/wiki/File:Test_Hall.jpg",
   creator: "Example Photographer",
@@ -131,6 +138,7 @@ test("venue-photo mirroring writes a bounded create-only derivative and retains 
   });
   assert.ok(uploaded?.length > 0);
   assert.equal(mirrored.creator, PHOTO.creator);
+  assert.equal(mirrored.title, PHOTO.title);
   assert.equal(mirrored.license, PHOTO.license);
   assert.equal(mirrored.licenseUrl, PHOTO.licenseUrl);
   assert.equal(mirrored.sourcePage, PHOTO.sourcePage);
@@ -143,6 +151,32 @@ test("venue-photo mirroring writes a bounded create-only derivative and retains 
   assert.equal(mirrored.mirror.contentType, "image/webp");
   assert.equal(mirrored.mirror.reused, false);
   assert.ok(licensedVenuePhoto(mirrored), "the stored record remains acceptable to the publication validator");
+});
+
+test("artist-photo mirroring uses the hardened pipeline with an artist-only object namespace", async () => {
+  let uploadedObject = null;
+  const mirrored = await mirrorLicensedArtistPhoto({
+    artistKey: "Bryson Tiller",
+    photo: PHOTO,
+    env: ENV,
+    now: new Date("2026-09-04T12:00:00.000Z"),
+    fetchImpl: async (url, options = {}) => {
+      if (String(url).startsWith(PHOTO.uri)) return imageResponse();
+      assert.equal(options.method, "PUT");
+      uploadedObject = String(url);
+      return new Response(null, { status: 201 });
+    },
+  });
+
+  assert.match(uploadedObject, /\/mshpit-public-media\/artists\/licensed\/bryson-tiller-[a-f0-9]{12}\/[a-f0-9]{48}\.webp(?:\?|$)/u);
+  assert.match(mirrored.uri, /^https:\/\/media\.mshpit\.example\/artists\/licensed\/bryson-tiller-[a-f0-9]{12}\/[a-f0-9]{48}\.webp$/u);
+  assert.equal(mirrored.creator, PHOTO.creator);
+  assert.equal(mirrored.title, PHOTO.title);
+  assert.equal(mirrored.license, PHOTO.license);
+  assert.equal(mirrored.provenanceSource, "commons");
+  assert.equal(mirrored.mirror.reused, false);
+  assert.equal(mirrored.modificationNotice, "Cropped, resized and converted to WebP.");
+  assert.ok(licensedVenuePhoto(mirrored), "the artist derivative retains the shared licensed-photo provenance contract");
 });
 
 test("venue-photo mirroring accepts an idempotent conflict only after byte verification", async () => {

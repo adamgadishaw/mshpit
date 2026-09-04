@@ -151,6 +151,19 @@ export function safeAttendanceTicketImageUri(value) {
   }
 }
 
+export function normalizeAttendanceTicketPhotoAttribution(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+    || value.source !== "licensed-media") return null;
+  const title = cleanText(value.title, 240);
+  const creator = cleanText(value.creator, 120);
+  const license = cleanText(value.license, 40);
+  const sourcePage = safeAttendanceTicketImageUri(value.sourcePage);
+  const licenseUrl = safeAttendanceTicketImageUri(value.licenseUrl);
+  const modificationNotice = cleanText(value.modificationNotice, 160);
+  if (!title || !creator || !license || !sourcePage || !licenseUrl || !modificationNotice) return null;
+  return { source: "licensed-media", title, creator, license, sourcePage, licenseUrl, modificationNotice };
+}
+
 export function formatAttendanceTicketDate(value) {
   const parts = calendarParts(value);
   if (!validCalendarParts(parts)) return null;
@@ -245,6 +258,9 @@ export function normalizeAttendanceTicketShow(value = {}) {
     value.artistPhotoUri,
     typeof value.artistImage === "object" ? firstText(value.artistImage.uri, value.artistImage.url) : value.artistImage,
   ));
+  const artistPhotoAttribution = artistImageUri
+    ? normalizeAttendanceTicketPhotoAttribution(value.artistPhotoAttribution ?? value.artistImageAttribution)
+    : null;
 
   return {
     eventTitle,
@@ -267,6 +283,7 @@ export function normalizeAttendanceTicketShow(value = {}) {
     ],
     ...(tourStopLabel ? { tourStopLabel } : {}),
     ...(artistImageUri ? { artistImageUri } : {}),
+    ...(artistPhotoAttribution ? { artistPhotoAttribution } : {}),
   };
 }
 
@@ -339,6 +356,7 @@ export function buildAttendanceTicketPreview(input = {}) {
     timing: show.timing,
     ...(show.tourStopLabel ? { tourStopLabel: show.tourStopLabel } : {}),
     ...(show.artistImageUri ? { imageUri: show.artistImageUri } : {}),
+    ...(show.artistPhotoAttribution ? { artistPhotoAttribution: show.artistPhotoAttribution } : {}),
     ...(seatLocation ? { seatLocation } : {}),
     authorSentence,
     accessibilityLabel,

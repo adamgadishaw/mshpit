@@ -67,6 +67,17 @@ test("ticket artwork uses Expo Image caching and the ticket edge is presentation
   assert.match(source, /borderStyle: "dashed"/);
 });
 
+test("licensed ticket artwork shows a compact complete credit without adding an action", () => {
+  assert.match(source, /preview\.artistPhotoAttribution/);
+  assert.match(source, /contentPosition=\{photoAttribution \? "top center" : "center"\}/);
+  assert.match(source, /photoAttribution\.title/);
+  assert.match(source, /photoAttribution\.creator/);
+  assert.match(source, /photoAttribution\.sourcePage/);
+  assert.match(source, /photoAttribution\.licenseUrl/);
+  assert.match(source, /Changed: \{photoAttribution\.modificationNotice\}/);
+  assert.doesNotMatch(source, /<Pressable[^>]+artworkCredit/);
+});
+
 test("ticket composition reads like a concert keepsake instead of a generic action card", () => {
   assert.match(source, />MSHPIT<\/Text>/);
   assert.match(source, /LIVE MUSIC, REMEMBERED/);

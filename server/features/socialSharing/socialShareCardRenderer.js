@@ -142,21 +142,48 @@ function eventSubtitle(event) {
     && normalizedWords(name) !== normalizedWords(event?.artist) ? name : "";
 }
 
-function artworkCandidate(value, source) {
-  if (source !== "owned-media" || typeof value !== "string") return null;
+function normalizedHttpsUrl(value) {
+  if (typeof value !== "string" || !value.trim() || value.length > 2_048) return null;
   try {
     const parsed = new URL(value.trim());
     if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.port || parsed.hash) return null;
-    return Object.freeze({ url: parsed.toString(), source });
+    return parsed.toString();
   } catch {
     return null;
   }
 }
 
+function artworkCandidate(candidate) {
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return null;
+  const source = candidate.source;
+  if (!["owned-media", "licensed-media"].includes(source)) return null;
+  const url = normalizedHttpsUrl(candidate.url);
+  if (!url) return null;
+  if (source === "owned-media") return Object.freeze({ url, source });
+
+  const title = cleanText(candidate.title, 240);
+  const creator = cleanText(candidate.creator, 120);
+  const license = cleanText(candidate.license, 40);
+  const licenseUrl = normalizedHttpsUrl(candidate.licenseUrl);
+  const sourcePage = normalizedHttpsUrl(candidate.sourcePage);
+  const modificationNotice = cleanText(candidate.modificationNotice, 160);
+  if (!title || !creator || !license || !licenseUrl || !sourcePage || !modificationNotice) return null;
+  return Object.freeze({
+    url,
+    source,
+    title,
+    creator,
+    license,
+    licenseUrl,
+    sourcePage,
+    modificationNotice,
+  });
+}
+
 function normalizedArtwork(candidates) {
   const unique = new Map();
   for (const candidate of Array.isArray(candidates) ? candidates : []) {
-    const normalized = artworkCandidate(candidate?.url, candidate?.source);
+    const normalized = artworkCandidate(candidate);
     if (normalized && !unique.has(normalized.url)) unique.set(normalized.url, normalized);
     if (unique.size >= 3) break;
   }
@@ -401,10 +428,25 @@ function safeArtworkDataUri(value) {
     ? value : "";
 }
 
-function artworkImage(dataUri, { x, y, width, height, clipId }) {
+const ARTWORK_PRESERVE_ASPECT_RATIOS = new Set([
+  "xMidYMid slice",
+  "xMidYMin slice",
+]);
+
+function artworkImage(dataUri, {
+  x,
+  y,
+  width,
+  height,
+  clipId,
+  preserveAspectRatio = "xMidYMid slice",
+}) {
   const safe = safeArtworkDataUri(dataUri);
+  const safePreserveAspectRatio = ARTWORK_PRESERVE_ASPECT_RATIOS.has(preserveAspectRatio)
+    ? preserveAspectRatio
+    : "xMidYMid slice";
   return safe
-    ? `<image href="${safe}" x="${x}" y="${y}" width="${width}" height="${height}" preserveAspectRatio="xMidYMid slice" clip-path="url(#${clipId})"/>`
+    ? `<image href="${safe}" x="${x}" y="${y}" width="${width}" height="${height}" preserveAspectRatio="${safePreserveAspectRatio}" clip-path="url(#${clipId})"/>`
     : "";
 }
 
@@ -482,9 +524,37 @@ function reviewShareSvg(model, artworkDataUri) {
 </svg>`;
 }
 
-function attendanceShareSvg(model, artworkDataUri) {
+function licensedArtworkAttribution(candidate) {
+  const artwork = artworkCandidate(candidate);
+  if (artwork?.source !== "licensed-media") return null;
+  const withoutScheme = (value) => value.replace(/^https:\/\//u, "");
+  const fitLine = (text, preferredSize, minimumSize) => {
+    const estimated = estimatedTextWidth(text, {
+      fontSize: preferredSize,
+      letterSpacing: 0.4,
+      monospace: true,
+    });
+    const fontSize = estimated > 880
+      ? Math.max(minimumSize, Math.floor(preferredSize * (880 / estimated)))
+      : preferredSize;
+    return Object.freeze({ text, fontSize });
+  };
+  return Object.freeze({
+    work: fitLine(`${artwork.title} · ${artwork.creator}`, 22, 14),
+    source: fitLine(withoutScheme(artwork.sourcePage), 16, 14),
+    license: fitLine(
+      `${artwork.license.replace(/-/gu, " ")} · ${withoutScheme(artwork.licenseUrl)}`,
+      16,
+      14,
+    ),
+    change: fitLine(`Changed: ${artwork.modificationNotice}`, 16, 14),
+  });
+}
+
+function attendanceShareSvg(model, artworkDataUri, selectedArtwork = null) {
   const palette = paletteFor(model);
   const hasArtwork = !!safeArtworkDataUri(artworkDataUri);
+  const photoAttribution = hasArtwork ? licensedArtworkAttribution(selectedArtwork) : "";
   // The authoritative photo may be absent, but the ticket must never switch to
   // a different composition after the preview loads. Reserve the same neutral
   // hero area in both cases so every attendance card keeps one geometry.
@@ -528,7 +598,7 @@ function attendanceShareSvg(model, artworkDataUri) {
     : `<rect x="40" y="318" width="500" height="10" fill="${palette.start}"/><rect x="540" y="318" width="500" height="10" fill="${palette.end}"/>`;
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${CARD_WIDTH}" height="${CARD_HEIGHT}" viewBox="0 0 ${CARD_WIDTH} ${CARD_HEIGHT}">
-  ${shareSvgDefs(palette, `<clipPath id="attendanceCard"><rect x="40" y="180" width="1000" height="1500" rx="42"/></clipPath><clipPath id="attendanceHero"><rect x="40" y="328" width="1000" height="392"/></clipPath><clipPath id="attendanceBody"><rect x="70" y="${bodyTop}" width="940" height="${Math.max(1, scheduleY - bodyTop - 12)}"/></clipPath><clipPath id="attendanceDate"><rect x="98" y="${scheduleY + 12}" width="300" height="134"/></clipPath><clipPath id="attendanceVenue"><rect x="460" y="${scheduleY + 8}" width="${venueMaxWidth + 20}" height="142"/></clipPath>`)}
+  ${shareSvgDefs(palette, `<clipPath id="attendanceCard"><rect x="40" y="180" width="1000" height="1500" rx="42"/></clipPath><clipPath id="attendanceHero"><rect x="40" y="328" width="1000" height="392"/></clipPath><clipPath id="attendanceAttribution"><rect x="74" y="548" width="932" height="160"/></clipPath><clipPath id="attendanceBody"><rect x="70" y="${bodyTop}" width="940" height="${Math.max(1, scheduleY - bodyTop - 12)}"/></clipPath><clipPath id="attendanceDate"><rect x="98" y="${scheduleY + 12}" width="300" height="134"/></clipPath><clipPath id="attendanceVenue"><rect x="460" y="${scheduleY + 8}" width="${venueMaxWidth + 20}" height="142"/></clipPath>`)}
   <rect width="${CARD_WIDTH}" height="${CARD_HEIGHT}" fill="#0b0715"/>
   <rect x="0" y="0" width="${CARD_WIDTH}" height="12" fill="url(#accent)"/>
   <text x="62" y="108" fill="#fff8ee" font-family="Courier New, monospace" font-size="18" font-weight="800" letter-spacing="4">YOUR NIGHT. YOUR TICKET.</text>
@@ -537,13 +607,15 @@ function attendanceShareSvg(model, artworkDataUri) {
     <rect x="40" y="180" width="1000" height="138" fill="#0b0a0f"/>
     ${register}
     <rect x="40" y="328" width="1000" height="392" fill="#121018"/>
-    ${hasArtwork ? `${artworkImage(artworkDataUri, { x: 40, y: 328, width: 1000, height: 392, clipId: "attendanceHero" })}<rect x="40" y="328" width="1000" height="392" fill="url(#photoScrim)" opacity="0.5"/>` : '<rect x="40" y="328" width="1000" height="392" fill="#17141d"/><line x1="88" y1="674" x2="992" y2="674" stroke="#2e2936" stroke-width="2"/>'}
+    ${hasArtwork ? `${artworkImage(artworkDataUri, { x: 40, y: 328, width: 1000, height: 392, clipId: "attendanceHero", preserveAspectRatio: "xMidYMin slice" })}<rect x="40" y="328" width="1000" height="392" fill="url(#photoScrim)" opacity="0.5"/>` : '<rect x="40" y="328" width="1000" height="392" fill="#17141d"/><line x1="88" y1="674" x2="992" y2="674" stroke="#2e2936" stroke-width="2"/>'}
+    ${photoAttribution ? '<rect x="64" y="548" width="952" height="160" rx="14" fill="#08080c" opacity="0.9"/>' : ""}
     <rect x="40" y="${bodyTop}" width="1000" height="${1350 - bodyTop}" fill="#1d1434"/>
     <rect x="40" y="1350" width="1000" height="330" fill="#251940"/>
   </g>
   ${communityMarkSvg({ x: 98, y: 250, scale: 0.075, opacity: 1 })}
   <text x="152" y="250" fill="#fff8ee" font-family="Arial, Helvetica, sans-serif" font-size="27" font-weight="900" letter-spacing="7">MSHPIT</text>
   <text x="154" y="281" fill="#858895" font-family="Courier New, monospace" font-size="12" font-weight="800" letter-spacing="2.6">LIVE MUSIC, REMEMBERED</text>
+  ${photoAttribution ? `<g data-section="licensed-photo-credit" clip-path="url(#attendanceAttribution)"><text x="84" y="582" fill="#fff8ee" font-family="Courier New, monospace" font-size="${photoAttribution.work.fontSize}" font-weight="900" letter-spacing="0.4">${escapeXml(photoAttribution.work.text)}</text><text x="84" y="620" fill="#d8d0df" font-family="Courier New, monospace" font-size="${photoAttribution.source.fontSize}" font-weight="800" letter-spacing="0.4">${escapeXml(photoAttribution.source.text)}</text><text x="84" y="658" fill="#d8d0df" font-family="Courier New, monospace" font-size="${photoAttribution.license.fontSize}" font-weight="800" letter-spacing="0.4">${escapeXml(photoAttribution.license.text)}</text><text x="84" y="696" fill="#d8d0df" font-family="Courier New, monospace" font-size="${photoAttribution.change.fontSize}" font-weight="800" letter-spacing="0.4">${escapeXml(photoAttribution.change.text)}</text></g>` : ""}
   <g data-section="attendance-body" data-statement-y="${statementY}" data-subtitle-y="${subtitleY || 0}" data-subtitle-lines="${subtitleLines.length}" data-artist-y="${artistY}" data-artist-lines="${artistLines.length}" clip-path="url(#attendanceBody)">
     ${svgTextLines(statementLines, { x: 88, y: statementY, lineHeight: statementLineHeight, fontSize: statementFontSize, fill: "#ddd6e8", weight: 800 })}
     ${subtitleLines.length ? `<text x="88" y="${contextY}" fill="${palette.end}" font-family="Courier New, monospace" font-size="15" font-weight="900" letter-spacing="3">TOUR / EVENT</text>${svgTextLines(subtitleLines, { x: 88, y: subtitleY, lineHeight: subtitleLineHeight, fontSize: subtitleFontSize, fill: "#c7acd9", weight: 800 })}` : ""}
@@ -575,11 +647,11 @@ function attendanceShareSvg(model, artworkDataUri) {
 </svg>`;
 }
 
-export function socialShareCardSvg(model, { artworkDataUri = "" } = {}) {
+export function socialShareCardSvg(model, { artworkDataUri = "", artwork = null } = {}) {
   if (!model || !COPY[model.variant]) throw new TypeError("A valid social share-card model is required");
   return model.variant === "review"
     ? reviewShareSvg(model, artworkDataUri)
-    : attendanceShareSvg(model, artworkDataUri);
+    : attendanceShareSvg(model, artworkDataUri, artwork);
 }
 
 async function preparedArtworkDataUri(bytes, sharpFactory) {
@@ -600,7 +672,15 @@ async function preparedArtworkDataUri(bytes, sharpFactory) {
     || pixels > MAX_ARTWORK_INPUT_PIXELS || Number(metadata?.pages || 1) !== 1) return "";
   const normalized = await pipeline
     .rotate()
-    .resize(1000, 632, { fit: "cover", position: "centre", withoutEnlargement: false })
+    // Keep the source aspect ratio here. The SVG is the one authoritative crop
+    // boundary, so its explicit top/centre alignment can preserve faces instead
+    // of receiving an image that was already irreversibly centre-cropped.
+    .resize({
+      width: 1000,
+      height: 1000,
+      fit: "inside",
+      withoutEnlargement: false,
+    })
     .jpeg({ quality: 82 })
     .toBuffer();
   if (!Buffer.isBuffer(normalized) || normalized.length < 12 || normalized.length > 1_500_000) return "";
@@ -618,7 +698,10 @@ async function renderSocialShareCardResult(model, options = {}) {
       artworkDataUri = "";
     }
   }
-  const svg = socialShareCardSvg(model, { artworkDataUri });
+  const svg = socialShareCardSvg(model, {
+    artworkDataUri,
+    artwork: artworkCandidate(options?.artwork),
+  });
   const output = await sharpFactory(Buffer.from(svg, "utf8"), {
     limitInputPixels: CARD_WIDTH * CARD_HEIGHT,
   }).png({
@@ -778,7 +861,7 @@ export function createSocialShareCardRenderer({
     }
   };
 
-  const renderAcceptedArtwork = async (model, bytes, signal) => withRenderAdmission(async () => {
+  const renderAcceptedArtwork = async (model, bytes, artwork, signal) => withRenderAdmission(async () => {
     if (signal?.aborted) throw requestAbortReason(signal);
     let artworkDataUri = "";
     try {
@@ -791,7 +874,7 @@ export function createSocialShareCardRenderer({
     if (signal?.aborted) throw requestAbortReason(signal);
     let rendered = null;
     try {
-      rendered = await renderPng(model, { artworkDataUri, signal });
+      rendered = await renderPng(model, { artworkDataUri, artwork, signal });
     } catch (error) {
       if (signal?.aborted) throw requestAbortReason(signal);
       throw new SocialShareCardRenderError(error);
@@ -801,6 +884,7 @@ export function createSocialShareCardRenderer({
       [PREPARED_ARTWORK_RENDER]: true,
       artworkBytes: null,
       artworkDataUri,
+      artwork,
       rendered,
     });
   });
@@ -845,7 +929,8 @@ export function createSocialShareCardRenderer({
           }
           return hasArtworkCandidates
             ? withArtworkLoadAdmission(() => loadArtwork(model.artwork, {
-                acceptBytes: (bytes) => renderAcceptedArtwork(model, bytes, workController.signal),
+                acceptBytes: (bytes, artwork) =>
+                  renderAcceptedArtwork(model, bytes, artwork, workController.signal),
                 acceptErrorIsTerminal: (error) =>
                   !(error instanceof SocialShareCardBusyError)
                   && !(error instanceof SocialShareCardRenderError),

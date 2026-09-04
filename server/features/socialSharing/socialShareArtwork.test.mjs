@@ -23,6 +23,13 @@ test("share artwork accepts verified first-party media and rejects provider host
     trustedShareArtworkUrl({ url: "https://media.mshpit.test/public/users/u/post/p.jpg", source: "owned-media" }, { env: ENV }),
     "https://media.mshpit.test/public/users/u/post/p.jpg",
   );
+  assert.equal(
+    trustedShareArtworkUrl({
+      url: "https://media.mshpit.test/public/artists/licensed/bryson-tiller.webp",
+      source: "licensed-media",
+    }, { env: ENV }),
+    "https://media.mshpit.test/public/artists/licensed/bryson-tiller.webp",
+  );
   for (const candidate of [
     { url: "https://attacker.example/photo.jpg", source: "ticketmaster" },
     { url: "https://s1.ticketm.net.attacker.example/photo.jpg", source: "ticketmaster" },
@@ -31,6 +38,9 @@ test("share artwork accepts verified first-party media and rejects provider host
     { url: "https://media.mshpit.test/private/source.jpg", source: "owned-media" },
     { url: "https://media.mshpit.test/publicity/not-inside.jpg", source: "owned-media" },
     { url: "https://media.mshpit.test/public/photo.jpg#secret", source: "owned-media" },
+    { url: "https://upload.wikimedia.org/wikipedia/commons/photo.jpg", source: "licensed-media" },
+    { url: "https://cdn-images.dzcdn.net/images/artist/photo.jpg", source: "licensed-media" },
+    { url: "https://media.mshpit.test/private/licensed.jpg", source: "licensed-media" },
     { url: "https://user:pass@s1.ticketm.net/photo.jpg", source: "ticketmaster" },
     { url: "http://s1.ticketm.net/photo.jpg", source: "ticketmaster" },
     { url: "https://s1.ticketm.net/photo.jpg", source: "untrusted" },

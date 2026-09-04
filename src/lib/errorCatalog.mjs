@@ -164,6 +164,15 @@ export const ERROR_CATALOG = Object.freeze({
     guidance: "Try again later; the rest of Mshpit should remain available.",
     retryable: true,
   }),
+  "PIT-SHARE-001": Object.freeze({
+    category: "share",
+    severity: "warning",
+    title: "This card needs a photo",
+    message: "This ticket needs a rights-cleared artist photo before it can be shared as artwork.",
+    failurePoint: "Share artwork eligibility",
+    guidance: "A Mshpit admin or verified artist can add a rights-cleared photo on the artist page.",
+    retryable: false,
+  }),
   "PIT-API-001": Object.freeze({
     category: "response",
     severity: "error",
@@ -339,6 +348,7 @@ export const SERVER_CODE_MAP = Object.freeze({
   DATABASE_UNAVAILABLE: "PIT-SVC-001",
   STORAGE_UNAVAILABLE: "PIT-SVC-001",
   MEDIA_STORAGE_UNAVAILABLE: "PIT-UPLOAD-001",
+  SHARE_ARTWORK_REQUIRED: "PIT-SHARE-001",
   SHARE_RENDER_UNAVAILABLE: "PIT-SVC-001",
   REQUEST_TOO_LARGE: "PIT-REQ-005",
   MEDIA_TYPE_UNSUPPORTED: "PIT-UPLOAD-002",

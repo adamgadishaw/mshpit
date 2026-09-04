@@ -274,6 +274,34 @@ test("Going ticket artwork never publishes a banner-finalized artist image as an
   assert.notEqual(created.post.attendanceTicket.artistPhotoUri, wrongPurposePhoto);
 });
 
+test("Going ticket projection carries complete attribution only for verified licensed artist art", () => {
+  const user = addUser("ticket_licensed_artist");
+  const event = {
+    id: "tm_ticket_licensed_artist",
+    artist: "Bryson Tiller",
+    venue: "Licensed Room",
+    date: `${FUTURE_YEAR}-10-26`,
+  };
+  addEvent(event);
+  markAttendance(user, event);
+
+  const created = routes["POST /api/posts"]({
+    user,
+    ip: "ticket-licensed-create",
+    body: ticketBody(event.id, "attendance_ticket_licensed_artist"),
+  });
+  assert.match(created.post.attendanceTicket.artistPhotoUri, /^https:\/\/[^/]+\/artists\/licensed\//);
+  assert.deepEqual(created.post.attendanceTicket.artistPhotoAttribution, {
+    source: "licensed-media",
+    title: "BrysonTiller.png",
+    creator: "BrysonTiller Faan",
+    license: "CC-BY-3.0",
+    licenseUrl: "https://creativecommons.org/licenses/by/3.0/",
+    sourcePage: "https://commons.wikimedia.org/wiki/File:BrysonTiller.png",
+    modificationNotice: "Cropped, resized and converted to WebP.",
+  });
+});
+
 test("ticket publication requires exact current Going attendance and rejects client event copies or secrets", () => {
   const user = addUser("ticket_guarded");
   const event = { id: "tm_ticket_post_2", date: `${FUTURE_YEAR}-11-01` };

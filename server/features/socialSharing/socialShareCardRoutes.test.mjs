@@ -16,6 +16,16 @@ const PNG = Buffer.concat([
   Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
   Buffer.alloc(120, 1),
 ]);
+const OWNED_ARTIST_PHOTO = "https://media.mshpit.test/public/artists/the-example/current.jpg";
+const LICENSED_ARTIST_PHOTO = Object.freeze({
+  uri: "https://media.mshpit.test/public/artists/licensed/the-example.webp",
+  title: "The_Example.jpg",
+  creator: "Example Photographer",
+  license: "CC-BY-3.0",
+  licenseUrl: "https://creativecommons.org/licenses/by/3.0/",
+  sourcePage: "https://commons.wikimedia.org/wiki/File:The_Example.jpg",
+  modificationNotice: "Cropped, resized and converted to WebP.",
+});
 
 class TestApiError extends Error {
   constructor(status, message, code) {
@@ -65,6 +75,7 @@ function fixture({
   renderer = null,
   artworkEnv = { MEDIA_PUBLIC_BASE_URL: "https://media.mshpit.test/public" },
   resolveCurrentArtistProfileImage = null,
+  resolveCurrentLicensedArtistPhoto = null,
   resolveCurrentEventProviderImage = null,
   resolvePublicDocument = async (path) => path.startsWith("/post/")
     ? reviewDocument(path.slice("/post/".length))
@@ -87,6 +98,7 @@ function fixture({
     rateLimit: () => {},
     requireUser: () => ({ id: "member_123", name: "Alex" }),
     resolveCurrentArtistProfileImage,
+    resolveCurrentLicensedArtistPhoto,
     resolveCurrentEventProviderImage,
     resolvePublicDocument,
     artworkEnv,
@@ -109,8 +121,14 @@ function context(body) {
   };
 }
 
+const isMissingShareArtwork = (error) => error.status === 409
+  && error.code === "SHARE_ARTWORK_REQUIRED";
+
 test("event artwork requires the member's exact saved Going or Interested state", async () => {
-  const going = fixture({ attendanceState: "going" });
+  const going = fixture({
+    attendanceState: "going",
+    resolveCurrentArtistProfileImage: () => OWNED_ARTIST_PHOTO,
+  });
   const ctx = context({ kind: "event", eventId: "event_123", intent: "going" });
   const result = binaryApiResponsePayload(await going.route(ctx));
   assert.ok(result);
@@ -194,6 +212,66 @@ test("public Going post falls back to its safe server-owned ticket snapshot", as
   ]) assert.doesNotMatch(serializedModel, new RegExp(privateValue, "u"));
 });
 
+test("attendance shares use verified mirrored artist art after managed profile art", async () => {
+  const rawTicket = {
+    version: 1,
+    state: "going",
+    tourDateId: "event_123",
+    artist: "The Example",
+    artistKey: "the example",
+    venue: "Massey Hall",
+    date: "2026-10-16",
+    artistPhotoUri: "https://cdn-images.dzcdn.net/images/artist/provider.jpg",
+  };
+  const candidate = {
+    url: LICENSED_ARTIST_PHOTO.uri,
+    source: "licensed-media",
+    title: LICENSED_ARTIST_PHOTO.title,
+    creator: LICENSED_ARTIST_PHOTO.creator,
+    license: LICENSED_ARTIST_PHOTO.license,
+    licenseUrl: LICENSED_ARTIST_PHOTO.licenseUrl,
+    sourcePage: LICENSED_ARTIST_PHOTO.sourcePage,
+    modificationNotice: LICENSED_ARTIST_PHOTO.modificationNotice,
+  };
+  const snapshot = publicAttendanceTicketShareSnapshot(rawTicket, {
+    env: { MEDIA_PUBLIC_BASE_URL: "https://media.mshpit.test/public" },
+    resolveCurrentArtistProfileImage: () => null,
+    resolveCurrentLicensedArtistPhoto: () => LICENSED_ARTIST_PHOTO,
+  });
+  assert.deepEqual(snapshot.fallbackArtwork, [candidate]);
+
+  const licensed = fixture({
+    resolveCurrentArtistProfileImage: () => null,
+    resolveCurrentLicensedArtistPhoto: (identity) => {
+      assert.equal(identity.artist, "The Example");
+      return LICENSED_ARTIST_PHOTO;
+    },
+  });
+  await licensed.route(context({ kind: "event", eventId: "event_123", intent: "going" }));
+  assert.deepEqual(licensed.renderedModels[0].artwork, [candidate]);
+
+  const managed = fixture({
+    resolveCurrentArtistProfileImage: () => OWNED_ARTIST_PHOTO,
+    resolveCurrentLicensedArtistPhoto: () => LICENSED_ARTIST_PHOTO,
+  });
+  await managed.route(context({ kind: "event", eventId: "event_123", intent: "going" }));
+  assert.deepEqual(managed.renderedModels[0].artwork, [{
+    url: OWNED_ARTIST_PHOTO,
+    source: "owned-media",
+  }]);
+
+  const directProvider = publicAttendanceTicketShareSnapshot(rawTicket, {
+    env: { MEDIA_PUBLIC_BASE_URL: "https://media.mshpit.test/public" },
+    resolveCurrentArtistProfileImage: () => null,
+    resolveCurrentLicensedArtistPhoto: () => ({
+      ...LICENSED_ARTIST_PHOTO,
+      uri: "https://upload.wikimedia.org/wikipedia/commons/example.jpg",
+    }),
+  });
+  assert.deepEqual(directProvider.fallbackArtwork, [],
+    "licensed candidates must be mirrored under the configured first-party media base");
+});
+
 test("persisted owned Going artwork must still be the current public artist profile image", async () => {
   const previousPhoto = "https://media.mshpit.test/public/artists/the-example/previous.jpg";
   const replacementPhoto = "https://media.mshpit.test/public/artists/the-example/current.jpg";
@@ -243,14 +321,20 @@ test("persisted owned Going artwork must still be the current public artist prof
 
   await current.route(context({ kind: "post", postId: "going_post" }));
   await replaced.route(context({ kind: "post", postId: "going_post" }));
-  await removed.route(context({ kind: "post", postId: "going_post" }));
-  await unreadable.route(context({ kind: "post", postId: "going_post" }));
+  await assert.rejects(
+    removed.route(context({ kind: "post", postId: "going_post" })),
+    isMissingShareArtwork,
+  );
+  await assert.rejects(
+    unreadable.route(context({ kind: "post", postId: "going_post" })),
+    isMissingShareArtwork,
+  );
 
   assert.deepEqual(seenIdentities, [{ artist: "The Example", artistKey: "the example" }]);
   assert.deepEqual(current.renderedModels[0].artwork, [{ url: previousPhoto, source: "owned-media" }]);
   assert.deepEqual(replaced.renderedModels[0].artwork, [{ url: replacementPhoto, source: "owned-media" }]);
-  assert.deepEqual(removed.renderedModels[0].artwork, []);
-  assert.deepEqual(unreadable.renderedModels[0].artwork, []);
+  assert.equal(removed.renderedModels.length, 0);
+  assert.equal(unreadable.renderedModels.length, 0);
   assert.notEqual(
     socialShareCardEtag(current.renderedModels[0]),
     socialShareCardEtag(replaced.renderedModels[0]),
@@ -365,10 +449,13 @@ test("legacy Going posts do not recover provider art without export permission",
     } : null,
   });
 
-  await route(context({ kind: "post", postId: "going_post" }));
+  await assert.rejects(
+    route(context({ kind: "post", postId: "going_post" })),
+    isMissingShareArtwork,
+  );
 
   assert.deepEqual(seen, [], "ineligible provider lookup is skipped entirely");
-  assert.deepEqual(renderedModels[0].artwork, []);
+  assert.equal(renderedModels.length, 0);
 });
 
 test("direct attendance shares reject current provider art when no export permission exists", async () => {
@@ -378,9 +465,12 @@ test("direct attendance shares reject current provider art when no export permis
     resolvePublicDocument: async (path) => eventDocument(path.slice("/event/".length)),
   });
 
-  await route(context({ kind: "event", eventId: "event_123", intent: "going" }));
+  await assert.rejects(
+    route(context({ kind: "event", eventId: "event_123", intent: "going" })),
+    isMissingShareArtwork,
+  );
 
-  assert.deepEqual(renderedModels[0].artwork, []);
+  assert.equal(renderedModels.length, 0);
 });
 
 test("Going-post fallback rejects an impossible legacy calendar date", () => {
@@ -609,12 +699,15 @@ test("attendance artwork keeps artist and public-domain venue art while rejectin
       return null;
     },
   });
-  await fanFixture.route(context({
-    kind: "event",
-    eventId: "event_fan_gallery",
-    intent: "going",
-  }));
-  assert.deepEqual(fanFixture.renderedModels[0].artwork, []);
+  await assert.rejects(
+    fanFixture.route(context({
+      kind: "event",
+      eventId: "event_fan_gallery",
+      intent: "going",
+    })),
+    isMissingShareArtwork,
+  );
+  assert.equal(fanFixture.renderedModels.length, 0);
 });
 
 test("attendance exports never reuse attribution-required venue art without visible credit", async () => {
@@ -644,18 +737,22 @@ test("attendance exports never reuse attribution-required venue art without visi
     },
   });
 
-  await venueFixture.route(context({
-    kind: "event",
-    eventId: "event_cc_by_venue",
-    intent: "going",
-  }));
+  await assert.rejects(
+    venueFixture.route(context({
+      kind: "event",
+      eventId: "event_cc_by_venue",
+      intent: "going",
+    })),
+    isMissingShareArtwork,
+  );
 
-  assert.deepEqual(venueFixture.renderedModels[0].artwork, [],
+  assert.equal(venueFixture.renderedModels.length, 0,
     "CC-BY/SA photos stay on attributed venue pages and never enter uncredited Story exports");
 });
 
 test("renderer saturation reports a dedicated retryable service failure", async () => {
   const { route } = fixture({
+    resolveCurrentArtistProfileImage: () => OWNED_ARTIST_PHOTO,
     renderer: {
       async render() { throw new SocialShareCardBusyError(); },
     },
@@ -668,6 +765,7 @@ test("renderer saturation reports a dedicated retryable service failure", async 
 
 test("temporary authoritative-photo failure reports a retryable artwork failure", async () => {
   const { route } = fixture({
+    resolveCurrentArtistProfileImage: () => OWNED_ARTIST_PHOTO,
     renderer: {
       async render() { throw new SocialShareCardArtworkUnavailableError(); },
     },

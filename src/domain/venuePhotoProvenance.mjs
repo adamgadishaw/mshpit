@@ -54,6 +54,7 @@ export function licensedVenuePhoto(entry) {
   if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
   const uri = verifiedHttpsUrl(entry.uri);
   const sourcePage = verifiedHttpsUrl(entry.sourcePage);
+  const title = cleanText(entry.title, 240);
   const creator = cleanText(entry.creator, 240);
   const license = cleanText(entry.license, 40)?.toUpperCase() || null;
   const definition = license ? VENUE_PHOTO_LICENSES[license] : null;
@@ -86,6 +87,7 @@ export function licensedVenuePhoto(entry) {
     by: `${creator} · ${definition.label}`,
     source: "licensed",
     provenanceSource,
+    ...(title ? { title } : {}),
     creator,
     license,
     licenseUrl: definition.url,

@@ -134,7 +134,7 @@ export default function SocialShareStudio({ accountId = null, model, onClose }) 
   const desktop = Platform.OS === "web" && width >= 760;
   const nativeStory = Platform.OS !== "web";
   const storyConfigured = instagramStorySharingConfigured();
-  const [assetState, setAssetState] = useState({ status: "loading", asset: null });
+  const [assetState, setAssetState] = useState({ status: "loading", asset: null, error: null });
   const [renderAttempt, setRenderAttempt] = useState(0);
   const [busyAction, setBusyAction] = useState(null);
   const [feedback, setFeedback] = useState(null);
@@ -142,6 +142,8 @@ export default function SocialShareStudio({ accountId = null, model, onClose }) 
   const preparedAsset = assetState.status === "ready" && assetState.asset?.previewUri
     ? assetState.asset
     : null;
+  const shareArtworkRequired = assetState.status === "unavailable"
+    && assetState.error?.serverCode === "SHARE_ARTWORK_REQUIRED";
   const renderKind = model?.renderRequest?.kind || null;
   const renderPostId = model?.renderRequest?.postId || null;
   const renderEventId = model?.renderRequest?.eventId || null;
@@ -162,7 +164,7 @@ export default function SocialShareStudio({ accountId = null, model, onClose }) 
     const controller = new AbortController();
     let active = true;
     let prepared = null;
-    setAssetState({ status: "loading", asset: null });
+    setAssetState({ status: "loading", asset: null, error: null });
     void createShareCardAsset(renderModel, { accountId, signal: controller.signal })
       .then((asset) => {
         prepared = asset || null;
@@ -170,11 +172,11 @@ export default function SocialShareStudio({ accountId = null, model, onClose }) 
           releaseShareCardAsset(prepared);
           return;
         }
-        setAssetState({ status: prepared ? "ready" : "unavailable", asset: prepared });
+        setAssetState({ status: prepared ? "ready" : "unavailable", asset: prepared, error: null });
       })
       .catch((error) => {
         if (!active || error?.name === "AbortError") return;
-        setAssetState({ status: "unavailable", asset: null });
+        setAssetState({ status: "unavailable", asset: null, error });
       });
     return () => {
       active = false;
@@ -249,7 +251,7 @@ export default function SocialShareStudio({ accountId = null, model, onClose }) 
   const retryShareCard = () => {
     if (busyAction || assetState.status !== "unavailable") return;
     setFeedback(null);
-    setAssetState({ status: "loading", asset: null });
+    setAssetState({ status: "loading", asset: null, error: null });
     setRenderAttempt((attempt) => attempt + 1);
   };
   const instagramLabel = "Instagram Story";
@@ -310,13 +312,15 @@ export default function SocialShareStudio({ accountId = null, model, onClose }) 
               </View>
             ) : <AuthoritativeShareCardPlaceholder status={assetState.status} />}
             <Text style={styles.cardStatus}>
-              {assetState.status === "loading"
+              {shareArtworkRequired
+                ? "This ticket needs a rights-cleared artist photo. A Mshpit admin or verified artist can add one on the artist page."
+                : assetState.status === "loading"
                 ? "Preparing the final share card…"
                 : assetState.status === "ready"
                   ? "Share artwork ready"
                   : "The artwork is unavailable right now. You can still copy the link."}
             </Text>
-            {assetState.status === "unavailable" ? (
+            {assetState.status === "unavailable" && !shareArtworkRequired ? (
               <Pressable
                 accessibilityHint="Try preparing the final share card again"
                 accessibilityLabel="Retry share artwork"
