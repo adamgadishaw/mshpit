@@ -1,5 +1,22 @@
 {
-  "bryson tiller": {
+  "a043bf80af701205de278dfa0c6a3773737192c7f58fe1d2": {
+    "artistKey": "bryson tiller",
+    "photo": {
+      "uri": "https://pub-ed4a84ccdec4452ebcdb1b116e40b67b.r2.dev/artists/licensed/bryson-tiller-57797a3c075c/a043bf80af701205de278dfa0c6a3773737192c7f58fe1d2.webp",
+      "source": "licensed",
+      "provenanceSource": "commons",
+      "title": "BrysonTiller.png",
+      "creator": "BrysonTiller Faan",
+      "license": "CC-BY-3.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/3.0/",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:BrysonTiller.png",
+      "modificationNotice": "Cropped, resized and converted to WebP.",
+      "mirror": {
+        "objectKey": "artists/licensed/bryson-tiller-57797a3c075c/a043bf80af701205de278dfa0c6a3773737192c7f58fe1d2.webp"
+      }
+    }
+  },
+  "a84ab2bcd680ed638991343983552341926bac7c9714782d": {
     "artistKey": "bryson tiller",
     "mbid": "d8fd8d9b-473b-4f06-83c8-869b1bb9de89",
     "photo": {

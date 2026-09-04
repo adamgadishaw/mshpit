@@ -16,12 +16,22 @@ import {
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SOURCE = resolve(HERE, "..", "src", "seed", "catalog.artist-photos.source.json");
 const OUTPUT = resolve(HERE, "..", "src", "seed", "catalog.artist-photos.verified.json");
+const CREDIT_OUTPUT = resolve(HERE, "..", "src", "seed", "catalog.photo-credits.json");
+const MIRRORED_OBJECT_KEY = /^artists\/licensed\/[a-z0-9](?:[a-z0-9-]{0,118}[a-z0-9])?\/([a-f0-9]{48})\.webp$/u;
 
 function jsonObject(value, label) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`${label} must contain a JSON object.`);
   }
   return value;
+}
+
+function normalizedFocalPoint(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const x = Number(value.x);
+  const y = Number(value.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || x > 1 || y < 0 || y > 1) return null;
+  return Object.freeze({ x, y });
 }
 
 async function readJsonObject(path, label, { optional = false } = {}) {
@@ -51,6 +61,39 @@ async function writeJsonAtomic(path, value) {
   }
 }
 
+function archivedCreditRow(row) {
+  const photo = licensedVenuePhoto(row?.photo);
+  const title = typeof row?.photo?.title === "string" ? row.photo.title.trim() : "";
+  const objectKey = typeof row?.photo?.mirror?.objectKey === "string"
+    ? row.photo.mirror.objectKey
+    : "";
+  const match = MIRRORED_OBJECT_KEY.exec(objectKey);
+  if (!photo || !title || !match) return null;
+  try {
+    const path = decodeURIComponent(new URL(photo.uri).pathname);
+    if (!path.endsWith(`/${objectKey}`)) return null;
+  } catch {
+    return null;
+  }
+  return {
+    id: match[1],
+    row: {
+      artistKey: row.artistKey,
+      ...(row.mbid ? { mbid: row.mbid } : {}),
+      photo: row.photo,
+    },
+  };
+}
+
+function appendPhotoCredits(archive, rows) {
+  const next = { ...archive };
+  for (const row of rows) {
+    const credit = archivedCreditRow(row);
+    if (credit && !Object.hasOwn(next, credit.id)) next[credit.id] = credit.row;
+  }
+  return next;
+}
+
 export async function runVerifiedArtistPhotoMirror({
   argv = process.argv.slice(2),
   env = process.env,
@@ -58,6 +101,7 @@ export async function runVerifiedArtistPhotoMirror({
   logger = console,
   mirror = mirrorLicensedArtistPhoto,
   outputPath = OUTPUT,
+  creditOutputPath = outputPath === OUTPUT ? CREDIT_OUTPUT : null,
   sourcePath = SOURCE,
 } = {}) {
   const options = parseArtistPhotoMirrorArgs(argv);
@@ -92,12 +136,14 @@ export async function runVerifiedArtistPhotoMirror({
   const failures = [];
   for (const { key, row } of selected) {
     try {
-      const photo = await mirror({
+      const mirroredPhoto = await mirror({
         artistKey: key,
         photo: row.photo,
         env,
         fetchImpl,
       });
+      const focalPoint = normalizedFocalPoint(row.photo?.focalPoint);
+      const photo = focalPoint ? { ...mirroredPhoto, focalPoint } : mirroredPhoto;
       successful.push({ key, artistKey: row.artistKey, mbid: row.mbid, photo });
     } catch (error) {
       failures.push(key);
@@ -106,6 +152,18 @@ export async function runVerifiedArtistPhotoMirror({
   }
 
   const next = mergeSuccessfulArtistPhotoMirrors(existing, successful, { authoritativeKeys });
+  if (creditOutputPath) {
+    const creditArchive = await readJsonObject(creditOutputPath, "Photo-credit archive", { optional: true });
+    const nextCreditArchive = appendPhotoCredits(creditArchive, [
+      ...Object.values(existing),
+      ...Object.values(next),
+    ]);
+    if (JSON.stringify(nextCreditArchive) !== JSON.stringify(creditArchive)) {
+      // Archive first: a later verified-catalog write can fail without losing
+      // the attribution record for a photo that was about to be replaced.
+      await writeJsonAtomic(creditOutputPath, nextCreditArchive);
+    }
+  }
   if (successful.length || JSON.stringify(next) !== JSON.stringify(existing)) {
     await writeJsonAtomic(outputPath, next);
   }

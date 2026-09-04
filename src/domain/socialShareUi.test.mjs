@@ -36,6 +36,12 @@ test("posts and exact event attendance share through one reusable studio", () =>
     "Retry starts one new authoritative render without changing the shared item");
   assert.match(studio, /source=\{\{ uri: preparedAsset\.previewUri \}\}/,
     "the visible final preview is the exact prepared PNG used by sharing actions");
+  assert.match(studio, /accessibilityLabel="Photo source"/);
+  assert.match(studio, /openExternalShareUrl\(preparedAsset\.photoCreditUrl\)/);
+  assert.match(studio, /photoSource:\s*\{[^}]*minHeight:\s*44/s,
+    "the source action keeps a full 44-point mobile touch target");
+  assert.doesNotMatch(studio, /Share artwork ready/,
+    "the finished preview does not waste space restating its ready state");
   assert.match(studio, /shareAction:\s*\{[^}]*minWidth:\s*0[^}]*flexBasis:\s*230/s,
     "Share destinations shrink or wrap inside narrow phone boundaries");
 });
@@ -56,6 +62,7 @@ test("share artwork is created only after an explicit share action and stays pri
     assert.match(adapter, /body: model\.renderRequest/);
     assert.match(adapter, /expectedAccountId: accountId/);
     assert.doesNotMatch(adapter, /\/share\/card\/post|\/share\/card\/event/);
+    assert.match(adapter, /photoCreditUrl: response\.photoCreditUrl \|\| null/);
   }
   assert.match(api, /export async function apiBinary/);
   assert.match(api, /apiIdentityBarrierDecision/);
@@ -88,6 +95,9 @@ test("Instagram uses the Story composer in native builds and an honest browser s
   assert.match(native, /RNShare\.Social\.INSTAGRAM_STORIES/);
   assert.match(native, /backgroundImage: preparedAsset\.fileUri/);
   assert.match(native, /appId: INSTAGRAM_STORY_APP_ID/);
+  assert.match(native, /attributionURL: preparedAsset\.photoCreditUrl \|\| model\?\.url \|\| undefined/,
+    "licensed artwork gives Instagram the stable first-party source record while the Story link still opens the shared item");
+  assert.match(native, /linkUrl: model\?\.url \|\| undefined/);
   assert.match(native, /INSTAGRAM_NOT_INSTALLED/);
   assert.doesNotMatch(native, /Sharing\.shareAsync|\bShare\.share\(/,
     "Story sharing must never fall back to a feed-capable generic share sheet");
@@ -115,7 +125,7 @@ test("native preview and Instagram handoff use one immutable prepared PNG", () =
   const studio = source("../components/SocialShareStudio.jsx");
   const native = source("../lib/socialShare.native.js");
 
-  assert.match(native, /return \{ file, fileUri: file\.uri, previewUri: file\.uri \};/,
+  assert.match(native, /fileUri: file\.uri,[\s\S]*?previewUri: file\.uri,[\s\S]*?photoCreditUrl: response\.photoCreditUrl \|\| null/,
     "the preview and native handoff point at the same generated cache file");
   assert.match(studio, /source=\{\{ uri: preparedAsset\.previewUri \}\}/,
     "the visible preview renders that exact generated file");

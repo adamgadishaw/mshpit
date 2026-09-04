@@ -3,6 +3,7 @@ import test from "node:test";
 
 import sharp from "sharp";
 
+import { publicArtistPhoto } from "../../artistPhotoCatalog.js";
 import {
   loadShareArtwork,
   ShareArtworkTransientError,
@@ -18,6 +19,23 @@ import {
   SocialShareCardArtworkUnavailableError,
   SocialShareCardBusyError,
 } from "./socialShareCardRenderer.js";
+
+function registeredLicensedArtwork() {
+  const photo = publicArtistPhoto("bryson tiller");
+  assert.ok(photo?.creditPath);
+  return {
+    url: photo.uri,
+    source: "licensed-media",
+    title: photo.title,
+    creator: photo.creator,
+    license: photo.license,
+    licenseUrl: photo.licenseUrl,
+    sourcePage: photo.sourcePage,
+    modificationNotice: photo.modificationNotice,
+    creditPath: photo.creditPath,
+    focalPoint: photo.focalPoint,
+  };
+}
 
 function eventDocument(overrides = {}) {
   return {
@@ -90,16 +108,7 @@ test("share models preserve only projected artwork provenance and keep each shar
   eventDocumentWithImage.image = "https://s1.ticketm.net/dam/a/show.jpg";
   const going = eventShareCardModel(eventDocumentWithImage, "going");
   const interested = eventShareCardModel(eventDocumentWithImage, "interested");
-  const licensedCandidate = {
-    url: "https://media.mshpit.test/public/artists/licensed/the-example.webp",
-    source: "licensed-media",
-    title: "The_Example.jpg",
-    creator: "Example Photographer",
-    license: "CC-BY-3.0",
-    licenseUrl: "https://creativecommons.org/licenses/by/3.0/",
-    sourcePage: "https://commons.wikimedia.org/wiki/File:The_Example.jpg",
-    modificationNotice: "Cropped, resized and converted to WebP.",
-  };
+  const licensedCandidate = registeredLicensedArtwork();
   const licensedGoing = eventShareCardModel(eventDocumentWithImage, "going", {
     fallbackArtwork: [licensedCandidate],
   });
@@ -122,41 +131,38 @@ test("share models preserve only projected artwork provenance and keep each shar
   assert.match(socialShareCardSvg(review), /data-layout="review-photo"/u);
   assert.notEqual(socialShareCardSvg(going), socialShareCardSvg(interested));
   assert.doesNotMatch(socialShareCardSvg(review), /FAN REVIEW/u);
-  const attributedSvg = socialShareCardSvg(licensedGoing, {
+  const photoSvg = socialShareCardSvg(licensedGoing, {
     artworkDataUri: "data:image/jpeg;base64,/9j/2Q==",
     artwork: licensedGoing.artwork[0],
   });
-  assert.match(attributedSvg, /The_Example\.jpg · Example Photographer/u);
-  assert.match(attributedSvg, /commons\.wikimedia\.org\/wiki\/File:The_Example\.jpg/u);
-  assert.match(
-    attributedSvg,
-    /CC BY 3\.0 · creativecommons\.org\/licenses\/by\/3\.0\//u,
-  );
-  assert.match(
-    attributedSvg,
-    /Changed: Cropped, resized and converted to WebP\./u,
-  );
-  const creditGroup = /<g data-section="licensed-photo-credit"[\s\S]*?<\/g>/u.exec(attributedSvg)?.[0] || "";
-  const creditFontSizes = [...creditGroup.matchAll(/font-size="(\d+)"/gu)]
-    .map((match) => Number(match[1]));
-  assert.equal(creditFontSizes.length, 4);
-  assert.ok(creditFontSizes.every((size) => size >= 14),
-    "all four TASL lines remain readable at phone Story scale");
-  assert.doesNotMatch(creditGroup, /https:\/\//u);
+  assert.match(photoSvg, /preserveAspectRatio="xMidYMin slice"/u);
+  assert.doesNotMatch(photoSvg, /licensed-photo-credit/u);
+  assert.doesNotMatch(photoSvg, /Bryson Tiller August|AtlantaFX|commons\.wikimedia\.org|creativecommons\.org|converted to WebP/u);
   assert.doesNotMatch(
     socialShareCardSvg(licensedGoing, {
       artworkDataUri: "data:image/jpeg;base64,/9j/2Q==",
     }),
-    /Example Photographer/u,
+    /AtlantaFX/u,
     "attribution must describe the candidate that was actually accepted",
   );
 });
 
-test("attendance artwork is top-aligned for faces while review artwork stays centered", () => {
+test("attendance artwork honors an explicit focal point while its default and review artwork stay centered", () => {
   const artworkDataUri = "data:image/jpeg;base64,/9j/2Q==";
   const attendanceSvg = socialShareCardSvg(
     eventShareCardModel(eventDocument(), "going"),
     { artworkDataUri },
+  );
+  const focalAttendanceSvg = socialShareCardSvg(
+    eventShareCardModel(eventDocument(), "going"),
+    {
+      artworkDataUri,
+      artwork: {
+        url: "https://media.mshpit.test/public/share-tests/portrait.jpg",
+        source: "owned-media",
+        focalPoint: { x: 0.43, y: 0.2 },
+      },
+    },
   );
   const reviewSvg = socialShareCardSvg(
     reviewShareCardModel(reviewDocument()),
@@ -165,6 +171,10 @@ test("attendance artwork is top-aligned for faces while review artwork stays cen
 
   assert.match(
     attendanceSvg,
+    /<image[^>]+preserveAspectRatio="xMidYMid slice"[^>]+clip-path="url\(#attendanceHero\)"/u,
+  );
+  assert.match(
+    focalAttendanceSvg,
     /<image[^>]+preserveAspectRatio="xMidYMin slice"[^>]+clip-path="url\(#attendanceHero\)"/u,
   );
   assert.match(
@@ -174,7 +184,7 @@ test("attendance artwork is top-aligned for faces while review artwork stays cen
   assert.doesNotMatch(reviewSvg, /preserveAspectRatio="xMidYMin slice"/u);
 });
 
-test("portrait preparation preserves the pixels needed by each SVG crop alignment", async () => {
+test("portrait preparation preserves the pixels needed by explicit focal alignment", async () => {
   const blueLowerSection = await sharp({
     create: {
       width: 400,
@@ -198,7 +208,14 @@ test("portrait preparation preserves the pixels needed by each SVG crop alignmen
 
   const attendance = await renderSocialShareCardPng(
     eventShareCardModel(eventDocument(), "going"),
-    { artworkBytes: portrait },
+    {
+      artworkBytes: portrait,
+      artwork: {
+        url: "https://media.mshpit.test/public/share-tests/portrait.jpg",
+        source: "owned-media",
+        focalPoint: { x: 0.43, y: 0.2 },
+      },
+    },
   );
   const review = await renderSocialShareCardPng(
     reviewShareCardModel(reviewDocument()),
@@ -225,13 +242,15 @@ test("attendance cards keep one ticket geometry and place the RSVP disclaimer in
     artworkDataUri: "data:image/jpeg;base64,/9j/2Q==",
   });
   const geometry = (svg) => ({
-    body: /data-section="attendance-body" data-statement-y="(\d+)"[\s\S]*?data-artist-y="(\d+)"/u.exec(svg)?.slice(1),
-    schedule: /data-section="attendance-schedule" data-schedule-y="(\d+)"/u.exec(svg)?.[1],
+    hero: /data-section="attendance-hero-copy" data-kicker-y="(\d+)" data-artist-y="(\d+)"[\s\S]*?data-subtitle-y="(\d+)"/u.exec(svg)?.slice(1),
+    meta: /data-section="attendance-meta"/u.test(svg),
   });
 
   assert.deepEqual(geometry(withoutPhoto), geometry(withPhoto));
   for (const svg of [withoutPhoto, withPhoto]) {
-    assert.match(svg, /<rect x="40" y="328" width="1000" height="392" fill="#121018"\/>/u);
+    assert.match(svg, /<rect x="40" y="328" width="1000" height="632" fill="#121018"\/>/u);
+    assert.match(svg, /<rect x="40" y="960" width="1000" height="390" fill="#1d1434"\/>/u);
+    assert.match(svg, /<rect x="40" y="1350" width="1000" height="330" fill="#251940"\/>/u);
     assert.match(svg, />MSHPIT<\/text>/u);
     assert.match(svg, />LIVE MUSIC, REMEMBERED<\/text>/u);
     assert.match(svg, />MSHPIT RSVP<\/text>/u);
@@ -274,7 +293,7 @@ test("SVG artwork bounds pathological words, escapes authored text, and uses one
   assert.doesNotMatch(eventSvg, /OPEN THE REVIEW ON MSHPIT/u);
 });
 
-test("photo attendance layout keeps worst-case authored text above the ticket perforation", async () => {
+test("photo attendance layout keeps worst-case authored text inside the hero and metadata regions", async () => {
   const model = eventShareCardModel(eventDocument({
     name: "The Extremely Long Farewell Celebration and Final Stadium Experience",
     artist: "WWWWWWWWWWWWWWWWWWWW WWWWWWWWWWWWWWWWWWWW",
@@ -286,18 +305,15 @@ test("photo attendance layout keeps worst-case authored text above the ticket pe
   const svg = socialShareCardSvg(model, {
     artworkDataUri: "data:image/jpeg;base64,/9j/2Q==",
   });
-  const body = /data-section="attendance-body" data-statement-y="(\d+)" data-subtitle-y="(\d+)" data-subtitle-lines="(\d+)" data-artist-y="(\d+)" data-artist-lines="(\d+)"/u.exec(svg);
-  const schedule = /data-section="attendance-schedule" data-schedule-y="(\d+)"/u.exec(svg);
-  assert.ok(body);
-  assert.ok(schedule);
-  const [, statementY, subtitleY, subtitleLineCount, artistY, artistLineCount] = body.map(Number);
-  const scheduleY = Number(schedule[1]);
-  assert.ok(Number(statementY) < Number(subtitleY));
-  assert.ok(Number(artistY) > Number(subtitleY) + ((subtitleLineCount - 1) * 32) + 26);
-  assert.ok(scheduleY > Number(artistY) + ((artistLineCount - 1) * 68) + 18);
-  assert.ok(scheduleY + 158 < 1350);
-  assert.match(svg, /clip-path="url\(#attendanceBody\)"/u);
-  assert.match(svg, /clip-path="url\(#attendanceVenue\)"/u);
+  const hero = /data-section="attendance-hero-copy" data-kicker-y="(\d+)" data-artist-y="(\d+)" data-artist-lines="(\d+)" data-subtitle-y="(\d+)" data-subtitle-lines="(\d+)"/u.exec(svg);
+  assert.ok(hero);
+  const [, kickerY, artistY, artistLineCount, subtitleY, subtitleLineCount] = hero.map(Number);
+  assert.ok(kickerY < artistY);
+  assert.ok(artistY + ((artistLineCount - 1) * 80) < subtitleY);
+  assert.ok(subtitleY + ((subtitleLineCount - 1) * 38) < 960);
+  assert.match(svg, /clip-path="url\(#attendanceHeroCopy\)"/u);
+  assert.match(svg, /clip-path="url\(#attendancePlace\)"/u);
+  assert.match(svg, /clip-path="url\(#attendanceStatement\)"/u);
   assert.match(svg, /…/u);
   const photo = await sharp({
     create: {
@@ -323,6 +339,65 @@ test("renderer emits a bounded 1080 by 1920 Instagram Story PNG", async () => {
   assert.equal(metadata.width, 1080);
   assert.equal(metadata.height, 1920);
   assert.equal(metadata.format, "png");
+});
+
+test("licensed attendance artwork stores its credit in PNG metadata without visible credit pixels", async () => {
+  const photo = publicArtistPhoto("bryson tiller");
+  const artwork = {
+    url: photo.uri,
+    source: "licensed-media",
+    title: photo.title,
+    creator: photo.creator,
+    license: photo.license,
+    licenseUrl: photo.licenseUrl,
+    sourcePage: photo.sourcePage,
+    modificationNotice: photo.modificationNotice,
+    creditPath: photo.creditPath,
+    focalPoint: photo.focalPoint,
+  };
+  const artworkBytes = await sharp({
+    create: {
+      width: 800,
+      height: 1_000,
+      channels: 3,
+      background: { r: 50, g: 70, b: 100 },
+    },
+  }).jpeg().toBuffer();
+  const bytes = await renderSocialShareCardPng(
+    eventShareCardModel(eventDocument(), "going"),
+    { artworkBytes, artwork },
+  );
+  const xmp = (await sharp(bytes).metadata()).xmp?.toString("utf8") || "";
+
+  assert.match(xmp, /AtlantaFX/u);
+  assert.match(xmp, new RegExp(`https://www\\.mshpit\\.com${photo.creditPath}`, "u"));
+});
+
+test("licensed artwork without an exact registered credit never reaches pixels or XMP", async () => {
+  const artwork = {
+    ...registeredLicensedArtwork(),
+    creditPath: `/photo-credits/${"0".repeat(48)}`,
+  };
+  const artworkBytes = await sharp({
+    create: {
+      width: 800,
+      height: 1_000,
+      channels: 3,
+      background: { r: 245, g: 15, b: 20 },
+    },
+  }).jpeg().toBuffer();
+  const bytes = await renderSocialShareCardPng(
+    eventShareCardModel(eventDocument(), "going"),
+    { artworkBytes, artwork },
+  );
+  const metadata = await sharp(bytes).metadata();
+  const sample = await sharp(bytes)
+    .extract({ left: 500, top: 500, width: 1, height: 1 })
+    .removeAlpha()
+    .raw()
+    .toBuffer();
+  assert.ok(sample[0] < 100, "an unregistered licensed photo must use the dark no-photo hero");
+  assert.equal(metadata.xmp, undefined);
 });
 
 test("renderer composites a real photo and degrades invalid image bytes to the clean no-photo card", async () => {
@@ -384,6 +459,9 @@ test("renderer rejects unsupported decoded formats and artwork above the pixel c
 });
 
 test("renderer skips a MIME-valid corrupt image and uses the next trusted candidate", async () => {
+  const licensedCandidate = registeredLicensedArtwork();
+  const mediaBase = new URL(licensedCandidate.url).origin;
+  const corruptUrl = `${mediaBase}/share-tests/corrupt.jpg`;
   const validPhoto = await sharp({
     create: {
       width: 640,
@@ -402,7 +480,7 @@ test("renderer skips a MIME-valid corrupt image and uses the next trusted candid
   const renderer = createSocialShareCardRenderer({
     loadArtwork: (candidates, options) => loadShareArtwork(candidates, {
       ...options,
-      env: { MEDIA_PUBLIC_BASE_URL: "https://media.mshpit.test/public" },
+      env: { MEDIA_PUBLIC_BASE_URL: mediaBase },
       fetchImpl: async (url) => {
         requested.push(url);
         const body = url.includes("corrupt") ? corruptJpeg : validPhoto;
@@ -425,29 +503,26 @@ test("renderer skips a MIME-valid corrupt image and uses the next trusted candid
   });
   const model = eventShareCardModel(eventDocument(), "going", {
     fallbackArtwork: [
-      { url: "https://media.mshpit.test/public/share-tests/corrupt.jpg", source: "owned-media" },
-      {
-        url: "https://media.mshpit.test/public/share-tests/valid.jpg",
-        source: "licensed-media",
-        title: "The_Example.jpg",
-        creator: "Example Photographer",
-        license: "CC-BY-3.0",
-        licenseUrl: "https://creativecommons.org/licenses/by/3.0/",
-        sourcePage: "https://commons.wikimedia.org/wiki/File:The_Example.jpg",
-        modificationNotice: "Cropped, resized and converted to WebP.",
-      },
+      { url: corruptUrl, source: "owned-media" },
+      licensedCandidate,
     ],
   });
 
   const result = await renderer.render(model);
   assert.deepEqual(requested, [
-    "https://media.mshpit.test/public/share-tests/corrupt.jpg",
-    "https://media.mshpit.test/public/share-tests/valid.jpg",
+    corruptUrl,
+    licensedCandidate.url,
   ]);
   assert.match(renderedArtworkDataUri, /^data:image\/jpeg;base64,/u);
   assert.equal(renderedArtwork?.source, "licensed-media");
-  assert.equal(renderedArtwork?.creator, "Example Photographer");
+  assert.equal(renderedArtwork?.creator, licensedCandidate.creator);
+  assert.equal(result.artwork?.creditPath, licensedCandidate.creditPath);
+  assert.deepEqual(result.artwork?.focalPoint, { x: 0.43, y: 0.2 });
   assert.equal(result.bytes[8], 4);
+  const cached = await renderer.render(model);
+  assert.equal(cached.bytes, result.bytes);
+  assert.deepEqual(cached.artwork, result.artwork);
+  assert.equal(requested.length, 2, "cache hits retain artwork metadata without refetching");
 });
 
 test("renderer coalesces and caches equal cards while bounding unique concurrent work", async () => {

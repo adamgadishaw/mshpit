@@ -175,7 +175,10 @@ test("artist-photo mirroring uses the hardened pipeline with an artist-only obje
   assert.equal(mirrored.license, PHOTO.license);
   assert.equal(mirrored.provenanceSource, "commons");
   assert.equal(mirrored.mirror.reused, false);
-  assert.equal(mirrored.modificationNotice, "Cropped, resized and converted to WebP.");
+  assert.equal(
+    mirrored.modificationNotice,
+    "Resized and converted to WebP by MSHpit.",
+  );
   assert.ok(licensedVenuePhoto(mirrored), "the artist derivative retains the shared licensed-photo provenance contract");
 });
 

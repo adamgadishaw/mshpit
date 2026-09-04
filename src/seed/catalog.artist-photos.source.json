@@ -3,14 +3,18 @@
     "artistKey": "bryson tiller",
     "mbid": "d8fd8d9b-473b-4f06-83c8-869b1bb9de89",
     "photo": {
-      "title": "BrysonTiller.png",
-      "uri": "https://upload.wikimedia.org/wikipedia/commons/9/96/BrysonTiller.png",
-      "sourcePage": "https://commons.wikimedia.org/wiki/File:BrysonTiller.png",
-      "creator": "BrysonTiller Faan",
+      "title": "Bryson Tiller August 2018 (cropped).jpg",
+      "uri": "https://upload.wikimedia.org/wikipedia/commons/b/b4/Bryson_Tiller_August_2018_%28cropped%29.jpg",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Bryson_Tiller_August_2018_(cropped).jpg",
+      "creator": "AtlantaFX",
       "license": "CC-BY-3.0",
       "licenseUrl": "https://creativecommons.org/licenses/by/3.0/",
       "source": "commons",
-      "modificationNotice": "Cropped, resized and converted to WebP."
+      "modificationNotice": "Source file was cropped on Wikimedia Commons from the original YouTube frame.",
+      "focalPoint": {
+        "x": 0.43,
+        "y": 0.2
+      }
     }
   }
 }

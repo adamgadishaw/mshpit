@@ -284,8 +284,8 @@ test("public SEO responses are cacheable, canonical, and fail closed during proj
   assert.match(source, /"X-Robots-Tag": htmlRobotsDirective\(\{ indexable: publicDocument \}\)/,
     "the HTTP header must share the tested environment-aware indexing policy");
   assert.match(source, /Link: `<\$\{plan\.document\.canonicalUrl\}>; rel="canonical"`/);
-  assert.match(source, /function servePublicPage[\s\S]*?"X-Robots-Tag": htmlRobotsDirective\(\{ indexable: true \}\)/,
-    "standalone trust pages use the shared production/staging header policy");
+  assert.match(source, /function servePublicPage[\s\S]*?const indexable = page\.indexable !== false[\s\S]*?"X-Robots-Tag": htmlRobotsDirective\(\{ indexable \}\)/,
+    "standalone trust and credit pages share the page-specific production/staging header policy");
   assert.match(source, /function serveWebShell[\s\S]*?"X-Robots-Tag": htmlRobotsDirective\(\{ indexable: publicDocument \}\)/,
     "public entity and app shells choose indexing through the shared policy");
   assert.match(source, /if \(!isProduction\(\)\) html = enforceHtmlRobotsMeta\(html\);[\s\S]*?"X-Robots-Tag": htmlRobotsDirective\(\)/,

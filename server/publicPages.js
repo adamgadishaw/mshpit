@@ -13,6 +13,7 @@ import {
 import { SUPPORT_EMAIL } from "../src/domain/contact.mjs";
 
 import { htmlRobotsDirective } from "./environment.js";
+import { photoCreditPageForPath } from "./photoCredits.js";
 const SITE_NAME = "Mshpit";
 export { SUPPORT_EMAIL };
 
@@ -468,7 +469,7 @@ function normalizedPath(pathname) {
 export function publicPageFor(pathname) {
   const path = normalizedPath(pathname);
   const page = PAGES[path];
-  return page ? { path, ...page } : null;
+  return page ? { path, ...page } : photoCreditPageForPath(path);
 }
 
 export function publicPageSitemapEntries() {
@@ -558,7 +559,8 @@ export function renderPublicPage(pathname, env = process.env) {
   if (!page) return null;
   const canonical = `${publicOrigin(env)}${page.path}`;
   const fullTitle = /\bmshpit\b/i.test(page.title) ? page.title : `${page.title} | ${SITE_NAME}`;
-  const image = `${publicOrigin(env)}/og.png`;
+  const image = page.heroImage || `${publicOrigin(env)}/og.png`;
+  const indexable = page.indexable !== false;
   const pageType = page.path === "/about" ? "AboutPage" : page.path === "/contact" ? "ContactPage" : "WebPage";
   const dateModified = exactDateModified(page.modifiedAt || page.updated);
   const jsonLd = {
@@ -602,6 +604,9 @@ export function renderPublicPage(pathname, env = process.env) {
   const primaryAction = page.primaryAction
     ? `<a class="primary" href="${esc(page.primaryAction.href)}">${esc(page.primaryAction.label)}</a>`
     : "";
+  const heroImage = page.heroImage
+    ? `<figure class="credit-photo"><img src="${esc(page.heroImage)}" alt="${esc(page.heroImageAlt || page.title)}" loading="eager" decoding="async" /></figure>`
+    : "";
 
   return `<!doctype html>
 <html lang="en">
@@ -611,8 +616,9 @@ export function renderPublicPage(pathname, env = process.env) {
   <meta name="theme-color" content="#0d0b09" />
   <title>${esc(fullTitle)}</title>
   <meta name="description" content="${esc(page.description)}" />
-  <meta name="robots" content="${esc(htmlRobotsDirective({ indexable: true, env }))}" />
+  <meta name="robots" content="${esc(htmlRobotsDirective({ indexable, env }))}" />
   <link rel="canonical" href="${esc(canonical)}" />
+  ${page.licenseUrl ? `<link rel="license" href="${esc(page.licenseUrl)}" />` : ""}
   <link rel="icon" href="/logo.svg" type="image/svg+xml" />
   <meta property="og:site_name" content="${SITE_NAME}" />
   <meta property="og:locale" content="en_CA" />
@@ -656,6 +662,8 @@ export function renderPublicPage(pathname, env = process.env) {
     .note { margin: 28px 0 44px; padding: 18px 20px; border: 1px solid #5b481d; border-left: 4px solid var(--gold); border-radius: 12px; background: #1c1710; color: var(--dim); }
     .primary { display: inline-flex; margin: -20px 0 44px; padding: 12px 18px; border-radius: 999px; background: var(--gold); color: var(--gold-ink); font-weight: 900; text-decoration: none; }
     .primary:hover { color: var(--gold-ink); background: #ffcc45; }
+    .credit-photo { margin: 30px 0 44px; overflow: hidden; border: 1px solid var(--line); border-radius: 18px; background: var(--panel); }
+    .credit-photo img { display: block; width: 100%; max-height: min(68vh, 680px); object-fit: contain; }
     section { padding: 30px 0; border-top: 1px solid var(--line); }
     h2 { margin: 0 0 12px; color: var(--text); font-size: 1.2rem; line-height: 1.35; }
     p { margin: 0 0 14px; color: var(--dim); }
@@ -689,6 +697,7 @@ export function renderPublicPage(pathname, env = process.env) {
     <p class="intro">${esc(page.intro)}</p>
     ${page.note ? `<p class="note">${esc(page.note)}</p>` : ""}
     ${primaryAction}
+    ${heroImage}
     ${page.sections.map(renderSection).join("\n    ")}
   </main>
   <footer>

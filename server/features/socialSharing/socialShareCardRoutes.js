@@ -1,4 +1,5 @@
 import { createPngApiResponse } from "../../binaryApiResponse.js";
+import { absolutePhotoCreditUrl, photoCreditPathFromArtwork } from "../../photoCredits.js";
 import { isStrictCalendarDate } from "../seo/publicEntityPolicy.js";
 import { normalizeTourDateId } from "../shows/showIdentity.js";
 import {
@@ -63,6 +64,15 @@ function boundedAttributionUrl(value) {
   }
 }
 
+function normalizedFocalPoint(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const x = Number(value.x);
+  const y = Number(value.y);
+  return Number.isFinite(x) && Number.isFinite(y) && x >= 0 && x <= 1 && y >= 0 && y <= 1
+    ? Object.freeze({ x, y })
+    : null;
+}
+
 function licensedArtistArtworkCandidate(photo, env) {
   if (!photo || typeof photo !== "object" || Array.isArray(photo)) return null;
   const transport = trustedArtworkCandidate(photo.uri, "licensed-media", env);
@@ -72,9 +82,10 @@ function licensedArtistArtworkCandidate(photo, env) {
   const licenseUrl = boundedAttributionUrl(photo.licenseUrl);
   const sourcePage = boundedAttributionUrl(photo.sourcePage);
   const modificationNotice = boundedAttributionText(photo.modificationNotice, 160);
+  const focalPoint = normalizedFocalPoint(photo.focalPoint);
   if (!transport || !title || !creator || !license || !licenseUrl
     || !sourcePage || !modificationNotice) return null;
-  return Object.freeze({
+  const projected = {
     ...transport,
     title,
     creator,
@@ -82,7 +93,10 @@ function licensedArtistArtworkCandidate(photo, env) {
     licenseUrl,
     sourcePage,
     modificationNotice,
-  });
+    ...(focalPoint ? { focalPoint } : {}),
+  };
+  const creditPath = photoCreditPathFromArtwork(projected);
+  return creditPath ? Object.freeze({ ...projected, creditPath }) : null;
 }
 
 function projectedOfficialArtwork(document, env) {
@@ -404,6 +418,7 @@ export function socialShareCardRoutes({
       return createPngApiResponse(rendered.bytes, {
         canonicalUrl: model.canonicalUrl,
         filename,
+        photoCreditUrl: absolutePhotoCreditUrl(photoCreditPathFromArtwork(rendered.artwork)),
       });
     },
   });

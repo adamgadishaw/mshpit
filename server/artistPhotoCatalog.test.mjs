@@ -7,14 +7,15 @@ const MBID = "d8fd8d9b-473b-4f06-83c8-869b1bb9de89";
 
 function verifiedPhoto(overrides = {}) {
   return {
-    title: "BrysonTiller.png",
+    title: "Bryson Tiller August 2018 (cropped).jpg",
     uri: "https://media.example/artists/bryson-tiller.webp",
-    sourcePage: "https://commons.wikimedia.org/wiki/File:BrysonTiller.png",
-    creator: "BrysonTiller Faan",
+    sourcePage: "https://commons.wikimedia.org/wiki/File:Bryson_Tiller_August_2018_(cropped).jpg",
+    creator: "AtlantaFX",
     license: "CC-BY-3.0",
     licenseUrl: "https://creativecommons.org/licenses/by/3.0/",
     source: "commons",
-    modificationNotice: "Cropped, resized and converted to WebP.",
+    modificationNotice: "Source file was cropped on Wikimedia Commons from the original YouTube frame. Resized and converted to WebP by MSHpit.",
+    focalPoint: { x: 0.43, y: 0.2 },
     mirror: {
       objectKey: `artists/licensed/bryson-tiller-${"a".repeat(12)}/${"b".repeat(48)}.webp`,
     },
@@ -40,15 +41,16 @@ test("artist photo lookup returns a validator-approved exact-key photo", () => {
     mediaPublicBaseUrl: "",
   }), {
     uri: "https://media.example/artists/bryson-tiller.webp",
-    by: "BrysonTiller Faan · CC BY 3.0",
+    by: "AtlantaFX · CC BY 3.0",
     source: "licensed",
     provenanceSource: "commons",
-    title: "BrysonTiller.png",
-    creator: "BrysonTiller Faan",
+    title: "Bryson Tiller August 2018 (cropped).jpg",
+    creator: "AtlantaFX",
     license: "CC-BY-3.0",
     licenseUrl: "https://creativecommons.org/licenses/by/3.0/",
-    sourcePage: "https://commons.wikimedia.org/wiki/File:BrysonTiller.png",
-    modificationNotice: "Cropped, resized and converted to WebP.",
+    sourcePage: "https://commons.wikimedia.org/wiki/File:Bryson_Tiller_August_2018_(cropped).jpg",
+    modificationNotice: "Source file was cropped on Wikimedia Commons from the original YouTube frame. Resized and converted to WebP by MSHpit.",
+    focalPoint: { x: 0.43, y: 0.2 },
   });
 });
 
@@ -60,7 +62,9 @@ test("artist photo lookup rebases a validated mirror key onto the current public
   });
   assert.equal(photo.uri,
     `https://new-media.example/cdn/artists/licensed/bryson-tiller-${"a".repeat(12)}/${"b".repeat(48)}.webp`);
-  assert.equal(photo.title, "BrysonTiller.png", "rebasing preserves attribution title metadata");
+  assert.equal(photo.title, "Bryson Tiller August 2018 (cropped).jpg",
+    "rebasing preserves attribution title metadata");
+  assert.deepEqual(photo.focalPoint, { x: 0.43, y: 0.2 }, "rebasing preserves the reviewed focal point");
 });
 
 test("artist photo lookup rejects unsafe public bases and malformed or malicious mirror keys", () => {
@@ -113,6 +117,15 @@ test("artist photo lookup fails closed on incomplete rights metadata", () => {
   }), null);
 });
 
+test("artist photo lookup omits malformed optional focal metadata", () => {
+  const photo = publicArtistPhoto("bryson tiller", {
+    catalog: catalog({ photo: verifiedPhoto({ focalPoint: { x: 2, y: "top" } }) }),
+    mediaPublicBaseUrl: "",
+  });
+  assert.ok(photo);
+  assert.equal(Object.hasOwn(photo, "focalPoint"), false);
+});
+
 test("source seed carries the reviewed Bryson Tiller identity and license", () => {
   const source = JSON.parse(readFileSync(
     new URL("../src/seed/catalog.artist-photos.source.json", import.meta.url),
@@ -122,14 +135,15 @@ test("source seed carries the reviewed Bryson Tiller identity and license", () =
     artistKey: "bryson tiller",
     mbid: MBID,
     photo: {
-      title: "BrysonTiller.png",
-      uri: "https://upload.wikimedia.org/wikipedia/commons/9/96/BrysonTiller.png",
-      sourcePage: "https://commons.wikimedia.org/wiki/File:BrysonTiller.png",
-      creator: "BrysonTiller Faan",
+      title: "Bryson Tiller August 2018 (cropped).jpg",
+      uri: "https://upload.wikimedia.org/wikipedia/commons/b/b4/Bryson_Tiller_August_2018_%28cropped%29.jpg",
+      sourcePage: "https://commons.wikimedia.org/wiki/File:Bryson_Tiller_August_2018_(cropped).jpg",
+      creator: "AtlantaFX",
       license: "CC-BY-3.0",
       licenseUrl: "https://creativecommons.org/licenses/by/3.0/",
       source: "commons",
-      modificationNotice: "Cropped, resized and converted to WebP.",
+      modificationNotice: "Source file was cropped on Wikimedia Commons from the original YouTube frame.",
+      focalPoint: { x: 0.43, y: 0.2 },
     },
   });
 });

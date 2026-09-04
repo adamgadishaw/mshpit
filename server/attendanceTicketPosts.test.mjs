@@ -293,12 +293,13 @@ test("Going ticket projection carries complete attribution only for verified lic
   assert.match(created.post.attendanceTicket.artistPhotoUri, /^https:\/\/[^/]+\/artists\/licensed\//);
   assert.deepEqual(created.post.attendanceTicket.artistPhotoAttribution, {
     source: "licensed-media",
-    title: "BrysonTiller.png",
-    creator: "BrysonTiller Faan",
+    title: "Bryson Tiller August 2018 (cropped).jpg",
+    creator: "AtlantaFX",
     license: "CC-BY-3.0",
     licenseUrl: "https://creativecommons.org/licenses/by/3.0/",
-    sourcePage: "https://commons.wikimedia.org/wiki/File:BrysonTiller.png",
-    modificationNotice: "Cropped, resized and converted to WebP.",
+    sourcePage: "https://commons.wikimedia.org/wiki/File:Bryson_Tiller_August_2018_(cropped).jpg",
+    modificationNotice:
+      "Source file was cropped on Wikimedia Commons from the original YouTube frame. Resized and converted to WebP by MSHpit.",
   });
 });
 

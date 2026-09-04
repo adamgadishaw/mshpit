@@ -107,7 +107,12 @@ export async function createShareCardAsset(model, { accountId, signal } = {}) {
   const file = new File(Paths.cache, socialShareFileName(model));
   file.create({ overwrite: true });
   file.write(response.bytes);
-  return { file, fileUri: file.uri, previewUri: file.uri };
+  return {
+    file,
+    fileUri: file.uri,
+    previewUri: file.uri,
+    photoCreditUrl: response.photoCreditUrl || null,
+  };
 }
 
 export function releaseShareCardAsset(asset) {
@@ -186,7 +191,7 @@ export async function shareCardToInstagramStory(model, { preparedAsset = null } 
     backgroundImage: preparedAsset.fileUri,
     backgroundTopColor: "#0D0B10",
     backgroundBottomColor: "#0D0B10",
-    attributionURL: model?.url || undefined,
+    attributionURL: preparedAsset.photoCreditUrl || model?.url || undefined,
     linkUrl: model?.url || undefined,
     linkText: "Open on Mshpit",
     type: "image/png",

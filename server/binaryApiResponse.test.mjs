@@ -55,3 +55,28 @@ test("PNG responses reject off-site or state-bearing canonical links and oversiz
     /PNG API response bytes are invalid/,
   );
 });
+
+test("PNG responses expose only a registered first-party photo credit as rel=license", () => {
+  const id = "a84ab2bcd680ed638991343983552341926bac7c9714782d";
+  const creditUrl = `https://www.mshpit.com/photo-credits/${id}`;
+  const response = createPngApiResponse(png(), {
+    canonicalUrl: "https://www.mshpit.com/event/event_123",
+    photoCreditUrl: creditUrl,
+  });
+  assert.equal(response.headers.Link,
+    `<https://www.mshpit.com/event/event_123>; rel="canonical", <${creditUrl}>; rel="license"`);
+
+  for (const photoCreditUrl of [
+    `https://tracker.example/photo-credits/${id}`,
+    `https://www.mshpit.com/photo-credits/${id}?next=https://tracker.example`,
+    "https://www.mshpit.com/photo-credits/000000000000000000000000000000000000000000000000",
+  ]) {
+    assert.throws(
+      () => createPngApiResponse(png(), {
+        canonicalUrl: "https://www.mshpit.com/event/event_123",
+        photoCreditUrl,
+      }),
+      /photo credit URL is invalid/,
+    );
+  }
+});

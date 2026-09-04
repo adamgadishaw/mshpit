@@ -7,6 +7,7 @@ import { AppError, captureAppError } from "./diagnostics";
 import { createRequestControl } from "./requestControl.mjs";
 import { apiIdentityBarrierDecision } from "../domain/apiIdentityState.mjs";
 import { apiBaseForRuntime } from "../domain/apiOrigin.mjs";
+import { photoCreditUrlFromLinkHeader } from "../domain/httpLinkHeader.mjs";
 
 const DEV_WEB = Platform.OS === "web" && typeof window !== "undefined" && window.location.port === "8081";
 const CONFIGURED_ORIGIN = (process.env.EXPO_PUBLIC_API_URL || "").replace(/\/+$/, "");
@@ -349,11 +350,13 @@ export async function apiBinary(path, {
     });
     throw apiFailure(err, { path, method: verb, context: operation, silent });
   }
+  const linkHeader = res.headers?.get?.("link") || null;
   return {
     bytes: new Uint8Array(buffer),
     contentType,
     contentDisposition: res.headers?.get?.("content-disposition") || null,
-    canonicalLink: res.headers?.get?.("link") || null,
+    canonicalLink: linkHeader,
+    photoCreditUrl: photoCreditUrlFromLinkHeader(linkHeader),
     requestId,
   };
 }

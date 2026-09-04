@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { licensedVenuePhoto } from "../src/domain/venuePhotoProvenance.mjs";
+import { photoCreditPath } from "./photoCredits.js";
 
 const ARTIST_PHOTO_SOURCE = new URL(
   "../src/seed/catalog.artist-photos.verified.json",
@@ -20,6 +21,14 @@ function normalizedArtistMbid(value) {
   if (value == null || value === "") return null;
   const mbid = typeof value === "string" ? value.trim().toLowerCase() : "";
   return MUSICBRAINZ_ARTIST_ID.test(mbid) ? mbid : false;
+}
+
+function normalizedFocalPoint(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const x = Number(value.x);
+  const y = Number(value.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || x > 1 || y < 0 || y > 1) return null;
+  return Object.freeze({ x, y });
 }
 
 const MIRRORED_ARTIST_OBJECT_KEY = /^artists\/licensed\/[a-z0-9](?:[a-z0-9-]{0,118}[a-z0-9])?\/[a-f0-9]{48}\.webp$/u;
@@ -94,5 +103,14 @@ export function publicArtistPhoto(artistKey, {
   // licensed-photo provenance so exported cards can provide complete TASL.
   if (!photo?.title) return null;
   const uri = deliveryUri(row.photo, mediaPublicBaseUrl);
-  return uri ? Object.freeze({ ...photo, uri }) : null;
+  const objectKey = mirroredArtistObjectKey(row.photo);
+  const creditId = objectKey?.match(/\/([a-f0-9]{48})\.webp$/u)?.[1] || null;
+  const creditPath = creditId ? photoCreditPath(creditId) : null;
+  const focalPoint = normalizedFocalPoint(row.photo?.focalPoint);
+  return uri ? Object.freeze({
+    ...photo,
+    uri,
+    ...(creditPath ? { creditId, creditPath } : {}),
+    ...(focalPoint ? { focalPoint } : {}),
+  }) : null;
 }

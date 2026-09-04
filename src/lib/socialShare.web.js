@@ -57,7 +57,7 @@ export async function createShareCardAsset(model, { accountId, signal } = {}) {
   const blob = new Blob([response.bytes], { type: response.contentType || "image/png" });
   const file = new File([blob], socialShareFileName(model), { type: blob.type });
   const previewUri = URL.createObjectURL(blob);
-  return { blob, file, previewUri };
+  return { blob, file, previewUri, photoCreditUrl: response.photoCreditUrl || null };
 }
 
 export function releaseShareCardAsset(asset) {

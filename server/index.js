@@ -300,12 +300,13 @@ function serveSecurityFile(req, res) {
 function servePublicPage(req, res, pathname) {
   const page = publicPageFor(pathname);
   if (!page) return false;
+  const indexable = page.indexable !== false;
   if (pathname !== page.path) {
     res.writeHead(301, {
       ...HEADERS,
       Location: page.path,
       "Cache-Control": "public, max-age=3600",
-      "X-Robots-Tag": htmlRobotsDirective(),
+      "X-Robots-Tag": htmlRobotsDirective({ indexable }),
     });
     res.end();
     return true;
@@ -317,7 +318,7 @@ function servePublicPage(req, res, pathname) {
     "Content-Type": "text/html; charset=utf-8",
     "Content-Length": Buffer.byteLength(body),
     "Cache-Control": "public, max-age=0, s-maxage=3600, stale-while-revalidate=86400",
-    "X-Robots-Tag": htmlRobotsDirective({ indexable: true }),
+    "X-Robots-Tag": htmlRobotsDirective({ indexable }),
     Link: `<${origin()}${page.path}>; rel="canonical"`,
   });
   if (req.method === "HEAD") res.end();

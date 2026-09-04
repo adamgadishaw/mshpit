@@ -15,7 +15,7 @@ const DEFAULT_SOURCE_HOSTS = Object.freeze(["upload.wikimedia.org", "thumb.wikim
 const INPUT_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 const DELIVERY_TYPE = "image/webp";
 const DELIVERY_NOTICE = "Converted to WebP and resized when needed by MSHpit for delivery.";
-const ARTIST_DELIVERY_NOTICE = "Cropped, resized and converted to WebP.";
+const ARTIST_DELIVERY_NOTICE = "Resized and converted to WebP by MSHpit.";
 const MODIFICATION_NOTICE_MAX = 240;
 
 export class VenuePhotoMirrorError extends Error {

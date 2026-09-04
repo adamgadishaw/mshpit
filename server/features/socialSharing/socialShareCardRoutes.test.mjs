@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { binaryApiResponsePayload } from "../../binaryApiResponse.js";
+import { publicArtistPhoto } from "../../artistPhotoCatalog.js";
 import {
   publicAttendanceTicketShareSnapshot,
   socialShareCardRoutes,
@@ -213,6 +214,9 @@ test("public Going post falls back to its safe server-owned ticket snapshot", as
 });
 
 test("attendance shares use verified mirrored artist art after managed profile art", async () => {
+  const licensedPhoto = publicArtistPhoto("bryson tiller");
+  assert.ok(licensedPhoto?.creditPath);
+  const mediaBase = new URL(licensedPhoto.uri).origin;
   const rawTicket = {
     version: 1,
     state: "going",
@@ -224,27 +228,41 @@ test("attendance shares use verified mirrored artist art after managed profile a
     artistPhotoUri: "https://cdn-images.dzcdn.net/images/artist/provider.jpg",
   };
   const candidate = {
-    url: LICENSED_ARTIST_PHOTO.uri,
+    url: licensedPhoto.uri,
     source: "licensed-media",
-    title: LICENSED_ARTIST_PHOTO.title,
-    creator: LICENSED_ARTIST_PHOTO.creator,
-    license: LICENSED_ARTIST_PHOTO.license,
-    licenseUrl: LICENSED_ARTIST_PHOTO.licenseUrl,
-    sourcePage: LICENSED_ARTIST_PHOTO.sourcePage,
-    modificationNotice: LICENSED_ARTIST_PHOTO.modificationNotice,
+    title: licensedPhoto.title,
+    creator: licensedPhoto.creator,
+    license: licensedPhoto.license,
+    licenseUrl: licensedPhoto.licenseUrl,
+    sourcePage: licensedPhoto.sourcePage,
+    modificationNotice: licensedPhoto.modificationNotice,
+    creditPath: licensedPhoto.creditPath,
+    focalPoint: licensedPhoto.focalPoint,
   };
   const snapshot = publicAttendanceTicketShareSnapshot(rawTicket, {
-    env: { MEDIA_PUBLIC_BASE_URL: "https://media.mshpit.test/public" },
+    env: { MEDIA_PUBLIC_BASE_URL: mediaBase },
     resolveCurrentArtistProfileImage: () => null,
-    resolveCurrentLicensedArtistPhoto: () => LICENSED_ARTIST_PHOTO,
+    resolveCurrentLicensedArtistPhoto: () => licensedPhoto,
   });
   assert.deepEqual(snapshot.fallbackArtwork, [candidate]);
 
+  assert.deepEqual(publicAttendanceTicketShareSnapshot(rawTicket, {
+    env: { MEDIA_PUBLIC_BASE_URL: "https://media.mshpit.test/public" },
+    resolveCurrentArtistProfileImage: () => null,
+    resolveCurrentLicensedArtistPhoto: () => LICENSED_ARTIST_PHOTO,
+  })?.fallbackArtwork, [], "complete-looking but unregistered licensed metadata fails closed");
+  assert.deepEqual(publicAttendanceTicketShareSnapshot(rawTicket, {
+    env: { MEDIA_PUBLIC_BASE_URL: mediaBase },
+    resolveCurrentArtistProfileImage: () => null,
+    resolveCurrentLicensedArtistPhoto: () => ({ ...licensedPhoto, creator: "Wrong creator" }),
+  })?.fallbackArtwork, [], "a registered URL with conflicting TASL metadata fails closed");
+
   const licensed = fixture({
+    artworkEnv: { MEDIA_PUBLIC_BASE_URL: mediaBase },
     resolveCurrentArtistProfileImage: () => null,
     resolveCurrentLicensedArtistPhoto: (identity) => {
       assert.equal(identity.artist, "The Example");
-      return LICENSED_ARTIST_PHOTO;
+      return licensedPhoto;
     },
   });
   await licensed.route(context({ kind: "event", eventId: "event_123", intent: "going" }));
@@ -252,7 +270,7 @@ test("attendance shares use verified mirrored artist art after managed profile a
 
   const managed = fixture({
     resolveCurrentArtistProfileImage: () => OWNED_ARTIST_PHOTO,
-    resolveCurrentLicensedArtistPhoto: () => LICENSED_ARTIST_PHOTO,
+    resolveCurrentLicensedArtistPhoto: () => licensedPhoto,
   });
   await managed.route(context({ kind: "event", eventId: "event_123", intent: "going" }));
   assert.deepEqual(managed.renderedModels[0].artwork, [{
@@ -261,15 +279,36 @@ test("attendance shares use verified mirrored artist art after managed profile a
   }]);
 
   const directProvider = publicAttendanceTicketShareSnapshot(rawTicket, {
-    env: { MEDIA_PUBLIC_BASE_URL: "https://media.mshpit.test/public" },
+    env: { MEDIA_PUBLIC_BASE_URL: mediaBase },
     resolveCurrentArtistProfileImage: () => null,
     resolveCurrentLicensedArtistPhoto: () => ({
-      ...LICENSED_ARTIST_PHOTO,
+      ...licensedPhoto,
       uri: "https://upload.wikimedia.org/wikipedia/commons/example.jpg",
     }),
   });
   assert.deepEqual(directProvider.fallbackArtwork, [],
     "licensed candidates must be mirrored under the configured first-party media base");
+});
+
+test("share responses link the exact licensed photo selected by the renderer", async () => {
+  const licensedPhoto = publicArtistPhoto("bryson tiller");
+  assert.ok(licensedPhoto?.creditPath);
+  const renderer = {
+    async render(model) {
+      return { bytes: PNG, artwork: model.artwork[0] };
+    },
+  };
+  const { route } = fixture({
+    artworkEnv: { MEDIA_PUBLIC_BASE_URL: "https://pub-ed4a84ccdec4452ebcdb1b116e40b67b.r2.dev" },
+    renderer,
+    resolveCurrentArtistProfileImage: () => null,
+    resolveCurrentLicensedArtistPhoto: () => licensedPhoto,
+  });
+  const response = binaryApiResponsePayload(await route(
+    context({ kind: "event", eventId: "event_123", intent: "going" }),
+  ));
+  assert.match(response.headers.Link, /rel="canonical", <https:\/\/www\.mshpit\.com\/photo-credits\/[a-f0-9]{48}>; rel="license"$/u);
+  assert.match(response.headers.Link, new RegExp(licensedPhoto.creditId, "u"));
 });
 
 test("persisted owned Going artwork must still be the current public artist profile image", async () => {

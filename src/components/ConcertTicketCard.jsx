@@ -131,8 +131,7 @@ export default function ConcertTicketCard({
   const imageUri = preview.imageUri && preview.imageUri !== failedImageUri
     ? preview.imageUri
     : null;
-  const photoAttribution = imageUri ? preview.artistPhotoAttribution : null;
-  const withoutScheme = (value) => String(value || "").replace(/^https:\/\//u, "");
+  const hasLicensedPortrait = !!(imageUri && preview.artistPhotoAttribution);
   const timing = Array.isArray(preview.timing) ? preview.timing.slice(0, 2) : [];
   const location = [preview.venue, preview.city].filter(Boolean).join(" · ");
   const contextLabel = preview.isTourTitle ? "TOUR" : "EVENT";
@@ -184,7 +183,7 @@ export default function ConcertTicketCard({
               source={{ uri: imageUri }}
               style={StyleSheet.absoluteFillObject}
               contentFit="cover"
-              contentPosition={photoAttribution ? "top center" : "center"}
+              contentPosition={hasLicensedPortrait ? "top center" : "center"}
               cachePolicy="memory-disk"
               enforceEarlyResizing
               recyclingKey={imageUri}
@@ -195,16 +194,6 @@ export default function ConcertTicketCard({
               importantForAccessibility="no-hide-descendants"
             />
             <View style={styles.artworkScrim} pointerEvents="none" accessibilityElementsHidden />
-            {photoAttribution ? (
-              <View style={styles.artworkCredit} pointerEvents="none" accessibilityElementsHidden>
-                <Text style={styles.artworkCreditLead} numberOfLines={1}>
-                  {photoAttribution.title} · {photoAttribution.creator} · {photoAttribution.license.replace(/-/gu, " ")}
-                </Text>
-                <Text style={styles.artworkCreditText} numberOfLines={1}>{withoutScheme(photoAttribution.sourcePage)}</Text>
-                <Text style={styles.artworkCreditText} numberOfLines={1}>{withoutScheme(photoAttribution.licenseUrl)}</Text>
-                <Text style={styles.artworkCreditText} numberOfLines={1}>Changed: {photoAttribution.modificationNotice}</Text>
-              </View>
-            ) : null}
           </View>
         ) : null}
 
@@ -443,31 +432,7 @@ const styles = StyleSheet.create({
   artworkScrim: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: colors.bg,
-    opacity: 0.13,
-  },
-  artworkCredit: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    bottom: 0,
-    paddingHorizontal: space(2),
-    paddingVertical: space(1),
-    backgroundColor: colors.bg,
-    opacity: 0.88,
-  },
-  artworkCreditLead: {
-    color: colors.text,
-    fontFamily: mono,
-    fontSize: 8,
-    lineHeight: 11,
-    fontWeight: "900",
-  },
-  artworkCreditText: {
-    color: colors.textDim,
-    fontFamily: mono,
-    fontSize: 7,
-    lineHeight: 10,
-    fontWeight: "700",
+    opacity: 0.06,
   },
   copy: {
     flex: 1,

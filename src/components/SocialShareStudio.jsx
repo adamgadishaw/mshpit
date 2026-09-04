@@ -8,6 +8,7 @@ import {
   createShareCardAsset,
   downloadShareCard,
   instagramStorySharingConfigured,
+  openExternalShareUrl,
   releaseShareCardAsset,
   shareCardToInstagramStory,
   shareCardToSocialPlatform,
@@ -248,6 +249,14 @@ export default function SocialShareStudio({ accountId = null, model, onClose }) 
     () => downloadShareCard(model, { preparedAsset }),
     "Share card download started.",
   );
+  const openPhotoSource = () => {
+    if (!preparedAsset?.photoCreditUrl) return;
+    void run(
+      "photo-source",
+      () => openExternalShareUrl(preparedAsset.photoCreditUrl),
+      "Photo source opened.",
+    );
+  };
   const retryShareCard = () => {
     if (busyAction || assetState.status !== "unavailable") return;
     setFeedback(null);
@@ -311,15 +320,34 @@ export default function SocialShareStudio({ accountId = null, model, onClose }) 
                 />
               </View>
             ) : <AuthoritativeShareCardPlaceholder status={assetState.status} />}
-            <Text style={styles.cardStatus}>
-              {shareArtworkRequired
+            {preparedAsset?.photoCreditUrl ? (
+              <Pressable
+                accessibilityHint="Open the original photo source and reuse terms on Mshpit"
+                accessibilityLabel="Photo source"
+                accessibilityRole="link"
+                disabled={!!busyAction}
+                onPress={openPhotoSource}
+                style={({ pressed }) => [
+                  styles.photoSource,
+                  pressed && !busyAction && styles.pressed,
+                  busyAction && styles.disabled,
+                ]}
+              >
+                <Icon name="photo" size={15} color={colors.textDim} />
+                <Text style={styles.photoSourceLabel}>Photo source</Text>
+                <Text style={styles.photoSourceDetail}>Credit and license</Text>
+                <Icon name="external" size={14} color={colors.textFaint} />
+              </Pressable>
+            ) : null}
+            {assetState.status !== "ready" ? (
+              <Text style={styles.cardStatus}>
+                {shareArtworkRequired
                 ? "This ticket needs a rights-cleared artist photo. A Mshpit admin or verified artist can add one on the artist page."
                 : assetState.status === "loading"
                 ? "Preparing the final share card…"
-                : assetState.status === "ready"
-                  ? "Share artwork ready"
-                  : "The artwork is unavailable right now. You can still copy the link."}
-            </Text>
+                : "The artwork is unavailable right now. You can still copy the link."}
+              </Text>
+            ) : null}
             {assetState.status === "unavailable" && !shareArtworkRequired ? (
               <Pressable
                 accessibilityHint="Try preparing the final share card again"
@@ -424,6 +452,9 @@ const styles = StyleSheet.create({
   content: { padding: space(4), gap: space(3) },
   finalPreview: { width: "100%", maxWidth: 300, aspectRatio: 9 / 16, alignSelf: "center", borderRadius: radius.md, overflow: "hidden", backgroundColor: "#090A0D", ...shadow.card },
   finalPreviewImage: { width: "100%", height: "100%" },
+  photoSource: { width: "100%", maxWidth: 300, minHeight: 44, alignSelf: "center", flexDirection: "row", alignItems: "center", gap: space(2), borderBottomWidth: 1, borderBottomColor: colors.lineSoft, paddingHorizontal: space(1), paddingVertical: space(2) },
+  photoSourceLabel: { color: colors.text, fontFamily: displayFont, fontSize: 11.5, fontWeight: "800" },
+  photoSourceDetail: { flex: 1, minWidth: 0, color: colors.textFaint, fontFamily: font, fontSize: 10.5, textAlign: "right" },
   previewPlaceholder: { flex: 1, alignItems: "center", justifyContent: "center", gap: space(3), padding: space(5), borderWidth: 1, borderColor: colors.line },
   placeholderBrand: { color: colors.text, fontFamily: displayFont, fontSize: 18, fontWeight: "900", letterSpacing: 5 },
   placeholderCopy: { maxWidth: 210, color: colors.textFaint, fontFamily: mono, fontSize: 9, lineHeight: 15, fontWeight: "800", letterSpacing: 1.5, textAlign: "center" },
