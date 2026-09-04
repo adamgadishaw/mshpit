@@ -14,6 +14,10 @@ import { eventPath, postPath } from "../../../src/domain/urls.mjs";
 const TEN_MINUTES = 10 * 60 * 1000;
 const ALLOWED_POST_FIELDS = new Set(["kind", "postId"]);
 const ALLOWED_EVENT_FIELDS = new Set(["kind", "eventId", "intent"]);
+const ATTRIBUTION_FREE_VENUE_LICENSES = new Map([
+  ["CC0-1.0", "https://creativecommons.org/publicdomain/zero/1.0/"],
+  ["PDM-1.0", "https://creativecommons.org/publicdomain/mark/1.0/"],
+]);
 
 function boundedPostId(value) {
   if (typeof value !== "string") return null;
@@ -39,15 +43,24 @@ function trustedArtworkCandidate(url, source, env) {
 }
 
 function projectedOfficialArtwork(document, env) {
-  if (document?.kind === "event") {
-    if (document.imageProvenance !== "provider") return null;
-    return trustedArtworkCandidate(document.event?.providerImage?.url, "ticketmaster", env);
-  }
-  if (document?.kind === "concert") {
-    return trustedArtworkCandidate(document.concert?.providerImage?.url, "ticketmaster", env);
-  }
+  if (["event", "concert"].includes(document?.kind)) return null;
   if (document?.kind !== "artist" || !document.artist
     || document.imageProvenance !== "entity-profile" || !document.image) return null;
+  return trustedArtworkCandidate(document.image, "owned-media", env);
+}
+
+function projectedLicensedVenueArtwork(document, env) {
+  if (document?.kind !== "venue" || !document.image
+    || !["licensed-venue", "licensed-venue-catalog"].includes(document.imageProvenance)) return null;
+  const photo = document.venue?.heroPhoto;
+  const license = typeof photo?.license === "string" ? photo.license.trim().toUpperCase() : "";
+  const expectedLicenseUrl = ATTRIBUTION_FREE_VENUE_LICENSES.get(license);
+  if (!expectedLicenseUrl || photo?.url !== document.image || photo?.licenseUrl !== expectedLicenseUrl) return null;
+  // Exported cards crop and redistribute the photo without a visible credit.
+  // Therefore only CC0/Public Domain Mark catalogue entries are eligible here;
+  // CC-BY/SA photos remain available on venue pages where attribution is shown.
+  // Revalidate the first-party mirror transport as well so this cannot become a
+  // general-purpose URL fetcher.
   return trustedArtworkCandidate(document.image, "owned-media", env);
 }
 
@@ -70,15 +83,35 @@ async function projectedArtworkFallbacks(document, resolvePublicDocument, env) {
   const candidates = [];
   for (const path of internalArtworkPaths(document)) {
     const fallback = await resolvePublicDocument(path);
-    const candidate = projectedOfficialArtwork(fallback, env);
+    const candidate = projectedOfficialArtwork(fallback, env)
+      || projectedLicensedVenueArtwork(fallback, env);
     if (candidate) candidates.push(candidate);
     if (candidates.length >= 2) break;
   }
   return candidates;
 }
 
+async function projectedAttendanceArtwork(document, resolvePublicDocument, env) {
+  const result = { artist: null, venue: null };
+  for (const path of internalArtworkPaths(document)) {
+    let fallback = null;
+    try {
+      fallback = await resolvePublicDocument(path);
+    } catch {
+      // A related public page is only a fallback. Failure to read it must not
+      // weaken or replace the remaining rights-safe candidates.
+      continue;
+    }
+    if (fallback?.kind === "artist" && !result.artist) {
+      result.artist = projectedOfficialArtwork(fallback, env);
+    } else if (fallback?.kind === "venue" && !result.venue) {
+      result.venue = projectedLicensedVenueArtwork(fallback, env);
+    }
+  }
+  return Object.freeze(result);
+}
+
 function attendanceArtworkCandidates(ticket, env, resolveCurrentArtistProfileImage) {
-  const providerArtwork = trustedArtworkCandidate(ticket?.artistPhotoUri, "ticketmaster", env);
   const persistedArtwork = trustedArtworkCandidate(ticket?.artistPhotoUri, "owned-media", env);
   let currentProfileImage = null;
   if (typeof resolveCurrentArtistProfileImage === "function") {
@@ -94,13 +127,11 @@ function attendanceArtworkCandidates(ticket, env, resolveCurrentArtistProfileIma
     }
   }
   const currentArtwork = trustedArtworkCandidate(currentProfileImage, "owned-media", env);
-  if (currentArtwork) {
-    return [...new Map([currentArtwork, providerArtwork]
-      .filter(Boolean)
-      .map((candidate) => [candidate.url, candidate])).values()];
-  }
+  if (currentArtwork) return [currentArtwork];
+  // A persisted first-party URL without a readable current profile cannot be
+  // checked for revocation, so fail closed rather than resurrecting it.
   if (persistedArtwork) return [];
-  return providerArtwork ? [providerArtwork] : [];
+  return [];
 }
 
 export function publicAttendanceTicketShareSnapshot(value, {
@@ -209,14 +240,23 @@ export function socialShareCardRoutes({
             ? (await resolvePublicDocument(eventPath(eventId)) || ticketDocument)
             : null;
           const eventDocument = eventDocumentForShare(resolvedEventDocument, artworkEnv);
+          const relatedArtwork = await projectedAttendanceArtwork(
+            eventDocument,
+            resolvePublicDocument,
+            artworkEnv,
+          );
+          const ticketArtwork = ticketDocument?.fallbackArtwork || [];
+          const allowProjectedArtist = typeof resolveCurrentArtistProfileImage !== "function";
+          const artistArtwork = ticketArtwork[0]
+            || (allowProjectedArtist ? relatedArtwork.artist : null);
           model = eventShareCardModel(eventDocument, "going", {
             postId,
             authorName: document.post?.author?.name,
             preferFallbackArtwork: true,
             fallbackArtwork: [
-              ...(ticketDocument?.fallbackArtwork || []),
-              ...await projectedArtworkFallbacks(eventDocument, resolvePublicDocument, artworkEnv),
-            ],
+              artistArtwork,
+              relatedArtwork.venue,
+            ].filter(Boolean),
           });
         }
         filename = model?.variant === "review" ? "mshpit-review.png" : "mshpit-going.png";
@@ -241,9 +281,23 @@ export function socialShareCardRoutes({
           await resolvePublicDocument(eventPath(eventId)),
           artworkEnv,
         );
+        const relatedArtwork = await projectedAttendanceArtwork(
+          document,
+          resolvePublicDocument,
+          artworkEnv,
+        );
+        const currentArtistArtwork = attendanceArtworkCandidates({
+          artist: document?.event?.artist,
+          artistKey: document?.event?.artistKey,
+        }, artworkEnv, resolveCurrentArtistProfileImage)[0]
+          || (typeof resolveCurrentArtistProfileImage !== "function" ? relatedArtwork.artist : null);
         model = eventShareCardModel(document, intent, {
           authorName: user.name,
-          fallbackArtwork: await projectedArtworkFallbacks(document, resolvePublicDocument, artworkEnv),
+          preferFallbackArtwork: true,
+          fallbackArtwork: [
+            currentArtistArtwork,
+            relatedArtwork.venue,
+          ].filter(Boolean),
         });
         filename = `mshpit-${intent}.png`;
       } else {

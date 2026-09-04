@@ -17,12 +17,13 @@ import { openTicketLink } from "../lib/ticketLinks";
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import useScopedRefresh from "../hooks/useScopedRefresh";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
+import { normalizeVenuePhotoProviderIdentity } from "../domain/venuePhotos.mjs";
 
 const REVIEW_BATCH = 8;
 const HISTORY_BATCH = 12;
 const UPCOMING_BATCH = 6;
 
-export default function VenueScreen({ venueName, onClose, onOpenShow, onOpenArtist, onReviewVenue, onOpenProfile, onOpenPhotos, onReport }) {
+export default function VenueScreen({ venueName, venueIdentity = null, onClose, onOpenShow, onOpenArtist, onReviewVenue, onOpenProfile, onOpenPhotos, onReport }) {
   const { width } = useWindowDimensions();
   const wide = width >= 760;
   const {
@@ -30,9 +31,13 @@ export default function VenueScreen({ venueName, onClose, onOpenShow, onOpenArti
     session, venuePhotos, venuePhotoState, loadVenuePhotos, venuePhotoPrivacyRevision, userByHandle,
   } = useStore();
   const venue = venueSummary(venueName);
+  const photoIdentity = normalizeVenuePhotoProviderIdentity({
+    source: venueIdentity?.source || venue.source,
+    providerVenueId: venueIdentity?.providerVenueId || venueIdentity?.venue_provider_id || venue.providerVenueId,
+  });
   const coord = venueCoord(venue.name);
-  const photos = venuePhotos(venue.name);
-  const photoState = venuePhotoState(venue.name);
+  const photos = venuePhotos(venue.name, photoIdentity);
+  const photoState = venuePhotoState(venue.name, photoIdentity);
   const reviews = venueReviewsFor(venue.name);
   const [visibleReviewCount, setVisibleReviewCount] = useState(REVIEW_BATCH);
   const [visibleHistoryCount, setVisibleHistoryCount] = useState(HISTORY_BATCH);
@@ -48,9 +53,9 @@ export default function VenueScreen({ venueName, onClose, onOpenShow, onOpenArti
     setVisibleHistoryCount(HISTORY_BATCH);
     setVisibleUpcomingCount(UPCOMING_BATCH);
     void loadVenueReviews(venue.name, { signal: controller.signal });
-    void loadVenuePhotos(venue.name, { signal: controller.signal }).catch(() => { /* architecture: allow-empty-catch -- the venue page retains its licensed empty state and visible retry control */ });
+    void loadVenuePhotos(venue.name, { ...photoIdentity, signal: controller.signal }).catch(() => { /* architecture: allow-empty-catch -- the venue page retains its licensed empty state and visible retry control */ });
     return () => controller.abort();
-  }, [venue.name, venuePhotoPrivacyRevision]);
+  }, [venue.name, photoIdentity?.source, photoIdentity?.providerVenueId, venuePhotoPrivacyRevision]);
 
   const fanRating = venueRating(venue.name);
   const fullGridPhotos = venueTopPhotos(venue.name, wide ? 24 : 18);
@@ -74,7 +79,7 @@ export default function VenueScreen({ venueName, onClose, onOpenShow, onOpenArti
     task: async ({ signal }) => {
       const [reviewResult, refreshedPhotos] = await Promise.all([
         loadVenueReviews(venue.name, { signal }),
-        loadVenuePhotos(venue.name, { force: true, signal }),
+        loadVenuePhotos(venue.name, { ...photoIdentity, force: true, signal }),
       ]);
       if (reviewResult?.ok === false && reviewResult?.error) throw reviewResult.error;
       return { reviewResult, refreshedPhotos };
@@ -102,7 +107,7 @@ export default function VenueScreen({ venueName, onClose, onOpenShow, onOpenArti
             coord={coord}
             loading={photoState.status === "idle" || photoState.status === "loading"}
             error={photoState.status === "error"}
-            onRetry={() => { void loadVenuePhotos(venue.name, { force: true }).catch(() => { /* architecture: allow-empty-catch -- the visible retry state reports this optional gallery failure */ }); }}
+            onRetry={() => { void loadVenuePhotos(venue.name, { ...photoIdentity, force: true }).catch(() => { /* architecture: allow-empty-catch -- the visible retry state reports this optional gallery failure */ }); }}
             onPress={openPhotoWidget}
           />
           <View style={styles.heroMeta}>

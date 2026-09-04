@@ -10,7 +10,8 @@ const OUTPUT_MAX_BYTES = 8 * 1024 * 1024;
 const SOURCE_MAX_REDIRECTS = 3;
 const SOURCE_TIMEOUT_MS = 20_000;
 const STORAGE_TIMEOUT_MS = 30_000;
-const DEFAULT_SOURCE_HOSTS = Object.freeze(["upload.wikimedia.org"]);
+// Keep this exact-host allowlist narrow; Commons serves originals and generated thumbnails separately.
+const DEFAULT_SOURCE_HOSTS = Object.freeze(["upload.wikimedia.org", "thumb.wikimedia.org"]);
 const INPUT_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 const DELIVERY_TYPE = "image/webp";
 const DELIVERY_NOTICE = "Converted to WebP and resized when needed by MSHpit for delivery.";

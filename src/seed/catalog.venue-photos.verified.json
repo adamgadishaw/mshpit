@@ -17886,5 +17886,295 @@
       "https://pub-ed4a84ccdec4452ebcdb1b116e40b67b.r2.dev/venues/licensed/yuengling-center-6e7a97fddd9c/94a8bdd614a001337de18094f36748b4efaa14c54d0976e8.webp",
       "https://pub-ed4a84ccdec4452ebcdb1b116e40b67b.r2.dev/venues/licensed/yuengling-center-6e7a97fddd9c/664d6e5004abb8b86bff5faa504e841ee7fcfd9501ff3269.webp"
     ]
+  },
+  "provider:ticketmaster:kovzpa8zbe": {
+    "galleryPool": [
+      {
+        "uri": "https://pub-ed4a84ccdec4452ebcdb1b116e40b67b.r2.dev/venues/licensed/provider-ticketmaster-kovzpa8zbe-7c689a221ad1/fac7b215331758b5119ff67d486626abf97b418f3a413e36.webp",
+        "by": "Yu Chu Chin · CC BY-SA 4.0",
+        "source": "licensed",
+        "provenanceSource": "commons",
+        "creator": "Yu Chu Chin",
+        "license": "CC-BY-SA-4.0",
+        "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0/",
+        "sourcePage": "https://commons.wikimedia.org/wiki/File:Wayville_Pavilion_at_the_Adelaide_Showground,_June_2026_(DSCF8217).jpg",
+        "modificationNotice": "Converted to WebP and resized when needed by MSHpit for delivery.",
+        "mirroredFrom": "https://thumb.wikimedia.org/wikipedia/commons/thumb/5/5e/Wayville_Pavilion_at_the_Adelaide_Showground%2C_June_2026_%28DSCF8217%29.jpg/1920px-Wayville_Pavilion_at_the_Adelaide_Showground%2C_June_2026_%28DSCF8217%29.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=thumbnail",
+        "mirror": {
+          "objectKey": "venues/licensed/provider-ticketmaster-kovzpa8zbe-7c689a221ad1/fac7b215331758b5119ff67d486626abf97b418f3a413e36.webp",
+          "contentType": "image/webp",
+          "byteSize": 370832,
+          "sha256": "fac7b215331758b5119ff67d486626abf97b418f3a413e36df9e8f57ddb02163",
+          "width": 1920,
+          "height": 1280,
+          "reused": false
+        }
+      }
+    ],
+    "photos": [
+      "https://pub-ed4a84ccdec4452ebcdb1b116e40b67b.r2.dev/venues/licensed/provider-ticketmaster-kovzpa8zbe-7c689a221ad1/fac7b215331758b5119ff67d486626abf97b418f3a413e36.webp"
+    ]
+  },
+  "provider:ticketmaster:kovzpzan61la": {
+    "galleryPool": [
+      {
+        "uri": "https://pub-ed4a84ccdec4452ebcdb1b116e40b67b.r2.dev/venues/licensed/provider-ticketmaster-kovzpzan61la-80bda149eaf1/e88d9aa5c82282a5b69deaed867357ddd091959ab5d7f315.webp",
+        "by": "Acabashi · CC BY-SA 4.0",
+        "source": "licensed",
+        "provenanceSource": "commons",
+        "creator": "Acabashi",
+        "license": "CC-BY-SA-4.0",
+        "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0/",
+        "sourcePage": "https://commons.wikimedia.org/wiki/File:Alexandra_Palace_from_North_London_Cricket_Club,_Haringey,_London_1.jpg",
+        "modificationNotice": "Converted to WebP and resized when needed by MSHpit for delivery.",
+        "mirroredFrom": "https://thumb.wikimedia.org/wikipedia/commons/thumb/a/af/Alexandra_Palace_from_North_London_Cricket_Club%2C_Haringey%2C_London_1.jpg/1920px-Alexandra_Palace_from_North_London_Cricket_Club%2C_Haringey%2C_London_1.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=thumbnail",
+        "mirror": {
+          "objectKey": "venues/licensed/provider-ticketmaster-kovzpzan61la-80bda149eaf1/e88d9aa5c82282a5b69deaed867357ddd091959ab5d7f315.webp",
+          "contentType": "image/webp",
+          "byteSize": 1100320,
+          "sha256": "e88d9aa5c82282a5b69deaed867357ddd091959ab5d7f315f1fcc0e15fe4ddf4",
+          "width": 1920,
+          "height": 1280,
+          "reused": false
+        }
+      }
+    ],
+    "photos": [
+      "https://pub-ed4a84ccdec4452ebcdb1b116e40b67b.r2.dev/venues/licensed/provider-ticketmaster-kovzpzan61la-80bda149eaf1/e88d9aa5c82282a5b69deaed867357ddd091959ab5d7f315.webp"
+    ]
+  },
+  "allegiant stadium": {
+    "galleryPool": [
+      {
+        "uri": "https://pub-ed4a84ccdec4452ebcdb1b116e40b67b.r2.dev/venues/licensed/allegiant-stadium-7a3b4e2f7e98/e367e57562f01a2dcf1f0bd34e2250ec1140545e2ab33984.webp",
+        "by": "Ken Lund from Reno, Nevada, USA · CC BY-SA 2.0",
+        "source": "licensed",
+        "provenanceSource": "commons",
+        "creator": "Ken Lund from Reno, Nevada, USA",
+        "license": "CC-BY-SA-2.0",
+        "licenseUrl": "https://creativecommons.org/licenses/by-sa/2.0/",
+        "sourcePage": "https://commons.wikimedia.org/wiki/File:Allegiant_Stadium,_Las_Vegas,_Nevada_(52259481401).jpg",
+        "modificationNotice": "Converted to WebP and resized when needed by MSHpit for delivery.",
+        "mirroredFrom": "https://thumb.wikimedia.org/wikipedia/commons/thumb/4/41/Allegiant_Stadium%2C_Las_Vegas%2C_Nevada_%2852259481401%29.jpg/1920px-Allegiant_Stadium%2C_Las_Vegas%2C_Nevada_%2852259481401%29.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=thumbnail",
+        "mirror": {
+          "objectKey": "venues/licensed/allegiant-stadium-7a3b4e2f7e98/e367e57562f01a2dcf1f0bd34e2250ec1140545e2ab33984.webp",
+          "contentType": "image/webp",
+          "byteSize": 671568,
+          "sha256": "e367e57562f01a2dcf1f0bd34e2250ec1140545e2ab33984489e281b580cb1cc",
+          "width": 1920,
+          "height": 1440,
+          "reused": false
+        }
+      },
+      {
+        "uri": "https://pub-ed4a84ccdec4452ebcdb1b116e40b67b.r2.dev/venues/licensed/allegiant-stadium-7a3b4e2f7e98/2d55c10539878bebb4ea2888dfe8b55cdd7110f573c47ff9.webp",
+        "by": "Ken Lund from Reno, Nevada, USA · CC BY-SA 2.0",
+        "source": "licensed",
+        "provenanceSource": "commons",
+        "creator": "Ken Lund from Reno, Nevada, USA",
+        "license": "CC-BY-SA-2.0",
+        "licenseUrl": "https://creativecommons.org/licenses/by-sa/2.0/",
+        "sourcePage": "https://commons.wikimedia.org/wiki/File:Allegiant_Stadium,_Las_Vegas,_Nevada_(52258514977).jpg",
+        "modificationNotice": "Converted to WebP and resized when needed by MSHpit for delivery.",
+        "mirroredFrom": "https://thumb.wikimedia.org/wikipedia/commons/thumb/b/bb/Allegiant_Stadium%2C_Las_Vegas%2C_Nevada_%2852258514977%29.jpg/1920px-Allegiant_Stadium%2C_Las_Vegas%2C_Nevada_%2852258514977%29.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=thumbnail",
+        "mirror": {
+          "objectKey": "venues/licensed/allegiant-stadium-7a3b4e2f7e98/2d55c10539878bebb4ea2888dfe8b55cdd7110f573c47ff9.webp",
+          "contentType": "image/webp",
+          "byteSize": 694910,
+          "sha256": "2d55c10539878bebb4ea2888dfe8b55cdd7110f573c47ff9442d656e34effe00",
+          "width": 1920,
+          "height": 1440,
+          "reused": false
+        }
+      }
+    ],
+    "photos": [
+      "https://pub-ed4a84ccdec4452ebcdb1b116e40b67b.r2.dev/venues/licensed/allegiant-stadium-7a3b4e2f7e98/e367e57562f01a2dcf1f0bd34e2250ec1140545e2ab33984.webp",
+      "https://pub-ed4a84ccdec4452ebcdb1b116e40b67b.r2.dev/venues/licensed/allegiant-stadium-7a3b4e2f7e98/2d55c10539878bebb4ea2888dfe8b55cdd7110f573c47ff9.webp"
+    ]
+  },
+  "provider:ticketmaster:kovzpzafdjva": {
+    "galleryPool": [
+      {
+        "uri": "https://pub-ed4a84ccdec4452ebcdb1b116e40b67b.r2.dev/venues/licensed/provider-ticketmaster-kovzpzafdjva-ac44ddc7ce2f/0183180ad5aeb10e87a1017ecb7cd40c59fd4b38e137a8c6.webp",
+        "by": "Atwngirl · CC BY-SA 4.0",
+        "source": "licensed",
+        "provenanceSource": "commons",
+        "creator": "Atwngirl",
+        "license": "CC-BY-SA-4.0",
+        "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0/",
+        "sourcePage": "https://commons.wikimedia.org/wiki/File:2021_-_Grandstand_-_Allentown_Fairgrounds_-_Allentown_PA.jpg",
+        "modificationNotice": "Converted to WebP and resized when needed by MSHpit for delivery.",
+        "mirroredFrom": "https://thumb.wikimedia.org/wikipedia/commons/thumb/4/44/2021_-_Grandstand_-_Allentown_Fairgrounds_-_Allentown_PA.jpg/1920px-2021_-_Grandstand_-_Allentown_Fairgrounds_-_Allentown_PA.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=thumbnail",
+        "mirror": {
+          "objectKey": "venues/licensed/provider-ticketmaster-kovzpzafdjva-ac44ddc7ce2f/0183180ad5aeb10e87a1017ecb7cd40c59fd4b38e137a8c6.webp",
+          "contentType": "image/webp",
+          "byteSize": 309198,
+          "sha256": "0183180ad5aeb10e87a1017ecb7cd40c59fd4b38e137a8c6dffb466fd83305d2",
+          "width": 1920,
+          "height": 1276,
+          "reused": false
+        }
+      }
+    ],
+    "photos": [
+      "https://pub-ed4a84ccdec4452ebcdb1b116e40b67b.r2.dev/venues/licensed/provider-ticketmaster-kovzpzafdjva-ac44ddc7ce2f/0183180ad5aeb10e87a1017ecb7cd40c59fd4b38e137a8c6.webp"
+    ]
+  },
+  "provider:ticketmaster:z6r9jza11e": {
+    "galleryPool": [
+      {
+        "uri": "https://pub-ed4a84ccdec4452ebcdb1b116e40b67b.r2.dev/venues/licensed/provider-ticketmaster-z6r9jza11e-d414dcdb91a1/641b39ab60998e1b471e62ecdb43fb22b625ba929e055463.webp",
+        "by": "Eli Christman from Richmond, VA, USA · CC BY 2.0",
+        "source": "licensed",
+        "provenanceSource": "commons",
+        "creator": "Eli Christman from Richmond, VA, USA",
+        "license": "CC-BY-2.0",
+        "licenseUrl": "https://creativecommons.org/licenses/by/2.0/",
+        "sourcePage": "https://commons.wikimedia.org/wiki/File:Altria_Theater_360_(33940319154).jpg",
+        "modificationNotice": "Converted to WebP and resized when needed by MSHpit for delivery.",
+        "mirroredFrom": "https://thumb.wikimedia.org/wikipedia/commons/thumb/4/46/Altria_Theater_360_%2833940319154%29.jpg/1920px-Altria_Theater_360_%2833940319154%29.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=thumbnail",
+        "mirror": {
+          "objectKey": "venues/licensed/provider-ticketmaster-z6r9jza11e-d414dcdb91a1/641b39ab60998e1b471e62ecdb43fb22b625ba929e055463.webp",
+          "contentType": "image/webp",
+          "byteSize": 280454,
+          "sha256": "641b39ab60998e1b471e62ecdb43fb22b625ba929e05546302d7d98cc83a479b",
+          "width": 1920,
+          "height": 1080,
+          "reused": false
+        }
+      }
+    ],
+    "photos": [
+      "https://pub-ed4a84ccdec4452ebcdb1b116e40b67b.r2.dev/venues/licensed/provider-ticketmaster-z6r9jza11e-d414dcdb91a1/641b39ab60998e1b471e62ecdb43fb22b625ba929e055463.webp"
+    ]
+  },
+  "arena monterrey": {
+    "galleryPool": [
+      {
+        "uri": "https://pub-ed4a84ccdec4452ebcdb1b116e40b67b.r2.dev/venues/licensed/arena-monterrey-b4e7cc8eab9b/065ca3055ef9118bd7a60dd8bb7d57cc1216a98a58e8c441.webp",
+        "by": "Hector Martínez · CC BY-SA 2.0",
+        "source": "licensed",
+        "provenanceSource": "commons",
+        "creator": "Hector Martínez",
+        "license": "CC-BY-SA-2.0",
+        "licenseUrl": "https://creativecommons.org/licenses/by-sa/2.0/",
+        "sourcePage": "https://commons.wikimedia.org/wiki/File:Arena_Monterrey.jpg",
+        "modificationNotice": "Converted to WebP and resized when needed by MSHpit for delivery.",
+        "mirroredFrom": "https://upload.wikimedia.org/wikipedia/commons/b/b9/Arena_Monterrey.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=thumbnail_unscaled",
+        "mirror": {
+          "objectKey": "venues/licensed/arena-monterrey-b4e7cc8eab9b/065ca3055ef9118bd7a60dd8bb7d57cc1216a98a58e8c441.webp",
+          "contentType": "image/webp",
+          "byteSize": 21824,
+          "sha256": "065ca3055ef9118bd7a60dd8bb7d57cc1216a98a58e8c441776604c5f06745d4",
+          "width": 640,
+          "height": 480,
+          "reused": false
+        }
+      },
+      {
+        "uri": "https://pub-ed4a84ccdec4452ebcdb1b116e40b67b.r2.dev/venues/licensed/arena-monterrey-b4e7cc8eab9b/e03c2f73bb3cd8f31fd4c8cef535c334f61a083d85ff3553.webp",
+        "by": "PR.ednasantos · CC BY-SA 4.0",
+        "source": "licensed",
+        "provenanceSource": "commons",
+        "creator": "PR.ednasantos",
+        "license": "CC-BY-SA-4.0",
+        "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0/",
+        "sourcePage": "https://commons.wikimedia.org/wiki/File:Arena_Monterrey_Exterior.jpg",
+        "modificationNotice": "Converted to WebP and resized when needed by MSHpit for delivery.",
+        "mirroredFrom": "https://thumb.wikimedia.org/wikipedia/commons/thumb/e/eb/Arena_Monterrey_Exterior.jpg/1920px-Arena_Monterrey_Exterior.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=thumbnail",
+        "mirror": {
+          "objectKey": "venues/licensed/arena-monterrey-b4e7cc8eab9b/e03c2f73bb3cd8f31fd4c8cef535c334f61a083d85ff3553.webp",
+          "contentType": "image/webp",
+          "byteSize": 120604,
+          "sha256": "e03c2f73bb3cd8f31fd4c8cef535c334f61a083d85ff3553ffec158ffa4ca13a",
+          "width": 1920,
+          "height": 718,
+          "reused": false
+        }
+      }
+    ],
+    "photos": [
+      "https://pub-ed4a84ccdec4452ebcdb1b116e40b67b.r2.dev/venues/licensed/arena-monterrey-b4e7cc8eab9b/065ca3055ef9118bd7a60dd8bb7d57cc1216a98a58e8c441.webp",
+      "https://pub-ed4a84ccdec4452ebcdb1b116e40b67b.r2.dev/venues/licensed/arena-monterrey-b4e7cc8eab9b/e03c2f73bb3cd8f31fd4c8cef535c334f61a083d85ff3553.webp"
+    ]
+  },
+  "provider:ticketmaster:z698xzc2za7wh": {
+    "galleryPool": [
+      {
+        "uri": "https://pub-ed4a84ccdec4452ebcdb1b116e40b67b.r2.dev/venues/licensed/provider-ticketmaster-z698xzc2za7wh-8a8cd4aca20c/dba8782b3cb654bf996c0bdadab4e73af70b6c1300c3521f.webp",
+        "by": "Arne Müseler · CC BY-SA 4.0",
+        "source": "licensed",
+        "provenanceSource": "commons",
+        "creator": "Arne Müseler",
+        "license": "CC-BY-SA-4.0",
+        "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0/",
+        "sourcePage": "https://commons.wikimedia.org/wiki/File:Germany_hamburg_Barclays_Arena.jpg",
+        "modificationNotice": "Converted to WebP and resized when needed by MSHpit for delivery.",
+        "mirroredFrom": "https://thumb.wikimedia.org/wikipedia/commons/thumb/7/70/Germany_hamburg_Barclays_Arena.jpg/1920px-Germany_hamburg_Barclays_Arena.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=thumbnail",
+        "mirror": {
+          "objectKey": "venues/licensed/provider-ticketmaster-z698xzc2za7wh-8a8cd4aca20c/dba8782b3cb654bf996c0bdadab4e73af70b6c1300c3521f.webp",
+          "contentType": "image/webp",
+          "byteSize": 790282,
+          "sha256": "dba8782b3cb654bf996c0bdadab4e73af70b6c1300c3521fb3c08f1f6849222c",
+          "width": 1920,
+          "height": 1438,
+          "reused": false
+        }
+      }
+    ],
+    "photos": [
+      "https://pub-ed4a84ccdec4452ebcdb1b116e40b67b.r2.dev/venues/licensed/provider-ticketmaster-z698xzc2za7wh-8a8cd4aca20c/dba8782b3cb654bf996c0bdadab4e73af70b6c1300c3521f.webp"
+    ]
+  },
+  "provider:ticketmaster:kovz917atp3": {
+    "galleryPool": [
+      {
+        "uri": "https://pub-ed4a84ccdec4452ebcdb1b116e40b67b.r2.dev/venues/licensed/provider-ticketmaster-kovz917atp3-b268039f40a4/c2654f052be5d33e06226224a80858afa7828ebd589b9450.webp",
+        "by": "Aleksandr Zykov · CC BY-SA 2.0",
+        "source": "licensed",
+        "provenanceSource": "commons",
+        "creator": "Aleksandr Zykov",
+        "license": "CC-BY-SA-2.0",
+        "licenseUrl": "https://creativecommons.org/licenses/by-sa/2.0/",
+        "sourcePage": "https://commons.wikimedia.org/wiki/File:Barclays_Center,_Brooklyn,_New_York_4.jpg",
+        "modificationNotice": "Converted to WebP and resized when needed by MSHpit for delivery.",
+        "mirroredFrom": "https://thumb.wikimedia.org/wikipedia/commons/thumb/4/4d/Barclays_Center%2C_Brooklyn%2C_New_York_4.jpg/1920px-Barclays_Center%2C_Brooklyn%2C_New_York_4.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=thumbnail",
+        "mirror": {
+          "objectKey": "venues/licensed/provider-ticketmaster-kovz917atp3-b268039f40a4/c2654f052be5d33e06226224a80858afa7828ebd589b9450.webp",
+          "contentType": "image/webp",
+          "byteSize": 185210,
+          "sha256": "c2654f052be5d33e06226224a80858afa7828ebd589b9450fc127f79a9f61793",
+          "width": 1440,
+          "height": 1440,
+          "reused": false
+        }
+      },
+      {
+        "uri": "https://pub-ed4a84ccdec4452ebcdb1b116e40b67b.r2.dev/venues/licensed/provider-ticketmaster-kovz917atp3-b268039f40a4/21180fb08f39a70aeeabfdcbcc088ed2cad202d26a8a1496.webp",
+        "by": "Aleksandr Zykov · CC BY-SA 2.0",
+        "source": "licensed",
+        "provenanceSource": "commons",
+        "creator": "Aleksandr Zykov",
+        "license": "CC-BY-SA-2.0",
+        "licenseUrl": "https://creativecommons.org/licenses/by-sa/2.0/",
+        "sourcePage": "https://commons.wikimedia.org/wiki/File:Barclays_Center,_Brooklyn,_New_York_5.jpg",
+        "modificationNotice": "Converted to WebP and resized when needed by MSHpit for delivery.",
+        "mirroredFrom": "https://thumb.wikimedia.org/wikipedia/commons/thumb/3/36/Barclays_Center%2C_Brooklyn%2C_New_York_5.jpg/1920px-Barclays_Center%2C_Brooklyn%2C_New_York_5.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=thumbnail",
+        "mirror": {
+          "objectKey": "venues/licensed/provider-ticketmaster-kovz917atp3-b268039f40a4/21180fb08f39a70aeeabfdcbcc088ed2cad202d26a8a1496.webp",
+          "contentType": "image/webp",
+          "byteSize": 129656,
+          "sha256": "21180fb08f39a70aeeabfdcbcc088ed2cad202d26a8a149699ccd767b51d5d4e",
+          "width": 1440,
+          "height": 1440,
+          "reused": false
+        }
+      }
+    ],
+    "photos": [
+      "https://pub-ed4a84ccdec4452ebcdb1b116e40b67b.r2.dev/venues/licensed/provider-ticketmaster-kovz917atp3-b268039f40a4/c2654f052be5d33e06226224a80858afa7828ebd589b9450.webp",
+      "https://pub-ed4a84ccdec4452ebcdb1b116e40b67b.r2.dev/venues/licensed/provider-ticketmaster-kovz917atp3-b268039f40a4/21180fb08f39a70aeeabfdcbcc088ed2cad202d26a8a1496.webp"
+    ]
   }
 }

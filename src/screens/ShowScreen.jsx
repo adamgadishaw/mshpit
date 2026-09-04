@@ -37,6 +37,7 @@ import useScopedRefresh from "../hooks/useScopedRefresh";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
 import { useArtistMemorial } from "../features/artistMemorials/useArtistMemorial";
 import { normalizeAttendanceTicketShow } from "../domain/attendanceTicket.mjs";
+import { normalizeVenuePhotoProviderIdentity } from "../domain/venuePhotos.mjs";
 
 const CROWD_FILTER_LABELS = Object.freeze({
   everyone: "Everyone",
@@ -163,9 +164,18 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
     artistPhotoUri,
   }), [artist, artistPhotoUri, eventTitle, norm]);
   const ticketShow = useMemo(() => normalizeAttendanceTicketShow(ticketEvent), [ticketEvent]);
+  const venuePhotoIdentity = normalizeVenuePhotoProviderIdentity({
+    source: norm.source || trustedShow?.provider?.name,
+    providerVenueId: norm.providerVenueId || norm.venue_provider_id,
+  });
+  const venueNavigation = {
+    name: venue,
+    place: city,
+    ...(venuePhotoIdentity || {}),
+  };
   const coord = venueCoord(venue);
-  const photos = venuePhotos(venue);
-  const photoState = venuePhotoState(venue);
+  const photos = venuePhotos(venue, venuePhotoIdentity);
+  const photoState = venuePhotoState(venue, venuePhotoIdentity);
   const key = legacyKey;
   const going = isGoing(key, tourDateId);
   const goingBusy = isGoingBusy(key, tourDateId);
@@ -241,9 +251,9 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
   const hiddenAttendeeCount = Math.max(0, attendeeTotal - renderedAttendeeCount);
   useEffect(() => {
     const controller = new AbortController();
-    void loadVenuePhotos(venue, { signal: controller.signal }).catch(() => { /* architecture: allow-empty-catch -- the show page remains usable while its optional venue gallery exposes a retry state */ });
+    void loadVenuePhotos(venue, { ...venuePhotoIdentity, signal: controller.signal }).catch(() => { /* architecture: allow-empty-catch -- the show page remains usable while its optional venue gallery exposes a retry state */ });
     return () => controller.abort();
-  }, [venue, venuePhotoPrivacyRevision]);
+  }, [venue, venuePhotoIdentity?.source, venuePhotoIdentity?.providerVenueId, venuePhotoPrivacyRevision]);
 
   useEffect(() => {
     setArchiveLoadMoreFailed(false);
@@ -369,7 +379,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
       const [documentResult, socialResult, refreshedPhotos] = await Promise.all([
         refreshShowDocument({ signal }),
         refreshShowSocial({ signal, strict: true }),
-        loadVenuePhotos(venue, { force: true, signal }),
+        loadVenuePhotos(venue, { ...venuePhotoIdentity, force: true, signal }),
       ]);
       return { documentResult, socialResult, refreshedPhotos };
     },
@@ -505,7 +515,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
           <View style={styles.stubRow}>
             <Pressable
               style={{ flex: 1 }}
-              onPress={() => onOpenVenue?.(venue)}
+              onPress={() => onOpenVenue?.(venueNavigation)}
               accessibilityRole="button"
               accessibilityLabel={`Open ${venue}'s venue page`}
             >
@@ -550,8 +560,8 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
               coord={coord}
               loading={photoState.status === "idle" || photoState.status === "loading"}
               error={photoState.status === "error"}
-              onRetry={() => { void loadVenuePhotos(venue, { force: true }).catch(() => {}); }}
-              onPress={() => onOpenVenue?.(venue)}
+              onRetry={() => { void loadVenuePhotos(venue, { ...venuePhotoIdentity, force: true }).catch(() => { /* architecture: allow-empty-catch -- the venue widget keeps its visible retry state while the optional gallery request fails */ }); }}
+              onPress={() => onOpenVenue?.(venueNavigation)}
             />
           </View>
         </View>
@@ -849,7 +859,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
             <Text style={styles.seeTxt}>See this artist</Text>
             <Icon name="chevron-right" size={16} color={colors.textDim} />
           </Pressable>
-          <Pressable style={styles.seeBtn} onPress={() => onOpenVenue?.(venue)} accessibilityRole="button" accessibilityLabel={`Open ${venue}'s venue page`}>
+          <Pressable style={styles.seeBtn} onPress={() => onOpenVenue?.(venueNavigation)} accessibilityRole="button" accessibilityLabel={`Open ${venue}'s venue page`}>
             <Icon name="pin" size={16} color={colors.amber} />
             <Text style={styles.seeTxt}>See this venue</Text>
             <Icon name="chevron-right" size={16} color={colors.textDim} />

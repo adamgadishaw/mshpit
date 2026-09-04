@@ -32,19 +32,27 @@ const licensed = (uri = "https://images.example/venue.jpg") => ({
 test("backfill CLI supports bounded dry runs, cursors, and a one-command full sweep", () => {
   assert.deepEqual(parseVenuePhotoBackfillArgs([
     "--limit=12", "--offset=4", "--cursor=bravo", "--dry-run",
-    "--delay-ms=500", "--checkpoint-every=3",
+    "--delay-ms=500", "--checkpoint-every=3", "--database=C:/data/pit.db",
+    "--inventory-limit=2000",
   ]), {
     all: false,
     limit: 12,
     offset: 4,
     cursor: "bravo",
+    databasePath: "C:/data/pit.db",
+    catalogOnly: false,
+    coverageOnly: false,
+    inventoryLimit: 2000,
     replace: false,
     dryRun: true,
     delayMs: 500,
     checkpointEvery: 3,
   });
   assert.equal(parseVenuePhotoBackfillArgs(["--all"]).limit, Number.POSITIVE_INFINITY);
+  assert.equal(parseVenuePhotoBackfillArgs(["--coverage"]).dryRun, true);
+  assert.equal(parseVenuePhotoBackfillArgs(["--catalog-only"]).catalogOnly, true);
   assert.throws(() => parseVenuePhotoBackfillArgs(["--limit=0"]), /--limit/u);
+  assert.throws(() => parseVenuePhotoBackfillArgs(["--inventory-limit=250001"]), /--inventory-limit/u);
   assert.throws(() => parseVenuePhotoBackfillArgs(["--delay-ms=5001"]), /--delay-ms/u);
 });
 
@@ -120,6 +128,111 @@ test("one-word venues require explicit live-venue context plus location evidence
     mime: "image/svg+xml",
     description: "History music venue in Toronto.",
   }), history), false);
+});
+
+test("missing venue coordinates never become a Gulf of Guinea location match", () => {
+  assert.equal(isRelevantCommonsVenuePhoto(commonsPage({
+    title: "File:History exterior.webp",
+    mime: "image/webp",
+    description: "History concert venue entrance.",
+    lat: 0,
+    lng: 0,
+  }), {
+    name: "History",
+    place: "",
+    lat: null,
+    lng: "",
+  }), false);
+});
+
+test("venue-photo relevance rejects concert performers, crowds, and sports matches", () => {
+  const allianzSydney = {
+    name: "Allianz Stadium",
+    place: "Sydney, New South Wales, Australia",
+    lat: -33.8891,
+    lng: 151.2254,
+  };
+  assert.equal(isRelevantCommonsVenuePhoto(commonsPage({
+    title: "File:Elton John at Allianz Stadium, Sydney.jpg",
+    description: "Elton John concert at Allianz Stadium in Sydney.",
+  }), allianzSydney), false);
+
+  const allstate = {
+    name: "Allstate Arena",
+    place: "Rosemont, Illinois, United States",
+    lat: 42.0053,
+    lng: -87.8878,
+  };
+  assert.equal(isRelevantCommonsVenuePhoto(commonsPage({
+    title: "File:Rammstein @ Allstate Arena, Rosemont IL 5-4-12.jpg",
+    description: "Rammstein performing at Allstate Arena in Rosemont.",
+  }), allstate), false);
+  assert.equal(isRelevantCommonsVenuePhoto(commonsPage({
+    title: "File:Kanye West @ Allstate Arena, Rosemont 10 8 2016.jpg",
+    description: "Kanye West onstage at Allstate Arena in Rosemont.",
+  }), allstate), false);
+  assert.equal(isRelevantCommonsVenuePhoto(commonsPage({
+    title: "File:Palmeiras x Sao Paulo - Allianz Parque.jpg",
+    description: "Palmeiras versus Sao Paulo game at Allianz Parque.",
+  }), {
+    name: "Allianz Parque",
+    place: "Sao Paulo, Brazil",
+  }), false);
+});
+
+test("venue-photo relevance rejects views and landscaping on venue grounds", () => {
+  const alexandraPalace = {
+    name: "Alexandra Palace",
+    place: "London, England, United Kingdom",
+    lat: 51.5941,
+    lng: -0.1306,
+  };
+  assert.equal(isRelevantCommonsVenuePhoto(commonsPage({
+    title: "File:City of London from The Terrace, Alexandra Palace, London N22.jpg",
+    description: "A skyline view from the terrace at Alexandra Palace.",
+  }), alexandraPalace), false);
+  assert.equal(isRelevantCommonsVenuePhoto(commonsPage({
+    title: "File:Flowerbeds, Alexandra Palace, London N22.jpg",
+    description: "Flowerbeds and gardens in the grounds of Alexandra Palace.",
+  }), alexandraPalace), false);
+});
+
+test("venue-photo relevance accepts a clearly structural building photo", () => {
+  assert.equal(isRelevantCommonsVenuePhoto(commonsPage({
+    title: "File:Allegiant Stadium, Las Vegas, Nevada.jpg",
+    description: "Exterior architecture and entrance of Allegiant Stadium in Las Vegas.",
+  }), {
+    name: "Allegiant Stadium",
+    place: "Las Vegas, Nevada, United States",
+    lat: 36.0908,
+    lng: -115.183,
+  }), true);
+
+  assert.equal(isRelevantCommonsVenuePhoto(commonsPage({
+    title: "File:RBC Stage Toronto exterior.jpg",
+    description: "Exterior entrance of the RBC Stage performance venue in Toronto.",
+  }), {
+    name: "RBC Stage",
+    place: "Toronto, Ontario, Canada",
+  }), true, "an official venue name containing an event token does not reject itself");
+
+  assert.equal(isRelevantCommonsVenuePhoto(commonsPage({
+    title: "File:Germany Hamburg Barclays Arena.jpg",
+    description: "Exterior of Barclays Arena in Hamburg, Germany.",
+  }), {
+    name: "Barclays Arena",
+    place: "Hamburg, Germany",
+  }), true, "a prefix made entirely from venue location tokens stays eligible");
+});
+
+test("venue-photo relevance rejects an unexplained artist prefix", () => {
+  assert.equal(isRelevantCommonsVenuePhoto(commonsPage({
+    title: "File:Willie Nelson & Family BankNH Pavilion 108 Kimball Road Gilford NH August 2025 05.jpg",
+    description: "Willie Nelson and Family at BankNH Pavilion in Gilford, New Hampshire.",
+  }), {
+    name: "BankNH Pavilion",
+    place: "Gilford, New Hampshire, United States",
+  }), false);
 });
 
 test("one-word Commons false matches reject schools, sculptures, and multilingual maps", () => {

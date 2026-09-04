@@ -6,7 +6,9 @@ import {
   cleanVenuePhotoResponse,
   isFreshVenuePhotoEntry,
   mergeVenuePhotoSources,
+  normalizeVenuePhotoProviderIdentity,
   venuePhotoAttemptScope,
+  venuePhotoRequestIdentity,
   venuePhotoScopedCacheKey,
   venuePhotoViewerScope,
   VENUE_PHOTO_CATALOG_VERSION,
@@ -213,11 +215,51 @@ test("viewer-specific venue photo caches cannot cross accounts or block boundari
   }
 });
 
+test("provider-scoped venue photo caches cannot cross same-named buildings", () => {
+  const viewer = venuePhotoViewerScope("account-a", [], 0);
+  const toronto = { source: "Ticketmaster", providerVenueId: "Toronto-Hall" };
+  const lisbon = { source: "ticketmaster", providerVenueId: "Lisbon-Hall" };
+
+  assert.deepEqual(normalizeVenuePhotoProviderIdentity(toronto), toronto);
+  assert.deepEqual(
+    normalizeVenuePhotoProviderIdentity({ source: " ticketmaster ", venue_provider_id: " Lisbon-Hall " }),
+    { source: "ticketmaster", providerVenueId: "Lisbon-Hall" },
+  );
+  assert.equal(normalizeVenuePhotoProviderIdentity({ source: "ticketmaster" }), null);
+  assert.notEqual(
+    venuePhotoScopedCacheKey("The Arena", viewer, toronto),
+    venuePhotoScopedCacheKey("The Arena", viewer, lisbon),
+  );
+  assert.equal(
+    venuePhotoRequestIdentity(" THE ARENA ", toronto),
+    venuePhotoRequestIdentity("the arena", { source: "ticketmaster", providerVenueId: "toronto-hall" }),
+    "provider cache identities normalize without collapsing distinct provider ids",
+  );
+});
+
 test("personalized venue-photo JSON bypasses browser caches", () => {
   const featureSource = readFileSync(new URL("../features/venuePhotos/venuePhotoApi.mjs", import.meta.url), "utf8");
   const apiSource = readFileSync(new URL("../lib/api.js", import.meta.url), "utf8");
   assert.match(featureSource, /cache:\s*"no-store"/u);
+  assert.match(featureSource, /source=\$\{encodeURIComponent\(provider\.source\)\}/u);
+  assert.match(featureSource, /providerVenueId=\$\{encodeURIComponent\(provider\.providerVenueId\)\}/u);
   assert.match(apiSource, /\.\.\.\(cache \? \{ cache \} : \{\}\)/u);
+});
+
+test("venue and show screens carry exact provider venue identity into photo reads and navigation", () => {
+  const venueScreen = readFileSync(new URL("../screens/VenueScreen.jsx", import.meta.url), "utf8");
+  const showScreen = readFileSync(new URL("../screens/ShowScreen.jsx", import.meta.url), "utf8");
+  const app = readFileSync(new URL("../../App.js", import.meta.url), "utf8");
+  const api = readFileSync(new URL("../../server/api.js", import.meta.url), "utf8");
+
+  assert.match(venueScreen, /venueIdentity\?\.source \|\| venue\.source/u);
+  assert.match(venueScreen, /venuePhotos\(venue\.name, photoIdentity\)/u);
+  assert.match(venueScreen, /loadVenuePhotos\(venue\.name, \{ \.\.\.photoIdentity,/u);
+  assert.match(showScreen, /providerVenueId: norm\.providerVenueId \|\| norm\.venue_provider_id/u);
+  assert.match(showScreen, /venuePhotos\(venue, venuePhotoIdentity\)/u);
+  assert.match(showScreen, /onOpenVenue\?\.\(venueNavigation\)/u);
+  assert.match(app, /venueIdentity=\{nav\.venue \|\| null\}/u);
+  assert.match(api, /publicVenuePhotoPool\(key, \{ \.\.\.provider, limit: VENUE_PHOTO_LIMIT \}\)/u);
 });
 
 test("the Store rotates venue-photo privacy state on account, block, and unblock boundaries", () => {
@@ -246,7 +288,7 @@ test("the Store rotates venue-photo privacy state on account, block, and unblock
     "both confirmed writes and both rollback paths must refetch the authoritative graph");
   assert.match(blockHydrationBoundary, /blockedIdsRef\.current = ids;\s+setVenueReviews\([\s\S]*?rotateVenuePhotoPrivacyScope\(\{ accountId, blockGraphAuthoritative: true \}\);\s+setBlockedIds\(ids\)/u,
     "authoritative block hydration must invalidate a pool fetched before hydration completed");
-  assert.match(venueRead, /venuePhotoScopedCacheKey\(venueKey, viewerScope\)/u);
+  assert.match(venueRead, /venuePhotoScopedCacheKey\(venueKey, viewerScope, provider\)/u);
   assert.match(venueRead, /currentVenuePhotoViewerScope\(\) !== viewerScope/u,
     "a late response from the previous viewer scope must never commit");
   assert.ok(venueRead.includes("if (active) return waitForVenuePhotoRequest(active.promise, signal)"),

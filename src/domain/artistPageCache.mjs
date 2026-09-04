@@ -16,6 +16,12 @@ const viewerScopeFor = (accountId) => accountIdFor(accountId) == null
   ? "guest"
   : `user:${accountIdFor(accountId)}`;
 
+// Reads and mutations for one artist must share a latest-wins lane. Otherwise
+// a GET that began before Save can finish afterward and repaint the old photo.
+export function artistPageResourceKind(artistKey) {
+  return `artist-page:${String(artistKey || "")}`;
+}
+
 export function artistPageCacheStorageKeys(accountId) {
   const viewer = accountIdFor(accountId) == null
     ? "guest"

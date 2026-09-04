@@ -14,10 +14,10 @@ const PHOTO = Buffer.from([
   0x49, 0x46, 0x00, 0x01, 0x01, 0x00, 0xff, 0xd9,
 ]);
 
-test("share artwork accepts only the fixed Ticketmaster host or configured public-media path", () => {
+test("share artwork accepts verified first-party media and rejects provider hosting without export permission", () => {
   assert.equal(
     trustedShareArtworkUrl({ url: "https://s1.ticketm.net/dam/a/show.jpg", source: "ticketmaster" }, { env: ENV }),
-    "https://s1.ticketm.net/dam/a/show.jpg",
+    null,
   );
   assert.equal(
     trustedShareArtworkUrl({ url: "https://media.mshpit.test/public/users/u/post/p.jpg", source: "owned-media" }, { env: ENV }),
@@ -65,12 +65,13 @@ test("artwork loading is bounded, refuses redirects and returns the first valid 
 
 test("a timed-out artwork source cannot suppress the remaining trusted candidates", async () => {
   const candidates = ["first", "second", "third"].map((name) => ({
-    url: `https://s1.ticketm.net/dam/a/${name}.jpg`,
-    source: "ticketmaster",
+    url: `https://media.mshpit.test/public/share-tests/${name}.jpg`,
+    source: "owned-media",
   }));
   const requestSignals = [];
   let requests = 0;
   const result = await loadShareArtwork(candidates, {
+    env: ENV,
     timeoutMs: 100,
     fetchImpl: async (_url, options) => {
       requests += 1;
@@ -100,8 +101,9 @@ test("a timed-out artwork source cannot suppress the remaining trusted candidate
 });
 
 test("bad MIME, oversized declarations and truncated responses fall through to the no-photo design", async () => {
-  const candidate = [{ url: "https://s1.ticketm.net/dam/a/show.jpg", source: "ticketmaster" }];
+  const candidate = [{ url: "https://media.mshpit.test/public/share-tests/show.jpg", source: "owned-media" }];
   const badMime = await loadShareArtwork(candidate, {
+    env: ENV,
     fetchImpl: async () => new Response(PHOTO, {
       headers: { "content-type": "text/html", "content-length": String(PHOTO.length) },
     }),
@@ -109,6 +111,7 @@ test("bad MIME, oversized declarations and truncated responses fall through to t
   assert.equal(badMime, null);
 
   const oversized = await loadShareArtwork(candidate, {
+    env: ENV,
     maxBytes: 1_024,
     fetchImpl: async () => new Response(PHOTO, {
       headers: { "content-type": "image/jpeg", "content-length": "1025" },
@@ -117,6 +120,7 @@ test("bad MIME, oversized declarations and truncated responses fall through to t
   assert.equal(oversized, null);
 
   const truncated = await loadShareArtwork(candidate, {
+    env: ENV,
     fetchImpl: async () => new Response(PHOTO, {
       headers: { "content-type": "image/jpeg", "content-length": String(PHOTO.length + 1) },
     }),
@@ -128,11 +132,12 @@ test("bad MIME, oversized declarations and truncated responses fall through to t
 
 test("permanent artwork failures settle on the stable no-photo design", async () => {
   const candidates = [404, 410].map((status) => ({
-    url: `https://s1.ticketm.net/dam/a/missing-${status}.jpg`,
-    source: "ticketmaster",
+    url: `https://media.mshpit.test/public/share-tests/missing-${status}.jpg`,
+    source: "owned-media",
   }));
   let requests = 0;
   const result = await loadShareArtwork(candidates, {
+    env: ENV,
     fetchImpl: async () => {
       const status = [404, 410][requests];
       requests += 1;
@@ -145,11 +150,12 @@ test("permanent artwork failures settle on the stable no-photo design", async ()
 
 test("temporary artwork exhaustion is classified as retryable", async () => {
   const candidates = [408, 429, 503].map((status) => ({
-    url: `https://s1.ticketm.net/dam/a/temporary-${status}.jpg`,
-    source: "ticketmaster",
+    url: `https://media.mshpit.test/public/share-tests/temporary-${status}.jpg`,
+    source: "owned-media",
   }));
   let requests = 0;
   await assert.rejects(loadShareArtwork(candidates, {
+    env: ENV,
     fetchImpl: async () => {
       const status = [408, 429, 503][requests];
       requests += 1;
@@ -161,12 +167,13 @@ test("temporary artwork exhaustion is classified as retryable", async () => {
 
 test("a rejecting image decoder is terminal for only that candidate", async () => {
   const candidates = ["corrupt", "valid"].map((name) => ({
-    url: `https://s1.ticketm.net/dam/a/${name}.jpg`,
-    source: "ticketmaster",
+    url: `https://media.mshpit.test/public/share-tests/${name}.jpg`,
+    source: "owned-media",
   }));
   let accepts = 0;
   const accepted = Object.freeze({ prepared: true });
   const result = await loadShareArtwork(candidates, {
+    env: ENV,
     fetchImpl: async () => new Response(PHOTO, {
       headers: {
         "content-type": "image/jpeg",
@@ -191,8 +198,9 @@ test("streaming artwork without Content-Length is stopped at the byte ceiling", 
     },
   });
   const result = await loadShareArtwork([
-    { url: "https://s1.ticketm.net/dam/a/stream.jpg", source: "ticketmaster" },
+    { url: "https://media.mshpit.test/public/share-tests/stream.jpg", source: "owned-media" },
   ], {
+    env: ENV,
     maxBytes: 1_024,
     fetchImpl: async () => new Response(oversizedStream, {
       headers: { "content-type": "image/jpeg" },
@@ -202,17 +210,19 @@ test("streaming artwork without Content-Length is stopped at the byte ceiling", 
 });
 
 test("declared artwork type must match a supported file signature", async () => {
-  const candidate = [{ url: "https://s1.ticketm.net/dam/a/show.jpg", source: "ticketmaster" }];
+  const candidate = [{ url: "https://media.mshpit.test/public/share-tests/show.jpg", source: "owned-media" }];
   const pngSignature = Buffer.from([
     0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
     0x00, 0x00, 0x00, 0x00,
   ]);
   const mismatch = await loadShareArtwork(candidate, {
+    env: ENV,
     fetchImpl: async () => new Response(pngSignature, {
       headers: { "content-type": "image/jpeg" },
     }),
   });
   const disguised = await loadShareArtwork(candidate, {
+    env: ENV,
     fetchImpl: async () => new Response(Buffer.from("GIF89a-not-a-jpeg"), {
       headers: { "content-type": "image/jpeg" },
     }),

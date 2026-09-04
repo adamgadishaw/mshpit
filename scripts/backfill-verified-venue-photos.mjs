@@ -11,6 +11,12 @@ import {
   mirrorLicensedVenuePhoto,
   venuePhotoMirrorConfigured,
 } from "./lib/venue-photo-mirror.mjs";
+import {
+  buildVenuePhotoInventory,
+  readTourDateVenueRows,
+  resolveVenuePhotoDatabasePath,
+  venuePhotoCoverageReport,
+} from "./lib/venue-photo-inventory.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SOURCE = join(HERE, "..", "src", "seed", "catalog.generated.json");
@@ -85,14 +91,31 @@ async function main() {
   // --replace means re-query selected venues; it deliberately does not erase
   // other verified rows before a replacement succeeds.
   const existing = JSON.parse(await readFile(OUTPUT, "utf8").catch(() => "{}"));
+  const databasePath = resolveVenuePhotoDatabasePath(options.databasePath);
+  const tourDates = options.catalogOnly
+    ? { available: false, reason: "catalog-only", rows: [] }
+    : readTourDateVenueRows(databasePath, { limit: options.inventoryLimit });
+  if (!options.catalogOnly && process.env.PIT_DATA_DIR && !tourDates.available) {
+    throw new Error(`Production tour-date venue inventory is unavailable (${tourDates.reason}).`);
+  }
+  const inventory = buildVenuePhotoInventory(source.venues || {}, tourDates.rows);
+  const coverageBefore = venuePhotoCoverageReport(inventory, existing);
   const batch = selectVenuePhotoBackfillBatch(
-    Object.entries(source.venues || {}), existing, options,
+    inventory.entries, existing, options,
   );
 
   if (options.dryRun) {
     console.log(JSON.stringify({
       dryRun: true,
-      selected: batch.selected.map(([key, venue]) => ({ key, name: venue.name })),
+      coverageOnly: options.coverageOnly,
+      tourDateDatabase: tourDates.available ? "available" : tourDates.reason,
+      inventory: inventory.stats,
+      coverage: coverageBefore,
+      selected: options.coverageOnly ? [] : batch.selected.map(([key, venue]) => ({
+        key,
+        name: venue.name,
+        sources: venue._inventoryOrigins || [],
+      })),
       totalEligible: batch.totalEligible,
       nextCursor: batch.nextCursor,
       hasMore: batch.hasMore,
@@ -139,6 +162,9 @@ async function main() {
     venuesWithPhotos: Object.keys(existing).length,
     photos: Object.values(existing)
       .reduce((sum, entry) => sum + (entry.galleryPool?.length || 0), 0),
+    inventory: inventory.stats,
+    coverageBefore,
+    coverageAfter: venuePhotoCoverageReport(inventory, existing),
     nextCursor: batch.hasMore ? batch.nextCursor : null,
     hasMore: batch.hasMore,
     resumeWith: batch.hasMore ? `--cursor=${batch.nextCursor}` : null,

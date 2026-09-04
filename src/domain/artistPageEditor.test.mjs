@@ -6,7 +6,10 @@ import {
   rejectLoadState,
   resolveLoadState,
 } from "./loadState.mjs";
-import { artistPageEditReady } from "./artistPageEditor.mjs";
+import {
+  artistPageEditReady,
+  confirmedArtistProfileMutation,
+} from "./artistPageEditor.mjs";
 
 const scope = "artist-page-editor:turnstile";
 
@@ -52,4 +55,40 @@ test("malformed or absent profile snapshots never unlock editing", () => {
     const resource = resolveLoadState({ scope, data: { profile, posts: [] }, updatedAt: 100 });
     assert.equal(artistPageEditReady(resource), false);
   }
+});
+
+test("artist page save requires an authoritative profile matching the requested photo", () => {
+  const avatarUri = "https://media.example/steve-lacy.jpg";
+  const confirmed = confirmedArtistProfileMutation({
+    ok: true,
+    profile: {
+      ownerId: null,
+      bio: null,
+      banner: null,
+      avatarUri,
+      feedEnabled: false,
+    },
+  }, { avatarUri, bio: "", feedEnabled: false });
+  assert.equal(confirmed.avatarUri, avatarUri);
+  assert.equal(confirmed.bio, null,
+    "a photo-only update accepts the API's canonical null for the editor's empty bio");
+  assert.equal(confirmed.ownerId, null, "staff can seed an unclaimed artist page");
+});
+
+test("artist page save rejects bare success, malformed URLs, and mismatched artwork", () => {
+  assert.equal(confirmedArtistProfileMutation({ ok: true }, {}), null);
+  assert.equal(confirmedArtistProfileMutation({
+    ok: true,
+    profile: { ownerId: null, bio: "", banner: null, avatarUri: "file:///preview.jpg", feedEnabled: false },
+  }, { avatarUri: "file:///preview.jpg" }), null);
+  assert.equal(confirmedArtistProfileMutation({
+    ok: true,
+    profile: {
+      ownerId: null,
+      bio: "",
+      banner: null,
+      avatarUri: "https://media.example/old.jpg",
+      feedEnabled: false,
+    },
+  }, { avatarUri: "https://media.example/new.jpg" }), null);
 });

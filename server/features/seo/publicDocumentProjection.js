@@ -17,6 +17,7 @@ import { postMediaStateByPost } from "../../mediaAssets.js";
 import { verifiedFinalizedLegacyMedia } from "../../mediaLegacyFinalize.js";
 import { safeOwnedReadyMediaUrl } from "../../publicMedia.js";
 import { publicTicketmasterEventImage } from "../../providerEventImage.js";
+import { publicVenuePhotoPool } from "../../venuePhotoCatalog.js";
 import { projectedOnlineReviewFields } from "../../onlineReviews.js";
 import { archiveShowKey } from "../artistArchive/artistArchiveKeys.js";
 import {
@@ -331,6 +332,40 @@ function profileImageSchema(media, name) {
     ...(media.width ? { width: media.width } : {}),
     ...(media.height ? { height: media.height } : {}),
     ...(media.mimeType ? { encodingFormat: media.mimeType } : {}),
+  });
+}
+
+function venuePhotoProjection(photo, venueName) {
+  const url = publicHttpsUrl(photo?.uri);
+  const creator = cleanLine(photo?.creator, 240);
+  const license = cleanLine(photo?.license, 40);
+  const licenseUrl = publicHttpsUrl(photo?.licenseUrl);
+  const sourcePage = publicHttpsUrl(photo?.sourcePage);
+  if (!url || !creator || !license || !licenseUrl || !sourcePage) return null;
+  return Object.freeze({
+    url,
+    alt: `${cleanLine(venueName, 180)} venue photo`,
+    attribution: cleanLine(photo?.by, 320) || `${creator} · ${license.replaceAll("-", " ")}`,
+    creator,
+    license,
+    licenseUrl,
+    sourcePage,
+    modificationNotice: cleanLine(photo?.modificationNotice, 240) || null,
+  });
+}
+
+function venuePhotoSchema(photo, venueName) {
+  if (!photo?.url) return null;
+  return Object.freeze({
+    "@type": "ImageObject",
+    contentUrl: photo.url,
+    url: photo.url,
+    name: `${cleanLine(venueName, 180)} venue photo`,
+    caption: photo.alt,
+    creditText: photo.attribution,
+    creator: Object.freeze({ "@type": "Person", name: photo.creator }),
+    license: photo.licenseUrl,
+    acquireLicensePage: photo.sourcePage,
   });
 }
 
@@ -1367,8 +1402,26 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       const rawAverageRating = Number(raw.venueReviews?.stats?.averageRating);
       const averageRating = ratingCount > 0 && Number.isFinite(rawAverageRating)
         && rawAverageRating >= 1 && rawAverageRating <= 5 ? rawAverageRating : null;
+      const licensedVenuePhotos = Object.freeze(publicVenuePhotoPool(name, {
+        limit: 3,
+        source: raw.venue?.source,
+        providerVenueId: raw.venue?.providerVenueId,
+      })
+        .map((photo) => venuePhotoProjection(photo, name)).filter(Boolean));
+      const licensedVenuePhoto = licensedVenuePhotos[0] || null;
       const primaryAsset = posts.flatMap((post) => post.media).find((asset) => asset.kind === "image" || asset.posterUrl) || null;
-      const image = primaryAsset?.kind === "image" ? primaryAsset.url : primaryAsset?.posterUrl || null;
+      const fanImage = primaryAsset?.kind === "image" ? primaryAsset.url : primaryAsset?.posterUrl || null;
+      const heroPhoto = licensedVenuePhoto || (fanImage ? Object.freeze({
+        url: fanImage,
+        alt: `${name} concert venue shared by the Mshpit community`,
+        attribution: "Mshpit community photo",
+        creator: null,
+        license: null,
+        licenseUrl: null,
+        sourcePage: null,
+        modificationNotice: null,
+      }) : null);
+      const image = heroPhoto?.url || null;
       const place = events.find((event) => event.place)?.place || posts.find((post) => post.city)?.city || null;
       const address = events.find((event) => event.address)?.address || null;
       const description = summary(`${name}${place ? ` in ${place}` : ""}: upcoming concerts, reviews and live music photos on Mshpit.`);
@@ -1384,7 +1437,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         name,
         url: absolute(publicOrigin, path),
         ...(address ? { address } : {}),
-        ...(image ? { image } : {}),
+        ...(licensedVenuePhoto ? { image: venuePhotoSchema(licensedVenuePhoto, name) } : fanImage ? { image: fanImage } : {}),
       };
       return Object.freeze({
         kind: "venue",
@@ -1394,11 +1447,16 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         canonicalPath: path,
         canonicalUrl: absolute(publicOrigin, path),
         image,
-        imageProvenance: image ? "fan-gallery" : null,
-        imageWidth: primaryAsset?.kind === "image" ? primaryAsset.width : null,
-        imageHeight: primaryAsset?.kind === "image" ? primaryAsset.height : null,
-        imageMimeType: primaryAsset?.kind === "image" ? primaryAsset.mimeType : null,
-        venue: Object.freeze({ name, place, address }),
+        imageProvenance: licensedVenuePhoto ? "licensed-venue"
+          : fanImage ? "fan-gallery" : null,
+        imageWidth: licensedVenuePhoto ? null
+          : fanImage && primaryAsset?.kind === "image" ? primaryAsset.width : null,
+        imageHeight: licensedVenuePhoto ? null
+          : fanImage && primaryAsset?.kind === "image" ? primaryAsset.height : null,
+        imageMimeType: licensedVenuePhoto ? null
+          : fanImage && primaryAsset?.kind === "image" ? primaryAsset.mimeType : null,
+        venue: Object.freeze({ name, place, address, heroPhoto }),
+        venuePhotos: licensedVenuePhotos,
         venueReviewStats: Object.freeze({ reviewCount, ratingCount, averageRating }),
         venueReviews: Object.freeze(venueReviews),
         posts,
@@ -1469,6 +1527,12 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
           updated_at: row.updated_at,
         }, publicPaths) : null;
         const featuredArtist = cleanLine(row.featured_artist, 160) || null;
+        const venuePhoto = publicVenuePhotoPool(name, {
+          limit: 1,
+          source: row.source,
+          providerVenueId: row.venue_provider_id,
+        })
+          .map((photo) => venuePhotoProjection(photo, name)).find(Boolean) || null;
         return [Object.freeze({
           name,
           path,
@@ -1483,6 +1547,8 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
             artist_public_slug: row.featured_artist_public_slug,
           }) : null,
           featuredEvent,
+          image: venuePhoto?.url || null,
+          photo: venuePhoto,
           modifiedAt: timestamp(row.updated_at),
         })];
       }) : [];
@@ -1537,12 +1603,25 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         Object.freeze({ name: page > 1 ? `${directoryLabel} — Page ${page}` : directoryLabel, path }),
       ]);
       const directoryItems = isArtists ? artists : isVenues ? venues : isConcerts ? concerts : events;
-      const items = directoryItems.slice(0, 100).map((item, index) => ({
-        "@type": "ListItem",
-        position: index + 1,
-        name: item.name || [item.artist, item.venue].filter(Boolean).join(" at "),
-        url: absolute(publicOrigin, item.path),
-      }));
+      const items = directoryItems.slice(0, 100).map((item, index) => {
+        const name = item.name || [item.artist, item.venue].filter(Boolean).join(" at ");
+        const url = absolute(publicOrigin, item.path);
+        return {
+          "@type": "ListItem",
+          position: index + 1,
+          name,
+          url,
+          ...(isVenues ? {
+            item: {
+              "@type": "MusicVenue",
+              name,
+              url,
+              ...(item.photo ? { image: venuePhotoSchema(item.photo, name) } : {}),
+            },
+          } : {}),
+        };
+      });
+      const directoryImage = isVenues ? venues.find((venue) => venue.image)?.image || null : null;
       return Object.freeze({
         kind: "directory",
         directoryKind: raw.kind,
@@ -1562,7 +1641,8 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         description,
         canonicalPath: path,
         canonicalUrl: absolute(publicOrigin, path),
-        image: null,
+        image: directoryImage,
+        imageProvenance: directoryImage ? "licensed-venue" : null,
         artists,
         events,
         venues,

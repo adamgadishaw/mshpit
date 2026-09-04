@@ -37,7 +37,7 @@ test("venue-photo mirror source overrides accept exact public hosts only", () =>
   const hosts = venuePhotoMirrorSourceHosts({
     VENUE_PHOTO_MIRROR_SOURCE_HOSTS: "images.reviewed.example,*.example,127.0.0.1,localhost,service.internal",
   });
-  assert.deepEqual([...hosts], ["upload.wikimedia.org", "images.reviewed.example"]);
+  assert.deepEqual([...hosts], ["upload.wikimedia.org", "thumb.wikimedia.org", "images.reviewed.example"]);
   assert.equal(venuePhotoMirrorConfigured(ENV), true);
 });
 
@@ -76,6 +76,36 @@ test("venue-photo mirroring rejects non-allowlisted image hosts and redirect esc
     fetchImpl: async (url) => String(url).startsWith(PHOTO.uri)
       ? new Response(null, { status: 302, headers: { Location: "https://127.0.0.1/private.jpg" } })
       : imageResponse(),
+  }), (error) => error.code === "SOURCE_HOST_NOT_APPROVED");
+});
+
+test("venue-photo mirroring accepts Commons thumbnail URLs without allowing redirect escapes", async () => {
+  const thumbnailUri = "https://thumb.wikimedia.org/wikipedia/commons/thumb/a/ab/Test_Hall.jpg/800px-Test_Hall.jpg";
+  let sourceCalls = 0;
+  const mirrored = await mirrorLicensedVenuePhoto({
+    venueKey: "test hall",
+    photo: { ...PHOTO, uri: thumbnailUri },
+    env: ENV,
+    fetchImpl: async (url, options = {}) => {
+      if (String(url) === thumbnailUri) {
+        sourceCalls += 1;
+        return imageResponse();
+      }
+      assert.equal(options.method, "PUT");
+      return new Response(null, { status: 201 });
+    },
+  });
+  assert.equal(sourceCalls, 1);
+  assert.equal(mirrored.mirroredFrom, thumbnailUri);
+
+  await assert.rejects(() => mirrorLicensedVenuePhoto({
+    venueKey: "test hall",
+    photo: { ...PHOTO, uri: thumbnailUri },
+    env: ENV,
+    fetchImpl: async () => new Response(null, {
+      status: 302,
+      headers: { Location: "https://images.unreviewed.example/redirected.jpg" },
+    }),
   }), (error) => error.code === "SOURCE_HOST_NOT_APPROVED");
 });
 

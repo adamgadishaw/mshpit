@@ -69,6 +69,7 @@ test("venue photo pools are server-only and unreachable from client modules", ()
   assert.deepEqual(offenders, [], "no client module may import the complete venue photo pool");
 
   const serverApi = readFileSync("server/api.js", "utf8");
-  assert.match(serverApi, /readFileSync\(VENUE_PHOTO_SOURCE/, "the server must own the split file");
+  const serverCatalog = readFileSync("server/venuePhotoCatalog.js", "utf8");
+  assert.match(serverCatalog, /readFileSync\(VENUE_PHOTO_SOURCE/, "the server must own the split file");
   assert.match(serverApi, /GET \/api\/venues\/:key\/photos/, "clients need a per-venue replacement endpoint");
 });

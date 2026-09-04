@@ -84,6 +84,37 @@ test("city venue documents have clean page metadata, safe venue links, JSON-LD p
   assert.doesNotMatch(rendered,/href="\/venue\/unproven-room"/u);
 });
 
+test("city venue directories show licensed venue photos in cards, social metadata, and MusicVenue items", () => {
+  const repository = fakeRepository({
+    readCityVenues() {
+      return {
+        kind:"city-venues",countryCode:"CA",country:"Canada",city:"Toronto",citySlug:"toronto",
+        page:1,pageSize:12,itemCount:1,venueCount:1,hasNext:false,
+        venues:[{
+          venue_identity:"name:rogers centre",venue:"Rogers Centre",
+          source:null,venue_provider_id:null,venue_region:"Ontario",venue_country:"Canada",
+          latest_at:1_725_000_000_000,
+        }],
+      };
+    },
+  });
+  const document = createPublicCollectionDocumentService({ repository,origin:ORIGIN })
+    .cityVenuesDocument({ countryCode:"ca",citySlug:"toronto" });
+  const html = renderPublicDocument(document);
+  const listItem = itemList(document).itemListElement[0];
+
+  assert.equal(document.imageProvenance,"licensed-venue");
+  assert.match(document.image,/^https:\/\/pub-[a-z0-9]+\.r2\.dev\/venues\/licensed\//u);
+  assert.equal(listItem.item["@type"],"MusicVenue");
+  assert.equal(listItem.item.image,document.venues[0].image);
+  assert.match(html,/class="directory-venue-photo"/u);
+  assert.match(html,/property="og:image" content="https:\/\/pub-/u);
+  assert.match(html,/name="twitter:image" content="https:\/\/pub-/u);
+  assert.match(html,/>License<\/a>/u);
+  assert.match(html,/Converted to WebP and resized/u);
+  assert.doesNotMatch(html,/<div class="directory-venue-fallback"/u);
+});
+
 test("city concert documents escape hostile data, omit zero ratings, and keep list schema visible-item exact", () => {
   const hostileArtist = 'Bad </script><script>alert("x")</script> Artist';
   const hostileVenue = 'Hall <img src=x onerror="alert(1)">';

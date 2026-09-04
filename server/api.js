@@ -8,7 +8,7 @@ import { MUSIC_PLAYER_ENABLED } from "../src/domain/musicPlayerAvailability.mjs"
 //   clean INTERNAL_ERROR with a request ID and no internal details
 // - responses only ever contain public projections (publicUser), never raw rows
 import { randomBytes, createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { mailConfigured, mailDiagnostics } from "./mailer.js";
 import { DEFAULT_TEMPLATES, availableTokens, isCodeOwnedTemplate, renderEmail, safeUrl } from "./emails.js";
 import {
@@ -174,9 +174,10 @@ import { createSuccessfulReadinessCache } from "./healthAvailability.js";
 import { PROVIDER_JSON_LIMITS, readBoundedJsonResponse } from "./boundedJsonResponse.js";
 import { assertSafeAuthoredFields, assertSafeAuthoredText } from "./contentSafety.js";
 import { canonicalProfileExtras } from "./profileExtras.js";
-import { licensedVenuePhoto, verifiedHttpsUrl } from "../src/domain/venuePhotoProvenance.mjs";
-import { canonicalVenueKey, resolveVenueCatalogKey, venueLookupKeys } from "../src/domain/venueIdentity.mjs";
+import { verifiedHttpsUrl } from "../src/domain/venuePhotoProvenance.mjs";
+import { canonicalVenueKey, venueLookupKeys } from "../src/domain/venueIdentity.mjs";
 import { publicVenueFanPhotos } from "./venueGallery.js";
+import { publicVenuePhotoPool } from "./venuePhotoCatalog.js";
 import { attachViewerLikes } from "./postViewerLikes.js";
 import { accountIsPublic, activeAccountSql, PROFILE_AUDIENCES, profileAudienceAllows } from "./accountVisibility.js";
 import { visibleTourDateRows } from "./tourDateVisibility.js";
@@ -260,8 +261,6 @@ const VIDEO_CACHED_FINALIZE_WAIT_MS = 18_000;
 const runtimeReadinessSuccessCache = createSuccessfulReadinessCache();
 const YOUTUBE_PLAYBACK_FAILURE_TTL_MS = 30 * DAY_MS;
 const VENUE_PHOTO_LIMIT = 24;
-const VENUE_PHOTO_SOURCE = new URL("../src/seed/catalog.venue-photos.json", import.meta.url);
-let venuePhotoCatalog;
 
 function decodedPathParam(ctx, name, { max, label = "link" }) {
   const raw = ctx?.params?.[name];
@@ -280,37 +279,24 @@ function decodedPathParam(ctx, name, { max, label = "link" }) {
   return clean(decoded, { max });
 }
 
-function venuePhotoSeed() {
-  if (venuePhotoCatalog) return venuePhotoCatalog;
-  try {
-    const parsed = JSON.parse(readFileSync(VENUE_PHOTO_SOURCE, "utf8"));
-    venuePhotoCatalog = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
-    return venuePhotoCatalog;
-  } catch (error) {
-    throw new ApiError(500, "Venue photos are temporarily unavailable.", "INTERNAL_ERROR", error);
+function optionalVenuePhotoQueryIdentity(ctx, name, { max, label }) {
+  const raw = ctx?.query?.[name];
+  if (raw == null || raw === "") return null;
+  if (typeof raw !== "string" || [...raw].length > max) {
+    throw new ApiError(400, `That ${label} is invalid.`, "VALIDATION_FAILED");
   }
+  const value = clean(raw, { max });
+  if (!value) throw new ApiError(400, `That ${label} is invalid.`, "VALIDATION_FAILED");
+  return value;
 }
 
-function normalizedVenuePhotoPool(key) {
-  const seed = venuePhotoSeed();
-  const catalogKey = resolveVenueCatalogKey(key, Object.keys(seed));
-  const raw = catalogKey ? seed[catalogKey] : null;
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
-  const gallery = Array.isArray(raw.galleryPool) ? raw.galleryPool : [];
-  const licensed = gallery.map(licensedVenuePhoto).filter(Boolean);
-  const byUrl = new Map(licensed.map((entry) => [entry.uri, entry]));
-  const preferred = Array.isArray(raw.photos)
-    ? raw.photos.map((uri) => byUrl.get(verifiedHttpsUrl(uri))).filter(Boolean)
-    : [];
-  const out = [];
-  const seen = new Set();
-  for (const entry of [...preferred, ...licensed]) {
-    if (seen.has(entry.uri)) continue;
-    seen.add(entry.uri);
-    out.push(entry);
-    if (out.length >= VENUE_PHOTO_LIMIT) break;
+function venuePhotoProviderQuery(ctx) {
+  const source = optionalVenuePhotoQueryIdentity(ctx, "source", { max: 40, label: "venue source" });
+  const providerVenueId = optionalVenuePhotoQueryIdentity(ctx, "providerVenueId", { max: 180, label: "venue provider link" });
+  if (!!source !== !!providerVenueId) {
+    throw new ApiError(400, "That venue provider link is incomplete.", "VALIDATION_FAILED");
   }
-  return out;
+  return { source, providerVenueId };
 }
 
 function serializeProfileExtras(value) {
@@ -1568,6 +1554,9 @@ const ATTENDANCE_TICKET_SECRET_KEYS = new Set([
 ]);
 const ticketArtistProfile = db.prepare(`SELECT owner_id,avatar_owner_id,avatar_uri,removed
   FROM artist_profiles WHERE artist_key=?`);
+const ticketProviderImageById = db.prepare(`SELECT source,ticket_url,event_source_url,
+    event_image_url,event_image_attribution,event_image_width,event_image_height
+  FROM tour_dates WHERE id=? LIMIT 1`);
 const providerGoingAttendance = db.prepare(`SELECT 1 FROM show_attendance a
   JOIN shows s ON s.id=a.show_id
   WHERE a.user_id=? AND a.state='going'
@@ -1703,6 +1692,7 @@ function storedAttendanceTicket(value) {
     doorsAt,
     doorsVerified: doorsAt ? true : null,
     artistPhotoUri: verifiedHttpsUrl(raw.artistPhotoUri),
+    eventImageUri: provider === "ticketmaster" ? verifiedHttpsUrl(raw.eventImageUri) : null,
     seat: storedAttendanceTicketSeat(raw.seat),
   };
 }
@@ -1728,6 +1718,15 @@ function attendanceTicketArtistPhoto(row) {
   // uses. Ticketmaster event artwork is deliberately not substituted: a tour
   // poster is not necessarily the artist's profile identity.
   return verifiedHttpsUrl(publicArtist(artistStmts.byNorm.get(key))?.photo) || null;
+}
+
+function attendanceTicketEventProviderPhoto(row) {
+  return publicTicketmasterEventImage(row)?.uri || null;
+}
+
+function attendanceTicketEventProviderPhotoById({ tourDateId } = {}) {
+  const id = exactTicketTourDateId(tourDateId);
+  return id ? attendanceTicketEventProviderPhoto(ticketProviderImageById.get(id)) : null;
 }
 
 function attendanceTicketSnapshot(row, seat) {
@@ -1764,6 +1763,7 @@ function attendanceTicketSnapshot(row, seat) {
     accessStartApproximate: providerFields.accessStartDateTime
       ? providerFields.accessStartApproximate : null,
     artistPhotoUri: attendanceTicketArtistPhoto(row),
+    eventImageUri: attendanceTicketEventProviderPhoto(row),
     seat,
   };
   const projected = storedAttendanceTicket(snapshot);
@@ -3087,6 +3087,20 @@ function safePublicArtistProfileImage(profile, slot) {
   return publicArtistProfileMedia(profile, slot)?.url || null;
 }
 
+function publicArtistProfileProjection(profile) {
+  if (!profile || profile.removed) return null;
+  return {
+    ownerId: profile.owner_id || null,
+    bio: profile.bio ?? null,
+    // A successful mutation must return the same verified media projection that
+    // public reads use. This keeps the editor from treating a database write as
+    // complete while the next artist-page render still has different artwork.
+    banner: safePublicArtistProfileImage(profile, "banner"),
+    avatarUri: safePublicArtistProfileImage(profile, "avatar"),
+    feedEnabled: !!profile.feed_enabled,
+  };
+}
+
 const ARTIST_PROFILE_SNAPSHOT_FIELDS = Object.freeze([
   "owner_id", "bio", "banner", "banner_owner_id", "avatar_uri", "avatar_owner_id",
   "feed_enabled", "removed", "updated_at",
@@ -3581,6 +3595,7 @@ export const routes = {
     requireUser,
     resolvePublicDocument: publicDocumentForPath,
     resolveCurrentArtistProfileImage: attendanceTicketArtistProfilePhoto,
+    resolveCurrentEventProviderImage: attendanceTicketEventProviderPhotoById,
   }),
   ...showRoutes({
     database: db,
@@ -7968,11 +7983,12 @@ export const routes = {
   "GET /api/venues/:key/photos": (ctx) => {
     const key = canonicalVenueKey(decodedPathParam(ctx, "key", { max: 200, label: "venue link" }));
     if (!key) throw new ApiError(400, "Choose a venue first.", "VALIDATION_FAILED");
+    const provider = venuePhotoProviderQuery(ctx);
     ctx.setHeader?.("Cache-Control", VENUE_PHOTO_CACHE_CONTROL);
     const viewerId = accountIsPublic(ctx.user) ? ctx.user.id : null;
     return {
       key,
-      photos: normalizedVenuePhotoPool(key),
+      photos: publicVenuePhotoPool(key, { ...provider, limit: VENUE_PHOTO_LIMIT }),
       fanPhotos: publicVenueFanPhotos(db, { venueKey: key, viewerId }),
     };
   },
@@ -8116,16 +8132,10 @@ export const routes = {
         ${blockSql}
       ORDER BY post.created_at DESC,post.id DESC LIMIT 100`).all(...args);
     return {
-      profile: p && !p.removed ? {
-        ownerId: p.owner_id || null,
-        bio: p.bio,
-        // Slot owners are storage provenance, not public authors. The claim
-        // owner above controls page visibility; uploader block/account state
-        // must not make staff-seeded catalog artwork disappear.
-        banner: safePublicArtistProfileImage(p, "banner"),
-        avatarUri: safePublicArtistProfileImage(p, "avatar"),
-        feedEnabled: !!p.feed_enabled,
-      } : null,
+      // Slot owners are storage provenance, not public authors. The claim owner
+      // controls page visibility; uploader block/account state must not make
+      // staff-seeded catalog artwork disappear.
+      profile: publicArtistProfileProjection(p),
       posts: posts.map((x) => ({ id: x.id, userId: x.user_id, text: x.text, createdAt: x.created_at })),
     };
   },
@@ -8142,6 +8152,12 @@ export const routes = {
     // `shape` deliberately treats null as omitted for ordinary fields. Media
     // slots need a distinct explicit-null operation so clients can clear the
     // URL and its provenance together without empty-string ambiguity.
+    // TextInput represents an intentionally cleared biography as an empty
+    // string. Preserve that operation explicitly because `shape` otherwise
+    // drops it and would leave the previous biography in the database.
+    if (Object.prototype.hasOwnProperty.call(ctx.body || {}, "bio")
+      && typeof ctx.body.bio === "string"
+      && !clean(ctx.body.bio, { max: 600, newlines: true })) v.bio = null;
     if (Object.prototype.hasOwnProperty.call(ctx.body || {}, "banner") && ctx.body.banner === null) v.banner = null;
     if (Object.prototype.hasOwnProperty.call(ctx.body || {}, "avatarUri") && ctx.body.avatarUri === null) v.avatarUri = null;
     assertSafeAuthoredText(v.bio, { field: "artist bio" });
@@ -8175,7 +8191,7 @@ export const routes = {
         ownerId: artistProfileSlotOwner(existing, "avatar"), url: existing.avatar_uri,
       }] : []),
     ].filter((entry) => entry.ownerId && entry.url);
-    atomicWrite(() => {
+    const saved = atomicWrite(() => {
       const current = artistProfileSnapshotByKey.get(key);
       if (!sameArtistProfileSnapshot(existing, current)) {
         throw new ApiError(409,
@@ -8192,7 +8208,12 @@ export const routes = {
         [existing?.banner, existing?.avatar_uri],
         ["banner", "avatar"],
       );
-      db.prepare(`UPDATE artist_profiles SET ${sets.join(", ")} WHERE artist_key=?`).run(...args, key);
+      const update = db.prepare(`UPDATE artist_profiles SET ${sets.join(", ")} WHERE artist_key=?`).run(...args, key);
+      if (Number(update.changes || 0) !== 1) {
+        throw new ApiError(409,
+          "That artist page changed while your update was being saved. Refresh it and try again.",
+          "CONFLICT");
+      }
       markOwnedMediaAssociated(db, {
         ownerId: u.id,
         urls: [bannerChanged ? v.banner : null, avatarChanged ? v.avatarUri : null],
@@ -8205,8 +8226,15 @@ export const routes = {
         const deletable = unreferencedOwnedMediaUrls(db, { ownerId, urls: previousUrls });
         enqueueOwnedMediaUrls(db, { ownerId, urls: deletable, at: now() });
       }
+      return artistProfileSnapshotByKey.get(key);
     });
-    return { ok: true };
+    const profile = publicArtistProfileProjection(saved);
+    if (!profile) {
+      throw new ApiError(409,
+        "That artist page could not be confirmed after saving. Refresh it and try again.",
+        "CONFLICT");
+    }
+    return { ok: true, profile };
   },
   "POST /api/artists/:key/posts": (ctx) => {
     const u = requireUser(ctx);

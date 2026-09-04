@@ -14,6 +14,8 @@ import { verifiedArtistGenre } from "./domain/genre.mjs";
 import { profileGenreSelection } from "./domain/genrePreferences.mjs";
 import { projectDiscoveryCatalogTotals, resolveDiscoveryCatalogTotal } from "./domain/discoveryCatalogTotals.mjs";
 import { buildArtistSummary } from "./domain/artistSummary.mjs";
+import { confirmedArtistProfileMutation } from "./domain/artistPageEditor.mjs";
+import { artistPageResourceKind } from "./domain/artistPageCache.mjs";
 import { ENABLE_DEMO_DATA, remoteIdentityValidationEnabled } from "./config/runtime.mjs";
 import { MUSIC_PLAYER_ENABLED } from "./domain/musicPlayerAvailability.mjs";
 import { isUpcomingEventDate, PERSISTED_FEED_LIMIT, persistedTourDateCache, publicProfileCacheEntry, sanitizePersistedStoreValue, sanitizeTourDates } from "./domain/dataPolicy.mjs";
@@ -83,6 +85,7 @@ import {
   cleanVenuePhotoResponse,
   isFreshVenuePhotoEntry,
   mergeVenuePhotoSources,
+  normalizeVenuePhotoProviderIdentity,
   venuePhotoScopedCacheKey,
   venuePhotoStateFor,
   venuePhotoViewerScope,
@@ -4916,7 +4919,7 @@ export function StoreProvider({ children }) {
     const scope = accountTargetScope(accountId, `artist-page:${artistKey}`);
     const context = "Loading this artist page";
     if (!artistKey) return localCommandError("PIT-REQ-002", context);
-    const claim = artistPageCache.claim(`artist-page:${artistKey}`, accountId);
+    const claim = artistPageCache.claim(artistPageResourceKind(artistKey), accountId);
     const enc = encodeURIComponent(artistKey);
     try {
       const { profile, posts } = await api(`/api/artists/${enc}/profile`, {
@@ -4952,31 +4955,60 @@ export function StoreProvider({ children }) {
       return commandError(error, context);
     }
   };
-  const updateArtistProfile = (name, patch) => {
+  const updateArtistProfile = async (name, patch) => {
+    const context = "Saving this artist page";
     const actor = sessionRef.current;
     if (!actor || !(isStaff(actor.role)
       || (actor.role === "artist" && norm(actor.artistName) === norm(name)))) {
-      return Promise.resolve({ ok: false });
+      return localCommandError(actor ? "PIT-AUTH-002" : "PIT-AUTH-001", context);
     }
     const key = norm(name);
-    const previous = artistProfiles[key] || {};
-    const claim = artistPageCache.claim(`artist-profile-mutation:${key}`, actor.id);
+    const resourceKind = artistPageResourceKind(key);
+    // Share the page's latest-wins lane with reads so a GET that started before
+    // this mutation cannot overwrite the confirmed photo after Save completes.
+    artistPageCache.claim(resourceKind, actor.id);
+    const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
     const safe = { ...patch };
     if ("bio" in safe) safe.bio = clean(safe.bio, { max: 600, newlines: true });
-    setArtistProfiles((m) => ({ ...m, [key]: { ...(m[key] || {}), ...safe } }), { claim, persist: false });
     const enc = encodeURIComponent(key);
-    return api(`/api/artists/${enc}/profile`, { method: "PATCH", body: safe, context: "Saving this artist page" })
-      .then(() => {
-        if (!artistPageCache.isCurrent(claim, sessionRef.current?.id || null)) {
-          return { ok: false };
-        }
-        artistPageCache.persistCurrent();
-        return { ok: true };
-      })
-      .catch((error) => {
-        setArtistProfiles((m) => ({ ...m, [key]: previous }), { claim });
-        return { ok: false, error };
+    try {
+      const response = await api(`/api/artists/${enc}/profile`, {
+        method: "PATCH",
+        body: safe,
+        context,
+        expectedAccountId: actor.id,
       });
+      const confirmedProfile = confirmedArtistProfileMutation(response, safe);
+      if (!confirmedProfile) {
+        throw new AppError("Mshpit could not confirm that this artist page saved. Try again.", {
+          code: "PIT-APP-001",
+          context,
+          source: "artist-profile",
+          retryable: true,
+        });
+      }
+      const currentActor = sessionRef.current;
+      const stillOwnsTarget = isStaff(currentActor?.role)
+        || (currentActor?.role === "artist" && norm(currentActor.artistName) === key);
+      if (!accountMutationIsCurrent(mutation, currentActor?.id, accountMutationEpochRef.current)
+        || !stillOwnsTarget) {
+        return localCommandError("PIT-AUTH-004", context);
+      }
+      // A refresh may legitimately begin while PATCH is in flight. Reclaim the
+      // page lane only after the authoritative response and identity checks so
+      // the confirmed save wins, while both pre-save and during-save reads are
+      // fenced from repainting stale artwork.
+      const commitClaim = artistPageCache.claim(resourceKind, currentActor.id);
+      const committed = setArtistProfiles((profiles) => ({
+        ...profiles,
+        [key]: confirmedProfile,
+      }), { claim: commitClaim, persist: false });
+      if (!committed) return localCommandError("PIT-AUTH-004", context);
+      artistPageCache.persistCurrent();
+      return commandSuccess({ profile: confirmedProfile });
+    } catch (error) {
+      return commandError(error, context);
+    }
   };
   const artistFeedEnabled = (name) => !!artistProfiles[norm(name)]?.feedEnabled;
   const artistPostsFor = (name) => artistPosts[norm(name)] || [];
@@ -5506,10 +5538,17 @@ export function StoreProvider({ children }) {
     // bundled catalogue row merely to form its normalized lookup key.
     return ENABLE_DEMO_DATA ? null : canonical;
   };
-  const venuePhotoState = (venueName) => {
+  const venuePhotoRequest = (venueName, providerIdentity = null) => {
     const venueKey = venueCatalogKey(venueName);
+    return {
+      venueKey,
+      provider: normalizeVenuePhotoProviderIdentity(providerIdentity),
+    };
+  };
+  const venuePhotoState = (venueName, providerIdentity = null) => {
+    const { venueKey, provider } = venuePhotoRequest(venueName, providerIdentity);
     if (!venueKey) return venuePhotoStateFor(null, venuePhotoPools);
-    const cacheKey = venuePhotoScopedCacheKey(venueKey, currentVenuePhotoViewerScope());
+    const cacheKey = venuePhotoScopedCacheKey(venueKey, currentVenuePhotoViewerScope(), provider);
     return venuePhotoStateFor(cacheKey, venuePhotoPools);
   };
 
@@ -5542,11 +5581,16 @@ export function StoreProvider({ children }) {
       promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", abortConsumer));
     });
   };
-  const loadVenuePhotos = (venueName, { force = false, signal } = {}) => {
-    const venueKey = venueCatalogKey(venueName);
+  const loadVenuePhotos = (venueName, {
+    force = false,
+    signal,
+    source = null,
+    providerVenueId = null,
+  } = {}) => {
+    const { venueKey, provider } = venuePhotoRequest(venueName, { source, providerVenueId });
     if (!venueKey) return Promise.resolve([]);
     const viewerScope = currentVenuePhotoViewerScope();
-    const cacheKey = venuePhotoScopedCacheKey(venueKey, viewerScope);
+    const cacheKey = venuePhotoScopedCacheKey(venueKey, viewerScope, provider);
     const cached = venuePhotoCacheRef.current.entries.get(cacheKey);
     if (!force && isFreshVenuePhotoEntry(cached)) {
       commitVenuePhotoEntry(cacheKey, cached); // touch its LRU position
@@ -5563,7 +5607,7 @@ export function StoreProvider({ children }) {
       error: null,
       loadedAt: cached?.loadedAt || 0,
     });
-    const promise = fetchVenuePhotos(venueKey, { signal: controller.signal })
+    const promise = fetchVenuePhotos(venueKey, { signal: controller.signal, ...provider })
       .then(({ photos, fanPhotos }) => {
         const cleanPhotos = cleanVenuePhotoResponse(photos);
         const cleanFanPhotos = cleanVenueFanPhotoResponse(fanPhotos);
@@ -5596,8 +5640,8 @@ export function StoreProvider({ children }) {
     return waitForVenuePhotoRequest(promise, signal);
   };
 
-  const venuePhotos = (venueName) => {
-    const state = venuePhotoState(venueName);
+  const venuePhotos = (venueName, providerIdentity = null) => {
+    const state = venuePhotoState(venueName, providerIdentity);
     const remote = state.photos;
     const privacy = venuePhotoCacheRef.current.privacy;
     const hiddenOwners = new Set([...blockedIds, ...(privacy.pendingMutations || [])].map(String));
@@ -5912,6 +5956,16 @@ export function StoreProvider({ children }) {
         && norm(t.venue) === key
         && (t.releaseAt <= Date.now() || isStaff(session?.role) || t.createdBy === session?.id))
       .map((t) => ({ ...t, scheduled: t.releaseAt > Date.now() }));
+    const providerVenues = new Map();
+    for (const event of upcoming) {
+      const identity = normalizeVenuePhotoProviderIdentity(event);
+      if (!identity) continue;
+      providerVenues.set(
+        `${identity.source.toLocaleLowerCase("en")}\u0000${identity.providerVenueId.toLocaleLowerCase("en")}`,
+        identity,
+      );
+    }
+    const providerVenue = providerVenues.size === 1 ? [...providerVenues.values()][0] : null;
     const cat = venueCatalogEntry(key);
     const place = (cat && cat.place) || nights.find((n) => n.city)?.city || upcoming.find((u) => u.place)?.place || "";
     const catalogPhoto = venueCatalogPhotoFields(cat);
@@ -5921,6 +5975,7 @@ export function StoreProvider({ children }) {
       photo: catalogPhoto.photo,
       photoCredit: catalogPhoto.photoCredit,
       photoProvenance: catalogPhoto.photoProvenance,
+      ...(providerVenue || {}),
       capacity: (cat && cat.capacity) || null,
       nights,
       upcoming,

@@ -1767,6 +1767,118 @@ test("venue pages never display a zero rating or emit venue AggregateRating mark
   }
 });
 
+test("venue SEO pages lead with rights-verified structural photography and ImageObject attribution", () => {
+  const database = createDatabase();
+  try {
+    const documents = createPublicDocumentService({ database, origin: "https://www.example.test" });
+    const document = documents.venueDocument({
+      venueKey: "rogers centre",
+      name: "Rogers Centre",
+    });
+    const html = documents.render(document);
+    const venueSchema = document.jsonLd.find((node) => node["@type"] === "MusicVenue");
+
+    assert.equal(document.imageProvenance, "licensed-venue");
+    assert.match(document.image, /^https:\/\/pub-[a-z0-9]+\.r2\.dev\/venues\/licensed\//u);
+    assert.equal(document.venuePhotos.length >= 1, true);
+    assert.equal(document.venue.heroPhoto.url, document.image);
+    assert.equal(venueSchema.image["@type"], "ImageObject");
+    assert.equal(venueSchema.image.contentUrl, document.image);
+    assert.match(venueSchema.image.license, /^https:\/\/creativecommons\.org\//u);
+    assert.match(venueSchema.image.acquireLicensePage, /^https:\/\/commons\.wikimedia\.org\/wiki\/File:/u);
+    assert.match(html, /class="profile-hero venue-hero"/u);
+    assert.match(html, /class="venue-hero-photo"/u);
+    assert.match(html, /fetchpriority="high"/u);
+    assert.match(html, />Source<\/a>/u);
+    assert.match(html, />License<\/a>/u);
+    assert.match(html, /Converted to WebP and resized/u);
+    assert.match(html, /property="og:image" content="https:\/\/pub-/u);
+    assert.match(html, /name="twitter:image" content="https:\/\/pub-/u);
+    assert.doesNotMatch(html, /Verified venue photo coming soon/u);
+  } finally {
+    database.close();
+  }
+});
+
+test("provider event artwork never becomes a venue hero or social preview", () => {
+  const database = createDatabase();
+  try {
+    database.prepare(`INSERT INTO tour_dates
+      (id,provider_event_id,artist,venue,place,date,start_date_time,ticket_url,source,venue_provider_id,
+        venue_city,venue_country_code,event_name,music_evidence,event_image_url,event_image_attribution,
+        event_image_width,event_image_height,updated_at,release_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      "provider-art-event",
+      "provider-art-event",
+      "Example Artist",
+      "Uncovered Provider Hall",
+      "Toronto, Ontario, Canada",
+      "2026-09-20",
+      "2026-09-20T19:30:00-04:00",
+      "https://www.ticketmaster.ca/event/provider-art-event",
+      "ticketmaster",
+      "uncovered-provider-hall",
+      "Toronto",
+      "CA",
+      "Example Artist Live",
+      "segment:music",
+      "https://s1.ticketm.net/dam/a/example-artist.jpg",
+      "Ticketmaster",
+      1600,
+      900,
+      NOW,
+      0,
+    );
+    const documents = createPublicDocumentService({ database, origin: "https://www.example.test" });
+    const document = documents.venueDocument({
+      venueKey: "uncovered provider hall",
+      name: "Uncovered Provider Hall",
+      providerVenueId: "uncovered-provider-hall",
+      source: "ticketmaster",
+      at: NOW,
+      today: "2026-08-25",
+    });
+    const html = documents.render(document);
+    const venueSchema = document.jsonLd.find((node) => node["@type"] === "MusicVenue");
+
+    assert.equal(document.image, null);
+    assert.equal(document.imageProvenance, null);
+    assert.equal(document.venue.heroPhoto, null);
+    assert.equal(venueSchema.image, undefined);
+    assert.doesNotMatch(JSON.stringify(venueSchema), /ticketm\.net/u);
+    assert.doesNotMatch(html, /ticketm\.net|Ticketmaster/u);
+    assert.match(html, /class="venue-hero-fallback"/u);
+    assert.match(html, />Uncovered Provider Hall<\/strong>/u);
+    assert.match(html, /property="og:image" content="https:\/\/www\.example\.test\/og\.png"/u);
+  } finally {
+    database.close();
+  }
+});
+
+test("venues without verified photography render an honest venue-specific fallback", () => {
+  const database = createDatabase();
+  try {
+    const documents = createPublicDocumentService({ database, origin: "https://www.example.test" });
+    const document = documents.venueDocument({
+      venueKey: "uncovered test room",
+      name: "Uncovered Test Room",
+    });
+    const html = documents.render(document);
+
+    assert.equal(document.image, null);
+    assert.equal(document.imageProvenance, null);
+    assert.match(html, /class="venue-hero-fallback"/u);
+    assert.match(html, />Uncovered Test Room<\/strong>/u);
+    assert.match(html, /Verified venue photo coming soon/u);
+    assert.equal(
+      document.jsonLd.find((node) => node["@type"] === "MusicVenue").image,
+      undefined,
+    );
+  } finally {
+    database.close();
+  }
+});
+
 test("public document service delegates artist collections and shows load more only above three", () => {
   const database = createDatabase();
   try {

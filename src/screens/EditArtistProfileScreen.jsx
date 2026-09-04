@@ -46,9 +46,11 @@ function ConfirmedArtistProfileEditor({
   const [bannerChanged, setBannerChanged] = useState(false);
   const [uploadingBanner, setUploadingBanner] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
 
   const pickPhoto = async () => {
     if (uploadingAvatar || saving) return;
+    setSaveError("");
     let res;
     try {
       res = await ImagePicker.launchImageLibraryAsync(profileImagePickerOptions("avatar", { platform: Platform.OS }));
@@ -71,6 +73,7 @@ function ConfirmedArtistProfileEditor({
 
   const pickBanner = async () => {
     if (uploadingBanner || saving) return;
+    setSaveError("");
     let res;
     try {
       res = await ImagePicker.launchImageLibraryAsync(profileImagePickerOptions("banner", { platform: Platform.OS }));
@@ -94,6 +97,7 @@ function ConfirmedArtistProfileEditor({
   const mediaBusy = uploadingAvatar || uploadingBanner;
   const save = async () => {
     if (!artistPageEditReady(resource) || mediaBusy || saving) return;
+    setSaveError("");
     setSaving(true);
     try {
       const result = await updateArtistProfile(artist.name, {
@@ -101,9 +105,18 @@ function ConfirmedArtistProfileEditor({
         feedEnabled,
         ...changedProfileImageFields({ avatarUri, banner, avatarChanged, bannerChanged }),
       });
-      if (result?.ok !== false) onClose?.();
-    } catch {
-      // API diagnostics already explain the failure; preserve the form values.
+      if (result?.ok === true) {
+        onClose?.();
+      } else {
+        setSaveError(result?.error?.message
+          || result?.error?.userMessage
+          || "Mshpit could not save this artist page. Your changes are still here so you can try again.");
+      }
+    } catch (error) {
+      // Preserve the selected files and written bio. The inline result makes a
+      // failed save visible even when a browser suppresses transient feedback.
+      setSaveError(error?.message
+        || "Mshpit could not save this artist page. Your changes are still here so you can try again.");
     } finally {
       setSaving(false);
     }
@@ -133,6 +146,12 @@ function ConfirmedArtistProfileEditor({
         contentInsetAdjustmentBehavior="automatic"
         keyboardShouldPersistTaps="handled"
       >
+        {saveError ? (
+          <View style={styles.saveError} accessibilityRole="alert" accessibilityLiveRegion="assertive">
+            <Icon name="x" size={18} color={colors.danger} />
+            <Text selectable style={styles.saveErrorText}>{saveError}</Text>
+          </View>
+        ) : null}
         <Pressable
           style={styles.bannerEdit}
           onPress={pickBanner}
@@ -308,6 +327,8 @@ export default function EditArtistProfileScreen({ artistName, onClose }) {
 const styles = StyleSheet.create({
   savingLock: { pointerEvents: "none", opacity: 0.82 },
   wrap: { flex: 1, backgroundColor: colors.bg },
+  saveError: { flexDirection: "row", alignItems: "flex-start", gap: 9, backgroundColor: colors.danger + "14", borderWidth: 1, borderColor: colors.danger + "55", borderRadius: radius.sm, padding: 12, marginBottom: 14 },
+  saveErrorText: { flex: 1, color: colors.text, fontSize: 13, lineHeight: 19 },
   editorGate: { flex: 1, alignItems: "center", justifyContent: "center", gap: 12, paddingHorizontal: 28, paddingBottom: 48 },
   editorGateTitle: { color: colors.text, fontSize: 19, fontWeight: "800", textAlign: "center" },
   editorGateText: { color: colors.textDim, fontSize: 14, lineHeight: 21, textAlign: "center", maxWidth: 420 },

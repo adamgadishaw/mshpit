@@ -1,8 +1,19 @@
 import { api } from "../../lib/api";
-import { VENUE_PHOTO_CATALOG_VERSION } from "../../domain/venuePhotos.mjs";
+import {
+  normalizeVenuePhotoProviderIdentity,
+  VENUE_PHOTO_CATALOG_VERSION,
+} from "../../domain/venuePhotos.mjs";
 
-export function fetchVenuePhotos(venueKey, { signal } = {}) {
-  return api(`/api/venues/${encodeURIComponent(venueKey)}/photos?v=${VENUE_PHOTO_CATALOG_VERSION}`, {
+export function venuePhotoRequestPath(venueKey, providerIdentity = null) {
+  const provider = normalizeVenuePhotoProviderIdentity(providerIdentity);
+  const providerQuery = provider
+    ? `&source=${encodeURIComponent(provider.source)}&providerVenueId=${encodeURIComponent(provider.providerVenueId)}`
+    : "";
+  return `/api/venues/${encodeURIComponent(venueKey)}/photos?v=${VENUE_PHOTO_CATALOG_VERSION}${providerQuery}`;
+}
+
+export function fetchVenuePhotos(venueKey, { signal, source, providerVenueId } = {}) {
+  return api(venuePhotoRequestPath(venueKey, { source, providerVenueId }), {
     signal,
     cache: "no-store",
     silent: true,

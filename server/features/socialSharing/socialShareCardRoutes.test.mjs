@@ -65,6 +65,7 @@ function fixture({
   renderer = null,
   artworkEnv = { MEDIA_PUBLIC_BASE_URL: "https://media.mshpit.test/public" },
   resolveCurrentArtistProfileImage = null,
+  resolveCurrentEventProviderImage = null,
   resolvePublicDocument = async (path) => path.startsWith("/post/")
     ? reviewDocument(path.slice("/post/".length))
     : eventDocument(path.slice("/event/".length)),
@@ -86,6 +87,7 @@ function fixture({
     rateLimit: () => {},
     requireUser: () => ({ id: "member_123", name: "Alex" }),
     resolveCurrentArtistProfileImage,
+    resolveCurrentEventProviderImage,
     resolvePublicDocument,
     artworkEnv,
     renderer: renderer || {
@@ -137,13 +139,15 @@ test("public Going post falls back to its safe server-owned ticket snapshot", as
     startLocalTime: "19:30:00",
     eventName: "The Last Encore Tour",
     artistPhotoUri: "https://media.mshpit.test/public/artists/the-example.jpg",
+    eventImageUri: "https://s1.ticketm.net/dam/a/provider-event.jpg",
     seat: { section: "PRIVATE-SECTION", row: "PRIVATE-ROW", seat: "PRIVATE-SEAT" },
     orderNumber: "PRIVATE-ORDER",
     barcode: "PRIVATE-BARCODE",
   };
   assert.deepEqual(publicAttendanceTicketShareSnapshot(rawTicket, {
     env: { MEDIA_PUBLIC_BASE_URL: "https://media.mshpit.test/public" },
-  })?.fallbackArtwork, [], "an owned host/path alone must not authorize persisted artwork");
+  })?.fallbackArtwork, [],
+  "an unverified owned avatar and a provider-hosted event image are both omitted");
   const snapshot = publicAttendanceTicketShareSnapshot(rawTicket, {
     env: { MEDIA_PUBLIC_BASE_URL: "https://media.mshpit.test/public" },
     resolveCurrentArtistProfileImage: () => rawTicket.artistPhotoUri,
@@ -260,17 +264,16 @@ test("persisted owned Going artwork must still be the current public artist prof
   }, {
     resolveCurrentArtistProfileImage: () => { throw new Error("provider art must not use profile validation"); },
   });
-  assert.deepEqual(providerSnapshot.fallbackArtwork, [{ url: providerPhoto, source: "ticketmaster" }]);
+  assert.deepEqual(providerSnapshot.fallbackArtwork, [],
+    "provider hosting is not derivative/redistribution permission");
   const providerWithoutProfileResolver = publicAttendanceTicketShareSnapshot({
     ...rawTicket,
     artistPhotoUri: providerPhoto,
   }, {
     resolveCurrentArtistProfileImage: null,
   });
-  assert.deepEqual(providerWithoutProfileResolver.fallbackArtwork, [{
-    url: providerPhoto,
-    source: "ticketmaster",
-  }], "persisted provider art remains usable when the current artist profile has no photo resolver");
+  assert.deepEqual(providerWithoutProfileResolver.fallbackArtwork, [],
+    "provider art remains ineligible without an explicit export permission signal");
 
   const oldTicketWithCurrentProfile = publicAttendanceTicketShareSnapshot({
     ...rawTicket,
@@ -293,11 +296,10 @@ test("persisted owned Going artwork must still be the current public artist prof
   });
   assert.deepEqual(providerWithCurrentProfile.fallbackArtwork, [
     { url: replacementPhoto, source: "owned-media" },
-    { url: providerPhoto, source: "ticketmaster" },
-  ], "the current artist identity leads while the stored provider snapshot remains a safe fallback");
+  ], "the current verified artist profile is eligible while the provider snapshot is not");
 });
 
-test("Going posts prioritize current artist identity over event-provider art", async () => {
+test("Going posts use current artist identity and reject event-provider art", async () => {
   const currentPhoto = "https://media.mshpit.test/public/artists/the-example/current.jpg";
   const providerPhoto = "https://s1.ticketm.net/dam/a/provider-event.jpg";
   const ticket = JSON.stringify({
@@ -334,8 +336,51 @@ test("Going posts prioritize current artist identity over event-provider art", a
   await route(context({ kind: "post", postId: "going_post" }));
   assert.deepEqual(renderedModels[0].artwork, [
     { url: currentPhoto, source: "owned-media" },
-    { url: providerPhoto, source: "ticketmaster" },
   ]);
+});
+
+test("legacy Going posts do not recover provider art without export permission", async () => {
+  const providerPhoto = "https://s1.ticketm.net/dam/a/recovered-provider-event.jpg";
+  const ticket = JSON.stringify({
+    version: 1,
+    state: "going",
+    tourDateId: "event_123",
+    provider: "ticketmaster",
+    artist: "The Example",
+    artistKey: "the example",
+    venue: "Massey Hall",
+    date: "2026-10-16",
+    artistPhotoUri: null,
+  });
+  const seen = [];
+  const { route, renderedModels } = fixture({
+    ticket,
+    resolveCurrentEventProviderImage: (identity) => {
+      seen.push(identity);
+      return providerPhoto;
+    },
+    resolvePublicDocument: async (path) => path === "/post/going_post" ? {
+      kind: "post",
+      post: { id: "going_post", kind: "status", author: { name: "Alex" } },
+    } : null,
+  });
+
+  await route(context({ kind: "post", postId: "going_post" }));
+
+  assert.deepEqual(seen, [], "ineligible provider lookup is skipped entirely");
+  assert.deepEqual(renderedModels[0].artwork, []);
+});
+
+test("direct attendance shares reject current provider art when no export permission exists", async () => {
+  const providerPhoto = "https://s1.ticketm.net/dam/a/direct-provider-event.jpg";
+  const { route, renderedModels } = fixture({
+    resolveCurrentEventProviderImage: () => ({ uri: providerPhoto }),
+    resolvePublicDocument: async (path) => eventDocument(path.slice("/event/".length)),
+  });
+
+  await route(context({ kind: "event", eventId: "event_123", intent: "going" }));
+
+  assert.deepEqual(renderedModels[0].artwork, []);
 });
 
 test("Going-post fallback rejects an impossible legacy calendar date", () => {
@@ -460,7 +505,7 @@ test("review artwork rejects cross-user artist and venue gallery fallbacks", asy
   assert.deepEqual(fallbackPaths, ["/post/review_fallback", "/artist/the-example", "/venue/massey-hall"]);
 });
 
-test("review artwork can use the exact public concert's Ticketmaster image", async () => {
+test("review artwork rejects a public concert's Ticketmaster image without export permission", async () => {
   const providerUrl = "https://s1.ticketm.net/dam/a/review-concert.jpg";
   const document = reviewDocument("review_provider_fallback");
   document.post.concertPath = "/concert/show.review-provider";
@@ -488,10 +533,7 @@ test("review artwork can use the exact public concert's Ticketmaster image", asy
 
   await providerFixture.route(context({ kind: "post", postId: "review_provider_fallback" }));
 
-  assert.deepEqual(providerFixture.renderedModels[0].artwork, [{
-    url: providerUrl,
-    source: "ticketmaster",
-  }]);
+  assert.deepEqual(providerFixture.renderedModels[0].artwork, []);
   assert.deepEqual(fallbackPaths, [
     "/post/review_provider_fallback",
     "/concert/show.review-provider",
@@ -499,9 +541,10 @@ test("review artwork can use the exact public concert's Ticketmaster image", asy
   ]);
 });
 
-test("event artwork keeps Ticketmaster art, strips fan-gallery primaries, and can fall back to an official artist profile", async () => {
+test("attendance artwork keeps artist and public-domain venue art while rejecting provider and fan images", async () => {
   const providerUrl = "https://s1.ticketm.net/dam/a/111/provider-event.jpg";
   const fanUrl = "https://media.mshpit.test/public/users/another-fan/event.jpg";
+  const venueUrl = "https://media.mshpit.test/public/venues/licensed/massey-hall/structural.webp";
   const document = eventDocument("event_provider");
   document.image = providerUrl;
   document.imageProvenance = "provider";
@@ -525,8 +568,15 @@ test("event artwork keeps Ticketmaster art, strips fan-gallery primaries, and ca
       if (path === "/venue/massey-hall") {
         return {
           kind: "venue",
-          image: "https://media.mshpit.test/public/users/another-fan/venue.jpg",
-          imageProvenance: "fan-gallery",
+          image: venueUrl,
+          imageProvenance: "licensed-venue-catalog",
+          venue: {
+            heroPhoto: {
+              url: venueUrl,
+              license: "CC0-1.0",
+              licenseUrl: "https://creativecommons.org/publicdomain/zero/1.0/",
+            },
+          },
         };
       }
       return null;
@@ -538,19 +588,26 @@ test("event artwork keeps Ticketmaster art, strips fan-gallery primaries, and ca
     intent: "going",
   }));
   assert.deepEqual(eventFixture.renderedModels[0].artwork, [
-    { url: providerUrl, source: "ticketmaster" },
     {
       url: "https://media.mshpit.test/public/artists/the-example/avatar.jpg",
       source: "owned-media",
     },
+    { url: venueUrl, source: "owned-media" },
   ]);
   assert.equal(eventFixture.renderedModels[0].artwork.some(({ url }) => url === fanUrl), false);
 
   const fanDocument = eventDocument("event_fan_gallery");
   fanDocument.image = fanUrl;
   fanDocument.imageProvenance = "fan-gallery";
+  fanDocument.event.venuePath = "/venue/fan-gallery";
   const fanFixture = fixture({
-    resolvePublicDocument: async (path) => path === "/event/event_fan_gallery" ? fanDocument : null,
+    resolvePublicDocument: async (path) => {
+      if (path === "/event/event_fan_gallery") return fanDocument;
+      if (path === "/venue/fan-gallery") {
+        return { kind: "venue", image: fanUrl, imageProvenance: "fan-gallery" };
+      }
+      return null;
+    },
   });
   await fanFixture.route(context({
     kind: "event",
@@ -558,6 +615,43 @@ test("event artwork keeps Ticketmaster art, strips fan-gallery primaries, and ca
     intent: "going",
   }));
   assert.deepEqual(fanFixture.renderedModels[0].artwork, []);
+});
+
+test("attendance exports never reuse attribution-required venue art without visible credit", async () => {
+  const venueUrl = "https://media.mshpit.test/public/venues/licensed/massey-hall/cc-by.webp";
+  const document = eventDocument("event_cc_by_venue");
+  document.event.venuePath = "/venue/massey-hall";
+  const venueFixture = fixture({
+    resolvePublicDocument: async (path) => {
+      if (path === "/event/event_cc_by_venue") return document;
+      if (path === "/venue/massey-hall") {
+        return {
+          kind: "venue",
+          image: venueUrl,
+          imageProvenance: "licensed-venue",
+          venue: {
+            heroPhoto: {
+              url: venueUrl,
+              creator: "Venue Photographer",
+              license: "CC-BY-SA-4.0",
+              licenseUrl: "https://creativecommons.org/licenses/by-sa/4.0/",
+              sourcePage: "https://commons.wikimedia.org/wiki/File:Venue.jpg",
+            },
+          },
+        };
+      }
+      return null;
+    },
+  });
+
+  await venueFixture.route(context({
+    kind: "event",
+    eventId: "event_cc_by_venue",
+    intent: "going",
+  }));
+
+  assert.deepEqual(venueFixture.renderedModels[0].artwork, [],
+    "CC-BY/SA photos stay on attributed venue pages and never enter uncredited Story exports");
 });
 
 test("renderer saturation reports a dedicated retryable service failure", async () => {

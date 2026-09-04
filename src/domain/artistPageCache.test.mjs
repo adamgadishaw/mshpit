@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   artistPageCacheForViewer,
+  artistPageResourceKind,
   artistPageCacheStorageKeys,
   clearArtistPageCache,
   createArtistPageCacheState,
@@ -10,6 +11,20 @@ import {
   handoffArtistPageCache,
   resolveArtistPageRefresh,
 } from "./artistPageCache.mjs";
+
+test("a confirmed artist save supersedes reads begun before and during the save", () => {
+  const reads = createArtistPageReadCoordinator();
+  const resource = artistPageResourceKind("steve lacy");
+  const beforeSaveRead = reads.claim(resource, "u_admin");
+  const saveFence = reads.claim(resource, "u_admin");
+  const duringSaveRead = reads.claim(resource, "u_admin");
+  const confirmedSaveCommit = reads.claim(resource, "u_admin");
+
+  assert.equal(reads.isCurrent(beforeSaveRead, "u_admin"), false);
+  assert.equal(reads.isCurrent(saveFence, "u_admin"), false);
+  assert.equal(reads.isCurrent(duringSaveRead, "u_admin"), false);
+  assert.equal(reads.isCurrent(confirmedSaveCommit, "u_admin"), true);
+});
 
 test("artist page cache rotates to the next viewer without carrying the prior viewer snapshot", () => {
   const accountA = createArtistPageCacheState("u_a", {

@@ -22,6 +22,7 @@ const DEFAULT_MAX_CONCURRENT_RENDERS = 1;
 const DEFAULT_MAX_CONCURRENT_ARTWORK_LOADS = 4;
 const DEFAULT_TRANSIENT_FAILURE_CACHE_ENTRIES = 160;
 const DEFAULT_TRANSIENT_FAILURE_CACHE_TTL_MS = 5_000;
+const DEFAULT_TOTAL_WORK_TIMEOUT_MS = 4_000;
 const PREPARED_ARTWORK_RENDER = Symbol("preparedArtworkRender");
 
 const COPY = Object.freeze({
@@ -142,7 +143,7 @@ function eventSubtitle(event) {
 }
 
 function artworkCandidate(value, source) {
-  if (!["owned-media", "ticketmaster"].includes(source) || typeof value !== "string") return null;
+  if (source !== "owned-media" || typeof value !== "string") return null;
   try {
     const parsed = new URL(value.trim());
     if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.port || parsed.hash) return null;
@@ -163,10 +164,10 @@ function normalizedArtwork(candidates) {
 }
 
 function eventArtwork(document) {
-  const providerUrl = document?.event?.providerImage?.url;
-  return normalizedArtwork([
-    providerUrl ? { url: providerUrl, source: "ticketmaster" } : null,
-  ]);
+  // Provider image presence is not a license to create a derivative Story
+  // asset. Attendance exports rely on verified owned media or CC0/PDM venue
+  // fallbacks admitted by the route boundary.
+  return normalizedArtwork([]);
 }
 
 function reviewArtwork(document) {
@@ -722,6 +723,13 @@ function waitForSharedOperation(operation, signal) {
   });
 }
 
+function boundedWorkTimeout(value) {
+  return Math.max(
+    500,
+    Math.min(10_000, Number(value) || DEFAULT_TOTAL_WORK_TIMEOUT_MS),
+  );
+}
+
 export function createSocialShareCardRenderer({
   loadArtwork = loadShareArtwork,
   renderPng = renderSocialShareCardResult,
@@ -730,6 +738,7 @@ export function createSocialShareCardRenderer({
   cache = createLruBufferCache(),
   transientFailureCache = createExpiringKeyCache(),
   transientFailureCacheTtlMs = DEFAULT_TRANSIENT_FAILURE_CACHE_TTL_MS,
+  totalWorkTimeoutMs = DEFAULT_TOTAL_WORK_TIMEOUT_MS,
   now = Date.now,
 } = {}) {
   if (typeof loadArtwork !== "function") throw new TypeError("A social share-card artwork loader is required");
@@ -744,6 +753,7 @@ export function createSocialShareCardRenderer({
     1_000,
     Math.min(30_000, Number(transientFailureCacheTtlMs) || DEFAULT_TRANSIENT_FAILURE_CACHE_TTL_MS),
   );
+  const workTimeout = boundedWorkTimeout(totalWorkTimeoutMs);
   const inFlight = new Map();
   let activeRenders = 0;
   let activeArtworkLoads = 0;
@@ -768,7 +778,8 @@ export function createSocialShareCardRenderer({
     }
   };
 
-  const renderAcceptedArtwork = async (model, bytes) => withRenderAdmission(async () => {
+  const renderAcceptedArtwork = async (model, bytes, signal) => withRenderAdmission(async () => {
+    if (signal?.aborted) throw requestAbortReason(signal);
     let artworkDataUri = "";
     try {
       artworkDataUri = await preparedArtworkDataUri(bytes, sharp);
@@ -777,12 +788,15 @@ export function createSocialShareCardRenderer({
       return null;
     }
     if (!artworkDataUri) return null;
+    if (signal?.aborted) throw requestAbortReason(signal);
     let rendered = null;
     try {
-      rendered = await renderPng(model, { artworkDataUri });
+      rendered = await renderPng(model, { artworkDataUri, signal });
     } catch (error) {
+      if (signal?.aborted) throw requestAbortReason(signal);
       throw new SocialShareCardRenderError(error);
     }
+    if (signal?.aborted) throw requestAbortReason(signal);
     return Object.freeze({
       [PREPARED_ARTWORK_RENDER]: true,
       artworkBytes: null,
@@ -791,14 +805,17 @@ export function createSocialShareCardRenderer({
     });
   });
 
-  const renderLoadedArtwork = async (model, loaded) => {
+  const renderLoadedArtwork = async (model, loaded, signal) => {
     if (loaded?.[PREPARED_ARTWORK_RENDER] === true) return loaded;
+    if (signal?.aborted) throw requestAbortReason(signal);
     const artworkBytes = Buffer.isBuffer(loaded) ? loaded : null;
     const artworkDataUri = safeArtworkDataUri(loaded);
     const rendered = await withRenderAdmission(() => renderPng(model, {
       artworkBytes,
       artworkDataUri,
+      signal,
     }));
+    if (signal?.aborted) throw requestAbortReason(signal);
     return { artworkBytes, artworkDataUri, rendered };
   };
 
@@ -815,17 +832,37 @@ export function createSocialShareCardRenderer({
       const existing = inFlight.get(etag);
       if (existing) return waitForSharedOperation(existing, signal);
       const hasArtworkCandidates = Array.isArray(model?.artwork) && model.artwork.length > 0;
-      const operation = Promise.resolve()
-        .then(() => hasArtworkCandidates
-          ? withArtworkLoadAdmission(() => loadArtwork(model.artwork, {
-            acceptBytes: (bytes) => renderAcceptedArtwork(model, bytes),
-            acceptErrorIsTerminal: (error) =>
-              !(error instanceof SocialShareCardBusyError)
-              && !(error instanceof SocialShareCardRenderError),
-          }))
-          : null)
-        .then((loaded) => renderLoadedArtwork(model, loaded))
+      const requiresArtwork = model?.variant === "going" || model?.variant === "interested";
+      const workController = new AbortController();
+      const timeout = setTimeout(() => {
+        workController.abort(new SocialShareCardArtworkUnavailableError());
+      }, workTimeout);
+      timeout.unref?.();
+      const coreOperation = Promise.resolve()
+        .then(() => {
+          if (requiresArtwork && !hasArtworkCandidates) {
+            throw new SocialShareCardArtworkUnavailableError();
+          }
+          return hasArtworkCandidates
+            ? withArtworkLoadAdmission(() => loadArtwork(model.artwork, {
+                acceptBytes: (bytes) => renderAcceptedArtwork(model, bytes, workController.signal),
+                acceptErrorIsTerminal: (error) =>
+                  !(error instanceof SocialShareCardBusyError)
+                  && !(error instanceof SocialShareCardRenderError),
+                signal: workController.signal,
+              }))
+            : null;
+        })
+        .then((loaded) => {
+          if (requiresArtwork && !loaded) {
+            throw new SocialShareCardArtworkUnavailableError();
+          }
+          return renderLoadedArtwork(model, loaded, workController.signal);
+        })
         .then(({ artworkBytes, artworkDataUri, rendered }) => {
+          if (requiresArtwork && !artworkDataUri && rendered?.artworkApplied !== true) {
+            throw new SocialShareCardArtworkUnavailableError();
+          }
           const bytes = Buffer.isBuffer(rendered) ? rendered : rendered?.bytes;
           if (!Buffer.isBuffer(bytes) || bytes.length < 100 || bytes.length > MAX_RENDER_BYTES) {
             throw new Error("Invalid social share card render");
@@ -842,8 +879,21 @@ export function createSocialShareCardRenderer({
           throw error instanceof SocialShareCardArtworkUnavailableError
             ? error
             : new SocialShareCardArtworkUnavailableError();
+        });
+      // The deadline belongs to the shared work, not to any one caller. The
+      // underlying task remains observed and keeps its admission slot until it
+      // really settles, while waiters receive a bounded retryable response if
+      // a fetch/decoder or native render temporarily ignores abort.
+      const operation = waitForSharedOperation(coreOperation, workController.signal)
+        .catch((error) => {
+          if (!(error instanceof SocialShareCardArtworkUnavailableError)) throw error;
+          const failureTime = Number(now());
+          const normalizedFailureTime = Number.isFinite(failureTime) ? failureTime : Date.now();
+          transientFailureCache.set(etag, normalizedFailureTime + transientFailureTtl);
+          throw error;
         })
         .finally(() => {
+          clearTimeout(timeout);
           inFlight.delete(etag);
         });
       inFlight.set(etag, operation);
@@ -865,6 +915,7 @@ export const socialShareCardConstants = Object.freeze({
   maxConcurrentArtworkLoads: DEFAULT_MAX_CONCURRENT_ARTWORK_LOADS,
   maxConcurrentRenders: DEFAULT_MAX_CONCURRENT_RENDERS,
   maxBytes: MAX_RENDER_BYTES,
+  totalWorkTimeoutMs: DEFAULT_TOTAL_WORK_TIMEOUT_MS,
   transientFailureCacheTtlMs: DEFAULT_TRANSIENT_FAILURE_CACHE_TTL_MS,
   version: CARD_VERSION,
   width: CARD_WIDTH,

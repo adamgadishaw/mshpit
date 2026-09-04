@@ -1,5 +1,4 @@
 const ARTWORK_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
-const TICKETMASTER_IMAGE_HOSTS = new Set(["s1.ticketm.net"]);
 const DEFAULT_MAX_BYTES = 6 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 3_000;
 
@@ -36,21 +35,17 @@ function pathIsWithinBase(pathname, basePathname) {
 
 /**
  * Share-card models carry only public projection URLs plus their proven source.
- * Rechecking the fixed provider/public-media origins here prevents the renderer
+ * Rechecking the first-party public-media origin here prevents the renderer
  * from becoming a general-purpose URL fetcher if a future caller bypasses that
- * projection boundary.
+ * projection boundary. A provider hostname proves transport identity, not a
+ * right to crop and redistribute the provider's image, so provider-hosted
+ * artwork is deliberately ineligible for exported cards.
  */
 export function trustedShareArtworkUrl(candidate, { env = process.env } = {}) {
   if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return null;
   const parsed = cleanUrl(candidate.url);
   if (!parsed) return null;
-  const source = candidate.source === "ticketmaster" ? "ticketmaster"
-    : candidate.source === "owned-media" ? "owned-media" : null;
-  if (!source) return null;
-
-  if (source === "ticketmaster") {
-    return TICKETMASTER_IMAGE_HOSTS.has(parsed.hostname.toLowerCase()) ? parsed.toString() : null;
-  }
+  if (candidate.source !== "owned-media") return null;
 
   const base = ownedMediaBase(env);
   if (!base || parsed.origin !== base.origin || !pathIsWithinBase(parsed.pathname, base.pathname)) return null;

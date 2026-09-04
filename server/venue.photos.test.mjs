@@ -28,4 +28,30 @@ test("venue photo endpoint handles missing pools and malformed route encoding sa
     () => getPhotos({ params: { key: "%E0%A4%A" } }),
     (error) => error?.status === 400 && error?.code === "VALIDATION_FAILED",
   );
+  for (const query of [
+    { source: "ticketmaster" },
+    { providerVenueId: "venue-only" },
+    { source: "x".repeat(41), providerVenueId: "venue" },
+  ]) {
+    assert.throws(
+      () => getPhotos({ params: { key: "sample-hall" }, query }),
+      (error) => error?.status === 400 && error?.code === "VALIDATION_FAILED",
+    );
+  }
+});
+
+test("venue photo endpoint never gives an unmapped provider venue a same-name photo", () => {
+  const providerResult = getPhotos({
+    params: { key: encodeURIComponent("Rogers Centre") },
+    query: { source: "Ticketmaster", providerVenueId: "unfilled-provider-key" },
+  });
+  assert.equal(providerResult.key, "rogers centre");
+  assert.deepEqual(providerResult.photos, []);
+
+  const legacyResult = getPhotos({
+    params: { key: encodeURIComponent("Rogers Centre") },
+  });
+  assert.equal(legacyResult.key, "rogers centre");
+  assert.ok(legacyResult.photos.length > 0);
+  assert.ok(legacyResult.photos.every((photo) => photo.source === "licensed"));
 });

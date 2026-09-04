@@ -7,6 +7,7 @@ import {
   venuePath,
 } from "../../../src/domain/urls.mjs";
 import { archiveShowKey } from "../artistArchive/artistArchiveKeys.js";
+import { publicVenuePhotoPool } from "../../venuePhotoCatalog.js";
 import { isStrictCalendarDate } from "./publicEntityPolicy.js";
 import { createPublicCollectionRepository } from "./publicCollectionRepository.js";
 
@@ -82,6 +83,14 @@ function collectionNode({ origin,path,name,description,items }) {
         position: index + 1,
         name: item.name,
         ...(item.path ? { url: absolute(origin,item.path) } : {}),
+        ...(item.entityType === "MusicVenue" && item.path ? {
+          item: Object.freeze({
+            "@type": "MusicVenue",
+            name: item.name,
+            url: absolute(origin,item.path),
+            ...(item.image ? { image: item.image } : {}),
+          }),
+        } : {}),
       })),
     }),
   });
@@ -117,9 +126,23 @@ function venueItem(row,identity) {
     : nameStable ? venuePath(name) : null;
   const region = cleanLine(row?.venue_region,120);
   const country = cleanLine(row?.venue_country,120) || identity.country;
+  const photo = publicVenuePhotoPool(name,{
+    limit:1,
+    source:row?.source,
+    providerVenueId:row?.venue_provider_id,
+  })[0] || null;
   return Object.freeze({
     name,path,
     place: cleanLine([identity.city,region,country].filter(Boolean).join(", "),180) || null,
+    image: photo?.uri || null,
+    photo: photo ? Object.freeze({
+      url: photo.uri,
+      alt: `${name} concert venue`,
+      attribution: photo.by,
+      sourcePage: photo.sourcePage,
+      licenseUrl: photo.licenseUrl,
+      modificationNotice: photo.modificationNotice || null,
+    }) : null,
     reviewCount: 0,
     featuredArtist: null,
     featuredArtistPath: null,
@@ -164,6 +187,8 @@ function baseDirectory({ kind,page,hasNext,path,pathFor,origin,title,description
   const listItems = items.map((item) => ({
     name: item.name || [item.artist,item.venue].filter(Boolean).join(" at "),
     path: item.path,
+    image: item.image || null,
+    entityType: kind === "venues" ? "MusicVenue" : null,
   }));
   return Object.freeze({
     kind: "directory",
@@ -173,6 +198,9 @@ function baseDirectory({ kind,page,hasNext,path,pathFor,origin,title,description
     previousPath,
     nextPath,
     ...metadata({ origin,path,title,description,page }),
+    image: kind === "venues" ? items.find((item) => item.image)?.image || null : null,
+    imageProvenance: kind === "venues" && items.some((item) => item.image)
+      ? "licensed-venue" : null,
     artists: Object.freeze([]),
     events: Object.freeze([]),
     venues: kind === "venues" ? items : Object.freeze([]),

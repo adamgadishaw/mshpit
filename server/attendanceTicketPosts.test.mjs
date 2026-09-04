@@ -201,6 +201,11 @@ test("Going ticket posts persist only a server-owned event snapshot and remain i
     "Ticketmaster event access must not be upgraded to venue-confirmed doors");
   assert.equal(created.post.attendanceTicket.doorsVerified, null);
   assert.equal(created.post.attendanceTicket.artistPhotoUri, "https://images.example.com/server-artist.jpg");
+  assert.equal(
+    created.post.attendanceTicket.eventImageUri,
+    "https://s1.ticketm.net/dam/a/111/attendance-ticket-test.jpg",
+    "the immutable Going ticket keeps its exact provider event artwork",
+  );
   assert.equal(Object.hasOwn(created.post.attendanceTicket, "art"), false);
 
   assert.throws(

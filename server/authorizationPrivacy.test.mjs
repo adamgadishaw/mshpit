@@ -291,9 +291,13 @@ test("new profile, artist, and venue-review media must be a ready image owned by
   throwsStatus(() => routes["PATCH /api/artists/:key/profile"]({
     user: q.userById.get(owner.id), ip: "artist-media-foreign", params: { key: "media boundary artist" }, body: { banner: foreign.url },
   }), 400, "VALIDATION_FAILED");
-  assert.deepEqual(routes["PATCH /api/artists/:key/profile"]({
+  const legacyArtistUpdate = routes["PATCH /api/artists/:key/profile"]({
     user: q.userById.get(owner.id), ip: "artist-media-legacy", params: { key: "media boundary artist" }, body: { banner: external, bio: "Still editable" },
-  }), { ok: true });
+  });
+  assert.equal(legacyArtistUpdate.ok, true);
+  assert.equal(legacyArtistUpdate.profile.bio, "Still editable");
+  assert.equal(legacyArtistUpdate.profile.banner, null,
+    "legacy unverified URLs stay stored but are never projected as public artwork");
   throwsStatus(() => routes["PATCH /api/artists/:key/profile"]({
     user: q.userById.get(owner.id), ip: "artist-media-legacy-copy", params: { key: "media boundary artist" }, body: { avatarUri: external },
   }), 400, "VALIDATION_FAILED");
@@ -390,6 +394,63 @@ test("admin-seeded unclaimed artist photos keep uploader provenance through clai
   assert.equal(stored.avatar_owner_id, null);
   assert.equal(stored.banner, banner.url);
   assert.equal(stored.banner_owner_id, admin.id);
+});
+
+test("admin photo-only artist save confirms the public photo when the existing bio is null", () => {
+  const adminSeed = addUser("steve_lacy_photo_admin", { role: "fan" });
+  db.prepare("UPDATE users SET role='admin' WHERE id=?").run(adminSeed.id);
+  const admin = q.userById.get(adminSeed.id);
+  const viewer = addUser("steve_lacy_photo_viewer");
+  const avatar = finalizedLegacyImage(admin, "stevelacyphoto", "avatar");
+  db.prepare(`INSERT INTO artist_profiles
+    (artist_key,owner_id,bio,feed_enabled,updated_at) VALUES ('steve lacy',NULL,NULL,0,?)`).run(Date.now());
+
+  const result = routes["PATCH /api/artists/:key/profile"]({
+    user: admin,
+    ip: "steve-lacy-photo-only",
+    params: { key: "steve lacy" },
+    // TextInput sends an empty string for the untouched, empty biography.
+    body: { bio: "", feedEnabled: false, avatarUri: avatar.url },
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.profile, {
+    ownerId: null,
+    bio: null,
+    banner: null,
+    avatarUri: avatar.url,
+    feedEnabled: false,
+  });
+  const stored = db.prepare(`SELECT owner_id,bio,avatar_uri,avatar_owner_id
+    FROM artist_profiles WHERE artist_key='steve lacy'`).get();
+  assert.equal(stored.owner_id, null);
+  assert.equal(stored.bio, null);
+  assert.equal(stored.avatar_uri, avatar.url);
+  assert.equal(stored.avatar_owner_id, admin.id);
+  assert.equal(routes["GET /api/artists/:key/profile"]({
+    user: viewer, params: { key: "steve lacy" },
+  }).profile.avatarUri, avatar.url);
+});
+
+test("artist profile save treats an explicitly empty biography as a clear", () => {
+  const adminSeed = addUser("artist_bio_clear_admin", { role: "fan" });
+  db.prepare("UPDATE users SET role='admin' WHERE id=?").run(adminSeed.id);
+  const admin = q.userById.get(adminSeed.id);
+  db.prepare(`INSERT INTO artist_profiles
+    (artist_key,owner_id,bio,feed_enabled,updated_at)
+    VALUES ('artist bio clear',NULL,'Old biography',0,?)`).run(Date.now());
+
+  const result = routes["PATCH /api/artists/:key/profile"]({
+    user: admin,
+    ip: "artist-bio-clear",
+    params: { key: "artist bio clear" },
+    body: { bio: "   " },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.profile.bio, null);
+  assert.equal(db.prepare(`SELECT bio FROM artist_profiles
+    WHERE artist_key='artist bio clear'`).get().bio, null);
 });
 
 test("artist profile publication requires the finalized descriptor purpose for each slot", () => {

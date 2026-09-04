@@ -98,10 +98,7 @@ test("share models preserve only projected artwork provenance and keep each shar
     }],
   }));
 
-  assert.deepEqual(going.artwork, [{
-    url: "https://s1.ticketm.net/dam/a/show.jpg",
-    source: "ticketmaster",
-  }]);
+  assert.deepEqual(going.artwork, [], "provider hosting alone is not export permission");
   assert.deepEqual(review.artwork, [{
     url: "https://media.mshpit.test/public/review-poster.jpg",
     source: "owned-media",
@@ -296,6 +293,7 @@ test("renderer skips a MIME-valid corrupt image and uses the next trusted candid
   const renderer = createSocialShareCardRenderer({
     loadArtwork: (candidates, options) => loadShareArtwork(candidates, {
       ...options,
+      env: { MEDIA_PUBLIC_BASE_URL: "https://media.mshpit.test/public" },
       fetchImpl: async (url) => {
         requested.push(url);
         const body = url.includes("corrupt") ? corruptJpeg : validPhoto;
@@ -315,20 +313,17 @@ test("renderer skips a MIME-valid corrupt image and uses the next trusted candid
       };
     },
   });
-  const document = eventDocument({
-    providerImage: { url: "https://s1.ticketm.net/dam/a/corrupt.jpg" },
-  });
-  const model = eventShareCardModel(document, "going", {
-    fallbackArtwork: [{
-      url: "https://s1.ticketm.net/dam/a/valid.jpg",
-      source: "ticketmaster",
-    }],
+  const model = eventShareCardModel(eventDocument(), "going", {
+    fallbackArtwork: [
+      { url: "https://media.mshpit.test/public/share-tests/corrupt.jpg", source: "owned-media" },
+      { url: "https://media.mshpit.test/public/share-tests/valid.jpg", source: "owned-media" },
+    ],
   });
 
   const result = await renderer.render(model);
   assert.deepEqual(requested, [
-    "https://s1.ticketm.net/dam/a/corrupt.jpg",
-    "https://s1.ticketm.net/dam/a/valid.jpg",
+    "https://media.mshpit.test/public/share-tests/corrupt.jpg",
+    "https://media.mshpit.test/public/share-tests/valid.jpg",
   ]);
   assert.match(renderedArtworkDataUri, /^data:image\/jpeg;base64,/u);
   assert.equal(result.bytes[8], 4);
@@ -349,10 +344,10 @@ test("renderer coalesces and caches equal cards while bounding unique concurrent
       ]);
     },
   });
-  const model = eventShareCardModel(eventDocument(), "going");
+  const model = reviewShareCardModel(reviewDocument());
   const sameA = renderer.render(model);
   const sameB = renderer.render(model);
-  const other = eventShareCardModel(eventDocument({ id: "ticketmaster-event_456" }), "going");
+  const other = reviewShareCardModel(reviewDocument({ id: "post_456" }));
   await assert.rejects(renderer.render(other), SocialShareCardBusyError);
   release();
   const [a, b] = await Promise.all([sameA, sameB]);
@@ -363,7 +358,7 @@ test("renderer coalesces and caches equal cards while bounding unique concurrent
   assert.equal(cached.bytes, a.bytes);
 });
 
-test("permanent artwork exhaustion renders and caches one stable no-photo card", async () => {
+test("attendance artwork exhaustion fails closed instead of caching a no-photo final card", async () => {
   let loads = 0;
   let renders = 0;
   let loadOptions = "not-called";
@@ -384,19 +379,67 @@ test("permanent artwork exhaustion renders and caches one stable no-photo card",
       };
     },
   });
-  const document = eventDocument({
-    providerImage: { url: "https://s1.ticketm.net/dam/a/show.jpg" },
+  const model = eventShareCardModel(eventDocument(), "going", {
+    fallbackArtwork: [{
+      url: "https://media.mshpit.test/public/share-tests/show.jpg",
+      source: "owned-media",
+    }],
   });
-  document.image = "https://s1.ticketm.net/dam/a/show.jpg";
-  const model = eventShareCardModel(document, "going");
+
+  await assert.rejects(renderer.render(model), SocialShareCardArtworkUnavailableError);
+  await assert.rejects(renderer.render(model), SocialShareCardArtworkUnavailableError);
+  assert.equal(loads, 1);
+  assert.equal(renders, 0);
+  assert.equal(typeof loadOptions.acceptBytes, "function");
+  assert.equal(loadOptions.signal instanceof AbortSignal, true,
+    "shared work receives its own deadline signal instead of a caller request signal");
+});
+
+test("attendance cards without a trusted photo fail before rendering", async () => {
+  let renders = 0;
+  const renderer = createSocialShareCardRenderer({
+    renderPng: async () => {
+      renders += 1;
+      throw new Error("an empty attendance card must never render");
+    },
+  });
+
+  await assert.rejects(
+    renderer.render(eventShareCardModel(eventDocument(), "going")),
+    SocialShareCardArtworkUnavailableError,
+  );
+  assert.equal(renders, 0);
+});
+
+test("review artwork exhaustion can still render and cache the intentional no-photo design", async () => {
+  let loads = 0;
+  let renders = 0;
+  const renderer = createSocialShareCardRenderer({
+    loadArtwork: async () => {
+      loads += 1;
+      return null;
+    },
+    renderPng: async (_model, { artworkDataUri }) => {
+      renders += 1;
+      assert.equal(artworkDataUri, "");
+      return {
+        bytes: Buffer.concat([
+          Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+          Buffer.alloc(120, 7),
+        ]),
+        artworkApplied: false,
+      };
+    },
+  });
+  const document = reviewDocument();
+  document.image = "https://media.mshpit.test/public/reviews/missing.jpg";
+  const model = reviewShareCardModel(document);
 
   const first = await renderer.render(model);
   const second = await renderer.render(model);
   assert.equal(loads, 1);
   assert.equal(renders, 1);
   assert.equal(first.bytes, second.bytes);
-  assert.equal(typeof loadOptions.acceptBytes, "function");
-  assert.equal(loadOptions.signal, undefined, "shared work must not inherit a caller request signal");
 });
 
 test("temporary artwork exhaustion uses a short error-only cache before allowing retry", async () => {
@@ -415,10 +458,12 @@ test("temporary artwork exhaustion uses a short error-only cache before allowing
       throw new Error("temporary artwork must not render a replacement card");
     },
   });
-  const document = eventDocument({
-    providerImage: { url: "https://s1.ticketm.net/dam/a/show.jpg" },
+  const model = eventShareCardModel(eventDocument(), "going", {
+    fallbackArtwork: [{
+      url: "https://media.mshpit.test/public/share-tests/show.jpg",
+      source: "owned-media",
+    }],
   });
-  const model = eventShareCardModel(document, "going");
 
   await assert.rejects(renderer.render(model), SocialShareCardArtworkUnavailableError);
   await assert.rejects(renderer.render(model), SocialShareCardArtworkUnavailableError);
@@ -429,6 +474,61 @@ test("temporary artwork exhaustion uses a short error-only cache before allowing
   await assert.rejects(renderer.render(model), SocialShareCardArtworkUnavailableError);
   assert.equal(loads, 2, "the card can be retried after the short error window");
   assert.equal(socialShareCardConstants.transientFailureCacheTtlMs, 5_000);
+});
+
+test("one total deadline bounds sequential artwork resolution and rendering", async () => {
+  let requests = 0;
+  const renderer = createSocialShareCardRenderer({
+    totalWorkTimeoutMs: 500,
+    loadArtwork: (candidates, options) => loadShareArtwork(candidates, {
+      ...options,
+      env: { MEDIA_PUBLIC_BASE_URL: "https://media.mshpit.test/public" },
+      fetchImpl: async (_url, { signal }) => {
+        requests += 1;
+        return new Promise((resolve, reject) => {
+          const onAbort = () => reject(signal.reason || new DOMException("Aborted", "AbortError"));
+          if (signal.aborted) onAbort();
+          else signal.addEventListener("abort", onAbort, { once: true });
+        });
+      },
+    }),
+  });
+  const candidates = ["one", "two", "three"].map((name) => ({
+    url: `https://media.mshpit.test/public/share-tests/${name}.jpg`,
+    source: "owned-media",
+  }));
+  const startedAt = Date.now();
+
+  await assert.rejects(
+    renderer.render(eventShareCardModel(eventDocument(), "going", { fallbackArtwork: candidates })),
+    SocialShareCardArtworkUnavailableError,
+  );
+  assert.ok(Date.now() - startedAt < 1_200, "three candidates share one bounded deadline");
+  assert.equal(requests, 1, "the total deadline stops resolution before later candidates begin");
+  assert.equal(socialShareCardConstants.totalWorkTimeoutMs, 4_000);
+});
+
+test("the same total deadline turns a stalled render into a retryable artwork failure", async () => {
+  let renderSignal = null;
+  const renderer = createSocialShareCardRenderer({
+    totalWorkTimeoutMs: 500,
+    renderPng: async (_model, { signal }) => {
+      renderSignal = signal;
+      return new Promise((resolve, reject) => {
+        const onAbort = () => reject(signal.reason || new DOMException("Aborted", "AbortError"));
+        if (signal.aborted) onAbort();
+        else signal.addEventListener("abort", onAbort, { once: true });
+      });
+    },
+  });
+  const startedAt = Date.now();
+
+  await assert.rejects(
+    renderer.render(reviewShareCardModel(reviewDocument())),
+    SocialShareCardArtworkUnavailableError,
+  );
+  assert.equal(renderSignal instanceof AbortSignal, true);
+  assert.ok(Date.now() - startedAt < 1_200, "native render shares the same total deadline");
 });
 
 test("remote artwork waiting does not occupy the Sharp render admission slot", async () => {
@@ -452,21 +552,20 @@ test("remote artwork waiting does not occupy the Sharp render admission slot", a
       ]);
     },
   });
-  const artworkDocument = eventDocument({
-    providerImage: { url: "https://s1.ticketm.net/dam/a/show.jpg" },
-  });
-  const waitingForArtwork = renderer.render(eventShareCardModel(artworkDocument, "going"));
+  const artworkDocument = reviewDocument();
+  artworkDocument.image = "https://media.mshpit.test/public/reviews/show.jpg";
+  const waitingForArtwork = renderer.render(reviewShareCardModel(artworkDocument));
   await artworkStarted;
 
-  const noArtworkModel = eventShareCardModel(eventDocument({ id: "ticketmaster-event_456" }), "going");
+  const noArtworkModel = reviewShareCardModel(reviewDocument({ id: "post_456" }));
   const noArtwork = await renderer.render(noArtworkModel);
   assert.equal(noArtwork.bytes[8], 6);
   releaseArtwork();
   const completedArtworkFallback = await waitingForArtwork;
   assert.equal(completedArtworkFallback.bytes[8], 5);
   assert.deepEqual(renderOrder, [
-    "https://www.mshpit.com/event/ticketmaster-event_456",
-    "https://www.mshpit.com/event/ticketmaster-event_123",
+    "https://www.mshpit.com/post/post_456",
+    "https://www.mshpit.com/post/post_123",
   ]);
 });
 
@@ -485,7 +584,7 @@ test("the first caller aborting does not cancel a coalesced renderer request", a
       ]);
     },
   });
-  const model = eventShareCardModel(eventDocument(), "going");
+  const model = reviewShareCardModel(reviewDocument());
   const controller = new AbortController();
   const first = renderer.render(model, { signal: controller.signal });
   await started;

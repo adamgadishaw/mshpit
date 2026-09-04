@@ -4,7 +4,35 @@ export const VENUE_PHOTO_CLIENT_CACHE_MAX = 32;
 export const VENUE_PHOTO_CLIENT_TTL_MS = 15 * 60 * 1000;
 export const VENUE_PHOTO_RESPONSE_MAX = 24;
 export const VENUE_FAN_PHOTO_RESPONSE_MAX = 12;
-export const VENUE_PHOTO_CATALOG_VERSION = "licensed-v2";
+export const VENUE_PHOTO_CATALOG_VERSION = "licensed-v3";
+
+const cleanProviderIdentityPart = (value, max) => {
+  const text = typeof value === "string" ? value.normalize("NFKC").trim() : "";
+  if (!text || [...text].length > max || /[\u0000-\u001f\u007f]/u.test(text)) return null;
+  return text;
+};
+
+// Provider venue ids distinguish same-named rooms in different cities. Keep
+// this identity paired and bounded so a partial provider hint can never poison
+// the client cache or be sent to the server as a misleading lookup.
+export function normalizeVenuePhotoProviderIdentity(value = {}) {
+  const source = cleanProviderIdentityPart(value?.source, 40);
+  const providerVenueId = cleanProviderIdentityPart(
+    value?.providerVenueId ?? value?.venue_provider_id,
+    180,
+  );
+  return source && providerVenueId ? { source, providerVenueId } : null;
+}
+
+export function venuePhotoRequestIdentity(venueKey, providerIdentity = null) {
+  const venue = String(venueKey || "").normalize("NFKC").trim().toLocaleLowerCase("en");
+  if (!venue) return null;
+  const provider = normalizeVenuePhotoProviderIdentity(providerIdentity);
+  const providerPart = provider
+    ? `|provider:${encodeURIComponent(provider.source.toLocaleLowerCase("en"))}:${encodeURIComponent(provider.providerVenueId.toLocaleLowerCase("en"))}`
+    : "";
+  return `venue:${encodeURIComponent(venue)}${providerPart}`;
+}
 
 const normalizedPrivacyIds = (ids) => [...new Set((Array.isArray(ids) ? ids : [])
   .map((id) => String(id || "").trim())
@@ -22,10 +50,10 @@ export function venuePhotoViewerScope(accountId, blockedIds = [], privacyEpoch =
   return `${account}|blocked:${blocked}|epoch:${epoch}`;
 }
 
-export function venuePhotoScopedCacheKey(venueKey, viewerScope) {
-  const venue = String(venueKey || "").trim();
+export function venuePhotoScopedCacheKey(venueKey, viewerScope, providerIdentity = null) {
+  const venue = venuePhotoRequestIdentity(venueKey, providerIdentity);
   const scope = String(viewerScope || "").trim();
-  return venue && scope ? `${scope}|venue:${encodeURIComponent(venue)}` : null;
+  return venue && scope ? `${scope}|${venue}` : null;
 }
 
 export function venuePhotoAttemptScope(venueName, photos) {

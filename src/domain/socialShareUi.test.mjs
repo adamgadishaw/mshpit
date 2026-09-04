@@ -96,6 +96,20 @@ test("Instagram uses the Story composer in native builds and an honest browser s
     "Share controls describe the action without exposing artwork dimensions");
 });
 
+test("native preview and Instagram handoff use one immutable prepared PNG", () => {
+  const studio = source("../components/SocialShareStudio.jsx");
+  const native = source("../lib/socialShare.native.js");
+
+  assert.match(native, /return \{ file, fileUri: file\.uri, previewUri: file\.uri \};/,
+    "the preview and native handoff point at the same generated cache file");
+  assert.match(studio, /source=\{\{ uri: preparedAsset\.previewUri \}\}/,
+    "the visible preview renders that exact generated file");
+  assert.match(studio, /shareCardToInstagramStory\(model, \{ preparedAsset \}\)/,
+    "the unchanged prepared asset is passed to the Story handoff");
+  assert.match(native, /backgroundImage: preparedAsset\.fileUri/,
+    "Instagram receives the same PNG that was previewed");
+});
+
 test("X and Facebook share the finished card when supported and retain the desktop fallback", () => {
   const studio = source("../components/SocialShareStudio.jsx");
   const native = source("../lib/socialShare.native.js");
