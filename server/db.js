@@ -314,7 +314,9 @@ CREATE TABLE IF NOT EXISTS artist_profiles (
   artist_key   TEXT PRIMARY KEY,
   bio          TEXT,
   banner       TEXT,
+  banner_owner_id TEXT REFERENCES users(id) ON DELETE SET NULL,
   avatar_uri   TEXT,
+  avatar_owner_id TEXT REFERENCES users(id) ON DELETE SET NULL,
   feed_enabled INTEGER NOT NULL DEFAULT 0,
   owner_id     TEXT REFERENCES users(id) ON DELETE SET NULL,
   removed      INTEGER NOT NULL DEFAULT 0,
@@ -1743,6 +1745,12 @@ const additiveMigrations = [
   // workflow hide them atomically while preserving an audit trail.
   "ALTER TABLE artist_posts ADD COLUMN removed INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE artist_profiles ADD COLUMN removed INTEGER NOT NULL DEFAULT 0",
+  // Artist-page ownership and image provenance are different facts. Staff can
+  // seed an unclaimed page, and a later artist claim must not rewrite who
+  // uploaded those bytes. Nullable columns preserve legacy rows for a one-time
+  // provenance backfill below.
+  "ALTER TABLE artist_profiles ADD COLUMN avatar_owner_id TEXT REFERENCES users(id) ON DELETE SET NULL",
+  "ALTER TABLE artist_profiles ADD COLUMN banner_owner_id TEXT REFERENCES users(id) ON DELETE SET NULL",
   // A report stores only a verified positional selector. The attachment URL is
   // resolved from the still-current target for authorized, no-store staff reads.
   "ALTER TABLE reports ADD COLUMN media_index INTEGER",
@@ -1880,6 +1888,7 @@ try {
   // both observe an empty table and silently insert duplicate version rows.
   const ver = db.prepare("SELECT version FROM schema_version LIMIT 1").get();
   if (!ver) db.prepare("INSERT INTO schema_version (version) VALUES (1)").run();
+  const newlyAddedColumns = new Set();
   for (const stmt of additiveMigrations) {
     const match = /^ALTER TABLE ([a-z_][a-z0-9_]*) ADD COLUMN ([a-z_][a-z0-9_]*)/i.exec(stmt);
     if (!match) throw new Error(`Unsupported additive migration: ${stmt}`);
@@ -1889,7 +1898,25 @@ try {
     // column instead of racing into a duplicate ALTER TABLE.
     const present = db.prepare(`PRAGMA table_info(${table})`).all()
       .some((entry) => String(entry.name).toLowerCase() === column.toLowerCase());
-    if (!present) db.exec(stmt);
+    if (!present) {
+      db.exec(stmt);
+      newlyAddedColumns.add(`${table}.${column}`.toLowerCase());
+    }
+  }
+  // This fallback is intentionally tied to the first addition of each column.
+  // Re-running it on every boot could wrongly assign a slot whose explicit
+  // uploader was later erased to the artist-page claimant. The legacy finalize
+  // schema performs the stronger exact-URL descriptor correction once its
+  // table is available.
+  if (newlyAddedColumns.has("artist_profiles.avatar_owner_id")) {
+    db.prepare(`UPDATE artist_profiles SET avatar_owner_id=owner_id
+      WHERE avatar_uri IS NOT NULL AND trim(avatar_uri)<>''
+        AND avatar_owner_id IS NULL AND owner_id IS NOT NULL`).run();
+  }
+  if (newlyAddedColumns.has("artist_profiles.banner_owner_id")) {
+    db.prepare(`UPDATE artist_profiles SET banner_owner_id=owner_id
+      WHERE banner IS NOT NULL AND trim(banner)<>''
+        AND banner_owner_id IS NULL AND owner_id IS NOT NULL`).run();
   }
   ensurePostMediaCapacity(db);
   ensureShowSchema(db);
@@ -1901,6 +1928,10 @@ try {
     ON media_upload_issuances(owner_id,accounting_class,issued_at,byte_size)`);
   db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_artists_public_slug
     ON artists(lower(public_slug)) WHERE public_slug IS NOT NULL AND public_slug<>''`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_artist_profiles_avatar_owner
+    ON artist_profiles(avatar_owner_id) WHERE avatar_owner_id IS NOT NULL`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_artist_profiles_banner_owner
+    ON artist_profiles(banner_owner_id) WHERE banner_owner_id IS NOT NULL`);
   db.exec(`CREATE TRIGGER IF NOT EXISTS trg_artists_public_slug_immutable
     BEFORE UPDATE OF public_slug ON artists
     WHEN trim(COALESCE(OLD.public_slug,''))<>'' AND NEW.public_slug IS NOT OLD.public_slug

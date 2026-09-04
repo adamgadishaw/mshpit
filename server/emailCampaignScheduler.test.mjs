@@ -274,12 +274,14 @@ test("scheduler failures are contained, sanitized, and observable", async () => 
 
 test("server startup and shutdown own the campaign recovery worker", () => {
   const source = readFileSync(new URL("./index.js", import.meta.url), "utf8");
-  const startup = source.indexOf("emailCampaignScheduler = startEmailCampaignScheduler()");
+  const listening = source.indexOf("await listenForServer(server, PORT)");
+  const startup = source.indexOf('emailCampaignScheduler = startBackgroundRuntime("/startup/email-campaigns", () => startEmailCampaignScheduler())');
   const gate = source.indexOf("emailCampaignRecoveryEnabled()");
   const shutdown = source.indexOf("emailCampaignScheduler?.stop()");
   const databaseClose = source.indexOf("db.close()", shutdown);
-  assert.ok(startup > source.indexOf("server.listen("), "recovery starts only after the HTTP server is ready");
-  assert.ok(gate > source.indexOf("server.listen(") && gate < startup, "hosted recovery is gated before the worker starts");
+  assert.ok(listening > 0, "HTTP startup owns the error and listening boundary");
+  assert.ok(startup > listening, "protected recovery starts only after the HTTP server is ready");
+  assert.ok(gate > listening && gate < startup, "hosted recovery is gated before the worker starts");
   assert.ok(shutdown > 0, "graceful shutdown stops future recovery ticks");
   assert.ok(databaseClose > shutdown, "the active bounded tick settles before the database closes");
 });

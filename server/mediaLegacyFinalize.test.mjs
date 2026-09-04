@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test, { after } from "node:test";
 
 import sharp from "sharp";
@@ -29,9 +30,11 @@ const {
   associateFinalizedLegacyMedia,
   createLegacyMediaUpload,
   finalizeLegacyMediaUpload,
+  ensureLegacyMediaFinalizeSchema,
   isTerminalLegacyImageError,
   LEGACY_MEDIA_FINALIZE_TTL_MS,
   recoverProfileImageReference,
+  verifiedFinalizedLegacyMedia,
 } = await import("./mediaLegacyFinalize.js");
 const { createMediaPresign } = await import("./media.js");
 const {
@@ -43,6 +46,86 @@ const {
   sanitizePrivateImageStaging,
   stageSanitizedPublicImage,
 } = await import("./mediaAssets.js");
+
+test("artist slot provenance migration prefers one exact finalized uploader and never reruns", () => {
+  const file = join(dataDir, "artist-slot-owner-migration.db");
+  let database = new DatabaseSync(file);
+  database.exec(`
+    CREATE TABLE users (id TEXT PRIMARY KEY);
+    CREATE TABLE artist_profiles (
+      artist_key TEXT PRIMARY KEY,owner_id TEXT,avatar_uri TEXT,avatar_owner_id TEXT,
+      banner TEXT,banner_owner_id TEXT,updated_at INTEGER
+    );
+    CREATE TABLE media_objects (
+      object_key TEXT PRIMARY KEY,owner_id TEXT,storage_scope TEXT,purpose TEXT,status TEXT
+    );
+    CREATE TABLE legacy_media_finalize_descriptors (
+      id TEXT PRIMARY KEY,owner_id TEXT NOT NULL,status TEXT NOT NULL,expires_at INTEGER NOT NULL,
+      output_url TEXT,output_object_key TEXT,purpose TEXT NOT NULL
+    );
+    INSERT INTO users VALUES ('claimant'),('staff-uploader');
+    INSERT INTO artist_profiles
+      (artist_key,owner_id,avatar_uri,avatar_owner_id,updated_at)
+      VALUES ('seeded artist','claimant','https://media.example.com/seeded.webp','claimant',1);
+    INSERT INTO media_objects VALUES
+      ('users/staff-uploader/avatar/seeded.webp','staff-uploader','public','avatar','associated');
+    INSERT INTO legacy_media_finalize_descriptors
+      (id,owner_id,status,expires_at,output_url,output_object_key,purpose)
+      VALUES ('lm_seededartistmigration0001','staff-uploader','finalized',9999999999999,
+        'https://media.example.com/seeded.webp','users/staff-uploader/avatar/seeded.webp','avatar');
+  `);
+  ensureLegacyMediaFinalizeSchema(database);
+  assert.deepEqual(
+    database.prepare("PRAGMA index_info('idx_legacy_media_finalize_reconciliation')").all()
+      .map((column) => column.name),
+    ["output_url", "purpose", "status", "owner_id"],
+  );
+  assert.equal(database.prepare("SELECT avatar_owner_id FROM artist_profiles").get().avatar_owner_id,
+    "staff-uploader", "the exact descriptor corrects the legacy claimant fallback");
+  assert.equal(database.prepare("SELECT COUNT(*) count FROM legacy_media_finalize_migrations").get().count, 1);
+  database.close();
+
+  database = new DatabaseSync(file);
+  database.prepare("UPDATE artist_profiles SET avatar_owner_id='claimant'").run();
+  ensureLegacyMediaFinalizeSchema(database);
+  assert.equal(database.prepare("SELECT avatar_owner_id FROM artist_profiles").get().avatar_owner_id,
+    "claimant", "the durable marker prevents a later boot from rewriting explicit provenance");
+  database.close();
+});
+
+test("finalized media purpose is selected in SQL when one URL has multiple descriptors", () => {
+  const owner = addUser("legacy_finalize_duplicate_purpose");
+  const objectKey = `users/${owner.id}/avatar/shared-output.webp`;
+  const publicUrl = `https://media.example.com/cdn/${objectKey}`;
+  db.prepare(`INSERT INTO media_objects
+    (object_key,owner_id,storage_scope,purpose,byte_size,status,created_at,updated_at)
+    VALUES (?,?,'public','avatar',1024,'issued',1,1)`).run(objectKey, owner.id);
+  const insertDescriptor = db.prepare(`INSERT INTO legacy_media_finalize_descriptors
+    (id,owner_id,token_hash,purpose,staging_object_key,staging_mime_type,staging_byte_size,
+      output_mime_type,output_object_key,output_url,output_byte_size,width,height,status,expires_at,
+      finalized_at,created_at,updated_at)
+    VALUES (?,?,?,?,?,'image/jpeg',2048,'image/webp',?,?,1024,100,100,'finalized',9999999999999,?,?,?)`);
+  insertDescriptor.run("lm_duplicatepurposebanner0001", owner.id, "a".repeat(64), "banner",
+    `users/${owner.id}/banner/shared-staging.jpg`, objectKey, publicUrl, 1, 1, 1);
+  insertDescriptor.run("lm_duplicatepurposeavatar0001", owner.id, "b".repeat(64), "avatar",
+    `users/${owner.id}/avatar/shared-staging.jpg`, objectKey, publicUrl, 2, 2, 2);
+
+  assert.equal(verifiedFinalizedLegacyMedia(db, {
+    ownerId: owner.id,
+    publicUrl,
+    purpose: "banner",
+  })?.descriptorId, "lm_duplicatepurposebanner0001");
+  assert.equal(verifiedFinalizedLegacyMedia(db, {
+    ownerId: owner.id,
+    publicUrl,
+    purpose: "avatar",
+  })?.descriptorId, "lm_duplicatepurposeavatar0001");
+  assert.equal(verifiedFinalizedLegacyMedia(db, {
+    ownerId: owner.id,
+    publicUrl,
+    purpose: "review",
+  }), null);
+});
 
 test("legacy finalize retires immutable image failures while keeping transient work resumable", () => {
   for (const [status, code] of [

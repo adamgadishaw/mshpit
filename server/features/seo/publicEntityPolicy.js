@@ -11,6 +11,50 @@ export function hasSubstantivePublicText(value, minimum) {
 export const hasSubstantiveArtistBio = (value) => hasSubstantivePublicText(value, PUBLIC_ENTITY_THRESHOLDS.artistBioCharacters);
 export const hasSubstantiveMemberBio = (value) => hasSubstantivePublicText(value, PUBLIC_ENTITY_THRESHOLDS.memberBioCharacters);
 export const hasSubstantiveAuthoredBody = (value) => hasSubstantivePublicText(value, PUBLIC_ENTITY_THRESHOLDS.authoredBodyCharacters);
+
+// Provider rows must prove they were classified as music. Member-authored
+// records predate the provider classifier and remain separately authorized.
+// Keep the JavaScript and SQL forms together so crawler
+// documents, directories, and sitemaps cannot silently drift apart.
+export function isPublicMusicEventCandidate(value = {}) {
+  const includesStoredQualification = ["musicQualified", "music_qualified"]
+    .some((field) => Object.hasOwn(value, field));
+  // Some projections are assembled only after the repository has applied the
+  // SQL policy. Do not make those safe, reduced shapes prove storage fields a
+  // second time.
+  if (!includesStoredQualification) return true;
+  const ownerId = value.ownerId ?? value.owner_id ?? null;
+  const qualified = value.musicQualified ?? value.music_qualified ?? null;
+  return ownerId != null || Number(qualified) === 1;
+}
+export function publicMusicEventCandidateSql(alias = "td") {
+  const identifier = String(alias || "");
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(identifier)) throw new TypeError("Invalid SQL alias");
+  return `(${identifier}.owner_id IS NOT NULL OR COALESCE(${identifier}.music_qualified,0)=1)`;
+}
+
+const NON_CONCERT_PRODUCT = /\b(?:parking(?:\s+pass)?|camping(?:\s+pass)?|weekend\s+camping|hotel\s+packages?|ticket\s*\+\s*hotel|souvenir\s+tickets?|entry\s+to\s+all\s+shows|season\s+membership|beginner\s+class|workshop)\b/iu;
+export function isIndexableMusicEventRecord(value = {}) {
+  if (!isPublicMusicEventCandidate(value)) return false;
+  const kind = normalizedPublicText(value.eventKind ?? value.event_kind ?? "concert").toLowerCase();
+  if (kind && !["concert", "festival", "fair", "multi_day"].includes(kind)) return false;
+  const name = normalizedPublicText(value.eventName ?? value.event_name ?? value.name ?? value.artist);
+  return Boolean(name) && !NON_CONCERT_PRODUCT.test(name);
+}
+
+export function hasCompleteRichMusicEventRecord(value = {}) {
+  return Boolean(
+    normalizedPublicText(value.id)
+    && normalizedPublicText(value.artist)
+    && normalizedPublicText(value.venue)
+    && isStrictIsoDateTime(value.startDateTime ?? value.start_date_time)
+    && normalizedPublicText(value.venueAddressLine1 ?? value.venue_address_line1
+      ?? value.venueAddressLine2 ?? value.venue_address_line2)
+    && normalizedPublicText(value.venueCity ?? value.venue_city)
+    && normalizedPublicText(value.venueCountryCode ?? value.venue_country_code
+      ?? value.venueCountry ?? value.venue_country),
+  );
+}
 export function isStrictCalendarDate(value) {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || ""));
   if (!match) return false;

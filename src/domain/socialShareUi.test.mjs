@@ -27,6 +27,15 @@ test("posts and exact event attendance share through one reusable studio", () =>
   assert.match(studio, /nativeStory && !storyConfigured/,
     "Native Story sharing fails closed until its public Meta App ID is built in");
   assert.match(studio, /socialShareIntentUrl\(platform, model\)/);
+  assert.doesNotMatch(studio, /LocalShareCard|model\.artworkUri/,
+    "raw client artwork must not masquerade as the final server-rendered card");
+  assert.match(studio, /<AuthoritativeShareCardPlaceholder status=\{assetState\.status\} \/>/);
+  assert.match(studio, /accessibilityLabel="Retry share artwork"/);
+  assert.match(studio, /setRenderAttempt\(\(attempt\) => attempt \+ 1\)/);
+  assert.match(studio, /\[accountId, renderAttempt, renderModel\]/,
+    "Retry starts one new authoritative render without changing the shared item");
+  assert.match(studio, /source=\{\{ uri: preparedAsset\.previewUri \}\}/,
+    "the visible final preview is the exact prepared PNG used by sharing actions");
   assert.match(studio, /shareAction:\s*\{[^}]*minWidth:\s*0[^}]*flexBasis:\s*230/s,
     "Share destinations shrink or wrap inside narrow phone boundaries");
 });
@@ -39,7 +48,7 @@ test("share artwork is created only after an explicit share action and stays pri
 
   assert.match(studio, /onPress=\{\(\) => setOpen\(true\)\}/);
   assert.match(studio, /createShareCardAsset\(renderModel, \{ accountId, signal: controller\.signal \}\)/);
-  assert.match(studio, /\}, \[accountId, renderModel\]\);/);
+  assert.match(studio, /\}, \[accountId, renderAttempt, renderModel\]\);/);
   assert.doesNotMatch(studio, /\}, \[accountId, model\]\);/,
     "An unrelated post refresh must not restart the private PNG render");
   for (const adapter of [native, web]) {
@@ -92,7 +101,10 @@ test("X and Facebook share the finished card when supported and retain the deskt
   const native = source("../lib/socialShare.native.js");
   const web = source("../lib/socialShare.web.js");
 
-  assert.match(studio, /shareCardToSocialPlatform\(platform, model, \{ preparedAsset: assetState\.asset, intentUrl: url \}\)/);
+  assert.match(studio, /const preparedAsset = assetState\.status === "ready" && assetState\.asset\?\.previewUri/);
+  assert.match(studio, /shareCardToInstagramStory\(model, \{ preparedAsset \}\)/);
+  assert.match(studio, /shareCardToSocialPlatform\(platform, model, \{ preparedAsset, intentUrl: url \}\)/);
+  assert.match(studio, /downloadShareCard\(model, \{ preparedAsset \}\)/);
   assert.match(studio, /Your share options opened with the card and Mshpit link\. Choose an available app and post when ready\./,
     "Browser share feedback does not claim a specific app opened or that anything was posted");
   assert.match(studio, /web composer opened and the card download started\. Attach the downloaded card before posting\./,
@@ -115,6 +127,19 @@ test("X and Facebook share the finished card when supported and retain the deskt
   assert.match(native, /com\.facebook\.katana/);
   assert.match(native, /if \(Platform\.OS !== "android"\) return false;/,
     "iOS avoids react-native-share's retired Social-framework target and keeps the image-capable share sheet");
+  for (const cancelCode of [
+    "CANCEL", "CANCELED", "CANCELLED", "ECANCELLED", "USER_CANCELLED",
+  ]) assert.match(native, new RegExp(`NATIVE_SHARE_CANCEL_CODES[\\s\\S]*?"${cancelCode}"`, "u"));
+  for (const cancelMessage of [
+    "PICKER_WAS_CANCELLED", "USER DID NOT SHARE",
+  ]) assert.match(native, new RegExp(`NATIVE_SHARE_CANCEL_MESSAGES[\\s\\S]*?"${cancelMessage}"`, "u"));
+  assert.match(native, /if \(nativeShareWasCancelled\(error\)\) return \{ mode: "dismissed", platform \};/);
+  assert.match(native, /return openNativeShareSheet\(RNShare, options, platform\);/,
+    "a failed Android direct handoff retains the prepared image through the system share sheet");
+  assert.match(native, /result\?\.success !== false\) return \{ mode: "targeted-social", platform \};/,
+    "a successful direct Android handoff remains targeted");
+  assert.doesNotMatch(native, /includes\([^\n]*cancel/iu,
+    "cancellation classification uses exact normalized values instead of swallowing unrelated failures");
 
   assert.match(web, /const composer = openExternalShareUrl\(intentUrl\);\s*const download = downloadShareCard\(model, \{ preparedAsset \}\);\s*await Promise\.all\(\[composer, download\]\);/s,
     "The composer popup opens before any awaited boundary, followed by the PNG download in the same tap");

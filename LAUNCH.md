@@ -28,10 +28,10 @@ The server runs additive SQLite migrations on boot, serves `dist/`, and exposes
 the same-origin API. A push to `master` auto-deploys on Render, so a brief restart
 is expected; failed gates must stop the push.
 
-The Blueprint also declares `mshpit-staging`, but its default hostname returned
-404 with `x-render-routing: no-server` on 2026-08-13. The branch/configuration is
-not a staging gate until the real service is provisioned, isolated, healthy, and
-smoke-tested. Record any direct-master release as having skipped staging.
+The Blueprint intentionally declares only the production web service and its
+private video verifier. There is no standing staging deployment. Treat every
+`master` push as a direct production release: require the complete local/CI
+gate, a verified recovery point, and an explicit post-deploy health check.
 
 ## 2. Persistent storage and backups
 

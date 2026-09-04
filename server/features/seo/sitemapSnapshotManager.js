@@ -11,7 +11,7 @@ const SNAPSHOT_VERSION = 1;
 // Bump this when sitemap selection/canonicalization policy changes without a
 // persistence-format change. A prior deploy's otherwise valid XML then gets one
 // deliberate rebuild instead of being reused under rules it never evaluated.
-export const SITEMAP_SNAPSHOT_REVISION = 1;
+export const SITEMAP_SNAPSHOT_REVISION = 2;
 const SNAPSHOT_FILENAME = "seo-sitemap-snapshot-v1.json";
 const DEFAULT_RETRY_SECONDS = 30;
 export const DEFAULT_SITEMAP_STARTUP_REUSE_MS = 15 * 60 * 1_000;

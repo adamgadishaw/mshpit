@@ -1566,7 +1566,8 @@ const ATTENDANCE_TICKET_SECRET_KEYS = new Set([
   "bookingreference", "transactionid", "paymenttoken", "walletpass",
   "password", "secret", "credential", "credentials",
 ]);
-const ticketArtistProfile = db.prepare("SELECT owner_id,avatar_uri,removed FROM artist_profiles WHERE artist_key=?");
+const ticketArtistProfile = db.prepare(`SELECT owner_id,avatar_owner_id,avatar_uri,removed
+  FROM artist_profiles WHERE artist_key=?`);
 const providerGoingAttendance = db.prepare(`SELECT 1 FROM show_attendance a
   JOIN shows s ON s.id=a.show_id
   WHERE a.user_id=? AND a.state='going'
@@ -1710,11 +1711,9 @@ function attendanceTicketArtistProfilePhoto({ artistKey, artist } = {}) {
   const key = normName(artistKey || artist);
   if (!key) return null;
   const profile = ticketArtistProfile.get(key);
-  if (profile?.owner_id && !profile.removed && publicAccountOrNull(profile.owner_id)) {
-    const profilePhoto = safePublicProfileImage(profile.owner_id, profile.avatar_uri);
-    if (profilePhoto) return profilePhoto;
-  }
-  return null;
+  if (!profile || profile.removed
+    || (profile.owner_id && !publicAccountOrNull(profile.owner_id))) return null;
+  return safePublicArtistProfileImage(profile, "avatar");
 }
 
 function attendanceTicketArtistPhoto(row) {
@@ -2398,13 +2397,27 @@ function reportableTargetFor(user, targetType, targetId) {
   }
 
   if (targetType === "artist_profile") {
-    const row = db.prepare("SELECT owner_id,bio,banner,avatar_uri,removed FROM artist_profiles WHERE artist_key=?").get(targetId);
-    if (!row || !row.owner_id || row.removed || !publicAccountOrNull(row.owner_id)
-      || blockedEitherWay(user.id, row.owner_id)) unavailableReportTarget();
-    preventSelfReport(row.owner_id, user.id);
+    const row = db.prepare(`SELECT owner_id,bio,banner,banner_owner_id,avatar_uri,avatar_owner_id,removed
+      FROM artist_profiles WHERE artist_key=?`).get(targetId);
+    if (!row || row.removed) unavailableReportTarget();
+    const bannerMedia = publicArtistProfileMedia(row, "banner");
+    const avatarMedia = publicArtistProfileMedia(row, "avatar");
+    if (row.owner_id) {
+      if (!publicAccountOrNull(row.owner_id) || blockedEitherWay(user.id, row.owner_id)) {
+        unavailableReportTarget();
+      }
+      preventSelfReport(row.owner_id, user.id);
+    } else {
+      // An unclaimed catalog page has no public author. Slot owners are private
+      // upload provenance: use them only to prevent a staff uploader from
+      // reporting their own seeded media, never as page ownership or output.
+      for (const uploaderId of new Set([bannerMedia?.ownerId, avatarMedia?.ownerId].filter(Boolean))) {
+        preventSelfReport(uploaderId, user.id);
+      }
+    }
     return {
-      authorId: row.owner_id,
-      photos: [row.banner, row.avatar_uri].filter((url) => !!safePublicProfileImage(row.owner_id, url)),
+      authorId: row.owner_id || null,
+      photos: [bannerMedia?.url, avatarMedia?.url].filter(Boolean),
     };
   }
 
@@ -2468,7 +2481,18 @@ function postJson(p, viewerId) {
   }
   const media = photos.map((url) => stableByUrl.get(url) || legacyByUrl.get(url)).filter(Boolean);
   const storedCampaign = p.kind === "status" ? normalizeArtistCampaign(parsedStoredObject(p.campaign)) : null;
-  const attendanceTicket = p.kind === "status" ? storedAttendanceTicket(p.attendance_ticket) : null;
+  const storedTicket = p.kind === "status" ? storedAttendanceTicket(p.attendance_ticket) : null;
+  // The database snapshot remains immutable for idempotency and auditability,
+  // while presentation follows the current safe artist image. This lets an
+  // older Going post gain staff-seeded artwork (or stop showing revoked art)
+  // without rewriting what the member originally submitted.
+  const attendanceTicket = storedTicket ? {
+    ...storedTicket,
+    artistPhotoUri: attendanceTicketArtistPhoto({
+      artist: storedTicket.artist,
+      artist_key: storedTicket.artistKey,
+    }) || null,
+  } : null;
   // Official presentation is a live authorization claim, not a permanent
   // visual badge embedded in authored JSON. Every row source feeding this
   // projector supplies current role/artist identity aliases; an old or custom
@@ -3039,6 +3063,40 @@ function observeBackgroundVideoFinalizeFailure(error) {
 function requireVideoPublishingActor(user) {
   if (user?.email_verified_at || user?.role === "admin") return;
   throw new ApiError(403, "Confirm your email before uploading a video.", "MEDIA_EMAIL_VERIFICATION_REQUIRED");
+}
+
+function artistProfileSlotOwner(profile, slot) {
+  if (!profile || (slot !== "avatar" && slot !== "banner")) return null;
+  return profile[`${slot}_owner_id`] || profile.owner_id || null;
+}
+
+function publicArtistProfileMedia(profile, slot) {
+  if (!profile || (slot !== "avatar" && slot !== "banner")) return null;
+  const ownerId = artistProfileSlotOwner(profile, slot);
+  const value = slot === "avatar" ? profile.avatar_uri : profile.banner;
+  if (!ownerId || !value) return null;
+  const finalized = verifiedFinalizedLegacyMedia(db, {
+    ownerId,
+    publicUrl: value,
+    purpose: slot,
+  });
+  return finalized ? { ownerId, url: finalized.publicUrl } : null;
+}
+
+function safePublicArtistProfileImage(profile, slot) {
+  return publicArtistProfileMedia(profile, slot)?.url || null;
+}
+
+const ARTIST_PROFILE_SNAPSHOT_FIELDS = Object.freeze([
+  "owner_id", "bio", "banner", "banner_owner_id", "avatar_uri", "avatar_owner_id",
+  "feed_enabled", "removed", "updated_at",
+]);
+const artistProfileSnapshotByKey = db.prepare(`SELECT ${ARTIST_PROFILE_SNAPSHOT_FIELDS.join(",")}
+  FROM artist_profiles WHERE artist_key=?`);
+
+function sameArtistProfileSnapshot(expected, current) {
+  if (!expected || !current) return !expected && !current;
+  return ARTIST_PROFILE_SNAPSHOT_FIELDS.every((field) => expected[field] === current[field]);
 }
 
 export function reserveVideoPublishingDemand(ctx, user, phase) {
@@ -5008,7 +5066,9 @@ export const routes = {
         OR (target_type='lounge_message' AND target_id IN (SELECT id FROM lounge_messages WHERE user_id=?))
         OR (target_type='venue_review' AND target_id IN (SELECT id FROM venue_reviews WHERE user_id=?))
         OR (target_type='artist_post' AND target_id IN (SELECT id FROM artist_posts WHERE user_id=?))
-        OR (target_type='artist_profile' AND target_id IN (SELECT artist_key FROM artist_profiles WHERE owner_id=?))`;
+        OR (target_type='artist_profile' AND target_id IN (
+          SELECT artist_key FROM artist_profiles WHERE owner_id=?
+        ))`;
       const accountReportParams = [u.id, u.id, u.id, u.id, u.id, u.id, u.id, u.id, u.id, u.id, u.id];
 
       // Reactions are keyed by durable media URL rather than a post FK. Remove
@@ -5019,7 +5079,12 @@ export const routes = {
         u.banner,
         ...db.prepare("SELECT photos FROM posts WHERE user_id=?").all(u.id),
         ...db.prepare("SELECT photos FROM venue_reviews WHERE user_id=?").all(u.id),
-        ...db.prepare("SELECT avatar_uri,banner FROM artist_profiles WHERE owner_id=?").all(u.id),
+        ...db.prepare(`SELECT
+          CASE WHEN COALESCE(avatar_owner_id,owner_id)=? THEN avatar_uri END avatar_uri,
+          CASE WHEN COALESCE(banner_owner_id,owner_id)=? THEN banner END banner
+          FROM artist_profiles
+          WHERE COALESCE(avatar_owner_id,owner_id)=?
+            OR COALESCE(banner_owner_id,owner_id)=?`).all(u.id, u.id, u.id, u.id),
       ].flatMap((value) => {
         if (typeof value === "string") return [value];
         if (value && Object.hasOwn(value, "photos")) return parseJsonArray(value.photos);
@@ -5034,7 +5099,6 @@ export const routes = {
       enqueueOwnedMediaUrls(db, { ownerId: u.id, urls: authoredMediaUrls, at: now() });
       enqueueAllOwnedMedia(db, { ownerId: u.id, at: now() });
       enqueueOwnerMediaSweep(db, { ownerId: u.id, at: now() });
-      eraseLegacyMediaFinalizeDescriptors(db, { ownerId: u.id, at: now() });
       db.prepare(`DELETE FROM media_reactions
         WHERE post_id IN (SELECT id FROM posts WHERE user_id=?) OR instr(media_url, ?) > 0`)
         .run(u.id, `users/${encodeURIComponent(u.id)}/`);
@@ -5055,7 +5119,9 @@ export const routes = {
         OR (target_type='lounge_message' AND target_id IN (SELECT id FROM lounge_messages WHERE user_id=?))
         OR (target_type='venue_review' AND target_id IN (SELECT id FROM venue_reviews WHERE user_id=?))
         OR (target_type='artist_post' AND target_id IN (SELECT id FROM artist_posts WHERE user_id=?))
-        OR (target_type='artist_profile' AND target_id IN (SELECT artist_key FROM artist_profiles WHERE owner_id=?))`)
+        OR (target_type='artist_profile' AND target_id IN (
+          SELECT artist_key FROM artist_profiles WHERE owner_id=?
+        ))`)
         .run(u.id, u.id, u.id, u.id, u.id, u.id, u.id, u.id, u.id, u.id, u.id);
 
       // Campaign queues/logs deliberately have no user FK. Clear both identity
@@ -5081,7 +5147,19 @@ export const routes = {
       db.prepare("DELETE FROM events WHERE user_id=?").run(u.id);
       db.prepare(`DELETE FROM reports WHERE ${accountReportWhere}`).run(...accountReportParams);
       db.prepare("DELETE FROM artist_posts WHERE user_id=?").run(u.id);
-      db.prepare("DELETE FROM artist_profiles WHERE owner_id=?").run(u.id);
+      // Clear only slots actually uploaded by this account before its user row
+      // can SET NULL their provenance. Claimed pages containing another
+      // account's seeded art survive as clean, unclaimed catalog overlays;
+      // claimant-authored bio/feed state does not.
+      eraseLegacyMediaFinalizeDescriptors(db, { ownerId: u.id, at: now() });
+      db.prepare(`DELETE FROM artist_profiles
+        WHERE owner_id=? AND NOT (
+          (avatar_uri IS NOT NULL AND avatar_owner_id IS NOT NULL AND avatar_owner_id<>?)
+          OR (banner IS NOT NULL AND banner_owner_id IS NOT NULL AND banner_owner_id<>?)
+        )`).run(u.id, u.id, u.id);
+      db.prepare(`UPDATE artist_profiles
+        SET owner_id=NULL,bio=NULL,feed_enabled=0,updated_at=?
+        WHERE owner_id=?`).run(now(), u.id);
       // Structured post tags are JSON rather than foreign-key rows, so account
       // erasure must explicitly remove this id from posts authored by others.
       scrubTaggedUserFromPosts(u.id);
@@ -8041,8 +8119,11 @@ export const routes = {
       profile: p && !p.removed ? {
         ownerId: p.owner_id || null,
         bio: p.bio,
-        banner: safePublicProfileImage(p.owner_id, p.banner),
-        avatarUri: safePublicProfileImage(p.owner_id, p.avatar_uri),
+        // Slot owners are storage provenance, not public authors. The claim
+        // owner above controls page visibility; uploader block/account state
+        // must not make staff-seeded catalog artwork disappear.
+        banner: safePublicArtistProfileImage(p, "banner"),
+        avatarUri: safePublicArtistProfileImage(p, "avatar"),
         feedEnabled: !!p.feed_enabled,
       } : null,
       posts: posts.map((x) => ({ id: x.id, userId: x.user_id, text: x.text, createdAt: x.created_at })),
@@ -8058,8 +8139,13 @@ export const routes = {
       avatarUri: { parse: (x) => clean(x, { max: 2000 }) },
       feedEnabled: { parse: (x) => (x ? 1 : 0) },
     });
+    // `shape` deliberately treats null as omitted for ordinary fields. Media
+    // slots need a distinct explicit-null operation so clients can clear the
+    // URL and its provenance together without empty-string ambiguity.
+    if (Object.prototype.hasOwnProperty.call(ctx.body || {}, "banner") && ctx.body.banner === null) v.banner = null;
+    if (Object.prototype.hasOwnProperty.call(ctx.body || {}, "avatarUri") && ctx.body.avatarUri === null) v.avatarUri = null;
     assertSafeAuthoredText(v.bio, { field: "artist bio" });
-    const existing = db.prepare("SELECT owner_id,banner,avatar_uri FROM artist_profiles WHERE artist_key=?").get(key);
+    const existing = artistProfileSnapshotByKey.get(key);
     assertNewOwnedReadyImageUrls(
       u.id,
       [v.banner, v.avatarUri],
@@ -8067,31 +8153,58 @@ export const routes = {
       "artist-profile",
       ["banner", "avatar"],
     );
+    const bannerChanged = v.banner !== undefined && v.banner !== existing?.banner;
+    const avatarChanged = v.avatarUri !== undefined && v.avatarUri !== existing?.avatar_uri;
     const sets = [], args = [];
     if (v.bio !== undefined) { sets.push("bio=?"); args.push(v.bio); }
-    if (v.banner !== undefined) { sets.push("banner=?"); args.push(v.banner); }
-    if (v.avatarUri !== undefined) { sets.push("avatar_uri=?"); args.push(v.avatarUri); }
+    if (bannerChanged) {
+      sets.push("banner=?", "banner_owner_id=?");
+      args.push(v.banner, v.banner ? u.id : null);
+    }
+    if (avatarChanged) {
+      sets.push("avatar_uri=?", "avatar_owner_id=?");
+      args.push(v.avatarUri, v.avatarUri ? u.id : null);
+    }
     if (v.feedEnabled !== undefined) { sets.push("feed_enabled=?"); args.push(v.feedEnabled); }
     sets.push("updated_at=?"); args.push(now());
     const replacedProfileMedia = [
-      ...(v.banner !== undefined && v.banner !== existing?.banner ? [existing?.banner] : []),
-      ...(v.avatarUri !== undefined && v.avatarUri !== existing?.avatar_uri ? [existing?.avatar_uri] : []),
-    ].filter(Boolean);
+      ...(bannerChanged && existing?.banner ? [{
+        ownerId: artistProfileSlotOwner(existing, "banner"), url: existing.banner,
+      }] : []),
+      ...(avatarChanged && existing?.avatar_uri ? [{
+        ownerId: artistProfileSlotOwner(existing, "avatar"), url: existing.avatar_uri,
+      }] : []),
+    ].filter((entry) => entry.ownerId && entry.url);
     atomicWrite(() => {
+      const current = artistProfileSnapshotByKey.get(key);
+      if (!sameArtistProfileSnapshot(existing, current)) {
+        throw new ApiError(409,
+          "That artist page changed while your update was being saved. Refresh it and try again.",
+          "CONFLICT");
+      }
+      claimArtistManagement(u, key);
+      if (!existing && u.role === "admin") {
+        db.prepare("INSERT INTO artist_profiles (artist_key,owner_id,updated_at) VALUES (?,?,?)").run(key, null, now());
+      }
       associateNewFinalizedImageUrls(
         u.id,
         [v.banner, v.avatarUri],
         [existing?.banner, existing?.avatar_uri],
         ["banner", "avatar"],
       );
-      claimArtistManagement(u, key);
-      if (!existing && u.role === "admin") {
-        db.prepare("INSERT INTO artist_profiles (artist_key,owner_id,updated_at) VALUES (?,?,?)").run(key, null, now());
-      }
       db.prepare(`UPDATE artist_profiles SET ${sets.join(", ")} WHERE artist_key=?`).run(...args, key);
-      markOwnedMediaAssociated(db, { ownerId: u.id, urls: [v.banner, v.avatarUri], at: now() });
-      const deletable = unreferencedOwnedMediaUrls(db, { ownerId: u.id, urls: replacedProfileMedia });
-      enqueueOwnedMediaUrls(db, { ownerId: u.id, urls: deletable, at: now() });
+      markOwnedMediaAssociated(db, {
+        ownerId: u.id,
+        urls: [bannerChanged ? v.banner : null, avatarChanged ? v.avatarUri : null],
+        at: now(),
+      });
+      for (const ownerId of new Set(replacedProfileMedia.map((entry) => entry.ownerId))) {
+        const previousUrls = replacedProfileMedia
+          .filter((entry) => entry.ownerId === ownerId)
+          .map((entry) => entry.url);
+        const deletable = unreferencedOwnedMediaUrls(db, { ownerId, urls: previousUrls });
+        enqueueOwnedMediaUrls(db, { ownerId, urls: deletable, at: now() });
+      }
     });
     return { ok: true };
   },

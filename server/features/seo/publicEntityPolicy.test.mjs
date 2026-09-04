@@ -1,6 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { PUBLIC_ENTITY_THRESHOLDS as T, hasSubstantivePublicText, isStrictCalendarDate, isStrictIsoDateTime, publishableAttendanceCount, qualifiesCityConcertDirectory, qualifiesCityVenueDirectory, structuredCityIdentity } from "./publicEntityPolicy.js";
+import {
+  PUBLIC_ENTITY_THRESHOLDS as T,
+  hasCompleteRichMusicEventRecord,
+  hasSubstantivePublicText,
+  isIndexableMusicEventRecord,
+  isPublicMusicEventCandidate,
+  isStrictCalendarDate,
+  isStrictIsoDateTime,
+  publishableAttendanceCount,
+  qualifiesCityConcertDirectory,
+  qualifiesCityVenueDirectory,
+  structuredCityIdentity,
+} from "./publicEntityPolicy.js";
 test("substantive text thresholds normalize whitespace and honor boundaries", () => {
   for (const n of [T.authoredBodyCharacters - 1, T.authoredBodyCharacters, T.authoredBodyCharacters + 1]) assert.equal(hasSubstantivePublicText("x".repeat(n), T.authoredBodyCharacters), n >= T.authoredBodyCharacters);
   assert.equal(hasSubstantivePublicText(" x  \n y ", 3), true);
@@ -19,4 +31,37 @@ test("city and attendance thresholds are exact at minus one, boundary, and plus 
   assert.equal(qualifiesCityConcertDirectory({ itemCount: 3, venueCount: 1 }), false); assert.equal(qualifiesCityConcertDirectory({ itemCount: 3, venueCount: 2 }), true); assert.equal(qualifiesCityConcertDirectory({ itemCount: 4, venueCount: 3 }), true);
   assert.equal(qualifiesCityVenueDirectory({ itemCount: 2, venueCount: 2 }), false); assert.equal(qualifiesCityVenueDirectory({ itemCount: 3, venueCount: 2 }), true); assert.equal(qualifiesCityVenueDirectory({ itemCount: 4, venueCount: 3 }), true);
   assert.equal(publishableAttendanceCount(4), null); assert.equal(publishableAttendanceCount(5), 5); assert.equal(publishableAttendanceCount(6), 6);
+});
+
+test("provider music evidence fails closed while member-owned concert records remain eligible", () => {
+  assert.equal(isPublicMusicEventCandidate({ owner_id: null, music_qualified: null }), false);
+  assert.equal(isPublicMusicEventCandidate({ owner_id: null, music_qualified: 0 }), false);
+  assert.equal(isPublicMusicEventCandidate({ owner_id: null, music_qualified: 1 }), true);
+  assert.equal(isPublicMusicEventCandidate({ owner_id: "member-1", music_qualified: null }), true);
+  assert.equal(isPublicMusicEventCandidate({ owner_id: "member-1", music_qualified: 0 }), true);
+  assert.equal(isPublicMusicEventCandidate({ event_name: "Repository-filtered concert" }), true);
+});
+
+test("SEO event policy rejects ticket products and non-concert event kinds", () => {
+  const concert = { owner_id: null, music_qualified: 1, event_kind: "concert", event_name: "The Beaches at History" };
+  assert.equal(isIndexableMusicEventRecord(concert), true);
+  assert.equal(isIndexableMusicEventRecord({ ...concert, event_name: "Reading Festival - Weekend Camping" }), false);
+  assert.equal(isIndexableMusicEventRecord({ ...concert, event_name: "Ticket + Hotel Package" }), false);
+  assert.equal(isIndexableMusicEventRecord({ ...concert, event_kind: "rodeo" }), false);
+});
+
+test("rich music-event evidence requires the same identity, time, and address fields as JSON-LD", () => {
+  const complete = {
+    id: "event-1",
+    artist: "The Beaches",
+    venue: "History",
+    start_date_time: "2026-09-16T19:30:00-04:00",
+    venue_address_line1: "1663 Queen St E",
+    venue_city: "Toronto",
+    venue_country_code: "CA",
+  };
+  assert.equal(hasCompleteRichMusicEventRecord(complete), true);
+  for (const field of ["id", "artist", "venue", "start_date_time", "venue_address_line1", "venue_city", "venue_country_code"]) {
+    assert.equal(hasCompleteRichMusicEventRecord({ ...complete, [field]: null }), false, field);
+  }
 });

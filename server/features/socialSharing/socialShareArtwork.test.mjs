@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   loadShareArtwork,
+  ShareArtworkTransientError,
   socialShareArtworkConstants,
   trustedShareArtworkUrl,
 } from "./socialShareArtwork.js";
@@ -62,7 +63,7 @@ test("artwork loading is bounded, refuses redirects and returns the first valid 
   assert.match(requests[0].options.headers.Accept, /image\/jpeg/u);
 });
 
-test("one artwork deadline is shared across every trusted candidate", async () => {
+test("a timed-out artwork source cannot suppress the remaining trusted candidates", async () => {
   const candidates = ["first", "second", "third"].map((name) => ({
     url: `https://s1.ticketm.net/dam/a/${name}.jpg`,
     source: "ticketmaster",
@@ -79,6 +80,11 @@ test("one artwork deadline is shared across every trusted candidate", async () =
           headers: { "content-type": "text/html", "content-length": String(PHOTO.length) },
         });
       }
+      if (requests === 3) {
+        return new Response(PHOTO, {
+          headers: { "content-type": "image/jpeg", "content-length": String(PHOTO.length) },
+        });
+      }
       return new Promise((resolve, reject) => {
         const rejectAbort = () => reject(options.signal.reason || new DOMException("Aborted", "AbortError"));
         if (options.signal.aborted) rejectAbort();
@@ -87,9 +93,10 @@ test("one artwork deadline is shared across every trusted candidate", async () =
     },
   });
 
-  assert.equal(result, null);
-  assert.equal(requests, 2, "the final candidate must not receive a fresh timeout window");
-  assert.equal(requestSignals[0], requestSignals[1], "all fetches must use the same deadline signal");
+  assert.deepEqual(result, PHOTO);
+  assert.equal(requests, 3, "every trusted fallback receives one bounded attempt");
+  assert.notEqual(requestSignals[0], requestSignals[1]);
+  assert.notEqual(requestSignals[1], requestSignals[2]);
 });
 
 test("bad MIME, oversized declarations and truncated responses fall through to the no-photo design", async () => {
@@ -117,6 +124,63 @@ test("bad MIME, oversized declarations and truncated responses fall through to t
   assert.equal(truncated, null);
   assert.equal(socialShareArtworkConstants.maxBytes, 6 * 1024 * 1024);
   assert.equal(socialShareArtworkConstants.timeoutMs, 3_000);
+});
+
+test("permanent artwork failures settle on the stable no-photo design", async () => {
+  const candidates = [404, 410].map((status) => ({
+    url: `https://s1.ticketm.net/dam/a/missing-${status}.jpg`,
+    source: "ticketmaster",
+  }));
+  let requests = 0;
+  const result = await loadShareArtwork(candidates, {
+    fetchImpl: async () => {
+      const status = [404, 410][requests];
+      requests += 1;
+      return new Response(null, { status });
+    },
+  });
+  assert.equal(result, null);
+  assert.equal(requests, 2);
+});
+
+test("temporary artwork exhaustion is classified as retryable", async () => {
+  const candidates = [408, 429, 503].map((status) => ({
+    url: `https://s1.ticketm.net/dam/a/temporary-${status}.jpg`,
+    source: "ticketmaster",
+  }));
+  let requests = 0;
+  await assert.rejects(loadShareArtwork(candidates, {
+    fetchImpl: async () => {
+      const status = [408, 429, 503][requests];
+      requests += 1;
+      return new Response(null, { status });
+    },
+  }), ShareArtworkTransientError);
+  assert.equal(requests, 3);
+});
+
+test("a rejecting image decoder is terminal for only that candidate", async () => {
+  const candidates = ["corrupt", "valid"].map((name) => ({
+    url: `https://s1.ticketm.net/dam/a/${name}.jpg`,
+    source: "ticketmaster",
+  }));
+  let accepts = 0;
+  const accepted = Object.freeze({ prepared: true });
+  const result = await loadShareArtwork(candidates, {
+    fetchImpl: async () => new Response(PHOTO, {
+      headers: {
+        "content-type": "image/jpeg",
+        "content-length": String(PHOTO.length),
+      },
+    }),
+    acceptBytes: async () => {
+      accepts += 1;
+      if (accepts === 1) throw new Error("decoder rejected corrupt bytes");
+      return accepted;
+    },
+  });
+  assert.equal(result, accepted);
+  assert.equal(accepts, 2);
 });
 
 test("streaming artwork without Content-Length is stopped at the byte ceiling", async () => {

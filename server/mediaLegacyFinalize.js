@@ -51,6 +51,58 @@ const RECOVERABLE_PROFILE_REFERENCES = Object.freeze({
 });
 const SANITIZED_PROFILE_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 const PROFILE_IMAGE_RENDITIONS = new Set(["avatar", "banner"]);
+const ARTIST_PROFILE_OWNER_RECOVERY_MARKER = "artist-profile-slot-owners:v1";
+
+function tableColumns(database, table) {
+  try {
+    return new Set(database.prepare(`PRAGMA table_info(${table})`).all()
+      .map((entry) => String(entry.name || "").toLowerCase()));
+  } catch {
+    return new Set();
+  }
+}
+
+function reconcileArtistProfileMediaOwners(database) {
+  const profileColumns = tableColumns(database, "artist_profiles");
+  const objectColumns = tableColumns(database, "media_objects");
+  const userColumns = tableColumns(database, "users");
+  if (!profileColumns.has("avatar_owner_id") || !profileColumns.has("banner_owner_id")
+    || !objectColumns.has("owner_id") || !objectColumns.has("object_key")
+    || !objectColumns.has("storage_scope") || !objectColumns.has("status")
+    || !userColumns.has("id")) return false;
+
+  for (const slot of [
+    { field: "avatar_uri", ownerField: "avatar_owner_id", purpose: "avatar" },
+    { field: "banner", ownerField: "banner_owner_id", purpose: "banner" },
+  ]) {
+    if (!profileColumns.has(slot.field)) continue;
+    // An exact finalized descriptor and live public object are stronger proof
+    // than the legacy page claimant fallback. COUNT(DISTINCT owner_id)=1 keeps
+    // ambiguous imported history fail-closed while allowing repeated finalize
+    // records from the same uploader.
+    database.prepare(`UPDATE artist_profiles
+      SET ${slot.ownerField}=(
+        SELECT MIN(d.owner_id)
+        FROM legacy_media_finalize_descriptors d
+        JOIN media_objects o ON o.owner_id=d.owner_id AND o.object_key=d.output_object_key
+        JOIN users uploader ON uploader.id=d.owner_id
+        WHERE d.output_url=artist_profiles.${slot.field}
+          AND d.purpose=? AND d.status='finalized'
+          AND o.storage_scope='public' AND o.status IN ('issued','associated')
+      )
+      WHERE ${slot.field} IS NOT NULL AND trim(${slot.field})<>''
+        AND 1=(
+          SELECT COUNT(DISTINCT d.owner_id)
+          FROM legacy_media_finalize_descriptors d
+          JOIN media_objects o ON o.owner_id=d.owner_id AND o.object_key=d.output_object_key
+          JOIN users uploader ON uploader.id=d.owner_id
+          WHERE d.output_url=artist_profiles.${slot.field}
+            AND d.purpose=? AND d.status='finalized'
+            AND o.storage_scope='public' AND o.status IN ('issued','associated')
+        )`).run(slot.purpose, slot.purpose);
+  }
+  return true;
+}
 
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
@@ -138,7 +190,20 @@ export function ensureLegacyMediaFinalizeSchema(database) {
       ON legacy_media_finalize_descriptors(owner_id,status,expires_at,id);
     CREATE INDEX IF NOT EXISTS idx_legacy_media_finalize_output
       ON legacy_media_finalize_descriptors(owner_id,output_url,status);
+    CREATE INDEX IF NOT EXISTS idx_legacy_media_finalize_reconciliation
+      ON legacy_media_finalize_descriptors(output_url,purpose,status,owner_id);
+    CREATE TABLE IF NOT EXISTS legacy_media_finalize_migrations (
+      key TEXT PRIMARY KEY,
+      completed_at INTEGER NOT NULL
+    );
   `);
+  withWrite(database, () => {
+    if (database.prepare("SELECT 1 FROM legacy_media_finalize_migrations WHERE key=?")
+      .get(ARTIST_PROFILE_OWNER_RECOVERY_MARKER)) return;
+    if (!reconcileArtistProfileMediaOwners(database)) return;
+    database.prepare(`INSERT INTO legacy_media_finalize_migrations (key,completed_at)
+      VALUES (?,?)`).run(ARTIST_PROFILE_OWNER_RECOVERY_MARKER, Date.now());
+  });
   initializedSchemas.add(database);
 }
 
@@ -403,19 +468,22 @@ function finalizedDescriptorReference(database, {
   const owner = typeof ownerId === "string" ? ownerId.trim() : "";
   const url = String(publicUrl || "");
   if (!owner || !url) return null;
-  const acceptedPurposes = new Set(
+  const acceptedPurposes = [...new Set(
     (Array.isArray(purpose) ? purpose : [purpose])
       .filter((value) => typeof value === "string" && value)
       .map((value) => value.trim().toLowerCase()),
-  );
+  )];
+  const purposeSql = acceptedPurposes.length
+    ? ` AND d.purpose IN (${acceptedPurposes.map(() => "?").join(",")})`
+    : "";
   const row = database.prepare(`SELECT d.*,o.status object_status,o.storage_scope object_storage_scope
     FROM legacy_media_finalize_descriptors d
     JOIN media_objects o ON o.owner_id=d.owner_id AND o.object_key=d.output_object_key
     WHERE d.owner_id=? AND d.output_url=? AND d.status='finalized'
-      AND o.storage_scope='public' AND o.status IN ('issued','associated')`)
-    .get(owner, url);
-  if (!row || (acceptedPurposes.size && !acceptedPurposes.has(row.purpose))) return null;
-  return row;
+      AND o.storage_scope='public' AND o.status IN ('issued','associated')${purposeSql}
+    ORDER BY d.updated_at DESC,d.id DESC LIMIT 1`)
+    .get(owner, url, ...acceptedPurposes);
+  return row || null;
 }
 
 // Read-only mutation guard. A URL merely present in the generic object ledger
@@ -462,8 +530,9 @@ function recoveryProfileRow(database, { ownerId, target, artistKey }) {
   }
   const key = typeof artistKey === "string" ? artistKey.trim() : "";
   if (!key) throw new ApiError(400, "The artist profile recovery target is invalid.", "VALIDATION_FAILED");
-  return database.prepare(`SELECT artist_key,owner_id,avatar_uri,banner
-    FROM artist_profiles WHERE artist_key=? AND owner_id=?`).get(key, ownerId) || null;
+  const slotOwner = target.field === "avatar_uri" ? "avatar_owner_id" : "banner_owner_id";
+  return database.prepare(`SELECT artist_key,owner_id,avatar_owner_id,banner_owner_id,avatar_uri,banner
+    FROM artist_profiles WHERE artist_key=? AND COALESCE(${slotOwner},owner_id)=?`).get(key, ownerId) || null;
 }
 
 function replaceRecoveryProfileRow(database, {
@@ -482,13 +551,15 @@ function replaceRecoveryProfileRow(database, {
     result = database.prepare("UPDATE users SET banner=? WHERE id=? AND banner=?")
       .run(publicUrl, ownerId, expectedCurrentUrl);
   } else if (target.scope === "artist_profile" && target.field === "avatar_uri") {
-    result = database.prepare(`UPDATE artist_profiles SET avatar_uri=?,updated_at=?
-      WHERE artist_key=? AND owner_id=? AND avatar_uri=?`)
-      .run(publicUrl, at, artistKey.trim(), ownerId, expectedCurrentUrl);
+    result = database.prepare(`UPDATE artist_profiles
+      SET avatar_uri=?,avatar_owner_id=?,updated_at=?
+      WHERE artist_key=? AND COALESCE(avatar_owner_id,owner_id)=? AND avatar_uri=?`)
+      .run(publicUrl, ownerId, at, artistKey.trim(), ownerId, expectedCurrentUrl);
   } else {
-    result = database.prepare(`UPDATE artist_profiles SET banner=?,updated_at=?
-      WHERE artist_key=? AND owner_id=? AND banner=?`)
-      .run(publicUrl, at, artistKey.trim(), ownerId, expectedCurrentUrl);
+    result = database.prepare(`UPDATE artist_profiles
+      SET banner=?,banner_owner_id=?,updated_at=?
+      WHERE artist_key=? AND COALESCE(banner_owner_id,owner_id)=? AND banner=?`)
+      .run(publicUrl, ownerId, at, artistKey.trim(), ownerId, expectedCurrentUrl);
   }
   if (Number(result.changes || 0) !== 1) {
     throw new ApiError(409, "That profile photo changed during recovery.", "CONFLICT");
@@ -757,6 +828,15 @@ export function eraseLegacyMediaFinalizeDescriptors(database, {
   ensureLegacyMediaFinalizeSchema(database);
   const owner = normalizedOwner(ownerId);
   return withWrite(database, () => {
+    const profileColumns = tableColumns(database, "artist_profiles");
+    if (profileColumns.has("avatar_owner_id") && profileColumns.has("banner_owner_id")) {
+      database.prepare(`UPDATE artist_profiles
+        SET avatar_uri=NULL,avatar_owner_id=NULL,updated_at=?
+        WHERE avatar_uri IS NOT NULL AND COALESCE(avatar_owner_id,owner_id)=?`).run(at, owner);
+      database.prepare(`UPDATE artist_profiles
+        SET banner=NULL,banner_owner_id=NULL,updated_at=?
+        WHERE banner IS NOT NULL AND COALESCE(banner_owner_id,owner_id)=?`).run(at, owner);
+    }
     const rows = database.prepare(`SELECT staging_object_key,output_object_key
       FROM legacy_media_finalize_descriptors WHERE owner_id=?`).all(owner);
     const keys = rows.flatMap((row) => [row.staging_object_key, row.output_object_key]).filter(Boolean);

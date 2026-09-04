@@ -540,7 +540,8 @@ export function startFounderOperationsScheduler({
     digestTimer = setTimer(async () => {
       digestTimer = null;
       if (active) await active;
-      active = Promise.resolve(runDigest(database, { env, at: clock() }))
+      active = Promise.resolve()
+        .then(() => runDigest(database, { env, at: clock() }))
         .catch((error) => { report("digest", error); return null; })
         .finally(() => { active = null; });
       await active;
@@ -552,7 +553,8 @@ export function startFounderOperationsScheduler({
   if (hostedProduction) {
     deploymentTimer = setTimer(() => {
       deploymentTimer = null;
-      deploymentActive = Promise.resolve(stampDeployment(database, { env, at: clock() }))
+      deploymentActive = Promise.resolve()
+        .then(() => stampDeployment(database, { env, at: clock() }))
         .then((result) => {
           if (result?.reason) {
             logger?.error?.(`[health] founder deployment stamp skipped reason=${safeCode(result.reason)}`);
@@ -575,7 +577,8 @@ export function startFounderOperationsScheduler({
     hostedProduction,
     tick() {
       if (active) return active;
-      active = Promise.resolve(runDigest(database, { env, at: clock() }))
+      active = Promise.resolve()
+        .then(() => runDigest(database, { env, at: clock() }))
         .catch((error) => { report("digest", error); return null; })
         .finally(() => { active = null; });
       return active;

@@ -24,9 +24,11 @@ import { createArtistMemorialService } from "../artistMemorials/artistMemorialSe
 import { archiveIdentityPart, archiveShowKey } from "../artistArchive/artistArchiveKeys.js";
 import {
   PUBLIC_ENTITY_THRESHOLDS,
+  hasCompleteRichMusicEventRecord,
   isStrictCalendarDate,
   hasStructuredShowLocationCollision,
-  isStrictIsoDateTime,
+  isIndexableMusicEventRecord,
+  publicMusicEventCandidateSql,
   qualifiesCityConcertDirectory,
   qualifiesCityVenueDirectory,
   structuredCityIdentity,
@@ -338,15 +340,16 @@ function visibleTourDateCandidates(database, {
   const at = Number.isSafeInteger(requestedAt) && requestedAt >= 0 ? requestedAt : Date.now();
   const today = new Date(at).toISOString().slice(0, 10);
   const rows = [];
-  const statement = database.prepare(`SELECT td.id,td.provider_event_id,td.artist,td.artist_key,td.venue,td.place,td.source,
+  const statement = database.prepare(`SELECT td.id,td.provider_event_id,td.artist,td.artist_key,td.venue,td.place,td.source,td.event_name,
       td.venue_provider_id,td.date,td.event_end_date,td.updated_at,td.owner_id,COALESCE(td.provider_active,1) AS provider_active,
-      td.event_status,td.ticket_url,td.start_date_time,td.venue_address_line1,td.venue_address_line2,
+      td.event_status,td.ticket_url,td.start_date_time,td.event_kind,td.music_qualified,td.music_evidence,
+      td.venue_address_line1,td.venue_address_line2,
       td.venue_city,td.venue_region,td.venue_country_code,td.venue_country,
       CASE WHEN ${tourDateHasNoPublishedMemorialSql("td")} THEN 0 ELSE 1 END AS memorialized
     FROM tour_dates td INDEXED BY idx_tourdates_sitemap_cursor
     LEFT JOIN users owner ON owner.id=td.owner_id
     WHERE td.release_at<=?
-      AND COALESCE(td.music_qualified,1)=1
+      AND ${publicMusicEventCandidateSql("td")}
       AND td.date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
       AND TRIM(COALESCE(td.artist,''))<>'' AND TRIM(COALESCE(td.venue,''))<>''
       AND (td.owner_id IS NULL OR ${activeAccountSql("owner")})
@@ -393,7 +396,8 @@ export function materializeSitemapCandidates(database, {
     now: at,
     maximumRows: safeMaximum - posts.length,
   });
-  const upcomingEvents = tourDates.filter((row) => currentOrUpcomingTourDateRow(row, today)
+  const upcomingEvents = tourDates.filter((row) => isIndexableMusicEventRecord(row)
+    && currentOrUpcomingTourDateRow(row, today)
     && (row.owner_id != null || Number(row.provider_active) === 1)
     && Number(row.memorialized) !== 1);
   return Object.freeze({
@@ -521,8 +525,8 @@ export function artistSitemapEntries(database, { now = Date.now(), candidates = 
   }
 
   const profileDetails = new Map(database.prepare(`SELECT ap.artist_key,ap.bio,ap.updated_at
-    FROM artist_profiles ap JOIN users owner ON owner.id=ap.owner_id
-    WHERE ap.removed=0 AND ${activeAccountSql("owner")}`).all()
+    FROM artist_profiles ap LEFT JOIN users owner ON owner.id=ap.owner_id
+    WHERE ap.removed=0 AND (ap.owner_id IS NULL OR ${activeAccountSql("owner")})`).all()
     .map((row) => [row.artist_key, row]));
   const officialUpdates = new Map(database.prepare(`SELECT post.artist_key,MAX(post.created_at) AS lastmod
     FROM artist_posts post
@@ -573,7 +577,8 @@ function visibleUpcomingEvents(database, { now = Date.now(), limit = -1, candida
   const at = Number.isSafeInteger(requestedAt) && requestedAt >= 0 ? requestedAt : Date.now();
   const today = new Date(at).toISOString().slice(0, 10);
   const rows = (candidates?.upcomingEvents || visibleTourDateCandidates(database, { now: at }))
-    .filter((row) => currentOrUpcomingTourDateRow(row, today)
+    .filter((row) => isIndexableMusicEventRecord(row)
+      && currentOrUpcomingTourDateRow(row, today)
       && (row.owner_id != null || Number(row.provider_active) === 1)
       && Number(row.memorialized) !== 1);
   return Number.isSafeInteger(limit) && limit > 0 ? rows.slice(0, limit) : rows;
@@ -620,13 +625,6 @@ function currentPublicEventTicketUrl(row, today) {
   return projectedTourDateTicketUrl(row) || null;
 }
 
-function hasCompleteRichEventRow(row) {
-  return isStrictIsoDateTime(row?.start_date_time)
-    && Boolean(String(row?.venue_address_line1 || row?.venue_address_line2 || "").trim())
-    && Boolean(String(row?.venue_city || "").trim())
-    && Boolean(String(row?.venue_country_code || row?.venue_country || "").trim());
-}
-
 export function eventSitemapEntries(database, options = {}) {
   const candidates = options.candidates || null;
   const events = visibleUpcomingEvents(database, options);
@@ -638,7 +636,7 @@ export function eventSitemapEntries(database, options = {}) {
     if (!hasIndexableEventEvidence({
       eligibleFanContent: Boolean(fanLastmod),
       currentPublicTicketUrl: currentPublicEventTicketUrl(row, today),
-      completeRichEvent: hasCompleteRichEventRow(row),
+      completeRichEvent: hasCompleteRichMusicEventRecord(row),
     })) return [];
     return [{
       path: eventPath(row.id),

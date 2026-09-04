@@ -3,6 +3,13 @@ const TICKETMASTER_IMAGE_HOSTS = new Set(["s1.ticketm.net"]);
 const DEFAULT_MAX_BYTES = 6 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 3_000;
 
+export class ShareArtworkTransientError extends Error {
+  constructor() {
+    super("Social share artwork is temporarily unavailable");
+    this.name = "ShareArtworkTransientError";
+  }
+}
+
 function cleanUrl(value) {
   if (typeof value !== "string" || !value.trim() || value.length > 2_048) return null;
   try {
@@ -105,6 +112,7 @@ async function readBoundedBytes(response, { maxBytes, signal }) {
 
 export async function loadShareArtwork(candidates, {
   acceptBytes = null,
+  acceptErrorIsTerminal = null,
   env = process.env,
   fetchImpl = globalThis.fetch,
   maxBytes = DEFAULT_MAX_BYTES,
@@ -114,35 +122,61 @@ export async function loadShareArtwork(candidates, {
   if (!Array.isArray(candidates) || typeof fetchImpl !== "function") return null;
   const boundedMax = Math.max(1_024, Math.min(DEFAULT_MAX_BYTES, Number(maxBytes) || DEFAULT_MAX_BYTES));
   const boundedTimeout = Math.max(100, Math.min(DEFAULT_TIMEOUT_MS, Number(timeoutMs) || DEFAULT_TIMEOUT_MS));
-  const timeoutSignal = AbortSignal.timeout(boundedTimeout);
-  const requestSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+  let sawTransientFailure = false;
 
   for (const candidate of candidates.slice(0, 3)) {
     if (signal?.aborted) throw signal.reason || new DOMException("Aborted", "AbortError");
-    if (timeoutSignal.aborted) break;
     const url = trustedShareArtworkUrl(candidate, { env });
     if (!url) continue;
-    let bytes = null;
+    // Give every trusted fallback its own short deadline. A stalled provider
+    // image must not consume the artist-profile candidate's opportunity.
+    const timeoutSignal = AbortSignal.timeout(boundedTimeout);
+    const requestSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+    let response = null;
     try {
-      const response = await fetchImpl(url, {
+      response = await fetchImpl(url, {
         method: "GET",
         headers: { Accept: "image/webp,image/png,image/jpeg" },
         redirect: "error",
         signal: requestSignal,
       });
-      if (!response?.ok) continue;
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      sawTransientFailure = true;
+      continue;
+    }
+
+    if (!response?.ok) {
+      const status = Number(response?.status);
+      if (!Number.isInteger(status) || status === 408 || status === 429 || status >= 500) {
+        sawTransientFailure = true;
+      }
+      continue;
+    }
+
+    let bytes = null;
+    try {
       bytes = await readBoundedBytes(response, { maxBytes: boundedMax, signal: requestSignal });
     } catch (error) {
       if (signal?.aborted) throw error;
-      if (timeoutSignal.aborted) break;
-      // A missing remote photo must not block sharing; the renderer has a
-      // designed, branded fallback and will still produce a complete card.
+      sawTransientFailure = true;
+      continue;
     }
     if (!bytes) continue;
     if (typeof acceptBytes !== "function") return bytes;
-    const accepted = await acceptBytes(bytes, candidate);
+    let accepted = null;
+    try {
+      accepted = await acceptBytes(bytes, candidate);
+    } catch (error) {
+      if (signal?.aborted || error?.name === "AbortError") throw error;
+      const terminal = typeof acceptErrorIsTerminal !== "function"
+        || acceptErrorIsTerminal(error, candidate) !== false;
+      if (!terminal) throw error;
+      continue;
+    }
     if (accepted) return accepted;
   }
+  if (sawTransientFailure) throw new ShareArtworkTransientError();
   return null;
 }
 

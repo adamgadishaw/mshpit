@@ -50,7 +50,8 @@ function createDatabase() {
     );
     CREATE TABLE follows (follower_id TEXT NOT NULL,followee_id TEXT NOT NULL,PRIMARY KEY(follower_id,followee_id));
     CREATE TABLE artist_profiles (
-      artist_key TEXT PRIMARY KEY,bio TEXT,banner TEXT,avatar_uri TEXT,feed_enabled INTEGER NOT NULL DEFAULT 0,
+      artist_key TEXT PRIMARY KEY,bio TEXT,banner TEXT,banner_owner_id TEXT,
+      avatar_uri TEXT,avatar_owner_id TEXT,feed_enabled INTEGER NOT NULL DEFAULT 0,
       owner_id TEXT,removed INTEGER NOT NULL DEFAULT 0,updated_at INTEGER
     );
     CREATE TABLE artist_posts (
@@ -379,6 +380,33 @@ test("crawler-readable artist surfaces never publish an unstructured legacy genr
   }
 });
 
+test("artist titles identify ambiguous names as music artists", () => {
+  const database = createDatabase();
+  try {
+    addUser(database, "active", { name: "Active Fan", handle: "activefan" });
+    const documents = service(database);
+    for (const [key, name] of [["sports", "Sports."], ["automatic", "Automatic"]]) {
+      addArtist(database, { key, name, bio: "" });
+      addPost(database, {
+        id: `${key}-review`,
+        artist: name,
+        artistKey: key,
+        review: "A detailed concert review covering the performance, sound, crowd, and encore.",
+      });
+      const document = documents.artistDocument({ artistKey: key, at: NOW });
+      assert.equal(document.title, `${name} — music artist reviews, photos & tour dates | Mshpit`);
+      assert.equal(
+        document.description,
+        `${name} is a music artist on Mshpit. See concert reviews, fan photos, ratings and tour dates.`,
+      );
+      assert.doesNotMatch(document.title, new RegExp(`^${name.replace(".", "\\.")} live\\b`, "iu"));
+      assert.match(documents.render(document), /music artist reviews/);
+    }
+  } finally {
+    database.close();
+  }
+});
+
 test("artist document uses only active UGC and references Event leaf pages without duplicating MusicEvent", () => {
   const database = createDatabase();
   try {
@@ -471,6 +499,7 @@ test("finalized profile images are owner and purpose bound and expose only trust
     const memberAvatarUrl = "https://media.example/public/profile-member-avatar.webp";
     const artistBannerUrl = "https://media.example/public/profile-artist-banner.jpg";
     const artistWrongAvatarUrl = "https://media.example/public/profile-artist-wrong-avatar.jpg";
+    const seededArtistAvatarUrl = "https://media.example/public/profile-seeded-artist-avatar.jpg";
     const wrongOwnerUrl = "https://media.example/public/profile-other-owner.jpg";
     const wrongPurposeUrl = "https://media.example/public/profile-wrong-purpose.jpg";
     addFinalizedProfileImage(database, {
@@ -495,6 +524,12 @@ test("finalized profile images are owner and purpose bound and expose only trust
       ownerId: "artist-owner",
       url: artistWrongAvatarUrl,
       purpose: "banner",
+    });
+    addFinalizedProfileImage(database, {
+      descriptorId: "lm_profileseededartist000001",
+      ownerId: "profile-owner",
+      url: seededArtistAvatarUrl,
+      purpose: "avatar",
     });
     addFinalizedProfileImage(database, {
       descriptorId: "lm_profileotherowner00000001",
@@ -524,6 +559,12 @@ test("finalized profile images are owner and purpose bound and expose only trust
       artistWrongAvatarUrl,
       "artist-owner",
       NOW,
+    );
+    addArtist(database, { key: "seeded-artist", name: "Seeded Artist" });
+    database.prepare(`INSERT INTO artist_profiles
+      (artist_key,bio,avatar_uri,avatar_owner_id,feed_enabled,owner_id,removed,updated_at)
+      VALUES (?,?,?,?,0,NULL,0,?)`).run(
+      "seeded-artist", "Staff-seeded catalog profile", seededArtistAvatarUrl, "profile-owner", NOW,
     );
     addPost(database, { id: "profile-image-comment-post", userId: "profile-owner" });
     database.prepare("INSERT INTO comments (id,post_id,user_id,text,removed,created_at) VALUES (?,?,?,?,0,?)")
@@ -569,6 +610,10 @@ test("finalized profile images are owner and purpose bound and expose only trust
       encodingFormat: "image/jpeg",
     });
     assert.doesNotMatch(JSON.stringify(artist), /profile-artist-wrong-avatar/);
+    const seededArtist = documents.artistDocument({ artistKey: "seeded-artist", today: "2026-08-25", at: NOW });
+    assert.equal(seededArtist.image, seededArtistAvatarUrl,
+      "an unclaimed artist page projects staff-seeded art under the slot uploader");
+    assert.equal(seededArtist.imageProvenance, "entity-profile");
 
     const wrongOwner = documents.memberDocument({ handle: "wrongowner" });
     const wrongPurpose = documents.memberDocument({ handle: "wrongpurpose" });
@@ -1067,7 +1112,7 @@ test("provider-evidenced festivals expose cohesive visible and structured event 
     });
     const html = documents.render(document);
     const schema = document.jsonLd.find((node) => node["@type"] === "MusicEvent");
-    assert.equal(document.title, "Lollapalooza — 2026-09-01 | Mshpit");
+    assert.equal(document.title, "Lollapalooza at Festival Park — 2026-09-01 | Mshpit");
     assert.equal(document.event.eventKind, "festival");
     assert.deepEqual(document.event.billedArtists, ["Headliner One", "Headliner Two"]);
     assert.equal(schema.name, "Lollapalooza");
@@ -1228,6 +1273,7 @@ test("verified post images are ImageObjects and the public artist directory is s
     const firstHtml = documents.render(firstPage);
     const secondHtml = documents.render(secondPage);
     assert.match(firstHtml, /name="robots" content="index,follow/);
+    assert.match(firstHtml, /rel="canonical" href="[^"]*\/artists"/);
     assert.match(secondHtml, /name="robots" content="noindex,follow"/);
     // `follow` is what keeps every leaf entity reachable from the slice.
     assert.doesNotMatch(secondHtml, /content="noindex,nofollow"/);

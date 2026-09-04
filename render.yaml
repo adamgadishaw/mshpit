@@ -8,6 +8,7 @@ services:
     name: mshpit
     runtime: node
     plan: starter                      # $7/mo; has persistent disk support
+    branch: master
     # The persistent disk is not mounted during builds. Give the quality gate a
     # throwaway, explicitly bootstrapped database; these command-scoped values do
     # not reach the runtime process or weaken the /data startup guard. The live
@@ -34,9 +35,10 @@ services:
         value: "24"
       - key: NODE_ENV
         value: production
+      - key: PIT_ENV
+        value: production
       # Explicit, non-secret authority for the bounded five-object maintenance
-      # release. Staging intentionally omits this even if somebody mispoints its
-      # storage settings at production.
+      # release. Keep it on the production web service only.
       - key: PIT_LEGACY_VIDEO_POSTER_RELEASE
         value: 2026-08-22-v1
       - key: PIT_DATA_DIR
@@ -279,159 +281,6 @@ services:
         value: /opt/ffmpeg/bin/ffmpeg
       - key: PIT_FFPROBE_PATH
         value: /opt/ffmpeg/bin/ffprobe
-
-  # ---------------------------------------------------------------------------
-  # STAGING. Deploys from the `staging` branch so `master` stops being both the
-  # integration and the production environment. Merge to `staging` first, watch
-  # it, then fast-forward `master`.
-  #
-  # Staging runs NODE_ENV=production on purpose: with NODE_ENV=development the
-  # cookie loses Secure, CORS opens to the dev allowlist, and the data-directory
-  # guard changes behaviour — at which point it is no longer a rehearsal. The
-  # deployment identity is carried by PIT_ENV instead, which drives:
-  #   - email: delivery is restricted to EMAIL_ALLOWED_RECIPIENTS and fails
-  #     CLOSED, so an unset allowlist sends nothing (see server/emailService.js)
-  #   - robots.txt: Disallow: / so staging is never indexed
-  #
-  # THREE THINGS MUST BE DIFFERENT FROM PRODUCTION, set in the dashboard:
-  #   1. MEDIA_BUCKET — a separate bucket. Sharing production's means staging
-  #      test uploads land in the bucket real users' photos are served from.
-  #   2. RESEND_API_KEY — ideally a separate key so staging sends are
-  #      attributable, and its own quota cannot eat production's.
-  #   3. ADMIN_PASSWORD — never reuse production's.
-  - type: web
-    name: mshpit-staging
-    runtime: node
-    plan: starter
-    branch: staging
-    buildCommand: npm ci && mkdir -p /tmp/pit-build-data && PIT_DATA_DIR=/tmp/pit-build-data PIT_ALLOW_EMPTY_DB_BOOTSTRAP=true npm run check:deploy
-    startCommand: node scripts/start-production.mjs
-    # Match production's core-only liveness policy. Optional staging media
-    # dependencies are verified manually through the strict /api/readiness gate.
-    healthCheckPath: /api/health
-    autoDeploy: true
-    disk:
-      name: pit-staging-data           # a DIFFERENT disk; never point at pit-data
-      mountPath: /data
-      sizeGB: 1
-    envVars:
-      - key: NODE_VERSION
-        value: "24"
-      - key: NODE_ENV
-        value: production              # see note above — deliberate
-      - key: PIT_ENV
-        value: staging                 # the isolation switch
-      - key: PIT_DATA_DIR
-        value: /data
-      # Fail closed by default. For a genuinely new disk, change this to true for
-      # one dashboard deployment only, confirm pit.db exists, then restore false.
-      - key: PIT_ALLOW_EMPTY_DB_BOOTSTRAP
-        value: "false"
-      - key: BACKUP_ENABLED
-        value: "true"
-      - key: BACKUP_KEEP
-        value: "7"
-      # Use a private staging backup bucket if off-host copies are configured.
-      - key: BACKUP_S3_ENDPOINT
-        sync: false
-      - key: BACKUP_S3_BUCKET
-        sync: false
-      - key: BACKUP_S3_REGION
-        sync: false
-      - key: BACKUP_S3_ACCESS_KEY_ID
-        sync: false
-      - key: BACKUP_S3_SECRET_ACCESS_KEY
-        sync: false
-      - key: PUBLIC_ORIGIN
-        sync: false                    # the onrender.com URL Render assigns
-      - key: OWNER_EMAIL
-        sync: false                    # if set, must match staging ADMIN_EMAIL
-      - key: ADMIN_EMAIL
-        sync: false                    # configure staging independently in Render
-      - key: OWNER_MIGRATION_EMAIL
-        sync: false                    # staging migration must be independent
-      - key: ADMIN_PASSWORD
-        sync: false                    # must NOT match production
-      - key: ALERT_EMAIL
-        sync: false
-      - key: SITE_HEALTH_DIGEST_ENABLED
-        value: "false"                # never mail production operations from staging
-      - key: SITE_HEALTH_DIGEST_HOUR
-        value: "9"
-      # Comma-separated. Anything not listed is logged as skipped, never sent.
-      # Empty means staging sends no email at all, which is the safe default.
-      - key: EMAIL_ALLOWED_RECIPIENTS
-        sync: false
-      - key: RESEND_API_KEY
-        sync: false
-      - key: MAIL_FROM
-        sync: false
-      - key: MAIL_REPLY_TO
-        sync: false
-      - key: EMAIL_CAMPAIGN_RECOVERY_ENABLED
-        value: "false"
-      - key: MEDIA_ENDPOINT
-        sync: false
-      - key: MEDIA_BUCKET
-        sync: false                    # a SEPARATE bucket from production
-      - key: MEDIA_SOURCE_BUCKET
-        sync: false                    # a SEPARATE private source bucket
-      - key: MEDIA_REGION
-        sync: false
-      - key: MEDIA_ACCESS_KEY_ID
-        sync: false
-      - key: MEDIA_SECRET_ACCESS_KEY
-        sync: false
-      - key: MEDIA_PUBLIC_BASE_URL
-        sync: false
-      - key: PIT_VIDEO_PUBLISHING_ENABLED
-        value: "false"
-      - key: PIT_VIDEO_VERIFIER_HOSTPORT
-        sync: false
-      - key: PIT_VIDEO_VERIFIER_SECRET
-        sync: false
-      - key: MEDIA_CLEANUP_ENABLED
-        value: "true"
-      - key: MEDIA_LEGACY_RECOVERY_ENABLED
-        value: "true"
-      - key: MEDIA_ORPHAN_TTL_MS
-        value: "172800000"
-      - key: MEDIA_UPLOAD_OUTSTANDING_OBJECTS
-        value: "40"
-      - key: MEDIA_UPLOAD_OUTSTANDING_BYTES
-        value: "6442450944"
-      - key: MEDIA_UPLOAD_24H_BYTES
-        value: "6442450944"
-      - key: MEDIA_UPLOAD_24H_TICKETS
-        value: "120"
-      - key: MEDIA_UPLOAD_GLOBAL_OUTSTANDING_OBJECTS
-        value: "10000"
-      - key: MEDIA_UPLOAD_GLOBAL_OUTSTANDING_BYTES
-        value: "137438953472"
-      - key: MEDIA_UPLOAD_GLOBAL_24H_BYTES
-        value: "549755813888"
-      - key: MEDIA_UPLOAD_GLOBAL_24H_TICKETS
-        value: "100000"
-      # Provider fan-out stays off on staging: it would burn production's shared
-      # YouTube and Ticketmaster quotas for data nobody looks at.
-      - key: CACHE_WARM_ENABLED
-        value: "false"
-      - key: TOURDATE_REFRESH_ENABLED
-        value: "false"
-      - key: ARTIST_DEATH_WATCH_SCHEDULER_ENABLED
-        value: "false"                # staging must not duplicate production provider checks
-      - key: ARTIST_GENRE_REFRESH_ENABLED
-        value: "false"                # production alone owns the paced MusicBrainz evidence pass
-      - key: ARTIST_PHOTO_SEED_ENABLED
-        value: "false"                # staging must not duplicate production Spotify work
-      - key: TOURDATE_DEMAND_REFRESH_ENABLED
-        value: "false"
-      - key: YOUTUBE_API_KEY
-        sync: false
-      - key: TICKETMASTER_KEY
-        sync: false
-      - key: EXPO_PUBLIC_GOOGLE_MAPS_KEY
-        sync: false
 
   # NOTE: the old git-push cron ("pit-catalog-refresh") is retired — the in-process
   # scheduler above replaces it for tour dates (no token, no redeploy, live instantly).

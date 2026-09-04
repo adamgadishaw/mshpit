@@ -184,6 +184,18 @@ export function accountPrivacyRoutes({
             .map((row) => ({ id: row.id, artistName: row.artist_name, note: row.note, status: row.status, createdAt: row.created_at })),
           profiles: database.prepare("SELECT artist_key,bio,banner,avatar_uri,feed_enabled,updated_at FROM artist_profiles WHERE owner_id=?").all(user.id)
             .map((row) => ({ artistKey: row.artist_key, bio: row.bio, banner: row.banner, avatarUri: row.avatar_uri, feedEnabled: !!row.feed_enabled, updatedAt: row.updated_at })),
+          // Upload provenance is separate from page authorship. Include the
+          // complete association list so staff-seeded photos on unclaimed or
+          // later-claimed pages remain portable without presenting those pages
+          // as profiles owned by the uploader.
+          managedPhotos: database.prepare(`SELECT artist_key,slot,url FROM (
+              SELECT artist_key,'avatar' slot,avatar_uri url FROM artist_profiles
+                WHERE COALESCE(avatar_owner_id,owner_id)=? AND avatar_uri IS NOT NULL AND avatar_uri<>''
+              UNION ALL
+              SELECT artist_key,'banner' slot,banner url FROM artist_profiles
+                WHERE COALESCE(banner_owner_id,owner_id)=? AND banner IS NOT NULL AND banner<>''
+            ) ORDER BY artist_key COLLATE NOCASE,slot`).all(user.id, user.id)
+            .map((row) => ({ artistKey: row.artist_key, slot: row.slot, url: row.url })),
           posts: database.prepare("SELECT id,artist_key,text,created_at FROM artist_posts WHERE user_id=? ORDER BY created_at DESC").all(user.id)
             .map((row) => ({ id: row.id, artistKey: row.artist_key, text: row.text, createdAt: row.created_at })),
         },

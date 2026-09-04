@@ -33,7 +33,7 @@ test("video verifier container pins its runtime and drops root privileges", () =
 });
 
 test("production verifier is private, automatically wired, and credential-free", () => {
-  const verifier = serviceBlock("pit-video-verifier", "mshpit-staging");
+  const verifier = serviceBlock("pit-video-verifier");
   assert.match(verifier, /runtime: docker/);
   assert.match(verifier, /region: oregon/);
   assert.match(verifier, /dockerfilePath: \.\/Dockerfile\.video-verifier/);

@@ -19,7 +19,11 @@ import { safeOwnedReadyMediaUrl } from "../../publicMedia.js";
 import { publicTicketmasterEventImage } from "../../providerEventImage.js";
 import { projectedOnlineReviewFields } from "../../onlineReviews.js";
 import { archiveShowKey } from "../artistArchive/artistArchiveKeys.js";
-import { isStrictCalendarDate, isStrictIsoDateTime } from "./publicEntityPolicy.js";
+import {
+  isIndexableMusicEventRecord,
+  isStrictCalendarDate,
+  isStrictIsoDateTime,
+} from "./publicEntityPolicy.js";
 
 const SITE_NAME = "Mshpit";
 const DEFAULT_ORIGIN = "https://www.mshpit.com";
@@ -501,7 +505,7 @@ function eventAllowsTicketOffer(event, today = null) {
 }
 
 function eventCard(row, paths) {
-  if (!row?.id) return null;
+  if (!row?.id || !isIndexableMusicEventRecord(row)) return null;
   const artist = cleanLine(row.artist, 160);
   const venue = cleanLine(row.venue, 180);
   const date = validDate(row.date);
@@ -831,8 +835,12 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       const mediaByPost = publicMediaForRows(database, raw.reviews || [], { galleryOnly: true, maxPerPost: 3 });
       const reviews = (raw.reviews || []).map((row) => postCard(row, mediaByPost.get(row.id), publicPaths));
       const profileOwner = raw.profile?.owner_id || null;
-      const avatarMedia = profileOwner ? safeProfileImage(database, profileOwner, raw.profile.avatar_uri, "avatar") : null;
-      const bannerMedia = profileOwner ? safeProfileImage(database, profileOwner, raw.profile.banner, "banner") : null;
+      const avatarOwner = raw.profile?.avatar_owner_id || profileOwner;
+      const bannerOwner = raw.profile?.banner_owner_id || profileOwner;
+      const avatarMedia = avatarOwner
+        ? safeProfileImage(database, avatarOwner, raw.profile.avatar_uri, "avatar") : null;
+      const bannerMedia = bannerOwner
+        ? safeProfileImage(database, bannerOwner, raw.profile.banner, "banner") : null;
       const avatar = avatarMedia?.url || null;
       const banner = bannerMedia?.url || null;
       const fanImage = reviews.flatMap((review) => review.media)
@@ -842,8 +850,9 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       const bio = cleanBody(raw.profile?.bio || source.bio, 2_000);
       const reviewCount = count(raw.stats?.review_count);
       const averageRating = memorial ? null : rating(raw.stats?.average_rating);
-      const description = summary(memorial?.summary || bio || `${name} live reviews, fan photos, artist updates and upcoming performances on Mshpit.`);
       const events = memorial ? [] : (raw.events || []).map((event) => eventCard(event, publicPaths)).filter(Boolean);
+      const description = summary(memorial?.summary || bio
+        || `${name} is a music artist on Mshpit. See concert reviews, fan photos, ratings and tour dates.`);
       const concerts = (raw.concerts || []).flatMap((concert) => {
         const date = validDate(concert.date);
         const venue = cleanLine(concert.venue, 180);
@@ -937,7 +946,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         siteName: SITE_NAME,
         title: memorial
           ? `Remembering ${name} — music, shows and fan memories | Mshpit`
-          : `${name} live — reviews, photos and shows | Mshpit`,
+          : `${name} — music artist reviews, photos & tour dates | Mshpit`,
         description,
         canonicalPath: path,
         canonicalUrl: absolute(publicOrigin, path),
@@ -1173,10 +1182,12 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         }),
         ...(posts.length ? { hasPart: posts.map((post) => ({ "@id": `${absolute(publicOrigin, post.path)}#posting` })) } : {}),
       };
+      const titleLead = event.name.toLocaleLowerCase("en").includes(event.venue.toLocaleLowerCase("en"))
+        ? event.name : `${event.name} at ${event.venue}`;
       return Object.freeze({
         kind: "event",
         siteName: SITE_NAME,
-        title: `${event.name} — ${event.date} | Mshpit`,
+        title: `${titleLead} — ${event.date} | Mshpit`,
         description,
         canonicalPath: path,
         canonicalUrl: absolute(publicOrigin, path),
@@ -1378,7 +1389,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       return Object.freeze({
         kind: "venue",
         siteName: SITE_NAME,
-        title: `${name} — concerts, reviews and fan photos | Mshpit`,
+        title: `${name} concert venue — upcoming shows, reviews & photos | Mshpit`,
         description,
         canonicalPath: path,
         canonicalUrl: absolute(publicOrigin, path),

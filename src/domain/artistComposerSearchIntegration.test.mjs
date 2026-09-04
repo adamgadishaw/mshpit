@@ -52,7 +52,8 @@ test("official provider titles remain distinct while clear tour names prefill th
   assert.doesNotMatch(composer, /prefill\?\.tour \|\| prefill\?\.eventName/);
   assert.match(composer, /EVENT LISTING NAME/);
   assert.match(composer, /TOUR OR SPECIAL EVENT/);
-  assert.match(card, /const performanceTitle = isOnlineReview[\s\S]*?: String\(log\.tour/);
+  assert.match(card, /const performance = reviewCardPerformance\(log\)/);
+  assert.match(card, /const performanceTitle = performance\.primary/);
   assert.match(card, /styles\.performanceCard/);
   assert.match(card, /styles\.performanceRegister/);
   assert.match(card, /MSHPIT \/ LIVE MEMORY/);

@@ -109,6 +109,24 @@ test("network, response, and HTTP failures normalize predictably", () => {
   assert.equal(catalogEntry("not-a-code"), ERROR_CATALOG["PIT-UNK-001"]);
 });
 
+test("connectivity copy is plain while provider codes keep provider guidance", () => {
+  const connectivity = catalogEntry(catalogueCode({ kind: "network" }));
+  assert.equal(connectivity.message,
+    "Mshpit couldn't connect. Check your internet connection and try again.");
+  assert.doesNotMatch(connectivity.message, /venue/iu);
+
+  const providerCode = catalogueCode({
+    serverCode: "PROVIDER_UNAVAILABLE",
+    status: 502,
+    kind: "network",
+  });
+  const provider = catalogEntry(providerCode);
+  assert.equal(providerCode, "PIT-SVC-002");
+  assert.equal(provider.category, "provider");
+  assert.match(provider.message, /music or ticket provider is temporarily unavailable/iu);
+  assert.doesNotMatch(provider.message, /internet connection/iu);
+});
+
 test("diagnostic routes discard query values and private identifiers", () => {
   assert.equal(
     safeRouteTemplate("/api/youtube/track?title=Private%20Song&artist=Someone"),

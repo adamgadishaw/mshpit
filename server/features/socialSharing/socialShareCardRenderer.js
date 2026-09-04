@@ -4,11 +4,14 @@ import sharp from "sharp";
 
 import { eventPath, postPath } from "../../../src/domain/urls.mjs";
 import { isStrictCalendarDate } from "../seo/publicEntityPolicy.js";
-import { loadShareArtwork } from "./socialShareArtwork.js";
+import {
+  loadShareArtwork,
+  ShareArtworkTransientError,
+} from "./socialShareArtwork.js";
 
 const CARD_WIDTH = 1080;
 const CARD_HEIGHT = 1920;
-const CARD_VERSION = "mshpit-social-story-v4";
+const CARD_VERSION = "mshpit-social-story-v5";
 const CANONICAL_ORIGIN = "https://www.mshpit.com";
 const MAX_RENDER_BYTES = 4 * 1024 * 1024;
 const MAX_ARTWORK_INPUT_BYTES = 6 * 1024 * 1024;
@@ -17,9 +20,8 @@ const DEFAULT_CACHE_ENTRIES = 160;
 const DEFAULT_CACHE_BYTES = 48 * 1024 * 1024;
 const DEFAULT_MAX_CONCURRENT_RENDERS = 1;
 const DEFAULT_MAX_CONCURRENT_ARTWORK_LOADS = 4;
-const DEFAULT_DEGRADED_CACHE_ENTRIES = 32;
-const DEFAULT_DEGRADED_CACHE_BYTES = 16 * 1024 * 1024;
-const DEFAULT_DEGRADED_CACHE_TTL_MS = 15_000;
+const DEFAULT_TRANSIENT_FAILURE_CACHE_ENTRIES = 160;
+const DEFAULT_TRANSIENT_FAILURE_CACHE_TTL_MS = 5_000;
 const PREPARED_ARTWORK_RENDER = Symbol("preparedArtworkRender");
 
 const COPY = Object.freeze({
@@ -47,6 +49,20 @@ export class SocialShareCardBusyError extends Error {
   constructor() {
     super("Social share card renderer is busy");
     this.name = "SocialShareCardBusyError";
+  }
+}
+
+export class SocialShareCardArtworkUnavailableError extends Error {
+  constructor() {
+    super("Social share card artwork is temporarily unavailable");
+    this.name = "SocialShareCardArtworkUnavailableError";
+  }
+}
+
+class SocialShareCardRenderError extends Error {
+  constructor(cause) {
+    super("Social share card rendering failed", { cause });
+    this.name = "SocialShareCardRenderError";
   }
 }
 
@@ -174,6 +190,7 @@ export function eventShareCardModel(document, intent, {
   postId = null,
   authorName = null,
   fallbackArtwork = [],
+  preferFallbackArtwork = false,
 } = {}) {
   const event = document?.event;
   if (document?.kind !== "event" || !event || !["going", "interested"].includes(intent)) return null;
@@ -187,10 +204,11 @@ export function eventShareCardModel(document, intent, {
   if (!shareUrl) return null;
   const author = cleanText(authorName, 100);
   const subtitle = eventSubtitle(event);
-  const artwork = normalizedArtwork([
-    ...eventArtwork(document),
-    ...(Array.isArray(fallbackArtwork) ? fallbackArtwork : []),
-  ]);
+  const eventCandidates = eventArtwork(document);
+  const fallbackCandidates = Array.isArray(fallbackArtwork) ? fallbackArtwork : [];
+  const artwork = normalizedArtwork(preferFallbackArtwork
+    ? [...fallbackCandidates, ...eventCandidates]
+    : [...eventCandidates, ...fallbackCandidates]);
   return Object.freeze({
     version: CARD_VERSION,
     variant: intent,
@@ -466,7 +484,10 @@ function reviewShareSvg(model, artworkDataUri) {
 function attendanceShareSvg(model, artworkDataUri) {
   const palette = paletteFor(model);
   const hasArtwork = !!safeArtworkDataUri(artworkDataUri);
-  const bodyTop = hasArtwork ? 720 : 330;
+  // The authoritative photo may be absent, but the ticket must never switch to
+  // a different composition after the preview loads. Reserve the same neutral
+  // hero area in both cases so every attendance card keeps one geometry.
+  const bodyTop = 720;
   const statementFontSize = 28;
   const statementLineHeight = 34;
   const subtitleFontSize = 26;
@@ -514,13 +535,14 @@ function attendanceShareSvg(model, artworkDataUri) {
     <rect x="40" y="180" width="1000" height="1500" rx="42" fill="#1d1434"/>
     <rect x="40" y="180" width="1000" height="138" fill="#0b0a0f"/>
     ${register}
-    ${hasArtwork ? `<rect x="40" y="328" width="1000" height="392" fill="#121018"/>${artworkImage(artworkDataUri, { x: 40, y: 328, width: 1000, height: 392, clipId: "attendanceHero" })}<rect x="40" y="328" width="1000" height="392" fill="url(#photoScrim)" opacity="0.5"/>` : ""}
+    <rect x="40" y="328" width="1000" height="392" fill="#121018"/>
+    ${hasArtwork ? `${artworkImage(artworkDataUri, { x: 40, y: 328, width: 1000, height: 392, clipId: "attendanceHero" })}<rect x="40" y="328" width="1000" height="392" fill="url(#photoScrim)" opacity="0.5"/>` : '<rect x="40" y="328" width="1000" height="392" fill="#17141d"/><line x1="88" y1="674" x2="992" y2="674" stroke="#2e2936" stroke-width="2"/>'}
     <rect x="40" y="${bodyTop}" width="1000" height="${1350 - bodyTop}" fill="#1d1434"/>
     <rect x="40" y="1350" width="1000" height="330" fill="#251940"/>
   </g>
   ${communityMarkSvg({ x: 98, y: 250, scale: 0.075, opacity: 1 })}
-  <text x="152" y="258" fill="#fff8ee" font-family="Arial, Helvetica, sans-serif" font-size="27" font-weight="900" letter-spacing="7">MSHPIT / ${escapeXml(model.label)}</text>
-  <text x="992" y="253" text-anchor="end" fill="#9e97ad" font-family="Courier New, monospace" font-size="15" font-weight="800" letter-spacing="2">SOCIAL RSVP · NOT VALID FOR ENTRY</text>
+  <text x="152" y="250" fill="#fff8ee" font-family="Arial, Helvetica, sans-serif" font-size="27" font-weight="900" letter-spacing="7">MSHPIT</text>
+  <text x="154" y="281" fill="#858895" font-family="Courier New, monospace" font-size="12" font-weight="800" letter-spacing="2.6">LIVE MUSIC, REMEMBERED</text>
   <g data-section="attendance-body" data-statement-y="${statementY}" data-subtitle-y="${subtitleY || 0}" data-subtitle-lines="${subtitleLines.length}" data-artist-y="${artistY}" data-artist-lines="${artistLines.length}" clip-path="url(#attendanceBody)">
     ${svgTextLines(statementLines, { x: 88, y: statementY, lineHeight: statementLineHeight, fontSize: statementFontSize, fill: "#ddd6e8", weight: 800 })}
     ${subtitleLines.length ? `<text x="88" y="${contextY}" fill="${palette.end}" font-family="Courier New, monospace" font-size="15" font-weight="900" letter-spacing="3">TOUR / EVENT</text>${svgTextLines(subtitleLines, { x: 88, y: subtitleY, lineHeight: subtitleLineHeight, fontSize: subtitleFontSize, fill: "#c7acd9", weight: 800 })}` : ""}
@@ -537,11 +559,10 @@ function attendanceShareSvg(model, artworkDataUri) {
   </g>
   <line x1="78" y1="1350" x2="1002" y2="1350" stroke="#695d78" stroke-width="2" stroke-dasharray="8 10"/>
   <circle cx="40" cy="1350" r="18" fill="#0b0715"/><circle cx="1040" cy="1350" r="18" fill="#0b0715"/>
-  <text x="540" y="1343" text-anchor="middle" fill="#9e97ad" font-family="Courier New, monospace" font-size="13" font-weight="900" letter-spacing="3">MSHPIT SOCIAL RSVP</text>
+  <text x="540" y="1343" text-anchor="middle" fill="#9e97ad" font-family="Courier New, monospace" font-size="13" font-weight="900" letter-spacing="3">MSHPIT RSVP</text>
   <g transform="rotate(-3 180 1480)">
     <rect x="88" y="1410" width="250" height="132" rx="26" fill="none" stroke="${palette.end}" stroke-width="5"/>
-    <text x="213" y="1472" text-anchor="middle" fill="${palette.end}" font-family="Courier New, monospace" font-size="${model.variant === "interested" ? 24 : 31}" font-weight="900" letter-spacing="3">${escapeXml(model.label)}</text>
-    <text x="213" y="1508" text-anchor="middle" fill="${palette.end}" font-family="Courier New, monospace" font-size="14" font-weight="800" letter-spacing="2">SOCIAL RSVP</text>
+    <text x="213" y="1488" text-anchor="middle" fill="${palette.end}" font-family="Courier New, monospace" font-size="31" font-weight="900" letter-spacing="3">RSVP</text>
   </g>
   <text x="390" y="1438" fill="#9e97ad" font-family="Courier New, monospace" font-size="14" font-weight="900" letter-spacing="2.4">SEATING</text>
   <text x="390" y="1482" fill="#fff8ee" font-family="Arial, Helvetica, sans-serif" font-size="27" font-weight="900">NOT SHARED</text>
@@ -549,6 +570,7 @@ function attendanceShareSvg(model, artworkDataUri) {
   <line x1="774" y1="1490" x2="992" y2="1490" stroke="${palette.end}" stroke-width="3"/>
   <text x="540" y="1800" text-anchor="middle" fill="#fff8ee" font-family="Arial, Helvetica, sans-serif" font-size="34" font-weight="900" letter-spacing="9">MSHPIT</text>
   <text x="540" y="1842" text-anchor="middle" fill="#9e97ad" font-family="Courier New, monospace" font-size="16" font-weight="800" letter-spacing="3.4">OPEN THE SHOW ON MSHPIT</text>
+  <text x="540" y="1882" text-anchor="middle" fill="#5f596a" font-family="Courier New, monospace" font-size="10" font-weight="700" letter-spacing="2.4">NOT VALID FOR ENTRY</text>
 </svg>`;
 }
 
@@ -645,37 +667,27 @@ function createLruBufferCache({ maxEntries = DEFAULT_CACHE_ENTRIES, maxBytes = D
   };
 }
 
-function createExpiringLruBufferCache({
-  maxEntries = DEFAULT_DEGRADED_CACHE_ENTRIES,
-  maxBytes = DEFAULT_DEGRADED_CACHE_BYTES,
-} = {}) {
+function createExpiringKeyCache({ maxEntries = DEFAULT_TRANSIENT_FAILURE_CACHE_ENTRIES } = {}) {
   const rows = new Map();
-  let totalBytes = 0;
   return {
     get(key, now) {
-      const row = rows.get(key);
-      if (!row) return null;
-      if (!Number.isFinite(now) || row.expiresAt <= now) {
+      const expiresAt = rows.get(key);
+      if (!Number.isFinite(expiresAt) || expiresAt <= now) {
         rows.delete(key);
-        totalBytes -= row.value.length;
-        return null;
+        return false;
       }
       rows.delete(key);
-      rows.set(key, row);
-      return row.value;
+      rows.set(key, expiresAt);
+      return true;
     },
-    set(key, value, expiresAt) {
-      if (!Buffer.isBuffer(value) || value.length > maxBytes || !Number.isFinite(expiresAt)) return;
-      const previous = rows.get(key);
-      if (previous) totalBytes -= previous.value.length;
+    set(key, expiresAt) {
+      if (!Number.isFinite(expiresAt)) return;
       rows.delete(key);
-      rows.set(key, { value, expiresAt });
-      totalBytes += value.length;
-      while (rows.size > maxEntries || totalBytes > maxBytes) {
-        const oldest = rows.entries().next().value;
-        if (!oldest) break;
-        rows.delete(oldest[0]);
-        totalBytes -= oldest[1].value.length;
+      rows.set(key, expiresAt);
+      while (rows.size > maxEntries) {
+        const oldest = rows.keys().next().value;
+        if (oldest == null) break;
+        rows.delete(oldest);
       }
     },
   };
@@ -716,8 +728,8 @@ export function createSocialShareCardRenderer({
   maxConcurrentRenders = DEFAULT_MAX_CONCURRENT_RENDERS,
   maxConcurrentArtworkLoads = DEFAULT_MAX_CONCURRENT_ARTWORK_LOADS,
   cache = createLruBufferCache(),
-  degradedCache = createExpiringLruBufferCache(),
-  degradedCacheTtlMs = DEFAULT_DEGRADED_CACHE_TTL_MS,
+  transientFailureCache = createExpiringKeyCache(),
+  transientFailureCacheTtlMs = DEFAULT_TRANSIENT_FAILURE_CACHE_TTL_MS,
   now = Date.now,
 } = {}) {
   if (typeof loadArtwork !== "function") throw new TypeError("A social share-card artwork loader is required");
@@ -728,9 +740,9 @@ export function createSocialShareCardRenderer({
     1,
     Number(maxConcurrentArtworkLoads) || DEFAULT_MAX_CONCURRENT_ARTWORK_LOADS,
   );
-  const degradedTtl = Math.max(
+  const transientFailureTtl = Math.max(
     1_000,
-    Math.min(30_000, Number(degradedCacheTtlMs) || DEFAULT_DEGRADED_CACHE_TTL_MS),
+    Math.min(30_000, Number(transientFailureCacheTtlMs) || DEFAULT_TRANSIENT_FAILURE_CACHE_TTL_MS),
   );
   const inFlight = new Map();
   let activeRenders = 0;
@@ -765,7 +777,12 @@ export function createSocialShareCardRenderer({
       return null;
     }
     if (!artworkDataUri) return null;
-    const rendered = await renderPng(model, { artworkDataUri });
+    let rendered = null;
+    try {
+      rendered = await renderPng(model, { artworkDataUri });
+    } catch (error) {
+      throw new SocialShareCardRenderError(error);
+    }
     return Object.freeze({
       [PREPARED_ARTWORK_RENDER]: true,
       artworkBytes: null,
@@ -791,8 +808,10 @@ export function createSocialShareCardRenderer({
       const etag = socialShareCardEtag(model);
       const cached = cache.get(etag);
       if (cached) return { bytes: cached, etag };
-      const degraded = degradedCache.get(etag, Number(now()));
-      if (degraded) return { bytes: degraded, etag };
+      const currentTime = Number(now());
+      if (transientFailureCache.get(etag, Number.isFinite(currentTime) ? currentTime : Date.now())) {
+        throw new SocialShareCardArtworkUnavailableError();
+      }
       const existing = inFlight.get(etag);
       if (existing) return waitForSharedOperation(existing, signal);
       const hasArtworkCandidates = Array.isArray(model?.artwork) && model.artwork.length > 0;
@@ -800,6 +819,9 @@ export function createSocialShareCardRenderer({
         .then(() => hasArtworkCandidates
           ? withArtworkLoadAdmission(() => loadArtwork(model.artwork, {
             acceptBytes: (bytes) => renderAcceptedArtwork(model, bytes),
+            acceptErrorIsTerminal: (error) =>
+              !(error instanceof SocialShareCardBusyError)
+              && !(error instanceof SocialShareCardRenderError),
           }))
           : null)
         .then((loaded) => renderLoadedArtwork(model, loaded))
@@ -808,15 +830,18 @@ export function createSocialShareCardRenderer({
           if (!Buffer.isBuffer(bytes) || bytes.length < 100 || bytes.length > MAX_RENDER_BYTES) {
             throw new Error("Invalid social share card render");
           }
-          const artworkApplied = Buffer.isBuffer(rendered)
-            ? Buffer.isBuffer(artworkBytes) || !!artworkDataUri
-            : rendered?.artworkApplied === true;
-          if (!hasArtworkCandidates || artworkApplied) {
-            cache.set(etag, bytes);
-          } else {
-            degradedCache.set(etag, bytes, Number(now()) + degradedTtl);
-          }
+          cache.set(etag, bytes);
           return { bytes, etag };
+        })
+        .catch((error) => {
+          if (!(error instanceof ShareArtworkTransientError)
+            && !(error instanceof SocialShareCardArtworkUnavailableError)) throw error;
+          const failureTime = Number(now());
+          const normalizedFailureTime = Number.isFinite(failureTime) ? failureTime : Date.now();
+          transientFailureCache.set(etag, normalizedFailureTime + transientFailureTtl);
+          throw error instanceof SocialShareCardArtworkUnavailableError
+            ? error
+            : new SocialShareCardArtworkUnavailableError();
         })
         .finally(() => {
           inFlight.delete(etag);
@@ -836,11 +861,11 @@ export const socialShareCardConstants = Object.freeze({
   artworkInputBytes: MAX_ARTWORK_INPUT_BYTES,
   artworkInputPixels: MAX_ARTWORK_INPUT_PIXELS,
   canonicalOrigin: CANONICAL_ORIGIN,
-  degradedCacheTtlMs: DEFAULT_DEGRADED_CACHE_TTL_MS,
   height: CARD_HEIGHT,
   maxConcurrentArtworkLoads: DEFAULT_MAX_CONCURRENT_ARTWORK_LOADS,
   maxConcurrentRenders: DEFAULT_MAX_CONCURRENT_RENDERS,
   maxBytes: MAX_RENDER_BYTES,
+  transientFailureCacheTtlMs: DEFAULT_TRANSIENT_FAILURE_CACHE_TTL_MS,
   version: CARD_VERSION,
   width: CARD_WIDTH,
 });

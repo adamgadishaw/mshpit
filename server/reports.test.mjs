@@ -52,6 +52,22 @@ function readyImage(owner, label) {
   return publicUrl;
 }
 
+function finalizedArtistImage(owner, label, purpose) {
+  const publicUrl = readyImage(owner, label);
+  const objectKey = new URL(publicUrl).pathname.replace(/^\//u, "");
+  const token = `${label}artist${++mediaSequence}`.replace(/[^A-Za-z0-9_-]/g, "").padEnd(12, "x");
+  const at = Date.now();
+  db.prepare(`INSERT INTO legacy_media_finalize_descriptors
+    (id,owner_id,token_hash,purpose,staging_object_key,staging_mime_type,staging_byte_size,
+      output_mime_type,output_object_key,output_url,output_byte_size,width,height,status,expires_at,
+      consumed_at,finalized_at,created_at,updated_at)
+    VALUES (?,?,?,?,?,'image/jpeg',2048,'image/webp',?,?,1024,100,100,'finalized',?,?,?,?,?)`)
+    .run(`lm_${token}`, owner.id, "d".repeat(64), purpose,
+      `users/${owner.id}/${purpose}/${token}-staging.jpg`, objectKey, publicUrl,
+      at + 60_000, null, at, at, at);
+  return publicUrl;
+}
+
 function report(user, body) {
   return routes["POST /api/reports"]({ user, ip: `reports-${user.id}`, body });
 }
@@ -108,8 +124,8 @@ const outsider = addUser("reports_outsider");
 const postPhotoOne = readyImage(author, "reportpostone");
 const postPhotoTwo = readyImage(author, "reportposttwo");
 const venuePhoto = readyImage(author, "reportvenue");
-const artistBanner = readyImage(author, "reportbanner");
-const artistAvatar = readyImage(author, "reportavatar");
+const artistBanner = finalizedArtistImage(author, "reportbanner", "banner");
+const artistAvatar = finalizedArtistImage(author, "reportavatar", "avatar");
 
 db.prepare(`INSERT INTO posts (id,user_id,artist,venue,overall,review,photos,removed,created_at)
   VALUES (?,?,?,?,?,?,?,?,?)`).run(
@@ -136,8 +152,11 @@ db.prepare("INSERT INTO lounge_messages (id,lounge_id,user_id,text,created_at) V
   .run("reports_lounge_message", "j. cole|scotiabank|2026-08-13", author.id, "A lounge message", Date.now());
 db.prepare("INSERT INTO venue_reviews (id,venue_key,user_id,rating,text,photos,created_at) VALUES (?,?,?,?,?,?,?)")
   .run("reports_venue_review", "scotiabank arena", author.id, 4, "A venue review", JSON.stringify([venuePhoto]), Date.now());
-db.prepare("INSERT INTO artist_profiles (artist_key,owner_id,bio,banner,avatar_uri,feed_enabled,updated_at) VALUES (?,?,?,?,?,?,?)")
-  .run("j. cole", author.id, "Official artist bio", artistBanner, artistAvatar, 1, Date.now());
+db.prepare(`INSERT INTO artist_profiles
+  (artist_key,owner_id,bio,banner,banner_owner_id,avatar_uri,avatar_owner_id,feed_enabled,updated_at)
+  VALUES (?,?,?,?,?,?,?,?,?)`)
+  .run("j. cole", author.id, "Official artist bio", artistBanner, author.id,
+    artistAvatar, author.id, 1, Date.now());
 db.prepare("INSERT INTO artist_posts (id,artist_key,user_id,text,created_at) VALUES (?,?,?,?,?)")
   .run("reports_artist_post", "j. cole", author.id, "An artist-page update", Date.now());
 
@@ -173,6 +192,42 @@ test("all reachable UGC targets report idempotently and exact media is verified 
   assert.equal(artistProfileReport.media_index, 2);
   assert.match(artistProfileReport.media_fingerprint, /^[a-f0-9]{64}$/);
   assert.equal(JSON.stringify(artistProfileReport).includes("media.example"), false);
+});
+
+test("public unclaimed staff-seeded artist photos are reportable without exposing the uploader", () => {
+  const staff = addUser("reports_unclaimed_staff");
+  db.prepare("UPDATE users SET role='admin' WHERE id=?").run(staff.id);
+  const viewer = addUser("reports_unclaimed_viewer");
+  const avatar = finalizedArtistImage(staff, "reportunclaimedavatar", "avatar");
+  const artistKey = "reports unclaimed artist";
+  db.prepare(`INSERT INTO artist_profiles
+    (artist_key,owner_id,bio,avatar_uri,avatar_owner_id,feed_enabled,updated_at)
+    VALUES (?,NULL,?,?,?,?,?)`)
+    .run(artistKey, "Staff-seeded public catalog page", avatar, staff.id, 1, Date.now());
+
+  const result = report(viewer, {
+    targetType: "artist_profile",
+    targetId: artistKey,
+    reason: "Unsafe image",
+    mediaUri: avatar,
+  });
+  assert.equal(result.duplicate, false);
+  assert.equal(JSON.stringify(result).includes(staff.id), false, "the report response does not reveal slot provenance");
+  const stored = db.prepare(`SELECT target_id,reason,media_index,media_fingerprint
+    FROM reports WHERE id=?`).get(result.id);
+  assert.equal(stored.target_id, artistKey);
+  assert.match(stored.reason, /^Specific attached media 1 of 1\. Unsafe image$/u);
+  assert.equal(stored.media_index, 1);
+  assert.match(stored.media_fingerprint, /^[a-f0-9]{64}$/u);
+  assert.equal(JSON.stringify(stored).includes(staff.id), false);
+  assert.equal(JSON.stringify(stored).includes(avatar), false);
+
+  expectApiError(() => report(q.userById.get(staff.id), {
+    targetType: "artist_profile",
+    targetId: artistKey,
+    reason: "self report",
+    mediaUri: avatar,
+  }), 400, "VALIDATION_FAILED");
 });
 
 test("private and gated targets cannot be probed or self-reported", () => {

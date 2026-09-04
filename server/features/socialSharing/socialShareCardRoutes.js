@@ -5,6 +5,7 @@ import {
   createSocialShareCardRenderer,
   eventShareCardModel,
   reviewShareCardModel,
+  SocialShareCardArtworkUnavailableError,
   SocialShareCardBusyError,
 } from "./socialShareCardRenderer.js";
 import { trustedShareArtworkUrl } from "./socialShareArtwork.js";
@@ -76,25 +77,30 @@ async function projectedArtworkFallbacks(document, resolvePublicDocument, env) {
   return candidates;
 }
 
-function persistedAttendanceArtwork(ticket, env, resolveCurrentArtistProfileImage) {
+function attendanceArtworkCandidates(ticket, env, resolveCurrentArtistProfileImage) {
   const providerArtwork = trustedArtworkCandidate(ticket?.artistPhotoUri, "ticketmaster", env);
-  if (providerArtwork) return providerArtwork;
   const persistedArtwork = trustedArtworkCandidate(ticket?.artistPhotoUri, "owned-media", env);
-  if (!persistedArtwork || typeof resolveCurrentArtistProfileImage !== "function") return null;
   let currentProfileImage = null;
-  try {
-    currentProfileImage = resolveCurrentArtistProfileImage({
-      artist: ticket.artist,
-      artistKey: ticket.artistKey,
-    });
-  } catch {
-    // Profile state is the revocation authority for owned media. If it cannot
-    // be read, fail closed to the branded no-photo card instead of reviving a
-    // deleted upload or failing the entire share request.
-    return null;
+  if (typeof resolveCurrentArtistProfileImage === "function") {
+    try {
+      currentProfileImage = resolveCurrentArtistProfileImage({
+        artist: ticket.artist,
+        artistKey: ticket.artistKey,
+      });
+    } catch {
+      // Profile state is the revocation authority for owned media. A provider
+      // snapshot remains independently safe, but an unreadable profile must
+      // never revive an old member-uploaded URL.
+    }
   }
   const currentArtwork = trustedArtworkCandidate(currentProfileImage, "owned-media", env);
-  return currentArtwork?.url === persistedArtwork.url ? persistedArtwork : null;
+  if (currentArtwork) {
+    return [...new Map([currentArtwork, providerArtwork]
+      .filter(Boolean)
+      .map((candidate) => [candidate.url, candidate])).values()];
+  }
+  if (persistedArtwork) return [];
+  return providerArtwork ? [providerArtwork] : [];
 }
 
 export function publicAttendanceTicketShareSnapshot(value, {
@@ -119,7 +125,7 @@ export function publicAttendanceTicketShareSnapshot(value, {
   const date = safe(ticket.date, 10);
   if (!id || !artist || !venue || !isStrictCalendarDate(date)) return null;
   const eventName = safe(ticket.eventName || ticket.tourName, 180);
-  const persistedArtwork = persistedAttendanceArtwork({
+  const fallbackArtwork = attendanceArtworkCandidates({
     artist,
     artistKey,
     artistPhotoUri: ticket.artistPhotoUri,
@@ -135,7 +141,7 @@ export function publicAttendanceTicketShareSnapshot(value, {
       date,
       localTime: safe(ticket.startLocalTime || ticket.startDateTime, 40),
     }),
-    fallbackArtwork: Object.freeze(persistedArtwork ? [persistedArtwork] : []),
+    fallbackArtwork: Object.freeze(fallbackArtwork),
   });
 }
 
@@ -206,6 +212,7 @@ export function socialShareCardRoutes({
           model = eventShareCardModel(eventDocument, "going", {
             postId,
             authorName: document.post?.author?.name,
+            preferFallbackArtwork: true,
             fallbackArtwork: [
               ...(ticketDocument?.fallbackArtwork || []),
               ...await projectedArtworkFallbacks(eventDocument, resolvePublicDocument, artworkEnv),
@@ -248,12 +255,21 @@ export function socialShareCardRoutes({
       try {
         rendered = await renderer.render(model, { signal: ctx.signal || null });
       } catch (error) {
-        if (!(error instanceof SocialShareCardBusyError)) throw error;
-        throw new ApiError(
-          503,
-          "Share artwork is busy. Wait a moment and try again.",
-          "SHARE_RENDER_UNAVAILABLE",
-        );
+        if (error instanceof SocialShareCardBusyError) {
+          throw new ApiError(
+            503,
+            "Share artwork is busy. Wait a moment and try again.",
+            "SHARE_RENDER_UNAVAILABLE",
+          );
+        }
+        if (error instanceof SocialShareCardArtworkUnavailableError) {
+          throw new ApiError(
+            503,
+            "The photo for this share card could not be prepared. Try again.",
+            "SHARE_RENDER_UNAVAILABLE",
+          );
+        }
+        throw error;
       }
       return createPngApiResponse(rendered.bytes, {
         canonicalUrl: model.canonicalUrl,

@@ -32,5 +32,6 @@ test("media-first cards use existing stage colours and visibility-scoped priorit
   assert.match(card, /styles\.mediaStatusRegisterMagenta/);
   assert.match(card, /styles\.mediaStatusRegisterCool/);
   assert.match(card, /const avatarPriority = mediaViewable === true \? "high" : "normal"/);
-  assert.equal((card.match(/priority=\{avatarPriority\}/g) || []).length, 2);
+  assert.equal((card.match(/priority=\{avatarPriority\}/g) || []).length, 3, "two avatars and the online review thumbnail follow card visibility");
+  assert.match(card, /source=\{\{ uri: youtubeThumbnailUrl \}\}[\s\S]*?priority=\{avatarPriority\}/);
 });

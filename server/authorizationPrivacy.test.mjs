@@ -319,6 +319,141 @@ test("new profile, artist, and venue-review media must be a ready image owned by
   }).reviews.find((row) => row.id === review.id).photos, ownReviewAlbum);
 });
 
+test("admin-seeded unclaimed artist photos keep uploader provenance through claim, replacement, and clear", () => {
+  const adminSeed = addUser("seeded_artist_admin", { role: "fan" });
+  db.prepare("UPDATE users SET role='admin' WHERE id=?").run(adminSeed.id);
+  const admin = q.userById.get(adminSeed.id);
+  const viewer = addUser("seeded_artist_viewer");
+  const unrelated = addUser("seeded_artist_unrelated", { role: "artist", artistName: "Different Artist" });
+  const artist = addUser("seeded_artist_claimant", { role: "artist", artistName: "Seeded Headliner" });
+  const avatar = finalizedLegacyImage(admin, "seededartistavatar", "avatar");
+  const banner = finalizedLegacyImage(admin, "seededartistbanner", "banner");
+
+  routes["PATCH /api/artists/:key/profile"]({
+    user: admin,
+    ip: "seeded-artist-admin",
+    params: { key: "seeded headliner" },
+    body: { avatarUri: avatar.url, banner: banner.url },
+  });
+  let stored = db.prepare(`SELECT owner_id,avatar_uri,avatar_owner_id,banner,banner_owner_id
+    FROM artist_profiles WHERE artist_key='seeded headliner'`).get();
+  assert.equal(stored.owner_id, null);
+  assert.equal(stored.avatar_owner_id, admin.id);
+  assert.equal(stored.banner_owner_id, admin.id);
+  assert.equal(routes["GET /api/artists/:key/profile"]({
+    user: viewer, params: { key: "seeded headliner" },
+  }).profile.avatarUri, avatar.url);
+
+  throwsStatus(() => routes["PATCH /api/artists/:key/profile"]({
+    user: unrelated,
+    ip: "seeded-artist-wrong-claimant",
+    params: { key: "seeded headliner" },
+    body: { bio: "Not mine" },
+  }), 403, "FORBIDDEN");
+
+  routes["PATCH /api/artists/:key/profile"]({
+    user: artist,
+    ip: "seeded-artist-claim",
+    params: { key: "seeded headliner" },
+    body: { bio: "Official biography", avatarUri: avatar.url },
+  });
+  stored = db.prepare(`SELECT owner_id,avatar_owner_id,banner_owner_id
+    FROM artist_profiles WHERE artist_key='seeded headliner'`).get();
+  assert.equal(stored.owner_id, artist.id);
+  assert.equal(stored.avatar_owner_id, admin.id, "sending the same URL preserves its uploader");
+  assert.equal(stored.banner_owner_id, admin.id, "omitting a slot preserves its uploader");
+
+  const replacement = finalizedLegacyImage(artist, "seededartistreplacement", "avatar");
+  routes["PATCH /api/artists/:key/profile"]({
+    user: q.userById.get(artist.id),
+    ip: "seeded-artist-replace",
+    params: { key: "seeded headliner" },
+    body: { avatarUri: replacement.url },
+  });
+  stored = db.prepare(`SELECT avatar_uri,avatar_owner_id,banner,banner_owner_id
+    FROM artist_profiles WHERE artist_key='seeded headliner'`).get();
+  assert.equal(stored.avatar_uri, replacement.url);
+  assert.equal(stored.avatar_owner_id, artist.id);
+  assert.equal(stored.banner_owner_id, admin.id);
+  assert.ok(db.prepare(`SELECT 1 FROM media_deletion_queue WHERE owner_id=? AND object_key=?`)
+    .get(admin.id, avatar.key), "replaced admin media is queued under its actual uploader");
+
+  routes["PATCH /api/artists/:key/profile"]({
+    user: q.userById.get(artist.id),
+    ip: "seeded-artist-clear",
+    params: { key: "seeded headliner" },
+    body: { avatarUri: null },
+  });
+  stored = db.prepare(`SELECT avatar_uri,avatar_owner_id,banner,banner_owner_id
+    FROM artist_profiles WHERE artist_key='seeded headliner'`).get();
+  assert.equal(stored.avatar_uri, null);
+  assert.equal(stored.avatar_owner_id, null);
+  assert.equal(stored.banner, banner.url);
+  assert.equal(stored.banner_owner_id, admin.id);
+});
+
+test("artist profile publication requires the finalized descriptor purpose for each slot", () => {
+  const owner = addUser("artist_slot_purpose_owner", { role: "artist", artistName: "Purpose Locked Artist" });
+  const viewer = addUser("artist_slot_purpose_viewer");
+  const bannerInAvatar = finalizedLegacyImage(owner, "bannerinavatarslot", "banner");
+  const avatarInBanner = finalizedLegacyImage(owner, "avatarinbannerslot", "avatar");
+  db.prepare(`INSERT INTO artist_profiles
+    (artist_key,owner_id,avatar_uri,avatar_owner_id,banner,banner_owner_id,feed_enabled,updated_at)
+    VALUES (?,?,?,?,?,?,1,?)`).run(
+    "purpose locked artist",
+    owner.id,
+    bannerInAvatar.url,
+    owner.id,
+    avatarInBanner.url,
+    owner.id,
+    Date.now(),
+  );
+
+  const profile = routes["GET /api/artists/:key/profile"]({
+    user: viewer,
+    params: { key: "purpose locked artist" },
+  }).profile;
+  assert.equal(profile.avatarUri, null, "a banner-finalized descriptor cannot publish as an artist avatar");
+  assert.equal(profile.banner, null, "an avatar-finalized descriptor cannot publish as an artist banner");
+});
+
+test("artist profile patch rejects a row changed after validation and leaves new media unassociated", () => {
+  const owner = addUser("artist_profile_cas_owner", { role: "artist", artistName: "Artist Profile CAS" });
+  const avatar = finalizedLegacyImage(owner, "artistprofilecasavatar", "avatar");
+  db.prepare(`INSERT INTO artist_profiles
+    (artist_key,owner_id,bio,feed_enabled,updated_at) VALUES (?,?,?,?,?)`)
+    .run("artist profile cas", owner.id, "Before", 1, 100);
+
+  const originalNow = Date.now;
+  let concurrentWriteInjected = false;
+  Date.now = () => {
+    if (!concurrentWriteInjected) {
+      concurrentWriteInjected = true;
+      db.prepare("UPDATE artist_profiles SET bio=?,updated_at=? WHERE artist_key=?")
+        .run("Saved by another request", 101, "artist profile cas");
+    }
+    return 102;
+  };
+  try {
+    throwsStatus(() => routes["PATCH /api/artists/:key/profile"]({
+      user: owner,
+      ip: "artist-profile-cas",
+      params: { key: "artist profile cas" },
+      body: { bio: "Stale caller", avatarUri: avatar.url },
+    }), 409, "CONFLICT");
+  } finally {
+    Date.now = originalNow;
+  }
+
+  const stored = db.prepare(`SELECT bio,avatar_uri FROM artist_profiles
+    WHERE artist_key='artist profile cas'`).get();
+  assert.equal(stored.bio, "Saved by another request");
+  assert.equal(stored.avatar_uri, null);
+  assert.equal(db.prepare("SELECT consumed_at FROM legacy_media_finalize_descriptors WHERE output_url=?")
+    .get(avatar.url).consumed_at, null, "the losing request does not consume the newly uploaded descriptor");
+  assert.equal(db.prepare("SELECT status FROM media_objects WHERE object_key=?").get(avatar.key).status, "issued");
+});
+
 test("legacy attacker media is retained for self-service but omitted from every public API projection", () => {
   const owner = addUser("legacy_media_owner", { role: "artist", artistName: "Legacy Media Artist" });
   const viewer = addUser("legacy_media_viewer");

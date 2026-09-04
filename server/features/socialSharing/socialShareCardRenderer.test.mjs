@@ -3,7 +3,10 @@ import test from "node:test";
 
 import sharp from "sharp";
 
-import { loadShareArtwork } from "./socialShareArtwork.js";
+import {
+  loadShareArtwork,
+  ShareArtworkTransientError,
+} from "./socialShareArtwork.js";
 
 import {
   createSocialShareCardRenderer,
@@ -12,6 +15,7 @@ import {
   reviewShareCardModel,
   socialShareCardConstants,
   socialShareCardSvg,
+  SocialShareCardArtworkUnavailableError,
   SocialShareCardBusyError,
 } from "./socialShareCardRenderer.js";
 
@@ -107,6 +111,29 @@ test("share models preserve only projected artwork provenance and keep each shar
   assert.match(socialShareCardSvg(review), /data-layout="review-photo"/u);
   assert.notEqual(socialShareCardSvg(going), socialShareCardSvg(interested));
   assert.doesNotMatch(socialShareCardSvg(review), /FAN REVIEW/u);
+});
+
+test("attendance cards keep one ticket geometry and place the RSVP disclaimer in bottom fine print", () => {
+  const model = eventShareCardModel(eventDocument(), "going");
+  const withoutPhoto = socialShareCardSvg(model);
+  const withPhoto = socialShareCardSvg(model, {
+    artworkDataUri: "data:image/jpeg;base64,/9j/2Q==",
+  });
+  const geometry = (svg) => ({
+    body: /data-section="attendance-body" data-statement-y="(\d+)"[\s\S]*?data-artist-y="(\d+)"/u.exec(svg)?.slice(1),
+    schedule: /data-section="attendance-schedule" data-schedule-y="(\d+)"/u.exec(svg)?.[1],
+  });
+
+  assert.deepEqual(geometry(withoutPhoto), geometry(withPhoto));
+  for (const svg of [withoutPhoto, withPhoto]) {
+    assert.match(svg, /<rect x="40" y="328" width="1000" height="392" fill="#121018"\/>/u);
+    assert.match(svg, />MSHPIT<\/text>/u);
+    assert.match(svg, />LIVE MUSIC, REMEMBERED<\/text>/u);
+    assert.match(svg, />MSHPIT RSVP<\/text>/u);
+    assert.match(svg, />RSVP<\/text>/u);
+    assert.doesNotMatch(svg, /SOCIAL RSVP|MSHPIT \/ GOING/u);
+    assert.ok(svg.indexOf("NOT VALID FOR ENTRY") > svg.indexOf("OPEN THE SHOW ON MSHPIT"));
+  }
 });
 
 test("share models never normalize impossible calendar dates into a different day", () => {
@@ -336,29 +363,26 @@ test("renderer coalesces and caches equal cards while bounding unique concurrent
   assert.equal(cached.bytes, a.bytes);
 });
 
-test("a missing-artwork fallback is cached briefly before artwork is retried", async () => {
+test("permanent artwork exhaustion renders and caches one stable no-photo card", async () => {
   let loads = 0;
   let renders = 0;
-  let clock = 10_000;
   let loadOptions = "not-called";
   const renderer = createSocialShareCardRenderer({
     loadArtwork: async (_candidates, options) => {
       loads += 1;
       loadOptions = options;
-      return loads === 1 ? null : Buffer.from([
-        0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46,
-        0x49, 0x46, 0x00, 0x01, 0x01, 0x00, 0xff, 0xd9,
-      ]);
+      return null;
     },
-    renderPng: async (_model, { artworkBytes }) => {
+    renderPng: async (_model, { artworkDataUri }) => {
       renders += 1;
-      return Buffer.concat([
-        Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-        Buffer.alloc(120, artworkBytes ? 2 : 1),
-      ]);
+      return {
+        bytes: Buffer.concat([
+          Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+          Buffer.alloc(120, 1),
+        ]),
+        artworkApplied: !!artworkDataUri,
+      };
     },
-    degradedCacheTtlMs: 15_000,
-    now: () => clock,
   });
   const document = eventDocument({
     providerImage: { url: "https://s1.ticketm.net/dam/a/show.jpg" },
@@ -366,20 +390,45 @@ test("a missing-artwork fallback is cached briefly before artwork is retried", a
   document.image = "https://s1.ticketm.net/dam/a/show.jpg";
   const model = eventShareCardModel(document, "going");
 
-  const fallback = await renderer.render(model);
-  const cachedFallback = await renderer.render(model);
-  clock += 15_001;
-  const photo = await renderer.render(model);
-  clock += 60_000;
-  const cachedPhoto = await renderer.render(model);
-  assert.equal(fallback.bytes[8], 1);
-  assert.equal(cachedFallback.bytes, fallback.bytes);
-  assert.equal(photo.bytes[8], 2);
-  assert.equal(loads, 2);
-  assert.equal(renders, 2);
-  assert.equal(cachedPhoto.bytes, photo.bytes);
+  const first = await renderer.render(model);
+  const second = await renderer.render(model);
+  assert.equal(loads, 1);
+  assert.equal(renders, 1);
+  assert.equal(first.bytes, second.bytes);
   assert.equal(typeof loadOptions.acceptBytes, "function");
   assert.equal(loadOptions.signal, undefined, "shared work must not inherit a caller request signal");
+});
+
+test("temporary artwork exhaustion uses a short error-only cache before allowing retry", async () => {
+  let loads = 0;
+  let renders = 0;
+  let clock = 10_000;
+  const renderer = createSocialShareCardRenderer({
+    transientFailureCacheTtlMs: 2_000,
+    now: () => clock,
+    loadArtwork: async () => {
+      loads += 1;
+      throw new ShareArtworkTransientError();
+    },
+    renderPng: async () => {
+      renders += 1;
+      throw new Error("temporary artwork must not render a replacement card");
+    },
+  });
+  const document = eventDocument({
+    providerImage: { url: "https://s1.ticketm.net/dam/a/show.jpg" },
+  });
+  const model = eventShareCardModel(document, "going");
+
+  await assert.rejects(renderer.render(model), SocialShareCardArtworkUnavailableError);
+  await assert.rejects(renderer.render(model), SocialShareCardArtworkUnavailableError);
+  assert.equal(loads, 1, "the short error cache prevents repeated provider hammering");
+  assert.equal(renders, 0);
+
+  clock += 2_001;
+  await assert.rejects(renderer.render(model), SocialShareCardArtworkUnavailableError);
+  assert.equal(loads, 2, "the card can be retried after the short error window");
+  assert.equal(socialShareCardConstants.transientFailureCacheTtlMs, 5_000);
 });
 
 test("remote artwork waiting does not occupy the Sharp render admission slot", async () => {
@@ -413,8 +462,8 @@ test("remote artwork waiting does not occupy the Sharp render admission slot", a
   const noArtwork = await renderer.render(noArtworkModel);
   assert.equal(noArtwork.bytes[8], 6);
   releaseArtwork();
-  const fallback = await waitingForArtwork;
-  assert.equal(fallback.bytes[8], 5);
+  const completedArtworkFallback = await waitingForArtwork;
+  assert.equal(completedArtworkFallback.bytes[8], 5);
   assert.deepEqual(renderOrder, [
     "https://www.mshpit.com/event/ticketmaster-event_456",
     "https://www.mshpit.com/event/ticketmaster-event_123",

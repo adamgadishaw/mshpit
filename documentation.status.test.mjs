@@ -44,8 +44,10 @@ test("current incident and security docs retain measured release caveats", async
     assert.match(source, /2,253,157/);
     assert.match(source, /615,705/);
     assert.match(source, /504,824/);
-    assert.match(source, /x-render-routing: no-server/);
   }
+  assert.match(audit, /x-render-routing: no-server/);
+  assert.match(status, /staging service was retired/i);
+  assert.match(status, /Releases are direct from `master`/i);
   // STATUS describes the last deployed release; SECURITY describes the current
   // uncommitted remediation worktree and must say explicitly that it is not live.
   assert.match(status, /17 advisories/);

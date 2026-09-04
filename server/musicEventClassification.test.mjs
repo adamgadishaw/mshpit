@@ -65,6 +65,18 @@ test("Ticketmaster fallback is limited to an exact requested-artist billing", ()
   assert.equal(matched.evidence, "ticketmaster:artist-search:matched-attraction");
 });
 
+test("Ticketmaster discovery requires the Music segment, not a lower taxonomy label", () => {
+  assert.equal(ticketmasterMusicEvent(ticketmasterEvent({
+    classifications: [{ segment: { name: "Sports" }, genre: { name: "Music" } }],
+  })), null);
+  assert.equal(ticketmasterMusicEvent(ticketmasterEvent({
+    classifications: [{ segment: { name: "Arts & Theatre" }, subGenre: { name: "Music" } }],
+  })), null);
+  assert.equal(ticketmasterMusicEvent(ticketmasterEvent({
+    classifications: [{ segment: { name: "Music" }, genre: { name: "Sports" } }],
+  })).evidence, "ticketmaster:classification:music");
+});
+
 test("Ticketmaster projection persists a bounded billed lineup for logging and public pages", () => {
   const many = Array.from({ length: 30 }, (_, index) => ({ name: `Artist ${index + 1}` }));
   const rows = ticketmasterRows({ _embedded: { events: [ticketmasterEvent({

@@ -78,6 +78,11 @@ import { createApiResponseHeaders, createApiResponseHeaderSetter } from "./respo
 import { binaryApiResponsePayload } from "./binaryApiResponse.js";
 import { reconcileAdminAccount } from "./adminBootstrap.js";
 import { applyHttpServerLimits } from "./httpServerPolicy.js";
+import { createOwnedRequestListener } from "./httpRequestBoundary.js";
+import {
+  listenForServer,
+  startOptionalBackgroundRuntime,
+} from "./backgroundRuntime.js";
 import { safeRequestFailureContext } from "./safeLogging.js";
 import { assertAccountMutationAccess } from "./accountMutationAccess.js";
 import { healthRateLimitPolicy } from "./healthAvailability.js";
@@ -474,7 +479,7 @@ function clientIp(req) {
   });
 }
 
-const server = createServer(async (req, res) => {
+async function handleRequest(req, res) {
   const started = Date.now();
   const requestId = randomUUID();
   const requestAbort = new AbortController();
@@ -553,7 +558,7 @@ const server = createServer(async (req, res) => {
           "Retry-After": "60",
         });
       }
-      return serveLandingMediaRequest({
+      return await serveLandingMediaRequest({
         req,
         res,
         pathname,
@@ -673,13 +678,14 @@ const server = createServer(async (req, res) => {
     const failure = safeRequestFailureContext({ method: req.method, pathname, routePattern, error: e });
     if (e instanceof ApiError) {
       if (e.status >= 500) {
-        console.error(`[pit] ${e.status} ${requestId} on ${failure.method} ${failure.route} (${Date.now() - started}ms): code=${e.code} cause=${failure.cause}`);
-        if (shouldRecordGeneralRequestFailure({
+        const observable = shouldRecordGeneralRequestFailure({
           method: failure.method,
           route: routePattern,
           status: e.status,
           code: e.code,
-        })) {
+        });
+        if (observable) {
+          console.error(`[pit] ${e.status} ${requestId} on ${failure.method} ${failure.route} (${Date.now() - started}ms): code=${e.code} cause=${failure.cause}`);
           recordError({ level: "error", code: e.code, status: e.status, method: failure.method, route: routePattern, cause: failure.cause, requestId });
           scheduleAlert();
         }
@@ -691,7 +697,17 @@ const server = createServer(async (req, res) => {
     scheduleAlert();
     return sendApiError(res, e, requestId, cors);
   }
-});
+}
+const server = createServer(createOwnedRequestListener(handleRequest, {
+  onRejected(error, req) {
+    const failure = safeRequestFailureContext({
+      method: req?.method,
+      routePattern: "request-boundary",
+      error,
+    });
+    console.error(`[pit] final request boundary contained a rejected listener: method=${failure.method} cause=${failure.cause}`);
+  },
+}));
 applyHttpServerLimits(server);
 
 // Observe fatal errors without installing an `uncaughtException` handler. Node
@@ -740,6 +756,31 @@ setInterval(() => {
 const alertDrains = createAlertDrainScheduler({ drain: () => maybeAlert() });
 function scheduleAlert() {
   alertDrains.schedule();
+}
+
+function reportBackgroundStartupFailure(routePattern, error) {
+  const failure = safeRequestFailureContext({
+    method: "JOB",
+    routePattern,
+    error,
+  });
+  console.error(`[pit] optional runtime startup failed safely: job=${failure.route} cause=${failure.cause}`);
+  recordError({
+    level: "error",
+    code: "BACKGROUND_START_FAILED",
+    status: 500,
+    method: "JOB",
+    route: failure.route,
+    cause: failure.cause,
+  });
+  scheduleAlert();
+}
+
+function startBackgroundRuntime(routePattern, start) {
+  return startOptionalBackgroundRuntime({
+    start,
+    report: (error) => reportBackgroundStartupFailure(routePattern, error),
+  });
 }
 
 // graceful shutdown, finish in-flight requests and campaign work, then close
@@ -893,8 +934,8 @@ async function startServer() {
   if (!loadedSitemap.ok && loadedSitemap.reason !== "missing") {
     console.error(`[seo] persisted sitemap rejected safely: category=${loadedSitemap.reason}`);
   }
-  server.listen(PORT, () => {
-    console.log(`[pit] up on http://localhost:${PORT} ${PROD ? "(production)" : "(dev)"}, serving API${existsSync(DIST) ? " + web build" : " (no dist/ yet)"}`);
+  await listenForServer(server, PORT);
+  console.log(`[pit] up on http://localhost:${PORT} ${PROD ? "(production)" : "(dev)"}, serving API${existsSync(DIST) ? " + web build" : " (no dist/ yet)"}`);
     try { pruneEmailOperationalData(db); }
     catch (error) { console.error(`[mail] startup retention sweep failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     try { pruneAnalyticsData({ database: db }); }
@@ -910,37 +951,36 @@ async function startServer() {
     try { expireLegacyMediaUploads(db); }
     catch (error) { console.error(`[media] startup legacy staging-expiry sweep failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     if (emailCampaignRecoveryEnabled()) {
-      emailCampaignScheduler = startEmailCampaignScheduler(); // bounded continuation after explicit restore/privacy approval
+      emailCampaignScheduler = startBackgroundRuntime("/startup/email-campaigns", () => startEmailCampaignScheduler()); // bounded continuation after explicit restore/privacy approval
     } else {
       console.log("[mail] automatic campaign recovery disabled; resume only after privacy replay and restore review.");
     }
-    startTourDateScheduler(); // scrapes tour dates into the DB on a timer (no cron/redeploy)
-    startArtistTourDateDemandRefresh(); // drains durable exact-artist demand without delaying reads
-    startMusicBrainzGenreRefreshScheduler(); // exact-MBID genre evidence, bounded and never on a foreground read
-    startArtistPhotoSeedScheduler(); // Spotify artist-page images, bounded and never on a foreground read
-    artistDeathWatchScheduler = startArtistDeathWatchScheduler({ service: artistDeathWatchService });
-    startCacheWarmScheduler(); // runs keyless catalogue enrichment; provider playback warming obeys the shared product gate
-    startBackupScheduler(); // verified daily SQLite snapshot on /data; private off-host copy when configured
-    startMediaDeletionScheduler({ database: db }); // bounded, durable cleanup of active user-media objects only
-    legacyVideoPosterScheduler = startLegacyVideoPosterVerificationScheduler({ database: db });
-    startVideoVerifierHealthScheduler();
+    startBackgroundRuntime("/startup/tour-dates", () => startTourDateScheduler()); // scrapes tour dates into the DB on a timer (no cron/redeploy)
+    startBackgroundRuntime("/startup/artist-tourdate-demand", () => startArtistTourDateDemandRefresh()); // drains durable exact-artist demand without delaying reads
+    startBackgroundRuntime("/startup/artist-genres", () => startMusicBrainzGenreRefreshScheduler()); // exact-MBID genre evidence, bounded and never on a foreground read
+    startBackgroundRuntime("/startup/artist-photos", () => startArtistPhotoSeedScheduler()); // Spotify artist-page images, bounded and never on a foreground read
+    artistDeathWatchScheduler = startBackgroundRuntime("/startup/death-watch", () => startArtistDeathWatchScheduler({ service: artistDeathWatchService }));
+    startBackgroundRuntime("/startup/catalog-warm", () => startCacheWarmScheduler()); // runs keyless catalogue enrichment; provider playback warming obeys the shared product gate
+    startBackgroundRuntime("/startup/database-backup", () => startBackupScheduler()); // verified daily SQLite snapshot on /data; private off-host copy when configured
+    startBackgroundRuntime("/startup/media-deletion", () => startMediaDeletionScheduler({ database: db })); // bounded, durable cleanup of active user-media objects only
+    legacyVideoPosterScheduler = startBackgroundRuntime("/startup/legacy-video-posters", () => startLegacyVideoPosterVerificationScheduler({ database: db }));
+    startBackgroundRuntime("/startup/video-verifier-health", () => startVideoVerifierHealthScheduler());
     // Sitemap reads serve only the validated persisted/current LKG. Reuse a
     // fresh current-revision snapshot across deploys; missing, stale, future,
     // or incompatible snapshots still rebuild after readiness. HTTP reads never
     // invoke a materialization.
     if (startupSitemapRefresh.refresh) {
-      void refreshSitemapSafely("startup", { force: startupSitemapRefresh.force });
+      void startBackgroundRuntime("/startup/sitemap-materialization", () => refreshSitemapSafely("startup", { force: startupSitemapRefresh.force }));
     }
-    startSitemapRefreshScheduler();
+    startBackgroundRuntime("/startup/sitemap-refresh", () => startSitemapRefreshScheduler());
     // Do not couple core availability to an optional remote provider. Until
     // this proof succeeds, capabilities stay off and private media operations
     // fail closed through requirePrivateMediaIsolationReady().
-    if (PROD) refreshPrivateMediaIsolationSafely("startup");
-    startPrivateMediaIsolationScheduler();
-    // A deployment is stamped only from this listen callback, after startup
-    // checks have completed and the web process is accepting connections.
-    founderOperationsScheduler = startFounderOperationsScheduler({ database: db });
-  });
+    if (PROD) void startBackgroundRuntime("/startup/private-media-probe", () => refreshPrivateMediaIsolationSafely("startup"));
+    startBackgroundRuntime("/startup/private-media-isolation", () => startPrivateMediaIsolationScheduler());
+    // A deployment is stamped only after the owned listen boundary resolves
+    // and the web process is accepting connections.
+    founderOperationsScheduler = startBackgroundRuntime("/startup/founder-operations", () => startFounderOperationsScheduler({ database: db }));
 }
 
 startServer().catch((error) => {

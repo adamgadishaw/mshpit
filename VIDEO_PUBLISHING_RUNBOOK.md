@@ -2,7 +2,7 @@
 
 Status: **the production verifier is Blueprint-provisioned and production video publishing is enabled after the gated infrastructure rollout.** `render.yaml` keeps `PIT_VIDEO_PUBLISHING_ENABLED=true`; revert it to `false` immediately if negotiated health, the production canary, or ongoing verifier health fails. The first infrastructure deployment remained disabled until private storage and signed verifier health passed.
 
-Budget: the current topology adds **one production-only Render Starter private service in Oregon, about US$7/month** at the expected Starter floor. No staging verifier is provisioned by the Blueprint, so this rollout does not add a second approximately US$7/month service. Confirm the live [Render pricing](https://render.com/pricing) before changing plans or adding a staging verifier.
+Budget: the current topology adds **one production-only Render Starter private service in Oregon, about US$7/month** at the expected Starter floor. There is no standing staging web service or staging verifier. Confirm the live [Render pricing](https://render.com/pricing) before changing plans or adding another service.
 
 ## What is being deployed
 
@@ -45,7 +45,7 @@ The Blueprint defines a **production private service**, not a background worker,
 
 Render private services have no public `onrender.com` address and are reachable only through the private network. The production web service receives `PIT_VIDEO_VERIFIER_HOSTPORT` from the verifier's Blueprint `hostport` property, so operators must not paste a public URL or manually construct a hostname. The verifier HMAC secret is generated on the private service and injected into the web service through a Blueprint `fromService` reference. See [Private Services](https://render.com/docs/private-services), [Private Network](https://render.com/docs/private-network), and [Blueprint YAML Reference](https://render.com/docs/blueprint-spec).
 
-Render promotes both web environments through `GET /api/readiness`, not the general `GET /api/health` liveness route. When a production-mode environment explicitly sets `PIT_VIDEO_PUBLISHING_ENABLED=true`, readiness remains `503` until the database/disk checks, private-source isolation proof, exact signed verifier health contract, and media storage configuration all make video publishing genuinely available. Setting the flag false is the deliberate rollback path and keeps the core web release deployable. Do not point Render back at `/api/health`; that would allow a cold release to become live during the temporary photo-only window before its verifier proof completes.
+Render continuously probes the core-only `GET /api/health` liveness route so an optional media dependency cannot restart the web service. Release verification separately probes `GET /api/readiness`. When production explicitly sets `PIT_VIDEO_PUBLISHING_ENABLED=true`, readiness remains `503` until the database/disk checks, private-source isolation proof, exact signed verifier health contract, and media storage configuration all make video publishing genuinely available. Setting the flag false is the deliberate rollback path and keeps the core web release deployable.
 
 The container pins its Node base image by immutable digest and pins and verifies the FFmpeg source release before building it. Its image build includes an encode/probe/full-decode smoke test, and the runtime uses the fixed `/opt/ffmpeg/bin/ffmpeg` and `/opt/ffmpeg/bin/ffprobe` paths. A successful image build is necessary but is not sufficient to enable publishing; live signed verifier health and storage checks must still pass. Decoder/base-image security updates require a rebuild and repeat canary before rollout.
 
@@ -53,7 +53,7 @@ Do not scale this version above one verifier instance. Its concurrency and coale
 
 ## Exact environment separation
 
-The current rollout provisions only the production verifier. It does not share a broad environment group with the web service. The verifier receives only its protocol secret, bounded bucket/origin identifiers, and decoder paths; it never receives storage credentials or application/database secrets. If a staging verifier is added later, it must be a separate service with separate buckets and a separate HMAC secret, and it will add its own recurring service cost.
+The current rollout provisions only the production verifier. It does not share a broad environment group with the web service. The verifier receives only its protocol secret, bounded bucket/origin identifiers, and decoder paths; it never receives storage credentials or application/database secrets. Any future disposable canary environment must use separate buckets, database, credentials, and HMAC secret, and requires an explicit owner decision.
 
 ### Web service only
 
@@ -65,7 +65,7 @@ Keep the existing database/disk, application, email, provider, and complete medi
 | `PIT_VIDEO_VERIFIER_HOSTPORT` | Blueprint `fromService` reference to `pit-video-verifier` property `hostport`; never a public URL |
 | `PIT_VIDEO_VERIFIER_SECRET` | Blueprint `fromService` reference to the verifier's generated `PIT_VIDEO_VERIFIER_SECRET` |
 
-The web service retains `MEDIA_ENDPOINT`, `MEDIA_BUCKET`, `MEDIA_REGION`, `MEDIA_ACCESS_KEY_ID`, `MEDIA_SECRET_ACCESS_KEY`, and `MEDIA_PUBLIC_BASE_URL`, and adds `MEDIA_SOURCE_BUCKET` for private originals. `MEDIA_SOURCE_BUCKET` must be distinct from `MEDIA_BUCKET` and must not have a public custom domain. Production does not accept `PIT_VIDEO_VERIFIER_URL`; that variable is local-development-only. Do not reuse a staging secret, bucket, or verifier hostname in production.
+The web service retains `MEDIA_ENDPOINT`, `MEDIA_BUCKET`, `MEDIA_REGION`, `MEDIA_ACCESS_KEY_ID`, `MEDIA_SECRET_ACCESS_KEY`, and `MEDIA_PUBLIC_BASE_URL`, and adds `MEDIA_SOURCE_BUCKET` for private originals. `MEDIA_SOURCE_BUCKET` must be distinct from `MEDIA_BUCKET` and must not have a public custom domain. Production does not accept `PIT_VIDEO_VERIFIER_URL`; that variable is local-development-only. Never reuse a test or canary secret, bucket, or verifier hostname in production.
 
 ### Private verifier only
 
@@ -84,19 +84,14 @@ The verifier must **not** receive any R2/S3 access key, secret key, database URL
 
 Never print, copy into a ticket, or commit the generated HMAC secret. Rotate it only with publishing disabled and preserve the single Blueprint source of truth; a mismatched/one-sided rotation is expected to fail closed.
 
-## Optional future staging enable sequence
+## Optional isolated canary environment
 
-No staging verifier is provisioned in the current production-only rollout. The following sequence applies only if the owner later approves the additional service cost and a separate staging verifier is added. Never point staging at the production verifier or either production bucket.
+There is no standing staging deployment. If the owner later approves a temporary
+release-equivalent canary, it must have its own database, public and private
+media buckets, credentials, verifier, and HMAC secret. It must never point at
+production data or services and must be removed after the evidence is captured.
 
-1. Run the repository quality gate (`npm run check`) and deploy the web code to `mshpit-staging` with its separate staging database, media bucket, and `PIT_VIDEO_PUBLISHING_ENABLED=false`.
-2. Add a separate staging private service with port `10001`, the isolated verifier environment above, and the same pinned-container controls. Do not add production values.
-3. Add the private hostport and matching HMAC secret to the staging web service. Keep the flag false and redeploy both services.
-4. As an authenticated moderator, inspect `GET /api/admin/health`. Require `services.mediaObjectStorageConfigured=true`, `services.privateVideoSourceStorageConfigured=true`, `services.videoVerifier.configured=true`, `services.videoVerifier.ready=true`, `services.videoVerifier.pipeline="private-derivative-v1"`, no `lastErrorCode`, and a nonempty `ffmpegVersion`. With the flag still false, both health URLs must advertise `videos:false`.
-5. Set the flag to `true` on **staging only**, deploy, and require the exact negotiated route to return `{photos:true,videos:true,pipeline:"private-derivative-v1"}` while unversioned `GET /api/health` still returns `videos:false`.
-6. Run every canary case and performance gate below using real staging object storage and release-equivalent clients. A mocked FFmpeg call, unit fixture, or direct database edit is not a canary.
-7. Disable the staging flag again after evidence is captured. Do not use a future staging exercise to alter production; production follows the separate sequence below.
-
-## Exact staging canary matrix
+## Exact isolated canary matrix
 
 Use a verified-email test account. Record client, source SHA-256, source bytes, declared and verified geometry/duration, poster SHA-256/time, create/upload/finalize timings, HTTP result, and Render deploy/FFmpeg version for every case.
 
@@ -115,8 +110,8 @@ Run `A`, `B`, `C`, and `H` on all three client paths: current Chromium web produ
 | I | 60.1+ s MP4 and a >100 MiB MP4 | Rejected before publication; no ready media descriptor or post is created |
 | J | QuickTime/MOV renamed `.mp4`, fragmented MP4, and WebM/MOV picker inputs | Picker or server rejects each; renaming never bypasses the ISO MP4 contract |
 | K | Interlaced H.264, HEVC/AV1/VP9, non-AAC audio, >60 fps, extra/unknown track, and pathological cropped/high-coded-resolution sample workload | Every source fails closed with a bounded 4xx response; no authoritative poster/ready asset remains |
-| L | Truncated/corrupt MP4, a source changed after ticket generation, and deliberately mismatched duration/dimensions/rotation through the staging API harness | Rejects with conflict/unsupported semantics; exact object generation and declared identity cannot be swapped |
-| M | Stop the verifier while staging remains flagged on; then restart it | Within one health-poll interval, negotiated capability becomes `videos:false` and new creates/finalizes fail closed; after healthy restart it returns only after a fresh signed health success |
+| L | Truncated/corrupt MP4, a source changed after ticket generation, and deliberately mismatched duration/dimensions/rotation through the isolated canary API harness | Rejects with conflict/unsupported semantics; exact object generation and declared identity cannot be swapped |
+| M | Stop the isolated canary verifier while publishing remains enabled; then restart it | Within one health-poll interval, negotiated capability becomes `videos:false` and new creates/finalizes fail closed; after healthy restart it returns only after a fresh signed health success |
 
 For terminally rejected uploads, verify immediate deletion is queued. A user-cancelled, resumable draft must either be explicitly deleted after the transfer stops or be proven eligible for the seven-day orphan sweep; stopping an upload is not evidence that a public source object vanished immediately.
 
@@ -167,7 +162,7 @@ Logs may contain only coarse result codes/timings. Never log HMAC headers, reque
 1. Set production `PIT_VIDEO_PUBLISHING_ENABLED=false` and use Render **Save and deploy**. For an active security/decoder incident, also stop the private verifier so the next signed health attempt fails closed while the web deploy rolls over.
 2. Confirm `GET /api/health?mediaPipeline=private-derivative-v1` and unversioned `GET /api/health` both advertise `videos:false` on the live service. Confirm direct create/finalize attempts fail closed while photo publishing and existing clip playback still work.
 3. Leave media rows and objects intact for investigation and normal cleanup. Do not reset the database, delete the bucket, or remove historical clips as part of feature rollback.
-4. Rotate `PIT_VIDEO_VERIFIER_SECRET` on both services with publishing off if authentication or log exposure is suspected. Re-run the entire staging matrix before re-enabling.
+4. Rotate `PIT_VIDEO_VERIFIER_SECRET` on both production services with publishing off if authentication or log exposure is suspected. Re-run the entire isolated canary matrix before re-enabling.
 5. Roll back application code only after reviewing additive database migrations and client negotiation compatibility; the feature flag is the first-line rollback.
 
 ## Private-ingest retention boundary

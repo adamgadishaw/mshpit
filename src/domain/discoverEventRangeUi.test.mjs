@@ -26,7 +26,9 @@ test("Discover keeps four events immediate and requests wider ranges only after 
   assert.match(screen, /rangeLoaderRef\.current\(\{[\s\S]*country: requestCountry,[\s\S]*local,[\s\S]*signal: controller\.signal/);
   assert.doesNotMatch(screen, /rangeLoaderRef\.current\(\{[^}]*\bcity\b/);
   assert.match(screen, /then\(\(\{ tourDates: rows, nextCursor, through \}\)/);
-  assert.match(screen, /setEventRange\(\(current\) => \(\{[\s\S]*\n\s*through,/);
+  assert.match(screen, /const currentMatches = current\.scopeKey === rangeScopeKey && current\.days === days/);
+  assert.match(screen, /const readyState = \{[\s\S]*through,[\s\S]*rows: normalized,[\s\S]*nextCursor,[\s\S]*status: "ready"/);
+  assert.match(screen, /eventRangeRef\.current = readyState;\s*setEventRange\(readyState\)/);
   assert.match(store, /const loadDiscoverTourDateRange = async/);
   assert.match(store, /fetchDiscoverTourDateRange\(\{ days, limit, after, country, local, signal \}\)/);
   assert.doesNotMatch(store, /loadDiscoverTourDateRange[\s\S]{0,220}\bcity\b/);

@@ -10,6 +10,9 @@ import {
   isValidYouTubeSourceUrl,
   normalizeOnlineRating,
   normalizeReviewExperienceType,
+  reviewCardPerformance,
+  youtubeReviewThumbnailUrl,
+  youtubeReviewVideoId,
 } from "./onlineReview.mjs";
 
 test("review experience defaults to in person and only accepts the online value", () => {
@@ -54,6 +57,56 @@ test("review links canonicalize to a safe parameter-free YouTube watch URL", () 
   assert.equal(
     canonicalYouTubeReviewUrl("https://youtu.be/dQw4w9WgXcQ", "dQw4w9WgXcQ"),
     "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+  );
+});
+
+test("review thumbnails are derived only from a validated canonical video id", () => {
+  assert.equal(
+    youtubeReviewVideoId("https://youtu.be/dQw4w9WgXcQ?t=30"),
+    "dQw4w9WgXcQ",
+  );
+  assert.equal(
+    youtubeReviewThumbnailUrl("https://youtu.be/dQw4w9WgXcQ?t=30"),
+    "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg",
+  );
+  assert.equal(youtubeReviewThumbnailUrl("https://example.com/watch?v=dQw4w9WgXcQ"), "");
+  assert.equal(youtubeReviewThumbnailUrl("https://youtu.be/dQw4w9WgXcQ", "aaaaaaaaaaa"), "");
+});
+
+test("review cards lead with the artist for online and festival-set reviews only", () => {
+  assert.deepEqual(
+    reviewCardPerformance({
+      experienceType: "online",
+      artist: "Little Simz",
+      onlineTitle: "Live at Glastonbury",
+    }),
+    {
+      festivalSet: false,
+      primary: "Little Simz",
+      primaryIsArtist: true,
+      secondary: "Live at Glastonbury",
+      showArtistInMeta: false,
+    },
+  );
+  assert.deepEqual(
+    reviewCardPerformance({ artist: "50 Cent", tour: "Festival set" }),
+    {
+      festivalSet: true,
+      primary: "50 Cent",
+      primaryIsArtist: true,
+      secondary: "Festival set",
+      showArtistInMeta: false,
+    },
+  );
+  assert.deepEqual(
+    reviewCardPerformance({ artist: "Beyoncé", tour: "Renaissance World Tour" }),
+    {
+      festivalSet: false,
+      primary: "Renaissance World Tour",
+      primaryIsArtist: false,
+      secondary: "",
+      showArtistInMeta: true,
+    },
   );
 });
 

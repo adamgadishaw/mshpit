@@ -424,11 +424,13 @@ function profileRecoveryRows(database) {
       SELECT 'user.banner',u.id,NULL,u.banner,u.created_at
         FROM users u WHERE u.banner IS NOT NULL AND u.banner<>''
       UNION ALL
-      SELECT 'artist_profile.avatar',a.owner_id,a.artist_key,a.avatar_uri,COALESCE(a.updated_at,0)
-        FROM artist_profiles a WHERE a.owner_id IS NOT NULL AND a.avatar_uri IS NOT NULL AND a.avatar_uri<>''
+      SELECT 'artist_profile.avatar',COALESCE(a.avatar_owner_id,a.owner_id),a.artist_key,a.avatar_uri,COALESCE(a.updated_at,0)
+        FROM artist_profiles a WHERE COALESCE(a.avatar_owner_id,a.owner_id) IS NOT NULL
+          AND a.avatar_uri IS NOT NULL AND a.avatar_uri<>''
       UNION ALL
-      SELECT 'artist_profile.banner',a.owner_id,a.artist_key,a.banner,COALESCE(a.updated_at,0)
-        FROM artist_profiles a WHERE a.owner_id IS NOT NULL AND a.banner IS NOT NULL AND a.banner<>''
+      SELECT 'artist_profile.banner',COALESCE(a.banner_owner_id,a.owner_id),a.artist_key,a.banner,COALESCE(a.updated_at,0)
+        FROM artist_profiles a WHERE COALESCE(a.banner_owner_id,a.owner_id) IS NOT NULL
+          AND a.banner IS NOT NULL AND a.banner<>''
     ) ORDER BY sort_at,owner_id,reference,COALESCE(artist_key,'')`).iterate();
 }
 
@@ -533,8 +535,8 @@ function exactMediaUrlStillReferenced(database, ownerId, url) {
   return !!database.prepare(`SELECT 1 FROM (
       SELECT avatar_uri value FROM users WHERE id=?
       UNION ALL SELECT banner FROM users WHERE id=?
-      UNION ALL SELECT avatar_uri FROM artist_profiles WHERE owner_id=?
-      UNION ALL SELECT banner FROM artist_profiles WHERE owner_id=?
+      UNION ALL SELECT avatar_uri FROM artist_profiles WHERE COALESCE(avatar_owner_id,owner_id)=?
+      UNION ALL SELECT banner FROM artist_profiles WHERE COALESCE(banner_owner_id,owner_id)=?
       UNION ALL SELECT j.value FROM posts p, json_each(CASE WHEN json_valid(p.photos) THEN p.photos ELSE '[]' END) j
         WHERE p.user_id=?
       UNION ALL SELECT j.value FROM venue_reviews r,

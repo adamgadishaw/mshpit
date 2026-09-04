@@ -49,7 +49,7 @@ test("ticket card is responsive and uses the shared design system", () => {
 test("ticket card keeps its interactive and summary modes accessible", () => {
   assert.match(source, /accessibilityRole="button"/);
   assert.match(source, /accessibilityRole="summary"/);
-  assert.match(source, /const cardAccessibilityLabel = "Mshpit social keepsake, not valid for entry\. "/);
+  assert.match(source, /const cardAccessibilityLabel = "Mshpit RSVP keepsake, not valid for entry\. "/);
   assert.match(source, /accessibilityLabel=\{cardAccessibilityLabel\}/);
   assert.match(source, /accessibilityHint=\{accessibilityHint \|\| "Opens the show page"\}/);
   assert.match(source, /importantForAccessibility="no-hide-descendants"/);
@@ -68,17 +68,22 @@ test("ticket artwork uses Expo Image caching and the ticket edge is presentation
 });
 
 test("ticket composition reads like a concert keepsake instead of a generic action card", () => {
-  assert.match(source, /MSHPIT \/ GOING/);
-  assert.match(source, /SOCIAL RSVP · NOT VALID FOR ENTRY/);
-  assert.match(source, /GOING/);
-  assert.match(source, /SOCIAL RSVP/);
+  assert.match(source, />MSHPIT<\/Text>/);
+  assert.match(source, /LIVE MUSIC, REMEMBERED/);
+  assert.doesNotMatch(source, /MSHPIT \/ GOING|SOCIAL RSVP/);
+  assert.match(source, />RSVP<\/Text>/);
   assert.match(source, /SEATING/);
   assert.match(source, /NOT SHARED/);
   assert.match(source, /VIEW SHOW/);
   assert.match(source, /RSVP CARD/);
   assert.match(source, /ARTIST \//);
   assert.match(source, /VENUE \/ CITY/);
-  assert.match(source, /MSHPIT SOCIAL RSVP/);
+  assert.match(source, /MSHPIT RSVP/);
+  assert.match(source, /legalFinePrint/);
+  assert.equal((source.match(/NOT VALID FOR ENTRY/g) || []).length, 1,
+    "the disclaimer appears once, in fine print at the very bottom");
+  assert.ok(source.indexOf("styles.legalFooter") > source.indexOf("styles.stub"),
+    "the entry disclaimer follows the full ticket stub");
   assert.doesNotMatch(source, /KEEP THE NIGHT|OPEN THE NIGHT|LIVE KEEPSAKE|THIS NIGHT/);
   assert.match(source, /colorRegister/);
   assert.match(source, /statusStamp/);

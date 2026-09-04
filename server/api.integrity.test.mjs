@@ -4073,6 +4073,16 @@ test("account export covers owned social data without secrets or raw IP addresse
   db.prepare("INSERT INTO lounge_messages (id,lounge_id,user_id,text,created_at) VALUES (?,?,?,?,?)").run("lm_export", "show-1", user.id, "hello lounge", 12);
   db.prepare("INSERT INTO artist_requests (id,user_id,artist_name,note,status,created_at) VALUES (?,?,?,?,?,?)").run("ar_export", user.id, "The Band", "I am the singer", "pending", 13);
   db.prepare("INSERT INTO artist_profiles (artist_key,bio,owner_id,updated_at) VALUES (?,?,?,?)").run("the band", "Official bio", user.id, 14);
+  db.prepare(`INSERT INTO artist_profiles
+    (artist_key,avatar_uri,avatar_owner_id,banner,banner_owner_id,owner_id,updated_at)
+    VALUES (?,?,?,?,?,NULL,?)`).run(
+    "seeded export artist",
+    "https://media.example.com/export-avatar.webp",
+    user.id,
+    "https://media.example.com/other-banner.webp",
+    other.id,
+    14,
+  );
   db.prepare("INSERT INTO artist_posts (id,artist_key,user_id,text,created_at) VALUES (?,?,?,?,?)").run("ap_export", "the band", user.id, "Tour soon", 15);
   db.prepare("INSERT INTO reports (id,target_type,target_id,reason,reporter_id,created_at) VALUES (?,?,?,?,?,?)").run("rep_export", "post", "missing", "spam", user.id, 16);
   db.prepare("INSERT INTO events (id,user_id,name,props,ip,created_at) VALUES (?,?,?,?,?,?)").run("evt_export", user.id, "view_artist", '{"artist":"The Band"}', "203.0.113.10", 17);
@@ -4117,6 +4127,11 @@ test("account export covers owned social data without secrets or raw IP addresse
   assert.equal(data.loungeMessages[0].id, "lm_export");
   assert.equal(data.artistAccount.requests[0].id, "ar_export");
   assert.equal(data.artistAccount.profiles[0].artistKey, "the band");
+  assert.deepEqual(data.artistAccount.managedPhotos, [{
+    artistKey: "seeded export artist",
+    slot: "avatar",
+    url: "https://media.example.com/export-avatar.webp",
+  }], "the export lists only artist photo slots uploaded by this account");
   assert.equal(data.artistAccount.posts[0].id, "ap_export");
   assert.equal(data.reportsSubmitted[0].id, "rep_export");
   assert.deepEqual(data.activityEvents[0].properties, { artist: "The Band" });
@@ -4189,6 +4204,36 @@ test("account export covers owned social data without secrets or raw IP addresse
   assert.equal(encoded.includes("test-hash"), false);
 });
 
+test("account export includes every managed artist photo beyond the former 1,000-row cap", () => {
+  const user = addUser("u_export_many_photos", "export-many@example.com", "exportmany");
+  const password = "ExportManyPhotos9";
+  db.prepare("UPDATE users SET pass_hash=? WHERE id=?").run(hashPassword(password), user.id);
+  const prefix = "managed export completeness ";
+  const insert = db.prepare(`INSERT INTO artist_profiles
+    (artist_key,avatar_uri,avatar_owner_id,owner_id,updated_at)
+    VALUES (?,?,?,NULL,?)`);
+  for (let index = 0; index < 1_001; index += 1) {
+    insert.run(
+      `${prefix}${String(index).padStart(4, "0")}`,
+      `https://media.example.com/managed-export-${index}.webp`,
+      user.id,
+      index,
+    );
+  }
+  try {
+    const data = routes["POST /api/me/export"]({
+      user: q.userById.get(user.id),
+      ip: "export-many-managed-photos",
+      body: { password },
+    });
+    assert.equal(data.artistAccount.managedPhotos.length, 1_001);
+    assert.equal(new Set(data.artistAccount.managedPhotos.map((photo) => photo.artistKey)).size, 1_001);
+  } finally {
+    db.prepare("DELETE FROM artist_profiles WHERE avatar_owner_id=? AND artist_key LIKE ?")
+      .run(user.id, `${prefix}%`);
+  }
+});
+
 test("account deletion requires the password and erases SET NULL privacy rows atomically", () => {
   const password = "ConcertPassword9";
   const user = addUser("u_delete", "delete@example.com", "deleteuser");
@@ -4196,10 +4241,17 @@ test("account deletion requires the password and erases SET NULL privacy rows at
   db.prepare("UPDATE users SET is_banned=1 WHERE id=?").run(user.id);
   const freshUser = q.userById.get(user.id);
   const survivor = addUser("u_delete_survivor", "delete-survivor@example.com", "deletesurvivor");
+  const foreignSeedKey = `users/${survivor.id}/banner/foreign-artist-seed.webp`;
+  const foreignSeedUrl = `https://media.example.com/cdn/${foreignSeedKey}`;
+  db.prepare(`INSERT INTO media_objects
+    (object_key,owner_id,storage_scope,purpose,byte_size,status,created_at,updated_at)
+    VALUES (?,?,'public','banner',512,'issued',20,20)`).run(foreignSeedKey, survivor.id);
   db.prepare("INSERT INTO events (id,user_id,name,props,ip,created_at) VALUES (?,?,?,?,?,?)").run("evt_delete", user.id, "login", "{}", "203.0.113.20", 20);
   db.prepare("INSERT INTO reports (id,target_type,target_id,reason,reporter_id,created_at) VALUES (?,?,?,?,?,?)").run("rep_delete", "user", survivor.id, "test", user.id, 21);
   db.prepare("INSERT INTO reports (id,target_type,target_id,reason,reporter_id,created_at) VALUES (?,?,?,?,?,?)").run("rep_delete_target", "user", user.id, "target gone", survivor.id, 21);
-  db.prepare("INSERT INTO artist_profiles (artist_key,bio,owner_id,updated_at) VALUES (?,?,?,?)").run("delete band", "bio", user.id, 22);
+  db.prepare(`INSERT INTO artist_profiles
+    (artist_key,bio,banner,banner_owner_id,owner_id,removed,updated_at)
+    VALUES (?,?,?,?,?,1,?)`).run("delete band", "bio", foreignSeedUrl, survivor.id, user.id, 22);
   db.prepare("INSERT INTO artist_posts (id,artist_key,user_id,text,created_at) VALUES (?,?,?,?,?)").run("ap_delete", "delete band", user.id, "post", 23);
   db.prepare("INSERT INTO notifications (id,user_id,actor_id,type,created_at) VALUES (?,?,?,?,?)").run("n_delete", survivor.id, user.id, "follow", 24);
   db.prepare("INSERT INTO posts (id,user_id,artist,venue,overall,created_at) VALUES (?,?,?,?,?,?)").run("post_delete", user.id, "Band", "Venue", 4, 25);
@@ -4238,6 +4290,11 @@ test("account deletion requires the password and erases SET NULL privacy rows at
       'finalized',?,?,?,?)`)
     .run(user.id, "e".repeat(64), legacyStagingKey, legacyOutputKey, legacyOutputUrl,
       Date.now() + 60_000, 27, 27, 27);
+  db.prepare(`INSERT INTO artist_profiles
+    (artist_key,bio,avatar_uri,avatar_owner_id,owner_id,updated_at)
+    VALUES (?,?,?,?,?,?)`).run(
+    "delete uploader only", "Surviving claimant bio", legacyOutputUrl, user.id, survivor.id, 28,
+  );
 
   const handler = routes["DELETE /api/me"];
   assert.throws(
@@ -4263,6 +4320,23 @@ test("account deletion requires the password and erases SET NULL privacy rows at
       "delete_queued", "account erasure keeps both private staging and sanitized output recoverably queued");
   }
   assert.ok(q.userById.get(survivor.id));
+  assert.deepEqual({ ...db.prepare(`SELECT owner_id,bio,banner,banner_owner_id,removed
+    FROM artist_profiles WHERE artist_key='delete band'`).get() }, {
+    owner_id: null,
+    bio: null,
+    banner: foreignSeedUrl,
+    banner_owner_id: survivor.id,
+    removed: 1,
+  }, "deleting a claimant unclaims the page but preserves foreign-seeded art and moderation state");
+  assert.deepEqual({ ...db.prepare(`SELECT owner_id,bio,avatar_uri,avatar_owner_id
+    FROM artist_profiles WHERE artist_key='delete uploader only'`).get() }, {
+    owner_id: survivor.id,
+    bio: "Surviving claimant bio",
+    avatar_uri: null,
+    avatar_owner_id: null,
+  }, "deleting an uploader clears only their slot without deleting another claimant's page");
+  assert.equal(db.prepare("SELECT status FROM media_objects WHERE object_key=?").get(foreignSeedKey).status,
+    "issued", "another uploader's seeded object is not queued with the deleting claimant");
   for (const [table, column] of [
     ["events", "user_id"],
     ["reports", "reporter_id"],

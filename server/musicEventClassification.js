@@ -46,7 +46,9 @@ export function ticketmasterMusicEvent(event, { requestedArtist = null } = {}) {
   if (!event || typeof event !== "object") return null;
   const labels = classificationLabels(event.classifications);
   const billedArtists = boundedNames(event._embedded?.attractions);
-  const providerMusicClassification = labels.some((label) => MUSIC.test(label));
+  const primarySegment = line(event.classifications?.[0]?.segment?.name, 80);
+  const providerMusicClassification = Boolean(primarySegment && MUSIC.test(primarySegment));
+  const explicitNonMusicSegment = Boolean(primarySegment && !providerMusicClassification);
   const requested = line(requestedArtist, 160)?.toLowerCase() || null;
   const requestedArtistMatch = requested
     ? billedArtists.some((name) => name.toLowerCase() === requested)
@@ -54,7 +56,7 @@ export function ticketmasterMusicEvent(event, { requestedArtist = null } = {}) {
   // City/country discovery fails closed on the response's explicit taxonomy.
   // Artist-specific lookup may recover a missing provider classification only
   // when the returned billing exactly matches the requested artist.
-  if (!providerMusicClassification && !requestedArtistMatch) return null;
+  if (!providerMusicClassification && (!requestedArtistMatch || explicitNonMusicSegment)) return null;
   const startDate = line(event.dates?.start?.localDate, 10);
   const endDate = line(event.dates?.end?.localDate, 10);
   return Object.freeze({

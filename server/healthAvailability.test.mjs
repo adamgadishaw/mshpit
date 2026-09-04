@@ -27,7 +27,11 @@ test("public liveness and deployment-readiness probes use a dedicated per-IP all
 test("private media probes degrade publishing without preventing core startup", () => {
   const source = readFileSync(new URL("./index.js", import.meta.url), "utf8");
   assert.doesNotMatch(source, /throw new Error\(`Private media storage privacy check failed/);
-  assert.match(source, /if \(PROD\) refreshPrivateMediaIsolationSafely\("startup"\)/);
+  assert.match(
+    source,
+    /if \(PROD\) void startBackgroundRuntime\("\/startup\/private-media-probe", \(\) => refreshPrivateMediaIsolationSafely\("startup"\)\);/,
+    "the production probe remains non-blocking and cannot escape its optional-runtime boundary",
+  );
   assert.match(source, /private-storage privacy check failed closed: phase=\$\{phase\} code=\$\{status\.errorCode/);
   assert.match(source, /if \(status\?\.ready\) ensureLegacyImageRecoveryScheduler\(\)/,
     "legacy recovery starts only from a successful private-storage proof");

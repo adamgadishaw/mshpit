@@ -398,3 +398,35 @@ test("the founder scheduler starts deployment and digest work only for productio
   assert.equal(stagingTimers.length, 0);
   await staging.stop();
 });
+
+test("the founder scheduler contains synchronous digest and deployment failures", async () => {
+  const timers = [];
+  const errors = [];
+  const scheduler = startFounderOperationsScheduler({
+    database: db,
+    env: productionEnv,
+    clock: () => Date.parse("2026-01-17T14:00:00Z"),
+    deploymentDelayMs: 5_000,
+    initialDelayMs: 30_000,
+    intervalMs: 60_000,
+    stampDeployment() { throw new Error("deployment detail must stay private"); },
+    runDigest() { throw new Error("digest detail must stay private"); },
+    setTimer(callback, delay) {
+      const handle = { callback, delay, unref() {} };
+      timers.push(handle);
+      return handle;
+    },
+    clearTimer() {},
+    logger: { log() {}, error(message) { errors.push(message); } },
+  });
+
+  assert.equal(timers.length, 2);
+  assert.doesNotThrow(() => timers[0].callback());
+  await assert.doesNotReject(() => timers[1].callback());
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(errors.filter((message) => message.includes("failed safely")).length, 2);
+
+  await assert.doesNotReject(() => scheduler.tick());
+  assert.equal(errors.filter((message) => message.includes("founder digest failed safely")).length, 2);
+  await scheduler.stop();
+});

@@ -27,7 +27,12 @@ import ConcertTicketCard from "./ConcertTicketCard";
 import { SocialShareButton } from "./SocialShareStudio";
 import { concertPostContext } from "../domain/concertPostContext.mjs";
 import { resolvePostAuthor } from "../domain/postAuthor.mjs";
-import { canonicalYouTubeReviewUrl, ONLINE_REVIEW_EXPERIENCE } from "../domain/onlineReview.mjs";
+import {
+  canonicalYouTubeReviewUrl,
+  ONLINE_REVIEW_EXPERIENCE,
+  reviewCardPerformance,
+  youtubeReviewThumbnailUrl,
+} from "../domain/onlineReview.mjs";
 import { buildPostShareModel } from "../domain/socialShareCard.mjs";
 
 // "3rd time in the pit" needs a real ordinal, not "3th".
@@ -135,13 +140,13 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onOpenSh
   const postContext = concertPostContext(log);
   const canonicalPostHref = postContext.showHref;
   const isOnlineReview = (log.experienceType || log.experience_type) === ONLINE_REVIEW_EXPERIENCE;
-  const onlineTitle = String(log.onlineTitle || log.online_title || "").trim();
   const youtubeUrl = isOnlineReview
     ? canonicalYouTubeReviewUrl(
       log.youtubeUrl || log.youtube_url,
       log.youtubeVideoId || log.youtube_video_id,
     )
     : "";
+  const youtubeThumbnailUrl = isOnlineReview ? youtubeReviewThumbnailUrl(youtubeUrl) : "";
   const artistHref = log.artist ? artistPath(log.artist, log.artistPublicSlug || log.artist_public_slug || null) : null;
   const venueHref = log.venue ? venuePath({
     name: log.venue,
@@ -225,11 +230,9 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onOpenSh
   const viewCount = Math.max(0, Math.trunc(Number(log.viewCount) || 0));
   // Server posts can arrive with null scores (photo-only posts); never crash the feed.
   const band = log.band ?? 0, room = log.room ?? 0, overall = log.overall ?? 0;
-  const performanceTitle = isOnlineReview
-    ? onlineTitle || log.artist || "Online concert"
-    : String(log.tour || "").trim() || log.artist || "Live show";
-  const titledPerformance = !isOnlineReview && !!String(log.tour || "").trim()
-    && String(log.tour).trim().toLowerCase() !== String(log.artist || "").trim().toLowerCase();
+  const performance = reviewCardPerformance(log);
+  const performanceTitle = performance.primary;
+  const titledPerformance = performance.showArtistInMeta;
   const factors = log.dims
     ? `Band ${band.toFixed(1)} · Room ${room.toFixed(1)} · Night ${(((log.dims.crowd || 0) + (log.dims.experience || 0)) / 2 || overall).toFixed(1)}`
     : `Band ${band.toFixed(1)} · Room ${room.toFixed(1)}`;
@@ -420,12 +423,11 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onOpenSh
               <Text style={styles.performanceArchiveMark}>{isOnlineReview ? "MSHPIT / ONLINE REVIEW" : "MSHPIT / LIVE MEMORY"}</Text>
             </View>
             <Text style={styles.performanceTitle} numberOfLines={3}>
-              {isOnlineReview && onlineTitle
-                ? performanceTitle
-                : titledPerformance
-                ? performanceTitle
-                : <PublicTextLink href={artistHref} onNavigate={() => onOpenArtist?.(log.artist)} style={styles.performanceTitle}>{performanceTitle}</PublicTextLink>}
+              {performance.primaryIsArtist
+                ? <PublicTextLink href={artistHref} onNavigate={() => onOpenArtist?.(log.artist)} style={styles.performanceTitle}>{performanceTitle}</PublicTextLink>
+                : performanceTitle}
             </Text>
+            {!!performance.secondary && <Text style={styles.performanceSubtitle} numberOfLines={2}>{performance.secondary}</Text>}
             <View style={styles.performancePerforation} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
               <View style={styles.performancePerforationLine} />
               <View style={styles.performancePerforationDot} />
@@ -433,8 +435,6 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onOpenSh
             </View>
             {isOnlineReview ? (
               <Text style={styles.performanceMeta}>
-                {!!log.artist && <PublicTextLink href={artistHref} onNavigate={() => onOpenArtist?.(log.artist)} style={styles.performanceArtist}>{log.artist}</PublicTextLink>}
-                {!!log.artist && <Text style={styles.dim}> · </Text>}
                 <Text style={styles.performanceDate}>WATCHED ONLINE</Text>
               </Text>
             ) : (
@@ -466,12 +466,25 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onOpenSh
               }}
               target={Platform.OS === "web" ? "_blank" : undefined}
               rel={Platform.OS === "web" ? "ugc nofollow noopener noreferrer" : undefined}
-              style={({ pressed }) => [styles.contextAction, styles.youtubeAction, pressed && styles.contextActionPressed]}
+              style={({ pressed }) => [styles.youtubePreview, pressed && styles.contextActionPressed]}
               accessibilityLabel="Watch this online concert on YouTube"
               accessibilityHint="Opens YouTube outside Mshpit"
             >
-              <Icon name="external" size={15} color={colors.text} />
-              <Text style={styles.contextActionText}>Watch on YouTube</Text>
+              <ExpoImage
+                source={{ uri: youtubeThumbnailUrl }}
+                style={styles.youtubeThumbnail}
+                contentFit="cover"
+                cachePolicy="memory-disk"
+                priority={avatarPriority}
+                transition={reduceMotion ? 0 : 160}
+                accessible={false}
+                accessibilityElementsHidden
+              />
+              <View style={styles.youtubePreviewScrim} pointerEvents="none" />
+              <View style={styles.youtubePreviewAction} pointerEvents="none">
+                <Icon name="external" size={15} color="#FFFFFF" />
+                <Text style={styles.youtubePreviewActionText}>Watch on YouTube</Text>
+              </View>
             </PublicPressableLink>
           ) : null
         ) : (
@@ -661,6 +674,7 @@ const styles = StyleSheet.create({
   performanceEyebrow: { color: colors.amber, fontFamily: mono, fontSize: 9, fontWeight: "900", letterSpacing: 1.35 },
   performanceArchiveMark: { flexShrink: 1, color: colors.textFaint, fontFamily: mono, fontSize: 7.5, lineHeight: 11, fontWeight: "900", letterSpacing: 1.05 },
   performanceTitle: { color: colors.text, fontFamily: displayFont, fontSize: 22, lineHeight: 26, fontWeight: "900", letterSpacing: -0.45, marginTop: 8 },
+  performanceSubtitle: { color: colors.textDim, fontFamily: font, fontSize: 13, lineHeight: 18, fontWeight: "800", marginTop: 3 },
   performancePerforation: { height: 17, flexDirection: "row", alignItems: "center", gap: 7 },
   performancePerforationLine: { flex: 1, borderTopWidth: 1, borderStyle: "dashed", borderColor: colors.line },
   performancePerforationDot: { width: 5, height: 5, borderRadius: 3, backgroundColor: colors.amberStrong },
@@ -671,7 +685,11 @@ const styles = StyleSheet.create({
   contextActions: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 10 },
   statusContextActions: { marginTop: 8, marginBottom: 2 },
   contextAction: { minHeight: 44, maxWidth: "100%", flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7, paddingHorizontal: 12, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.amber + "80", backgroundColor: colors.surfaceAlt },
-  youtubeAction: { borderColor: "#FF0033", backgroundColor: "rgba(255,0,51,0.10)" },
+  youtubePreview: { width: "100%", maxWidth: 640, aspectRatio: 16 / 9, overflow: "hidden", borderRadius: radius.lg, borderWidth: 1, borderColor: "#FF003380", backgroundColor: colors.surfaceAlt },
+  youtubeThumbnail: { width: "100%", height: "100%", backgroundColor: colors.bgElev },
+  youtubePreviewScrim: { position: "absolute", top: 0, right: 0, bottom: 0, left: 0, backgroundColor: "rgba(4,4,8,0.18)" },
+  youtubePreviewAction: { position: "absolute", left: 12, bottom: 12, minHeight: 40, flexDirection: "row", alignItems: "center", gap: 7, paddingHorizontal: 13, borderRadius: radius.pill, backgroundColor: "rgba(12,10,13,0.88)", borderWidth: 1, borderColor: "rgba(255,255,255,0.28)" },
+  youtubePreviewActionText: { color: "#FFFFFF", fontSize: 12, fontWeight: "900" },
   contextActionSecondary: { flexShrink: 1, borderColor: colors.cool + "70" },
   contextActionPressed: { opacity: 0.8, transform: [{ scale: 0.98 }] },
   contextActionText: { flexShrink: 1, color: colors.text, fontSize: 12, fontWeight: "800" },

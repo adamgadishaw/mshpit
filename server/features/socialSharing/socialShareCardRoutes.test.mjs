@@ -8,6 +8,7 @@ import {
 } from "./socialShareCardRoutes.js";
 import {
   socialShareCardEtag,
+  SocialShareCardArtworkUnavailableError,
   SocialShareCardBusyError,
 } from "./socialShareCardRenderer.js";
 
@@ -243,7 +244,7 @@ test("persisted owned Going artwork must still be the current public artist prof
 
   assert.deepEqual(seenIdentities, [{ artist: "The Example", artistKey: "the example" }]);
   assert.deepEqual(current.renderedModels[0].artwork, [{ url: previousPhoto, source: "owned-media" }]);
-  assert.deepEqual(replaced.renderedModels[0].artwork, []);
+  assert.deepEqual(replaced.renderedModels[0].artwork, [{ url: replacementPhoto, source: "owned-media" }]);
   assert.deepEqual(removed.renderedModels[0].artwork, []);
   assert.deepEqual(unreadable.renderedModels[0].artwork, []);
   assert.notEqual(
@@ -270,6 +271,71 @@ test("persisted owned Going artwork must still be the current public artist prof
     url: providerPhoto,
     source: "ticketmaster",
   }], "persisted provider art remains usable when the current artist profile has no photo resolver");
+
+  const oldTicketWithCurrentProfile = publicAttendanceTicketShareSnapshot({
+    ...rawTicket,
+    artistPhotoUri: null,
+  }, {
+    env: { MEDIA_PUBLIC_BASE_URL: "https://media.mshpit.test/public" },
+    resolveCurrentArtistProfileImage: () => replacementPhoto,
+  });
+  assert.deepEqual(oldTicketWithCurrentProfile.fallbackArtwork, [{
+    url: replacementPhoto,
+    source: "owned-media",
+  }], "an older ticket without a photo picks up the current trusted artist profile");
+
+  const providerWithCurrentProfile = publicAttendanceTicketShareSnapshot({
+    ...rawTicket,
+    artistPhotoUri: providerPhoto,
+  }, {
+    env: { MEDIA_PUBLIC_BASE_URL: "https://media.mshpit.test/public" },
+    resolveCurrentArtistProfileImage: () => replacementPhoto,
+  });
+  assert.deepEqual(providerWithCurrentProfile.fallbackArtwork, [
+    { url: replacementPhoto, source: "owned-media" },
+    { url: providerPhoto, source: "ticketmaster" },
+  ], "the current artist identity leads while the stored provider snapshot remains a safe fallback");
+});
+
+test("Going posts prioritize current artist identity over event-provider art", async () => {
+  const currentPhoto = "https://media.mshpit.test/public/artists/the-example/current.jpg";
+  const providerPhoto = "https://s1.ticketm.net/dam/a/provider-event.jpg";
+  const ticket = JSON.stringify({
+    version: 1,
+    state: "going",
+    tourDateId: "event_123",
+    artist: "The Example",
+    artistKey: "the example",
+    venue: "Massey Hall",
+    date: "2026-10-16",
+    artistPhotoUri: null,
+  });
+  const { route, renderedModels } = fixture({
+    ticket,
+    resolveCurrentArtistProfileImage: () => currentPhoto,
+    resolvePublicDocument: async (path) => {
+      if (path === "/post/going_post") {
+        return {
+          kind: "post",
+          post: { id: "going_post", kind: "status", author: { name: "Alex" } },
+        };
+      }
+      if (path === "/event/event_123") {
+        const document = eventDocument("event_123");
+        document.image = providerPhoto;
+        document.imageProvenance = "provider";
+        document.event.providerImage = { url: providerPhoto };
+        return document;
+      }
+      return null;
+    },
+  });
+
+  await route(context({ kind: "post", postId: "going_post" }));
+  assert.deepEqual(renderedModels[0].artwork, [
+    { url: currentPhoto, source: "owned-media" },
+    { url: providerPhoto, source: "ticketmaster" },
+  ]);
 });
 
 test("Going-post fallback rejects an impossible legacy calendar date", () => {
@@ -498,6 +564,18 @@ test("renderer saturation reports a dedicated retryable service failure", async 
   const { route } = fixture({
     renderer: {
       async render() { throw new SocialShareCardBusyError(); },
+    },
+  });
+  await assert.rejects(
+    route(context({ kind: "event", eventId: "event_123", intent: "going" })),
+    (error) => error.status === 503 && error.code === "SHARE_RENDER_UNAVAILABLE",
+  );
+});
+
+test("temporary authoritative-photo failure reports a retryable artwork failure", async () => {
+  const { route } = fixture({
+    renderer: {
+      async render() { throw new SocialShareCardArtworkUnavailableError(); },
     },
   });
   await assert.rejects(

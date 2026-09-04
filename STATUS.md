@@ -155,10 +155,10 @@ August 4/5 audit/session log are historical journals, not current status.
 
 ## Known release and operating gaps
 
-- The declared `mshpit-staging` hostname returned HTTP 404 with
-  `x-render-routing: no-server` on 2026-08-13. The `staging` branch and Blueprint
-  entry exist, but a usable Render staging service was not verified. Do not claim
-  a staging rehearsal until the actual service URL is healthy and tested.
+- The unused Render staging service was retired on 2026-09-04. It carried no
+  distinct code and its uninitialized disk generated failed-deploy noise.
+  Releases are direct from `master`; do not claim a staging rehearsal. Require
+  the complete local/CI gate, a verified recovery point, and post-deploy checks.
 - Health confirms the production backup scheduler is enabled, but no post-change
   snapshot, off-host upload, restore, or rollback has been independently
   observed. Off-host configuration is currently false. Configure private backup
@@ -184,8 +184,8 @@ August 4/5 audit/session log are historical journals, not current status.
    to the release.
 2. Confirm a verified production backup/restore point and keep the last-known-good commit
    (`1c6d91f`) available for code rollback.
-3. Provision and smoke the real staging service before calling future releases
-   staged; this release is explicitly recorded as direct-master.
+3. Record releases as direct-master and require the complete local/CI gate,
+   verified recovery point, and post-deploy checks before calling them complete.
 4. Post-deploy read-only proof covers custom/origin commit and data parity,
    durable-storage health, J. Cole post/photo presence, missing-chunk behavior,
    venue-cache behavior, exact live bundle size, and health beyond 60 seconds.

@@ -148,6 +148,27 @@ function ticketBody(tourDateId, mutationId, extra = {}) {
   };
 }
 
+let artistMediaSequence = 0;
+function finalizedArtistSlotImage(owner, purpose) {
+  artistMediaSequence += 1;
+  const token = `ticketartist${artistMediaSequence}`;
+  const objectKey = `users/${owner.id}/${purpose}/${token}.webp`;
+  const publicUrl = `https://pit-media.example/${objectKey}`;
+  const at = Date.now();
+  db.prepare(`INSERT INTO media_objects
+    (object_key,owner_id,storage_scope,purpose,byte_size,status,created_at,updated_at)
+    VALUES (?,?,'public',?,1024,'issued',?,?)`).run(objectKey, owner.id, purpose, at, at);
+  db.prepare(`INSERT INTO legacy_media_finalize_descriptors
+    (id,owner_id,token_hash,purpose,staging_object_key,staging_mime_type,staging_byte_size,
+      output_mime_type,output_object_key,output_url,output_byte_size,width,height,status,expires_at,
+      finalized_at,created_at,updated_at)
+    VALUES (?,?,?,?,?,'image/jpeg',2048,'image/webp',?,?,1024,100,100,'finalized',?,?,?,?)`)
+    .run(`lm_${token.padEnd(24, "x")}`, owner.id, "d".repeat(64), purpose,
+      `users/${owner.id}/${purpose}/${token}-staging.jpg`, objectKey, publicUrl,
+      at + 60_000, at, at, at);
+  return publicUrl;
+}
+
 test("Going ticket posts persist only a server-owned event snapshot and remain idempotent", () => {
   const user = addUser("ticket_owner");
   const event = { id: "tm_ticket_post_1" };
@@ -221,6 +242,31 @@ test("Going ticket posts persist only a server-owned event snapshot and remain i
   routes["DELETE /api/posts/:id"]({ user, ip: "ticket-delete", params: { id: created.id } });
   assert.equal(db.prepare("SELECT attendance_ticket FROM posts WHERE id=?").get(created.id).attendance_ticket, null,
     "author deletion scrubs the public event and optional seat snapshot");
+});
+
+test("Going ticket artwork never publishes a banner-finalized artist image as an avatar", () => {
+  const user = addUser("ticket_artist_purpose");
+  const event = {
+    id: "tm_ticket_artist_purpose",
+    artist: "Ticket Purpose Artist",
+    venue: "Purpose Room",
+    date: `${FUTURE_YEAR}-10-25`,
+  };
+  addEvent(event);
+  const wrongPurposePhoto = finalizedArtistSlotImage(user, "banner");
+  db.prepare(`INSERT INTO artist_profiles
+    (artist_key,owner_id,avatar_uri,avatar_owner_id,feed_enabled,updated_at)
+    VALUES (?,NULL,?,?,1,?)`)
+    .run("ticket purpose artist", wrongPurposePhoto, user.id, Date.now());
+  markAttendance(user, event);
+
+  const created = routes["POST /api/posts"]({
+    user,
+    ip: "ticket-artist-purpose-create",
+    body: ticketBody(event.id, "attendance_ticket_artist_purpose"),
+  });
+  assert.equal(created.post.attendanceTicket.artistPhotoUri, null);
+  assert.notEqual(created.post.attendanceTicket.artistPhotoUri, wrongPurposePhoto);
 });
 
 test("ticket publication requires exact current Going attendance and rejects client event copies or secrets", () => {

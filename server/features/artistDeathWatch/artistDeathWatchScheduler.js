@@ -33,7 +33,8 @@ export function startArtistDeathWatchScheduler({
   };
   const tick = () => {
     if (stopped || pending) return;
-    pending = Promise.resolve(service.scan({ at: now() }))
+    pending = Promise.resolve()
+      .then(() => service.scan({ at: now() }))
       .catch(onError)
       .finally(() => {
         pending = null;

@@ -59,7 +59,9 @@ test("Discover keeps scene controls inside their card and makes genre exploratio
   assert.doesNotMatch(screen, /contentContainerStyle=\{styles\.regionRail\}/);
   assert.match(screen, /controlsCard: \{ width: "100%", minWidth: 0, overflow: "hidden"/);
   assert.match(screen, /selectDefaultDiscoverGenre/);
-  assert.match(screen, /genreResult\.genre === selectedGenre && genreResult\.region === region/);
+  assert.match(screen, /const genreScopeKey = JSON\.stringify\(\[overviewScopeKey, String\(selectedGenre \|\| ""\)\.trim\(\)\.toLowerCase\(\)\]\)/);
+  assert.match(screen, /const genreRows = selectedGenre \? genreResults\[genreScopeKey\] \|\| \[\] : \[\]/,
+    "genre rows must come only from the exact normalized region-and-genre scope");
   assert.match(screen, /fallbackRows=\{overview\.chart\.rows\}/);
   assert.match(screen, /attendanceRows=\{sceneAttendance\}/);
   assert.match(screen, /filterDiscoverSceneRows\(photos/);

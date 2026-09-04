@@ -363,8 +363,8 @@ export function unreferencedOwnedMediaUrls(database, {
   const stillUsed = database.prepare(`SELECT 1 FROM (
       SELECT avatar_uri value FROM users WHERE id=?
       UNION ALL SELECT banner FROM users WHERE id=?
-      UNION ALL SELECT avatar_uri FROM artist_profiles WHERE owner_id=?
-      UNION ALL SELECT banner FROM artist_profiles WHERE owner_id=?
+      UNION ALL SELECT avatar_uri FROM artist_profiles WHERE COALESCE(avatar_owner_id,owner_id)=?
+      UNION ALL SELECT banner FROM artist_profiles WHERE COALESCE(banner_owner_id,owner_id)=?
       UNION ALL SELECT j.value FROM posts p, json_each(CASE WHEN json_valid(p.photos) THEN p.photos ELSE '[]' END) j WHERE p.user_id=?
       UNION ALL SELECT j.value FROM venue_reviews r, json_each(CASE WHEN json_valid(r.photos) THEN r.photos ELSE '[]' END) j WHERE r.user_id=?
       UNION ALL SELECT poster_url FROM legacy_video_posters WHERE owner_id=?

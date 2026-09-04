@@ -13,6 +13,19 @@ const DIRECT_ANDROID_TARGETS = Object.freeze({
   x: Object.freeze({ androidPackage: "com.twitter.android", socialKey: "TWITTER" }),
   facebook: Object.freeze({ androidPackage: "com.facebook.katana", socialKey: "FACEBOOK" }),
 });
+const NATIVE_SHARE_CANCEL_CODES = new Set([
+  "CANCEL",
+  "CANCELED",
+  "CANCELLED",
+  "ECANCELLED",
+  "USER_CANCELLED",
+]);
+const NATIVE_SHARE_CANCEL_MESSAGES = new Set([
+  "CANCELED",
+  "CANCELLED",
+  "PICKER_WAS_CANCELLED",
+  "USER DID NOT SHARE",
+]);
 
 export const instagramStorySharingConfigured = () => /^\d{5,32}$/u.test(INSTAGRAM_STORY_APP_ID);
 
@@ -26,6 +39,43 @@ async function loadNativeShare(errorCode = "SOCIAL_SHARE_UNAVAILABLE") {
 
 function socialShareMessage(model) {
   return [...new Set([model?.shareText, model?.url].map((value) => String(value || "").trim()).filter(Boolean))].join("\n\n");
+}
+
+function normalizedNativeShareValue(value) {
+  return typeof value === "string"
+    ? value.normalize("NFKC").trim().replace(/\s+/gu, " ").toUpperCase()
+    : "";
+}
+
+function nativeShareWasCancelled(error) {
+  const codeValues = [
+    error?.code,
+    error?.errorCode,
+    error?.name,
+    error?.error?.code,
+  ].map(normalizedNativeShareValue);
+  if (codeValues.some((value) => NATIVE_SHARE_CANCEL_CODES.has(value))) return true;
+  const messageValues = [
+    typeof error === "string" ? error : null,
+    error?.message,
+    error?.error?.message,
+  ].map(normalizedNativeShareValue);
+  return messageValues.some((value) => NATIVE_SHARE_CANCEL_MESSAGES.has(value));
+}
+
+async function openNativeShareSheet(RNShare, options, platform) {
+  try {
+    const result = await RNShare.open({ ...options, failOnCancel: false });
+    return {
+      mode: result?.dismissedAction || nativeShareWasCancelled(result)
+        ? "dismissed"
+        : "native-share-sheet",
+      platform,
+    };
+  } catch (error) {
+    if (nativeShareWasCancelled(error)) return { mode: "dismissed", platform };
+    throw error;
+  }
 }
 
 async function socialTargetAvailable(RNShare, target) {
@@ -96,16 +146,23 @@ export async function shareCardToSocialPlatform(platform, model, { preparedAsset
 
   const directSocial = target ? RNShare.Social?.[target.socialKey] : null;
   if (directSocial && await socialTargetAvailable(RNShare, target)) {
-    const result = await RNShare.shareSingle({
-      ...options,
-      social: directSocial,
-    });
-    if (result?.success === false) throw new Error("SOCIAL_SHARE_NOT_OPENED");
-    return { mode: "targeted-social", platform };
+    try {
+      const result = await RNShare.shareSingle({
+        ...options,
+        social: directSocial,
+      });
+      if (result?.success !== false) return { mode: "targeted-social", platform };
+      if (nativeShareWasCancelled(result)) return { mode: "dismissed", platform };
+    } catch (error) {
+      if (nativeShareWasCancelled(error)) return { mode: "dismissed", platform };
+    }
+    // Package detection can race an uninstall, an Android intent can be
+    // rejected, or the direct handoff can fail before the target opens. Keep
+    // the image and link usable through the system share sheet in those cases.
+    return openNativeShareSheet(RNShare, options, platform);
   }
 
-  const result = await RNShare.open({ ...options, failOnCancel: false });
-  return { mode: result?.dismissedAction ? "dismissed" : "native-share-sheet", platform };
+  return openNativeShareSheet(RNShare, options, platform);
 }
 
 export async function shareCardToInstagramStory(model, { preparedAsset = null } = {}) {

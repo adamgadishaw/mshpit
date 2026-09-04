@@ -14,7 +14,6 @@ import {
 } from "../lib/socialShare";
 import { socialShareIntentUrl } from "../domain/socialShareCard.mjs";
 import { colors, displayFont, font, mono, radius, shadow, space } from "../theme";
-import BrandMark from "./BrandMark";
 import Icon from "./Icon";
 
 const KIND_ACCENTS = Object.freeze({
@@ -51,88 +50,21 @@ function shareErrorMessage(error) {
   return "That share option did not open. Copy the link and try again.";
 }
 
-function LocalShareCard({ model }) {
-  const accent = KIND_ACCENTS[model.kind] || colors.amberStrong;
+function AuthoritativeShareCardPlaceholder({ status }) {
+  const unavailable = status === "unavailable";
   return (
-    <View style={styles.previewCard} accessibilityRole="image" accessibilityLabel={model.accessibilityLabel}>
-      <View style={[styles.register, { backgroundColor: accent }]} />
-      <View style={styles.previewTopline}>
-        <View style={styles.brandLockup}>
-          <BrandMark size={27} color={accent} />
-          <View>
-            <Text style={styles.brandName}>MSHPIT</Text>
-            <Text style={styles.brandSub}>LIVE MUSIC, REMEMBERED</Text>
-          </View>
-        </View>
-        <View style={[styles.kindPill, { borderColor: accent }]}>
-          <Text style={[styles.kindPillText, { color: accent }]}>{model.eyebrow}</Text>
-        </View>
-      </View>
-
-      <View style={styles.artworkStage}>
-        {model.artworkUri ? (
-          <ExpoImage
-            source={{ uri: model.artworkUri }}
-            style={StyleSheet.absoluteFill}
-            contentFit="cover"
-            transition={160}
-            accessible={false}
-          />
-        ) : (
-          <View style={styles.abstractArtwork} pointerEvents="none">
-            <View style={[styles.stageBeam, styles.stageBeamLeft, { backgroundColor: accent + "36" }]} />
-            <View style={[styles.stageBeam, styles.stageBeamRight, { backgroundColor: colors.cool + "28" }]} />
-            <View style={[styles.recordRing, { borderColor: accent + "9A" }]}>
-              <View style={[styles.recordLabel, { backgroundColor: accent }]} />
-            </View>
-          </View>
-        )}
-        <View style={styles.artworkScrim} />
-        <View style={styles.artworkCopy}>
-          {model.authorName ? <Text style={styles.actionLine}>{model.authorName}</Text> : null}
-          <Text style={styles.previewTitle} numberOfLines={2}>{model.title}</Text>
-          {model.contextTitle && model.contextTitle !== model.title
-            ? <Text style={[styles.contextTitle, { color: accent }]} numberOfLines={2}>{model.contextTitle}</Text>
-            : null}
-        </View>
-      </View>
-
-      <View style={styles.previewBody}>
-        <View style={styles.metaRow}>
-          <View style={styles.metaColumn}>
-            <Text style={styles.metaLabel}>VENUE / CITY</Text>
-            <Text style={styles.metaValue} numberOfLines={2}>{model.place || "Live event"}</Text>
-          </View>
-          <View style={styles.metaDivider} />
-          <View style={[styles.metaColumn, styles.metaColumnRight]}>
-            <Text style={styles.metaLabel}>DATE / TIME</Text>
-            <Text style={[styles.metaValue, styles.metaValueRight]} numberOfLines={2}>
-              {[model.dateLabel, model.timeLabel].filter(Boolean).join(" · ") || "See event details"}
-            </Text>
-          </View>
-        </View>
-        {model.kind === "review" && model.rating ? (
-          <View style={styles.scoreRow}>
-            <View style={[styles.scoreMark, { backgroundColor: accent }]}>
-              <Icon name="star" size={14} color="#090A0D" />
-            </View>
-            <Text style={styles.scoreValue}>{model.rating.toFixed(1)}</Text>
-            <Text style={styles.scoreLabel}>FAN SCORE / 5</Text>
-          </View>
-        ) : null}
-        {model.quote ? (
-          <Text style={styles.quote} numberOfLines={3}>“{model.quote}”</Text>
-        ) : null}
-      </View>
-
-      <View style={styles.perforation}>
-        <View style={styles.perforationNotchLeft} />
-        <View style={styles.perforationLine} />
-        <View style={styles.perforationNotchRight} />
-      </View>
-      <View style={styles.previewFooter}>
-        <Text style={styles.footerPrompt}>SEE THE FULL NIGHT</Text>
-        <Text style={[styles.footerUrl, { color: accent }]}>MSHPIT.COM</Text>
+    <View
+      style={styles.finalPreview}
+      accessibilityRole={unavailable ? "summary" : "progressbar"}
+      accessibilityLabel={unavailable ? "Share artwork unavailable" : "Preparing the final share artwork"}
+      accessibilityState={{ busy: !unavailable }}
+    >
+      <View style={styles.previewPlaceholder}>
+        <Icon name={unavailable ? "x" : "photo"} size={26} color={colors.textFaint} />
+        <Text style={styles.placeholderBrand}>MSHPIT</Text>
+        <Text style={styles.placeholderCopy}>
+          {unavailable ? "THE FINAL CARD ISN’T AVAILABLE YET" : "PREPARING THE FINAL CARD"}
+        </Text>
       </View>
     </View>
   );
@@ -203,9 +135,13 @@ export default function SocialShareStudio({ accountId = null, model, onClose }) 
   const nativeStory = Platform.OS !== "web";
   const storyConfigured = instagramStorySharingConfigured();
   const [assetState, setAssetState] = useState({ status: "loading", asset: null });
+  const [renderAttempt, setRenderAttempt] = useState(0);
   const [busyAction, setBusyAction] = useState(null);
   const [feedback, setFeedback] = useState(null);
   const accent = KIND_ACCENTS[model?.kind] || colors.amberStrong;
+  const preparedAsset = assetState.status === "ready" && assetState.asset?.previewUri
+    ? assetState.asset
+    : null;
   const renderKind = model?.renderRequest?.kind || null;
   const renderPostId = model?.renderRequest?.postId || null;
   const renderEventId = model?.renderRequest?.eventId || null;
@@ -245,7 +181,7 @@ export default function SocialShareStudio({ accountId = null, model, onClose }) 
       controller.abort();
       releaseShareCardAsset(prepared);
     };
-  }, [accountId, renderModel]);
+  }, [accountId, renderAttempt, renderModel]);
 
   if (!model) return null;
 
@@ -270,7 +206,7 @@ export default function SocialShareStudio({ accountId = null, model, onClose }) 
 
   const shareToStory = () => run(
     "instagram",
-    () => shareCardToInstagramStory(model, { preparedAsset: assetState.asset }),
+    () => shareCardToInstagramStory(model, { preparedAsset }),
     (result) => {
       if (result?.mode === "instagram-story") {
         return "Instagram opened a Story draft. Nothing was posted automatically.";
@@ -288,7 +224,7 @@ export default function SocialShareStudio({ accountId = null, model, onClose }) 
     const label = platform === "x" ? "X" : "Facebook";
     void run(
       platform,
-      () => shareCardToSocialPlatform(platform, model, { preparedAsset: assetState.asset, intentUrl: url }),
+      () => shareCardToSocialPlatform(platform, model, { preparedAsset, intentUrl: url }),
       (result) => {
         if (result?.mode === "dismissed") return "Share options closed. Nothing was posted.";
         if (Platform.OS === "web") {
@@ -307,9 +243,15 @@ export default function SocialShareStudio({ accountId = null, model, onClose }) 
   const copyLink = () => run("copy", () => copyShareLink(model.url), "Link copied.");
   const download = () => run(
     "download",
-    () => downloadShareCard(model, { preparedAsset: assetState.asset }),
+    () => downloadShareCard(model, { preparedAsset }),
     "Share card download started.",
   );
+  const retryShareCard = () => {
+    if (busyAction || assetState.status !== "unavailable") return;
+    setFeedback(null);
+    setAssetState({ status: "loading", asset: null });
+    setRenderAttempt((attempt) => attempt + 1);
+  };
   const instagramLabel = "Instagram Story";
   const instagramDetail = nativeStory
     ? storyConfigured
@@ -357,16 +299,16 @@ export default function SocialShareStudio({ accountId = null, model, onClose }) 
             contentContainerStyle={styles.content}
             showsVerticalScrollIndicator={false}
           >
-            {assetState.asset?.previewUri ? (
+            {preparedAsset?.previewUri ? (
               <View style={styles.finalPreview}>
                 <ExpoImage
-                  source={{ uri: assetState.asset.previewUri }}
+                  source={{ uri: preparedAsset.previewUri }}
                   style={styles.finalPreviewImage}
                   contentFit="contain"
                   accessibilityLabel={model.accessibilityLabel}
                 />
               </View>
-            ) : <LocalShareCard model={model} />}
+            ) : <AuthoritativeShareCardPlaceholder status={assetState.status} />}
             <Text style={styles.cardStatus}>
               {assetState.status === "loading"
                 ? "Preparing the final share card…"
@@ -374,6 +316,22 @@ export default function SocialShareStudio({ accountId = null, model, onClose }) 
                   ? "Share artwork ready"
                   : "The artwork is unavailable right now. You can still copy the link."}
             </Text>
+            {assetState.status === "unavailable" ? (
+              <Pressable
+                accessibilityHint="Try preparing the final share card again"
+                accessibilityLabel="Retry share artwork"
+                accessibilityRole="button"
+                disabled={!!busyAction}
+                onPress={retryShareCard}
+                style={({ pressed }) => [
+                  styles.retryButton,
+                  pressed && !busyAction && styles.pressed,
+                  busyAction && styles.disabled,
+                ]}
+              >
+                <Text style={styles.retryButtonText}>TRY AGAIN</Text>
+              </Pressable>
+            ) : null}
 
             <View style={styles.actionsGrid}>
               <ShareAction
@@ -460,49 +418,14 @@ const styles = StyleSheet.create({
   sheetIntro: { color: colors.textDim, fontFamily: font, fontSize: 12, lineHeight: 17, marginTop: 3 },
   closeButton: { width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
   content: { padding: space(4), gap: space(3) },
-  previewCard: { width: "100%", maxWidth: 440, alignSelf: "center", borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderColor: "#3D3F49", backgroundColor: "#090A0D", overflow: "hidden", boxShadow: "0 18px 46px rgba(0,0,0,0.42)" },
-  register: { height: 5 },
-  previewTopline: { minHeight: 62, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: space(2), paddingHorizontal: space(4) },
-  brandLockup: { minWidth: 0, flexDirection: "row", alignItems: "center", gap: space(2) },
-  brandName: { color: "#FFF8EE", fontFamily: mono, fontSize: 11, fontWeight: "900", letterSpacing: 2.2 },
-  brandSub: { color: "#858895", fontFamily: mono, fontSize: 6.5, fontWeight: "900", letterSpacing: 1.15, marginTop: 2 },
-  kindPill: { flexShrink: 0, borderRadius: radius.pill, borderWidth: 1, paddingHorizontal: space(2), paddingVertical: 5 },
-  kindPillText: { fontFamily: mono, fontSize: 7.5, fontWeight: "900", letterSpacing: 1.2 },
-  artworkStage: { height: 190, justifyContent: "flex-end", overflow: "hidden", backgroundColor: "#12141B" },
-  abstractArtwork: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center", overflow: "hidden" },
-  stageBeam: { position: "absolute", width: 110, height: 310, top: -100, borderRadius: 55 },
-  stageBeamLeft: { left: 12, transform: [{ rotate: "27deg" }] },
-  stageBeamRight: { right: 6, transform: [{ rotate: "-25deg" }] },
-  recordRing: { width: 126, height: 126, alignItems: "center", justifyContent: "center", borderRadius: 63, borderWidth: 22, backgroundColor: "#08090C" },
-  recordLabel: { width: 25, height: 25, borderRadius: 13 },
-  artworkScrim: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(3,4,8,0.45)" },
-  artworkCopy: { zIndex: 1, paddingHorizontal: space(4), paddingBottom: space(4) },
-  actionLine: { color: "#D4D0C8", fontFamily: mono, fontSize: 8.5, fontWeight: "900", letterSpacing: 1.15, textTransform: "uppercase" },
-  previewTitle: { color: "#FFF8EE", fontFamily: displayFont, fontSize: 30, lineHeight: 32, fontWeight: "900", letterSpacing: -0.8, marginTop: 5 },
-  contextTitle: { fontFamily: displayFont, fontSize: 12.5, lineHeight: 17, fontWeight: "900", marginTop: 4 },
-  previewBody: { paddingHorizontal: space(4), paddingTop: space(4), paddingBottom: space(3) },
-  metaRow: { flexDirection: "row", alignItems: "stretch", gap: space(3) },
-  metaColumn: { flex: 1, minWidth: 0 },
-  metaColumnRight: { alignItems: "flex-end" },
-  metaDivider: { width: 1, backgroundColor: "#333641" },
-  metaLabel: { color: "#858895", fontFamily: mono, fontSize: 7, fontWeight: "900", letterSpacing: 1.2 },
-  metaValue: { color: "#FFF8EE", fontFamily: displayFont, fontSize: 12, lineHeight: 16, fontWeight: "800", marginTop: 5 },
-  metaValueRight: { textAlign: "right" },
-  scoreRow: { minHeight: 42, flexDirection: "row", alignItems: "center", gap: space(2), marginTop: space(3), paddingTop: space(3), borderTopWidth: 1, borderTopColor: "#252832" },
-  scoreMark: { width: 29, height: 29, borderRadius: 9, alignItems: "center", justifyContent: "center" },
-  scoreValue: { color: "#FFF8EE", fontFamily: mono, fontSize: 21, fontWeight: "900" },
-  scoreLabel: { color: "#858895", fontFamily: mono, fontSize: 7.5, fontWeight: "900", letterSpacing: 1.1 },
-  quote: { color: "#D7D4CC", fontFamily: font, fontSize: 12.5, lineHeight: 18, marginTop: space(3) },
-  perforation: { height: 17, flexDirection: "row", alignItems: "center" },
-  perforationLine: { flex: 1, borderTopWidth: 1, borderStyle: "dashed", borderColor: "#3D3F49" },
-  perforationNotchLeft: { width: 14, height: 14, borderRadius: 7, marginLeft: -7, backgroundColor: colors.bgElev },
-  perforationNotchRight: { width: 14, height: 14, borderRadius: 7, marginRight: -7, backgroundColor: colors.bgElev },
-  previewFooter: { minHeight: 52, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: space(3), paddingHorizontal: space(4) },
-  footerPrompt: { color: "#858895", fontFamily: mono, fontSize: 7.5, fontWeight: "900", letterSpacing: 1.25 },
-  footerUrl: { fontFamily: mono, fontSize: 10, fontWeight: "900", letterSpacing: 1.1 },
   finalPreview: { width: "100%", maxWidth: 300, aspectRatio: 9 / 16, alignSelf: "center", borderRadius: radius.md, overflow: "hidden", backgroundColor: "#090A0D", ...shadow.card },
   finalPreviewImage: { width: "100%", height: "100%" },
+  previewPlaceholder: { flex: 1, alignItems: "center", justifyContent: "center", gap: space(3), padding: space(5), borderWidth: 1, borderColor: colors.line },
+  placeholderBrand: { color: colors.text, fontFamily: displayFont, fontSize: 18, fontWeight: "900", letterSpacing: 5 },
+  placeholderCopy: { maxWidth: 210, color: colors.textFaint, fontFamily: mono, fontSize: 9, lineHeight: 15, fontWeight: "800", letterSpacing: 1.5, textAlign: "center" },
   cardStatus: { color: colors.textFaint, fontFamily: mono, fontSize: 9, lineHeight: 14, textAlign: "center", letterSpacing: 0.5 },
+  retryButton: { minHeight: 44, alignSelf: "center", alignItems: "center", justifyContent: "center", borderRadius: radius.pill, borderCurve: "continuous", borderWidth: 1, borderColor: colors.amber + "80", backgroundColor: colors.surface, paddingHorizontal: space(5) },
+  retryButtonText: { color: colors.amber, fontFamily: mono, fontSize: 10, fontWeight: "900", letterSpacing: 1.5 },
   actionsGrid: { flexDirection: "row", flexWrap: "wrap", gap: space(2), marginTop: space(1) },
   shareAction: { minWidth: 0, minHeight: 68, flexGrow: 1, flexBasis: 230, flexDirection: "row", alignItems: "center", gap: space(3), borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface, paddingHorizontal: space(3), paddingVertical: space(2) },
   actionMark: { width: 38, height: 38, flexShrink: 0, alignItems: "center", justifyContent: "center", borderRadius: 12, borderWidth: 1, backgroundColor: colors.bgElev },

@@ -63,6 +63,52 @@ export function canonicalYouTubeReviewUrl(value, expectedVideoId = "") {
   }
 }
 
+export function youtubeReviewVideoId(value, expectedVideoId = "") {
+  const canonicalUrl = canonicalYouTubeReviewUrl(value, expectedVideoId);
+  if (!canonicalUrl) return "";
+  try {
+    const videoId = new URL(canonicalUrl).searchParams.get("v") || "";
+    return YOUTUBE_VIDEO_ID.test(videoId) ? videoId : "";
+  } catch {
+    return "";
+  }
+}
+
+export function youtubeReviewThumbnailUrl(value, expectedVideoId = "") {
+  const videoId = youtubeReviewVideoId(value, expectedVideoId);
+  return videoId ? `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg` : "";
+}
+
+export function reviewCardPerformance(value) {
+  const review = value && typeof value === "object" ? value : {};
+  const online = isOnlineReview(review);
+  const artist = text(review.artist);
+  const tour = text(review.tour);
+  const onlineTitle = text(review.onlineTitle ?? review.online_title);
+  const normalizedTour = tour.toLowerCase().replace(/\s+/g, " ");
+  const festivalSet = !online && normalizedTour === "festival set";
+  const tourMatchesArtist = !!tour && tour.toLowerCase() === artist.toLowerCase();
+  const primaryIsArtist = !!artist && (online || festivalSet || !tour || tourMatchesArtist);
+  const primary = primaryIsArtist
+    ? artist
+    : online
+      ? onlineTitle || artist || "Online concert"
+      : tour || artist || "Live show";
+  const secondaryCandidate = online ? onlineTitle : festivalSet ? tour : "";
+  const secondary = secondaryCandidate
+    && secondaryCandidate.toLowerCase() !== primary.toLowerCase()
+    ? secondaryCandidate
+    : "";
+
+  return {
+    festivalSet,
+    primary,
+    primaryIsArtist,
+    secondary,
+    showArtistInMeta: !online && !!artist && !primaryIsArtist,
+  };
+}
+
 export function isValidYouTubeSourceUrl(value) {
   return !!canonicalYouTubeReviewUrl(value);
 }

@@ -134,7 +134,7 @@ export default function ConcertTicketCard({
   const timing = Array.isArray(preview.timing) ? preview.timing.slice(0, 2) : [];
   const location = [preview.venue, preview.city].filter(Boolean).join(" · ");
   const contextLabel = preview.isTourTitle ? "TOUR" : "EVENT";
-  const cardAccessibilityLabel = "Mshpit social keepsake, not valid for entry. " + preview.accessibilityLabel;
+  const cardAccessibilityLabel = "Mshpit RSVP keepsake, not valid for entry. " + preview.accessibilityLabel;
   const measureCard = (event) => {
     const measuredWidth = Math.round(event?.nativeEvent?.layout?.width || 0);
     if (measuredWidth > 0) {
@@ -158,9 +158,11 @@ export default function ConcertTicketCard({
           <View style={styles.brandMark} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
             <BrandMark size={20} />
           </View>
-          <Text style={styles.brandText}>MSHPIT / GOING</Text>
+          <View style={styles.brandCopy}>
+            <Text style={styles.brandText}>MSHPIT</Text>
+            <Text style={styles.brandSlogan}>LIVE MUSIC, REMEMBERED</Text>
+          </View>
         </View>
-        <Text style={[styles.disclaimer, narrow && styles.disclaimerNarrow]}>SOCIAL RSVP · NOT VALID FOR ENTRY</Text>
       </View>
 
       <View style={styles.colorRegister} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
@@ -240,15 +242,14 @@ export default function ConcertTicketCard({
       <View style={styles.perforation} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
         <View style={styles.notchLeft} />
         <View style={styles.dash} />
-        <Text style={styles.perforationText}>MSHPIT SOCIAL RSVP</Text>
+        <Text style={styles.perforationText}>MSHPIT RSVP</Text>
         <View style={styles.dash} />
         <View style={styles.notchRight} />
       </View>
 
       <View style={[styles.stub, narrow && styles.stubNarrow, compact && styles.stubCompact]}>
         <View style={[styles.statusStamp, narrow && styles.statusStampNarrow]}>
-          <Text style={styles.statusStampLead}>GOING</Text>
-          <Text style={styles.statusStampSub}>SOCIAL RSVP</Text>
+          <Text style={styles.statusStampLead}>RSVP</Text>
         </View>
         <SeatStub seatLocation={preview.seatLocation} narrow={narrow} />
         {onPress ? (
@@ -259,6 +260,9 @@ export default function ConcertTicketCard({
         ) : (
           <Text style={styles.displayOnly}>RSVP CARD</Text>
         )}
+      </View>
+      <View style={styles.legalFooter}>
+        <Text style={styles.legalFinePrint}>NOT VALID FOR ENTRY</Text>
       </View>
     </>
   );
@@ -353,6 +357,10 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: space(2),
   },
+  brandCopy: {
+    minWidth: 0,
+    gap: 1,
+  },
   brandMark: {
     width: 28,
     height: 28,
@@ -372,18 +380,13 @@ const styles = StyleSheet.create({
     fontWeight: "900",
     letterSpacing: 1.25,
   },
-  disclaimer: {
+  brandSlogan: {
     color: colors.textFaint,
     fontFamily: mono,
-    fontSize: 8,
-    lineHeight: 12,
+    fontSize: 6,
+    lineHeight: 9,
     fontWeight: "900",
-    letterSpacing: 1.15,
-  },
-  disclaimerNarrow: {
-    flexShrink: 1,
-    fontSize: 7,
-    letterSpacing: 0.8,
+    letterSpacing: 0.9,
   },
   colorRegister: {
     height: 4,
@@ -723,13 +726,21 @@ const styles = StyleSheet.create({
     fontWeight: "900",
     letterSpacing: 1.5,
   },
-  statusStampSub: {
+  legalFooter: {
+    minHeight: 18,
+    paddingHorizontal: space(3),
+    paddingBottom: space(2),
+    alignItems: "center",
+    justifyContent: "flex-end",
+    backgroundColor: colors.surfaceAlt,
+  },
+  legalFinePrint: {
     color: colors.textDim,
     fontFamily: mono,
-    fontSize: 7,
-    lineHeight: 10,
-    fontWeight: "900",
-    letterSpacing: 1.1,
+    fontSize: 6,
+    lineHeight: 8,
+    fontWeight: "800",
+    letterSpacing: 1,
   },
   seatGrid: {
     flex: 1,

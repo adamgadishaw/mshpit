@@ -88,6 +88,29 @@ test("each pull awaits its bounded current-surface loaders and keeps existing co
 
 });
 
+test("Discover keeps last-good results inside their exact region and genre scopes", () => {
+  const discover = sources.Discover;
+  assert.match(discover, /const overviewScopeKey = discoverCountryIdentity\(region\) \|\| "worldwide"/);
+  assert.match(discover, /const \[overviewResults, setOverviewResults\] = useState/);
+  assert.match(discover, /const previous = overviewResultsRef\.current\[requestScopeKey\]/);
+  assert.match(discover, /hasDiscoverOverviewContent\(previous\) \? "refreshing" : "loading"/);
+  assert.match(discover, /setOverviewResults\(\(current\) => \(\{ \.\.\.current, \[requestScopeKey\]: normalized \}\)\)/);
+  assert.match(discover, /const genreScopeKey = JSON\.stringify\(\[overviewScopeKey,/);
+  assert.match(discover, /const previous = genreResultsRef\.current\[requestScopeKey\] \|\| \[\]/);
+  assert.match(discover, /previous\.length \? "refreshing" : "loading"/);
+  assert.match(discover, /setGenreResults\(\(current\) => \(\{ \.\.\.current, \[requestScopeKey\]: normalized \}\)\)/);
+  assert.match(discover, /const sameScope = previous\.scopeKey === rangeScopeKey && previous\.days === days/);
+  assert.match(discover, /rows: sameScope \? previous\.rows : \[\]/);
+  assert.match(discover, /!append && currentMatches && current\.rows\.length && !normalized\.length/);
+  assert.match(discover, /Updating dates\. Your current events are still here\./);
+  assert.doesNotMatch(discover, /setOverview\([^\n]*normalizeDiscoverOverview\(\{ countries:/,
+    "starting a request must not erase a healthy chart");
+  assert.doesNotMatch(discover, /setGenreResult\(\{ genre: selectedGenre, region, rows: \[\] \}\)/,
+    "starting a request must not erase healthy genre rows");
+  assert.doesNotMatch(discover, /rows: append && current\.scopeKey === rangeScopeKey && current\.days === days \? current\.rows : \[\]/,
+    "refreshing an exact event range must not erase healthy event and venue rows");
+});
+
 test("desktop right rail has no in-app refresh owner", () => {
   assert.doesNotMatch(sources.RightRail, /VinylRefreshBoundary|right-rail-refresh|onRefreshData|refreshRail/);
   assert.doesNotMatch(sources.App, /refreshRightRailData|onRefreshData=\{refreshRightRailData\}/);

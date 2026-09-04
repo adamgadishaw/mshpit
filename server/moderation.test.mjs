@@ -27,6 +27,7 @@ const admin = addUser("moderation_admin", "admin");
 const moderator = addUser("moderation_mod", "moderator");
 const fan = addUser("moderation_fan", "fan");
 const author = addUser("moderation_author", "fan");
+const mediaSeeder = addUser("moderation_media_seeder", "admin");
 
 function insertPost(id, review = "reported review", removed = 0) {
   db.prepare(`INSERT INTO posts (id,user_id,artist,venue,overall,review,photos,removed,created_at)
@@ -172,10 +173,12 @@ test("moderation never projects an attacker-controlled external reported-media U
 test("artist profiles are actionable report targets with exact private-by-default media context", () => {
   const artistKey = "moderation artist";
   const banner = `https://media.example/assets/users/${author.id}/banner/artist-banner.jpg`;
-  const avatar = `https://media.example/assets/users/${author.id}/avatar/artist-avatar.jpg`;
+  const avatar = `https://media.example/assets/users/${mediaSeeder.id}/avatar/artist-avatar.jpg`;
   db.prepare(`INSERT INTO artist_profiles
-    (artist_key,owner_id,bio,banner,avatar_uri,feed_enabled,removed,updated_at)
-    VALUES (?,?,?,?,?,?,0,?)`).run(artistKey, author.id, "Official artist biography", banner, avatar, 1, Date.now());
+    (artist_key,owner_id,bio,banner,banner_owner_id,avatar_uri,avatar_owner_id,feed_enabled,removed,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,0,?)`).run(
+    artistKey, author.id, "Official artist biography", banner, author.id, avatar, mediaSeeder.id, 1, Date.now(),
+  );
   db.prepare(`INSERT INTO reports
     (id,target_type,target_id,reason,reporter_id,status,media_index,media_fingerprint,created_at)
     VALUES (?,?,?,?,?,'open',?,?,?)`).run(
@@ -195,6 +198,9 @@ test("artist profiles are actionable report targets with exact private-by-defaul
   const action = routes["POST /api/admin/moderation/actions"];
   const removed = action(staffCtx(moderator, { body: { action: "remove", reportId: report.id } }));
   assert.equal(removed.removed, true);
+  assert.ok(db.prepare("SELECT 1 FROM media_deletion_queue WHERE owner_id=? AND object_key=?")
+    .get(mediaSeeder.id, `users/${mediaSeeder.id}/avatar/artist-avatar.jpg`),
+  "reported artist media is queued under its slot uploader, not the page claimant");
   assert.equal(routes["GET /api/artists/:key/profile"]({ params: { key: artistKey } }).profile, null);
   const restored = action(staffCtx(moderator, { body: {
     action: "restore", targetType: "artist_profile", targetId: artistKey, reason: "Appeal accepted",
@@ -208,7 +214,7 @@ test("moderator removal permanently detaches media while retries stay idempotent
     post: `https://media.example/assets/users/${author.id}/post/moderation-irreversible-post.jpg`,
     venue: `https://media.example/assets/users/${author.id}/review/moderation-irreversible-venue.jpg`,
     banner: `https://media.example/assets/users/${author.id}/banner/moderation-irreversible-banner.jpg`,
-    avatar: `https://media.example/assets/users/${author.id}/avatar/moderation-irreversible-avatar.jpg`,
+    avatar: `https://media.example/assets/users/${mediaSeeder.id}/avatar/moderation-irreversible-avatar.jpg`,
     reattached: `https://media.example/assets/users/${author.id}/post/moderation-irreversible-reattached.jpg`,
     external: "https://attacker.example/not-owned.jpg",
   };
@@ -224,10 +230,10 @@ test("moderator removal permanently detaches media while retries stay idempotent
     "Venue text survives restore", JSON.stringify([urls.venue]), Date.now(),
   );
   db.prepare(`INSERT INTO artist_profiles
-    (artist_key,owner_id,bio,banner,avatar_uri,feed_enabled,updated_at)
-    VALUES (?,?,?,?,?,?,?)`).run(
+    (artist_key,owner_id,bio,banner,banner_owner_id,avatar_uri,avatar_owner_id,feed_enabled,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?)`).run(
     "moderation irreversible artist", author.id, "Artist bio survives restore",
-    urls.banner, urls.avatar, 1, Date.now(),
+    urls.banner, author.id, urls.avatar, mediaSeeder.id, 1, Date.now(),
   );
   const insertReaction = db.prepare("INSERT INTO media_reactions (media_url,user_id,post_id,created_at) VALUES (?,?,?,?)");
   for (const mediaUrl of Object.values(urls)) insertReaction.run(mediaUrl, fan.id, null, Date.now());
@@ -282,9 +288,13 @@ test("moderator removal permanently detaches media while retries stay idempotent
     `users/${author.id}/post/moderation-irreversible-post.jpg`,
     `users/${author.id}/review/moderation-irreversible-venue.jpg`,
     `users/${author.id}/banner/moderation-irreversible-banner.jpg`,
-    `users/${author.id}/avatar/moderation-irreversible-avatar.jpg`,
     `users/${author.id}/post/moderation-irreversible-reattached.jpg`,
   ]) assert.equal(queuedKeys.has(key), true, `${key} was not durably queued`);
+  const seededQueuedKeys = new Set(db.prepare("SELECT object_key FROM media_deletion_queue WHERE owner_id=?")
+    .all(mediaSeeder.id).map((row) => row.object_key));
+  assert.equal(seededQueuedKeys.has(
+    `users/${mediaSeeder.id}/avatar/moderation-irreversible-avatar.jpg`,
+  ), true, "mixed-owner artist avatar was not queued under its actual uploader");
   assert.equal(JSON.stringify([...queuedKeys]).includes("attacker.example"), false, "foreign media never becomes deletion work");
   assert.equal(
     db.prepare("SELECT COUNT(*) count FROM media_reactions WHERE user_id=? AND media_url IN (?,?,?,?,?,?)")

@@ -6,7 +6,7 @@ export const ERROR_CATALOG = Object.freeze({
     category: "connectivity",
     severity: "warning",
     title: "The signal dropped",
-    message: "Pit could not reach the venue. Check your connection and try again.",
+    message: "Mshpit couldn't connect. Check your internet connection and try again.",
     failurePoint: "Network connection",
     guidance: "Reconnect, then retry the action.",
     retryable: true,

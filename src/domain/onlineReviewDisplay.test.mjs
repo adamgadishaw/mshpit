@@ -11,8 +11,28 @@ test("online review cards use only a canonical external YouTube action", () => {
   assert.match(card, /Watch on YouTube/);
   assert.match(card, /target=\{Platform\.OS === "web" \? "_blank" : undefined\}/);
   assert.match(card, /rel=\{Platform\.OS === "web" \? "ugc nofollow noopener noreferrer" : undefined\}/);
+  assert.match(card, /youtubeReviewThumbnailUrl\(youtubeUrl\)/);
+  assert.match(card, /source=\{\{ uri: youtubeThumbnailUrl \}\}/);
+  assert.match(card, /cachePolicy="memory-disk"/);
   assert.doesNotMatch(card, /canonicalYouTubeReviewUrl\([\s\S]{0,180}sourceUrl/);
   assert.doesNotMatch(card, /Watch on YouTube[\s\S]{0,300}onPlay/);
+});
+
+test("online and festival cards make the artist the primary linked title without repeating it", () => {
+  const card = source("../components/TicketStub.jsx");
+  const titleBlock = card.slice(
+    card.indexOf("<Text style={styles.performanceTitle}"),
+    card.indexOf("<View style={styles.performancePerforation}"),
+  );
+  const onlineMetaBlock = card.slice(
+    card.indexOf("{isOnlineReview ? (", card.indexOf("<View style={styles.performancePerforation}")),
+    card.indexOf(") : (", card.indexOf("{isOnlineReview ? (", card.indexOf("<View style={styles.performancePerforation}"))),
+  );
+
+  assert.match(card, /const performance = reviewCardPerformance\(log\)/);
+  assert.match(titleBlock, /performance\.primaryIsArtist[\s\S]*?<PublicTextLink href=\{artistHref\}/);
+  assert.match(titleBlock, /performance\.secondary/);
+  assert.doesNotMatch(onlineMetaBlock, /performanceArtist|onOpenArtist|artistHref/);
 });
 
 test("online review cards never present physical show, venue, attendance, or archive navigation", () => {

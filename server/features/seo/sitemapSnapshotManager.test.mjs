@@ -256,6 +256,12 @@ test("payload validation enforces canonical host, shard membership, and global U
     stats: valid.stats,
   };
   assert.equal(validateSitemapSnapshotPayload(payload, { env: ENV }).stats.totalUrls, 1);
+  assert.equal(SITEMAP_SNAPSHOT_REVISION, 2);
+  assert.throws(
+    () => validateSitemapSnapshotPayload({ ...payload, revision: 1 }, { env: ENV }),
+    /SITEMAP_SNAPSHOT_REVISION/,
+    "the pagination-era sitemap snapshot is never reused",
+  );
 
   assert.throws(
     () => validateSitemapSnapshotPayload({ ...payload, revision: SITEMAP_SNAPSHOT_REVISION + 1 }, { env: ENV }),

@@ -116,26 +116,33 @@ export default function DiscoverScreen({
     ? LIVE_EVENT_SCOPE.LOCAL
     : LIVE_EVENT_SCOPE.WORLDWIDE;
   const rangeScopeKey = `${liveScope}|${region}|${homeCity}|${homeCountry || ""}`;
+  const overviewScopeKey = discoverCountryIdentity(region) || "worldwide";
   const [query, setQuery] = useState("");
-  const [overview, setOverview] = useState(EMPTY_OVERVIEW);
-  const [overviewStatus, setOverviewStatus] = useState("idle");
+  const [overviewResults, setOverviewResults] = useState(() => ({}));
+  const overview = overviewResults[overviewScopeKey] || EMPTY_OVERVIEW;
+  const [overviewRequestState, setOverviewRequestState] = useState({ scopeKey: null, status: "idle" });
   const [selectedGenre, setSelectedGenre] = useState(null);
   const [sceneExpanded, setSceneExpanded] = useState(false);
-  const [genreResult, setGenreResult] = useState({ genre: null, region: null, rows: [] });
-  const genreRows = genreResult.genre === selectedGenre && genreResult.region === region
-    ? genreResult.rows
-    : [];
-  const [genreStatus, setGenreStatus] = useState("idle");
+  const genreScopeKey = JSON.stringify([overviewScopeKey, String(selectedGenre || "").trim().toLowerCase()]);
+  const [genreResults, setGenreResults] = useState(() => ({}));
+  const genreRows = selectedGenre ? genreResults[genreScopeKey] || [] : [];
+  const [genreRequestState, setGenreRequestState] = useState({ scopeKey: null, status: "idle" });
   const [eventRange, setEventRange] = useState(EMPTY_EVENT_RANGE);
   const [visibleEventCount, setVisibleEventCount] = useState(DISCOVER_RANGE_BATCH);
   const [pullRefreshing, setPullRefreshing] = useState(false);
   const [pullRefreshError, setPullRefreshError] = useState(false);
   const overviewLoaderRef = useRef(loadDiscoverOverview);
   overviewLoaderRef.current = loadDiscoverOverview;
+  const overviewResultsRef = useRef(overviewResults);
+  overviewResultsRef.current = overviewResults;
   const genreLoaderRef = useRef(loadDiscoverGenre);
   genreLoaderRef.current = loadDiscoverGenre;
+  const genreResultsRef = useRef(genreResults);
+  genreResultsRef.current = genreResults;
   const rangeLoaderRef = useRef(loadDiscoverTourDateRange);
   rangeLoaderRef.current = loadDiscoverTourDateRange;
+  const eventRangeRef = useRef(eventRange);
+  eventRangeRef.current = eventRange;
   const overviewRequestRef = useRef({ sequence: 0, controller: null });
   const genreRequestRef = useRef({ sequence: 0, controller: null });
   const rangeRequestRef = useRef({ sequence: 0, controller: null });
@@ -249,71 +256,87 @@ export default function DiscoverScreen({
     limit: 200,
   }), [myAttendance, region]);
 
-  const requestOverview = useCallback(({ preserve = false, force = false } = {}) => {
+  const requestOverview = useCallback(({ force = false } = {}) => {
     overviewRequestRef.current.controller?.abort();
     const controller = new AbortController();
     const sequence = overviewRequestRef.current.sequence + 1;
     overviewRequestRef.current = { sequence, controller };
-    if (preserve) setOverviewStatus("refreshing");
-    else {
-      setOverview((current) => normalizeDiscoverOverview({ countries: current.countries }));
-      setOverviewStatus("loading");
-    }
+    const requestScopeKey = overviewScopeKey;
+    const previous = overviewResultsRef.current[requestScopeKey];
+    setOverviewRequestState({
+      scopeKey: requestScopeKey,
+      status: hasDiscoverOverviewContent(previous) ? "refreshing" : "loading",
+    });
     return overviewLoaderRef.current({ by: "popularity", country: region, signal: controller.signal, force })
       .then((payload) => {
         if (controller.signal.aborted || overviewRequestRef.current.sequence !== sequence) return null;
         const normalized = normalizeDiscoverOverview(payload, "popularity");
         normalized.countries = orderDiscoverCountries(normalized.countries, homeCountry);
-        setOverview(normalized);
-        setOverviewStatus("ready");
+        if (hasDiscoverOverviewContent(previous) && !hasDiscoverOverviewContent(normalized)) {
+          setOverviewRequestState({ scopeKey: requestScopeKey, status: "error" });
+          return false;
+        }
+        overviewResultsRef.current = { ...overviewResultsRef.current, [requestScopeKey]: normalized };
+        setOverviewResults((current) => ({ ...current, [requestScopeKey]: normalized }));
+        setOverviewRequestState({ scopeKey: requestScopeKey, status: "ready" });
         return true;
       })
       .catch(() => {
         if (controller.signal.aborted || overviewRequestRef.current.sequence !== sequence) return null;
-        setOverviewStatus("error");
+        setOverviewRequestState({ scopeKey: requestScopeKey, status: "error" });
         return false;
       });
-  }, [homeCountry, region]);
+  }, [homeCountry, overviewScopeKey, region]);
 
   const requestGenre = useCallback(({ force = false } = {}) => {
     genreRequestRef.current.controller?.abort();
     if (!selectedGenre) {
-      setGenreResult({ genre: null, region: null, rows: [] });
-      setGenreStatus("idle");
+      setGenreRequestState({ scopeKey: null, status: "idle" });
       return Promise.resolve(true);
     }
     const controller = new AbortController();
     const sequence = genreRequestRef.current.sequence + 1;
     genreRequestRef.current = { sequence, controller };
-    setGenreResult({ genre: selectedGenre, region, rows: [] });
-    setGenreStatus("loading");
+    const requestScopeKey = genreScopeKey;
+    const previous = genreResultsRef.current[requestScopeKey] || [];
+    setGenreRequestState({ scopeKey: requestScopeKey, status: previous.length ? "refreshing" : "loading" });
     return genreLoaderRef.current({ genre: selectedGenre, country: region, limit: 12, signal: controller.signal, force })
       .then((result) => {
         if (controller.signal.aborted || genreRequestRef.current.sequence !== sequence) return null;
-        setGenreResult({ genre: selectedGenre, region, rows: normalizeDiscoverArtistRows(result?.rows, 12) });
-        setGenreStatus("ready");
+        const normalized = normalizeDiscoverArtistRows(result?.rows, 12);
+        if (previous.length && !normalized.length) {
+          setGenreRequestState({ scopeKey: requestScopeKey, status: "error" });
+          return false;
+        }
+        genreResultsRef.current = { ...genreResultsRef.current, [requestScopeKey]: normalized };
+        setGenreResults((current) => ({ ...current, [requestScopeKey]: normalized }));
+        setGenreRequestState({ scopeKey: requestScopeKey, status: "ready" });
         return true;
       })
       .catch(() => {
         if (controller.signal.aborted || genreRequestRef.current.sequence !== sequence) return null;
-        setGenreStatus("error");
+        setGenreRequestState({ scopeKey: requestScopeKey, status: "error" });
         return false;
       });
-  }, [region, selectedGenre]);
+  }, [genreScopeKey, region, selectedGenre]);
 
   const requestEventRange = useCallback((days, { after = null, append = false } = {}) => {
     rangeRequestRef.current.controller?.abort();
     const controller = new AbortController();
     const sequence = rangeRequestRef.current.sequence + 1;
     rangeRequestRef.current = { sequence, controller };
-    setEventRange((current) => ({
+    const previous = eventRangeRef.current;
+    const sameScope = previous.scopeKey === rangeScopeKey && previous.days === days;
+    const loadingState = {
       scopeKey: rangeScopeKey,
       days,
-      through: append && current.scopeKey === rangeScopeKey && current.days === days ? current.through : null,
-      rows: append && current.scopeKey === rangeScopeKey && current.days === days ? current.rows : [],
-      nextCursor: append && current.scopeKey === rangeScopeKey && current.days === days ? current.nextCursor : null,
-      status: "loading",
-    }));
+      through: sameScope ? previous.through : null,
+      rows: sameScope ? previous.rows : [],
+      nextCursor: sameScope ? previous.nextCursor : null,
+      status: append || !sameScope || !previous.rows.length ? "loading" : "refreshing",
+    };
+    eventRangeRef.current = loadingState;
+    setEventRange(loadingState);
     const worldwideIdentity = discoverCountryIdentity("Worldwide");
     const local = liveScope === LIVE_EVENT_SCOPE.LOCAL;
     const requestCountry = local || discoverCountryIdentity(region) === worldwideIdentity ? undefined : region;
@@ -326,20 +349,36 @@ export default function DiscoverScreen({
       signal: controller.signal,
     }).then(({ tourDates: rows, nextCursor, through }) => {
       if (controller.signal.aborted || rangeRequestRef.current.sequence !== sequence) return null;
-      setEventRange((current) => ({
+      const current = eventRangeRef.current;
+      const currentMatches = current.scopeKey === rangeScopeKey && current.days === days;
+      const normalized = append && currentMatches
+        ? mergeDiscoverRangePages(current.rows, rows)
+        : mergeDiscoverRangePages([], rows);
+      if (!append && currentMatches && current.rows.length && !normalized.length) {
+        const errorState = { ...current, status: "error" };
+        eventRangeRef.current = errorState;
+        setEventRange(errorState);
+        return false;
+      }
+      const readyState = {
         scopeKey: rangeScopeKey,
         days,
         through,
-        rows: append && current.scopeKey === rangeScopeKey && current.days === days
-          ? mergeDiscoverRangePages(current.rows, rows)
-          : mergeDiscoverRangePages([], rows),
+        rows: normalized,
         nextCursor,
         status: "ready",
-      }));
+      };
+      eventRangeRef.current = readyState;
+      setEventRange(readyState);
       return true;
     }).catch(() => {
       if (controller.signal.aborted || rangeRequestRef.current.sequence !== sequence) return null;
-      setEventRange((current) => ({ ...current, scopeKey: rangeScopeKey, days, status: "error" }));
+      const current = eventRangeRef.current;
+      const errorState = current.scopeKey === rangeScopeKey && current.days === days
+        ? { ...current, status: "error" }
+        : { scopeKey: rangeScopeKey, days, through: null, rows: [], nextCursor: null, status: "error" };
+      eventRangeRef.current = errorState;
+      setEventRange(errorState);
       return false;
     });
   }, [liveScope, rangeScopeKey, region]);
@@ -350,7 +389,7 @@ export default function DiscoverScreen({
   }, [requestEventRange]);
 
   const loadMoreEvents = useCallback(() => {
-    if (eventRange.status === "loading") return;
+    if (eventRange.status === "loading" || eventRange.status === "refreshing") return;
     const nextVisibleCount = visibleEventCount + DISCOVER_RANGE_BATCH;
     setVisibleEventCount(nextVisibleCount);
     if (!rangeMatchesScene) {
@@ -433,7 +472,7 @@ export default function DiscoverScreen({
       ? requestEventRange(eventRange.days || selectedRangeDays)
       : Promise.resolve(true);
     const results = await Promise.allSettled([
-      requestOverview({ preserve: true, force: true }),
+      requestOverview({ force: true }),
       selectedGenre ? requestGenre({ force: true }) : Promise.resolve(true),
       refreshTourDates?.({ signal: controller.signal }),
       refreshDiscoverySidebar?.({ signal: controller.signal }),
@@ -448,6 +487,15 @@ export default function DiscoverScreen({
     pullRefreshControllerRef.current = null;
     return !failed;
   }, [eventRange.days, eventRange.scopeKey, eventRange.status, rangeScopeKey, refreshDiscoverySidebar, refreshTourDates, requestEventRange, requestGenre, requestOverview, selectedGenre, selectedRangeDays]);
+
+  const overviewStatus = overviewRequestState.scopeKey === overviewScopeKey
+    ? overviewRequestState.status
+    : hasDiscoverOverviewContent(overview) ? "ready" : "loading";
+  const genreStatus = !selectedGenre
+    ? "idle"
+    : genreRequestState.scopeKey === genreScopeKey
+      ? genreRequestState.status
+      : genreRows.length ? "ready" : "loading";
 
   const overviewState = discoverSectionState({ status: overviewStatus, rows: overview.chart.rows });
   const showOverviewContent = hasDiscoverOverviewContent(overview)
@@ -600,6 +648,12 @@ export default function DiscoverScreen({
                   <Text style={styles.rangeStatusText}>Finding more upcoming events...</Text>
                 </View>
               ) : null}
+              {eventRange.scopeKey === rangeScopeKey && eventRange.status === "refreshing" && rangeMatchesScene ? (
+                <View style={styles.rangeStatus} accessibilityLiveRegion="polite">
+                  <ActivityIndicator size="small" color={colors.amber} />
+                  <Text style={styles.rangeStatusText}>Updating dates. Your current events are still here.</Text>
+                </View>
+              ) : null}
               {eventRange.scopeKey === rangeScopeKey && eventRange.status === "error" ? (
                 <Pressable style={({ focused, pressed }) => [styles.rangeRetry, pressed && styles.cardPressed, focused && focusRing]} onPress={() => selectEventRange(eventRange.days || selectedRangeDays)} accessibilityRole="button" accessibilityLabel="Try loading this event range again">
                   <Text style={styles.rangeRetryText}>Couldn't load more dates. Try again.</Text>
@@ -647,11 +701,11 @@ export default function DiscoverScreen({
           ) : null}
           {rangeHasMore ? (
             <Pressable
-              style={({ focused, pressed }) => [styles.loadMoreEvents, pressed && styles.cardPressed, focused && focusRing, eventRange.status === "loading" && styles.loadMoreEventsDisabled]}
+              style={({ focused, pressed }) => [styles.loadMoreEvents, pressed && styles.cardPressed, focused && focusRing, (eventRange.status === "loading" || eventRange.status === "refreshing") && styles.loadMoreEventsDisabled]}
               onPress={loadMoreEvents}
-              disabled={eventRange.status === "loading"}
+              disabled={eventRange.status === "loading" || eventRange.status === "refreshing"}
               accessibilityRole="button"
-              accessibilityState={{ disabled: eventRange.status === "loading" }}
+              accessibilityState={{ disabled: eventRange.status === "loading" || eventRange.status === "refreshing" }}
               accessibilityLabel={`Load ${DISCOVER_RANGE_BATCH} more upcoming events`}
             >
               {eventRange.status === "loading" ? <ActivityIndicator size="small" color={colors.amber} /> : null}
@@ -760,7 +814,7 @@ export default function DiscoverScreen({
       {overviewStatus === "error" && showOverviewContent && (
         <View style={styles.refreshError} accessibilityLiveRegion="assertive">
           <Text style={styles.refreshErrorText} selectable>Could not update. Showing the last results.</Text>
-          <Pressable style={styles.refreshRetryButton} onPress={() => requestOverview({ preserve: true, force: true })} accessibilityRole="button" accessibilityLabel="Retry updating Discover"><Text style={styles.refreshRetry}>Retry</Text></Pressable>
+          <Pressable style={styles.refreshRetryButton} onPress={() => requestOverview({ force: true })} accessibilityRole="button" accessibilityLabel="Retry updating Discover"><Text style={styles.refreshRetry}>Retry</Text></Pressable>
         </View>
       )}
 

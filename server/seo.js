@@ -40,7 +40,10 @@ import {
 } from "./features/seo/sitemapService.js";
 import { createSitemapSnapshotManager } from "./features/seo/sitemapSnapshotManager.js";
 import { decodeArchiveShowKey } from "./features/artistArchive/artistArchiveKeys.js";
-import { isStrictCalendarDate } from "./features/seo/publicEntityPolicy.js";
+import {
+  isStrictCalendarDate,
+  publicMusicEventCandidateSql,
+} from "./features/seo/publicEntityPolicy.js";
 import { effectiveTourDateEndSql } from "./tourDateLifecycle.js";
 import { tourDateHasNoPublishedMemorialSql } from "./artistMemorialTourDateVisibility.js";
 import { inPersonReviewSql } from "./onlineReviews.js";
@@ -92,7 +95,7 @@ const publicEventIdentity = db.prepare(`SELECT td.id,td.event_name,td.artist,td.
     td.music_evidence,td.billed_artists,td.event_end_date
   FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id
   WHERE td.id=?1 AND td.release_at<=?2
-    AND COALESCE(td.music_qualified,1)=1
+    AND ${publicMusicEventCandidateSql("td")}
     AND (td.owner_id IS NULL OR ${activeAccountSql("owner")})
     AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1 OR ${effectiveTourDateEndSql("td")}<?3)
     AND (${effectiveTourDateEndSql("td")}<?3 OR ${tourDateHasNoPublishedMemorialSql("td")})
@@ -514,6 +517,7 @@ function substantiveText(value, minimum) {
 
 function documentIsIndexable(document) {
   if (!document) return false;
+  if (document.indexable === false) return false;
   if (document.kind === "home") return true;
   if (document.kind === "artist") {
     return substantiveText(document.memorial?.summary, 20)

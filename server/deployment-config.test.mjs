@@ -14,10 +14,10 @@ function configuredTrueCount(source, key) {
   return [...source.matchAll(pattern)].length;
 }
 
-test("both Render services gate deployment on deterministic checks in isolated build storage", async () => {
+test("the production Render service gates deployment on deterministic checks in isolated build storage", async () => {
   const source = await readFile(new URL("render.yaml", ROOT), "utf8");
   const commands = [...source.matchAll(/^\s*buildCommand:\s*(.+)$/gm)].map((match) => match[1]);
-  assert.equal(commands.length, 2, "production and staging both declare a build command");
+  assert.equal(commands.length, 1, "the production web service declares one build command");
   for (const command of commands) {
     assert.match(command, /npm run check:deploy(?:\s|$)/);
     assert.match(command, /PIT_DATA_DIR=\/tmp\/pit-build-data/);
@@ -33,10 +33,10 @@ test("both Render services gate deployment on deterministic checks in isolated b
   }
 });
 
-test("both Render services verify a persistent-disk snapshot before migrations", async () => {
+test("the production Render service verifies a persistent-disk snapshot before migrations", async () => {
   const source = await readFile(new URL("render.yaml", ROOT), "utf8");
   const commands = [...source.matchAll(/^\s*startCommand:\s*(.+)$/gm)].map((match) => match[1]);
-  assert.deepEqual(commands, ["node scripts/start-production.mjs", "node scripts/start-production.mjs"]);
+  assert.deepEqual(commands, ["node scripts/start-production.mjs"]);
 
   const launcher = await readFile(new URL("scripts/start-production.mjs", ROOT), "utf8");
   assert.match(launcher, /backup-db\.mjs/);
@@ -58,7 +58,7 @@ test("the test runner cannot inherit Render's hosted runtime or bootstrap approv
 test("Render health checks stay core-only while manual release verification remains strict", async () => {
   const source = await readFile(new URL("render.yaml", ROOT), "utf8");
   const healthPaths = [...source.matchAll(/^\s*healthCheckPath:\s*(\S+)$/gm)].map((match) => match[1]);
-  assert.deepEqual(healthPaths, ["/api/health", "/api/health"]);
+  assert.deepEqual(healthPaths, ["/api/health"]);
   assert.doesNotMatch(source, /^\s*healthCheckPath:\s*\/api\/readiness$/m,
     "an optional R2 or verifier outage must not restart the web service");
 
@@ -70,16 +70,15 @@ test("Render health checks stay core-only while manual release verification rema
 
 test("runtime bootstrap fails closed while production alone owns the bounded tour refresh", async () => {
   const source = await readFile(new URL("render.yaml", ROOT), "utf8");
-  assert.equal(configuredFalseCount(source, "PIT_ALLOW_EMPTY_DB_BOOTSTRAP"), 2);
-  assert.equal(configuredFalseCount(source, "CACHE_WARM_ENABLED"), 2);
-  assert.equal(configuredFalseCount(source, "TOURDATE_REFRESH_ENABLED"), 1);
+  assert.equal(configuredFalseCount(source, "PIT_ALLOW_EMPTY_DB_BOOTSTRAP"), 1);
+  assert.equal(configuredFalseCount(source, "CACHE_WARM_ENABLED"), 1);
+  assert.equal(configuredFalseCount(source, "TOURDATE_REFRESH_ENABLED"), 0);
   assert.equal(configuredTrueCount(source, "TOURDATE_REFRESH_ENABLED"), 1);
-  const stagingStart = source.indexOf("name: mshpit-staging");
-  assert.equal(configuredTrueCount(source.slice(0, stagingStart), "TOURDATE_REFRESH_ENABLED"), 1);
-  assert.equal(configuredTrueCount(source, "BACKUP_ENABLED"), 2);
-  assert.equal(configuredTrueCount(source, "MEDIA_CLEANUP_ENABLED"), 2);
-  assert.equal([...source.matchAll(/^\s*- key: MEDIA_ORPHAN_TTL_MS$/gm)].length, 2);
-  assert.equal([...source.matchAll(/^\s*- key: BACKUP_S3_BUCKET$/gm)].length, 2, "each service exposes a separate private off-host backup setting");
+  assert.equal(configuredTrueCount(source, "BACKUP_ENABLED"), 1);
+  assert.equal(configuredTrueCount(source, "MEDIA_CLEANUP_ENABLED"), 1);
+  assert.equal([...source.matchAll(/^\s*- key: MEDIA_ORPHAN_TTL_MS$/gm)].length, 1);
+  assert.equal([...source.matchAll(/^\s*- key: BACKUP_S3_BUCKET$/gm)].length, 1,
+    "production exposes its private off-host backup setting");
   assert.match(source, /PutObject, DeleteObject, and ListBucket/);
   assert.match(source, /BACKUP_KEEP controls\s*\n\s*# local files only/);
 });
@@ -89,14 +88,15 @@ test("only production carries the bounded legacy-poster release identity", async
   const assignments = [...source.matchAll(/^\s*- key: PIT_LEGACY_VIDEO_POSTER_RELEASE\r?\n\s*value: ([^\s#]+)$/gm)];
   assert.equal(assignments.length, 1);
   assert.equal(assignments[0][1], "2026-08-22-v1");
-  const stagingStart = source.indexOf("name: mshpit-staging");
-  assert.ok(stagingStart > 0);
-  assert.ok(assignments[0].index < stagingStart, "staging must not inherit production deletion authority");
+  const productionStart = source.search(/^\s*name: mshpit\s*$/m);
+  const verifierStart = source.search(/^\s*- type: pserv\r?\n\s*name: pit-video-verifier\s*$/m);
+  assert.ok(productionStart >= 0 && assignments[0].index > productionStart && assignments[0].index < verifierStart,
+    "the production web service alone carries deletion authority");
 });
 
-test("quality runs on both branches that Render auto-deploys", async () => {
+test("quality runs on the production branch that Render auto-deploys", async () => {
   const source = await readFile(new URL(".github/workflows/quality.yml", ROOT), "utf8");
-  assert.match(source, /branches:\s*\[master, staging\]/);
+  assert.match(source, /branches:\s*\[master\]/);
 });
 
 test("CI actions are immutable and checkout does not persist a repository credential", async () => {
@@ -147,10 +147,21 @@ test("Render never stores private credentials in the tracked blueprint", async (
     assert.doesNotMatch(block, /^\s*value\s*:/m, `${key} must not have a tracked value`);
   }
   for (const key of privateKeys) assert.ok(seen.get(key), `${key} is missing from the deployment contract`);
-  assert.equal(seen.get("OWNER_EMAIL"), 2, "production and staging must source Owner mail from Render rather than git");
-  assert.equal(seen.get("OWNER_MIGRATION_EMAIL"), 2, "one-time Owner migration approval must remain a Render secret");
-  assert.equal(seen.get("ADMIN_EMAIL"), 2, "production and staging must each source the administrator identity from Render");
-  assert.equal(seen.get("PIT_VIDEO_VERIFIER_SECRET"), 3, "production references one generated verifier secret while staging remains host-managed");
+  assert.equal(seen.get("OWNER_EMAIL"), 1, "production must source Owner mail from Render rather than git");
+  assert.equal(seen.get("OWNER_MIGRATION_EMAIL"), 1, "one-time Owner migration approval must remain a Render secret");
+  assert.equal(seen.get("ADMIN_EMAIL"), 1, "production must source the administrator identity from Render");
+  assert.equal(seen.get("PIT_VIDEO_VERIFIER_SECRET"), 2,
+    "production references the verifier's generated secret");
+});
+
+test("the Blueprint declares only the explicit production web deployment", async () => {
+  const source = await readFile(new URL("render.yaml", ROOT), "utf8");
+  const verifierStart = source.search(/^\s*- type: pserv\r?\n\s*name: pit-video-verifier\s*$/m);
+  assert.ok(verifierStart > 0);
+  const productionWeb = source.slice(0, verifierStart);
+  assert.match(productionWeb, /^\s*branch:\s*master\s*$/m);
+  assert.match(productionWeb, /^\s*- key: PIT_ENV\r?\n\s*value: production\s*$/m);
+  assert.doesNotMatch(source, /mshpit-staging|pit-staging-data|^\s*branch:\s*staging\s*$/m);
 });
 
 test("the retired catalog cron cannot place a GitHub token in process arguments", async () => {
