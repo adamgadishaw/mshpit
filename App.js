@@ -66,6 +66,7 @@ const VerifyEmailScreen = lazyWithRetry(() => import("./src/screens/VerifyEmailS
 const OwnerApprovalScreen = lazyWithRetry(() => import("./src/screens/OwnerApprovalScreen"), "OwnerApprovalScreen");
 const BadgeLegendScreen = lazyWithRetry(() => import("./src/screens/BadgeLegendScreen"), "BadgeLegendScreen");
 const WelcomeScreen = lazyWithRetry(() => import("./src/screens/WelcomeScreen"), "WelcomeScreen");
+const SignupOnboardingScreen = lazyWithRetry(() => import("./src/screens/SignupOnboardingScreen"), "SignupOnboardingScreen");
 const FollowListScreen = lazyWithRetry(() => import("./src/screens/FollowListScreen"), "FollowListScreen");
 import LandingScreen from "./src/screens/LandingScreen";
 import { load, remove, save } from "./src/lib/persist";
@@ -114,6 +115,7 @@ import { prepareShowNavigation } from "./src/domain/showNavigation.mjs";
 import { isOnlineReview } from "./src/domain/onlineReview.mjs";
 import { readSensitiveFragmentToken, readSensitiveLinkToken, scrubSensitiveLinkToken } from "./src/domain/sensitiveLinkTokens.mjs";
 import { verifiedMutationDecision } from "./src/domain/emailVerificationUx.mjs";
+import { needsSignupOnboarding } from "./src/domain/signupOnboarding.mjs";
 import { desktopRightRailLayout } from "./src/domain/desktopRailLayout.mjs";
 import { filterDiscoverSceneRows } from "./src/domain/discoverScene.mjs";
 import { calendarFocusForPost } from "./src/domain/calendarShows.mjs";
@@ -184,7 +186,7 @@ function Root() {
     session, authReady, addLog, editLog, userById, loadUser, visibleFeed, followingFeed, localFeed, refreshFeed, loadMoreFeed,
     feedHasMore, feedLoadingMore, notInterested, undoNotInterested, logout, exportMyData, userByHandle,
     searchPeople, inboxUnread, accountStatus, track, unreadNotifications, recordPlay, playHistory, isFollowing, follow, isBlocked,
-    loadPlayHistory, saveQueueAsPlaylist, autoplayQueue, followingCount, resendEmailVerification,
+    loadPlayHistory, saveQueueAsPlaylist, autoplayQueue, followingCount, resendEmailVerification, completeSignupOnboarding,
     topArtists, artistsAlphabetical, upcomingEvents, discoverySidebar, discoverySidebarStatus, refreshDiscoverySidebar, refreshTourDates, tourDates, goingFor, myAttendance, refreshMyAttendance,
     remoteArtistMeta,
     resolveYouTube, invalidateYouTube, youtubeVideoRejected, resolveDeezerPreview,
@@ -432,8 +434,9 @@ function Root() {
     else remove(PLAYER_STATE_STORAGE_KEY);
   }, [authReady, player, playerAccountId, playerStateIsScoped, web]);
   const [acctOpen, setAcctOpen] = useState(false);
-  // First-run welcome (Spotify + find-your-people). Armed at signup, shown once the
-  // taste picker is closed so it survives the theme reload PickArtists can trigger.
+  // The reusable product guide remains available from the menu. New-account
+  // setup is separate and keyed to private server state below, so it works on
+  // web and native and can safely resume after an interrupted first sign-in.
   const [welcome, setWelcome] = useState(false);
   const [verificationPrompt, setVerificationPrompt] = useState(null);
   useEffect(() => {
@@ -497,19 +500,6 @@ function Root() {
     track("screen_view", { screen, referrer: accountId === previous.accountId ? previous.screen || undefined : undefined });
     lastAnalyticsScreenRef.current = { accountId, screen };
   }, [landing, tab, nav, session?.id, track]);
-
-  // Fire the welcome once signup's taste picker is closed (survives a theme reload
-  // because the "pending" flag is on disk). Consume the flag so it shows only once.
-  useEffect(() => {
-    if (!web || !session?.id || !load("pit.welcomePending", false)) return;
-    if (nav.pickArtists || nav.auth) return; // wait until the picker is gone
-    save("pit.welcomePending", false);
-    setWelcome(true);
-    // Depend on the picker/auth booleans, not the whole nav object (which is a new
-    // reference every render — that made this effect + a localStorage read fire on
-    // every render, a real source of lag).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session?.id, !!nav.pickArtists, !!nav.auth]);
 
   // Which nav frames are public, shareable pages. Everything else (composer,
   // settings, moderation) deliberately has no URL: those are sheets over the
@@ -1120,7 +1110,7 @@ function Root() {
   if (nav.photos) overlay = <PhotoViewer photos={nav.photos.images} index={nav.photos.index} postId={nav.photos.postId} returnFocusRef={mediaViewerOpenerRef} session={session} mediaReactions={mediaReactions} loadMediaReactions={loadMediaReactions} toggleMediaReaction={toggleMediaReaction} track={track} onReport={openReport} onClose={back} />;
   else if (MUSIC_PLAYER_ENABLED && nav.addToPlaylist) overlay = <PlaylistPickerScreen track={nav.addToPlaylist} onClose={back} />;
   else if (nav.followList) overlay = <FollowListScreen userId={nav.followList.userId} mode={nav.followList.mode} onClose={back} onOpenProfile={openProfile} />;
-  else if (nav.auth) overlay = <AuthScreen initialMode={nav.authMode} onDone={(mode) => { if (mode === "signup") { if (web) save("pit.welcomePending", true); replace({ pickArtists: true }); } else back(); }} onCancel={back} />;
+  else if (nav.auth) overlay = <AuthScreen initialMode={nav.authMode} onDone={back} onCancel={back} />;
   else if (nav.pickArtists) overlay = <PickArtistsScreen onDone={clear} onSkip={clear} onRequireVerification={() => setVerificationPrompt("artistPicks")} />;
   else if (nav.editingPost) overlay = <LogScreen user={session} editing={nav.editingPost} composerId={nav.composerId} initialDraftId={nav.draftId} onDraftIdentity={updateComposerDraftIdentity} pendingMedia={pendingComposerPicker?.composerId === nav.composerId ? pendingComposerPicker : null} onPendingMediaConsumed={consumePendingComposerPicker} onPost={onEditLog} onCancel={back} closeGuardRef={composerCloseGuardRef} />;
   else if (nav.logging) overlay = <LogScreen user={session} prefill={nav.prefill} defaultMode={nav.postMode || "show"} composerId={nav.composerId} initialDraftId={nav.draftId} onDraftIdentity={updateComposerDraftIdentity} pendingMedia={pendingComposerPicker?.composerId === nav.composerId ? pendingComposerPicker : null} onPendingMediaConsumed={consumePendingComposerPicker} onPost={onAddLog} onCancel={back} closeGuardRef={composerCloseGuardRef} />;
@@ -1362,7 +1352,20 @@ function Root() {
   // Full-screen clips and gallery videos own audio while visible. Pause the
   // music player at its current position and require an explicit Play afterward
   // instead of auto-resuming two audio surfaces on viewer close.
-  const playerObscured = !!resetToken || !!ownerApprovalToken || !!welcome || !!nav.photos || (ENABLE_CLIPS && !!nav.clips);
+  const signupOnboardingVisible = authReady
+    && needsSignupOnboarding(session)
+    && status === "ok"
+    && !nav.auth
+    && !resetToken
+    && !unsubToken
+    && !verifyToken
+    && !ownerApprovalToken;
+  const finishSignupOnboarding = async ({ openArtistPicker = false } = {}) => {
+    const result = await completeSignupOnboarding();
+    if (result?.ok && openArtistPicker) replace({ pickArtists: true });
+    return result;
+  };
+  const playerObscured = !!resetToken || !!ownerApprovalToken || !!welcome || signupOnboardingVisible || !!nav.photos || (ENABLE_CLIPS && !!nav.clips);
   const landingSurface = landingRenderSurface({ authReady, session, landing });
 
   return (
@@ -1533,7 +1536,15 @@ function Root() {
           </View>
         )}
 
-        {welcome && session && (
+        {signupOnboardingVisible && session && (
+          <View style={styles.welcomeModal} accessibilityViewIsModal>
+            <Suspense fallback={<ScreenLoading />}>
+              <SignupOnboardingScreen session={session} onComplete={finishSignupOnboarding} />
+            </Suspense>
+          </View>
+        )}
+
+        {welcome && session && !signupOnboardingVisible && (
           <View style={styles.welcomeModal}>
             <WelcomeScreen
               onClose={() => setWelcome(false)}

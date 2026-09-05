@@ -43,6 +43,7 @@ export const PULL_REFRESH_COVERAGE = Object.freeze([
   coverage("ReportScreen.jsx", "form", "Report composer must preserve the person's draft."),
   coverage("RequestArtistScreen.jsx", "form", "Artist request composer must preserve unsaved work."),
   coverage("ResetPasswordScreen.jsx", "form", "Password form has no refreshable collection."),
+  coverage("SignupOnboardingScreen.jsx", "form", "Signup profile setup must preserve the member's unsaved username and banner choices."),
   coverage("SongPicker.jsx", "form", "Song picker is query-driven and owns its search lifecycle."),
   coverage("SuggestionBoxScreen.jsx", "form", "Suggestion composer must preserve unsaved work."),
   coverage("VenueReviewScreen.jsx", "form", "Review composer must preserve unsaved work."),

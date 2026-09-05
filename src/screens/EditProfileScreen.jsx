@@ -20,18 +20,17 @@ import {
   profileGenreOptions,
   profileGenreSelection,
 } from "../domain/genrePreferences.mjs";
+import { cleanHandle, isHandle } from "../domain/validation.mjs";
 
 const AVATAR_IMAGE_HINT = profileImageSelectionHint("avatar");
 const BANNER_IMAGE_HINT = profileImageSelectionHint("banner");
 
 export default function EditProfileScreen({ onClose }) {
-  const { session, users, updateProfile, locationCenter } = useStore();
+  const { session, updateProfile, locationCenter } = useStore();
   const [name, setName] = useState(session?.name || "");
   const [handle, setHandle] = useState(session?.handle || "");
-  const cleanHandleInput = (v) => v.toLowerCase().replace(/[^a-z0-9_]/g, "").slice(0, 20);
-  const handleTaken = handle.length >= 3 && (users || []).some((u) => u.handle === handle && u.id !== session?.id);
-  const handleTooShort = handle.length > 0 && handle.length < 3;
   const handleChanged = handle !== session?.handle;
+  const handleInvalid = !isHandle(handle);
   const [bio, setBio] = useState(session?.bio || "");
   const [avatarUri, setAvatarUri] = useState(isDurableMediaUrl(session?.avatarUri) ? session.avatarUri : null);
   const [banner, setBanner] = useState(isDurableMediaUrl(session?.banner) ? session.banner : null);
@@ -43,6 +42,7 @@ export default function EditProfileScreen({ onClose }) {
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
   const [uploadingBanner, setUploadingBanner] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
 
   if (pickingCity) {
     return (
@@ -124,20 +124,26 @@ export default function EditProfileScreen({ onClose }) {
   const mediaBusy = uploadingAvatar || uploadingBanner;
   const save = async () => {
     if (mediaBusy || saving) return;
+    if (handleInvalid) {
+      setSaveError("Use 3–20 letters, numbers, or underscores for your @username.");
+      return;
+    }
     if (!genreSelection.valid) {
       setGenreError(genreSelection.error);
       return;
     }
     const initials = (name.trim() || "?").split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase();
     setSaving(true);
+    setSaveError("");
     try {
       const result = await Promise.resolve(updateProfile({
         name: name.trim() || session.name, bio: bio.trim(), avatarUri, banner, genres: genreSelection.genres, initials, home,
-        ...(handleChanged && !handleTaken && !handleTooShort ? { handle } : {}),
+        ...(handleChanged ? { handle } : {}),
       }));
       if (result?.ok !== false) onClose?.();
-    } catch {
-      // The API layer owns user feedback; preserving this screen preserves edits.
+      else setSaveError(result?.error?.message || result?.error || "Profile could not be saved. Try again.");
+    } catch (error) {
+      setSaveError(error?.message || "Profile could not be saved. Try again.");
     } finally {
       setSaving(false);
     }
@@ -147,7 +153,7 @@ export default function EditProfileScreen({ onClose }) {
 
   return (
     <View style={styles.wrap}>
-      <SheetHeader title="Edit your profile" onClose={onClose} action={{ label: saving ? "Saving..." : mediaBusy ? "Uploading..." : "Save", onPress: save, disabled: mediaBusy || saving || !genreSelection.valid }} />
+      <SheetHeader title="Edit your profile" onClose={onClose} action={{ label: saving ? "Saving..." : mediaBusy ? "Uploading..." : "Save", onPress: save, disabled: mediaBusy || saving || !genreSelection.valid || handleInvalid }} />
 
       <ScrollView style={saving ? styles.savingLock : null} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <Text style={styles.profileScope}>This is the profile people see for your personal account. Artist page, promotion, and show tools are in Artist HQ.</Text>
@@ -197,24 +203,24 @@ export default function EditProfileScreen({ onClose }) {
         <TextInput style={styles.input} value={name} onChangeText={setName} placeholder="Your name" placeholderTextColor={colors.textFaint} maxLength={40} />
 
         <Text style={styles.label}>USERNAME</Text>
-        <View style={[styles.handleRow, handleTaken && styles.handleRowBad, handleChanged && !handleTaken && !handleTooShort && styles.handleRowGood]}>
+        <View style={[styles.handleRow, handleInvalid && styles.handleRowBad, handleChanged && !handleInvalid && styles.handleRowGood]}>
           <Text style={styles.at}>@</Text>
           <TextInput
             style={styles.handleInput}
             value={handle}
-            onChangeText={(v) => setHandle(cleanHandleInput(v))}
+            onChangeText={(value) => { setHandle(cleanHandle(value)); setSaveError(""); }}
             placeholder="username"
             placeholderTextColor={colors.textFaint}
             autoCapitalize="none"
             autoCorrect={false}
             maxLength={20}
           />
-          {handleChanged && !handleTooShort && (
-            <Text style={[styles.handleStatus, handleTaken ? styles.bad : styles.good]}>{handleTaken ? "taken" : "available"}</Text>
+          {handleChanged && !handleInvalid && (
+            <Text style={[styles.handleStatus, styles.good]}>ready to save</Text>
           )}
         </View>
         <Text style={styles.handleHint}>
-          {handleTooShort ? "At least 3 characters." : "Use letters, numbers, or underscores. This is your @username across Mshpit."}
+          {handleInvalid ? "Use 3–20 letters, numbers, or underscores." : "This is your public @username across Mshpit. The server confirms it when you save."}
         </Text>
 
         <Text style={styles.label}>HOME CITY</Text>
@@ -253,7 +259,9 @@ export default function EditProfileScreen({ onClose }) {
         </View>
         {!!genreError && <Text style={styles.genreError} accessibilityRole="alert" accessibilityLiveRegion="assertive">{genreError}</Text>}
 
-        <Button title={saving ? "Saving profile..." : mediaBusy ? "Uploading photo..." : "Save profile"} icon="check" onPress={save} disabled={mediaBusy || saving || !genreSelection.valid} style={{ marginTop: 28 }} />
+        {!!saveError && <Text style={styles.saveError} accessibilityRole="alert" accessibilityLiveRegion="assertive">{saveError}</Text>}
+
+        <Button title={saving ? "Saving profile..." : mediaBusy ? "Uploading photo..." : "Save profile"} icon="check" onPress={save} disabled={mediaBusy || saving || !genreSelection.valid || handleInvalid} style={{ marginTop: 28 }} />
       </ScrollView>
     </View>
   );
@@ -302,6 +310,7 @@ const styles = StyleSheet.create({
   genreCount: { color: colors.amber, fontSize: 11.5, fontWeight: "700", marginBottom: 8, marginTop: 20 },
   genreHint: { color: colors.textDim, fontSize: 12, lineHeight: 17, marginTop: -2, marginBottom: 10 },
   genreError: { color: colors.danger, fontSize: 12.5, lineHeight: 18, marginTop: 8 },
+  saveError: { color: colors.danger, fontSize: 12.5, lineHeight: 18, marginTop: 16, textAlign: "center" },
   chips: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   chip: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
   chipOn: { borderColor: colors.amber, backgroundColor: colors.bgElev },

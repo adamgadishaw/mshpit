@@ -66,6 +66,8 @@ test("official provider titles remain distinct while clear tour names prefill th
   assert.match(card, />View this show<\/Text>/);
   assert.match(card, /Compare \{artist\} shows/);
   assert.match(card, /ticketActionRail: \{[^}]*borderTopWidth: 0[^}]*borderBottomLeftRadius/);
+  assert.match(card, /performanceCardAttached: \{ borderBottomLeftRadius: 0, borderBottomRightRadius: 0 \}/);
+  assert.doesNotMatch(card, /ticketActionRail: \{[^}]*marginHorizontal/);
   assert.match(card, /onOpenArtistArchive/);
   for (const field of ["log.artist", "log.venue", "log.city", "log.date"]) assert.ok(card.includes(field));
 });

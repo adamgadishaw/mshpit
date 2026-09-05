@@ -719,7 +719,7 @@ const styles = StyleSheet.create({
 
   performanceCardShadow: { marginTop: 12, borderRadius: radius.md, borderCurve: "continuous", ...shadow.card },
   performanceCard: { overflow: "hidden", borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderColor: colors.line, backgroundColor: colors.bgElev },
-  performanceCardAttached: { borderBottomLeftRadius: 4, borderBottomRightRadius: 4 },
+  performanceCardAttached: { borderBottomLeftRadius: 0, borderBottomRightRadius: 0 },
   performanceRegister: { height: 4, flexDirection: "row" },
   performanceRegisterAmber: { flex: 2, backgroundColor: colors.amberStrong },
   performanceRegisterMagenta: { flex: 1, backgroundColor: colors.magenta },
@@ -739,7 +739,7 @@ const styles = StyleSheet.create({
   performanceDate: { color: colors.amber, fontFamily: mono, fontSize: 11.5 },
   contextActions: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 10 },
   contextAction: { minHeight: 44, maxWidth: "100%", flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7, paddingHorizontal: 12, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.amber + "80", backgroundColor: colors.surfaceAlt },
-  ticketActionRail: { minHeight: 48, flexDirection: "row", alignItems: "stretch", marginTop: -1, marginHorizontal: 12, overflow: "hidden", borderWidth: 1, borderTopWidth: 0, borderColor: colors.line, borderBottomLeftRadius: radius.md, borderBottomRightRadius: radius.md, backgroundColor: colors.surfaceAlt },
+  ticketActionRail: { minHeight: 48, flexDirection: "row", alignItems: "stretch", marginTop: -1, overflow: "hidden", borderWidth: 1, borderTopWidth: 0, borderColor: colors.line, borderBottomLeftRadius: radius.md, borderBottomRightRadius: radius.md, backgroundColor: colors.surfaceAlt },
   ticketAction: { minWidth: 0, minHeight: 48, flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingHorizontal: 10, paddingVertical: 7 },
   ticketActionDivider: { width: 1, marginVertical: 8, backgroundColor: colors.line },
   ticketActionText: { minWidth: 0, flexShrink: 1, color: colors.text, fontSize: 11.5, lineHeight: 15, fontWeight: "900", textAlign: "center" },

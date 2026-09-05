@@ -75,6 +75,9 @@ CREATE TABLE IF NOT EXISTS users (
   age_band        TEXT NOT NULL DEFAULT 'unknown' CHECK (age_band IN ('13_17','18_plus','unknown')),
   dm_policy       TEXT NOT NULL DEFAULT 'mutuals' CHECK (dm_policy IN ('nobody','people_i_follow','mutuals')),
   profile_audience TEXT NOT NULL DEFAULT 'everyone' CHECK (profile_audience IN ('everyone','members','only_me')),
+  -- Only accounts explicitly created by signup receive a numeric onboarding
+  -- version. Historical and staff-created rows remain NULL and exempt.
+  onboarding_version INTEGER CHECK (onboarding_version IS NULL OR onboarding_version BETWEEN 0 AND 1000),
   created_at      INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_users_created ON users(created_at DESC, id DESC);
@@ -1732,6 +1735,9 @@ const additiveMigrations = [
   // Set when the welcome mail goes out, so verifying twice, an admin marking an
   // already-verified account, or a resend cannot send it again.
   "ALTER TABLE users ADD COLUMN welcome_sent_at INTEGER NOT NULL DEFAULT 0",
+  // Missing means this account predates signup onboarding (or was provisioned
+  // by staff) and remains exempt. Only the signup transaction writes version 0.
+  "ALTER TABLE users ADD COLUMN onboarding_version INTEGER CHECK (onboarding_version IS NULL OR onboarding_version BETWEEN 0 AND 1000)",
   // Delivery claims are expiring leases. A unique token prevents a timed-out
   // sender from settling a row after a later worker has reclaimed it.
   "ALTER TABLE email_queue ADD COLUMN claimed_at INTEGER",
@@ -2986,6 +2992,7 @@ export function publicUser(u, { self = false, badges = false } = {}) {
   const selfExtras = self
     ? Object.fromEntries(selfExtraKeys.filter((key) => extras[key] !== undefined).map((key) => [key, extras[key]]))
     : {};
+  const onboardingVersion = u.onboarding_version == null ? null : Number(u.onboarding_version);
 
   return {
     ...publicExtras,
@@ -3022,6 +3029,7 @@ export function publicUser(u, { self = false, badges = false } = {}) {
       directMessagePolicy: u.dm_policy || "mutuals",
       profileAudience: u.profile_audience || "everyone",
       emailVerified: !!u.email_verified_at,
+      ...(Number.isSafeInteger(onboardingVersion) && onboardingVersion >= 0 ? { onboardingVersion } : {}),
       marketingOptOut: !!u.marketing_opt_out || !u.marketing_consent_at,
       marketingConsentAt: u.marketing_consent_at || null,
       isBanned: !!u.is_banned,

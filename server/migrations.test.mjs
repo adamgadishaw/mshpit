@@ -146,6 +146,18 @@ test("landing showcase consent migrates historical posts as opted out", () => {
   );
 });
 
+test("signup onboarding is additive and leaves historical accounts exempt", () => {
+  assert.match(
+    source,
+    /ALTER TABLE users ADD COLUMN onboarding_version INTEGER CHECK \(onboarding_version IS NULL OR onboarding_version BETWEEN 0 AND 1000\)/,
+  );
+  assert.doesNotMatch(
+    source,
+    /ALTER TABLE users ADD COLUMN onboarding_version[^\n]*DEFAULT/i,
+    "a default would turn historical accounts into versioned signup accounts",
+  );
+});
+
 test("verification retry receipts are additive, bounded, and avoid raw email", () => {
   assert.match(source, /CREATE TABLE IF NOT EXISTS email_verification_receipts/);
   assert.match(source, /email_hash\s+TEXT NOT NULL/);

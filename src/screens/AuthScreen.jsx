@@ -96,7 +96,7 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) 
           <Text style={[styles.tag, { marginBottom: 20 }]} accessibilityRole="header">Finish signing up from your email</Text>
           <View style={styles.artistNote}>
             <Icon name="mail" size={16} color={colors.amber} />
-            <Text style={styles.artistNoteTxt} accessibilityLiveRegion="polite" role="status">If this is a new email address, we sent a verification link. If it already has an account, log in or reset your password. For privacy, we show the same message either way.</Text>
+            <Text style={styles.artistNoteTxt} accessibilityLiveRegion="polite" role="status">If this is a new email address, we sent a verification link. After you confirm and log in, you can choose your public @username and banner, then take a quick tour. If this address already has an account, log in or reset your password. For privacy, we show the same message either way.</Text>
           </View>
           <Pressable style={styles.primary} onPress={() => { setMode("login"); setSignupSubmitted(false); setPassword(""); setError(""); }} accessibilityRole="button">
             <Text style={styles.primaryTxt}>CONTINUE TO LOG IN</Text>
@@ -189,6 +189,13 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) 
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <Text style={styles.wordmark}>MSHPIT</Text>
         <Text style={styles.tag}>remember the shows you attend</Text>
+
+        {mode === "signup" && (
+          <View style={styles.setupNote} accessibilityRole="summary">
+            <Icon name="you" size={17} color={colors.amber} />
+            <Text style={styles.setupNoteText}>After email confirmation, finish your profile with a public @username and optional banner, then follow a short walkthrough.</Text>
+          </View>
+        )}
 
         {mode === "signup" && (
           <TextInput
@@ -375,6 +382,8 @@ const styles = StyleSheet.create({
   content: { padding: 16, paddingBottom: 48 },
   wordmark: { color: colors.text, fontSize: 34, fontWeight: "900", letterSpacing: 5, fontFamily: mono, marginTop: 8 },
   tag: { color: colors.textDim, fontSize: 14, marginTop: 4, marginBottom: 24 },
+  setupNote: { flexDirection: "row", alignItems: "flex-start", gap: 10, backgroundColor: colors.bgElev, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 13, marginTop: -10, marginBottom: 14 },
+  setupNoteText: { flex: 1, color: colors.textDim, fontSize: 12.5, lineHeight: 18 },
   input: {
     backgroundColor: colors.surface,
     borderRadius: radius.sm,

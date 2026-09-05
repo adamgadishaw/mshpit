@@ -1,7 +1,7 @@
 import { createContext, useContext, useState, useEffect, useRef } from "react";
 import { AppState, Platform } from "react-native";
 import { seedFeed, ratedShows, haversineKm, installDemoCatalogShows } from "./data";
-import { clean, cleanEmail, isEmail, cleanName, isName, cleanHandle, isPassword, clampRating, LIMITS } from "./domain/validation.mjs";
+import { clean, cleanEmail, isEmail, cleanName, isName, cleanHandle, isHandle, isPassword, clampRating, LIMITS } from "./domain/validation.mjs";
 import { load, remove, save } from "./lib/persist";
 import { api, AppError, captureAppError, configureApiIdentity } from "./lib/api";
 import { classifyAccountAgeBand, requestAccountExport, updateAnnouncementEmailPreference, updateDirectMessagePreference, updateProfileAudience, updateProfileSearchIndexingPreference } from "./lib/accountPrivacyApi";
@@ -12,6 +12,8 @@ import { arenaVenues } from "./seed/arenas";
 import { ACHIEVEMENTS } from "./domain/badges.mjs";
 import { verifiedArtistGenre } from "./domain/genre.mjs";
 import { profileGenreSelection } from "./domain/genrePreferences.mjs";
+import { SIGNUP_ONBOARDING_VERSION } from "./domain/signupOnboarding.mjs";
+import { completeSignupOnboardingForAccount } from "./features/signupOnboarding/signupOnboardingService";
 import { projectDiscoveryCatalogTotals, resolveDiscoveryCatalogTotal } from "./domain/discoveryCatalogTotals.mjs";
 import { buildArtistSummary } from "./domain/artistSummary.mjs";
 import { confirmedArtistProfileMutation } from "./domain/artistPageEditor.mjs";
@@ -2924,10 +2926,12 @@ export function StoreProvider({ children }) {
       avatarColor: AV[Math.floor(Math.random() * AV.length)],
       avatarUri: null,
       bio: "",
+      emailVerified: true,
       ageBand,
       directMessagePolicy: "mutuals",
       genres: genreSelection.genres,
       favoriteArtists: [],
+      onboardingVersion: 0,
       playlists: [],
       home: { ...pickedLocation, city, lat: coords?.lat ?? null, lng: coords?.lng ?? null },
       ...consent,
@@ -3187,8 +3191,11 @@ export function StoreProvider({ children }) {
     if ("bio" in safe) safe.bio = clean(safe.bio, { max: LIMITS.bio, newlines: true });
     if ("handle" in safe) {
       const h = cleanHandle(safe.handle);
-      // only accept a valid, unused handle; otherwise keep the current one
-      safe.handle = h.length >= 3 && !users.some((u) => u.handle === h && u.id !== actor.id) ? h : actor.handle;
+      // The locally cached people directory is intentionally incomplete, so it
+      // cannot truthfully decide whether a public username is available. Keep
+      // format validation local and let the server/unique index own collisions.
+      if (!isHandle(h)) return Promise.resolve({ ok: false, error: "Use 3–20 letters, numbers, or underscores for your @username." });
+      safe.handle = h;
     }
     if (Array.isArray(safe.favoriteArtists)) safe.favoriteArtists = safe.favoriteArtists.map((n) => clean(n, { max: 80 })).filter(Boolean).slice(0, 50);
     if ("name" in safe) safe.initials = (safe.name.match(/\p{L}|\p{N}/gu) || ["?"]).slice(0, 2).join("").toUpperCase();
@@ -3240,6 +3247,43 @@ export function StoreProvider({ children }) {
         setSession(previousSession);
         return { ok: false, error };
       });
+  };
+
+  const completeSignupOnboarding = async () => {
+    const actor = sessionRef.current;
+    if (!actor) return { ok: false, error: "Log in to finish setting up your account." };
+    if (actor.emailVerified !== true) return { ok: false, error: "Confirm your email before finishing account setup." };
+    const accountMutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
+
+    if (!remoteIdentityValidationEnabled(LOCAL_AUTH_FALLBACK)) {
+      const user = { ...actor, onboardingVersion: SIGNUP_ONBOARDING_VERSION };
+      sessionRef.current = user;
+      setSession(user);
+      setUsers((all) => all.map((entry) => entry.id === actor.id ? { ...entry, onboardingVersion: SIGNUP_ONBOARDING_VERSION } : entry));
+      if (ENABLE_DEMO_DATA) save("pit.session", user);
+      return { ok: true, onboardingVersion: SIGNUP_ONBOARDING_VERSION, user };
+    }
+
+    try {
+      const result = await completeSignupOnboardingForAccount(actor.id, SIGNUP_ONBOARDING_VERSION);
+      if (!accountMutationIsCurrent(accountMutation, sessionRef.current?.id, accountMutationEpochRef.current)) {
+        return { ok: false, stale: true };
+      }
+      if (result?.user) {
+        const user = { ...sessionRef.current, ...result.user };
+        sessionRef.current = user;
+        setSession(user);
+        setUsers((all) => all.map((entry) => entry.id === user.id
+          ? (ENABLE_DEMO_DATA ? { ...entry, ...user } : publicProfileCacheEntry({ ...entry, ...user }))
+          : entry));
+      }
+      return { ok: true, ...result };
+    } catch (error) {
+      if (!accountMutationIsCurrent(accountMutation, sessionRef.current?.id, accountMutationEpochRef.current)) {
+        return { ok: false, stale: true };
+      }
+      return { ok: false, error };
+    }
   };
 
   const addLog = (log, { silent = false } = {}) => {
@@ -6457,7 +6501,7 @@ export function StoreProvider({ children }) {
   const value = {
     users, adminMembers, adminMemberDirectory, session, authReady, feed, removedIds, blockedIds, requests, tourDates, reports, moderationConsole, follows, discoverySidebar, discoverySidebarStatus,
     userById, userByHandle, logsByUser, sharedShows,
-    login, signup, logout, deleteAccount, forgotPassword, resetPassword, confirmEmailVerification, resendEmailVerification, updateProfile, setAnalyticsEnabled, setProfileSearchIndexingEnabled, setDirectMessagePolicy, setAgeBandClassification, setProfileAudience, setAnnouncementEmailsEnabled, chooseTheme,
+    login, signup, logout, deleteAccount, forgotPassword, resetPassword, confirmEmailVerification, resendEmailVerification, updateProfile, completeSignupOnboarding, setAnalyticsEnabled, setProfileSearchIndexingEnabled, setDirectMessagePolicy, setAgeBandClassification, setProfileAudience, setAnnouncementEmailsEnabled, chooseTheme,
     addLog, editLog, reportContent, actionReport, dismissReport, removeContent, restoreContent,
     requestArtist, approveArtist, rejectArtist,
     addTourDatesBatch,

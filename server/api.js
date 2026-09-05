@@ -158,6 +158,7 @@ import { guestSearchAnalyticsRoutes } from "./features/guestSearchAnalytics/gues
 import { suggestionRoutes } from "./features/suggestions/suggestionRoutes.js";
 import { createPeopleSuggestionService } from "./features/people/peopleSuggestionService.js";
 import { accountMuteRoutes } from "./features/accountMute/accountMuteRoutes.js";
+import { accountOnboardingRoutes } from "./features/accountOnboarding/accountOnboardingRoutes.js";
 import { peopleSuggestionRoutes } from "./features/people/peopleSuggestionRoutes.js";
 import { createArtistRecommendationService } from "./features/artistRecommendations/artistRecommendationService.js";
 import { artistRecommendationRoutes } from "./features/artistRecommendations/artistRecommendationRoutes.js";
@@ -3574,6 +3575,14 @@ export const routes = {
     projectUser: publicUser,
     invalidateRecommendations: invalidateRecommendationSnapshotForViewer,
   }),
+  ...accountOnboardingRoutes({
+    database: db,
+    ApiError,
+    getUser: (id) => q.userById.get(id),
+    projectSelf: (user) => publicUser(user, { self: true }),
+    rateLimit: limit,
+    requireUser,
+  }),
   ...artistRecommendationRoutes({
     service: artistRecommendationService,
     requireUser,
@@ -4666,7 +4675,9 @@ export const routes = {
             ...(v.analyticsConsent ? { analyticsConsentAt: createdAt } : {}),
           }), id);
           db.prepare("UPDATE users SET genres=? WHERE id=?").run(JSON.stringify(v.genres), id);
-          db.prepare("UPDATE users SET age_band=?, dm_policy='mutuals' WHERE id=?").run(v.ageBand, id);
+          // Only accounts created through signup enter the first-run flow.
+          // Migrated and staff-provisioned accounts keep NULL and stay exempt.
+          db.prepare("UPDATE users SET age_band=?, dm_policy='mutuals', onboarding_version=0 WHERE id=?").run(v.ageBand, id);
         });
         created = q.userById.get(id);
       } catch (error) {
