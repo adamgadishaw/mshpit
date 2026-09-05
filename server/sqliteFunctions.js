@@ -11,6 +11,15 @@ export function pitVenuePublicSlug(source, providerVenueId) {
   return `${namespace}-${provider}`;
 }
 
+export function pitArtistIdentity(value) {
+  return String(value ?? "")
+    .trim()
+    .slice(0, 240)
+    .normalize("NFKC")
+    .toLocaleLowerCase("en")
+    .replace(/\s+/gu, " ");
+}
+
 // SQLite expression indexes can only be parsed, vacuumed, and integrity-checked
 // by a connection that knows every application-defined function in their schema.
 // Register the same deterministic callbacks on web, backup, restore, and test
@@ -21,5 +30,6 @@ export function registerPitSqliteFunctions(database) {
   }
   database.function("pit_public_slug", { deterministic: true }, pitPublicSlug);
   database.function("pit_venue_public_slug", { deterministic: true }, pitVenuePublicSlug);
+  database.function("pit_artist_identity", { deterministic: true }, pitArtistIdentity);
   return database;
 }

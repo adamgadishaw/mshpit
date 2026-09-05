@@ -15,6 +15,7 @@ import { publicTourDateVenueFields } from "./publicTourDateVenueProjection.js";
 import { publicTourDateProviderFields } from "./tourDateMetadata.js";
 import { catalogTotals } from "./catalogTotals.js";
 import { eligiblePopularityArtists } from "./artistPopularityEligibility.js";
+import { artistHasLegacyMemorial } from "./artistMemorialTourDateVisibility.js";
 
 const norm = (value) => String(value || "").trim().toLowerCase();
 const radians = (degrees) => degrees * Math.PI / 180;
@@ -24,6 +25,9 @@ const POPULAR_LOUNGE_ACTIVITY_MS = 90 * 24 * 60 * 60 * 1000;
 const POPULAR_LOUNGE_MAX = 12;
 const POPULAR_LOUNGE_CANDIDATE_MAX = 48;
 let popularLoungeCache = { expiresAt: 0, rows: [] };
+
+const liveCommunityLounges = (rows) => (Array.isArray(rows) ? rows : [])
+  .filter((row) => !artistHasLegacyMemorial(db, { artist: row?.artist }));
 
 function distanceKm(a, b) {
   if (![a?.lat, a?.lng, b?.lat, b?.lng].every(Number.isFinite)) return null;
@@ -90,7 +94,9 @@ function popularLounges({ limit = 6, at = Date.now() } = {}) {
     : 6;
   if (requested <= 0) return [];
   const timestamp = Number.isFinite(Number(at)) ? Number(at) : Date.now();
-  if (popularLoungeCache.expiresAt > timestamp) return popularLoungeCache.rows.slice(0, requested);
+  if (popularLoungeCache.expiresAt > timestamp) {
+    return liveCommunityLounges(popularLoungeCache.rows).slice(0, requested);
+  }
 
   // The directory is intentionally aggregate-only. It uses public show identity
   // plus counts from active accounts; no member id, authored message, profile, or
@@ -139,7 +145,7 @@ function popularLounges({ limit = 6, at = Date.now() } = {}) {
       attendance.artist COLLATE NOCASE
     LIMIT ?
   `).all(timestamp - POPULAR_LOUNGE_ACTIVITY_MS, POPULAR_LOUNGE_CANDIDATE_MAX, POPULAR_LOUNGE_MAX);
-  const projected = projectPopularLounges(rows, { limit: POPULAR_LOUNGE_MAX });
+  const projected = projectPopularLounges(liveCommunityLounges(rows), { limit: POPULAR_LOUNGE_MAX });
   popularLoungeCache = { expiresAt: timestamp + POPULAR_LOUNGE_CACHE_MS, rows: projected };
   return projected.slice(0, requested);
 }

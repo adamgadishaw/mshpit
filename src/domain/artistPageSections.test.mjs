@@ -7,6 +7,7 @@ import {
   artistPageHighlights,
   artistPagePreview,
   artistPageSectionModel,
+  artistPageSectionsForMode,
   artistPageSynopsis,
   normalizeArtistPageSection,
 } from "./artistPageSections.mjs";
@@ -28,6 +29,25 @@ test("artist page sections keep live shows primary and the release catalog expli
   assert.equal(music.showCommunity, false);
   assert.equal(music.showMusic, true);
   assert.equal(music.loadDiscography, true);
+});
+
+test("legacy profiles expose education and community without live or music services", () => {
+  assert.deepEqual(artistPageSectionsForMode({ legacyMode: true }).map(({ key }) => key), ["overview", "community"]);
+  assert.equal(normalizeArtistPageSection("live", { legacyMode: true }), "overview");
+  assert.equal(normalizeArtistPageSection("music", { legacyMode: true }), "overview");
+  assert.equal(normalizeArtistPageSection("community", { legacyMode: true }), "community");
+
+  const overview = artistPageSectionModel("overview", { legacyMode: true });
+  assert.equal(overview.legacyMode, true);
+  assert.equal(overview.showAbout, true);
+  assert.equal(overview.showCommunity, true);
+  assert.equal(overview.showLive, false);
+  assert.equal(overview.showMusic, false);
+  assert.equal(overview.loadFullArchive, false);
+  assert.equal(overview.loadDiscography, false);
+
+  const staleMusicSelection = artistPageSectionModel("music", { legacyMode: true });
+  assert.equal(staleMusicSelection.active, "overview");
 });
 
 test("artist overview previews are bounded without mutating complete section rows", () => {

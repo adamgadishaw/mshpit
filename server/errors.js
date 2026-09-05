@@ -19,6 +19,7 @@ export const ERROR_CATALOG = Object.freeze({
   CONFLICT: { status: 409, retryable: false },
   ARTIST_MEMORIALIZED: { status: 409, retryable: false },
   ARTIST_MEMORIAL_REQUIRED: { status: 409, retryable: false },
+  ARTIST_LEGACY_READ_ONLY: { status: 409, retryable: false },
   CHECK_IN_UNAVAILABLE: { status: 409, retryable: false },
   IDEMPOTENCY_MISMATCH: { status: 409, retryable: false },
   IDENTITY_CHANGED: { status: 409, retryable: false },

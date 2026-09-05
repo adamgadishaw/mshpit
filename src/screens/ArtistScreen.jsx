@@ -31,13 +31,16 @@ import { artistCinematicMedia } from "../domain/artistGalleryMedia.mjs";
 import { useArtistMemorial } from "../features/artistMemorials/useArtistMemorial";
 import { PublicPressableLink } from "../components/PublicWebLinks";
 import { concertPath, eventPath, postPath, profilePath } from "../domain/urls.mjs";
-import { ARTIST_OVERVIEW_LIMITS, ARTIST_PAGE_SECTIONS, artistPageHighlights, artistPagePreview, artistPageSectionModel } from "../domain/artistPageSections.mjs";
+import { ARTIST_OVERVIEW_LIMITS, artistPageHighlights, artistPagePreview, artistPageSectionModel, artistPageSectionsForMode } from "../domain/artistPageSections.mjs";
+import { isLegacyArtistMemorial } from "../domain/artistLegacy.mjs";
+import { artistLegacyPresentation } from "../domain/artistLegacyPresentation.mjs";
 import { useArtistFollowFanClub } from "../features/artistFollow/useArtistFollowFanClub";
 import { ENABLE_MUSIC_PLAYER } from "../config/runtime.mjs";
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import useScopedRefresh from "../hooks/useScopedRefresh";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
 import ExpandableText from "../components/ExpandableText";
+import BrandMark from "../components/BrandMark";
 
 const compactCount = (value) => {
   const count = Number(value) || 0;
@@ -59,10 +62,10 @@ const TRACK_REPORT_TYPES = [
   { key: "other", label: "Other" },
 ];
 
-function ArtistPageSectionNav({ active, onChange, memorialMode = false, statusPending = false }) {
+function ArtistPageSectionNav({ active, onChange, memorialMode = false, legacyMode = false, statusPending = false }) {
   return (
     <View style={styles.sectionNav} accessibilityRole="tablist" accessibilityLabel="Artist page sections">
-      {ARTIST_PAGE_SECTIONS.map((section) => {
+      {artistPageSectionsForMode({ legacyMode }).map((section) => {
         const selected = active === section.key;
         const label = section.key === "live"
           ? memorialMode ? "Legacy" : statusPending ? "Archive" : section.label
@@ -106,7 +109,7 @@ function AlbumArt({ uri }) {
   return <Image source={{ uri: src }} style={styles.albumArtImg} resizeMode="cover" onError={() => setStage((s) => s + 1)} />;
 }
 
-function TopReviewCard({ review, rank, artistName, onOpenPost, onOpenShow, onOpenPhotos, onOpenProfile, memorialMode = false }) {
+function TopReviewCard({ review, rank, artistName, onOpenPost, onOpenShow, onOpenPhotos, onOpenProfile, memorialMode = false, archiveAvailable = true }) {
   const author = review.user?.name || "A Pit fan";
   const handle = review.user?.handle ? `@${review.user.handle}` : "Review";
   const score = Number(review.overall) || 0;
@@ -123,7 +126,7 @@ function TopReviewCard({ review, rank, artistName, onOpenPost, onOpenShow, onOpe
     : [];
   const thumbnail = publicMedia[0] || null;
   const canOpenAuthor = !!review.userId && typeof onOpenProfile === "function";
-  const canOpenExactShow = review.kind !== "memory" && !!String(review.archiveShowKey || "").trim();
+  const canOpenExactShow = archiveAvailable && review.kind !== "memory" && !!String(review.archiveShowKey || "").trim();
   const reviewText = String(review.review || "");
   const reviewBody = reviewText.trim() ? reviewText : "Shared a concert memory.";
   const authorIdentity = (
@@ -248,11 +251,13 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
     artistDiscography, artistSeenCount, reportTrack, updateProfile, isFanClubMember, joinFanClub,
     refreshArtistCatalogMetadata } = useStore();
   const a = artistSummary(artistName);
-  const playerEnabled = ENABLE_MUSIC_PLAYER && typeof onPlay === "function";
-  const playlistEnabled = ENABLE_MUSIC_PLAYER && typeof onAddToPlaylist === "function";
+  const artistPageProofScope = refreshScope(session?.id, "artist-page-proof", a.profileKey || a.name);
+  const [confirmedArtistPage, setConfirmedArtistPage] = useState(null);
+  const currentConfirmedArtistPage = confirmedArtistPage?.scope === artistPageProofScope
+    ? confirmedArtistPage.page
+    : null;
   const [sectionSelection, setSectionSelection] = useState(() => ({ artistKey: a.profileKey, section: "overview" }));
   const activeSection = sectionSelection.artistKey === a.profileKey ? sectionSelection.section : "overview";
-  const sectionModel = artistPageSectionModel(activeSection);
   const setActiveSection = (section) => setSectionSelection({ artistKey: a.profileKey, section });
 
   const { resource: memorialResource, availability: memorialAvailability, reload: retryMemorial } = useArtistMemorial({
@@ -261,9 +266,18 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
   });
   const memorial = memorialResource.data;
   const deceased = memorialAvailability === "deceased";
+  const legacyMode = isLegacyArtistMemorial(memorial);
+  const confirmedLegacyProfile = legacyMode && currentConfirmedArtistPage?.legacyProfile === true;
   const liveAvailable = memorialAvailability === "living";
   const memorialKnown = deceased || liveAvailable;
   const memorialChecking = memorialAvailability === "checking";
+  // Live/music/fan-club capabilities fail closed until the canonical memorial
+  // lookup has answered. This prevents a protected legacy action from flashing
+  // on screen—or starting its data request—during the initial async check.
+  const profileServicesAvailable = memorialKnown && !legacyMode;
+  const sectionModel = artistPageSectionModel(activeSection, { legacyMode: !profileServicesAvailable });
+  const playerEnabled = profileServicesAvailable && ENABLE_MUSIC_PLAYER && typeof onPlay === "function";
+  const playlistEnabled = profileServicesAvailable && ENABLE_MUSIC_PLAYER && typeof onAddToPlaylist === "function";
   const badges = artistBadges(a.name);
   // Metadata: bundled catalog first, else the DB catalog (resolved from
   // MusicBrainz on demand if we've never seen this artist, no empty pages).
@@ -340,7 +354,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
   // this public profile directly, but never enter an artist-only workspace.
   const ownsArtistPage = isArtistOwner(a.name);
   const ownsNamedArtistPage = artistWorkspaceOwnsArtist(session, a.name);
-  const canManagePublicPage = ownsArtistPage && !previewAsFan;
+  const canManagePublicPage = profileServicesAvailable && ownsArtistPage && !previewAsFan;
   const upcoming = liveAvailable
     ? (previewAsFan ? a.upcoming.filter((date) => !date.scheduled) : a.upcoming)
     : [];
@@ -356,19 +370,40 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
   const visibleUpcoming = sectionModel.condensed
     ? artistPagePreview(upcoming, { condensed: true, limit: ARTIST_OVERVIEW_LIMITS.upcoming })
     : upcomingPresentation.shows;
-  const bio = a.ownerBio || meta?.bio;
-  const bannerUri = a.banner || meta?.photo || null;
+  const cachedArtistPosts = artistPostsFor(a.name);
+  const artistPresentation = artistLegacyPresentation({
+    // Until status is authoritative, catalogue identity is safer than a stale
+    // owner cache. A confirmed living/modern memorial restores the normal
+    // presentation; a legacy page requires the server marker below.
+    legacyMode: !profileServicesAvailable,
+    cachedArtist: a,
+    catalogArtist: meta,
+    cachedPosts: cachedArtistPosts,
+    confirmedPage: currentConfirmedArtistPage,
+    gallery,
+  });
+  const {
+    bio,
+    bannerUri,
+    profileUri,
+    profileAvatarUri,
+    profileOwnerId,
+    posts,
+    heroGallery,
+  } = artistPresentation;
   const hasRegularHeroImage = artistCinematicMedia({
     bannerUri,
-    profileUri: a.photo || meta?.photo || null,
-    gallery,
+    profileUri,
+    gallery: heroGallery,
   }, 1).length > 0;
-  const profileAvatarPhotos = a.profileAvatarUri && a.ownerId
-    ? [{ uri: a.profileAvatarUri, ownerId: a.ownerId, artistProfileKey: a.profileKey, by: a.name }]
+  const profileAvatarPhotos = profileAvatarUri
+    ? [{ uri: profileAvatarUri, ...(profileOwnerId ? { ownerId: profileOwnerId } : {}), artistProfileKey: a.profileKey, by: a.name }]
     : null;
-  const avatarUser = { avatarUri: a.photo || meta?.photo || null, initials: a.name.slice(0, 2).toUpperCase(), avatarColor: colors.amber };
-  const posts = artistPostsFor(a.name);
+  const avatarUser = { avatarUri: profileUri, initials: a.name.slice(0, 2).toUpperCase(), avatarColor: colors.amber };
   const visiblePosts = artistPagePreview(posts.slice(0, 10), { condensed: sectionModel.condensed, limit: ARTIST_OVERVIEW_LIMITS.posts });
+  const artistPostsVisible = legacyMode
+    ? posts.length > 0
+    : profileServicesAvailable && (a.feedEnabled || canManagePublicPage) && (posts.length > 0 || !sectionModel.condensed);
   const fanClubMember = !!session && isFanClubMember(a.name);
   const followUi = useArtistFollowFanClub({
     accountId: session?.id || null,
@@ -739,11 +774,21 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
   // aggregates for each album/song rating shown on the page.
   useEffect(() => {
     const controller = new AbortController();
-    void loadArtistPage(a.name, { signal: controller.signal });
+    void loadArtistPage(a.name, { signal: controller.signal }).then((result) => {
+      if (controller.signal.aborted || !result?.ok) return;
+      setConfirmedArtistPage({
+        scope: artistPageProofScope,
+        page: {
+          legacyProfile: result.legacyProfile === true,
+          profile: result.profile || null,
+          posts: Array.isArray(result.posts) ? result.posts : [],
+        },
+      });
+    });
     return () => controller.abort();
     // The legacy store facade recreates actions as state changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [a.name, artistPageCacheEpoch]);
+  }, [a.name, artistPageCacheEpoch, artistPageProofScope]);
   const artistRefreshScope = refreshScope(session?.id, "artist", a.profileKey || a.name);
   const { refresh: refreshArtist, refreshing: artistRefreshing } = useScopedRefresh({
     scope: artistRefreshScope,
@@ -753,6 +798,16 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
         loadArtistPhotos(a.name, a.profileKey, { signal }),
         refreshArtistCatalogMetadata(a.name, { signal }),
       ]);
+      if (!signal.aborted && pageResult?.ok) {
+        setConfirmedArtistPage({
+          scope: artistPageProofScope,
+          page: {
+            legacyProfile: pageResult.legacyProfile === true,
+            profile: pageResult.profile || null,
+            posts: Array.isArray(pageResult.posts) ? pageResult.posts : [],
+          },
+        });
+      }
       const failure = [pageResult, photoResult, metadataResult].find((result) => result?.ok === false && result?.error);
       if (failure?.error) throw failure.error;
       return { pageResult, photoResult, metadataResult };
@@ -767,7 +822,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
   return (
     <View style={styles.wrap}>
       <ScreenHeader
-        kicker="ARTIST PROFILE"
+        kicker={legacyMode ? "LEGACY ARTIST" : "ARTIST PROFILE"}
         title={a.name}
         onBack={onClose}
         backLabel={`Leave ${a.name} artist profile`}
@@ -799,8 +854,8 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
           <ArtistCinematicCarousel
             artistName={a.name}
             bannerUri={bannerUri}
-            profileUri={a.photo || meta?.photo || null}
-            gallery={gallery}
+            profileUri={profileUri}
+            gallery={heroGallery}
             onOpenMedia={onOpenPhotos}
           />
         ) : (
@@ -809,10 +864,10 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
 
         <View style={styles.headRow}>
           <View style={styles.avatarWrap}>
-            <Avatar user={avatarUser} size={84} onPress={() => onOpenPhotos?.(profileAvatarPhotos || (meta?.photos?.length ? meta.photos : a.photo ? [a.photo] : []), 0)} />
+            <Avatar user={avatarUser} size={84} onPress={() => onOpenPhotos?.(profileAvatarPhotos || (meta?.photos?.length ? meta.photos : profileUri ? [profileUri] : []), 0)} />
           </View>
           <View style={styles.profileActions}>
-            {ownsNamedArtistPage && !previewAsFan && onManageArtistProfile ? (
+            {profileServicesAvailable && ownsNamedArtistPage && !previewAsFan && onManageArtistProfile ? (
               <Pressable style={styles.editBtn} onPress={onManageArtistProfile} accessibilityRole="button" accessibilityLabel={`Open ${a.name} Artist HQ`}>
                 <Icon name="music" size={14} color={colors.amber} />
                 <Text style={styles.editTxt}>Artist HQ</Text>
@@ -823,13 +878,13 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
                 <Text style={styles.editTxt}>Edit artist page</Text>
               </Pressable>
             ) : null}
-            {!ownsArtistPage && a.ownerId && onReport ? (
+            {!ownsArtistPage && profileOwnerId && onReport ? (
               <Pressable
                 style={styles.reportProfileBtn}
                 onPress={() => onReport({
                   targetType: "artist_profile",
                   targetId: a.profileKey,
-                  ownerId: a.ownerId,
+                  ownerId: profileOwnerId,
                   targetName: "artist profile",
                   title: `${a.name} artist profile`,
                   summary: "Report this artist-owned bio or profile imagery to the moderation team.",
@@ -851,7 +906,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
             {deceased ? (
               <View accessible style={styles.memorialChip} accessibilityLabel={`${a.name}, remembered in tribute`}>
                 <Icon name="dove" size={13} color={colors.gold} strokeWidth={1.8} />
-                <Text style={styles.memorialChipText}>IN MEMORY</Text>
+                <Text style={styles.memorialChipText}>{legacyMode ? "LEGACY PROFILE" : "IN MEMORY"}</Text>
               </View>
             ) : null}
             {!memorialKnown ? (
@@ -913,7 +968,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
           </View>
         ) : null}
 
-        {session && !ownsArtistPage && followUi.invite && followed && !fanClubMember ? (
+        {profileServicesAvailable && session && !ownsArtistPage && followUi.invite && followed && !fanClubMember ? (
           <View style={styles.fanClubInvite} accessibilityLiveRegion="polite">
             <View style={styles.fanClubInviteIcon}>
               <Icon name="comment" size={17} color={colors.amber} />
@@ -954,15 +1009,45 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
           artistKey={a.profileKey}
           artistName={a.name}
           memorial={memorial}
+          autoOpen={!legacyMode}
           style={styles.memorial}
         />
+
+        {legacyMode ? (
+          <View style={styles.legacyBoundary} accessible accessibilityLabel="Educational legacy profile. Live services and media uploads are closed; written community memories remain open.">
+            <View style={styles.legacyBoundaryMark}><Icon name="shield" size={20} color={colors.gold} /></View>
+            <View style={styles.legacyBoundaryCopy}>
+              <Text style={styles.legacyBoundaryKicker}>PRESERVED FOR MUSIC HISTORY</Text>
+              <Text style={styles.legacyBoundaryTitle}>An educational legacy profile</Text>
+              <Text style={styles.legacyBoundaryText}>
+                Biography and community memories remain available. Photo and video uploads, live ratings, dates, tour archives, music playback, and fan clubs are closed for this artist. Fans can still add written memories.
+              </Text>
+            </View>
+          </View>
+        ) : null}
+
+        {legacyMode && !!bio ? (
+          <View style={styles.legacyBiography}>
+            <Text style={styles.legacyBiographyLabel}>ABOUT THE ARTIST</Text>
+            <ExpandableText
+              text={bio}
+              style={styles.bio}
+              toggleStyle={styles.bioToggle}
+              toggleTextStyle={styles.bioToggleText}
+              moreAccessibilityLabel={`Read the full ${a.name} biography`}
+              lessAccessibilityLabel={`Show a shorter ${a.name} biography`}
+            />
+          </View>
+        ) : null}
 
         {thin && !canManagePublicPage && (
           <View style={styles.comingSoon}>
             <Icon name="clock" size={16} color={colors.amber} />
             <View style={{ flex: 1 }}>
-              <Text style={styles.comingSoonTitle}>We're adding this artist</Text>
-              <Text style={styles.comingSoonSub}>{deceased
+              <Text style={styles.comingSoonTitle}>{legacyMode ? "Educational legacy profile" : "We're adding this artist"}</Text>
+              <Text style={styles.comingSoonSub}>{legacyMode
+                ? "This page is kept as a verified educational record with its existing community history."
+                : deceased
                 ? "Photos, songs, and fan memories will keep building this permanent tribute."
                 : liveAvailable
                   ? "Photos and songs are on the way. Your reviews still count and will show here."
@@ -1069,7 +1154,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
         )}
         </>)}
 
-        <View style={styles.repCard}>
+        {!legacyMode ? <View style={styles.repCard}>
           <Text style={styles.repLabel}>{deceased ? "CREATIVE LEGACY" : liveAvailable ? "LIVE REPUTATION" : "ARTIST STATUS"}</Text>
           {deceased ? (
             <View style={styles.legacyRow}>
@@ -1118,7 +1203,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
             </View>
           )}
           {liveAvailable && liveArchiveResource.status === "error" && !liveArchive ? <Text style={styles.note}>The live reputation could not refresh. Open the archive to try again.</Text> : null}
-        </View>
+        </View> : null}
 
         {/* Put the artist's visual identity directly beside their live reputation.
             This remains a bounded preview; the dedicated gallery owns the full
@@ -1127,13 +1212,15 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
           <>
             <View style={styles.galleryHeading}>
               <View style={{ flex: 1, minWidth: 0 }}>
-                <Text style={styles.sectionLabel}>PHOTOS & FAN GALLERY</Text>
-                <Text style={styles.bio}>{sectionModel.condensed ? "A quick look at public fan photos and videos." : "Public fan photos and videos, along with artist images. Private and moderated media is not shown."}</Text>
+                <Text style={styles.sectionLabel}>{legacyMode ? "ARCHIVE & COMMUNITY PHOTOS" : "PHOTOS & FAN GALLERY"}</Text>
+                <Text style={styles.bio}>{legacyMode
+                  ? "Existing public images remain part of this protected community record. New photo and video uploads are closed; written memories remain open."
+                  : sectionModel.condensed ? "A quick look at public fan photos and videos." : "Public fan photos and videos, along with artist images. Private and moderated media is not shown."}</Text>
               </View>
               {onOpenGallery ? (
                 <Pressable
                   style={({ pressed, focused }) => [styles.galleryOpenButton, pressed && styles.archivePressed, focused && focusRing]}
-                  onPress={() => onOpenGallery(a.name, a.profileKey)}
+                  onPress={() => onOpenGallery(a.name, a.profileKey, legacyMode)}
                   accessibilityRole="button"
                   accessibilityLabel={`Open the full ${a.name} photo and fan gallery`}
                 >
@@ -1162,20 +1249,22 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
             ) : (
               <View style={styles.galleryEmpty} accessible accessibilityLabel={`No public fan media for ${a.name} yet`}>
                 <Icon name="photo" size={20} color={colors.textFaint} />
-                <Text style={styles.galleryEmptyText}>No public fan media yet. Shared concert photos will build this archive.</Text>
+                <Text style={styles.galleryEmptyText}>{legacyMode
+                  ? "No archived community media is available for this artist. Written memories remain open below."
+                  : "No public fan media yet. Shared concert photos will build this archive."}</Text>
               </View>
             )}
           </>
         )}
 
         {/* Live-music actions remain primary while the built-in player is paused. */}
-        {deceased && session && typeof onShareMemory === "function" ? (
-          <Pressable style={styles.memoryBtn} onPress={() => onShareMemory(a.name, a.profileKey)} accessibilityRole="button" accessibilityLabel={`Share a fan memory about ${a.name}`}>
+        {deceased && (!legacyMode || confirmedLegacyProfile) && session && typeof onShareMemory === "function" ? (
+          <Pressable style={styles.memoryBtn} onPress={() => onShareMemory(a.name, a.profileKey, { legacyProfile: confirmedLegacyProfile })} accessibilityRole="button" accessibilityLabel={`Share a ${confirmedLegacyProfile ? "written " : "fan "}memory about ${a.name}`}>
             <Icon name="dove" size={17} color="#1A1206" strokeWidth={1.7} />
-            <Text style={styles.memoryBtnText}>Share a fan memory</Text>
+            <Text style={styles.memoryBtnText}>{confirmedLegacyProfile ? "Share a written memory" : "Share a fan memory"}</Text>
           </Pressable>
         ) : null}
-        <View style={styles.artistActions}>
+        {profileServicesAvailable ? <View style={styles.artistActions}>
           <Pressable
             style={styles.fcBtn}
             onPress={() => onOpenFanClub?.(a.name)}
@@ -1189,9 +1278,9 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
             <Icon name="archive" size={15} color={colors.amber} />
             <Text style={styles.listenTxt}>{deceased ? "Concert history" : liveAvailable ? "Live archive" : "Concert archive"}</Text>
           </Pressable>
-        </View>
+        </View> : null}
 
-        <ArtistPageSectionNav active={activeSection} onChange={setActiveSection} memorialMode={deceased} statusPending={!memorialKnown} />
+        <ArtistPageSectionNav active={sectionModel.active} onChange={setActiveSection} memorialMode={deceased} legacyMode={!profileServicesAvailable} statusPending={!memorialKnown} />
 
         {/* Top song — a "start here" pick beside the profile, one tap to play. */}
         {sectionModel.showMusic && playerEnabled && topSong && (
@@ -1205,21 +1294,25 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
           </Pressable>
         )}
 
-        {/* Artist posts are read-only here. Creation and removal live in Artist HQ. */}
-        {sectionModel.showCommunity && (a.feedEnabled || canManagePublicPage) && (posts.length > 0 || !sectionModel.condensed) && (
+        {/* Artist posts are read-only here. Creation and removal live in Artist HQ.
+            Legacy pages expose only staff-curated history notes. They must never
+            borrow the artist's avatar/name or imply that the artist published
+            them. Modern artist posts keep their existing owner presentation. */}
+        {sectionModel.showCommunity && artistPostsVisible && (
           <>
             <View style={styles.feedHead}>
-              <Text style={styles.sectionLabel}>ARTIST POSTS{posts.length ? ` · ${posts.length}` : ""}</Text>
-              {canManagePublicPage && !a.feedEnabled && <Text style={styles.feedOff}>hidden from fans</Text>}
+              <Text style={styles.sectionLabel}>{legacyMode ? "MSHPIT HISTORY NOTES" : "ARTIST POSTS"}{posts.length ? ` · ${posts.length}` : ""}</Text>
+              {!legacyMode && canManagePublicPage && !a.feedEnabled && <Text style={styles.feedOff}>hidden from fans</Text>}
             </View>
-            {posts.length === 0 && <Text style={styles.empty}>No artist posts yet.</Text>}
+            {legacyMode ? <Text style={styles.editorialIntro}>Background and historical context written by Mshpit staff. These notes are not posts from the artist.</Text> : null}
+            {!legacyMode && posts.length === 0 && <Text style={styles.empty}>No artist posts yet.</Text>}
             {visiblePosts.map((p) => (
-              <View key={p.id} style={styles.postCard}>
+              <View key={p.id} style={[styles.postCard, legacyMode && styles.editorialCard]}>
                 <View style={styles.postTop}>
-                  <Avatar user={avatarUser} size={28} />
+                  {legacyMode ? <View style={styles.editorialMark}><BrandMark size={19} color={colors.gold} /></View> : <Avatar user={avatarUser} size={28} />}
                   <View style={{ flex: 1 }}>
-                    <Text style={styles.postName}>{a.name}</Text>
-                    <Text style={styles.postTs}>{p.ts}</Text>
+                    <Text style={styles.postName}>{legacyMode ? "Mshpit editorial" : a.name}</Text>
+                    <Text style={styles.postTs}>{legacyMode ? `HISTORY NOTE · ${p.ts}` : p.ts}</Text>
                   </View>
                   {!ownsArtistPage && onReport ? (
                     <Pressable
@@ -1229,12 +1322,12 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
                         targetType: "artist_post",
                         targetId: p.id,
                         ownerId: p.userId,
-                        targetName: "artist update",
-                        title: `${a.name} artist-page update`,
+                        targetName: legacyMode ? "Mshpit history note" : "artist update",
+                        title: legacyMode ? `${a.name} history note` : `${a.name} artist-page update`,
                         summary: p.text,
                       })}
                       accessibilityRole="button"
-                      accessibilityLabel={`Report ${a.name} artist-page update`}
+                      accessibilityLabel={legacyMode ? `Report Mshpit's history note about ${a.name}` : `Report ${a.name} artist-page update`}
                     >
                       <Icon name="flag" size={14} color={colors.textFaint} />
                     </Pressable>
@@ -1243,14 +1336,14 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
                 <ExpandableText
                   text={p.text}
                   style={styles.postText}
-                  moreAccessibilityLabel={`Read the full ${a.name} artist update`}
-                  lessAccessibilityLabel={`Show a shorter ${a.name} artist update`}
+                  moreAccessibilityLabel={legacyMode ? `Read the full Mshpit history note about ${a.name}` : `Read the full ${a.name} artist update`}
+                  lessAccessibilityLabel={legacyMode ? `Show a shorter Mshpit history note about ${a.name}` : `Show a shorter ${a.name} artist update`}
                 />
               </View>
             ))}
             {sectionModel.condensed && posts.length > visiblePosts.length && (
-              <Pressable style={styles.showAllBtn} onPress={() => setActiveSection("community")} accessibilityRole="button" accessibilityLabel={`See all ${posts.length} ${a.name} artist posts`}>
-                <Text style={styles.showAllTxt}>See every artist update</Text>
+              <Pressable style={styles.showAllBtn} onPress={() => setActiveSection("community")} accessibilityRole="button" accessibilityLabel={legacyMode ? `See all ${posts.length} Mshpit history notes about ${a.name}` : `See all ${posts.length} ${a.name} artist posts`}>
+                <Text style={styles.showAllTxt}>{legacyMode ? "See every history note" : "See every artist update"}</Text>
                 <Icon name="chevron-right" size={15} color={colors.amber} />
               </Pressable>
             )}
@@ -1373,7 +1466,9 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
               <View style={{ flex: 1 }}>
                 <Text style={styles.sectionLabel}>{deceased ? `FAN MEMORIES${topReviews.length ? ` · ${topReviews.length}` : ""}` : sectionModel.condensed ? "TOP REVIEW" : `TOP REVIEWS · ${topReviews.length}`}</Text>
                 <Text style={styles.topReviewsIntro}>
-                  {deceased
+                  {legacyMode
+                    ? "Read community memories or add your own written remembrance. Photo and video submissions stay closed on this protected profile."
+                    : deceased
                     ? "Read the memories fans shared from concerts, then open the exact night in the historical archive."
                     : sectionModel.condensed
                     ? "Read the fan post, or open the exact show for that night's details."
@@ -1424,6 +1519,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
                   onOpenPhotos={onOpenPhotos}
                   onOpenProfile={onOpenProfile}
                   memorialMode={deceased}
+                  archiveAvailable={profileServicesAvailable}
                 />
               ))}
             </View>
@@ -1436,7 +1532,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
           </>
         )}
 
-        {sectionModel.showAbout && !!bio && (
+        {!legacyMode && sectionModel.showAbout && !!bio && (
           <>
             <Text style={styles.sectionLabel}>ABOUT</Text>
             <ExpandableText
@@ -1662,6 +1758,14 @@ const styles = StyleSheet.create({
   memorialStatusChip: { minHeight: 28, flexDirection: "row", alignItems: "center", gap: 5, marginLeft: 5, paddingHorizontal: 9, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surfaceAlt },
   memorialStatusChipText: { color: colors.textDim, fontFamily: mono, fontSize: 8.5, fontWeight: "900", letterSpacing: 0.8 },
   memorial: { marginTop: 16 },
+  legacyBoundary: { flexDirection: "row", alignItems: "flex-start", gap: 13, marginTop: 14, padding: 16, borderRadius: radius.lg, borderCurve: "continuous", borderWidth: 1, borderColor: `${colors.gold}70`, backgroundColor: `${colors.gold}0B` },
+  legacyBoundaryMark: { width: 42, height: 42, borderRadius: 21, flexShrink: 0, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: `${colors.gold}66`, backgroundColor: colors.surface },
+  legacyBoundaryCopy: { flex: 1, minWidth: 0 },
+  legacyBoundaryKicker: { color: colors.gold, fontFamily: mono, fontSize: 9, fontWeight: "900", letterSpacing: 1.5 },
+  legacyBoundaryTitle: { color: colors.text, fontFamily: displayFont, fontSize: 20, lineHeight: 25, fontWeight: "900", marginTop: 4 },
+  legacyBoundaryText: { color: colors.textDim, fontSize: 13, lineHeight: 19, marginTop: 5 },
+  legacyBiography: { marginTop: 12, padding: 16, borderRadius: radius.lg, borderCurve: "continuous", borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surface },
+  legacyBiographyLabel: { color: colors.textFaint, fontFamily: mono, fontSize: 9.5, fontWeight: "900", letterSpacing: 1.4, marginBottom: 8 },
   memorialRetry: { alignSelf: "flex-start", minHeight: 36, justifyContent: "center", marginTop: 8, paddingHorizontal: 12, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.gold, backgroundColor: colors.surface },
   memorialRetryText: { color: colors.gold, fontSize: 11.5, fontWeight: "900" },
   chipRow: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 10, flexWrap: "wrap" },
@@ -1698,6 +1802,9 @@ const styles = StyleSheet.create({
   feedHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   feedOff: { color: colors.textFaint, fontSize: 11, fontStyle: "italic", marginTop: 14 },
   postCard: { backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 14, marginBottom: 8 },
+  editorialCard: { borderColor: `${colors.gold}55`, backgroundColor: colors.bgElev },
+  editorialIntro: { color: colors.textDim, fontSize: 12.5, lineHeight: 18, marginTop: -4, marginBottom: 10, maxWidth: 720 },
+  editorialMark: { width: 32, height: 32, borderRadius: 16, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: `${colors.gold}55`, backgroundColor: `${colors.gold}0D` },
   postTop: { flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 8 },
   postName: { color: colors.text, fontSize: 14, fontWeight: "800" },
   postTs: { color: colors.textFaint, fontFamily: mono, fontSize: 11, marginTop: 1 },

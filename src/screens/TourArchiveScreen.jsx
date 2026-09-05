@@ -4,6 +4,7 @@ import { useStore } from "../store";
 import { colors, displayFont, focusRing, mono, radius, shadow, space } from "../theme";
 import Avatar from "../components/Avatar";
 import Icon from "../components/Icon";
+import LegacyArtistArchiveGate from "../components/artist/LegacyArtistArchiveGate";
 import ScreenHeader from "../components/ScreenHeader";
 import SmartImage from "../components/SmartImage";
 import Stars from "../components/Stars";
@@ -20,8 +21,10 @@ import {
   showsForArchiveTour,
 } from "../domain/artistEventArchive.mjs";
 import { mediaDisplayKind, mediaPosterUri } from "../domain/postMediaDisplay.mjs";
+import { isLegacyArtistMemorial } from "../domain/artistLegacy.mjs";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
 import { useArtistEventArchive, useArtistEventReviews } from "../features/artistEvents/useArtistEventArchive";
+import { useArtistMemorial } from "../features/artistMemorials/useArtistMemorial";
 import useScopedRefresh from "../hooks/useScopedRefresh";
 
 function TourHero({ artistName, tour, cover, fallbackName, onOpenPhotos, onOpenProfile }) {
@@ -205,8 +208,11 @@ export default function TourArchiveScreen({ artistName, artistKey, tourKey, tour
   const { width } = useWindowDimensions();
   const wide = width >= 820;
   const accountId = session?.id || null;
-  const { resource: archiveResource, reload: reloadArchive, refresh: refreshArchive } = useArtistEventArchive({ accountId, name: artistName, artistKey });
-  const { resource: reviewsResource, reload: reloadReviews, refresh: refreshReviews, loadMore } = useArtistEventReviews({ accountId, name: artistName, artistKey, tourKey, limit: 30 });
+  const { resource: memorialResource, availability: memorialAvailability, reload: retryMemorial } = useArtistMemorial({ accountId, artistKey });
+  const legacyMode = isLegacyArtistMemorial(memorialResource.data);
+  const archiveAllowed = memorialAvailability === "living" || (memorialAvailability === "deceased" && !legacyMode);
+  const { resource: archiveResource, reload: reloadArchive, refresh: refreshArchive } = useArtistEventArchive({ accountId, name: artistName, artistKey, enabled: archiveAllowed });
+  const { resource: reviewsResource, reload: reloadReviews, refresh: refreshReviews, loadMore } = useArtistEventReviews({ accountId, name: artistName, artistKey, tourKey, limit: 30, enabled: archiveAllowed });
   const [refreshError, setRefreshError] = useState("");
   const tourArchiveRefreshScope = refreshScope(
     accountId,
@@ -270,8 +276,15 @@ export default function TourArchiveScreen({ artistName, artistKey, tourKey, tour
 
   return (
     <View style={styles.wrap}>
-      <ScreenHeader kicker="TOUR ARCHIVE" title={tour?.name || tourName || artistName || "Tour"} onBack={onClose} />
-      {initialArchiveLoading ? (
+      <ScreenHeader kicker={legacyMode ? "LEGACY ARTIST" : "TOUR ARCHIVE"} title={tour?.name || tourName || artistName || "Tour"} onBack={onClose} />
+      {!archiveAllowed ? (
+        <LegacyArtistArchiveGate
+          artistName={artistName}
+          state={legacyMode ? "legacy" : memorialAvailability === "checking" ? "checking" : "unavailable"}
+          onBack={onClose}
+          onRetry={retryMemorial}
+        />
+      ) : initialArchiveLoading ? (
         <View style={styles.center} accessibilityLiveRegion="polite">
           <ActivityIndicator color={colors.amber} />
           <Text style={styles.stateTitle}>Opening the tour archive…</Text>

@@ -13,6 +13,7 @@ import { projectedTourDateTicketUrl } from "../../../src/domain/ticketLinks.mjs"
 import { projectArtistGenre } from "../../../src/domain/genre.mjs";
 import { SUPPORT_EMAIL } from "../../../src/domain/contact.mjs";
 import { LANDING_IDENTITY_COPY } from "../../../src/domain/landingPresentation.mjs";
+import { isLegacyArtistMemorial } from "../../../src/domain/artistLegacy.mjs";
 import { postMediaStateByPost } from "../../mediaAssets.js";
 import { verifiedFinalizedLegacyMedia } from "../../mediaLegacyFinalize.js";
 import { safeOwnedReadyMediaUrl } from "../../publicMedia.js";
@@ -168,6 +169,7 @@ function memorialProjection(value) {
   }
   return Object.freeze({
     deathDate,
+    ...(isLegacyArtistMemorial({ deceased: true, deathDate }) ? { legacy: true } : {}),
     summary: memorialSummary,
     thankYou,
     accomplishments: Object.freeze(accomplishments),
@@ -891,22 +893,35 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       // Legacy vanity routes redirect before rendering, and this second gate
       // keeps a memorial out of any mistakenly requested non-canonical document.
       const memorial = path === artistCanonicalPath ? memorialProjection(raw.memorial) : null;
+      const legacyMode = memorial?.legacy === true;
       const mediaByPost = publicMediaForRows(database, raw.reviews || [], { galleryOnly: true, maxPerPost: 3 });
       const reviews = (raw.reviews || []).map((row) => postCard(row, mediaByPost.get(row.id), publicPaths));
-      const profileOwner = raw.profile?.owner_id || null;
+      const profilePublic = Number(raw.profile?.owner_public) === 1;
+      const profileOwner = legacyMode || profilePublic ? raw.profile?.owner_id || null : null;
       const avatarOwner = raw.profile?.avatar_owner_id || profileOwner;
       const bannerOwner = raw.profile?.banner_owner_id || profileOwner;
-      const avatarMedia = avatarOwner
+      const avatarAllowed = legacyMode
+        ? Number(raw.profile?.avatar_staff_public) === 1
+        : profilePublic;
+      const bannerAllowed = legacyMode
+        ? Number(raw.profile?.banner_staff_public) === 1
+        : profilePublic;
+      const avatarMedia = avatarAllowed && avatarOwner
         ? safeProfileImage(database, avatarOwner, raw.profile.avatar_uri, "avatar") : null;
-      const bannerMedia = bannerOwner
+      const bannerMedia = bannerAllowed && bannerOwner
         ? safeProfileImage(database, bannerOwner, raw.profile.banner, "banner") : null;
       const avatar = avatarMedia?.url || null;
       const banner = bannerMedia?.url || null;
-      const fanImage = reviews.flatMap((review) => review.media)
+      // Historical community photos remain in the bounded memories section,
+      // but never become the identity image or social preview for a protected
+      // legacy profile. Only staff-curated profile media may represent it.
+      const fanImage = legacyMode ? null : reviews.flatMap((review) => review.media)
         .map((asset) => asset.kind === "image" ? asset.url : asset.posterUrl)
         .find(Boolean) || null;
       const name = cleanLine(source.name, 160);
-      const bio = cleanBody(raw.profile?.bio || source.bio, 2_000);
+      const staffLegacyBio = Number(raw.profile?.bio_staff_curated) === 1 ? raw.profile?.bio : null;
+      const profileBio = profilePublic ? raw.profile?.bio : null;
+      const bio = cleanBody(legacyMode ? staffLegacyBio || source.bio : profileBio || source.bio, 2_000);
       const reviewCount = count(raw.stats?.review_count);
       const averageRating = memorial ? null : rating(raw.stats?.average_rating);
       const events = memorial ? [] : (raw.events || []).map((event) => eventCard(event, publicPaths)).filter(Boolean);
@@ -920,7 +935,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         bio || `Music artist page for ${name} on Mshpit: concert reviews, fan photos, ratings and upcoming tour dates.`,
         artistSignals.length ? `${artistSignals.join("; ")}.` : "",
       ].filter(Boolean).join(" "));
-      const concerts = (raw.concerts || []).flatMap((concert) => {
+      const concerts = (legacyMode ? [] : raw.concerts || []).flatMap((concert) => {
         const date = validDate(concert.date);
         const venue = cleanLine(concert.venue, 180);
         if (!date || !venue) return [];
@@ -943,11 +958,14 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         })];
       });
       const archiveTotal = count(raw.concerts?.[0]?.archive_item_count);
-      const archivePath = archiveTotal > 3 ? artistConcertsPath(source.public_slug) : null;
-      const updates = (raw.updates || []).map((update) => Object.freeze({
+      const archivePath = !legacyMode && archiveTotal > 3 ? artistConcertsPath(source.public_slug) : null;
+      const updates = (raw.updates || [])
+        .filter((update) => legacyMode ? update.u_role === "admin" : profilePublic)
+        .map((update) => Object.freeze({
         id: String(update.id),
         text: cleanBody(update.text, 2_000),
         publishedAt: timestamp(update.created_at),
+        editorial: legacyMode,
       })).filter((update) => update.text);
       const modifiedAt = Math.max(
         timestamp(source.updated_at) || 0,
@@ -973,7 +991,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         disambiguatingDescription: "Music artist",
         url: absolute(publicOrigin, path),
         ...(musicBrainzUrl ? { sameAs: [musicBrainzUrl] } : {}),
-        ...((bio || memorial?.summary) ? { description: bio || memorial.summary } : {}),
+        ...((bio || memorial?.summary) ? { description: legacyMode ? memorial.summary : bio || memorial.summary } : {}),
         ...(entityImage ? { image: entityImage } : {}),
         ...(memorial ? {
           deathDate: memorial.deathDate,
@@ -1015,7 +1033,9 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       return Object.freeze({
         kind: "artist",
         siteName: SITE_NAME,
-        title: memorial
+        title: legacyMode
+          ? `${name} legacy — biography and community memories | Mshpit`
+          : memorial
           ? `Remembering ${name} — music, shows and fan memories | Mshpit`
           : `${name} — music artist reviews, photos & tour dates | Mshpit`,
         description,

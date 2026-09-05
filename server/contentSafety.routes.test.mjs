@@ -7,7 +7,7 @@ import test, { after } from "node:test";
 const dataDir = mkdtempSync(join(tmpdir(), "pit-content-safety-routes-"));
 process.env.PIT_DATA_DIR = dataDir;
 
-const { db, q } = await import("./db.js");
+const { artistRow, artistStmts, db, q } = await import("./db.js");
 const { ApiError, routes } = await import("./api.js");
 
 after(() => {
@@ -30,6 +30,7 @@ const artist = addUser("safety_artist", "artist", "Safety Artist");
 const safePostId = "safety_existing_post";
 const loungeKey = "safety artist|safety room|2026-08-14";
 
+artistStmts.upsert.run(artistRow("safety artist", { name: "Safety Artist" }, "test"));
 db.prepare(`INSERT INTO posts (id,user_id,artist,venue,overall,review,photos,created_at)
   VALUES (?,?,?,?,?,?,?,?)`).run(safePostId, member.id, "Safety Artist", "Safety Room", 4, "A normal review", "[]", Date.now());
 db.prepare("INSERT INTO fan_club_members (artist,user_id) VALUES (?,?)").run("safety artist", member.id);

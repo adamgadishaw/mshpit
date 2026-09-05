@@ -30,6 +30,7 @@ import { useArtistEventReviews } from "../features/artistEvents/useArtistEventAr
 import { readShowCrowdAttendance, readShowDocument, readShowLoungeMeta } from "../features/showSocial/showSocialService";
 import ShowAttendanceControls from "../features/showSocial/ShowAttendanceControls";
 import GoingTicketComposer from "../components/GoingTicketComposer";
+import LegacyArtistArchiveGate from "../components/artist/LegacyArtistArchiveGate";
 import { openTicketLink } from "../lib/ticketLinks";
 import { ENABLE_CANONICAL_SHOW_READ } from "../config/runtime.mjs";
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
@@ -38,6 +39,8 @@ import { refreshScope } from "../domain/scopedRefresh.mjs";
 import { useArtistMemorial } from "../features/artistMemorials/useArtistMemorial";
 import { normalizeAttendanceTicketShow } from "../domain/attendanceTicket.mjs";
 import { normalizeVenuePhotoProviderIdentity } from "../domain/venuePhotos.mjs";
+import { isLegacyArtistMemorial } from "../domain/artistLegacy.mjs";
+import useCanonicalArtistIdentity from "../hooks/useCanonicalArtistIdentity";
 
 const CROWD_FILTER_LABELS = Object.freeze({
   everyone: "Everyone",
@@ -143,18 +146,35 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
     : (!norm.kind && typeof norm.id === "string" && norm.id.trim() ? norm.id.trim() : null);
   const artistProfile = useMemo(() => artistSummary?.(artist) || null, [artist, artistSummary]);
   const artistPhotoUri = artistProfile?.photo || null;
-  const memorialArtistKey = norm.artistKey || artistProfile?.profileKey || null;
   const {
+    artistKey: memorialArtistKey,
+    status: artistIdentityStatus,
+    retry: retryArtistIdentity,
+  } = useCanonicalArtistIdentity({
+    artistName: artist,
+    artistKey: norm.artistKey || null,
+  });
+  const {
+    resource: memorialResource,
     availability: memorialAvailability,
     reload: retryMemorial,
   } = useArtistMemorial({
     accountId,
     artistKey: memorialArtistKey,
-    enabled: !!memorialArtistKey,
+    enabled: artistIdentityStatus === "ready" && !!memorialArtistKey,
   });
   const deceased = memorialAvailability === "deceased";
+  const legacyMode = isLegacyArtistMemorial(memorialResource.data);
   const liveActionsAvailable = memorialAvailability === "living";
   const memorialChecking = memorialAvailability === "checking";
+  const showPageAllowed = artistIdentityStatus === "ready"
+    && (liveActionsAvailable || (deceased && !legacyMode));
+  const profileGateState = legacyMode
+    ? "legacy"
+    : artistIdentityStatus === "checking" || memorialChecking
+      ? "checking"
+      : "unavailable";
+  const retryProfileStatus = artistIdentityStatus === "unavailable" ? retryArtistIdentity : retryMemorial;
   const ticketEvent = useMemo(() => ({
     ...norm,
     artistName: artist,
@@ -189,10 +209,10 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
   } = useArtistEventReviews({
     accountId,
     name: artist,
-    artistKey: log.artistKey || null,
+    artistKey: memorialArtistKey,
     showKey: archiveShowKey,
     limit: 20,
-    enabled: !!archiveShowKey,
+    enabled: showPageAllowed && !!archiveShowKey,
   });
   const archiveReviewData = archiveReviewResource.data || {};
   const archiveReviews = Array.isArray(archiveReviewData.reviews) ? archiveReviewData.reviews : [];
@@ -464,7 +484,14 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
         backHint="Returns to the artist, post, or page you came from"
       />
 
-      <VinylRefreshBoundary
+      {!showPageAllowed ? (
+        <LegacyArtistArchiveGate
+          artistName={artist}
+          state={profileGateState}
+          onBack={onClose}
+          onRetry={retryProfileStatus}
+        />
+      ) : <VinylRefreshBoundary
         refreshing={showRefreshing}
         onRefresh={refreshShow}
         accessibilityLabel={`Refresh ${eventTitle} show page`}
@@ -922,7 +949,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
           </>
         )}
       </ScrollView>
-      </VinylRefreshBoundary>
+      </VinylRefreshBoundary>}
     </View>
   );
 }

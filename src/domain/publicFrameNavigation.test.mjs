@@ -30,11 +30,15 @@ test("direct artist-concert archive URLs resolve the base artist then rebuild th
     resolvePath: "/artist/earl-sweatshirt",
   });
   assert.deepEqual(
-    resolvedPublicCollectionFrame(hydration, { kind: "artist", name: "Earl Sweatshirt" }),
+    resolvedPublicCollectionFrame(hydration, {
+      kind: "artist",
+      name: "Earl Sweatshirt",
+      artistKey: "earl sweatshirt",
+    }),
     {
       artistArchive: {
         name: "Earl Sweatshirt",
-        artistKey: null,
+        artistKey: "earl sweatshirt",
         publicSlug: "earl-sweatshirt",
       },
     },

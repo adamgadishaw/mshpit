@@ -16,6 +16,10 @@ import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import { resolvePostAuthor } from "../domain/postAuthor.mjs";
 import useScopedRefresh from "../hooks/useScopedRefresh";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
+import LegacyArtistArchiveGate from "../components/artist/LegacyArtistArchiveGate";
+import { isLegacyArtistMemorial } from "../domain/artistLegacy.mjs";
+import { useArtistMemorial } from "../features/artistMemorials/useArtistMemorial";
+import useCanonicalArtistIdentity from "../hooks/useCanonicalArtistIdentity";
 
 const EMPTY_FAN_ACTIONS = Object.freeze({ text: "", joining: false, sending: false });
 
@@ -25,7 +29,34 @@ export default function FanClubScreen({ artist, onClose, onOpenProfile, onOpenPr
     session, chatAuthEpoch, userById, fanClubFor, loadFanClub, addFanClubMessage,
     retryChatMessage, cancelChatMessage, isFanClubMember, joinFanClub, fanClubCount,
   } = useStore();
-  const artistKey = String(artist || "").trim().toLowerCase();
+  const routeArtistName = String(artist || "").trim();
+  const {
+    artistName: canonicalArtistName,
+    artistKey: canonicalArtistKey,
+    status: artistIdentityStatus,
+    retry: retryArtistIdentity,
+  } = useCanonicalArtistIdentity({ artistName: routeArtistName });
+  const {
+    resource: memorialResource,
+    availability: memorialAvailability,
+    reload: retryMemorial,
+  } = useArtistMemorial({
+    accountId: session?.id || null,
+    artistKey: canonicalArtistKey,
+    enabled: artistIdentityStatus === "ready" && !!canonicalArtistKey,
+  });
+  const legacyMode = isLegacyArtistMemorial(memorialResource.data);
+  const fanClubAllowed = artistIdentityStatus === "ready"
+    && (memorialAvailability === "living" || (memorialAvailability === "deceased" && !legacyMode));
+  const profileGateState = legacyMode
+    ? "legacy"
+    : artistIdentityStatus === "checking" || memorialAvailability === "checking"
+      ? "checking"
+      : "unavailable";
+  const retryProfileStatus = artistIdentityStatus === "unavailable" ? retryArtistIdentity : retryMemorial;
+  const displayArtistName = canonicalArtistName || routeArtistName;
+  const fanClubTarget = canonicalArtistKey || routeArtistName;
+  const artistKey = String(fanClubTarget || "").trim().toLowerCase();
   const actionScope = accountTargetScope(session?.id, `fan:${artistKey}`);
   const actionScopeRef = useRef(actionScope);
   actionScopeRef.current = actionScope;
@@ -37,17 +68,17 @@ export default function FanClubScreen({ artist, onClose, onOpenProfile, onOpenPr
   }));
   const [gateMeta, setGateMeta] = useState(null);
   const { scrollRef, onScroll, onContentSizeChange } = useChatScroll();
-  const messages = fanClubFor(artist);
-  const member = isFanClubMember(artist);
+  const messages = fanClubAllowed ? fanClubFor(fanClubTarget) : [];
+  const member = fanClubAllowed && isFanClubMember(fanClubTarget);
   useLiveChat(
-    ({ after, signal }) => loadFanClub(artist, { after, signal }),
-    { channelKey: `fan-club:${chatAuthEpoch}:${session?.id || "guest"}:${artist}`, enabled: !!artist && member },
+    ({ after, signal }) => loadFanClub(fanClubTarget, { after, signal }),
+    { channelKey: `fan-club:${chatAuthEpoch}:${session?.id || "guest"}:${artistKey}`, enabled: fanClubAllowed && !!artistKey && member },
   );
   const fanClubRefreshScope = refreshScope(session?.id, "fan-club", `${chatAuthEpoch}:${artistKey}`);
   const { refresh: refreshFanClub, refreshing: fanClubRefreshing } = useScopedRefresh({
     scope: fanClubRefreshScope,
-    enabled: !!artistKey && member,
-    task: ({ signal }) => loadFanClub(artist, { signal, strict: true }),
+    enabled: fanClubAllowed && !!artistKey && member,
+    task: ({ signal }) => loadFanClub(fanClubTarget, { signal, strict: true }),
   });
   const currentGateMeta = gateMeta?.key === artistKey ? gateMeta : null;
 
@@ -58,7 +89,7 @@ export default function FanClubScreen({ artist, onClose, onOpenProfile, onOpenPr
   // Non-members only receive aggregate gate metadata; message polling starts
   // after the server-confirmed join updates membership in the store.
   useEffect(() => {
-    if (!artistKey || member) return undefined;
+    if (!fanClubAllowed || !artistKey || member) return undefined;
     const controller = new AbortController();
     api(`/api/fanclubs/${encodeURIComponent(artistKey)}/meta`, {
       signal: controller.signal,
@@ -70,25 +101,25 @@ export default function FanClubScreen({ artist, onClose, onOpenProfile, onOpenPr
       })
       .catch(() => {});
     return () => controller.abort();
-  }, [artistKey, member]);
+  }, [artistKey, fanClubAllowed, member]);
 
-  const art = artistMeta(artist)?.photo;
+  const art = artistMeta(displayArtistName)?.photo;
 
   const toggleMembership = async () => {
-    if (joining) return;
+    if (!fanClubAllowed || joining) return;
     const requestScope = actionScope;
     updateActions({ joining: true });
-    await joinFanClub(artist);
+    await joinFanClub(fanClubTarget);
     if (actionScopeRef.current === requestScope) updateActions({ joining: false });
   };
 
   const send = async () => {
     const submitted = text;
     const draft = submitted.trim();
-    if (!draft || sending) return;
+    if (!fanClubAllowed || !draft || sending) return;
     const requestScope = actionScope;
     updateActions({ sending: true });
-    const result = await addFanClubMessage(artist, draft);
+    const result = await addFanClubMessage(fanClubTarget, draft);
     if (actionScopeRef.current !== requestScope) return;
     setActionState((current) => {
       const value = scopedScreenValue(current, requestScope, EMPTY_FAN_ACTIONS);
@@ -106,15 +137,29 @@ export default function FanClubScreen({ artist, onClose, onOpenProfile, onOpenPr
     }
   };
 
+  if (!fanClubAllowed) {
+    return (
+      <View style={styles.wrap}>
+        <ScreenHeader kicker={legacyMode ? "LEGACY ARTIST" : "FAN CLUB"} title={displayArtistName} onBack={onClose} />
+        <LegacyArtistArchiveGate
+          artistName={displayArtistName}
+          state={profileGateState}
+          onBack={onClose}
+          onRetry={retryProfileStatus}
+        />
+      </View>
+    );
+  }
+
   if (!member) {
     return (
       <View style={styles.wrap}>
-        <ScreenHeader kicker="FAN CLUB" title={artist} onBack={onClose} />
+        <ScreenHeader kicker="FAN CLUB" title={displayArtistName} onBack={onClose} />
         <View style={styles.gate}>
           <SpinningRecord size={92} playing color={colors.amberStrong} art={art} />
-          <Text style={styles.gateTitle}>{artist} Fan Club</Text>
+          <Text style={styles.gateTitle}>{displayArtistName} Fan Club</Text>
           <Text style={styles.gateSub}>Talk to other fans, swap shows, plan trips. No ticket needed.</Text>
-          <Text style={styles.gateMeta}>{currentGateMeta?.members ?? fanClubCount(artist)} members · {currentGateMeta?.messageCount ?? messages.length} messages</Text>
+          <Text style={styles.gateMeta}>{currentGateMeta?.members ?? fanClubCount(fanClubTarget)} members · {currentGateMeta?.messageCount ?? messages.length} messages</Text>
           {session ? (
             <Pressable style={[styles.joinBtn, joining && { opacity: 0.65 }]} onPress={toggleMembership} disabled={joining}>
               <Icon name="user-plus" size={16} color="#1A1206" />
@@ -130,12 +175,12 @@ export default function FanClubScreen({ artist, onClose, onOpenProfile, onOpenPr
 
   return (
     <KeyboardAvoidingView style={styles.wrap} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-      <ScreenHeader kicker={`FAN CLUB · ${fanClubCount(artist)} members`} title={artist} onBack={onClose}
+      <ScreenHeader kicker={`FAN CLUB · ${fanClubCount(fanClubTarget)} members`} title={displayArtistName} onBack={onClose}
         right={<Pressable onPress={toggleMembership} disabled={joining}><Text style={styles.leave}>{joining ? "leaving…" : "leave"}</Text></Pressable>} />
       <VinylRefreshBoundary
         refreshing={fanClubRefreshing}
         onRefresh={refreshFanClub}
-        accessibilityLabel={`Refresh the ${artist} Fan Club`}
+        accessibilityLabel={`Refresh the ${displayArtistName} Fan Club`}
       >
       <ScrollView ref={scrollRef} contentContainerStyle={styles.chat} showsVerticalScrollIndicator={false}
         onScroll={onScroll} onContentSizeChange={onContentSizeChange} scrollEventThrottle={100}>
@@ -171,7 +216,7 @@ export default function FanClubScreen({ artist, onClose, onOpenProfile, onOpenPr
                         targetId: m.id,
                         ownerId: m.userId,
                         targetName: "fan-club message",
-                        title: `${m.name || "A member"} in the ${artist} fan club`,
+                        title: `${m.name || "A member"} in the ${displayArtistName} fan club`,
                         summary: m.text,
                       })}
                       hitSlop={8}
@@ -190,13 +235,13 @@ export default function FanClubScreen({ artist, onClose, onOpenProfile, onOpenPr
       </VinylRefreshBoundary>
       {session && (
         <View style={styles.inputBar}>
-          <TextInput style={styles.input} placeholder={`Message the ${artist} fan club…`} placeholderTextColor={colors.textFaint} value={text} onChangeText={(value) => updateActions({ text: value })} onSubmitEditing={send} returnKeyType="send" maxLength={1000} />
+          <TextInput style={styles.input} placeholder={`Message the ${displayArtistName} fan club…`} placeholderTextColor={colors.textFaint} value={text} onChangeText={(value) => updateActions({ text: value })} onSubmitEditing={send} returnKeyType="send" maxLength={1000} />
           <Pressable
             style={[styles.sendBtn, sending && { opacity: 0.65 }]}
             onPress={send}
             disabled={sending || !text.trim()}
             accessibilityRole="button"
-            accessibilityLabel={`Send message to the ${artist} fan club`}
+            accessibilityLabel={`Send message to the ${displayArtistName} fan club`}
             accessibilityState={{ disabled: sending || !text.trim(), busy: sending }}
           ><Icon name="chevron-right" size={20} color="#1A1206" /></Pressable>
         </View>

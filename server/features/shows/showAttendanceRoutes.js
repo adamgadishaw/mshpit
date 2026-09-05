@@ -27,6 +27,7 @@ export function showAttendanceRoutes({
   database,
   attendanceRepository = null,
   ApiError,
+  assertLiveAttendanceAvailable,
   assertSafeAuthoredFields,
   atomicWrite,
   clean,
@@ -44,7 +45,8 @@ export function showAttendanceRoutes({
   resolveTourDateShow = null,
   userById,
 }) {
-  if (!database?.prepare || typeof ApiError !== "function" || typeof assertSafeAuthoredFields !== "function"
+  if (!database?.prepare || typeof ApiError !== "function" || typeof assertLiveAttendanceAvailable !== "function"
+    || typeof assertSafeAuthoredFields !== "function"
     || typeof atomicWrite !== "function" || typeof clean !== "function" || typeof cleanDate !== "function"
     || typeof decodeShowKey !== "function" || typeof finishPage !== "function" || !limits
     || typeof now !== "function" || typeof pageRequest !== "function" || typeof projectUser !== "function"
@@ -203,6 +205,21 @@ export function showAttendanceRoutes({
           }
         }
 
+        if (!removal) {
+          // Exact catalog data wins when present. Legacy-key rows keep their
+          // historical identity in the member snapshot; a new legacy-key write
+          // has only validated request fields. Include the alias so the policy
+          // can verify its artist segment independently of duplicated client
+          // metadata.
+          const policyIdentity = exactDescriptor || existing.show || {};
+          const storedIdentity = current?.snapshot || {};
+          assertLiveAttendanceAvailable({
+            artistKey: policyIdentity.artistKey || storedIdentity.artistKey || artistKey,
+            artist: policyIdentity.artist || storedIdentity.artist || artist,
+            key,
+          });
+        }
+
         const writeAt = now();
         const exactShow = freshLiveTransition && exactDescriptor
           ? repository.ensureExactShow(exactDescriptor, writeAt) : null;
@@ -260,6 +277,12 @@ export function showAttendanceRoutes({
       const { cursor, limit } = pageRequest(ctx, 50, 100);
       const viewerId = ctx.user ? requireVerifiedUser(ctx).id : null;
       noStore(ctx);
+      const resolvedShow = repository.resolveShow(key);
+      assertLiveAttendanceAvailable({
+        artistKey: resolvedShow?.artistKey || null,
+        artist: resolvedShow?.artist || null,
+        key,
+      });
       const snapshot = repository.crowdSnapshot({
         key,
         viewerId,

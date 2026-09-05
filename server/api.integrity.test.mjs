@@ -49,6 +49,12 @@ function addUser(id, email, handle) {
   return q.userById.get(id);
 }
 
+function addCatalogArtist(name, norm = String(name || "").trim().toLowerCase()) {
+  const at = Date.now();
+  db.prepare(`INSERT OR IGNORE INTO artists (norm,name,created_at,updated_at)
+    VALUES (?,?,?,?)`).run(norm, name, at, at);
+}
+
 function verifiedUser(id, email, handle) {
   addUser(id, email, handle);
   db.prepare("UPDATE users SET email_verified_at=? WHERE id=?").run(Date.now(), id);
@@ -2591,10 +2597,12 @@ test("artist-owned profile UGC honors blocks in both directions without hiding c
   assert.equal(getProfile().profile.bio, "OWNER_BIO_MUST_HIDE");
   assert.equal(getProfile().posts[0].text, "OWNER_UPDATE_MUST_HIDE");
   db.prepare("INSERT INTO blocks (blocker_id,blocked_id,created_at) VALUES (?,?,?)").run(owner.id, viewer.id, Date.now());
-  assert.deepEqual(getProfile(), { profile: null, posts: [] }, "an incoming block hides the complete owner-authored overlay");
+  assert.deepEqual(getProfile(), { profile: null, posts: [], legacyProfile: false },
+    "an incoming block hides the complete owner-authored overlay without misclassifying the catalog artist");
   db.prepare("DELETE FROM blocks WHERE blocker_id=? AND blocked_id=?").run(owner.id, viewer.id);
   db.prepare("INSERT INTO blocks (blocker_id,blocked_id,created_at) VALUES (?,?,?)").run(viewer.id, owner.id, Date.now());
-  assert.deepEqual(getProfile(), { profile: null, posts: [] }, "an outgoing block hides the same overlay");
+  assert.deepEqual(getProfile(), { profile: null, posts: [], legacyProfile: false },
+    "an outgoing block hides the same overlay without misclassifying the catalog artist");
 
   const catalog = routes["GET /api/artists"]({ user: viewer, query: { q: "blocksafecatalogartist", limit: 5 } });
   assert.equal(catalog.artists[0]?.name, "Block-safe Catalog Artist", "provider/catalog identity remains available without owner UGC");
@@ -2902,6 +2910,7 @@ test("analytics is consented, allow-listed, IP-free, aggregated, and admin-only"
 test("capped social endpoints return the newest window in chronological order", () => {
   const userA = addUser("u_a", "a@example.com", "usera");
   addUser("u_b", "b@example.com", "userb");
+  addCatalogArtist("Artist");
 
   const insertDm = db.prepare("INSERT INTO dms (id,from_id,to_id,text,created_at) VALUES (?,?,?,?,?)");
   for (let i = 1; i <= 505; i++) insertDm.run(`dm_${String(i).padStart(4, "0")}`, "u_a", "u_b", `dm ${i}`, i);
@@ -3022,6 +3031,7 @@ test("group-chat reads require membership or attendance while gate metadata stay
   const blockedAuthor = addUser("u_chat_blocked", "chat-blocked@example.com", "chatblocked");
   const artist = "gate artist";
   const loungeKey = "gate artist|gate venue|2026-08-01";
+  addCatalogArtist("Gate Artist");
 
   db.prepare("INSERT INTO fan_club_members (artist,user_id) VALUES (?,?)").run(artist, member.id);
   db.prepare("INSERT INTO going (user_id,concert_key,artist,venue,date) VALUES (?,?,?,?,?)")
@@ -3162,6 +3172,8 @@ test("desired-state social mutations are idempotent and old toggle calls still w
   assert.equal(like(likeCtx({ liked: false })).liked, false);
 
   const join = routes["POST /api/fanclubs/:artist/join"];
+  db.prepare("INSERT OR IGNORE INTO artists (norm,name,created_at,updated_at) VALUES (?,?,?,?)")
+    .run("test artist", "Test Artist", Date.now(), Date.now());
   const joinCtx = (body) => ({ user, ip: "toggle-test", params: { artist: "Test%20Artist" }, body });
   assert.deepEqual(join(joinCtx({ joined: true })), { member: true, joined: true });
   assert.deepEqual(join(joinCtx({ joined: true })), { member: true, joined: true });
@@ -4015,6 +4027,7 @@ test("blocking closes direct profile, content, interaction, and community read p
   const blocked = addUser("u_block_matrix_b", "block-matrix-b@example.com", "blockmatrixb");
   db.prepare("UPDATE users SET email_verified_at=? WHERE id=?").run(Date.now(), blocker.id);
   const verifiedBlocker = q.userById.get(blocker.id);
+  addCatalogArtist("Artist");
   db.prepare("INSERT INTO posts (id,user_id,artist,venue,overall,created_at) VALUES (?,?,?,?,?,?)").run("post_block_matrix", blocked.id, "Artist", "Venue", 4, 100);
   db.prepare("INSERT INTO playlists (id,user_id,name,tracks,created_at) VALUES (?,?,?,?,?)").run("playlist_block_matrix", blocked.id, "List", '[{"title":"Song"}]', 100);
   db.prepare("INSERT INTO fan_club_messages (id,artist,user_id,text,created_at) VALUES (?,?,?,?,?)").run("fan_block_matrix", "artist", blocked.id, "hidden", 100);
@@ -4539,6 +4552,9 @@ test("an admin genre correction outranks the crawl, is audited, and is reversibl
 test("fan-club directory aggregates authoritative memberships and visible messages", () => {
   const first = addUser("u_fan_directory_1", "fan-directory-1@example.com", "fandirone");
   const second = addUser("u_fan_directory_2", "fan-directory-2@example.com", "fandirtwo");
+  addCatalogArtist("Directory Headliner");
+  addCatalogArtist("Directory Opener");
+  addCatalogArtist("Directory Archive");
   db.prepare("INSERT INTO fan_club_members (artist,user_id) VALUES (?,?)").run("directory headliner", first.id);
   db.prepare("INSERT INTO fan_club_members (artist,user_id) VALUES (?,?)").run("directory headliner", second.id);
   db.prepare("INSERT INTO fan_club_members (artist,user_id) VALUES (?,?)").run("directory opener", first.id);
@@ -4578,6 +4594,7 @@ test("public UGC surfaces share one banned and live-suspension visibility rule",
   const venue = "public-visibility-venue";
   const artistKey = "public visibility artist";
   const nowAt = Date.now();
+  addCatalogArtist("Public Visibility Club");
 
   db.prepare(`INSERT INTO posts (id,user_id,artist,venue,overall,review,photos,photos_public,created_at)
     VALUES (?,?,?,?,?,?,?,?,?)`).run(postId, author.id, "Visibility Artist", "Visibility Venue", 4, "visible post", '["https://media.example/users/u_public_visibility_author/post/visible.mp4"]', 1, nowAt);

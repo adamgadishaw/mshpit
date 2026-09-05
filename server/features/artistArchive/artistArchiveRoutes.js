@@ -3,10 +3,21 @@ import { createArtistArchiveService } from "./artistArchiveService.js";
 
 const TEN_MINUTES = 10 * 60 * 1000;
 
-export function artistArchiveRoutes({ database, ApiError, clean, normName, projectMediaState, projectReviewUser, rateLimit, resolveArtistName }) {
+export function artistArchiveRoutes({
+  database,
+  ApiError,
+  assertArtistArchiveAvailable,
+  clean,
+  normName,
+  projectMediaState,
+  projectReviewUser,
+  rateLimit,
+  resolveArtistName,
+}) {
   if (typeof ApiError !== "function" || typeof clean !== "function" || typeof normName !== "function"
     || typeof projectMediaState !== "function" || typeof projectReviewUser !== "function"
-    || typeof rateLimit !== "function" || typeof resolveArtistName !== "function") {
+    || typeof rateLimit !== "function" || typeof resolveArtistName !== "function"
+    || typeof assertArtistArchiveAvailable !== "function") {
     throw new TypeError("Artist archive routes require the API boundary dependencies");
   }
   const repository = createArtistArchiveRepository(database);
@@ -15,12 +26,20 @@ export function artistArchiveRoutes({ database, ApiError, clean, normName, proje
   function identity(ctx) {
     const artistKey = normName(clean(ctx.query?.artistKey, { max: 120 })) || null;
     const requestedName = clean(ctx.query?.name, { max: 120 }) || null;
+    // SQLite NOCASE is ASCII-only, so a name-only archive request cannot be
+    // trusted to resolve a protected Unicode identity. Current clients resolve
+    // the durable catalogue key before opening an archive; reject stale or
+    // hand-crafted name-only calls rather than guessing at a namesake.
+    if (!artistKey) {
+      throw new ApiError(400, "Refresh the artist page before opening its archive.", "VALIDATION_FAILED");
+    }
     const canonicalName = artistKey ? clean(resolveArtistName(artistKey), { max: 120 }) || null : null;
     if (artistKey && canonicalName && requestedName && normName(requestedName) !== normName(canonicalName)) {
       throw new ApiError(400, "That artist identity changed. Refresh the artist page and try again.", "VALIDATION_FAILED");
     }
     const name = artistKey ? canonicalName : requestedName;
     if (!name) throw new ApiError(400, "Choose an artist before opening the archive.", "VALIDATION_FAILED");
+    assertArtistArchiveAvailable({ artistKey, name });
     return { artistKey, name };
   }
 

@@ -204,6 +204,7 @@ export default function LogScreen({
   prefill,
   editing = null,
   defaultMode = "show",
+  legacyArtistProfile = false,
   closeGuardRef,
   composerId,
   initialDraftId,
@@ -219,11 +220,14 @@ export default function LogScreen({
   // A memorial memory uses the lightweight status composer while retaining one
   // server-verified artist identity and never opening the rating controls.
   const [postType, setPostType] = useState(
-    editing ? (editing.kind === "status" ? "status" : "show")
+    editing ? (editing.kind === "memory" ? "memory" : editing.kind === "status" ? "status" : "show")
       : defaultMode === "memory" && prefill?.artist ? "memory"
         : prefill?.artist ? "show" : defaultMode === "campaign" ? "status" : defaultMode
   );
   const isMemorialMemory = postType === "memory";
+  const memoryEditLocked = !!editing && isMemorialMemory;
+  const protectedLegacyMemory = !editing && isMemorialMemory && legacyArtistProfile === true;
+  const memoryTextOnly = memoryEditLocked || protectedLegacyMemory;
   const isStatus = postType === "status" || isMemorialMemory;
   const initialExperienceType = normalizeReviewExperienceType(
     editing?.experienceType ?? editing?.experience_type ?? prefill?.experienceType ?? prefill?.experience_type,
@@ -900,7 +904,9 @@ export default function LogScreen({
       }
     : computed;
   const youtubeUrlValid = isValidYouTubeSourceUrl(youtubeUrl);
-  const canPostStatus = !!(review.trim() || photos.filter(isDurableMediaUrl).length || song?.videoId);
+  const canPostStatus = protectedLegacyMemory
+    ? !!review.trim()
+    : !!(review.trim() || photos.filter(isDurableMediaUrl).length || song?.videoId);
   const canPostBase = isStatus
     ? canPostStatus
     : isOnlineReview
@@ -908,7 +914,7 @@ export default function LogScreen({
       : artist.trim() && venue.trim() && computed.overall > 0;
   const canPost = !!canPostBase && pendingMediaAssets.length === 0;
   const submitBusy = uploadingPhotos || resolvingSong || posting || artistAttaching;
-  const engagementPrompt = useMemo(() => composerEngagementPrompt({
+  const engagementPrompt = useMemo(() => protectedLegacyMemory ? null : composerEngagementPrompt({
     kind: isStatus ? "status" : "review",
     experienceType,
     canPost: !!canPostBase,
@@ -920,7 +926,7 @@ export default function LogScreen({
     media: photos,
     song,
     taggedPeople: isStatus || isOnlineReview ? [] : taggedPeople,
-  }), [isStatus, isOnlineReview, experienceType, canPostBase, artistPicked, city, tour, onlineTitle, review, photos, song, taggedPeople]);
+  }), [protectedLegacyMemory, isStatus, isOnlineReview, experienceType, canPostBase, artistPicked, city, tour, onlineTitle, review, photos, song, taggedPeople]);
 
   const draftMediaProject = useMemo(() => normalizeMediaProject({
     assets: [
@@ -1218,19 +1224,22 @@ export default function LogScreen({
         const result = await onPost?.({
           id: submissionIdRef.current,
           kind: isMemorialMemory ? "memory" : "status",
-          ...(isMemorialMemory ? { artist: artist.trim(), artistKey } : {}),
+          ...(isMemorialMemory && !memoryEditLocked ? { artist: artist.trim(), artistKey } : {}),
+          ...(protectedLegacyMemory ? { legacyArtistProfile: true } : {}),
           user: editing?.user || (user
             ? { name: user.name, handle: user.handle, initials: user.initials }
             : { name: "You", handle: "you", initials: "YOU" }),
           timeAgo: editing?.timeAgo || "now",
           review: review.trim(),
           taggedPeople: [],
-          song,
-          photos: durablePhotos,
-          ...(stableMediaAssetIds ? { mediaAssetIds: stableMediaAssetIds } : {}),
-          media: publishedMedia,
-          photosPublic: isMemorialMemory && photosPublic,
-          campaign: isCampaign ? campaign : null,
+          ...(!memoryTextOnly ? {
+            song,
+            photos: durablePhotos,
+            ...(stableMediaAssetIds ? { mediaAssetIds: stableMediaAssetIds } : {}),
+            media: publishedMedia,
+            photosPublic: isMemorialMemory && photosPublic,
+            campaign: isCampaign ? campaign : null,
+          } : {}),
           likes: editing?.likes || 0,
           comments: editing?.comments || 0,
         });
@@ -1301,7 +1310,7 @@ export default function LogScreen({
 
   return (
     <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-      <SheetHeader title={editing ? (isCampaign ? "Edit featured post" : isOnlineReview ? "Edit online review" : "Edit post") : isMemorialMemory ? "Share a fan memory" : isCampaign ? "New featured post" : isStatus ? "New post" : isOnlineReview ? "Review an online concert" : "Log a show"} onClose={onCancel} leadDisabled={submitBusy} action={{ label: posting ? (editing ? "Saving..." : "Posting...") : uploadingPhotos ? "Uploading..." : resolvingSong ? "Checking..." : editing ? "Save" : "Post", onPress: submit, disabled: !canPost || submitBusy }} />
+      <SheetHeader title={editing ? (isMemorialMemory ? "Edit fan memory" : isCampaign ? "Edit featured post" : isOnlineReview ? "Edit online review" : "Edit post") : protectedLegacyMemory ? "Share a written memory" : isMemorialMemory ? "Share a fan memory" : isCampaign ? "New featured post" : isStatus ? "New post" : isOnlineReview ? "Review an online concert" : "Log a show"} onClose={onCancel} leadDisabled={submitBusy} action={{ label: posting ? (editing ? "Saving..." : "Posting...") : uploadingPhotos ? "Uploading..." : resolvingSong ? "Checking..." : editing ? "Save" : "Post", onPress: submit, disabled: !canPost || submitBusy }} />
 
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         {!!postError && <View style={styles.postErrorBox}><Icon name="flag" size={14} color={colors.danger} /><Text style={styles.postErrorTxt}>{postError}</Text></View>}
@@ -1324,7 +1333,7 @@ export default function LogScreen({
           </View>
         )}
 
-        {!editing && !draftId && drafts.length > 0 && !hasContent && (
+        {!editing && !protectedLegacyMemory && !draftId && drafts.length > 0 && !hasContent && (
           <View style={styles.drafts}>
             <Text style={styles.draftsLabel}>RESUME A DRAFT</Text>
             {drafts.slice(0, 5).map((d) => {
@@ -1349,8 +1358,12 @@ export default function LogScreen({
             <View style={styles.memorialMemoryNotice} accessible accessibilityLabel={`Fan memory for ${artist}. No rating will be added.`}>
               <Icon name="dove" size={19} color={colors.gold} strokeWidth={1.6} />
               <View style={{ flex: 1 }}>
-                <Text style={styles.memorialMemoryTitle}>A fan memory for {artist}</Text>
-                <Text style={styles.memorialMemoryText}>Share words, photos, or video. This stays a social post and never becomes a live rating.</Text>
+                <Text style={styles.memorialMemoryTitle}>{protectedLegacyMemory ? "A written memory" : "A fan memory"} for {artist}</Text>
+                <Text style={styles.memorialMemoryText}>{memoryEditLocked
+                  ? "You can update your words. The artist identity and existing media stay unchanged on this protected historical record."
+                  : protectedLegacyMemory
+                  ? "Share a written remembrance with the community. Photo, video, and YouTube attachments stay closed on this protected legacy profile."
+                  : "Share words, photos, or video. This stays a social post and never becomes a live rating."}</Text>
               </View>
             </View>
           ) : null}
@@ -1626,12 +1639,14 @@ export default function LogScreen({
           </>
         )}
 
+        {!memoryTextOnly ? <>
         <Text style={styles.attachLabel}>ADD TO YOUR POST</Text>
         <View style={styles.attachBar}>
           <AttachChip icon="camera" label={mediaAttachmentLabel} active={showPhotos || photos.length > 0 || pendingMediaAssets.length > 0} count={photos.length + pendingMediaAssets.length} onPress={toggleMediaPanel} disabled={submitBusy} />
           {!isOnlineReview && <AttachChip icon="play" label="YouTube" active={showSong || !!song?.videoId} onPress={() => setShowSong((v) => !v)} disabled={submitBusy} />}
           {!isStatus && !isOnlineReview ? <AttachChip icon="you" label="People with you" active={showPeople || taggedPeople.length > 0} count={taggedPeople.length} onPress={() => setShowPeople((v) => !v)} disabled={submitBusy} /> : null}
         </View>
+        </> : null}
         {!isStatus && !isOnlineReview && (showPeople || taggedPeople.length > 0) && (
           <View style={styles.attachPanel}>
             <Text style={styles.attachHint}>Tag the people who went to this show with you. You must follow each other, and anyone tagged can remove their own tag.</Text>
@@ -1698,7 +1713,7 @@ export default function LogScreen({
             )}
           </View>
         )}
-        {!!mediaAvailabilityCopy && (
+        {!memoryTextOnly && !!mediaAvailabilityCopy && (
           <View style={styles.mediaCapabilityNotice} accessibilityRole="note">
             <Icon name="camera" size={16} color={colors.amber} />
             <View style={styles.mediaCapabilityNoticeBody}>
@@ -1717,7 +1732,7 @@ export default function LogScreen({
           </View>
         )}
 
-        {!isOnlineReview && (showSong || song?.videoId) && (
+        {!memoryTextOnly && !isOnlineReview && (showSong || song?.videoId) && (
         <View style={styles.attachPanel}>
         <Text style={styles.attachHint}>Add a YouTube link to a song, review, interview, lesson, or performance. People can watch the exact video you choose.</Text>
         {song?.videoId ? (
@@ -1756,7 +1771,7 @@ export default function LogScreen({
         </View>
         )}
 
-        {(showPhotos || photos.length > 0 || pendingMediaAssets.length > 0) && (
+        {!memoryTextOnly && (showPhotos || photos.length > 0 || pendingMediaAssets.length > 0) && (
         <View style={styles.attachPanel}>
         {pendingMediaAssets.length > 0 ? (
           <View style={styles.pendingMedia}>

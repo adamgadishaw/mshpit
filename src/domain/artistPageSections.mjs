@@ -14,24 +14,33 @@ export const ARTIST_OVERVIEW_LIMITS = Object.freeze({
 });
 
 const SECTION_KEYS = new Set(ARTIST_PAGE_SECTIONS.map((section) => section.key));
+const LEGACY_SECTION_KEYS = new Set(["overview", "community"]);
 
-export function normalizeArtistPageSection(value) {
-  const key = String(value || "").trim().toLowerCase();
-  return SECTION_KEYS.has(key) ? key : "overview";
+export function artistPageSectionsForMode({ legacyMode = false } = {}) {
+  return legacyMode
+    ? ARTIST_PAGE_SECTIONS.filter((section) => LEGACY_SECTION_KEYS.has(section.key))
+    : ARTIST_PAGE_SECTIONS;
 }
 
-export function artistPageSectionModel(value) {
-  const active = normalizeArtistPageSection(value);
+export function normalizeArtistPageSection(value, { legacyMode = false } = {}) {
+  const key = String(value || "").trim().toLowerCase();
+  const allowed = legacyMode ? LEGACY_SECTION_KEYS : SECTION_KEYS;
+  return allowed.has(key) ? key : "overview";
+}
+
+export function artistPageSectionModel(value, { legacyMode = false } = {}) {
+  const active = normalizeArtistPageSection(value, { legacyMode });
   const overview = active === "overview";
   return Object.freeze({
     active,
     condensed: overview,
-    showLive: overview || active === "live",
+    legacyMode,
+    showLive: !legacyMode && (overview || active === "live"),
     showCommunity: overview || active === "community",
-    showMusic: active === "music",
+    showMusic: !legacyMode && active === "music",
     showAbout: overview,
-    loadFullArchive: active === "live",
-    loadDiscography: active === "music",
+    loadFullArchive: !legacyMode && active === "live",
+    loadDiscography: !legacyMode && active === "music",
   });
 }
 

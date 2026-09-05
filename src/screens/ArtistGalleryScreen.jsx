@@ -13,7 +13,7 @@ import useScopedRefresh from "../hooks/useScopedRefresh";
 
 const pageStep = (columns) => columns * 3;
 
-export default function ArtistGalleryScreen({ artistName, artistKey = null, onClose, onOpenPhotos }) {
+export default function ArtistGalleryScreen({ artistName, artistKey = null, legacyMode = false, onClose, onOpenPhotos }) {
   const { width } = useWindowDimensions();
   const { session, artistSummary, artistGallery, loadArtistPhotos, removePhoto } = useStore();
   const artist = artistSummary(artistName);
@@ -71,7 +71,7 @@ export default function ArtistGalleryScreen({ artistName, artistKey = null, onCl
 
   return (
     <View style={styles.wrap}>
-      <ScreenHeader kicker="ARTIST PHOTOS" title={resolvedName} onBack={onClose} />
+      <ScreenHeader kicker={legacyMode ? "LEGACY ARCHIVE" : "ARTIST PHOTOS"} title={resolvedName} onBack={onClose} />
       <VinylRefreshBoundary
         refreshing={refreshing}
         onRefresh={refreshGallery}
@@ -100,9 +100,11 @@ export default function ArtistGalleryScreen({ artistName, artistKey = null, onCl
             <View style={styles.intro}>
               <View style={styles.introIcon}><Icon name="photo" size={20} color={colors.amber} /></View>
               <View style={styles.introCopy}>
-                <Text style={styles.eyebrow}>THE FAN LENS</Text>
-                <Text style={styles.introTitle}>A living visual archive.</Text>
-                <Text style={styles.introText}>Public fan photos and clips sit beside artist imagery. Private, removed, blocked, or moderated media never appears here.</Text>
+                <Text style={styles.eyebrow}>{legacyMode ? "PRESERVED RECORD" : "THE FAN LENS"}</Text>
+                <Text style={styles.introTitle}>{legacyMode ? "A protected visual record." : "A living visual archive."}</Text>
+                <Text style={styles.introText}>{legacyMode
+                  ? "Existing public artist and community images are preserved here for historical context. New uploads are closed, and private, removed, blocked, or moderated media never appears."
+                  : "Public fan photos and clips sit beside artist imagery. Private, removed, blocked, or moderated media never appears here."}</Text>
               </View>
             </View>
             {!!loadError && rows.length > 0 && (
@@ -132,8 +134,10 @@ export default function ArtistGalleryScreen({ artistName, artistKey = null, onCl
         ) : (
           <View style={styles.empty} accessible accessibilityLabel={`No public photos for ${resolvedName} yet`}>
             <View style={styles.emptyIcon}><Icon name="photo" size={28} color={colors.textFaint} /></View>
-            <Text style={styles.emptyTitle}>No public photos yet</Text>
-            <Text style={styles.emptyText}>Fan media will appear here when someone chooses to share it publicly.</Text>
+            <Text style={styles.emptyTitle}>{legacyMode ? "No preserved public photos" : "No public photos yet"}</Text>
+            <Text style={styles.emptyText}>{legacyMode
+              ? "This protected historical record does not currently contain public imagery. New community uploads are closed."
+              : "Fan media will appear here when someone chooses to share it publicly."}</Text>
           </View>
         )}
         renderItem={({ item, index }) => (
@@ -175,7 +179,7 @@ export default function ArtistGalleryScreen({ artistName, artistKey = null, onCl
             <Text style={styles.moreText}>LOAD MORE</Text>
             <Icon name="chevron-down" size={15} color={colors.amber} />
           </Pressable>
-        ) : rows.length ? <Text style={styles.endText}>END OF PUBLIC GALLERY · {rows.length} ITEMS</Text> : null}
+        ) : rows.length ? <Text style={styles.endText}>{legacyMode ? "END OF PRESERVED GALLERY" : "END OF PUBLIC GALLERY"} · {rows.length} ITEMS</Text> : null}
       />
       </VinylRefreshBoundary>
     </View>

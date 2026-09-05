@@ -77,11 +77,21 @@ test("Spotify artist imagery is fixed-host, unaltered, attributed, and limited t
 
 test("artist gallery is a stable in-app subroute linked from owner and fan previews", () => {
   assert.match(app, /lazyWithRetry\(\(\) => import\("\.\/src\/screens\/ArtistGalleryScreen"\), "ArtistGalleryScreen"\)/);
-  assert.match(app, /go\(\{ artistGallery: \{ name, artistKey: artistKey \|\| null \} \}\)/);
+  assert.match(app, /go\(\{ artistGallery: \{ name, artistKey: artistKey \|\| null, legacyMode: legacyMode === true \} \}\)/);
   assert.match(app, /nav\.artistGallery\) overlay = <ArtistGalleryScreen/);
   assert.equal((app.match(/onOpenGallery=\{openArtistGallery\}/g) || []).length, 2);
   assert.match(artist, /PHOTOS & FAN GALLERY/);
-  assert.match(artist, /onOpenGallery\(a\.name, a\.profileKey\)/);
+  assert.match(artist, /onOpenGallery\(a\.name, a\.profileKey, legacyMode\)/);
+});
+
+test("legacy galleries keep existing public media but present it as a closed historical record", () => {
+  assert.match(app, /legacyMode=\{nav\.artistGallery\.legacyMode === true\}/);
+  assert.match(gallery, /legacyMode = false/);
+  assert.match(gallery, /legacyMode \? "LEGACY ARCHIVE" : "ARTIST PHOTOS"/);
+  assert.match(gallery, /A protected visual record\./);
+  assert.match(gallery, /New uploads are closed/);
+  assert.match(gallery, /No preserved public photos/);
+  assert.match(gallery, /END OF PRESERVED GALLERY/);
 });
 
 test("cinematic artist media stays user-driven, reduced-motion aware, and decodes one slide", () => {
@@ -102,16 +112,16 @@ test("artist hero copy stays clear of the profile-avatar punch-through", () => {
 });
 
 test("artist gallery previews do not present a capped projection as the total", () => {
-  assert.match(artist, /<Text style=\{styles\.sectionLabel\}>PHOTOS & FAN GALLERY<\/Text>/);
+  assert.match(artist, /<Text style=\{styles\.sectionLabel\}>\{legacyMode \? "ARCHIVE & COMMUNITY PHOTOS" : "PHOTOS & FAN GALLERY"\}<\/Text>/);
   assert.equal((artist.match(/PHOTOS & FAN GALLERY/g) || []).length, 1, "the gallery preview renders once");
   assert.doesNotMatch(artist, /PHOTOS & FAN GALLERY\{gallery\.length/);
   assert.doesNotMatch(artist, /See all \$\{gallery\.length\} media items/);
 });
 
 test("artist photos sit directly between Live Reputation and the primary artist actions", () => {
-  const reputationAt = artist.indexOf('<View style={styles.repCard}>');
-  const galleryAt = artist.indexOf("<Text style={styles.sectionLabel}>PHOTOS & FAN GALLERY</Text>");
-  const actionsAt = artist.indexOf('<View style={styles.artistActions}>');
+  const reputationAt = artist.indexOf('{!legacyMode ? <View style={styles.repCard}>');
+  const galleryAt = artist.indexOf('<View style={styles.galleryHeading}>');
+  const actionsAt = artist.indexOf('{profileServicesAvailable ? <View style={styles.artistActions}>');
   assert.ok(reputationAt >= 0, "Live Reputation must render");
   assert.ok(galleryAt > reputationAt, "gallery must follow Live Reputation");
   assert.ok(actionsAt > galleryAt, "gallery must appear before Fan Club and Live archive actions");

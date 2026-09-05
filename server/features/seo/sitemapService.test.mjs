@@ -815,6 +815,54 @@ test("qualified collection, city, and artist archive pages are complete, canonic
   assert.deepEqual(cityXml, sitemapXmlFor("/sitemaps/cities.xml", { database: db, ...options }));
 });
 
+test("legacy artists remain indexed while their tour archive entry point is omitted", () => {
+  const artist = "Protected Legacy Sitemap Artist";
+  const artistKey = normName(artist);
+  const publicSlug = "protected-legacy-sitemap-artist";
+  const artistMbid = "62345678-1234-4234-8234-123456789abc";
+  const author = addUser("u_sitemap_legacy_archive", "sitemaplegacyarchive");
+  addArtist(artist, publicSlug, {
+    bio: "An educational catalogue biography preserving an influential artist's work and place in music history.",
+    mbid: artistMbid,
+  });
+  addPost("p_sitemap_legacy_archive", author.id, {
+    artist,
+    review: "An existing community memory about the artist's lasting influence and a historic performance shared long ago.",
+    createdAt: Date.parse("2026-08-20T20:00:00.000Z"),
+    kind: "review",
+  });
+  db.prepare("UPDATE posts SET date='1968-06-15',artist_mbid=? WHERE id='p_sitemap_legacy_archive'")
+    .run(artistMbid);
+  const memorials = createArtistMemorialService({ repository: createArtistMemorialRepository(db) });
+  assert.equal(memorials.upsert({
+    status: "published",
+    deathDate: "1969-12-31",
+    summary: "An influential artist whose recorded work remains important to music history and generations of listeners.",
+    thankYou: "Thank you for the enduring music.",
+    accomplishments: ["A lasting catalogue"],
+    sourceUrl: "https://news.example.org/protected-legacy-artist",
+    sourceTitle: "Verified historical record",
+    confirmedIndividual: true,
+    restartSpotlight: false,
+  }, {
+    artistKey,
+    artistName: artist,
+    artistMbid,
+    at: Date.parse("2026-08-25T00:00:00.000Z"),
+  }).ok, true);
+
+  const datasets = buildSitemapDatasets(db, { now: Date.parse("2026-08-25T00:00:00.000Z") });
+  assert.equal(datasets.get("artists").some((entry) => entry.path === `/artist/${publicSlug}`), true);
+  assert.equal(datasets.get("concerts").some((entry) => entry.path === artistConcertsPath(publicSlug)), false);
+  const exactShowPath = concertPath(archiveShowKey({
+    artistIdentity: artistKey,
+    venueIdentity: normName("Sitemap Hall"),
+    date: "1968-06-15",
+  }));
+  assert.equal(datasets.get("concerts").some((entry) => entry.path === exactShowPath), false,
+    "legacy per-date pages are omitted while the educational artist profile stays indexed");
+});
+
 test("artist archive name fallback is allowed only for one unambiguous catalogue identity", () => {
   const author = addUser("u_sitemap_duplicate_artist_name", "sitemapduplicateartist");
   const displayName = "Shared Catalogue Display Name";

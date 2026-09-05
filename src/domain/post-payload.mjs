@@ -84,3 +84,38 @@ export function buildReviewEditBody(changes) {
     song: !online && changes.song?.videoId ? changes.song : null,
   };
 }
+
+// The artist page may open a memory composer with a server-projected legacy
+// marker. That marker improves the UI, but it is never the authorization
+// boundary: the API still resolves the artist and enforces the legacy policy.
+// Keeping this projection here prevents hidden attachment state from crossing
+// the client boundary when the composer is intentionally words-only.
+export function buildMemoryCreateBody(post, { textOnly = false } = {}) {
+  const body = {
+    clientMutationId: post?.id,
+    kind: "memory",
+    artist: clean(post?.artist, { max: 80 }),
+    artistKey: cleanArtistKey(post?.artistKey),
+    review: clean(post?.review, { max: LIMITS.review, newlines: true }),
+  };
+  if (textOnly) return body;
+  return {
+    ...body,
+    taggedUserIds: taggedUserIdsFromPeople(post?.taggedPeople),
+    song: post?.song || null,
+    photos: Array.isArray(post?.photos) ? post.photos : [],
+    ...(Array.isArray(post?.mediaAssetIds) ? { mediaAssetIds: cleanMediaAssetIds(post.mediaAssetIds) } : {}),
+    photosPublic: post?.photosPublic === false ? 0 : 1,
+  };
+}
+
+// Legacy memories remain text-editable after their artist page becomes a
+// protected historical profile. Keep this PATCH intentionally tiny: artist
+// identity is server-owned, while omitted media/song/privacy fields must remain
+// untouched rather than being synthesized as destructive defaults.
+export function buildMemoryEditBody(changes, { version = null } = {}) {
+  return {
+    review: clean(changes?.review, { max: LIMITS.review, newlines: true }),
+    ...(Number.isSafeInteger(version) ? { version } : {}),
+  };
+}

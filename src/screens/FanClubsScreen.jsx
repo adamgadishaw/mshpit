@@ -9,11 +9,12 @@ import { fanClubSearchResults } from "../domain/fanClubDirectory.mjs";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
 import useScopedRefresh from "../hooks/useScopedRefresh";
 
-// Fan clubs, front and center: a browsable directory of every club (most members
-// first) plus type-to-find across ALL artists, so any club is one search away
-// instead of buried behind its artist page.
+// Fan clubs, front and center: a browsable directory of active, server-approved
+// artist communities. Catalogue-only candidates fail closed unless the API has
+// explicitly marked them eligible, so a protected legacy profile is never
+// advertised as a club that somebody can start.
 export default function FanClubsScreen({ onClose, onOpenFanClub }) {
-  const { session, fanClubsDirectory, fanClubDirectoryStatus, loadFanClubsDirectory, artistsAlphabetical } = useStore();
+  const { session, fanClubsDirectory, fanClubDirectoryStatus, loadFanClubsDirectory, artistsAlphabetical, searchArtistsApi } = useStore();
   const [q, setQ] = useState("");
   const query = q.trim().toLowerCase();
 
@@ -38,8 +39,30 @@ export default function FanClubsScreen({ onClose, onOpenFanClub }) {
     return () => controller.abort();
   }, [session?.id]);
 
-  // Searching matches every artist in the catalog, so you can open (and be the
-  // first member of) any club, not just the already-active ones.
+  // Ask the server for the matching catalog identities because that response
+  // carries the authoritative `fanClubAvailable` policy bit. A short debounce
+  // keeps type-ahead responsive without turning every keystroke into a request.
+  useEffect(() => {
+    if (query.length < 2) return undefined;
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      void searchArtistsApi(query, {
+        signal: controller.signal,
+        limit: 40,
+        remoteFallback: false,
+      });
+    }, 180);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+    // Store actions are facade functions recreated with state; the query owns
+    // this request lifecycle and cached results trigger the desired rerender.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query]);
+
+  // Active rows have crossed the server's memorial policy boundary. The domain
+  // projection ignores catalogue rows without an explicit eligibility flag.
   const results = query ? fanClubSearchResults(active, artistsAlphabetical(1000), query, 40) : [];
 
   const Row = ({ c }) => (
@@ -65,7 +88,7 @@ export default function FanClubsScreen({ onClose, onOpenFanClub }) {
           <Icon name="search" size={18} color={colors.textDim} />
           <TextInput
             style={styles.input}
-            placeholder="Find any artist's fan club"
+            placeholder="Find an active artist fan club"
             placeholderTextColor={colors.textFaint}
             value={q}
             onChangeText={setQ}
@@ -85,12 +108,12 @@ export default function FanClubsScreen({ onClose, onOpenFanClub }) {
         {query ? (
           <>
             <Text style={styles.sectionLabel}>CLUBS · {results.length}</Text>
-            {results.length === 0 && <Text style={styles.empty}>No artists match "{q}".</Text>}
+            {results.length === 0 && <Text style={styles.empty}>No active fan clubs match "{q}".</Text>}
             {results.map((c) => <Row key={c.artist} c={c} />)}
           </>
         ) : (
           <>
-            <Text style={styles.hint}>Permanent chats for every artist, swap shows, plan trips, no ticket needed.</Text>
+            <Text style={styles.hint}>Permanent chats for active artist communities. Swap shows, plan trips, no ticket needed.</Text>
             <Text style={styles.sectionLabel}>ACTIVE CLUBS · {active.length}</Text>
             {active.length === 0 && <Text style={styles.empty}>{fanClubDirectoryStatus === "loading" ? "Refreshing active clubs…" : "No clubs yet, search an artist to start one."}</Text>}
             {active.map((c) => <Row key={c.artist} c={c} />)}

@@ -18,13 +18,20 @@ const clean = (value, { max }) => {
   return result && result.length <= max ? result : null;
 };
 
-function fixture({ loadDiscography = async (...args) => ({ args }) } = {}) {
-  const calls = { auth: 0, limits: [] };
+function fixture({
+  assertMusicServiceAvailable = () => {},
+  loadDiscography = async (...args) => ({ args }),
+} = {}) {
+  const calls = { auth: 0, limits: [], loads: 0 };
   const routes = artistDiscographyRoutes({
     ApiError,
     ProviderError,
+    assertMusicServiceAvailable,
     clean,
-    loadDiscography,
+    loadDiscography: async (...args) => {
+      calls.loads += 1;
+      return loadDiscography(...args);
+    },
     rateLimit(_ctx, key, max, windowMs) { calls.limits.push({ key, max, windowMs }); },
     requireUser(ctx) {
       calls.auth += 1;
@@ -45,6 +52,37 @@ test("public discography reads cannot supply or persist a caller-selected provid
   assert.deepEqual(result.args, ["Same Name", { signal }]);
   assert.equal(calls.auth, 0);
   assert.equal(calls.limits[0].key, "discography");
+});
+
+test("legacy music policy gates canonical and name-only discography requests before provider work", async () => {
+  const blocked = new Set(["legacy artist", "legacy-artist-key"]);
+  const { routes, calls } = fixture({
+    assertMusicServiceAvailable({ artist }) {
+      const identity = String(artist || "").normalize("NFKC").trim().toLowerCase().replace(/\s+/gu, " ");
+      if (blocked.has(identity)) {
+        throw new ApiError(409, "Legacy artist music services are closed.", "ARTIST_LEGACY_READ_ONLY");
+      }
+    },
+  });
+
+  await assert.rejects(
+    routes["GET /api/artists/discography"]({ query: { name: "legacy-artist-key" } }),
+    (error) => error.code === "ARTIST_LEGACY_READ_ONLY",
+  );
+  await assert.rejects(
+    routes["POST /api/artists/discography/selection"]({
+      user: { id: "u_test" },
+      body: { name: "  LEGACY   ARTIST  ", deezerId: "123" },
+    }),
+    (error) => error.code === "ARTIST_LEGACY_READ_ONLY",
+  );
+  assert.equal(calls.loads, 0, "blocked identities never spend provider capacity");
+
+  const allowed = await routes["GET /api/artists/discography"]({
+    query: { name: "Living Artist" },
+  });
+  assert.deepEqual(allowed.args[0], "Living Artist");
+  assert.equal(calls.loads, 1);
 });
 
 test("same-name provider selection requires an account and is explicitly ephemeral", async () => {

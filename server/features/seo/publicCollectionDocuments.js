@@ -215,7 +215,7 @@ function baseDirectory({ kind,page,hasNext,path,pathFor,origin,title,description
   });
 }
 
-export function createPublicCollectionDocumentService({ database,origin = DEFAULT_ORIGIN,repository = null } = {}) {
+export function createPublicCollectionDocumentService({ database,origin = DEFAULT_ORIGIN,repository = null,legacyArtistPolicy = null } = {}) {
   const publicOrigin = normalizedOrigin(origin);
   const source = repository || createPublicCollectionRepository(database);
 
@@ -276,6 +276,7 @@ export function createPublicCollectionDocumentService({ database,origin = DEFAUL
     artistConcertsDocument(options = {}) {
       const raw = source.readArtistConcerts(options);
       if (!raw) return null;
+      if (typeof legacyArtistPolicy === "function" && legacyArtistPolicy(raw.artist, options) === true) return null;
       const page = raw.page;
       const artistName = cleanLine(raw.artist?.name,160);
       const publicSlug = cleanLine(raw.artist?.public_slug,160);

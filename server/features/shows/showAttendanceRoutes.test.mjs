@@ -74,7 +74,10 @@ function decodeCursor(value) {
   return { createdAt, id };
 }
 
-function fixture() {
+function fixture({
+  assertLiveAttendanceAvailable = () => {},
+  resolveTourDateShow = null,
+} = {}) {
   const database = createDatabase();
   let clock = 2_000_000_000_000;
   let beforeAtomicWrite = null;
@@ -83,6 +86,7 @@ function fixture() {
   const routes = showAttendanceRoutes({
     database,
     ApiError,
+    assertLiveAttendanceAvailable,
     assertSafeAuthoredFields(fields) {
       calls.safety.push(fields);
       if (fields?.tour === "unsafe tour" || fields?.artist === "unsafe artist") {
@@ -150,6 +154,7 @@ function fixture() {
       if (!ctx.user.email_verified_at) throw new ApiError(403, "Verify.", "EMAIL_VERIFICATION_REQUIRED");
       return ctx.user;
     },
+    resolveTourDateShow,
     userById,
   });
   return {
@@ -1037,6 +1042,92 @@ test("an existing live check-in can be retried or made private after the trusted
       (error) => error.status === 409 && error.code === "CHECK_IN_UNAVAILABLE",
       "the closed window remains enforced for a fresh check-in",
     );
+  } finally {
+    database.close();
+  }
+});
+
+test("protected legacy artists cannot create, update, or expose attendance while deletion remains available", () => {
+  const legacyArtist = "Legacy Artist";
+  const legacyArtistKey = "legacy-artist-key";
+  const legacyKey = "legacy artist|history hall|1968-06-15";
+  const assertLiveAttendanceAvailable = ({ artistKey, artist, key }) => {
+    const aliasArtist = String(key || "").split("|")[0]?.trim().toLowerCase();
+    if (String(artistKey || "").toLowerCase() === legacyArtistKey
+      || String(artist || "").toLowerCase() === legacyArtist.toLowerCase()
+      || aliasArtist === legacyArtist.toLowerCase()) {
+      throw new ApiError(409, "Legacy artist live services are closed.", "ARTIST_LEGACY_READ_ONLY");
+    }
+  };
+  const exactDescriptor = {
+    tourDateId: "legacy-tour-date",
+    artist: legacyArtist,
+    artistKey: legacyArtistKey,
+    venue: "History Hall",
+    venueKey: "history-hall",
+    city: "Toronto",
+    date: "1968-06-15",
+    localDate: "1968-06-15",
+    lifecycle: "completed",
+    tour: "Archive Tour",
+    legacyKey,
+    claimLegacyAlias: true,
+  };
+  const { database, routes } = fixture({
+    assertLiveAttendanceAvailable,
+    resolveTourDateShow: (_user, tourDateId) => tourDateId === exactDescriptor.tourDateId
+      ? exactDescriptor : null,
+  });
+  try {
+    const member = addUser(database, "legacy_policy_member");
+    const post = (body) => routes["POST /api/going"](context({ user: member, body }));
+
+    assert.throws(
+      () => post({ tourDateId: exactDescriptor.tourDateId, state: "went" }),
+      (error) => error.status === 409 && error.code === "ARTIST_LEGACY_READ_ONLY",
+      "an exact historical tour date cannot allocate protected attendance",
+    );
+    assert.equal(database.prepare("SELECT COUNT(*) count FROM shows").get().count, 0);
+
+    assert.throws(
+      () => post({
+        key: legacyKey,
+        artist: "Decoy Artist",
+        artistKey: "decoy-artist",
+        venue: "History Hall",
+        city: "Toronto",
+        date: "1968-06-15",
+        state: "going",
+      }),
+      (error) => error.code === "ARTIST_LEGACY_READ_ONLY",
+      "the canonical artist segment in a legacy key cannot be bypassed with decoy fields",
+    );
+    assert.equal(database.prepare("SELECT COUNT(*) count FROM shows").get().count, 0);
+
+    database.prepare(`INSERT INTO going
+      (user_id,concert_key,artist,venue,city,date,created_at) VALUES (?,?,?,?,?,?,?)`)
+      .run(member.id, legacyKey, legacyArtist, "History Hall", "Toronto", "1968-06-15", 40);
+    assert.throws(
+      () => post({ key: legacyKey, state: "went" }),
+      (error) => error.code === "ARTIST_LEGACY_READ_ONLY",
+      "an existing protected attendance relation cannot transition",
+    );
+    assert.throws(
+      () => routes["GET /api/going/:key/attendees"](context({
+        user: member,
+        params: { key: encodeURIComponent(legacyKey) },
+        query: { scope: "everyone" },
+      })),
+      (error) => error.code === "ARTIST_LEGACY_READ_ONLY",
+      "protected legacy crowd state is not exposed",
+    );
+
+    const removed = post({ key: legacyKey, going: false });
+    assert.equal(removed.attendance, null);
+    assert.equal(database.prepare("SELECT 1 FROM going WHERE user_id=?").get(member.id), undefined,
+      "the member can still remove historical attendance after the page is protected");
+    assert.equal(database.prepare("SELECT COUNT(*) count FROM shows").get().count, 0,
+      "cleanup never allocates a replacement Show");
   } finally {
     database.close();
   }

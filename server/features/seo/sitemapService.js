@@ -5,6 +5,7 @@ import { publicPageSitemapEntries } from "../../publicPages.js";
 import { publicTicketmasterEventImage } from "../../providerEventImage.js";
 import { publicVenuePhotoPool } from "../../venuePhotoCatalog.js";
 import { projectedTourDateTicketUrl } from "../../../src/domain/ticketLinks.mjs";
+import { isLegacyArtistMemorial } from "../../../src/domain/artistLegacy.mjs";
 import {
   artistConcertsPath,
   artistPath,
@@ -38,7 +39,10 @@ import {
 } from "./publicEntityPolicy.js";
 import { createPublicDocumentRepository } from "./publicDocumentRepository.js";
 import { effectiveTourDateEndSql } from "../../tourDateLifecycle.js";
-import { tourDateHasNoPublishedMemorialSql } from "../../artistMemorialTourDateVisibility.js";
+import {
+  artistHasLegacyMemorial,
+  tourDateHasNoPublishedMemorialSql,
+} from "../../artistMemorialTourDateVisibility.js";
 
 export const SITEMAP_MAX_URLS = 50_000;
 export const SITEMAP_MAX_BYTES = 50 * 1024 * 1024;
@@ -565,6 +569,7 @@ export function artistSitemapEntries(database, { now = Date.now(), candidates = 
       artistKey: row.norm,
       artistName: row.name,
       publicSlug: row.public_slug,
+      legacy: isLegacyArtistMemorial(memorialDetails.get(row.norm)?.memorial),
       lastmod: newest(
         row.updated_at,
         profileDetails.get(row.norm)?.updated_at,
@@ -684,7 +689,10 @@ function publicConcertCandidates(database, { now = Date.now(), candidates = null
       date: row.date,
     });
   }
-  return [...concerts.values()];
+  return [...concerts.values()].filter((concert) => !artistHasLegacyMemorial(database, {
+    artistKey: concert.artistKey,
+    artist: concert.artistName,
+  }));
 }
 
 export function concertSitemapEntries(database, options = {}) {
@@ -1006,6 +1014,9 @@ function citySitemapEntries({ candidates, venueEntries, concerts }) {
   return entries.sort((left, right) => left.path.localeCompare(right.path));
 }
 function artistArchiveSitemapEntries({ artistEntries, concerts }) {
+  // Resolve names against the complete catalogue before filtering legacy
+  // profiles. Otherwise removing one same-named legacy row can make an
+  // originally ambiguous concert appear to belong to a living namesake.
   const byKey = new Map(artistEntries.map((row) => [String(row.artistKey || "").toLowerCase(), row]));
   const byName = new Map();
   const ambiguousNames = new Set();
@@ -1021,9 +1032,11 @@ function artistArchiveSitemapEntries({ artistEntries, concerts }) {
   }
   const groups = new Map();
   for (const concert of concerts) {
-    const artist = byKey.get(String(concert.artistKey || "").toLowerCase())
-      || byName.get(String(concert.artistName || "").trim().toLowerCase());
-    if (!artist?.publicSlug) continue;
+    const key = String(concert.artistKey || "").toLowerCase();
+    const artist = key
+      ? byKey.get(key)
+      : byName.get(String(concert.artistName || "").trim().toLowerCase());
+    if (!artist?.publicSlug || artist.legacy === true) continue;
     if (!groups.has(artist.publicSlug)) groups.set(artist.publicSlug, { items: [], lastmod: null });
     const group = groups.get(artist.publicSlug);
     group.items.push(concert);

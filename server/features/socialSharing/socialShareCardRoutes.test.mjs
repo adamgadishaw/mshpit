@@ -78,6 +78,7 @@ function fixture({
   resolveCurrentArtistProfileImage = null,
   resolveCurrentLicensedArtistPhoto = null,
   resolveCurrentEventProviderImage = null,
+  assertLiveShareAvailable = null,
   resolvePublicDocument = async (path) => path.startsWith("/post/")
     ? reviewDocument(path.slice("/post/".length))
     : eventDocument(path.slice("/event/".length)),
@@ -95,6 +96,7 @@ function fixture({
     attendanceRepository: {
       ownExactAttendance: () => ({ attendance: { state: attendanceState } }),
     },
+    assertLiveShareAvailable,
     blockedEitherWay: () => blocked,
     rateLimit: () => {},
     requireUser: () => ({ id: "member_123", name: "Alex" }),
@@ -211,6 +213,42 @@ test("public Going post falls back to its safe server-owned ticket snapshot", as
   for (const privateValue of [
     "PRIVATE-SECTION", "PRIVATE-ROW", "PRIVATE-SEAT", "PRIVATE-ORDER", "PRIVATE-BARCODE",
   ]) assert.doesNotMatch(serializedModel, new RegExp(privateValue, "u"));
+});
+
+test("legacy artists cannot generate Going share cards from an old ticket snapshot", async () => {
+  const ticket = JSON.stringify({
+    version: 1,
+    state: "going",
+    tourDateId: "legacy_event_123",
+    artist: "Protected Legacy Artist",
+    artistKey: "protected-legacy-artist",
+    venue: "History Hall",
+    date: "1968-06-15",
+  });
+  const legacyError = new TestApiError(
+    409,
+    "Legacy artist pages do not offer Going or Interested share cards.",
+    "ARTIST_LEGACY_READ_ONLY",
+  );
+  const { route, renderedModels } = fixture({
+    ticket,
+    assertLiveShareAvailable(identity) {
+      assert.deepEqual(identity, {
+        artistKey: "protected-legacy-artist",
+        artist: "Protected Legacy Artist",
+      });
+      throw legacyError;
+    },
+    resolvePublicDocument: async (path) => path.startsWith("/post/") ? {
+      kind: "post",
+      post: { id: "legacy-going-post", kind: "status", author: { name: "Alex" } },
+    } : null,
+  });
+  await assert.rejects(
+    route(context({ kind: "post", postId: "legacy-going-post" })),
+    (error) => error === legacyError,
+  );
+  assert.equal(renderedModels.length, 0);
 });
 
 test("attendance shares use verified mirrored artist art after managed profile art", async () => {

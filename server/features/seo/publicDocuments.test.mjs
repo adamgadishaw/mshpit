@@ -18,7 +18,7 @@ function createDatabase() {
     CREATE TABLE users (
       id TEXT PRIMARY KEY,name TEXT NOT NULL,handle TEXT NOT NULL,artist_name TEXT,bio TEXT,
       avatar_uri TEXT,banner TEXT,created_at INTEGER NOT NULL,is_banned INTEGER NOT NULL DEFAULT 0,
-      suspended_until INTEGER,extras TEXT NOT NULL DEFAULT '{}'
+      suspended_until INTEGER,extras TEXT NOT NULL DEFAULT '{}',role TEXT NOT NULL DEFAULT 'fan'
     );
     CREATE TABLE artists (
       norm TEXT PRIMARY KEY,name TEXT NOT NULL,public_slug TEXT,genre TEXT,data TEXT,bio TEXT,mbid TEXT,country TEXT,formed TEXT,
@@ -50,7 +50,8 @@ function createDatabase() {
     );
     CREATE TABLE follows (follower_id TEXT NOT NULL,followee_id TEXT NOT NULL,PRIMARY KEY(follower_id,followee_id));
     CREATE TABLE artist_profiles (
-      artist_key TEXT PRIMARY KEY,bio TEXT,banner TEXT,banner_owner_id TEXT,
+      artist_key TEXT PRIMARY KEY,bio TEXT,bio_staff_curated INTEGER NOT NULL DEFAULT 0,
+      banner TEXT,banner_owner_id TEXT,
       avatar_uri TEXT,avatar_owner_id TEXT,feed_enabled INTEGER NOT NULL DEFAULT 0,
       owner_id TEXT,removed INTEGER NOT NULL DEFAULT 0,updated_at INTEGER
     );
@@ -752,6 +753,125 @@ test("canonical artist documents expose only an identity-bound published memoria
     const mismatched = documents.artistDocument({ artistKey: "alpha", at: NOW });
     assert.equal(mismatched.memorial, null);
     assert.equal(mismatched.jsonLd[0].about["@type"], "Thing");
+  } finally {
+    database.close();
+  }
+});
+
+test("pre-1970 memorial artists render educational legacy profiles without tour or date archives", () => {
+  const database = createDatabase();
+  try {
+    addArtist(database, {
+      bio: "A catalogue biography about an influential recording artist and the musical history surrounding their work.",
+      data: { genres: ["Jazz"] },
+    });
+    addUser(database, "active", { name: "Archive Fan", handle: "archivefan" });
+    addUser(database, "former-owner", { name: "Former Artist Owner", handle: "formerowner", banned: true });
+    addUser(database, "legacy-admin", { name: "Mshpit Historian", handle: "legacyadmin" });
+    database.prepare("UPDATE users SET role='admin' WHERE id=?").run("legacy-admin");
+    addPost(database, {
+      id: "legacy-community-memory",
+      review: "This existing community memory explains how the artist's recordings continued to connect generations of listeners.",
+      venue: "History Hall",
+      date: "1968-06-15",
+      overall: 4.5,
+    });
+    database.prepare("UPDATE posts SET artist_mbid=? WHERE id=?")
+      .run(ARTIST_MBID, "legacy-community-memory");
+    const fanImageUrl = "https://media.example/public/legacy-fan-image.jpg";
+    addReadyImage(database, {
+      assetId: "asset-legacy-fan-image",
+      ownerId: "active",
+      url: fanImageUrl,
+      postId: "legacy-community-memory",
+    });
+    const formerAvatarUrl = "https://media.example/public/legacy-former-avatar.jpg";
+    const staffBannerUrl = "https://media.example/public/legacy-staff-banner.jpg";
+    addFinalizedProfileImage(database, {
+      descriptorId: "lm_legacyformeravatar000001",
+      ownerId: "former-owner",
+      url: formerAvatarUrl,
+      purpose: "avatar",
+    });
+    addFinalizedProfileImage(database, {
+      descriptorId: "lm_legacystaffbanner0000001",
+      ownerId: "legacy-admin",
+      url: staffBannerUrl,
+      purpose: "banner",
+      width: 1_600,
+      height: 600,
+    });
+    database.prepare(`INSERT INTO artist_profiles
+      (artist_key,owner_id,bio,bio_staff_curated,banner,banner_owner_id,avatar_uri,avatar_owner_id,
+        feed_enabled,removed,updated_at)
+      VALUES (?,?,?,1,?,?,?,?,1,0,?)`).run(
+      "alpha", "former-owner", "A staff-curated educational biography.", staffBannerUrl, "legacy-admin",
+      formerAvatarUrl, "former-owner", NOW,
+    );
+    database.prepare("INSERT INTO artist_posts (id,artist_key,user_id,text,removed,created_at) VALUES (?,?,?,?,0,?)")
+      .run("legacy-former-note", "alpha", "former-owner", "A former owner note that must not be represented as history.", NOW - 2);
+    database.prepare("INSERT INTO artist_posts (id,artist_key,user_id,text,removed,created_at) VALUES (?,?,?,?,0,?)")
+      .run("legacy-staff-note", "alpha", "legacy-admin", "Mshpit context about the artist's place in music history.", NOW - 1);
+    database.prepare(`INSERT INTO tour_dates
+      (id,artist,artist_key,venue,place,date,source,updated_at,release_at,provider_active)
+      VALUES (?,?,?,?,?,?,?,?,?,1)`).run(
+      "legacy-historical-date", "Alpha", "alpha", "History Hall", "Toronto, Canada",
+      "1968-06-15", "archive", NOW, 0,
+    );
+    assert.equal(saveMemorial(database, {
+      deathDate: "1969-12-31",
+      summary: "An influential artist whose recorded work remains important to music history and generations of listeners.",
+    }).ok, true);
+
+    const documents = service(database);
+    const legacy = documents.artistDocument({ artistKey: "alpha", today: "2026-08-25", at: NOW });
+    const html = documents.render(legacy);
+
+    assert.equal(legacy.memorial.legacy, true);
+    assert.deepEqual(legacy.events, []);
+    assert.deepEqual(legacy.concerts, []);
+    assert.deepEqual(legacy.updates.map((update) => update.id), ["legacy-staff-note"]);
+    assert.equal(legacy.updates[0].editorial, true);
+    assert.equal(legacy.archivePath, null);
+    assert.equal(legacy.artist.bio, "A staff-curated educational biography.");
+    assert.equal(legacy.image, staffBannerUrl,
+      "active staff artwork remains public even when the former artist owner is inactive");
+    assert.equal(legacy.jsonLd[0].about.image.contentUrl, staffBannerUrl);
+    assert.equal(legacy.jsonLd[0].primaryImageOfPage.contentUrl, staffBannerUrl);
+    assert.equal(legacy.reviews[0].media[0].url, fanImageUrl,
+      "existing community media remains visible inside its bounded memory card");
+    assert.notEqual(legacy.image, formerAvatarUrl);
+    assert.notEqual(legacy.image, fanImageUrl,
+      "former-owner and community media never become the legacy identity image");
+    assert.match(legacy.title, /Alpha legacy — biography and community memories/);
+    assert.match(html, /Educational legacy profile/);
+    assert.match(html, /protected educational page/);
+    assert.match(html, /Community memories/);
+    assert.match(html, /Mshpit editorial/);
+    assert.match(html, /History and context/);
+    assert.match(html, /Mshpit context about the artist&#39;s place in music history/);
+    assert.match(html, /legacy-community-memory|continued to connect generations/);
+    assert.doesNotMatch(html, /Upcoming shows|Concert history|View full concert archive|Official notes|Top live reviews/);
+    assert.equal(documents.artistConcertsDocument({
+      publicSlug: "alpha",
+      today: "2026-08-25",
+      at: NOW,
+    }), null, "direct legacy artist archive documents are unavailable");
+    const exactShowKey = archiveShowKey({
+      artistIdentity: "alpha",
+      venueIdentity: "history hall",
+      date: "1968-06-15",
+    });
+    assert.equal(documents.concertDocument({ showKey: exactShowKey, at: NOW }), null,
+      "direct legacy per-date concert documents are unavailable");
+    assert.equal(documents.eventDocument({
+      id: "legacy-historical-date",
+      today: "2026-08-25",
+      at: NOW,
+    }), null, "direct legacy event documents are unavailable");
+    assert.equal(documents.directoryDocument({
+      kind: "concerts", page: 1, today: "2026-08-25", at: NOW,
+    }), null, "legacy dates do not create a global concert-directory page");
   } finally {
     database.close();
   }

@@ -316,6 +316,7 @@ CREATE TABLE IF NOT EXISTS artist_requests (
 CREATE TABLE IF NOT EXISTS artist_profiles (
   artist_key   TEXT PRIMARY KEY,
   bio          TEXT,
+  bio_staff_curated INTEGER NOT NULL DEFAULT 0,
   banner       TEXT,
   banner_owner_id TEXT REFERENCES users(id) ON DELETE SET NULL,
   avatar_uri   TEXT,
@@ -1757,6 +1758,9 @@ const additiveMigrations = [
   // provenance backfill below.
   "ALTER TABLE artist_profiles ADD COLUMN avatar_owner_id TEXT REFERENCES users(id) ON DELETE SET NULL",
   "ALTER TABLE artist_profiles ADD COLUMN banner_owner_id TEXT REFERENCES users(id) ON DELETE SET NULL",
+  // Biography provenance must survive account deletion. Admin-authored history
+  // may remain on a protected legacy profile; artist-authored copy may not.
+  "ALTER TABLE artist_profiles ADD COLUMN bio_staff_curated INTEGER NOT NULL DEFAULT 0",
   // A report stores only a verified positional selector. The attachment URL is
   // resolved from the still-current target for authorized, no-store staff reads.
   "ALTER TABLE reports ADD COLUMN media_index INTEGER",
@@ -1924,6 +1928,10 @@ try {
       WHERE banner IS NOT NULL AND trim(banner)<>''
         AND banner_owner_id IS NULL AND owner_id IS NOT NULL`).run();
   }
+  // Biography provenance cannot be inferred safely for old rows: an unowned
+  // row may be staff-seeded or may simply have lost its former owner. Keep the
+  // migration conservative; staff can explicitly review and resave trusted
+  // educational copy, which records durable provenance from that point on.
   ensurePostMediaCapacity(db);
   ensureShowSchema(db);
   ensureLoungeSchema(db);

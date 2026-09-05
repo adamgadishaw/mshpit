@@ -6,6 +6,7 @@ import ScreenHeader from "../components/ScreenHeader";
 import SmartImage from "../components/SmartImage";
 import Stars from "../components/Stars";
 import Icon from "../components/Icon";
+import LegacyArtistArchiveGate from "../components/artist/LegacyArtistArchiveGate";
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import {
   archiveCoverMedia,
@@ -15,7 +16,10 @@ import {
   compactArchiveCount,
 } from "../domain/artistEventArchive.mjs";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
+import { isLegacyArtistMemorial } from "../domain/artistLegacy.mjs";
 import { useArtistEventArchive } from "../features/artistEvents/useArtistEventArchive";
+import { useArtistMemorial } from "../features/artistMemorials/useArtistMemorial";
+import useCanonicalArtistIdentity from "../hooks/useCanonicalArtistIdentity";
 import useScopedRefresh from "../hooks/useScopedRefresh";
 import { openTicketLink } from "../lib/ticketLinks";
 
@@ -242,9 +246,34 @@ export default function ArtistArchiveScreen({ artistName, artistKey, onClose, on
   const { width } = useWindowDimensions();
   const wide = width >= 820;
   const accountId = session?.id || null;
-  const { resource, refresh: refreshArchive } = useArtistEventArchive({ accountId, name: artistName, artistKey });
+  const {
+    artistName: resolvedArtistName,
+    artistKey: resolvedArtistKey,
+    status: artistIdentityStatus,
+    retry: retryArtistIdentity,
+  } = useCanonicalArtistIdentity({ artistName, artistKey });
+  const { resource: memorialResource, availability: memorialAvailability, reload: retryMemorial } = useArtistMemorial({
+    accountId,
+    artistKey: resolvedArtistKey,
+    enabled: artistIdentityStatus === "ready" && !!resolvedArtistKey,
+  });
+  const legacyMode = isLegacyArtistMemorial(memorialResource.data);
+  const archiveAllowed = artistIdentityStatus === "ready"
+    && (memorialAvailability === "living" || (memorialAvailability === "deceased" && !legacyMode));
+  const gateState = legacyMode
+    ? "legacy"
+    : artistIdentityStatus === "checking" || memorialAvailability === "checking"
+      ? "checking"
+      : "unavailable";
+  const retryProfileStatus = artistIdentityStatus === "unavailable" ? retryArtistIdentity : retryMemorial;
+  const { resource, refresh: refreshArchive } = useArtistEventArchive({
+    accountId,
+    name: resolvedArtistName || artistName,
+    artistKey: resolvedArtistKey,
+    enabled: archiveAllowed,
+  });
   const [refreshError, setRefreshError] = useState("");
-  const artistArchiveRefreshScope = refreshScope(accountId, "artist-archive", artistKey || artistName || "unknown");
+  const artistArchiveRefreshScope = refreshScope(accountId, "artist-archive", resolvedArtistKey || resolvedArtistName || artistName || "unknown");
   const { refresh: refreshArchiveView, refreshing } = useScopedRefresh({
     scope: artistArchiveRefreshScope,
     task: async ({ signal }) => {
@@ -263,15 +292,22 @@ export default function ArtistArchiveScreen({ artistName, artistKey, onClose, on
     if (item.type === "empty") return <EmptyRow {...item} />;
     if (item.type === "top-show") return <ShowRow show={item.show} rank={item.rank} wide={wide} onOpenShow={onOpenShow} onOpenPhotos={onOpenPhotos} onOpenProfile={onOpenProfile} />;
     if (item.type === "show") return <ShowRow show={item.show} wide={wide} onOpenShow={onOpenShow} onOpenPhotos={onOpenPhotos} onOpenProfile={onOpenProfile} />;
-    if (item.type === "tour") return <TourRow tour={item.tour} onOpenTour={onOpenTour} onOpenPhotos={onOpenPhotos} onOpenProfile={onOpenProfile} />;
-    if (item.type === "upcoming") return <UpcomingRow show={item.show} artistName={artistName} onOpenShow={onOpenShow} />;
+    if (item.type === "tour") return <TourRow tour={item.tour} onOpenTour={(tour) => onOpenTour?.(tour, resolvedArtistKey)} onOpenPhotos={onOpenPhotos} onOpenProfile={onOpenProfile} />;
+    if (item.type === "upcoming") return <UpcomingRow show={item.show} artistName={resolvedArtistName || artistName} onOpenShow={onOpenShow} />;
     return null;
   };
 
   return (
     <View style={styles.wrap}>
-      <ScreenHeader kicker="LIVE ARCHIVE" title={artistName || "Artist"} onBack={onClose} />
-      {initialLoading ? (
+      <ScreenHeader kicker={legacyMode ? "LEGACY ARTIST" : "LIVE ARCHIVE"} title={resolvedArtistName || artistName || "Artist"} onBack={onClose} />
+      {!archiveAllowed ? (
+        <LegacyArtistArchiveGate
+          artistName={resolvedArtistName || artistName}
+          state={gateState}
+          onBack={onClose}
+          onRetry={retryProfileStatus}
+        />
+      ) : initialLoading ? (
         <View style={styles.center} accessibilityLiveRegion="polite"><ActivityIndicator color={colors.amber} /><Text style={styles.stateText}>Opening the live archive…</Text></View>
       ) : initialError ? (
         <View style={styles.center} accessibilityLiveRegion="assertive">
@@ -296,7 +332,7 @@ export default function ArtistArchiveScreen({ artistName, artistKey, onClose, on
           showsVerticalScrollIndicator={false}
           ListHeaderComponent={(
             <>
-              <Hero artistName={archive?.artist?.name || artistName} archive={archive} />
+              <Hero artistName={archive?.artist?.name || resolvedArtistName || artistName} archive={archive} />
               {(refreshError || (resource.status === "error" && resource.updatedAt != null)) && (
                 <View style={styles.refreshWarning} accessibilityLiveRegion="assertive">
                   <Text style={styles.refreshWarningText} selectable>{refreshError || "The archive could not refresh. Showing the last complete view."}</Text>

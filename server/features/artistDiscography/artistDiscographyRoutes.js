@@ -10,12 +10,14 @@ function providerBoundary(error, { ApiError, ProviderError }) {
 export function artistDiscographyRoutes({
   ApiError,
   ProviderError,
+  assertMusicServiceAvailable,
   clean,
   loadDiscography,
   rateLimit,
   requireUser,
 }) {
-  if (typeof ApiError !== "function" || typeof ProviderError !== "function" || typeof clean !== "function"
+  if (typeof ApiError !== "function" || typeof ProviderError !== "function"
+    || typeof assertMusicServiceAvailable !== "function" || typeof clean !== "function"
     || typeof loadDiscography !== "function" || typeof rateLimit !== "function" || typeof requireUser !== "function") {
     throw new TypeError("Artist discography routes require complete boundary dependencies");
   }
@@ -29,6 +31,7 @@ export function artistDiscographyRoutes({
     // Public reads may warm only the server-selected canonical identity.
     "GET /api/artists/discography": async (ctx) => {
       const name = artistName(ctx);
+      assertMusicServiceAvailable({ artist: name });
       rateLimit(ctx, "discography", 40, TEN_MINUTES);
       try {
         return await loadDiscography(name, { signal: ctx.signal });
@@ -42,6 +45,7 @@ export function artistDiscographyRoutes({
     "POST /api/artists/discography/selection": async (ctx) => {
       requireUser(ctx);
       const name = artistName(ctx);
+      assertMusicServiceAvailable({ artist: name });
       const rawId = String(ctx.body?.deezerId || "");
       if (!/^\d{1,15}$/u.test(rawId)) {
         throw new ApiError(400, "Choose a valid artist match.", "VALIDATION_FAILED");

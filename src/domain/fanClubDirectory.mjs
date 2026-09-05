@@ -8,6 +8,16 @@ const normalizedClub = (club) => {
 
 const sortClubs = (a, b) => b.members - a.members || b.messages - a.messages || a.artist.localeCompare(b.artist);
 
+export function projectFanClubArtistCandidate(candidate, genre = null) {
+  const name = text(candidate?.name);
+  if (!name) return null;
+  const projected = { name, genre: genre ?? candidate?.genre ?? null };
+  if (candidate?.fanClubAvailable === true || candidate?.fanClubAvailable === false) {
+    projected.fanClubAvailable = candidate.fanClubAvailable;
+  }
+  return projected;
+}
+
 export function normalizeFanClubDirectory(rows) {
   const byArtist = new Map();
   for (const candidate of Array.isArray(rows) ? rows : []) {
@@ -80,6 +90,11 @@ export function fanClubSearchResults(activeRows, artistRows, query, limit = 40) 
   }
 
   for (const candidate of Array.isArray(artistRows) ? artistRows : []) {
+    // Active rows have already crossed the server's legacy-artist policy. A
+    // catalogue-only suggestion has not, so advertise it only when an
+    // authoritative source explicitly marks fan clubs available. Unknown
+    // memorial status fails closed instead of creating a legacy club doorway.
+    if (candidate?.fanClubAvailable !== true) continue;
     const artist = text(candidate?.name);
     const identity = artist.toLocaleLowerCase();
     if (!artist || !identity.includes(needle) || seen.has(identity)) continue;

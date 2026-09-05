@@ -109,12 +109,13 @@ test("Artist HQ launches the artist-only campaign composer and the feed renders 
 
 test("fan preview hides ownership affordances and unreleased dates", () => {
   assert.match(artist, /previewAsFan = false/);
-  assert.match(artist, /const canManagePublicPage = ownsArtistPage && !previewAsFan/);
+  assert.match(artist, /const profileServicesAvailable = memorialKnown && !legacyMode/);
+  assert.match(artist, /const canManagePublicPage = profileServicesAvailable && ownsArtistPage && !previewAsFan/);
   assert.match(artist, /const liveAvailable = memorialAvailability === "living"/);
   assert.match(artist, /const upcoming = liveAvailable[\s\S]*\? \(previewAsFan \? a\.upcoming\.filter\(\(date\) => !date\.scheduled\) : a\.upcoming\)[\s\S]*: \[\]/);
   assert.match(artist, /FAN PREVIEW/);
   assert.match(artist, /Owner controls and scheduled dates are hidden\./);
-  assert.match(artist, /!ownsArtistPage && a\.ownerId && onReport/);
+  assert.match(artist, /!ownsArtistPage && profileOwnerId && onReport/);
   assert.match(artist, /!ownsArtistPage && onReport/);
   assert.match(artist, /\^https:\\\/\\\/\/i\.test\(t\.ticketUrl \|\| ""\)/);
   assert.match(artist, /Tickets soon/);
@@ -166,7 +167,7 @@ test("Artist HQ retains confirmed page data on refresh failure without crossing 
 test("Artist HQ page reads expose a retryable scoped contract and gate unconfirmed zeroes", () => {
   assert.match(store, /const loadArtistPage = async \(name, \{ signal \} = \{\}\) =>/);
   assert.match(store, /accountTargetScope\(accountId, `artist-page:\$\{artistKey\}`\)/);
-  assert.match(store, /return commandSuccess\(\{ scope, profile: normalizedProfile, posts: normalizedPosts, loadedAt: Date\.now\(\) \}\)/);
+  assert.match(store, /return commandSuccess\(\{[\s\S]*scope,[\s\S]*profile: normalizedProfile,[\s\S]*posts: normalizedPosts,[\s\S]*legacyProfile,[\s\S]*loadedAt: Date\.now\(\),[\s\S]*\}\)/);
   assert.match(store, /return commandError\(error, context\)/);
   assert.match(store, /silent: true/);
 

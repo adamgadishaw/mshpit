@@ -2,18 +2,24 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import {
+  artistHasNoLegacyMemorialSql,
+  artistHasLegacyMemorial,
   artistHasPublishedMemorial,
   tourDateHasNoPublishedMemorialSql,
 } from "./artistMemorialTourDateVisibility.js";
-import { visibleTourDateRowsFrom } from "./tourDateVisibility.js";
+import { registerPitSqliteFunctions } from "./sqliteFunctions.js";
+import { visibleTourDateRowsFrom } from "./tourDateVisibilityQuery.js";
 
 function fixture() {
   const database = new DatabaseSync(":memory:");
+  registerPitSqliteFunctions(database);
   database.exec(`
     CREATE TABLE users (id TEXT PRIMARY KEY,is_banned INTEGER NOT NULL DEFAULT 0,suspended_until INTEGER);
     CREATE TABLE blocks (blocker_id TEXT,blocked_id TEXT);
     CREATE TABLE artists (norm TEXT PRIMARY KEY,name TEXT NOT NULL,mbid TEXT);
-    CREATE TABLE artist_memorials (artist_key TEXT PRIMARY KEY,artist_mbid TEXT,status TEXT NOT NULL);
+    CREATE TABLE artist_memorials (
+      artist_key TEXT PRIMARY KEY,artist_mbid TEXT,status TEXT NOT NULL,death_date TEXT
+    );
     CREATE TABLE tour_dates (
       id TEXT PRIMARY KEY,artist TEXT,artist_key TEXT,owner_id TEXT,release_at INTEGER NOT NULL DEFAULT 0,
       date TEXT,event_end_date TEXT,event_kind TEXT,music_evidence TEXT,billed_artists TEXT,
@@ -21,7 +27,13 @@ function fixture() {
     );
   `);
   const addArtist = database.prepare("INSERT INTO artists (norm,name,mbid) VALUES (?,?,?)");
-  const addMemorial = database.prepare("INSERT INTO artist_memorials (artist_key,artist_mbid,status) VALUES (?,?,?)");
+  const addMemorialStatement = database.prepare(`INSERT INTO artist_memorials
+    (artist_key,artist_mbid,status,death_date) VALUES (?,?,?,?)`);
+  const addMemorial = {
+    run(artistKey, artistMbid, status, deathDate = "2024-05-17") {
+      return addMemorialStatement.run(artistKey, artistMbid, status, deathDate);
+    },
+  };
   const addDate = database.prepare(`INSERT INTO tour_dates
     (id,artist,artist_key,date,event_end_date,music_qualified,provider_active) VALUES (?,?,?,?,?,1,1)`);
   return { database, addArtist, addMemorial, addDate };
@@ -29,6 +41,7 @@ function fixture() {
 
 test("tour-date memorial SQL rejects unsafe aliases", () => {
   assert.throws(() => tourDateHasNoPublishedMemorialSql("td;drop"), /Invalid tour-date SQL alias/);
+  assert.throws(() => artistHasNoLegacyMemorialSql("td;drop"), /Invalid tour-date SQL alias/);
 });
 
 test("upcoming reads reject provider passes, series, and classes but retain real festivals", () => {
@@ -135,6 +148,40 @@ test("published memorial lookup accepts a current exact key or unique display na
       artist: "Remembered Artist",
     }), false, "an explicit, different identity must never fall back to the display name");
     assert.equal(artistHasPublishedMemorial(database, { artist: "Someone Else" }), false);
+  } finally {
+    database.close();
+  }
+});
+
+test("legacy lookup requires a published, exact-identity pre-1970 memorial", () => {
+  const { database, addArtist, addMemorial, addDate } = fixture();
+  try {
+    addArtist.run("legacy", "Legacy Artist", "mbid-legacy");
+    addArtist.run("boundary", "Boundary Artist", "mbid-boundary");
+    addArtist.run("draft-legacy", "Draft Legacy", "mbid-draft");
+    addArtist.run("stale-legacy", "Stale Legacy", "mbid-current");
+    addArtist.run("edith-piaf-identity", "Édith Piaf", "mbid-edith");
+    addMemorial.run("legacy", "mbid-legacy", "published", "1969-12-31");
+    addMemorial.run("boundary", "mbid-boundary", "published", "1970-01-01");
+    addMemorial.run("draft-legacy", "mbid-draft", "draft", "1950-01-01");
+    addMemorial.run("stale-legacy", "mbid-old", "published", "1940-01-01");
+    addMemorial.run("edith-piaf-identity", "mbid-edith", "published", "1963-10-10");
+    addDate.run("unicode-name-only", "ÉDITH PIAF", null, "1962-01-01", null);
+
+    assert.equal(artistHasLegacyMemorial(database, { artistKey: "legacy" }), true);
+    assert.equal(artistHasLegacyMemorial(database, { artist: "Legacy Artist" }), true);
+    assert.equal(artistHasLegacyMemorial(database, { artistKey: "boundary" }), false);
+    assert.equal(artistHasLegacyMemorial(database, { artistKey: "draft-legacy" }), false);
+    assert.equal(artistHasLegacyMemorial(database, { artistKey: "stale-legacy" }), false);
+    assert.equal(artistHasLegacyMemorial(database, {
+      artistKey: "someone-else",
+      artist: "Legacy Artist",
+    }), false);
+    assert.equal(artistHasLegacyMemorial(database, { artist: "ÉDITH PIAF" }), true,
+      "Unicode case variants resolve to the same exact memorial identity");
+    assert.deepEqual(database.prepare(`SELECT id FROM tour_dates td
+      WHERE ${artistHasNoLegacyMemorialSql("td")}`).all().map((row) => row.id), [],
+    "legacy archive SQL rejects Unicode case variants on historical name-only rows");
   } finally {
     database.close();
   }

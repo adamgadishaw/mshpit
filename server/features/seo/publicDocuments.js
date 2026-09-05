@@ -6,6 +6,7 @@ import { createPublicVenueReviewService } from "./publicVenueReviews.js";
 import { createPublicCollectionDocumentService } from "./publicCollectionDocuments.js";
 import { createPublicDocumentProjector } from "./publicDocumentProjection.js";
 import { decodeArchiveShowKey } from "../artistArchive/artistArchiveKeys.js";
+import { isLegacyArtistMemorial } from "../../../src/domain/artistLegacy.mjs";
 import {
   renderPublicDocument,
   renderPublicDocumentHead,
@@ -25,11 +26,37 @@ export function createPublicDocumentService({ database, origin, paths, artistMem
     venueReviews: createPublicVenueReviewService(database),
   });
   const projector = createPublicDocumentProjector({ database, origin, paths });
-  const collections = createPublicCollectionDocumentService({ database, origin });
   const profileSearchIndexing = createProfileSearchIndexingPolicy(database);
   const memorials = artistMemorialService || createArtistMemorialService({
     repository: createArtistMemorialRepository(database),
   });
+  const collections = createPublicCollectionDocumentService({
+    database,
+    origin,
+    legacyArtistPolicy(artist, options = {}) {
+      const requestedAt = Number(options.at);
+      const at = Number.isSafeInteger(requestedAt) && requestedAt >= 0 ? requestedAt : Date.now();
+      const detail = memorials.readPublicWithMetadata({
+        artistKey: artist?.norm,
+        artistMbid: artist?.mbid,
+        at,
+      });
+      return isLegacyArtistMemorial(detail?.memorial);
+    },
+  });
+
+  function isLegacyArtistIdentity({ artistKey = null, name = null, at = Date.now() } = {}) {
+    const artist = repository.readArtistIdentity({ artistKey, name });
+    if (!artist) return false;
+    const requestedAt = Number(at);
+    const instant = Number.isSafeInteger(requestedAt) && requestedAt >= 0 ? requestedAt : Date.now();
+    const memorialDetail = memorials.readPublicWithMetadata({
+      artistKey: artist.norm,
+      artistMbid: artist.mbid,
+      at: instant,
+    });
+    return isLegacyArtistMemorial(memorialDetail?.memorial);
+  }
 
   const service = {
     homeDocument(options = {}) {
@@ -74,14 +101,27 @@ export function createPublicDocumentService({ database, origin, paths, artistMem
 
     eventDocument(options = {}) {
       const raw = repository.readEvent(options);
-      return raw ? projector.event(raw, options) : null;
+      if (!raw) return null;
+      if (isLegacyArtistIdentity({
+        artistKey: raw.event.artist_key,
+        name: raw.event.artist,
+        at: options.at,
+      })) return null;
+      return projector.event(raw, options);
     },
 
     concertDocument(options = {}) {
       const decoded = decodeArchiveShowKey(options.showKey);
       if (!decoded) return null;
       const raw = repository.readConcert(decoded);
-      return raw ? projector.concert(raw, options) : null;
+      if (!raw) return null;
+      const representative = raw.reviews?.[0] || null;
+      if (representative && isLegacyArtistIdentity({
+        artistKey: representative.artist_key,
+        name: representative.artist,
+        at: options.at,
+      })) return null;
+      return projector.concert(raw, options);
     },
 
     venueDocument(options = {}) {

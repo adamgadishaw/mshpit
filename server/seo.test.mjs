@@ -97,6 +97,8 @@ test("SEO metadata, entity routing, and sitemap exclude restricted authors", asy
 
   const artistMeta = metadataFor(artistPath(artist));
   assert.match(artistMeta.description, /catalogue-owned artist biography/i);
+  assert.equal(resolveEntity(artistPath(artist))?.artistKey, normName(artist),
+    "public artist resolution carries the canonical key into direct archive hydration");
   const artistShell = injectHead("<html><head><title>Pit</title></head><body><div id=\"root\"></div></body></html>", artistPath(artist));
   assert.match(artistShell, /Reviews<\/dt><dd>1<\/dd>/,
     "artist aggregates count only active authors");

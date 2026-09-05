@@ -1,4 +1,5 @@
 import { MEDIA_POST_MAX_ATTACHMENTS } from "../src/domain/mediaUploadPolicy.mjs";
+import { LEGACY_ARTIST_DEATH_DATE_CUTOFF, isLegacyArtistMemorial } from "../src/domain/artistLegacy.mjs";
 import { LEGAL_ACCEPTANCE_VERSION } from "../src/domain/privacyDisclosures.mjs";
 import { MUSIC_PLAYER_ENABLED } from "../src/domain/musicPlayerAvailability.mjs";
 // API routes. Conventions that keep this hard to crash and easy to fix:
@@ -188,7 +189,10 @@ import {
   enqueueArtistTourDateDemandRefresh,
   exactCatalogArtistForDemandRefresh,
 } from "./artistTourDateDemandRefresh.js";
-import { artistHasPublishedMemorial } from "./artistMemorialTourDateVisibility.js";
+import {
+  artistHasLegacyMemorial,
+  artistHasPublishedMemorial,
+} from "./artistMemorialTourDateVisibility.js";
 import {
   isCurrentOrUpcomingLiveEvent,
   liveEventQueryFloorDate,
@@ -419,6 +423,7 @@ function maybeEnqueueArtistTourDateDemandRefresh(ctx, artistKey) {
   // active signed-in account may create that demand, and hitting this separate
   // allowance must never turn a public artist read into a 429 response.
   if (!accountIsPublic(user, now())) return false;
+  if (artistHasLegacyMemorial(db, { artistKey })) return false;
   try {
     if (!rateLimit(
       `artist-tourdate-demand:user:${user.id}`,
@@ -592,6 +597,128 @@ function artistIdentityMatches(user, key) {
   return user?.role === "artist" && normName(user.artist_name) === normName(key);
 }
 
+function legacyArtistPolicyIdentity(key, artist = null) {
+  const normalized = normName(key);
+  const row = normalized
+    ? (artistStmts.byNorm.get(normalized) || artistStmts.byPublicSlug.get(normalized))
+    : null;
+  return {
+    // An unresolved string is a display-name candidate, not an authoritative
+    // catalog key. Leaving the key null lets the memorial repository apply its
+    // Unicode-normalized unique-name fallback instead of allowing a spacing or
+    // normalization variant to bypass the policy.
+    artistKey: row?.norm || null,
+    artist: row?.name || artist || key || null,
+  };
+}
+
+function isLegacyArtistProfile(key, artist = null) {
+  return artistHasLegacyMemorial(db, legacyArtistPolicyIdentity(key, artist));
+}
+
+function legacyArtistReadOnlyError(message = "This legacy artist page is preserved for education and community memories.") {
+  return new ApiError(409, message, "ARTIST_LEGACY_READ_ONLY");
+}
+
+function assertArtistMusicServiceAvailable(artist) {
+  if (isLegacyArtistProfile(artist, artist)) {
+    throw legacyArtistReadOnlyError(
+      "Legacy artist pages preserve music history without playback, discography, or track-rating services.",
+    );
+  }
+}
+
+function ratingArtistSegment(ref) {
+  const separator = String(ref || "").indexOf("|");
+  return separator > 0 ? String(ref).slice(0, separator).trim() : null;
+}
+
+const fanClubArtistNameCandidates = db.prepare(`SELECT DISTINCT catalog.norm,catalog.name,catalog.public_slug
+  FROM artists catalog
+  LEFT JOIN artist_memorials memorial
+    ON memorial.artist_key=catalog.norm AND memorial.artist_mbid=catalog.mbid
+  WHERE pit_artist_identity(catalog.name)=pit_artist_identity(?)
+    OR (memorial.status='published' AND memorial.artist_mbid IS NOT NULL
+      AND pit_artist_identity(memorial.artist_name)=pit_artist_identity(?))
+  ORDER BY catalog.norm LIMIT 2`);
+
+function fanClubArtistIdentity(value) {
+  const requested = normName(value);
+  const slugRow = requested ? artistStmts.byPublicSlug.get(requested) : null;
+  const nameCandidates = !slugRow && requested
+    ? fanClubArtistNameCandidates.all(value, value)
+    : [];
+  // Fan-club rows predate durable artist keys, so a string that happens to equal
+  // one catalog norm is still a free-form display name when multiple catalog
+  // identities share it. An immutable public slug remains authoritative.
+  const normRow = !slugRow && nameCandidates.length === 0 && requested
+    ? artistStmts.byNorm.get(requested)
+    : null;
+  const row = slugRow || (nameCandidates.length === 1 ? nameCandidates[0] : normRow);
+  const storageArtist = normName(row?.name || requested);
+  return {
+    requested,
+    artistKey: row?.norm || null,
+    artist: row?.name || null,
+    resolution: row ? "resolved" : nameCandidates.length > 1 ? "ambiguous" : "unresolved",
+    storageArtist,
+    aliases: [...new Set([
+      storageArtist,
+      normName(row?.norm),
+      normName(row?.public_slug),
+      requested,
+    ].filter(Boolean))],
+  };
+}
+
+function existingFanClubMembershipArtist(identity, userId) {
+  const lookup = db.prepare("SELECT 1 FROM fan_club_members WHERE artist=? AND user_id=?");
+  const exact = (identity?.aliases || []).find((artist) => lookup.get(artist, userId));
+  if (exact) return exact;
+  const normalizedLookup = db.prepare(`SELECT artist FROM fan_club_members
+    WHERE user_id=? AND pit_artist_identity(artist)=pit_artist_identity(?)
+    ORDER BY artist LIMIT 1`);
+  for (const artist of identity?.aliases || []) {
+    const matched = normalizedLookup.get(userId, artist)?.artist;
+    if (matched) return matched;
+  }
+  return null;
+}
+
+function assertArtistFanClubAvailable(identity) {
+  if (!identity?.artistKey) {
+    throw new ApiError(
+      409,
+      "This fan club needs staff review before it can reopen.",
+      "CONFLICT",
+    );
+  }
+  if (!artistHasLegacyMemorial(db, {
+    artistKey: identity.artistKey,
+    artist: identity.artist,
+  })) return;
+  throw legacyArtistReadOnlyError("Legacy artist pages keep community memories, but do not open fan clubs.");
+}
+
+function legacySafeLoungeSnapshot(key, at, { register = false } = {}) {
+  // Resolve without opening a room first. A pre-transition attendee or stale
+  // deep link must not recreate a live service after the artist becomes a
+  // protected legacy profile.
+  const preview = loungeLifecycleService.snapshot(key, at, { register: false });
+  const show = showAttendanceRepository.resolveShow(key);
+  if (artistHasLegacyMemorial(db, {
+    artistKey: show?.artistKey || null,
+    artist: show?.artist || preview?.artist || null,
+  })) {
+    throw legacyArtistReadOnlyError(
+      "Legacy artist pages preserve written community memories without live concert lounges.",
+    );
+  }
+  return register
+    ? loungeLifecycleService.snapshot(key, at, { register: true })
+    : preview;
+}
+
 function matchingArtistAccountIds(key) {
   return db.prepare("SELECT id,artist_name FROM users WHERE role='artist'").all()
     .filter((row) => normName(row.artist_name) === normName(key))
@@ -601,8 +728,16 @@ function matchingArtistAccountIds(key) {
 function assertArtistManagementCandidate(user, key) {
   if (user?.role === "admin") return;
   if (!artistIdentityMatches(user, key)) throw new ApiError(403, "Not your page.", "FORBIDDEN");
+  if (isLegacyArtistProfile(key)) throw legacyArtistReadOnlyError();
   const ownerId = db.prepare("SELECT owner_id FROM artist_profiles WHERE artist_key=?").get(key)?.owner_id;
   if (ownerId && ownerId !== user.id) throw new ApiError(403, "Not your page.", "FORBIDDEN");
+}
+
+function assertArtistPostCleanupCandidate(user, key) {
+  if (user?.role === "admin") return;
+  if (!artistIdentityMatches(user, key)) throw new ApiError(403, "Not your page.", "FORBIDDEN");
+  const ownerId = db.prepare("SELECT owner_id FROM artist_profiles WHERE artist_key=?").get(key)?.owner_id;
+  if (!ownerId || ownerId !== user.id) throw new ApiError(403, "Not your page.", "FORBIDDEN");
 }
 
 // Page ownership is a durable database binding, not a display-name comparison.
@@ -1550,6 +1685,11 @@ function cleanArtistCampaign(value, {
   if (!currentArtistKey) {
     throw new ApiError(403, "Only an approved artist account can publish an artist drop.", "FORBIDDEN");
   }
+  if (isLegacyArtistProfile(currentArtistKey, currentArtistName)) {
+    throw legacyArtistReadOnlyError(
+      "Legacy artist pages keep staff-curated history and community memories, but do not publish artist drops.",
+    );
+  }
   if (committed?.artistKey && normName(committed.artistKey) !== currentArtistKey) {
     throw new ApiError(403, "That artist drop belongs to an identity this account no longer manages.", "FORBIDDEN");
   }
@@ -1583,6 +1723,22 @@ function assertArtistAcceptsMemorialMemory({ artistKey = null, artist = null } =
     409,
     "Fan memories without a rating are available only on a verified memorial page.",
     "ARTIST_MEMORIAL_REQUIRED",
+  );
+}
+
+function assertLegacyArtistContentWrite({
+  artistKey = null,
+  artist = null,
+  addsMedia = false,
+  addsSong = false,
+  addsPlaylist = false,
+  addsOnlineVideo = false,
+  publishesMedia = false,
+} = {}) {
+  if ((!addsMedia && !addsSong && !addsPlaylist && !addsOnlineVideo && !publishesMedia)
+    || !artistHasLegacyMemorial(db, { artistKey, artist })) return;
+  throw legacyArtistReadOnlyError(
+    "Legacy artist pages accept written community memories, but new photos, videos, video links, song tags, and playlists are closed.",
   );
 }
 
@@ -1764,8 +1920,15 @@ function attendanceTicketArtistProfilePhoto({ artistKey, artist } = {}) {
   const key = normName(artistKey || artist);
   if (!key) return null;
   const profile = ticketArtistProfile.get(key);
-  if (!profile || profile.removed
-    || (profile.owner_id && !publicAccountOrNull(profile.owner_id))) return null;
+  if (!profile || profile.removed) return null;
+  if (isLegacyArtistProfile(key, artist)) {
+    const uploaderId = artistProfileSlotOwner(profile, "avatar");
+    const uploader = uploaderId ? q.userById.get(uploaderId) : null;
+    return uploader?.role === "admin" && accountIsPublic(uploader, now())
+      ? safePublicArtistProfileImage(profile, "avatar")
+      : null;
+  }
+  if (profile.owner_id && !publicAccountOrNull(profile.owner_id)) return null;
   return safePublicArtistProfileImage(profile, "avatar");
 }
 
@@ -2097,7 +2260,22 @@ function canonicalCreateRequest(user, body, storedPost = null) {
     });
     if (errs.length) throw new ApiError(400, errs[0]);
     const binding = memorialMemory ? resolveArtistBinding(v.artist, source.artistKey) : null;
-    if (memorialMemory) assertArtistAcceptsMemorialMemory({ artistKey: binding?.artist_key, artist: v.artist });
+    if (memorialMemory) {
+      assertArtistAcceptsMemorialMemory({ artistKey: binding?.artist_key, artist: v.artist });
+      // Exact idempotent retries replay an already-committed canonical body.
+      // Do not mistake that stored media for a new legacy-profile upload; the
+      // mutation hash below still rejects every changed replay.
+      if (!storedPost) {
+        assertLegacyArtistContentWrite({
+          artistKey: binding?.artist_key,
+          artist: v.artist,
+          addsMedia: (stableMedia ? stableMedia.photos : (v.photos || [])).length > 0,
+          addsSong: !!v.song,
+          addsPlaylist: source.playlistId != null && source.playlistId !== "",
+          publishesMedia: !!v.photosPublic,
+        });
+      }
+    }
     const playlist = memorialMemory ? null : playlistSnapshotForPost(user, source.playlistId, parsedStoredObject(storedPost?.playlist));
     if (!stableMedia) rejectNewLegacyMediaUrls(v.photos || [], parseJsonArray(storedPost?.photos));
     const campaign = memorialMemory ? null : cleanArtistCampaign(source.campaign, {
@@ -3202,8 +3380,28 @@ function publicArtistProfileProjection(profile) {
   };
 }
 
+function publicLegacyArtistProfileProjection(profile) {
+  if (!profile || profile.removed) return null;
+  const adminMedia = (slot) => {
+    const ownerId = artistProfileSlotOwner(profile, slot);
+    const owner = ownerId ? q.userById.get(ownerId) : null;
+    return owner?.role === "admin" && accountIsPublic(owner, now())
+      ? safePublicArtistProfileImage(profile, slot)
+      : null;
+  };
+  return {
+    ownerId: null,
+    // Only durable staff-curation provenance can publish educational copy.
+    // Ownership can later be removed, so owner_id is not a safe proxy.
+    bio: profile.bio_staff_curated ? (profile.bio ?? null) : null,
+    banner: adminMedia("banner"),
+    avatarUri: adminMedia("avatar"),
+    feedEnabled: !!profile.feed_enabled,
+  };
+}
+
 const ARTIST_PROFILE_SNAPSHOT_FIELDS = Object.freeze([
-  "owner_id", "bio", "banner", "banner_owner_id", "avatar_uri", "avatar_owner_id",
+  "owner_id", "bio", "bio_staff_curated", "banner", "banner_owner_id", "avatar_uri", "avatar_owner_id",
   "feed_enabled", "removed", "updated_at",
 ]);
 const artistProfileSnapshotByKey = db.prepare(`SELECT ${ARTIST_PROFILE_SNAPSHOT_FIELDS.join(",")}
@@ -3421,6 +3619,7 @@ function youtubeTrackPlaybackContext(ctx, input = {}) {
   const title = clean(input.title, { max: 200 });
   const artist = clean(input.artist, { max: 120 });
   if (!title) throw new ApiError(400, "Missing title.");
+  if (artist) assertArtistMusicServiceAvailable(artist);
   const sourceProvider = String(clean(input.provider, { max: 24 }) || "").toLowerCase();
   const sourceId = clean(input.sourceId, { max: 64 }) || "";
   const recordingSource = cleanTrackRecordingSource(sourceProvider, sourceId);
@@ -3602,6 +3801,13 @@ export const routes = {
   ...artistArchiveRoutes({
     database: db,
     ApiError,
+    assertArtistArchiveAvailable: ({ artistKey, name }) => {
+      if (isLegacyArtistProfile(artistKey, name)) {
+        throw legacyArtistReadOnlyError(
+          "Legacy artist pages preserve community memories without tour or show archives.",
+        );
+      }
+    },
     clean,
     normName,
     // Stable post_media is the only archive publication authority. Mark every
@@ -3636,6 +3842,7 @@ export const routes = {
   ...artistDiscographyRoutes({
     ApiError,
     ProviderError,
+    assertMusicServiceAvailable: ({ artist }) => assertArtistMusicServiceAvailable(artist),
     clean,
     loadDiscography: getDeezerDiscography,
     rateLimit: limit,
@@ -3683,6 +3890,15 @@ export const routes = {
     database: db,
     attendanceRepository: showAttendanceRepository,
     ApiError,
+    assertLiveAttendanceAvailable: ({ artistKey, artist, key }) => {
+      const legacyAliasArtist = String(key || "").split("|")[0]?.trim() || null;
+      if (isLegacyArtistProfile(artistKey, artist)
+        || (legacyAliasArtist && isLegacyArtistProfile(null, legacyAliasArtist))) {
+        throw legacyArtistReadOnlyError(
+          "Legacy artist pages do not offer live attendance or crowd services.",
+        );
+      }
+    },
     assertSafeAuthoredFields,
     atomicWrite,
     clean,
@@ -3704,6 +3920,13 @@ export const routes = {
     database: db,
     ApiError,
     attendanceRepository: showAttendanceRepository,
+    assertLiveShareAvailable: ({ artistKey, artist }) => {
+      if (isLegacyArtistProfile(artistKey, artist)) {
+        throw legacyArtistReadOnlyError(
+          "Legacy artist pages do not offer Going or Interested share cards.",
+        );
+      }
+    },
     blockedEitherWay,
     rateLimit: limit,
     requireUser,
@@ -4128,6 +4351,11 @@ export const routes = {
         }
         return {
           ...artist,
+          // Fan-club discovery must not infer eligibility from an absent badge.
+          // This bit is calculated beside the authoritative memorial snapshot
+          // so zero-member living artists remain discoverable while legacy
+          // artists never appear as clubs somebody can start.
+          fanClubAvailable: !isLegacyArtistMemorial(memorial),
           // Search receives only the compact public marker. The complete prose,
           // accomplishments, thank-you, and citation load on the artist page.
           memorial: memorial ? {
@@ -4215,11 +4443,24 @@ export const routes = {
     const name = clean(ctx.query.name, { max: 120 });
     if (!name) throw new ApiError(400, "Missing name.");
     const existing = artistStmts.byNorm.get(normName(name));
-    if (existing) return { artist: publicArtist(existing), created: false };
+    if (existing) return {
+      artist: {
+        ...publicArtist(existing),
+        fanClubAvailable: !artistHasLegacyMemorial(db, {
+          artistKey: existing.norm,
+          artist: existing.name,
+        }),
+      },
+      created: false,
+    };
     limit(ctx, "resolve", 90, 10 * 60 * 1000); // cap outbound MB lookups per client
     const mb = await resolveFromMusicBrainz(name, { signal: ctx.signal });
     if (!mb) return { artist: null, created: false };
-    return { artist: publicArtist(artistRow(mb.name, mb, "musicbrainz")), created: false, transient: true };
+    return {
+      artist: { ...publicArtist(artistRow(mb.name, mb, "musicbrainz")), fanClubAvailable: true },
+      created: false,
+      transient: true,
+    };
   },
 
   // Same-named artists disambiguation: a short list of Deezer candidates (fans,
@@ -4228,6 +4469,7 @@ export const routes = {
   "GET /api/artists/candidates": async (ctx) => {
     const name = clean(ctx.query.name, { max: 120 });
     if (!name) throw new ApiError(400, "Missing name.");
+    assertArtistMusicServiceAvailable(name);
     limit(ctx, "artist-candidates", 60, 10 * 60 * 1000);
     try { return { candidates: await findDeezerArtistCandidates(name, { signal: ctx.signal }) }; }
     catch (error) {
@@ -4243,6 +4485,7 @@ export const routes = {
     const title = clean(ctx.query.title, { max: 200 });
     const artist = clean(ctx.query.artist, { max: 120 });
     if (!title) throw new ApiError(400, "Missing title.");
+    if (artist) assertArtistMusicServiceAvailable(artist);
     limit(ctx, "deezer-track", 180, 10 * 60 * 1000);
     try { return await getFreshDeezerPreview(title, artist, { signal: ctx.signal }); }
     catch (error) {
@@ -5376,6 +5619,11 @@ export const routes = {
     const user = requireUser(ctx);
     limit(ctx, "tour-date-batch", 20, 60 * 60 * 1000);
     const batch = cleanTourDateBatch(ctx, user);
+    if (user.role !== "admin" && isLegacyArtistProfile(normName(batch.artist), batch.artist)) {
+      throw legacyArtistReadOnlyError(
+        "Legacy artist pages do not accept artist-submitted tour or concert dates.",
+      );
+    }
     const includesCurrentOrFutureDate = batch.dates.some((entry) => isCurrentOrUpcomingLiveEvent({
       date: entry.date,
       eventEndDate: entry.eventEndDate,
@@ -5728,7 +5976,16 @@ export const routes = {
           assertGoingAttendanceForTicket(u.id, v.attendanceTicket);
           assertNoActiveAttendanceTicketPost(u.id, v.attendanceTicket);
         }
-        if (v.memorialMemory) assertArtistAcceptsMemorialMemory({ artistKey: v.binding?.artist_key, artist: v.artist });
+        if (v.memorialMemory) {
+          assertArtistAcceptsMemorialMemory({ artistKey: v.binding?.artist_key, artist: v.artist });
+          assertLegacyArtistContentWrite({
+            artistKey: v.binding?.artist_key,
+            artist: v.artist,
+            addsMedia: v.photos.length > 0,
+            addsSong: !!v.song,
+            publishesMedia: !!v.photosPublic,
+          });
+        }
         postRow.run(id, u.id, v.memorialMemory ? v.artist : "", "", "", "", 0, null, null,
           "{}", v.review, JSON.stringify(v.photos), v.photosPublic, 0, v.campaign ? JSON.stringify(v.campaign) : null, "[]", null,
           "[]", JSON.stringify(transactionTaggedUserIds), "status", v.song ? JSON.stringify(v.song) : null, v.playlist ? JSON.stringify(v.playlist) : null,
@@ -5969,12 +6226,26 @@ export const routes = {
       next.youtube_video_id = null;
     }
     if (has("playlistId")) {
-      if (currentMemorialMemory) throw new ApiError(400, "Playlists cannot be attached to a memorial fan memory.", "VALIDATION_FAILED");
-      if (current.kind !== "status") throw new ApiError(400, "Playlists can only be attached to regular posts.", "VALIDATION_FAILED");
-      let currentSnapshot = null;
-      try { currentSnapshot = current.playlist ? JSON.parse(current.playlist) : null; } catch {}
-      const playlist = playlistSnapshotForPost(u, body.playlistId, currentSnapshot);
-      next.playlist = playlist ? JSON.stringify(playlist) : null;
+      if (currentMemorialMemory) {
+        const clearsPlaylist = body.playlistId == null || String(body.playlistId).trim() === "";
+        if (!clearsPlaylist) {
+          assertLegacyArtistContentWrite({
+            artistKey: current.artist_key,
+            artist: current.artist,
+            addsPlaylist: true,
+          });
+          throw new ApiError(400, "Playlists cannot be attached to a memorial fan memory.", "VALIDATION_FAILED");
+        }
+        // Cleanup stays available even after a page becomes protected. This can
+        // remove an older attachment without creating or resolving a playlist.
+        next.playlist = null;
+      } else {
+        if (current.kind !== "status") throw new ApiError(400, "Playlists can only be attached to regular posts.", "VALIDATION_FAILED");
+        let currentSnapshot = null;
+        try { currentSnapshot = current.playlist ? JSON.parse(current.playlist) : null; } catch {}
+        const playlist = playlistSnapshotForPost(u, body.playlistId, currentSnapshot);
+        next.playlist = playlist ? JSON.stringify(playlist) : null;
+      }
     }
 
     let editedSong = null;
@@ -5993,8 +6264,8 @@ export const routes = {
       "online concert title": has("onlineTitle") ? next.online_title : undefined,
     });
 
-    let storedPhotos = [];
-    try { storedPhotos = JSON.parse(next.photos || "[]"); } catch {}
+    const storedPhotos = parseJsonArray(next.photos);
+    const previousPhotos = parseJsonArray(current.photos);
     // Privacy wins if a forged/older client submits contradictory toggles. A
     // standalone showcase opt-in makes ordinary photo sharing public, while an
     // explicit public-off edit immediately clears homepage eligibility.
@@ -6017,7 +6288,6 @@ export const routes = {
     }
 
     const editedAt = Math.max(now(), currentVersion + 1);
-    const previousPhotos = parseJsonArray(current.photos);
     const removedPhotos = previousPhotos.filter((value) => !storedPhotos.includes(value));
     // An older client may edit a post that already has stable media while only
     // sending the legacy URL array. Preserve any linked assets whose publish URL
@@ -6067,8 +6337,48 @@ export const routes = {
         ? { artist_key: current.artist_key, artist_mbid: current.artist_mbid }
         : { artist_key: null, artist_mbid: null }
       : resolveArtistBinding(next.artist, has("artistKey") ? body.artistKey : current.artist_key);
-    if (current.kind !== "status"
-      && ["artist", "artistKey", "overall", "band", "room", "dims", "experienceType"].some(has)) {
+    // The legacy boundary belongs to the canonical artist identity, not to one
+    // post kind. Historical reviews and older clients must not be able to add
+    // media after the artist page becomes a protected educational archive.
+    // Removing old attachments or editing words remains available.
+    const legacyAddsMedia = storedPhotos.some((url) => !previousPhotos.includes(url));
+    const legacyAddsSong = has("song") && !!next.song && next.song !== current.song;
+    const legacyAddsPlaylist = has("playlistId") && !!next.playlist && next.playlist !== current.playlist;
+    const legacyAddsOnlineVideo = current.kind !== "status"
+      && (has("youtubeUrl") || has("youtubeVideoId"))
+      && !!next.youtube_url
+      && (next.youtube_url !== current.youtube_url || next.youtube_video_id !== current.youtube_video_id);
+    const legacyPublishesMedia = (has("photosPublic") && !!next.photos_public && !current.photos_public)
+      || (has("landingShowcase") && !!next.landing_showcase && !current.landing_showcase);
+    assertLegacyArtistContentWrite({
+      artistKey: editBinding.artist_key,
+      artist: next.artist,
+      addsMedia: legacyAddsMedia,
+      addsSong: legacyAddsSong,
+      addsPlaylist: legacyAddsPlaylist,
+      addsOnlineVideo: legacyAddsOnlineVideo,
+      publishesMedia: legacyPublishesMedia,
+    });
+    const changesLiveReviewMetadata = current.kind !== "status" && [
+      ["artist", next.artist, current.artist],
+      ["artistKey", editBinding.artist_key, current.artist_key],
+      ["venue", next.venue, current.venue],
+      ["city", next.city, current.city],
+      ["date", next.date, current.date],
+      ["overall", next.overall, current.overall],
+      ["band", next.band, current.band],
+      ["room", next.room, current.room],
+      ["dims", next.dims, current.dims],
+      ["setlist", next.setlist, current.setlist],
+      ["tour", next.tour, current.tour],
+      ["experienceType", next.experience_type, current.experience_type],
+    ].some(([field, nextValue, currentValue]) => has(field) && nextValue !== currentValue);
+    if (changesLiveReviewMetadata) {
+      if (artistHasLegacyMemorial(db, { artistKey: editBinding.artist_key, artist: next.artist })) {
+        throw legacyArtistReadOnlyError(
+          "Legacy artist pages preserve historical review details, but live ratings, dates, venues, setlists, and tours are locked.",
+        );
+      }
       assertArtistAcceptsLiveRating({ artistKey: editBinding.artist_key, artist: next.artist });
     }
     const nextTaggedUserIds = storedPostTaggedUserIds(next.tagged_user_ids);
@@ -6089,6 +6399,20 @@ export const routes = {
       });
       const transactionNewlyTaggedUserIds = transactionTaggedUserIds.filter((id) => !transactionCommittedIdSet.has(id));
       assertPostTagRecipientBudget(u.id, transactionNewlyTaggedUserIds, { postId: current.id });
+      if (currentMemorialMemory) {
+        assertArtistAcceptsMemorialMemory({ artistKey: current.artist_key, artist: current.artist });
+      }
+      // Re-evaluate after BEGIN IMMEDIATE so a memorial published concurrently
+      // cannot race one final media addition onto the newly protected page.
+      assertLegacyArtistContentWrite({
+        artistKey: editBinding.artist_key,
+        artist: next.artist,
+        addsMedia: legacyAddsMedia,
+        addsSong: legacyAddsSong,
+        addsPlaylist: legacyAddsPlaylist,
+        addsOnlineVideo: legacyAddsOnlineVideo,
+        publishesMedia: legacyPublishesMedia,
+      });
       const updated = db.prepare(`UPDATE posts SET artist=?,venue=?,city=?,date=?,overall=?,band=?,room=?,dims=?,review=?,photos=?,photos_public=?,landing_showcase=?,campaign=?,setlist=?,tour=?,tags=?,tagged_user_ids=?,song=?,playlist=?,artist_key=?,artist_mbid=?,venue_key=?,experience_type=?,online_title=?,youtube_url=?,youtube_video_id=?,updated_at=?
         WHERE id=? AND user_id=? AND removed=0 AND COALESCE(updated_at,created_at)=?`)
         .run(next.artist, next.venue, next.city, next.date, next.overall, next.band, next.room, next.dims, next.review, next.photos, next.photos_public, next.landing_showcase, next.campaign, next.setlist, next.tour, next.tags, JSON.stringify(transactionTaggedUserIds), next.song, next.playlist,
@@ -6523,7 +6847,14 @@ export const routes = {
   "GET /api/me/fanclubs": (ctx) => {
     const u = requireUser(ctx);
     const rows = db.prepare("SELECT artist FROM fan_club_members WHERE user_id = ?").all(u.id);
-    return { artists: rows.map((r) => r.artist) };
+    return {
+      artists: rows
+        .map((row) => fanClubArtistIdentity(row.artist))
+        .filter((identity) => identity.artistKey
+          && !isLegacyArtistProfile(identity.artistKey, identity.artist))
+        .map((identity) => identity.storageArtist)
+        .filter((artist, index, artists) => artists.indexOf(artist) === index),
+    };
   },
 
   // Public aggregate directory. Membership rows and non-removed messages are
@@ -6544,42 +6875,92 @@ export const routes = {
           WHERE messages.artist=active_clubs.artist AND messages.removed=0 AND ${activeAccountSql("message_user")}) messages,
         COUNT(*) OVER() total_count
       FROM active_clubs
-      ORDER BY members DESC,messages DESC,active_clubs.artist COLLATE NOCASE LIMIT 200`).all();
-    const total = Number(found[0]?.total_count) || 0;
-    const clubs = found.map(({ total_count: _totalCount, ...club }) => club);
-    return { clubs, total };
+      WHERE NOT EXISTS (
+        SELECT 1 FROM artist_memorials memorial
+        JOIN artists remembered
+          ON remembered.norm=memorial.artist_key AND remembered.mbid=memorial.artist_mbid
+        WHERE memorial.status='published' AND memorial.artist_mbid IS NOT NULL
+          AND memorial.death_date<?
+          AND (
+            remembered.norm=active_clubs.artist COLLATE NOCASE
+            OR remembered.public_slug=active_clubs.artist COLLATE NOCASE
+            OR (
+              remembered.name=active_clubs.artist COLLATE NOCASE
+              AND 1=(SELECT COUNT(*) FROM artists exact_artist
+                WHERE exact_artist.name=active_clubs.artist COLLATE NOCASE)
+            )
+          )
+      )
+      ORDER BY members DESC,messages DESC,active_clubs.artist COLLATE NOCASE LIMIT 200`)
+      .all(LEGACY_ARTIST_DEATH_DATE_CUTOFF);
+    const canonicalClubs = new Map();
+    for (const { total_count: _totalCount, ...club } of found) {
+      const identity = fanClubArtistIdentity(club.artist);
+      if (!identity.artistKey || isLegacyArtistProfile(identity.artistKey, identity.artist)) continue;
+      const existing = canonicalClubs.get(identity.artistKey);
+      if (existing) {
+        existing.members += Number(club.members) || 0;
+        existing.messages += Number(club.messages) || 0;
+      } else {
+        canonicalClubs.set(identity.artistKey, {
+          artist: identity.storageArtist,
+          members: Number(club.members) || 0,
+          messages: Number(club.messages) || 0,
+        });
+      }
+    }
+    const clubs = [...canonicalClubs.values()]
+      .sort((left, right) => right.members - left.members
+        || right.messages - left.messages
+        || left.artist.localeCompare(right.artist));
+    return { clubs, total: clubs.length };
   },
 
   "POST /api/fanclubs/:artist/join": (ctx) => {
     const u = requireUser(ctx);
     limit(ctx, "fanclub", 60, 10 * 60 * 1000);
-    const artist = decodedPathParam(ctx, "artist", { max: LIMITS.artist, label: "artist link" }).toLowerCase();
-    if (!artist) throw new ApiError(400, "Bad artist.");
-    const has = !!db.prepare("SELECT 1 FROM fan_club_members WHERE artist=? AND user_id=?").get(artist, u.id);
+    const identity = fanClubArtistIdentity(decodedPathParam(ctx, "artist", { max: LIMITS.artist, label: "artist link" }));
+    if (!identity.requested) throw new ApiError(400, "Bad artist.");
+    const membershipArtist = existingFanClubMembershipArtist(identity, u.id);
+    const has = !!membershipArtist;
     const joined = desiredState(ctx.body, "joined", has);
-    if (!joined && has) db.prepare("DELETE FROM fan_club_members WHERE artist=? AND user_id=?").run(artist, u.id);
-    else if (joined && !has) db.prepare("INSERT INTO fan_club_members (artist,user_id) VALUES (?,?)").run(artist, u.id);
+    if (joined) {
+      assertArtistFanClubAvailable(identity);
+    }
+    if (!joined && has) {
+      const remove = db.prepare("DELETE FROM fan_club_members WHERE artist=? AND user_id=?");
+      for (const artist of new Set([...identity.aliases, membershipArtist])) remove.run(artist, u.id);
+      const removeNormalized = db.prepare(`DELETE FROM fan_club_members
+        WHERE user_id=? AND pit_artist_identity(artist)=pit_artist_identity(?)`);
+      for (const artist of identity.aliases) removeNormalized.run(u.id, artist);
+    } else if (joined && !has) {
+      db.prepare("INSERT INTO fan_club_members (artist,user_id) VALUES (?,?)").run(identity.storageArtist, u.id);
+    }
     return { member: joined, joined };
   },
 
   // The gate only needs aggregate counts. Keep that lightweight metadata public
   // without exposing message bodies to people who have not joined the club.
   "GET /api/fanclubs/:artist/meta": (ctx) => {
-    const artist = decodedPathParam(ctx, "artist", { max: LIMITS.artist, label: "artist link" }).toLowerCase();
-    if (!artist) throw new ApiError(400, "Bad artist.", "VALIDATION_FAILED");
+    const identity = fanClubArtistIdentity(decodedPathParam(ctx, "artist", { max: LIMITS.artist, label: "artist link" }));
+    if (!identity.requested) throw new ApiError(400, "Bad artist.", "VALIDATION_FAILED");
+    assertArtistFanClubAvailable(identity);
+    const aliases = identity.aliases;
+    const placeholders = aliases.map(() => "?").join(",");
     const members = db.prepare(`SELECT COUNT(*) c FROM fan_club_members m JOIN users u ON u.id=m.user_id
-      WHERE m.artist=? AND ${activeAccountSql("u")}`).get(artist).c;
+      WHERE m.artist IN (${placeholders}) AND ${activeAccountSql("u")}`).get(...aliases).c;
     const messageCount = db.prepare(`SELECT COUNT(*) c FROM fan_club_messages m JOIN users u ON u.id=m.user_id
-      WHERE m.artist=? AND m.removed=0 AND ${activeAccountSql("u")}`).get(artist).c;
+      WHERE m.artist IN (${placeholders}) AND m.removed=0 AND ${activeAccountSql("u")}`).get(...aliases).c;
     return { members, messageCount };
   },
 
   "GET /api/fanclubs/:artist/messages": (ctx) => {
     const u = requireUser(ctx);
-    const artist = decodedPathParam(ctx, "artist", { max: LIMITS.artist, label: "artist link" }).toLowerCase();
-    if (!artist) throw new ApiError(400, "Bad artist.", "VALIDATION_FAILED");
-    const member = db.prepare("SELECT 1 FROM fan_club_members WHERE artist=? AND user_id=?").get(artist, u.id);
-    if (!member) throw new ApiError(403, "Join this fan club before opening its conversation.", "FAN_CLUB_MEMBERSHIP_REQUIRED");
+    const identity = fanClubArtistIdentity(decodedPathParam(ctx, "artist", { max: LIMITS.artist, label: "artist link" }));
+    if (!identity.requested) throw new ApiError(400, "Bad artist.", "VALIDATION_FAILED");
+    assertArtistFanClubAvailable(identity);
+    const artist = existingFanClubMembershipArtist(identity, u.id);
+    if (!artist) throw new ApiError(403, "Join this fan club before opening its conversation.", "FAN_CLUB_MEMBERSHIP_REQUIRED");
     const { cursor, limit } = pageRequest(ctx, 300, 300);
     const after = decodeCursor(ctx.query?.after);
     if (cursor && after) throw new ApiError(400, "Use either before or after, not both.", "VALIDATION_FAILED");
@@ -6622,12 +7003,13 @@ export const routes = {
 
   "POST /api/fanclubs/:artist/messages": (ctx) => {
     const u = requireUser(ctx);
-    const artist = decodedPathParam(ctx, "artist", { max: LIMITS.artist, label: "artist link" }).toLowerCase();
+    const identity = fanClubArtistIdentity(decodedPathParam(ctx, "artist", { max: LIMITS.artist, label: "artist link" }));
     const text = clean(ctx.body?.text, { max: LIMITS.message, newlines: true });
-    if (!artist || !text) throw new ApiError(400, "Say something first.");
+    if (!identity.requested || !text) throw new ApiError(400, "Say something first.");
+    assertArtistFanClubAvailable(identity);
     assertSafeAuthoredText(text, { field: "fan-club message" });
-    const member = db.prepare("SELECT 1 FROM fan_club_members WHERE artist=? AND user_id=?").get(artist, u.id);
-    if (!member) throw new ApiError(403, "Join this fan club before jumping into the conversation.", "FAN_CLUB_MEMBERSHIP_REQUIRED");
+    const artist = existingFanClubMembershipArtist(identity, u.id);
+    if (!artist) throw new ApiError(403, "Join this fan club before jumping into the conversation.", "FAN_CLUB_MEMBERSHIP_REQUIRED");
     const mutationId = chatClientMutationId(ctx.body?.clientMutationId);
     const existing = mutationId
       ? db.prepare("SELECT id,artist,text,removed FROM fan_club_messages WHERE user_id=? AND client_mutation_id=? LIMIT 1").get(u.id, mutationId)
@@ -6662,7 +7044,7 @@ export const routes = {
     ctx.setHeader?.("Cache-Control", "no-store");
     const register = !!ctx.user && accountIsPublic(ctx.user)
       && showAttendanceRepository.hasAttendeeAccess(ctx.user.id, key);
-    const lifecycle = loungeLifecycleService.snapshot(key, now(), { register });
+    const lifecycle = legacySafeLoungeSnapshot(key, now(), { register });
     const attendeeCount = db.prepare(`SELECT COUNT(*) c FROM going g JOIN users u ON u.id=g.user_id
       WHERE g.concert_key=? AND ${activeAccountSql("u")}`).get(key).c;
     if (lifecycle.status === "closed") {
@@ -6673,7 +7055,9 @@ export const routes = {
         timingKnown: lifecycle.timingKnown,
         cutoffAt: lifecycle.cutoffAt,
         cutoffSource: lifecycle.cutoffSource,
-        fanClubArtist: lifecycle.artist || null,
+        fanClubArtist: lifecycle.artist && !isLegacyArtistProfile(lifecycle.artist, lifecycle.artist)
+          ? lifecycle.artist
+          : null,
       };
     }
     const messageCount = db.prepare(`SELECT COUNT(*) c FROM lounge_messages m JOIN users u ON u.id=m.user_id
@@ -6685,7 +7069,9 @@ export const routes = {
       timingKnown: lifecycle.timingKnown,
       cutoffAt: lifecycle.cutoffAt,
       cutoffSource: lifecycle.cutoffSource,
-      fanClubArtist: lifecycle.artist || null,
+      fanClubArtist: lifecycle.artist && !isLegacyArtistProfile(lifecycle.artist, lifecycle.artist)
+        ? lifecycle.artist
+        : null,
     };
   },
 
@@ -6693,9 +7079,10 @@ export const routes = {
     const u = requireUser(ctx);
     const key = decodedPathParam(ctx, "key", { max: 300, label: "lounge link" }).toLowerCase();
     if (!key) throw new ApiError(400, "Bad lounge.", "VALIDATION_FAILED");
+    legacySafeLoungeSnapshot(key, now(), { register: false });
     const attendee = showAttendanceRepository.hasAttendeeAccess(u.id, key);
     if (!attendee) throw new ApiError(403, "Join this show's Going list before opening the lounge.", "LOUNGE_ATTENDANCE_REQUIRED");
-    const lifecycle = loungeLifecycleService.snapshot(key, now(), { register: true });
+    const lifecycle = legacySafeLoungeSnapshot(key, now(), { register: true });
     if (lifecycle.status === "closed") {
       throw new ApiError(410, "This show's Lounge has closed. Keep the conversation going in the artist Fan Club.", "LOUNGE_CLOSED");
     }
@@ -6749,10 +7136,10 @@ export const routes = {
       : null;
     if (existing) {
       assertChatRetryMatches(existing, { lounge_id: key, text });
-      loungeLifecycleService.snapshot(key, now(), { register: true });
+      legacySafeLoungeSnapshot(key, now(), { register: true });
       return { id: existing.id, duplicate: true };
     }
-    const lifecycle = loungeLifecycleService.snapshot(key, now(), { register: true });
+    const lifecycle = legacySafeLoungeSnapshot(key, now(), { register: true });
     if (lifecycle.status === "closed") {
       throw new ApiError(410, "This show's Lounge has closed. Keep the conversation going in the artist Fan Club.", "LOUNGE_CLOSED");
     }
@@ -8084,6 +8471,8 @@ export const routes = {
     const kind = ctx.query.kind === "song" ? "song" : "album";
     const ref = clean(ctx.query.ref, { max: 200 });
     if (!ref) throw new ApiError(400, "Missing ref.");
+    const artist = ratingArtistSegment(ref);
+    if (artist) assertArtistMusicServiceAvailable(artist);
     const agg = db.prepare(`SELECT AVG(r.rating) avg,COUNT(*) count FROM ratings r JOIN users u ON u.id=r.user_id
       WHERE r.kind=? AND r.ref=? AND ${activeAccountSql("u")}`).get(kind, ref);
     const mine = ctx.user ? db.prepare("SELECT rating FROM ratings WHERE user_id=? AND kind=? AND ref=?").get(ctx.user.id, kind, ref) : null;
@@ -8096,6 +8485,8 @@ export const routes = {
     const ref = clean(ctx.body?.ref, { max: 200 });
     const rating = clampRating(ctx.body?.rating);
     if (!ref || !rating) throw new ApiError(400, "Bad rating.");
+    const artist = ratingArtistSegment(ref);
+    if (artist) assertArtistMusicServiceAvailable(artist);
     db.prepare(`INSERT INTO ratings (user_id,kind,ref,rating) VALUES (?,?,?,?)
                 ON CONFLICT(user_id,kind,ref) DO UPDATE SET rating=excluded.rating`).run(u.id, kind, ref, rating);
     const agg = db.prepare(`SELECT AVG(r.rating) avg,COUNT(*) count FROM ratings r JOIN users u ON u.id=r.user_id
@@ -8181,6 +8572,7 @@ export const routes = {
     limit(ctx, "artistreq", 5, 60 * 60 * 1000);
     const artistName = clean(ctx.body?.artistName, { max: LIMITS.artist });
     if (!artistName || artistName.length < 2) throw new ApiError(400, "Enter the artist name.");
+    if (isLegacyArtistProfile(normName(artistName), artistName)) throw legacyArtistReadOnlyError();
     const note = clean(ctx.body?.note, { max: LIMITS.note, newlines: true }) || "";
     assertSafeAuthoredFields({ "artist name": artistName, "request note": note });
     const id = uid("ar");
@@ -8198,6 +8590,7 @@ export const routes = {
     const r = db.prepare("SELECT * FROM artist_requests WHERE id=?").get(ctx.params.id);
     if (!r) throw new ApiError(404, "No such request.");
     const key = normName(r.artist_name);
+    if (isLegacyArtistProfile(key, r.artist_name)) throw legacyArtistReadOnlyError();
     atomicWrite(() => {
       const target = q.userById.get(r.user_id);
       if (!target) throw new ApiError(404, "The requesting account no longer exists.", "NOT_FOUND");
@@ -8228,45 +8621,65 @@ export const routes = {
   },
   "GET /api/artists/:key/profile": (ctx) => {
     const key = decodedPathParam(ctx, "key", { max: 200, label: "artist link" }).toLowerCase();
+    const catalogArtist = artistStmts.byNorm.get(key) || artistStmts.byPublicSlug.get(key);
+    const profileKey = catalogArtist?.norm || key;
+    const legacyProfile = artistHasLegacyMemorial(db, {
+      artistKey: profileKey,
+      artist: catalogArtist?.name || null,
+    });
     // Artist pages can use an immutable public slug while the queue is keyed by
     // canonical catalog identity. Only authenticated reads enqueue, and no raw
     // path/query/requester data is persisted.
     if (ctx.user?.id) {
-      const catalogArtist = artistStmts.byNorm.get(key) || artistStmts.byPublicSlug.get(key);
       if (catalogArtist) {
         maybeEnqueueArtistTourDateDemandRefresh(ctx, catalogArtist.norm);
       }
     }
-    const p = db.prepare("SELECT * FROM artist_profiles WHERE artist_key=?").get(key);
+    const p = db.prepare("SELECT * FROM artist_profiles WHERE artist_key=?").get(profileKey);
     const blocked = blockedIdSet(ctx.user?.id);
     // Owner overrides are ordinary user-authored UGC. A block must hide them in
     // both directions just like profiles and posts elsewhere; the client can
     // still render provider/catalog metadata beneath this null overlay.
-    if (p?.owner_id && (blocked.has(p.owner_id) || !publicAccountOrNull(p.owner_id))) return { profile: null, posts: [] };
+    if (!legacyProfile && p?.owner_id && (blocked.has(p.owner_id) || !publicAccountOrNull(p.owner_id))) {
+      return { profile: null, posts: [], legacyProfile: false };
+    }
     const viewer = ctx.user?.id || null;
     const blockSql = viewer ? `AND NOT EXISTS (SELECT 1 FROM blocks b WHERE
       (b.blocker_id=? AND b.blocked_id=post.user_id) OR (b.blocker_id=post.user_id AND b.blocked_id=?))` : "";
-    const args = viewer ? [key, viewer, viewer] : [key];
+    const args = viewer ? [profileKey, viewer, viewer] : [profileKey];
     // A disabled updates feed is a publication boundary, not just a client-side
     // presentation preference. Keep its posts available to the owning artist
     // and admins for management, but never disclose them to public/non-owners.
-    const canManageFeed = canManageArtistProfile(ctx.user, key, p);
+    const canManageFeed = legacyProfile
+      ? ctx.user?.role === "admin"
+      : canManageArtistProfile(ctx.user, profileKey, p);
     const posts = p?.removed || (!p?.feed_enabled && !canManageFeed) ? [] : db.prepare(`SELECT post.id,post.user_id,post.text,post.created_at
       FROM artist_posts post JOIN users author ON author.id=post.user_id
       WHERE post.artist_key=? AND post.removed=0 AND ${activeAccountSql("author")}
+        ${legacyProfile ? "AND author.role='admin'" : ""}
         ${blockSql}
       ORDER BY post.created_at DESC,post.id DESC LIMIT 100`).all(...args);
     return {
+      // The client must distinguish a server-sanitized legacy projection from
+      // a pre-memorial owner snapshot that was already in flight or on disk.
+      // Without this marker, old owner copy could be relabelled as editorial.
+      legacyProfile,
       // Slot owners are storage provenance, not public authors. The claim owner
       // controls page visibility; uploader block/account state must not make
       // staff-seeded catalog artwork disappear.
-      profile: publicArtistProfileProjection(p),
+      profile: legacyProfile ? publicLegacyArtistProfileProjection(p) : publicArtistProfileProjection(p),
       posts: posts.map((x) => ({ id: x.id, userId: x.user_id, text: x.text, createdAt: x.created_at })),
     };
   },
   "PATCH /api/artists/:key/profile": (ctx) => {
     const u = requireUser(ctx);
-    const key = decodedPathParam(ctx, "key", { max: 200, label: "artist link" }).toLowerCase();
+    const requestedKey = decodedPathParam(ctx, "key", { max: 200, label: "artist link" }).toLowerCase();
+    const catalogArtist = artistStmts.byNorm.get(requestedKey) || artistStmts.byPublicSlug.get(requestedKey);
+    const key = catalogArtist?.norm || requestedKey;
+    const legacyProfile = artistHasLegacyMemorial(db, {
+      artistKey: key,
+      artist: catalogArtist?.name || null,
+    });
     assertArtistManagementCandidate(u, key);
     const [, v] = shape(ctx.body, {
       bio: { parse: (x) => clean(x, { max: 600, newlines: true }) },
@@ -8297,7 +8710,10 @@ export const routes = {
     const bannerChanged = v.banner !== undefined && v.banner !== existing?.banner;
     const avatarChanged = v.avatarUri !== undefined && v.avatarUri !== existing?.avatar_uri;
     const sets = [], args = [];
-    if (v.bio !== undefined) { sets.push("bio=?"); args.push(v.bio); }
+    if (v.bio !== undefined) {
+      sets.push("bio=?", "bio_staff_curated=?");
+      args.push(v.bio, u.role === "admin" && !!v.bio ? 1 : 0);
+    }
     if (bannerChanged) {
       sets.push("banner=?", "banner_owner_id=?");
       args.push(v.banner, v.banner ? u.id : null);
@@ -8353,7 +8769,9 @@ export const routes = {
       }
       return artistProfileSnapshotByKey.get(key);
     });
-    const profile = publicArtistProfileProjection(saved);
+    const profile = legacyProfile
+      ? publicLegacyArtistProfileProjection(saved)
+      : publicArtistProfileProjection(saved);
     if (!profile) {
       throw new ApiError(409,
         "That artist page could not be confirmed after saving. Refresh it and try again.",
@@ -8381,10 +8799,16 @@ export const routes = {
   "DELETE /api/artists/:key/posts/:id": (ctx) => {
     const u = requireUser(ctx);
     const key = decodedPathParam(ctx, "key", { max: 200, label: "artist link" }).toLowerCase();
-    assertArtistManagementCandidate(u, key);
+    assertArtistPostCleanupCandidate(u, key);
     atomicWrite(() => {
-      claimArtistManagement(u, key);
-      db.prepare("DELETE FROM artist_posts WHERE id=? AND artist_key=?").run(ctx.params.id, key);
+      if (u.role === "admin") {
+        db.prepare("DELETE FROM artist_posts WHERE id=? AND artist_key=?").run(ctx.params.id, key);
+      } else {
+        // A former page owner may clean up only their own historical updates.
+        // Staff-curated educational notes belong to the protected archive.
+        db.prepare("DELETE FROM artist_posts WHERE id=? AND artist_key=? AND user_id=?")
+          .run(ctx.params.id, key, u.id);
+      }
     });
     return { ok: true };
   },

@@ -53,7 +53,7 @@ test("mode switching preserves unfinished work while payload normalization strip
 });
 
 test("online mode has no descriptive or companion tags while in-person keeps people who went", () => {
-  includes(source, "{!isOnlineReview && (");
+  includes(source, "{!memoryTextOnly && !isOnlineReview && (");
   includes(source, "tags: []");
   includes(source, '? "WHO DID YOU WATCH?" : "WHO DID YOU SEE?"');
   includes(source, '{!isStatus && !isOnlineReview ? <AttachChip icon="you" label="People with you"');

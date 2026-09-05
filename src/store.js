@@ -35,6 +35,7 @@ import {
   applyFanClubMembership,
   createFanClubDirectoryReadCoordinator,
   normalizeFanClubDirectory,
+  projectFanClubArtistCandidate,
 } from "./domain/fanClubDirectory.mjs";
 import { createDiscoverCache, discoverGenreCacheKey, discoverOverviewCacheKey } from "./domain/discoverCache.mjs";
 import { mergeUniquePage, reconcileMemberMutationPage } from "./domain/pageMerge.mjs";
@@ -60,7 +61,7 @@ import {
 } from "./domain/draftPolicy.mjs";
 import { MEDIA_POST_MAX_ATTACHMENTS } from "./domain/mediaUploadPolicy.mjs";
 import { LEGAL_ACCEPTANCE_VERSION } from "./domain/privacyDisclosures.mjs";
-import { buildReviewCreateBody, buildReviewEditBody, cleanArtistKey } from "./domain/post-payload.mjs";
+import { buildMemoryCreateBody, buildMemoryEditBody, buildReviewCreateBody, buildReviewEditBody, cleanArtistKey } from "./domain/post-payload.mjs";
 import { isInPersonConcertReview } from "./domain/onlineReview.mjs";
 import { mergeEditedPost, resolvePostEditTarget } from "./domain/postEditTarget.mjs";
 import { postMatchesEditIntent, shouldReconcileEditFailure } from "./domain/postReconciliation.mjs";
@@ -113,6 +114,7 @@ import { normalizeArtistCampaign } from "./domain/artistCampaignPost.mjs";
 import { normalizeTaggedPeople, taggedUserIdsFromPeople } from "./domain/postFriendTags.mjs";
 import { fetchDirectMessageSummaries, writeDirectMessageRead } from "./features/chat/services/dmReadApi.mjs";
 import { removeMyPostTagRequest } from "./features/postTags/services/postTagApi.mjs";
+import { saveMemoryPostEdit } from "./features/postEditing/services/memoryPostEditApi.mjs";
 import { searchPeopleRequest } from "./features/people/services/peopleSearchApi.mjs";
 import { attachArtistSuggestion, fetchArtistSuggestions, mergeArtistSearchCacheEntry, refreshArtistCatalogEntry } from "./features/artistSearch/artistSearchApi.mjs";
 import { useAccountCommentCache } from "./features/comments/useAccountCommentCache";
@@ -3330,7 +3332,7 @@ export function StoreProvider({ children }) {
     if (postingActor) {
       const body = kind === "status"
         ? memorialMemory
-          ? { clientMutationId: localId, kind: "memory", artist: safe.artist, artistKey: safe.artistKey, review: safe.review, taggedUserIds: taggedUserIdsFromPeople(safe.taggedPeople), song: safe.song || null, photos: safe.photos || [], ...(Array.isArray(safe.mediaAssetIds) ? { mediaAssetIds: safe.mediaAssetIds } : {}), photosPublic: safe.photosPublic === false ? 0 : 1 }
+          ? buildMemoryCreateBody(safe, { textOnly: log.legacyArtistProfile === true })
           : safe.attendanceTicket
           ? {
             clientMutationId: localId,
@@ -3436,6 +3438,30 @@ export function StoreProvider({ children }) {
     // Author-only, admins included: moderation removes content, never rewrites it.
     const previous = resolvePostEditTarget(feed, target);
     if (!previous || previous.userId !== session.id) return { ok: false };
+
+    if ((previous.kind || changes.kind) === "memory") {
+      const version = previous.version ?? previous.editedAt ?? previous.createdAt;
+      const body = buildMemoryEditBody(changes, { version });
+      const existingContent = body.review
+        || (Array.isArray(previous.photos) && previous.photos.length > 0)
+        || previous.song
+        || previous.playlist;
+      if (!existingContent) return { ok: false };
+      feedMutationRevisionRef.current += 1;
+      try {
+        const post = await saveMemoryPostEdit(id, body, { apiClient: api });
+        feedMutationRevisionRef.current += 1;
+        const updated = normalizeServerPost(post);
+        setFeed((all) => mergeEditedPost(all, updated));
+        upsertProfileHistoryPost(session.id, updated.userId, updated);
+        return { ok: true, post: updated };
+      } catch (error) {
+        feedMutationRevisionRef.current += 1;
+        const reconciled = await reconcileEditedPost(id, body, error);
+        if (reconciled) return { ok: true, post: reconciled, reconciled: true };
+        return { ok: false, error };
+      }
+    }
 
     // A status post has no artist/venue/rating, so it only sends the fields it
     // actually owns; sending empty artist/venue would trip the review validators.
@@ -4968,7 +4994,7 @@ export function StoreProvider({ children }) {
     const claim = artistPageCache.claim(artistPageResourceKind(artistKey), accountId);
     const enc = encodeURIComponent(artistKey);
     try {
-      const { profile, posts } = await api(`/api/artists/${enc}/profile`, {
+      const { profile, posts, legacyProfile } = await api(`/api/artists/${enc}/profile`, {
         signal,
         silent: true,
         context,
@@ -4981,6 +5007,9 @@ export function StoreProvider({ children }) {
         throw new Error("The artist profile response was invalid.");
       }
       if (!Array.isArray(posts)) throw new Error("The artist updates response was invalid.");
+      if (typeof legacyProfile !== "boolean") {
+        throw new Error("The artist profile policy response was invalid.");
+      }
       const normalizedProfile = profile || {};
       const normalizedPosts = posts.map((post) => ({
         id: post.id,
@@ -4992,11 +5021,17 @@ export function StoreProvider({ children }) {
       // removes a post that staff hid since this device last opened the page.
       const committed = artistPageCache.resolveRefresh(
         artistKey,
-        { ok: true, profile: normalizedProfile, posts: normalizedPosts },
+        { ok: true, profile: normalizedProfile, posts: normalizedPosts, legacyProfile },
         { claim },
       );
       if (!committed) return localCommandError("PIT-AUTH-004", context);
-      return commandSuccess({ scope, profile: normalizedProfile, posts: normalizedPosts, loadedAt: Date.now() });
+      return commandSuccess({
+        scope,
+        profile: normalizedProfile,
+        posts: normalizedPosts,
+        legacyProfile,
+        loadedAt: Date.now(),
+      });
     } catch (error) {
       return commandError(error, context);
     }
@@ -6108,15 +6143,24 @@ export function StoreProvider({ children }) {
   // Every artist we know of, from the scraped catalog + rated shows + tour dates.
   const allArtists = () => {
     const map = {};
-    const add = (name, genre) => {
-      const k = norm(name);
-      if (!k || map[k]) return;
-      map[k] = { name, genre: genre || null };
+    const add = (candidate, genre) => {
+      const projected = projectFanClubArtistCandidate(candidate, genre);
+      const k = norm(projected?.name);
+      if (!k) return;
+      if (!map[k]) {
+        map[k] = projected;
+        return;
+      }
+      // Later catalog layers may carry the authoritative eligibility bit even
+      // when the first metadata layer did not. Preserve, but never invent, it.
+      if (projected.fanClubAvailable === true || projected.fanClubAvailable === false) {
+        map[k] = { ...map[k], fanClubAvailable: projected.fanClubAvailable };
+      }
     };
-    Object.values(remoteArtists).forEach((artist) => add(artist.name, verifiedArtistGenre(artist)));
-    Object.values(catalogArtists).forEach((artist) => add(artist.name, verifiedArtistGenre(artist)));
-    ratedShows.forEach((show) => add(show.artist, artistGenre(show.artist)));
-    tourDates.forEach((date) => add(date.artist, artistGenre(date.artist)));
+    Object.values(remoteArtists).forEach((artist) => add(artist, verifiedArtistGenre(artist)));
+    Object.values(catalogArtists).forEach((artist) => add(artist, verifiedArtistGenre(artist)));
+    ratedShows.forEach((show) => add({ name: show.artist }, artistGenre(show.artist)));
+    tourDates.forEach((date) => add({ name: date.artist }, artistGenre(date.artist)));
     return Object.values(map);
   };
 

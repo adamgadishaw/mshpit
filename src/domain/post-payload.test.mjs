@@ -1,7 +1,41 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildReviewCreateBody, buildReviewEditBody } from "./post-payload.mjs";
+import { buildMemoryCreateBody, buildMemoryEditBody, buildReviewCreateBody, buildReviewEditBody } from "./post-payload.mjs";
+
+test("protected legacy memories cross the client boundary as words and identity only", () => {
+  const body = buildMemoryCreateBody({
+    id: "post_legacy_memory_001",
+    artist: "  Legacy Artist  ",
+    artistKey: "legacy-artist",
+    review: "  I learned this song from my grandmother.  ",
+    taggedPeople: [{ id: "friend" }],
+    song: { videoId: "dQw4w9WgXcQ" },
+    photos: ["https://media.example/unrelated.jpg"],
+    mediaAssetIds: ["ma_abcdefgh12345678"],
+    photosPublic: true,
+  }, { textOnly: true });
+
+  assert.deepEqual(body, {
+    clientMutationId: "post_legacy_memory_001",
+    kind: "memory",
+    artist: "Legacy Artist",
+    artistKey: "legacy-artist",
+    review: "I learned this song from my grandmother.",
+  });
+});
+
+test("memory edits change only words and never rewrite artist or media policy", () => {
+  const body = buildMemoryEditBody({
+    review: "  A lasting memory.  ",
+    artist: "A different artist",
+    artistKey: "different",
+    song: null,
+    photos: [],
+    photosPublic: true,
+  }, { version: 42 });
+  assert.deepEqual(body, { review: "A lasting memory.", version: 42 });
+});
 
 test("a selected J. Cole catalog key survives the review create payload", () => {
   const body = buildReviewCreateBody({

@@ -7,7 +7,7 @@ import test, { after } from "node:test";
 const dataDir = mkdtempSync(join(tmpdir(), "pit-chat-idempotency-"));
 process.env.PIT_DATA_DIR = dataDir;
 
-const { db, q } = await import("./db.js");
+const { artistRow, artistStmts, db, q } = await import("./db.js");
 const { ApiError, routes } = await import("./api.js");
 
 after(() => {
@@ -66,6 +66,7 @@ test("DM retries return one row and reject mutation-token reuse", () => {
 
 test("fan-club retries return one row and keep the token bound to its room and text", () => {
   const artist = "test artist";
+  artistStmts.upsert.run(artistRow(artist, { name: "Test Artist" }, "test"));
   db.prepare("INSERT INTO fan_club_members (artist,user_id) VALUES (?,?)").run(artist, sender.id);
   const send = routes["POST /api/fanclubs/:artist/messages"];
   const ctx = {

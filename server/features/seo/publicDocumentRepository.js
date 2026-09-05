@@ -8,7 +8,10 @@ import {
   structuredShowLocationKey,
 } from "./publicEntityPolicy.js";
 import { effectiveTourDateEndSql } from "../../tourDateLifecycle.js";
-import { tourDateHasNoPublishedMemorialSql } from "../../artistMemorialTourDateVisibility.js";
+import {
+  artistHasNoLegacyMemorialSql,
+  tourDateHasNoPublishedMemorialSql,
+} from "../../artistMemorialTourDateVisibility.js";
 import { inPersonReviewSql } from "../../onlineReviews.js";
 
 const bounded = (value, fallback, maximum) => {
@@ -102,6 +105,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null }
   // LOWER(). Register that exact deterministic identity at the crawler read
   // boundary so a public concert page cannot drift from the in-app archive.
   database.function?.("pit_archive_identity", { deterministic: true }, archiveIdentityPart);
+  database.function?.("pit_artist_identity", { deterministic: true }, archiveIdentityPart);
   database.function?.("pit_structured_show_location", { deterministic: true }, (city, countryCode) =>
     structuredShowLocationKey({ venue_city: city, venue_country_code: countryCode }));
   database.function?.("pit_indexable_music_event", { deterministic: true }, (
@@ -163,11 +167,22 @@ export function createPublicDocumentRepository(database, { venueReviews = null }
     FROM artists WHERE norm=? LIMIT 1`);
   const artistByName = database.prepare(`SELECT norm,name,public_slug,genre,data,bio,mbid,country,formed,updated_at
     FROM artists WHERE LOWER(name)=LOWER(?) ORDER BY rank_score DESC,norm LIMIT 1`);
-  const artistProfile = database.prepare(`SELECT ap.bio,ap.banner,ap.banner_owner_id,
-      ap.avatar_uri,ap.avatar_owner_id,ap.feed_enabled,ap.owner_id,ap.updated_at
+  const artistIdentityByName = database.prepare(`SELECT norm,name,public_slug,genre,data,bio,mbid,country,formed,updated_at
+    FROM artists WHERE name=? COLLATE NOCASE ORDER BY norm LIMIT 2`);
+  const artistProfile = database.prepare(`SELECT ap.bio,ap.bio_staff_curated,ap.banner,ap.banner_owner_id,
+      ap.avatar_uri,ap.avatar_owner_id,ap.feed_enabled,ap.owner_id,ap.updated_at,
+      CASE WHEN ap.owner_id IS NULL OR (${activeAccountSql("owner")})
+        THEN 1 ELSE 0 END AS owner_public,
+      CASE WHEN ap.avatar_owner_id IS NOT NULL AND EXISTS (
+        SELECT 1 FROM users avatar_staff WHERE avatar_staff.id=ap.avatar_owner_id
+          AND avatar_staff.role='admin' AND ${activeAccountSql("avatar_staff")}
+      ) THEN 1 ELSE 0 END AS avatar_staff_public,
+      CASE WHEN ap.banner_owner_id IS NOT NULL AND EXISTS (
+        SELECT 1 FROM users banner_staff WHERE banner_staff.id=ap.banner_owner_id
+          AND banner_staff.role='admin' AND ${activeAccountSql("banner_staff")}
+      ) THEN 1 ELSE 0 END AS banner_staff_public
     FROM artist_profiles ap LEFT JOIN users owner ON owner.id=ap.owner_id
-    WHERE ap.artist_key=? AND ap.removed=0
-      AND (ap.owner_id IS NULL OR ${activeAccountSql("owner")}) LIMIT 1`);
+    WHERE ap.artist_key=? AND ap.removed=0 LIMIT 1`);
   const artistReviews = database.prepare(`SELECT ${PUBLIC_POST_COLUMNS}
     FROM posts p JOIN users u ON u.id=p.user_id
     WHERE p.removed=0 AND (COALESCE(p.kind,'review')='review' OR (
@@ -199,7 +214,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null }
       ))
       AND ${artistPostIdentity("p")} AND ${activeAccountSql("u")}`);
   const artistUpdates = database.prepare(`SELECT post.id,post.user_id,post.text,post.created_at,
-      author.name AS u_name,author.handle AS u_handle
+      author.name AS u_name,author.handle AS u_handle,author.role AS u_role
     FROM artist_posts post JOIN users author ON author.id=post.user_id
     WHERE post.artist_key=? AND post.removed=0 AND ${activeAccountSql("author")}
     ORDER BY post.created_at DESC,post.id DESC LIMIT ?`);
@@ -579,6 +594,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null }
       AND (LENGTH(TRIM(COALESCE(p.review,'')))>=40 OR
         (p.photos_public=1 AND ${PUBLIC_READY_MEDIA_EVIDENCE_SQL}))
       AND ${activeAccountSql("author")}
+      AND ${artistHasNoLegacyMemorialSql("p")}
       AND ${noStructuredShowLocationCollisionSql("p")}
   ), ranked AS (
     SELECT eligible.*,
@@ -659,7 +675,17 @@ export function createPublicDocumentRepository(database, { venueReviews = null }
     return displayName ? artistByName.get(displayName) || null : null;
   }
 
+  function readArtistIdentity({ artistKey = null, name = null } = {}) {
+    const key = typeof artistKey === "string" ? artistKey.trim().toLowerCase() : "";
+    if (key) return artistByKey.get(key) || null;
+    const displayName = typeof name === "string" ? name.trim() : "";
+    if (!displayName) return null;
+    const rows = artistIdentityByName.all(displayName);
+    return rows.length === 1 ? rows[0] : null;
+  }
+
   return Object.freeze({
+    readArtistIdentity,
     readHome({ artistLimit = 6, postLimit = 6 } = {}) {
       const artists = homeArtists.all(bounded(artistLimit, 6, 12));
       return { artists, posts: homePosts.all(bounded(postLimit, 6, 12)) };

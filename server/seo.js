@@ -179,7 +179,7 @@ function artistResolution(slug) {
   if (!artist) return null;
   const path = artistPath(artist);
   return {
-    entity: { kind: "artist", name: artist.name, path },
+    entity: { kind: "artist", name: artist.name, artistKey: artist.norm, path },
     canonicalPath: path,
     documentRequest: { kind: "artist", artistKey: artist.norm, canonicalPath: path },
   };

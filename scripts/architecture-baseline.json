@@ -262,8 +262,8 @@
       "fingerprint": "16db71068a9761bf536c"
     },
     "server/api.js": {
-      "count": 12,
-      "fingerprint": "034ef4f6beaee35898a9"
+      "count": 11,
+      "fingerprint": "1ea6f78ee3ee5efe98d8"
     },
     "server/backupScheduler.js": {
       "count": 2,

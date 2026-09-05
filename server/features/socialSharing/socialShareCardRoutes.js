@@ -244,6 +244,7 @@ export function publicAttendanceTicketShareSnapshot(value, {
       id,
       name: eventName || `${artist} at ${venue}`,
       artist,
+      artistKey: artistKey || null,
       venue,
       place: safe(ticket.place || ticket.city, 180),
       date,
@@ -258,6 +259,7 @@ export function socialShareCardRoutes({
   ApiError,
   attendanceRepository,
   blockedEitherWay,
+  assertLiveShareAvailable = null,
   rateLimit,
   requireUser,
   resolvePublicDocument,
@@ -317,6 +319,12 @@ export function socialShareCardRoutes({
               resolveCurrentLicensedArtistPhoto,
             },
           );
+          if (ticketDocument && typeof assertLiveShareAvailable === "function") {
+            assertLiveShareAvailable({
+              artistKey: ticketDocument.event.artistKey,
+              artist: ticketDocument.event.artist,
+            });
+          }
           const eventId = ticketDocument?.event?.id || null;
           const resolvedEventDocument = eventId
             ? (await resolvePublicDocument(eventPath(eventId)) || ticketDocument)
@@ -363,6 +371,12 @@ export function socialShareCardRoutes({
           await resolvePublicDocument(eventPath(eventId)),
           artworkEnv,
         );
+        if (document && typeof assertLiveShareAvailable === "function") {
+          assertLiveShareAvailable({
+            artistKey: document.event?.artistKey,
+            artist: document.event?.artist,
+          });
+        }
         const relatedArtwork = await projectedAttendanceArtwork(
           document,
           resolvePublicDocument,

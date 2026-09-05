@@ -17,7 +17,7 @@ function createDatabase() {
       norm TEXT PRIMARY KEY,name TEXT NOT NULL,public_slug TEXT,genre TEXT,data TEXT,bio TEXT,mbid TEXT,updated_at INTEGER
     );
     CREATE TABLE artist_memorials (
-      artist_key TEXT PRIMARY KEY,artist_mbid TEXT,status TEXT NOT NULL
+      artist_key TEXT PRIMARY KEY,artist_mbid TEXT,status TEXT NOT NULL,death_date TEXT
     );
     CREATE TABLE tour_dates (
       id TEXT PRIMARY KEY,artist TEXT NOT NULL,artist_key TEXT,venue TEXT,place TEXT,date TEXT,

@@ -2,7 +2,10 @@ import { activeAccountSql } from "../../accountVisibility.js";
 import { slugify } from "../../../src/domain/urls.mjs";
 import { archiveIdentityPart } from "../artistArchive/artistArchiveKeys.js";
 import { currentOrUpcomingTourDateSql, effectiveTourDateEndSql } from "../../tourDateLifecycle.js";
-import { tourDateHasNoPublishedMemorialSql } from "../../artistMemorialTourDateVisibility.js";
+import {
+  artistHasNoLegacyMemorialSql,
+  tourDateHasNoPublishedMemorialSql,
+} from "../../artistMemorialTourDateVisibility.js";
 import { inPersonReviewSql } from "../../onlineReviews.js";
 import {
   PUBLIC_ENTITY_THRESHOLDS,
@@ -84,6 +87,7 @@ const requestedCitySlug = (value) => {
 export function createPublicCollectionRepository(database) {
   if (!database?.prepare) throw new TypeError("Public SEO collections require a database");
   database.function?.("pit_archive_identity", { deterministic: true }, archiveIdentityPart);
+  database.function?.("pit_artist_identity", { deterministic: true }, archiveIdentityPart);
   database.function?.("pit_public_slug", { deterministic: true }, slugify);
   database.function?.("pit_structured_show_location", { deterministic: true }, (city, countryCode) =>
     structuredShowLocationKey({ venue_city: city, venue_country_code: countryCode }));
@@ -199,6 +203,7 @@ export function createPublicCollectionRepository(database) {
     WHERE p.removed=0 AND ${inPersonReviewSql("p")}
       AND ${validCalendarDateSql("p")} AND p.date<=?2 AND ${activeAccountSql("author")}
       AND ${eligiblePostSql("p")}
+      AND ${artistHasNoLegacyMemorialSql("p")}
   ), ranked AS (
     SELECT eligible_posts.*,
       ROW_NUMBER() OVER (PARTITION BY show_artist,show_venue,date,user_id
@@ -237,11 +242,11 @@ export function createPublicCollectionRepository(database) {
     concerts.average_rating DESC,concerts.latest_at DESC,concerts.show_artist,concerts.show_venue
   LIMIT ?7 OFFSET ?8`);
 
-  const artistByKey = database.prepare(`SELECT norm,name,public_slug,genre,bio,updated_at
+  const artistByKey = database.prepare(`SELECT norm,name,public_slug,genre,bio,mbid,updated_at
     FROM artists WHERE norm=? AND public_slug IS NOT NULL AND TRIM(public_slug)<>'' LIMIT 2`);
-  const artistBySlug = database.prepare(`SELECT norm,name,public_slug,genre,bio,updated_at
+  const artistBySlug = database.prepare(`SELECT norm,name,public_slug,genre,bio,mbid,updated_at
     FROM artists WHERE public_slug=? COLLATE NOCASE AND TRIM(public_slug)<>'' LIMIT 2`);
-  const artistByName = database.prepare(`SELECT norm,name,public_slug,genre,bio,updated_at
+  const artistByName = database.prepare(`SELECT norm,name,public_slug,genre,bio,mbid,updated_at
     FROM artists WHERE name=? COLLATE NOCASE AND public_slug IS NOT NULL AND TRIM(public_slug)<>''
     ORDER BY norm LIMIT 2`);
 
@@ -254,6 +259,7 @@ export function createPublicCollectionRepository(database) {
       AND (p.artist_key=?1 OR (p.artist_key IS NULL AND LOWER(p.artist)=LOWER(?2)
         AND (SELECT COUNT(*) FROM artists legacy_match WHERE legacy_match.name=p.artist COLLATE NOCASE)=1))
       AND ${activeAccountSql("author")} AND ${eligiblePostSql("p")}
+      AND ${artistHasNoLegacyMemorialSql("p")}
       AND ${noStructuredShowLocationCollisionSql("p", "?4", "?5")}
   ), ranked AS (
     SELECT eligible_posts.*,

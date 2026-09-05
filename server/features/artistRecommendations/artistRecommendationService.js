@@ -2,6 +2,7 @@ import { activeAccountSql } from "../../accountVisibility.js";
 import { ARTIST_GENRE_SQL_COLUMNS, projectArtistGenreColumns } from "../../artistGenreProjection.js";
 import { tourDateHasNoPublishedMemorialSql } from "../../artistMemorialTourDateVisibility.js";
 import { inPersonReviewSql } from "../../onlineReviews.js";
+import { pitArtistIdentity } from "../../sqliteFunctions.js";
 import { currentOrUpcomingTourDateSql } from "../../tourDateLifecycle.js";
 
 const MAX_RESULTS = 8;
@@ -99,6 +100,11 @@ const safeProfileImageSql = (user = "followed") => `CASE WHEN ${user}.avatar_uri
 
 export function createArtistRecommendationService(database) {
   if (!database?.prepare) throw new TypeError("Artist recommendations require a database");
+  // The service is also constructed with isolated SQLite connections in
+  // maintenance and test processes. Own the deterministic function required by
+  // the shared memorial SQL instead of relying on a web-server import side
+  // effect; this keeps Unicode name-only identities consistent everywhere.
+  database.function?.("pit_artist_identity", { deterministic: true }, pitArtistIdentity);
 
   const candidateArtists = database.prepare(`SELECT a.norm,a.name,a.public_slug,a.photo,a.country,
       a.popularity,a.rank_score,${ARTIST_GENRE_SQL_COLUMNS}

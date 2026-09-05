@@ -88,6 +88,19 @@ function insertSafeAvatar(db, userId) {
   );
 }
 
+test("artist recommendations install the shared Unicode identity function on isolated connections", () => {
+  const db = database();
+  try {
+    createArtistRecommendationService(db);
+    assert.equal(
+      db.prepare("SELECT pit_artist_identity(?) identity").get("  ÉDITH   PIAF  ").identity,
+      "édith piaf",
+    );
+  } finally {
+    db.close();
+  }
+});
+
 test("artist recommendations use real taste signals, public upcoming dates, and block-safe social proof", () => {
   const db = database();
   try {
