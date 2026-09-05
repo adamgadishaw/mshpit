@@ -29,6 +29,45 @@ test("public venue photo lookup follows explicit venue rename aliases", () => {
   assert.equal(result[0].uri, preferred.uri);
 });
 
+test("only RBC's verified provider crosswalk can reuse its renamed venue pool", () => {
+  const rbc = photo("rbc-amphitheatre");
+  const providerBindings = {
+    "provider:ticketmaster:kovzpzaekkia": "budweiser stage",
+  };
+  const catalog = {
+    "budweiser stage": { galleryPool: [rbc], photos: [rbc.uri] },
+  };
+  assert.deepEqual(publicVenuePhotoPool("RBC Amphitheatre", {
+    catalog,
+    providerBindings,
+    source: "Ticketmaster",
+    providerVenueId: "KovZpZAEkkIA",
+  }).map((entry) => entry.uri), [rbc.uri]);
+  assert.deepEqual(publicVenuePhotoPool("Some Other Venue", {
+    catalog,
+    providerBindings,
+    source: "ticketmaster",
+    providerVenueId: "KovZpZAEkkIA",
+  }), [], "the verified provider id cannot attach its photo to a different venue");
+  assert.deepEqual(publicVenuePhotoPool("RBC Amphitheatre", {
+    catalog,
+    providerBindings,
+    source: "ticketmaster",
+    providerVenueId: "unmapped-same-name-venue",
+  }), [], "a same-name request without an explicit crosswalk remains empty");
+
+  const rightsRemoved = {
+    ...catalog,
+    "provider:ticketmaster:kovzpzaekkia": { galleryPool: [], photos: [] },
+  };
+  assert.deepEqual(publicVenuePhotoPool("RBC Amphitheatre", {
+    catalog: rightsRemoved,
+    providerBindings,
+    source: "ticketmaster",
+    providerVenueId: "KovZpZAEkkIA",
+  }), [], "an explicit empty provider row overrides the crosswalk after a rights removal");
+});
+
 test("provider-scoped venue photos require an exact provider catalog key", () => {
   const fallback = photo("fallback");
   const provider = photo("provider");

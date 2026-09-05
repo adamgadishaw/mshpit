@@ -12,6 +12,8 @@ import {
 } from "./venuePageSections.mjs";
 
 const venueScreen = readFileSync(new URL("../screens/VenueScreen.jsx", import.meta.url), "utf8");
+const venuePhotoWidget = readFileSync(new URL("../components/VenuePhotoWidget.jsx", import.meta.url), "utf8");
+const venueDiscoveryCards = readFileSync(new URL("../components/VenueDiscoveryCards.jsx", import.meta.url), "utf8");
 
 test("venue page sections keep one compact overview and explicit full sections", () => {
   assert.deepEqual(VENUE_PAGE_SECTIONS.map(({ key }) => key), ["overview", "shows", "reviews"]);
@@ -76,4 +78,21 @@ test("venue screen renders bounded previews instead of every show at once", () =
   assert.match(venueScreen, /venuePhotoViewerIndex\(photos, photo, fallbackIndex\)/);
   assert.match(venueScreen, /sectionModel\.showHistory/);
   assert.match(venueScreen, /accessibilityRole="tab"/);
+});
+
+test("venue mobile surfaces keep one bounded edge and reserve row flex for wide layouts", () => {
+  assert.match(venueScreen, /content:\s*\{[^}]*minWidth:\s*0[^}]*alignItems:\s*"stretch"[^}]*paddingHorizontal:\s*space\(4\)/s);
+  assert.match(venueScreen, /style=\{\[styles\.seatingCard, wide && styles\.seatingCardWide\]\}/);
+  assert.match(venueScreen, /style=\{\[styles\.guideActions, wide && styles\.guideActionsWide\]\}/);
+  assert.match(venueScreen, /style=\{\[styles\.guideUnavailable, wide && styles\.guideUnavailableWide\]\}/);
+  assert.match(venueScreen, /seatingCard:\s*\{[^}]*alignSelf:\s*"stretch"/s);
+  assert.doesNotMatch(venueScreen, /seatingCard:\s*\{[^}]*flex:\s*0\.9/s);
+  assert.match(venueScreen, /seatingCardWide:\s*\{\s*flex:\s*0\.9\s*\}/);
+  assert.match(venueScreen, /guideActionsWide:\s*\{\s*flex:\s*1\.1\s*\}/);
+  assert.match(venueScreen, /guideUnavailableWide:\s*\{\s*flex:\s*1\.1\s*\}/);
+  assert.match(venueScreen, /reputationGrid:\s*\{[^}]*flexDirection:\s*"column"/s);
+  assert.match(venueScreen, /reputationGridWide:\s*\{\s*flexDirection:\s*"row"\s*\}/);
+  assert.match(venueScreen, /reviewPhotoFrame:\s*\{[^}]*maxWidth:\s*"31%"[^}]*aspectRatio:\s*1/s);
+  assert.match(venuePhotoWidget, /wrap:\s*\{[^}]*width:\s*"100%"[^}]*maxWidth:\s*"100%"[^}]*minWidth:\s*0/s);
+  assert.match(venueDiscoveryCards, /eventCard:\s*\{[^}]*width:\s*"100%"[^}]*maxWidth:\s*"100%"[^}]*minWidth:\s*0/s);
 });

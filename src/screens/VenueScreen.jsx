@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Linking, Platform, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
-import { colors, displayFont, focusRing, mono, radius, shadow } from "../theme";
+import { colors, displayFont, focusRing, mono, radius, shadow, space } from "../theme";
 import { useStore } from "../store";
 import Stars from "../components/Stars";
 import Icon from "../components/Icon";
@@ -424,7 +424,7 @@ function webExternalLinkProps(url) {
 function VenueVisitGuide({ guide, wide, error, onOpen }) {
   return (
     <View style={[styles.guideGrid, wide && styles.guideGridWide]}>
-      <View style={styles.seatingCard}>
+      <View style={[styles.seatingCard, wide && styles.seatingCardWide]}>
         <View style={styles.guideIcon}>
           <Icon name="ticket" size={21} color={colors.amber} />
         </View>
@@ -435,7 +435,7 @@ function VenueVisitGuide({ guide, wide, error, onOpen }) {
         </View>
       </View>
       {guide.actions.length ? (
-        <View style={styles.guideActions}>
+        <View style={[styles.guideActions, wide && styles.guideActionsWide]}>
           {guide.actions.map((action) => (
             <Pressable
               key={action.id}
@@ -463,7 +463,7 @@ function VenueVisitGuide({ guide, wide, error, onOpen }) {
           {error ? <Text style={styles.guideError} accessibilityRole="alert" accessibilityLiveRegion="assertive">{error}</Text> : null}
         </View>
       ) : (
-        <View style={styles.guideUnavailable}>
+        <View style={[styles.guideUnavailable, wide && styles.guideUnavailableWide]}>
           <Icon name="map" size={20} color={colors.textFaint} />
           <Text style={styles.guideUnavailableText}>Parking and transit links will appear when this venue has a verified location.</Text>
         </View>
@@ -527,65 +527,68 @@ function MoreButton({ label, remaining, onPress }) {
 
 const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: colors.bg },
-  content: { width: "100%", maxWidth: 980, alignSelf: "center", padding: 16, paddingBottom: 64, gap: 14 },
-  heroShell: { padding: 7, borderRadius: radius.lg, borderCurve: "continuous", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, ...shadow.card },
+  content: { width: "100%", maxWidth: 980, minWidth: 0, alignSelf: "center", alignItems: "stretch", paddingHorizontal: space(4), paddingTop: space(4), paddingBottom: 96, gap: 14 },
+  heroShell: { width: "100%", maxWidth: "100%", minWidth: 0, alignSelf: "stretch", padding: 7, borderRadius: radius.lg, borderCurve: "continuous", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, ...shadow.card },
   heroMeta: { minHeight: 42, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12, paddingHorizontal: 8, paddingTop: 5 },
   placeRow: { flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: 7 },
   place: { flexShrink: 1, color: colors.textDim, fontSize: 12 },
   capacity: { color: colors.textFaint, fontFamily: mono, fontSize: 9, fontWeight: "900", letterSpacing: 0.8 },
-  metrics: { flexDirection: "row", flexWrap: "wrap", gap: 7 },
-  metric: { flexGrow: 1, flexBasis: 128, minHeight: 64, alignItems: "center", justifyContent: "center", padding: 8, borderRadius: radius.md, borderCurve: "continuous", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft },
+  metrics: { width: "100%", maxWidth: "100%", minWidth: 0, flexDirection: "row", flexWrap: "wrap", gap: 7 },
+  metric: { minWidth: 0, flexGrow: 1, flexBasis: 128, minHeight: 64, alignItems: "center", justifyContent: "center", padding: 8, borderRadius: radius.md, borderCurve: "continuous", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft },
   metricValue: { color: colors.text, fontFamily: mono, fontSize: 18, fontWeight: "900", fontVariant: ["tabular-nums"], marginTop: 2 },
   metricValueAccent: { color: colors.amber },
   metricLabel: { color: colors.textFaint, fontFamily: mono, fontSize: 8, fontWeight: "900", letterSpacing: 0.8, marginTop: 2 },
-  sectionNav: { flexDirection: "row", alignItems: "stretch", gap: 5, padding: 4, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.bgElev },
-  sectionNavItem: { flex: 1, minWidth: 0, minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingHorizontal: 8, borderRadius: radius.sm },
+  sectionNav: { width: "100%", maxWidth: "100%", minWidth: 0, alignSelf: "stretch", flexDirection: "row", alignItems: "stretch", gap: 5, padding: 4, borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.bgElev },
+  sectionNavItem: { flex: 1, minWidth: 0, minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingHorizontal: 8, borderRadius: radius.sm, borderCurve: "continuous" },
   sectionNavItemOn: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.amber },
   sectionNavText: { color: colors.textFaint, fontSize: 11.5, fontWeight: "800" },
   sectionNavTextOn: { color: colors.amber },
-  guideGrid: { gap: 8 },
+  guideGrid: { width: "100%", maxWidth: "100%", minWidth: 0, alignSelf: "stretch", gap: 8 },
   guideGridWide: { flexDirection: "row", alignItems: "stretch" },
-  seatingCard: { flex: 0.9, minHeight: 148, flexDirection: "row", alignItems: "flex-start", gap: 12, padding: 15, borderRadius: radius.md, borderCurve: "continuous", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft },
-  guideIcon: { width: 44, height: 44, alignItems: "center", justifyContent: "center", borderRadius: 14, backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.line },
+  seatingCard: { minWidth: 0, alignSelf: "stretch", minHeight: 148, flexDirection: "row", alignItems: "flex-start", gap: 12, padding: 15, borderRadius: radius.md, borderCurve: "continuous", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft },
+  seatingCardWide: { flex: 0.9 },
+  guideIcon: { width: 44, height: 44, alignItems: "center", justifyContent: "center", borderRadius: 14, borderCurve: "continuous", backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.line },
   guideLabel: { color: colors.textFaint, fontFamily: mono, fontSize: 8, fontWeight: "900", letterSpacing: 1.1 },
   guideTitle: { color: colors.text, fontFamily: displayFont, fontSize: 17, fontWeight: "900", marginTop: 5 },
   guideBody: { color: colors.textDim, fontSize: 12.5, lineHeight: 18, marginTop: 5 },
-  guideActions: { flex: 1.1, gap: 7 },
-  guideAction: { minHeight: 58, flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 11, paddingVertical: 8, borderRadius: radius.md, borderCurve: "continuous", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft, ...Platform.select({ web: { cursor: "pointer", transitionDuration: "120ms", transitionProperty: "background-color, border-color" } }) },
+  guideActions: { minWidth: 0, alignSelf: "stretch", gap: 7 },
+  guideActionsWide: { flex: 1.1 },
+  guideAction: { width: "100%", maxWidth: "100%", minWidth: 0, minHeight: 58, flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 11, paddingVertical: 8, borderRadius: radius.md, borderCurve: "continuous", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft, ...Platform.select({ web: { cursor: "pointer", transitionDuration: "120ms", transitionProperty: "background-color, border-color" } }) },
   guideActionHover: { backgroundColor: colors.surfaceAlt, borderColor: colors.line },
-  guideActionIcon: { width: 36, height: 36, alignItems: "center", justifyContent: "center", borderRadius: 12, backgroundColor: colors.bgElev },
+  guideActionIcon: { width: 36, height: 36, alignItems: "center", justifyContent: "center", borderRadius: radius.sm, borderCurve: "continuous", backgroundColor: colors.bgElev },
   guideActionTitle: { color: colors.text, fontFamily: displayFont, fontSize: 13, fontWeight: "900" },
   guideActionBody: { color: colors.textDim, fontSize: 10.5, lineHeight: 14, marginTop: 2 },
   guideError: { color: colors.danger, fontSize: 11.5, lineHeight: 16, textAlign: "center" },
-  guideUnavailable: { flex: 1.1, minHeight: 90, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10, padding: 15, borderRadius: radius.md, borderCurve: "continuous", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft },
+  guideUnavailable: { minWidth: 0, alignSelf: "stretch", minHeight: 90, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10, padding: 15, borderRadius: radius.md, borderCurve: "continuous", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft },
+  guideUnavailableWide: { flex: 1.1 },
   guideUnavailableText: { flex: 1, color: colors.textDim, fontSize: 12.5, lineHeight: 18 },
-  section: { gap: 10 },
-  sectionHeader: { minHeight: 40, flexDirection: "row", alignItems: "flex-end", gap: 12 },
+  section: { width: "100%", maxWidth: "100%", minWidth: 0, alignSelf: "stretch", gap: 10 },
+  sectionHeader: { minWidth: 0, minHeight: 40, flexDirection: "row", alignItems: "flex-end", gap: 12 },
   sectionKicker: { color: colors.textFaint, fontFamily: mono, fontSize: 9, fontWeight: "900", letterSpacing: 1.5 },
   sectionTitle: { color: colors.text, fontFamily: displayFont, fontSize: 21, fontWeight: "900", letterSpacing: -0.4, marginTop: 3 },
-  countPill: { minWidth: 30, height: 28, alignItems: "center", justifyContent: "center", paddingHorizontal: 8, borderRadius: 14, backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.line },
+  countPill: { minWidth: 30, height: 28, flexShrink: 0, alignItems: "center", justifyContent: "center", paddingHorizontal: 8, borderRadius: 14, backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.line },
   countText: { color: colors.amber, fontFamily: mono, fontSize: 11, fontWeight: "900", fontVariant: ["tabular-nums"] },
-  stack: { gap: 10 },
-  noUpcoming: { minHeight: 82, flexDirection: "row", alignItems: "center", gap: 13, padding: 15, borderRadius: radius.md, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft },
-  noUpcomingIcon: { width: 46, height: 46, alignItems: "center", justifyContent: "center", borderRadius: 15, backgroundColor: colors.bgElev },
+  stack: { width: "100%", maxWidth: "100%", minWidth: 0, alignSelf: "stretch", gap: 10 },
+  noUpcoming: { width: "100%", maxWidth: "100%", minWidth: 0, minHeight: 82, flexDirection: "row", alignItems: "center", gap: 13, padding: 15, borderRadius: radius.md, borderCurve: "continuous", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft },
+  noUpcomingIcon: { width: 46, height: 46, alignItems: "center", justifyContent: "center", borderRadius: 15, borderCurve: "continuous", backgroundColor: colors.bgElev },
   noUpcomingTitle: { color: colors.text, fontFamily: displayFont, fontSize: 15, fontWeight: "900" },
   noUpcomingBody: { color: colors.textDim, fontSize: 12, lineHeight: 17, marginTop: 3 },
-  reputationGrid: { flexDirection: "row", gap: 8 },
+  reputationGrid: { width: "100%", maxWidth: "100%", minWidth: 0, flexDirection: "column", gap: 8 },
   reputationGridWide: { flexDirection: "row" },
-  scorePanel: { minWidth: 106, alignItems: "center", justifyContent: "center", padding: 12, borderRadius: radius.md, backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.line },
+  scorePanel: { minWidth: 106, alignSelf: "stretch", alignItems: "center", justifyContent: "center", padding: 12, borderRadius: radius.md, borderCurve: "continuous", backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.line },
   scoreValue: { color: colors.cool, fontFamily: mono, fontSize: 32, lineHeight: 36, fontWeight: "900", fontVariant: ["tabular-nums"] },
   scoreLabel: { color: colors.textFaint, fontFamily: mono, fontSize: 8, fontWeight: "900", letterSpacing: 0.8, marginTop: 7 },
-  reputationCopy: { flex: 1, minWidth: 0, justifyContent: "center", padding: 12, borderRadius: radius.md, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft },
+  reputationCopy: { flex: 1, minWidth: 0, alignSelf: "stretch", justifyContent: "center", padding: 12, borderRadius: radius.md, borderCurve: "continuous", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft },
   reputationTitle: { color: colors.text, fontFamily: displayFont, fontSize: 15, fontWeight: "900" },
   reputationBody: { color: colors.textDim, fontSize: 12, lineHeight: 17, marginTop: 4 },
   reviewSignal: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 12 },
   reviewSignalText: { color: colors.textFaint, fontSize: 11 },
-  reviewButton: { minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingHorizontal: 16, borderRadius: radius.md, backgroundColor: colors.amberStrong, borderWidth: 1, borderBottomWidth: 3, borderColor: colors.amber, borderBottomColor: colors.accentEdge, ...shadow.control, ...Platform.select({ web: { cursor: "pointer" } }) },
+  reviewButton: { width: "100%", maxWidth: "100%", minWidth: 0, minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingHorizontal: 16, borderRadius: radius.md, borderCurve: "continuous", backgroundColor: colors.amberStrong, borderWidth: 1, borderBottomWidth: 3, borderColor: colors.amber, borderBottomColor: colors.accentEdge, ...shadow.control, ...Platform.select({ web: { cursor: "pointer" } }) },
   reviewButtonText: { color: "#1A1206", fontFamily: displayFont, fontSize: 14, fontWeight: "900" },
   buttonPressed: { transform: [{ scale: 0.99 }], opacity: 0.9 },
-  photoGrid: { flexDirection: "row", flexWrap: "wrap", gap: 7 },
+  photoGrid: { width: "100%", maxWidth: "100%", minWidth: 0, flexDirection: "row", flexWrap: "wrap", gap: 7 },
   photoTile: { width: "31.5%", aspectRatio: 1, borderRadius: 12, borderCurve: "continuous", borderWidth: 1, borderColor: colors.lineSoft },
-  reviewCard: { padding: 15, borderRadius: radius.md, borderCurve: "continuous", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft, ...shadow.card },
+  reviewCard: { width: "100%", maxWidth: "100%", minWidth: 0, padding: 15, borderRadius: radius.md, borderCurve: "continuous", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft, ...shadow.card },
   reviewHead: { flexDirection: "row", alignItems: "center", gap: 10 },
   flexCopy: { flex: 1, minWidth: 0 },
   reviewName: { color: colors.text, fontFamily: displayFont, fontSize: 14, fontWeight: "900" },
@@ -596,19 +599,19 @@ const styles = StyleSheet.create({
   reviewText: { color: colors.text, fontSize: 14, lineHeight: 21, marginTop: 12 },
   reviewTextBlock: { alignItems: "flex-start" },
   reviewPhotos: { flexDirection: "row", flexWrap: "wrap", gap: 7, marginTop: 12 },
-  reviewPhotoFrame: { width: 82, height: 82, overflow: "hidden", borderRadius: 12, borderCurve: "continuous", borderWidth: 1, borderColor: colors.line },
+  reviewPhotoFrame: { width: 82, maxWidth: "31%", aspectRatio: 1, overflow: "hidden", borderRadius: radius.sm, borderCurve: "continuous", borderWidth: 1, borderColor: colors.line },
   reviewPhoto: { ...StyleSheet.absoluteFillObject },
   reviewPhotoMore: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(6,7,11,0.58)" },
   reviewPhotoMoreText: { color: "#fff", fontFamily: mono, fontSize: 18, fontWeight: "900" },
-  emptyReviews: { alignItems: "center", padding: 25, borderRadius: radius.md, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft },
+  emptyReviews: { width: "100%", maxWidth: "100%", minWidth: 0, alignItems: "center", padding: 25, borderRadius: radius.md, borderCurve: "continuous", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft },
   emptyTitle: { color: colors.text, fontFamily: displayFont, fontSize: 16, fontWeight: "900", textAlign: "center", marginTop: 10 },
   emptyBody: { maxWidth: 470, color: colors.textDim, fontSize: 13, lineHeight: 19, textAlign: "center", marginTop: 5 },
-  historyCard: { minHeight: 70, flexDirection: "row", alignItems: "center", gap: 11, padding: 12, borderRadius: radius.md, borderCurve: "continuous", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft, ...Platform.select({ web: { cursor: "pointer", transitionDuration: "120ms", transitionProperty: "background-color, transform" } }) },
+  historyCard: { width: "100%", maxWidth: "100%", minWidth: 0, minHeight: 70, flexDirection: "row", alignItems: "center", gap: 11, padding: 12, borderRadius: radius.md, borderCurve: "continuous", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft, ...Platform.select({ web: { cursor: "pointer", transitionDuration: "120ms", transitionProperty: "background-color, transform" } }) },
   historyHover: { backgroundColor: colors.surfaceAlt },
-  historyIcon: { width: 42, height: 42, alignItems: "center", justifyContent: "center", borderRadius: 14, backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.line },
+  historyIcon: { width: 42, height: 42, alignItems: "center", justifyContent: "center", borderRadius: 14, borderCurve: "continuous", backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.line },
   historyArtist: { color: colors.text, fontFamily: displayFont, fontSize: 15, fontWeight: "900" },
   historyMeta: { color: colors.textDim, fontSize: 11, marginTop: 3 },
-  historyEmpty: { color: colors.textDim, fontSize: 13, fontStyle: "italic", padding: 16, borderRadius: radius.md, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft },
-  moreButton: { minHeight: 48, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingHorizontal: 16, borderRadius: radius.md, borderCurve: "continuous", backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.line, ...Platform.select({ web: { cursor: "pointer" } }) },
+  historyEmpty: { width: "100%", maxWidth: "100%", minWidth: 0, color: colors.textDim, fontSize: 13, fontStyle: "italic", padding: 16, borderRadius: radius.md, borderCurve: "continuous", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft },
+  moreButton: { width: "100%", maxWidth: "100%", minWidth: 0, minHeight: 48, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingHorizontal: 16, borderRadius: radius.md, borderCurve: "continuous", backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.line, ...Platform.select({ web: { cursor: "pointer" } }) },
   moreButtonText: { color: colors.amber, fontFamily: displayFont, fontSize: 13, fontWeight: "900" },
 });

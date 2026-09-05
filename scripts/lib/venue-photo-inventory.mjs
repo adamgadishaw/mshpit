@@ -7,7 +7,10 @@ import {
   resolveVenueCatalogKey,
   venueIdentityFingerprint,
 } from "../../src/domain/venueIdentity.mjs";
-import { providerVenuePhotoCatalogKey } from "../../server/venuePhotoCatalogIdentity.js";
+import {
+  providerVenuePhotoCatalogKey,
+} from "../../server/venuePhotoCatalogIdentity.js";
+import { venuePhotoCatalogBindingForProviderKey } from "../../server/venuePhotoCatalogBindings.js";
 import { hasLicensedVenuePhoto } from "./venue-photo-record.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -68,14 +71,15 @@ export function readTourDateVenueRows(databasePath, { limit = DEFAULT_ROW_LIMIT 
         MAX(NULLIF(TRIM(place),'')) AS place,
         venue_city,MAX(NULLIF(TRIM(venue_region),'')) AS venue_region,
         venue_country_code,MAX(NULLIF(TRIM(venue_country),'')) AS venue_country,
-        MAX(lat) AS lat,MAX(lng) AS lng,MAX(updated_at) AS updated_at
+        lat,lng,MAX(updated_at) AS updated_at
       FROM tour_dates
       WHERE TRIM(COALESCE(venue,''))<>''
       GROUP BY LOWER(TRIM(venue)),LOWER(TRIM(COALESCE(source,''))),
         LOWER(TRIM(COALESCE(venue_provider_id,''))),
-        LOWER(TRIM(COALESCE(venue_city,''))),UPPER(TRIM(COALESCE(venue_country_code,'')))
+        LOWER(TRIM(COALESCE(venue_city,''))),UPPER(TRIM(COALESCE(venue_country_code,''))),
+        lat,lng
       ORDER BY LOWER(TRIM(venue)),LOWER(TRIM(COALESCE(source,''))),
-        LOWER(TRIM(COALESCE(venue_provider_id,'')))
+        LOWER(TRIM(COALESCE(venue_provider_id,''))),lat,lng
       LIMIT ?`).all(bounded + 1);
     if (rows.length > bounded) {
       throw new Error(`tour-date venue inventory exceeded the safe ${bounded}-row bound.`);
@@ -201,7 +205,7 @@ function percentage(count, total) {
   return total ? Number((count * 100 / total).toFixed(1)) : 100;
 }
 
-export function venuePhotoCoverageReport(inventory, verifiedInventory = {}) {
+export function venuePhotoCoverageReport(inventory, verifiedInventory = {}, { providerBindings = null } = {}) {
   const entries = Array.isArray(inventory?.entries) ? inventory.entries : [];
   const verifiedKeys = Object.keys(verifiedInventory || {});
   let exactCovered = 0;
@@ -213,11 +217,22 @@ export function venuePhotoCoverageReport(inventory, verifiedInventory = {}) {
     const exact = hasLicensedVenuePhoto(verifiedInventory?.[key]) || hasLicensedVenuePhoto(venue);
     const providerScoped = String(key || "").startsWith("provider:");
     const nameKey = resolveVenueCatalogKey(venue?.name, verifiedKeys);
+    const providerFallbackName = providerScoped
+      ? venuePhotoCatalogBindingForProviderKey(key, providerBindings)
+      : null;
+    const providerFallbackKey = providerFallbackName
+      ? resolveVenueCatalogKey(providerFallbackName, verifiedKeys)
+      : null;
     // Match the runtime boundary: a provider venue may use only its exact
-    // provider catalog row. Name/alias fallback remains valid for name-only
-    // legacy identities, where there is no provider scope to disambiguate.
-    const fallback = !providerScoped && !exact && nameKey
-      ? hasLicensedVenuePhoto(verifiedInventory[nameKey])
+    // provider catalog row or an explicit verified renamed-building crosswalk.
+    // Generic name/alias fallback remains valid only for name-only identities.
+    const hasProviderRecord = providerScoped
+      && Object.prototype.hasOwnProperty.call(verifiedInventory, key);
+    const fallbackKey = providerScoped
+      ? hasProviderRecord ? null : providerFallbackKey
+      : nameKey;
+    const fallback = !exact && fallbackKey
+      ? hasLicensedVenuePhoto(verifiedInventory[fallbackKey])
       : false;
     const isTourVenue = venue?._inventoryOrigins?.includes("tour_dates");
     exactCovered += Number(exact);

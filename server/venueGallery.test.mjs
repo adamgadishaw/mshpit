@@ -105,6 +105,24 @@ test("renamed venues share the canonical licensed gallery without shared caching
   assert.equal(headers["Cache-Control"], "private, no-store");
 });
 
+test("only the verified renamed RBC provider identity can use its canonical licensed gallery", () => {
+  const provider = { source: "ticketmaster", providerVenueId: "KovZpZAEkkIA" };
+  const verified = getPhotos({
+    params: { key: encodeURIComponent("RBC Amphitheatre") },
+    query: provider,
+  });
+  assert.ok(verified.photos.length > 0);
+  assert.deepEqual(
+    verified.photos,
+    getPhotos({ params: { key: encodeURIComponent("Budweiser Stage") } }).photos,
+  );
+  const unmapped = getPhotos({
+    params: { key: encodeURIComponent("RBC Amphitheatre") },
+    query: { source: "ticketmaster", providerVenueId: "different-venue" },
+  });
+  assert.deepEqual(unmapped.photos, [], "unmapped provider identities remain fail closed");
+});
+
 test("venue gallery adds only public, ready, unreported, unmoderated and block-visible fan images", () => {
   const viewer = addUser("gallery-viewer");
   const visible = addUser("gallery-visible");

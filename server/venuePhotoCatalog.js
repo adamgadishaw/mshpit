@@ -5,7 +5,10 @@ import {
   normalizeVenueKey,
   venueIdentityFingerprint,
 } from "../src/domain/venueIdentity.mjs";
-import { providerVenuePhotoCatalogKey } from "./venuePhotoCatalogIdentity.js";
+import {
+  providerVenuePhotoCatalogKey,
+} from "./venuePhotoCatalogIdentity.js";
+import { venuePhotoCatalogBinding } from "./venuePhotoCatalogBindings.js";
 
 const VENUE_PHOTO_SOURCE = new URL("../src/seed/catalog.venue-photos.json", import.meta.url);
 const DEFAULT_LIMIT = 3;
@@ -102,6 +105,7 @@ function venuePhotoCatalogIndex() {
 export function publicVenuePhotoPool(venueName, {
   limit = DEFAULT_LIMIT,
   catalog = null,
+  providerBindings = null,
   source: providerSource = null,
   providerVenueId = null,
 } = {}) {
@@ -110,12 +114,25 @@ export function publicVenuePhotoPool(venueName, {
   const index = customCatalog ? buildCatalogIndex(customCatalog) : venuePhotoCatalogIndex();
   const providerKey = providerVenuePhotoCatalogKey(providerSource, providerVenueId);
   const catalogKey = index.resolveName(venueName);
+  const verifiedProviderNameKey = venuePhotoCatalogBinding(
+    providerSource,
+    providerVenueId,
+    providerBindings,
+  );
+  const verifiedProviderCatalogKey = verifiedProviderNameKey
+    && canonicalVenueKey(verifiedProviderNameKey) === canonicalVenueKey(venueName)
+    ? index.resolveName(verifiedProviderNameKey)
+    : null;
   // Provider identity is authoritative. Falling back from one provider venue
   // to a name-only row can put a same-named room from another city on the page.
-  // Name/alias lookup remains available only for genuinely name-only legacy
-  // requests, where no provider-scoped identity exists.
+  // The only exception is a narrow, verified provider-to-catalog crosswalk for
+  // a known renamed building. An explicit provider row (including an empty row
+  // after a rights removal) always remains authoritative.
+  const hasProviderPool = !!providerKey && index.pools.has(providerKey);
   const licensed = providerKey
-    ? (index.pools.get(providerKey) || [])
+    ? (hasProviderPool
+      ? (index.pools.get(providerKey) || [])
+      : (index.pools.get(verifiedProviderCatalogKey) || []))
     : (index.pools.get(catalogKey) || []);
 
   const seen = new Set();

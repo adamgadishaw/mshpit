@@ -135,7 +135,7 @@ const styles = StyleSheet.create({
   upcomingLabel: { color: colors.textFaint, fontFamily: mono, fontSize: 7, fontWeight: "800", letterSpacing: 0.7, marginTop: 1 },
   hovered: { backgroundColor: colors.surfaceAlt, borderColor: colors.line },
   pressed: { transform: [{ scale: 0.99 }], opacity: 0.9 },
-  eventCard: { minHeight: 94, flexDirection: "row", alignItems: "center", gap: 13, padding: 14, backgroundColor: colors.surface, borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderColor: colors.lineSoft, ...shadow.card },
+  eventCard: { width: "100%", maxWidth: "100%", minWidth: 0, alignSelf: "stretch", minHeight: 94, flexDirection: "row", alignItems: "center", gap: 13, padding: 14, backgroundColor: colors.surface, borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderColor: colors.lineSoft, ...shadow.card },
   eventCardCompact: { minHeight: 74, padding: 10, gap: 10, backgroundColor: colors.bgElev, boxShadow: "none" },
   dateBadge: { width: 58, minHeight: 64, alignItems: "center", justifyContent: "center", borderRadius: 16, borderCurve: "continuous", backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.amber },
   dateBadgeCompact: { width: 46, minHeight: 52, borderRadius: 13 },
@@ -153,7 +153,7 @@ const styles = StyleSheet.create({
   eventPlace: { color: colors.textDim, fontSize: 12, lineHeight: 17, marginTop: 2 },
   genre: { alignSelf: "flex-start", color: colors.cool, fontSize: 10, fontWeight: "700", marginTop: 4 },
   eventDetails: { alignSelf: "flex-start", color: colors.amber, fontFamily: mono, fontSize: 10, lineHeight: 16, fontWeight: "900", marginTop: 5 },
-  ticketButton: { minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingHorizontal: 13, borderRadius: radius.pill, backgroundColor: colors.amberStrong, borderWidth: 1, borderBottomWidth: 3, borderColor: colors.amber, borderBottomColor: colors.accentEdge, ...shadow.control, ...Platform.select({ web: { cursor: "pointer" } }) },
+  ticketButton: { minHeight: 44, flexShrink: 0, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingHorizontal: 13, borderRadius: radius.pill, backgroundColor: colors.amberStrong, borderWidth: 1, borderBottomWidth: 3, borderColor: colors.amber, borderBottomColor: colors.accentEdge, ...shadow.control, ...Platform.select({ web: { cursor: "pointer" } }) },
   ticketPressed: { transform: [{ translateY: 2 }], opacity: 0.9 },
   ticketText: { color: "#1A1206", fontFamily: displayFont, fontSize: 12, fontWeight: "900" },
 });

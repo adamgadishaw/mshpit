@@ -4,7 +4,7 @@ export const VENUE_PHOTO_CLIENT_CACHE_MAX = 32;
 export const VENUE_PHOTO_CLIENT_TTL_MS = 15 * 60 * 1000;
 export const VENUE_PHOTO_RESPONSE_MAX = 24;
 export const VENUE_FAN_PHOTO_RESPONSE_MAX = 12;
-export const VENUE_PHOTO_CATALOG_VERSION = "licensed-v3";
+export const VENUE_PHOTO_CATALOG_VERSION = "licensed-v4";
 
 const cleanProviderIdentityPart = (value, max) => {
   const text = typeof value === "string" ? value.normalize("NFKC").trim() : "";

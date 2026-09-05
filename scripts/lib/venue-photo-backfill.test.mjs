@@ -44,6 +44,8 @@ test("backfill CLI supports bounded dry runs, cursors, and a one-command full sw
     coverageOnly: false,
     inventoryLimit: 2000,
     replace: false,
+    useProgressState: true,
+    statePath: null,
     dryRun: true,
     delayMs: 500,
     checkpointEvery: 3,
@@ -51,9 +53,46 @@ test("backfill CLI supports bounded dry runs, cursors, and a one-command full sw
   assert.equal(parseVenuePhotoBackfillArgs(["--all"]).limit, Number.POSITIVE_INFINITY);
   assert.equal(parseVenuePhotoBackfillArgs(["--coverage"]).dryRun, true);
   assert.equal(parseVenuePhotoBackfillArgs(["--catalog-only"]).catalogOnly, true);
+  assert.equal(parseVenuePhotoBackfillArgs(["--no-state"]).useProgressState, false);
+  assert.equal(parseVenuePhotoBackfillArgs(["--state-path=C:/data/progress.json"]).statePath, "C:/data/progress.json");
   assert.throws(() => parseVenuePhotoBackfillArgs(["--limit=0"]), /--limit/u);
   assert.throws(() => parseVenuePhotoBackfillArgs(["--inventory-limit=250001"]), /--inventory-limit/u);
   assert.throws(() => parseVenuePhotoBackfillArgs(["--delay-ms=5001"]), /--delay-ms/u);
+});
+
+test("recurring backfill batches wrap after the saved cursor and tolerate a removed cursor", () => {
+  const venues = [
+    ["alpha", { name: "Alpha Room", major: true, capacity: 400 }],
+    ["bravo", { name: "Bravo Room", capacity: 300 }],
+    ["charlie", { name: "Charlie Room", capacity: 200 }],
+  ];
+  const wrapped = selectVenuePhotoBackfillBatch(venues, {}, {
+    limit: 2,
+    cursor: "bravo",
+    wrap: true,
+  });
+  assert.deepEqual(wrapped.selected.map(([key]) => key), ["charlie", "alpha"]);
+  assert.equal(wrapped.hasMore, true);
+
+  const stale = selectVenuePhotoBackfillBatch(venues, {}, {
+    limit: 1,
+    cursor: "removed-venue",
+    wrap: true,
+    allowStaleCursor: true,
+  });
+  assert.deepEqual(stale.selected.map(([key]) => key), ["alpha"]);
+});
+
+test("explicit provider rights-removal rows stay tombstoned even during replace sweeps", () => {
+  const providerKey = "provider:ticketmaster:removed-photo-rights";
+  const venues = [
+    [providerKey, { name: "Protected Room" }],
+    ["ordinary-room", { name: "Ordinary Room" }],
+  ];
+  const batch = selectVenuePhotoBackfillBatch(venues, {
+    [providerKey]: { galleryPool: [], photos: [] },
+  }, { replace: true, limit: 10 });
+  assert.deepEqual(batch.selected.map(([key]) => key), ["ordinary-room"]);
 });
 
 test("backfill batches skip accepted inventory and resume after the emitted cursor", () => {

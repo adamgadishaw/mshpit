@@ -57,7 +57,10 @@ test("coverage does not report a name photo as served for a provider-scoped tour
   const verified = {
     "known hall": { galleryPool: [licensed("https://media.example/known.webp")] },
   };
-  const report = venuePhotoCoverageReport(inventory, verified);
+  const providerBindings = {
+    "provider:ticketmaster:kovzpzaekkia": "budweiser stage",
+  };
+  const report = venuePhotoCoverageReport(inventory, verified, { providerBindings });
   assert.equal(report.total, 2);
   assert.equal(report.exactCovered, 1);
   assert.equal(report.servedCovered, 1);
@@ -65,6 +68,34 @@ test("coverage does not report a name photo as served for a provider-scoped tour
   assert.equal(report.tourDateServedCovered, 0);
   assert.equal(report.tourDateServedMissing, 1);
   assert.equal(report.tourDateServedCoveragePercent, 0);
+});
+
+test("coverage counts the explicit RBC provider rename crosswalk without opening generic fallback", () => {
+  const inventory = buildVenuePhotoInventory({
+    "budweiser stage": { name: "RBC Amphitheatre" },
+  }, [{
+    venue: "RBC Amphitheatre", source: "ticketmaster", venue_provider_id: "KovZpZAEkkIA",
+    venue_city: "Toronto", venue_country_code: "CA",
+  }]);
+  const verified = {
+    "budweiser stage": { galleryPool: [licensed("https://media.example/rbc.webp")] },
+  };
+  const providerBindings = {
+    "provider:ticketmaster:kovzpzaekkia": "budweiser stage",
+  };
+  const report = venuePhotoCoverageReport(inventory, verified, { providerBindings });
+  assert.equal(report.total, 2);
+  assert.equal(report.exactCovered, 1);
+  assert.equal(report.servedCovered, 2);
+  assert.equal(report.tourDateExactCovered, 0);
+  assert.equal(report.tourDateServedCovered, 1);
+
+  const rightsRemoved = venuePhotoCoverageReport(inventory, {
+    ...verified,
+    "provider:ticketmaster:kovzpzaekkia": { galleryPool: [] },
+  }, { providerBindings });
+  assert.equal(rightsRemoved.tourDateServedCovered, 0,
+    "an explicit empty provider row remains an authoritative rights-removal record");
 });
 
 test("coverage still counts a verified name fallback for a name-only legacy identity", () => {

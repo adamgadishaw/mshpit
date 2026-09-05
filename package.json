@@ -44,6 +44,8 @@
     "ingest:venues": "node scripts/ingest-venues.mjs",
     "ingest:artists": "node scripts/ingest.mjs",
     "ingest:venue-photos": "node scripts/ingest-venue-photos.mjs",
+    "generate:venue-photo-bindings": "node scripts/generate-venue-photo-bindings.mjs",
+    "check:venue-photo-bindings": "node scripts/generate-venue-photo-bindings.mjs --check",
     "ingest:famous-photos": "node scripts/ingest-famous-venue-photos.mjs",
     "ingest:details": "node scripts/ingest-artist-details.mjs",
     "ingest:fix-bios": "node scripts/fix-bios.mjs",

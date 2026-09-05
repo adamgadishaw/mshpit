@@ -1863,6 +1863,42 @@ test("venue SEO pages lead with rights-verified structural photography and Image
   }
 });
 
+test("RBC provider SEO uses its verified renamed-building image while unknown provider ids stay generic", () => {
+  const database = createDatabase();
+  try {
+    const documents = createPublicDocumentService({ database, origin: "https://www.example.test" });
+    const rbc = documents.venueDocument({
+      venueKey: "budweiser stage",
+      name: "RBC Amphitheatre",
+      providerVenueId: "KovZpZAEkkIA",
+      source: "ticketmaster",
+    });
+    const rbcHtml = documents.render(rbc);
+    const rbcSchema = rbc.jsonLd.find((node) => node["@type"] === "MusicVenue");
+    assert.equal(rbc.imageProvenance, "licensed-venue");
+    assert.match(rbc.image, /\/venues\/licensed\/budweiser-stage-/u);
+    assert.equal(rbcSchema.image.contentUrl, rbc.image);
+    assert.match(rbcSchema.image.acquireLicensePage, /commons\.wikimedia\.org\/wiki\/File:Budweiser_Stage/u);
+    assert.match(rbcHtml, /property="og:image" content="https:\/\/pub-/u);
+    assert.doesNotMatch(rbcHtml, /Verified venue photo coming soon/u);
+
+    const unknown = documents.venueDocument({
+      venueKey: "budweiser stage",
+      name: "RBC Amphitheatre",
+      providerVenueId: "not-the-rbc-venue",
+      source: "ticketmaster",
+    });
+    const unknownHtml = documents.render(unknown);
+    assert.equal(unknown.image, null);
+    assert.equal(unknown.imageProvenance, null);
+    assert.equal(unknown.jsonLd.find((node) => node["@type"] === "MusicVenue").image, undefined);
+    assert.match(unknownHtml, /class="venue-hero-fallback"/u);
+    assert.match(unknownHtml, /property="og:image" content="https:\/\/www\.example\.test\/og\.png"/u);
+  } finally {
+    database.close();
+  }
+});
+
 test("provider event artwork never becomes a venue hero or social preview", () => {
   const database = createDatabase();
   try {

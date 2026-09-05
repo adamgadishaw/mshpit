@@ -116,7 +116,7 @@ export default function VenuePhotoWidget({ photos = [], venueName, city, coord, 
         : `No verified photos of ${venueName} are available yet`;
 
   return (
-    <View>
+    <View style={styles.wrap}>
       <View style={[styles.frame, {
         height: compact
           ? width >= 900 ? 214 : 180
@@ -205,8 +205,9 @@ export default function VenuePhotoWidget({ photos = [], venueName, city, coord, 
 }
 
 const styles = StyleSheet.create({
-  frame: { width: "100%", borderRadius: 16, overflow: "hidden", borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.bgElev },
-  scrim: { ...StyleSheet.absoluteFillObject, backgroundColor: "transparent", borderRadius: 16 },
+  wrap: { width: "100%", maxWidth: "100%", minWidth: 0, alignSelf: "stretch" },
+  frame: { width: "100%", maxWidth: "100%", minWidth: 0, borderRadius: 16, borderCurve: "continuous", overflow: "hidden", borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.bgElev },
+  scrim: { ...StyleSheet.absoluteFillObject, backgroundColor: "transparent", borderRadius: 16, borderCurve: "continuous" },
   emptyArtwork: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center" },
   emptyArtworkIcon: { width: 64, height: 64, borderRadius: 22, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: "rgba(255,255,255,0.18)", backgroundColor: "rgba(5,6,10,0.34)" },
   title: { position: "absolute", left: 16, bottom: 16, right: 16 },

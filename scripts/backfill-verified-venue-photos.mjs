@@ -17,6 +17,11 @@ import {
   resolveVenuePhotoDatabasePath,
   venuePhotoCoverageReport,
 } from "./lib/venue-photo-inventory.mjs";
+import {
+  readVenuePhotoBackfillState,
+  resolveVenuePhotoBackfillStatePath,
+  writeVenuePhotoBackfillState,
+} from "./lib/venue-photo-backfill-state.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SOURCE = join(HERE, "..", "src", "seed", "catalog.generated.json");
@@ -100,8 +105,27 @@ async function main() {
   }
   const inventory = buildVenuePhotoInventory(source.venues || {}, tourDates.rows);
   const coverageBefore = venuePhotoCoverageReport(inventory, existing);
+  const useProgressState = !options.dryRun
+    && options.useProgressState
+    && !options.all
+    && !options.replace
+    && options.offset === 0;
+  const progressStatePath = useProgressState
+    ? resolveVenuePhotoBackfillStatePath(databasePath, options.statePath)
+    : null;
+  const savedProgress = progressStatePath && !options.cursor
+    ? await readVenuePhotoBackfillState(progressStatePath)
+    : null;
+  const progressCursor = options.cursor || savedProgress?.cursor || null;
   const batch = selectVenuePhotoBackfillBatch(
-    inventory.entries, existing, options,
+    inventory.entries,
+    existing,
+    {
+      ...options,
+      cursor: progressCursor,
+      wrap: useProgressState,
+      allowStaleCursor: useProgressState && !options.cursor,
+    },
   );
 
   if (options.dryRun) {
@@ -141,6 +165,18 @@ async function main() {
       console.warn(`${venue.name}: ${error.message}`);
     }
     processed += 1;
+    // Advance only after an attempt finishes. If the process dies mid-request,
+    // the same venue is retried; ordinary provider misses cannot starve the
+    // rest of the inventory across recurring runs.
+    if (progressStatePath) {
+      // Persist a successful catalogue addition before advancing its cursor.
+      // This ordering avoids skipping newly mirrored media after a crash.
+      if (dirty) {
+        await writeJsonAtomic(OUTPUT, existing);
+        dirty = false;
+      }
+      await writeVenuePhotoBackfillState(progressStatePath, key);
+    }
     if (processed % options.checkpointEvery === 0) {
       if (dirty) {
         await writeJsonAtomic(OUTPUT, existing);
@@ -168,6 +204,7 @@ async function main() {
     nextCursor: batch.hasMore ? batch.nextCursor : null,
     hasMore: batch.hasMore,
     resumeWith: batch.hasMore ? `--cursor=${batch.nextCursor}` : null,
+    progressCursor: progressStatePath ? batch.nextCursor : null,
   }));
 }
 

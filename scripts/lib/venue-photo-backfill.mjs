@@ -1,4 +1,4 @@
-import { needsLicensedVenuePhotoAcross } from "./venue-photo-record.mjs";
+import { hasLicensedVenuePhoto, needsLicensedVenuePhotoAcross } from "./venue-photo-record.mjs";
 
 const DEFAULT_LIMIT = 75;
 const MAX_BATCH_LIMIT = 250;
@@ -188,6 +188,7 @@ export function parseVenuePhotoBackfillArgs(args = []) {
   const inventoryLimitText = valueOf("inventory-limit");
   const delayText = valueOf("delay-ms");
   const checkpointText = valueOf("checkpoint-every");
+  const statePath = valueOf("state-path") || null;
   const coverageOnly = args.includes("--coverage");
   return {
     all,
@@ -201,6 +202,8 @@ export function parseVenuePhotoBackfillArgs(args = []) {
     inventoryLimit: inventoryLimitText == null ? 100_000
       : safeInteger(inventoryLimitText, "--inventory-limit", { min: 1, max: 250_000 }),
     replace: args.includes("--replace"),
+    useProgressState: !args.includes("--no-state"),
+    statePath,
     dryRun: args.includes("--dry-run") || args.includes("--list") || coverageOnly,
     delayMs: delayText == null ? 250
       : safeInteger(delayText, "--delay-ms", { max: 5000 }),
@@ -217,18 +220,28 @@ export function selectVenuePhotoBackfillBatch(entries, existing = {}, options = 
 
   if (options.cursor) {
     const cursorIndex = ordered.findIndex(([key]) => key === options.cursor);
-    if (cursorIndex < 0) throw new Error(`Unknown venue-photo cursor: ${options.cursor}`);
-    start = Math.max(start, cursorIndex + 1);
+    if (cursorIndex < 0) {
+      if (!options.allowStaleCursor) throw new Error(`Unknown venue-photo cursor: ${options.cursor}`);
+      start = 0;
+    } else {
+      start = Math.max(start, cursorIndex + 1);
+    }
   }
 
-  const eligible = ([key, venue]) => options.replace
-    || needsLicensedVenuePhotoAcross(existing[key], venue);
-  const remaining = ordered.slice(start).filter(eligible);
+  const eligible = ([key, venue]) => {
+    const explicitProviderTombstone = String(key || "").startsWith("provider:")
+      && Object.prototype.hasOwnProperty.call(existing || {}, key)
+      && !hasLicensedVenuePhoto(existing[key]);
+    if (explicitProviderTombstone) return false;
+    return options.replace || needsLicensedVenuePhotoAcross(existing[key], venue);
+  };
+  const traversal = options.wrap && start > 0
+    ? [...ordered.slice(start), ...ordered.slice(0, start)]
+    : ordered.slice(start);
+  const remaining = traversal.filter(eligible);
   const selected = Number.isFinite(limit) ? remaining.slice(0, limit) : remaining;
   const nextCursor = selected.at(-1)?.[0] || null;
-  const lastIndex = nextCursor == null ? start - 1
-    : ordered.findIndex(([key]) => key === nextCursor);
-  const hasMore = nextCursor != null && ordered.slice(lastIndex + 1).some(eligible);
+  const hasMore = selected.length > 0 && remaining.length > selected.length;
 
   return { selected, nextCursor, hasMore, totalEligible: remaining.length };
 }
