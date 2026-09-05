@@ -38,7 +38,8 @@ function database() {
       id TEXT PRIMARY KEY,artist_key TEXT,artist TEXT,release_at INTEGER DEFAULT 0,music_qualified INTEGER DEFAULT 1,
       owner_id TEXT,provider_active INTEGER DEFAULT 1,date TEXT,event_end_date TEXT,event_status TEXT,
       start_date_time TEXT,start_local_time TEXT,event_name TEXT,tour_name TEXT,venue TEXT,venue_city TEXT,
-      place TEXT,venue_country TEXT
+      place TEXT,venue_country TEXT,event_kind TEXT NOT NULL DEFAULT 'concert',
+      music_evidence TEXT,billed_artists TEXT NOT NULL DEFAULT '[]'
     );
     CREATE TABLE media_assets (
       id TEXT,owner_id TEXT,source_key TEXT,render_variant_id TEXT,kind TEXT,status TEXT,

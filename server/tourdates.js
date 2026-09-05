@@ -19,6 +19,7 @@ import {
   ticketmasterMarketCoverageKey,
 } from "./ticketmasterMarketCoverage.js";
 import { PROVIDER_JSON_LIMITS, readBoundedJsonResponse } from "./boundedJsonResponse.js";
+import { startPeriodicJob } from "./periodicJobScheduler.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CATALOG = join(HERE, "..", "src", "seed", "catalog.generated.json");
@@ -27,6 +28,7 @@ const BIT = process.env.BANDSINTOWN_APP_ID;
 const LIMIT = Number(process.env.TOURDATE_LIMIT) || 150;
 const CITY_LIMIT = Number(process.env.TOURDATE_CITY_LIMIT) || 50;
 const REFRESH_H = Number(process.env.TOURDATE_REFRESH_H) || 12;
+const RETRY_DELAY_MS = 15 * 60 * 1000;
 const DAY = 86400000;
 const LAST_REFRESH_KEY = "tourdates:last-refresh:v1";
 const INGESTION_REVISION_KEY = "tourdates:ingestion-revision";
@@ -40,7 +42,33 @@ const MARKET_COVERAGE_KEY_PREFIX = "tourdates:ticketmaster-market-coverage:v1:";
 // discover. The persisted value makes that release run once even when the
 // ordinary freshness clock is still recent, without replaying on every deploy.
 export const TOURDATE_INGESTION_REVISION = "live-catalog-demand-partitioned-90d-v3";
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+function throwIfAborted(signal) {
+  if (!signal?.aborted) return;
+  throw signal.reason instanceof Error
+    ? signal.reason
+    : new DOMException("Tour-date refresh stopped.", "AbortError");
+}
+
+const sleep = (ms, signal) => {
+  throwIfAborted(signal);
+  if (!signal) return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(finish, ms);
+    timer.unref?.();
+    signal.addEventListener("abort", abort, { once: true });
+    function cleanup() {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", abort);
+    }
+    function finish() { cleanup(); resolve(); }
+    function abort() {
+      cleanup();
+      reject(signal.reason instanceof Error
+        ? signal.reason
+        : new DOMException("Tour-date refresh stopped.", "AbortError"));
+    }
+  });
+};
 const slugId = (p, n, v, d) => `${p}_${n}_${v}_${d}`.toLowerCase().replace(/[^a-z0-9]+/g, "_").slice(0, 120);
 const norm = (value) => String(value || "").trim().toLowerCase();
 const optionalText = (value) => {
@@ -305,9 +333,13 @@ export function writeTicketmasterMarketCoverageState(database, market, state) {
   return true;
 }
 
-async function getJSON(url) {
+async function getJSON(url, { signal } = {}) {
+  throwIfAborted(signal);
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), 15000);
+  t.unref?.();
+  const abort = () => ctrl.abort(signal.reason);
+  signal?.addEventListener("abort", abort, { once: true });
   try {
     const r = await fetch(url, { signal: ctrl.signal, headers: { "User-Agent": "mshpit.com" } });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -315,7 +347,10 @@ async function getJSON(url) {
       maxBytes: PROVIDER_JSON_LIMITS.tourDates,
       signal: ctrl.signal,
     });
-  } finally { clearTimeout(t); }
+  } finally {
+    clearTimeout(t);
+    signal?.removeEventListener("abort", abort);
+  }
 }
 
 // Provider capacity is deliberately bounded, so spend the artist lane on the
@@ -730,14 +765,14 @@ export async function collectTicketmasterMarketPartitions({
   });
 }
 
-async function tmDates(name) {
+async function tmDates(name, { signal } = {}) {
   if (!KEY) return [];
   const data = await getJSON(ticketmasterEventSearchUrl({
     apiKey: KEY,
     keyword: name,
     size: ARTIST_PAGE_SIZE,
     startEndDateTime: ticketmasterActiveAndFutureRange(),
-  }));
+  }), { signal });
   return ticketmasterRows(data, { requestedArtist: name });
 }
 
@@ -745,24 +780,28 @@ async function tmDates(name) {
 // produce a large global catalogue with no dates near a Toronto account. The
 // official Discovery API supports city + music classification filters, so one
 // request per distinct member city gives the local rail useful coverage.
-async function tmCityDates(city) {
+async function tmCityDates(city, { signal } = {}) {
   if (!KEY || !city) return [];
   return collectTicketmasterMarketPartitions({
     apiKey: KEY,
     city,
     state: readTicketmasterMarketCoverageState(db, { city }),
+    fetchJson: (url) => getJSON(url, { signal }),
+    wait: (ms) => sleep(ms, signal),
   });
 }
 
 // A small rotating country batch gives Pit representative worldwide coverage
 // without multiplying the per-artist/provider fan-out. One complete sweep takes
 // several scheduled runs, and the cursor survives restarts on the same disk.
-async function tmCountryDates(countryCode) {
+async function tmCountryDates(countryCode, { signal } = {}) {
   if (!KEY || !countryCode) return [];
   return collectTicketmasterMarketPartitions({
     apiKey: KEY,
     countryCode,
     state: readTicketmasterMarketCoverageState(db, { countryCode }),
+    fetchJson: (url) => getJSON(url, { signal }),
+    wait: (ms) => sleep(ms, signal),
   });
 }
 
@@ -821,10 +860,10 @@ export function bandsintownRows(data, { requestedArtist = null } = {}) {
   return out;
 }
 
-async function bitDates(name) {
+async function bitDates(name, { signal } = {}) {
   if (!BIT) return [];
   const enc = encodeURIComponent(name).replace(/%2F/gi, "%252F");
-  const data = await getJSON(`https://rest.bandsintown.com/artists/${enc}/events?app_id=${encodeURIComponent(BIT)}&date=upcoming`);
+  const data = await getJSON(`https://rest.bandsintown.com/artists/${enc}/events?app_id=${encodeURIComponent(BIT)}&date=upcoming`, { signal });
   return bandsintownRows(data, { requestedArtist: name });
 }
 
@@ -936,10 +975,10 @@ export function dedupeTourProviderRows(rows) {
   return [...byIdentity.values()];
 }
 
-async function fetchDates(name) {
+async function fetchDates(name, { signal } = {}) {
   const result = await collectNamedTourProviderResults([
-    KEY ? { source: "ticketmaster", run: () => tmDates(name) } : null,
-    BIT ? { source: "bandsintown", run: () => bitDates(name) } : null,
+    KEY ? { source: "ticketmaster", run: () => tmDates(name, { signal }) } : null,
+    BIT ? { source: "bandsintown", run: () => bitDates(name, { signal }) } : null,
   ]);
   return { ...result, rows: dedupeTourProviderRows(result.rows) };
 }
@@ -1152,8 +1191,9 @@ export function persistTicketmasterMarketResult(database, {
 }
 
 let running = false;
-async function refresh() {
+async function refresh({ signal } = {}) {
   if (running || (!KEY && !BIT)) return;
+  throwIfAborted(signal);
   running = true;
   const t0 = Date.now();
   try {
@@ -1183,8 +1223,10 @@ async function refresh() {
       }
     };
     for (const a of artists) {
+      throwIfAborted(signal);
       try {
-        const result = await fetchDates(a.name);
+        const result = await fetchDates(a.name, { signal });
+        throwIfAborted(signal);
         providerSuccesses += result.successes;
         providerFailures += result.failures;
         recordOutcomes(result.outcomes, a.name);
@@ -1198,21 +1240,23 @@ async function refresh() {
         catch { /* architecture: allow-empty-catch -- preserve the original artist-ingest write failure */ }
         throw e;
       }
-      await sleep(TM_REQUEST_DELAY_MS); // stay below provider rate limits
+      await sleep(TM_REQUEST_DELAY_MS, signal); // stay below provider rate limits
     }
     const cities = db.prepare(`SELECT home_city city, COUNT(*) members FROM users
       WHERE home_city IS NOT NULL AND trim(home_city) <> ''
       GROUP BY lower(trim(home_city)) ORDER BY members DESC LIMIT ?`).all(CITY_LIMIT);
     for (const { city } of cities) {
+      throwIfAborted(signal);
       try {
         let marketResult = null;
         const result = await collectNamedTourProviderResults([KEY ? {
           source: "ticketmaster",
           run: async () => {
-            marketResult = await tmCityDates(city);
+            marketResult = await tmCityDates(city, { signal });
             return marketResult;
           },
         } : null]);
+        throwIfAborted(signal);
         providerSuccesses += result.successes;
         providerFailures += result.failures;
         recordOutcomes(result.outcomes);
@@ -1228,20 +1272,22 @@ async function refresh() {
         catch { /* architecture: allow-empty-catch -- preserve the original city-ingest write failure */ }
         throw e;
       }
-      await sleep(TM_REQUEST_DELAY_MS);
+      await sleep(TM_REQUEST_DELAY_MS, signal);
     }
     for (const countryCode of countryBatch.countries) {
+      throwIfAborted(signal);
       try {
         let marketResult = null;
         const result = await collectNamedTourProviderResults([
           {
             source: "ticketmaster",
             run: async () => {
-              marketResult = await tmCountryDates(countryCode);
+              marketResult = await tmCountryDates(countryCode, { signal });
               return marketResult;
             },
           },
         ]);
+        throwIfAborted(signal);
         providerSuccesses += result.successes;
         providerFailures += result.failures;
         recordOutcomes(result.outcomes);
@@ -1257,8 +1303,9 @@ async function refresh() {
         catch { /* architecture: allow-empty-catch -- preserve the original country-ingest write failure if rollback itself fails */ }
         throw e;
       }
-      await sleep(TM_REQUEST_DELAY_MS);
+      await sleep(TM_REQUEST_DELAY_MS, signal);
     }
+    throwIfAborted(signal);
     if (countryBatch.countries.length) markCountryCursor(countryBatch.nextCursor);
     if (!hasSuccessfulTourProviderWork(providerSuccesses)) {
       throw new Error(`Every configured tour provider request failed (${providerFailures} failures); existing dates were kept and the refresh remains due.`);
@@ -1278,35 +1325,40 @@ async function refresh() {
     markRefreshComplete(Date.now(), artistSelection.nextCursor);
     console.log(`[pit] tour dates refreshed: ${total} dates / ${artists.length} artists + ${cities.length} member cities + ${countryBatch.countries.length} global markets (${providerSuccesses} provider calls ok, ${providerFailures} failed) in ${Math.round((Date.now() - t0) / 1000)}s`);
   } catch (e) {
-    console.error(`[pit] tour-date refresh failed cause=${privateErrorLabel(e)}`);
+    if (!signal?.aborted) console.error(`[pit] tour-date refresh failed cause=${privateErrorLabel(e)}`);
     throw e;
   } finally { running = false; }
 }
 
-export function startTourDateScheduler() {
+export function startTourDateScheduler({
+  initialDelayMs = 30_000,
+  intervalMs = REFRESH_H * 3600 * 1000,
+  retryDelayMs = RETRY_DELAY_MS,
+  logger = console,
+  schedule = startPeriodicJob,
+} = {}) {
   if (!isTourDateSchedulerEnabled()) {
-    console.log("[pit] tour-date scheduler disabled; set TOURDATE_REFRESH_ENABLED=true to opt in on Render.");
-    return;
+    logger.log?.("[pit] tour-date scheduler disabled; set TOURDATE_REFRESH_ENABLED=true to opt in on Render.");
+    return null;
   }
   if (!KEY && !BIT) {
-    console.log("[pit] tour-date scheduler idle, set TICKETMASTER_KEY and/or BANDSINTOWN_APP_ID to enable.");
-    return;
+    logger.log?.("[pit] tour-date scheduler idle, set TICKETMASTER_KEY and/or BANDSINTOWN_APP_ID to enable.");
+    return null;
   }
-  console.log(`[pit] tour-date scheduler on (${[KEY && "Ticketmaster", BIT && "Bandsintown"].filter(Boolean).join(" + ")}, every ${REFRESH_H}h).`);
-  const triggerRefresh = () => {
+  logger.log?.(`[pit] tour-date scheduler on (${[KEY && "Ticketmaster", BIT && "Bandsintown"].filter(Boolean).join(" + ")}, every ${REFRESH_H}h).`);
+  return schedule({
+    initialDelayMs: Math.max(1_000, Number(initialDelayMs) || 30_000),
+    intervalMs: Math.max(60_000, Number(intervalMs) || REFRESH_H * 3600 * 1000),
+    retryDelayMs: Math.max(60_000, Number(retryDelayMs) || RETRY_DELAY_MS),
     // Freshness is checked only after this job owns the shared slot. That way a
     // queued timer can cheaply skip work made unnecessary while it was waiting.
-    void runTourDateJobSafely(() => runBackgroundJob(async () => {
+    run: ({ signal } = {}) => runBackgroundJob(async () => {
       if (!shouldRefreshTourDateIngestion({
         lastRefreshAt: storedLastRefreshAt(),
         storedRevision: storedIngestionRevision(),
       })) return;
-      await refresh();
-    }));
-  };
-  // Let health checks and real traffic win the cold-start window. The freshness
-  // read itself stays inside the safe job boundary in case SQLite is transiently
-  // unavailable during maintenance.
-  setTimeout(triggerRefresh, 30_000).unref();
-  setInterval(triggerRefresh, REFRESH_H * 3600 * 1000).unref();
+      await refresh({ signal });
+    }),
+    report: (error) => logger.error?.(`[pit] scheduled tour-date refresh failed safely cause=${privateErrorLabel(error)}; retrying in ${Math.round(Math.max(60_000, Number(retryDelayMs) || RETRY_DELAY_MS) / 60_000)}m`),
+  });
 }

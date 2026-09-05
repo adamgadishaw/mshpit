@@ -27,6 +27,34 @@ const LIVE_MAX_INFLIGHT = Math.max(1, Math.min(4,
 const liveInflight = new Map();
 const wikidataCircuit = { until: 0, code: null };
 
+function throwIfAborted(signal) {
+  if (!signal?.aborted) return;
+  throw signal.reason instanceof Error
+    ? signal.reason
+    : new DOMException("Wikidata enrichment stopped.", "AbortError");
+}
+
+function abortableDelay(ms, signal) {
+  throwIfAborted(signal);
+  if (!signal) return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(finish, ms);
+    timer.unref?.();
+    signal.addEventListener("abort", abort, { once: true });
+    function cleanup() {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", abort);
+    }
+    function finish() { cleanup(); resolve(); }
+    function abort() {
+      cleanup();
+      reject(signal.reason instanceof Error
+        ? signal.reason
+        : new DOMException("Wikidata enrichment stopped.", "AbortError"));
+    }
+  });
+}
+
 const channelChecks = {
   get: db.prepare("SELECT mbid,channel_id,validated,checked_at FROM wikidata_channel_checks WHERE mbid=?"),
   set: db.prepare(`INSERT INTO wikidata_channel_checks (mbid,channel_id,validated,checked_at)
@@ -135,7 +163,8 @@ function retryAtFrom(response, fallbackMs = 60_000) {
   return Number.isFinite(absolute) && absolute > Date.now() ? absolute : Date.now() + fallbackMs;
 }
 
-async function wikidataBatch(mbids, fetchImpl, timeoutMs) {
+async function wikidataBatch(mbids, fetchImpl, timeoutMs, signal) {
+  throwIfAborted(signal);
   if (wikidataCircuit.until > Date.now()) {
     throw new WikidataRequestError("Wikidata lookups are cooling down.", {
       code: "wikidata_paused",
@@ -145,7 +174,8 @@ async function wikidataBatch(mbids, fetchImpl, timeoutMs) {
   }
 
   let response;
-  const requestSignal = AbortSignal.timeout(timeoutMs);
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  const requestSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
   try {
     response = await fetchImpl(`${WIKIDATA_SPARQL}?query=${encodeURIComponent(buildSparql(mbids))}&format=json`, {
       headers: {
@@ -188,17 +218,18 @@ async function wikidataBatch(mbids, fetchImpl, timeoutMs) {
   }
 }
 
-async function channelTitles(ids, apiKey, fetchImpl) {
+async function channelTitles(ids, apiKey, fetchImpl, signal) {
   const titles = {};
   if (!apiKey || !ids.length) return { titles, checked: false };
   let checked = true;
   for (let i = 0; i < ids.length; i += 50) {
+    throwIfAborted(signal);
     try {
       const data = await youtubeJson("channels", {
         part: "snippet",
         id: ids.slice(i, i + 50).join(","),
         maxResults: "50",
-      }, apiKey, fetchImpl);
+      }, apiKey, fetchImpl, 8_000, { signal });
       for (const item of data?.items || []) {
         if (item?.id && CHANNEL_RE.test(item.id)) titles[item.id] = item?.snippet?.title || "";
       }
@@ -276,17 +307,18 @@ export function wikidataProviderStatus() {
   };
 }
 
-async function wikidataBatchWithRetry(mbids, fetchImpl, timeoutMs, sleep, random) {
+async function wikidataBatchWithRetry(mbids, fetchImpl, timeoutMs, sleep, random, signal) {
   let lastError;
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      return await wikidataBatch(mbids, fetchImpl, timeoutMs);
+      return await wikidataBatch(mbids, fetchImpl, timeoutMs, signal);
     } catch (error) {
+      throwIfAborted(signal);
       lastError = error;
       if (["wikidata_rate_limited", "wikidata_paused", "wikidata_rejected"].includes(error?.code)) throw error;
       if (attempt < 2) {
         const delay = Math.round(Math.min(5_000, 500 * (2 ** attempt)) * (0.8 + random() * 0.4));
-        await sleep(delay);
+        await sleep(delay, signal);
       }
     }
   }
@@ -305,9 +337,11 @@ export async function backfillChannelsFromWikidata({
   apiKey = process.env.YOUTUBE_API_KEY,
   fetchImpl = fetch,
   onProgress = null,
-  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  sleep = abortableDelay,
   random = Math.random,
+  signal,
 } = {}) {
+  throwIfAborted(signal);
   const safeLimit = clampInteger(limit, 4_000, 1, 50_000);
   const safeBatchSize = clampInteger(batchSize, 100, 1, 150);
   const cutoff = Date.now() - CHECK_TTL_MS;
@@ -371,6 +405,7 @@ export async function backfillChannelsFromWikidata({
   };
 
   for (let i = 0; i < identities.length; i += safeBatchSize) {
+    throwIfAborted(signal);
     const batch = identities.slice(i, i + safeBatchSize);
     const needsFetch = batch.filter((group) => !group.cached || group.cached.checkedAt < cutoff);
     let fetched = new Map();
@@ -380,13 +415,14 @@ export async function backfillChannelsFromWikidata({
     let fetchError = null;
     if (needsFetch.length) {
       try {
-        fetched = await wikidataBatchWithRetry(needsFetch.map((group) => group.mbid), fetchImpl, 30_000, sleep, random);
+        fetched = await wikidataBatchWithRetry(needsFetch.map((group) => group.mbid), fetchImpl, 30_000, sleep, random, signal);
         const allIds = [...new Set([...fetched.values()].flat())];
-        const inspected = await channelTitles(allIds, apiKey, fetchImpl);
+        const inspected = await channelTitles(allIds, apiKey, fetchImpl, signal);
         titles = inspected.titles;
         titlesChecked = inspected.checked;
         stats.batches++;
       } catch (error) {
+        throwIfAborted(signal);
         fetchError = error;
         stats.failedBatches++;
         stats.deferred += needsFetch.length;
@@ -396,6 +432,7 @@ export async function backfillChannelsFromWikidata({
     }
 
     const checkedAt = Date.now();
+    throwIfAborted(signal);
     db.exec("BEGIN");
     try {
       for (const group of batch) {
@@ -440,7 +477,7 @@ export async function backfillChannelsFromWikidata({
     }
 
     onProgress?.({ ...stats });
-    if (needsFetch.length) await sleep(1_200);
+    if (needsFetch.length) await sleep(1_200, signal);
   }
   return stats;
 }

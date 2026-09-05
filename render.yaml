@@ -28,6 +28,9 @@ services:
     # publishing without restarting the web/API service. /api/readiness remains
     # the strict manual release-verification endpoint.
     healthCheckPath: /api/health
+    # Match the app's cooperative shutdown window. The process keeps SQLite
+    # open while active maintenance jobs settle, with a 55s internal last resort.
+    maxShutdownDelaySeconds: 60
     # Build only after the immutable GitHub Quality gate for master passes.
     # This replaces the deprecated commit-immediate autoDeploy switch.
     autoDeployTrigger: checksPass

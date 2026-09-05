@@ -1001,6 +1001,8 @@ test("event ticket offers require a supported future purchasable state and missi
     const scheduledHtml = documents.render(scheduled);
 
     assert.equal(scheduled.jsonLd[0]["@type"], "MusicEvent");
+    assert.equal(scheduled.jsonLd[0].name, "Unlisted Touring Artist",
+      "fallback event names do not duplicate the venue stored in location.name");
     assert.equal(scheduled.jsonLd[0].location["@type"], "Place");
     assert.deepEqual(scheduled.jsonLd[0].performer, [{
       "@type": "MusicGroup",
@@ -1032,6 +1034,10 @@ test("event ticket offers require a supported future purchasable state and missi
     const cancelled = documents.eventDocument(options);
     assert.equal(Object.hasOwn(cancelled.jsonLd[0], "offers"), false);
     assert.equal(cancelled.event.ticketUrl, null);
+
+    database.prepare("UPDATE tour_dates SET event_status=? WHERE id=?").run("rescheduled", "unknown-event");
+    const rescheduledWithoutPreviousDate = documents.eventDocument(options);
+    assert.equal(rescheduledWithoutPreviousDate.jsonLd[0].eventStatus, "https://schema.org/EventRescheduled");
 
     database.prepare("UPDATE tour_dates SET event_status=?,date=? WHERE id=?").run("scheduled", "2026-08-20", "unknown-event");
     const past = documents.eventDocument(options);
@@ -1130,6 +1136,8 @@ test("provider-evidenced festivals expose cohesive visible and structured event 
       { "@type": "MusicGroup", name: "Headliner Two" },
     ]);
     assert.deepEqual(schema.image, ["https://s1.ticketm.net/dam/a/festival.jpg"]);
+    assert.equal(document.jsonLd.find((node) => node["@type"] === "WebPage")
+      .primaryImageOfPage.contentUrl, "https://s1.ticketm.net/dam/a/festival.jpg");
     assert.equal(document.image, "https://s1.ticketm.net/dam/a/festival.jpg");
     assert.equal(document.imageProvenance, "provider");
     assert.equal(document.imageWidth, 1920);
@@ -1137,6 +1145,8 @@ test("provider-evidenced festivals expose cohesive visible and structured event 
     assert.match(html, /<h1>Lollapalooza<\/h1>/);
     assert.match(html, /Lineup:<\/strong> Headliner One · Headliner Two/);
     assert.match(html, /src="https:\/\/s1\.ticketm\.net\/dam\/a\/festival\.jpg"/);
+    assert.match(html, /property="og:image:alt" content="Lollapalooza event image"/);
+    assert.match(html, /name="twitter:image:alt" content="Lollapalooza event image"/);
     assert.match(html, /Ticketmaster \/ promoter · <a href="https:\/\/www\.ticketmaster\.com\/event\/tm-festival-1"/);
 
     database.prepare("UPDATE tour_dates SET music_qualified=0 WHERE id=?").run("festival-event");
@@ -1325,6 +1335,34 @@ test("Discover is a substantive public hub while Search stays useful and noindex
       "discover-event", "Discover Artist", "Discovery Hall", "London, United Kingdom",
       "2026-12-05", "ticketmaster", 0, "London", "GB", NOW,
     );
+    const insertRangeEvent = database.prepare(`INSERT INTO tour_dates
+      (id,artist,venue,place,date,source,event_name,event_kind,music_evidence,billed_artists,
+        event_end_date,release_at,venue_city,venue_country_code,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+    insertRangeEvent.run(
+      "expired-corrupt-range", "Old Concert", "Old Hall", "London, United Kingdom",
+      "2026-01-10", "ticketmaster", "Old Concert Live", "concert",
+      "ticketmaster:classification:music", JSON.stringify(["Old Concert"]), "2026-12-31",
+      0, "London", "GB", NOW,
+    );
+    insertRangeEvent.run(
+      "ongoing-real-festival", "Festival Headliner", "Festival Park", "London, United Kingdom",
+      "2026-08-24", "ticketmaster", "City Music Festival", "festival",
+      "ticketmaster:classification:music", JSON.stringify(["Festival Headliner"]), "2026-08-26",
+      0, "London", "GB", NOW,
+    );
+    insertRangeEvent.run(
+      "provider-multi-day-product", "Automatic live", "Subscription Hall", "London, United Kingdom",
+      "2026-01-01", "ticketmaster", "Automatic live", "multi_day",
+      "ticketmaster:classification:music", "[]", "2026-12-31",
+      0, "London", "GB", NOW,
+    );
+    insertRangeEvent.run(
+      "malformed-provider-title", "Pã\u009cSsy", "Encoding Hall", "London, United Kingdom",
+      "2026-12-07", "ticketmaster", "Pã\u009cSsy Live", "concert",
+      "ticketmaster:classification:music", JSON.stringify(["Pã\u009cSsy"]), null,
+      0, "London", "GB", NOW,
+    );
 
     const documents = service(database);
     const discover = documents.discoverDocument({ at: NOW, today: "2026-08-25" });
@@ -1332,6 +1370,14 @@ test("Discover is a substantive public hub while Search stays useful and noindex
     assert.equal(discover.indexable, true);
     assert.equal(discover.artists.some((artist) => artist.name === "Discover Artist"), true);
     assert.equal(discover.events.some((event) => event.id === "discover-event"), true);
+    assert.equal(discover.events.some((event) => event.id === "ongoing-real-festival"), true,
+      "a real, billed festival remains visible while it is underway");
+    assert.equal(discover.events.some((event) => event.id === "expired-corrupt-range"), false,
+      "a bad end date cannot keep an ordinary concert current");
+    assert.equal(discover.events.some((event) => event.id === "provider-multi-day-product"), false,
+      "an unbilled long-running provider product is not search-facing live music");
+    assert.equal(discover.events.some((event) => event.id === "malformed-provider-title"), false,
+      "malformed provider text is not emitted to crawler-visible HTML");
     assert.equal(discover.posts.some((post) => post.id === "discover-review"), true);
     const discoverHtml = documents.render(discover);
     assert.match(discoverHtml, /Discover music through the people who were there/);
@@ -1364,6 +1410,12 @@ test("artist and event directories reject impossible future dates before paginat
     addArtist(database, {
       key: "invalid-date-only",
       name: "Invalid Date Only",
+      bio: "",
+      mbid: null,
+    });
+    addArtist(database, {
+      key: "provider-product-only",
+      name: "Provider Product Only",
       bio: "",
       mbid: null,
     });
@@ -1405,6 +1457,30 @@ test("artist and event directories reject impossible future dates before paginat
       0,
       NOW + 100,
     );
+    database.prepare(`INSERT INTO tour_dates
+      (id,artist,artist_key,venue,place,date,event_end_date,source,event_name,event_kind,
+        music_qualified,music_evidence,billed_artists,venue_provider_id,venue_city,
+        venue_country_code,release_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      "provider-season-product",
+      "Provider Product Only",
+      "provider-product-only",
+      "Season Product Hall",
+      "Toronto, Canada",
+      "2026-01-01",
+      "2026-12-31",
+      "ticketmaster",
+      "Provider Product Only Live Access",
+      "multi_day",
+      1,
+      "ticketmaster:classification:music",
+      JSON.stringify(["Provider Product Only"]),
+      "season-product-provider",
+      "Toronto",
+      "CA",
+      0,
+      NOW + 101,
+    );
 
     const documents = service(database);
     const eventPageOne = documents.directoryDocument({ kind: "events", page: 1, at: NOW, today: "2026-08-25" });
@@ -1417,6 +1493,8 @@ test("artist and event directories reject impossible future dates before paginat
     const artistDirectory = documents.directoryDocument({ kind: "artists", page: 1, at: NOW, today: "2026-08-25" });
     assert.equal(artistDirectory.artists.some((artist) => artist.name === "Valid Directory Artist"), true);
     assert.equal(artistDirectory.artists.some((artist) => artist.name === "Invalid Date Only"), false);
+    assert.equal(artistDirectory.artists.some((artist) => artist.name === "Provider Product Only"), false,
+      "a long provider product cannot qualify an otherwise thin artist page");
   } finally {
     database.close();
   }
@@ -1458,6 +1536,30 @@ test("global venue and concert directories are bounded, canonical, substantive, 
     insertEvent.run("shared-south", "Alpha", "Shared Room", "Chicago, United States", "2026-10-03", null, null, "Chicago", "US", "3 South Road", 0, NOW + 22, null);
     insertEvent.run("impossible-event", "Alpha", "Impossible Hall", "Nowhere", "2026-99-99", "ticketmaster", "impossible", "Nowhere", "CA", "4 Invalid Road", 0, NOW + 23, null);
     insertEvent.run("restricted-event", "Alpha", "Restricted Hall", "Toronto, Canada", "2026-10-04", "ticketmaster", "restricted", "Toronto", "CA", "5 Hidden Road", 0, NOW + 24, "banned");
+    database.prepare(`INSERT INTO tour_dates
+      (id,artist,venue,place,date,event_end_date,source,event_name,event_kind,music_qualified,
+        music_evidence,billed_artists,venue_provider_id,venue_city,venue_country_code,
+        venue_address_line1,release_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      "venue-season-product",
+      "Alpha",
+      "Season Product Hall",
+      "Toronto, Canada",
+      "2026-01-01",
+      "2026-12-31",
+      "ticketmaster",
+      "Alpha Live Access",
+      "multi_day",
+      1,
+      "ticketmaster:classification:music",
+      JSON.stringify(["Alpha"]),
+      "season-product-hall",
+      "Toronto",
+      "CA",
+      "99 Subscription Road",
+      0,
+      NOW + 25,
+    );
 
     const documents = service(database);
     const venuePageOne = documents.directoryDocument({ kind: "venues", page: 1, at: NOW, today: "2026-08-25" });
@@ -1473,6 +1575,8 @@ test("global venue and concert directories are bounded, canonical, substantive, 
     assert.equal([...venuePageOne.venues, ...venuePageTwo.venues].some((venue) => venue.name === "Shared Room"), false);
     assert.equal([...venuePageOne.venues, ...venuePageTwo.venues].some((venue) => venue.name === "Impossible Hall"), false);
     assert.equal([...venuePageOne.venues, ...venuePageTwo.venues].some((venue) => venue.name === "Restricted Hall"), false);
+    assert.equal([...venuePageOne.venues, ...venuePageTwo.venues].some((venue) => venue.name === "Season Product Hall"), false,
+      "a long provider product cannot qualify an otherwise empty venue page");
     const providerVenue = venuePageOne.venues.find((venue) => venue.name === "Provider Hall 01");
     assert.equal(providerVenue.path, "/venue/ticketmaster-provider-01");
     assert.equal(providerVenue.featuredEvent.path, "/event/directory-event-01");

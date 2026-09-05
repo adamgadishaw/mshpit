@@ -18,6 +18,7 @@ import {
   runScheduledBackup,
   scheduledBackupArgs,
   shouldRunScheduledBackup,
+  startBackupScheduler,
 } from "./backupScheduler.js";
 
 test("production backups default on, explicit values fail closed, and development stays quiet", () => {
@@ -209,4 +210,44 @@ test("a wedged backup child is killed and cannot deadlock the maintenance queue"
     /backup process timed out after 5ms/,
   );
   assert.equal(killedWith, "SIGKILL");
+});
+
+test("cooperative shutdown kills the backup child and waits for close", async () => {
+  const controller = new AbortController();
+  let killedWith = null;
+  let child = null;
+  const fakeSpawn = () => {
+    child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.kill = (signal) => {
+      killedWith = signal;
+      queueMicrotask(() => child.emit("close", 137));
+      return true;
+    };
+    return child;
+  };
+
+  const active = runScheduledBackup({ env: {}, spawnProcess: fakeSpawn, signal: controller.signal });
+  controller.abort(new DOMException("deploy", "AbortError"));
+  await assert.rejects(active, (error) => error?.name === "AbortError");
+  assert.equal(killedWith, "SIGKILL");
+});
+
+test("the daily backup scheduler owns its lifecycle and configures a prompt retry", async () => {
+  let configuration = null;
+  const handle = { trigger() {}, stop() { return Promise.resolve(); } };
+  const scheduler = startBackupScheduler({
+    env: { NODE_ENV: "production", BACKUP_ENABLED: "true" },
+    logger: { log() {}, warn() {}, error() {} },
+    schedule: (options) => { configuration = options; return handle; },
+  });
+
+  assert.equal(scheduler, handle);
+  assert.equal(configuration.initialDelayMs, 5 * 60 * 1000);
+  assert.equal(configuration.intervalMs, 24 * 60 * 60 * 1000);
+  assert.equal(configuration.retryDelayMs, 15 * 60 * 1000,
+    "a transient failure is retried before the next daily slot");
+  assert.equal(typeof configuration.run, "function");
+  assert.equal(typeof configuration.report, "function");
 });

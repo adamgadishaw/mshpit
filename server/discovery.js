@@ -14,6 +14,7 @@ import { publicTicketmasterEventImage } from "./providerEventImage.js";
 import { publicTourDateVenueFields } from "./publicTourDateVenueProjection.js";
 import { publicTourDateProviderFields } from "./tourDateMetadata.js";
 import { catalogTotals } from "./catalogTotals.js";
+import { eligiblePopularityArtists } from "./artistPopularityEligibility.js";
 
 const norm = (value) => String(value || "").trim().toLowerCase();
 const radians = (degrees) => degrees * Math.PI / 180;
@@ -254,7 +255,9 @@ export function discoverySidebar(viewer, {
     .slice(0, venueLimit)
     .map(({ locality, ...venue }) => ({ ...venue, local: locality >= 4 }));
 
-  const topArtists = artistStmts.top.all(Math.max(1, Math.min(40, artistLimit))).map((row) => {
+  const topArtistLimit = Math.max(1, Math.min(40, artistLimit));
+  const topArtistCandidates = artistStmts.top.all(Math.min(800, Math.max(160, topArtistLimit * 20)));
+  const topArtists = eligiblePopularityArtists(topArtistCandidates, { limit: topArtistLimit }).map((row) => {
     const artist = publicArtist(row);
     return { name: artist.name, genre: artist.genre || null, photo: artist.photo || null, popularity: artist.popularity ?? null, avg: 0 };
   });

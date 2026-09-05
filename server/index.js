@@ -132,6 +132,10 @@ const UNSAFE_REQUEST_ORIGINS = allowedUnsafeRequestOrigins({
 const TRUSTED_PROXY_CIDRS = trustedProxyCidrs(process.env.PIT_TRUSTED_PROXY_CIDRS);
 const RENDER_PROXY_HEADERS = process.env.RENDER === "true";
 const ACTIVE_SESSION_COOKIE = sessionCookieName(PROD);
+// Render gives this service 60 seconds to stop. Keep the process-level guard
+// just inside that window so cooperative job cancellation and SQLite close get
+// a real chance to finish without letting a wedged provider hang deployment.
+const SHUTDOWN_FORCE_EXIT_MS = 55_000;
 
 function mediaConnectOrigin() {
   try {
@@ -799,6 +803,10 @@ let founderOperationsScheduler = null;
 let legacyVideoPosterScheduler = null;
 let legacyImageRecoveryScheduler = null;
 let artistDeathWatchScheduler = null;
+let tourDateScheduler = null;
+let cacheWarmScheduler = null;
+let backupScheduler = null;
+let mediaDeletionScheduler = null;
 let privateMediaIsolationTimer = null;
 let sitemapRefreshTimer = null;
 let sitemapRetryTimer = null;
@@ -810,6 +818,10 @@ function shutdown(exitCode = 0) {
   const founderOperationsStop = founderOperationsScheduler?.stop() || Promise.resolve();
   const legacyImageRecoveryStop = legacyImageRecoveryScheduler?.stop() || Promise.resolve();
   const artistDeathWatchStop = artistDeathWatchScheduler?.stop() || Promise.resolve();
+  const tourDateStop = tourDateScheduler?.stop({ abortActive: true }) || Promise.resolve();
+  const cacheWarmStop = cacheWarmScheduler?.stop({ abortActive: true }) || Promise.resolve();
+  const backupStop = backupScheduler?.stop({ abortActive: true }) || Promise.resolve();
+  const mediaDeletionStop = mediaDeletionScheduler?.stop({ abortActive: true }) || Promise.resolve();
   const artistTourDateRefreshStop = stopArtistTourDateDemandRefresh({ abortActive: true });
   const artistGenreRefreshStop = stopMusicBrainzGenreRefreshScheduler({ abortActive: true });
   const artistPhotoSeedStop = stopArtistPhotoSeedScheduler({ abortActive: true });
@@ -828,6 +840,14 @@ function shutdown(exitCode = 0) {
     catch (error) { console.error(`[media] legacy image recovery shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     try { await artistDeathWatchStop; }
     catch (error) { console.error(`[memorial-watch] shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
+    try { await tourDateStop; }
+    catch (error) { console.error(`[pit] tour-date scheduler shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
+    try { await cacheWarmStop; }
+    catch (error) { console.error(`[pit] catalogue enrichment shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
+    try { await backupStop; }
+    catch (error) { console.error(`[pit] database backup shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
+    try { await mediaDeletionStop; }
+    catch (error) { console.error(`[media] deletion worker shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     try { await artistTourDateRefreshStop; }
     catch (error) { console.error(`[pit] exact artist refresh shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     try { await artistGenreRefreshStop; }
@@ -840,7 +860,10 @@ function shutdown(exitCode = 0) {
     catch (error) { console.error(`[pit] database close failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     process.exit(exitCode);
   });
-  setTimeout(() => process.exit(exitCode), 5000).unref();
+  setTimeout(() => {
+    console.error(`[pit] shutdown exceeded ${Math.round(SHUTDOWN_FORCE_EXIT_MS / 1000)}s; forcing process exit.`);
+    process.exit(exitCode);
+  }, SHUTDOWN_FORCE_EXIT_MS).unref();
 }
 process.on("SIGINT", () => shutdown(0));
 process.on("SIGTERM", () => shutdown(0));
@@ -962,14 +985,14 @@ async function startServer() {
     } else {
       console.log("[mail] automatic campaign recovery disabled; resume only after privacy replay and restore review.");
     }
-    startBackgroundRuntime("/startup/tour-dates", () => startTourDateScheduler()); // scrapes tour dates into the DB on a timer (no cron/redeploy)
+    tourDateScheduler = startBackgroundRuntime("/startup/tour-dates", () => startTourDateScheduler()); // scrapes tour dates into the DB on a timer (no cron/redeploy)
     startBackgroundRuntime("/startup/artist-tourdate-demand", () => startArtistTourDateDemandRefresh()); // drains durable exact-artist demand without delaying reads
     startBackgroundRuntime("/startup/artist-genres", () => startMusicBrainzGenreRefreshScheduler()); // exact-MBID genre evidence, bounded and never on a foreground read
     startBackgroundRuntime("/startup/artist-photos", () => startArtistPhotoSeedScheduler()); // Spotify artist-page images, bounded and never on a foreground read
     artistDeathWatchScheduler = startBackgroundRuntime("/startup/death-watch", () => startArtistDeathWatchScheduler({ service: artistDeathWatchService }));
-    startBackgroundRuntime("/startup/catalog-warm", () => startCacheWarmScheduler()); // runs keyless catalogue enrichment; provider playback warming obeys the shared product gate
-    startBackgroundRuntime("/startup/database-backup", () => startBackupScheduler()); // verified daily SQLite snapshot on /data; private off-host copy when configured
-    startBackgroundRuntime("/startup/media-deletion", () => startMediaDeletionScheduler({ database: db })); // bounded, durable cleanup of active user-media objects only
+    cacheWarmScheduler = startBackgroundRuntime("/startup/catalog-warm", () => startCacheWarmScheduler()); // runs keyless catalogue enrichment; provider playback warming obeys the shared product gate
+    backupScheduler = startBackgroundRuntime("/startup/database-backup", () => startBackupScheduler()); // verified daily SQLite snapshot on /data; private off-host copy when configured
+    mediaDeletionScheduler = startBackgroundRuntime("/startup/media-deletion", () => startMediaDeletionScheduler({ database: db })); // bounded, durable cleanup of active user-media objects only
     legacyVideoPosterScheduler = startBackgroundRuntime("/startup/legacy-video-posters", () => startLegacyVideoPosterVerificationScheduler({ database: db }));
     startBackgroundRuntime("/startup/video-verifier-health", () => startVideoVerifierHealthScheduler());
     // Sitemap reads serve only the validated persisted/current LKG. Reuse a

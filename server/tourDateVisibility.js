@@ -1,6 +1,9 @@
 import { accountIsPublic, activeAccountSql } from "./accountVisibility.js";
 import { db } from "./db.js";
-import { currentOrUpcomingTourDateSql, effectiveTourDateEndSql } from "./tourDateLifecycle.js";
+import {
+  currentOrUpcomingTourDateSql,
+  effectiveTourDateEndSql,
+} from "./tourDateLifecycle.js";
 import { tourDateHasNoPublishedMemorialSql } from "./artistMemorialTourDateVisibility.js";
 
 // Apply release and account-state rules before tour dates reach discovery,

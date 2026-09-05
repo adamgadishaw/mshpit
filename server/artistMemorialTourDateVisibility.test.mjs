@@ -16,7 +16,8 @@ function fixture() {
     CREATE TABLE artist_memorials (artist_key TEXT PRIMARY KEY,artist_mbid TEXT,status TEXT NOT NULL);
     CREATE TABLE tour_dates (
       id TEXT PRIMARY KEY,artist TEXT,artist_key TEXT,owner_id TEXT,release_at INTEGER NOT NULL DEFAULT 0,
-      date TEXT,event_end_date TEXT,music_qualified INTEGER,provider_active INTEGER NOT NULL DEFAULT 1
+      date TEXT,event_end_date TEXT,event_kind TEXT,music_evidence TEXT,billed_artists TEXT,
+      music_qualified INTEGER,provider_active INTEGER NOT NULL DEFAULT 1
     );
   `);
   const addArtist = database.prepare("INSERT INTO artists (norm,name,mbid) VALUES (?,?,?)");
@@ -28,6 +29,36 @@ function fixture() {
 
 test("tour-date memorial SQL rejects unsafe aliases", () => {
   assert.throws(() => tourDateHasNoPublishedMemorialSql("td;drop"), /Invalid tour-date SQL alias/);
+});
+
+test("upcoming reads reject provider passes, series, and classes but retain real festivals", () => {
+  const { database } = fixture();
+  const add = database.prepare(`INSERT INTO tour_dates
+    (id,artist,date,event_end_date,event_kind,music_evidence,billed_artists,music_qualified,provider_active)
+    VALUES (?,?,?,?,?,?,?,1,1)`);
+  try {
+    add.run("entry-all", "Entry to All Shows", "2026-01-01", "2026-12-31", "multi_day",
+      "ticketmaster:classification:music", "[]");
+    add.run("season-pass", "Morning Melodies", "2026-02-23", "2026-12-07", "multi_day",
+      "ticketmaster:classification:music", JSON.stringify(["Morning Melodies"]));
+    add.run("beginner-class", "Koto Beginner Class", "2026-08-23", "2026-11-08", "multi_day",
+      "ticketmaster:classification:music", "[]");
+    add.run("real-festival", "Riverfront Jazz Festival", "2026-09-03", "2026-09-07", "festival",
+      "ticketmaster:classification:music", JSON.stringify(["Gladys Knight", "Samara Joy"]));
+    add.run("real-multi-day", "Touring Artist", "2026-09-04", "2026-09-06", "multi_day",
+      "ticketmaster:classification:music", JSON.stringify(["Touring Artist"]));
+
+    assert.deepEqual(visibleTourDateRowsFrom(database, null, {
+      today: "2026-09-04",
+      at: Date.UTC(2026, 8, 5),
+    }).map((row) => row.id), ["real-festival", "real-multi-day"]);
+    assert.deepEqual(visibleTourDateRowsFrom(database, null, {
+      at: Date.UTC(2026, 8, 5),
+    }).map((row) => row.id), ["entry-all", "season-pass", "beginner-class", "real-festival", "real-multi-day"],
+    "historical/admin read paths retain the stored rows for diagnosis and repair");
+  } finally {
+    database.close();
+  }
 });
 
 test("published exact-identity memorials suppress current and future dates but preserve history", () => {

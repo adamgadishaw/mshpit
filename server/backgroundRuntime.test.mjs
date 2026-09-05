@@ -148,4 +148,10 @@ test("server startup owns its listener and starts core schedulers through the op
   }
   assert.match(source, /code:\s*"BACKGROUND_START_FAILED"/);
   assert.match(source, /method:\s*"JOB"/);
+  for (const scheduler of ["tourDateScheduler", "cacheWarmScheduler", "backupScheduler", "mediaDeletionScheduler"]) {
+    assert.match(source, new RegExp(`let ${scheduler} = null;`));
+    assert.match(source, new RegExp(`${scheduler}\\?\\.stop\\(\\{ abortActive: true \\}\\)`),
+      `${scheduler} must cooperatively abort and settle before the shared SQLite connection closes`);
+  }
+  assert.match(source, /const SHUTDOWN_FORCE_EXIT_MS = 55_000;/);
 });

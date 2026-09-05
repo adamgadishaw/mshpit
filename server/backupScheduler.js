@@ -7,6 +7,7 @@ import { privateErrorLabel } from "./errors.js";
 import { isProduction } from "./environment.js";
 import { boundedBackupTimeout } from "../scripts/backup-db-verification.mjs";
 import { privateBackupStorageConfig } from "./backupStorageSecurity.js";
+import { startPeriodicJob } from "./periodicJobScheduler.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..");
@@ -18,6 +19,7 @@ const OFFHOST_RECEIPT_NAME = ".offhost-upload-receipt-v1.json";
 const UPLOAD_KEYS = ["BACKUP_S3_ENDPOINT", "BACKUP_S3_BUCKET", "BACKUP_S3_ACCESS_KEY_ID", "BACKUP_S3_SECRET_ACCESS_KEY"];
 const HOUR_MS = 60 * 60 * 1000;
 const FUTURE_CLOCK_SKEW_MS = 5 * 60 * 1000;
+const BACKUP_RETRY_DELAY_MS = 15 * 60 * 1000;
 
 export function backupSchedulerEnabled(env = process.env) {
   const value = String(env?.BACKUP_ENABLED || "").trim().toLowerCase();
@@ -181,7 +183,14 @@ export function scheduledBackupArgs(env = process.env) {
   return [SCRIPT, ...(offhostBackupConfigured(env) ? ["--upload"] : [])];
 }
 
-export function runScheduledBackup({ env = process.env, spawnProcess = spawn, processTimeoutMs } = {}) {
+function backupAbortError(signal) {
+  return signal?.reason instanceof Error
+    ? signal.reason
+    : new DOMException("Database backup stopped.", "AbortError");
+}
+
+export function runScheduledBackup({ env = process.env, spawnProcess = spawn, processTimeoutMs, signal } = {}) {
+  if (signal?.aborted) return Promise.reject(backupAbortError(signal));
   return new Promise((resolveRun, rejectRun) => {
     // Make the child and the freshness probe agree on the same persistent path.
     // Without this explicit env value the child historically defaulted to the
@@ -200,6 +209,7 @@ export function runScheduledBackup({ env = process.env, spawnProcess = spawn, pr
     let stdout = "";
     let stderr = "";
     let settled = false;
+    let abortListener = null;
     const append = (current, chunk) => (current + String(chunk || "")).slice(-12_000);
     child.stdout?.on?.("data", (chunk) => { stdout = append(stdout, chunk); });
     child.stderr?.on?.("data", (chunk) => { stderr = append(stderr, chunk); });
@@ -207,6 +217,7 @@ export function runScheduledBackup({ env = process.env, spawnProcess = spawn, pr
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
+      if (abortListener) signal?.removeEventListener("abort", abortListener);
       if (error) rejectRun(error);
       else resolveRun(result);
     };
@@ -224,8 +235,21 @@ export function runScheduledBackup({ env = process.env, spawnProcess = spawn, pr
       finish(new Error(`backup process timed out after ${timeoutMs}ms`));
     }, timeoutMs);
     timeout.unref?.();
+    abortListener = () => {
+      // The backup script publishes via a verified temporary snapshot. Killing
+      // its child cannot mutate the source database; an unpublished partial is
+      // ignored and cleaned by the next run. Wait for `close` before allowing
+      // the web process to close SQLite.
+      try { child.kill?.("SIGKILL"); }
+      catch { /* architecture: allow-empty-catch -- the 55s process guard remains the final shutdown boundary if child signaling itself fails */ }
+    };
+    signal?.addEventListener("abort", abortListener, { once: true });
     child.once("error", (error) => finish(error));
     child.once("close", (code) => {
+      if (signal?.aborted) {
+        finish(backupAbortError(signal));
+        return;
+      }
       if (code !== 0) {
         finish(new Error(`backup process exited ${code}: ${(stderr || stdout).trim().slice(-2000)}`));
         return;
@@ -248,6 +272,9 @@ export function runScheduledBackup({ env = process.env, spawnProcess = spawn, pr
       }
       finish(null, { uploaded: expectsUpload, output: stdout.trim() });
     });
+    // Close/error listeners must exist before a test double or platform child
+    // can synchronously acknowledge the kill.
+    if (signal?.aborted) abortListener();
   });
 }
 
@@ -267,24 +294,28 @@ export function startBackupScheduler({
   env = process.env,
   initialDelayMs = 5 * 60 * 1000,
   intervalMs = 24 * 60 * 60 * 1000,
-  run = () => runScheduledBackup({ env }),
+  retryDelayMs = BACKUP_RETRY_DELAY_MS,
+  run = ({ signal } = {}) => runScheduledBackup({ env, signal }),
   logger = console,
+  schedule = startPeriodicJob,
 } = {}) {
   if (!backupSchedulerEnabled(env)) {
     logger.log?.("[pit] database backup scheduler disabled.");
-    return;
+    return null;
   }
   logger.log?.(`[pit] database backups scheduled (${offhostBackupConfigured(env) ? "persistent disk + private off-host" : "persistent disk only"}).`);
   for (const warning of backupStartupWarnings(env)) {
     logger.warn?.(`[pit] backup warning: ${warning}.`);
   }
-  const trigger = () => {
-    void runBackupJobSafely(() => runBackgroundJob(async () => {
+  return schedule({
+    initialDelayMs: Math.max(1_000, Number(initialDelayMs) || 5 * 60 * 1000),
+    intervalMs: Math.max(60_000, Number(intervalMs) || 24 * 60 * 60 * 1000),
+    retryDelayMs: Math.max(60_000, Number(retryDelayMs) || BACKUP_RETRY_DELAY_MS),
+    run: ({ signal } = {}) => runBackgroundJob(async () => {
       if (!shouldRunScheduledBackup(latestBackupAt(env), Date.now(), intervalMs)) return;
-      const result = await run();
+      const result = await run({ signal });
       logger.log?.(`[pit] database backup verified${result?.uploaded ? " and uploaded off-host" : " on persistent disk"}.`);
-    }), (error) => logger.error?.(`[pit] scheduled database backup failed safely cause=${privateErrorLabel(error)}`));
-  };
-  setTimeout(trigger, Math.max(1_000, Number(initialDelayMs) || 5 * 60 * 1000)).unref();
-  setInterval(trigger, Math.max(60_000, Number(intervalMs) || 24 * 60 * 60 * 1000)).unref();
+    }),
+    report: (error) => logger.error?.(`[pit] scheduled database backup failed safely cause=${privateErrorLabel(error)}; retrying in ${Math.round(Math.max(60_000, Number(retryDelayMs) || BACKUP_RETRY_DELAY_MS) / 60_000)}m`),
+  });
 }

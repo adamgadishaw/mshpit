@@ -3,8 +3,10 @@ import { projectArtistGenre } from "../src/domain/genre.mjs";
 import { createTopRatedShowService } from "./features/discovery/topRatedShowService.js";
 import { activeAccountSql } from "./accountVisibility.js";
 import { inPersonReviewSql } from "./onlineReviews.js";
+import { eligiblePopularityArtists } from "./artistPopularityEligibility.js";
 
 const ARTIST_RATING_CANDIDATE_LIMIT = 5_000;
+const POPULARITY_RANKING_CANDIDATE_LIMIT = 1_200;
 
 const GENRE_ALIAS = {
   "hip hop": "Hip-Hop", hiphop: "Hip-Hop", "hip-hop": "Hip-Hop", rap: "Hip-Hop", trap: "Hip-Hop", "conscious hip hop": "Hip-Hop",
@@ -69,7 +71,7 @@ function chartRow(name, artist, rank, extra = {}) {
  * DB-backed Discover queries. Keeping these outside api.js makes the HTTP routes
  * thin and gives the overview endpoint one consistent source of truth.
  */
-export function createDiscoverService({ database = db, clock = Date.now } = {}) {
+export function createDiscoverService({ database = db, clock = Date.now, reviewedArtistNorms } = {}) {
   const PROJECTION_TTL_MS = 60 * 1000;
   const PUBLIC_PLAY_DELAY_MS = 6 * 60 * 60 * 1000;
   const PUBLIC_PLAY_MIN_LISTENERS = 3;
@@ -230,8 +232,15 @@ export function createDiscoverService({ database = db, clock = Date.now } = {}) 
       params.push(JSON.stringify(artistNorms));
     }
     sql += " ORDER BY popularity DESC, rank_score DESC, name LIMIT ?";
-    params.push(genreFilter ? Math.min(60, rowLimit * 2) : rowLimit);
-    const rows = database.prepare(sql).all(...params);
+    const candidateLimit = Math.min(
+      POPULARITY_RANKING_CANDIDATE_LIMIT,
+      Math.max(genreFilter ? 60 : 240, rowLimit * (genreFilter ? 8 : 20)),
+    );
+    params.push(candidateLimit);
+    const rows = eligiblePopularityArtists(database.prepare(sql).all(...params), {
+      reviewedArtistNorms,
+      limit: genreFilter ? Math.min(60, rowLimit * 2) : rowLimit,
+    });
     const popularRows = rows.map((row, index) => chartRow(row.name, row, index + 1, {
       ...(genreFilter ? { rankingGroup: "popular" } : {}),
     }));

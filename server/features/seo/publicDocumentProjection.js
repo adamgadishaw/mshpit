@@ -23,6 +23,7 @@ import { archiveShowKey } from "../artistArchive/artistArchiveKeys.js";
 import { venueCoordinates, venueGuideModel } from "../../../src/domain/venueGuide.mjs";
 import { publicVenueFacts } from "../../venueFacts.js";
 import {
+  isCurrentOrUpcomingPublicMusicEvent,
   isIndexableMusicEventRecord,
   isStrictCalendarDate,
   isStrictIsoDateTime,
@@ -356,6 +357,19 @@ function venuePhotoProjection(photo, venueName) {
   });
 }
 
+function primaryImageSchema(value, name) {
+  if (value && typeof value === "object" && value["@type"] === "ImageObject") return value;
+  const contentUrl = publicHttpsUrl(typeof value === "string" ? value : value?.contentUrl || value?.url);
+  if (!contentUrl) return null;
+  const cleanName = cleanLine(name, 180);
+  return Object.freeze({
+    "@type": "ImageObject",
+    contentUrl,
+    url: contentUrl,
+    ...(cleanName ? { name: cleanName } : {}),
+  });
+}
+
 function venuePhotoSchema(photo, venueName) {
   if (!photo?.url) return null;
   return Object.freeze({
@@ -529,7 +543,7 @@ function eventStatus(value) {
   const status = cleanLine(value, 40).toLowerCase();
   if (status === "cancelled" || status === "canceled") return "https://schema.org/EventCancelled";
   if (status === "postponed") return "https://schema.org/EventPostponed";
-  if (status === "rescheduled") return null;
+  if (status === "rescheduled") return "https://schema.org/EventRescheduled";
   return "https://schema.org/EventScheduled";
 }
 
@@ -566,6 +580,10 @@ function eventCard(row, paths) {
     id: String(row.id),
     providerEventId: cleanLine(row.provider_event_id, 180) || null,
     name: (providerEvidence ? cleanLine(row.event_name, 220) : null) || `${artist} at ${venue}`,
+    // Google's Event guidance keeps the venue in location.name rather than
+    // repeating it in the event name. Preserve the fuller visible heading,
+    // while giving structured data the provider title or artist identity.
+    schemaName: (providerEvidence ? cleanLine(row.event_name, 220) : null) || artist,
     path: canonicalEventPath(paths, row),
     artist,
     artistPath: relatedArtistPath(paths, row),
@@ -599,7 +617,7 @@ function eventCard(row, paths) {
 }
 
 function eventSchema(event, origin, { image = null, description = null, today = null } = {}) {
-  const name = cleanLine(event?.name, 220);
+  const name = cleanLine(event?.schemaName || event?.name, 220);
   const venue = cleanLine(event?.venue, 180);
   const path = cleanLine(event?.path, 500);
   const startDate = completeDateTime(event?.startDateTime);
@@ -768,9 +786,11 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       });
     },
 
-    discover(raw, { canonicalPath: requestedPath = "/discover" } = {}) {
+    discover(raw, { canonicalPath: requestedPath = "/discover", at = Date.now(), today = null } = {}) {
       if (!raw) return null;
       const path = canonicalPath(requestedPath, "/discover");
+      const instant = Number.isFinite(Number(at)) ? Number(at) : Date.now();
+      const currentDate = validDate(today) || new Date(instant).toISOString().slice(0, 10);
       const artists = (raw.artists || []).slice(0, 24).map((row) => Object.freeze({
         name: cleanLine(row.name, 160),
         path: canonicalArtistPath(publicPaths, row),
@@ -778,6 +798,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         description: summary(row.bio, 180),
       })).filter((artist) => artist.name && artist.path);
       const events = (raw.events || []).slice(0, 48)
+        .filter((row) => isCurrentOrUpcomingPublicMusicEvent(row, currentDate))
         .map((row) => eventCard(row, publicPaths))
         .filter(Boolean);
       // Public review text may appear in discovery. Media remains excluded here
@@ -984,6 +1005,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         ...(isoTimestamp(modifiedAt) ? { dateModified: isoTimestamp(modifiedAt) } : {}),
         about: entity,
         mainEntity: { "@id": entity["@id"] },
+        ...(entityImage ? { primaryImageOfPage: primaryImageSchema(entityImage, `${name} artist image`) } : {}),
         isPartOf: siteReference(publicOrigin),
         publisher: organizationReference(publicOrigin),
         ...(events.length ? {
@@ -1000,6 +1022,9 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         canonicalPath: path,
         canonicalUrl: absolute(publicOrigin, path),
         image: socialProfileImage?.url || fanImage,
+        imageAlt: socialProfileImage?.url
+          ? `${name} artist profile image`
+          : fanImage ? `${name} concert photo shared on Mshpit` : null,
         imageProvenance: socialProfileImage?.url ? "entity-profile" : fanImage ? "fan-gallery" : null,
         imageWidth: socialProfileImage?.width || null,
         imageHeight: socialProfileImage?.height || null,
@@ -1223,6 +1248,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         description,
         isPartOf: siteReference(publicOrigin),
         publisher: organizationReference(publicOrigin),
+        ...(image ? { primaryImageOfPage: primaryImageSchema(image, `${event.name} event image`) } : {}),
         ...(schemaEvent ? { mainEntity: { "@id": schemaEvent["@id"] } } : {
           about: [
             { "@type": "Thing", name: event.artist, ...(event.artistPath ? { url: absolute(publicOrigin, event.artistPath) } : {}) },
@@ -1241,6 +1267,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         canonicalPath: path,
         canonicalUrl: absolute(publicOrigin, path),
         image,
+        imageAlt: image ? `${event.name} event image` : null,
         imageProvenance,
         imageWidth: event.providerImage?.url ? event.providerImage.width : primaryAsset?.kind === "image" ? primaryAsset.width : null,
         imageHeight: event.providerImage?.url ? event.providerImage.height : primaryAsset?.kind === "image" ? primaryAsset.height : null,
@@ -1337,6 +1364,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         description,
         isPartOf: siteReference(publicOrigin),
         publisher: organizationReference(publicOrigin),
+        ...(image ? { primaryImageOfPage: primaryImageSchema(image, `${artist} at ${venue} concert photo`) } : {}),
         ...(concertEvent ? { mainEntity: { "@id": concertEvent["@id"] } } : {
           about: [
             { "@type": "Thing", name: artist, ...(artistCanonicalPath ? { url: absolute(publicOrigin, artistCanonicalPath) } : {}) },
@@ -1358,6 +1386,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         canonicalPath: path,
         canonicalUrl: pageUrl,
         image,
+        imageAlt: image ? `${artist} at ${venue} concert photo` : null,
         imageWidth: primaryAsset?.kind === "image" ? primaryAsset.width : null,
         imageHeight: primaryAsset?.kind === "image" ? primaryAsset.height : null,
         imageMimeType: primaryAsset?.kind === "image" ? primaryAsset.mimeType : null,
@@ -1511,6 +1540,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         canonicalPath: path,
         canonicalUrl: venueUrl,
         image,
+        imageAlt: heroPhoto?.alt || null,
         imageProvenance: licensedVenuePhoto ? "licensed-venue"
           : fanImage ? "fan-gallery" : null,
         imageWidth: licensedVenuePhoto ? null
@@ -1535,6 +1565,10 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
           description,
           about: { "@id": venueEntityId },
           mainEntity: { "@id": venueEntityId },
+          ...(image ? { primaryImageOfPage: primaryImageSchema(
+            licensedVenuePhoto ? venuePhotoSchema(licensedVenuePhoto, name) : image,
+            `${name} venue photo`,
+          ) } : {}),
           ...(events.length ? { hasPart: events.slice(0, 12).map((event) => ({ "@id": `${absolute(publicOrigin, event.path)}#page` })) } : {}),
           isPartOf: siteReference(publicOrigin),
           publisher: organizationReference(publicOrigin),

@@ -15,6 +15,7 @@ const {
   isCacheWarmSchedulerEnabled,
   isYouTubePlaybackWarmEnabled,
   runCacheWarmJobSafely,
+  startCacheWarmScheduler,
 } = await import("./cacheWarmer.js");
 const {
   bandsintownRows,
@@ -152,6 +153,22 @@ test("tour-date restarts skip provider fan-out while the persisted refresh is fr
   assert.equal(shouldRefreshTourDates(0, now, 12), true);
   assert.equal(shouldRefreshTourDates(now - 60 * 60 * 1000, now, 12), false);
   assert.equal(shouldRefreshTourDates(now - 13 * 60 * 60 * 1000, now, 12), true);
+});
+
+test("catalogue warming exposes an owned scheduler with a same-day recovery retry", async () => {
+  let configuration = null;
+  const handle = { trigger() {}, stop() { return Promise.resolve(); } };
+  const scheduler = startCacheWarmScheduler({
+    logger: { log() {}, warn() {}, error() {} },
+    schedule: (options) => { configuration = options; return handle; },
+  });
+
+  assert.equal(scheduler, handle);
+  assert.equal(configuration.initialDelayMs, 60_000);
+  assert.equal(configuration.intervalMs, 24 * 60 * 60_000);
+  assert.equal(configuration.retryDelayMs, 30 * 60_000);
+  assert.equal(typeof configuration.run, "function");
+  await scheduler.stop();
 });
 
 test("a material collector revision forces one safe refresh despite a fresh clock", () => {
@@ -1085,6 +1102,13 @@ test("public tour visibility hides inactive upcoming providers without hiding au
   insert.run("tour_visibility_history", artist, "History Hall", "2034-06-01", null, "ticketmaster", 1, null, 0, 0, 1);
   insert.run("tour_visibility_range", artist, "Festival Grounds", "2034-12-20", "2035-01-10", "ticketmaster", 1, null, 0, 1, 1);
   insert.run("tour_visibility_inactive_range", artist, "Inactive Grounds", "2034-12-21", "2035-01-11", "ticketmaster", 1, null, 0, 0, 1);
+  db.prepare(`UPDATE tour_dates SET event_kind='festival',music_evidence=?,billed_artists=?
+    WHERE id IN (?,?)`).run(
+    "ticketmaster:classification:music",
+    JSON.stringify([artist]),
+    "tour_visibility_range",
+    "tour_visibility_inactive_range",
+  );
   insert.run("tour_visibility_active", artist, "Active Hall", "2035-06-01", null, "ticketmaster", 1, null, 0, 1, 1);
   insert.run("tour_visibility_inactive", artist, "Inactive Hall", "2035-07-01", null, "ticketmaster", 1, null, 0, 0, 1);
   insert.run("tour_visibility_authored", artist, "Authored Hall", "2035-08-01", null, "artist-submitted", 1, ownerId, 0, 0, null);

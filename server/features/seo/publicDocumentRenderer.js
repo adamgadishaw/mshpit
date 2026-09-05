@@ -473,7 +473,7 @@ export function renderPublicDocumentHead(document) {
     ${contentImage && document.imageWidth ? `<meta property="og:image:width" content="${esc(document.imageWidth)}" />` : !contentImage ? '<meta property="og:image:width" content="1200" />' : ""}
     ${contentImage && document.imageHeight ? `<meta property="og:image:height" content="${esc(document.imageHeight)}" />` : !contentImage ? '<meta property="og:image:height" content="630" />' : ""}
     ${contentImage && document.imageMimeType ? `<meta property="og:image:type" content="${esc(document.imageMimeType)}" />` : ""}
-    <meta property="og:image:alt" content="${esc(document.title)}" />` : ""}
+    <meta property="og:image:alt" content="${esc(document.imageAlt || document.title)}" />` : ""}
     ${video ? `<meta property="og:video" content="${esc(video)}" />
     <meta property="og:video:secure_url" content="${esc(video)}" />
     ${document.video?.mimeType ? `<meta property="og:video:type" content="${esc(document.video.mimeType)}" />` : ""}
@@ -485,7 +485,7 @@ export function renderPublicDocumentHead(document) {
     <meta name="twitter:title" content="${esc(document.title)}" />
     <meta name="twitter:description" content="${esc(document.description)}" />
     ${image ? `<meta name="twitter:image" content="${esc(image)}" />
-    <meta name="twitter:image:alt" content="${esc(document.title)}" />` : ""}
+    <meta name="twitter:image:alt" content="${esc(document.imageAlt || document.title)}" />` : ""}
     ${structured}`;
 }
 

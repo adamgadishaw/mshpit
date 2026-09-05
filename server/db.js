@@ -2656,6 +2656,11 @@ pruneMissingArtists();
 
 export const normName = (s) => (s || "").trim().toLowerCase();
 
+// Names present in the reviewed, checked-in catalogue are safe baseline
+// identities for public popularity ranking. Provider-only rows must prove
+// their identity separately before Discover can rank them.
+export const bundledArtistNorms = new Set();
+
 const artistPublicSlugByNorm = db.prepare("SELECT public_slug FROM artists WHERE norm=?");
 const artistPublicSlugOwner = db.prepare(`SELECT norm FROM artists
   WHERE public_slug IS NOT NULL AND public_slug<>'' AND lower(public_slug)=lower(?) LIMIT 1`);
@@ -2876,6 +2881,11 @@ export function seedArtistsFromBundle() {
     const cat = JSON.parse(readFileSync(path, "utf8"));
     const entries = Object.entries(cat.artists || {});
     if (!entries.length) return;
+    bundledArtistNorms.clear();
+    for (const [key, artist] of entries) {
+      const norm = normName(key || artist?.name);
+      if (norm) bundledArtistNorms.add(norm);
+    }
     const fresh = artistStmts.count.get().c === 0;
     db.exec("BEGIN");
     for (const [key, a] of entries) {

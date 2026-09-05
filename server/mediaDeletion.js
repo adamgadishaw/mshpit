@@ -712,6 +712,12 @@ function pauseDeletionForConfiguration(database, job, at) {
     .run(at + MEDIA_OWNER_SWEEP_RECHECK_MS, at, job.id);
 }
 
+function releaseDeletionForShutdown(database, job, at) {
+  database.prepare(`UPDATE media_deletion_queue SET status='pending',attempts=CASE WHEN attempts>0 THEN attempts-1 ELSE 0 END,
+    next_attempt_at=?,last_error_code=NULL,updated_at=?,dead_at=NULL WHERE id=?`)
+    .run(at, at, job.id);
+}
+
 function finishFailure(database, job, errorCode, at, { terminal = false } = {}) {
   const dead = terminal || job.attempts >= MEDIA_DELETION_MAX_ATTEMPTS;
   if (dead) {
@@ -809,6 +815,17 @@ async function boundedResponseText(response, maxBytes = 2 * 1024 * 1024) {
   return new TextDecoder().decode(bytes);
 }
 
+function linkedRequestController(signal) {
+  const controller = new AbortController();
+  const abort = () => controller.abort(signal.reason);
+  signal?.addEventListener("abort", abort, { once: true });
+  if (signal?.aborted) abort();
+  return {
+    controller,
+    detach: () => signal?.removeEventListener("abort", abort),
+  };
+}
+
 function finishSweepFailure(database, job, errorCode, at, { terminal = false } = {}) {
   const dead = terminal || job.attempts >= MEDIA_DELETION_MAX_ATTEMPTS;
   if (dead) {
@@ -826,6 +843,12 @@ function pauseSweepForConfiguration(database, job, at) {
   database.prepare(`UPDATE media_owner_sweeps SET status='pending',attempts=CASE WHEN attempts>0 THEN attempts-1 ELSE 0 END,
     next_attempt_at=?,last_error_code='storage_unconfigured',updated_at=?,dead_at=NULL WHERE owner_id=?`)
     .run(at + MEDIA_OWNER_SWEEP_RECHECK_MS, at, job.owner_id);
+}
+
+function releaseSweepForShutdown(database, job, at) {
+  database.prepare(`UPDATE media_owner_sweeps SET status='pending',attempts=CASE WHEN attempts>0 THEN attempts-1 ELSE 0 END,
+    next_attempt_at=?,last_error_code=NULL,updated_at=?,dead_at=NULL WHERE owner_id=?`)
+    .run(at, at, job.owner_id);
 }
 
 export function redriveMediaDeletionDeadLetters(database, {
@@ -870,7 +893,9 @@ export async function runMediaOwnerSweepOnce({
   fetchImpl = globalThis.fetch,
   clock = () => Date.now(),
   timeoutMs = 8_000,
+  signal,
 } = {}) {
+  if (signal?.aborted) return { processed: 0, errorCode: "worker_aborted" };
   if (!database || typeof fetchImpl !== "function") return { processed: 0, errorCode: "worker_unavailable" };
   if (!mediaConfigured(env)) return { processed: 0, errorCode: "storage_unconfigured" };
   const job = claimOwnerSweep(database, clock());
@@ -892,7 +917,8 @@ export async function runMediaOwnerSweepOnce({
     });
     return { processed: 1, errorCode: prepared.errorCode, deadLettered: state === "dead" ? 1 : 0, retried: state === "retry" ? 1 : 0 };
   }
-  const controller = new AbortController();
+  const linked = linkedRequestController(signal);
+  const { controller } = linked;
   const boundedTimeout = Math.max(50, Math.min(30_000, Math.trunc(Number(timeoutMs) || 8_000)));
   const timeout = setTimeout(() => controller.abort(), boundedTimeout);
   timeout.unref?.();
@@ -913,11 +939,16 @@ export async function runMediaOwnerSweepOnce({
       }
     }
   } catch {
-    errorCode = controller.signal.aborted ? "list_timeout" : "list_network";
+    errorCode = signal?.aborted ? "list_aborted" : controller.signal.aborted ? "list_timeout" : "list_network";
   } finally {
     clearTimeout(timeout);
+    linked.detach();
   }
   if (errorCode) {
+    if (signal?.aborted) {
+      releaseSweepForShutdown(database, job, clock());
+      return { processed: 1, errorCode: "worker_aborted", cancelled: 1 };
+    }
     const state = finishSweepFailure(database, job, errorCode, clock());
     return { processed: 1, errorCode, deadLettered: state === "dead" ? 1 : 0, retried: state === "retry" ? 1 : 0 };
   }
@@ -970,7 +1001,7 @@ export async function runMediaOwnerSweepOnce({
   return { processed: 1, discovered, hasMore: page.truncated, verificationPending, errorCode: null };
 }
 
-async function deleteOne(job, { env, fetchImpl, timeoutMs, clock }) {
+async function deleteOne(job, { env, fetchImpl, timeoutMs, clock, signal }) {
   const prepared = createMediaDeleteRequest({
     objectKey: job.object_key,
     ownerId: job.owner_id,
@@ -979,7 +1010,8 @@ async function deleteOne(job, { env, fetchImpl, timeoutMs, clock }) {
     now: new Date(clock()),
   });
   if (!prepared.ok) return { ok: false, errorCode: prepared.errorCode, terminal: prepared.errorCode === "invalid_key" };
-  const controller = new AbortController();
+  const linked = linkedRequestController(signal);
+  const { controller } = linked;
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   timeout.unref?.();
   try {
@@ -994,9 +1026,10 @@ async function deleteOne(job, { env, fetchImpl, timeoutMs, clock }) {
       : 0;
     return { ok: false, errorCode: status ? `http_${status}` : "http_invalid" };
   } catch {
-    return { ok: false, errorCode: controller.signal.aborted ? "timeout" : "network" };
+    return { ok: false, errorCode: signal?.aborted ? "aborted" : controller.signal.aborted ? "timeout" : "network" };
   } finally {
     clearTimeout(timeout);
+    linked.detach();
   }
 }
 
@@ -1007,6 +1040,7 @@ export async function runMediaDeletionBatch({
   clock = () => Date.now(),
   batchSize = 8,
   timeoutMs = 8_000,
+  signal,
 } = {}) {
   const result = {
     configured: mediaConfigured(env),
@@ -1021,6 +1055,10 @@ export async function runMediaDeletionBatch({
     deletionRechecks: 0,
     lastErrorCode: null,
   };
+  if (signal?.aborted) {
+    result.lastErrorCode = "worker_aborted";
+    return result;
+  }
   if (database) {
     const at = clock();
     const redriven = redriveMediaDeletionDeadLetters(database, { at });
@@ -1037,19 +1075,24 @@ export async function runMediaDeletionBatch({
     result.lastErrorCode = "worker_unavailable";
     return result;
   }
-  const sweep = await runMediaOwnerSweepOnce({ database, env, fetchImpl, clock, timeoutMs });
+  const sweep = await runMediaOwnerSweepOnce({ database, env, fetchImpl, clock, timeoutMs, signal });
   result.sweepPages = sweep.processed || 0;
   result.sweepKeysDiscovered = sweep.discovered || 0;
   result.retried += sweep.retried || 0;
   result.deadLettered += sweep.deadLettered || 0;
   if (sweep.errorCode) result.lastErrorCode = sweep.errorCode;
+  if (signal?.aborted) return result;
   const limit = Math.max(1, Math.min(50, Math.trunc(Number(batchSize) || 8)));
   const boundedTimeout = Math.max(50, Math.min(30_000, Math.trunc(Number(timeoutMs) || 8_000)));
   for (let index = 0; index < limit; index++) {
+    if (signal?.aborted) {
+      result.lastErrorCode = "worker_aborted";
+      break;
+    }
     const job = claimNext(database, clock());
     if (!job) break;
     result.processed += 1;
-    const outcome = await deleteOne(job, { env, fetchImpl, timeoutMs: boundedTimeout, clock });
+    const outcome = await deleteOne(job, { env, fetchImpl, timeoutMs: boundedTimeout, clock, signal });
     if (outcome.ok) {
       const state = finishSuccess(database, job.id, clock());
       result.deleted += 1;
@@ -1061,6 +1104,11 @@ export async function runMediaDeletionBatch({
       result.retried += 1;
       result.lastErrorCode = outcome.errorCode;
       continue;
+    }
+    if (outcome.errorCode === "aborted" && signal?.aborted) {
+      releaseDeletionForShutdown(database, job, clock());
+      result.lastErrorCode = "worker_aborted";
+      break;
     }
     const state = finishFailure(database, job, outcome.errorCode, clock(), { terminal: outcome.terminal });
     result.lastErrorCode = outcome.errorCode;
@@ -1129,32 +1177,63 @@ export function startMediaDeletionScheduler({
   fetchImpl = globalThis.fetch,
   initialDelayMs = 15_000,
   intervalMs = 60_000,
+  runBatch = runMediaDeletionBatch,
+  setTimer = setTimeout,
+  clearTimer = clearTimeout,
+  setRepeatingTimer = setInterval,
+  clearRepeatingTimer = clearInterval,
+  logger = console,
 } = {}) {
   if (!mediaDeletionSchedulerEnabled(env)) {
-    console.log("[pit] active-media cleanup scheduler disabled.");
+    logger.log?.("[pit] active-media cleanup scheduler disabled.");
     return null;
   }
   schedulerState.startedAt ||= Date.now();
-  console.log(`[pit] active-media cleanup scheduled (${mediaConfigured(env) ? "storage ready" : "waiting for media storage configuration"}).`);
-  const trigger = async () => {
-    if (schedulerState.running) return;
+  logger.log?.(`[pit] active-media cleanup scheduled (${mediaConfigured(env) ? "storage ready" : "waiting for media storage configuration"}).`);
+  let stopped = false;
+  let active = null;
+  let activeController = null;
+  const trigger = () => {
+    if (stopped) return Promise.resolve(null);
+    if (active) return active;
+    const controller = new AbortController();
+    activeController = controller;
     schedulerState.running = true;
     schedulerState.lastRunAt = Date.now();
-    try {
-      const result = await runMediaDeletionBatch({ database, env, fetchImpl });
-      schedulerState.lastErrorCode = result.lastErrorCode;
-      if (result.configured && !result.lastErrorCode) schedulerState.lastSuccessAt = Date.now();
-      if (result.deadLettered) console.error(`[pit] active-media cleanup moved ${result.deadLettered} item(s) to dead-letter.`);
-    } catch {
-      schedulerState.lastErrorCode = "worker_failed";
-      console.error("[pit] active-media cleanup worker failed safely.");
-    } finally {
-      schedulerState.running = false;
-    }
+    active = Promise.resolve()
+      .then(() => runBatch({ database, env, fetchImpl, signal: controller.signal }))
+      .then((result) => {
+        schedulerState.lastErrorCode = result.lastErrorCode;
+        if (result.configured && !result.lastErrorCode) schedulerState.lastSuccessAt = Date.now();
+        if (result.deadLettered) logger.error?.(`[pit] active-media cleanup moved ${result.deadLettered} item(s) to dead-letter.`);
+        return result;
+      })
+      .catch(() => {
+        schedulerState.lastErrorCode = "worker_failed";
+        logger.error?.("[pit] active-media cleanup worker failed safely.");
+        return null;
+      })
+      .finally(() => {
+        schedulerState.running = false;
+        if (activeController === controller) activeController = null;
+        active = null;
+      });
+    return active;
   };
-  const initial = setTimeout(() => { void trigger(); }, Math.max(1_000, Number(initialDelayMs) || 15_000));
-  const interval = setInterval(() => { void trigger(); }, Math.max(10_000, Number(intervalMs) || 60_000));
+  const initial = setTimer(() => { void trigger(); }, Math.max(1_000, Number(initialDelayMs) || 15_000));
+  const interval = setRepeatingTimer(() => { void trigger(); }, Math.max(10_000, Number(intervalMs) || 60_000));
   initial.unref?.();
   interval.unref?.();
-  return { trigger, stop: () => { clearTimeout(initial); clearInterval(interval); } };
+  return {
+    trigger,
+    stop: ({ abortActive = false } = {}) => {
+      stopped = true;
+      clearTimer(initial);
+      clearRepeatingTimer(interval);
+      if (abortActive && activeController && !activeController.signal.aborted) {
+        activeController.abort(new DOMException("Media deletion scheduler stopped.", "AbortError"));
+      }
+      return active || Promise.resolve();
+    },
+  };
 }

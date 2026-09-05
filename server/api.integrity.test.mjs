@@ -2652,10 +2652,12 @@ test("unresolved artist search names expire after 30 days and the enrichment que
 test("Discover legacy routes share one service and overview opts into a bounded public cache", () => {
   artistStmts.upsert.run(artistRow("discover route alpha", {
     name: "Discover Route Alpha", genre: "rap", country: "Route Test Country", popularity: 99,
+    spotifyId: "0000000000000000000001",
     genreClaims: [{ value: "rap", source: "provider", at: 1 }],
   }, "test"));
   artistStmts.upsert.run(artistRow("discover route bravo", {
     name: "Discover Route Bravo", genre: "indie rock", country: "Route Test Country", popularity: 98,
+    spotifyId: "0000000000000000000002",
     genreClaims: [{ value: "indie rock", source: "provider", at: 1 }],
   }, "test"));
 
@@ -3449,6 +3451,8 @@ test("tour-date range browsing is bounded, cursor-paged, canonical-location scop
 
   try {
     add({ id: ids[0], days: -3, eventKind: "fair", eventEndDate: dateAt(2) });
+    db.prepare("UPDATE tour_dates SET music_evidence=?,billed_artists=? WHERE id=?")
+      .run("ticketmaster:classification:music", JSON.stringify([`Artist ${ids[0]}`]), ids[0]);
     add({ id: ids[1], days: 10 });
     add({ id: ids[2], days: 20 });
     add({ id: ids[3], days: 30 });

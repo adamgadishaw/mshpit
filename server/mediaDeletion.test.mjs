@@ -38,6 +38,7 @@ const {
   redriveMediaDeletionDeadLetters,
   runMediaDeletionBatch,
   runMediaOwnerSweepOnce,
+  startMediaDeletionScheduler,
   trustedOwnedMediaKey,
 } = await import("./mediaDeletion.js");
 
@@ -70,6 +71,74 @@ function clearMediaTables() {
   db.prepare("DELETE FROM media_upload_issuances").run();
   db.prepare("DELETE FROM media_owner_sweeps").run();
 }
+
+test("media cleanup coalesces ticks and shutdown waits for the active batch", async () => {
+  let complete;
+  const activeBatch = new Promise((resolve) => { complete = resolve; });
+  const once = [];
+  const repeating = [];
+  const clearedOnce = [];
+  const clearedRepeating = [];
+  let calls = 0;
+  const timer = (collection) => (callback, delay) => {
+    const handle = { callback, delay, unref() {} };
+    collection.push(handle);
+    return handle;
+  };
+  const scheduler = startMediaDeletionScheduler({
+    database: db,
+    env: { ...process.env, MEDIA_CLEANUP_ENABLED: "true" },
+    runBatch: async () => {
+      calls += 1;
+      await activeBatch;
+      return { configured: true, lastErrorCode: null, deadLettered: 0 };
+    },
+    setTimer: timer(once),
+    clearTimer: (handle) => clearedOnce.push(handle),
+    setRepeatingTimer: timer(repeating),
+    clearRepeatingTimer: (handle) => clearedRepeating.push(handle),
+    logger: { log() {}, error() {} },
+  });
+
+  const first = scheduler.trigger();
+  assert.equal(scheduler.trigger(), first);
+  await Promise.resolve();
+  assert.equal(calls, 1);
+  let stopped = false;
+  const stopping = scheduler.stop().then(() => { stopped = true; });
+  await Promise.resolve();
+  assert.equal(stopped, false);
+  complete();
+  await stopping;
+  assert.equal(stopped, true);
+  assert.equal(await scheduler.trigger(), null);
+  assert.deepEqual(clearedOnce, [once[0]]);
+  assert.deepEqual(clearedRepeating, [repeating[0]]);
+});
+
+test("media scheduler aborts an active batch and still awaits its settlement", async () => {
+  let receivedSignal = null;
+  const scheduler = startMediaDeletionScheduler({
+    database: db,
+    env: { ...process.env, MEDIA_CLEANUP_ENABLED: "true" },
+    runBatch: ({ signal }) => new Promise((resolve) => {
+      receivedSignal = signal;
+      signal.addEventListener("abort", () => resolve({
+        configured: true,
+        lastErrorCode: "worker_aborted",
+        deadLettered: 0,
+      }), { once: true });
+    }),
+    logger: { log() {}, error() {} },
+  });
+
+  const active = scheduler.trigger();
+  await Promise.resolve();
+  assert.equal(receivedSignal?.aborted, false);
+  await scheduler.stop({ abortActive: true });
+  assert.equal(receivedSignal.aborted, true);
+  await active;
+});
 
 function enqueueTicket(owner, key, at = Date.now()) {
   assert.equal(recordMediaObjectTicket(db, { ownerId: owner, objectKey: key, at, expiresAt: null }), true);
@@ -665,6 +734,38 @@ test("stale never-associated tickets are queued after a bounded TTL", async () =
   assert.equal(db.prepare("SELECT 1 FROM media_objects WHERE object_key=?").get(key), undefined);
 });
 
+test("shutdown cancellation releases claimed deletion work without spending an attempt", async () => {
+  clearMediaTables();
+  const owner = "shutdown_release_owner";
+  const key = `users/${owner}/post/retry-after-deploy.jpg`;
+  enqueueTicket(owner, key, 10_000);
+  const controller = new AbortController();
+  let fetchStarted;
+  const started = new Promise((resolve) => { fetchStarted = resolve; });
+  const active = runMediaDeletionBatch({
+    database: db,
+    env: process.env,
+    clock: () => 20_000,
+    batchSize: 1,
+    signal: controller.signal,
+    fetchImpl: async (_url, { signal }) => new Promise((_resolve, reject) => {
+      fetchStarted();
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    }),
+  });
+  await started;
+  controller.abort(new DOMException("deploy", "AbortError"));
+  const result = await active;
+  assert.equal(result.lastErrorCode, "worker_aborted");
+  assert.deepEqual({ ...db.prepare(`SELECT status,attempts,next_attempt_at,last_error_code
+    FROM media_deletion_queue WHERE object_key=?`).get(key) }, {
+    status: "pending",
+    attempts: 0,
+    next_attempt_at: 20_000,
+    last_error_code: null,
+  });
+});
+
 test("legacy photo presign requires verified email before any storage ledger write and permits admins", () => {
   clearMediaTables();
   const user = addUnverifiedUser("legacy_unverified_owner");
@@ -691,6 +792,35 @@ test("legacy photo presign requires verified email before any storage ledger wri
 
 test("abandoned uploads default to a 48-hour staging window", () => {
   assert.equal(mediaOrphanTtlMs({}), 2 * 24 * 60 * 60_000);
+});
+
+test("shutdown cancellation releases a claimed owner sweep without spending an attempt", async () => {
+  clearMediaTables();
+  const owner = "shutdown_sweep_owner";
+  enqueueOwnerMediaSweep(db, { ownerId: owner, at: 5_000 });
+  const controller = new AbortController();
+  let fetchStarted;
+  const started = new Promise((resolve) => { fetchStarted = resolve; });
+  const active = runMediaOwnerSweepOnce({
+    database: db,
+    env: process.env,
+    clock: () => 10_000,
+    signal: controller.signal,
+    fetchImpl: async (_url, { signal }) => new Promise((_resolve, reject) => {
+      fetchStarted();
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    }),
+  });
+  await started;
+  controller.abort(new DOMException("deploy", "AbortError"));
+  assert.deepEqual(await active, { processed: 1, errorCode: "worker_aborted", cancelled: 1 });
+  assert.deepEqual({ ...db.prepare(`SELECT status,attempts,next_attempt_at,last_error_code
+    FROM media_owner_sweeps WHERE owner_id=?`).get(owner) }, {
+    status: "pending",
+    attempts: 0,
+    next_attempt_at: 10_000,
+    last_error_code: null,
+  });
 });
 
 test("legacy owner-prefix sweep paginates safely and ignores every foreign or malformed returned key", async () => {

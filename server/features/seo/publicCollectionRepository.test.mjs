@@ -24,7 +24,9 @@ function createDatabase() {
       source TEXT,updated_at INTEGER NOT NULL DEFAULT 0,owner_id TEXT,release_at INTEGER NOT NULL DEFAULT 0,
       provider_event_id TEXT,venue_provider_id TEXT,venue_city TEXT,venue_region TEXT,
       venue_country_code TEXT,venue_country TEXT,provider_active INTEGER NOT NULL DEFAULT 1,
-      music_qualified INTEGER NOT NULL DEFAULT 1,event_end_date TEXT
+      music_qualified INTEGER NOT NULL DEFAULT 1,event_end_date TEXT,
+      event_kind TEXT NOT NULL DEFAULT 'concert',music_evidence TEXT,
+      billed_artists TEXT NOT NULL DEFAULT '[]'
     );
     CREATE TABLE posts (
       id TEXT PRIMARY KEY,user_id TEXT NOT NULL,artist TEXT NOT NULL,artist_key TEXT,venue TEXT NOT NULL,

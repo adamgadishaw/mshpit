@@ -354,16 +354,30 @@ test("segmented sitemaps contain only substantive canonical public pages", async
     review: "This otherwise substantial post belongs to an account that is not publicly visible and must stay out.",
     createdAt: 1_720_000_020_000,
   });
+  addPost("p_sitemap_metlife", active.id, {
+    artist: "Venue Guide Artist",
+    review: "A detailed first-hand review that establishes a useful public venue page with verified location context.",
+    createdAt: 1_720_000_025_000,
+    kind: "review",
+  });
+  db.prepare("UPDATE posts SET venue=?,venue_key=?,city=? WHERE id=?")
+    .run("MetLife Stadium", normName("MetLife Stadium"), "East Rutherford", "p_sitemap_metlife");
   db.prepare(`INSERT INTO tour_dates
-    (id,artist,venue,place,date,source,ticket_url,updated_at,release_at)
-    VALUES (?,?,?,?,?,?,?,?,0)`).run(
+    (id,artist,venue,place,date,source,ticket_url,event_image_url,event_image_attribution,
+      event_image_width,event_image_height,music_qualified,updated_at,release_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0)`).run(
     "td_sitemap_public",
     "Touring Sitemap Artist",
     "World Hall",
     "London, UK",
     "2026-12-01",
-    "test",
+    "ticketmaster",
     "https://www.ticketmaster.com/event/td-sitemap-public",
+    "https://s1.ticketm.net/dam/a/sitemap-event.jpg",
+    "Ticketmaster / promoter",
+    1920,
+    1080,
+    1,
     1_730_000_000_000,
   );
   db.prepare(`INSERT INTO tour_dates
@@ -499,6 +513,8 @@ test("segmented sitemaps contain only substantive canonical public pages", async
   assert.match(events, /\/event\/td_sitemap_fan_event/);
   assert.match(events, /\/event\/td_sitemap_rich_event/);
   assert.doesNotMatch(events, /td_sitemap_thin_event|td_sitemap_offsale_event|td_sitemap_non_music/);
+  assert.match(events, /xmlns:image="http:\/\/www\.google\.com\/schemas\/sitemap-image\/1\.1"/);
+  assert.match(events, /<image:loc>https:\/\/s1\.ticketm\.net\/dam\/a\/sitemap-event\.jpg<\/image:loc>/);
   const venues = sitemapXmlFor("/sitemaps/venues.xml", { database: db, now: 1_725_000_000_000 });
   assert.match(venues, /\/venue\/world-hall/);
   assert.match(venues, /\/venue\/sitemap-hall/);
@@ -506,6 +522,8 @@ test("segmented sitemaps contain only substantive canonical public pages", async
   assert.doesNotMatch(venues, /\/venue\/unity-hall/);
   assert.match(venues, /\/venue\/ticketmaster-shared-north/);
   assert.match(venues, /\/venue\/ticketmaster-shared-south/);
+  assert.match(venues, /\/venue\/metlife-stadium/);
+  assert.match(venues, /<image:loc>https:\/\/pub-ed4a84ccdec4452ebcdb1b116e40b67b\.r2\.dev\/venues\/licensed\/metlife-stadium-[^<]+\.webp<\/image:loc>/);
   assert.doesNotMatch(venues, /\/venue\/(?:shared-arena|community-centre)/);
   const providerVenueDay = new Date(1_721_000_000_000).toISOString().slice(0, 10);
   const unattributedVenuePostDay = new Date(1_724_100_001_000).toISOString().slice(0, 10);

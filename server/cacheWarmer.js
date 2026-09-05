@@ -28,9 +28,39 @@ import { backfillChannelsFromWikidata } from "./wikidataChannels.js";
 import { backgroundJobEnabled } from "./backgroundJobs.js";
 import { runBackgroundJob } from "./backgroundJobCoordinator.js";
 import { MUSIC_PLAYER_ENABLED } from "../src/domain/musicPlayerAvailability.mjs";
+import { startPeriodicJob } from "./periodicJobScheduler.js";
 
 const PROGRESS_KEY = "warm:youtube:v1";
 const DAILY_MARKER_KEY = "warm:youtube:lastRun";
+const WARM_RETRY_DELAY_MS = 30 * 60 * 1000;
+
+function throwIfAborted(signal) {
+  if (!signal?.aborted) return;
+  throw signal.reason instanceof Error
+    ? signal.reason
+    : new DOMException("Catalogue enrichment stopped.", "AbortError");
+}
+
+function abortableDelay(ms, signal) {
+  throwIfAborted(signal);
+  if (!signal) return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(finish, ms);
+    timer.unref?.();
+    signal.addEventListener("abort", abort, { once: true });
+    function cleanup() {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", abort);
+    }
+    function finish() { cleanup(); resolve(); }
+    function abort() {
+      cleanup();
+      reject(signal.reason instanceof Error
+        ? signal.reason
+        : new DOMException("Catalogue enrichment stopped.", "AbortError"));
+    }
+  });
+}
 
 // Hosted instances opt in explicitly. This prevents a cold-start/restart loop
 // from immediately repeating thousands of provider lookups. Local development
@@ -103,9 +133,11 @@ export async function warmYouTubeCache({
   resolve = resolveYouTubeTrack,
   providerStatus = youtubeProviderStatus,
   onProgress = null,
-  sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
+  sleep = abortableDelay,
   sleepMs = 120,
+  signal,
 } = {}) {
+  throwIfAborted(signal);
   const progress = readProgress();
   // Progress prevents duplicate work within one day's pass, not forever. A new
   // day reconsiders failures, newly-enriched tracks, and expired cache entries;
@@ -154,6 +186,7 @@ export async function warmYouTubeCache({
   const stats = { artistsTouched: 0, resolved: 0, skipped: 0, failed: 0, spent: 0, stoppedEarly: false };
 
   for (const row of artists) {
+    throwIfAborted(signal);
     if (stats.spent >= budget) { stats.stoppedEarly = true; break; }
     if (done.has(normName(row.name))) continue;
 
@@ -167,6 +200,7 @@ export async function warmYouTubeCache({
     let fullyVisited = true;
 
     for (const track of tracks) {
+      throwIfAborted(signal);
       if (stats.spent >= budget) { stats.stoppedEarly = true; fullyVisited = false; break; }
       if (isCached(track.title, row.name)) { stats.skipped++; continue; }
 
@@ -181,6 +215,7 @@ export async function warmYouTubeCache({
         const result = await resolve(track.title, row.name, {
           expectedDurationSec: Number(track.duration) || 0,
           allowSearch: false,
+          signal,
         });
         stats.spent += firstForArtist ? COST_FIRST_TRACK : COST_CACHED_ARTIST;
         firstForArtist = false;
@@ -200,9 +235,10 @@ export async function warmYouTubeCache({
           break;
         }
       } catch {
+        throwIfAborted(signal);
         stats.failed++;
       }
-      if (sleepMs) await sleep(sleepMs);
+      if (sleepMs) await sleep(sleepMs, signal);
     }
 
     if (fullyVisited) done.add(normName(row.name));
@@ -244,51 +280,65 @@ function markRanToday(now = Date.now()) {
 export function startCacheWarmScheduler({
   budget = Number(process.env.YOUTUBE_WARM_BUDGET) || 1500,
   intervalMs = 24 * 60 * 60 * 1000,
+  initialDelayMs = 60 * 1000,
+  retryDelayMs = WARM_RETRY_DELAY_MS,
+  logger = console,
+  schedule = startPeriodicJob,
 } = {}) {
   if (!isCacheWarmSchedulerEnabled()) {
-    console.log("[pit] catalogue enrichment disabled; set CACHE_WARM_ENABLED=true to opt in on Render.");
-    return;
+    logger.log?.("[pit] catalogue enrichment disabled; set CACHE_WARM_ENABLED=true to opt in on Render.");
+    return null;
   }
   const youtubeWarmEnabled = isYouTubePlaybackWarmEnabled(process.env);
-  console.log(youtubeWarmEnabled
+  logger.log?.(youtubeWarmEnabled
     ? `[pit] catalogue enrichment on (daily, ~${budget} general quota units; search disabled).`
     : MUSIC_PLAYER_ENABLED
       ? "[pit] Wikidata channel enrichment on; YouTube catalogue warming is idle until a key is configured."
       : "[pit] Wikidata catalogue enrichment on; built-in playback warming is paused.");
 
-  const runOnce = async () => {
+  const runOnce = async ({ signal } = {}) => {
+    throwIfAborted(signal);
     if (ranToday()) return;
     const pruned = pruneExpiredProviderData(Date.now(), { force: true });
-    if (pruned.youtube || pruned.provider) console.log(`[pit] provider cache prune: ${pruned.youtube + pruned.provider} expired rows removed.`);
+    if (pruned.youtube || pruned.provider) logger.log?.(`[pit] provider cache prune: ${pruned.youtube + pruned.provider} expired rows removed.`);
+    let providerPhaseSucceeded = false;
     // Phase 0, free: pull channel ids from Wikidata (keyless, zero search quota)
     // so most notable artists are discovered without spending the daily search
     // budget. Only what Wikidata cannot cover falls through to the search-based
     // warm below. Best-effort — a Wikidata outage must not stop the warm.
     try {
-      const wd = await backfillChannelsFromWikidata({});
-      if (wd.stored) console.log(`[pit] wikidata channels: ${wd.stored} discovered free (of ${wd.considered} considered).`);
+      const wd = await backfillChannelsFromWikidata({ signal });
+      providerPhaseSucceeded = true;
+      if (wd.stored) logger.log?.(`[pit] wikidata channels: ${wd.stored} discovered free (of ${wd.considered} considered).`);
     } catch (error) {
-      console.log(`[pit] wikidata channel backfill skipped cause=${privateErrorLabel(error)}`);
+      throwIfAborted(signal);
+      logger.warn?.(`[pit] wikidata channel backfill skipped cause=${privateErrorLabel(error)}`);
     }
     if (youtubeWarmEnabled) {
       try {
-        const stats = await warmYouTubeCache({ budget });
-        console.log(`[pit] cache warm: ${stats.resolved} resolved, ${stats.skipped} fresh cache rows, ${stats.failed} deferred/unmatched, ~${stats.spent} general units.`);
+        const stats = await warmYouTubeCache({ budget, signal });
+        providerPhaseSucceeded = true;
+        logger.log?.(`[pit] cache warm: ${stats.resolved} resolved, ${stats.skipped} fresh cache rows, ${stats.failed} deferred/unmatched, ~${stats.spent} general units.`);
       } catch (error) {
-        console.log(`[pit] cache warm failed cause=${privateErrorLabel(error)}`);
+        throwIfAborted(signal);
+        logger.warn?.(`[pit] cache warm failed cause=${privateErrorLabel(error)}`);
       }
     }
+    // Do not stamp a failed day as complete. Without this guard a transient
+    // Wikidata/YouTube outage was remembered as success and left the catalogue
+    // stale until the next 24-hour timer.
+    if (!providerPhaseSucceeded) throw new Error("Every configured catalogue enrichment phase failed.");
+    throwIfAborted(signal);
     markRanToday();
-  };
-
-  const triggerRun = () => {
-    // Keep the safe timer boundary outermost so coordinator and job failures
-    // retain the same contained/reportable behavior as before serialization.
-    void runCacheWarmJobSafely(() => runBackgroundJob(runOnce));
   };
 
   // A minute after boot, not immediately: let the server settle and serve
   // traffic first. This job is never in a hurry.
-  setTimeout(triggerRun, 60 * 1000).unref();
-  setInterval(triggerRun, intervalMs).unref();
+  return schedule({
+    initialDelayMs: Math.max(1_000, Number(initialDelayMs) || 60 * 1000),
+    intervalMs: Math.max(60_000, Number(intervalMs) || 24 * 60 * 60 * 1000),
+    retryDelayMs: Math.max(60_000, Number(retryDelayMs) || WARM_RETRY_DELAY_MS),
+    run: ({ signal } = {}) => runBackgroundJob(() => runOnce({ signal })),
+    report: (error) => logger.error?.(`[pit] scheduled catalogue enrichment failed safely cause=${privateErrorLabel(error)}; retrying in ${Math.round(Math.max(60_000, Number(retryDelayMs) || WARM_RETRY_DELAY_MS) / 60_000)}m`),
+  });
 }

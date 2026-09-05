@@ -97,6 +97,12 @@ function fixture() {
   return database;
 }
 
+function fixtureDiscoverService(database, options = {}) {
+  const reviewedArtistNorms = new Set(database.prepare("SELECT norm FROM artists").all()
+    .map((row) => row.norm));
+  return createDiscoverService({ database, ...options, reviewedArtistNorms });
+}
+
 test("canonicalGenre collapses conservative aliases", () => {
   assert.equal(canonicalGenre(" hip hop "), "Hip-Hop");
   assert.equal(canonicalGenre("indie rock"), "Indie");
@@ -119,7 +125,7 @@ test("Discover hides crawl hints and only filters or aggregates evidenced genres
     }));
     addArtist.run("musicbrainz-evidence", "MusicBrainz Evidence", "Hip Hop", "Canada", 94, 10, null, musicBrainzEvidencedGenre());
 
-    const service = createDiscoverService({ database });
+    const service = fixtureDiscoverService(database);
     const chart = service.chart({ country: "Canada", limit: 10 });
     const byName = Object.fromEntries(chart.rows.map((row) => [row.name, row]));
     assert.equal(byName["Legacy Crawl"].genre, null, "a legacy crawl label must not be stated as fact");
@@ -156,7 +162,7 @@ test("the projection cache is reused briefly and invalidates immediately on genr
     },
   };
   try {
-    const service = createDiscoverService({ database, clock: () => 1000 });
+    const service = fixtureDiscoverService(database, { clock: () => 1000 });
     service.genres({ country: "Canada" });
     service.chart({ genre: "Hip-Hop", country: "Canada", limit: 10 });
     assert.equal(scans, 1, "one evidence projection serves both aggregation and filtering");
@@ -186,12 +192,32 @@ test("the projection cache is reused briefly and invalidates immediately on genr
 test("popularity chart filters by canonical genre and country", () => {
   const database = fixture();
   try {
-    const service = createDiscoverService({ database });
+    const service = fixtureDiscoverService(database);
     const result = service.chart({ genre: "Hip-Hop", country: "canada", limit: 10 });
     assert.equal(result.source, "popularity");
     assert.deepEqual(result.rows.map((row) => row.name), ["Alpha"]);
     assert.deepEqual(result.rows[0].topTrack, { title: "First", url: "first.mp3" });
     assert.equal(result.rows[0].followers, 120);
+  } finally {
+    database.close();
+  }
+});
+
+test("popularity chart skips unreviewed provider rows with inconsistent identity data", () => {
+  const database = fixture();
+  try {
+    const addArtist = database.prepare("INSERT INTO artists VALUES (?,?,?,?,?,?,?,?)");
+    addArtist.run("d", "D", "Hip Hop", "Canada", 100, 100, null,
+      JSON.stringify({ name: "D", followers: 24_000_000, topTracks: [{ title: "Wrong Artist Track" }] }));
+    addArtist.run("emonyx", "EMONYX", "Hip Hop", "Canada", 99, 99, null,
+      JSON.stringify({ name: "EMONYX", followers: 19_000_000, topTracks: [{ title: "Lose Yourself" }] }));
+
+    const service = createDiscoverService({
+      database,
+      reviewedArtistNorms: new Set(["alpha", "bravo", "charlie", "delta"]),
+    });
+    const result = service.chart({ country: "Canada", limit: 10 });
+    assert.deepEqual(result.rows.map((row) => row.name), ["Alpha", "Charlie", "Delta"]);
   } finally {
     database.close();
   }
@@ -214,7 +240,7 @@ test("genre artists put confidence-ranked MSHpit live ratings before separate po
     addPost.run("echo-one", "member-1", "Echo", "echo", "Hall C", "hall-c", "Toronto, Canada", "2026-03-01", 5, "Perfect night", null, "review", "in_person", 0, 2, 2);
     addPost.run("echo-online", "member-2", "Echo", "echo", "YouTube", "youtube", "Online", "2026-03-02", 5, "Stream review", null, "review", "online", 0, 5, 5);
 
-    const result = createDiscoverService({ database }).chart({ genre: "Hip-Hop", country: "Canada", limit: 12 });
+    const result = fixtureDiscoverService(database).chart({ genre: "Hip-Hop", country: "Canada", limit: 12 });
     assert.deepEqual(result.ratedRows.map((row) => row.name), ["Alpha", "Echo"], "sample confidence beats a lone perfect rating");
     assert.deepEqual(
       result.ratedRows.map((row) => ({ name: row.name, ratingCount: row.ratingCount, reviewCount: row.reviewCount, avgRating: row.avgRating })),
@@ -233,7 +259,7 @@ test("genre artists put confidence-ranked MSHpit live ratings before separate po
 test("plays chart honors genre and country instead of returning an unfiltered global list", () => {
   const database = fixture();
   try {
-    const service = createDiscoverService({ database });
+    const service = fixtureDiscoverService(database);
     const result = service.chart({ by: "plays", genre: "Indie", country: "Canada", limit: 10 });
     assert.deepEqual(result.rows.map((row) => ({ name: row.name, plays: row.plays })), [{ name: "Charlie", plays: 3 }]);
     assert.equal(result.rows[0].playsApproximate, true);
@@ -249,7 +275,7 @@ test("plays chart honors genre and country instead of returning an unfiltered gl
 test("overview returns one coherent first-paint payload", () => {
   const database = fixture();
   try {
-    const service = createDiscoverService({ database, clock: () => 1_700_000_000_000 });
+    const service = fixtureDiscoverService(database, { clock: () => 1_700_000_000_000 });
     const result = service.overview({ country: "Canada" });
     assert.deepEqual(result.chart.rows.map((row) => row.name), ["Alpha", "Charlie", "Delta"]);
     assert.equal(result.chart.rows.find((row) => row.name === "Delta")?.genre, null);
