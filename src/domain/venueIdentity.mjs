@@ -4,6 +4,9 @@ import { slugify } from "./urls.mjs";
 // an alias only when both names are known to describe the same physical room.
 const VENUE_ALIAS_GROUPS = Object.freeze([
   Object.freeze({
+    // Keep the original persisted key stable. The public/current display name
+    // comes from the curated venue catalogue, while aliases let both names
+    // resolve to the same historical posts, reviews, shows, and SEO pages.
     canonical: "budweiser stage",
     aliases: Object.freeze(["budweiser stage", "rbc amphitheatre", "rbc amphitheater"]),
   }),

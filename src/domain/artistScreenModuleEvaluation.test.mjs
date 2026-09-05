@@ -33,6 +33,11 @@ function dependencyStub() {
 
 test("ArtistScreen evaluates its module-level styles without unbound runtime tokens", () => {
   const source = readFileSync(filename, "utf8");
+  assert.doesNotMatch(
+    source,
+    /\bsetBioExpanded\s*\(/,
+    "artist bios are owned by ExpandableText and must not call the removed screen-level setter",
+  );
   const compiled = transformSync(source, {
     filename: filename.pathname,
     babelrc: false,

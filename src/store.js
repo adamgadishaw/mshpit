@@ -77,6 +77,7 @@ import {
 } from "./lib/productAnalytics";
 import { analyticsDurationBucket } from "./domain/analyticsPolicy.mjs";
 import { isVenuePlaceActionable, locationCenterFromVenues, venuePlaceIdentity } from "./domain/venueDiscovery.mjs";
+import { countryForCity } from "./geo";
 import {
   confirmEmailWithReconciliation,
   matchingEmailVerifiedSessionUser,
@@ -1338,15 +1339,16 @@ export function StoreProvider({ children }) {
     // Keep the shared startup catalogue aligned with the product's 30-day live
     // window. Longer discovery ranges are loaded explicitly by the screens that
     // need them instead of making every signed-in device parse the full archive.
-    const { tourDates: live } = await fetchStartupTourDates({
+    const { tourDates: live, partial } = await fetchStartupTourDates({
       signal,
       expectedAccountId: accountId,
+      homeCountry: session?.home?.country || countryForCity(session?.home?.city),
     });
     if (signal?.aborted || tourDateReadRef.current.sequence !== sequence
       || tourDateReadRef.current.accountId !== accountId
       || (sessionRef.current?.id || null) !== accountId) return null;
     const accepted = sanitizeTourDates(live, ENABLE_DEMO_DATA);
-    const next = ENABLE_DEMO_DATA
+    const next = ENABLE_DEMO_DATA || partial
       ? [...new Map([...accepted, ...tourDatesRef.current].map((event) => [event.id, event])).values()]
       : accepted;
     tourDatesRef.current = next;
@@ -5560,8 +5562,11 @@ export function StoreProvider({ children }) {
     .flatMap((r) => r.photos.map((p) => ({ uri: p, by: r.name, venueReviewId: r.id, ownerId: r.userId })))
     .slice(0, n);
   const venueCatalogEntry = (venueName) => {
-    const key = norm(venueName);
-    return catalogVenues[key] || arenaVenues[key] || null;
+    const key = resolveVenueCatalogKey(venueName, [
+      ...Object.keys(arenaVenues),
+      ...Object.keys(catalogVenues),
+    ]);
+    return key ? catalogVenues[key] || arenaVenues[key] || null : null;
   };
   // All photos for a venue's widget, self-healing like the artist gallery:
   //   1. fan-uploaded review photos
@@ -5970,11 +5975,12 @@ export function StoreProvider({ children }) {
   // Venue page - the room's reputation across every show held there. Sound,
   // views, and crowd live with the building, not the touring band.
   const venueSummary = (name) => {
-    const key = norm(name);
-    const liveLogs = feed.filter((l) => !removedIds.includes(l.id) && norm(l.venue) === key);
+    const key = canonicalVenueKey(name) || norm(name);
+    const sameVenue = (value) => (canonicalVenueKey(value) || norm(value)) === key;
+    const liveLogs = feed.filter((l) => !removedIds.includes(l.id) && sameVenue(l.venue));
     const covered = new Set(liveLogs.map((l) => norm(l.artist)));
     const aggregateNights = ratedShows
-      .filter((r) => norm(r.venue) === key && !covered.has(norm(r.artist)))
+      .filter((r) => sameVenue(r.venue) && !covered.has(norm(r.artist)))
       .map((r) => ({
         id: r.id,
         user: { name: "Community", handle: "pit", initials: "PT" },
@@ -5997,7 +6003,7 @@ export function StoreProvider({ children }) {
     const avg = (sel) => (nights.length ? nights.reduce((s, n) => s + sel(n), 0) / nights.length : 0);
     const upcoming = tourDates
       .filter((t) => isUpcomingEventDate(t)
-        && norm(t.venue) === key
+        && sameVenue(t.venue)
         && (t.releaseAt <= Date.now() || isStaff(session?.role) || t.createdBy === session?.id))
       .map((t) => ({ ...t, scheduled: t.releaseAt > Date.now() }));
     const providerVenues = new Map();
@@ -6010,7 +6016,7 @@ export function StoreProvider({ children }) {
       );
     }
     const providerVenue = providerVenues.size === 1 ? [...providerVenues.values()][0] : null;
-    const cat = venueCatalogEntry(key);
+    const cat = venueCatalogEntry(name);
     const place = (cat && cat.place) || nights.find((n) => n.city)?.city || upcoming.find((u) => u.place)?.place || "";
     const catalogPhoto = venueCatalogPhotoFields(cat);
     return {
@@ -6047,21 +6053,22 @@ export function StoreProvider({ children }) {
   };
 
   const venueCoord = (name) => {
-    const k = norm(name);
-    const cat = venueCatalogEntry(k);
+    const k = canonicalVenueKey(name) || norm(name);
+    const sameVenue = (value) => (canonicalVenueKey(value) || norm(value)) === k;
+    const cat = venueCatalogEntry(name);
     if (cat && cat.lat != null) return { lat: cat.lat, lng: cat.lng };
-    const rs = ratedShows.find((r) => norm(r.venue) === k);
+    const rs = ratedShows.find((r) => sameVenue(r.venue));
     if (rs) return { lat: rs.lat, lng: rs.lng };
-    const event = tourDates.find((date) => norm(date.venue) === k && date.lat != null && date.lng != null);
+    const event = tourDates.find((date) => sameVenue(date.venue) && date.lat != null && date.lng != null);
     return event ? { lat: event.lat, lng: event.lng } : null;
   };
 
   const allVenues = () => {
     const map = {};
     const add = (name, place) => {
-      const k = norm(name);
+      const k = canonicalVenueKey(name) || norm(name);
       if (!k || map[k]) return;
-      const cat = venueCatalogEntry(k);
+      const cat = venueCatalogEntry(name);
       map[k] = {
         name: cat?.name || name,
         place: cat?.place || place || "",
@@ -6081,7 +6088,7 @@ export function StoreProvider({ children }) {
   // # of public upcoming dates at a venue (released only).
   const venueUpcomingCount = (name) =>
     tourDates.filter((t) => isUpcomingEventDate(t)
-      && norm(t.venue) === norm(name)
+      && (canonicalVenueKey(t.venue) || norm(t.venue)) === (canonicalVenueKey(name) || norm(name))
       && t.releaseAt <= Date.now()).length;
 
   // --- Sidebar data (desktop rails) ------------------------------------------
@@ -6367,7 +6374,7 @@ export function StoreProvider({ children }) {
         ...v,
         distanceKm: haversineKm(center, v.coord),
         upcoming: tourDates.filter((t) => isUpcomingEventDate(t)
-          && norm(t.venue) === norm(v.name)
+          && (canonicalVenueKey(t.venue) || norm(t.venue)) === (canonicalVenueKey(v.name) || norm(v.name))
           && t.releaseAt <= Date.now()).length,
       }))
       .filter((v) => v.distanceKm <= maxKm)

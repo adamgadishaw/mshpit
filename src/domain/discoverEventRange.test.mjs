@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   discoverySidebarRangeRequestPath,
   mergeDiscoverRangePages,
+  mergeStartupTourDatePages,
   parseTourDateRangeResponse,
   selectDiscoverRangeEvents,
   tourDateRangeRequestPath,
@@ -66,6 +67,19 @@ test("Discover range parses legacy and paged server responses defensively", () =
     parseTourDateRangeResponse({ upcomingEvents: [{ id: "nearby" }] }),
     { tourDates: [{ id: "nearby" }], nextCursor: null, through: null },
   );
+});
+
+test("startup combines global and home-country pages without duplicate events", () => {
+  const global = Array.from({ length: 500 }, (_, index) => ({ id: `global-${index}` }));
+  const canada = [
+    { id: "global-20" },
+    { id: "rbc-pitbull", venue: "RBC Amphitheatre", venueCountryCode: "CA" },
+    { id: "rbc-wutang", venue: "RBC Amphitheatre", venueCountryCode: "CA" },
+  ];
+  const merged = mergeStartupTourDatePages([global, canada]);
+  assert.equal(merged.length, 502);
+  assert.equal(merged.filter((event) => event.id === "global-20").length, 1);
+  assert.deepEqual(merged.slice(-2).map((event) => event.id), ["rbc-pitbull", "rbc-wutang"]);
 });
 
 test("Discover range sends supported European country names as ISO filters", () => {

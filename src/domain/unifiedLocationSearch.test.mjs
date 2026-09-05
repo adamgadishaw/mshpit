@@ -92,6 +92,27 @@ test("same-named provider venues keep distinct provider identities", () => {
   ]);
 });
 
+test("current venue names absorb historical aliases while both remain searchable", () => {
+  const venues = createUnifiedVenueSearchIndex({
+    tourDates: [{
+      id: "rbc-event",
+      artist: "Pitbull",
+      venue: "RBC Amphitheatre",
+      date: "2099-09-05",
+      releaseAt: 0,
+      source: "ticketmaster",
+      providerVenueId: "KovZpZAEkkIA",
+      venueCity: "Toronto",
+      venueCountryCode: "CA",
+    }],
+    curatedVenues: [{ name: "Budweiser Stage", place: "Toronto, Ontario, Canada", capacity: 16000 }],
+    now: Date.UTC(2098, 0, 1),
+  });
+  assert.deepEqual(searchUnifiedVenueIndex(venues, "RBC").map((row) => row.name), ["RBC Amphitheatre"]);
+  assert.deepEqual(searchUnifiedVenueIndex(venues, "Budweiser").map((row) => row.name), ["RBC Amphitheatre"]);
+  assert.equal(searchUnifiedVenueIndex(venues, "Toronto").length, 1, "the historical anchor cannot duplicate the renamed room");
+});
+
 test("the production-safe venue index exposes Portugal's five real arena anchors", () => {
   const venues = createUnifiedVenueSearchIndex({ curatedVenues: arenaVenues });
   assert.deepEqual(

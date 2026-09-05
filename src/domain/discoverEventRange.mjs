@@ -12,6 +12,11 @@ export const DISCOVER_RANGE_DAYS = Object.freeze([30, 60, 90]);
 export const DISCOVER_RANGE_BATCH = 4;
 export const DISCOVER_RANGE_REQUEST_LIMIT = 250;
 export const DISCOVER_RANGE_MAX_EVENTS = 500;
+// Startup combines one bounded worldwide page with, when available, one
+// bounded home-country page. This keeps first paint finite while preventing a
+// busy global date from crowding every relevant local venue out of the shared
+// catalogue snapshot.
+export const STARTUP_TOUR_DATE_MAX_EVENTS = DISCOVER_RANGE_MAX_EVENTS * 2;
 
 const clean = (value, max = 180) => typeof value === "string"
   ? value.replace(/[\u0000-\u001f\u007f]/g, "").replace(/\s+/g, " ").trim().slice(0, max)
@@ -97,6 +102,23 @@ export function mergeDiscoverRangePages(current, incoming, { limit = DISCOVER_RA
     seen.add(identity);
     merged.push(event);
     if (merged.length >= maximum) break;
+  }
+  return merged;
+}
+
+export function mergeStartupTourDatePages(pages, { limit = STARTUP_TOUR_DATE_MAX_EVENTS } = {}) {
+  const maximum = boundedInteger(limit, STARTUP_TOUR_DATE_MAX_EVENTS, 1, STARTUP_TOUR_DATE_MAX_EVENTS);
+  const merged = [];
+  const seen = new Set();
+  for (const page of Array.isArray(pages) ? pages : []) {
+    for (const event of Array.isArray(page) ? page : []) {
+      if (!event || typeof event !== "object") continue;
+      const identity = eventIdentity(event);
+      if (!identity || seen.has(identity)) continue;
+      seen.add(identity);
+      merged.push(event);
+      if (merged.length >= maximum) return merged;
+    }
   }
   return merged;
 }

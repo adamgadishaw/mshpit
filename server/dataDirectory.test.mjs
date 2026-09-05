@@ -14,6 +14,7 @@ function createInitializedDatabase(path) {
     CREATE TABLE users (id TEXT PRIMARY KEY);
     CREATE TABLE posts (id TEXT PRIMARY KEY);
     CREATE TABLE artists (id TEXT PRIMARY KEY);
+    CREATE TABLE tour_dates (id TEXT PRIMARY KEY);
     CREATE TABLE schema_version (version INTEGER NOT NULL);
     CREATE TABLE app_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     INSERT INTO schema_version VALUES (1);
@@ -139,6 +140,7 @@ test("production refuses a structurally valid but empty Pit database", () => {
     CREATE TABLE users (id TEXT PRIMARY KEY);
     CREATE TABLE posts (id TEXT PRIMARY KEY);
     CREATE TABLE artists (id TEXT PRIMARY KEY);
+    CREATE TABLE tour_dates (id TEXT PRIMARY KEY);
     CREATE TABLE schema_version (version INTEGER NOT NULL);
     CREATE TABLE app_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     INSERT INTO schema_version VALUES (1);
@@ -164,6 +166,7 @@ test("a marked initialized Pit database can legitimately have no posts", () => {
     CREATE TABLE users (id TEXT PRIMARY KEY);
     CREATE TABLE posts (id TEXT PRIMARY KEY);
     CREATE TABLE artists (id TEXT PRIMARY KEY);
+    CREATE TABLE tour_dates (id TEXT PRIMARY KEY);
     CREATE TABLE app_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     INSERT INTO schema_version VALUES (1);
     INSERT INTO users VALUES ('u_admin');
@@ -186,6 +189,23 @@ test("production refuses a different SQLite application identity", () => {
   createInitializedDatabase(databasePath);
   const database = new DatabaseSync(databasePath);
   database.exec("PRAGMA application_id = 123456");
+  database.close();
+  try {
+    assert.throws(
+      () => prepareDataDirectory({ env: { NODE_ENV: "production", PIT_DATA_DIR: mounted } }),
+      /not an initialized Pit database.*refusing to migrate/i,
+    );
+  } finally {
+    rmSync(mounted, { recursive: true, force: true });
+  }
+});
+
+test("production refuses a database missing its durable event and venue catalogue", () => {
+  const mounted = mkdtempSync(join(tmpdir(), "pit-missing-tour-catalogue-"));
+  const databasePath = join(mounted, "pit.db");
+  createInitializedDatabase(databasePath);
+  const database = new DatabaseSync(databasePath);
+  database.exec("DROP TABLE tour_dates");
   database.close();
   try {
     assert.throws(

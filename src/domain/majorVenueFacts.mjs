@@ -11,7 +11,7 @@ export const arenaVenueEntries = [
   // --- Canada ---
   V("Scotiabank Arena", "Toronto, Ontario, Canada", 43.6435, -79.3791, 19800),
   V("Rogers Centre", "Toronto, Ontario, Canada", 43.6414, -79.3894, 53506),
-  V("Budweiser Stage", "Toronto, Ontario, Canada", 43.6289, -79.4158, 16000),
+  V("RBC Amphitheatre", "Toronto, Ontario, Canada", 43.6289, -79.4158, 16000),
   V("Coca-Cola Coliseum", "Toronto, Ontario, Canada", 43.6360, -79.4136, 8500),
   V("History", "Toronto, Ontario, Canada", 43.6640, -79.3300, 2500),
   V("Bell Centre", "Montreal, Quebec, Canada", 45.4961, -73.5693, 21105),

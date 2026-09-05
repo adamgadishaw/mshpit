@@ -31,5 +31,10 @@ test("shared startup tour dates use the bounded 30-day product window", () => {
   const body = functionBody("refreshTourDates", "loadDiscoverTourDateRange");
   assert.match(body, /fetchStartupTourDates\(\{/);
   assert.match(tourDateApiSource, /tourDateRangeRequestPath\(\{ days: 30, limit: DISCOVER_RANGE_MAX_EVENTS \}\)/);
+  assert.match(body, /homeCountry: session\?\.home\?\.country \|\| countryForCity\(session\?\.home\?\.city\)/);
+  assert.match(body, /ENABLE_DEMO_DATA \|\| partial/);
+  assert.match(tourDateApiSource, /Promise\.allSettled/);
+  assert.match(tourDateApiSource, /country: homeCountry/);
+  assert.match(tourDateApiSource, /mergeStartupTourDatePages/);
   assert.doesNotMatch(body, /api\("\/api\/tourdates"/);
 });

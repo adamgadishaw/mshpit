@@ -1,5 +1,6 @@
 import { isUpcomingEventDate } from "./dataPolicy.mjs";
 import { discoverRowCountryLabel } from "./discoverScene.mjs";
+import { canonicalVenueKey, venueLookupKeys } from "./venueIdentity.mjs";
 
 export const UNIFIED_EVENT_SEARCH_INDEX_LIMIT = 5000;
 export const UNIFIED_VENUE_SEARCH_INDEX_LIMIT = 7500;
@@ -113,7 +114,7 @@ const venueSourceIdentity = (row, name, location) => {
 };
 
 const venueMergeIdentity = (name, location) => (
-  `venue:${normalized(name)}:${normalized(location.city)}:${normalized(location.country || location.place)}`
+  `venue:${normalized(canonicalVenueKey(name) || name)}:${normalized(location.city)}:${normalized(location.country || location.place)}`
 );
 
 const visibleUpcoming = (row, at) => {
@@ -152,7 +153,9 @@ export function createUnifiedVenueSearchIndex({
       ? identity
       : anchorTargets.get(mergeIdentity) || mergeIdentity;
     const existing = venues.get(storageIdentity);
-    const searchParts = [name, location.place, location.city, location.region, location.country];
+    // A renamed room keeps its current display name while both current and
+    // historical names remain searchable.
+    const searchParts = [name, ...venueLookupKeys(name), location.place, location.city, location.region, location.country];
     if (existing) {
       searchParts.forEach((part) => part && existing.searchParts.add(part));
       if (event && visibleUpcoming(row, at)) existing.row.upcoming += 1;

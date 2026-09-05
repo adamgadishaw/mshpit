@@ -3,7 +3,19 @@ import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 export const PIT_SQLITE_APPLICATION_ID = 0x50495431; // ASCII "PIT1"
-const REQUIRED_PRODUCTION_TABLES = Object.freeze(["schema_version", "users", "posts", "artists", "app_meta"]);
+// `tour_dates` is also the durable source of production venue identity. If it
+// is missing, letting db.js recreate the table would make both the event and
+// venue catalogues look successfully empty after a bad restore or wrong-disk
+// deploy. Treat that as the same fail-closed condition as missing accounts or
+// artists; an intentional first boot already has the explicit bootstrap path.
+const REQUIRED_PRODUCTION_TABLES = Object.freeze([
+  "schema_version",
+  "users",
+  "posts",
+  "artists",
+  "tour_dates",
+  "app_meta",
+]);
 const REQUIRED_NONEMPTY_TABLES = Object.freeze(["users", "artists"]);
 
 // Opening SQLite without a preflight is destructive in this particular failure

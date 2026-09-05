@@ -519,7 +519,6 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
     setShowAllSongs(false);
     setShowAllReleases(false);
     setShowAllUpcoming(false);
-    setBioExpanded(false);
     setIdentityOpen(false);
     setCandidates(null);
     setCandidatesLoading(false);
