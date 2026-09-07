@@ -826,14 +826,15 @@ test("signup never derives the public handle from a private email local-part", (
       password: "private-handle-password1",
       genres: ["Rock"],
       ageBand: "18_plus",
-      termsVersion: "2026-09-02",
+      termsVersion: "2026-09-07",
     },
     ip: `signup-private-handle-${distinctive}`,
     ua: "test",
     setSession(value) { session = value; },
   });
   const created = q.userByEmail.get(email);
-  assert.deepEqual(result, { ok: true, pending: true });
+  assert.deepEqual(result, { ok: true, pending: true, cancelToken: result.cancelToken });
+  assert.match(result.cancelToken, /^[A-Za-z0-9_-]{43}$/);
   assert.equal(created.handle.includes("legal"), false);
   assert.equal(created.handle.includes("work"), false);
   assert.match(created.handle, /^pitfan_[a-f0-9]{8}/u);
@@ -912,13 +913,13 @@ test("auth limits stay bound to the IP even when the caller supplies rotating ac
         password: "rotation-test-password1",
         genres: ["Rock"],
         ageBand: "18_plus",
-        termsVersion: "2026-09-02",
+        termsVersion: "2026-09-07",
       },
       ip: sharedIp,
       ua: "test",
       setSession() { throw new Error("signup must not issue a session"); },
     });
-    assert.deepEqual(result, { ok: true, pending: true });
+    assert.deepEqual(result, { ok: true, pending: true, cancelToken: result.cancelToken });
     currentUser = q.userByEmail.get(email);
   }
   assert.throws(
@@ -930,7 +931,7 @@ test("auth limits stay bound to the IP even when the caller supplies rotating ac
         password: "rotation-test-password1",
         genres: ["Rock"],
         ageBand: "18_plus",
-        termsVersion: "2026-09-02",
+        termsVersion: "2026-09-07",
       },
       ip: sharedIp,
       ua: "test",
@@ -949,15 +950,17 @@ test("signup returns the same body and cookie behavior for new and registered ad
     password: "enumeration-password1",
     genres: ["Rock"],
     ageBand: "18_plus",
-    termsVersion: "2026-09-02",
+    termsVersion: "2026-09-07",
   };
   let newSession = null;
   const first = routes["POST /api/signup"]({ body, ip: `signup-enumeration-new-${Date.now()}`, ua: "test", setSession(value) { newSession = value; } });
   const originalHash = q.userByEmail.get(email).pass_hash;
   let existingSession = null;
   const second = routes["POST /api/signup"]({ body: { ...body, password: "different-password1" }, ip: `signup-enumeration-existing-${Date.now()}`, ua: "test", setSession(value) { existingSession = value; } });
-  assert.deepEqual(first, { ok: true, pending: true });
-  assert.deepEqual(second, first);
+  assert.deepEqual(first, { ok: true, pending: true, cancelToken: first.cancelToken });
+  assert.match(first.cancelToken, /^[A-Za-z0-9_-]{43}$/);
+  assert.match(second.cancelToken, /^[A-Za-z0-9_-]{43}$/);
+  assert.deepEqual(second, { ...first, cancelToken: second.cancelToken });
   assert.equal(newSession, null);
   assert.equal(existingSession, null);
   assert.equal(q.userByEmail.get(email).pass_hash, originalHash, "a duplicate request cannot replace the existing credential");

@@ -96,8 +96,14 @@ export function reconcileAdminAccount({
   const email = configuredAdminEmail || "admin@localhost.invalid";
   if (production) assertProductionPassword(configured, email);
 
-  const existing = queries.userByEmail.get(email);
   const storedOwnerState = production ? readOwnerIdentityState(database) : { state: "missing", identity: null };
+  if (production && !storedOwnerState.identity && queries.usersByEmail?.all(email).length > 1) {
+    throw new Error("More than one account uses the configured Owner email; explicitly lock the intended Owner identity before startup.");
+  }
+  const existing = storedOwnerState.identity?.userId
+    ? database.prepare("SELECT * FROM users WHERE id=? AND lower(email)=lower(?)").get(storedOwnerState.identity.userId, email)
+      || (storedOwnerState.identity.version === 1 ? queries.userByEmail.get(email) : null)
+    : queries.userByEmail.get(email);
   if (production && storedOwnerState.state === "invalid") {
     throw new Error("The stored Owner identity is malformed; refusing to adopt or replace an Owner automatically.");
   }

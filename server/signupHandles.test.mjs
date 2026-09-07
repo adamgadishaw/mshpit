@@ -80,8 +80,10 @@ test("signup preference cannot turn public availability into an email existence 
   const old = { ...existing };
   const first = signup("private_preference");
   const duplicate = signup("private_preference", { email: existing.email });
-  assert.deepEqual(first.result, { ok: true, pending: true });
-  assert.deepEqual(duplicate.result, first.result);
+  assert.deepEqual(first.result, { ok: true, pending: true, cancelToken: first.result.cancelToken });
+  assert.match(first.result.cancelToken, /^[A-Za-z0-9_-]{43}$/);
+  assert.deepEqual(duplicate.result, { ...first.result, cancelToken: duplicate.result.cancelToken });
+  assert.match(duplicate.result.cancelToken, /^[A-Za-z0-9_-]{43}$/);
   assert.equal(first.session, null);
   assert.equal(duplicate.session, null);
   assert.match(first.user.handle, /^pitfan_[a-f0-9]{8}/u);
@@ -93,13 +95,13 @@ test("signup preference cannot turn public availability into an email existence 
   assert.equal(JSON.stringify(publicUser(first.user)).includes("private_preference"), false);
   assert.equal(JSON.stringify(publicUser(first.user, { self: true })).includes("private_preference"), false);
   const repeated = signup("another_preference", { email: first.user.email });
-  assert.deepEqual(repeated.result, first.result);
+  assert.deepEqual(repeated.result, { ...first.result, cancelToken: repeated.result.cancelToken });
   assert.equal(JSON.parse(repeated.user.extras).pendingSignupHandle, "private_preference");
 });
 
 test("signup remains compatible without a handle or city and does not store invented coordinates", () => {
   const created = signup(undefined);
-  assert.deepEqual(created.result, { ok: true, pending: true });
+  assert.deepEqual(created.result, { ok: true, pending: true, cancelToken: created.result.cancelToken });
   assert.match(created.user.handle, /^pitfan_[a-f0-9]{8}/u);
   assert.equal(created.user.home_city, null);
   assert.equal(created.user.home_lat, null);
@@ -218,10 +220,11 @@ test("availability is rate limited by IP even when the caller rotates cookies", 
   apiError(() => routes["GET /api/signup/handle-availability"](request), 429, "RATE_LIMITED");
 });
 
-test("a pending preference does not grant media upload or onboarding-completion permission", () => {
+test("setup completion is independent from verification and does not grant media permission", () => {
   const created = signup("still_unverified");
   apiError(() => routes["POST /api/media/assets"]({ user: created.user, body: {}, ip: "unverified-media" }),
     403, "MEDIA_EMAIL_VERIFICATION_REQUIRED");
-  apiError(() => routes["POST /api/me/onboarding/complete"]({ user: created.user, body: { version: 1 }, ip: "unverified-complete" }),
-    403, "EMAIL_VERIFICATION_REQUIRED");
+  assert.equal(routes["POST /api/me/onboarding/complete"]({ user: created.user, body: { version: 1 }, ip: "unverified-complete" }).onboardingVersion, 1);
+  assert.equal(q.userById.get(created.user.id).email_verified_at, 0);
+  apiError(() => routes["POST /api/media/assets"]({ user: q.userById.get(created.user.id), body: {}, ip: "unverified-media-after-finish" }), 403, "MEDIA_EMAIL_VERIFICATION_REQUIRED");
 });

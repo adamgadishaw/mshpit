@@ -13,6 +13,7 @@ import { PROFILE_GENRE_MAX, PROFILE_GENRE_OPTIONS } from "../domain/genrePrefere
 import { cleanHandle, isEmail } from "../domain/validation.mjs";
 import { signupAccountError, signupAriaProps, signupFormPayload, signupHandlePresentation, signupMusicError } from "../domain/signupForm.mjs";
 import { useSignupHandleAvailability } from "../features/signupHandle/useSignupHandleAvailability";
+import { cancelSignupRequest } from "../features/signupOnboarding/accountSecurityService";
 
 const readableError = (error, fallback) => String(typeof error === "string" ? error : error?.userMessage || error?.message || fallback).slice(0, 280);
 const controlStyle = (base, disabled = false) => ({ pressed, focused }) => [base, disabled && styles.disabled, pressed && !disabled && styles.pressed, focused && focusRing];
@@ -22,14 +23,18 @@ function AuthPressable({ accessibilityState = {}, disabled, ...props }) {
   return <Pressable {...props} disabled={disabled} accessibilityState={state} {...signupAriaProps(Platform.OS, state)} />;
 }
 
-export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) {
-  const { login, signup, forgotPassword } = useStore();
+export default function AuthScreen({ onDone, onCancel, initialMode = "login", addAccount = false, initialEmail = "" }) {
+  const { login, signup, forgotPassword, session } = useStore();
   const insets = useSafeAreaInsets();
   const [mode, setMode] = useState(initialMode === "signup" ? "signup" : "login");
   const [step, setStep] = useState(1);
   const [name, setName] = useState("");
   const [handle, setHandle] = useState("");
-  const [email, setEmail] = useState("");
+  const [email, setEmail] = useState(addAccount ? session?.email || "" : initialEmail);
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [accounts, setAccounts] = useState(null);
+  const [cancelToken, setCancelToken] = useState(null);
+  const [cancelPrompt, setCancelPrompt] = useState(false);
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [city, setCity] = useState(null);
@@ -75,6 +80,7 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) 
   const showError = (failure) => { setError(failure.message); setErrorField(failure.field || null); };
   const changeMode = (next) => {
     if (busyRef.current) return;
+    setAccounts(null); setPassword(""); setCurrentPassword("");
     setMode(next); setStep(1); setSentTo(null); setShowPassword(false); clearError();
   };
   const accountValues = () => ({ name, handle, email, password });
@@ -82,11 +88,13 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) 
     || (availability.resource.scope === cleanHandle(handle) && availability.resource.status === "error"
       && Number(availability.resource.error?.status) === 400 ? { field: "handle", message: handleStatus.message } : null);
   const advance = () => {
+    if (addAccount && !currentPassword) { showError({ field: "currentPassword", message: "Enter the current account’s password to add another account." }); return; }
     const failure = accountFailure();
     if (failure) { showError(failure); return; }
     clearError(); setStep(2);
   };
-  const submit = async () => {
+  const submit = async (accountId) => {
+    if (typeof accountId !== "string") accountId = undefined;
     if (busyRef.current) return;
     if (signupMode && step === 1) { advance(); return; }
     if (signupMode) {
@@ -101,12 +109,14 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) 
     clearError(); busyRef.current = true; setBusyAction("auth");
     try {
       const result = signupMode
-        ? await signup(signupFormPayload({ ...accountValues(), city, genres, ageBand, agreed, analyticsConsent }))
-        : await login(email.trim(), password);
+        ? await signup({ ...signupFormPayload({ ...accountValues(), city, genres, ageBand, agreed, analyticsConsent }), ...(addAccount ? { addAccount, currentPassword } : {}) })
+        : await login(email.trim(), password, accountId);
       if (!mounted.current) return;
       if (result?.ok) {
+        if (result.chooseAccount) { setAccounts(result.accounts); return; }
         setPassword(""); setShowPassword(false);
-        if (signupMode && result.pending === true) setSignupSubmitted(true);
+        setAccounts(null); setCurrentPassword("");
+        if (signupMode && result.pending === true) { setSignupSubmitted(true); setCancelToken(result.cancelToken || null); }
         else onDone?.(mode);
       } else {
         const handleTaken = result?.error?.serverCode === "HANDLE_TAKEN" || result?.code === "HANDLE_TAKEN"
@@ -120,6 +130,21 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) 
       busyRef.current = false;
       if (mounted.current) setBusyAction(null);
     }
+  };
+  const close = () => {
+    if (busyRef.current) return;
+    if (cancelToken) { setCancelPrompt(true); return; }
+    setPassword(""); setCurrentPassword(""); setAccounts(null); onCancel?.();
+  };
+  const cancel = async () => {
+    if (busyRef.current) return;
+    busyRef.current = true; setBusyAction("cancel"); clearError();
+    try {
+      await cancelSignupRequest(cancelToken);
+      if (mounted.current) { setCancelToken(null); setPassword(""); onCancel?.(); }
+    } catch (failure) {
+      if (mounted.current) showError({ message: readableError(failure, "Cancellation could not be confirmed. Reconnect and try again.") });
+    } finally { busyRef.current = false; if (mounted.current) setBusyAction(null); }
   };
   const sendReset = async () => {
     if (busyRef.current) return;
@@ -156,13 +181,13 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) 
         {key === "handle" ? <Text style={styles.handlePrefix}>@</Text> : null}
         <TextInput
           ref={(node) => { inputs.current[key] = node; }}
-          style={styles.input} value={value} onChangeText={(next) => { change(next); clearError(); }}
+          style={styles.input} value={value} onChangeText={(next) => { change(next); setAccounts(null); clearError(); }}
           placeholder={options.placeholder} placeholderTextColor={colors.textFaint}
           autoCapitalize={key === "name" ? "words" : "none"} autoCorrect={false}
           autoComplete={options.autoComplete} textContentType={options.textContentType}
           keyboardType={key === "email" ? "email-address" : "default"}
-          secureTextEntry={key === "password" && !showPassword}
-          maxLength={options.maxLength || 120} editable={!busy}
+          secureTextEntry={key === "currentPassword" || (key === "password" && !showPassword)}
+          maxLength={options.maxLength || 120} editable={!busy && !(addAccount && key === "email")}
           returnKeyType={options.returnKeyType || "next"} onSubmitEditing={options.onSubmit}
           accessibilityLabel={label} accessibilityState={{ disabled: busy }}
           {...signupAriaProps(Platform.OS, { disabled: busy })}
@@ -187,7 +212,7 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) 
   const progress = { min: 1, max: 2, now: step, text: `Step ${step} of 2: ${step === 1 ? "Account" : "Music"}` };
 
   return <KeyboardAvoidingView style={[styles.wrap, { paddingTop: insets.top }]} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-    <SheetHeader title={signupSubmitted ? "Check your email" : mode === "forgot" ? "Reset password" : signupMode ? "Sign up" : "Log in"} onClose={onCancel} leadDisabled={busy} />
+    <SheetHeader title={signupSubmitted ? "Check your email" : mode === "forgot" ? "Reset password" : signupMode ? addAccount ? "Add account" : "Sign up" : "Log in"} onClose={close} leadDisabled={busy} />
     <ScrollView ref={scroll} contentContainerStyle={[styles.content, { paddingBottom: Math.max(insets.bottom, 16) + 24 }]} contentInsetAdjustmentBehavior="automatic" keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag" automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}>
       <View style={styles.ticket}>
         <View style={styles.brandRow}><BrandMark size={30} color={colors.amber} /><View><Text style={styles.wordmark}>MSHPIT</Text><Text style={styles.slogan}>LIVE MUSIC, REMEMBERED</Text></View></View>
@@ -200,9 +225,17 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) 
           <Text style={styles.subtitle}>{subheading}</Text>
           {!!error ? <Text ref={errorRef} tabIndex={-1} style={styles.error} accessibilityRole="alert" accessibilityLiveRegion="assertive" selectable>{error}</Text> : null}
 
-          {signupSubmitted ? <>
+          {cancelPrompt ? <>
+            <Text style={styles.subtitle}>Cancel signup? This deletes the unfinished account and queues its uploads for removal. An existing account is never deleted by this signup form. Closing your browser instead keeps unfinished setup available; it does not expire.</Text>
+            {primary("Delete unfinished signup", cancel, busy)}
+            {primary("Keep setting up", () => setCancelPrompt(false))}
+          </> : accounts ? <>
+            <Text style={styles.subtitle}>This password matches two accounts. Which one would you like to use?</Text>
+            {accounts.map((account) => <View key={account.id}>{primary(`${account.name} · @${account.handle}`, () => void submit(account.id))}</View>)}
+            {primary("Use a different password", () => { setAccounts(null); setPassword(""); })}
+          </> : signupSubmitted ? <>
             <View style={styles.note}><Icon name="mail" size={19} color={colors.amber} /><Text style={styles.noteText} accessibilityLiveRegion="polite" role="status">If this is a new email address, we sent a verification link. Your preferred @username is confirmed after verification, if it’s still available. If this address already has an account, log in or reset your password. For privacy, we show the same message either way.</Text></View>
-            <View style={styles.nextStep}><Icon name="you" size={18} color={colors.amber} /><Text style={styles.noteText}>After email confirmation, add your profile photo and optional banner, check your public @username, then take a quick tour.</Text></View>
+            <View style={styles.nextStep}><Icon name="you" size={18} color={colors.amber} /><Text style={styles.noteText}>Log in to finish setup. Confirm your email to claim your username, add a profile photo and banner. Cancelling before Finish setup deletes the unfinished account; interrupted setup does not expire. Already have an account? Add a second from Settings after signing in.</Text></View>
             {primary("Continue to log in", () => { setSignupSubmitted(false); changeMode("login"); })}
           </> : mode === "forgot" ? sentTo ? <>
             <View style={styles.note}><Icon name="mail" size={19} color={colors.amber} /><Text style={styles.noteText} accessibilityLiveRegion="polite" role="status">If an account exists for {sentTo}, we’ve emailed a link to reset your password. It’s valid for 1 hour. Check spam if you don’t see it.</Text></View>
@@ -213,6 +246,7 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) 
             <AuthPressable style={controlStyle(styles.textButton, busy)} onPress={() => changeMode("login")} disabled={busy} accessibilityRole="button"><Text style={styles.link}>Back to log in</Text></AuthPressable>
           </> : <>
             {(!signupMode || step === 1) ? <>
+              {signupMode && addAccount ? <>{field("currentPassword", "Current account password", currentPassword, setCurrentPassword, { maxLength: 100, autoComplete: "current-password" })}<Text style={styles.hint}>Up to two accounts can use a verified email. Use the same password for a choice at login, or different passwords to sign straight into the matching account.</Text></> : null}
               {signupMode ? <View style={styles.fieldPair}>
                 {field("name", "Name", name, setName, { paired: true, maxLength: 40, autoComplete: "name", textContentType: "name", onSubmit: () => inputs.current.handle?.focus?.() })}
                 {field("handle", "Username", handle, (value) => setHandle(cleanHandle(value)), { paired: true, maxLength: 20, autoComplete: "username", textContentType: "username", onSubmit: () => inputs.current.email?.focus?.() })}

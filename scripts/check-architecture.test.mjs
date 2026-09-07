@@ -7,8 +7,13 @@ import {
   architectureBaselineRefreshBlockers,
   captureArchitectureBaseline,
   inspectArchitecture,
+  extractInlineApiRoutes,
   unexplainedEmptyCatchCount,
 } from "./check-architecture.mjs";
+
+test("reusing an existing handler is not a new inline API route", () => {
+  assert.deepEqual(extractInlineApiRoutes('const routes = { "DELETE /api/me": erase }; const cancel = routes["DELETE /api/me"];'), ["DELETE /api/me"]);
+});
 
 function fixtureCanonicalCommandResult() {
   return "export function isAppErrorLike() { return true; }\nexport function commandSuccess(value) { return { ok: true, value }; }\nexport function commandFailure(error) { return { ok: false, error }; }\n";

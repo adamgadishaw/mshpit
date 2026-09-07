@@ -2799,23 +2799,23 @@ test("signup records Terms separately while optional analytics defaults off", ()
       city: "Toronto",
       genres: ["R&B", "Hip-Hop"],
       ageBand: "18_plus",
-      termsVersion: "2026-09-02",
+      termsVersion: "2026-09-07",
       analyticsConsent: false,
     },
     setSession: (value) => { sessionCookie = value; },
   });
   const created = publicUser(q.userByEmail.get(email), { self: true });
   assert.equal(sessionCookie, undefined);
-  assert.deepEqual(result, { ok: true, pending: true });
+  assert.deepEqual(result, { ok: true, pending: true, cancelToken: result.cancelToken });
   assert.ok(created.termsAcceptedAt);
-  assert.equal(created.termsVersion, "2026-09-02");
+  assert.equal(created.termsVersion, "2026-09-07");
   assert.equal(created.analyticsConsentAt, undefined);
   assert.equal(created.consentAt, undefined);
   assert.deepEqual(created.genres, ["R&B", "Hip-Hop"]);
   assert.throws(() => routes["POST /api/signup"]({
     ip: "signup-genres-test", ua: "integrity-test", body: {
       name: "No Genres", email: "no-genres@example.com", password: "privatepass123", city: "Toronto",
-      genres: [], ageBand: "18_plus", termsVersion: "2026-09-02",
+      genres: [], ageBand: "18_plus", termsVersion: "2026-09-07",
     }, setSession: () => {},
   }), (error) => error.status === 400 && error.code === "VALIDATION_FAILED");
   assert.throws(() => routes["POST /api/signup"]({

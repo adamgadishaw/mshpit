@@ -162,6 +162,7 @@ import { suggestionRoutes } from "./features/suggestions/suggestionRoutes.js";
 import { createPeopleSuggestionService } from "./features/people/peopleSuggestionService.js";
 import { accountMuteRoutes } from "./features/accountMute/accountMuteRoutes.js";
 import { accountOnboardingRoutes } from "./features/accountOnboarding/accountOnboardingRoutes.js";
+import { accountSecurityRoutes } from "./features/accountOnboarding/accountSecurityRoutes.js";
 import { claimPendingSignupHandle, handleChangeAvailableAt, HANDLE_COOLDOWN_DAYS, normalizedProfileHandle, pendingSignupHandle } from "./features/accountOnboarding/signupHandle.js";
 import { cityGuideRoutes } from "./features/cities/cityGuideRoutes.js";
 import { artistBiographyRoutes } from "./features/artists/artistBiographyRoutes.js";
@@ -335,6 +336,7 @@ function parseStoredProfileExtras(value) {
 }
 
 const AUTH_RATE_SCOPE = randomBytes(32);
+const SIGNUP_CANCELLATION = Symbol("signup cancellation authority");
 function jsonObject(value) {
   try {
     const parsed = JSON.parse(value || "{}");
@@ -3801,6 +3803,13 @@ export const routes = {
     requireUser,
     signupHandleAvailability,
   }),
+  ...accountSecurityRoutes({ database: db, ApiError, requireSessionUser, limit, verifyPassword,
+    hashPassword, atomicWrite, createSession,
+    cancelSignup: (user, ctx, hash) => routes["DELETE /api/me"]({ ...ctx, user,
+      body: { onboardingOnly: true }, [SIGNUP_CANCELLATION]: hash,
+      clearSession: () => { if (ctx.user?.id === user.id) ctx.clearSession?.(); },
+    }),
+  }),
   ...cityGuideRoutes({ database: db, ApiError, requireAdmin, rateLimit: limit, now }),
   ...artistBiographyRoutes({ database: db, ApiError, requireAdmin, rateLimit: limit, now, publicArtist }),
   ...artistRecommendationRoutes({
@@ -4929,15 +4938,32 @@ export const routes = {
     // cookie behavior below are also identical: signup must not be an account
     // lookup oracle.
     const passwordHash = hashPassword(v.password);
+    const cancelToken = randomBytes(32).toString("base64url");
+    const cancelHash = createHash("sha256").update(cancelToken).digest("hex");
+    const addingAccount = ctx.body?.addAccount === true;
+    if (addingAccount) {
+      const actor = requireVerifiedUser(ctx);
+      if (cleanEmail(actor.email) !== v.email || typeof ctx.body?.currentPassword !== "string"
+        || ctx.body.currentPassword.length > 100 || !verifyPassword(ctx.body.currentPassword, actor.pass_hash)) {
+        throw new ApiError(401, "Confirm the current account's password to add an account with this email.", "AUTH_INVALID");
+      }
+    }
     const existing = q.userByEmail.get(v.email);
     const id = uid("u");
     const initials = (v.name.match(/\p{L}|\p{N}/gu) || ["?"]).slice(0, 2).join("").toUpperCase();
     const colors = ["#F2A65A", "#E0457B", "#5B8DEF", "#6FCF97", "#B98AE0", "#E8B65A"];
     const createdAt = now();
     let created = null;
-    if (!existing) {
+    if (!existing || addingAccount) {
       try {
         atomicWrite(() => {
+          const accounts = q.usersByEmail.all(v.email);
+          if (!addingAccount && accounts.length) return;
+          if (addingAccount) {
+            const actor = q.userById.get(ctx.user.id);
+            if (!actor?.email_verified_at || actor.pass_hash !== ctx.user.pass_hash || cleanEmail(actor.email) !== v.email) throw new ApiError(409, "Your account changed. Log in again before adding an account.", "CONFLICT");
+          }
+          if (accounts.length >= 2) throw new ApiError(409, "This email already has two accounts. Use another email for a third.", "CONFLICT");
           q.insertUser.run(id, v.email, v.name, privateSignupHandle(), passwordHash,
             "fan", v.city ?? null, v.lat ?? null, v.lng ?? null, initials, colors[Math.floor(Math.random() * colors.length)], createdAt);
           db.prepare("UPDATE users SET extras=? WHERE id=?").run(JSON.stringify({
@@ -4950,13 +4976,14 @@ export const routes = {
           // Only accounts created through signup enter the first-run flow.
           // Migrated and staff-provisioned accounts keep NULL and stay exempt.
           db.prepare("UPDATE users SET age_band=?, dm_policy='mutuals', onboarding_version=0 WHERE id=?").run(v.ageBand, id);
+          db.prepare("UPDATE users SET signup_cancel_hash=? WHERE id=?").run(cancelHash, id);
         });
         created = q.userById.get(id);
       } catch (error) {
         // A concurrent request for this address may win between the existence
         // check and INSERT. Hide only that race; unrelated constraints and disk
         // failures remain real errors.
-        if (!q.userByEmail.get(v.email)) throw error;
+        if (addingAccount || !q.userByEmail.get(v.email)) throw error;
       }
     }
     if (created) {
@@ -4965,7 +4992,7 @@ export const routes = {
       // exactly the same for an address that was already registered.
       beginVerification(created);
     }
-    return { ok: true, pending: true };
+    return { ok: true, pending: true, cancelToken };
   },
 
   "POST /api/login": (ctx) => {
@@ -4980,9 +5007,18 @@ export const routes = {
       password: { required: true, parse: (x) => (typeof x === "string" ? x.slice(0, 100) : undefined) },
     });
     if (errs.length) throw new ApiError(400, errs[0]);
-    const u = q.userByEmail.get(v.email);
-    // same error either way, never reveal which part was wrong
-    if (!verifyPasswordForUser(v.password, u?.pass_hash)) throw new ApiError(401, "Wrong email or password.", "AUTH_INVALID");
+    const candidates = q.usersByEmail.all(v.email);
+    const matching = [];
+    // Always perform two password checks, including dummy records for empty
+    // slots. Never expose a sibling that this password did not authenticate.
+    for (let slot = 0; slot < 2; slot++) {
+      if (verifyPasswordForUser(v.password, candidates[slot]?.pass_hash)) matching.push(candidates[slot]);
+    }
+    const selected = ctx.body?.accountId;
+    const u = selected ? matching.find((entry) => entry.id === selected) : matching[0];
+    if (!u) throw new ApiError(401, "Wrong email or password.", "AUTH_INVALID");
+    ctx.setHeader?.("Cache-Control", "no-store");
+    if (!selected && matching.length > 1) return { chooseAccount: true, accounts: matching.map((entry) => ({ id: entry.id, name: entry.name, handle: entry.handle })) };
     // Banned accounts receive a restricted session so the account gate can
     // still offer export and permanent deletion. Social routes continue to
     // fail through requireUser(); the self projection carries the restriction.
@@ -5012,7 +5048,8 @@ export const routes = {
     try {
       const email = cleanEmail(ctx.body?.email);
       if (!email) return generic;
-      const u = q.userByEmail.get(email);
+      const accounts = q.usersByEmail.all(email);
+      for (const u of accounts.length ? accounts : [null]) {
       const requestedAt = now();
       // Persist the cooldown in the existing expiry field so a distributed spray
       // cannot invalidate a person's latest link or send repeated mail merely by
@@ -5029,7 +5066,7 @@ export const routes = {
         requestedAt + 60 * 60 * 1000,
         resetEligible ? u.id : -1,
       );
-      if (!resetEligible) return generic;
+      if (!resetEligible) continue;
       const configuredOrigin = (process.env.PUBLIC_ORIGIN || "").replace(/\/+$/, "");
       const publicOrigin = configuredOrigin || (process.env.NODE_ENV === "production" ? "https://www.mshpit.com" : ctx.origin);
       // Keep bearer credentials in the URL fragment: browsers do not send a
@@ -5042,6 +5079,7 @@ export const routes = {
         vars: { link },
         idempotencyKey: `password-reset-${hash.slice(0, 32)}`,
       });
+      }
       return generic;
     } finally {
       await responseFloor.settle();
@@ -5065,7 +5103,7 @@ export const routes = {
     // is the single-use compare-and-swap if another process races this token.
     const replacementPasswordHash = hashPassword(password);
     const sess = atomicWrite(() => {
-      const consumed = db.prepare(`UPDATE users SET pass_hash=?, reset_hash=NULL, reset_expires=0
+      const consumed = db.prepare(`UPDATE users SET pass_hash=?, reset_hash=NULL, reset_expires=0,signup_cancel_hash=NULL
         WHERE id=? AND reset_hash=? AND reset_expires>?`)
         .run(replacementPasswordHash, u.id, hash, now()).changes === 1;
       if (!consumed) throw new ApiError(400, "This reset link is invalid or has expired. Request a new one.");
@@ -5468,11 +5506,21 @@ export const routes = {
     }
     limit(ctx, "delete-account", 5, 60 * 60 * 1000);
     const password = typeof ctx.body?.password === "string" ? ctx.body.password : "";
-    if (!password) throw new ApiError(400, "Enter your current password to delete your account.", "VALIDATION_FAILED");
-    if (!verifyPassword(password, u.pass_hash)) throw new ApiError(401, "That password doesn't match your account.", "AUTH_INVALID");
+    if (!ctx[SIGNUP_CANCELLATION]) {
+      if (!password) throw new ApiError(400, "Enter your current password to delete your account.", "VALIDATION_FAILED");
+      if (!verifyPassword(password, u.pass_hash)) throw new ApiError(401, "That password doesn't match your account.", "AUTH_INVALID");
+    }
 
     db.exec("BEGIN IMMEDIATE");
     try {
+      if (!ctx[SIGNUP_CANCELLATION] && q.userById.get(u.id)?.pass_hash !== u.pass_hash) throw new ApiError(409, "Your password changed. Log in again before deleting this account.", "CONFLICT");
+      if (ctx.body?.onboardingOnly === true) {
+        const current = q.userById.get(u.id);
+        if (!current || current.onboarding_version !== 0
+          || (ctx[SIGNUP_CANCELLATION] && current.signup_cancel_hash !== ctx[SIGNUP_CANCELLATION])) {
+          throw new ApiError(409, "Setup was already finished or changed. Use Delete account in Settings instead.", "CONFLICT");
+        }
+      }
       const accountReportWhere = `reporter_id=?
         OR (target_type='user' AND target_id=?)
         OR (target_type='post' AND target_id IN (SELECT id FROM posts WHERE user_id=?))
@@ -5543,8 +5591,10 @@ export const routes = {
       // Campaign queues/logs deliberately have no user FK. Clear both identity
       // columns because old rows may have only one of them populated, and ensure
       // no already-queued campaign can send after the account is gone.
-      db.prepare("DELETE FROM email_queue WHERE user_id=? OR lower(to_email)=lower(?)").run(u.id, u.email);
-      db.prepare("DELETE FROM email_log WHERE user_id=? OR lower(to_email)=lower(?)").run(u.id, u.email);
+      const hasSibling = q.usersByEmail.all(u.email).some((entry) => entry.id !== u.id);
+      for (const table of ["email_queue", "email_log"]) {
+        db.prepare(`DELETE FROM ${table} WHERE user_id=? OR (?=0 AND (user_id IS NULL OR user_id='') AND lower(to_email)=lower(?))`).run(u.id, hasSibling ? 1 : 0, u.email);
+      }
 
       // Durable staff-created artifacts survive their creator, but must no longer
       // identify the erased account. Badge grant notes are author-entered, so the

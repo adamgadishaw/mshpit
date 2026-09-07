@@ -124,8 +124,10 @@ Start by logging the last show you went to.`,
     cta_url: "{{origin}}",
   },
   password_reset: {
-    subject: "Reset your Pit password",
-    body: `Someone asked to reset the password for this Pit account.
+    subject: "Reset your Pit password for @{{handle}}",
+    body: `Someone asked to reset the password for @{{handle}}.
+
+This link changes only this account. Other accounts using your email keep their own passwords.
 
 Tap the button to set a new one. The link is valid for 1 hour.
 

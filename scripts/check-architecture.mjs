@@ -83,7 +83,9 @@ export function extractInlineApiRoutes(source) {
   const routes = [];
   const pattern = /(["'`])((?:GET|POST|PUT|PATCH|DELETE) \/api(?:\/[^"'`\r\n]*)?)\1/g;
   for (const match of source.matchAll(pattern)) routes.push(match[2]);
-  return routes;
+  // A handler reference (for example cancellation reusing account erasure) is
+  // not another route. Count each registered route name only once.
+  return [...new Set(routes)];
 }
 
 function importSpecifiers(source) {

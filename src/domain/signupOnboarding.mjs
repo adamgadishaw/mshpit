@@ -4,7 +4,7 @@ export const SIGNUP_ONBOARDING_VERSION = 1;
 // this flow. A missing value belongs to an older account and is treated as
 // complete, so shipping a new walkthrough never ambushes every existing member.
 export function needsSignupOnboarding(session, currentVersion = SIGNUP_ONBOARDING_VERSION) {
-  if (!session?.id || session.emailVerified !== true) return false;
+  if (!session?.id) return false;
   const version = session.onboardingVersion;
   return Number.isSafeInteger(version) && version >= 0 && version < currentVersion;
 }

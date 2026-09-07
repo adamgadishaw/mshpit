@@ -7,6 +7,7 @@ import BrandMark from "../components/BrandMark";
 import Button from "../components/Button";
 import Icon from "../components/Icon";
 import WelcomeGuide from "../features/signupOnboarding/WelcomeGuide";
+import AccountPasswordForm from "../features/signupOnboarding/AccountPasswordForm";
 import CityWelcomeCard from "../features/cities/CityWelcomeCard";
 import { cityIdentityForLocation } from "../cityIdentity";
 import { cleanHandle, isHandle } from "../domain/validation.mjs";
@@ -22,7 +23,7 @@ const message = (error, fallback) => String(typeof error === "string" ? error : 
 // Saved photos survive refresh; unfinished changes stay visible until confirmed
 // or explicitly discarded. Nothing sensitive is persisted in browser storage.
 export default function SignupOnboardingScreen({ session, initialStep = 1, onComplete, onSkip, onSaveProfile }) {
-  const { updateProfile } = useStore();
+  const { updateProfile, deleteAccount, resendEmailVerification } = useStore();
   const saveProfile = onSaveProfile || updateProfile;
   const insets = useSafeAreaInsets();
   const scrollRef = useRef(null);
@@ -38,6 +39,7 @@ export default function SignupOnboardingScreen({ session, initialStep = 1, onCom
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
   const [discardPrompt, setDiscardPrompt] = useState(false);
+  const [cancelPrompt, setCancelPrompt] = useState(false);
   const [handleLocked, setHandleLocked] = useState(() => signupHandleLocked(session));
   const [destination, setDestination] = useState("shows");
   const [touched, setTouched] = useState(false);
@@ -73,7 +75,7 @@ export default function SignupOnboardingScreen({ session, initialStep = 1, onCom
 
   const begin = (kind) => {
     if (active.current) return null;
-    if (session.emailVerified !== true) { setError("Confirm your email before setting up your profile."); return null; }
+    if (!["finishing", "verification"].includes(kind) && session.emailVerified !== true) { setError("Confirm your email to claim your username and upload photos. You can finish setup without photos and add them later."); return null; }
     const task = { accountId: session.id, controller: new AbortController() };
     active.current = task; setOperation(kind); setError(""); setStatus(""); setDiscardPrompt(false);
     return task;
@@ -91,6 +93,22 @@ export default function SignupOnboardingScreen({ session, initialStep = 1, onCom
     setDraft((value) => ({ ...value, ...Object.fromEntries(Object.keys(patch).map((key) => [key, confirmed[key]])) }));
     if (patch.handle || signupHandleLocked(result.user)) setHandleLocked(true);
     return confirmed;
+  };
+  const confirmEmail = async () => {
+    const task = begin("verification");
+    if (!task) return;
+    try {
+      const result = await resendEmailVerification({ signal: task.controller.signal });
+      if (!current(task)) return;
+      if (result?.state === "confirmed") {
+        const next = signupProfileSnapshot(result.user);
+        setDraft(next); setSaved(next);
+        setStatus("Email confirmed. Add your profile photo and banner below.");
+      } else if (["sent", "recent"].includes(result?.state)) {
+        setStatus("Check your inbox for the confirmation link, then return here. Your setup stays open.");
+      } else setError("A confirmation link could not be sent. Please try again.");
+    } catch (caught) { if (current(task)) setError(message(caught, "Email confirmation could not be checked. Try again.")); }
+    finally { end(task); }
   };
 
   const pickPhoto = async (purpose) => {
@@ -128,6 +146,7 @@ export default function SignupOnboardingScreen({ session, initialStep = 1, onCom
   const continueProfile = async () => {
     if (active.current) return;
     setTouched(true);
+    if (session.emailVerified !== true) { setStep(2); setError(""); return; }
     if (!isHandle(draft.handle)) { setError("Use 3–20 letters, numbers, or underscores for your @username."); return; }
     const patch = signupProfilePatch(draft, saved);
     if (!Object.keys(patch).length) { setStep(2); setError(""); setStatus(""); setDiscardPrompt(false); return; }
@@ -152,11 +171,13 @@ export default function SignupOnboardingScreen({ session, initialStep = 1, onCom
     finally { end(task); }
   };
 
+  if (cancelPrompt) return <AccountPasswordForm key={session.id} session={session} deleteAccount={deleteAccount} cancelSetup onClose={() => setCancelPrompt(false)} />;
+
   return <View style={styles.safe} accessibilityViewIsModal>
     <KeyboardAvoidingView style={styles.keyboard} behavior={Platform.OS === "ios" ? "padding" : undefined}>
       <View style={styles.header}><View style={styles.headerInner}>
         <View style={styles.brand}><BrandMark size={30} color={colors.amber} /><View><Text style={styles.brandName}>MSHPIT</Text><Text style={styles.brandLine}>LIVE MUSIC, REMEMBERED</Text></View></View>
-        <Pressable onPress={() => void finish("feed")} disabled={busy} accessibilityRole="button" accessibilityLabel="Set up later" style={({ focused }) => [styles.later, focused && focusRing]}><Text style={styles.laterText}>Later</Text></Pressable>
+        <Pressable onPress={() => setCancelPrompt(true)} disabled={busy} accessibilityRole="button" accessibilityLabel="Cancel signup" style={({ focused }) => [styles.later, focused && focusRing]}><Text style={styles.laterText}>Cancel</Text></Pressable>
       </View></View>
       <View style={styles.progress} accessible accessibilityRole="progressbar" accessibilityLabel="Profile setup progress" accessibilityValue={{ min: 1, max: TOTAL_STEPS, now: step }} aria-valuemin={1} aria-valuemax={TOTAL_STEPS} aria-valuenow={step}>
         <Text style={styles.kicker}>STEP {step} OF {TOTAL_STEPS} · {step === 1 ? "YOUR PROFILE" : "YOUR FIRST NIGHT"}</Text>
@@ -166,6 +187,8 @@ export default function SignupOnboardingScreen({ session, initialStep = 1, onCom
         {step === 1 ? <>
           <Text style={styles.title} accessibilityRole="header">Make it yours, {firstName}.</Text>
           <Text style={styles.subtitle}>A face for the crowd. A banner for your kind of night. Both are optional.</Text>
+          {session.emailVerified !== true && <Text selectable style={styles.hint}>Confirm your email to claim your chosen @username and add photos. You can finish setup now and add photos later in Edit profile.</Text>}
+          {session.emailVerified !== true && <Button title={operation === "verification" ? "Checking…" : "Confirm email to add photos"} variant="secondary" onPress={() => void confirmEmail()} disabled={busy} style={{ marginBottom: space(3) }} />}
           <View style={styles.profileCard}>
             <View style={styles.trim}><View style={styles.trimAmber} /><View style={styles.trimPink} /><View style={styles.trimBlue} /></View>
             <Pressable onPress={() => void pickPhoto("banner")} disabled={busy} accessibilityRole="button" accessibilityLabel={draft.banner ? "Change profile banner" : "Add profile banner"} style={({ focused }) => [styles.banner, focused && focusRing]}>
@@ -194,15 +217,15 @@ export default function SignupOnboardingScreen({ session, initialStep = 1, onCom
           <Text style={styles.subtitle}>{homeCity ? "Make " + homeCity + " your next night out. " : "Your next great night starts somewhere. "}Where do you want to start?</Text>
           {city && <View style={{ marginBottom: space(4) }}><CityWelcomeCard city={city} compact hideActions /></View>}
           <WelcomeGuide selected={destination} onChoose={setDestination} busy={busy} />
-          <Text style={styles.savedNote}>Your profile is saved. Nothing gets posted or followed until you choose.</Text>
+          <Text style={styles.savedNote}>Finish setup keeps your account. Cancel deletes the unfinished account and its uploads. Interrupted setup stays available with no expiry. Email confirmation is separate; nothing gets posted or followed here.</Text>
         </>}
-        {discardPrompt && <View style={styles.discard} accessibilityRole="alert"><Text style={styles.discardTitle}>Keep your changes?</Text><Text style={styles.hint}>Some changes aren’t saved yet. Saved photos will stay on your profile.</Text><Button title="Save and continue" onPress={() => void continueProfile()} /><Button title="Discard unsaved changes and leave" variant="secondary" onPress={() => void finish("feed", true)} /></View>}
+        {discardPrompt && <View style={styles.discard} accessibilityRole="alert"><Text style={styles.discardTitle}>Keep your changes?</Text><Text style={styles.hint}>Some profile changes aren’t saved yet.</Text><Button title="Save and continue" onPress={() => void continueProfile()} /><Button title="Finish setup without these changes" variant="secondary" onPress={() => void finish("feed", true)} /><Button title="Cancel signup" variant="secondary" onPress={() => setCancelPrompt(true)} /></View>}
         {!!error && <Text style={styles.error} accessibilityRole="alert" accessibilityLiveRegion="assertive" role="alert">{error}</Text>}
         {!!status && <Text style={styles.status} accessibilityLiveRegion="polite" role="status">{status}</Text>}
       </ScrollView>
       <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, 12) }]}><View style={styles.footerInner}>
         {step === 2 && <Button title="Back" variant="secondary" onPress={() => { setStep(1); setError(""); }} disabled={busy} style={styles.back} />}
-        <Button title={operation === "saving" ? "Saving…" : operation === "finishing" ? "Opening…" : step === 1 ? dirty ? "Save and continue" : "Continue" : "Let’s go"} onPress={() => step === 1 ? void continueProfile() : void finish()} disabled={busy} loading={busy} icon="chevron-right" style={styles.next} />
+        <Button title={operation === "saving" ? "Saving…" : operation === "finishing" ? "Finishing…" : step === 1 ? dirty ? "Save and continue" : "Continue" : "Finish setup"} onPress={() => step === 1 ? void continueProfile() : void finish()} disabled={busy} loading={busy} icon="chevron-right" style={styles.next} />
       </View></View>
     </KeyboardAvoidingView>
   </View>;

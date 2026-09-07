@@ -40,7 +40,9 @@ test("the walkthrough saves both profile images with account-bound confirmation 
   assert.match(onboarding, /pickPhoto\("avatar"\)/);
   assert.match(onboarding, /expectedAccountId: task.accountId/);
   assert.match(onboarding, /confirmSignupProfile\(result, task.accountId, patch\)/);
-  assert.match(onboarding, /Discard unsaved changes and leave/);
+  assert.match(onboarding, /Finish setup without these changes/);
+  assert.match(onboarding, /Cancel signup/);
+  assert.doesNotMatch(onboarding, /void finish\("feed"\)/);
   assert.match(onboarding, /WelcomeGuide/);
   assert.match(onboarding, /controller.abort\(\)/);
   assert.match(onboarding, /accessibilityRole="progressbar"/);

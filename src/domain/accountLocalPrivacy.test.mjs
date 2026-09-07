@@ -223,7 +223,7 @@ test("session revalidation preserves confirmed UI until an authoritative boundar
 
 test("permanent deletion adopts guest caches before its final comprehensive purge", () => {
   const source = readFileSync(new URL("../store.js", import.meta.url), "utf8");
-  const start = source.indexOf("const deleteAccount = async (password) => {");
+  const start = source.indexOf("const deleteAccount = async (password,");
   const end = source.indexOf("const chooseTheme", start);
   assert.ok(start >= 0 && end > start);
   const deletion = source.slice(start, end);

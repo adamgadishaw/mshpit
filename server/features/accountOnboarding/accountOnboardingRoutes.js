@@ -17,7 +17,7 @@ export function accountOnboardingRoutes({
     || typeof rateLimit !== "function" || typeof requireUser !== "function") {
     throw new TypeError("Account onboarding routes require complete boundary dependencies");
   }
-  const completeOnboarding = database.prepare(`UPDATE users SET onboarding_version=?
+  const completeOnboarding = database.prepare(`UPDATE users SET onboarding_version=?,signup_cancel_hash=NULL
     WHERE id=? AND onboarding_version IS NOT NULL AND onboarding_version < ?`);
 
   return Object.freeze({
@@ -31,9 +31,6 @@ export function accountOnboardingRoutes({
       const user = requireUser(ctx);
       rateLimit(ctx, "onboarding-complete", COMPLETIONS_PER_WINDOW, TEN_MINUTES_MS);
       ctx.setHeader?.("Cache-Control", "no-store");
-      if (!user.email_verified_at) {
-        throw new ApiError(403, "Confirm your email before finishing account setup.", "EMAIL_VERIFICATION_REQUIRED");
-      }
 
       const version = ctx.body?.version;
       if (!Number.isSafeInteger(version) || version < 1 || version > SIGNUP_ONBOARDING_VERSION) {

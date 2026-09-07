@@ -2799,10 +2799,15 @@ export function StoreProvider({ children }) {
   // Server-first auth (real accounts, hashed passwords, httpOnly sessions).
   // Falls back to the local in-memory demo accounts only in an explicit dev build.
   // A production network failure must never authenticate a bundled plaintext user.
-  const login = async (email, password) => {
+  const login = async (email, password, accountId) => {
     if (remoteIdentityValidationEnabled(LOCAL_AUTH_FALLBACK)) {
       try {
-        const { user } = await api("/api/login", { method: "POST", body: { email, password }, context: "Signing in", silent: true, skipIdentityCheck: true });
+        const response = await api("/api/login", { method: "POST", body: { email, password, ...(accountId ? { accountId } : {}) }, context: "Signing in", silent: true, skipIdentityCheck: true });
+        if (response?.chooseAccount === true && Array.isArray(response.accounts) && response.accounts.length === 2) {
+          return { ok: true, chooseAccount: true, accounts: response.accounts };
+        }
+        const user = response?.user;
+        if (!user?.id) return { ok: false, error: "Sign-in could not be confirmed. Try again." };
         absorbServerUser(user, { announce: true });
         track("login", { method: "password" });
         return { ok: true };
@@ -2928,7 +2933,7 @@ export function StoreProvider({ children }) {
     return candidate;
   };
 
-  const signup = async ({ name, handle, email, password, city, location = null, genres = [], ageBand, agreedToTerms, analyticsConsent = false }) => {
+  const signup = async ({ name, handle, email, password, city, location = null, genres = [], ageBand, agreedToTerms, analyticsConsent = false, addAccount = false, currentPassword }) => {
     const nm = cleanName(name);
     const em = cleanEmail(email);
     if (!isName(nm)) return { ok: false, error: "Enter a name (letters or numbers, up to 40 chars)." };
@@ -2948,12 +2953,13 @@ export function StoreProvider({ children }) {
       try {
         const response = await api("/api/signup", {
           method: "POST",
-          body: { name: nm, ...(handle !== undefined ? { handle: cleanHandle(handle) } : {}), email: em, password, city, lat: srvCoords?.lat, lng: srvCoords?.lng, genres: genreSelection.genres, ageBand, analyticsConsent: !!analyticsConsent, termsVersion: TERMS_VERSION },
+          body: { name: nm, ...(handle !== undefined ? { handle: cleanHandle(handle) } : {}), email: em, password, city, lat: srvCoords?.lat, lng: srvCoords?.lng, genres: genreSelection.genres, ageBand, analyticsConsent: !!analyticsConsent, termsVersion: TERMS_VERSION, ...(addAccount ? { addAccount, currentPassword } : {}) },
           context: "Creating your Pit account",
           silent: true,
-          skipIdentityCheck: true,
+          skipIdentityCheck: !addAccount,
+          ...(addAccount ? { expectedAccountId: sessionRef.current?.id } : {}),
         });
-        if (response?.pending) return { ok: true, pending: true };
+        if (response?.pending) return { ok: true, pending: true, cancelToken: response.cancelToken };
         return { ok: false, error: "That request did not complete. Please try again." };
       } catch (e) {
         if (e.status) return { ok: false, error: e.message };
@@ -3085,14 +3091,16 @@ export function StoreProvider({ children }) {
   // Permanent deletion is deliberately server-first. Nothing is cleared from
   // this device until the password is verified and the database transaction has
   // committed, so a network/auth failure leaves the account and form recoverable.
-  const deleteAccount = async (password) => {
+  const deleteAccount = async (password, { onboardingOnly = false } = {}) => {
     if (!session) return { ok: false, error: "Log in before deleting your account." };
     const deleted = session;
+    const deletionMutation = captureAccountMutation(deleted.id, accountMutationEpochRef.current);
     let confirmedDeleted = false;
     try {
       await api("/api/me", {
         method: "DELETE",
-        body: { password },
+        body: { password, ...(onboardingOnly ? { onboardingOnly: true } : {}) },
+        expectedAccountId: deleted.id,
         context: "Deleting your Pit account",
         silent: true,
       });
@@ -3104,7 +3112,8 @@ export function StoreProvider({ children }) {
         // The DELETE may have committed even if its response was lost. Confirm
         // the authoritative session before inviting a destructive retry.
         const check = await api("/api/me", { context: "Confirming account deletion", silent: true, skipIdentityCheck: true });
-        confirmedDeleted = !check?.user;
+        if (!check?.user) return { ok: false, unknown: true, error: "Your session ended, but deletion could not be confirmed. Reconnect and check your account before retrying." };
+        confirmedDeleted = false;
         if (!confirmedDeleted) return { ok: false, error: "Pit did not delete the account. Your account is still active.", appError: error };
       } catch (verificationError) {
         return {
@@ -3117,6 +3126,7 @@ export function StoreProvider({ children }) {
     }
 
     if (!confirmedDeleted) return { ok: false, unknown: true, error: "Pit could not confirm account deletion." };
+    if (!accountMutationIsCurrent(deletionMutation, sessionRef.current?.id, accountMutationEpochRef.current)) return { ok: false, stale: true, error: "Your account changed. Reopen account settings." };
 
     const devicePrivacy = accountPrivatePayloadsAfterLogout({
       accountId: deleted.id,
@@ -3308,7 +3318,6 @@ export function StoreProvider({ children }) {
     const actor = sessionRef.current;
     if (!actor) return { ok: false, error: "Log in to finish setting up your account." };
     if ((expectedAccountId && expectedAccountId !== actor.id) || signal?.aborted) return { ok: false, stale: true, error: "Your account changed. Reopen setup." };
-    if (actor.emailVerified !== true) return { ok: false, error: "Confirm your email before finishing account setup." };
     const accountMutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
 
     if (!remoteIdentityValidationEnabled(LOCAL_AUTH_FALLBACK)) {

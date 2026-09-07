@@ -71,7 +71,8 @@ test("only canonical signup marks a new account as onboarding-incomplete", () =>
     setSession() { issuedSession = true; },
   });
 
-  assert.deepEqual(response, { ok: true, pending: true });
+  assert.deepEqual(response, { ok: true, pending: true, cancelToken: response.cancelToken });
+  assert.match(response.cancelToken, /^[A-Za-z0-9_-]{43}$/);
   assert.equal(issuedSession, false);
   assert.equal(q.userByEmail.get(email).onboarding_version, 0);
 
@@ -90,7 +91,8 @@ test("only canonical signup marks a new account as onboarding-incomplete", () =>
     ua: "test",
     setSession() { issuedSession = true; },
   });
-  assert.deepEqual(retry, response, "new and existing emails retain the same public response");
+  assert.deepEqual(retry, { ...response, cancelToken: retry.cancelToken }, "new and existing emails retain the same public response shape");
+  assert.match(retry.cancelToken, /^[A-Za-z0-9_-]{43}$/);
   assert.equal(issuedSession, false, "signup never issues a session");
   assert.equal(q.userByEmail.get(email).onboarding_version, 1, "a duplicate signup cannot reset completion");
 });
@@ -112,7 +114,7 @@ test("onboarding state is exposed only in self and session projections", () => {
   assert.equal(routes["GET /api/me"]({ user: legacy }).user.onboardingVersion, undefined);
 });
 
-test("completion requires an authenticated verified account and the current version", () => {
+test("completion requires an authenticated account and the current version, not verification", () => {
   const complete = routes["POST /api/me/onboarding/complete"];
   const unverified = addUser({ onboardingVersion: 0 });
 
@@ -120,10 +122,7 @@ test("completion requires an authenticated verified account and the current vers
     status: 401,
     code: "AUTH_REQUIRED",
   });
-  expectApiError(() => complete({ user: unverified, body: { version: 1 }, ip: "onboarding-unverified" }), {
-    status: 403,
-    code: "EMAIL_VERIFICATION_REQUIRED",
-  });
+  assert.equal(complete({ user: unverified, body: { version: 1 }, ip: "onboarding-unverified" }).onboardingVersion, 1);
 
   const verified = addUser({ verified: true, onboardingVersion: 0 });
   for (const [label, body] of [

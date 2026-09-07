@@ -10,6 +10,8 @@ import ThemeSwatch, { themeGridStyle } from "../components/ThemeSwatch";
 import { profileManagementAction } from "../domain/artistWorkspace.mjs";
 import { SUPPORT_EMAIL, SUPPORT_URL } from "../domain/contact.mjs";
 import { visibleThemeChoices } from "../domain/themeChoices.mjs";
+import AccountPasswordForm from "../features/signupOnboarding/AccountPasswordForm";
+import AuthScreen from "./AuthScreen";
 
 const versionLabel = Constants.expoConfig?.version || "Unavailable";
 
@@ -57,7 +59,7 @@ function Toggle({ value, busy = false }) {
 }
 
 export default function SettingsScreen({ onClose, onManageProfile, onOpenProfile, onOpenPrivacy, onOpenTerms, onOpenDiagnostics, onOpenDeleteAccount, onLogout }) {
-  const { session, chooseTheme, blockedUsers, unblockUser, blockedDirectoryStatus, refreshBlockedDirectory, isBlockMutationPending, mutedUsers, unmuteUser, exportMyData, setAnalyticsEnabled, setProfileSearchIndexingEnabled, setDirectMessagePolicy, setAgeBandClassification, setProfileAudience, setAnnouncementEmailsEnabled } = useStore();
+  const { session, deleteAccount, chooseTheme, blockedUsers, unblockUser, blockedDirectoryStatus, refreshBlockedDirectory, isBlockMutationPending, mutedUsers, unmuteUser, exportMyData, setAnalyticsEnabled, setProfileSearchIndexingEnabled, setDirectMessagePolicy, setAgeBandClassification, setProfileAudience, setAnnouncementEmailsEnabled } = useStore();
   const blocked = session ? blockedUsers() : [];
   const muted = session ? mutedUsers() : [];
   const [exporting, setExporting] = useState(false);
@@ -78,6 +80,7 @@ export default function SettingsScreen({ onClose, onManageProfile, onOpenProfile
   const [supportError, setSupportError] = useState(null);
   const [showMoreThemes, setShowMoreThemes] = useState(false);
   const [blockListMessage, setBlockListMessage] = useState(null);
+  const [accountAction, setAccountAction] = useState(null);
   const analyticsEnabled = !!(session?.analyticsConsentAt || session?.consentAt) && !session?.analyticsOptOut;
   const profileSearchIndexingEnabled = session?.searchIndexingOptOut !== true;
   const announcementsEnabled = !session?.marketingOptOut;
@@ -155,6 +158,9 @@ export default function SettingsScreen({ onClose, onManageProfile, onOpenProfile
     setSavingProfileAudience(false);
   };
 
+  if (accountAction === "password") return <AccountPasswordForm key={session?.id} session={session} deleteAccount={deleteAccount} onClose={() => setAccountAction(null)} />;
+  if (accountAction === "switch" || accountAction === "add") return <AuthScreen key={`${session?.id}:${accountAction}`} initialMode={accountAction === "add" ? "signup" : "login"} initialEmail={session?.email || ""} addAccount={accountAction === "add"} onCancel={() => setAccountAction(null)} onDone={onClose} />;
+
   return (
     <View style={styles.wrap}>
       <SheetHeader title="Settings" onClose={onClose} />
@@ -180,6 +186,9 @@ export default function SettingsScreen({ onClose, onManageProfile, onOpenProfile
         {session && (
           <>
             <Text style={styles.section}>ACCOUNT</Text>
+            <Row icon="shield" label="Change password" sub="Only changes the password for this account" onPress={() => setAccountAction("password")} />
+            <Row icon="you" label="Switch account" sub="Enter your password, then choose if it matches both accounts" onPress={() => setAccountAction("switch")} />
+            <Row icon="plus" label="Add another account" sub={session.emailVerified ? "Up to two accounts with this email" : "Confirm your email first"} disabled={!session.emailVerified} onPress={() => setAccountAction("add")} />
             <Row icon="you" label={publicProfileLabel} sub={publicProfileDetail} onPress={onOpenProfile} />
             <Row
               icon={manageProfile.icon}

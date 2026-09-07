@@ -29,6 +29,7 @@ import { MUSIC_PLAYER_ENABLED } from "../src/domain/musicPlayerAvailability.mjs"
 import { ensureShowSchema } from "./features/shows/showSchema.js";
 import { ensureLoungeSchema } from "./features/lounges/loungeSchema.js";
 import { ensureCitySchema } from "./features/cities/citySchema.js";
+import { ensureSharedEmailSchema } from "./features/accountOnboarding/sharedEmailSchema.js";
 
 export const artistSearchKey = (value) => String(value || "")
   .normalize("NFKD")
@@ -2399,9 +2400,12 @@ if (!db.prepare("SELECT 1 FROM app_meta WHERE key=?").get(isoDateMigration)) {
   }
 }
 
+ensureSharedEmailSchema(db);
+
 // --- tiny helpers ------------------------------------------------------------
 export const q = {
-  userByEmail: db.prepare("SELECT * FROM users WHERE email = ?"),
+  userByEmail: db.prepare("SELECT * FROM users WHERE lower(trim(email)) = lower(trim(?)) ORDER BY created_at,id LIMIT 1"),
+  usersByEmail: db.prepare("SELECT * FROM users WHERE lower(trim(email)) = lower(trim(?)) ORDER BY created_at,id LIMIT 2"),
   userById: db.prepare("SELECT * FROM users WHERE id = ?"),
   userByHandle: db.prepare("SELECT * FROM users WHERE handle = ?"),
   insertUser: db.prepare(`INSERT INTO users (id,email,name,handle,pass_hash,role,home_city,home_lat,home_lng,initials,avatar_color,created_at)

@@ -54,7 +54,7 @@ test("signup rejects omitted or unknown age bands and persists a classified band
     password: "classified-password1",
     city: "Toronto",
     genres: ["Rock"],
-    termsVersion: "2026-09-02",
+    termsVersion: "2026-09-07",
   };
 
   for (const [suffix, ageBand] of [["missing", undefined], ["unknown", "unknown"]]) {
@@ -69,12 +69,13 @@ test("signup rejects omitted or unknown age bands and persists a classified band
   }
 
   const email = "age-signup-classified@example.test";
-  assert.deepEqual(signup({
+  const response = signup({
     body: { ...baseBody, email, ageBand: "18_plus" },
     ip: "age-signup-classified",
     ua: "test",
     setSession() { throw new Error("signup must not issue a session"); },
-  }), { ok: true, pending: true });
+  });
+  assert.deepEqual(response, { ok: true, pending: true, cancelToken: response.cancelToken });
   assert.equal(q.userByEmail.get(email).age_band, "18_plus");
 });
 
