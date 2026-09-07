@@ -3,6 +3,10 @@ import assert from "node:assert/strict";
 import { confirmSignupProfile, signupHandleLocked, signupProfilePatch, signupProfileSnapshot } from "./signupProfileDraft.mjs";
 
 const user = { id: "one", handle: "nightfan", avatarUri: "https://media.example/avatar.jpg", banner: null };
+test("unverified setup shows its requested username without claiming it publicly", () => {
+  assert.equal(signupProfileSnapshot({ ...user, emailVerified: false, pendingSignupHandle: "mychoice" }).handle, "mychoice");
+  assert.equal(signupProfileSnapshot({ ...user, emailVerified: true, pendingSignupHandle: "mychoice" }).handle, "nightfan");
+});
 test("setup resumes only server-backed media, not temporary picker paths", () => {
   assert.deepEqual(signupProfileSnapshot({ ...user, avatarUri: "blob:local", banner: "file:/private.jpg" }), { handle: "nightfan", avatarUri: null, banner: null });
   assert.deepEqual(signupProfileSnapshot(user), { handle: "nightfan", avatarUri: user.avatarUri, banner: null });

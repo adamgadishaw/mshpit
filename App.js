@@ -1153,7 +1153,7 @@ function Root() {
   else if (nav.venues) overlay = <VenuesScreen initialRegion={nav.discoverRegion} onClose={back} onOpenVenue={openVenue} />;
   else if (nav.fanClubs) overlay = <FanClubsScreen onClose={back} onOpenFanClub={openFanClub} />;
   else if (nav.suggestion) overlay = <SuggestionBoxScreen onClose={back} initialSurface={nav.suggestion.surface} />;
-  else if (nav.settings) overlay = <SettingsScreen onClose={back} onManageProfile={openProfileManagement} onOpenProfile={() => (session ? openProfile(session.id) : go({ auth: true }))} onOpenPrivacy={() => go({ privacy: true })} onOpenTerms={() => go({ terms: true })} onOpenDiagnostics={() => { if (canViewDiagnostics) go({ diagnostics: true }); }} onOpenDeleteAccount={() => go({ deleteAccount: true })} onLogout={signOut} />;
+  else if (nav.settings) overlay = <SettingsScreen initialAccountAction={nav.accountAction === "switch" ? "switch" : null} onClose={back} onManageProfile={openProfileManagement} onOpenProfile={() => (session ? openProfile(session.id) : go({ auth: true }))} onOpenPrivacy={() => go({ privacy: true })} onOpenTerms={() => go({ terms: true })} onOpenDiagnostics={() => { if (canViewDiagnostics) go({ diagnostics: true }); }} onOpenDeleteAccount={() => go({ deleteAccount: true })} onLogout={signOut} />;
   else if (nav.deleteAccount) overlay = <DeleteAccountScreen onClose={back} onDeleted={onAccountDeleted} />;
   else if (nav.diagnostics && canViewDiagnostics) overlay = <DiagnosticsScreen onClose={back} />;
   else if (nav.privacy) overlay = <PrivacyScreen onClose={back} />;
@@ -1519,6 +1519,7 @@ function Root() {
             { icon: "you", label: profileDestination === "artistHub" ? "View public artist page" : "View public profile", onPress: () => { setAcctOpen(false); session && openProfile(session.id); } },
             { icon: profileAction.icon, label: profileAction.title, onPress: () => { setAcctOpen(false); openProfileManagement(); } },
             { icon: "menu", label: "Settings", onPress: () => { setAcctOpen(false); go({ settings: true }); } },
+            { icon: "you", label: "Switch account", onPress: () => { setAcctOpen(false); go({ settings: true, accountAction: "switch" }); } },
             { divider: true },
             { icon: "logout", label: "Log out", danger: true, onPress: () => { setAcctOpen(false); signOut(); } },
           ]}

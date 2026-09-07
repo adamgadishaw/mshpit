@@ -104,7 +104,7 @@ test("different passwords sign directly into only the matching account", () => {
   rejects(() => login("missing@example.test", "first-password1"), 401);
 });
 
-test("a second account requires a verified current account and reauthentication; third account rejected", () => {
+test("Settings add-account requires a verified current account and reauthentication; third account rejected", () => {
   const first = member();
   rejects(() => signup(first.email, { addAccount: true, currentPassword: "first-password1" }), 401);
   rejects(() => signup(first.email, { addAccount: true, currentPassword: "wrong-password1" }, first), 401);
@@ -117,12 +117,53 @@ test("a second account requires a verified current account and reauthentication;
   assert.equal(q.usersByEmail.all(first.email).length, 2);
 });
 
-test("public duplicate signup never overwrites or provides authority to cancel an existing account", () => {
+test("different-password public signup creates a restricted sibling and cancellation cannot erase the existing account", () => {
   const first = member();
-  const { result } = signup(first.email);
+  const firstCookie = createSession(first.id);
+  const { result, ctx } = signup(first.email);
+  assert.equal(result.created, true);
+  assert.equal(result.verificationRequired, true);
+  assert.equal(result.user.emailVerified, false);
+  assert.equal(result.user.role, "fan");
+  assert.notEqual(result.user.id, first.id);
+  assert.equal(getSession(ctx.session.token).user_id, result.user.id);
+  assert.equal(getSession(firstCookie.token).user_id, first.id);
+  assert.equal(q.usersByEmail.all(first.email).length, 2);
+  rejects(() => signup(first.email, { password: "third-password3" }), 409);
+  assert.equal(q.usersByEmail.all(first.email).length, 2);
   routes["POST /api/signup/cancel"](context({ cancelToken: result.cancelToken }));
   assert.equal(q.userById.get(first.id).pass_hash, first.pass_hash);
+  assert.equal(getSession(firstCookie.token).user_id, first.id);
+  assert.equal(getSession(ctx.session.token), null);
   assert.equal(q.usersByEmail.all(first.email).length, 1);
+});
+
+test("matching signup credentials require an explicit choice before creating a same-password sibling", () => {
+  const first = member();
+  const choice = signup(first.email, { password: "first-password1" });
+  assert.equal(choice.result.needsAccountChoice, true);
+  assert.equal(choice.result.canCreate, true);
+  assert.equal(choice.result.accounts.length, 1);
+  assert.equal(choice.result.accounts[0].id, first.id);
+  assert.equal(choice.result.cancelToken, undefined);
+  assert.equal(choice.ctx.session, undefined);
+  assert.equal(q.usersByEmail.all(first.email).length, 1);
+  rejects(() => signup(first.email, { createAdditional: true, password: "wrong-password4" }), 401);
+  assert.equal(q.usersByEmail.all(first.email).length, 1);
+  const created = signup(first.email, { createAdditional: true, password: "first-password1" });
+  assert.equal(created.result.created, true);
+  assert.equal(created.result.verificationRequired, true);
+  assert.equal(created.result.user.emailVerified, false);
+  assert.notEqual(created.result.user.id, first.id);
+  assert.equal(getSession(created.ctx.session.token).user_id, created.result.user.id);
+  const fullChoice = signup(first.email, { password: "first-password1" });
+  assert.equal(fullChoice.result.needsAccountChoice, true);
+  assert.equal(fullChoice.result.canCreate, false);
+  assert.equal(fullChoice.result.accounts.length, 2);
+  assert.equal(fullChoice.ctx.session, undefined);
+  rejects(() => signup(first.email, { createAdditional: true, password: "first-password1" }), 409);
+  assert.equal(q.usersByEmail.all(first.email).length, 2);
+  assert.equal(q.userById.get(first.id).pass_hash, first.pass_hash);
 });
 
 test("explicit signup cancellation deletes only the unfinished account and is retry-safe", () => {

@@ -183,10 +183,13 @@ test("privacy and terms mirror the dated in-app policies and expose support", ()
 
 test("legal acceptance version stays aligned with both material policy dates", () => {
   assert.equal(PRIVACY_POLICY_UPDATED, TERMS_POLICY_UPDATED);
+  assert.match(LEGAL_ACCEPTANCE_VERSION, /^\d{4}-\d{2}-\d{2}(?:\.[1-9]\d*)?$/);
+  const policyDate = new Date(`${PRIVACY_POLICY_UPDATED} 00:00:00 UTC`).toISOString().slice(0, 10);
+  assert.equal(LEGAL_ACCEPTANCE_VERSION.slice(0, 10), policyDate);
   for (const path of ["/privacy", "/terms"]) {
     const page = structuredGraph(renderPublicPage(path))
       .find((node) => node["@id"].endsWith("#page"));
-    assert.equal(page.dateModified, LEGAL_ACCEPTANCE_VERSION);
+    assert.equal(page.dateModified, policyDate, "SEO dates stay valid calendar dates even when acceptance has a same-day revision");
   }
 });
 

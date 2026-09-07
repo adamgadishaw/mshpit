@@ -18,7 +18,7 @@ function createDatabase() {
       role TEXT NOT NULL DEFAULT 'fan',
       artist_name TEXT,
       is_banned INTEGER NOT NULL DEFAULT 0,
-      suspended_until INTEGER
+      suspended_until INTEGER,dormant_at INTEGER
     );
     CREATE TABLE posts (
       id TEXT PRIMARY KEY,

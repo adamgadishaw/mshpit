@@ -14,6 +14,7 @@ import { verifiedArtistGenre } from "./domain/genre.mjs";
 import { profileGenreSelection } from "./domain/genrePreferences.mjs";
 import { SIGNUP_ONBOARDING_VERSION } from "./domain/signupOnboarding.mjs";
 import { completeSignupOnboardingForAccount } from "./features/signupOnboarding/signupOnboardingService";
+import { switchLinkedAccountRequest } from "./features/signupOnboarding/accountSecurityService";
 import { projectDiscoveryCatalogTotals, resolveDiscoveryCatalogTotal } from "./domain/discoveryCatalogTotals.mjs";
 import { buildArtistSummary } from "./domain/artistSummary.mjs";
 import { confirmedArtistProfileMutation } from "./domain/artistPageEditor.mjs";
@@ -2799,6 +2800,18 @@ export function StoreProvider({ children }) {
   // Server-first auth (real accounts, hashed passwords, httpOnly sessions).
   // Falls back to the local in-memory demo accounts only in an explicit dev build.
   // A production network failure must never authenticate a bundled plaintext user.
+  const switchLinkedAccount = async (targetId, { expectedAccountId } = {}) => {
+    const actorId = sessionRef.current?.id, epoch = accountMutationEpochRef.current;
+    if (!actorId || actorId !== expectedAccountId || !targetId || targetId === actorId) return { ok: false, error: "Choose an available account." };
+    try {
+      const result = await switchLinkedAccountRequest(actorId, targetId);
+      if (sessionRef.current?.id !== actorId || accountMutationEpochRef.current !== epoch) return { ok: false, stale: true, error: "Your account changed. Reopen the account selector." };
+      if (result?.user?.id !== targetId) return { ok: false, error: "The account switch could not be confirmed. Reload to check your session." };
+      absorbServerUser(result.user, { announce: true });
+      return { ok: true };
+    } catch (error) { return { ok: false, error }; }
+  };
+
   const login = async (email, password, accountId) => {
     if (remoteIdentityValidationEnabled(LOCAL_AUTH_FALLBACK)) {
       try {
@@ -2933,7 +2946,7 @@ export function StoreProvider({ children }) {
     return candidate;
   };
 
-  const signup = async ({ name, handle, email, password, city, location = null, genres = [], ageBand, agreedToTerms, analyticsConsent = false, addAccount = false, currentPassword }) => {
+  const signup = async ({ name, handle, email, password, city, location = null, genres = [], ageBand, agreedToTerms, analyticsConsent = false, addAccount = false, currentPassword, createAdditional = false }) => {
     const nm = cleanName(name);
     const em = cleanEmail(email);
     if (!isName(nm)) return { ok: false, error: "Enter a name (letters or numbers, up to 40 chars)." };
@@ -2953,13 +2966,17 @@ export function StoreProvider({ children }) {
       try {
         const response = await api("/api/signup", {
           method: "POST",
-          body: { name: nm, ...(handle !== undefined ? { handle: cleanHandle(handle) } : {}), email: em, password, city, lat: srvCoords?.lat, lng: srvCoords?.lng, genres: genreSelection.genres, ageBand, analyticsConsent: !!analyticsConsent, termsVersion: TERMS_VERSION, ...(addAccount ? { addAccount, currentPassword } : {}) },
+          body: { name: nm, ...(handle !== undefined ? { handle: cleanHandle(handle) } : {}), email: em, password, city, lat: srvCoords?.lat, lng: srvCoords?.lng, genres: genreSelection.genres, ageBand, analyticsConsent: !!analyticsConsent, termsVersion: TERMS_VERSION, ...(addAccount ? { addAccount, currentPassword } : {}), ...(createAdditional ? { createAdditional: true } : {}) },
           context: "Creating your Pit account",
           silent: true,
           skipIdentityCheck: !addAccount,
           ...(addAccount ? { expectedAccountId: sessionRef.current?.id } : {}),
         });
-        if (response?.pending) return { ok: true, pending: true, cancelToken: response.cancelToken };
+        if (response?.needsAccountChoice && Array.isArray(response.accounts) && response.accounts.length > 0 && response.accounts.length <= 2) return { ok: true, needsAccountChoice: true, accounts: response.accounts, canCreate: response.canCreate === true };
+        if (response?.created === true && response.user?.id) {
+          absorbServerUser(response.user, { announce: true });
+          return { ok: true, created: true };
+        }
         return { ok: false, error: "That request did not complete. Please try again." };
       } catch (e) {
         if (e.status) return { ok: false, error: e.message };
@@ -6613,7 +6630,7 @@ export function StoreProvider({ children }) {
   const value = {
     users, adminMembers, adminMemberDirectory, session, authReady, feed, removedIds, blockedIds, requests, tourDates, reports, moderationConsole, follows, discoverySidebar, discoverySidebarStatus,
     userById, userByHandle, logsByUser, sharedShows,
-    login, signup, logout, deleteAccount, forgotPassword, resetPassword, confirmEmailVerification, resendEmailVerification, updateProfile, completeSignupOnboarding, setAnalyticsEnabled, setProfileSearchIndexingEnabled, setDirectMessagePolicy, setAgeBandClassification, setProfileAudience, setAnnouncementEmailsEnabled, chooseTheme,
+    login, signup, logout, switchLinkedAccount, deleteAccount, forgotPassword, resetPassword, confirmEmailVerification, resendEmailVerification, updateProfile, completeSignupOnboarding, setAnalyticsEnabled, setProfileSearchIndexingEnabled, setDirectMessagePolicy, setAgeBandClassification, setProfileAudience, setAnnouncementEmailsEnabled, chooseTheme,
     addLog, editLog, reportContent, actionReport, dismissReport, removeContent, restoreContent,
     requestArtist, approveArtist, rejectArtist,
     addTourDatesBatch,

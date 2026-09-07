@@ -5,6 +5,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
+import { LEGAL_ACCEPTANCE_VERSION } from "../src/domain/privacyDisclosures.mjs";
 
 const dataDir = mkdtempSync(join(tmpdir(), "pit-auth-security-"));
 process.env.PIT_DATA_DIR = dataDir;
@@ -74,6 +75,50 @@ function addUser({ role = "fan", password = "test-password", banned = false, sus
 }
 
 const silentLog = { info() {}, warn() {} };
+
+test("session issuance reactivates only its account without lifting moderation", () => {
+  const selected = addUser({ banned: true, suspendedUntil: Date.now() + 86_400_000 });
+  const sibling = addUser();
+  db.prepare("UPDATE users SET email=? WHERE id=?").run(selected.email, sibling.id);
+  const inactiveAt = Date.now() - 710 * 86_400_000;
+  db.prepare(`UPDATE users SET last_active_at=?,dormant_at=?,inactivity_warning_sent_at=?,
+    inactivity_warning_activity_at=?,inactivity_warning_receipt='fixture-delivery' WHERE id IN (?,?)`)
+    .run(inactiveAt, inactiveAt + 365 * 86_400_000, Date.now() - 10 * 86_400_000, inactiveAt, selected.id, sibling.id);
+  const session = createSession(selected.id, "127.0.0.1", "fixture");
+  const current = q.userById.get(selected.id);
+  assert.ok(getSession(session.token));
+  assert.ok(current.last_active_at > inactiveAt);
+  assert.equal(current.dormant_at, null);
+  assert.equal(current.inactivity_warning_receipt, null);
+  assert.equal(current.is_banned, 1);
+  assert.equal(current.suspended_until, selected.suspended_until);
+  assert.equal(q.userById.get(sibling.id).last_active_at, inactiveAt);
+  assert.ok(q.userById.get(sibling.id).dormant_at);
+});
+
+test("passive session reads preserve dormancy and do not extend inactivity", () => {
+  const account = addUser();
+  const session = createSession(account.id);
+  const inactiveAt = Date.now() - 400 * 86_400_000;
+  db.prepare("UPDATE users SET last_active_at=?,dormant_at=? WHERE id=?").run(inactiveAt, Date.now(), account.id);
+  const dormantAt = q.userById.get(account.id).dormant_at;
+  assert.ok(getSession(session.token), "privacy access can still use a valid dormant session");
+  assert.ok(getSession(session.token));
+  assert.equal(q.userById.get(account.id).last_active_at, inactiveAt);
+  assert.equal(q.userById.get(account.id).dormant_at, dormantAt);
+});
+
+test("session activity participates in the enclosing authentication transaction", () => {
+  const account = addUser();
+  const before = q.userById.get(account.id).last_active_at;
+  db.exec("BEGIN IMMEDIATE");
+  const session = createSession(account.id);
+  assert.ok(q.userById.get(account.id).last_active_at > before);
+  db.exec("ROLLBACK");
+  assert.equal(q.userById.get(account.id).last_active_at, before);
+  assert.equal(getSession(session.token), null);
+});
+
 const RATE_LIMIT_BUCKET_CAPACITY = 50_000;
 const RATE_LIMIT_TEST_WINDOW_MS = 60_000;
 
@@ -372,6 +417,7 @@ test("SQLite itself blocks Owner identity replacement, restriction, demotion, an
   assert.throws(() => db.prepare("UPDATE users SET suspended_until=? WHERE id=?").run(Date.now() + 60_000, owner.id), /Owner account security boundary/u);
   assert.throws(() => db.prepare("UPDATE users SET email=? WHERE id=?").run("other@example.test", owner.id), /Owner account security boundary/u);
   assert.throws(() => db.prepare("UPDATE users SET email_verified_at=0 WHERE id=?").run(owner.id), /Owner account security boundary/u);
+  assert.throws(() => db.prepare("UPDATE users SET dormant_at=? WHERE id=?").run(Date.now(), owner.id), /Owner account cannot become dormant/u);
   assert.throws(() => db.prepare("DELETE FROM users WHERE id=?").run(owner.id), /Owner account cannot be deleted/u);
 
   db.prepare("UPDATE users SET name=?,handle=? WHERE id=?").run("Mshpit", "mshpit", owner.id);
@@ -605,8 +651,10 @@ test("authority repair restores the admin boundary and revokes old cookies", () 
     banned: true,
     suspendedUntil: Date.now() + 60_000,
   });
-  setBootstrapAdminIdentity(user);
+  // The historical session predates the damaged legacy Owner lock; recording
+  // fresh activity cannot mutate an already-invalid locked Owner record.
   createSession(user.id, "127.0.0.1", "test");
+  setBootstrapAdminIdentity(user);
 
   const result = reconcileAdminAccount({
     database: db,
@@ -826,19 +874,22 @@ test("signup never derives the public handle from a private email local-part", (
       password: "private-handle-password1",
       genres: ["Rock"],
       ageBand: "18_plus",
-      termsVersion: "2026-09-07",
+      termsVersion: LEGAL_ACCEPTANCE_VERSION,
     },
     ip: `signup-private-handle-${distinctive}`,
     ua: "test",
     setSession(value) { session = value; },
   });
   const created = q.userByEmail.get(email);
-  assert.deepEqual(result, { ok: true, pending: true, cancelToken: result.cancelToken });
+  assert.equal(result.created, true);
+  assert.equal(result.verificationRequired, true);
+  assert.equal(result.user.id, created.id);
+  assert.equal(result.user.emailVerified, false);
   assert.match(result.cancelToken, /^[A-Za-z0-9_-]{43}$/);
   assert.equal(created.handle.includes("legal"), false);
   assert.equal(created.handle.includes("work"), false);
   assert.match(created.handle, /^pitfan_[a-f0-9]{8}/u);
-  assert.equal(session, null, "signup cannot reveal account existence through a Set-Cookie difference");
+  assert.equal(getSession(session.token).user_id, created.id, "only the newly created account is authenticated");
 });
 
 test("rate-limit capacity rejects new identities without clearing live limits", () => {
@@ -913,13 +964,14 @@ test("auth limits stay bound to the IP even when the caller supplies rotating ac
         password: "rotation-test-password1",
         genres: ["Rock"],
         ageBand: "18_plus",
-        termsVersion: "2026-09-07",
+        termsVersion: LEGAL_ACCEPTANCE_VERSION,
       },
       ip: sharedIp,
       ua: "test",
-      setSession() { throw new Error("signup must not issue a session"); },
+      setSession(value) { assert.ok(value.token); },
     });
-    assert.deepEqual(result, { ok: true, pending: true, cancelToken: result.cancelToken });
+    assert.equal(result.created, true);
+    assert.equal(result.user.emailVerified, false);
     currentUser = q.userByEmail.get(email);
   }
   assert.throws(
@@ -931,7 +983,7 @@ test("auth limits stay bound to the IP even when the caller supplies rotating ac
         password: "rotation-test-password1",
         genres: ["Rock"],
         ageBand: "18_plus",
-        termsVersion: "2026-09-07",
+        termsVersion: LEGAL_ACCEPTANCE_VERSION,
       },
       ip: sharedIp,
       ua: "test",
@@ -941,7 +993,7 @@ test("auth limits stay bound to the IP even when the caller supplies rotating ac
   );
 });
 
-test("signup returns the same body and cookie behavior for new and registered addresses", () => {
+test("different-password signup creates distinct restricted accounts without replacing existing credentials", () => {
   resetRateLimitsForTests();
   const email = `signup-enumeration-${Date.now()}@example.test`;
   const body = {
@@ -950,20 +1002,24 @@ test("signup returns the same body and cookie behavior for new and registered ad
     password: "enumeration-password1",
     genres: ["Rock"],
     ageBand: "18_plus",
-    termsVersion: "2026-09-07",
+    termsVersion: LEGAL_ACCEPTANCE_VERSION,
   };
   let newSession = null;
   const first = routes["POST /api/signup"]({ body, ip: `signup-enumeration-new-${Date.now()}`, ua: "test", setSession(value) { newSession = value; } });
   const originalHash = q.userByEmail.get(email).pass_hash;
   let existingSession = null;
   const second = routes["POST /api/signup"]({ body: { ...body, password: "different-password1" }, ip: `signup-enumeration-existing-${Date.now()}`, ua: "test", setSession(value) { existingSession = value; } });
-  assert.deepEqual(first, { ok: true, pending: true, cancelToken: first.cancelToken });
+  assert.equal(first.created, true);
+  assert.equal(second.created, true);
+  assert.equal(first.user.emailVerified, false);
+  assert.equal(second.user.emailVerified, false);
   assert.match(first.cancelToken, /^[A-Za-z0-9_-]{43}$/);
   assert.match(second.cancelToken, /^[A-Za-z0-9_-]{43}$/);
-  assert.deepEqual(second, { ...first, cancelToken: second.cancelToken });
-  assert.equal(newSession, null);
-  assert.equal(existingSession, null);
-  assert.equal(q.userByEmail.get(email).pass_hash, originalHash, "a duplicate request cannot replace the existing credential");
+  assert.notEqual(first.user.id, second.user.id);
+  assert.equal(getSession(newSession.token).user_id, first.user.id);
+  assert.equal(getSession(existingSession.token).user_id, second.user.id);
+  assert.equal(q.usersByEmail.all(email).length, 2);
+  assert.equal(q.userById.get(first.user.id).pass_hash, originalHash, "a second signup cannot replace the existing credential");
 });
 
 test("promotion cannot turn an existing long member cookie into a long-lived staff cookie", () => {

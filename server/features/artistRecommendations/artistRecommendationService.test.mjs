@@ -10,7 +10,7 @@ function database() {
       id TEXT PRIMARY KEY,name TEXT,handle TEXT,role TEXT DEFAULT 'fan',verified INTEGER DEFAULT 0,
       avatar_uri TEXT,avatar_color TEXT,initials TEXT,profile_updated_at INTEGER DEFAULT 0,
       home_city TEXT,genres TEXT DEFAULT '[]',favorite_artists TEXT DEFAULT '[]',
-      is_banned INTEGER DEFAULT 0,suspended_until INTEGER
+      is_banned INTEGER DEFAULT 0,suspended_until INTEGER,dormant_at INTEGER
     );
     CREATE TABLE artists (
       norm TEXT PRIMARY KEY,name TEXT,public_slug TEXT,photo TEXT,country TEXT,popularity INTEGER,

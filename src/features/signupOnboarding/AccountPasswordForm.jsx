@@ -45,7 +45,7 @@ export default function AccountPasswordForm({ onClose, session, deleteAccount, c
     <SheetHeader title={cancelSetup ? "Cancel signup" : "Change password"} onClose={onClose} leadDisabled={busy} />
     <ScrollView contentInsetAdjustmentBehavior="automatic" keyboardShouldPersistTaps="handled" contentContainerStyle={{ padding: space(4), gap: space(4), width: "100%", maxWidth: 640, alignSelf: "center" }}>
       <Text selectable style={{ color: colors.textDim, lineHeight: 22 }}>{cancelSetup
-        ? "This deletes your unfinished account, its profile, and queues uploaded photos for deletion. This cannot be undone. Another account using the same email is not affected. Closing the browser without cancelling leaves setup available with no expiry."
+        ? "This deletes your unfinished account, its profile, and queues uploaded photos for deletion. This cannot be undone. Another account using the same email is not affected. Closing the browser without cancelling keeps your progress, subject to the account inactivity policy."
         : `Change the password for @${session?.handle || "your account"}. This signs out other devices for this account only.`}</Text>
       {!done && <>{field("Current password", currentPassword, setCurrentPassword, "current-password")}
         {!cancelSetup && <>{field("New password", password, setPassword, "new-password")}{field("Confirm new password", confirmation, setConfirmation, "new-password")}</>}

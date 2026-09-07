@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
+import { LEGAL_ACCEPTANCE_VERSION } from "../src/domain/privacyDisclosures.mjs";
 
 const dataDir = mkdtempSync(join(tmpdir(), "pit-age-band-safety-"));
 process.env.PIT_DATA_DIR = dataDir;
@@ -54,7 +55,7 @@ test("signup rejects omitted or unknown age bands and persists a classified band
     password: "classified-password1",
     city: "Toronto",
     genres: ["Rock"],
-    termsVersion: "2026-09-07",
+    termsVersion: LEGAL_ACCEPTANCE_VERSION,
   };
 
   for (const [suffix, ageBand] of [["missing", undefined], ["unknown", "unknown"]]) {
@@ -69,13 +70,18 @@ test("signup rejects omitted or unknown age bands and persists a classified band
   }
 
   const email = "age-signup-classified@example.test";
+  let session;
   const response = signup({
     body: { ...baseBody, email, ageBand: "18_plus" },
     ip: "age-signup-classified",
     ua: "test",
-    setSession() { throw new Error("signup must not issue a session"); },
+    setSession(value) { session = value; },
   });
-  assert.deepEqual(response, { ok: true, pending: true, cancelToken: response.cancelToken });
+  assert.equal(response.created, true);
+  assert.equal(response.verificationRequired, true);
+  assert.equal(response.user.emailVerified, false);
+  assert.equal(response.user.id, q.userByEmail.get(email).id);
+  assert.ok(session?.token);
   assert.equal(q.userByEmail.get(email).age_band, "18_plus");
 });
 

@@ -11,7 +11,7 @@ function createDatabase() {
   const db = new DatabaseSync(":memory:");
   db.exec(`
     CREATE TABLE users (
-      id TEXT PRIMARY KEY,is_banned INTEGER NOT NULL DEFAULT 0,suspended_until INTEGER
+      id TEXT PRIMARY KEY,is_banned INTEGER NOT NULL DEFAULT 0,suspended_until INTEGER,dormant_at INTEGER
     );
     CREATE TABLE artists (
       norm TEXT PRIMARY KEY,name TEXT NOT NULL,public_slug TEXT,genre TEXT,data TEXT,bio TEXT,mbid TEXT,updated_at INTEGER

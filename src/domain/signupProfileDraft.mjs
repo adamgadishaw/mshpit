@@ -3,7 +3,7 @@ import { cleanHandle } from "./validation.mjs";
 const imageUrl = (value) => /^https?:\/\//i.test(String(value || "")) ? value : null;
 
 export function signupProfileSnapshot(user) {
-  return { handle: cleanHandle(user?.handle || ""), avatarUri: imageUrl(user?.avatarUri), banner: imageUrl(user?.banner) };
+  return { handle: cleanHandle((user?.emailVerified === false && user?.pendingSignupHandle) || user?.handle || ""), avatarUri: imageUrl(user?.avatarUri), banner: imageUrl(user?.banner) };
 }
 
 export function signupProfilePatch(draft, saved) {

@@ -10,7 +10,7 @@ function fixtureDatabase() {
     CREATE TABLE users (
       id TEXT PRIMARY KEY,
       is_banned INTEGER NOT NULL DEFAULT 0,
-      suspended_until INTEGER
+      suspended_until INTEGER,dormant_at INTEGER
     );
     CREATE TABLE tour_dates (
       id TEXT PRIMARY KEY,

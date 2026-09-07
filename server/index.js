@@ -12,7 +12,7 @@ import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { join, extname, normalize, dirname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { db, q, publicUser, pruneMissingArtists } from "./db.js";
-import { artistDeathWatchService, routes } from "./api.js";
+import { artistDeathWatchService, eraseAccountForInactivity, routes } from "./api.js";
 import { ApiError, errorEnvelope } from "./errors.js";
 import { assertExpectedAccount } from "./identityBinding.js";
 import { maybeAlert, pruneErrors, recordError } from "./errorLog.js";
@@ -67,6 +67,12 @@ import { pruneAnalyticsData } from "./analyticsService.js";
 import { pruneGuestSearchAnalytics } from "./guestSearchAnalytics.js";
 import { pruneProductSuggestions } from "./features/suggestions/suggestionRetention.js";
 import { pruneExpiredAccountSecrets } from "./accountSecretRetention.js";
+import { recordInteractiveAccountActivity } from "./features/accountLifecycle/accountLifecycle.js";
+import { recordSuccessfulInteractiveMutation } from "./features/accountLifecycle/interactiveActivity.js";
+import { startAccountLifecycleScheduler } from "./features/accountLifecycle/accountLifecycleScheduler.js";
+import { createAccountInactivityWarningSender } from "./features/accountLifecycle/accountInactivityWarning.js";
+import { deliver, publicOrigin as emailPublicOrigin, remainingToday } from "./emailService.js";
+import { getEmailDeliveryReceipt } from "./mailer.js";
 import { pruneExpiredFeedImpressionHistory } from "./feedImpressions.js";
 import { startArtistDeathWatchScheduler } from "./features/artistDeathWatch/artistDeathWatchScheduler.js";
 import { missingStaticAssetResponse } from "./staticPolicy.js";
@@ -618,7 +624,6 @@ async function handleRequest(req, res) {
       const token = parseCookies(req.headers.cookie)[ACTIVE_SESSION_COOKIE];
       const sess = getSession(token);
       const user = sess ? q.userById.get(sess.user_id) : null;
-      assertAccountMutationAccess({ method: req.method, pathname, user });
       const expectedAccountHeader = req.headers["x-pit-expected-account"];
       const expectedAccount = Array.isArray(expectedAccountHeader) ? expectedAccountHeader[0] : expectedAccountHeader;
       assertExpectedAccount(expectedAccount, user);
@@ -644,7 +649,13 @@ async function handleRequest(req, res) {
         clearSession: () => setCookies.push(...clearSessionCookies(PROD)),
         setHeader: createApiResponseHeaderSetter(responseHeaders),
       };
+      assertAccountMutationAccess({ method: req.method, pathname, user, body: ctx.body });
       const result = await match.handler(ctx);
+      recordSuccessfulInteractiveMutation({
+        method: req.method, routePattern, user, result,
+        recordActivity: () => recordInteractiveAccountActivity(db, { userId: user.id, kind: "mutation", at: Date.now() }),
+        reportFailure: (error) => console.warn(`[pit] account activity bookkeeping failed safely: cause=${safeRequestFailureContext({ error }).cause}`),
+      });
       const extra = { ...cors, ...responseHeaders };
       if (setCookies.length) extra["Set-Cookie"] = setCookies;
       // A handler can 302-redirect (OAuth handoff) by returning { redirect: url }.
@@ -807,6 +818,7 @@ let tourDateScheduler = null;
 let cacheWarmScheduler = null;
 let backupScheduler = null;
 let mediaDeletionScheduler = null;
+let accountLifecycleScheduler = null;
 let privateMediaIsolationTimer = null;
 let sitemapRefreshTimer = null;
 let sitemapRetryTimer = null;
@@ -822,6 +834,7 @@ function shutdown(exitCode = 0) {
   const cacheWarmStop = cacheWarmScheduler?.stop({ abortActive: true }) || Promise.resolve();
   const backupStop = backupScheduler?.stop({ abortActive: true }) || Promise.resolve();
   const mediaDeletionStop = mediaDeletionScheduler?.stop({ abortActive: true }) || Promise.resolve();
+  const accountLifecycleStop = accountLifecycleScheduler?.stop() || Promise.resolve();
   const artistTourDateRefreshStop = stopArtistTourDateDemandRefresh({ abortActive: true });
   const artistGenreRefreshStop = stopMusicBrainzGenreRefreshScheduler({ abortActive: true });
   const artistPhotoSeedStop = stopArtistPhotoSeedScheduler({ abortActive: true });
@@ -848,6 +861,8 @@ function shutdown(exitCode = 0) {
     catch (error) { console.error(`[pit] database backup shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     try { await mediaDeletionStop; }
     catch (error) { console.error(`[media] deletion worker shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
+    try { await accountLifecycleStop; }
+    catch (error) { console.error(`[pit] account lifecycle shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     try { await artistTourDateRefreshStop; }
     catch (error) { console.error(`[pit] exact artist refresh shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     try { await artistGenreRefreshStop; }
@@ -993,6 +1008,20 @@ async function startServer() {
     cacheWarmScheduler = startBackgroundRuntime("/startup/catalog-warm", () => startCacheWarmScheduler()); // runs keyless catalogue enrichment; provider playback warming obeys the shared product gate
     backupScheduler = startBackgroundRuntime("/startup/database-backup", () => startBackupScheduler()); // verified daily SQLite snapshot on /data; private off-host copy when configured
     mediaDeletionScheduler = startBackgroundRuntime("/startup/media-deletion", () => startMediaDeletionScheduler({ database: db })); // bounded, durable cleanup of active user-media objects only
+    accountLifecycleScheduler = startBackgroundRuntime("/startup/account-inactivity", () => startAccountLifecycleScheduler({
+      database: db,
+      eraseAccount: eraseAccountForInactivity,
+      sendWarning: createAccountInactivityWarningSender({
+        database: db, deliver, getDeliveryReceipt: getEmailDeliveryReceipt,
+        origin: emailPublicOrigin(), canSend: () => remainingToday() > 0,
+      }),
+      onResult: (result) => {
+        if (result.dormant || result.warned || result.deleted || result.failed || result.pending) {
+          console.log(`[pit] account inactivity checked=${result.checked} dormant=${result.dormant} warned=${result.warned} deleted=${result.deleted} pending=${result.pending} failed=${result.failed}`);
+        }
+      },
+      onError: (error) => reportBackgroundStartupFailure("/maintenance/account-inactivity", error),
+    }));
     legacyVideoPosterScheduler = startBackgroundRuntime("/startup/legacy-video-posters", () => startLegacyVideoPosterVerificationScheduler({ database: db }));
     startBackgroundRuntime("/startup/video-verifier-health", () => startVideoVerifierHealthScheduler());
     // Sitemap reads serve only the validated persisted/current LKG. Reuse a

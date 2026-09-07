@@ -9,7 +9,7 @@ import { validateCityEditorial, validateCityPhoto, validateCityCopy, cityLocalDa
 const AT=Date.parse("2026-09-08T02:00:00Z");
 function fixture() {
   const db=new DatabaseSync(":memory:");db.exec(`PRAGMA foreign_keys=ON;
-    CREATE TABLE users(id TEXT PRIMARY KEY,is_banned INTEGER DEFAULT 0,suspended_until INTEGER,profile_audience TEXT DEFAULT 'everyone');
+    CREATE TABLE users(id TEXT PRIMARY KEY,is_banned INTEGER DEFAULT 0,suspended_until INTEGER,dormant_at INTEGER,profile_audience TEXT DEFAULT 'everyone');
     CREATE TABLE artists(norm TEXT PRIMARY KEY,name TEXT,public_slug TEXT,mbid TEXT,rank_score INTEGER DEFAULT 0);
     CREATE TABLE artist_memorials(artist_key TEXT,artist_mbid TEXT,status TEXT,death_date TEXT);
     CREATE TABLE tour_dates(id TEXT PRIMARY KEY,artist TEXT,artist_key TEXT,venue TEXT,date TEXT,source TEXT,

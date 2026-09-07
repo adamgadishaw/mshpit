@@ -31,7 +31,7 @@ import {
 } from "./directMessageSafety.js";
 import { deezerEnrichmentGenreFields } from "./deezerGenre.js";
 import { ARTIST_GENRE_SQL_COLUMNS, projectArtistGenreColumns } from "./artistGenreProjection.js";
-import { hashPassword, verifyPassword, verifyPasswordForUser, createSession, destroySession, rateLimit, reserveRateLimits } from "./auth.js";
+import { hashPassword, verifyPassword, verifyPasswordForUser, createSession, destroySession, rateLimit, reserveRateLimits, sessionTtlForRole } from "./auth.js";
 import { opaqueId } from "./ids.js";
 import { createRecoveryResponseFloor } from "./authResponseFloor.js";
 import { startCatalogSeed, catalogSeedStatus, stopCatalogSeed, deezerEnrich, catalogSeedRequestOptions } from "./catalogSeed.js";
@@ -163,6 +163,8 @@ import { createPeopleSuggestionService } from "./features/people/peopleSuggestio
 import { accountMuteRoutes } from "./features/accountMute/accountMuteRoutes.js";
 import { accountOnboardingRoutes } from "./features/accountOnboarding/accountOnboardingRoutes.js";
 import { accountSecurityRoutes } from "./features/accountOnboarding/accountSecurityRoutes.js";
+import { createLinkedAccounts } from "./features/accountOnboarding/linkedAccounts.js";
+import { accountLifecycleDecision } from "./features/accountLifecycle/accountLifecycle.js";
 import { claimPendingSignupHandle, handleChangeAvailableAt, HANDLE_COOLDOWN_DAYS, normalizedProfileHandle, pendingSignupHandle } from "./features/accountOnboarding/signupHandle.js";
 import { cityGuideRoutes } from "./features/cities/cityGuideRoutes.js";
 import { artistBiographyRoutes } from "./features/artists/artistBiographyRoutes.js";
@@ -222,7 +224,7 @@ import {
   publicTourDateVenueName,
 } from "./publicTourDateVenueProjection.js";
 import { publicTourDateProviderFields } from "./tourDateMetadata.js";
-import { isOwnerId, ownerAccount } from "./ownerIdentity.js";
+import { isOwnerId, ownerAccount, readOwnerIdentity } from "./ownerIdentity.js";
 import {
   createOwnerApprovalRequest,
   emailOwnerApprovalRequest,
@@ -3766,6 +3768,144 @@ async function searchYouTubeTrack(ctx, input) {
   });
 }
 
+// Complete erasure shared by explicit account deletion and the fenced inactivity
+// worker. The caller owns the transaction; no email or object-network operations
+// run here. Durable media cleanup is enqueued before user/content cascades.
+function eraseAccountData(u, { at = now() } = {}) {
+  if (!db.isTransaction) throw new TypeError("Account erasure requires an active transaction");
+  if (!u?.id) throw new TypeError("Account erasure requires a current account");
+  if (isOwnerId(db, u.id)) throw new ApiError(403, "The permanent Owner account cannot be deleted.", "FORBIDDEN");
+  const accountReportWhere = `reporter_id=?
+    OR (target_type='user' AND target_id=?)
+    OR (target_type='post' AND target_id IN (SELECT id FROM posts WHERE user_id=?))
+    OR (target_type='comment' AND target_id IN (SELECT id FROM comments WHERE user_id=?))
+    OR (target_type='message' AND target_id IN (SELECT id FROM dms WHERE from_id=? OR to_id=?))
+    OR (target_type='fan_message' AND target_id IN (SELECT id FROM fan_club_messages WHERE user_id=?))
+    OR (target_type='lounge_message' AND target_id IN (SELECT id FROM lounge_messages WHERE user_id=?))
+    OR (target_type='venue_review' AND target_id IN (SELECT id FROM venue_reviews WHERE user_id=?))
+    OR (target_type='artist_post' AND target_id IN (SELECT id FROM artist_posts WHERE user_id=?))
+    OR (target_type='artist_profile' AND target_id IN (
+      SELECT artist_key FROM artist_profiles WHERE owner_id=?
+    ))`;
+  const accountReportParams = [u.id, u.id, u.id, u.id, u.id, u.id, u.id, u.id, u.id, u.id, u.id];
+
+  // Reactions are keyed by durable media URL rather than a post FK. Remove
+  // both exact attachments and every canonical object path owned by this
+  // account so another person's like cannot keep the deleted user id alive.
+  const authoredMediaUrls = [
+    u.avatar_uri,
+    u.banner,
+    ...db.prepare("SELECT photos FROM posts WHERE user_id=?").all(u.id),
+    ...db.prepare("SELECT photos FROM venue_reviews WHERE user_id=?").all(u.id),
+    ...db.prepare(`SELECT
+      CASE WHEN COALESCE(avatar_owner_id,owner_id)=? THEN avatar_uri END avatar_uri,
+      CASE WHEN COALESCE(banner_owner_id,owner_id)=? THEN banner END banner
+      FROM artist_profiles
+      WHERE COALESCE(avatar_owner_id,owner_id)=?
+        OR COALESCE(banner_owner_id,owner_id)=?`).all(u.id, u.id, u.id, u.id),
+  ].flatMap((value) => {
+    if (typeof value === "string") return [value];
+    if (value && Object.hasOwn(value, "photos")) return parseJsonArray(value.photos);
+    return [value?.avatar_uri, value?.banner].filter(Boolean);
+  });
+
+  // Bootstrap any trusted pre-ledger associations, then queue the complete
+  // owner ledger. That second step is what catches a successful direct
+  // upload that never became a post/profile after a lost response or an
+  // abandoned composer. Both writes are inside this account transaction and
+  // survive the user/content cascades below.
+  enqueueOwnedMediaUrls(db, { ownerId: u.id, urls: authoredMediaUrls, at });
+  enqueueAllOwnedMedia(db, { ownerId: u.id, at });
+  enqueueOwnerMediaSweep(db, { ownerId: u.id, at });
+  db.prepare(`DELETE FROM media_reactions
+    WHERE post_id IN (SELECT id FROM posts WHERE user_id=?) OR instr(media_url, ?) > 0`)
+    .run(u.id, `users/${encodeURIComponent(u.id)}/`);
+  const deleteReactionForUrl = db.prepare("DELETE FROM media_reactions WHERE media_url=?");
+  for (const mediaUrl of new Set(authoredMediaUrls)) deleteReactionForUrl.run(mediaUrl);
+
+  // The moderation ledger intentionally contains ids and bounded state JSON.
+  // There is no documented retention basis after account erasure, so delete
+  // actions performed by this account and actions about its reports/content.
+  db.prepare(`DELETE FROM moderation_actions WHERE target_type='report'
+    AND target_id IN (SELECT id FROM reports WHERE ${accountReportWhere})`).run(...accountReportParams);
+  db.prepare(`DELETE FROM moderation_actions WHERE actor_id=?
+    OR (target_type='user' AND target_id=?)
+    OR (target_type='post' AND target_id IN (SELECT id FROM posts WHERE user_id=?))
+    OR (target_type='comment' AND target_id IN (SELECT id FROM comments WHERE user_id=?))
+    OR (target_type='message' AND target_id IN (SELECT id FROM dms WHERE from_id=? OR to_id=?))
+    OR (target_type='fan_message' AND target_id IN (SELECT id FROM fan_club_messages WHERE user_id=?))
+    OR (target_type='lounge_message' AND target_id IN (SELECT id FROM lounge_messages WHERE user_id=?))
+    OR (target_type='venue_review' AND target_id IN (SELECT id FROM venue_reviews WHERE user_id=?))
+    OR (target_type='artist_post' AND target_id IN (SELECT id FROM artist_posts WHERE user_id=?))
+    OR (target_type='artist_profile' AND target_id IN (
+      SELECT artist_key FROM artist_profiles WHERE owner_id=?
+    ))`)
+    .run(u.id, u.id, u.id, u.id, u.id, u.id, u.id, u.id, u.id, u.id, u.id);
+
+  // Campaign queues/logs deliberately have no user FK. Clear both identity
+  // columns because old rows may have only one of them populated, and ensure
+  // no already-queued campaign can send after the account is gone.
+  const hasSibling = q.usersByEmail.all(u.email).some((entry) => entry.id !== u.id);
+  for (const table of ["email_queue", "email_log"]) {
+    db.prepare(`DELETE FROM ${table} WHERE user_id=? OR (?=0 AND (user_id IS NULL OR user_id='') AND lower(to_email)=lower(?))`).run(u.id, hasSibling ? 1 : 0, u.email);
+  }
+
+  // Durable staff-created artifacts survive their creator, but must no longer
+  // identify the erased account. Badge grant notes are author-entered, so the
+  // attribution and note are removed together.
+  db.prepare("UPDATE custom_badges SET created_by=NULL WHERE created_by=?").run(u.id);
+  db.prepare("UPDATE user_badges SET granted_by=NULL,note='' WHERE granted_by=?").run(u.id);
+  db.prepare("UPDATE track_overrides SET set_by=NULL WHERE set_by=?").run(u.id);
+  db.prepare("UPDATE track_source_overrides SET set_by=NULL WHERE set_by=?").run(u.id);
+  db.prepare("UPDATE email_templates SET updated_by=NULL WHERE updated_by=?").run(u.id);
+  db.prepare("UPDATE email_campaigns SET created_by=NULL WHERE created_by=?").run(u.id);
+
+  // These relationships use ON DELETE SET NULL so shared rows can normally
+  // survive account changes. Deletion is a privacy erasure, so remove the
+  // account's authored/attributable records instead of leaving them behind.
+  db.prepare("DELETE FROM notifications WHERE actor_id=?").run(u.id);
+  db.prepare("DELETE FROM events WHERE user_id=?").run(u.id);
+  db.prepare(`DELETE FROM reports WHERE ${accountReportWhere}`).run(...accountReportParams);
+  db.prepare("DELETE FROM artist_posts WHERE user_id=?").run(u.id);
+  // Clear only slots actually uploaded by this account before its user row
+  // can SET NULL their provenance. Claimed pages containing another
+  // account's seeded art survive as clean, unclaimed catalog overlays;
+  // claimant-authored bio/feed state does not.
+  eraseLegacyMediaFinalizeDescriptors(db, { ownerId: u.id, at });
+  db.prepare(`DELETE FROM artist_profiles
+    WHERE owner_id=? AND NOT (
+      (avatar_uri IS NOT NULL AND avatar_owner_id IS NOT NULL AND avatar_owner_id<>?)
+      OR (banner IS NOT NULL AND banner_owner_id IS NOT NULL AND banner_owner_id<>?)
+    )`).run(u.id, u.id, u.id);
+  db.prepare(`UPDATE artist_profiles
+    SET owner_id=NULL,bio=NULL,feed_enabled=0,updated_at=?
+    WHERE owner_id=?`).run(at, u.id);
+  // Structured post tags are JSON rather than foreign-key rows, so account
+  // erasure must explicitly remove this id from posts authored by others.
+  scrubTaggedUserFromPosts(u.id);
+  db.prepare("DELETE FROM users WHERE id=?").run(u.id);
+}
+
+// Defense in depth: the maintenance callback repeats the durable Owner,
+// activity-generation, delivered-warning and full grace-period checks. Merely
+// importing this function or running a migration can never erase an account.
+export function eraseAccountForInactivity(user, { at = now(), reason = "inactivity" } = {}) {
+  if (!db.isTransaction) throw new TypeError("Inactivity erasure requires the worker transaction");
+  if (reason !== "inactivity" || !Number.isSafeInteger(at) || at <= 0) {
+    throw new TypeError("Invalid inactivity erasure context");
+  }
+  const identity = readOwnerIdentity(db);
+  const current = user?.id ? q.userById.get(user.id) : null;
+  if (identity?.version !== 2 || !current || current.id === identity.userId
+    || current.last_active_at !== user.last_active_at
+    || !accountLifecycleDecision(current, { at, ownerId: identity.userId }).delete) return false;
+  eraseAccountData(current, { at });
+  return true;
+}
+
+const linkedAccounts = createLinkedAccounts({ database: db, ApiError, requireSessionUser, limit,
+  verifyPassword, atomicWrite, createSession, sessionTtlForRole, publicUser, now });
+
 // route table: "METHOD /path" -> handler(ctx) ; :params exposed as ctx.params
 export const routes = {
   ...capacityHandshakeRoutes({
@@ -3804,12 +3944,13 @@ export const routes = {
     signupHandleAvailability,
   }),
   ...accountSecurityRoutes({ database: db, ApiError, requireSessionUser, limit, verifyPassword,
-    hashPassword, atomicWrite, createSession,
+    hashPassword, atomicWrite, createSession, proveAndGrant: linkedAccounts.proveAndGrant,
     cancelSignup: (user, ctx, hash) => routes["DELETE /api/me"]({ ...ctx, user,
       body: { onboardingOnly: true }, [SIGNUP_CANCELLATION]: hash,
       clearSession: () => { if (ctx.user?.id === user.id) ctx.clearSession?.(); },
     }),
   }),
+  ...linkedAccounts.routes,
   ...cityGuideRoutes({ database: db, ApiError, requireAdmin, rateLimit: limit, now }),
   ...artistBiographyRoutes({ database: db, ApiError, requireAdmin, rateLimit: limit, now, publicArtist }),
   ...artistRecommendationRoutes({
@@ -4933,10 +5074,9 @@ export const routes = {
     if (v.termsVersion !== CURRENT_TERMS_VERSION) {
       throw new ApiError(400, "Accept the current Terms & Conditions and Privacy policy to create an account.", "VALIDATION_FAILED");
     }
-    // Do the expensive password work before the existence check so registered
-    // and new addresses have the same dominant timing cost. The response and
-    // cookie behavior below are also identical: signup must not be an account
-    // lookup oracle.
+    // Report the actual signup outcome. Account identities are disclosed only
+    // after the submitted password authenticates them, never by email alone.
+    ctx.setHeader?.("Cache-Control", "no-store");
     const passwordHash = hashPassword(v.password);
     const cancelToken = randomBytes(32).toString("base64url");
     const cancelHash = createHash("sha256").update(cancelToken).digest("hex");
@@ -4948,22 +5088,30 @@ export const routes = {
         throw new ApiError(401, "Confirm the current account's password to add an account with this email.", "AUTH_INVALID");
       }
     }
-    const existing = q.userByEmail.get(v.email);
+    const existingAccounts = q.usersByEmail.all(v.email);
+    const matching = [];
+    for (let slot = 0; slot < 2; slot++) {
+      if (verifyPasswordForUser(v.password, existingAccounts[slot]?.pass_hash)) matching.push(existingAccounts[slot]);
+    }
+    const createAdditional = ctx.body?.createAdditional === true;
+    if (!addingAccount && matching.length && !createAdditional) {
+      return { ok: true, needsAccountChoice: true, canCreate: existingAccounts.length < 2,
+        accounts: matching.map((user) => ({ id: user.id, name: user.name, handle: user.handle,
+          setupIncomplete: user.onboarding_version === 0, emailVerified: !!user.email_verified_at })) };
+    }
+    if (createAdditional && !addingAccount && !matching.length) throw new ApiError(401, "Log in before adding an account with these credentials.", "AUTH_INVALID");
     const id = uid("u");
     const initials = (v.name.match(/\p{L}|\p{N}/gu) || ["?"]).slice(0, 2).join("").toUpperCase();
     const colors = ["#F2A65A", "#E0457B", "#5B8DEF", "#6FCF97", "#B98AE0", "#E8B65A"];
     const createdAt = now();
-    let created = null;
-    if (!existing || addingAccount) {
-      try {
-        atomicWrite(() => {
+    atomicWrite(() => {
           const accounts = q.usersByEmail.all(v.email);
-          if (!addingAccount && accounts.length) return;
+          if (createAdditional && !addingAccount && !accounts.some((user) => matching.some((proof) => proof.id === user.id && proof.pass_hash === user.pass_hash))) throw new ApiError(409, "Your account changed. Try signing up again.", "CONFLICT");
           if (addingAccount) {
             const actor = q.userById.get(ctx.user.id);
             if (!actor?.email_verified_at || actor.pass_hash !== ctx.user.pass_hash || cleanEmail(actor.email) !== v.email) throw new ApiError(409, "Your account changed. Log in again before adding an account.", "CONFLICT");
           }
-          if (accounts.length >= 2) throw new ApiError(409, "This email already has two accounts. Use another email for a third.", "CONFLICT");
+          if (accounts.length >= 2) throw new ApiError(409, "This email already has two accounts. Log in, reset your password, or use another email.", "CONFLICT");
           q.insertUser.run(id, v.email, v.name, privateSignupHandle(), passwordHash,
             "fan", v.city ?? null, v.lat ?? null, v.lng ?? null, initials, colors[Math.floor(Math.random() * colors.length)], createdAt);
           db.prepare("UPDATE users SET extras=? WHERE id=?").run(JSON.stringify({
@@ -4977,22 +5125,16 @@ export const routes = {
           // Migrated and staff-provisioned accounts keep NULL and stay exempt.
           db.prepare("UPDATE users SET age_band=?, dm_policy='mutuals', onboarding_version=0 WHERE id=?").run(v.ageBand, id);
           db.prepare("UPDATE users SET signup_cancel_hash=? WHERE id=?").run(cancelHash, id);
-        });
-        created = q.userById.get(id);
-      } catch (error) {
-        // A concurrent request for this address may win between the existence
-        // check and INSERT. Hide only that race; unrelated constraints and disk
-        // failures remain real errors.
-        if (addingAccount || !q.userByEmail.get(v.email)) throw error;
-      }
-    }
-    if (created) {
-      // Verification mail now; WELCOME remains held until confirmation. This is
-      // background work, but the public response never claims delivery and is
-      // exactly the same for an address that was already registered.
-      beginVerification(created);
-    }
-    return { ok: true, pending: true, cancelToken };
+    });
+    const created = q.userById.get(id);
+    beginVerification(created);
+    // Only the new, unverified fan account receives this limited session.
+    // The verification gate blocks all public/social mutations until confirmed.
+    const session = createSession(id, ctx.ip, ctx.ua);
+    linkedAccounts.proveAndGrant({ userId: id, password: v.password, token: session.token });
+    ctx.setSession(session);
+    return { ok: true, created: true, verificationRequired: true, cancelToken,
+      user: publicUser(q.userById.get(id), { self: true }) };
   },
 
   "POST /api/login": (ctx) => {
@@ -5022,9 +5164,21 @@ export const routes = {
     // Banned accounts receive a restricted session so the account gate can
     // still offer export and permanent deletion. Social routes continue to
     // fail through requireUser(); the self projection carries the restriction.
-    const sess = createSession(u.id, ctx.ip, ctx.ua);
-    ctx.setSession(sess);
-    return { user: publicUser(u, { self: true }) };
+    // Scrypt runs before the writer lock, but its snapshot must still be the
+    // live credential when a session is issued. A concurrent reset can revoke
+    // sessions between verification and this point; stale proof must not mint
+    // another cookie after that revocation has committed.
+    const authenticated = atomicWrite(() => {
+      const current = q.userById.get(u.id);
+      if (!current || current.pass_hash !== u.pass_hash || cleanEmail(current.email) !== v.email) {
+        throw new ApiError(401, "Wrong email or password.", "AUTH_INVALID");
+      }
+      const session = createSession(current.id, ctx.ip, ctx.ua);
+      return { session, user: q.userById.get(current.id) };
+    });
+    linkedAccounts.proveAndGrant({ userId: authenticated.user.id, password: v.password, token: authenticated.session.token });
+    ctx.setSession(authenticated.session);
+    return { user: publicUser(authenticated.user, { self: true }) };
   },
 
   "POST /api/logout": (ctx) => {
@@ -5110,6 +5264,7 @@ export const routes = {
       db.prepare("DELETE FROM sessions WHERE user_id=?").run(u.id); // sign out everywhere else
       return createSession(u.id, ctx.ip, ctx.ua);
     });
+    linkedAccounts.proveAndGrant({ userId: u.id, password, token: sess.token });
     ctx.setSession(sess);
     return { user: publicUser(q.userById.get(u.id), { self: true }) };
   },
@@ -5511,8 +5666,7 @@ export const routes = {
       if (!verifyPassword(password, u.pass_hash)) throw new ApiError(401, "That password doesn't match your account.", "AUTH_INVALID");
     }
 
-    db.exec("BEGIN IMMEDIATE");
-    try {
+    atomicWrite(() => {
       if (!ctx[SIGNUP_CANCELLATION] && q.userById.get(u.id)?.pass_hash !== u.pass_hash) throw new ApiError(409, "Your password changed. Log in again before deleting this account.", "CONFLICT");
       if (ctx.body?.onboardingOnly === true) {
         const current = q.userById.get(u.id);
@@ -5521,120 +5675,8 @@ export const routes = {
           throw new ApiError(409, "Setup was already finished or changed. Use Delete account in Settings instead.", "CONFLICT");
         }
       }
-      const accountReportWhere = `reporter_id=?
-        OR (target_type='user' AND target_id=?)
-        OR (target_type='post' AND target_id IN (SELECT id FROM posts WHERE user_id=?))
-        OR (target_type='comment' AND target_id IN (SELECT id FROM comments WHERE user_id=?))
-        OR (target_type='message' AND target_id IN (SELECT id FROM dms WHERE from_id=? OR to_id=?))
-        OR (target_type='fan_message' AND target_id IN (SELECT id FROM fan_club_messages WHERE user_id=?))
-        OR (target_type='lounge_message' AND target_id IN (SELECT id FROM lounge_messages WHERE user_id=?))
-        OR (target_type='venue_review' AND target_id IN (SELECT id FROM venue_reviews WHERE user_id=?))
-        OR (target_type='artist_post' AND target_id IN (SELECT id FROM artist_posts WHERE user_id=?))
-        OR (target_type='artist_profile' AND target_id IN (
-          SELECT artist_key FROM artist_profiles WHERE owner_id=?
-        ))`;
-      const accountReportParams = [u.id, u.id, u.id, u.id, u.id, u.id, u.id, u.id, u.id, u.id, u.id];
-
-      // Reactions are keyed by durable media URL rather than a post FK. Remove
-      // both exact attachments and every canonical object path owned by this
-      // account so another person's like cannot keep the deleted user id alive.
-      const authoredMediaUrls = [
-        u.avatar_uri,
-        u.banner,
-        ...db.prepare("SELECT photos FROM posts WHERE user_id=?").all(u.id),
-        ...db.prepare("SELECT photos FROM venue_reviews WHERE user_id=?").all(u.id),
-        ...db.prepare(`SELECT
-          CASE WHEN COALESCE(avatar_owner_id,owner_id)=? THEN avatar_uri END avatar_uri,
-          CASE WHEN COALESCE(banner_owner_id,owner_id)=? THEN banner END banner
-          FROM artist_profiles
-          WHERE COALESCE(avatar_owner_id,owner_id)=?
-            OR COALESCE(banner_owner_id,owner_id)=?`).all(u.id, u.id, u.id, u.id),
-      ].flatMap((value) => {
-        if (typeof value === "string") return [value];
-        if (value && Object.hasOwn(value, "photos")) return parseJsonArray(value.photos);
-        return [value?.avatar_uri, value?.banner].filter(Boolean);
-      });
-
-      // Bootstrap any trusted pre-ledger associations, then queue the complete
-      // owner ledger. That second step is what catches a successful direct
-      // upload that never became a post/profile after a lost response or an
-      // abandoned composer. Both writes are inside this account transaction and
-      // survive the user/content cascades below.
-      enqueueOwnedMediaUrls(db, { ownerId: u.id, urls: authoredMediaUrls, at: now() });
-      enqueueAllOwnedMedia(db, { ownerId: u.id, at: now() });
-      enqueueOwnerMediaSweep(db, { ownerId: u.id, at: now() });
-      db.prepare(`DELETE FROM media_reactions
-        WHERE post_id IN (SELECT id FROM posts WHERE user_id=?) OR instr(media_url, ?) > 0`)
-        .run(u.id, `users/${encodeURIComponent(u.id)}/`);
-      const deleteReactionForUrl = db.prepare("DELETE FROM media_reactions WHERE media_url=?");
-      for (const mediaUrl of new Set(authoredMediaUrls)) deleteReactionForUrl.run(mediaUrl);
-
-      // The moderation ledger intentionally contains ids and bounded state JSON.
-      // There is no documented retention basis after account erasure, so delete
-      // actions performed by this account and actions about its reports/content.
-      db.prepare(`DELETE FROM moderation_actions WHERE target_type='report'
-        AND target_id IN (SELECT id FROM reports WHERE ${accountReportWhere})`).run(...accountReportParams);
-      db.prepare(`DELETE FROM moderation_actions WHERE actor_id=?
-        OR (target_type='user' AND target_id=?)
-        OR (target_type='post' AND target_id IN (SELECT id FROM posts WHERE user_id=?))
-        OR (target_type='comment' AND target_id IN (SELECT id FROM comments WHERE user_id=?))
-        OR (target_type='message' AND target_id IN (SELECT id FROM dms WHERE from_id=? OR to_id=?))
-        OR (target_type='fan_message' AND target_id IN (SELECT id FROM fan_club_messages WHERE user_id=?))
-        OR (target_type='lounge_message' AND target_id IN (SELECT id FROM lounge_messages WHERE user_id=?))
-        OR (target_type='venue_review' AND target_id IN (SELECT id FROM venue_reviews WHERE user_id=?))
-        OR (target_type='artist_post' AND target_id IN (SELECT id FROM artist_posts WHERE user_id=?))
-        OR (target_type='artist_profile' AND target_id IN (
-          SELECT artist_key FROM artist_profiles WHERE owner_id=?
-        ))`)
-        .run(u.id, u.id, u.id, u.id, u.id, u.id, u.id, u.id, u.id, u.id, u.id);
-
-      // Campaign queues/logs deliberately have no user FK. Clear both identity
-      // columns because old rows may have only one of them populated, and ensure
-      // no already-queued campaign can send after the account is gone.
-      const hasSibling = q.usersByEmail.all(u.email).some((entry) => entry.id !== u.id);
-      for (const table of ["email_queue", "email_log"]) {
-        db.prepare(`DELETE FROM ${table} WHERE user_id=? OR (?=0 AND (user_id IS NULL OR user_id='') AND lower(to_email)=lower(?))`).run(u.id, hasSibling ? 1 : 0, u.email);
-      }
-
-      // Durable staff-created artifacts survive their creator, but must no longer
-      // identify the erased account. Badge grant notes are author-entered, so the
-      // attribution and note are removed together.
-      db.prepare("UPDATE custom_badges SET created_by=NULL WHERE created_by=?").run(u.id);
-      db.prepare("UPDATE user_badges SET granted_by=NULL,note='' WHERE granted_by=?").run(u.id);
-      db.prepare("UPDATE track_overrides SET set_by=NULL WHERE set_by=?").run(u.id);
-      db.prepare("UPDATE track_source_overrides SET set_by=NULL WHERE set_by=?").run(u.id);
-      db.prepare("UPDATE email_templates SET updated_by=NULL WHERE updated_by=?").run(u.id);
-      db.prepare("UPDATE email_campaigns SET created_by=NULL WHERE created_by=?").run(u.id);
-
-      // These relationships use ON DELETE SET NULL so shared rows can normally
-      // survive account changes. Deletion is a privacy erasure, so remove the
-      // account's authored/attributable records instead of leaving them behind.
-      db.prepare("DELETE FROM notifications WHERE actor_id=?").run(u.id);
-      db.prepare("DELETE FROM events WHERE user_id=?").run(u.id);
-      db.prepare(`DELETE FROM reports WHERE ${accountReportWhere}`).run(...accountReportParams);
-      db.prepare("DELETE FROM artist_posts WHERE user_id=?").run(u.id);
-      // Clear only slots actually uploaded by this account before its user row
-      // can SET NULL their provenance. Claimed pages containing another
-      // account's seeded art survive as clean, unclaimed catalog overlays;
-      // claimant-authored bio/feed state does not.
-      eraseLegacyMediaFinalizeDescriptors(db, { ownerId: u.id, at: now() });
-      db.prepare(`DELETE FROM artist_profiles
-        WHERE owner_id=? AND NOT (
-          (avatar_uri IS NOT NULL AND avatar_owner_id IS NOT NULL AND avatar_owner_id<>?)
-          OR (banner IS NOT NULL AND banner_owner_id IS NOT NULL AND banner_owner_id<>?)
-        )`).run(u.id, u.id, u.id);
-      db.prepare(`UPDATE artist_profiles
-        SET owner_id=NULL,bio=NULL,feed_enabled=0,updated_at=?
-        WHERE owner_id=?`).run(now(), u.id);
-      // Structured post tags are JSON rather than foreign-key rows, so account
-      // erasure must explicitly remove this id from posts authored by others.
-      scrubTaggedUserFromPosts(u.id);
-      db.prepare("DELETE FROM users WHERE id=?").run(u.id);
-      db.exec("COMMIT");
-    } catch (error) {
-      try { db.exec("ROLLBACK"); } catch {}
-      throw error;
-    }
+      eraseAccountData(q.userById.get(u.id), { at: now() });
+    });
     ctx.clearSession?.();
     return { ok: true };
   },

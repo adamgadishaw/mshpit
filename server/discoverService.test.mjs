@@ -67,9 +67,9 @@ function fixture() {
     CREATE TABLE users (
       id TEXT PRIMARY KEY,
       is_banned INTEGER NOT NULL DEFAULT 0,
-      suspended_until INTEGER
+      suspended_until INTEGER,dormant_at INTEGER
     );
-    INSERT INTO users VALUES ('member-1', 0, NULL), ('member-2', 0, NULL), ('banned-member', 1, NULL);
+    INSERT INTO users (id,is_banned,suspended_until) VALUES ('member-1', 0, NULL), ('member-2', 0, NULL), ('banned-member', 1, NULL);
     CREATE TABLE plays (artist TEXT, user_id TEXT, created_at INTEGER);
     CREATE TABLE posts (
       id TEXT PRIMARY KEY,user_id TEXT NOT NULL,artist TEXT NOT NULL,artist_key TEXT,

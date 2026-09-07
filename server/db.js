@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
 import { PIT_SQLITE_APPLICATION_ID, prepareDataDirectory } from "./dataDirectory.js";
 import { contentSafetyDecision } from "./contentSafety.js";
 import { canonicalProfileExtras } from "./profileExtras.js";
-import { handleChangeAvailableAt } from "./features/accountOnboarding/signupHandle.js";
+import { handleChangeAvailableAt, pendingSignupHandle } from "./features/accountOnboarding/signupHandle.js";
 import { legacyTrackOverrideIdentityKey, trackOverrideIdentityKey } from "./trackIdentity.js";
 import { normalizeTaggedUserIds } from "../src/domain/postFriendTags.mjs";
 import { privateErrorLabel } from "./errors.js";
@@ -30,6 +30,7 @@ import { ensureShowSchema } from "./features/shows/showSchema.js";
 import { ensureLoungeSchema } from "./features/lounges/loungeSchema.js";
 import { ensureCitySchema } from "./features/cities/citySchema.js";
 import { ensureSharedEmailSchema } from "./features/accountOnboarding/sharedEmailSchema.js";
+import { ensureAccountLifecycleSchema } from "./features/accountLifecycle/accountLifecycleSchema.js";
 
 export const artistSearchKey = (value) => String(value || "")
   .normalize("NFKD")
@@ -2401,6 +2402,7 @@ if (!db.prepare("SELECT 1 FROM app_meta WHERE key=?").get(isoDateMigration)) {
 }
 
 ensureSharedEmailSchema(db);
+ensureAccountLifecycleSchema(db);
 
 // --- tiny helpers ------------------------------------------------------------
 export const q = {
@@ -3066,6 +3068,7 @@ export function publicUser(u, { self = false, badges = false } = {}) {
       directMessagePolicy: u.dm_policy || "mutuals",
       profileAudience: u.profile_audience || "everyone",
       emailVerified: !!u.email_verified_at,
+      ...(!u.email_verified_at ? { pendingSignupHandle: pendingSignupHandle(parseJsonObject(u.extras)) || null } : {}),
       handleChangeAvailableAt: handleChangeAvailableAt(u.handle_changed_at),
       ...(Number.isSafeInteger(onboardingVersion) && onboardingVersion >= 0 ? { onboardingVersion } : {}),
       marketingOptOut: !!u.marketing_opt_out || !u.marketing_consent_at,

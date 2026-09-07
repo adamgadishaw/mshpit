@@ -10,7 +10,7 @@ function fixture() {
       id TEXT PRIMARY KEY,name TEXT,handle TEXT,initials TEXT,avatar_uri TEXT,avatar_color TEXT,
       verified INTEGER DEFAULT 0,role TEXT DEFAULT 'fan',home_city TEXT,home_lat REAL,home_lng REAL,
       genres TEXT DEFAULT '[]',favorite_artists TEXT DEFAULT '[]',is_banned INTEGER DEFAULT 0,
-      suspended_until INTEGER,profile_updated_at INTEGER DEFAULT 0,profile_audience TEXT DEFAULT 'everyone'
+      suspended_until INTEGER,dormant_at INTEGER,profile_updated_at INTEGER DEFAULT 0,profile_audience TEXT DEFAULT 'everyone'
     );
     CREATE TABLE follows (follower_id TEXT,followee_id TEXT,PRIMARY KEY(follower_id,followee_id));
     CREATE TABLE blocks (blocker_id TEXT,blocked_id TEXT,PRIMARY KEY(blocker_id,blocked_id));

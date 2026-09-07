@@ -138,7 +138,8 @@ export async function deliver({ to, userId = null, kind = "transactional", templ
 
   const result = await sendEmail({ to, subject, html, text, idempotencyKey });
   writeLog({ ...base, status: result.sent ? "sent" : "failed", reason: result.sent ? null : result.reason });
-  return { sent: result.sent, reason: result.reason ?? null };
+  return { sent: result.sent, reason: result.reason ?? null,
+    ...(result.providerId ? { providerId: result.providerId } : {}) };
 }
 
 /**

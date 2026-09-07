@@ -12,7 +12,7 @@ delete process.env.RESEND_API_KEY;
 delete process.env.MAIL_FROM;
 const { db, q, publicUser } = await import("./db.js");
 const { routes } = await import("./api.js");
-const { resetRateLimitsForTests } = await import("./auth.js");
+const { getSession, resetRateLimitsForTests } = await import("./auth.js");
 const { completeVerification, forceVerify, mintVerifyToken } = await import("./verification.js");
 
 after(() => {
@@ -39,7 +39,7 @@ function signup(handle, overrides = {}) {
   let session = null;
   const result = routes["POST /api/signup"]({ body, ip: `signup-handle-ip-${sequence}`, ua: "test",
     setSession(value) { session = value; } });
-  return { result, session, user: q.userByEmail.get(body.email), body };
+  return { result, session, user: result.user?.id ? q.userById.get(result.user.id) : q.userByEmail.get(body.email), body };
 }
 function availability(handle, extra = {}) {
   const headers = new Map();
@@ -75,17 +75,20 @@ test("claimed staff and member handles cannot be chosen regardless of target ema
   apiError(() => signup("ab", { email: existing.email }), 400, "VALIDATION_FAILED");
 });
 
-test("signup preference cannot turn public availability into an email existence oracle", () => {
+test("signup keeps preferred handles private and never overwrites a sibling", () => {
   const existing = addUser("privacy_existing");
   const old = { ...existing };
   const first = signup("private_preference");
   const duplicate = signup("private_preference", { email: existing.email });
-  assert.deepEqual(first.result, { ok: true, pending: true, cancelToken: first.result.cancelToken });
-  assert.match(first.result.cancelToken, /^[A-Za-z0-9_-]{43}$/);
-  assert.deepEqual(duplicate.result, { ...first.result, cancelToken: duplicate.result.cancelToken });
-  assert.match(duplicate.result.cancelToken, /^[A-Za-z0-9_-]{43}$/);
-  assert.equal(first.session, null);
-  assert.equal(duplicate.session, null);
+  for (const created of [first, duplicate]) {
+    assert.equal(created.result.created, true);
+    assert.equal(created.result.verificationRequired, true);
+    assert.equal(created.result.user.emailVerified, false);
+    assert.equal(created.result.user.id, created.user.id);
+    assert.match(created.result.cancelToken, /^[A-Za-z0-9_-]{43}$/);
+    assert.equal(getSession(created.session.token).user_id, created.user.id);
+  }
+  assert.notEqual(duplicate.user.id, existing.id);
   assert.match(first.user.handle, /^pitfan_[a-f0-9]{8}/u);
   assert.equal(JSON.parse(first.user.extras).pendingSignupHandle, "private_preference");
   assert.deepEqual(availability("private_preference"), { handle: "private_preference", available: true });
@@ -93,15 +96,23 @@ test("signup preference cannot turn public availability into an email existence 
   assert.equal(q.userById.get(existing.id).pass_hash, old.pass_hash);
   assert.equal(q.userById.get(existing.id).handle, old.handle);
   assert.equal(JSON.stringify(publicUser(first.user)).includes("private_preference"), false);
-  assert.equal(JSON.stringify(publicUser(first.user, { self: true })).includes("private_preference"), false);
+  assert.equal(publicUser(first.user, { self: true }).pendingSignupHandle, "private_preference");
+  assert.equal(publicUser(first.user).pendingSignupHandle, undefined);
   const repeated = signup("another_preference", { email: first.user.email });
-  assert.deepEqual(repeated.result, { ...first.result, cancelToken: repeated.result.cancelToken });
+  assert.equal(repeated.result.needsAccountChoice, true);
+  assert.equal(repeated.result.accounts[0].id, first.user.id);
+  assert.equal(repeated.result.cancelToken, undefined);
+  assert.equal(repeated.session, null);
+  assert.equal(q.usersByEmail.all(first.user.email).length, 1);
   assert.equal(JSON.parse(repeated.user.extras).pendingSignupHandle, "private_preference");
 });
 
 test("signup remains compatible without a handle or city and does not store invented coordinates", () => {
   const created = signup(undefined);
-  assert.deepEqual(created.result, { ok: true, pending: true, cancelToken: created.result.cancelToken });
+  assert.equal(created.result.created, true);
+  assert.equal(created.result.verificationRequired, true);
+  assert.equal(created.result.user.emailVerified, false);
+  assert.equal(getSession(created.session.token).user_id, created.user.id);
   assert.match(created.user.handle, /^pitfan_[a-f0-9]{8}/u);
   assert.equal(created.user.home_city, null);
   assert.equal(created.user.home_lat, null);
@@ -120,6 +131,7 @@ test("verification atomically claims a preference once and keeps initial edit fr
   assert.equal(availability("my_new_handle").available, false);
   assert.equal(completeVerification(token).user.handle, "my_new_handle");
   assert.equal(publicUser(completed.user, { self: true }).handleChangeAvailableAt, null);
+  assert.equal(publicUser(completed.user, { self: true }).pendingSignupHandle, undefined);
 });
 
 test("two concurrent preferences may coexist, but only the first verified account claims the handle", () => {
@@ -168,7 +180,8 @@ test("private preference survives profile extras edits but cannot be forged thro
   const created = signup("keep_preference");
   const saved = routes["PATCH /api/me"]({ user: created.user, body: { extras: { theme: "neon" } }, ip: "pending-extras" });
   assert.equal(JSON.parse(q.userById.get(created.user.id).extras).pendingSignupHandle, "keep_preference");
-  assert.equal(JSON.stringify(saved).includes("keep_preference"), false);
+  assert.equal(saved.user.pendingSignupHandle, "keep_preference");
+  assert.equal(JSON.stringify(publicUser(q.userById.get(created.user.id))).includes("keep_preference"), false);
   assert.throws(() => routes["PATCH /api/me"]({ user: q.userById.get(created.user.id),
     body: { extras: { pendingSignupHandle: "forged_preference" } }, ip: "forged-pending-extras" }), (error) => error.status === 400);
   assert.equal(forceVerify(created.user.id).handle, "keep_preference");

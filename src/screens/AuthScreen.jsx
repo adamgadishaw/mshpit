@@ -13,7 +13,6 @@ import { PROFILE_GENRE_MAX, PROFILE_GENRE_OPTIONS } from "../domain/genrePrefere
 import { cleanHandle, isEmail } from "../domain/validation.mjs";
 import { signupAccountError, signupAriaProps, signupFormPayload, signupHandlePresentation, signupMusicError } from "../domain/signupForm.mjs";
 import { useSignupHandleAvailability } from "../features/signupHandle/useSignupHandleAvailability";
-import { cancelSignupRequest } from "../features/signupOnboarding/accountSecurityService";
 
 const readableError = (error, fallback) => String(typeof error === "string" ? error : error?.userMessage || error?.message || fallback).slice(0, 280);
 const controlStyle = (base, disabled = false) => ({ pressed, focused }) => [base, disabled && styles.disabled, pressed && !disabled && styles.pressed, focused && focusRing];
@@ -33,8 +32,7 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login", ad
   const [email, setEmail] = useState(addAccount ? session?.email || "" : initialEmail);
   const [currentPassword, setCurrentPassword] = useState("");
   const [accounts, setAccounts] = useState(null);
-  const [cancelToken, setCancelToken] = useState(null);
-  const [cancelPrompt, setCancelPrompt] = useState(false);
+  const [signupChoice, setSignupChoice] = useState(null);
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [city, setCity] = useState(null);
@@ -46,7 +44,6 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login", ad
   const [pickingCity, setPickingCity] = useState(false);
   const [viewing, setViewing] = useState(null);
   const [sentTo, setSentTo] = useState(null);
-  const [signupSubmitted, setSignupSubmitted] = useState(false);
   const [busyAction, setBusyAction] = useState(null);
   const [error, setError] = useState("");
   const [errorField, setErrorField] = useState(null);
@@ -60,7 +57,7 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login", ad
   const authBusy = busyAction === "auth";
   const resetBusy = busyAction === "reset";
   const busy = !!busyAction;
-  const availability = useSignupHandleAvailability(handle, { enabled: signupMode && !signupSubmitted && !viewing && !pickingCity });
+  const availability = useSignupHandleAvailability(handle, { enabled: signupMode && !signupChoice && !viewing && !pickingCity });
   const handleStatus = signupHandlePresentation(availability.resource, handle);
   const currentAvailability = availability.resource.status === "ready" ? availability.resource.data : null;
 
@@ -68,7 +65,7 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login", ad
   useEffect(() => {
     scroll.current?.scrollTo?.({ y: 0, animated: false });
     if (!error) heading.current?.focus?.();
-  }, [mode, step, signupSubmitted, sentTo, viewing, pickingCity]);
+  }, [mode, step, signupChoice, sentTo, viewing, pickingCity]);
   useEffect(() => {
     if (!error) return;
     const target = inputs.current[errorField] || errorRef.current;
@@ -80,7 +77,7 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login", ad
   const showError = (failure) => { setError(failure.message); setErrorField(failure.field || null); };
   const changeMode = (next) => {
     if (busyRef.current) return;
-    setAccounts(null); setPassword(""); setCurrentPassword("");
+    setAccounts(null); setSignupChoice(null); setPassword(""); setCurrentPassword("");
     setMode(next); setStep(1); setSentTo(null); setShowPassword(false); clearError();
   };
   const accountValues = () => ({ name, handle, email, password });
@@ -93,11 +90,12 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login", ad
     if (failure) { showError(failure); return; }
     clearError(); setStep(2);
   };
-  const submit = async (accountId) => {
+  const submit = async (accountId, { createAdditional = false, useExisting = false } = {}) => {
     if (typeof accountId !== "string") accountId = undefined;
     if (busyRef.current) return;
-    if (signupMode && step === 1) { advance(); return; }
-    if (signupMode) {
+    const creating = signupMode && !useExisting;
+    if (creating && step === 1) { advance(); return; }
+    if (creating) {
       const accountError = accountFailure();
       if (accountError) { setStep(1); showError(accountError); return; }
       const musicFailure = signupMusicError({ genres, ageBand, agreed });
@@ -108,16 +106,16 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login", ad
     }
     clearError(); busyRef.current = true; setBusyAction("auth");
     try {
-      const result = signupMode
-        ? await signup({ ...signupFormPayload({ ...accountValues(), city, genres, ageBand, agreed, analyticsConsent }), ...(addAccount ? { addAccount, currentPassword } : {}) })
+      const result = creating
+        ? await signup({ ...signupFormPayload({ ...accountValues(), city, genres, ageBand, agreed, analyticsConsent }), ...(addAccount ? { addAccount, currentPassword } : {}), createAdditional })
         : await login(email.trim(), password, accountId);
       if (!mounted.current) return;
       if (result?.ok) {
-        if (result.chooseAccount) { setAccounts(result.accounts); return; }
+        if (result.needsAccountChoice) { setSignupChoice(result); return; }
+        if (result.chooseAccount) { setSignupChoice(null); setAccounts(result.accounts); return; }
         setPassword(""); setShowPassword(false);
         setAccounts(null); setCurrentPassword("");
-        if (signupMode && result.pending === true) { setSignupSubmitted(true); setCancelToken(result.cancelToken || null); }
-        else onDone?.(mode);
+        onDone?.(creating ? "signup" : "login");
       } else {
         const handleTaken = result?.error?.serverCode === "HANDLE_TAKEN" || result?.code === "HANDLE_TAKEN"
           || /username.*taken|handle.*taken/i.test(readableError(result?.error, ""));
@@ -133,18 +131,7 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login", ad
   };
   const close = () => {
     if (busyRef.current) return;
-    if (cancelToken) { setCancelPrompt(true); return; }
     setPassword(""); setCurrentPassword(""); setAccounts(null); onCancel?.();
-  };
-  const cancel = async () => {
-    if (busyRef.current) return;
-    busyRef.current = true; setBusyAction("cancel"); clearError();
-    try {
-      await cancelSignupRequest(cancelToken);
-      if (mounted.current) { setCancelToken(null); setPassword(""); onCancel?.(); }
-    } catch (failure) {
-      if (mounted.current) showError({ message: readableError(failure, "Cancellation could not be confirmed. Reconnect and try again.") });
-    } finally { busyRef.current = false; if (mounted.current) setBusyAction(null); }
   };
   const sendReset = async () => {
     if (busyRef.current) return;
@@ -205,38 +192,35 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login", ad
     <Text style={styles.primaryText}>{label}</Text>
     {!loading ? <Icon name="chevron-right" size={18} color="#1A1206" /> : null}
   </AuthPressable>;
-  const headingText = signupSubmitted ? "Check your email." : mode === "forgot" ? sentTo ? "Check your email." : "Back to your account."
+  const headingText = signupChoice || accounts ? "Choose your account." : mode === "forgot" ? sentTo ? "Check your email." : "Back to your account."
     : signupMode ? step === 1 ? "Make it your night." : "Find your kind of show." : "Good to see you.";
-  const subheading = signupSubmitted ? "One more step before your profile is ready." : mode === "forgot" ? "A reset link gets you back in."
+  const subheading = signupChoice || accounts ? "Choose which profile to open." : mode === "forgot" ? "A reset link gets you back in."
     : signupMode ? step === 1 ? "Start with your account details." : "Pick your music. We’ll take it from there." : "Your shows, photos and people are waiting.";
   const progress = { min: 1, max: 2, now: step, text: `Step ${step} of 2: ${step === 1 ? "Account" : "Music"}` };
 
   return <KeyboardAvoidingView style={[styles.wrap, { paddingTop: insets.top }]} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-    <SheetHeader title={signupSubmitted ? "Check your email" : mode === "forgot" ? "Reset password" : signupMode ? addAccount ? "Add account" : "Sign up" : "Log in"} onClose={close} leadDisabled={busy} />
+    <SheetHeader title={mode === "forgot" ? "Reset password" : signupMode ? addAccount ? "Add account" : "Sign up" : "Log in"} onClose={close} leadDisabled={busy} />
     <ScrollView ref={scroll} contentContainerStyle={[styles.content, { paddingBottom: Math.max(insets.bottom, 16) + 24 }]} contentInsetAdjustmentBehavior="automatic" keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag" automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}>
       <View style={styles.ticket}>
         <View style={styles.brandRow}><BrandMark size={30} color={colors.amber} /><View><Text style={styles.wordmark}>MSHPIT</Text><Text style={styles.slogan}>LIVE MUSIC, REMEMBERED</Text></View></View>
         <View style={styles.trim}><View style={styles.amberTrim} /><View style={styles.magentaTrim} /><View style={styles.coolTrim} /></View>
         <View style={styles.cardBody}>
-          {signupMode && !signupSubmitted ? <View style={styles.stepper} accessibilityRole="progressbar" accessibilityLabel="Account creation progress" accessibilityValue={progress} {...signupAriaProps(Platform.OS, {}, progress)}>
+          {signupMode && !signupChoice ? <View style={styles.stepper} accessibilityRole="progressbar" accessibilityLabel="Account creation progress" accessibilityValue={progress} {...signupAriaProps(Platform.OS, {}, progress)}>
             <Text style={styles.stepKicker}>STEP {step} OF 2</Text><Text style={styles.stepName}>{step === 1 ? "Account / Music next" : "Music / Almost there"}</Text>
           </View> : null}
           <Text ref={heading} tabIndex={-1} style={styles.title} accessibilityRole="header">{headingText}</Text>
           <Text style={styles.subtitle}>{subheading}</Text>
           {!!error ? <Text ref={errorRef} tabIndex={-1} style={styles.error} accessibilityRole="alert" accessibilityLiveRegion="assertive" selectable>{error}</Text> : null}
 
-          {cancelPrompt ? <>
-            <Text style={styles.subtitle}>Cancel signup? This deletes the unfinished account and queues its uploads for removal. An existing account is never deleted by this signup form. Closing your browser instead keeps unfinished setup available; it does not expire.</Text>
-            {primary("Delete unfinished signup", cancel, busy)}
-            {primary("Keep setting up", () => setCancelPrompt(false))}
+          {signupChoice ? <>
+            <Text style={styles.subtitle}>{signupChoice.canCreate ? "An account already uses this email and password. Continue with it, or create your second account. Nothing has been changed." : "These credentials already belong to an account. Choose a profile below. Nothing has been changed."}</Text>
+            {signupChoice.accounts.map((account) => <View key={account.id}>{primary(`${account.setupIncomplete ? "Continue setup" : "Log in"}: ${account.name} · @${account.handle}`, () => void submit(account.id, { useExisting: true }))}</View>)}
+            {signupChoice.canCreate ? primary("Create a second account", () => void submit(undefined, { createAdditional: true })) : <Text style={styles.hint}>This email has reached its two-account limit.</Text>}
+            {primary("Use a different email", () => { setSignupChoice(null); setPassword(""); setStep(1); })}
           </> : accounts ? <>
             <Text style={styles.subtitle}>This password matches two accounts. Which one would you like to use?</Text>
-            {accounts.map((account) => <View key={account.id}>{primary(`${account.name} · @${account.handle}`, () => void submit(account.id))}</View>)}
+            {accounts.map((account) => <View key={account.id}>{primary(`${account.name} · @${account.handle}`, () => void submit(account.id, { useExisting: true }))}</View>)}
             {primary("Use a different password", () => { setAccounts(null); setPassword(""); })}
-          </> : signupSubmitted ? <>
-            <View style={styles.note}><Icon name="mail" size={19} color={colors.amber} /><Text style={styles.noteText} accessibilityLiveRegion="polite" role="status">If this is a new email address, we sent a verification link. Your preferred @username is confirmed after verification, if it’s still available. If this address already has an account, log in or reset your password. For privacy, we show the same message either way.</Text></View>
-            <View style={styles.nextStep}><Icon name="you" size={18} color={colors.amber} /><Text style={styles.noteText}>Log in to finish setup. Confirm your email to claim your username, add a profile photo and banner. Cancelling before Finish setup deletes the unfinished account; interrupted setup does not expire. Already have an account? Add a second from Settings after signing in.</Text></View>
-            {primary("Continue to log in", () => { setSignupSubmitted(false); changeMode("login"); })}
           </> : mode === "forgot" ? sentTo ? <>
             <View style={styles.note}><Icon name="mail" size={19} color={colors.amber} /><Text style={styles.noteText} accessibilityLiveRegion="polite" role="status">If an account exists for {sentTo}, we’ve emailed a link to reset your password. It’s valid for 1 hour. Check spam if you don’t see it.</Text></View>
             {primary("Back to log in", () => changeMode("login"))}
@@ -295,7 +279,7 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login", ad
             <AuthPressable style={controlStyle(styles.textButton, busy)} onPress={() => changeMode(signupMode ? "login" : "signup")} disabled={busy} accessibilityRole="button"><Text style={styles.link}>{signupMode ? "Have an account? Log in" : "No account? Sign up"}</Text></AuthPressable>
           </>}
         </View>
-        {!signupSubmitted && mode !== "forgot" ? <View style={styles.ticketFooter}><Icon name="shield" size={16} color={colors.amber} /><Text style={styles.footerText}>Artist? Start with a personal account, then choose Claim artist profile. Every claim is reviewed.</Text></View> : null}
+        {mode !== "forgot" ? <View style={styles.ticketFooter}><Icon name="shield" size={16} color={colors.amber} /><Text style={styles.footerText}>Artist? Start with a personal account, then choose Claim artist profile. Every claim is reviewed.</Text></View> : null}
       </View>
     </ScrollView>
   </KeyboardAvoidingView>;

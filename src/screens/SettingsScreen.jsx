@@ -12,6 +12,7 @@ import { SUPPORT_EMAIL, SUPPORT_URL } from "../domain/contact.mjs";
 import { visibleThemeChoices } from "../domain/themeChoices.mjs";
 import AccountPasswordForm from "../features/signupOnboarding/AccountPasswordForm";
 import AuthScreen from "./AuthScreen";
+import AccountSwitcher from "../features/signupOnboarding/AccountSwitcher";
 
 const versionLabel = Constants.expoConfig?.version || "Unavailable";
 
@@ -58,8 +59,8 @@ function Toggle({ value, busy = false }) {
   );
 }
 
-export default function SettingsScreen({ onClose, onManageProfile, onOpenProfile, onOpenPrivacy, onOpenTerms, onOpenDiagnostics, onOpenDeleteAccount, onLogout }) {
-  const { session, deleteAccount, chooseTheme, blockedUsers, unblockUser, blockedDirectoryStatus, refreshBlockedDirectory, isBlockMutationPending, mutedUsers, unmuteUser, exportMyData, setAnalyticsEnabled, setProfileSearchIndexingEnabled, setDirectMessagePolicy, setAgeBandClassification, setProfileAudience, setAnnouncementEmailsEnabled } = useStore();
+export default function SettingsScreen({ onClose, onManageProfile, onOpenProfile, onOpenPrivacy, onOpenTerms, onOpenDiagnostics, onOpenDeleteAccount, onLogout, initialAccountAction = null }) {
+  const { session, deleteAccount, switchLinkedAccount, chooseTheme, blockedUsers, unblockUser, blockedDirectoryStatus, refreshBlockedDirectory, isBlockMutationPending, mutedUsers, unmuteUser, exportMyData, setAnalyticsEnabled, setProfileSearchIndexingEnabled, setDirectMessagePolicy, setAgeBandClassification, setProfileAudience, setAnnouncementEmailsEnabled } = useStore();
   const blocked = session ? blockedUsers() : [];
   const muted = session ? mutedUsers() : [];
   const [exporting, setExporting] = useState(false);
@@ -80,7 +81,7 @@ export default function SettingsScreen({ onClose, onManageProfile, onOpenProfile
   const [supportError, setSupportError] = useState(null);
   const [showMoreThemes, setShowMoreThemes] = useState(false);
   const [blockListMessage, setBlockListMessage] = useState(null);
-  const [accountAction, setAccountAction] = useState(null);
+  const [accountAction, setAccountAction] = useState(initialAccountAction);
   const analyticsEnabled = !!(session?.analyticsConsentAt || session?.consentAt) && !session?.analyticsOptOut;
   const profileSearchIndexingEnabled = session?.searchIndexingOptOut !== true;
   const announcementsEnabled = !session?.marketingOptOut;
@@ -159,7 +160,8 @@ export default function SettingsScreen({ onClose, onManageProfile, onOpenProfile
   };
 
   if (accountAction === "password") return <AccountPasswordForm key={session?.id} session={session} deleteAccount={deleteAccount} onClose={() => setAccountAction(null)} />;
-  if (accountAction === "switch" || accountAction === "add") return <AuthScreen key={`${session?.id}:${accountAction}`} initialMode={accountAction === "add" ? "signup" : "login"} initialEmail={session?.email || ""} addAccount={accountAction === "add"} onCancel={() => setAccountAction(null)} onDone={onClose} />;
+  if (accountAction === "switch") return <AccountSwitcher key={session?.id} session={session} switchAccount={switchLinkedAccount} onClose={onClose} onLogin={() => setAccountAction("login")} onAdd={() => setAccountAction("add")} />;
+  if (accountAction === "login" || accountAction === "add") return <AuthScreen key={`${session?.id}:${accountAction}`} initialMode={accountAction === "add" ? "signup" : "login"} initialEmail={session?.email || ""} addAccount={accountAction === "add"} onCancel={() => setAccountAction("switch")} onDone={onClose} />;
 
   return (
     <View style={styles.wrap}>
@@ -187,7 +189,7 @@ export default function SettingsScreen({ onClose, onManageProfile, onOpenProfile
           <>
             <Text style={styles.section}>ACCOUNT</Text>
             <Row icon="shield" label="Change password" sub="Only changes the password for this account" onPress={() => setAccountAction("password")} />
-            <Row icon="you" label="Switch account" sub="Enter your password, then choose if it matches both accounts" onPress={() => setAccountAction("switch")} />
+            <Row icon="you" label="Switch account" sub="Your connected profiles, without signing in again" onPress={() => setAccountAction("switch")} />
             <Row icon="plus" label="Add another account" sub={session.emailVerified ? "Up to two accounts with this email" : "Confirm your email first"} disabled={!session.emailVerified} onPress={() => setAccountAction("add")} />
             <Row icon="you" label={publicProfileLabel} sub={publicProfileDetail} onPress={onOpenProfile} />
             <Row

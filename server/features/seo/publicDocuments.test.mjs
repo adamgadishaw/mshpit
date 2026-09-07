@@ -22,7 +22,7 @@ function createDatabase() {
     CREATE TABLE users (
       id TEXT PRIMARY KEY,name TEXT NOT NULL,handle TEXT NOT NULL,artist_name TEXT,bio TEXT,
       avatar_uri TEXT,banner TEXT,created_at INTEGER NOT NULL,is_banned INTEGER NOT NULL DEFAULT 0,
-      suspended_until INTEGER,extras TEXT NOT NULL DEFAULT '{}',role TEXT NOT NULL DEFAULT 'fan',
+      suspended_until INTEGER,dormant_at INTEGER,extras TEXT NOT NULL DEFAULT '{}',role TEXT NOT NULL DEFAULT 'fan',
       profile_audience TEXT NOT NULL DEFAULT 'everyone'
     );
     CREATE TABLE artists (

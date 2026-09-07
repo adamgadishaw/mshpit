@@ -25,13 +25,27 @@ test("verified server account state opens the walkthrough on web and native", ()
   assert.doesNotMatch(app, /load\("pit\.welcomePending"/);
 });
 
-test("signup clearly continues into public profile setup after confirmation", () => {
+test("signup enters real account setup or a password-proven choice, never a false confirmation", () => {
   assert.match(auth, /handle/);
   assert.match(auth, /profile photo/i);
   assert.match(auth, /banner/);
-  assert.match(auth, /same message either way/);
+  assert.doesNotMatch(auth, /same message either way|signupSubmitted|result.pending/);
+  assert.match(auth, /result.needsAccountChoice/);
+  assert.match(auth, /Create a second account/);
+  assert.match(store, /response\?\.created === true && response.user\?\.id/);
   assert.match(app, /rightRailLayout.visible && !nav.auth/);
   assert.doesNotMatch(auth, /radius\.xl/);
+});
+
+test("the profile dropdown and settings offer an account-bound selector", () => {
+  assert.match(app, /label: "Switch account"/);
+  assert.match(app, /accountAction: "switch"/);
+  const settings = read("../screens/SettingsScreen.jsx");
+  const selector = read("../features/signupOnboarding/AccountSwitcher.jsx");
+  assert.match(settings, /<AccountSwitcher/);
+  assert.match(selector, /expectedAccountId: sourceId/);
+  assert.match(store, /result\?\.user\?\.id !== targetId/);
+  assert.match(store, /accountMutationEpochRef.current !== epoch/);
 });
 
 test("the walkthrough saves both profile images with account-bound confirmation and an explicit discard choice", () => {

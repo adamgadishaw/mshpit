@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
+import { LEGAL_ACCEPTANCE_VERSION } from "../src/domain/privacyDisclosures.mjs";
 
 const dataDir = mkdtempSync(join(tmpdir(), "pit-content-safety-routes-"));
 process.env.PIT_DATA_DIR = dataDir;
@@ -58,7 +59,7 @@ test("every public or social authored write rejects unsafe text before persisten
 
   const cases = [
     ["signup profile name", () => routes["POST /api/signup"](ctx(null, "signup", {
-      name: "White Power", email: "new-safety@example.com", password: "SafetyPass123", genres: ["Rock"], ageBand: "18_plus", termsVersion: "2026-09-07",
+      name: "White Power", email: "new-safety@example.com", password: "SafetyPass123", genres: ["Rock"], ageBand: "18_plus", termsVersion: LEGAL_ACCEPTANCE_VERSION,
     }))],
     ["profile handle", () => routes["PATCH /api/me"](ctx(member, "profile", { handle: "whitepower" }))],
     ["post body", () => routes["POST /api/posts"](ctx(member, "post-body", {

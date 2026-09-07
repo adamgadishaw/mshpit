@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
+import { LEGAL_ACCEPTANCE_VERSION } from "../src/domain/privacyDisclosures.mjs";
 
 const dataDir = mkdtempSync(join(tmpdir(), "pit-api-integrity-"));
 process.env.PIT_DATA_DIR = dataDir;
@@ -2799,23 +2800,26 @@ test("signup records Terms separately while optional analytics defaults off", ()
       city: "Toronto",
       genres: ["R&B", "Hip-Hop"],
       ageBand: "18_plus",
-      termsVersion: "2026-09-07",
+      termsVersion: LEGAL_ACCEPTANCE_VERSION,
       analyticsConsent: false,
     },
     setSession: (value) => { sessionCookie = value; },
   });
   const created = publicUser(q.userByEmail.get(email), { self: true });
-  assert.equal(sessionCookie, undefined);
-  assert.deepEqual(result, { ok: true, pending: true, cancelToken: result.cancelToken });
+  assert.ok(sessionCookie?.token);
+  assert.equal(result.created, true);
+  assert.equal(result.verificationRequired, true);
+  assert.equal(result.user.id, created.id);
+  assert.equal(result.user.emailVerified, false);
   assert.ok(created.termsAcceptedAt);
-  assert.equal(created.termsVersion, "2026-09-07");
+  assert.equal(created.termsVersion, LEGAL_ACCEPTANCE_VERSION);
   assert.equal(created.analyticsConsentAt, undefined);
   assert.equal(created.consentAt, undefined);
   assert.deepEqual(created.genres, ["R&B", "Hip-Hop"]);
   assert.throws(() => routes["POST /api/signup"]({
     ip: "signup-genres-test", ua: "integrity-test", body: {
       name: "No Genres", email: "no-genres@example.com", password: "privatepass123", city: "Toronto",
-      genres: [], ageBand: "18_plus", termsVersion: "2026-09-07",
+      genres: [], ageBand: "18_plus", termsVersion: LEGAL_ACCEPTANCE_VERSION,
     }, setSession: () => {},
   }), (error) => error.status === 400 && error.code === "VALIDATION_FAILED");
   assert.throws(() => routes["POST /api/signup"]({

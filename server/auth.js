@@ -12,7 +12,8 @@
 //   reset counters, while the in-process memory ceiling rejects new identities
 //   without discarding live limits.
 import { scryptSync, randomBytes, timingSafeEqual, createHash } from "node:crypto";
-import { q } from "./db.js";
+import { db, q } from "./db.js";
+import { recordInteractiveAccountActivity } from "./features/accountLifecycle/accountLifecycle.js";
 
 export const STANDARD_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 export const PRIVILEGED_SESSION_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours
@@ -67,7 +68,23 @@ export function createSession(userId, _ip, _ua) {
   // Keep the nullable legacy columns empty. They are not used for authorization
   // or account UI, so retaining them would add privacy exposure without a
   // security control in return.
-  q.insertSession.run(sha256(token), userId, now, now + ttl, "", "");
+  // Session issuance follows a successful explicit authentication boundary,
+  // including account switching and password recovery. Atomically fence stale
+  // inactivity work before issuing the session; nested password-change
+  // transactions remain valid because this uses a savepoint.
+  db.exec("SAVEPOINT authenticated_account_session");
+  try {
+    recordInteractiveAccountActivity(db, { userId, at: now, kind: "login", reactivate: true });
+    q.insertSession.run(sha256(token), userId, now, now + ttl, "", "");
+    db.exec("RELEASE authenticated_account_session");
+  } catch (error) {
+    try {
+      db.exec("ROLLBACK TO authenticated_account_session; RELEASE authenticated_account_session");
+    } catch (rollbackError) {
+      throw new AggregateError([error, rollbackError], "Session issuance and rollback failed");
+    }
+    throw error;
+  }
   return { token, expiresAt: now + ttl };
 }
 

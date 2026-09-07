@@ -9,8 +9,8 @@ const NOW = Date.parse("2026-09-07T02:00:00Z");
 function fixture() {
   const database = registerPitSqliteFunctions(new DatabaseSync(":memory:"));
   database.exec(`
-    CREATE TABLE users (id TEXT PRIMARY KEY,is_banned INTEGER DEFAULT 0,suspended_until INTEGER);
-    INSERT INTO users VALUES ('member',0,NULL),('banned',1,NULL),('suspended',0,9999999999999);
+    CREATE TABLE users (id TEXT PRIMARY KEY,is_banned INTEGER DEFAULT 0,suspended_until INTEGER,dormant_at INTEGER);
+    INSERT INTO users (id,is_banned,suspended_until) VALUES ('member',0,NULL),('banned',1,NULL),('suspended',0,9999999999999);
     CREATE TABLE artists (norm TEXT PRIMARY KEY,name TEXT,mbid TEXT);
     CREATE TABLE artist_memorials (artist_key TEXT,artist_mbid TEXT,status TEXT);
     CREATE TABLE tour_dates (

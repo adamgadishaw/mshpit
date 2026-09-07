@@ -90,9 +90,44 @@ export async function sendEmail({ to, subject, html, text, idempotencyKey }) {
       console.warn(`[mail] send failed status=${r.status} reason=${reason}`);
       return { ok: false, sent: false, reason: r.status === 403 ? "sender-not-verified" : "send-failed" };
     }
-    return { ok: true, sent: true };
+    // HTTP success means accepted, not delivered. Preserve the opaque provider
+    // ID for callers that require a separately verified delivery receipt.
+    let providerId = null;
+    try {
+      const body = typeof r.json === "function" ? await r.json() : null;
+      if (validProviderEmailId(body?.id)) providerId = body.id;
+    } catch (error) {
+      console.warn(`[mail] accepted message receipt unavailable cause=${mailFailureLabel(error)}`);
+    }
+    return { ok: true, sent: true, ...(providerId ? { providerId } : {}) };
   } catch (e) {
     console.warn(`[mail] transport error cause=${mailFailureLabel(e)}`);
     return { ok: false, sent: false, reason: "error" };
+  }
+}
+
+const validProviderEmailId = (id) => typeof id === "string"
+  && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+
+// Resend's retrieve endpoint reports delivery independently of send acceptance.
+// Sending-only API keys, missing/expired records, recipient mismatches, pending
+// or bounced mail, malformed responses and transport errors all fail closed.
+export async function getEmailDeliveryReceipt({ providerId, to, signal } = {}) {
+  if (!validProviderEmailId(providerId) || !to || !process.env.RESEND_API_KEY) return { delivered: false };
+  try {
+    const response = await fetch(`https://api.resend.com/emails/${providerId}`, {
+      method: "GET", redirect: "error",
+      headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, "User-Agent": "PitConcertApp/1.0 (https://mshpit.com)" },
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(10_000)]) : AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) return { delivered: false };
+    const record = await response.json();
+    const recipients = Array.isArray(record?.to) ? record.to : [];
+    if (record?.id !== providerId || record.last_event !== "delivered" || recipients.length !== 1
+      || String(recipients[0]).trim().toLowerCase() !== String(to).trim().toLowerCase()) return { delivered: false };
+    return { delivered: true, receiptId: `resend:${providerId}:delivered` };
+  } catch (error) {
+    console.warn(`[mail] delivery lookup unavailable cause=${mailFailureLabel(error)}`);
+    return { delivered: false };
   }
 }

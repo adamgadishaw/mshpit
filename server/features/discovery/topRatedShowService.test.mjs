@@ -113,7 +113,7 @@ function fixture() {
   const database = new DatabaseSync(":memory:");
   database.exec(`
     CREATE TABLE users (
-      id TEXT PRIMARY KEY,is_banned INTEGER NOT NULL DEFAULT 0,suspended_until INTEGER
+      id TEXT PRIMARY KEY,is_banned INTEGER NOT NULL DEFAULT 0,suspended_until INTEGER,dormant_at INTEGER
     );
     CREATE TABLE posts (
       id TEXT PRIMARY KEY,user_id TEXT NOT NULL,artist TEXT NOT NULL,artist_key TEXT,
@@ -128,7 +128,7 @@ function fixture() {
     );
     CREATE INDEX idx_tourdates_artist_visibility ON tour_dates(artist_key,date,id) WHERE artist_key IS NOT NULL;
     CREATE INDEX idx_tourdates_artist_trim_date ON tour_dates(lower(trim(artist)),date,id);
-    INSERT INTO users VALUES
+    INSERT INTO users (id,is_banned,suspended_until) VALUES
       ('active',0,NULL),('banned',1,NULL),('suspended',0,4102444800000);
     INSERT INTO posts VALUES
       ('active-post','active','Visible Artist','visible artist','The Hall','the hall','Toronto','2026-08-01',4.5,'Visible review','World Tour','review','in_person',0,10,NULL),

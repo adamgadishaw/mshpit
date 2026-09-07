@@ -10,7 +10,7 @@ const NOW = Date.parse("2026-09-07T02:00:00Z");
 function fixture() {
   const database = registerPitSqliteFunctions(new DatabaseSync(":memory:"));
   database.exec(`
-    CREATE TABLE users(id TEXT PRIMARY KEY,is_banned INTEGER DEFAULT 0,suspended_until INTEGER,profile_audience TEXT DEFAULT 'everyone');
+    CREATE TABLE users(id TEXT PRIMARY KEY,is_banned INTEGER DEFAULT 0,suspended_until INTEGER,dormant_at INTEGER,profile_audience TEXT DEFAULT 'everyone');
     INSERT INTO users(id) VALUES ('viewer'),('fan'),('blocked');
     CREATE TABLE blocks(blocker_id TEXT,blocked_id TEXT);
     CREATE TABLE artists(norm TEXT PRIMARY KEY,name TEXT,mbid TEXT);

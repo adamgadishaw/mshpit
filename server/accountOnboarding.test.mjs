@@ -71,17 +71,21 @@ test("only canonical signup marks a new account as onboarding-incomplete", () =>
     setSession() { issuedSession = true; },
   });
 
-  assert.deepEqual(response, { ok: true, pending: true, cancelToken: response.cancelToken });
+  assert.equal(response.created, true);
+  assert.equal(response.verificationRequired, true);
+  assert.equal(response.user.emailVerified, false);
+  assert.equal(response.user.onboardingVersion, 0);
   assert.match(response.cancelToken, /^[A-Za-z0-9_-]{43}$/);
-  assert.equal(issuedSession, false);
+  assert.equal(issuedSession, true, "signup issues only the new restricted account session");
   assert.equal(q.userByEmail.get(email).onboarding_version, 0);
 
   db.prepare("UPDATE users SET onboarding_version=1 WHERE email=?").run(email);
+  issuedSession = false;
   const retry = routes["POST /api/signup"]({
     body: {
       name: "New Onboarding Member",
       email,
-      password: "different-password1",
+      password: "onboarding-password1",
       city: "Toronto",
       genres: ["Rock"],
       ageBand: "18_plus",
@@ -91,9 +95,11 @@ test("only canonical signup marks a new account as onboarding-incomplete", () =>
     ua: "test",
     setSession() { issuedSession = true; },
   });
-  assert.deepEqual(retry, { ...response, cancelToken: retry.cancelToken }, "new and existing emails retain the same public response shape");
-  assert.match(retry.cancelToken, /^[A-Za-z0-9_-]{43}$/);
-  assert.equal(issuedSession, false, "signup never issues a session");
+  assert.equal(retry.needsAccountChoice, true, "matching credentials require an explicit account choice");
+  assert.equal(retry.accounts[0].id, response.user.id);
+  assert.equal(retry.cancelToken, undefined, "an existing account gets no new cancellation capability");
+  assert.equal(issuedSession, false, "a credential match alone does not silently switch accounts");
+  assert.equal(q.usersByEmail.all(email).length, 1);
   assert.equal(q.userByEmail.get(email).onboarding_version, 1, "a duplicate signup cannot reset completion");
 });
 

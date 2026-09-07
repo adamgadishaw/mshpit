@@ -14,7 +14,7 @@ function fixture() {
   const database = new DatabaseSync(":memory:");
   registerPitSqliteFunctions(database);
   database.exec(`
-    CREATE TABLE users (id TEXT PRIMARY KEY,is_banned INTEGER NOT NULL DEFAULT 0,suspended_until INTEGER);
+    CREATE TABLE users (id TEXT PRIMARY KEY,is_banned INTEGER NOT NULL DEFAULT 0,suspended_until INTEGER,dormant_at INTEGER);
     CREATE TABLE blocks (blocker_id TEXT,blocked_id TEXT);
     CREATE TABLE artists (norm TEXT PRIMARY KEY,name TEXT NOT NULL,mbid TEXT);
     CREATE TABLE artist_memorials (

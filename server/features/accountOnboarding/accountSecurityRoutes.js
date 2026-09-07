@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { isPassword } from "../../../src/domain/validation.mjs";
 
 export function accountSecurityRoutes({ database, ApiError, requireSessionUser, limit, verifyPassword,
-  hashPassword, atomicWrite, createSession, cancelSignup }) {
+  hashPassword, atomicWrite, createSession, cancelSignup, proveAndGrant = () => {} }) {
   return {
     "POST /api/me/password": (ctx) => {
       const actor = requireSessionUser(ctx);
@@ -22,6 +22,7 @@ export function accountSecurityRoutes({ database, ApiError, requireSessionUser, 
         database.prepare("DELETE FROM sessions WHERE user_id=?").run(user.id);
         return createSession(user.id, ctx.ip, ctx.ua);
       });
+      proveAndGrant({ userId: user.id, password: ctx.body.password, token: session.token });
       ctx.setSession(session);
       return { ok: true, accountId: user.id };
     },
