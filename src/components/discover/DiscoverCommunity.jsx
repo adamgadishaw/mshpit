@@ -1,5 +1,5 @@
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
-import { memo } from "react";
+import { Pressable, StyleSheet, Text, View } from "react-native";
+import { memo, useState } from "react";
 import { colors, font, mono, radius, shadow } from "../../theme";
 import Icon from "../Icon";
 import SmartImage from "../SmartImage";
@@ -7,6 +7,7 @@ import ClipPoster from "../ClipPoster";
 import { mediaDisplayKind, mediaPosterUri } from "../../domain/postMediaDisplay.mjs";
 import { compactDiscoverNumber } from "../../domain/discoverView.mjs";
 import { SectionHeading } from "./DiscoverPrimitives";
+import { discoveryGridLayout } from "../../domain/discoveryGridLayout.mjs";
 
 function PhotoTile({ photo, index, onOpen, width }) {
   const video = mediaDisplayKind(photo) === "video";
@@ -31,21 +32,24 @@ function PhotoTile({ photo, index, onOpen, width }) {
 }
 
 export const DiscoverPhotos = memo(function DiscoverPhotos({ photos, photoUris, compact, width, onOpenPhotos }) {
+  const [containerWidth, setContainerWidth] = useState(null);
+  const layout = discoveryGridLayout(containerWidth ?? Math.min(width, 1040) - (compact ? 54 : 86));
   if (!photos.length) return null;
   return (
-    <View style={styles.panel}>
+    <View style={[styles.panel, compact && styles.panelCompact]}>
       <SectionHeading eyebrow="FAN PHOTOS AND VIDEOS" title="Popular photos and videos" detail="The most-liked concert photos and clips shared by fans" />
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.rail} accessibilityLabel="Popular concert photos and videos">
-        {photos.map((photo, index) => <PhotoTile key={`${photo.logId}_${photo.uri}_${index}`} photo={photo} index={index} width={compact ? Math.min(236, width - 64) : 250} onOpen={() => onOpenPhotos?.(photoUris, index)} />)}
-      </ScrollView>
+      <View style={[styles.grid, { gap: layout.gap }]} onLayout={(event) => setContainerWidth(event.nativeEvent.layout.width)} accessibilityLabel="Popular concert photos and videos">
+        {photos.map((photo, index) => <PhotoTile key={`${photo.logId}_${photo.uri}_${index}`} photo={photo} index={index} width={layout.tileWidth} onOpen={() => onOpenPhotos?.(photoUris, index)} />)}
+      </View>
     </View>
   );
 });
 
 const styles = StyleSheet.create({
   panel: { borderRadius: radius.lg, borderCurve: "continuous", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft, padding: 18, gap: 14, ...shadow.card },
-  rail: { gap: 11, paddingRight: 6 },
-  photoTile: { overflow: "hidden", borderRadius: radius.md, borderCurve: "continuous", backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.lineSoft },
+  panelCompact: { padding: 12 },
+  grid: { flexDirection: "row", flexWrap: "wrap", width: "100%", minWidth: 0 },
+  photoTile: { minWidth: 0, maxWidth: "100%", overflow: "hidden", borderRadius: radius.md, borderCurve: "continuous", backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.lineSoft },
   photoImage: { width: "100%", aspectRatio: 1.28, backgroundColor: colors.bgElev },
   photoMeta: { minHeight: 54, flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 11, paddingVertical: 8 },
   photoCopy: { flex: 1, minWidth: 0 },

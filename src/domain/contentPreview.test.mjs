@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { contentPreview, DEFAULT_CONTENT_PREVIEW_LIMIT } from "./contentPreview.mjs";
+import { contentPreview, DEFAULT_CONTENT_PREVIEW_LIMIT, POST_CONTENT_PREVIEW_LIMIT } from "./contentPreview.mjs";
 
 test("content preview leaves short content byte-for-byte unchanged", () => {
   const source = "  Short copy with a line break.\n";
@@ -42,4 +42,32 @@ test("expanding restores the exact original content", () => {
   assert.equal(expanded.text, source);
   assert.equal(expanded.truncated, false);
   assert.equal(expanded.expandable, true);
+});
+
+test("post previews allow 240 characters without increasing the shorter biography default", () => {
+  assert.equal(POST_CONTENT_PREVIEW_LIMIT, 240);
+  assert.equal(DEFAULT_CONTENT_PREVIEW_LIMIT, 100);
+  for (const count of [101, 180, 239, 240]) {
+    const source = "A".repeat(count);
+    assert.deepEqual(contentPreview(source, { limit: POST_CONTENT_PREVIEW_LIMIT }), {
+      text: source, truncated: false, expandable: false,
+    });
+  }
+  const source = "A".repeat(241);
+  assert.deepEqual(contentPreview(source, { limit: POST_CONTENT_PREVIEW_LIMIT }), {
+    text: `${"A".repeat(240)}…`, truncated: true, expandable: true,
+  });
+});
+
+test("longer post previews retain Unicode, whole mention/link tokens and exact expansion", () => {
+  const unicode = `${"🎵".repeat(234)} finalword after the concert`;
+  assert.equal(contentPreview(unicode, { limit: POST_CONTENT_PREVIEW_LIMIT }).text, `${"🎵".repeat(234)}…`);
+  assert.equal(contentPreview("🎵".repeat(240), { limit: POST_CONTENT_PREVIEW_LIMIT }).expandable, false);
+
+  for (const token of ["@concert_friend", "https://mshpit.com/artist/j-cole"]) {
+    const source = `${"A".repeat(228)} before ${token} after the show\nExact final line.  `;
+    const preview = contentPreview(source, { limit: POST_CONTENT_PREVIEW_LIMIT });
+    assert.equal(preview.text, `${"A".repeat(228)} before…`);
+    assert.equal(contentPreview(source, { limit: POST_CONTENT_PREVIEW_LIMIT, expanded: true }).text, source);
+  }
 });

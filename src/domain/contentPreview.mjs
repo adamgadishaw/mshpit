@@ -1,4 +1,6 @@
 export const DEFAULT_CONTENT_PREVIEW_LIMIT = 100;
+// Post cards need enough room for a useful review; short bios keep their own default.
+export const POST_CONTENT_PREVIEW_LIMIT = 240;
 
 const whitespace = (value) => /\s/u.test(value || "");
 const protectedToken = (value) => /^(?:@[\p{L}\p{N}_]+|(?:https?:\/\/|www\.)\S+)$/iu.test(value);

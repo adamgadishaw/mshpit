@@ -89,7 +89,7 @@ export function CityGuideContent({ guide, width, onOpenVenue, onOpenArtist, onOp
       </ScrollView>
     </View> : null}
     <View style={[styles.columns, wide && styles.columnsWide]}>
-      <View style={[styles.column, wide && styles.showsColumn]}>
+      <View style={[styles.column, wide && styles.columnWide, wide && styles.showsColumn]}>
         <View style={styles.section}>
           <Heading count={today.length}>{t("todayTitle")}</Heading>
           {today.length ? today.map((show) => <CityShowTicket key={show.id} show={show} copy={copy} showImage={wide} onOpen={() => onOpenShow?.(cityShowNavigation(show, guide.city))} />) : <View style={styles.empty}><Icon name="calendar" color={colors.textFaint} size={24} /><Text style={styles.body}>{t("noShowsToday")}</Text></View>}
@@ -100,7 +100,7 @@ export function CityGuideContent({ guide, width, onOpenVenue, onOpenArtist, onOp
           {upcoming.length > eventLimit ? <Button title={t("showMore")} variant="secondary" onPress={() => setEventLimit((count) => count + 6)} /> : null}
         </View>
       </View>
-      {hasStory ? <View style={styles.column}>
+      {hasStory ? <View style={[styles.column, wide && styles.columnWide]}>
         <View style={styles.programme}>
           <View style={styles.programmeMasthead}><Icon name="music" size={22} color={colors.magenta} /><Text style={styles.programmeLabel}>{t("programmeLabel")}</Text></View>
           <View style={styles.programmeBody}>
@@ -116,12 +116,12 @@ export function CityGuideContent({ guide, width, onOpenVenue, onOpenArtist, onOp
       </View> : null}
     </View>
     <View style={[styles.columns, wide && styles.columnsWide]}>
-      <View style={styles.column}><View style={styles.panel}>
+      <View style={[styles.column, wide && styles.columnWide]}><View style={styles.panel}>
         <Heading accent={colors.magenta}>{t("artistsTitle")}</Heading>
         {guide.artists?.length ? guide.artists.slice(0, artistLimit).map((artist) => <Destination key={artist.key || artist.name} title={artist.name} subtitle={artist.description} image={artist.image} icon="music" path={artist.path} label={t("openArtist")} onPress={() => onOpenArtist?.(artist)} />) : <Text style={styles.body}>{t("noArtists")}</Text>}
         {guide.artists?.length > artistLimit ? <Button title={t("showMore")} variant="secondary" onPress={() => setArtistLimit((count) => count + 6)} /> : null}
       </View></View>
-      <View style={styles.column}><View style={styles.panel}>
+      <View style={[styles.column, wide && styles.columnWide]}><View style={styles.panel}>
         <Heading accent={colors.cool}>{t("venuesTitle")}</Heading>
         {guide.venues?.length ? guide.venues.slice(0, venueLimit).map((venue) => <Destination key={venue.key || venue.name} title={venue.name} subtitle={t("upcomingCount", { count: venue.upcomingCount || 0 })} image={venue.photo?.url} icon="pin" path={venue.path} label={t("openVenue")} onPress={() => onOpenVenue?.(venue)} />) : <Text style={styles.body}>{t("noVenues")}</Text>}
         {guide.venues?.length > venueLimit ? <Button variant="secondary" title={t("showMore")} onPress={() => setVenueLimit((count) => count + 6)} /> : null}
@@ -177,7 +177,13 @@ const styles = StyleSheet.create({
   countValue: { color: colors.amber, fontSize: 27, fontWeight: "800", fontFamily: displayFont, fontVariant: ["tabular-nums"] }, countLabel: { color: colors.textDim, fontSize: 10, textAlign: "center", lineHeight: 15 }, leadCredit: { marginTop: -space(5), marginBottom: -space(4), paddingHorizontal: space(2) },
   headingRow: { flexDirection: "row", alignItems: "center", gap: space(3), minWidth: 0 }, headingMark: { width: space(1), height: space(6), borderRadius: space(1) }, sectionTitle: { color: colors.text, fontFamily: displayFont, fontWeight: "800", fontSize: 23, lineHeight: 29, flex: 1 },
   headingCount: { color: colors.amber, fontFamily: mono, fontSize: 12, padding: space(2), backgroundColor: colors.surfaceAlt, borderRadius: radius.sm }, section: { gap: space(3), minWidth: 0 },
-  columns: { gap: space(6) }, columnsWide: { flexDirection: "row", alignItems: "flex-start" }, column: { flex: 1, minWidth: 0, gap: space(6) }, showsColumn: { flex: 1.2 },
+  // A vertical stack must keep each section's content height. flex: 1 here
+  // gives mobile columns a zero basis, placing the story over show tickets
+  // and intercepting taps on See more. Only share space in the wide row.
+  columns: { gap: space(6), minWidth: 0, flexShrink: 0 },
+  columnsWide: { flexDirection: "row", alignItems: "flex-start" },
+  column: { minWidth: 0, gap: space(6), flexShrink: 0 },
+  columnWide: { flex: 1 }, showsColumn: { flex: 1.2 },
   panel: { padding: space(5), gap: space(3), borderRadius: radius.lg, borderCurve: "continuous", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, minWidth: 0 },
   body: { color: colors.textDim, fontSize: 14, lineHeight: 23, flexShrink: 1 }, empty: { flexDirection: "row", alignItems: "center", gap: space(3), padding: space(5), borderWidth: 1, borderColor: colors.line, borderRadius: radius.md, backgroundColor: colors.surface },
   programme: { borderRadius: radius.lg, borderCurve: "continuous", borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface, overflow: "hidden" }, programmeMasthead: { padding: space(5), flexDirection: "row", alignItems: "center", gap: space(3), backgroundColor: colors.surfaceAlt, borderBottomWidth: 1, borderColor: colors.line },

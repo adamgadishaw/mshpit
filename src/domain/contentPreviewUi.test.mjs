@@ -26,6 +26,13 @@ test("feed and profile cards use compact copy while a dedicated post keeps the c
   assert.match(ticketStub, /compactContent = false/);
   assert.match(ticketStub, /key={`status-copy:\${log\.id}`}/);
   assert.match(ticketStub, /key={`review-copy:\${log\.id}`}/);
+  assert.match(ticketStub, /import \{ POST_CONTENT_PREVIEW_LIMIT \} from "\.\.\/domain\/contentPreview\.mjs"/);
+  for (const key of ["status-copy", "review-copy"]) {
+    const start = ticketStub.indexOf(`key={\`${key}:`);
+    const preview = ticketStub.slice(start, ticketStub.indexOf("renderText=", start));
+    assert.match(preview, /limit=\{POST_CONTENT_PREVIEW_LIMIT\}/);
+    assert.match(preview, /compact=\{compactContent\}/);
+  }
   assert.match(ticketStub, /accessibilityLabel={`\${accessibilityLabel}\. Open post and comments\.`}/);
   assert.match(feedScreen, /<TicketStub[\s\S]*?log=\{item\}[\s\S]*?compactContent/);
   assert.match(profileScreen, /<TicketStub[\s\S]*?compactContent/);

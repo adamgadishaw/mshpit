@@ -15,10 +15,18 @@ export function orderedCityPhotos(photos = [], stockImage = null) {
   if (stock?.url && !seen.has(stock.url)) result.push({ ...stock, kind: "city" });
   return result;
 }
+export function cityLocalClock(value) {
+  if (typeof value !== "string" || value.length > 80) return "";
+  // Providers store either a wall-clock time or an ISO local date/time. Read
+  // only its clock component; converting through Date shifts the venue's time.
+  const match = value.trim().match(/^(?:(\d{4}-\d{2}-\d{2})[T ])?([01]?\d|2[0-3]):([0-5]\d)(?::[0-5]\d(?:\.\d{1,9})?)?(?:Z|[+-](?:[01]\d|2[0-3]):?[0-5]\d)?$/);
+  if (!match || (match[1] && !cityDateStamp(match[1]))) return "";
+  return `${match[2].padStart(2, "0")}:${match[3]}`;
+}
 export function cityShowTime(show) {
   const date = String(show?.date || "").slice(0, 10);
-  const time = String(show?.startLocalTime || "").slice(0, 5);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return time;
+  const time = cityLocalClock(show?.startLocalTime);
+  if (!cityDateStamp(date)) return time;
   const parsed = new Date(`${date}T12:00:00Z`);
   if (!Number.isFinite(parsed.getTime())) return time;
   return [parsed.toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" }), time].filter(Boolean).join(" · ");

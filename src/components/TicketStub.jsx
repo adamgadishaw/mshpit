@@ -9,6 +9,7 @@ import RatingBars from "./RatingBars";
 import SpinStar from "./SpinStar";
 import CommentPreview from "./AfterpartyPreview";
 import ExpandableText from "./ExpandableText";
+import { POST_CONTENT_PREVIEW_LIMIT } from "../domain/contentPreview.mjs";
 import PostMediaGrid from "./PostMediaGrid";
 import SongAttachment from "./SongAttachment";
 import { useStore } from "../store";
@@ -403,6 +404,7 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
           <ExpandableText
             key={`status-copy:${log.id}`}
             text={log.review}
+            limit={POST_CONTENT_PREVIEW_LIMIT}
             compact={compactContent}
             toggleTextStyle={campaignPresentation ? { color: campaignTreatment.accentColor } : null}
             renderText={({ text, accessibilityLabel }) => (
@@ -584,6 +586,7 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
         <ExpandableText
           key={`review-copy:${log.id}`}
           text={log.review}
+          limit={POST_CONTENT_PREVIEW_LIMIT}
           compact={compactContent}
           containerStyle={styles.reviewWrap}
           renderText={({ text, accessibilityLabel }) => (

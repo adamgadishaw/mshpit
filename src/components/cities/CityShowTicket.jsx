@@ -3,7 +3,7 @@ import { colors, displayFont, focusRing, mono, radius, space } from "../../theme
 import { PublicPressableLink } from "../PublicWebLinks";
 import Icon from "../Icon";
 import CityImage from "./CityImage";
-import { cityDateStamp, cityShowTime, cityText } from "./cityPresentation.mjs";
+import { cityDateStamp, cityLocalClock, cityShowTime, cityText } from "./cityPresentation.mjs";
 
 export default function CityShowTicket({ show, copy, onOpen, showImage = false }) {
   const stamp = cityDateStamp(show.date);
@@ -17,7 +17,7 @@ export default function CityShowTicket({ show, copy, onOpen, showImage = false }
       <Text style={styles.title} numberOfLines={2}>{title}</Text>
       {show.eventName && show.eventName !== title ? <Text style={styles.tour} numberOfLines={1}>{show.eventName}</Text> : null}
       <Text style={styles.venue} numberOfLines={2}>{show.venue}</Text>
-      <View style={styles.footer}><Text style={styles.time}>{stamp ? String(show.startLocalTime || "").slice(0, 5) : cityText(copy, "datePending")}</Text><Icon name="chevron-right" color={colors.amber} size={18} /></View>
+      <View style={styles.footer}><Text style={styles.time}>{stamp ? cityLocalClock(show.startLocalTime) : cityText(copy, "datePending")}</Text><Icon name="chevron-right" color={colors.amber} size={18} /></View>
     </View>
     {showImage && show.image ? <CityImage uri={show.image} style={styles.artwork} contain={false} previewWidth={160} accessibilityLabel={title} /> : null}
   </PublicPressableLink>;

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { cityDateStamp, cityGalleryItems, cityShowNavigation, cityText, orderedCityPhotos, cityShowTime } from "./cityPresentation.mjs";
+import { cityDateStamp, cityGalleryItems, cityLocalClock, cityShowNavigation, cityText, orderedCityPhotos, cityShowTime } from "./cityPresentation.mjs";
 import { venuePhotoAttribution } from "../../domain/venuePhotoProvenance.mjs";
 import { prepareShowNavigation } from "../../domain/showNavigation.mjs";
 
@@ -24,6 +24,29 @@ test("managed wording interpolates only known tokens and preserves an explicit e
 test("show date formatting retains the event's local clock time", () => {
   assert.match(cityShowTime({ date: "2026-09-07", startLocalTime: "20:30:00", timeZone: "Europe/Paris" }), /20:30$/);
   assert.equal(cityShowTime({ date: "unknown", startLocalTime: "18:00" }), "18:00");
+});
+
+test("city clocks support provider local datetimes without displaying the year as a time", () => {
+  for (const value of ["20:30", "20:30:00", "2026-09-07T20:30:00", "2026-09-07 20:30:00", "2026-09-07T20:30:00.000"]) {
+    assert.equal(cityLocalClock(value), "20:30", value);
+  }
+  assert.equal(cityLocalClock("00:00:00"), "00:00");
+  assert.equal(cityLocalClock(" 8:05 "), "08:05");
+  for (const timeZone of ["Pacific/Auckland", "America/Toronto", "Europe/Paris"]) {
+    for (const suffix of ["", "Z", "-04:00", "+1300"]) {
+      const show = { date: "2026-09-07", startLocalTime: `2026-09-07T20:30:00${suffix}`, timeZone };
+      assert.match(cityShowTime(show), /20:30$/);
+      assert.equal(cityLocalClock(show.startLocalTime), "20:30", "preserve the supplied venue clock, not the viewer's timezone");
+    }
+  }
+});
+
+test("date-only and malformed local-time values never become misleading clock labels", () => {
+  for (const value of [null, undefined, 2026, {}, "", "2026-09-07", "TBA", "2026-", "24:00", "12:60", "12:30:99", "2026-02-31T19:00:00", "2026-09-07T19:00:00junk", "before 19:00", "2026-09-07T19:00:00+99:00"]) {
+    assert.equal(cityLocalClock(value), "", String(value));
+  }
+  assert.equal(cityShowTime({ date: "2026-02-31", startLocalTime: "19:00" }), "19:00");
+  assert.doesNotMatch(cityShowTime({ date: "2026-09-07", startLocalTime: "2026-09-07" }), /2026-/);
 });
 test("ticket date stubs preserve local dates and reject impossible calendar dates", () => {
   assert.deepEqual(cityDateStamp("2026-09-07"), { month: "SEP", day: "07", year: "2026" });
