@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { View, Text, StyleSheet, ScrollView, Pressable, Image, TextInput, ActivityIndicator } from "react-native";
+import { View, Text, StyleSheet, ScrollView, Pressable, Image, TextInput, ActivityIndicator, Linking, Alert } from "react-native";
 import { colors, displayFont, focusRing, mono, radius, shadow, space } from "../theme";
 import { useStore, isStaff } from "../store";
 import { artistMeta } from "../seed/ingested";
@@ -14,7 +14,6 @@ import Badge, { BadgeRow } from "../components/Badge";
 import { proxied, isHttp } from "../lib/img";
 import { api } from "../lib/api";
 import { loadSelectedArtistDiscography } from "../lib/artistDiscographyApi";
-import { openTicketLink } from "../lib/ticketLinks";
 import { formatDate } from "../domain/dates.mjs";
 import { discographyIdentityCopy, discographyPresentation } from "../domain/discographyView.mjs";
 import { mediaDisplayItems, mediaDisplayKind, mediaPosterUri } from "../domain/postMediaDisplay.mjs";
@@ -23,7 +22,6 @@ import { artistWorkspaceOwnsArtist } from "../domain/artistWorkspace.mjs";
 import { selectArtistReviewsPresentation } from "../features/artistReviews/artistReviewsState.mjs";
 import { useArtistTopReviews } from "../features/artistReviews/useArtistTopReviews";
 import { useArtistEventArchive } from "../features/artistEvents/useArtistEventArchive";
-import { selectArtistUpcomingShows } from "../domain/artistUpcomingShows.mjs";
 import ArtistMemorialTribute from "../components/artist/ArtistMemorialTribute";
 import ArtistCinematicCarousel from "../components/ArtistCinematicCarousel";
 import SpotifyArtistPhoto from "../components/SpotifyArtistPhoto";
@@ -31,7 +29,7 @@ import { artistCinematicMedia } from "../domain/artistGalleryMedia.mjs";
 import { useArtistMemorial } from "../features/artistMemorials/useArtistMemorial";
 import { PublicPressableLink } from "../components/PublicWebLinks";
 import { concertPath, eventPath, postPath, profilePath } from "../domain/urls.mjs";
-import { ARTIST_OVERVIEW_LIMITS, artistPageHighlights, artistPagePreview, artistPageSectionModel, artistPageSectionsForMode } from "../domain/artistPageSections.mjs";
+import { ARTIST_OVERVIEW_LIMITS, artistPageHighlights, artistPageSynopsis, artistPagePreview, artistPageSectionModel, artistPageSectionsForMode } from "../domain/artistPageSections.mjs";
 import { isLegacyArtistMemorial } from "../domain/artistLegacy.mjs";
 import { artistLegacyPresentation } from "../domain/artistLegacyPresentation.mjs";
 import { useArtistFollowFanClub } from "../features/artistFollow/useArtistFollowFanClub";
@@ -41,6 +39,9 @@ import useScopedRefresh from "../hooks/useScopedRefresh";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
 import ExpandableText from "../components/ExpandableText";
 import BrandMark from "../components/BrandMark";
+import { artistBiographyRows } from "../domain/artistBiography.mjs";
+import { useArtistOverview } from "../features/artistOverview/useArtistOverview";
+import ArtistUpcomingShows from "../components/artist/ArtistUpcomingShows";
 
 const compactCount = (value) => {
   const count = Number(value) || 0;
@@ -63,16 +64,33 @@ const TRACK_REPORT_TYPES = [
 ];
 
 function ArtistPageSectionNav({ active, onChange, memorialMode = false, legacyMode = false, statusPending = false }) {
+  const tabs = artistPageSectionsForMode({ legacyMode });
+  const tabRefs = useRef([]);
+  const moveFocus = (event, index) => {
+    const key = event.key || event.nativeEvent?.key;
+    let next;
+    if (key === "ArrowRight") next = (index + 1) % tabs.length;
+    else if (key === "ArrowLeft") next = (index + tabs.length - 1) % tabs.length;
+    else if (key === "Home") next = 0;
+    else if (key === "End") next = tabs.length - 1;
+    else return;
+    event.preventDefault?.();
+    onChange(tabs[next].key);
+    tabRefs.current[next]?.focus?.();
+  };
   return (
     <View style={styles.sectionNav} accessibilityRole="tablist" accessibilityLabel="Artist page sections">
-      {artistPageSectionsForMode({ legacyMode }).map((section) => {
+      {tabs.map((section, index) => {
         const selected = active === section.key;
-        const label = section.key === "live"
+        const label = section.key === "shows"
           ? memorialMode ? "Legacy" : statusPending ? "Archive" : section.label
           : section.label;
         return (
           <Pressable
             key={section.key}
+            ref={(node) => { tabRefs.current[index] = node; }}
+            tabIndex={selected ? 0 : -1}
+            onKeyDown={(event) => moveFocus(event, index)}
             style={({ pressed, focused }) => [
               styles.sectionNavItem,
               selected && styles.sectionNavItemOn,
@@ -82,6 +100,7 @@ function ArtistPageSectionNav({ active, onChange, memorialMode = false, legacyMo
             onPress={() => onChange(section.key)}
             accessibilityRole="tab"
             accessibilityState={{ selected }}
+            aria-selected={selected}
             accessibilityLabel={`${label} artist page section`}
           >
             <Icon name={section.icon} size={14} color={selected ? colors.amber : colors.textFaint} />
@@ -258,7 +277,13 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
     : null;
   const [sectionSelection, setSectionSelection] = useState(() => ({ artistKey: a.profileKey, section: "overview" }));
   const activeSection = sectionSelection.artistKey === a.profileKey ? sectionSelection.section : "overview";
-  const setActiveSection = (section) => setSectionSelection({ artistKey: a.profileKey, section });
+  const pageScroll = useRef(null);
+  const [contentWidth, setContentWidth] = useState(0);
+  const artistWide = contentWidth >= 840;
+  const setActiveSection = (section) => {
+    setSectionSelection({ artistKey: a.profileKey, section });
+    pageScroll.current?.scrollTo?.({ y: 0, animated: false });
+  };
 
   const { resource: memorialResource, availability: memorialAvailability, reload: retryMemorial } = useArtistMemorial({
     accountId: session?.id || null,
@@ -298,6 +323,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
   // artist until that request lands, which is the state the branch below already
   // handled.
   const bundledAlbums = meta?.albums || [];
+  const biographyRows = artistBiographyRows(meta?.biographyFacts);
   useEffect(() => { if (!remoteArtistMeta(a.name)) resolveArtist(a.name); }, [a.name]);
   // Pull the artist's fan photos from the server so the rolling gallery shows
   // every public post photo ever, not just posts sitting in this device's feed.
@@ -318,20 +344,25 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
   const topReviewsPresentation = selectArtistReviewsPresentation(topReviewsResource, a.nights, { limit: 3, memorialMode: deceased });
   const topReviews = topReviewsPresentation.reviews;
   const visibleTopReviews = artistPagePreview(topReviews, { condensed: sectionModel.condensed, limit: ARTIST_OVERVIEW_LIMITS.reviews });
-  const { resource: liveArchiveResource } = useArtistEventArchive({
+  const { resource: liveArchiveResource, reload: retryLiveArchive, refresh: refreshLiveArchive } = useArtistEventArchive({
     accountId: session?.id || null,
     name: a.name,
     artistKey: a.profileKey,
     enabled: sectionModel.loadFullArchive,
   });
   const liveArchive = sectionModel.loadFullArchive && liveArchiveResource.updatedAt != null ? liveArchiveResource.data : null;
-  const archiveRatings = liveArchive?.shows?.reduce((sum, show) => sum + (Number(show.avgRating) || 0) * (Number(show.ratingCount) || 0), 0) || 0;
-  const archiveRatingCount = Number(liveArchive?.totals?.ratings) || 0;
-  const archiveAverage = archiveRatingCount ? archiveRatings / archiveRatingCount : 0;
-  const localRatingRows = a.nights.filter((night) => Number(night.overall) > 0);
-  const displayedAverage = liveArchive ? archiveAverage : (Number(a.avgOverall) || 0);
-  const displayedRatingCount = liveArchive ? archiveRatingCount : localRatingRows.length;
-  const displayedShowCount = liveArchive ? (Number(liveArchive?.totals?.shows) || 0) : localRatingRows.length;
+  const artistOverview = useArtistOverview({
+    accountId: session?.id || null,
+    artistKey: a.profileKey,
+    enabled: profileServicesAvailable,
+    publicPreview: previewAsFan,
+  });
+  const overviewResource = artistOverview.resource;
+  const reputation = overviewResource.data?.reputation;
+  const reputationReady = overviewResource.updatedAt != null && !!reputation;
+  const displayedAverage = reputationReady ? Number(reputation.average ?? reputation.avgRating) || 0 : 0;
+  const displayedRatingCount = reputationReady ? Number(reputation.ratingCount) || 0 : 0;
+  const displayedShowCount = reputationReady ? Number(reputation.showCount) || 0 : 0;
   const topPerformances = liveArchive?.topShows || [];
   const canModerate = isStaff(session?.role);
   const genre = a.genre || "Genre not listed yet";
@@ -355,21 +386,12 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
   const ownsArtistPage = isArtistOwner(a.name);
   const ownsNamedArtistPage = artistWorkspaceOwnsArtist(session, a.name);
   const canManagePublicPage = profileServicesAvailable && ownsArtistPage && !previewAsFan;
-  const upcoming = liveAvailable
-    ? (previewAsFan ? a.upcoming.filter((date) => !date.scheduled) : a.upcoming)
-    : [];
   const highlights = artistPageHighlights({
-    upcomingCount: upcoming.length,
+    upcomingCount: liveAvailable ? overviewResource.data?.schedule?.total : 0,
     hometown: meta?.hometown,
     country: meta?.country,
-    formed: meta?.formed,
     memorialMode: deceased,
   });
-  const [showAllUpcoming, setShowAllUpcoming] = useState(false);
-  const upcomingPresentation = selectArtistUpcomingShows(upcoming, { expanded: showAllUpcoming });
-  const visibleUpcoming = sectionModel.condensed
-    ? artistPagePreview(upcoming, { condensed: true, limit: ARTIST_OVERVIEW_LIMITS.upcoming })
-    : upcomingPresentation.shows;
   const cachedArtistPosts = artistPostsFor(a.name);
   const artistPresentation = artistLegacyPresentation({
     // Until status is authoritative, catalogue identity is safer than a stale
@@ -553,7 +575,6 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
     setOpenAlbum(null);
     setShowAllSongs(false);
     setShowAllReleases(false);
-    setShowAllUpcoming(false);
     setIdentityOpen(false);
     setCandidates(null);
     setCandidatesLoading(false);
@@ -793,11 +814,15 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
   const { refresh: refreshArtist, refreshing: artistRefreshing } = useScopedRefresh({
     scope: artistRefreshScope,
     task: async ({ signal }) => {
-      const [pageResult, photoResult, metadataResult] = await Promise.all([
+      const settled = await Promise.allSettled([
         loadArtistPage(a.name, { signal }),
         loadArtistPhotos(a.name, a.profileKey, { signal }),
         refreshArtistCatalogMetadata(a.name, { signal }),
+        ...(profileServicesAvailable ? [artistOverview.refresh({ signal })] : []),
+        ...(sectionModel.loadFullArchive ? [refreshLiveArchive({ signal })] : []),
       ]);
+      const results = settled.map((result) => result.status === "fulfilled" ? result.value : { ok: false, error: result.reason });
+      const [pageResult, photoResult, metadataResult] = results;
       if (!signal.aborted && pageResult?.ok) {
         setConfirmedArtistPage({
           scope: artistPageProofScope,
@@ -808,7 +833,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
           },
         });
       }
-      const failure = [pageResult, photoResult, metadataResult].find((result) => result?.ok === false && result?.error);
+      const failure = results.find((result) => result?.ok === false && result?.error);
       if (failure?.error) throw failure.error;
       return { pageResult, photoResult, metadataResult };
     },
@@ -834,7 +859,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
         onRefresh={refreshArtist}
         accessibilityLabel={`Refresh ${a.name} artist page`}
       >
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <ScrollView ref={pageScroll} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} onLayout={(event) => setContentWidth(event.nativeEvent.layout.width)}>
         {previewAsFan && (
           <View
             style={styles.fanPreviewNotice}
@@ -848,6 +873,9 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
             </View>
           </View>
         )}
+
+        <View style={[styles.heroLayout, artistWide && styles.heroLayoutWide]}>
+          <View style={[styles.heroVisual, artistWide && styles.heroVisualWide]}>
         {/* One decoded frame at a time: artist-owned imagery leads, followed by
             public fan photos. Motion is user-driven and respects Reduce Motion. */}
         {hasRegularHeroImage || !meta?.spotifyPhoto ? (
@@ -856,16 +884,15 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
             bannerUri={bannerUri}
             profileUri={profileUri}
             gallery={heroGallery}
+            compact
             onOpenMedia={onOpenPhotos}
           />
         ) : (
           <SpotifyArtistPhoto artist={meta} artistName={a.name} />
         )}
 
-        <View style={styles.headRow}>
-          <View style={styles.avatarWrap}>
-            <Avatar user={avatarUser} size={84} onPress={() => onOpenPhotos?.(profileAvatarPhotos || (meta?.photos?.length ? meta.photos : profileUri ? [profileUri] : []), 0)} />
-          </View>
+
+        {((profileServicesAvailable && ownsNamedArtistPage && !previewAsFan && onManageArtistProfile) || (canModerate && !previewAsFan && onEditArtistProfile) || (!ownsArtistPage && profileOwnerId && onReport)) ? <View style={styles.headRow}>
           <View style={styles.profileActions}>
             {profileServicesAvailable && ownsNamedArtistPage && !previewAsFan && onManageArtistProfile ? (
               <Pressable style={styles.editBtn} onPress={onManageArtistProfile} accessibilityRole="button" accessibilityLabel={`Open ${a.name} Artist HQ`}>
@@ -897,11 +924,18 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
               </Pressable>
             ) : null}
           </View>
-        </View>
+        </View> : null}
 
+
+          </View>
+          <View style={[styles.heroDetails, artistWide && styles.heroDetailsWide]}>
+        <View style={styles.identityHeader}>
+          <View style={styles.avatarWrap}>
+            <Avatar user={avatarUser} size={52} onPress={() => onOpenPhotos?.(profileAvatarPhotos || (meta?.photos?.length ? meta.photos : profileUri ? [profileUri] : []), 0)} />
+          </View>
         <View style={styles.headInfo}>
           <View style={styles.nameRow}>
-            <Text style={styles.heroName}>{a.name}</Text>
+            <Text style={[styles.heroName, !artistWide && styles.heroNameCompact]}>{a.name}</Text>
             {badges.length ? <BadgeRow badges={badges} size={20} style={styles.nameBadges} /> : null}
             {deceased ? (
               <View accessible style={styles.memorialChip} accessibilityLabel={`${a.name}, remembered in tribute`}>
@@ -953,6 +987,88 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
             ) : null}
           </View>
         </View>
+        </View>
+
+            {!legacyMode && !!bio && (
+              <View style={styles.heroIntro}>
+                <Text style={styles.bio}>{artistPageSynopsis(bio, { condensed: true, limit: artistWide ? 220 : 160 }).text}</Text>
+              </View>
+            )}
+        {!legacyMode ? <View style={styles.repCard}>
+          <Text style={styles.repLabel}>{deceased ? "CREATIVE LEGACY" : liveAvailable ? "CONCERT RATINGS" : "ARTIST STATUS"}</Text>
+          {deceased ? (
+            <View style={styles.legacyRow}>
+              <View style={styles.legacyMark}><Icon name="dove" size={27} color={colors.gold} strokeWidth={1.5} /></View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.legacyTitle}>Remembered through the music</Text>
+                <Text style={styles.repSub}>This permanent page preserves concert history, photos, and fan memories. New live ratings are closed.</Text>
+              </View>
+            </View>
+          ) : liveAvailable ? (
+            <View style={styles.repRow}>
+              <Text style={styles.bigScore}>{reputationReady && displayedRatingCount ? displayedAverage.toFixed(1) : "—"}</Text>
+              <View style={{ flex: 1 }}>
+                <Stars value={displayedAverage} size={18} />
+                <Text style={styles.repSub}>
+                  {displayedRatingCount
+                    ? `${displayedShowCount} show${displayedShowCount === 1 ? "" : "s"} · ${displayedRatingCount} rating${displayedRatingCount === 1 ? "" : "s"}`
+                    : !reputationReady ? overviewResource.status === "error" ? "Concert ratings could not load" : "Loading concert ratings…" : "No concert ratings yet"}
+                </Text>
+              </View>
+            </View>
+          ) : (
+            <View style={styles.legacyRow} accessibilityLiveRegion="polite">
+              <View style={styles.legacyMark}>
+                {memorialChecking ? <ActivityIndicator color={colors.gold} /> : <Icon name="shield" size={24} color={colors.gold} />}
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.legacyTitle}>{memorialChecking ? "Checking artist status" : "Live details are temporarily unavailable"}</Text>
+                <Text style={styles.repSub}>{memorialChecking
+                  ? "Mshpit is confirming whether live ratings and upcoming shows are available for this artist."
+                  : "Mshpit could not safely confirm this artist's status, so live ratings and review actions remain hidden."}</Text>
+                {!memorialChecking ? (
+                  <Pressable style={styles.memorialRetry} onPress={retryMemorial} accessibilityRole="button" accessibilityLabel={`Retry checking ${a.name}'s artist status`}>
+                    <Text style={styles.memorialRetryText}>Try again</Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            </View>
+          )}
+          {session && seen?.count > 0 && (
+            <View style={styles.seenChip} accessibilityLabel={`You have seen ${a.name} live ${seen.count} ${seen.count === 1 ? "time" : "times"}`}>
+              <Icon name="check" size={13} color={colors.good} />
+              <Text style={styles.seenChipTxt}>
+                You've been in the pit with them {seen.count === 1 ? "once" : seen.count === 2 ? "twice" : `${seen.count} times`}{seen.last ? ` · last ${seen.last}` : ""}
+              </Text>
+            </View>
+          )}
+          {liveAvailable && overviewResource.status === "error" ? (
+            <Pressable style={styles.bioToggle} onPress={() => artistOverview.reload()} accessibilityRole="button" accessibilityLabel="Retry artist concert ratings and dates">
+              <Text style={styles.bioToggleText}>{reputationReady ? "Showing saved ratings · Retry" : "Try again"}</Text>
+            </Pressable>
+          ) : null}
+        </View> : null}
+
+
+        {highlights.length > 0 && (
+          <View style={styles.artistFacts} accessibilityLabel={highlights.map((fact) => `${fact.label}: ${fact.value}`).join(". ")}>
+            {highlights.map((fact) => (
+              <View key={fact.key} style={styles.artistFact}>
+                <Icon name={fact.icon} size={13} color={colors.amber} />
+                <View style={styles.artistFactCopy}>
+                  <Text style={styles.artistFactLabel}>{fact.label}</Text>
+                  <Text style={styles.artistFactValue} numberOfLines={2}>{fact.value}</Text>
+                </View>
+              </View>
+            ))}
+          </View>
+        )}
+
+
+          </View>
+        </View>
+        <ArtistPageSectionNav active={sectionModel.active} onChange={setActiveSection} memorialMode={deceased} legacyMode={!profileServicesAvailable} statusPending={!memorialKnown} />
+
 
         {session && !ownsArtistPage && followUi.error ? (
           <View style={styles.followFeedbackError} accessibilityLiveRegion="assertive">
@@ -1026,7 +1142,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
           </View>
         ) : null}
 
-        {legacyMode && !!bio ? (
+        {legacyMode && sectionModel.condensed && !!bio ? (
           <View style={styles.legacyBiography}>
             <Text style={styles.legacyBiographyLabel}>ABOUT THE ARTIST</Text>
             <ExpandableText
@@ -1040,7 +1156,330 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
           </View>
         ) : null}
 
-        {thin && !canManagePublicPage && (
+
+        {sectionModel.active === "community" && (
+          <View style={styles.sectionHeading}>
+            <Text style={styles.pageKicker}>THE COMMUNITY</Text>
+            <Text style={styles.pageTitle}>{legacyMode ? "Stories that stay" : "Reviews and photos"}</Text>
+          </View>
+        )}
+        {sectionModel.showLive && liveAvailable && (
+          <ArtistUpcomingShows
+            controller={artistOverview}
+            artistName={a.name}
+            onOpenShow={onOpenShow}
+            condensed={sectionModel.condensed}
+            onViewAll={() => setActiveSection("shows")}
+          />
+        )}
+
+        {/* The complete archive is server-backed and groups many fan logs into
+            one performance. Keep this profile preview compact; the virtualized
+            archive owns the long history. */}
+        {sectionModel.showLive && (<>
+        {sectionModel.active === "shows" && liveAvailable && (
+          <>
+            <Text style={styles.sectionLabel}>TOP-RATED PAST SHOWS</Text>
+            <Text style={styles.topNightsIntro}>Concerts rated by the people who were there.</Text>
+            {liveArchiveResource.status === "error" ? (
+              <View style={styles.topReviewsFallback}>
+                <View style={styles.topReviewsFallbackCopy}>
+                <Text style={styles.topReviewsFallbackText} accessibilityRole="alert">
+                  {liveArchive ? "Past shows could not refresh. Your last loaded history is still here." : "Past shows could not load. Please try again."}
+                </Text>
+                </View>
+                <Pressable
+                  style={({ pressed, focused }) => [styles.topReviewsRetry, pressed && styles.archivePressed, focused && focusRing]}
+                  onPress={() => retryLiveArchive()}
+                  accessibilityRole="button"
+                  accessibilityLabel="Retry loading past shows"
+                >
+                  <Text style={styles.topReviewsRetryText}>Try again</Text>
+                </Pressable>
+              </View>
+            ) : null}
+            {!liveArchive && liveArchiveResource.status !== "error" ? (
+              <View style={styles.inlineLoading}><ActivityIndicator size="small" color={colors.amber} /><Text style={styles.empty}>Opening the live history…</Text></View>
+            ) : topPerformances.length ? topPerformances.slice(0, 3).map((show, index) => (
+              <PublicPressableLink
+                key={show.key || show.id || index}
+                href={concertPath(show.key)}
+                onNavigate={() => onOpenShow?.(show)}
+                style={({ pressed, focused }) => [styles.topNightCard, index === 0 && styles.topNightCardLead, pressed && styles.archivePressed, focused && focusRing]}
+                accessibilityLabel={`Open number ${index + 1} rated ${a.name} performance at ${show.venue || "venue"}`}
+              >
+                <View style={[styles.topNightRank, index === 0 && styles.topNightRankLead]}><Text style={styles.topNightRankText}>#{index + 1}</Text></View>
+                <View style={styles.topNightCopy}>
+                  <Text style={styles.topNightVenue} numberOfLines={1}>{show.venue || "Venue to be announced"}</Text>
+                  <Text style={styles.topNightMeta} numberOfLines={1}>{[show.place, formatDate(show.date, "")].filter(Boolean).join(" · ")}</Text>
+                  {!!show.tour && <Text style={styles.topNightTour} numberOfLines={1}>{show.tour}</Text>}
+                </View>
+                <View style={styles.topNightScore}><Icon name="star" size={12} color={colors.gold} filled /><Text style={styles.topNightScoreText}>{Number(show.avgRating || 0).toFixed(1)}</Text></View>
+              </PublicPressableLink>
+            )) : liveArchiveResource.status === "error" ? null : (
+              <Text style={styles.empty}>The podium is open. Rated performances will rise here as fans add their nights.</Text>
+            )}
+          </>
+        )}
+        {sectionModel.active === "shows" ? (
+          <>
+            <Text style={styles.sectionLabel}>PAST SHOWS</Text>
+            <Pressable
+              style={({ pressed, focused }) => [styles.archiveCard, pressed && styles.archivePressed, focused && focusRing]}
+              onPress={() => onOpenArchive?.(a.name, a.profileKey)}
+              accessibilityRole="button"
+              accessibilityLabel={`Open ${a.name} ${deceased ? "concert history" : "live archive"}`}
+              accessibilityHint={deceased ? "Shows historical concerts, tours, photos, and fan memories" : "Shows the top rated performances, tours, photos, and every review"}
+            >
+              <View style={styles.archiveMark}><Icon name="archive" size={20} color={colors.amber} /></View>
+              <View style={styles.archiveCopy}>
+                <Text style={styles.archiveTitle}>{deceased ? "Concert history and memories" : liveAvailable ? "Concert history" : "Concert archive"}</Text>
+                <Text style={styles.archiveText}>{deceased
+                  ? "Remember past shows through tour galleries, photos, and the fan memories already shared."
+                  : liveAvailable
+                    ? "Explore the top three fan-rated shows, tour galleries, and the full review history."
+                    : "Browse historical concert records while Mshpit verifies whether live actions are available."}</Text>
+              </View>
+              <View style={styles.archiveArrow}><Icon name="chevron-right" size={17} color={colors.amber} /></View>
+            </Pressable>
+          </>
+        ) : null}
+        </>)}
+
+        {/* The writing fans keep passing around, paired with its public media. */}
+        {memorialKnown && sectionModel.showCommunity && (topReviews.length > 0 || topReviewsPresentation.initialError || topReviewsPresentation.refreshError) && (
+          <>
+            <View style={styles.topReviewsHeading}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.sectionLabel}>{deceased ? `FAN MEMORIES${topReviews.length ? ` · ${topReviews.length}` : ""}` : sectionModel.condensed ? "FROM THE REVIEWS" : `TOP REVIEWS · ${topReviews.length}`}</Text>
+                <Text style={styles.topReviewsIntro}>
+                  {legacyMode
+                    ? "Read community memories or add your own written remembrance. Photo and video submissions stay closed on this protected profile."
+                    : deceased
+                    ? "Read the memories fans shared from concerts, then open the exact night in the historical archive."
+                    : sectionModel.condensed
+                    ? "Read the fan post, or open the exact show for that night's details."
+                    : "Each review stays with its original fan post. View show opens the exact concert instead."}
+                </Text>
+              </View>
+              <View style={styles.topReviewsSeal} accessibilityLabel={deceased ? "In remembrance" : "Fan favorites"}>
+                <Icon name={deceased ? "dove" : "heart"} size={12} color={deceased ? colors.gold : colors.magenta} strokeWidth={1.8} />
+                <Text style={styles.topReviewsSealText}>{deceased ? "IN REMEMBRANCE" : "FAN FAVORITES"}</Text>
+              </View>
+            </View>
+            {(topReviewsPresentation.initialError || topReviewsPresentation.refreshError) && (
+              <View style={styles.topReviewsFallback} accessibilityRole="alert">
+                <View style={styles.topReviewsFallbackCopy}>
+                  <Text style={styles.topReviewsFallbackLabel}>
+                    {topReviewsPresentation.initialError ? "DEVICE COPY" : deceased ? "LAST SAVED MEMORIES" : "LAST LIVE RANKING"}
+                  </Text>
+                  <Text style={styles.topReviewsFallbackText}>
+                    {topReviewsPresentation.initialError
+                      ? `${deceased ? "Fan memories" : "Live favorites"} could not load, so these are reviews already on this device.`
+                      : deceased ? "The latest refresh failed. The last saved fan memories are still showing." : "The latest refresh failed. The last verified ranking is still showing."}
+                  </Text>
+                </View>
+                <Pressable
+                  style={({ pressed, focused }) => [
+                    styles.topReviewsRetry,
+                    pressed && styles.topReviewActionPressed,
+                    focused && focusRing,
+                  ]}
+                  onPress={retryTopReviews}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Retry loading ${deceased ? "artist fan memories" : "live artist reviews"}`}
+                >
+                  <Icon name="chevron-right" size={13} color={colors.amber} />
+                  <Text style={styles.topReviewsRetryText}>Retry</Text>
+                </Pressable>
+              </View>
+            )}
+            <View style={styles.topReviewsList}>
+              {visibleTopReviews.map((review, index) => (
+                <TopReviewCard
+                  key={review.id}
+                  review={review}
+                  rank={index + 1}
+                  artistName={a.name}
+                  onOpenPost={onOpenPost}
+                  onOpenShow={onOpenShow}
+                  onOpenPhotos={onOpenPhotos}
+                  onOpenProfile={onOpenProfile}
+                  memorialMode={deceased}
+                  archiveAvailable={profileServicesAvailable}
+                />
+              ))}
+            </View>
+            {sectionModel.condensed && topReviews.length > visibleTopReviews.length ? (
+              <Pressable style={styles.showAllBtn} onPress={() => setActiveSection("community")} accessibilityRole="button" accessibilityLabel={`Read all top ${a.name} reviews`}>
+                <Text style={styles.showAllTxt}>{deceased ? "Read more fan memories" : "Read more reviews"}</Text>
+                <Icon name="chevron-right" size={15} color={colors.amber} />
+              </Pressable>
+            ) : null}
+          </>
+        )}
+
+        {/* The overview stays bounded; the gallery owns the full collection and
+            pagination after the schedule and review previews. */}
+        {sectionModel.showCommunity && (gallery.length > 0 || !sectionModel.condensed) && (
+          <>
+            <View style={styles.galleryHeading}>
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text style={styles.sectionLabel}>{legacyMode ? "ARCHIVE & COMMUNITY PHOTOS" : "PHOTOS & VIDEOS"}</Text>
+                <Text style={styles.bio}>{legacyMode
+                  ? "Existing public images remain part of this protected community record. New photo and video uploads are closed; written memories remain open."
+                  : sectionModel.condensed ? "A quick look at public fan photos and videos." : "Public fan photos and videos, along with artist images. Private and moderated media is not shown."}</Text>
+              </View>
+              {onOpenGallery ? (
+                <Pressable
+                  style={({ pressed, focused }) => [styles.galleryOpenButton, pressed && styles.archivePressed, focused && focusRing]}
+                  onPress={() => onOpenGallery(a.name, a.profileKey, legacyMode)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Open the full ${a.name} photo and fan gallery`}
+                >
+                  <Text style={styles.galleryOpenText}>SEE ALL</Text>
+                  <Icon name="chevron-right" size={14} color={colors.amber} />
+                </Pressable>
+              ) : null}
+            </View>
+            {gallery.length ? (
+              <View style={styles.fanGrid}>
+                {visibleGallery.map((p, i) => (
+                  <View key={p.uri || i} style={styles.fanTile}>
+                    <SmartImage uri={p.uri} posterUri={mediaPosterUri(p)} mediaKind={mediaDisplayKind(p)} accessibilityLabel={p.altText || `Open media from ${a.name}`} style={StyleSheet.absoluteFill} contain={false}
+                      onPress={() => onOpenPhotos?.(gallery.map((x) => ({ ...x, uri: x.uri, by: x.by, postId: x.postId, ownerId: x.ownerId })), i, p.postId || null)} />
+                    {p.source !== "fan" && !!p.by && (
+                      <View style={styles.creditTag} pointerEvents="none"><Text style={styles.creditTxt} numberOfLines={1}>{p.by}</Text></View>
+                    )}
+                    {canModerate && (
+                      <Pressable style={styles.modBtn} hitSlop={6} onPress={() => removePhoto(p.uri)} accessibilityRole="button" accessibilityLabel={`Hide this ${a.name} gallery item`}>
+                        <Icon name="x" size={12} color="#fff" />
+                      </Pressable>
+                    )}
+                  </View>
+                ))}
+              </View>
+            ) : (
+              <View style={styles.galleryEmpty} accessible accessibilityLabel={`No public fan media for ${a.name} yet`}>
+                <Icon name="photo" size={20} color={colors.textFaint} />
+                <Text style={styles.galleryEmptyText}>{legacyMode
+                  ? "No archived community media is available for this artist. Written memories remain open below."
+                  : "No public fan media yet. Shared concert photos will build this archive."}</Text>
+              </View>
+            )}
+          </>
+        )}
+
+        {/* Live-music actions remain primary while the built-in player is paused. */}
+        {deceased && (!legacyMode || confirmedLegacyProfile) && session && typeof onShareMemory === "function" ? (
+          <Pressable style={styles.memoryBtn} onPress={() => onShareMemory(a.name, a.profileKey, { legacyProfile: confirmedLegacyProfile })} accessibilityRole="button" accessibilityLabel={`Share a ${confirmedLegacyProfile ? "written " : "fan "}memory about ${a.name}`}>
+            <Icon name="dove" size={17} color="#1A1206" strokeWidth={1.7} />
+            <Text style={styles.memoryBtnText}>{confirmedLegacyProfile ? "Share a written memory" : "Share a fan memory"}</Text>
+          </Pressable>
+        ) : null}
+        {profileServicesAvailable && sectionModel.active === "community" ? <View style={styles.artistActions}>
+          <Pressable
+            style={styles.fcBtn}
+            onPress={() => onOpenFanClub?.(a.name)}
+            accessibilityRole="button"
+            accessibilityLabel={`Open the ${a.name} Fan Club${fanClubMember ? ", joined" : ""}`}
+          >
+            <Icon name="comment" size={16} color="#1A1206" />
+            <Text style={styles.fcTxt}>Fan Club</Text>
+          </Pressable>
+          <Pressable style={styles.listenBtn} onPress={() => onOpenArchive?.(a.name, a.profileKey)}>
+            <Icon name="archive" size={15} color={colors.amber} />
+            <Text style={styles.listenTxt}>{deceased ? "Concert history" : liveAvailable ? "Live archive" : "Concert archive"}</Text>
+          </Pressable>
+        </View> : null}
+
+        {/* Artist posts are read-only here. Creation and removal live in Artist HQ.
+            Legacy pages expose only staff-curated history notes. They must never
+            borrow the artist's avatar/name or imply that the artist published
+            them. Modern artist posts keep their existing owner presentation. */}
+        {sectionModel.showCommunity && artistPostsVisible && (
+          <>
+            <View style={styles.feedHead}>
+              <Text style={styles.sectionLabel}>{legacyMode ? "MSHPIT HISTORY NOTES" : "ARTIST POSTS"}{posts.length ? ` · ${posts.length}` : ""}</Text>
+              {!legacyMode && canManagePublicPage && !a.feedEnabled && <Text style={styles.feedOff}>hidden from fans</Text>}
+            </View>
+            {legacyMode ? <Text style={styles.editorialIntro}>Background and historical context written by Mshpit staff. These notes are not posts from the artist.</Text> : null}
+            {!legacyMode && posts.length === 0 && <Text style={styles.empty}>No artist posts yet.</Text>}
+            {visiblePosts.map((p) => (
+              <View key={p.id} style={[styles.postCard, legacyMode && styles.editorialCard]}>
+                <View style={styles.postTop}>
+                  {legacyMode ? <View style={styles.editorialMark}><BrandMark size={19} color={colors.gold} /></View> : <Avatar user={avatarUser} size={28} />}
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.postName}>{legacyMode ? "Mshpit editorial" : a.name}</Text>
+                    <Text style={styles.postTs}>{legacyMode ? `HISTORY NOTE · ${p.ts}` : p.ts}</Text>
+                  </View>
+                  {!ownsArtistPage && onReport ? (
+                    <Pressable
+                      style={styles.artistPostReport}
+                      hitSlop={8}
+                      onPress={() => onReport({
+                        targetType: "artist_post",
+                        targetId: p.id,
+                        ownerId: p.userId,
+                        targetName: legacyMode ? "Mshpit history note" : "artist update",
+                        title: legacyMode ? `${a.name} history note` : `${a.name} artist-page update`,
+                        summary: p.text,
+                      })}
+                      accessibilityRole="button"
+                      accessibilityLabel={legacyMode ? `Report Mshpit's history note about ${a.name}` : `Report ${a.name} artist-page update`}
+                    >
+                      <Icon name="flag" size={14} color={colors.textFaint} />
+                    </Pressable>
+                  ) : null}
+                </View>
+                <ExpandableText
+                  text={p.text}
+                  style={styles.postText}
+                  moreAccessibilityLabel={legacyMode ? `Read the full Mshpit history note about ${a.name}` : `Read the full ${a.name} artist update`}
+                  lessAccessibilityLabel={legacyMode ? `Show a shorter Mshpit history note about ${a.name}` : `Show a shorter ${a.name} artist update`}
+                />
+              </View>
+            ))}
+            {sectionModel.condensed && posts.length > visiblePosts.length && (
+              <Pressable style={styles.showAllBtn} onPress={() => setActiveSection("community")} accessibilityRole="button" accessibilityLabel={legacyMode ? `See all ${posts.length} Mshpit history notes about ${a.name}` : `See all ${posts.length} ${a.name} artist posts`}>
+                <Text style={styles.showAllTxt}>{legacyMode ? "See every history note" : "See every artist update"}</Text>
+                <Icon name="chevron-right" size={15} color={colors.amber} />
+              </Pressable>
+            )}
+          </>
+        )}
+
+        {sectionModel.showAbout && (!legacyMode || sectionModel.active === "about") && !!bio && (
+          <>
+            <Text style={styles.sectionLabel}>THE ARTIST</Text>
+            <ExpandableText
+              text={bio}
+              style={styles.bio}
+              toggleStyle={styles.bioToggle}
+              toggleTextStyle={styles.bioToggleText}
+              moreAccessibilityLabel={`Read the full ${a.name} biography`}
+              lessAccessibilityLabel={`Show a shorter ${a.name} biography`}
+            />
+          </>
+        )}
+
+
+        {sectionModel.showAbout && biographyRows.length > 0 && (
+          <View style={styles.aboutFacts} accessibilityLabel="Verified artist biography facts">
+            {biographyRows.map((fact) => (
+              <View key={fact.key} style={styles.aboutFact}>
+                <Text style={styles.aboutFactLabel}>{fact.label}</Text>
+                <Text selectable style={styles.aboutFactValue}>{fact.value}</Text>
+                {fact.sourceUrl ? (
+                  <PublicPressableLink href={fact.sourceUrl} onNavigate={() => Linking.openURL(fact.sourceUrl).catch(() => Alert.alert("Source unavailable", "The source could not open. Please try again."))} style={styles.factSource} accessibilityLabel={`Source for ${fact.label.toLowerCase()}`}>
+                    <Text style={styles.bioToggleText}>Source</Text><Icon name="external" size={12} color={colors.amber} />
+                  </PublicPressableLink>
+                ) : null}
+              </View>
+            ))}
+          </View>
+        )}
+        {thin && sectionModel.showAbout && !canManagePublicPage && (
           <View style={styles.comingSoon}>
             <Icon name="clock" size={16} color={colors.amber} />
             <View style={{ flex: 1 }}>
@@ -1053,20 +1492,6 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
                   ? "Photos and songs are on the way. Your reviews still count and will show here."
                   : "Photos and songs are on the way. Live actions stay closed until the artist status is verified."}</Text>
             </View>
-          </View>
-        )}
-
-        {highlights.length > 0 && (
-          <View style={styles.artistFacts} accessibilityLabel={highlights.map((fact) => `${fact.label}: ${fact.value}`).join(". ")}>
-            {highlights.map((fact) => (
-              <View key={fact.key} style={styles.artistFact}>
-                <Icon name={fact.icon} size={13} color={colors.amber} />
-                <View style={styles.artistFactCopy}>
-                  <Text style={styles.artistFactLabel}>{fact.label}</Text>
-                  <Text style={styles.artistFactValue} numberOfLines={2}>{fact.value}</Text>
-                </View>
-              </View>
-            ))}
           </View>
         )}
 
@@ -1154,134 +1579,6 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
         )}
         </>)}
 
-        {!legacyMode ? <View style={styles.repCard}>
-          <Text style={styles.repLabel}>{deceased ? "CREATIVE LEGACY" : liveAvailable ? "LIVE REPUTATION" : "ARTIST STATUS"}</Text>
-          {deceased ? (
-            <View style={styles.legacyRow}>
-              <View style={styles.legacyMark}><Icon name="dove" size={27} color={colors.gold} strokeWidth={1.5} /></View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.legacyTitle}>Remembered through the music</Text>
-                <Text style={styles.repSub}>This permanent page preserves concert history, photos, and fan memories. New live ratings are closed.</Text>
-              </View>
-            </View>
-          ) : liveAvailable ? (
-            <View style={styles.repRow}>
-              <Text style={styles.bigScore}>{displayedRatingCount ? displayedAverage.toFixed(1) : "—"}</Text>
-              <View style={{ flex: 1 }}>
-                <Stars value={displayedAverage} size={18} />
-                <Text style={styles.repSub}>
-                  {displayedRatingCount
-                    ? `${displayedShowCount} show${displayedShowCount === 1 ? "" : "s"} · ${displayedRatingCount} fan rating${displayedRatingCount === 1 ? "" : "s"}`
-                    : "No live rating yet"}
-                </Text>
-              </View>
-            </View>
-          ) : (
-            <View style={styles.legacyRow} accessibilityLiveRegion="polite">
-              <View style={styles.legacyMark}>
-                {memorialChecking ? <ActivityIndicator color={colors.gold} /> : <Icon name="shield" size={24} color={colors.gold} />}
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.legacyTitle}>{memorialChecking ? "Checking artist status" : "Live details are temporarily unavailable"}</Text>
-                <Text style={styles.repSub}>{memorialChecking
-                  ? "Mshpit is confirming whether live ratings and upcoming shows are available for this artist."
-                  : "Mshpit could not safely confirm this artist's status, so live ratings and review actions remain hidden."}</Text>
-                {!memorialChecking ? (
-                  <Pressable style={styles.memorialRetry} onPress={retryMemorial} accessibilityRole="button" accessibilityLabel={`Retry checking ${a.name}'s artist status`}>
-                    <Text style={styles.memorialRetryText}>Try again</Text>
-                  </Pressable>
-                ) : null}
-              </View>
-            </View>
-          )}
-          {session && seen?.count > 0 && (
-            <View style={styles.seenChip} accessibilityLabel={`You have seen ${a.name} live ${seen.count} ${seen.count === 1 ? "time" : "times"}`}>
-              <Icon name="check" size={13} color={colors.good} />
-              <Text style={styles.seenChipTxt}>
-                You've been in the pit with them {seen.count === 1 ? "once" : seen.count === 2 ? "twice" : `${seen.count} times`}{seen.last ? ` · last ${seen.last}` : ""}
-              </Text>
-            </View>
-          )}
-          {liveAvailable && liveArchiveResource.status === "error" && !liveArchive ? <Text style={styles.note}>The live reputation could not refresh. Open the archive to try again.</Text> : null}
-        </View> : null}
-
-        {/* Put the artist's visual identity directly beside their live reputation.
-            This remains a bounded preview; the dedicated gallery owns the full
-            collection and its pagination. */}
-        {sectionModel.showCommunity && (gallery.length > 0 || !sectionModel.condensed) && (
-          <>
-            <View style={styles.galleryHeading}>
-              <View style={{ flex: 1, minWidth: 0 }}>
-                <Text style={styles.sectionLabel}>{legacyMode ? "ARCHIVE & COMMUNITY PHOTOS" : "PHOTOS & FAN GALLERY"}</Text>
-                <Text style={styles.bio}>{legacyMode
-                  ? "Existing public images remain part of this protected community record. New photo and video uploads are closed; written memories remain open."
-                  : sectionModel.condensed ? "A quick look at public fan photos and videos." : "Public fan photos and videos, along with artist images. Private and moderated media is not shown."}</Text>
-              </View>
-              {onOpenGallery ? (
-                <Pressable
-                  style={({ pressed, focused }) => [styles.galleryOpenButton, pressed && styles.archivePressed, focused && focusRing]}
-                  onPress={() => onOpenGallery(a.name, a.profileKey, legacyMode)}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Open the full ${a.name} photo and fan gallery`}
-                >
-                  <Text style={styles.galleryOpenText}>SEE ALL</Text>
-                  <Icon name="chevron-right" size={14} color={colors.amber} />
-                </Pressable>
-              ) : null}
-            </View>
-            {gallery.length ? (
-              <View style={styles.fanGrid}>
-                {visibleGallery.map((p, i) => (
-                  <View key={p.uri || i} style={styles.fanTile}>
-                    <SmartImage uri={p.uri} posterUri={mediaPosterUri(p)} mediaKind={mediaDisplayKind(p)} accessibilityLabel={p.altText || `Open media from ${a.name}`} style={StyleSheet.absoluteFill} contain={false}
-                      onPress={() => onOpenPhotos?.(gallery.map((x) => ({ ...x, uri: x.uri, by: x.by, postId: x.postId, ownerId: x.ownerId })), i, p.postId || null)} />
-                    {p.source !== "fan" && !!p.by && (
-                      <View style={styles.creditTag} pointerEvents="none"><Text style={styles.creditTxt} numberOfLines={1}>{p.by}</Text></View>
-                    )}
-                    {canModerate && (
-                      <Pressable style={styles.modBtn} hitSlop={6} onPress={() => removePhoto(p.uri)} accessibilityRole="button" accessibilityLabel={`Hide this ${a.name} gallery item`}>
-                        <Icon name="x" size={12} color="#fff" />
-                      </Pressable>
-                    )}
-                  </View>
-                ))}
-              </View>
-            ) : (
-              <View style={styles.galleryEmpty} accessible accessibilityLabel={`No public fan media for ${a.name} yet`}>
-                <Icon name="photo" size={20} color={colors.textFaint} />
-                <Text style={styles.galleryEmptyText}>{legacyMode
-                  ? "No archived community media is available for this artist. Written memories remain open below."
-                  : "No public fan media yet. Shared concert photos will build this archive."}</Text>
-              </View>
-            )}
-          </>
-        )}
-
-        {/* Live-music actions remain primary while the built-in player is paused. */}
-        {deceased && (!legacyMode || confirmedLegacyProfile) && session && typeof onShareMemory === "function" ? (
-          <Pressable style={styles.memoryBtn} onPress={() => onShareMemory(a.name, a.profileKey, { legacyProfile: confirmedLegacyProfile })} accessibilityRole="button" accessibilityLabel={`Share a ${confirmedLegacyProfile ? "written " : "fan "}memory about ${a.name}`}>
-            <Icon name="dove" size={17} color="#1A1206" strokeWidth={1.7} />
-            <Text style={styles.memoryBtnText}>{confirmedLegacyProfile ? "Share a written memory" : "Share a fan memory"}</Text>
-          </Pressable>
-        ) : null}
-        {profileServicesAvailable ? <View style={styles.artistActions}>
-          <Pressable
-            style={styles.fcBtn}
-            onPress={() => onOpenFanClub?.(a.name)}
-            accessibilityRole="button"
-            accessibilityLabel={`Open the ${a.name} Fan Club${fanClubMember ? ", joined" : ""}`}
-          >
-            <Icon name="comment" size={16} color="#1A1206" />
-            <Text style={styles.fcTxt}>Fan Club</Text>
-          </Pressable>
-          <Pressable style={styles.listenBtn} onPress={() => onOpenArchive?.(a.name, a.profileKey)}>
-            <Icon name="archive" size={15} color={colors.amber} />
-            <Text style={styles.listenTxt}>{deceased ? "Concert history" : liveAvailable ? "Live archive" : "Concert archive"}</Text>
-          </Pressable>
-        </View> : null}
-
-        <ArtistPageSectionNav active={sectionModel.active} onChange={setActiveSection} memorialMode={deceased} legacyMode={!profileServicesAvailable} statusPending={!memorialKnown} />
-
         {/* Top song — a "start here" pick beside the profile, one tap to play. */}
         {sectionModel.showMusic && playerEnabled && topSong && (
           <Pressable style={styles.topSong} onPress={() => playSingle(topSong.song)} accessibilityRole="button" accessibilityLabel={`Play top song ${topSong.song.title}`}>
@@ -1292,258 +1589,6 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
             </View>
             <Icon name="chevron-right" size={16} color={colors.textDim} />
           </Pressable>
-        )}
-
-        {/* Artist posts are read-only here. Creation and removal live in Artist HQ.
-            Legacy pages expose only staff-curated history notes. They must never
-            borrow the artist's avatar/name or imply that the artist published
-            them. Modern artist posts keep their existing owner presentation. */}
-        {sectionModel.showCommunity && artistPostsVisible && (
-          <>
-            <View style={styles.feedHead}>
-              <Text style={styles.sectionLabel}>{legacyMode ? "MSHPIT HISTORY NOTES" : "ARTIST POSTS"}{posts.length ? ` · ${posts.length}` : ""}</Text>
-              {!legacyMode && canManagePublicPage && !a.feedEnabled && <Text style={styles.feedOff}>hidden from fans</Text>}
-            </View>
-            {legacyMode ? <Text style={styles.editorialIntro}>Background and historical context written by Mshpit staff. These notes are not posts from the artist.</Text> : null}
-            {!legacyMode && posts.length === 0 && <Text style={styles.empty}>No artist posts yet.</Text>}
-            {visiblePosts.map((p) => (
-              <View key={p.id} style={[styles.postCard, legacyMode && styles.editorialCard]}>
-                <View style={styles.postTop}>
-                  {legacyMode ? <View style={styles.editorialMark}><BrandMark size={19} color={colors.gold} /></View> : <Avatar user={avatarUser} size={28} />}
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.postName}>{legacyMode ? "Mshpit editorial" : a.name}</Text>
-                    <Text style={styles.postTs}>{legacyMode ? `HISTORY NOTE · ${p.ts}` : p.ts}</Text>
-                  </View>
-                  {!ownsArtistPage && onReport ? (
-                    <Pressable
-                      style={styles.artistPostReport}
-                      hitSlop={8}
-                      onPress={() => onReport({
-                        targetType: "artist_post",
-                        targetId: p.id,
-                        ownerId: p.userId,
-                        targetName: legacyMode ? "Mshpit history note" : "artist update",
-                        title: legacyMode ? `${a.name} history note` : `${a.name} artist-page update`,
-                        summary: p.text,
-                      })}
-                      accessibilityRole="button"
-                      accessibilityLabel={legacyMode ? `Report Mshpit's history note about ${a.name}` : `Report ${a.name} artist-page update`}
-                    >
-                      <Icon name="flag" size={14} color={colors.textFaint} />
-                    </Pressable>
-                  ) : null}
-                </View>
-                <ExpandableText
-                  text={p.text}
-                  style={styles.postText}
-                  moreAccessibilityLabel={legacyMode ? `Read the full Mshpit history note about ${a.name}` : `Read the full ${a.name} artist update`}
-                  lessAccessibilityLabel={legacyMode ? `Show a shorter Mshpit history note about ${a.name}` : `Show a shorter ${a.name} artist update`}
-                />
-              </View>
-            ))}
-            {sectionModel.condensed && posts.length > visiblePosts.length && (
-              <Pressable style={styles.showAllBtn} onPress={() => setActiveSection("community")} accessibilityRole="button" accessibilityLabel={legacyMode ? `See all ${posts.length} Mshpit history notes about ${a.name}` : `See all ${posts.length} ${a.name} artist posts`}>
-                <Text style={styles.showAllTxt}>{legacyMode ? "See every history note" : "See every artist update"}</Text>
-                <Icon name="chevron-right" size={15} color={colors.amber} />
-              </Pressable>
-            )}
-          </>
-        )}
-
-        {/* Upcoming shows first, this is a live-music app, gigs lead. */}
-        {sectionModel.showLive && upcoming.length > 0 && (
-          <>
-            <Text style={styles.sectionLabel}>UPCOMING · {upcoming.length}</Text>
-            {visibleUpcoming.map((t) => (
-              <View key={t.id} style={styles.upRow}>
-                <PublicPressableLink
-                  href={eventPath(t)}
-                  onNavigate={() => onOpenShow?.(t)}
-                  style={({ pressed, focused }) => [styles.upMain, pressed && styles.archivePressed, focused && focusRing]}
-                  accessibilityLabel={`Open ${a.name} at ${t.venue}, ${t.place || "location to be announced"}, ${formatDate(t.date, t.date)}`}
-                  accessibilityHint="Opens the event page"
-                >
-                  <Text style={styles.upVenue}>{t.venue}</Text>
-                  <Text style={styles.upPlace}>{t.place}</Text>
-                  <Text style={styles.upDate}>{formatDate(t.date, t.date)}{t.scheduled ? "  · scheduled" : ""}</Text>
-                </PublicPressableLink>
-                {t.soldOut ? (
-                  <View style={styles.soldOut}><Text style={styles.soldOutTxt}>SOLD OUT</Text></View>
-                ) : /^https:\/\//i.test(t.ticketUrl || "") ? (
-                  <Pressable style={styles.ticketBtn} onPress={() => { void openTicketLink(t.ticketUrl); }} accessibilityRole="link" accessibilityLabel={`Open tickets for ${a.name} at ${t.venue}`}>
-                    <Icon name="ticket" size={14} color="#1A1206" />
-                    <Text style={styles.ticketTxt}>Tickets</Text>
-                  </Pressable>
-                ) : (
-                  <View style={styles.ticketPending} accessibilityLabel="Ticket link coming soon">
-                    <Icon name="clock" size={13} color={colors.textDim} />
-                    <Text style={styles.ticketPendingTxt}>Tickets soon</Text>
-                  </View>
-                )}
-              </View>
-            ))}
-            {upcomingPresentation.hasOverflow && (
-              <Pressable
-                style={({ pressed, focused }) => [styles.showAllBtn, pressed && styles.archivePressed, focused && focusRing]}
-                onPress={() => sectionModel.condensed ? setActiveSection("live") : setShowAllUpcoming((current) => !current)}
-                accessibilityRole="button"
-                accessibilityState={{ expanded: sectionModel.condensed ? false : upcomingPresentation.expanded }}
-                accessibilityLabel={sectionModel.condensed
-                  ? `View every upcoming ${a.name} show`
-                  : upcomingPresentation.expanded
-                    ? `Show fewer upcoming ${a.name} shows`
-                    : `Load ${upcomingPresentation.overflowCount} more upcoming ${a.name} shows`}
-              >
-                <Text style={styles.showAllTxt}>
-                  {sectionModel.condensed ? `View all ${upcoming.length} shows` : upcomingPresentation.expanded ? "Show fewer" : `Load ${upcomingPresentation.overflowCount} more`}
-                </Text>
-                <Icon name={sectionModel.condensed ? "chevron-right" : upcomingPresentation.expanded ? "chevron-up" : "chevron-down"} size={15} color={colors.amber} />
-              </Pressable>
-            )}
-          </>
-        )}
-
-        {/* The complete archive is server-backed and groups many fan logs into
-            one performance. Keep this profile preview compact; the virtualized
-            archive owns the long history. */}
-        {sectionModel.showLive && (<>
-        {sectionModel.active === "live" && liveAvailable && (
-          <>
-            <Text style={styles.sectionLabel}>TOP-RATED NIGHTS</Text>
-            <Text style={styles.topNightsIntro}>The three performances fans rate highest, weighted by real community depth.</Text>
-            {liveArchiveResource.status === "loading" && !liveArchive ? (
-              <View style={styles.inlineLoading}><ActivityIndicator size="small" color={colors.amber} /><Text style={styles.empty}>Opening the live history…</Text></View>
-            ) : topPerformances.length ? topPerformances.slice(0, 3).map((show, index) => (
-              <PublicPressableLink
-                key={show.key || show.id || index}
-                href={concertPath(show.key)}
-                onNavigate={() => onOpenShow?.(show)}
-                style={({ pressed, focused }) => [styles.topNightCard, index === 0 && styles.topNightCardLead, pressed && styles.archivePressed, focused && focusRing]}
-                accessibilityLabel={`Open number ${index + 1} rated ${a.name} performance at ${show.venue || "venue"}`}
-              >
-                <View style={[styles.topNightRank, index === 0 && styles.topNightRankLead]}><Text style={styles.topNightRankText}>#{index + 1}</Text></View>
-                <View style={styles.topNightCopy}>
-                  <Text style={styles.topNightVenue} numberOfLines={1}>{show.venue || "Venue to be announced"}</Text>
-                  <Text style={styles.topNightMeta} numberOfLines={1}>{[show.place, formatDate(show.date, "")].filter(Boolean).join(" · ")}</Text>
-                  {!!show.tour && <Text style={styles.topNightTour} numberOfLines={1}>{show.tour}</Text>}
-                </View>
-                <View style={styles.topNightScore}><Icon name="star" size={12} color={colors.gold} filled /><Text style={styles.topNightScoreText}>{Number(show.avgRating || 0).toFixed(1)}</Text></View>
-              </PublicPressableLink>
-            )) : (
-              <Text style={styles.empty}>The podium is open. Rated performances will rise here as fans add their nights.</Text>
-            )}
-          </>
-        )}
-        {sectionModel.active === "live" ? (
-          <>
-            <Text style={styles.sectionLabel}>LIVE ARCHIVE</Text>
-            <Pressable
-              style={({ pressed, focused }) => [styles.archiveCard, pressed && styles.archivePressed, focused && focusRing]}
-              onPress={() => onOpenArchive?.(a.name, a.profileKey)}
-              accessibilityRole="button"
-              accessibilityLabel={`Open ${a.name} ${deceased ? "concert history" : "live archive"}`}
-              accessibilityHint={deceased ? "Shows historical concerts, tours, photos, and fan memories" : "Shows the top rated performances, tours, photos, and every review"}
-            >
-              <View style={styles.archiveMark}><Icon name="archive" size={20} color={colors.amber} /></View>
-              <View style={styles.archiveCopy}>
-                <Text style={styles.archiveTitle}>{deceased ? "Concert history and memories" : liveAvailable ? "Every tour. Every night." : "Concert archive"}</Text>
-                <Text style={styles.archiveText}>{deceased
-                  ? "Remember past shows through tour galleries, photos, and the fan memories already shared."
-                  : liveAvailable
-                    ? "Explore the top three fan-rated shows, tour galleries, and the full review history."
-                    : "Browse historical concert records while Mshpit verifies whether live actions are available."}</Text>
-              </View>
-              <View style={styles.archiveArrow}><Icon name="chevron-right" size={17} color={colors.amber} /></View>
-            </Pressable>
-          </>
-        ) : null}
-        </>)}
-
-        {/* The writing fans keep passing around, paired with its public media. */}
-        {memorialKnown && sectionModel.showCommunity && (topReviews.length > 0 || topReviewsPresentation.initialError || topReviewsPresentation.refreshError) && (
-          <>
-            <View style={styles.topReviewsHeading}>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.sectionLabel}>{deceased ? `FAN MEMORIES${topReviews.length ? ` · ${topReviews.length}` : ""}` : sectionModel.condensed ? "TOP REVIEW" : `TOP REVIEWS · ${topReviews.length}`}</Text>
-                <Text style={styles.topReviewsIntro}>
-                  {legacyMode
-                    ? "Read community memories or add your own written remembrance. Photo and video submissions stay closed on this protected profile."
-                    : deceased
-                    ? "Read the memories fans shared from concerts, then open the exact night in the historical archive."
-                    : sectionModel.condensed
-                    ? "Read the fan post, or open the exact show for that night's details."
-                    : "Each review stays with its original fan post. View show opens the exact concert instead."}
-                </Text>
-              </View>
-              <View style={styles.topReviewsSeal} accessibilityLabel={deceased ? "In remembrance" : "Fan favorites"}>
-                <Icon name={deceased ? "dove" : "heart"} size={12} color={deceased ? colors.gold : colors.magenta} strokeWidth={1.8} />
-                <Text style={styles.topReviewsSealText}>{deceased ? "IN REMEMBRANCE" : "FAN FAVORITES"}</Text>
-              </View>
-            </View>
-            {(topReviewsPresentation.initialError || topReviewsPresentation.refreshError) && (
-              <View style={styles.topReviewsFallback} accessibilityRole="alert">
-                <View style={styles.topReviewsFallbackCopy}>
-                  <Text style={styles.topReviewsFallbackLabel}>
-                    {topReviewsPresentation.initialError ? "DEVICE COPY" : deceased ? "LAST SAVED MEMORIES" : "LAST LIVE RANKING"}
-                  </Text>
-                  <Text style={styles.topReviewsFallbackText}>
-                    {topReviewsPresentation.initialError
-                      ? `${deceased ? "Fan memories" : "Live favorites"} could not load, so these are reviews already on this device.`
-                      : deceased ? "The latest refresh failed. The last saved fan memories are still showing." : "The latest refresh failed. The last verified ranking is still showing."}
-                  </Text>
-                </View>
-                <Pressable
-                  style={({ pressed, focused }) => [
-                    styles.topReviewsRetry,
-                    pressed && styles.topReviewActionPressed,
-                    focused && focusRing,
-                  ]}
-                  onPress={retryTopReviews}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Retry loading ${deceased ? "artist fan memories" : "live artist reviews"}`}
-                >
-                  <Icon name="chevron-right" size={13} color={colors.amber} />
-                  <Text style={styles.topReviewsRetryText}>Retry</Text>
-                </Pressable>
-              </View>
-            )}
-            <View style={styles.topReviewsList}>
-              {visibleTopReviews.map((review, index) => (
-                <TopReviewCard
-                  key={review.id}
-                  review={review}
-                  rank={index + 1}
-                  artistName={a.name}
-                  onOpenPost={onOpenPost}
-                  onOpenShow={onOpenShow}
-                  onOpenPhotos={onOpenPhotos}
-                  onOpenProfile={onOpenProfile}
-                  memorialMode={deceased}
-                  archiveAvailable={profileServicesAvailable}
-                />
-              ))}
-            </View>
-            {sectionModel.condensed && topReviews.length > visibleTopReviews.length ? (
-              <Pressable style={styles.showAllBtn} onPress={() => setActiveSection("community")} accessibilityRole="button" accessibilityLabel={`Read all top ${a.name} reviews`}>
-                <Text style={styles.showAllTxt}>{deceased ? "Read more fan memories" : "Read more reviews"}</Text>
-                <Icon name="chevron-right" size={15} color={colors.amber} />
-              </Pressable>
-            ) : null}
-          </>
-        )}
-
-        {!legacyMode && sectionModel.showAbout && !!bio && (
-          <>
-            <Text style={styles.sectionLabel}>ABOUT</Text>
-            <ExpandableText
-              text={bio}
-              style={styles.bio}
-              toggleStyle={styles.bioToggle}
-              toggleTextStyle={styles.bioToggleText}
-              moreAccessibilityLabel={`Read the full ${a.name} biography`}
-              lessAccessibilityLabel={`Show a shorter ${a.name} biography`}
-            />
-          </>
         )}
 
         {sectionModel.showMusic && (<>
@@ -1725,7 +1770,7 @@ const styles = StyleSheet.create({
   topTitle: { color: colors.textFaint, fontSize: 11, letterSpacing: 2, fontWeight: "700" },
   content: { width: "100%", maxWidth: 1120, alignSelf: "center", padding: 16, paddingBottom: 64 },
   sectionNav: { flexDirection: "row", alignItems: "stretch", gap: 6, marginTop: 18, marginBottom: 2, padding: 4, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.bgElev },
-  sectionNavItem: { flex: 1, minWidth: 0, minHeight: 46, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingHorizontal: 7, borderRadius: radius.sm },
+  sectionNavItem: { flex: 1, minWidth: 0, minHeight: 54, flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 6, paddingHorizontal: 7, borderRadius: radius.sm },
   sectionNavItemOn: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.amber },
   sectionNavItemPressed: { opacity: 0.72 },
   sectionNavText: { color: colors.textFaint, fontSize: 11.5, fontWeight: "800" },
@@ -1736,7 +1781,7 @@ const styles = StyleSheet.create({
   fanPreviewIcon: { width: 28, height: 28, borderRadius: 14, alignItems: "center", justifyContent: "center", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line },
   fanPreviewTitle: { color: colors.amber, fontFamily: mono, fontSize: 10, fontWeight: "900", letterSpacing: 1.2 },
   fanPreviewText: { color: colors.textDim, fontSize: 11.5, marginTop: 2 },
-  headRow: { flexDirection: "row", alignItems: "flex-end", justifyContent: "space-between", marginTop: -42, paddingLeft: 4 },
+  headRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: space(2), marginTop: space(3) },
   avatarWrap: { borderWidth: 3, borderColor: colors.bg, borderRadius: 48, backgroundColor: colors.bg },
   profileActions: { alignItems: "flex-end", gap: 6, marginBottom: 4 },
   editBtn: { flexDirection: "row", alignItems: "center", gap: 7, borderWidth: 1, borderColor: colors.amber, borderRadius: radius.pill, paddingHorizontal: 16, paddingVertical: 8, marginBottom: 4 },
@@ -1749,10 +1794,12 @@ const styles = StyleSheet.create({
   badgeChips: { alignItems: "flex-end", gap: 6, marginBottom: 4 },
   reportProfileBtn: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: 7, borderWidth: 1, borderColor: colors.line, borderRadius: radius.pill, paddingHorizontal: 14 },
   reportProfileText: { color: colors.textDim, fontSize: 12, fontWeight: "700" },
-  headInfo: { marginTop: 12 },
+  identityHeader: { flexDirection: "row", alignItems: "center", gap: space(3) },
+  headInfo: { marginTop: 0, flex: 1, minWidth: 0 },
   nameRow: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 4 },
   nameBadges: { marginTop: 4 },
-  heroName: { color: colors.text, fontSize: 30, fontWeight: "900", letterSpacing: -0.6 },
+  heroName: { color: colors.text, fontFamily: displayFont, fontSize: 34, fontWeight: "900", letterSpacing: -0.6 },
+  heroNameCompact: { fontSize: 28 },
   memorialChip: { minHeight: 28, flexDirection: "row", alignItems: "center", gap: 5, marginLeft: 5, paddingHorizontal: 9, borderRadius: radius.pill, borderWidth: 1, borderColor: `${colors.gold}66`, backgroundColor: `${colors.gold}12` },
   memorialChipText: { color: colors.gold, fontFamily: mono, fontSize: 9, fontWeight: "900", letterSpacing: 1 },
   memorialStatusChip: { minHeight: 28, flexDirection: "row", alignItems: "center", gap: 5, marginLeft: 5, paddingHorizontal: 9, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surfaceAlt },
@@ -1788,6 +1835,21 @@ const styles = StyleSheet.create({
   fanClubInviteLater: { minWidth: 96, minHeight: 44, alignItems: "center", justifyContent: "center", paddingHorizontal: 16, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
   fanClubInviteLaterText: { color: colors.textDim, fontSize: 12.5, fontWeight: "800" },
 
+  heroLayout: { gap: space(4), flexShrink: 0 },
+  heroLayoutWide: { flexDirection: "row", alignItems: "flex-start", gap: space(6) },
+  heroVisual: { minWidth: 0, flexShrink: 0 },
+  heroVisualWide: { flex: 1.15 },
+  heroDetails: { minWidth: 0, flexShrink: 0 },
+  heroDetailsWide: { flex: 1, paddingTop: space(2) },
+  heroIntro: { marginTop: space(3) },
+  sectionHeading: { marginTop: space(5), gap: space(2) },
+  pageKicker: { color: colors.amber, fontFamily: mono, fontSize: 10, fontWeight: "800", letterSpacing: 1.5 },
+  pageTitle: { color: colors.text, fontFamily: displayFont, fontSize: 28, fontWeight: "900" },
+  aboutFacts: { marginTop: space(4), borderWidth: 1, borderColor: colors.lineSoft, borderRadius: radius.md, backgroundColor: colors.surface, padding: space(3), gap: space(3) },
+  aboutFact: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space(2) },
+  aboutFactLabel: { color: colors.textDim, fontSize: 13, minWidth: 100 },
+  aboutFactValue: { color: colors.text, fontSize: 14, fontWeight: "800", flex: 1 },
+  factSource: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: space(1), paddingHorizontal: space(2) },
   repCard: { backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 15, marginTop: 14 },
   repLabel: { color: colors.textFaint, fontSize: 11, letterSpacing: 1.5, fontWeight: "700", marginBottom: 12 },
   repRow: { flexDirection: "row", alignItems: "center", gap: 16 },

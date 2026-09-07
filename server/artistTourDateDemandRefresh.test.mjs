@@ -38,6 +38,115 @@ function addArtist(name, extra = {}) {
   return artistStmts.byNorm.get(key);
 }
 
+test("verified co-headline dates supplement a cached solo attraction without replacing it", async () => {
+  const requests = [];
+  const result = await collectExactTicketmasterArtistDates({
+    apiKey: "test", artistName: "Chris Brown", attractionId: "solo-chris", requestDelayMs: 0,
+    fetchJson: async (url) => {
+      const id = new URL(url).searchParams.get("attractionId"); requests.push(id);
+      const event = id === "K8vZ917LxIV"
+        ? tmEvent({ id: "joint", artist: "USHER RAYMOND & CHRIS BROWN", attractionId: id })
+        : tmEvent({ id: "solo", artist: "Chris Brown", attractionId: "solo-chris" });
+      return { _embedded: { events: [event] }, page: { totalPages: 1, totalElements: 1 } };
+    },
+  });
+  assert.deepEqual(requests, ["solo-chris", "K8vZ917LxIV"]);
+  assert.equal(result.complete, true);
+  assert.equal(result.attractionId, "solo-chris");
+  assert.deepEqual(result.rows.map((row) => row.provider_event_id).sort(), ["joint", "solo"]);
+  assert.ok(result.rows.find((row) => row.provider_event_id === "joint").billed_artists.includes("Usher"));
+});
+
+test("a failed co-headline supplement preserves solo dates and cannot claim complete coverage", async () => {
+  const result = await collectExactTicketmasterArtistDates({
+    apiKey: "test", artistName: "Usher", attractionId: "solo-usher", requestDelayMs: 0,
+    fetchJson: async (url) => {
+      if (new URL(url).searchParams.get("attractionId") === "K8vZ917LxIV") throw new Error("offline");
+      return { _embedded: { events: [tmEvent({ id: "solo", artist: "Usher", attractionId: "solo-usher" })] }, page: { totalPages: 1 } };
+    },
+  });
+  assert.equal(result.complete, false);
+  assert.equal(result.rows.length, 1);
+  assert.equal(result.attractionId, "solo-usher");
+});
+
+test("verified joint billing cannot promote a sports event into music dates", async () => {
+  const { ticketmasterRows } = await import("./tourdates.js");
+  const event = tmEvent({ id: "nonmusic", artist: "USHER RAYMOND & CHRIS BROWN", attractionId: "K8vZ917LxIV" });
+  event.classifications = [{ primary: true, segment: { id: "KZFzniwnSyZfZ7v7nE", name: "Sports" } }];
+  assert.deepEqual(ticketmasterRows({ _embedded: { events: [event] } }, { requestedArtist: "Chris Brown" }), []);
+});
+
+test("a joint rate limit outranks a solo paging cap and retries the same scan window", async () => {
+  const result = await collectExactTicketmasterArtistDates({
+    apiKey: "test", artistName: "Chris Brown", attractionId: "solo-chris", requestDelayMs: 0,
+    fetchJson: async (value) => {
+      const url = new URL(value);
+      const joint = url.searchParams.get("attractionId") === "K8vZ917LxIV";
+      const page = Number(url.searchParams.get("page"));
+      if (joint && page === 1) throw Object.assign(new Error("slow down"), { status: 429 });
+      return tmPage(page, joint ? 2 : 99, [tmEvent({
+        id: (joint ? "joint-" : "solo-") + page,
+        artist: joint ? "USHER RAYMOND & CHRIS BROWN" : "Chris Brown",
+        attractionId: joint ? "K8vZ917LxIV" : "solo-chris",
+      })]);
+    },
+  });
+  assert.equal(result.complete, false);
+  assert.equal(result.limited, true);
+  assert.equal(result.errorCategory, "provider_rate_limited");
+  assert.equal(result.rows.length, 6, "verified rows from both partial scans survive");
+
+  addArtist("Chris Brown");
+  const nowRef = { value: Date.parse("2026-09-07T12:00:00Z") };
+  const persisted = [];
+  const service = testService({
+    nowRef, persisted, ticketmasterWindowDays: 1,
+    refreshArtist: async () => ({ ...result, ticketmaster: { ...result, attempted: true } }),
+  });
+  service.enqueue({ artistKey: "chris brown", authenticated: true });
+  const outcome = await service.runDueOnce();
+  const row = db.prepare("SELECT * FROM artist_tourdate_refresh_queue WHERE artist_key='chris brown'").get();
+  assert.equal(outcome.status, "retry");
+  assert.equal(row.last_error_code, "provider_rate_limited");
+  assert.ok(outcome.retryAt - nowRef.value >= 60 * 60 * 1000);
+  assert.equal(row.ticketmaster_scan_cursor_date, "2026-09-07", "a failed provider page must not advance past unscanned dates");
+  assert.equal(persisted[0].rows.length, 6);
+});
+
+test("joint scans keep the exported collector's default fetch, delay and clock", async (t) => {
+  const requests = [];
+  t.mock.method(globalThis, "fetch", async (value) => {
+    const url = new URL(value);
+    const id = url.searchParams.get("attractionId");
+    const page = Number(url.searchParams.get("page"));
+    requests.push({ id, page, range: url.searchParams.get("startEndDateTime") });
+    const joint = id === "K8vZ917LxIV";
+    return Response.json(tmPage(page, joint ? 2 : 1, [tmEvent({
+      id: (joint ? "joint-" : "solo-") + page,
+      artist: joint ? "USHER RAYMOND & CHRIS BROWN" : "Chris Brown",
+      attractionId: id,
+    })]));
+  });
+  // The production delay is unref'd; keep this isolated test alive while its
+  // two one-millisecond waits exercise the default delay without network I/O.
+  const keepAlive = setInterval(() => {}, 1000);
+  try {
+    const result = await collectExactTicketmasterArtistDates({
+      apiKey: "test", artistName: "Chris Brown", attractionId: "solo-chris", requestDelayMs: 1,
+    });
+    assert.equal(result.complete, true);
+    assert.equal(result.errorCategory, null);
+    assert.equal(result.rows.length, 3);
+    assert.deepEqual(requests.map(({ id, page }) => [id, page]), [
+      ["solo-chris", 0], ["K8vZ917LxIV", 0], ["K8vZ917LxIV", 1],
+    ]);
+    assert.ok(requests.every(({ range }) => range === requests[0].range && !range.includes("NaN")));
+  } finally {
+    clearInterval(keepAlive);
+  }
+});
+
 function tmEvent({
   id,
   name = "Bryson Tiller Live",

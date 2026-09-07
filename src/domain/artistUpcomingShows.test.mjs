@@ -62,13 +62,17 @@ test("artist upcoming shows handle empty and short collections without a toggle"
   assert.equal(short.expanded, false);
 });
 
-test("artist profile wires the compact show selector to an accessible resettable toggle", () => {
+test("artist profile uses a bounded server-backed preview and an accessible paginated Shows section", () => {
   const source = readFileSync(new URL("../screens/ArtistScreen.jsx", import.meta.url), "utf8");
-
-  assert.match(source, /selectArtistUpcomingShows\(upcoming, \{ expanded: showAllUpcoming \}\)/);
-  assert.match(source, /setShowAllUpcoming\(false\)/);
-  assert.match(source, /visibleUpcoming\.map\(\(t\) =>/);
-  assert.match(source, /accessibilityState=\{\{ expanded: sectionModel\.condensed \? false : upcomingPresentation\.expanded \}\}/);
-  assert.match(source, /Load \$\{upcomingPresentation\.overflowCount\} more/);
-  assert.match(source, /Show fewer/);
+  const schedule = readFileSync(new URL("../components/artist/ArtistUpcomingShows.jsx", import.meta.url), "utf8");
+  assert.match(source, /<ArtistUpcomingShows[\s\S]*?controller=\{artistOverview\}[\s\S]*?condensed=\{sectionModel\.condensed\}[\s\S]*?onViewAll=\{\(\) => setActiveSection\("shows"\)\}/);
+  assert.doesNotMatch(source, /selectArtistUpcomingShows|setShowAllUpcoming|visibleUpcoming/);
+  assert.match(schedule, /const shown = condensed \? rows\.slice\(0, 3\) : rows/);
+  assert.match(schedule, /shown\.map\(\(event\) => <ShowTicket key=\{event\.id\}/);
+  assert.match(schedule, /!condensed && schedule\?\.hasMore \? <Action[\s\S]*?disabled=\{pending \|\| loadingMore\} onPress=\{controller\.loadMore\}/);
+  assert.match(schedule, /accessibilityRole="button" accessibilityLabel=\{label\} accessibilityState=\{\{ disabled \}\}/);
+  assert.match(schedule, /schedule\?\.legacy \|\| schedule\?\.coverage\?\.status === "disabled"\) return null/);
+  assert.match(schedule, /const hasSchedule = !!schedule/);
+  assert.match(schedule, /text\(hasSchedule \? "stale" : "failed"\)/);
+  assert.match(schedule, /onPress=\{controller\.reload\}/);
 });

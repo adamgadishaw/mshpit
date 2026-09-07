@@ -20,17 +20,17 @@ test("artist review actions have distinct reload-safe post and concert URLs", ()
 });
 
 test("memorial and pre-1970 legacy profiles use distinct permanent presentation modes", () => {
-  assert.match(source, /deceased \? "CREATIVE LEGACY" : liveAvailable \? "LIVE REPUTATION" : "ARTIST STATUS"/);
+  assert.match(source, /deceased \? "CREATIVE LEGACY" : liveAvailable \? "CONCERT RATINGS" : "ARTIST STATUS"/);
   assert.match(source, /New live ratings are closed\./);
   assert.match(source, /deceased \? `FAN MEMORIES/);
-  assert.match(source, /sectionModel\.active === "live" && liveAvailable/);
+  assert.match(source, /sectionModel\.active === "shows" && liveAvailable/);
   assert.match(source, /deceased && \(!legacyMode \|\| confirmedLegacyProfile\) && session/);
   assert.match(source, /Share a written memory/);
   assert.match(source, /PRESERVED FOR MUSIC HISTORY/);
   assert.match(source, /Photo and video uploads, live ratings, dates, tour archives, music playback, and fan clubs are closed/);
   assert.match(source, /Fans can still add written memories/);
   assert.match(source, /archiveAvailable=\{profileServicesAvailable\}/);
-  assert.match(source, /profileServicesAvailable \? <View style=\{styles\.artistActions\}>/);
+  assert.match(source, /profileServicesAvailable && sectionModel\.active === "community" \? <View style=\{styles\.artistActions\}>/);
   assert.match(source, /const artistPostsVisible = legacyMode[\s\S]*?posts\.length > 0[\s\S]*?: profileServicesAvailable/);
   assert.match(source, /MSHPIT HISTORY NOTES/);
   assert.match(source, /These notes are not posts from the artist/);
@@ -57,8 +57,9 @@ test("artist and show screens fail closed until memorial status is authoritative
   assert.match(source, /const liveAvailable = memorialAvailability === "living"/);
   assert.match(source, /const profileServicesAvailable = memorialKnown && !legacyMode/);
   assert.match(source, /artistPageSectionModel\(activeSection, \{ legacyMode: !profileServicesAvailable \}\)/);
-  assert.match(source, /const upcoming = liveAvailable/);
-  assert.match(source, /liveAvailable \? "LIVE REPUTATION" : "ARTIST STATUS"/);
+  assert.match(source, /useArtistOverview\(\{[\s\S]*?enabled: profileServicesAvailable/);
+  assert.match(source, /sectionModel\.showLive && liveAvailable && \([\s\S]*?<ArtistUpcomingShows/);
+  assert.match(source, /liveAvailable \? "CONCERT RATINGS" : "ARTIST STATUS"/);
   assert.match(source, /memorialKnown && sectionModel\.showCommunity/);
   assert.match(showSource, /const liveActionsAvailable = memorialAvailability === "living"/);
   assert.match(showSource, /useCanonicalArtistIdentity\(\{[\s\S]*?artistName: artist,[\s\S]*?artistKey: norm\.artistKey \|\| null/);

@@ -14,6 +14,8 @@ const app = readFileSync(new URL("../../App.js", import.meta.url), "utf8");
 const menu = readFileSync(new URL("../screens/MenuScreen.jsx", import.meta.url), "utf8");
 const you = readFileSync(new URL("../screens/YouScreen.jsx", import.meta.url), "utf8");
 const artist = readFileSync(new URL("../screens/ArtistScreen.jsx", import.meta.url), "utf8");
+const artistOverview = readFileSync(new URL("../features/artistOverview/useArtistOverview.js", import.meta.url), "utf8");
+const artistOverviewRequest = readFileSync(new URL("../features/artistOverview/artistOverviewRequest.mjs", import.meta.url), "utf8");
 const hub = readFileSync(new URL("../screens/ArtistHubScreen.jsx", import.meta.url), "utf8");
 const artistEditor = readFileSync(new URL("../screens/EditArtistProfileScreen.jsx", import.meta.url), "utf8");
 const profile = readFileSync(new URL("../screens/ProfileScreen.jsx", import.meta.url), "utf8");
@@ -112,13 +114,16 @@ test("fan preview hides ownership affordances and unreleased dates", () => {
   assert.match(artist, /const profileServicesAvailable = memorialKnown && !legacyMode/);
   assert.match(artist, /const canManagePublicPage = profileServicesAvailable && ownsArtistPage && !previewAsFan/);
   assert.match(artist, /const liveAvailable = memorialAvailability === "living"/);
-  assert.match(artist, /const upcoming = liveAvailable[\s\S]*\? \(previewAsFan \? a\.upcoming\.filter\(\(date\) => !date\.scheduled\) : a\.upcoming\)[\s\S]*: \[\]/);
+  assert.match(artist, /useArtistOverview\(\{[\s\S]*?enabled: profileServicesAvailable,[\s\S]*?publicPreview: previewAsFan/);
+  assert.match(artist, /sectionModel\.showLive && liveAvailable && \([\s\S]*?<ArtistUpcomingShows/);
+  assert.match(artistOverview, /\[artistKey, accountId, enabled, pageSize, publicPreview\]/);
+  assert.match(artistOverviewRequest, /publicPreview/);
+  assert.doesNotMatch(artist, /a\.upcoming|selectArtistUpcomingShows|setShowAllUpcoming/,
+    "artist previews must use the release-aware server schedule, not the capped startup list");
   assert.match(artist, /FAN PREVIEW/);
   assert.match(artist, /Owner controls and scheduled dates are hidden\./);
   assert.match(artist, /!ownsArtistPage && profileOwnerId && onReport/);
   assert.match(artist, /!ownsArtistPage && onReport/);
-  assert.match(artist, /\^https:\\\/\\\/\/i\.test\(t\.ticketUrl \|\| ""\)/);
-  assert.match(artist, /Tickets soon/);
 });
 
 test("artist publishing reports authoritative outcomes and preserves failed drafts", () => {

@@ -80,7 +80,7 @@ test("artist gallery is a stable in-app subroute linked from owner and fan previ
   assert.match(app, /go\(\{ artistGallery: \{ name, artistKey: artistKey \|\| null, legacyMode: legacyMode === true \} \}\)/);
   assert.match(app, /nav\.artistGallery\) overlay = <ArtistGalleryScreen/);
   assert.equal((app.match(/onOpenGallery=\{openArtistGallery\}/g) || []).length, 2);
-  assert.match(artist, /PHOTOS & FAN GALLERY/);
+  assert.match(artist, /PHOTOS & VIDEOS/);
   assert.match(artist, /onOpenGallery\(a\.name, a\.profileKey, legacyMode\)/);
 });
 
@@ -112,19 +112,25 @@ test("artist hero copy stays clear of the profile-avatar punch-through", () => {
 });
 
 test("artist gallery previews do not present a capped projection as the total", () => {
-  assert.match(artist, /<Text style=\{styles\.sectionLabel\}>\{legacyMode \? "ARCHIVE & COMMUNITY PHOTOS" : "PHOTOS & FAN GALLERY"\}<\/Text>/);
-  assert.equal((artist.match(/PHOTOS & FAN GALLERY/g) || []).length, 1, "the gallery preview renders once");
-  assert.doesNotMatch(artist, /PHOTOS & FAN GALLERY\{gallery\.length/);
+  assert.match(artist, /<Text style=\{styles\.sectionLabel\}>\{legacyMode \? "ARCHIVE & COMMUNITY PHOTOS" : "PHOTOS & VIDEOS"\}<\/Text>/);
+  assert.equal((artist.match(/PHOTOS & VIDEOS/g) || []).length, 1, "the gallery preview renders once");
+  assert.doesNotMatch(artist, /PHOTOS & VIDEOS\{gallery\.length/);
   assert.doesNotMatch(artist, /See all \$\{gallery\.length\} media items/);
 });
 
-test("artist photos sit directly between Live Reputation and the primary artist actions", () => {
+test("artist navigation follows identity and reputation before shows, reviews, and the gallery", () => {
   const reputationAt = artist.indexOf('{!legacyMode ? <View style={styles.repCard}>');
+  const navigationAt = artist.indexOf('<ArtistPageSectionNav active=');
+  const upcomingAt = artist.indexOf('<ArtistUpcomingShows');
+  const reviewsAt = artist.indexOf('<View style={styles.topReviewsHeading}>');
   const galleryAt = artist.indexOf('<View style={styles.galleryHeading}>');
-  const actionsAt = artist.indexOf('{profileServicesAvailable ? <View style={styles.artistActions}>');
+  const actionsAt = artist.indexOf('{profileServicesAvailable && sectionModel.active === "community" ? <View style={styles.artistActions}>');
   assert.ok(reputationAt >= 0, "Live Reputation must render");
-  assert.ok(galleryAt > reputationAt, "gallery must follow Live Reputation");
-  assert.ok(actionsAt > galleryAt, "gallery must appear before Fan Club and Live archive actions");
+  assert.ok(navigationAt > reputationAt, "navigation follows the identity and reputation block");
+  assert.ok(upcomingAt > navigationAt, "navigation appears before the show preview");
+  assert.ok(reviewsAt > upcomingAt, "the concert schedule leads the overview previews");
+  assert.ok(galleryAt > reviewsAt, "the bounded gallery follows reviews instead of burying navigation");
+  assert.ok(actionsAt > galleryAt, "community actions remain behind the explicit Community section");
 });
 
 test("artist overview stays bounded while full sections remain explicit", () => {
@@ -133,7 +139,9 @@ test("artist overview stays bounded while full sections remain explicit", () => 
   assert.match(artist, /visibleTopReviews\.map\(\(review, index\) =>/);
   assert.match(artist, /<ExpandableText[\s\S]*?text=\{bio\}/);
   assert.match(artist, /<ExpandableText[\s\S]*?text=\{p\.text\}/);
-  assert.match(artist, /sectionModel\.active === "live"/);
+  assert.match(artist, /sectionModel\.active === "shows"/);
+  assert.match(artist, /sectionModel\.showLive && liveAvailable && \([\s\S]*?<ArtistUpcomingShows/);
+  assert.match(artist, /sectionModel\.showAbout && biographyRows\.length > 0/);
   assert.match(artist, /moreAccessibilityLabel=\{`Read the full \$\{a\.name\} biography`\}/);
   assert.doesNotMatch(artist, /visibleGallery\.map[\s\S]*?veryWidePage/);
 });

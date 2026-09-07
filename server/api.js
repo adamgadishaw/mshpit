@@ -74,6 +74,8 @@ import { postTagRoutes } from "./postTagRoutes.js";
 import { artistReviewRoutes } from "./features/artistReviews/artistReviewRoutes.js";
 import { artistResolveRoutes } from "./features/artistSearch/artistResolveRoutes.js";
 import { artistArchiveRoutes } from "./features/artistArchive/artistArchiveRoutes.js";
+import { createArtistLiveSummaryService } from "./features/artistArchive/artistLiveSummaryService.js";
+import { artistLiveSummaryRoutes } from "./features/artistArchive/artistLiveSummaryRoutes.js";
 import { archiveShowKeyForPost } from "./features/artistArchive/postArchiveIdentity.js";
 import { accountPrivacyRoutes } from "./features/accountPrivacy/accountPrivacyRoutes.js";
 import { artistDiscographyRoutes } from "./features/artistDiscography/artistDiscographyRoutes.js";
@@ -161,6 +163,8 @@ import { createPeopleSuggestionService } from "./features/people/peopleSuggestio
 import { accountMuteRoutes } from "./features/accountMute/accountMuteRoutes.js";
 import { accountOnboardingRoutes } from "./features/accountOnboarding/accountOnboardingRoutes.js";
 import { cityGuideRoutes } from "./features/cities/cityGuideRoutes.js";
+import { artistBiographyRoutes } from "./features/artists/artistBiographyRoutes.js";
+import { musicBrainzBiographyFacts } from "../src/domain/artistBiography.mjs";
 import { peopleSuggestionRoutes } from "./features/people/peopleSuggestionRoutes.js";
 import { createArtistRecommendationService } from "./features/artistRecommendations/artistRecommendationService.js";
 import { artistRecommendationRoutes } from "./features/artistRecommendations/artistRecommendationRoutes.js";
@@ -2933,7 +2937,7 @@ function musicBrainzArtistProjection(candidate) {
     mbid,
     genre: genre || null,
     country: clean(candidate?.area?.name || candidate?.country || "", { max: 80 }) || null,
-    beginYear: clean(candidate?.["life-span"]?.begin || "", { max: 20 }).slice(0, 4) || null,
+    biographyProvider: musicBrainzBiographyFacts(candidate),
     rank_score: Number.isFinite(score) ? score : 1,
   };
 }
@@ -3537,6 +3541,7 @@ function scheduleClientCrashAlert() {
 
 const peopleSuggestionService = createPeopleSuggestionService(db, { projectUser: publicUser });
 const artistRecommendationService = createArtistRecommendationService(db);
+const artistLiveSummaryService = createArtistLiveSummaryService({ database: db, projectDate: tourDateJson, clock: now });
 const messageRelationshipContextService = createMessageRelationshipContextService(db);
 
 function deploymentReadinessProjection() {
@@ -3787,6 +3792,7 @@ export const routes = {
     requireUser,
   }),
   ...cityGuideRoutes({ database: db, ApiError, requireAdmin, rateLimit: limit, now }),
+  ...artistBiographyRoutes({ database: db, ApiError, requireAdmin, rateLimit: limit, now, publicArtist }),
   ...artistRecommendationRoutes({
     service: artistRecommendationService,
     requireUser,
@@ -8624,6 +8630,8 @@ export const routes = {
     db.prepare("UPDATE artist_requests SET status='rejected' WHERE id=?").run(ctx.params.id);
     return { ok: true };
   },
+  ...artistLiveSummaryRoutes({ service: artistLiveSummaryService, rateLimit: limit, decodedPathParam,
+    resolveArtist: (key) => artistStmts.byNorm.get(key) || artistStmts.byPublicSlug.get(key) }),
   "GET /api/artists/:key/profile": (ctx) => {
     const key = decodedPathParam(ctx, "key", { max: 200, label: "artist link" }).toLowerCase();
     const catalogArtist = artistStmts.byNorm.get(key) || artistStmts.byPublicSlug.get(key);

@@ -98,6 +98,7 @@ test("exact MusicBrainz identity survives optional Deezer failure and reports de
             id: mbid,
             name,
             score: 100,
+            type: "Person",
             area: { name: "Canada" },
             "life-span": { begin: "2020-01-01" },
           }],
@@ -122,6 +123,9 @@ test("exact MusicBrainz identity survives optional Deezer failure and reports de
   assert.equal(result.artists.length, 1);
   assert.equal(result.artists[0].mbid, mbid);
   assert.equal(result.artists[0].deezerId, undefined);
+  assert.equal(result.artists[0].biographyFacts.artistType, "person");
+  assert.equal(result.artists[0].biographyFacts.birthDate, "2020-01-01");
+  assert.equal(result.artists[0].formed, null, "a solo artist's birthday cannot become a formation or career year");
   assert.deepEqual(result.providerFailures, [{
     artist: name,
     provider: "Deezer",

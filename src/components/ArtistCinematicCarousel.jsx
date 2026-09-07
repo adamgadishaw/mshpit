@@ -20,6 +20,7 @@ export default function ArtistCinematicCarousel({
   profileUri = null,
   gallery = [],
   onOpenMedia,
+  compact = false,
 }) {
   const { width } = useWindowDimensions();
   const reduceMotion = useReducedMotion();
@@ -30,7 +31,7 @@ export default function ArtistCinematicCarousel({
     [bannerUri, gallery, profileUri],
   );
   const current = slides[index] || null;
-  const heroHeight = width >= 1180 ? 320 : width >= 760 ? 270 : 210;
+  const heroHeight = compact ? (slides.length ? width >= 760 ? 250 : 160 : 110) : width >= 1180 ? 320 : width >= 760 ? 270 : 210;
   const previewWidth = width >= 760 ? 1400 : 760;
 
   useEffect(() => {
@@ -94,7 +95,7 @@ export default function ArtistCinematicCarousel({
       <View pointerEvents="none" style={styles.topScrim} />
       <View pointerEvents="none" style={styles.bottomScrim} />
 
-      <View pointerEvents="none" style={styles.copy}>
+      <View pointerEvents="none" style={[styles.copy, compact && styles.compactCopy]}>
         <Text style={styles.kicker}>{current?.source === "fan" ? "MSHPIT MEMBER PHOTO" : "FEATURED ARTIST"}</Text>
         <Text style={styles.credit} numberOfLines={1}>
           {current?.by ? `Photo by ${current.by}` : current ? "Artist imagery" : "More photos are on the way"}
@@ -148,6 +149,7 @@ const styles = StyleSheet.create({
   // Keep editorial copy beyond that reserved zone instead of duplicating the
   // artist name beneath the avatar.
   copy: { position: "absolute", left: 116, right: 18, bottom: 18 },
+  compactCopy: { left: 18, bottom: 14 },
   kicker: { color: "#FFB56B", fontFamily: mono, fontSize: 9.5, fontWeight: "900", letterSpacing: 2 },
   credit: { color: "rgba(255,255,255,0.75)", fontSize: 11, marginTop: 5 },
   controls: { position: "absolute", right: 14, top: 14, flexDirection: "row", alignItems: "center", gap: 6 },

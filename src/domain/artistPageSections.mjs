@@ -1,8 +1,8 @@
 export const ARTIST_PAGE_SECTIONS = Object.freeze([
   Object.freeze({ key: "overview", label: "Overview", icon: "star" }),
-  Object.freeze({ key: "live", label: "Live", icon: "calendar" }),
+  Object.freeze({ key: "shows", label: "Shows", icon: "calendar" }),
   Object.freeze({ key: "community", label: "Community", icon: "comment" }),
-  Object.freeze({ key: "music", label: "Music", icon: "music" }),
+  Object.freeze({ key: "about", label: "About", icon: "music" }),
 ]);
 
 export const ARTIST_OVERVIEW_LIMITS = Object.freeze({
@@ -14,7 +14,8 @@ export const ARTIST_OVERVIEW_LIMITS = Object.freeze({
 });
 
 const SECTION_KEYS = new Set(ARTIST_PAGE_SECTIONS.map((section) => section.key));
-const LEGACY_SECTION_KEYS = new Set(["overview", "community"]);
+const LEGACY_SECTION_KEYS = new Set(["overview", "community", "about"]);
+const SECTION_ALIASES = Object.freeze({ live: "shows", music: "about" });
 
 export function artistPageSectionsForMode({ legacyMode = false } = {}) {
   return legacyMode
@@ -23,7 +24,8 @@ export function artistPageSectionsForMode({ legacyMode = false } = {}) {
 }
 
 export function normalizeArtistPageSection(value, { legacyMode = false } = {}) {
-  const key = String(value || "").trim().toLowerCase();
+  const requested = String(value || "").trim().toLowerCase();
+  const key = SECTION_ALIASES[requested] || requested;
   const allowed = legacyMode ? LEGACY_SECTION_KEYS : SECTION_KEYS;
   return allowed.has(key) ? key : "overview";
 }
@@ -35,12 +37,12 @@ export function artistPageSectionModel(value, { legacyMode = false } = {}) {
     active,
     condensed: overview,
     legacyMode,
-    showLive: !legacyMode && (overview || active === "live"),
+    showLive: !legacyMode && (overview || active === "shows"),
     showCommunity: overview || active === "community",
-    showMusic: !legacyMode && active === "music",
-    showAbout: overview,
-    loadFullArchive: !legacyMode && active === "live",
-    loadDiscography: !legacyMode && active === "music",
+    showMusic: !legacyMode && active === "about",
+    showAbout: active === "about" || (legacyMode && overview),
+    loadFullArchive: !legacyMode && active === "shows",
+    loadDiscography: !legacyMode && active === "about",
   });
 }
 
@@ -67,7 +69,7 @@ export function artistPageSynopsis(value, { condensed = false, limit = ARTIST_OV
 
 const cleanFact = (value) => String(value ?? "").replace(/\s+/gu, " ").trim();
 
-export function artistPageHighlights({ upcomingCount = 0, hometown = null, country = null, formed = null, memorialMode = false } = {}) {
+export function artistPageHighlights({ upcomingCount = 0, hometown = null, country = null, memorialMode = false } = {}) {
   const highlights = [];
   const count = Math.max(0, Math.trunc(Number(upcomingCount) || 0));
   if (!memorialMode && count > 0) {
@@ -75,7 +77,7 @@ export function artistPageHighlights({ upcomingCount = 0, hometown = null, count
   }
   const location = cleanFact(hometown) || cleanFact(country);
   if (location) highlights.push(Object.freeze({ key: "from", label: "From", value: location, icon: "pin" }));
-  const year = cleanFact(formed).match(/^(?:18|19|20)\d{2}$/u)?.[0] || "";
-  if (year) highlights.push(Object.freeze({ key: "started", label: "Started", value: year, icon: "clock" }));
+  // Legacy `formed` values can be a solo artist's birth year. Verified career
+  // and formation facts belong in About, with their explicit date meanings.
   return Object.freeze(highlights.slice(0, 3));
 }

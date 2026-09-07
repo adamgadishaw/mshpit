@@ -7,6 +7,7 @@
 // Songs/albums stay on-demand (the artist page pulls its Deezer discography with
 // previews when opened), so every seeded artist is playable without a song scrape.
 import { opaqueId } from "./ids.js";
+import { musicBrainzBiographyFacts } from "../src/domain/artistBiography.mjs";
 import { artistStmts, artistRow, normName, db } from "./db.js";
 import { findDeezerArtist, providerJson, ProviderError } from "./musicProviders.js";
 import {
@@ -94,7 +95,7 @@ export async function mbTag(tag, offset, {
       return {
         items: raw
           .filter((x) => x.name && (x.type === "Group" || x.type === "Person"))
-          .map((x) => ({ name: x.name, mbid: x.id, beginYear: x["life-span"]?.begin?.slice(0, 4) || null, country: x.area?.name || null })),
+          .map((x) => ({ name: x.name, mbid: x.id, biographyProvider: musicBrainzBiographyFacts(x), country: x.area?.name || null })),
         rawCount: raw.length,
         total: Number(d.count ?? d["artist-count"]) || null,
       };
@@ -193,7 +194,7 @@ export async function crawlArtists({ target = 10000, perTag = 600, shouldStop = 
         if (artistStmts.byNorm.get(norm)) continue; // additive: never re-add
         // Search tags are useful for discovery, but not authoritative enough to
         // publish as the artist's primary genre. Enrichment can verify it later.
-        artistStmts.upsert.run(artistRow(norm, { name: x.name, ...crawlerGenreFields(genre), mbid: x.mbid, country: x.country, beginYear: x.beginYear }, "musicbrainz"));
+        artistStmts.upsert.run(artistRow(norm, { name: x.name, ...crawlerGenreFields(genre), mbid: x.mbid, country: x.country, biographyProvider: x.biographyProvider }, "musicbrainz"));
         added++;
       }
       const done = page.total != null ? offset + PAGE >= page.total : page.rawCount < PAGE;

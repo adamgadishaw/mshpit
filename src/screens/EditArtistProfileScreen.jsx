@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ActivityIndicator, View, Text, StyleSheet, ScrollView, TextInput, Pressable, Image, Platform } from "react-native";
 import * as ImagePicker from "expo-image-picker";
 import { colors, radius } from "../theme";
@@ -15,6 +15,8 @@ import {
   profileImageSelectionHint,
 } from "../domain/profileImagePolicy.mjs";
 import { artistPageEditReady } from "../domain/artistPageEditor.mjs";
+import { fetchArtistBiography, saveArtistBiography } from "../features/artistBiography/artistBiographyService";
+import { validateStaffArtistBiography } from "../domain/artistBiography.mjs";
 import {
   beginLoadState,
   createLoadState,
@@ -27,6 +29,73 @@ import { accountTargetScope } from "../domain/screenScope.mjs";
 const AVATAR_IMAGE_HINT = profileImageSelectionHint("avatar");
 const BANNER_IMAGE_HINT = profileImageSelectionHint("banner");
 
+function ArtistBiographyEditor({ artist, accountId, refreshMetadata }) {
+  const [snapshot, setSnapshot] = useState(null);
+  const [draft, setDraft] = useState(null);
+  const [error, setError] = useState("");
+  const [note, setNote] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [requestVersion, setRequestVersion] = useState(0);
+  const saveController = useRef(null);
+  const artistKey = artist.key || artist.name.toLowerCase();
+  useEffect(() => {
+    const controller = new AbortController();
+    setSnapshot(null); setDraft(null); setError(""); setNote("");
+    void fetchArtistBiography({ artistKey, accountId, signal: controller.signal }).then((value) => {
+      if (controller.signal.aborted) return;
+      setSnapshot(value);
+      const editable = value.facts || value.pendingFacts;
+      setDraft({ artistType: editable?.artistType || "unknown", birthDate: editable?.birthDate || "",
+        formedDate: editable?.formedDate || "", careerStartYear: editable?.careerStartYear || "", sourceUrl: editable?.sourceUrl || "" });
+    }).catch((failure) => { if (!controller.signal.aborted) setError(failure.message || "Artist facts could not load."); });
+    return () => { controller.abort(); saveController.current?.abort(); };
+  }, [artistKey, accountId, requestVersion]);
+  const save = async () => {
+    if (!snapshot || !draft || saveController.current) return;
+    setError(""); setNote("");
+    let facts;
+    try { facts = validateStaffArtistBiography(draft); }
+    catch (failure) { setError(failure.message); return; }
+    const controller = new AbortController();
+    saveController.current = controller; setSaving(true);
+    try {
+      const value = await saveArtistBiography({ artistKey, accountId, artistMbid: snapshot.artistMbid, revision: snapshot.revision, facts, signal: controller.signal });
+      if (controller.signal.aborted) return;
+      setSnapshot(value); setNote("Artist facts saved.");
+      try { await refreshMetadata?.(artist.name, { signal: controller.signal }); }
+      catch { if (!controller.signal.aborted) setNote("Artist facts saved. Refresh the artist page to load them."); }
+    } catch (failure) {
+      if (!controller.signal.aborted) setError(failure.message || "Artist facts could not save. Your edits are still here.");
+    } finally {
+      if (saveController.current === controller) saveController.current = null;
+      if (!controller.signal.aborted) setSaving(false);
+    }
+  };
+  const field = (key, label, maximum, hint) => <View key={key}>
+    <Text style={styles.label}>{label}</Text>
+    <TextInput accessibilityLabel={label} style={styles.input} value={draft[key]} maxLength={maximum} editable={!saving}
+      onChangeText={(value) => setDraft((current) => ({ ...current, [key]: value }))} placeholder={hint} placeholderTextColor={colors.textFaint} autoCapitalize="none" autoCorrect={false} />
+  </View>;
+  return <View style={styles.factsPanel}>
+    <Text accessibilityRole="header" style={styles.toggleTitle}>Artist facts · staff</Text>
+    <Text style={styles.toggleSub}>Only enter facts supported by the source below. These save separately and are protected from automatic refreshes.</Text>
+    {snapshot?.requiresReview ? <Text selectable accessibilityRole="alert" style={styles.factsError}>The artist identity changed or was not previously confirmed. These saved facts are hidden publicly. Check them against the current artist and source before saving.</Text> : null}
+    {snapshot?.legacyYear && !snapshot.facts ? <Text selectable style={styles.toggleSub}>Previous unverified year: {snapshot.legacyYear}. It stays hidden until its meaning is confirmed.</Text> : null}
+    {error ? <Text selectable accessibilityRole="alert" style={styles.factsError}>{error}</Text> : null}
+    {!draft ? (error ? <Button title="Reload artist facts" variant="secondary" onPress={() => setRequestVersion((value) => value + 1)} /> : <ActivityIndicator accessibilityLabel="Loading artist facts" color={colors.accent} />) : <>
+      <View style={styles.factsTypes}>{[["person", "Person"], ["group", "Group"], ["other", "Other"], ["unknown", "Unknown"]].map(([value, label]) => <Button key={value} title={label} small disabled={saving} variant={draft.artistType === value ? "primary" : "secondary"}
+        onPress={() => setDraft((current) => ({ ...current, artistType: value, birthDate: value === "person" ? current.birthDate : "", formedDate: value === "group" ? current.formedDate : "", careerStartYear: value === "unknown" ? "" : current.careerStartYear }))} />)}</View>
+      {draft.artistType === "person" ? field("birthDate", "Birth date", 10, "YYYY, YYYY-MM, or YYYY-MM-DD") : null}
+      {draft.artistType === "group" ? field("formedDate", "Formation date", 10, "YYYY, YYYY-MM, or YYYY-MM-DD") : null}
+      {draft.artistType !== "unknown" ? field("careerStartYear", "Career began", 4, "Verified year, not a birthday") : null}
+      {field("sourceUrl", "Source URL", 1200, "https://")}
+      <Button title={saving ? "Saving artist facts..." : "Save artist facts"} onPress={save} disabled={saving} />
+      {error ? <Button title="Reload saved facts" variant="secondary" disabled={saving} onPress={() => setRequestVersion((value) => value + 1)} /> : null}
+    </>}
+    {note ? <Text selectable accessibilityLiveRegion="polite" style={styles.toggleSub}>{note}</Text> : null}
+  </View>;
+}
+
 function ConfirmedArtistProfileEditor({
   artist,
   confirmedProfile,
@@ -34,6 +103,9 @@ function ConfirmedArtistProfileEditor({
   resource,
   updateArtistProfile,
   onClose,
+  accountId,
+  staff = false,
+  refreshMetadata,
 }) {
   const [bio, setBio] = useState(confirmedProfile.bio ?? meta?.bio ?? "");
   const initialAvatar = confirmedProfile.avatarUri ?? meta?.photo;
@@ -198,6 +270,7 @@ function ConfirmedArtistProfileEditor({
 
         <Text style={styles.label}>BIO</Text>
         <TextInput style={[styles.input, styles.multiline]} value={bio} onChangeText={setBio} placeholder="Tell fans about the artist" placeholderTextColor={colors.textFaint} multiline />
+        {staff ? <ArtistBiographyEditor artist={artist} accountId={accountId} refreshMetadata={refreshMetadata} /> : null}
 
         <Text style={styles.label}>ARTIST POSTS</Text>
         <Pressable
@@ -234,6 +307,7 @@ export default function EditArtistProfileScreen({ artistName, onClose }) {
     loadArtistPage,
     updateArtistProfile,
     isArtistOwner,
+    refreshArtistCatalogMetadata,
   } = useStore();
   const artist = artistSummary(artistName);
   const meta = artistMeta(artist.name);
@@ -321,10 +395,16 @@ export default function EditArtistProfileScreen({ artistName, onClose }) {
       resource={scopedResource}
       updateArtistProfile={updateArtistProfile}
       onClose={onClose}
+      accountId={session?.id}
+      staff={session?.role === "admin"}
+      refreshMetadata={refreshArtistCatalogMetadata}
     />
   );
 }
 const styles = StyleSheet.create({
+  factsPanel: { padding: 14, gap: 10, marginTop: 18, borderWidth: 1, borderColor: colors.line, borderRadius: radius.md },
+  factsTypes: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  factsError: { color: colors.danger, fontSize: 13, lineHeight: 19 },
   savingLock: { pointerEvents: "none", opacity: 0.82 },
   wrap: { flex: 1, backgroundColor: colors.bg },
   saveError: { flexDirection: "row", alignItems: "flex-start", gap: 9, backgroundColor: colors.danger + "14", borderWidth: 1, borderColor: colors.danger + "55", borderRadius: radius.sm, padding: 12, marginBottom: 14 },

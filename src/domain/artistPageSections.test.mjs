@@ -13,8 +13,9 @@ import {
 } from "./artistPageSections.mjs";
 
 test("artist page sections keep live shows primary and the release catalog explicit", () => {
-  assert.deepEqual(ARTIST_PAGE_SECTIONS.map(({ key }) => key), ["overview", "live", "community", "music"]);
-  assert.equal(normalizeArtistPageSection("MUSIC"), "music");
+  assert.deepEqual(ARTIST_PAGE_SECTIONS.map(({ key }) => key), ["overview", "shows", "community", "about"]);
+  assert.equal(normalizeArtistPageSection("MUSIC"), "about");
+  assert.equal(normalizeArtistPageSection("live"), "shows");
   assert.equal(normalizeArtistPageSection("unknown"), "overview");
 
   const overview = artistPageSectionModel("overview");
@@ -32,9 +33,9 @@ test("artist page sections keep live shows primary and the release catalog expli
 });
 
 test("legacy profiles expose education and community without live or music services", () => {
-  assert.deepEqual(artistPageSectionsForMode({ legacyMode: true }).map(({ key }) => key), ["overview", "community"]);
+  assert.deepEqual(artistPageSectionsForMode({ legacyMode: true }).map(({ key }) => key), ["overview", "community", "about"]);
   assert.equal(normalizeArtistPageSection("live", { legacyMode: true }), "overview");
-  assert.equal(normalizeArtistPageSection("music", { legacyMode: true }), "overview");
+  assert.equal(normalizeArtistPageSection("music", { legacyMode: true }), "about");
   assert.equal(normalizeArtistPageSection("community", { legacyMode: true }), "community");
 
   const overview = artistPageSectionModel("overview", { legacyMode: true });
@@ -47,7 +48,8 @@ test("legacy profiles expose education and community without live or music servi
   assert.equal(overview.loadDiscography, false);
 
   const staleMusicSelection = artistPageSectionModel("music", { legacyMode: true });
-  assert.equal(staleMusicSelection.active, "overview");
+  assert.equal(staleMusicSelection.active, "about");
+  assert.equal(staleMusicSelection.showMusic, false);
 });
 
 test("artist overview previews are bounded without mutating complete section rows", () => {
@@ -91,10 +93,10 @@ test("artist highlights stay factual, compact, and suppress future dates in memo
   }), [
     { key: "upcoming", label: "Upcoming", value: "4 shows", icon: "calendar" },
     { key: "from", label: "From", value: "Fayetteville, North Carolina", icon: "pin" },
-    { key: "started", label: "Started", value: "2007", icon: "clock" },
   ]);
   assert.deepEqual(artistPageHighlights({ upcomingCount: 1, country: "Canada", formed: "unknown", memorialMode: true }), [
     { key: "from", label: "From", value: "Canada", icon: "pin" },
   ]);
   assert.deepEqual(artistPageHighlights(), []);
+  assert.deepEqual(artistPageHighlights({ formed: "1985" }), [], "legacy birth years must not be labeled career starts");
 });

@@ -9,6 +9,8 @@ import { DatabaseSync } from "node:sqlite";
 import { createHash } from "node:crypto";
 import { toIsoDate } from "../src/domain/dates.mjs";
 import { projectArtistGenre } from "../src/domain/genre.mjs";
+import { preserveArtistBiography, projectArtistBiography } from "../src/domain/artistBiography.mjs";
+import { ensureArtistScheduleRevisionSchema } from "./features/artistArchive/artistScheduleCandidateIndex.js";
 import { slugify } from "../src/domain/urls.mjs";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -2127,6 +2129,7 @@ db.exec("CREATE INDEX IF NOT EXISTS idx_tourdates_owner ON tour_dates(owner_id, 
 db.exec("CREATE INDEX IF NOT EXISTS idx_tourdates_artist_date ON tour_dates(lower(artist), date, id)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_tourdates_artist_trim_date ON tour_dates(lower(trim(artist)), date, id)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_tourdates_artist_visibility ON tour_dates(artist_key, release_at, date, provider_active, id) WHERE artist_key IS NOT NULL");
+ensureArtistScheduleRevisionSchema(db);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_tourdates_structured_city_date
   ON tour_dates(venue_country_code, venue_city, release_at, date, provider_active, id)
   WHERE venue_country_code IS NOT NULL AND venue_city IS NOT NULL`);
@@ -2690,6 +2693,11 @@ function artistPublicSlugForWrite(norm, name) {
 export function artistRow(key, a, source = "musicbrainz") {
   const now = Date.now();
   const norm = normName(key || a.name);
+  const existing = artistStmts.byNorm.get(norm);
+  let previous = {};
+  try { previous = JSON.parse(existing?.data || "{}"); }
+  catch { /* architecture: allow-empty-catch -- corrupt legacy metadata cannot supply optional facts. */ }
+  a = preserveArtistBiography(previous, a);
   const name = a.name || key;
   const rank = (a.popularity != null ? a.popularity * 1000 : 0) + (a.albums?.length || 0) * 10 + ((a.topTracks?.length || 0) ? 5 : 0);
   return {
@@ -2703,7 +2711,9 @@ export function artistRow(key, a, source = "musicbrainz") {
     mbid: a.mbid || null,
     spotify_id: a.spotifyId || null,
     country: a.country || null,
-    formed: a.beginYear || a.formed || null,
+    // Keep the ambiguous legacy column for review; public dates come only from
+    // typed, source-backed biography facts, never from this compatibility field.
+    formed: existing?.formed || a.formed || a.beginYear || null,
     popularity: a.popularity ?? null,
     rank_score: Math.round(a.rank_score ?? rank),
     data: JSON.stringify(a),
@@ -2758,7 +2768,7 @@ export function publicArtist(r) {
     // architecture: allow-empty-catch -- corrupt legacy metadata contributes no optional public fields.
   }
   const projectedData = { ...data };
-  for (const key of ["spotifyPhotoCheckedAt", "spotifyPhotoNoMatchSince", "spotifyPhotoLastResult"]) {
+  for (const key of ["spotifyPhotoCheckedAt", "spotifyPhotoNoMatchSince", "spotifyPhotoLastResult", "biographyStaff", "biographyProvider", "beginYear", "formed"]) {
     delete projectedData[key];
   }
   const spotifyId = publicSpotifyId(r.spotify_id || data.spotifyId);
@@ -2783,13 +2793,15 @@ export function publicArtist(r) {
   // The column is kept by COALESCE on partial enrichment, so it can hold a
   // stale value; `data` carries the authoritative claims and wins.
   const projectedGenre = projectArtistGenre(data, r.genre);
+  const biographyFacts = projectArtistBiography(data, { artistMbid: r.mbid });
   return {
     // `key` is the catalog's stable identity. The composer sends it back when a
     // suggestion is picked, so a review binds to this artist rather than to
     // whatever string was typed.
     ...projectedData, key: r.norm, name: r.name, publicSlug: r.public_slug || null,
     photo: spotifyCdnHostedUrl(r.photo) ? null : r.photo, bio: r.bio, mbid: r.mbid, spotifyId: spotifyId || null,
-    formed: r.formed || null,
+    biographyFacts,
+    formed: biographyFacts?.formedDate?.slice(0, 4) || null,
     country: r.country, popularity: r.popularity,
     genre: projectedGenre.genre,
     genreHint: projectedGenre.genreHint,

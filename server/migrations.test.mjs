@@ -324,6 +324,13 @@ test("legacy posts, attendance, tour-date, and campaign tables gain safe additiv
     DROP INDEX idx_posts_artist_archive;
     DROP INDEX idx_posts_artist_name_archive;
     DROP TRIGGER trg_posts_legacy_author_tombstone;
+    DROP TRIGGER trg_artist_schedule_event_insert;
+    DROP TRIGGER trg_artist_schedule_event_delete;
+    DROP TRIGGER trg_artist_schedule_event_identity;
+    DROP TRIGGER trg_artist_schedule_catalog_insert;
+    DROP TRIGGER trg_artist_schedule_catalog_delete;
+    DROP TRIGGER trg_artist_schedule_catalog_identity;
+    DROP TABLE artist_schedule_revision;
     DROP TABLE artist_tourdate_refresh_queue;
     ALTER TABLE posts DROP COLUMN attendance_ticket;
     ALTER TABLE posts DROP COLUMN youtube_video_id;
@@ -393,6 +400,15 @@ test("legacy posts, attendance, tour-date, and campaign tables gain safe additiv
   assert.ok(tourColumns.has("owner_id"));
   assert.ok(tourColumns.has("artist_key"));
   assert.ok(tourColumns.has("release_at"));
+  const scheduleTriggers = upgraded.db.prepare("SELECT name,sql FROM sqlite_master WHERE type='trigger' AND name LIKE 'trg_artist_schedule_%'").all();
+  assert.equal(scheduleTriggers.length, 6, "upgrade reinstalls event and artist identity invalidation after additive columns exist");
+  for (const trigger of scheduleTriggers) assert.doesNotMatch(trigger.sql, /\bpit_\w+\s*\(/u,
+    "schedule invalidation remains compatible with previous binaries and native backup connections");
+  assert.equal(upgraded.db.prepare("SELECT COUNT(*) count FROM artist_schedule_revision").get().count, 1);
+  const revisionBeforeOldWriter = upgraded.db.prepare("SELECT revision FROM artist_schedule_revision WHERE singleton=1").get().revision;
+  previous.db.prepare("UPDATE tour_dates SET billed_artists=? WHERE id='seo_exact_event'").run('["Radiohead"]');
+  assert.notEqual(upgraded.db.prepare("SELECT revision FROM artist_schedule_revision WHERE singleton=1").get().revision,
+    revisionBeforeOldWriter, "a previous connection's ordinary event write invalidates current billing candidates");
   for (const column of [
     "provider_event_id", "event_name", "tour_name", "start_date_time", "start_local_time",
     "access_start_date_time", "access_start_approximate", "event_timezone",

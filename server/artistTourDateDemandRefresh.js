@@ -17,6 +17,7 @@ import {
   upsertProviderTourDateRows,
 } from "./tourdates.js";
 import { PROVIDER_JSON_LIMITS, readBoundedJsonResponse } from "./boundedJsonResponse.js";
+import { ticketmasterAttractionMatchesArtist, verifiedJointAttractionIdsForArtist } from "./artistBillingIdentity.js";
 
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
@@ -168,12 +169,11 @@ export function ticketmasterDemandScanWindow(queueRow = {}, at = Date.now(), {
 }
 
 export function exactTicketmasterAttractionIds(data, artistName) {
-  const requested = ticketmasterArtistIdentity(artistName);
   const ids = new Set();
   for (const event of Array.isArray(data?._embedded?.events) ? data._embedded.events : []) {
     for (const attraction of Array.isArray(event?._embedded?.attractions) ? event._embedded.attractions : []) {
       const id = providerIdentifier(attraction?.id);
-      if (id && ticketmasterArtistIdentity(attraction?.name) === requested) ids.add(id);
+      if (id && ticketmasterAttractionMatchesArtist(attraction, artistName)) ids.add(id);
     }
   }
   return [...ids];
@@ -294,7 +294,7 @@ async function collectTicketmasterMode({
     const exactEvents = (Array.isArray(data?._embedded?.events) ? data._embedded.events : []).filter((event) => {
       const attractions = Array.isArray(event?._embedded?.attractions) ? event._embedded.attractions : [];
       return attractions.some((attraction) =>
-        ticketmasterArtistIdentity(attraction?.name) === identity
+        ticketmasterAttractionMatchesArtist(attraction, name)
           && (!exactAttractionId || providerIdentifier(attraction?.id) === exactAttractionId));
     });
     exactEventCount += exactEvents.length;
@@ -332,7 +332,7 @@ async function collectTicketmasterMode({
 // Ticketmaster keyword search is fuzzy. Every accepted event must include the
 // exact requested attraction identity. A cached provider ID that yields no
 // usable rows receives one exact-name fallback before the cache can change.
-export async function collectExactTicketmasterArtistDates({
+async function collectIndividualTicketmasterArtistDates({
   apiKey,
   artistName,
   attractionId,
@@ -377,7 +377,8 @@ export async function collectExactTicketmasterArtistDates({
     scanEndDate: validDateKey(scanEndDate) || "",
   };
   const primary = await collectTicketmasterMode({ ...shared, attractionId: knownAttractionId });
-  const primaryIds = primary.attractionIds.map(providerIdentifier).filter(Boolean);
+  const jointIds = verifiedJointAttractionIdsForArtist(name);
+  const primaryIds = primary.attractionIds.map(providerIdentifier).filter((id) => id && !jointIds.includes(id));
   if (!knownAttractionId) {
     return {
       ...primary,
@@ -410,7 +411,7 @@ export async function collectExactTicketmasterArtistDates({
       fallbackAttempted: true,
     };
   }
-  const fallbackIds = fallback.attractionIds.map(providerIdentifier).filter(Boolean);
+  const fallbackIds = fallback.attractionIds.map(providerIdentifier).filter((id) => id && !jointIds.includes(id));
   const verifiedIdentity = fallback.exactEventCount > 0 || fallbackIds.length > 0;
   const attractionCacheAction = verifiedIdentity
     ? (fallbackIds.length === 1 ? "replace" : "clear")
@@ -424,6 +425,43 @@ export async function collectExactTicketmasterArtistDates({
     attractionCacheAction,
     fallbackAttempted: true,
   };
+}
+
+export async function collectExactTicketmasterArtistDates(options = {}) {
+  const { fetchJson = fetchTourProviderJson, wait = abortableDelay, at = Date.now() } = options;
+  const shared = {
+    ...options, fetchJson, wait, at,
+    requestDelayMs: boundedInteger(options.requestDelayMs, DEFAULT_REQUEST_DELAY_MS, { min: 0, max: 5000 }),
+    scanStartDate: validDateKey(options.scanStartDate) || "",
+    scanEndDate: validDateKey(options.scanEndDate) || "",
+  };
+  const jointIds = verifiedJointAttractionIdsForArtist(shared.artistName);
+  const attractionId = jointIds.includes(shared.attractionId) ? null : shared.attractionId;
+  let result = await collectIndividualTicketmasterArtistDates({ ...shared, attractionId });
+  if (jointIds.includes(shared.attractionId) && !result.attractionId) result = { ...result, attractionCacheAction: "clear" };
+  if (!shared.apiKey) return result;
+  // A cached solo attraction can have dates while a co-headlining tour lives
+  // under another ID. Query the small verified joint set as well, retaining the
+  // individual cache; otherwise today's joint tour hides tomorrow's solo dates.
+  for (const id of jointIds) {
+    try {
+      if (shared.requestDelayMs) await wait(shared.requestDelayMs, { signal: shared.signal });
+      const joint = await collectTicketmasterMode({ ...shared, attractionId: id });
+      const rows = new Map([...result.rows, ...joint.rows].map((row) => [providerRowIdentity(row), row]));
+      const errorCategory = result.errorCategory || joint.errorCategory
+        ? strongestFailureCode([result.errorCategory, joint.errorCategory]) : null;
+      result = { ...result, rows: [...rows.values()], complete: result.complete && joint.complete,
+        limited: result.limited || joint.limited, pagesFetched: result.pagesFetched + joint.pagesFetched,
+        errorCategory,
+        error: (errorCategory === joint.errorCategory ? joint.error : result.error) || result.error || joint.error || null };
+    } catch (error) {
+      const caughtCategory = providerFailureCode(error, shared.signal);
+      const errorCategory = strongestFailureCode([result.errorCategory, caughtCategory]);
+      result = { ...result, complete: false, errorCategory,
+        error: errorCategory === caughtCategory ? error : (result.error || error) };
+    }
+  }
+  return result;
 }
 
 export function exactBandsintownArtistEvents(data, artistName) {
@@ -938,7 +976,9 @@ export function createArtistTourDateDemandRefreshService({
             Math.max(scanWindow.windowDays, scanWindow.windowDays * 2),
           );
         }
-      } else if (tmReport.limited) {
+      } else if (tmReport.limited && (!tmReport.errorCategory || tmReport.errorCategory === "ticketmaster_coverage_limited")) {
+        // A paging cap can narrow a successful scan, but a failed joint-provider
+        // page must retry this window rather than skip any unscanned dates.
         if (scanWindow.windowDays > 1) {
           windowDays = Math.max(1, Math.floor(scanWindow.windowDays / 2));
         } else {

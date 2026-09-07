@@ -20,6 +20,7 @@ import {
 } from "./ticketmasterMarketCoverage.js";
 import { PROVIDER_JSON_LIMITS, readBoundedJsonResponse } from "./boundedJsonResponse.js";
 import { startPeriodicJob } from "./periodicJobScheduler.js";
+import { artistBillingIdentity, ticketmasterAttractionMatchesArtist, ticketmasterBilledArtists } from "./artistBillingIdentity.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CATALOG = join(HERE, "..", "src", "seed", "catalog.generated.json");
@@ -89,13 +90,7 @@ function absoluteIsoTime(value) {
   const parsed = Date.parse(text);
   return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
 }
-export const ticketmasterArtistIdentity = (value) => String(value || "")
-  .normalize("NFKD")
-  .replace(/\p{Mark}+/gu, "")
-  .toLocaleLowerCase("en")
-  .replace(/&/g, " and ")
-  .replace(/[^\p{Letter}\p{Number}]+/gu, " ")
-  .trim();
+export const ticketmasterArtistIdentity = artistBillingIdentity;
 
 export function ticketmasterFutureBoundary(at = Date.now()) {
   const parsed = Number(at);
@@ -546,9 +541,8 @@ export function ticketmasterRows(data, { requestedArtist = null } = {}) {
     if (!musicEvent) continue;
     const venue = event._embedded?.venues?.[0];
     const attractions = event._embedded?.attractions || [];
-    const requestedIdentity = ticketmasterArtistIdentity(requestedArtist);
     const matchesRequestedArtist = !requestedArtist
-      || attractions.some((attraction) => ticketmasterArtistIdentity(attraction.name) === requestedIdentity);
+      || attractions.some((attraction) => ticketmasterAttractionMatchesArtist(attraction, requestedArtist));
     const artist = requestedArtist || attractions[0]?.name || event.name;
     const date = optionalText(event.dates?.start?.localDate);
     if (!artist || !venue?.name || !date || !matchesRequestedArtist) continue;
@@ -595,7 +589,7 @@ export function ticketmasterRows(data, { requestedArtist = null } = {}) {
       event_kind: musicEvent.kind,
       music_qualified: 1,
       music_evidence: musicEvent.evidence,
-      billed_artists: musicEvent.billedArtists,
+      billed_artists: ticketmasterBilledArtists(attractions),
       event_end_date: musicEvent.endDate,
       event_image_url: eventImage?.uri ?? null,
       event_image_attribution: eventImage?.attribution ?? null,

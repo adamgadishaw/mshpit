@@ -11,6 +11,7 @@ import {
 import { effectiveTourDateEndSql } from "../../tourDateLifecycle.js";
 import {
   artistHasNoLegacyMemorialSql,
+  artistHasPublishedMemorial,
   tourDateHasNoPublishedMemorialSql,
 } from "../../artistMemorialTourDateVisibility.js";
 import { inPersonReviewSql } from "../../onlineReviews.js";
@@ -91,7 +92,7 @@ function noStructuredShowLocationCollisionSql(alias = "p") {
  * public values, which keeps private columns and legacy media URLs from being
  * accidentally spread into a renderer.
  */
-export function createPublicDocumentRepository(database, { venueReviews = null } = {}) {
+export function createPublicDocumentRepository(database, { venueReviews = null, artistLiveSummary = null } = {}) {
   if (!database?.prepare) throw new TypeError("Public SEO documents require a database");
   // Archive keys normalize Unicode and punctuation more carefully than SQLite's
   // LOWER(). Register that exact deterministic identity at the crawler read
@@ -174,6 +175,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null }
         p.photos_public=1 AND ${PUBLIC_READY_MEDIA_EVIDENCE_SQL}
       ))
       AND ${artistPostIdentity("p")} AND ${activeAccountSql("u")}
+      AND COALESCE(u.profile_audience,'everyone')='everyone'
     ORDER BY (like_count+comment_count) DESC,p.overall DESC,
       CASE WHEN p.date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' THEN p.date ELSE '' END DESC,
       p.created_at DESC,p.id ASC LIMIT ?`);
@@ -190,7 +192,8 @@ export function createPublicDocumentRepository(database, { venueReviews = null }
       AND (LENGTH(TRIM(COALESCE(p.review,'')))>=40 OR (
         p.photos_public=1 AND ${PUBLIC_READY_MEDIA_EVIDENCE_SQL}
       ))
-      AND ${artistPostIdentity("p")} AND ${activeAccountSql("u")}`);
+      AND ${artistPostIdentity("p")} AND ${activeAccountSql("u")}
+      AND COALESCE(u.profile_audience,'everyone')='everyone'`);
   const artistUpdates = database.prepare(`SELECT post.id,post.user_id,post.text,post.created_at,
       author.name AS u_name,author.handle AS u_handle,author.role AS u_role
     FROM artist_posts post JOIN users author ON author.id=post.user_id
@@ -230,6 +233,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null }
         p.photos_public=1 AND ${PUBLIC_READY_MEDIA_EVIDENCE_SQL}
       ))
       AND ${artistPostIdentity("p")} AND ${activeAccountSql("u")}
+      AND COALESCE(u.profile_audience,'everyone')='everyone'
       AND ${noStructuredShowLocationCollisionSql("p")}
   ), ranked AS (
     SELECT eligible.*,
@@ -692,13 +696,19 @@ export function createPublicDocumentRepository(database, { venueReviews = null }
       const day = typeof today === "string" && /^\d{4}-\d{2}-\d{2}$/.test(today)
         ? today
         : new Date(instant).toISOString().slice(0, 10);
+      // Memorial community memories have their own ratingless publication
+      // rules. Living profiles share the exact UI reputation and public dates.
+      const live = typeof artistLiveSummary === "function" && !artistHasPublishedMemorial(database, { artistKey: artist.norm })
+        ? artistLiveSummary({ artist, viewer: null, at: instant, query: { limit: bounded(eventLimit, 3, 6), publicPreview: 1 } }) : null;
       return {
         artist,
         profile,
         reviews: artistReviews.all(...identityArgs, bounded(reviewLimit, 3, 6)),
-        stats: artistReviewStats.get(...identityArgs) || null,
+        stats: live ? { review_count: live.reputation.reviewCount, rating_count: live.reputation.ratingCount,
+          average_rating: live.reputation.avgRating } : artistReviewStats.get(...identityArgs) || null,
         updates,
-        events: artistEvents.all(...identityArgs, instant, day, bounded(eventLimit, 3, 6)),
+        events: live ? live.schedule.items : artistEvents.all(...identityArgs, instant, day, bounded(eventLimit, 3, 6)),
+        upcomingTotal: live?.schedule.total ?? null,
         concerts: artistConcerts.all(day, ...identityArgs, instant, day, bounded(concertLimit, 3, 3)),
       };
     },

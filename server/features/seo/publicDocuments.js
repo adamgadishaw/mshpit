@@ -7,6 +7,7 @@ import { createPublicCollectionDocumentService } from "./publicCollectionDocumen
 import { createPublicDocumentProjector } from "./publicDocumentProjection.js";
 import { decodeArchiveShowKey } from "../artistArchive/artistArchiveKeys.js";
 import { isLegacyArtistMemorial } from "../../../src/domain/artistLegacy.mjs";
+import { createArtistLiveSummaryService } from "../artistArchive/artistLiveSummaryService.js";
 import { createCityGuideRepository } from "../cities/cityGuideRepository.js";
 import { projectCityGuideDocument, projectCityDirectoryDocument } from "./cityGuideDocument.js";
 import {
@@ -24,8 +25,13 @@ import {
  * only privacy-safe reads, public projection and HTML rendering.
  */
 export function createPublicDocumentService({ database, origin, paths, artistMemorialService = null } = {}) {
+  let artistLiveSummary;
   const repository = createPublicDocumentRepository(database, {
     venueReviews: createPublicVenueReviewService(database),
+    artistLiveSummary: (options) => {
+      artistLiveSummary ||= createArtistLiveSummaryService({ database, projectDate: (row) => row });
+      return artistLiveSummary.read(options);
+    },
   });
   const projector = createPublicDocumentProjector({ database, origin, paths });
   const profileSearchIndexing = createProfileSearchIndexingPolicy(database);

@@ -70,7 +70,7 @@ test("artist top reviews bound invalid limits without throwing", () => {
 test("artist page keeps fan posts and exact shows as separate explicit destinations", () => {
   assert.match(artistScreen, /useArtistTopReviews\(\{/);
   assert.match(artistScreen, /selectArtistReviewsPresentation\(topReviewsResource, a\.nights, \{ limit: 3, memorialMode: deceased \}\)/);
-  assert.match(artistScreen, /sectionModel\.condensed \? "TOP REVIEW" : `TOP REVIEWS · \$\{topReviews\.length\}`/);
+  assert.match(artistScreen, /sectionModel\.condensed \? "FROM THE REVIEWS" : `TOP REVIEWS · \$\{topReviews\.length\}`/);
   assert.match(artistScreen, /visibleTopReviews\.map\(\(review, index\) =>/);
   assert.match(artistScreen, /DEVICE COPY/);
   assert.match(artistScreen, /accessibilityLabel=\{`Retry loading \$\{deceased \? "artist fan memories" : "live artist reviews"\}`\}/);

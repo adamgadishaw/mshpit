@@ -11,6 +11,7 @@ import {
 } from "../../../src/domain/urls.mjs";
 import { projectedTourDateTicketUrl } from "../../../src/domain/ticketLinks.mjs";
 import { projectArtistGenre } from "../../../src/domain/genre.mjs";
+import { projectArtistBiography } from "../../../src/domain/artistBiography.mjs";
 import { SUPPORT_EMAIL } from "../../../src/domain/contact.mjs";
 import { LANDING_IDENTITY_COPY } from "../../../src/domain/landingPresentation.mjs";
 import { isLegacyArtistMemorial } from "../../../src/domain/artistLegacy.mjs";
@@ -931,6 +932,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       const profileBio = profilePublic ? raw.profile?.bio : null;
       const bio = cleanBody(legacyMode ? staffLegacyBio || source.bio : profileBio || source.bio, 2_000);
       const reviewCount = count(raw.stats?.review_count);
+      const ratingCount = count(raw.stats?.rating_count ?? raw.stats?.review_count);
       const averageRating = memorial ? null : rating(raw.stats?.average_rating);
       const events = memorial ? [] : (raw.events || []).map((event) => eventCard(event, publicPaths)).filter(Boolean);
       const concerts = (legacyMode ? [] : raw.concerts || []).flatMap((concert) => {
@@ -969,10 +971,11 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       const hasUpcomingShows = events.length > 0;
       const hasFanPhotos = Boolean(fanImage);
       const reviewSignal = averageRating != null && hasReviews
-        ? `${averageRating.toFixed(1)}/5 live rating from ${reviewCount} ${reviewCount === 1 ? "review" : "reviews"}`
+        ? `${averageRating.toFixed(1)}/5 live rating from ${ratingCount} ${ratingCount === 1 ? "rating" : "ratings"}`
         : hasReviews ? `${reviewCount} concert ${reviewCount === 1 ? "review" : "reviews"}` : null;
+      const upcomingTotal = count(raw.upcomingTotal ?? events.length);
       const upcomingSignal = hasUpcomingShows
-        ? `${events.length} upcoming ${events.length === 1 ? "show" : "shows"}` : null;
+        ? `${upcomingTotal} upcoming ${upcomingTotal === 1 ? "show" : "shows"}` : null;
       const artistTitle = legacyMode
         ? `${name} legacy — biography and community memories | Mshpit`
         : memorial
@@ -1012,12 +1015,11 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         || profileImageSchema(bannerMedia, `${name} profile banner`)
         || fanImage;
       const socialProfileImage = bannerMedia || avatarMedia;
+      const biographyFacts = projectArtistBiography(parseObject(source.data), { artistMbid: source.mbid });
       const entity = {
-        // The catalogue currently does not preserve Person versus Group. Keep
-        // the generic type unless the identity-bound memorial workflow has a
-        // published record; that workflow requires an explicit individual
-        // attestation before it can write anything public.
-        "@type": memorial ? "Person" : "Thing",
+        // Only sourced typed facts or an identity-bound memorial establish the
+        // entity type. Ambiguous legacy catalog years establish no facts.
+        "@type": memorial || biographyFacts?.artistType === "person" ? "Person" : biographyFacts?.artistType === "group" ? "MusicGroup" : "Thing",
         "@id": `${absolute(publicOrigin, path)}#artist`,
         name,
         disambiguatingDescription: "Music artist",
@@ -1025,6 +1027,8 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         ...(musicBrainzUrl ? { sameAs: [musicBrainzUrl] } : {}),
         ...((bio || memorial?.summary) ? { description: legacyMode ? memorial.summary : bio || memorial.summary } : {}),
         ...(entityImage ? { image: entityImage } : {}),
+        ...(biographyFacts?.birthDate?.length === 10 ? { birthDate: biographyFacts.birthDate } : {}),
+        ...(!memorial && biographyFacts?.formedDate?.length === 10 ? { foundingDate: biographyFacts.formedDate } : {}),
         ...(memorial ? {
           deathDate: memorial.deathDate,
           subjectOf: {
@@ -1077,9 +1081,9 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         imageWidth: socialProfileImage?.width || null,
         imageHeight: socialProfileImage?.height || null,
         imageMimeType: socialProfileImage?.mimeType || null,
-        artist: Object.freeze({ name, bio, genres: publicArtistGenres(source), country: cleanLine(source.country, 100) || null, formed: cleanLine(source.formed, 80) || null }),
+        artist: Object.freeze({ name, bio, genres: publicArtistGenres(source), country: cleanLine(source.country, 100) || null, biographyFacts }),
         memorial,
-        stats: Object.freeze({ reviewCount, averageRating }),
+        stats: Object.freeze({ reviewCount, ratingCount, averageRating, upcomingTotal }),
         reviews,
         updates,
         events,

@@ -33,7 +33,9 @@ export function useArtistEventArchive({ accountId = null, name = null, artistKey
     activeRequest.current?.controller.abort();
     const sequence = ++requestSequence.current;
     if (!enabled || !identity) {
-      const next = resolveLoadState({ scope, data: EMPTY_ARTIST_EVENT_ARCHIVE });
+      // Not requested is not a successful empty response. Keep updatedAt null
+      // so the first failure after opening Shows remains an initial-load error.
+      const next = createLoadState({ scope, data: EMPTY_ARTIST_EVENT_ARCHIVE });
       resourceRef.current = next;
       setResource(next);
       activeRequest.current = null;
@@ -97,8 +99,12 @@ export function useArtistEventArchive({ accountId = null, name = null, artistKey
     return next.data;
   }, [runArchive]);
 
+  const projected = projectArtistEventArchive(resource, { accountId, artistKey, name });
   return {
-    resource: projectArtistEventArchive(resource, { accountId, artistKey, name }),
+    // Render pending immediately on enable, before the request effect runs.
+    resource: enabled && identity && projected.status === "idle"
+      ? { ...projected, status: "loading" }
+      : projected,
     reload: runArchive,
     refresh,
   };

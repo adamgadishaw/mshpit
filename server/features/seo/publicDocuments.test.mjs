@@ -8,6 +8,9 @@ import { ensureLegacyMediaFinalizeSchema } from "../../mediaLegacyFinalize.js";
 import { createPublicDocumentService } from "./publicDocuments.js";
 import { serializePublicStructuredData } from "./publicDocumentRenderer.js";
 import { ensureCitySchema } from "../cities/citySchema.js";
+import { musicBrainzBiographyFacts, validateStaffArtistBiography } from "../../../src/domain/artistBiography.mjs";
+import { createArtistLiveSummaryService } from "../artistArchive/artistLiveSummaryService.js";
+import { ensureArtistScheduleRevisionSchema } from "../artistArchive/artistScheduleCandidateIndex.js";
 
 const ARTIST_MBID = "12345678-1234-4234-8234-123456789abc";
 const OTHER_MBID = "22345678-1234-4234-8234-123456789abc";
@@ -19,7 +22,8 @@ function createDatabase() {
     CREATE TABLE users (
       id TEXT PRIMARY KEY,name TEXT NOT NULL,handle TEXT NOT NULL,artist_name TEXT,bio TEXT,
       avatar_uri TEXT,banner TEXT,created_at INTEGER NOT NULL,is_banned INTEGER NOT NULL DEFAULT 0,
-      suspended_until INTEGER,extras TEXT NOT NULL DEFAULT '{}',role TEXT NOT NULL DEFAULT 'fan'
+      suspended_until INTEGER,extras TEXT NOT NULL DEFAULT '{}',role TEXT NOT NULL DEFAULT 'fan',
+      profile_audience TEXT NOT NULL DEFAULT 'everyone'
     );
     CREATE TABLE artists (
       norm TEXT PRIMARY KEY,name TEXT NOT NULL,public_slug TEXT,genre TEXT,data TEXT,bio TEXT,mbid TEXT,country TEXT,formed TEXT,
@@ -42,7 +46,7 @@ function createDatabase() {
       photos_public INTEGER NOT NULL DEFAULT 0,kind TEXT DEFAULT 'review',removed INTEGER NOT NULL DEFAULT 0,
       experience_type TEXT NOT NULL DEFAULT 'in_person',online_title TEXT,youtube_url TEXT,youtube_video_id TEXT,
       like_count INTEGER NOT NULL DEFAULT 0,comment_count INTEGER NOT NULL DEFAULT 0,
-      created_at INTEGER NOT NULL,updated_at INTEGER
+      created_at INTEGER NOT NULL,updated_at INTEGER,band REAL,room REAL,dims TEXT NOT NULL DEFAULT '{}'
     );
     CREATE TABLE likes (post_id TEXT NOT NULL,user_id TEXT NOT NULL,PRIMARY KEY(post_id,user_id));
     CREATE TABLE comments (
@@ -100,6 +104,10 @@ function createDatabase() {
       removed INTEGER NOT NULL DEFAULT 0,created_at INTEGER NOT NULL
     );
   `);
+  database.exec(`CREATE TABLE blocks(blocker_id TEXT,blocked_id TEXT);
+    CREATE TABLE artist_tourdate_refresh_queue(artist_key TEXT PRIMARY KEY,status TEXT,attempted_at INTEGER,
+      succeeded_at INTEGER,ticketmaster_coverage_limited INTEGER DEFAULT 0,last_error_code TEXT);`);
+  ensureArtistScheduleRevisionSchema(database);
   return database;
 }
 
@@ -299,12 +307,75 @@ function service(database) {
   return createPublicDocumentService({ database, origin: "https://www.example.com" });
 }
 
+test("artist SEO and the app share complete public calendar counts and eligible reviewer/show reputation", () => {
+  const database = createDatabase();
+  try {
+    addArtist(database);
+    addArtist(database, { key: "beta", name: "Beta", mbid: OTHER_MBID });
+    addUser(database, "active"); addUser(database, "second"); addUser(database, "private");
+    database.exec("UPDATE users SET profile_audience='only_me' WHERE id='private'");
+    addPost(database, { id: "old", overall: 1, createdAt: 1000 });
+    addPost(database, { id: "latest", overall: 2, createdAt: 2000,
+      review: "This public account's newest review is the vote that counts for this show." });
+    addPost(database, { id: "second", userId: "second", overall: 4,
+      review: "The second public account adds a separate eligible rating for this same show." });
+    addPost(database, { id: "private", userId: "private", overall: 5,
+      review: "PRIVATE PROFILE REVIEW MUST NOT ENTER CRAWLER CARDS OR THE PUBLIC SCORE." });
+    const event = database.prepare(`INSERT INTO tour_dates
+      (id,artist,artist_key,venue,place,date,venue_city,venue_country_code,source,music_evidence,billed_artists,owner_id,release_at)
+      VALUES (?, 'Beta','beta','Shared Hall','Toronto, Canada','2027-05-01','Toronto','CA','ticketmaster','ticketmaster:classification:music','["Beta","Alpha"]',?,?)`);
+    for (let i = 0; i < 7; i += 1) event.run(`coheadline-${i}`, null, 0);
+    event.run("scheduled", "active", NOW + 1000);
+    const summary = createArtistLiveSummaryService({ database, projectDate: (row) => row, clock: () => NOW })
+      .read({ artist: database.prepare("SELECT * FROM artists WHERE norm='alpha'").get(), query: { publicPreview: 1, limit: 3 } });
+    const documents = service(database);
+    const document = documents.artistDocument({ artistKey: "alpha", at: NOW });
+    assert.equal(document.stats.averageRating, summary.reputation.avgRating);
+    assert.equal(document.stats.averageRating, 3);
+    assert.equal(document.stats.ratingCount, 2);
+    assert.equal(document.stats.upcomingTotal, 7);
+    assert.equal(document.events.length, 3);
+    assert.deepEqual(document.events.map((row) => row.id), summary.schedule.items.map((row) => row.id));
+    assert.doesNotMatch(documents.render(document), /PRIVATE PROFILE REVIEW/u);
+    assert.match(document.description, /7 upcoming shows/u);
+    assert.doesNotMatch(JSON.stringify(document.jsonLd[0].about), /AggregateRating/u,
+      "artist reputation does not imply unsupported Google artist-rating rich results");
+  } finally { database.close(); }
+});
+
+test("artist SEO omits ambiguous lifespan years and exposes typed facts only in About", () => {
+  const database = createDatabase();
+  try {
+    addArtist(database);
+    const documents = service(database);
+    const legacy = documents.artistDocument({ artistKey: "alpha", at: NOW });
+    assert.doesNotMatch(documents.render(legacy), /<dt>Started<\/dt>|<dt>Born<\/dt>|<dt>Formed<\/dt>/);
+    const provider = musicBrainzBiographyFacts({ id: ARTIST_MBID, type: "Person", "life-span": { begin: "1985-01-28" } });
+    database.prepare("UPDATE artists SET data=? WHERE norm='alpha'").run(JSON.stringify({ biographyProvider: provider }));
+    const person = documents.artistDocument({ artistKey: "alpha", at: NOW });
+    const html = documents.render(person);
+    assert.equal(person.jsonLd[0].about["@type"], "Person");
+    assert.equal(person.jsonLd[0].about.birthDate, "1985-01-28");
+    assert.match(html, /About Alpha<\/h2><dl class="stats"><div><dt>Born<\/dt>/);
+    assert.doesNotMatch(html, /<dt>Started<\/dt>|<dt>Career began<\/dt>/);
+    const facts = validateStaffArtistBiography({ artistType: "group", formedDate: "1960-01-01", sourceUrl: "https://artist.example.org/history" });
+    database.prepare("UPDATE artists SET data=? WHERE norm='alpha'").run(JSON.stringify({ biographyStaff: { revision: 1, artistMbid: ARTIST_MBID, facts } }));
+    const group = documents.artistDocument({ artistKey: "alpha", at: NOW });
+    assert.equal(group.jsonLd[0].about["@type"], "MusicGroup");
+    assert.equal(group.jsonLd[0].about.foundingDate, "1960-01-01");
+    assert.equal(group.jsonLd[0].about.birthDate, undefined);
+    assert.match(documents.render(group), /<dt>Formed<\/dt>/);
+    database.prepare("UPDATE artists SET mbid=? WHERE norm='alpha'").run(OTHER_MBID);
+    const changedIdentity = documents.artistDocument({ artistKey: "alpha", at: NOW });
+    assert.equal(changedIdentity.jsonLd[0].about.foundingDate, undefined);
+    assert.doesNotMatch(documents.render(changedIdentity), /<dt>Formed<\/dt>|<dt>Born<\/dt>/);
+  } finally { database.close(); }
+});
+
 test("public city venue directories use the city repository's canonical guide and moderated label", () => {
   const database = createDatabase();
   try {
-    database.exec(`ALTER TABLE users ADD COLUMN profile_audience TEXT NOT NULL DEFAULT 'everyone';
-      CREATE TABLE reports (target_id TEXT,status TEXT);
-      CREATE TABLE blocks (blocker_id TEXT,blocked_id TEXT);
+    database.exec(`CREATE TABLE reports (target_id TEXT,status TEXT);
       CREATE TABLE moderation_actions (id TEXT,actor_id TEXT,action TEXT,target_type TEXT,target_id TEXT,
         reason TEXT,prior_state TEXT,next_state TEXT,request_id TEXT,created_at INTEGER);`);
     ensureCitySchema(database,{ venues:[],seeds:[],previousSeeds:[],geo:{},banner:null });
@@ -426,7 +497,7 @@ test("artist metadata identifies ambiguous names without advertising absent modu
       assert.equal(document.title, `${name} concert reviews & live ratings | Mshpit`);
       assert.equal(
         document.description,
-        `${name} on Mshpit: 4.5/5 live rating from 1 review. Read firsthand concert reviews.`,
+        `${name} on Mshpit: 4.5/5 live rating from 1 rating. Read firsthand concert reviews.`,
       );
       assert.equal(document.description.length <= 160, true);
       assert.doesNotMatch(document.title, new RegExp(`^${name.replace(".", "\\.")} live\\b`, "iu"));
@@ -493,14 +564,14 @@ test("artist document uses only active UGC and references Event leaf pages witho
     addArtist(database, { key: "bad-mbid", name: "Bad MBID", mbid: "not-a-musicbrainz-id" });
 
     const documents = service(database);
-    const document = documents.artistDocument({ artistKey: "alpha", today: "2026-08-25", at: Date.now() });
+    const document = documents.artistDocument({ artistKey: "alpha", today: "2026-08-25", at: NOW });
     const html = documents.render(document);
     const eventDocument = documents.eventDocument({ id: "event-public", today: "2026-08-25", at: Date.now() });
     const invalidMbidDocument = documents.artistDocument({ artistKey: "bad-mbid", today: "2026-08-25", at: Date.now() });
 
     assert.equal(document.jsonLd[0]["@type"], "CollectionPage");
     assert.equal(document.title, "Alpha concert reviews & upcoming shows | Mshpit");
-    assert.match(document.description, /live rating from 2 reviews and 1 upcoming show/u);
+    assert.match(document.description, /live rating from 1 rating and 1 upcoming show/u);
     assert.match(document.description, /fan-shared photos/u);
     assert.equal(document.jsonLd[0].about["@type"], "Thing");
     assert.equal(document.jsonLd[0].about["@id"], "https://www.example.com/artist/alpha#artist");
