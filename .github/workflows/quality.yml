@@ -24,3 +24,16 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
+      # Render passes runtime flags into its build. Exercise that boundary too:
+      # a passing local-default suite must not hide a hosted-only failure.
+      # The test runner still owns throwaway storage and strips mail credentials.
+      - name: Test with hosted background settings
+        run: npm test
+        env:
+          NODE_ENV: production
+          PIT_ENV: production
+          RENDER: "true"
+          CACHE_WARM_ENABLED: "false"
+          TOURDATE_REFRESH_ENABLED: "true"
+          EMAIL_CAMPAIGN_RECOVERY_ENABLED: "false"
+          PIT_ALLOW_EMPTY_DB_BOOTSTRAP: "true"

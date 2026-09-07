@@ -125,6 +125,19 @@ test("quality runs on the production branch that Render auto-deploys", async () 
   assert.match(source, /branches:\s*\[master\]/);
 });
 
+test("quality repeats the full test suite with Render's background runtime settings", async () => {
+  const source = await readFile(new URL(".github/workflows/quality.yml", ROOT), "utf8");
+  const hostedStep = source.split("- name: Test with hosted background settings")[1] || "";
+  assert.match(hostedStep, /run:\s*npm test\s*\r?\n/);
+  assert.match(hostedStep, /NODE_ENV:\s*production/);
+  assert.match(hostedStep, /PIT_ENV:\s*production/);
+  assert.match(hostedStep, /RENDER:\s*"true"/);
+  assert.match(hostedStep, /CACHE_WARM_ENABLED:\s*"false"/);
+  assert.match(hostedStep, /TOURDATE_REFRESH_ENABLED:\s*"true"/);
+  assert.match(hostedStep, /EMAIL_CAMPAIGN_RECOVERY_ENABLED:\s*"false"/);
+  assert.match(hostedStep, /PIT_ALLOW_EMPTY_DB_BOOTSTRAP:\s*"true"/);
+});
+
 test("CI actions are immutable and checkout does not persist a repository credential", async () => {
   const source = await readFile(new URL(".github/workflows/quality.yml", ROOT), "utf8");
   const actionUses = [...source.matchAll(/^\s*- uses:\s*([^\s#]+)(?:\s*#.*)?$/gm)].map((match) => match[1]);

@@ -156,7 +156,15 @@ test("tour-date restarts skip provider fan-out while the persisted refresh is fr
   assert.equal(shouldRefreshTourDates(now - 13 * 60 * 60 * 1000, now, 12), true);
 });
 
-test("catalogue warming exposes an owned scheduler with a same-day recovery retry", async () => {
+test("catalogue warming exposes an owned scheduler with a same-day recovery retry", async (t) => {
+  const previous = process.env.CACHE_WARM_ENABLED;
+  t.after(() => {
+    if (previous === undefined) delete process.env.CACHE_WARM_ENABLED;
+    else process.env.CACHE_WARM_ENABLED = previous;
+  });
+  // Render intentionally disables the runtime warmer. This test owns its
+  // enabled fixture instead of inheriting the build host's production flag.
+  process.env.CACHE_WARM_ENABLED = "true";
   let configuration = null;
   const handle = { trigger() {}, stop() { return Promise.resolve(); } };
   const scheduler = startCacheWarmScheduler({
@@ -170,6 +178,22 @@ test("catalogue warming exposes an owned scheduler with a same-day recovery retr
   assert.equal(configuration.retryDelayMs, 30 * 60_000);
   assert.equal(typeof configuration.run, "function");
   await scheduler.stop();
+});
+
+test("disabled catalogue warming does not create a scheduler", (t) => {
+  const previous = process.env.CACHE_WARM_ENABLED;
+  t.after(() => {
+    if (previous === undefined) delete process.env.CACHE_WARM_ENABLED;
+    else process.env.CACHE_WARM_ENABLED = previous;
+  });
+  process.env.CACHE_WARM_ENABLED = "false";
+  let scheduleCalls = 0;
+  const scheduler = startCacheWarmScheduler({
+    logger: { log() {}, warn() {}, error() {} },
+    schedule: () => { scheduleCalls++; return { stop() {}, trigger() {} }; },
+  });
+  assert.equal(scheduler, null);
+  assert.equal(scheduleCalls, 0, "the disabled runtime must not create timers or start provider work");
 });
 
 test("a material collector revision forces one safe refresh despite a fresh clock", () => {
