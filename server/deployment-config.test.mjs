@@ -194,5 +194,7 @@ test("the retired catalog cron cannot place a GitHub token in process arguments"
   const source = await readFile(new URL("scripts/cron-scrape.mjs", ROOT), "utf8");
   assert.doesNotMatch(source, /GITHUB_TOKEN|x-access-token/i);
   assert.match(source, /retired/i);
-  assert.match(source, /process\.exitCode\s*=\s*1/);
+  assert.match(source, /process\.exitCode\s*=\s*0/);
+  assert.match(source, /status:\s*"skipped"/);
+  assert.doesNotMatch(source, /\bimport\b|spawn|execSync|execFile|git\s+push/i);
 });

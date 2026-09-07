@@ -20,6 +20,29 @@ const binding = (mbid, qid, date, precision = 11) => ({
   precision: { value: String(precision) },
 });
 
+test("MusicBrainz service-unavailable replies carry Retry-After and dispose the failed body",async()=>{
+  let cancelled=0;
+  await assert.rejects(confirmMusicBrainzDeathSignal({artistMbid:MBID,deathDate:"2026-08-29"},{at:AT,requestGate:(work)=>work(),
+    fetchImpl:async()=>({ok:false,status:503,headers:new Headers({"Retry-After":"7200"}),body:{cancel:async()=>{cancelled++;}}})}),
+    error=>error.code==="musicbrainz_unavailable" && error.status===503 && error.retryAt===AT+7_200_000);
+  assert.equal(cancelled,1);
+});
+
+test("a deleted MusicBrainz identity supplies no death evidence and does not halt later artists",async()=>{
+  const result=await confirmMusicBrainzDeathSignal({artistMbid:MBID,deathDate:"2026-08-29"},{at:AT,requestGate:(work)=>work(),
+    fetchImpl:async()=>({ok:false,status:404,headers:new Headers()})});
+  assert.equal(result,null);
+});
+
+test("MusicBrainz bodies are bounded before decoding and body timeouts retain a useful error code",async()=>{
+  await assert.rejects(confirmMusicBrainzDeathSignal({artistMbid:MBID,deathDate:"2026-08-29"},{at:AT,requestGate:(work)=>work(),
+    fetchImpl:async()=>({ok:true,status:200,headers:new Headers({"Content-Length":"99999999"}),json:async()=>{throw new Error("must not parse");}})}),
+    error=>error.code==="musicbrainz_response");
+  await assert.rejects(confirmMusicBrainzDeathSignal({artistMbid:MBID,deathDate:"2026-08-29"},{at:AT,requestGate:(work)=>work(),
+    fetchImpl:async()=>({ok:true,status:200,json:async()=>{throw new DOMException("Timed out","TimeoutError");}})}),
+    error=>error.code==="musicbrainz_timeout");
+});
+
 test("bounded historical Wikidata lookup uses exact MusicBrainz IDs and Person semantics", () => {
   const query = buildWikidataDeathSignalsQuery([{ artistMbid: MBID }]);
   assert.match(query, /VALUES \?mbid \{ "11111111-1111-4111-8111-111111111111" \}/);

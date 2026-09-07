@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import {
   catalogSeedRequestOptions, crawlerGenreFields, fillMissingArtistPhotos, growOutcome, refreshSongsAndGenres,
-  deezerEnrich, enrichCatalogArtistPhoto, mergeGenreBackfillData, mergePhotoFillData,
+  deezerEnrich, enrichCatalogArtistPhoto, mbTag, mergeGenreBackfillData, mergePhotoFillData,
   normalizeLegacySpotifyArtistPhotoData, photoFillRefreshBefore, rotateRowsAfterCursor,
   shouldEnrichAfterCrawl, stripSpotifyArtistPhotoData,
   SPOTIFY_PHOTO_NO_MATCH_GRACE_MS,
@@ -14,6 +14,65 @@ import { artistRow, artistStmts, mergeBundledArtist, publicArtist } from "./db.j
 import { ProviderError } from "./musicProviders.js";
 
 const catalogSeedSource = readFileSync(new URL("./catalogSeed.js", import.meta.url), "utf8");
+
+test("MusicBrainz catalog pages gate every retry and retain unfiltered pagination", async () => {
+  let requests = 0;
+  let gateActive = false;
+  const gates = [];
+  const pauses = [];
+  const signal = new AbortController().signal;
+  const page = await mbTag("hip hop", 100, {
+    signal,
+    requestGate: async (run, options) => {
+      gates.push(options.signal);
+      gateActive = true;
+      try { return await run(); } finally { gateActive = false; }
+    },
+    fetchImpl: async (url, options) => {
+      assert.equal(gateActive, true);
+      assert.equal(new URL(url).searchParams.get("offset"), "100");
+      assert.ok(options.signal);
+      if (++requests === 1) return { ok: false, status: 429 };
+      return { ok: true, json: async () => {
+        assert.equal(gateActive, true, "body parsing must finish before releasing the shared gate");
+        return { count: 250, artists: [
+          { id: "person", name: "Person", type: "Person" },
+          { id: "group", name: "Group", type: "Group" },
+          { id: "character", name: "Character", type: "Character" },
+        ] };
+      } };
+    },
+    pause: async (milliseconds) => { pauses.push(milliseconds); },
+  });
+  assert.deepEqual(gates, [signal, signal]);
+  assert.deepEqual(pauses, [1000]);
+  assert.equal(page.rawCount, 3);
+  assert.equal(page.total, 250);
+  assert.deepEqual(page.items.map((artist) => artist.mbid), ["person", "group"]);
+});
+
+test("cancelled MusicBrainz catalog requests do not retry or reach fetch", async () => {
+  const controller = new AbortController();
+  controller.abort(new DOMException("Cancelled", "AbortError"));
+  await assert.rejects(mbTag("rock", 0, {
+    signal: controller.signal,
+    fetchImpl: () => assert.fail("cancelled request must not fetch"),
+    pause: () => assert.fail("cancelled request must not retry"),
+  }), { name: "AbortError" });
+});
+
+test("MusicBrainz catalog pages reject oversized provider bodies within the gate", async () => {
+  let requests = 0;
+  await assert.rejects(mbTag("rock", 0, {
+    requestGate: (run) => run(),
+    fetchImpl: async () => {
+      requests += 1;
+      return new Response("{}", { headers: { "content-length": "20000000" } });
+    },
+    pause: async () => {},
+  }), { code: "response_too_large" });
+  assert.equal(requests, 3, "provider retries must remain bounded");
+});
 
 // Regression cover for the 2026-07-14 incident. "Grow by 10k" added zero artists
 // (every genre cursor had reached the end of its results) yet reported success and

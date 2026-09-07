@@ -4,6 +4,7 @@ import { createTopRatedShowService } from "./features/discovery/topRatedShowServ
 import { activeAccountSql } from "./accountVisibility.js";
 import { inPersonReviewSql } from "./onlineReviews.js";
 import { eligiblePopularityArtists } from "./artistPopularityEligibility.js";
+import { createEventCoverageService } from "./features/discovery/eventCoverageService.js";
 
 const ARTIST_RATING_CANDIDATE_LIMIT = 5_000;
 const POPULARITY_RANKING_CANDIDATE_LIMIT = 1_200;
@@ -77,6 +78,7 @@ export function createDiscoverService({ database = db, clock = Date.now, reviewe
   const PUBLIC_PLAY_MIN_LISTENERS = 3;
   let projectionCache = { version: null, at: 0, rows: [] };
   const topRatedShows = createTopRatedShowService({ database, clock });
+  const eventCoverage = createEventCoverageService({ database, clock });
 
   function projectionVersion() {
     return Number(database.prepare("SELECT revision FROM artist_projection_revision WHERE singleton = 1").get()?.revision) || 0;
@@ -307,6 +309,7 @@ export function createDiscoverService({ database = db, clock = Date.now, reviewe
       catalogTotal: genreResult.catalogTotal,
       countries: countries({ min: 5 }).countries,
       topRatedShows: topRatedShows.read({ country, limit: 24 }),
+      eventCoverage: eventCoverage.read(),
       generatedAt: new Date(clock()).toISOString(),
     };
   }

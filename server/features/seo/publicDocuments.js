@@ -7,6 +7,8 @@ import { createPublicCollectionDocumentService } from "./publicCollectionDocumen
 import { createPublicDocumentProjector } from "./publicDocumentProjection.js";
 import { decodeArchiveShowKey } from "../artistArchive/artistArchiveKeys.js";
 import { isLegacyArtistMemorial } from "../../../src/domain/artistLegacy.mjs";
+import { createCityGuideRepository } from "../cities/cityGuideRepository.js";
+import { projectCityGuideDocument, projectCityDirectoryDocument } from "./cityGuideDocument.js";
 import {
   renderPublicDocument,
   renderPublicDocumentHead,
@@ -30,9 +32,17 @@ export function createPublicDocumentService({ database, origin, paths, artistMem
   const memorials = artistMemorialService || createArtistMemorialService({
     repository: createArtistMemorialRepository(database),
   });
+  let cityRepository;
+  const cities = () => (cityRepository ||= createCityGuideRepository(database));
   const collections = createPublicCollectionDocumentService({
     database,
     origin,
+    cityGuideRepository() {
+      // Collection documents also serve older read-only fixtures and databases
+      // without city metadata; those remain useful without a speculative link.
+      if (!database.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='city_profiles'").get()) return null;
+      return cities();
+    },
     legacyArtistPolicy(artist, options = {}) {
       const requestedAt = Number(options.at);
       const at = Number.isSafeInteger(requestedAt) && requestedAt >= 0 ? requestedAt : Date.now();
@@ -59,6 +69,13 @@ export function createPublicDocumentService({ database, origin, paths, artistMem
   }
 
   const service = {
+    citiesDocument(options = {}) {
+      return projectCityDirectoryDocument({ cities: cities().listSitemapCities(options), copy: cities().readCopy().copy }, { origin });
+    },
+    cityDocument(options = {}) {
+      const guide = cities().getGuide({ ...options, viewerId: null });
+      return guide ? projectCityGuideDocument(guide, { origin }) : null;
+    },
     homeDocument(options = {}) {
       return projector.home(repository.readHome(options), options);
     },
@@ -147,6 +164,8 @@ export function createPublicDocumentService({ database, origin, paths, artistMem
     },
 
     documentFor(request = {}) {
+      if (request.kind === "city-directory") return service.citiesDocument(request);
+      if (request.kind === "city") return service.cityDocument(request);
       if (request.kind === "home") return service.homeDocument(request);
       if (request.kind === "discover") return service.discoverDocument(request);
       if (request.kind === "search") return service.searchDocument(request);

@@ -49,6 +49,7 @@ const {
   ticketmasterRequestDelayMs,
   ticketmasterRows,
   persistTicketmasterMarketResult,
+  persistSuccessfulCountryRotation,
   upsertProviderTourDateRows,
 } = await import("./tourdates.js");
 const { visibleTourDateRowsFrom } = await import("./tourDateVisibility.js");
@@ -784,6 +785,18 @@ test("partial tour-provider success advances freshness without weakening total-o
   assert.equal(hasSuccessfulTourProviderWork(0), false);
   assert.equal(hasSuccessfulTourProviderWork(-1), false);
   assert.equal(hasSuccessfulTourProviderWork("not-a-number"), false);
+});
+
+test("a complete country-provider outage retains its rotation cursor despite other successful lanes", () => {
+  const key = "tourdates:ticketmaster-country-cursor:v2";
+  db.prepare("INSERT OR REPLACE INTO app_meta (key,value) VALUES (?,?)").run(key, "10");
+  assert.equal(persistSuccessfulCountryRotation(db, { nextCursor: 20, successfulRequests: 0 }), false);
+  assert.equal(db.prepare("SELECT value FROM app_meta WHERE key=?").get(key).value, "10");
+  assert.equal(persistSuccessfulCountryRotation(db, { nextCursor: 20, successfulRequests: 1 }), true,
+    "a successful empty country response is real coverage and allows fair rotation");
+  assert.equal(db.prepare("SELECT value FROM app_meta WHERE key=?").get(key).value, "20");
+  assert.throws(() => persistSuccessfulCountryRotation(db, { nextCursor: -1, successfulRequests: 1 }), TypeError);
+  assert.equal(db.prepare("SELECT value FROM app_meta WHERE key=?").get(key).value, "20");
 });
 
 test("provider projections retain stable event, clock, status, and venue identity", () => {

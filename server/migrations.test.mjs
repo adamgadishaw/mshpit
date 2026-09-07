@@ -307,6 +307,7 @@ test("legacy posts, attendance, tour-date, and campaign tables gain safe additiv
     DROP INDEX idx_tourdates_owner_show;
     DROP INDEX idx_tourdates_artist_visibility;
     DROP INDEX idx_tourdates_structured_city_date;
+    DROP INDEX idx_city_tour_location;
     DROP INDEX idx_tourdates_range_country_code_city_date;
     DROP INDEX idx_tourdates_range_country_city_date;
     DROP INDEX idx_tourdates_range_country_code_date;
@@ -429,6 +430,9 @@ test("legacy posts, attendance, tour-date, and campaign tables gain safe additiv
   );
   assert.ok(tourIndexes.has("idx_tourdates_artist_visibility"));
   assert.ok(tourIndexes.has("idx_tourdates_structured_city_date"));
+  assert.ok(tourIndexes.has("idx_city_tour_location"));
+  assert.doesNotMatch(upgraded.db.prepare("SELECT sql FROM sqlite_master WHERE name='idx_city_tour_location'").get().sql,/pit_public_slug/,
+    "city index can be verified by backup clients without app-defined SQL functions");
   assert.ok(tourIndexes.has("idx_tourdates_range_country_code_city_date"));
   assert.ok(tourIndexes.has("idx_tourdates_range_country_city_date"));
   assert.ok(tourIndexes.has("idx_tourdates_range_country_code_date"));

@@ -14,7 +14,8 @@ function abortableDelay(milliseconds, { signal } = {}) {
   if (signal?.aborted) return Promise.reject(abortError(signal));
   return new Promise((resolve, reject) => {
     const timer = setTimeout(finish, Math.max(0, milliseconds));
-    timer.unref?.();
+    // An awaited request also runs in the catalogue CLI. Keep its only pending
+    // cooldown alive; cancellation clears it when the caller no longer needs it.
     function finish() {
       signal?.removeEventListener("abort", abort);
       resolve();

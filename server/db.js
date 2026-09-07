@@ -25,6 +25,7 @@ import { registerPitSqliteFunctions } from "./sqliteFunctions.js";
 import { MUSIC_PLAYER_ENABLED } from "../src/domain/musicPlayerAvailability.mjs";
 import { ensureShowSchema } from "./features/shows/showSchema.js";
 import { ensureLoungeSchema } from "./features/lounges/loungeSchema.js";
+import { ensureCitySchema } from "./features/cities/citySchema.js";
 
 export const artistSearchKey = (value) => String(value || "")
   .normalize("NFKD")
@@ -1934,6 +1935,7 @@ try {
   // educational copy, which records durable provenance from that point on.
   ensurePostMediaCapacity(db);
   ensureShowSchema(db);
+  ensureCitySchema(db);
   ensureLoungeSchema(db);
   ensureArtistPublicSlugs(db);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_media_objects_owner_accounting_status_bytes

@@ -1,5 +1,7 @@
 import { LANDING_IDENTITY_COPY, landingKicker } from "../../../src/domain/landingPresentation.mjs";
 import { canonicalYouTubeReviewLink } from "../../onlineReviews.js";
+import { renderCityGuideMain, renderCityDirectoryMain } from "./cityGuideDocument.js";
+import { CITY_GUIDE_STYLES } from "./cityGuideStyles.js";
 
 const esc = (value) => String(value ?? "")
   .replace(/&/g, "&amp;")
@@ -333,7 +335,7 @@ function eventMain(document) {
       ${providerImage}
       ${eventDetails(event)}
     </section>
-    ${posts ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">People who were there</p><h2>Fan memories from this show</h2></div></div><div class="post-list">${posts}</div></section>` : `<section class="section empty-state"><p class="eyebrow">The archive starts here</p><h2>No fan memories have been shared for this date yet.</h2><p>After the show, fans can log a review and choose which photos appear in public galleries.</p></section>`}
+    ${posts ? `<section class="section" data-mshpit-fan-backed="true"><div class="section-heading"><div><p class="eyebrow">People who were there</p><h2>Fan memories from this show</h2></div></div><div class="post-list">${posts}</div></section>` : `<section class="section empty-state"><p class="eyebrow">The archive starts here</p><h2>No fan memories have been shared for this date yet.</h2><p>After the show, fans can log a review and choose which photos appear in public galleries.</p></section>`}
   </main>`;
 }
 
@@ -361,7 +363,7 @@ function venueMain(document) {
   const heroPhotoSource = publicHttpsUrl(venue.heroPhoto?.sourcePage);
   const heroPhotoLicense = publicHttpsUrl(venue.heroPhoto?.licenseUrl);
   const heroPhotoNotice = cleanCaption(venue.heroPhoto?.modificationNotice);
-  const heroPhoto = heroPhotoUrl ? `<figure class="venue-hero-photo"><img src="${esc(heroPhotoUrl)}" alt="${esc(venue.heroPhoto?.alt || `${venue.name} venue photo`)}" loading="eager" decoding="async" fetchpriority="high" referrerpolicy="no-referrer" /><figcaption>${esc(venue.heroPhoto?.attribution || "Venue photo")}${heroPhotoSource ? ` · <a href="${esc(heroPhotoSource)}" rel="nofollow noopener noreferrer">Source</a>` : ""}${heroPhotoLicense ? ` · <a href="${esc(heroPhotoLicense)}" rel="nofollow noopener noreferrer">License</a>` : ""}${heroPhotoNotice ? ` · ${esc(heroPhotoNotice)}` : ""}</figcaption></figure>` : `<div class="venue-hero-fallback" role="img" aria-label="${esc(`${venue.name} venue artwork`)}"><span>MSHPIT VENUE</span><strong>${esc(venue.name)}</strong><small>Verified venue photo coming soon</small></div>`;
+  const heroPhoto = heroPhotoUrl ? `<figure class="venue-hero-photo"><img src="${esc(heroPhotoUrl)}" alt="${esc(venue.heroPhoto?.alt || `${venue.name} venue photo`)}" loading="eager" decoding="async" fetchpriority="high" referrerpolicy="no-referrer" /><figcaption>${esc(venue.heroPhoto?.attribution || "Venue photo")}${heroPhotoSource ? ` · <a href="${esc(heroPhotoSource)}" rel="nofollow noopener noreferrer">Source</a>` : ""}${heroPhotoLicense ? ` · <a href="${esc(heroPhotoLicense)}" rel="nofollow noopener noreferrer">License</a>` : ""}${heroPhotoNotice ? ` · ${esc(heroPhotoNotice)}` : ""}</figcaption></figure>` : `<div class="venue-hero-fallback" role="img" aria-label="${esc(`${venue.name} venue artwork`)}"><span>MSHPIT VENUE</span><strong>${esc(venue.name)}</strong></div>`;
   const events = document.events.map((event) => `<li><time datetime="${esc(event.startDateTime || event.date)}"><strong>${esc(dateLabel(event.date))}</strong></time><div><h3>${link(event.path, event.name)}</h3><p>${link(event.artistPath, event.artist)}${event.place ? ` · ${esc(event.place)}` : ""}</p></div>${event.soldOut ? '<span class="pill">Sold out</span>' : ""}</li>`).join("");
   const posts = document.posts.map((post) => compactPost(post)).join("");
   const reviewStats = document.venueReviewStats || { reviewCount: 0, ratingCount: 0, averageRating: null };
@@ -415,26 +417,32 @@ function directoryMain(document) {
   }).join("");
   const concerts = (document.concerts || []).map((concert) => `<li><time datetime="${esc(concert.date)}"><strong>${esc(dateLabel(concert.date))}</strong></time><div><h2>${link(concert.path, `${concert.artist} at ${concert.venue}`)}</h2><p>${link(concert.artistPath, concert.artist)} · ${link(concert.venuePath, concert.venue)}${concert.city ? ` · ${esc(concert.city)}` : ""}</p></div><span class="archive-score">${concert.averageRating != null ? `${esc(concert.averageRating.toFixed(1))}/5 · ` : "No rating yet · "}${esc(concert.reviewCount)} ${concert.reviewCount === 1 ? "review" : "reviews"}</span></li>`).join("");
   const pageSuffix = document.page > 1 ? ` — Page ${esc(document.page)}` : "";
-  const heading = kind === "artists" ? "Artists in the live archive"
+  const defaultHeading = kind === "artists" ? "Artists in the live archive"
     : kind === "venues" ? "Concert venues on Mshpit"
       : kind === "concerts" ? "Concert nights fans remember" : "Upcoming concerts worldwide";
+  const heading = cleanCaption(document.heading) || defaultHeading;
   const label = kind === "artists" ? "Artist directory"
     : kind === "venues" ? "Venue directory"
       : kind === "concerts" ? "Concert archive" : "Event directory";
-  const related = document.relatedPath && document.relatedLabel ? '<div class="actions">' + link(document.relatedPath, document.relatedLabel, "button") + '</div>' : "";
+  const relatedLinks = Array.isArray(document.relatedLinks) ? document.relatedLinks
+    : document.relatedPath && document.relatedLabel ? [{ path: document.relatedPath, label: document.relatedLabel }] : [];
+  const related = relatedLinks.length ? '<div class="actions">' + relatedLinks.filter((row) => publicHref(row?.path) && row?.label)
+    .map((row) => link(row.path, row.label, "button")).join("") + '</div>' : "";
   const content = kind === "artists" ? `<ul class="artist-grid directory-grid">${artists}</ul>`
     : kind === "venues" ? `<ul class="artist-grid directory-grid">${venues}</ul>`
       : kind === "concerts" ? `<ol class="event-list archive-list">${concerts}</ol>`
         : `<ol class="event-list directory-events">${events}</ol>`;
   return `<main id="main">
     ${breadcrumbs(document)}
-    <section class="directory-hero"><p class="eyebrow">Mshpit directory</p><h1>${heading}${pageSuffix}</h1><p>${esc(document.description)}</p>${related}</section>
+    <section class="directory-hero"><p class="eyebrow">Mshpit directory</p><h1>${esc(heading)}${pageSuffix}</h1><p>${esc(document.description)}</p>${related}</section>
     <section class="section" aria-label="${label}">${content}</section>
     ${(document.previousPath || document.nextPath) ? `<nav class="pagination" aria-label="Directory pages">${document.previousPath ? link(document.previousPath, "Previous page") : ""}${document.nextPath ? link(document.nextPath, "Next page") : ""}</nav>` : ""}
   </main>`;
 }
 
 export function renderPublicDocumentMain(document) {
+  if (document?.kind === "city-directory") return renderCityDirectoryMain(document);
+  if (document?.kind === "city") return renderCityGuideMain(document);
   if (!document || !["home", "discover", "search", "artist", "member", "post", "event", "concert", "venue", "directory"].includes(document.kind)) return null;
   if (document.kind === "home") return homeMain(document);
   if (document.kind === "discover") return discoverMain(document);
@@ -521,7 +529,7 @@ export function renderPublicDocumentShell(document) {
   // Keep the style element inside #root. React's createRoot replaces both the
   // semantic preview and these temporary styles when the interactive client
   // mounts, so crawler-first CSS cannot leak into the signed-in application.
-  return `<style data-mshpit-public-document>${STYLES}</style>
+  return `<style data-mshpit-public-document>${STYLES}${["city", "city-directory"].includes(document.kind) ? CITY_GUIDE_STYLES : ""}</style>
     <div class="seo-document">
       <a class="skip" href="#main">Skip to content</a>
       <header class="site-header"><div><a class="brand" href="/" aria-label="Mshpit home">MSHPIT</a><nav aria-label="Main navigation"><a href="/artists">Artists</a><a href="/events">Events</a><a href="/venues">Venues</a><a href="/concerts">Concerts</a><a href="/discover">Discover</a><a href="/search">Search</a><a href="/login">Log in</a></nav></div></header>

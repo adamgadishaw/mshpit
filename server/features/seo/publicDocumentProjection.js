@@ -571,12 +571,14 @@ function eventCard(row, paths) {
     return Number.isNaN(parsed.valueOf()) ? null : value;
   })();
   const providerEvidence = cleanLine(row.music_evidence, 120);
+  const memberAuthored = (row.owner_id ?? row.ownerId ?? null) != null;
   const billedArtists = providerEvidence ? parseArray(row.billed_artists)
     .slice(0, 20).map((name) => cleanLine(name, 160)).filter(Boolean) : [];
-  const eventKind = providerEvidence && ["concert", "festival", "fair", "rodeo", "multi_day"].includes(row.event_kind)
+  const eventKind = (providerEvidence || memberAuthored)
+    && ["concert", "festival", "fair", "multi_day"].includes(row.event_kind)
     ? row.event_kind
     : "concert";
-  const endDate = providerEvidence ? validDate(row.event_end_date) : null;
+  const endDate = providerEvidence || memberAuthored ? validDate(row.event_end_date) : null;
   const providerImage = publicTicketmasterEventImage(row);
   return Object.freeze({
     id: String(row.id),
@@ -595,7 +597,10 @@ function eventCard(row, paths) {
     place: cleanLine(row.place, 180) || cleanLine([row.venue_city, row.venue_region, row.venue_country].filter(Boolean).join(", "), 180) || null,
     coord: venueCoordinates(row),
     date,
-    endDate: endDate && endDate >= date ? endDate : null,
+    // A date-only end on the same calendar day can sort before an offset-aware
+    // startDate after Google normalizes both values. Omit it unless this is a
+    // genuine multi-day range.
+    endDate: endDate && endDate > date ? endDate : null,
     startDateTime,
     localTime: cleanLine(row.start_local_time, 20) || null,
     timezone: cleanLine(row.event_timezone, 80) || null,
@@ -622,7 +627,10 @@ function eventSchema(event, origin, { image = null, description = null, today = 
   const name = cleanLine(event?.schemaName || event?.name, 220);
   const venue = cleanLine(event?.venue, 180);
   const path = cleanLine(event?.path, 500);
-  const startDate = completeDateTime(event?.startDateTime);
+  // Google accepts an ISO calendar date when the promoter has not published a
+  // start time. Prefer the offset-aware instant, but do not invent a time just
+  // to qualify a legitimate event for search.
+  const startDate = completeDateTime(event?.startDateTime) || validDate(event?.date);
   const address = event?.address;
   if (!name || !venue || !path || !startDate || !cleanLine(address?.streetAddress, 260)
     || !cleanLine(address?.addressLocality, 120)
@@ -925,16 +933,6 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       const reviewCount = count(raw.stats?.review_count);
       const averageRating = memorial ? null : rating(raw.stats?.average_rating);
       const events = memorial ? [] : (raw.events || []).map((event) => eventCard(event, publicPaths)).filter(Boolean);
-      const artistSignals = [
-        events.length ? `${events.length} upcoming ${events.length === 1 ? "show" : "shows"}` : "",
-        averageRating != null && reviewCount > 0
-          ? `${averageRating.toFixed(1)}/5 live rating from ${reviewCount} ${reviewCount === 1 ? "review" : "reviews"}`
-          : reviewCount > 0 ? `${reviewCount} concert ${reviewCount === 1 ? "review" : "reviews"}` : "",
-      ].filter(Boolean);
-      const description = summary(memorial?.summary || [
-        bio || `Music artist page for ${name} on Mshpit: concert reviews, fan photos, ratings and upcoming tour dates.`,
-        artistSignals.length ? `${artistSignals.join("; ")}.` : "",
-      ].filter(Boolean).join(" "));
       const concerts = (legacyMode ? [] : raw.concerts || []).flatMap((concert) => {
         const date = validDate(concert.date);
         const venue = cleanLine(concert.venue, 180);
@@ -967,6 +965,40 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         publishedAt: timestamp(update.created_at),
         editorial: legacyMode,
       })).filter((update) => update.text);
+      const hasReviews = reviewCount > 0;
+      const hasUpcomingShows = events.length > 0;
+      const hasFanPhotos = Boolean(fanImage);
+      const reviewSignal = averageRating != null && hasReviews
+        ? `${averageRating.toFixed(1)}/5 live rating from ${reviewCount} ${reviewCount === 1 ? "review" : "reviews"}`
+        : hasReviews ? `${reviewCount} concert ${reviewCount === 1 ? "review" : "reviews"}` : null;
+      const upcomingSignal = hasUpcomingShows
+        ? `${events.length} upcoming ${events.length === 1 ? "show" : "shows"}` : null;
+      const artistTitle = legacyMode
+        ? `${name} legacy — biography and community memories | Mshpit`
+        : memorial
+        ? `Remembering ${name} — music, shows and fan memories | Mshpit`
+        : hasReviews && hasUpcomingShows
+        ? `${name} concert reviews & upcoming shows | Mshpit`
+        : hasReviews && hasFanPhotos && averageRating != null
+        ? `${name} concert reviews, ratings & photos | Mshpit`
+        : hasReviews && hasFanPhotos
+        ? `${name} concert reviews & photos | Mshpit`
+        : hasReviews && averageRating != null
+        ? `${name} concert reviews & live ratings | Mshpit`
+        : hasReviews
+        ? `${name} concert reviews | Mshpit`
+        : hasUpcomingShows
+        ? `${name} upcoming concerts & artist profile | Mshpit`
+        : `${name} music artist profile | Mshpit`;
+      const description = summary(memorial?.summary || (hasReviews
+        ? `${name} on Mshpit: ${reviewSignal}${upcomingSignal ? ` and ${upcomingSignal}` : ""}. ${bio ? `${bio} ` : ""}Read firsthand concert reviews${hasFanPhotos ? " and browse fan-shared photos" : ""}${hasUpcomingShows ? ", then see upcoming show details" : ""}.`
+        : hasUpcomingShows
+        ? `${name} on Mshpit: ${upcomingSignal}. See upcoming concert dates${bio ? " and artist details" : ""}.`
+        : bio
+        ? `${name} artist profile on Mshpit. ${bio}`
+        : updates.length
+        ? `${name} artist profile and public updates on Mshpit.`
+        : `${name} music artist profile on Mshpit.`));
       const modifiedAt = Math.max(
         timestamp(source.updated_at) || 0,
         timestamp(raw.profile?.updated_at) || 0,
@@ -1033,11 +1065,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       return Object.freeze({
         kind: "artist",
         siteName: SITE_NAME,
-        title: legacyMode
-          ? `${name} legacy — biography and community memories | Mshpit`
-          : memorial
-          ? `Remembering ${name} — music, shows and fan memories | Mshpit`
-          : `${name} — music artist reviews, photos & tour dates | Mshpit`,
+        title: artistTitle,
         description,
         canonicalPath: path,
         canonicalUrl: absolute(publicOrigin, path),
@@ -1496,14 +1524,47 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       const coord = events.find((event) => event.coord)?.coord || curatedFacts?.coord || null;
       const capacity = curatedFacts?.capacity || null;
       const guide = venueGuideModel({ name, place, capacity, coord });
-      const descriptionDetails = [
-        guide.capacityLabel ? `a listed capacity of ${guide.capacityLabel}` : null,
-        events.length ? `${events.length} upcoming ${events.length === 1 ? "concert" : "concerts"}` : null,
-        reviewCount ? `${reviewCount} public ${reviewCount === 1 ? "review" : "reviews"}` : null,
-        guide.actions.length ? "live directions, parking and transit searches" : null,
-        "event-specific seating guidance",
-      ].filter(Boolean).join(", ");
-      const description = summary(`${name}${place ? ` in ${place}` : ""} concert venue guide: ${descriptionDetails}.`);
+      const guideActionIds = new Set((guide.actions || []).map((action) => cleanLine(action?.id, 40)));
+      const visitTopics = [
+        guideActionIds.has("directions") ? "directions" : null,
+        guideActionIds.has("parking") ? "parking" : null,
+        guideActionIds.has("transit") ? "public transit" : null,
+      ].filter(Boolean);
+      const visitTopicLabel = visitTopics.length > 2
+        ? `${visitTopics.slice(0, -1).join(", ")} and ${visitTopics.at(-1)}`
+        : visitTopics.join(" and ");
+      const hasVenueReviews = reviewCount > 0;
+      const hasUpcomingConcerts = events.length > 0;
+      const hasCapacity = Boolean(guide.capacityLabel);
+      const hasVisitLinks = visitTopics.length > 0;
+      const venueTitle = hasVenueReviews && hasUpcomingConcerts
+        ? `${name} reviews & upcoming concerts | Mshpit`
+        : hasVenueReviews && ratingCount > 0
+        ? `${name} venue reviews & ratings | Mshpit`
+        : hasVenueReviews
+        ? `${name} venue reviews | Mshpit`
+        : hasUpcomingConcerts && (hasCapacity || hasVisitLinks)
+        ? `${name} concerts & visitor guide | Mshpit`
+        : hasUpcomingConcerts
+        ? `${name} upcoming concerts${place ? ` in ${place}` : ""} | Mshpit`
+        : hasCapacity && hasVisitLinks
+        ? `${name} venue guide: capacity, parking & transit | Mshpit`
+        : hasCapacity
+        ? `${name} venue guide & capacity | Mshpit`
+        : hasVisitLinks
+        ? `${name} venue guide: directions & visitor info | Mshpit`
+        : `${name} music venue${place ? ` in ${place}` : ""} | Mshpit`;
+      const descriptionParts = [`Explore ${name}${place ? ` in ${place}` : ""} on Mshpit.`];
+      if (hasVenueReviews) {
+        descriptionParts.push(averageRating != null && ratingCount > 0
+          ? `${reviewCount} public ${reviewCount === 1 ? "review" : "reviews"} with a ${averageRating.toFixed(1)}/5 community rating from ${ratingCount} ${ratingCount === 1 ? "rating" : "ratings"}.`
+          : `${reviewCount} public ${reviewCount === 1 ? "review" : "reviews"}.`);
+      }
+      if (hasUpcomingConcerts) descriptionParts.push(`See ${events.length} upcoming ${events.length === 1 ? "concert" : "concerts"}.`);
+      if (hasCapacity) descriptionParts.push(`Listed capacity: ${guide.capacityLabel}.`);
+      if (hasVisitLinks) descriptionParts.push(`Find ${visitTopicLabel} links.`);
+      if (descriptionParts.length === 1) descriptionParts.push("View available venue details.");
+      const description = summary(descriptionParts.join(" "));
       const breadcrumbs = Object.freeze([
         Object.freeze({ name: "Mshpit", path: "/" }),
         Object.freeze({ name: "Venues", path: "/venues" }),
@@ -1555,7 +1616,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       return Object.freeze({
         kind: "venue",
         siteName: SITE_NAME,
-        title: `${name} concert venue guide — shows, seating & reviews | Mshpit`,
+        title: venueTitle,
         description,
         canonicalPath: path,
         canonicalUrl: venueUrl,

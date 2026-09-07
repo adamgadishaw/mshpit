@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import { colors, displayFont, focusRing, font, mono, radius, shadow } from "../theme";
 import { useStore } from "../store";
@@ -13,6 +13,8 @@ import { UpcomingEventCard, VenueDiscoveryCard } from "../components/VenueDiscov
 import { EventScopeToggle, PopularLoungeCard } from "../components/LiveDiscoveryCards";
 import { PublicPressableLink } from "../components/PublicWebLinks";
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
+import CityDiscoveryTiles from "../features/cities/CityDiscoveryTiles";
+import { CityNavigationContext } from "../components/cities/CityNavigationContext";
 import { eventPath } from "../domain/urls.mjs";
 import { buildDiscoverEventBannerSlides } from "../domain/discoverEventBanner.mjs";
 import {
@@ -27,7 +29,6 @@ import {
 import {
   DISCOVER_SUPPORTED_EVENT_COUNTRIES,
   discoverCountryIdentity,
-  discoverEventCountryFacets,
   filterDiscoverSceneRows,
   projectDiscoverScene,
 } from "../domain/discoverScene.mjs";
@@ -100,6 +101,7 @@ export default function DiscoverScreen({
     myAttendance = [],
   } = useStore();
   const { width } = useWindowDimensions();
+  const openCity = useContext(CityNavigationContext);
   const compact = width < 620;
   const veryCompact = width < 380;
   const wide = width >= 900;
@@ -166,16 +168,14 @@ export default function DiscoverScreen({
     postId: photo.logId,
     ownerId: photo.ownerId,
   })), [scenePhotos]);
-  const sceneProjection = useMemo(() => projectDiscoverScene(tourDates, {
+  const rangeMatchesScene = eventRange.scopeKey === rangeScopeKey
+    && (eventRange.status === "ready" || eventRange.rows.length > 0);
+  const sceneProjection = useMemo(() => projectDiscoverScene(rangeMatchesScene ? eventRange.rows : tourDates, {
     region,
     eventLimit: 12,
     venueLimit: 8,
     countryForCity,
-  }), [region, tourDates]);
-  const eventCountryFacets = useMemo(() => discoverEventCountryFacets(tourDates, {
-    countryForCity,
-    limit: 40,
-  }), [tourDates]);
+  }), [eventRange.rows, rangeMatchesScene, region, tourDates]);
   const localEvents = useMemo(
     () => localDiscoveryEvents(discoverySidebar?.upcomingEvents, { limit: 12 }),
     [discoverySidebar?.upcomingEvents],
@@ -193,8 +193,6 @@ export default function DiscoverScreen({
     worldwideEvents: initialRangeEvents,
     limit: 4,
   }), [initialRangeEvents]);
-  const rangeMatchesScene = eventRange.scopeKey === rangeScopeKey
-    && (eventRange.status === "ready" || eventRange.rows.length > 0);
   const rangeEvents = useMemo(() => {
     if (!rangeMatchesScene) return [];
     const scopedRows = liveScope === LIVE_EVENT_SCOPE.LOCAL
@@ -404,11 +402,12 @@ export default function DiscoverScreen({
 
   useEffect(() => {
     setVisibleEventCount(DISCOVER_RANGE_BATCH);
+    requestEventRange(DISCOVER_RANGE_DAYS[0]);
     return () => {
       rangeRequestRef.current.controller?.abort();
       rangeRequestRef.current.sequence += 1;
     };
-  }, [rangeScopeKey]);
+  }, [rangeScopeKey, requestEventRange]);
 
   useEffect(() => {
     requestOverview();
@@ -500,11 +499,13 @@ export default function DiscoverScreen({
   const overviewState = discoverSectionState({ status: overviewStatus, rows: overview.chart.rows });
   const showOverviewContent = hasDiscoverOverviewContent(overview)
     && (overviewStatus === "ready" || overviewStatus === "refreshing" || overviewStatus === "error");
-  const countries = discoverNationOptions(eventCountryFacets, {
+  const countries = discoverNationOptions(overview.eventCoverage.countries, {
     homeCountry,
     selectedRegion: region,
     supportedCountries: DISCOVER_SUPPORTED_EVENT_COUNTRIES,
     limit: DISCOVER_SUPPORTED_EVENT_COUNTRIES.length + 2,
+    complete: overview.eventCoverage.status === "ready",
+    total: overview.eventCoverage.total,
   });
   const sceneChoiceLimit = compact ? 3 : 12;
   const sceneCountries = visibleDiscoverCountries(countries, region, { compact: true, expanded: sceneExpanded, limit: sceneChoiceLimit });
@@ -515,8 +516,8 @@ export default function DiscoverScreen({
     : selectedCountryRow?.count ?? overview.genreTotal;
   const metrics = [
     { label: "artists", value: sceneArtistTotal, tint: colors.amber },
-    { label: "upcoming events", value: sceneProjection.eventCount, tint: colors.gold },
-    { label: "venues", value: sceneProjection.venueCount, tint: colors.cool },
+    { label: "upcoming events", value: (region === "Worldwide" ? overview.eventCoverage.total : countries.find((row) => discoverCountryIdentity(row.country) === discoverCountryIdentity(region))?.count) ?? sceneProjection.eventCount, tint: colors.gold },
+    { label: "venues", value: (region === "Worldwide" ? overview.eventCoverage.venueTotal : overview.eventCoverage.countries.find((row) => discoverCountryIdentity(row.country) === discoverCountryIdentity(region))?.venueCount) ?? sceneProjection.venueCount, tint: colors.cool },
     { label: "genres", value: overview.distinctGenres ?? localStats.genres, tint: colors.magenta },
   ];
 
@@ -715,6 +716,7 @@ export default function DiscoverScreen({
         </View>
       </View>
 
+      <CityDiscoveryTiles country={region === "Worldwide" ? "" : region} limit={6} onOpenCity={openCity} />
       <View style={styles.nearSection}>
         <SectionHeading
           eyebrow="AROUND YOU"

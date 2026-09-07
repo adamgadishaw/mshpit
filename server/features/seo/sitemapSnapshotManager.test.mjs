@@ -256,7 +256,7 @@ test("payload validation enforces canonical host, shard membership, and global U
     stats: valid.stats,
   };
   assert.equal(validateSitemapSnapshotPayload(payload, { env: ENV }).stats.totalUrls, 1);
-  assert.equal(SITEMAP_SNAPSHOT_REVISION, 2);
+  assert.equal(SITEMAP_SNAPSHOT_REVISION, 4);
   assert.throws(
     () => validateSitemapSnapshotPayload({ ...payload, revision: 1 }, { env: ENV }),
     /SITEMAP_SNAPSHOT_REVISION/,

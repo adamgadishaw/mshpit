@@ -1,4 +1,7 @@
 const MUSIC = /^(?:music)$/iu;
+// Ticketmaster's stable Music segment identity is locale-independent.
+// https://developer.ticketmaster.com/products-and-docs/apis/discovery-api/v2/
+const TICKETMASTER_MUSIC_SEGMENT_ID = "KZFzniwnSyZfZ7v7nJ";
 const FESTIVAL = /\b(?:festival|fest)\b/iu;
 const FAIR = /\b(?:fair|exhibition|exposition)\b/iu;
 const RODEO = /\brodeo\b/iu;
@@ -46,9 +49,14 @@ export function ticketmasterMusicEvent(event, { requestedArtist = null } = {}) {
   if (!event || typeof event !== "object") return null;
   const labels = classificationLabels(event.classifications);
   const billedArtists = boundedNames(event._embedded?.attractions);
-  const primarySegment = line(event.classifications?.[0]?.segment?.name, 80);
-  const providerMusicClassification = Boolean(primarySegment && MUSIC.test(primarySegment));
-  const explicitNonMusicSegment = Boolean(primarySegment && !providerMusicClassification);
+  const classifications = Array.isArray(event.classifications) ? event.classifications.slice(0, 20) : [];
+  const primary = classifications.find((classification) => classification?.primary === true) || classifications[0];
+  const primarySegment = line(primary?.segment?.name, 80);
+  const primarySegmentId = line(primary?.segment?.id, 80);
+  const providerMusicClassification = primarySegmentId
+    ? primarySegmentId === TICKETMASTER_MUSIC_SEGMENT_ID
+    : Boolean(primarySegment && MUSIC.test(primarySegment));
+  const explicitNonMusicSegment = Boolean((primarySegmentId || primarySegment) && !providerMusicClassification);
   const requested = line(requestedArtist, 160)?.toLowerCase() || null;
   const requestedArtistMatch = requested
     ? billedArtists.some((name) => name.toLowerCase() === requested)

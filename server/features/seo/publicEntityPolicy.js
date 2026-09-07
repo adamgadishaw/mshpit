@@ -41,8 +41,23 @@ export function publicMusicEventCandidateSql(alias = "td") {
   return `(${identifier}.owner_id IS NOT NULL OR COALESCE(${identifier}.music_qualified,0)=1)`;
 }
 
-const NON_CONCERT_PRODUCT = /\b(?:parking(?:\s+pass)?|camping(?:\s+pass)?|weekend\s+camping|hotel\s+packages?|ticket\s*\+\s*hotel|souvenir\s+tickets?|entry\s+to\s+all\s+shows|(?:full\s+)?season\s+(?:memberships?|pass(?:es)?)|concert\s+package(?:\s+events?)?|beginner\s+class|workshop)\b/iu;
-const GENERIC_NON_CONCERT_PRODUCT = /^(?:the\s+)?bundles?$/iu;
+const PUBLIC_EVENT_TITLE_RULES = Object.freeze([
+  Object.freeze(["parking, camping, hotel, or souvenir product", /\b(?:parking(?:\s+pass)?|camping(?:\s+pass)?|weekend\s+camping|hotel\s+packages?|ticket\s*\+\s*hotel|souvenir\s+tickets?)\b/iu]),
+  Object.freeze(["pass or wristband product", /\b(?:(?:entry|admission)\s+to\s+(?:all|every)\s+(?:shows?|events?)|(?:full\s+)?season\s+(?:memberships?|pass(?:es)?)|(?:multi[ -]?venue|weekend|(?:one|two|three|four|five|six|seven|[1-9])[- ]day|lawn|general|pedestrian|comfort|festival)\s+(?:pass(?:es)?|wristbands?)|wristbands?\s+(?:for|to)\s+all\s+(?:venues|shows|events))\b/iu]),
+  Object.freeze(["package, bundle, or add-on product", /(?:\bconcert\s+package(?:\s+events?)?\b|\b(?:vip|hospitality|premium)\s+(?:packages?|upgrades?|add[ -]?ons?|experiences?)\b|^(?:bundles?|packages?|upgrades?|add[ -]?ons?)(?:\b|[-:])|\b(?:bundles?|packages?|upgrades?|add[ -]?ons?)\s*$|\b(?:event\s+(?:ticket\s+)?not\s+included|boleto\s+de\s+evento\s+no\s+in(?:c|l)luido)\b)/iu]),
+  Object.freeze(["class, course, workshop, or lesson", /(?:\b(?:beginner|introductory)\s+(?:class(?:es)?|courses?|workshops?|lessons?|seminars?)\b|\b(?:music|guitar|piano|drum|singing|dance)\s+(?:class(?:es)?|courses?|workshops?|lessons?|seminars?)\b|^(?:class(?:es)?|courses?|workshops?|lessons?|seminars?)(?:\s*$|\s*[-–—:|]))/iu]),
+  Object.freeze(["VIP or access-only ticket product", /(?:\bofficial\s+vip\s+ticket\s+experiences?\b|\b(?:party|suite|box)\s+(?:box\s+)?rentals?\b|\b(?:box\s+seats?|ticketmaster\s+suite|fast\s+lane|(?:club|lounge)\s+access|early\s+entry)\b|(?:^|[-–—|:])\s*vip(?:\s|$))/iu]),
+  Object.freeze(["non-music sports admission", /(?:\b(?:formula\s*1|f1)\b.{0,80}\b(?:admission|race|pass(?:es)?)\b|\b(?:grand\s+prix|usgp)\b.{0,80}\b(?:admission|pass(?:es)?)\b|\bmelbourne\s+cup\s+day\b)/iu]),
+  Object.freeze(["test fixture event", /^(?:evento\s+teste|test\s+event)(?:\b|\s*[-:])/iu]),
+]);
+
+export function publicMusicEventTitleViolations(value) {
+  const name = normalizedPublicText(value);
+  if (!name) return Object.freeze(["empty event title"]);
+  return Object.freeze(PUBLIC_EVENT_TITLE_RULES
+    .filter(([, pattern]) => pattern.test(name))
+    .map(([reason]) => reason));
+}
 function publicBilledArtists(value) {
   value = value && typeof value === "object" ? value : {};
   const source = value.billedArtists ?? value.billed_artists;
@@ -58,9 +73,20 @@ function publicBilledArtists(value) {
   }
 }
 function hasBoundedProviderRange(value, kind, ownerId) {
-  if (ownerId != null || !CURRENT_RANGE_EVENT_KINDS.has(kind)) return true;
   const start = value.date;
   const end = value.eventEndDate ?? value.event_end_date;
+  if (ownerId != null) {
+    if (!normalizedPublicText(end)) return true;
+    if (!isStrictCalendarDate(start) || !isStrictCalendarDate(end)) return false;
+    if (end === start) return true;
+    if (end <= start) return false;
+    const spanDays = (Date.parse(`${end}T00:00:00Z`) - Date.parse(`${start}T00:00:00Z`)) / 86_400_000;
+    const maximum = kind === "festival" || kind === "fair"
+      ? MAX_PROVIDER_FESTIVAL_FAIR_SPAN_DAYS
+      : MAX_PROVIDER_MULTI_DAY_SPAN_DAYS;
+    return spanDays >= 1 && spanDays <= maximum;
+  }
+  if (!CURRENT_RANGE_EVENT_KINDS.has(kind)) return true;
   if (kind !== "multi_day" && !normalizedPublicText(end)) return true;
   if (!isStrictCalendarDate(start) || !isStrictCalendarDate(end)) return false;
   if (kind !== "multi_day" && end === start) return true;
@@ -90,13 +116,61 @@ export function isIndexableMusicEventRecord(value = {}) {
   const venue = normalizedPublicText(value.venue);
   return Boolean(name)
     && ![name, artist, venue].some((text) => PUBLIC_TEXT_ENCODING_HAZARD.test(text))
-    && !NON_CONCERT_PRODUCT.test(name)
-    && !GENERIC_NON_CONCERT_PRODUCT.test(name);
+    && publicMusicEventTitleViolations(name).length === 0;
 }
 
-// A corrupt range on an ordinary concert must not keep an old event in
-// directories or sitemaps. Only provider-evidenced range events may
-// stay current by its end date; every other record is current by start date.
+export function publicIndexableMusicEventSql(alias = "td") {
+  const identifier = String(alias || "");
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(identifier)) throw new TypeError("Invalid SQL alias");
+  return `pit_indexable_music_event(${identifier}.owner_id,${identifier}.music_qualified,
+    ${identifier}.event_kind,${identifier}.event_name,${identifier}.artist,${identifier}.venue,
+    ${identifier}.music_evidence,${identifier}.billed_artists,${identifier}.date,
+    ${identifier}.event_end_date)=1`;
+}
+
+const PUBLIC_EVENT_POLICY_CACHE_LIMIT = 50_000;
+const publicEventPolicyCaches = new WeakMap();
+
+export function installPublicMusicEventPolicySql(database) {
+  if (!database?.function) throw new TypeError("Public music event SQL policy requires a database");
+  let cache = publicEventPolicyCaches.get(database);
+  if (!cache) {
+    cache = new Map();
+    publicEventPolicyCaches.set(database, cache);
+  }
+  database.function("pit_indexable_music_event", { deterministic: true }, (
+    ownerId, musicQualified, eventKind, eventName, artist, venue, musicEvidence, billedArtists,
+    date, eventEndDate,
+  ) => {
+    const values = [ownerId, musicQualified, eventKind, eventName, artist, venue,
+      musicEvidence, billedArtists, date, eventEndDate];
+    const key = JSON.stringify(values);
+    if (cache.has(key)) return cache.get(key);
+    const result = isIndexableMusicEventRecord({
+      owner_id: ownerId,
+      music_qualified: musicQualified,
+      event_kind: eventKind,
+      event_name: eventName,
+      artist,
+      venue,
+      music_evidence: musicEvidence,
+      billed_artists: billedArtists,
+      date,
+      event_end_date: eventEndDate,
+    }) ? 1 : 0;
+    // Keep a stable bounded working set. FIFO eviction would make a catalogue
+    // just over the limit miss every row on every sequential scan: early rows
+    // evict the entries that later rows are about to reuse. Once full, compute
+    // uncached tail rows instead of churning the useful prefix.
+    if (cache.size < PUBLIC_EVENT_POLICY_CACHE_LIMIT) cache.set(key, result);
+    return result;
+  });
+}
+
+// A corrupt range on an ordinary provider concert must not keep an old event
+// in directories or sitemaps. Bounded member-authored ranges and bounded,
+// provider-evidenced range events may stay current through their end date;
+// every other record is current by start date.
 export function isCurrentOrUpcomingPublicMusicEvent(value = {}, today) {
   value = value && typeof value === "object" ? value : {};
   if (!isIndexableMusicEventRecord(value) || !isStrictCalendarDate(today)) return false;
@@ -120,6 +194,13 @@ export function currentOrUpcomingPublicMusicEventSql(alias = "td", placeholder =
   const kind = `LOWER(TRIM(COALESCE(${identifier}.event_kind,'')))`;
   const start = `${identifier}.date`;
   const end = `${identifier}.event_end_date`;
+  const memberRangeBound = `(${identifier}.owner_id IS NULL
+    OR TRIM(COALESCE(${end},''))=''
+    OR (date(${end})=${end} AND (${end}=${start} OR (${end}>${start}
+      AND julianday(${end})-julianday(${start}) BETWEEN 1 AND CASE
+        WHEN ${kind} IN ('festival','fair') THEN ${MAX_PROVIDER_FESTIVAL_FAIR_SPAN_DAYS}
+        ELSE ${MAX_PROVIDER_MULTI_DAY_SPAN_DAYS}
+      END))))`;
   const providerRangeBound = `(${identifier}.owner_id IS NOT NULL
     OR ${kind} NOT IN ('festival','fair','multi_day')
     OR (${kind} IN ('festival','fair') AND TRIM(COALESCE(${end},''))='')
@@ -129,7 +210,7 @@ export function currentOrUpcomingPublicMusicEventSql(alias = "td", placeholder =
         WHEN ${kind}='multi_day' THEN ${MAX_PROVIDER_MULTI_DAY_SPAN_DAYS}
         ELSE ${MAX_PROVIDER_FESTIVAL_FAIR_SPAN_DAYS}
       END))`;
-  return `(date(${start})=${start} AND ${providerRangeBound} AND (${start}>=${parameter} OR (
+  return `(date(${start})=${start} AND ${memberRangeBound} AND ${providerRangeBound} AND (${start}>=${parameter} OR (
     date(${end})=${end}
     AND ${end}>${start}
     AND ${end}>=${parameter}
@@ -141,11 +222,13 @@ export function currentOrUpcomingPublicMusicEventSql(alias = "td", placeholder =
 }
 
 export function hasCompleteRichMusicEventRecord(value = {}) {
+  const hasStartDate = isStrictIsoDateTime(value.startDateTime ?? value.start_date_time)
+    || isStrictCalendarDate(value.date);
   return Boolean(
     normalizedPublicText(value.id)
     && normalizedPublicText(value.artist)
     && normalizedPublicText(value.venue)
-    && isStrictIsoDateTime(value.startDateTime ?? value.start_date_time)
+    && hasStartDate
     && normalizedPublicText(value.venueAddressLine1 ?? value.venue_address_line1
       ?? value.venueAddressLine2 ?? value.venue_address_line2)
     && normalizedPublicText(value.venueCity ?? value.venue_city)

@@ -77,6 +77,38 @@ test("Ticketmaster discovery requires the Music segment, not a lower taxonomy la
   })).evidence, "ticketmaster:classification:music");
 });
 
+test("Ticketmaster Music segment identity accepts translated labels without widening the taxonomy", () => {
+  for (const name of ["Musique", "Música", "Musik", "音楽", undefined]) {
+    const event = ticketmasterEvent({
+      classifications: [{ primary: true, segment: { id: "KZFzniwnSyZfZ7v7nJ", name } }],
+    });
+    assert.equal(ticketmasterMusicEvent(event)?.evidence, "ticketmaster:classification:music");
+    assert.equal(ticketmasterRows({ _embedded: { events: [event] } }).length, 1,
+      `localized segment ${name} must survive country ingestion`);
+  }
+  for (const name of ["Sports", "Deportes", "Music"]) {
+    assert.equal(ticketmasterMusicEvent(ticketmasterEvent({
+      classifications: [{ primary: true, segment: { id: "non-music-segment", name } }],
+    }), { requestedArtist: "The Beaches" }), null,
+    "a non-Music segment ID cannot be overridden by a label or artist-name match");
+  }
+});
+
+test("Ticketmaster discovery uses explicit primary taxonomy rather than array order", () => {
+  assert.equal(ticketmasterMusicEvent(ticketmasterEvent({
+    classifications: [
+      { primary: false, segment: { name: "Music" } },
+      { primary: true, segment: { name: "Sports" } },
+    ],
+  })), null);
+  assert.equal(ticketmasterMusicEvent(ticketmasterEvent({
+    classifications: [
+      { primary: false, segment: { name: "Other" } },
+      { primary: true, segment: { id: "KZFzniwnSyZfZ7v7nJ", name: "Música" } },
+    ],
+  }))?.evidence, "ticketmaster:classification:music");
+});
+
 test("Ticketmaster projection persists a bounded billed lineup for logging and public pages", () => {
   const many = Array.from({ length: 30 }, (_, index) => ({ name: `Artist ${index + 1}` }));
   const rows = ticketmasterRows({ _embedded: { events: [ticketmasterEvent({

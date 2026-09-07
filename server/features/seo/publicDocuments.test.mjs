@@ -7,6 +7,7 @@ import { archiveShowKey } from "../artistArchive/artistArchiveKeys.js";
 import { ensureLegacyMediaFinalizeSchema } from "../../mediaLegacyFinalize.js";
 import { createPublicDocumentService } from "./publicDocuments.js";
 import { serializePublicStructuredData } from "./publicDocumentRenderer.js";
+import { ensureCitySchema } from "../cities/citySchema.js";
 
 const ARTIST_MBID = "12345678-1234-4234-8234-123456789abc";
 const OTHER_MBID = "22345678-1234-4234-8234-123456789abc";
@@ -298,6 +299,33 @@ function service(database) {
   return createPublicDocumentService({ database, origin: "https://www.example.com" });
 }
 
+test("public city venue directories use the city repository's canonical guide and moderated label", () => {
+  const database = createDatabase();
+  try {
+    database.exec(`ALTER TABLE users ADD COLUMN profile_audience TEXT NOT NULL DEFAULT 'everyone';
+      CREATE TABLE reports (target_id TEXT,status TEXT);
+      CREATE TABLE blocks (blocker_id TEXT,blocked_id TEXT);
+      CREATE TABLE moderation_actions (id TEXT,actor_id TEXT,action TEXT,target_type TEXT,target_id TEXT,
+        reason TEXT,prior_state TEXT,next_state TEXT,request_id TEXT,created_at INTEGER);`);
+    ensureCitySchema(database,{ venues:[],seeds:[],previousSeeds:[],geo:{},banner:null });
+    addArtist(database);
+    const insert = database.prepare(`INSERT INTO tour_dates
+      (id,artist,artist_key,venue,date,venue_city,venue_country_code,venue_country,venue_region,source)
+      VALUES (?, 'Alpha','alpha',?,?,'Toronto','CA','Canada','Ontario','Ticketmaster')`);
+    for (let index=0;index<3;index++) insert.run(`city-link-${index}`,`Public Hall ${index}`,`2026-09-0${index+1}`);
+    database.prepare("UPDATE city_site_copy SET copy_json=json_set(copy_json,'$.cityGuideLink',?),revision=1 WHERE id='city'")
+      .run("Read about music in {city}");
+    const documents = service(database);
+    const directory = documents.cityVenuesDocument({ countryCode:"ca",citySlug:"toronto",at:NOW });
+    assert.ok(directory);
+    assert.deepEqual(directory.relatedLinks[1],{ path:"/city/ca/toronto",label:"Read about music in Toronto" });
+    assert.match(documents.render(directory),/href="\/city\/ca\/toronto"[^>]*>Read about music in Toronto<\/a>/u);
+    assert.equal(documents.cityDocument({ countryCode:"ca",citySlug:"toronto",at:NOW }).canonicalPath,"/city/ca/toronto");
+  } finally {
+    database.close();
+  }
+});
+
 test("home document is substantive, contains WebSite JSON-LD, and excludes restricted authors without a member-count claim", () => {
   const database = createDatabase();
   try {
@@ -381,7 +409,7 @@ test("crawler-readable artist surfaces never publish an unstructured legacy genr
   }
 });
 
-test("artist titles identify ambiguous names as music artists", () => {
+test("artist metadata identifies ambiguous names without advertising absent modules", () => {
   const database = createDatabase();
   try {
     addUser(database, "active", { name: "Active Fan", handle: "activefan" });
@@ -395,15 +423,33 @@ test("artist titles identify ambiguous names as music artists", () => {
         review: "A detailed concert review covering the performance, sound, crowd, and encore.",
       });
       const document = documents.artistDocument({ artistKey: key, at: NOW });
-      assert.equal(document.title, `${name} — music artist reviews, photos & tour dates | Mshpit`);
+      assert.equal(document.title, `${name} concert reviews & live ratings | Mshpit`);
       assert.equal(
         document.description,
-        `Music artist page for ${name} on Mshpit: concert reviews, fan photos, ratings and upcoming tour dates. 4.5/5 live rating from 1 review.`,
+        `${name} on Mshpit: 4.5/5 live rating from 1 review. Read firsthand concert reviews.`,
       );
       assert.equal(document.description.length <= 160, true);
       assert.doesNotMatch(document.title, new RegExp(`^${name.replace(".", "\\.")} live\\b`, "iu"));
-      assert.match(documents.render(document), /music artist reviews/);
+      assert.doesNotMatch(`${document.title} ${document.description}`, /photos|tour dates|upcoming/iu);
     }
+
+    addArtist(database, { key: "photo-no-score", name: "Photo Artist", bio: "" });
+    addPost(database, {
+      id: "photo-no-score-review",
+      artist: "Photo Artist",
+      artistKey: "photo-no-score",
+      overall: 0,
+      review: "A detailed written concert review with a public photo but no valid numeric score.",
+    });
+    addReadyImage(database, {
+      assetId: "photo-no-score-image",
+      ownerId: "active",
+      postId: "photo-no-score-review",
+      url: "https://media.example/public/photo-no-score.jpg",
+    });
+    const photoNoScore = documents.artistDocument({ artistKey: "photo-no-score", at: NOW });
+    assert.equal(photoNoScore.title, "Photo Artist concert reviews & photos | Mshpit");
+    assert.doesNotMatch(`${photoNoScore.title} ${photoNoScore.description}`, /rating/iu);
   } finally {
     database.close();
   }
@@ -453,12 +499,17 @@ test("artist document uses only active UGC and references Event leaf pages witho
     const invalidMbidDocument = documents.artistDocument({ artistKey: "bad-mbid", today: "2026-08-25", at: Date.now() });
 
     assert.equal(document.jsonLd[0]["@type"], "CollectionPage");
+    assert.equal(document.title, "Alpha concert reviews & upcoming shows | Mshpit");
+    assert.match(document.description, /live rating from 2 reviews and 1 upcoming show/u);
+    assert.match(document.description, /fan-shared photos/u);
     assert.equal(document.jsonLd[0].about["@type"], "Thing");
     assert.equal(document.jsonLd[0].about["@id"], "https://www.example.com/artist/alpha#artist");
     assert.equal(document.jsonLd[0].about.disambiguatingDescription, "Music artist");
     assert.deepEqual(document.jsonLd[0].mainEntity, { "@id": "https://www.example.com/artist/alpha#artist" });
     assert.deepEqual(document.jsonLd[0].about.sameAs, [`https://musicbrainz.org/artist/${ARTIST_MBID}`]);
     assert.equal(Object.hasOwn(invalidMbidDocument.jsonLd[0].about, "sameAs"), false);
+    assert.equal(invalidMbidDocument.title, "Bad MBID music artist profile | Mshpit");
+    assert.doesNotMatch(`${invalidMbidDocument.title} ${invalidMbidDocument.description}`, /reviews|photos|tour dates|upcoming/iu);
     assert.deepEqual(document.reviews.map((review) => review.id), ["visible", "private-gallery"]);
     assert.deepEqual(document.events.map((event) => event.id), ["event-public"]);
     assert.deepEqual(document.updates.map((update) => update.id), ["update-visible"]);
@@ -753,6 +804,42 @@ test("canonical artist documents expose only an identity-bound published memoria
     const mismatched = documents.artistDocument({ artistKey: "alpha", at: NOW });
     assert.equal(mismatched.memorial, null);
     assert.equal(mismatched.jsonLd[0].about["@type"], "Thing");
+  } finally {
+    database.close();
+  }
+});
+
+test("pending media-only posts do not create public review, directory, or concert evidence", () => {
+  const database = createDatabase();
+  try {
+    addUser(database, "active", { name: "Active Fan", handle: "activefan" });
+    addArtist(database, { key: "pending-artist", name: "Pending Artist", bio: "" });
+    addPost(database, {
+      id: "pending-artist-media",
+      artist: "Pending Artist",
+      artistKey: "pending-artist",
+      review: "",
+      photosPublic: true,
+    });
+    database.prepare("INSERT INTO post_media (post_id,asset_id,position,created_at) VALUES (?,?,0,?)")
+      .run("pending-artist-media", "missing-pending-asset", 2_500);
+
+    const document = service(database).artistDocument({ artistKey: "pending-artist", at: NOW });
+
+    assert.equal(document.reviews.length, 0);
+    assert.equal(document.title, "Pending Artist music artist profile | Mshpit");
+    assert.doesNotMatch(`${document.title} ${document.description}`, /reviews|photos|rating/iu);
+    assert.equal(service(database).directoryDocument({
+      kind: "artists", page: 1, at: NOW, today: "2026-08-25",
+    }), null, "an unverified upload cannot admit an otherwise thin artist to the public directory");
+    const pendingShowKey = archiveShowKey({
+      artistIdentity: "pending-artist",
+      venueIdentity: "history",
+      date: "2026-08-20",
+    });
+    assert.equal(service(database).concertDocument({
+      showKey: pendingShowKey, at: NOW, today: "2026-08-25",
+    }), null, "an unverified upload and its rating cannot create a public concert page");
   } finally {
     database.close();
   }
@@ -1269,8 +1356,56 @@ test("provider-evidenced festivals expose cohesive visible and structured event 
     assert.match(html, /name="twitter:image:alt" content="Lollapalooza event image"/);
     assert.match(html, /Ticketmaster \/ promoter · <a href="https:\/\/www\.ticketmaster\.com\/event\/tm-festival-1"/);
 
+    database.prepare("UPDATE tour_dates SET event_end_date=date WHERE id=?").run("festival-event");
+    const sameDayDocument = documents.eventDocument({
+      id: "festival-event", today: "2026-08-25", at: NOW,
+    });
+    const sameDaySchema = sameDayDocument.jsonLd.find((node) => node["@type"] === "MusicEvent");
+    assert.equal(Object.hasOwn(sameDaySchema, "endDate"), false,
+      "a date-only same-day end must not precede an offset-aware start after normalization");
+
+    database.prepare("UPDATE tour_dates SET start_date_time=NULL,event_end_date=NULL WHERE id=?")
+      .run("festival-event");
+    const dateOnlyDocument = documents.eventDocument({
+      id: "festival-event", today: "2026-08-25", at: NOW,
+    });
+    const dateOnlySchema = dateOnlyDocument.jsonLd.find((node) => node["@type"] === "MusicEvent");
+    assert.equal(dateOnlySchema.startDate, "2026-09-01",
+      "a real event without a published time emits a date instead of an invented timestamp");
+
     database.prepare("UPDATE tour_dates SET music_qualified=0 WHERE id=?").run("festival-event");
     assert.equal(documents.eventDocument({ id: "festival-event", today: "2026-08-25", at: NOW }), null);
+  } finally {
+    database.close();
+  }
+});
+
+test("bounded member-authored ranges preserve their kind and end date in structured data", () => {
+  const database = createDatabase();
+  try {
+    addUser(database, "member-range", { name: "Range Member", handle: "range-member" });
+    database.prepare(`INSERT INTO tour_dates
+      (id,artist,venue,place,date,start_date_time,event_name,event_kind,music_qualified,
+        event_end_date,venue_address_line1,venue_city,venue_country_code,source,owner_id,release_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)`).run(
+      "member-festival", "Member Headliner", "Community Park", "Toronto, ON",
+      "2026-09-01", "2026-09-01T16:00:00-04:00", "Community Music Festival",
+      "festival", 0, "2026-09-26", "1 Music Way", "Toronto", "CA", "member", "member-range",
+    );
+    const documents = service(database);
+    const document = documents.eventDocument({
+      id: "member-festival", today: "2026-08-25", at: NOW,
+    });
+    const schema = document.jsonLd.find((node) => node["@type"] === "MusicEvent");
+    assert.equal(document.event.eventKind, "festival");
+    assert.equal(document.event.endDate, "2026-09-26");
+    assert.equal(schema.endDate, "2026-09-26");
+
+    database.prepare("UPDATE tour_dates SET event_end_date=? WHERE id=?")
+      .run("2026-10-17", "member-festival");
+    assert.equal(documents.eventDocument({
+      id: "member-festival", today: "2026-08-25", at: NOW,
+    }), null, "a member-authored festival spanning more than 45 days is not indexable");
   } finally {
     database.close();
   }
@@ -1938,8 +2073,8 @@ test("venue pages expose only verified capacity and coordinates with practical v
     });
     assert.match(schema.hasMap, /^https:\/\/www\.google\.com\/maps\/dir\//u);
     assert.equal(schema.mainEntityOfPage["@id"], "https://www.example.com/venue/scotiabank-arena#page");
-    assert.match(document.title, /concert venue guide/u);
-    assert.match(document.description, /listed capacity of 19,800/u);
+    assert.equal(document.title, "Scotiabank Arena venue guide: capacity, parking & transit | Mshpit");
+    assert.match(document.description, /Listed capacity: 19,800/u);
     assert.match(html, /Seating, parking and transport/u);
     assert.match(html, /19,800 listed capacity/u);
     assert.match(html, />Parking nearby</u);
@@ -2008,6 +2143,8 @@ test("venue pages show real public ratings and safely render only eligible recen
     const venueSchema = document.jsonLd.find((node) => node["@type"] === "MusicVenue");
 
     assert.deepEqual(document.venueReviewStats, { reviewCount: 1, ratingCount: 1, averageRating: 4.5 });
+    assert.equal(document.title, "Freeform Hall venue reviews & ratings | Mshpit");
+    assert.doesNotMatch(document.description, /upcoming|capacity|parking|transit/iu);
     assert.equal(document.venueReviews.length, 1);
     assert.deepEqual(document.venueReviews[0].photos, [verifiedUrl]);
     assert.equal(venueSchema.review.length, 1);
@@ -2190,9 +2327,11 @@ test("venues without verified photography render an honest venue-specific fallba
 
     assert.equal(document.image, null);
     assert.equal(document.imageProvenance, null);
+    assert.equal(document.title, "Uncovered Test Room music venue | Mshpit");
+    assert.equal(document.description, "Explore Uncovered Test Room on Mshpit. View available venue details.");
     assert.match(html, /class="venue-hero-fallback"/u);
     assert.match(html, />Uncovered Test Room<\/strong>/u);
-    assert.match(html, /Verified venue photo coming soon/u);
+    assert.doesNotMatch(html, /Verified venue photo coming soon/u);
     assert.equal(
       document.jsonLd.find((node) => node["@type"] === "MusicVenue").image,
       undefined,

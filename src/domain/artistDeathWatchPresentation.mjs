@@ -15,6 +15,15 @@ export function shouldPollArtistDeathWatch({ running = false, resourceStatus = "
   return running === true && resourceStatus === "ready";
 }
 
+export function artistDeathWatchCooldown(settings, at = Date.now()) {
+  const code = String(settings?.lastErrorCode || "");
+  const nextScanAt = Number(settings?.nextScanAt);
+  const valid = /^(?:wikidata|musicbrainz)_(?:timeout|network|rate_limited|unavailable|rejected|response)$/u.test(code)
+    && Number.isSafeInteger(nextScanAt) && nextScanAt >= 0 && nextScanAt <= 8_640_000_000_000_000
+    && Number.isFinite(at) && nextScanAt > at;
+  return { active: valid, nextScanAt: valid ? nextScanAt : null, remainingMs: valid ? nextScanAt - at : 0 };
+}
+
 export function artistDeathWatchProviderWarning(code) {
   const normalized = typeof code === "string" ? code.trim().toLowerCase() : "";
   if (!normalized) return "";

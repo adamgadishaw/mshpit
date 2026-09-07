@@ -4987,13 +4987,16 @@ test("a verified composer selection persists an exact MusicBrainz identity befor
   assert.equal(created.post.artistMbid, mbid);
 });
 
-test("cancelling public artist resolution aborts the outbound MusicBrainz request", async () => {
+test("cancelling public artist resolution aborts the outbound MusicBrainz request", { timeout: 5_000 }, async () => {
   const controller = new AbortController();
   const originalFetch = globalThis.fetch;
   let providerSignal = null;
+  let markStarted;
+  const started = new Promise((resolve) => { markStarted = resolve; });
   globalThis.fetch = async (_url, options = {}) => new Promise((_resolve, reject) => {
     providerSignal = options.signal;
     options.signal?.addEventListener("abort", () => reject(options.signal.reason), { once: true });
+    markStarted();
   });
 
   const pending = routes["GET /api/artists/resolve"]({
@@ -5002,7 +5005,7 @@ test("cancelling public artist resolution aborts the outbound MusicBrainz reques
     signal: controller.signal,
   });
   try {
-    await eventually(() => providerSignal, Boolean);
+    await started; // The shared provider cooldown can defer request dispatch.
     controller.abort();
     await assert.rejects(pending, (error) => error?.name === "AbortError");
     assert.equal(providerSignal.aborted, true);

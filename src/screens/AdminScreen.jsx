@@ -11,6 +11,7 @@ import ModerationConsole from "../components/moderation/ModerationConsole";
 import SuggestionInbox from "../components/moderation/SuggestionInbox";
 import ArtistMemorialConsole from "../components/moderation/ArtistMemorialConsole";
 import ArtistDeathWatchPanel from "../components/moderation/ArtistDeathWatchPanel";
+import CityPagesEditor from "../features/cities/CityPagesEditor";
 import { normalizeAdminMemberQuery } from "../domain/moderationConsole.mjs";
 import { staffScopeFor } from "../domain/staffReadCoordinator.mjs";
 import { readAdminHealth } from "../features/admin/services/adminHealthApi.mjs";
@@ -32,7 +33,7 @@ import useScopedRefresh from "../hooks/useScopedRefresh";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
 
 const ADMIN_ONLY_TABS = new Set([
-  "overview", "analytics", "catalog", "email", "badges", "suggestions", "memorials", "requests",
+  "overview", "analytics", "catalog", "email", "cities", "badges", "suggestions", "memorials", "requests",
 ]);
 
 // Privacy-bounded first-party product analytics for operator diagnosis. Public
@@ -680,6 +681,7 @@ export default function AdminScreen({ onClose }) {
     { key: "content", label: "Content", icon: "feed" },
     { key: "catalog", label: "Catalog", icon: "music", admin: true },
     { key: "email", label: "Email", icon: "feed", admin: true },
+    { key: "cities", label: "City pages", icon: "map", admin: true },
     { key: "badges", label: "Badges", icon: "star", admin: true },
     { key: "suggestions", label: "Suggestions", icon: "comment", admin: true },
     { key: "artist_alerts", label: "Artist alerts", icon: "dove", badge: Number(deathWatch.data?.counts?.pending) || undefined },
@@ -1083,6 +1085,7 @@ export default function AdminScreen({ onClose }) {
 
         {/* ---- EMAIL ---- */}
         {activeTab === "email" && <EmailConsole />}
+        {activeTab === "cities" && iAmAdmin && <CityPagesEditor key={`cities:${session?.id}:${session?.role}`} accountId={session?.id} />}
 
         {activeTab === "badges" && <BadgeConsole />}
 

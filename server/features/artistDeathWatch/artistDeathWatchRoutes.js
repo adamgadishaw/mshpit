@@ -1,5 +1,6 @@
 import { createArtistDeathWatchRepository } from "./artistDeathWatchRepository.js";
 import { createArtistDeathWatchService } from "./artistDeathWatchService.js";
+import { isDeathWatchProviderFailure } from "./artistDeathWatchRetry.js";
 
 const HOUR_MS = 60 * 60 * 1000;
 const noStore = (ctx) => ctx.setHeader?.("Cache-Control", "no-store");
@@ -139,6 +140,12 @@ export function artistDeathWatchRoutes({
       noStore(ctx);
       rateLimit(ctx, "artist-death-watch-manual", 4, HOUR_MS);
       const scanAt = now();
+      const snapshot = snapshotWithBackgroundState();
+      if (!snapshot.running && isDeathWatchProviderFailure(snapshot.settings?.lastErrorCode)
+        && Number(snapshot.settings?.nextScanAt)>scanAt) {
+        return {accepted:false,started:false,skipped:true,reason:"provider_cooldown",
+          retryAt:snapshot.settings.nextScanAt,...snapshot};
+      }
       const started = startManualScan(scanAt);
       return {
         accepted: true,

@@ -111,6 +111,28 @@ test("an MBID-only catalog artist becomes a pending candidate only after both so
   assert.equal(candidate.status, "pending", "provider checks never auto-publish a memorial");
 });
 
+test("MusicBrainz outages preserve confirmed rows and durable cursor while repeated failures back off across restarts",async()=>{
+  const artists=[{artist_key:"alpha",artist_name:"Alpha",artist_mbid:mbid(901)},
+    {artist_key:"beta",artist_name:"Beta",artist_mbid:mbid(902)}];
+  const repository=fakeRepository(artists);let fail=true,requests=0;
+  const makeService=()=>createArtistDeathWatchService({repository,sleep:async()=>{},recentWikidataReader:async()=>[],
+    wikidataReader:async(rows)=>new Map(rows.map((row)=>[row.artistKey,{...row,wikidataId:row.artistKey==="alpha"?"Q901":"Q902",deathDate:"2026-08-29"}])),
+    musicBrainzReader:async(signal)=>{requests++;if(fail && signal.artistKey==="beta")throw providerFailure("musicbrainz_unavailable");return {...signal,artistType:"Person"};}});
+  let service=makeService();
+  await assert.rejects(service.scan({at:AT,force:true}),/musicbrainz_unavailable/);
+  assert.equal(repository.candidates.size,1);assert.equal(repository.readSettings().cursor_artist_key,"alpha");
+  assert.equal(repository.readSettings().next_scan_at,AT+ARTIST_DEATH_WATCH_INTERVAL_MS);
+  const before=requests;
+  service=makeService();
+  assert.equal((await service.scan({at:AT+1000,force:true})).reason,"provider_cooldown");assert.equal(requests,before);
+  await assert.rejects(service.scan({at:AT+ARTIST_DEATH_WATCH_INTERVAL_MS,force:true}),/musicbrainz_unavailable/);
+  assert.equal(repository.readSettings().next_scan_at,AT+3*ARTIST_DEATH_WATCH_INTERVAL_MS);
+  fail=false;
+  const recovered=await service.scan({at:AT+3*ARTIST_DEATH_WATCH_INTERVAL_MS});
+  assert.equal(recovered.settings.lastErrorCode,null);assert.equal(recovered.settings.nextScanAt,AT+4*ARTIST_DEATH_WATCH_INTERVAL_MS);
+  assert.equal(repository.candidates.size,2);assert.equal(recovered.settings.lastSuccessAt,AT+3*ARTIST_DEATH_WATCH_INTERVAL_MS);
+});
+
 test("a recent signal with no unique local MBID match fails closed before MusicBrainz", async () => {
   const repository = fakeRepository([]);
   let confirmations = 0;

@@ -6,8 +6,10 @@ import {
   currentOrUpcomingPublicMusicEventSql,
   hasCompleteRichMusicEventRecord,
   hasSubstantivePublicText,
+  installPublicMusicEventPolicySql,
   isCurrentOrUpcomingPublicMusicEvent,
   isIndexableMusicEventRecord,
+  publicMusicEventTitleViolations,
   isPublicMusicEventCandidate,
   isStrictCalendarDate,
   isStrictIsoDateTime,
@@ -55,6 +57,40 @@ test("SEO event policy rejects ticket products and non-concert event kinds", () 
   assert.equal(isIndexableMusicEventRecord({ ...concert, event_name: "Full Season Pass" }), false);
   assert.equal(isIndexableMusicEventRecord({ ...concert, event_name: "Concert Package Event" }), false);
   assert.equal(isIndexableMusicEventRecord({ ...concert, event_name: "Bundle" }), false);
+  assert.equal(isIndexableMusicEventRecord({ ...concert, event_name: "Big Reveal Bash Bundle" }), false);
+  assert.equal(isIndexableMusicEventRecord({ ...concert, event_name: "Koto Fall Introductory Class" }), false);
+  assert.equal(isIndexableMusicEventRecord({ ...concert, event_name: "Artist VIP Upgrade" }), false);
+  assert.equal(isIndexableMusicEventRecord({ ...concert, event_name: "Artist Hospitality Package" }), false);
+  assert.equal(isIndexableMusicEventRecord({ ...concert, event_name: "O.A.R. - Party Box Rental" }), false);
+  assert.equal(isIndexableMusicEventRecord({ ...concert, event_name: "Weekend Wristband For All Venues & Events" }), false);
+  assert.equal(isIndexableMusicEventRecord({ ...concert, event_name: "Plantasia TWO DAY PASS" }), false);
+  assert.equal(isIndexableMusicEventRecord({ ...concert, event_name: "5SOS - BITE THE APPLE UPGRADE (boleto de evento no incluido)" }), false);
+  assert.equal(isIndexableMusicEventRecord({ ...concert, event_name: "PACKAGE VIP MELANIE MARTINEZ" }), false);
+  assert.equal(isIndexableMusicEventRecord({ ...concert, event_name: "Melanie Martinez – HADES: THE SACRIFICE | VIP" }), false);
+  assert.equal(isIndexableMusicEventRecord({ ...concert, event_name: "Evanescence | Box seat in the Ticketmaster Suite" }), false);
+  assert.equal(isIndexableMusicEventRecord({ ...concert, event_name: "Bob Dylan - Official VIP Ticket Experiences" }), false);
+  assert.equal(isIndexableMusicEventRecord({ ...concert, event_name: "2026 Formula 1 MSC Cruises USGP - Friday Admission" }), false);
+  assert.equal(isIndexableMusicEventRecord({ ...concert, event_name: "Lexus Melbourne Cup Day - General Admission" }), false);
+  assert.equal(isIndexableMusicEventRecord({ ...concert, event_name: "Evento Teste - 2025" }), false);
+  assert.equal(isIndexableMusicEventRecord({ ...concert, event_name: "Niall Horan: Dinner Party Live On Tour" }), true);
+  assert.equal(isIndexableMusicEventRecord({ ...concert, event_name: "Official Electric Island Afterparty" }), true);
+  assert.equal(isIndexableMusicEventRecord({ ...concert, event_name: "The Pass Live" }), true);
+  assert.equal(isIndexableMusicEventRecord({ ...concert, event_name: "Class of 2026 Reunion Concert" }), true);
+  assert.equal(isIndexableMusicEventRecord({ ...concert, event_name: "The Package Tour" }), true);
+  assert.equal(isIndexableMusicEventRecord({ ...concert, event_name: "Lessons in Love Tour" }), true,
+    "a legitimate tour title containing Lessons is not mistaken for an educational product");
+  assert.equal(isIndexableMusicEventRecord({ ...concert, event_name: "Formula 1 Grand Prix Concert" }), true,
+    "a concert named for Formula 1 is not mistaken for sports admission");
+  assert.equal(isIndexableMusicEventRecord({ ...concert, event_name: "The Workshop Live" }), true,
+    "an artist or concert title containing Workshop is not treated as a class");
+  assert.equal(isIndexableMusicEventRecord({ ...concert, event_name: "Seminar Tour" }), true,
+    "a tour title beginning with Seminar is not treated as an educational product");
+  assert.equal(isIndexableMusicEventRecord({ ...concert, event_name: "Workshop: Beginner guitar" }), false,
+    "an explicit workshop product heading remains excluded");
+  assert.equal(isIndexableMusicEventRecord({ ...concert, event_name: "Piano Lessons for Beginners" }), false,
+    "an explicit music-instruction phrase remains excluded");
+  assert.deepEqual(publicMusicEventTitleViolations("O.A.R. - Party Box Rental"), ["VIP or access-only ticket product"]);
+  assert.deepEqual(publicMusicEventTitleViolations("Premium Experience"), ["package, bundle, or add-on product"]);
   assert.equal(isIndexableMusicEventRecord({ ...concert, event_name: "The Eras Tour Series Finale" }), true,
     "ordinary artist event names containing series are not rejected");
   assert.equal(isIndexableMusicEventRecord({ ...concert, event_kind: "rodeo" }), false);
@@ -82,7 +118,13 @@ test("SEO event policy rejects ticket products and non-concert event kinds", () 
   }), false, "an explicit provider fair may not span more than 45 elapsed days");
   assert.equal(isIndexableMusicEventRecord({
     ...explicitFestival, owner_id: "member-1", event_end_date: "2027-09-01",
-  }), true, "member-authored long ranges are not subject to provider caps");
+  }), false, "member-authored festival ranges may not span more than 45 elapsed days");
+  assert.equal(isIndexableMusicEventRecord({
+    ...concert, owner_id: "member-1", date: "2026-09-01", event_end_date: "2026-09-22",
+  }), true, "member-authored ordinary events may span up to 21 elapsed days");
+  assert.equal(isIndexableMusicEventRecord({
+    ...concert, owner_id: "member-1", date: "2026-09-01", event_end_date: "2026-09-23",
+  }), false, "member-authored ordinary events may not span more than 21 elapsed days");
   assert.equal(isIndexableMusicEventRecord({ ...festival, billed_artists: "[]" }), false,
     "a provider multi-day product cannot become an event page without a billed performer");
   assert.equal(isIndexableMusicEventRecord({
@@ -91,6 +133,22 @@ test("SEO event policy rejects ticket products and non-concert event kinds", () 
   }), false, "provider objects cannot masquerade as public billed-artist strings");
   assert.equal(isIndexableMusicEventRecord({ ...concert, artist: "Pã\u009cSsy" }), false,
     "malformed provider text is withheld rather than published to search");
+});
+
+test("cached SQL event policy stays input-sensitive across repeated reads", () => {
+  const database = new DatabaseSync(":memory:");
+  try {
+    installPublicMusicEventPolicySql(database);
+    installPublicMusicEventPolicySql(database);
+    const check = database.prepare("SELECT pit_indexable_music_event(?,?,?,?,?,?,?,?,?,?) AS eligible");
+    const args = [null, 1, "concert", "The Beaches at History", "The Beaches", "History", null, "[]", "2026-09-20", null];
+    assert.equal(check.get(...args).eligible, 1);
+    assert.equal(check.get(...args).eligible, 1);
+    assert.equal(check.get(...args.slice(0, 3), "The Beaches VIP Upgrade", ...args.slice(4)).eligible, 0);
+    assert.equal(check.get(...args).eligible, 1);
+  } finally {
+    database.close();
+  }
 });
 
 test("SEO event lifecycle ignores corrupt ranges on ordinary concerts", () => {
@@ -129,10 +187,16 @@ test("SEO event lifecycle ignores corrupt ranges on ordinary concerts", () => {
     owner_id: "member-1",
     date: "2026-01-01",
     event_end_date: "2026-12-31",
-  }, "2026-09-05"), true, "member-authored long ranges remain current through their end date");
+  }, "2026-09-05"), false, "member-authored overlong ranges are not current or indexable");
+  assert.equal(isCurrentOrUpcomingPublicMusicEvent({
+    ...base,
+    owner_id: "member-1",
+    date: "2026-09-01",
+    event_end_date: "2026-09-10",
+  }, "2026-09-05"), true, "a bounded member-authored range remains current through its end date");
 });
 
-test("SEO currentness SQL applies the same provider range bounds and unlimited member ranges", () => {
+test("SEO currentness SQL applies provider and member range bounds", () => {
   const database = new DatabaseSync(":memory:");
   try {
     database.exec("CREATE TABLE tour_dates (id TEXT PRIMARY KEY,owner_id TEXT,event_kind TEXT,date TEXT,event_end_date TEXT,music_evidence TEXT)");
@@ -141,11 +205,13 @@ test("SEO currentness SQL applies the same provider range bounds and unlimited m
     insert.run("festival-46", null, "festival", "2026-09-10", "2026-10-26", "ticketmaster:classification:music");
     insert.run("fair-46", null, "fair", "2026-09-10", "2026-10-26", "ticketmaster:classification:music");
     insert.run("member-long", "member-1", "concert", "2026-01-01", "2026-12-31", "");
+    insert.run("member-bounded", "member-1", "concert", "2026-09-01", "2026-09-10", "");
+    insert.run("member-festival-25", "member-1", "festival", "2026-09-01", "2026-09-26", "");
     insert.run("provider-concert-corrupt", null, "concert", "2026-01-01", "2026-12-31", "ticketmaster:classification:music");
     const ids = database.prepare(`SELECT id FROM tour_dates td
       WHERE ${currentOrUpcomingPublicMusicEventSql("td", "?1")} ORDER BY id`)
       .all("2026-09-05").map(({ id }) => id);
-    assert.deepEqual(ids, ["festival-25", "member-long"]);
+    assert.deepEqual(ids, ["festival-25", "member-bounded", "member-festival-25"]);
   } finally {
     database.close();
   }
@@ -162,6 +228,8 @@ test("rich music-event evidence requires the same identity, time, and address fi
     venue_country_code: "CA",
   };
   assert.equal(hasCompleteRichMusicEventRecord(complete), true);
+  assert.equal(hasCompleteRichMusicEventRecord({ ...complete, start_date_time: null, date: "2026-09-16" }), true,
+    "Google-valid date-only events remain complete when no start time is published");
   for (const field of ["id", "artist", "venue", "start_date_time", "venue_address_line1", "venue_city", "venue_country_code"]) {
     assert.equal(hasCompleteRichMusicEventRecord({ ...complete, [field]: null }), false, field);
   }

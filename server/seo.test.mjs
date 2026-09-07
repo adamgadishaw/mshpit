@@ -398,6 +398,14 @@ test("thin public entities keep unique SSR at 200/noindex while real event evide
     "seo_thin_public_event", `${thinArtist} Live`, thinArtist, thinVenue, "Toronto, Canada",
     thinDate, "test", Date.now(),
   );
+  db.prepare(`INSERT INTO tour_dates
+    (id,provider_event_id,event_name,artist,artist_key,venue,place,date,ticket_url,event_status,
+      source,music_qualified,updated_at,release_at,provider_active)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,1)`).run(
+    "seo_ticket_only_public_event", "tm-seo-ticket-only", `${thinArtist} Ticketed Live`,
+    thinArtist, normName(thinArtist), "SEO Ticket Only Hall", "Toronto, Canada", "2036-01-14",
+    "https://www.ticketmaster.ca/event/seo-ticket-only", "onsale", "ticketmaster", 1, Date.now() + 1,
+  );
 
   const removedAuthor = addUser("u_seo_thin_removed", "seothinremoved");
   addPost("seo_thin_removed_review", removedAuthor.id, {
@@ -438,6 +446,14 @@ test("thin public entities keep unique SSR at 200/noindex while real event evide
   assert.doesNotMatch(thinHtml, /content="index,follow/);
   assert.equal([...thinHtml.matchAll(/rel="canonical"/g)].length, 1);
   assert.match(thinHtml, /rel="canonical" href="https:\/\/www\.example\.com\/event\/seo_thin_public_event"/);
+
+  const ticketOnlyPath = eventPath("seo_ticket_only_public_event");
+  const ticketOnlyPlan = seoHttpPlan(ticketOnlyPath);
+  assert.equal(ticketOnlyPlan.type, "document");
+  assert.equal(ticketOnlyPlan.status, 200);
+  assert.equal(ticketOnlyPlan.document.event.ticketUrl, "https://www.ticketmaster.ca/event/seo-ticket-only");
+  assert.equal(ticketOnlyPlan.indexable, false,
+    "an on-sale provider ticket is useful on the page but cannot make a thin event indexable");
 
   const catalogThinArtist = "SEO Catalog Thin Artist";
   db.prepare(`INSERT OR REPLACE INTO artists
@@ -501,7 +517,7 @@ test("thin public entities keep unique SSR at 200/noindex while real event evide
   assert.match(eventSitemap, /\/event\/seo_fan_evidence_event/);
   assert.doesNotMatch(
     eventSitemap,
-    /seo_thin_public_event|seo_restricted_owner_event|seo_inactive_provider_event/,
+    /seo_thin_public_event|seo_ticket_only_public_event|seo_restricted_owner_event|seo_inactive_provider_event/,
   );
 });
 

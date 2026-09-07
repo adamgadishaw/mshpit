@@ -27,6 +27,7 @@ import { createUnifiedEventSearchIndex, searchUnifiedEventIndex } from "../domai
 import { openTicketLink } from "../lib/ticketLinks";
 import { recordGuestSearch } from "../features/analytics/services/guestSearchAnalyticsApi.mjs";
 import { ENABLE_DEMO_DATA, ENABLE_MUSIC_PLAYER } from "../config/runtime.mjs";
+import CityDiscoveryTiles from "../features/cities/CityDiscoveryTiles";
 
 const EMPTY_LOOKUP_STATE = Object.freeze({ busy: false, message: "" });
 const EMPTY_ROWS = Object.freeze([]);
@@ -162,7 +163,7 @@ function searchResultBucket(count) {
   return "over_twenty";
 }
 
-export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpenFanClub, onOpenProfile, onPlay, onAddToPlaylist }) {
+export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenVenue, onOpenFanClub, onOpenProfile, onPlay, onAddToPlaylist }) {
   const { tourDates, refreshTourDates, searchVenues, artistsAlphabetical, fanClubsDirectory, fanClubDirectoryStatus, loadFanClubsDirectory, track,
     session, blockedIds, isFollowing, follow, unfollow, searchPeople, searchArtistsApi, resolveArtist,
     recentSearches, addRecentSearch, removeRecentSearch, clearRecentSearches, searchSongsApi } = useStore();
@@ -617,6 +618,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
         testID="search-refresh"
       >
       <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.list} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+        {(activeCategory === "all" || activeCategory === "venues") && <CityDiscoveryTiles query={settledQuery} limit={5} onOpenCity={onOpenCity} />}
         {surfaceRefreshError ? (
           <Text style={styles.surfaceRefreshError} accessibilityRole="alert" accessibilityLiveRegion="assertive">
             Some search sources could not refresh. Your current results are still here.

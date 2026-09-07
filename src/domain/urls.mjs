@@ -29,7 +29,7 @@ export const RESERVED_SLUGS = new Set([
   // Public route prefixes must be reserved as ROOT slugs too, or a band
   // called "Artist" builds "/artist", which parsePath reads as a prefix with no
   // value and rejects. That put a dead link in the sitemap.
-  "artist", "artists", "venue", "u", "post", "show", "event", "events", "concert", "concerts",
+  "artist", "artists", "venue", "u", "post", "show", "event", "events", "concert", "concerts", "city", "cities",
   "about", "admin", "api", "assets", "auth", "badges", "calendar", "clips",
   "contact", "discover", "download", "edit", "explore", "favicon.ico", "feed",
   "help", "home", "inbox", "legal", "login", "logout", "menu", "messages",
@@ -127,6 +127,18 @@ function cityCollectionPath(kind, value, page = 1) {
 }
 export const cityVenuesPath = (value, page = 1) => cityCollectionPath("venues", value, page);
 export const cityConcertsPath = (value, page = 1) => cityCollectionPath("concerts", value, page);
+export function cityPath(value) {
+  const identity = structuredCityParts({ ...value, city: value?.citySlug || value?.city });
+  return identity ? `/city/${identity.countryCode}/${identity.citySlug}` : null;
+}
+export function parseCityPath(pathname) {
+  const parts = String(pathname || "").split(/[?#]/)[0].split("/").filter(Boolean);
+  if (parts.length !== 3 || parts[0].toLowerCase() !== "city") return null;
+  const countryCode = parts[1].toLowerCase();
+  const citySlug = parts[2].toLowerCase();
+  return /^[a-z]{2}$/.test(countryCode) && citySlug && slugify(citySlug) === citySlug
+    ? { countryCode, citySlug } : null;
+}
 export function artistConcertsPath(artistOrSlug, page = 1) {
   const artist = artistOrSlug && typeof artistOrSlug === "object" ? artistOrSlug : null;
   const slug = slugify(artist?.publicSlug || artist?.public_slug || artistOrSlug), cleanPage = positivePage(page);

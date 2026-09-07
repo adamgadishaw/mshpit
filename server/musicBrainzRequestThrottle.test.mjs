@@ -1,7 +1,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { spawnSync } from "node:child_process";
 
 import { createMusicBrainzRequestThrottle } from "./musicBrainzRequestThrottle.js";
+
+test("a CLI process stays alive until its awaited queued MusicBrainz request completes", () => {
+  const moduleUrl = new URL("./musicBrainzRequestThrottle.js", import.meta.url).href;
+  const result = spawnSync(process.execPath, ["--input-type=module", "-e", `
+    import { createMusicBrainzRequestThrottle } from ${JSON.stringify(moduleUrl)};
+    const run = createMusicBrainzRequestThrottle();
+    await run(async () => {});
+    await run(async () => { process.stdout.write("second request completed"); });
+  `], { encoding: "utf8", timeout: 10_000 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "second request completed");
+});
 
 test("all callers share at least one second between MusicBrainz request starts", async () => {
   let now = 10_000;

@@ -160,6 +160,7 @@ import { suggestionRoutes } from "./features/suggestions/suggestionRoutes.js";
 import { createPeopleSuggestionService } from "./features/people/peopleSuggestionService.js";
 import { accountMuteRoutes } from "./features/accountMute/accountMuteRoutes.js";
 import { accountOnboardingRoutes } from "./features/accountOnboarding/accountOnboardingRoutes.js";
+import { cityGuideRoutes } from "./features/cities/cityGuideRoutes.js";
 import { peopleSuggestionRoutes } from "./features/people/peopleSuggestionRoutes.js";
 import { createArtistRecommendationService } from "./features/artistRecommendations/artistRecommendationService.js";
 import { artistRecommendationRoutes } from "./features/artistRecommendations/artistRecommendationRoutes.js";
@@ -175,6 +176,7 @@ import { attachPostImpressionStats } from "./feedImpressions.js";
 import { hasTrustedLandingImage, landingTotals, publicLandingCommunityMedia } from "./landingMedia.js";
 import { createSuccessfulReadinessCache } from "./healthAvailability.js";
 import { PROVIDER_JSON_LIMITS, readBoundedJsonResponse } from "./boundedJsonResponse.js";
+import { runMusicBrainzRequest } from "./musicBrainzRequestThrottle.js";
 import { assertSafeAuthoredFields, assertSafeAuthoredText } from "./contentSafety.js";
 import { canonicalProfileExtras } from "./profileExtras.js";
 import { verifiedHttpsUrl } from "../src/domain/venuePhotoProvenance.mjs";
@@ -2937,49 +2939,51 @@ function musicBrainzArtistProjection(candidate) {
 }
 
 async function readMusicBrainzArtistCandidates(name, { signal } = {}) {
-  const slash = String.fromCharCode(92);
-  const escapedName = name.split(slash).join(slash + slash).split('"').join(slash + '"');
-  const query = 'artist:"' + escapedName + '"';
-  const url = "https://musicbrainz.org/ws/2/artist?query="
-    + encodeURIComponent(query)
-    + "&fmt=json&limit=5";
-  let response;
-  let requestSignal;
-  try {
-    const timeoutSignal = AbortSignal.timeout(MUSICBRAINZ_ARTIST_LOOKUP_TIMEOUT_MS);
-    requestSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
-    response = await fetch(url, {
-      headers: { "User-Agent": "Pit/1.0 (https://mshpit.com)", Accept: "application/json" },
-      signal: requestSignal,
-    });
-  } catch (error) {
-    if (signal?.aborted) throw signal.reason || error;
-    throw new ProviderError("MusicBrainz", 502, "MusicBrainz could not be reached.", {
-      code: "network",
-      cause: error,
-    });
-  }
-  if (!response.ok) {
-    throw new ProviderError("MusicBrainz", response.status, "MusicBrainz did not return a usable response.", {
-      code: response.status === 429 ? "rate_limited" : "http_error",
-    });
-  }
-  let payload;
-  try {
-    payload = await readBoundedJsonResponse(response, {
-      maxBytes: PROVIDER_JSON_LIMITS.musicBrainz,
-      signal: requestSignal,
-    });
-  } catch (error) {
-    if (signal?.aborted) throw signal.reason || error;
-    throw new ProviderError("MusicBrainz", 502, "MusicBrainz returned unreadable data.", {
-      code: "invalid_json",
-      cause: error,
-    });
-  }
-  return (Array.isArray(payload?.artists) ? payload.artists : [])
-    .map(musicBrainzArtistProjection)
-    .filter(Boolean);
+  return runMusicBrainzRequest(async () => {
+    const slash = String.fromCharCode(92);
+    const escapedName = name.split(slash).join(slash + slash).split('"').join(slash + '"');
+    const query = 'artist:"' + escapedName + '"';
+    const url = "https://musicbrainz.org/ws/2/artist?query="
+      + encodeURIComponent(query)
+      + "&fmt=json&limit=5";
+    let response;
+    let requestSignal;
+    try {
+      const timeoutSignal = AbortSignal.timeout(MUSICBRAINZ_ARTIST_LOOKUP_TIMEOUT_MS);
+      requestSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+      response = await fetch(url, {
+        headers: { "User-Agent": "Pit/1.0 (https://mshpit.com)", Accept: "application/json" },
+        signal: requestSignal,
+      });
+    } catch (error) {
+      if (signal?.aborted) throw signal.reason || error;
+      throw new ProviderError("MusicBrainz", 502, "MusicBrainz could not be reached.", {
+        code: "network",
+        cause: error,
+      });
+    }
+    if (!response.ok) {
+      throw new ProviderError("MusicBrainz", response.status, "MusicBrainz did not return a usable response.", {
+        code: response.status === 429 ? "rate_limited" : "http_error",
+      });
+    }
+    let payload;
+    try {
+      payload = await readBoundedJsonResponse(response, {
+        maxBytes: PROVIDER_JSON_LIMITS.musicBrainz,
+        signal: requestSignal,
+      });
+    } catch (error) {
+      if (signal?.aborted) throw signal.reason || error;
+      throw new ProviderError("MusicBrainz", 502, "MusicBrainz returned unreadable data.", {
+        code: "invalid_json",
+        cause: error,
+      });
+    }
+    return (Array.isArray(payload?.artists) ? payload.artists : [])
+      .map(musicBrainzArtistProjection)
+      .filter(Boolean);
+  }, { signal });
 }
 
 async function resolveFromMusicBrainz(name, { requireExactIdentity = false, signal } = {}) {
@@ -3782,6 +3786,7 @@ export const routes = {
     rateLimit: limit,
     requireUser,
   }),
+  ...cityGuideRoutes({ database: db, ApiError, requireAdmin, rateLimit: limit, now }),
   ...artistRecommendationRoutes({
     service: artistRecommendationService,
     requireUser,

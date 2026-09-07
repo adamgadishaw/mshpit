@@ -168,6 +168,7 @@ export function normalizeDiscoverOverview(payload, requestedSource = "popularity
     distinctGenres: optionalCount(payload?.distinctGenres),
     catalogTotal: optionalCount(payload?.catalogTotal),
     memberTotal: optionalCount(payload?.memberTotal),
+    eventCoverage: normalizeDiscoverEventCoverage(payload?.eventCoverage),
     countries: (Array.isArray(payload?.countries) ? payload.countries : [])
       .filter((row) => text(row?.country) && text(row.country) !== "Worldwide")
       .map((row) => ({ country: text(row.country), count: finiteCount(row.count) })),
@@ -192,11 +193,27 @@ export function orderDiscoverCountries(countries, homeCountry, limit = 12) {
   }).slice(0, Math.max(1, limit));
 }
 
+export function normalizeDiscoverEventCoverage(value) {
+  if (value?.status !== "ready" || value?.basis !== "public-catalog" || optionalCount(value?.total) == null) {
+    return { status: "unknown", total: null, venueTotal: null, countries: [] };
+  }
+  return {
+    status: "ready",
+    total: optionalCount(value.total),
+    venueTotal: optionalCount(value.venueTotal),
+    countries: (Array.isArray(value.countries) ? value.countries : []).slice(0, 300)
+      .filter((row) => text(row?.country) && optionalCount(row?.count) != null)
+      .map((row) => ({ country: text(row.country).slice(0, 80), count: optionalCount(row.count), venueCount: optionalCount(row.venueCount) })),
+  };
+}
+
 export function discoverNationOptions(facets, {
   homeCountry = "",
   selectedRegion = "Worldwide",
   supportedCountries = [],
   limit = 12,
+  complete = false,
+  total = null,
 } = {}) {
   const source = Array.isArray(facets) ? facets : [];
   const available = [...source];
@@ -206,18 +223,18 @@ export function discoverNationOptions(facets, {
     const identity = discoverCountryIdentity(label);
     if (!label || !identity || identity === "worldwide" || known.has(identity)) continue;
     known.add(identity);
-    available.push({ country: label, count: 0 });
+    available.push({ country: label, count: complete ? 0 : null });
   }
   const selectedIdentity = discoverCountryIdentity(selectedRegion);
   const selected = available.find((row) => discoverCountryIdentity(row?.country) === selectedIdentity);
   const pinned = selectedIdentity && selectedIdentity !== "worldwide"
-    ? [selected || { country: text(selectedRegion) || "Worldwide", count: 0 }, ...available.filter((row) => (
+    ? [selected || { country: text(selectedRegion) || "Worldwide", count: complete ? 0 : null }, ...available.filter((row) => (
       discoverCountryIdentity(row?.country) !== selectedIdentity
     ))]
     : available;
-  const total = source.reduce((sum, row) => sum + finiteCount(row?.count), 0);
+  const worldwideCount = complete ? optionalCount(total) ?? source.reduce((sum, row) => sum + finiteCount(row?.count), 0) : null;
   return orderDiscoverCountries(pinned, homeCountry, limit).map((row) => (
-    row.country === "Worldwide" ? { ...row, count: total } : row
+    row.country === "Worldwide" ? { ...row, count: worldwideCount } : row
   ));
 }
 

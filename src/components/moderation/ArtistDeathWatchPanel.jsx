@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Linking, Pressable, StyleSheet, Text, View } from "react-native";
 import Button from "../Button";
 import Icon from "../Icon";
@@ -6,16 +6,19 @@ import { colors, displayFont, focusRing, mono, radius, shadow, space } from "../
 import {
   ARTIST_DEATH_WATCH_FILTERS,
   artistDeathWatchEmptyMessage,
+  artistDeathWatchCooldown,
   artistDeathWatchProviderWarning,
   normalizeArtistDeathWatchFilter,
 } from "../../domain/artistDeathWatchPresentation.mjs";
 
-const when = (value) => value != null && Number.isFinite(Number(value))
+const when = (value) => value != null && Number.isSafeInteger(Number(value))
+  && Number(value) >= 0 && Number(value) <= 8_640_000_000_000_000
   ? new Date(Number(value)).toLocaleString()
   : "Not yet";
 
 export default function ArtistDeathWatchPanel({ watch, isAdmin = false }) {
   const [evidenceError, setEvidenceError] = useState("");
+  const [clock, setClock] = useState(Date.now);
   const data = watch?.data || {};
   const pending = Number(data.counts?.pending) || 0;
   const dismissed = Number(data.counts?.dismissed) || 0;
@@ -23,6 +26,17 @@ export default function ArtistDeathWatchPanel({ watch, isAdmin = false }) {
   const counts = { pending, dismissed, memorialized };
   const status = normalizeArtistDeathWatchFilter(watch?.status);
   const running = data.running === true;
+  const cooldown = artistDeathWatchCooldown(data.settings, clock);
+  const reload = watch?.reload;
+  useEffect(() => {
+    if (!cooldown.active) return undefined;
+    const timer = setTimeout(() => {
+      const current = Date.now();
+      setClock(current);
+      if (current >= cooldown.nextScanAt) reload?.();
+    }, Math.min(60_000, cooldown.remainingMs + 1));
+    return () => clearTimeout(timer);
+  }, [clock, cooldown.active, cooldown.nextScanAt, cooldown.remainingMs, reload]);
   const error = evidenceError || watch?.error?.userMessage || watch?.error?.message || "";
   const providerWarning = running ? "" : artistDeathWatchProviderWarning(data.settings?.lastErrorCode);
   const eligibleArtists = Number(data.eligibleCount ?? data.eligibleArtists) || 0;
@@ -48,7 +62,7 @@ export default function ArtistDeathWatchPanel({ watch, isAdmin = false }) {
         </View>
         <View style={styles.actions}>
           <Button title="Refresh" variant="secondary" small loading={watch?.loading} onPress={watch?.reload} />
-          {isAdmin ? <Button title={running ? "Checking" : "Check now"} variant="secondary" small icon="search" loading={running} disabled={watch?.loading || running} onPress={watch?.runNow} /> : null}
+          {isAdmin ? <Button title={running ? "Checking" : "Check now"} variant="secondary" small icon="search" loading={running} disabled={watch?.loading || running || cooldown.active} onPress={watch?.runNow} /> : null}
         </View>
       </View>
 
@@ -101,6 +115,7 @@ export default function ArtistDeathWatchPanel({ watch, isAdmin = false }) {
         <View style={styles.providerWarning}>
           <Text style={styles.providerWarningLabel}>LAST SOURCE WARNING</Text>
           <Text accessibilityRole="alert" style={styles.warning}>{providerWarning}</Text>
+          {cooldown.active ? <Text accessibilityLiveRegion="polite" style={styles.detail}>Next check: {when(cooldown.nextScanAt)}. Refresh is still available.</Text> : null}
         </View>
       ) : null}
       {error ? <Text accessibilityRole="alert" style={styles.error}>{error}</Text> : null}

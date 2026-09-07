@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useContext, useMemo, useState } from "react";
 import { View, Text, StyleSheet, Pressable, Alert, Linking, Platform } from "react-native";
 import { Image as ExpoImage } from "expo-image";
 import { colors, displayFont, font, mono, radius, shadow, roleColor, space } from "../theme";
@@ -21,7 +21,9 @@ import { normalizeTaggedPeople } from "../domain/postFriendTags.mjs";
 import { ENABLE_MUSIC_PLAYER } from "../config/runtime.mjs";
 import useReducedMotion from "../hooks/useReducedMotion";
 import { PublicPressableLink, PublicTextLink } from "./PublicWebLinks";
-import { artistPath, profilePath, venuePath } from "../domain/urls.mjs";
+import { artistPath, cityPath, profilePath, venuePath } from "../domain/urls.mjs";
+import { cityIdentityForLocation } from "../cityIdentity.js";
+import { CityNavigationContext } from "./cities/CityNavigationContext";
 import { buildAttendanceTicketPreview } from "../domain/attendanceTicket.mjs";
 import { calendarShowFromPost } from "../domain/calendarShows.mjs";
 import ConcertTicketCard from "./ConcertTicketCard";
@@ -177,6 +179,9 @@ function TicketActionRail({ showHref, onOpenShow, compareHref, onCompare, artist
 // opens the post's comments. Lounge is reserved for the exact show's shared
 // conversation so the two spaces never look like duplicate features.
 export default function TicketStub({ log, mediaViewable = null, compactContent = false, onOpen, onOpenShow, onOpenPost, onNotInterested, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onReport, onEdit, onDelete, onOpenPhotos, onPlay, onRemoveMyPostTag, onSelfTagRemoved, showComments = true }) {
+  const onOpenCity = useContext(CityNavigationContext);
+  const cityIdentity = cityIdentityForLocation(log);
+  const cityHref = cityIdentity ? cityPath(cityIdentity) : null;
   const avatarPriority = mediaViewable === true ? "high" : "normal";
   const openPostDetail = () => (onOpenPost || onComment || onOpen)?.(log);
   const openComments = () => (onComment || onOpenPost || onOpen)?.(log);
@@ -504,7 +509,7 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
                     <><PublicTextLink href={artistHref} onNavigate={() => onOpenArtist?.(log.artist)} style={styles.performanceArtist}>{log.artist}</PublicTextLink><Text style={styles.dim}> · </Text></>
                   ) : null}
                   <PublicTextLink href={venueHref} onNavigate={() => onOpenVenue?.(log.venue)} style={styles.performanceVenue}>{log.venue}</PublicTextLink>
-                  {!!log.city && <Text style={styles.dim}> · {log.city}</Text>}
+                  {!!log.city && <Text style={styles.dim}> · <PublicTextLink href={cityHref} onNavigate={cityIdentity && onOpenCity ? () => onOpenCity(cityIdentity) : undefined} style={styles.dim}>{log.city}</PublicTextLink></Text>}
                   {!!log.date && <Text style={styles.performanceDate}> · {formatDate(log.date, log.date)}</Text>}
                 </Text>
                 {log.seen > 1 ? <Text style={styles.seenTxt}>{ordinal(log.seen)} time in the pit</Text> : null}
@@ -612,7 +617,7 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
               <View style={{ flex: 1 }}>
                 <Text style={styles.venueLine}>
                   <PublicTextLink href={venueHref} onNavigate={() => onOpenVenue?.(log.venue)} style={styles.venueLink}>{log.venue}</PublicTextLink>
-                  <Text style={styles.dim}> · {log.city}</Text>
+                  <Text style={styles.dim}> · <PublicTextLink href={cityHref} onNavigate={cityIdentity && onOpenCity ? () => onOpenCity(cityIdentity) : undefined} style={styles.dim}>{log.city}</PublicTextLink></Text>
                 </Text>
                 <Text style={styles.factors}>{factors}</Text>
               </View>

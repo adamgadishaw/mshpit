@@ -79,6 +79,15 @@ test("manual scan starts in the background and repeated clicks join the singleto
   assert.equal(completed.startedAt, null);
 });
 
+test("manual scan reports the existing provider cooldown without starting a background request",()=>{
+  const fixture=routeFixture({scan:()=>{throw new Error("must not call provider");}});
+  fixture.snapshot.settings.lastErrorCode="musicbrainz_unavailable";
+  fixture.snapshot.settings.nextScanAt=3_600_000;
+  const result=fixture.routes["POST /api/admin/artist-death-watch/scan"]({setHeader(){}});
+  assert.equal(result.accepted,false);assert.equal(result.started,false);assert.equal(result.reason,"provider_cooldown");
+  assert.equal(result.retryAt,3_600_000);assert.equal(fixture.calls.scans,0);
+});
+
 test("manual scan rejection is consumed and reported without failing the trigger request", async () => {
   const work = deferred();
   const failures = [];

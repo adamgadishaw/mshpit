@@ -298,9 +298,16 @@ function storedCountryCursor() {
   return db.prepare("SELECT value FROM app_meta WHERE key=?").get(COUNTRY_CURSOR_KEY)?.value || 0;
 }
 
-function markCountryCursor(cursor) {
-  db.prepare("INSERT INTO app_meta (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+export function persistSuccessfulCountryRotation(database, { nextCursor, successfulRequests } = {}) {
+  // Artist/city lookups succeeding does not mean the country lane worked. Keep
+  // the same batch due after a complete market outage instead of skipping it
+  // for a full worldwide rotation. A successful empty response still counts.
+  if (!hasSuccessfulTourProviderWork(successfulRequests)) return false;
+  const cursor = Number(nextCursor);
+  if (!Number.isSafeInteger(cursor) || cursor < 0) throw new TypeError("country cursor must be a non-negative integer");
+  database.prepare("INSERT INTO app_meta (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
     .run(COUNTRY_CURSOR_KEY, String(cursor));
+  return true;
 }
 
 export function ticketmasterMarketCoverageMetaKey(market) {
@@ -1208,7 +1215,7 @@ async function refresh({ signal } = {}) {
     const countryBatch = KEY
       ? ticketmasterCountryRotation(COUNTRY_CODES, storedCountryCursor(), COUNTRY_BATCH_SIZE)
       : { countries: [], nextCursor: 0 };
-    let total = 0, providerSuccesses = 0, providerFailures = 0;
+    let total = 0, providerSuccesses = 0, providerFailures = 0, countrySuccesses = 0;
     const successfulArtistScopes = new Map();
     const recordOutcomes = (outcomes, artistName = null) => {
       for (const outcome of outcomes || []) {
@@ -1290,6 +1297,7 @@ async function refresh({ signal } = {}) {
         throwIfAborted(signal);
         providerSuccesses += result.successes;
         providerFailures += result.failures;
+        countrySuccesses += result.successes;
         recordOutcomes(result.outcomes);
         const now = Date.now();
         if (marketResult) persistTicketmasterMarketResult(db, {
@@ -1306,10 +1314,13 @@ async function refresh({ signal } = {}) {
       await sleep(TM_REQUEST_DELAY_MS, signal);
     }
     throwIfAborted(signal);
-    if (countryBatch.countries.length) markCountryCursor(countryBatch.nextCursor);
     if (!hasSuccessfulTourProviderWork(providerSuccesses)) {
       throw new Error(`Every configured tour provider request failed (${providerFailures} failures); existing dates were kept and the refresh remains due.`);
     }
+    if (countryBatch.countries.length) persistSuccessfulCountryRotation(db, {
+      nextCursor: countryBatch.nextCursor,
+      successfulRequests: countrySuccesses,
+    });
     // A rotating artist lane can never prove source-wide completeness. Reconcile
     // only exact Bandsintown artists whose complete request succeeded this run;
     // provider and member rows outside that scope remain untouched.

@@ -28,6 +28,7 @@ const {
   SITEMAP_MAX_URLS,
   buildSitemapDatasets,
   createSitemapSnapshot,
+  hasIndexableEventEvidence,
   isSitemapRequestPath,
   materializeSitemapCandidates,
   pageSitemapEntries,
@@ -36,6 +37,14 @@ const {
   sitemapXmlFor,
   urlsetParts,
 } = await import("./sitemapService.js");
+
+test("a ticket URL alone is not indexable event evidence", () => {
+  assert.equal(hasIndexableEventEvidence({
+    currentPublicTicketUrl: "https://www.ticketmaster.com/event/ticket-only",
+  }), false);
+  assert.equal(hasIndexableEventEvidence({ eligibleFanContent: true }), true);
+  assert.equal(hasIndexableEventEvidence({ completeRichEvent: true }), true);
+});
 
 after(() => {
   db.close();
@@ -364,8 +373,9 @@ test("segmented sitemaps contain only substantive canonical public pages", async
     .run("MetLife Stadium", normName("MetLife Stadium"), "East Rutherford", "p_sitemap_metlife");
   db.prepare(`INSERT INTO tour_dates
     (id,artist,venue,place,date,source,ticket_url,event_image_url,event_image_attribution,
-      event_image_width,event_image_height,music_qualified,updated_at,release_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0)`).run(
+      event_image_width,event_image_height,music_qualified,start_date_time,venue_address_line1,
+      venue_city,venue_country_code,updated_at,release_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)`).run(
     "td_sitemap_public",
     "Touring Sitemap Artist",
     "World Hall",
@@ -378,6 +388,10 @@ test("segmented sitemaps contain only substantive canonical public pages", async
     1920,
     1080,
     1,
+    "2026-12-01T20:00:00Z",
+    "1 World Hall Way",
+    "London",
+    "GB",
     1_730_000_000_000,
   );
   db.prepare(`INSERT INTO tour_dates
@@ -385,6 +399,15 @@ test("segmented sitemaps contain only substantive canonical public pages", async
     VALUES (?,?,?,?,?,?,?,0)`).run(
     "td_sitemap_thin_event", "Thin Event Artist", "Thin Event Hall", "Toronto, Canada",
     "2026-12-05", "test", 1_730_000_000_100,
+  );
+  db.prepare(`INSERT INTO tour_dates
+    (id,provider_event_id,event_name,artist,venue,place,date,source,ticket_url,event_status,
+      music_qualified,updated_at,release_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0)`).run(
+    "td_sitemap_ticket_only", "tm-sitemap-ticket-only", "Ticket Only Artist Live",
+    "Ticket Only Artist", "Ticket Only Hall", "Toronto, Canada", "2026-12-05",
+    "ticketmaster", "https://www.ticketmaster.com/event/td-sitemap-ticket-only", "onsale",
+    1, 1_730_000_000_150,
   );
   addPost("p_sitemap_event_fan", active.id, {
     artist: "Fan Evidence Artist",
@@ -512,7 +535,7 @@ test("segmented sitemaps contain only substantive canonical public pages", async
   assert.match(events, /\/event\/td_sitemap_public/);
   assert.match(events, /\/event\/td_sitemap_fan_event/);
   assert.match(events, /\/event\/td_sitemap_rich_event/);
-  assert.doesNotMatch(events, /td_sitemap_thin_event|td_sitemap_offsale_event|td_sitemap_non_music/);
+  assert.doesNotMatch(events, /td_sitemap_thin_event|td_sitemap_ticket_only|td_sitemap_offsale_event|td_sitemap_non_music/);
   assert.match(events, /xmlns:image="http:\/\/www\.google\.com\/schemas\/sitemap-image\/1\.1"/);
   assert.match(events, /<image:loc>https:\/\/s1\.ticketm\.net\/dam\/a\/sitemap-event\.jpg<\/image:loc>/);
   const venues = sitemapXmlFor("/sitemaps/venues.xml", { database: db, now: 1_725_000_000_000 });

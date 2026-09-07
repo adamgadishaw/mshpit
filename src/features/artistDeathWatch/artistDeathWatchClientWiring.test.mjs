@@ -31,6 +31,9 @@ test("the moderation panel names and counts each review state without presenting
   assert.match(panelSource, /ARTIST_DEATH_WATCH_FILTERS\.map/);
   assert.match(panelSource, /counts = \{ pending, dismissed, memorialized \}/);
   assert.match(panelSource, /title=\{running \? "Checking" : "Check now"\}/);
+  assert.match(panelSource, /disabled=\{watch\?\.loading \|\| running \|\| cooldown\.active\}/);
+  assert.match(panelSource, /Next check: \{when\(cooldown\.nextScanAt\)\}/);
+  assert.match(panelSource, /if \(current >= cooldown\.nextScanAt\) reload\?\.\(\)/);
   assert.match(panelSource, /Checking artist sources in the background/);
   assert.match(panelSource, /LAST SOURCE WARNING/);
   assert.match(panelSource, /ARTISTS ELIGIBLE TO CHECK/);

@@ -16,6 +16,7 @@ import {
   readRecentWikidataDeaths,
   readWikidataDeathSignals,
 } from "./artistDeathWatchProviders.js";
+import { deathWatchRetryAt, isDeathWatchProviderFailure } from "./artistDeathWatchRetry.js";
 
 const STATUS_SET = new Set(ARTIST_DEATH_CANDIDATE_STATUSES);
 
@@ -147,8 +148,9 @@ export function createArtistDeathWatchService({
     const current = projectArtistDeathWatchSettings(repository.readSettings());
     if (!current) throw new Error("Artist death watch settings are unavailable");
     if (!current.enabled && !force) return { skipped: true, reason: "disabled", ...snapshot() };
-    if (!force && current.nextScanAt != null && current.nextScanAt > scanAt) {
-      return { skipped: true, reason: "not_due", ...snapshot() };
+    if (current.nextScanAt != null && current.nextScanAt > scanAt
+      && (!force || isDeathWatchProviderFailure(current.lastErrorCode))) {
+      return { skipped: true, reason: current.lastErrorCode ? "provider_cooldown" : "not_due", ...snapshot() };
     }
 
     let cursorArtistKey = repository.readSettings()?.cursor_artist_key || null;
@@ -339,7 +341,7 @@ export function createArtistDeathWatchService({
         cursorArtistKey,
         lastScanAt: scanAt,
         lastSuccessAt: hasLiveAuthoritativeCoverage ? scanAt : current.lastSuccessAt,
-        nextScanAt: scanAt + ARTIST_DEATH_WATCH_INTERVAL_MS,
+        nextScanAt: warningCode ? deathWatchRetryAt(current,catalogError || recentError,scanAt) : scanAt + ARTIST_DEATH_WATCH_INTERVAL_MS,
         lastErrorCode: warningCode,
         at: scanAt,
       });
@@ -375,8 +377,7 @@ export function createArtistDeathWatchService({
           }) : null,
         });
       }
-      const retryAt = Number.isSafeInteger(Number(error?.retryAt)) && Number(error.retryAt) > scanAt
-        ? Number(error.retryAt) : scanAt + ARTIST_DEATH_WATCH_INTERVAL_MS;
+      const retryAt = deathWatchRetryAt(current,error,scanAt);
       repository.recordScan({
         cursorArtistKey,
         lastScanAt: scanAt,

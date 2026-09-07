@@ -4,7 +4,7 @@ import test from "node:test";
 
 const read = (path) => readFile(new URL(path, import.meta.url), "utf8");
 
-test("Discover keeps four events immediate and requests wider ranges only after an action", async () => {
+test("Discover shows four events and fetches the selected scope before offering wider ranges", async () => {
   const screen = await read("../screens/DiscoverScreen.jsx");
   const store = await read("../store.js");
   const rangeApi = await read("../features/discovery/tourDateRangeApi.mjs");
@@ -21,7 +21,7 @@ test("Discover keeps four events immediate and requests wider ranges only after 
   assert.match(screen, /selectDiscoverRangeEvents/);
   assert.match(screen, /mergeDiscoverRangePages/);
   assert.match(screen, /rangeRequestRef\.current\.controller\?\.abort\(\)/);
-  assert.doesNotMatch(screen, /useEffect\(\(\) => \{\s*requestEventRange\(/);
+  assert.match(screen, /useEffect\(\(\) => \{\s*setVisibleEventCount\(DISCOVER_RANGE_BATCH\);\s*requestEventRange\(DISCOVER_RANGE_DAYS\[0\]\)/);
   assert.match(screen, /const local = liveScope === LIVE_EVENT_SCOPE\.LOCAL/);
   assert.match(screen, /rangeLoaderRef\.current\(\{[\s\S]*country: requestCountry,[\s\S]*local,[\s\S]*signal: controller\.signal/);
   assert.doesNotMatch(screen, /rangeLoaderRef\.current\(\{[^}]*\bcity\b/);

@@ -9,6 +9,9 @@ import {
 import { inPersonReviewSql } from "../../onlineReviews.js";
 import {
   PUBLIC_ENTITY_THRESHOLDS,
+  installPublicMusicEventPolicySql,
+  publicIndexableMusicEventSql,
+  publicMusicEventCandidateSql,
   isStrictCalendarDate,
   qualifiesCityConcertDirectory,
   qualifiesCityVenueDirectory,
@@ -18,7 +21,11 @@ import {
 const MAX_PAGE = 1_000;
 const validCalendarDateSql = (a) => `${a}.date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' AND date(${a}.date)=${a}.date`;
 const structuredLocationSql = (a) => `TRIM(COALESCE(${a}.venue_city,''))<>'' AND LENGTH(TRIM(COALESCE(${a}.venue_country_code,'')))=2 AND UPPER(TRIM(${a}.venue_country_code)) GLOB '[A-Z][A-Z]'`;
-const publicTourVisibility = (a, owner, at) => `${a}.release_at<=${at} AND COALESCE(${a}.music_qualified,1)=1 AND (${a}.owner_id IS NULL OR ${activeAccountSql(owner)}) AND (${a}.owner_id IS NOT NULL OR COALESCE(${a}.provider_active,1)=1)`;
+const publicTourVisibility = (a, owner, at) => `${a}.release_at<=${at}
+  AND ${publicMusicEventCandidateSql(a)}
+  AND ${publicIndexableMusicEventSql(a)}
+  AND (${a}.owner_id IS NULL OR ${activeAccountSql(owner)})
+  AND (${a}.owner_id IS NOT NULL OR COALESCE(${a}.provider_active,1)=1)`;
 
 const noStructuredShowLocationCollisionSql = (alias = "p", at = "?4", today = "?5") => `NOT EXISTS (
   SELECT COUNT(DISTINCT pit_structured_show_location(public_location.venue_city,public_location.venue_country_code)) AS location_count FROM tour_dates public_location
@@ -91,7 +98,7 @@ export function createPublicCollectionRepository(database) {
   database.function?.("pit_public_slug", { deterministic: true }, slugify);
   database.function?.("pit_structured_show_location", { deterministic: true }, (city, countryCode) =>
     structuredShowLocationKey({ venue_city: city, venue_country_code: countryCode }));
-
+  installPublicMusicEventPolicySql(database);
   const resolveCity = database.prepare(`WITH candidates AS (
     SELECT TRIM(td.venue_city) AS display_city,NULLIF(TRIM(td.venue_country),'') AS display_country
     FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id

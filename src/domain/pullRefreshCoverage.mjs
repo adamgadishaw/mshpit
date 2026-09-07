@@ -8,6 +8,8 @@ export const PULL_REFRESH_COVERAGE = Object.freeze([
   coverage("ArtistArchiveScreen.jsx", "required", "Remote artist performance archive with cursor pagination."),
   coverage("ArtistGalleryScreen.jsx", "required", "Remote artist media archive with cursor pagination."),
   coverage("ArtistScreen.jsx", "required", "Remote artist profile and fan-photo detail."),
+  coverage("CityScreen.jsx", "required", "Account-scoped city photos, local shows, and moderated editorial content."),
+  coverage("CityDirectoryScreen.jsx", "required", "Remote city directory refresh preserves the active search and reloads pagination."),
   coverage("ClipsScreen.jsx", "required", "Remote clip reel with cursor pagination."),
   coverage("FanClubScreen.jsx", "required", "Active-room community messages; pull complements, but does not replace, live updates."),
   coverage("FanClubsScreen.jsx", "required", "Remote artist-community directory while preserving its search query."),

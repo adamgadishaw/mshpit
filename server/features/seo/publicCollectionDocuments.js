@@ -10,6 +10,7 @@ import { archiveShowKey } from "../artistArchive/artistArchiveKeys.js";
 import { publicVenuePhotoPool } from "../../venuePhotoCatalog.js";
 import { isStrictCalendarDate } from "./publicEntityPolicy.js";
 import { createPublicCollectionRepository } from "./publicCollectionRepository.js";
+import { cityIdentity } from "../../../src/domain/cityIdentity.mjs";
 
 const SITE_NAME = "Mshpit";
 const DEFAULT_ORIGIN = "https://www.mshpit.com";
@@ -181,7 +182,7 @@ function concertItem(row,{ city = null,knownArtist = null } = {}) {
   });
 }
 
-function baseDirectory({ kind,page,hasNext,path,pathFor,origin,title,description,breadcrumbs,items,relatedPath,relatedLabel }) {
+function baseDirectory({ kind,page,hasNext,path,pathFor,origin,title,description,heading,breadcrumbs,items,relatedPath,relatedLabel,relatedLinks = [] }) {
   const previousPath = page > 1 ? pathFor(page - 1) : null;
   const nextPath = hasNext ? pathFor(page + 1) : null;
   const listItems = items.map((item) => ({
@@ -201,6 +202,7 @@ function baseDirectory({ kind,page,hasNext,path,pathFor,origin,title,description
     image: kind === "venues" ? items.find((item) => item.image)?.image || null : null,
     imageProvenance: kind === "venues" && items.some((item) => item.image)
       ? "licensed-venue" : null,
+    heading: cleanLine(heading,180) || null,
     artists: Object.freeze([]),
     events: Object.freeze([]),
     venues: kind === "venues" ? items : Object.freeze([]),
@@ -208,6 +210,10 @@ function baseDirectory({ kind,page,hasNext,path,pathFor,origin,title,description
     breadcrumbs,
     relatedPath,
     relatedLabel,
+    relatedLinks: freezeRows([
+      ...(relatedPath && relatedLabel ? [{ path:relatedPath,label:relatedLabel }] : []),
+      ...relatedLinks,
+    ]),
     jsonLd: Object.freeze([
       collectionNode({ origin,path,name:title.replace(/ \| Mshpit$/u,""),description,items:listItems }),
       breadcrumbNode(origin,breadcrumbs),
@@ -215,9 +221,26 @@ function baseDirectory({ kind,page,hasNext,path,pathFor,origin,title,description
   });
 }
 
-export function createPublicCollectionDocumentService({ database,origin = DEFAULT_ORIGIN,repository = null,legacyArtistPolicy = null } = {}) {
+export function createPublicCollectionDocumentService({ database,origin = DEFAULT_ORIGIN,repository = null,legacyArtistPolicy = null,cityGuideRepository = null } = {}) {
   const publicOrigin = normalizedOrigin(origin);
   const source = repository || createPublicCollectionRepository(database);
+
+  function cityGuideLinks(raw,options) {
+    // Old city directories do not always carry a region. Do not guess a guide
+    // for ambiguous identities such as Portland, or construct unverified URLs.
+    const identity = cityIdentity(raw.countryCode,raw.city,raw.region);
+    if (!identity || !cityGuideRepository) return [];
+    const guideRepository = typeof cityGuideRepository === "function" ? cityGuideRepository() : cityGuideRepository;
+    if (!guideRepository) return [];
+    // This is cached public registry metadata, not the viewer-specific gallery.
+    const at = safeTimestamp(options.at) ?? Date.now();
+    const matches = guideRepository.listSitemapCities({ at }).filter((city) =>
+      city.countryCode === identity.countryCode && city.citySlug === identity.citySlug && city.path === identity.path);
+    if (matches.length !== 1) return [];
+    const label = cleanLine(String(guideRepository.readCopy().copy?.cityGuideLink || "")
+      .replaceAll("{city}",matches[0].city),200);
+    return label ? [{ path:identity.path,label }] : [];
+  }
 
   const service = {
     cityVenuesDocument(options = {}) {
@@ -241,8 +264,10 @@ export function createPublicCollectionDocumentService({ database,origin = DEFAUL
       ]);
       return baseDirectory({
         kind:"venues",page,hasNext:raw.hasNext === true,path,pathFor,origin:publicOrigin,title,description,
+        heading:`Concert venues in ${context}`,
         breadcrumbs,items:venues,
         relatedPath:cityConcertsPath(raw),relatedLabel:`Concerts in ${context}`,
+        relatedLinks:cityGuideLinks(raw,options),
       });
     },
 
@@ -268,8 +293,10 @@ export function createPublicCollectionDocumentService({ database,origin = DEFAUL
       ]);
       return baseDirectory({
         kind:"concerts",page,hasNext:raw.hasNext === true,path,pathFor,origin:publicOrigin,title,description,
+        heading:`Concerts in ${context}`,
         breadcrumbs,items:concerts,
         relatedPath:cityVenuesPath(raw),relatedLabel:`Venues in ${context}`,
+        relatedLinks:cityGuideLinks(raw,options),
       });
     },
 
@@ -297,6 +324,7 @@ export function createPublicCollectionDocumentService({ database,origin = DEFAUL
       ]);
       return baseDirectory({
         kind:"concerts",page,hasNext:raw.hasNext === true,path,pathFor,origin:publicOrigin,title,description,
+        heading:`${artistName} concert archive`,
         breadcrumbs,items:concerts,relatedPath:artistPage,relatedLabel:`${artistName} artist profile`,
       });
     },

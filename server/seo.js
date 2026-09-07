@@ -19,6 +19,8 @@ import {
   concertsPath,
   cityConcertsPath,
   cityVenuesPath,
+  cityPath,
+  parseCityPath,
   eventPath,
   eventsPath,
   parsePath,
@@ -387,6 +389,13 @@ const APP_SCREENS = new Set([
 function publicRoute(pathname) {
   const path = cleanPathname(pathname);
   if (!path) return { type: "not-found", status: 404 };
+  if (path.toLowerCase() === "/cities") {
+    const document = safePublicDocument(() => publicDocuments.citiesDocument({ at: Date.now() }));
+    if (document === PUBLIC_DOCUMENT_UNAVAILABLE) return { type: "unavailable", status: 503 };
+    if (!document) return { type: "not-found", status: 404 };
+    if (path !== "/cities") return { type: "redirect", status: 301, location: "/cities", canonicalPath: "/cities" };
+    return { type: "document", status: 200, canonicalPath: "/cities", indexable: document.indexable, document };
+  }
   if (path === "/") {
     const document = safePublicDocument(() => publicDocuments.homeDocument({ canonicalPath: "/" }));
     if (document === PUBLIC_DOCUMENT_UNAVAILABLE) return { type: "unavailable", status: 503 };
@@ -400,6 +409,15 @@ function publicRoute(pathname) {
   }
 
   const collection = parsePublicCollectionPath(path);
+  if (/^\/city(?:\/|$)/iu.test(path)) {
+    const identity = parseCityPath(path);
+    if (!identity) return { type: "not-found", status: 404 };
+    const document = safePublicDocument(() => publicDocuments.cityDocument({ ...identity, at: Date.now() }));
+    if (document === PUBLIC_DOCUMENT_UNAVAILABLE) return { type: "unavailable", status: 503 };
+    if (!document) return { type: "not-found", status: 404 };
+    if (path !== document.canonicalPath) return { type: "redirect", status: 301, location: document.canonicalPath };
+    return { type: "document", status: 200, canonicalPath: document.canonicalPath, indexable: document.indexable, document };
+  }
   if (collection && ["artists", "events", "venues", "concerts"].includes(collection.type)) {
     const buildPath = {
       artists: artistsPath,
@@ -519,6 +537,7 @@ function documentIsIndexable(document) {
   if (!document) return false;
   if (document.indexable === false) return false;
   if (document.kind === "home") return true;
+  if (document.kind === "city" || document.kind === "city-directory") return document.indexable === true;
   if (document.kind === "artist") {
     return substantiveText(document.memorial?.summary, 20)
       || substantiveText(document.artist?.bio, 80)
@@ -538,11 +557,8 @@ function documentIsIndexable(document) {
       eligibleFanContent: document.posts?.some((post) => (
         substantiveText(post.text, 40) || post.media?.length > 0
       )),
-      // The event projector has already revalidated the persisted URL and
-      // removes past/non-purchasable offers before this policy runs.
-      currentPublicTicketUrl: document.event?.ticketUrl,
-      // The projector emits MusicEvent only for strict offset DateTime plus a
-      // complete structured street/locality/country address.
+      // The projector emits MusicEvent only for a strict calendar date (or an
+      // offset-aware DateTime) plus a complete street/locality/country address.
       completeRichEvent: document.jsonLd?.some((node) => node?.["@type"] === "MusicEvent"),
     });
   }

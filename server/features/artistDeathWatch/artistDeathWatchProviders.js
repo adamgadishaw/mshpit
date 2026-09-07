@@ -4,12 +4,14 @@ import {
   canonicalWikidataId,
 } from "../../../src/domain/artistDeathWatch.mjs";
 import { runMusicBrainzRequest } from "../../musicBrainzRequestThrottle.js";
+import { PROVIDER_JSON_LIMITS, readBoundedJsonResponse } from "../../boundedJsonResponse.js";
 
 const WIKIDATA_SPARQL = "https://query.wikidata.org/sparql";
 const MUSICBRAINZ_API = "https://musicbrainz.org/ws/2/artist";
 const HUMAN_QID = "Q5";
 const WIKIDATA_BATCH_LIMIT = 50;
 const DEFAULT_TIMEOUT_MS = 8_000;
+const MUSICBRAINZ_TIMEOUT_MS = 15_000;
 const USER_AGENT = process.env.ARTIST_DEATH_WATCH_USER_AGENT
   || "mshpit-memorial-watch/1.0 (https://www.mshpit.com; support@mshpit.com)";
 
@@ -84,17 +86,19 @@ export function parseWikidataDeathSignals(payload, artists, { at = Date.now() } 
 
 function providerRetryAt(response, at) {
   const raw = response?.headers?.get?.("retry-after");
-  if (raw && /^\d+$/u.test(raw.trim())) return at + Number(raw) * 1000;
+  if (raw && /^\d+$/u.test(raw.trim())) return at + Math.min(86_400_000,Math.max(60_000,Number(raw)*1000));
   const absolute = raw ? Date.parse(raw) : NaN;
-  return Number.isFinite(absolute) && absolute > at ? absolute : at + 60_000;
+  return Number.isFinite(absolute) && absolute > at ? Math.min(at+86_400_000,absolute) : at + 60_000;
 }
 
-async function providerJson(url, { fetchImpl, timeoutMs, provider, at }) {
+async function providerJson(url, { fetchImpl, timeoutMs, provider, at, signal = null }) {
   let response;
+  const timeoutSignal=AbortSignal.timeout(timeoutMs);
+  const requestSignal=signal ? AbortSignal.any([signal,timeoutSignal]) : timeoutSignal;
   try {
     response = await fetchImpl(url, {
       headers: { "User-Agent": USER_AGENT, Accept: "application/json" },
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: requestSignal,
     });
   } catch (error) {
     throw new ArtistDeathWatchProviderError(`${provider} could not be reached.`, {
@@ -103,6 +107,7 @@ async function providerJson(url, { fetchImpl, timeoutMs, provider, at }) {
     });
   }
   if (response.status === 429) {
+    try { await response.body?.cancel?.(); } catch { /* Failed body disposal must not hide the provider status. */ }
     throw new ArtistDeathWatchProviderError(`${provider} asked Mshpit to slow down.`, {
       code: `${provider.toLowerCase()}_rate_limited`,
       status: 429,
@@ -110,16 +115,22 @@ async function providerJson(url, { fetchImpl, timeoutMs, provider, at }) {
     });
   }
   if (!response.ok) {
+    try { await response.body?.cancel?.(); } catch { /* Failed body disposal must not hide the provider status. */ }
     throw new ArtistDeathWatchProviderError(`${provider} returned ${response.status}.`, {
       code: response.status >= 500 ? `${provider.toLowerCase()}_unavailable` : `${provider.toLowerCase()}_rejected`,
       status: response.status,
+      retryAt: response.status>=500 ? providerRetryAt(response,at) : null,
     });
   }
   try {
-    return await response.json();
-  } catch {
+    return await readBoundedJsonResponse(response, {
+      maxBytes: provider==="MusicBrainz" ? PROVIDER_JSON_LIMITS.musicBrainz : PROVIDER_JSON_LIMITS.wikidata,
+      signal: requestSignal,
+    });
+  } catch (error) {
     throw new ArtistDeathWatchProviderError(`${provider} returned unreadable data.`, {
-      code: `${provider.toLowerCase()}_response`,
+      code: [error?.name,error?.cause?.name].some((name)=>name==="TimeoutError" || name==="AbortError")
+        ? `${provider.toLowerCase()}_timeout` : `${provider.toLowerCase()}_response`,
     });
   }
 }
@@ -251,7 +262,7 @@ export function parseMusicBrainzDeathSignal(payload, expected, { at = Date.now()
 
 export async function confirmMusicBrainzDeathSignal(expected, {
   fetchImpl = fetch,
-  timeoutMs = DEFAULT_TIMEOUT_MS,
+  timeoutMs = MUSICBRAINZ_TIMEOUT_MS,
   at = Date.now(),
   signal = null,
   requestGate = runMusicBrainzRequest,
@@ -260,11 +271,18 @@ export async function confirmMusicBrainzDeathSignal(expected, {
   if (!artistMbid) return null;
   const url = new URL(`${MUSICBRAINZ_API}/${artistMbid}`);
   url.searchParams.set("fmt", "json");
-  const payload = await requestGate(() => providerJson(url, {
-    fetchImpl,
-    timeoutMs: Math.max(1_000, Math.min(15_000, Math.trunc(Number(timeoutMs) || DEFAULT_TIMEOUT_MS))),
-    provider: "MusicBrainz",
-    at,
-  }), { signal });
+  let payload;
+  try {
+    payload = await requestGate(() => providerJson(url, {
+      fetchImpl,
+      timeoutMs: Math.max(1_000, Math.min(15_000, Math.trunc(Number(timeoutMs) || MUSICBRAINZ_TIMEOUT_MS))),
+      provider: "MusicBrainz", at, signal,
+    }), { signal });
+  } catch (error) {
+    // An exact identity deleted or merged upstream is not a death confirmation.
+    // It also must not strand the complete catalogue behind one missing MBID.
+    if (error?.status===404 || error?.status===410) return null;
+    throw error;
+  }
   return parseMusicBrainzDeathSignal(payload, expected, { at });
 }

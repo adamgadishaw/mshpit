@@ -189,6 +189,7 @@ test("event nation options pin a selected low-volume country and keep worldwide 
     homeCountry: "Country 2",
     selectedRegion: "Country 15",
     limit: 12,
+    complete: true,
   }).slice(0, 3), [
     { country: "Worldwide", count: 1_395 },
     { country: "Country 2", count: 99 },
@@ -199,23 +200,24 @@ test("event nation options pin a selected low-volume country and keep worldwide 
     homeCountry: "Country 2",
     selectedRegion: "France",
     limit: 12,
+    complete: true,
   });
   assert.ok(emptySelected.some((row) => row.country === "France" && row.count === 0));
   assert.equal(emptySelected[0].count, 1_395, "the synthetic zero-count selection must not inflate Worldwide");
 });
 
-test("supported event countries remain selectable with honest zero counts before ingestion", () => {
+test("supported event countries remain selectable with unknown counts until server coverage arrives", () => {
   const countries = discoverNationOptions([], {
     homeCountry: "Canada",
     supportedCountries: ["Portugal", "Spain", "France", "Portugal"],
     limit: 10,
   });
   assert.deepEqual(countries, [
-    { country: "Worldwide", count: 0 },
+    { country: "Worldwide", count: null },
     { country: "Canada", count: null },
-    { country: "Portugal", count: 0 },
-    { country: "Spain", count: 0 },
-    { country: "France", count: 0 },
+    { country: "Portugal", count: null },
+    { country: "Spain", count: null },
+    { country: "France", count: null },
   ]);
 
   const selected = discoverNationOptions([], {
@@ -224,8 +226,22 @@ test("supported event countries remain selectable with honest zero counts before
     supportedCountries: ["Portugal", "Spain"],
     limit: 10,
   });
-  assert.ok(selected.some((row) => row.country === "Portugal" && row.count === 0));
-  assert.equal(selected[0].count, 0, "zero-count supported choices must not inflate Worldwide");
+  assert.ok(selected.some((row) => row.country === "Portugal" && row.count === null));
+  assert.equal(selected[0].count, null, "an incomplete client page cannot establish worldwide inventory");
+});
+
+test("ready server coverage establishes true zero countries and preserves the worldwide total", () => {
+  const overview = normalizeDiscoverOverview({ eventCoverage: {
+    status: "ready", basis: "public-catalog", total: 1200, venueTotal: 600,
+    countries: [{ country: "France", count: 14, venueCount: 10 }],
+  } });
+  const rows = discoverNationOptions(overview.eventCoverage.countries, {
+    supportedCountries: ["France", "Portugal"], complete: true, total: overview.eventCoverage.total,
+  });
+  assert.equal(rows[0].count, 1200);
+  assert.equal(rows.find((row) => row.country === "France").count, 14);
+  assert.equal(rows.find((row) => row.country === "Portugal").count, 0);
+  assert.equal(normalizeDiscoverOverview({ eventCoverage: { status: "error", total: 0 } }).eventCoverage.total, null);
 });
 
 test("genre exploration defaults to the first verified genre and preserves a valid choice", () => {

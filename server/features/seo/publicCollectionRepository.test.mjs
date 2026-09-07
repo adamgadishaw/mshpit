@@ -24,7 +24,7 @@ function createDatabase() {
       source TEXT,updated_at INTEGER NOT NULL DEFAULT 0,owner_id TEXT,release_at INTEGER NOT NULL DEFAULT 0,
       provider_event_id TEXT,venue_provider_id TEXT,venue_city TEXT,venue_region TEXT,
       venue_country_code TEXT,venue_country TEXT,provider_active INTEGER NOT NULL DEFAULT 1,
-      music_qualified INTEGER NOT NULL DEFAULT 1,event_end_date TEXT,
+      music_qualified INTEGER NOT NULL DEFAULT 1,event_name TEXT,event_end_date TEXT,
       event_kind TEXT NOT NULL DEFAULT 'concert',music_evidence TEXT,
       billed_artists TEXT NOT NULL DEFAULT '[]'
     );
@@ -68,14 +68,17 @@ function addTour(db,{
   id,artist = "Alpha",artistKey = "alpha",venue = "Hall A",date = "2026-12-01",
   city = "Toronto",countryCode = "CA",country = "Canada",place = "ignored free form",
   source = "ticketmaster",providerVenueId = null,providerEventId = null,ownerId = null,
-  releaseAt = 0,providerActive = true,
+  releaseAt = 0,providerActive = true,musicQualified = 1,eventName = null,eventKind = "concert",
+  musicEvidence = null,billedArtists = [],eventEndDate = null,
 } = {}) {
   db.prepare(`INSERT INTO tour_dates
     (id,artist,artist_key,venue,place,date,source,updated_at,owner_id,release_at,
-      provider_event_id,venue_provider_id,venue_city,venue_region,venue_country_code,venue_country,provider_active)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      provider_event_id,venue_provider_id,venue_city,venue_region,venue_country_code,venue_country,provider_active,
+      music_qualified,event_name,event_kind,music_evidence,billed_artists,event_end_date)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
     id,artist,artistKey,venue,place,date,source,NOW,ownerId,releaseAt,
     providerEventId || `provider-${id}`,providerVenueId,city,"Ontario",countryCode,country,providerActive ? 1 : 0,
+    musicQualified,eventName || `${artist} Live`,eventKind,musicEvidence,JSON.stringify(billedArtists),eventEndDate,
   );
 }
 function addPost(db,{
@@ -158,6 +161,35 @@ test("city venue rows fail closed for collisions and exclude inactive, unrelease
     assert.deepEqual(new Set(result.venues.map((row) => row.venue)),new Set(["North","South"]));
     assert.equal(repo.readCityVenues({ countryCode:"CA",citySlug:"toronto",page:2,at:NOW,today:TODAY }),null);
     assert.equal(repo.readCityVenues({ countryCode:"CA",citySlug:"toronto",page:1001,at:NOW,today:TODAY }),null);
+  } finally { db.close(); }
+});
+
+test("collection pages use the same fail-closed music and product policy as entity pages and sitemaps", () => {
+  const db = createDatabase();
+  try {
+    addUser(db,"active");
+    addArtist(db);
+    addTour(db,{ id:"good-1",artist:"One",venue:"North",providerVenueId:"north",date:"2026-12-01" });
+    addTour(db,{ id:"good-2",artist:"Two",venue:"South",providerVenueId:"south",date:"2026-12-02" });
+    addTour(db,{ id:"good-3",artist:"Three",venue:"North",providerVenueId:"north",date:"2026-12-03" });
+    addTour(db,{
+      id:"not-music",artist:"Sports Admission",venue:"Stadium",providerVenueId:"stadium",
+      date:"2026-12-04",musicQualified:0,
+    });
+    addTour(db,{
+      id:"provider-product",artist:"Headliner",venue:"North",providerVenueId:"north",
+      date:"2026-12-05",eventName:"Headliner VIP Upgrade",
+    });
+    addTour(db,{
+      id:"provider-class",artist:"Music School",venue:"South",providerVenueId:"south",
+      date:"2026-12-06",eventName:"Music School Introductory Class",
+    });
+
+    const result = createPublicCollectionRepository(db)
+      .readCityVenues({ countryCode:"CA",citySlug:"toronto",at:NOW,today:TODAY });
+    assert.equal(result.itemCount,3);
+    assert.equal(result.venueCount,2);
+    assert.equal(result.venues.some((row) => row.venue === "Stadium"),false);
   } finally { db.close(); }
 });
 test("city concert directories require three eligible archives across two venues and reject location ambiguity", () => {

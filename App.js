@@ -47,6 +47,7 @@ const ArtistHubScreen = lazyWithRetry(() => import("./src/screens/ArtistHubScree
 const EditArtistProfileScreen = lazyWithRetry(() => import("./src/screens/EditArtistProfileScreen"), "EditArtistProfileScreen");
 const VenueScreen = lazyWithRetry(() => import("./src/screens/VenueScreen"), "VenueScreen");
 const VenuesScreen = lazyWithRetry(() => import("./src/screens/VenuesScreen"), "VenuesScreen");
+const CityScreen = lazyWithRetry(() => import("./src/screens/CityScreen"), "CityScreen");
 const PickArtistsScreen = lazyWithRetry(() => import("./src/screens/PickArtistsScreen"), "PickArtistsScreen");
 const FanClubsScreen = lazyWithRetry(() => import("./src/screens/FanClubsScreen"), "FanClubsScreen");
 const NearbyScreen = lazyWithRetry(() => import("./src/screens/NearbyScreen"), "NearbyScreen");
@@ -75,7 +76,9 @@ import { getPendingImagePickerResult } from "./src/lib/imagePickerRecovery";
 import { lazyWithRetry } from "./src/lib/lazyWithRetry";
 import { recordFeedImpressionForSession } from "./src/features/feedImpressions/feedImpressionService";
 import useFeedImpressionSession from "./src/features/feedImpressions/useFeedImpressionSession";
-import { artistPath, eventPath, parsePath, isPublicEntityPath } from "./src/domain/urls.mjs";
+import { artistPath, eventPath, parsePath, parseCityPath, isPublicEntityPath } from "./src/domain/urls.mjs";
+import { cityIdentityForLocation } from "./src/cityIdentity.js";
+import { CityNavigationContext } from "./src/components/cities/CityNavigationContext";
 import { shouldRestorePersistedStack } from "./src/domain/browserNavigation.mjs";
 import { initialLandingState, landingRenderSurface } from "./src/domain/landingStartup.mjs";
 import { publicNavigationLinks, shouldShowMobilePublicTrail } from "./src/domain/publicNavigationLinks.mjs";
@@ -771,6 +774,12 @@ function Root() {
     let cancelled = false;
     const path = window.location.pathname;
     if (!path || path === "/") return;
+    const cityRoute = parseCityPath(path);
+    if (cityRoute || path === "/cities") {
+      setLanding(false);
+      setStack([{}, { cityGuide: cityRoute || { directory: true } }]);
+      return;
+    }
     const collectionHydration = publicCollectionHydration(path);
     if (collectionHydration) {
       setLanding(false);
@@ -996,6 +1005,10 @@ function Root() {
     track("view_artist_tour");
     go({ artistTour: { name, artistKey: artistKey || null, tourKey: tour.key, tourName: tour.name || "Live tour" } });
   };
+  const openCity = (value) => {
+    const identity = cityIdentityForLocation(value);
+    if (identity) go({ cityGuide: identity });
+  };
   const openVenue = (venue) => {
     const payload = venue && typeof venue === "object" ? venue : null;
     const name = String(payload?.name || venue || "").trim();
@@ -1112,7 +1125,7 @@ function Root() {
   if (nav.photos) overlay = <PhotoViewer photos={nav.photos.images} index={nav.photos.index} postId={nav.photos.postId} returnFocusRef={mediaViewerOpenerRef} session={session} mediaReactions={mediaReactions} loadMediaReactions={loadMediaReactions} toggleMediaReaction={toggleMediaReaction} track={track} onReport={openReport} onClose={back} />;
   else if (MUSIC_PLAYER_ENABLED && nav.addToPlaylist) overlay = <PlaylistPickerScreen track={nav.addToPlaylist} onClose={back} />;
   else if (nav.followList) overlay = <FollowListScreen userId={nav.followList.userId} mode={nav.followList.mode} onClose={back} onOpenProfile={openProfile} />;
-  else if (nav.auth) overlay = <AuthScreen initialMode={nav.authMode} onDone={back} onCancel={back} />;
+  else if (nav.auth) overlay = <AuthScreen initialMode={nav.authMode} onDone={back} onCancel={back} onOpenCity={(city) => replace({ cityGuide: city })} />;
   else if (nav.pickArtists) overlay = <PickArtistsScreen onDone={clear} onSkip={clear} onRequireVerification={() => setVerificationPrompt("artistPicks")} />;
   else if (nav.editingPost) overlay = <LogScreen user={session} editing={nav.editingPost} composerId={nav.composerId} initialDraftId={nav.draftId} onDraftIdentity={updateComposerDraftIdentity} pendingMedia={pendingComposerPicker?.composerId === nav.composerId ? pendingComposerPicker : null} onPendingMediaConsumed={consumePendingComposerPicker} onPost={onEditLog} onCancel={back} closeGuardRef={composerCloseGuardRef} />;
   else if (nav.logging) overlay = <LogScreen user={session} prefill={nav.prefill} defaultMode={nav.postMode || "show"} legacyArtistProfile={nav.legacyArtistProfile === true} composerId={nav.composerId} initialDraftId={nav.draftId} onDraftIdentity={updateComposerDraftIdentity} pendingMedia={pendingComposerPicker?.composerId === nav.composerId ? pendingComposerPicker : null} onPendingMediaConsumed={consumePendingComposerPicker} onPost={onAddLog} onCancel={back} closeGuardRef={composerCloseGuardRef} />;
@@ -1136,6 +1149,7 @@ function Root() {
   else if (nav.artistName) overlay = <ArtistScreen artistName={nav.artistName} onClose={back} onOpenPost={openPost} onOpenShow={openShow} onOpenArchive={openArtistArchive} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onShareMemory={(name, artistKey, options = {}) => requireVerifiedMutation("post", () => go({ logging: true, postMode: "memory", legacyArtistProfile: options.legacyProfile === true, prefill: { artist: name, artistKey } }))} onOpenPhotos={openPhotos} onOpenGallery={openArtistGallery} onOpenProfile={openProfile} onManageArtistProfile={() => go({ artistHub: true })} onEditArtistProfile={(name) => name && requireVerifiedMutation("artist", () => go({ editArtist: name }))} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} onReport={openReport} />;
   else if (nav.venueName) overlay = <VenueScreen venueName={nav.venueName} venueIdentity={nav.venue || null} onClose={back} onOpenShow={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onReviewVenue={openVenueReview} onOpenProfile={openProfile} onOpenPhotos={openPhotos} onReport={openReport} />;
   else if (nav.nearby) overlay = <NearbyScreen onClose={back} onOpenVenue={openVenue} onOpenArtist={openArtist} />;
+  else if (nav.cityGuide) overlay = <CityScreen city={nav.cityGuide} accountId={session?.id || null} onClose={back} onOpenCity={openCity} onOpenVenue={openVenue} onOpenArtist={openArtist} onOpenShow={openShow} onOpenPhotos={openPhotos} />;
   else if (nav.venues) overlay = <VenuesScreen initialRegion={nav.discoverRegion} onClose={back} onOpenVenue={openVenue} />;
   else if (nav.fanClubs) overlay = <FanClubsScreen onClose={back} onOpenFanClub={openFanClub} />;
   else if (nav.suggestion) overlay = <SuggestionBoxScreen onClose={back} initialSurface={nav.suggestion.surface} />;
@@ -1282,7 +1296,7 @@ function Root() {
                   onRemoveMyPostTag={removePostTag}
                 />
               )}
-              {tab === "search" && <SearchScreen onOpen={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenProfile={openProfile} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} />}
+              {tab === "search" && <SearchScreen onOpen={openShow} onOpenArtist={openArtist} onOpenCity={openCity} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenProfile={openProfile} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} />}
               {tab === "discover" && <DiscoverScreen onOpenTopRated={(discoverRegion) => go({ topRated: true, discoverRegion })} onOpenEvents={(discoverRegion) => openPublicDirectory("events", { region: discoverRegion })} onOpen={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenNearby={() => go({ nearby: true })} onOpenFanClubs={() => go({ fanClubs: true })} onOpenVenues={(discoverRegion) => go({ venues: true, discoverRegion })} onOpenLounge={(lounge) => go({ lounge })} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} onOpenProfile={openProfile} />}
               {tab === "you" && (
                 <YouScreen
@@ -1371,6 +1385,7 @@ function Root() {
   const landingSurface = landingRenderSurface({ authReady, session, landing });
 
   return (
+    <CityNavigationContext.Provider value={openCity}>
     <View style={styles.root}>
       <SafeAreaView style={styles.safe}>
         <StatusBar style={themeIsDark ? "light" : "dark"} />
@@ -1559,6 +1574,7 @@ function Root() {
         )}
       </SafeAreaView>
     </View>
+    </CityNavigationContext.Provider>
   );
 }
 

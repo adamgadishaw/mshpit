@@ -9,8 +9,10 @@ import PrivacyScreen from "./PrivacyScreen";
 import TermsScreen from "./TermsScreen";
 import { GENRES } from "../data";
 import { PROFILE_GENRE_MAX, profileGenreSelection } from "../domain/genrePreferences.mjs";
+import CityWelcomeCard from "../features/cities/CityWelcomeCard";
+import { cityIdentityForLocation } from "../cityIdentity.js";
 
-export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) {
+export default function AuthScreen({ onDone, onCancel, onOpenCity, initialMode = "login" }) {
   const { login, signup, forgotPassword } = useStore();
   const [mode, setMode] = useState(initialMode === "signup" ? "signup" : "login");
   const [sentTo, setSentTo] = useState(null); // email a reset link was requested for
@@ -26,6 +28,7 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) 
   const [viewing, setViewing] = useState(null); // "terms" | "privacy", inline reader
   const [error, setError] = useState("");
   const [signupSubmitted, setSignupSubmitted] = useState(false);
+  const [cityWelcome, setCityWelcome] = useState(null);
   const [busyAction, setBusyAction] = useState(null); // "auth" | "reset"
 
   const authBusy = busyAction === "auth";
@@ -52,7 +55,12 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) 
       const res = mode === "login"
         ? await login(email.trim(), password)
         : await signup({ name, email: email.trim(), password, city: city?.city, location: city, genres: genreSelection.genres, ageBand, agreedToTerms: true, analyticsConsent });
-      if (res?.ok && mode === "signup" && res?.pending) setSignupSubmitted(true);
+      if (res?.ok && mode === "signup") {
+        const identity = cityIdentityForLocation(city);
+        setSignupSubmitted(res.pending === true);
+        if (identity) setCityWelcome({ identity, pending: res.pending === true });
+        else if (!res.pending) onDone?.(mode);
+      }
       else if (res?.ok) onDone?.(mode);
       else setError(res?.error || "That request did not complete. Please try again.");
     } catch {
@@ -87,6 +95,18 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) 
   if (viewing === "terms") return <TermsScreen onClose={() => setViewing(null)} />;
   if (viewing === "privacy") return <PrivacyScreen onClose={() => setViewing(null)} />;
 
+  if (cityWelcome) {
+    const dismiss = () => {
+      setCityWelcome(null);
+      if (!cityWelcome.pending) onDone?.("signup");
+    };
+    return <View style={styles.wrap}>
+      <SheetHeader title={cityWelcome.identity.city} onClose={dismiss} />
+      <ScrollView contentContainerStyle={styles.content}>
+        <CityWelcomeCard city={cityWelcome.identity} onDismiss={dismiss} onOpenCity={onOpenCity ? (identity) => { setCityWelcome(null); onOpenCity(identity); } : undefined} />
+      </ScrollView>
+    </View>;
+  }
   if (signupSubmitted) {
     return (
       <View style={styles.wrap}>

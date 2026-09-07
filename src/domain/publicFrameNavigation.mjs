@@ -1,6 +1,7 @@
 import {
   artistConcertsPath,
   artistPath,
+  cityPath,
   concertPath,
   eventPath,
   parsePublicCollectionPath,
@@ -17,6 +18,7 @@ const text = (value) => String(value ?? "").trim();
 // never written into browser history.
 export function publicFramePath(frame, { resolveArtistMeta, resolveUser } = {}) {
   if (!frame) return null;
+  if (frame.cityGuide) return frame.cityGuide.directory ? "/cities" : cityPath(frame.cityGuide);
   if (frame.directory === "artists" || frame.directory === "events") return `/${frame.directory}`;
   if (frame.artistArchive?.name) {
     const publicSlug = text(

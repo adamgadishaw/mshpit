@@ -4,7 +4,6 @@ import { postMediaProjectionByPost } from "../../mediaAssets.js";
 import { publicPageSitemapEntries } from "../../publicPages.js";
 import { publicTicketmasterEventImage } from "../../providerEventImage.js";
 import { publicVenuePhotoPool } from "../../venuePhotoCatalog.js";
-import { projectedTourDateTicketUrl } from "../../../src/domain/ticketLinks.mjs";
 import { isLegacyArtistMemorial } from "../../../src/domain/artistLegacy.mjs";
 import {
   artistConcertsPath,
@@ -38,6 +37,7 @@ import {
   structuredCityIdentity,
 } from "./publicEntityPolicy.js";
 import { createPublicDocumentRepository } from "./publicDocumentRepository.js";
+import { createCityGuideRepository } from "../cities/cityGuideRepository.js";
 import { effectiveTourDateEndSql } from "../../tourDateLifecycle.js";
 import {
   artistHasLegacyMemorial,
@@ -64,10 +64,6 @@ export const SITEMAP_PATHS = Object.freeze([
 ]);
 
 const CANDIDATE_READ_SIZE = 500;
-const NON_PURCHASABLE_EVENT_STATUSES = new Set([
-  "cancelled", "canceled", "offsale", "off-sale", "off_sale", "unavailable",
-]);
-
 const xmlEscape = (value) => String(value ?? "")
   .replace(/&/g, "&amp;")
   .replace(/</g, "&lt;")
@@ -594,14 +590,12 @@ function visibleUpcomingEvents(database, { now = Date.now(), limit = -1, candida
 
 export function hasIndexableEventEvidence({
   eligibleFanContent = false,
-  currentPublicTicketUrl = null,
   completeRichEvent = false,
 } = {}) {
-  return Boolean(
-    eligibleFanContent
-    || publicHttpsUrl(currentPublicTicketUrl)
-    || completeRichEvent,
-  );
+  // A purchasable link is useful to a person who reaches an event page, but it
+  // is not substantive page content on its own. Index only community-backed
+  // events or provider records complete enough to emit a valid MusicEvent.
+  return Boolean(eligibleFanContent || completeRichEvent);
 }
 
 function eventEvidenceKey(row) {
@@ -625,25 +619,14 @@ function eligibleFanEvidenceByEvent(posts) {
   return evidence;
 }
 
-function currentPublicEventTicketUrl(row, today) {
-  const status = String(row?.event_status || "").trim().toLowerCase();
-  if (!isStrictCalendarDate(row?.date) || row.date < today || NON_PURCHASABLE_EVENT_STATUSES.has(status)) {
-    return null;
-  }
-  return projectedTourDateTicketUrl(row) || null;
-}
-
 export function eventSitemapEntries(database, options = {}) {
   const candidates = options.candidates || null;
   const events = visibleUpcomingEvents(database, options);
   const fanEvidence = eligibleFanEvidenceByEvent(candidates?.posts || visiblePostCandidates(database));
-  const today = candidates?.today
-    || new Date(Number.isFinite(Number(options.now)) ? Number(options.now) : Date.now()).toISOString().slice(0, 10);
   return events.flatMap((row) => {
     const fanLastmod = fanEvidence.get(eventEvidenceKey(row));
     if (!hasIndexableEventEvidence({
       eligibleFanContent: Boolean(fanLastmod),
-      currentPublicTicketUrl: currentPublicEventTicketUrl(row, today),
       completeRichEvent: hasCompleteRichMusicEventRecord(row),
     })) return [];
     const providerImage = publicTicketmasterEventImage(row);
@@ -1096,7 +1079,13 @@ export function buildSitemapDatasets(database, { now = Date.now() } = {}) {
       totals: directoryTotals,
     }),
   ];
-  const cities = citySitemapEntries({ candidates, venueEntries: venues, concerts });
+  const guideCities = database.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='city_profiles'").get()
+    ? createCityGuideRepository(database).listSitemapCities({ at: candidates.generatedAt }).map((city) => ({
+      path: city.path, ...(city.updatedAt > 0 ? { lastmod: new Date(city.updatedAt).toISOString() } : {}),
+    }))
+    : [];
+  if (guideCities.length) pages.push({ path: "/cities" });
+  const cities = [...citySitemapEntries({ candidates, venueEntries: venues, concerts }), ...guideCities];
   const artistArchives = artistArchiveSitemapEntries({ artistEntries: artists, concerts });
   const datasets = new Map([
     ["pages", pages],

@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
+import { registerPitSqliteFunctions } from "./sqliteFunctions.js";
 
 // discoverService's production singleton imports db.js. Give that harmless
 // default handle its own directory so this fixture never contends with parallel
@@ -45,7 +46,7 @@ function musicBrainzEvidencedGenre(value = "Hip Hop") {
 }
 
 function fixture() {
-  const database = new DatabaseSync(":memory:");
+  const database = registerPitSqliteFunctions(new DatabaseSync(":memory:"));
   database.exec(`
     CREATE TABLE artists (
       norm TEXT PRIMARY KEY, name TEXT NOT NULL, genre TEXT, country TEXT,
@@ -81,8 +82,18 @@ function fixture() {
       source TEXT,venue_provider_id TEXT,venue_city TEXT,venue_region TEXT,
       venue_country_code TEXT,venue_country TEXT,owner_id TEXT,updated_at INTEGER
     );
+    ALTER TABLE artists ADD COLUMN mbid TEXT;
+    ALTER TABLE tour_dates ADD COLUMN event_end_date TEXT;
+    ALTER TABLE tour_dates ADD COLUMN event_timezone TEXT;
+    ALTER TABLE tour_dates ADD COLUMN event_kind TEXT;
+    ALTER TABLE tour_dates ADD COLUMN music_evidence TEXT;
+    ALTER TABLE tour_dates ADD COLUMN billed_artists TEXT;
+    ALTER TABLE tour_dates ADD COLUMN music_qualified INTEGER DEFAULT 1;
+    ALTER TABLE tour_dates ADD COLUMN provider_active INTEGER DEFAULT 1;
+    ALTER TABLE tour_dates ADD COLUMN release_at INTEGER DEFAULT 0;
+    CREATE TABLE artist_memorials (artist_key TEXT,artist_mbid TEXT,status TEXT);
   `);
-  const addArtist = database.prepare("INSERT INTO artists VALUES (?,?,?,?,?,?,?,?)");
+  const addArtist = database.prepare("INSERT INTO artists(norm,name,genre,country,popularity,rank_score,photo,data) VALUES (?,?,?,?,?,?,?,?)");
   addArtist.run("alpha", "Alpha", "rap", "Canada", 90, 9, "alpha.jpg", evidencedGenre("rap", { followers: 120, topTracks: [{ title: "First", url: "first.mp3" }] }));
   addArtist.run("bravo", "Bravo", "Hip Hop", "United States", 98, 10, "bravo.jpg", evidencedGenre("Hip Hop"));
   addArtist.run("charlie", "Charlie", "indie rock", "Canada", 80, 8, null, evidencedGenre("indie rock"));
@@ -113,7 +124,7 @@ test("canonicalGenre collapses conservative aliases", () => {
 test("Discover hides crawl hints and only filters or aggregates evidenced genres", () => {
   const database = fixture();
   try {
-    const addArtist = database.prepare("INSERT INTO artists VALUES (?,?,?,?,?,?,?,?)");
+    const addArtist = database.prepare("INSERT INTO artists(norm,name,genre,country,popularity,rank_score,photo,data) VALUES (?,?,?,?,?,?,?,?)");
     addArtist.run("legacy-crawl", "Legacy Crawl", "Hardcore", "Canada", 99, 11, null, "{}");
     addArtist.run("legacy-alternative", "Legacy Alternative", "Alternative", "Canada", 98, 10, null, "{}");
     addArtist.run("malformed-crawl", "Malformed Crawl", "Metal", "Canada", 97, 10, null, "{not-json");
@@ -206,7 +217,7 @@ test("popularity chart filters by canonical genre and country", () => {
 test("popularity chart skips unreviewed provider rows with inconsistent identity data", () => {
   const database = fixture();
   try {
-    const addArtist = database.prepare("INSERT INTO artists VALUES (?,?,?,?,?,?,?,?)");
+    const addArtist = database.prepare("INSERT INTO artists(norm,name,genre,country,popularity,rank_score,photo,data) VALUES (?,?,?,?,?,?,?,?)");
     addArtist.run("d", "D", "Hip Hop", "Canada", 100, 100, null,
       JSON.stringify({ name: "D", followers: 24_000_000, topTracks: [{ title: "Wrong Artist Track" }] }));
     addArtist.run("emonyx", "EMONYX", "Hip Hop", "Canada", 99, 99, null,
@@ -226,7 +237,7 @@ test("popularity chart skips unreviewed provider rows with inconsistent identity
 test("genre artists put confidence-ranked MSHpit live ratings before separate popularity rows", () => {
   const database = fixture();
   try {
-    const addArtist = database.prepare("INSERT INTO artists VALUES (?,?,?,?,?,?,?,?)");
+    const addArtist = database.prepare("INSERT INTO artists(norm,name,genre,country,popularity,rank_score,photo,data) VALUES (?,?,?,?,?,?,?,?)");
     addArtist.run("echo", "Echo", "Hip Hop", "Canada", 96, 9, null, evidencedGenre("Hip Hop"));
     addArtist.run("foxtrot", "Foxtrot", "Hip Hop", "Canada", 95, 8, null, evidencedGenre("Hip Hop"));
     const addPost = database.prepare(`INSERT INTO posts

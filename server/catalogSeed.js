@@ -15,6 +15,8 @@ import {
 import { genreFieldsForClaim, resolveGenre, storedClaims } from "../src/domain/genre.mjs";
 import { privateErrorLabel } from "./errors.js";
 import { runBackgroundJob } from "./backgroundJobCoordinator.js";
+import { runMusicBrainzRequest } from "./musicBrainzRequestThrottle.js";
+import { PROVIDER_JSON_LIMITS, readBoundedJsonResponse } from "./boundedJsonResponse.js";
 import {
   findSpotifyArtistPhoto,
   safeSpotifyArtistId,
@@ -71,14 +73,23 @@ export const GENRE_TAGS = [
   ["classical", "Classical"], ["gospel", "Gospel"], ["world", "World"],
 ];
 
-async function mbTag(tag, offset) {
+export async function mbTag(tag, offset, {
+  fetchImpl = globalThis.fetch,
+  requestGate = runMusicBrainzRequest,
+  pause = sleep,
+  signal,
+} = {}) {
   const url = `https://musicbrainz.org/ws/2/artist?query=${encodeURIComponent(`tag:"${tag}"`)}&fmt=json&limit=${PAGE}&offset=${offset}`;
   let lastError;
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const r = await fetch(url, { headers: { "User-Agent": UA, Accept: "application/json" }, signal: AbortSignal.timeout(15000) });
-      if (!r.ok) throw new ProviderError("MusicBrainz", r.status, `MusicBrainz returned ${r.status}.`, { code: r.status === 429 ? "rate_limited" : "http_error" });
-      const d = await r.json();
+      const d = await requestGate(async () => {
+        const timeoutSignal = AbortSignal.timeout(15_000);
+        const requestSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+        const response = await fetchImpl(url, { headers: { "User-Agent": UA, Accept: "application/json" }, signal: requestSignal });
+        if (!response.ok) throw new ProviderError("MusicBrainz", response.status, `MusicBrainz returned ${response.status}.`, { code: response.status === 429 ? "rate_limited" : "http_error" });
+        return readBoundedJsonResponse(response, { maxBytes: PROVIDER_JSON_LIMITS.musicBrainz, signal: requestSignal });
+      }, { signal });
       const raw = Array.isArray(d.artists) ? d.artists : [];
       return {
         items: raw
@@ -88,8 +99,9 @@ async function mbTag(tag, offset) {
         total: Number(d.count ?? d["artist-count"]) || null,
       };
     } catch (error) {
+      if (signal?.aborted) throw signal.reason || error;
       lastError = error;
-      if (attempt < 2) await sleep(1000 * (attempt + 1));
+      if (attempt < 2) await pause(1000 * (attempt + 1));
     }
   }
   throw lastError || new ProviderError("MusicBrainz", 502, "MusicBrainz could not be reached.");
@@ -174,7 +186,8 @@ export async function crawlArtists({ target = 10000, perTag = 600, shouldStop = 
       const page = await mbTag(tag, offset);
       const list = page.items;
       pages++;
-      await sleep(1100); // MusicBrainz ~1 req/s
+      // The shared provider gate spaces this crawl against identity lookups,
+      // genre refresh, and memorial checks, including retries.
       for (const x of list) {
         const norm = normName(x.name);
         if (artistStmts.byNorm.get(norm)) continue; // additive: never re-add
