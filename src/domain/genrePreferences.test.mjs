@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   PROFILE_GENRE_MAX,
+  PROFILE_GENRE_OPTIONS,
   profileGenreOptions,
   profileGenreSelection,
 } from "./genrePreferences.mjs";
@@ -24,4 +25,16 @@ test("legacy profile labels stay visible instead of being silently truncated", (
     profileGenreOptions(["Legacy Wave", "R&B", "legacy wave"], ["R&B", "Rock"]),
     ["Legacy Wave", "R&B", "Rock"],
   );
+});
+
+test("signup and profile defaults include broad musical tastes without rewriting custom preferences", () => {
+  for (const genre of ["Pop", "R&B", "Rock", "Country", "Latin", "Afrobeats", "Reggae", "Classical", "Gospel", "K-Pop"])
+    assert.ok(PROFILE_GENRE_OPTIONS.includes(genre), `${genre} must be selectable`);
+  for (const genre of PROFILE_GENRE_OPTIONS) assert.equal(profileGenreSelection([genre]).valid, true);
+  assert.equal(new Set(PROFILE_GENRE_OPTIONS.map((genre) => genre.toLowerCase())).size, PROFILE_GENRE_OPTIONS.length);
+  const saved = ["Chamber Pop", "r&b", "Tamil Folk"];
+  const options = profileGenreOptions(saved);
+  assert.deepEqual(options.slice(0, 3), saved);
+  assert.equal(options.filter((genre) => genre.toLowerCase() === "r&b").length, 1);
+  assert.deepEqual(saved, ["Chamber Pop", "r&b", "Tamil Folk"]);
 });

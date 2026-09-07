@@ -1,454 +1,312 @@
-import { useState } from "react";
-import { View, Text, StyleSheet, TextInput, Pressable, ScrollView } from "react-native";
-import { colors, mono, radius } from "../theme";
+import { useEffect, useRef, useState } from "react";
+import { ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { colors, displayFont, focusRing, mono, radius, shadow, space } from "../theme";
 import { useStore } from "../store";
 import Icon from "../components/Icon";
+import BrandMark from "../components/BrandMark";
 import SheetHeader from "../components/SheetHeader";
 import LocationPicker from "../components/LocationPicker";
 import PrivacyScreen from "./PrivacyScreen";
 import TermsScreen from "./TermsScreen";
-import { GENRES } from "../data";
-import { PROFILE_GENRE_MAX, profileGenreSelection } from "../domain/genrePreferences.mjs";
-import CityWelcomeCard from "../features/cities/CityWelcomeCard";
-import { cityIdentityForLocation } from "../cityIdentity.js";
+import { PROFILE_GENRE_MAX, PROFILE_GENRE_OPTIONS } from "../domain/genrePreferences.mjs";
+import { cleanHandle, isEmail } from "../domain/validation.mjs";
+import { signupAccountError, signupAriaProps, signupFormPayload, signupHandlePresentation, signupMusicError } from "../domain/signupForm.mjs";
+import { useSignupHandleAvailability } from "../features/signupHandle/useSignupHandleAvailability";
 
-export default function AuthScreen({ onDone, onCancel, onOpenCity, initialMode = "login" }) {
+const readableError = (error, fallback) => String(typeof error === "string" ? error : error?.userMessage || error?.message || fallback).slice(0, 280);
+const controlStyle = (base, disabled = false) => ({ pressed, focused }) => [base, disabled && styles.disabled, pressed && !disabled && styles.pressed, focused && focusRing];
+
+function AuthPressable({ accessibilityState = {}, disabled, ...props }) {
+  const state = { ...accessibilityState, ...(disabled === undefined ? {} : { disabled: !!disabled }) };
+  return <Pressable {...props} disabled={disabled} accessibilityState={state} {...signupAriaProps(Platform.OS, state)} />;
+}
+
+export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) {
   const { login, signup, forgotPassword } = useStore();
+  const insets = useSafeAreaInsets();
   const [mode, setMode] = useState(initialMode === "signup" ? "signup" : "login");
-  const [sentTo, setSentTo] = useState(null); // email a reset link was requested for
+  const [step, setStep] = useState(1);
   const [name, setName] = useState("");
+  const [handle, setHandle] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [city, setCity] = useState(null); // complete LocationPicker place identity
+  const [showPassword, setShowPassword] = useState(false);
+  const [city, setCity] = useState(null);
   const [genres, setGenres] = useState([]);
+  const [ageBand, setAgeBand] = useState(null);
+  const [agreed, setAgreed] = useState(false);
+  const [analyticsConsent, setAnalyticsConsent] = useState(false);
+  const [analyticsDetails, setAnalyticsDetails] = useState(false);
   const [pickingCity, setPickingCity] = useState(false);
-  const [agreed, setAgreed] = useState(false); // signup: consent to Terms + Privacy
-  const [ageBand, setAgeBand] = useState(null); // coarse safety band; no birth date is collected
-  const [analyticsConsent, setAnalyticsConsent] = useState(false); // optional, default off
-  const [viewing, setViewing] = useState(null); // "terms" | "privacy", inline reader
-  const [error, setError] = useState("");
+  const [viewing, setViewing] = useState(null);
+  const [sentTo, setSentTo] = useState(null);
   const [signupSubmitted, setSignupSubmitted] = useState(false);
-  const [cityWelcome, setCityWelcome] = useState(null);
-  const [busyAction, setBusyAction] = useState(null); // "auth" | "reset"
-
+  const [busyAction, setBusyAction] = useState(null);
+  const [error, setError] = useState("");
+  const [errorField, setErrorField] = useState(null);
+  const mounted = useRef(true);
+  const busyRef = useRef(false);
+  const inputs = useRef({});
+  const scroll = useRef(null);
+  const heading = useRef(null);
+  const errorRef = useRef(null);
+  const signupMode = mode === "signup";
   const authBusy = busyAction === "auth";
   const resetBusy = busyAction === "reset";
+  const busy = !!busyAction;
+  const availability = useSignupHandleAvailability(handle, { enabled: signupMode && !signupSubmitted && !viewing && !pickingCity });
+  const handleStatus = signupHandlePresentation(availability.resource, handle);
+  const currentAvailability = availability.resource.status === "ready" ? availability.resource.data : null;
 
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  useEffect(() => {
+    scroll.current?.scrollTo?.({ y: 0, animated: false });
+    if (!error) heading.current?.focus?.();
+  }, [mode, step, signupSubmitted, sentTo, viewing, pickingCity]);
+  useEffect(() => {
+    if (!error) return;
+    const target = inputs.current[errorField] || errorRef.current;
+    target?.focus?.();
+    if (!errorField || !inputs.current[errorField]) scroll.current?.scrollTo?.({ y: 0, animated: false });
+  }, [error, errorField, step]);
+
+  const clearError = () => { setError(""); setErrorField(null); };
+  const showError = (failure) => { setError(failure.message); setErrorField(failure.field || null); };
+  const changeMode = (next) => {
+    if (busyRef.current) return;
+    setMode(next); setStep(1); setSentTo(null); setShowPassword(false); clearError();
+  };
+  const accountValues = () => ({ name, handle, email, password });
+  const accountFailure = () => signupAccountError(accountValues(), currentAvailability)
+    || (availability.resource.scope === cleanHandle(handle) && availability.resource.status === "error"
+      && Number(availability.resource.error?.status) === 400 ? { field: "handle", message: handleStatus.message } : null);
+  const advance = () => {
+    const failure = accountFailure();
+    if (failure) { showError(failure); return; }
+    clearError(); setStep(2);
+  };
   const submit = async () => {
-    if (busyAction) return;
-    if (mode === "signup" && !agreed) {
-      setError("Please agree to the Terms & Conditions and Privacy policy to create your account.");
+    if (busyRef.current) return;
+    if (signupMode && step === 1) { advance(); return; }
+    if (signupMode) {
+      const accountError = accountFailure();
+      if (accountError) { setStep(1); showError(accountError); return; }
+      const musicFailure = signupMusicError({ genres, ageBand, agreed });
+      if (musicFailure) { showError(musicFailure); return; }
+    } else if (!isEmail(email) || !password) {
+      showError({ field: !isEmail(email) ? "email" : "password", message: !isEmail(email) ? "Enter a valid email address." : "Enter your password." });
       return;
     }
-    if (mode === "signup" && !ageBand) {
-      setError("Choose your age group to continue.");
-      return;
-    }
-    const genreSelection = profileGenreSelection(genres);
-    if (mode === "signup" && !genreSelection.valid) {
-      setError(genreSelection.error);
-      return;
-    }
-    setError("");
-    setBusyAction("auth");
+    clearError(); busyRef.current = true; setBusyAction("auth");
     try {
-      const res = mode === "login"
-        ? await login(email.trim(), password)
-        : await signup({ name, email: email.trim(), password, city: city?.city, location: city, genres: genreSelection.genres, ageBand, agreedToTerms: true, analyticsConsent });
-      if (res?.ok && mode === "signup") {
-        const identity = cityIdentityForLocation(city);
-        setSignupSubmitted(res.pending === true);
-        if (identity) setCityWelcome({ identity, pending: res.pending === true });
-        else if (!res.pending) onDone?.(mode);
+      const result = signupMode
+        ? await signup(signupFormPayload({ ...accountValues(), city, genres, ageBand, agreed, analyticsConsent }))
+        : await login(email.trim(), password);
+      if (!mounted.current) return;
+      if (result?.ok) {
+        setPassword(""); setShowPassword(false);
+        if (signupMode && result.pending === true) setSignupSubmitted(true);
+        else onDone?.(mode);
+      } else {
+        const handleTaken = result?.error?.serverCode === "HANDLE_TAKEN" || result?.code === "HANDLE_TAKEN"
+          || /username.*taken|handle.*taken/i.test(readableError(result?.error, ""));
+        if (signupMode && handleTaken) { setStep(1); availability.retry(); }
+        showError({ field: handleTaken ? "handle" : null, message: readableError(result?.error, "That request did not complete. Please try again.") });
       }
-      else if (res?.ok) onDone?.(mode);
-      else setError(res?.error || "That request did not complete. Please try again.");
-    } catch {
-      setError("Couldn't connect. Check your connection and try again.");
+    } catch (failure) {
+      if (mounted.current) showError({ message: readableError(failure, "Couldn't connect. Check your connection and try again.") });
     } finally {
-      setBusyAction(null);
+      busyRef.current = false;
+      if (mounted.current) setBusyAction(null);
     }
   };
-
-  if (pickingCity) {
-    return (
-      <LocationPicker
-        onClose={() => setPickingCity(false)}
-        onSelect={(place) => { setCity(place); setPickingCity(false); }}
-      />
-    );
-  }
-
+  const sendReset = async () => {
+    if (busyRef.current) return;
+    if (!isEmail(email)) { showError({ field: "email", message: "Enter the email on your account." }); return; }
+    const requestedEmail = email.trim();
+    clearError(); busyRef.current = true; setBusyAction("reset");
+    try {
+      const result = await forgotPassword(requestedEmail);
+      if (!mounted.current) return;
+      if (result?.ok === false) showError({ message: readableError(result.error, "The reset request did not complete. Please try again.") });
+      else setSentTo(requestedEmail);
+    } catch (failure) {
+      if (mounted.current) showError({ message: readableError(failure, "Couldn't request a reset link. Check your connection and try again.") });
+    } finally {
+      busyRef.current = false;
+      if (mounted.current) setBusyAction(null);
+    }
+  };
   const toggleGenre = (genre) => {
-    setGenres((current) => {
-      if (current.includes(genre)) return current.filter((value) => value !== genre);
-      if (current.length >= PROFILE_GENRE_MAX) {
-        setError("Choose up to 3 music genres.");
-        return current;
-      }
-      setError("");
-      return [...current, genre];
-    });
+    if (genres.includes(genre)) { setGenres(genres.filter((value) => value !== genre)); clearError(); return; }
+    if (genres.length >= PROFILE_GENRE_MAX) { showError({ field: "genres", message: "Choose up to 3 music genres." }); return; }
+    setGenres([...genres, genre]); clearError();
   };
 
-  // Let people actually read what they're agreeing to, without leaving sign-up.
+  // Inline readers and the location picker leave all form state mounted here.
+  if (pickingCity) return <LocationPicker onClose={() => setPickingCity(false)} onSelect={(place) => { setCity(place); setPickingCity(false); }} />;
   if (viewing === "terms") return <TermsScreen onClose={() => setViewing(null)} />;
   if (viewing === "privacy") return <PrivacyScreen onClose={() => setViewing(null)} />;
 
-  if (cityWelcome) {
-    const dismiss = () => {
-      setCityWelcome(null);
-      if (!cityWelcome.pending) onDone?.("signup");
-    };
-    return <View style={styles.wrap}>
-      <SheetHeader title={cityWelcome.identity.city} onClose={dismiss} />
-      <ScrollView contentContainerStyle={styles.content}>
-        <CityWelcomeCard city={cityWelcome.identity} onDismiss={dismiss} onOpenCity={onOpenCity ? (identity) => { setCityWelcome(null); onOpenCity(identity); } : undefined} />
-      </ScrollView>
-    </View>;
-  }
-  if (signupSubmitted) {
-    return (
-      <View style={styles.wrap}>
-        <SheetHeader title="Check your email" onClose={onCancel} />
-        <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-          <Text style={styles.wordmark}>MSHPIT</Text>
-          <Text style={[styles.tag, { marginBottom: 20 }]} accessibilityRole="header">Finish signing up from your email</Text>
-          <View style={styles.artistNote}>
-            <Icon name="mail" size={16} color={colors.amber} />
-            <Text style={styles.artistNoteTxt} accessibilityLiveRegion="polite" role="status">If this is a new email address, we sent a verification link. After you confirm and log in, you can choose your public @username and banner, then take a quick tour. If this address already has an account, log in or reset your password. For privacy, we show the same message either way.</Text>
-          </View>
-          <Pressable style={styles.primary} onPress={() => { setMode("login"); setSignupSubmitted(false); setPassword(""); setError(""); }} accessibilityRole="button">
-            <Text style={styles.primaryTxt}>CONTINUE TO LOG IN</Text>
-          </Pressable>
-        </ScrollView>
-      </View>
-    );
-  }
-
-  const sendReset = async () => {
-    if (busyAction) return;
-    if (!email.trim()) { setError("Enter the email on your account."); return; }
-    const requestedEmail = email.trim();
-    setError("");
-    setBusyAction("reset");
-    try {
-      const result = await forgotPassword(requestedEmail);
-      if (result?.ok === false) setError(result?.error || "The reset request did not complete. Please try again.");
-      else setSentTo(requestedEmail);
-    } catch {
-      setError("Couldn't request a reset link. Check your connection and try again.");
-    } finally {
-      setBusyAction(null);
-    }
-  };
-
-  // Forgot-password view: request a reset link, then a neutral confirmation.
-  if (mode === "forgot") {
-    return (
-      <View style={styles.wrap}>
-        <SheetHeader title="Reset password" onClose={onCancel} />
-        <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-          <Text style={styles.wordmark}>MSHPIT</Text>
-          {sentTo ? (
-            <View>
-              <Text style={[styles.tag, { marginBottom: 20 }]} accessibilityRole="header">Check your email</Text>
-              <View style={styles.artistNote}>
-                <Icon name="mail" size={16} color={colors.amber} />
-                <Text style={styles.artistNoteTxt} accessibilityLiveRegion="polite" role="status">If an account exists for {sentTo}, we've emailed a link to reset your password. It's valid for 1 hour. Check spam if you don't see it.</Text>
-              </View>
-              <Pressable style={styles.primary} onPress={() => { setMode("login"); setSentTo(null); setError(""); }} accessibilityRole="button">
-                <Text style={styles.primaryTxt}>BACK TO LOG IN</Text>
-              </Pressable>
-            </View>
-          ) : (
-            <>
-              <Text style={[styles.tag, { marginBottom: 20 }]}>Enter your email and we'll send a reset link.</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="Email"
-                placeholderTextColor={colors.textFaint}
-                value={email}
-                onChangeText={(value) => { setEmail(value); setError(""); }}
-                autoCapitalize="none"
-                autoCorrect={false}
-                autoComplete="email"
-                textContentType="emailAddress"
-                keyboardType="email-address"
-                returnKeyType="send"
-                maxLength={120}
-                onSubmitEditing={sendReset}
-                editable={!resetBusy}
-                accessibilityLabel="Account email"
-                accessibilityState={{ disabled: resetBusy }}
-              />
-              {!!error && <Text style={styles.error} accessibilityRole="alert" accessibilityLiveRegion="assertive">{error}</Text>}
-              <Pressable
-                style={[styles.primary, resetBusy && styles.primaryOff]}
-                onPress={sendReset}
-                disabled={resetBusy}
-                accessibilityRole="button"
-                accessibilityState={{ disabled: resetBusy, busy: resetBusy }}
-              >
-                <Text style={styles.primaryTxt}>{resetBusy ? "SENDING..." : "SEND RESET LINK"}</Text>
-              </Pressable>
-              <Pressable style={styles.switchButton} onPress={() => { setMode("login"); setError(""); }} disabled={resetBusy} accessibilityRole="button" accessibilityState={{ disabled: resetBusy }}>
-                <Text style={styles.switch}>Back to log in</Text>
-              </Pressable>
-            </>
-          )}
-        </ScrollView>
-      </View>
-    );
-  }
-
-  return (
-    <View style={styles.wrap}>
-      <SheetHeader title={mode === "login" ? "Log in" : "Sign up"} onClose={onCancel} />
-
-      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-        <Text style={styles.wordmark}>MSHPIT</Text>
-        <Text style={styles.tag}>remember the shows you attend</Text>
-
-        {mode === "signup" && (
-          <View style={styles.setupNote} accessibilityRole="summary">
-            <Icon name="you" size={17} color={colors.amber} />
-            <Text style={styles.setupNoteText}>After email confirmation, finish your profile with a public @username and optional banner, then follow a short walkthrough.</Text>
-          </View>
-        )}
-
-        {mode === "signup" && (
-          <TextInput
-            style={styles.input}
-            placeholder="Name"
-            placeholderTextColor={colors.textFaint}
-            value={name}
-            onChangeText={(value) => { setName(value); setError(""); }}
-            autoComplete="name"
-            textContentType="name"
-            returnKeyType="next"
-            maxLength={40}
-            editable={!authBusy}
-            accessibilityLabel="Name"
-            accessibilityState={{ disabled: authBusy }}
-          />
-        )}
-        {mode === "signup" && (
-          <View style={styles.ageSection} accessibilityRole="radiogroup" accessibilityLabel="Age group">
-            <Text style={styles.genreLabel}>AGE GROUP</Text>
-            <Text style={styles.genreHint}>Used only for account safety. We do not ask for your birth date.</Text>
-            <View style={styles.ageChoices}>
-              {[["13_17", "13–17"], ["18_plus", "18+"]].map(([value, label]) => (
-                <Pressable key={value} style={[styles.ageChoice, ageBand === value && styles.genreChipSelected]} onPress={() => setAgeBand(value)} accessibilityRole="radio" accessibilityState={{ selected: ageBand === value }}>
-                  <Text style={[styles.genreChipText, ageBand === value && styles.genreChipTextSelected]}>{label}</Text>
-                </Pressable>
-              ))}
-            </View>
-          </View>
-        )}
-
-        {mode === "signup" && (
-          <Pressable
-            style={[styles.cityPick, authBusy && styles.primaryOff]}
-            onPress={() => setPickingCity(true)}
-            disabled={authBusy}
-            accessibilityRole="button"
-            accessibilityLabel={city ? `City, ${city.label}` : "Choose your city"}
-            accessibilityHint="Used to show nearby concerts and local posts"
-            accessibilityState={{ disabled: authBusy }}
-          >
-            <Icon name="pin" size={16} color={colors.amber} />
-            <Text style={[styles.cityTxt, !city && styles.cityPlaceholder]}>{city ? city.label : "Your city (shows events near you)"}</Text>
-            <Icon name="chevron-right" size={16} color={colors.textDim} />
-          </Pressable>
-        )}
-        {mode === "signup" && (
-          <View style={styles.genreSection}>
-            <View style={styles.genreHeading}>
-              <Text style={styles.genreLabel}>MUSIC YOU LIKE</Text>
-              <Text style={styles.genreCount}>{genres.length}/3 selected</Text>
-            </View>
-            <Text style={styles.genreHint}>Choose 1 to 3 genres. This starts your artist, show, and feed recommendations.</Text>
-            <View style={styles.genreChips}>
-              {GENRES.map((genre) => {
-                const selected = genres.includes(genre);
-                return (
-                  <Pressable
-                    key={genre}
-                    style={[styles.genreChip, selected && styles.genreChipSelected]}
-                    onPress={() => toggleGenre(genre)}
-                    disabled={authBusy}
-                    accessibilityRole="checkbox"
-                    accessibilityState={{ checked: selected, disabled: authBusy }}
-                    accessibilityLabel={genre}
-                  >
-                    <Text style={[styles.genreChipText, selected && styles.genreChipTextSelected]}>{genre}</Text>
-                  </Pressable>
-                );
-              })}
-            </View>
-          </View>
-        )}
+  const field = (key, label, value, change, options = {}) => (
+    <View style={[styles.field, options.paired && styles.pairedField]} key={key}>
+      <Text style={styles.fieldLabel}>{label}</Text>
+      <View style={[styles.inputShell, errorField === key && styles.invalidInput]}>
+        {key === "handle" ? <Text style={styles.handlePrefix}>@</Text> : null}
         <TextInput
-          style={styles.input}
-          placeholder="Email"
-          placeholderTextColor={colors.textFaint}
-          value={email}
-          onChangeText={(value) => { setEmail(value); setError(""); }}
-          autoCapitalize="none"
-          autoCorrect={false}
-          autoComplete="email"
-          textContentType="emailAddress"
-          keyboardType="email-address"
-          returnKeyType="next"
-          maxLength={120}
-          editable={!authBusy}
-          accessibilityLabel="Email"
-          accessibilityState={{ disabled: authBusy }}
+          ref={(node) => { inputs.current[key] = node; }}
+          style={styles.input} value={value} onChangeText={(next) => { change(next); clearError(); }}
+          placeholder={options.placeholder} placeholderTextColor={colors.textFaint}
+          autoCapitalize={key === "name" ? "words" : "none"} autoCorrect={false}
+          autoComplete={options.autoComplete} textContentType={options.textContentType}
+          keyboardType={key === "email" ? "email-address" : "default"}
+          secureTextEntry={key === "password" && !showPassword}
+          maxLength={options.maxLength || 120} editable={!busy}
+          returnKeyType={options.returnKeyType || "next"} onSubmitEditing={options.onSubmit}
+          accessibilityLabel={label} accessibilityState={{ disabled: busy }}
+          {...signupAriaProps(Platform.OS, { disabled: busy })}
+          {...(Platform.OS === "web" ? { "aria-invalid": errorField === key } : {})}
         />
-        <TextInput
-          style={styles.input}
-          placeholder="Password"
-          placeholderTextColor={colors.textFaint}
-          value={password}
-          onChangeText={(value) => { setPassword(value); setError(""); }}
-          secureTextEntry
-          autoComplete={mode === "login" ? "current-password" : "new-password"}
-          textContentType={mode === "login" ? "password" : "newPassword"}
-          returnKeyType="go"
-          maxLength={100}
-          editable={!authBusy}
-          onSubmitEditing={submit}
-          accessibilityLabel="Password"
-          accessibilityState={{ disabled: authBusy }}
-        />
-
-        {mode === "signup" && (
-          <Pressable
-            style={styles.consent}
-            onPress={() => { setAgreed((v) => !v); setError(""); }}
-            disabled={authBusy}
-            accessibilityRole="checkbox"
-            accessibilityState={{ checked: agreed, disabled: authBusy }}
-            accessibilityLabel="I agree to the Terms and Privacy policy"
-          >
-            <View style={[styles.box, agreed && styles.boxOn]}>
-              {agreed ? <Icon name="check" size={14} color="#1A1206" strokeWidth={3} /> : null}
-            </View>
-            <Text style={styles.consentTxt}>
-              I agree to the{" "}
-              <Text style={styles.link}>Terms & Conditions</Text> and Privacy policy. Use the links below to review them first.
-            </Text>
-          </Pressable>
-        )}
-
-        {mode === "signup" && (
-          <View style={styles.policyLinks}>
-            <Pressable style={styles.inlineLink} onPress={() => setViewing("terms")} disabled={authBusy} accessibilityRole="link" accessibilityState={{ disabled: authBusy }}><Text style={styles.link}>Read Terms</Text></Pressable>
-            <Pressable style={styles.inlineLink} onPress={() => setViewing("privacy")} disabled={authBusy} accessibilityRole="link" accessibilityState={{ disabled: authBusy }}><Text style={styles.link}>Read Privacy policy</Text></Pressable>
-          </View>
-        )}
-
-        {mode === "signup" && (
-          <Pressable style={styles.consent} onPress={() => setAnalyticsConsent((value) => !value)} disabled={authBusy} accessibilityRole="checkbox" accessibilityState={{ checked: analyticsConsent, disabled: authBusy }} accessibilityLabel="Share optional limited account usage data">
-            <View style={[styles.box, analyticsConsent && styles.boxOn]}>
-              {analyticsConsent ? <Icon name="check" size={14} color="#1A1206" strokeWidth={3} /> : null}
-            </View>
-            <Text style={styles.consentTxt}>Optional: share limited app usage events linked to your account. These events do not include the contents of authored posts or reviews, search terms, messages, or uploaded media. IP addresses are not stored with these analytics events. This helps Mshpit fix problems and improve recommendations. You can change this any time in Settings.</Text>
-          </Pressable>
-        )}
-
-        {mode === "login" && (
-          <Pressable style={styles.forgotButton} onPress={() => { setMode("forgot"); setError(""); }} disabled={authBusy} accessibilityRole="button" accessibilityState={{ disabled: authBusy }}>
-            <Text style={styles.forgot}>Forgot password?</Text>
-          </Pressable>
-        )}
-
-        {!!error && <Text style={styles.error} accessibilityRole="alert" accessibilityLiveRegion="assertive">{error}</Text>}
-
-        <Pressable
-          style={[styles.primary, (authBusy || (mode === "signup" && (!agreed || !profileGenreSelection(genres).valid))) && styles.primaryOff]}
-          onPress={submit}
-          disabled={authBusy || (mode === "signup" && (!agreed || !profileGenreSelection(genres).valid))}
-          accessibilityRole="button"
-          accessibilityState={{ disabled: authBusy || (mode === "signup" && (!agreed || !profileGenreSelection(genres).valid)), busy: authBusy }}
-        >
-          <Text style={styles.primaryTxt}>{authBusy ? (mode === "login" ? "LOGGING IN..." : "CREATING ACCOUNT...") : mode === "login" ? "LOG IN" : "CREATE ACCOUNT"}</Text>
-        </Pressable>
-
-        <Pressable style={styles.switchButton} onPress={() => { setMode(mode === "login" ? "signup" : "login"); setError(""); }} disabled={authBusy} accessibilityRole="button" accessibilityState={{ disabled: authBusy }}>
-          <Text style={styles.switch}>
-            {mode === "login" ? "No account? Sign up" : "Have an account? Log in"}
-          </Text>
-        </Pressable>
-
-        <View style={styles.artistNote}>
-          <Icon name="shield" size={16} color={colors.amber} />
-          <Text style={styles.artistNoteTxt}>
-            Are you an artist? Create a personal account first. Then open your profile and choose
-            Claim artist profile. Every claim is reviewed before approval.
-          </Text>
-        </View>
-      </ScrollView>
+        {key === "password" ? <AuthPressable style={controlStyle(styles.passwordToggle, busy)} onPress={() => setShowPassword(!showPassword)} disabled={busy} accessibilityRole="button" accessibilityLabel={showPassword ? "Hide password" : "Show password"} accessibilityState={{ disabled: busy }}>
+          <Text style={styles.link}>{showPassword ? "Hide" : "Show"}</Text>
+        </AuthPressable> : null}
+      </View>
+      {options.hint ? <Text style={styles.hint}>{options.hint}</Text> : null}
     </View>
   );
+  const primary = (label, onPress, loading = false) => <AuthPressable style={controlStyle(styles.primary, busy)} onPress={onPress} disabled={busy} accessibilityRole="button" accessibilityState={{ disabled: busy, busy: loading }}>
+    {loading ? <ActivityIndicator size="small" color="#1A1206" /> : null}
+    <Text style={styles.primaryText}>{label}</Text>
+    {!loading ? <Icon name="chevron-right" size={18} color="#1A1206" /> : null}
+  </AuthPressable>;
+  const headingText = signupSubmitted ? "Check your email." : mode === "forgot" ? sentTo ? "Check your email." : "Back to your account."
+    : signupMode ? step === 1 ? "Make it your night." : "Find your kind of show." : "Good to see you.";
+  const subheading = signupSubmitted ? "One more step before your profile is ready." : mode === "forgot" ? "A reset link gets you back in."
+    : signupMode ? step === 1 ? "Start with your account details." : "Pick your music. We’ll take it from there." : "Your shows, photos and people are waiting.";
+  const progress = { min: 1, max: 2, now: step, text: `Step ${step} of 2: ${step === 1 ? "Account" : "Music"}` };
+
+  return <KeyboardAvoidingView style={[styles.wrap, { paddingTop: insets.top }]} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+    <SheetHeader title={signupSubmitted ? "Check your email" : mode === "forgot" ? "Reset password" : signupMode ? "Sign up" : "Log in"} onClose={onCancel} leadDisabled={busy} />
+    <ScrollView ref={scroll} contentContainerStyle={[styles.content, { paddingBottom: Math.max(insets.bottom, 16) + 24 }]} contentInsetAdjustmentBehavior="automatic" keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag" automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}>
+      <View style={styles.ticket}>
+        <View style={styles.brandRow}><BrandMark size={30} color={colors.amber} /><View><Text style={styles.wordmark}>MSHPIT</Text><Text style={styles.slogan}>LIVE MUSIC, REMEMBERED</Text></View></View>
+        <View style={styles.trim}><View style={styles.amberTrim} /><View style={styles.magentaTrim} /><View style={styles.coolTrim} /></View>
+        <View style={styles.cardBody}>
+          {signupMode && !signupSubmitted ? <View style={styles.stepper} accessibilityRole="progressbar" accessibilityLabel="Account creation progress" accessibilityValue={progress} {...signupAriaProps(Platform.OS, {}, progress)}>
+            <Text style={styles.stepKicker}>STEP {step} OF 2</Text><Text style={styles.stepName}>{step === 1 ? "Account / Music next" : "Music / Almost there"}</Text>
+          </View> : null}
+          <Text ref={heading} tabIndex={-1} style={styles.title} accessibilityRole="header">{headingText}</Text>
+          <Text style={styles.subtitle}>{subheading}</Text>
+          {!!error ? <Text ref={errorRef} tabIndex={-1} style={styles.error} accessibilityRole="alert" accessibilityLiveRegion="assertive" selectable>{error}</Text> : null}
+
+          {signupSubmitted ? <>
+            <View style={styles.note}><Icon name="mail" size={19} color={colors.amber} /><Text style={styles.noteText} accessibilityLiveRegion="polite" role="status">If this is a new email address, we sent a verification link. Your preferred @username is confirmed after verification, if it’s still available. If this address already has an account, log in or reset your password. For privacy, we show the same message either way.</Text></View>
+            <View style={styles.nextStep}><Icon name="you" size={18} color={colors.amber} /><Text style={styles.noteText}>After email confirmation, add your profile photo and optional banner, check your public @username, then take a quick tour.</Text></View>
+            {primary("Continue to log in", () => { setSignupSubmitted(false); changeMode("login"); })}
+          </> : mode === "forgot" ? sentTo ? <>
+            <View style={styles.note}><Icon name="mail" size={19} color={colors.amber} /><Text style={styles.noteText} accessibilityLiveRegion="polite" role="status">If an account exists for {sentTo}, we’ve emailed a link to reset your password. It’s valid for 1 hour. Check spam if you don’t see it.</Text></View>
+            {primary("Back to log in", () => changeMode("login"))}
+          </> : <>
+            {field("email", "Account email", email, setEmail, { autoComplete: "email", textContentType: "emailAddress", returnKeyType: "send", onSubmit: sendReset })}
+            {primary(resetBusy ? "Sending…" : "Send reset link", sendReset, resetBusy)}
+            <AuthPressable style={controlStyle(styles.textButton, busy)} onPress={() => changeMode("login")} disabled={busy} accessibilityRole="button"><Text style={styles.link}>Back to log in</Text></AuthPressable>
+          </> : <>
+            {(!signupMode || step === 1) ? <>
+              {signupMode ? <View style={styles.fieldPair}>
+                {field("name", "Name", name, setName, { paired: true, maxLength: 40, autoComplete: "name", textContentType: "name", onSubmit: () => inputs.current.handle?.focus?.() })}
+                {field("handle", "Username", handle, (value) => setHandle(cleanHandle(value)), { paired: true, maxLength: 20, autoComplete: "username", textContentType: "username", onSubmit: () => inputs.current.email?.focus?.() })}
+              </View> : null}
+              {signupMode ? <View style={styles.availability} accessibilityLiveRegion="polite">
+                <Text style={[styles.hint, handleStatus.tone === "good" && styles.availableText, handleStatus.tone === "error" && styles.errorText]}>{handleStatus.message}</Text>
+                {availability.resource.status === "error" ? <AuthPressable onPress={availability.retry} style={controlStyle(styles.retry, busy)} disabled={busy} accessibilityRole="button" accessibilityLabel="Check username again" accessibilityState={{ disabled: busy }}><Text style={styles.link}>Try again</Text></AuthPressable> : null}
+              </View> : null}
+              {field("email", "Email", email, setEmail, { autoComplete: "email", textContentType: "emailAddress", onSubmit: () => inputs.current.password?.focus?.() })}
+              {field("password", "Password", password, setPassword, { maxLength: 100, autoComplete: signupMode ? "new-password" : "current-password", textContentType: signupMode ? "newPassword" : "password", returnKeyType: signupMode ? "next" : "go", onSubmit: submit, hint: signupMode ? "8+ characters, with a letter and a number." : null })}
+              {signupMode ? <View style={styles.nextStep}><Icon name="you" size={18} color={colors.amber} /><Text style={styles.noteText}>Your profile photo and banner come next, after email confirmation.</Text></View>
+                : <AuthPressable style={controlStyle(styles.forgotButton, busy)} onPress={() => changeMode("forgot")} disabled={busy} accessibilityRole="button"><Text style={styles.link}>Forgot password?</Text></AuthPressable>}
+            </> : <>
+              <View ref={(node) => { inputs.current.genres = node; }} tabIndex={-1} style={styles.section}>
+                <View style={styles.sectionHeading}><Text style={styles.fieldLabel}>Music you like</Text><Text style={styles.count}>{genres.length}/3</Text></View>
+                <Text style={styles.hint}>Choose 1–3 genres for your first recommendations.</Text>
+                <View style={styles.genreChips}>{PROFILE_GENRE_OPTIONS.map((genre) => {
+                  const selected = genres.includes(genre);
+                  return <AuthPressable key={genre} style={({ pressed, focused }) => [styles.genreChip, selected && styles.selectedChip, pressed && styles.pressed, focused && focusRing]} onPress={() => toggleGenre(genre)} disabled={busy} accessibilityRole="checkbox" accessibilityLabel={genre} accessibilityState={{ checked: selected, disabled: busy }}>
+                    <Text style={[styles.genreText, selected && styles.selectedText]}>{genre}</Text>{selected ? <Icon name="check" size={13} color={colors.amber} /> : null}
+                  </AuthPressable>;
+                })}</View>
+              </View>
+              <View style={styles.section}><View style={styles.sectionHeading}><Text style={styles.fieldLabel}>Your city</Text><Text style={styles.optional}>Optional</Text></View>
+                <AuthPressable style={controlStyle(styles.cityPick, busy)} onPress={() => setPickingCity(true)} disabled={busy} accessibilityRole="button" accessibilityLabel={city ? `City, ${city.label}` : "Choose your city"} accessibilityHint="Shows nearby concerts and local posts" accessibilityState={{ disabled: busy }}>
+                  <Icon name="pin" size={18} color={colors.amber} /><Text style={styles.cityText}>{city?.label || "Find shows near you"}</Text><Icon name="chevron-right" size={16} color={colors.textDim} />
+                </AuthPressable>
+                {city ? <AuthPressable style={controlStyle(styles.retry, busy)} onPress={() => setCity(null)} disabled={busy} accessibilityRole="button" accessibilityLabel="Remove selected city"><Text style={styles.link}>Not now</Text></AuthPressable> : null}
+              </View>
+              <View ref={(node) => { inputs.current.ageBand = node; }} tabIndex={-1} style={styles.section} accessibilityRole="radiogroup" accessibilityLabel="Age group">
+                <Text style={styles.fieldLabel}>Age group</Text><Text style={styles.hint}>For account safety. No birth date needed.</Text>
+                <View style={styles.ageChoices}>{[["13_17", "13–17"], ["18_plus", "18+"]].map(([value, label]) => <AuthPressable key={value} style={({ focused, pressed }) => [styles.ageChoice, ageBand === value && styles.selectedChip, pressed && styles.pressed, focused && focusRing]} onPress={() => { setAgeBand(value); clearError(); }} disabled={busy} accessibilityRole="radio" accessibilityState={{ checked: ageBand === value, disabled: busy }} accessibilityLabel={label}><Text style={[styles.genreText, ageBand === value && styles.selectedText]}>{label}</Text></AuthPressable>)}</View>
+              </View>
+              <View style={styles.consents}>
+                <AuthPressable ref={(node) => { inputs.current.agreed = node; }} style={controlStyle(styles.consent, busy)} onPress={() => { setAgreed(!agreed); clearError(); }} disabled={busy} accessibilityRole="checkbox" accessibilityLabel="I agree to the Terms and Privacy policy" accessibilityState={{ checked: agreed, disabled: busy }}>
+                  <View style={[styles.checkbox, agreed && styles.checked]}>{agreed ? <Icon name="check" size={14} color="#1A1206" strokeWidth={3} /> : null}</View><Text style={styles.consentText}>I agree to the Terms & Conditions and Privacy policy.</Text>
+                </AuthPressable>
+                <View style={styles.policyLinks}><AuthPressable style={controlStyle(styles.retry, busy)} onPress={() => setViewing("terms")} disabled={busy} accessibilityRole="button" accessibilityLabel="Read Terms"><Text style={styles.link}>Read Terms</Text></AuthPressable><AuthPressable style={controlStyle(styles.retry, busy)} onPress={() => setViewing("privacy")} disabled={busy} accessibilityRole="button" accessibilityLabel="Read Privacy policy"><Text style={styles.link}>Read Privacy policy</Text></AuthPressable></View>
+                <AuthPressable style={controlStyle(styles.consent, busy)} onPress={() => setAnalyticsConsent(!analyticsConsent)} disabled={busy} accessibilityRole="checkbox" accessibilityLabel="Share optional limited account usage data" accessibilityState={{ checked: analyticsConsent, disabled: busy }}><View style={[styles.checkbox, analyticsConsent && styles.checked]}>{analyticsConsent ? <Icon name="check" size={14} color="#1A1206" strokeWidth={3} /> : null}</View><Text style={styles.consentText}>Optional: share limited account usage data to help improve Mshpit.</Text></AuthPressable>
+                <AuthPressable style={controlStyle(styles.retry, busy)} onPress={() => setAnalyticsDetails(!analyticsDetails)} disabled={busy} accessibilityRole="button" accessibilityState={{ expanded: analyticsDetails }} accessibilityLabel="What usage data is shared"><Text style={styles.link}>{analyticsDetails ? "Hide details" : "What is shared?"}</Text></AuthPressable>
+                {analyticsDetails ? <Text style={styles.hint}>We record limited usage events linked to your account. They do not include the contents of authored posts or reviews, search terms, messages, or uploaded media. IP addresses are not stored with these analytics events. Change your choice any time in Settings; opting out deletes your raw product events.</Text> : null}
+              </View>
+            </>}
+            {primary(authBusy ? signupMode ? "Creating account…" : "Logging in…" : signupMode ? step === 1 ? "Continue to music" : "Create account" : "Log in", submit, authBusy)}
+            {signupMode && step === 2 ? <AuthPressable style={controlStyle(styles.textButton, busy)} onPress={() => { clearError(); setStep(1); }} disabled={busy} accessibilityRole="button"><Text style={styles.link}>Back to account details</Text></AuthPressable> : null}
+            <AuthPressable style={controlStyle(styles.textButton, busy)} onPress={() => changeMode(signupMode ? "login" : "signup")} disabled={busy} accessibilityRole="button"><Text style={styles.link}>{signupMode ? "Have an account? Log in" : "No account? Sign up"}</Text></AuthPressable>
+          </>}
+        </View>
+        {!signupSubmitted && mode !== "forgot" ? <View style={styles.ticketFooter}><Icon name="shield" size={16} color={colors.amber} /><Text style={styles.footerText}>Artist? Start with a personal account, then choose Claim artist profile. Every claim is reviewed.</Text></View> : null}
+      </View>
+    </ScrollView>
+  </KeyboardAvoidingView>;
 }
 
 const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: colors.bg },
-  topbar: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, paddingBottom: 10 },
-  cancel: { color: colors.textDim, fontSize: 15, width: 40 },
-  topTitle: { color: colors.textFaint, fontSize: 11, letterSpacing: 2, fontWeight: "700" },
-  content: { padding: 16, paddingBottom: 48 },
-  wordmark: { color: colors.text, fontSize: 34, fontWeight: "900", letterSpacing: 5, fontFamily: mono, marginTop: 8 },
-  tag: { color: colors.textDim, fontSize: 14, marginTop: 4, marginBottom: 24 },
-  setupNote: { flexDirection: "row", alignItems: "flex-start", gap: 10, backgroundColor: colors.bgElev, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 13, marginTop: -10, marginBottom: 14 },
-  setupNoteText: { flex: 1, color: colors.textDim, fontSize: 12.5, lineHeight: 18 },
-  input: {
-    backgroundColor: colors.surface,
-    borderRadius: radius.sm,
-    borderWidth: 1,
-    borderColor: colors.line,
-    color: colors.text,
-    paddingHorizontal: 14,
-    paddingVertical: 13,
-    fontSize: 15,
-    marginBottom: 10,
-  },
-  cityPick: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: colors.surface, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.line, paddingHorizontal: 14, paddingVertical: 13, marginBottom: 10 },
-  cityTxt: { flex: 1, color: colors.text, fontSize: 15 },
-  cityPlaceholder: { color: colors.textFaint },
-  genreSection: { gap: 8, paddingVertical: 8, marginBottom: 4 },
-  genreHeading: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 },
-  genreLabel: { color: colors.textFaint, fontFamily: mono, fontSize: 10, fontWeight: "800", letterSpacing: 1.3 },
-  genreCount: { color: colors.amber, fontSize: 11.5, fontWeight: "700" },
-  genreHint: { color: colors.textDim, fontSize: 12, lineHeight: 17 },
-  genreChips: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
-  genreChip: { minHeight: 44, justifyContent: "center", paddingHorizontal: 12, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
-  genreChipSelected: { borderColor: colors.amber, backgroundColor: colors.bgElev },
-  genreChipText: { color: colors.textDim, fontSize: 12.5, fontWeight: "600" },
-  genreChipTextSelected: { color: colors.amber, fontWeight: "800" },
-  ageSection: { gap: 8, marginTop: 8, marginBottom: 4 },
-  ageChoices: { flexDirection: "row", gap: 8 },
-  ageChoice: { minHeight: 44, minWidth: 96, alignItems: "center", justifyContent: "center", borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
-  error: { color: colors.danger, fontSize: 13, marginBottom: 8 },
-  consent: { minHeight: 44, flexDirection: "row", alignItems: "flex-start", gap: 10, marginTop: 14, marginBottom: 4, paddingVertical: 6 },
-  policyLinks: { flexDirection: "row", flexWrap: "wrap", gap: 18, marginLeft: 44, marginTop: 3, marginBottom: 4 },
-  inlineLink: { minHeight: 44, justifyContent: "center" },
-  box: { width: 22, height: 22, borderRadius: 6, borderWidth: 1.5, borderColor: colors.line, backgroundColor: colors.surface, alignItems: "center", justifyContent: "center", marginTop: 1 },
-  boxOn: { backgroundColor: colors.amberStrong, borderColor: colors.amberStrong },
-  consentTxt: { flex: 1, color: colors.textDim, fontSize: 12.5, lineHeight: 18 },
-  link: { color: colors.amber, fontWeight: "700", textDecorationLine: "underline" },
-  primary: { backgroundColor: colors.amberStrong, borderRadius: radius.md, paddingVertical: 15, alignItems: "center", marginTop: 10 },
-  primaryOff: { opacity: 0.5 },
-  primaryTxt: { color: "#1A1206", fontSize: 15, fontWeight: "800", letterSpacing: 1 },
-  switchButton: { minHeight: 44, alignItems: "center", justifyContent: "center", marginTop: 8 },
-  switch: { color: colors.amber, fontSize: 14, textAlign: "center" },
-  forgotButton: { minHeight: 44, alignItems: "flex-end", justifyContent: "center" },
-  forgot: { color: colors.textDim, fontSize: 13, textAlign: "right" },
-  artistNote: { flexDirection: "row", gap: 10, backgroundColor: colors.bgElev, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 14, marginTop: 24 },
-  artistNoteTxt: { color: colors.textDim, fontSize: 12, lineHeight: 18, flex: 1 },
-  seed: { marginTop: 20, backgroundColor: colors.surface, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.lineSoft, padding: 14 },
-  seedTitle: { color: colors.textFaint, fontSize: 10, letterSpacing: 1.5, fontWeight: "700", marginBottom: 8 },
-  seedLine: { color: colors.textDim, fontFamily: mono, fontSize: 11, lineHeight: 18 },
+  content: { flexGrow: 1, padding: space(4), alignItems: "center" },
+  ticket: { width: "100%", maxWidth: 640, minWidth: 0, borderRadius: radius.lg, borderCurve: "continuous", borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface, overflow: "hidden", ...shadow.card },
+  brandRow: { flexDirection: "row", alignItems: "center", gap: 11, padding: space(4) },
+  wordmark: { color: colors.text, fontFamily: mono, fontSize: 16, fontWeight: "900", letterSpacing: 3 },
+  slogan: { color: colors.textFaint, fontFamily: mono, fontSize: 8, fontWeight: "700", letterSpacing: 1.3, marginTop: 4 },
+  trim: { flexDirection: "row", height: 4 }, amberTrim: { flex: 2, backgroundColor: colors.amberStrong }, magentaTrim: { flex: 1, backgroundColor: colors.magenta }, coolTrim: { flex: 1, backgroundColor: colors.cool },
+  cardBody: { padding: space(4), gap: 10, minWidth: 0 },
+  stepper: { flexDirection: "row", justifyContent: "space-between", flexWrap: "wrap", gap: 6, paddingBottom: 8, borderBottomWidth: 1, borderBottomColor: colors.lineSoft, borderStyle: "dashed" },
+  stepKicker: { color: colors.amber, fontFamily: mono, fontSize: 10, fontWeight: "800", letterSpacing: 1 },
+  stepName: { color: colors.textFaint, fontSize: 11 },
+  title: { color: colors.text, fontFamily: displayFont, fontWeight: "900", fontSize: 29, lineHeight: 35, letterSpacing: -0.7, marginTop: 3 },
+  subtitle: { color: colors.textDim, fontSize: 14, lineHeight: 20, marginBottom: 5 },
+  fieldPair: { flexDirection: "row", flexWrap: "wrap", gap: 12 }, pairedField: { flexGrow: 1, flexBasis: 220, minWidth: 0 },
+  field: { gap: 6, marginBottom: 3 }, fieldLabel: { color: colors.text, fontSize: 13, fontWeight: "800" },
+  inputShell: { flexDirection: "row", alignItems: "center", minHeight: 48, borderWidth: 1, borderColor: colors.line, borderRadius: radius.sm, backgroundColor: colors.bgElev, overflow: "hidden" },
+  input: { flex: 1, minWidth: 0, color: colors.text, fontSize: 16, paddingHorizontal: 12, paddingVertical: 12 },
+  handlePrefix: { color: colors.amber, fontFamily: mono, fontWeight: "800", fontSize: 17, paddingLeft: 12 },
+  invalidInput: { borderColor: colors.danger }, passwordToggle: { width: 44, minHeight: 44, alignItems: "center", justifyContent: "center" },
+  hint: { color: colors.textDim, fontSize: 12, lineHeight: 17 }, availability: { minHeight: 22, gap: 3 }, availableText: { color: colors.good }, errorText: { color: colors.danger },
+  section: { gap: 8, marginBottom: 6 }, sectionHeading: { flexDirection: "row", justifyContent: "space-between", gap: 8, alignItems: "center" },
+  count: { color: colors.amber, fontFamily: mono, fontSize: 12, fontWeight: "800" }, optional: { color: colors.textFaint, fontSize: 11 },
+  genreChips: { flexDirection: "row", flexWrap: "wrap", gap: 7 },
+  genreChip: { minHeight: 44, flexDirection: "row", gap: 6, alignItems: "center", justifyContent: "center", paddingHorizontal: 12, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.bgElev },
+  genreText: { color: colors.textDim, fontSize: 12.5, fontWeight: "700" }, selectedChip: { borderColor: colors.amber, backgroundColor: colors.surfaceAlt }, selectedText: { color: colors.amber, fontWeight: "900" },
+  cityPick: { minHeight: 48, flexDirection: "row", gap: 9, alignItems: "center", padding: 12, backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.line, borderRadius: radius.sm }, cityText: { flex: 1, minWidth: 0, color: colors.textDim, fontSize: 13, lineHeight: 18 },
+  ageChoices: { flexDirection: "row", gap: 10 }, ageChoice: { flex: 1, minHeight: 44, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.bgElev, borderRadius: radius.sm, alignItems: "center", justifyContent: "center" },
+  consents: { borderTopWidth: 1, borderTopColor: colors.lineSoft, paddingTop: 10, gap: 2 },
+  consent: { minHeight: 44, flexDirection: "row", alignItems: "flex-start", gap: 10, paddingVertical: 8 },
+  checkbox: { width: 22, height: 22, borderWidth: 1.5, borderColor: colors.line, borderRadius: 6, alignItems: "center", justifyContent: "center", flexShrink: 0 }, checked: { backgroundColor: colors.amberStrong, borderColor: colors.amberStrong },
+  consentText: { flex: 1, minWidth: 0, color: colors.textDim, fontSize: 12.5, lineHeight: 18 },
+  policyLinks: { flexDirection: "row", flexWrap: "wrap", columnGap: 16, paddingLeft: 32 },
+  link: { color: colors.amber, fontSize: 12.5, fontWeight: "700" }, retry: { minHeight: 44, alignSelf: "flex-start", justifyContent: "center" },
+  primary: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10, minHeight: 50, backgroundColor: colors.amberStrong, borderColor: colors.amber, borderBottomColor: colors.accentEdge, borderWidth: 1, borderBottomWidth: 3, borderRadius: radius.md, paddingHorizontal: 16, marginTop: 6, ...shadow.control },
+  primaryText: { color: "#1A1206", fontFamily: displayFont, fontSize: 16, fontWeight: "900" },
+  textButton: { minHeight: 44, justifyContent: "center", alignItems: "center" }, forgotButton: { minHeight: 44, alignSelf: "flex-end", justifyContent: "center" },
+  error: { color: colors.danger, backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.danger, borderRadius: radius.sm, padding: 12, fontSize: 13, lineHeight: 19 },
+  note: { flexDirection: "row", gap: 10, paddingVertical: 8 }, noteText: { flex: 1, minWidth: 0, color: colors.textDim, fontSize: 12.5, lineHeight: 19 },
+  nextStep: { flexDirection: "row", alignItems: "flex-start", gap: 10, padding: 12, backgroundColor: colors.bgElev, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.lineSoft },
+  ticketFooter: { flexDirection: "row", alignItems: "flex-start", gap: 10, borderTopWidth: 1, borderTopColor: colors.line, borderStyle: "dashed", padding: space(4), backgroundColor: colors.bgElev }, footerText: { flex: 1, minWidth: 0, color: colors.textFaint, fontSize: 11, lineHeight: 16 },
+  disabled: { opacity: 0.5 }, pressed: { opacity: 0.82 },
 });

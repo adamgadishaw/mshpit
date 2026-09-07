@@ -10,6 +10,7 @@ export function accountOnboardingRoutes({
   projectSelf,
   rateLimit,
   requireUser,
+  signupHandleAvailability,
 }) {
   if (typeof ApiError !== "function" || !database?.prepare
     || typeof getUser !== "function" || typeof projectSelf !== "function"
@@ -20,6 +21,9 @@ export function accountOnboardingRoutes({
     WHERE id=? AND onboarding_version IS NOT NULL AND onboarding_version < ?`);
 
   return Object.freeze({
+    ...(typeof signupHandleAvailability === "function" ? {
+      "GET /api/signup/handle-availability": signupHandleAvailability,
+    } : {}),
     // Completion is trusted workflow state, not user-authored profile metadata.
     // Keeping it out of PATCH /api/me prevents a general extras write from
     // spoofing progress. The conditional update also makes retries write-free.

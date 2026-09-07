@@ -3,7 +3,6 @@ import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, Image, Platfo
 import * as ImagePicker from "expo-image-picker";
 import { colors, radius } from "../theme";
 import { useStore } from "../store";
-import { GENRES } from "../data";
 import Avatar from "../components/Avatar";
 import Icon from "../components/Icon";
 import LocationPicker from "../components/LocationPicker";
@@ -106,7 +105,7 @@ export default function EditProfileScreen({ onClose }) {
     }
   };
 
-  const genreOptions = profileGenreOptions(genres, GENRES);
+  const genreOptions = profileGenreOptions(genres);
   const genreSelection = profileGenreSelection(genres);
   const toggleGenre = (genre) => setGenres((current) => {
     if (current.includes(genre)) {

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { FlatList, Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { colors, displayFont, focusRing, mono, radius, shadow } from "../theme";
 import { useStore } from "../store";
@@ -10,17 +10,19 @@ import { UpcomingEventCard, VenueDiscoveryCard } from "../components/VenueDiscov
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
 import { nearestMapPoints } from "../domain/venueDiscovery.mjs";
+import { nearbyInitialTab, nearbyLocationPrompt } from "../domain/nearbyEntry.mjs";
 import useScopedRefresh from "../hooks/useScopedRefresh";
 import { openTicketLink } from "../lib/ticketLinks";
 
 const RADII = [25, 50, 75, 150];
 const MAP_POINT_LIMIT = 60;
 
-export default function NearbyScreen({ onClose, onOpenVenue, onOpenArtist }) {
+export default function NearbyScreen({ onClose, onOpenVenue, onOpenArtist, initialTab = "venues" }) {
   const { session, localVenues, regionShows, venueSummary, locationCenter, refreshTourDates } = useStore();
   const [center, setCenter] = useState(session?.home || null);
   const [km, setKm] = useState(75);
-  const [tab, setTab] = useState("venues");
+  const [tab, setTab] = useState(() => nearbyInitialTab(initialTab));
+  useEffect(() => { setTab(nearbyInitialTab(initialTab)); }, [initialTab]);
   const [pickingCity, setPickingCity] = useState(false);
   const [refreshError, setRefreshError] = useState(false);
   const nearbyRefreshTarget = [center?.lat ?? "none", center?.lng ?? "none", km, tab].join(":");
@@ -47,6 +49,7 @@ export default function NearbyScreen({ onClose, onOpenVenue, onOpenArtist }) {
   }
 
   const hasCoords = center?.lat != null && center?.lng != null;
+  const locationPrompt = nearbyLocationPrompt(center);
   const venues = hasCoords ? localVenues(km, center) : [];
   const shows = hasCoords ? regionShows(km, center) : [];
   const mapPoints = nearestMapPoints(venues.map((venue) => {
@@ -151,8 +154,8 @@ export default function NearbyScreen({ onClose, onOpenVenue, onOpenArtist }) {
             {!hasCoords ? (
               <View style={styles.emptyLocation}>
                 <View style={styles.emptyLocationIcon}><Icon name="map" size={25} color={colors.textFaint} /></View>
-                <Text style={styles.emptyTitle}>This city is not mapped yet</Text>
-                <Text style={styles.emptyBody}>Choose another major city to see nearby venues and shows.</Text>
+                <Text style={styles.emptyTitle}>{locationPrompt.title}</Text>
+                <Text style={styles.emptyBody}>{locationPrompt.body}</Text>
                 <Pressable style={styles.chooseButton} onPress={() => setPickingCity(true)}><Text style={styles.chooseText}>Choose a city</Text></Pressable>
               </View>
             ) : (

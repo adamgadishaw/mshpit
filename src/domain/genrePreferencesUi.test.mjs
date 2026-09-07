@@ -9,12 +9,17 @@ const pickArtists = read("../screens/PickArtistsScreen.jsx");
 const discoverGenres = read("../components/discover/DiscoverGenres.jsx");
 
 test("signup and Edit Profile expose the same required one-to-three genre contract", () => {
-  assert.match(auth, /Choose 1 to 3 genres/);
-  assert.match(auth, /genres: genreSelection\.genres/);
+  assert.match(auth, /Choose 1–3 genres/);
+  assert.match(auth, /signupMusicError\(\{ genres, ageBand, agreed \}\)/);
+  assert.match(auth, /signupFormPayload\(/);
+  assert.match(read("./signupForm.mjs"), /genres: profileGenreSelection\(genres\)\.genres/);
   assert.match(auth, /PROFILE_GENRE_MAX/);
   assert.match(editProfile, /profileGenreSelection\(genres\)/);
   assert.match(editProfile, /disabled: mediaBusy \|\| saving \|\| !genreSelection\.valid/);
-  assert.match(editProfile, /profileGenreOptions\(genres, GENRES\)/);
+  assert.match(auth, /PROFILE_GENRE_OPTIONS\.map/);
+  assert.match(editProfile, /profileGenreOptions\(genres\)/);
+  assert.doesNotMatch(auth, /import \{ GENRES \} from "\.\.\/data"/);
+  assert.doesNotMatch(editProfile, /import \{ GENRES \} from "\.\.\/data"/);
 });
 
 test("artist picks no longer silently rewrite explicit genre preferences", () => {

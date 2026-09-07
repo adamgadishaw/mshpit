@@ -16,7 +16,21 @@ test("signup onboarding completion is account-scoped and validates the response"
     body: { version: 1 },
     context: "Finishing account setup",
     expectedAccountId: "u_new",
+    signal: undefined,
   }]]);
+});
+
+test("signup completion forwards cancellation with the initiating account", async () => {
+  const controller = new AbortController();
+  let observed;
+  await requestSignupOnboardingCompletion({ accountId: "u_new", version: 1, signal: controller.signal }, {
+    apiCall: async (_path, options) => {
+      observed = options;
+      return { ok: true, onboardingVersion: 1, user: { id: "u_new", onboardingVersion: 1 } };
+    },
+  });
+  assert.equal(observed.signal, controller.signal);
+  assert.equal(observed.expectedAccountId, "u_new");
 });
 
 test("signup onboarding completion rejects malformed or cross-account responses", async () => {

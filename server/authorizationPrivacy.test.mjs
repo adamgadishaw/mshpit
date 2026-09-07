@@ -76,6 +76,62 @@ function throwsStatus(run, status, code = null) {
     && (!code || error.code === code));
 }
 
+test("profile photo removal clears only the explicit slot and queues its owned rendition once", () => {
+  const owner = addUser("profile_photo_remove");
+  const avatar = finalizedLegacyImage(owner, "profileclearavatar", "avatar");
+  const banner = finalizedLegacyImage(owner, "profileclearbanner", "banner");
+  const patch = (body) => routes["PATCH /api/me"]({ user: q.userById.get(owner.id), ip: owner.id, body });
+  patch({ avatarUri: avatar.url, banner: banner.url });
+  assert.ok(db.prepare("SELECT consumed_at FROM legacy_media_finalize_descriptors WHERE output_url=?").get(avatar.url).consumed_at > 0);
+  const first = patch({ avatarUri: null });
+  assert.equal(first.user.avatarUri, null);
+  assert.equal(first.user.banner, banner.url, "omitting a media slot retains it");
+  assert.equal(q.userById.get(owner.id).avatar_uri, null);
+  assert.equal(db.prepare("SELECT status FROM media_objects WHERE owner_id=? AND object_key=?").get(owner.id, avatar.key).status, "delete_queued");
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM media_deletion_queue WHERE owner_id=? AND object_key=?").get(owner.id, avatar.key).n, 1);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM media_deletion_queue WHERE owner_id=? AND object_key=?").get(owner.id, banner.key).n, 0);
+  assert.equal(patch({ avatarUri: null }).user.avatarUri, null, "retry is idempotent");
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM media_deletion_queue WHERE owner_id=? AND object_key=?").get(owner.id, avatar.key).n, 1);
+  const second = patch({ banner: null });
+  assert.equal(second.user.banner, null);
+  assert.equal(second.user.avatarUri, null);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM media_deletion_queue WHERE owner_id=? AND object_key=?").get(owner.id, banner.key).n, 1);
+});
+
+test("profile photo removal preserves reused artwork and cannot target another account", () => {
+  const owner = addUser("profile_remove_scoped");
+  const other = addUser("profile_remove_other");
+  const avatar = finalizedLegacyImage(owner, "sharedprofileavatar", "avatar");
+  const foreign = finalizedLegacyImage(other, "otherprofilebanner", "banner");
+  routes["PATCH /api/me"]({ user: owner, ip: owner.id, body: { avatarUri: avatar.url } });
+  routes["PATCH /api/me"]({ user: other, ip: other.id, body: { banner: foreign.url } });
+  db.prepare(`INSERT INTO artist_profiles (artist_key,owner_id,avatar_uri,avatar_owner_id,feed_enabled,updated_at)
+    VALUES (?,?,?,?,0,?)`).run("profile removal shared artwork", owner.id, avatar.url, owner.id, Date.now());
+  throwsStatus(() => routes["PATCH /api/me"]({ ip: "anonymous-remove", body: { id: owner.id, avatarUri: null } }), 401, "AUTH_REQUIRED");
+  const result = routes["PATCH /api/me"]({ user: q.userById.get(owner.id), ip: owner.id,
+    body: { id: other.id, userId: other.id, avatarUri: null, banner: null } });
+  assert.equal(result.user.id, owner.id);
+  assert.equal(result.user.avatarUri, null);
+  assert.equal(q.userById.get(other.id).banner, foreign.url);
+  assert.equal(db.prepare("SELECT avatar_uri FROM artist_profiles WHERE artist_key=?").get("profile removal shared artwork").avatar_uri, avatar.url);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM media_deletion_queue WHERE object_key IN (?,?)").get(avatar.key, foreign.key).n, 0);
+  assert.equal(db.prepare("SELECT status FROM media_objects WHERE object_key=?").get(avatar.key).status, "associated");
+});
+
+test("profile removal rolls back the association if its cleanup queue write fails", () => {
+  const owner = addUser("profile_remove_rollback");
+  const image = finalizedLegacyImage(owner, "rollbackprofilebanner", "banner");
+  routes["PATCH /api/me"]({ user: owner, ip: owner.id, body: { banner: image.url } });
+  db.exec(`CREATE TEMP TRIGGER fail_profile_removal BEFORE INSERT ON media_deletion_queue
+    WHEN NEW.owner_id='${owner.id}' BEGIN SELECT RAISE(ABORT,'fixture removal queue failure'); END`);
+  try {
+    assert.throws(() => routes["PATCH /api/me"]({ user: q.userById.get(owner.id), ip: owner.id, body: { banner: null } }), /fixture removal queue failure/);
+  } finally { db.exec("DROP TRIGGER fail_profile_removal"); }
+  assert.equal(q.userById.get(owner.id).banner, image.url);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM media_deletion_queue WHERE object_key=?").get(image.key).n, 0);
+  assert.equal(db.prepare("SELECT status FROM media_objects WHERE object_key=?").get(image.key).status, "associated");
+});
+
 test("artist management follows owner_id even when two accounts share the same display artist", () => {
   const owner = addUser("artist_owner", { role: "artist", artistName: "Twin Artist" });
   const impostor = addUser("artist_impostor", { role: "artist", artistName: "Twin Artist" });

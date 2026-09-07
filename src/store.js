@@ -2900,11 +2900,15 @@ export function StoreProvider({ children }) {
     return { ...result, state: verificationResendState(result), sessionUpdated };
   };
 
-  // Request a password-reset email. Always resolves ok (never leaks which emails
-  // have accounts); the server emails a 1-hour link.
+  // The server acknowledgment is neutral for existing and unknown emails.
+  // Transport failures still need a retry, not a false "email sent" screen.
   const forgotPassword = async (email) => {
-    try { await api("/api/forgot", { method: "POST", body: { email }, context: "Requesting a password reset", silent: true }); } catch {}
-    return { ok: true };
+    try {
+      await api("/api/forgot", { method: "POST", body: { email }, context: "Requesting a password reset", silent: true });
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error };
+    }
   };
   // Complete a reset from the emailed token; on success we're signed in.
   const resetPassword = async (token, password) => {
@@ -2924,13 +2928,13 @@ export function StoreProvider({ children }) {
     return candidate;
   };
 
-  const signup = async ({ name, email, password, city, location = null, genres = [], ageBand, agreedToTerms, analyticsConsent = false }) => {
+  const signup = async ({ name, handle, email, password, city, location = null, genres = [], ageBand, agreedToTerms, analyticsConsent = false }) => {
     const nm = cleanName(name);
     const em = cleanEmail(email);
     if (!isName(nm)) return { ok: false, error: "Enter a name (letters or numbers, up to 40 chars)." };
     if (!isEmail(em)) return { ok: false, error: "Enter a valid email address." };
     if (!isPassword(password)) return { ok: false, error: "Password needs 8+ characters with letters and numbers." };
-    if (!city) return { ok: false, error: "Pick your city - it powers your local feed." };
+    if (handle !== undefined && !isHandle(handle)) return { ok: false, error: "Use 3–20 letters, numbers, or underscores for your @username." };
     const genreSelection = profileGenreSelection(genres);
     if (!genreSelection.valid) return { ok: false, error: genreSelection.error };
     if (!agreedToTerms) return { ok: false, error: "Please agree to the Terms & Conditions and Privacy policy." };
@@ -2944,7 +2948,7 @@ export function StoreProvider({ children }) {
       try {
         const response = await api("/api/signup", {
           method: "POST",
-          body: { name: nm, email: em, password, city, lat: srvCoords?.lat, lng: srvCoords?.lng, genres: genreSelection.genres, ageBand, analyticsConsent: !!analyticsConsent, termsVersion: TERMS_VERSION },
+          body: { name: nm, ...(handle !== undefined ? { handle: cleanHandle(handle) } : {}), email: em, password, city, lat: srvCoords?.lat, lng: srvCoords?.lng, genres: genreSelection.genres, ageBand, analyticsConsent: !!analyticsConsent, termsVersion: TERMS_VERSION },
           context: "Creating your Pit account",
           silent: true,
           skipIdentityCheck: true,
@@ -2964,7 +2968,7 @@ export function StoreProvider({ children }) {
       name: nm,
       // Development-only accounts follow the production privacy rule: never
       // derive a public username from the private email local-part.
-      handle: uniqueHandle(`pitfan_${Date.now().toString(36).slice(-4)}${Math.random().toString(36).slice(2, 6)}`),
+      handle: uniqueHandle(handle || `pitfan_${Date.now().toString(36).slice(-4)}${Math.random().toString(36).slice(2, 6)}`),
       email: em,
       password,
       role: "fan",
@@ -3221,9 +3225,12 @@ export function StoreProvider({ children }) {
     applyTheme(next, session?.id || null);
   };
 
-  const updateProfile = (patch) => {
+  const updateProfile = (patch, { expectedAccountId, signal, optimistic = true } = {}) => {
     const actor = sessionRef.current;
     if (!actor) return Promise.resolve({ ok: false });
+    if ((expectedAccountId && expectedAccountId !== actor.id) || signal?.aborted) {
+      return Promise.resolve({ ok: false, stale: true, error: "Your account changed. Reopen profile setup." });
+    }
     const previousSession = actor;
     const accountMutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
     // Sanitize the free-text fields; pass structured fields (home, songs) through.
@@ -3245,10 +3252,10 @@ export function StoreProvider({ children }) {
     }
     if (Array.isArray(safe.favoriteArtists)) safe.favoriteArtists = safe.favoriteArtists.map((n) => clean(n, { max: 80 })).filter(Boolean).slice(0, 50);
     if ("name" in safe) safe.initials = (safe.name.match(/\p{L}|\p{N}/gu) || ["?"]).slice(0, 2).join("").toUpperCase();
-    setUsers((all) => all.map((u) => (u.id === actor.id
+    if (optimistic) setUsers((all) => all.map((u) => (u.id === actor.id
       ? (ENABLE_DEMO_DATA ? { ...u, ...safe } : publicProfileCacheEntry({ ...u, ...safe }))
       : u)));
-    setSession((current) => current?.id === actor.id ? { ...current, ...safe } : current);
+    if (optimistic) setSession((current) => current?.id === actor.id ? { ...current, ...safe } : current);
     // Persist to the server so profile edits (incl. your @handle) survive sign-out
     // and follow you to a new device. The server is the authority on handle
     // uniqueness, re-absorb its response so a taken handle reverts cleanly.
@@ -3268,15 +3275,17 @@ export function StoreProvider({ children }) {
     }
     if (!Object.keys(body).length) return Promise.resolve({ ok: true, patch: safe });
 
-    return api("/api/me", { method: "PATCH", body, context: "Saving your profile", expectedAccountId: actor.id })
+    return api("/api/me", { method: "PATCH", body, context: "Saving your profile", expectedAccountId: actor.id, signal })
       .then(({ user }) => {
         if (!accountMutationIsCurrent(accountMutation, sessionRef.current?.id, accountMutationEpochRef.current)) {
           return { ok: false, stale: true };
         }
+        if (user?.id !== actor.id) throw new Error("Mshpit could not confirm the profile save. Please try again.");
         if (user) {
           setUsers((all) => all.map((u) => (u.id === user.id
             ? (ENABLE_DEMO_DATA ? { ...u, ...user } : publicProfileCacheEntry({ ...u, ...user }))
             : u)));
+          sessionRef.current = { ...sessionRef.current, ...user };
           setSession((s) => ({ ...s, ...user }));
         }
         return { ok: true, user, patch: safe };
@@ -3287,17 +3296,18 @@ export function StoreProvider({ children }) {
         }
         // Server rejected something (e.g. handle taken / cooldown / role tag).
         // Restore the last server-backed snapshot instead of leaving a false save.
-        setUsers((all) => all.map((u) => (u.id === previousSession.id
+        if (optimistic) setUsers((all) => all.map((u) => (u.id === previousSession.id
           ? (ENABLE_DEMO_DATA ? previousSession : publicProfileCacheEntry(previousSession))
           : u)));
-        setSession(previousSession);
+        if (optimistic) setSession(previousSession);
         return { ok: false, error };
       });
   };
 
-  const completeSignupOnboarding = async () => {
+  const completeSignupOnboarding = async ({ expectedAccountId, signal } = {}) => {
     const actor = sessionRef.current;
     if (!actor) return { ok: false, error: "Log in to finish setting up your account." };
+    if ((expectedAccountId && expectedAccountId !== actor.id) || signal?.aborted) return { ok: false, stale: true, error: "Your account changed. Reopen setup." };
     if (actor.emailVerified !== true) return { ok: false, error: "Confirm your email before finishing account setup." };
     const accountMutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
 
@@ -3311,7 +3321,7 @@ export function StoreProvider({ children }) {
     }
 
     try {
-      const result = await completeSignupOnboardingForAccount(actor.id, SIGNUP_ONBOARDING_VERSION);
+      const result = await completeSignupOnboardingForAccount(actor.id, SIGNUP_ONBOARDING_VERSION, { signal });
       if (!accountMutationIsCurrent(accountMutation, sessionRef.current?.id, accountMutationEpochRef.current)) {
         return { ok: false, stale: true };
       }

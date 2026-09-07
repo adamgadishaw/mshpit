@@ -10,8 +10,21 @@
 import { createHash, randomBytes } from "node:crypto";
 import { db, emailStmts, q } from "./db.js";
 import { publicOrigin, sendTemplate, sendTemplateInBackground } from "./emailService.js";
+import { claimPendingSignupHandle } from "./features/accountOnboarding/signupHandle.js";
 
 const TTL_MS = 24 * 60 * 60 * 1000;
+
+function markVerifiedWithSignupPreference(userId, at = Date.now()) {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    emailStmts.markEmailVerified.run(at, userId);
+    claimPendingSignupHandle(db, q.userById.get(userId), at);
+    db.exec("COMMIT");
+  } catch (error) {
+    try { db.exec("ROLLBACK"); } catch { /* Keep the original verification failure. */ }
+    throw error;
+  }
+}
 
 // Local-only compatibility switch. Hosted production must never turn a mail
 // outage into an authorization bypass by auto-verifying new accounts.
@@ -64,7 +77,7 @@ export async function sendWelcomeOnce(user, { background = false } = {}) {
  */
 export function beginVerification(user, { background = true } = {}) {
   if (!verificationEnabled()) {
-    emailStmts.markEmailVerified.run(Date.now(), user.id);
+    markVerifiedWithSignupPreference(user.id);
     sendWelcomeOnce(user, { background });
     return { verificationSent: false, autoVerified: true };
   }
@@ -95,6 +108,7 @@ export function completeVerification(token, now = Date.now()) {
     if (user) {
       emailStmts.recordVerificationReceipt.run(tokenHash, user.id, hashToken(user.email), now, user.email_verify_expires);
       emailStmts.markEmailVerified.run(now, user.id);
+      claimPendingSignupHandle(db, q.userById.get(user.id), now);
       completion = { user: q.userById.get(user.id), replayed: false };
     } else {
       const receipt = emailStmts.verificationReceiptByHash.get(tokenHash, now);
@@ -124,7 +138,7 @@ export function completeVerification(token, now = Date.now()) {
 export function forceVerify(userId) {
   const user = q.userById.get(userId);
   if (!user) return null;
-  if (!user.email_verified_at) emailStmts.markEmailVerified.run(Date.now(), userId);
+  if (!user.email_verified_at) markVerifiedWithSignupPreference(userId);
   sendWelcomeOnce(user, { background: true });
   return q.userById.get(userId);
 }

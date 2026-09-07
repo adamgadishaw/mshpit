@@ -162,6 +162,7 @@ import { suggestionRoutes } from "./features/suggestions/suggestionRoutes.js";
 import { createPeopleSuggestionService } from "./features/people/peopleSuggestionService.js";
 import { accountMuteRoutes } from "./features/accountMute/accountMuteRoutes.js";
 import { accountOnboardingRoutes } from "./features/accountOnboarding/accountOnboardingRoutes.js";
+import { claimPendingSignupHandle, handleChangeAvailableAt, HANDLE_COOLDOWN_DAYS, normalizedProfileHandle, pendingSignupHandle } from "./features/accountOnboarding/signupHandle.js";
 import { cityGuideRoutes } from "./features/cities/cityGuideRoutes.js";
 import { artistBiographyRoutes } from "./features/artists/artistBiographyRoutes.js";
 import { musicBrainzBiographyFacts } from "../src/domain/artistBiography.mjs";
@@ -333,14 +334,6 @@ function parseStoredProfileExtras(value) {
   }
 }
 
-// Advance a timestamp by N business days (skip Sat/Sun), for the @handle cooldown.
-function addBusinessDays(ts, n) {
-  const d = new Date(ts);
-  let added = 0;
-  while (added < n) { d.setUTCDate(d.getUTCDate() + 1); const day = d.getUTCDay(); if (day !== 0 && day !== 6) added++; }
-  return d.getTime();
-}
-const HANDLE_COOLDOWN_DAYS = 10; // business days between username changes
 const AUTH_RATE_SCOPE = randomBytes(32);
 function jsonObject(value) {
   try {
@@ -1460,6 +1453,22 @@ function privateSignupHandle() {
   // An email local-part is private identity data, not a public username. Use a
   // neutral random base and let the user choose a meaningful handle later.
   return uniqueHandle(`pitfan_${randomBytes(4).toString("hex")}`);
+}
+
+function validateSignupHandle(value) {
+  const handle = normalizedProfileHandle(value);
+  if (!handle) throw new ApiError(400, "Use 3 to 20 letters, numbers, or underscores for your @username.", "VALIDATION_FAILED");
+  assertSafeAuthoredFields({ username: handle });
+  return handle;
+}
+
+function signupHandleAvailability(ctx) {
+  // This endpoint intentionally ignores pending signup preferences. Claiming a
+  // handle before email confirmation would turn this read into an email oracle.
+  limitAuthentication(ctx, "signup-handle", { ipMax: 60, ipWindowMs: 10 * 60 * 1000 });
+  ctx.setHeader?.("Cache-Control", "no-store");
+  const handle = validateSignupHandle(ctx.query?.handle);
+  return { handle, available: !q.userByHandle.get(handle) };
 }
 
 function storedPostTaggedUserIds(value) {
@@ -3790,6 +3799,7 @@ export const routes = {
     projectSelf: (user) => publicUser(user, { self: true }),
     rateLimit: limit,
     requireUser,
+    signupHandleAvailability,
   }),
   ...cityGuideRoutes({ database: db, ApiError, requireAdmin, rateLimit: limit, now }),
   ...artistBiographyRoutes({ database: db, ApiError, requireAdmin, rateLimit: limit, now, publicArtist }),
@@ -4904,6 +4914,13 @@ export const routes = {
     });
     if (errs.length) throw new ApiError(400, errs[0]);
     assertSafeAuthoredFields({ "profile name": v.name, city: v.city });
+    const preferredHandle = Object.hasOwn(ctx.body || {}, "handle")
+      ? validateSignupHandle(ctx.body.handle) : undefined;
+    // Check only claimed names, identically for new and existing emails. This
+    // preference remains private and is claimed atomically on verification.
+    if (preferredHandle && q.userByHandle.get(preferredHandle)) {
+      throw new ApiError(409, "That username is taken. Choose another one.", "CONFLICT");
+    }
     if (v.termsVersion !== CURRENT_TERMS_VERSION) {
       throw new ApiError(400, "Accept the current Terms & Conditions and Privacy policy to create an account.", "VALIDATION_FAILED");
     }
@@ -4927,6 +4944,7 @@ export const routes = {
             termsAcceptedAt: createdAt,
             termsVersion: CURRENT_TERMS_VERSION,
             ...(v.analyticsConsent ? { analyticsConsentAt: createdAt } : {}),
+            ...(preferredHandle ? { pendingSignupHandle: preferredHandle } : {}),
           }), id);
           db.prepare("UPDATE users SET genres=? WHERE id=?").run(JSON.stringify(v.genres), id);
           // Only accounts created through signup enter the first-run flow.
@@ -5155,7 +5173,12 @@ export const routes = {
         if (current[key] === undefined) delete requested[key];
         else requested[key] = current[key];
       }
+      const pendingHandle = pendingSignupHandle(parseStoredProfileExtras(u.extras));
+      if (pendingHandle) requested.pendingSignupHandle = pendingHandle;
       serializedExtras = serializeProfileExtras(requested);
+      if (serializedExtras === null) {
+        throw new ApiError(400, `profile metadata must be no larger than ${PROFILE_EXTRAS_MAX_BYTES} bytes.`, "VALIDATION_FAILED");
+      }
       assertSafeAuthoredFields({
         "now-playing title": requested.nowPlaying?.title,
         "now-playing artist": requested.nowPlaying?.artist,
@@ -5164,7 +5187,7 @@ export const routes = {
 
     const [profileErrors, v] = shape(ctx.body, {
       name: { parse: (x) => (isName(x) ? cleanName(x) : undefined) },
-      handle: { parse: (x) => { const h = cleanHandle(x); return h && h.length >= 3 ? h : undefined; } },
+      handle: { parse: normalizedProfileHandle },
       bio: { parse: (x) => clean(x, { max: LIMITS.bio, newlines: true }) },
       banner: { parse: (x) => clean(x, { max: 2000 }) },
       avatarUri: { parse: (x) => clean(x, { max: 2000 }) },
@@ -5185,6 +5208,13 @@ export const routes = {
     });
     if (profileErrors.length) {
       throw new ApiError(400, profileErrors[0], "VALIDATION_FAILED");
+    }
+    // `shape` leaves null values alone for ordinary optional fields. These two
+    // media slots additionally accept explicit null as removal; an omitted
+    // slot still means retain it. The existing transaction owns reference
+    // removal and any now-unreferenced object cleanup together.
+    for (const key of ["banner", "avatarUri"]) {
+      if (Object.hasOwn(ctx.body || {}, key) && ctx.body[key] === null) v[key] = null;
     }
     assertSafeAuthoredFields({
       "profile name": v.name,
@@ -5212,7 +5242,7 @@ export const routes = {
         throw new ApiError(400, u.role === "admin" ? 'Admin usernames must contain "admin".' : 'Moderator usernames must contain "mod".');
       }
       if (u.handle_changed_at) {
-        const nextAt = addBusinessDays(u.handle_changed_at, HANDLE_COOLDOWN_DAYS);
+        const nextAt = handleChangeAvailableAt(u.handle_changed_at);
         if (now() < nextAt) {
           const when = new Date(nextAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
           throw new ApiError(429, `Username can only change every ${HANDLE_COOLDOWN_DAYS} business days, next change available ${when}.`);
@@ -7953,6 +7983,7 @@ export const routes = {
       const changed = db.prepare(`UPDATE users
         SET email_verified_at=?, email_verify_hash=NULL, email_verify_expires=0
         WHERE id=? AND email_verified_at=0`).run(now(), ctx.params.id).changes === 1;
+      if (changed) claimPendingSignupHandle(db, q.userById.get(before.id), now());
       if (changed) moderationRecord(ctx, "verify-email", "user", before.id, ctx.body?.reason || "",
         { emailVerified: false }, { emailVerified: true, by: actor.id });
     });

@@ -2,6 +2,14 @@ export const PROFILE_GENRE_MIN = 1;
 export const PROFILE_GENRE_MAX = 3;
 export const PROFILE_GENRE_MAX_LENGTH = 30;
 
+// Personal taste choices are broader than the small legacy discovery taxonomy.
+// Do not repurpose artist-classification filters or rewrite saved custom labels.
+export const PROFILE_GENRE_OPTIONS = Object.freeze([
+  "Pop", "Hip-Hop", "R&B", "Rock", "Indie", "Electronic", "Country", "Latin",
+  "Afrobeats", "Reggae", "Jazz", "Blues", "Folk", "Classical", "Metal", "Punk",
+  "Soul", "Gospel", "K-Pop", "World", "Hardcore", "Psych Rock", "Alt-Country", "Shoegaze",
+]);
+
 const cleanGenre = (value) => typeof value === "string"
   ? value.replace(/[\u0000-\u001f\u007f]/gu, "").replace(/\s+/gu, " ").trim()
   : "";
@@ -40,7 +48,7 @@ export function profileGenreSelection(values) {
 // Existing accounts may carry older labels or more than three selections.
 // Keep those labels visible in Edit Profile so the member can deliberately
 // reduce/change them; do not silently truncate their stored preferences.
-export function profileGenreOptions(preferred, defaults) {
+export function profileGenreOptions(preferred, defaults = PROFILE_GENRE_OPTIONS) {
   const output = [];
   const seen = new Set();
   for (const value of [...(Array.isArray(preferred) ? preferred : []), ...(Array.isArray(defaults) ? defaults : [])]) {

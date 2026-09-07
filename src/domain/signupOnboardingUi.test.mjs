@@ -18,27 +18,31 @@ test("signup onboarding UI and integration files remain parseable", () => {
 
 test("verified server account state opens the walkthrough on web and native", () => {
   assert.match(app, /needsSignupOnboarding\(session\)/);
-  assert.match(app, /<SignupOnboardingScreen session=\{session\} onComplete=\{finishSignupOnboarding\}/);
-  assert.match(app, /completeSignupOnboarding\(\)/);
+  assert.match(app, /<SignupOnboardingScreen key=\{session.id\} session=\{session\} onComplete=\{finishSignupOnboarding\}/);
+  assert.match(app, /completeSignupOnboarding\(\{ expectedAccountId, signal \}\)/);
+  assert.match(app, /expectedAccountId === sessionRef.current\?\.id/);
   assert.doesNotMatch(app, /save\("pit\.welcomePending"/);
   assert.doesNotMatch(app, /load\("pit\.welcomePending"/);
 });
 
 test("signup clearly continues into public profile setup after confirmation", () => {
-  assert.match(auth, /public @username and optional banner/);
-  assert.match(auth, /then take a quick tour/);
+  assert.match(auth, /handle/);
+  assert.match(auth, /profile photo/i);
+  assert.match(auth, /banner/);
   assert.match(auth, /same message either way/);
+  assert.match(app, /rightRailLayout.visible && !nav.auth/);
+  assert.doesNotMatch(auth, /radius\.xl/);
 });
 
-test("the walkthrough saves a banner and authoritative username before teaching the app", () => {
+test("the walkthrough saves both profile images with account-bound confirmation and an explicit discard choice", () => {
   assert.match(onboarding, /STEP \{step\} OF \{TOTAL_STEPS\}/);
-  assert.match(onboarding, /profileImagePickerOptions\("banner"/);
-  assert.match(onboarding, /uploadMediaAsset\(result\.assets\[0\], "banner"\)/);
-  assert.match(onboarding, /saveProfile\(patch\)/);
-  assert.match(onboarding, /result\?\.user/);
-  assert.match(onboarding, /Find a show/);
-  assert.match(onboarding, /Make plans/);
-  assert.match(onboarding, /Remember the night/);
+  assert.match(onboarding, /pickPhoto\("banner"\)/);
+  assert.match(onboarding, /pickPhoto\("avatar"\)/);
+  assert.match(onboarding, /expectedAccountId: task.accountId/);
+  assert.match(onboarding, /confirmSignupProfile\(result, task.accountId, patch\)/);
+  assert.match(onboarding, /Discard unsaved changes and leave/);
+  assert.match(onboarding, /WelcomeGuide/);
+  assert.match(onboarding, /controller.abort\(\)/);
   assert.match(onboarding, /accessibilityRole="progressbar"/);
   assert.match(onboarding, /accessibilityLiveRegion="assertive"/);
 });

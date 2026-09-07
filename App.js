@@ -382,7 +382,7 @@ function Root() {
     desktop: wide,
     playerColumnWidth: MUSIC_PLAYER_ENABLED && wide ? playerColumnWidth : 0,
   });
-  const showRightRail = rightRailLayout.visible;
+  const showRightRail = rightRailLayout.visible && !nav.auth;
   const homeCountdown = session ? homeShowCountdownPlan({
     attendance: myAttendance,
     going: goingFor(session.id),
@@ -1148,7 +1148,7 @@ function Root() {
   else if (nav.artistTour) overlay = <TourArchiveScreen artistName={nav.artistTour.name} artistKey={nav.artistTour.artistKey} tourKey={nav.artistTour.tourKey} tourName={nav.artistTour.tourName} onClose={back} onOpenShow={openShow} onOpenPost={openPost} onOpenPhotos={openPhotos} onOpenProfile={openProfile} />;
   else if (nav.artistName) overlay = <ArtistScreen artistName={nav.artistName} onClose={back} onOpenPost={openPost} onOpenShow={openShow} onOpenArchive={openArtistArchive} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onShareMemory={(name, artistKey, options = {}) => requireVerifiedMutation("post", () => go({ logging: true, postMode: "memory", legacyArtistProfile: options.legacyProfile === true, prefill: { artist: name, artistKey } }))} onOpenPhotos={openPhotos} onOpenGallery={openArtistGallery} onOpenProfile={openProfile} onManageArtistProfile={() => go({ artistHub: true })} onEditArtistProfile={(name) => name && requireVerifiedMutation("artist", () => go({ editArtist: name }))} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} onReport={openReport} />;
   else if (nav.venueName) overlay = <VenueScreen venueName={nav.venueName} venueIdentity={nav.venue || null} onClose={back} onOpenShow={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onReviewVenue={openVenueReview} onOpenProfile={openProfile} onOpenPhotos={openPhotos} onReport={openReport} />;
-  else if (nav.nearby) overlay = <NearbyScreen onClose={back} onOpenVenue={openVenue} onOpenArtist={openArtist} />;
+  else if (nav.nearby) overlay = <NearbyScreen onClose={back} onOpenVenue={openVenue} onOpenArtist={openArtist} initialTab={nav.nearbyTab} />;
   else if (nav.cityGuide) overlay = <CityScreen city={nav.cityGuide} accountId={session?.id || null} onClose={back} onOpenCity={openCity} onOpenVenue={openVenue} onOpenArtist={openArtist} onOpenShow={openShow} onOpenPhotos={openPhotos} />;
   else if (nav.venues) overlay = <VenuesScreen initialRegion={nav.discoverRegion} onClose={back} onOpenVenue={openVenue} />;
   else if (nav.fanClubs) overlay = <FanClubsScreen onClose={back} onOpenFanClub={openFanClub} />;
@@ -1376,9 +1376,16 @@ function Root() {
     && !unsubToken
     && !verifyToken
     && !ownerApprovalToken;
-  const finishSignupOnboarding = async ({ openArtistPicker = false } = {}) => {
-    const result = await completeSignupOnboarding();
-    if (result?.ok && openArtistPicker) replace({ pickArtists: true });
+  const finishSignupOnboarding = async ({ destination = "feed", openArtistPicker = false, expectedAccountId, signal } = {}) => {
+    if (!expectedAccountId || expectedAccountId !== sessionRef.current?.id || signal?.aborted) {
+      return { ok: false, stale: true, error: "Your account changed. Reopen setup." };
+    }
+    const result = await completeSignupOnboarding({ expectedAccountId, signal });
+    if (result?.ok && expectedAccountId === sessionRef.current?.id) {
+      if (openArtistPicker || destination === "artists") replace({ pickArtists: true });
+      else if (destination === "shows") replace({ nearby: true, nearbyTab: "shows" });
+      else if (destination === "review") requireVerifiedMutation("review", () => replace({ logging: true }));
+    }
     return result;
   };
   const playerObscured = !!resetToken || !!ownerApprovalToken || !!welcome || signupOnboardingVisible || !!nav.photos || (ENABLE_CLIPS && !!nav.clips);
@@ -1531,7 +1538,7 @@ function Root() {
 
         {verifyToken && (
           <View style={styles.welcomeModal}>
-            <VerifyEmailScreen token={verifyToken} onConsumed={scrubVerifyUrl} onDone={clearVerifyUrl} />
+            <VerifyEmailScreen token={verifyToken} onConsumed={scrubVerifyUrl} onDone={clearVerifyUrl} onLogin={() => { clearVerifyUrl(); enter(); go({ auth: true, authMode: "login" }); }} />
           </View>
         )}
 
@@ -1556,7 +1563,7 @@ function Root() {
         {signupOnboardingVisible && session && (
           <View style={styles.welcomeModal} accessibilityViewIsModal>
             <Suspense fallback={<ScreenLoading />}>
-              <SignupOnboardingScreen session={session} onComplete={finishSignupOnboarding} />
+              <SignupOnboardingScreen key={session.id} session={session} onComplete={finishSignupOnboarding} />
             </Suspense>
           </View>
         )}
@@ -1568,7 +1575,9 @@ function Root() {
               onOpenFanClub={(a) => { setWelcome(false); openFanClub(a); }}
               onOpenShow={(s) => { setWelcome(false); openShow(s); }}
               onOpenFanClubs={() => { setWelcome(false); go({ fanClubs: true }); }}
-              onOpenNearby={() => { setWelcome(false); go({ nearby: true }); }}
+              onOpenNearby={() => { setWelcome(false); go({ nearby: true, nearbyTab: "shows" }); }}
+              onOpenArtists={() => { setWelcome(false); go({ pickArtists: true }); }}
+              onReview={() => { setWelcome(false); requireVerifiedMutation("review", () => go({ logging: true })); }}
             />
           </View>
         )}

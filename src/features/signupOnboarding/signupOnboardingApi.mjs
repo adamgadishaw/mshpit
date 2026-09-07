@@ -1,5 +1,5 @@
 export async function requestSignupOnboardingCompletion(
-  { accountId, version },
+  { accountId, version, signal },
   { apiCall } = {},
 ) {
   if (typeof apiCall !== "function") throw new TypeError("Signup onboarding transport is unavailable");
@@ -11,6 +11,7 @@ export async function requestSignupOnboardingCompletion(
     body: { version },
     context: "Finishing account setup",
     expectedAccountId: accountId,
+    signal,
   });
   if (result?.ok !== true
     || result?.user?.id !== accountId

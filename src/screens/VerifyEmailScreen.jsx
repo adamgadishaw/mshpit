@@ -6,7 +6,7 @@ import { View, Text, StyleSheet, Pressable } from "react-native";
 import { colors, radius, space } from "../theme";
 import { useStore } from "../store";
 
-export default function VerifyEmailScreen({ token, onConsumed, onDone }) {
+export default function VerifyEmailScreen({ token, onConsumed, onDone, onLogin }) {
   const { confirmEmailVerification } = useStore();
   const [state, setState] = useState("asking");
   const requestRef = useRef(null);
@@ -14,7 +14,7 @@ export default function VerifyEmailScreen({ token, onConsumed, onDone }) {
   useEffect(() => () => requestRef.current?.abort(), []);
 
   const submit = async () => {
-    if (state === "working") return;
+    if (requestRef.current) return;
     requestRef.current?.abort();
     const controller = new AbortController();
     requestRef.current = controller;
@@ -68,9 +68,9 @@ export default function VerifyEmailScreen({ token, onConsumed, onDone }) {
         {state === "doneExternal" && (
           <>
             <Text style={styles.h}>That email is confirmed.</Text>
-            <Text style={styles.p}>The address is confirmed. Sign in to its Pit account to see the updated account status.</Text>
-            <Pressable style={[styles.btn, styles.btnPrimary]} onPress={onDone} accessibilityRole="button">
-              <Text style={styles.btnTxtPrimary}>Back to Pit</Text>
+            <Text style={styles.p}>Log in to finish your profile, add your photos, and find your first show.</Text>
+            <Pressable style={[styles.btn, styles.btnPrimary]} onPress={onLogin || onDone} accessibilityRole="button">
+              <Text style={styles.btnTxtPrimary}>Continue to log in</Text>
             </Pressable>
           </>
         )}
@@ -81,8 +81,8 @@ export default function VerifyEmailScreen({ token, onConsumed, onDone }) {
             <Text style={styles.p}>
               Verification links last 24 hours. Sign in and you can send yourself a fresh one.
             </Text>
-            <Pressable style={[styles.btn, styles.btnPrimary]} onPress={onDone} accessibilityRole="button">
-              <Text style={styles.btnTxtPrimary}>Back to Pit</Text>
+            <Pressable style={[styles.btn, styles.btnPrimary]} onPress={onLogin || onDone} accessibilityRole="button">
+              <Text style={styles.btnTxtPrimary}>Log in to get a new link</Text>
             </Pressable>
           </>
         )}

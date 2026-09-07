@@ -39,3 +39,34 @@ test("new-account artist picks intercept save before the protected profile reque
   assert.match(picks, /onRequireVerification\?\.\(\)/);
   assert.match(picks, /Confirm your email before saving these picks/);
 });
+
+test("confirmation and expired links offer a direct login continuation without auto-signing in", () => {
+  assert.match(confirmation, /Continue to log in/);
+  assert.match(confirmation, /Log in to get a new link/);
+  assert.equal((confirmation.match(/onPress=\{onLogin \|\| onDone\}/g) || []).length, 2);
+  assert.match(confirmation, /if \(requestRef\.current\) return;/);
+  const tree = parse(app, { sourceType: "module", plugins: ["jsx"] });
+  let login;
+  function visit(node) {
+    if (!node || typeof node !== "object") return;
+    if (node.type === "JSXOpeningElement" && node.name?.name === "VerifyEmailScreen") {
+      login = node.attributes.find((attribute) => attribute.name?.name === "onLogin")?.value?.expression;
+    }
+    for (const child of Object.values(node)) {
+      if (Array.isArray(child)) child.forEach(visit);
+      else if (child && typeof child === "object") visit(child);
+    }
+  }
+  visit(tree);
+  assert.ok(login, "App wires a direct verification-to-login action");
+  const calls = [], stack = [{}];
+  const run = new Function("clearVerifyUrl", "enter", "go", `return (${app.slice(login.start, login.end)});`)(
+    () => calls.push("clear-token"), () => calls.push("enter"), (route) => { calls.push(route); stack.push(route); },
+  );
+  assert.deepEqual(calls, [], "Only the explicit button action opens login");
+  run();
+  assert.deepEqual(calls, ["clear-token", "enter", { auth: true, authMode: "login" }]);
+  assert.equal(stack.length, 2, "login must open above the root so its completion can go back");
+  stack.pop();
+  assert.deepEqual(stack, [{}], "successful login returns to the root where profile setup can appear");
+});

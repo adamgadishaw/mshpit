@@ -246,9 +246,22 @@ function capturedUploadError(error, { timedOut = false, context, code } = {}) {
 /**
  * Upload one Expo ImagePickerAsset and return its durable public URL.
  * The local URI is deliberately never returned to callers, persisted, or sent
- * to the Pit API.
+ * to the Pit API. Account-scoped screens should pass their initiating account
+ * and cancel the signal on unmount/account changes; preparation can be async.
  */
-export async function uploadMediaAsset(asset, purpose, { signal, timeoutMs } = {}) {
+export async function uploadMediaAsset(asset, purpose, { signal, timeoutMs, expectedAccountId } = {}) {
+  if (expectedAccountId !== undefined
+    && (typeof expectedAccountId !== "string" || !expectedAccountId.trim())) {
+    throw new TypeError("An upload account identity must be a nonempty string.");
+  }
+  const uploadAccountId = expectedAccountId?.trim();
+  const abortIfNeeded = () => {
+    if (!signal?.aborted) return;
+    const error = new Error("Photo upload was cancelled.");
+    error.name = "AbortError";
+    throw error;
+  };
+  abortIfNeeded();
   let uploadAsset = asset;
   try {
     if (purpose === "avatar" || purpose === "banner") {
@@ -259,8 +272,10 @@ export async function uploadMediaAsset(asset, purpose, { signal, timeoutMs } = {
         uploadAsset = asset;
       }
     }
+  abortIfNeeded();
   const context = `Uploading ${purpose} media`;
   const prepared = await prepareMediaUploadAsset(uploadAsset, { optimizeWeb: true, context });
+  abortIfNeeded();
 
   // The authenticated Pit API validates size/type and returns a short-lived URL;
   // storage credentials never enter the client bundle.
@@ -268,6 +283,7 @@ export async function uploadMediaAsset(asset, purpose, { signal, timeoutMs } = {
     method: "POST",
     context: "Preparing your photo upload",
     signal,
+    expectedAccountId: uploadAccountId,
     body: {
       purpose,
       contentType: prepared.contentType,
@@ -275,6 +291,7 @@ export async function uploadMediaAsset(asset, purpose, { signal, timeoutMs } = {
       name: prepared.name,
     },
   });
+  abortIfNeeded();
   // Legacy surfaces no longer receive a browser-authored public object. Camera
   // bytes are staged privately, then the server performs the full decode and a
   // metadata-free re-encode before returning the only URL callers may persist.
@@ -293,12 +310,15 @@ export async function uploadMediaAsset(asset, purpose, { signal, timeoutMs } = {
     });
   }
   await uploadPreparedMediaAsset(prepared, ticket, { signal, timeoutMs, context });
+  abortIfNeeded();
   const finalized = await api("/api/media/finalize", {
     method: "POST",
     context: `Securing ${purpose} media`,
     signal,
+    expectedAccountId: uploadAccountId,
     body: { finalizeToken: ticket.finalizeToken },
   });
+  abortIfNeeded();
   if (finalized?.descriptorId !== ticket.descriptorId || !isDurableMediaUrl(finalized?.publicUrl)) {
     throw captureAppError(new AppError(undefined, {
       code: "PIT-UPLOAD-004",
