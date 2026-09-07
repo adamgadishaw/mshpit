@@ -618,7 +618,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
         testID="search-refresh"
       >
       <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.list} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-        {(activeCategory === "all" || activeCategory === "venues") && <CityDiscoveryTiles query={settledQuery} limit={5} onOpenCity={onOpenCity} />}
+        {(activeCategory === "all" || activeCategory === "venues") && <CityDiscoveryTiles query={settledQuery} limit={5} onOpenCity={onOpenCity} layout="rail" />}
         {surfaceRefreshError ? (
           <Text style={styles.surfaceRefreshError} accessibilityRole="alert" accessibilityLiveRegion="assertive">
             Some search sources could not refresh. Your current results are still here.

@@ -1,12 +1,13 @@
 import { useCallback, useEffect } from "react";
 import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
 import CityDirectoryTiles from "../../components/cities/CityDirectoryTiles";
+import CityDirectoryRail from "../../components/cities/CityDirectoryRail";
 import Button from "../../components/Button";
 import { colors, font, radius, space } from "../../theme";
 import { readCityDirectory } from "./cityApi.mjs";
 import useCityResource from "./useCityResource";
 
-export default function CityDiscoveryTiles({ country = "", query = "", limit = 8, onOpenCity, title = true, registerRefresh }) {
+export default function CityDiscoveryTiles({ country = "", query = "", limit = 8, onOpenCity, title = true, registerRefresh, layout = "grid" }) {
   const load = useCallback((signal) => readCityDirectory({ country, query, limit, signal }), [country, query, limit]);
   const resource = useCityResource(`cities:${country}:${query}:${limit}`, load, { delay: query ? 220 : 0 });
   useEffect(() => {
@@ -15,6 +16,7 @@ export default function CityDiscoveryTiles({ country = "", query = "", limit = 8
   }, [registerRefresh, resource.refresh]);
   const copy = resource.data?.copy || {};
   const cities = Array.isArray(resource.data?.cities) ? resource.data.cities : [];
+  const Directory = layout === "rail" ? CityDirectoryRail : CityDirectoryTiles;
   return <View style={styles.root}>
     {resource.error ? <View style={styles.message}>
       <Text style={styles.error} accessibilityRole="alert">{copy.loadError || "City guides could not load."}</Text>
@@ -22,7 +24,7 @@ export default function CityDiscoveryTiles({ country = "", query = "", limit = 8
     </View> : null}
     {!resource.data && !resource.error ? <View style={styles.message} accessibilityLiveRegion="polite"><ActivityIndicator color={colors.amber} /><Text style={styles.detail}>{copy.loading || "Loading city guides…"}</Text></View> : null}
     {resource.data && !cities.length ? <View style={styles.message}><Text style={styles.detail}>{copy.noCities || "No cities found."}</Text></View> : null}
-    <CityDirectoryTiles cities={cities} copy={copy} onOpenCity={onOpenCity} title={title} />
+    <Directory cities={cities} copy={copy} onOpenCity={onOpenCity} title={title} />
   </View>;
 }
 
