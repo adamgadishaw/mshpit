@@ -89,8 +89,7 @@ function confidenceRank(average, ratingCount) {
   return ((confidenceRating / 5) * 0.8 + depth * 0.2) * 100;
 }
 
-function projectShows(postRows, providerRows, { country = "Worldwide", limit = 24 } = {}) {
-  const requestedCountry = discoverCountryIdentity(country);
+function projectShowCandidates(postRows, providerRows) {
   const providerLocations = createProviderLocationIndex(providerRows);
   const shows = new Map();
   const latestReviewerShows = new Set();
@@ -103,8 +102,6 @@ function projectShows(postRows, providerRows, { country = "Worldwide", limit = 2
     if (!Number.isFinite(rating) || rating < 1 || rating > 5) continue;
     const providerLocation = providerLocations.get(providerShowIdentity(row)) || null;
     const venueCountry = providerLocation?.venueCountry || explicitCountryFromPlace(row?.city);
-    if (requestedCountry && requestedCountry !== "worldwide"
-      && discoverCountryIdentity(venueCountry) !== requestedCountry) continue;
 
     const identity = showIdentity(row, providerLocation);
     const reviewerIdentity = `${identity}\u0000${identityPart(row?.user_id)}`;
@@ -173,45 +170,98 @@ function projectShows(postRows, providerRows, { country = "Worldwide", limit = 2
       || right.avgRating - left.avgRating
       || right.newestAt - left.newestAt
       || left.artist.localeCompare(right.artist))
-    .slice(0, boundedLimit(limit))
-    .map(({ newestAt, ...show }, index) => ({ ...show, rank: index + 1 }));
+    .map(({ newestAt, ...show }) => show);
+}
+
+function selectShows(candidates, { country = "Worldwide", limit = 24 } = {}) {
+  const requestedCountry = discoverCountryIdentity(country);
+  return candidates.filter((show) => !requestedCountry || requestedCountry === "worldwide"
+    || discoverCountryIdentity(show.venueCountry) === requestedCountry)
+    .slice(0, boundedLimit(limit)).map((show, index) => ({ ...show, rank: index + 1 }));
+}
+
+function projectShows(postRows, providerRows, options = {}) {
+  return selectShows(projectShowCandidates(postRows, providerRows), options);
+}
+
+function locationRequests(posts) {
+  const unique = new Map();
+  for (const post of posts) {
+    const row = {
+      artistKey: clean(post.artist_key, 180) || null,
+      artist: clean(post.artist, 240).toLocaleLowerCase("en"),
+      date: clean(post.date, 40),
+    };
+    const key = JSON.stringify([row.artistKey, row.artist, row.date]);
+    if (!unique.has(key)) unique.set(key, row);
+  }
+  return JSON.stringify([...unique.values()]);
 }
 
 export function createTopRatedShowService({ database, clock = Date.now } = {}) {
   if (!database?.prepare) throw new TypeError("A database is required");
   const cache = new Map();
-
-  const read = ({ country = "Worldwide", limit = 24 } = {}) => {
-    const safeLimit = boundedLimit(limit);
-    const cacheKey = `${discoverCountryIdentity(country) || "worldwide"}\u0000${safeLimit}`;
-    const current = Number(clock());
-    const cached = cache.get(cacheKey);
-    if (cached && current - cached.at < CACHE_TTL_MS) return cached.rows;
-
-    const posts = database.prepare(`
+  let snapshot = null;
+  const postStatement = database.prepare(`
       SELECT p.id,p.user_id,p.artist,p.artist_key,p.venue,p.venue_key,p.city,p.date,
         p.overall,p.review,p.tour,p.created_at,p.updated_at
       FROM posts p
       JOIN users author ON author.id=p.user_id
       WHERE p.removed=0 AND ${inPersonReviewSql("p")}
-        AND TRIM(p.artist)<>'''' AND TRIM(p.venue)<>'''' AND TRIM(p.date)<>''''
+        AND TRIM(p.artist)<>'' AND TRIM(p.venue)<>'' AND TRIM(p.date)<>''
         AND p.overall BETWEEN 1 AND 5
         AND ${activeAccountSql("author")}
       ORDER BY p.created_at DESC,p.id DESC
       LIMIT ?
-    `).all(POST_CANDIDATE_LIMIT);
-    const providerLocations = database.prepare(`
+    `);
+  // Look up only artist/day identities that actually have reviews. The old
+  // latest-5000 provider sweep lost older reviewed shows as the catalogue grew.
+  // Both branches use existing artist/date indexes; one JSON parameter keeps
+  // the bounded 5000-review batch below SQLite's bind-variable limit.
+  // CROSS JOIN keeps the small requested set first: ordinary joins can make
+  // SQLite scan the whole event catalogue for the legacy-name branch.
+  const locationStatement = database.prepare(`
+      WITH requested AS MATERIALIZED (
+        SELECT json_extract(value,'$.artistKey') AS artist_key,
+          json_extract(value,'$.artist') AS artist,json_extract(value,'$.date') AS date
+        FROM json_each(?1)
+      ), matched AS (
+        SELECT td.id FROM requested r CROSS JOIN tour_dates td
+          WHERE td.artist_key=r.artist_key AND td.date=r.date
+            AND r.artist_key IS NOT NULL AND td.artist_key IS NOT NULL AND td.owner_id IS NULL
+        UNION
+        SELECT td.id FROM requested r CROSS JOIN tour_dates td
+          WHERE lower(trim(td.artist))=r.artist AND td.date=r.date
+            AND (r.artist_key IS NULL OR td.artist_key IS NULL) AND td.owner_id IS NULL
+      )
       SELECT td.artist,td.artist_key,td.venue,td.place,td.date,td.source,td.venue_provider_id,
         td.venue_city,td.venue_region,td.venue_country_code,td.venue_country
-      FROM tour_dates td
-      WHERE td.owner_id IS NULL AND TRIM(COALESCE(td.venue,''))<>''
+      FROM matched m CROSS JOIN tour_dates td
+      WHERE td.id=m.id AND TRIM(COALESCE(td.venue,''))<>''
         AND TRIM(COALESCE(td.date,''))<>''
       ORDER BY td.updated_at DESC,td.id DESC
-      LIMIT ?
-    `).all(PROVIDER_LOCATION_LIMIT);
-    const rows = projectShows(posts, providerLocations, { country, limit: safeLimit });
+      LIMIT ?2
+    `);
+  const read = ({ country = "Worldwide", limit = 24 } = {}) => {
+    const safeLimit = boundedLimit(limit);
+    const current = Number(clock());
+    const cacheKey = `${discoverCountryIdentity(country) || "worldwide"}\u0000${safeLimit}`;
+    const fresh = snapshot && current >= snapshot.at && current - snapshot.at < CACHE_TTL_MS;
+    if (!fresh) {
+      // Expired or failed reads never serve the previous visibility snapshot.
+      snapshot = null;
+      cache.clear();
+      const posts = postStatement.all(POST_CANDIDATE_LIMIT);
+      const locations = posts.length
+        ? locationStatement.all(locationRequests(posts), PROVIDER_LOCATION_LIMIT) : [];
+      // Retain public show aggregates, not reviewer IDs or review text.
+      snapshot = { at: current, rows: projectShowCandidates(posts, locations) };
+    }
+    const cached = cache.get(cacheKey);
+    if (cached) return cached;
+    const rows = selectShows(snapshot.rows, { country, limit: safeLimit });
     cache.delete(cacheKey);
-    cache.set(cacheKey, { at: current, rows });
+    cache.set(cacheKey, rows);
     while (cache.size > CACHE_ENTRY_LIMIT) cache.delete(cache.keys().next().value);
     return rows;
   };

@@ -1,8 +1,22 @@
+import { accountMutationIsCurrent } from "./accountMutation.mjs";
+import { isLoadCancellation } from "./loadState.mjs";
+
 const AUTHORITATIVE_UNAVAILABLE_STATUSES = new Set([403, 404, 410]);
 const AUTHORITATIVE_UNAVAILABLE_CODES = new Set(["FORBIDDEN", "NOT_FOUND"]);
 
 export const PROFILE_STALE_MESSAGE = "Could not refresh this profile. Showing saved profile data.";
 export const PROFILE_LOAD_ERROR = "This profile could not be loaded. Check your connection and try again.";
+
+// HTTP access denials can arrive after logout just like successful reads.
+// Neither may publish or quarantine data in a different viewer's cache.
+export function assertCurrentProfileRead(read, accountId, epoch, { signal, error } = {}) {
+  if (!isLoadCancellation(error, signal)
+    && error?.serverCode !== "IDENTITY_CHANGED"
+    && accountMutationIsCurrent(read, accountId, epoch)) return;
+  const cancellation = new Error("This profile request is no longer current.");
+  cancellation.name = "AbortError";
+  throw cancellation;
+}
 
 export function unavailableProfileOutcome(reason = "unavailable") {
   return { status: "missing", reason, evict: true, user: null, error: "" };

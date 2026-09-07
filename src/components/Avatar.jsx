@@ -1,9 +1,10 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useMemo } from "react";
 import { View, Text, Pressable, StyleSheet, PixelRatio } from "react-native";
 import { Image as ExpoImage } from "expo-image";
 import { colors, focusRing, mono } from "../theme";
 import { displaySrc, previewSrc } from "../lib/img";
 import { imageLoadPolicy, versionedImageCacheKey } from "../domain/imageLoadPolicy.mjs";
+import useImageAttempt from "../hooks/useImageAttempt";
 
 // Shows the user's uploaded photo if set, else initials on their colour.
 // Tappable to open a profile.
@@ -18,12 +19,8 @@ export default function Avatar({ user, size = 36, onPress, priority = "normal" }
       displaySrc(rawAvatarUri, previewWidth),
     ].filter(Boolean))];
   }, [previewWidth, rawAvatarUri]);
-  const requestScope = `${String(rawAvatarUri || "")}|${previewWidth}`;
-  const activeScopeRef = useRef(requestScope);
-  activeScopeRef.current = requestScope;
-  const [loadState, setLoadState] = useState({ scope: requestScope, index: 0 });
-  const sourceIndex = loadState.scope === requestScope ? loadState.index : 0;
-  const avatarUri = sources[sourceIndex] || null;
+  const requestScope = JSON.stringify([rawAvatarUri, previewWidth, user?.id || user?.handle, user?.profileUpdatedAt]);
+  const { uri: avatarUri, index: sourceIndex, onError, onDisplay } = useImageAttempt(requestScope, sources);
   const cacheKey = versionedImageCacheKey({
     namespace: "avatar",
     id: user?.id || user?.handle,
@@ -33,14 +30,6 @@ export default function Avatar({ user, size = 36, onPress, priority = "normal" }
   });
   const source = useMemo(() => avatarUri ? { uri: avatarUri, cacheKey } : null, [avatarUri, cacheKey]);
   const policy = imageLoadPolicy({ priority });
-  const fail = useCallback(() => {
-    setLoadState((current) => {
-      if (activeScopeRef.current !== requestScope) return current;
-      const currentIndex = current.scope === requestScope ? current.index : 0;
-      if (currentIndex >= sources.length) return current.scope === requestScope ? current : { scope: requestScope, index: sources.length };
-      return { scope: requestScope, index: currentIndex + 1 };
-    });
-  }, [requestScope, sources.length]);
   const fallback = (
     <View
       style={[
@@ -70,7 +59,8 @@ export default function Avatar({ user, size = 36, onPress, priority = "normal" }
           enforceEarlyResizing
           recyclingKey={`avatar:${cacheKey}`}
           transition={80}
-          onError={fail}
+          onError={onError}
+          onDisplay={onDisplay}
         />
       )}
     </View>

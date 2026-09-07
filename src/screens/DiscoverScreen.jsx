@@ -8,6 +8,7 @@ import DiscoverChart from "../components/discover/DiscoverChart";
 import DiscoverGenres from "../components/discover/DiscoverGenres";
 import { DiscoverPhotos } from "../components/discover/DiscoverCommunity";
 import DiscoverEventBanner from "../components/discover/DiscoverEventBanner";
+import DiscoverProgrammeNav from "../components/discover/DiscoverProgrammeNav";
 import { MetricTile, OverviewState, QuickAction, SectionHeading } from "../components/discover/DiscoverPrimitives";
 import { UpcomingEventCard, VenueDiscoveryCard } from "../components/VenueDiscoveryCards";
 import { EventScopeToggle, PopularLoungeCard } from "../components/LiveDiscoveryCards";
@@ -16,6 +17,7 @@ import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import CityDiscoveryTiles from "../features/cities/CityDiscoveryTiles";
 import { CityNavigationContext } from "../components/cities/CityNavigationContext";
 import { eventPath } from "../domain/urls.mjs";
+import { discoverProgrammeKey } from "../domain/discoverProgramme.mjs";
 import { buildDiscoverEventBannerSlides } from "../domain/discoverEventBanner.mjs";
 import {
   DISCOVER_AREA_SCOPE,
@@ -106,6 +108,13 @@ export default function DiscoverScreen({
   const veryCompact = width < 380;
   const wide = width >= 900;
   const actionBasis = veryCompact ? "100%" : "48%";
+  const [programme, setProgramme] = useState("shows");
+  const [areaExpanded, setAreaExpanded] = useState(false);
+  const [dateExpanded, setDateExpanded] = useState(false);
+  const areaDisclosureRef = useRef(null);
+  const dateDisclosureRef = useRef(null);
+  const cityRefreshRef = useRef(null);
+  const registerCityRefresh = useCallback((refresh) => { cityRefreshRef.current = refresh; }, []);
 
   const accountId = session?.id || null;
   const homeCity = session?.home?.city || discoverySidebar?.location?.city || "";
@@ -433,7 +442,7 @@ export default function DiscoverScreen({
     setPullRefreshing(false);
     setPullRefreshError(false);
     return () => pullRefreshControllerRef.current?.abort();
-  }, [accountId, rangeScopeKey]);
+  }, [accountId, programme, rangeScopeKey]);
 
   useEffect(() => {
     const nextGenre = selectDefaultDiscoverGenre(overview.genres, selectedGenre);
@@ -443,6 +452,8 @@ export default function DiscoverScreen({
   const pickRegion = (country) => {
     setQuery("");
     setSceneExpanded(false);
+    setAreaExpanded(false);
+    if (areaExpanded) areaDisclosureRef.current?.focus?.();
     setAreaChoice((current) => selectDiscoverCountryArea(
       resolveDiscoverAreaChoice(current, areaContext),
       country,
@@ -476,6 +487,7 @@ export default function DiscoverScreen({
       refreshTourDates?.({ signal: controller.signal }),
       refreshDiscoverySidebar?.({ signal: controller.signal }),
       refreshLoadedRange,
+      programme === "cities" && cityRefreshRef.current ? cityRefreshRef.current({ signal: controller.signal }) : Promise.resolve(true),
     ]);
     if (controller.signal.aborted || pullRefreshControllerRef.current !== controller) return false;
     const failed = results.some((result) => result.status === "rejected"
@@ -485,7 +497,7 @@ export default function DiscoverScreen({
     setPullRefreshing(false);
     pullRefreshControllerRef.current = null;
     return !failed;
-  }, [eventRange.days, eventRange.scopeKey, eventRange.status, rangeScopeKey, refreshDiscoverySidebar, refreshTourDates, requestEventRange, requestGenre, requestOverview, selectedGenre, selectedRangeDays]);
+  }, [eventRange.days, eventRange.scopeKey, eventRange.status, programme, rangeScopeKey, refreshDiscoverySidebar, refreshTourDates, requestEventRange, requestGenre, requestOverview, selectedGenre, selectedRangeDays]);
 
   const overviewStatus = overviewRequestState.scopeKey === overviewScopeKey
     ? overviewRequestState.status
@@ -540,18 +552,30 @@ export default function DiscoverScreen({
         </Text>
       ) : null}
       <View style={[styles.hero, compact && styles.heroCompact]}>
+        <View pointerEvents="none" style={styles.heroStripe}><View style={styles.stripeWarm} /><View style={styles.stripePink} /><View style={styles.stripeCool} /></View>
         <View style={styles.heroCopy}>
           <Text style={styles.kicker}>FIND MUSIC AND SHOWS</Text>
           <Text style={[styles.title, compact && styles.titleCompact]} accessibilityRole="header">Discover</Text>
-          <Text style={styles.tagline}>See upcoming events, popular artists, venues, and fan picks in one place.</Text>
+          {!compact && <Text style={styles.tagline}>See upcoming events, popular artists, venues, and fan picks in one place.</Text>}
         </View>
-        <View style={styles.scenePill} accessible accessibilityLabel={`Showing Discover for ${region}`}>
+        <Pressable
+          ref={areaDisclosureRef}
+          style={({ pressed, focused }) => [styles.scenePill, pressed && styles.cardPressed, focused && focusRing]}
+          onPress={() => setAreaExpanded((value) => !value)}
+          accessibilityRole="button"
+          accessibilityState={{ expanded: areaExpanded }}
+          aria-expanded={areaExpanded}
+          accessibilityLabel={`Choose an area to explore. Current area: ${region}`}
+        >
           <Icon name={region === "Worldwide" ? "globe" : "pin"} size={15} color={colors.amber} />
           <Text style={styles.scenePillText} numberOfLines={1}>{region}</Text>
-        </View>
+          <Icon name={areaExpanded ? "minus" : "chevron-down"} size={14} color={colors.textDim} />
+        </Pressable>
       </View>
 
-      <View style={styles.controlsCard}>
+      <DiscoverProgrammeNav selected={programme} onSelect={(value) => setProgramme(discoverProgrammeKey(value))} compact={compact} />
+
+      {areaExpanded && <View style={styles.controlsCard}>
         <View style={[styles.controlTop, compact && styles.controlTopCompact]}>
           <View style={styles.controlCopy}>
             <Text style={styles.controlLabel}>CHOOSE AN AREA</Text>
@@ -569,6 +593,7 @@ export default function DiscoverScreen({
                 onPress={() => pickRegion(country.country)}
                 accessibilityRole="radio"
                 accessibilityState={{ selected }}
+                aria-checked={selected}
                 accessibilityLabel={country.country + (country.count != null ? ", " + country.count + " upcoming events" : "")}
               >
                 <View style={styles.regionChipCopy}>
@@ -595,9 +620,9 @@ export default function DiscoverScreen({
             </Pressable>
           )}
         </View>
-      </View>
+      </View>}
 
-      <View style={styles.upcomingSection}>
+      {programme === "shows" && <View nativeID="discover-panel-shows" accessibilityRole="tabpanel" aria-labelledby="discover-tab-shows" style={styles.upcomingSection}>
         <View style={styles.livePanel}>
           <View style={[styles.livePanelHead, compact && styles.livePanelHeadCompact]}>
             <SectionHeading
@@ -619,9 +644,21 @@ export default function DiscoverScreen({
               onChange={pickLiveScope}
             />
             <View style={styles.rangeControl}>
-              <Text style={styles.rangeLabel}>HOW FAR AHEAD?</Text>
-              <Text style={styles.rangeHint}>Choose how far ahead to plan. We'll keep your current events here while we find more.</Text>
-              <View style={styles.rangeOptions} accessibilityRole="radiogroup" accessibilityLabel="Choose how far ahead to look for events">
+              <Pressable
+                ref={dateDisclosureRef}
+                style={({ pressed, focused }) => [styles.rangeDisclosure, pressed && styles.cardPressed, focused && focusRing]}
+                onPress={() => setDateExpanded((value) => !value)}
+                accessibilityRole="button"
+                accessibilityState={{ expanded: dateExpanded }}
+                aria-expanded={dateExpanded}
+                accessibilityLabel={`Choose how far ahead to look. Current range: ${selectedRangeDays} days`}
+              >
+                <Icon name="calendar" size={15} color={colors.amber} />
+                <Text style={styles.rangeDisclosureText}>Next {selectedRangeDays} days</Text>
+                <Icon name={dateExpanded ? "minus" : "chevron-down"} size={14} color={colors.textDim} />
+              </Pressable>
+              {dateExpanded && <View style={styles.rangeOptions} accessibilityRole="radiogroup" accessibilityLabel="Choose how far ahead to look for events">
+                <Text style={styles.rangeLabel}>HOW FAR AHEAD?</Text>
                 {DISCOVER_RANGE_DAYS.map((days) => {
                   const selected = selectedRangeDays === days;
                   return (
@@ -633,16 +670,17 @@ export default function DiscoverScreen({
                         pressed && styles.cardPressed,
                         focused && focusRing,
                       ]}
-                      onPress={() => selectEventRange(days)}
+                      onPress={() => { selectEventRange(days); setDateExpanded(false); dateDisclosureRef.current?.focus?.(); }}
                       accessibilityRole="radio"
                       accessibilityState={{ selected }}
+                      aria-checked={selected}
                       accessibilityLabel={`Show events over the next ${days} days`}
                     >
                       <Text style={[styles.rangeOptionText, selected && styles.rangeOptionTextSelected]}>{days} days</Text>
                     </Pressable>
                   );
                 })}
-              </View>
+              </View>}
               {eventRange.scopeKey === rangeScopeKey && eventRange.status === "loading" && !rangeMatchesScene ? (
                 <View style={styles.rangeStatus} accessibilityLiveRegion="polite">
                   <ActivityIndicator size="small" color={colors.amber} />
@@ -714,10 +752,10 @@ export default function DiscoverScreen({
             </Pressable>
           ) : null}
         </View>
-      </View>
+      </View>}
 
-      <CityDiscoveryTiles country={region === "Worldwide" ? "" : region} limit={6} onOpenCity={openCity} />
-      <View style={styles.nearSection}>
+      {programme === "cities" && <View nativeID="discover-panel-cities" accessibilityRole="tabpanel" aria-labelledby="discover-tab-cities"><CityDiscoveryTiles country={region === "Worldwide" ? "" : region} limit={6} onOpenCity={openCity} registerRefresh={registerCityRefresh} /></View>}
+      {programme === "venues" && <View nativeID="discover-panel-venues" accessibilityRole="tabpanel" aria-labelledby="discover-tab-venues" style={styles.programmePanel}><View style={styles.nearSection}>
         <SectionHeading
           eyebrow="AROUND YOU"
           title="Near you"
@@ -784,19 +822,19 @@ export default function DiscoverScreen({
             <Text style={styles.liveEmptyText}>No venues with upcoming events are listed for {region} yet.</Text>
           </View>
         )}
-      </View>
+      </View></View>}
 
-      <View style={styles.quickSection}>
+      {programme === "shows" && <View style={styles.quickSection}>
         <SectionHeading eyebrow="MORE TO EXPLORE" title="More ways to explore" detail="Top-rated shows and artist communities" />
         <View style={styles.quickGrid}>
           <QuickAction icon="trophy" title="Top-rated shows" detail={region === "Worldwide" ? "Shows members rated highest" : `Highly rated shows in ${region}`} tint={colors.gold} onPress={() => onOpenTopRated?.(region)} basis={actionBasis} />
           <QuickAction icon="you" title="Fan clubs" detail="Meet other fans of an artist" tint={colors.magenta} onPress={onOpenFanClubs} basis={actionBasis} />
         </View>
-      </View>
+      </View>}
 
-      <View style={[styles.metrics, compact && styles.metricsCompact]}>{metrics.map((metric) => <MetricTile key={metric.label} {...metric} compact={compact} />)}</View>
+      {programme === "artists" && <View style={[styles.metrics, compact && styles.metricsCompact]}>{metrics.map((metric) => <MetricTile key={metric.label} {...metric} compact={compact} />)}</View>}
 
-      <View style={styles.loungePanel}>
+      {programme === "shows" && <View style={styles.loungePanel}>
         <SectionHeading eyebrow="CONCERT CONVERSATIONS" title="Popular lounges" detail={region === "Worldwide" ? "The most active concert conversations. Private member data is not used." : `Active concert conversations in ${region}. Private member data is not used.`} />
         {loungeRows.length === 0 ? (
           <View style={styles.liveEmpty}>
@@ -808,19 +846,19 @@ export default function DiscoverScreen({
             {loungeRows.map((lounge) => <PopularLoungeCard key={lounge.key} lounge={lounge} compact onPress={() => onOpenLounge?.(lounge)} />)}
           </View>
         )}
-      </View>
+      </View>}
 
-      {overviewStatus === "refreshing" && showOverviewContent && (
+      {programme === "artists" && overviewStatus === "refreshing" && showOverviewContent && (
         <View style={styles.refreshNotice} accessibilityLiveRegion="polite"><ActivityIndicator size="small" color={colors.amber} /><Text style={styles.refreshNoticeText}>Updating {region}</Text></View>
       )}
-      {overviewStatus === "error" && showOverviewContent && (
+      {programme === "artists" && overviewStatus === "error" && showOverviewContent && (
         <View style={styles.refreshError} accessibilityLiveRegion="assertive">
           <Text style={styles.refreshErrorText} selectable>Could not update. Showing the last results.</Text>
           <Pressable style={styles.refreshRetryButton} onPress={() => requestOverview({ force: true })} accessibilityRole="button" accessibilityLabel="Retry updating Discover"><Text style={styles.refreshRetry}>Retry</Text></Pressable>
         </View>
       )}
 
-      {!showOverviewContent ? (
+      {programme === "artists" && <View nativeID="discover-panel-artists" accessibilityRole="tabpanel" aria-labelledby="discover-tab-artists" style={styles.programmePanel}>{!showOverviewContent ? (
         <OverviewState state={overviewState} region={region} onRetry={() => requestOverview({ force: true })} onWorldwide={() => pickRegion("Worldwide")} />
       ) : (
         <>
@@ -828,7 +866,6 @@ export default function DiscoverScreen({
         </>
       )}
 
-      <DiscoverPhotos photos={scenePhotos} photoUris={photoUris} compact={compact} width={width} onOpenPhotos={openPhotos} />
       {showOverviewContent ? (
         <DiscoverGenres
           genres={overview.genres}
@@ -844,7 +881,11 @@ export default function DiscoverScreen({
           onOpenArtist={openArtist}
           onRetry={retryGenre}
         />
-      ) : null}
+      ) : null}</View>}
+      {programme === "photos" && <View nativeID="discover-panel-photos" accessibilityRole="tabpanel" aria-labelledby="discover-tab-photos">
+        <DiscoverPhotos photos={scenePhotos} photoUris={photoUris} compact={compact} width={width} onOpenPhotos={openPhotos} />
+        {!scenePhotos.length && <View style={styles.liveEmpty} accessibilityLiveRegion="polite"><Icon name="photo" size={20} color={colors.textFaint} /><Text style={styles.liveEmptyText}>No concert photos or videos are shared for {region} yet.</Text></View>}
+      </View>}
     </ScrollView>
     </VinylRefreshBoundary>
   );
@@ -854,14 +895,19 @@ const styles = StyleSheet.create({
   content: { width: "100%", maxWidth: 1040, alignSelf: "center", paddingHorizontal: 24, paddingTop: 24, paddingBottom: 56, gap: 18 },
   contentCompact: { paddingHorizontal: 14, paddingTop: 16, paddingBottom: 40, gap: 14 },
   pullRefreshError: { color: colors.danger, fontFamily: font, fontSize: 12, lineHeight: 17, textAlign: "center" },
-  hero: { minHeight: 150, borderRadius: radius.lg, borderCurve: "continuous", padding: 24, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft, flexDirection: "row", alignItems: "flex-end", justifyContent: "space-between", gap: 20, ...shadow.card },
-  heroCompact: { minHeight: 0, padding: 18, alignItems: "flex-start", flexDirection: "column" },
-  heroCopy: { flex: 1, maxWidth: 650 },
+  hero: { minHeight: 118, overflow: "hidden", borderRadius: radius.lg, borderCurve: "continuous", padding: 20, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft, flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 12, ...shadow.card },
+  heroCompact: { minHeight: 0, padding: 16 },
+  heroCopy: { flex: 1, minWidth: 150, maxWidth: 650 },
+  heroStripe: { position: "absolute", top: 0, left: 0, right: 0, height: 3, flexDirection: "row" },
+  stripeWarm: { flex: 2, backgroundColor: colors.amberStrong },
+  stripePink: { flex: 1, backgroundColor: colors.magenta },
+  stripeCool: { flex: 1, backgroundColor: colors.cool },
+  programmePanel: { gap: 18, minWidth: 0, width: "100%" },
   kicker: { color: colors.amber, fontFamily: mono, fontSize: 10.5, fontWeight: "900", letterSpacing: 2.1 },
   title: { color: colors.text, fontFamily: displayFont, fontSize: 40, lineHeight: 46, fontWeight: "900", letterSpacing: -1.2, paddingTop: 5 },
   titleCompact: { fontSize: 34, lineHeight: 40 },
   tagline: { color: colors.textDim, fontFamily: font, fontSize: 15, lineHeight: 22, paddingTop: 6, maxWidth: 560 },
-  scenePill: { maxWidth: 220, minHeight: 38, flexDirection: "row", alignItems: "center", gap: 7, paddingHorizontal: 12, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.bgElev },
+  scenePill: { maxWidth: 220, minHeight: 44, flexDirection: "row", alignItems: "center", gap: 7, paddingHorizontal: 12, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.bgElev },
   scenePillText: { color: colors.text, fontFamily: font, fontSize: 12.5, fontWeight: "800", flexShrink: 1 },
   controlsCard: { width: "100%", minWidth: 0, overflow: "hidden", backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.lineSoft, borderRadius: radius.md, borderCurve: "continuous", padding: 14, gap: 10 },
   controlTop: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 16 },
@@ -908,7 +954,9 @@ const styles = StyleSheet.create({
   livePanelHead: { gap: 10 },
   livePanelHeadCompact: { alignItems: "stretch" },
   rangeControl: { gap: 7, paddingTop: 2 },
-  rangeLabel: { color: colors.textFaint, fontFamily: mono, fontSize: 9.5, fontWeight: "900", letterSpacing: 1.2 },
+  rangeDisclosure: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: 8, alignSelf: "flex-start", paddingHorizontal: 12, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
+  rangeDisclosureText: { color: colors.text, fontFamily: font, fontSize: 12, fontWeight: "800" },
+  rangeLabel: { width: "100%", color: colors.textFaint, fontFamily: mono, fontSize: 9.5, fontWeight: "900", letterSpacing: 1.2 },
   rangeHint: { color: colors.textDim, fontFamily: font, fontSize: 12, lineHeight: 17 },
   rangeOptions: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   rangeOption: { minHeight: 44, minWidth: 78, alignItems: "center", justifyContent: "center", paddingHorizontal: 12, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },

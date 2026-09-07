@@ -33,9 +33,13 @@ test("shared profile media uses disk caching, recycling, and a visible fallback"
   assert.match(avatar, /allowDownscaling/);
   assert.match(avatar, /enforceEarlyResizing/);
   assert.match(avatar, /recyclingKey=/);
-  assert.match(avatar, /onError=\{fail\}/);
-  assert.match(avatar, /activeScopeRef\.current !== requestScope/,
-    "a late failure from a recycled avatar cannot advance the new member's fallback ladder");
+  assert.match(avatar, /onError=\{onError\}/);
+  assert.match(avatar, /useImageAttempt\(requestScope, sources\)/);
+  const imageAttempt = read("../hooks/useImageAttempt.js");
+  assert.match(imageAttempt, /stateRef\.current\.scope !== scope/,
+    "recycled image requests reset at render time before old events can arrive");
+  assert.match(imageAttempt, /advanceImageAttempt\(stateRef\.current, \{ scope, index \}/,
+    "a late failure must own the current request scope and source index");
   assert.match(avatar, /\{fallback\}[\s\S]*!!avatarUri/,
     "initials remain painted underneath a loading or failed network photo");
   assert.match(smartImage, /from "expo-image"/);

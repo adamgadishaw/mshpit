@@ -126,6 +126,8 @@ function fixture() {
       source TEXT,venue_provider_id TEXT,venue_city TEXT,venue_region TEXT,
       venue_country_code TEXT,venue_country TEXT,owner_id TEXT,updated_at INTEGER
     );
+    CREATE INDEX idx_tourdates_artist_visibility ON tour_dates(artist_key,date,id) WHERE artist_key IS NOT NULL;
+    CREATE INDEX idx_tourdates_artist_trim_date ON tour_dates(lower(trim(artist)),date,id);
     INSERT INTO users VALUES
       ('active',0,NULL),('banned',1,NULL),('suspended',0,4102444800000);
     INSERT INTO posts VALUES
@@ -163,4 +165,133 @@ test("server-backed read excludes moderated accounts and caches bounded public r
   } finally {
     raw.close();
   }
+});
+
+function tracked(raw,{rejectProvider=()=>false}={}) {
+  const counts={posts:0,providers:0,providerSql:"",parameters:null};
+  return {counts,database:{prepare(sql) {
+    const statement=raw.prepare(sql);
+    if(sql.includes("WITH requested"))counts.providerSql=sql;
+    return {all(...args) {
+      if(sql.includes("FROM posts p"))counts.posts++;
+      if(sql.includes("WITH requested")) {
+        counts.providers++;counts.parameters=args;
+        if(rejectProvider())throw new Error("Synthetic provider-location read failure");
+      }
+      return statement.all(...args);
+    }};
+  }}};
+}
+
+test("changing countries and limits reuses one bounded aggregate snapshot without reviewer data",()=>{
+  const raw=fixture(),{database,counts}=tracked(raw);
+  try {
+    const service=createTopRatedShowService({database,clock:()=>1000});
+    const first=service.read({country:"Canada",limit:24});
+    for(let i=1;i<=30;i++)service.read({country:i%2?"United States":"Canada",limit:i});
+    const last=service.read({country:"Canada",limit:24});
+    assert.deepEqual(last,first);
+    assert.equal(counts.posts,1);assert.equal(counts.providers,1);
+    assert.equal("user_id" in first[0],false);assert.equal("review" in first[0],false);
+    assert.equal(counts.parameters.length,2,"one JSON batch and one limit, not a variable per reviewed show");
+  } finally {raw.close();}
+});
+
+test("country switching cannot extend the moderation/deletion cache deadline",()=>{
+  const raw=fixture(),{database,counts}=tracked(raw);let at=1000;
+  try {
+    const service=createTopRatedShowService({database,clock:()=>at});
+    assert.equal(service.read({country:"Canada"}).length,1);
+    raw.exec("UPDATE posts SET removed=1 WHERE id='active-post'");
+    at=60_999;assert.equal(service.read({country:"Worldwide"}).length,1,"same original snapshot, still within its minute");
+    at=61_000;assert.equal(service.read({country:"Worldwide"}).length,0,"a new country request did not restart the minute");
+    assert.equal(service.read({country:"Canada"}).length,0);
+    assert.equal(counts.posts,2);assert.equal(counts.providers,1,"empty valid reviews skip provider work");
+  } finally {raw.close();}
+});
+
+test("clock rollback invalidates the snapshot and failed refreshes cannot return old rankings",()=>{
+  const raw=fixture();let at=1000,fail=false;
+  const {database}=tracked(raw,{rejectProvider:()=>fail});
+  try {
+    const service=createTopRatedShowService({database,clock:()=>at});
+    assert.equal(service.read({country:"Canada"}).length,1);
+    at=999;fail=true;
+    assert.throws(()=>service.read({country:"Canada"}),/Synthetic/);
+    assert.throws(()=>service.read({country:"Worldwide"}),/Synthetic/);
+    fail=false;raw.exec("UPDATE users SET is_banned=1 WHERE id='active'");
+    assert.deepEqual(service.read({country:"Canada"}),[]);
+  } finally {raw.close();}
+});
+
+test("old reviewed shows keep their exact country after more than 5000 unrelated provider updates",()=>{
+  const raw=fixture(),{database,counts}=tracked(raw);
+  try {
+    const insert=raw.prepare("INSERT INTO tour_dates(id,artist,artist_key,venue,date,updated_at) VALUES (?,'Unrelated','unrelated','Other Hall','2027-01-01',?)");
+    raw.exec("BEGIN");for(let i=0;i<5100;i++)insert.run("newer-"+i,100+i);raw.exec("COMMIT");
+    const rows=createTopRatedShowService({database,clock:()=>1000}).read({country:"Canada"});
+    assert.equal(rows.length,1);assert.equal(rows[0].providerVenueId,"tm-ca-hall");
+    const plan=raw.prepare("EXPLAIN QUERY PLAN "+counts.providerSql).all(...counts.parameters).map(row=>row.detail).join(" ");
+    assert.match(plan,/idx_tourdates_artist_visibility/);assert.match(plan,/idx_tourdates_artist_trim_date/);
+  } finally {raw.close();}
+});
+
+test("5000 distinct reviewed identities use two SQL bindings and retain bounded public results", () => {
+  const raw = fixture();
+  const { database, counts } = tracked(raw);
+  try {
+    const insertPost = raw.prepare(`INSERT INTO posts(id,user_id,artist,artist_key,venue,city,date,overall,kind,created_at)
+      VALUES (?,'active',?,?,'The Hall','Toronto','2026-08-01',4.5,'review',?)`);
+    const insertEvent = raw.prepare(`INSERT INTO tour_dates(id,artist,artist_key,venue,date,venue_country_code,venue_country,updated_at)
+      VALUES (?,?,?,'The Hall','2026-08-01','CA','Canada',?)`);
+    raw.exec("BEGIN");
+    for (let index = 0; index < 5000; index++) {
+      const key = `batch-${index}`;
+      const name = `Batch ${index}`;
+      insertPost.run(key, name, key, 100 + index);
+      insertEvent.run(key, name, key, 100 + index);
+    }
+    raw.exec("COMMIT");
+    const rows = createTopRatedShowService({ database, clock: () => 1000 }).read({ country: "Canada", limit: 100 });
+    assert.equal(rows.length, 30);
+    assert.equal(counts.parameters.length, 2);
+    assert.equal(JSON.parse(counts.parameters[0]).length, 5000);
+    assert.equal(counts.parameters[1], 5000);
+  } finally {
+    raw.close();
+  }
+});
+
+test("provider matching never uses private dates or a different typed artist identity", () => {
+  const raw = fixture();
+  try {
+    raw.exec("UPDATE tour_dates SET owner_id='active'");
+    assert.deepEqual(createTopRatedShowService({ database: raw }).read({ country: "Canada" }), []);
+    raw.exec("UPDATE tour_dates SET owner_id=NULL,artist_key='different-artist'");
+    assert.deepEqual(createTopRatedShowService({ database: raw }).read({ country: "Canada" }), []);
+    raw.exec("UPDATE tour_dates SET artist_key='visible artist',date='2026-08-02'");
+    assert.deepEqual(createTopRatedShowService({ database: raw }).read({ country: "Canada" }), []);
+  } finally {
+    raw.close();
+  }
+});
+
+test("typed artist keys survive a provider display-name change and legacy unkeyed reviews still resolve",()=>{
+  const raw=fixture();
+  try {
+    raw.exec("UPDATE tour_dates SET artist='Updated Display Name'");
+    assert.equal(createTopRatedShowService({database:raw,clock:()=>1000}).read({country:"Canada"}).length,1);
+    raw.exec("UPDATE tour_dates SET artist='Visible Artist'; UPDATE posts SET artist_key=NULL WHERE id='active-post'");
+    assert.equal(createTopRatedShowService({database:raw,clock:()=>1000}).read({country:"Canada"}).length,1);
+  } finally {raw.close();}
+});
+
+test("blank review identity fields cannot consume the entire valid candidate budget",()=>{
+  const raw=fixture();
+  try {
+    const insert=raw.prepare("INSERT INTO posts(id,user_id,artist,venue,date,overall,kind,created_at) VALUES (?,'active','  ','The Hall','2026-08-01',5,'review',?)");
+    raw.exec("BEGIN");for(let i=0;i<5000;i++)insert.run("blank-"+i,100+i);raw.exec("COMMIT");
+    const rows=createTopRatedShowService({database:raw,clock:()=>1000}).read({country:"Canada"});
+    assert.equal(rows.length,1);assert.equal(rows[0].artist,"Visible Artist");
+  } finally {raw.close();}
 });

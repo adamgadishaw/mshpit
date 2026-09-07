@@ -142,6 +142,7 @@ import {
 import { createGoingIntentCoordinator, goingIntentKey } from "./domain/goingIntent.mjs";
 import { reconcileAttendancePlan } from "./domain/attendancePlanCache.mjs";
 import { accountMutationIsCurrent, captureAccountMutation } from "./domain/accountMutation.mjs";
+import { captureFeedRead, feedReadIsCurrent } from "./domain/feedPagination.mjs";
 import { commandFailure, commandSuccess } from "./domain/commandResult.mjs";
 import {
   ARTIST_REQUEST_CONFIRMATION_ERROR,
@@ -158,6 +159,7 @@ import {
   normalizeDirectMessageReadCursor,
 } from "./domain/directMessageRead.mjs";
 import {
+  assertCurrentProfileRead,
   profileFailureOutcome,
   unavailableProfileOutcome,
   withoutUnavailableProfile,
@@ -926,7 +928,7 @@ export function StoreProvider({ children }) {
   const [feedNextCursor, setFeedNextCursor] = useState(null);
   const [feedLoadingMore, setFeedLoadingMore] = useState(false);
   const [feedHasMore, setFeedHasMore] = useState(true);
-  const feedLoadMoreRef = useRef(false);
+  const feedLoadMoreRef = useRef(null);
 
   // Persist identity + continuity state so a refresh doesn't wipe your session,
   // account, posts, or follows.
@@ -1002,7 +1004,8 @@ export function StoreProvider({ children }) {
     feedAccountIdRef.current = nextAccountId;
     feedRefreshRef.current.sequence += 1;
     feedRefreshRef.current.inFlight = false;
-    feedLoadMoreRef.current = false;
+    feedLoadMoreRef.current?.controller.abort();
+    feedLoadMoreRef.current = null;
     feedModeRef.current = "for-you";
     feedAlgorithmRef.current = "global-personal-v1";
     feedSnapshotIdentityRef.current = null;
@@ -1132,39 +1135,54 @@ export function StoreProvider({ children }) {
     });
   };
 
+  const currentFeedReadState = () => ({
+    accountId: feedAccountIdRef.current,
+    epoch: accountMutationEpochRef.current,
+    sequence: feedRefreshRef.current.sequence,
+    mutationRevision: feedMutationRevisionRef.current,
+  });
   const hydrateFeed = async ({ resetPagination = true, signal } = {}) => {
     const refresh = feedRefreshRef.current;
     if (refresh.inFlight) return null;
     const sequence = ++refresh.sequence;
-    const mutationRevision = feedMutationRevisionRef.current;
+    const read = captureFeedRead(currentFeedReadState());
+    const isCurrent = (error) => feedReadIsCurrent(read, currentFeedReadState(), { signal, error });
+    // A previous page belongs to the old head, even if its transport ignores
+    // cancellation. The sequence guard below is the publication authority.
+    feedLoadMoreRef.current?.controller.abort();
+    feedLoadMoreRef.current = null;
+    setFeedLoadingMore(false);
     refresh.inFlight = true;
     try {
       const startedAt = Date.now();
       let payload;
       let fallback = false;
+      let mode = "for-you";
+      let algorithm = "music-affinity-v2";
       try {
         payload = await api(`/api/feed/for-you?limit=${FEED_PAGE_LIMIT}`, {
           context: "Refreshing your recommended concert feed",
           silent: true,
           signal,
         });
-        feedModeRef.current = "for-you";
-        feedAlgorithmRef.current = payload?.algorithm?.id || "music-affinity-v2";
+        algorithm = payload?.algorithm?.id || algorithm;
       } catch (error) {
-        if (signal?.aborted) throw error;
+        if (!isCurrent(error)) throw error;
         fallback = true;
         payload = await api(`/api/feed?limit=${FEED_PAGE_LIMIT}`, {
           context: "Loading the chronological concert feed",
           silent: true,
           signal,
         });
-        feedModeRef.current = "legacy";
-        feedAlgorithmRef.current = "chronological-v1";
+        mode = "legacy";
+        algorithm = "chronological-v1";
       }
       const { posts, nextCursor } = payload || {};
       // A create/edit/like that happened after this read began is newer than the
       // response. Ignore it; the next explicit refresh will reconcile safely.
-      if (signal?.aborted || sequence !== refresh.sequence || mutationRevision !== feedMutationRevisionRef.current) return null;
+      if (!isCurrent()) return null;
+      feedModeRef.current = mode;
+      feedAlgorithmRef.current = algorithm;
       // The initial server page is authoritative for a production cache. Demo
       // mode keeps its bundled cards alongside the live page for prototyping.
       mergeServerFeed(posts, { prepend: true, authoritative: resetPagination && !ENABLE_DEMO_DATA });
@@ -1190,14 +1208,15 @@ export function StoreProvider({ children }) {
         outcome: "ok",
       });
       return true;
-    } catch {
-      if (!signal?.aborted) trackProductEvent("performance", {
+    } catch (error) {
+      const current = isCurrent(error);
+      if (current) trackProductEvent("performance", {
         metric: "feed_load",
         durationBucket: "over_5s",
         surface: "everyone",
         outcome: "error",
       });
-      return signal?.aborted ? null : false;
+      return current ? false : null;
     } finally {
       if (sequence === refresh.sequence) refresh.inFlight = false;
     }
@@ -1205,21 +1224,29 @@ export function StoreProvider({ children }) {
   const loadMoreFeed = async () => {
     // React state does not update until the next render. FlatList may fire
     // onEndReached more than once in that window, so use an immediate lock too.
-    if (feedLoadMoreRef.current || feedLoadingMore || !feedHasMore || !feedNextCursor) return false;
-    feedLoadMoreRef.current = true;
+    if (feedRefreshRef.current.inFlight || feedLoadMoreRef.current || feedLoadingMore || !feedHasMore || !feedNextCursor) return false;
+    const request = { controller: new AbortController(), read: captureFeedRead(currentFeedReadState()) };
+    const signal = request.controller.signal;
+    const isCurrent = (error) => feedLoadMoreRef.current === request
+      && feedReadIsCurrent(request.read, currentFeedReadState(), { signal, error });
+    feedLoadMoreRef.current = request;
     setFeedLoadingMore(true);
     const startedAt = Date.now();
     try {
       let payload;
       let fallback = false;
-      if (feedModeRef.current === "for-you") {
+      let mode = feedModeRef.current;
+      let algorithm = feedAlgorithmRef.current;
+      if (mode === "for-you") {
         try {
           payload = await api(`/api/feed/for-you?limit=${FEED_PAGE_LIMIT}&cursor=${encodeURIComponent(feedNextCursor)}`, {
             context: "Loading more recommended concert posts",
             silent: true,
+            signal,
           });
-          feedAlgorithmRef.current = payload?.algorithm?.id || feedAlgorithmRef.current;
-        } catch {
+          algorithm = payload?.algorithm?.id || algorithm;
+        } catch (error) {
+          if (!isCurrent(error)) throw error;
           // Recommendation cursors are intentionally incompatible with the
           // chronological endpoint. Preserve existing card positions while a
           // legacy first page establishes a compatible cursor.
@@ -1227,17 +1254,22 @@ export function StoreProvider({ children }) {
           payload = await api(`/api/feed?limit=${FEED_PAGE_LIMIT}`, {
             context: "Loading the chronological concert feed",
             silent: true,
+            signal,
           });
-          feedModeRef.current = "legacy";
-          feedAlgorithmRef.current = "chronological-v1";
+          mode = "legacy";
+          algorithm = "chronological-v1";
         }
       } else {
         payload = await api(`/api/feed?limit=${FEED_PAGE_LIMIT}&before=${encodeURIComponent(feedNextCursor)}`, {
           context: "Loading more concert reviews",
           silent: true,
+          signal,
         });
       }
+      if (!isCurrent()) return false;
       const { posts, nextCursor } = payload || {};
+      feedModeRef.current = mode;
+      feedAlgorithmRef.current = algorithm;
       mergeServerFeed(posts, { prepend: false, preserveOrder: fallback });
       setFeedNextCursor(nextCursor || null);
       setFeedHasMore(!!nextCursor);
@@ -1250,8 +1282,9 @@ export function StoreProvider({ children }) {
         outcome: "ok",
       });
       return true;
-    } catch {
-      trackProductEvent("performance", {
+    } catch (error) {
+      // architecture: allow-ambiguous-result -- optional next-page callers use false for unchanged feed/cursor on failure or obsolete reads
+      if (isCurrent(error)) trackProductEvent("performance", {
         metric: "feed_next_page",
         durationBucket: analyticsDurationBucket(Date.now() - startedAt),
         surface: "everyone",
@@ -1259,8 +1292,10 @@ export function StoreProvider({ children }) {
       });
       return false;
     } finally {
-      feedLoadMoreRef.current = false;
-      setFeedLoadingMore(false);
+      if (feedLoadMoreRef.current === request) {
+        feedLoadMoreRef.current = null;
+        setFeedLoadingMore(false);
+      }
     }
   };
   const revalidateCachedFeed = async ({ signal } = {}) => {
@@ -1325,6 +1360,8 @@ export function StoreProvider({ children }) {
       controller.abort();
       feedRefreshRef.current.sequence += 1;
       feedRefreshRef.current.inFlight = false;
+      feedLoadMoreRef.current?.controller.abort();
+      feedLoadMoreRef.current = null;
     };
     // Restart immediately when account scope changes. The cleanup aborts the old
     // viewer's request before the new personalized cache can accept a response.
@@ -1517,6 +1554,10 @@ export function StoreProvider({ children }) {
   // failures keep an existing cache available only as explicitly stale data.
   const loadUser = async (id, { signal } = {}) => {
     if (!id) return unavailableProfileOutcome("missing-id");
+    const read = captureAccountMutation(sessionRef.current?.id, accountMutationEpochRef.current);
+    const assertCurrent = (error) => assertCurrentProfileRead(
+      read, sessionRef.current?.id, accountMutationEpochRef.current, { signal, error },
+    );
     const cachedAtStart = !!userById(id) || sessionRef.current?.id === id;
     const quarantine = () => {
       setUsers((current) => withoutUnavailableProfile(current, id));
@@ -1538,13 +1579,14 @@ export function StoreProvider({ children }) {
         silent: true,
         context: "Loading this profile",
       }));
+      assertCurrent();
       if (!su?.id) {
         const outcome = unavailableProfileOutcome("missing-response");
         quarantine();
         return outcome;
       }
     } catch (error) {
-      if (isLoadCancellation(error, signal)) throw error;
+      assertCurrent(error);
       const outcome = profileFailureOutcome(error, { hasCachedProfile: cachedAtStart });
       if (outcome.evict) quarantine();
       return outcome;

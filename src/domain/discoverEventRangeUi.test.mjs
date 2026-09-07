@@ -12,7 +12,7 @@ test("Discover shows four events and fetches the selected scope before offering 
   assert.match(screen, /DISCOVER_RANGE_DAYS/);
   assert.match(screen, /HOW FAR AHEAD\?/);
   assert.match(screen, /accessibilityLabel="Choose how far ahead to look for events"/);
-  assert.match(screen, /onPress=\{\(\) => selectEventRange\(days\)\}/);
+  assert.match(screen, /onPress=\{\(\) => \{ selectEventRange\(days\); setDateExpanded\(false\); dateDisclosureRef.current\?\.focus\?\.\(\); \}\}/);
   assert.match(screen, /const selectedRangeDays[\s\S]*DISCOVER_RANGE_DAYS\[0\]/);
   assert.match(screen, /const initialRangeEvents = useMemo\(\(\) => selectDiscoverRangeEvents\([\s\S]*days: DISCOVER_RANGE_DAYS\[0\]/);
   assert.match(screen, /const liveEvents = useMemo\(\(\) => upcomingEventsForScope\([\s\S]*worldwideEvents: initialRangeEvents[\s\S]*limit: 4,/);
