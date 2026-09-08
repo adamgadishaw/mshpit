@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 import { db, q, publicUser, pruneMissingArtists } from "./db.js";
 import { artistDeathWatchService, eraseAccountForInactivity, routes } from "./api.js";
 import { ApiError, errorEnvelope } from "./errors.js";
-import { assertExpectedAccount } from "./identityBinding.js";
+import { readAuthorizedRequest } from "./requestAuthorization.js";
 import { maybeAlert, pruneErrors, recordError } from "./errorLog.js";
 import { createAlertDrainScheduler } from "./alertDrainScheduler.js";
 import { sitemapStartupRefreshDecision } from "./features/seo/sitemapSnapshotManager.js";
@@ -91,7 +91,6 @@ import {
   startOptionalBackgroundRuntime,
 } from "./backgroundRuntime.js";
 import { safeRequestFailureContext } from "./safeLogging.js";
-import { assertAccountMutationAccess } from "./accountMutationAccess.js";
 import { healthRateLimitPolicy } from "./healthAvailability.js";
 import { shouldRecordGeneralRequestFailure } from "./requestFailureObservability.js";
 import { crawlerFileRateLimitPolicy } from "./crawlerFileRateLimit.js";
@@ -622,11 +621,8 @@ async function handleRequest(req, res) {
       routePattern = match.route || "";
 
       const token = parseCookies(req.headers.cookie)[ACTIVE_SESSION_COOKIE];
-      const sess = getSession(token);
-      const user = sess ? q.userById.get(sess.user_id) : null;
       const expectedAccountHeader = req.headers["x-pit-expected-account"];
       const expectedAccount = Array.isArray(expectedAccountHeader) ? expectedAccountHeader[0] : expectedAccountHeader;
-      assertExpectedAccount(expectedAccount, user);
       const capacityChallengeHeader = req.headers["x-pit-capacity-challenge"];
       const capacityChallenge = Array.isArray(capacityChallengeHeader)
         ? capacityChallengeHeader[0] : capacityChallengeHeader;
@@ -634,12 +630,15 @@ async function handleRequest(req, res) {
       const setCookies = [];
       const responseHeaders = createApiResponseHeaders();
       const proto = (req.headers["x-forwarded-proto"] || "").split(",")[0] || (req.socket.encrypted ? "https" : "http");
+      const authorized = await readAuthorizedRequest({
+        token, expectedAccount, method: req.method, pathname,
+        // DELETE /api/me requires the current password too.
+        readBody: () => ["POST", "PATCH", "PUT", "DELETE"].includes(req.method)
+          ? readJsonBody(req, { limit: BODY_LIMIT }) : {},
+      });
+      const { user } = authorized;
       const ctx = {
-        // DELETE /api/me requires the current password. Parse JSON on DELETE as
-        // well as write verbs so that confirmation is verified server-side.
-        body: ["POST", "PATCH", "PUT", "DELETE"].includes(req.method)
-          ? await readJsonBody(req, { limit: BODY_LIMIT })
-          : {},
+        ...authorized,
         query, params: match.params, ip, ua: req.headers["user-agent"], token, user,
         host: req.headers.host, proto, origin: `${proto}://${req.headers.host}`, requestId,
         capacityChallenge,
@@ -649,7 +648,6 @@ async function handleRequest(req, res) {
         clearSession: () => setCookies.push(...clearSessionCookies(PROD)),
         setHeader: createApiResponseHeaderSetter(responseHeaders),
       };
-      assertAccountMutationAccess({ method: req.method, pathname, user, body: ctx.body });
       const result = await match.handler(ctx);
       recordSuccessfulInteractiveMutation({
         method: req.method, routePattern, user, result,

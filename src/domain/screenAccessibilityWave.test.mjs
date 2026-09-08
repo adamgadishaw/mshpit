@@ -47,7 +47,9 @@ test("authentication forms expose autofill, live errors, and real pending locks"
   assert.match(source.auth, /target\?\.focus\?\.\(\)/);
   assert.match(source.auth, /accessibilityLiveRegion="assertive"/);
   assert.match(source.reset, /autoComplete="new-password"/);
-  assert.match(source.reset, /if \(busy\) return;/);
+  assert.match(source.reset, /if \(busy \|\| attempt\.current\) return;/);
+  assert.match(source.reset, /resetPassword\(token, password, \{ signal: controller\.signal \}\)/);
+  assert.match(source.reset, /attempt\.current\?\.abort\(\)/);
   assert.match(source.reset, /accessibilityState=\{\{ disabled: busy, busy \}\}/);
 });
 

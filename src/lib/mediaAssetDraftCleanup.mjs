@@ -1,4 +1,4 @@
-export async function retireMediaAssetDrafts({ assetIds, apiCall } = {}) {
+export async function retireMediaAssetDrafts({ assetIds, apiCall, expectedAccountId, signal } = {}) {
   if (typeof apiCall !== "function") throw new TypeError("apiCall is required");
   const ids = [...new Set((Array.isArray(assetIds) ? assetIds : [])
     .map((value) => String(value || "").trim())
@@ -9,6 +9,8 @@ export async function retireMediaAssetDrafts({ assetIds, apiCall } = {}) {
         method: "DELETE",
         context: "Discarding the unfinished media upload",
         silent: true,
+        expectedAccountId,
+        signal,
       });
       // Both `removed:true` and the idempotent `removed:false` response mean
       // the caller no longer has a live owner draft to retain locally.

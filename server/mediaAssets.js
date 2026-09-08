@@ -1541,12 +1541,14 @@ export async function finalizeMediaAsset(database, {
   authoritativeVideoVerifier = null,
   authoritativePosterRequired = false,
   beforeAuthoritativeVerify,
+  assertAuthorized,
   imageProcessor = defaultImageProcessor,
   signal,
   imageFinalizationStage = null,
   imageStoredObject = null,
   imageExpectedFingerprint = null,
 } = {}) {
+  assertAuthorized?.();
   const row = database.prepare("SELECT * FROM media_assets WHERE id=? AND owner_id=?").get(assetId, ownerId);
   if (!row) throw new ApiError(404, "That media item was not found.", "NOT_FOUND");
   let input = normalizedAssetFinalize(row, body);
@@ -1623,6 +1625,7 @@ export async function finalizeMediaAsset(database, {
         authoritativeVideoVerifier,
         authoritativePosterRequired,
         beforeAuthoritativeVerify,
+        assertAuthorized,
         imageProcessor,
         signal: sharedSignal,
         imageFinalizationStage: IMAGE_FINALIZATION_PREFLIGHT_TOKEN,
@@ -1671,6 +1674,7 @@ export async function finalizeMediaAsset(database, {
         authoritativeVideoVerifier,
         authoritativePosterRequired,
         beforeAuthoritativeVerify,
+        assertAuthorized,
         imageProcessor,
         signal: sharedSignal,
         imageFinalizationStage: IMAGE_FINALIZATION_GENERATION_TOKEN,
@@ -1722,6 +1726,7 @@ export async function finalizeMediaAsset(database, {
         editRecipe: input.encodedRecipe,
       });
       const variantId = `mv_${variantIdentity.slice(0, 24)}`;
+      assertAuthorized?.();
       const staged = await stageSanitizedImageDelivery(database, {
         ownerId,
         asset: row,
@@ -1765,6 +1770,7 @@ export async function finalizeMediaAsset(database, {
     }
     const structurallyNormalized = authoritativeVideoFinalize(row, body, declared, structural);
     if (typeof authoritativeVideoVerifier === "function") {
+      assertAuthorized?.();
       const preparedDelivery = prepareAuthoritativeDelivery(database, {
         ownerId,
         assetId: row.id,
@@ -1845,6 +1851,7 @@ export async function finalizeMediaAsset(database, {
   }
 
   return withWrite(database, () => {
+    assertAuthorized?.();
     const current = database.prepare("SELECT * FROM media_assets WHERE id=? AND owner_id=?").get(row.id, ownerId);
     if (current?.finalize_hash) {
       if (!finalizedSourceMatches(current, input)) throw new ApiError(409, "That media item changed while it was finalizing.", "CONFLICT");
@@ -2339,11 +2346,13 @@ async function finalizePendingPhotoRevisionVariant(database, {
   at,
   fetchImpl,
   imageProcessor,
+  assertAuthorized,
   signal,
   imageFinalizationStage = null,
   imageStoredObject = null,
   imageExpectedFingerprint = null,
 }) {
+  assertAuthorized?.();
   if (row.kind !== "image" || row.role !== "render" || row.attached) {
     throw new ApiError(409, "That photo can no longer be replaced. Reopen PIT Studio.", "CONFLICT");
   }
@@ -2400,6 +2409,7 @@ async function finalizePendingPhotoRevisionVariant(database, {
         at,
         fetchImpl,
         imageProcessor,
+        assertAuthorized,
         signal: sharedSignal,
         imageFinalizationStage: IMAGE_FINALIZATION_PREFLIGHT_TOKEN,
         imageExpectedFingerprint: admissionFingerprint,
@@ -2453,6 +2463,7 @@ async function finalizePendingPhotoRevisionVariant(database, {
         at,
         fetchImpl,
         imageProcessor,
+        assertAuthorized,
         signal: sharedSignal,
         imageFinalizationStage: IMAGE_FINALIZATION_GENERATION_TOKEN,
         imageStoredObject: stored,
@@ -2475,6 +2486,7 @@ async function finalizePendingPhotoRevisionVariant(database, {
     expectedType: row.mime_type,
   }, { sanitizing: true });
   assertVerifiedDimensions(sanitized, input.width, input.height);
+  assertAuthorized?.();
   const stagedDelivery = await stageSanitizedImageDelivery(database, {
     ownerId,
     asset,
@@ -2488,6 +2500,7 @@ async function finalizePendingPhotoRevisionVariant(database, {
   });
 
   return withWrite(database, () => {
+    assertAuthorized?.();
     const current = loadPendingPhotoRevisionVariant(database, { ownerId, assetId, variantId });
     if (!current) {
       const committed = database.prepare(`SELECT v.*,a.source_key,a.owner_id
@@ -2570,11 +2583,13 @@ export async function finalizeMediaVariant(database, {
   at = Date.now(),
   fetchImpl = globalThis.fetch,
   imageProcessor = defaultImageProcessor,
+  assertAuthorized,
   signal,
   imageFinalizationStage = null,
   imageStoredObject = null,
   imageExpectedFingerprint = null,
 } = {}) {
+  assertAuthorized?.();
   let row = database.prepare(`SELECT v.*,a.owner_id,a.purpose,a.kind,a.duration_ms,a.edit_recipe,a.source_key,a.status asset_status,
       a.render_state FROM media_variants v JOIN media_assets a ON a.id=v.asset_id
       WHERE v.id=? AND v.asset_id=? AND a.owner_id=?`).get(variantId, assetId, ownerId);
@@ -2591,6 +2606,7 @@ export async function finalizeMediaVariant(database, {
       at,
       fetchImpl,
       imageProcessor,
+      assertAuthorized,
       signal,
       imageFinalizationStage,
       imageStoredObject,
@@ -2647,6 +2663,7 @@ export async function finalizeMediaVariant(database, {
         at,
         fetchImpl,
         imageProcessor,
+        assertAuthorized,
         signal: sharedSignal,
         imageFinalizationStage: IMAGE_FINALIZATION_PREFLIGHT_TOKEN,
         imageExpectedFingerprint: admissionFingerprint,
@@ -2697,6 +2714,7 @@ export async function finalizeMediaVariant(database, {
         at,
         fetchImpl,
         imageProcessor,
+        assertAuthorized,
         signal: sharedSignal,
         imageFinalizationStage: IMAGE_FINALIZATION_GENERATION_TOKEN,
         imageStoredObject: stored,
@@ -2719,6 +2737,7 @@ export async function finalizeMediaVariant(database, {
     expectedType: row.mime_type,
   }, { sanitizing: true });
   assertVerifiedDimensions(sanitized, input.width, input.height);
+  assertAuthorized?.();
   const stagedDelivery = await stageSanitizedImageDelivery(database, {
     ownerId,
     asset,
@@ -2732,6 +2751,7 @@ export async function finalizeMediaVariant(database, {
   });
 
   return withWrite(database, () => {
+    assertAuthorized?.();
     const current = database.prepare(`SELECT v.finalize_hash,v.status,v.object_key,a.source_key
       FROM media_variants v JOIN media_assets a ON a.id=v.asset_id
       WHERE v.id=? AND v.asset_id=? AND a.owner_id=?`).get(variantId, assetId, ownerId);

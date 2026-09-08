@@ -335,10 +335,12 @@ export async function finalizeLegacyMediaUpload(database, {
   at = Date.now(),
   fetchImpl = globalThis.fetch,
   imageProcessor,
+  assertAuthorized,
   signal,
   imageFinalizationStage = null,
   imageExpectedFingerprint = null,
 } = {}) {
+  assertAuthorized?.();
   ensureLegacyMediaFinalizeSchema(database);
   const owner = normalizedOwner(ownerId);
   const descriptor = authenticatedDescriptor(database, { ownerId: owner, finalizeToken });
@@ -367,6 +369,7 @@ export async function finalizeLegacyMediaUpload(database, {
         at,
         fetchImpl,
         imageProcessor,
+        assertAuthorized,
         signal: sharedSignal,
         imageFinalizationStage: IMAGE_FINALIZATION_PREFLIGHT_TOKEN,
         imageExpectedFingerprint: admissionFingerprint,
@@ -399,6 +402,7 @@ export async function finalizeLegacyMediaUpload(database, {
       signal,
       imageFinalizationStage: IMAGE_FINALIZATION_PREFLIGHT_TOKEN,
     });
+    assertAuthorized?.();
     const staged = await stageSanitizedPublicImage(database, {
       ownerId: owner,
       purpose: row.purpose,
@@ -413,6 +417,7 @@ export async function finalizeLegacyMediaUpload(database, {
     });
 
     const committed = withWrite(database, () => {
+      assertAuthorized?.();
       const current = authenticatedDescriptor(database, { ownerId: owner, finalizeToken });
       if (current.status === "finalized") return { row: current, duplicate: true };
       if (current.status !== "processing" || current.processing_claim !== claimId) {

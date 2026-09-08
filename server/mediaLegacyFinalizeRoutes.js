@@ -41,12 +41,15 @@ export function mediaLegacyFinalizeRoutes({ database, requireUser, requireVerifi
       if (!finalizeToken) {
         throw new ApiError(400, "Photo finalization is missing.", "VALIDATION_FAILED");
       }
-      return finalizeLegacyMediaUpload(database, {
+      const result = await finalizeLegacyMediaUpload(database, {
         ownerId: user.id,
         finalizeToken,
         at: now(),
         signal: ctx.signal,
+        assertAuthorized: ctx.assertCurrentSession,
       });
+      ctx.assertCurrentSession?.();
+      return result;
     },
   };
 }

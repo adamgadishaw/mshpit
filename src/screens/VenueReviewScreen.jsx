@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, Image, Platfo
 import * as ImagePicker from "expo-image-picker";
 import { colors, radius } from "../theme";
 import { useStore } from "../store";
+import { useAccountTaskScope } from "../hooks/useAccountTaskScope";
 import ScreenHeader from "../components/ScreenHeader";
 import Icon from "../components/Icon";
 import TapStars from "../components/TapStars";
@@ -12,7 +13,8 @@ import { postMediaPickerOptions } from "../domain/mediaPickerOptions.mjs";
 import { MEDIA_POST_MAX_ATTACHMENTS } from "../domain/mediaUploadPolicy.mjs";
 
 export default function VenueReviewScreen({ venueName, onClose }) {
-  const { addVenueReview } = useStore();
+  const { session, addVenueReview } = useStore();
+  const accountTasks = useAccountTaskScope(session?.id);
   const [rating, setRating] = useState(0);
   const [text, setText] = useState("");
   const [photos, setPhotos] = useState([]);
@@ -24,6 +26,8 @@ export default function VenueReviewScreen({ venueName, onClose }) {
     if (uploadingPhotos || posting) return;
     const remaining = Math.max(0, MEDIA_POST_MAX_ATTACHMENTS - photos.length);
     if (!remaining) return;
+    const task = accountTasks.begin(session?.id);
+    if (!task) return;
     let res;
     try {
       res = await ImagePicker.launchImageLibraryAsync(postMediaPickerOptions({
@@ -33,23 +37,28 @@ export default function VenueReviewScreen({ venueName, onClose }) {
         allowVideos: false,
       }));
     } catch (error) {
-      reportMediaPickerError(error, "Opening the venue photo library");
+      if (task.isCurrent()) reportMediaPickerError(error, "Opening the venue photo library");
+      task.finish();
       return;
     }
-    if (!res || res.canceled || !res.assets?.length) return;
+    if (!task.isCurrent() || !res || res.canceled || !res.assets?.length) { task.finish(); return; }
     setUploadingPhotos(true);
     const uploaded = [];
     try {
       for (const asset of res.assets.slice(0, remaining)) {
+        if (!task.isCurrent()) break;
         try {
-          uploaded.push(await uploadMediaAsset(asset, "venue"));
+          uploaded.push(await uploadMediaAsset(asset, "venue", { expectedAccountId: task.accountId, signal: task.controller.signal }));
         } catch {
           break;
         }
       }
     } finally {
-      if (uploaded.length) setPhotos((current) => [...current, ...uploaded].filter(isDurableMediaUrl).slice(0, MEDIA_POST_MAX_ATTACHMENTS));
-      setUploadingPhotos(false);
+      if (task.isCurrent()) {
+        if (uploaded.length) setPhotos((current) => [...current, ...uploaded].filter(isDurableMediaUrl).slice(0, MEDIA_POST_MAX_ATTACHMENTS));
+        setUploadingPhotos(false);
+      }
+      task.finish();
     }
   };
 
@@ -57,6 +66,8 @@ export default function VenueReviewScreen({ venueName, onClose }) {
   const submitBusy = uploadingPhotos || posting;
   const save = async () => {
     if (!canPost || submitBusy) return;
+    const task = accountTasks.begin(session?.id);
+    if (!task) return;
     setPosting(true);
     try {
       const result = await addVenueReview(venueName, {
@@ -65,11 +76,12 @@ export default function VenueReviewScreen({ venueName, onClose }) {
         photos: photos.filter(isDurableMediaUrl),
         photosPublic: photos.length > 0 && photosPublic,
       });
-      if (result?.ok !== false) onClose?.();
+      if (task.isCurrent() && result?.ok !== false) onClose?.();
     } catch {
       // Keep the review editable; the API layer already logged and displayed it.
     } finally {
-      setPosting(false);
+      if (task.isCurrent()) setPosting(false);
+      task.finish();
     }
   };
 

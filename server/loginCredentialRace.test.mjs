@@ -24,6 +24,27 @@ function member() {
   return q.userById.get(id);
 }
 
+test("login verifies the exact password and rejects overlength input without issuing a session", () => {
+  const user = member();
+  const password = "A1" + "a".repeat(98);
+  db.prepare("UPDATE users SET pass_hash=? WHERE id=?").run(hashPassword(password), user.id);
+  for (const supplied of [password + "x", password + "-wrong-suffix", "a".repeat(10_000)]) {
+    let issued;
+    assert.throws(() => routes["POST /api/login"]({
+      body: { email: user.email, password: supplied }, ip: "login-exact-password", ua: "test",
+      setSession(session) { issued = session; },
+    }), (error) => error.status === 400);
+    assert.equal(issued, undefined);
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM sessions WHERE user_id=?").get(user.id).n, 0);
+  }
+  let issued;
+  assert.equal(routes["POST /api/login"]({
+    body: { email: user.email, password }, ip: "login-exact-password", ua: "test",
+    setSession(session) { issued = session; },
+  }).user.id, user.id);
+  assert.equal(getSession(issued.token).user_id, user.id);
+});
+
 test("a password reset/change committed after verification cannot mint an old-password login session", () => {
   for (const mode of ["reset", "change"]) {
     const user = member();

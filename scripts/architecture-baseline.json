@@ -398,8 +398,8 @@
       "fingerprint": "a7d7591efd0f54f47090"
     },
     "src/store.js": {
-      "count": 18,
-      "fingerprint": "9dc2681cd0c73b96c485"
+      "count": 17,
+      "fingerprint": "df1415615aff98c95fa1"
     },
     "src/theme.js": {
       "count": 4,
@@ -440,8 +440,8 @@
       "fingerprint": "01e0028f751a5ee02884"
     },
     "src/store.js": {
-      "count": 115,
-      "fingerprint": "8229ea249f19fdd8c08a"
+      "count": 114,
+      "fingerprint": "390c1c34c8f8283732db"
     }
   },
   "legacyClientContractShapesByFile": {

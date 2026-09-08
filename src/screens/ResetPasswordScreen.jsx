@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { View, Text, StyleSheet, TextInput, Pressable, ScrollView } from "react-native";
 import { colors, mono, radius } from "../theme";
 import { useStore } from "../store";
@@ -13,21 +13,28 @@ export default function ResetPasswordScreen({ token, onDone, onCancel }) {
   const [confirm, setConfirm] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const attempt = useRef(null);
+  useEffect(() => () => { attempt.current?.abort(); }, []);
 
   const submit = async () => {
-    if (busy) return;
+    if (busy || attempt.current) return;
     if (password.length < 8) { setError("Use at least 8 characters."); return; }
     if (password !== confirm) { setError("The two passwords don't match."); return; }
     setBusy(true);
     setError("");
+    const controller = new AbortController();
+    attempt.current = controller;
     try {
-      const res = await resetPassword(token, password);
+      const res = await resetPassword(token, password, { signal: controller.signal });
+      if (controller.signal.aborted) return;
       if (res?.ok) onDone?.();
       else setError(res?.error || "Couldn't reset. Request a new link.");
     } catch {
+      if (controller.signal.aborted) return;
       setError("Couldn't reset. Check your connection and request a new link if needed.");
     } finally {
-      setBusy(false);
+      if (attempt.current === controller) attempt.current = null;
+      if (!controller.signal.aborted) setBusy(false);
     }
   };
 

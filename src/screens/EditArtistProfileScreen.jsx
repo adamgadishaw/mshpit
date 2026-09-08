@@ -3,6 +3,7 @@ import { ActivityIndicator, View, Text, StyleSheet, ScrollView, TextInput, Press
 import * as ImagePicker from "expo-image-picker";
 import { colors, radius } from "../theme";
 import { useStore } from "../store";
+import { useAccountTaskScope } from "../hooks/useAccountTaskScope";
 import { artistMeta } from "../seed/ingested";
 import Avatar from "../components/Avatar";
 import Icon from "../components/Icon";
@@ -108,6 +109,7 @@ function ConfirmedArtistProfileEditor({
   refreshMetadata,
 }) {
   const [bio, setBio] = useState(confirmedProfile.bio ?? meta?.bio ?? "");
+  const accountTasks = useAccountTaskScope(accountId);
   const initialAvatar = confirmedProfile.avatarUri ?? meta?.photo;
   const initialBanner = confirmedProfile.banner ?? meta?.photo;
   const [avatarUri, setAvatarUri] = useState(isDurableMediaUrl(initialAvatar) ? initialAvatar : null);
@@ -122,53 +124,65 @@ function ConfirmedArtistProfileEditor({
 
   const pickPhoto = async () => {
     if (uploadingAvatar || saving) return;
+    const task = accountTasks.begin(accountId);
+    if (!task) return;
     setSaveError("");
     let res;
     try {
       res = await ImagePicker.launchImageLibraryAsync(profileImagePickerOptions("avatar", { platform: Platform.OS }));
     } catch (error) {
-      reportMediaPickerError(error, "Opening the artist profile photo library");
+      if (task.isCurrent()) reportMediaPickerError(error, "Opening the artist profile photo library");
+      task.finish();
       return;
     }
-    if (!res || res.canceled || !res.assets?.[0]) return;
+    if (!task.isCurrent() || !res || res.canceled || !res.assets?.[0]) { task.finish(); return; }
     setUploadingAvatar(true);
     try {
-      const uploaded = await uploadMediaAsset(res.assets[0], "avatar");
+      const uploaded = await uploadMediaAsset(res.assets[0], "avatar", { expectedAccountId: task.accountId, signal: task.controller.signal });
+      if (!task.isCurrent()) return;
       setAvatarUri(uploaded);
       setAvatarChanged(true);
     } catch {
       // Keep the previous durable photo; the helper records themed feedback.
     } finally {
-      setUploadingAvatar(false);
+      if (task.isCurrent()) setUploadingAvatar(false);
+      task.finish();
     }
   };
 
   const pickBanner = async () => {
     if (uploadingBanner || saving) return;
+    const task = accountTasks.begin(accountId);
+    if (!task) return;
     setSaveError("");
     let res;
     try {
       res = await ImagePicker.launchImageLibraryAsync(profileImagePickerOptions("banner", { platform: Platform.OS }));
     } catch (error) {
-      reportMediaPickerError(error, "Opening the artist banner photo library");
+      if (task.isCurrent()) reportMediaPickerError(error, "Opening the artist banner photo library");
+      task.finish();
       return;
     }
-    if (!res || res.canceled || !res.assets?.[0]) return;
+    if (!task.isCurrent() || !res || res.canceled || !res.assets?.[0]) { task.finish(); return; }
     setUploadingBanner(true);
     try {
-      const uploaded = await uploadMediaAsset(res.assets[0], "banner");
+      const uploaded = await uploadMediaAsset(res.assets[0], "banner", { expectedAccountId: task.accountId, signal: task.controller.signal });
+      if (!task.isCurrent()) return;
       setBanner(uploaded);
       setBannerChanged(true);
     } catch {
       // Keep this editor open so the owner can retry without losing the bio.
     } finally {
-      setUploadingBanner(false);
+      if (task.isCurrent()) setUploadingBanner(false);
+      task.finish();
     }
   };
 
   const mediaBusy = uploadingAvatar || uploadingBanner;
   const save = async () => {
     if (!artistPageEditReady(resource) || mediaBusy || saving) return;
+    const task = accountTasks.begin(accountId);
+    if (!task) return;
     setSaveError("");
     setSaving(true);
     try {
@@ -177,6 +191,7 @@ function ConfirmedArtistProfileEditor({
         feedEnabled,
         ...changedProfileImageFields({ avatarUri, banner, avatarChanged, bannerChanged }),
       });
+      if (!task.isCurrent()) return;
       if (result?.ok === true) {
         onClose?.();
       } else {
@@ -187,10 +202,11 @@ function ConfirmedArtistProfileEditor({
     } catch (error) {
       // Preserve the selected files and written bio. The inline result makes a
       // failed save visible even when a browser suppresses transient feedback.
-      setSaveError(error?.message
+      if (task.isCurrent()) setSaveError(error?.message
         || "Mshpit could not save this artist page. Your changes are still here so you can try again.");
     } finally {
-      setSaving(false);
+      if (task.isCurrent()) setSaving(false);
+      task.finish();
     }
   };
 

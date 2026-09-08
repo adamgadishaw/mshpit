@@ -5,8 +5,12 @@
 // composer work is meant to remove.
 import Storage from "expo-sqlite/kv-store";
 import { createJsonPersistence } from "./persistenceAdapter.mjs";
+import { AUTH_INTENT_KEY } from "../domain/authTransitions.mjs";
 
 const DURABLE_KEYS = new Set([
+  // Failed logout and interrupted sign-in must stay blocked after process death.
+  // This marker contains only intent/revision, never credentials or account data.
+  AUTH_INTENT_KEY,
   "pit.session",
   "pit.drafts",
   "pit.entered",

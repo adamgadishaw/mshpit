@@ -27,3 +27,16 @@ test("draft cleanup keeps failed identities available for retry or orphan sweepi
   assert.deepEqual(result.retired, []);
   assert.deepEqual(result.pending, ["ma_retry"]);
 });
+
+test("cleanup preserves the initiating account and cancellation signal", async () => {
+  const controller = new AbortController();
+  const result = await retireMediaAssetDrafts({
+    assetIds: ["ma_owned_a"], expectedAccountId: "a", signal: controller.signal,
+    apiCall: async (_path, options) => {
+      assert.equal(options.expectedAccountId, "a");
+      assert.equal(options.signal, controller.signal);
+      throw Object.assign(new Error("Account changed"), { status: 409 });
+    },
+  });
+  assert.deepEqual(result, { retired: [], pending: ["ma_owned_a"] });
+});

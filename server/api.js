@@ -4280,10 +4280,12 @@ export const routes = {
           at: now(),
           authoritativeVideoVerifier: verifyVideoObject,
           authoritativePosterRequired: true,
+          assertAuthorized: ctx.assertCurrentSession,
           fetchImpl: async () => {
             throw new ApiError(503, "Clip verification is temporarily unavailable. Try again later.", "MEDIA_STORAGE_UNAVAILABLE");
           },
         });
+        ctx.assertCurrentSession?.();
         return { ...result, finalize: { state: "completed" } };
       }
       const ownerId = u.id;
@@ -4304,11 +4306,11 @@ export const routes = {
               at: now(),
               authoritativeVideoVerifier: verifyVideoObject,
               authoritativePosterRequired: true,
-              beforeAuthoritativeVerify: () => reserveVideoPublishingDemand(
-                { ip: requestIp },
-                { id: ownerId },
-                "verify",
-              ),
+              assertAuthorized: ctx.assertCurrentSession,
+              beforeAuthoritativeVerify: () => {
+                ctx.assertCurrentSession?.();
+                return reserveVideoPublishingDemand({ ip: requestIp }, { id: ownerId }, "verify");
+              },
               // Deliberately no caller signal: a browser disconnect or proxy
               // timeout must not cancel the shared process-local job. The job's
               // own signal is cancelled only when this owner deletes the draft.
@@ -4335,6 +4337,7 @@ export const routes = {
           signal: ctx.signal,
         });
         if (compatibility.settled) {
+          ctx.assertCurrentSession?.();
           return { ...compatibility.value, finalize: { state: "completed" } };
         }
         // Cached bundles do not understand a successful `processing` body: they
@@ -4357,7 +4360,9 @@ export const routes = {
       body: finalizeBody,
       at: now(),
       signal: ctx.signal,
+      assertAuthorized: ctx.assertCurrentSession,
     });
+    ctx.assertCurrentSession?.();
     return { ...result, finalize: { state: result.asset?.status === "ready" ? "completed" : "idle" } };
   },
 
@@ -4401,13 +4406,17 @@ export const routes = {
 
   "POST /api/media/assets/:id/variants/:variantId/finalize": async (ctx) => {
     const u = requireUser(ctx);
-    return finalizeMediaVariant(db, {
+    const result = await finalizeMediaVariant(db, {
       ownerId: u.id,
       assetId: ctx.params.id,
       variantId: ctx.params.variantId,
       body: ctx.body,
       at: now(),
+      signal: ctx.signal,
+      assertAuthorized: ctx.assertCurrentSession,
     });
+    ctx.assertCurrentSession?.();
+    return result;
   },
 
   // ---- per-photo reactions (the full-screen media viewer) ----
@@ -5146,7 +5155,7 @@ export const routes = {
     });
     const [errs, v] = shape(ctx.body, {
       email: { required: true, parse: (x) => cleanEmail(x) || undefined },
-      password: { required: true, parse: (x) => (typeof x === "string" ? x.slice(0, 100) : undefined) },
+      password: { required: true, parse: (x) => (typeof x === "string" && x.length <= 100 ? x : undefined) },
     });
     if (errs.length) throw new ApiError(400, errs[0]);
     const candidates = q.usersByEmail.all(v.email);
@@ -5471,6 +5480,7 @@ export const routes = {
       ...(v.avatarUri !== undefined && v.avatarUri !== u.avatar_uri ? [u.avatar_uri] : []),
     ].filter(Boolean);
     atomicWrite(() => {
+      ctx.assertCurrentSession?.();
       associateNewFinalizedImageUrls(
         u.id,
         [v.banner, v.avatarUri],
@@ -6092,6 +6102,7 @@ export const routes = {
       if (v.campaign) limit(ctx, "artist-campaign", 2, 24 * 60 * 60 * 1000);
       const id = uid("p");
       const racedDuplicate = atomicWrite(() => {
+        ctx.assertCurrentSession?.();
         // BEGIN IMMEDIATE waits out another writer. Rechecking the key while
         // holding that lock turns simultaneous retries into the same response
         // instead of leaking a SQLite uniqueness failure as a 500.
@@ -6139,6 +6150,7 @@ export const routes = {
     assertArtistAcceptsLiveRating({ artistKey: v.binding.artist_key, artist: v.artist });
     const id = uid("p");
     const racedDuplicate = atomicWrite(() => {
+      ctx.assertCurrentSession?.();
       const raced = resolvePostCreateRetry(u.id, mutationId, mutationHash);
       if (raced) return raced;
       const transactionTaggedUserIds = validatedPostTaggedUserIds(u, v.taggedUserIds);
@@ -6516,6 +6528,7 @@ export const routes = {
     }
     const nextTaggedUserIds = storedPostTaggedUserIds(next.tagged_user_ids);
     atomicWrite(() => {
+      ctx.assertCurrentSession?.();
       const transactionCurrent = db.prepare(`SELECT tagged_user_ids,COALESCE(updated_at,created_at) AS version
         FROM posts WHERE id=? AND user_id=? AND removed=0`).get(current.id, u.id);
       if (!transactionCurrent || transactionCurrent.version !== currentVersion) {
@@ -8692,6 +8705,7 @@ export const routes = {
     assertNewOwnedReadyImageUrls(u.id, photos, [], "venue-review", venuePhotoPurposes);
     const id = uid("vr");
     atomicWrite(() => {
+      ctx.assertCurrentSession?.();
       associateNewFinalizedImageUrls(u.id, photos, [], venuePhotoPurposes);
       db.prepare("INSERT INTO venue_reviews (id,venue_key,user_id,rating,text,photos,photos_public,created_at) VALUES (?,?,?,?,?,?,?,?)")
         .run(id, key, u.id, rating, text || "", JSON.stringify(photos || []), photosPublic ? 1 : 0, now());
@@ -8869,6 +8883,7 @@ export const routes = {
       }] : []),
     ].filter((entry) => entry.ownerId && entry.url);
     const saved = atomicWrite(() => {
+      ctx.assertCurrentSession?.();
       const current = artistProfileSnapshotByKey.get(key);
       if (!sameArtistProfileSnapshot(existing, current)) {
         throw new ApiError(409,

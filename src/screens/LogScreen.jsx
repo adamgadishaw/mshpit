@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, KeyboardAvoid
 import * as ImagePicker from "expo-image-picker";
 import { colors, mono, radius, font, displayFont, shadow, space } from "../theme";
 import { useStore } from "../store";
+import { useAccountTaskScope } from "../hooks/useAccountTaskScope";
 import { RATING_DIMS, computeReview } from "../data";
 
 // Tour presets: pick one to attach the show to the artist without an album/tour.
@@ -212,7 +213,8 @@ export default function LogScreen({
   pendingMedia,
   onPendingMediaConsumed,
 }) {
-  const { searchArtistsApi, attachArtistSuggestionApi, searchVenues, searchPeople, drafts, saveDraft, deleteDraft } = useStore();
+  const { session, searchArtistsApi, attachArtistSuggestionApi, searchVenues, searchPeople, drafts, saveDraft, deleteDraft } = useStore();
+  const accountTasks = useAccountTaskScope(session?.id);
   const initialRecoveryDraftRef = useRef(!editing && initialDraftId
     ? drafts.find((draft) => draft?.id === initialDraftId) || null
     : null);
@@ -465,10 +467,16 @@ export default function LogScreen({
     const entries = [...remoteDraftAssetIdsRef.current.entries()]
       .filter(([localId]) => !selected || selected.has(localId));
     if (!entries.length) return { retired: [], pending: [] };
+    const task = accountTasks.begin(user?.id);
+    if (!task) return { retired: [], pending: entries.map(([, assetId]) => assetId) };
     const result = await retireMediaAssetDrafts({
       assetIds: entries.map(([, assetId]) => assetId),
       apiCall: api,
+      expectedAccountId: task.accountId,
+      signal: task.controller.signal,
     });
+    task.finish();
+    if (!task.isCurrent()) return result;
     const retired = new Set(result.retired);
     const retiredByLocalId = new Map();
     for (const [localId, assetId] of entries) {
@@ -604,11 +612,13 @@ export default function LogScreen({
     // foreground, and explicit retry; do not start another health request in
     // parallel with the actual upload.
     const controller = new AbortController();
+    const task = accountTasks.begin(user?.id, controller);
+    if (!task) return { ok: false, stale: true };
     uploadControllerRef.current?.abort();
     uploadControllerRef.current = controller;
     const operation = { controller, token: Symbol("media-upload") };
     uploadOperationRef.current = operation;
-    const ownsOperation = () => uploadOperationRef.current === operation;
+    const ownsOperation = () => uploadOperationRef.current === operation && task.ownsScope();
     const operationIsActive = () => ownsOperation() && !controller.signal.aborted;
     const progressPublisher = createMediaTransferProgressPublisher({
       publish: (value) => { if (operationIsActive()) setUploadProgress(value); },
@@ -634,6 +644,7 @@ export default function LogScreen({
         try {
           ready = await uploadOriginalMediaAsset({
             asset,
+            expectedAccountId: task.accountId,
             signal: controller.signal,
             onStage: (stage) => {
               if (!operationIsActive()) return;
@@ -719,7 +730,9 @@ export default function LogScreen({
     } catch (error) {
       const message = controller.signal.aborted
         ? "Media upload stopped. Finished items are attached; the remaining originals are ready to retry."
-        : (error?.message || "Mshpit could not upload that item. Finished items are attached, and the remaining originals are ready to retry.");
+        : Number(error?.status) === 401
+          ? "Your session expired. Sign in to the same account before uploading again. You may need to re-create this draft and choose your files again."
+          : (error?.message || "Mshpit could not upload that item. Finished items are attached, and the remaining originals are ready to retry.");
       if (ownsOperation()) setMediaError(message);
       return { ok: false, error };
     } finally {
@@ -730,10 +743,14 @@ export default function LogScreen({
         setUploadingPhotos(false);
         setUploadProgress(null);
       }
+      task.finish();
     }
   }
 
   async function stageSelectedAssets(assets) {
+    const task = accountTasks.begin(user?.id);
+    if (!task) return;
+    task.finish();
     if (uploadOperationRef.current || uploadingPhotos || posting || !Array.isArray(assets) || !assets.length) return;
     const remaining = Math.max(0, MEDIA_POST_MAX_ATTACHMENTS - photos.length - pendingMediaAssets.length);
     if (!remaining) return;
@@ -780,14 +797,18 @@ export default function LogScreen({
     if (!remaining) return;
     let res;
     let pickerRequestId = null;
+    const task = accountTasks.begin(user?.id);
+    if (!task) return;
     try {
       // SDK 57 requires library permission to return an original iOS video via
       // Passthrough. Ask before opening Photos so the prompt never appears only
       // after someone has already made a selection.
       if (Platform.OS === "ios") {
         const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (!task.isCurrent()) { task.finish(); return; }
         if (!permission?.granted) {
           Alert.alert("Photo library access is needed", "Allow Mshpit to access your library so you can attach original photos and videos.");
+          task.finish();
           return;
         }
       }
@@ -810,15 +831,21 @@ export default function LogScreen({
         allowVideos: pickerCapabilities.videos,
       }));
     } catch (error) {
-      if (pickerRequestId) remove(PENDING_COMPOSER_PICKER_KEY);
-      reportMediaPickerError(error, "Opening the media library");
+      if (task.isCurrent()) {
+        if (pickerRequestId) remove(PENDING_COMPOSER_PICKER_KEY);
+        reportMediaPickerError(error, "Opening the media library");
+      }
+      task.finish();
       return;
     }
+    if (!task.isCurrent()) { task.finish(); return; }
     if (pickerRequestId) remove(PENDING_COMPOSER_PICKER_KEY);
     if (!res || res.canceled || !res.assets?.length) {
+      task.finish();
       return;
     }
-    await stageSelectedAssets(res.assets);
+    try { await stageSelectedAssets(res.assets); }
+    finally { task.finish(); }
   };
 
   const cancelUpload = async () => {
@@ -845,6 +872,8 @@ export default function LogScreen({
 
   const retryPendingMedia = async () => {
     if (!pendingMediaAssets.length || uploadOperationRef.current || submitBusy) return;
+    const task = accountTasks.begin(user?.id);
+    if (!task) return;
     setMediaError("");
     try {
       // New picker assets upload directly while this composer is alive. Only
@@ -852,6 +881,7 @@ export default function LogScreen({
       // id can resume from the server without reading the local source again.
       const staged = pendingMediaAssets.filter((asset) => asset.durableLocalUri && !asset.assetId);
       const recoverableStaged = await recoverMediaDraftAssets(staged);
+      if (!task.isCurrent()) return;
       if (recoverableStaged.length !== staged.length) {
         throw new Error("A selected photo or video is no longer available on this device. Choose it again before continuing.");
       }
@@ -862,7 +892,9 @@ export default function LogScreen({
       setPendingMediaAssets(originals);
       await uploadOriginalMedia(originals);
     } catch (error) {
-      setMediaError(error?.message || "Mshpit could not recover the original files. Choose them again and retry.");
+      if (task.isCurrent()) setMediaError(error?.message || "Mshpit could not recover the original files. Choose them again and retry.");
+    } finally {
+      task.finish();
     }
   };
 
@@ -1201,6 +1233,8 @@ export default function LogScreen({
 
   const submit = async () => {
     if (!canPost || submitBusy || submitOperationRef.current) return;
+    const task = accountTasks.begin(user?.id);
+    if (!task) return;
     // React state does not update until the next render. Claim the operation
     // synchronously so a fast second tap cannot launch another request with
     // the same submission id before `posting` becomes visible.
@@ -1243,6 +1277,7 @@ export default function LogScreen({
           likes: editing?.likes || 0,
           comments: editing?.comments || 0,
         });
+        if (!task.isCurrent()) return;
         if (result?.ok === false) {
           setPostError(postErrorMessage(result.error));
           return;
@@ -1294,6 +1329,7 @@ export default function LogScreen({
       // Failed posts stay fully editable and retain any saved draft, and now say
       // WHY: previously a rejected post silently left the composer open with no
       // message, which read as "it didn't go through" for no visible reason.
+      if (!task.isCurrent()) return;
       if (result?.ok === false) { setPostError(postErrorMessage(result.error)); return; }
       if (draftIdRef.current) deleteDraft(draftIdRef.current);
       draftIdRef.current = null;
@@ -1301,10 +1337,11 @@ export default function LogScreen({
       setSavedDraftFingerprint(null);
       onDraftIdentity?.(composerId, null);
     } catch (error) {
-      setPostError(postErrorMessage(error));
+      if (task.isCurrent()) setPostError(postErrorMessage(error));
     } finally {
       submitOperationRef.current = false;
-      setPosting(false);
+      if (task.isCurrent()) setPosting(false);
+      task.finish();
     }
   };
 

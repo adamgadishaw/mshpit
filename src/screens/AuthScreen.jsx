@@ -49,6 +49,7 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, initialMode
   const [errorField, setErrorField] = useState(null);
   const mounted = useRef(true);
   const busyRef = useRef(false);
+  const authAttempt = useRef(null);
   const inputs = useRef({});
   const scroll = useRef(null);
   const heading = useRef(null);
@@ -61,7 +62,7 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, initialMode
   const handleStatus = signupHandlePresentation(availability.resource, handle);
   const currentAvailability = availability.resource.status === "ready" ? availability.resource.data : null;
 
-  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; authAttempt.current?.abort(); }; }, []);
   useEffect(() => {
     scroll.current?.scrollTo?.({ y: 0, animated: false });
     if (!error) heading.current?.focus?.();
@@ -106,10 +107,12 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, initialMode
       return;
     }
     clearError(); busyRef.current = true; setBusyAction("auth");
+    const attempt = new AbortController();
+    authAttempt.current = attempt;
     try {
       const result = creating
-        ? await signup({ ...signupFormPayload({ ...accountValues(), city, genres, ageBand, agreed, analyticsConsent }), ...(addAccount ? { addAccount, currentPassword } : {}), createAdditional })
-        : await login(email.trim(), password, accountId);
+        ? await signup({ ...signupFormPayload({ ...accountValues(), city, genres, ageBand, agreed, analyticsConsent }), ...(addAccount ? { addAccount, currentPassword } : {}), createAdditional }, { signal: attempt.signal })
+        : await login(email.trim(), password, accountId, { signal: attempt.signal });
       if (!mounted.current) return;
       if (result?.ok) {
         if (result.needsAccountChoice) { setSignupChoice(result); return; }
@@ -126,6 +129,7 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, initialMode
     } catch (failure) {
       if (mounted.current) showError({ message: readableError(failure, "Couldn't connect. Check your connection and try again.") });
     } finally {
+      if (authAttempt.current === attempt) authAttempt.current = null;
       busyRef.current = false;
       if (mounted.current) setBusyAction(null);
     }

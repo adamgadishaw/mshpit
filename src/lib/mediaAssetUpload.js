@@ -34,13 +34,31 @@ const optionalSourceDuration = (value) => {
 export async function uploadOriginalMediaAsset({
   asset,
   signal,
+  expectedAccountId,
   onStage,
   onProgress,
   onRemoteDraft,
 } = {}, services = {}) {
-  const apiCall = services.apiCall || api;
+  if (typeof expectedAccountId !== "string" || !expectedAccountId.trim()) {
+    throw mediaPipelineError("MEDIA_ACCOUNT_REQUIRED", "An account identity is required to upload media.");
+  }
+  const accountId = expectedAccountId.trim();
+  const abortIfNeeded = () => {
+    if (!signal?.aborted) return;
+    const error = mediaPipelineError("MEDIA_UPLOAD_CANCELLED", "Media upload was cancelled.");
+    error.name = "AbortError";
+    throw error;
+  };
+  const transport = services.apiCall || api;
+  const apiCall = async (path, options) => {
+    abortIfNeeded();
+    const result = await transport(path, { ...options, signal, expectedAccountId: accountId });
+    abortIfNeeded();
+    return result;
+  };
   const prepareAsset = services.prepareAsset || prepareMediaUploadAsset;
   const uploadPrepared = services.uploadPrepared || uploadPreparedMediaAsset;
+  abortIfNeeded();
   if (!asset?.id || !asset?.uri) {
     throw mediaPipelineError("MEDIA_SOURCE_INVALID", "Choose that media again before uploading.");
   }
@@ -79,6 +97,7 @@ export async function uploadOriginalMediaAsset({
       optimizeWeb: false,
       context: "Preparing the original media",
     });
+    abortIfNeeded();
     const clientAssetId = mediaSourceClientAssetId({
       localId: asset.id,
       fileSize: sourcePrepared.fileSize,
@@ -112,6 +131,7 @@ export async function uploadOriginalMediaAsset({
         context: "Uploading the original media",
         onProgress: (progress) => onProgress?.({ ...progress, stage: "uploading-source" }),
       });
+      abortIfNeeded();
       onRemoteDraft?.({ assetId, duplicate: !!created.duplicate, sourceUploaded: true });
     }
 
@@ -133,6 +153,7 @@ export async function uploadOriginalMediaAsset({
     context: "Checking your Mshpit media",
     signal,
   }))?.asset;
+  abortIfNeeded();
   if (!finalAsset?.id || finalAsset.status !== "ready" || !isDurableMediaUrl(finalAsset.url)) {
     throw mediaPipelineError("MEDIA_FINALIZE_PENDING", "Mshpit is still preparing that media item. Try the final step again.");
   }

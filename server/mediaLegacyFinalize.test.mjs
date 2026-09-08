@@ -24,7 +24,8 @@ Object.assign(process.env, {
 });
 
 const { db, q } = await import("./db.js");
-const { hashPassword } = await import("./auth.js");
+const { hashPassword, createSession, destroySession } = await import("./auth.js");
+const { readAuthorizedRequest } = await import("./requestAuthorization.js");
 const { routes } = await import("./api.js");
 const {
   associateFinalizedLegacyMedia,
@@ -198,6 +199,42 @@ async function clientPut(ticket, bytes, fetchImpl) {
   });
   assert.equal(response.status, 200);
 }
+
+test("legacy photo finalization cannot commit after logout and a new session can resume the same source", async () => {
+  const owner = addUser("legacy_session_commit_owner");
+  db.prepare("UPDATE users SET email_verified_at=? WHERE id=?").run(Date.now(), owner.id);
+  const session = createSession(owner.id);
+  const authorization = (token) => readAuthorizedRequest({ token, expectedAccount: owner.id,
+    method: "POST", pathname: "/api/media/finalize", readBody: () => ({}) });
+  const auth = await authorization(session.token);
+  const storage = memoryObjectStorage();
+  const source = await sharp({ create: { width: 16, height: 16, channels: 3, background: "#123456" } }).jpeg().toBuffer();
+  const created = createLegacyMediaUpload(db, { ownerId: owner.id,
+    body: { purpose: "avatar", contentType: "image/jpeg", fileSize: source.length, name: "camera.jpg" } });
+  await clientPut(created.upload, source, storage.fetchImpl);
+  let revoked = false;
+  const fetchImpl = async (url, options) => {
+    const response = await storage.fetchImpl(url, options);
+    if (options.method === "PUT" && new URL(url).pathname.includes("/pit-public/")) {
+      revoked = true;
+      destroySession(session.token);
+    }
+    return response;
+  };
+  await assert.rejects(finalizeLegacyMediaUpload(db, { ownerId: owner.id, finalizeToken: created.finalizeToken,
+    fetchImpl, assertAuthorized: auth.assertCurrentSession }), (error) => error.code === "AUTH_REQUIRED");
+  assert.equal(revoked, true);
+  const pending = db.prepare("SELECT status,output_url,processing_claim FROM legacy_media_finalize_descriptors WHERE id=?").get(created.descriptorId);
+  assert.equal(pending.status, "pending");
+  assert.equal(pending.output_url, null);
+  assert.equal(pending.processing_claim, null);
+  assert.equal(db.prepare("SELECT status FROM media_objects WHERE object_key=?").get(created.upload.key).status, "issued");
+  assert.equal(db.isTransaction, false);
+  const fresh = await authorization(createSession(owner.id).token);
+  const resumed = await finalizeLegacyMediaUpload(db, { ownerId: owner.id, finalizeToken: created.finalizeToken,
+    fetchImpl: storage.fetchImpl, assertAuthorized: fresh.assertCurrentSession });
+  assert.equal(resumed.status, "finalized");
+});
 
 async function stagedProfileDelivery({
   ownerId,

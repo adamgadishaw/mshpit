@@ -4,6 +4,7 @@ import { seedFeed, ratedShows, haversineKm, installDemoCatalogShows } from "./da
 import { clean, cleanEmail, isEmail, cleanName, isName, cleanHandle, isHandle, isPassword, clampRating, LIMITS } from "./domain/validation.mjs";
 import { load, remove, save } from "./lib/persist";
 import { api, AppError, captureAppError, configureApiIdentity } from "./lib/api";
+import { authTransitions, AUTH_INTENT_KEY } from "./lib/authTransitions";
 import { classifyAccountAgeBand, requestAccountExport, updateAnnouncementEmailPreference, updateDirectMessagePreference, updateProfileAudience, updateProfileSearchIndexingPreference } from "./lib/accountPrivacyApi";
 import { requestFreshDeezerPreview } from "./lib/playbackApi";
 import { clearStoredTheme, setTheme as applyTheme, storedThemeSelection, syncThemeFromAccount } from "./theme";
@@ -2488,6 +2489,7 @@ export function StoreProvider({ children }) {
 
   // Fold a server user into local state so profiles/avatars resolve everywhere.
   const absorbServerUser = (su, { announce = false, hydrateAccount = true } = {}) => {
+    if (!ENABLE_DEMO_DATA && authTransitions.blocked()) return null;
     const merged = { playlists: [], genres: [], favoriteArtists: [], ...su };
     resolveLegacyDraftsForIdentity(merged.id);
     authValidationSequenceRef.current += 1;
@@ -2677,6 +2679,16 @@ export function StoreProvider({ children }) {
       const confirmedBeforeValidation = identityHasBeenConfirmed || authReadyRef.current;
       const accountBeforeValidation = sessionRef.current?.id || null;
       const sequence = ++authValidationSequenceRef.current;
+      const intentRevision = authTransitions.revision();
+      // An explicit sign-out is stronger than a still-valid cookie. Publish only
+      // guest data while revocation is offline; retry without resurrecting A.
+      if (authTransitions.blocked()) {
+        if (authTransitions.pending()) return { authoritative: false, pending: true };
+        publishAuthoritativeGuest(accountBeforeValidation);
+        const result = await authTransitions.reconcile();
+        if (result.kind === "pending") scheduleRetry(false);
+        return { authoritative: result.kind === "revoked", signedOut: true };
+      }
       if (!confirmedBeforeValidation) lockIdentity();
 
       try {
@@ -2685,7 +2697,7 @@ export function StoreProvider({ children }) {
           context: "Validating your account",
           skipIdentityCheck: true,
         });
-        if (context.isSuperseded() || stopped || sequence !== authValidationSequenceRef.current) {
+        if (context.isSuperseded() || stopped || sequence !== authValidationSequenceRef.current || intentRevision !== authTransitions.revision() || authTransitions.blocked()) {
           return { authoritative: false, stale: true };
         }
 
@@ -2730,7 +2742,7 @@ export function StoreProvider({ children }) {
         if (confirmedBeforeValidation && !outcome.departingAccountId) void revalidateCachedFeed();
         return { authoritative: true, outcome: outcome.kind };
       } catch (error) {
-        if (context.isSuperseded() || stopped || sequence !== authValidationSequenceRef.current) {
+        if (context.isSuperseded() || stopped || sequence !== authValidationSequenceRef.current || intentRevision !== authTransitions.revision() || authTransitions.blocked()) {
           return { authoritative: false, stale: true };
         }
         const outcome = sessionValidationOutcome({
@@ -2757,6 +2769,7 @@ export function StoreProvider({ children }) {
       run: runValidation,
       onStrictRequest: lockIdentity,
     });
+    const stopAuthRetry = authTransitions.onPendingRevocation(() => scheduleRetry(false));
     void coordinator.validate({ force: true, reason: "cold-start" });
 
     const resume = () => {
@@ -2775,8 +2788,9 @@ export function StoreProvider({ children }) {
     };
     const onPageHide = () => coordinator.background();
     const onPageShow = () => resume();
+    const onOnline = () => { void coordinator.validate({ force: true, reason: "online" }); };
     const onStorage = (event) => {
-      if (event.key !== AUTH_EPOCH_STORAGE_KEY) return;
+      if (event.key !== AUTH_EPOCH_STORAGE_KEY && event.key !== AUTH_INTENT_KEY) return;
       // Cookies are origin-wide. Another tab may have replaced the authenticated
       // account, so immediately lock this tab and ask /api/me before any further
       // account-scoped analytics or personalized requests.
@@ -2786,16 +2800,19 @@ export function StoreProvider({ children }) {
       window.addEventListener("storage", onStorage);
       window.addEventListener("pagehide", onPageHide);
       window.addEventListener("pageshow", onPageShow);
+      window.addEventListener("online", onOnline);
       if (typeof document !== "undefined") document.addEventListener("visibilitychange", onVisibilityChange);
     }
     return () => {
       stopped = true;
+      stopAuthRetry();
       if (retryTimer) clearTimeout(retryTimer);
       appStateSubscription?.remove?.();
       if (Platform.OS === "web" && typeof window !== "undefined") {
         window.removeEventListener("storage", onStorage);
         window.removeEventListener("pagehide", onPageHide);
         window.removeEventListener("pageshow", onPageShow);
+        window.removeEventListener("online", onOnline);
         if (typeof document !== "undefined") document.removeEventListener("visibilitychange", onVisibilityChange);
       }
     };
@@ -2805,30 +2822,39 @@ export function StoreProvider({ children }) {
   // Server-first auth (real accounts, hashed passwords, httpOnly sessions).
   // Falls back to the local in-memory demo accounts only in an explicit dev build.
   // A production network failure must never authenticate a bundled plaintext user.
+  const performAuthentication = (request, accept, signal) => {
+    authValidationSequenceRef.current += 1;
+    return authTransitions.run({ request, accept, signal, onCancel: () => { void logout(); }, onUncertain: () => { void logout(); } })
+      .then((result) => result?.kind === "cancelled" ? { ...localCommandError("PIT-AUTH-004", "Signing in"), stale: true } : result);
+  };
   const switchLinkedAccount = async (targetId, { expectedAccountId } = {}) => {
     const actorId = sessionRef.current?.id, epoch = accountMutationEpochRef.current;
     if (!actorId || actorId !== expectedAccountId || !targetId || targetId === actorId) return { ok: false, error: "Choose an available account." };
     try {
-      const result = await switchLinkedAccountRequest(actorId, targetId);
-      if (sessionRef.current?.id !== actorId || accountMutationEpochRef.current !== epoch) return { ok: false, stale: true, error: "Your account changed. Reopen the account selector." };
-      if (result?.user?.id !== targetId) return { ok: false, error: "The account switch could not be confirmed. Reload to check your session." };
-      absorbServerUser(result.user, { announce: true });
-      return { ok: true };
+      return await performAuthentication(() => switchLinkedAccountRequest(actorId, targetId), (result) => {
+        if (sessionRef.current?.id !== actorId || accountMutationEpochRef.current !== epoch || result?.user?.id !== targetId) {
+          void logout();
+          return { ok: false, stale: true, error: "Your account changed. Reopen the account selector." };
+        }
+        absorbServerUser(result.user, { announce: true });
+        return { ok: true };
+      });
     } catch (error) { return { ok: false, error }; }
   };
 
-  const login = async (email, password, accountId) => {
+  const login = async (email, password, accountId, { signal } = {}) => {
     if (remoteIdentityValidationEnabled(LOCAL_AUTH_FALLBACK)) {
       try {
-        const response = await api("/api/login", { method: "POST", body: { email, password, ...(accountId ? { accountId } : {}) }, context: "Signing in", silent: true, skipIdentityCheck: true });
-        if (response?.chooseAccount === true && Array.isArray(response.accounts) && response.accounts.length === 2) {
-          return { ok: true, chooseAccount: true, accounts: response.accounts };
-        }
-        const user = response?.user;
-        if (!user?.id) return { ok: false, error: "Sign-in could not be confirmed. Try again." };
-        absorbServerUser(user, { announce: true });
-        track("login", { method: "password" });
-        return { ok: true };
+        return await performAuthentication(() => api("/api/login", { method: "POST", body: { email, password, ...(accountId ? { accountId } : {}) }, context: "Signing in", silent: true, skipIdentityCheck: true }), (response) => {
+          if (response?.chooseAccount === true && Array.isArray(response.accounts) && response.accounts.length === 2) {
+            return { ok: true, chooseAccount: true, accounts: response.accounts };
+          }
+          const user = response?.user;
+          if (!user?.id) { void logout(); return { ok: false, error: "Sign-in could not be confirmed. Try again." }; }
+          absorbServerUser(user, { announce: true });
+          track("login", { method: "password" });
+          return { ok: true };
+        }, signal);
       } catch (e) {
         if (e.status) return { ok: false, error: e.message }; // real server verdict
       }
@@ -2934,11 +2960,13 @@ export function StoreProvider({ children }) {
     }
   };
   // Complete a reset from the emailed token; on success we're signed in.
-  const resetPassword = async (token, password) => {
+  const resetPassword = async (token, password, { signal } = {}) => {
     try {
-      const { user } = await api("/api/reset", { method: "POST", body: { token, password }, context: "Resetting your password", silent: true, skipIdentityCheck: true });
-      absorbServerUser(user, { announce: true });
-      return { ok: true };
+      return await performAuthentication(() => api("/api/reset", { method: "POST", body: { token, password }, context: "Resetting your password", silent: true, skipIdentityCheck: true }), ({ user }) => {
+        if (!user?.id) { void logout(); return { ok: false, error: "Your sign-in could not be confirmed. Please log in again." }; }
+        absorbServerUser(user, { announce: true });
+        return { ok: true };
+      }, signal);
     } catch (e) { return { ok: false, error: e.status ? e.message : "Couldn't reset. Try requesting a new link." }; }
   };
 
@@ -2951,7 +2979,7 @@ export function StoreProvider({ children }) {
     return candidate;
   };
 
-  const signup = async ({ name, handle, email, password, city, location = null, genres = [], ageBand, agreedToTerms, analyticsConsent = false, addAccount = false, currentPassword, createAdditional = false }) => {
+  const signup = async ({ name, handle, email, password, city, location = null, genres = [], ageBand, agreedToTerms, analyticsConsent = false, addAccount = false, currentPassword, createAdditional = false }, { signal } = {}) => {
     const nm = cleanName(name);
     const em = cleanEmail(email);
     if (!isName(nm)) return { ok: false, error: "Enter a name (letters or numbers, up to 40 chars)." };
@@ -2969,20 +2997,22 @@ export function StoreProvider({ children }) {
     const srvCoords = locationCenter(pickedLocation);
     if (remoteIdentityValidationEnabled(LOCAL_AUTH_FALLBACK)) {
       try {
-        const response = await api("/api/signup", {
+        return await performAuthentication(() => api("/api/signup", {
           method: "POST",
           body: { name: nm, ...(handle !== undefined ? { handle: cleanHandle(handle) } : {}), email: em, password, city, lat: srvCoords?.lat, lng: srvCoords?.lng, genres: genreSelection.genres, ageBand, analyticsConsent: !!analyticsConsent, termsVersion: TERMS_VERSION, ...(addAccount ? { addAccount, currentPassword } : {}), ...(createAdditional ? { createAdditional: true } : {}) },
           context: "Creating your Pit account",
           silent: true,
           skipIdentityCheck: !addAccount,
           ...(addAccount ? { expectedAccountId: sessionRef.current?.id } : {}),
-        });
-        if (response?.needsAccountChoice && Array.isArray(response.accounts) && response.accounts.length > 0 && response.accounts.length <= 2) return { ok: true, needsAccountChoice: true, accounts: response.accounts, canCreate: response.canCreate === true };
-        if (response?.created === true && response.user?.id) {
-          absorbServerUser(response.user, { announce: true });
-          return { ok: true, created: true };
-        }
-        return { ok: false, error: "That request did not complete. Please try again." };
+        }), (response) => {
+          if (response?.needsAccountChoice && Array.isArray(response.accounts) && response.accounts.length > 0 && response.accounts.length <= 2) return { ok: true, needsAccountChoice: true, accounts: response.accounts, canCreate: response.canCreate === true };
+          if (response?.created === true && response.user?.id) {
+            absorbServerUser(response.user, { announce: true });
+            return { ok: true, created: true };
+          }
+          void logout();
+          return { ok: false, error: "That request did not complete. Please try again." };
+        }, signal);
       } catch (e) {
         if (e.status) return { ok: false, error: e.message };
       }
@@ -3028,10 +3058,13 @@ export function StoreProvider({ children }) {
 
   const logout = () => {
     authValidationSequenceRef.current += 1;
+    accountMutationEpochRef.current += 1;
     const departingAccountId = sessionRef.current?.id || null;
-    const request = api("/api/logout", { method: "POST", expectedAccountId: departingAccountId })
-      .catch(() => {}) // best-effort server-side
-      .finally(() => broadcastAuthEpoch());
+    const request = authTransitions.signOut().then((result) => {
+      if (result.kind === "pending") captureAppError(new AppError(undefined, { code: "PIT-AUTH-006", context: "Finishing sign-out", cause: result.cause }), { toast: true });
+      return result;
+    }).finally(() => broadcastAuthEpoch());
+    broadcastAuthEpoch();
     playHistoryRequestRef.current = { sequence: playHistoryRequestRef.current.sequence + 1, accountId: null };
     playlistRequestRef.current = { sequence: playlistRequestRef.current.sequence + 1, accountId: null };
     setPlayHistory([]);
@@ -3934,7 +3967,24 @@ export function StoreProvider({ children }) {
   const isBlocked = (id) => blockedIds.includes(id);
   const isBlockMutationPending = (id) => venuePhotoCacheRef.current.privacy.pendingMutations.has(String(id));
   const refreshBlockedDirectory = async ({ accountId = sessionRef.current?.id } = {}) => {
-    if (!accountId) return { ok: false };
+    if (!accountId || sessionRef.current?.id !== accountId) return { ok: false, stale: true };
+    const epoch = accountMutationEpochRef.current;
+    const sequence = (blockedIdsRef.directorySequence || 0) + 1;
+    blockedIdsRef.directorySequence = sequence;
+    const privacyRevision = venuePhotoCacheRef.current.privacy.revision;
+    const isCurrent = () => sessionRef.current?.id === accountId
+      && accountMutationEpochRef.current === epoch
+      && blockedIdsRef.directorySequence === sequence;
+    const privacyChanged = () => privacyRevision !== venuePhotoCacheRef.current.privacy.revision
+      || venuePhotoCacheRef.current.privacy.pendingMutations.size > 0;
+    // Do not replace an optimistic block/unblock with a pre-mutation snapshot.
+    // Leave an explicit retry state when a mutation supersedes this read.
+    const stalePrivacyResult = () => {
+      blockedIdsRef.status = "error";
+      setBlockedIds((current) => [...current]);
+      return { ok: false, stale: true };
+    };
+    if (privacyChanged()) return stalePrivacyResult();
     blockedIdsRef.accountId = accountId;
     blockedIdsRef.status = "loading";
     setBlockedIds((current) => [...current]);
@@ -3944,7 +3994,9 @@ export function StoreProvider({ children }) {
         context: "Loading blocked accounts",
         expectedAccountId: accountId,
       });
-      if (sessionRef.current?.id !== accountId || !Array.isArray(list)) return { ok: false, stale: true };
+      if (!isCurrent()) return { ok: false, stale: true };
+      if (privacyChanged()) return stalePrivacyResult();
+      if (!Array.isArray(list)) throw new Error("Blocked accounts could not be loaded.");
       const ids = list.map((user) => user.id).filter(Boolean);
       blockedIdsRef.accountId = accountId;
       blockedIdsRef.status = "ready";
@@ -3955,7 +4007,7 @@ export function StoreProvider({ children }) {
       absorbUsers(list);
       return { ok: true, users: list };
     } catch (error) {
-      if (sessionRef.current?.id !== accountId) return { ok: false, stale: true };
+      if (!isCurrent()) return { ok: false, stale: true };
       blockedIdsRef.accountId = accountId;
       blockedIdsRef.status = "error";
       setBlockedIds((current) => [...current]);

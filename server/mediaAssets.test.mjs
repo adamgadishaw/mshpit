@@ -24,7 +24,8 @@ Object.assign(process.env, {
 });
 
 const { db, q } = await import("./db.js");
-const { hashPassword } = await import("./auth.js");
+const { hashPassword, createSession, destroySession } = await import("./auth.js");
+const { readAuthorizedRequest } = await import("./requestAuthorization.js");
 const { routes } = await import("./api.js");
 const {
   createMediaAsset,
@@ -450,6 +451,204 @@ const finalizeMediaAsset = (database, options) => finalizeMediaAssetRuntime(data
 const finalizeMediaVariant = (database, options) => finalizeMediaVariantRuntime(database, {
   imageProcessor: fixtureImageProcessor,
   ...options,
+});
+
+async function mediaAuthorization(owner, session, pathname = "/api/media/assets/test/finalize") {
+  return readAuthorizedRequest({ token: session.token, expectedAccount: owner.id,
+    method: "POST", pathname, readBody: () => ({}) });
+}
+
+test("media finalization refuses revoked or restricted sessions at its final commit and remains resumable", async () => {
+  for (const mode of ["logout", "expiry", "unverified", "banned", "dormant"]) {
+    const owner = addUser(`media_session_commit_${mode}`);
+    db.prepare("UPDATE users SET email_verified_at=? WHERE id=?").run(Date.now(), owner.id);
+    const session = createSession(owner.id);
+    const auth = await mediaAuthorization(owner, session);
+    const created = createMediaAsset(db, { ownerId: owner.id,
+      body: sourceBody({ clientAssetId: `session-commit-${mode}` }) });
+    let changed = false;
+    const storage = verifiedImage(4_096, "image/jpeg", 640, 480, null, { onDelivery() {
+      changed = true;
+      if (mode === "logout") destroySession(session.token);
+      if (mode === "expiry") db.prepare("UPDATE sessions SET expires_at=? WHERE user_id=?").run(Date.now() - 1, owner.id);
+      if (mode === "unverified") db.prepare("UPDATE users SET email_verified_at=0 WHERE id=?").run(owner.id);
+      if (mode === "banned") db.prepare("UPDATE users SET is_banned=1 WHERE id=?").run(owner.id);
+      if (mode === "dormant") db.prepare("UPDATE users SET dormant_at=? WHERE id=?").run(Date.now(), owner.id);
+    } });
+    const options = { ownerId: owner.id, assetId: created.asset.id,
+      body: { deliveryMode: "server", editRecipe: {} }, fetchImpl: storage };
+    await assert.rejects(finalizeMediaAsset(db, { ...options, assertAuthorized: auth.assertCurrentSession }),
+      (error) => [401, 403].includes(error.status), mode);
+    assert.equal(changed, true, "revocation occurred after public staging, before the database commit");
+    const pending = db.prepare("SELECT status,finalize_hash,render_variant_id FROM media_assets WHERE id=?").get(created.asset.id);
+    assert.equal(pending.status, "upload_pending");
+    assert.equal(pending.finalize_hash, null);
+    assert.equal(pending.render_variant_id, null);
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM post_media WHERE asset_id=?").get(created.asset.id).n, 0);
+    assert.equal(db.isTransaction, false);
+    db.prepare("UPDATE users SET email_verified_at=?,is_banned=0,dormant_at=0 WHERE id=?").run(Date.now(), owner.id);
+    const fresh = await mediaAuthorization(owner, createSession(owner.id));
+    const retried = await finalizeMediaAsset(db, { ...options, assertAuthorized: fresh.assertCurrentSession });
+    assert.equal(retried.asset.status, "ready", "fresh authentication can resume the same saved draft");
+  }
+});
+
+test("simultaneous accounts with the same client upload ID cannot mix files or share revocation", async () => {
+  const owners = [addUser("media_parallel_session_a"), addUser("media_parallel_session_b")];
+  const sessions = owners.map((owner) => {
+    db.prepare("UPDATE users SET email_verified_at=? WHERE id=?").run(Date.now(), owner.id);
+    return createSession(owner.id);
+  });
+  const authorization = await Promise.all(owners.map((owner, index) => mediaAuthorization(owner, sessions[index])));
+  const assets = owners.map((owner) => createMediaAsset(db, { ownerId: owner.id,
+    body: sourceBody({ clientAssetId: "same-client-selection-id" }) }));
+  assert.notEqual(assets[0].asset.id, assets[1].asset.id);
+  assert.notEqual(assets[0].upload.key, assets[1].upload.key);
+  const results = await Promise.allSettled(owners.map((owner, index) => finalizeMediaAsset(db, {
+    ownerId: owner.id, assetId: assets[index].asset.id,
+    body: { deliveryMode: "server", editRecipe: {} }, assertAuthorized: authorization[index].assertCurrentSession,
+    fetchImpl: verifiedImage(4_096, "image/jpeg", 640, 480, null, {
+      onDelivery() { if (index === 0) destroySession(sessions[0].token); },
+    }),
+  })));
+  assert.equal(results[0].status, "rejected");
+  assert.equal(results[0].reason.code, "AUTH_REQUIRED");
+  assert.equal(results[1].status, "fulfilled");
+  assert.equal(results[1].value.asset.status, "ready");
+  assert.match(results[1].value.asset.url, new RegExp(`/users/${owners[1].id}/`));
+});
+
+test("foreign asset and variant IDs cannot be finalized, changed, removed, or published", async () => {
+  const owner = addUser("media_foreign_action_owner");
+  const stranger = addUser("media_foreign_action_stranger");
+  db.prepare("UPDATE users SET email_verified_at=? WHERE id=?").run(Date.now(), stranger.id);
+  const ready = addReadyPostImage(owner.id, "foreign_action", Date.now());
+  const ctx = { user: q.userById.get(stranger.id), params: { id: ready.assetId, variantId: "mv_lease_foreign_action" },
+    ip: "foreign-media-action", body: {} };
+  for (const route of ["POST /api/media/assets/:id/finalize", "POST /api/media/assets/:id/variants/:variantId/finalize"]) {
+    await assert.rejects(routes[route](ctx), (error) => error.status === 404, route);
+  }
+  for (const route of ["PATCH /api/media/assets/:id", "POST /api/media/assets/:id/variants"]) {
+    assert.throws(() => routes[route]({ ...ctx, body: { altText: "Not mine" } }), (error) => error.status === 404, route);
+  }
+  assert.equal(routes["DELETE /api/media/assets/:id"](ctx).removed, false);
+  assert.throws(() => routes["POST /api/posts"]({ ...ctx,
+    body: { kind: "status", review: "Not my file", mediaAssetIds: [ready.assetId] },
+  }), (error) => error.status === 409 && error.code === "CONFLICT");
+  assert.equal(db.prepare("SELECT status FROM media_assets WHERE id=?").get(ready.assetId).status, "ready");
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM post_media WHERE asset_id=?").get(ready.assetId).n, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM posts WHERE user_id=?").get(stranger.id).n, 0);
+});
+
+test("initial and replacement photo renditions require a live session at commit and can resume", async () => {
+  const owner = addUser("media_variant_session_owner");
+  db.prepare("UPDATE users SET email_verified_at=? WHERE id=?").run(Date.now(), owner.id);
+  const created = createMediaAsset(db, { ownerId: owner.id,
+    body: sourceBody({ clientAssetId: "variant-session-source" }) });
+  await finalizeMediaAsset(db, { ownerId: owner.id, assetId: created.asset.id,
+    body: { width: 640, height: 480, editRecipe: { kind: "image", filter: "pit" } },
+    fetchImpl: verifiedImage(4_096, "image/jpeg", 640, 480) });
+  for (const replacement of [false, true]) {
+    if (replacement) updateMediaAsset(db, { ownerId: owner.id, assetId: created.asset.id,
+      body: { editRecipe: { kind: "image", filter: "mono" } } });
+    const session = createSession(owner.id);
+    const auth = await mediaAuthorization(owner, session);
+    const variant = createMediaVariant(db, { ownerId: owner.id, assetId: created.asset.id,
+      body: { clientVariantId: `variant-session-${replacement}`, role: "render",
+        contentType: "image/webp", fileSize: 4_096, name: "edited.webp" } });
+    const before = db.prepare("SELECT render_variant_id FROM media_assets WHERE id=?").get(created.asset.id).render_variant_id;
+    const options = { ownerId: owner.id, assetId: created.asset.id, variantId: variant.variant.id,
+      body: { width: 640, height: 480 },
+      fetchImpl: verifiedImage(4_096, "image/webp", 640, 480, null, {
+        onDelivery() { destroySession(session.token); },
+      }) };
+    await assert.rejects(finalizeMediaVariant(db, { ...options, assertAuthorized: auth.assertCurrentSession }),
+      (error) => error.code === "AUTH_REQUIRED");
+    assert.equal(db.prepare("SELECT render_variant_id FROM media_assets WHERE id=?").get(created.asset.id).render_variant_id, before);
+    assert.equal(db.isTransaction, false);
+    const fresh = await mediaAuthorization(owner, createSession(owner.id));
+    const retried = await finalizeMediaVariant(db, { ...options, assertAuthorized: fresh.assertCurrentSession });
+    assert.equal(retried.asset.status, "ready");
+    assert.equal(retried.variant.id, variant.variant.id);
+  }
+});
+
+test("detached clip verification cannot mark a draft ready after its initiating session expires", async () => {
+  const owner = addUser("media_video_session_owner");
+  db.prepare("UPDATE users SET email_verified_at=? WHERE id=?").run(Date.now(), owner.id);
+  const session = createSession(owner.id);
+  const auth = await mediaAuthorization(owner, session);
+  const created = createMediaAsset(db, { ownerId: owner.id,
+    body: sourceBody({ clientAssetId: "clip-session-source", contentType: "video/mp4",
+      fileSize: 500_000, name: "clip.mp4" }) });
+  const options = { ownerId: owner.id, assetId: created.asset.id,
+    body: { width: 1_920, height: 1_080, durationMs: 10_000,
+      editRecipe: { kind: "video", durationMs: 10_000, trimStartMs: 0, trimEndMs: 10_000, coverMs: 0 } },
+    fetchImpl: verifiedMp4WithPoster(500_000, 10_000), authoritativePosterRequired: true };
+  const started = startVideoFinalizeJob({ ownerId: owner.id, assetId: created.asset.id,
+    fingerprint: "a".repeat(64), run: () => finalizeMediaAsset(db, {
+      ...options, assertAuthorized: auth.assertCurrentSession,
+      authoritativeVideoVerifier: async (input) => {
+        const decoded = await authoritativeFixtureDecodeWithPoster(input);
+        db.prepare("UPDATE sessions SET expires_at=? WHERE user_id=?").run(Date.now() - 1, owner.id);
+        return decoded;
+      },
+    }) });
+  await assert.rejects(started.completion, (error) => error.code === "AUTH_REQUIRED");
+  assert.equal(db.prepare("SELECT status,finalize_hash FROM media_assets WHERE id=?").get(created.asset.id).status, "upload_pending");
+  assert.equal(videoFinalizeState({ ownerId: owner.id, assetId: created.asset.id }).error.code, "AUTH_REQUIRED");
+  const fresh = await mediaAuthorization(owner, createSession(owner.id));
+  const resumed = startVideoFinalizeJob({ ownerId: owner.id, assetId: created.asset.id,
+    fingerprint: "a".repeat(64), run: () => finalizeMediaAsset(db, { ...options,
+      assertAuthorized: fresh.assertCurrentSession, authoritativeVideoVerifier: authoritativeFixtureDecodeWithPoster,
+    }) });
+  assert.equal((await resumed.completion).asset.status, "ready");
+});
+
+test("publishing rechecks session and account state inside the write transaction before attaching media", async () => {
+  for (const mode of ["logout", "unverified", "banned"]) {
+    const owner = addUser(`media_publish_session_${mode}`);
+    db.prepare("UPDATE users SET email_verified_at=? WHERE id=?").run(Date.now(), owner.id);
+    const session = createSession(owner.id);
+    const body = { kind: "status", review: "Saved photo draft",
+      mediaAssetIds: [addReadyPostImage(owner.id, `publish_session_${mode}`, Date.now()).assetId] };
+    const auth = await readAuthorizedRequest({ token: session.token, expectedAccount: owner.id,
+      method: "POST", pathname: "/api/posts", readBody: () => body });
+    if (mode === "logout") destroySession(session.token);
+    if (mode === "unverified") db.prepare("UPDATE users SET email_verified_at=0 WHERE id=?").run(owner.id);
+    if (mode === "banned") db.prepare("UPDATE users SET is_banned=1 WHERE id=?").run(owner.id);
+    assert.throws(() => routes["POST /api/posts"]({ ...auth, ip: `publish-session-${mode}` }),
+      (error) => [401, 403].includes(error.status));
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM posts WHERE user_id=?").get(owner.id).n, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM post_media WHERE asset_id=?").get(body.mediaAssetIds[0]).n, 0);
+    assert.equal(db.isTransaction, false);
+  }
+});
+
+test("a sanitized object staged before revocation stays ledger-tracked and orphan cleanup retires it", async () => {
+  const owner = addUser("media_revoked_orphan_owner");
+  db.prepare("UPDATE users SET email_verified_at=? WHERE id=?").run(Date.now(), owner.id);
+  const session = createSession(owner.id);
+  const auth = await mediaAuthorization(owner, session);
+  const created = createMediaAsset(db, { ownerId: owner.id,
+    body: sourceBody({ clientAssetId: "revoked-orphan-source" }) });
+  await assert.rejects(finalizeMediaAsset(db, {
+    ownerId: owner.id, assetId: created.asset.id, body: { deliveryMode: "server", editRecipe: {} },
+    assertAuthorized: auth.assertCurrentSession,
+    fetchImpl: verifiedImage(4_096, "image/jpeg", 640, 480, null, {
+      onDelivery() { destroySession(session.token); },
+    }),
+  }), (error) => error.code === "AUTH_REQUIRED");
+  const ledger = db.prepare("SELECT object_key,storage_scope,status FROM media_objects WHERE owner_id=?").all(owner.id);
+  assert.equal(ledger.length, 2);
+  assert.equal(ledger.filter((row) => row.storage_scope === "public").length, 1);
+  assert.ok(ledger.every((row) => row.status === "issued"));
+  assert.equal(ownedMediaAsset(db, { ownerId: owner.id, assetId: created.asset.id }).url, null);
+  enqueueExpiredMediaTickets(db, { at: Date.now() + 49 * 60 * 60_000, limit: 500,
+    env: { MEDIA_ORPHAN_TTL_MS: 48 * 60 * 60_000 } });
+  assert.ok(db.prepare("SELECT status FROM media_objects WHERE owner_id=?").all(owner.id)
+    .every((row) => row.status === "delete_queued"));
+  assert.equal(ownedMediaAsset(db, { ownerId: owner.id, assetId: created.asset.id }), null);
 });
 
 async function authoritativeFixtureDecodeWithPoster({ structural, posterTimeMs, output }) {

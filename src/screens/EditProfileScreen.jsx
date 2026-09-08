@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, Image, Platfo
 import * as ImagePicker from "expo-image-picker";
 import { colors, radius } from "../theme";
 import { useStore } from "../store";
+import { useAccountTaskScope } from "../hooks/useAccountTaskScope";
 import Avatar from "../components/Avatar";
 import Icon from "../components/Icon";
 import LocationPicker from "../components/LocationPicker";
@@ -26,6 +27,7 @@ const BANNER_IMAGE_HINT = profileImageSelectionHint("banner");
 
 export default function EditProfileScreen({ onClose }) {
   const { session, updateProfile, locationCenter } = useStore();
+  const accountTasks = useAccountTaskScope(session?.id);
   const [name, setName] = useState(session?.name || "");
   const [handle, setHandle] = useState(session?.handle || "");
   const handleChanged = handle !== session?.handle;
@@ -67,41 +69,51 @@ export default function EditProfileScreen({ onClose }) {
 
   const pickPhoto = async () => {
     if (uploadingAvatar || saving) return;
+    const task = accountTasks.begin(session?.id);
+    if (!task) return;
     let res;
     try {
       res = await ImagePicker.launchImageLibraryAsync(profileImagePickerOptions("avatar", { platform: Platform.OS }));
     } catch (error) {
-      reportMediaPickerError(error, "Opening the profile photo library");
+      if (task.isCurrent()) reportMediaPickerError(error, "Opening the profile photo library");
+      task.finish();
       return;
     }
-    if (!res || res.canceled || !res.assets?.[0]) return;
+    if (!task.isCurrent() || !res || res.canceled || !res.assets?.[0]) { task.finish(); return; }
     setUploadingAvatar(true);
     try {
-      setAvatarUri(await uploadMediaAsset(res.assets[0], "avatar"));
+      const uploaded = await uploadMediaAsset(res.assets[0], "avatar", { expectedAccountId: task.accountId, signal: task.controller.signal });
+      if (task.isCurrent()) setAvatarUri(uploaded);
     } catch {
       // The upload helper records the themed diagnostic and leaves the existing
       // durable photo untouched.
     } finally {
-      setUploadingAvatar(false);
+      if (task.isCurrent()) setUploadingAvatar(false);
+      task.finish();
     }
   };
   const pickBanner = async () => {
     if (uploadingBanner || saving) return;
+    const task = accountTasks.begin(session?.id);
+    if (!task) return;
     let res;
     try {
       res = await ImagePicker.launchImageLibraryAsync(profileImagePickerOptions("banner", { platform: Platform.OS }));
     } catch (error) {
-      reportMediaPickerError(error, "Opening the banner photo library");
+      if (task.isCurrent()) reportMediaPickerError(error, "Opening the banner photo library");
+      task.finish();
       return;
     }
-    if (!res || res.canceled || !res.assets?.[0]) return;
+    if (!task.isCurrent() || !res || res.canceled || !res.assets?.[0]) { task.finish(); return; }
     setUploadingBanner(true);
     try {
-      setBanner(await uploadMediaAsset(res.assets[0], "banner"));
+      const uploaded = await uploadMediaAsset(res.assets[0], "banner", { expectedAccountId: task.accountId, signal: task.controller.signal });
+      if (task.isCurrent()) setBanner(uploaded);
     } catch {
       // Keep the editor open with its previous banner when upload fails.
     } finally {
-      setUploadingBanner(false);
+      if (task.isCurrent()) setUploadingBanner(false);
+      task.finish();
     }
   };
 
@@ -131,6 +143,8 @@ export default function EditProfileScreen({ onClose }) {
       setGenreError(genreSelection.error);
       return;
     }
+    const task = accountTasks.begin(session?.id);
+    if (!task) return;
     const initials = (name.trim() || "?").split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase();
     setSaving(true);
     setSaveError("");
@@ -138,13 +152,15 @@ export default function EditProfileScreen({ onClose }) {
       const result = await Promise.resolve(updateProfile({
         name: name.trim() || session.name, bio: bio.trim(), avatarUri, banner, genres: genreSelection.genres, initials, home,
         ...(handleChanged ? { handle } : {}),
-      }));
+      }, { expectedAccountId: task.accountId, signal: task.controller.signal }));
+      if (!task.isCurrent()) return;
       if (result?.ok !== false) onClose?.();
       else setSaveError(result?.error?.message || result?.error || "Profile could not be saved. Try again.");
     } catch (error) {
-      setSaveError(error?.message || "Profile could not be saved. Try again.");
+      if (task.isCurrent()) setSaveError(error?.message || "Profile could not be saved. Try again.");
     } finally {
-      setSaving(false);
+      if (task.isCurrent()) setSaving(false);
+      task.finish();
     }
   };
 

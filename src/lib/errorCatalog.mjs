@@ -65,6 +65,15 @@ export const ERROR_CATALOG = Object.freeze({
     guidance: "Use the persistent confirmation reminder to send a fresh link, then repeat the action.",
     retryable: false,
   }),
+  "PIT-AUTH-006": Object.freeze({
+    category: "authentication",
+    severity: "warning",
+    title: "Sign-out needs a connection",
+    message: "Your account is hidden on this device. Reconnect so Mshpit can finish signing out securely.",
+    failurePoint: "Session revocation",
+    guidance: "Keep Mshpit open and reconnect. Sign-out will retry automatically.",
+    retryable: true,
+  }),
   "PIT-CHAT-001": Object.freeze({
     category: "permission",
     severity: "warning",

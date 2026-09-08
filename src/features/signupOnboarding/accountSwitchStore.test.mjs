@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { parse } from "@babel/parser";
+import { createAuthTransitions } from "../../domain/authTransitions.mjs";
 
 const source = readFileSync(new URL("../../store.js", import.meta.url), "utf8");
 const ast = parse(source, { sourceType: "module", plugins: ["jsx"] });
@@ -16,8 +17,11 @@ function fixture() {
   const pending = new Promise((done, fail) => { resolve = done; reject = fail; });
   const request = (...args) => { calls.push(args); return pending; };
   const absorb = (...args) => adopted.push(args);
-  const run = new Function("sessionRef", "accountMutationEpochRef", "switchLinkedAccountRequest", "absorbServerUser",
-    `return (${productionCallback});`)(sessionRef, accountMutationEpochRef, request, absorb);
+  let intent = null;
+  const transitions = createAuthTransitions({ read: () => intent, write: (value) => { intent = value; }, revoke: async () => {} });
+  const performAuthentication = (send, accept) => transitions.run({ request: send, accept });
+  const run = new Function("sessionRef", "accountMutationEpochRef", "switchLinkedAccountRequest", "absorbServerUser", "performAuthentication", "logout",
+    `return (${productionCallback});`)(sessionRef, accountMutationEpochRef, request, absorb, performAuthentication, () => transitions.signOut());
   return { run, calls, adopted, resolve, reject, sessionRef, accountMutationEpochRef };
 }
 
@@ -31,6 +35,7 @@ test("account switching never sends a stale or missing source identity", async (
 test("a confirmed exact target is adopted through the existing private-cache reset", async () => {
   const f = fixture(), user = { id: "b", emailVerified: true };
   const pending = f.run("b", { expectedAccountId: "a" });
+  await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(f.calls, [["a", "b"]]);
   f.resolve({ user });
   assert.deepEqual(await pending, { ok: true });
