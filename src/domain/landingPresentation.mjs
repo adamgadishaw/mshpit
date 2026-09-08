@@ -34,6 +34,13 @@ export function landingKicker(compact = false) {
   return compact ? LANDING_IDENTITY_COPY.compactKicker : LANDING_IDENTITY_COPY.kicker;
 }
 
+// Optional discovery rows must not be able to take down the entire app shell.
+export function landingLiveItems(value) {
+  return Array.isArray(value)
+    ? value.filter((event) => event && typeof event === "object" && !Array.isArray(event)).slice(0, 3)
+    : [];
+}
+
 // Keep the hero's layout decisions in one pure model. Width alone is not
 // enough: a landscape laptop window can be wide and still too short for a
 // bottom-anchored pitch once text scaling is applied.

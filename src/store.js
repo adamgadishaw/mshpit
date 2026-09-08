@@ -31,6 +31,7 @@ import {
   recommendationPreferenceMutationKey,
 } from "./domain/recommendationPreferenceMutation.mjs";
 import { createAccountReadCoordinator } from "./domain/accountReadCoordinator.mjs";
+import { hiddenRecommendationIds } from "./domain/startupCacheState.mjs";
 import { commentRequestCacheKey } from "./domain/commentCache.mjs";
 import {
   applyFanClubMembership,
@@ -307,7 +308,9 @@ const broadcastAuthEpoch = () => {
   // tabs cannot trigger each other in a lock/revalidate loop.
   save(AUTH_EPOCH_STORAGE_KEY, { at: Date.now(), nonce: Math.random().toString(36).slice(2) });
 };
-const loadRecommendationHiddenIds = (accountId) => new Set(accountId ? load(recommendationPreferenceStorageKey(accountId), []) : []);
+const loadRecommendationHiddenIds = (accountId) => new Set(hiddenRecommendationIds(
+  accountId ? load(recommendationPreferenceStorageKey(accountId), []) : [],
+));
 const loadScopedFeed = (accountId) => {
   const scoped = load(feedStorageKey(accountId), null);
   if (Array.isArray(scoped)) return sanitizePersistedStoreValue("pit.feed", scoped, ENABLE_DEMO_DATA);
@@ -1051,7 +1054,9 @@ export function StoreProvider({ children }) {
       .then(({ hiddenPostIds }) => {
         if (!controller.signal.aborted && sessionRef.current?.id === accountId
           && recommendationPreferenceRevisionRef.current === preferenceRevision) {
-          const ids = (hiddenPostIds || []).filter((id) => typeof id === "string");
+          // An incomplete response must not erase a valid device preference.
+          if (!Array.isArray(hiddenPostIds)) return;
+          const ids = hiddenRecommendationIds(hiddenPostIds);
           save(recommendationPreferenceStorageKey(accountId), ids);
           setRecommendationHiddenIds(new Set(ids));
         }

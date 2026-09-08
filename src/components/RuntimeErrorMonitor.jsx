@@ -12,7 +12,7 @@ function safelyCapture(error, { code, context, kind, source }) {
       source,
       toast: false,
     });
-    void reportClientCrash({ kind });
+    void reportClientCrash({ kind, error });
   } catch {
     // A monitor must never become a second crash.
   }

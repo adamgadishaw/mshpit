@@ -12,12 +12,15 @@ import { reportClientCrash } from "../lib/clientCrashReporter";
 export default class ErrorBoundary extends Component {
   state = { error: null, appError: null, resetArmed: false };
   resetTimer = null;
+  crashSequence = 0;
+  active = true;
 
   static getDerivedStateFromError(error) {
     return { error };
   }
 
   componentDidCatch(error, info) {
+    const sequence = ++this.crashSequence;
     if (__DEV__) console.error("[pit] uncaught render error:", error, info?.componentStack);
     const appError = captureAppError(error, {
       code: "PIT-APP-001",
@@ -25,15 +28,27 @@ export default class ErrorBoundary extends Component {
       source: "react-boundary",
       toast: false,
     });
-    void reportClientCrash({ kind: "render" });
     this.setState({ appError });
+    // Use the receipt for this exact crash, not an unrelated local reference.
+    // A late report must never repaint a retried or unmounted boundary.
+    void reportClientCrash({ kind: "render", error }).then((receipt) => {
+      if (!this.active || sequence !== this.crashSequence || !receipt?.requestId) return;
+      this.setState((current) => current.error === error
+        ? { appError: { ...appError, requestId: receipt.requestId } }
+        : null);
+    });
   }
 
   componentWillUnmount() {
+    this.active = false;
+    this.crashSequence += 1;
     if (this.resetTimer) clearTimeout(this.resetTimer);
   }
 
-  retry = () => this.setState({ error: null, appError: null, resetArmed: false });
+  retry = () => {
+    this.crashSequence += 1;
+    this.setState({ error: null, appError: null, resetArmed: false });
+  };
 
   reload = () => {
     if (Platform.OS === "web" && typeof window !== "undefined") window.location.reload();

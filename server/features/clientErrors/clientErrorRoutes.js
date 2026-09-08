@@ -1,4 +1,5 @@
 import { normalizeClientCrashReport } from "../../../src/domain/clientCrashReport.mjs";
+import { clientCrashCause, resolveClientCrashLocation } from "./clientCrashLocation.js";
 
 const MINUTE_MS = 60 * 1000;
 const DAY_MS = 24 * 60 * MINUTE_MS;
@@ -28,6 +29,7 @@ export function clientErrorRoutes({
   onRecorded = () => {},
   rateLimit,
   recordError,
+  resolveCrashLocation = resolveClientCrashLocation,
 }) {
   if (typeof ApiError !== "function" || typeof rateLimit !== "function" || typeof recordError !== "function") {
     throw new TypeError("Client error routes require complete boundary dependencies");
@@ -50,7 +52,7 @@ export function clientErrorRoutes({
         status: 0,
         method: "POST",
         route: "/client/" + report.surface,
-        cause: CAUSES[report.kind][report.platform],
+        cause: clientCrashCause(CAUSES[report.kind][report.platform], report, resolveCrashLocation),
         requestId: ctx.requestId,
       });
       if (fingerprint) {

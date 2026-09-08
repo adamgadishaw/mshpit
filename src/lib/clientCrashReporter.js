@@ -1,8 +1,10 @@
 import { Platform } from "react-native";
-import { clientErrorSurface, normalizeClientCrashReport } from "../domain/clientCrashReport.mjs";
+import { clientCrashDiagnostic, clientCrashRequestId, clientErrorSurface, normalizeClientCrashReport } from "../domain/clientCrashReport.mjs";
 import { apiUrl } from "./api";
 
 const DEDUPE_MS = 30_000;
+const REQUEST_TIMEOUT_MS = 5_000;
+const MAX_RECENT_REPORTS = 128;
 const recentlyReported = new Map();
 
 const currentSurface = () => {
@@ -13,14 +15,19 @@ const currentSurface = () => {
 // This is deliberately not the ordinary authenticated API client. Crash
 // telemetry must not wait on account hydration, create a toast, send cookies,
 // or recursively diagnose its own failure.
-export async function reportClientCrash({ kind, surface = currentSurface(), platform = Platform.OS } = {}) {
-  const report = normalizeClientCrashReport({ kind, surface, platform });
+export async function reportClientCrash({ kind, error, surface = currentSurface(), platform = Platform.OS } = {}) {
+  const origin = platform === "web" && typeof window !== "undefined" ? window.location?.origin : undefined;
+  const report = normalizeClientCrashReport({ kind, surface, platform, ...clientCrashDiagnostic(error, { origin }) });
   if (!report) return false;
   if (typeof __DEV__ !== "undefined" && __DEV__) return false;
 
   const now = Date.now();
-  const key = [report.kind, report.platform, report.surface].join(":");
+  for (const [previousKey, reportedAt] of recentlyReported) {
+    if (now - reportedAt >= DEDUPE_MS) recentlyReported.delete(previousKey);
+  }
+  const key = JSON.stringify(report);
   if (now - (recentlyReported.get(key) || 0) < DEDUPE_MS) return false;
+  if (recentlyReported.size >= MAX_RECENT_REPORTS) recentlyReported.delete(recentlyReported.keys().next().value);
   recentlyReported.set(key, now);
 
   const options = {
@@ -32,6 +39,8 @@ export async function reportClientCrash({ kind, surface = currentSurface(), plat
       kind: report.kind,
       platform: report.platform,
       surface: report.surface,
+      ...(report.errorType ? { errorType: report.errorType, diagnosis: report.diagnosis } : {}),
+      ...(report.location ? { location: report.location } : {}),
     }),
   };
   if (Platform.OS === "web") {
@@ -39,11 +48,22 @@ export async function reportClientCrash({ kind, surface = currentSurface(), plat
     options.referrerPolicy = "no-referrer";
   }
 
+  let timeout;
   try {
-    const response = await fetch(apiUrl("/api/client-errors"), options);
-    return response.ok;
+    const controller = new AbortController();
+    options.signal = controller.signal;
+    // Bound completion even if a platform fetch does not settle after abort.
+    const deadline = new Promise((resolve) => {
+      timeout = setTimeout(() => { controller.abort(); resolve(false); }, REQUEST_TIMEOUT_MS);
+    });
+    const request = fetch(apiUrl("/api/client-errors"), options).then((response) => response.ok
+      ? { requestId: clientCrashRequestId(response.headers?.get?.("X-Request-Id")) }
+      : false);
+    return await Promise.race([request, deadline]);
   } catch {
     return false;
+  } finally {
+    clearTimeout(timeout);
   }
 }
 

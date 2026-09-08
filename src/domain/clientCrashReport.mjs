@@ -5,6 +5,15 @@ const CRASH_CODES = Object.freeze({
 });
 
 const PLATFORMS = new Set(["web", "ios", "android", "unknown"]);
+const ERROR_DIAGNOSES = Object.freeze({
+  Error: "unknown", TypeError: "type", ReferenceError: "reference", RangeError: "range",
+  SyntaxError: "syntax", URIError: "uri", EvalError: "eval", AggregateError: "aggregate",
+  AbortError: "abort", Unknown: "unknown",
+});
+const REACT_DIAGNOSES = new Set(["react130", "react185", "react301", "react310", "react321"]);
+export const CLIENT_WEB_ASSET_RE = /^[A-Za-z_][A-Za-z0-9_-]{0,63}-[a-f0-9]{32}\.js$/;
+const MAX_COORDINATE = 9_999_999;
+const REQUEST_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SURFACES = new Set([
   "landing",
   "artist",
@@ -60,7 +69,60 @@ export function normalizeClientCrashReport(value) {
   const rawSurface = typeof value.surface === "string" ? value.surface.trim().toLowerCase() : "";
   const platform = PLATFORMS.has(rawPlatform) ? rawPlatform : "unknown";
   const surface = SURFACES.has(rawSurface) ? rawSurface : "app";
-  return Object.freeze({ kind, code: CRASH_CODES[kind], platform, surface });
+  const report = { kind, code: CRASH_CODES[kind], platform, surface };
+  if (typeof value.errorType === "string" && Object.hasOwn(ERROR_DIAGNOSES, value.errorType)) {
+    report.errorType = value.errorType;
+    report.diagnosis = REACT_DIAGNOSES.has(value.diagnosis)
+      ? value.diagnosis : ERROR_DIAGNOSES[value.errorType];
+  }
+  const location = platform === "web" ? normalizeClientCrashLocation(value.location) : null;
+  if (location) report.location = location;
+  return Object.freeze(report);
+}
+
+export function normalizeClientCrashLocation(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  if (typeof value.asset !== "string" || !CLIENT_WEB_ASSET_RE.test(value.asset)) return null;
+  if (![value.line, value.column].every((coordinate) => Number.isInteger(coordinate)
+    && coordinate > 0 && coordinate <= MAX_COORDINATE)) return null;
+  return Object.freeze({ asset: value.asset, line: value.line, column: value.column });
+}
+
+export function clientCrashRequestId(value) {
+  return typeof value === "string" && REQUEST_ID_RE.test(value) ? value : null;
+}
+
+function errorField(error, field) {
+  try { const value = error?.[field]; return typeof value === "string" ? value : ""; }
+  catch { return ""; }
+}
+
+// Inspect locally, then discard the message, raw stack, function names and URLs.
+// React markers are a finite catalogue, never arbitrary numbers from a message.
+export function clientCrashDiagnostic(error, { origin } = {}) {
+  if (error == null) return {};
+  const name = errorField(error, "name");
+  const errorType = Object.hasOwn(ERROR_DIAGNOSES, name) ? name : "Unknown";
+  const marker = /^Minified React error #(130|185|301|310|321);/.exec(errorField(error, "message").slice(0, 80));
+  const diagnostic = { errorType, diagnosis: marker ? `react${marker[1]}` : ERROR_DIAGNOSES[errorType] };
+  if (typeof origin !== "string" || !/^https?:\/\//.test(origin)) return diagnostic;
+  const frames = errorField(error, "stack").slice(0, 16_384).split("\n").slice(0, 24);
+  for (const frame of frames) {
+    if (!/^\s*at\s+|^[^@\s]*@https?:\/\//.test(frame)) continue;
+    const match = /(?:\s|\(|@)(https?:\/\/[^\s)]+):(\d{1,7}):(\d{1,7})\)?\s*$/.exec(frame);
+    if (!match) continue;
+    try {
+      const url = new URL(match[1]);
+      if (url.origin !== origin || url.username || url.password || url.search || url.hash) continue;
+      const prefix = "/_expo/static/js/web/";
+      if (!url.pathname.startsWith(prefix)) continue;
+      const location = normalizeClientCrashLocation({
+        asset: url.pathname.slice(prefix.length), line: Number(match[2]), column: Number(match[3]),
+      });
+      if (location) return { ...diagnostic, location };
+    } catch { /* Malformed or non-first-party frames are not diagnostic locations. */ }
+  }
+  return diagnostic;
 }
 
 export const CLIENT_CRASH_KINDS = Object.freeze(Object.keys(CRASH_CODES));

@@ -10,7 +10,7 @@ class TestApiError extends Error {
   }
 }
 
-function fixture() {
+function fixture(options = {}) {
   const recorded = [];
   const limits = [];
   let alerts = 0;
@@ -22,6 +22,7 @@ function fixture() {
       return "fingerprint";
     },
     onRecorded: () => { alerts += 1; },
+    ...options,
   });
   const headers = {};
   return {
@@ -71,4 +72,28 @@ test("unhandled promises remain serious without being mislabeled fatal", () => {
   f.handler({ ...f.ctx, body: { kind: "promise", platform: "web", surface: "feed" } });
   assert.equal(f.recorded[0].level, "error");
   assert.equal(f.recorded[0].code, "PIT-APP-003");
+});
+
+test("diagnostic reports preserve finite classifications and only server-approved locations", () => {
+  const f = fixture({ resolveCrashLocation: () => "b123.1.2" });
+  f.handler({ ...f.ctx, body: {
+    kind: "render", platform: "web", surface: "landing", errorType: "ReferenceError", diagnosis: "reference",
+    location: { asset: "index-0123456789abcdef0123456789abcdef.js", line: 1, column: 2 },
+    message: "private", stack: "private", requestId: "private", accountId: "private",
+  } });
+  assert.equal(f.recorded[0].cause, "RenderError.Web.Ref/b123.1.2");
+  assert.equal(f.recorded[0].requestId, f.ctx.requestId);
+  assert.equal(JSON.stringify(f.recorded).includes("private"), false);
+  assert.deepEqual(f.handler(f.ctx), { ok: true });
+});
+
+test("spoofed classes, diagnoses and absent build assets do not enter the operational record", () => {
+  const f = fixture();
+  f.handler({ ...f.ctx, body: {
+    kind: "render", platform: "web", surface: "landing", errorType: "PrivateUserError", diagnosis: "private",
+    location: { asset: "index-00000000000000000000000000000000.js", line: 1, column: 2 },
+  } });
+  assert.equal(f.recorded[0].cause, "RenderError.Web");
+  f.handler({ ...f.ctx, body: { kind: "render", platform: "web", errorType: "Error", diagnosis: "react310" } });
+  assert.equal(f.recorded[1].cause, "RenderError.Web.Error.react310");
 });

@@ -11,6 +11,7 @@ import {
   LANDING_IDENTITY_COPY,
   LANDING_BROWSE_LINKS,
   landingKicker,
+  landingLiveItems,
   landingLayoutMode,
   landingProofItems,
 } from "../domain/landingPresentation.mjs";
@@ -239,9 +240,7 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse, onBrowseCat
   // Discovery is already loaded once by StoreProvider. Reusing that bounded,
   // public projection avoids a second event-catalogue query during startup.
   const landingLiveEvents = useMemo(
-    () => Array.isArray(discoverySidebar?.upcomingEvents)
-      ? discoverySidebar.upcomingEvents.slice(0, 3)
-      : [],
+    () => landingLiveItems(discoverySidebar?.upcomingEvents),
     [discoverySidebar?.upcomingEvents],
   );
   const hasLandingLive = landingLiveEvents.length > 0;

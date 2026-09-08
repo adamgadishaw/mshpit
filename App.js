@@ -124,6 +124,7 @@ import { readSensitiveFragmentToken, readSensitiveLinkToken, scrubSensitiveLinkT
 import { verifiedMutationDecision } from "./src/domain/emailVerificationUx.mjs";
 import { needsSignupOnboarding } from "./src/domain/signupOnboarding.mjs";
 import { replaceNavigationFrame } from "./src/domain/navigationStack.mjs";
+import { restoredMainTab } from "./src/domain/startupCacheState.mjs";
 import { desktopRightRailLayout } from "./src/domain/desktopRailLayout.mjs";
 import { filterDiscoverSceneRows } from "./src/domain/discoverScene.mjs";
 import { calendarFocusForPost } from "./src/domain/calendarShows.mjs";
@@ -223,7 +224,7 @@ function Root() {
   };
 
   // Restore the last tab on reload so a refresh doesn't dump you back on the feed.
-  const [tab, setTab] = useState(() => (web ? load("pit.tab", "feed") : "feed"));
+  const [tab, setTab] = useState(() => restoredMainTab(web ? load("pit.tab", "feed") : "feed"));
   // Navigation is a STACK of frames. Each frame is one overlay screen, e.g.
   // { artistName } or { profileId }; the top frame is what's showing. An empty
   // base frame ({}) means "just the tab screens." Opening a screen PUSHES a
