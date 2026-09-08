@@ -1,8 +1,35 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { concertMemoryShareText, selectConcertMemories } from "./concertMemories.mjs";
+import { concertMemoryShareText, selectConcertMemories, selectedConcertMemoryForAccount } from "./concertMemories.mjs";
 
 const NOW = Date.UTC(2026, 7, 21, 12);
+
+test("memory selection is empty while signed out or account hydration is incomplete", () => {
+  for (const accountId of [undefined, null, "", " ", 42, {}]) {
+    for (const selection of [undefined, null, {}, { accountId, memory: { id: "unowned" } }]) {
+      assert.equal(selectedConcertMemoryForAccount(selection, accountId), null);
+    }
+  }
+});
+
+test("memory selection only reveals the current account's memory", () => {
+  const memory = { id: "show-memory", log: { userId: "account-a" } };
+  const selection = { accountId: "account-a", memory };
+  assert.equal(selectedConcertMemoryForAccount(selection, "account-a"), memory);
+  for (const accountId of ["account-b", undefined, null, ""]) {
+    assert.equal(selectedConcertMemoryForAccount(selection, accountId), null);
+  }
+  assert.equal(selectedConcertMemoryForAccount(null, "account-a"), null);
+});
+
+test("malformed memory selections do not become modal or gallery input", () => {
+  for (const selection of [42, "memory", [], {}, { accountId: "account-a" }]) {
+    assert.equal(selectedConcertMemoryForAccount(selection, "account-a"), null);
+  }
+  for (const memory of [undefined, null, 42, "memory", []]) {
+    assert.equal(selectedConcertMemoryForAccount({ accountId: "account-a", memory }, "account-a"), null);
+  }
+});
 
 test("concert memories select a nearby anniversary before a deterministic rediscovery", () => {
   const logs = [

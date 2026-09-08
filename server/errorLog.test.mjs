@@ -24,6 +24,7 @@ after(() => {
 beforeEach(() => {
   db.exec("DELETE FROM error_events");
   db.exec("DELETE FROM email_log");
+  db.exec("UPDATE error_alert_delivery SET last_sent_at=0,pending_key=NULL,pending_payload=NULL WHERE singleton=1");
   delete process.env.ERROR_ALERTS_ENABLED;
   delete process.env.ERROR_ALERT_COOLDOWN_MIN;
   delete process.env.ALERT_EMAIL;

@@ -3,6 +3,15 @@ const DATE_PARTS = /^(\d{4})\D{1,3}(\d{1,2})\D{1,3}(\d{1,2})$/;
 
 const text = (value) => typeof value === "string" ? value.trim() : "";
 
+// No selection belongs to a signed-out account. In particular, two missing
+// IDs must not compare equal and then dereference an absent selection.
+export function selectedConcertMemoryForAccount(selection, accountId) {
+  if (!text(accountId) || !selection || typeof selection !== "object"
+    || Array.isArray(selection) || selection.accountId !== accountId) return null;
+  const memory = selection.memory;
+  return memory && typeof memory === "object" && !Array.isArray(memory) ? memory : null;
+}
+
 function clockMs(value) {
   const parsed = value instanceof Date ? value.getTime() : Number(value);
   return Number.isFinite(parsed) ? parsed : Date.now();

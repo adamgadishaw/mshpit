@@ -9,7 +9,7 @@ import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import { BadgeRow } from "../components/Badge";
 import { useStore, isStaff, isMod } from "../store";
 import { formatDate } from "../domain/dates.mjs";
-import { concertMemoryShareText, selectConcertMemories } from "../domain/concertMemories.mjs";
+import { concertMemoryShareText, selectConcertMemories, selectedConcertMemoryForAccount } from "../domain/concertMemories.mjs";
 import { concertMemoryGallery } from "../domain/concertMemoryGallery.mjs";
 import { profileManagementAction } from "../domain/artistWorkspace.mjs";
 import { selectConcertReviews } from "../domain/profileTimeline.mjs";
@@ -67,7 +67,7 @@ export default function YouScreen({ onLogin, onLogout, onManageProfile, onSettin
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState(false);
   const refreshControllerRef = useRef(null);
-  const selectedMemory = memorySelection?.accountId === session?.id ? memorySelection.memory : null;
+  const selectedMemory = selectedConcertMemoryForAccount(memorySelection, session?.id);
   const selectedMemoryLog = selectedMemory?.log || null;
   const selectedArchiveShowKey = selectedMemoryLog?.archiveShowKey || null;
   const { resource: selectedMemoryReviews } = useArtistEventReviews({

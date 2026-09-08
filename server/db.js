@@ -31,6 +31,7 @@ import { ensureLoungeSchema } from "./features/lounges/loungeSchema.js";
 import { ensureCitySchema } from "./features/cities/citySchema.js";
 import { ensureSharedEmailSchema } from "./features/accountOnboarding/sharedEmailSchema.js";
 import { ensureAccountLifecycleSchema } from "./features/accountLifecycle/accountLifecycleSchema.js";
+import { ensureErrorAlertSchema } from "./errorAlertDelivery.js";
 
 export const artistSearchKey = (value) => String(value || "")
   .normalize("NFKD")
@@ -1939,6 +1940,7 @@ try {
   // migration conservative; staff can explicitly review and resave trusted
   // educational copy, which records durable provenance from that point on.
   ensurePostMediaCapacity(db);
+  ensureErrorAlertSchema(db);
   ensureShowSchema(db);
   ensureCitySchema(db);
   ensureLoungeSchema(db);

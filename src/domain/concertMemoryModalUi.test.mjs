@@ -26,7 +26,7 @@ test("concert memories remain parseable as an in-context accessible sheet", () =
 
 test("opening a memory stays on You until the member explicitly asks for the full show", () => {
   assert.match(you, /const \[memorySelection, setMemorySelection\] = useState\(null\)/);
-  assert.match(you, /memorySelection\?\.accountId === session\?\.id \? memorySelection\.memory : null/);
+  assert.match(you, /selectedConcertMemoryForAccount\(memorySelection, session\?\.id\)/);
   assert.match(you, /onPress=\{\(\) => setMemorySelection\(\{ accountId: session\.id, memory \}\)\}/);
   assert.doesNotMatch(you, /onPress=\{\(\) => onOpen\?\.\(memory\.log\)\}/);
   assert.match(you, /onOpenFull=\{onOpen \? openMemoryBreakdown : null\}/);

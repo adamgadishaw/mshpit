@@ -123,6 +123,46 @@ causes locally and verify their fixes separately. Improved reporting will make a
 future recurrence more identifiable; it cannot retroactively reconstruct the
 original incident.
 
+## Duplicate-digest correction
+
+The previous digest checkpoint was rounded down to an hourly occurrence bucket.
+Consequently, a new error could trigger an email that repeated an already-reported
+older crash, with the same request UUID and unchanged `1x` count. In-memory
+checkpoint loss on process restart could also replay recent records. Seeing that
+old reference again was not proof of another occurrence or increased traffic.
+
+Delivery now uses additive, private bookkeeping tables:
+
+- A per-fingerprint acknowledged count separates historical volume from newly
+  reportable occurrences. Only the captured counts advance after the mail service
+  confirms successful delivery. A new occurrence arriving during delivery remains
+  pending, including when it shares the same fingerprint.
+- A successful-send timestamp preserves the cooldown across process restarts.
+  Manual force bypasses cooldown only; it cannot resend acknowledged occurrences.
+- A bounded frozen batch contains at most 20 rows of the existing safe diagnostic
+  fields and counts. The same batch and content-derived provider idempotency key
+  survive retries and restarts, even if additional errors arrive. Skipped or failed
+  sends do not acknowledge anything. A local checkpoint failure after provider
+  success also keeps that stable retry batch.
+
+On the first upgraded boot, older ledger history is used as the baseline and is
+not replayed. Recent serious faults within the configured initial cooldown
+lookback are conservatively retained for an **Initial catch-up** digest because
+legacy delivery history cannot establish which were successfully reported. Their
+counts use the retained hourly buckets, so the boundary bucket can include older
+occurrences; if recent legacy rows have no buckets, their unknown counts are kept
+rather than silently acknowledged. This one-time catch-up can therefore repeat a
+legacy alert. It does not erase the ledger or label an unknown recent fault as
+successfully delivered. Subsequent acknowledged counts do not replay.
+
+This correction does not add a continuous retry worker. The existing scheduler
+drains when another alert trigger occurs; a trigger rejected during cooldown does
+not automatically schedule a wakeup at cooldown expiry. Pending counts remain
+available for a later trigger or an authorized manual test, subject to the existing
+ledger retention policy. Provider idempotency also has the provider's own retention
+and delivery guarantees; the application cannot promise indefinite exactly-once
+email across an arbitrarily long uncertain provider outage.
+
 ## Separately reproduced startup defects fixed in this release
 
 - A saved `pit.feed.preferences.v1.<accountId>` value of `{}` or `42` caused

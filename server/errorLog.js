@@ -17,7 +17,8 @@
 //      entry point swallows its own failure, and alerts are a rate-limited
 //      digest rather than one mail per error.
 import { createHash } from "node:crypto";
-import { errorStmts } from "./db.js";
+import { db, errorStmts } from "./db.js";
+import { alertCooldownMs, createErrorAlertDelivery } from "./errorAlertDelivery.js";
 import { cleanEmail, isEmail } from "../src/domain/validation.mjs";
 
 const RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
@@ -28,14 +29,14 @@ const hourStart = (value) => Math.floor(Number(value) / HOUR_MS) * HOUR_MS;
 // A digest, not a notification per error. During an outage the difference is
 // one email versus thousands, and thousands means the alert gets muted and the
 // next real incident is missed.
-const DEFAULT_COOLDOWN_MS = 30 * 60 * 1000;
+const alertDelivery = createErrorAlertDelivery(db);
+export { alertCooldownMs };
 
 // Re-entrancy guard. If sending an alert fails and that failure were recorded as
 // an error, it could trigger another alert. Nothing recorded while this is set
 // can schedule mail.
 let alerting = false;
 let lastAlertAt = 0;
-let alertedThrough = 0;
 
 // Each field is matched against a SHAPE and replaced wholesale when it does not
 // fit, rather than filtered character by character. Filtering is the wrong tool:
@@ -58,11 +59,6 @@ const CODE_RE = /^[A-Za-z][A-Za-z0-9_-]{0,38}$/;
 const ROUTE_RE = /^[A-Za-z0-9/:._-]{1,80}$/;
 const METHOD_RE = /^[A-Z]{3,7}$/;
 const REQUEST_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-export function alertCooldownMs(env = process.env) {
-  const raw = Number(env?.ERROR_ALERT_COOLDOWN_MIN);
-  return Number.isFinite(raw) && raw > 0 ? raw * 60 * 1000 : DEFAULT_COOLDOWN_MS;
-}
 
 export function alertsEnabled(env = process.env) {
   const raw = String(env?.ERROR_ALERTS_ENABLED ?? "").trim().toLowerCase();
@@ -154,13 +150,12 @@ export async function maybeAlert({ now = Date.now(), force = false } = {}) {
   if (!alertsEnabled()) return { sent: false, reason: "disabled" };
   if (!force && now - lastAlertAt < alertCooldownMs()) return { sent: false, reason: "cooling-down" };
 
-  const windowStart = alertedThrough || now - alertCooldownMs();
-  let rows;
-  try { rows = errorStmts.sinceGeneral.all(hourStart(windowStart), 20); }
+  let delivery;
+  try { delivery = alertDelivery.nextBatch({ now, force }); }
   catch { return { sent: false, reason: "unavailable" }; }
-  // Only server faults page anybody. A 404 or a validation error is not news.
-  const serious = rows.filter((r) => r.level === "fatal" || r.status === 0 || r.status >= 500);
-  if (!serious.length) return { sent: false, reason: "nothing-serious" };
+  if (!delivery.batch) return { sent: false, reason: delivery.reason };
+  const { batch } = delivery;
+  const serious = batch.rows;
 
   alerting = true;
   try {
@@ -179,14 +174,17 @@ export async function maybeAlert({ now = Date.now(), force = false } = {}) {
       to: recipient,
       vars: {
         name: "there",
-        summary: `${total} error${total === 1 ? "" : "s"} across ${serious.length} kind${serious.length === 1 ? "" : "s"}`,
+        summary: `${batch.initialCatchUp ? "Initial catch-up: " : ""}${total} error${total === 1 ? "" : "s"} across ${serious.length} kind${serious.length === 1 ? "" : "s"}`,
         detail: lines,
       },
-      // One alert per cooldown window, so a retry cannot double-send.
-      idempotencyKey: `error-alert-${Math.floor(now / alertCooldownMs())}`,
+      // A durable frozen batch keeps this stable even if the process restarts
+      // or more occurrences arrive before an uncertain delivery is retried.
+      idempotencyKey: batch.key,
     });
     lastAlertAt = now;
-    alertedThrough = now;
+    // A skipped/failed provider attempt must not consume pending occurrences.
+    // Only the captured counts advance; arrivals during delivery remain queued.
+    if (result.sent) alertDelivery.acknowledge(batch.key, now);
     return { sent: !!result.sent, reason: result.reason ?? null, kinds: serious.length, occurrences: total };
   } catch {
     // A failed alert must not itself become a recorded error, or the two would
@@ -198,9 +196,8 @@ export async function maybeAlert({ now = Date.now(), force = false } = {}) {
   }
 }
 
-/** Test seam: the module keeps alert state in memory by design. */
+/** Simulate a process restart: clear only local latches, never durable delivery acknowledgements. */
 export function resetAlertStateForTests() {
   alerting = false;
   lastAlertAt = 0;
-  alertedThrough = 0;
 }
