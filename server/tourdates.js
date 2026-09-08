@@ -984,6 +984,33 @@ async function fetchDates(name, { signal } = {}) {
   return { ...result, rows: dedupeTourProviderRows(result.rows) };
 }
 
+// A stable provider venue ID permits renames. Without IDs on both snapshots,
+// an explicit name/location conflict is enough to stop inheriting metadata.
+// These are fixed schema fields, never caller-supplied SQL identifiers.
+const PROVIDER_VENUE_FALLBACK_CONFLICT_SQL = [
+  "venue", "place", "venue_city", "venue_region", "venue_country_code", "venue_country",
+].map((field) => `(NULLIF(TRIM(excluded.${field}),'') IS NOT NULL
+  AND NULLIF(TRIM(tour_dates.${field}),'') IS NOT NULL
+  AND LOWER(TRIM(excluded.${field})) IS NOT LOWER(TRIM(tour_dates.${field})))`).join(" OR ");
+
+const PROVIDER_VENUE_IDENTITY_CHANGED_SQL = `(
+  LOWER(TRIM(COALESCE(excluded.source,''))) IS NOT LOWER(TRIM(COALESCE(tour_dates.source,'')))
+  OR CASE WHEN NULLIF(TRIM(excluded.venue_provider_id),'') IS NOT NULL
+    AND NULLIF(TRIM(tour_dates.venue_provider_id),'') IS NOT NULL
+    THEN TRIM(excluded.venue_provider_id) IS NOT TRIM(tour_dates.venue_provider_id)
+    ELSE (${PROVIDER_VENUE_FALLBACK_CONFLICT_SQL}) END
+)`;
+
+// Keep venue-dependent facts from one snapshot. A moved event may retain its
+// stable event ID/status, but not an old address, title or local clock merely
+// because the replacement venue's provider response omitted that field.
+const PROVIDER_VENUE_SNAPSHOT_ASSIGNMENTS_SQL = [
+  "event_name", "start_date_time", "start_local_time", "access_start_date_time", "access_start_approximate",
+  "event_timezone", "venue_provider_id", "venue_address_line1", "venue_address_line2", "venue_city",
+  "venue_region", "venue_postal_code", "venue_country_code", "venue_country",
+].map((field) => `${field}=CASE WHEN ${PROVIDER_VENUE_IDENTITY_CHANGED_SQL}
+  THEN excluded.${field} ELSE COALESCE(excluded.${field},tour_dates.${field}) END`).join(",\n    ");
+
 const PROVIDER_TOUR_DATE_UPSERT_SQL = `
   INSERT INTO tour_dates (
     id,artist,artist_key,venue,place,lat,lng,date,ticket_url,sold_out,source,updated_at,
@@ -1012,6 +1039,7 @@ const PROVIDER_TOUR_DATE_UPSERT_SQL = `
       OR excluded.lng IS NOT tour_dates.lng OR excluded.date IS NOT tour_dates.date
       OR excluded.ticket_url IS NOT tour_dates.ticket_url OR excluded.sold_out IS NOT tour_dates.sold_out
       OR excluded.source IS NOT tour_dates.source OR excluded.provider_active IS NOT tour_dates.provider_active
+      OR ${PROVIDER_VENUE_IDENTITY_CHANGED_SQL}
       OR COALESCE(excluded.provider_event_id,tour_dates.provider_event_id) IS NOT tour_dates.provider_event_id
       OR COALESCE(excluded.event_name,tour_dates.event_name) IS NOT tour_dates.event_name
       OR (CASE WHEN excluded.event_name IS NOT NULL THEN excluded.tour_name ELSE tour_dates.tour_name END) IS NOT tour_dates.tour_name
@@ -1040,22 +1068,10 @@ const PROVIDER_TOUR_DATE_UPSERT_SQL = `
       OR excluded.event_image_height IS NOT tour_dates.event_image_height
       THEN excluded.updated_at ELSE tour_dates.updated_at END,
     provider_event_id=COALESCE(excluded.provider_event_id,tour_dates.provider_event_id),
-    event_name=COALESCE(excluded.event_name,tour_dates.event_name),
-    tour_name=CASE WHEN excluded.event_name IS NOT NULL THEN excluded.tour_name ELSE tour_dates.tour_name END,
-    start_date_time=COALESCE(excluded.start_date_time,tour_dates.start_date_time),
-    start_local_time=COALESCE(excluded.start_local_time,tour_dates.start_local_time),
-    access_start_date_time=COALESCE(excluded.access_start_date_time,tour_dates.access_start_date_time),
-    access_start_approximate=COALESCE(excluded.access_start_approximate,tour_dates.access_start_approximate),
-    event_timezone=COALESCE(excluded.event_timezone,tour_dates.event_timezone),
+    ${PROVIDER_VENUE_SNAPSHOT_ASSIGNMENTS_SQL},
+    tour_name=CASE WHEN ${PROVIDER_VENUE_IDENTITY_CHANGED_SQL} OR excluded.event_name IS NOT NULL
+      THEN excluded.tour_name ELSE tour_dates.tour_name END,
     event_status=COALESCE(excluded.event_status,tour_dates.event_status),
-    venue_provider_id=COALESCE(excluded.venue_provider_id,tour_dates.venue_provider_id),
-    venue_address_line1=COALESCE(excluded.venue_address_line1,tour_dates.venue_address_line1),
-    venue_address_line2=COALESCE(excluded.venue_address_line2,tour_dates.venue_address_line2),
-    venue_city=COALESCE(excluded.venue_city,tour_dates.venue_city),
-    venue_region=COALESCE(excluded.venue_region,tour_dates.venue_region),
-    venue_postal_code=COALESCE(excluded.venue_postal_code,tour_dates.venue_postal_code),
-    venue_country_code=COALESCE(excluded.venue_country_code,tour_dates.venue_country_code),
-    venue_country=COALESCE(excluded.venue_country,tour_dates.venue_country),
     event_kind=excluded.event_kind,music_qualified=excluded.music_qualified,
     music_evidence=excluded.music_evidence,billed_artists=excluded.billed_artists,
     event_end_date=excluded.event_end_date,

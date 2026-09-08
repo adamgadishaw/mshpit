@@ -19,6 +19,8 @@ const text = (value) => String(value ?? "").trim();
 export function publicFramePath(frame, { resolveArtistMeta, resolveUser } = {}) {
   if (!frame) return null;
   if (frame.cityGuide) return frame.cityGuide.directory ? "/cities" : cityPath(frame.cityGuide);
+  if (frame.venues) return "/venues";
+  if (frame.auth) return frame.authMode === "signup" ? "/signup" : "/login";
   if (frame.directory === "artists" || frame.directory === "events") return `/${frame.directory}`;
   if (frame.artistArchive?.name) {
     const publicSlug = text(
@@ -42,6 +44,35 @@ export function publicFramePath(frame, { resolveArtistMeta, resolveUser } = {}) 
     return user?.handle ? profilePath(user.handle) : null;
   }
   return null;
+}
+
+// These public entry pages need no entity lookup. Keep reload, new-tab links,
+// and in-app navigation on the same destination rather than the default feed.
+export function publicEntryFrame(pathname) {
+  if (pathname === "/venues") return { venues: true };
+  if (pathname === "/signup") return { auth: true, authMode: "signup" };
+  if (pathname === "/login") return { auth: true, authMode: "login" };
+  return null;
+}
+
+// A direct entry has no in-app parent. Give its Close/Back action a real root
+// URL, while leaving the existing history chain untouched for in-app auth.
+export function hydratePublicEntryHistory(history, pathname) {
+  if (!publicEntryFrame(pathname)) return false;
+  history.replaceState({ pit: "root" }, "", "/");
+  history.pushState({ pit: "nav" }, "", pathname);
+  return true;
+}
+
+export function updatedAuthFrame(frame, mode) {
+  if (!frame?.auth || !["login", "signup", "forgot"].includes(mode)) return null;
+  return { ...frame, authMode: mode };
+}
+
+export function publicDirectoryProgramme(frame) {
+  if (frame?.directory === "artists") return "artists";
+  if (frame?.directory === "events") return "shows";
+  return undefined;
 }
 
 // Collection documents are server-rendered separately from entity documents.

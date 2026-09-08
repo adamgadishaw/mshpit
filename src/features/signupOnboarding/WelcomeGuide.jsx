@@ -8,9 +8,12 @@ const MOVES = [
   { destination: "review", icon: "camera", title: "Remember the night", detail: "Rate a concert, share your photos, and tag who came with you." },
 ];
 
-export default function WelcomeGuide({ selected, onChoose, busy = false }) {
+export default function WelcomeGuide({ selected, onChoose, busy = false, includeExplore = false }) {
+  const moves = includeExplore
+    ? [{ destination: "feed", icon: "discover", title: "Just explore", detail: "Back to browsing. No need to pick a show, follow anyone or post." }, ...MOVES]
+    : MOVES;
   return <View style={styles.moves} accessibilityRole={selected === undefined ? undefined : "radiogroup"} accessibilityLabel={selected === undefined ? undefined : "Choose where to start"}>
-    {MOVES.map(({ destination, icon, title, detail }, index) => <Pressable
+    {moves.map(({ destination, icon, title, detail }, index) => <Pressable
       key={destination} onPress={() => onChoose(destination)} disabled={busy}
       accessibilityRole={selected === undefined ? "button" : "radio"}
       accessibilityLabel={title} accessibilityState={{ ...(selected === undefined ? {} : { checked: selected === destination }), disabled: busy }}

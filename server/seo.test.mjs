@@ -273,7 +273,7 @@ test("crawlable HTML contains semantic content and keeps the interactive bundle"
     '<script src="/_expo/static/js/web/index-test.js" defer></script>\n</body>',
   );
   const html = injectHead(shell, "/");
-  assert.match(html, /<h1>The shows you saw\.<br \/><em>The taste you built\.<\/em><\/h1>/);
+  assert.match(html, /<h1>Find your next show\.<br \/><em>Hear from the crowd\.<\/em><\/h1>/);
   assert.match(html, /REMEMBER THE NIGHT\. FIND WHAT&#39;S NEXT\./);
   assert.match(html, /<script src="\/mshpit-web-boot-v1\.js"><\/script>/);
   assert.match(html, /<script src="\/_expo\/static\/js\/web\/index-test\.js" defer><\/script>/);
@@ -282,7 +282,7 @@ test("crawlable HTML contains semantic content and keeps the interactive bundle"
   assert.match(html, /<link rel="canonical" href="https:\/\/www\.example\.com\/" \/>/);
   assert.match(html, /<script type="application\/ld\+json">[\s\S]*?"@type":"WebSite"/);
   assert.match(html, /<a href="\/artists">Artists<\/a>/);
-  assert.match(html, /<a href="\/events">Events<\/a>/);
+  assert.match(html, /<a href="\/events">Upcoming shows<\/a>/);
   assert.match(html, /<div class="seo-document">/);
   assert.doesNotMatch(html, /<html[^>]*data-mshpit-web-boot/i);
   assert.doesNotMatch(html, /<div class="seo-document"[^>]*(?:hidden|aria-hidden)/i);

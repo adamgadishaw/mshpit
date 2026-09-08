@@ -2,6 +2,7 @@ import { ScrollView, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import BrandMark from "../components/BrandMark";
 import Button from "../components/Button";
+import SheetHeader from "../components/SheetHeader";
 import WelcomeGuide from "../features/signupOnboarding/WelcomeGuide";
 import { useStore } from "../store";
 import { colors, displayFont, mono, radius, space } from "../theme";
@@ -17,6 +18,7 @@ export default function WelcomeScreen({ onClose, onOpenFanClubs, onOpenNearby, o
     else if (destination === "review") onReview?.();
   };
   return <View style={styles.wrap} accessibilityViewIsModal>
+    <SheetHeader title="Welcome to Mshpit" onBack={onClose} />
     <ScrollView contentContainerStyle={[styles.content, { paddingBottom: Math.max(insets.bottom, 24) }]}>
       <View style={styles.brand}><BrandMark size={32} color={colors.amber} /><Text style={styles.kicker}>LIVE MUSIC, REMEMBERED</Text></View>
       <Text style={styles.title} accessibilityRole="header">How MSHpit works</Text>

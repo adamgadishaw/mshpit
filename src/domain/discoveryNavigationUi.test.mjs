@@ -25,7 +25,9 @@ test("Discover leads with upcoming events, then Near you, then Venues, while ret
   assert.match(source, /EventScopeToggle/);
   assert.match(source, /PopularLoungeCard/);
   assert.match(source, /onOpenLounge/);
-  assert.match(source, /No events are listed near your home area yet/);
+  assert.match(source, /discoverEventRecovery\(/);
+  assert.match(source, /eventRecovery\.message/);
+  assert.match(source, /accessibilityLabel="Browse upcoming events worldwide"/);
   assert.match(source, /DiscoverEventBanner/);
   assert.match(source, /eventImage[\s\S]*source: "provider"[\s\S]*provider: "ticketmaster"/);
   assert.match(source, /const liveEvents = useMemo\(\(\) => upcomingEventsForScope/);

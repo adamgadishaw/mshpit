@@ -84,8 +84,12 @@ import { initialLandingState, landingRenderSurface } from "./src/domain/landingS
 import { publicNavigationLinks, shouldShowMobilePublicTrail } from "./src/domain/publicNavigationLinks.mjs";
 import {
   publicCollectionHydration,
+  hydratePublicEntryHistory,
+  publicDirectoryProgramme,
+  publicEntryFrame,
   publicFramePath,
   resolvedPublicCollectionFrame,
+  updatedAuthFrame,
 } from "./src/domain/publicFrameNavigation.mjs";
 import {
   readPublicPost,
@@ -119,6 +123,7 @@ import { isOnlineReview } from "./src/domain/onlineReview.mjs";
 import { readSensitiveFragmentToken, readSensitiveLinkToken, scrubSensitiveLinkToken } from "./src/domain/sensitiveLinkTokens.mjs";
 import { verifiedMutationDecision } from "./src/domain/emailVerificationUx.mjs";
 import { needsSignupOnboarding } from "./src/domain/signupOnboarding.mjs";
+import { replaceNavigationFrame } from "./src/domain/navigationStack.mjs";
 import { desktopRightRailLayout } from "./src/domain/desktopRailLayout.mjs";
 import { filterDiscoverSceneRows } from "./src/domain/discoverScene.mjs";
 import { calendarFocusForPost } from "./src/domain/calendarShows.mjs";
@@ -247,6 +252,7 @@ function Root() {
     const top = prepareAvailableNavigationFrame(saved[saved.length - 1]);
     if (!ENABLE_CLIPS && top?.clips) return [{}];
     if (top?.diagnostics) return [{}];
+    if (top?.signupSetup || top?.welcomeGuide) return [{}];
     return top && Object.keys(top).length ? [{}, top] : [{}];
   });
   const nav = stack[stack.length - 1];
@@ -440,7 +446,7 @@ function Root() {
   // The reusable product guide remains available from the menu. New-account
   // setup is separate and keyed to private server state below, so it works on
   // web and native and can safely resume after an interrupted first sign-in.
-  const [welcome, setWelcome] = useState(false);
+  const welcome = !!nav.welcomeGuide;
   const [verificationPrompt, setVerificationPrompt] = useState(null);
   useEffect(() => {
     if (!session?.id || session.emailVerified !== false) setVerificationPrompt(null);
@@ -524,7 +530,9 @@ function Root() {
   const commitGo = (candidate) => {
     const frame = prepareAvailableNavigationFrame(candidate);
     if (!frame) return;
-    setStack((s) => [...s, frame]);
+    const next = [...stackRef.current, frame];
+    stackRef.current = next;
+    setStack(next);
     if (web) {
       try {
         // The third argument is the whole point: it changes the address bar
@@ -543,9 +551,15 @@ function Root() {
   const commitReplace = (candidate) => {
     const frame = prepareAvailableNavigationFrame(candidate);
     if (!frame) return;
-    setStack((s) => [...s.slice(0, -1), frame]);
+    const previous = stackRef.current;
+    const next = replaceNavigationFrame(previous, frame);
+    stackRef.current = next;
+    setStack(next);
     if (web) {
-      try { window.history.replaceState({ pit: "nav" }, "", pathForFrame(frame) || undefined); }
+      try {
+        const method = next.length > previous.length ? "pushState" : "replaceState";
+        window.history[method]({ pit: "nav" }, "", pathForFrame(frame) || undefined);
+      }
       catch {
         // architecture: allow-empty-catch -- history mirroring is best effort; the in-memory stack remains authoritative.
       }
@@ -710,7 +724,6 @@ function Root() {
     remove(PENDING_COMPOSER_PICKER_KEY);
     stopAndClearPlayback();
     setPreview(null);
-    setWelcome(false);
     setVerificationPrompt(null);
     setAcctOpen(false);
     setTab("feed");
@@ -774,6 +787,17 @@ function Root() {
     let cancelled = false;
     const path = window.location.pathname;
     if (!path || path === "/") return;
+    const entryFrame = publicEntryFrame(path);
+    if (entryFrame) {
+      setLanding(false);
+      const next = [{}, entryFrame];
+      stackRef.current = next;
+      setStack(next);
+      try { hydratePublicEntryHistory(window.history, path); } catch {
+        // architecture: allow-empty-catch -- The entry screen remains usable when browser history is unavailable.
+      }
+      return;
+    }
     const cityRoute = parseCityPath(path);
     if (cityRoute || path === "/cities") {
       setLanding(false);
@@ -1125,7 +1149,9 @@ function Root() {
   if (nav.photos) overlay = <PhotoViewer photos={nav.photos.images} index={nav.photos.index} postId={nav.photos.postId} returnFocusRef={mediaViewerOpenerRef} session={session} mediaReactions={mediaReactions} loadMediaReactions={loadMediaReactions} toggleMediaReaction={toggleMediaReaction} track={track} onReport={openReport} onClose={back} />;
   else if (MUSIC_PLAYER_ENABLED && nav.addToPlaylist) overlay = <PlaylistPickerScreen track={nav.addToPlaylist} onClose={back} />;
   else if (nav.followList) overlay = <FollowListScreen userId={nav.followList.userId} mode={nav.followList.mode} onClose={back} onOpenProfile={openProfile} />;
-  else if (nav.auth) overlay = <AuthScreen initialMode={nav.authMode} onDone={back} onCancel={back} onOpenCity={(city) => replace({ cityGuide: city })} />;
+  else if (nav.auth) overlay = <AuthScreen initialMode={nav.authMode} onModeChange={(mode) => { const frame = updatedAuthFrame(stackRef.current[stackRef.current.length - 1], mode); if (frame) commitReplace(frame); }} onDone={back} onCancel={back} onOpenCity={(city) => replace({ cityGuide: city })} />;
+  else if (nav.signupSetup && session) overlay = <SignupOnboardingScreen key={session.id} session={session} onComplete={(options) => finishSignupOnboarding(options)} onClose={back} closeGuardRef={composerCloseGuardRef} />;
+  else if (nav.welcomeGuide && session) overlay = <WelcomeScreen onClose={back} onOpenFanClubs={() => replace({ fanClubs: true })} onOpenNearby={() => replace({ nearby: true, nearbyTab: "shows" })} onOpenArtists={() => replace({ pickArtists: true })} onReview={() => requireVerifiedMutation("review", () => replace({ logging: true }))} />;
   else if (nav.pickArtists) overlay = <PickArtistsScreen onDone={clear} onSkip={clear} onRequireVerification={() => setVerificationPrompt("artistPicks")} />;
   else if (nav.editingPost) overlay = <LogScreen user={session} editing={nav.editingPost} composerId={nav.composerId} initialDraftId={nav.draftId} onDraftIdentity={updateComposerDraftIdentity} pendingMedia={pendingComposerPicker?.composerId === nav.composerId ? pendingComposerPicker : null} onPendingMediaConsumed={consumePendingComposerPicker} onPost={onEditLog} onCancel={back} closeGuardRef={composerCloseGuardRef} />;
   else if (nav.logging) overlay = <LogScreen user={session} prefill={nav.prefill} defaultMode={nav.postMode || "show"} legacyArtistProfile={nav.legacyArtistProfile === true} composerId={nav.composerId} initialDraftId={nav.draftId} onDraftIdentity={updateComposerDraftIdentity} pendingMedia={pendingComposerPicker?.composerId === nav.composerId ? pendingComposerPicker : null} onPendingMediaConsumed={consumePendingComposerPicker} onPost={onAddLog} onCancel={back} closeGuardRef={composerCloseGuardRef} />;
@@ -1153,7 +1179,7 @@ function Root() {
   else if (nav.venues) overlay = <VenuesScreen initialRegion={nav.discoverRegion} onClose={back} onOpenVenue={openVenue} />;
   else if (nav.fanClubs) overlay = <FanClubsScreen onClose={back} onOpenFanClub={openFanClub} />;
   else if (nav.suggestion) overlay = <SuggestionBoxScreen onClose={back} initialSurface={nav.suggestion.surface} />;
-  else if (nav.settings) overlay = <SettingsScreen initialAccountAction={nav.accountAction === "switch" ? "switch" : null} onClose={back} onManageProfile={openProfileManagement} onOpenProfile={() => (session ? openProfile(session.id) : go({ auth: true }))} onOpenPrivacy={() => go({ privacy: true })} onOpenTerms={() => go({ terms: true })} onOpenDiagnostics={() => { if (canViewDiagnostics) go({ diagnostics: true }); }} onOpenDeleteAccount={() => go({ deleteAccount: true })} onLogout={signOut} />;
+  else if (nav.settings) overlay = <SettingsScreen initialAccountAction={nav.accountAction === "switch" ? "switch" : null} onClose={back} onFinishSetup={needsSignupOnboarding(session) ? () => go({ signupSetup: true }) : undefined} onManageProfile={openProfileManagement} onOpenProfile={() => (session ? openProfile(session.id) : go({ auth: true }))} onOpenPrivacy={() => go({ privacy: true })} onOpenTerms={() => go({ terms: true })} onOpenDiagnostics={() => { if (canViewDiagnostics) go({ diagnostics: true }); }} onOpenDeleteAccount={() => go({ deleteAccount: true })} onLogout={signOut} />;
   else if (nav.deleteAccount) overlay = <DeleteAccountScreen onClose={back} onDeleted={onAccountDeleted} />;
   else if (nav.diagnostics && canViewDiagnostics) overlay = <DiagnosticsScreen onClose={back} />;
   else if (nav.privacy) overlay = <PrivacyScreen onClose={back} />;
@@ -1182,7 +1208,7 @@ function Root() {
       onAdmin={() => replace({ admin: true })}
       onTourDates={() => requireVerifiedMutation("artist", () => replace({ bulk: true }))}
       onRequestArtist={() => requireVerifiedMutation("artist", () => replace({ reqArtist: true }))}
-      onHowItWorks={() => setWelcome(true)}
+      onHowItWorks={() => go({ welcomeGuide: true })}
       onLogin={() => replace({ auth: true })}
       onLogout={signOut}
       onBackToLanding={exitToLanding}
@@ -1236,6 +1262,7 @@ function Root() {
                   loggedIn={!!session}
                   accountId={session?.id || null}
                   homeCity={session?.home?.city}
+                  onFinishSetup={needsSignupOnboarding(session) ? () => go({ signupSetup: true }) : undefined}
                   unread={inboxUnread()}
                   notifUnread={session ? unreadNotifications() : 0}
                   hideHeaderActions={wide}
@@ -1297,7 +1324,7 @@ function Root() {
                 />
               )}
               {tab === "search" && <SearchScreen onOpen={openShow} onOpenArtist={openArtist} onOpenCity={openCity} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenProfile={openProfile} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} />}
-              {tab === "discover" && <DiscoverScreen onOpenTopRated={(discoverRegion) => go({ topRated: true, discoverRegion })} onOpenEvents={(discoverRegion) => openPublicDirectory("events", { region: discoverRegion })} onOpen={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenNearby={() => go({ nearby: true })} onOpenFanClubs={() => go({ fanClubs: true })} onOpenVenues={(discoverRegion) => go({ venues: true, discoverRegion })} onOpenLounge={(lounge) => go({ lounge })} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} onOpenProfile={openProfile} />}
+              {tab === "discover" && <DiscoverScreen initialProgramme={publicDirectoryProgramme(nav)} onOpenTopRated={(discoverRegion) => go({ topRated: true, discoverRegion })} onOpenEvents={(discoverRegion) => openPublicDirectory("events", { region: discoverRegion })} onOpen={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenNearby={() => go({ nearby: true })} onOpenFanClubs={() => go({ fanClubs: true })} onOpenVenues={(discoverRegion) => go({ venues: true, discoverRegion })} onOpenLounge={(lounge) => go({ lounge })} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} onOpenProfile={openProfile} />}
               {tab === "you" && (
                 <YouScreen
                   onLogin={() => go({ auth: true })}
@@ -1369,7 +1396,8 @@ function Root() {
   // music player at its current position and require an explicit Play afterward
   // instead of auto-resuming two audio surfaces on viewer close.
   const signupOnboardingVisible = authReady
-    && needsSignupOnboarding(session)
+    && !!session
+    && !!nav.signupSetup
     && status === "ok"
     && !nav.auth
     && !resetToken
@@ -1381,10 +1409,15 @@ function Root() {
       return { ok: false, stale: true, error: "Your account changed. Reopen setup." };
     }
     const result = await completeSignupOnboarding({ expectedAccountId, signal });
-    if (result?.ok && expectedAccountId === sessionRef.current?.id) {
-      if (openArtistPicker || destination === "artists") replace({ pickArtists: true });
-      else if (destination === "shows") replace({ nearby: true, nearbyTab: "shows" });
-      else if (destination === "review") requireVerifiedMutation("review", () => replace({ logging: true }));
+    // Setup is an optional route now, so publishing the confirmed version does
+    // not unmount it. An aborted signal means the person actually left: never
+    // redirect them when a late completion response arrives.
+    if (result?.ok && expectedAccountId === sessionRef.current?.id && !signal?.aborted) {
+      if (openArtistPicker || destination === "artists") commitReplace({ pickArtists: true });
+      else if (destination === "shows") commitReplace({ nearby: true, nearbyTab: "shows" });
+      else if (destination === "review") {
+        if (!requireVerifiedMutation("review", () => { commitReplace({ logging: true }); return true; })) finishComposerBack();
+      } else finishComposerBack();
     }
     return result;
   };
@@ -1397,13 +1430,30 @@ function Root() {
       <SafeAreaView style={styles.safe}>
         <StatusBar style={themeIsDark ? "light" : "dark"} />
 
+        {/* Reserve space for the reminder instead of covering mobile controls.
+            Optional setup has its own confirmation/resend controls. */}
+        {status === "ok" && session && session.emailVerified === false && !nav.signupSetup && (
+          <VerifyEmailBanner
+            email={session.email}
+            onResend={resendEmailVerification}
+            blockedAction={verificationPrompt}
+            onCloseGate={() => setVerificationPrompt(null)}
+          />
+        )}
+
         {landingSurface === "pending" ? (
           <ScreenLoading />
         ) : landingSurface === "landing" ? (
           <LandingScreen
             onLogin={() => { enter(); go({ auth: true, authMode: "login" }); }}
             onSignup={() => { enter(); go({ auth: true, authMode: "signup" }); }}
-            onBrowse={enter}
+            onBrowse={() => openPublicDirectory("events")}
+            onBrowseCategory={(category) => {
+              if (category === "artists") { openPublicDirectory("artists"); return; }
+              enter();
+              if (category === "venues") go({ venues: true });
+              if (category === "cities") go({ cityGuide: { directory: true } });
+            }}
             onOpenEvent={(event) => { enter(); openShow(event); }}
             onExploreLounges={() => { enter(); setTab("discover"); go({ auth: true, authMode: "login" }); }}
             onSuggestion={() => { enter(); go({ suggestion: { surface: "landing" } }); }}
@@ -1484,18 +1534,6 @@ function Root() {
           </View>
         )}
 
-        {/* Browsing and privacy/account rights stay available, while protected
-            actions expand this persistent reminder into a verification gate. */}
-        {status === "ok" && session && session.emailVerified === false && (
-          <VerifyEmailBanner
-            email={session.email}
-            topOffset={MUSIC_PLAYER_ENABLED && !wide && player ? 72 : undefined}
-            onResend={resendEmailVerification}
-            blockedAction={verificationPrompt}
-            onCloseGate={() => setVerificationPrompt(null)}
-          />
-        )}
-
         <FeedbackHost canViewDiagnostics={canViewDiagnostics} onOpenDiagnostics={() => { if (canViewDiagnostics) go({ diagnostics: true }); }} />
 
         {MUSIC_PLAYER_ENABLED && status === "ok" && preview && (
@@ -1561,27 +1599,6 @@ function Root() {
           </View>
         )}
 
-        {signupOnboardingVisible && session && (
-          <View style={styles.welcomeModal} accessibilityViewIsModal>
-            <Suspense fallback={<ScreenLoading />}>
-              <SignupOnboardingScreen key={session.id} session={session} onComplete={finishSignupOnboarding} />
-            </Suspense>
-          </View>
-        )}
-
-        {welcome && session && !signupOnboardingVisible && (
-          <View style={styles.welcomeModal}>
-            <WelcomeScreen
-              onClose={() => setWelcome(false)}
-              onOpenFanClub={(a) => { setWelcome(false); openFanClub(a); }}
-              onOpenShow={(s) => { setWelcome(false); openShow(s); }}
-              onOpenFanClubs={() => { setWelcome(false); go({ fanClubs: true }); }}
-              onOpenNearby={() => { setWelcome(false); go({ nearby: true, nearbyTab: "shows" }); }}
-              onOpenArtists={() => { setWelcome(false); go({ pickArtists: true }); }}
-              onReview={() => { setWelcome(false); requireVerifiedMutation("review", () => go({ logging: true })); }}
-            />
-          </View>
-        )}
       </SafeAreaView>
     </View>
     </CityNavigationContext.Provider>

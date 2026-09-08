@@ -54,7 +54,7 @@ function bootHarness() {
 }
 
 test("web boot template installs a parser-blocking same-origin handoff before the body", () => {
-  const statusMarkup = '<div class="mshpit-web-boot-status" role="status" aria-live="polite" aria-atomic="true">Loading Mshpit</div>';
+  const statusMarkup = '<div class="mshpit-web-boot-status" data-nosnippet role="status" aria-live="polite" aria-atomic="true">Loading Mshpit</div>';
   const styleStart = template.indexOf('<style id="mshpit-web-boot-style">');
   const scriptTag = '<script src="/mshpit-web-boot-v1.js"></script>';
   const scriptStart = template.indexOf(scriptTag);

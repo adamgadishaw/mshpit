@@ -21,7 +21,8 @@ test("Discover keyboard navigation wraps and supports Home and End", () => {
 const read = (name) => readFileSync(new URL(name, import.meta.url), "utf8");
 test("Discover renders only the selected destination and keeps filter state independent", () => {
   const source = read("../screens/DiscoverScreen.jsx");
-  assert.match(source, /const \[programme, setProgramme\] = useState\("shows"\)/);
+  assert.match(source, /const \[programme, setProgramme\] = useState\(\(\) => discoverProgrammeKey\(initialProgramme\)\)/);
+  assert.match(source, /if \(initialProgramme !== undefined\) setProgramme\(discoverProgrammeKey\(initialProgramme\)\)/);
   assert.match(source, /const \[areaExpanded, setAreaExpanded\] = useState\(false\)/);
   assert.match(source, /const \[dateExpanded, setDateExpanded\] = useState\(false\)/);
   for (const { key } of DISCOVER_PROGRAMME_SECTIONS) {

@@ -22,7 +22,7 @@ function AuthPressable({ accessibilityState = {}, disabled, ...props }) {
   return <Pressable {...props} disabled={disabled} accessibilityState={state} {...signupAriaProps(Platform.OS, state)} />;
 }
 
-export default function AuthScreen({ onDone, onCancel, initialMode = "login", addAccount = false, initialEmail = "" }) {
+export default function AuthScreen({ onDone, onCancel, onModeChange, initialMode = "login", addAccount = false, initialEmail = "" }) {
   const { login, signup, forgotPassword, session } = useStore();
   const insets = useSafeAreaInsets();
   const [mode, setMode] = useState(initialMode === "signup" ? "signup" : "login");
@@ -79,6 +79,7 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login", ad
     if (busyRef.current) return;
     setAccounts(null); setSignupChoice(null); setPassword(""); setCurrentPassword("");
     setMode(next); setStep(1); setSentTo(null); setShowPassword(false); clearError();
+    onModeChange?.(next);
   };
   const accountValues = () => ({ name, handle, email, password });
   const accountFailure = () => signupAccountError(accountValues(), currentAvailability)
@@ -214,7 +215,7 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login", ad
 
           {signupChoice ? <>
             <Text style={styles.subtitle}>{signupChoice.canCreate ? "An account already uses this email and password. Continue with it, or create your second account. Nothing has been changed." : "These credentials already belong to an account. Choose a profile below. Nothing has been changed."}</Text>
-            {signupChoice.accounts.map((account) => <View key={account.id}>{primary(`${account.setupIncomplete ? "Continue setup" : "Log in"}: ${account.name} · @${account.handle}`, () => void submit(account.id, { useExisting: true }))}</View>)}
+            {signupChoice.accounts.map((account) => <View key={account.id}>{primary(`Log in: ${account.name} · @${account.handle}`, () => void submit(account.id, { useExisting: true }))}</View>)}
             {signupChoice.canCreate ? primary("Create a second account", () => void submit(undefined, { createAdditional: true })) : <Text style={styles.hint}>This email has reached its two-account limit.</Text>}
             {primary("Use a different email", () => { setSignupChoice(null); setPassword(""); setStep(1); })}
           </> : accounts ? <>
@@ -241,7 +242,7 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login", ad
               </View> : null}
               {field("email", "Email", email, setEmail, { autoComplete: "email", textContentType: "emailAddress", onSubmit: () => inputs.current.password?.focus?.() })}
               {field("password", "Password", password, setPassword, { maxLength: 100, autoComplete: signupMode ? "new-password" : "current-password", textContentType: signupMode ? "newPassword" : "password", returnKeyType: signupMode ? "next" : "go", onSubmit: submit, hint: signupMode ? "8+ characters, with a letter and a number." : null })}
-              {signupMode ? <View style={styles.nextStep}><Icon name="you" size={18} color={colors.amber} /><Text style={styles.noteText}>Your profile photo and banner come next, after email confirmation.</Text></View>
+              {signupMode ? <View style={styles.nextStep}><Icon name="you" size={18} color={colors.amber} /><Text style={styles.noteText}>Explore as soon as you sign up. Add a profile photo and banner whenever you’re ready, after email confirmation.</Text></View>
                 : <AuthPressable style={controlStyle(styles.forgotButton, busy)} onPress={() => changeMode("forgot")} disabled={busy} accessibilityRole="button"><Text style={styles.link}>Forgot password?</Text></AuthPressable>}
             </> : <>
               <View ref={(node) => { inputs.current.genres = node; }} tabIndex={-1} style={styles.section}>

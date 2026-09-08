@@ -303,7 +303,15 @@ const PAGES = Object.freeze({
     sections: [
       {
         heading: "Eligibility",
-        paragraphs: ["You must be at least 13 years old (or the minimum age required in your country) to use Pit, and legally able to enter this agreement. One account per person unless we approve otherwise. Artist accounts are reviewed and verified before approval."],
+        paragraphs: ["You must be at least 13 years old (or the minimum age required in your country) to use Pit, and legally able to enter this agreement. Up to two accounts may use one email address. Add a second account from Settings after confirming the email and the current account's password. Another email is needed for further accounts. Artist accounts are reviewed and verified before approval."],
+      },
+      {
+        heading: "Shared email and account setup",
+        paragraphs: ["Each account has its own password. If a password matches both accounts using an email, sign-in asks which account to use. Changing a password affects only that account. Anyone with access to the shared inbox can receive recovery links for either account, so only share an email with someone you trust. Finish setup keeps your account; email verification is separate. Explicitly cancelling signup before Finish setup deletes the unfinished account and queues its uploads for removal. Closing the app, losing connection, or leaving setup unfinished does not immediately delete the account. The account inactivity policy below also applies to unfinished and unverified accounts. After finishing setup, use Delete account in Settings if you want to leave."],
+      },
+      {
+        heading: "Account inactivity",
+        paragraphs: ["Every account except the permanently designated Owner account becomes dormant after 365 days without authenticated, user-initiated activity. Dormant accounts are suspended from normal social use until you successfully sign in or switch into that account; doing so reactivates inactivity dormancy but does not remove a moderation ban or suspension. After 730 inactive days, an account and its content are eligible for permanent deletion through Pit's account-erasure process. Before deletion, Pit must confirm delivery of an account-specific email warning and allow at least 30 further days to return; if delivery cannot be confirmed, deletion is delayed. A successful sign-in or other authenticated, user-initiated activity resets that account's inactivity period. Background refreshes, automated polling, and activity in another account sharing its email do not count. These rules apply to unfinished, unverified, artist, and staff accounts as well as regular member accounts. For existing accounts without reliable activity history, tracking starts when this policy is activated, not at an assumed historical creation date. Days mean consecutive 24-hour periods."],
       },
       {
         heading: "Your account",

@@ -1,5 +1,6 @@
 import { cityPath } from "../../../src/domain/urls.mjs";
 import { DEFAULT_CITY_COPY } from "../cities/cityCopy.js";
+import { publicCityMetadata, publicEventTimeLabel } from "./publicMetadataPresentation.js";
 
 const text = (value, max = 8000) => String(value ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, max);
 const path = (value) => typeof value === "string" && value.startsWith("/") && !value.startsWith("//") && !/[\\\u0000-\u001f]/.test(value) ? value : null;
@@ -20,14 +21,19 @@ export function projectCityGuideDocument(guide, { origin = "https://www.mshpit.c
   const locationLabel = [city, text(guide.city.region, 100)].filter(Boolean).join(", ");
   const canonicalUrl = new URL(canonicalPath, origin).href;
   const heading = text(editorial.title, 180) || format(copy.cityTitle, locationLabel) || locationLabel;
-  const searchTitle = text(editorial.seoTitle, 80) || format(copy.citySeoTitle, locationLabel) || heading;
-  const description = text(editorial.seoDescription, 200) || text(editorial.intro, 300) || format(copy.citySeoDescription || copy.cityDescription, locationLabel);
   const photoRows = [...(guide.photos || []).filter((photo) => photo.kind !== "city").slice(0, 9),
     ...(guide.photos || []).filter((photo) => photo.kind === "city").slice(0, 1)];
   const photos = photoRows.flatMap((photo) => {
     const url = mediaUrl(photo.uri || photo.url, origin);
     return url ? [{ ...photo, url, alt: text(photo.alt || photo.altText || city, 240) }] : [];
   });
+  // Only untouched defaults become evidence-aware. Managed city SEO copy and
+  // long editorial introductions retain their existing precedence and limits.
+  const defaults = publicCityMetadata(locationLabel, guide, photos);
+  const searchTitle = text(editorial.seoTitle, 80)
+    || (copy.citySeoTitle === DEFAULT_CITY_COPY.citySeoTitle ? defaults.title : format(copy.citySeoTitle, locationLabel)) || heading;
+  const description = text(editorial.seoDescription, 200) || text(editorial.intro, 300)
+    || (copy.citySeoDescription === DEFAULT_CITY_COPY.citySeoDescription ? defaults.description : format(copy.citySeoDescription || copy.cityDescription, locationLabel));
   const list = [...(guide.venues || []), ...(guide.artists || []), ...(guide.performingArtists || []), ...(guide.today || []), ...(guide.upcoming || [])];
   const linked = [...new Map(list.flatMap((item) => path(item.path)
     && text(item.name || item.artist || item.eventName, 180)
@@ -85,7 +91,8 @@ export function renderCityGuideMain(document) {
     const date = /^\d{4}-\d{2}-\d{2}$/.test(row.date || "") ? new Date(row.date + "T00:00:00Z") : null;
     const validDate = date && Number.isFinite(date.valueOf()) && date.toISOString().slice(0, 10) === row.date;
     const dateLabel = validDate ? new Intl.DateTimeFormat("en", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" }).format(date) : row.date;
-    return `<li><time datetime="${esc(row.date)}">${esc(dateLabel)}</time><div><h3>${link(row.path, title)}</h3>${row.eventName && row.eventName !== title ? `<p>${esc(row.eventName)}</p>` : ""}<p>${link(row.venuePath, row.venue)}${row.startLocalTime ? " · " + esc(row.startLocalTime) : ""}</p></div></li>`;
+    const timeLabel = publicEventTimeLabel(row.startLocalTime);
+    return `<li><time datetime="${esc(row.date)}">${esc(dateLabel)}</time><div><h3>${link(row.path, title)}</h3>${row.eventName && row.eventName !== title ? `<p>${esc(row.eventName)}</p>` : ""}<p>${link(row.venuePath, row.venue)}${timeLabel ? " · " + esc(timeLabel) : ""}</p></div></li>`;
   }).join("")}</ol>`;
   const venues = (guide.venues || []).map((row) => `<li><h3>${link(row.path, row.name)}</h3>${row.place ? `<p>${esc(row.place)}</p>` : ""}</li>`).join("");
   const artists = (guide.artists || []).map((row) => `<li><h3>${link(row.path, row.name)}</h3>${row.description ? paragraphs(row.description) : ""}</li>`).join("");

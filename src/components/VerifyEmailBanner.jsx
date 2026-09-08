@@ -4,12 +4,12 @@
 // expands into an action-specific gate with a resend control and a safe path
 // back to browsing.
 import { useEffect, useRef, useState } from "react";
-import { View, Text, StyleSheet, Pressable, Platform } from "react-native";
+import { View, Text, StyleSheet, Pressable } from "react-native";
 import { colors, focusRing, radius, shadow, space } from "../theme";
 import { verificationPromptCopy } from "../domain/emailVerificationUx.mjs";
 import Icon from "./Icon";
 
-export default function VerifyEmailBanner({ email, topOffset, onResend, blockedAction = null, onCloseGate }) {
+export default function VerifyEmailBanner({ email, onResend, blockedAction = null, onCloseGate }) {
   const [state, setState] = useState("idle");
   const requestRef = useRef(null);
 
@@ -93,7 +93,8 @@ export default function VerifyEmailBanner({ email, topOffset, onResend, blockedA
   }
 
   return (
-    <View style={[styles.banner, Number.isFinite(topOffset) && { top: topOffset }]} accessibilityRole="alert">
+    <View style={styles.bannerSlot}>
+    <View style={styles.banner} accessibilityRole="alert">
       <View style={styles.bannerMark}><Icon name="mail" size={15} color={colors.gold} /></View>
       <View style={styles.bannerCopy}>
         <Text style={styles.bannerTitle}>Confirm your email to join in</Text>
@@ -114,22 +115,19 @@ export default function VerifyEmailBanner({ email, topOffset, onResend, blockedA
         </Text>
       </Pressable>
     </View>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  bannerSlot: { width: "100%", flexShrink: 0, paddingHorizontal: space(3), paddingVertical: space(2), alignItems: "center" },
   banner: {
-    position: "absolute",
-    left: 16,
-    right: 16,
-    top: Platform.OS === "ios" ? 8 : 6,
-    zIndex: 440,
+    width: "100%",
     flexDirection: "row",
     alignItems: "center",
     gap: space(2),
     alignSelf: "center",
     maxWidth: 680,
-    marginHorizontal: "auto",
     backgroundColor: colors.surfaceAlt,
     borderWidth: 1,
     borderColor: colors.gold,

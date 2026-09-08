@@ -15,15 +15,16 @@ const productionCallback = source.slice(callback.start, callback.end);
 
 function fixture() {
   const sessionRef = { current: { id: "account-a", emailVerified: true } };
-  const calls = [], navigations = [], verifiedActions = [];
+  const calls = [], navigations = [], verifiedActions = [], backCalls = [];
   let resolve, reject;
   const result = new Promise((done, fail) => { resolve = done; reject = fail; });
   const completeSignupOnboarding = (options) => { calls.push(options); return result; };
-  const replace = (route) => navigations.push(route);
-  const requireVerifiedMutation = (kind, run) => { verifiedActions.push(kind); run(); };
-  const finish = new Function("sessionRef", "completeSignupOnboarding", "replace", "requireVerifiedMutation",
-    `return (${productionCallback});`)(sessionRef, completeSignupOnboarding, replace, requireVerifiedMutation);
-  return { finish, sessionRef, calls, navigations, verifiedActions, resolve, reject };
+  const commitReplace = (route) => navigations.push(route);
+  const finishComposerBack = () => backCalls.push("back");
+  const requireVerifiedMutation = (kind, run) => { verifiedActions.push(kind); if (!sessionRef.current?.emailVerified) return false; return run(); };
+  const finish = new Function("sessionRef", "completeSignupOnboarding", "commitReplace", "finishComposerBack", "requireVerifiedMutation",
+    `return (${productionCallback});`)(sessionRef, completeSignupOnboarding, commitReplace, finishComposerBack, requireVerifiedMutation);
+  return { finish, sessionRef, calls, navigations, verifiedActions, backCalls, resolve, reject };
 }
 
 test("setup completion rejects missing, switched or already-canceled account before mutation", async () => {
@@ -49,18 +50,17 @@ test("an account change or logout after completion starts cannot redirect the ne
   }
 });
 
-test("successful completion still opens the chosen destination after setup's normal unmount abort", async () => {
+test("successful completion opens only an explicitly chosen destination", async () => {
   for (const [destination, route] of [["shows", { nearby: true, nearbyTab: "shows" }], ["artists", { pickArtists: true }], ["review", { logging: true }]]) {
     const f = fixture(), controller = new AbortController();
     const pending = f.finish({ destination, expectedAccountId: "account-a", signal: controller.signal });
-    // Store publishes the confirmed version first, unmounting setup. Its
-    // cleanup aborts the screen controller before App resumes this callback.
+    // Publishing the confirmed version must not unmount the optional route.
     f.sessionRef.current = { id: "account-a", emailVerified: true, onboardingVersion: 1 };
-    controller.abort();
     f.resolve({ ok: true, user: f.sessionRef.current });
     assert.equal((await pending).ok, true);
     assert.deepEqual(f.navigations, [route]);
     assert.deepEqual(f.verifiedActions, destination === "review" ? ["review"] : []);
+    assert.deepEqual(f.backCalls, []);
   }
 });
 
@@ -80,11 +80,36 @@ test("a failed or rejected completion never opens a destination", async () => {
   assert.deepEqual(rejected.verifiedActions, []);
 });
 
-test("deferring setup does not trigger a selected review or artist action", async () => {
+test("default completion returns to browsing without requiring a first action", async () => {
   const f = fixture();
-  const pending = f.finish({ destination: "feed", expectedAccountId: "account-a" });
+  const pending = f.finish({ expectedAccountId: "account-a" });
   f.resolve({ ok: true, user: { id: "account-a", onboardingVersion: 1 } });
   assert.equal((await pending).ok, true);
   assert.deepEqual(f.navigations, []);
   assert.deepEqual(f.verifiedActions, []);
+  assert.deepEqual(f.backCalls, ["back"]);
+});
+
+test("leaving an in-flight setup prevents late completion from navigating", async () => {
+  for (const destination of ["feed", "shows", "artists", "review"]) {
+    const f = fixture(), controller = new AbortController();
+    const pending = f.finish({ destination, expectedAccountId: "account-a", signal: controller.signal });
+    controller.abort();
+    f.resolve({ ok: true, user: { id: "account-a", onboardingVersion: 1 } });
+    await pending;
+    assert.deepEqual(f.navigations, []);
+    assert.deepEqual(f.backCalls, []);
+    assert.deepEqual(f.verifiedActions, []);
+  }
+});
+
+test("an unverified account can finish and browse without entering a review composer", async () => {
+  const f = fixture();
+  f.sessionRef.current.emailVerified = false;
+  const pending = f.finish({ destination: "review", expectedAccountId: "account-a" });
+  f.resolve({ ok: true });
+  await pending;
+  assert.deepEqual(f.navigations, []);
+  assert.deepEqual(f.verifiedActions, ["review"]);
+  assert.deepEqual(f.backCalls, ["back"]);
 });

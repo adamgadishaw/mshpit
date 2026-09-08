@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   LANDING_IDENTITY_COPY,
+  LANDING_BROWSE_LINKS,
   landingKicker,
   landingLayoutMode,
   landingProofItems,
@@ -65,13 +66,18 @@ test("landing identity describes the product in plain language", () => {
   assert.equal(landingKicker(false), "REMEMBER THE NIGHT. FIND WHAT'S NEXT.");
   assert.equal(landingKicker(true), "REMEMBER. RATE. DISCOVER.");
   assert.equal(LANDING_IDENTITY_COPY.signupAction, "Create an account");
-  assert.equal(LANDING_IDENTITY_COPY.browseAction, "Browse shows and artists");
-  assert.match(LANDING_IDENTITY_COPY.body, /remember every show/i);
-  assert.match(LANDING_IDENTITY_COPY.body, /photos, ratings/i);
-  assert.match(LANDING_IDENTITY_COPY.body, /fans whose taste you trust/i);
-  assert.match(LANDING_IDENTITY_COPY.headline, /shows/i);
-  assert.match(LANDING_IDENTITY_COPY.headlineAccent, /taste/i);
+  assert.equal(LANDING_IDENTITY_COPY.browseAction, "Find concerts");
+  assert.match(LANDING_IDENTITY_COPY.body, /concert reviews/i);
+  assert.match(LANDING_IDENTITY_COPY.body, /photos from the crowd/i);
+  assert.match(LANDING_IDENTITY_COPY.body, /venue guides/i);
+  assert.match(LANDING_IDENTITY_COPY.headline, /next show/i);
+  assert.match(LANDING_IDENTITY_COPY.headlineAccent, /crowd/i);
 
   const identity = Object.values(LANDING_IDENTITY_COPY).join(" ");
   assert.doesNotMatch(identity, /\b(?:diary|journal|social network|musical journey)\b/i);
+});
+
+test("public browsing paths are distinct and do not force signup", () => {
+  assert.deepEqual(LANDING_BROWSE_LINKS.map(({ href }) => href), ["/artists", "/venues", "/cities"]);
+  assert.equal(new Set(LANDING_BROWSE_LINKS.map(({ key }) => key)).size, 3);
 });

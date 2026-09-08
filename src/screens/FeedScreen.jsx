@@ -65,7 +65,7 @@ const FeedTicketRow = memo(function FeedTicketRow({ item, itemIndex, mediaViewab
   );
 });
 
-export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, accountId = null, homeCity, unread = 0, notifUnread = 0, newUser = false, hideHeaderActions = false, onRefresh, onLoadMore, hasMore = false, loadingMore = false, countdownPlan = null, showHomeCountdown = false, suggestedUsers = [], suggestedUsersLoading = false, showSuggestedPitters = false, onFollowUser, isFollowing, isBlocked, onOpenCountdown, onViewAllCountdown, onOpen, onImpression, onDwell, onNotInterested, onUndoNotInterested, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onOpenNearby, onOpenInbox, onOpenNotifications, onOpenMenu, onOpenClips, onReport, onEdit, onOpenPhotos, onPlay, onRemoveMyPostTag, onLogShow, onOpenDiscover }) {
+export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, accountId = null, homeCity, unread = 0, notifUnread = 0, newUser = false, hideHeaderActions = false, onFinishSetup, onRefresh, onLoadMore, hasMore = false, loadingMore = false, countdownPlan = null, showHomeCountdown = false, suggestedUsers = [], suggestedUsersLoading = false, showSuggestedPitters = false, onFollowUser, isFollowing, isBlocked, onOpenCountdown, onViewAllCountdown, onOpen, onImpression, onDwell, onNotInterested, onUndoNotInterested, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onOpenNearby, onOpenInbox, onOpenNotifications, onOpenMenu, onOpenClips, onReport, onEdit, onOpenPhotos, onPlay, onRemoveMyPostTag, onLogShow, onOpenDiscover }) {
   const { width } = useWindowDimensions();
   const appActive = useAppActive();
   const phone = width < 700;
@@ -403,19 +403,19 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
             </Pressable>
           )}
 
-          {loggedIn && newUser && !guideDismissed && (
+          {loggedIn && (newUser || onFinishSetup) && !guideDismissed && (
             <View style={styles.gs}>
               <View style={styles.gsHead}>
                 <View style={{ flex: 1, minWidth: 0 }}>
-                  <Text style={styles.gsTitle}>Your first night on Mshpit</Text>
+                  <Text style={styles.gsTitle}>{onFinishSetup ? homeCity ? `Welcome to Mshpit, ${homeCity.split(",")[0]}.` : "You’re in. Welcome to Mshpit." : "Your first night on Mshpit"}</Text>
                   <Text style={styles.gsJourney}>{HOME_JOURNEY_LINE}</Text>
                 </View>
                 <Pressable onPress={dismissGuide} hitSlop={10} accessibilityRole="button" accessibilityLabel="Dismiss getting started guide"><Icon name="x" size={16} color={colors.textDim} /></Pressable>
               </View>
-              <Text style={styles.gsSub}>Find a show, save the night, then come back to rate it, share the memory, and meet other fans.</Text>
+              <Text style={styles.gsSub}>{onFinishSetup ? "Have a look around. Your profile photo, banner and city welcome can wait—find them in Settings anytime." : "Find a show, save the night, then come back to rate it, share the memory, and meet other fans."}</Text>
               <View style={styles.gsActions}>
                 <HomeAction icon="discover" label="Find a show" onPress={onOpenDiscover} />
-                <HomeAction icon="plus" label="Log a show" onPress={onLogShow} primary />
+                {onFinishSetup ? <HomeAction icon="you" label="Finish profile setup" onPress={onFinishSetup} /> : <HomeAction icon="plus" label="Log a show" onPress={onLogShow} primary />}
               </View>
             </View>
           )}

@@ -9,6 +9,7 @@ import DiscoverGenres from "../components/discover/DiscoverGenres";
 import { DiscoverPhotos } from "../components/discover/DiscoverCommunity";
 import DiscoverEventBanner from "../components/discover/DiscoverEventBanner";
 import DiscoverProgrammeNav from "../components/discover/DiscoverProgrammeNav";
+import { discoverEventRecovery } from "../components/discover/discovery-recovery.mjs";
 import { MetricTile, OverviewState, QuickAction, SectionHeading } from "../components/discover/DiscoverPrimitives";
 import { UpcomingEventCard, VenueDiscoveryCard } from "../components/VenueDiscoveryCards";
 import { EventScopeToggle, PopularLoungeCard } from "../components/LiveDiscoveryCards";
@@ -74,6 +75,7 @@ function useLatestCallback(callback) {
 }
 
 export default function DiscoverScreen({
+  initialProgramme,
   onOpen,
   onOpenTopRated,
   onOpenEvents,
@@ -95,7 +97,6 @@ export default function DiscoverScreen({
     loadDiscoverTourDateRange,
     discoverStats,
     discoverySidebar,
-    discoverySidebarStatus,
     tourDates,
     refreshTourDates,
     refreshDiscoverySidebar,
@@ -108,7 +109,10 @@ export default function DiscoverScreen({
   const veryCompact = width < 380;
   const wide = width >= 900;
   const actionBasis = veryCompact ? "100%" : "48%";
-  const [programme, setProgramme] = useState("shows");
+  const [programme, setProgramme] = useState(() => discoverProgrammeKey(initialProgramme));
+  useEffect(() => {
+    if (initialProgramme !== undefined) setProgramme(discoverProgrammeKey(initialProgramme));
+  }, [initialProgramme]);
   const [areaExpanded, setAreaExpanded] = useState(false);
   const [dateExpanded, setDateExpanded] = useState(false);
   const areaDisclosureRef = useRef(null);
@@ -225,6 +229,14 @@ export default function DiscoverScreen({
   const rangeHasMore = !rangeMatchesScene
     || rangeEvents.length > visibleEventCount
     || (!!eventRange.nextCursor && eventRange.rows.length < DISCOVER_RANGE_MAX_EVENTS);
+  const eventRecovery = discoverEventRecovery({
+    status: eventRange.scopeKey === rangeScopeKey ? eventRange.status : "idle",
+    count: visibleLiveEvents.length,
+    days: selectedRangeDays,
+    ranges: DISCOVER_RANGE_DAYS,
+    local: liveScope === LIVE_EVENT_SCOPE.LOCAL,
+    region,
+  });
   const eventArtwork = useMemo(() => visibleLiveEvents.flatMap((event) => event?.eventImage ? [{
     ...event.eventImage,
     eventId: event.id,
@@ -681,7 +693,7 @@ export default function DiscoverScreen({
                   );
                 })}
               </View>}
-              {eventRange.scopeKey === rangeScopeKey && eventRange.status === "loading" && !rangeMatchesScene ? (
+              {eventRange.scopeKey === rangeScopeKey && eventRange.status === "loading" && !rangeMatchesScene && visibleLiveEvents.length > 0 ? (
                 <View style={styles.rangeStatus} accessibilityLiveRegion="polite">
                   <ActivityIndicator size="small" color={colors.amber} />
                   <Text style={styles.rangeStatusText}>Finding more upcoming events...</Text>
@@ -693,7 +705,7 @@ export default function DiscoverScreen({
                   <Text style={styles.rangeStatusText}>Updating dates. Your current events are still here.</Text>
                 </View>
               ) : null}
-              {eventRange.scopeKey === rangeScopeKey && eventRange.status === "error" ? (
+              {eventRange.scopeKey === rangeScopeKey && eventRange.status === "error" && visibleLiveEvents.length > 0 ? (
                 <Pressable style={({ focused, pressed }) => [styles.rangeRetry, pressed && styles.cardPressed, focused && focusRing]} onPress={() => selectEventRange(eventRange.days || selectedRangeDays)} accessibilityRole="button" accessibilityLabel="Try loading this event range again">
                   <Text style={styles.rangeRetryText}>Couldn't load more dates. Try again.</Text>
                 </Pressable>
@@ -707,16 +719,26 @@ export default function DiscoverScreen({
             active
             onOpenEvent={onOpen}
           />
-          {visibleLiveEvents.length === 0 ? (
-            <View style={styles.liveEmpty} accessibilityLiveRegion="polite">
-              <Icon name={liveScope === LIVE_EVENT_SCOPE.WORLDWIDE ? "globe" : "pin"} size={19} color={colors.textFaint} />
-              <Text style={styles.liveEmptyText}>
-                {discoverySidebarStatus === "loading"
-                  ? "Loading upcoming events…"
-                  : liveScope === LIVE_EVENT_SCOPE.LOCAL
-                    ? "No events are listed near your home area yet. Try Worldwide."
-                    : `No upcoming events are listed for ${region} yet.`}
-              </Text>
+          {eventRecovery ? (
+            <View style={[styles.liveEmpty, styles.eventRecovery]} accessibilityLiveRegion="polite">
+              <View style={styles.eventRecoveryMessage}>
+                {eventRecovery.kind === "loading" ? <ActivityIndicator size="small" color={colors.amber} /> : <Icon name={liveScope === LIVE_EVENT_SCOPE.WORLDWIDE ? "globe" : "pin"} size={19} color={colors.textFaint} />}
+                <Text style={styles.liveEmptyText} selectable accessibilityRole={eventRecovery.kind === "error" ? "alert" : undefined}>{eventRecovery.message}</Text>
+              </View>
+              {eventRecovery.kind !== "loading" && <View style={styles.eventRecoveryActions}>
+                {eventRecovery.kind === "error" && <Pressable style={({ focused, pressed }) => [styles.recoveryAction, pressed && styles.cardPressed, focused && focusRing]} onPress={() => selectEventRange(selectedRangeDays)} accessibilityRole="button" accessibilityLabel="Try loading this event range again">
+                  <Icon name="search" size={15} color={colors.amber} /><Text style={styles.recoveryActionText}>Try again</Text>
+                </Pressable>}
+                {eventRecovery.nextDays && <Pressable style={({ focused, pressed }) => [styles.recoveryAction, pressed && styles.cardPressed, focused && focusRing]} onPress={() => selectEventRange(eventRecovery.nextDays)} accessibilityRole="button" accessibilityLabel={`Look for events over the next ${eventRecovery.nextDays} days`}>
+                  <Icon name="calendar" size={15} color={colors.amber} /><Text style={styles.recoveryActionText}>Look ahead {eventRecovery.nextDays} days</Text>
+                </Pressable>}
+                {eventRecovery.worldwide && <Pressable style={({ focused, pressed }) => [styles.recoveryAction, pressed && styles.cardPressed, focused && focusRing]} onPress={() => pickRegion("Worldwide")} accessibilityRole="button" accessibilityLabel="Browse upcoming events worldwide">
+                  <Icon name="globe" size={15} color={colors.amber} /><Text style={styles.recoveryActionText}>Try Worldwide</Text>
+                </Pressable>}
+                {eventRecovery.kind === "empty" && !eventRecovery.nextDays && !eventRecovery.worldwide && <Pressable style={({ focused, pressed }) => [styles.recoveryAction, pressed && styles.cardPressed, focused && focusRing]} onPress={() => setProgramme("cities")} accessibilityRole="button" accessibilityLabel="Browse music cities">
+                  <Icon name="pin" size={15} color={colors.amber} /><Text style={styles.recoveryActionText}>Browse cities</Text>
+                </Pressable>}
+              </View>}
             </View>
           ) : (
             <View style={styles.liveRows}>
@@ -738,7 +760,7 @@ export default function DiscoverScreen({
               {"Showing " + visibleLiveEvents.length + " event" + (visibleLiveEvents.length === 1 ? "" : "s") + " over the next " + selectedRangeDays + " days."}
             </Text>
           ) : null}
-          {rangeHasMore ? (
+          {rangeHasMore && !eventRecovery ? (
             <Pressable
               style={({ focused, pressed }) => [styles.loadMoreEvents, pressed && styles.cardPressed, focused && focusRing, (eventRange.status === "loading" || eventRange.status === "refreshing") && styles.loadMoreEventsDisabled]}
               onPress={loadMoreEvents}
@@ -975,6 +997,11 @@ const styles = StyleSheet.create({
   loadMoreEventsText: { color: colors.amber, fontFamily: font, fontSize: 12, fontWeight: "900" },
   liveEmpty: { minHeight: 82, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 9, padding: 14, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surface },
   liveEmptyText: { flex: 1, color: colors.textDim, fontFamily: font, fontSize: 12, lineHeight: 17 },
+  eventRecovery: { alignItems: "stretch", flexDirection: "column", gap: 12 },
+  eventRecoveryMessage: { flexDirection: "row", alignItems: "center", gap: 9 },
+  eventRecoveryActions: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  recoveryAction: { minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7, paddingHorizontal: 12, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.bgElev },
+  recoveryActionText: { color: colors.amber, fontFamily: font, fontSize: 12, fontWeight: "800" },
   cardPressed: { opacity: 0.82, transform: [{ scale: 0.99 }] },
   refreshNotice: { minHeight: 38, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, borderRadius: radius.pill, backgroundColor: colors.bgElev },
   refreshNoticeText: { color: colors.textDim, fontFamily: font, fontSize: 12, fontWeight: "700" },

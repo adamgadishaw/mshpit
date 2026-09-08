@@ -1,8 +1,8 @@
 export const SIGNUP_ONBOARDING_VERSION = 1;
 
-// Only accounts explicitly created with an incomplete onboarding version enter
-// this flow. A missing value belongs to an older account and is treated as
-// complete, so shipping a new walkthrough never ambushes every existing member.
+// Offer optional setup only to explicitly unfinished accounts. This is not an
+// access gate: browsing never requires completing the walkthrough. A missing
+// version belongs to an older account and is treated as complete.
 export function needsSignupOnboarding(session, currentVersion = SIGNUP_ONBOARDING_VERSION) {
   if (!session?.id) return false;
   const version = session.onboardingVersion;

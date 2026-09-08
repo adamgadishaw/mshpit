@@ -17,12 +17,18 @@ const optionalCount = (value) => {
 export const LANDING_IDENTITY_COPY = Object.freeze({
   kicker: "REMEMBER THE NIGHT. FIND WHAT'S NEXT.",
   compactKicker: "REMEMBER. RATE. DISCOVER.",
-  headline: "The shows you saw.",
-  headlineAccent: "The taste you built.",
-  body: "Remember every show with photos, ratings, and the people who were there. Discover your next night through fans whose taste you trust.",
+  headline: "Find your next show.",
+  headlineAccent: "Hear from the crowd.",
+  body: "Read concert reviews, see photos from the crowd, and explore upcoming shows. Find artists and venue guides, then keep a record of your own nights.",
   signupAction: "Create an account",
-  browseAction: "Browse shows and artists",
+  browseAction: "Find concerts",
 });
+
+export const LANDING_BROWSE_LINKS = Object.freeze([
+  { key: "artists", href: "/artists", label: "Artists" },
+  { key: "venues", href: "/venues", label: "Venue guides", compactLabel: "Venues" },
+  { key: "cities", href: "/cities", label: "Music cities", compactLabel: "Cities" },
+]);
 
 export function landingKicker(compact = false) {
   return compact ? LANDING_IDENTITY_COPY.compactKicker : LANDING_IDENTITY_COPY.kicker;

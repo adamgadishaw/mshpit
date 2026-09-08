@@ -124,7 +124,8 @@ test("universal search offers typed result filters without member-count marketin
     unifiedSearchCategories({ canSearchPeople: true, canSearchSongs: true }).map(({ label }) => label),
     ["All", "Artists", "Shows", "Venues", "People", "Fan clubs", "Songs"],
   );
-  assert.match(search, /searchCategories\.map/);
+  assert.match(search, /availableSearchCategories\(searchCategories, resultGroups\)/);
+  assert.match(search, /availableCategories\.map/);
   assert.match(search, /accessibilityLabel="Filter search results"/);
   assert.match(search, /hidden=\{!showCategory\("artists"\)\}/);
   assert.match(search, /hidden=\{!showCategory\("shows"\)\}/);

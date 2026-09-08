@@ -5,9 +5,11 @@ import Svg, { Defs, LinearGradient, Stop, Rect } from "react-native-svg";
 import { displayFont, focusRing, mono, radius } from "../theme";
 import BrandMark from "../components/BrandMark";
 import Icon from "../components/Icon";
+import { PublicPressableLink } from "../components/PublicWebLinks";
 import { useStore } from "../store";
 import {
   LANDING_IDENTITY_COPY,
+  LANDING_BROWSE_LINKS,
   landingKicker,
   landingLayoutMode,
   landingProofItems,
@@ -29,17 +31,17 @@ import { previewSrc } from "../lib/img";
 // frame and warms only the next so a phone never decodes the whole reel at once.
 // ----------------------------------------------------------------------------
 
-function LandingAction({ kind = "ghost", title, icon, onPress, accessibilityHint, fullWidth = false, compact = false }) {
+function LandingAction({ kind = "ghost", title, icon, onPress, href, accessibilityHint, fullWidth = false, compact = false }) {
   const [hovered, setHovered] = useState(false);
   const [focused, setFocused] = useState(false);
   const primary = kind === "primary";
   const login = kind === "login";
   return (
-    <Pressable
-      accessibilityRole="button"
+    <PublicPressableLink
+      href={href}
       accessibilityLabel={title}
       accessibilityHint={accessibilityHint}
-      onPress={onPress}
+      onNavigate={onPress}
       onHoverIn={() => setHovered(true)}
       onHoverOut={() => setHovered(false)}
       onFocus={() => setFocused(true)}
@@ -61,7 +63,7 @@ function LandingAction({ kind = "ghost", title, icon, onPress, accessibilityHint
         login && styles.actionLoginText,
         compact && styles.actionTextCompact,
       ]}>{title}</Text>
-    </Pressable>
+    </PublicPressableLink>
   );
 }
 
@@ -128,7 +130,7 @@ function LandingLiveRow({ item, onPress }) {
   );
 }
 
-export default function LandingScreen({ onLogin, onSignup, onBrowse, onSuggestion, onOpenEvent, onExploreLounges }) {
+export default function LandingScreen({ onLogin, onSignup, onBrowse, onBrowseCategory, onSuggestion, onOpenEvent, onExploreLounges }) {
   const { discoverySidebar } = useStore();
   const { width, height, fontScale } = useWindowDimensions();
   const { wide, compact, scrollPitch } = landingLayoutMode({ width, height, fontScale });
@@ -357,21 +359,32 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse, onSuggestio
           <View style={[styles.ctas, !wide && styles.ctasNarrow, compact && styles.ctasCompact]}>
             <LandingAction
               kind="primary"
-              title={LANDING_IDENTITY_COPY.signupAction}
+              title={LANDING_IDENTITY_COPY.browseAction}
               icon="ticket"
-              onPress={onSignup}
-              fullWidth={compact}
-              compact={compact}
-              accessibilityHint="Creates a Mshpit account"
-            />
-            <LandingAction
-              title={compact ? "Browse shows" : LANDING_IDENTITY_COPY.browseAction}
-              icon="discover"
+              href="/events"
               onPress={onBrowse}
               fullWidth={compact}
               compact={compact}
-              accessibilityHint="Opens Mshpit without creating an account"
+              accessibilityHint="Browse upcoming concerts without creating an account"
             />
+            <LandingAction
+              title={LANDING_IDENTITY_COPY.signupAction}
+              href="/signup"
+              onPress={onSignup}
+              fullWidth={compact}
+              compact={compact}
+              accessibilityHint="Create a Mshpit account to share your own nights"
+            />
+          </View>
+
+          <View style={[styles.browseLinks, !wide && styles.browseLinksCentered]} accessibilityLabel="Explore without an account">
+            {LANDING_BROWSE_LINKS.map((item) => (
+              <PublicPressableLink key={item.key} href={item.href} accessibilityLabel={item.label} onNavigate={() => onBrowseCategory?.(item.key)}
+                style={({ focused, pressed }) => [styles.browseLink, focused && focusRing, pressed && styles.actionPressed]}>
+                <Text style={styles.browseLinkText}>{compact ? item.compactLabel || item.label : item.label}</Text>
+                <Icon name="chevron-right" size={12} color="#F2A65A" />
+              </PublicPressableLink>
+            ))}
           </View>
 
           {!compact && <View
@@ -657,6 +670,11 @@ const styles = StyleSheet.create({
   liveRowDetail: { color: "rgba(244,239,231,0.58)", fontSize: 9.5, lineHeight: 14, marginTop: 1 },
   loungeExplainer: { flex: 1, minHeight: 106, flexDirection: "row", alignItems: "center", gap: 9, padding: 11, borderRadius: radius.sm, borderWidth: 1, borderColor: "rgba(231,106,153,0.25)", backgroundColor: "rgba(231,106,153,0.06)", ...Platform.select({ web: { cursor: "pointer" } }) },
   loungeExplainerDetail: { color: "rgba(244,239,231,0.62)", fontSize: 10, lineHeight: 15, marginTop: 3 },
+
+  browseLinks: { flexDirection: "row", flexWrap: "wrap", gap: 4, marginTop: 8 },
+  browseLinksCentered: { justifyContent: "center" },
+  browseLink: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: 3, paddingHorizontal: 8, borderRadius: radius.sm },
+  browseLinkText: { color: "#F2A65A", fontSize: 12, fontWeight: "800" },
 
   feedbackLink: {
     minHeight: 44, marginTop: 12, flexDirection: "row", alignItems: "center", gap: 8,

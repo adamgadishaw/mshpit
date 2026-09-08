@@ -25,5 +25,7 @@ test("first-run guidance states the product and its complete social concert loop
 test("the main menu keeps the product guide available after onboarding", () => {
   assert.match(menu, /title:\s*"How MSHpit works"/);
   assert.match(menu, /Discover a show, attend, log the night, and find your people\./);
-  assert.match(app, /onHowItWorks=\{\(\) => setWelcome\(true\)\}/);
+  assert.match(app, /onHowItWorks=\{\(\) => go\(\{ welcomeGuide: true \}\)\}/);
+  assert.match(app, /nav.welcomeGuide && session\) overlay = <WelcomeScreen onClose=\{back\}/);
+  assert.doesNotMatch(app, /setWelcome\(/);
 });

@@ -22,7 +22,7 @@ const message = (error, fallback) => String(typeof error === "string" ? error : 
 
 // Saved photos survive refresh; unfinished changes stay visible until confirmed
 // or explicitly discarded. Nothing sensitive is persisted in browser storage.
-export default function SignupOnboardingScreen({ session, initialStep = 1, onComplete, onSkip, onSaveProfile }) {
+export default function SignupOnboardingScreen({ session, initialStep = 1, onComplete, onClose, closeGuardRef, onSaveProfile }) {
   const { updateProfile, deleteAccount, resendEmailVerification } = useStore();
   const saveProfile = onSaveProfile || updateProfile;
   const insets = useSafeAreaInsets();
@@ -31,6 +31,7 @@ export default function SignupOnboardingScreen({ session, initialStep = 1, onCom
   const owner = useRef(session.id);
   owner.current = session.id;
   const active = useRef(null);
+  const closeState = useRef(null);
   const initial = signupProfileSnapshot(session);
   const [draft, setDraft] = useState(initial);
   const [saved, setSaved] = useState(initial);
@@ -40,11 +41,13 @@ export default function SignupOnboardingScreen({ session, initialStep = 1, onCom
   const [status, setStatus] = useState("");
   const [discardPrompt, setDiscardPrompt] = useState(false);
   const [cancelPrompt, setCancelPrompt] = useState(false);
+  const [leaveRequest, setLeaveRequest] = useState(null);
   const [handleLocked, setHandleLocked] = useState(() => signupHandleLocked(session));
-  const [destination, setDestination] = useState("shows");
+  const [destination, setDestination] = useState("feed");
   const [touched, setTouched] = useState(false);
   const busy = !!operation;
   const dirty = Object.keys(signupProfilePatch(draft, saved)).length > 0;
+  closeState.current = { dirty };
   const handleInvalid = touched && !isHandle(draft.handle);
   const firstName = String(session.name || "there").trim().split(/\s+/)[0];
   const homeCity = session.home?.city?.split(",")[0];
@@ -61,7 +64,19 @@ export default function SignupOnboardingScreen({ session, initialStep = 1, onCom
     setDraft(next); setSaved(next); setStep(initialStep === 2 ? 2 : 1);
     setHandleLocked(signupHandleLocked(session));
     setOperation(null); setError(""); setStatus(""); setDiscardPrompt(false);
+    setLeaveRequest(null); setCancelPrompt(false); setDestination("feed");
   }, [session.id, initialStep]);
+  useEffect(() => {
+    if (!closeGuardRef) return undefined;
+    // Header, browser and Android Back use the same shell guard. Leaving is
+    // local: neither completing setup nor deleting the account is required.
+    const guard = (request) => {
+      if (closeState.current?.dirty || active.current) setLeaveRequest(request);
+      else request.proceed();
+    };
+    closeGuardRef.current = guard;
+    return () => { if (closeGuardRef.current === guard) closeGuardRef.current = null; };
+  }, [closeGuardRef]);
   useEffect(() => {
     if (signupHandleLocked(session)) setHandleLocked(true);
   }, [session.handleChangeAvailableAt]);
@@ -163,7 +178,7 @@ export default function SignupOnboardingScreen({ session, initialStep = 1, onCom
     const task = begin("finishing");
     if (!task) return;
     try {
-      const callback = onComplete || onSkip;
+      const callback = onComplete;
       if (typeof callback !== "function") throw new Error("Setup could not finish. Please try again.");
       const result = await callback({ destination: next, expectedAccountId: task.accountId, signal: task.controller.signal });
       if (current(task) && result?.ok !== true) throw result?.error || new Error("Setup could not be confirmed. Please try again.");
@@ -171,13 +186,20 @@ export default function SignupOnboardingScreen({ session, initialStep = 1, onCom
     finally { end(task); }
   };
 
+  if (leaveRequest) return <View style={[styles.safe, styles.leave]}>
+    <Text style={styles.title} accessibilityRole="header">Leave profile setup?</Text>
+    <Text style={styles.subtitle}>Your account and saved changes stay. Unsaved edits on this screen will be discarded. You can return through Settings.</Text>
+    {busy && <Text style={styles.hint}>A save already sent may still finish. Leaving won’t send another save or delete your account.</Text>}
+    <Button title="Keep editing" onPress={() => { const request = leaveRequest; setLeaveRequest(null); request.cancel?.(); }} />
+    <Button title="Leave setup" variant="secondary" onPress={() => { active.current?.controller.abort(); active.current = null; leaveRequest.proceed(); }} />
+  </View>;
   if (cancelPrompt) return <AccountPasswordForm key={session.id} session={session} deleteAccount={deleteAccount} cancelSetup onClose={() => setCancelPrompt(false)} />;
 
   return <View style={styles.safe} accessibilityViewIsModal>
     <KeyboardAvoidingView style={styles.keyboard} behavior={Platform.OS === "ios" ? "padding" : undefined}>
       <View style={styles.header}><View style={styles.headerInner}>
         <View style={styles.brand}><BrandMark size={30} color={colors.amber} /><View><Text style={styles.brandName}>MSHPIT</Text><Text style={styles.brandLine}>LIVE MUSIC, REMEMBERED</Text></View></View>
-        <Pressable onPress={() => setCancelPrompt(true)} disabled={busy} accessibilityRole="button" accessibilityLabel="Cancel signup" style={({ focused }) => [styles.later, focused && focusRing]}><Text style={styles.laterText}>Cancel</Text></Pressable>
+        <Pressable onPress={onClose} accessibilityRole="button" accessibilityLabel="Back to browsing" style={({ focused }) => [styles.later, focused && focusRing]}><Icon name="chevron-left" size={16} color={colors.textDim} /><Text style={styles.laterText}>Explore</Text></Pressable>
       </View></View>
       <View style={styles.progress} accessible accessibilityRole="progressbar" accessibilityLabel="Profile setup progress" accessibilityValue={{ min: 1, max: TOTAL_STEPS, now: step }} aria-valuemin={1} aria-valuemax={TOTAL_STEPS} aria-valuenow={step}>
         <Text style={styles.kicker}>STEP {step} OF {TOTAL_STEPS} · {step === 1 ? "YOUR PROFILE" : "YOUR FIRST NIGHT"}</Text>
@@ -214,14 +236,15 @@ export default function SignupOnboardingScreen({ session, initialStep = 1, onCom
           <View style={styles.privacy}><Icon name="shield" size={18} color={colors.textDim} /><Text style={styles.privacyText}>Your profile photo and banner follow your profile’s audience settings. Use photos you’re happy to share.</Text></View>
         </> : <>
           <Text style={styles.title} accessibilityRole="header">You’re on the list.</Text>
-          <Text style={styles.subtitle}>{homeCity ? "Make " + homeCity + " your next night out. " : "Your next great night starts somewhere. "}Where do you want to start?</Text>
+          <Text style={styles.subtitle}>{homeCity ? "Welcome to the music in " + homeCity + ". " : "Make yourself at home. "}Browse at your own pace. Everything below is optional.</Text>
           {city && <View style={{ marginBottom: space(4) }}><CityWelcomeCard city={city} compact hideActions /></View>}
-          <WelcomeGuide selected={destination} onChoose={setDestination} busy={busy} />
-          <Text style={styles.savedNote}>Finish setup keeps your account. Cancel deletes the unfinished account and queues its uploads for removal. Leaving setup keeps your progress, subject to the inactivity policy. Confirm your email before posting, messaging or following anyone.</Text>
+          <WelcomeGuide selected={destination} onChoose={setDestination} busy={busy} includeExplore />
+          <Text style={styles.savedNote}>Finish setup marks your profile ready. Exploring now keeps your account and saved progress, subject to the inactivity policy. Confirm your email before posting, messaging or following anyone.</Text>
         </>}
         {discardPrompt && <View style={styles.discard} accessibilityRole="alert"><Text style={styles.discardTitle}>Keep your changes?</Text><Text style={styles.hint}>Some profile changes aren’t saved yet.</Text><Button title="Save and continue" onPress={() => void continueProfile()} /><Button title="Finish setup without these changes" variant="secondary" onPress={() => void finish("feed", true)} /><Button title="Cancel signup" variant="secondary" onPress={() => setCancelPrompt(true)} /></View>}
         {!!error && <Text style={styles.error} accessibilityRole="alert" accessibilityLiveRegion="assertive" role="alert">{error}</Text>}
         {!!status && <Text style={styles.status} accessibilityLiveRegion="polite" role="status">{status}</Text>}
+        <Pressable onPress={() => setCancelPrompt(true)} disabled={busy} accessibilityRole="button" accessibilityLabel="Cancel signup" style={({ focused }) => [styles.cancelSignup, focused && focusRing]}><Text style={styles.hint}>Cancel signup and delete this unfinished account</Text></Pressable>
       </ScrollView>
       <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, 12) }]}><View style={styles.footerInner}>
         {step === 2 && <Button title="Back" variant="secondary" onPress={() => { setStep(1); setError(""); }} disabled={busy} style={styles.back} />}
@@ -242,7 +265,9 @@ const styles = StyleSheet.create({
   brand: { flexDirection: "row", alignItems: "center", gap: space(2) },
   brandName: { color: colors.text, fontFamily: mono, fontSize: 13, fontWeight: "900", letterSpacing: 2.8 },
   brandLine: { color: colors.textFaint, fontFamily: mono, fontSize: 7, letterSpacing: 1.3, marginTop: 3 },
-  later: { minHeight: 44, minWidth: 56, alignItems: "center", justifyContent: "center", borderRadius: radius.sm }, laterText: { color: colors.textDim, fontWeight: "700", fontSize: 13 },
+  later: { minHeight: 44, minWidth: 76, flexDirection: "row", gap: 4, alignItems: "center", justifyContent: "center", borderRadius: radius.sm }, laterText: { color: colors.textDim, fontWeight: "700", fontSize: 13 },
+  leave: { padding: space(5), gap: space(3), justifyContent: "center", width: "100%", maxWidth: 648, alignSelf: "center" },
+  cancelSignup: { alignSelf: "flex-start", minHeight: 44, justifyContent: "center", marginTop: space(4), borderRadius: radius.sm },
   progress: { width: "100%", maxWidth: 648, alignSelf: "center", paddingHorizontal: space(4), paddingTop: space(4), paddingBottom: space(2) },
   kicker: { fontFamily: mono, fontSize: 10, color: colors.amber, fontWeight: "800", letterSpacing: 1.5 }, progressBars: { flexDirection: "row", gap: 6, marginTop: space(2) }, progressBar: { flex: 1, height: 3, backgroundColor: colors.line, borderRadius: radius.pill }, progressOn: { backgroundColor: colors.amber },
   content: { width: "100%", maxWidth: 648, alignSelf: "center", paddingHorizontal: space(4), paddingTop: space(3), paddingBottom: space(6) },

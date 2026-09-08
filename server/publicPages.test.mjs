@@ -181,6 +181,29 @@ test("privacy and terms mirror the dated in-app policies and expose support", ()
   assert.doesNotMatch(terms, /building interest profiles and targeting/);
 });
 
+test("public account terms exactly match the approved in-app eligibility, setup, and inactivity copy", async () => {
+  const source = await readFile(new URL("../src/screens/TermsScreen.jsx", import.meta.url), "utf8");
+  const appSections = new Map([...source.matchAll(/\{\s*h:\s*("(?:[^"\\]|\\.)*")\s*,\s*p:\s*("(?:[^"\\]|\\.)*")/g)]
+    .map((match) => [JSON.parse(match[1]), JSON.parse(match[2])]));
+  const page = publicPageFor("/terms");
+  const html = renderPublicPage("/terms");
+  for (const heading of ["Eligibility", "Shared email and account setup", "Account inactivity"]) {
+    assert.ok(appSections.has(heading), `the in-app policy must include ${heading}`);
+    const sections = page.sections.filter((section) => section.heading === heading);
+    assert.equal(sections.length, 1, `the public policy must include ${heading} exactly once`);
+    assert.deepEqual(sections[0].paragraphs, [appSections.get(heading)],
+      `${heading} must not drift between the public document and signup policy`);
+    assert.ok(html.includes(`<h2>${heading}</h2>`), `${heading} must be readable without JavaScript`);
+  }
+  assert.doesNotMatch(html, /One account per person/);
+  assert.match(html, /Up to two accounts may use one email address/);
+  assert.match(html, /permanently designated Owner account/);
+  assert.match(html, /dormant after 365 days/);
+  assert.match(html, /After 730 inactive days/);
+  assert.match(html, /confirm delivery of an account-specific email warning and allow at least 30 further days/);
+  assert.match(html, /not at an assumed historical creation date/);
+});
+
 test("legal acceptance version stays aligned with both material policy dates", () => {
   assert.equal(PRIVACY_POLICY_UPDATED, TERMS_POLICY_UPDATED);
   assert.match(LEGAL_ACCEPTANCE_VERSION, /^\d{4}-\d{2}-\d{2}(?:\.[1-9]\d*)?$/);

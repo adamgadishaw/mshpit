@@ -23,7 +23,7 @@ test("welcome navigation and Nearby render the intended initial tab and missing-
   const app = readFileSync(new URL("../../App.js", import.meta.url), "utf8");
   const nearby = readFileSync(new URL("../screens/NearbyScreen.jsx", import.meta.url), "utf8");
   assert.match(app, /<NearbyScreen[^>]*initialTab=\{nav\.nearbyTab\}/);
-  assert.match(app, /onOpenNearby=\{\(\) => \{ setWelcome\(false\); go\(\{ nearby: true, nearbyTab: "shows" \}\); \}\}/);
+  assert.match(app, /onOpenNearby=\{\(\) => replace\(\{ nearby: true, nearbyTab: "shows" \}\)\}/);
   assert.match(nearby, /useState\(\(\) => nearbyInitialTab\(initialTab\)\)/);
   assert.match(nearby, /useEffect\(\(\) => \{ setTab\(nearbyInitialTab\(initialTab\)\); \}, \[initialTab\]\)/);
   assert.match(nearby, /\{locationPrompt\.title\}/);

@@ -59,7 +59,7 @@ function Toggle({ value, busy = false }) {
   );
 }
 
-export default function SettingsScreen({ onClose, onManageProfile, onOpenProfile, onOpenPrivacy, onOpenTerms, onOpenDiagnostics, onOpenDeleteAccount, onLogout, initialAccountAction = null }) {
+export default function SettingsScreen({ onClose, onManageProfile, onFinishSetup, onOpenProfile, onOpenPrivacy, onOpenTerms, onOpenDiagnostics, onOpenDeleteAccount, onLogout, initialAccountAction = null }) {
   const { session, deleteAccount, switchLinkedAccount, chooseTheme, blockedUsers, unblockUser, blockedDirectoryStatus, refreshBlockedDirectory, isBlockMutationPending, mutedUsers, unmuteUser, exportMyData, setAnalyticsEnabled, setProfileSearchIndexingEnabled, setDirectMessagePolicy, setAgeBandClassification, setProfileAudience, setAnnouncementEmailsEnabled } = useStore();
   const blocked = session ? blockedUsers() : [];
   const muted = session ? mutedUsers() : [];
@@ -188,6 +188,7 @@ export default function SettingsScreen({ onClose, onManageProfile, onOpenProfile
         {session && (
           <>
             <Text style={styles.section}>ACCOUNT</Text>
+            {onFinishSetup && <Row icon="you" label="Finish profile setup" sub="Optional photos, banner and a welcome to your city" onPress={onFinishSetup} />}
             <Row icon="shield" label="Change password" sub="Only changes the password for this account" onPress={() => setAccountAction("password")} />
             <Row icon="you" label="Switch account" sub="Your connected profiles, without signing in again" onPress={() => setAccountAction("switch")} />
             <Row icon="plus" label="Add another account" sub={session.emailVerified ? "Up to two accounts with this email" : "Confirm your email first"} disabled={!session.emailVerified} onPress={() => setAccountAction("add")} />

@@ -37,7 +37,7 @@ test("phone live header lets its title shrink without clipping the worldwide bad
 test("landing copy names the exact actions and removes theatrical placeholders", () => {
   const combined = `${landing}\n${presentation}\n${journey}`;
   assert.match(combined, /Find a show, log and rate it, share a review or photo, and connect with other fans\./);
-  assert.match(combined, /Browse shows and artists/);
+  assert.match(combined, /Find concerts/);
   assert.match(combined, /Upcoming concerts and show discussions/);
   assert.match(combined, /concert venues/);
   assert.doesNotMatch(combined, /Shows ahead\. Rooms waiting\.|Find → Attend → Log → Share → Connect|rooms in the PIT|Explore the PIT/);
@@ -75,13 +75,24 @@ test("compact phone hero keeps secondary sections out of the first-screen compos
   assert.match(landing, /\{!compact && <View[\s\S]*styles\.journeyRail/);
   assert.match(landing, /\{!compact && hasLandingLive \? \(/);
   assert.match(landing, /\{!compact && !!onSuggestion && \(/);
-  assert.match(landing, /title=\{compact \? "Browse shows" : LANDING_IDENTITY_COPY\.browseAction\}/);
+  assert.match(landing, /title=\{LANDING_IDENTITY_COPY\.browseAction\}/);
   assert.match(landing, /headlineCompact:\s*\{[^}]*fontSize:\s*34[^}]*lineHeight:\s*36/s);
   assert.match(landing, /proofItemCompact:\s*\{[^}]*minHeight:\s*78/s);
 });
 
 test("landing header keeps one distinct information link instead of duplicate directory destinations", () => {
-  assert.match(landing, /href="\/about"[\s\S]*?>About<\/Text>/);
-  assert.doesNotMatch(landing, /href="\/artists"/);
-  assert.doesNotMatch(landing, /href="\/events"/);
+  const header = landing.slice(landing.indexOf("function WebPublicNav"), landing.indexOf("function landingDateLabel"));
+  assert.match(header, /href="\/about"[\s\S]*?>About<\/Text>/);
+  assert.doesNotMatch(header, /href="\/artists"|href="\/events"/);
+});
+
+test("landing concert entry opens the event directory and category links remain crawlable", () => {
+  const app = source("../../App.js");
+  assert.match(app, /onBrowse=\{\(\) => openPublicDirectory\("events"\)\}/);
+  assert.match(app, /category === "artists"[\s\S]{0,60}openPublicDirectory\("artists"\)/);
+  assert.match(app, /category === "venues"\) go\(\{ venues: true \}\)/);
+  assert.match(app, /category === "cities"\) go\(\{ cityGuide: \{ directory: true \} \}\)/);
+  assert.match(landing, /href="\/events"\s+onPress=\{onBrowse\}/);
+  assert.match(landing, /<PublicPressableLink key=\{item.key\} href=\{item.href\}/);
+  assert.match(landing, /browseLink:\s*\{[^}]*minHeight:\s*44/);
 });

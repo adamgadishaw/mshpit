@@ -32,6 +32,14 @@ test("the persistent reminder cannot be dismissed and the expanded gate keeps ac
   assert.match(confirmation, /You can browse without confirming/);
 });
 
+test("the compact reminder reserves layout space and cannot cover setup's Back control", () => {
+  const compactStyle = banner.slice(banner.indexOf("  banner: {"), banner.indexOf("  bannerMark:"));
+  assert.doesNotMatch(compactStyle, /position:|zIndex:|top:/);
+  assert.match(banner, /style=\{styles.bannerSlot\}/);
+  assert.match(app, /session.emailVerified === false && !nav.signupSetup/);
+  assert.ok(app.indexOf("<VerifyEmailBanner") < app.indexOf('{landingSurface === "pending"'));
+});
+
 test("new-account artist picks intercept save before the protected profile request", () => {
   const guard = picks.indexOf("if (needsEmailVerification)");
   const mutation = picks.indexOf("await updateProfile");
@@ -68,5 +76,5 @@ test("confirmation and expired links offer a direct login continuation without a
   assert.deepEqual(calls, ["clear-token", "enter", { auth: true, authMode: "login" }]);
   assert.equal(stack.length, 2, "login must open above the root so its completion can go back");
   stack.pop();
-  assert.deepEqual(stack, [{}], "successful login returns to the root where profile setup can appear");
+  assert.deepEqual(stack, [{}], "successful login returns to browsing, not a setup gate");
 });

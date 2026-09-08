@@ -16,13 +16,24 @@ test("signup onboarding UI and integration files remain parseable", () => {
   }
 });
 
-test("verified server account state opens the walkthrough on web and native", () => {
+test("unfinished accounts can browse; setup opens only through an explicit navigation entry", () => {
   assert.match(app, /needsSignupOnboarding\(session\)/);
-  assert.match(app, /<SignupOnboardingScreen key=\{session.id\} session=\{session\} onComplete=\{finishSignupOnboarding\}/);
+  assert.match(app, /nav.signupSetup && session\) overlay = <SignupOnboardingScreen/);
+  assert.match(app, /onClose=\{back\} closeGuardRef=\{composerCloseGuardRef\}/);
+  assert.doesNotMatch(app, /signupOnboardingVisible && session &&/);
+  const visible = app.slice(app.indexOf("const signupOnboardingVisible"), app.indexOf("const finishSignupOnboarding"));
+  assert.match(visible, /!!nav.signupSetup/);
+  assert.doesNotMatch(visible, /needsSignupOnboarding/);
+  assert.match(app, /if \(top\?\.signupSetup \|\| top\?\.welcomeGuide\) return \[\{\}\]/);
   assert.match(app, /completeSignupOnboarding\(\{ expectedAccountId, signal \}\)/);
   assert.match(app, /expectedAccountId === sessionRef.current\?\.id/);
   assert.doesNotMatch(app, /save\("pit\.welcomePending"/);
   assert.doesNotMatch(app, /load\("pit\.welcomePending"/);
+  const feed = read("../screens/FeedScreen.jsx");
+  const settings = read("../screens/SettingsScreen.jsx");
+  assert.match(feed, /label="Finish profile setup"/);
+  assert.match(settings, /label="Finish profile setup"/);
+  assert.match(feed, /Dismiss getting started guide/);
 });
 
 test("signup enters real account setup or a password-proven choice, never a false confirmation", () => {
@@ -61,6 +72,12 @@ test("the walkthrough saves both profile images with account-bound confirmation 
   assert.match(onboarding, /controller.abort\(\)/);
   assert.match(onboarding, /accessibilityRole="progressbar"/);
   assert.match(onboarding, /accessibilityLiveRegion="assertive"/);
+  assert.match(onboarding, /\[destination, setDestination\] = useState\("feed"\)/);
+  assert.match(onboarding, /onPress=\{onClose\} accessibilityRole="button" accessibilityLabel="Back to browsing"/);
+  assert.match(onboarding, /closeGuardRef.current = guard/);
+  assert.match(onboarding, /title="Leave setup"/);
+  assert.match(onboarding, /leaveRequest.proceed\(\)/);
+  assert.doesNotMatch(onboarding, /onComplete \|\| onSkip/);
 });
 
 test("profile editing never calls a partial local member cache username availability", () => {

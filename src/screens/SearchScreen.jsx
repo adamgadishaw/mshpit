@@ -1,6 +1,6 @@
 import { useMemo, useState, useEffect, useRef } from "react";
 import { ActivityIndicator, View, Text, StyleSheet, ScrollView, TextInput, Pressable, Image } from "react-native";
-import { colors, mono, radius, roleColor } from "../theme";
+import { colors, focusRing, mono, radius, roleColor } from "../theme";
 import { ratedShows } from "../data";
 import { ingestedArtists } from "../seed/ingested";
 import { useStore } from "../store";
@@ -28,6 +28,7 @@ import { openTicketLink } from "../lib/ticketLinks";
 import { recordGuestSearch } from "../features/analytics/services/guestSearchAnalyticsApi.mjs";
 import { ENABLE_DEMO_DATA, ENABLE_MUSIC_PLAYER } from "../config/runtime.mjs";
 import CityDiscoveryTiles from "../features/cities/CityDiscoveryTiles";
+import { availableSearchCategories } from "../components/discover/discovery-recovery.mjs";
 
 const EMPTY_LOOKUP_STATE = Object.freeze({ busy: false, message: "" });
 const EMPTY_ROWS = Object.freeze([]);
@@ -142,14 +143,16 @@ function EventRow({ t, onOpenShow, onOpenVenue, onOpenTicket }) {
 }
 
 // A collapsible-free section: header + rows. Renders nothing when empty.
-function Section({ icon, tint, title, count, rows, hidden = false }) {
+function Section({ icon, tint, title, count, rows, hidden = false, onShowAll }) {
   if (hidden || !rows || rows.length === 0) return null;
   return (
     <View style={styles.section}>
       <View style={styles.secHead}>
         <Icon name={icon} size={13} color={tint} />
         <Text style={styles.secTitle} accessibilityRole="header">{title}</Text>
-        <Text style={styles.secCount}>{count}</Text>
+        {onShowAll ? <Pressable style={({ focused }) => [styles.sectionReveal, focused && focusRing]} onPress={onShowAll} accessibilityRole="button" accessibilityLabel={`Show all ${count} available ${title.toLowerCase()}`}>
+          <Text style={styles.sectionRevealText}>Show all {count}</Text><Icon name="chevron-right" size={14} color={colors.amber} />
+        </Pressable> : <Text style={styles.secCount}>{count}</Text>}
       </View>
       {rows}
     </View>
@@ -178,6 +181,14 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
   };
   const [focused, setFocused] = useState(false);
   const [activeCategory, setActiveCategory] = useState("all");
+  const resultScrollRef = useRef(null);
+  const searchInputRef = useRef(null);
+  const categoryRefs = useRef({});
+  const selectCategory = (key) => {
+    setActiveCategory(key);
+    resultScrollRef.current?.scrollTo?.({ y: 0, animated: false });
+    categoryRefs.current[key]?.focus?.();
+  };
   const [artistCache, setArtistCache] = useState({ scope: null, rows: [] });
   const [songCache, setSongCache] = useState({ scope: null, rows: [] });
   const [searchLoading, setSearchLoading] = useState(false);
@@ -216,6 +227,11 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
     if (lookupBusy || actionMessage) {
       setLookupState({ scope: lookupScope, value: EMPTY_LOOKUP_STATE });
     }
+  };
+  const clearSearch = () => {
+    changeQuery("");
+    setSearchError("");
+    searchInputRef.current?.focus?.();
   };
   const peopleScope = unifiedPeopleSearchScope(session?.id, blockedIds);
   const [peopleCache, setPeopleCache] = useState({ scope: null, query: "", rows: [] });
@@ -476,6 +492,10 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
   const exactArtist = artists.some((a) => a.name.toLowerCase() === query);
   const resultState = unifiedSearchState({ query, loading: searchLoading || !queryIsSettled, people, artists, songs, venues, events, clubs });
   const resultGroups = { people, artists, songs, venues, events, clubs };
+  const availableCategories = availableSearchCategories(searchCategories, resultGroups);
+  const alternativeCategories = availableCategories.filter((item) => item.key !== "all" && item.key !== activeCategory && item.count > 0);
+  const expandCategory = (key, rows) => !showBrowse && activeCategory === "all" && rows.length > SEARCH_ALL_PREVIEW_LIMIT
+    ? () => selectCategory(key) : undefined;
   const categoryGroupKey = activeCategory === "shows" ? "events" : activeCategory;
   const selectedRows = activeCategory === "all" ? [] : resultGroups[categoryGroupKey] || [];
   const visibleResultState = activeCategory === "all"
@@ -565,6 +585,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
         <View style={[styles.field, focused && styles.fieldFocused]}>
           <Icon name="search" size={18} color={focused ? colors.amber : colors.textDim} />
           <TextInput
+            ref={searchInputRef}
             style={styles.input}
             placeholder={session?.id ? "Search artists, people, shows, venues" : "Search artists, shows, venues"}
             placeholderTextColor={colors.textFaint}
@@ -582,20 +603,24 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
             accessibilityState={{ busy: searchLoading || !queryIsSettled }}
             returnKeyType="search"
           />
-          {!!q && <Pressable style={styles.fieldAction} onPress={() => { changeQuery(""); setSearchError(""); }} accessibilityRole="button" accessibilityLabel="Clear search"><Icon name="x" size={16} color={colors.textFaint} /></Pressable>}
+          {!!q && <Pressable style={styles.fieldAction} onPress={clearSearch} accessibilityRole="button" accessibilityLabel="Clear search"><Icon name="x" size={16} color={colors.textFaint} /></Pressable>}
         </View>
         {!!query && (
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
             contentContainerStyle={styles.categoryRail}
+            accessibilityRole="tablist"
             accessibilityLabel="Filter search results"
           >
-            {searchCategories.map((item) => {
+            {availableCategories.map((item) => {
               const selected = item.key === activeCategory;
+              const countReady = queryIsSettled && !searchLoading;
               return (
-                <Pressable key={item.key} style={[styles.categoryChip, selected && styles.categoryChipSelected]} onPress={() => setActiveCategory(item.key)} accessibilityRole="tab" accessibilityState={{ selected }}>
+                <Pressable key={item.key} ref={(node) => { categoryRefs.current[item.key] = node; }} style={({ focused }) => [styles.categoryChip, selected && styles.categoryChipSelected, focused && focusRing]} onPress={() => selectCategory(item.key)} accessibilityRole="tab" accessibilityLabel={countReady ? `${item.label}, ${item.count} available results` : item.label} accessibilityState={{ selected }}>
                   <Text style={[styles.categoryChipText, selected && styles.categoryChipTextSelected]}>{item.label}</Text>
+                  {countReady && <Text style={[styles.categoryCount, selected && styles.categoryChipTextSelected]}>{item.count}</Text>}
                 </Pressable>
               );
             })}
@@ -617,7 +642,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
         accessibilityLabel="Refresh search results"
         testID="search-refresh"
       >
-      <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.list} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+      <ScrollView ref={resultScrollRef} style={{ flex: 1 }} contentContainerStyle={styles.list} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentInsetAdjustmentBehavior="automatic">
         {(activeCategory === "all" || activeCategory === "venues") && <CityDiscoveryTiles query={settledQuery} limit={5} onOpenCity={onOpenCity} layout="rail" />}
         {surfaceRefreshError ? (
           <Text style={styles.surfaceRefreshError} accessibilityRole="alert" accessibilityLiveRegion="assertive">
@@ -671,6 +696,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
           hidden={!showCategory("people")}
           icon="you" tint={colors.gold}
           title="PEOPLE" count={people.length}
+          onShowAll={expandCategory("people", people)}
           rows={peopleRows.map((u) => (
             <PersonRow
               key={u.id}
@@ -687,6 +713,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
           hidden={!showCategory("artists")}
           icon="music" tint={colors.amber}
           title={showBrowse ? "SUGGESTED ARTISTS" : "ARTISTS"} count={artists.length}
+          onShowAll={expandCategory("artists", artists)}
           rows={[
             ...artistRows.map((a) => <ArtistRow key={a.name} name={a.name} genre={a.genre} memorial={a.memorial} onPress={() => openArtist(a)} />),
             showCategory("artists") && query.length >= 2 && !exactArtist ? (
@@ -706,6 +733,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
           hidden={!showCategory("songs")}
           icon="music" tint={colors.good}
           title="SONGS" count={songs.length}
+          onShowAll={expandCategory("songs", songs)}
           rows={songRows.map((song) => (
             <SongRow
               key={`${song.id || song.title}|${song.artist}`}
@@ -724,12 +752,15 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
           ))} />}
 
         <Section hidden={!showCategory("venues")} icon="pin" tint={colors.cool} title="VENUES" count={venues.length}
+          onShowAll={expandCategory("venues", venues)}
           rows={venueRows.map((v) => <VenueRow key={v.identity || `${v.name}|${v.place || ""}|${v.source || ""}|${v.providerVenueId || ""}`} v={v} onPress={() => openVenue(v)} />)} />
 
         <Section hidden={!showCategory("shows")} icon="calendar" tint={colors.amber} title="SHOWS" count={events.length}
+          onShowAll={expandCategory("shows", events)}
           rows={eventRows.map((t) => <EventRow key={t.id || `${t.artist}|${t.venue}|${t.date}`} t={t} onOpenShow={onOpen} onOpenVenue={openVenue} onOpenTicket={openTicket} />)} />
 
         <Section hidden={!showCategory("clubs")} icon="comment" tint={colors.magenta} title="FAN CLUBS" count={clubs.length}
+          onShowAll={expandCategory("clubs", clubs)}
           rows={clubRows.map((c) => (
             <Pressable key={"fc_" + c.artist} style={styles.row} onPress={() => onOpenFanClub?.(c.artist)} accessibilityRole="button" accessibilityLabel={`Open ${c.artist} fan club${c.members > 0 ? `, ${c.members} members` : ""}`}>
               <View style={[styles.dot, { borderColor: colors.magenta }]}><Icon name="comment" size={14} color={colors.magenta} /></View>
@@ -743,7 +774,18 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
         />
 
         {!visibleSearchError && visibleResultState === "no-results" && (
-          <Text style={styles.empty}>No {activeCategory === "all" ? "matches" : activeCategoryLabel.toLowerCase()} for “{q}”.</Text>
+          <View style={styles.empty} accessibilityLiveRegion="polite">
+            <Text style={styles.emptyTitle} selectable>No {activeCategory === "all" ? "matches" : activeCategoryLabel.toLowerCase()} for “{q}”.</Text>
+            <Text style={styles.emptyDetail}>{alternativeCategories.length ? "There are matches in other categories." : "Try a shorter name, another spelling, or a city."}</Text>
+            <View style={styles.emptyActions}>
+              {alternativeCategories.map((item) => <Pressable key={item.key} style={({ focused }) => [styles.recoveryAction, focused && focusRing]} onPress={() => selectCategory(item.key)} accessibilityRole="button" accessibilityLabel={`Show ${item.count} available ${item.label.toLowerCase()} for ${q.trim()}`}>
+                <Text style={styles.recoveryActionText}>{item.label} · {item.count}</Text><Icon name="chevron-right" size={14} color={colors.amber} />
+              </Pressable>)}
+              <Pressable style={({ focused }) => [styles.recoveryAction, focused && focusRing]} onPress={clearSearch} accessibilityRole="button" accessibilityLabel="Clear search and browse">
+                <Text style={styles.recoveryActionText}>Clear search</Text>
+              </Pressable>
+            </View>
+          </View>
         )}
       </ScrollView>
       </VinylRefreshBoundary>
@@ -757,10 +799,11 @@ const styles = StyleSheet.create({
   header: { padding: 16, paddingBottom: 12 },
   field: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, paddingHorizontal: 14 },
   fieldFocused: { borderColor: colors.amber },
-  input: { flex: 1, color: colors.text, fontSize: 15, paddingVertical: 13 },
+  input: { flex: 1, minWidth: 0, color: colors.text, fontSize: 15, paddingVertical: 13 },
   fieldAction: { width: 44, height: 44, marginRight: -12, alignItems: "center", justifyContent: "center" },
   categoryRail: { gap: 8, paddingTop: 10, paddingRight: 8 },
-  categoryChip: { minHeight: 36, justifyContent: "center", paddingHorizontal: 13, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
+  categoryChip: { minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingHorizontal: 13, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
+  categoryCount: { color: colors.textFaint, fontFamily: mono, fontSize: 10, fontVariant: ["tabular-nums"] },
   categoryChipSelected: { borderColor: colors.amber, backgroundColor: colors.bgElev },
   categoryChipText: { color: colors.textDim, fontSize: 12, fontWeight: "700" },
   categoryChipTextSelected: { color: colors.amber, fontWeight: "900" },
@@ -782,6 +825,8 @@ const styles = StyleSheet.create({
   secHead: { flexDirection: "row", alignItems: "center", gap: 7, paddingHorizontal: 4, paddingBottom: 6, marginBottom: 2, borderBottomWidth: 1, borderBottomColor: colors.lineSoft },
   secTitle: { color: colors.textFaint, fontSize: 11, letterSpacing: 1.5, fontWeight: "800", flex: 1 },
   secCount: { color: colors.amber, fontFamily: mono, fontSize: 12, fontWeight: "800" },
+  sectionReveal: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 6, borderRadius: radius.sm },
+  sectionRevealText: { color: colors.amber, fontSize: 12, fontWeight: "800" },
 
   row: { minHeight: 52, flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 4, borderRadius: radius.sm },
   rowMain: { flex: 1, minWidth: 0, minHeight: 52, flexDirection: "row", alignItems: "center", gap: 11, paddingVertical: 4 },
@@ -795,7 +840,12 @@ const styles = StyleSheet.create({
   memorialPill: { flexDirection: "row", alignItems: "center", gap: 3, flexShrink: 0, paddingHorizontal: 6, paddingVertical: 2, borderRadius: radius.pill, borderWidth: 1, borderColor: `${colors.gold}66`, backgroundColor: `${colors.gold}12` },
   memorialPillText: { color: colors.gold, fontFamily: mono, fontSize: 8, lineHeight: 11, letterSpacing: 0.7, fontWeight: "900" },
   soldOut: { color: colors.danger, fontSize: 10, fontWeight: "800", letterSpacing: 0.5 },
-  empty: { color: colors.textDim, fontSize: 13, fontStyle: "italic", padding: 12, textAlign: "center" },
+  empty: { padding: 16, gap: 9, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
+  emptyTitle: { color: colors.text, fontSize: 15, fontWeight: "800" },
+  emptyDetail: { color: colors.textDim, fontSize: 13, lineHeight: 19 },
+  emptyActions: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  recoveryAction: { minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 5, paddingHorizontal: 12, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.bgElev },
+  recoveryActionText: { color: colors.amber, fontSize: 12, fontWeight: "800" },
   followBtn: { minHeight: 44, justifyContent: "center", paddingHorizontal: 14, borderRadius: radius.pill, backgroundColor: colors.amberStrong },
   followTxt: { color: "#1A1206", fontSize: 12.5, fontWeight: "800" },
   followingBtn: { backgroundColor: "transparent", borderWidth: 1, borderColor: colors.line },

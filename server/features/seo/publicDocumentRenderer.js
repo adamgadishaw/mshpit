@@ -1,8 +1,9 @@
-import { LANDING_IDENTITY_COPY, landingKicker } from "../../../src/domain/landingPresentation.mjs";
+import { LANDING_IDENTITY_COPY, LANDING_BROWSE_LINKS, landingKicker } from "../../../src/domain/landingPresentation.mjs";
 import { canonicalYouTubeReviewLink } from "../../onlineReviews.js";
 import { renderCityGuideMain, renderCityDirectoryMain } from "./cityGuideDocument.js";
 import { CITY_GUIDE_STYLES } from "./cityGuideStyles.js";
 import { artistBiographyRows } from "../../../src/domain/artistBiography.mjs";
+import { publicEventTimeLabel } from "./publicMetadataPresentation.js";
 
 const esc = (value) => String(value ?? "")
   .replace(/&/g, "&amp;")
@@ -177,7 +178,8 @@ function homeMain(document) {
       <p class="eyebrow">${esc(landingKicker(false))}</p>
       <h1>${esc(LANDING_IDENTITY_COPY.headline)}<br /><em>${esc(LANDING_IDENTITY_COPY.headlineAccent)}</em></h1>
       <p class="hero-copy">${esc(LANDING_IDENTITY_COPY.body)}</p>
-      <div class="actions"><a class="button primary" href="/signup">${esc(LANDING_IDENTITY_COPY.signupAction)}</a><a class="button" href="/feed">${esc(LANDING_IDENTITY_COPY.browseAction)}</a></div>
+      <div class="actions"><a class="button primary" href="/events">${esc(LANDING_IDENTITY_COPY.browseAction)}</a><a class="button" href="/signup">${esc(LANDING_IDENTITY_COPY.signupAction)}</a></div>
+      <div class="actions landing-browse" aria-label="Explore without an account">${LANDING_BROWSE_LINKS.map((item) => link(item.href, item.label)).join("")}</div>
     </section>
     ${artists ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">In the pit now</p><h2>Artists worth exploring</h2></div><a href="/artists">Browse all artists</a></div><ul class="artist-grid">${artists}</ul></section>` : ""}
     ${posts ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">From the crowd</p><h2>Nights people remember</h2></div><a href="/feed">Open the feed</a></div><div class="post-list">${posts}</div></section>` : ""}
@@ -190,7 +192,7 @@ function discoverMain(document) {
     <h3>${link(artist.path, artist.name)}</h3>
     ${artist.description ? `<p>${esc(artist.description)}</p>` : ""}
   </li>`).join("");
-  const events = document.events.map((event) => `<li><time datetime="${esc(event.startDateTime || event.date)}"><strong>${esc(dateLabel(event.date))}</strong>${event.localTime ? `<small>${esc(event.localTime)}</small>` : ""}</time><div><h3>${link(event.path, event.name)}</h3><p>${link(event.artistPath, event.artist)} · ${link(event.venuePath, event.venue)}${event.place ? ` · ${esc(event.place)}` : ""}</p></div>${event.soldOut ? '<span class="pill">Sold out</span>' : ""}</li>`).join("");
+  const events = document.events.map((event) => `<li><time datetime="${esc(event.startDateTime || event.date)}"><strong>${esc(dateLabel(event.date))}</strong>${publicEventTimeLabel(event.localTime) ? `<small>${esc(publicEventTimeLabel(event.localTime))}</small>` : ""}</time><div><h3>${link(event.path, event.name)}</h3><p>${link(event.artistPath, event.artist)} · ${link(event.venuePath, event.venue)}${event.place ? ` · ${esc(event.place)}` : ""}</p></div>${event.soldOut ? '<span class="pill">Sold out</span>' : ""}</li>`).join("");
   const posts = document.posts.map((post) => compactPost(post)).join("");
   return `<main id="main">
     ${breadcrumbs(document)}
@@ -205,7 +207,7 @@ function searchMain(document) {
   return `<main id="main">
     ${breadcrumbs(document)}
     <section class="directory-hero"><p class="eyebrow">Find it on Mshpit</p><h1>Search artists, concerts and people.</h1><p>${esc(document.description)}</p><div class="actions"><a class="button primary" href="/artists">Browse artists</a><a class="button" href="/events">Browse upcoming concerts</a><a class="button" href="/discover">Open Discover</a></div></section>
-    <section class="section empty-state"><p class="eyebrow">Interactive search</p><h2>Search across the whole community in the Mshpit app.</h2><p>With JavaScript enabled, this page searches artists, upcoming shows, venues, members and songs in one place. Public artist and event directories remain available through the links above.</p></section>
+    <section class="section empty-state"><p class="eyebrow">More ways to explore</p><h2>Start with a place.</h2><p>Find a venue for your next night out, or explore the shows and music history of a city.</p><div class="actions"><a class="button" href="/venues">Find venues</a><a class="button" href="/cities">Explore music cities</a></div></section>
   </main>`;
 }
 
@@ -214,6 +216,7 @@ function artistMain(document) {
   const memorialMode = !!document.memorial;
   const legacyMode = document.memorial?.legacy === true;
   const nextEvent = !memorialMode ? document.events[0] : null;
+  const upcomingTotal = Math.max(document.events.length, Number(stats.upcomingTotal) || 0);
   const artistFacts = [
     `<div><dt>${legacyMode ? "Community memories" : memorialMode ? "Fan memories" : "Reviews"}</dt><dd>${esc(stats.reviewCount)}</dd></div>`,
     legacyMode
@@ -223,12 +226,12 @@ function artistMain(document) {
       : stats.averageRating != null
         ? `<div><dt>Live rating</dt><dd>${esc(stats.averageRating.toFixed(1))}<small>/5</small></dd></div>`
         : `<div><dt>Live rating</dt><dd>No rating yet</dd></div>`,
-    !memorialMode ? `<div><dt>Upcoming</dt><dd>${esc(document.events.length)} ${document.events.length === 1 ? "show" : "shows"}</dd></div>` : "",
+    !memorialMode ? `<div><dt>Upcoming</dt><dd>${esc(upcomingTotal)} ${upcomingTotal === 1 ? "show" : "shows"}</dd></div>` : "",
     artist.country ? `<div><dt>From</dt><dd>${esc(artist.country)}</dd></div>` : "",
   ].filter(Boolean).join("");
   const biography = artistBiographyRows(artist.biographyFacts).map((fact) => `<div><dt>${esc(fact.label)}</dt><dd>${esc(fact.value)} <a href="${esc(fact.sourceUrl)}" rel="noopener noreferrer">Source</a></dd></div>`).join("");
-  const nextShow = nextEvent ? `<div class="artist-next"><p class="eyebrow">Next show</p><h2>${link(nextEvent.path, nextEvent.name)}</h2><p><time datetime="${esc(nextEvent.startDateTime || nextEvent.date)}">${esc(longDateLabel(nextEvent.date) || nextEvent.date)}${nextEvent.localTime ? ` at ${esc(nextEvent.localTime)}` : ""}</time> · ${link(nextEvent.venuePath, nextEvent.venue)}${nextEvent.place ? ` · ${esc(nextEvent.place)}` : ""}</p></div>` : "";
-  const events = document.events.map((event) => `<li><time datetime="${esc(event.startDateTime || event.date)}"><strong>${esc(dateLabel(event.date))}</strong>${event.localTime ? `<small>${esc(event.localTime)}</small>` : ""}</time><div><h3>${link(event.path, event.name)}</h3><p>${link(event.venuePath, event.venue)}${event.place ? ` · ${esc(event.place)}` : ""}</p></div>${event.soldOut ? '<span class="pill">Sold out</span>' : event.statusLabel !== "scheduled" ? `<span class="pill">${esc(event.statusLabel)}</span>` : ""}</li>`).join("");
+  const nextShow = nextEvent ? `<div class="artist-next"><p class="eyebrow">Next show</p><h2>${link(nextEvent.path, nextEvent.name)}</h2><p><time datetime="${esc(nextEvent.startDateTime || nextEvent.date)}">${esc(longDateLabel(nextEvent.date) || nextEvent.date)}${publicEventTimeLabel(nextEvent.localTime) ? ` at ${esc(publicEventTimeLabel(nextEvent.localTime))}` : ""}</time> · ${link(nextEvent.venuePath, nextEvent.venue)}${nextEvent.place ? ` · ${esc(nextEvent.place)}` : ""}</p></div>` : "";
+  const events = document.events.map((event) => `<li><time datetime="${esc(event.startDateTime || event.date)}"><strong>${esc(dateLabel(event.date))}</strong>${publicEventTimeLabel(event.localTime) ? `<small>${esc(publicEventTimeLabel(event.localTime))}</small>` : ""}</time><div><h3>${link(event.path, event.name)}</h3><p>${link(event.venuePath, event.venue)}${event.place ? ` · ${esc(event.place)}` : ""}</p></div>${event.soldOut ? '<span class="pill">Sold out</span>' : event.statusLabel !== "scheduled" ? `<span class="pill">${esc(event.statusLabel)}</span>` : ""}</li>`).join("");
   const concerts = legacyMode ? "" : (document.concerts || []).map((concert) => `<li><time datetime="${esc(concert.date)}"><strong>${esc(dateLabel(concert.date))}</strong></time><div><h3>${link(concert.path, concert.venue)}</h3>${concert.city ? `<p>${esc(concert.city)}</p>` : ""}</div><span class="archive-score">${memorialMode ? `${esc(concert.reviewCount)} ${concert.reviewCount === 1 ? "fan memory" : "fan memories"}` : `${concert.averageRating != null ? `${esc(concert.averageRating.toFixed(1))}/5 · ` : ""}${esc(concert.ratingCount)} ${concert.ratingCount === 1 ? "rating" : "ratings"}`}</span></li>`).join("");
   const archiveLink = !legacyMode && document.archivePath && Number(document.archiveTotal) > 3 ? link(document.archivePath, "View full concert archive") : "";
   const updates = document.updates.map((update) => {
@@ -266,7 +269,7 @@ function artistMain(document) {
     </section>
     ${memorial}
     ${biography ? `<section class="section"><h2>About ${esc(artist.name)}</h2><dl class="stats">${biography}</dl></section>` : ""}
-    ${!memorialMode && events ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">On the road</p><h2>Upcoming shows</h2></div></div><ol class="event-list">${events}</ol></section>` : ""}
+    ${!memorialMode && events ? `<section class="section" id="shows"><div class="section-heading"><div><p class="eyebrow">On the road</p><h2>Upcoming shows</h2>${upcomingTotal > document.events.length ? `<p class="micro">Next ${document.events.length} of ${esc(upcomingTotal)} listed shows. The Shows tab on this artist page has the full schedule.</p>` : ""}</div></div><ol class="event-list">${events}</ol></section>` : ""}
     ${concerts ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">From the archive</p><h2>${memorialMode ? "Concert history" : "Top-rated concert nights"}</h2></div>${archiveLink}</div><ol class="event-list archive-list">${concerts}</ol></section>` : ""}
     ${updates ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">${legacyMode ? "Mshpit editorial" : "Official notes"}</p><h2>${legacyMode ? "History and context" : `From ${esc(artist.name)}`}</h2></div></div><div class="updates">${updates}</div></section>` : ""}
     ${reviews ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">${legacyMode ? "Community archive" : "People who were there"}</p><h2>${legacyMode ? "Community memories" : memorialMode ? "Fan memories" : "Top live reviews"}</h2></div></div><div class="post-list">${reviews}</div></section>` : ""}
@@ -312,7 +315,7 @@ function eventDetails(event) {
   const venue = link(event.venuePath, event.venue);
   const address = postalAddress(event.address);
   return `<dl class="event-facts">
-    <div><dt>Date</dt><dd><time datetime="${esc(event.startDateTime || event.date)}">${esc(date || event.date)}${event.localTime ? ` at ${esc(event.localTime)}` : ""}</time>${event.endDate ? ` through <time datetime="${esc(event.endDate)}">${esc(longDateLabel(event.endDate) || event.endDate)}</time>` : ""}</dd></div>
+    <div><dt>Date</dt><dd><time datetime="${esc(event.startDateTime || event.date)}">${esc(date || event.date)}${publicEventTimeLabel(event.localTime) ? ` at ${esc(publicEventTimeLabel(event.localTime))}` : ""}</time>${event.endDate ? ` through <time datetime="${esc(event.endDate)}">${esc(longDateLabel(event.endDate) || event.endDate)}</time>` : ""}</dd></div>
     <div><dt>Venue</dt><dd>${venue}</dd></div>
     ${event.place ? `<div><dt>Location</dt><dd>${esc(event.place)}</dd></div>` : ""}
     ${address ? `<div><dt>Venue address</dt><dd>${address}</dd></div>` : ""}
@@ -331,7 +334,7 @@ function eventMain(document) {
     ${breadcrumbs(document)}
     <section class="profile-hero event-hero">
       <p class="eyebrow">Live music event</p>
-      <h1>${esc(event.name)}</h1>
+      <h1>${esc(document.heading || event.name)}</h1>
       <p class="hero-copy">${link(event.artistPath, event.artist)} · ${link(event.venuePath, event.venue)}</p>
       ${event.billedArtists?.length > 1 ? `<p class="hero-copy"><strong>Lineup:</strong> ${event.billedArtists.map(esc).join(" · ")}</p>` : ""}
       ${providerImage}
@@ -531,12 +534,15 @@ export function renderPublicDocumentShell(document) {
   // Keep the style element inside #root. React's createRoot replaces both the
   // semantic preview and these temporary styles when the interactive client
   // mounts, so crawler-first CSS cannot leak into the signed-in application.
-  return `<style data-mshpit-public-document>${STYLES}${["city", "city-directory"].includes(document.kind) ? CITY_GUIDE_STYLES : ""}</style>
+  return `<style data-mshpit-public-document>${STYLES}${["city", "city-directory"].includes(document.kind) ? CITY_GUIDE_STYLES : ""}
+    .landing-browse a{display:inline-flex;align-items:center;min-height:44px;padding:0 .35rem;font-weight:700}
+    @media(max-width:760px){.site-header>div{flex-wrap:wrap;gap:.5rem}.site-header nav{width:100%;max-width:100%;overflow-x:auto;flex-wrap:nowrap;padding-bottom:.2rem}.site-header nav a,.site-header nav a:not(:last-child){display:inline-flex;flex-shrink:0;align-items:center;min-height:44px}.landing-browse{gap:1rem;justify-content:center}}
+    </style>
     <div class="seo-document">
       <a class="skip" href="#main">Skip to content</a>
-      <header class="site-header"><div><a class="brand" href="/" aria-label="Mshpit home">MSHPIT</a><nav aria-label="Main navigation"><a href="/artists">Artists</a><a href="/events">Events</a><a href="/venues">Venues</a><a href="/concerts">Concerts</a><a href="/discover">Discover</a><a href="/search">Search</a><a href="/login">Log in</a></nav></div></header>
+      <header class="site-header"><div data-nosnippet><a class="brand" href="/" aria-label="Mshpit home">MSHPIT</a><nav aria-label="Main navigation"><a href="/artists">Artists</a><a href="/events">Upcoming shows</a><a href="/venues">Venues</a><a href="/cities">Music cities</a><a href="/concerts">Concert archive</a><a href="/search">Search</a><a href="/login">Log in</a></nav></div></header>
       ${main}
-      <footer class="site-footer"><span>© ${new Date().getUTCFullYear()} Mshpit</span><div><a href="/about">About</a><a href="/contact">Contact</a><a href="/community-guidelines">Guidelines</a><a href="/ratings-methodology">Ratings</a><a href="/privacy">Privacy</a><a href="/terms">Terms</a><a href="/support">Support</a></div></footer>
+      <footer class="site-footer"><span data-nosnippet>© ${new Date().getUTCFullYear()} Mshpit</span><div data-nosnippet><a href="/about">About</a><a href="/contact">Contact</a><a href="/community-guidelines">Guidelines</a><a href="/ratings-methodology">Ratings</a><a href="/privacy">Privacy</a><a href="/terms">Terms</a><a href="/support">Support</a></div></footer>
     </div>`;
 }
 

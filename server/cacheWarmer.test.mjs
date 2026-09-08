@@ -1125,6 +1125,97 @@ test("provider upserts persist the durable fields and reactivate a returned even
   );
 });
 
+const VENUE_SNAPSHOT_FIELDS = [
+  "event_name", "tour_name", "start_date_time", "start_local_time", "access_start_date_time",
+  "access_start_approximate", "event_timezone", "venue_provider_id", "venue_address_line1",
+  "venue_address_line2", "venue_city", "venue_region", "venue_postal_code", "venue_country_code", "venue_country",
+];
+
+function venueSnapshotRows(id) {
+  const full = {
+    id, artist: "Snapshot Artist", venue: "Original Hall", place: "Scranton, Pennsylvania, United States",
+    date: "2033-01-02", source: "ticketmaster", provider_event_id: id,
+    event_name: "Snapshot Artist - Original World Tour", tour_name: "Original World Tour",
+    start_date_time: "2033-01-03T00:00:00Z", start_local_time: "2033-01-02T19:00:00",
+    access_start_date_time: "2033-01-02T23:00:00Z", access_start_approximate: 0,
+    event_timezone: "America/New_York", venue_provider_id: "original-hall-id",
+    venue_address_line1: "1 Original Street", venue_address_line2: "Old entrance", venue_city: "Scranton",
+    venue_region: "PA", venue_postal_code: "18503", venue_country_code: "US", venue_country: "United States",
+    event_status: "onsale", music_qualified: 1, music_evidence: "ticketmaster:classification:music",
+    billed_artists: ["Snapshot Artist"],
+  };
+  const partial = Object.fromEntries(Object.entries(full).filter(([field]) => !VENUE_SNAPSHOT_FIELDS.includes(field)));
+  return { full, partial };
+}
+
+test("a moved venue with missing provider metadata cannot inherit the old location snapshot", () => {
+  const { full, partial } = venueSnapshotRows("tm_snapshot_moved_missing_id");
+  upsertProviderTourDateRows(db, [full], { seenAt: 1000 });
+  const moved = { ...partial, venue: "Replacement Hall", place: "Toronto, Ontario, Canada" };
+  upsertProviderTourDateRows(db, [moved], { seenAt: 2000 });
+  const actual = db.prepare("SELECT * FROM tour_dates WHERE id=?").get(full.id);
+  for (const field of VENUE_SNAPSHOT_FIELDS) assert.equal(actual[field], null, `${field} must not follow the old venue`);
+  assert.equal(actual.venue, moved.venue);
+  assert.equal(actual.place, moved.place);
+  assert.equal(actual.provider_event_id, full.provider_event_id, "the event identity is unchanged");
+  assert.equal(actual.event_status, "onsale", "event-level status is independent of venue metadata");
+  assert.equal(actual.updated_at, 2000);
+  upsertProviderTourDateRows(db, [moved], { seenAt: 3000 });
+  assert.deepEqual({ ...db.prepare("SELECT updated_at,last_seen_at FROM tour_dates WHERE id=?").get(full.id) },
+    { updated_at: 2000, last_seen_at: 3000 }, "retrying the same partial snapshot must not manufacture another revision");
+});
+
+test("a changed provider venue ID invalidates old metadata even when the venue name stays the same", () => {
+  const { full, partial } = venueSnapshotRows("tm_snapshot_changed_id");
+  upsertProviderTourDateRows(db, [full], { seenAt: 1000 });
+  upsertProviderTourDateRows(db, [{ ...partial, venue_provider_id: "replacement-hall-id", venue_city: "Toronto" }], { seenAt: 2000 });
+  const actual = db.prepare("SELECT * FROM tour_dates WHERE id=?").get(full.id);
+  assert.equal(actual.venue_provider_id, "replacement-hall-id");
+  assert.equal(actual.venue_city, "Toronto", "explicit new snapshot facts survive");
+  for (const field of VENUE_SNAPSHOT_FIELDS.filter((field) => !["venue_provider_id", "venue_city"].includes(field))) {
+    assert.equal(actual[field], null, `${field} must not cross provider venue identities`);
+  }
+});
+
+test("same-venue partial updates retain optional metadata with either a matching or omitted provider ID", () => {
+  for (const suppliedId of [false, true]) {
+    const { full, partial } = venueSnapshotRows(`tm_snapshot_same_${suppliedId}`);
+    upsertProviderTourDateRows(db, [full], { seenAt: 1000 });
+    if (suppliedId) partial.venue_provider_id = full.venue_provider_id;
+    upsertProviderTourDateRows(db, [partial], { seenAt: 2000 });
+    const actual = db.prepare("SELECT * FROM tour_dates WHERE id=?").get(full.id);
+    for (const field of VENUE_SNAPSHOT_FIELDS) assert.equal(actual[field], full[field], `${field} remains known for the same venue`);
+    assert.equal(actual.updated_at, 1000);
+    assert.equal(actual.last_seen_at, 2000);
+  }
+});
+
+test("a stable provider venue ID allows a renamed venue without losing its known metadata", () => {
+  const { full, partial } = venueSnapshotRows("tm_snapshot_renamed");
+  upsertProviderTourDateRows(db, [full], { seenAt: 1000 });
+  upsertProviderTourDateRows(db, [{ ...partial, venue: "Renamed Original Hall", venue_provider_id: full.venue_provider_id }], { seenAt: 2000 });
+  const actual = db.prepare("SELECT * FROM tour_dates WHERE id=?").get(full.id);
+  for (const field of VENUE_SNAPSHOT_FIELDS) assert.equal(actual[field], full[field]);
+  assert.equal(actual.venue, "Renamed Original Hall");
+  assert.equal(actual.updated_at, 2000);
+});
+
+test("fallback venue identity includes explicit location changes and provider namespace", () => {
+  for (const [suffix, change] of [
+    ["location", { venue_city: "Toronto", place: "Toronto, Ontario, Canada" }],
+    ["provider", { source: "bandsintown", venue_provider_id: "original-hall-id" }],
+  ]) {
+    const { full, partial } = venueSnapshotRows(`tm_snapshot_${suffix}`);
+    upsertProviderTourDateRows(db, [full], { seenAt: 1000 });
+    upsertProviderTourDateRows(db, [{ ...partial, ...change }], { seenAt: 2000 });
+    const actual = db.prepare("SELECT * FROM tour_dates WHERE id=?").get(full.id);
+    assert.equal(actual.event_name, null);
+    assert.equal(actual.venue_address_line1, null);
+    assert.equal(actual.venue_provider_id, change.venue_provider_id ?? null);
+    assert.equal(actual.updated_at, 2000);
+  }
+});
+
 test("public tour visibility hides inactive upcoming providers without hiding authored dates or history", () => {
   const ownerId = "u_tour_visibility_owner";
   if (!q.userById.get(ownerId)) {

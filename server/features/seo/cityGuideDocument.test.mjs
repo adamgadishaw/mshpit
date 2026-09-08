@@ -29,7 +29,31 @@ test("empty city shells stay noindex; real history or venues permit indexing", (
   const empty = projectCityGuideDocument(guide());
   assert.equal(empty.indexable, false);
   assert.match(renderPublicDocumentHead(empty), /noindex,follow/);
+  assert.equal(empty.title, "Toronto live music guide | Mshpit");
+  assert.doesNotMatch(empty.description, /upcoming|reviews|photos|history/i);
   assert.equal(projectCityGuideDocument(guide({editorial:{history:"A documented city music history with original researched context. ".repeat(3)}})).indexable, true);
+});
+
+test("default city metadata describes available venues and concerts without inventing community content", () => {
+  const venue = { name: "Main Hall", path: "/venue/main-hall" };
+  const venues = projectCityGuideDocument(guide({ venues: [venue] }));
+  assert.equal(venues.title, "Toronto live music venues & guide | Mshpit");
+  assert.match(venues.description, /Main Hall/);
+  assert.doesNotMatch(venues.description, /upcoming|reviews|photos|history/i);
+  const shows = projectCityGuideDocument(guide({ venues: [venue], upcoming: [{ artist: "Band", path: "/event/1" }] }));
+  assert.equal(shows.title, "Toronto concerts & live music venues | Mshpit");
+  assert.match(shows.description, /upcoming concert listings/);
+  assert.doesNotMatch(shows.description, /reviews|photos|history/i);
+});
+
+test("managed default city copy remains authoritative over evidence-aware fallback metadata", () => {
+  const doc = projectCityGuideDocument(guide({ copy: { ...DEFAULT_CITY_COPY,
+    citySeoTitle: "{city} independent music guide", citySeoDescription: "The edited guide to {city}." },
+    venues: [{ name: "Main Hall", path: "/venue/main-hall" }],
+  }));
+  assert.equal(doc.title, "Toronto independent music guide | Mshpit");
+  assert.equal(doc.description, "The edited guide to Toronto.");
+  assert.equal(doc.indexable, true);
 });
 test("city HTML escapes moderation content and does not invent incomplete Event objects", () => {
   const doc = projectCityGuideDocument(guide({ editorial: {title:'<script>alert("x")</script>',history:"<img src=x onerror=alert(1)>"},
@@ -73,7 +97,7 @@ test("city search metadata is independently editable without changing visible pr
 test("city programme is artist-led, formats managed headings and links public gallery reviews", () => {
   const doc = projectCityGuideDocument(guide({
     copy: { ...DEFAULT_CITY_COPY, todayTitle: "Concerts in {city} today", openReview: "Read this review" },
-    today: [{ artist: "J. Cole", eventName: "Festival set", path: "/event/concert1", venue: "Scotiabank Arena", venuePath: "/venue/arena", date: "2026-09-07" }],
+    today: [{ artist: "J. Cole", eventName: "Festival set", path: "/event/concert1", venue: "Scotiabank Arena", venuePath: "/venue/arena", date: "2026-09-07", startLocalTime: "2026-09-07T20:00:00" }],
     photos: [{ kind: "fan", url: "/media/concert.webp", alt: "J. Cole at Scotiabank Arena", path: "/post/review1" }],
   }));
   const html = renderPublicDocumentMain(doc);
@@ -81,6 +105,8 @@ test("city programme is artist-led, formats managed headings and links public ga
   assert.match(html, /<h3><a href="\/event\/concert1">J\. Cole<\/a><\/h3><p>Festival set<\/p>/);
   assert.match(html, /href="\/post\/review1" aria-label="Read this review: J\. Cole at Scotiabank Arena"/);
   assert.match(html, /href="\/venue\/arena"/);
+  assert.match(html, /Scotiabank Arena<\/a> · 8 PM/);
+  assert.doesNotMatch(html, /2026-09-07T20:00:00/);
   assert.match(html, /fetchpriority="high"/);
   assert.equal(doc.imageAlt, "J. Cole at Scotiabank Arena");
   assert.equal((html.match(/<h1>/g) || []).length, 1);

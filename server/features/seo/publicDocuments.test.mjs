@@ -325,6 +325,7 @@ test("artist SEO and the app share complete public calendar counts and eligible 
       (id,artist,artist_key,venue,place,date,venue_city,venue_country_code,source,music_evidence,billed_artists,owner_id,release_at)
       VALUES (?, 'Beta','beta','Shared Hall','Toronto, Canada','2027-05-01','Toronto','CA','ticketmaster','ticketmaster:classification:music','["Beta","Alpha"]',?,?)`);
     for (let i = 0; i < 7; i += 1) event.run(`coheadline-${i}`, null, 0);
+    database.exec("UPDATE tour_dates SET start_local_time='2027-05-01T20:00:00' WHERE id='coheadline-0'");
     event.run("scheduled", "active", NOW + 1000);
     const summary = createArtistLiveSummaryService({ database, projectDate: (row) => row, clock: () => NOW })
       .read({ artist: database.prepare("SELECT * FROM artists WHERE norm='alpha'").get(), query: { publicPreview: 1, limit: 3 } });
@@ -337,6 +338,11 @@ test("artist SEO and the app share complete public calendar counts and eligible 
     assert.equal(document.events.length, 3);
     assert.deepEqual(document.events.map((row) => row.id), summary.schedule.items.map((row) => row.id));
     assert.doesNotMatch(documents.render(document), /PRIVATE PROFILE REVIEW/u);
+    const html = documents.render(document);
+    assert.match(html, /<dt>Upcoming<\/dt><dd>7 shows<\/dd>/);
+    assert.match(html, /Next 3 of 7 listed shows/);
+    assert.match(html, /May 1, 2027 at 8 PM/);
+    assert.doesNotMatch(html, />[^<]*2027-05-01T20:00:00/);
     assert.match(document.description, /7 upcoming shows/u);
     assert.doesNotMatch(JSON.stringify(document.jsonLd[0].about), /AggregateRating/u,
       "artist reputation does not imply unsupported Google artist-rating rich results");
@@ -416,6 +422,8 @@ test("home document is substantive, contains WebSite JSON-LD, and excludes restr
     const document = documents.homeDocument();
     const html = documents.render(document);
 
+    assert.equal(document.title, "Concert reviews, upcoming shows & venue guides | Mshpit");
+    assert.match(document.description, /^Read concert reviews, see photos from the crowd, and explore upcoming shows\./);
     assert.equal(document.jsonLd[0]["@type"], "WebSite");
     assert.equal(document.jsonLd[1]["@type"], "Organization");
     assert.equal(document.jsonLd[1].alternateName, "PIT");
@@ -426,9 +434,9 @@ test("home document is substantive, contains WebSite JSON-LD, and excludes restr
     assert.match(html, /Crowd energy &amp; joy &lt;b&gt;all night&lt;\/b&gt;/);
     assert.doesNotMatch(html, /BANNED PRIVATE COPY/);
     assert.doesNotMatch(html, /\b\d[\d,]* members\b/i);
-    assert.match(html, /<h1>The shows you saw\.<br \/><em>The taste you built\.<\/em><\/h1>/);
+    assert.match(html, /<h1>Find your next show\.<br \/><em>Hear from the crowd\.<\/em><\/h1>/);
     assert.match(html, />Create an account<\/a>/);
-    assert.match(html, />Browse shows and artists<\/a>/);
+    assert.match(html, /href="\/events"[^>]*>Find concerts<\/a>/);
     assert.doesNotMatch(html, /Remember every show\.<br \/><em>Find your people/);
   } finally {
     database.close();
@@ -1009,7 +1017,8 @@ test("pre-1970 memorial artists render educational legacy profiles without tour 
     assert.match(html, /History and context/);
     assert.match(html, /Mshpit context about the artist&#39;s place in music history/);
     assert.match(html, /legacy-community-memory|continued to connect generations/);
-    assert.doesNotMatch(html, /Upcoming shows|Concert history|View full concert archive|Official notes|Top live reviews/);
+    assert.doesNotMatch(html.match(/<main[\s\S]*?<\/main>/)?.[0], /Upcoming shows|Concert history|View full concert archive|Official notes|Top live reviews/,
+      "the artist's own legacy content has no touring modules; global navigation may still link upcoming shows");
     assert.equal(documents.artistConcertsDocument({
       publicSlug: "alpha",
       today: "2026-08-25",
@@ -1278,6 +1287,10 @@ test("event ticket offers require a supported future purchasable state and missi
     const scheduled = documents.eventDocument(options);
     const scheduledHtml = documents.render(scheduled);
 
+    assert.equal(scheduled.title, "Unlisted Touring Artist at World Hall — Sep 1, 2026 | Mshpit");
+    assert.match(scheduled.description, /Toronto/);
+    assert.doesNotMatch(scheduled.description, /memories|photos|reviews|brings live music/i);
+
     assert.equal(scheduled.jsonLd[0]["@type"], "MusicEvent");
     assert.equal(scheduled.jsonLd[0].name, "Unlisted Touring Artist",
       "fallback event names do not duplicate the venue stored in location.name");
@@ -1310,15 +1323,21 @@ test("event ticket offers require a supported future purchasable state and missi
 
     database.prepare("UPDATE tour_dates SET event_status=? WHERE id=?").run("cancelled", "unknown-event");
     const cancelled = documents.eventDocument(options);
+    assert.match(cancelled.title, /^Cancelled: Unlisted Touring Artist at World Hall/);
+    assert.match(cancelled.description, /^Cancelled:/);
     assert.equal(Object.hasOwn(cancelled.jsonLd[0], "offers"), false);
     assert.equal(cancelled.event.ticketUrl, null);
 
     database.prepare("UPDATE tour_dates SET event_status=? WHERE id=?").run("rescheduled", "unknown-event");
     const rescheduledWithoutPreviousDate = documents.eventDocument(options);
+    assert.match(rescheduledWithoutPreviousDate.title, /^Rescheduled:/);
     assert.equal(rescheduledWithoutPreviousDate.jsonLd[0].eventStatus, "https://schema.org/EventRescheduled");
 
     database.prepare("UPDATE tour_dates SET event_status=?,date=? WHERE id=?").run("scheduled", "2026-08-20", "unknown-event");
     const past = documents.eventDocument(options);
+    assert.match(past.title, /Aug 20, 2026/);
+    assert.match(past.description, /Past event details/);
+    assert.doesNotMatch(past.description, /upcoming|brings live music/i);
     assert.equal(past.jsonLd[0]["@type"], "MusicEvent");
     assert.equal(Object.hasOwn(past.jsonLd[0], "offers"), false);
     assert.equal(past.event.ticketUrl, null);
@@ -1403,7 +1422,7 @@ test("provider-evidenced festivals expose cohesive visible and structured event 
     });
     const html = documents.render(document);
     const schema = document.jsonLd.find((node) => node["@type"] === "MusicEvent");
-    assert.equal(document.title, "Lollapalooza at Festival Park — 2026-09-01 | Mshpit");
+    assert.equal(document.title, "Lollapalooza at Festival Park — Sep 1–4, 2026 | Mshpit");
     assert.equal(document.event.eventKind, "festival");
     assert.deepEqual(document.event.billedArtists, ["Headliner One", "Headliner Two"]);
     assert.equal(schema.name, "Lollapalooza");
@@ -1420,7 +1439,7 @@ test("provider-evidenced festivals expose cohesive visible and structured event 
     assert.equal(document.imageProvenance, "provider");
     assert.equal(document.imageWidth, 1920);
     assert.equal(document.imageHeight, 1080);
-    assert.match(html, /<h1>Lollapalooza<\/h1>/);
+    assert.match(html, /<h1>Lollapalooza at Festival Park — Sep 1–4, 2026<\/h1>/);
     assert.match(html, /Lineup:<\/strong> Headliner One · Headliner Two/);
     assert.match(html, /src="https:\/\/s1\.ticketm\.net\/dam\/a\/festival\.jpg"/);
     assert.match(html, /property="og:image:alt" content="Lollapalooza event image"/);
@@ -1715,7 +1734,7 @@ test("Discover is a substantive public hub while Search stays useful and noindex
     const searchHtml = documents.render(search);
     assert.equal(search.kind, "search");
     assert.equal(search.indexable, false);
-    assert.match(searchHtml, /Search across the whole community/);
+    assert.match(searchHtml, /Search artists, concerts and people\./);
     assert.match(searchHtml, /name="robots" content="noindex,follow"/);
     assert.doesNotMatch(searchHtml, /rel="canonical"/);
   } finally {
@@ -2058,7 +2077,7 @@ test("standalone posts safely expose attributed tour and setlist details and com
     assert.equal(html.includes("Setlist shared by"), true);
     assert.equal(html.includes("@cloe"), true);
     assert.equal(JSON.stringify(document.jsonLd).includes("EventSeries"), false);
-    for (const path of ["/artists", "/events", "/venues", "/concerts", "/discover"]) {
+    for (const path of ["/artists", "/events", "/venues", "/concerts", "/cities", "/search"]) {
       assert.equal(html.includes('href="' + path + '"'), true);
     }
     assert.deepEqual(malformed.post.setlist, []);
@@ -2144,7 +2163,7 @@ test("venue pages expose only verified capacity and coordinates with practical v
     });
     assert.match(schema.hasMap, /^https:\/\/www\.google\.com\/maps\/dir\//u);
     assert.equal(schema.mainEntityOfPage["@id"], "https://www.example.com/venue/scotiabank-arena#page");
-    assert.equal(document.title, "Scotiabank Arena venue guide: capacity, parking & transit | Mshpit");
+    assert.equal(document.title, "Scotiabank Arena in Toronto, Ontario venue guide: capacity, parking & transit | Mshpit");
     assert.match(document.description, /Listed capacity: 19,800/u);
     assert.match(html, /Seating, parking and transport/u);
     assert.match(html, /19,800 listed capacity/u);
