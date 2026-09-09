@@ -1,11 +1,13 @@
 import { api } from "./api";
 
-export function requestAccountExport(password) {
+export function requestAccountExport(password, { expectedAccountId, signal } = {}) {
   return api("/api/me/export", {
     method: "POST",
     body: { password: typeof password === "string" ? password : "" },
     context: "Preparing your account export",
     silent: true,
+    expectedAccountId,
+    signal,
   });
 }
 

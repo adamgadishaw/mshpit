@@ -195,7 +195,7 @@ export async function api(path, { method = "GET", body, context, silent = false,
   // Even a correctly bound response can finish after this tab deliberately
   // adopted another account. Never hand that stale success to a Store callback
   // that would mutate the new account's local state.
-  if (!skipIdentityCheck && expectedAccountId === undefined && identityAtStart.generation !== apiIdentity.generation) {
+  if (!skipIdentityCheck && identityAtStart.generation !== apiIdentity.generation) {
     const err = new AppError("Your account changed while that request was running. Try again.", {
       status: 409,
       serverCode: "IDENTITY_CHANGED",
@@ -344,7 +344,7 @@ export async function apiBinary(path, {
     });
     throw apiFailure(err, { path, method: verb, context: operation, silent });
   }
-  if (!skipIdentityCheck && expectedAccountId === undefined && identityAtStart.generation !== apiIdentity.generation) {
+  if (!skipIdentityCheck && identityAtStart.generation !== apiIdentity.generation) {
     const err = new AppError("Your account changed while that request was running. Try again.", {
       status: 409, serverCode: "IDENTITY_CHANGED", context: operation, source: "api",
     });

@@ -5,6 +5,8 @@ export const ARTIST_OVERVIEW_COPY = Object.freeze({
   invalidCountry: "Choose a country name or two-letter code.", loading: "Loading show dates…", refreshing: "Updating show dates…", retry: "Try again",
   empty: "No upcoming dates are listed here yet.", emptyFiltered: "No dates are listed for this location. Try all locations.",
   failed: "Show dates could not load. Please try again.", stale: "Showing the last loaded dates. The update did not finish.",
+  catalogUnavailable: "This artist’s catalog record is unavailable. Go back and search for the artist again.",
+  catalogUnavailableStale: "Showing the last loaded dates. This artist’s catalog record is unavailable, so these dates could not be confirmed.",
   partial: "Some dates may be missing. Check the artist’s official channels too.", coverageStale: "These dates have not been checked recently. Confirm details with the venue.",
   coverageUnknown: "We have not checked every source for this artist yet.", coverageUnavailable: "The date source is unavailable. Listed dates may be incomplete.",
   coveragePending: "More date sources are being checked.", moreFailed: "More dates could not load. Your current list is still here.",

@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { ScrollView, Text, TextInput, View } from "react-native";
+import { ScrollView, Text, View } from "react-native";
 import Button from "../../components/Button";
 import SheetHeader from "../../components/SheetHeader";
+import CredentialForm, { CredentialInput, CredentialLabel } from "../../components/credential-form";
 import { colors, radius, space } from "../../theme";
 import { isPassword } from "../../domain/validation.mjs";
 import { changeAccountPassword } from "./accountSecurityService";
@@ -14,6 +15,7 @@ export default function AccountPasswordForm({ onClose, session, deleteAccount, c
   const [message, setMessage] = useState("");
   const [done, setDone] = useState(false);
   const active = useRef(null), mounted = useRef(true), owner = useRef(session?.id);
+  const passwordInput = useRef(null), confirmationInput = useRef(null);
   owner.current = session?.id;
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; active.current?.abort(); }; }, []);
   const submit = async () => {
@@ -36,9 +38,10 @@ export default function AccountPasswordForm({ onClose, session, deleteAccount, c
       if (mounted.current && owner.current === accountId) setMessage(typeof error === "string" ? error : error?.message || "Could not confirm the change. Please try again.");
     } finally { if (mounted.current) { active.current = null; setBusy(false); } }
   };
-  const field = (label, value, change, autoComplete) => <View style={{ gap: space(2) }}>
-    <Text style={{ color: colors.text, fontWeight: "700" }}>{label}</Text>
-    <TextInput accessibilityLabel={label} value={value} onChangeText={change} secureTextEntry autoCapitalize="none" autoCorrect={false} autoComplete={autoComplete}
+  const field = (label, name, value, change, autoComplete, inputRef, nextRef) => <View style={{ gap: space(2) }}>
+    <CredentialLabel htmlFor={name} style={{ color: colors.text, fontWeight: "700" }}>{label}</CredentialLabel>
+    <CredentialInput ref={inputRef} name={name} accessibilityLabel={label} value={value} onChangeText={change} secureTextEntry autoCapitalize="none" autoCorrect={false} autoComplete={autoComplete}
+      returnKeyType={nextRef ? "next" : "done"} onSubmitEditing={nextRef ? () => nextRef.current?.focus() : undefined}
       maxLength={100} editable={!busy} style={{ minHeight: 48, padding: space(3), borderWidth: 1, borderColor: colors.line, borderRadius: radius.sm, backgroundColor: colors.surface, color: colors.text, fontSize: 16 }} />
   </View>;
   return <View style={{ flex: 1, backgroundColor: colors.bg }}>
@@ -47,10 +50,11 @@ export default function AccountPasswordForm({ onClose, session, deleteAccount, c
       <Text selectable style={{ color: colors.textDim, lineHeight: 22 }}>{cancelSetup
         ? "This deletes your unfinished account, its profile, and queues uploaded photos for deletion. This cannot be undone. Another account using the same email is not affected. Closing the browser without cancelling keeps your progress, subject to the account inactivity policy."
         : `Change the password for @${session?.handle || "your account"}. This signs out other devices for this account only.`}</Text>
-      {!done && <>{field("Current password", currentPassword, setCurrentPassword, "current-password")}
-        {!cancelSetup && <>{field("New password", password, setPassword, "new-password")}{field("Confirm new password", confirmation, setConfirmation, "new-password")}</>}
-        <Button title={busy ? "Please wait…" : cancelSetup ? "Delete unfinished account" : "Change password"} onPress={submit} disabled={busy} loading={busy} />
-      </>}
+      {!done && <CredentialForm busy={busy} id={cancelSetup ? "pit-cancel-signup" : "pit-change-password"} username={session?.email} onSubmit={submit} disabled={busy} style={{ gap: space(4) }}>
+        {field("Current password", "current-password", currentPassword, setCurrentPassword, "current-password", undefined, cancelSetup ? undefined : passwordInput)}
+        {!cancelSetup && <>{field("New password", "new-password", password, setPassword, "new-password", passwordInput, confirmationInput)}{field("Confirm new password", "confirm-password", confirmation, setConfirmation, "new-password", confirmationInput)}</>}
+        <Button submit title={busy ? "Please wait…" : cancelSetup ? "Delete unfinished account" : "Change password"} onPress={submit} disabled={busy} loading={busy} />
+      </CredentialForm>}
       {!!message && <Text selectable accessibilityRole="alert" style={{ color: done ? colors.good : colors.danger, lineHeight: 22 }}>{message}</Text>}
       <Button title={done ? "Back to Settings" : cancelSetup ? "Keep setting up" : "Cancel"} onPress={onClose} variant="secondary" disabled={busy} />
     </ScrollView>

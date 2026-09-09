@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import Icon from "../components/Icon";
 import SheetHeader from "../components/SheetHeader";
+import CredentialForm, { CredentialInput, CredentialLabel, CredentialSubmit } from "../components/credential-form";
 import { ownerApprovalPresentation, ownerApprovalRemaining } from "../domain/ownerApproval.mjs";
 import { decideOwnerApproval, reviewOwnerApproval } from "../features/ownerApprovals/services/ownerApprovalApi.mjs";
 import { colors, mono, radius, space } from "../theme";
@@ -21,15 +22,16 @@ const decisionFailureCopy = (error) => {
   return error?.message || "The decision could not be recorded. The request is unchanged and it is safe to retry.";
 };
 
-function DecisionButton({ label, icon, tone, disabled, busy, onPress }) {
+function DecisionButton({ label, icon, tone, disabled, busy, decision }) {
   const approve = tone === "approve";
   return (
-    <Pressable
+    <CredentialSubmit
+      name="decision"
+      value={decision}
       accessibilityRole="button"
       accessibilityLabel={label}
       accessibilityState={{ disabled, busy }}
       disabled={disabled}
-      onPress={onPress}
       style={({ pressed }) => [
         styles.decisionButton,
         approve ? styles.approveButton : styles.rejectButton,
@@ -39,7 +41,7 @@ function DecisionButton({ label, icon, tone, disabled, busy, onPress }) {
     >
       {busy ? <ActivityIndicator size="small" color={approve ? "#1A1206" : colors.danger} /> : <Icon name={icon} size={16} color={approve ? "#1A1206" : colors.danger} />}
       <Text style={[styles.decisionText, approve ? styles.approveText : styles.rejectText]}>{busy ? "RECORDING..." : label}</Text>
-    </Pressable>
+    </CredentialSubmit>
   );
 }
 
@@ -108,6 +110,12 @@ export default function OwnerApprovalScreen({ token, session, onConsumed, onDone
       setPassword("");
       setBusyDecision(null);
     }
+  };
+
+  const submitDecision = (submitter) => {
+    if (submitter?.name === "decision" && submitter.value === "approved") return decide("approved");
+    if (submitter?.name === "decision" && submitter.value === "rejected") return decide("rejected");
+    setActionError("Choose an approval or rejection button below to record your decision.");
   };
 
   if (session?.owner !== true) {
@@ -189,8 +197,10 @@ export default function OwnerApprovalScreen({ token, session, onConsumed, onDone
               </Text>
             </View>
 
-            <Text style={styles.passwordLabel}>OWNER PASSWORD</Text>
-            <TextInput
+            <CredentialForm busy={!!busyDecision} id="owner-approval-decision" username={session?.email} onSubmit={submitDecision} disabled={!password || !!busyDecision || remaining.expired} requireExplicitSubmitter>
+            <CredentialLabel htmlFor="current-password" style={styles.passwordLabel}>OWNER PASSWORD</CredentialLabel>
+            <CredentialInput
+              name="current-password"
               accessibilityLabel="Owner password"
               accessibilityHint="Required for both approval and rejection"
               accessibilityState={{ disabled: !!busyDecision || remaining.expired }}
@@ -200,7 +210,6 @@ export default function OwnerApprovalScreen({ token, session, onConsumed, onDone
               editable={!busyDecision && !remaining.expired}
               maxLength={100}
               onChangeText={(value) => { setPassword(value); setActionError(""); }}
-              onSubmitEditing={() => decide("approved")}
               placeholder="Re-enter the current Owner password"
               placeholderTextColor={colors.textFaint}
               returnKeyType="done"
@@ -213,9 +222,10 @@ export default function OwnerApprovalScreen({ token, session, onConsumed, onDone
             {actionError ? <Text accessibilityRole="alert" accessibilityLiveRegion="assertive" style={styles.error}>{actionError}</Text> : null}
 
             <View style={styles.decisionRow}>
-              <DecisionButton label="REJECT REQUEST" icon="x" tone="reject" disabled={!password || !!busyDecision || remaining.expired} busy={busyDecision === "rejected"} onPress={() => decide("rejected")} />
-              <DecisionButton label={presentation.approveLabel} icon="check" tone="approve" disabled={!password || !!busyDecision || remaining.expired} busy={busyDecision === "approved"} onPress={() => decide("approved")} />
+              <DecisionButton label="REJECT REQUEST" icon="x" tone="reject" disabled={!password || !!busyDecision || remaining.expired} busy={busyDecision === "rejected"} decision="rejected" />
+              <DecisionButton label={presentation.approveLabel} icon="check" tone="approve" disabled={!password || !!busyDecision || remaining.expired} busy={busyDecision === "approved"} decision="approved" />
             </View>
+            </CredentialForm>
           </>
         ) : null}
 

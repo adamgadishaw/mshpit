@@ -38,9 +38,9 @@ function load(file) {
 }
 const ArtistUpcomingShows = load(fileURLToPath(new URL("../../components/artist/ArtistUpcomingShows.jsx", import.meta.url))).default;
 const noop = () => {};
-function render({ count = 4, status = "ready", condensed = false, coverage = "fresh", legacy = false, moreError = null, countryCode = "", city = "", customCopy = null, eventStatus = null } = {}) {
+function render({ count = 4, status = "ready", condensed = false, coverage = "fresh", legacy = false, moreError = null, countryCode = "", city = "", customCopy = null, eventStatus = null, errorCode = "PIT-NET-001", serverCode = null, hasSchedule = status !== "loading" } = {}) {
   const items = Array.from({ length: count }, (_, index) => ({ id: `show-${index}`, artist: "Example", eventName: "Example at the Hall", venue: "The Hall", place: "Toronto, Ontario, Canada", date: "2026-10-01", startLocalTime: "2026-10-01T19:30:00", ticketUrl: "https://www.ticketmaster.ca/event/123", eventStatus }));
-  const controller = { resource: { status, error: status === "error" ? { code: "PIT-NET-001" } : null, data: status === "loading" ? null : { schedule: { items, total: count, legacy, hasMore: count > 3, coverage: { status: coverage } } } }, countryCode, city, moreError, reload: noop, refresh: noop, loadMore: noop, setLocation: noop };
+  const controller = { resource: { status, error: status === "error" ? { code: errorCode, serverCode } : null, data: hasSchedule ? { schedule: { items, total: count, legacy, hasMore: count > 3, coverage: { status: coverage } } } : null }, countryCode, city, moreError, reload: noop, refresh: noop, loadMore: noop, setLocation: noop };
   return ReactDOMServer.renderToStaticMarkup(React.createElement(ArtistUpcomingShows, { controller, artistName: "Example", condensed, onViewAll: noop, onOpenShow: noop, copy: customCopy }));
 }
 
@@ -73,6 +73,31 @@ test("loading, empty, partial coverage and stale errors have distinct rendered w
 test("legacy and memorial schedules render no live controls", () => {
   assert.equal(render({ legacy: true }), "");
   assert.equal(render({ coverage: "disabled" }), "");
+});
+
+test("missing catalog is not an empty schedule or a temporary server failure", () => {
+  const missing = render({ status: "error", errorCode: "PIT-REQ-002", hasSchedule: false });
+  assert.match(missing, /catalog record is unavailable/);
+  assert.match(missing, /Go back and search for the artist again/);
+  assert.match(missing, /PIT-REQ-002/);
+  assert.doesNotMatch(missing, /No upcoming dates|Show dates could not load|data-testid="artist-show-/);
+  const serverFailure = render({ status: "error", errorCode: "PIT-SVC-001", hasSchedule: false });
+  assert.match(serverFailure, /Show dates could not load/);
+  assert.doesNotMatch(serverFailure, /catalog record is unavailable|No upcoming dates/);
+  assert.match(render({ count: 0 }), /No upcoming dates are listed here yet/);
+  assert.match(render({ status: "error", serverCode: "NOT_FOUND", hasSchedule: false }), /catalog record is unavailable/);
+});
+
+test("catalog disappearance retains prior dates with an explicit unconfirmed warning", () => {
+  const html = render({ status: "error", errorCode: "PIT-REQ-002" });
+  assert.match(html, /Showing the last loaded dates/);
+  assert.match(html, /catalog record is unavailable/);
+  assert.match(html, /these dates could not be confirmed/);
+  assert.match(html, /data-testid="artist-show-show-0"/);
+  assert.doesNotMatch(html, /No upcoming dates/);
+  assert.match(render({ status: "error", errorCode: "PIT-REQ-002", hasSchedule: false,
+    customCopy: { catalogUnavailable: "Artist record is being checked." },
+  }), /Artist record is being checked/);
 });
 test("cancelled shows keep their status and show page but never offer tickets", () => {
   const html = render({ count: 1, eventStatus: "cancelled" });

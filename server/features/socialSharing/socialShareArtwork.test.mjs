@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   loadShareArtwork,
+  shareArtworkFailureReason,
   ShareArtworkTransientError,
   socialShareArtworkConstants,
   trustedShareArtworkUrl,
@@ -166,13 +167,13 @@ test("temporary artwork exhaustion is classified as retryable", async () => {
   let requests = 0;
   await assert.rejects(loadShareArtwork(candidates, {
     env: ENV,
-    fetchImpl: async () => {
-      const status = [408, 429, 503][requests];
+    fetchImpl: async (url) => {
+      const status = Number(/temporary-(\d+)/u.exec(url)[1]);
       requests += 1;
       return new Response(null, { status });
     },
   }), ShareArtworkTransientError);
-  assert.equal(requests, 3);
+  assert.equal(requests, 6, "each temporary source receives at most one bounded retry");
 });
 
 test("a rejecting image decoder is terminal for only that candidate", async () => {
@@ -239,4 +240,127 @@ test("declared artwork type must match a supported file signature", async () => 
   });
   assert.equal(mismatch, null);
   assert.equal(disguised, null);
+});
+
+const RETRY_PHOTO = Object.freeze({
+  url: "https://media.mshpit.test/public/share-tests/retry.jpg",
+  source: "owned-media",
+});
+
+function photoResponse() {
+  return new Response(PHOTO, { headers: { "content-type": "image/jpeg" } });
+}
+
+test("one temporary GET failure recovers the same approved image without resetting its budget", async () => {
+  for (const phase of ["status", "connection", "body"]) {
+    const requests = [];
+    const result = await loadShareArtwork([RETRY_PHOTO], {
+      env: ENV,
+      fetchImpl: async (url, options) => {
+        requests.push({ url, options });
+        if (requests.length === 1) {
+          if (phase === "status") return new Response(null, { status: 503 });
+          const failure = new TypeError("Do not log https://private.example/?token=secret", {
+            cause: Object.assign(new Error("private transport details"), { code: "ECONNRESET" }),
+          });
+          if (phase === "connection") throw failure;
+          return new Response(new ReadableStream({
+            start(controller) { controller.error(failure); },
+          }), { headers: { "content-type": "image/jpeg" } });
+        }
+        return photoResponse();
+      },
+    });
+    assert.deepEqual(result, PHOTO, phase);
+    assert.equal(requests.length, 2, phase);
+    assert.equal(requests[0].url, RETRY_PHOTO.url);
+    assert.equal(requests[1].url, RETRY_PHOTO.url);
+    assert.equal(requests[0].options.signal, requests[1].options.signal,
+      "the retry shares the original image deadline");
+    assert.equal(requests[1].options.redirect, "error");
+  }
+});
+
+test("upstream Retry-After beyond the image budget is not ignored or waited out", async () => {
+  for (const cooldown of ["120", new Date(Date.now() + 120_000).toUTCString()]) {
+    let requests = 0;
+    await assert.rejects(loadShareArtwork([RETRY_PHOTO], {
+      env: ENV,
+      fetchImpl: async () => {
+        requests += 1;
+        return new Response(null, { status: 429, headers: { "retry-after": cooldown } });
+      },
+    }), (error) => error instanceof ShareArtworkTransientError && error.code === "upstream_http");
+    assert.equal(requests, 1);
+  }
+});
+
+test("aborting as a response completes or during retry delay never starts another fetch", async () => {
+  for (const duringDelay of [false, true]) {
+    const controller = new AbortController();
+    let requests = 0;
+    let received;
+    const first = new Promise((resolve) => { received = resolve; });
+    const pending = loadShareArtwork([RETRY_PHOTO], {
+      env: ENV,
+      signal: controller.signal,
+      fetchImpl: async () => { requests += 1; received(); return new Response(null, { status: 503 }); },
+    });
+    await first;
+    if (duringDelay) await new Promise((resolve) => setImmediate(resolve));
+    controller.abort(new DOMException("Request closed", "AbortError"));
+    await assert.rejects(pending, { name: "AbortError" });
+    assert.equal(requests, 1);
+  }
+});
+
+test("a fetch ignoring abort cannot hold an artwork slot and its late body is discarded", async () => {
+  let deliver;
+  let cancelled = 0;
+  let requests = 0;
+  const late = new Promise((resolve) => { deliver = resolve; });
+  // AbortSignal.timeout is unref'ed; keep this isolated test alive for its deadline.
+  const keepAlive = setTimeout(() => {}, 1_000);
+  try {
+    await assert.rejects(loadShareArtwork([RETRY_PHOTO], {
+      env: ENV,
+      timeoutMs: 100,
+      fetchImpl: () => { requests += 1; return late; },
+    }), (error) => error instanceof ShareArtworkTransientError && error.code === "network_timeout");
+    assert.equal(requests, 1, "a fully spent deadline is never extended for a retry");
+    deliver(new Response(new ReadableStream({ cancel() { cancelled += 1; } }), {
+      headers: { "content-type": "image/jpeg" },
+    }));
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(cancelled, 1);
+  } finally { clearTimeout(keepAlive); }
+});
+
+test("an unreadable response body is cancelled at the original image deadline", async () => {
+  let cancelled = 0;
+  const keepAlive = setTimeout(() => {}, 1_000);
+  try {
+    await assert.rejects(loadShareArtwork([RETRY_PHOTO], {
+      env: ENV,
+      timeoutMs: 100,
+      fetchImpl: async () => new Response(new ReadableStream({ cancel() { cancelled += 1; } }), {
+        headers: { "content-type": "image/jpeg" },
+      }),
+    }), (error) => error instanceof ShareArtworkTransientError && error.code === "network_timeout");
+    assert.equal(cancelled, 1);
+  } finally { clearTimeout(keepAlive); }
+});
+
+test("share failure reasons are a fixed allowlist, never provider URLs or arbitrary codes", () => {
+  const cases = [
+    [{ code: "ETIMEDOUT" }, "network_timeout"],
+    [{ cause: { code: "UND_ERR_SOCKET" } }, "connection_reset"],
+    [{ cause: { code: "EAI_AGAIN" } }, "dns_unavailable"],
+    [{ code: "https://private.example/?token=secret" }, "network_unavailable"],
+    [{ message: "bucket account and user details" }, "network_unavailable"],
+  ];
+  for (const [error, expected] of cases) assert.equal(shareArtworkFailureReason(error), expected);
+  assert.equal(new ShareArtworkTransientError("secret").code, "network_unavailable");
+  assert.equal(new ShareArtworkTransientError("connection_reset").cause, undefined);
 });

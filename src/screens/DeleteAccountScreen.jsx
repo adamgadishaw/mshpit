@@ -1,10 +1,11 @@
 import { useState } from "react";
-import { ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { ScrollView, StyleSheet, Text, View } from "react-native";
 import Button from "../components/Button";
 import Icon from "../components/Icon";
 import SheetHeader from "../components/SheetHeader";
 import { useStore } from "../store";
 import { colors, displayFont, radius } from "../theme";
+import CredentialForm, { CredentialInput, CredentialLabel } from "../components/credential-form";
 
 function WarningLine({ children }) {
   return (
@@ -26,13 +27,19 @@ export default function DeleteAccountScreen({ onClose, onDeleted }) {
     if (!password || deleting) return;
     setDeleting(true);
     setError("");
-    const result = await deleteAccount(password);
-    if (result.ok) {
-      onDeleted?.();
-      return;
+    try {
+      const result = await deleteAccount(password);
+      if (result?.ok) {
+        setPassword("");
+        onDeleted?.();
+        return;
+      }
+      setError(result?.error || "Your account couldn't be deleted. Try again.");
+    } catch {
+      setError("Your account couldn't be deleted. Try again.");
+    } finally {
+      setDeleting(false);
     }
-    setError(result.error || "Your account couldn't be deleted. Try again.");
-    setDeleting(false);
   };
 
   return (
@@ -67,9 +74,10 @@ export default function DeleteAccountScreen({ onClose, onDeleted }) {
             <Button title="KEEP MY ACCOUNT" variant="secondary" onPress={onClose} style={styles.secondary} />
           </>
         ) : (
-          <>
-            <Text style={styles.label}>CURRENT PASSWORD</Text>
-            <TextInput
+          <CredentialForm busy={deleting} id="delete-account" username={session?.email} onSubmit={submit} disabled={!password || deleting}>
+            <CredentialLabel htmlFor="current-password" style={styles.label}>CURRENT PASSWORD</CredentialLabel>
+            <CredentialInput
+              name="current-password"
               style={styles.input}
               value={password}
               onChangeText={(value) => { setPassword(value); setError(""); }}
@@ -82,7 +90,6 @@ export default function DeleteAccountScreen({ onClose, onDeleted }) {
               textContentType="password"
               maxLength={100}
               editable={!deleting}
-              onSubmitEditing={submit}
               returnKeyType="done"
             />
             {!!error && <Text selectable style={styles.error}>{error}</Text>}
@@ -91,6 +98,7 @@ export default function DeleteAccountScreen({ onClose, onDeleted }) {
               <Text selectable style={styles.finalWarningText}>This action starts as soon as you press delete. There is no recovery period.</Text>
             </View>
             <Button
+              submit
               title={deleting ? "DELETING ACCOUNT..." : "DELETE ACCOUNT PERMANENTLY"}
               variant="danger"
               icon="trash"
@@ -104,7 +112,7 @@ export default function DeleteAccountScreen({ onClose, onDeleted }) {
               onPress={() => { setStep("warning"); setPassword(""); setError(""); }}
               style={styles.secondary}
             />
-          </>
+          </CredentialForm>
         )}
       </ScrollView>
     </View>

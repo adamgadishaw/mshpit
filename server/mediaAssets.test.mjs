@@ -2716,7 +2716,7 @@ test("post creation projects stable media and grandfathers stored URL-only media
   assert.notEqual(publicStable.media[0].sourceUrl, created.upload.storageLocator,
     "non-owners never receive the original source reference");
   assert.equal(db.prepare("SELECT status FROM media_objects WHERE object_key=?").get(created.upload.key).status, "associated");
-  const exported = routes["POST /api/me/export"]({ user, ip: "stable-media-export", body: { password: "media-password" } });
+  const exported = await routes["POST /api/me/export"]({ user, ip: "stable-media-export", body: { password: "media-password" } });
   const exportedAsset = exported.mediaAssets.find((asset) => asset.id === created.asset.id);
   assert.equal(exportedAsset?.url, deliveryUrl);
   assert.equal(exportedAsset?.altText, "Singer reaching toward the front row");

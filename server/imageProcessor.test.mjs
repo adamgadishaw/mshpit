@@ -12,6 +12,18 @@ import {
 import { imageProcessorHealth, sanitizeDecodedImage, validateDecodedImage } from "./imageProcessor.js";
 import { MEDIA_POST_MAX_ATTACHMENTS } from "../src/domain/mediaUploadPolicy.mjs";
 
+test("the image runtime includes the vendor fix for GHSA-rgj7-g3m4-5g8c", () => {
+  const atLeast = (actual, minimum) => {
+    const parts = String(actual).split(".").map(Number);
+    return parts.length >= minimum.length && minimum.every((part, index) =>
+      parts.slice(0, index).some((value, prior) => value > minimum[prior]) || parts[index] >= part);
+  };
+  // Sharp's patched prebuild includes libheif 1.23.2. Check the loaded binary,
+  // not only the manifest, so a stale installation cannot pass image security CI.
+  assert.equal(atLeast(sharp.versions.sharp, [0, 35, 4]), true, "Sharp must include the vendor patch");
+  assert.equal(atLeast(sharp.versions.heif, [1, 23, 2]), true, "the loaded libheif must include the upstream fix");
+});
+
 function createdImage({ width = 64, height = 48, format = "jpeg" } = {}) {
   const pipeline = sharp({
     create: { width, height, channels: 4, background: { r: 100, g: 30, b: 180, alpha: 0.8 } },

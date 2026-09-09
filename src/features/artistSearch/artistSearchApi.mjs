@@ -36,6 +36,12 @@ export function mergeArtistSearchCacheEntry(current, incoming) {
   if (!current || typeof current !== "object") return incoming;
   const merged = { ...current, ...incoming };
   if (incoming.searchSummary === true) {
+    // Catalog search summaries describe stored rows. A prior provider preview
+    // must not keep its transient marker after this durable identity arrives.
+    const incomingKey = incoming.key || incoming.norm;
+    if (incoming.transient !== true && typeof incomingKey === "string" && incomingKey.trim()) {
+      merged.transient = false;
+    }
     for (const field of ["albums", "topTracks"]) {
       const currentRows = Array.isArray(current[field]) ? current[field] : [];
       const incomingRows = Array.isArray(incoming[field]) ? incoming[field] : [];

@@ -1,4 +1,4 @@
-import { verifyPasswordForUser } from "../../auth.js";
+import { verifyPasswordForUserAsync } from "../../auth.js";
 import { clean, cleanHandle } from "../../validate.js";
 import { isOwnerId } from "../../ownerIdentity.js";
 import {
@@ -34,6 +34,7 @@ export function ownerApprovalRoutes({
   requireOwner,
   roleChangeTouchesHead,
   selectedRoleHandle,
+  verifyPassword = verifyPasswordForUserAsync,
 }) {
   if (!database?.prepare || typeof ApiError !== "function" || typeof applyRoleChange !== "function"
     || typeof getUser !== "function" || typeof limit !== "function" || typeof now !== "function"
@@ -79,7 +80,7 @@ export function ownerApprovalRoutes({
       if (!token || !password || !decision) {
         throw new ApiError(400, "Token, Owner password, and decision are required.", "VALIDATION_FAILED");
       }
-      if (!verifyPasswordForUser(password, owner.pass_hash)) {
+      if (password.length > 100 || !await verifyPassword(password, owner.pass_hash)) {
         throw new ApiError(401, "That password doesn't match the Owner account.", "AUTH_INVALID");
       }
 
@@ -88,6 +89,14 @@ export function ownerApprovalRoutes({
         ownerId: owner.id,
         decision,
         at: now(),
+        assertAuthorized: () => {
+          ctx.assertCurrentSession?.();
+          requireOwner(ctx);
+          const current = getUser(owner.id);
+          if (!current || current.pass_hash !== owner.pass_hash) {
+            throw new ApiError(401, "Your account changed. Log in again before deciding this request.", "AUTH_REQUIRED");
+          }
+        },
         applyApprovedAction: ({ request, payload }) => {
           const requester = getUser(request.requested_by);
           if (!requester || requester.role !== "admin" || requester.is_banned

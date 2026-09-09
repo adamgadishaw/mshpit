@@ -21,7 +21,7 @@ export async function readAuthorizedRequest({ token, expectedAccount, method, pa
   return {
     body,
     user,
-    assertCurrentSession() {
+    assertCurrentSession({ allowRestrictedAccount = false } = {}) {
       const current = currentUser(token);
       if (!current) throw new ApiError(401, "Log in first.", "AUTH_REQUIRED");
       assertExpectedAccount(user?.id || "guest", current);
@@ -31,8 +31,10 @@ export async function readAuthorizedRequest({ token, expectedAccount, method, pa
       if (current.role !== user.role) {
         throw new ApiError(401, "Your account permissions changed. Log in again.", "AUTH_REQUIRED");
       }
-      if (current.is_banned) throw new ApiError(403, "This account is banned.", "FORBIDDEN");
-      if (current.suspended_until && current.suspended_until > Date.now()) {
+      // Password recovery and account export retain their session-bound rights
+      // during moderation restrictions; ordinary social/media guards do not.
+      if (!allowRestrictedAccount && current.is_banned) throw new ApiError(403, "This account is banned.", "FORBIDDEN");
+      if (!allowRestrictedAccount && current.suspended_until && current.suspended_until > Date.now()) {
         throw new ApiError(403, "This account is suspended.", "FORBIDDEN");
       }
       assertAccountMutationAccess({ method, pathname, user: current, body });

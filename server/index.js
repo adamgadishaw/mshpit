@@ -107,6 +107,7 @@ import {
   stopVideoVerifierHealthScheduler,
 } from "./videoVerifier.js";
 import { verifyPrivateMediaBucketIsolation } from "./media.js";
+import { createMediaIsolationMonitor } from "./mediaIsolationMonitor.js";
 import {
   ensureLegacyMediaFinalizeSchema,
   expireLegacyMediaUploads,
@@ -817,7 +818,7 @@ let cacheWarmScheduler = null;
 let backupScheduler = null;
 let mediaDeletionScheduler = null;
 let accountLifecycleScheduler = null;
-let privateMediaIsolationTimer = null;
+let privateMediaIsolationMonitor = null;
 let sitemapRefreshTimer = null;
 let sitemapRetryTimer = null;
 function shutdown(exitCode = 0) {
@@ -837,7 +838,7 @@ function shutdown(exitCode = 0) {
   const artistGenreRefreshStop = stopMusicBrainzGenreRefreshScheduler({ abortActive: true });
   const artistPhotoSeedStop = stopArtistPhotoSeedScheduler({ abortActive: true });
   stopVideoVerifierHealthScheduler({ abortActive: true });
-  if (privateMediaIsolationTimer) clearInterval(privateMediaIsolationTimer);
+  const privateMediaIsolationStop = privateMediaIsolationMonitor?.stop() || Promise.resolve();
   if (sitemapRefreshTimer) clearInterval(sitemapRefreshTimer);
   if (sitemapRetryTimer) clearTimeout(sitemapRetryTimer);
   const sitemapRefreshStop = drainSitemapSnapshotRefresh();
@@ -869,6 +870,8 @@ function shutdown(exitCode = 0) {
     catch (error) { console.error(`[pit] artist photo seed shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     try { await sitemapRefreshStop; }
     catch (error) { console.error(`[seo] sitemap refresh shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
+    try { await privateMediaIsolationStop; }
+    catch (error) { console.error(`[media] privacy recovery shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     try { db.close(); }
     catch (error) { console.error(`[pit] database close failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     process.exit(exitCode);
@@ -881,25 +884,6 @@ function shutdown(exitCode = 0) {
 process.on("SIGINT", () => shutdown(0));
 process.on("SIGTERM", () => shutdown(0));
 
-let privateIsolationProbeActive = false;
-async function refreshPrivateMediaIsolation() {
-  if (privateIsolationProbeActive) return null;
-  privateIsolationProbeActive = true;
-  try {
-    return await verifyPrivateMediaBucketIsolation({ env: process.env });
-  } finally {
-    privateIsolationProbeActive = false;
-  }
-}
-
-function startPrivateMediaIsolationScheduler() {
-  if (!PROD || privateMediaIsolationTimer) return;
-  privateMediaIsolationTimer = setInterval(() => {
-    refreshPrivateMediaIsolationSafely("scheduled");
-  }, 5 * 60 * 1000);
-  privateMediaIsolationTimer.unref();
-}
-
 function ensureLegacyImageRecoveryScheduler() {
   if (shuttingDown || legacyImageRecoveryScheduler) return legacyImageRecoveryScheduler;
   if (!legacyImageRecoveryEnabled(process.env)) return null;
@@ -908,18 +892,21 @@ function ensureLegacyImageRecoveryScheduler() {
   return legacyImageRecoveryScheduler;
 }
 function refreshPrivateMediaIsolationSafely(phase) {
-  return refreshPrivateMediaIsolation()
-    .then((status) => {
+  if (shuttingDown) return Promise.resolve(null);
+  if (!privateMediaIsolationMonitor) privateMediaIsolationMonitor = createMediaIsolationMonitor({
+    probe: ({ signal }) => verifyPrivateMediaBucketIsolation({ env: process.env, signal }),
+    onResult: (status, { phase, recovered, retryInMs }) => {
       if (status?.ready) ensureLegacyImageRecoveryScheduler();
+      if (recovered) console.log("[media] private-storage privacy check recovered");
       if (status && !status.ready) {
-        console.error(`[media] private-storage privacy check failed closed: phase=${phase} code=${status.errorCode || "probe_failed"}`);
+        console.error(`[media] private-storage privacy check failed closed: phase=${phase} code=${status.errorCode || "probe_failed"} retryInMs=${retryInMs}`);
       }
-      return status;
-    })
-    .catch((error) => {
+    },
+    onError: (error, phase) => {
       console.error(`[media] private-storage privacy check failed safely: phase=${phase} cause=${safeRequestFailureContext({ error }).cause}`);
-      return null;
-    });
+    },
+  });
+  return privateMediaIsolationMonitor.trigger(phase);
 }
 
 function sitemapRefreshIntervalMs(env = process.env) {
@@ -1034,7 +1021,6 @@ async function startServer() {
     // this proof succeeds, capabilities stay off and private media operations
     // fail closed through requirePrivateMediaIsolationReady().
     if (PROD) void startBackgroundRuntime("/startup/private-media-probe", () => refreshPrivateMediaIsolationSafely("startup"));
-    startBackgroundRuntime("/startup/private-media-isolation", () => startPrivateMediaIsolationScheduler());
     // A deployment is stamped only after the owned listen boundary resolves
     // and the web process is accepting connections.
     founderOperationsScheduler = startBackgroundRuntime("/startup/founder-operations", () => startFounderOperationsScheduler({ database: db }));

@@ -53,7 +53,9 @@ test("share artwork is created only after an explicit share action and stays pri
   const api = source("../lib/api.js");
 
   assert.match(studio, /onPress=\{\(\) => setOpen\(true\)\}/);
-  assert.match(studio, /createShareCardAsset\(renderModel, \{ accountId, signal: controller\.signal \}\)/);
+  assert.match(studio, /prepareShareCardAsset\(\s*\(\{ signal \}\) => createShareCardAsset\(renderModel, \{ accountId, signal \}\)/);
+  assert.match(studio, /signal: controller\.signal,\s*release: releaseShareCardAsset/,
+    "The lifecycle cancels the account-scoped request and releases late private assets");
   assert.match(studio, /\}, \[accountId, renderAttempt, renderModel\]\);/);
   assert.doesNotMatch(studio, /\}, \[accountId, model\]\);/,
     "An unrelated post refresh must not restart the private PNG render");

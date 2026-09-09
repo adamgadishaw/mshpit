@@ -43,7 +43,9 @@ export function artistResolveRoutes({
       const persisted = await persistExactMusicBrainzIdentity(name, {
         signal: ctx.signal,
         expectedMbid,
+        assertAuthorized: ctx.assertCurrentSession,
       });
+      ctx.assertCurrentSession?.();
       clearMissingArtist(key);
       return { artist: projectArtist(persisted), created: true };
     },

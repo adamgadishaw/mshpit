@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 
 import {
@@ -11,6 +11,8 @@ import ConcertTicketCard from "./ConcertTicketCard";
 import Icon from "./Icon";
 
 const cleanSeatPart = (value, max = 40) => String(value || "").trim().slice(0, max);
+const POST_ERROR = "Couldn't share this ticket right now. Your Going status is still saved.";
+const EMPTY_DRAFT = { note: "", shareSeatLocation: false, section: "", row: "", seat: "" };
 
 export default function GoingTicketComposer({
   event,
@@ -19,21 +21,36 @@ export default function GoingTicketComposer({
   tourDateId,
   user,
 }) {
-  const [note, setNote] = useState("");
-  const [shareSeatLocation, setShareSeatLocation] = useState(false);
-  const [section, setSection] = useState("");
-  const [row, setRow] = useState("");
-  const [seat, setSeat] = useState("");
-  const [posting, setPosting] = useState(false);
-  const [error, setError] = useState("");
+  const [draft, setDraft] = useState(null);
+  const [postingMutation, setPostingMutation] = useState(null);
+  const [failure, setFailure] = useState(null);
   const mutationRef = useRef(null);
-  if (!mutationRef.current || mutationRef.current.tourDateId !== tourDateId) {
+  const accountId = user?.id || null;
+  if (!mutationRef.current || mutationRef.current.tourDateId !== tourDateId
+    || mutationRef.current.accountId !== accountId) {
     mutationRef.current = {
       tourDateId,
+      accountId,
       id: createAttendanceTicketClientMutationId(),
+      draftScope: mutationRef.current?.accountId === accountId ? mutationRef.current.draftScope : {},
+      pending: null,
+      cancelled: false,
     };
   }
-  const clientMutationId = mutationRef.current.id;
+  const mutation = mutationRef.current;
+  const clientMutationId = mutation.id;
+  // A departing account's private text and seat consent never render under its
+  // replacement, even before effect cleanup. Same-account retries keep drafts.
+  const { note, shareSeatLocation, section, row, seat } = draft?.scope === mutation.draftScope ? draft : EMPTY_DRAFT;
+  const posting = postingMutation === mutation;
+  const error = failure?.mutation === mutation ? failure.message : "";
+  useEffect(() => {
+    mutation.cancelled = false;
+    return () => {
+      mutation.cancelled = true;
+      mutation.pending = null;
+    };
+  }, [mutation]);
   const seatLocation = useMemo(() => ({
     section: cleanSeatPart(section),
     row: cleanSeatPart(row),
@@ -46,27 +63,61 @@ export default function GoingTicketComposer({
     shareSeatLocation,
   }), [event, seatLocation, shareSeatLocation, user?.handle, user?.name]);
 
-  const publish = async () => {
-    if (posting || !tourDateId) return;
-    setPosting(true);
-    setError("");
-    const result = await onPost?.({
-      id: clientMutationId,
-      kind: "status",
-      review: note.trim(),
-      attendanceTicket: {
-        ...ticket,
-        tourDateId,
-        includeSeat: shareSeatLocation,
-        ...(shareSeatLocation ? seatLocation : {}),
-      },
+  const isCurrent = () => mutationRef.current === mutation && !mutation.cancelled;
+  const updateDraft = (field, value) => {
+    if (!isCurrent()) return;
+    setDraft((previous) => {
+      const current = previous?.scope === mutation.draftScope ? previous : EMPTY_DRAFT;
+      return {
+        ...current,
+        scope: mutation.draftScope,
+        [field]: typeof value === "function" ? value(current[field]) : value,
+      };
     });
-    setPosting(false);
-    if (result?.ok) {
-      onDismiss?.();
-      return;
+  };
+  const dismiss = () => {
+    if (!isCurrent()) return;
+    mutation.cancelled = true;
+    mutation.pending = null;
+    setPostingMutation(null);
+    onDismiss?.();
+  };
+  const publish = async () => {
+    if (!isCurrent() || mutation.pending || !tourDateId) return;
+    // Claim synchronously: two presses can arrive before loading re-renders.
+    const request = {};
+    mutation.pending = request;
+    const ownsRequest = () => isCurrent() && mutation.pending === request;
+    setPostingMutation(mutation);
+    setFailure(null);
+    try {
+      const result = await onPost?.({
+        id: clientMutationId,
+        kind: "status",
+        review: note.trim(),
+        attendanceTicket: {
+          ...ticket,
+          tourDateId,
+          includeSeat: shareSeatLocation,
+          ...(shareSeatLocation ? seatLocation : {}),
+        },
+      });
+      if (!ownsRequest() || result?.stale) return;
+      if (result?.ok) {
+        dismiss();
+        return;
+      }
+      setFailure({ mutation, message: POST_ERROR });
+    } catch (error) {
+      if (ownsRequest() && error?.name !== "AbortError" && !error?.stale) {
+        setFailure({ mutation, message: POST_ERROR });
+      }
+    } finally {
+      if (ownsRequest()) {
+        mutation.pending = null;
+        setPostingMutation(null);
+      }
     }
-    setError("Couldn't share this ticket right now. Your Going status is still saved.");
   };
 
   return (
@@ -78,7 +129,7 @@ export default function GoingTicketComposer({
           <Text style={styles.title}>Share your Going post?</Text>
           <Text style={styles.intro}>Optional. Your Going status is already saved. This creates a public feed post and is not a ticket for entry.</Text>
         </View>
-        <Pressable style={styles.dismiss} onPress={onDismiss} accessibilityRole="button" accessibilityLabel="Do not share a Going post">
+        <Pressable style={styles.dismiss} onPress={dismiss} accessibilityRole="button" accessibilityLabel="Do not share a Going post">
           <Icon name="x" size={16} color={colors.textDim} />
         </Pressable>
       </View>
@@ -88,7 +139,7 @@ export default function GoingTicketComposer({
       <TextInput
         style={styles.note}
         value={note}
-        onChangeText={setNote}
+        onChangeText={(value) => updateDraft("note", value)}
         maxLength={500}
         multiline
         placeholder="Add a note (optional)"
@@ -98,7 +149,7 @@ export default function GoingTicketComposer({
 
       <Pressable
         style={({ pressed }) => [styles.seatToggle, pressed && styles.pressed]}
-        onPress={() => setShareSeatLocation((value) => !value)}
+        onPress={() => updateDraft("shareSeatLocation", (value) => !value)}
         accessibilityRole="checkbox"
         accessibilityState={{ checked: shareSeatLocation }}
         accessibilityLabel="Share my seat location publicly"
@@ -115,15 +166,15 @@ export default function GoingTicketComposer({
 
       {shareSeatLocation ? (
         <View style={styles.seatFields}>
-          <TextInput style={styles.seatInput} value={section} onChangeText={setSection} maxLength={40} placeholder="Section or general admission" placeholderTextColor={colors.textFaint} accessibilityLabel="Public section or general admission area" />
-          <TextInput style={styles.seatInput} value={row} onChangeText={setRow} maxLength={30} placeholder="Row (optional)" placeholderTextColor={colors.textFaint} accessibilityLabel="Public row, optional" />
-          <TextInput style={styles.seatInput} value={seat} onChangeText={setSeat} maxLength={30} placeholder="Seat (optional)" placeholderTextColor={colors.textFaint} accessibilityLabel="Public seat, optional" />
+          <TextInput style={styles.seatInput} value={section} onChangeText={(value) => updateDraft("section", value)} maxLength={40} placeholder="Section or general admission" placeholderTextColor={colors.textFaint} accessibilityLabel="Public section or general admission area" />
+          <TextInput style={styles.seatInput} value={row} onChangeText={(value) => updateDraft("row", value)} maxLength={30} placeholder="Row (optional)" placeholderTextColor={colors.textFaint} accessibilityLabel="Public row, optional" />
+          <TextInput style={styles.seatInput} value={seat} onChangeText={(value) => updateDraft("seat", value)} maxLength={30} placeholder="Seat (optional)" placeholderTextColor={colors.textFaint} accessibilityLabel="Public seat, optional" />
         </View>
       ) : null}
 
       {error ? <Text selectable style={styles.error} accessibilityRole="alert">{error}</Text> : null}
       <View style={styles.actions}>
-        <Button title="Not now" variant="secondary" small onPress={onDismiss} style={styles.action} disabled={posting} />
+        <Button title="Not now" variant="secondary" small onPress={dismiss} style={styles.action} disabled={posting} />
         <Button title="Share post" icon="share" small onPress={() => { void publish(); }} style={styles.action} loading={posting} disabled={!tourDateId} />
       </View>
     </View>

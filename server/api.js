@@ -19,6 +19,7 @@ import {
 import { AUDIENCES, audienceSize, campaignProgress, drainCampaign, pauseCampaign, startCampaign } from "./emailQueue.js";
 import { db, DATABASE_PATH, q, emailStmts, badgeStmts, customBadgesFor, publicUser as storedPublicUser, parseJsonArray, parseJsonObject, artistStmts, publicArtist, artistRow, artistSearchKey, normName, pruneMissingArtists } from "./db.js";
 import { publicArtistPhoto } from "./artistPhotoCatalog.js";
+import { resolveReviewedArtistAlias } from "./reviewedArtistIdentities.js";
 import { BADGE_COLORS, BADGE_GLYPHS, BADGE_KINDS, validateBadge } from "../src/domain/badgeArt.mjs";
 import { alertCooldownMs, alertRecipient, alertsEnabled, errorStats, maybeAlert, recentErrors, recordError } from "./errorLog.js";
 import { genreClaim, resolveGenre, storedClaims, upsertClaim, withoutSource } from "../src/domain/genre.mjs";
@@ -31,7 +32,7 @@ import {
 } from "./directMessageSafety.js";
 import { deezerEnrichmentGenreFields } from "./deezerGenre.js";
 import { ARTIST_GENRE_SQL_COLUMNS, projectArtistGenreColumns } from "./artistGenreProjection.js";
-import { hashPassword, verifyPassword, verifyPasswordForUser, createSession, destroySession, rateLimit, reserveRateLimits, sessionTtlForRole } from "./auth.js";
+import { hashPasswordAsync as hashPassword, verifyPasswordAsync as verifyPassword, verifyPasswordForUserAsync as verifyPasswordForUser, createSession, destroySession, rateLimit, reserveRateLimits, sessionTtlForRole } from "./auth.js";
 import { opaqueId } from "./ids.js";
 import { createRecoveryResponseFloor } from "./authResponseFloor.js";
 import { startCatalogSeed, catalogSeedStatus, stopCatalogSeed, deezerEnrich, catalogSeedRequestOptions } from "./catalogSeed.js";
@@ -115,7 +116,7 @@ import {
 import { discoverySidebar } from "./discovery.js";
 import { publicDocumentForPath, resolveEntity, sitemapSnapshotHealth } from "./seo.js";
 import { userRewards } from "./rewards.js";
-import { beginVerification, completeVerification, resendVerification, sendWelcomeOnce, verificationEnabled } from "./verification.js";
+import { prepareVerification, completeVerification, resendVerification, sendWelcomeOnce, verificationEnabled } from "./verification.js";
 import {
   clearYouTubeTrackCache,
   ProviderError,
@@ -354,7 +355,11 @@ function handleAllowedForRole(handle, role) {
 
 function requireSessionUser(ctx) {
   if (!ctx.user) throw new ApiError(401, "Log in first.", "AUTH_REQUIRED");
-  return ctx.user;
+  // Request-body authorization resolves before dispatch. Recheck here so a
+  // revocation between those boundaries cannot authorize even a synchronous
+  // handler. Social helpers below still reject moderation restrictions; the
+  // session-only helper preserves explicit recovery and privacy rights.
+  return ctx.assertCurrentSession?.({ allowRestrictedAccount: true }) || ctx.user;
 }
 function requireUser(ctx) {
   const user = requireSessionUser(ctx);
@@ -3017,7 +3022,6 @@ async function resolveFromMusicBrainz(name, { requireExactIdentity = false, sign
     candidates = await readMusicBrainzArtistCandidates(name, { signal });
   } catch (error) {
     if (signal?.aborted) throw signal.reason || error;
-    if (!requireExactIdentity) return null;
     throw new ApiError(
       502,
       "MusicBrainz is unavailable right now. Retry the artist lookup before continuing.",
@@ -3053,99 +3057,113 @@ const artistByOtherMusicBrainzIdentity = db.prepare(
   "SELECT norm,name,mbid FROM artists WHERE mbid IS NOT NULL AND lower(mbid)=? AND norm<>? LIMIT 1",
 );
 
-async function persistExactMusicBrainzIdentity(name, { signal, expectedMbid = null } = {}) {
+// Public artist reads share the same persisted identity lookup. Reviewed
+// aliases require an exact, unique provider ID; unknown text never creates a row.
+function resolveCatalogArtistReference(value) {
+  const key = normName(value);
+  return artistStmts.byNorm.get(key) || artistStmts.byPublicSlug.get(key)
+    || resolveReviewedArtistAlias(db, key);
+}
+
+async function persistExactMusicBrainzIdentity(name, { signal, expectedMbid = null, assertAuthorized } = {}) {
   const resolved = await resolveFromMusicBrainz(name, { requireExactIdentity: true, signal });
-  const artistKey = normalizedMusicBrainzArtistName(resolved.name);
-  const mbid = resolved.mbid.toLowerCase();
-  const expectedIdentity = String(expectedMbid || "").trim().toLowerCase();
-  if (expectedIdentity && (!MUSICBRAINZ_ARTIST_ID.test(expectedIdentity) || expectedIdentity !== mbid)) {
-    throw new ApiError(
-      409,
-      "That artist result changed before it could be attached. Search again and choose the current match.",
-      "CONFLICT",
-    );
-  }
-  const existing = artistStmts.byNorm.get(artistKey);
-  let existingData = {};
-  try {
-    existingData = existing?.data ? JSON.parse(existing.data) : {};
-  } catch {
-    existingData = {};
-  }
-  if (!existingData || typeof existingData !== "object" || Array.isArray(existingData)) existingData = {};
+  return atomicWrite(() => {
+    assertAuthorized?.();
+    const artistKey = normalizedMusicBrainzArtistName(resolved.name);
+    const mbid = resolved.mbid.toLowerCase();
+    const expectedIdentity = String(expectedMbid || "").trim().toLowerCase();
+    if (expectedIdentity && (!MUSICBRAINZ_ARTIST_ID.test(expectedIdentity) || expectedIdentity !== mbid)) {
+      throw new ApiError(
+        409,
+        "That artist result changed before it could be attached. Search again and choose the current match.",
+        "CONFLICT",
+      );
+    }
+    const existing = artistStmts.byNorm.get(artistKey);
+    let existingData = {};
+    try {
+      existingData = existing?.data ? JSON.parse(existing.data) : {};
+    } catch {
+      existingData = {};
+    }
+    if (!existingData || typeof existingData !== "object" || Array.isArray(existingData)) existingData = {};
 
-  const recordedMbids = [existing?.mbid, existingData.mbid]
-    .map((value) => String(value || "").trim().toLowerCase())
-    .filter(Boolean);
-  if (recordedMbids.some((value) => !MUSICBRAINZ_ARTIST_ID.test(value) || value !== mbid)) {
-    throw new ApiError(
-      409,
-      "This catalog artist already has a different identity. Review that artist before replacing its MusicBrainz ID.",
-      "CONFLICT",
-    );
-  }
+    const recordedMbids = [existing?.mbid, existingData.mbid]
+      .map((value) => String(value || "").trim().toLowerCase())
+      .filter(Boolean);
+    if (recordedMbids.some((value) => !MUSICBRAINZ_ARTIST_ID.test(value) || value !== mbid)) {
+      throw new ApiError(
+        409,
+        "This catalog artist already has a different identity. Review that artist before replacing its MusicBrainz ID.",
+        "CONFLICT",
+      );
+    }
 
-  const identityOwner = artistByOtherMusicBrainzIdentity.get(mbid, artistKey);
-  if (identityOwner) {
-    throw new ApiError(
-      409,
-      "That MusicBrainz identity is already attached to another catalog artist. Merge or correct the catalog rows first.",
-      "CONFLICT",
-    );
-  }
+    const identityOwner = artistByOtherMusicBrainzIdentity.get(mbid, artistKey);
+    if (identityOwner) {
+      throw new ApiError(
+        409,
+        "That MusicBrainz identity is already attached to another catalog artist. Merge or correct the catalog rows first.",
+        "CONFLICT",
+      );
+    }
 
-  const rankCandidates = [
-    Number(existingData.rank_score),
-    Number(existing?.rank_score),
-    Number(resolved.rank_score),
-  ].filter(Number.isFinite);
-  const merged = {
-    ...resolved,
-    ...existingData,
-    name: resolved.name,
-    mbid,
-    genre: existingData.genre ?? existing?.genre ?? resolved.genre ?? null,
-    photo: existingData.photo ?? existing?.photo ?? null,
-    bio: existingData.bio ?? existing?.bio ?? null,
-    spotifyId: existingData.spotifyId ?? existing?.spotify_id ?? null,
-    country: existingData.country ?? existing?.country ?? resolved.country ?? null,
-    beginYear: existingData.beginYear ?? existingData.formed ?? existing?.formed ?? resolved.beginYear ?? null,
-    popularity: existingData.popularity ?? existing?.popularity ?? null,
-    rank_score: rankCandidates.length ? Math.max(...rankCandidates) : 1,
-  };
+    const rankCandidates = [
+      Number(existingData.rank_score),
+      Number(existing?.rank_score),
+      Number(resolved.rank_score),
+    ].filter(Number.isFinite);
+    const merged = {
+      ...resolved,
+      ...existingData,
+      name: resolved.name,
+      mbid,
+      genre: existingData.genre ?? existing?.genre ?? resolved.genre ?? null,
+      photo: existingData.photo ?? existing?.photo ?? null,
+      bio: existingData.bio ?? existing?.bio ?? null,
+      spotifyId: existingData.spotifyId ?? existing?.spotify_id ?? null,
+      country: existingData.country ?? existing?.country ?? resolved.country ?? null,
+      beginYear: existingData.beginYear ?? existingData.formed ?? existing?.formed ?? resolved.beginYear ?? null,
+      popularity: existingData.popularity ?? existing?.popularity ?? null,
+      rank_score: rankCandidates.length ? Math.max(...rankCandidates) : 1,
+    };
 
-  artistStmts.upsert.run(artistRow(artistKey, merged, existing?.source || "musicbrainz"));
-  const persisted = artistStmts.byNorm.get(artistKey);
-  if (!persisted || String(persisted.mbid || "").toLowerCase() !== mbid) {
-    throw new ApiError(
-      409,
-      "The artist identity changed while it was being saved. Reload the catalog and try again.",
-      "CONFLICT",
-    );
-  }
-  return persisted;
+    artistStmts.upsert.run(artistRow(artistKey, merged, existing?.source || "musicbrainz"));
+    const persisted = artistStmts.byNorm.get(artistKey);
+    if (!persisted || String(persisted.mbid || "").toLowerCase() !== mbid) {
+      throw new ApiError(
+        409,
+        "The artist identity changed while it was being saved. Reload the catalog and try again.",
+        "CONFLICT",
+      );
+    }
+    return persisted;
+  });
 }
 
 // Enrich a (usually thin) catalog artist from Deezer: photo, popularity, top
 // tracks, and a genre if it has none. Uses the shared exact-name-preferred matcher
 // so we don't attach a same-named act's photo/songs. Upserts so the page fills in.
 // Returns true if Deezer had a match.
-async function enrichArtistFromDeezer(name) {
+async function enrichArtistFromDeezer(name, { assertAuthorized } = {}) {
   const e = await deezerEnrich(name);
-  if (!e) return false;
-  const existing = artistStmts.byNorm.get(normName(name));
-  let data = {};
-  try { data = existing?.data ? JSON.parse(existing.data) : {}; } catch {}
-  const merged = {
-    ...data,
-    name: existing?.name || name,
-    ...deezerEnrichmentGenreFields(data, existing?.genre, e),
-    photo: e.photo || data.photo || null,
-    mbid: existing?.mbid || data.mbid || null, country: existing?.country || null, beginYear: existing?.formed || null,
-    popularity: e.popularity, followers: e.followers, topTracks: e.topTracks, deezerId: e.deezerId,
-  };
-  artistStmts.upsert.run(artistRow(normName(name), merged, "deezer"));
-  return true;
+  return atomicWrite(() => {
+    assertAuthorized?.();
+    if (!e) return false;
+    const existing = artistStmts.byNorm.get(normName(name));
+    let data = {};
+    try { data = existing?.data ? JSON.parse(existing.data) : {}; } catch {}
+    const merged = {
+      ...data,
+      name: existing?.name || name,
+      ...deezerEnrichmentGenreFields(data, existing?.genre, e),
+      photo: e.photo || data.photo || null,
+      mbid: existing?.mbid || data.mbid || null, country: existing?.country || null, beginYear: existing?.formed || null,
+      popularity: e.popularity, followers: e.followers, topTracks: e.topTracks, deezerId: e.deezerId,
+    };
+    artistStmts.upsert.run(artistRow(normName(name), merged, "deezer"));
+    return true;
+  });
 }
 
 // A likeable media URL: real https, sane length, no credentials, hash dropped
@@ -3944,7 +3962,8 @@ export const routes = {
     signupHandleAvailability,
   }),
   ...accountSecurityRoutes({ database: db, ApiError, requireSessionUser, limit, verifyPassword,
-    hashPassword, atomicWrite, createSession, proveAndGrant: linkedAccounts.proveAndGrant,
+    hashPassword, atomicWrite, createSession, matchingPasswordUsers: linkedAccounts.matchingPasswordUsers,
+    grantVerifiedAccounts: linkedAccounts.grantVerifiedAccounts,
     cancelSignup: (user, ctx, hash) => routes["DELETE /api/me"]({ ...ctx, user,
       body: { onboardingOnly: true }, [SIGNUP_CANCELLATION]: hash,
       clearSession: () => { if (ctx.user?.id === user.id) ctx.clearSession?.(); },
@@ -4501,6 +4520,11 @@ export const routes = {
         ? prefixRows
         : artistStmts.search.all(`%${literal}%`, folded ? `%${folded}%` : "\u0000", term, folded, lim);
     }
+    // A reviewed spelling alias is useful only after its provider identity is
+    // present. Exact existing names win; never fuzzy-merge unrelated artists.
+    const reviewedAlias = term && !artistStmts.byNorm.get(term)
+      ? resolveReviewedArtistAlias(db, term) : null;
+    if (reviewedAlias) rows = [reviewedAlias, ...rows.filter((row) => row.norm !== reviewedAlias.norm)].slice(0, lim);
     // A signed-in exact catalog lookup may queue a provider refresh, but this
     // read never waits for it. Anonymous/type-ahead/partial searches cannot
     // spend provider quota or fill the durable queue.
@@ -4622,7 +4646,7 @@ export const routes = {
   "GET /api/artists/resolve": async (ctx) => {
     const name = clean(ctx.query.name, { max: 120 });
     if (!name) throw new ApiError(400, "Missing name.");
-    const existing = artistStmts.byNorm.get(normName(name));
+    const existing = resolveCatalogArtistReference(name);
     if (existing) return {
       artist: {
         ...publicArtist(existing),
@@ -5042,7 +5066,7 @@ export const routes = {
   },
 
   // ---- auth ----
-  "POST /api/signup": (ctx) => {
+  "POST /api/signup": async (ctx) => {
     // Auth endpoints are always limited by network + normalized target,
     // independent of whatever cookie the caller happens to carry. A bot cannot
     // mint a new account and thereby mint a fresh signup/login/recovery bucket.
@@ -5086,21 +5110,27 @@ export const routes = {
     // Report the actual signup outcome. Account identities are disclosed only
     // after the submitted password authenticates them, never by email alone.
     ctx.setHeader?.("Cache-Control", "no-store");
-    const passwordHash = hashPassword(v.password);
+    const passwordHash = await hashPassword(v.password);
     const cancelToken = randomBytes(32).toString("base64url");
     const cancelHash = createHash("sha256").update(cancelToken).digest("hex");
     const addingAccount = ctx.body?.addAccount === true;
     if (addingAccount) {
       const actor = requireVerifiedUser(ctx);
       if (cleanEmail(actor.email) !== v.email || typeof ctx.body?.currentPassword !== "string"
-        || ctx.body.currentPassword.length > 100 || !verifyPassword(ctx.body.currentPassword, actor.pass_hash)) {
+        || ctx.body.currentPassword.length > 100 || !await verifyPassword(ctx.body.currentPassword, actor.pass_hash)) {
         throw new ApiError(401, "Confirm the current account's password to add an account with this email.", "AUTH_INVALID");
       }
     }
     const existingAccounts = q.usersByEmail.all(v.email);
     const matching = [];
     for (let slot = 0; slot < 2; slot++) {
-      if (verifyPasswordForUser(v.password, existingAccounts[slot]?.pass_hash)) matching.push(existingAccounts[slot]);
+      if (await verifyPasswordForUser(v.password, existingAccounts[slot]?.pass_hash)) matching.push(existingAccounts[slot]);
+    }
+    // A password reset or deletion may finish while a worker is checking the
+    // other slot. Never disclose choices backed only by an outdated proof.
+    for (let i = matching.length - 1; i >= 0; i--) {
+      const fresh = q.userById.get(matching[i].id);
+      if (!fresh || fresh.pass_hash !== matching[i].pass_hash || cleanEmail(fresh.email) !== v.email) matching.splice(i, 1);
     }
     const createAdditional = ctx.body?.createAdditional === true;
     if (!addingAccount && matching.length && !createAdditional) {
@@ -5113,10 +5143,11 @@ export const routes = {
     const initials = (v.name.match(/\p{L}|\p{N}/gu) || ["?"]).slice(0, 2).join("").toUpperCase();
     const colors = ["#F2A65A", "#E0457B", "#5B8DEF", "#6FCF97", "#B98AE0", "#E8B65A"];
     const createdAt = now();
-    atomicWrite(() => {
+    const signup = atomicWrite(() => {
           const accounts = q.usersByEmail.all(v.email);
           if (createAdditional && !addingAccount && !accounts.some((user) => matching.some((proof) => proof.id === user.id && proof.pass_hash === user.pass_hash))) throw new ApiError(409, "Your account changed. Try signing up again.", "CONFLICT");
           if (addingAccount) {
+            ctx.assertCurrentSession?.();
             const actor = q.userById.get(ctx.user.id);
             if (!actor?.email_verified_at || actor.pass_hash !== ctx.user.pass_hash || cleanEmail(actor.email) !== v.email) throw new ApiError(409, "Your account changed. Log in again before adding an account.", "CONFLICT");
           }
@@ -5134,19 +5165,21 @@ export const routes = {
           // Migrated and staff-provisioned accounts keep NULL and stay exempt.
           db.prepare("UPDATE users SET age_band=?, dm_policy='mutuals', onboarding_version=0 WHERE id=?").run(v.ageBand, id);
           db.prepare("UPDATE users SET signup_cancel_hash=? WHERE id=?").run(cancelHash, id);
+          const created = q.userById.get(id);
+          const verification = prepareVerification(created);
+          const issued = createSession(id, ctx.ip, ctx.ua);
+          linkedAccounts.grantVerifiedAccounts({ userId: id, users: [q.userById.get(id), ...matching], token: issued.token });
+          return { session: issued, verification };
     });
-    const created = q.userById.get(id);
-    beginVerification(created);
+    void signup.verification.sendAfterCommit();
     // Only the new, unverified fan account receives this limited session.
     // The verification gate blocks all public/social mutations until confirmed.
-    const session = createSession(id, ctx.ip, ctx.ua);
-    linkedAccounts.proveAndGrant({ userId: id, password: v.password, token: session.token });
-    ctx.setSession(session);
+    ctx.setSession(signup.session);
     return { ok: true, created: true, verificationRequired: true, cancelToken,
       user: publicUser(q.userById.get(id), { self: true }) };
   },
 
-  "POST /api/login": (ctx) => {
+  "POST /api/login": async (ctx) => {
     limitAuthentication(ctx, "login", {
       ipMax: 10,
       ipWindowMs: 10 * 60 * 1000,
@@ -5163,7 +5196,11 @@ export const routes = {
     // Always perform two password checks, including dummy records for empty
     // slots. Never expose a sibling that this password did not authenticate.
     for (let slot = 0; slot < 2; slot++) {
-      if (verifyPasswordForUser(v.password, candidates[slot]?.pass_hash)) matching.push(candidates[slot]);
+      if (await verifyPasswordForUser(v.password, candidates[slot]?.pass_hash)) matching.push(candidates[slot]);
+    }
+    for (let i = matching.length - 1; i >= 0; i--) {
+      const fresh = q.userById.get(matching[i].id);
+      if (!fresh || fresh.pass_hash !== matching[i].pass_hash || cleanEmail(fresh.email) !== v.email) matching.splice(i, 1);
     }
     const selected = ctx.body?.accountId;
     const u = selected ? matching.find((entry) => entry.id === selected) : matching[0];
@@ -5183,9 +5220,9 @@ export const routes = {
         throw new ApiError(401, "Wrong email or password.", "AUTH_INVALID");
       }
       const session = createSession(current.id, ctx.ip, ctx.ua);
+      linkedAccounts.grantVerifiedAccounts({ userId: current.id, users: matching, token: session.token });
       return { session, user: q.userById.get(current.id) };
     });
-    linkedAccounts.proveAndGrant({ userId: authenticated.user.id, password: v.password, token: authenticated.session.token });
     ctx.setSession(authenticated.session);
     return { user: publicUser(authenticated.user, { self: true }) };
   },
@@ -5251,7 +5288,7 @@ export const routes = {
 
   // Complete a reset: swap the password, invalidate the token + all sessions, and
   // sign the user straight in on this device.
-  "POST /api/reset": (ctx) => {
+  "POST /api/reset": async (ctx) => {
     limit(ctx, "reset", 10, 15 * 60 * 1000);
     const token = clean(ctx.body?.token, { max: 200 });
     const password = typeof ctx.body?.password === "string" ? ctx.body.password : "";
@@ -5264,16 +5301,19 @@ export const routes = {
     // consumption, credential replacement, prior-session revocation, and the
     // replacement session one atomic security boundary. The conditional update
     // is the single-use compare-and-swap if another process races this token.
-    const replacementPasswordHash = hashPassword(password);
+    const replacementPasswordHash = await hashPassword(password);
+    const matching = await linkedAccounts.matchingPasswordUsers({ email: u.email, password });
     const sess = atomicWrite(() => {
       const consumed = db.prepare(`UPDATE users SET pass_hash=?, reset_hash=NULL, reset_expires=0,signup_cancel_hash=NULL
         WHERE id=? AND reset_hash=? AND reset_expires>?`)
         .run(replacementPasswordHash, u.id, hash, now()).changes === 1;
       if (!consumed) throw new ApiError(400, "This reset link is invalid or has expired. Request a new one.");
       db.prepare("DELETE FROM sessions WHERE user_id=?").run(u.id); // sign out everywhere else
-      return createSession(u.id, ctx.ip, ctx.ua);
+      const issued = createSession(u.id, ctx.ip, ctx.ua);
+      const current = q.userById.get(u.id);
+      linkedAccounts.grantVerifiedAccounts({ userId: u.id, users: [current, ...matching.filter((entry) => entry.id !== u.id)], token: issued.token });
+      return issued;
     });
-    linkedAccounts.proveAndGrant({ userId: u.id, password, token: sess.token });
     ctx.setSession(sess);
     return { user: publicUser(q.userById.get(u.id), { self: true }) };
   },
@@ -5663,9 +5703,12 @@ export const routes = {
   // guard the destructive action. Rows whose foreign keys would otherwise be
   // anonymized with SET NULL are explicitly removed before deleting the user;
   // all remaining account-owned rows disappear through FK cascades.
-  "DELETE /api/me": (ctx) => {
+  "DELETE /api/me": async (ctx) => {
     // A moderation restriction cannot trap someone in the service.
-    const u = requireSessionUser(ctx);
+    // Signup cancellation uses a server-only symbol and an exact capability
+    // checked again under the writer lock below. It must not borrow or require
+    // the caller's potentially unrelated session.
+    const u = ctx[SIGNUP_CANCELLATION] ? ctx.user : requireSessionUser(ctx);
     if (isOwnerId(db, u.id)) {
       throw new ApiError(403, "The permanent Owner account cannot be deleted.", "FORBIDDEN");
     }
@@ -5673,10 +5716,11 @@ export const routes = {
     const password = typeof ctx.body?.password === "string" ? ctx.body.password : "";
     if (!ctx[SIGNUP_CANCELLATION]) {
       if (!password) throw new ApiError(400, "Enter your current password to delete your account.", "VALIDATION_FAILED");
-      if (!verifyPassword(password, u.pass_hash)) throw new ApiError(401, "That password doesn't match your account.", "AUTH_INVALID");
+      if (!await verifyPassword(password, u.pass_hash)) throw new ApiError(401, "That password doesn't match your account.", "AUTH_INVALID");
     }
 
     atomicWrite(() => {
+      if (!ctx[SIGNUP_CANCELLATION]) ctx.assertCurrentSession?.({ allowRestrictedAccount: true });
       if (!ctx[SIGNUP_CANCELLATION] && q.userById.get(u.id)?.pass_hash !== u.pass_hash) throw new ApiError(409, "Your password changed. Log in again before deleting this account.", "CONFLICT");
       if (ctx.body?.onboardingOnly === true) {
         const current = q.userById.get(u.id);
@@ -8437,14 +8481,14 @@ export const routes = {
       let artistKey = normName(name);
       let enrichmentName = name;
       if (requireExactIdentity) {
-        const persisted = await persistExactMusicBrainzIdentity(name, { signal: ctx.signal });
+        const persisted = await persistExactMusicBrainzIdentity(name, { signal: ctx.signal, assertAuthorized: ctx.assertCurrentSession });
         expectedMbid = String(persisted.mbid || "").toLowerCase();
         artistKey = persisted.norm;
         enrichmentName = persisted.name;
       }
 
       try {
-        if (await enrichArtistFromDeezer(enrichmentName)) enriched += 1;
+        if (await enrichArtistFromDeezer(enrichmentName, { assertAuthorized: ctx.assertCurrentSession })) enriched += 1;
       } catch (error) {
         if (ctx.signal?.aborted) throw ctx.signal.reason || error;
         if (!(error instanceof ProviderError)) throw error;
@@ -8768,10 +8812,10 @@ export const routes = {
     return { ok: true };
   },
   ...artistLiveSummaryRoutes({ service: artistLiveSummaryService, rateLimit: limit, decodedPathParam,
-    resolveArtist: (key) => artistStmts.byNorm.get(key) || artistStmts.byPublicSlug.get(key) }),
+    resolveArtist: resolveCatalogArtistReference }),
   "GET /api/artists/:key/profile": (ctx) => {
     const key = decodedPathParam(ctx, "key", { max: 200, label: "artist link" }).toLowerCase();
-    const catalogArtist = artistStmts.byNorm.get(key) || artistStmts.byPublicSlug.get(key);
+    const catalogArtist = resolveCatalogArtistReference(key);
     const profileKey = catalogArtist?.norm || key;
     const legacyProfile = artistHasLegacyMemorial(db, {
       artistKey: profileKey,

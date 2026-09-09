@@ -322,6 +322,8 @@ test("service-wide upload breakers atomically aggregate outstanding capabilities
     (error) => {
       assert.equal(error.status, 503);
       assert.equal(error.code, "MEDIA_STORAGE_UNAVAILABLE");
+      assert.equal(error.cause?.name, "MediaStorageFailure");
+      assert.equal(error.cause?.code, "service_capacity");
       assert.equal(error.message.includes(first.id), false);
       assert.equal(error.message.includes(third.id), false);
       assert.equal(error.message.toLowerCase().includes("plan"), false);
@@ -1159,7 +1161,7 @@ test("post photo edits and author deletion queue only attachments that became un
   ]);
 });
 
-test("account erasure queues historical associations and minted-but-unattached objects before cascades", () => {
+test("account erasure queues historical associations and minted-but-unattached objects before cascades", async () => {
   clearMediaTables();
   const user = addUser("account_cleanup_owner", "erase-me-now");
   const admin = addUser("account_cleanup_admin");
@@ -1189,7 +1191,7 @@ test("account erasure queues historical associations and minted-but-unattached o
     VALUES ('ma_artist_profile_cleanup',?,'remove','artist_profile','account artist','test','{}','{}',?)`).run(admin.id, 1_000);
 
   let cleared = false;
-  const result = routes["DELETE /api/me"]({
+  const result = await routes["DELETE /api/me"]({
     user: q.userById.get(user.id),
     ip: "account-cleanup",
     body: { password: "erase-me-now" },

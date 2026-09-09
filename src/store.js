@@ -1748,12 +1748,17 @@ export function StoreProvider({ children }) {
       return [];
     }
   };
-  // Resolve one artist by name, creates it from MusicBrainz on the server if it's
-  // not in the catalog yet, so no artist page is ever empty. Cached client-side.
+  // Public lookup never creates a catalog row. Preserve its transient marker so
+  // a provider preview cannot be mistaken for a persisted artist identity.
   const resolveArtist = async (name) => {
     const k = norm(name);
     if (remoteArtists[k]) return remoteArtists[k];
-    try { const { artist } = await api(`/api/artists/resolve?name=${encodeURIComponent(name)}`); if (artist) cacheArtists([artist]); return artist || null; }
+    try {
+      const result = await api(`/api/artists/resolve?name=${encodeURIComponent(name)}`);
+      const artist = result.artist ? { ...result.artist, transient: result.transient === true } : null;
+      if (artist) cacheArtists([artist]);
+      return artist;
+    }
     catch { return null; }
   };
   const remoteArtistMeta = (name) => remoteArtists[norm(name)] || null;
@@ -2827,7 +2832,7 @@ export function StoreProvider({ children }) {
     return authTransitions.run({ request, accept, signal, onCancel: () => { void logout(); }, onUncertain: () => { void logout(); } })
       .then((result) => result?.kind === "cancelled" ? { ...localCommandError("PIT-AUTH-004", "Signing in"), stale: true } : result);
   };
-  const switchLinkedAccount = async (targetId, { expectedAccountId } = {}) => {
+  const switchLinkedAccount = async (targetId, { expectedAccountId, signal } = {}) => {
     const actorId = sessionRef.current?.id, epoch = accountMutationEpochRef.current;
     if (!actorId || actorId !== expectedAccountId || !targetId || targetId === actorId) return { ok: false, error: "Choose an available account." };
     try {
@@ -2838,7 +2843,7 @@ export function StoreProvider({ children }) {
         }
         absorbServerUser(result.user, { announce: true });
         return { ok: true };
-      });
+      }, signal);
     } catch (error) { return { ok: false, error }; }
   };
 
@@ -4124,10 +4129,15 @@ export function StoreProvider({ children }) {
   // Personal data backup: pull the server's portable account export and hand it
   // to the user as a downloadable JSON file.
   const exportMyData = async (password) => {
-    if (!session) return { ok: false, error: "Log in before exporting your data." };
+    const actor = sessionRef.current;
+    if (!actor?.id) return { ok: false, error: "Log in before exporting your data." };
+    const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
+    const current = () => accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current);
+    const stale = () => ({ ok: false, stale: true, error: "Your account changed. Reopen Settings to export your data." });
     try {
-      const data = await requestAccountExport(password);
-      const fileName = `pit-backup-${session.handle || "me"}-${new Date().toISOString().slice(0, 10)}.json`;
+      const data = await requestAccountExport(password, { expectedAccountId: actor.id });
+      if (!current()) return stale();
+      const fileName = `pit-backup-${actor.handle || "me"}-${new Date().toISOString().slice(0, 10)}.json`;
       const json = JSON.stringify(data, null, 2);
       if (typeof window !== "undefined" && typeof document !== "undefined") {
         const blob = new Blob([json], { type: "application/json" });
@@ -4144,16 +4154,23 @@ export function StoreProvider({ children }) {
           import("expo-file-system"),
           import("expo-sharing"),
         ]);
-        if (!(await Sharing.isAvailableAsync())) throw new Error("File sharing is unavailable on this device.");
-        const file = new File(Paths.cache, fileName);
+        if (!current()) return stale();
+        const canShare = await Sharing.isAvailableAsync();
+        if (!current()) return stale();
+        if (!canShare) throw new Error("File sharing is unavailable on this device.");
+        const file = new File(Paths.cache, `pit-export-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+        let ownsFile = false;
         try {
-          file.create({ overwrite: true, intermediates: true });
+          file.create({ overwrite: false, intermediates: true });
+          ownsFile = true;
           file.write(json);
+          if (!current()) return stale();
           await Sharing.shareAsync(file.uri, { mimeType: "application/json", dialogTitle: "Save your Pit data" });
         } finally {
           // Account exports contain messages and listening/profile history.
-          // Never leave that archive in the app cache after the share sheet.
-          try { file.delete(); }
+          // Retire only the file this invocation created, even after a switch.
+          // A share already handed to the OS cannot be revoked by the app.
+          try { if (ownsFile) file.delete(); }
           catch (cleanupError) {
             captureAppError(cleanupError, {
               code: "PIT-STORE-001",

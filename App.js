@@ -1460,7 +1460,7 @@ function Root() {
             onSuggestion={() => { enter(); go({ suggestion: { surface: "landing" } }); }}
           />
         ) : status !== "ok" ? (
-          nav.deleteAccount ? overlay : <AccountGate status={status} until={session?.suspendedUntil} onLogout={signOut} onExport={exportMyData} onDelete={() => go({ deleteAccount: true })} />
+          nav.deleteAccount ? overlay : <AccountGate username={session?.email} status={status} until={session?.suspendedUntil} onLogout={signOut} onExport={exportMyData} onDelete={() => go({ deleteAccount: true })} />
         ) : (
           <View style={[styles.appFrame, wide && styles.appFrameWide]}>
             {MUSIC_PLAYER_ENABLED && (wide || (player && !(ENABLE_CLIPS && nav.clips))) && (

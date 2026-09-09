@@ -66,15 +66,20 @@ export function accountPrivacyRoutes({
       return { user: projectSelf(findUserById(user.id)) };
     },
 
-    // A portable, privacy-filtered account backup. This remains synchronous and
-    // explicitly documents bounded histories until the archive job is queued.
-    "POST /api/me/export": (ctx) => {
+    // Password work yields; the guarded privacy-filtered projection below is
+    // synchronous and explicitly documents bounded histories.
+    "POST /api/me/export": async (ctx) => {
       // Privacy rights remain available when social posting is restricted.
-      const user = requireSessionUser(ctx);
+      const actor = requireSessionUser(ctx);
       rateLimit(ctx, "export", 5, EXPORT_LIMIT_WINDOW_MS);
       const password = typeof ctx.body?.password === "string" ? ctx.body.password : "";
-      if (!password || !verifyPassword(password, user.pass_hash)) {
+      if (!password || password.length > 100 || !await verifyPassword(password, actor.pass_hash)) {
         throw new ApiError(401, "Enter your current password to download your data.", "AUTH_INVALID");
+      }
+      ctx.assertCurrentSession?.({ allowRestrictedAccount: true });
+      const user = findUserById(actor.id);
+      if (!user || user.pass_hash !== actor.pass_hash) {
+        throw new ApiError(401, "Your account changed. Log in again before downloading your data.", "AUTH_REQUIRED");
       }
       // A portability export describes this account's own relationships. It must
       // not become a second profile directory: resolving a counterparty's live

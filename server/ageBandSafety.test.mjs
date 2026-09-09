@@ -48,7 +48,7 @@ function expectApiError(run, { status, code, message }) {
     && (!message || message.test(error.message)));
 }
 
-test("signup rejects omitted or unknown age bands and persists a classified band", () => {
+test("signup rejects omitted or unknown age bands and persists a classified band", async () => {
   const signup = routes["POST /api/signup"];
   const baseBody = {
     name: "Classified Signup",
@@ -60,18 +60,19 @@ test("signup rejects omitted or unknown age bands and persists a classified band
 
   for (const [suffix, ageBand] of [["missing", undefined], ["unknown", "unknown"]]) {
     const email = `age-signup-${suffix}@example.test`;
-    expectApiError(() => signup({
+    await assert.rejects(() => signup({
       body: { ...baseBody, email, ...(ageBand ? { ageBand } : {}) },
       ip: `age-signup-${suffix}`,
       ua: "test",
       setSession() { throw new Error("invalid signup must not issue a session"); },
-    }), { status: 400, code: "VALIDATION_FAILED", message: /ageBand/u });
+    }), (error) => error instanceof ApiError && error.status === 400
+      && error.code === "VALIDATION_FAILED" && /ageBand/u.test(error.message));
     assert.equal(q.userByEmail.get(email), undefined);
   }
 
   const email = "age-signup-classified@example.test";
   let session;
-  const response = signup({
+  const response = await signup({
     body: { ...baseBody, email, ageBand: "18_plus" },
     ip: "age-signup-classified",
     ua: "test",

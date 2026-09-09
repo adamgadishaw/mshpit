@@ -2,6 +2,7 @@ import {
   MEDIA_PUBLISHING_HEALTH_PATH,
   mediaPublishingCapabilitiesFromHealth,
 } from "../domain/mediaPublishingCapabilities.mjs";
+import { recoverMediaRequest } from "../domain/mediaRequestRecovery.mjs";
 
 export const MEDIA_PUBLISHING_CAPABILITIES_TTL_MS = 30_000;
 export const MEDIA_PUBLISHING_VIDEO_STALE_IF_UNAVAILABLE_MS = 5 * 60_000;
@@ -72,6 +73,7 @@ export async function loadMediaPublishingCapabilities({
   apiCall,
   force = false,
   now = Date.now,
+  recovery,
 } = {}) {
   if (typeof apiCall !== "function") {
     throw new TypeError("A PIT API adapter is required to load media publishing capability.");
@@ -81,10 +83,16 @@ export async function loadMediaPublishingCapabilities({
   const state = stateFor(apiCall);
   const checkedAt = now();
   const cacheAge = state.cached ? checkedAt - state.cached.checkedAt : Infinity;
-  if (!force && cacheAge >= 0 && cacheAge < MEDIA_PUBLISHING_CAPABILITIES_TTL_MS) {
+  const cacheTtl = state.cached?.capabilities?.photos === false ? 2_000 : MEDIA_PUBLISHING_CAPABILITIES_TTL_MS;
+  if (!force && cacheAge >= 0 && cacheAge < cacheTtl) {
     return capabilitiesForConsumer(state, state.cached.capabilities, { checkedAt, force });
   }
-  if (state.inFlight) return waitForInFlight(state.inFlight, signal);
+  const consume = async (entry) => {
+    const capabilities = await waitForInFlight(entry, signal);
+    // Force belongs to each waiter, not whoever started the shared request.
+    return capabilitiesForConsumer(state, capabilities, { checkedAt: now(), force });
+  };
+  if (state.inFlight && !state.inFlight.controller.signal.aborted) return consume(state.inFlight);
 
   const controller = new AbortController();
   const entry = {
@@ -94,13 +102,30 @@ export async function loadMediaPublishingCapabilities({
     waiters: 0,
   };
   entry.promise = Promise.resolve()
-    .then(() => apiCall(MEDIA_PUBLISHING_HEALTH_PATH, {
+    .then(() => recoverMediaRequest(async ({ signal: requestSignal }) => {
+      const health = await apiCall(MEDIA_PUBLISHING_HEALTH_PATH, {
       context: "Checking media publishing availability",
       silent: true,
-      signal: controller.signal,
+      signal: requestSignal,
       skipIdentityCheck: true,
       timeoutMs: 3_000,
-    }))
+      });
+      if (mediaPublishingCapabilitiesFromHealth(health).photos === false) {
+        const error = new Error("Media publishing is temporarily unavailable.");
+        error.code = "MEDIA_STORAGE_UNAVAILABLE";
+        error.status = 503;
+        error.retryable = true;
+        error.health = health;
+        throw error;
+      }
+      return health;
+    }, { requestTimeoutMs: 3_000, totalTimeoutMs: 16_000, now, ...recovery, signal: controller.signal }))
+    .catch((error) => {
+      // An explicit unavailable response is still authoritative after its
+      // bounded recovery attempts; never promote it into healthy capability.
+      if (error?.health) return error.health;
+      throw error;
+    })
     .then((health) => {
       if (controller.signal.aborted) throw abortError();
       const capabilities = mediaPublishingCapabilitiesFromHealth(health);
@@ -110,12 +135,12 @@ export async function loadMediaPublishingCapabilities({
         state.lastVideoSourceTypes = [...(capabilities.sourceTypes || [])];
       }
       state.cached = { capabilities, checkedAt: completedAt };
-      return capabilitiesForConsumer(state, capabilities, { checkedAt: completedAt, force });
+      return capabilities;
     })
     .finally(() => {
       entry.settled = true;
       if (state.inFlight === entry) state.inFlight = null;
     });
   state.inFlight = entry;
-  return waitForInFlight(entry, signal);
+  return consume(entry);
 }

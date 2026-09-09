@@ -111,7 +111,7 @@ test("a lost photo POST recovers from a prior server's metadata-free GET", async
     wait: async (ms) => { clock += ms; },
     apiCall: async (path, options) => {
       calls.push({ path, method: options.method });
-      if (options.method === "POST") throw new Error("response lost after photo finalize");
+      if (options.method === "POST") throw Object.assign(new Error("response lost after photo finalize"), { code: "PIT-NET-001", status: 0 });
       return { asset: { id: input.assetId, status: "render_pending" } };
     },
   });
@@ -250,7 +250,7 @@ test("the long processing envelope does not apply before a job is acknowledged",
     },
   }), (error) => error.code === "MEDIA_STORAGE_UNAVAILABLE" && error.retryable === true
     && /could not start processing/u.test(error.message));
-  assert.equal(clock - startedAt, MEDIA_SOURCE_FINALIZE_START_TIMEOUT_MS);
+  assert.equal(clock - startedAt, 15_000, "Three failed owner reads end recovery early instead of consuming the entire startup envelope");
   assert.ok(MEDIA_SOURCE_FINALIZE_START_TIMEOUT_MS < MEDIA_SOURCE_FINALIZE_V1_TIMEOUT_MS);
 });
 
@@ -293,10 +293,82 @@ test("a lost acknowledgement recovers by polling instead of duplicating source b
     wait: async (ms) => { clock += ms; },
     apiCall: async (_path, options) => {
       calls += 1;
-      if (options.method === "POST") throw new Error("response lost after acceptance");
+      if (options.method === "POST") throw Object.assign(new Error("response lost after acceptance"), { code: "PIT-NET-001", status: 0 });
       return ready();
     },
   });
   assert.equal(result.asset.status, "ready");
   assert.equal(calls, 2);
+});
+
+test("a confirmed temporary failed job retries the identical finalize operation after an owner read", async () => {
+  let clock = 0; const requests = [];
+  const failed = { asset: { id: input.assetId, status: "upload_pending" }, finalize: { state: "failed", error: { status: 503, code: "MEDIA_STORAGE_UNAVAILABLE", retryable: true } } };
+  const responses = [failed, failed, ready()];
+  assert.equal((await finalizeMediaSourceV1({ ...input, now: () => clock, wait: async (ms) => { clock += ms; },
+    apiCall: async (path, options) => { requests.push({ path, options }); return responses.shift(); },
+  })).asset.status, "ready");
+  assert.deepEqual(requests.map(({ options }) => options.method), ["POST", "GET", "POST"]);
+  assert.deepEqual(requests[0].options.body, requests[2].options.body);
+  assert.equal(requests[0].path, requests[2].path);
+});
+
+test("persistent failed jobs stop after three submissions with the saved asset identity intact", async () => {
+  let clock = 0, submissions = 0;
+  await assert.rejects(finalizeMediaSourceV1({ ...input, now: () => clock, wait: async (ms) => { clock += ms; },
+    apiCall: async (_path, options) => {
+      if (options.method === "POST") submissions += 1;
+      return { asset: { id: input.assetId, status: "upload_pending" }, finalize: { state: "failed", error: { status: 503, code: "MEDIA_STORAGE_UNAVAILABLE", retryable: true } } };
+    },
+  }), { code: "MEDIA_STORAGE_UNAVAILABLE", status: 503 });
+  assert.equal(submissions, 3);
+  assert.ok(clock < MEDIA_SOURCE_FINALIZE_START_TIMEOUT_MS);
+});
+
+test("finalize auth, permissions, rate limits, validation and unknown errors never resubmit", async () => {
+  for (const error of [Object.assign(new Error("Expired"), { status: 401 }), Object.assign(new Error("Permission"), { status: 403 }),
+    Object.assign(new Error("Account changed"), { status: 409, code: "IDENTITY_CHANGED" }), Object.assign(new Error("Invalid"), { status: 422 }),
+    Object.assign(new Error("Rate limited"), { status: 429 }), new TypeError("Invalid local input")]) {
+    let calls = 0;
+    await assert.rejects(finalizeMediaSourceV1({ ...input, apiCall: async () => { calls += 1; throw error; },
+      wait: async () => { throw new Error("Must not retry"); },
+    }), (actual) => actual === error);
+    assert.equal(calls, 1);
+  }
+});
+
+test("already-cancelled and late-ready finalize responses never surface success", async () => {
+  const before = new AbortController(); before.abort(); let calls = 0;
+  await assert.rejects(finalizeMediaSourceV1({ ...input, signal: before.signal, apiCall: async () => { calls += 1; return ready(); } }), { name: "AbortError" });
+  assert.equal(calls, 0);
+  const controller = new AbortController(); let release;
+  const pending = finalizeMediaSourceV1({ ...input, signal: controller.signal, apiCall: () => new Promise((done) => { release = done; }) });
+  controller.abort(); await assert.rejects(pending, { name: "AbortError" });
+  release(ready()); await new Promise((done) => setImmediate(done));
+});
+
+test("an owner response for a different media identity is rejected without polling or adoption", async () => {
+  let calls = 0;
+  await assert.rejects(finalizeMediaSourceV1({ ...input, apiCall: async () => { calls += 1; return { asset: { id: "other", status: "ready" } }; } }), { code: "MEDIA_ASSET_INVALID" });
+  assert.equal(calls, 1);
+});
+
+test("a processing job loses connection only for three reads before returning a resumable error", async () => {
+  let clock = 0, reads = 0;
+  await assert.rejects(finalizeMediaSourceV1({ ...input, now: () => clock, wait: async (ms) => { clock += ms; },
+    apiCall: async (_path, options) => { if (options.method === "POST") return processing(); reads += 1; throw Object.assign(new Error("Lost"), { status: 503 }); },
+  }), (error) => error.status === 503 && /upload is saved/u.test(error.message));
+  assert.equal(reads, 3);
+  assert.ok(clock < MEDIA_SOURCE_FINALIZE_V1_TIMEOUT_MS);
+});
+
+test("resume read retries temporary failure without another asset creation or source PUT", async () => {
+  let reads = 0; const stages = [];
+  const result = await resumeExistingMediaSourceV1({ asset: { assetId: input.assetId }, kind: "image", body: {},
+    recovery: { wait: async () => {} }, onStage: (value) => stages.push(value),
+    apiCall: async (path, options) => { assert.equal(path, `/api/media/assets/${input.assetId}`); assert.equal(options.method, undefined); reads += 1;
+      if (reads === 1) throw Object.assign(new Error("Storage recovering"), { status: 503 }); return ready(); },
+  });
+  assert.equal(result.asset.id, input.assetId); assert.equal(reads, 2);
+  assert.deepEqual(stages, ["checking-source", "reconnecting-source"]);
 });

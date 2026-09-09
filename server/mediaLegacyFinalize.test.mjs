@@ -500,6 +500,52 @@ test("legacy API route stages privately, finalizes, and gates profile associatio
   }
 });
 
+for (const purpose of ["avatar", "banner"]) {
+  test(`${purpose} attachment routes reject foreign, private, wrong-purpose, and retired images without mutation`, async () => {
+    const firstOwner = addUser(`legacy_attachment_${purpose}_owner`);
+    const firstStranger = addUser(`legacy_attachment_${purpose}_stranger`);
+    for (const user of [firstOwner, firstStranger]) {
+      db.prepare("UPDATE users SET role='admin',email_verified_at=? WHERE id=?").run(Date.now(), user.id);
+    }
+    const owner = q.userById.get(firstOwner.id);
+    const stranger = q.userById.get(firstStranger.id);
+    const storage = memoryObjectStorage();
+    const source = await sharp({ create: { width: 18, height: 14, channels: 3, background: "#442266" } })
+      .jpeg().toBuffer();
+    const created = createLegacyMediaUpload(db, { ownerId: owner.id,
+      body: { purpose, contentType: "image/jpeg", fileSize: source.length, name: "private-camera.jpg" } });
+    await clientPut(created.upload, source, storage.fetchImpl);
+    const finalized = await finalizeLegacyMediaUpload(db, { ownerId: owner.id,
+      finalizeToken: created.finalizeToken, fetchImpl: storage.fetchImpl });
+    const field = purpose === "avatar" ? "avatarUri" : "banner";
+    const otherField = purpose === "avatar" ? "banner" : "avatarUri";
+    const artistKey = `media-attachment-${purpose}-audit`;
+    const profileState = (user) => db.prepare("SELECT avatar_uri,banner FROM users WHERE id=?").get(user.id);
+    const before = new Map([owner, stranger].map((user) => [user.id, profileState(user)]));
+    const rejectAttachment = (user, selectedField, url) => {
+      for (const route of ["PATCH /api/me", "PATCH /api/artists/:key/profile"]) {
+        assert.throws(() => routes[route]({ user, ip: `attachment-${purpose}-${user.id}`,
+          params: { key: artistKey }, body: { [selectedField]: url } }),
+        (error) => error.status === 400 && error.code === "VALIDATION_FAILED", route);
+        assert.deepEqual(profileState(user), before.get(user.id));
+        assert.equal(db.prepare("SELECT 1 FROM artist_profiles WHERE artist_key=?").get(artistKey), undefined,
+          "a rejected URL must not claim or create the artist profile");
+        assert.equal(db.prepare("SELECT consumed_at FROM legacy_media_finalize_descriptors WHERE id=?")
+          .get(created.descriptorId).consumed_at, null);
+      }
+    };
+    rejectAttachment(stranger, field, finalized.publicUrl);
+    rejectAttachment(owner, otherField, finalized.publicUrl);
+    rejectAttachment(owner, field, created.upload.storageLocator);
+    rejectAttachment(owner, field, `${process.env.MEDIA_PUBLIC_BASE_URL}/${created.upload.key}`);
+    assert.equal(db.prepare("SELECT status FROM media_objects WHERE object_key=?").get(finalized.key).status, "issued");
+    db.prepare("UPDATE media_objects SET status='delete_queued' WHERE object_key=?").run(finalized.key);
+    rejectAttachment(owner, field, finalized.publicUrl);
+    assert.equal(db.prepare("SELECT status FROM media_objects WHERE object_key=?").get(finalized.key).status, "delete_queued",
+      "a retired descriptor must never be reassociated by replaying its public URL");
+  });
+}
+
 test("profile recovery registers only attested sanitized derivatives and CAS-replaces exact owner references", async () => {
   const owner = addUser("legacy_profile_recovery_owner");
   const storage = memoryObjectStorage();

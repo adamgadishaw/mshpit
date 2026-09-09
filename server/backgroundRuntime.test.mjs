@@ -136,7 +136,7 @@ test("server startup owns its listener and starts core schedulers through the op
     ["legacy-video-posters", "startLegacyVideoPosterVerificationScheduler"],
     ["video-verifier-health", "startVideoVerifierHealthScheduler"],
     ["sitemap-refresh", "startSitemapRefreshScheduler"],
-    ["private-media-isolation", "startPrivateMediaIsolationScheduler"],
+    ["private-media-probe", "refreshPrivateMediaIsolationSafely"],
     ["founder-operations", "startFounderOperationsScheduler"],
   ];
   for (const [route, starter] of requiredStarters) {
@@ -148,6 +148,13 @@ test("server startup owns its listener and starts core schedulers through the op
   }
   assert.match(source, /code:\s*"BACKGROUND_START_FAILED"/);
   assert.match(source, /method:\s*"JOB"/);
+  assert.match(source, /let privateMediaIsolationMonitor = null;/);
+  assert.match(source, /if \(!privateMediaIsolationMonitor\) privateMediaIsolationMonitor = createMediaIsolationMonitor\(/,
+    "the first optional probe must own the single recovery scheduler");
+  assert.match(source, /return privateMediaIsolationMonitor\.trigger\(phase\);/);
+  assert.match(source, /privateMediaIsolationMonitor\?\.stop\(\)/);
+  assert.match(source, /await privateMediaIsolationStop;[\s\S]*db\.close\(\)/,
+    "privacy recovery must stop and settle before the shared database closes");
   for (const scheduler of ["tourDateScheduler", "cacheWarmScheduler", "backupScheduler", "mediaDeletionScheduler"]) {
     assert.match(source, new RegExp(`let ${scheduler} = null;`));
     assert.match(source, new RegExp(`${scheduler}\\?\\.stop\\(\\{ abortActive: true \\}\\)`),

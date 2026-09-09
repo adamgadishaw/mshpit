@@ -50,6 +50,18 @@ export function createAuthTransitions({ read, write, revoke, exclusive = (work) 
     const previous = snapshot();
     const ticket = record("pending");
     active = ticket;
+    const discardStaleCompletion = () => {
+      // Without browser-wide locks, an older response may apply Set-Cookie
+      // after a newer tab commits sign-in. No HTTP status proves the cookie was
+      // untouched. Retire that permission and revoke; a newer pending request
+      // retains its own outcome fence and remains free to finish in order.
+      if (!current(ticket) && snapshot()?.phase === "signed-in") {
+        const displacedRevision = revision();
+        onUncertain();
+        if (revision() === displacedRevision) void signOut();
+      }
+      return staleAuthentication();
+    };
     const cancel = () => {
       if (!current(ticket) || snapshot()?.phase !== "pending") return;
       // The owner clears private projections and calls signOut. Never await its
@@ -62,14 +74,14 @@ export function createAuthTransitions({ read, write, revoke, exclusive = (work) 
       if (!current(ticket) || signal?.aborted) return staleAuthentication();
       try {
         const data = await request();
-        if (!current(ticket) || signal?.aborted) return staleAuthentication();
+        if (!current(ticket) || signal?.aborted) return discardStaleCompletion();
         // Account-choice responses do not issue a session. Preserve prior intent
         // while rotating its revision to supersede older validation reads.
         write({ revision: ticket.revision, phase: data?.user?.id ? "signed-in" : previous?.phase || "signed-in" });
         return accept(data);
       } catch (error) {
-        if (!current(ticket) || signal?.aborted) return staleAuthentication();
-        if (error?.status >= 400 && error.status < 500) {
+        if (!current(ticket) || signal?.aborted) return discardStaleCompletion();
+        if (error?.status >= 400 && error.status < 500 && error.serverCode !== "IDENTITY_CHANGED") {
           write({ revision: ticket.revision, phase: previous?.phase || "signed-in" });
         } else {
           // Unknown network outcomes may already have changed the cookie.

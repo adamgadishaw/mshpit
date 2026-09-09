@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { buildArtistSummary } from "../../domain/artistSummary.mjs";
 
 import {
   ARTIST_SEARCH_MAX_LIMIT,
@@ -163,4 +164,17 @@ test("artist search summaries cannot downgrade richer cached artist metadata", (
     searchSummary: true,
   });
   assert.equal(refreshedGenre.genre, "Soul", "a fresh catalog projection replaces stale genre metadata");
+});
+
+test("persisted catalog search clears an older preview marker without losing richer metadata", () => {
+  const preview = { name: "A$AP Rocky", key: "preview-rocky", transient: true,
+    albums: [{ title: "Existing release" }], topTracks: [{ title: "Existing track" }] };
+  const stored = { name: "A$AP Rocky", key: "artist/verified-rocky", searchSummary: true, albums: [], topTracks: [] };
+  const merged = mergeArtistSearchCacheEntry(preview, stored);
+  assert.equal(merged.transient, false);
+  assert.deepEqual(merged.albums, preview.albums);
+  assert.deepEqual(merged.topTracks, preview.topTracks);
+  assert.equal(buildArtistSummary({ name: stored.name, key: "a$ap rocky", remoteArtist: merged }).profileKey, stored.key);
+  assert.equal(mergeArtistSearchCacheEntry(preview, { ...stored, transient: true }).transient, true);
+  assert.equal(mergeArtistSearchCacheEntry(preview, { name: stored.name, searchSummary: true }).transient, true);
 });

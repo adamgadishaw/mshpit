@@ -1,6 +1,7 @@
 import { getMediaConfig, mediaBucketForScope, mediaConfigured, presignS3Request } from "./media.js";
 import { withImmediateWrite as withWrite } from "./databaseTransaction.js";
 import { ApiError } from "./errors.js";
+import { mediaStorageUnavailable } from "./mediaStorageFailure.js";
 
 const OWNER = /^[A-Za-z0-9_-]{1,128}$/;
 const OBJECT_KEY = /^users\/([A-Za-z0-9_-]{1,128})\/(avatar|banner|post|review|venue)\/([A-Za-z0-9_-]{1,180})\.(jpg|png|webp|gif|heic|heif|avif|mp4|webm|mov)$/;
@@ -292,8 +293,8 @@ export function reserveMediaUploadTicket(database, {
         || nextGlobalOutstandingBytes > globalLimits.outstandingBytes
         || nextGlobalRollingTickets > globalLimits.rollingTickets
         || nextGlobalRollingBytes > globalLimits.rollingBytes) {
-      throw new ApiError(503, "Media uploads are temporarily at service capacity. Please try again later.",
-        "MEDIA_STORAGE_UNAVAILABLE");
+      throw mediaStorageUnavailable("Media uploads are temporarily at service capacity. Please try again later.",
+        "service_capacity");
     }
 
     if (!existing) {

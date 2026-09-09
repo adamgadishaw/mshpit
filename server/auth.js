@@ -11,7 +11,8 @@
 // - Rate limiting: fixed-window in-memory buckets per key. Process restarts
 //   reset counters, while the in-process memory ceiling rejects new identities
 //   without discarding live limits.
-import { scryptSync, randomBytes, timingSafeEqual, createHash } from "node:crypto";
+import { scrypt, scryptSync, randomBytes, timingSafeEqual, createHash } from "node:crypto";
+import { passwordWork } from "./passwordWork.js";
 import { db, q } from "./db.js";
 import { recordInteractiveAccountActivity } from "./features/accountLifecycle/accountLifecycle.js";
 
@@ -58,6 +59,32 @@ export function verifyPasswordForUser(password, stored) {
   return hasStoredPassword && valid;
 }
 
+// HTTP handlers use bounded asynchronous work. Keep synchronous helpers for
+// bootstrap and fixtures only. Existing hashes need no migration.
+const derivePassword = (password, salt) => passwordWork(() => new Promise((resolve, reject) => {
+  scrypt(password, salt, 64, (error, hash) => error ? reject(error) : resolve(hash));
+}));
+
+export async function hashPasswordAsync(password) {
+  const salt = randomBytes(16);
+  const hash = await derivePassword(password, salt);
+  return `scrypt:${salt.toString("hex")}:${hash.toString("hex")}`;
+}
+
+export async function verifyPasswordAsync(password, stored) {
+  const [algo, saltHex, hashHex, extra] = String(stored || "").split(":");
+  if (typeof password !== "string" || password.length > 100 || algo !== "scrypt" || extra !== undefined
+    || !/^[a-f0-9]{32}$/i.test(saltHex || "") || !/^[a-f0-9]{128}$/i.test(hashHex || "")) return false;
+  const hash = await derivePassword(password, Buffer.from(saltHex, "hex"));
+  return timingSafeEqual(hash, Buffer.from(hashHex, "hex"));
+}
+
+export async function verifyPasswordForUserAsync(password, stored) {
+  const hasStoredPassword = typeof stored === "string" && stored.length > 0;
+  const valid = await verifyPasswordAsync(password, hasStoredPassword ? stored : DUMMY_PASSWORD_RECORD);
+  return hasStoredPassword && valid;
+}
+
 // --- sessions ----------------------------------------------------------------
 const sha256 = (s) => createHash("sha256").update(s).digest("hex");
 
@@ -98,7 +125,7 @@ export function getSession(token) {
     row.expires_at,
     row.created_at + sessionTtlForRole(q.userById.get(row.user_id)?.role),
   );
-  if (effectiveExpiry < Date.now()) {
+  if (effectiveExpiry <= Date.now()) {
     q.deleteSession.run(row.token_hash);
     return null;
   }

@@ -322,7 +322,7 @@ test("artist-post reports honor a distinct profile owner's visibility boundary",
   assert.equal(db.prepare("SELECT COUNT(*) count FROM reports WHERE reporter_id=?").get(viewer.id).count, 0);
 });
 
-test("account deletion removes reports aimed at every newly reportable authored surface", () => {
+test("account deletion removes reports aimed at every newly reportable authored surface", async () => {
   const password = "DeleteMe123";
   const deleting = addUser("reports_delete_target", hashPassword(password));
   db.prepare("INSERT INTO fan_club_messages (id,artist,user_id,text,created_at) VALUES (?,?,?,?,?)")
@@ -384,7 +384,7 @@ test("account deletion removes reports aimed at every newly reportable authored 
   db.prepare("INSERT INTO email_templates (key,subject,body,updated_at,updated_by) VALUES (?,?,?,?,?)")
     .run("reports_delete_template", "Template", "Body", Date.now(), deleting.id);
 
-  routes["DELETE /api/me"]({
+  await routes["DELETE /api/me"]({
     user: deleting,
     ip: "reports-delete",
     body: { password },

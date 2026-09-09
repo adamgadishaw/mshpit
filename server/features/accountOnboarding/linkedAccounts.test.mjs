@@ -75,14 +75,14 @@ function fixture(t, options = {}) {
     };
   }
   const list = (user, session) => service.routes["GET /api/me/accounts"](context(user, session));
-  const connect = (user, session, password = "Matching-pass1") => service.routes["POST /api/me/accounts/connect"](context(user, session, { password }));
+  const connect = async (user, session, password = "Matching-pass1") => (await service.routes["POST /api/me/accounts/connect"](context(user, session, { password })));
   const swap = (user, session, accountId) => service.routes["POST /api/me/accounts/switch"](context(user, session, { accountId }));
   const count = (table) => db.prepare(`SELECT COUNT(*) n FROM ${table}`).get().n;
   return { db, service, addUser, createSession, context, list, connect, swap, count, activations, rates,
     now: () => at, advance: (ms) => { at += ms; } };
 }
 
-test("same salted-password proof is browser-local, minimal, and non-enumerating", (t) => {
+test("same salted-password proof is browser-local, minimal, and non-enumerating", async (t) => {
   const f = fixture(t);
   const member = f.addUser();
   const owner = f.addUser({ role: "admin" });
@@ -93,7 +93,7 @@ test("same salted-password proof is browser-local, minimal, and non-enumerating"
   assert.deepEqual(unlinked.accounts.map((a) => a.id), [member.id]);
   assert.equal(unlinked.connected, false);
   assert.equal(unlinked.canConnect, true);
-  const linked = f.connect(member, browser);
+  const linked = (await f.connect(member, browser));
   assert.deepEqual(linked.accounts.map((a) => a.id), [member.id, owner.id]);
   assert.equal(linked.connected, true);
   assert.equal(linked.canConnect, false);
@@ -105,43 +105,43 @@ test("same salted-password proof is browser-local, minimal, and non-enumerating"
   assert.equal(f.count("linked_account_session_grants"), 1);
 });
 
-test("matching email alone, matching password alone, and whitespace variants never link", (t) => {
+test("matching email alone, matching password alone, and whitespace variants never link", async (t) => {
   for (const target of [{ password: "Different-pass2" }, { password: "Matching-pass1 " }, { email: "other@example.test" }]) {
     const f = fixture(t);
     const member = f.addUser();
     const sibling = f.addUser(target);
     const session = f.createSession(member.id);
-    assert.equal(f.connect(member, session).connected, false);
+    assert.equal((await f.connect(member, session)).connected, false);
     assert.deepEqual(f.list(member, session).accounts.map((a) => a.id), [member.id]);
     assert.throws(() => f.swap(member, session, sibling.id), { code: "FORBIDDEN" });
     assert.equal(f.count("linked_account_pairs"), 0);
   }
 });
 
-test("source password, real live session, and exact granted target are all required", (t) => {
+test("source password, real live session, and exact granted target are all required", async (t) => {
   const f = fixture(t);
   const member = f.addUser();
   const sibling = f.addUser({ role: "admin" });
   const unrelated = f.addUser({ email: "unrelated@example.test" });
   const session = f.createSession(member.id);
-  assert.throws(() => f.connect(member, session, "Wrong-pass2"), { code: "AUTH_INVALID" });
-  assert.throws(() => f.connect(member, session, "Matching-pass1" + "x".repeat(100)), { code: "AUTH_INVALID" });
-  assert.throws(() => f.connect(member, session, { password: "Matching-pass1" }), { code: "AUTH_INVALID" });
+  (await assert.rejects(async () => (await f.connect(member, session, "Wrong-pass2")), { code: "AUTH_INVALID" }));
+  (await assert.rejects(async () => (await f.connect(member, session, "Matching-pass1" + "x".repeat(100))), { code: "AUTH_INVALID" }));
+  (await assert.rejects(async () => (await f.connect(member, session, { password: "Matching-pass1" })), { code: "AUTH_INVALID" }));
   assert.equal(f.count("linked_account_pairs"), 0);
   assert.throws(() => f.list(member, { token: "forged" }), { code: "AUTH_REQUIRED" });
   assert.throws(() => f.list(sibling, session), { code: "AUTH_REQUIRED" });
-  f.connect(member, session);
+  (await f.connect(member, session));
   assert.throws(() => f.swap(member, session, unrelated.id), { code: "FORBIDDEN" });
   assert.throws(() => f.swap(member, session, member.id), { code: "FORBIDDEN" });
   assert.throws(() => f.swap(member, session, { id: sibling.id }), { code: "VALIDATION_FAILED" });
 });
 
-test("both accounts must be verified; a pre-proven signup appears only after confirmation", (t) => {
+test("both accounts must be verified; a pre-proven signup appears only after confirmation", async (t) => {
   const f = fixture(t);
   const member = f.addUser();
   const pending = f.addUser({ verified: false });
   const session = f.createSession(member.id);
-  assert.equal(f.connect(member, session).connected, false);
+  assert.equal((await f.connect(member, session)).connected, false);
   assert.equal(f.count("linked_account_pairs"), 1);
   assert.deepEqual(f.list(member, session).accounts.map((a) => a.id), [member.id]);
   assert.throws(() => f.swap(member, session, pending.id), { code: "FORBIDDEN" });
@@ -150,29 +150,29 @@ test("both accounts must be verified; a pre-proven signup appears only after con
   f.db.prepare("UPDATE users SET email_verified_at=NULL WHERE id=?").run(member.id);
   assert.equal(f.count("linked_account_pairs"), 0);
   assert.equal(f.count("linked_account_session_grants"), 0);
-  assert.throws(() => f.connect(member, session), { code: "EMAIL_VERIFICATION_REQUIRED" });
+  (await assert.rejects(async () => (await f.connect(member, session)), { code: "EMAIL_VERIFICATION_REQUIRED" }));
 });
 
-test("source and target restrictions deny linking and switching", (t) => {
+test("source and target restrictions deny linking and switching", async (t) => {
   for (const restricted of [{ banned: true }, { suspendedUntil: 1_900_000_000_000 }]) {
     const f = fixture(t);
     const member = f.addUser();
     const target = f.addUser(restricted);
     const session = f.createSession(member.id);
-    assert.equal(f.connect(member, session).connected, false);
+    assert.equal((await f.connect(member, session)).connected, false);
     assert.throws(() => f.swap(member, session, target.id), { code: "FORBIDDEN" });
     assert.throws(() => f.list(target, f.createSession(target.id)), { code: "FORBIDDEN" });
   }
 });
 
-test("password and email updates to EITHER account revoke all browser grants immediately", (t) => {
+test("password and email updates to EITHER account revoke all browser grants immediately", async (t) => {
   for (const side of [0, 1]) for (const [column, value] of [["pass_hash", "replacement-password-record"], ["email", "changed@example.test"]]) {
     const f = fixture(t);
     const users = [f.addUser(), f.addUser({ role: "admin" })];
     const browser = f.createSession(users[0].id);
     const otherBrowser = f.createSession(users[0].id);
-    f.connect(users[0], browser);
-    f.connect(users[0], otherBrowser);
+    (await f.connect(users[0], browser));
+    (await f.connect(users[0], otherBrowser));
     assert.equal(f.count("linked_account_session_grants"), 2);
     f.db.prepare(`UPDATE users SET ${column}=? WHERE id=?`).run(value, users[side].id);
     assert.equal(f.count("linked_account_pairs"), 0);
@@ -181,13 +181,13 @@ test("password and email updates to EITHER account revoke all browser grants imm
   }
 });
 
-test("role/restriction changes revoke proof, but profile and verification completion do not", (t) => {
+test("role/restriction changes revoke proof, but profile and verification completion do not", async (t) => {
   for (const [column, value] of [["role", "moderator"], ["is_banned", 1], ["suspended_until", 1_900_000_000_000]]) {
     const f = fixture(t);
     const member = f.addUser();
     const target = f.addUser();
     const session = f.createSession(member.id);
-    f.connect(member, session);
+    (await f.connect(member, session));
     f.db.prepare("UPDATE users SET name='Renamed' WHERE id=?").run(target.id);
     assert.equal(f.count("linked_account_pairs"), 1);
     f.db.prepare(`UPDATE users SET ${column}=? WHERE id=?`).run(value, target.id);
@@ -196,14 +196,14 @@ test("role/restriction changes revoke proof, but profile and verification comple
   }
 });
 
-test("deleting either account cascades links; logout deletes only that browser's grant", (t) => {
+test("deleting either account cascades links; logout deletes only that browser's grant", async (t) => {
   for (const side of [0, 1]) {
     const f = fixture(t);
     const users = [f.addUser(), f.addUser()];
     const first = f.createSession(users[0].id);
     const second = f.createSession(users[0].id);
-    f.connect(users[0], first);
-    f.connect(users[0], second);
+    (await f.connect(users[0], first));
+    (await f.connect(users[0], second));
     f.db.prepare("DELETE FROM sessions WHERE token_hash=?").run(hashToken(first.token));
     assert.equal(f.count("linked_account_pairs"), 1);
     assert.equal(f.count("linked_account_session_grants"), 1);
@@ -214,18 +214,18 @@ test("deleting either account cascades links; logout deletes only that browser's
   }
 });
 
-test("member-to-admin bounces and repeated proof cannot extend the original privileged TTL", (t) => {
+test("member-to-admin bounces and repeated proof cannot extend the original privileged TTL", async (t) => {
   const f = fixture(t);
   const member = f.addUser();
   const admin = f.addUser({ role: "admin" });
   const session = f.createSession(member.id);
   const originalToken = session.token;
   const authenticatedAt = f.now();
-  f.connect(member, session);
+  (await f.connect(member, session));
   let grant = f.db.prepare("SELECT * FROM linked_account_session_grants").get();
   assert.equal(grant.expires_at, authenticatedAt + 12 * HOUR);
   f.advance(4 * HOUR);
-  f.connect(member, session);
+  (await f.connect(member, session));
   assert.equal(f.db.prepare("SELECT expires_at FROM linked_account_session_grants").get().expires_at, grant.expires_at);
   const result = f.swap(member, session, admin.id);
   assert.equal(result.user.id, admin.id);
@@ -245,23 +245,23 @@ test("member-to-admin bounces and repeated proof cannot extend the original priv
   assert.throws(() => f.swap(member, session, admin.id), { code: "AUTH_REQUIRED" });
 });
 
-test("an older member session cannot create fresh staff authority via connect", (t) => {
+test("an older member session cannot create fresh staff authority via connect", async (t) => {
   const f = fixture(t);
   const member = f.addUser();
   const admin = f.addUser({ role: "admin" });
   const session = f.createSession(member.id);
   f.advance(13 * HOUR);
-  assert.equal(f.connect(member, session).connected, false);
+  assert.equal((await f.connect(member, session)).connected, false);
   assert.equal(f.count("linked_account_session_grants"), 0);
   assert.throws(() => f.swap(member, session, admin.id), { code: "FORBIDDEN" });
 });
 
-test("switch failure rolls back session rotation and does not set a cookie", (t) => {
+test("switch failure rolls back session rotation and does not set a cookie", async (t) => {
   const f = fixture(t, { onAuthenticated: () => { throw new Error("simulated lifecycle failure"); } });
   const member = f.addUser();
   const sibling = f.addUser();
   const session = f.createSession(member.id);
-  f.connect(member, session);
+  (await f.connect(member, session));
   const before = session.token;
   assert.throws(() => f.swap(member, session, sibling.id), /simulated lifecycle failure/);
   assert.equal(session.token, before);
@@ -270,7 +270,7 @@ test("switch failure rolls back session rotation and does not set a cookie", (t)
   assert.equal(f.list(member, session).connected, true);
 });
 
-test("credential changes racing password verification cannot persist stale proof", (t) => {
+test("credential changes racing password verification cannot persist stale proof", async (t) => {
   let f;
   let targetId;
   let verifications = 0;
@@ -282,12 +282,12 @@ test("credential changes racing password verification cannot persist stale proof
   const member = f.addUser();
   targetId = f.addUser().id;
   const session = f.createSession(member.id);
-  assert.equal(f.connect(member, session).connected, false);
+  assert.equal((await f.connect(member, session)).connected, false);
   assert.equal(f.count("linked_account_pairs"), 0);
   assert.equal(f.count("linked_account_session_grants"), 0);
 });
 
-test("schema installation is idempotent and auth responses are no-store and rate-limited", (t) => {
+test("schema installation is idempotent and auth responses are no-store and rate-limited", async (t) => {
   const f = fixture(t);
   ensureLinkedAccountsSchema(f.db);
   ensureLinkedAccountsSchema(f.db);
@@ -298,7 +298,7 @@ test("schema installation is idempotent and auth responses are no-store and rate
   f.service.routes["GET /api/me/accounts"](listCtx);
   assert.equal(listCtx.headers["Cache-Control"], "no-store");
   const connectCtx = f.context(member, session, { password: "Matching-pass1" });
-  f.service.routes["POST /api/me/accounts/connect"](connectCtx);
+  (await f.service.routes["POST /api/me/accounts/connect"](connectCtx));
   assert.equal(connectCtx.headers["Cache-Control"], "no-store");
   const switchCtx = f.context(member, session, { accountId: sibling.id });
   f.service.routes["POST /api/me/accounts/switch"](switchCtx);
@@ -314,24 +314,24 @@ test("schema refuses to install without deletion-cascade enforcement", (t) => {
   assert.equal(db.prepare("SELECT COUNT(*) n FROM sqlite_schema WHERE type='table'").get().n, 0);
 });
 
-test("proof is valid in either account direction and email normalization is consistent", (t) => {
+test("proof is valid in either account direction and email normalization is consistent", async (t) => {
   const f = fixture(t);
   const admin = f.addUser({ role: "admin", email: " SHARED@example.test " });
   const member = f.addUser();
   const session = f.createSession(admin.id);
-  assert.equal(f.connect(admin, session).connected, true);
+  assert.equal((await f.connect(admin, session)).connected, true);
   const response = f.swap(admin, session, member.id);
   assert.equal(response.user.id, member.id);
   assert.deepEqual(response.accounts.map((account) => [account.id, account.isCurrent]), [[member.id, true], [admin.id, false]]);
   assert.equal(session.expiresAt, f.now() + 12 * HOUR);
 });
 
-test("source unverified proof cannot expose or switch into a verified account", (t) => {
+test("source unverified proof cannot expose or switch into a verified account", async (t) => {
   const f = fixture(t);
   const pending = f.addUser({ verified: false });
   const admin = f.addUser({ role: "admin" });
   const session = f.createSession(pending.id);
-  assert.equal(f.service.proveAndGrant({ userId: pending.id, password: "Matching-pass1", token: session.token }).connected, false);
+  assert.equal((await f.service.proveAndGrant({ userId: pending.id, password: "Matching-pass1", token: session.token })).connected, false);
   assert.equal(f.list(pending, session).connected, false);
   assert.deepEqual(f.list(pending, session).accounts.map((account) => account.id), [pending.id]);
   assert.throws(() => f.swap(pending, session, admin.id), { code: "FORBIDDEN" });

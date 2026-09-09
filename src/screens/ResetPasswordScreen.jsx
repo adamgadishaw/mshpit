@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { View, Text, StyleSheet, TextInput, Pressable, ScrollView } from "react-native";
+import { View, Text, StyleSheet, Pressable, ScrollView } from "react-native";
 import { colors, mono, radius } from "../theme";
 import { useStore } from "../store";
 import Icon from "../components/Icon";
 import SheetHeader from "../components/SheetHeader";
+import CredentialForm, { CredentialInput, CredentialLabel, CredentialSubmit } from "../components/credential-form";
 
 // Set a new password from an emailed reset link (?reset=TOKEN). On success the
 // account is signed straight in and every other session is invalidated.
@@ -14,6 +15,7 @@ export default function ResetPasswordScreen({ token, onDone, onCancel }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const attempt = useRef(null);
+  const confirmationInput = useRef(null);
   useEffect(() => () => { attempt.current?.abort(); }, []);
 
   const submit = async () => {
@@ -44,7 +46,10 @@ export default function ResetPasswordScreen({ token, onDone, onCancel }) {
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <Text style={styles.wordmark}>MSHPIT</Text>
         <Text style={styles.tag}>Choose a new password for your account.</Text>
-        <TextInput
+        <CredentialForm busy={busy} id="pit-reset-password" onSubmit={submit} disabled={busy}>
+        <CredentialLabel htmlFor="new-password" style={styles.label}>New password</CredentialLabel>
+        <CredentialInput
+          name="new-password"
           style={styles.input}
           placeholder="New password"
           placeholderTextColor={colors.textFaint}
@@ -54,13 +59,17 @@ export default function ResetPasswordScreen({ token, onDone, onCancel }) {
           autoComplete="new-password"
           textContentType="newPassword"
           returnKeyType="next"
+          onSubmitEditing={() => confirmationInput.current?.focus()}
           maxLength={100}
           editable={!busy}
           accessibilityLabel="New password"
           accessibilityHint="Use at least eight characters"
           accessibilityState={{ disabled: busy }}
         />
-        <TextInput
+        <CredentialLabel htmlFor="confirm-password" style={styles.label}>Confirm new password</CredentialLabel>
+        <CredentialInput
+          ref={confirmationInput}
+          name="confirm-password"
           style={styles.input}
           placeholder="Confirm new password"
           placeholderTextColor={colors.textFaint}
@@ -72,14 +81,14 @@ export default function ResetPasswordScreen({ token, onDone, onCancel }) {
           returnKeyType="done"
           maxLength={100}
           editable={!busy}
-          onSubmitEditing={submit}
           accessibilityLabel="Confirm new password"
           accessibilityState={{ disabled: busy }}
         />
         {!!error && <Text style={styles.error} accessibilityRole="alert" accessibilityLiveRegion="assertive">{error}</Text>}
-        <Pressable style={[styles.primary, busy && styles.disabled]} onPress={submit} disabled={busy} accessibilityRole="button" accessibilityState={{ disabled: busy, busy }}>
+        <CredentialSubmit style={[styles.primary, busy && styles.disabled]} onPress={submit} disabled={busy} accessibilityRole="button" accessibilityState={{ disabled: busy, busy }}>
           <Text style={styles.primaryTxt}>{busy ? "SAVING..." : "RESET PASSWORD"}</Text>
-        </Pressable>
+        </CredentialSubmit>
+        </CredentialForm>
         <Pressable style={styles.switchButton} onPress={onCancel} disabled={busy} accessibilityRole="button" accessibilityState={{ disabled: busy }}><Text style={styles.switch}>Cancel</Text></Pressable>
         <View style={styles.note}>
           <Icon name="lock" size={15} color={colors.amber} />
@@ -95,6 +104,7 @@ const styles = StyleSheet.create({
   content: { padding: 16, paddingBottom: 48 },
   wordmark: { color: colors.text, fontSize: 34, fontWeight: "900", letterSpacing: 5, fontFamily: mono, marginTop: 8 },
   tag: { color: colors.textDim, fontSize: 14, marginTop: 4, marginBottom: 24 },
+  label: { color: colors.text, fontSize: 14, fontWeight: "700", marginBottom: 6 },
   input: { backgroundColor: colors.surface, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.line, color: colors.text, paddingHorizontal: 14, paddingVertical: 13, fontSize: 15, marginBottom: 10 },
   error: { color: colors.danger, fontSize: 13, marginBottom: 8 },
   primary: { backgroundColor: colors.amberStrong, borderRadius: radius.md, paddingVertical: 15, alignItems: "center", marginTop: 10 },

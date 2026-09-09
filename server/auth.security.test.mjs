@@ -76,6 +76,17 @@ function addUser({ role = "fan", password = "test-password", banned = false, sus
 
 const silentLog = { info() {}, warn() {} };
 
+test("a session is invalid at its exact expiry time", () => {
+  const user = addUser();
+  const session = createSession(user.id);
+  const realNow = Date.now;
+  try {
+    Date.now = () => session.expiresAt;
+    assert.equal(getSession(session.token), null);
+  } finally { Date.now = realNow; }
+  assert.equal(getSession(session.token), null, "an expired record is revoked, not revived by a later clock value");
+});
+
 test("session issuance reactivates only its account without lifting moderation", () => {
   const selected = addUser({ banned: true, suspendedUntil: Date.now() + 86_400_000 });
   const sibling = addUser();
@@ -714,11 +725,11 @@ test("staff sessions are capped at twelve hours while member sessions retain thi
     "session authorization does not retain raw network/device fingerprints");
 });
 
-test("banned accounts can authenticate only into a restricted self-service session", () => {
+test("banned accounts can authenticate only into a restricted self-service session", async () => {
   const password = "restricted-account-password";
   const user = addUser({ password, banned: true });
   let session = null;
-  const result = routes["POST /api/login"]({
+  const result = await routes["POST /api/login"]({
     body: { email: user.email, password },
     ip: `restricted-login-${user.id}`,
     ua: "test",
@@ -731,7 +742,7 @@ test("banned accounts can authenticate only into a restricted self-service sessi
     () => routes["POST /api/me/analytics-consent"]({ user: q.userById.get(user.id), body: { enabled: true }, ip: `restricted-write-${user.id}` }),
     /banned/i,
   );
-  assert.equal(routes["POST /api/me/export"]({ user: q.userById.get(user.id), ip: `restricted-export-${user.id}`, body: { password } }).profile.id, user.id);
+  assert.equal((await routes["POST /api/me/export"]({ user: q.userById.get(user.id), ip: `restricted-export-${user.id}`, body: { password } })).profile.id, user.id);
 });
 
 test("password recovery keeps cooldown, response, and cookie behavior uniform across identities", async () => {
@@ -762,7 +773,7 @@ test("password recovery keeps cooldown, response, and cookie behavior uniform ac
   assert.equal(cookieMutations, 0);
 });
 
-test("password reset atomically consumes the token, revokes old sessions, and creates one replacement", () => {
+test("password reset atomically consumes the token, revokes old sessions, and creates one replacement", async () => {
   const oldPassword = "reset-success-old-password1";
   const newPassword = "reset-success-new-password2";
   const user = addUser({ password: oldPassword });
@@ -774,7 +785,7 @@ test("password reset atomically consumes the token, revokes old sessions, and cr
     .run(tokenHash, Date.now() + 60_000, user.id);
   let replacementSession = null;
 
-  const result = routes["POST /api/reset"]({
+  const result = await routes["POST /api/reset"]({
     body: { token, password: newPassword },
     ip: `reset-success-${user.id}`,
     ua: "test",
@@ -791,7 +802,7 @@ test("password reset atomically consumes the token, revokes old sessions, and cr
   assert.equal(getSession(secondOldSession.token), null);
   assert.equal(getSession(replacementSession?.token)?.user_id, user.id);
   assert.equal(db.prepare("SELECT COUNT(*) count FROM sessions WHERE user_id=?").get(user.id).count, 1);
-  assert.throws(() => routes["POST /api/reset"]({
+  await assert.rejects(() => routes["POST /api/reset"]({
     body: { token, password: "reset-replay-password3" },
     ip: `reset-replay-${user.id}`,
     ua: "test",
@@ -799,7 +810,7 @@ test("password reset atomically consumes the token, revokes old sessions, and cr
   }), (error) => error?.status === 400);
 });
 
-test("password reset rolls back token consumption and password change when prior-session revocation fails", () => {
+test("password reset rolls back token consumption and password change when prior-session revocation fails", async () => {
   const oldPassword = "reset-rollback-old-password1";
   const newPassword = "reset-rollback-new-password2";
   const user = addUser({ password: oldPassword });
@@ -813,7 +824,7 @@ test("password reset rolls back token consumption and password change when prior
     BEGIN SELECT RAISE(ABORT, 'forced reset revoke failure'); END`);
   let replacementSession = null;
   try {
-    assert.throws(() => routes["POST /api/reset"]({
+    await assert.rejects(() => routes["POST /api/reset"]({
       body: { token, password: newPassword },
       ip: `reset-revoke-failure-${user.id}`,
       ua: "test",
@@ -831,7 +842,7 @@ test("password reset rolls back token consumption and password change when prior
   assert.equal(replacementSession, null);
 });
 
-test("password reset rolls back revoked sessions when replacement-session creation fails", () => {
+test("password reset rolls back revoked sessions when replacement-session creation fails", async () => {
   const oldPassword = "reset-session-old-password1";
   const newPassword = "reset-session-new-password2";
   const user = addUser({ password: oldPassword });
@@ -845,7 +856,7 @@ test("password reset rolls back revoked sessions when replacement-session creati
     BEGIN SELECT RAISE(ABORT, 'forced replacement session failure'); END`);
   let replacementSession = null;
   try {
-    assert.throws(() => routes["POST /api/reset"]({
+    await assert.rejects(() => routes["POST /api/reset"]({
       body: { token, password: newPassword },
       ip: `reset-session-failure-${user.id}`,
       ua: "test",
@@ -863,11 +874,11 @@ test("password reset rolls back revoked sessions when replacement-session creati
   assert.equal(replacementSession, null);
 });
 
-test("signup never derives the public handle from a private email local-part", () => {
+test("signup never derives the public handle from a private email local-part", async () => {
   const distinctive = `legal.name.work-id-${Date.now()}`;
   let session = null;
   const email = `${distinctive}@example.test`;
-  const result = routes["POST /api/signup"]({
+  const result = await routes["POST /api/signup"]({
     body: {
       name: "Private Handle Test",
       email,
@@ -950,13 +961,13 @@ test("multi-bucket reservations reject capacity overflow atomically", () => {
   }
 });
 
-test("auth limits stay bound to the IP even when the caller supplies rotating account identities", () => {
+test("auth limits stay bound to the IP even when the caller supplies rotating account identities", async () => {
   resetRateLimitsForTests();
   const sharedIp = `signup-rotation-${Date.now()}`;
   let currentUser = null;
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const email = `rotation-${attempt}-${Date.now()}@example.test`;
-    const result = routes["POST /api/signup"]({
+    const result = await routes["POST /api/signup"]({
       user: currentUser,
       body: {
         name: `Rotation User ${attempt}`,
@@ -974,7 +985,7 @@ test("auth limits stay bound to the IP even when the caller supplies rotating ac
     assert.equal(result.user.emailVerified, false);
     currentUser = q.userByEmail.get(email);
   }
-  assert.throws(
+  await assert.rejects(
     () => routes["POST /api/signup"]({
       user: currentUser,
       body: {
@@ -993,7 +1004,7 @@ test("auth limits stay bound to the IP even when the caller supplies rotating ac
   );
 });
 
-test("different-password signup creates distinct restricted accounts without replacing existing credentials", () => {
+test("different-password signup creates distinct restricted accounts without replacing existing credentials", async () => {
   resetRateLimitsForTests();
   const email = `signup-enumeration-${Date.now()}@example.test`;
   const body = {
@@ -1005,10 +1016,10 @@ test("different-password signup creates distinct restricted accounts without rep
     termsVersion: LEGAL_ACCEPTANCE_VERSION,
   };
   let newSession = null;
-  const first = routes["POST /api/signup"]({ body, ip: `signup-enumeration-new-${Date.now()}`, ua: "test", setSession(value) { newSession = value; } });
+  const first = await routes["POST /api/signup"]({ body, ip: `signup-enumeration-new-${Date.now()}`, ua: "test", setSession(value) { newSession = value; } });
   const originalHash = q.userByEmail.get(email).pass_hash;
   let existingSession = null;
-  const second = routes["POST /api/signup"]({ body: { ...body, password: "different-password1" }, ip: `signup-enumeration-existing-${Date.now()}`, ua: "test", setSession(value) { existingSession = value; } });
+  const second = await routes["POST /api/signup"]({ body: { ...body, password: "different-password1" }, ip: `signup-enumeration-existing-${Date.now()}`, ua: "test", setSession(value) { existingSession = value; } });
   assert.equal(first.created, true);
   assert.equal(second.created, true);
   assert.equal(first.user.emailVerified, false);

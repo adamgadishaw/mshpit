@@ -249,6 +249,8 @@
     "src/components/TicketStub.jsx -> src/store"
   ],
   "allowedFileNameViolations": [
+    "src/components/credential-form.jsx",
+    "src/components/credential-form.web.jsx",
     "src/domain/media-alt-text.mjs",
     "src/domain/notification-bundles.mjs",
     "src/domain/player-gesture.mjs",

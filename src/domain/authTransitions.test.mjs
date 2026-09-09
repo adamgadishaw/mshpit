@@ -116,6 +116,18 @@ test("account choice cannot unlock a previously signed-out cookie", async () => 
   assert.equal(transitions.pending(), false);
 });
 
+test("an identity-fenced switch response is an uncertain cookie outcome, not a rejected credential", async () => {
+  const calls = [];
+  const { transitions } = fixture({ state: { revision: "member", phase: "signed-in" }, revoke: async () => calls.push("revoke") });
+  await assert.rejects(transitions.run({
+    request: async () => { throw Object.assign(new Error("identity changed after cookie write"), { status: 409, serverCode: "IDENTITY_CHANGED" }); },
+    accept: () => assert.fail("adopted"), onUncertain: () => calls.push("clear-private"),
+  }), /identity changed/);
+  await tick();
+  assert.equal(transitions.blocked(), true);
+  assert.deepEqual(calls, ["clear-private", "revoke"]);
+});
+
 test("two tabs serialize cookie writes and old-tab reconciliation cannot revoke the new login", async () => {
   let shared = null, serial = Promise.resolve(), id = 0;
   const calls = [], response = deferred();
@@ -136,3 +148,29 @@ test("two tabs serialize cookie writes and old-tab reconciliation cannot revoke 
   assert.equal(a.blocked(), false);
   assert.deepEqual(calls, []);
 });
+
+for (const outcome of ["success", "network-error", "http-error"]) {
+  test(`without browser-wide locks, stale ${outcome} cannot leave a newer signed-in intent adopting the old cookie`, async () => {
+    let shared = null, id = 0, cookie = null, cleared = 0;
+    const response = deferred();
+    const options = {
+      read: () => shared, write: (value) => { shared = value; }, nonce: () => `${++id}`,
+      revoke: async () => { cookie = null; },
+    };
+    const a = createAuthTransitions(options), b = createAuthTransitions(options);
+    const old = a.run({
+      request: async () => { await response.promise; cookie = "A"; if (outcome !== "success") throw Object.assign(new Error("late request failed"), outcome === "http-error" ? { status: 401 } : {}); return { user: { id: "A" } }; },
+      accept: () => assert.fail("stale login adopted"), onUncertain: () => { cleared++; void a.signOut(); },
+    });
+    await tick();
+    await b.run({ request: async () => { cookie = "B"; return { user: { id: "B" } }; }, accept: () => {} });
+    assert.equal(cookie, "B");
+    response.resolve();
+    assert.equal((await old).stale, true);
+    await tick();
+    assert.equal(a.blocked(), true, "late Set-Cookie must invalidate the shared adoption permission");
+    assert.equal(b.blocked(), true);
+    assert.equal(cookie, null, "compensation removes the out-of-order cookie");
+    assert.equal(cleared, 1);
+  });
+}

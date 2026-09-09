@@ -40,6 +40,7 @@ import {
 } from "./mediaDeletion.js";
 import { verifyMp4Compatibility } from "./mp4Probe.js";
 import { sanitizeDecodedImage, validateDecodedImage, ImageProcessorError } from "./imageProcessor.js";
+import { mediaStorageRequestFailure, requestMediaStorage } from "./mediaStorageRequest.js";
 import { VIDEO_VERIFIER_SOURCE_CONTENT_TYPES } from "./videoVerifierProtocol.js";
 
 const ASSET_ID = /^ma_[A-Za-z0-9_-]{8,80}$/;
@@ -350,9 +351,11 @@ async function verifyStoredObject({ objectKey, expectedBytes, expectedType, env,
   }
   let response;
   try {
-    response = await fetchImpl(url, {
+    response = await requestMediaStorage({
+      url,
       method: "HEAD",
-      redirect: "error",
+      stage: "head",
+      fetchImpl,
       signal: mediaTransferSignal(signal, expectedBytes),
     });
   } catch (error) {
@@ -362,7 +365,8 @@ async function verifyStoredObject({ objectKey, expectedBytes, expectedType, env,
     throw new ApiError(409, "The upload has not reached storage yet. Try again.", "CONFLICT");
   }
   if (!response || response.status < 200 || response.status >= 300) {
-    throw new ApiError(503, "The upload could not be verified yet. Try again.", "MEDIA_STORAGE_UNAVAILABLE");
+    throw new ApiError(503, "The upload could not be verified yet. Try again.", "MEDIA_STORAGE_UNAVAILABLE",
+      mediaStorageRequestFailure({ stage: "head", status: response?.status ?? 0 }));
   }
   const actualLength = Number(response.headers?.get?.("content-length"));
   const actualType = contentType(response.headers?.get?.("content-type"));
@@ -396,48 +400,49 @@ async function downloadStoredObjectBytes({
     expiresIn: 90,
     storageScope,
   });
-  let response;
   try {
-    response = await fetchImpl(capability.downloadUrl, {
+    return await requestMediaStorage({
+      url: capability.downloadUrl,
       method: "GET",
-      redirect: "error",
+      stage: "source_get",
+      fetchImpl,
       headers: capability.requiredHeaders,
       signal: mediaTransferSignal(signal, expectedBytes),
+      consume: async (response) => {
+        const actualBytes = Number(response?.headers?.get?.("content-length"));
+        const actualType = contentType(response?.headers?.get?.("content-type"));
+        const actualEtag = strongObjectEtag(response?.headers?.get?.("etag"));
+        if (response?.status !== 200 || actualBytes !== expectedBytes || actualType !== expectedType
+            || actualEtag !== stored.etag || !response.body || typeof response.body.getReader !== "function") {
+          throw new ApiError(409, "The uploaded image changed before it could be inspected.", "CONFLICT");
+        }
+        const reader = response.body.getReader();
+        const chunks = [];
+        let received = 0;
+        try {
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            received += value?.byteLength || 0;
+            if (received > expectedBytes) {
+              await reader.cancel("image exceeded signed size");
+              throw new ApiError(409, "The uploaded image changed before it could be inspected.", "CONFLICT");
+            }
+            chunks.push(Buffer.from(value));
+          }
+        } finally {
+          reader.releaseLock();
+        }
+        if (received !== expectedBytes) {
+          throw new ApiError(409, "The uploaded image changed before it could be inspected.", "CONFLICT");
+        }
+        return Buffer.concat(chunks, received);
+      },
     });
-  } catch (error) {
-    throw new ApiError(503, "The uploaded image could not be inspected yet. Try again.", "MEDIA_STORAGE_UNAVAILABLE", error);
-  }
-  const actualBytes = Number(response?.headers?.get?.("content-length"));
-  const actualType = contentType(response?.headers?.get?.("content-type"));
-  const actualEtag = strongObjectEtag(response?.headers?.get?.("etag"));
-  if (response?.status !== 200 || actualBytes !== expectedBytes || actualType !== expectedType
-      || actualEtag !== stored.etag || !response.body || typeof response.body.getReader !== "function") {
-    throw new ApiError(409, "The uploaded image changed before it could be inspected.", "CONFLICT");
-  }
-  const reader = response.body.getReader();
-  const chunks = [];
-  let received = 0;
-  try {
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      received += value?.byteLength || 0;
-      if (received > expectedBytes) {
-        await reader.cancel("image exceeded signed size");
-        throw new ApiError(409, "The uploaded image changed before it could be inspected.", "CONFLICT");
-      }
-      chunks.push(Buffer.from(value));
-    }
   } catch (error) {
     if (error instanceof ApiError) throw error;
     throw new ApiError(503, "The uploaded image could not be inspected yet. Try again.", "MEDIA_STORAGE_UNAVAILABLE", error);
-  } finally {
-    reader.releaseLock();
   }
-  if (received !== expectedBytes) {
-    throw new ApiError(409, "The uploaded image changed before it could be inspected.", "CONFLICT");
-  }
-  return Buffer.concat(chunks, received);
 }
 
 async function verifyStoredImage({
@@ -616,46 +621,47 @@ function createAuthoritativePosterVariant(database, {
 
 async function verifyStoredObjectDigest({ objectKey, stored, expectedBytes, expectedType, expectedDigest, env, fetchImpl, signal }) {
   const capability = createMediaDownloadCapability({ objectKey, ifMatch: stored.etag, env, expiresIn: 90 });
-  let response;
   try {
-    response = await fetchImpl(capability.downloadUrl, {
+    await requestMediaStorage({
+      url: capability.downloadUrl,
       method: "GET",
-      redirect: "error",
+      stage: "digest_get",
+      fetchImpl,
       headers: capability.requiredHeaders,
       signal: mediaTransferSignal(signal, expectedBytes),
+      consume: async (response) => {
+        const actualBytes = Number(response?.headers?.get?.("content-length"));
+        const actualType = contentType(response?.headers?.get?.("content-type"));
+        const actualEtag = strongObjectEtag(response?.headers?.get?.("etag"));
+        if (response?.status !== 200 || actualBytes !== expectedBytes || actualType !== expectedType
+            || actualEtag !== stored.etag || !response.body || typeof response.body.getReader !== "function") {
+          throw new ApiError(409, "The generated clip cover changed before publication.", "CONFLICT");
+        }
+        const reader = response.body.getReader();
+        const hash = createHash("sha256");
+        let received = 0;
+        try {
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            received += value.byteLength;
+            if (received > expectedBytes) {
+              await reader.cancel("cover exceeded signed size");
+              throw new ApiError(409, "The generated clip cover changed before publication.", "CONFLICT");
+            }
+            hash.update(value);
+          }
+        } finally {
+          reader.releaseLock();
+        }
+        if (received !== expectedBytes || hash.digest("hex") !== expectedDigest) {
+          throw new ApiError(409, "The generated clip cover bytes do not match the authoritative decoder.", "CONFLICT");
+        }
+      },
     });
-  } catch (error) {
-    throw new ApiError(503, "The generated clip cover could not be verified.", "MEDIA_STORAGE_UNAVAILABLE", error);
-  }
-  const actualBytes = Number(response?.headers?.get?.("content-length"));
-  const actualType = contentType(response?.headers?.get?.("content-type"));
-  const actualEtag = strongObjectEtag(response?.headers?.get?.("etag"));
-  if (response?.status !== 200 || actualBytes !== expectedBytes || actualType !== expectedType
-      || actualEtag !== stored.etag || !response.body || typeof response.body.getReader !== "function") {
-    throw new ApiError(409, "The generated clip cover changed before publication.", "CONFLICT");
-  }
-  const reader = response.body.getReader();
-  const hash = createHash("sha256");
-  let received = 0;
-  try {
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      received += value.byteLength;
-      if (received > expectedBytes) {
-        await reader.cancel("cover exceeded signed size");
-        throw new ApiError(409, "The generated clip cover changed before publication.", "CONFLICT");
-      }
-      hash.update(value);
-    }
   } catch (error) {
     if (error instanceof ApiError) throw error;
     throw new ApiError(503, "The generated clip cover could not be verified.", "MEDIA_STORAGE_UNAVAILABLE", error);
-  } finally {
-    reader.releaseLock();
-  }
-  if (received !== expectedBytes || hash.digest("hex") !== expectedDigest) {
-    throw new ApiError(409, "The generated clip cover bytes do not match the authoritative decoder.", "CONFLICT");
   }
 }
 
@@ -702,13 +708,15 @@ async function stageAuthoritativePoster(database, {
         signal: mediaTransferSignal(signal, input.byteSize),
       });
     } catch (error) {
-      throw new ApiError(503, "Clip cover storage is temporarily unavailable.", "MEDIA_STORAGE_UNAVAILABLE", error);
+      throw new ApiError(503, "Clip cover storage is temporarily unavailable.", "MEDIA_STORAGE_UNAVAILABLE",
+        mediaStorageRequestFailure({ stage: "poster_put", error, signal }));
     }
     // A lost response can leave the deterministic create-only object present.
     // 412 is reconciled only after the exact generation is downloaded and its
     // SHA-256 matches the worker response below.
     if (!response || !((response.status >= 200 && response.status < 300) || response.status === 412)) {
-      throw new ApiError(503, "Clip cover storage is temporarily unavailable.", "MEDIA_STORAGE_UNAVAILABLE");
+      throw new ApiError(503, "Clip cover storage is temporarily unavailable.", "MEDIA_STORAGE_UNAVAILABLE",
+        mediaStorageRequestFailure({ stage: "poster_put", status: response?.status ?? 0 }));
     }
   }
   const stored = await verifyStoredObject({
@@ -1029,10 +1037,12 @@ async function stageSanitizedImageDelivery(database, {
       signal: mediaTransferSignal(signal, output.byteSize),
     });
   } catch (error) {
-    throw new ApiError(503, "Photo delivery storage is temporarily unavailable.", "MEDIA_STORAGE_UNAVAILABLE", error);
+    throw new ApiError(503, "Photo delivery storage is temporarily unavailable.", "MEDIA_STORAGE_UNAVAILABLE",
+      mediaStorageRequestFailure({ stage: "photo_put", error, signal }));
   }
   if (!response || !((response.status >= 200 && response.status < 300) || response.status === 412)) {
-    throw new ApiError(503, "Photo delivery storage is temporarily unavailable.", "MEDIA_STORAGE_UNAVAILABLE");
+    throw new ApiError(503, "Photo delivery storage is temporarily unavailable.", "MEDIA_STORAGE_UNAVAILABLE",
+      mediaStorageRequestFailure({ stage: "photo_put", status: response?.status ?? 0 }));
   }
   const stored = await verifyStoredObject({
     objectKey: prepared.objectKey,

@@ -79,12 +79,17 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-async function eventually(read, predicate, { attempts = 100 } = {}) {
+async function eventually(read, predicate, { timeoutMs = 5_000, intervalMs = 50 } = {}) {
+  const deadline = performance.now() + timeoutMs;
   let value;
-  for (let index = 0; index < attempts; index += 1) {
+  while (true) {
     value = await read();
     if (predicate(value)) return value;
-    await new Promise((resolve) => setImmediate(resolve));
+    const remaining = deadline - performance.now();
+    if (remaining <= 0) break;
+    // Background storage retries intentionally use real 150/350ms backoff.
+    // Yield elapsed time, not a hot loop of event-loop turns/API reads.
+    await new Promise((resolve) => setTimeout(resolve, Math.min(intervalMs, remaining)));
   }
   assert.fail(`Expected asynchronous state was not reached: ${JSON.stringify(value)}`);
 }
@@ -2787,10 +2792,10 @@ test("PATCH /api/me schemas extras, filters public song text, and keeps trusted 
   assert.equal(optedIn.user.searchIndexingOptOut, false);
 });
 
-test("signup records Terms separately while optional analytics defaults off", () => {
+test("signup records Terms separately while optional analytics defaults off", async () => {
   let sessionCookie;
   const email = "default-private@example.com";
-  const result = routes["POST /api/signup"]({
+  const result = await routes["POST /api/signup"]({
     ip: "signup-consent-test",
     ua: "integrity-test",
     body: {
@@ -2816,13 +2821,13 @@ test("signup records Terms separately while optional analytics defaults off", ()
   assert.equal(created.analyticsConsentAt, undefined);
   assert.equal(created.consentAt, undefined);
   assert.deepEqual(created.genres, ["R&B", "Hip-Hop"]);
-  assert.throws(() => routes["POST /api/signup"]({
+  await assert.rejects(() => routes["POST /api/signup"]({
     ip: "signup-genres-test", ua: "integrity-test", body: {
       name: "No Genres", email: "no-genres@example.com", password: "privatepass123", city: "Toronto",
       genres: [], ageBand: "18_plus", termsVersion: LEGAL_ACCEPTANCE_VERSION,
     }, setSession: () => {},
   }), (error) => error.status === 400 && error.code === "VALIDATION_FAILED");
-  assert.throws(() => routes["POST /api/signup"]({
+  await assert.rejects(() => routes["POST /api/signup"]({
     ip: "signup-consent-test-2", ua: "integrity-test", body: {
       name: "No Terms", email: "no-terms@example.com", password: "privatepass123", city: "Toronto", genres: ["Rock"], ageBand: "18_plus",
     }, setSession: () => {},
@@ -4180,7 +4185,7 @@ test("moderators have real bounded actions and every content change is audited",
   assert.equal(routes["POST /api/admin/users/:id/suspend"]({ user: moderator, params: { id: target.id }, body: { days: 1 } }).ok, true);
 });
 
-test("account export covers owned social data without secrets or raw IP addresses", () => {
+test("account export covers owned social data without secrets or raw IP addresses", async () => {
   const user = addUser("u_export", "export@example.com", "exportuser");
   db.prepare("UPDATE users SET suspended_until=? WHERE id=?").run(Date.now() + 86_400_000, user.id);
   const restrictedUser = q.userById.get(user.id);
@@ -4242,7 +4247,7 @@ test("account export covers owned social data without secrets or raw IP addresse
     .run("post_export_rejected", user.id, 22);
 
   db.prepare("UPDATE users SET pass_hash=? WHERE id=?").run(hashPassword("export-password1"), restrictedUser.id);
-  const data = routes["POST /api/me/export"]({ user: q.userById.get(restrictedUser.id), ip: "export-test", body: { password: "export-password1" } });
+  const data = await routes["POST /api/me/export"]({ user: q.userById.get(restrictedUser.id), ip: "export-test", body: { password: "export-password1" } });
   assert.equal(data.venueReviews[0].id, "vr_export");
   assert.deepEqual(data.fanClubs.memberships, ["The Band"]);
   assert.equal(data.loungeMessages[0].id, "lm_export");
@@ -4325,7 +4330,7 @@ test("account export covers owned social data without secrets or raw IP addresse
   assert.equal(encoded.includes("test-hash"), false);
 });
 
-test("account export includes every managed artist photo beyond the former 1,000-row cap", () => {
+test("account export includes every managed artist photo beyond the former 1,000-row cap", async () => {
   const user = addUser("u_export_many_photos", "export-many@example.com", "exportmany");
   const password = "ExportManyPhotos9";
   db.prepare("UPDATE users SET pass_hash=? WHERE id=?").run(hashPassword(password), user.id);
@@ -4342,7 +4347,7 @@ test("account export includes every managed artist photo beyond the former 1,000
     );
   }
   try {
-    const data = routes["POST /api/me/export"]({
+    const data = await routes["POST /api/me/export"]({
       user: q.userById.get(user.id),
       ip: "export-many-managed-photos",
       body: { password },
@@ -4355,7 +4360,7 @@ test("account export includes every managed artist photo beyond the former 1,000
   }
 });
 
-test("account deletion requires the password and erases SET NULL privacy rows atomically", () => {
+test("account deletion requires the password and erases SET NULL privacy rows atomically", async () => {
   const password = "ConcertPassword9";
   const user = addUser("u_delete", "delete@example.com", "deleteuser");
   db.prepare("UPDATE users SET pass_hash=? WHERE id=?").run(hashPassword(password), user.id);
@@ -4418,14 +4423,14 @@ test("account deletion requires the password and erases SET NULL privacy rows at
   );
 
   const handler = routes["DELETE /api/me"];
-  assert.throws(
+  await assert.rejects(
     () => handler({ user: freshUser, ip: "delete-test-wrong", body: { password: "WrongPassword1" } }),
     (error) => error instanceof ApiError && error.status === 401 && error.code === "AUTH_INVALID"
   );
   assert.ok(q.userById.get(user.id));
 
   let cleared = false;
-  assert.deepEqual(handler({ user: freshUser, ip: "delete-test", body: { password }, clearSession: () => { cleared = true; } }), { ok: true });
+  assert.deepEqual(await handler({ user: freshUser, ip: "delete-test", body: { password }, clearSession: () => { cleared = true; } }), { ok: true });
   assert.equal(cleared, true);
   assert.equal(q.userById.get(user.id), undefined);
   assert.equal(db.prepare("SELECT COUNT(*) count FROM show_attendance WHERE user_id=?").get(user.id).count, 0);
@@ -5164,7 +5169,7 @@ test("playlist tracks keep their exact recording identity", () => {
   assert.equal(byTitle.NoIdentity.title, "NoIdentity");
 });
 
-test("play history round-trips exact provider recordings to history, friends, and export", () => {
+test("play history round-trips exact provider recordings to history, friends, and export", async () => {
   const owner = addUser("u_play_source_owner", "play-source-owner@example.com", "playsourceowner");
   const viewer = addUser("u_play_source_viewer", "play-source-viewer@example.com", "playsourceviewer");
   db.prepare("INSERT INTO follows (follower_id,followee_id) VALUES (?,?)").run(viewer.id, owner.id);
@@ -5217,7 +5222,7 @@ test("play history round-trips exact provider recordings to history, friends, an
   });
 
   db.prepare("UPDATE users SET pass_hash=? WHERE id=?").run(hashPassword("play-export-password1"), owner.id);
-  const exported = routes["POST /api/me/export"]({ user: q.userById.get(owner.id), ip: "play-source-export", body: { password: "play-export-password1" } })
+  const exported = (await routes["POST /api/me/export"]({ user: q.userById.get(owner.id), ip: "play-source-export", body: { password: "play-export-password1" } }))
     .listeningHistory.filter((play) => play.title === shared.title);
   assert.deepEqual(exported.map((play) => ({
     provider: play.provider,

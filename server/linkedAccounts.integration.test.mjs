@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
-import { createServer } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,9 +16,9 @@ delete process.env.MAIL_FROM;
 const { db, q } = await import("./db.js");
 const { routes } = await import("./api.js");
 const { createSession, getSession, hashPassword, parseCookies, resetRateLimitsForTests,
-  sessionCookieHeaders, COOKIE } = await import("./auth.js");
-const { assertExpectedAccount } = await import("./identityBinding.js");
-const { assertAccountMutationAccess } = await import("./accountMutationAccess.js");
+  sessionCookieHeaders, clearSessionCookies, COOKIE } = await import("./auth.js");
+const { readAuthorizedRequest } = await import("./requestAuthorization.js");
+const { readJsonBody, assertUnsafeRequestOrigin } = await import("./requestSecurity.js");
 const { mintVerifyToken } = await import("./verification.js");
 
 function matchRoute(method, pathname) {
@@ -38,26 +38,26 @@ function matchRoute(method, pathname) {
 // Local HTTP transport exercises the real route table, credential/session DB,
 // production cookie serialization/parsing, and pre-route identity/verification
 // guards without starting index.js's external-provider background schedulers.
+let nextBodyStarted = null;
 const server = createServer(async (req, res) => {
   const headers = {};
   try {
     const url = new URL(req.url, "http://127.0.0.1");
-    const chunks = [];
-    for await (const chunk of req) chunks.push(chunk);
-    const text = Buffer.concat(chunks).toString();
-    const body = text ? JSON.parse(text) : {};
+    assertUnsafeRequestOrigin(req.method, req.headers, new Set([origin]));
     const token = parseCookies(req.headers.cookie)[COOKIE];
-    const session = getSession(token);
-    const user = session ? q.userById.get(session.user_id) : null;
-    assertExpectedAccount(req.headers["x-pit-expected-account"], user);
-    assertAccountMutationAccess({ method: req.method, pathname: url.pathname, user, body });
+    const authorized = await readAuthorizedRequest({ token, expectedAccount: req.headers["x-pit-expected-account"],
+      method: req.method, pathname: url.pathname, readBody: () => {
+        if (!["POST", "PATCH", "PUT", "DELETE"].includes(req.method)) return {};
+        const observe = nextBodyStarted; nextBodyStarted = null; observe?.();
+        return readJsonBody(req);
+      } });
     const match = matchRoute(req.method, url.pathname);
     if (!match) throw new Error("Test route missing");
-    const result = await match.handler({ body, token, user, query: Object.fromEntries(url.searchParams), params: match.params,
+    const result = await match.handler({ ...authorized, token, query: Object.fromEntries(url.searchParams), params: match.params,
       ip: "linked-cookie-test", ua: "test", origin: "http://127.0.0.1",
       setHeader: (key, value) => { headers[key] = value; },
       setSession: (replacement) => { headers["Set-Cookie"] = sessionCookieHeaders(replacement.token, replacement.expiresAt, false); },
-      clearSession: () => {},
+      clearSession: () => { headers["Set-Cookie"] = clearSessionCookies(false); },
     });
     res.writeHead(200, { "Content-Type": "application/json", ...headers });
     res.end(JSON.stringify(result));
@@ -99,6 +99,85 @@ const login = (user, password = "Same-password1") => request("/api/login", {
   method: "POST", body: { email: user.email, password, accountId: user.id },
 });
 const ids = (response) => response.body.accounts.map((account) => account.id);
+
+function startHeldPost(cookie, accountId) {
+  let client;
+  const ready = new Promise((resolve) => { nextBodyStarted = resolve; });
+  const response = new Promise((resolve, reject) => {
+    client = httpRequest(`${origin}/api/posts`, { method: "POST", headers: {
+      "Content-Type": "application/json", Cookie: cookie, "X-Pit-Expected-Account": accountId,
+    } }, (res) => {
+      const chunks = [];
+      res.on("data", (chunk) => chunks.push(chunk));
+      res.on("end", () => {
+        try { resolve({ status: res.statusCode, body: JSON.parse(Buffer.concat(chunks).toString()) }); }
+        catch (error) { reject(error); }
+      });
+      res.on("error", reject);
+    });
+    client.on("error", reject);
+    client.setTimeout(10_000, () => client.destroy(new Error("Local held request timed out")));
+    client.write('{"kind":"status","review":');
+  });
+  return { ready, response, finish: () => client.end('"Held publication must not save"}'),
+    close: () => client.destroy() };
+}
+
+test("real HTTP body waits cannot preserve a revoked session or borrow another account's authority", async () => {
+  for (const mode of ["logout", "expiry", "password-change", "password-reset"]) {
+    const actor = member(), independent = member();
+    const initial = await login(actor);
+    const unrelated = await login(independent);
+    assert.equal(initial.status, 200);
+    assert.equal(unrelated.status, 200);
+    const pending = startHeldPost(initial.cookie, actor.id);
+    try {
+      await pending.ready;
+      if (mode === "logout") {
+        const result = await request("/api/logout", { method: "POST", cookie: initial.cookie, body: {} });
+        assert.equal(result.status, 200);
+        assert.match(result.serializedCookie, /Max-Age=0/);
+      } else if (mode === "expiry") {
+        db.prepare("UPDATE sessions SET expires_at=? WHERE user_id=?").run(Date.now() - 1, actor.id);
+      } else if (mode === "password-change") {
+        const result = await request("/api/me/password", { method: "POST", cookie: initial.cookie,
+          body: { currentPassword: "Same-password1", password: "Changed-password2" } });
+        assert.equal(result.status, 200);
+        assert.equal((await request("/api/me", { cookie: result.cookie })).body.user.id, actor.id);
+      } else {
+        const token = randomBytes(32).toString("base64url");
+        db.prepare("UPDATE users SET reset_hash=?,reset_expires=? WHERE id=?")
+          .run(createHash("sha256").update(token).digest("hex"), Date.now() + 60_000, actor.id);
+        const result = await request("/api/reset", { method: "POST", body: { token, password: "Reset-password3" } });
+        assert.equal(result.status, 200);
+        const replay = await request("/api/reset", { method: "POST", body: { token, password: "Replay-password4" } });
+        assert.equal(replay.status, 400);
+        assert.equal(replay.cookie, undefined);
+      }
+      assert.equal((await request("/api/me", { cookie: unrelated.cookie, expectedAccount: independent.id })).body.user.id, independent.id,
+        "independent requests must still complete while the first request body is held");
+      pending.finish();
+      const blocked = await pending.response;
+      assert.equal(blocked.status, 409, mode);
+      assert.equal(blocked.body.code, "IDENTITY_CHANGED", mode);
+      assert.equal(db.prepare("SELECT COUNT(*) n FROM posts WHERE user_id=?").get(actor.id).n, 0, mode);
+      assert.equal((await request("/api/me", { cookie: initial.cookie })).body.user, null, mode);
+    } finally { pending.close(); }
+  }
+});
+
+test("actual concurrent reset requests consume a reset capability only once", async () => {
+  const user = member();
+  const token = randomBytes(32).toString("base64url");
+  db.prepare("UPDATE users SET reset_hash=?,reset_expires=? WHERE id=?")
+    .run(createHash("sha256").update(token).digest("hex"), Date.now() + 60_000, user.id);
+  const results = await Promise.all(["First-password1", "Second-password2"].map((password) =>
+    request("/api/reset", { method: "POST", body: { token, password } })));
+  assert.deepEqual(results.map((result) => result.status).sort(), [200, 400]);
+  assert.equal(results.filter((result) => result.cookie).length, 1);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM sessions WHERE user_id=?").get(user.id).n, 1);
+  assert.equal(db.isTransaction, false);
+});
 
 test("password login proves both accounts and a cookie-only switch rotates identity with a fixed staff cap", async () => {
   const fan = member();
@@ -258,7 +337,7 @@ test("HTTP signup cookie blocks public and social writes until verification whil
   assert.ok(q.userById.get(original.id));
 });
 
-test("reset and password-change sessions re-prove only matching siblings outside their credential transactions", async () => {
+test("reset and password-change verify outside and grant only matching siblings inside credential transactions", async () => {
   const first = member({ password: "Old-password1" });
   const second = member({ email: first.email, password: "Replacement-password2" });
   const resetToken = randomBytes(32).toString("base64url");

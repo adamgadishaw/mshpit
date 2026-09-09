@@ -11,6 +11,7 @@ import {
 import { isStrictCalendarDate } from "../seo/publicEntityPolicy.js";
 import {
   loadShareArtwork,
+  shareArtworkFailureReason,
   ShareArtworkTransientError,
 } from "./socialShareArtwork.js";
 
@@ -55,13 +56,16 @@ export class SocialShareCardBusyError extends Error {
   constructor() {
     super("Social share card renderer is busy");
     this.name = "SocialShareCardBusyError";
+    this.code = "renderer_busy";
   }
 }
 
 export class SocialShareCardArtworkUnavailableError extends Error {
-  constructor() {
+  constructor(transientError = null) {
     super("Social share card artwork is temporarily unavailable");
     this.name = "SocialShareCardArtworkUnavailableError";
+    this.code = transientError instanceof ShareArtworkTransientError
+      ? shareArtworkFailureReason(transientError) : "artwork_unavailable";
   }
 }
 
@@ -1020,7 +1024,7 @@ export function createSocialShareCardRenderer({
           transientFailureCache.set(etag, normalizedFailureTime + transientFailureTtl);
           throw error instanceof SocialShareCardArtworkUnavailableError
             ? error
-            : new SocialShareCardArtworkUnavailableError();
+            : new SocialShareCardArtworkUnavailableError(error);
         });
       // The deadline belongs to the shared work, not to any one caller. The
       // underlying task remains observed and keeps its admission slot until it

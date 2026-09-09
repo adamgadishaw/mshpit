@@ -9,6 +9,7 @@ const INSTAGRAM_STORY_APP_ID = String(process.env.EXPO_PUBLIC_META_APP_ID || "")
 const INSTAGRAM_PACKAGE = "com.instagram.android";
 const INSTAGRAM_STORY_SCHEME = "instagram-stories://share";
 const SOCIAL_PLATFORMS = new Set(["x", "facebook"]);
+let shareCacheSequence = 0;
 const DIRECT_ANDROID_TARGETS = Object.freeze({
   x: Object.freeze({ androidPackage: "com.twitter.android", socialKey: "TWITTER" }),
   facebook: Object.freeze({ androidPackage: "com.facebook.katana", socialKey: "FACEBOOK" }),
@@ -94,6 +95,14 @@ async function socialTargetAvailable(RNShare, target) {
 
 export async function createShareCardAsset(model, { accountId, signal } = {}) {
   if (!accountId || !model?.renderRequest) return null;
+  const assertActive = () => {
+    if (!signal?.aborted) return;
+    if (signal.reason instanceof Error) throw signal.reason;
+    const error = new Error("Share preparation was cancelled.");
+    error.name = "AbortError";
+    throw error;
+  };
+  assertActive();
   const response = await apiBinary("/api/share-cards/render", {
     method: "POST",
     body: model.renderRequest,
@@ -104,9 +113,21 @@ export async function createShareCardAsset(model, { accountId, signal } = {}) {
     expectedAccountId: accountId,
     acceptedContentTypes: ["image/png"],
   });
-  const file = new File(Paths.cache, socialShareFileName(model));
-  file.create({ overwrite: true });
-  file.write(response.bytes);
+  assertActive();
+  // Every preparation owns a separate cache file. A cancelled/late render must
+  // never overwrite or delete another account's card or the successful retry.
+  // The friendly export filename is still supplied to the share sheet below.
+  const cacheName = `mshpit-share-${Date.now().toString(36)}-${(++shareCacheSequence).toString(36)}-${Math.random().toString(36).slice(2)}.png`;
+  const file = new File(Paths.cache, cacheName);
+  let created = false;
+  try {
+    file.create({ overwrite: false });
+    created = true;
+    file.write(response.bytes);
+  } catch (error) {
+    if (created) releaseShareCardAsset({ file });
+    throw error;
+  }
   return {
     file,
     fileUri: file.uri,

@@ -32,6 +32,7 @@ import { ensureCitySchema } from "./features/cities/citySchema.js";
 import { ensureSharedEmailSchema } from "./features/accountOnboarding/sharedEmailSchema.js";
 import { ensureAccountLifecycleSchema } from "./features/accountLifecycle/accountLifecycleSchema.js";
 import { ensureErrorAlertSchema } from "./errorAlertDelivery.js";
+import { seedReviewedArtistIdentities } from "./reviewedArtistIdentities.js";
 
 export const artistSearchKey = (value) => String(value || "")
   .normalize("NFKD")
@@ -2933,6 +2934,17 @@ export function seedArtistsFromBundle() {
   }
 }
 seedArtistsFromBundle();
+
+// Source-reviewed gaps are additive and independent of the scraped bundle.
+// Only aggregate counts are logged; conflicts never replace existing records.
+try {
+  const reviewed = seedReviewedArtistIdentities(db, { makeArtistRow: artistRow });
+  if (reviewed.inserted || reviewed.conflicts) {
+    console.log(`[db] reviewed artist identities inserted=${reviewed.inserted} existing=${reviewed.existing} conflicts=${reviewed.conflicts}`);
+  }
+} catch (error) {
+  console.warn(`[db] reviewed artist identity seed skipped cause=${privateErrorLabel(error)}`);
+}
 
 // One-time cleanup for rows written by the old enrichment job. A marker avoids
 // reparsing the full catalogue on every boot; new writes no longer persist these

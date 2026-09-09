@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import Avatar from "../../components/Avatar";
 import Button from "../../components/Button";
 import SheetHeader from "../../components/SheetHeader";
+import CredentialForm, { CredentialInput, CredentialLabel } from "../../components/credential-form";
 import { colors, displayFont, focusRing, radius, space } from "../../theme";
 import { connectLinkedAccounts, loadLinkedAccounts } from "./accountSecurityService";
 
@@ -21,10 +22,10 @@ export default function AccountSwitcher({ session, switchAccount, onClose, onLog
     const sourceId = session.id, controller = new AbortController();
     request.current = controller; setBusy(true); setError("");
     try {
-      const result = action === "switch" ? await switchAccount(accountId, { expectedAccountId: sourceId })
+      const result = action === "switch" ? await switchAccount(accountId, { expectedAccountId: sourceId, signal: controller.signal })
         : action === "connect" ? await connectLinkedAccounts(sourceId, password, { signal: controller.signal })
           : await loadLinkedAccounts(sourceId, { signal: controller.signal });
-      if (action === "switch" && result?.ok) { onClose?.(); return; }
+      if (action === "switch" && result?.ok) { if (mounted.current && !controller.signal.aborted) onClose?.(); return; }
       if (!mounted.current || owner.current !== sourceId) return;
       if (action === "switch") throw result?.error || new Error("Could not confirm the account switch. Try again.");
       if (!Array.isArray(result?.accounts) || !result.accounts.some((row) => row.id === sourceId && row.isCurrent)) throw new Error("Could not load your accounts. Try again.");
@@ -39,6 +40,10 @@ export default function AccountSwitcher({ session, switchAccount, onClose, onLog
       request.current = null;
       if (mounted.current && owner.current === sourceId) setBusy(false);
     }
+  };
+  const connect = async () => {
+    if (!password) return;
+    await perform("connect");
   };
   useEffect(() => {
     mounted.current = true;
@@ -68,12 +73,12 @@ export default function AccountSwitcher({ session, switchAccount, onClose, onLog
         <Text style={styles.detail}>Already have a second account? On older sessions, confirm your password once to connect it on this device. After that, switching doesn’t ask again.</Text>
         <Button title="Connect an existing account" variant="secondary" disabled={busy} onPress={() => setConnecting(true)} />
       </>}
-      {connecting && <View style={styles.form}>
-        <Text style={styles.name}>Current password</Text>
-        <TextInput accessibilityLabel="Password to connect accounts" secureTextEntry autoComplete="current-password" autoCapitalize="none" autoCorrect={false} maxLength={100} value={password} onChangeText={setPassword} editable={!busy} style={styles.input} />
-        <Button title={busy ? "Connecting…" : "Connect accounts"} loading={busy} disabled={busy || !password} onPress={() => void perform("connect")} />
+      {connecting && <CredentialForm busy={busy} id="pit-connect-accounts" username={session?.email} onSubmit={connect} disabled={busy} style={styles.form}>
+        <CredentialLabel htmlFor="current-password" style={styles.name}>Current password</CredentialLabel>
+        <CredentialInput name="current-password" accessibilityLabel="Password to connect accounts" secureTextEntry autoComplete="current-password" autoCapitalize="none" autoCorrect={false} maxLength={100} value={password} onChangeText={setPassword} editable={!busy} returnKeyType="done" style={styles.input} />
+        <Button submit title={busy ? "Connecting…" : "Connect accounts"} loading={busy} disabled={busy || !password} onPress={connect} />
         <Button title="Cancel" variant="secondary" disabled={busy} onPress={() => { setConnecting(false); setPassword(""); }} />
-      </View>}
+      </CredentialForm>}
       {!session?.emailVerified && <Text style={styles.detail}>Confirm your email before connecting or switching accounts.</Text>}
       <Button title="Log in to a different account" variant="secondary" disabled={busy} onPress={onLogin} />
       {session?.emailVerified && (resource?.accounts?.length || 1) < 2 && <Button title="Create a second account" variant="secondary" disabled={busy} onPress={onAdd} />}

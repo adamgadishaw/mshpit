@@ -35,6 +35,25 @@ test("artist resolver route requires its complete API boundary", () => {
   );
 });
 
+test("artist resolution carries the live-session guard through provider work and cannot clear the queue after revocation", async () => {
+  let cleared = false;
+  let live = true;
+  const guard = () => { if (!live) throw new TestApiError(401, "Log in first.", "AUTH_REQUIRED"); };
+  const routes = createRoutes({
+    clearMissingArtist: () => { cleared = true; },
+    persistExactMusicBrainzIdentity: async (_name, options) => {
+      assert.equal(options.assertAuthorized, guard);
+      live = false;
+      options.assertAuthorized();
+      assert.fail("revoked work cannot reach persistence");
+    },
+  });
+  await assert.rejects(routes["POST /api/artists/resolve"]({
+    body: { name: "Exact Artist" }, assertCurrentSession: guard,
+  }), (error) => error.code === "AUTH_REQUIRED");
+  assert.equal(cleared, false);
+});
+
 test("verified artist selection preserves rate limits, provider identity, cancellation, and missing-queue cleanup", async () => {
   const calls = [];
   const signal = new AbortController().signal;

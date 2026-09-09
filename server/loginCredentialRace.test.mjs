@@ -24,28 +24,28 @@ function member() {
   return q.userById.get(id);
 }
 
-test("login verifies the exact password and rejects overlength input without issuing a session", () => {
+test("login verifies the exact password and rejects overlength input without issuing a session", async () => {
   const user = member();
   const password = "A1" + "a".repeat(98);
   db.prepare("UPDATE users SET pass_hash=? WHERE id=?").run(hashPassword(password), user.id);
   for (const supplied of [password + "x", password + "-wrong-suffix", "a".repeat(10_000)]) {
     let issued;
-    assert.throws(() => routes["POST /api/login"]({
+    (await assert.rejects(async () => (await routes["POST /api/login"]({
       body: { email: user.email, password: supplied }, ip: "login-exact-password", ua: "test",
       setSession(session) { issued = session; },
-    }), (error) => error.status === 400);
+    })), (error) => error.status === 400));
     assert.equal(issued, undefined);
     assert.equal(db.prepare("SELECT COUNT(*) n FROM sessions WHERE user_id=?").get(user.id).n, 0);
   }
   let issued;
-  assert.equal(routes["POST /api/login"]({
+  assert.equal((await routes["POST /api/login"]({
     body: { email: user.email, password }, ip: "login-exact-password", ua: "test",
     setSession(session) { issued = session; },
-  }).user.id, user.id);
+  })).user.id, user.id);
   assert.equal(getSession(issued.token).user_id, user.id);
 });
 
-test("a password reset/change committed after verification cannot mint an old-password login session", () => {
+test("a password reset/change committed after verification cannot mint an old-password login session", async () => {
   for (const mode of ["reset", "change"]) {
     const user = member();
     const previous = createSession(user.id);
@@ -53,27 +53,28 @@ test("a password reset/change committed after verification cannot mint an old-pa
     if (mode === "reset") db.prepare("UPDATE users SET reset_hash=?,reset_expires=? WHERE id=?")
       .run(createHash("sha256").update(resetToken).digest("hex"), Date.now() + 60_000, user.id);
     let replacement;
+    const replacementHash = hashPassword("Replacement-password2");
     let staleLoginCookie;
     let verifiedSnapshotObserved = false;
-    assert.throws(() => routes["POST /api/login"]({
+    (await assert.rejects(async () => (await routes["POST /api/login"]({
       body: { email: user.email, password: "Original-password1", accountId: user.id },
       ip: `login-race-${mode}`, ua: "test",
       // Production sets no-store after successful password matching and before
-      // session issuance. Simulate another process committing the real reset
-      // or password-change route at this deterministic interleaving point.
+      // session issuance. Simulate another process COMMITTING its reset/change
+      // here. Password work happens beforehand, as in the production handlers.
       setHeader(name) {
         if (name !== "Cache-Control" || verifiedSnapshotObserved) return;
         verifiedSnapshotObserved = true;
-        const context = { user: q.userById.get(user.id), token: previous.token,
-          ip: `credential-race-${mode}`, ua: "test", setHeader() {},
-          setSession(session) { replacement = session; },
-          body: mode === "reset" ? { token: resetToken, password: "Replacement-password2" }
-            : { currentPassword: "Original-password1", password: "Replacement-password2" },
-        };
-        routes[mode === "reset" ? "POST /api/reset" : "POST /api/me/password"](context);
+        db.exec("BEGIN IMMEDIATE");
+        try {
+          db.prepare("UPDATE users SET pass_hash=?,reset_hash=NULL,reset_expires=0 WHERE id=?").run(replacementHash, user.id);
+          db.prepare("DELETE FROM sessions WHERE user_id=?").run(user.id);
+          replacement = createSession(user.id);
+          db.exec("COMMIT");
+        } catch (error) { db.exec("ROLLBACK"); throw error; }
       },
       setSession(session) { staleLoginCookie = session; },
-    }), (error) => error.status === 401 && error.code === "AUTH_INVALID");
+    })), (error) => error.status === 401 && error.code === "AUTH_INVALID"));
     assert.equal(verifiedSnapshotObserved, true);
     assert.equal(staleLoginCookie, undefined);
     assert.equal(getSession(previous.token), null);
@@ -82,20 +83,20 @@ test("a password reset/change committed after verification cannot mint an old-pa
       "only the reset/change replacement session may survive");
     assert.equal(db.isTransaction, false);
     let currentCookie;
-    assert.equal(routes["POST /api/login"]({ body: { email: user.email, password: "Replacement-password2" },
-      ip: `fresh-login-${mode}`, ua: "test", setSession(session) { currentCookie = session; } }).user.id, user.id);
+    assert.equal((await routes["POST /api/login"]({ body: { email: user.email, password: "Replacement-password2" },
+      ip: `fresh-login-${mode}`, ua: "test", setSession(session) { currentCookie = session; } })).user.id, user.id);
     assert.equal(getSession(currentCookie.token).user_id, user.id);
   }
 });
 
-test("changing a verified login email before issuance invalidates the old identifier proof", () => {
+test("changing a verified login email before issuance invalidates the old identifier proof", async () => {
   const user = member();
   let issued;
-  assert.throws(() => routes["POST /api/login"]({
+  (await assert.rejects(async () => (await routes["POST /api/login"]({
     body: { email: user.email, password: "Original-password1" }, ip: "login-email-race", ua: "test",
     setHeader() { db.prepare("UPDATE users SET email=? WHERE id=?").run(`changed-${user.email}`, user.id); },
     setSession(session) { issued = session; },
-  }), (error) => error.status === 401 && error.code === "AUTH_INVALID");
+  })), (error) => error.status === 401 && error.code === "AUTH_INVALID"));
   assert.equal(issued, undefined);
   assert.equal(db.prepare("SELECT COUNT(*) n FROM sessions WHERE user_id=?").get(user.id).n, 0);
 });

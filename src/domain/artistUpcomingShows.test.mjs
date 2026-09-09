@@ -73,6 +73,8 @@ test("artist profile uses a bounded server-backed preview and an accessible pagi
   assert.match(schedule, /accessibilityRole="button" accessibilityLabel=\{label\} accessibilityState=\{\{ disabled \}\}/);
   assert.match(schedule, /schedule\?\.legacy \|\| schedule\?\.coverage\?\.status === "disabled"\) return null/);
   assert.match(schedule, /const hasSchedule = !!schedule/);
-  assert.match(schedule, /text\(hasSchedule \? "stale" : "failed"\)/);
+  assert.match(schedule, /text\(failureCopy\)/);
+  assert.match(schedule, /resource\.error\?\.code === "PIT-REQ-002" \|\| resource\.error\?\.serverCode === "NOT_FOUND"/);
+  assert.match(schedule, /catalogUnavailable\s*\? hasSchedule \? "catalogUnavailableStale" : "catalogUnavailable"\s*:\s*hasSchedule \? "stale" : "failed"/);
   assert.match(schedule, /onPress=\{controller\.reload\}/);
 });

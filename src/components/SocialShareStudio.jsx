@@ -14,6 +14,8 @@ import {
   shareCardToSocialPlatform,
 } from "../lib/socialShare";
 import { socialShareIntentUrl } from "../domain/socialShareCard.mjs";
+import { prepareShareCardAsset } from "../domain/shareCardPreparation.mjs";
+import { AppError, captureAppError } from "../lib/diagnostics";
 import { colors, displayFont, font, mono, radius, shadow, space } from "../theme";
 import Icon from "./Icon";
 
@@ -121,6 +123,7 @@ export function SocialShareButton({
       </Pressable>
       {open ? (
         <SocialShareStudio
+          key={JSON.stringify([accountId, model.id, model.kind, model.renderRequest?.kind, model.renderRequest?.eventId, model.renderRequest?.intent, model.renderRequest?.postId])}
           accountId={accountId}
           model={model}
           onClose={() => setOpen(false)}
@@ -135,16 +138,11 @@ export default function SocialShareStudio({ accountId = null, model, onClose }) 
   const desktop = Platform.OS === "web" && width >= 760;
   const nativeStory = Platform.OS !== "web";
   const storyConfigured = instagramStorySharingConfigured();
-  const [assetState, setAssetState] = useState({ status: "loading", asset: null, error: null });
+  const [storedAssetState, setStoredAssetState] = useState(null);
   const [renderAttempt, setRenderAttempt] = useState(0);
   const [busyAction, setBusyAction] = useState(null);
   const [feedback, setFeedback] = useState(null);
   const accent = KIND_ACCENTS[model?.kind] || colors.amberStrong;
-  const preparedAsset = assetState.status === "ready" && assetState.asset?.previewUri
-    ? assetState.asset
-    : null;
-  const shareArtworkRequired = assetState.status === "unavailable"
-    && assetState.error?.serverCode === "SHARE_ARTWORK_REQUIRED";
   const renderKind = model?.renderRequest?.kind || null;
   const renderPostId = model?.renderRequest?.postId || null;
   const renderEventId = model?.renderRequest?.eventId || null;
@@ -159,14 +157,38 @@ export default function SocialShareStudio({ accountId = null, model, onClose }) 
         : { kind: "event", eventId: renderEventId, intent: renderIntent },
     };
   }, [model?.id, model?.kind, renderEventId, renderIntent, renderKind, renderPostId]);
+  const preparationScope = useMemo(() => ({ accountId, renderModel, renderAttempt }), [accountId, renderModel, renderAttempt]);
+  // Project the new identity during render, before the old effect cleans up.
+  // A prior account/model's private PNG must never be offered by a new card.
+  const assetState = storedAssetState?.scope === preparationScope ? storedAssetState : {
+    status: renderModel ? "loading" : "unavailable", asset: null, error: null,
+  };
+  const setAssetState = (state) => setStoredAssetState({ ...state, scope: preparationScope });
+  const preparedAsset = assetState.status === "ready" && assetState.asset?.previewUri
+    ? assetState.asset
+    : null;
+  const shareArtworkRequired = assetState.status === "unavailable"
+    && assetState.error?.serverCode === "SHARE_ARTWORK_REQUIRED";
 
   useEffect(() => {
-    if (!renderModel) return undefined;
+    if (!renderModel) {
+      setAssetState({ status: "unavailable", asset: null, error: null });
+      return undefined;
+    }
     const controller = new AbortController();
     let active = true;
     let prepared = null;
     setAssetState({ status: "loading", asset: null, error: null });
-    void createShareCardAsset(renderModel, { accountId, signal: controller.signal })
+    void prepareShareCardAsset(
+      ({ signal }) => createShareCardAsset(renderModel, { accountId, signal }),
+      {
+        signal: controller.signal,
+        release: releaseShareCardAsset,
+        timeoutError: () => new AppError(undefined, {
+          code: "PIT-NET-002", context: "Preparing a share card", source: "share-card-preparation",
+        }),
+      },
+    )
       .then((asset) => {
         prepared = asset || null;
         if (!active) {
@@ -176,7 +198,8 @@ export default function SocialShareStudio({ accountId = null, model, onClose }) 
         setAssetState({ status: prepared ? "ready" : "unavailable", asset: prepared, error: null });
       })
       .catch((error) => {
-        if (!active || error?.name === "AbortError") return;
+        if (!active || controller.signal.aborted) return;
+        if (error?.source === "share-card-preparation") captureAppError(error, { toast: false });
         setAssetState({ status: "unavailable", asset: null, error });
       });
     return () => {

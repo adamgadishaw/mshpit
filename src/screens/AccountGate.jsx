@@ -1,13 +1,14 @@
 import { useState } from "react";
-import { View, Text, TextInput, StyleSheet, Pressable } from "react-native";
+import { View, Text, StyleSheet, Pressable } from "react-native";
 import { colors } from "../theme";
 import Icon from "../components/Icon";
 import { APPEALS_EMAIL } from "../domain/contact.mjs";
+import CredentialForm, { CredentialInput, CredentialLabel, CredentialSubmit } from "../components/credential-form";
 
 // Full-screen block for banned (red) or suspended (yellow) accounts. They can't
 // post, DM, or browse. Privacy rights remain available: a restriction must not
 // prevent someone from exporting or deleting their own account.
-export default function AccountGate({ status, until, onLogout, onExport, onDelete }) {
+export default function AccountGate({ status, until, onLogout, onExport, onDelete, username }) {
   const banned = status === "banned";
   const bg = banned ? "#2A0E12" : "#2A2208";
   const accent = banned ? "#E0457B" : "#E8B65A";
@@ -16,13 +17,18 @@ export default function AccountGate({ status, until, onLogout, onExport, onDelet
   const [exportResult, setExportResult] = useState(null);
   const [exportPassword, setExportPassword] = useState("");
   const exportData = async () => {
-    if (exporting) return;
+    if (exporting || !exportPassword) return;
     setExporting(true);
     setExportResult(null);
-    const result = await onExport?.(exportPassword);
-    setExportResult(result || { ok: false, error: "Pit could not prepare your data file." });
-    if (result?.ok) setExportPassword("");
-    setExporting(false);
+    try {
+      const result = await onExport?.(exportPassword);
+      setExportResult(result || { ok: false, error: "Pit could not prepare your data file." });
+      if (result?.ok) setExportPassword("");
+    } catch {
+      setExportResult({ ok: false, error: "Pit could not prepare your data file." });
+    } finally {
+      setExporting(false);
+    }
   };
   return (
     <View style={[styles.wrap, { backgroundColor: bg }]}>
@@ -37,7 +43,10 @@ export default function AccountGate({ status, until, onLogout, onExport, onDelet
       </Text>
       <Text style={styles.appeal}>Think this is a mistake? Email {APPEALS_EMAIL}.</Text>
       <Text style={styles.rights}>You can still download your data or permanently delete this account.</Text>
-      <TextInput
+      <CredentialForm busy={exporting} id="restricted-account-export" username={username} onSubmit={exportData} disabled={exporting || !exportPassword} style={styles.exportForm}>
+      <CredentialLabel htmlFor="current-password" style={styles.rights}>Current password for data export</CredentialLabel>
+      <CredentialInput
+        name="current-password"
         value={exportPassword}
         onChangeText={setExportPassword}
         placeholder="Current password for data export"
@@ -49,16 +58,18 @@ export default function AccountGate({ status, until, onLogout, onExport, onDelet
         textContentType="password"
         style={styles.passwordInput}
         accessibilityLabel="Current password for data export"
+        editable={!exporting}
       />
       <View style={styles.actions}>
-        <Pressable style={[styles.btn, { borderColor: accent }, (exporting || !exportPassword) && styles.btnDisabled]} onPress={exportData} disabled={exporting || !exportPassword}>
+        <CredentialSubmit style={[styles.btn, { borderColor: accent }, (exporting || !exportPassword) && styles.btnDisabled]} onPress={exportData} disabled={exporting || !exportPassword}>
           <Text style={[styles.btnTxt, { color: accent }]}>{exporting ? "Preparing data..." : "Download my data"}</Text>
-        </Pressable>
+        </CredentialSubmit>
         <Pressable style={[styles.btn, styles.deleteBtn]} onPress={onDelete}>
           <Text style={[styles.btnTxt, { color: "#fff" }]}>Delete account</Text>
         </Pressable>
       </View>
       {exportResult && <Text style={[styles.result, !exportResult.ok && styles.resultError]} accessibilityRole="alert">{exportResult.ok ? "Your Pit data file is ready." : exportResult.error}</Text>}
+      </CredentialForm>
       <Pressable style={[styles.btn, { borderColor: accent }]} onPress={onLogout}>
         <Text style={[styles.btnTxt, { color: accent }]}>Log out</Text>
       </Pressable>
@@ -74,6 +85,7 @@ const styles = StyleSheet.create({
   appeal: { color: "rgba(255,255,255,0.6)", fontSize: 13, marginTop: 4 },
   rights: { color: "rgba(255,255,255,0.78)", fontSize: 12.5, lineHeight: 18, textAlign: "center", marginTop: 6 },
   passwordInput: { width: "100%", maxWidth: 360, minHeight: 48, color: "#fff", borderWidth: 1, borderColor: "rgba(255,255,255,0.35)", borderRadius: 14, paddingHorizontal: 14 },
+  exportForm: { width: "100%", alignItems: "center", gap: 12 },
   actions: { flexDirection: "row", flexWrap: "wrap", justifyContent: "center", gap: 10 },
   btn: { borderWidth: 1, borderRadius: 999, paddingHorizontal: 28, paddingVertical: 12, marginTop: 12 },
   deleteBtn: { backgroundColor: colors.danger, borderColor: colors.danger },

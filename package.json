@@ -34,7 +34,7 @@
     "react-native-svg": "15.15.4",
     "react-native-web": "^0.21.2",
     "react-native-worklets": "0.10.1",
-    "sharp": "0.35.3"
+    "sharp": "0.35.4"
   },
   "scripts": {
     "start": "expo start",
@@ -73,6 +73,7 @@
     "verify:production-core": "node scripts/verify-production-core.mjs",
     "verify:production-media": "node scripts/verify-production-media.mjs",
     "verify:auth-browser": "node scripts/verify-auth-browser.mjs",
+    "verify:auth-real-server": "node scripts/verify-auth-real-server.mjs",
     "verify:production": "npm run verify:production-core && npm run verify:production-media && npm run verify:seo-catalog && npm run verify:seo",
     "inventory:seo": "node scripts/seo-inventory.mjs",
     "check:deploy": "npm run split:catalog && npm run test && npm run check:syntax && npm run check:architecture && npm run build:web",

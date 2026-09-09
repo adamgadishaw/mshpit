@@ -211,10 +211,12 @@ export function decideOwnerApproval(database, {
   decision,
   at = Date.now(),
   applyApprovedAction = () => {},
+  assertAuthorized = () => {},
 } = {}) {
   if (!ALLOWED_DECISIONS.has(decision)) return { ok: false, reason: "bad-decision" };
   const tokenHash = hash(token);
   return transaction(database, () => {
+    assertAuthorized();
     expireOwnerApprovalRequests(database, at);
     const request = database.prepare("SELECT * FROM owner_approval_requests WHERE token_hash=?").get(tokenHash);
     if (!request || request.status !== "pending" || request.expires_at <= at) {

@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { colors, displayFont, focusRing, mono, radius, shadow, space } from "../theme";
 import { useStore } from "../store";
 import Icon from "../components/Icon";
 import BrandMark from "../components/BrandMark";
 import SheetHeader from "../components/SheetHeader";
+import CredentialForm, { CredentialInput, CredentialLabel, CredentialSubmit } from "../components/credential-form";
 import LocationPicker from "../components/LocationPicker";
 import PrivacyScreen from "./PrivacyScreen";
 import TermsScreen from "./TermsScreen";
@@ -168,10 +169,10 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, initialMode
 
   const field = (key, label, value, change, options = {}) => (
     <View style={[styles.field, options.paired && styles.pairedField]} key={key}>
-      <Text style={styles.fieldLabel}>{label}</Text>
+      <CredentialLabel htmlFor={key} style={styles.fieldLabel}>{label}</CredentialLabel>
       <View style={[styles.inputShell, errorField === key && styles.invalidInput]}>
         {key === "handle" ? <Text style={styles.handlePrefix}>@</Text> : null}
-        <TextInput
+        <CredentialInput name={key}
           ref={(node) => { inputs.current[key] = node; }}
           style={styles.input} value={value} onChangeText={(next) => { change(next); setAccounts(null); clearError(); }}
           placeholder={options.placeholder} placeholderTextColor={colors.textFaint}
@@ -192,11 +193,24 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, initialMode
       {options.hint ? <Text style={styles.hint}>{options.hint}</Text> : null}
     </View>
   );
-  const primary = (label, onPress, loading = false) => <AuthPressable style={controlStyle(styles.primary, busy)} onPress={onPress} disabled={busy} accessibilityRole="button" accessibilityState={{ disabled: busy, busy: loading }}>
+  const primary = (label, onPress, loading = false, action) => {
+    const Control = action ? CredentialSubmit : AuthPressable;
+    return <Control name={action?.name} value={action?.value} style={controlStyle(styles.primary, busy)} onPress={onPress} disabled={busy} accessibilityRole="button" accessibilityState={{ disabled: busy, busy: loading }}>
     {loading ? <ActivityIndicator size="small" color="#1A1206" /> : null}
     <Text style={styles.primaryText}>{label}</Text>
     {!loading ? <Icon name="chevron-right" size={18} color="#1A1206" /> : null}
-  </AuthPressable>;
+  </Control>;
+  };
+  const submitForm = (action) => {
+    if (signupChoice || accounts) {
+      const choices = signupChoice?.accounts || accounts || [];
+      if (action?.name === "account" && choices.some(account => account.id === action.value)) return submit(action.value, { useExisting: true });
+      if (action?.name === "create-additional" && signupChoice?.canCreate) return submit(undefined, { createAdditional: true });
+      return;
+    }
+    if (mode === "forgot") return sentTo ? undefined : sendReset();
+    return submit();
+  };
   const headingText = signupChoice || accounts ? "Choose your account." : mode === "forgot" ? sentTo ? "Check your email." : "Back to your account."
     : signupMode ? step === 1 ? "Make it your night." : "Find your kind of show." : "Good to see you.";
   const subheading = signupChoice || accounts ? "Choose which profile to open." : mode === "forgot" ? "A reset link gets you back in."
@@ -209,7 +223,7 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, initialMode
       <View style={styles.ticket}>
         <View style={styles.brandRow}><BrandMark size={30} color={colors.amber} /><View><Text style={styles.wordmark}>MSHPIT</Text><Text style={styles.slogan}>LIVE MUSIC, REMEMBERED</Text></View></View>
         <View style={styles.trim}><View style={styles.amberTrim} /><View style={styles.magentaTrim} /><View style={styles.coolTrim} /></View>
-        <View style={styles.cardBody}>
+        <CredentialForm busy={busy} id={`pit-${mode}${addAccount ? "-additional" : ""}`} onSubmit={submitForm} disabled={busy} style={styles.cardBody}>
           {signupMode && !signupChoice ? <View style={styles.stepper} accessibilityRole="progressbar" accessibilityLabel="Account creation progress" accessibilityValue={progress} {...signupAriaProps(Platform.OS, {}, progress)}>
             <Text style={styles.stepKicker}>STEP {step} OF 2</Text><Text style={styles.stepName}>{step === 1 ? "Account / Music next" : "Music / Almost there"}</Text>
           </View> : null}
@@ -217,38 +231,41 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, initialMode
           <Text style={styles.subtitle}>{subheading}</Text>
           {!!error ? <Text ref={errorRef} tabIndex={-1} style={styles.error} accessibilityRole="alert" accessibilityLiveRegion="assertive" selectable>{error}</Text> : null}
 
-          {signupChoice ? <>
-            <Text style={styles.subtitle}>{signupChoice.canCreate ? "An account already uses this email and password. Continue with it, or create your second account. Nothing has been changed." : "These credentials already belong to an account. Choose a profile below. Nothing has been changed."}</Text>
-            {signupChoice.accounts.map((account) => <View key={account.id}>{primary(`Log in: ${account.name} · @${account.handle}`, () => void submit(account.id, { useExisting: true }))}</View>)}
-            {signupChoice.canCreate ? primary("Create a second account", () => void submit(undefined, { createAdditional: true })) : <Text style={styles.hint}>This email has reached its two-account limit.</Text>}
-            {primary("Use a different email", () => { setSignupChoice(null); setPassword(""); setStep(1); })}
-          </> : accounts ? <>
-            <Text style={styles.subtitle}>This password matches two accounts. Which one would you like to use?</Text>
-            {accounts.map((account) => <View key={account.id}>{primary(`${account.name} · @${account.handle}`, () => void submit(account.id, { useExisting: true }))}</View>)}
-            {primary("Use a different password", () => { setAccounts(null); setPassword(""); })}
-          </> : mode === "forgot" ? sentTo ? <>
-            <View style={styles.note}><Icon name="mail" size={19} color={colors.amber} /><Text style={styles.noteText} accessibilityLiveRegion="polite" role="status">If an account exists for {sentTo}, we’ve emailed a link to reset your password. It’s valid for 1 hour. Check spam if you don’t see it.</Text></View>
-            {primary("Back to log in", () => changeMode("login"))}
-          </> : <>
-            {field("email", "Account email", email, setEmail, { autoComplete: "email", textContentType: "emailAddress", returnKeyType: "send", onSubmit: sendReset })}
-            {primary(resetBusy ? "Sending…" : "Send reset link", sendReset, resetBusy)}
-            <AuthPressable style={controlStyle(styles.textButton, busy)} onPress={() => changeMode("login")} disabled={busy} accessibilityRole="button"><Text style={styles.link}>Back to log in</Text></AuthPressable>
-          </> : <>
-            {(!signupMode || step === 1) ? <>
+          {/* Keep credentials associated through music/account selection; never persist them. */}
+          {mode !== "forgot" ? <View style={[styles.credentials, (signupChoice || accounts || (signupMode && step === 2)) && styles.hiddenCredentials]}>
               {signupMode && addAccount ? <>{field("currentPassword", "Current account password", currentPassword, setCurrentPassword, { maxLength: 100, autoComplete: "current-password" })}<Text style={styles.hint}>Up to two accounts can use a verified email. Use the same password for a choice at login, or different passwords to sign straight into the matching account.</Text></> : null}
               {signupMode ? <View style={styles.fieldPair}>
                 {field("name", "Name", name, setName, { paired: true, maxLength: 40, autoComplete: "name", textContentType: "name", onSubmit: () => inputs.current.handle?.focus?.() })}
-                {field("handle", "Username", handle, (value) => setHandle(cleanHandle(value)), { paired: true, maxLength: 20, autoComplete: "username", textContentType: "username", onSubmit: () => inputs.current.email?.focus?.() })}
+                {field("handle", "Username", handle, (value) => setHandle(cleanHandle(value)), { paired: true, maxLength: 20, autoComplete: "off", onSubmit: () => inputs.current.email?.focus?.() })}
               </View> : null}
               {signupMode ? <View style={styles.availability} accessibilityLiveRegion="polite">
                 <Text style={[styles.hint, handleStatus.tone === "good" && styles.availableText, handleStatus.tone === "error" && styles.errorText]}>{handleStatus.message}</Text>
                 {availability.resource.status === "error" ? <AuthPressable onPress={availability.retry} style={controlStyle(styles.retry, busy)} disabled={busy} accessibilityRole="button" accessibilityLabel="Check username again" accessibilityState={{ disabled: busy }}><Text style={styles.link}>Try again</Text></AuthPressable> : null}
               </View> : null}
-              {field("email", "Email", email, setEmail, { autoComplete: "email", textContentType: "emailAddress", onSubmit: () => inputs.current.password?.focus?.() })}
-              {field("password", "Password", password, setPassword, { maxLength: 100, autoComplete: signupMode ? "new-password" : "current-password", textContentType: signupMode ? "newPassword" : "password", returnKeyType: signupMode ? "next" : "go", onSubmit: submit, hint: signupMode ? "8+ characters, with a letter and a number." : null })}
+              {field("email", "Email", email, setEmail, { autoComplete: "username", textContentType: "emailAddress", onSubmit: () => inputs.current.password?.focus?.() })}
+              {field("password", "Password", password, setPassword, { maxLength: 100, autoComplete: signupMode ? "new-password" : "current-password", textContentType: signupMode ? "newPassword" : "password", returnKeyType: signupMode ? "next" : "go", hint: signupMode ? "8+ characters, with a letter and a number." : null })}
               {signupMode ? <View style={styles.nextStep}><Icon name="you" size={18} color={colors.amber} /><Text style={styles.noteText}>Explore as soon as you sign up. Add a profile photo and banner whenever you’re ready, after email confirmation.</Text></View>
                 : <AuthPressable style={controlStyle(styles.forgotButton, busy)} onPress={() => changeMode("forgot")} disabled={busy} accessibilityRole="button"><Text style={styles.link}>Forgot password?</Text></AuthPressable>}
-            </> : <>
+
+          </View> : null}
+          {signupChoice ? <>
+            <Text style={styles.subtitle}>{signupChoice.canCreate ? "An account already uses this email and password. Continue with it, or create your second account. Nothing has been changed." : "These credentials already belong to an account. Choose a profile below. Nothing has been changed."}</Text>
+            {signupChoice.accounts.map((account) => <View key={account.id}>{primary(`Log in: ${account.name} · @${account.handle}`, null, false, { name: "account", value: account.id })}</View>)}
+            {signupChoice.canCreate ? primary("Create a second account", null, false, { name: "create-additional" }) : <Text style={styles.hint}>This email has reached its two-account limit.</Text>}
+            {primary("Use a different email", () => { setSignupChoice(null); setPassword(""); setStep(1); })}
+          </> : accounts ? <>
+            <Text style={styles.subtitle}>This password matches two accounts. Which one would you like to use?</Text>
+            {accounts.map((account) => <View key={account.id}>{primary(`${account.name} · @${account.handle}`, null, false, { name: "account", value: account.id })}</View>)}
+            {primary("Use a different password", () => { setAccounts(null); setPassword(""); })}
+          </> : mode === "forgot" ? sentTo ? <>
+            <View style={styles.note}><Icon name="mail" size={19} color={colors.amber} /><Text style={styles.noteText} accessibilityLiveRegion="polite" role="status">If an account exists for {sentTo}, we’ve emailed a link to reset your password. It’s valid for 1 hour. Check spam if you don’t see it.</Text></View>
+            {primary("Back to log in", () => changeMode("login"))}
+          </> : <>
+            {field("email", "Account email", email, setEmail, { autoComplete: "username", textContentType: "emailAddress", returnKeyType: "send" })}
+            {primary(resetBusy ? "Sending…" : "Send reset link", sendReset, resetBusy, { name: "reset" })}
+            <AuthPressable style={controlStyle(styles.textButton, busy)} onPress={() => changeMode("login")} disabled={busy} accessibilityRole="button"><Text style={styles.link}>Back to log in</Text></AuthPressable>
+          </> : <>
+            {signupMode && step === 2 ? <>
               <View ref={(node) => { inputs.current.genres = node; }} tabIndex={-1} style={styles.section}>
                 <View style={styles.sectionHeading}><Text style={styles.fieldLabel}>Music you like</Text><Text style={styles.count}>{genres.length}/3</Text></View>
                 <Text style={styles.hint}>Choose 1–3 genres for your first recommendations.</Text>
@@ -278,12 +295,12 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, initialMode
                 <AuthPressable style={controlStyle(styles.retry, busy)} onPress={() => setAnalyticsDetails(!analyticsDetails)} disabled={busy} accessibilityRole="button" accessibilityState={{ expanded: analyticsDetails }} accessibilityLabel="What usage data is shared"><Text style={styles.link}>{analyticsDetails ? "Hide details" : "What is shared?"}</Text></AuthPressable>
                 {analyticsDetails ? <Text style={styles.hint}>We record limited usage events linked to your account. They do not include the contents of authored posts or reviews, search terms, messages, or uploaded media. IP addresses are not stored with these analytics events. Change your choice any time in Settings; opting out deletes your raw product events.</Text> : null}
               </View>
-            </>}
-            {primary(authBusy ? signupMode ? "Creating account…" : "Logging in…" : signupMode ? step === 1 ? "Continue to music" : "Create account" : "Log in", submit, authBusy)}
+            </> : null}
+            {primary(authBusy ? signupMode ? "Creating account…" : "Logging in…" : signupMode ? step === 1 ? "Continue to music" : "Create account" : "Log in", submit, authBusy, { name: "continue" })}
             {signupMode && step === 2 ? <AuthPressable style={controlStyle(styles.textButton, busy)} onPress={() => { clearError(); setStep(1); }} disabled={busy} accessibilityRole="button"><Text style={styles.link}>Back to account details</Text></AuthPressable> : null}
             <AuthPressable style={controlStyle(styles.textButton, busy)} onPress={() => changeMode(signupMode ? "login" : "signup")} disabled={busy} accessibilityRole="button"><Text style={styles.link}>{signupMode ? "Have an account? Log in" : "No account? Sign up"}</Text></AuthPressable>
           </>}
-        </View>
+        </CredentialForm>
         {mode !== "forgot" ? <View style={styles.ticketFooter}><Icon name="shield" size={16} color={colors.amber} /><Text style={styles.footerText}>Artist? Start with a personal account, then choose Claim artist profile. Every claim is reviewed.</Text></View> : null}
       </View>
     </ScrollView>
@@ -291,6 +308,8 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, initialMode
 }
 
 const styles = StyleSheet.create({
+  credentials: { gap: 10 },
+  hiddenCredentials: { display: "none" },
   wrap: { flex: 1, backgroundColor: colors.bg },
   content: { flexGrow: 1, padding: space(4), alignItems: "center" },
   ticket: { width: "100%", maxWidth: 640, minWidth: 0, borderRadius: radius.lg, borderCurve: "continuous", borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface, overflow: "hidden", ...shadow.card },

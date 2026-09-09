@@ -139,7 +139,7 @@ test("only the exact Owner can review and decide, with password reauthentication
   );
 });
 
-test("the Owner cannot be role-targeted, restricted, or self-deleted through the API", () => {
+test("the Owner cannot be role-targeted, restricted, or self-deleted through the API", async () => {
   assert.throws(
     () => routes["POST /api/admin/users/:id/role"](context(administrator, {
       params: { id: owner.id }, body: { role: "fan" },
@@ -152,7 +152,7 @@ test("the Owner cannot be role-targeted, restricted, or self-deleted through the
     })),
     (error) => error?.code === "FORBIDDEN",
   );
-  assert.throws(
+  await assert.rejects(
     () => routes["DELETE /api/me"](context(owner, { body: { password: ownerPassword } })),
     (error) => error?.code === "FORBIDDEN",
   );

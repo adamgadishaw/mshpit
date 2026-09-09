@@ -160,7 +160,8 @@ test("component preserves semantic links, compact bounds and explicit network st
   assert.match(component, /openTicketLink\(ticketUrl/);
   assert.match(component, /coverage\?\.status === "disabled"/);
   assert.match(component, /minHeight: 44/);
-  assert.match(component, /text\(hasSchedule \? "stale" : "failed"\)/);
+  assert.match(component, /text\(failureCopy\)/);
+  assert.match(component, /hasSchedule \? "stale" : "failed"/);
   assert.doesNotMatch(component, /\bfetch\s*\(|from .*Store/);
   assert.match(hook, /useSyncExternalStore/);
   assert.match(hook, /\[artistKey, accountId, enabled, pageSize, publicPreview\]/);

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { ActivityIndicator, Platform, Pressable, Text, StyleSheet, View } from "react-native";
 import { colors, displayFont, focusRing, radius, shadow } from "../theme";
 import Icon from "./Icon";
+import { CredentialSubmit } from "./credential-form";
 
 // Cleaner, slightly 3D buttons: a raised face with a darker bottom edge + soft
 // glow that presses in on tap. variant: primary | secondary | danger.
@@ -16,13 +17,15 @@ export default function Button({
   accessibilityHint,
   style,
   small,
+  submit = false,
 }) {
   const [hovered, setHovered] = useState(false);
   const [focused, setFocused] = useState(false);
   const v = VARIANTS[variant];
   const blocked = !!disabled || loading;
+  const Control = submit ? CredentialSubmit : Pressable;
   return (
-    <Pressable
+    <Control
       onPress={blocked ? null : onPress}
       onHoverIn={() => setHovered(true)}
       onHoverOut={() => setHovered(false)}
@@ -49,7 +52,7 @@ export default function Button({
         {loading ? <ActivityIndicator size="small" color={v.fg} /> : icon ? <Icon name={icon} size={small ? 15 : 17} color={v.fg} strokeWidth={2.4} /> : null}
         <Text style={[styles.txt, small && styles.txtSmall, { color: v.fg }]}>{title}</Text>
       </View>
-    </Pressable>
+    </Control>
   );
 }
 

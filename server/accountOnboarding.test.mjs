@@ -50,13 +50,13 @@ function expectApiError(run, { status, code }) {
     && error.code === code);
 }
 
-test("only canonical signup marks a new account as onboarding-incomplete", () => {
+test("only canonical signup marks a new account as onboarding-incomplete", async () => {
   const legacy = addUser();
   assert.equal(legacy.onboarding_version, null);
 
   const email = `onboarding-signup-${Date.now()}@example.test`;
   let issuedSession = false;
-  const response = routes["POST /api/signup"]({
+  const response = (await routes["POST /api/signup"]({
     body: {
       name: "New Onboarding Member",
       email,
@@ -69,7 +69,7 @@ test("only canonical signup marks a new account as onboarding-incomplete", () =>
     ip: "onboarding-signup",
     ua: "test",
     setSession() { issuedSession = true; },
-  });
+  }));
 
   assert.equal(response.created, true);
   assert.equal(response.verificationRequired, true);
@@ -81,7 +81,7 @@ test("only canonical signup marks a new account as onboarding-incomplete", () =>
 
   db.prepare("UPDATE users SET onboarding_version=1 WHERE email=?").run(email);
   issuedSession = false;
-  const retry = routes["POST /api/signup"]({
+  const retry = (await routes["POST /api/signup"]({
     body: {
       name: "New Onboarding Member",
       email,
@@ -94,7 +94,7 @@ test("only canonical signup marks a new account as onboarding-incomplete", () =>
     ip: "onboarding-signup-existing",
     ua: "test",
     setSession() { issuedSession = true; },
-  });
+  }));
   assert.equal(retry.needsAccountChoice, true, "matching credentials require an explicit account choice");
   assert.equal(retry.accounts[0].id, response.user.id);
   assert.equal(retry.cancelToken, undefined, "an existing account gets no new cancellation capability");

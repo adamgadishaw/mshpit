@@ -46,14 +46,14 @@ function ctx(user, suffix, body = {}, params = {}) {
   return { user, ip: `content-safety-${suffix}`, body, params, query: {} };
 }
 
-function rejected(run, label) {
-  assert.throws(run, (error) => error instanceof ApiError
+async function rejected(run, label) {
+  await assert.rejects(async () => run(), (error) => error instanceof ApiError
     && error.status === 422
     && error.code === "CONTENT_REJECTED"
     && !error.message.toLowerCase().includes("white power"), label);
 }
 
-test("every public or social authored write rejects unsafe text before persistence", () => {
+test("every public or social authored write rejects unsafe text before persistence", async () => {
   const validTrack = { title: "Safe track", artist: "Safe artist", url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ" };
   const unsafeTrack = { ...validTrack, title: "white power" };
 
@@ -112,7 +112,7 @@ test("every public or social authored write rejects unsafe text before persisten
     }))],
   ];
 
-  for (const [label, run] of cases) rejected(run, label);
+  for (const [label, run] of cases) await rejected(run, label);
 
   assert.equal(db.prepare("SELECT COUNT(*) count FROM users").get().count, 3);
   assert.equal(db.prepare("SELECT COUNT(*) count FROM posts").get().count, 1);

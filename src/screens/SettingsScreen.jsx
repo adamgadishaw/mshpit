@@ -1,6 +1,6 @@
 import { useState } from "react";
 import Constants from "expo-constants";
-import { Linking, View, Text, TextInput, StyleSheet, ScrollView, Pressable } from "react-native";
+import { Linking, View, Text, StyleSheet, ScrollView, Pressable } from "react-native";
 import { colors, focusRing, radius, mono, THEMES, themeKey, space } from "../theme";
 import { isMod, useStore } from "../store";
 import SheetHeader from "../components/SheetHeader";
@@ -13,10 +13,11 @@ import { visibleThemeChoices } from "../domain/themeChoices.mjs";
 import AccountPasswordForm from "../features/signupOnboarding/AccountPasswordForm";
 import AuthScreen from "./AuthScreen";
 import AccountSwitcher from "../features/signupOnboarding/AccountSwitcher";
+import CredentialForm, { CredentialInput, CredentialLabel, CredentialSubmit } from "../components/credential-form";
 
 const versionLabel = Constants.expoConfig?.version || "Unavailable";
 
-function Row({ icon, label, sub, onPress, danger, right, disabled = false, accessibilityRole, accessibilityState }) {
+function Row({ icon, label, sub, onPress, danger, right, disabled = false, accessibilityRole, accessibilityState, submit = false }) {
   const body = (
     <>
       <View style={[styles.rowIcon, danger && { borderColor: colors.danger }]}>
@@ -34,8 +35,9 @@ function Row({ icon, label, sub, onPress, danger, right, disabled = false, acces
     return <View style={styles.row}>{body}</View>;
   }
 
+  const Control = submit ? CredentialSubmit : Pressable;
   return (
-    <Pressable
+    <Control
       style={({ focused }) => [styles.row, disabled && styles.rowDisabled, focused && focusRing]}
       onPress={onPress}
       disabled={disabled}
@@ -43,7 +45,7 @@ function Row({ icon, label, sub, onPress, danger, right, disabled = false, acces
       accessibilityState={{ ...accessibilityState, disabled }}
     >
       {body}
-    </Pressable>
+    </Control>
   );
 }
 
@@ -90,13 +92,18 @@ export default function SettingsScreen({ onClose, onManageProfile, onFinishSetup
   const publicProfileDetail = manageProfile.destination === "artistHub" ? session?.artistName : `@${session?.handle || ""}`;
   const themeChoices = visibleThemeChoices(THEMES, { expanded: showMoreThemes, selectedKey: themeKey });
   const doExport = async () => {
-    if (exporting) return;
+    if (exporting || !exportPassword) return;
     setExporting(true);
     setExportResult(null);
-    const result = await exportMyData(exportPassword);
-    setExportResult(result);
-    if (result?.ok) setExportPassword("");
-    setExporting(false);
+    try {
+      const result = await exportMyData(exportPassword);
+      setExportResult(result || { ok: false, error: "Pit could not prepare your data file." });
+      if (result?.ok) setExportPassword("");
+    } catch {
+      setExportResult({ ok: false, error: "Pit could not prepare your data file." });
+    } finally {
+      setExporting(false);
+    }
   };
   const toggleAnalytics = async () => {
     if (!session || savingAnalytics) return;
@@ -308,7 +315,10 @@ export default function SettingsScreen({ onClose, onManageProfile, onFinishSetup
                 {announcementResult}
               </Text>
             )}
-            <TextInput
+            <CredentialForm busy={exporting} id="settings-data-export" username={session?.email} onSubmit={doExport} disabled={exporting || !exportPassword}>
+            <CredentialLabel htmlFor="current-password" style={styles.hint}>Current password for data export</CredentialLabel>
+            <CredentialInput
+              name="current-password"
               value={exportPassword}
               onChangeText={setExportPassword}
               placeholder="Current password for data export"
@@ -320,8 +330,10 @@ export default function SettingsScreen({ onClose, onManageProfile, onFinishSetup
               textContentType="password"
               style={styles.passwordInput}
               accessibilityLabel="Current password for data export"
+              editable={!exporting}
             />
             <Row
+              submit
               icon="share"
               label={exporting ? "Preparing your backup..." : "Download your data"}
               sub="A portable backup of your profile, reviews, posts, messages, and activity (JSON)"
@@ -334,6 +346,7 @@ export default function SettingsScreen({ onClose, onManageProfile, onFinishSetup
                 {exportResult.ok ? "Your Pit data file is ready." : exportResult.error}
               </Text>
             )}
+            </CredentialForm>
             <Text style={[styles.hint, { marginTop: 6 }]}>BLOCKED ACCOUNTS{blocked.length ? ` · ${blocked.length}` : ""}</Text>
             {blockedDirectoryStatus === "loading" && blocked.length === 0 && <Text style={styles.blockedEmpty}>Loading blocked accounts...</Text>}
             {blockedDirectoryStatus === "error" && (

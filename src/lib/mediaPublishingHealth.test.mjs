@@ -156,3 +156,88 @@ test("one cancelled consumer does not duplicate or cancel a shared request still
   assert.deepEqual(await retained, { photos: true, videos: true, sourceTypes: ["video/mp4", "video/quicktime"] });
   assert.equal(requestCount, 1);
 });
+
+test("temporary photo-readiness failure recovers through bounded rechecks without lying about capability", async () => {
+  let requests = 0, clock = 0; const waits = [];
+  const result = await loadMediaPublishingCapabilities({
+    apiCall: async () => ++requests < 3 ? { capabilities: { mediaPublishing: { photos: false, videos: false } } } : healthyPipeline(),
+    now: () => clock, recovery: { wait: async (ms) => { waits.push(ms); clock += ms; } }, force: true,
+  });
+  assert.deepEqual(result, { photos: true, videos: true, sourceTypes: ["video/mp4", "video/quicktime"] });
+  assert.equal(requests, 3); assert.deepEqual(waits, [2_000, 5_000]);
+});
+
+test("exhausted readiness recovery stays unavailable and its negative cache expires quickly", async () => {
+  let requests = 0, clock = 0;
+  const options = { apiCall: async () => { requests += 1; return { capabilities: { mediaPublishing: { photos: false, videos: false } } }; },
+    now: () => clock, recovery: { wait: async (ms) => { clock += ms; } } };
+  assert.deepEqual(await loadMediaPublishingCapabilities(options), { photos: false, videos: false, sourceTypes: [] });
+  assert.equal(requests, 3);
+  await loadMediaPublishingCapabilities(options); assert.equal(requests, 3);
+  clock += 2_000;
+  assert.equal((await loadMediaPublishingCapabilities(options)).photos, false); assert.equal(requests, 6);
+});
+
+test("typed network health failure retries but auth and unknown failures do not", async () => {
+  let calls = 0;
+  const recovered = await loadMediaPublishingCapabilities({ apiCall: async () => {
+    if (++calls === 1) throw Object.assign(new Error("Offline"), { code: "PIT-NET-001", status: 0 }); return healthyPipeline();
+  }, recovery: { wait: async () => {} } });
+  assert.equal(recovered.photos, true); assert.equal(calls, 2);
+  for (const failure of [Object.assign(new Error("Expired"), { status: 401 }), new TypeError("Invalid adapter")]) {
+    calls = 0;
+    await assert.rejects(loadMediaPublishingCapabilities({ apiCall: async () => { calls += 1; throw failure; },
+      recovery: { wait: async () => { throw new Error("Must not retry"); } },
+    }), (error) => error === failure);
+    assert.equal(calls, 1);
+  }
+});
+
+test("force and selection waiters sharing one check apply their own stale-video policy", async () => {
+  let clock = 0, calls = 0, release;
+  const apiCall = async () => {
+    if (++calls === 1) return healthyPipeline();
+    return new Promise((done) => { release = done; });
+  };
+  await loadMediaPublishingCapabilities({ apiCall, now: () => clock });
+  clock += MEDIA_PUBLISHING_CAPABILITIES_TTL_MS;
+  const selection = loadMediaPublishingCapabilities({ apiCall, now: () => clock });
+  const forced = loadMediaPublishingCapabilities({ apiCall, now: () => clock, force: true });
+  await Promise.resolve(); release({ capabilities: { mediaPublishing: { photos: true, videos: false } } });
+  assert.equal((await selection).videos, true, "Selection retains bounded proven capability");
+  assert.equal((await forced).videos, false, "Forced consumer must see the authoritative response");
+  assert.equal(calls, 2);
+});
+
+test("the last waiter cancelling a non-aborting transport immediately permits a fresh check", async () => {
+  const controller = new AbortController(); let calls = 0, release;
+  const apiCall = async () => {
+    if (++calls === 1) return new Promise((done) => { release = done; });
+    return healthyPipeline();
+  };
+  const old = loadMediaPublishingCapabilities({ apiCall, signal: controller.signal });
+  await Promise.resolve(); controller.abort();
+  const current = loadMediaPublishingCapabilities({ apiCall });
+  await assert.rejects(old, { name: "AbortError" });
+  assert.equal((await current).videos, true);
+  release({ capabilities: { mediaPublishing: { photos: false, videos: false } } });
+  await new Promise((done) => setImmediate(done));
+  assert.equal((await loadMediaPublishingCapabilities({ apiCall })).videos, true);
+  assert.equal(calls, 2, "Late aborted response cannot overwrite healthy cache or hold a stale flight");
+});
+
+test("health backoff cancellation cannot keep scheduling after its consumer has left", async () => {
+  const controller = new AbortController(); let calls = 0;
+  await assert.rejects(loadMediaPublishingCapabilities({ signal: controller.signal,
+    apiCall: async () => { calls += 1; throw Object.assign(new Error("Offline"), { status: 503 }); },
+    recovery: { wait: async () => { controller.abort(); } },
+  }), { name: "AbortError" });
+  assert.equal(calls, 1);
+});
+
+test("a stalled health adapter settles on its independent deadline and does not cache a false success", async () => {
+  let calls = 0;
+  const apiCall = async () => { calls += 1; return new Promise(() => {}); };
+  await assert.rejects(loadMediaPublishingCapabilities({ apiCall, recovery: { requestTimeoutMs: 10, totalTimeoutMs: 20 } }), { code: "PIT-NET-002" });
+  assert.equal(calls, 1);
+});

@@ -9,7 +9,7 @@ process.env.PIT_DATA_DIR = directory;
 process.env.PIT_ALLOW_EMPTY_DB_BOOTSTRAP = "true";
 delete process.env.RESEND_API_KEY;
 delete process.env.MAIL_FROM;
-const { db, q } = await import("./db.js");
+const { db, q, artistStmts } = await import("./db.js");
 const { createSession, destroySession, getSession, hashPassword } = await import("./auth.js");
 const { readAuthorizedRequest } = await import("./requestAuthorization.js");
 const { routes } = await import("./api.js");
@@ -25,6 +25,33 @@ function member() {
 const body = { kind: "status", review: "Authorized text" };
 const request = (session, options = {}) => readAuthorizedRequest({
   token: session.token, method: "POST", pathname: "/api/posts", readBody: () => body, ...options,
+});
+
+test("ratings, follows, and messages reject stale authority between body authorization and route dispatch", async () => {
+  for (const mode of ["logout", "expiry", "unverified", "banned"]) {
+    for (const action of ["rating", "follow", "message"]) {
+      const user = member();
+      const other = member();
+      db.prepare("UPDATE users SET age_band='18_plus',dm_policy='people_i_follow' WHERE id IN (?,?)").run(user.id, other.id);
+      db.prepare("INSERT INTO follows (follower_id,followee_id) VALUES (?,?)").run(other.id, user.id);
+      const [route, pathname, payload, params] = action === "rating"
+        ? ["POST /api/ratings", "/api/ratings", { kind: "album", ref: "Guarded Album", rating: 4 }, {}]
+        : action === "follow"
+          ? ["POST /api/users/:id/follow", `/api/users/${other.id}/follow`, { following: true }, { id: other.id }]
+          : ["POST /api/dms/:otherId", `/api/dms/${other.id}`, { text: "Authorized fixture message" }, { otherId: other.id }];
+      const session = createSession(user.id);
+      const authorized = await request(session, { pathname, readBody: () => payload });
+      if (mode === "logout") destroySession(session.token);
+      if (mode === "expiry") db.prepare("UPDATE sessions SET expires_at=0 WHERE user_id=?").run(user.id);
+      if (mode === "unverified") db.prepare("UPDATE users SET email_verified_at=0 WHERE id=?").run(user.id);
+      if (mode === "banned") db.prepare("UPDATE users SET is_banned=1 WHERE id=?").run(user.id);
+      assert.throws(() => routes[route]({ ...authorized, params, ip: user.id }),
+        (error) => ["AUTH_REQUIRED", "EMAIL_VERIFICATION_REQUIRED", "FORBIDDEN"].includes(error.code), `${mode}/${action}`);
+      assert.equal(db.prepare("SELECT COUNT(*) n FROM ratings WHERE user_id=?").get(user.id).n, 0);
+      assert.equal(db.prepare("SELECT COUNT(*) n FROM follows WHERE follower_id=?").get(user.id).n, 0);
+      assert.equal(db.prepare("SELECT COUNT(*) n FROM dms WHERE from_id=?").get(user.id).n, 0);
+    }
+  }
 });
 
 test("logout or expiry while reading JSON cannot publish using the earlier session", async () => {
@@ -127,4 +154,50 @@ test("profile and venue publication transactions refuse a session revoked after 
     assert.equal(db.prepare("SELECT COUNT(*) n FROM venue_reviews WHERE user_id=?").get(user.id).n, 0);
     assert.equal(db.isTransaction, false);
   }
+});
+
+test("provider-backed artist writes revalidate the original session under their writer transaction", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    for (const [mode, privileged] of [["logout", false], ["unverified", false], ["demotion", true], ["expiry", true]]) {
+      const user = member();
+      if (privileged) db.prepare("UPDATE users SET role='admin' WHERE id=?").run(user.id);
+      const session = createSession(user.id);
+      const name = `Guarded Artist ${sequence}`;
+      const mbid = `77777777-7777-4777-8777-${String(sequence).padStart(12, "0")}`;
+      const pathname = privileged ? "/api/admin/artists/enrich" : "/api/artists/resolve";
+      const payload = privileged ? { names: [name] } : { name, mbid };
+      const authorized = await request(session, { pathname, readBody: () => payload });
+      let changed = false;
+      let guardedWrite = false;
+      globalThis.fetch = async (url) => {
+        if (!changed) {
+          changed = true;
+          if (mode === "logout") destroySession(session.token);
+          if (mode === "unverified") db.prepare("UPDATE users SET email_verified_at=0 WHERE id=?").run(user.id);
+          if (mode === "demotion") db.prepare("UPDATE users SET role='fan' WHERE id=?").run(user.id);
+          if (mode === "expiry") db.prepare("UPDATE sessions SET expires_at=0 WHERE user_id=?").run(user.id);
+        }
+        if (String(url).includes("musicbrainz.org/ws/2/artist")) {
+          return new Response(JSON.stringify({ artists: [{ id: mbid, name, score: 100 }] }));
+        }
+        if (String(url).includes("api.deezer.com/search/artist")) {
+          return new Response(JSON.stringify({ data: [{ id: 9876543, name, nb_fan: 1000 }] }));
+        }
+        if (String(url).includes("api.deezer.com/artist/9876543/top")) {
+          return new Response(JSON.stringify({ data: [] }));
+        }
+        throw new Error("Unexpected fixture provider request");
+      };
+      await assert.rejects(routes[`POST ${pathname}`]({ ...authorized, ip: `artist-${user.id}`,
+        assertCurrentSession() {
+          guardedWrite ||= db.isTransaction;
+          return authorized.assertCurrentSession();
+        } }), (error) => ["AUTH_REQUIRED", "EMAIL_VERIFICATION_REQUIRED"].includes(error.code), mode);
+      assert.equal(changed, true, "the real provider boundary must have yielded");
+      assert.equal(guardedWrite, true, "authorization must be checked inside the database write transaction");
+      assert.equal(artistStmts.byNorm.get(name.toLowerCase()), undefined, "no catalog write after revoked authority");
+      assert.equal(db.isTransaction, false);
+    }
+  } finally { globalThis.fetch = originalFetch; }
 });

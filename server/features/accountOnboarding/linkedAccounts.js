@@ -132,20 +132,25 @@ export function createLinkedAccounts({ database, ApiError, requireSessionUser, l
   // checked inside it so concurrent credential changes cannot mint a link.
   // Pending signup may be linked, but no sibling metadata or switching becomes
   // available until BOTH accounts are email-verified.
-  function proveAndGrant({ userId, password, token, rejectInvalidPassword = false }) {
-    const hash = tokenHash(token);
-    const user = userById.get(userId);
-    const validPassword = typeof password === "string" && password.length > 0 && password.length <= 100
-      && usable(user) && verifyPassword(password, user.pass_hash);
-    if (!validPassword) {
-      if (rejectInvalidPassword) throw new ApiError(401, "Your password doesn't match this account.", "AUTH_INVALID");
-      return { connected: false };
+  async function matchingPasswordUsers({ email, password }) {
+    const candidates = database.prepare("SELECT * FROM users WHERE lower(trim(email))=? ORDER BY created_at,id LIMIT 2")
+      .all(normalizedEmail(email));
+    const matching = [];
+    if (typeof password !== "string" || !password || password.length > 100) return matching;
+    for (const user of candidates) {
+      if (await verifyPassword(password, user.pass_hash)) matching.push(user);
     }
-    const other = database.prepare(`SELECT * FROM users
-      WHERE lower(trim(email))=? AND id<>? ORDER BY created_at,id LIMIT 1`)
-      .get(normalizedEmail(user.email), user.id);
-    if (!usable(other) || !verifyPassword(password, other.pass_hash)) return { connected: false };
-    return atomicWrite(() => {
+    return matching;
+  }
+
+  // These proofs are server-local snapshots from password verification, never
+  // request data. No expensive work follows issuance of a replacement session.
+  function grantVerifiedAccounts({ userId, users, token }) {
+    const hash = tokenHash(token);
+    const user = users.find((entry) => entry.id === userId);
+    const other = users.find((entry) => entry.id !== userId && normalizedEmail(entry.email) === normalizedEmail(user?.email));
+    if (!usable(user) || !usable(other)) return { connected: false };
+    const grant = () => {
       const freshUser = userById.get(user.id);
       const freshOther = userById.get(other.id);
       const at = now();
@@ -165,7 +170,18 @@ export function createLinkedAccounts({ database, ApiError, requireSessionUser, l
       addPair.run(a, b, at);
       addGrant.run(hash, a, b, authenticatedAt, expiresAt);
       return { connected: !!freshUser.email_verified_at && !!freshOther.email_verified_at };
-    });
+    };
+    return database.isTransaction ? grant() : atomicWrite(grant);
+  }
+
+  async function proveAndGrant({ userId, password, token, rejectInvalidPassword = false }) {
+    const user = userById.get(userId);
+    const users = user ? await matchingPasswordUsers({ email: user.email, password }) : [];
+    if (!usable(user) || !users.some((entry) => entry.id === userId && entry.pass_hash === user.pass_hash)) {
+      if (rejectInvalidPassword) throw new ApiError(401, "Your password doesn't match this account.", "AUTH_INVALID");
+      return { connected: false };
+    }
+    return grantVerifiedAccounts({ userId, users, token });
   }
 
   const routes = {
@@ -173,12 +189,12 @@ export function createLinkedAccounts({ database, ApiError, requireSessionUser, l
       ctx.setHeader?.("Cache-Control", "no-store");
       return accountList(requireActor(ctx));
     },
-    "POST /api/me/accounts/connect": (ctx) => {
+    "POST /api/me/accounts/connect": async (ctx) => {
       ctx.setHeader?.("Cache-Control", "no-store");
       const { user } = requireActor(ctx);
       limit(ctx, "connect-accounts", 5, 15 * 60 * 1000);
       if (!user.email_verified_at) throw new ApiError(403, "Confirm your email before linking accounts.", "EMAIL_VERIFICATION_REQUIRED");
-      proveAndGrant({ userId: user.id, password: ctx.body?.password, token: ctx.token, rejectInvalidPassword: true });
+      await proveAndGrant({ userId: user.id, password: ctx.body?.password, token: ctx.token, rejectInvalidPassword: true });
       return accountList(requireActor(ctx));
     },
     "POST /api/me/accounts/switch": (ctx) => {
@@ -218,5 +234,5 @@ export function createLinkedAccounts({ database, ApiError, requireSessionUser, l
       return result.response;
     },
   };
-  return { routes, proveAndGrant };
+  return { routes, proveAndGrant, matchingPasswordUsers, grantVerifiedAccounts };
 }

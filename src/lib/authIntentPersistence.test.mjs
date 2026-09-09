@@ -125,3 +125,42 @@ test("stale signed-in cookie cannot suppress coordinator revocation or its reloa
   assert.equal((await reloaded.reconcile()).kind, "revoked");
   assert.equal(revocations, 2);
 });
+
+for (const rejected of ["cookie", "storage", "both", "neither"]) {
+  test(`saturated ordering cannot prevent logout when ${rejected} durable writes reject`, async () => {
+    let stored = intent("old", "signed-in", Number.MAX_SAFE_INTEGER);
+    let cookie = { ...stored };
+    const options = {
+      readStored: () => stored, readCookie: () => cookie,
+      writeStored: value => { if (!["storage", "both"].includes(rejected)) stored = value; },
+      writeCookie: value => { if (!["cookie", "both"].includes(rejected)) cookie = value; },
+    };
+    let revocations = 0;
+    const persistence = createAuthIntentPersistence(options);
+    const transitions = createAuthTransitions({ ...persistence, revoke: async () => { revocations++; }, nonce: () => "logout" });
+    assert.equal((await transitions.signOut()).kind, "revoked");
+    assert.equal(revocations, 1);
+    assert.equal(transitions.blocked(), true);
+    assert.equal(persistence.read().order, Number.MAX_SAFE_INTEGER);
+    if (rejected !== "both") assert.equal(createAuthIntentPersistence(options).read().phase, "signed-out");
+  });
+}
+
+test("different-revision equal-order blocking intent beats signed-in regardless of storage location", () => {
+  for (const phase of ["pending", "signed-out"]) {
+    const blocked = intent("blocked", phase, 25), signedIn = intent("older", "signed-in", 25);
+    for (const [stored, cookie] of [[blocked, signedIn], [signedIn, blocked]]) {
+      assert.deepEqual(createAuthIntentPersistence({ readStored: () => stored, readCookie: () => cookie }).read(), blocked);
+    }
+  }
+});
+
+test("successful deliberate login can replace saturated intent when durable writes succeed", async () => {
+  let stored = intent("old", "signed-out", Number.MAX_SAFE_INTEGER), cookie = { ...stored };
+  const persistence = createAuthIntentPersistence({ readStored: () => stored, readCookie: () => cookie,
+    writeStored: value => { stored = value; }, writeCookie: value => { cookie = value; } });
+  const transitions = createAuthTransitions({ ...persistence, revoke: async () => {}, nonce: () => "login" });
+  await transitions.run({ request: async () => ({ user: { id: "fixture" } }), accept: () => {} });
+  assert.equal(transitions.blocked(), false);
+  assert.equal(persistence.read().phase, "signed-in");
+});

@@ -1,5 +1,7 @@
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import { ApiError } from "./errors.js";
+import { mediaStorageUnavailable } from "./mediaStorageFailure.js";
+import { probePrivateMediaIsolation } from "./mediaPrivacyProbe.js";
 import { PUBLIC_MEDIA_CACHE_CONTROL } from "./mediaDeliveryPolicy.js";
 import {
   MEDIA_PHOTO_SOURCE_MAX_BYTES,
@@ -63,13 +65,13 @@ let privateIsolationState = Object.freeze({
 function checkedUrl(value, label, env) {
   let url;
   try { url = new URL(value); }
-  catch { throw new ApiError(503, `${label} is not configured correctly.`, "MEDIA_STORAGE_UNAVAILABLE"); }
+  catch { throw mediaStorageUnavailable(`${label} is not configured correctly.`, "configuration_invalid"); }
   const localHttp = env.NODE_ENV !== "production" && url.protocol === "http:";
   if (url.protocol !== "https:" && !localHttp) {
-    throw new ApiError(503, `${label} must use HTTPS.`, "MEDIA_STORAGE_UNAVAILABLE");
+    throw mediaStorageUnavailable(`${label} must use HTTPS.`, "configuration_invalid");
   }
   if (url.username || url.password || url.search || url.hash) {
-    throw new ApiError(503, `${label} contains unsupported URL parts.`, "MEDIA_STORAGE_UNAVAILABLE");
+    throw mediaStorageUnavailable(`${label} contains unsupported URL parts.`, "configuration_invalid");
   }
   return url;
 }
@@ -133,70 +135,21 @@ export function privateMediaIsolationStatus(env = process.env) {
 export function requirePrivateMediaIsolationReady(env = process.env) {
   const status = privateMediaIsolationStatus(env);
   if (!status.ready) {
-    throw new ApiError(503, "Private media storage has not passed its privacy check.", "MEDIA_STORAGE_UNAVAILABLE");
+    throw mediaStorageUnavailable("Private media storage has not passed its privacy check.",
+      status.configured ? "privacy_not_ready" : "configuration_invalid");
   }
   return status;
 }
 
-function privacyProbeStatus(value) {
-  const status = Number(value);
-  return Number.isInteger(status) && status >= 100 && status <= 599 ? status : null;
-}
-
-function cloudflareR2ApiEndpoint(endpoint) {
-  const hostname = String(endpoint?.hostname || "").trim().toLowerCase();
-  return /^[a-f0-9]{32}\.(?:(?:eu|fedramp)\.)?r2\.cloudflarestorage\.com$/.test(hostname);
-}
-
-async function boundedPrivacyProbeBody(response, maxBytes = 512) {
-  const declaredLength = Number(response?.headers?.get?.("content-length"));
-  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) return null;
-  const reader = response?.body?.getReader?.();
-  if (!reader) {
-    if (typeof response?.text !== "function") return null;
-    const text = String(await response.text());
-    return Buffer.byteLength(text, "utf8") <= maxBytes ? text : null;
-  }
-  const chunks = [];
-  let total = 0;
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      total += value?.byteLength || 0;
-      if (total > maxBytes) {
-        await reader.cancel().catch(() => { /* architecture: allow-empty-catch -- oversized denial-body cleanup is best-effort */ });
-        return null;
-      }
-      chunks.push(value);
-    }
-  } finally {
-    reader.releaseLock?.();
-  }
-  return new TextDecoder().decode(Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))));
-}
-
-async function privacyProbeDenied(response, endpoint) {
-  const status = privacyProbeStatus(response?.status);
-  if (status === 401 || status === 403) return true;
-  // Cloudflare's authenticated R2 S3 endpoint currently rejects an unsigned
-  // request with HTTP 400 rather than 401/403. Accept only that provider's
-  // exact, tiny authorization-denial document; a generic 400/404 remains
-  // insufficient proof and media publishing stays closed.
-  if (status !== 400 || !cloudflareR2ApiEndpoint(endpoint)) return false;
-  const body = await boundedPrivacyProbeBody(response);
-  if (!body) return false;
-  const compact = body.trim().replace(/>\s+</g, "><");
-  return compact === '<?xml version="1.0" encoding="UTF-8"?><Error><Code>InvalidArgument</Code><Message>Authorization</Message></Error>'
-    || compact === "<Error><Code>InvalidArgument</Code><Message>Authorization</Message></Error>";
-}
 
 export async function verifyPrivateMediaBucketIsolation({
   env = process.env,
   fetchImpl = globalThis.fetch,
   clock = () => Date.now(),
   timeoutMs = 5_000,
+  signal,
 } = {}) {
+  if (signal?.aborted) throw signal.reason || new DOMException("Aborted", "AbortError");
   let config;
   try { config = getMediaConfig(env); }
   catch {
@@ -214,29 +167,11 @@ export async function verifyPrivateMediaBucketIsolation({
   root.searchParams.set("list-type", "2");
   root.searchParams.set("max-keys", "1");
   const randomObject = joinObjectUrl(config.endpoint, [config.sourceBucket, "__pit_privacy_probe__", randomUUID()]);
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), Math.max(500, Math.min(15_000, Math.trunc(Number(timeoutMs) || 5_000))));
-  timeout.unref?.();
-  let listStatus = null;
-  let objectStatus = null;
-  let errorCode = null;
-  try {
-    const [list, object] = await Promise.all([
-      fetchImpl(root.toString(), { method: "GET", redirect: "error", signal: controller.signal }),
-      fetchImpl(randomObject, { method: "GET", redirect: "error", signal: controller.signal }),
-    ]);
-    listStatus = privacyProbeStatus(list?.status);
-    objectStatus = privacyProbeStatus(object?.status);
-    const [listDenied, objectDenied] = await Promise.all([
-      privacyProbeDenied(list, config.endpoint),
-      privacyProbeDenied(object, config.endpoint),
-    ]);
-    if (!listDenied || !objectDenied) errorCode = "anonymous_access_not_denied";
-  } catch {
-    errorCode = controller.signal.aborted ? "probe_timeout" : "probe_failed";
-  } finally {
-    clearTimeout(timeout);
-  }
+  const { listStatus, objectStatus, errorCode } = await probePrivateMediaIsolation({
+    listUrl: root.toString(), objectUrl: randomObject, endpoint: config.endpoint,
+    fetchImpl, timeoutMs, signal,
+  });
+  if (signal?.aborted) throw signal.reason || new DOMException("Aborted", "AbortError");
   privateIsolationState = Object.freeze({
     configured: true,
     ready: !errorCode,
@@ -252,7 +187,7 @@ export async function verifyPrivateMediaBucketIsolation({
 function storageBucket(config, storageScope) {
   if (storageScope === "private") {
     if (!config.sourceBucket || config.sourceBucket === config.bucket) {
-      throw new ApiError(503, "Private clip storage is not configured.", "MEDIA_STORAGE_UNAVAILABLE");
+      throw mediaStorageUnavailable("Private clip storage is not configured.", "configuration_invalid");
     }
     return config.sourceBucket;
   }
@@ -388,7 +323,7 @@ export function createMediaPresign({
   const file = validateMediaRequest(body);
   const config = getMediaConfig(env);
   if (!config.configured) {
-    throw new ApiError(503, "Photo storage is warming up. Try again soon.", "MEDIA_STORAGE_UNAVAILABLE");
+    throw mediaStorageUnavailable("Photo storage is warming up. Try again soon.", "configuration_invalid");
   }
   if (storageScope === "private" && String(env.NODE_ENV || "").toLowerCase() === "production") {
     // Do not mint a capability that could place an original camera file into a

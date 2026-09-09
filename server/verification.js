@@ -11,19 +11,28 @@ import { createHash, randomBytes } from "node:crypto";
 import { db, emailStmts, q } from "./db.js";
 import { publicOrigin, sendTemplate, sendTemplateInBackground } from "./emailService.js";
 import { claimPendingSignupHandle } from "./features/accountOnboarding/signupHandle.js";
+import { privateErrorLabel } from "./errors.js";
 
 const TTL_MS = 24 * 60 * 60 * 1000;
 
-function markVerifiedWithSignupPreference(userId, at = Date.now()) {
+function verificationWrite(work) {
+  if (db.isTransaction) return work();
   db.exec("BEGIN IMMEDIATE");
   try {
-    emailStmts.markEmailVerified.run(at, userId);
-    claimPendingSignupHandle(db, q.userById.get(userId), at);
+    const result = work();
     db.exec("COMMIT");
+    return result;
   } catch (error) {
     try { db.exec("ROLLBACK"); } catch { /* Keep the original verification failure. */ }
     throw error;
   }
+}
+
+function markVerifiedWithSignupPreference(userId, at = Date.now()) {
+  return verificationWrite(() => {
+    emailStmts.markEmailVerified.run(at, userId);
+    claimPendingSignupHandle(db, q.userById.get(userId), at);
+  });
 }
 
 // Local-only compatibility switch. Hosted production must never turn a mail
@@ -42,7 +51,9 @@ export function hashToken(token) {
 // Stores only the hash. A token is shown to its owner once, in their inbox.
 export function mintVerifyToken(userId, now = Date.now()) {
   const token = randomBytes(32).toString("base64url");
-  emailStmts.setVerifyToken.run(hashToken(token), now + TTL_MS, userId);
+  if (emailStmts.setVerifyToken.run(hashToken(token), now + TTL_MS, userId).changes !== 1) {
+    throw new Error("Verification token could not be stored");
+  }
   return token;
 }
 
@@ -71,25 +82,51 @@ export async function sendWelcomeOnce(user, { background = false } = {}) {
   return sendTemplate("welcome", options);
 }
 
-/**
- * Called at signup. Either starts verification, or (kill switch off) marks the
- * account verified and welcomes it immediately.
- */
-export function beginVerification(user, { background = true } = {}) {
-  if (!verificationEnabled()) {
-    markVerifiedWithSignupPreference(user.id);
-    sendWelcomeOnce(user, { background });
-    return { verificationSent: false, autoVerified: true };
-  }
-  const token = mintVerifyToken(user.id);
-  const options = {
-    user,
-    vars: { name: user.name, link: verifyLink(token) },
-    idempotencyKey: `verify-${hashToken(token).slice(0, 32)}`,
+// Database-only signup preparation. The secret stays inside a closure: neither
+// a response nor a queued diagnostic record receives the raw bearer token.
+export function prepareVerification(user) {
+  if (!db.isTransaction) throw new Error("Verification preparation requires a transaction");
+  const autoVerified = !verificationEnabled();
+  if (autoVerified) markVerifiedWithSignupPreference(user.id);
+  const token = autoVerified ? null : mintVerifyToken(user.id);
+  const tokenHash = token ? hashToken(token) : null;
+  const failedDelivery = (error) => {
+    console.warn(`[mail] signup verification scheduling failed cause=${privateErrorLabel(error)}`);
+    return { sent: false, reason: "delivery-failed" };
   };
-  if (background) sendTemplateInBackground("verify_email", options);
-  else sendTemplate("verify_email", options);
-  return { verificationSent: true, autoVerified: false };
+  return {
+    autoVerified,
+    sendAfterCommit({ background = true } = {}) {
+      if (db.isTransaction) throw new Error("Verification mail must follow commit");
+      try {
+        const fresh = q.userById.get(user.id);
+        // A rolled-back signup, replaced token, or changed address must not
+        // send a stale capability even if a caller retains this closure.
+        if (!fresh || fresh.email !== user.email
+          || (autoVerified ? !fresh.email_verified_at
+            : fresh.email_verify_hash !== tokenHash || fresh.email_verify_expires <= Date.now())) {
+          return Promise.resolve({ sent: false, reason: "verification-changed" });
+        }
+        if (autoVerified) return sendWelcomeOnce(fresh, { background }).catch(failedDelivery);
+        const options = { user: fresh,
+          vars: { name: fresh.name, link: verifyLink(token) },
+          idempotencyKey: `verify-${tokenHash.slice(0, 32)}` };
+        const delivery = background ? sendTemplateInBackground("verify_email", options) : sendTemplate("verify_email", options);
+        return Promise.resolve(delivery).catch(failedDelivery);
+      } catch (error) {
+        // The signup is already committed. Delivery trouble must not discard
+        // its response/cookie or silently grant email verification.
+        return Promise.resolve(failedDelivery(error));
+      }
+    },
+  };
+}
+
+/** Existing callers retain the same result and post-commit mail behavior. */
+export function beginVerification(user, { background = true } = {}) {
+  const prepared = verificationWrite(() => prepareVerification(user));
+  void prepared.sendAfterCommit({ background });
+  return { verificationSent: !prepared.autoVerified, autoVerified: prepared.autoVerified };
 }
 
 /**

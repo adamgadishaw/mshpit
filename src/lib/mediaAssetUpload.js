@@ -3,6 +3,8 @@ import { isDurableMediaUrl, prepareMediaUploadAsset, uploadPreparedMediaAsset } 
 import { finalizeMediaSourceV1, resumeExistingMediaSourceV1 } from "./mediaAssetFinalize.mjs";
 import { defaultMediaEdit } from "../domain/mediaEdit.mjs";
 import { mediaSourceClientAssetId } from "../domain/mediaUploadIdentity.mjs";
+import { boundedMediaRequest, recoverMediaRequest } from "../domain/mediaRequestRecovery.mjs";
+import { mediaUploadTimeoutMs } from "../domain/mediaUploadDeadline.mjs";
 
 function mediaPipelineError(code, message, cause) {
   const error = new Error(message, cause ? { cause } : undefined);
@@ -52,7 +54,7 @@ export async function uploadOriginalMediaAsset({
   const transport = services.apiCall || api;
   const apiCall = async (path, options) => {
     abortIfNeeded();
-    const result = await transport(path, { ...options, signal, expectedAccountId: accountId });
+    const result = await transport(path, { ...options, signal: options?.signal || signal, expectedAccountId: accountId });
     abortIfNeeded();
     return result;
   };
@@ -91,12 +93,13 @@ export async function uploadOriginalMediaAsset({
       signal,
       onStage,
       onRemoteDraft,
+      recovery: services.recovery,
     });
   } else {
-    const sourcePrepared = await prepareAsset({ ...asset, file: asset.runtimeFile || asset.file }, {
+    const sourcePrepared = await boundedMediaRequest(() => prepareAsset({ ...asset, file: asset.runtimeFile || asset.file }, {
       optimizeWeb: false,
       context: "Preparing the original media",
-    });
+    }), { signal, timeoutMs: 30_000 });
     abortIfNeeded();
     const clientAssetId = mediaSourceClientAssetId({
       localId: asset.id,
@@ -105,18 +108,21 @@ export async function uploadOriginalMediaAsset({
       name: sourcePrepared.name,
     });
     onStage?.("preparing-source");
-    const created = await apiCall("/api/media/assets", {
+    const createBody = {
+      clientAssetId,
+      purpose: "post",
+      contentType: sourcePrepared.contentType,
+      fileSize: sourcePrepared.fileSize,
+      name: sourcePrepared.name,
+    };
+    const created = await recoverMediaRequest(({ signal: requestSignal }) => apiCall("/api/media/assets", {
       method: "POST",
       context: "Preparing your Mshpit media",
-      signal,
-      body: {
-        clientAssetId,
-        purpose: "post",
-        contentType: sourcePrepared.contentType,
-        fileSize: sourcePrepared.fileSize,
-        name: sourcePrepared.name,
-      },
-    });
+      signal: requestSignal,
+      timeoutMs: 10_000,
+      silent: true,
+      body: createBody,
+    }), { ...services.recovery, signal, onRetry: () => onStage?.("reconnecting-source") });
     if (!created?.asset?.id) {
       throw mediaPipelineError("MEDIA_ASSET_INVALID", "Mshpit could not prepare that media item.");
     }
@@ -126,11 +132,11 @@ export async function uploadOriginalMediaAsset({
     }
     if (created.upload) {
       onStage?.("uploading-source");
-      await uploadPrepared(sourcePrepared, created.upload, {
-        signal,
+      await boundedMediaRequest(({ signal: transferSignal }) => uploadPrepared(sourcePrepared, created.upload, {
+        signal: transferSignal,
         context: "Uploading the original media",
-        onProgress: (progress) => onProgress?.({ ...progress, stage: "uploading-source" }),
-      });
+        onProgress: (progress) => { if (!signal?.aborted && !transferSignal.aborted) onProgress?.({ ...progress, stage: "uploading-source" }); },
+      }), { signal, timeoutMs: mediaUploadTimeoutMs(sourcePrepared) });
       abortIfNeeded();
       onRemoteDraft?.({ assetId, duplicate: !!created.duplicate, sourceUploaded: true });
     }
@@ -149,12 +155,14 @@ export async function uploadOriginalMediaAsset({
   // in the same transaction that made the delivery ready. Do not gate a
   // successfully verified upload on a second identical PATCH that can fail or
   // be cancelled after all expensive work has completed.
-  const finalAsset = result?.asset || (await apiCall(`/api/media/assets/${encodeURIComponent(assetId)}`, {
+  const finalAsset = result?.asset || (await recoverMediaRequest(({ signal: requestSignal }) => apiCall(`/api/media/assets/${encodeURIComponent(assetId)}`, {
     context: "Checking your Mshpit media",
-    signal,
-  }))?.asset;
+    signal: requestSignal,
+    timeoutMs: 10_000,
+    silent: true,
+  }), { ...services.recovery, signal, onRetry: () => onStage?.("reconnecting-source") }))?.asset;
   abortIfNeeded();
-  if (!finalAsset?.id || finalAsset.status !== "ready" || !isDurableMediaUrl(finalAsset.url)) {
+  if (finalAsset?.id !== assetId || finalAsset.status !== "ready" || !isDurableMediaUrl(finalAsset.url)) {
     throw mediaPipelineError("MEDIA_FINALIZE_PENDING", "Mshpit is still preparing that media item. Try the final step again.");
   }
   if (kind === "video" && !finalAsset.posterUrl) {

@@ -69,9 +69,9 @@ test("verified uploads stop drafts from pointing at released staging files", () 
 });
 
 test("source transfer forwards byte progress and exposes cancellable remote draft identity", () => {
-  includes(source, 'onProgress: (progress) => onProgress?.({ ...progress, stage: "uploading-source" })');
+  includes(source, 'if (!signal?.aborted && !transferSignal.aborted) onProgress?.({ ...progress, stage: "uploading-source" })');
   const created = source.indexOf("assetId = created.asset.id");
-  const transfer = source.indexOf("await uploadPrepared(sourcePrepared", created);
+  const transfer = source.indexOf("await boundedMediaRequest(({ signal: transferSignal }) => uploadPrepared(sourcePrepared", created);
   assert.ok(created >= 0 && transfer > created);
   includes(source.slice(created, transfer), 'created.asset.status !== "ready"');
   includes(source.slice(created, transfer), "onRemoteDraft?.({ assetId, duplicate: !!created.duplicate, sourceUploaded: false })");

@@ -31,15 +31,15 @@ function member(email = `member-${++sequence}@example.test`, password = "first-p
   db.prepare("UPDATE users SET email_verified_at=? WHERE id=?").run(Date.now(), id);
   return q.userById.get(id);
 }
-function signup(email, extra = {}, actor) {
+async function signup(email, extra = {}, actor) {
   const ctx = context({ name: "Second Member", email, password: "second-password2", genres: ["Rock"], ageBand: "18_plus", termsVersion: LEGAL_ACCEPTANCE_VERSION, ...extra }, actor);
-  return { ctx, result: routes["POST /api/signup"](ctx) };
+  return { ctx, result: (await routes["POST /api/signup"](ctx)) };
 }
-function login(email, password, accountId) {
+async function login(email, password, accountId) {
   const ctx = context({ email, password, ...(accountId ? { accountId } : {}) });
-  return { ctx, result: routes["POST /api/login"](ctx) };
+  return { ctx, result: (await routes["POST /api/login"](ctx)) };
 }
-const rejects = (action, status) => assert.throws(action, (error) => error.status === status);
+const rejects = (action, status) => assert.rejects(async () => await action(), (error) => error.status === status);
 
 test("migration preserves users, children, indexes, views and triggers and is repeatable", () => {
   const fixture = new DatabaseSync(":memory:");
@@ -83,44 +83,44 @@ test("failed migration rolls back without losing the original parent or child ro
   } finally { fixture.close(); }
 });
 
-test("a shared password gives a chooser without a session; selection authenticates just that account", () => {
+test("a shared password gives a chooser without a session; selection authenticates just that account", async () => {
   const first = member(), second = member(first.email);
-  const choice = login(first.email.toUpperCase(), "first-password1");
+  const choice = (await login(first.email.toUpperCase(), "first-password1"));
   assert.equal(choice.ctx.session, undefined);
   assert.equal(choice.result.chooseAccount, true);
   assert.deepEqual(new Set(choice.result.accounts.map((user) => user.id)), new Set([first.id, second.id]));
   assert.deepEqual(Object.keys(choice.result.accounts[0]).sort(), ["handle", "id", "name"]);
-  const chosen = login(first.email, "first-password1", second.id);
+  const chosen = (await login(first.email, "first-password1", second.id));
   assert.equal(chosen.result.user.id, second.id);
   assert.equal(getSession(chosen.ctx.session.token).user_id, second.id);
 });
 
-test("different passwords sign directly into only the matching account", () => {
+test("different passwords sign directly into only the matching account", async () => {
   const first = member(), second = member(first.email, "other-password2");
-  assert.equal(login(first.email, "first-password1").result.user.id, first.id);
-  assert.equal(login(first.email, "other-password2").result.user.id, second.id);
-  rejects(() => login(first.email, "first-password1", second.id), 401);
-  rejects(() => login(first.email, "wrong-password3"), 401);
-  rejects(() => login("missing@example.test", "first-password1"), 401);
+  assert.equal((await login(first.email, "first-password1")).result.user.id, first.id);
+  assert.equal((await login(first.email, "other-password2")).result.user.id, second.id);
+  (await rejects(async () => (await login(first.email, "first-password1", second.id)), 401));
+  (await rejects(async () => (await login(first.email, "wrong-password3")), 401));
+  (await rejects(async () => (await login("missing@example.test", "first-password1")), 401));
 });
 
-test("Settings add-account requires a verified current account and reauthentication; third account rejected", () => {
+test("Settings add-account requires a verified current account and reauthentication; third account rejected", async () => {
   const first = member();
-  rejects(() => signup(first.email, { addAccount: true, currentPassword: "first-password1" }), 401);
-  rejects(() => signup(first.email, { addAccount: true, currentPassword: "wrong-password1" }, first), 401);
-  rejects(() => signup("someone-else@example.test", { addAccount: true, currentPassword: "first-password1" }, first), 401);
-  rejects(() => signup(first.email, { addAccount: true, currentPassword: "first-password1" }, { ...first, email_verified_at: 0 }), 403);
-  signup(first.email, { addAccount: true, currentPassword: "first-password1" }, first);
+  (await rejects(async () => (await signup(first.email, { addAccount: true, currentPassword: "first-password1" })), 401));
+  (await rejects(async () => (await signup(first.email, { addAccount: true, currentPassword: "wrong-password1" }, first)), 401));
+  (await rejects(async () => (await signup("someone-else@example.test", { addAccount: true, currentPassword: "first-password1" }, first)), 401));
+  (await rejects(async () => (await signup(first.email, { addAccount: true, currentPassword: "first-password1" }, { ...first, email_verified_at: 0 })), 403));
+  (await signup(first.email, { addAccount: true, currentPassword: "first-password1" }, first));
   assert.equal(q.usersByEmail.all(first.email).length, 2);
   assert.equal(q.userById.get(first.id).pass_hash, first.pass_hash);
-  rejects(() => signup(first.email, { addAccount: true, currentPassword: "first-password1" }, first), 409);
+  (await rejects(async () => (await signup(first.email, { addAccount: true, currentPassword: "first-password1" }, first)), 409));
   assert.equal(q.usersByEmail.all(first.email).length, 2);
 });
 
-test("different-password public signup creates a restricted sibling and cancellation cannot erase the existing account", () => {
+test("different-password public signup creates a restricted sibling and cancellation cannot erase the existing account", async () => {
   const first = member();
   const firstCookie = createSession(first.id);
-  const { result, ctx } = signup(first.email);
+  const { result, ctx } = (await signup(first.email));
   assert.equal(result.created, true);
   assert.equal(result.verificationRequired, true);
   assert.equal(result.user.emailVerified, false);
@@ -129,18 +129,18 @@ test("different-password public signup creates a restricted sibling and cancella
   assert.equal(getSession(ctx.session.token).user_id, result.user.id);
   assert.equal(getSession(firstCookie.token).user_id, first.id);
   assert.equal(q.usersByEmail.all(first.email).length, 2);
-  rejects(() => signup(first.email, { password: "third-password3" }), 409);
+  (await rejects(async () => (await signup(first.email, { password: "third-password3" })), 409));
   assert.equal(q.usersByEmail.all(first.email).length, 2);
-  routes["POST /api/signup/cancel"](context({ cancelToken: result.cancelToken }));
+  (await routes["POST /api/signup/cancel"](context({ cancelToken: result.cancelToken })));
   assert.equal(q.userById.get(first.id).pass_hash, first.pass_hash);
   assert.equal(getSession(firstCookie.token).user_id, first.id);
   assert.equal(getSession(ctx.session.token), null);
   assert.equal(q.usersByEmail.all(first.email).length, 1);
 });
 
-test("matching signup credentials require an explicit choice before creating a same-password sibling", () => {
+test("matching signup credentials require an explicit choice before creating a same-password sibling", async () => {
   const first = member();
-  const choice = signup(first.email, { password: "first-password1" });
+  const choice = (await signup(first.email, { password: "first-password1" }));
   assert.equal(choice.result.needsAccountChoice, true);
   assert.equal(choice.result.canCreate, true);
   assert.equal(choice.result.accounts.length, 1);
@@ -148,72 +148,72 @@ test("matching signup credentials require an explicit choice before creating a s
   assert.equal(choice.result.cancelToken, undefined);
   assert.equal(choice.ctx.session, undefined);
   assert.equal(q.usersByEmail.all(first.email).length, 1);
-  rejects(() => signup(first.email, { createAdditional: true, password: "wrong-password4" }), 401);
+  (await rejects(async () => (await signup(first.email, { createAdditional: true, password: "wrong-password4" })), 401));
   assert.equal(q.usersByEmail.all(first.email).length, 1);
-  const created = signup(first.email, { createAdditional: true, password: "first-password1" });
+  const created = (await signup(first.email, { createAdditional: true, password: "first-password1" }));
   assert.equal(created.result.created, true);
   assert.equal(created.result.verificationRequired, true);
   assert.equal(created.result.user.emailVerified, false);
   assert.notEqual(created.result.user.id, first.id);
   assert.equal(getSession(created.ctx.session.token).user_id, created.result.user.id);
-  const fullChoice = signup(first.email, { password: "first-password1" });
+  const fullChoice = (await signup(first.email, { password: "first-password1" }));
   assert.equal(fullChoice.result.needsAccountChoice, true);
   assert.equal(fullChoice.result.canCreate, false);
   assert.equal(fullChoice.result.accounts.length, 2);
   assert.equal(fullChoice.ctx.session, undefined);
-  rejects(() => signup(first.email, { createAdditional: true, password: "first-password1" }), 409);
+  (await rejects(async () => (await signup(first.email, { createAdditional: true, password: "first-password1" })), 409));
   assert.equal(q.usersByEmail.all(first.email).length, 2);
   assert.equal(q.userById.get(first.id).pass_hash, first.pass_hash);
 });
 
-test("explicit signup cancellation deletes only the unfinished account and is retry-safe", () => {
+test("explicit signup cancellation deletes only the unfinished account and is retry-safe", async () => {
   const first = member();
-  const { result } = signup(first.email, { addAccount: true, currentPassword: "first-password1" }, first);
+  const { result } = (await signup(first.email, { addAccount: true, currentPassword: "first-password1" }, first));
   const second = q.usersByEmail.all(first.email).find((entry) => entry.id !== first.id);
   const cookie = createSession(second.id);
   db.prepare("UPDATE users SET created_at=1 WHERE id=?").run(second.id);
   assert.ok(q.userById.get(second.id), "unfinished accounts have no age cutoff");
   const cancel = context({ cancelToken: result.cancelToken }, first);
-  assert.deepEqual(routes["POST /api/signup/cancel"](cancel), { ok: true });
+  assert.deepEqual((await routes["POST /api/signup/cancel"](cancel)), { ok: true });
   assert.equal(cancel.cleared, undefined, "sibling session remains intact");
   assert.equal(q.userById.get(second.id), undefined);
   assert.equal(getSession(cookie.token), null);
   assert.ok(db.prepare("SELECT 1 FROM media_owner_sweeps WHERE owner_id=?").get(second.id), "all uploaded objects remain queued for cleanup after the user row is erased");
   assert.ok(q.userById.get(first.id));
-  assert.deepEqual(routes["POST /api/signup/cancel"](context({ cancelToken: result.cancelToken })), { ok: true });
+  assert.deepEqual((await routes["POST /api/signup/cancel"](context({ cancelToken: result.cancelToken }))), { ok: true });
 });
 
-test("Finish setup prevents later cancellation even before verification", () => {
-  const email = `finish-${++sequence}@example.test`, { result } = signup(email);
+test("Finish setup prevents later cancellation even before verification", async () => {
+  const email = `finish-${++sequence}@example.test`, { result } = (await signup(email));
   const user = q.userByEmail.get(email);
   assert.equal(user.email_verified_at, 0);
   routes["POST /api/me/onboarding/complete"](context({ version: 1 }, user));
-  routes["POST /api/signup/cancel"](context({ cancelToken: result.cancelToken }));
+  (await routes["POST /api/signup/cancel"](context({ cancelToken: result.cancelToken })));
   assert.ok(q.userById.get(user.id));
-  rejects(() => routes["DELETE /api/me"](context({ password: "second-password2", onboardingOnly: true }, user)), 409);
+  (await rejects(async () => (await routes["DELETE /api/me"](context({ password: "second-password2", onboardingOnly: true }, user))), 409));
   assert.equal(q.userById.get(user.id).signup_cancel_hash, null);
   assert.equal(q.userById.get(user.id).email_verified_at, 0);
 });
 
-test("authenticated cancellation cannot erase legacy or completed accounts", () => {
+test("authenticated cancellation cannot erase legacy or completed accounts", async () => {
   const user = member();
-  rejects(() => routes["DELETE /api/me"](context({ password: "first-password1", onboardingOnly: true }, user)), 409);
+  (await rejects(async () => (await routes["DELETE /api/me"](context({ password: "first-password1", onboardingOnly: true }, user))), 409));
   assert.ok(q.userById.get(user.id));
 });
 
-test("password change revokes this account's sessions and recovery tokens, not its sibling", () => {
+test("password change revokes this account's sessions and recovery tokens, not its sibling", async () => {
   const first = member(), second = member(first.email), firstCookie = createSession(first.id), secondCookie = createSession(second.id);
   db.prepare("UPDATE users SET reset_hash='old-reset',reset_expires=? WHERE id=?").run(Date.now() + 100000, first.id);
-  rejects(() => routes["POST /api/me/password"](context({ currentPassword: "wrong", password: "replacement-password3" }, first)), 401);
+  (await rejects(async () => (await routes["POST /api/me/password"](context({ currentPassword: "wrong", password: "replacement-password3" }, first))), 401));
   const ctx = context({ currentPassword: "first-password1", password: "replacement-password3" }, first);
-  assert.equal(routes["POST /api/me/password"](ctx).accountId, first.id);
+  assert.equal((await routes["POST /api/me/password"](ctx)).accountId, first.id);
   assert.equal(getSession(firstCookie.token), null);
   assert.equal(getSession(ctx.session.token).user_id, first.id);
   assert.equal(getSession(secondCookie.token).user_id, second.id);
   assert.equal(q.userById.get(first.id).reset_hash, null);
   assert.equal(q.userById.get(second.id).pass_hash, second.pass_hash);
   assert.ok(verifyPassword("replacement-password3", q.userById.get(first.id).pass_hash));
-  assert.equal(login(first.email, "first-password1").result.user.id, second.id);
+  assert.equal((await login(first.email, "first-password1")).result.user.id, second.id);
 });
 
 test("mailbox recovery creates separate reset tokens for both accounts and respects cooldown", async () => {

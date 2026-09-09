@@ -22,12 +22,16 @@ export function createAuthIntentPersistence({
 } = {}) {
   let memory = null;
   const read = () => {
-    // A tie favors durable state over this tab's cached copy, and the shared
-    // cookie over storage. Phase updates may share an auth revision across tabs.
+    // A tie normally favors durable state and then the cookie. Conflicting
+    // revisions at the same clock value fail closed: an older signed-in cookie
+    // must not erase a concurrent (or saturated-clock) sign-out/pending intent.
     const copies = [memory, safelyRead(readStored), safelyRead(readCookie)];
     let latest = null;
     for (const copy of copies) {
-      if (copy && (!latest || copy.order >= latest.order)) latest = copy;
+      if (!copy || (latest && copy.order < latest.order)) continue;
+      if (latest && copy.order === latest.order && copy.revision !== latest.revision
+        && latest.phase !== "signed-in" && copy.phase === "signed-in") continue;
+      latest = copy;
     }
     if (latest) memory = latest;
     return latest ? { ...latest } : null;
@@ -38,8 +42,10 @@ export function createAuthIntentPersistence({
     const highest = read()?.order || 0;
     const clock = Number(now());
     const wallTime = Number.isSafeInteger(clock) && clock >= 0 ? clock : 0;
-    const order = Math.max(wallTime, highest + 1);
-    if (!Number.isSafeInteger(order)) throw new RangeError("Authentication intent order is exhausted.");
+    // Corrupt but integer-shaped storage must never make logout throw before
+    // it clears private state. At the ceiling, revision + fail-closed ties keep
+    // the new blocking intent ahead of stale signed-in durable copies.
+    const order = Math.max(wallTime, highest < Number.MAX_SAFE_INTEGER ? highest + 1 : highest);
     const next = { ...intent, order };
     memory = next;
     try { writeStored({ ...next }); }

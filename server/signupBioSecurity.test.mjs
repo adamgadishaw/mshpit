@@ -101,13 +101,13 @@ test("bio edits cannot smuggle executable or unowned profile media", () => {
   }
 });
 
-test("signup ignores forged authority and cannot use Owner as the new account", () => {
+test("signup ignores forged authority and cannot use Owner as the new account", async () => {
   const owner = member({ role: "admin" });
   const ownerSession = createSession(owner.id), ownerBefore = { ...q.userById.get(owner.id) };
   const email = `fresh-bio-security-${++sequence}@example.test`;
   const ctx = context(signupBody(email, { role: "admin", id: owner.id, emailVerified: true,
     email_verified_at: Date.now(), onboardingVersion: 1, isOwner: true }), owner);
-  routes["POST /api/signup"](ctx);
+  (await routes["POST /api/signup"](ctx));
   const created = q.userByEmail.get(email);
   assert.ok(created);
   assert.notEqual(created.id, owner.id);
@@ -119,11 +119,11 @@ test("signup ignores forged authority and cannot use Owner as the new account", 
   if (ctx.session) assert.equal(getSession(ctx.session.token).user_id, created.id);
 });
 
-test("a second account's verification and cancellation cannot change or delete Owner", () => {
+test("a second account's verification and cancellation cannot change or delete Owner", async () => {
   const owner = member({ role: "admin" });
   const ownerSession = createSession(owner.id), ownerBefore = { ...q.userById.get(owner.id) };
   const creation = context(signupBody(owner.email, { addAccount: true, currentPassword: "fixture-password1" }), owner);
-  const result = routes["POST /api/signup"](creation);
+  const result = (await routes["POST /api/signup"](creation));
   const second = q.usersByEmail.all(owner.email).find((user) => user.id !== owner.id);
   assert.ok(second);
   assert.equal(second.role, "fan");
@@ -133,7 +133,7 @@ test("a second account's verification and cancellation cannot change or delete O
   assert.equal(verification.session, undefined, "email confirmation must not replace Owner's session");
   assert.ok(q.userById.get(second.id).email_verified_at > 0);
   assert.equal(q.userById.get(second.id).onboarding_version, 0, "verification is not setup completion");
-  routes["POST /api/signup/cancel"](context({ cancelToken: result.cancelToken }, owner));
+  (await routes["POST /api/signup/cancel"](context({ cancelToken: result.cancelToken }, owner)));
   assert.equal(q.userById.get(second.id), undefined);
   assert.deepEqual({ ...q.userById.get(owner.id) }, ownerBefore);
   assert.equal(getSession(ownerSession.token).user_id, owner.id);

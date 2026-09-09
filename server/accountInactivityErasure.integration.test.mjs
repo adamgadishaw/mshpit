@@ -60,12 +60,12 @@ test("full-erasure export requires a transaction and repeats policy, receipt, an
   assert.ok(q.userById.get(snapshot.id));
 });
 
-test("eligible lifecycle erasure reuses complete media, session, link, post, and tag cleanup without touching the sibling", () => {
+test("eligible lifecycle erasure reuses complete media, session, link, post, and tag cleanup without touching the sibling", async () => {
   const user = member();
   const sibling = member({ email: user.email });
   const session = createSession(user.id);
   const siblingSession = createSession(sibling.id);
-  routes["POST /api/me/accounts/connect"]({ user, token: session.token, body: { password: "Same-password1" },
+  await routes["POST /api/me/accounts/connect"]({ user, token: session.token, body: { password: "Same-password1" },
     ip: "erasure-proof", setHeader() {} });
   assert.equal(db.prepare("SELECT COUNT(*) n FROM linked_account_pairs WHERE user_a_id=? OR user_b_id=?").get(user.id, user.id).n, 1);
   const key = `users/${user.id}/post/never-attached.jpg`;

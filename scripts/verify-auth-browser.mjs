@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
-import { readFileSync, readdirSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -22,6 +22,10 @@ const alice = Object.freeze({
   termsVersion: "2026-09-02",
 });
 const bob = Object.freeze({ ...alice, id: "auth-fixture-b", name: "Fixture Bob", handle: "fixturebob", initials: "FB" });
+const fixturePassword = "fixture-password1";
+const replacementPassword = "fixture-password2";
+const fixtureResetToken = "fixture-reset-token-0123456789";
+const fixtureOwnerToken = "fixture-owner-token-0123456789";
 
 const cases = [
   { name: "login-mobile", kind: "login", width: 390 },
@@ -37,12 +41,23 @@ const cases = [
   { name: "logout-unavailable-storage-cookie-fallback", kind: "logout-failed", width: 390, failureStatus: 500, storageUnavailable: true },
   { name: "linked-switch-mobile", kind: "switch", width: 390 },
   { name: "linked-switch-desktop", kind: "switch", width: 1280 },
+  { name: "linked-switch-canceled-browser-back-mobile", kind: "switch-canceled", width: 390 },
+  { name: "linked-switch-canceled-browser-back-desktop", kind: "switch-canceled", width: 1280 },
   { name: "external-account-switch", kind: "external-switch", width: 390 },
   { name: "expired-session-mobile", kind: "expired", width: 390 },
   { name: "expired-session-desktop", kind: "expired", width: 1280 },
   { name: "startup-401-stale-cache", kind: "startup-401", width: 390 },
   { name: "startup-offline-recovery-mobile", kind: "startup-offline", width: 390 },
   { name: "startup-offline-recovery-desktop", kind: "startup-offline", width: 1280 },
+  { name: "forms-login-mobile", kind: "forms-login", width: 390 },
+  { name: "forms-login-desktop", kind: "forms-login", width: 1280 },
+  { name: "forms-signup-mobile", kind: "forms-signup", width: 390 },
+  { name: "forms-signup-desktop", kind: "forms-signup", width: 1280 },
+  { name: "forms-reset-password", kind: "forms-reset", width: 390 },
+  { name: "forms-change-password", kind: "forms-change", width: 1280 },
+  { name: "forms-connect-accounts", kind: "forms-connect", width: 390 },
+  { name: "forms-settings-export", kind: "forms-settings", width: 1280 },
+  { name: "forms-owner-explicit-decision", kind: "forms-owner", width: 390 },
 ];
 
 function loadChromium() {
@@ -139,6 +154,201 @@ function initialBrowserState({ cachedUser, storageUnavailable }) {
   window.fixtureObserveGuest();
 }
 
+async function credentialFields(page, specifications, { submitButtons = 1 } = {}) {
+  const fields = [];
+  for (const [label, autocomplete] of specifications) {
+    const locator = page.getByLabel(label, { exact: true });
+    await locator.waitFor({ state: "attached" });
+    const field = await locator.evaluate(input => ({
+      tag: input.tagName, id: input.id, name: input.name, autocomplete: input.autocomplete,
+      uniqueId: !!input.id && [...document.querySelectorAll("[id]")].filter(node => node.id === input.id).length === 1,
+      labelConnected: [...(input.labels || [])].some(label => label.isConnected && label.control === input && label.textContent.trim()),
+      form: input.form ? [...document.forms].indexOf(input.form) : -1,
+      formConnected: input.form?.isConnected === true,
+      method: input.form?.method, noValidate: input.form?.noValidate,
+      nested: !!input.form?.querySelector("form"),
+    }));
+    assert.equal(field.tag, "INPUT", `${label} must be a real input.`);
+    assert.ok(field.name, `${label} must have a stable name.`);
+    assert.ok(field.uniqueId, `${label} must have a unique, nonempty id.`);
+    assert.ok(field.labelConnected, `${label} must have a real connected HTML label.`);
+    assert.ok(field.form >= 0 && field.formConnected, `${label} must belong to a connected form.`);
+    assert.equal(field.method, "post", `${label}'s form must never default to credential-bearing GET navigation.`);
+    assert.equal(field.noValidate, true, "Custom validation requires noValidate on the form.");
+    assert.equal(field.nested, false, "Credential forms must not be nested.");
+    assert.equal(field.autocomplete, autocomplete, `${label} has the wrong password-manager hint.`);
+    fields.push(field);
+  }
+  assert.equal(new Set(fields.map(field => field.form)).size, 1, "Related credentials must have one form owner.");
+  assert.equal(new Set(fields.map(field => field.name)).size, fields.length, "Credential field names must be distinct.");
+  const form = page.locator("form").nth(fields[0].form);
+  assert.equal(await form.locator('button[type="submit"]').count(), submitButtons, "The credential form has the wrong number of real submit buttons.");
+  const counter = await form.evaluate(form => {
+    window.fixtureSubmitCounts ||= {};
+    if (!form.fixtureSubmitCounter) {
+      form.fixtureSubmitCounter = `form-${Object.keys(window.fixtureSubmitCounts).length}`;
+      window.fixtureSubmitCounts[form.fixtureSubmitCounter] = 0;
+      form.addEventListener("submit", () => { window.fixtureSubmitCounts[form.fixtureSubmitCounter]++; }, true);
+    }
+    return form.fixtureSubmitCounter;
+  });
+  return { form, fields, submissions: () => page.evaluate(key => window.fixtureSubmitCounts[key], counter) };
+}
+
+async function semanticFormCase(page, origin, item, state, { landing, feed, you }) {
+  const screenshot = async (suffix = "") => {
+    if (process.env.PIT_AUTH_BROWSER_SCREENSHOTS !== "1") return;
+    mkdirSync(join(root, ".tmp"), { recursive: true });
+    await page.screenshot({ path: join(root, ".tmp", `credential-${item.name}${suffix}.png`), fullPage: true });
+  };
+  const count = path => state.calls.filter(call => call.path === path && call.method === "POST").length;
+  const openLogin = async () => {
+    const button = page.getByRole("button", { name: "Log in", exact: true }).last();
+    if (await button.isVisible()) await button.click();
+    else {
+      await page.getByRole("tab", { name: "You", exact: true }).click();
+      await page.getByText("LOG IN / SIGN UP", { exact: true }).click();
+    }
+    await page.getByRole("heading", { name: "Good to see you.", exact: true }).waitFor();
+  };
+  const settings = async () => { await feed(); await you(alice); await page.getByText("Settings", { exact: true }).click(); };
+  if (item.kind === "forms-login") {
+    await landing();
+    await openLogin();
+    await credentialFields(page, [["Email", "username"], ["Password", "current-password"]]);
+    await screenshot();
+    await page.getByLabel("Email", { exact: true }).fill(alice.email);
+    await page.getByLabel("Password", { exact: true }).fill(fixturePassword);
+    await page.getByRole("button", { name: "Show password", exact: true }).click();
+    assert.equal(await page.getByLabel("Password", { exact: true }).getAttribute("type"), "text");
+    assert.equal(await page.getByLabel("Password", { exact: true }).getAttribute("autocomplete"), "current-password");
+    await page.getByRole("button", { name: "Hide password", exact: true }).click();
+    await page.getByRole("button", { name: "Forgot password?", exact: true }).click();
+    await page.getByRole("heading", { name: "Back to your account.", exact: true }).waitFor();
+    assert.equal(count("/api/login"), 0, "Password visibility/forgot-password controls submitted login.");
+    assert.equal(count("/api/forgot"), 0, "Opening forgot-password must not send a reset email.");
+    await page.getByRole("button", { name: "Back to log in", exact: true }).click();
+    await page.getByRole("button", { name: "Close", exact: true }).click();
+    await page.getByRole("heading", { name: "Good to see you.", exact: true }).waitFor({ state: "hidden" });
+    assert.equal(count("/api/login"), 0, "Closing the form submitted login.");
+    await openLogin();
+    const { form, submissions } = await credentialFields(page, [["Email", "username"], ["Password", "current-password"]]);
+    await page.getByLabel("Email", { exact: true }).fill(alice.email);
+    await page.getByLabel("Password", { exact: true }).fill(fixturePassword);
+    await page.getByLabel("Password", { exact: true }).press("Enter");
+    await waitFor(() => typeof state.releaseLogin === "function", "Enter did not submit the login form.");
+    assert.equal(count("/api/login"), 1);
+    assert.equal(await submissions(), 1, "Enter must emit a real form submit event, not bypass the form.");
+    const submit = form.locator('button[type="submit"]');
+    const box = await submit.boundingBox();
+    assert.ok(box, "The busy submit button disappeared.");
+    await page.mouse.dblclick(box.x + box.width / 2, box.y + box.height / 2);
+    await page.keyboard.press("Enter");
+    await page.waitForTimeout(150);
+    assert.equal(count("/api/login"), 1, "Rapid clicks/Enter duplicated the pending login request.");
+    state.releaseLogin(); state.releaseLogin = null;
+    await page.getByRole("heading", { name: "Good to see you.", exact: true }).waitFor({ state: "hidden" });
+    await you(alice);
+    assert.equal(count("/api/login"), 1);
+  } else if (item.kind === "forms-signup") {
+    await landing();
+    await openLogin();
+    await page.getByRole("button", { name: "No account? Sign up", exact: true }).click();
+    await page.getByRole("heading", { name: "Make it your night.", exact: true }).waitFor();
+    const before = await credentialFields(page, [["Name", "name"], ["Username", "off"], ["Email", "username"], ["Password", "new-password"]]);
+    await screenshot();
+    await page.getByLabel("Name", { exact: true }).fill(alice.name);
+    await page.getByLabel("Username", { exact: true }).fill(alice.handle);
+    await page.getByLabel("Email", { exact: true }).fill(alice.email);
+    await page.getByLabel("Password", { exact: true }).fill(fixturePassword);
+    await page.getByLabel("Password", { exact: true }).press("Enter");
+    await page.getByRole("heading", { name: "Find your kind of show.", exact: true }).waitFor();
+    assert.equal(count("/api/signup"), 0, "Step one created an account instead of advancing.");
+    assert.equal(await before.submissions(), 1, "Step-one Enter must submit the existing form exactly once.");
+    const after = await credentialFields(page, [["Name", "name"], ["Username", "off"], ["Email", "username"], ["Password", "new-password"]]);
+    await screenshot("-music");
+    assert.deepEqual(after.fields.map(field => [field.id, field.form]), before.fields.map(field => [field.id, field.form]), "Signup lost its credential inputs/form between steps.");
+    assert.equal(await page.getByLabel("Password", { exact: true }).inputValue(), fixturePassword);
+    await page.getByRole("button", { name: "Back to account details", exact: true }).click();
+    await page.getByRole("heading", { name: "Make it your night.", exact: true }).waitFor();
+    assert.equal(count("/api/signup"), 0, "Signup Back submitted the account.");
+    assert.equal(await before.submissions(), 1, "Signup Back emitted a submit event.");
+    await page.getByLabel("Password", { exact: true }).press("Enter");
+    await page.getByRole("heading", { name: "Find your kind of show.", exact: true }).waitFor();
+    await page.getByRole("checkbox", { name: "Rock", exact: true }).click();
+    await page.getByRole("radio", { name: "18+", exact: true }).click();
+    await page.getByRole("checkbox", { name: "I agree to the Terms and Privacy policy", exact: true }).click();
+    assert.equal(count("/api/signup"), 0, "Signup choices submitted before the user confirmed.");
+    await page.getByRole("button", { name: "Create account", exact: true }).press("Enter");
+    await waitFor(() => count("/api/signup") > 0, "Final signup submission was not sent.");
+    await feed();
+    assert.equal(count("/api/signup"), 1, "Signup was submitted more than once.");
+    assert.equal(await before.submissions(), 3, "Two step-one advances and final confirmation must use exactly three native form submissions.");
+  } else if (item.kind === "forms-reset") {
+    await credentialFields(page, [["New password", "new-password"], ["Confirm new password", "new-password"]]);
+    await page.getByLabel("New password", { exact: true }).fill(replacementPassword);
+    await page.getByLabel("Confirm new password", { exact: true }).fill(replacementPassword);
+    await page.getByRole("button", { name: "Cancel", exact: true }).click();
+    assert.equal(count("/api/reset"), 0, "Reset Cancel submitted the password.");
+    await page.goto(`${origin}/#reset=${fixtureResetToken}`, { waitUntil: "networkidle" });
+    // Adding a fragment to the current page is same-document navigation; load
+    // the fixture link as a new document so the root consumes its token again.
+    await page.reload({ waitUntil: "networkidle" });
+    await credentialFields(page, [["New password", "new-password"], ["Confirm new password", "new-password"]]);
+    await page.getByLabel("New password", { exact: true }).fill(replacementPassword);
+    await page.getByLabel("Confirm new password", { exact: true }).fill(replacementPassword);
+    await page.getByLabel("Confirm new password", { exact: true }).press("Enter");
+    await feed();
+    assert.equal(count("/api/reset"), 1, "Reset Enter must submit exactly once.");
+  } else if (item.kind === "forms-change") {
+    await settings();
+    await page.getByText("Change password", { exact: true }).click();
+    await credentialFields(page, [["Current password", "current-password"], ["New password", "new-password"], ["Confirm new password", "new-password"]]);
+    await page.getByRole("button", { name: "Cancel", exact: true }).click();
+    assert.equal(count("/api/me/password"), 0, "Change-password Cancel submitted the form.");
+    await page.getByText("Change password", { exact: true }).click();
+    await page.getByLabel("Current password", { exact: true }).fill(fixturePassword);
+    await page.getByLabel("New password", { exact: true }).fill(replacementPassword);
+    await page.getByLabel("Confirm new password", { exact: true }).fill(replacementPassword);
+    await page.getByLabel("Confirm new password", { exact: true }).press("Enter");
+    await page.getByRole("alert").filter({ hasText: "Password changed for this account." }).waitFor();
+    assert.equal(count("/api/me/password"), 1, "Change-password Enter must submit exactly once.");
+  } else if (item.kind === "forms-connect") {
+    await settings();
+    await page.getByText("Switch account", { exact: true }).click();
+    await page.getByRole("button", { name: "Connect an existing account", exact: true }).click();
+    await credentialFields(page, [["Password to connect accounts", "current-password"]]);
+    await page.getByRole("button", { name: "Cancel", exact: true }).click();
+    assert.equal(count("/api/me/accounts/connect"), 0, "Connect Cancel submitted the form.");
+    await page.getByRole("button", { name: "Connect an existing account", exact: true }).click();
+    await page.getByLabel("Password to connect accounts", { exact: true }).fill(fixturePassword);
+    await page.getByLabel("Password to connect accounts", { exact: true }).press("Enter");
+    await page.getByLabel("Password to connect accounts", { exact: true }).waitFor({ state: "hidden" });
+    assert.equal(count("/api/me/accounts/connect"), 1, "Connect Enter must submit exactly once.");
+  } else if (item.kind === "forms-settings") {
+    await settings();
+    await credentialFields(page, [["Current password for data export", "current-password"]]);
+    await page.getByLabel("Current password for data export", { exact: true }).fill(fixturePassword);
+    const before = state.calls.filter(call => call.method === "POST").length;
+    await page.getByRole("button", { name: "Close", exact: true }).click();
+    await page.getByText(alice.name, { exact: true }).first().waitFor();
+    assert.equal(state.calls.filter(call => call.method === "POST").length, before, "Closing Settings submitted the export password.");
+  } else if (item.kind === "forms-owner") {
+    await page.getByRole("heading", { name: "Approve this security audit stamp?", exact: true }).waitFor();
+    const { submissions } = await credentialFields(page, [["Owner password", "current-password"]], { submitButtons: 2 });
+    await page.getByLabel("Owner password", { exact: true }).fill(fixturePassword);
+    await page.getByLabel("Owner password", { exact: true }).press("Enter");
+    await page.getByRole("alert").filter({ hasText: "Choose an approval or rejection button below to record your decision." }).waitFor();
+    await page.waitForTimeout(150);
+    assert.equal(count("/api/owner-approvals/decide"), 0, "Password Enter must never choose an Owner decision.");
+    assert.equal(await submissions(), 0, "Ambiguous Owner Enter must not trigger an implicit native submitter.");
+    await page.getByRole("button", { name: "APPROVE SECURITY STAMP", exact: true }).click();
+    await page.getByRole("heading", { name: "Approved and recorded", exact: true }).waitFor();
+    assert.equal(count("/api/owner-approvals/decide"), 1, "Explicit Owner decision must send exactly once.");
+    assert.equal(await submissions(), 1, "Explicit Owner decision must use its native form submitter.");
+  }
+}
+
 async function runCase(browser, origin, item) {
   const context = await browser.newContext({
     viewport: { width: item.width, height: 844 },
@@ -146,17 +356,18 @@ async function runCase(browser, origin, item) {
   });
   const page = await context.newPage();
   page.setDefaultTimeout(timeoutMs);
+  const guestStart = item.kind.startsWith("login") || ["startup-401", "forms-login", "forms-signup", "forms-reset"].includes(item.kind);
   const state = {
-    user: item.kind.startsWith("login") || item.kind === "startup-401" ? null : alice,
+    user: guestStart ? null : item.kind === "forms-owner" ? { ...alice, role: "admin", owner: true } : alice,
     offline: item.kind === "startup-offline", badPassword: item.kind === "login-retry",
     logoutUnavailable: item.kind === "logout-failed", phase: "start",
     calls: [], pageErrors: [], consoleErrors: [], reports: [], routeErrors: [],
-    releaseLogin: null, loginCompleted: false,
+    releaseLogin: null, releaseSwitch: null, loginCompleted: false, connected: item.kind !== "forms-connect", credentialUrlLeaks: [],
   };
   page.on("pageerror", error => state.pageErrors.push(error.message));
   page.on("console", message => { if (message.type() === "error") state.consoleErrors.push(message.text()); });
   await page.addInitScript(initialBrowserState, {
-    cachedUser: item.kind.startsWith("login") ? null : alice,
+    cachedUser: guestStart && item.kind !== "startup-401" ? null : alice,
     storageUnavailable: item.storageUnavailable === true,
   });
   await context.route("**/*", async route => {
@@ -164,6 +375,11 @@ async function runCase(browser, origin, item) {
     const url = new URL(request.url());
     const json = (body, status = 200) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
     try {
+      if ([fixturePassword, replacementPassword].some(password => decodeURIComponent(url.href).includes(password))
+        || [...url.searchParams.keys()].some(key => /password/i.test(key))) {
+        state.credentialUrlLeaks.push("A request URL contained password data.");
+        return await route.abort();
+      }
       if (!url.pathname.startsWith("/api/")) {
         if (url.origin === origin) return await route.continue();
         return await route.abort();
@@ -178,7 +394,7 @@ async function runCase(browser, origin, item) {
         return await json({ user: state.user });
       }
       if (url.pathname === "/api/login") {
-        if (item.kind === "login-canceled") await new Promise(fulfill => { state.releaseLogin = fulfill; });
+        if (["login-canceled", "forms-login"].includes(item.kind)) await new Promise(fulfill => { state.releaseLogin = fulfill; });
         if (state.badPassword) return await json({ error: "Wrong email or password.", code: "INVALID_CREDENTIALS" }, 401);
         if (item.kind === "login-choice" && !body.accountId) return await json({ chooseAccount: true, accounts: [alice, bob] });
         // Model server-side success even when a browser aborts or discards the
@@ -199,11 +415,48 @@ async function runCase(browser, origin, item) {
         return await json({ ok: true });
       }
       if (url.pathname === "/api/me/accounts") {
+        if (!state.connected) return await json({ accounts: [{ ...alice, isCurrent: true }], connected: false, canConnect: true });
         return await json({ accounts: [alice, bob].map(user => ({ ...user, isCurrent: user.id === state.user?.id })), connected: true, canConnect: false });
+      }
+      if (url.pathname === "/api/me/accounts/connect") {
+        assert.equal(request.method(), "POST"); assert.equal(account, alice.id); assert.equal(body.password, fixturePassword);
+        state.connected = true;
+        return await json({ accounts: [alice, bob].map(user => ({ ...user, isCurrent: user.id === alice.id })), connected: true, canConnect: false });
+      }
+      if (url.pathname === "/api/me/password") {
+        assert.equal(request.method(), "POST"); assert.equal(account, alice.id);
+        assert.equal(body.currentPassword, fixturePassword); assert.equal(body.password, replacementPassword);
+        return await json({ ok: true, accountId: alice.id });
+      }
+      if (url.pathname === "/api/admin/moderation") return await json({ reports: [], recentActions: [], nextCursor: null });
+      if (url.pathname === "/api/admin/artist-requests") return await json({ requests: [] });
+      if (url.pathname === "/api/owner-approvals/review") {
+        assert.equal(request.method(), "POST"); assert.equal(body.token, fixtureOwnerToken);
+        return await json({ review: {
+          request: { id: "fixture-owner-review", kind: "security_release", expiresAt: Date.now() + 3_600_000 },
+          payload: { category: "security_audit", checks: ["tests", "architecture"], commit: "fixture-only" },
+        } });
+      }
+      if (url.pathname === "/api/owner-approvals/decide") {
+        assert.equal(request.method(), "POST"); assert.equal(body.token, fixtureOwnerToken);
+        assert.equal(body.password, fixturePassword); assert.equal(body.decision, "approved");
+        return await json({ ok: true, decision: "approved", receipt: { id: "fixture-owner-receipt", stamp: "fixture-not-a-real-receipt" }, emailSent: false });
+      }
+      if (url.pathname === "/api/reset") {
+        assert.equal(request.method(), "POST"); assert.equal(body.password, replacementPassword); assert.equal(body.token, fixtureResetToken);
+        state.user = alice;
+        return await json({ user: alice });
+      }
+      if (url.pathname === "/api/signup/handle-availability") return await json({ handle: url.searchParams.get("handle"), available: true });
+      if (url.pathname === "/api/signup") {
+        assert.equal(request.method(), "POST"); assert.equal(body.password, fixturePassword); assert.equal(body.email, alice.email);
+        state.user = alice;
+        return await json({ created: true, user: alice });
       }
       if (url.pathname === "/api/me/accounts/switch") {
         assert.equal(account, alice.id, "Account switch must bind to the currently displayed account.");
         assert.equal(body.accountId, bob.id);
+        if (item.kind === "switch-canceled") await new Promise(fulfill => { state.releaseSwitch = fulfill; });
         state.user = bob;
         state.phase = "switched";
         return await json({ ok: true, user: bob });
@@ -258,8 +511,12 @@ async function runCase(browser, origin, item) {
   };
   let failure = null;
   try {
-    await page.goto(origin, { waitUntil: "networkidle", timeout: timeoutMs });
-    if (item.kind.startsWith("login")) {
+    const entry = item.kind === "forms-reset" ? `${origin}/#reset=${fixtureResetToken}`
+      : item.kind === "forms-owner" ? `${origin}/#ownerApproval=${fixtureOwnerToken}` : origin;
+    await page.goto(entry, { waitUntil: "networkidle", timeout: timeoutMs });
+    if (item.kind.startsWith("forms-")) {
+      await semanticFormCase(page, origin, item, state, { landing, feed, you });
+    } else if (item.kind.startsWith("login")) {
       await landing();
       await page.getByRole("button", { name: "Log in", exact: true }).last().click();
       await page.getByRole("textbox", { name: "Email", exact: true }).fill(alice.email);
@@ -320,16 +577,34 @@ async function runCase(browser, origin, item) {
         await landing();
         await assertGuestPrivacy(after);
       } else assert.equal(state.user, null);
-    } else if (item.kind === "switch") {
+    } else if (item.kind === "switch" || item.kind === "switch-canceled") {
       await feed();
       await you(alice);
       await page.getByText("Settings", { exact: true }).click();
       await page.getByText("Switch account", { exact: true }).click();
       await page.getByRole("button", { name: "Fixture Bob, @fixturebob, switch account", exact: true }).click();
-      await feed();
-      await you(bob);
-      assert.ok(state.calls.some(call => call.phase === "switched" && call.account === bob.id));
-      assert.equal(state.calls.some(call => call.phase === "switched" && call.account === alice.id), false, "Switch reused the old account header.");
+      if (item.kind === "switch-canceled") {
+        await waitFor(() => typeof state.releaseSwitch === "function", "Switch was not held by the fixture.");
+        await page.goBack();
+        await page.getByRole("heading", { name: "Your profiles", exact: true }).waitFor({ state: "hidden" });
+        const after = await startGuestGuard();
+        state.releaseSwitch(); state.releaseSwitch = null;
+        await waitFor(() => state.user === null, "Canceled switch left the selected server account active.");
+        await page.waitForTimeout(250);
+        await assertGuestPrivacy(after);
+        await page.reload({ waitUntil: "networkidle" });
+        await landing();
+        await forceIdentity();
+        await page.waitForTimeout(250);
+        await assertGuestPrivacy(after);
+        assert.equal(state.calls.filter(call => call.path === "/api/me/accounts/switch").length, 1);
+        assert.ok(state.calls.some(call => call.path === "/api/logout"));
+      } else {
+        await feed();
+        await you(bob);
+        assert.ok(state.calls.some(call => call.phase === "switched" && call.account === bob.id));
+        assert.equal(state.calls.some(call => call.phase === "switched" && call.account === alice.id), false, "Switch reused the old account header.");
+      }
     } else if (item.kind === "external-switch" || item.kind === "expired") {
       await feed();
       await you(alice);
@@ -356,16 +631,19 @@ async function runCase(browser, origin, item) {
     assert.deepEqual(state.routeErrors, [], "Fixture/interception failure.");
     assert.deepEqual(state.pageErrors, [], "Uncaught browser error.");
     assert.deepEqual(state.reports, [], "The app sent a crash receipt.");
+    assert.deepEqual(state.credentialUrlLeaks, [], "Password data entered a request URL.");
+    assert.equal([fixturePassword, replacementPassword].some(password => decodeURIComponent(page.url()).includes(password)), false, "Password data entered the browser address.");
     assert.equal(state.consoleErrors.some(message => /TypeError|ReferenceError|Minified React error/.test(message)), false, "Runtime console exception.");
     assert.equal((await page.locator("body").innerText()).includes("Something crashed on our end"), false);
   } catch (error) { failure = error.message; }
   finally {
     state.releaseLogin?.();
+    state.releaseSwitch?.();
     await context.close();
   }
   return {
     name: item.name, passed: !failure,
-    ...(failure ? { failure, calls: state.calls, pageErrors: state.pageErrors, consoleErrors: state.consoleErrors, routeErrors: state.routeErrors, reports: state.reports } : {}),
+    ...(failure ? { failure, calls: state.calls, pageErrors: state.pageErrors, consoleErrors: state.consoleErrors, routeErrors: state.routeErrors, reports: state.reports, credentialUrlLeaks: state.credentialUrlLeaks } : {}),
   };
 }
 

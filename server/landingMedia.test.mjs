@@ -427,7 +427,7 @@ test("homepage consent is default-off, owner-only, idempotent, and privacy-norma
   assert.equal(restoredEdit.post.landingShowcase, true);
 
   db.prepare("UPDATE users SET pass_hash=? WHERE id=?").run(hashPassword("landing-export-password1"), owner.id);
-  const exported = routes["POST /api/me/export"]({ user: q.userById.get(owner.id), ip: "landing-consent-export", body: { password: "landing-export-password1" } });
+  const exported = await routes["POST /api/me/export"]({ user: q.userById.get(owner.id), ip: "landing-consent-export", body: { password: "landing-export-password1" } });
   const exportedPost = exported.posts.find((post) => post.id === first.id);
   assert.equal(exportedPost.photosPublic, true);
   assert.equal(exportedPost.landingShowcase, true);

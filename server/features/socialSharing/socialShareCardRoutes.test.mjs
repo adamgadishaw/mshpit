@@ -29,8 +29,8 @@ const LICENSED_ARTIST_PHOTO = Object.freeze({
 });
 
 class TestApiError extends Error {
-  constructor(status, message, code) {
-    super(message);
+  constructor(status, message, code, cause) {
+    super(message, cause ? { cause } : undefined);
     this.status = status;
     this.code = code;
   }
@@ -72,6 +72,7 @@ function reviewDocument(id = "post_123") {
 function fixture({
   attendanceState = "going",
   blocked = false,
+  postBoundary = () => ({ user_id: "post_owner", kind: ticket ? "status" : "review", attendance_ticket: ticket }),
   ticket = null,
   renderer = null,
   artworkEnv = { MEDIA_PUBLIC_BASE_URL: "https://media.mshpit.test/public" },
@@ -87,17 +88,17 @@ function fixture({
   const database = {
     prepare(sql) {
       assert.match(sql, /attendance_ticket/u);
-      return { get: () => ({ user_id: "post_owner", kind: ticket ? "status" : "review", attendance_ticket: ticket }) };
+      return { get: postBoundary };
     },
   };
   const routes = socialShareCardRoutes({
     database,
     ApiError: TestApiError,
     attendanceRepository: {
-      ownExactAttendance: () => ({ attendance: { state: attendanceState } }),
+      ownExactAttendance: () => ({ attendance: { state: typeof attendanceState === "function" ? attendanceState() : attendanceState } }),
     },
     assertLiveShareAvailable,
-    blockedEitherWay: () => blocked,
+    blockedEitherWay: () => typeof blocked === "function" ? blocked() : blocked,
     rateLimit: () => {},
     requireUser: () => ({ id: "member_123", name: "Alex" }),
     resolveCurrentArtistProfileImage,
@@ -126,6 +127,60 @@ function context(body) {
 
 const isMissingShareArtwork = (error) => error.status === 409
   && error.code === "SHARE_ARTWORK_REQUIRED";
+
+test("share-card bytes cannot outlive the initiating session during document or renderer work", async () => {
+  for (const phase of ["document", "renderer"]) {
+    let live = true;
+    let renders = 0;
+    const { route } = fixture({
+      resolvePublicDocument: async () => {
+        if (phase === "document") live = false;
+        return reviewDocument();
+      },
+      renderer: { async render() {
+        renders += 1;
+        live = false;
+        return { bytes: PNG };
+      } },
+    });
+    const ctx = { ...context({ kind: "post", postId: "post_123" }),
+      assertCurrentSession() {
+        if (!live) throw new TestApiError(401, "Log in first.", "AUTH_REQUIRED");
+      } };
+    await assert.rejects(route(ctx), (error) => error.code === "AUTH_REQUIRED", phase);
+    assert.equal(renders, phase === "document" ? 0 : 1);
+  }
+});
+
+test("post share output is withheld after a new block, removal, private projection, or edit during rendering", async () => {
+  for (const change of ["block", "remove", "private", "edit"]) {
+    let changed = false;
+    const { route } = fixture({
+      blocked: () => changed && change === "block",
+      postBoundary: () => changed && change === "remove" ? null : { user_id: "post_owner" },
+      resolvePublicDocument: async () => {
+        if (changed && change === "private") return null;
+        const document = reviewDocument();
+        if (changed && change === "edit") document.post.text = "Replacement text";
+        return document;
+      },
+      renderer: { async render() { changed = true; return { bytes: PNG }; } },
+    });
+    await assert.rejects(route(context({ kind: "post", postId: "post_123" })),
+      (error) => error.status === 404 && error.code === "NOT_FOUND", change);
+  }
+});
+
+test("attendance share output is withheld when the saved intent changes during rendering", async () => {
+  let state = "going";
+  const { route } = fixture({
+    attendanceState: () => state,
+    resolveCurrentArtistProfileImage: () => OWNED_ARTIST_PHOTO,
+    renderer: { async render() { state = "interested"; return { bytes: PNG }; } },
+  });
+  await assert.rejects(route(context({ kind: "event", eventId: "event_123", intent: "going" })),
+    (error) => error.status === 409 && error.code === "CONFLICT");
+});
 
 test("event artwork requires the member's exact saved Going or Interested state", async () => {
   const going = fixture({
@@ -623,7 +678,8 @@ test("review artwork keeps its own media first and preserves an official artist 
       source: "owned-media",
     },
   ]);
-  assert.deepEqual(fallbackPaths, ["/post/review_media", "/artist/the-example", "/venue/massey-hall"]);
+  assert.deepEqual(fallbackPaths, ["/post/review_media", "/artist/the-example", "/venue/massey-hall",
+    "/post/review_media", "/post/review_media"]);
 });
 
 test("review artwork rejects cross-user artist and venue gallery fallbacks", async () => {
@@ -669,7 +725,8 @@ test("review artwork rejects cross-user artist and venue gallery fallbacks", asy
   });
   await fallbackFixture.route(context({ kind: "post", postId: "review_fallback" }));
   assert.deepEqual(fallbackFixture.renderedModels[0].artwork, []);
-  assert.deepEqual(fallbackPaths, ["/post/review_fallback", "/artist/the-example", "/venue/massey-hall"]);
+  assert.deepEqual(fallbackPaths, ["/post/review_fallback", "/artist/the-example", "/venue/massey-hall",
+    "/post/review_fallback", "/post/review_fallback"]);
 });
 
 test("review artwork rejects a public concert's Ticketmaster image without export permission", async () => {
@@ -705,6 +762,8 @@ test("review artwork rejects a public concert's Ticketmaster image without expor
     "/post/review_provider_fallback",
     "/concert/show.review-provider",
     "/artist/the-example",
+    "/post/review_provider_fallback",
+    "/post/review_provider_fallback",
   ]);
 });
 
@@ -836,7 +895,8 @@ test("renderer saturation reports a dedicated retryable service failure", async 
   });
   await assert.rejects(
     route(context({ kind: "event", eventId: "event_123", intent: "going" })),
-    (error) => error.status === 503 && error.code === "SHARE_RENDER_UNAVAILABLE",
+    (error) => error.status === 503 && error.code === "SHARE_RENDER_UNAVAILABLE"
+      && error.cause?.code === "renderer_busy",
   );
 });
 
@@ -849,6 +909,7 @@ test("temporary authoritative-photo failure reports a retryable artwork failure"
   });
   await assert.rejects(
     route(context({ kind: "event", eventId: "event_123", intent: "going" })),
-    (error) => error.status === 503 && error.code === "SHARE_RENDER_UNAVAILABLE",
+    (error) => error.status === 503 && error.code === "SHARE_RENDER_UNAVAILABLE"
+      && error.cause?.code === "artwork_unavailable",
   );
 });

@@ -1,4 +1,13 @@
 import { verifiedArtistGenre } from "./genre.mjs";
+import { canonicalArtistIdentity } from "./canonicalArtistIdentity.mjs";
+
+function persistedArtistKey(name, artist) {
+  if (!artist || artist.transient === true) return null;
+  const key = artist.key || artist.norm || artist.artistKey;
+  if (typeof key !== "string" || !key.trim() || key.trim().length > 180
+    || /[\u0000-\u001f\u007f]/u.test(key)) return null;
+  return canonicalArtistIdentity({ artistName: name, catalogArtist: artist }).artistKey;
+}
 
 const average = (rows, select) => rows.length
   ? rows.reduce((sum, row) => sum + select(row), 0) / rows.length
@@ -29,7 +38,9 @@ export function buildArtistSummary({
     banner: prof.banner || null,
     ownerBio: prof.bio || null,
     ownerId: prof.ownerId || null,
-    profileKey: key,
+    // Catalog keys can differ from display-name spelling. Only a matching,
+    // persisted identity may replace the legacy name-key while metadata loads.
+    profileKey: persistedArtistKey(name, remoteArtist) || persistedArtistKey(name, catalogArtist) || key,
     feedEnabled: !!prof.feedEnabled,
     nights: safeNights,
     upcoming: safeUpcoming,

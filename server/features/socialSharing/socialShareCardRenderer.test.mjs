@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { ApiError, errorEnvelope, privateErrorLabel } from "../../errors.js";
 
 import sharp from "sharp";
 
@@ -19,6 +20,21 @@ import {
   SocialShareCardArtworkUnavailableError,
   SocialShareCardBusyError,
 } from "./socialShareCardRenderer.js";
+
+test("share diagnostics distinguish renderer saturation and transport outages without leaking them publicly", () => {
+  for (const [failure, code] of [
+    [new SocialShareCardBusyError(), "renderer_busy"],
+    [new SocialShareCardArtworkUnavailableError(), "artwork_unavailable"],
+    [new SocialShareCardArtworkUnavailableError(new ShareArtworkTransientError("connection_reset")), "connection_reset"],
+  ]) {
+    assert.equal(failure.code, code);
+    assert.ok(privateErrorLabel(failure).endsWith(`/${code}`));
+    const exposed = errorEnvelope(new ApiError(503, "Try again.", "SHARE_RENDER_UNAVAILABLE", failure), "request-id");
+    assert.deepEqual(exposed, {
+      error: "Try again.", code: "SHARE_RENDER_UNAVAILABLE", status: 503, requestId: "request-id", retryable: true,
+    });
+  }
+});
 
 function registeredLicensedArtwork() {
   const photo = publicArtistPhoto("bryson tiller");
@@ -647,7 +663,7 @@ test("temporary artwork exhaustion uses a short error-only cache before allowing
     now: () => clock,
     loadArtwork: async () => {
       loads += 1;
-      throw new ShareArtworkTransientError();
+      throw new ShareArtworkTransientError("connection_reset");
     },
     renderPng: async () => {
       renders += 1;
@@ -661,8 +677,10 @@ test("temporary artwork exhaustion uses a short error-only cache before allowing
     }],
   });
 
-  await assert.rejects(renderer.render(model), SocialShareCardArtworkUnavailableError);
-  await assert.rejects(renderer.render(model), SocialShareCardArtworkUnavailableError);
+  await assert.rejects(renderer.render(model), (error) => error instanceof SocialShareCardArtworkUnavailableError
+    && error.code === "connection_reset");
+  await assert.rejects(renderer.render(model), (error) => error instanceof SocialShareCardArtworkUnavailableError
+    && error.code === "artwork_unavailable");
   assert.equal(loads, 1, "the short error cache prevents repeated provider hammering");
   assert.equal(renders, 0);
 
@@ -670,6 +688,39 @@ test("temporary artwork exhaustion uses a short error-only cache before allowing
   await assert.rejects(renderer.render(model), SocialShareCardArtworkUnavailableError);
   assert.equal(loads, 2, "the card can be retried after the short error window");
   assert.equal(socialShareCardConstants.transientFailureCacheTtlMs, 5_000);
+});
+
+test("a temporary photo outage recovers into a photo-bearing Going PNG, never an empty cached ticket", async () => {
+  const artwork = { url: "https://media.mshpit.test/public/share-tests/recovered.png", source: "owned-media" };
+  const photo = await sharp({ create: {
+    width: 640, height: 480, channels: 3, background: "#d43020",
+  } }).png().toBuffer();
+  let requests = 0;
+  const renderer = createSocialShareCardRenderer({
+    loadArtwork: (candidates, options) => loadShareArtwork(candidates, {
+      ...options,
+      env: { MEDIA_PUBLIC_BASE_URL: "https://media.mshpit.test/public" },
+      fetchImpl: async (url) => {
+        assert.equal(url, artwork.url);
+        requests += 1;
+        return requests === 1
+          ? new Response(null, { status: 503 })
+          : new Response(photo, { headers: { "content-type": "image/png" } });
+      },
+    }),
+  });
+  const model = eventShareCardModel(eventDocument(), "going", { fallbackArtwork: [artwork] });
+  const snapshot = JSON.stringify(model);
+  const first = await renderer.render(model);
+  const second = await renderer.render(model);
+  assert.equal(first.artwork?.url, artwork.url);
+  assert.equal(second.artwork?.url, artwork.url);
+  assert.equal(first.bytes, second.bytes);
+  assert.equal(requests, 2);
+  assert.equal(JSON.stringify(model), snapshot);
+  const metadata = await sharp(first.bytes).metadata();
+  assert.equal(metadata.width, 1080);
+  assert.equal(metadata.height, 1920);
 });
 
 test("one total deadline bounds sequential artwork resolution and rendering", async () => {

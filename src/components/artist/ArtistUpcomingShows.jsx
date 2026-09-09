@@ -95,13 +95,17 @@ export default function ArtistUpcomingShows({ controller, artistName, onOpenShow
   const pending = ["idle", "loading", "refreshing"].includes(resource.status);
   const failed = resource.status === "error";
   const hasSchedule = !!schedule;
+  const catalogUnavailable = resource.error?.code === "PIT-REQ-002" || resource.error?.serverCode === "NOT_FOUND";
+  const failureCopy = catalogUnavailable
+    ? hasSchedule ? "catalogUnavailableStale" : "catalogUnavailable"
+    : hasSchedule ? "stale" : "failed";
   const coverage = schedule?.coverage?.status;
   const coverageKey = coverage === "partial" ? "partial" : coverage === "stale" ? "coverageStale" : coverage === "unknown" ? "coverageUnknown" : coverage === "unavailable" ? "coverageUnavailable" : schedule?.coverage?.refreshPending ? "coveragePending" : null;
   return <View style={[styles.section, { marginTop: space(5) }]}>
     <View style={styles.heading}><View style={styles.headingCopy}><Text accessibilityRole="header" style={styles.title}>{text("title")}</Text><Text style={styles.description}>{text("description")}</Text></View><Icon name="ticket" size={24} color={colors.amber} /></View>
     {!condensed ? <LocationFilter controller={controller} copy={copy} /> : null}
     {pending ? <View accessibilityLiveRegion="polite" style={styles.notice}><ActivityIndicator size="small" color={colors.amber} /><Text style={styles.noticeText}>{text(hasSchedule ? "refreshing" : "loading")}</Text></View> : null}
-    {failed ? <View style={styles.notice}><Text selectable accessibilityRole="alert" style={styles.noticeText}>{text(hasSchedule ? "stale" : "failed")}{resource.error?.code ? ` (${resource.error.code})` : ""}</Text><Action label={text("retry")} onPress={controller.reload} /></View> : null}
+    {failed ? <View style={styles.notice}><Text selectable accessibilityRole="alert" style={styles.noticeText}>{text(failureCopy)}{resource.error?.code ? ` (${resource.error.code})` : ""}</Text><Action label={text("retry")} onPress={controller.reload} /></View> : null}
     {!pending && !failed && !rows.length ? <Text selectable style={styles.empty}>{text(controller.city || controller.countryCode ? "emptyFiltered" : "empty")}</Text> : null}
     {shown.map((event) => <ShowTicket key={event.id} event={event} artistName={artistName} onOpenShow={onOpenShow} copy={copy} />)}
     {coverageKey ? <Text selectable style={styles.coverage}>{text(coverageKey)}</Text> : null}

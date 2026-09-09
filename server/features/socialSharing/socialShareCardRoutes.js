@@ -286,6 +286,7 @@ export function socialShareCardRoutes({
       const kind = typeof ctx.body?.kind === "string" ? ctx.body.kind.trim().toLowerCase() : "";
       let model = null;
       let filename = "mshpit-share.png";
+      let assertShareCurrent = async () => {};
 
       if (kind === "post") {
         if (!exactBodyKeys(ctx.body, ALLOWED_POST_FIELDS)) {
@@ -301,6 +302,15 @@ export function socialShareCardRoutes({
         if (document?.kind !== "post") {
           throw new ApiError(404, "That post is not available to share.", "NOT_FOUND");
         }
+        const snapshot = JSON.stringify(document.post);
+        assertShareCurrent = async () => {
+          const latestDocument = await resolvePublicDocument(postPath(postId));
+          const latestBoundary = postBoundaryById.get(postId);
+          if (!latestBoundary || blockedEitherWay(user.id, latestBoundary.user_id)
+            || latestDocument?.kind !== "post" || JSON.stringify(latestDocument.post) !== snapshot) {
+            throw new ApiError(404, "That post is not available to share.", "NOT_FOUND");
+          }
+        };
         model = document.post?.kind === "review"
           ? reviewShareCardModel(document, {
               fallbackArtwork: await projectedArtworkFallbacks(
@@ -360,6 +370,12 @@ export function socialShareCardRoutes({
           throw new ApiError(400, "Choose a saved Going or Interested event.", "VALIDATION_FAILED");
         }
         const own = attendanceRepository.ownExactAttendance(user.id, { tourDateId: eventId });
+        assertShareCurrent = async () => {
+          const current = attendanceRepository.ownExactAttendance(user.id, { tourDateId: eventId });
+          if (current?.attendance?.state !== intent) {
+            throw new ApiError(409, "This attendance changed. Reopen the event before sharing it.", "CONFLICT");
+          }
+        };
         if (own?.attendance?.state !== intent) {
           throw new ApiError(
             409,
@@ -410,6 +426,9 @@ export function socialShareCardRoutes({
         );
       }
       let rendered;
+      ctx.assertCurrentSession?.();
+      await assertShareCurrent();
+      ctx.assertCurrentSession?.();
       try {
         rendered = await renderer.render(model, { signal: ctx.signal || null });
       } catch (error) {
@@ -418,6 +437,7 @@ export function socialShareCardRoutes({
             503,
             "Share artwork is busy. Wait a moment and try again.",
             "SHARE_RENDER_UNAVAILABLE",
+            error,
           );
         }
         if (error instanceof SocialShareCardArtworkUnavailableError) {
@@ -425,10 +445,16 @@ export function socialShareCardRoutes({
             503,
             "The photo for this share card could not be prepared. Try again.",
             "SHARE_RENDER_UNAVAILABLE",
+            error,
           );
         }
         throw error;
       }
+      // Rendering and artwork reads yield. Never deliver captured private state
+      // after logout, a new block, a removed/edited post, or changed attendance.
+      ctx.assertCurrentSession?.();
+      await assertShareCurrent();
+      ctx.assertCurrentSession?.();
       return createPngApiResponse(rendered.bytes, {
         canonicalUrl: model.canonicalUrl,
         filename,
