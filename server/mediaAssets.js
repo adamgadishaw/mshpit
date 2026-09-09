@@ -476,10 +476,14 @@ const defaultImageProcessor = Object.freeze({
   sanitize: sanitizeDecodedImage,
 });
 
-async function runImageProcessor(operation, options, { sanitizing = false } = {}) {
+export async function runImageProcessor(operation, options, { sanitizing = false } = {}) {
   try {
     return await operation(options.bytes, options);
   } catch (error) {
+    if (options.signal?.aborted) {
+      throw options.signal.reason instanceof Error ? options.signal.reason
+        : new DOMException("Photo verification was cancelled.", "AbortError");
+    }
     const code = String(error?.code || "");
     if (new Set(["busy", "timeout", "worker_unavailable", "worker_protocol"]).has(code)) {
       const message = code === "busy"
@@ -1262,6 +1266,7 @@ export async function sanitizePrivateImageStaging(database, {
   });
   const sanitized = await runImageProcessor(imageProcessor?.sanitize || defaultImageProcessor.sanitize, {
     bytes: verified.bytes,
+    signal,
     expectedType,
     outputType,
     ...(allowHeicFallback === true && Number.isSafeInteger(imageTimeoutMs) && imageTimeoutMs > 0
@@ -1708,6 +1713,7 @@ export async function finalizeMediaAsset(database, {
     const decoded = input.serverOriginalDelivery
       ? await runImageProcessor(imageProcessor?.sanitize || defaultImageProcessor.sanitize, {
         bytes: verifiedImage.bytes,
+        signal,
         expectedType: row.mime_type,
         outputType: serverImageDeliveryType(row.mime_type),
         timeoutMs: 60_000,
@@ -1717,6 +1723,7 @@ export async function finalizeMediaAsset(database, {
       }, { sanitizing: true })
       : await runImageProcessor(imageProcessor?.validate || defaultImageProcessor.validate, {
         bytes: verifiedImage.bytes,
+        signal,
         expectedType: row.mime_type,
         timeoutMs: 60_000,
         allowHeicFallback: true,
@@ -2493,6 +2500,7 @@ async function finalizePendingPhotoRevisionVariant(database, {
   });
   const sanitized = await runImageProcessor(imageProcessor?.sanitize || defaultImageProcessor.sanitize, {
     bytes: verifiedImage.bytes,
+    signal,
     expectedType: row.mime_type,
   }, { sanitizing: true });
   assertVerifiedDimensions(sanitized, input.width, input.height);
@@ -2744,6 +2752,7 @@ export async function finalizeMediaVariant(database, {
   });
   const sanitized = await runImageProcessor(imageProcessor?.sanitize || defaultImageProcessor.sanitize, {
     bytes: verifiedImage.bytes,
+    signal,
     expectedType: row.mime_type,
   }, { sanitizing: true });
   assertVerifiedDimensions(sanitized, input.width, input.height);

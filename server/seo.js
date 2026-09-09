@@ -44,11 +44,13 @@ import { createSitemapSnapshotManager } from "./features/seo/sitemapSnapshotMana
 import { decodeArchiveShowKey } from "./features/artistArchive/artistArchiveKeys.js";
 import {
   isStrictCalendarDate,
+  publicIndexableMusicEventSql,
   publicMusicEventCandidateSql,
 } from "./features/seo/publicEntityPolicy.js";
 import { effectiveTourDateEndSql } from "./tourDateLifecycle.js";
 import { tourDateHasNoPublishedMemorialSql } from "./artistMemorialTourDateVisibility.js";
 import { inPersonReviewSql } from "./onlineReviews.js";
+import { hasSubstantiveVenueGuide } from "./venueFacts.js";
 
 const SITE_NAME = "Mshpit";
 const DEFAULT_TITLE = "Mshpit — Concert reviews, photos and live music discovery";
@@ -117,28 +119,38 @@ const publicConcertIdentity = db.prepare(`SELECT p.artist,p.artist_key,p.venue,p
   LIMIT 1`);
 const PUBLIC_VENUE_EVENT_IDENTITY_COLUMNS = `td.venue,LOWER(td.venue) AS venue_key,
     COALESCE(NULLIF(td.venue_city,''),td.place) AS city,td.source,td.venue_provider_id,td.updated_at`;
+// Resolve venue identity from the same public music evidence used by its guide
+// and sitemap. A newer parking product or sports record cannot rename a music
+// venue page or make its canonical document disagree with sitemap eligibility.
+const PUBLIC_VENUE_EVENT_EVIDENCE_SQL = `td.date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+    AND date(td.date)=td.date
+    AND ${publicMusicEventCandidateSql("td")}
+    AND ${publicIndexableMusicEventSql("td")}`;
 const venueProviderByPublicSlug = db.prepare(`SELECT ${PUBLIC_VENUE_EVENT_IDENTITY_COLUMNS}
   FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id
   WHERE pit_venue_public_slug(td.source,td.venue_provider_id)=?
     AND td.venue_provider_id IS NOT NULL AND TRIM(td.venue_provider_id)<>''
+    AND ${PUBLIC_VENUE_EVENT_EVIDENCE_SQL}
     AND td.release_at<=? AND (td.owner_id IS NULL OR ${activeAccountSql("owner")})
-    AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1 OR td.date<?)
+    AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1 OR ${effectiveTourDateEndSql("td")}<?)
   ORDER BY td.updated_at DESC,td.id DESC LIMIT 1`);
 const venueProvidersByNameSlug = db.prepare(`SELECT MAX(td.venue) AS venue,td.source,td.venue_provider_id,
     MAX(COALESCE(NULLIF(td.venue_city,''),td.place)) AS city,MAX(td.updated_at) AS updated_at
   FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id
   WHERE pit_public_slug(td.venue)=? AND TRIM(COALESCE(td.venue,''))<>''
     AND td.venue_provider_id IS NOT NULL AND TRIM(td.venue_provider_id)<>''
+    AND ${PUBLIC_VENUE_EVENT_EVIDENCE_SQL}
     AND td.release_at<=? AND (td.owner_id IS NULL OR ${activeAccountSql("owner")})
-    AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1 OR td.date<?)
+    AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1 OR ${effectiveTourDateEndSql("td")}<?)
   GROUP BY td.source,td.venue_provider_id
   ORDER BY MAX(td.updated_at) DESC,td.source,td.venue_provider_id LIMIT 2`);
 const venueEventIdentitiesByNameSlug = db.prepare(`SELECT LOWER(TRIM(td.venue)) AS venue_identity,
     pit_public_slug(COALESCE(NULLIF(td.venue_city,''),NULLIF(td.place,''))) AS location_identity
   FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id
   WHERE pit_public_slug(td.venue)=? AND TRIM(COALESCE(td.venue,''))<>''
+    AND ${PUBLIC_VENUE_EVENT_EVIDENCE_SQL}
     AND td.release_at<=? AND (td.owner_id IS NULL OR ${activeAccountSql("owner")})
-    AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1 OR td.date<?)
+    AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1 OR ${effectiveTourDateEndSql("td")}<?)
   GROUP BY venue_identity,location_identity
   ORDER BY MAX(td.updated_at) DESC,venue_identity,location_identity LIMIT 2`);
 const venuePostIdentitiesByNameSlug = db.prepare(`SELECT LOWER(TRIM(p.venue)) AS venue_identity,
@@ -152,8 +164,9 @@ const venuePostIdentitiesByNameSlug = db.prepare(`SELECT LOWER(TRIM(p.venue)) AS
 const venueEventByNameSlug = db.prepare(`SELECT ${PUBLIC_VENUE_EVENT_IDENTITY_COLUMNS}
   FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id
   WHERE pit_public_slug(td.venue)=? AND TRIM(COALESCE(td.venue,''))<>''
+    AND ${PUBLIC_VENUE_EVENT_EVIDENCE_SQL}
     AND td.release_at<=? AND (td.owner_id IS NULL OR ${activeAccountSql("owner")})
-    AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1 OR td.date<?)
+    AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1 OR ${effectiveTourDateEndSql("td")}<?)
   ORDER BY td.updated_at DESC,td.id DESC LIMIT 1`);
 const venuePostByNameSlug = db.prepare(`SELECT p.venue,p.venue_key,p.city,
     NULL AS source,NULL AS venue_provider_id,COALESCE(p.updated_at,p.created_at) AS updated_at
@@ -567,7 +580,8 @@ function documentIsIndexable(document) {
       || Number(document.concert?.ratingCount) > 0;
   }
   if (document.kind === "venue") {
-    return document.events?.length > 0
+    return hasSubstantiveVenueGuide(document.venue)
+      || document.events?.length > 0
       || document.posts?.some((post) => substantiveText(post.text, 40) || post.media?.length);
   }
   if (document.kind === "discover") {

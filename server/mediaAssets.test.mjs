@@ -38,8 +38,10 @@ const {
   mediaSelection,
   ownedMediaAsset,
   stageSanitizedPublicImage,
+  runImageProcessor,
   updateMediaAsset,
 } = await import("./mediaAssets.js");
+
 const {
   enqueueExpiredMediaTickets,
   MEDIA_UPLOAD_SETTLE_BUFFER_MS,
@@ -457,6 +459,20 @@ async function mediaAuthorization(owner, session, pathname = "/api/media/assets/
   return readAuthorizedRequest({ token: session.token, expectedAccount: owner.id,
     method: "POST", pathname, readBody: () => ({}) });
 }
+
+test("image cancellation and admission deadlines are not reported as invalid photos", async () => {
+  for (const reason of [
+    new DOMException("request cancelled", "AbortError"),
+    Object.assign(new Error("verification timed out; retry"), { status: 503, code: "MEDIA_STORAGE_UNAVAILABLE" }),
+  ]) {
+    const controller = new AbortController();
+    await assert.rejects(runImageProcessor(async (_bytes, { signal }) => {
+      assert.equal(signal, controller.signal);
+      controller.abort(reason);
+      throw reason;
+    }, { bytes: Buffer.alloc(12), signal: controller.signal }), (error) => error === reason);
+  }
+});
 
 test("media finalization refuses revoked or restricted sessions at its final commit and remains resumable", async () => {
   for (const mode of ["logout", "expiry", "unverified", "banned", "dormant"]) {

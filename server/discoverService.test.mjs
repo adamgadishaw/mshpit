@@ -168,8 +168,17 @@ test("the projection cache is reused briefly and invalidates immediately on genr
   let scans = 0;
   const database = {
     prepare(sql) {
-      if (sql === "SELECT norm, country, genre, data FROM artists") scans += 1;
-      return raw.prepare(sql);
+      const statement = raw.prepare(sql);
+      if (sql.startsWith("SELECT a.norm,a.country,")) {
+        scans += 1;
+        return { *iterate() {
+          for (const row of statement.iterate()) {
+            assert.equal(Object.hasOwn(row, "data"), false, "genre scans must not return rich artist blobs");
+            yield row;
+          }
+        } };
+      }
+      return statement;
     },
   };
   try {

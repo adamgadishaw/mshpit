@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 
 import sharp from "sharp";
+import { tryAcquireMemoryWork } from "../../memoryAdmission.js";
+import { renderIsolatedSocialShareCard } from "./socialShareCardProcess.js";
 
 import { eventPath, postPath } from "../../../src/domain/urls.mjs";
 import {
@@ -23,7 +25,7 @@ const MAX_RENDER_BYTES = 4 * 1024 * 1024;
 const MAX_ARTWORK_INPUT_BYTES = 6 * 1024 * 1024;
 const MAX_ARTWORK_INPUT_PIXELS = 12_000_000;
 const DEFAULT_CACHE_ENTRIES = 160;
-const DEFAULT_CACHE_BYTES = 48 * 1024 * 1024;
+const DEFAULT_CACHE_BYTES = 24 * 1024 * 1024;
 const DEFAULT_MAX_CONCURRENT_RENDERS = 1;
 const DEFAULT_MAX_CONCURRENT_ARTWORK_LOADS = 4;
 const DEFAULT_TRANSIENT_FAILURE_CACHE_ENTRIES = 160;
@@ -717,7 +719,7 @@ async function preparedArtworkDataUri(bytes, sharpFactory) {
   return `data:image/jpeg;base64,${normalized.toString("base64")}`;
 }
 
-async function renderSocialShareCardResult(model, options = {}) {
+export async function renderSocialShareCardResult(model, options = {}) {
   const sharpFactory = typeof options === "function" ? options : options?.sharpFactory || sharp;
   let artworkDataUri = safeArtworkDataUri(options?.artworkDataUri);
   if (!artworkDataUri && Buffer.isBuffer(options?.artworkBytes)) {
@@ -869,7 +871,7 @@ function boundedWorkTimeout(value) {
 
 export function createSocialShareCardRenderer({
   loadArtwork = loadShareArtwork,
-  renderPng = renderSocialShareCardResult,
+  renderPng = renderIsolatedSocialShareCard,
   maxConcurrentRenders = DEFAULT_MAX_CONCURRENT_RENDERS,
   maxConcurrentArtworkLoads = DEFAULT_MAX_CONCURRENT_ARTWORK_LOADS,
   cache = createLruBufferCache(),
@@ -877,6 +879,7 @@ export function createSocialShareCardRenderer({
   transientFailureCacheTtlMs = DEFAULT_TRANSIENT_FAILURE_CACHE_TTL_MS,
   totalWorkTimeoutMs = DEFAULT_TOTAL_WORK_TIMEOUT_MS,
   now = Date.now,
+  acquireMemoryLease = () => tryAcquireMemoryWork("share"),
 } = {}) {
   if (typeof loadArtwork !== "function") throw new TypeError("A social share-card artwork loader is required");
   if (typeof renderPng !== "function") throw new TypeError("A social share-card renderer is required");
@@ -897,11 +900,14 @@ export function createSocialShareCardRenderer({
 
   const withRenderAdmission = async (task) => {
     if (activeRenders >= renderLimit) throw new SocialShareCardBusyError();
+    const lease = acquireMemoryLease();
+    if (!lease) throw new SocialShareCardBusyError();
     activeRenders += 1;
     try {
       return await task();
     } finally {
       activeRenders = Math.max(0, activeRenders - 1);
+      lease.release();
     }
   };
 
@@ -919,6 +925,18 @@ export function createSocialShareCardRenderer({
     if (signal?.aborted) throw requestAbortReason(signal);
     const acceptedArtwork = artworkCandidate(artwork);
     if (!acceptedArtwork) return null;
+    if (renderPng === renderIsolatedSocialShareCard) {
+      let rendered;
+      try {
+        rendered = await renderPng(model, { artworkBytes: bytes, artwork: acceptedArtwork, signal });
+      } catch (error) {
+        if (signal?.aborted) throw requestAbortReason(signal);
+        throw new SocialShareCardRenderError(error);
+      }
+      if (rendered?.artworkApplied !== true) return null;
+      return Object.freeze({ [PREPARED_ARTWORK_RENDER]: true, artworkBytes: null,
+        artworkDataUri: "", artwork: acceptedArtwork, rendered });
+    }
     let artworkDataUri = "";
     try {
       artworkDataUri = await preparedArtworkDataUri(bytes, sharp);

@@ -455,19 +455,12 @@ test("the real HEIC decoder fallback is explicit and remains unavailable to ordi
   );
 });
 
-test("the bounded processor queue admits a complete ordinary 20-item album without busy failures", async () => {
+test("ordinary 20-item albums remain supported through serial processing without retaining every source buffer", async () => {
   const jpeg = await createdImage({ width: 512, height: 512 });
-  const jobs = Array.from({ length: MEDIA_POST_MAX_ATTACHMENTS }, () => (
-    validateDecodedImage(jpeg, { expectedType: "image/jpeg" })
-  ));
-  const during = imageProcessorHealth();
-  assert.equal(during.capacity, 1);
-  assert.equal(during.active, 1);
-  assert.equal(during.queued, MEDIA_POST_MAX_ATTACHMENTS - 1);
-  assert.ok(during.queueCapacity >= MEDIA_POST_MAX_ATTACHMENTS,
-    "queue capacity covers an ordinary album even before client-side serial backpressure");
-
-  const results = await Promise.all(jobs);
+  const results = [];
+  for (let index = 0; index < MEDIA_POST_MAX_ATTACHMENTS; index += 1) {
+    results.push(await validateDecodedImage(jpeg, { expectedType: "image/jpeg" }));
+  }
   assert.equal(results.length, MEDIA_POST_MAX_ATTACHMENTS);
   assert.equal(results.every((result) => result.mimeType === "image/jpeg"
     && result.width === 512 && result.height === 512 && result.pixels === 512 * 512), true);
@@ -475,9 +468,111 @@ test("the bounded processor queue admits a complete ordinary 20-item album witho
   assert.equal(health.isolation, "child_process");
   assert.equal(health.active, 0);
   assert.equal(health.queued, 0);
+  assert.equal(health.queueCapacity, 2);
+  assert.equal(health.queueByteCapacity, 60 * 1024 * 1024);
   assert.equal(health.maxPixels, MAX_IMAGE_PIXELS);
   assert.equal(health.diskCache, false);
   assert.equal(health.untrustedOperationsBlocked, true);
+});
+
+test("image worker admission rejects pressure before forking and keeps its memory lease until an aborted child exits", async () => {
+  const jpeg = await createdImage();
+  await assert.rejects(validateDecodedImage(jpeg, { expectedType: "image/jpeg", acquireMemoryLease: () => null }),
+    (error) => error.code === "busy");
+  assert.equal(imageProcessorHealth().active, 0);
+  const alreadyAborted = new AbortController();
+  alreadyAborted.abort();
+  let admissions = 0;
+  await assert.rejects(validateDecodedImage(jpeg, { expectedType: "image/jpeg", signal: alreadyAborted.signal,
+    acquireMemoryLease: () => { admissions += 1; return { release() {} }; } }), (error) => error.name === "AbortError");
+  assert.equal(admissions, 0, "cancelled work must not acquire memory or start a child");
+  let released = 0;
+  const controller = new AbortController();
+  const operation = validateDecodedImage(jpeg, { expectedType: "image/jpeg", signal: controller.signal,
+    acquireMemoryLease: () => ({ release() { released += 1; } }) });
+  const rejected = assert.rejects(operation, (error) => error.name === "AbortError");
+  controller.abort();
+  assert.equal(released, 0, "a cancelled child must keep its reservation until the OS reports exit");
+  assert.equal(imageProcessorHealth().active, 1);
+  await rejected;
+  assert.equal(released, 1);
+  assert.equal(imageProcessorHealth().active, 0);
+});
+
+test("queued image cancellation immediately frees retained buffers and excess work receives bounded backpressure", async () => {
+  const jpeg = await createdImage();
+  const activeController = new AbortController();
+  const queuedController = new AbortController();
+  const options = { expectedType: "image/jpeg", acquireMemoryLease: () => ({ release() {} }) };
+  const active = validateDecodedImage(jpeg, { ...options, signal: activeController.signal });
+  const cancelled = validateDecodedImage(jpeg, { ...options, signal: queuedController.signal });
+  const next = validateDecodedImage(jpeg, options);
+  const activeRejected = assert.rejects(active, (error) => error.name === "AbortError");
+  const queuedRejected = assert.rejects(cancelled, (error) => error.name === "AbortError");
+  assert.equal(imageProcessorHealth().queued, 2);
+  await assert.rejects(validateDecodedImage(jpeg, options), (error) => error.code === "busy");
+  queuedController.abort();
+  assert.equal(imageProcessorHealth().queued, 1);
+  assert.equal(imageProcessorHealth().queuedBytes, jpeg.length);
+  activeController.abort();
+  await Promise.all([activeRejected, queuedRejected]);
+  assert.equal((await next).mimeType, "image/jpeg");
+  assert.equal(imageProcessorHealth().queuedBytes, 0);
+});
+
+test("a synchronous admission failure rejects its queued photo without poisoning later work", async () => {
+  const jpeg = await createdImage();
+  const controller = new AbortController();
+  let released = 0;
+  const options = { expectedType: "image/jpeg",
+    acquireMemoryLease: () => ({ release() { released += 1; } }) };
+  const active = validateDecodedImage(jpeg, { ...options, signal: controller.signal });
+  const failure = new Error("admission sensor unavailable");
+  const rejected = validateDecodedImage(jpeg, { ...options, acquireMemoryLease: () => { throw failure; } });
+  const next = validateDecodedImage(jpeg, options);
+  const activeRejected = assert.rejects(active, (error) => error.name === "AbortError");
+  const queuedRejected = assert.rejects(rejected, (error) => error === failure);
+  assert.equal(imageProcessorHealth().queued, 2);
+  controller.abort();
+  await Promise.all([activeRejected, queuedRejected]);
+  assert.equal((await next).mimeType, "image/jpeg");
+  assert.equal(released, 2);
+  assert.equal(imageProcessorHealth().active, 0);
+  assert.equal(imageProcessorHealth().queued, 0);
+  assert.equal(imageProcessorHealth().queuedBytes, 0);
+});
+
+test("queued image work expires before retaining source bytes indefinitely", async (t) => {
+  const jpeg = await createdImage();
+  const controller = new AbortController();
+  const options = { expectedType: "image/jpeg", acquireMemoryLease: () => ({ release() {} }) };
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const active = validateDecodedImage(jpeg, { ...options, signal: controller.signal });
+  const queued = validateDecodedImage(jpeg, { ...options, queueTimeoutMs: 1000 });
+  const queuedRejected = assert.rejects(queued, (error) => error.code === "timeout");
+  const activeRejected = assert.rejects(active, (error) => error.name === "AbortError");
+  t.mock.timers.tick(1000);
+  assert.equal(imageProcessorHealth().queued, 0);
+  assert.equal(imageProcessorHealth().queuedBytes, 0);
+  controller.abort();
+  await Promise.all([queuedRejected, activeRejected]);
+  t.mock.timers.reset();
+});
+
+test("an active image deadline releases reserved memory only after terminating its child", async (t) => {
+  const jpeg = await createdImage();
+  let releases = 0;
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const operation = validateDecodedImage(jpeg, { expectedType: "image/jpeg", timeoutMs: 1000,
+    acquireMemoryLease: () => ({ release() { releases += 1; } }) });
+  const rejected = assert.rejects(operation, (error) => error.code === "timeout");
+  t.mock.timers.tick(1000);
+  assert.equal(releases, 0);
+  assert.equal(imageProcessorHealth().active, 1);
+  await rejected;
+  assert.equal(releases, 1);
+  assert.equal(imageProcessorHealth().active, 0);
+  t.mock.timers.reset();
 });
 
 test("high-bit-depth PNGs are rejected before their expanded pixels reach libvips", async () => {

@@ -9,6 +9,7 @@ import {
   SITEMAP_MAX_PERSISTED_SNAPSHOT_BYTES,
   createSitemapSnapshotManager,
   sitemapStartupRefreshDecision,
+  sitemapSnapshotJsonChunks,
   validateSitemapSnapshotPayload,
 } from "./sitemapSnapshotManager.js";
 
@@ -61,6 +62,7 @@ function createTempManager(options = {}) {
     database: DATABASE,
     dataDir,
     env: ENV,
+    acquireRefreshLease: () => ({ release() {} }),
     ...options,
   });
   return { dataDir, manager };
@@ -256,7 +258,7 @@ test("payload validation enforces canonical host, shard membership, and global U
     stats: valid.stats,
   };
   assert.equal(validateSitemapSnapshotPayload(payload, { env: ENV }).stats.totalUrls, 1);
-  assert.equal(SITEMAP_SNAPSHOT_REVISION, 4);
+  assert.equal(SITEMAP_SNAPSHOT_REVISION, 5);
   assert.throws(
     () => validateSitemapSnapshotPayload({ ...payload, revision: 1 }, { env: ENV }),
     /SITEMAP_SNAPSHOT_REVISION/,
@@ -322,6 +324,49 @@ test("startup reuses only a fresh validated snapshot from the current sitemap re
   }
 });
 
+test("the evergreen venue policy rejects fresh revision 4 XML and persists one revision 5 rebuild", async () => {
+  const now = 1_725_000_000_000;
+  let builds = 0;
+  const { dataDir, manager } = createTempManager({
+    now: () => now,
+    buildSnapshot() {
+      builds += 1;
+      return testSnapshot("evergreen-policy", { generatedAt: now });
+    },
+  });
+  try {
+    const previous = testSnapshot("old-policy", { generatedAt: now });
+    const paths = [...previous.paths];
+    writeFileSync(manager.persistedPath, JSON.stringify({
+      version: 1,
+      revision: 4,
+      generatedAt: now,
+      paths,
+      documents: Object.fromEntries(["/sitemap.xml", ...paths].map(path => [path, previous.xmlFor(path)])),
+      stats: previous.stats,
+    }));
+    const loaded = await manager.load();
+    assert.equal(loaded.ok, false, "freshness cannot bypass a changed selection policy");
+    assert.equal(loaded.reason, "load_validation");
+    assert.equal(manager.lookup("/sitemap.xml").status, "unavailable");
+    assert.equal(builds, 0, "loading never builds on a request path");
+    const decision = sitemapStartupRefreshDecision(loaded, { now });
+    assert.equal(decision.refresh, true);
+    assert.equal(decision.force, true);
+    const refreshed = await manager.refresh({ force: decision.force });
+    assert.equal(refreshed.ok, true);
+    assert.equal(builds, 1);
+    assert.equal(refreshed.snapshot.revision, 5);
+    assert.match(manager.lookup("/sitemaps/pages.xml").body, /evergreen-policy/);
+    const persisted = JSON.parse(readFileSync(manager.persistedPath, "utf8"));
+    assert.equal(persisted.revision, 5);
+    assert.equal(validateSitemapSnapshotPayload(persisted, { env: ENV }).revision, 5);
+    assert.equal(sitemapStartupRefreshDecision(refreshed, { now }).refresh, false);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
 test("startup rejects missing, incompatible, and implausibly future snapshot state", () => {
   assert.deepEqual(sitemapStartupRefreshDecision({ ok: false, reason: "missing" }), {
     refresh: true, force: true, reason: "missing",
@@ -334,4 +379,96 @@ test("startup rejects missing, incompatible, and implausibly future snapshot sta
     ok: true,
     snapshot: { version: 1, revision: SITEMAP_SNAPSHOT_REVISION, generatedAt: 61_001 },
   }, { now: 1_000 }).reason, "future");
+});
+
+test("snapshot JSON persistence chunks preserve exact XML and Unicode without a full serialized copy", () => {
+  const xml = `${"x".repeat(16_383)}🎸${'<url>"\\\n\t&</url>'.repeat(20_000)}`;
+  const payload = { version: 1, revision: SITEMAP_SNAPSHOT_REVISION, generatedAt: 123,
+    paths: ["/sitemaps/pages.xml"], documents: { "/sitemap.xml": xml, "/sitemaps/pages.xml": xml },
+    stats: { totalUrls: 1, shardCount: 1 } };
+  const chunks = [...sitemapSnapshotJsonChunks(payload)];
+  assert.ok(chunks.length > 20);
+  assert.ok(chunks.every(chunk => Buffer.byteLength(chunk, "utf8") < 128 * 1024));
+  assert.deepEqual(JSON.parse(chunks.join("")), payload);
+});
+
+test("memory-pressure deferral retains cached sitemap XML without a failed refresh or duplicate build", async () => {
+  let clock = 1_725_000_000_000;
+  let allowed = true;
+  let builds = 0;
+  let releases = 0;
+  const { dataDir, manager } = createTempManager({
+    now: () => clock,
+    acquireRefreshLease() { return allowed ? { release() { releases += 1; } } : null; },
+    buildSnapshot() { builds += 1; return testSnapshot(`memory-${builds}`, { generatedAt: clock }); },
+  });
+  try {
+    assert.equal((await manager.refresh()).ok, true);
+    const previous = manager.xmlFor("/sitemaps/pages.xml");
+    allowed = false;
+    const pending = manager.refresh({ force: true });
+    assert.equal(manager.refresh({ force: true }), pending);
+    assert.deepEqual(await pending, { ok: false, reason: "resource_pressure", retryAt: clock + 30_000 });
+    assert.equal(manager.xmlFor("/sitemaps/pages.xml"), previous);
+    assert.equal(manager.health().consecutiveFailures, 0);
+    assert.equal(manager.health().lastFailureCategory, null);
+    assert.equal(manager.health().refreshing, false);
+    assert.equal(builds, 1);
+    assert.equal(releases, 1);
+    assert.equal((await manager.refresh()).reason, "backoff");
+    allowed = true;
+    clock += 30_000;
+    assert.equal((await manager.refresh()).ok, true);
+    assert.equal(builds, 2);
+    assert.equal(releases, 2);
+    assert.notEqual(manager.xmlFor("/sitemaps/pages.xml"), previous);
+  } finally { rmSync(dataDir, { recursive: true, force: true }); }
+});
+
+test("persisted-load memory admission leaves last-known-good XML available and releases after parsing", async () => {
+  let allowed = true;
+  let releases = 0;
+  const phases = [];
+  const { dataDir, manager } = createTempManager({
+    acquireRefreshLease({ phase }) {
+      phases.push(phase);
+      return allowed ? { release() { releases += 1; } } : null;
+    },
+    buildSnapshot() { return testSnapshot("load-admission"); },
+  });
+  try {
+    assert.equal((await manager.refresh()).ok, true);
+    const previous = manager.xmlFor("/sitemaps/pages.xml");
+    allowed = false;
+    assert.equal((await manager.load()).reason, "resource_pressure");
+    assert.equal(manager.xmlFor("/sitemaps/pages.xml"), previous);
+    assert.equal(manager.health().consecutiveFailures, 0);
+    allowed = true;
+    assert.equal((await manager.load()).ok, true);
+    assert.deepEqual(phases, ["refresh", "load", "load"]);
+    assert.equal(releases, 2);
+  } finally { rmSync(dataDir, { recursive: true, force: true }); }
+});
+
+test("failed snapshot materialization releases its memory reservation before a later retry", async () => {
+  let fail = true;
+  let held = false;
+  let releases = 0;
+  const { dataDir, manager } = createTempManager({
+    acquireRefreshLease() {
+      assert.equal(held, false);
+      held = true;
+      return { release() { held = false; releases += 1; } };
+    },
+    buildSnapshot() { if (fail) throw new Error("fixture build failure"); return testSnapshot("recovered-lease"); },
+  });
+  try {
+    assert.equal((await manager.refresh()).reason, "refresh_failed");
+    assert.equal(held, false);
+    assert.equal(releases, 1);
+    fail = false;
+    assert.equal((await manager.refresh({ force: true })).ok, true);
+    assert.equal(held, false);
+    assert.equal(releases, 2);
+  } finally { rmSync(dataDir, { recursive: true, force: true }); }
 });

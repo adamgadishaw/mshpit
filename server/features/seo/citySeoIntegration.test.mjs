@@ -12,6 +12,7 @@ process.env.PIT_DATA_DIR = dataDir;
 process.env.PUBLIC_ORIGIN = "https://www.mshpit.com";
 const { db } = await import("../../db.js");
 const { seoHttpPlan, injectHead } = await import("../../seo.js");
+const { createSitemapSnapshot } = await import("./sitemapService.js");
 after(() => { db.close(); rmSync(dataDir, { recursive: true, force: true }); });
 
 test("known city and directory URLs return rendered public documents; unknown city is404", () => {
@@ -44,4 +45,46 @@ test("city guide stock photos are served from site assets and not visitor-time t
   const plan = seoHttpPlan("/city/ca/toronto");
   assert.match(plan.document.cityGuide.photos.at(-1).url, /^https:\/\/www\.mshpit\.com\/images\/cities\//);
   assert.match(plan.document.cityGuide.copy.welcomeBannerUrl, /^\/images\/cities\//);
+});
+
+test("city sitemap XML preserves saved modification dates and never invents dates for invalid or undated guides", () => {
+  const generatedAt = Date.parse("2030-09-09T15:00:00Z");
+  const savedAt = Date.parse("2025-04-06T19:30:00Z");
+  const cases = [
+    ["Saved City", "saved-city", savedAt, "2025-04-06"],
+    ["Undated City", "undated-city", 0, null],
+    ["Invalid Date City", "invalid-date-city", "not-a-timestamp", null],
+    ["Out Of Range City", "out-of-range-city", 8_640_000_000_000_001, null],
+    ["Negative Date City", "negative-date-city", -1, null],
+  ];
+  const insert = db.prepare(`INSERT INTO city_profiles
+    (country_code,city_slug,city,country,editorial_json,updated_at) VALUES ('CA',?,?,'Canada',?,?)`);
+  const editorial = JSON.stringify({ intro: "A local music guide with concert venues, music history, and practical advice for finding live performances in the city." });
+  const rowFor = (xml, slug) => {
+    const loc = `<loc>https://www.mshpit.com/city/ca/${slug}</loc>`;
+    const row = [...xml.matchAll(/<url>[\s\S]*?<\/url>/g)].map(([value]) => value).find((value) => value.includes(loc));
+    assert.ok(row, `Expected a public city guide entry for ${slug}`);
+    return row;
+  };
+  try {
+    for (const [city, slug, updatedAt] of cases) insert.run(slug, city, editorial, updatedAt);
+    const snapshot = createSitemapSnapshot({ database: db, now: generatedAt });
+    const xml = snapshot.xmlFor("/sitemaps/cities.xml");
+    for (const [, slug, , expectedDay] of cases) {
+      const row = rowFor(xml, slug);
+      if (expectedDay) assert.ok(row.includes(`<lastmod>${expectedDay}</lastmod>`), slug);
+      else assert.doesNotMatch(row, /<lastmod>/, slug);
+      assert.doesNotMatch(row, /2030-09-09/, "Building a sitemap is not a city guide content update");
+    }
+
+    const editedAt = Date.parse("2026-06-07T09:15:00Z");
+    db.prepare("UPDATE city_profiles SET updated_at=? WHERE country_code='CA' AND city_slug='saved-city'").run(editedAt);
+    // Advance beyond the registry's one-minute public metadata cache, not the saved edit timestamp.
+    const rebuilt = createSitemapSnapshot({ database: db, now: generatedAt + 60_001 }).xmlFor("/sitemaps/cities.xml");
+    assert.match(rowFor(rebuilt, "saved-city"), /<lastmod>2026-06-07<\/lastmod>/);
+    assert.match(rowFor(xml, "saved-city"), /<lastmod>2025-04-06<\/lastmod>/);
+  } finally {
+    const remove = db.prepare("DELETE FROM city_profiles WHERE country_code='CA' AND city_slug=?");
+    for (const [, slug] of cases) remove.run(slug);
+  }
 });

@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
+import { DatabaseSync } from "node:sqlite";
 
 const dataDir = mkdtempSync(join(tmpdir(), "pit-music-providers-"));
 process.env.PIT_DATA_DIR = dataDir;
@@ -29,6 +30,7 @@ const {
   getFreshDeezerPreview,
   resolveYouTubeTrack,
   scoreYouTubeCandidate,
+  searchCatalogSongs,
   selectArtistChannel,
   selectCatalogueTrack,
   selectDeezerArtist,
@@ -56,6 +58,86 @@ function deferred() {
   });
   return { promise, resolve, reject };
 }
+
+function songCatalogFixture() {
+  const database = new DatabaseSync(":memory:");
+  database.exec("CREATE TABLE artists (norm TEXT PRIMARY KEY,name TEXT,popularity INTEGER,data TEXT)");
+  return database;
+}
+
+test("catalog song search streams the full catalogue and retains only correctly ranked top matches", () => {
+  const raw = songCatalogFixture();
+  try {
+    const insert = raw.prepare("INSERT INTO artists VALUES (?,?,?,?)");
+    for (let index = 0; index < 650; index += 1) {
+      insert.run(`artist-${index}`, `Artist ${index}`, index, JSON.stringify({
+        unusedBiography: "irrelevant".repeat(1000),
+        topTracks: [{ title: `Signal ${String(index).padStart(3, "0")}`, id: index + 1 }],
+      }));
+    }
+    insert.run("last", "Last Artist", 1, JSON.stringify({ photo: "fallback.jpg", topTracks: [
+      { title: "Signal", url: "https://open.spotify.com/track/ExactRecording001", album: "Album", duration: 183 },
+      { title: "Signal", sourceId: "explicit", provider: "deezer", art: "track.jpg" },
+    ] }));
+    let visited = 0;
+    const database = { prepare(sql) {
+      const statement = raw.prepare(sql);
+      return {
+        *iterate(...args) {
+          for (const row of statement.iterate(...args)) {
+            if (Object.hasOwn(row, "title")) visited += 1;
+            assert.equal(Object.hasOwn(row, "data"), false, "rich artist blobs never cross the query boundary");
+            yield row;
+          }
+        },
+        all() { assert.fail("song search must stream instead of materializing its source"); },
+      };
+    } };
+    const result = searchCatalogSongs("signal", { database, limit: 4 });
+    assert.equal(visited, 652, "the last artist remains searchable; no catalogue truncation");
+    assert.deepEqual(result.map((row) => row.title), ["Signal", "Signal", "Signal 649", "Signal 648"]);
+    assert.equal(result[0].sourceId, "ExactRecording001");
+    assert.equal(result[0].provider, "spotify");
+    assert.equal(result[0].art, "fallback.jpg");
+    assert.equal(result[0].duration, 183);
+    assert.equal(result[1].art, "track.jpg");
+    assert.equal(result[1].provider, "deezer");
+    assert.equal(result[0].source, "catalog");
+    assert.equal(searchCatalogSongs("signal", { database, limit: 100000 }).length, 100);
+    assert.deepEqual(searchCatalogSongs("signal", { database, limit: 0 }), []);
+  } finally { raw.close(); }
+});
+
+test("streamed song search rejects malformed JSON shapes and sees writes without index expiry", () => {
+  const database = songCatalogFixture();
+  try {
+    const insert = database.prepare("INSERT INTO artists VALUES (?,?,?,?)");
+    insert.run("bad", "Bad", 100, "{not json");
+    insert.run("scalar", "Scalar", 100, JSON.stringify({ topTracks: "Signal" }));
+    insert.run("object", "Object", 100, JSON.stringify({ topTracks: { title: "Signal" } }));
+    insert.run("valid", "Beyonce Signal", 1, JSON.stringify({ topTracks: [null, "Signal", false, 4,
+      { title: 4 }, { title: "" }, { title: "A Quiet Night" }, { title: "Beyonce Signal" },
+    ] }));
+    assert.deepEqual(searchCatalogSongs("signal", { database }).map((row) => row.title), ["Beyonce Signal", "A Quiet Night"]);
+    database.prepare("UPDATE artists SET data=? WHERE norm='valid'").run(JSON.stringify({ topTracks: [{ title: "New Signal" }] }));
+    assert.deepEqual(searchCatalogSongs("signal", { database }).map((row) => row.title), ["New Signal"]);
+  } finally { database.close(); }
+});
+
+test("streamed recording proof preserves normalized namesakes and ambiguous recording rejection", () => {
+  const database = songCatalogFixture();
+  try {
+    const insert = database.prepare("INSERT INTO artists VALUES (?,?,?,?)");
+    const track = { title: "Signal", url: "https://open.spotify.com/track/Proof001", duration: 180 };
+    insert.run("first", "The  Artist", 1, JSON.stringify({ topTracks: [track, track] }));
+    insert.run("second", "THE ARTIST", 2, JSON.stringify({ topTracks: [track] }));
+    const input = { database, artist: "the artist", title: "Signal", sourceId: "Proof001" };
+    assert.equal(spotifyCatalogueTrackProof(input)?.durationSec, 180);
+    assert.equal(spotifyCatalogueTrackProof({ ...input, sourceId: "Other" }), null);
+    database.prepare("UPDATE artists SET data=? WHERE norm='second'").run(JSON.stringify({ topTracks: [{ ...track, duration: 181 }] }));
+    assert.equal(spotifyCatalogueTrackProof(input), null);
+  } finally { database.close(); }
+});
 
 test("every bundled Spotify track has exact local recording proof without duration metadata", () => {
   const bundled = JSON.parse(readFileSync(new URL("../src/seed/catalog.core.json", import.meta.url), "utf8"));

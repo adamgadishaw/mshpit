@@ -17,6 +17,7 @@ import { ApiError, errorEnvelope } from "./errors.js";
 import { readAuthorizedRequest } from "./requestAuthorization.js";
 import { maybeAlert, pruneErrors, recordError } from "./errorLog.js";
 import { createAlertDrainScheduler } from "./alertDrainScheduler.js";
+import { startMemoryMonitor } from "./memoryAdmission.js";
 import { sitemapStartupRefreshDecision } from "./features/seo/sitemapSnapshotManager.js";
 import {
   injectHead,
@@ -821,9 +822,11 @@ let accountLifecycleScheduler = null;
 let privateMediaIsolationMonitor = null;
 let sitemapRefreshTimer = null;
 let sitemapRetryTimer = null;
+let memoryMonitor = null;
 function shutdown(exitCode = 0) {
   if (shuttingDown) return;
   shuttingDown = true;
+  memoryMonitor?.stop();
   console.log("\n[pit] shutting down…");
   const campaignStop = emailCampaignScheduler?.stop() || Promise.resolve();
   const founderOperationsStop = founderOperationsScheduler?.stop() || Promise.resolve();
@@ -957,6 +960,7 @@ function startSitemapRefreshScheduler() {
 }
 
 async function startServer() {
+  memoryMonitor = startMemoryMonitor();
   const loadedSitemap = await loadSitemapSnapshot();
   const startupSitemapRefresh = sitemapStartupRefreshDecision(loadedSitemap, {
     maximumAgeMs: sitemapRefreshIntervalMs(),

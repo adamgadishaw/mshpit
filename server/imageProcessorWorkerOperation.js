@@ -3,7 +3,7 @@ import sharp from "sharp";
 import {
   canonicalLegacyRecoveryJpegPrefix,
   ImageInspectionError,
-  inspectImageBytes,
+  inspectImageBytesAsync,
   MAX_IMAGE_ANIMATION_FRAMES,
   MAX_IMAGE_EDGE,
   MAX_IMAGE_PIXELS,
@@ -38,7 +38,7 @@ const FORMAT_MIME = Object.freeze({
 
 // Each child handles exactly one image. Keep libvips' own cache small so the
 // pixel ceiling, rather than a process-global cache, controls resident memory.
-sharp.cache({ memory: 32, files: 0, items: 8 });
+sharp.cache({ memory: 8, files: 0, items: 8 });
 sharp.concurrency(1);
 
 function processorError(code, message, cause) {
@@ -234,7 +234,7 @@ async function sanitizeDecodedPixels(pipeline, type, requestedMaxOutputBytes, {
   if (!Buffer.isBuffer(data) || data.byteLength < 1 || data.byteLength > maxOutputBytes) {
     throw processorError("output_size", "Sanitized image exceeds the safe delivery size.");
   }
-  const inspection = inspectImageBytes(data, { expectedType: type, sanitized: true });
+  const inspection = await inspectImageBytesAsync(data, { expectedType: type, sanitized: true });
   const outputFrames = Number(info?.pages || 1);
   const outputHeight = outputFrames > 1 ? Number(info?.pageHeight) : Number(info?.height);
   if (inspection.width !== Number(info?.width) || inspection.height !== outputHeight
@@ -294,7 +294,7 @@ async function sanitizeHeicFallback(bytes, structural, type, requestedMaxOutputB
     }
     // Keep a zero-copy view over the JS-owned display buffer while Sharp
     // encodes it. The decoder is disposed only after this await completes,
-    // avoiding a second up-to-96 MiB RGBA allocation in the bounded child.
+    // avoiding a second up-to-191 MiB RGBA allocation in the bounded child.
     const rgba = Buffer.from(pixels.buffer, pixels.byteOffset, pixels.byteLength);
     return await sanitizeDecodedPixels(sharp(rgba, {
       raw: { width: dimensions.width, height: dimensions.height, channels: 4 },
@@ -312,7 +312,7 @@ async function sanitizeHeicFallback(bytes, structural, type, requestedMaxOutputB
 }
 
 async function validate(bytes, expectedType, allowHeicFallback, allowLegacyJpegTrailer) {
-  const source = sanitizationSource(bytes, expectedType, allowLegacyJpegTrailer);
+  const source = await sanitizationSource(bytes, expectedType, allowLegacyJpegTrailer);
   const animated = source.structural.frames > 1;
   const pipeline = sharp(source.bytes, sharpOptions(MAX_IMAGE_PIXELS, animated));
   try {
@@ -333,11 +333,11 @@ async function validate(bytes, expectedType, allowHeicFallback, allowLegacyJpegT
   }
 }
 
-function sanitizationSource(bytes, expectedType, allowLegacyJpegTrailer) {
+async function sanitizationSource(bytes, expectedType, allowLegacyJpegTrailer) {
   try {
     return {
       bytes,
-      structural: inspectImageBytes(bytes, { expectedType, sanitized: false }),
+      structural: await inspectImageBytesAsync(bytes, { expectedType, sanitized: false }),
     };
   } catch (error) {
     if (!(allowLegacyJpegTrailer === true && expectedType === "image/jpeg"
@@ -345,7 +345,7 @@ function sanitizationSource(bytes, expectedType, allowLegacyJpegTrailer) {
       throw error;
     }
     const canonical = canonicalLegacyRecoveryJpegPrefix(bytes);
-    const structural = inspectImageBytes(canonical, {
+    const structural = await inspectImageBytesAsync(canonical, {
       expectedType: "image/jpeg",
       sanitized: false,
       maxPixels: MAX_LEGACY_RECOVERY_JPEG_PIXELS,
@@ -360,7 +360,7 @@ function sanitizationSource(bytes, expectedType, allowLegacyJpegTrailer) {
 
 async function sanitize(bytes, expectedType, requestedOutputType, requestedMaxOutputBytes,
   allowHeicFallback, allowLegacyJpegTrailer, profileRenditionValue, maxEdgeValue) {
-  const source = sanitizationSource(bytes, expectedType, allowLegacyJpegTrailer);
+  const source = await sanitizationSource(bytes, expectedType, allowLegacyJpegTrailer);
   const type = outputType(requestedOutputType || expectedType);
   const profileRendition = requestedProfileRendition(profileRenditionValue);
   const maxEdge = requestedMaxEdge(maxEdgeValue);

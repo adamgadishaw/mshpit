@@ -1,4 +1,6 @@
-import { inflateSync } from "node:zlib";
+import { createInflate, inflateSync } from "node:zlib";
+import { Readable, Writable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 
 // These limits are enforced before libvips visits pixels. Fifty megapixels
 // covers current 48 MP phone-camera output while the isolated child heap and
@@ -170,11 +172,15 @@ function pngPasses(width, height, interlace) {
   ]).filter(([columns, rows]) => columns && rows);
 }
 
-function validatePngInflate(idat, { width, height, bitDepth, colorType, interlace }) {
+function pngScanlineLayouts({ width, height, bitDepth, colorType, interlace }) {
   const channels = ({ 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 })[colorType];
   if (!channels) invalid();
   const passes = pngPasses(width, height, interlace);
-  const layouts = passes.map(([columns, rows]) => ({ rows, rowBytes: Math.ceil(columns * channels * bitDepth / 8) }));
+  return passes.map(([columns, rows]) => ({ rows, rowBytes: Math.ceil(columns * channels * bitDepth / 8) }));
+}
+
+function validatePngInflate(idat, dimensions) {
+  const layouts = pngScanlineLayouts(dimensions);
   const expected = layouts.reduce((total, pass) => total + pass.rows * (pass.rowBytes + 1), 0);
   let inflated;
   try { inflated = inflateSync(Buffer.concat(idat), { maxOutputLength: expected }); }
@@ -189,7 +195,41 @@ function validatePngInflate(idat, { width, height, bitDepth, colorType, interlac
   }
 }
 
-function inspectPng(bytes, { sanitized }) {
+async function validatePngInflateStreaming(idat, dimensions, signal) {
+  const layouts = pngScanlineLayouts(dimensions);
+  const expected = layouts.reduce((total, pass) => total + pass.rows * (pass.rowBytes + 1), 0);
+  let received = 0;
+  let nextFilter = 0;
+  let passIndex = 0;
+  let remainingRows = layouts[0].rows;
+  const sink = new Writable({
+    write(chunk, _encoding, done) {
+      try {
+        const end = received + chunk.length;
+        if (end > expected) invalid("decode", "PNG compressed pixels exceed their declared dimensions.");
+        while (nextFilter < end) {
+          if (chunk[nextFilter - received] > 4) invalid("decode", "PNG contains an invalid row filter.");
+          nextFilter += layouts[passIndex].rowBytes + 1;
+          if (--remainingRows === 0 && ++passIndex < layouts.length) remainingRows = layouts[passIndex].rows;
+        }
+        received = end;
+        done();
+      } catch (error) { done(error); }
+    },
+  });
+  try {
+    // Retain only compressed source slices and a small inflater window. No
+    // complete RGBA-sized scanline buffer or concatenated IDAT copy is needed.
+    await pipeline(Readable.from(idat), createInflate({ chunkSize: 16 * 1024 }), sink, { signal });
+  } catch (error) {
+    if (signal?.aborted) throw signal.reason || error;
+    if (error instanceof ImageInspectionError) throw error;
+    invalid("decode", "PNG compressed pixels are malformed or exceed their declared dimensions.");
+  }
+  if (received !== expected) invalid("decode", "PNG pixel data does not match its declared dimensions.");
+}
+
+function inspectPng(bytes, { sanitized, maxPixels, maxEdge }, validatePixels) {
   if (bytes.length < 45 || !bytes.subarray(0, 8).equals(PNG_SIGNATURE)) invalid();
   let offset = 8;
   let width;
@@ -220,6 +260,8 @@ function inspectPng(bytes, { sanitized }) {
       sawIhdr = true;
       width = bytes.readUInt32BE(dataStart);
       height = bytes.readUInt32BE(dataStart + 4);
+      // Reject oversized headers before any compressed pixel expansion.
+      assertResourceBounds(width, height, { maxPixels, maxEdge });
       bitDepth = bytes[dataStart + 8];
       colorType = bytes[dataStart + 9];
       interlace = bytes[dataStart + 12];
@@ -253,7 +295,7 @@ function inspectPng(bytes, { sanitized }) {
     offset = chunkEnd;
   }
   if (!sawIhdr || !sawIdat || !sawIend || offset !== bytes.length) invalid();
-  validatePngInflate(idat, { width, height, bitDepth, colorType, interlace });
+  validatePixels(idat, { width, height, bitDepth, colorType, interlace });
   return { width, height, metadataPresent };
 }
 
@@ -556,12 +598,12 @@ function inspectHeif(bytes) {
   return { ...largest, metadataPresent: true };
 }
 
-export function inspectImageBytes(value, {
+function inspectImageBytesWithPngValidator(value, {
   expectedType,
   sanitized = false,
   maxPixels = MAX_IMAGE_PIXELS,
   maxEdge = MAX_IMAGE_EDGE,
-} = {}) {
+} = {}, validatePngPixels = validatePngInflate) {
   const bytes = asBuffer(value);
   if (bytes.length < 12) invalid();
   const actualType = detectedMimeType(bytes);
@@ -570,7 +612,7 @@ export function inspectImageBytes(value, {
   }
   let result;
   if (actualType === "image/jpeg") result = inspectJpeg(bytes, { sanitized });
-  else if (actualType === "image/png") result = inspectPng(bytes, { sanitized });
+  else if (actualType === "image/png") result = inspectPng(bytes, { sanitized, maxPixels, maxEdge }, validatePngPixels);
   else if (actualType === "image/webp") result = inspectWebp(bytes, { sanitized });
   else if (actualType === "image/gif") result = inspectGif(bytes);
   else result = inspectHeif(bytes);
@@ -595,6 +637,24 @@ export function inspectImageBytes(value, {
     metadataPresent: !!result.metadataPresent,
     sanitized: !!sanitized,
   });
+}
+
+export function inspectImageBytes(value, options = {}) {
+  return inspectImageBytesWithPngValidator(value, options);
+}
+
+// The worker uses this complete asynchronous inspection, not a structural-only
+// bypass: framing, checksums and limits are shared with the synchronous API,
+// and no result is returned until every expanded PNG row has been validated.
+export async function inspectImageBytesAsync(value, options = {}) {
+  options.signal?.throwIfAborted();
+  let png = null;
+  const result = inspectImageBytesWithPngValidator(value, options, (idat, dimensions) => {
+    png = { idat, dimensions };
+  });
+  if (png) await validatePngInflateStreaming(png.idat, png.dimensions, options.signal);
+  options.signal?.throwIfAborted();
+  return result;
 }
 
 // A small set of pre-hardening phone-camera objects contain an otherwise valid

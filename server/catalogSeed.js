@@ -210,10 +210,13 @@ export async function crawlArtists({ target = 10000, perTag = 600, shouldStop = 
 // popularity, top tracks (so Discover shows a real "top song") and a genre when
 // they don't have one. Resumable.
 export async function enrichThin({ shouldStop = () => false, tick = () => {} } = {}) {
-  const rows = db.prepare("SELECT norm,name,genre,mbid,country,formed,data FROM artists WHERE popularity IS NULL").all();
+  const rows = db.prepare("SELECT norm FROM artists WHERE popularity IS NULL").all();
+  const currentArtist = db.prepare("SELECT norm,name,genre,mbid,country,formed,data FROM artists WHERE norm=?");
   let ranked = 0, done = 0;
-  for (const row of rows) {
+  for (const identity of rows) {
     if (shouldStop()) break;
+    const row = currentArtist.get(identity.norm);
+    if (!row) continue;
     const e = await deezerEnrich(row.name);
     await sleep(80); // gentle on the keyless API
     if (e) {
@@ -238,12 +241,15 @@ export async function enrichThin({ shouldStop = () => false, tick = () => {} } =
 // song" on Discover) get their Deezer top tracks + a genre if missing. Most-popular
 // first, resumable (each run only touches rows still lacking a filled topTracks).
 export async function enrichSongs({ shouldStop = () => false, tick = () => {} } = {}) {
-  const rows = db.prepare(`SELECT norm,name,genre,data FROM artists
+  const rows = db.prepare(`SELECT norm FROM artists
     WHERE popularity IS NOT NULL AND (data IS NULL OR data NOT LIKE '%"topTracks":[{%')
     ORDER BY popularity DESC`).all();
+  const currentArtist = db.prepare("SELECT norm,name,genre,data FROM artists WHERE norm=?");
   let filled = 0, done = 0;
-  for (const row of rows) {
+  for (const identity of rows) {
     if (shouldStop()) break;
+    const row = currentArtist.get(identity.norm);
+    if (!row) continue;
     const e = await deezerEnrich(row.name);
     await sleep(90);
     if (e && e.topTracks.length) {
@@ -807,26 +813,60 @@ export function mergeGenreBackfillData(row, data, enriched) {
   };
 }
 
-export async function backfillGenres({ shouldStop = () => false, tick = () => {}, limit = 500 } = {}) {
-  const orderedRows = db.prepare(`SELECT norm,name,genre,data,source FROM artists
-    ORDER BY popularity IS NULL, popularity DESC, rank_score DESC, norm`).all();
-  const cursor = db.prepare("SELECT value FROM app_meta WHERE key=?").get(GENRE_BACKFILL_CURSOR_KEY)?.value || "";
-  const rows = rotateRowsAfterCursor(orderedRows, cursor);
-
+// Stream provenance only while selecting a bounded batch. Retain identities,
+// not a complete catalogue of rich data blobs, during slow provider requests.
+export function selectGenreBackfillCandidates({
+  database = db, cursor = "", limit = 500, shouldStop = () => false,
+} = {}) {
+  const take = Math.max(0, Math.min(500, Math.trunc(Number(limit) || 0)));
   const pending = [];
-  for (const row of rows) {
-    let data = {};
-    try { data = JSON.parse(row.data || "{}"); } catch { /* Corrupt rows remain eligible for provider repair. */ }
-    const record = resolveGenre(storedClaims(data, row.genre));
-    if (!record || !record.evidence || needsDeezerGenreRevalidation(data, row.genre)) {
-      pending.push({ row, data });
+  if (!take || shouldStop()) return pending;
+  const hasCursor = Boolean(cursor && database.prepare("SELECT 1 FROM artists WHERE norm=?").get(cursor));
+  // Sort identities only: even SQLite's temporary ordering must not carry the
+  // provenance payload of every artist at once.
+  const ordered = database.prepare(`SELECT norm FROM artists
+    ORDER BY popularity IS NULL, popularity DESC, rank_score DESC, norm`);
+  const genreFields = database.prepare(`SELECT norm,genre,
+      CASE WHEN json_valid(data) THEN json_object(
+        'mbid',json_extract(data,'$.mbid'),
+        'deezerId',json_extract(data,'$.deezerId'),
+        'genreHint',json_extract(data,'$.genreHint'),
+        'genreClaims',json_extract(data,'$.genreClaims'),
+        'genreRecord',json_extract(data,'$.genreRecord'),
+        'genreEvidence',json_extract(data,'$.genreEvidence'),
+        'musicBrainzGenreEvidence',json_extract(data,'$.musicBrainzGenreEvidence')
+      ) ELSE '{}' END AS genre_data
+    FROM artists WHERE norm=?`);
+  for (let pass = 0; pass < (hasCursor ? 2 : 1); pass += 1) {
+    let afterCursor = !hasCursor || pass === 1;
+    for (const identity of ordered.iterate()) {
+      if (shouldStop()) return pending;
+      if (!afterCursor) {
+        if (identity.norm === cursor) afterCursor = true;
+        continue;
+      }
+      const row = genreFields.get(identity.norm);
+      const data = JSON.parse(row.genre_data);
+      const record = resolveGenre(storedClaims(data, row.genre));
+      if (!record || !record.evidence || needsDeezerGenreRevalidation(data, row.genre)) pending.push(row.norm);
+      if (pending.length >= take || (pass === 1 && row.norm === cursor)) return pending;
     }
-    if (pending.length >= limit) break;
   }
+  return pending;
+}
+
+export async function backfillGenres({ shouldStop = () => false, tick = () => {}, limit = 500 } = {}) {
+  const cursor = db.prepare("SELECT value FROM app_meta WHERE key=?").get(GENRE_BACKFILL_CURSOR_KEY)?.value || "";
+  const pending = selectGenreBackfillCandidates({ cursor, limit, shouldStop });
+  const currentArtist = db.prepare("SELECT norm,name,genre,data,source FROM artists WHERE norm=?");
 
   let fixed = 0, done = 0, lastAttemptedNorm = "";
-  for (const { row, data } of pending) {
+  for (const artistNorm of pending) {
     if (shouldStop()) break;
+    const row = currentArtist.get(artistNorm);
+    if (!row) continue;
+    let data = {};
+    try { data = JSON.parse(row.data || "{}"); } catch { /* Corrupt rows remain eligible for provider repair. */ }
     let enriched = null;
     try { enriched = await deezerEnrich(row.name); } catch { enriched = null; }
     await sleep(90); // gentle on the keyless API

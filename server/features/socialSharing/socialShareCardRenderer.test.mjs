@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ApiError, errorEnvelope, privateErrorLabel } from "../../errors.js";
+import { createMemoryAdmission } from "../../memoryAdmission.js";
 
 import sharp from "sharp";
 
@@ -841,4 +842,51 @@ test("the first caller aborting does not cancel a coalesced renderer request", a
   release();
   const completed = await second;
   assert.equal(completed.bytes[8], 3);
+});
+
+test("share rendering respects the shared photo/sitemap budget while cached cards remain available", async () => {
+  const admission = createMemoryAdmission({ readMemory: () => ({
+    limitBytes: 2 * 1024 ** 3, usedBytes: 256 * 1024 ** 2,
+  }) });
+  let calls = 0;
+  const renderer = createSocialShareCardRenderer({
+    acquireMemoryLease: () => admission.tryAcquire("share"),
+    renderPng: async () => { calls += 1; return Buffer.alloc(128, 3); },
+  });
+  const model = reviewShareCardModel(reviewDocument());
+  const photo = admission.tryAcquire("image");
+  await assert.rejects(renderer.render(model), SocialShareCardBusyError);
+  assert.equal(calls, 0);
+  photo.release();
+  await renderer.render(model);
+  assert.equal(calls, 1);
+  const sitemap = admission.tryAcquire("sitemap");
+  assert.ok(sitemap);
+  assert.equal((await renderer.render(model)).bytes.length, 128, "cache hits do not need a new decoder slot");
+  sitemap.release();
+  assert.equal(admission.snapshot().reservedBytes, 0);
+});
+
+test("a share request deadline never releases memory while its native renderer is still running", async () => {
+  let releaseRender;
+  let markStarted;
+  let released = false;
+  const started = new Promise((resolve) => { markStarted = resolve; });
+  const pending = new Promise((resolve) => { releaseRender = resolve; });
+  const renderer = createSocialShareCardRenderer({
+    totalWorkTimeoutMs: 500,
+    acquireMemoryLease: () => ({ release() { released = true; } }),
+    renderPng: async () => { markStarted(); await pending; return Buffer.alloc(128, 3); },
+  });
+  const result = renderer.render(reviewShareCardModel(reviewDocument()));
+  await started;
+  // Keep the process alive while exercising the production unref'd deadline.
+  const keepAlive = setTimeout(() => {}, 1000);
+  try {
+    await assert.rejects(result, SocialShareCardArtworkUnavailableError);
+    assert.equal(released, false);
+    releaseRender();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(released, true);
+  } finally { clearTimeout(keepAlive); releaseRender(); }
 });

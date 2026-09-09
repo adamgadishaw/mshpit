@@ -61,3 +61,32 @@ test("a synchronous throw releases the coordinator for the next job", async () =
   await assert.rejects(run(() => { throw new Error("sync failure"); }), /sync failure/);
   assert.equal(await run(() => 42), 42);
 });
+
+test("memory pressure defers maintenance before work starts and does not poison later attempts", async () => {
+  let available = false;
+  let releases = 0;
+  const run = createBackgroundJobCoordinator({ acquireMemoryLease: () =>
+    available ? { release() { releases += 1; } } : null });
+  let calls = 0;
+  await assert.rejects(run(() => { calls += 1; }), { code: "MEMORY_PRESSURE" });
+  assert.equal(calls, 0);
+  available = true;
+  assert.equal(await run(() => "recovered"), "recovered");
+  await assert.rejects(run(() => { throw new Error("failed"); }), /failed/);
+  assert.equal(releases, 2);
+});
+
+test("coordinator bounds pending work and retains its lease until actual task settlement", async () => {
+  const gate = deferred();
+  let released = false;
+  const run = createBackgroundJobCoordinator({ maxPending: 1,
+    acquireMemoryLease: () => ({ release() { released = true; } }) });
+  const first = run(() => gate.promise);
+  await Promise.resolve();
+  await assert.rejects(run(() => {}), { code: "MEMORY_PRESSURE" });
+  assert.equal(released, false);
+  gate.resolve();
+  await first;
+  assert.equal(released, true);
+  assert.equal(await run(() => "next"), "next");
+});

@@ -15,6 +15,8 @@ import {
   tourDateHasNoPublishedMemorialSql,
 } from "../../artistMemorialTourDateVisibility.js";
 import { inPersonReviewSql } from "../../onlineReviews.js";
+import { pitPublicSlug, pitVenuePublicSlug } from "../../sqliteFunctions.js";
+import { publicVenuePlace } from "../../venueFacts.js";
 
 const bounded = (value, fallback, maximum) => {
   const parsed = Number(value);
@@ -99,6 +101,8 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
   // boundary so a public concert page cannot drift from the in-app archive.
   database.function?.("pit_archive_identity", { deterministic: true }, archiveIdentityPart);
   database.function?.("pit_artist_identity", { deterministic: true }, archiveIdentityPart);
+  database.function?.("pit_public_slug", { deterministic: true }, pitPublicSlug);
+  database.function?.("pit_venue_public_slug", { deterministic: true }, pitVenuePublicSlug);
   database.function?.("pit_structured_show_location", { deterministic: true }, (city, countryCode) =>
     structuredShowLocationKey({ venue_city: city, venue_country_code: countryCode }));
   installPublicMusicEventPolicySql(database);
@@ -398,6 +402,38 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
       AND (td.owner_id IS NULL OR ${activeAccountSql("owner")})
       AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1)
     ORDER BY td.date ASC,td.id ASC LIMIT ?`);
+
+  // A provider venue's location remains useful after its last concert. Read
+  // only the latest public location, never return historical rows as upcoming
+  // shows, and keep exact provider identity alongside the indexed public slug.
+  const venueLocationByProvider = database.prepare(`SELECT td.place,td.venue_city,td.venue_region,
+      td.venue_country,td.venue_country_code
+    FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id
+    WHERE pit_venue_public_slug(td.source,td.venue_provider_id)=?
+      AND td.source IS ? AND td.venue_provider_id=?
+      AND td.venue_provider_id IS NOT NULL AND TRIM(td.venue_provider_id)<>''
+      AND td.release_at<=?
+      AND td.date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' AND date(td.date)=td.date
+      AND ${publicMusicEventCandidateSql("td")}
+      AND ${publicIndexableMusicEventSql("td")}
+      AND (td.owner_id IS NULL OR ${activeAccountSql("owner")})
+      AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1 OR ${effectiveTourDateEndSql("td")}<?)
+    ORDER BY td.updated_at DESC,td.id DESC LIMIT 1`);
+
+  // The public URL resolver rejects ambiguous name routes before this read.
+  // Preserve a known locality here so a same-named building elsewhere cannot
+  // acquire curated facts simply because its upcoming calendar is empty.
+  const venueLocationByName = database.prepare(`SELECT td.place,td.venue_city,td.venue_region,
+      td.venue_country,td.venue_country_code
+    FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id
+    WHERE pit_public_slug(td.venue)=? AND LOWER(TRIM(td.venue))=LOWER(TRIM(?))
+      AND TRIM(COALESCE(td.venue,''))<>'' AND td.release_at<=?
+      AND td.date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' AND date(td.date)=td.date
+      AND ${publicMusicEventCandidateSql("td")}
+      AND ${publicIndexableMusicEventSql("td")}
+      AND (td.owner_id IS NULL OR ${activeAccountSql("owner")})
+      AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1 OR ${effectiveTourDateEndSql("td")}<?)
+    ORDER BY td.updated_at DESC,td.id DESC LIMIT 1`);
 
   const directoryArtists = database.prepare(`SELECT a.norm,a.name,a.public_slug,a.genre,a.data,a.bio,a.updated_at,
       COUNT(*) OVER () AS directory_total
@@ -794,8 +830,12 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
       const events = providerId
         ? venueEventsByProvider.all(providerSource, providerId, instant, day, bounded(eventLimit, 8, 16))
         : venueEventsByName.all(venueName, instant, day, bounded(eventLimit, 8, 16));
+      const location = providerId ? venueLocationByProvider.get(
+        pitVenuePublicSlug(providerSource, providerId), providerSource, providerId, instant, day,
+      ) : venueLocationByName.get(pitPublicSlug(venueName), venueName, instant, day);
       return {
-        venue: { key, name: venueName, providerVenueId: providerId || null, source: providerSource },
+        venue: { key, name: venueName, providerVenueId: providerId || null, source: providerSource,
+          place: publicVenuePlace(location) },
         posts,
         events,
         venueReviews: venueReviews?.read({ venueKey: key, limit: 8 }) || {

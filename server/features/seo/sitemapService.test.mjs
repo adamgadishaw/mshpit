@@ -27,6 +27,7 @@ const {
   SITEMAP_MAX_SOURCE_ROWS,
   SITEMAP_MAX_URLS,
   buildSitemapDatasets,
+  artistSitemapEntries,
   createSitemapSnapshot,
   hasIndexableEventEvidence,
   isSitemapRequestPath,
@@ -44,6 +45,37 @@ test("a ticket URL alone is not indexable event evidence", () => {
   }), false);
   assert.equal(hasIndexableEventEvidence({ eligibleFanContent: true }), true);
   assert.equal(hasIndexableEventEvidence({ completeRichEvent: true }), true);
+});
+
+test("artist sitemap streams biographies and retains only exact normalized text eligibility", () => {
+  const cases = [
+    ["Streamed Long Biography", "streamed-long-bio", "Verified music history. ".repeat(2_000), true],
+    ["Streamed Padded Biography", "streamed-padded-bio", " \n".repeat(20_000) + "short", false],
+    ["Streamed Boundary Biography", "streamed-boundary-bio", "x".repeat(80), true],
+  ];
+  for (const [name, slug, bio] of cases) addArtist(name, slug, { bio });
+  let streamed = 0;
+  const counted = new Proxy(db, {
+    get(target, property) {
+      if (property === "prepare") return sql => {
+        const statement = target.prepare(sql);
+        if (!String(sql).startsWith("SELECT norm,name,public_slug,bio,mbid,updated_at FROM artists")) return statement;
+        return {
+          all() { throw new Error("Sitemap must not materialize the complete biography column"); },
+          *iterate() { streamed += 1; yield* statement.iterate(); },
+        };
+      };
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  try {
+    const paths = new Set(artistSitemapEntries(counted, { candidates: { posts: [], upcomingEvents: [] } }).map(row => row.path));
+    assert.equal(streamed, 1);
+    for (const [, slug, , expected] of cases) assert.equal(paths.has(`/artist/${slug}`), expected, slug);
+  } finally {
+    for (const [name] of cases) db.prepare("DELETE FROM artists WHERE norm=?").run(normName(name));
+  }
 });
 
 after(() => {

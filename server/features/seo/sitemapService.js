@@ -4,6 +4,7 @@ import { postMediaProjectionByPost } from "../../mediaAssets.js";
 import { publicPageSitemapEntries } from "../../publicPages.js";
 import { publicTicketmasterEventImage } from "../../providerEventImage.js";
 import { publicVenuePhotoPool } from "../../venuePhotoCatalog.js";
+import { hasSubstantiveVenueGuide, publicVenueFacts, publicVenuePlace } from "../../venueFacts.js";
 import { isLegacyArtistMemorial } from "../../../src/domain/artistLegacy.mjs";
 import {
   artistConcertsPath,
@@ -29,7 +30,7 @@ import {
   hasCompleteRichMusicEventRecord,
   isCurrentOrUpcomingPublicMusicEvent,
   isStrictCalendarDate,
-  hasStructuredShowLocationCollision,
+  structuredShowLocationKey,
   isIndexableMusicEventRecord,
   publicMusicEventCandidateSql,
   qualifiesCityConcertDirectory,
@@ -89,8 +90,12 @@ function isoDay(value) {
 }
 
 function newest(...values) {
-  const valid = values.map(Number).filter((value) => Number.isFinite(value) && value > 0);
-  return valid.length ? Math.max(...valid) : null;
+  let latest = null;
+  for (const value of values) {
+    const time = Number(value);
+    if (Number.isFinite(time) && time > 0 && (latest == null || time > latest)) latest = time;
+  }
+  return latest;
 }
 
 function publicHttpsUrl(value) {
@@ -187,14 +192,14 @@ function renderUrlRow(entry, base) {
 }
 
 function renderUrlsetRows(rows) {
-  const hasImages = rows.some((row) => row.hasImages);
-  const hasVideos = rows.some((row) => row.hasVideos);
+  const hasImages = rows.hasImages;
+  const hasVideos = rows.hasVideos;
   const namespaces = [
     'xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"',
     hasImages ? 'xmlns:image="http://www.google.com/schemas/sitemap-image/1.1"' : null,
     hasVideos ? 'xmlns:video="http://www.google.com/schemas/sitemap-video/1.1"' : null,
   ].filter(Boolean).join(" ");
-  return `<?xml version="1.0" encoding="UTF-8"?>\n<urlset ${namespaces}>\n${rows.map((row) => row.xml).join("\n")}\n</urlset>\n`;
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<urlset ${namespaces}>\n${rows.join("\n")}\n</urlset>\n`;
 }
 
 function normalizedSitemapLimits({ maxUrls = SITEMAP_MAX_URLS, maxBytes = SITEMAP_MAX_BYTES } = {}) {
@@ -214,23 +219,18 @@ function urlsetEnvelopeByteLength(hasImages, hasVideos) {
   return Buffer.byteLength(envelope, "utf8");
 }
 
-function urlsetRowParts(entries, base, limits = {}) {
+function* urlsetRowParts(entries, base, limits = {}) {
   const { maxUrls, maxBytes } = normalizedSitemapLimits(limits);
   const seen = new Set();
-  const rows = [];
-  for (const entry of entries) {
-    const row = renderUrlRow(entry, base);
-    if (!row || seen.has(row.loc)) continue;
-    seen.add(row.loc);
-    rows.push(row);
-  }
-
-  const parts = [];
+  let yielded = false;
   let current = [];
   let currentRowBytes = 0;
   let currentHasImages = false;
   let currentHasVideos = false;
-  for (const row of rows) {
+  for (const entry of entries) {
+    const row = renderUrlRow(entry, base);
+    if (!row || seen.has(row.loc)) continue;
+    seen.add(row.loc);
     const nextHasImages = currentHasImages || row.hasImages;
     const nextHasVideos = currentHasVideos || row.hasVideos;
     const nextBytes = urlsetEnvelopeByteLength(nextHasImages, nextHasVideos)
@@ -239,7 +239,10 @@ function urlsetRowParts(entries, base, limits = {}) {
       + current.length;
     const exceedsCurrent = current.length >= maxUrls || nextBytes > maxBytes;
     if (exceedsCurrent && current.length) {
-      parts.push(current);
+      yielded = true;
+      current.hasImages = currentHasImages;
+      current.hasVideos = currentHasVideos;
+      yield current;
       current = [];
       currentRowBytes = 0;
       currentHasImages = false;
@@ -253,17 +256,20 @@ function urlsetRowParts(entries, base, limits = {}) {
       + row.bytes
       + current.length;
     if (candidateBytes > maxBytes) continue;
-    current.push(row);
+    current.push(row.xml);
     currentRowBytes += row.bytes;
     currentHasImages = candidateHasImages;
     currentHasVideos = candidateHasVideos;
   }
-  if (current.length || !parts.length) parts.push(current);
-  return parts;
+  if (current.length || !yielded) {
+    current.hasImages = currentHasImages;
+    current.hasVideos = currentHasVideos;
+    yield current;
+  }
 }
 
 export function urlsetParts(entries, base, limits = {}) {
-  return urlsetRowParts(entries, base, limits).map((rows) => renderUrlsetRows(rows));
+  return Array.from(urlsetRowParts(entries, base, limits), renderUrlsetRows);
 }
 
 export function sitemapIndexXml(env = process.env, paths = SITEMAP_PATHS) {
@@ -490,9 +496,16 @@ export function artistSitemapEntries(database, { now = Date.now(), candidates = 
   const requestedAt = Number(now);
   const at = Number.isSafeInteger(requestedAt) && requestedAt >= 0 ? requestedAt : Date.now();
   const today = new Date(at).toISOString().slice(0, 10);
-  const artistRows = database.prepare(`SELECT norm,name,public_slug,bio,mbid,updated_at FROM artists
+  const artistStatement = database.prepare(`SELECT norm,name,public_slug,bio,mbid,updated_at FROM artists
       WHERE public_slug IS NOT NULL AND trim(public_slug)<>''
-      ORDER BY rank_score DESC,norm`).all();
+      ORDER BY rank_score DESC,norm`);
+  const artistRows = [];
+  // Retain identity and exact eligibility, not every catalogue biography, while
+  // the shared candidate/identity reducers are alive during a refresh.
+  for (const row of artistStatement.iterate()) {
+    const { bio, ...identity } = row;
+    artistRows.push({ ...identity, substantiveBio: String(bio || "").replace(/\s+/g, " ").trim().length >= 80 });
+  }
   const artistByNorm = new Map(artistRows.map((row) => [String(row.norm || "").trim().toLowerCase(), row]));
   const artistByName = new Map();
   const ambiguousArtistNames = new Set();
@@ -557,7 +570,9 @@ export function artistSitemapEntries(database, { now = Date.now(), candidates = 
   }
 
   return artistRows.filter((row) => memorialDetails.has(row.norm)
-      || String(profileDetails.get(row.norm)?.bio || row.bio || "").replace(/\s+/g, " ").trim().length >= 80
+      || (profileDetails.get(row.norm)?.bio
+        ? String(profileDetails.get(row.norm).bio).replace(/\s+/g, " ").trim().length >= 80
+        : row.substantiveBio)
       || postUpdates.has(row.norm)
       || tourUpdates.has(row.norm))
     .map((row) => ({
@@ -644,18 +659,22 @@ function publicConcertCandidates(database, { now = Date.now(), candidates = null
   const today = new Date(at).toISOString().slice(0, 10);
   const concerts = new Map();
   const posts = candidates?.posts || visiblePostCandidates(database);
-  const locationRowsByShow = new Map();
+  const neededShows = new Set(posts.map(showLocationKey).filter(Boolean));
+  const firstLocationByShow = new Map();
+  const locationCollisions = new Set();
   for (const tourRow of candidates?.tourDates || visibleTourDateCandidates(database, { now: at })) {
     const showKey = showLocationKey(tourRow);
-    if (!showKey) continue;
-    if (!locationRowsByShow.has(showKey)) locationRowsByShow.set(showKey, []);
-    locationRowsByShow.get(showKey).push(tourRow);
+    if (!showKey || !neededShows.has(showKey) || locationCollisions.has(showKey)) continue;
+    const location = structuredShowLocationKey(tourRow);
+    if (!location) continue;
+    if (firstLocationByShow.has(showKey) && firstLocationByShow.get(showKey) !== location) locationCollisions.add(showKey);
+    else firstLocationByShow.set(showKey, location);
   }
   for (const row of posts) {
     if (row.kind === "status" || (row.experience_type || "in_person") !== "in_person"
       || !isStrictCalendarDate(row.date) || row.date > today) continue;
     if (!row.artist || !row.venue || (!row.meaningfulText && !(row.photos_public && row.readyMedia.length))) continue;
-    if (hasStructuredShowLocationCollision(locationRowsByShow.get(showLocationKey(row)))) continue;
+    if (locationCollisions.has(showLocationKey(row))) continue;
     const key = archiveShowKey({
       artistIdentity: row.artist_key || row.artist,
       venueIdentity: row.venue_key || row.venue,
@@ -698,6 +717,20 @@ export function venueSitemapEntries(database, options = {}) {
     posts: publicPostRows,
   };
   const groups = new Map();
+  const guideRowsByProvider = new Map();
+  const latestGuideRow = (previous, row) => {
+    if (!isStrictCalendarDate(row.date) || !isIndexableMusicEventRecord(row)) return previous;
+    if (!previous || Number(row.updated_at) > Number(previous.updated_at)
+      || (Number(row.updated_at) === Number(previous.updated_at) && String(row.id) > String(previous.id))) return row;
+    return previous;
+  };
+  const hasGuide = (row) => {
+    if (!row) return false;
+    const place = publicVenuePlace(row);
+    if (!place) return false;
+    const facts = publicVenueFacts({ name: row.venue, place, providerVenueId: row.venue_provider_id });
+    return facts != null && hasSubstantiveVenueGuide({ name: row.venue, ...facts, guideLocationVerified: true });
+  };
   const groupFor = (row) => {
     const venueSlug = slugify(row?.venue);
     if (!venueSlug) return null;
@@ -708,6 +741,7 @@ export function venueSitemapEntries(database, options = {}) {
         providers: new Map(),
         unattributedLastmod: null,
         hasUnstructuredLocation: false,
+        guideRow: null,
       });
     }
     const group = groups.get(venueSlug);
@@ -727,9 +761,11 @@ export function venueSitemapEntries(database, options = {}) {
     }) : null;
     const upcoming = upcomingById.get(row.id);
     if (!providerPath) {
+      group.guideRow = latestGuideRow(group.guideRow, row);
       if (upcoming) group.unattributedLastmod = newest(group.unattributedLastmod, upcoming.updated_at);
       continue;
     }
+    guideRowsByProvider.set(providerPath, latestGuideRow(guideRowsByProvider.get(providerPath), row));
     const provider = group.providers.get(providerPath) || {
       path: providerPath,
       source: row.source,
@@ -749,7 +785,7 @@ export function venueSitemapEntries(database, options = {}) {
 
   const entries = new Map();
   const addEntry = (path, lastmod, images = []) => {
-    if (!path || !lastmod) return;
+    if (!path) return;
     const previous = entries.get(path);
     const imageLocs = [...new Set([
       ...(previous?.images || []).map((image) => image.loc),
@@ -769,16 +805,21 @@ export function venueSitemapEntries(database, options = {}) {
         source: provider.source,
         providerVenueId: provider.providerVenueId,
       }).map((photo) => ({ loc: photo.uri }));
-      addEntry(provider.path, provider.eligibleLastmod, images);
+      const guideRow = guideRowsByProvider.get(provider.path);
+      const evergreen = hasGuide(guideRow);
+      if (provider.eligibleLastmod || evergreen) {
+        addEntry(provider.path, newest(provider.eligibleLastmod, evergreen ? guideRow.updated_at : null), images);
+      }
     }
     // A name-only post is not proof that it belongs to a provider venue. Never
     // let that post change or populate the provider-specific sitemap leaf.
     // A name-only URL is safe only when no provider identity can redirect it
     // and the available locality evidence does not collapse distinct rooms.
-    if (!providers.length && group.unattributedLastmod && !group.hasUnstructuredLocation && group.locations.size === 1) {
+    const evergreen = hasGuide(group.guideRow);
+    if (!providers.length && (group.unattributedLastmod || evergreen) && !group.hasUnstructuredLocation && group.locations.size === 1) {
       const images = publicVenuePhotoPool(group.name, { limit: 3 })
         .map((photo) => ({ loc: photo.uri }));
-      addEntry(venuePath(group.name), group.unattributedLastmod, images);
+      addEntry(venuePath(group.name), newest(group.unattributedLastmod, evergreen ? group.guideRow.updated_at : null), images);
     }
   }
   return [...entries.values()];
@@ -814,25 +855,25 @@ function collectionPageSitemapEntries({ artists, events, venues, concerts, total
   return [
     ...paginationEntries({
       itemCount: totals.artists,
-      lastmod: newest(...artists.map((row) => row.lastmod)),
+      lastmod: artists.reduce((latest, row) => newest(latest, row.lastmod), null),
       pathFor: artistsPath,
       includeFirst: true,
     }),
     ...paginationEntries({
       itemCount: totals.events,
-      lastmod: newest(...events.map((row) => row.updated_at)),
+      lastmod: events.reduce((latest, row) => newest(latest, row.updated_at), null),
       pathFor: eventsPath,
       includeFirst: true,
     }),
     ...paginationEntries({
       itemCount: totals.venues,
-      lastmod: newest(...venues.map((row) => row.lastmod)),
+      lastmod: venues.reduce((latest, row) => newest(latest, row.lastmod), null),
       pathFor: venuesPath,
       includeFirst: true,
     }),
     ...paginationEntries({
       itemCount: totals.concerts,
-      lastmod: newest(...concerts.map((row) => row.lastmod)),
+      lastmod: concerts.reduce((latest, row) => newest(latest, row.lastmod), null),
       pathFor: concertsPath,
       includeFirst: true,
     }),
@@ -871,7 +912,7 @@ function compareRepresentativeEvents(left, right) {
 
 function citySitemapEntries({ candidates, venueEntries, concerts }) {
   const indexableVenues = new Set(venueEntries.map((row) => row.path));
-  const tourRowsByShow = new Map();
+  const showDetails = new Map();
   const venueNameEvidence = new Map();
   const cityNamesByRoute = new Map();
 
@@ -902,19 +943,16 @@ function citySitemapEntries({ candidates, venueEntries, concerts }) {
 
     const showKey = showLocationKey(row);
     if (!showKey || !identity) continue;
-    if (!tourRowsByShow.has(showKey)) tourRowsByShow.set(showKey, []);
-    tourRowsByShow.get(showKey).push({ row, identity, locationKey });
-  }
-
-  const showDetails = new Map();
-  for (const [showKey, rows] of tourRowsByShow) {
-    const locations = new Set(rows.map((entry) => entry.locationKey));
-    const artistKeys = new Set(rows
-      .map((entry) => displayIdentity(entry.row.artist_key))
-      .filter(Boolean));
-    const representative = [...rows].sort((left, right) =>
-      compareRepresentativeEvents(left.row, right.row))[0];
-    showDetails.set(showKey, { representative, locations, artistKeys });
+    if (!showDetails.has(showKey)) showDetails.set(showKey, {
+      representative: { row, identity, locationKey }, locations: new Set(), artistKeys: new Set(),
+    });
+    const detail = showDetails.get(showKey);
+    if (detail.locations.size < 2) detail.locations.add(locationKey);
+    const artistKey = displayIdentity(row.artist_key);
+    if (artistKey && detail.artistKeys.size < 2) detail.artistKeys.add(artistKey);
+    if (compareRepresentativeEvents(row, detail.representative.row) < 0) {
+      detail.representative = { row, identity, locationKey };
+    }
   }
 
   const groupFor = (map, identity) => {
@@ -1081,7 +1119,8 @@ export function buildSitemapDatasets(database, { now = Date.now() } = {}) {
   ];
   const guideCities = database.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='city_profiles'").get()
     ? createCityGuideRepository(database).listSitemapCities({ at: candidates.generatedAt }).map((city) => ({
-      path: city.path, ...(city.updatedAt > 0 ? { lastmod: new Date(city.updatedAt).toISOString() } : {}),
+      // Keep persisted timestamps numeric until the shared XML formatter validates them.
+      path: city.path, lastmod: city.updatedAt,
     }))
     : [];
   if (guideCities.length) pages.push({ path: "/cities" });
@@ -1150,23 +1189,26 @@ export function createSitemapSnapshot({
     : Date.now();
   const datasets = buildSitemapDatasets(database, { now: generatedAt });
   const options = { database, env, now: generatedAt, maxUrls, maxBytes, datasets };
-  const rowsByPath = new Map();
+  const responseCache = new Map();
   const paths = [];
   const datasetCounts = {};
   for (const [name, basePath] of SITEMAP_DATASETS) {
     datasetCounts[name] = datasets.get(name)?.length || 0;
     const rowParts = sitemapRowPartsFor(name, options);
     if (!rowParts) continue;
-    for (let index = 0; index < rowParts.length; index += 1) {
+    let index = 0;
+    for (const rows of rowParts) {
       const path = shardPath(basePath, index);
       paths.push(path);
-      rowsByPath.set(path, rowParts[index]);
+      responseCache.set(path, renderUrlsetRows(rows));
+      index += 1;
     }
+    // The snapshot owns only finalized XML; do not keep candidate entry arrays
+    // or every per-URL XML fragment alive behind its long-lived closure.
+    datasets.delete(name);
   }
 
-  const responseCache = new Map([
-    ["/sitemap.xml", sitemapIndexXml(env, paths)],
-  ]);
+  responseCache.set("/sitemap.xml", sitemapIndexXml(env, paths));
   const missingCache = new Set();
   const rememberMissing = (path) => {
     if (missingCache.has(path)) return;
@@ -1190,14 +1232,8 @@ export function createSitemapSnapshot({
       if (responseCache.has(path)) return responseCache.get(path);
       if (!parsedSitemapPath(path)) return null;
       if (missingCache.has(path)) return null;
-      const rows = rowsByPath.get(path);
-      if (!rows) {
-        rememberMissing(path);
-        return null;
-      }
-      const body = renderUrlsetRows(rows);
-      responseCache.set(path, body);
-      return body;
+      rememberMissing(path);
+      return null;
     },
   });
 }
@@ -1217,6 +1253,11 @@ export function sitemapXmlFor(pathname, {
   const parsed = parsedSitemapPath(pathname);
   if (!parsed) return null;
   const rowParts = sitemapRowPartsFor(parsed.name, options);
-  const rows = rowParts?.[parsed.partIndex];
-  return rows ? renderUrlsetRows(rows) : null;
+  if (!rowParts) return null;
+  let index = 0;
+  for (const rows of rowParts) {
+    if (index === parsed.partIndex) return renderUrlsetRows(rows);
+    index += 1;
+  }
+  return null;
 }

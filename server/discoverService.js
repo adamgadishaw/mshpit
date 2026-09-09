@@ -5,6 +5,7 @@ import { activeAccountSql } from "./accountVisibility.js";
 import { inPersonReviewSql } from "./onlineReviews.js";
 import { eligiblePopularityArtists } from "./artistPopularityEligibility.js";
 import { createEventCoverageService } from "./features/discovery/eventCoverageService.js";
+import { ARTIST_GENRE_SQL_COLUMNS, projectArtistGenreColumns } from "./artistGenreProjection.js";
 
 const ARTIST_RATING_CANDIDATE_LIMIT = 5_000;
 const POPULARITY_RANKING_CANDIDATE_LIMIT = 1_200;
@@ -88,8 +89,19 @@ export function createDiscoverService({ database = db, clock = Date.now, reviewe
     const version = projectionVersion();
     const current = clock();
     if (projectionCache.version === version && current - projectionCache.at < PROJECTION_TTL_MS) return projectionCache.rows;
-    const rows = database.prepare("SELECT norm, country, genre, data FROM artists").all()
-      .map((row) => ({ norm: row.norm, country: row.country || null, genre: projectedGenre(row) }));
+    const rows = [];
+    // Do not hydrate photos, albums, or tracks to classify a small genre label.
+    // Keep the former data.mbid evidence boundary even for legacy rows whose
+    // typed MBID column has not been populated yet.
+    for (const row of database.prepare(`SELECT a.norm,a.country,${ARTIST_GENRE_SQL_COLUMNS},
+        CASE WHEN json_valid(a.data) THEN substr(CAST(json_extract(a.data,'$.mbid') AS TEXT),1,36) END AS genre_data_mbid
+      FROM artists a`).iterate()) {
+      rows.push({
+        norm: row.norm,
+        country: row.country || null,
+        genre: canonicalGenre(projectArtistGenreColumns({ ...row, genre_mbid: row.genre_data_mbid })),
+      });
+    }
     projectionCache = { version, at: current, rows };
     return rows;
   }

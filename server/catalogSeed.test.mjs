@@ -1,11 +1,13 @@
 import test from "node:test";
 import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
+import { DatabaseSync } from "node:sqlite";
 import {
   catalogSeedRequestOptions, crawlerGenreFields, fillMissingArtistPhotos, growOutcome, refreshSongsAndGenres,
   deezerEnrich, enrichCatalogArtistPhoto, mbTag, mergeGenreBackfillData, mergePhotoFillData,
   normalizeLegacySpotifyArtistPhotoData, photoFillRefreshBefore, rotateRowsAfterCursor,
   shouldEnrichAfterCrawl, stripSpotifyArtistPhotoData,
+  selectGenreBackfillCandidates,
   SPOTIFY_PHOTO_NO_MATCH_GRACE_MS,
   SPOTIFY_PHOTO_RECHECK_MS,
 } from "./catalogSeed.js";
@@ -14,6 +16,49 @@ import { artistRow, artistStmts, mergeBundledArtist, publicArtist } from "./db.j
 import { ProviderError } from "./musicProviders.js";
 
 const catalogSeedSource = readFileSync(new URL("./catalogSeed.js", import.meta.url), "utf8");
+
+test("genre backfill streams narrow provenance and wraps after its cursor with a bounded identity batch", () => {
+  const raw = new DatabaseSync(":memory:");
+  raw.exec("CREATE TABLE artists (norm TEXT PRIMARY KEY,genre TEXT,popularity INTEGER,rank_score REAL,data TEXT)");
+  try {
+    const insert = raw.prepare("INSERT INTO artists VALUES (?,?,?,?,?)");
+    for (const [index, norm] of ["a", "b", "c", "d", "e"].entries()) {
+      insert.run(norm, "Rock", 100 - index, index, norm === "d" ? "{malformed" : JSON.stringify({
+        genreClaims: norm === "c" ? [{ value: "Rock", source: "staff", at: 1 }] : [],
+        topTracks: [{ title: "Ignored" }], unused: "metadata".repeat(2000),
+      }));
+    }
+    let narrowReads = 0;
+    const database = { prepare(sql) {
+      const statement = raw.prepare(sql);
+      return {
+        get(...args) {
+          const row = statement.get(...args);
+          if (row?.genre_data) {
+            narrowReads += 1;
+            assert.equal(Object.hasOwn(row, "data"), false);
+            assert.ok(row.genre_data.length < 500, "unrelated rich metadata stays inside SQLite");
+          }
+          return row;
+        },
+        *iterate(...args) {
+          for (const row of statement.iterate(...args)) {
+            assert.deepEqual(Object.keys(row), ["norm"], "only identities are sorted for the catalogue scan");
+            yield row;
+          }
+        },
+        all() { assert.fail("genre candidate selection must not load the complete catalogue"); },
+      };
+    } };
+    assert.deepEqual(selectGenreBackfillCandidates({ database, cursor: "b", limit: 2 }), ["d", "e"]);
+    assert.deepEqual(selectGenreBackfillCandidates({ database, cursor: "d", limit: 3 }), ["e", "a", "b"]);
+    assert.deepEqual(selectGenreBackfillCandidates({ database, cursor: "missing", limit: 10 }), ["a", "b", "d", "e"]);
+    assert.deepEqual(selectGenreBackfillCandidates({ database, cursor: "e", limit: 10 }), ["a", "b", "d", "e"]);
+    assert.ok(narrowReads > 5);
+    assert.deepEqual(selectGenreBackfillCandidates({ database, limit: 0 }), []);
+    assert.deepEqual(selectGenreBackfillCandidates({ database, shouldStop: () => true }), []);
+  } finally { raw.close(); }
+});
 
 test("MusicBrainz catalog pages gate every retry and retain unfiltered pagination", async () => {
   let requests = 0;

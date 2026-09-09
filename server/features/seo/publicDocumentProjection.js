@@ -1515,7 +1515,8 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         modificationNotice: null,
       }) : null);
       const image = heroPhoto?.url || null;
-      const contentPlace = events.find((event) => event.place)?.place || posts.find((post) => post.city)?.city || null;
+      const contentPlace = events.find((event) => event.place)?.place || posts.find((post) => post.city)?.city
+        || cleanLine(raw.venue?.place, 300) || null;
       const curatedFacts = publicVenueFacts({
         name,
         place: contentPlace,
@@ -1634,7 +1635,8 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
           : fanImage && primaryAsset?.kind === "image" ? primaryAsset.height : null,
         imageMimeType: licensedVenuePhoto ? null
           : fanImage && primaryAsset?.kind === "image" ? primaryAsset.mimeType : null,
-        venue: Object.freeze({ name, place, address, heroPhoto, capacity, coord, guide }),
+        venue: Object.freeze({ name, place, address, heroPhoto, capacity, coord, guide,
+          guideLocationVerified: Boolean(contentPlace && curatedFacts) }),
         venuePhotos: licensedVenuePhotos,
         venueReviewStats: Object.freeze({ reviewCount, ratingCount, averageRating }),
         venueReviews: Object.freeze(venueReviews),

@@ -750,6 +750,7 @@ export async function recoverLegacyPostImage(database, candidate, {
     const sanitized = await imageProcessor(bytes, {
       expectedType: source.mimeType,
       outputType,
+      signal,
       timeoutMs: LEGACY_IMAGE_RECOVERY_TIMEOUT_MS,
       allowHeicFallback: true,
       allowLegacyJpegTrailer: true,

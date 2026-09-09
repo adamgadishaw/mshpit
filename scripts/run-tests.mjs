@@ -8,9 +8,10 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { memoryBoundedTestArguments } from "./test-memory-policy.mjs";
 
 const dataDir = mkdtempSync(join(tmpdir(), "pit-tests-"));
-const testArgs = process.argv.slice(2);
+const testArgs = memoryBoundedTestArguments(process.argv.slice(2));
 const testEnvironment = {
   ...process.env,
   NODE_ENV: "test",

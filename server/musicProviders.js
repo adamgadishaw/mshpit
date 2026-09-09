@@ -1019,14 +1019,14 @@ export async function getFreshDeezerPreview(title, artist, { fetchImpl = fetch, 
   return { ...result, status: result.preview ? "fresh" : "not_found", expiresAt: result.preview ? expiresAt : null };
 }
 
-export function spotifyCatalogueTrackProof({ sourceId, title, artist }) {
+export function spotifyCatalogueTrackProof({ sourceId, title, artist, database = db }) {
   const id = String(sourceId || "").trim();
   if (!/^[A-Za-z0-9]{1,64}$/.test(id)) return null;
   const requestedArtist = normalizeTrackIdentityText(artist);
   const requestedTitles = youtubeTitleCreditCandidates(title);
   if (!requestedArtist || !requestedTitles.length) return null;
-  const compatible = [];
-  for (const song of getSongIndex()) {
+  const compatible = new Map();
+  for (const song of readCatalogSongs({ database, artistIdentity: requestedArtist })) {
     if (String(song?.provider || "").toLowerCase() !== "spotify" || String(song?.sourceId || "") !== id) continue;
     if (normalizeTrackIdentityText(song.artist) !== requestedArtist) continue;
     const authoritativeTitles = youtubeTitleCreditCandidates(song.title, song.artist);
@@ -1039,15 +1039,16 @@ export function spotifyCatalogueTrackProof({ sourceId, title, artist }) {
     // enriched row has one; its absence must not invalidate the exact source
     // identity shared by every production catalogue row.
     const durationSec = Math.max(0, Number(song.duration) || 0);
-    compatible.push({
+    const match = {
       titleBase: shared.base,
       credits: shared.credits,
       durationSec,
-    });
+    };
+    compatible.set(JSON.stringify(match), match);
+    if (compatible.size > 1) return null;
   }
-  const distinct = [...new Map(compatible.map((entry) => [JSON.stringify(entry), entry])).values()];
-  if (distinct.length !== 1) return null;
-  const match = distinct[0];
+  if (compatible.size !== 1) return null;
+  const match = compatible.values().next().value;
   return {
     verified: true,
     featuredCredits: match.credits ? match.credits.split("|") : [],
@@ -2510,61 +2511,87 @@ export async function searchDeezerTracks(query, { limit = 12, fetchImpl = fetch,
   });
 }
 
-// ---- catalogue song index -------------------------------------------------
-// The catalogue already holds ~2,500 songs on artists we know are real touring
-// acts. Searching those in memory answers instantly, works with no network, and
-// costs nothing, so it runs before the provider call rather than after it.
-//
-// Rebuilt lazily: the catalogue only changes when a seed or enrichment run
-// writes, which is rare compared to how often people search.
-let songIndex = null;
-let songIndexBuiltAt = 0;
-const SONG_INDEX_TTL_MS = 10 * 60 * 1000;
+// ---- catalogue song search ------------------------------------------------
+// Local catalogue matches remain available without a network/provider request.
+// Stream individual tracks out of SQLite rather than retaining every artist's
+// rich metadata and a second process-lifetime song index. JSON guards handle
+// malformed legacy blobs, non-array topTracks, and non-object array entries.
+// No artist/track count limit: a match at the end of the catalogue still wins.
+const CATALOG_SONG_SELECT = `SELECT a.name AS artist,a.popularity,
+    json_extract(t.value,'$.title') AS title,
+    json_extract(t.value,'$.url') AS url,
+    json_extract(t.value,'$.id') AS id,
+    json_extract(t.value,'$.sourceId') AS sourceId,
+    json_extract(t.value,'$.provider') AS provider,
+    json_extract(t.value,'$.album') AS album,
+    COALESCE(NULLIF(json_extract(t.value,'$.art'),''),json_extract(a.data,'$.photo')) AS art,
+    json_extract(t.value,'$.duration') AS duration
+  FROM artists a, json_each(CASE WHEN json_valid(a.data) THEN
+    CASE WHEN json_type(a.data,'$.topTracks')='array' THEN a.data ELSE '{}' END
+    ELSE '{}' END,'$.topTracks') t
+  WHERE t.type='object' AND json_type(t.value,'$.title')='text'
+    AND length(json_extract(t.value,'$.title'))>0`;
 
-function buildSongIndex() {
-  const out = [];
-  for (const row of db.prepare("SELECT name, popularity, data FROM artists").all()) {
-    let data = {};
-    try { data = JSON.parse(row.data || "{}"); } catch { continue; }
-    const art = data.photo || null;
-    for (const t of data.topTracks || []) {
-      if (!t?.title) continue;
-      const spotifyId = String(t.url || "").match(/open\.spotify\.com\/track\/([A-Za-z0-9]+)/i)?.[1] || null;
-      const sourceId = t.sourceId ? String(t.sourceId) : spotifyId || (t.id ? String(t.id) : null);
-      const provider = t.provider || (spotifyId ? "spotify" : null);
-      out.push({
-        title: t.title,
-        artist: row.name,
-        id: t.id ? String(t.id) : null,
-        sourceId,
-        provider,
-        album: t.album || null,
-        art: t.art || art,
-        duration: Number(t.duration) || null,
+const catalogSongStatements = new WeakMap();
+function songStatements(database) {
+  let statements = catalogSongStatements.get(database);
+  if (!statements) {
+    statements = {
+      all: database.prepare(CATALOG_SONG_SELECT),
+      artist: database.prepare(`${CATALOG_SONG_SELECT} AND a.norm=?`),
+      identities: database.prepare("SELECT norm,name FROM artists"),
+    };
+    catalogSongStatements.set(database, statements);
+  }
+  return statements;
+}
+
+function* readCatalogSongs({ database = db, artistIdentity = null } = {}) {
+  const statements = songStatements(database);
+  function* projected(rows) {
+    for (const row of rows) {
+      const spotifyId = String(row.url || "").match(/open\.spotify\.com\/track\/([A-Za-z0-9]+)/i)?.[1] || null;
+      yield {
+        title: row.title,
+        artist: row.artist,
+        id: row.id ? String(row.id) : null,
+        sourceId: row.sourceId ? String(row.sourceId) : spotifyId || (row.id ? String(row.id) : null),
+        provider: row.provider || (spotifyId ? "spotify" : null),
+        album: row.album || null,
+        art: row.art || null,
+        duration: Number(row.duration) || null,
         popularity: Number(row.popularity) || 0,
-      });
+      };
     }
   }
-  return out;
-}
-
-function getSongIndex() {
-  if (!songIndex || Date.now() - songIndexBuiltAt > SONG_INDEX_TTL_MS) {
-    songIndex = buildSongIndex();
-    songIndexBuiltAt = Date.now();
+  if (artistIdentity == null) {
+    yield* projected(statements.all.iterate());
+    return;
   }
-  return songIndex;
+  // Exact recording proof scans only small identity fields before reading the
+  // matching artists' tracks. Preserve Unicode/punctuation normalization and
+  // namesakes instead of guessing an indexed norm from the request spelling.
+  for (const row of statements.identities.iterate()) {
+    if (normalizeTrackIdentityText(row.name) === artistIdentity) {
+      yield* projected(statements.artist.iterate(row.norm));
+    }
+  }
 }
 
-export function invalidateSongIndex() { songIndex = null; }
+// Compatibility for writers/tests that used to expire the retained index.
+// Streaming reads observe committed catalogue changes on the next call.
+export function invalidateSongIndex() {}
 
 // Title matches rank above artist matches: someone typing a song title wants
 // that song, not everything by a band whose name contains the words.
-export function searchCatalogSongs(query, { limit = 12 } = {}) {
+export function searchCatalogSongs(query, { limit = 12, database = db } = {}) {
   const q = normalizeMusicText(query);
   if (q.length < 2) return [];
+  const take = Math.max(0, Math.min(100, Math.trunc(Number(limit) || 0)));
+  if (!take) return [];
   const hits = [];
-  for (const song of getSongIndex()) {
+  const compare = (a, b) => b.weight - a.weight || b.popularity - a.popularity || a.title.localeCompare(b.title);
+  for (const song of readCatalogSongs({ database })) {
     const title = normalizeMusicText(song.title);
     const artist = normalizeMusicText(song.artist);
     let weight = 0;
@@ -2573,8 +2600,16 @@ export function searchCatalogSongs(query, { limit = 12 } = {}) {
     else if (title.includes(q)) weight = 2;
     else if (artist.includes(q)) weight = 1;
     else continue;
-    hits.push({ ...song, source: "catalog", weight });
+    const candidate = { ...song, source: "catalog", weight };
+    // Keep only the requested top N, including stable encounter order for ties.
+    // Broad queries no longer clone and sort every matching catalogue track.
+    const position = hits.findIndex((hit) => compare(candidate, hit) < 0);
+    if (position < 0) {
+      if (hits.length < take) hits.push(candidate);
+    } else {
+      hits.splice(position, 0, candidate);
+      if (hits.length > take) hits.pop();
+    }
   }
-  hits.sort((a, b) => b.weight - a.weight || b.popularity - a.popularity || a.title.localeCompare(b.title));
-  return hits.slice(0, limit);
+  return hits;
 }

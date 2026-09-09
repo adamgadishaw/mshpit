@@ -1,5 +1,6 @@
 import { mkdir, open, readFile, rename, stat, unlink } from "node:fs/promises";
 import { join } from "node:path";
+import { tryAcquireMemoryWork } from "../../memoryAdmission.js";
 import {
   SITEMAP_MAX_BYTES,
   SITEMAP_MAX_URLS,
@@ -11,7 +12,7 @@ const SNAPSHOT_VERSION = 1;
 // Bump this when sitemap selection/canonicalization policy changes without a
 // persistence-format change. A prior deploy's otherwise valid XML then gets one
 // deliberate rebuild instead of being reused under rules it never evaluated.
-export const SITEMAP_SNAPSHOT_REVISION = 4;
+export const SITEMAP_SNAPSHOT_REVISION = 5;
 const SNAPSHOT_FILENAME = "seo-sitemap-snapshot-v1.json";
 const DEFAULT_RETRY_SECONDS = 30;
 export const DEFAULT_SITEMAP_STARTUP_REUSE_MS = 15 * 60 * 1_000;
@@ -28,12 +29,16 @@ function canonicalOrigin(env = process.env) {
   }
 }
 
-function sitemapLocations(xml) {
-  return [...String(xml || "").matchAll(/<loc>([^<]+)<\/loc>/g)].map((match) => match[1]);
+function* sitemapLocations(xml) {
+  for (const match of String(xml || "").matchAll(/<loc>([^<]+)<\/loc>/g)) yield match[1];
 }
 
 function urlCount(xml) {
-  return [...String(xml || "").matchAll(/<url>/g)].length;
+  let count = 0;
+  for (const match of String(xml || "").matchAll(/<url>/g)) {
+    if (match) count += 1;
+  }
+  return count;
 }
 
 function sanitizedStats(value, { totalUrls, shardCount }) {
@@ -81,12 +86,14 @@ export function validateSitemapSnapshotPayload(payload, { env = process.env } = 
     throw new TypeError("SITEMAP_SNAPSHOT_INDEX_XML");
   }
   if (Buffer.byteLength(indexXml, "utf8") > SITEMAP_MAX_BYTES) throw new TypeError("SITEMAP_SNAPSHOT_INDEX_BYTES");
-  const indexedPaths = sitemapLocations(indexXml).map((value) => {
+  let indexedCount = 0;
+  for (const value of sitemapLocations(indexXml)) {
     const url = new URL(value);
     if (url.origin !== origin || url.search || url.hash) throw new TypeError("SITEMAP_SNAPSHOT_INDEX_ORIGIN");
-    return url.pathname;
-  });
-  if (indexedPaths.length !== paths.length || indexedPaths.some((path, index) => path !== paths[index])) {
+    if (url.pathname !== paths[indexedCount]) throw new TypeError("SITEMAP_SNAPSHOT_INDEX_CONTENTS");
+    indexedCount += 1;
+  }
+  if (indexedCount !== paths.length) {
     throw new TypeError("SITEMAP_SNAPSHOT_INDEX_CONTENTS");
   }
 
@@ -98,14 +105,15 @@ export function validateSitemapSnapshotPayload(payload, { env = process.env } = 
     if (Buffer.byteLength(xml, "utf8") > SITEMAP_MAX_BYTES) throw new TypeError("SITEMAP_SNAPSHOT_SHARD_BYTES");
     const count = urlCount(xml);
     if (count > SITEMAP_MAX_URLS) throw new TypeError("SITEMAP_SNAPSHOT_SHARD_URLS");
-    const locations = sitemapLocations(xml);
-    if (locations.length !== count) throw new TypeError("SITEMAP_SNAPSHOT_LOC_COUNT");
-    for (const value of locations) {
+    let locationCount = 0;
+    for (const value of sitemapLocations(xml)) {
+      locationCount += 1;
       const url = new URL(value);
       if (url.origin !== origin || url.search || url.hash) throw new TypeError("SITEMAP_SNAPSHOT_URL_ORIGIN");
       if (seenUrls.has(url.href)) throw new TypeError("SITEMAP_SNAPSHOT_DUPLICATE_URL");
       seenUrls.add(url.href);
     }
+    if (locationCount !== count) throw new TypeError("SITEMAP_SNAPSHOT_LOC_COUNT");
     totalUrls += count;
   }
 
@@ -149,6 +157,26 @@ function hydratedSnapshot(payload) {
       return Object.hasOwn(documents, pathname) ? documents[pathname] : null;
     },
   });
+}
+
+// Persist the existing JSON format without constructing another whole-snapshot
+// string alongside old XML, new XML, and the builder's candidate structures.
+// JSON-escaped surrogate halves remain lossless even at a chunk boundary.
+export function* sitemapSnapshotJsonChunks(payload) {
+  yield `{"version":${payload.version},"revision":${payload.revision},"generatedAt":${payload.generatedAt},"paths":[`;
+  for (let index = 0; index < payload.paths.length; index += 1) {
+    yield `${index ? "," : ""}${JSON.stringify(payload.paths[index])}`;
+  }
+  yield '],"documents":{';
+  let index = 0;
+  for (const [path, xml] of Object.entries(payload.documents)) {
+    yield `${index++ ? "," : ""}${JSON.stringify(path)}:"`;
+    for (let offset = 0; offset < xml.length; offset += 16_384) {
+      yield JSON.stringify(xml.slice(offset, offset + 16_384)).slice(1, -1);
+    }
+    yield '"';
+  }
+  yield `},"stats":${JSON.stringify(payload.stats)}}`;
 }
 
 /**
@@ -210,10 +238,12 @@ export function createSitemapSnapshotManager({
   retryMaximumMs = 15 * 60 * 1_000,
   deferBuild = () => new Promise((resolve) => setImmediate(resolve)),
   maximumPersistedBytes = SITEMAP_MAX_PERSISTED_SNAPSHOT_BYTES,
+  acquireRefreshLease = () => tryAcquireMemoryWork("sitemap"),
 } = {}) {
   if (!database?.prepare) throw new TypeError("Sitemap snapshot manager requires a database");
   if (typeof dataDir !== "string" || !dataDir.trim()) throw new TypeError("Sitemap snapshot manager requires the configured data directory");
   if (typeof buildSnapshot !== "function") throw new TypeError("Sitemap snapshot manager requires a builder");
+  if (typeof acquireRefreshLease !== "function") throw new TypeError("Sitemap refresh admission must be a function");
   const persistedByteLimit = Number.isSafeInteger(maximumPersistedBytes) && maximumPersistedBytes > 0
     ? Math.min(maximumPersistedBytes, SITEMAP_MAX_PERSISTED_SNAPSHOT_BYTES)
     : SITEMAP_MAX_PERSISTED_SNAPSHOT_BYTES;
@@ -229,6 +259,7 @@ export function createSitemapSnapshotManager({
   let lastFailureCategory = null;
   let consecutiveFailures = 0;
   let nextRetryAt = null;
+  let lastDeferredAt = null;
 
   const health = () => {
     const clock = Number(now());
@@ -246,6 +277,7 @@ export function createSitemapSnapshotManager({
       lastFailureAt,
       lastFailureCategory,
       nextRetryAt,
+      lastDeferredAt,
       totalUrls: current?.stats?.totalUrls ?? 0,
       shardCount: current?.stats?.shardCount ?? 0,
       datasetCounts: Object.freeze({ ...(current?.stats?.datasetCounts || {}) }),
@@ -269,10 +301,17 @@ export function createSitemapSnapshotManager({
   };
 
   const load = async () => {
+    let lease = null;
     try {
       const metadata = await stat(persistedPath);
       if (!metadata.isFile() || metadata.size < 2 || metadata.size > persistedByteLimit) {
         throw new TypeError("SITEMAP_SNAPSHOT_FILE_SIZE");
+      }
+      lease = acquireRefreshLease({ phase: "load" });
+      if (!lease) {
+        lastDeferredAt = Number(now());
+        nextRetryAt = lastDeferredAt + DEFAULT_RETRY_SECONDS * 1_000;
+        return Object.freeze({ ok: false, reason: "resource_pressure", retryAt: nextRetryAt });
       }
       const payload = validateSitemapSnapshotPayload(
         JSON.parse(await readFile(persistedPath, "utf8")),
@@ -293,20 +332,23 @@ export function createSitemapSnapshotManager({
       lastFailureAt = Number(now());
       lastFailureCategory = failureCategory(error, "load");
       return Object.freeze({ ok: false, reason: lastFailureCategory });
+    } finally {
+      lease?.release?.();
     }
   };
 
   const persist = async (payload) => {
     await mkdir(dataDir, { recursive: true });
     const temporaryPath = `${persistedPath}.${process.pid}.${Number(now())}.tmp`;
-    const serialized = JSON.stringify(payload);
-    if (Buffer.byteLength(serialized, "utf8") > persistedByteLimit) {
-      throw new TypeError("SITEMAP_SNAPSHOT_FILE_SIZE");
-    }
     let temporaryHandle = null;
     try {
       temporaryHandle = await open(temporaryPath, "wx", 0o600);
-      await temporaryHandle.writeFile(serialized, { encoding: "utf8" });
+      let writtenBytes = 0;
+      for (const chunk of sitemapSnapshotJsonChunks(payload)) {
+        writtenBytes += Buffer.byteLength(chunk, "utf8");
+        if (writtenBytes > persistedByteLimit) throw new TypeError("SITEMAP_SNAPSHOT_FILE_SIZE");
+        await temporaryHandle.writeFile(chunk, { encoding: "utf8" });
+      }
       await temporaryHandle.sync();
       await temporaryHandle.close();
       temporaryHandle = null;
@@ -340,8 +382,15 @@ export function createSitemapSnapshotManager({
     }
     refreshStartedAt = requestedAt;
     refreshPromise = (async () => {
+      let lease = null;
       try {
         await deferBuild();
+        lease = acquireRefreshLease({ phase: "refresh" });
+        if (!lease) {
+          lastDeferredAt = Number(now());
+          nextRetryAt = lastDeferredAt + DEFAULT_RETRY_SECONDS * 1_000;
+          return Object.freeze({ ok: false, reason: "resource_pressure", retryAt: nextRetryAt });
+        }
         const built = await buildSnapshot({ database, env, now: requestedAt });
         const payload = payloadFromSnapshot(built, env);
         await persist(payload);
@@ -365,9 +414,12 @@ export function createSitemapSnapshotManager({
         nextRetryAt = lastFailureAt + backoff;
         return Object.freeze({ ok: false, reason: lastFailureCategory, retryAt: nextRetryAt });
       } finally {
-        lastRefreshDurationMs = Math.max(0, Number(now()) - requestedAt);
-        refreshStartedAt = null;
-        refreshPromise = null;
+        try { lease?.release?.(); }
+        finally {
+          lastRefreshDurationMs = Math.max(0, Number(now()) - requestedAt);
+          refreshStartedAt = null;
+          refreshPromise = null;
+        }
       }
     })();
     return refreshPromise;

@@ -3,13 +3,15 @@ import { fileURLToPath } from "node:url";
 
 import { MAX_IMAGE_PIXELS } from "./imageInspection.js";
 import { MEDIA_PHOTO_SOURCE_MAX_BYTES } from "../src/domain/mediaUploadPolicy.mjs";
+import { tryAcquireMemoryWork } from "./memoryAdmission.js";
 
 const MAX_ACTIVE_IMAGE_JOBS = 1;
-const MAX_QUEUED_IMAGE_JOBS = 24;
-const MAX_QUEUED_IMAGE_BYTES = 128 * 1024 * 1024;
+const MAX_QUEUED_IMAGE_JOBS = 2;
+const MAX_QUEUED_IMAGE_BYTES = 60 * 1024 * 1024;
 const MAX_IMAGE_INPUT_BYTES = MEDIA_PHOTO_SOURCE_MAX_BYTES;
 const MAX_IMAGE_OUTPUT_BYTES = 12 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 30_000;
+const DEFAULT_QUEUE_TIMEOUT_MS = 30_000;
 const CHILD_HEAP_MIB = 320;
 const WORKER_PATH = fileURLToPath(new URL("./imageProcessorWorker.js", import.meta.url));
 
@@ -65,6 +67,11 @@ function terminate(child) {
   if (!child?.pid) return;
   try { child.kill("SIGKILL"); }
   catch (error) { if (error?.code !== "ESRCH") void error; }
+}
+
+function abortReason(signal) {
+  return signal?.reason instanceof Error
+    ? signal.reason : new DOMException("Image processing was cancelled.", "AbortError");
 }
 
 function normalizedWorkerResult(message, operation) {
@@ -123,6 +130,10 @@ function normalizedWorkerResult(message, operation) {
 
 function executeIsolatedImageJob(operation, bytes, options = {}) {
   const input = inputBytes(bytes);
+  if (options.signal?.aborted) return Promise.reject(abortReason(options.signal));
+  const memoryLease = typeof options.acquireMemoryLease === "function"
+    ? options.acquireMemoryLease() : tryAcquireMemoryWork("image");
+  if (!memoryLease) return Promise.reject(new ImageProcessorError("busy", "Image processing is waiting for safe memory capacity."));
   activeImageJobs += 1;
   return new Promise((resolve, reject) => {
     let child;
@@ -132,11 +143,16 @@ function executeIsolatedImageJob(operation, bytes, options = {}) {
     const release = () => {
       if (released) return;
       released = true;
+      memoryLease.release();
       activeImageJobs = Math.max(0, activeImageJobs - 1);
       queueMicrotask(drainImageQueue);
     };
     const fail = (error) => {
       if (!outcome) outcome = { error };
+      terminate(child);
+    };
+    const onAbort = () => {
+      outcome = { error: abortReason(options.signal) };
       terminate(child);
     };
     try {
@@ -156,6 +172,7 @@ function executeIsolatedImageJob(operation, bytes, options = {}) {
       fail(new ImageProcessorError("timeout", "Image verification timed out."));
     }, normalizedTimeout(options.timeoutMs));
     timer.unref?.();
+    options.signal?.addEventListener("abort", onAbort, { once: true });
     child.once("message", (message) => {
       if (outcome) return;
       try { outcome = { value: normalizedWorkerResult(message, operation) }; }
@@ -167,6 +184,7 @@ function executeIsolatedImageJob(operation, bytes, options = {}) {
     });
     child.once("close", () => {
       clearTimeout(timer);
+      options.signal?.removeEventListener("abort", onAbort);
       release();
       if (!outcome) {
         reject(new ImageProcessorError("worker_unavailable", "Image verification ended without a result."));
@@ -176,6 +194,10 @@ function executeIsolatedImageJob(operation, bytes, options = {}) {
         resolve(outcome.value);
       }
     });
+    if (options.signal?.aborted) {
+      onAbort();
+      return;
+    }
     try {
       child.send({
         operation,
@@ -205,13 +227,21 @@ function executeIsolatedImageJob(operation, bytes, options = {}) {
 function drainImageQueue() {
   while (activeImageJobs < MAX_ACTIVE_IMAGE_JOBS && queuedImageJobs.length) {
     const job = queuedImageJobs.shift();
+    job.cleanup();
     queuedImageBytes = Math.max(0, queuedImageBytes - job.bytes.byteLength);
-    executeIsolatedImageJob(job.operation, job.bytes, job.options).then(job.resolve, job.reject);
+    try {
+      executeIsolatedImageJob(job.operation, job.bytes, job.options).then(job.resolve, job.reject);
+    } catch (error) {
+      // An admission failure must reject this queued caller, not escape the
+      // drain microtask and prevent the remaining uploads from proceeding.
+      job.reject(error);
+    }
   }
 }
 
 function runIsolatedImageJob(operation, bytes, options = {}) {
   const input = inputBytes(bytes);
+  if (options.signal?.aborted) return Promise.reject(abortReason(options.signal));
   if (activeImageJobs < MAX_ACTIVE_IMAGE_JOBS) {
     return executeIsolatedImageJob(operation, input, options);
   }
@@ -223,8 +253,27 @@ function runIsolatedImageJob(operation, bytes, options = {}) {
     ));
   }
   return new Promise((resolve, reject) => {
+    const job = { operation, bytes: input, options, resolve, reject, cleanup: null };
+    const cancel = (reason) => {
+      const index = queuedImageJobs.indexOf(job);
+      if (index < 0) return;
+      queuedImageJobs.splice(index, 1);
+      queuedImageBytes = Math.max(0, queuedImageBytes - input.byteLength);
+      job.cleanup();
+      reject(reason);
+    };
+    const onAbort = () => cancel(abortReason(options.signal));
+    const timer = setTimeout(() => cancel(new ImageProcessorError("timeout", "Image processing did not start in time.")),
+      normalizedTimeout(options.queueTimeoutMs ?? DEFAULT_QUEUE_TIMEOUT_MS));
+    timer.unref?.();
+    job.cleanup = () => {
+      clearTimeout(timer);
+      options.signal?.removeEventListener("abort", onAbort);
+    };
     queuedImageBytes += input.byteLength;
-    queuedImageJobs.push({ operation, bytes: input, options, resolve, reject });
+    queuedImageJobs.push(job);
+    options.signal?.addEventListener("abort", onAbort, { once: true });
+    if (options.signal?.aborted) onAbort();
   });
 }
 
@@ -233,12 +282,18 @@ export async function validateDecodedImage(bytes, {
   timeoutMs = DEFAULT_TIMEOUT_MS,
   allowHeicFallback = false,
   allowLegacyJpegTrailer = false,
+  signal = null,
+  acquireMemoryLease,
+  queueTimeoutMs = DEFAULT_QUEUE_TIMEOUT_MS,
 } = {}) {
   return runIsolatedImageJob("validate", bytes, {
     expectedType,
     timeoutMs,
     allowHeicFallback: allowHeicFallback === true,
     allowLegacyJpegTrailer: allowLegacyJpegTrailer === true,
+    signal,
+    acquireMemoryLease,
+    queueTimeoutMs,
   });
 }
 
@@ -251,6 +306,9 @@ export async function sanitizeDecodedImage(bytes, {
   allowHeicFallback = false,
   allowLegacyJpegTrailer = false,
   profileRendition = null,
+  signal = null,
+  acquireMemoryLease,
+  queueTimeoutMs = DEFAULT_QUEUE_TIMEOUT_MS,
 } = {}) {
   return runIsolatedImageJob("sanitize", bytes, {
     expectedType,
@@ -261,6 +319,9 @@ export async function sanitizeDecodedImage(bytes, {
     allowHeicFallback: allowHeicFallback === true,
     allowLegacyJpegTrailer: allowLegacyJpegTrailer === true,
     profileRendition,
+    signal,
+    acquireMemoryLease,
+    queueTimeoutMs,
   });
 }
 
@@ -275,6 +336,7 @@ export function imageProcessorHealth() {
     timeoutMs: DEFAULT_TIMEOUT_MS,
     queuedBytes: queuedImageBytes,
     queueByteCapacity: MAX_QUEUED_IMAGE_BYTES,
+    queueTimeoutMs: DEFAULT_QUEUE_TIMEOUT_MS,
     childHeapMiB: CHILD_HEAP_MIB,
     maxInputBytes: MAX_IMAGE_INPUT_BYTES,
     maxPixels: MAX_IMAGE_PIXELS,
