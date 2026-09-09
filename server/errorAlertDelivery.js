@@ -58,7 +58,7 @@ function transaction(database, action) {
 export function createErrorAlertDelivery(database) {
   const state = database.prepare("SELECT * FROM error_alert_delivery WHERE singleton=1");
   const pending = database.prepare(`SELECT e.fingerprint,e.level,e.code,e.status,e.method,e.route,e.cause,
-      e.last_request_id,e.first_seen,e.count through_count,
+      e.last_request_id,e.first_seen,e.last_seen,e.count through_count,
       e.count-COALESCE(c.through_count,0) count,
       COALESCE(c.through_count,0) acknowledged_count,
       COALESCE(c.legacy_through_count,0) legacy_through_count

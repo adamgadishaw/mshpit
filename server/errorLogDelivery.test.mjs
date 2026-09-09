@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { registerHooks } from "node:module";
 import { tmpdir } from "node:os";
@@ -100,9 +101,33 @@ test("failed sends retain the frozen batch and key across restart and newer erro
   send = async () => ({ sent: true });
   assert.equal((await maybeAlert({ now: minute(37) })).occurrences, 1);
   assert.deepEqual(packets[0], packets[1], "uncertain retries must keep exactly the same payload and idempotency key");
+  assert.match(packets[1].vars.detail, /Last occurred: 2026-09-08 16:05:00\.000 UTC/);
   assert.equal((await maybeAlert({ now: minute(68) })).occurrences, 1);
   assert.equal(packets[2].vars.detail.includes(secondId), true);
+  assert.match(packets[2].vars.detail, /Last occurred: 2026-09-08 16:10:00\.000 UTC/);
   assert.notEqual(packets[2].idempotencyKey, packets[1].idempotencyKey);
+});
+
+test("a legacy frozen alert without timestamps preserves its body and key across retries", async () => {
+  crash();
+  const row = db.prepare(`SELECT fingerprint,level,code,status,method,route,cause,
+    last_request_id,first_seen,count through_count,count,
+    0 acknowledged_count,0 legacy_through_count FROM error_events`).get();
+  const payload = JSON.stringify({ rows: [row], initialCatchUp: false });
+  const key = "error-alert-v2-" + createHash("sha256").update(payload).digest("hex").slice(0, 40);
+  db.prepare("UPDATE error_alert_delivery SET pending_key=?,pending_payload=? WHERE singleton=1").run(key, payload);
+  send = async () => ({ sent: false, reason: "provider-unavailable" });
+  await maybeAlert({ now: minute(6) });
+  assert.equal(packets[0].idempotencyKey, key);
+  assert.equal(packets[0].vars.detail, `1x  FATAL  POST /client/landing  PIT-APP-001  (RenderError.Web)  request ${firstId}`);
+  crash({ requestId: secondId, at: minute(10) });
+  resetAlertStateForTests();
+  send = async () => ({ sent: true });
+  await maybeAlert({ now: minute(37) });
+  assert.deepEqual(packets[1], packets[0]);
+  assert.equal((await maybeAlert({ now: minute(68) })).occurrences, 1);
+  assert.match(packets[2].vars.detail, /Last occurred: 2026-09-08 16:10:00\.000 UTC/);
+  assert.notEqual(packets[2].idempotencyKey, key);
 });
 
 test("a skipped send does not consume pending counts", async () => {

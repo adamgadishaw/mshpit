@@ -62,13 +62,15 @@ test("pending batches survive repository recreation without absorbing newer occu
   ensureErrorAlertSchema(database, { now });
   event(database, { at: now });
   const batch = createErrorAlertDelivery(database).nextBatch({ now }).batch;
-  database.exec("UPDATE error_events SET count=2 WHERE fingerprint='a'");
+  assert.equal(batch.rows[0].last_seen, now);
+  database.prepare("UPDATE error_events SET count=2,last_seen=? WHERE fingerprint='a'").run(now + 60_000);
   const restarted = createErrorAlertDelivery(database);
   assert.deepEqual(restarted.nextBatch({ now: now + HOUR }).batch, batch);
   restarted.acknowledge(batch.key, now + HOUR);
   const next = restarted.nextBatch({ now: now + 2 * HOUR }).batch;
   assert.equal(next.rows[0].count, 1);
   assert.equal(next.rows[0].through_count, 2);
+  assert.equal(next.rows[0].last_seen, now + 60_000);
   assert.notEqual(next.key, batch.key);
 });
 

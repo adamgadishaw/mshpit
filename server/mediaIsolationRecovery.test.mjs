@@ -58,6 +58,88 @@ test("an overnight-style privacy failure blocks uploads then recovers on the two
   assert.equal(timers.tasks.size, 0);
 });
 
+test("temporary storage HTTP failures close publishing and recover promptly instead of waiting five minutes", async () => {
+  for (const statuses of [[503, 403], [403, 503], [502, 504], [429, 403], [408, 403], [599, 403]]) {
+    const timers = fakeTimers();
+    let unavailable = true;
+    const monitor = createMediaIsolationMonitor({ ...timers,
+      probe: ({ signal }) => privacyProbe(async (url) => ({ status: unavailable
+        ? statuses[new URL(url).searchParams.has("list-type") ? 0 : 1] : 403 }), { signal }),
+    });
+    try {
+      const failed = await monitor.trigger("startup");
+      assert.equal(failed.errorCode, "probe_http_unavailable");
+      assert.equal(failed.ready, false);
+      assert.throws(presign, (error) => error.code === "MEDIA_STORAGE_UNAVAILABLE");
+      assert.equal(timers.delay, 2_000);
+      unavailable = false;
+      await timers.fire();
+      assert.equal(presign().storageScope, "private");
+      assert.equal(timers.delay, 300_000);
+    } finally { await monitor.stop(); }
+  }
+});
+
+test("an unexpected anonymous response wins over a temporary failure on the other privacy check", async () => {
+  for (const statuses of [[200, 503], [503, 200], [404, 503], [503, 400], [null, 503]]) {
+    const timers = fakeTimers();
+    const monitor = createMediaIsolationMonitor({ ...timers,
+      probe: ({ signal }) => privacyProbe(async (url) => ({ status:
+        statuses[new URL(url).searchParams.has("list-type") ? 0 : 1] }), { signal }),
+    });
+    try {
+      const result = await monitor.trigger("startup");
+      assert.equal(result.errorCode, "anonymous_access_not_denied");
+      assert.equal(result.ready, false);
+      assert.throws(presign, (error) => error.status === 503);
+      assert.equal(timers.delay, 300_000);
+    } finally { await monitor.stop(); }
+  }
+});
+
+test("storage recovery respects Retry-After without overflowing timers or retaining stale delay on recovery", async () => {
+  const at = Date.parse("2026-09-09T19:00:00Z");
+  for (const [header, expected] of [["120", 120_000], ["Wed, 09 Sep 2026 19:02:00 GMT", 120_000],
+    ["0", 2_000], ["nonsense", 2_000], ["999999999999", 2_147_483_647]]) {
+    const timers = fakeTimers();
+    let unavailable = true;
+    const monitor = createMediaIsolationMonitor({ ...timers,
+      probe: ({ signal }) => privacyProbe(async () => ({ status: unavailable ? 429 : 403,
+        headers: new Headers({ "retry-after": header }) }), { signal, clock: () => at }),
+    });
+    try {
+      await monitor.trigger("startup");
+      assert.equal(timers.delay, expected);
+      assert.throws(presign, (error) => error.status === 503);
+      unavailable = false;
+      await timers.fire();
+      assert.equal(timers.delay, 300_000);
+      assert.equal(privateMediaIsolationStatus(ENV).retryAfterMs, undefined);
+    } finally { await monitor.stop(); }
+  }
+});
+
+test("a response cooldown survives the other privacy probe failing", async () => {
+  const timers = fakeTimers();
+  const monitor = createMediaIsolationMonitor({ ...timers,
+    probe: ({ signal }) => privacyProbe(async (url) => {
+      if (new URL(url).searchParams.has("list-type")) {
+        return { status: 429, headers: new Headers({ "retry-after": "120" }) };
+      }
+      await nextTurn();
+      throw new TypeError("connection failed");
+    }, { signal }),
+  });
+  try {
+    const result = await monitor.trigger("startup");
+    assert.equal(result.errorCode, "probe_failed");
+    assert.equal(result.listStatus, 429);
+    assert.equal(result.retryAfterMs, 120_000);
+    assert.equal(timers.delay, 120_000);
+    assert.throws(presign, (error) => error.status === 503);
+  } finally { await monitor.stop(); }
+});
+
 test("continued transport failures back off to one minute without stacking timers", async () => {
   const timers = fakeTimers();
   const monitor = createMediaIsolationMonitor({ ...timers,

@@ -13,6 +13,7 @@ import ArtistMemorialConsole from "../components/moderation/ArtistMemorialConsol
 import ArtistDeathWatchPanel from "../components/moderation/ArtistDeathWatchPanel";
 import CityPagesEditor from "../features/cities/CityPagesEditor";
 import { normalizeAdminMemberQuery } from "../domain/moderationConsole.mjs";
+import { formatErrorOccurrenceTime } from "../domain/errorDiagnostics.mjs";
 import { staffScopeFor } from "../domain/staffReadCoordinator.mjs";
 import { readAdminHealth } from "../features/admin/services/adminHealthApi.mjs";
 import {
@@ -609,7 +610,7 @@ export default function AdminScreen({ onClose }) {
 
   // Keep the authenticated operational-health request active for server-side
   // diagnostics even while its dormant media-specific card is not rendered.
-  const [, setHealth] = useState(null);
+  const [health, setHealth] = useState(null);
   const adminRefreshRegistry = useRef({});
   useEffect(() => {
     if (activeTab !== "overview" || !artistRequestScope) {
@@ -783,8 +784,8 @@ export default function AdminScreen({ onClose }) {
               <View style={styles.stat}><Text style={[styles.statN, bannedCount ? { color: colors.danger } : null]}>{bannedCount}</Text><Text style={styles.statL}>banned</Text></View>
             </View>
 
-            {/* Aggregated app and server errors. One row per distinct problem, so the
-                count is the volume and the list is the work. */}
+            {/* Windowed totals and retained problem counts are deliberately
+                labelled separately; a retained row is not proof of a fresh failure. */}
             {errorLog && (
               <View style={[styles.healthCard, errorLog.last24h?.occurrences > 0 && styles.healthCardBad]}>
                 <Text style={styles.healthTitle}>APP + SERVER ERRORS</Text>
@@ -799,11 +800,19 @@ export default function AdminScreen({ onClose }) {
                     ? `alerts to ${errorLog.alerts.to || "(no ADMIN_EMAIL)"}, at most one digest every ${errorLog.alerts.cooldownMinutes}m`
                     : "alerts are switched off (ERROR_ALERTS_ENABLED)"}
                 </Text>
+                {health?.commit ? (
+                  <Text selectable style={styles.healthSub}>Current release: {health.commit} (error releases are not recorded).</Text>
+                ) : null}
+                <Text style={styles.healthSub}>Retained totals below include older occurrences, not just the last 24 hours.</Text>
                 {(errorLog.errors || []).slice(0, 8).map((e) => (
-                  <Text key={e.fingerprint} style={styles.errRow} numberOfLines={1}>
-                    {e.count}x {e.level === "fatal" ? "FATAL" : e.status} {e.method} {e.route || "(no route)"} / {e.code}
-                    {e.cause && e.cause !== "unclassified" ? ` (${e.cause})` : ""}
-                  </Text>
+                  <View key={e.fingerprint} style={styles.errEntry}>
+                    <Text selectable style={styles.errRow}>
+                      {e.count} retained total / {e.level === "fatal" ? "FATAL" : e.status} {e.method} {e.route || "(no route)"} / {e.code}
+                      {e.cause && e.cause !== "unclassified" ? ` (${e.cause})` : ""}
+                    </Text>
+                    <Text selectable style={styles.errRow}>Last occurred: {formatErrorOccurrenceTime(e.lastSeen) || "Unknown time"}</Text>
+                    {e.lastRequestId ? <Text selectable style={styles.errRow}>Request ID: {e.lastRequestId}</Text> : null}
+                  </View>
                 ))}
                 <View style={styles.errActions}>
                   <Pressable style={styles.errTestBtn} onPress={sendTestAlert}>
@@ -1180,7 +1189,8 @@ const styles = StyleSheet.create({
   healthTitle: { color: colors.textDim, fontSize: 11, fontWeight: "800", letterSpacing: 1, fontFamily: mono },
   healthState: { fontSize: 13.5, fontWeight: "700" },
   healthSub: { color: colors.textDim, fontSize: 12 },
-  errRow: { color: colors.textFaint, fontSize: 11, fontFamily: mono, marginTop: 3 },
+  errEntry: { gap: 3, marginTop: 8 },
+  errRow: { color: colors.textDim, fontSize: 11, fontFamily: mono },
   errActions: { flexDirection: "row", alignItems: "center", gap: 10, marginTop: 10 },
   errTestBtn: { alignSelf: "flex-start", paddingHorizontal: 12, paddingVertical: 7, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line },
   errTestTxt: { color: colors.text, fontSize: 11, fontWeight: "700" },

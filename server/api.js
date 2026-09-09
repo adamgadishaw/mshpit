@@ -8181,6 +8181,7 @@ export const routes = {
         fingerprint: e.fingerprint, level: e.level, code: e.code, status: e.status,
         method: e.method, route: e.route, cause: e.cause, count: e.count,
         firstSeen: e.first_seen, lastSeen: e.last_seen,
+        lastRequestId: e.last_request_id,
       })),
       last24h: errorStats(dayAgo),
       last7Days: errorStats(weekAgo),

@@ -20,6 +20,7 @@ import { createHash } from "node:crypto";
 import { db, errorStmts } from "./db.js";
 import { alertCooldownMs, createErrorAlertDelivery } from "./errorAlertDelivery.js";
 import { cleanEmail, isEmail } from "../src/domain/validation.mjs";
+import { formatErrorOccurrenceTime } from "../src/domain/errorDiagnostics.mjs";
 
 const RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const MAX_ROWS = 2000;
@@ -167,7 +168,11 @@ export async function maybeAlert({ now = Date.now(), force = false } = {}) {
     const lines = serious.map((r) => {
       const where = `${r.method} ${r.route}`.trim() || "(no route)";
       const correlation = r.last_request_id ? `  request ${r.last_request_id}` : "";
-      return `${r.count}x  ${r.level === "fatal" ? "FATAL" : r.status}  ${where}  ${r.code || "-"}${r.cause ? `  (${r.cause})` : ""}${correlation}`;
+      // Older frozen batches have no last_seen. Keep their rendered details
+      // unchanged so a deployment cannot alter an uncertain send's payload.
+      const occurredAt = formatErrorOccurrenceTime(r.last_seen);
+      const occurrence = occurredAt ? `  Last occurred: ${occurredAt}` : "";
+      return `${r.count}x  ${r.level === "fatal" ? "FATAL" : r.status}  ${where}  ${r.code || "-"}${r.cause ? `  (${r.cause})` : ""}${correlation}${occurrence}`;
     }).join("\n");
 
     const result = await sendTemplate("error_alert", {

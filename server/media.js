@@ -129,6 +129,7 @@ export function privateMediaIsolationStatus(env = process.env) {
     listStatus: current.listStatus || null,
     objectStatus: current.objectStatus || null,
     errorCode: current.errorCode || null,
+    ...(current.retryAfterMs > 0 ? { retryAfterMs: current.retryAfterMs } : {}),
   });
 }
 
@@ -167,9 +168,9 @@ export async function verifyPrivateMediaBucketIsolation({
   root.searchParams.set("list-type", "2");
   root.searchParams.set("max-keys", "1");
   const randomObject = joinObjectUrl(config.endpoint, [config.sourceBucket, "__pit_privacy_probe__", randomUUID()]);
-  const { listStatus, objectStatus, errorCode } = await probePrivateMediaIsolation({
+  const { listStatus, objectStatus, errorCode, retryAfterMs } = await probePrivateMediaIsolation({
     listUrl: root.toString(), objectUrl: randomObject, endpoint: config.endpoint,
-    fetchImpl, timeoutMs, signal,
+    fetchImpl, timeoutMs, signal, clock,
   });
   if (signal?.aborted) throw signal.reason || new DOMException("Aborted", "AbortError");
   privateIsolationState = Object.freeze({
@@ -180,6 +181,7 @@ export async function verifyPrivateMediaBucketIsolation({
     objectStatus,
     errorCode,
     identity,
+    ...(retryAfterMs > 0 ? { retryAfterMs } : {}),
   });
   return privateMediaIsolationStatus(env);
 }

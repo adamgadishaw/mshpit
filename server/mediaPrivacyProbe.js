@@ -5,6 +5,22 @@ function responseStatus(response) {
   return Number.isInteger(value) && value >= 100 && value <= 599 ? value : null;
 }
 
+// A temporary provider failure does not prove either privacy or public access.
+// Keep uploads closed, but let the monitor retry it promptly rather than wait
+// the five-minute interval reserved for configuration/exposure failures.
+function transientResponse(status) {
+  return status === 408 || status === 429 || (status >= 500 && status <= 599);
+}
+
+function retryAfterMs(response, at) {
+  const raw = response?.headers?.get?.("retry-after");
+  if (typeof raw !== "string" || raw.length > 128) return 0;
+  const value = raw.trim();
+  const duration = /^\d+$/.test(value) ? Number(value) * 1_000 : Date.parse(value) - at;
+  // Keep the timer in Node's supported range; overflow otherwise retries in 1ms.
+  return Number.isFinite(duration) && duration > 0 ? Math.min(2_147_483_647, Math.ceil(duration)) : 0;
+}
+
 function releaseBody(body) {
   if (!body || body.locked || typeof body.cancel !== "function") return;
   try { Promise.resolve(body.cancel()).catch(() => {}); } // architecture: allow-empty-catch -- response cleanup is best-effort
@@ -58,7 +74,7 @@ async function denied(response, endpoint, signal) {
     || compact === "<Error><Code>InvalidArgument</Code><Message>Authorization</Message></Error>";
 }
 
-export async function probePrivateMediaIsolation({ listUrl, objectUrl, endpoint, fetchImpl, timeoutMs = 5_000, signal } = {}) {
+export async function probePrivateMediaIsolation({ listUrl, objectUrl, endpoint, fetchImpl, timeoutMs = 5_000, signal, clock = Date.now } = {}) {
   if (signal?.aborted) throw signal.reason || new DOMException("Aborted", "AbortError");
   const controller = new AbortController();
   const abort = () => controller.abort(signal.reason || new DOMException("Aborted", "AbortError"));
@@ -71,30 +87,41 @@ export async function probePrivateMediaIsolation({ listUrl, objectUrl, endpoint,
   const timeout = setTimeout(() => controller.abort(new DOMException("Privacy probe timed out", "TimeoutError")),
     Math.max(500, Math.min(15_000, Math.trunc(Number(timeoutMs) || 5_000))));
   timeout.unref?.();
-  const fetchProbe = async (url) => {
+  let listStatus = null;
+  let objectStatus = null;
+  let retryDelayMs = 0;
+  const fetchProbe = async (url, kind) => {
     const response = await fetchImpl(url, { method: "GET", redirect: "error", signal: controller.signal });
     responses.add(response);
     if (controller.signal.aborted) {
       releaseBody(response?.body);
       throw controller.signal.reason;
     }
+    const status = responseStatus(response);
+    if (kind === "list") listStatus = status;
+    else objectStatus = status;
+    if (transientResponse(status)) retryDelayMs = Math.max(retryDelayMs, retryAfterMs(response, clock()));
     return response;
   };
-  let listStatus = null;
-  let objectStatus = null;
   try {
     const work = (async () => {
-      const [list, object] = await Promise.all([fetchProbe(listUrl), fetchProbe(objectUrl)]);
-      listStatus = responseStatus(list);
-      objectStatus = responseStatus(object);
+      const [list, object] = await Promise.all([fetchProbe(listUrl, "list"), fetchProbe(objectUrl, "object")]);
       const results = await Promise.all([denied(list, endpoint, controller.signal), denied(object, endpoint, controller.signal)]);
-      return results.every(Boolean) ? null : "anonymous_access_not_denied";
+      if (results.every(Boolean)) return null;
+      const statuses = [listStatus, objectStatus];
+      // A definite unexpected response takes precedence over a transient peer:
+      // a public listing plus a 503 object probe is still a privacy failure.
+      if (results.some((isDenied, index) => !isDenied && !transientResponse(statuses[index]))) {
+        return "anonymous_access_not_denied";
+      }
+      return "probe_http_unavailable";
     })();
     const errorCode = await Promise.race([work, interrupted]);
-    return { listStatus, objectStatus, errorCode };
+    return { listStatus, objectStatus, errorCode, ...(errorCode && retryDelayMs > 0 ? { retryAfterMs: retryDelayMs } : {}) };
   } catch {
     if (signal?.aborted) throw signal.reason || new DOMException("Aborted", "AbortError");
-    return { listStatus, objectStatus, errorCode: controller.signal.aborted ? "probe_timeout" : "probe_failed" };
+    return { listStatus, objectStatus, errorCode: controller.signal.aborted ? "probe_timeout" : "probe_failed",
+      ...(retryDelayMs > 0 ? { retryAfterMs: retryDelayMs } : {}) };
   } finally {
     clearTimeout(timeout);
     signal?.removeEventListener("abort", abort);
