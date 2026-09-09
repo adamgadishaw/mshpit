@@ -26,6 +26,7 @@ export function createRequestControl({ method, timeoutMs, callerSignal } = {}) {
   else callerSignal?.addEventListener?.("abort", abortFromCaller, { once: true });
 
   const timer = setTimeout(() => {
+    if (controller.signal.aborted) return;
     timedOut = true;
     controller.abort();
   }, duration);

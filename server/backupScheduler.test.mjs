@@ -52,6 +52,17 @@ test("scheduled snapshots live under the mounted data directory and respect fres
   }
 });
 
+test("a date-named directory cannot masquerade as a completed backup", () => {
+  const root = mkdtempSync(join(tmpdir(), "pit-backup-directory-"));
+  const env = { PIT_DATA_DIR: root };
+  try {
+    mkdirSync(backupDirectory(env));
+    mkdirSync(join(backupDirectory(env), "pit-20260909-010203.db"));
+    assert.equal(latestBackupSnapshot(env), null);
+    assert.equal(shouldRunScheduledBackup(latestBackupAt(env)), true);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("off-host upload requires a complete private bucket and controls the CLI flag", () => {
   const complete = {
     BACKUP_S3_ENDPOINT: "https://private.example",

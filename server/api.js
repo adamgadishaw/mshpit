@@ -5067,6 +5067,7 @@ export const routes = {
 
   // ---- auth ----
   "POST /api/signup": async (ctx) => {
+    ctx.signal?.throwIfAborted();
     // Auth endpoints are always limited by network + normalized target,
     // independent of whatever cookie the caller happens to carry. A bot cannot
     // mint a new account and thereby mint a fresh signup/login/recovery bucket.
@@ -5111,6 +5112,7 @@ export const routes = {
     // after the submitted password authenticates them, never by email alone.
     ctx.setHeader?.("Cache-Control", "no-store");
     const passwordHash = await hashPassword(v.password);
+    ctx.signal?.throwIfAborted();
     const cancelToken = randomBytes(32).toString("base64url");
     const cancelHash = createHash("sha256").update(cancelToken).digest("hex");
     const addingAccount = ctx.body?.addAccount === true;
@@ -5133,6 +5135,7 @@ export const routes = {
       if (!fresh || fresh.pass_hash !== matching[i].pass_hash || cleanEmail(fresh.email) !== v.email) matching.splice(i, 1);
     }
     const createAdditional = ctx.body?.createAdditional === true;
+    ctx.signal?.throwIfAborted();
     if (!addingAccount && matching.length && !createAdditional) {
       return { ok: true, needsAccountChoice: true, canCreate: existingAccounts.length < 2,
         accounts: matching.map((user) => ({ id: user.id, name: user.name, handle: user.handle,
@@ -5144,6 +5147,9 @@ export const routes = {
     const colors = ["#F2A65A", "#E0457B", "#5B8DEF", "#6FCF97", "#B98AE0", "#E8B65A"];
     const createdAt = now();
     const signup = atomicWrite(() => {
+          // A disconnected form cannot receive its cancellation capability.
+          // Stop before committing; a later disconnect cannot undo this commit.
+          ctx.signal?.throwIfAborted();
           const accounts = q.usersByEmail.all(v.email);
           if (createAdditional && !addingAccount && !accounts.some((user) => matching.some((proof) => proof.id === user.id && proof.pass_hash === user.pass_hash))) throw new ApiError(409, "Your account changed. Try signing up again.", "CONFLICT");
           if (addingAccount) {
@@ -5180,6 +5186,7 @@ export const routes = {
   },
 
   "POST /api/login": async (ctx) => {
+    ctx.signal?.throwIfAborted();
     limitAuthentication(ctx, "login", {
       ipMax: 10,
       ipWindowMs: 10 * 60 * 1000,
@@ -5203,6 +5210,7 @@ export const routes = {
       if (!fresh || fresh.pass_hash !== matching[i].pass_hash || cleanEmail(fresh.email) !== v.email) matching.splice(i, 1);
     }
     const selected = ctx.body?.accountId;
+    ctx.signal?.throwIfAborted();
     const u = selected ? matching.find((entry) => entry.id === selected) : matching[0];
     if (!u) throw new ApiError(401, "Wrong email or password.", "AUTH_INVALID");
     ctx.setHeader?.("Cache-Control", "no-store");
@@ -5215,6 +5223,7 @@ export const routes = {
     // sessions between verification and this point; stale proof must not mint
     // another cookie after that revocation has committed.
     const authenticated = atomicWrite(() => {
+      ctx.signal?.throwIfAborted();
       const current = q.userById.get(u.id);
       if (!current || current.pass_hash !== u.pass_hash || cleanEmail(current.email) !== v.email) {
         throw new ApiError(401, "Wrong email or password.", "AUTH_INVALID");
@@ -5289,6 +5298,7 @@ export const routes = {
   // Complete a reset: swap the password, invalidate the token + all sessions, and
   // sign the user straight in on this device.
   "POST /api/reset": async (ctx) => {
+    ctx.signal?.throwIfAborted();
     limit(ctx, "reset", 10, 15 * 60 * 1000);
     const token = clean(ctx.body?.token, { max: 200 });
     const password = typeof ctx.body?.password === "string" ? ctx.body.password : "";
@@ -5304,6 +5314,7 @@ export const routes = {
     const replacementPasswordHash = await hashPassword(password);
     const matching = await linkedAccounts.matchingPasswordUsers({ email: u.email, password });
     const sess = atomicWrite(() => {
+      ctx.signal?.throwIfAborted();
       const consumed = db.prepare(`UPDATE users SET pass_hash=?, reset_hash=NULL, reset_expires=0,signup_cancel_hash=NULL
         WHERE id=? AND reset_hash=? AND reset_expires>?`)
         .run(replacementPasswordHash, u.id, hash, now()).changes === 1;
@@ -5320,7 +5331,8 @@ export const routes = {
 
   "GET /api/me": (ctx) => {
     ctx.setHeader?.("Cache-Control", "no-store");
-    return { user: ctx.user ? publicUser(ctx.user, { self: true, badges: true }) : null };
+    const user = ctx.user ? requireSessionUser(ctx) : null;
+    return { user: user ? publicUser(user, { self: true, badges: true }) : null };
   },
 
   "POST /api/me/analytics-consent": (ctx) => {
@@ -6758,7 +6770,7 @@ export const routes = {
       const ids = [...new Set(pending.filter((id) => !byId.has(id)))].slice(0, 100);
       if (!ids.length) break;
       const placeholders = ids.map(() => "?").join(",");
-      const parents = db.prepare(`SELECT c.*,u.name,u.initials,u.avatar_uri,u.avatar_color,u.role,u.verified,u.profile_updated_at,u.is_banned,u.suspended_until
+      const parents = db.prepare(`SELECT c.*,u.name,u.initials,u.avatar_uri,u.avatar_color,u.role,u.verified,u.profile_updated_at,u.is_banned,u.suspended_until,u.dormant_at
         FROM comments c JOIN users u ON u.id=c.user_id
         WHERE c.post_id=? AND c.id IN (${placeholders})`).all(ctx.params.id, ...ids);
       pending = [];
@@ -8035,6 +8047,9 @@ export const routes = {
     // reading the account's private self projection. Only the matching active
     // session may receive `email`, `home`, and `emailVerified` back.
     if (ctx.user?.id === completion.user.id) {
+      // The verification capability confirms an address, not a stale session.
+      // A committed confirmation remains retryable through its receipt.
+      requireSessionUser(ctx);
       response.user = publicUser(completion.user, { self: true });
     }
     return response;

@@ -9,6 +9,7 @@ import test from "node:test";
 
 import {
   backupRetentionCount,
+  backupSourceManifest,
   backupTableCounts,
   boundedBackupTimeout,
   verifyBackupSnapshot,
@@ -128,6 +129,87 @@ test("backup verification rejects referential corruption without exposing row co
   }
 });
 
+test("source-aware backup verification rejects missing populated and empty member tables", () => {
+  const directory = mkdtempSync(join(tmpdir(), "pit-backup-member-manifest-"));
+  try {
+    const path = createSnapshot(directory);
+    for (const minimumRows of [1, 0]) {
+      const manifest = { comments: { columns: ["id", "user_id", "text"], minimumRows } };
+      assert.throws(() => verifyBackupSnapshot(path, snapshotCounts(), manifest),
+        /comments is missing from the source-matched snapshot/);
+    }
+    assert.deepEqual(verifyBackupSnapshot(path), snapshotCounts(),
+      "standalone historical verification does not demand tables from a newer deployment");
+    const database = new DatabaseSync(path);
+    database.exec("CREATE VIEW comments AS SELECT id, user_id, '' AS text FROM posts");
+    database.close();
+    assert.throws(() => verifyBackupSnapshot(path, null, {
+      comments: { columns: ["id", "user_id", "text"], minimumRows: 1 },
+    }), /comments is missing from the source-matched snapshot/,
+    "a matching view is not a durable table");
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("source-aware backup verification rejects lost relation rows and columns", () => {
+  const directory = mkdtempSync(join(tmpdir(), "pit-backup-member-floor-"));
+  try {
+    const path = createSnapshot(directory);
+    const database = new DatabaseSync(path);
+    database.exec("CREATE TABLE comments (id TEXT PRIMARY KEY, user_id TEXT REFERENCES users(id), text TEXT)");
+    database.close();
+    const comments = { columns: ["id", "user_id", "text"], minimumRows: 1 };
+    assert.throws(() => verifyBackupSnapshot(path, null, { comments }),
+      /comments: snapshot lost rows \(0 < 1\)/);
+    assert.throws(() => verifyBackupSnapshot(path, null, {
+      comments: { columns: [...comments.columns, "kept_metadata"], minimumRows: 0 },
+    }), /comments: snapshot is missing source column kept_metadata/);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("backup verification rejects invalid schema version metadata", () => {
+  const directory = mkdtempSync(join(tmpdir(), "pit-backup-schema-marker-"));
+  try {
+    const path = createSnapshot(directory);
+    const database = new DatabaseSync(path);
+    database.exec("UPDATE schema_version SET version=0");
+    database.close();
+    assert.throws(() => verifyBackupSnapshot(path), /schema_version has no valid version marker/);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("source manifests preserve member rows while allowing volatile cache and session pruning", () => {
+  const directory = mkdtempSync(join(tmpdir(), "pit-backup-source-inventory-"));
+  try {
+    const path = createSnapshot(directory);
+    const database = new DatabaseSync(path);
+    registerPitSqliteFunctions(database);
+    database.exec(`
+      CREATE TABLE comments (id TEXT PRIMARY KEY, user_id TEXT REFERENCES users(id), text TEXT);
+      CREATE TABLE account_mutes (muter_id TEXT REFERENCES users(id), muted_id TEXT REFERENCES users(id));
+      CREATE TABLE provider_cache (key TEXT PRIMARY KEY, payload TEXT);
+      CREATE TABLE sessions (id TEXT PRIMARY KEY, user_id TEXT REFERENCES users(id));
+      INSERT INTO comments VALUES ('comment', 'u1', 'keep this');
+      INSERT INTO provider_cache VALUES ('lookup', 'replaceable');
+      INSERT INTO sessions VALUES ('expired', 'u1');
+    `);
+    const manifest = backupSourceManifest(database);
+    assert.deepEqual(manifest.comments, { columns: ["id", "user_id", "text"], minimumRows: 1 });
+    assert.equal(manifest.account_mutes.minimumRows, 0, "empty durable tables remain inventoried");
+    assert.equal(manifest.provider_cache.minimumRows, null);
+    assert.equal(manifest.sessions.minimumRows, null);
+    assert.equal(manifest.users.minimumRows, 2);
+    assert.equal(Object.hasOwn(manifest, "newer_deployment_table"), false);
+    database.exec("DELETE FROM provider_cache; DELETE FROM sessions");
+    database.close();
+    assert.deepEqual(verifyBackupSnapshot(path, snapshotCounts(), manifest), snapshotCounts());
+    const changed = new DatabaseSync(path);
+    changed.exec("DELETE FROM comments");
+    changed.close();
+    assert.throws(() => verifyBackupSnapshot(path, snapshotCounts(), manifest),
+      /comments: snapshot lost rows \(0 < 1\)/);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
 test("the current recovery contract deliberately rejects a pre-profile schema", () => {
   const directory = mkdtempSync(join(tmpdir(), "pit-backup-old-schema-"));
   try {
@@ -218,6 +300,26 @@ test("backup retention reserves one verified replacement slot before VACUUM INTO
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("backup retention ignores date-named directories without deleting their contents", () => {
+  const root = mkdtempSync(join(tmpdir(), "pit-backup-directory-retention-"));
+  const dataDirectory = join(root, "data");
+  const backupDirectory = join(root, "backups");
+  mkdirSync(dataDirectory);
+  mkdirSync(backupDirectory);
+  const unrelated = join(backupDirectory, "pit-20260801-010203.db");
+  mkdirSync(unrelated);
+  try {
+    createSnapshot(dataDirectory, "pit.db");
+    createSnapshot(unrelated, "preserved.db");
+    const result = spawnSync(process.execPath, [BACKUP_SCRIPT], {
+      encoding: "utf8", windowsHide: true,
+      env: { ...process.env, PIT_DATA_DIR: dataDirectory, BACKUP_DIR: backupDirectory, BACKUP_KEEP: "1" },
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.deepEqual(verifyBackupSnapshot(join(unrelated, "preserved.db")), snapshotCounts());
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test("a failed verification publishes no final snapshot and cleans its partial file", () => {

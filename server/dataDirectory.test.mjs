@@ -200,6 +200,28 @@ test("production refuses a different SQLite application identity", () => {
   }
 });
 
+test("production refuses missing or invalid schema metadata without changing the database", () => {
+  const mounted = mkdtempSync(join(tmpdir(), "pit-invalid-schema-version-"));
+  const databasePath = join(mounted, "pit.db");
+  createInitializedDatabase(databasePath);
+  try {
+    for (const version of [null, 0, -1, "invalid"]) {
+      const database = new DatabaseSync(databasePath);
+      database.exec("DELETE FROM schema_version");
+      if (version !== null) database.prepare("INSERT INTO schema_version VALUES (?)").run(version);
+      database.close();
+      assert.throws(() => assertExistingProductionDatabase(databasePath),
+        (error) => /schema_version/.test(error.cause?.message));
+      const unchanged = new DatabaseSync(databasePath, { readOnly: true });
+      try {
+        assert.deepEqual(unchanged.prepare("SELECT version FROM schema_version").all().map((row) => row.version),
+          version === null ? [] : [version]);
+        assert.equal(unchanged.prepare("SELECT COUNT(*) n FROM users").get().n, 1);
+      } finally { unchanged.close(); }
+    }
+  } finally { rmSync(mounted, { recursive: true, force: true }); }
+});
+
 test("production refuses a database missing its durable event and venue catalogue", () => {
   const mounted = mkdtempSync(join(tmpdir(), "pit-missing-tour-catalogue-"));
   const databasePath = join(mounted, "pit.db");

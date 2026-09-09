@@ -43,7 +43,9 @@ export function latestBackupSnapshot(env = process.env) {
   for (const name of readdirSync(directory)) {
     if (!BACKUP_NAME.test(name)) continue;
     try {
-      const updatedAt = statSync(join(directory, name)).mtimeMs || 0;
+      const snapshot = statSync(join(directory, name));
+      if (!snapshot.isFile()) continue;
+      const updatedAt = snapshot.mtimeMs || 0;
       if (updatedAt > 0 && (!latest || updatedAt > latest.updatedAt
         || (updatedAt === latest.updatedAt && name > latest.name))) {
         latest = { name, updatedAt };

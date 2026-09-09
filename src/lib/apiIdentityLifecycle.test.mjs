@@ -29,7 +29,7 @@ function fixture() {
     apiIdentityBarrierDecision, createRequestControl, photoCreditUrlFromLinkHeader: () => null,
     fetch: async (url, options) => { requests.push({ url, options }); return response.promise; },
   };
-  const transport = new Function(...Object.keys(bindings), `${body}\nreturn { api, apiBinary, configureApiIdentity };`)(...Object.values(bindings));
+  const transport = new Function(...Object.keys(bindings), `${body}\nreturn { api, apiBinary, configureApiIdentity, waiting: () => identityWaiters.size };`)(...Object.values(bindings));
   transport.configureApiIdentity("a");
   return {
     ...transport, requests, diagnostics,
@@ -72,3 +72,84 @@ test("deliberate identity discovery remains available across identity changes", 
   assert.deepEqual(await pending, { private: "account-a" });
   assert.equal(f.requests[0].options.headers["X-Pit-Expected-Account"], undefined);
 });
+
+for (const binary of [false, true]) {
+  const label = binary ? "binary" : "JSON";
+  test(`${label} cold-start identity wait obeys the request deadline`, async () => {
+    const f = fixture(), caller = new AbortController();
+    f.configureApiIdentity(null, { ready: false });
+    const pending = (binary ? f.apiBinary : f.api)("/api/private-fixture", {
+      timeoutMs: 10, signal: caller.signal, silent: true,
+    }).then(() => null, (error) => error);
+    const result = await Promise.race([pending, new Promise((resolve) => setTimeout(() => resolve("still waiting"), 100))]);
+    caller.abort();
+    await pending;
+    assert.equal(result?.kind, "timeout");
+    assert.equal(f.requests.length, 0, "no cookie-bound request may escape the unvalidated gate");
+    assert.equal(f.diagnostics.length, 1);
+    assert.equal(f.waiting(), 0, "deadline removes the pending identity waiter");
+    f.configureApiIdentity("b");
+    await Promise.resolve();
+    assert.equal(f.requests.length, 0, "timed-out requests are never replayed on later validation");
+  });
+
+  test(`${label} cold-start wait survives replacement by another unready identity`, async () => {
+    const f = fixture(), caller = new AbortController();
+    f.configureApiIdentity(null, { ready: false });
+    const pending = (binary ? f.apiBinary : f.api)("/api/private-fixture", { signal: caller.signal })
+      .then((value) => value, (error) => error);
+    f.configureApiIdentity("b", { ready: false });
+    f.configureApiIdentity("b");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const request = f.requests[0];
+    f.finish(binary);
+    caller.abort();
+    await pending;
+    assert.equal(request?.options.headers["X-Pit-Expected-Account"], "b");
+  });
+
+  test(`${label} a briefly ready identity cannot release a now-unvalidated request`, async () => {
+    const f = fixture(), caller = new AbortController();
+    f.configureApiIdentity(null, { ready: false });
+    const pending = (binary ? f.apiBinary : f.api)("/api/private-fixture", { signal: caller.signal })
+      .then((value) => value, (error) => error);
+    f.configureApiIdentity("b");
+    f.configureApiIdentity("b", { ready: false });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const escaped = f.requests.length;
+    f.configureApiIdentity("b");
+    f.finish(binary);
+    await pending;
+    assert.equal(escaped, 0);
+    assert.equal(f.requests[0].options.headers["X-Pit-Expected-Account"], "b");
+  });
+
+  test(`${label} cancellation while waiting stays out of error diagnostics`, async () => {
+    const f = fixture(), caller = new AbortController();
+    f.configureApiIdentity(null, { ready: false });
+    const pending = (binary ? f.apiBinary : f.api)("/api/private-fixture", { signal: caller.signal });
+    caller.abort();
+    await assert.rejects(pending, { name: "AbortError" });
+    assert.equal(f.requests.length, 0);
+    assert.equal(f.diagnostics.length, 0);
+    assert.equal(f.waiting(), 0, "cancellation removes the pending identity waiter");
+  });
+
+  test(`${label} identity invalidation between helper completion and dispatch cannot release a request`, async () => {
+    const f = fixture();
+    f.configureApiIdentity(null, { ready: false });
+    const pending = (binary ? f.apiBinary : f.api)("/api/private-fixture", { silent: true })
+      .then((value) => value, (error) => error);
+    f.configureApiIdentity("b");
+    // The helper resumes first, then this invalidation runs before the caller
+    // of the async helper can resume and construct cookie-bound headers.
+    queueMicrotask(() => f.configureApiIdentity("b", { ready: false }));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const escaped = f.requests.length;
+    f.configureApiIdentity("b");
+    f.finish(binary);
+    await pending;
+    assert.equal(escaped, 0, "dispatch must validate readiness after every asynchronous boundary");
+    assert.equal(f.requests[0].options.headers["X-Pit-Expected-Account"], "b");
+  });
+}

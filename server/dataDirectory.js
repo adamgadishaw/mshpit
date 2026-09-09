@@ -35,6 +35,10 @@ export function assertExistingProductionDatabase(databasePath, { allowEmpty = fa
     ).all(...REQUIRED_PRODUCTION_TABLES).map((row) => row.name));
     const missing = REQUIRED_PRODUCTION_TABLES.filter((table) => !found.has(table));
     if (missing.length) throw new Error(`missing required tables: ${missing.join(", ")}`);
+    const schemaVersion = database.prepare("SELECT version FROM schema_version LIMIT 1").get()?.version;
+    if (!Number.isSafeInteger(schemaVersion) || schemaVersion < 1) {
+      throw new Error("schema_version has no valid version marker");
+    }
 
     const applicationId = Number(database.prepare("PRAGMA application_id").get()?.application_id || 0);
     if (applicationId !== 0 && applicationId !== PIT_SQLITE_APPLICATION_ID) {

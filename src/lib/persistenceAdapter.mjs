@@ -16,26 +16,38 @@ export function createJsonPersistence(storage = null) {
   return {
     load(key, fallback) {
       if (removedOverrides.has(key)) return fallback;
-      if (memoryOverrides.has(key)) return memory[key];
+      if (memoryOverrides.has(key)) return JSON.parse(memory[key]);
       try {
         if (storage?.getItem) {
           const value = storage.getItem(key);
           return value == null ? fallback : JSON.parse(value);
         }
       } catch (error) { report(error, "read", key); }
-      return Object.prototype.hasOwnProperty.call(memory, key) ? memory[key] : fallback;
+      return Object.prototype.hasOwnProperty.call(memory, key) ? JSON.parse(memory[key]) : fallback;
     },
 
     save(key, value) {
+      // Both backends have JSON snapshot semantics. A rejected serialization
+      // must preserve the previous value (including a privacy-removal marker),
+      // not retain a mutable object that durable storage could never represent.
+      let serialized;
+      try {
+        serialized = JSON.stringify(value);
+        if (typeof serialized !== "string") throw new TypeError("Persistence value must be JSON-serializable");
+      } catch (error) { report(error, "write", key); return; }
       try {
         if (storage?.setItem) {
-          storage.setItem(key, JSON.stringify(value));
+          storage.setItem(key, serialized);
+          // Recovery makes durable storage authoritative again. Retire its old
+          // failed-write fallback so later read trouble cannot resurrect it,
+          // including after another tab has replaced or removed the value.
+          delete memory[key];
           memoryOverrides.delete(key);
           removedOverrides.delete(key);
           return;
         }
       } catch (error) { report(error, "write", key); }
-      memory[key] = value;
+      memory[key] = serialized;
       memoryOverrides.add(key);
       removedOverrides.delete(key);
     },

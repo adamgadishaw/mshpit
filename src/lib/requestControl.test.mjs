@@ -24,3 +24,12 @@ test("request control distinguishes its timeout from caller cancellation", async
   assert.equal(cancelled.didTimeout(), false);
   cancelled.cleanup();
 });
+
+test("caller cancellation does not turn into a timeout while cleanup is pending", async () => {
+  const caller = new AbortController();
+  const control = createRequestControl({ timeoutMs: 5, callerSignal: caller.signal });
+  caller.abort();
+  await new Promise((resolve) => setTimeout(resolve, 15));
+  assert.equal(control.didTimeout(), false);
+  control.cleanup();
+});

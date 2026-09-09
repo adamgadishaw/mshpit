@@ -164,7 +164,7 @@ function candidateRows(viewer, at, hiddenIds = new Set()) {
   if (viewer?.id) args.push(viewer.id, viewer.id);
   args.push(Math.min(2400, CANDIDATE_SCAN_LIMIT + Math.min(500, hiddenIds.size)));
   const rows = db.prepare(`${RECOMMENDATION_CANDIDATE_SELECT}
-    WHERE p.removed=0 AND p.created_at<=? AND u.is_banned=0
+    WHERE p.removed=0 AND p.created_at<=? AND u.is_banned=0 AND u.dormant_at IS NULL
       AND (u.suspended_until IS NULL OR u.suspended_until<=?)
       ${blockSql}
     ORDER BY p.created_at DESC,p.id DESC LIMIT ?`).all(...args);
@@ -304,7 +304,7 @@ function liveRows(ids, viewer, at, hiddenIds = new Set()) {
   const args = [...visibleIds, at];
   if (viewer?.id) args.push(viewer.id, viewer.id);
   const found = db.prepare(`${POST_SELECT}
-    WHERE p.id IN (${placeholders}) AND p.removed=0 AND u.is_banned=0
+    WHERE p.id IN (${placeholders}) AND p.removed=0 AND u.is_banned=0 AND u.dormant_at IS NULL
       AND (u.suspended_until IS NULL OR u.suspended_until<=?)
       ${blockSql}`).all(...args);
   const byId = new Map(found.map((row) => [row.id, row]));
@@ -320,7 +320,14 @@ export function recommendedFeedPage({ viewer = null, cursor = null, limit = 20, 
     const decoded = decodePageCursor(cursor);
     snapshot = snapshots.get(decoded.snapshotId);
     if (!snapshot || snapshot.expiresAt <= at || snapshot.viewerKey !== (viewer?.id || "guest")) {
-      if (snapshot?.expiresAt <= at) snapshots.delete(decoded.snapshotId);
+      if (snapshot?.expiresAt <= at) {
+        snapshots.delete(decoded.snapshotId);
+        // Retire the matching auxiliary entry too, but never a newer head
+        // created after this immutable cursor was issued.
+        if (activeSnapshotByViewer.get(snapshot.viewerKey) === decoded.snapshotId) {
+          activeSnapshotByViewer.delete(snapshot.viewerKey);
+        }
+      }
       throw new ApiError(400, "That recommendation page expired. Refresh the feed to continue.", "RECOMMENDATION_CURSOR_EXPIRED");
     }
     offset = decoded.offset;

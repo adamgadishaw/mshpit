@@ -25,6 +25,7 @@ import { registerPitSqliteFunctions } from "../server/sqliteFunctions.js";
 import { privateBackupStorageConfig, verifyPrivateBackupBucket } from "../server/backupStorageSecurity.js";
 import {
   backupRetentionCount,
+  backupSourceManifest,
   backupTableCounts,
   boundedBackupTimeout,
   verifyBackupSnapshot,
@@ -106,7 +107,8 @@ async function upload(path, publishedName = basename(path)) {
 }
 
 function completedSnapshots() {
-  return readdirSync(BACKUP_DIR).filter((f) => NAME.test(f))
+  return readdirSync(BACKUP_DIR, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && NAME.test(entry.name)).map((entry) => entry.name)
     .map((f) => ({ f, t: statSync(join(BACKUP_DIR, f)).mtimeMs }))
     .sort((a, b) => b.t - a.t);
 }
@@ -151,7 +153,15 @@ if (rollover.dropped) {
 const live = new DatabaseSync(SOURCE, { readOnly: true });
 registerPitSqliteFunctions(live);
 let expected;
-try { expected = backupTableCounts(live); } finally { live.close(); }
+let sourceManifest;
+try {
+  // Capture both baselines from one read snapshot. This does not block WAL
+  // writers and does not mutate the source or repair missing data.
+  live.exec("BEGIN");
+  expected = backupTableCounts(live);
+  sourceManifest = backupSourceManifest(live);
+  live.exec("COMMIT");
+} finally { live.close(); }
 
 const dest = join(BACKUP_DIR, `pit-${stamp()}.db`);
 // A crash or failed integrity check must not leave a filename the scheduler
@@ -167,7 +177,7 @@ try {
   registerPitSqliteFunctions(source);
   try { source.exec(`VACUUM INTO '${partial.replace(/'/g, "''")}'`); } finally { source.close(); }
 
-  got = verifyBackupSnapshot(partial, expected);
+  got = verifyBackupSnapshot(partial, expected, sourceManifest);
   bytes = statSync(partial).size;
   // When off-host durability was requested, do not publish a fresh local final
   // that would suppress the next scheduler retry unless that upload succeeded.

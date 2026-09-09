@@ -18,6 +18,58 @@ export const CRITICAL_BACKUP_TABLES = Object.freeze([
   "app_meta",
 ]);
 
+// The current source determines which tables exist: these names are row-count
+// floors, NOT new requirements imposed on historical standalone snapshots.
+// Cache, session and receipt pruning may race a backup, so those tables retain
+// schema-presence protection without being treated as durable member content.
+const MEMBER_ROW_FLOOR_TABLES = new Set([
+  ...CRITICAL_BACKUP_TABLES,
+  "likes", "comments", "follows", "fan_club_members", "fan_club_messages",
+  "dms", "dm_reads", "ratings", "going", "artist_requests", "artist_posts",
+  "post_user_tags", "post_tag_rejections", "recommendation_preferences",
+  "playlists", "blocks", "account_mutes", "user_achievements", "user_badges",
+  "custom_badges", "reports", "moderation_actions", "lounge_messages",
+  "concert_lounges", "shows", "show_aliases", "show_performers",
+  "show_attendance", "show_attendance_verifications", "linked_account_pairs",
+  "media_reactions", "media_objects", "media_assets", "media_variants",
+  "media_asset_revisions", "post_media", "legacy_video_posters",
+]);
+const quoteIdentifier = (name) => `"${String(name).replaceAll('"', '""')}"`;
+
+export function backupSourceManifest(database) {
+  const tables = database.prepare(
+    "SELECT name FROM sqlite_schema WHERE type='table' AND name NOT GLOB 'sqlite_*' ORDER BY name",
+  ).all();
+  return Object.fromEntries(tables.map(({ name }) => [name, {
+    columns: database.prepare(`PRAGMA table_xinfo(${quoteIdentifier(name)})`).all().map((column) => column.name),
+    minimumRows: MEMBER_ROW_FLOOR_TABLES.has(name)
+      ? Number(database.prepare(`SELECT COUNT(*) c FROM ${quoteIdentifier(name)}`).get().c)
+      : null,
+  }]));
+}
+
+function verifySourceManifest(snapshot, manifest) {
+  const tables = new Set(snapshot.prepare("SELECT name FROM sqlite_schema WHERE type='table'")
+    .all().map((row) => row.name));
+  for (const [table, expected] of Object.entries(manifest)) {
+    if (!tables.has(table)) throw new Error(`${table} is missing from the source-matched snapshot`);
+    const columns = new Set(snapshot.prepare(`PRAGMA table_xinfo(${quoteIdentifier(table)})`)
+      .all().map((column) => column.name));
+    if (!columns.size) throw new Error(`${table} is missing from the source-matched snapshot`);
+    for (const column of expected.columns) {
+      if (!columns.has(column)) throw new Error(`${table}: snapshot is missing source column ${column}`);
+    }
+    if (expected.minimumRows === null) continue;
+    if (!Number.isSafeInteger(expected.minimumRows) || expected.minimumRows < 0) {
+      throw new Error(`${table}: source row baseline is unavailable`);
+    }
+    const count = Number(snapshot.prepare(`SELECT COUNT(*) c FROM ${quoteIdentifier(table)}`).get().c);
+    if (count < expected.minimumRows) {
+      throw new Error(`${table}: snapshot lost rows (${count} < ${expected.minimumRows})`);
+    }
+  }
+}
+
 export function backupRetentionCount(value, fallback = 7) {
   const raw = value == null || String(value).trim() === "" ? fallback : Number(value);
   if (!Number.isSafeInteger(raw) || raw < 1) {
@@ -49,7 +101,7 @@ export function backupTableCounts(database) {
 // commit before SQLite takes its snapshot can make the backup newer than that
 // floor and are valid. Falling below the floor is treated as a failed backup;
 // a concurrent delete can cause a safe false alarm, but never silent data loss.
-export function verifyBackupSnapshot(path, expected = null) {
+export function verifyBackupSnapshot(path, expected = null, sourceManifest = null) {
   if (!existsSync(path)) throw new Error(`No such snapshot: ${path}`);
   const snapshot = new DatabaseSync(path, { readOnly: true });
   registerPitSqliteFunctions(snapshot);
@@ -74,6 +126,10 @@ export function verifyBackupSnapshot(path, expected = null) {
       if (got[table] === null) throw new Error(`${table} is missing from the snapshot`);
     }
     if (got.schema_version < 1) throw new Error("schema_version is empty in the snapshot");
+    const schemaVersion = snapshot.prepare("SELECT version FROM schema_version LIMIT 1").get()?.version;
+    if (!Number.isSafeInteger(schemaVersion) || schemaVersion < 1) {
+      throw new Error("schema_version has no valid version marker");
+    }
     if (got.users < 1 || got.artists < 1) {
       throw new Error("critical account or artist catalogue data is empty in the snapshot");
     }
@@ -92,6 +148,7 @@ export function verifyBackupSnapshot(path, expected = null) {
         }
       }
     }
+    if (sourceManifest) verifySourceManifest(snapshot, sourceManifest);
     return got;
   } finally {
     snapshot.close();

@@ -6,6 +6,7 @@ export function accountSecurityRoutes({ database, ApiError, requireSessionUser, 
   matchingPasswordUsers = async () => [], grantVerifiedAccounts = () => {} }) {
   return {
     "POST /api/me/password": async (ctx) => {
+      ctx.signal?.throwIfAborted();
       const actor = requireSessionUser(ctx);
       limit(ctx, "change-password", 5, 15 * 60 * 1000);
       ctx.setHeader?.("Cache-Control", "no-store");
@@ -18,6 +19,7 @@ export function accountSecurityRoutes({ database, ApiError, requireSessionUser, 
       const replacement = await hashPassword(ctx.body.password);
       const matching = await matchingPasswordUsers({ email: user.email, password: ctx.body.password });
       const session = atomicWrite(() => {
+        ctx.signal?.throwIfAborted();
         ctx.assertCurrentSession?.({ allowRestrictedAccount: true });
         const changed = database.prepare(`UPDATE users SET pass_hash=?,reset_hash=NULL,reset_expires=0,signup_cancel_hash=NULL
           WHERE id=? AND pass_hash=?`).run(replacement, user.id, user.pass_hash).changes;

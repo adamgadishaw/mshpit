@@ -28,7 +28,7 @@ const request = (session, options = {}) => readAuthorizedRequest({
 });
 
 test("ratings, follows, and messages reject stale authority between body authorization and route dispatch", async () => {
-  for (const mode of ["logout", "expiry", "unverified", "banned"]) {
+  for (const mode of ["logout", "expiry", "unverified", "banned", "suspended", "dormant"]) {
     for (const action of ["rating", "follow", "message"]) {
       const user = member();
       const other = member();
@@ -45,6 +45,8 @@ test("ratings, follows, and messages reject stale authority between body authori
       if (mode === "expiry") db.prepare("UPDATE sessions SET expires_at=0 WHERE user_id=?").run(user.id);
       if (mode === "unverified") db.prepare("UPDATE users SET email_verified_at=0 WHERE id=?").run(user.id);
       if (mode === "banned") db.prepare("UPDATE users SET is_banned=1 WHERE id=?").run(user.id);
+      if (mode === "suspended") db.prepare("UPDATE users SET suspended_until=? WHERE id=?").run(Date.now() + 60_000, user.id);
+      if (mode === "dormant") db.prepare("UPDATE users SET dormant_at=? WHERE id=?").run(Date.now(), user.id);
       assert.throws(() => routes[route]({ ...authorized, params, ip: user.id }),
         (error) => ["AUTH_REQUIRED", "EMAIL_VERIFICATION_REQUIRED", "FORBIDDEN"].includes(error.code), `${mode}/${action}`);
       assert.equal(db.prepare("SELECT COUNT(*) n FROM ratings WHERE user_id=?").get(user.id).n, 0);

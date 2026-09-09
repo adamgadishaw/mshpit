@@ -174,9 +174,11 @@ export function createLinkedAccounts({ database, ApiError, requireSessionUser, l
     return database.isTransaction ? grant() : atomicWrite(grant);
   }
 
-  async function proveAndGrant({ userId, password, token, rejectInvalidPassword = false }) {
+  async function proveAndGrant({ userId, password, token, rejectInvalidPassword = false, signal }) {
+    signal?.throwIfAborted();
     const user = userById.get(userId);
     const users = user ? await matchingPasswordUsers({ email: user.email, password }) : [];
+    signal?.throwIfAborted();
     if (!usable(user) || !users.some((entry) => entry.id === userId && entry.pass_hash === user.pass_hash)) {
       if (rejectInvalidPassword) throw new ApiError(401, "Your password doesn't match this account.", "AUTH_INVALID");
       return { connected: false };
@@ -194,7 +196,8 @@ export function createLinkedAccounts({ database, ApiError, requireSessionUser, l
       const { user } = requireActor(ctx);
       limit(ctx, "connect-accounts", 5, 15 * 60 * 1000);
       if (!user.email_verified_at) throw new ApiError(403, "Confirm your email before linking accounts.", "EMAIL_VERIFICATION_REQUIRED");
-      await proveAndGrant({ userId: user.id, password: ctx.body?.password, token: ctx.token, rejectInvalidPassword: true });
+      await proveAndGrant({ userId: user.id, password: ctx.body?.password, token: ctx.token,
+        rejectInvalidPassword: true, signal: ctx.signal });
       return accountList(requireActor(ctx));
     },
     "POST /api/me/accounts/switch": (ctx) => {

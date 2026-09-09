@@ -23,17 +23,49 @@ const BASE = apiBaseForRuntime({
 // another tab cannot silently turn an old tab's action into the new account's
 // action. `/api/me` is the sole identity-discovery call and opts out explicitly.
 let apiIdentity = { accountId: null, ready: false, generation: 0 };
-let resolveIdentityReady;
-let identityReady = new Promise((resolve) => { resolveIdentityReady = resolve; });
+const identityWaiters = new Set();
+
+// Remove cancelled waiters even if account discovery never completes offline.
+function waitForApiIdentity(signal) {
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      identityWaiters.delete(onReady);
+      signal.removeEventListener("abort", onAbort);
+    };
+    const onAbort = () => {
+      cleanup();
+      reject(signal.reason || new DOMException("Aborted", "AbortError"));
+    };
+    const onReady = () => {
+      if (!apiIdentity.ready) return;
+      cleanup();
+      resolve();
+    };
+    if (signal.aborted) return onAbort();
+    signal.addEventListener("abort", onAbort, { once: true });
+    identityWaiters.add(onReady);
+    onReady();
+  });
+}
+
+async function awaitValidatedIdentity(control, signal, failureContext) {
+  try {
+    await waitForApiIdentity(control.signal);
+    if (control.signal.aborted) throw control.signal.reason || new DOMException("Aborted", "AbortError");
+  } catch (error) {
+    const kind = control.didTimeout() ? "timeout" : "abort";
+    control.cleanup();
+    if (signal?.aborted && kind === "abort") throw error;
+    throw apiFailure(error, { ...failureContext, kind });
+  }
+}
 
 export function configureApiIdentity(accountId, { ready = true } = {}) {
   const normalized = accountId ? String(accountId) : null;
   if (apiIdentity.accountId !== normalized || apiIdentity.ready !== !!ready) {
     apiIdentity = { accountId: normalized, ready: !!ready, generation: apiIdentity.generation + 1 };
     if (apiIdentity.ready) {
-      resolveIdentityReady?.();
-    } else {
-      identityReady = new Promise((resolve) => { resolveIdentityReady = resolve; });
+      for (const notify of identityWaiters) notify();
     }
   }
   return apiIdentity.generation;
@@ -88,22 +120,22 @@ export async function api(path, { method = "GET", body, context, silent = false,
     });
     throw apiFailure(err, { path, method: verb, context: operation, silent });
   }
+  const control = createRequestControl({ method: verb, timeoutMs, callerSignal: signal });
   if (barrierDecision === "wait") {
-    if (signal?.aborted) throw signal.reason || new DOMException("Aborted", "AbortError");
-    await Promise.race([
-      identityReady,
-      signal ? new Promise((_, reject) => signal.addEventListener("abort", () => reject(signal.reason || new DOMException("Aborted", "AbortError")), { once: true })) : new Promise(() => {}),
-    ]);
+    // Check here, in the actual dispatch continuation, not just inside a helper.
+    while (!apiIdentity.ready) {
+      await awaitValidatedIdentity(control, signal, { path, method: verb, context: operation, silent });
+    }
   }
   let payload;
   try {
     payload = body === undefined ? undefined : JSON.stringify(body);
   } catch (error) {
+    control.cleanup();
     const invalidBody = new AppError(undefined, { code: "PIT-REQ-001", context: operation, source: "api", cause: error });
     throw apiFailure(invalidBody, { path, method: verb, context: operation, silent });
   }
 
-  const control = createRequestControl({ method: verb, timeoutMs, callerSignal: signal });
   const identityAtStart = apiIdentity;
   const explicitExpected = expectedAccountId !== undefined ? (expectedAccountId ? String(expectedAccountId) : null) : undefined;
   const requestIdentity = explicitExpected !== undefined
@@ -236,23 +268,22 @@ export async function apiBinary(path, {
     });
     throw apiFailure(err, { path, method: verb, context: operation, silent });
   }
+  const control = createRequestControl({ method: verb, timeoutMs, callerSignal: signal });
   if (barrierDecision === "wait") {
-    if (signal?.aborted) throw signal.reason || new DOMException("Aborted", "AbortError");
-    await Promise.race([
-      identityReady,
-      signal ? new Promise((_, reject) => signal.addEventListener("abort", () => reject(signal.reason || new DOMException("Aborted", "AbortError")), { once: true })) : new Promise(() => {}),
-    ]);
+    while (!apiIdentity.ready) {
+      await awaitValidatedIdentity(control, signal, { path, method: verb, context: operation, silent });
+    }
   }
 
   let payload;
   try {
     payload = body === undefined ? undefined : JSON.stringify(body);
   } catch (error) {
+    control.cleanup();
     const invalidBody = new AppError(undefined, { code: "PIT-REQ-001", context: operation, source: "api", cause: error });
     throw apiFailure(invalidBody, { path, method: verb, context: operation, silent });
   }
 
-  const control = createRequestControl({ method: verb, timeoutMs, callerSignal: signal });
   const identityAtStart = apiIdentity;
   const explicitExpected = expectedAccountId !== undefined ? (expectedAccountId ? String(expectedAccountId) : null) : undefined;
   const requestIdentity = explicitExpected !== undefined
