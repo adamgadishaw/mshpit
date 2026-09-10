@@ -179,14 +179,22 @@ function TicketActionRail({ showHref, onOpenShow, compareHref, onCompare, artist
 // sit on a ticket-stub line below, the score reads at a glance, and the footer
 // opens the post's comments. Lounge is reserved for the exact show's shared
 // conversation so the two spaces never look like duplicate features.
-export default function TicketStub({ log, mediaViewable = null, compactContent = false, onOpen, onOpenShow, onOpenPost, onNotInterested, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onReport, onEdit, onDelete, onOpenPhotos, onPlay, onRemoveMyPostTag, onSelfTagRemoved, showComments = true }) {
+export default function TicketStub({ log, mediaViewable = null, compactContent = false, onOpen, onOpenShow, onOpenPost, onNotInterested, onComment, onRequireAuth, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onReport, onEdit, onDelete, onOpenPhotos, onPlay, onRemoveMyPostTag, onSelfTagRemoved, showComments = true }) {
   const onOpenCity = useContext(CityNavigationContext);
   const cityIdentity = cityIdentityForLocation(log);
   const cityHref = cityIdentity ? cityPath(cityIdentity) : null;
   const avatarPriority = mediaViewable === true ? "high" : "normal";
   const openPostDetail = () => (onOpenPost || onComment || onOpen)?.(log);
-  const openComments = () => (onComment || onOpenPost || onOpen)?.(log);
+  // Comments are public post navigation, never a fallback to artist/show detail.
+  // Leave the callback absent when unavailable so the canonical web href works.
+  const openComments = onComment || onOpenPost ? () => (onComment || onOpenPost)(log) : undefined;
   const { userById, likeInfo, toggleLike, commentsFor, session, userBadges, deleteOwnPost } = useStore();
+  const pressLike = (event) => {
+    event?.stopPropagation?.();
+    event?.nativeEvent?.stopPropagation?.();
+    if (!session) { onRequireAuth?.(); return; }
+    toggleLike(log.id, log.likes || 0);
+  };
   const cachedAuthor = userById?.(log.userId);
   const author = useMemo(
     () => resolvePostAuthor({ userId: log.userId, cached: cachedAuthor, embedded: log.user }),
@@ -408,7 +416,7 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
             compact={compactContent}
             toggleTextStyle={campaignPresentation ? { color: campaignTreatment.accentColor } : null}
             renderText={({ text, accessibilityLabel }) => (
-              <PublicPressableLink href={canonicalPostHref} onNavigate={() => (onComment || onOpen)?.(log)} accessibilityLabel={`${accessibilityLabel}. Open post and comments.`}>
+              <PublicPressableLink href={canonicalPostHref} onNavigate={openComments} accessibilityLabel={`${accessibilityLabel}. Open post and comments.`}>
                 <Text accessibilityLabel={accessibilityLabel} style={[styles.statusText, campaignPresentation && { color: campaignTreatment.textColor }]}>{text}</Text>
               </PublicPressableLink>
             )}
@@ -424,7 +432,7 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
 
         <View style={[styles.statusFooter, campaignPresentation && styles.campaignFooter]}>
           <NotForMeButton onPress={onNotInterested ? () => onNotInterested(log) : undefined} palette={campaignTreatment} />
-          <Pressable style={({ pressed }) => [styles.fBtn, campaignPresentation && styles.campaignTouchTarget, pressed && (campaignPresentation ? styles.campaignControlPressed : styles.controlPressed)]} onPress={() => (session ? toggleLike(log.id, log.likes || 0) : onOpen?.(log))} hitSlop={8} accessibilityRole="button" accessibilityLabel={`${liked ? "Unlike" : "Like"}, ${likeCount} likes`}>
+          <Pressable style={({ pressed }) => [styles.fBtn, campaignPresentation && styles.campaignTouchTarget, pressed && (campaignPresentation ? styles.campaignControlPressed : styles.controlPressed)]} onPress={pressLike} hitSlop={8} accessibilityRole="button" accessibilityLabel={`${liked ? "Unlike" : "Like"}, ${likeCount} likes`}>
             <Icon name="heart" size={18} color={campaignPresentation ? (liked ? campaignTreatment.accentColor : campaignTreatment.mutedTextColor) : liked ? colors.magenta : colors.textDim} filled={liked} />
             <Text style={[styles.fCount, campaignPresentation && { color: liked ? campaignTreatment.accentColor : campaignTreatment.mutedTextColor }, !campaignPresentation && liked && { color: colors.magenta }]}>{likeCount}</Text>
           </Pressable>
@@ -440,7 +448,7 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
           />
         </View>
 
-        {showComments && <CommentPreview log={log} onOpen={onComment || onOpen} palette={campaignTreatment} />}
+        {showComments && <CommentPreview log={log} onOpen={openComments} palette={campaignTreatment} />}
         </View>
       </View>
     );
@@ -647,7 +655,7 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
       {/* Post reactions and comments. Show-wide conversation lives in Lounge. */}
       <View style={styles.footer}>
         <NotForMeButton onPress={onNotInterested ? () => onNotInterested(log) : undefined} />
-        <Pressable style={({ pressed }) => [styles.fBtn, pressed && styles.controlPressed]} onPress={() => (session ? toggleLike(log.id, log.likes || 0) : isOnlineReview ? openPostDetail() : onOpen?.(log))} hitSlop={8} accessibilityRole="button" accessibilityLabel={`${liked ? "Unlike" : "Like"}, ${likeCount} likes`}>
+        <Pressable style={({ pressed }) => [styles.fBtn, pressed && styles.controlPressed]} onPress={pressLike} hitSlop={8} accessibilityRole="button" accessibilityLabel={`${liked ? "Unlike" : "Like"}, ${likeCount} likes`}>
           <Icon name="heart" size={18} color={liked ? colors.magenta : colors.textDim} filled={liked} />
           <Text style={[styles.fCount, liked && { color: colors.magenta }]}>{likeCount}</Text>
         </Pressable>
@@ -676,7 +684,7 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
         )}
       </View>
 
-      {showComments && <CommentPreview log={log} onOpen={onComment || onOpen} />}
+      {showComments && <CommentPreview log={log} onOpen={openComments} />}
     </View>
   );
 }

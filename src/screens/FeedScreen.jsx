@@ -29,6 +29,7 @@ const FeedTicketRow = memo(function FeedTicketRow({ item, itemIndex, mediaViewab
   const open = useCallback((_unused) => actionsRef.current.onOpen?.(item, { surface, position: itemIndex }), [actionsRef, item, itemIndex, surface]);
   const openShow = useCallback((show) => actionsRef.current.onOpen?.(show, { surface, position: itemIndex }), [actionsRef, itemIndex, surface]);
   const comment = useCallback((...args) => actionsRef.current.onComment?.(...args), [actionsRef]);
+  const requireAuth = useCallback(() => actionsRef.current.onRequireAuth?.(), [actionsRef]);
   const preview = useCallback((...args) => actionsRef.current.onPreview?.(...args), [actionsRef]);
   const openProfile = useCallback((...args) => actionsRef.current.onOpenProfile?.(...args), [actionsRef]);
   const openArtist = useCallback((...args) => actionsRef.current.onOpenArtist?.(...args), [actionsRef]);
@@ -51,6 +52,7 @@ const FeedTicketRow = memo(function FeedTicketRow({ item, itemIndex, mediaViewab
       onOpenPost={capabilities.comment ? comment : undefined}
       onNotInterested={surface === "everyone" && item.recommendation && capabilities.notInterested ? hideRecommendation : undefined}
       onComment={capabilities.comment ? comment : undefined}
+      onRequireAuth={capabilities.requireAuth ? requireAuth : undefined}
       onPreview={capabilities.preview ? preview : undefined}
       onOpenProfile={capabilities.openProfile ? openProfile : undefined}
       onOpenArtist={capabilities.openArtist ? openArtist : undefined}
@@ -65,7 +67,7 @@ const FeedTicketRow = memo(function FeedTicketRow({ item, itemIndex, mediaViewab
   );
 });
 
-export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, accountId = null, homeCity, unread = 0, notifUnread = 0, newUser = false, hideHeaderActions = false, onFinishSetup, onRefresh, onLoadMore, hasMore = false, loadingMore = false, countdownPlan = null, showHomeCountdown = false, suggestedUsers = [], suggestedUsersLoading = false, showSuggestedPitters = false, onFollowUser, isFollowing, isBlocked, onOpenCountdown, onViewAllCountdown, onOpen, onImpression, onDwell, onNotInterested, onUndoNotInterested, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onOpenNearby, onOpenInbox, onOpenNotifications, onOpenMenu, onOpenClips, onReport, onEdit, onOpenPhotos, onPlay, onRemoveMyPostTag, onLogShow, onOpenDiscover }) {
+export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, accountId = null, homeCity, unread = 0, notifUnread = 0, newUser = false, hideHeaderActions = false, onFinishSetup, onRefresh, onLoadMore, hasMore = false, loadingMore = false, countdownPlan = null, showHomeCountdown = false, suggestedUsers = [], suggestedUsersLoading = false, showSuggestedPitters = false, onFollowUser, isFollowing, isBlocked, onOpenCountdown, onViewAllCountdown, onOpen, onImpression, onDwell, onNotInterested, onUndoNotInterested, onComment, onRequireAuth, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onOpenNearby, onOpenInbox, onOpenNotifications, onOpenMenu, onOpenClips, onReport, onEdit, onOpenPhotos, onPlay, onRemoveMyPostTag, onLogShow, onOpenDiscover }) {
   const { width } = useWindowDimensions();
   const appActive = useAppActive();
   const phone = width < 700;
@@ -290,6 +292,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
     onPreview,
     onRemoveMyPostTag,
     onReport,
+    onRequireAuth,
   };
   const canComment = typeof onComment === "function";
   const canEdit = typeof onEdit === "function";
@@ -302,6 +305,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
   const canPreview = typeof onPreview === "function";
   const canRemoveMyPostTag = typeof onRemoveMyPostTag === "function";
   const canReport = typeof onReport === "function";
+  const canRequireAuth = typeof onRequireAuth === "function";
   const canHideRecommendation = typeof onNotInterested === "function";
   const rowCapabilities = useMemo(() => ({
     comment: canComment,
@@ -316,7 +320,8 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
     preview: canPreview,
     removeMyPostTag: canRemoveMyPostTag,
     report: canReport,
-  }), [canComment, canEdit, canHideRecommendation, canOpenArtist, canOpenArtistArchive, canOpenPhotos, canOpenProfile, canOpenVenue, canPlay, canPreview, canRemoveMyPostTag, canReport]);
+    requireAuth: canRequireAuth,
+  }), [canComment, canEdit, canHideRecommendation, canOpenArtist, canOpenArtistArchive, canOpenPhotos, canOpenProfile, canOpenVenue, canPlay, canPreview, canRemoveMyPostTag, canReport, canRequireAuth]);
   const renderFeedItem = useCallback(({ item, index: itemIndex }) => (
     <FeedTicketRow
       item={item}

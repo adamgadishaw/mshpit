@@ -62,6 +62,7 @@ const ProfileMediaTile = memo(function ProfileMediaTile({ item, index, viewerIte
 const ProfileTicketRow = memo(function ProfileTicketRow({ log, actionsRef, capabilities }) {
   const openShow = useCallback((...args) => actionsRef.current.onOpenShow?.(...args), [actionsRef]);
   const openPost = useCallback((...args) => actionsRef.current.onOpenPost?.(...args), [actionsRef]);
+  const requireAuth = useCallback(() => actionsRef.current.onRequireAuth?.(), [actionsRef]);
   const openProfile = useCallback((...args) => actionsRef.current.onOpenProfile?.(...args), [actionsRef]);
   const openArtist = useCallback((...args) => actionsRef.current.onOpenArtist?.(...args), [actionsRef]);
   const openArtistArchive = useCallback((...args) => actionsRef.current.onOpenArtistArchive?.(...args), [actionsRef]);
@@ -89,6 +90,7 @@ const ProfileTicketRow = memo(function ProfileTicketRow({ log, actionsRef, capab
       onOpen={capabilities.openShow ? openShow : undefined}
       onOpenShow={capabilities.openShow ? openShow : undefined}
       onOpenPost={capabilities.openPost ? openPost : undefined}
+      onRequireAuth={capabilities.requireAuth ? requireAuth : undefined}
       onOpenProfile={capabilities.openProfile ? openProfile : undefined}
       onOpenArtist={capabilities.openArtist ? openArtist : undefined}
       onOpenArtistArchive={capabilities.openArtistArchive ? openArtistArchive : undefined}
@@ -105,7 +107,7 @@ const ProfileTicketRow = memo(function ProfileTicketRow({ log, actionsRef, capab
 });
 
 // Public member profile: musical identity, live history, media, plans, and posts.
-export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenPost, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onManageProfile, onMessage, onReport, onEditPost, onOpenPhotos, onRemoveMyPostTag, onOpenFollowList, onOpenBadges }) {
+export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenPost, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onManageProfile, onMessage, onReport, onEditPost, onOpenPhotos, onRemoveMyPostTag, onOpenFollowList, onOpenBadges, onRequireAuth }) {
   const appActive = useAppActive();
   const { session, userById, logsByUser, isFollowing, follow, unfollow, followerCount, followingCount, goingFor, myAttendance, userBadges, sharedShows, loadUser, isBlocked, blockUser, unblockUser, isMuted, muteUser, unmuteUser, userPoints, userAchievements, loadRewards, deleteOwnPost } = useStore();
   const profileScope = accountTargetScope(session?.id, `profile:${userId || ""}`);
@@ -160,6 +162,7 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenPost,
   const canOpenVenue = typeof onOpenVenue === "function";
   const canRemoveMyPostTag = typeof onRemoveMyPostTag === "function";
   const canReportPosts = typeof onReport === "function";
+  const canRequireAuth = typeof onRequireAuth === "function";
   const profilePostCapabilities = useMemo(() => ({
     edit: canEditPosts,
     openArtist: canOpenArtist,
@@ -171,7 +174,8 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenPost,
     openVenue: canOpenVenue,
     removeMyPostTag: canRemoveMyPostTag,
     report: canReportPosts,
-  }), [canEditPosts, canOpenArtist, canOpenArtistArchive, canOpenPhotos, canOpenPost, canOpenProfile, canOpenShow, canOpenVenue, canRemoveMyPostTag, canReportPosts]);
+    requireAuth: canRequireAuth,
+  }), [canEditPosts, canOpenArtist, canOpenArtistArchive, canOpenPhotos, canOpenPost, canOpenProfile, canOpenShow, canOpenVenue, canRemoveMyPostTag, canReportPosts, canRequireAuth]);
   postActionsRef.current = {
     deleteOwnPost,
     onEditPost,
@@ -184,6 +188,7 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenPost,
     onOpenVenue,
     onRemoveMyPostTag,
     onReport,
+    onRequireAuth,
     removeHistoryPost: history.removePost,
     updateHistoryPost: history.updatePost,
   };

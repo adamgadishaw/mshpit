@@ -263,7 +263,7 @@ function TopReviewCard({ review, rank, artistName, onOpenPost, onOpenShow, onOpe
 
 // Artist page - the rollup of a band's live reputation across every night,
 // plus where to catch them next. Answers "is this band worth seeing?"
-export default function ArtistScreen({ artistName, previewAsFan = false, onClose, onOpenPost, onOpenShow, onOpenArchive, onOpenVenue, onOpenFanClub, onShareMemory, onOpenPhotos, onOpenGallery, onOpenProfile, onManageArtistProfile, onEditArtistProfile, onPlay, onAddToPlaylist, onReport }) {
+export default function ArtistScreen({ artistName, previewAsFan = false, onClose, onOpenPost, onOpenShow, onOpenArchive, onOpenVenue, onOpenFanClub, onShareMemory, onOpenPhotos, onOpenGallery, onOpenProfile, onManageArtistProfile, onEditArtistProfile, onPlay, onAddToPlaylist, onReport, onRequireAuth }) {
   const { session, artistSummary, albumRating, songRating, rateAlbum, rateSong, loadRating,
     isArtistOwner, artistPostsFor, loadArtistPage, artistPageCacheEpoch,
     artistGallery, loadArtistPhotos, removePhoto, artistBadges, remoteArtistMeta, resolveArtist,
@@ -1614,7 +1614,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
                           </View>
                           <Text style={styles.discSub}>{al.year || "Year unknown"}{al.tracks?.length ? ` · ${al.tracks.length} songs` : ""}{ar.count > 0 ? ` · ${ar.avg.toFixed(1)}★` : ""}</Text>
                         </View>
-                        <TapStars value={ar.mine} onChange={(n) => rateAlbum(a.name, al.title, n)} size={13} gap={2} />
+                        <TapStars value={ar.mine} onChange={(n) => { if (!session) return onRequireAuth?.(); rateAlbum(a.name, al.title, n); }} size={13} gap={2} />
                       </View>
                     </Pressable>
                     {playerEnabled && playable && (
@@ -1652,7 +1652,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
                               {sr.count > 0 && <View style={styles.songMeta}><Stars value={sr.avg} size={10} /><Text style={styles.songAvg}>{sr.avg.toFixed(1)} · {sr.count}</Text></View>}
                             </View>
                           </View>
-                          <TapStars value={sr.mine} onChange={(n) => rateSong(a.name, t.title, n)} size={15} gap={2} />
+                          <TapStars value={sr.mine} onChange={(n) => { if (!session) return onRequireAuth?.(); rateSong(a.name, t.title, n); }} size={15} gap={2} />
                           {session && playerEnabled && (
                             <Pressable style={styles.songAdd} onPress={() => toggleReportBox(reportDescriptor)} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Report the wrong video playing for ${t.title}`}>
                               <Icon name="flag" size={12} color={reportedSongs[reportIdentity] ? colors.good : colors.textFaint} />
@@ -1695,7 +1695,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
                     <AlbumArt uri={al.art} />
                     <Text style={styles.albumTitle} numberOfLines={2}>{al.title}</Text>
                     <Text style={styles.albumYear}>{al.year} · {kind}{ar.count > 0 ? `  ${ar.avg.toFixed(1)}★` : ""}</Text>
-                    <TapStars value={ar.mine} onChange={(n) => rateAlbum(a.name, al.title, n)} size={13} gap={2} />
+                    <TapStars value={ar.mine} onChange={(n) => { if (!session) return onRequireAuth?.(); rateAlbum(a.name, al.title, n); }} size={13} gap={2} />
                   </View>
                 );
               })}
@@ -1725,7 +1725,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
                         <Text style={styles.songMetaEmpty} numberOfLines={1}>{s.album ? s.album : "Not rated yet"}</Text>
                       )}
                     </View>
-                    <TapStars value={sr.mine} onChange={(n) => rateSong(a.name, s.title, n)} size={16} gap={3} />
+                    <TapStars value={sr.mine} onChange={(n) => { if (!session) return onRequireAuth?.(); rateSong(a.name, s.title, n); }} size={16} gap={3} />
                     {session && playerEnabled && (
                       <Pressable style={styles.songAdd} onPress={() => toggleReportBox(reportDescriptor)} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Report the wrong video playing for ${s.title}`}>
                         <Icon name="flag" size={12} color={reported ? colors.good : colors.textFaint} />

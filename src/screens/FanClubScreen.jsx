@@ -24,7 +24,7 @@ import useCanonicalArtistIdentity from "../hooks/useCanonicalArtistIdentity";
 const EMPTY_FAN_ACTIONS = Object.freeze({ text: "", joining: false, sending: false });
 
 // The artist Fan Club - a permanent chat for fans, even with no show coming up.
-export default function FanClubScreen({ artist, onClose, onOpenProfile, onOpenProfileByHandle, onReport }) {
+export default function FanClubScreen({ artist, onClose, onOpenProfile, onOpenProfileByHandle, onReport, onRequireAuth }) {
   const {
     session, chatAuthEpoch, userById, fanClubFor, loadFanClub, addFanClubMessage,
     retryChatMessage, cancelChatMessage, isFanClubMember, joinFanClub, fanClubCount,
@@ -106,6 +106,7 @@ export default function FanClubScreen({ artist, onClose, onOpenProfile, onOpenPr
   const art = artistMeta(displayArtistName)?.photo;
 
   const toggleMembership = async () => {
+    if (!session) { onRequireAuth?.(); return; }
     if (!fanClubAllowed || joining) return;
     const requestScope = actionScope;
     updateActions({ joining: true });
@@ -166,7 +167,10 @@ export default function FanClubScreen({ artist, onClose, onOpenProfile, onOpenPr
               <Text style={styles.joinTxt}>{joining ? "Joining…" : "Join the fan club"}</Text>
             </Pressable>
           ) : (
-            <Text style={styles.gateNote}>Log in to join.</Text>
+            <Pressable style={styles.joinBtn} onPress={toggleMembership} disabled={!onRequireAuth} accessibilityRole="button" accessibilityLabel="Log in to join the fan club" accessibilityState={{ disabled: !onRequireAuth }}>
+              <Icon name="user-plus" size={16} color="#1A1206" />
+              <Text style={styles.joinTxt}>Log in to join</Text>
+            </Pressable>
           )}
         </View>
       </View>

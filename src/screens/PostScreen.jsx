@@ -53,7 +53,7 @@ function CommentNode({ c, replies, depth, onReply, onDelete, onReport, sessionId
           </View>
           <Text style={[styles.cText, c.deleted && styles.deletedText]}>{c.deleted ? "Comment deleted" : c.text}</Text>
           {!c.deleted && <View style={styles.commentActions}>
-            <Pressable onPress={() => onReply(c)} hitSlop={6}><Text style={styles.replyBtn}>Reply</Text></Pressable>
+            <Pressable onPress={() => onReply(c)} hitSlop={6} accessibilityRole="button" accessibilityLabel="Reply to comment"><Text style={styles.replyBtn}>Reply</Text></Pressable>
             {own && <Pressable onPress={() => onDelete(c)} hitSlop={6}><Text style={styles.deleteBtn}>Delete</Text></Pressable>}
             {!own && c.userId && onReport ? (
               <Pressable
@@ -84,7 +84,7 @@ function CommentNode({ c, replies, depth, onReply, onDelete, onReport, sessionId
 
 // Post detail — the actual post + its comment thread. This is where like/comment
 // notifications land (not the performance page), and where forum-style replies live.
-export default function PostScreen({ log, onClose, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onOpenShow, onReport, onEdit, onOpenPhotos, onPlay, onRemoveMyPostTag }) {
+export default function PostScreen({ log, onClose, onRequireAuth, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onOpenShow, onReport, onEdit, onOpenPhotos, onPlay, onRemoveMyPostTag }) {
   const { session, feed, commentsFor, addComment, deleteOwnComment, deleteOwnPost, loadComments, userById, userBadges } = useStore();
   const [postLocalOverrides, setPostLocalOverrides] = useState({});
   // Navigation keeps the post that was originally opened. Resolve it against
@@ -119,6 +119,7 @@ export default function PostScreen({ log, onClose, onOpenProfile, onOpenArtist, 
     error: null,
   }));
   const scrollRef = useRef(null);
+  const inputRef = useRef(null);
   const commentScopeRef = useRef(commentScope);
   commentScopeRef.current = commentScope;
 
@@ -201,7 +202,14 @@ export default function PostScreen({ log, onClose, onOpenProfile, onOpenArtist, 
     return roots.map(build);
   }, [flat]);
 
+  const showComments = () => scrollRef.current?.scrollToEnd({ animated: true });
+  const reply = (comment) => {
+    if (!session?.id) { onRequireAuth?.(); return; }
+    setReplyTo({ id: comment.id, name: comment.name || userById?.(comment.userId)?.name });
+    inputRef.current?.focus();
+  };
   const send = async () => {
+    if (!session?.id) { onRequireAuth?.(); return; }
     const t = text.trim();
     if (!t || sending) return;
     setSending(true);
@@ -240,7 +248,7 @@ export default function PostScreen({ log, onClose, onOpenProfile, onOpenArtist, 
         accessibilityLabel="Refresh post and comments"
       >
       <ScrollView ref={scrollRef} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-        <TicketStub log={activeLog} compactContent={false} showComments={false} onOpen={isOnlineReview ? undefined : () => onOpenShow?.(activeLog)} onOpenShow={isOnlineReview ? undefined : onOpenShow} onOpenProfile={onOpenProfile} onOpenArtist={onOpenArtist} onOpenArtistArchive={isOnlineReview ? undefined : onOpenArtistArchive} onOpenVenue={isOnlineReview ? undefined : onOpenVenue} onReport={onReport} onEdit={onEdit} onDelete={removePost} onOpenPhotos={onOpenPhotos} onPlay={onPlay} onRemoveMyPostTag={onRemoveMyPostTag} onSelfTagRemoved={reconcileSelfTagRemoval} />
+        <TicketStub log={activeLog} compactContent={false} showComments={false} onOpen={isOnlineReview ? undefined : () => onOpenShow?.(activeLog)} onOpenShow={isOnlineReview ? undefined : onOpenShow} onOpenProfile={onOpenProfile} onOpenArtist={onOpenArtist} onOpenArtistArchive={isOnlineReview ? undefined : onOpenArtistArchive} onOpenVenue={isOnlineReview ? undefined : onOpenVenue} onReport={onReport} onEdit={onEdit} onDelete={removePost} onOpenPhotos={onOpenPhotos} onPlay={onPlay} onRemoveMyPostTag={onRemoveMyPostTag} onSelfTagRemoved={reconcileSelfTagRemoval} onRequireAuth={onRequireAuth} onComment={showComments} onOpenPost={showComments} />
 
         <Text style={styles.sectionLabel}>
           {commentsUsable ? `${flat.length} COMMENT${flat.length === 1 ? "" : "S"}` : "COMMENTS"}
@@ -269,17 +277,23 @@ export default function PostScreen({ log, onClose, onOpenProfile, onOpenArtist, 
         ) : null}
         {commentsUsable && tree.length === 0 ? <Text style={styles.empty}>No comments yet. Start the conversation.</Text> : null}
         {commentsUsable ? tree.map((node) => (
-          <CommentNode key={node.c.id} c={node.c} replies={node.replies} depth={0} onReply={(c) => setReplyTo({ id: c.id, name: c.name || userById?.(c.userId)?.name })} onDelete={removeComment} onReport={onReport} sessionId={session?.id} onOpenProfile={onOpenProfile} userById={userById} userBadges={userBadges} />
+          <CommentNode key={node.c.id} c={node.c} replies={node.replies} depth={0} onReply={reply} onDelete={removeComment} onReport={onReport} sessionId={session?.id} onOpenProfile={onOpenProfile} userById={userById} userBadges={userBadges} />
         )) : null}
         <View style={{ height: 20 }} />
       </ScrollView>
       </VinylRefreshBoundary>
 
-      {!commentsUsable ? (
+      {!session?.id ? (
+        <View style={styles.composerWrap}>
+          <Pressable onPress={() => onRequireAuth?.()} accessibilityRole="button" accessibilityLabel="Sign in to comment" style={styles.signinButton}>
+            <Text style={styles.signin}>Sign in to comment</Text>
+          </Pressable>
+        </View>
+      ) : !commentsUsable ? (
         <View style={styles.composerWrap}>
           <Text style={styles.signin}>{commentsPending ? "Connecting to comments..." : "Reconnect to the thread to comment."}</Text>
         </View>
-      ) : session ? (
+      ) : (
         <View style={styles.composerWrap}>
           {replyTo && (
             <View style={styles.replyingTo}>
@@ -289,6 +303,7 @@ export default function PostScreen({ log, onClose, onOpenProfile, onOpenArtist, 
           )}
           <View style={styles.composer}>
             <TextInput
+              ref={inputRef}
               style={styles.input}
               placeholder={replyTo ? "Write a reply..." : "Reply to this post..."}
               placeholderTextColor={colors.textFaint}
@@ -304,8 +319,6 @@ export default function PostScreen({ log, onClose, onOpenProfile, onOpenArtist, 
             </Pressable>
           </View>
         </View>
-      ) : (
-        <View style={styles.composerWrap}><Text style={styles.signin}>Sign in to comment.</Text></View>
       )}
     </View>
   );
@@ -344,4 +357,5 @@ const styles = StyleSheet.create({
   send: { width: 40, height: 40, borderRadius: 20, backgroundColor: colors.amberStrong, alignItems: "center", justifyContent: "center" },
   sendOff: { opacity: 0.4 },
   signin: { color: colors.textDim, fontSize: 13, textAlign: "center", paddingVertical: 6 },
+  signinButton: { minHeight: 44, justifyContent: "center" },
 });

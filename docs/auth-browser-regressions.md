@@ -26,6 +26,7 @@ node scripts/verify-auth-browser.mjs --list
 node scripts/verify-auth-browser.mjs logout-
 node scripts/verify-auth-browser.mjs login-canceled
 node scripts/verify-auth-browser.mjs forms-
+node scripts/verify-auth-browser.mjs guest-
 ```
 
 `PIT_AUTH_BROWSER_DIST` can select a different **local** exported build directory.
@@ -38,7 +39,17 @@ passwords, cookies, or tokens.
 
 ## Contract
 
-The 30 cases cover normal login on mobile/desktop, wrong-password retry,
+The 46 cases include 16 logged-out interaction checks plus the original 30
+authentication checks. Guest cases use an actual feed card for concert reviews,
+online reviews, status posts and Going tickets on mobile and desktop widths.
+Likes must open sign-in without loading the artist/show or sending a write.
+Public comments stay readable; Reply and the composer sign-in button open auth;
+the post footer stays in its own thread. Photo reactions and reports open auth,
+and cancel/back preserves the current gallery item. Signing in after a guest
+Like does not replay it; a new, deliberate member tap sends an account-bound
+request. Missing API fixtures, page exceptions and crash reports fail each case.
+
+The original authentication cases cover normal login on mobile/desktop, wrong-password retry,
 multi-profile login choice, normal logout/reload on both widths, failed logout
 with network failure and HTTP 500, linked switching on both widths, external
 account switching, expired sessions on both widths, startup 401 with stale cache,

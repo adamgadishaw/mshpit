@@ -262,6 +262,8 @@ export default function PhotoViewer({
   toggleMediaReaction,
   track,
   onReport,
+  onRequireAuth,
+  onRememberIndex,
   onClose,
 }) {
   const [i, setI] = useState(() => normalizedGalleryIndex(index, photos.length));
@@ -424,14 +426,17 @@ export default function PhotoViewer({
         <View style={styles.topActions}>
           {canReport ? (
             <Pressable
-              onPress={() => onReport({
+              onPress={() => {
+                onRememberIndex?.(i);
+                onReport({
                 ...parentTarget,
                 ownerId,
                 mediaUri: uri,
                 mediaLabel: `Specific ${video ? "video" : "photo"} ${i + 1} of ${photos.length}`,
                 title: `${video ? "Video" : "Photo"}${by ? ` by ${by}` : " from a community post"}`,
                 summary: "Only this attachment is identified in the report sent to moderators.",
-              })}
+                });
+              }}
               hitSlop={8}
               style={styles.reportBtn}
               accessibilityRole="button"
@@ -502,9 +507,17 @@ export default function PhotoViewer({
           <Text style={styles.by}>{video ? "Shared" : "Photo"} by {by}</Text>
         ) : null}
         <Pressable
-          style={[styles.likeBtn, r.mine && styles.likeBtnOn, (!session || !currentPostId) && styles.likeBtnDisabled]}
-          onPress={() => toggleMediaReaction(uri, currentPostId)}
-          disabled={!session || !currentPostId}
+          style={[styles.likeBtn, r.mine && styles.likeBtnOn, !currentPostId && styles.likeBtnDisabled]}
+          onPress={(event) => {
+            event?.stopPropagation?.();
+            if (!session?.id) {
+              onRememberIndex?.(i);
+              onRequireAuth?.();
+              return;
+            }
+            toggleMediaReaction(uri, currentPostId);
+          }}
+          disabled={!currentPostId}
           hitSlop={8}
           accessibilityRole="button"
           accessibilityLabel={`${r.mine ? "Unlike" : "Like"} this ${video ? "video" : "photo"}, ${r.count} ${r.count === 1 ? "like" : "likes"}`}

@@ -284,8 +284,8 @@ test("the shared Store deletion path removes posts from dedicated profile histor
   const start = source.indexOf("const deleteOwnPost =");
   const end = source.indexOf("const removeMyPostTag", start);
   assert.ok(start >= 0 && end > start);
-  assert.match(source.slice(start, end), /removeProfileHistoryPost\(session\.id, session\.id, postId\)/);
-  assert.match(source.slice(start, end), /upsertProfileHistoryPost\(session\.id, session\.id, removed\)/);
+  assert.match(source.slice(start, end), /removeProfileHistoryPost\(actor\.id, actor\.id, postId\)/);
+  assert.match(source.slice(start, end), /upsertProfileHistoryPost\(actor\.id, actor\.id, removed\)/);
 });
 
 test("the shared Store rotates profile history at auth boundaries and scrubs it after a confirmed block", () => {

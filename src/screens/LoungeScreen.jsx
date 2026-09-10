@@ -21,7 +21,7 @@ const EMPTY_LOUNGE_ACTIONS = Object.freeze({ enteredRoom: null, entering: false,
 // One persistent Lounge belongs to this exact show before, during, and after.
 // Gated: you have to tap in, so conversation reads and polling stay off until
 // the member deliberately enters the room.
-export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfileByHandle, onOpenFanClub, onReport }) {
+export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfileByHandle, onOpenFanClub, onReport, onRequireAuth }) {
   const {
     session, chatAuthEpoch, concertKey, loungeFor, enterLounge, addLoungeMessage,
     retryChatMessage, cancelChatMessage, loadLounge, attendeesFor, userById, removeLoungeMessage,
@@ -125,13 +125,15 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
   }, [clearLounge, currentGateMeta?.cutoffAt, currentGateMeta?.status, key]);
 
   const enter = async () => {
-    if (entering || !session || !roomIdentity || !loungeOpen) return;
+    if (!session) { onRequireAuth?.(); return; }
+    if (entering || !roomIdentity || !loungeOpen) return;
     const requestScope = actionScope;
     updateActions({ entering: true });
     const result = await enterLounge(log);
     if (actionScopeRef.current !== requestScope) return;
     updateActions({ enteredRoom: result?.ok && !result?.guest ? roomIdentity : null, entering: false });
   };
+  const entryDisabled = session ? entering || !loungeOpen : !onRequireAuth;
 
   if (currentGateMeta?.status === "closed") {
     const fanClubArtist = currentGateMeta.fanClubArtist || log.artist;
@@ -203,7 +205,7 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
           ) : (
             <>
               <Text style={styles.gateMeta}>{currentGateMeta?.messageCount ?? messages.length} messages · {currentGateMeta?.attendeeCount ?? attendees.length} going</Text>
-              <Pressable style={[styles.enterBtn, (entering || !session || !loungeOpen) && { opacity: 0.65 }]} onPress={enter} disabled={entering || !session || !loungeOpen} accessibilityRole="button" accessibilityState={{ disabled: entering || !session || !loungeOpen, busy: entering }}>
+              <Pressable style={[styles.enterBtn, entryDisabled && { opacity: 0.65 }]} onPress={enter} disabled={entryDisabled} accessibilityRole="button" accessibilityState={{ disabled: entryDisabled, busy: entering }}>
                 <Text style={styles.enterTxt}>{!session ? "Log in to enter the Lounge" : !loungeOpen ? "Checking this Lounge…" : entering ? "Saving your spot…" : "I'm going — enter this show's Lounge"}</Text>
               </Pressable>
             </>

@@ -505,6 +505,15 @@ export function StoreProvider({ children }) {
   const accountMutationEpochRef = useRef(0);
   sessionRef.current = session;
   authReadyRef.current = authReady;
+  // A callback belongs to the account epoch that rendered it. Rechecking only
+  // the latest session would let a delayed tap act for a replacement account.
+  const renderedAccountMutation = captureAccountMutation(session?.id, accountMutationEpochRef.current);
+  const currentMutationActor = () => {
+    const actor = sessionRef.current;
+    return actor?.id && authReadyRef.current && accountMutationIsCurrent(
+      renderedAccountMutation, actor.id, accountMutationEpochRef.current,
+    ) ? actor : null;
+  };
   const [playHistory, setPlayHistory] = useState(() => load(playHistoryStorageKey(session?.id), [])); // every song played, newest first
   const [playHistoryAccountId, setPlayHistoryAccountId] = useState(session?.id || null);
   const [playHistoryStatus, setPlayHistoryStatus] = useState(session?.id ? "loading" : "ready");
@@ -1994,21 +2003,23 @@ export function StoreProvider({ children }) {
     } catch {}
   };
   const toggleMediaReaction = async (url, postId) => {
-    if (!session || !url) return { ok: false };
-    const accountId = sessionRef.current?.id || null;
+    const actor = currentMutationActor();
+    if (!actor || !url || !postId) return { ok: false };
+    const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
+    const isCurrent = () => accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current);
     setMediaReactions((m) => {
       const cur = m[url] || { count: 0, mine: false };
       return { ...m, [url]: { count: Math.max(0, cur.count + (cur.mine ? -1 : 1)), mine: !cur.mine } };
     });
     try {
-      const r = await api("/api/media/react", { method: "POST", context: "Liking a photo", body: { url, postId } });
-      if ((sessionRef.current?.id || null) !== accountId) return { ok: false, stale: true };
+      const r = await api("/api/media/react", { method: "POST", context: "Liking a photo", body: { url, postId }, expectedAccountId: actor.id });
+      if (!isCurrent()) return { ok: false, stale: true };
       setMediaReactions((m) => ({ ...m, [url]: { count: r.count, mine: r.liked } }));
       if (postId) track("interaction", { postId, action: r.liked ? "like" : "unlike", surface: "media_viewer" });
       return { ok: true };
     } catch (error) {
       // Roll back the optimistic flip; the server said no.
-      if ((sessionRef.current?.id || null) === accountId) {
+      if (isCurrent()) {
         setMediaReactions((m) => {
           const cur = m[url] || { count: 0, mine: false };
           return { ...m, [url]: { count: Math.max(0, cur.count + (cur.mine ? -1 : 1)), mine: !cur.mine } };
@@ -3412,8 +3423,19 @@ export function StoreProvider({ children }) {
   };
 
   const addLog = (log, { silent = false } = {}) => {
+    const postingActor = currentMutationActor();
+    // Reject before optimistic feed/history writes, including callbacks kept
+    // alive across logout or an account switch. The composer retains its draft.
+    if (!postingActor) return Promise.resolve({
+      ok: false,
+      error: new AppError("Sign in again to publish this post.", {
+        status: 401,
+        serverCode: "AUTH_REQUIRED",
+        context: log?.kind === "status" || log?.kind === "memory" ? "Posting your update" : "Posting your concert review",
+        source: "post-delivery",
+      }),
+    });
     const localId = log.id || "p_local_" + Date.now();
-    const postingActor = session;
     const postingMutation = postingActor
       ? captureAccountMutation(postingActor.id, accountMutationEpochRef.current)
       : null;
@@ -3517,23 +3539,6 @@ export function StoreProvider({ children }) {
           return { ok: false, error };
         });
     }
-    if (ENABLE_DEMO_DATA) {
-      track("post", { kind: kind === "status" ? "status" : "review", mediaCount: Array.isArray(safe.photos) ? safe.photos.length : 0 });
-      return Promise.resolve({ ok: true, localOnly: true });
-    }
-    // A vanished/expired session must never look like a successful publish.
-    // The composer retains its durable draft so the member can sign back in
-    // and submit the same mutation safely.
-    setFeed((f) => f.filter((l) => l.id !== localId));
-    return Promise.resolve({
-      ok: false,
-      error: new AppError("Sign in again to publish this post.", {
-        status: 401,
-        serverCode: "AUTH_REQUIRED",
-        context: kind === "status" ? "Posting your update" : "Posting your concert review",
-        source: "post-delivery",
-      }),
-    });
   };
 
   const reconcileEditedPost = async (id, body, error) => {
@@ -4393,7 +4398,10 @@ export function StoreProvider({ children }) {
   // the write fails put it back exactly where it was so nothing is silently
   // lost. The server soft-deletes, so a failed request never orphans comments.
   const deleteOwnPost = (postId) => {
-    if (!session || !postId) return Promise.resolve({ ok: false });
+    const actor = currentMutationActor();
+    if (!actor || !postId) return Promise.resolve({ ok: false });
+    const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
+    const isCurrent = () => accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current);
     let removed = null;
     let removedIndex = -1;
     feedMutationRevisionRef.current += 1;
@@ -4402,10 +4410,15 @@ export function StoreProvider({ children }) {
       removed = removedIndex >= 0 ? f[removedIndex] : null;
       return f.filter((l) => l.id !== postId);
     });
-    removeProfileHistoryPost(session.id, session.id, postId);
-    return api(`/api/posts/${postId}`, { method: "DELETE", context: "Deleting your post" })
-      .then(() => { track("delete_post", { postId }); return { ok: true }; })
+    removeProfileHistoryPost(actor.id, actor.id, postId);
+    return api(`/api/posts/${postId}`, { method: "DELETE", context: "Deleting your post", expectedAccountId: actor.id })
+      .then(() => {
+        if (!isCurrent()) return { ok: false, stale: true };
+        track("delete_post", { postId });
+        return { ok: true };
+      })
       .catch((error) => {
+        if (!isCurrent()) return { ok: false, stale: true, error };
         // Restore at the original position, not just at the top of the feed.
         if (removed) {
           feedMutationRevisionRef.current += 1;
@@ -4415,7 +4428,7 @@ export function StoreProvider({ children }) {
             next.splice(Math.max(0, Math.min(removedIndex, next.length)), 0, removed);
             return next;
           });
-          upsertProfileHistoryPost(session.id, session.id, removed);
+          upsertProfileHistoryPost(actor.id, actor.id, removed);
         }
         return { ok: false, error };
       });
@@ -4439,21 +4452,29 @@ export function StoreProvider({ children }) {
   };
   const likeInfo = (id, base = 0) => ({ count: (likes[id] ?? base) + (myLikes[id] ? 1 : 0), liked: !!myLikes[id] });
   const toggleLike = (id, base = 0) => {
+    const actor = currentMutationActor();
+    if (!actor || !id) return Promise.resolve({ ok: false });
+    const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
+    const isCurrent = () => accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current);
     const previous = !!myLikes[id];
     const liked = !previous;
     feedMutationRevisionRef.current += 1;
     setMyLikes((m) => ({ ...m, [id]: liked }));
     setLikes((l) => ({ ...l, [id]: l[id] ?? base }));
-    if (session) api(`/api/posts/${id}/like`, { method: "POST", body: { liked }, context: liked ? "Liking this review" : "Removing your like" })
+    return api(`/api/posts/${id}/like`, { method: "POST", body: { liked }, context: liked ? "Liking this review" : "Removing your like", expectedAccountId: actor.id })
       .then((result) => {
+        if (!isCurrent()) return { ok: false, stale: true };
         feedMutationRevisionRef.current += 1;
         if (typeof result?.liked === "boolean") setMyLikes((m) => ({ ...m, [id]: result.liked }));
         track("interaction", { postId: id, action: liked ? "like" : "unlike", surface: "feed" });
         if (liked) { track("like", { postId: id }); const o = postOwner(id); if (o) notify(o, "like", { postId: id, artist: feed.find((l) => l.id === id)?.artist }); }
+        return { ok: true, liked: typeof result?.liked === "boolean" ? result.liked : liked };
       })
-      .catch(() => {
+      .catch((error) => {
+        if (!isCurrent()) return { ok: false, stale: true, error };
         feedMutationRevisionRef.current += 1;
         setMyLikes((m) => ({ ...m, [id]: previous }));
+        return { ok: false, error };
       });
   };
 
