@@ -84,6 +84,36 @@ export function boundedBackupTimeout(value, fallback, { min = 1_000, max = 30 * 
   return Math.max(min, Math.min(max, Math.round(parsed)));
 }
 
+// A VACUUM INTO copy can need as much space as the live database plus its WAL;
+// the extra tenth covers page rounding and a WAL that grows during the copy.
+export function requiredBackupBytes(databaseBytes, walBytes = 0) {
+  const total = Math.max(0, Number(databaseBytes) || 0) + Math.max(0, Number(walBytes) || 0);
+  return total + Math.ceil(total / 10);
+}
+
+export function isDiskFullError(error) {
+  return error?.errcode === 13 || error?.code === "ENOSPC"
+    || /database or disk is full/i.test(String(error?.message || ""));
+}
+
+// Choose the oldest completed snapshots to delete so a new copy fits. Snapshots
+// arrive newest first. The newest verified recovery point is never chosen, and
+// nothing is chosen when pruning every older snapshot still would not make room:
+// deleting history that cannot rescue the backup only loses recovery points.
+// Unknown free space takes no preflight action.
+export function snapshotsToFreeSpace({ snapshots = [], freeBytes, requiredBytes } = {}) {
+  const free = Number(freeBytes);
+  const needed = Number(requiredBytes);
+  if (!Number.isFinite(free) || !Number.isFinite(needed) || free >= needed) return { fits: true, remove: [] };
+  const remove = [];
+  let available = free;
+  for (let index = snapshots.length - 1; index >= 1 && available < needed; index -= 1) {
+    remove.push(snapshots[index].f);
+    available += Math.max(0, Number(snapshots[index].size) || 0);
+  }
+  return available >= needed ? { fits: true, remove } : { fits: false, remove: [] };
+}
+
 export function backupTableCounts(database) {
   const out = {};
   for (const table of CRITICAL_BACKUP_TABLES) {

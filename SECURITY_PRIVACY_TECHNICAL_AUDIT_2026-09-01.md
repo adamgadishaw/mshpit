@@ -68,6 +68,11 @@ This audit used source review, repository/history inspection, dependency and Exp
 - Web source maps are emitted for diagnosis but every `.map` path, including encoded and trailing-slash variants, is refused over HTTP with 404; the server reads them from disk only. Map parsing is bounded to 20 per 10 minutes per process.
 - The privacy policy's crash section said crash reports contained no error message. The change was held until the owner approved replacement wording on 2026-09-11, which discloses the redacted message, the web code position, server code locations and release, alert email delivery through the email provider, that alert emails stay in the staff mailbox until deleted, and that a message can occasionally still contain on-screen text. Policy dates and `LEGAL_ACCEPTANCE_VERSION` moved to 2026-09-11; existing acceptance records are unaffected.
 
+### Startup backup disk exhaustion (2026-09-11)
+
+- Production was unavailable from about 18:43 to 19:25 UTC. The pre-migration backup in `scripts/start-production.mjs` failed with `database or disk is full` on the 1 GB `/data` disk that also holds up to seven local snapshots, and the launcher refuses to start without a verified backup. The release code booted locally in production mode behind the same backup gate.
+- The owner raised the disk to 5 GB. `scripts/backup-db.mjs` now deletes the oldest completed snapshots only when that makes a new copy fit, never the newest verified one, and retries once after a disk-full copy before refusing. Off-host backups remain unconfigured, so local pruning can remove the only older recovery points.
+
 ### Supply chain and repository
 
 - Production dependency audit: zero known high-severity advisories.
@@ -138,6 +143,7 @@ Some authenticated GET paths can enqueue artist refresh demand, renew media leas
 - 2026-09-10 founder error diagnostics: complete `npm run check` passed with 4,237/4,237 tests, dependency audit, syntax across 563 Node files, architecture, and the web export with source maps; initial JavaScript 498.4 of 512.0 KiB gzip.
 - 2026-09-10 real-build source-map check: a minified position in the shipped index bundle resolved to its original `src/screens` file and line through the real crash route, and that bundle's `.map` was refused.
 - 2026-09-11 committed-scope gate: the change alone, including the privacy policy update, on `4603cb3` in an isolated worktree without unrelated uncommitted work, passed `npm run check` with 4,174/4,174 tests, dependency audit, syntax across 557 Node files, architecture, and the web export with 54 source maps; initial JavaScript 495.2 of 512.0 KiB gzip.
+- 2026-09-11 backup disk-full fix gate: the fix on `2098442`, in an isolated worktree without unrelated uncommitted work, passed `npm run check` with 4,179/4,179 tests, dependency audit, syntax across 557 Node files, architecture, and the web export with 54 source maps; initial JavaScript 495.2 of 512.0 KiB gzip.
 
 ## Release and ongoing review rule
 

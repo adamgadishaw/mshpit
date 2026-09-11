@@ -17,7 +17,7 @@
 // requires its own private BACKUP_S3_* credentials and refuses to run if it is
 // pointed at the media bucket.
 import { DatabaseSync } from "node:sqlite";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statfsSync, statSync, unlinkSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { presignS3Request } from "../server/media.js";
@@ -28,6 +28,9 @@ import {
   backupSourceManifest,
   backupTableCounts,
   boundedBackupTimeout,
+  isDiskFullError,
+  requiredBackupBytes,
+  snapshotsToFreeSpace,
   verifyBackupSnapshot,
 } from "./backup-db-verification.mjs";
 
@@ -109,7 +112,10 @@ async function upload(path, publishedName = basename(path)) {
 function completedSnapshots() {
   return readdirSync(BACKUP_DIR, { withFileTypes: true })
     .filter((entry) => entry.isFile() && NAME.test(entry.name)).map((entry) => entry.name)
-    .map((f) => ({ f, t: statSync(join(BACKUP_DIR, f)).mtimeMs }))
+    .map((f) => {
+      const stats = statSync(join(BACKUP_DIR, f));
+      return { f, t: stats.mtimeMs, size: stats.size };
+    })
     .sort((a, b) => b.t - a.t);
 }
 
@@ -133,6 +139,52 @@ function reserveReplacementSlot() {
   return prune(Math.max(1, KEEP - 1));
 }
 
+const megabytes = (bytes) => (Number(bytes) / 1048576).toFixed(2);
+// Tests cannot fill a real disk. Outside production a fixture may state the free
+// space or force one disk-full copy; production ignores both.
+const testHooksAllowed = String(process.env.NODE_ENV || "").trim().toLowerCase() !== "production";
+let simulatedDiskFullPending = testHooksAllowed
+  && String(process.env.PIT_TEST_BACKUP_DISK_FULL_ONCE || "").trim() === "1";
+
+function freeBackupBytes() {
+  const stated = testHooksAllowed ? String(process.env.PIT_TEST_BACKUP_FREE_BYTES || "").trim() : "";
+  if (stated) return Number(stated);
+  try {
+    const stats = statfsSync(BACKUP_DIR);
+    return Number(stats.bavail) * Number(stats.bsize);
+  } catch (error) {
+    console.log(`space     free space unavailable (${error?.code || "unknown"}); preflight skipped`);
+    return Number.NaN;
+  }
+}
+
+// A full disk used to fail every startup backup, and a persistent-disk service
+// that refuses to start without one stayed down (2026-09-11). Delete the oldest
+// completed snapshots only when that makes the copy fit; the newest always stays.
+function makeRoomForCopy(requiredBytes) {
+  const plan = snapshotsToFreeSpace({ snapshots: completedSnapshots(), freeBytes: freeBackupBytes(), requiredBytes });
+  for (const name of plan.remove) unlinkSync(join(BACKUP_DIR, name));
+  if (plan.remove.length) {
+    console.log(`space     preflight: pruned ${plan.remove.length} oldest snapshot(s) so a ${megabytes(requiredBytes)} MB copy fits`);
+  } else if (!plan.fits) {
+    console.log(`space     preflight: pruning older snapshots cannot free ${megabytes(requiredBytes)} MB; the disk needs more room`);
+  }
+}
+
+function copyDatabaseInto(path) {
+  // VACUUM INTO needs a writable handle to the source, but takes only a read lock
+  // for the duration and writes nothing to it.
+  const source = new DatabaseSync(SOURCE);
+  registerPitSqliteFunctions(source);
+  try {
+    if (simulatedDiskFullPending) {
+      simulatedDiskFullPending = false;
+      throw Object.assign(new Error("database or disk is full"), { errcode: 13 });
+    }
+    source.exec(`VACUUM INTO '${path.replace(/'/g, "''")}'`);
+  } finally { source.close(); }
+}
+
 const args = process.argv.slice(2);
 const verifyAt = args.indexOf("--verify");
 if (verifyAt !== -1) {
@@ -150,6 +202,8 @@ const rollover = reserveReplacementSlot();
 if (rollover.dropped) {
   console.log(`preflight ${rollover.kept} verified snapshot(s) kept, ${rollover.dropped} oldest pruned for replacement capacity`);
 }
+const walPath = `${SOURCE}-wal`;
+makeRoomForCopy(requiredBackupBytes(statSync(SOURCE).size, existsSync(walPath) ? statSync(walPath).size : 0));
 const live = new DatabaseSync(SOURCE, { readOnly: true });
 registerPitSqliteFunctions(live);
 let expected;
@@ -167,15 +221,23 @@ const dest = join(BACKUP_DIR, `pit-${stamp()}.db`);
 // A crash or failed integrity check must not leave a filename the scheduler
 // considers successful. Only the atomic rename publishes a completed snapshot.
 const partial = `${dest}.partial-${process.pid}`;
-// VACUUM INTO needs a writable handle to the source, but takes only a read lock
-// for the duration and writes nothing to it.
 let got;
 let bytes;
 let uploadedAt = null;
 try {
-  const source = new DatabaseSync(SOURCE);
-  registerPitSqliteFunctions(source);
-  try { source.exec(`VACUUM INTO '${partial.replace(/'/g, "''")}'`); } finally { source.close(); }
+  try {
+    copyDatabaseInto(partial);
+  } catch (error) {
+    // The preflight is an estimate: a WAL can grow and filesystems have overhead.
+    // On a full disk keep only the newest verified snapshot and retry once; a
+    // second failure still refuses, as before.
+    if (!isDiskFullError(error)) throw error;
+    if (existsSync(partial)) unlinkSync(partial);
+    const { dropped } = prune(1);
+    if (!dropped) throw error;
+    console.log(`space     disk full during copy: pruned ${dropped} older snapshot(s), kept the newest, retrying once`);
+    copyDatabaseInto(partial);
+  }
 
   got = verifyBackupSnapshot(partial, expected, sourceManifest);
   bytes = statSync(partial).size;

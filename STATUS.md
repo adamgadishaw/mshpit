@@ -6,6 +6,40 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-09-11 production outage: full data disk
+
+- mshpit.com returned 502 from about 14:43 to 15:25 Toronto time (18:43 to
+  19:25 UTC) while `2098442` deployed. Render's origin reported
+  `x-render-routing: dynamic-paid-error`, and Render's status page showed no
+  incident.
+- Root cause: `scripts/start-production.mjs` runs `scripts/backup-db.mjs`
+  before the server starts. Its `VACUUM INTO` copy failed with
+  `database or disk is full` because the 1 GB `/data` disk also holds up to
+  `BACKUP_KEEP=7` local snapshots. The launcher refuses to start without a
+  verified backup, so Render restarted it in a loop and nothing listened.
+- Not the release code: the exact commit booted locally in production mode in
+  about 3 seconds, and again in about 1 second after running the same
+  pre-migration backup and integrity check against a throwaway database.
+- Recovery: the owner raised the disk to 5 GB. The service came back on the
+  previous build (`index-c5c4de...` bundle, September 7 privacy page), so
+  `2098442` did not reach production that day.
+- Fix: before copying, the backup measures free space and deletes the oldest
+  completed snapshots only when that makes the copy fit, always keeping the
+  newest verified one. If the disk still fills during the copy, it keeps only
+  the newest snapshot and retries once; a second failure still refuses to
+  start. `render.yaml` now declares `sizeGB: 5` to match the live disk.
+- Verification: five new backup tests cover space planning, preflight
+  pruning, the disk-full retry, refusal when nothing can be pruned, and
+  production ignoring the test fixtures.
+- Committed-scope gate: this fix applied to `2098442` in an isolated worktree
+  passed `npm run check` with **4,179/4,179** tests, dependency audit, syntax (557
+  files), architecture, web export with 54 source maps, and the bundle budget
+  at **495.2 / 512.0 KiB** gzip.
+- Remaining risk: off-host backups are still not configured, so pruning under
+  disk pressure can remove the only older local recovery points. Every deploy
+  on this persistent-disk service is still unavailable while the startup
+  backup and boot run.
+
 ## 2026-09-10 founder error diagnostics
 
 - Alert emails now say where and why. Each grouped error keeps its latest detail

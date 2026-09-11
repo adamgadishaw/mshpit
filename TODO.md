@@ -263,6 +263,10 @@ remains a broad context whose changing value can rerender unrelated consumers.
     fields explicitly); bound how long an alert batch that cannot be emailed
     keeps its frozen detail; and watch alert emails for unquoted on-screen text
     that redaction cannot detect, which the privacy policy discloses.
+13. **Backup capacity:** the 2026-09-11 outage came from a full 1 GB data disk.
+    Configure private off-host backups (`BACKUP_S3_*`) so pruning under disk
+    pressure never removes the only older recovery points, and alert the owner
+    when free space on `/data` drops below two database-sized copies.
 
 ## Foundation complete for Alpha
 

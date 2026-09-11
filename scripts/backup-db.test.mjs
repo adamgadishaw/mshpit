@@ -12,6 +12,9 @@ import {
   backupSourceManifest,
   backupTableCounts,
   boundedBackupTimeout,
+  isDiskFullError,
+  requiredBackupBytes,
+  snapshotsToFreeSpace,
   verifyBackupSnapshot,
 } from "./backup-db-verification.mjs";
 import { registerPitSqliteFunctions } from "../server/sqliteFunctions.js";
@@ -300,6 +303,121 @@ test("backup retention reserves one verified replacement slot before VACUUM INTO
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("backup space planning prunes the oldest snapshots only when that makes the copy fit", () => {
+  const snapshots = [
+    { f: "pit-20260803-010203.db", size: 300 },
+    { f: "pit-20260802-010203.db", size: 300 },
+    { f: "pit-20260801-010203.db", size: 300 },
+  ];
+  assert.deepEqual(snapshotsToFreeSpace({ snapshots, freeBytes: 1_000, requiredBytes: 900 }), { fits: true, remove: [] });
+  assert.deepEqual(snapshotsToFreeSpace({ snapshots, freeBytes: 400, requiredBytes: 900 }),
+    { fits: true, remove: ["pit-20260801-010203.db", "pit-20260802-010203.db"] });
+  assert.deepEqual(snapshotsToFreeSpace({ snapshots, freeBytes: 200, requiredBytes: 900 }), { fits: false, remove: [] },
+    "the newest recovery point is never chosen, and history is kept when pruning cannot make room");
+  assert.deepEqual(snapshotsToFreeSpace({ snapshots, freeBytes: Number.NaN, requiredBytes: 900 }), { fits: true, remove: [] },
+    "unknown free space takes no preflight action");
+  assert.equal(requiredBackupBytes(1_000, 200), 1_320);
+  assert.equal(isDiskFullError(Object.assign(new Error("database or disk is full"), { errcode: 13 })), true);
+  assert.equal(isDiskFullError(Object.assign(new Error("write failed"), { code: "ENOSPC" })), true);
+  assert.equal(isDiskFullError(new Error("integrity_check failed: corrupt")), false);
+});
+
+test("backup preflight prunes the oldest snapshots when free space cannot hold the copy", () => {
+  const root = mkdtempSync(join(tmpdir(), "pit-backup-space-"));
+  const dataDirectory = join(root, "data");
+  const backupDirectory = join(root, "backups");
+  mkdirSync(dataDirectory);
+  mkdirSync(backupDirectory);
+  try {
+    createSnapshot(dataDirectory, "pit.db");
+    const paths = ["pit-20260801-010203.db", "pit-20260802-010203.db", "pit-20260803-010203.db"].map((name, index) => {
+      const path = createSnapshot(backupDirectory, name);
+      const clock = new Date(Date.UTC(2026, 7, 1 + index, 1, 2, 3));
+      utimesSync(path, clock, clock);
+      return path;
+    });
+
+    const result = spawnSync(process.execPath, [BACKUP_SCRIPT], {
+      encoding: "utf8", windowsHide: true,
+      env: { ...process.env, PIT_DATA_DIR: dataDirectory, BACKUP_DIR: backupDirectory, BACKUP_KEEP: "7", PIT_TEST_BACKUP_FREE_BYTES: "1" },
+    });
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /space\s+preflight: pruned 2 oldest snapshot\(s\)/);
+    assert.equal(existsSync(paths[0]), false);
+    assert.equal(existsSync(paths[1]), false);
+    assert.equal(existsSync(paths[2]), true, "the newest verified recovery point is never removed");
+    assert.equal(readdirSync(backupDirectory).filter((name) => name.endsWith(".db")).length, 2);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a disk-full copy keeps the newest snapshot, prunes older ones, and retries once", () => {
+  const root = mkdtempSync(join(tmpdir(), "pit-backup-disk-full-"));
+  const dataDirectory = join(root, "data");
+  const backupDirectory = join(root, "backups");
+  mkdirSync(dataDirectory);
+  mkdirSync(backupDirectory);
+  try {
+    createSnapshot(dataDirectory, "pit.db");
+    const oldest = createSnapshot(backupDirectory, "pit-20260801-010203.db");
+    const newest = createSnapshot(backupDirectory, "pit-20260802-010203.db");
+    utimesSync(oldest, new Date("2026-08-01T01:02:03Z"), new Date("2026-08-01T01:02:03Z"));
+    utimesSync(newest, new Date("2026-08-02T01:02:03Z"), new Date("2026-08-02T01:02:03Z"));
+
+    const result = spawnSync(process.execPath, [BACKUP_SCRIPT], {
+      encoding: "utf8", windowsHide: true,
+      env: { ...process.env, PIT_DATA_DIR: dataDirectory, BACKUP_DIR: backupDirectory, BACKUP_KEEP: "7", PIT_TEST_BACKUP_DISK_FULL_ONCE: "1" },
+    });
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /disk full during copy: pruned 1 older snapshot\(s\), kept the newest, retrying once/);
+    assert.equal(existsSync(oldest), false);
+    assert.equal(existsSync(newest), true, "the newest verified recovery point is never removed");
+    const files = readdirSync(backupDirectory);
+    assert.equal(files.filter((name) => name.endsWith(".db")).length, 2);
+    assert.equal(files.some((name) => name.includes(".partial-")), false);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a disk-full copy with no older snapshot to prune still refuses and leaves no partial", () => {
+  const root = mkdtempSync(join(tmpdir(), "pit-backup-disk-full-refuse-"));
+  const dataDirectory = join(root, "data");
+  const backupDirectory = join(root, "backups");
+  mkdirSync(dataDirectory);
+  try {
+    createSnapshot(dataDirectory, "pit.db");
+    const result = spawnSync(process.execPath, [BACKUP_SCRIPT], {
+      encoding: "utf8", windowsHide: true,
+      env: { ...process.env, PIT_DATA_DIR: dataDirectory, BACKUP_DIR: backupDirectory, PIT_TEST_BACKUP_DISK_FULL_ONCE: "1" },
+    });
+    assert.notEqual(result.status, 0, "a backup that cannot be written must still refuse");
+    assert.match(result.stderr, /database or disk is full/);
+    assert.deepEqual(readdirSync(backupDirectory), []);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("production ignores the backup space test fixtures", () => {
+  const root = mkdtempSync(join(tmpdir(), "pit-backup-production-fixtures-"));
+  const dataDirectory = join(root, "data");
+  const backupDirectory = join(root, "backups");
+  mkdirSync(dataDirectory);
+  mkdirSync(backupDirectory);
+  try {
+    createSnapshot(dataDirectory, "pit.db");
+    const older = createSnapshot(backupDirectory, "pit-20260801-010203.db");
+    const result = spawnSync(process.execPath, [BACKUP_SCRIPT], {
+      encoding: "utf8", windowsHide: true,
+      env: {
+        ...process.env, NODE_ENV: "production", PIT_DATA_DIR: dataDirectory, BACKUP_DIR: backupDirectory,
+        BACKUP_KEEP: "7", PIT_TEST_BACKUP_FREE_BYTES: "1", PIT_TEST_BACKUP_DISK_FULL_ONCE: "1",
+      },
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.doesNotMatch(result.stdout, /space\s+(preflight|disk full)/);
+    assert.equal(existsSync(older), true);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test("backup retention ignores date-named directories without deleting their contents", () => {

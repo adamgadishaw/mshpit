@@ -37,7 +37,7 @@ services:
     disk:
       name: pit-data
       mountPath: /data                 # PIT_DATA_DIR points here → pit.db survives deploys
-      sizeGB: 1
+      sizeGB: 5                        # raised from 1 on 2026-09-11 after backup snapshots filled the disk
     envVars:
       - key: NODE_VERSION
         value: "24"
