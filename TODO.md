@@ -267,6 +267,12 @@ remains a broad context whose changing value can rerender unrelated consumers.
     Configure private off-host backups (`BACKUP_S3_*`) so pruning under disk
     pressure never removes the only older recovery points, and alert the owner
     when free space on `/data` drops below two database-sized copies.
+14. **Credibility plan:** follow the running order in
+    `docs/mshpit-soundcheck-2026-09-11.md`. Record the production baseline from
+    `npm run audit:userbase` first, then noindex thin event, venue, and city
+    pages, apply the public event rules to the landing page, hide off-core
+    features, add a type scale, link posts to shows, add a README and archive
+    root documents, and replace source-text tests with behavior tests.
 
 ## Foundation complete for Alpha
 

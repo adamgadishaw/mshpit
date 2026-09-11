@@ -6,6 +6,23 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-09-11 credibility audit and user-base audit script
+
+- `docs/mshpit-soundcheck-2026-09-11.md` records a layer-by-layer audit of the
+  database, user base, codebase, and public site, and the running order that
+  supersedes the older improvement lists as the plan of record.
+- `npm run audit:userbase` (`scripts/audit-userbase.mjs`) opens the database
+  read-only and prints counts, shares, and sizes only. Its test plants emails,
+  names, handles, cities, IPs, and review text in a partial schema and proves
+  none appear in the output and the database file is unchanged. Production
+  numbers are pending the owner running it in the Render Shell.
+- Decisions needed from the owner: noindexing event, venue, and city pages
+  without member content (83 of 65,205 live sitemap URLs were made by members)
+  and hiding features outside the core loop.
+- The local `backups/pit-20260813-195945.db` appears to be early production data
+  with raw session IPs and user agents. It is git-ignored but should be deleted
+  or encrypted.
+
 ## 2026-09-11 production outage: full data disk
 
 - mshpit.com returned 502 from about 14:43 to 15:25 Toronto time (18:43 to

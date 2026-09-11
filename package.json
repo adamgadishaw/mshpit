@@ -60,6 +60,7 @@
     "benchmark:seed": "node scripts/seed-capacity-fixture.mjs",
     "backup": "node scripts/backup-db.mjs",
     "backup:verify": "node scripts/backup-db.mjs --verify",
+    "audit:userbase": "node scripts/audit-userbase.mjs",
     "recover:legacy-images": "node scripts/recover-legacy-images.mjs",
     "migrate:legacy-videos": "node scripts/migrate-legacy-videos.mjs",
     "build:web": "npm run split:catalog && expo export -p web --source-maps external && npm run check:web-bundle",
