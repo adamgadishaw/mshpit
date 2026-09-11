@@ -28,6 +28,7 @@ const { maybeAlert, recordError, recentErrors, resetAlertStateForTests } = await
 after(() => { db.close(); hooks.deregister(); delete globalThis.__pitAlertTestSend; rmSync(directory, { recursive: true, force: true }); });
 beforeEach(() => {
   db.exec("DELETE FROM error_events");
+  db.exec("DELETE FROM error_event_details");
   db.exec("UPDATE error_alert_delivery SET last_sent_at=0,pending_key=NULL,pending_payload=NULL WHERE singleton=1");
   delete process.env.ERROR_ALERTS_ENABLED;
   delete process.env.ERROR_ALERT_COOLDOWN_MIN;
@@ -149,4 +150,39 @@ test("a post-delivery checkpoint failure leaves a safely retryable frozen batch"
   await maybeAlert({ now: minute(37) });
   assert.deepEqual(packets[0], packets[1]);
   assert.equal((await maybeAlert({ now: minute(68) })).reason, "nothing-serious");
+});
+
+test("the alert says where and why each problem happened, and which release produced it", async () => {
+  const previousRelease = process.env.RENDER_GIT_COMMIT;
+  process.env.RENDER_GIT_COMMIT = "4603cb3e6084abcdef0123456789abcdef012345";
+  try {
+    recordError({
+      level: "fatal", code: "PIT-APP-002", status: 0, method: "POST", route: "/client/landing",
+      cause: "RuntimeError.Web.Type", requestId: firstId, at: minute(5),
+      detail: {
+        location: "src/screens/LandingScreen.jsx:88:12 in LandingHero",
+        reason: "TypeError: Cannot read properties of undefined (reading 'photos') for jane@example.com",
+      },
+    });
+    function coalescedProviderJob() {
+      return new DOMException("All provider callers disconnected.", "AbortError");
+    }
+    recordError({
+      level: "fatal", code: "PROCESS", status: 0, method: "", route: "unhandledRejection",
+      cause: "AbortError/20", error: coalescedProviderJob(), at: minute(6),
+    });
+    assert.equal((await maybeAlert({ now: minute(7) })).sent, true);
+    const body = packets[0].vars.detail;
+    assert.match(body, /Where: src\/screens\/LandingScreen\.jsx:88:12 in LandingHero/);
+    assert.match(body, /Why: TypeError: Cannot read properties of undefined \(reading 'photos'\) for <email>/);
+    assert.match(body, /Where: server\/errorLogDelivery\.test\.mjs:\d+:\d+ in coalescedProviderJob/);
+    assert.match(body, /Why: AbortError \[20\]: All provider callers disconnected\./);
+    assert.match(body, /Release: 4603cb3e6084/);
+    assert.equal(body.includes("jane@example.com"), false);
+    // With detail present, each problem becomes its own paragraph.
+    assert.equal(body.split("\n\n").length, 2);
+  } finally {
+    if (previousRelease === undefined) delete process.env.RENDER_GIT_COMMIT;
+    else process.env.RENDER_GIT_COMMIT = previousRelease;
+  }
 });

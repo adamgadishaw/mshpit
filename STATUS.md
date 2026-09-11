@@ -6,6 +6,75 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-09-10 founder error diagnostics
+
+- Alert emails now say where and why. Each grouped error keeps its latest detail
+  in a founder-only `error_event_details` table (`server/errorDetails.js`): the
+  first application stack frames made repo-relative, the redacted message and
+  cause chain, and the release commit. The `error_events` grouping identity is
+  unchanged, so existing history does not split.
+- Every `recordError` call site in `server/index.js`, including process-level
+  fatals, now passes the error object. A `DOMException` abort's stack points at
+  the code that constructed it, so an unhandled abort names its source instead
+  of recording only `AbortError/20`.
+- Browser crashes send a message redacted on the device and again on the server
+  (`src/domain/errorRedaction.mjs`). URL query strings and userinfo, emails,
+  bearer tokens, `key=value` secrets, JWTs, long hex and mixed tokens, IP
+  addresses, and quoted free text are removed; property names, build asset hashes
+  and request ids are kept.
+- The web build emits external source maps. `server/staticPolicy.js` refuses
+  every `.map` request with 404, and
+  `server/features/clientErrors/clientSourceLocation.js` reads them server-side
+  with Node's built-in `SourceMap` to turn a minified location into
+  `src/...:line:column in name`. A lookup is accepted only when the generated line
+  matches exactly, because `findEntry` otherwise returns an earlier line's
+  mapping. Parsing is capped at 20 maps per 10 minutes per process.
+- Crash locations now resolve for WebKit `global code@` and `module code@`
+  frames (every iPhone browser) and for `public/mshpit-web-boot-v1.js`. Window
+  errors with no error object (cross-origin scripts, extensions, `ResizeObserver`
+  notices) are no longer filed as fatal crashes or emailed.
+- Alert detail is frozen into the persisted batch, so a retried send stays
+  byte-identical under its idempotency key. It is trimmed from the oldest rows to
+  keep the batch under 22,000 characters, below the 24,000-character
+  `pending_payload` CHECK that would otherwise stop alerting.
+- Verification: complete `npm run check` on the working tree passed with
+  **4,237/4,237** tests, dependency audit, syntax (563 files), architecture, web
+  export with 55 source maps, and the bundle budget at **498.4 / 512.0 KiB**
+  gzip. An in-process check against the real build resolved
+  `index-3775ab4b...js:549:495` to `src/screens/FeedScreen.jsx:17:1` through the
+  real crash route, redactor, resolver and error log, and refused its `.map`.
+- Committed-scope gate: this change alone, including the privacy policy update,
+  applied to `4603cb3` in an isolated worktree without the unrelated uncommitted
+  work in the checkout, passed `npm run check` with **4,174/4,174** tests,
+  dependency audit, syntax (557 files), architecture, web export with 54
+  source maps, and the bundle budget at **495.2 / 512.0 KiB** gzip.
+- Privacy policy: the crash section (`CRASH_MONITORING_DISCLOSURE` in
+  `src/domain/privacyDisclosures.mjs`) said crash reports contain no error
+  message, which this change would have made false. The change was held until
+  the owner approved new wording on 2026-09-11: reports include a shortened,
+  redacted message and, on the web, a code position; server problem records keep
+  the code location, message and release; staff get alert emails through the
+  email delivery provider; alert emails stay in the staff mailbox until deleted;
+  and a message can occasionally still contain on-screen text. The privacy and
+  Terms dates move to September 11, 2026 and `LEGAL_ACCEPTANCE_VERSION` to
+  `2026-09-11`, because tests keep the pair aligned; the Terms text is unchanged.
+  Existing members are not asked to accept again. A signup page opened before
+  the deploy must be refreshed, because `/api/signup` rejects an older version.
+  `ERROR_CATALOG.md` now documents this as the one persisted diagnostic exception.
+- Deployment: no environment changes. Render's `check:deploy` runs `build:web`,
+  so production emits and keeps maps on disk. Release identity comes from
+  `RENDER_GIT_COMMIT`.
+- Not yet in the admin console: `GET /api/admin/errors` projects fields
+  explicitly in `server/api.js`, which had unrelated uncommitted work at the
+  time. Detail currently reaches the alert email only.
+- Remaining risk: unquoted prose that application code writes into an error
+  message cannot be detected and will appear in the founder email. Source maps
+  add build output on disk and an occasional bounded synchronous parse during
+  crash ingestion.
+- An alert batch that cannot be emailed keeps its frozen detail in
+  `error_alert_delivery` until a send succeeds, so a long email outage keeps that
+  detail beyond the 30-day problem-record window.
+
 ## 2026-09-02 native runtime remediation
 
 - The project is aligned to Expo SDK 57.0.19, React Native 0.86.3,

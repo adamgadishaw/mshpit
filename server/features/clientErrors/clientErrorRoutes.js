@@ -1,5 +1,6 @@
 import { normalizeClientCrashReport } from "../../../src/domain/clientCrashReport.mjs";
 import { clientCrashCause, resolveClientCrashLocation } from "./clientCrashLocation.js";
+import { resolveClientSourceLocation } from "./clientSourceLocation.js";
 
 const MINUTE_MS = 60 * 1000;
 const DAY_MS = 24 * 60 * MINUTE_MS;
@@ -24,12 +25,26 @@ const CAUSES = Object.freeze({
   }),
 });
 
+// Where and why for the owner's alert. The cause stays a finite grouping
+// identity; this is the readable version: the original source location resolved
+// through the private source map, and the message normalization already redacted.
+function clientCrashDetail(report, resolveSourceLocation) {
+  let location = null;
+  if (report.platform === "web" && report.location && typeof resolveSourceLocation === "function") {
+    try { location = resolveSourceLocation(report.location); }
+    catch { location = null; }
+  }
+  const reason = report.message ? `${report.errorType || "Error"}: ${report.message}` : null;
+  return location || reason ? { detail: { location, reason } } : {};
+}
+
 export function clientErrorRoutes({
   ApiError,
   onRecorded = () => {},
   rateLimit,
   recordError,
   resolveCrashLocation = resolveClientCrashLocation,
+  resolveSourceLocation = resolveClientSourceLocation,
 }) {
   if (typeof ApiError !== "function" || typeof rateLimit !== "function" || typeof recordError !== "function") {
     throw new TypeError("Client error routes require complete boundary dependencies");
@@ -54,6 +69,7 @@ export function clientErrorRoutes({
         route: "/client/" + report.surface,
         cause: clientCrashCause(CAUSES[report.kind][report.platform], report, resolveCrashLocation),
         requestId: ctx.requestId,
+        ...clientCrashDetail(report, resolveSourceLocation),
       });
       if (fingerprint) {
         try { onRecorded(); } catch {} // architecture: allow-empty-catch -- alert scheduling is best effort and must never turn crash reporting into another crash

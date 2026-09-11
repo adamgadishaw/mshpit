@@ -27,7 +27,12 @@ export default function RuntimeErrorMonitor() {
       // crashes. They retain their normal browser behaviour and stay out of
       // this high-severity ledger.
       if (event?.target && event.target !== window) return;
-      safelyCapture(event?.error, {
+      // No error object means the browser withheld everything: a cross-origin
+      // script, an extension, or a benign engine notice such as Chrome's
+      // "ResizeObserver loop" warning. With no message, stack or location there
+      // is nothing to act on, so it is not filed as a fatal crash or emailed.
+      if (event?.error == null) return;
+      safelyCapture(event.error, {
         code: "PIT-APP-002",
         context: "Running the current screen",
         kind: "runtime",

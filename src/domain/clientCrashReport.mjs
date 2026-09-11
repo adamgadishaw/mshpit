@@ -1,3 +1,5 @@
+import { redactDiagnosticText } from "./errorRedaction.mjs";
+
 const CRASH_CODES = Object.freeze({
   render: "PIT-APP-001",
   runtime: "PIT-APP-002",
@@ -12,6 +14,9 @@ const ERROR_DIAGNOSES = Object.freeze({
 });
 const REACT_DIAGNOSES = new Set(["react130", "react185", "react301", "react310", "react321"]);
 export const CLIENT_WEB_ASSET_RE = /^[A-Za-z_][A-Za-z0-9_-]{0,63}-[a-f0-9]{32}\.js$/;
+// The pre-bundle boot script is served unminified from public/, outside the bundle directory.
+export const CLIENT_BOOT_ASSET_RE = /^mshpit-web-boot-v\d{1,3}\.js$/;
+const MAX_MESSAGE = 240;
 const MAX_COORDINATE = 9_999_999;
 const REQUEST_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SURFACES = new Set([
@@ -77,12 +82,16 @@ export function normalizeClientCrashReport(value) {
   }
   const location = platform === "web" ? normalizeClientCrashLocation(value.location) : null;
   if (location) report.location = location;
+  // The server redacts again: a client can send anything.
+  const message = typeof value.message === "string" ? redactDiagnosticText(value.message, { max: MAX_MESSAGE }) : "";
+  if (message) report.message = message;
   return Object.freeze(report);
 }
 
 export function normalizeClientCrashLocation(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  if (typeof value.asset !== "string" || !CLIENT_WEB_ASSET_RE.test(value.asset)) return null;
+  if (typeof value.asset !== "string"
+    || !(CLIENT_WEB_ASSET_RE.test(value.asset) || CLIENT_BOOT_ASSET_RE.test(value.asset))) return null;
   if (![value.line, value.column].every((coordinate) => Number.isInteger(coordinate)
     && coordinate > 0 && coordinate <= MAX_COORDINATE)) return null;
   return Object.freeze({ asset: value.asset, line: value.line, column: value.column });
@@ -97,7 +106,8 @@ function errorField(error, field) {
   catch { return ""; }
 }
 
-// Inspect locally, then discard the message, raw stack, function names and URLs.
+// Inspect locally. The raw stack, function names and URLs never leave the
+// device; the message leaves only after redaction (errorRedaction.mjs).
 // React markers are a finite catalogue, never arbitrary numbers from a message.
 export function clientCrashDiagnostic(error, { origin } = {}) {
   if (error == null) return {};
@@ -105,19 +115,29 @@ export function clientCrashDiagnostic(error, { origin } = {}) {
   const errorType = Object.hasOwn(ERROR_DIAGNOSES, name) ? name : "Unknown";
   const marker = /^Minified React error #(130|185|301|310|321);/.exec(errorField(error, "message").slice(0, 80));
   const diagnostic = { errorType, diagnosis: marker ? `react${marker[1]}` : ERROR_DIAGNOSES[errorType] };
+  const message = redactDiagnosticText(errorField(error, "message"), { max: MAX_MESSAGE });
+  if (message) diagnostic.message = message;
   if (typeof origin !== "string" || !/^https?:\/\//.test(origin)) return diagnostic;
   const frames = errorField(error, "stack").slice(0, 16_384).split("\n").slice(0, 24);
   for (const frame of frames) {
-    if (!/^\s*at\s+|^[^@\s]*@https?:\/\//.test(frame)) continue;
+    // WebKit names top-level frames "global code" and "module code"; every browser on
+    // iPhone is WebKit, so a crash during module evaluation has only those frames.
+    // The names are matched literally: allowing any spaces would let message text
+    // that contains a URL be read as a frame.
+    if (!/^\s*at\s+|^(?:[^@\s]*|global code|module code|eval code)@https?:\/\//.test(frame)) continue;
     const match = /(?:\s|\(|@)(https?:\/\/[^\s)]+):(\d{1,7}):(\d{1,7})\)?\s*$/.exec(frame);
     if (!match) continue;
     try {
       const url = new URL(match[1]);
       if (url.origin !== origin || url.username || url.password || url.search || url.hash) continue;
       const prefix = "/_expo/static/js/web/";
-      if (!url.pathname.startsWith(prefix)) continue;
+      const rootAsset = url.pathname.slice(1);
+      const asset = url.pathname.startsWith(prefix)
+        ? url.pathname.slice(prefix.length)
+        : CLIENT_BOOT_ASSET_RE.test(rootAsset) ? rootAsset : null;
+      if (!asset) continue;
       const location = normalizeClientCrashLocation({
-        asset: url.pathname.slice(prefix.length), line: Number(match[2]), column: Number(match[3]),
+        asset, line: Number(match[2]), column: Number(match[3]),
       });
       if (location) return { ...diagnostic, location };
     } catch { /* Malformed or non-first-party frames are not diagnostic locations. */ }

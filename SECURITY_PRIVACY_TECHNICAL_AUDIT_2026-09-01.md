@@ -60,6 +60,14 @@ This audit used source review, repository/history inspection, dependency and Exp
 - Provider artwork and outbound ticket/source URLs pass allow-list and canonical HTTPS policies that reject credentials, unsafe schemes, non-default ports, IP/special-use hosts, and provider lookalikes.
 - Native configuration does not request location access. Photo-library permission is explicit; camera and microphone permissions are disabled in the current app configuration.
 
+### Founder error diagnostics (2026-09-10)
+
+- Public failures are unchanged: clients still receive stable `PIT-*` codes and request IDs, and Render's log line still prints only the error class.
+- A founder-only channel now carries diagnostic detail to the owner's alert email. `error_event_details` stores, per grouped error, repo-relative application stack frames (file, line, column and function name), the redacted message and cause chain, and the release commit. Raw stack text, request bodies, query values, cookies and account identifiers are not stored.
+- Messages are redacted on the device and again on the server by one shared module. Signed URL query strings and userinfo, email addresses, bearer tokens, `key=value` secrets, JWTs, long hex and mixed-alphabet tokens, IP addresses, and quoted free text, including text echoed by `JSON.parse`, are replaced. Unquoted prose that application code writes into a message cannot be detected and will reach the founder email.
+- Web source maps are emitted for diagnosis but every `.map` path, including encoded and trailing-slash variants, is refused over HTTP with 404; the server reads them from disk only. Map parsing is bounded to 20 per 10 minutes per process.
+- The privacy policy's crash section said crash reports contained no error message. The change was held until the owner approved replacement wording on 2026-09-11, which discloses the redacted message, the web code position, server code locations and release, alert email delivery through the email provider, that alert emails stay in the staff mailbox until deleted, and that a message can occasionally still contain on-screen text. Policy dates and `LEGAL_ACCEPTANCE_VERSION` moved to 2026-09-11; existing acceptance records are unaffected.
+
 ### Supply chain and repository
 
 - Production dependency audit: zero known high-severity advisories.
@@ -126,6 +134,10 @@ Some authenticated GET paths can enqueue artist refresh demand, renew media leas
 - Production web export and bundle-budget gate: passed at 466.9 KiB gzip of the 512 KiB initial-JavaScript budget.
 - Staged diff hygiene and private credential/data scan: passed.
 - Expo Doctor: 21/22 checks passed. The sole failure is the documented upstream SDK 56 Hermes memory regression; it remains the native release gate described above.
+
+- 2026-09-10 founder error diagnostics: complete `npm run check` passed with 4,237/4,237 tests, dependency audit, syntax across 563 Node files, architecture, and the web export with source maps; initial JavaScript 498.4 of 512.0 KiB gzip.
+- 2026-09-10 real-build source-map check: a minified position in the shipped index bundle resolved to its original `src/screens` file and line through the real crash route, and that bundle's `.map` was refused.
+- 2026-09-11 committed-scope gate: the change alone, including the privacy policy update, on `4603cb3` in an isolated worktree without unrelated uncommitted work, passed `npm run check` with 4,174/4,174 tests, dependency audit, syntax across 557 Node files, architecture, and the web export with 54 source maps; initial JavaScript 495.2 of 512.0 KiB gzip.
 
 ## Release and ongoing review rule
 

@@ -85,3 +85,14 @@ status, stable error codes, source, timestamp, and request ID. Never record:
 The diagnostics service strips query strings and replaces resource identifiers
 with `:id`. Raw errors can still be written to development console output, but
 must not be persisted or shown to other users.
+
+**Founder error detail (2026-09-11).** The one persisted exception is
+`error_event_details` (`server/errorDetails.js`), which reaches only the owner's
+alert email. Per grouped error it keeps up to three locations in Pit's own
+source code, the error name, code and message after
+`src/domain/errorRedaction.mjs`, and the release commit. Browser crash reports
+send the same redacted message, and the server resolves web positions through
+source maps it never serves publicly. The privacy policy's crash section
+(`CRASH_MONITORING_DISCLOSURE` in `src/domain/privacyDisclosures.mjs`) describes
+this, so change the two together. Never add raw stacks, request bodies, query
+values, or account identifiers to it, and never show it to other users.

@@ -76,7 +76,7 @@ import { deliver, publicOrigin as emailPublicOrigin, remainingToday } from "./em
 import { getEmailDeliveryReceipt } from "./mailer.js";
 import { pruneExpiredFeedImpressionHistory } from "./feedImpressions.js";
 import { startArtistDeathWatchScheduler } from "./features/artistDeathWatch/artistDeathWatchScheduler.js";
-import { missingStaticAssetResponse } from "./staticPolicy.js";
+import { missingStaticAssetResponse, privateStaticAssetResponse } from "./staticPolicy.js";
 import { publicPageFor, renderPublicPage } from "./publicPages.js";
 import { SECURITY_TXT_PATH, securityTxtResponse } from "./securityTxt.js";
 import { staticAssetCacheControl } from "./staticAssetCache.js";
@@ -344,6 +344,13 @@ function serveStatic(req, res, pathname) {
     return true;
   }
   if (pathname === "/") return false;
+  // Source maps are private diagnostics (clientSourceLocation.js). Every bundle
+  // names its map, so a map must be refused here, not merely left unlinked.
+  const privateAsset = privateStaticAssetResponse(pathname);
+  if (privateAsset) {
+    send(res, privateAsset.status, privateAsset.body, privateAsset.headers);
+    return true;
+  }
   // path-traversal proof: normalize then require the DIST prefix
   let file = normalize(join(DIST, pathname === "/" ? "index.html" : pathname));
   const distRoot = normalize(DIST) + sep;
@@ -708,14 +715,14 @@ async function handleRequest(req, res) {
         });
         if (observable) {
           console.error(`[pit] ${e.status} ${requestId} on ${failure.method} ${failure.route} (${Date.now() - started}ms): code=${e.code} cause=${failure.cause}`);
-          recordError({ level: "error", code: e.code, status: e.status, method: failure.method, route: routePattern, cause: failure.cause, requestId });
+          recordError({ level: "error", code: e.code, status: e.status, method: failure.method, route: routePattern, cause: failure.cause, requestId, error: e });
           scheduleAlert();
         }
       }
       return sendApiError(res, e, requestId, cors);
     }
     console.error(`[pit] 500 ${requestId} on ${failure.method} ${failure.route} (${Date.now() - started}ms): cause=${failure.cause}`);
-    recordError({ level: "error", code: "UNHANDLED", status: 500, method: failure.method, route: routePattern, cause: failure.cause, requestId });
+    recordError({ level: "error", code: "UNHANDLED", status: 500, method: failure.method, route: routePattern, cause: failure.cause, requestId, error: e });
     scheduleAlert();
     return sendApiError(res, e, requestId, cors);
   }
@@ -743,7 +750,7 @@ process.on("uncaughtExceptionMonitor", (error, origin) => {
   // Recorded synchronously because the process is about to exit. No alert is
   // scheduled here: a timer would never fire, and Render restarting the service
   // is what surfaces this. The next request after the restart sends the digest.
-  recordError({ level: "fatal", code: "PROCESS", status: 0, method: "", route: failure.route, cause: failure.cause });
+  recordError({ level: "fatal", code: "PROCESS", status: 0, method: "", route: failure.route, cause: failure.cause, error });
 });
 
 // Hourly maintenance owns its failure at the timer boundary. A transient
@@ -794,6 +801,7 @@ function reportBackgroundStartupFailure(routePattern, error) {
     method: "JOB",
     route: failure.route,
     cause: failure.cause,
+    error,
   });
   scheduleAlert();
 }

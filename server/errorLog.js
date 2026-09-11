@@ -10,9 +10,11 @@
 //
 //   1. ONE ROW PER PROBLEM, not per occurrence. A 500 in a loop is one row with
 //      a count. Per-occurrence rows would fill a 1GB disk and bury the signal.
-//   2. NOTHING USER-AUTHORED IS STORED. Route patterns, stable codes, sanitized
-//      cause names and a server-generated request UUID only — the same safe
-//      diagnostic shape the console line prints.
+//   2. THE GROUPING ROW HOLDS NO FREE TEXT. Route patterns, stable codes,
+//      sanitized cause names and a server-generated request UUID only: the same
+//      safe shape the console line prints. Where and why (the stack location and
+//      the redacted message) live in a separate founder-only table,
+//      errorDetails.js, so they inform the owner's alert without splitting rows.
 //   3. LOGGING MUST NEVER BREAK A REQUEST, and alerting must never storm. Every
 //      entry point swallows its own failure, and alerts are a rate-limited
 //      digest rather than one mail per error.
@@ -21,6 +23,14 @@ import { db, errorStmts } from "./db.js";
 import { alertCooldownMs, createErrorAlertDelivery } from "./errorAlertDelivery.js";
 import { cleanEmail, isEmail } from "../src/domain/validation.mjs";
 import { formatErrorOccurrenceTime } from "../src/domain/errorDiagnostics.mjs";
+import {
+  ensureErrorDetailSchema,
+  errorDetailFromError,
+  errorDetailsByFingerprint,
+  formatErrorDetailLines,
+  pruneErrorDetails,
+  recordErrorDetail,
+} from "./errorDetails.js";
 
 const RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const MAX_ROWS = 2000;
@@ -30,7 +40,15 @@ const hourStart = (value) => Math.floor(Number(value) / HOUR_MS) * HOUR_MS;
 // A digest, not a notification per error. During an outage the difference is
 // one email versus thousands, and thousands means the alert gets muted and the
 // next real incident is missed.
-const alertDelivery = createErrorAlertDelivery(db);
+// Founder-only where/why detail lives beside the grouped rows (errorDetails.js).
+// It is created here rather than in db.js so the grouping schema is untouched,
+// and a failure to create it loses only detail, never grouping or alerting.
+let detailsAvailable = true;
+try { ensureErrorDetailSchema(db); }
+catch { detailsAvailable = false; }
+const alertDelivery = createErrorAlertDelivery(db, {
+  detailsFor: (fingerprints) => (detailsAvailable ? errorDetailsByFingerprint(db, fingerprints) : new Map()),
+});
 export { alertCooldownMs };
 
 // Re-entrancy guard. If sending an alert fails and that failure were recorded as
@@ -83,11 +101,22 @@ export function fingerprintOf({ level, code, status, method, route, cause }) {
     .digest("hex").slice(0, 24);
 }
 
+// Where and why, kept apart from the grouping identity. The occurrence is
+// already recorded when this runs, so a detail failure must never cost the
+// fingerprint or throw out of a logging call.
+function recordDetail(fingerprint, error, detail, at) {
+  if (!detailsAvailable) return;
+  try {
+    const described = detail && typeof detail === "object" ? detail : errorDetailFromError(error);
+    recordErrorDetail(db, { fingerprint, location: described.location, reason: described.reason, at });
+  } catch { /* architecture: allow-empty-catch -- detail is diagnostic only and must not affect the recorded occurrence */ }
+}
+
 /**
  * Record one occurrence. Safe to call from a catch block: it never throws, so a
  * logging failure cannot turn a handled 500 into an unhandled one.
  */
-export function recordError({ level = "error", code = "", status = 0, method = "", route = "", cause = "", requestId = "", at = Date.now() } = {}) {
+export function recordError({ level = "error", code = "", status = 0, method = "", route = "", cause = "", requestId = "", error, detail, at = Date.now() } = {}) {
   try {
     const entry = {
       level: level === "fatal" ? "fatal" : "error",
@@ -103,6 +132,7 @@ export function recordError({ level = "error", code = "", status = 0, method = "
     const recordedAt = Number.isFinite(Number(at)) ? Number(at) : Date.now();
     errorStmts.record.run({ ...entry, fingerprint, at: recordedAt });
     errorStmts.recordBucket.run(fingerprint, hourStart(recordedAt));
+    recordDetail(fingerprint, error, detail, recordedAt);
     return fingerprint;
   } catch {
     return null;
@@ -120,7 +150,11 @@ export function pruneErrors(now = Date.now()) {
       const cutoff = errorStmts.oldest.all(rows - MAX_ROWS).pop();
       if (cutoff) errorStmts.pruneBelow.run(cutoff.last_seen);
     }
-  } catch {}
+  } catch { /* architecture: allow-empty-catch -- retention runs on an hourly timer; a failed prune is retried next hour and must not crash the scheduler */ }
+  if (detailsAvailable) {
+    try { pruneErrorDetails(db); }
+    catch { /* architecture: allow-empty-catch -- orphaned detail rows are harmless and are retried on the next prune */ }
+  }
 }
 
 export function recentErrors(limit = 50) {
@@ -172,15 +206,21 @@ export async function maybeAlert({ now = Date.now(), force = false } = {}) {
       // unchanged so a deployment cannot alter an uncertain send's payload.
       const occurredAt = formatErrorOccurrenceTime(r.last_seen);
       const occurrence = occurredAt ? `  Last occurred: ${occurredAt}` : "";
-      return `${r.count}x  ${r.level === "fatal" ? "FATAL" : r.status}  ${where}  ${r.code || "-"}${r.cause ? `  (${r.cause})` : ""}${correlation}${occurrence}`;
-    }).join("\n");
+      const summary = `${r.count}x  ${r.level === "fatal" ? "FATAL" : r.status}  ${where}  ${r.code || "-"}${r.cause ? `  (${r.cause})` : ""}${correlation}${occurrence}`;
+      // Where and why were frozen into the batch with the row, so a retried send
+      // renders byte-identical content under the same provider idempotency key.
+      const detailLines = formatErrorDetailLines(r.detail);
+      return detailLines ? `${summary}\n${detailLines}` : summary;
+    });
+    // A batch without any detail keeps the original one-line-per-row digest exactly.
+    const detailText = lines.some((line) => line.includes("\n")) ? lines.join("\n\n") : lines.join("\n");
 
     const result = await sendTemplate("error_alert", {
       to: recipient,
       vars: {
         name: "there",
         summary: `${batch.initialCatchUp ? "Initial catch-up: " : ""}${total} error${total === 1 ? "" : "s"} across ${serious.length} kind${serious.length === 1 ? "" : "s"}`,
-        detail: lines,
+        detail: detailText,
       },
       // A durable frozen batch keeps this stable even if the process restarts
       // or more occurrences arrive before an uncertain delivery is retried.

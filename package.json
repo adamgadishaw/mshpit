@@ -62,7 +62,7 @@
     "backup:verify": "node scripts/backup-db.mjs --verify",
     "recover:legacy-images": "node scripts/recover-legacy-images.mjs",
     "migrate:legacy-videos": "node scripts/migrate-legacy-videos.mjs",
-    "build:web": "npm run split:catalog && expo export -p web && npm run check:web-bundle",
+    "build:web": "npm run split:catalog && expo export -p web --source-maps external && npm run check:web-bundle",
     "test": "node scripts/run-tests.mjs",
     "check:dependencies": "npm audit --omit=dev --audit-level=high",
     "check:syntax": "node scripts/check-syntax.mjs",

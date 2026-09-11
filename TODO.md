@@ -258,6 +258,11 @@ remains a broad context whose changing value can rerender unrelated consumers.
     service (the default hostname returned `no-server` on 2026-08-13); configure
     separate private `BACKUP_S3_*` credentials, observe a scheduled production
     snapshot/upload, and rehearse restore from that current recovery point.
+12. **Error diagnostics:** show the founder-only where and why detail in the
+    admin error console (`GET /api/admin/errors` in `server/api.js` projects
+    fields explicitly); bound how long an alert batch that cannot be emailed
+    keeps its frozen detail; and watch alert emails for unquoted on-screen text
+    that redaction cannot detect, which the privacy policy discloses.
 
 ## Foundation complete for Alpha
 

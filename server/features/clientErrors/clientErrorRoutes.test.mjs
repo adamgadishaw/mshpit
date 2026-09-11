@@ -22,6 +22,8 @@ function fixture(options = {}) {
       return "fingerprint";
     },
     onRecorded: () => { alerts += 1; },
+    // Deterministic by default: no test reads the real dist directory.
+    resolveSourceLocation: () => null,
     ...options,
   });
   const headers = {};
@@ -39,7 +41,7 @@ function fixture(options = {}) {
   };
 }
 
-test("client error ingestion stores only a finite operational fingerprint", () => {
+test("client error ingestion stores a finite fingerprint plus a readable reason", () => {
   const f = fixture();
   assert.deepEqual(f.handler(f.ctx), { ok: true });
   assert.equal(f.limits.length, 2);
@@ -53,8 +55,8 @@ test("client error ingestion stores only a finite operational fingerprint", () =
     route: "/client/artist",
     cause: "RenderError.Ios",
     requestId: f.ctx.requestId,
+    detail: { location: null, reason: "Error: private" },
   }]);
-  assert.equal(JSON.stringify(f.recorded).includes("private"), false);
 });
 
 test("client error ingestion rejects unknown crash kinds", () => {
@@ -75,15 +77,26 @@ test("unhandled promises remain serious without being mislabeled fatal", () => {
 });
 
 test("diagnostic reports preserve finite classifications and only server-approved locations", () => {
-  const f = fixture({ resolveCrashLocation: () => "b123.1.2" });
+  const f = fixture({
+    resolveCrashLocation: () => "b123.1.2",
+    resolveSourceLocation: (location) => `src/screens/Landing.jsx:${location.line}:${location.column} in renderHero`,
+  });
   f.handler({ ...f.ctx, body: {
     kind: "render", platform: "web", surface: "landing", errorType: "ReferenceError", diagnosis: "reference",
     location: { asset: "index-0123456789abcdef0123456789abcdef.js", line: 1, column: 2 },
-    message: "private", stack: "private", requestId: "private", accountId: "private",
+    message: "privateName is not defined for jane@example.com",
+    stack: "private stack", requestId: "private request", accountId: "private account",
   } });
   assert.equal(f.recorded[0].cause, "RenderError.Web.Ref/b123.1.2");
   assert.equal(f.recorded[0].requestId, f.ctx.requestId);
-  assert.equal(JSON.stringify(f.recorded).includes("private"), false);
+  assert.deepEqual(f.recorded[0].detail, {
+    location: "src/screens/Landing.jsx:1:2 in renderHero",
+    reason: "ReferenceError: privateName is not defined for <email>",
+  });
+  // Stack text, client-supplied request ids and account context never reach the record.
+  for (const leaked of ["private stack", "private request", "private account", "jane@example.com"]) {
+    assert.equal(JSON.stringify(f.recorded).includes(leaked), false, `${leaked} must not be recorded`);
+  }
   assert.deepEqual(f.handler(f.ctx), { ok: true });
 });
 
@@ -96,4 +109,18 @@ test("spoofed classes, diagnoses and absent build assets do not enter the operat
   assert.equal(f.recorded[0].cause, "RenderError.Web");
   f.handler({ ...f.ctx, body: { kind: "render", platform: "web", errorType: "Error", diagnosis: "react310" } });
   assert.equal(f.recorded[1].cause, "RenderError.Web.Error.react310");
+});
+
+test("a failing source lookup never blocks ingestion, and native locations are not resolved", () => {
+  const f = fixture({ resolveSourceLocation: () => { throw new Error("map exploded"); } });
+  f.handler({ ...f.ctx, body: {
+    kind: "runtime", platform: "web", surface: "feed", errorType: "TypeError",
+    location: { asset: "index-0123456789abcdef0123456789abcdef.js", line: 3, column: 4 },
+  } });
+  assert.equal(f.recorded.length, 1);
+  assert.equal(f.recorded[0].detail, undefined);
+
+  const native = fixture({ resolveSourceLocation: () => { throw new Error("must not resolve native locations"); } });
+  native.handler({ ...native.ctx, body: { kind: "runtime", platform: "ios", surface: "feed", errorType: "TypeError" } });
+  assert.equal(native.recorded[0].detail, undefined);
 });

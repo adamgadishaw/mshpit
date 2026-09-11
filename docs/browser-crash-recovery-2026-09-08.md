@@ -1,5 +1,12 @@
 # Browser crash diagnostics and recovery — 2026-09-08
 
+> **Partly superseded on 2026-09-11.** Crash reports now also send an error
+> message redacted by `src/domain/errorRedaction.mjs`, and the server resolves
+> web positions through source maps into the founder-only
+> `error_event_details` table. Statements below that no message is sent describe
+> the 2026-09-08 design. `STATUS.md` and the privacy policy's crash section
+> describe current behavior.
+
 ## What the original alert means
 
 The report `FATAL POST /client/landing PIT-APP-001 (RenderError.Web)` with request

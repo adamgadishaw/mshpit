@@ -92,7 +92,7 @@ test("trust-page metadata is canonical, brand-consistent, and does not invent po
 
   const privacyPage = structuredGraph(renderPublicPage("/privacy"))
     .find((node) => node["@id"].endsWith("#page"));
-  assert.equal(privacyPage.dateModified, "2026-09-07", "an exact published policy day is safe to expose");
+  assert.equal(privacyPage.dateModified, "2026-09-11", "an exact published policy day is safe to expose");
 
   for (const path of ["/community-guidelines", "/ratings-methodology"]) {
     const html = renderPublicPage(path);
@@ -104,13 +104,13 @@ test("trust-page metadata is canonical, brand-consistent, and does not invent po
   }
   const terms = renderPublicPage("/terms");
   const termsPage = structuredGraph(terms).find((node) => node["@id"].endsWith("#page"));
-  assert.match(terms, /Last updated September 7, 2026/);
-  assert.equal(termsPage.dateModified, "2026-09-07");
+  assert.match(terms, /Last updated September 11, 2026/);
+  assert.equal(termsPage.dateModified, "2026-09-11");
 });
 
 test("privacy and terms mirror the dated in-app policies and expose support", () => {
   const privacy = renderPublicPage("/privacy");
-  assert.match(privacy, /Last updated September 7, 2026/);
+  assert.match(privacy, /Last updated September 11, 2026/);
   assert.match(privacy, /rolling 30-day period/);
   assert.match(privacy, /rolling 180-day period/);
   assert.match(privacy, /Unused server-side staged photo and video uploads are normally deleted after about 48 hours/);
@@ -123,7 +123,9 @@ test("privacy and terms mirror the dated in-app policies and expose support", ()
   assert.match(privacy, /daily aggregate counters/);
   assert.match(privacy, /cannot identify a unique visitor/);
   assert.match(privacy, /Crash and reliability monitoring/);
-  assert.match(privacy, /does not contain the error message or stack trace/);
+  assert.match(privacy, /most text in quotation marks/);
+  assert.match(privacy, /can occasionally still contain a fragment of what was on screen/);
+  assert.match(privacy, /Alert emails stay in the staff mailbox until deleted there/);
   assert.match(privacy, /separate from optional product analytics/);
   assert.match(privacy, /suggestion box accepts an anonymous category/);
   assert.match(privacy, /Aggregate guest-search counters are retained for up to 90 days/);
@@ -149,7 +151,7 @@ test("privacy and terms mirror the dated in-app policies and expose support", ()
   assert.match(privacy, new RegExp(`mailto:${SUPPORT_EMAIL.replace(".", "\\.")}`));
 
   const terms = renderPublicPage("/terms");
-  assert.match(terms, /Last updated September 7, 2026/);
+  assert.match(terms, /Last updated September 11, 2026/);
   assert.match(terms, /Your content and licence/);
   assert.match(terms, /120 original photo or video uploads/);
   assert.match(terms, /6 GiB/);

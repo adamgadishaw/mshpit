@@ -283,10 +283,6 @@
       "count": 2,
       "fingerprint": "8854f47205573bead399"
     },
-    "server/errorLog.js": {
-      "count": 1,
-      "fingerprint": "e8485f04df62b46f322a"
-    },
     "server/mediaDeletion.js": {
       "count": 2,
       "fingerprint": "37e1e014835b82d48555"

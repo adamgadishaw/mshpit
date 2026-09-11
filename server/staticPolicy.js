@@ -19,3 +19,20 @@ export function missingStaticAssetResponse(pathname) {
     headers: { "Cache-Control": "no-store" },
   };
 }
+
+// Source maps are private. The web build emits one beside every bundle so the
+// server can turn a minified crash location into a source file and line, and
+// every bundle names its map in a sourceMappingURL comment. Serving them would
+// publish the full original client source, comments included, to anyone.
+export function privateStaticAssetResponse(pathname) {
+  let path;
+  try { path = decodeURIComponent(String(pathname || "")); }
+  catch { path = String(pathname || ""); }
+  path = path.split(/[?#]/, 1)[0].replace(/\/+$/, "").toLowerCase();
+  if (!path.endsWith(".map")) return null;
+  return {
+    status: 404,
+    body: { error: "Asset not found." },
+    headers: { "Cache-Control": "no-store" },
+  };
+}

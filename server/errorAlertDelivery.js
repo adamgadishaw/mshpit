@@ -1,7 +1,12 @@
 import { createHash } from "node:crypto";
+import { boundedAlertDetail } from "./errorDetails.js";
 
 const HOUR_MS = 3_600_000;
 const MAX_DIGEST_ROWS = 20;
+// pending_payload carries a CHECK of 24000 characters. Detail is trimmed from
+// the oldest rows until the frozen batch fits beneath this margin: a payload
+// that violated the CHECK would make nextBatch throw and stop alerting entirely.
+const ALERT_PAYLOAD_BUDGET = 22_000;
 const SERIOUS_GENERAL = `(e.level='fatal' OR e.status=0 OR e.status>=500)
   AND NOT (e.method='GET' AND e.route='/api/readiness' AND e.status=503 AND e.code='MEDIA_STORAGE_UNAVAILABLE')`;
 
@@ -55,7 +60,35 @@ function transaction(database, action) {
   }
 }
 
-export function createErrorAlertDelivery(database) {
+// Detail is frozen into the batch with its row. Looking it up at send time would
+// let a retry render different content under the same idempotency key.
+function withAlertDetails(rows, detailsFor) {
+  if (typeof detailsFor !== "function" || !rows.length) return rows;
+  let details;
+  try { details = detailsFor(rows.map((row) => row.fingerprint)); }
+  catch { return rows; }
+  if (!(details instanceof Map)) return rows;
+  return rows.map((row) => {
+    const detail = boundedAlertDetail(details.get(row.fingerprint));
+    return detail ? { ...row, detail } : row;
+  });
+}
+
+function fitAlertPayload(payload) {
+  let serialized = JSON.stringify(payload);
+  if (serialized.length <= ALERT_PAYLOAD_BUDGET) return { payload, serialized };
+  const rows = payload.rows.map((row) => ({ ...row }));
+  // Rows are oldest first, so the most recent problems keep their detail longest.
+  for (let index = 0; index < rows.length && serialized.length > ALERT_PAYLOAD_BUDGET; index += 1) {
+    if (!rows[index].detail) continue;
+    delete rows[index].detail;
+    serialized = JSON.stringify({ ...payload, rows });
+  }
+  const fitted = { ...payload, rows };
+  return { payload: fitted, serialized: JSON.stringify(fitted) };
+}
+
+export function createErrorAlertDelivery(database, { detailsFor = null } = {}) {
   const state = database.prepare("SELECT * FROM error_alert_delivery WHERE singleton=1");
   const pending = database.prepare(`SELECT e.fingerprint,e.level,e.code,e.status,e.method,e.route,e.cause,
       e.last_request_id,e.first_seen,e.last_seen,e.count through_count,
@@ -81,10 +114,12 @@ export function createErrorAlertDelivery(database) {
         // Freeze retries across restarts and concurrent arrivals. A new error
         // must not change the provider idempotency key of an uncertain send.
         if (current.pending_key) return { batch: { ...JSON.parse(current.pending_payload), key: current.pending_key } };
-        const rows = pending.all(MAX_DIGEST_ROWS).map((row) => ({ ...row }));
+        const rows = withAlertDetails(pending.all(MAX_DIGEST_ROWS).map((row) => ({ ...row })), detailsFor);
         if (!rows.length) return { reason: "nothing-serious" };
-        const payload = { rows, initialCatchUp: rows.some((row) => row.acknowledged_count < row.legacy_through_count) };
-        const serialized = JSON.stringify(payload);
+        const { payload, serialized } = fitAlertPayload({
+          rows,
+          initialCatchUp: rows.some((row) => row.acknowledged_count < row.legacy_through_count),
+        });
         const key = "error-alert-v2-" + createHash("sha256").update(serialized).digest("hex").slice(0, 40);
         save.run(key, serialized);
         return { batch: { ...payload, key } };

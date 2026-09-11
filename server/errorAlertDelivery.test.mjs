@@ -87,3 +87,62 @@ test("a pruned and recreated fingerprint is not acknowledged as the older genera
   const next = delivery.nextBatch({ now: now + HOUR }).batch;
   assert.equal(next.rows[0].count, 1);
 });
+
+function longEvent(database, fingerprint, at) {
+  database.prepare("INSERT INTO error_events VALUES (?,'fatal',?,0,'POST',?,?,?,1,?,?)")
+    .run(fingerprint, "PIT-APP-" + "0".repeat(32), "/client/" + "r".repeat(72), "RenderError.Web." + "c".repeat(64),
+      "123e4567-e89b-42d3-a456-426614174000", at, at);
+  database.prepare("INSERT INTO error_occurrence_buckets VALUES (?,?,?)").run(fingerprint, Math.floor(at / HOUR) * HOUR, 1);
+}
+
+test("where and why are frozen into the batch and trimmed from the oldest rows to respect the payload CHECK", (t) => {
+  const database = fixture(t);
+  const now = 200 * HOUR;
+  ensureErrorAlertSchema(database, { now });
+  for (let index = 0; index < 20; index += 1) {
+    longEvent(database, `fp${String(index).padStart(2, "0")}`, now - (20 - index) * 60_000);
+  }
+  const huge = {
+    location: `server/musicProviders.js:164:12 in coalescedProviderJob ${"x".repeat(400)}`,
+    reason: `AbortError [20]: ${"y".repeat(700)}`,
+    release: "4603cb3e6084",
+  };
+  let lookups = 0;
+  const delivery = createErrorAlertDelivery(database, {
+    detailsFor: (fingerprints) => {
+      lookups += 1;
+      return new Map(fingerprints.map((fingerprint) => [fingerprint, huge]));
+    },
+  });
+  const { batch } = delivery.nextBatch({ now, force: true });
+  const stored = database.prepare("SELECT pending_payload FROM error_alert_delivery WHERE singleton=1").get().pending_payload;
+  assert.ok(stored.length <= 22_000, `frozen payload is ${stored.length} characters`);
+  const untrimmed = JSON.stringify({
+    rows: batch.rows.map((row) => ({ ...row, detail: batch.rows.at(-1).detail })),
+    initialCatchUp: batch.initialCatchUp,
+  });
+  assert.ok(untrimmed.length > 24_000, "without trimming this batch would violate the database CHECK and stop alerts");
+
+  assert.equal(batch.rows.length, 20, "trimming detail never drops an error");
+  const detailed = batch.rows.map((row) => Boolean(row.detail));
+  assert.ok(detailed.includes(false) && detailed.includes(true));
+  // Rows are oldest first: the oldest lose detail first, the most recent keep it.
+  assert.ok(detailed.indexOf(true) > detailed.lastIndexOf(false));
+  assert.equal(batch.rows.at(-1).detail.location.length, 240);
+  assert.equal(batch.rows.at(-1).detail.release, "4603cb3e6084");
+
+  // A retry reuses the frozen batch rather than looking detail up again.
+  assert.deepEqual(delivery.nextBatch({ now: now + HOUR, force: true }).batch, batch);
+  assert.equal(lookups, 1);
+});
+
+test("an unreadable detail table never blocks the alert", (t) => {
+  const database = fixture(t);
+  const now = 200 * HOUR;
+  ensureErrorAlertSchema(database, { now });
+  event(database, { fingerprint: "only", at: now - 60_000 });
+  const delivery = createErrorAlertDelivery(database, { detailsFor: () => { throw new Error("no such table"); } });
+  const { batch } = delivery.nextBatch({ now, force: true });
+  assert.equal(batch.rows.length, 1);
+  assert.equal(batch.rows[0].detail, undefined);
+});

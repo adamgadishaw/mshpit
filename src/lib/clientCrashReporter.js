@@ -25,7 +25,10 @@ export async function reportClientCrash({ kind, error, surface = currentSurface(
   for (const [previousKey, reportedAt] of recentlyReported) {
     if (now - reportedAt >= DEDUPE_MS) recentlyReported.delete(previousKey);
   }
-  const key = JSON.stringify(report);
+  // One bug whose message varies (an id, a count) is still one report per window.
+  const identity = { ...report };
+  delete identity.message;
+  const key = JSON.stringify(identity);
   if (now - (recentlyReported.get(key) || 0) < DEDUPE_MS) return false;
   if (recentlyReported.size >= MAX_RECENT_REPORTS) recentlyReported.delete(recentlyReported.keys().next().value);
   recentlyReported.set(key, now);
@@ -41,6 +44,7 @@ export async function reportClientCrash({ kind, error, surface = currentSurface(
       surface: report.surface,
       ...(report.errorType ? { errorType: report.errorType, diagnosis: report.diagnosis } : {}),
       ...(report.location ? { location: report.location } : {}),
+      ...(report.message ? { message: report.message } : {}),
     }),
   };
   if (Platform.OS === "web") {

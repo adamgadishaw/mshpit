@@ -27,8 +27,8 @@ function setup(t, fetch) {
   return t.mock.method(globalThis, "fetch", fetch);
 }
 function crash(ErrorType = TypeError, line = 1) {
-  const error = new ErrorType("private account detail");
-  error.stack = `${error.name}: private account detail\n    at privateFunction (${origin}/_expo/static/js/web/${asset}:${line}:123)`;
+  const error = new ErrorType(`Cannot read 'photos' of "Jane's private note" for jane@example.com`);
+  error.stack = `${error.name}: ${error.message}\n    at privateFunction (${origin}/_expo/static/js/web/${asset}:${line}:123)`;
   return error;
 }
 
@@ -43,9 +43,12 @@ test("reports send only projected diagnostics, omit credentials and return match
   assert.deepEqual(JSON.parse(options.body), {
     kind: "render", platform: "web", surface: "landing", errorType: "TypeError", diagnosis: "type",
     location: { asset, line: 1, column: 123 },
+    message: `Cannot read 'photos' of "<text>" for <email>`,
   });
-  assert.equal(options.body.includes("private"), false);
-  assert.equal(options.body.includes(origin), false);
+  // The message travels redacted; the stack, function names and page origin never do.
+  for (const leaked of ["Jane", "jane@example.com", "privateFunction", origin]) {
+    assert.equal(options.body.includes(leaked), false, `${leaked} must not be transmitted`);
+  }
   assert.equal(options.signal.aborted, false);
 });
 
