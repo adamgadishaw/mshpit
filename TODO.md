@@ -273,6 +273,11 @@ remains a broad context whose changing value can rerender unrelated consumers.
     pages, apply the public event rules to the landing page, hide off-core
     features, add a type scale, link posts to shows, add a README and archive
     root documents, and replace source-text tests with behavior tests.
+15. **Artist lookup resilience:** `GET /api/artists/resolve` returns 502
+    whenever MusicBrainz answers 503, which it does often. Cache successful
+    lookups, fall back to the local catalogue or Deezer, and retry once on a
+    provider 5xx so an upstream blip is not a visitor-visible failure. Needs
+    `server/api.js`.
 
 ## Foundation complete for Alpha
 

@@ -144,3 +144,32 @@ test("alert lines render only what is known, bounded", () => {
   assert.equal(formatErrorDetailLines(null), "");
   assert.equal(boundedAlertDetail({ location: "x".repeat(1000) }).location.length, 240);
 });
+
+test("a provider failure keeps the upstream status in the cause chain", () => {
+  const upstream = new Error("MusicBrainz did not return a usable response.");
+  upstream.name = "ProviderError";
+  upstream.code = "http_error";
+  upstream.status = 503;
+  const failure = new Error("MusicBrainz is unavailable right now. Retry the artist lookup before continuing.");
+  failure.name = "ApiError";
+  failure.code = "PROVIDER_UNAVAILABLE";
+  failure.status = 502;
+  failure.cause = upstream;
+
+  // 503 (busy, wait) and 403 (refused, act) are the same sanitized cause name,
+  // so the status is what tells the owner which one happened.
+  const reason = describeErrorReason(failure);
+  assert.match(reason, /^ApiError \[PROVIDER_UNAVAILABLE, status 502\]: MusicBrainz is unavailable/);
+  assert.match(reason, /caused by ProviderError \[http_error, status 503\]: MusicBrainz did not return/);
+});
+
+test("a value that is not an HTTP status stays out of the reason", () => {
+  const zero = new Error("Nope");
+  zero.name = "ProviderError";
+  zero.status = 0;
+  const absurd = new Error("Nope");
+  absurd.name = "ProviderError";
+  absurd.status = 99_999;
+  assert.equal(describeErrorReason(zero), "ProviderError: Nope");
+  assert.equal(describeErrorReason(absurd), "ProviderError: Nope");
+});

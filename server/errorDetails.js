@@ -123,7 +123,12 @@ function describeOne(value) {
     const rawCode = readField(value, "code");
     const code = /^[A-Za-z0-9_.-]{1,40}$/.test(String(rawCode ?? "")) ? String(rawCode) : "";
     const message = redactDiagnosticText(readField(value, "message"), { max: ERROR_DETAIL_LIMITS.message });
-    return `${name}${code ? ` [${code}]` : ""}${message ? `: ${message}` : ""}`;
+    // An upstream HTTP status separates "the provider is busy" from "the
+    // provider refused us". The sanitized cause name cannot carry that.
+    const rawStatus = Number(readField(value, "status"));
+    const status = Number.isInteger(rawStatus) && rawStatus >= 100 && rawStatus <= 599 ? rawStatus : null;
+    const tag = [code, status ? `status ${status}` : ""].filter(Boolean).join(", ");
+    return `${name}${tag ? ` [${tag}]` : ""}${message ? `: ${message}` : ""}`;
   }
   const text = redactDiagnosticText(value, { max: ERROR_DETAIL_LIMITS.message });
   return text ? `Thrown value: ${text}` : "";

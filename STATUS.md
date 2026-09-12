@@ -6,6 +6,25 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-09-12 upstream provider alerts
+
+- `GET /api/artists/resolve` returned 502 `PROVIDER_UNAVAILABLE` twice on
+  2026-09-12. MusicBrainz was answering 503 "currently busy" to plain requests
+  from an unrelated network at the same time, so the failure was upstream. The
+  lookup already throttles and sends a contact user agent.
+- The alert cause chain now carries the upstream HTTP status, for example
+  `ProviderError [http_error, status 503]`. That separates a busy provider from
+  one that refused Pit, which the sanitized cause name alone cannot do.
+- A transient provider fault (`PROVIDER_UNAVAILABLE` caused by `http_error` or
+  `network`) is held out of the alert email until it reaches
+  `ERROR_ALERT_PROVIDER_MIN` occurrences since the last alert (default 10). It
+  stays in the admin console the whole time, and rate limiting, refusals and
+  unreadable payloads still alert on the first occurrence.
+- Still open: a visitor looking up an artist outside the local catalogue sees a
+  502 while MusicBrainz is down. Caching, a catalogue or Deezer fallback, and a
+  single retry all need `server/api.js`, which carries another agent's
+  uncommitted work.
+
 ## 2026-09-11 credibility audit and user-base audit script
 
 - `docs/mshpit-soundcheck-2026-09-11.md` records a layer-by-layer audit of the

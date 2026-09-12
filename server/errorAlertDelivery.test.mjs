@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
-import { createErrorAlertDelivery, ensureErrorAlertSchema } from "./errorAlertDelivery.js";
+import { createErrorAlertDelivery, ensureErrorAlertSchema, providerBlipThreshold } from "./errorAlertDelivery.js";
 
 const HOUR = 3_600_000;
 function fixture(t) {
@@ -145,4 +145,39 @@ test("an unreadable detail table never blocks the alert", (t) => {
   const { batch } = delivery.nextBatch({ now, force: true });
   assert.equal(batch.rows.length, 1);
   assert.equal(batch.rows[0].detail, undefined);
+});
+
+function providerEvent(database, { fingerprint, count, at, cause = "ProviderError/http_error" }) {
+  database.prepare(`INSERT INTO error_events
+    (fingerprint,level,code,status,method,route,cause,last_request_id,count,first_seen,last_seen)
+    VALUES (?,'error','PROVIDER_UNAVAILABLE',502,'GET','/api/artists/resolve',?,NULL,?,?,?)`)
+    .run(fingerprint, cause, count, at, at);
+  database.prepare("INSERT INTO error_occurrence_buckets VALUES (?,?,?)")
+    .run(fingerprint, Math.floor(at / HOUR) * HOUR, count);
+}
+
+test("a short upstream blip waits while a sustained outage and rate limiting mail out", (t) => {
+  const database = fixture(t);
+  const now = 300 * HOUR;
+  ensureErrorAlertSchema(database, { now });
+  providerEvent(database, { fingerprint: "blip", count: 2, at: now - 4 * 60_000 });
+  providerEvent(database, { fingerprint: "outage", count: 12, at: now - 3 * 60_000 });
+  providerEvent(database, { fingerprint: "limited", count: 2, at: now - 2 * 60_000, cause: "ProviderError/rate_limited" });
+  const delivery = createErrorAlertDelivery(database);
+
+  const { batch } = delivery.nextBatch({ now });
+  assert.deepEqual(batch.rows.map((row) => row.fingerprint), ["outage", "limited"]);
+  delivery.acknowledge(batch.key, now);
+
+  // The held blip is not dropped: it mails once it accumulates past the threshold.
+  database.prepare("UPDATE error_events SET count=10,last_seen=? WHERE fingerprint='blip'").run(now + 60_000);
+  const later = delivery.nextBatch({ now: now + 31 * 60_000 });
+  assert.deepEqual(later.batch.rows.map((row) => [row.fingerprint, row.count]), [["blip", 10]]);
+});
+
+test("the provider blip threshold is tunable and refuses nonsense", () => {
+  assert.equal(providerBlipThreshold({}), 10);
+  assert.equal(providerBlipThreshold({ ERROR_ALERT_PROVIDER_MIN: "3" }), 3);
+  assert.equal(providerBlipThreshold({ ERROR_ALERT_PROVIDER_MIN: "0" }), 10);
+  assert.equal(providerBlipThreshold({ ERROR_ALERT_PROVIDER_MIN: "abc" }), 10);
 });

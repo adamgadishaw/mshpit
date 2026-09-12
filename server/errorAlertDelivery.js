@@ -10,6 +10,18 @@ const ALERT_PAYLOAD_BUDGET = 22_000;
 const SERIOUS_GENERAL = `(e.level='fatal' OR e.status=0 OR e.status>=500)
   AND NOT (e.method='GET' AND e.route='/api/readiness' AND e.status=503 AND e.code='MEDIA_STORAGE_UNAVAILABLE')`;
 
+// A provider's own 5xx, or a provider that cannot be reached, is not the
+// owner's to fix: waiting is the only action. A short blip stays in the console
+// and only a sustained run of them is mailed. Rate limiting, refusals and
+// unreadable payloads stay in every digest because those are ours to fix.
+const TRANSIENT_PROVIDER_FAULT = `e.code='PROVIDER_UNAVAILABLE'
+  AND (e.cause LIKE '%http_error' OR e.cause LIKE '%network')`;
+
+export function providerBlipThreshold(env = process.env) {
+  const raw = Number(env?.ERROR_ALERT_PROVIDER_MIN);
+  return Number.isInteger(raw) && raw > 0 ? raw : 10;
+}
+
 export function alertCooldownMs(env = process.env) {
   const raw = Number(env?.ERROR_ALERT_COOLDOWN_MIN);
   return Number.isFinite(raw) && raw > 0 ? raw * 60_000 : 30 * 60_000;
@@ -97,6 +109,7 @@ export function createErrorAlertDelivery(database, { detailsFor = null } = {}) {
       COALESCE(c.legacy_through_count,0) legacy_through_count
     FROM error_events e LEFT JOIN error_alert_checkpoints c ON c.fingerprint=e.fingerprint
     WHERE e.count>COALESCE(c.through_count,0) AND ${SERIOUS_GENERAL}
+      AND NOT (${TRANSIENT_PROVIDER_FAULT} AND e.count-COALESCE(c.through_count,0) < ?)
     ORDER BY e.last_seen ASC,e.fingerprint ASC LIMIT ?`);
   const save = database.prepare("UPDATE error_alert_delivery SET pending_key=?,pending_payload=? WHERE singleton=1");
   const acknowledge = database.prepare(`INSERT INTO error_alert_checkpoints (fingerprint,through_count,legacy_through_count)
@@ -114,7 +127,7 @@ export function createErrorAlertDelivery(database, { detailsFor = null } = {}) {
         // Freeze retries across restarts and concurrent arrivals. A new error
         // must not change the provider idempotency key of an uncertain send.
         if (current.pending_key) return { batch: { ...JSON.parse(current.pending_payload), key: current.pending_key } };
-        const rows = withAlertDetails(pending.all(MAX_DIGEST_ROWS).map((row) => ({ ...row })), detailsFor);
+        const rows = withAlertDetails(pending.all(providerBlipThreshold(), MAX_DIGEST_ROWS).map((row) => ({ ...row })), detailsFor);
         if (!rows.length) return { reason: "nothing-serious" };
         const { payload, serialized } = fitAlertPayload({
           rows,
