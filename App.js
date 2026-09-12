@@ -9,6 +9,7 @@ import { StoreProvider, useStore, isMod, isStaff } from "./src/store";
 import Icon from "./src/components/Icon";
 import ErrorBoundary from "./src/components/ErrorBoundary";
 import RuntimeErrorMonitor from "./src/components/RuntimeErrorMonitor";
+import { configureClientCrashSurface } from "./src/lib/clientCrashReporter";
 import FeedbackHost from "./src/components/FeedbackHost";
 import VerifyEmailBanner from "./src/components/VerifyEmailBanner";
 import { DesktopTopNav, RightRail } from "./src/components/Rails";
@@ -501,15 +502,19 @@ function Root() {
     demoEnabled: ENABLE_DEMO_DATA,
     readPersisted: load,
   }));
+  const analyticsScreen = analyticsScreenKey({ landing, tab, nav });
+  // Configure before React evaluates the active child screen. This preserves
+  // the true SPA surface even when its public URL intentionally remains root.
+  configureClientCrashSurface(analyticsScreen);
   const lastAnalyticsScreenRef = useRef({ accountId: null, screen: null });
   useEffect(() => {
-    const screen = analyticsScreenKey({ landing, tab, nav });
+    const screen = analyticsScreen;
     const accountId = session?.id || null;
     const previous = lastAnalyticsScreenRef.current;
     if (screen === previous.screen && accountId === previous.accountId) return;
     track("screen_view", { screen, referrer: accountId === previous.accountId ? previous.screen || undefined : undefined });
     lastAnalyticsScreenRef.current = { accountId, screen };
-  }, [landing, tab, nav, session?.id, track]);
+  }, [analyticsScreen, session?.id, track]);
 
   // Which nav frames are public, shareable pages. Everything else (composer,
   // settings, moderation) deliberately has no URL: those are sheets over the

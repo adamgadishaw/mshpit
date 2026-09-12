@@ -138,6 +138,28 @@ test("different-password public signup creates a restricted sibling and cancella
   assert.equal(q.usersByEmail.all(first.email).length, 1);
 });
 
+test("concurrent ordinary first signups cannot create an unintended sibling account", async () => {
+  const email = `concurrent-first-${++sequence}@example.test`;
+  const attempts = Array.from({ length: 5 }, (_, index) => {
+    const ctx = context({
+      name: `Concurrent Member ${index}`,
+      email,
+      password: "concurrent-password1",
+      genres: ["Rock"],
+      ageBand: "18_plus",
+      termsVersion: LEGAL_ACCEPTANCE_VERSION,
+    });
+    return routes["POST /api/signup"](ctx);
+  });
+  const settled = await Promise.allSettled(attempts);
+  assert.equal(q.usersByEmail.all(email).length, 1);
+  assert.equal(settled.filter((entry) => entry.status === "fulfilled" && entry.value?.created).length, 1);
+  for (const entry of settled.filter((result) => result.status === "rejected")) {
+    assert.equal(entry.reason?.status, 409);
+    assert.equal(entry.reason?.code, "CONFLICT");
+  }
+});
+
 test("matching signup credentials require an explicit choice before creating a same-password sibling", async () => {
   const first = member();
   const choice = (await signup(first.email, { password: "first-password1" }));

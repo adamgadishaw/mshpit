@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   clientErrorSurface,
+  clientErrorSurfaceFromScreen,
   clientCrashDiagnostic,
   clientCrashRequestId,
   normalizeClientCrashLocation,
@@ -45,6 +46,18 @@ test("surface projection never exposes an entity id or query", () => {
   assert.equal(clientErrorSurface("/shows/tm-123"), "show");
   assert.equal(clientErrorSurface("/search?q=private"), "search");
   assert.equal(clientErrorSurface("/unknown/private/value"), "app");
+});
+
+test("SPA screen projection distinguishes tab and overlay crashes without retaining navigation data", () => {
+  assert.equal(clientErrorSurfaceFromScreen("tab_you"), "you");
+  assert.equal(clientErrorSurfaceFromScreen("tab_feed"), "feed");
+  assert.equal(clientErrorSurfaceFromScreen("artist_gallery"), "artist");
+  assert.equal(clientErrorSurfaceFromScreen("venue_review"), "venue");
+  assert.equal(clientErrorSurfaceFromScreen("media_viewer"), "post");
+  assert.equal(clientErrorSurfaceFromScreen("account_delete"), "settings");
+  for (const privateValue of ["artist_private-id", "profile:@private", "search?q=private", null, {}]) {
+    assert.equal(clientErrorSurfaceFromScreen(privateValue), "app");
+  }
 });
 
 const asset = "index-0123456789abcdef0123456789abcdef.js";

@@ -909,7 +909,9 @@ function refreshPrivateMediaIsolationSafely(phase) {
     onResult: (status, { phase, recovered, retryInMs }) => {
       if (status?.ready) ensureLegacyImageRecoveryScheduler();
       if (recovered) console.log("[media] private-storage privacy check recovered");
-      if (status && !status.ready) {
+      if (status?.ready && status.errorCode) {
+        console.warn(`[media] private-storage privacy probe degraded: phase=${phase} code=${status.errorCode} proof=last_known_denial retryInMs=${retryInMs}`);
+      } else if (status && !status.ready) {
         console.error(`[media] private-storage privacy check failed closed: phase=${phase} code=${status.errorCode || "probe_failed"} retryInMs=${retryInMs}`);
       }
     },

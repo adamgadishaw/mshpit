@@ -193,6 +193,33 @@ test("the explicitly activated default release retires pre-published posters who
   }
 });
 
+test("legacy video poster backlog runs one bounded batch per minute instead of every second", async () => {
+  const scheduled = [];
+  let runs = 0;
+  const timer = { unref() {} };
+  const scheduler = startLegacyVideoPosterVerificationScheduler({
+    database: { prepare: () => ({ get: () => ({ next_at: 1 }) }) },
+    env: {
+      ...process.env,
+      NODE_ENV: "production",
+      PIT_ENV: "production",
+      MEDIA_PUBLIC_BASE_URL: LEGACY_VIDEO_POSTER_PUBLIC_BASE,
+      PIT_LEGACY_VIDEO_POSTER_RELEASE: LEGACY_VIDEO_POSTER_RELEASE_ID,
+    },
+    reconcile: () => { runs += 1; },
+    verify: async () => {},
+    now: () => 100_000,
+    setTimerFn: (callback, delay) => { scheduled.push({ callback, delay }); return timer; },
+    clearTimerFn: () => {},
+  });
+  const initial = scheduled.shift();
+  assert.equal(initial.delay, 1_000, "the first bounded release check remains prompt after deploy");
+  await initial.callback();
+  assert.equal(runs, 1);
+  assert.equal(scheduled.shift().delay, 60_000);
+  scheduler.stop();
+});
+
 test("an existing database from before the cleanup triggers gains them idempotently on boot", () => {
   const migrationDir = mkdtempSync(join(tmpdir(), "pit-legacy-poster-migration-"));
   const dbModule = new URL("./db.js", import.meta.url).href;

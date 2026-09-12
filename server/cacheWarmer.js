@@ -339,6 +339,11 @@ export function startCacheWarmScheduler({
     intervalMs: Math.max(60_000, Number(intervalMs) || 24 * 60 * 60 * 1000),
     retryDelayMs: Math.max(60_000, Number(retryDelayMs) || WARM_RETRY_DELAY_MS),
     run: ({ signal } = {}) => runBackgroundJob(() => runOnce({ signal })),
-    report: (error) => logger.error?.(`[pit] scheduled catalogue enrichment failed safely cause=${privateErrorLabel(error)}; retrying in ${Math.round(Math.max(60_000, Number(retryDelayMs) || WARM_RETRY_DELAY_MS) / 60_000)}m`),
+    report: (error, { willRetry, retryDelayMs: scheduledRetryMs } = {}) => logger.error?.(
+      `[pit] scheduled catalogue enrichment failed safely cause=${privateErrorLabel(error)}`
+      + (willRetry
+        ? `; one recovery retry in ${Math.round(Math.max(60_000, Number(scheduledRetryMs) || Number(retryDelayMs) || WARM_RETRY_DELAY_MS) / 60_000)}m`
+        : "; recovery retry exhausted; waiting for the normal enrichment interval"),
+    ),
   });
 }

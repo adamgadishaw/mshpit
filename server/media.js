@@ -1,6 +1,7 @@
 import { createHash, createHmac, randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import { ApiError } from "./errors.js";
-import { mediaStorageUnavailable } from "./mediaStorageFailure.js";
+import { mediaStorageControlFailure, mediaStorageUnavailable } from "./mediaStorageFailure.js";
 import { probePrivateMediaIsolation } from "./mediaPrivacyProbe.js";
 import { PUBLIC_MEDIA_CACHE_CONTROL } from "./mediaDeliveryPolicy.js";
 import {
@@ -56,11 +57,26 @@ let privateIsolationState = Object.freeze({
   configured: false,
   ready: false,
   checkedAt: null,
+  lastVerifiedAt: null,
   listStatus: null,
   objectStatus: null,
   errorCode: "not_checked",
   identity: null,
 });
+
+// A remote timeout cannot make a bucket public. Once the exact configured
+// bucket has proved that anonymous listing and object reads are denied, retain
+// that proof briefly while the monitor retries a transport-only failure. The
+// grace is deliberately short and process-local: a restart, configuration
+// change, or any explicit anonymous-access response still closes publishing.
+export const PRIVATE_MEDIA_ISOLATION_TRANSIENT_GRACE_MS = 15 * 60_000;
+export const PRIVATE_MEDIA_ISOLATION_REQUEST_WAIT_MS = 7_500;
+const TRANSIENT_ISOLATION_ERRORS = new Set([
+  "not_checked",
+  "probe_timeout",
+  "probe_failed",
+  "probe_http_unavailable",
+]);
 
 function checkedUrl(value, label, env) {
   let url;
@@ -121,7 +137,8 @@ export function privateMediaIsolationStatus(env = process.env) {
   const identity = privateIsolationIdentity(config);
   const current = identity === privateIsolationState.identity
     ? privateIsolationState
-    : { configured: !!identity, ready: false, checkedAt: null, listStatus: null, objectStatus: null, errorCode: "not_checked" };
+    : { configured: !!identity, ready: false, checkedAt: null, lastVerifiedAt: null,
+      listStatus: null, objectStatus: null, errorCode: "not_checked" };
   return Object.freeze({
     configured: !!current.configured,
     ready: !!current.ready,
@@ -129,6 +146,9 @@ export function privateMediaIsolationStatus(env = process.env) {
     listStatus: current.listStatus || null,
     objectStatus: current.objectStatus || null,
     errorCode: current.errorCode || null,
+    ...(current.ready && current.errorCode && current.lastVerifiedAt
+      ? { lastVerifiedAt: current.lastVerifiedAt, proof: "last_known_denial" }
+      : {}),
     ...(current.retryAfterMs > 0 ? { retryAfterMs: current.retryAfterMs } : {}),
   });
 }
@@ -140,6 +160,53 @@ export function requirePrivateMediaIsolationReady(env = process.env) {
       status.configured ? "privacy_not_ready" : "configuration_invalid");
   }
   return status;
+}
+
+function isolationUnavailable(status) {
+  return mediaStorageUnavailable(
+    "Private media storage has not passed its privacy check.",
+    status?.configured ? "privacy_not_ready" : "configuration_invalid",
+  );
+}
+
+/**
+ * Let an upload arriving during a cold-start/recovery probe join the one shared
+ * monitor result instead of failing in a few milliseconds. This function does
+ * no network work of its own, so concurrent members cannot amplify a storage
+ * incident into another probe storm. Explicit exposure/configuration failures
+ * remain immediate and every wait has one caller-owned deadline.
+ */
+export async function waitForPrivateMediaIsolationReady({
+  env = process.env,
+  signal,
+  timeoutMs = PRIVATE_MEDIA_ISOLATION_REQUEST_WAIT_MS,
+  pollMs = 100,
+  clock = Date.now,
+  waitImpl = (ms, options) => delay(ms, undefined, options),
+} = {}) {
+  if (typeof clock !== "function" || typeof waitImpl !== "function") {
+    throw new TypeError("Private media readiness waiting requires bounded timing dependencies.");
+  }
+  const timeout = Math.max(100, Math.min(10_000, Math.trunc(Number(timeoutMs)
+    || PRIVATE_MEDIA_ISOLATION_REQUEST_WAIT_MS)));
+  const interval = Math.max(25, Math.min(500, Math.trunc(Number(pollMs) || 100)));
+  const startedAt = Number(clock());
+  if (!Number.isFinite(startedAt)) throw isolationUnavailable(privateMediaIsolationStatus(env));
+  const deadline = startedAt + timeout;
+  while (true) {
+    if (signal?.aborted) throw signal.reason || new DOMException("Aborted", "AbortError");
+    const status = privateMediaIsolationStatus(env);
+    if (status.ready) return status;
+    if (!TRANSIENT_ISOLATION_ERRORS.has(status.errorCode)) throw isolationUnavailable(status);
+    const remaining = deadline - Number(clock());
+    if (!Number.isFinite(remaining) || remaining <= 0) throw isolationUnavailable(status);
+    try {
+      await waitImpl(Math.min(interval, remaining), { signal });
+    } catch (error) {
+      if (signal?.aborted) throw signal.reason || error;
+      throw isolationUnavailable(status);
+    }
+  }
 }
 
 
@@ -155,13 +222,13 @@ export async function verifyPrivateMediaBucketIsolation({
   try { config = getMediaConfig(env); }
   catch {
     privateIsolationState = Object.freeze({ configured: false, ready: false, checkedAt: clock(), listStatus: null,
-      objectStatus: null, errorCode: "storage_unconfigured", identity: null });
+      objectStatus: null, errorCode: "storage_unconfigured", identity: null, lastVerifiedAt: null });
     return privateMediaIsolationStatus(env);
   }
   const identity = privateIsolationIdentity(config);
   if (!config.configured || !identity || config.sourceBucket === config.bucket || typeof fetchImpl !== "function") {
     privateIsolationState = Object.freeze({ configured: !!identity, ready: false, checkedAt: clock(), listStatus: null,
-      objectStatus: null, errorCode: "storage_unconfigured", identity });
+      objectStatus: null, errorCode: "storage_unconfigured", identity, lastVerifiedAt: null });
     return privateMediaIsolationStatus(env);
   }
   const root = new URL(joinObjectUrl(config.endpoint, [config.sourceBucket]));
@@ -173,10 +240,19 @@ export async function verifyPrivateMediaBucketIsolation({
     fetchImpl, timeoutMs, signal, clock,
   });
   if (signal?.aborted) throw signal.reason || new DOMException("Aborted", "AbortError");
+  const checkedAt = Number(clock());
+  const previousVerifiedAt = privateIsolationState.identity === identity
+    && privateIsolationState.lastVerifiedAt != null
+    ? Number(privateIsolationState.lastVerifiedAt) : NaN;
+  const transient = TRANSIENT_ISOLATION_ERRORS.has(errorCode);
+  const retainProof = !!errorCode && transient && Number.isFinite(checkedAt)
+    && Number.isFinite(previousVerifiedAt) && checkedAt >= previousVerifiedAt
+    && checkedAt - previousVerifiedAt <= PRIVATE_MEDIA_ISOLATION_TRANSIENT_GRACE_MS;
   privateIsolationState = Object.freeze({
     configured: true,
-    ready: !errorCode,
-    checkedAt: clock(),
+    ready: !errorCode || retainProof,
+    checkedAt,
+    lastVerifiedAt: !errorCode ? checkedAt : retainProof ? previousVerifiedAt : null,
     listStatus,
     objectStatus,
     errorCode,
@@ -363,8 +439,9 @@ export function createMediaPresign({
       expiresIn,
       now,
     });
-  } catch (error) {
-    throw new ApiError(502, "Photo upload could not be prepared. Try again.", "MEDIA_UPLOAD_FAILED", error);
+  } catch {
+    throw new ApiError(502, "Photo upload could not be prepared. Try again.", "MEDIA_UPLOAD_FAILED",
+      mediaStorageControlFailure("source_upload_signing"));
   }
   return {
     method: "PUT",
@@ -421,8 +498,9 @@ export function createMediaDownloadCapability({
       expiresIn: ttl,
       now,
     });
-  } catch (error) {
-    throw new ApiError(503, "Clip verification could not be prepared. Try again.", "MEDIA_STORAGE_UNAVAILABLE", error);
+  } catch {
+    throw new ApiError(503, "Clip verification could not be prepared. Try again.", "MEDIA_STORAGE_UNAVAILABLE",
+      mediaStorageControlFailure("source_download_signing"));
   }
   return {
     method: "GET",
@@ -471,8 +549,9 @@ export function createMediaProcessorUploadCapability({
       expiresIn: ttl,
       now,
     });
-  } catch (error) {
-    throw new ApiError(503, "Clip delivery upload could not be prepared.", "MEDIA_STORAGE_UNAVAILABLE", error);
+  } catch {
+    throw new ApiError(503, "Clip delivery upload could not be prepared.", "MEDIA_STORAGE_UNAVAILABLE",
+      mediaStorageControlFailure("video_delivery_signing"));
   }
   return {
     method: "PUT",
@@ -526,8 +605,9 @@ export function createMediaProcessorImageUploadCapability({
       expiresIn: ttl,
       now,
     });
-  } catch (error) {
-    throw new ApiError(503, "Photo delivery upload could not be prepared.", "MEDIA_STORAGE_UNAVAILABLE", error);
+  } catch {
+    throw new ApiError(503, "Photo delivery upload could not be prepared.", "MEDIA_STORAGE_UNAVAILABLE",
+      mediaStorageControlFailure("photo_delivery_signing"));
   }
   return {
     method: "PUT",

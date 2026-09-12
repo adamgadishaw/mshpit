@@ -10,12 +10,14 @@ const ALERT_PAYLOAD_BUDGET = 22_000;
 const SERIOUS_GENERAL = `(e.level='fatal' OR e.status=0 OR e.status>=500)
   AND NOT (e.method='GET' AND e.route='/api/readiness' AND e.status=503 AND e.code='MEDIA_STORAGE_UNAVAILABLE')`;
 
-// A provider's own 5xx, or a provider that cannot be reached, is not the
-// owner's to fix: waiting is the only action. A short blip stays in the console
-// and only a sustained run of them is mailed. Rate limiting, refusals and
-// unreadable payloads stay in every digest because those are ours to fix.
-const TRANSIENT_PROVIDER_FAULT = `e.code='PROVIDER_UNAVAILABLE'
-  AND (e.cause LIKE '%http_error' OR e.cause LIKE '%network')`;
+// A provider's own 5xx, a network break, or load shed by our provider gate is
+// not immediately actionable. Explicit upstream refusals (401/403), malformed
+// payloads and generic http_error classifications mail immediately. Treating
+// every http_error as transient previously hid permission failures.
+const TRANSIENT_PROVIDER_FAULT = "e.code='PROVIDER_UNAVAILABLE' AND ("
+  + "e.cause LIKE '%/upstream_5xx' OR e.cause LIKE '%/network' "
+  + "OR e.cause LIKE '%/circuit_open' OR e.cause LIKE '%/queue_saturated' "
+  + "OR e.cause LIKE '%/queue_timeout')";
 
 export function providerBlipThreshold(env = process.env) {
   const raw = Number(env?.ERROR_ALERT_PROVIDER_MIN);

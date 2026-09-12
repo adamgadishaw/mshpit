@@ -9,6 +9,7 @@ import { PROVIDER_JSON_LIMITS, readBoundedJsonResponse } from "./boundedJsonResp
 
 const DEEZER_DISCOGRAPHY_TTL_MS = 24 * 60 * 60 * 1000;
 const DEEZER_PREVIEW_MAX_TTL_MS = 5 * 60 * 1000;
+const MUSICBRAINZ_RESOLUTION_CACHE_MAX_ENTRIES = 100_000;
 const days = (n) => n * 24 * 60 * 60 * 1000;
 const YOUTUBE_POLICY_MAX_AGE_MS = days(30);
 // Non-authorized YouTube API data must be deleted or refreshed within 30 days.
@@ -1806,7 +1807,10 @@ export function pruneExpiredProviderData(at = Date.now(), { force = false } = {}
   }
   lastProviderPruneAt = at;
   const youtube = ytStmts.deleteExpired.run(at, at - days(30)).changes;
-  const provider = providerCacheStmts.deleteExpired.run(at).changes;
+  const providerExpired = providerCacheStmts.deleteExpired.run(at).changes;
+  const providerIdentityOverflow = providerCacheStmts.trimMusicBrainzResolutions
+    .run(MUSICBRAINZ_RESOLUTION_CACHE_MAX_ENTRIES).changes;
+  const provider = providerExpired + providerIdentityOverflow;
   // Artist rows are another API-data cache. Clear both positive mappings and
   // recorded misses after 30 days when their provenance is YouTube/legacy.
   const artistChannels = db.prepare(`UPDATE artists

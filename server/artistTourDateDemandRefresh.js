@@ -29,6 +29,7 @@ const DEFAULT_QUEUE_LIMIT = 128;
 const DEFAULT_GLOBAL_HOURLY_LIMIT = 12;
 const DEFAULT_MAX_ATTEMPTS = 4;
 const DEFAULT_REQUEST_DELAY_MS = 550;
+const DEFAULT_CAPACITY_RETRY_DELAY_MS = 60 * 1000;
 const DEFAULT_TICKETMASTER_WINDOW_DAYS = 180;
 const TICKETMASTER_PAGE_SIZE = 200;
 const TICKETMASTER_MAX_PAGES = 5;
@@ -36,6 +37,7 @@ const PROVIDER_RANGE_DAYS = 3 * 366;
 const BUDGET_PREFIX = "tourdates:demand:global:v1:";
 const DATE_KEY_PATTERN = /^\d{4}-\d{2}-\d{2}$/u;
 const ERROR_PRIORITY = Object.freeze({
+  capacity_deferred: 6,
   provider_rate_limited: 5,
   provider_unavailable: 4,
   aborted: 3,
@@ -71,6 +73,9 @@ function providerFailureCode(error, signal) {
   const explicit = optionalLine(error?.providerCategory, 64);
   if (explicit && Object.hasOwn(ERROR_PRIORITY, explicit)) return explicit;
   if (signal?.aborted || error?.name === "AbortError") return "aborted";
+  if (error?.code === "MEMORY_PRESSURE" || error?.name === "MemoryWorkBusyError") {
+    return "capacity_deferred";
+  }
   const status = Number(error?.status);
   if (status === 429) return "provider_rate_limited";
   if (status >= 500) return "provider_unavailable";
@@ -680,6 +685,11 @@ function queueOptions(env, overrides) {
     ),
     maxAttempts: boundedInteger(overrides.maxAttempts, DEFAULT_MAX_ATTEMPTS, { min: 1, max: 10 }),
     interJobDelayMs: boundedInteger(overrides.interJobDelayMs, DEFAULT_REQUEST_DELAY_MS, { min: 0, max: 5000 }),
+    capacityRetryDelayMs: boundedInteger(
+      overrides.capacityRetryDelayMs,
+      DEFAULT_CAPACITY_RETRY_DELAY_MS,
+      { min: 5000, max: 5 * 60 * 1000 },
+    ),
     ticketmasterWindowDays: boundedInteger(
       overrides.ticketmasterWindowDays ?? env.TOURDATE_DEMAND_WINDOW_DAYS,
       DEFAULT_TICKETMASTER_WINDOW_DAYS,
@@ -708,6 +718,8 @@ export function createArtistTourDateDemandRefreshService({
   claimTokenFactory = randomUUID,
   logger = console,
   autoSchedule = true,
+  setTimerFn = setTimeout,
+  clearTimerFn = clearTimeout,
   ...overrides
 } = {}) {
   if (!database) throw new TypeError("database is required");
@@ -813,7 +825,7 @@ export function createArtistTourDateDemandRefreshService({
   };
 
   const clearTimer = () => {
-    if (timer) clearTimeout(timer);
+    if (timer) clearTimerFn(timer);
     timer = null;
     timerDueAt = 0;
   };
@@ -873,7 +885,7 @@ export function createArtistTourDateDemandRefreshService({
     if (timer && timerDueAt <= requestedDue) return;
     clearTimer();
     timerDueAt = requestedDue;
-    timer = setTimeout(() => {
+    timer = setTimerFn(() => {
       timer = null;
       timerDueAt = 0;
       void drain();
@@ -1144,17 +1156,27 @@ export function createArtistTourDateDemandRefreshService({
     }
     clearTimer();
     draining = true;
+    let continuationDelayMs = options.interJobDelayMs;
     drainPromise = runJob(runDueOnce)
       .catch((error) => {
-        logger.error?.(
-          "[pit] exact artist refresh queue failed safely category=" + providerFailureCode(error),
-        );
-        return { status: "failed" };
+        const category = providerFailureCode(error);
+        if (category === "capacity_deferred") {
+          // Memory admission rejected the maintenance lease before runDueOnce,
+          // so no provider call or durable attempt occurred. Pace the next
+          // admission check instead of spinning at the 550ms inter-artist rate.
+          continuationDelayMs = options.capacityRetryDelayMs;
+          logger.warn?.(
+            "[pit] exact artist refresh queue deferred safely category=capacity_deferred",
+          );
+          return { status: "deferred", errorCategory: category };
+        }
+        logger.error?.(`[pit] exact artist refresh queue failed safely category=${category}`);
+        return { status: "failed", errorCategory: category };
       })
       .finally(() => {
         draining = false;
         drainPromise = null;
-        scheduleNext(options.interJobDelayMs);
+        scheduleNext(continuationDelayMs);
       });
     return drainPromise;
   };

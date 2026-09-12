@@ -32,6 +32,6 @@ test("confirmed legacy profiles open a words-only memory composer", () => {
 test("memory PATCHes use the dedicated text-only payload and reconciliation path", () => {
   const memoryBranch = store.match(/if \(\(previous\.kind \|\| changes\.kind\) === "memory"\)[\s\S]*?\n    \}/)?.[0] || "";
   assert.match(memoryBranch, /buildMemoryEditBody\(changes, \{ version \}\)/);
-  assert.match(memoryBranch, /saveMemoryPostEdit\(id, body, \{ apiClient: api \}\)/);
+  assert.match(memoryBranch, /saveMemoryPostEdit\(id, body, \{ apiClient: api, expectedAccountId: actor\.id \}\)/);
   assert.doesNotMatch(memoryBranch, /artistKey|photosPublic|mediaAssetIds|song:/);
 });

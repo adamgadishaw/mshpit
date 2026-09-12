@@ -48,6 +48,8 @@ const {
   ticketmasterFutureBoundary,
   ticketmasterRequestDelayMs,
   ticketmasterRows,
+  tourDateProviderFailureCategory,
+  tourDateProviderOutageDecision,
   persistTicketmasterMarketResult,
   persistSuccessfulCountryRotation,
   upsertProviderTourDateRows,
@@ -166,9 +168,10 @@ test("catalogue warming exposes an owned scheduler with a same-day recovery retr
   // enabled fixture instead of inheriting the build host's production flag.
   process.env.CACHE_WARM_ENABLED = "true";
   let configuration = null;
+  const errors = [];
   const handle = { trigger() {}, stop() { return Promise.resolve(); } };
   const scheduler = startCacheWarmScheduler({
-    logger: { log() {}, warn() {}, error() {} },
+    logger: { log() {}, warn() {}, error: (line) => errors.push(line) },
     schedule: (options) => { configuration = options; return handle; },
   });
 
@@ -177,6 +180,16 @@ test("catalogue warming exposes an owned scheduler with a same-day recovery retr
   assert.equal(configuration.intervalMs, 24 * 60 * 60_000);
   assert.equal(configuration.retryDelayMs, 30 * 60_000);
   assert.equal(typeof configuration.run, "function");
+  configuration.report(new Error("provider unavailable"), {
+    willRetry: true,
+    retryDelayMs: configuration.retryDelayMs,
+  });
+  configuration.report(new Error("provider still unavailable"), {
+    willRetry: false,
+    retryDelayMs: null,
+  });
+  assert.match(errors[0], /one recovery retry in 30m$/);
+  assert.match(errors[1], /recovery retry exhausted; waiting for the normal enrichment interval$/);
   await scheduler.stop();
 });
 
@@ -709,6 +722,71 @@ test("an incomplete zero-row provider result cannot suppress total-outage retry"
   assert.deepEqual(collected.outcomes, [{ source: "ticketmaster", ok: false }]);
   assert.equal(hasSuccessfulTourProviderWork(collected.successes), false,
     "a page-zero outage must leave the worldwide refresh immediately due");
+});
+
+test("tour-date provider failures keep safe actionable categories", async () => {
+  const refused = Object.assign(new Error("secret-bearing provider response"), { status: 403 });
+  const limited = Object.assign(new Error("rate limited"), { status: 429 });
+  const unavailable = Object.assign(new Error("down"), { status: 503 });
+  assert.equal(tourDateProviderFailureCategory(refused), "provider_refused");
+  assert.equal(tourDateProviderFailureCategory(limited), "provider_rate_limited");
+  assert.equal(tourDateProviderFailureCategory(unavailable), "provider_unavailable");
+  assert.equal(tourDateProviderFailureCategory(new TypeError("fetch failed")), "provider_network");
+
+  const collected = await collectNamedTourProviderResults([
+    { source: "ticketmaster", run: async () => { throw limited; } },
+    { source: "bandsintown", run: async () => { throw unavailable; } },
+  ]);
+  assert.deepEqual(collected.failureCategories, [
+    "provider_rate_limited",
+    "provider_unavailable",
+  ]);
+});
+
+test("tour-date refresh stops early during a provider-wide outage", () => {
+  let state = tourDateProviderOutageDecision({
+    failures: 2,
+    failureCategories: ["provider_unavailable"],
+    consecutiveFailures: 0,
+    failureLimit: 3,
+  });
+  assert.deepEqual(state, {
+    consecutiveFailures: 1,
+    stop: false,
+    category: "provider_unavailable",
+  });
+  state = tourDateProviderOutageDecision({
+    failures: 2,
+    failureCategories: ["provider_unavailable"],
+    consecutiveFailures: state.consecutiveFailures,
+    failureLimit: 3,
+  });
+  assert.equal(state.stop, false);
+  state = tourDateProviderOutageDecision({
+    failures: 2,
+    failureCategories: ["provider_unavailable"],
+    consecutiveFailures: state.consecutiveFailures,
+    failureLimit: 3,
+  });
+  assert.equal(state.stop, true, "three dead scopes stop the worldwide fan-out");
+
+  assert.equal(tourDateProviderOutageDecision({
+    failures: 1,
+    failureCategories: ["provider_rate_limited"],
+    consecutiveFailures: 0,
+  }).stop, true, "rate limiting stops immediately instead of multiplying requests");
+  assert.equal(tourDateProviderOutageDecision({
+    successes: 1,
+    failures: 1,
+    failureCategories: ["provider_rate_limited"],
+    consecutiveFailures: 0,
+  }).stop, true, "one healthy provider cannot hide another provider's rate limit");
+  assert.deepEqual(tourDateProviderOutageDecision({
+    successes: 1,
+    failures: 1,
+    failureCategories: ["provider_unavailable"],
+    consecutiveFailures: 2,
+  }), { consecutiveFailures: 0, stop: false, category: null });
 });
 
 test("provider dedupe preserves distinct same-day shows and removes only repeated stable identities", () => {

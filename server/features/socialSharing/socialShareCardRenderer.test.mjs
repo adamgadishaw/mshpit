@@ -544,13 +544,18 @@ test("renderer skips a MIME-valid corrupt image and uses the next trusted candid
 
 test("renderer coalesces and caches equal cards while bounding unique concurrent work", async () => {
   let calls = 0;
+  let active = 0;
+  let peak = 0;
   let release;
   const waiting = new Promise((resolve) => { release = resolve; });
   const renderer = createSocialShareCardRenderer({
     maxConcurrentRenders: 1,
     renderPng: async () => {
       calls += 1;
+      active += 1;
+      peak = Math.max(peak, active);
       await waiting;
+      active -= 1;
       return Buffer.concat([
         Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
         Buffer.alloc(120, 1),
@@ -561,13 +566,16 @@ test("renderer coalesces and caches equal cards while bounding unique concurrent
   const sameA = renderer.render(model);
   const sameB = renderer.render(model);
   const other = reviewShareCardModel(reviewDocument({ id: "post_456" }));
-  await assert.rejects(renderer.render(other), SocialShareCardBusyError);
+  const otherResult = renderer.render(other);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls, 1, "a unique card waits behind the one native render slot");
   release();
-  const [a, b] = await Promise.all([sameA, sameB]);
-  assert.equal(calls, 1);
+  const [a, b] = await Promise.all([sameA, sameB, otherResult]);
+  assert.equal(calls, 2);
+  assert.equal(peak, 1);
   assert.equal(a.bytes, b.bytes);
   const cached = await renderer.render(model);
-  assert.equal(calls, 1);
+  assert.equal(calls, 2);
   assert.equal(cached.bytes, a.bytes);
 });
 

@@ -41,6 +41,7 @@ import {
 import { verifyMp4Compatibility } from "./mp4Probe.js";
 import { sanitizeDecodedImage, validateDecodedImage, ImageProcessorError } from "./imageProcessor.js";
 import { mediaStorageRequestFailure, requestMediaStorage } from "./mediaStorageRequest.js";
+import { mediaStorageControlFailure } from "./mediaStorageFailure.js";
 import { VIDEO_VERIFIER_SOURCE_CONTENT_TYPES } from "./videoVerifierProtocol.js";
 
 const ASSET_ID = /^ma_[A-Za-z0-9_-]{8,80}$/;
@@ -346,8 +347,9 @@ async function verifyStoredObject({ objectKey, expectedBytes, expectedType, env,
       secretAccessKey: config.secretAccessKey,
       expiresIn: 60,
     });
-  } catch (error) {
-    throw new ApiError(503, "The upload could not be verified yet. Try again.", "MEDIA_STORAGE_UNAVAILABLE", error);
+  } catch {
+    throw new ApiError(503, "The upload could not be verified yet. Try again.", "MEDIA_STORAGE_UNAVAILABLE",
+      mediaStorageControlFailure("head_signing"));
   }
   let response;
   try {
@@ -1155,6 +1157,7 @@ export async function sanitizePrivateImageStaging(database, {
   imageTimeoutMs,
   allowHeicFallback = false,
   allowLegacyJpegTrailer = false,
+  memoryPriority = "interactive",
   profileRendition = null,
   signal,
   imageFinalizationStage = null,
@@ -1197,6 +1200,7 @@ export async function sanitizePrivateImageStaging(database, {
         imageTimeoutMs,
         allowHeicFallback,
         allowLegacyJpegTrailer,
+        memoryPriority,
         profileRendition,
         signal: sharedSignal,
         imageFinalizationStage: IMAGE_FINALIZATION_PREFLIGHT_TOKEN,
@@ -1245,6 +1249,7 @@ export async function sanitizePrivateImageStaging(database, {
         imageTimeoutMs,
         allowHeicFallback,
         allowLegacyJpegTrailer,
+        memoryPriority,
         profileRendition,
         signal: sharedSignal,
         imageFinalizationStage: IMAGE_FINALIZATION_GENERATION_TOKEN,
@@ -1274,6 +1279,7 @@ export async function sanitizePrivateImageStaging(database, {
       : {}),
     allowHeicFallback: allowHeicFallback === true,
     allowLegacyJpegTrailer: allowLegacyJpegTrailer === true,
+    memoryPriority: memoryPriority === "background" ? "background" : "interactive",
     profileRendition,
   }, { sanitizing: true });
   return Object.freeze({ sanitized, sourceEtag: stored.etag });

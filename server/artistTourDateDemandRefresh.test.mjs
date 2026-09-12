@@ -427,6 +427,62 @@ test("provider failure survives restart and retries after its durable backoff", 
   assert.equal(db.prepare("SELECT status,attempt_count FROM artist_tourdate_refresh_queue").get().attempt_count, 0);
 });
 
+test("memory admission defers the exact-artist queue without provider failure or a hot retry loop", async () => {
+  addArtist("Capacity Artist");
+  const nowRef = { value: 2_125_000_000_000 };
+  const timers = [];
+  const warnings = [];
+  const errors = [];
+  let admissionAttempts = 0;
+  const pressure = Object.assign(new Error("maintenance capacity unavailable"), {
+    name: "MemoryWorkBusyError",
+    code: "MEMORY_PRESSURE",
+  });
+  const service = testService({
+    nowRef,
+    autoSchedule: true,
+    capacityRetryDelayMs: 60_000,
+    runJob: () => {
+      admissionAttempts += 1;
+      return Promise.reject(pressure);
+    },
+    refreshArtist: async () => assert.fail("capacity rejection happens before provider work"),
+    setTimerFn(callback, delay) {
+      const handle = { callback, delay, unref() {} };
+      timers.push(handle);
+      return handle;
+    },
+    clearTimerFn() {},
+    logger: {
+      warn: (line) => warnings.push(line),
+      error: (line) => errors.push(line),
+    },
+  });
+
+  service.start();
+  assert.deepEqual(service.enqueue({
+    artistKey: "capacity artist",
+    authenticated: true,
+  }), { queued: true, reason: "queued" });
+  assert.equal(timers.length, 1);
+  assert.equal(timers[0].delay, 0);
+
+  timers[0].callback();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(admissionAttempts, 1);
+  assert.equal(timers.length, 2, "one capacity rejection creates one paced continuation");
+  assert.equal(timers[1].delay, 60_000, "capacity is rechecked once per minute, not every 550ms");
+  assert.equal(errors.length, 0, "a local capacity deferral is not reported as a provider failure");
+  assert.match(warnings[0], /category=capacity_deferred/);
+  assert.deepEqual(
+    { ...db.prepare("SELECT status,attempt_count,last_error_code FROM artist_tourdate_refresh_queue").get() },
+    { status: "pending", attempt_count: 0, last_error_code: null },
+    "no provider attempt or durable failure is recorded when maintenance admission is unavailable",
+  );
+  await service.stop();
+});
+
 test("a discovered Ticketmaster attraction ID is retained and reused after cooldown", async () => {
   addArtist("Stable Provider Artist");
   const nowRef = { value: 2_150_000_000_000 };

@@ -24,6 +24,7 @@ export function publicProfileCacheEntry(user) {
     ...(MUSIC_PLAYER_ENABLED ? ["nowPlaying"] : []),
   ];
   const projected = Object.fromEntries(keys.filter((key) => user[key] !== undefined).map((key) => [key, user[key]]));
+  if (typeof user.concertMapVisible === "boolean") projected.concertMapVisible = user.concertMapVisible;
   if (Array.isArray(user.genres)) projected.genres = user.genres.filter((value) => typeof value === "string").slice(0, 12);
   if (Array.isArray(user.favoriteArtists)) projected.favoriteArtists = user.favoriteArtists.filter((value) => typeof value === "string").slice(0, 50);
   if (typeof user.home?.city === "string" && user.home.city) projected.home = { city: user.home.city };

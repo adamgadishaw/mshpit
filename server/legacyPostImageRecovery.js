@@ -754,6 +754,7 @@ export async function recoverLegacyPostImage(database, candidate, {
       timeoutMs: LEGACY_IMAGE_RECOVERY_TIMEOUT_MS,
       allowHeicFallback: true,
       allowLegacyJpegTrailer: true,
+      memoryPriority: "background",
     });
     const output = {
       bytes: Buffer.from(sanitized?.bytes || []),
@@ -889,6 +890,7 @@ export async function recoverLegacyProfileImage(database, candidate, {
     imageTimeoutMs: LEGACY_IMAGE_RECOVERY_TIMEOUT_MS,
     allowHeicFallback: true,
     allowLegacyJpegTrailer: true,
+    memoryPriority: "background",
     signal,
   });
   const delivery = await stageSanitizedPublicImage(database, {
@@ -1116,9 +1118,11 @@ export function startLegacyImageRecoveryScheduler({
   env = process.env,
   maxItems = 2,
   intervalMs = 5 * 60_000,
-  continuationDelayMs = 1_000,
+  continuationDelayMs = intervalMs,
   initialDelayMs = 0,
   drain = drainLegacyImageRecovery,
+  setTimerFn = setTimeout,
+  clearTimerFn = clearTimeout,
 } = {}) {
   if (!database?.prepare || typeof drain !== "function") {
     throw new TypeError("Legacy image recovery scheduler requires a database and drain function.");
@@ -1127,7 +1131,15 @@ export function startLegacyImageRecoveryScheduler({
   if (existing) return existing;
   const batchSize = Math.max(1, Math.min(8, Math.trunc(Number(maxItems) || 2)));
   const idleDelay = Math.max(1_000, Math.min(60 * 60_000, Math.trunc(Number(intervalMs) || 5 * 60_000)));
-  const continuationDelay = Math.max(100, Math.min(60_000, Math.trunc(Number(continuationDelayMs) || 1_000)));
+  // Recovery uses an isolated decoder and can temporarily hold hundreds of
+  // MiB across source, IPC, decoded pixels, and the sanitized result. A one-
+  // second continuation loop previously spawned roughly 100 jobs per minute
+  // while a backlog existed. Keep backlog progress automatic, but never hot-
+  // loop it inside the latency-sensitive web process.
+  const continuationDelay = Math.max(
+    60_000,
+    Math.min(60 * 60_000, Math.trunc(Number(continuationDelayMs) || idleDelay)),
+  );
   const startupDelay = Math.max(0, Math.min(idleDelay, Math.trunc(Number(initialDelayMs) || 0)));
   const health = freshRecoveryHealth();
   health.enabled = true;
@@ -1146,7 +1158,7 @@ export function startLegacyImageRecoveryScheduler({
 
   const schedule = (delay) => {
     if (stopped || timer) return;
-    timer = setTimeout(() => {
+    timer = setTimerFn(() => {
       timer = null;
       void run(true);
     }, delay);
@@ -1196,7 +1208,7 @@ export function startLegacyImageRecoveryScheduler({
       if (stopped) return;
       stopped = true;
       health.enabled = false;
-      if (timer) clearTimeout(timer);
+      if (timer) clearTimerFn(timer);
       timer = null;
       controller?.abort();
       try { await active; } catch { /* drain errors are reflected in health */ }

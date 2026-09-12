@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Constants from "expo-constants";
 import { Linking, View, Text, StyleSheet, ScrollView, Pressable } from "react-native";
 import { colors, focusRing, radius, mono, THEMES, themeKey, space } from "../theme";
@@ -62,7 +62,7 @@ function Toggle({ value, busy = false }) {
 }
 
 export default function SettingsScreen({ onClose, onManageProfile, onFinishSetup, onOpenProfile, onOpenPrivacy, onOpenTerms, onOpenDiagnostics, onOpenDeleteAccount, onLogout, initialAccountAction = null }) {
-  const { session, deleteAccount, switchLinkedAccount, chooseTheme, blockedUsers, unblockUser, blockedDirectoryStatus, refreshBlockedDirectory, isBlockMutationPending, mutedUsers, unmuteUser, exportMyData, setAnalyticsEnabled, setProfileSearchIndexingEnabled, setDirectMessagePolicy, setAgeBandClassification, setProfileAudience, setAnnouncementEmailsEnabled } = useStore();
+  const { session, deleteAccount, switchLinkedAccount, chooseTheme, blockedUsers, unblockUser, blockedDirectoryStatus, refreshBlockedDirectory, isBlockMutationPending, mutedUsers, unmuteUser, exportMyData, setAnalyticsEnabled, setProfileSearchIndexingEnabled, setDirectMessagePolicy, setAgeBandClassification, setProfileAudience, setAnnouncementEmailsEnabled, updateProfile } = useStore();
   const blocked = session ? blockedUsers() : [];
   const muted = session ? mutedUsers() : [];
   const [exporting, setExporting] = useState(false);
@@ -79,6 +79,8 @@ export default function SettingsScreen({ onClose, onManageProfile, onFinishSetup
   const [ageBandResult, setAgeBandResult] = useState(null);
   const [savingProfileAudience, setSavingProfileAudience] = useState(false);
   const [profileAudienceResult, setProfileAudienceResult] = useState(null);
+  const [concertMapState, setConcertMapState] = useState(null);
+  const concertMapRequestRef = useRef(null);
   const [announcementResult, setAnnouncementResult] = useState(null);
   const [supportError, setSupportError] = useState(null);
   const [showMoreThemes, setShowMoreThemes] = useState(false);
@@ -86,6 +88,17 @@ export default function SettingsScreen({ onClose, onManageProfile, onFinishSetup
   const [accountAction, setAccountAction] = useState(initialAccountAction);
   const analyticsEnabled = !!(session?.analyticsConsentAt || session?.consentAt) && !session?.analyticsOptOut;
   const profileSearchIndexingEnabled = session?.searchIndexingOptOut !== true;
+  const concertMapVisible = session?.concertMapVisible !== false;
+  const mapPreference = concertMapState?.accountId === session?.id ? concertMapState : null;
+  useEffect(() => {
+    const accountId = session?.id;
+    return () => {
+      const request = concertMapRequestRef.current;
+      if (!request || request.accountId !== accountId) return;
+      request.controller.abort();
+      concertMapRequestRef.current = null;
+    };
+  }, [session?.id]);
   const announcementsEnabled = !session?.marketingOptOut;
   const manageProfile = profileManagementAction(session);
   const publicProfileLabel = manageProfile.destination === "artistHub" ? "View public artist page" : "View public profile";
@@ -164,6 +177,30 @@ export default function SettingsScreen({ onClose, onManageProfile, onFinishSetup
     const result = await setProfileAudience(audience);
     setProfileAudienceResult(result?.ok ? "Your profile audience was saved." : "That profile setting did not save. Please try again.");
     setSavingProfileAudience(false);
+  };
+  const toggleConcertMap = async () => {
+    const accountId = session?.id;
+    if (!accountId || concertMapRequestRef.current) return;
+    const nextVisible = !concertMapVisible;
+    const request = { accountId, controller: new AbortController() };
+    concertMapRequestRef.current = request;
+    setConcertMapState({ accountId, busy: true, message: null });
+    try {
+      const result = await updateProfile({ concertMapVisible: nextVisible }, {
+        expectedAccountId: accountId, optimistic: false, signal: request.controller.signal,
+      });
+      if (request.controller.signal.aborted || concertMapRequestRef.current !== request) return;
+      const confirmed = result?.ok && result.user?.id === accountId && result.user.concertMapVisible === nextVisible;
+      setConcertMapState({ accountId, busy: false, error: !confirmed, message: confirmed
+        ? (nextVisible ? "Your concert map is visible on your profile." : "Your concert map is hidden. Your concert list is unchanged.")
+        : "Your map preference did not save. Please try again." });
+    } catch {
+      if (!request.controller.signal.aborted && concertMapRequestRef.current === request) {
+        setConcertMapState({ accountId, busy: false, error: true, message: "Your map preference did not save. Please try again." });
+      }
+    } finally {
+      if (concertMapRequestRef.current === request) concertMapRequestRef.current = null;
+    }
   };
 
   if (accountAction === "password") return <AccountPasswordForm key={session?.id} session={session} deleteAccount={deleteAccount} onClose={() => setAccountAction(null)} />;
@@ -246,6 +283,19 @@ export default function SettingsScreen({ onClose, onManageProfile, onFinishSetup
               })}
               {!!profileAudienceResult && <Text style={[styles.exportStatus, profileAudienceResult.startsWith("That") && styles.exportError]} accessibilityLiveRegion="polite">{profileAudienceResult}</Text>}
             </View>
+            <Row
+              icon="map"
+              label="Show my concert map"
+              sub={concertMapVisible
+                ? "On. People who can view your profile can see your concert map."
+                : "Off. The map is hidden from your profile. Your concert list stays visible to your chosen audience."}
+              onPress={toggleConcertMap}
+              disabled={!!mapPreference?.busy}
+              accessibilityRole="switch"
+              accessibilityState={{ checked: concertMapVisible, busy: !!mapPreference?.busy }}
+              right={<Toggle value={concertMapVisible} busy={!!mapPreference?.busy} />}
+            />
+            {!!mapPreference?.message && <Text style={[styles.exportStatus, mapPreference.error && styles.exportError]} accessibilityRole="alert" accessibilityLiveRegion="polite">{mapPreference.message}</Text>}
             <View style={styles.messagePolicy} accessibilityRole="radiogroup" accessibilityLabel="Who can send me a new direct message">
               <Text style={styles.messagePolicyTitle}>Who can message me?</Text>
               <Text style={styles.messagePolicyHint}>{(session.ageBand || "unknown") === "unknown" ? "Choose your age group above before sending a message. Your existing chat history stays readable." : "This controls new conversations. Existing chat history stays readable. Teen accounts always require mutual follows before either person can send."}</Text>

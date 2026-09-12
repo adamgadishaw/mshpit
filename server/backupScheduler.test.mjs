@@ -247,10 +247,11 @@ test("cooperative shutdown kills the backup child and waits for close", async ()
 
 test("the daily backup scheduler owns its lifecycle and configures a prompt retry", async () => {
   let configuration = null;
+  const errors = [];
   const handle = { trigger() {}, stop() { return Promise.resolve(); } };
   const scheduler = startBackupScheduler({
     env: { NODE_ENV: "production", BACKUP_ENABLED: "true" },
-    logger: { log() {}, warn() {}, error() {} },
+    logger: { log() {}, warn() {}, error: (line) => errors.push(line) },
     schedule: (options) => { configuration = options; return handle; },
   });
 
@@ -261,4 +262,14 @@ test("the daily backup scheduler owns its lifecycle and configures a prompt retr
     "a transient failure is retried before the next daily slot");
   assert.equal(typeof configuration.run, "function");
   assert.equal(typeof configuration.report, "function");
+  configuration.report(new Error("disk temporarily busy"), {
+    willRetry: true,
+    retryDelayMs: configuration.retryDelayMs,
+  });
+  configuration.report(new Error("disk still busy"), {
+    willRetry: false,
+    retryDelayMs: null,
+  });
+  assert.match(errors[0], /one recovery retry in 15m$/);
+  assert.match(errors[1], /recovery retry exhausted; waiting for the normal backup interval$/);
 });

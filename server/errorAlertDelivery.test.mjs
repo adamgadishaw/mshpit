@@ -147,7 +147,7 @@ test("an unreadable detail table never blocks the alert", (t) => {
   assert.equal(batch.rows[0].detail, undefined);
 });
 
-function providerEvent(database, { fingerprint, count, at, cause = "ProviderError/http_error" }) {
+function providerEvent(database, { fingerprint, count, at, cause = "ProviderError/upstream_5xx" }) {
   database.prepare(`INSERT INTO error_events
     (fingerprint,level,code,status,method,route,cause,last_request_id,count,first_seen,last_seen)
     VALUES (?,'error','PROVIDER_UNAVAILABLE',502,'GET','/api/artists/resolve',?,NULL,?,?,?)`)
@@ -173,6 +173,26 @@ test("a short upstream blip waits while a sustained outage and rate limiting mai
   database.prepare("UPDATE error_events SET count=10,last_seen=? WHERE fingerprint='blip'").run(now + 60_000);
   const later = delivery.nextBatch({ now: now + 31 * 60_000 });
   assert.deepEqual(later.batch.rows.map((row) => [row.fingerprint, row.count]), [["blip", 10]]);
+});
+
+test("an upstream refusal is never hidden behind the provider blip threshold", (t) => {
+  const database = fixture(t);
+  const now = 310 * HOUR;
+  ensureErrorAlertSchema(database, { now });
+  providerEvent(database, {
+    fingerprint: "forbidden",
+    count: 1,
+    at: now - 60_000,
+    cause: "ProviderError/quota_or_forbidden",
+  });
+  providerEvent(database, {
+    fingerprint: "legacy-ambiguous-http",
+    count: 1,
+    at: now - 30_000,
+    cause: "ProviderError/http_error",
+  });
+  const { batch } = createErrorAlertDelivery(database).nextBatch({ now });
+  assert.deepEqual(batch.rows.map((row) => row.fingerprint), ["forbidden", "legacy-ambiguous-http"]);
 });
 
 test("the provider blip threshold is tunable and refuses nonsense", () => {

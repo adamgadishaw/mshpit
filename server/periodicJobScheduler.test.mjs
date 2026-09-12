@@ -107,6 +107,38 @@ test("a failed long-interval job gets one bounded retry and success clears it", 
   await scheduler.stop();
 });
 
+test("a failed recovery retry waits for the ordinary interval instead of looping forever", async () => {
+  const clock = timers();
+  const errors = [];
+  let calls = 0;
+  const scheduler = startPeriodicJob({
+    run: async () => {
+      calls += 1;
+      throw new Error("provider remains unavailable");
+    },
+    report: (error, context) => errors.push({ message: error.message, ...context }),
+    initialDelayMs: 30_000,
+    intervalMs: 12 * 60 * 60_000,
+    retryDelayMs: 15 * 60_000,
+    ...clock,
+  });
+
+  assert.equal(await scheduler.trigger(), false);
+  assert.equal(clock.once.length, 2, "the failed scheduled run gets one recovery timer");
+  await clock.once[1].callback();
+  assert.equal(calls, 2);
+  assert.deepEqual(errors, [
+    { message: "provider remains unavailable", willRetry: true, retryDelayMs: 15 * 60_000 },
+    { message: "provider remains unavailable", willRetry: false, retryDelayMs: null },
+  ]);
+  assert.equal(clock.once.length, 2, "the failed recovery cannot allocate another retry timer");
+
+  await clock.repeating[0].callback();
+  assert.equal(calls, 3, "the ordinary interval opens a new attempt window");
+  assert.equal(clock.once.length, 3, "the new interval may schedule one fresh recovery retry");
+  await scheduler.stop();
+});
+
 test("false is a contained failure and retry timers do not fan out", async () => {
   const clock = timers();
   const scheduler = startPeriodicJob({

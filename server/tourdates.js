@@ -132,6 +132,105 @@ function boundedInteger(value, fallback, { min, max }) {
   return Math.max(min, Math.min(max, Math.floor(parsed)));
 }
 
+const TOUR_PROVIDER_FAILURE_PRIORITY = Object.freeze({
+  provider_refused: 7,
+  provider_rate_limited: 6,
+  provider_unavailable: 5,
+  provider_timeout: 4,
+  provider_network: 3,
+  provider_response_invalid: 2,
+  provider_refresh_failed: 1,
+  aborted: 0,
+});
+const TOUR_PROVIDER_ERROR_CODE = Object.freeze({
+  provider_refused: "TOUR_PROVIDER_REFUSED",
+  provider_rate_limited: "TOUR_PROVIDER_RATE_LIMITED",
+  provider_unavailable: "TOUR_PROVIDER_UNAVAILABLE",
+  provider_timeout: "TOUR_PROVIDER_TIMEOUT",
+  provider_network: "TOUR_PROVIDER_NETWORK",
+  provider_response_invalid: "TOUR_PROVIDER_RESPONSE_INVALID",
+  provider_refresh_failed: "TOUR_PROVIDER_FAILED",
+  aborted: "ABORT_ERR",
+});
+const PROVIDER_FAILURE_STREAK_LIMIT = boundedInteger(
+  process.env.TOURDATE_PROVIDER_FAILURE_STREAK_LIMIT,
+  3,
+  { min: 1, max: 10 },
+);
+
+export function tourDateProviderFailureCategory(error, signal) {
+  const explicit = String(error?.providerCategory || "").trim();
+  if (Object.hasOwn(TOUR_PROVIDER_FAILURE_PRIORITY, explicit)) return explicit;
+  if (signal?.aborted) return "aborted";
+  const code = String(error?.code || "").trim().toUpperCase();
+  if (code.includes("RATE_LIMIT")) return "provider_rate_limited";
+  if (code.includes("REFUSED") || code.includes("AUTH")) return "provider_refused";
+  if (code.includes("TIMEOUT") || error?.name === "TimeoutError") return "provider_timeout";
+  if (code.includes("RESPONSE") || error?.name === "BoundedJsonResponseError") return "provider_response_invalid";
+  if (code.includes("NETWORK")) return "provider_network";
+  if (code.includes("UNAVAILABLE")) return "provider_unavailable";
+  const status = Number(error?.status);
+  if (status === 401 || status === 403) return "provider_refused";
+  if (status === 429) return "provider_rate_limited";
+  if (status === 408 || status === 504) return "provider_timeout";
+  if (status >= 500) return "provider_unavailable";
+  if (error?.name === "AbortError") return "provider_timeout";
+  if (error instanceof TypeError) return "provider_network";
+  return "provider_refresh_failed";
+}
+
+function strongestTourDateProviderFailure(categories) {
+  return [...new Set((categories || []).filter((category) =>
+    Object.hasOwn(TOUR_PROVIDER_FAILURE_PRIORITY, category)))]
+    .sort((left, right) => TOUR_PROVIDER_FAILURE_PRIORITY[right] - TOUR_PROVIDER_FAILURE_PRIORITY[left])[0]
+    || "provider_refresh_failed";
+}
+
+function tourDateProviderError(category, cause) {
+  const safeCategory = Object.hasOwn(TOUR_PROVIDER_ERROR_CODE, category)
+    ? category
+    : "provider_refresh_failed";
+  const error = new Error("Tour-date providers are temporarily unavailable.", cause ? { cause } : undefined);
+  error.name = "TourDateProviderError";
+  error.code = TOUR_PROVIDER_ERROR_CODE[safeCategory];
+  error.providerCategory = safeCategory;
+  return error;
+}
+
+export function tourDateProviderOutageDecision({
+  successes = 0,
+  failures = 0,
+  failureCategories = [],
+  consecutiveFailures = 0,
+  failureLimit = PROVIDER_FAILURE_STREAK_LIMIT,
+} = {}) {
+  if (Number(failures) <= 0) {
+    return Object.freeze({ consecutiveFailures: 0, stop: false, category: null });
+  }
+  const category = strongestTourDateProviderFailure(failureCategories);
+  // A second provider succeeding does not make it safe to continue calling a
+  // provider that has explicitly refused or rate-limited us. Stop the sweep so
+  // a partial upstream outage cannot multiply 401/403/429 traffic across every
+  // artist, city, and country scope.
+  if (category === "provider_refused" || category === "provider_rate_limited") {
+    return Object.freeze({
+      consecutiveFailures: Math.max(0, Number(consecutiveFailures) || 0) + 1,
+      stop: true,
+      category,
+    });
+  }
+  if (Number(successes) > 0) {
+    return Object.freeze({ consecutiveFailures: 0, stop: false, category: null });
+  }
+  const next = Math.max(0, Number(consecutiveFailures) || 0) + 1;
+  const threshold = boundedInteger(failureLimit, PROVIDER_FAILURE_STREAK_LIMIT, { min: 1, max: 10 });
+  return Object.freeze({
+    consecutiveFailures: next,
+    stop: next >= threshold,
+    category,
+  });
+}
+
 export function ticketmasterArtistPageSize(value) {
   // One provider call costs the same at 200 rows and prevents prolific touring
   // artists from being permanently truncated after their first 50 dates.
@@ -338,17 +437,42 @@ export function writeTicketmasterMarketCoverageState(database, market, state) {
 async function getJSON(url, { signal } = {}) {
   throwIfAborted(signal);
   const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), 15000);
+  let timedOut = false;
+  const t = setTimeout(() => {
+    timedOut = true;
+    ctrl.abort(new DOMException("Timed out", "TimeoutError"));
+  }, 15000);
   t.unref?.();
-  const abort = () => ctrl.abort(signal.reason);
+  const abort = () => ctrl.abort(signal?.reason || new DOMException("Aborted", "AbortError"));
   signal?.addEventListener("abort", abort, { once: true });
   try {
     const r = await fetch(url, { signal: ctrl.signal, headers: { "User-Agent": "mshpit.com" } });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    if (!r.ok) {
+      const status = Number(r.status) || 502;
+      const category = status === 401 || status === 403
+        ? "provider_refused"
+        : status === 429
+          ? "provider_rate_limited"
+          : status === 408 || status === 504
+            ? "provider_timeout"
+            : status >= 500
+              ? "provider_unavailable"
+              : "provider_refresh_failed";
+      const error = tourDateProviderError(category);
+      error.status = status;
+      throw error;
+    }
     return await readBoundedJsonResponse(r, {
       maxBytes: PROVIDER_JSON_LIMITS.tourDates,
       signal: ctrl.signal,
     });
+  } catch (error) {
+    if (signal?.aborted) throw signal.reason || error;
+    if (error?.providerCategory) throw error;
+    const category = timedOut
+      ? "provider_timeout"
+      : tourDateProviderFailureCategory(error, ctrl.signal.aborted ? null : signal);
+    throw tourDateProviderError(category, error);
   } finally {
     clearTimeout(t);
     signal?.removeEventListener("abort", abort);
@@ -906,6 +1030,16 @@ export async function collectNamedTourProviderResults(providers) {
     settled[index].status === "fulfilled"
       && (result.requestComplete || result.rows.length > 0)
   ));
+  const failureCategories = settled.flatMap((result, index) => {
+    if (result.status === "rejected") {
+      return [tourDateProviderFailureCategory(result.reason)];
+    }
+    if (normalized[index].requestComplete) return [];
+    const explicit = String(result.value?.errorCategory || "").trim();
+    return [Object.hasOwn(TOUR_PROVIDER_FAILURE_PRIORITY, explicit)
+      ? explicit
+      : tourDateProviderFailureCategory(result.value?.error)];
+  });
   return {
     rows: normalized.flatMap((result) => result.rows),
     // A partial page with verified rows is useful durable work even though it
@@ -914,6 +1048,7 @@ export async function collectNamedTourProviderResults(providers) {
     successes: useful.filter(Boolean).length,
     failures: settled.filter((result) => result.status === "rejected").length
       + normalized.filter((result, index) => settled[index].status === "fulfilled" && !result.requestComplete).length,
+    failureCategories,
     outcomes: settled.map((result, index) => ({
       source: active[index].source,
       ok: result.status === "fulfilled" && normalized[index].complete,
@@ -1226,6 +1361,19 @@ async function refresh({ signal } = {}) {
       ? ticketmasterCountryRotation(COUNTRY_CODES, storedCountryCursor(), COUNTRY_BATCH_SIZE)
       : { countries: [], nextCursor: 0 };
     let total = 0, providerSuccesses = 0, providerFailures = 0, countrySuccesses = 0;
+    let providerFailureStreak = 0;
+    const providerFailureCategories = [];
+    const stopOnProviderOutage = (result) => {
+      providerFailureCategories.push(...(result?.failureCategories || []));
+      const decision = tourDateProviderOutageDecision({
+        successes: result?.successes,
+        failures: result?.failures,
+        failureCategories: result?.failureCategories,
+        consecutiveFailures: providerFailureStreak,
+      });
+      providerFailureStreak = decision.consecutiveFailures;
+      if (decision.stop) throw tourDateProviderError(decision.category);
+    };
     const successfulArtistScopes = new Map();
     const recordOutcomes = (outcomes, artistName = null) => {
       for (const outcome of outcomes || []) {
@@ -1246,6 +1394,7 @@ async function refresh({ signal } = {}) {
         throwIfAborted(signal);
         providerSuccesses += result.successes;
         providerFailures += result.failures;
+        stopOnProviderOutage(result);
         recordOutcomes(result.outcomes, a.name);
         const now = Date.now();
         db.exec("BEGIN");
@@ -1276,6 +1425,7 @@ async function refresh({ signal } = {}) {
         throwIfAborted(signal);
         providerSuccesses += result.successes;
         providerFailures += result.failures;
+        stopOnProviderOutage(result);
         recordOutcomes(result.outcomes);
         const now = Date.now();
         if (marketResult) persistTicketmasterMarketResult(db, {
@@ -1308,6 +1458,7 @@ async function refresh({ signal } = {}) {
         providerSuccesses += result.successes;
         providerFailures += result.failures;
         countrySuccesses += result.successes;
+        stopOnProviderOutage(result);
         recordOutcomes(result.outcomes);
         const now = Date.now();
         if (marketResult) persistTicketmasterMarketResult(db, {
@@ -1325,7 +1476,7 @@ async function refresh({ signal } = {}) {
     }
     throwIfAborted(signal);
     if (!hasSuccessfulTourProviderWork(providerSuccesses)) {
-      throw new Error(`Every configured tour provider request failed (${providerFailures} failures); existing dates were kept and the refresh remains due.`);
+      throw tourDateProviderError(strongestTourDateProviderFailure(providerFailureCategories));
     }
     if (countryBatch.countries.length) persistSuccessfulCountryRotation(db, {
       nextCursor: countryBatch.nextCursor,
@@ -1346,7 +1497,12 @@ async function refresh({ signal } = {}) {
     markRefreshComplete(Date.now(), artistSelection.nextCursor);
     console.log(`[pit] tour dates refreshed: ${total} dates / ${artists.length} artists + ${cities.length} member cities + ${countryBatch.countries.length} global markets (${providerSuccesses} provider calls ok, ${providerFailures} failed) in ${Math.round((Date.now() - t0) / 1000)}s`);
   } catch (e) {
-    if (!signal?.aborted) console.error(`[pit] tour-date refresh failed cause=${privateErrorLabel(e)}`);
+    if (!signal?.aborted) {
+      console.error(
+        `[pit] tour-date refresh failed cause=${privateErrorLabel(e)}`
+        + ` category=${tourDateProviderFailureCategory(e, signal)}`,
+      );
+    }
     throw e;
   } finally { running = false; }
 }
@@ -1380,6 +1536,11 @@ export function startTourDateScheduler({
       })) return;
       await refresh({ signal });
     }),
-    report: (error) => logger.error?.(`[pit] scheduled tour-date refresh failed safely cause=${privateErrorLabel(error)}; retrying in ${Math.round(Math.max(60_000, Number(retryDelayMs) || RETRY_DELAY_MS) / 60_000)}m`),
+    report: (error, { willRetry } = {}) => logger.error?.(
+      `[pit] scheduled tour-date refresh failed safely cause=${privateErrorLabel(error)} category=${tourDateProviderFailureCategory(error)}`
+      + (willRetry
+        ? `; one recovery retry in ${Math.round(Math.max(60_000, Number(retryDelayMs) || RETRY_DELAY_MS) / 60_000)}m`
+        : "; recovery retry exhausted; waiting for the normal refresh interval"),
+    ),
   });
 }

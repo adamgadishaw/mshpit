@@ -57,6 +57,22 @@ function fixture() {
   return { save, calls, writes, state, sessionRef, accountMutationEpochRef, flush, adopt };
 }
 
+test("concert map preference crosses the confirmed profile wire and keeps false in the public cache", async () => {
+  for (const visible of [false, true]) {
+    const f = fixture(), before = structuredClone(f.state);
+    const pending = f.save({ concertMapVisible: visible });
+    assert.equal(f.calls.length, 1, "a map-only update must not be mistaken for an unsupported no-op");
+    assert.deepEqual(f.calls[0].options.body, { concertMapVisible: visible });
+    assert.deepEqual(f.state, before, "privacy settings are not optimistic");
+    const user = { ...owner, concertMapVisible: visible };
+    f.calls[0].resolve({ user });
+    assert.equal((await pending).ok, true);
+    f.flush();
+    assert.equal(f.state.session.concertMapVisible, visible);
+    assert.equal(f.state.users[0].concertMapVisible, visible);
+  }
+});
+
 test("setup photo saves remain unchanged while pending and publish only confirmed server fields", async () => {
   const f = fixture(), controller = new AbortController();
   const patch = { avatarUri: "https://media.example.test/avatar-new.jpg" };

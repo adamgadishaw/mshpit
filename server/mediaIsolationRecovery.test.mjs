@@ -2,7 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { createMediaIsolationMonitor } from "./mediaIsolationMonitor.js";
-import { createMediaPresign, privateMediaIsolationStatus, verifyPrivateMediaBucketIsolation } from "./media.js";
+import {
+  createMediaPresign,
+  PRIVATE_MEDIA_ISOLATION_TRANSIENT_GRACE_MS,
+  privateMediaIsolationStatus,
+  verifyPrivateMediaBucketIsolation,
+  waitForPrivateMediaIsolationReady,
+} from "./media.js";
 
 function fakeTimers() {
   const tasks = new Map();
@@ -25,11 +31,13 @@ const ENV = Object.freeze({
   MEDIA_REGION: "auto", MEDIA_ACCESS_KEY_ID: "test", MEDIA_SECRET_ACCESS_KEY: "test",
   MEDIA_PUBLIC_BASE_URL: "https://media.example.com",
 });
-const privacyProbe = (fetchImpl, options = {}) => verifyPrivateMediaBucketIsolation({ env: ENV, fetchImpl, ...options });
-const presign = () => createMediaPresign({ userId: "recovery-owner", storageScope: "private", env: ENV,
+const isolatedEnv = (suffix) => Object.freeze({ ...ENV, MEDIA_SOURCE_BUCKET: `private-${suffix}` });
+const privacyProbe = (fetchImpl, options = {}) => verifyPrivateMediaBucketIsolation({ env: options.env || ENV,
+  fetchImpl, ...options });
+const presign = (env = ENV) => createMediaPresign({ userId: "recovery-owner", storageScope: "private", env,
   body: { purpose: "post", contentType: "image/jpeg", fileSize: 1024, name: "concert.jpg" } });
 
-test("an overnight-style privacy failure blocks uploads then recovers on the two-second retry", async () => {
+test("a transient probe failure retains recent denial proof while retrying in two seconds", async () => {
   const timers = fakeTimers();
   let unavailable = false;
   const reports = [];
@@ -46,7 +54,8 @@ test("an overnight-style privacy failure blocks uploads then recovers on the two
   unavailable = true;
   await timers.fire();
   assert.equal(privateMediaIsolationStatus(ENV).errorCode, "probe_failed");
-  assert.throws(presign, (error) => error.code === "MEDIA_STORAGE_UNAVAILABLE");
+  assert.equal(privateMediaIsolationStatus(ENV).proof, "last_known_denial");
+  assert.equal(presign().storageScope, "private");
   assert.equal(timers.delay, 2_000);
   unavailable = false;
   await timers.fire();
@@ -58,23 +67,82 @@ test("an overnight-style privacy failure blocks uploads then recovers on the two
   assert.equal(timers.tasks.size, 0);
 });
 
+test("cold-start upload waiters join one bounded recovery result after proof loss", async () => {
+  const env = isolatedEnv("cold-request-wait");
+  const failed = await privacyProbe(async () => { throw new TypeError("provider unavailable"); }, { env });
+  assert.equal(failed.ready, false);
+  assert.equal(failed.errorCode, "probe_failed");
+  let providerCalls = 0;
+  let sharedRecovery = null;
+  const waitImpl = () => {
+    sharedRecovery ||= privacyProbe(async () => {
+      providerCalls += 1;
+      return { status: 403 };
+    }, { env });
+    return sharedRecovery;
+  };
+  const options = { env, timeoutMs: 1_000, pollMs: 25, waitImpl };
+  const [first, second] = await Promise.all([
+    waitForPrivateMediaIsolationReady(options),
+    waitForPrivateMediaIsolationReady(options),
+  ]);
+  assert.equal(first.ready, true);
+  assert.equal(second.ready, true);
+  assert.equal(providerCalls, 2, "one shared recovery probe performs exactly the list and object checks");
+  assert.equal(presign(env).storageScope, "private");
+});
+
+test("secure grace expires and any explicit anonymous-access signal closes it immediately", async () => {
+  const env = isolatedEnv("grace-boundary");
+  let at = 10_000;
+  assert.equal((await privacyProbe(async () => ({ status: 403 }), { env, clock: () => at })).ready, true);
+  at += 1_000;
+  const degraded = await privacyProbe(async () => { throw new TypeError("temporary network failure"); },
+    { env, clock: () => at });
+  assert.equal(degraded.ready, true);
+  assert.equal(degraded.proof, "last_known_denial");
+
+  const explicitEnv = isolatedEnv("mixed-explicit-exposure");
+  assert.equal((await privacyProbe(async () => ({ status: 403 }), { env: explicitEnv, clock: () => at })).ready, true);
+  let request = 0;
+  const exposed = await privacyProbe(async () => {
+    request += 1;
+    if (request === 1) return { status: 200 };
+    await nextTurn();
+    throw new TypeError("peer probe failed");
+  }, { env: explicitEnv, clock: () => at + 1 });
+  assert.equal(exposed.errorCode, "anonymous_access_not_denied");
+  assert.equal(exposed.ready, false);
+  await assert.rejects(waitForPrivateMediaIsolationReady({ env: explicitEnv,
+    waitImpl: () => { throw new Error("explicit exposure must not wait"); } }),
+  (error) => error.code === "MEDIA_STORAGE_UNAVAILABLE");
+
+  at += PRIVATE_MEDIA_ISOLATION_TRANSIENT_GRACE_MS + 1;
+  const expired = await privacyProbe(async () => { throw new TypeError("network still unavailable"); },
+    { env, clock: () => at });
+  assert.equal(expired.ready, false);
+  assert.equal(expired.proof, undefined);
+  assert.throws(() => presign(env), (error) => error.code === "MEDIA_STORAGE_UNAVAILABLE");
+});
+
 test("temporary storage HTTP failures close publishing and recover promptly instead of waiting five minutes", async () => {
-  for (const statuses of [[503, 403], [403, 503], [502, 504], [429, 403], [408, 403], [599, 403]]) {
+  for (const [caseIndex, statuses] of [[503, 403], [403, 503], [502, 504], [429, 403], [408, 403], [599, 403]].entries()) {
+    const env = isolatedEnv(`cold-http-${caseIndex}`);
     const timers = fakeTimers();
     let unavailable = true;
     const monitor = createMediaIsolationMonitor({ ...timers,
       probe: ({ signal }) => privacyProbe(async (url) => ({ status: unavailable
-        ? statuses[new URL(url).searchParams.has("list-type") ? 0 : 1] : 403 }), { signal }),
+        ? statuses[new URL(url).searchParams.has("list-type") ? 0 : 1] : 403 }), { signal, env }),
     });
     try {
       const failed = await monitor.trigger("startup");
       assert.equal(failed.errorCode, "probe_http_unavailable");
       assert.equal(failed.ready, false);
-      assert.throws(presign, (error) => error.code === "MEDIA_STORAGE_UNAVAILABLE");
+      assert.throws(() => presign(env), (error) => error.code === "MEDIA_STORAGE_UNAVAILABLE");
       assert.equal(timers.delay, 2_000);
       unavailable = false;
       await timers.fire();
-      assert.equal(presign().storageScope, "private");
+      assert.equal(presign(env).storageScope, "private");
       assert.equal(timers.delay, 300_000);
     } finally { await monitor.stop(); }
   }
@@ -99,22 +167,23 @@ test("an unexpected anonymous response wins over a temporary failure on the othe
 
 test("storage recovery respects Retry-After without overflowing timers or retaining stale delay on recovery", async () => {
   const at = Date.parse("2026-09-09T19:00:00Z");
-  for (const [header, expected] of [["120", 120_000], ["Wed, 09 Sep 2026 19:02:00 GMT", 120_000],
-    ["0", 2_000], ["nonsense", 2_000], ["999999999999", 2_147_483_647]]) {
+  for (const [caseIndex, [header, expected]] of [["120", 120_000], ["Wed, 09 Sep 2026 19:02:00 GMT", 120_000],
+    ["0", 2_000], ["nonsense", 2_000], ["999999999999", 2_147_483_647]].entries()) {
+    const env = isolatedEnv(`retry-after-${caseIndex}`);
     const timers = fakeTimers();
     let unavailable = true;
     const monitor = createMediaIsolationMonitor({ ...timers,
       probe: ({ signal }) => privacyProbe(async () => ({ status: unavailable ? 429 : 403,
-        headers: new Headers({ "retry-after": header }) }), { signal, clock: () => at }),
+        headers: new Headers({ "retry-after": header }) }), { signal, clock: () => at, env }),
     });
     try {
       await monitor.trigger("startup");
       assert.equal(timers.delay, expected);
-      assert.throws(presign, (error) => error.status === 503);
+      assert.throws(() => presign(env), (error) => error.status === 503);
       unavailable = false;
       await timers.fire();
       assert.equal(timers.delay, 300_000);
-      assert.equal(privateMediaIsolationStatus(ENV).retryAfterMs, undefined);
+      assert.equal(privateMediaIsolationStatus(env).retryAfterMs, undefined);
     } finally { await monitor.stop(); }
   }
 });

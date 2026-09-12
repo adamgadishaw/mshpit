@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 
 import { MAX_IMAGE_PIXELS } from "./imageInspection.js";
 import { MEDIA_PHOTO_SOURCE_MAX_BYTES } from "../src/domain/mediaUploadPolicy.mjs";
-import { tryAcquireMemoryWork } from "./memoryAdmission.js";
+import { acquireMemoryWork, tryAcquireMemoryWork } from "./memoryAdmission.js";
 
 const MAX_ACTIVE_IMAGE_JOBS = 1;
 const MAX_QUEUED_IMAGE_JOBS = 2;
@@ -128,13 +128,56 @@ function normalizedWorkerResult(message, operation) {
   });
 }
 
-function executeIsolatedImageJob(operation, bytes, options = {}) {
+async function executeIsolatedImageJob(operation, bytes, options = {}) {
   const input = inputBytes(bytes);
   if (options.signal?.aborted) return Promise.reject(abortReason(options.signal));
-  const memoryLease = typeof options.acquireMemoryLease === "function"
-    ? options.acquireMemoryLease() : tryAcquireMemoryWork("image");
-  if (!memoryLease) return Promise.reject(new ImageProcessorError("busy", "Image processing is waiting for safe memory capacity."));
+  // Reserve the one local worker slot before awaiting global capacity. This
+  // keeps the existing two-job/60 MiB queue bound intact while a short-lived
+  // share or sitemap job drains, instead of letting many callers retain their
+  // complete upload buffers in the global waiter queue.
   activeImageJobs += 1;
+  let memoryLease = null;
+  let slotReleased = false;
+  const releaseSlot = () => {
+    if (slotReleased) return;
+    slotReleased = true;
+    activeImageJobs = Math.max(0, activeImageJobs - 1);
+    queueMicrotask(drainImageQueue);
+  };
+  try {
+    const acquire = typeof options.acquireMemoryLease === "function"
+      ? options.acquireMemoryLease
+      : options.memoryPriority === "background"
+        // Repair work is replayable. If interactive work is active or already
+        // queued, defer this batch to its paced scheduler instead of occupying
+        // the sole local image slot while waiting ahead of a member upload.
+        ? () => tryAcquireMemoryWork("image")
+        : (admissionOptions) => acquireMemoryWork("image", admissionOptions);
+    const pendingLease = acquire({
+      signal: options.signal,
+      timeoutMs: Math.min(10_000, normalizedTimeout(options.queueTimeoutMs ?? DEFAULT_QUEUE_TIMEOUT_MS)),
+      retainedBytes: input.byteLength,
+      priority: options.memoryPriority === "background" ? "background" : "interactive",
+    });
+    // Test/embedded callers may provide a synchronous admission primitive. Do
+    // not introduce an artificial microtask before their worker deadline is
+    // installed; production's shared admission is intentionally asynchronous.
+    memoryLease = pendingLease && typeof pendingLease.then === "function"
+      ? await pendingLease
+      : pendingLease;
+  } catch (error) {
+    releaseSlot();
+    throw error;
+  }
+  if (!memoryLease) {
+    releaseSlot();
+    throw new ImageProcessorError("busy", "Image processing is waiting for safe memory capacity.");
+  }
+  if (options.signal?.aborted) {
+    memoryLease.release();
+    releaseSlot();
+    throw abortReason(options.signal);
+  }
   return new Promise((resolve, reject) => {
     let child;
     let timer;
@@ -144,8 +187,7 @@ function executeIsolatedImageJob(operation, bytes, options = {}) {
       if (released) return;
       released = true;
       memoryLease.release();
-      activeImageJobs = Math.max(0, activeImageJobs - 1);
-      queueMicrotask(drainImageQueue);
+      releaseSlot();
     };
     const fail = (error) => {
       if (!outcome) outcome = { error };
@@ -284,6 +326,7 @@ export async function validateDecodedImage(bytes, {
   allowLegacyJpegTrailer = false,
   signal = null,
   acquireMemoryLease,
+  memoryPriority = "interactive",
   queueTimeoutMs = DEFAULT_QUEUE_TIMEOUT_MS,
 } = {}) {
   return runIsolatedImageJob("validate", bytes, {
@@ -293,6 +336,7 @@ export async function validateDecodedImage(bytes, {
     allowLegacyJpegTrailer: allowLegacyJpegTrailer === true,
     signal,
     acquireMemoryLease,
+    memoryPriority,
     queueTimeoutMs,
   });
 }
@@ -308,6 +352,7 @@ export async function sanitizeDecodedImage(bytes, {
   profileRendition = null,
   signal = null,
   acquireMemoryLease,
+  memoryPriority = "interactive",
   queueTimeoutMs = DEFAULT_QUEUE_TIMEOUT_MS,
 } = {}) {
   return runIsolatedImageJob("sanitize", bytes, {
@@ -321,6 +366,7 @@ export async function sanitizeDecodedImage(bytes, {
     profileRendition,
     signal,
     acquireMemoryLease,
+    memoryPriority,
     queueTimeoutMs,
   });
 }

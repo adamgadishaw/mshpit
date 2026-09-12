@@ -355,6 +355,7 @@ export function collectSiteHealthDigest(database, {
   }
   if (!publicMediaConfigured || !privateVideoConfigured) issues.push("media_storage_unconfigured");
   else if (!privateIsolation.ready) issues.push("private_media_unverified");
+  else if (privateIsolation.errorCode) warnings.push("private_media_probe_degraded");
   if (publishingEnabled(env) && !verifier.ready) issues.push("video_verifier_not_ready");
   if (!deletion) issues.push("media_cleanup_status_unavailable");
   else if (!deletion.enabled) issues.push("media_cleanup_disabled");

@@ -3341,7 +3341,7 @@ export function StoreProvider({ children }) {
     // and follow you to a new device. The server is the authority on handle
     // uniqueness, re-absorb its response so a taken handle reverts cleanly.
     const body = {};
-    for (const k of ["name", "bio", "handle", "avatarUri", "banner"]) if (k in safe) body[k] = safe[k];
+    for (const k of ["name", "bio", "handle", "avatarUri", "banner", "concertMapVisible"]) if (k in safe) body[k] = safe[k];
     if (safe.home) { body.city = safe.home.city; body.lat = safe.home.lat; body.lng = safe.home.lng; }
     if (Array.isArray(safe.genres)) body.genres = safe.genres;
     if (Array.isArray(safe.favoriteArtists)) body.favoriteArtists = safe.favoriteArtists;
@@ -3541,17 +3541,24 @@ export function StoreProvider({ children }) {
     }
   };
 
-  const reconcileEditedPost = async (id, body, error) => {
+  const reconcileEditedPost = async (id, body, error, { expectedAccountId, mutation } = {}) => {
     if (!shouldReconcileEditFailure(error)) return null;
+    const isCurrent = () => !mutation || accountMutationIsCurrent(
+      mutation,
+      sessionRef.current?.id,
+      accountMutationEpochRef.current,
+    );
+    if (!isCurrent()) return null;
     try {
       const { post } = await api(`/api/posts/${encodeURIComponent(id)}`, {
         context: "Confirming whether your update saved",
         silent: true,
+        expectedAccountId,
       });
-      if (!postMatchesEditIntent(post, body)) return null;
+      if (!isCurrent() || !postMatchesEditIntent(post, body)) return null;
       const updated = normalizeServerPost(post);
       setFeed((all) => mergeEditedPost(all, updated));
-      upsertProfileHistoryPost(sessionRef.current?.id, updated.userId, updated);
+      upsertProfileHistoryPost(expectedAccountId || sessionRef.current?.id, updated.userId, updated);
       return updated;
     } catch {
       return null;
@@ -3560,10 +3567,17 @@ export function StoreProvider({ children }) {
 
   const editLog = async (target, changes) => {
     const id = typeof target === "string" ? target : target?.id;
-    if (!session || !id) return { ok: false };
+    const actor = currentMutationActor();
+    if (!actor || !id) return { ok: false };
+    const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
+    const isCurrent = () => accountMutationIsCurrent(
+      mutation,
+      sessionRef.current?.id,
+      accountMutationEpochRef.current,
+    );
     // Author-only, admins included: moderation removes content, never rewrites it.
     const previous = resolvePostEditTarget(feed, target);
-    if (!previous || previous.userId !== session.id) return { ok: false };
+    if (!previous || previous.userId !== actor.id) return { ok: false };
 
     if ((previous.kind || changes.kind) === "memory") {
       const version = previous.version ?? previous.editedAt ?? previous.createdAt;
@@ -3575,15 +3589,17 @@ export function StoreProvider({ children }) {
       if (!existingContent) return { ok: false };
       feedMutationRevisionRef.current += 1;
       try {
-        const post = await saveMemoryPostEdit(id, body, { apiClient: api });
+        const post = await saveMemoryPostEdit(id, body, { apiClient: api, expectedAccountId: actor.id });
+        if (!isCurrent()) return { ok: false, stale: true };
         feedMutationRevisionRef.current += 1;
         const updated = normalizeServerPost(post);
         setFeed((all) => mergeEditedPost(all, updated));
-        upsertProfileHistoryPost(session.id, updated.userId, updated);
+        upsertProfileHistoryPost(actor.id, updated.userId, updated);
         return { ok: true, post: updated };
       } catch (error) {
+        if (!isCurrent()) return { ok: false, error, stale: true };
         feedMutationRevisionRef.current += 1;
-        const reconciled = await reconcileEditedPost(id, body, error);
+        const reconciled = await reconcileEditedPost(id, body, error, { expectedAccountId: actor.id, mutation });
         if (reconciled) return { ok: true, post: reconciled, reconciled: true };
         return { ok: false, error };
       }
@@ -3611,15 +3627,19 @@ export function StoreProvider({ children }) {
       if (!body.review && !body.photos.length && !body.song && !effectivePlaylistId) return { ok: false };
       feedMutationRevisionRef.current += 1;
       try {
-        const { post } = await api(`/api/posts/${encodeURIComponent(id)}`, { method: "PATCH", context: "Saving your update", body, silent: true });
+        const { post } = await api(`/api/posts/${encodeURIComponent(id)}`, {
+          method: "PATCH", context: "Saving your update", body, silent: true, expectedAccountId: actor.id,
+        });
+        if (!isCurrent()) return { ok: false, stale: true };
         feedMutationRevisionRef.current += 1;
         const updated = normalizeServerPost(post);
         setFeed((all) => mergeEditedPost(all, updated));
-        upsertProfileHistoryPost(session.id, updated.userId, updated);
+        upsertProfileHistoryPost(actor.id, updated.userId, updated);
         return { ok: true, post: updated };
       } catch (error) {
+        if (!isCurrent()) return { ok: false, error, stale: true };
         feedMutationRevisionRef.current += 1;
-        const reconciled = await reconcileEditedPost(id, body, error);
+        const reconciled = await reconcileEditedPost(id, body, error, { expectedAccountId: actor.id, mutation });
         if (reconciled) return { ok: true, post: reconciled, reconciled: true };
         return { ok: false, error };
       }
@@ -3637,16 +3657,19 @@ export function StoreProvider({ children }) {
         context: "Saving your concert review",
         body: { ...safe, ...(Number.isSafeInteger(version) ? { version } : {}) },
         silent: true,
+        expectedAccountId: actor.id,
       });
+      if (!isCurrent()) return { ok: false, stale: true };
       feedMutationRevisionRef.current += 1;
       const updated = normalizeServerPost(post);
       setFeed((all) => mergeEditedPost(all, updated));
-      upsertProfileHistoryPost(session.id, updated.userId, updated);
+      upsertProfileHistoryPost(actor.id, updated.userId, updated);
       return { ok: true, post: updated };
     } catch (error) {
+      if (!isCurrent()) return { ok: false, error, stale: true };
       feedMutationRevisionRef.current += 1;
       const body = { ...safe, ...(Number.isSafeInteger(version) ? { version } : {}) };
-      const reconciled = await reconcileEditedPost(id, body, error);
+      const reconciled = await reconcileEditedPost(id, body, error, { expectedAccountId: actor.id, mutation });
       if (reconciled) return { ok: true, post: reconciled, reconciled: true };
       return { ok: false, error };
     }
@@ -3657,14 +3680,23 @@ export function StoreProvider({ children }) {
   // posts, people, comments, private messages and gated community messages.
   const reportContent = async (targetId, reason, targetType = "post", { mediaUri = null, category = "other", details = "" } = {}) => {
     const r = clean(reason, { max: LIMITS.note });
-    if (!session) return { ok: false, error: "Log in to send this to the moderators." };
+    const actor = currentMutationActor();
+    if (!actor) return { ok: false, error: "Log in to send this to the moderators." };
+    const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
+    const isCurrent = () => accountMutationIsCurrent(
+      mutation,
+      sessionRef.current?.id,
+      accountMutationEpochRef.current,
+    );
     try {
       const result = await api("/api/reports", {
         method: "POST",
         body: { targetType, targetId, reason: r, category, details: clean(details, { max: 500, newlines: true }), ...(mediaUri ? { mediaUri } : {}) },
         context: "Sending your report",
         silent: true, // the screen shows a specific message, not a generic toast
+        expectedAccountId: actor.id,
       });
+      if (!isCurrent()) return { ok: false, stale: true };
       setReports((current) => current.some((entry) => entry.id === result.id)
         ? current
         : [{
@@ -3672,12 +3704,13 @@ export function StoreProvider({ children }) {
             targetType,
             targetId,
             reason: r,
-            reporterId: session.id,
+            reporterId: actor.id,
             status: "open",
           }, ...current]);
       if (targetType === "post") track("interaction", { postId: targetId, action: "report", surface: "post_detail" });
       return { ok: true, id: result.id, duplicate: !!result.duplicate };
     } catch (error) {
+      if (!isCurrent()) return { ok: false, stale: true, appError: error };
       // Deliberately NOT the generic transport message ("Pit could not finish
       // that action"), which never says the report was not filed. For this one
       // action the outcome matters more than the HTTP reason, and `appError`
@@ -3927,24 +3960,39 @@ export function StoreProvider({ children }) {
   const bumpFollowers = (id, d) =>
     setUserStats((m) => (m[id] ? { ...m, [id]: { ...m[id], followers: Math.max(0, (m[id].followers || 0) + d) } } : m));
   const follow = (id) => {
-    if (!session || isFollowing(id)) return;
-    setFollows((f) => ({ ...f, [session.id]: [...new Set([...(f[session.id] || []), id])] }));
+    const actor = currentMutationActor();
+    if (!actor || (follows[actor.id] || []).includes(id)) return;
+    const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
+    const isCurrent = () => accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current);
+    setFollows((f) => ({ ...f, [actor.id]: [...new Set([...(f[actor.id] || []), id])] }));
     bumpFollowers(id, 1);
-    api(`/api/users/${id}/follow`, { method: "POST", body: { following: true }, context: "Following this fan" })
-      .then(() => { track("follow"); notify(id, "follow"); })
+    return api(`/api/users/${id}/follow`, { method: "POST", body: { following: true }, context: "Following this fan", expectedAccountId: actor.id })
+      .then(() => {
+        if (!isCurrent()) return { ok: false, stale: true };
+        track("follow"); notify(id, "follow");
+        return { ok: true };
+      })
       .catch(() => {
-        setFollows((f) => ({ ...f, [session.id]: (f[session.id] || []).filter((x) => x !== id) }));
+        if (!isCurrent()) return { ok: false, stale: true };
+        setFollows((f) => ({ ...f, [actor.id]: (f[actor.id] || []).filter((x) => x !== id) }));
         bumpFollowers(id, -1);
+        return { ok: false };
       });
   };
   const unfollow = (id) => {
-    if (!session || !isFollowing(id)) return;
-    setFollows((f) => ({ ...f, [session.id]: (f[session.id] || []).filter((x) => x !== id) }));
+    const actor = currentMutationActor();
+    if (!actor || !(follows[actor.id] || []).includes(id)) return;
+    const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
+    const isCurrent = () => accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current);
+    setFollows((f) => ({ ...f, [actor.id]: (f[actor.id] || []).filter((x) => x !== id) }));
     bumpFollowers(id, -1);
-    api(`/api/users/${id}/follow`, { method: "POST", body: { following: false }, context: "Unfollowing this fan" })
+    return api(`/api/users/${id}/follow`, { method: "POST", body: { following: false }, context: "Unfollowing this fan", expectedAccountId: actor.id })
+      .then(() => isCurrent() ? { ok: true } : { ok: false, stale: true })
       .catch(() => {
-        setFollows((f) => ({ ...f, [session.id]: [...new Set([...(f[session.id] || []), id])] }));
+        if (!isCurrent()) return { ok: false, stale: true };
+        setFollows((f) => ({ ...f, [actor.id]: [...new Set([...(f[actor.id] || []), id])] }));
         bumpFollowers(id, 1);
+        return { ok: false };
       });
   };
   // Prefer the server's real numbers (loadUser fills them); the local follows map
@@ -4025,9 +4073,12 @@ export function StoreProvider({ children }) {
     }
   };
   const blockUser = (id) => {
-    if (!session || !id || isBlocked(id)
+    const actor = currentMutationActor();
+    if (!actor || !id || isBlocked(id)
       || isBlockMutationPending(id)) return Promise.resolve({ ok: false });
-    const accountId = session.id;
+    const accountId = actor.id;
+    const mutation = captureAccountMutation(accountId, accountMutationEpochRef.current);
+    const isCurrent = () => accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current);
     const mineBefore = follows[accountId] || [];
     const theirsBefore = follows[id] || [];
     const nextBlocked = [...new Set([...blockedIdsRef.current, id])];
@@ -4042,10 +4093,10 @@ export function StoreProvider({ children }) {
     setVenueReviews((groups) => withoutVenueReviewsByUser(groups, id));
     // Sever locally the way the server does.
     setFollows((f) => ({ ...f, [accountId]: (f[accountId] || []).filter((x) => x !== id), [id]: (f[id] || []).filter((x) => x !== accountId) }));
-    return api(`/api/users/${id}/block`, { method: "POST", body: { blocked: true }, context: "Blocking this account" })
+    return api(`/api/users/${id}/block`, { method: "POST", body: { blocked: true }, context: "Blocking this account", expectedAccountId: accountId })
       .then(() => {
+        if (!isCurrent()) return { ok: false, stale: true };
         scrubBlockedProfileHistoryPerson(accountId, id);
-        if (sessionRef.current?.id !== accountId) return;
         finishVenuePhotoPrivacyMutation(id);
         setFeed((rows) => rows
           .filter((post) => post.userId !== id)
@@ -4064,7 +4115,7 @@ export function StoreProvider({ children }) {
         return { ok: true };
       })
       .catch((error) => {
-        if (sessionRef.current?.id !== accountId) return;
+        if (!isCurrent()) return { ok: false, stale: true };
         const restored = blockedIdsRef.current.filter((x) => x !== id);
         blockedIdsRef.current = restored;
         finishVenuePhotoPrivacyMutation(id);
@@ -4074,27 +4125,29 @@ export function StoreProvider({ children }) {
       });
   };
   const unblockUser = (id) => {
-    if (!session || !isBlocked(id)
+    const actor = currentMutationActor();
+    if (!actor || !isBlocked(id)
       || isBlockMutationPending(id)) return Promise.resolve({ ok: false });
-    const accountId = session.id;
+    const accountId = actor.id;
+    const mutation = captureAccountMutation(accountId, accountMutationEpochRef.current);
+    const isCurrent = () => accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current);
     const nextBlocked = blockedIdsRef.current.filter((x) => x !== id);
     blockedIdsRef.current = nextBlocked;
     beginVenuePhotoPrivacyMutation(id);
     setBlockedIds(nextBlocked);
-    return api(`/api/users/${id}/block`, { method: "POST", body: { blocked: false }, context: "Unblocking this account" })
+    return api(`/api/users/${id}/block`, { method: "POST", body: { blocked: false }, context: "Unblocking this account", expectedAccountId: accountId })
       .then(() => {
+        if (!isCurrent()) return { ok: false, stale: true };
         // A block scrub leaves privacy tombstones in optimistic overlays. The
         // confirmed unblock must drop that account cache so the next visit can
         // read the newly visible server projection from scratch.
         resetProfileHistoryAccount(accountId);
-        if (sessionRef.current?.id === accountId) {
-          finishVenuePhotoPrivacyMutation(id);
-          invalidateArtistPageCache();
-        }
+        finishVenuePhotoPrivacyMutation(id);
+        invalidateArtistPageCache();
         return { ok: true };
       })
       .catch((error) => {
-        if (sessionRef.current?.id !== accountId) return;
+        if (!isCurrent()) return { ok: false, stale: true };
         const restored = [...new Set([...blockedIdsRef.current, id])];
         blockedIdsRef.current = restored;
         finishVenuePhotoPrivacyMutation(id);
@@ -4106,28 +4159,36 @@ export function StoreProvider({ children }) {
   const mutedUsers = () => mutedIds.map((id) => userById(id)).filter(Boolean);
   const isMuted = (id) => mutedIds.includes(id);
   const muteUser = async (id) => {
-    if (!session || !id || id === session.id || isMuted(id)) return { ok: false };
-    const accountId = session.id;
+    const actor = currentMutationActor();
+    if (!actor || !id || id === actor.id || isMuted(id)) return { ok: false };
+    const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
+    const isCurrent = () => accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current);
     setMutedIds((ids) => [...new Set([...ids, id])]);
     setFeed((rows) => rows.filter((post) => post.userId !== id));
     setNotifications((rows) => rows.filter((notification) => notification.actorId !== id));
     try {
-      await saveAccountMute(id, true);
+      await saveAccountMute(id, true, { expectedAccountId: actor.id });
+      if (!isCurrent()) return { ok: false, stale: true };
       return { ok: true };
     } catch (error) {
-      if (sessionRef.current?.id === accountId) setMutedIds((ids) => ids.filter((value) => value !== id));
+      if (!isCurrent()) return { ok: false, stale: true };
+      setMutedIds((ids) => ids.filter((value) => value !== id));
       return { ok: false, error };
     }
   };
   const unmuteUser = async (id) => {
-    if (!session || !isMuted(id)) return { ok: false };
-    const accountId = session.id;
+    const actor = currentMutationActor();
+    if (!actor || !isMuted(id)) return { ok: false };
+    const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
+    const isCurrent = () => accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current);
     setMutedIds((ids) => ids.filter((value) => value !== id));
     try {
-      await saveAccountMute(id, false);
+      await saveAccountMute(id, false, { expectedAccountId: actor.id });
+      if (!isCurrent()) return { ok: false, stale: true };
       return { ok: true };
     } catch (error) {
-      if (sessionRef.current?.id === accountId) setMutedIds((ids) => [...new Set([...ids, id])]);
+      if (!isCurrent()) return { ok: false, stale: true };
+      setMutedIds((ids) => [...new Set([...ids, id])]);
       return { ok: false, error };
     }
   };
@@ -4479,8 +4540,11 @@ export function StoreProvider({ children }) {
   };
 
   const notInterested = (postId) => {
-    if (!session?.id || !postId) return Promise.resolve({ ok: false });
-    const accountId = session.id;
+    const actor = currentMutationActor();
+    if (!actor || !postId) return Promise.resolve({ ok: false });
+    const accountId = actor.id;
+    const mutation = captureAccountMutation(accountId, accountMutationEpochRef.current);
+    const isCurrent = () => accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current);
     const mutationKey = recommendationPreferenceMutationKey(accountId, postId);
     recommendationPreferenceRevisionRef.current += 1;
     setRecommendationHiddenIds((current) => {
@@ -4495,9 +4559,11 @@ export function StoreProvider({ children }) {
         body: { action: "not_interested" },
         context: "Tuning your recommendations",
         silent: true,
+        expectedAccountId: accountId,
       },
     ));
     return operation.promise.then((result) => {
+      if (!isCurrent()) return { ok: false, stale: true };
       track("recommendation_feedback", { postId, action: "not_interested", surface: "everyone" }, { expectedAccountId: accountId });
       return result;
     }).catch((error) => {
@@ -4505,7 +4571,7 @@ export function StoreProvider({ children }) {
       const persisted = loadRecommendationHiddenIds(accountId);
       persisted.delete(postId);
       save(recommendationPreferenceStorageKey(accountId), [...persisted]);
-      if (sessionRef.current?.id === accountId) {
+      if (isCurrent()) {
         setRecommendationHiddenIds((current) => {
           const next = new Set(current);
           next.delete(postId);
@@ -4513,12 +4579,16 @@ export function StoreProvider({ children }) {
           return next;
         });
       }
+      if (!isCurrent()) return { ok: false, stale: true };
       throw error;
     });
   };
   const undoNotInterested = (postId) => {
-    if (!session?.id || !postId) return Promise.resolve({ ok: false });
-    const accountId = session.id;
+    const actor = currentMutationActor();
+    if (!actor || !postId) return Promise.resolve({ ok: false });
+    const accountId = actor.id;
+    const mutation = captureAccountMutation(accountId, accountMutationEpochRef.current);
+    const isCurrent = () => accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current);
     const mutationKey = recommendationPreferenceMutationKey(accountId, postId);
     recommendationPreferenceRevisionRef.current += 1;
     setRecommendationHiddenIds((current) => {
@@ -4533,20 +4603,22 @@ export function StoreProvider({ children }) {
         method: "DELETE",
         context: "Restoring this recommendation",
         silent: true,
+        expectedAccountId: accountId,
       },
     ));
-    return operation.promise.catch((error) => {
+    return operation.promise.then((result) => isCurrent() ? result : { ok: false, stale: true }).catch((error) => {
       if (!recommendationPreferenceMutationsRef.current.isCurrent(operation)) throw error;
       const persisted = loadRecommendationHiddenIds(accountId);
       persisted.add(postId);
       save(recommendationPreferenceStorageKey(accountId), [...persisted]);
-      if (sessionRef.current?.id === accountId) {
+      if (isCurrent()) {
         setRecommendationHiddenIds((current) => {
           const next = new Set([...current, postId]);
           save(recommendationPreferenceStorageKey(accountId), [...next]);
           return next;
         });
       }
+      if (!isCurrent()) return { ok: false, stale: true };
       throw error;
     });
   };

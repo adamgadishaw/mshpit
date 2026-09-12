@@ -45,6 +45,7 @@ import {
   mediaConfigured,
   privateMediaIsolationStatus,
   privateVideoMediaConfigured,
+  waitForPrivateMediaIsolationReady,
 } from "./media.js";
 import {
   assertPhotosMatchSelection,
@@ -73,6 +74,7 @@ import { directMessageReadProjection, dmReadRoutes } from "./dmReadRoutes.js";
 import { createMessageRelationshipContextService } from "./features/messaging/messageRelationshipContext.js";
 import { postTagRoutes } from "./postTagRoutes.js";
 import { artistReviewRoutes } from "./features/artistReviews/artistReviewRoutes.js";
+import { concertHistoryRoutes } from "./features/concertHistory/concertHistoryRoutes.js";
 import { artistResolveRoutes } from "./features/artistSearch/artistResolveRoutes.js";
 import { artistArchiveRoutes } from "./features/artistArchive/artistArchiveRoutes.js";
 import { createArtistLiveSummaryService } from "./features/artistArchive/artistLiveSummaryService.js";
@@ -275,7 +277,7 @@ const VIDEO_VERIFY_GLOBAL_HOURLY_LIMIT = 2_000;
 const ARTIST_TOURDATE_DEMAND_USER_HOURLY_LIMIT = 12;
 const ARTIST_TOURDATE_DEMAND_USER_WINDOW_MS = 60 * 60 * 1000;
 const MUSICBRAINZ_ARTIST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
-const MUSICBRAINZ_ARTIST_LOOKUP_TIMEOUT_MS = 12_000;
+const MUSICBRAINZ_ARTIST_LOOKUP_TIMEOUT_MS = 8_000;
 // A resolved MusicBrainz identity does not change, so the last good answer for
 // a name is kept and served while the provider is unavailable. Public catalogue
 // metadata only, never anything a member wrote.
@@ -2964,17 +2966,37 @@ function musicBrainzArtistProjection(candidate) {
   };
 }
 
-function musicBrainzRetryableFailure(error) {
-  const status = Number(error?.status);
-  return error instanceof ProviderError
-    && (error.code === "network" || (Number.isInteger(status) && status >= 500));
+const musicBrainzArtistCandidateInflight = new Map();
+
+function waitForSharedMusicBrainzCandidates(job, signal) {
+  if (signal?.aborted) return Promise.reject(signal.reason || new DOMException("Aborted", "AbortError"));
+  job.waiters += 1;
+  return new Promise((resolve, reject) => {
+    let finished = false;
+    const release = () => {
+      if (finished) return false;
+      finished = true;
+      signal?.removeEventListener("abort", onAbort);
+      job.waiters = Math.max(0, job.waiters - 1);
+      if (!job.settled && job.waiters === 0 && !job.controller.signal.aborted) {
+        job.controller.abort(new DOMException("All artist-lookup callers disconnected.", "AbortError"));
+      }
+      return true;
+    };
+    const onAbort = () => {
+      if (!release()) return;
+      reject(signal.reason || new DOMException("Aborted", "AbortError"));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    job.promise.then(
+      (value) => { if (release()) resolve(value); },
+      (error) => { if (release()) reject(error); },
+    );
+  });
 }
 
-// MusicBrainz sheds load with a 503 during traffic spikes. One retry re-enters
-// the shared start-time queue, so the second attempt still honours the
-// one-request-per-second rule instead of hammering a provider already in trouble.
-async function readMusicBrainzArtistCandidates(name, { signal } = {}) {
-  const attempt = () => runMusicBrainzRequest(async () => {
+async function readMusicBrainzArtistCandidatesUnshared(name, { signal, priority = "normal" } = {}) {
+  return runMusicBrainzRequest(async () => {
     const slash = String.fromCharCode(92);
     const escapedName = name.split(slash).join(slash + slash).split('"').join(slash + '"');
     const query = 'artist:"' + escapedName + '"';
@@ -2999,7 +3021,13 @@ async function readMusicBrainzArtistCandidates(name, { signal } = {}) {
     }
     if (!response.ok) {
       throw new ProviderError("MusicBrainz", response.status, "MusicBrainz did not return a usable response.", {
-        code: response.status === 429 ? "rate_limited" : "http_error",
+        code: response.status === 429
+          ? "rate_limited"
+          : response.status >= 500
+            ? "upstream_5xx"
+            : response.status === 401 || response.status === 403
+              ? "quota_or_forbidden"
+              : "http_error",
       });
     }
     let payload;
@@ -3018,16 +3046,31 @@ async function readMusicBrainzArtistCandidates(name, { signal } = {}) {
     return (Array.isArray(payload?.artists) ? payload.artists : [])
       .map(musicBrainzArtistProjection)
       .filter(Boolean);
-  }, { signal });
-  try {
-    return await attempt();
-  } catch (error) {
-    if (signal?.aborted || !musicBrainzRetryableFailure(error)) throw error;
-    return attempt();
-  }
+  }, { signal, priority });
 }
 
-async function resolveFromMusicBrainz(name, { requireExactIdentity = false, signal } = {}) {
+async function readMusicBrainzArtistCandidates(name, { signal, priority = "normal" } = {}) {
+  const key = normalizedMusicBrainzArtistName(name);
+  if (!key) return [];
+  let job = musicBrainzArtistCandidateInflight.get(key);
+  if (!job) {
+    const controller = new AbortController();
+    job = { controller, promise: null, settled: false, waiters: 0 };
+    job.promise = readMusicBrainzArtistCandidatesUnshared(name, {
+      signal: controller.signal,
+      priority,
+    }).finally(() => {
+      job.settled = true;
+      if (musicBrainzArtistCandidateInflight.get(key) === job) {
+        musicBrainzArtistCandidateInflight.delete(key);
+      }
+    });
+    musicBrainzArtistCandidateInflight.set(key, job);
+  }
+  return waitForSharedMusicBrainzCandidates(job, signal);
+}
+
+async function resolveFromMusicBrainz(name, { requireExactIdentity = false, signal, priority = "normal" } = {}) {
   const requestedIdentity = normalizedMusicBrainzArtistName(name);
   if (!requestedIdentity) {
     if (requireExactIdentity) {
@@ -3038,7 +3081,7 @@ async function resolveFromMusicBrainz(name, { requireExactIdentity = false, sign
 
   let candidates;
   try {
-    candidates = await readMusicBrainzArtistCandidates(name, { signal });
+    candidates = await readMusicBrainzArtistCandidates(name, { signal, priority });
   } catch (error) {
     if (signal?.aborted) throw signal.reason || error;
     throw new ApiError(
@@ -3097,15 +3140,51 @@ function cachedMusicBrainzResolution(name) {
   }
   const rememberedName = clean(stored?.name, { max: 241 });
   const mbid = String(stored?.mbid || "").trim().toLowerCase();
-  if (!rememberedName || !MUSICBRAINZ_ARTIST_ID.test(mbid)) return null;
-  return { ...stored, name: rememberedName, mbid };
+  if (!rememberedName || !MUSICBRAINZ_ARTIST_ID.test(mbid)
+    || normalizedMusicBrainzArtistName(rememberedName) !== normalizedMusicBrainzArtistName(name)) return null;
+  return {
+    artist: { ...stored, name: rememberedName, mbid },
+    fresh: Number(row.expires_at) > Date.now(),
+  };
 }
 
 function rememberMusicBrainzResolution(name, artist) {
   const key = musicBrainzResolveCacheKey(name);
-  if (!key || !artist?.mbid) return;
+  if (!key || !artist?.mbid
+    || normalizedMusicBrainzArtistName(artist.name) !== normalizedMusicBrainzArtistName(name)) return;
   const at = Date.now();
   providerCacheStmts.set.run(key, JSON.stringify(artist), at, at + MUSICBRAINZ_RESOLVE_CACHE_MS);
+}
+
+// Deezer is a request-scoped availability fallback, not an identity authority.
+// It is used only when exactly one provider ID has the requested normalized
+// name. Ambiguous same-name acts deliberately remain unresolved for the
+// listener to choose through the existing candidates flow.
+async function resolveFromDeezerExactName(name, { signal } = {}) {
+  const requested = normalizeMusicText(name);
+  if (!requested) return null;
+  let candidates;
+  try {
+    candidates = await findDeezerArtistCandidates(name, { limit: 10, signal });
+  } catch (error) {
+    if (signal?.aborted) throw signal.reason || error;
+    if (error instanceof ProviderError) return null;
+    throw error;
+  }
+  const exact = new Map(
+    candidates
+      .filter((candidate) => normalizeMusicText(candidate?.name) === requested)
+      .map((candidate) => [String(candidate.id), candidate]),
+  );
+  if (exact.size !== 1) return null;
+  const candidate = exact.values().next().value;
+  return {
+    name: clean(candidate.name, { max: 120 }),
+    deezerId: String(candidate.id),
+    photo: candidate.photo || null,
+    followers: Math.max(0, Number(candidate.fans) || 0),
+    rank_score: Math.max(1, Number(candidate.fans) || 1),
+  };
 }
 
 function resolveCatalogArtistReference(value) {
@@ -3115,7 +3194,11 @@ function resolveCatalogArtistReference(value) {
 }
 
 async function persistExactMusicBrainzIdentity(name, { signal, expectedMbid = null, assertAuthorized } = {}) {
-  const resolved = await resolveFromMusicBrainz(name, { requireExactIdentity: true, signal });
+  const resolved = await resolveFromMusicBrainz(name, {
+    requireExactIdentity: true,
+    signal,
+    priority: "interactive",
+  });
   return atomicWrite(() => {
     assertAuthorized?.();
     const artistKey = normalizedMusicBrainzArtistName(resolved.name);
@@ -3679,6 +3762,7 @@ function staffHealthProjection(actor) {
         ...youtubeProviderStatus(),
         actorAllowance,
       },
+      musicBrainzLookup: runMusicBrainzRequest.status(),
       wikidataLookup: wikidataProviderStatus(),
       tourProviderConfigured: !!(process.env.TICKETMASTER_KEY || process.env.BANDSINTOWN_APP_ID),
       tourDates: db.prepare("SELECT COUNT(*) c FROM tour_dates").get().c,
@@ -4098,6 +4182,7 @@ export const routes = {
     rateLimit: limit,
     requireVerifiedUser,
   }),
+  ...concertHistoryRoutes({ database: db, ApiError, visibleProfileOrNull, blockedEitherWay, rateLimit: limit, now }),
   ...artistReviewRoutes({
     database: db,
     ApiError,
@@ -4293,12 +4378,25 @@ export const routes = {
     // createMediaAsset still validates the complete retry identity/hash. The
     // flag only prevents a second signed writer from being minted for the same
     // validated row while its detached verifier job is reading it.
-    return createMediaAsset(db, {
+    const create = () => createMediaAsset(db, {
       ownerId: u.id,
       body: ctx.body,
       at: now(),
       suppressDuplicateUpload,
     });
+    // On a cold restart the server begins accepting requests before the shared
+    // private-bucket proof can finish. Join that one bounded recovery result
+    // instead of failing every concurrent upload immediately; the waiter never
+    // performs provider I/O itself and explicit exposure/config failures still
+    // reject without delay.
+    if (String(process.env.NODE_ENV || "").toLowerCase() === "production"
+        && !privateMediaIsolationStatus(process.env).ready) {
+      return waitForPrivateMediaIsolationReady({ env: process.env, signal: ctx.signal }).then(() => {
+        ctx.assertCurrentSession?.();
+        return create();
+      });
+    }
+    return create();
   },
 
   // A signed HEAD confirms ticket MIME/length. Readiness-gated private-derivative-v1
@@ -4308,7 +4406,8 @@ export const routes = {
   // remain client-declared until an authoritative image probe exists.
   "POST /api/media/assets/:id/finalize": async (ctx) => {
     const u = requireUser(ctx);
-    const owned = db.prepare("SELECT kind,mime_type FROM media_assets WHERE id=? AND owner_id=?").get(ctx.params.id, u.id);
+    const owned = db.prepare("SELECT kind,mime_type,source_storage_scope FROM media_assets WHERE id=? AND owner_id=?")
+      .get(ctx.params.id, u.id);
     if (!owned) throw new ApiError(404, "That media item was not found.", "NOT_FOUND");
     const video = owned?.kind === "video";
     const capabilities = video ? runtimeMediaPublishingCapabilities() : null;
@@ -4355,6 +4454,12 @@ export const routes = {
         });
         ctx.assertCurrentSession?.();
         return { ...result, finalize: { state: "completed" } };
+      }
+      if (owned.source_storage_scope === "private"
+          && String(process.env.NODE_ENV || "").toLowerCase() === "production"
+          && !privateMediaIsolationStatus(process.env).ready) {
+        await waitForPrivateMediaIsolationReady({ env: process.env, signal: ctx.signal });
+        ctx.assertCurrentSession?.();
       }
       const ownerId = u.id;
       const assetId = ctx.params.id;
@@ -4422,6 +4527,12 @@ export const routes = {
       return { asset: initialAsset, finalize: started.finalize };
     }
 
+    if (owned.source_storage_scope === "private"
+        && String(process.env.NODE_ENV || "").toLowerCase() === "production"
+        && !privateMediaIsolationStatus(process.env).ready) {
+      await waitForPrivateMediaIsolationReady({ env: process.env, signal: ctx.signal });
+      ctx.assertCurrentSession?.();
+    }
     const result = await finalizeMediaAsset(db, {
       ownerId: u.id,
       assetId: ctx.params.id,
@@ -4706,23 +4817,63 @@ export const routes = {
       },
       created: false,
     };
+    const remembered = cachedMusicBrainzResolution(name);
+    if (remembered?.fresh) {
+      return {
+        artist: {
+          ...publicArtist(artistRow(remembered.artist.name, remembered.artist, "musicbrainz")),
+          fanClubAvailable: true,
+        },
+        created: false,
+        transient: true,
+        cached: true,
+      };
+    }
     limit(ctx, "resolve", 90, 10 * 60 * 1000); // cap outbound MB lookups per client
     let mb;
     try {
-      mb = await resolveFromMusicBrainz(name, { signal: ctx.signal });
+      mb = await resolveFromMusicBrainz(name, { signal: ctx.signal, priority: "interactive" });
     } catch (error) {
       // A provider outage must not fail a lookup this catalogue has already
       // answered. Every other failure, including no exact match, still fails.
-      const remembered = error?.code === "PROVIDER_UNAVAILABLE" ? cachedMusicBrainzResolution(name) : null;
-      if (!remembered) throw error;
+      if (error?.code !== "PROVIDER_UNAVAILABLE") throw error;
+      if (remembered) {
+        return {
+          artist: {
+            ...publicArtist(artistRow(remembered.artist.name, remembered.artist, "musicbrainz")),
+            fanClubAvailable: true,
+          },
+          created: false,
+          transient: true,
+          cached: true,
+          stale: true,
+        };
+      }
+      const fallback = await resolveFromDeezerExactName(name, { signal: ctx.signal });
+      if (!fallback) throw error;
       return {
-        artist: { ...publicArtist(artistRow(remembered.name, remembered, "musicbrainz")), fanClubAvailable: true },
+        artist: {
+          ...publicArtist(artistRow(fallback.name, fallback, "deezer")),
+          fanClubAvailable: true,
+        },
         created: false,
         transient: true,
-        stale: true,
+        providerFallback: "deezer",
       };
     }
-    if (!mb) return { artist: null, created: false };
+    if (!mb) {
+      const fallback = await resolveFromDeezerExactName(name, { signal: ctx.signal });
+      if (!fallback) return { artist: null, created: false };
+      return {
+        artist: {
+          ...publicArtist(artistRow(fallback.name, fallback, "deezer")),
+          fanClubAvailable: true,
+        },
+        created: false,
+        transient: true,
+        providerFallback: "deezer",
+      };
+    }
     rememberMusicBrainzResolution(name, mb);
     return {
       artist: { ...publicArtist(artistRow(mb.name, mb, "musicbrainz")), fanClubAvailable: true },
@@ -5215,6 +5366,18 @@ export const routes = {
           // Stop before committing; a later disconnect cannot undo this commit.
           ctx.signal?.throwIfAborted();
           const accounts = q.usersByEmail.all(v.email);
+          const accountSnapshotUnchanged = accounts.length === existingAccounts.length
+            && accounts.every((account) => existingAccounts.some((proof) => (
+              proof.id === account.id && proof.pass_hash === account.pass_hash
+            )));
+          // An ordinary signup may intentionally create the second account when
+          // its password differs, but only from the exact account set that was
+          // inspected before hashing. Without this in-transaction fence, two
+          // simultaneous first signups can both observe an empty address and the
+          // second request silently becomes an unintended sibling account.
+          if (!addingAccount && !createAdditional && !accountSnapshotUnchanged) {
+            throw new ApiError(409, "Accounts for this email changed while signup was finishing. Try again.", "CONFLICT");
+          }
           if (createAdditional && !addingAccount && !accounts.some((user) => matching.some((proof) => proof.id === user.id && proof.pass_hash === user.pass_hash))) throw new ApiError(409, "Your account changed. Try signing up again.", "CONFLICT");
           if (addingAccount) {
             ctx.assertCurrentSession?.();
@@ -5454,6 +5617,7 @@ export const routes = {
     const hasGenres = Object.prototype.hasOwnProperty.call(ctx.body || {}, "genres");
     const hasDirectMessagePolicy = Object.prototype.hasOwnProperty.call(ctx.body || {}, "directMessagePolicy");
     const hasProfileAudience = Object.prototype.hasOwnProperty.call(ctx.body || {}, "profileAudience");
+    const hasConcertMapVisible = Object.prototype.hasOwnProperty.call(ctx.body || {}, "concertMapVisible");
     const hasAgeBand = Object.prototype.hasOwnProperty.call(ctx.body || {}, "ageBand");
     const incomingGenres = hasGenres ? profileGenreSelection(ctx.body.genres) : null;
     if (hasGenres && !incomingGenres.valid) {
@@ -5467,6 +5631,9 @@ export const routes = {
     }
     if (hasProfileAudience && !PROFILE_AUDIENCES.includes(ctx.body.profileAudience)) {
       throw new ApiError(400, "Choose who can see your profile.", "VALIDATION_FAILED");
+    }
+    if (hasConcertMapVisible && typeof ctx.body.concertMapVisible !== "boolean") {
+      throw new ApiError(400, "concertMapVisible must be a boolean.", "VALIDATION_FAILED");
     }
     if (hasAgeBand && !isClassifiedAccountAgeBand(ctx.body.ageBand)) {
       throw new ApiError(400, "Choose 13-17 or 18 or older.", "VALIDATION_FAILED");
@@ -5487,7 +5654,7 @@ export const routes = {
       // compatibility-envelope patch may neither forge nor erase any of them.
       const requested = incomingExtras.value;
       const current = canonicalProfileExtras(parseStoredProfileExtras(u.extras)).value;
-      for (const key of ["consentAt", "analyticsConsentAt", "termsAcceptedAt", "termsVersion", "analyticsOptOut", "searchIndexingOptOut"]) {
+      for (const key of ["consentAt", "analyticsConsentAt", "termsAcceptedAt", "termsVersion", "analyticsOptOut", "searchIndexingOptOut", "concertMapVisible"]) {
         if (current[key] === undefined) delete requested[key];
         else requested[key] = current[key];
       }
@@ -5522,6 +5689,7 @@ export const routes = {
       // stale theme on /api/me and the client "snaps back" to a previous theme.
       theme: { parse: (x) => (["stage", "neon", "forest", "ember", "backstage", "vinyl", "daylight", "ice", "rose", "mint", "sunset", "lavender"].includes(x) ? x : undefined) },
       searchIndexingOptOut: { parse: (x) => (typeof x === "boolean" ? x : undefined) },
+      concertMapVisible: { parse: (x) => (typeof x === "boolean" ? x : undefined) },
       extras: { parse: () => serializedExtras },
     });
     if (profileErrors.length) {
@@ -5579,10 +5747,11 @@ export const routes = {
     if (ageBandClassificationPending) { sets.push("age_band = ?"); args.push(v.ageBand); }
     // Theme is stored inside the extras blob, so it survives sign-out and follows
     // the account. Merge it with an extras patch when both arrive together.
-    if (v.theme || v.searchIndexingOptOut !== undefined) {
+    if (v.theme || v.searchIndexingOptOut !== undefined || v.concertMapVisible !== undefined) {
       const cur = parseStoredProfileExtras(v.extras ?? u.extras);
       if (v.theme) cur.theme = v.theme;
       if (v.searchIndexingOptOut !== undefined) cur.searchIndexingOptOut = v.searchIndexingOptOut;
+      if (v.concertMapVisible !== undefined) cur.concertMapVisible = v.concertMapVisible;
       const encoded = serializeProfileExtras(cur);
       if (!encoded) throw new ApiError(400, `profile metadata must be no larger than ${PROFILE_EXTRAS_MAX_BYTES} bytes.`);
       sets.push("extras = ?"); args.push(encoded);

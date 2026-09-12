@@ -302,11 +302,12 @@ test("the shared Store rotates profile history at auth boundaries and scrubs it 
   const blockStart = source.indexOf("const blockUser =");
   const blockEnd = source.indexOf("const unblockUser =", blockStart);
   assert.ok(blockStart >= 0 && blockEnd > blockStart);
-  assert.match(source.slice(blockStart, blockEnd), /\.then\(\(\) => \{\s*scrubBlockedProfileHistoryPerson\(accountId, id\)/);
-  assert.match(source.slice(blockStart, blockEnd), /sessionRef\.current\?\.id !== accountId/);
+  assert.match(source.slice(blockStart, blockEnd), /captureAccountMutation\(accountId, accountMutationEpochRef\.current\)/);
+  assert.match(source.slice(blockStart, blockEnd), /\.then\(\(\) => \{\s*if \(!isCurrent\(\)\) return \{ ok: false, stale: true \};\s*scrubBlockedProfileHistoryPerson\(accountId, id\)/);
 
   const unblockStart = blockEnd;
   const unblockEnd = source.indexOf("const blockedUsers =", unblockStart);
   assert.ok(unblockEnd > unblockStart);
-  assert.match(source.slice(unblockStart, unblockEnd), /\.then\(\(\) => \{[\s\S]*resetProfileHistoryAccount\(accountId\)/);
+  assert.match(source.slice(unblockStart, unblockEnd), /captureAccountMutation\(accountId, accountMutationEpochRef\.current\)/);
+  assert.match(source.slice(unblockStart, unblockEnd), /\.then\(\(\) => \{\s*if \(!isCurrent\(\)\) return \{ ok: false, stale: true \};[\s\S]*resetProfileHistoryAccount\(accountId\)/);
 });

@@ -6,8 +6,10 @@ export const fetchMutedAccounts = (accountId) => api("/api/me/muted", {
   expectedAccountId: accountId,
 });
 
-export const saveAccountMute = (id, muted) => api(`/api/users/${id}/mute`, {
+export const saveAccountMute = (id, muted, { expectedAccountId, signal } = {}) => api(`/api/users/${id}/mute`, {
   method: "POST",
   body: { muted },
   context: muted ? "Muting this account" : "Unmuting this account",
+  expectedAccountId,
+  signal,
 });

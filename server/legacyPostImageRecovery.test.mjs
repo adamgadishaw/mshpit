@@ -123,6 +123,40 @@ test("automatic legacy recovery is serial, bounded, observable, and stoppable", 
   assert.equal(legacyImageRecoveryHealth(db).lastErrorCode, "TEST_RECOVERY_FAILED");
   await failingScheduler.stop();
 });
+
+test("legacy recovery backlog cannot hot-loop isolated image workers", async () => {
+  const timers = [];
+  const cleared = [];
+  const database = { prepare() {} };
+  const scheduler = startLegacyImageRecoveryScheduler({
+    database,
+    initialDelayMs: 0,
+    intervalMs: 5 * 60_000,
+    continuationDelayMs: 1_000,
+    drain: async () => ({
+      scanned: 2,
+      recovered: [{ kind: "post" }, { kind: "profile" }],
+      failed: [],
+      exhausted: false,
+      limitReached: true,
+    }),
+    setTimerFn(callback, delay) {
+      const timer = { callback, delay, unref() {} };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimerFn(timer) { cleared.push(timer); },
+  });
+
+  assert.equal(timers[0].delay, 0);
+  timers[0].callback();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(timers.length, 2);
+  assert.equal(timers[1].delay, 60_000,
+    "even an unsafe override cannot restart decoder work more than once per minute");
+  await scheduler.stop();
+  assert.deepEqual(cleared, [timers[1]]);
+});
 after(() => {
   db.close();
   rmSync(dataDir, { recursive: true, force: true });

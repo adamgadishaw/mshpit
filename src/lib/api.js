@@ -24,6 +24,7 @@ const BASE = apiBaseForRuntime({
 // action. `/api/me` is the sole identity-discovery call and opts out explicitly.
 let apiIdentity = { accountId: null, ready: false, generation: 0 };
 const identityWaiters = new Set();
+const MAX_IDENTITY_WAITERS = 128;
 
 // Remove cancelled waiters even if account discovery never completes offline.
 function waitForApiIdentity(signal) {
@@ -42,6 +43,18 @@ function waitForApiIdentity(signal) {
       resolve();
     };
     if (signal.aborted) return onAbort();
+    // A broken screen must not retain an unbounded number of API continuations
+    // while the authoritative /api/me handshake is offline or stalled. Normal
+    // startup is well below this ceiling; excess work fails before fetch and can
+    // be retried after identity settles.
+    if (identityWaiters.size >= MAX_IDENTITY_WAITERS) {
+      return reject(new AppError("The app is still confirming your account. Try again in a moment.", {
+        status: 503,
+        serverCode: "IDENTITY_BARRIER_BUSY",
+        retryable: true,
+        source: "api",
+      }));
+    }
     signal.addEventListener("abort", onAbort, { once: true });
     identityWaiters.add(onReady);
     onReady();

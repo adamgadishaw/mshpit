@@ -11,7 +11,7 @@ const hooks = registerHooks({
     return nextResolve(specifier, context);
   },
 });
-const { reportClientCrash, resetClientCrashReporterForTests } = await import("./clientCrashReporter.js");
+const { configureClientCrashSurface, reportClientCrash, resetClientCrashReporterForTests } = await import("./clientCrashReporter.js");
 hooks.deregister();
 
 const origin = "https://app.example";
@@ -67,6 +67,18 @@ test("legacy reports remain safe and invalid request references are discarded", 
   const fetch = setup(t, async () => new Response(null, { status: 200, headers: { "X-Request-Id": "private" } }));
   assert.deepEqual(await reportClientCrash({ kind: "render" }), { requestId: null });
   assert.deepEqual(JSON.parse(fetch.mock.calls[0].arguments[1].body), { kind: "render", platform: "web", surface: "landing" });
+});
+
+test("active SPA navigation overrides the root URL without exposing screen parameters", async (t) => {
+  const fetch = setup(t, async () => new Response(null, { status: 200 }));
+  assert.equal(configureClientCrashSurface("tab_you"), "you");
+  await reportClientCrash({ kind: "render", error: crash() });
+  assert.equal(JSON.parse(fetch.mock.calls[0].arguments[1].body).surface, "you");
+
+  resetClientCrashReporterForTests();
+  assert.equal(configureClientCrashSurface("profile:@private-person"), "app");
+  await reportClientCrash({ kind: "runtime", error: crash(ReferenceError, 3) });
+  assert.equal(JSON.parse(fetch.mock.calls[1].arguments[1].body).surface, "app");
 });
 
 test("report transport finishes after its deadline even if fetch ignores cancellation", async (t) => {

@@ -24,6 +24,9 @@ import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import useScopedRefresh from "../hooks/useScopedRefresh";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
 import ExpandableText from "../components/ExpandableText";
+import { useConcertHistory } from "../features/concertHistory/useConcertHistory";
+import { concertNightKey } from "../features/concertHistory/concertHistoryModel.mjs";
+import ConcertHistory from "../features/concertHistory/ConcertHistory";
 
 const EMPTY_PROFILE_STATE = Object.freeze({ status: "loading", user: null, error: "" });
 const EMPTY_LIST = Object.freeze([]);
@@ -73,7 +76,10 @@ const ProfileTicketRow = memo(function ProfileTicketRow({ log, actionsRef, capab
   const removeMyPostTag = useCallback((...args) => actionsRef.current.onRemoveMyPostTag?.(...args), [actionsRef]);
   const deletePost = useCallback(async (postId) => {
     const result = await actionsRef.current.deleteOwnPost?.(postId);
-    if (result?.ok) actionsRef.current.removeHistoryPost?.(postId);
+    if (result?.ok) {
+      actionsRef.current.removeHistoryPost?.(postId);
+      actionsRef.current.removeConcertPost?.(postId);
+    }
     return result;
   }, [actionsRef]);
   const selfTagRemoved = useCallback(({ id, version, userId: removedUserId }) => {
@@ -109,7 +115,7 @@ const ProfileTicketRow = memo(function ProfileTicketRow({ log, actionsRef, capab
 // Public member profile: musical identity, live history, media, plans, and posts.
 export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenPost, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onManageProfile, onMessage, onReport, onEditPost, onOpenPhotos, onRemoveMyPostTag, onOpenFollowList, onOpenBadges, onRequireAuth }) {
   const appActive = useAppActive();
-  const { session, userById, logsByUser, isFollowing, follow, unfollow, followerCount, followingCount, goingFor, myAttendance, userBadges, sharedShows, loadUser, isBlocked, blockUser, unblockUser, isMuted, muteUser, unmuteUser, userPoints, userAchievements, loadRewards, deleteOwnPost } = useStore();
+  const { session, authReady, chatAuthEpoch, userById, logsByUser, isFollowing, follow, unfollow, followerCount, followingCount, goingFor, myAttendance, userBadges, sharedShows, loadUser, isBlocked, blockUser, unblockUser, isMuted, muteUser, unmuteUser, userPoints, userAchievements, loadRewards, deleteOwnPost } = useStore();
   const profileScope = accountTargetScope(session?.id, `profile:${userId || ""}`);
   const profileScopeRef = useRef(profileScope);
   profileScopeRef.current = profileScope;
@@ -130,6 +136,13 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenPost,
     ? null
     : session?.id === userId ? { ...cachedUser, ...session } : cachedUser;
   const isSelf = !!user && session?.id === user.id;
+  const concertScope = `${profileScope}:${chatAuthEpoch}:${user?.concertMapVisible !== false}`;
+  const concertScopeRef = useRef(concertScope);
+  concertScopeRef.current = concertScope;
+  const concertHistory = useConcertHistory({
+    accountId: session?.id || null, authEpoch: chatAuthEpoch, targetId: userId,
+    enabled: authReady && !!user, mapVisible: user?.concertMapVisible !== false,
+  });
   const historyOwnsLogs = history.posts.length > 0 || history.status === "ready";
   const cachedLogs = user && !historyOwnsLogs ? logsByUser(user.id) : EMPTY_LIST;
   const logs = user ? (historyOwnsLogs ? history.posts : cachedLogs) : EMPTY_LIST;
@@ -144,8 +157,25 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenPost,
     posts: logs,
   }) : EMPTY_CALENDAR, [calendarDay, going, isSelf, logs, myAttendance, user?.id]);
   const planned = profileCalendar.upcoming;
-  const pastShows = profileCalendar.past;
-  const pastShowPreview = useMemo(() => pastShows.slice(0, 3), [pastShows]);
+  // Keep the owner's private Went entries in their own history. Public review
+  // history comes from its bounded, permission-checked endpoint, not the feed.
+  const concertRows = useMemo(() => {
+    if (!isSelf) return concertHistory.concerts;
+    const privateShows = memberCalendarModel({ today: new Date(), attendance: myAttendance, posts: [] }).past
+      .filter((show) => show.attended);
+    const posted = new Set(concertHistory.concerts.map(concertNightKey));
+    return [...concertHistory.concerts, ...privateShows.filter((show) => !posted.has(concertNightKey(show))).map((show) => ({
+      ...show, id: `attendance:${show.calendarKey || show.key}`, postId: null,
+      lat: null, lng: null, country: null, countryCode: null, photo: null,
+    }))];
+  }, [calendarDay, concertHistory.concerts, isSelf, myAttendance]);
+  const openHistoryConcert = useCallback((concert) => {
+    if (!concert.postId) { if (isSelf) onOpenShow?.(concert); return; }
+    const scope = concertScope;
+    void concertHistory.openConcert(concert, (post) => {
+      if (concertScopeRef.current === scope) onOpenPost?.(post);
+    });
+  }, [concertScope, concertHistory.openConcert, isSelf, onOpenPost, onOpenShow]);
   const gallery = useMemo(() => profileMediaItems(logs, { isSelf }), [isSelf, logs]);
   const galleryPreview = useMemo(() => gallery.slice(0, 3), [gallery]);
   const galleryViewerItems = useMemo(
@@ -190,6 +220,7 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenPost,
     onReport,
     onRequireAuth,
     removeHistoryPost: history.removePost,
+    removeConcertPost: concertHistory.removePost,
     updateHistoryPost: history.updatePost,
   };
   useEffect(() => {
@@ -236,10 +267,11 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenPost,
     enabled: !!userId,
     task: async ({ signal }) => {
       const requestScope = profileScope;
-      const [outcome, historyOutcome, rewards] = await Promise.all([
+      const [outcome, historyOutcome, rewards, concertsOutcome] = await Promise.all([
         loadUser(userId, { signal }),
         history.retry(),
         loadRewards(userId, { signal }),
+        concertHistory.refresh(),
       ]);
       if (signal.aborted || profileScopeRef.current !== requestScope) return { stale: true };
       setProfileState({
@@ -257,7 +289,7 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenPost,
           ? outcome.error
           : new Error(outcome?.error || "This profile could not be refreshed.");
       }
-      return { outcome, historyOutcome, rewards };
+      return { outcome, historyOutcome, rewards, concertsOutcome };
     },
   });
   if (!user) {
@@ -537,21 +569,20 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenPost,
           );
         })}
 
-        <Text style={styles.sectionLabel}>PAST SHOWS · {historyCount(pastShows.length)}</Text>
-        {pastShowPreview.length === 0 && !historyLoading ? <Text style={styles.empty}>No past shows yet.</Text> : null}
-        {pastShowPreview.map((p) => (
-          <Pressable key={p.calendarKey || p.key || p.postId} style={styles.showRow} onPress={() => onOpenShow?.(p)}>
-            <View style={styles.goingDot}><Icon name="archive" size={15} color={colors.amber} /></View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.showArtist}>{p.artist}</Text>
-              <Text style={styles.showVenue}>{p.venue} · {formatDate(p.date, p.date)}</Text>
-            </View>
-            <View style={styles.showSource}><Text style={styles.showSourceTxt}>{p.logged ? "LOGGED" : p.attended ? "WENT" : "POSTED"}</Text></View>
-          </Pressable>
-        ))}
-        {pastShows.length > pastShowPreview.length ? (
-          <Text style={styles.calendarSummaryHint}>Most recent shows are summarized here; the full dated history remains in Calendar.</Text>
-        ) : null}
+        <ConcertHistory
+            key={concertScope}
+            concerts={concertRows}
+            status={concertHistory.status}
+            complete={concertHistory.complete}
+            loadingMore={concertHistory.loadingMore}
+            error={concertHistory.error}
+            onRetry={concertHistory.retry}
+            onLoadMore={concertHistory.loadMore}
+            onOpenConcert={openHistoryConcert}
+            openingId={concertHistory.openingId}
+            openingError={concertHistory.openingError}
+            mapVisible={user.concertMapVisible !== false && concertHistory.mapVisible}
+        />
 
         {/* their posts, the same feed card as home, so a profile reads like a
             wall of everything this person has posted (Facebook/Letterboxd style) */}

@@ -99,6 +99,44 @@ test("already running maintenance permits an interactive photo only if both rese
   assert.equal(admission.snapshot().reservedBytes, 0);
 });
 
+test("bounded waiters prioritize interactive work over earlier background recovery", async () => {
+  const admission = createMemoryAdmission({ readMemory: healthy });
+  const sitemap = admission.tryAcquire("sitemap");
+  assert.ok(sitemap);
+  const background = admission.acquire("background", { priority: "background", timeoutMs: 1_000 });
+  const share = admission.acquire("share", { priority: "interactive", timeoutMs: 1_000 });
+  assert.deepEqual(admission.snapshot().queuedByKind,
+    { image: 0, share: 1, sitemap: 0, background: 1 });
+  sitemap.release();
+  const shareLease = await share;
+  assert.ok(shareLease);
+  assert.deepEqual(admission.snapshot().activeKinds, ["share"]);
+  assert.equal(admission.snapshot().queuedByKind.background, 1);
+  shareLease.release();
+  const backgroundLease = await background;
+  assert.ok(backgroundLease);
+  backgroundLease.release();
+  assert.equal(admission.snapshot().queued, 0);
+  assert.equal(admission.snapshot().admittedByKind.share, 1);
+});
+
+test("aborting a memory waiter immediately releases its retained-byte budget", async () => {
+  const admission = createMemoryAdmission({ readMemory: healthy });
+  const image = admission.tryAcquire("image");
+  const controller = new AbortController();
+  const pending = admission.acquire("share", {
+    signal: controller.signal,
+    retainedBytes: 6 * MIB,
+    timeoutMs: 1_000,
+  });
+  assert.equal(admission.snapshot().queuedRetainedBytes, 6 * MIB);
+  controller.abort(new DOMException("caller left", "AbortError"));
+  await assert.rejects(pending, (error) => error.name === "AbortError");
+  assert.equal(admission.snapshot().queuedRetainedBytes, 0);
+  assert.equal(admission.snapshot().queued, 0);
+  image.release();
+});
+
 test("under memory pressure heavy work is deferred without allocating a wait queue", () => {
   const admission = createMemoryAdmission({ readMemory: () => ({ ...healthy(), usedBytes: 2000 * MIB }) });
   for (let index = 0; index < 10000; index += 1) assert.equal(admission.tryAcquire("share"), null);

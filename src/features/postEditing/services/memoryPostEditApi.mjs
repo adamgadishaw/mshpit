@@ -1,4 +1,4 @@
-export async function saveMemoryPostEdit(postId, body, { apiClient, signal } = {}) {
+export async function saveMemoryPostEdit(postId, body, { apiClient, signal, expectedAccountId } = {}) {
   const id = String(postId || "").trim();
   if (!id) throw new TypeError("A fan-memory post id is required.");
   if (typeof apiClient !== "function") throw new TypeError("A fan-memory API client is required.");
@@ -8,6 +8,7 @@ export async function saveMemoryPostEdit(postId, body, { apiClient, signal } = {
     body,
     signal,
     silent: true,
+    expectedAccountId,
   });
   if (!response?.post || typeof response.post !== "object" || Array.isArray(response.post)) {
     throw new TypeError("The saved fan-memory response was invalid.");

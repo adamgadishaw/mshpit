@@ -318,6 +318,11 @@ export function startBackupScheduler({
       const result = await run({ signal });
       logger.log?.(`[pit] database backup verified${result?.uploaded ? " and uploaded off-host" : " on persistent disk"}.`);
     }),
-    report: (error) => logger.error?.(`[pit] scheduled database backup failed safely cause=${privateErrorLabel(error)}; retrying in ${Math.round(Math.max(60_000, Number(retryDelayMs) || BACKUP_RETRY_DELAY_MS) / 60_000)}m`),
+    report: (error, { willRetry, retryDelayMs: scheduledRetryMs } = {}) => logger.error?.(
+      `[pit] scheduled database backup failed safely cause=${privateErrorLabel(error)}`
+      + (willRetry
+        ? `; one recovery retry in ${Math.round(Math.max(60_000, Number(scheduledRetryMs) || Number(retryDelayMs) || BACKUP_RETRY_DELAY_MS) / 60_000)}m`
+        : "; recovery retry exhausted; waiting for the normal backup interval"),
+    ),
   });
 }

@@ -44,20 +44,25 @@ export function createMediaIsolationMonitor({
     active = Promise.resolve().then(() => probe({ signal })).then((status) => {
       if (stopped || signal.aborted) return null;
       const ready = status?.ready === true;
-      const recovered = ready && wasUnavailable;
-      if (ready) failures = 0;
+      const probeHealthy = ready && !status?.errorCode;
+      const recovered = probeHealthy && wasUnavailable;
+      if (probeHealthy) failures = 0;
       else failures = Math.min(failures + 1, 20);
-      wasUnavailable = !ready;
+      // A retained denial proof keeps publishing safe, but the provider probe
+      // itself is still degraded. Preserve that state so the next clean proof
+      // is reported as a recovery and operations can distinguish the grace
+      // window from ordinary healthy monitoring.
+      wasUnavailable = !probeHealthy;
       const transient = ["probe_timeout", "probe_failed", "probe_http_unavailable"].includes(status?.errorCode);
-      const backoff = !ready && transient
+      const backoff = transient
         ? Math.min(maxRetry, retryDelay * (2 ** Math.min(failures - 1, 10)))
         : healthyDelay;
-      const providerDelay = !ready && Number.isFinite(status?.retryAfterMs)
+      const providerDelay = transient && Number.isFinite(status?.retryAfterMs)
         ? Math.max(0, Math.min(2_147_483_647, status.retryAfterMs)) : 0;
       const delay = Math.max(backoff, providerDelay);
       try { onResult(status, { phase, recovered, retryInMs: delay }); }
       catch (error) { reportError(error, phase); }
-      schedule(delay, ready ? "scheduled" : "recovery");
+      schedule(delay, probeHealthy ? "scheduled" : "recovery");
       return status;
     }).catch((error) => {
       if (stopped || signal.aborted) return null;

@@ -74,6 +74,9 @@ async function call(path, {
       method,
       headers: {
         "Content-Type": "application/json",
+        // Exercise the same-origin mutation boundary the browser uses. Omitting
+        // this would test CSRF rejection (403), not write contention.
+        ...(!["GET", "HEAD"].includes(method) ? { Origin: target.origin } : {}),
         ...(cookie ? { Cookie: cookie } : {}),
         ...(visitorIp ? { "CF-Connecting-IP": visitorIp, "X-Forwarded-For": visitorIp } : {}),
         ...(requestHeaders || {}),
@@ -120,54 +123,82 @@ if (health.status !== 200) {
   process.exit(2);
 }
 
-// --- 1. the same email six times, concurrently. The public response is
-//        deliberately privacy-safe (it never reveals whether an account was
-//        created), so exact single-row proof happens below when --data-dir is
-//        available.
-//        Runs FIRST: signup is rate-limited per IP (5 per 15 min by design), and
-//        every request here shares one address, so doing this after the bulk
-//        signups would measure the rate limiter instead of the race. ---
+// --- 1. the same initial signup three times, concurrently. A normal form
+//        double-submit must create only one account. Mshpit deliberately allows
+//        a second account on one email, but that requires the caller's explicit
+//        createAdditional intent; an in-flight retry cannot supply that intent.
+//        Runs FIRST: signup is rate-limited per IP and normalized target. ---
 console.log("1. duplicate signup race");
 const dupeEmail = `stress-${stamp}-dupe@example.test`;
-const dupes = await Promise.all(Array.from({ length: 6 }, () =>
+const dupeBody = {
+  name: "Dupe",
+  email: dupeEmail,
+  password: "horsebattery7",
+  genres: ["Rock"],
+  ageBand: "18_plus",
+  termsVersion: LEGAL_ACCEPTANCE_VERSION,
+};
+const dupes = await Promise.all(Array.from({ length: 3 }, () =>
   call("/api/signup", {
     method: "POST",
-    body: {
-      name: "Dupe",
-      email: dupeEmail,
-      password: "horsebattery7",
-      genres: ["Rock"],
-      ageBand: "18_plus",
-      termsVersion: LEGAL_ACCEPTANCE_VERSION,
-    },
+    body: dupeBody,
   })));
-const acceptedSignups = dupes.filter((entry) => entry.status === 200 && entry.json?.pending === true).length;
+const createdSignups = dupes.filter((entry) => entry.status === 200 && entry.json?.created === true).length;
+const accountChoices = dupes.filter((entry) => entry.status === 200 && entry.json?.needsAccountChoice === true).length;
+const saturatedSignups = dupes.filter((entry) => entry.status === 409 && entry.json?.code === "CONFLICT").length;
 const signupLimited = dupes.filter((entry) => entry.status === 429).length;
-const unexpectedSignup = dupes.length - acceptedSignups - signupLimited;
-console.log(`   ${acceptedSignups} privacy-safe accepted, ${signupLimited} rate-limited, ${unexpectedSignup} unexpected`);
-if (!acceptedSignups || unexpectedSignup) {
+const unexpectedSignup = dupes.length - createdSignups - accountChoices - saturatedSignups - signupLimited;
+console.log(`   ${createdSignups} created, ${accountChoices} account choices, ${saturatedSignups} saturated, ${signupLimited} rate-limited, ${unexpectedSignup} unexpected`);
+if (!createdSignups || unexpectedSignup) {
   stats.errors.push(`duplicate-email race returned ${unexpectedSignup} unexpected responses`);
 }
 
-// --- 2. accounts for the load phase.
+// --- 2. prove the shared-email contract: the ordinary race left one row, one
+//        explicit additional-account request creates row two, and another is
+//        refused without changing the database. ---
+console.log("2. shared-email maximum and explicit intent");
+process.env.PIT_DATA_DIR = dataDir;
+const { db, q } = await import("../server/db.js");
+const { createSession, hashPassword } = await import("../server/auth.js");
+const countSharedEmailRows = () => Number(db.prepare("SELECT COUNT(*) AS count FROM users WHERE lower(email)=lower(?)").get(dupeEmail)?.count);
+const ordinaryRows = countSharedEmailRows();
+console.log(`   ordinary duplicate race persisted ${ordinaryRows} account row${ordinaryRows === 1 ? "" : "s"}`);
+if (ordinaryRows !== 1) stats.errors.push(`ordinary duplicate-email race persisted ${ordinaryRows} account rows`);
+const explicitSecond = await call("/api/signup", { method: "POST", body: { ...dupeBody, createAdditional: true } });
+const afterExplicitSecond = countSharedEmailRows();
+console.log(`   explicit second account returned ${explicitSecond.status}; ${afterExplicitSecond} rows now stored`);
+if (explicitSecond.status !== 200 || explicitSecond.json?.created !== true || afterExplicitSecond !== 2) {
+  stats.errors.push(`explicit second account returned ${explicitSecond.status} and left ${afterExplicitSecond} rows`);
+}
+const refusedThird = await call("/api/signup", { method: "POST", body: { ...dupeBody, createAdditional: true } });
+const afterRefusedThird = countSharedEmailRows();
+console.log(`   third account returned ${refusedThird.status}; ${afterRefusedThird} rows remain`);
+if (refusedThird.status !== 409 || afterRefusedThird !== 2) {
+  stats.errors.push(`third shared-email account returned ${refusedThird.status} and left ${afterRefusedThird} rows`);
+}
+
+// --- 3. accounts for the load phase.
 //
 //        Signup is limited to 5 per 15 minutes PER IP, which is correct and
 //        which a single-machine load test will always hit. The required
 //        isolated --data-dir lets this harness mint test-only sessions directly
 //        instead of weakening or racing that production limit.
-console.log("2. accounts for the load phase");
+console.log("3. accounts for the load phase");
 let signedUp = [];
-process.env.PIT_DATA_DIR = dataDir;
-const { db, q } = await import("../server/db.js");
-const { createSession, hashPassword } = await import("../server/auth.js");
-const duplicateRows = Number(db.prepare("SELECT COUNT(*) AS count FROM users WHERE lower(email)=lower(?)").get(dupeEmail)?.count);
-console.log(`   duplicate-email race persisted ${duplicateRows} account row`);
-if (duplicateRows !== 1) stats.errors.push(`duplicate-email race persisted ${duplicateRows} account rows`);
 const hash = hashPassword("horsebattery7");
+const completeFixtureUser = db.prepare(`UPDATE users SET
+  email_verified_at=?, onboarding_version=1, age_band='18_plus', genres=?, extras=?
+  WHERE id=?`);
 for (let i = 0; i < USERS; i += 1) {
   const id = `u_stress_${stamp}_${i}`;
   try {
     q.insertUser.run(id, `seed-${stamp}-${i}@example.test`, `Seed ${i}`, `seed${stamp}${i}`.slice(0, 20), hash, "fan", "Toronto", 43.65, -79.38, "S", "#123456", Date.now());
+    const completedAt = Date.now();
+    completeFixtureUser.run(completedAt, JSON.stringify(["Rock"]), JSON.stringify({
+      termsAcceptedAt: completedAt,
+      termsVersion: LEGAL_ACCEPTANCE_VERSION,
+      analyticsOptOut: true,
+    }), id);
     const session = createSession(id, "127.0.0.1", "stress");
     signedUp.push({
       id,
@@ -180,8 +211,8 @@ for (let i = 0; i < USERS; i += 1) {
 console.log(`   ${signedUp.length} sessions minted directly (bypassing the per-IP signup limit)`);
 if (!signedUp.length) { console.error("   no accounts available; pass --data-dir <server data dir>"); process.exit(1); }
 
-// --- 3. read load ---
-console.log("3. concurrent reads");
+// --- 4. read load ---
+console.log("4. concurrent reads");
 const readPaths = ["/api/feed?limit=20", "/api/artists?q=drake&limit=5", "/api/health", "/api/me"];
 for (let round = 0; round < ROUNDS; round += 1) {
   await Promise.all(signedUp.map((a, i) => call(readPaths[(round + i) % readPaths.length], {
@@ -191,9 +222,9 @@ for (let round = 0; round < ROUNDS; round += 1) {
 }
 console.log(`   ${ROUNDS * signedUp.length} reads issued`);
 
-// --- 4. concurrent writes, then the count is checked against reality. This is
+// --- 5. concurrent writes, then the count is checked against reality. This is
 //        the lost-update test: N users liking one post must yield exactly N. ---
-console.log("4. write contention on one row");
+console.log("5. write contention on one row");
 const author = signedUp[0];
 const post = await call("/api/posts", {
   method: "POST", cookie: author.cookie, visitorIp: author.visitorIp,
@@ -220,10 +251,10 @@ if (postId) {
 }
 console.log(likeReport);
 
-// --- 5. rate limiting must engage on an active product route and must answer
+// --- 6. rate limiting must engage on an active product route and must answer
 //        429 rather than 500. Playlists are intentionally paused and return 404,
 //        so exercising that retired surface would prove nothing.
-console.log("5. rate limit behaviour");
+console.log("6. rate limit behaviour");
 // Deliberately more than the route's own ceiling (120/10 minutes), so this proves the
 // limiter actually engages. A burst under the limit would pass while testing
 // nothing. What matters is that the refusal is a 429, not a 500 or a crash.

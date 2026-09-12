@@ -199,6 +199,9 @@ test("public health is minimal while detailed readiness requires active staff", 
     assert.equal(typeof staffHealth.services.mail.apiKeyPresent, "boolean");
     assert.equal(typeof staffHealth.services.youtubeLookup?.search?.remaining, "number");
     assert.equal(typeof staffHealth.services.youtubeLookup?.efficiency?.searchCallsReserved, "number");
+    assert.equal(typeof staffHealth.services.musicBrainzLookup?.queued, "number");
+    assert.equal(typeof staffHealth.services.musicBrainzLookup?.capacity, "number");
+    assert.equal(typeof staffHealth.services.musicBrainzLookup?.circuitOpen, "boolean");
     assert.deepEqual(Object.keys(staffHealth.services.privateMediaIsolation).sort(),
       ["checkedAt", "configured", "errorCode", "listStatus", "objectStatus", "ready"].sort());
     assert.equal(typeof staffHealth.services.imageProcessor.available, "boolean");
@@ -2132,6 +2135,59 @@ test("stable media creation rejects disabled video before reserving a ticket and
       objects: count("media_objects"),
       issuances: count("media_upload_issuances"),
     }, beforeVariant, "unverified rendition requests fail before a variant, object, or issuance is written");
+  } finally {
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test("a production upload arriving before the shared privacy proof waits without reserving a ledger row", async () => {
+  const user = verifiedUser("u_media_cold_privacy", "media-cold-privacy@example.com", "mediacoldprivacy");
+  const keys = ["NODE_ENV", "MEDIA_ENDPOINT", "MEDIA_BUCKET", "MEDIA_SOURCE_BUCKET", "MEDIA_REGION",
+    "MEDIA_ACCESS_KEY_ID", "MEDIA_SECRET_ACCESS_KEY", "MEDIA_PUBLIC_BASE_URL"];
+  const previous = new Map(keys.map((key) => [key, process.env[key]]));
+  const count = (table) => db.prepare(`SELECT COUNT(*) count FROM ${table} WHERE owner_id=?`).get(user.id).count;
+  try {
+    Object.assign(process.env, {
+      NODE_ENV: "production",
+      MEDIA_ENDPOINT: "https://objects.example.com/s3",
+      MEDIA_BUCKET: "pit-cold-request",
+      MEDIA_SOURCE_BUCKET: "pit-cold-request-private",
+      MEDIA_REGION: "auto",
+      MEDIA_ACCESS_KEY_ID: "cold-request-access",
+      MEDIA_SECRET_ACCESS_KEY: "cold-request-secret",
+      MEDIA_PUBLIC_BASE_URL: "https://media.example.com/cold-request",
+    });
+    const before = { assets: count("media_assets"), objects: count("media_objects") };
+    let authorizationChecks = 0;
+    const pending = routes["POST /api/media/assets"]({
+      user,
+      ip: "media-cold-privacy",
+      signal: new AbortController().signal,
+      assertCurrentSession: () => { authorizationChecks += 1; },
+      body: {
+        clientAssetId: "media-cold-privacy",
+        purpose: "post",
+        contentType: "image/jpeg",
+        fileSize: 2_048,
+        name: "cold-privacy.jpg",
+      },
+    });
+    assert.equal(typeof pending?.then, "function");
+    const checksBeforeRecovery = authorizationChecks;
+    assert.deepEqual({ assets: count("media_assets"), objects: count("media_objects") }, before,
+      "waiting for the one monitor proof cannot consume a storage ticket");
+    const status = await verifyPrivateMediaBucketIsolation({ env: process.env,
+      fetchImpl: async () => ({ status: 403 }) });
+    assert.equal(status.ready, true);
+    const created = await pending;
+    assert.equal(created.asset.kind, "image");
+    assert.equal(authorizationChecks, checksBeforeRecovery + 1,
+      "session authority is rechecked after the recovery wait");
+    assert.equal(count("media_assets"), before.assets + 1);
+    assert.equal(count("media_objects"), before.objects + 1);
   } finally {
     for (const [key, value] of previous) {
       if (value === undefined) delete process.env[key];

@@ -69,9 +69,9 @@ check("orphan badge grants", "fail",
   "granted badges whose definition was deleted rather than archived");
 
 // --- identity uniqueness that no index guarantees ---
-check("duplicate emails", "fail",
-  "SELECT LOWER(email) e, COUNT(*) c FROM users GROUP BY LOWER(email) HAVING c > 1 LIMIT 20",
-  "two accounts share an address, case-insensitively");
+check("email account limit exceeded", "fail",
+  "SELECT LOWER(email) e, COUNT(*) c FROM users GROUP BY LOWER(email) HAVING c > 2 LIMIT 20",
+  "more than two accounts share an address, case-insensitively");
 check("duplicate handles", "fail",
   "SELECT LOWER(handle) h, COUNT(*) c FROM users GROUP BY LOWER(handle) HAVING c > 1 LIMIT 20",
   "two accounts share a handle, case-insensitively");

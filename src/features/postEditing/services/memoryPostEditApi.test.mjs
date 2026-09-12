@@ -8,6 +8,7 @@ test("fan-memory editing encodes one post id and forwards only the prepared body
   const body = { review: "Updated memory", version: 4 };
   const saved = { id: "memory / one", kind: "memory", review: body.review };
   const result = await saveMemoryPostEdit("memory / one", body, {
+    expectedAccountId: "account-a",
     apiClient: async (...args) => {
       calls.push(args);
       return { post: saved };
@@ -20,6 +21,7 @@ test("fan-memory editing encodes one post id and forwards only the prepared body
     body,
     signal: undefined,
     silent: true,
+    expectedAccountId: "account-a",
   }]]);
 });
 

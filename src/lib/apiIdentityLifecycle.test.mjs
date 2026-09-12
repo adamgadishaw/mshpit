@@ -64,6 +64,31 @@ for (const binary of [false, true]) {
   });
 }
 
+test("cold identity admission bounds mixed JSON and binary continuations", async () => {
+  const f = fixture();
+  f.configureApiIdentity(null, { ready: false });
+  const controllers = Array.from({ length: 128 }, () => new AbortController());
+  const pending = controllers.map((controller, index) => (
+    index % 2 ? f.apiBinary : f.api
+  )("/api/private-fixture", {
+    signal: controller.signal,
+    silent: true,
+  }).then(() => null, (error) => error));
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(f.waiting(), 128);
+  const overflow = await f.api("/api/private-fixture", { silent: true })
+    .then(() => null, (error) => error);
+  assert.equal(overflow?.status, 503);
+  assert.equal(overflow?.serverCode, "IDENTITY_BARRIER_BUSY");
+  assert.equal(overflow?.retryable, true);
+  assert.equal(f.requests.length, 0, "overflow never becomes a cookie-authenticated request");
+
+  for (const controller of controllers) controller.abort();
+  await Promise.all(pending);
+  assert.equal(f.waiting(), 0, "cancelling the admitted work releases every slot");
+});
+
 test("deliberate identity discovery remains available across identity changes", async () => {
   const f = fixture();
   const pending = f.api("/api/me", { skipIdentityCheck: true });

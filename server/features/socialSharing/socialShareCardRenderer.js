@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 import sharp from "sharp";
-import { tryAcquireMemoryWork } from "../../memoryAdmission.js";
+import { acquireMemoryWork } from "../../memoryAdmission.js";
 import { renderIsolatedSocialShareCard } from "./socialShareCardProcess.js";
 
 import { eventPath, postPath } from "../../../src/domain/urls.mjs";
@@ -873,13 +873,14 @@ export function createSocialShareCardRenderer({
   loadArtwork = loadShareArtwork,
   renderPng = renderIsolatedSocialShareCard,
   maxConcurrentRenders = DEFAULT_MAX_CONCURRENT_RENDERS,
+  maxQueuedRenders = 4,
   maxConcurrentArtworkLoads = DEFAULT_MAX_CONCURRENT_ARTWORK_LOADS,
   cache = createLruBufferCache(),
   transientFailureCache = createExpiringKeyCache(),
   transientFailureCacheTtlMs = DEFAULT_TRANSIENT_FAILURE_CACHE_TTL_MS,
   totalWorkTimeoutMs = DEFAULT_TOTAL_WORK_TIMEOUT_MS,
   now = Date.now,
-  acquireMemoryLease = () => tryAcquireMemoryWork("share"),
+  acquireMemoryLease = (options) => acquireMemoryWork("share", options),
 } = {}) {
   if (typeof loadArtwork !== "function") throw new TypeError("A social share-card artwork loader is required");
   if (typeof renderPng !== "function") throw new TypeError("A social share-card renderer is required");
@@ -894,20 +895,61 @@ export function createSocialShareCardRenderer({
     Math.min(30_000, Number(transientFailureCacheTtlMs) || DEFAULT_TRANSIENT_FAILURE_CACHE_TTL_MS),
   );
   const workTimeout = boundedWorkTimeout(totalWorkTimeoutMs);
+  const renderQueueLimit = Math.max(1, Math.min(16, Math.trunc(Number(maxQueuedRenders) || 4)));
   const inFlight = new Map();
   let activeRenders = 0;
+  const renderWaiters = [];
   let activeArtworkLoads = 0;
 
-  const withRenderAdmission = async (task) => {
-    if (activeRenders >= renderLimit) throw new SocialShareCardBusyError();
-    const lease = acquireMemoryLease();
-    if (!lease) throw new SocialShareCardBusyError();
-    activeRenders += 1;
+  const releaseRenderSlot = () => {
+    activeRenders = Math.max(0, activeRenders - 1);
+    while (activeRenders < renderLimit && renderWaiters.length) {
+      const waiter = renderWaiters.shift();
+      waiter.signal?.removeEventListener("abort", waiter.onAbort);
+      if (waiter.signal?.aborted) continue;
+      activeRenders += 1;
+      waiter.resolve(releaseRenderSlot);
+    }
+  };
+
+  const acquireRenderSlot = (signal) => {
+    if (signal?.aborted) return Promise.reject(requestAbortReason(signal));
+    if (activeRenders < renderLimit && !renderWaiters.length) {
+      activeRenders += 1;
+      return Promise.resolve(releaseRenderSlot);
+    }
+    if (renderWaiters.length >= renderQueueLimit) return Promise.reject(new SocialShareCardBusyError());
+    return new Promise((resolve, reject) => {
+      const waiter = { signal, resolve, reject, onAbort: null };
+      waiter.onAbort = () => {
+        const index = renderWaiters.indexOf(waiter);
+        if (index < 0) return;
+        renderWaiters.splice(index, 1);
+        signal.removeEventListener("abort", waiter.onAbort);
+        reject(requestAbortReason(signal));
+      };
+      renderWaiters.push(waiter);
+      signal?.addEventListener("abort", waiter.onAbort, { once: true });
+      if (signal?.aborted) waiter.onAbort();
+    });
+  };
+
+  const withRenderAdmission = async (task, { signal = null, retainedBytes = 0 } = {}) => {
+    const releaseSlot = await acquireRenderSlot(signal);
+    let lease = null;
     try {
+      lease = await Promise.resolve(acquireMemoryLease({
+        signal,
+        timeoutMs: workTimeout,
+        retainedBytes,
+        priority: "interactive",
+      }));
+      if (!lease) throw new SocialShareCardBusyError();
+      if (signal?.aborted) throw requestAbortReason(signal);
       return await task();
     } finally {
-      activeRenders = Math.max(0, activeRenders - 1);
-      lease.release();
+      lease?.release();
+      releaseSlot();
     }
   };
 
@@ -961,7 +1003,7 @@ export function createSocialShareCardRenderer({
       artwork: acceptedArtwork,
       rendered,
     });
-  });
+  }, { signal, retainedBytes: Buffer.isBuffer(bytes) ? bytes.byteLength : 0 });
 
   const renderLoadedArtwork = async (model, loaded, signal) => {
     if (loaded?.[PREPARED_ARTWORK_RENDER] === true) return loaded;
@@ -972,7 +1014,7 @@ export function createSocialShareCardRenderer({
       artworkBytes,
       artworkDataUri,
       signal,
-    }));
+    }), { signal, retainedBytes: artworkBytes?.byteLength || Buffer.byteLength(artworkDataUri || "", "utf8") });
     if (signal?.aborted) throw requestAbortReason(signal);
     return { artworkBytes, artworkDataUri, artwork: null, rendered };
   };

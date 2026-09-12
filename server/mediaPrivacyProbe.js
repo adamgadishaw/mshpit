@@ -90,6 +90,11 @@ export async function probePrivateMediaIsolation({ listUrl, objectUrl, endpoint,
   let listStatus = null;
   let objectStatus = null;
   let retryDelayMs = 0;
+  // Remember an explicit unexpected anonymous response even if the peer
+  // request later rejects. Promise.all short-circuits on that rejection; without
+  // this latch a proven exposure could be misclassified as transport failure
+  // and incorrectly inherit a last-known-secure grace window.
+  let explicitAnonymousAccessRisk = false;
   const fetchProbe = async (url, kind) => {
     const response = await fetchImpl(url, { method: "GET", redirect: "error", signal: controller.signal });
     responses.add(response);
@@ -101,6 +106,9 @@ export async function probePrivateMediaIsolation({ listUrl, objectUrl, endpoint,
     if (kind === "list") listStatus = status;
     else objectStatus = status;
     if (transientResponse(status)) retryDelayMs = Math.max(retryDelayMs, retryAfterMs(response, clock()));
+    if (status !== 401 && status !== 403 && !transientResponse(status)) {
+      explicitAnonymousAccessRisk = true;
+    }
     return response;
   };
   try {
@@ -120,7 +128,9 @@ export async function probePrivateMediaIsolation({ listUrl, objectUrl, endpoint,
     return { listStatus, objectStatus, errorCode, ...(errorCode && retryDelayMs > 0 ? { retryAfterMs: retryDelayMs } : {}) };
   } catch {
     if (signal?.aborted) throw signal.reason || new DOMException("Aborted", "AbortError");
-    return { listStatus, objectStatus, errorCode: controller.signal.aborted ? "probe_timeout" : "probe_failed",
+    return { listStatus, objectStatus, errorCode: explicitAnonymousAccessRisk
+      ? "anonymous_access_not_denied"
+      : controller.signal.aborted ? "probe_timeout" : "probe_failed",
       ...(retryDelayMs > 0 ? { retryAfterMs: retryDelayMs } : {}) };
   } finally {
     clearTimeout(timeout);

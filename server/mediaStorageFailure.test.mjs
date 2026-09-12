@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { ApiError, errorEnvelope } from "./errors.js";
 import { createMediaPresign, getMediaConfig, mediaBucketForScope } from "./media.js";
-import { mediaStorageUnavailable } from "./mediaStorageFailure.js";
+import { mediaStorageControlFailure, mediaStorageUnavailable } from "./mediaStorageFailure.js";
 import { safeRequestFailureContext } from "./safeLogging.js";
 
 const env = Object.freeze({
@@ -37,6 +37,17 @@ test("upload preparation reasons stay distinct privately without changing the pu
   }
   assert.equal(causes.size, 3);
   assert.throws(() => mediaStorageUnavailable("No", "https://secret.example/bucket?token=secret"), TypeError);
+});
+
+test("capability signing failures use fixed leak-safe control-plane stages", () => {
+  for (const operation of ["source_upload_signing", "source_download_signing", "head_signing",
+    "video_delivery_signing", "photo_delivery_signing"]) {
+    const error = new ApiError(503, "Media storage is temporarily unavailable.",
+      "MEDIA_STORAGE_UNAVAILABLE", mediaStorageControlFailure(operation));
+    assert.equal(context(error).cause, `MediaStorageControl/${operation}`);
+    assert.doesNotMatch(JSON.stringify(context(error)), /fixture-secret|diagnostic-private|https:/);
+  }
+  assert.throws(() => mediaStorageControlFailure("users/private/source.jpg"), TypeError);
 });
 
 test("missing and invalid configuration are classified before any upload capability is issued", () => {

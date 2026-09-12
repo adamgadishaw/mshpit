@@ -66,6 +66,28 @@ export function clientErrorSurface(pathname) {
   return "app";
 }
 
+// Stateful SPA navigation deliberately does not give every mounted screen its
+// own URL. Project the already-finite analytics screen key into the same coarse,
+// privacy-safe buckets used by URL-derived reports. Arbitrary screen text,
+// entity ids and handles always collapse to app.
+export function clientErrorSurfaceFromScreen(value) {
+  const screen = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (screen === "landing") return "landing";
+  if (screen === "tab_feed") return "feed";
+  if (screen === "tab_search") return "search";
+  if (screen === "tab_discover") return "discover";
+  if (screen === "tab_you") return "you";
+  if (screen === "auth") return "auth";
+  if (["artist", "artist_hq", "artist_preview", "artist_gallery", "artist_edit", "artist_archive", "artist_tour", "pick_artists", "request_artist"].includes(screen)) return "artist";
+  if (["venue", "venue_review", "nearby"].includes(screen)) return "venue";
+  if (screen === "venues") return "venues";
+  if (["show", "calendar", "lounge"].includes(screen)) return "show";
+  if (["post", "post_edit", "post_create", "media_viewer", "report"].includes(screen)) return "post";
+  if (["profile", "profile_edit", "follow_list", "activity", "inbox", "message_thread"].includes(screen)) return "you";
+  if (["settings", "account_delete", "privacy", "terms"].includes(screen)) return "settings";
+  return "app";
+}
+
 export function normalizeClientCrashReport(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const kind = typeof value.kind === "string" ? value.kind.trim().toLowerCase() : "";

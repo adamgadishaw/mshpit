@@ -491,34 +491,48 @@ export function startLegacyVideoPosterVerificationScheduler({
   database,
   env = process.env,
   fetchImpl = globalThis.fetch,
+  reconcile = reconcileLegacyVideoPosters,
+  verify = verifyLegacyVideoPosterBatch,
+  now = Date.now,
+  setTimerFn = setTimeout,
+  clearTimerFn = clearTimeout,
 } = {}) {
   if (!defaultReleaseRuntime(env)) return { stop() {} };
+  if (typeof reconcile !== "function" || typeof verify !== "function" || typeof now !== "function"
+      || typeof setTimerFn !== "function" || typeof clearTimerFn !== "function") {
+    throw new TypeError("Legacy video poster scheduler requires bounded runtime dependencies.");
+  }
   let stopped = false;
   let timer = null;
   const schedule = (delay) => {
     if (stopped) return;
-    timer = setTimeout(run, Math.max(1_000, Math.min(15 * 60_000, delay)));
+    timer = setTimerFn(run, Math.max(1_000, Math.min(15 * 60_000, delay)));
     timer.unref?.();
   };
   const run = async () => {
     if (stopped) return;
     try {
-      reconcileLegacyVideoPosters(database);
-      await verifyLegacyVideoPosterBatch(database, { env, fetchImpl });
+      reconcile(database);
+      await verify(database, { env, fetchImpl });
     } catch (error) {
       console.error(`[media] legacy poster verification failed safely: ${String(error?.name || "Error")}`);
     }
     if (stopped) return;
     const due = database.prepare(`SELECT MIN(next_attempt_at) next_at FROM legacy_video_posters
       WHERE status IN ('pending','retry')`).get()?.next_at;
-    const untilDue = due == null ? RECONCILE_INTERVAL_MS : Math.max(1_000, Number(due) - Date.now());
+    // Even a due backlog is a migration/repair lane, never an interactive one.
+    // Five remote HEADs every second can amplify a storage incident and retain
+    // pooled response state. One bounded batch per minute still completes the
+    // eight-entry release promptly without competing with member uploads.
+    const untilDue = due == null ? RECONCILE_INTERVAL_MS
+      : Math.max(RECONCILE_INTERVAL_MS, Number(due) - Number(now()));
     schedule(Math.min(RECONCILE_INTERVAL_MS, untilDue));
   };
   schedule(1_000);
   return {
     stop() {
       stopped = true;
-      if (timer) clearTimeout(timer);
+      if (timer) clearTimerFn(timer);
     },
   };
 }

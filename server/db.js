@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 import { PIT_SQLITE_APPLICATION_ID, prepareDataDirectory } from "./dataDirectory.js";
 import { contentSafetyDecision } from "./contentSafety.js";
 import { canonicalProfileExtras } from "./profileExtras.js";
+import { concertMapVisibleFor } from "./profilePreferences.js";
 import { handleChangeAvailableAt, pendingSignupHandle } from "./features/accountOnboarding/signupHandle.js";
 import { legacyTrackOverrideIdentityKey, trackOverrideIdentityKey } from "./trackIdentity.js";
 import { normalizeTaggedUserIds } from "../src/domain/postFriendTags.mjs";
@@ -2599,7 +2600,15 @@ export const providerCacheStmts = {
   get: db.prepare("SELECT data,updated_at,expires_at FROM provider_cache WHERE key=?"),
   set: db.prepare(`INSERT INTO provider_cache (key,data,updated_at,expires_at) VALUES (?,?,?,?)
     ON CONFLICT(key) DO UPDATE SET data=excluded.data,updated_at=excluded.updated_at,expires_at=excluded.expires_at`),
-  deleteExpired: db.prepare("DELETE FROM provider_cache WHERE expires_at < ?"),
+  // Exact MusicBrainz name/MBID pairs are immutable public identity recovery
+  // records. Keep them after freshness expires so an upstream outage cannot
+  // erase the last known answer; the separate cap prevents unbounded growth.
+  deleteExpired: db.prepare("DELETE FROM provider_cache "
+    + "WHERE expires_at < ? AND key NOT LIKE 'mbresolve:v1:%'"),
+  trimMusicBrainzResolutions: db.prepare("DELETE FROM provider_cache "
+    + "WHERE key LIKE 'mbresolve:v1:%' AND key NOT IN ("
+    + "SELECT key FROM provider_cache WHERE key LIKE 'mbresolve:v1:%' "
+    + "ORDER BY updated_at DESC,key ASC LIMIT ?)"),
 };
 
 // --- Artist catalog statements + helpers -------------------------------------
@@ -3069,6 +3078,7 @@ export function publicUser(u, { self = false, badges = false } = {}) {
     // Public profile snapshots carry a monotonic version so clients can choose
     // the freshest avatar/banner projection without cache-busting media URLs.
     profileUpdatedAt: Number(u.profile_updated_at) || 0,
+    concertMapVisible: concertMapVisibleFor(u),
     genres: parseJsonArray(u.genres),
     favoriteArtists: parseJsonArray(u.favorite_artists),
     // Email verification is PRIVATE account state, unlike `verified` above which

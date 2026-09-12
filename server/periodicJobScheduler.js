@@ -7,8 +7,8 @@ function boundedDelay(value, fallback, minimum) {
   return Math.max(minimum, Math.floor(Number.isFinite(resolved) ? resolved : minimum));
 }
 
-function reportSafely(report, error) {
-  try { report?.(error); }
+function reportSafely(report, error, context) {
+  try { report?.(error, context); }
   catch {
     // architecture: allow-empty-catch -- a diagnostic sink cannot turn a
     // contained maintenance failure into an unhandled scheduler rejection.
@@ -49,6 +49,7 @@ export function startPeriodicJob({
   let active = null;
   let activeController = null;
   let retryTimer = null;
+  let retryConsumed = false;
 
   const clearRetry = () => {
     if (retryTimer === null) return;
@@ -57,17 +58,27 @@ export function startPeriodicJob({
   };
 
   const scheduleRetry = () => {
-    if (stopped || !retryDelay || retryTimer !== null) return;
+    // A recovery retry is deliberately single-shot. The old implementation
+    // scheduled another retry after each failed retry, which turned a provider
+    // outage into permanent 15-minute fan-out until the provider recovered.
+    // The ordinary interval opens a fresh recovery window instead.
+    if (stopped || !retryDelay || retryTimer !== null || retryConsumed) return false;
+    retryConsumed = true;
     retryTimer = setTimer(() => {
       retryTimer = null;
-      void trigger();
+      return trigger({ recoveryRetry: true });
     }, retryDelay);
     retryTimer?.unref?.();
+    return true;
   };
 
-  const trigger = () => {
+  const trigger = ({ recoveryRetry = false, openRetryWindow = false } = {}) => {
     if (stopped) return Promise.resolve(false);
     if (active) return active;
+    if (openRetryWindow) {
+      clearRetry();
+      retryConsumed = false;
+    }
     const controller = new AbortController();
     activeController = controller;
     active = Promise.resolve()
@@ -80,8 +91,11 @@ export function startPeriodicJob({
       })
       .catch((error) => {
         if (stopped && controller.signal.aborted) return false;
-        reportSafely(report, error);
-        scheduleRetry();
+        const willRetry = scheduleRetry();
+        reportSafely(report, error, Object.freeze({
+          willRetry,
+          retryDelayMs: willRetry ? retryDelay : null,
+        }));
         return false;
       })
       .finally(() => {
@@ -91,13 +105,13 @@ export function startPeriodicJob({
     return active;
   };
 
-  const firstTimer = setTimer(() => { void trigger(); }, firstDelay);
-  const intervalTimer = setRepeatingTimer(() => { void trigger(); }, repeatingDelay);
+  const firstTimer = setTimer(() => trigger({ openRetryWindow: true }), firstDelay);
+  const intervalTimer = setRepeatingTimer(() => trigger({ openRetryWindow: true }), repeatingDelay);
   firstTimer?.unref?.();
   intervalTimer?.unref?.();
 
   return Object.freeze({
-    trigger,
+    trigger: () => trigger(),
     stop({ abortActive = false } = {}) {
       if (!stopped) {
         stopped = true;

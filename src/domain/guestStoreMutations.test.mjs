@@ -14,7 +14,12 @@ import { clean, clampRating, LIMITS } from "./validation.mjs";
 const source = readFileSync(new URL("../store.js", import.meta.url), "utf8");
 const ast = parse(source, { sourceType: "module", plugins: ["jsx"] });
 const provider = ast.program.body.find((node) => node.declaration?.id?.name === "StoreProvider").declaration;
-const names = ["renderedAccountMutation", "currentMutationActor", "addLog", "toggleLike", "deleteOwnPost", "toggleMediaReaction"];
+const names = [
+  "renderedAccountMutation", "currentMutationActor",
+  "addLog", "toggleLike", "deleteOwnPost", "toggleMediaReaction",
+  "editLog", "reportContent", "follow", "unfollow", "blockUser", "unblockUser",
+  "muteUser", "unmuteUser", "notInterested", "undoNotInterested",
+];
 const declarations = provider.body.body.flatMap((node) => node.type === "VariableDeclaration" ? node.declarations : []);
 const callbacks = names.map((name) => declarations.find((node) => node.id?.name === name))
   .filter(Boolean).map((node) => `const ${source.slice(node.start, node.end)};`).join("\n");
@@ -46,7 +51,7 @@ function fixture({ actor = owner, ready = true, demo = false } = {}) {
     notify: (...args) => effects.push(["notify", ...args]), postOwner: () => owner.id,
     api: (path, options) => new Promise((resolve, reject) => calls.push({ path, options, resolve, reject })),
   };
-  const actions = new Function(...Object.keys(dependencies), `"use strict"; ${callbacks}\nreturn { addLog, toggleLike, deleteOwnPost, toggleMediaReaction };`)(...Object.values(dependencies));
+  const actions = new Function(...Object.keys(dependencies), `"use strict"; ${callbacks}\nreturn { addLog, toggleLike, deleteOwnPost, toggleMediaReaction, editLog, reportContent, follow, unfollow, blockUser, unblockUser, muteUser, unmuteUser, notInterested, undoNotInterested };`)(...Object.values(dependencies));
   const adopt = (user, epoch = 1) => { sessionRef.current = user; accountMutationEpochRef.current += epoch; };
   return { actions, state, calls, writes, effects, adopt, authReadyRef, sessionRef, accountMutationEpochRef, feedMutationRevisionRef };
 }
@@ -57,6 +62,50 @@ const commands = {
   deleteOwnPost: (f) => f.actions.deleteOwnPost(seedPost.id),
   toggleMediaReaction: (f) => f.actions.toggleMediaReaction("photo", seedPost.id),
 };
+
+const additionalGuardedCommands = {
+  editLog: (f) => f.actions.editLog(seedPost, { review: "Changed" }),
+  reportContent: (f) => f.actions.reportContent(seedPost.id, "spam"),
+  follow: (f) => f.actions.follow(other.id),
+  unfollow: (f) => f.actions.unfollow(other.id),
+  blockUser: (f) => f.actions.blockUser(other.id),
+  unblockUser: (f) => f.actions.unblockUser(other.id),
+  muteUser: (f) => f.actions.muteUser(other.id),
+  unmuteUser: (f) => f.actions.unmuteUser(other.id),
+  notInterested: (f) => f.actions.notInterested(seedPost.id),
+  undoNotInterested: (f) => f.actions.undoNotInterested(seedPost.id),
+};
+
+for (const [name, invoke] of Object.entries(additionalGuardedCommands)) {
+  test(`${name}: guest and stale-render callbacks stop before local or network effects`, async () => {
+    for (const mode of ["guest", "demo-guest", "logout", "switch", "reentered", "unready", "guest-then-login"]) {
+      const f = fixture({ actor: mode.includes("guest") ? null : owner, demo: mode === "demo-guest", ready: mode !== "unready" });
+      if (mode === "logout") f.adopt(null);
+      if (mode === "switch") f.adopt(other);
+      if (mode === "reentered") f.adopt({ ...owner }, 2);
+      if (mode === "guest-then-login") f.adopt(owner);
+      const before = structuredClone(f.state);
+      const result = invoke(f);
+      assert.deepEqual(f.writes, [], `${name} / ${mode}`);
+      assert.deepEqual(f.effects, [], `${name} / ${mode}`);
+      assert.equal(f.feedMutationRevisionRef.current, 0, `${name} / ${mode}`);
+      assert.deepEqual(f.state, before, `${name} / ${mode}`);
+      assert.deepEqual(f.calls, [], `${name} / ${mode}`);
+      if (result && typeof result.then === "function") await result;
+    }
+  });
+}
+
+test("guarded social mutations bind transport and completion to one account epoch", () => {
+  for (const name of Object.keys(additionalGuardedCommands)) {
+    const declaration = declarations.find((node) => node.id?.name === name);
+    const callbackSource = source.slice(declaration.start, declaration.end);
+    assert.match(callbackSource, /currentMutationActor\(\)/, `${name} must reject stale render callbacks`);
+    assert.match(callbackSource, /captureAccountMutation\(/, `${name} must capture one account epoch`);
+    assert.match(callbackSource, /accountMutationIsCurrent\(/, `${name} must fence late completion`);
+    assert.match(callbackSource, /expectedAccountId/, `${name} must bind its request to that account`);
+  }
+});
 
 for (const [name, invoke] of Object.entries(commands)) {
   test(`${name}: guests and stale render callbacks cannot mutate or dispatch`, async () => {

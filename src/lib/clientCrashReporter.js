@@ -1,16 +1,26 @@
 import { Platform } from "react-native";
-import { clientCrashDiagnostic, clientCrashRequestId, clientErrorSurface, normalizeClientCrashReport } from "../domain/clientCrashReport.mjs";
+import { clientCrashDiagnostic, clientCrashRequestId, clientErrorSurface, clientErrorSurfaceFromScreen, normalizeClientCrashReport } from "../domain/clientCrashReport.mjs";
 import { apiUrl } from "./api";
 
 const DEDUPE_MS = 30_000;
 const REQUEST_TIMEOUT_MS = 5_000;
 const MAX_RECENT_REPORTS = 128;
 const recentlyReported = new Map();
+let configuredSurface = null;
 
 const currentSurface = () => {
+  if (configuredSurface) return configuredSurface;
   if (Platform.OS !== "web" || typeof window === "undefined") return "app";
   return clientErrorSurface(window.location?.pathname);
 };
+
+// Root calls this synchronously before rendering the active screen. An effect is
+// too late: a child render exception happens before effects commit. The mapper
+// accepts only known screen keys and never retains navigation values or ids.
+export function configureClientCrashSurface(screen) {
+  configuredSurface = clientErrorSurfaceFromScreen(screen);
+  return configuredSurface;
+}
 
 // This is deliberately not the ordinary authenticated API client. Crash
 // telemetry must not wait on account hydration, create a toast, send cookies,
@@ -73,4 +83,5 @@ export async function reportClientCrash({ kind, error, surface = currentSurface(
 
 export function resetClientCrashReporterForTests() {
   recentlyReported.clear();
+  configuredSurface = null;
 }
