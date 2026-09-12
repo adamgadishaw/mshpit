@@ -80,3 +80,57 @@ test("an existing exact-name artist takes priority over a reviewed spelling alia
   const searched = routes["GET /api/artists"](context({}, { q: "ASAP Rocky" }));
   assert.equal(searched.artists[0].key, "asap rocky");
 });
+
+test("a remembered artist still resolves while MusicBrainz is unavailable", async () => {
+  const originalFetch = globalThis.fetch;
+  const remembered = { name: "Outage Memory Fixture", id: "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff", score: 100 };
+  try {
+    globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({ artists: [remembered] }) });
+    const first = await routes["GET /api/artists/resolve"](context({}, { name: remembered.name }));
+    assert.equal(first.artist.mbid, remembered.id);
+    assert.equal(first.stale, undefined);
+
+    // The provider is down, but this catalogue has answered this name before.
+    globalThis.fetch = async () => ({ ok: false, status: 503 });
+    const served = await routes["GET /api/artists/resolve"](context({}, { name: remembered.name }));
+    assert.equal(served.artist.mbid, remembered.id);
+    assert.equal(served.artist.name, remembered.name);
+    assert.equal(served.stale, true);
+    assert.equal(served.transient, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("one retry absorbs a single transient MusicBrainz failure", async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  try {
+    globalThis.fetch = async () => {
+      calls += 1;
+      if (calls === 1) return { ok: false, status: 503 };
+      return { ok: true, status: 200, json: async () => ({ artists: [
+        { name: "Retry Fixture", id: "cccccccc-dddd-4eee-8fff-aaaaaaaaaaaa", score: 100 },
+      ] }) };
+    };
+    const resolved = await routes["GET /api/artists/resolve"](context({}, { name: "Retry Fixture" }));
+    assert.equal(calls, 2, "a provider 503 is retried once");
+    assert.equal(resolved.artist.name, "Retry Fixture");
+    assert.equal(resolved.stale, undefined);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("an artist never resolved before still fails honestly during an outage", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => ({ ok: false, status: 503 });
+    await assert.rejects(
+      routes["GET /api/artists/resolve"](context({}, { name: "Never Seen Outage Fixture" })),
+      (error) => error.status === 502 && error.code === "PROVIDER_UNAVAILABLE",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

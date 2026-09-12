@@ -273,11 +273,11 @@ remains a broad context whose changing value can rerender unrelated consumers.
     pages, apply the public event rules to the landing page, hide off-core
     features, add a type scale, link posts to shows, add a README and archive
     root documents, and replace source-text tests with behavior tests.
-15. **Artist lookup resilience:** `GET /api/artists/resolve` returns 502
-    whenever MusicBrainz answers 503, which it does often. Cache successful
-    lookups, fall back to the local catalogue or Deezer, and retry once on a
-    provider 5xx so an upstream blip is not a visitor-visible failure. Needs
-    `server/api.js`.
+15. **Artist lookup resilience (partial):** successful MusicBrainz resolutions
+    are now cached for 90 days and served during an outage, and one transient
+    provider failure is retried. Still open: a Deezer or fuzzy-catalogue
+    fallback for a name Pit has never resolved, and the same treatment for
+    `POST /api/artists/resolve` when staff attach an artist during an outage.
 
 ## Foundation complete for Alpha
 

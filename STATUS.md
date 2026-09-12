@@ -25,6 +25,17 @@ August 4/5 audit/session log are historical journals, not current status.
   single retry all need `server/api.js`, which carries another agent's
   uncommitted work.
 
+- `GET /api/artists/resolve` now remembers each successful MusicBrainz
+  resolution in `provider_cache` for 90 days and serves that answer while the
+  provider is unavailable, marked `stale: true`. A name this catalogue has never
+  resolved still fails with 502, which is honest: Pit does not know that artist.
+- The lookup retries once on a transient provider failure (a provider 5xx or an
+  unreachable host). The retry re-enters the shared MusicBrainz queue, so the
+  one-request-per-second rule still holds and a struggling provider is not
+  hammered.
+- Three tests cover it: a remembered artist during an outage, one retry
+  absorbing a single 503, and an artist never seen before still failing.
+
 ## 2026-09-11 credibility audit and user-base audit script
 
 - `docs/mshpit-soundcheck-2026-09-11.md` records a layer-by-layer audit of the

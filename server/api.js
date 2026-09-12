@@ -17,7 +17,7 @@ import {
   sendTemplate, sendTemplateInBackground, sentToday, templateFor, unsubscribeUrl,
 } from "./emailService.js";
 import { AUDIENCES, audienceSize, campaignProgress, drainCampaign, pauseCampaign, startCampaign } from "./emailQueue.js";
-import { db, DATABASE_PATH, q, emailStmts, badgeStmts, customBadgesFor, publicUser as storedPublicUser, parseJsonArray, parseJsonObject, artistStmts, publicArtist, artistRow, artistSearchKey, normName, pruneMissingArtists } from "./db.js";
+import { db, DATABASE_PATH, q, emailStmts, badgeStmts, customBadgesFor, publicUser as storedPublicUser, parseJsonArray, parseJsonObject, artistStmts, publicArtist, artistRow, artistSearchKey, normName, pruneMissingArtists, providerCacheStmts } from "./db.js";
 import { publicArtistPhoto } from "./artistPhotoCatalog.js";
 import { resolveReviewedArtistAlias } from "./reviewedArtistIdentities.js";
 import { BADGE_COLORS, BADGE_GLYPHS, BADGE_KINDS, validateBadge } from "../src/domain/badgeArt.mjs";
@@ -276,6 +276,10 @@ const ARTIST_TOURDATE_DEMAND_USER_HOURLY_LIMIT = 12;
 const ARTIST_TOURDATE_DEMAND_USER_WINDOW_MS = 60 * 60 * 1000;
 const MUSICBRAINZ_ARTIST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const MUSICBRAINZ_ARTIST_LOOKUP_TIMEOUT_MS = 12_000;
+// A resolved MusicBrainz identity does not change, so the last good answer for
+// a name is kept and served while the provider is unavailable. Public catalogue
+// metadata only, never anything a member wrote.
+const MUSICBRAINZ_RESOLVE_CACHE_MS = 90 * 24 * 60 * 60 * 1000;
 const VIDEO_CACHED_FINALIZE_WAIT_MS = 18_000;
 const runtimeReadinessSuccessCache = createSuccessfulReadinessCache();
 const YOUTUBE_PLAYBACK_FAILURE_TTL_MS = 30 * DAY_MS;
@@ -2960,8 +2964,17 @@ function musicBrainzArtistProjection(candidate) {
   };
 }
 
+function musicBrainzRetryableFailure(error) {
+  const status = Number(error?.status);
+  return error instanceof ProviderError
+    && (error.code === "network" || (Number.isInteger(status) && status >= 500));
+}
+
+// MusicBrainz sheds load with a 503 during traffic spikes. One retry re-enters
+// the shared start-time queue, so the second attempt still honours the
+// one-request-per-second rule instead of hammering a provider already in trouble.
 async function readMusicBrainzArtistCandidates(name, { signal } = {}) {
-  return runMusicBrainzRequest(async () => {
+  const attempt = () => runMusicBrainzRequest(async () => {
     const slash = String.fromCharCode(92);
     const escapedName = name.split(slash).join(slash + slash).split('"').join(slash + '"');
     const query = 'artist:"' + escapedName + '"';
@@ -3006,6 +3019,12 @@ async function readMusicBrainzArtistCandidates(name, { signal } = {}) {
       .map(musicBrainzArtistProjection)
       .filter(Boolean);
   }, { signal });
+  try {
+    return await attempt();
+  } catch (error) {
+    if (signal?.aborted || !musicBrainzRetryableFailure(error)) throw error;
+    return attempt();
+  }
 }
 
 async function resolveFromMusicBrainz(name, { requireExactIdentity = false, signal } = {}) {
@@ -3059,6 +3078,36 @@ const artistByOtherMusicBrainzIdentity = db.prepare(
 
 // Public artist reads share the same persisted identity lookup. Reviewed
 // aliases require an exact, unique provider ID; unknown text never creates a row.
+function musicBrainzResolveCacheKey(name) {
+  const identity = normalizedMusicBrainzArtistName(name);
+  return identity ? `mbresolve:v1:${identity}` : null;
+}
+
+// The last good answer for this name. Age is not a reason to refuse it: the
+// alternative is failing a lookup this catalogue has already answered once.
+function cachedMusicBrainzResolution(name) {
+  const key = musicBrainzResolveCacheKey(name);
+  const row = key ? providerCacheStmts.get.get(key) : null;
+  if (!row) return null;
+  let stored;
+  try {
+    stored = JSON.parse(row.data);
+  } catch {
+    return null;
+  }
+  const rememberedName = clean(stored?.name, { max: 241 });
+  const mbid = String(stored?.mbid || "").trim().toLowerCase();
+  if (!rememberedName || !MUSICBRAINZ_ARTIST_ID.test(mbid)) return null;
+  return { ...stored, name: rememberedName, mbid };
+}
+
+function rememberMusicBrainzResolution(name, artist) {
+  const key = musicBrainzResolveCacheKey(name);
+  if (!key || !artist?.mbid) return;
+  const at = Date.now();
+  providerCacheStmts.set.run(key, JSON.stringify(artist), at, at + MUSICBRAINZ_RESOLVE_CACHE_MS);
+}
+
 function resolveCatalogArtistReference(value) {
   const key = normName(value);
   return artistStmts.byNorm.get(key) || artistStmts.byPublicSlug.get(key)
@@ -4658,8 +4707,23 @@ export const routes = {
       created: false,
     };
     limit(ctx, "resolve", 90, 10 * 60 * 1000); // cap outbound MB lookups per client
-    const mb = await resolveFromMusicBrainz(name, { signal: ctx.signal });
+    let mb;
+    try {
+      mb = await resolveFromMusicBrainz(name, { signal: ctx.signal });
+    } catch (error) {
+      // A provider outage must not fail a lookup this catalogue has already
+      // answered. Every other failure, including no exact match, still fails.
+      const remembered = error?.code === "PROVIDER_UNAVAILABLE" ? cachedMusicBrainzResolution(name) : null;
+      if (!remembered) throw error;
+      return {
+        artist: { ...publicArtist(artistRow(remembered.name, remembered, "musicbrainz")), fanClubAvailable: true },
+        created: false,
+        transient: true,
+        stale: true,
+      };
+    }
     if (!mb) return { artist: null, created: false };
+    rememberMusicBrainzResolution(name, mb);
     return {
       artist: { ...publicArtist(artistRow(mb.name, mb, "musicbrainz")), fanClubAvailable: true },
       created: false,
