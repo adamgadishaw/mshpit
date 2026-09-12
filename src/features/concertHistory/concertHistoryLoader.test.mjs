@@ -20,7 +20,7 @@ test("concert response rejects malformed pagination and scrubs invalid or hidden
   for (const payload of [null, {}, page([], "next", { hasMore: false }), page([], null, { complete: false }), page([row("x", { date: "bad" })])]) {
     assert.throws(() => concertHistoryResponse(payload));
   }
-  for (const patch of [{ lat: null }, { lat: "43.7" }, { lng: Infinity }, { lng: 181 }]) {
+  for (const patch of [{ lat: null }, { lat: "43.7" }, { lng: Infinity }, { lng: 181 }, { locationPrecision: "country" }, { venue: "", locationPrecision: "venue" }]) {
     const result = concertHistoryResponse(page([row("x", patch)]));
     assert.equal(result.concerts[0].lat, null);
     assert.equal(result.concerts[0].countryCode, null);
@@ -28,6 +28,23 @@ test("concert response rejects malformed pagination and scrubs invalid or hidden
   const result = concertHistoryResponse(page([row("x")], null, { mapVisible: false }));
   assert.equal(result.concerts[0].lat, null);
   assert.equal(result.concerts[0].country, null);
+});
+
+test("city-only history accepts bounded event addresses and preserves explicit approximate precision", () => {
+  const city = row("city", { venue: "", eventAddress: "10 Queen Street", locationPrecision: "city" });
+  const result = concertHistoryResponse(page([city]));
+  assert.equal(result.concerts[0].venue, "");
+  assert.equal(result.concerts[0].eventAddress, "10 Queen Street");
+  assert.equal(result.concerts[0].locationPrecision, "city");
+  assert.equal(result.concerts[0].lat, 43.7);
+  assert.equal(concertHistoryResponse(page([{ ...city, eventAddress: "a".repeat(240) }])).concerts[0].eventAddress.length, 240);
+  for (const patch of [{ venue: "", city: "" }, { eventAddress: {} }, { eventAddress: "a".repeat(241) }]) {
+    assert.throws(() => concertHistoryResponse(page([{ ...city, ...patch }])));
+  }
+  const hidden = concertHistoryResponse(page([city], null, { mapVisible: false })).concerts[0];
+  assert.equal(hidden.lat, null);
+  assert.equal(hidden.locationPrecision, null);
+  assert.equal(hidden.eventAddress, "10 Queen Street", "The publicly supplied concert address is not inferred map metadata.");
 });
 
 test("all history drains beyond the feed's first page including empty eligible pages", async () => {

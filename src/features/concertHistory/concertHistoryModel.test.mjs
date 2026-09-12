@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { clusterConcertMapPins, concertCoordinates, concertHistoryFrame, concertHistoryModel, concertHistorySummary, concertMapViewport, projectConcertPin } from "./concertHistoryModel.mjs";
+import { clusterConcertMapPins, concertCoordinates, concertHistoryFrame, concertHistoryModel, concertHistorySummary, concertLocationLabel, concertLocationPhrase, concertMapViewport, projectConcertPin } from "./concertHistoryModel.mjs";
 
 const row = (id, patch = {}) => ({ id, postId: id, artist: "The National", venue: "Massey Hall", venueKey: "massey-hall", city: "Toronto", date: "2026-06-14", rating: 4.5, lat: 43.654, lng: -79.379, countryCode: "CA", country: "Canada", ...patch });
 
@@ -67,6 +67,34 @@ test("one confirmed country uses its continent; two countries use the world even
   assert.equal(concertHistoryFrame(concertHistoryModel([row("gb", { countryCode: "GB", country: "United Kingdom" })])).name, "Europe");
   assert.equal(concertHistoryFrame(concertHistoryModel([row("unknown", { countryCode: "", country: "" })])).name, "World");
   assert.equal(concertHistoryModel([row("a"), row("b", { date: "2026-06-15", countryCode: "", country: "Canada" })]).countryCount, 1);
+});
+
+test("city-only concerts share a city pin but never collapse different posts from the same night", () => {
+  const city = (id, patch = {}) => row(id, { venue: "", venueKey: "", city: "Toronto, Ontario, Canada", locationPrecision: "city", ...patch });
+  const history = concertHistoryModel([city("a"), city("b")]);
+  assert.equal(history.concertCount, 2);
+  assert.equal(history.venues.length, 1);
+  assert.equal(history.venues[0].name, "Toronto, Ontario, Canada");
+  assert.equal(history.venues[0].city, "");
+  assert.equal(history.venues[0].hasVenue, false);
+  assert.equal(history.venues[0].coordinates.precision, "city");
+  assert.equal(history.venueCount, 0);
+  assert.equal(concertHistorySummary(history, true), "2 concerts · 1 city location · 1 country");
+  assert.equal(concertLocationLabel(city("a")), "Toronto, Ontario, Canada");
+  assert.equal(concertLocationPhrase(city("a")), "in Toronto, Ontario, Canada");
+});
+
+test("event addresses remain distinct, labelled city approximations and never invent a venue", () => {
+  const city = (id, eventAddress) => row(id, { venue: "", venueKey: "", eventAddress, locationPrecision: "city" });
+  const history = concertHistoryModel([city("a", "10 Queen Street"), city("b", "20 Queen Street"), city("c", "10 Queen Street")]);
+  assert.equal(history.concertCount, 3);
+  assert.equal(history.venues.length, 2);
+  assert.deepEqual(history.venues.map((venue) => venue.name), ["10 Queen Street", "20 Queen Street"]);
+  assert.equal(history.venueCount, 0);
+  assert.equal(history.cityLocationCount, 1);
+  assert.equal(concertLocationLabel(city("a", "10 Queen Street")), "10 Queen Street · Toronto");
+  assert.equal(concertCoordinates(city("a", "10 Queen Street")).precision, "city");
+  assert.equal(concertCoordinates({ ...city("a", "10 Queen Street"), locationPrecision: "venue" }), null);
 });
 
 test("continent and world pin projection agree with the real equirectangular map", () => {

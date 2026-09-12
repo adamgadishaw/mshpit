@@ -333,6 +333,7 @@ test("legacy posts, attendance, tour-date, and campaign tables gain safe additiv
     DROP TABLE artist_schedule_revision;
     DROP TABLE artist_tourdate_refresh_queue;
     ALTER TABLE posts DROP COLUMN attendance_ticket;
+    ALTER TABLE posts DROP COLUMN event_address;
     ALTER TABLE posts DROP COLUMN youtube_video_id;
     ALTER TABLE posts DROP COLUMN youtube_url;
     ALTER TABLE posts DROP COLUMN online_title;
@@ -390,6 +391,9 @@ test("legacy posts, attendance, tour-date, and campaign tables gain safe additiv
 
   assert.ok(goingColumns.has("created_at"));
   assert.ok(postColumns.has("attendance_ticket"));
+  assert.ok(postColumns.has("event_address"));
+  const addressColumn = upgraded.db.prepare("PRAGMA table_info(posts)").all().find((row) => row.name === "event_address");
+  assert.equal(addressColumn.notnull, 0, "legacy posts receive a nullable address without invented data");
   for (const column of ["experience_type", "online_title", "youtube_url", "youtube_video_id"]) {
     assert.ok(postColumns.has(column), `posts should add ${column}`);
   }

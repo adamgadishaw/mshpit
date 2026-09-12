@@ -28,6 +28,7 @@ const fixtureResetToken = "fixture-reset-token-0123456789";
 const fixtureOwnerToken = "fixture-owner-token-0123456789";
 
 const cases = [
+  ...[390, 1280].map(width => ({ name: `composer-location-${width}`, kind: "composer-location", width })),
   ...[390, 1280].map(width => ({ name: `guest-member-tabs-${width}`, kind: "guest-member-tabs", width })),
   ...[390, 1280].flatMap(width => [
     ...["concert", "status", "online", "going"].map(postKind => ({ name: `guest-like-${postKind}-${width}`, kind: "guest-like", postKind, width })),
@@ -364,6 +365,7 @@ async function runCase(browser, origin, item) {
   const page = await context.newPage();
   page.setDefaultTimeout(timeoutMs);
   const guestCase = item.kind.startsWith("guest-");
+  const locationCase = item.kind === "composer-location";
   const guestStart = guestCase || item.kind.startsWith("login") || ["startup-401", "forms-login", "forms-signup", "forms-reset"].includes(item.kind);
   const publicPost = {
     id: "p_guest_browser", userId: "public-author", user: { id: "public-author", name: "Public Author", handle: "public-author", role: "fan" },
@@ -382,6 +384,7 @@ async function runCase(browser, origin, item) {
     calls: [], pageErrors: [], consoleErrors: [], reports: [], routeErrors: [],
     releaseLogin: null, releaseSwitch: null, releaseDiscover: null, holdDiscover: item.kind === "login-canceled",
     loginCompleted: false, connected: item.kind !== "forms-connect", credentialUrlLeaks: [],
+    locationPost: null, locationWrites: [], releaseCitySearch: null,
   };
   page.on("pageerror", error => state.pageErrors.push(error.message));
   page.on("console", message => { if (message.type() === "error") state.consoleErrors.push(message.text()); });
@@ -413,6 +416,28 @@ async function runCase(browser, origin, item) {
       const body = request.postData() ? request.postDataJSON() : null;
       const account = request.headers()["x-pit-expected-account"] || null;
       state.calls.push({ path: url.pathname, method: request.method(), account, phase: state.phase });
+      if (locationCase && url.pathname === "/api/cities") {
+        if (url.searchParams.get("q") === "Lon") await new Promise(fulfill => { state.releaseCitySearch = fulfill; });
+        return await json({ cities: url.searchParams.get("q") === "Tor" ? [
+          { city: "Toronto", region: "Ontario", country: "Canada", countryCode: "CA", citySlug: "toronto" },
+        ] : [{ city: "London", region: "England", country: "United Kingdom", countryCode: "GB", citySlug: "london" }] });
+      }
+      if (locationCase && url.pathname === "/api/artists") return await json({ artists: [{ name: "Fixture Artist", key: "fixture-artist" }] });
+      if (locationCase && url.pathname === "/api/health") return await json({ ok: true, capabilities: { mediaPublishing: { photos: true, videos: false } } });
+      if (locationCase && ((url.pathname === "/api/posts" && request.method() === "POST")
+        || (url.pathname === "/api/posts/p_location_browser" && request.method() === "PATCH"))) {
+        assert.equal(account, alice.id);
+        state.locationWrites.push({ method: request.method(), body });
+        state.locationPost = {
+          ...state.locationPost, ...body, id: "p_location_browser", userId: alice.id, user: alice,
+          kind: "review", createdAt: state.locationPost?.createdAt || Date.now(), version: (state.locationPost?.version || 0) + 1,
+          likes: 0, comments: 0, photos: [], media: [], taggedPeople: [],
+        };
+        return await json({ post: state.locationPost });
+      }
+      if (locationCase && url.pathname === "/api/posts/p_location_browser" && request.method() === "GET") return await json({ post: state.locationPost });
+      if (locationCase && /^\/api\/posts\/[^/]+\/comments$/.test(url.pathname)) return await json({ comments: [] });
+      if (locationCase && url.pathname === "/api/media/reactions") return await json({ reactions: {} });
       if (url.pathname === "/api/client-errors") { state.reports.push(body); return await json({ ok: true }); }
       if (guestCase && url.pathname === "/api/resolve") return await json({ entity: { kind: "show", id: publicPost.id, path: `/post/${publicPost.id}` } });
       if (guestCase && url.pathname === "/api/artists/fixture-artist/memorial") return await json({ memorial: null });
@@ -495,7 +520,7 @@ async function runCase(browser, origin, item) {
       }
       if (url.pathname.startsWith("/api/feed")) {
         if (!state.user) return await json({ error: "Sign in to view the feed.", code: "UNAUTHORIZED" }, 401);
-        return await json({ posts: guestCase ? [publicPost] : [], hasMore: false, hiddenPostIds: [] });
+        return await json({ posts: guestCase ? [publicPost] : locationCase && state.locationPost ? [state.locationPost] : [], hasMore: false, hiddenPostIds: [] });
       }
       if (guestCase && url.pathname === `/api/posts/${publicPost.id}/comments` && request.method() === "GET") return await json({ comments: [{ id: "c_guest_fixture", postId: publicPost.id, userId: "public-reader", name: "Public Reader", text: "A public comment to read.", at: Date.now() - 30_000 }] });
       if (guestCase && url.pathname === `/api/posts/${publicPost.id}` && request.method() === "GET") return await json({ post: publicPost });
@@ -526,6 +551,8 @@ async function runCase(browser, origin, item) {
         state.loginCompleted = true;
         return;
       }
+      if (locationCase && url.pathname === "/api/cities" && url.searchParams.get("q") === "Lon"
+        && /closed|disposed|handled|aborted|canceled|cancelled/i.test(error.message)) return;
       state.routeErrors.push(error.message);
       await route.abort().catch(() => {});
     }
@@ -560,7 +587,57 @@ async function runCase(browser, origin, item) {
       : item.kind === "forms-owner" ? `${origin}/#ownerApproval=${fixtureOwnerToken}`
       : guestCase && item.kind !== "guest-member-tabs" ? `${origin}/post/${publicPost.id}` : origin;
     await page.goto(entry, { waitUntil: "networkidle", timeout: timeoutMs });
-    if (item.kind === "guest-member-tabs") {
+    if (locationCase) {
+      await feed();
+      await page.getByRole("button", { name: "Log a show", exact: true }).last().click();
+      const cityInput = page.getByLabel("Concert city, region and country", { exact: true });
+      const addressInput = page.getByLabel("Public event address, optional", { exact: true });
+      await page.getByLabel("Artist", { exact: true }).fill("Fixture Artist");
+      await cityInput.fill("Tor");
+      await page.getByRole("button", { name: "Use Toronto, Ontario, Canada", exact: true }).click();
+      assert.equal(await cityInput.inputValue(), "Toronto, Ontario, Canada");
+      assert.equal(await page.getByLabel("Concert venue, optional with a city", { exact: true }).inputValue(), "");
+      await addressInput.fill("123 Queen Street West");
+      const bounds = await cityInput.boundingBox();
+      assert.ok(bounds && bounds.x >= 0 && bounds.x + bounds.width <= item.width + 1, "City input escaped the mobile viewport.");
+      mkdirSync(join(root, ".tmp"), { recursive: true });
+      await page.getByLabel("Concert venue, optional with a city", { exact: true }).scrollIntoViewIfNeeded();
+      await page.screenshot({ path: join(root, ".tmp", `location-composer-${item.width}.png`) });
+      await page.getByLabel("Rating", { exact: true }).first().press("End");
+      const postButton = page.getByRole("button", { name: "Post to feed", exact: true });
+      assert.equal(await postButton.isEnabled(), true, "A rated city-only concert must be publishable.");
+      await postButton.click();
+      await waitFor(() => state.locationWrites.length === 1, "City-only concert was not submitted.");
+      assert.equal(state.locationWrites[0].body.venue, "");
+      assert.equal(state.locationWrites[0].body.city, "Toronto, Ontario, Canada");
+      assert.equal(state.locationWrites[0].body.eventAddress, "123 Queen Street West");
+      await page.getByRole("button", { name: "Edit post", exact: true }).first().click();
+      await addressInput.waitFor();
+      assert.equal(await cityInput.inputValue(), "Toronto, Ontario, Canada");
+      assert.equal(await addressInput.inputValue(), "123 Queen Street West");
+      await cityInput.fill("Lon");
+      await waitFor(() => typeof state.releaseCitySearch === "function", "Pending city search was not captured.");
+      await cityInput.fill("Ottawa, Ontario, Canada");
+      await addressInput.focus();
+      state.releaseCitySearch();
+      await page.waitForTimeout(350);
+      assert.equal(await cityInput.inputValue(), "Ottawa, Ontario, Canada", "A stale lookup replaced the manually entered city.");
+      assert.equal(await page.getByRole("button", { name: "Use London, England, United Kingdom", exact: true }).count(), 0);
+      await addressInput.fill("456 Bank Street");
+      await page.getByRole("button", { name: "Save changes", exact: true }).click();
+      await waitFor(() => state.locationWrites.length === 2, "Updated city/address was not submitted.");
+      assert.equal(state.locationWrites[1].method, "PATCH");
+      assert.equal(state.locationWrites[1].body.venue, "");
+      assert.equal(state.locationWrites[1].body.city, "Ottawa, Ontario, Canada");
+      assert.equal(state.locationWrites[1].body.eventAddress, "456 Bank Street");
+      await page.getByRole("button", { name: "Edit post", exact: true }).first().click();
+      await addressInput.waitFor();
+      assert.equal(await addressInput.inputValue(), "456 Bank Street");
+      await addressInput.fill("");
+      await page.getByRole("button", { name: "Save changes", exact: true }).click();
+      await waitFor(() => state.locationWrites.length === 3, "Address removal was not submitted.");
+      assert.equal(state.locationWrites[2].body.eventAddress, null, "A cleared address must explicitly remove the stored value.");
+    } else if (item.kind === "guest-member-tabs") {
       await landing();
       await page.getByRole("button", { name: "Log in", exact: true }).last().click();
       await page.getByRole("heading", { name: "Good to see you.", exact: true }).waitFor();
@@ -760,6 +837,7 @@ async function runCase(browser, origin, item) {
     state.releaseLogin?.();
     state.releaseSwitch?.();
     state.releaseDiscover?.();
+    state.releaseCitySearch?.();
     await context.close();
   }
   return {

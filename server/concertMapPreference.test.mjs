@@ -163,6 +163,6 @@ test("actual history cursors remain target-bound and public rows expose only the
   concert(account, "new", 200); concert(account, "old", 100); concert(other, "other", 100);
   const response = history(account, other, { limit: "1" });
   assert.throws(() => history(other, account, { before: response.nextCursor }), { status: 400 });
-  assert.deepEqual(Object.keys(response.concerts[0]).sort(), ["id", "postId", "artist", "venue", "venueKey", "city", "date", "rating", "photo", "lat", "lng", "countryCode", "country"].sort());
+  assert.deepEqual(Object.keys(response.concerts[0]).sort(), ["id", "postId", "artist", "venue", "venueKey", "city", "eventAddress", "date", "rating", "photo", "lat", "lng", "countryCode", "country"].sort());
   assert.equal(response.concerts[0].photo, null);
 });

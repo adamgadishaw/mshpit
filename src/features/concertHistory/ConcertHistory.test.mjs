@@ -118,6 +118,37 @@ test("attendance-only rows open a show rather than claiming an attached review",
   assert.equal(view.nodes.some((node) => /^Open review for/.test(node.props?.accessibilityLabel || "")), false);
 });
 
+test("city-only and address reviews remain readable and filter under a city heading", () => {
+  const cityRows = rows(2).map((row) => ({ ...row, venue: "", venueKey: "", locationPrecision: "city", lat: 43.65 }));
+  const f = fixture({ concerts: cityRows }), initial = f.render();
+  assert.doesNotMatch(textContent(initial), /Venue not recorded/);
+  const action = label(initial, "Open review for Artist 0 in Toronto");
+  assert.ok(action);
+  action.props.onPress();
+  assert.equal(f.calls.open[0].postId, "post-0");
+  mapNode(initial).props.onSelectVenue(model.concertVenueKey(cityRows[0]));
+  const selected = f.render();
+  assert.match(textContent(selected), /IN THIS CITY/);
+  assert.doesNotMatch(textContent(selected), /AT THIS VENUE/);
+  assert.match(textContent(selected), /approximate city location/);
+  assert.equal(historyRows(selected).length, 2);
+  const address = { ...cityRows[0], eventAddress: "10 Queen Street" };
+  const addressFixture = fixture({ concerts: [address] }), addressView = addressFixture.render();
+  assert.match(textContent(addressView), /10 Queen Street · Toronto/);
+  label(addressView, "Open review for Artist 0 at 10 Queen Street · Toronto").props.onPress();
+  assert.equal(addressFixture.calls.open[0].eventAddress, address.eventAddress);
+});
+
+test("city pins announce approximate placement without a fictional venue", () => {
+  const cityRows = rows(2).map((row) => ({ ...row, venue: "", venueKey: "", locationPrecision: "city", lat: 43.65 }));
+  const history = model.concertHistoryModel(cityRows), f = fixture({ component: "map", model: history });
+  const view = f.render(), pin = label(view, "Toronto. 2 logged concerts. Approximate city location.");
+  assert.ok(pin);
+  pin.props.onPress();
+  assert.equal(f.calls.selected[0], history.venues[0].key);
+  assert.doesNotMatch(textContent(view), /Venue not recorded/);
+});
+
 test("expanded history is bounded and advances loaded rows before asking the server for more", () => {
   const f = fixture({ concerts: rows(43), complete: false }), initial = f.render();
   assert.match(textContent(initial), /partial history/);

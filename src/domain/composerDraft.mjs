@@ -56,6 +56,7 @@ export function normalizeComposerDraft(value = {}) {
     artistKey: value.artistKey == null || value.artistKey === "" ? null : String(value.artistKey),
     venue: isOnlineReview ? "" : text(value.venue),
     city: isOnlineReview ? "" : text(value.city),
+    eventAddress: postType === "show" && !isOnlineReview ? text(value.eventAddress) : "",
     tour: isOnlineReview ? "" : text(value.tour),
     date: isOnlineReview ? "" : text(value.date),
     onlineTitle: isOnlineReview ? text(value.onlineTitle ?? value.online_title) : "",
@@ -99,6 +100,7 @@ export function composerDraftHasContent(value) {
     draft.artist.trim()
     || draft.venue.trim()
     || draft.city.trim()
+    || draft.eventAddress.trim()
     || draft.tour.trim()
     || draft.onlineTitle.trim()
     || draft.youtubeUrl.trim()

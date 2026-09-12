@@ -120,6 +120,7 @@ CREATE TABLE IF NOT EXISTS posts (
   artist        TEXT NOT NULL,
   venue         TEXT NOT NULL,
   city          TEXT NOT NULL DEFAULT '',
+  event_address TEXT CHECK (event_address IS NULL OR length(event_address) <= 240),
   date          TEXT NOT NULL DEFAULT '',
   overall       REAL NOT NULL,
   band          REAL,
@@ -1663,6 +1664,7 @@ const additiveMigrations = [
   "ALTER TABLE posts ADD COLUMN artist_key TEXT",
   "ALTER TABLE posts ADD COLUMN artist_mbid TEXT",
   "ALTER TABLE posts ADD COLUMN venue_key TEXT",
+  "ALTER TABLE posts ADD COLUMN event_address TEXT CHECK (event_address IS NULL OR length(event_address) <= 240)",
   // Stable per-composer token. If a write commits but its response is lost,
   // retrying returns that row instead of publishing a duplicate review.
   "ALTER TABLE posts ADD COLUMN client_mutation_id TEXT",
@@ -2019,13 +2021,13 @@ WHEN OLD.removed=0 AND NEW.removed=1
   AND NEW.setlist='[]' AND NEW.tour IS NULL AND NEW.tags='[]'
   AND NEW.song IS NULL AND NEW.playlist IS NULL
   AND NEW.artist_key IS NULL AND NEW.artist_mbid IS NULL AND NEW.venue_key IS NULL
-  AND NEW.client_mutation_id IS NULL AND NEW.client_mutation_hash IS NULL
+  AND NEW.client_mutation_hash IS NULL
   AND (NEW.campaign IS NOT NULL OR NEW.tagged_user_ids<>'[]'
     OR NEW.experience_type<>'in_person' OR NEW.online_title IS NOT NULL
-    OR NEW.youtube_url IS NOT NULL OR NEW.youtube_video_id IS NOT NULL)
+    OR NEW.youtube_url IS NOT NULL OR NEW.youtube_video_id IS NOT NULL OR NEW.event_address IS NOT NULL)
 BEGIN
   UPDATE posts SET campaign=NULL,tagged_user_ids='[]',experience_type='in_person',
-    online_title=NULL,youtube_url=NULL,youtube_video_id=NULL WHERE id=NEW.id;
+    online_title=NULL,youtube_url=NULL,youtube_video_id=NULL,event_address=NULL WHERE id=NEW.id;
 END;
 
 CREATE TRIGGER IF NOT EXISTS trg_posts_create_receipt_removed

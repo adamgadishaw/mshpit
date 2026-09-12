@@ -38,7 +38,7 @@ const concerts = Object.freeze(Array.from({ length: 8 }, (_, index) => {
   });
 }));
 const cases = [390, 1280].flatMap(width => [
-  ...["preview-map-review", "map-off", "unmapped", "failure-retry", "empty", "own-map-entry", "two-countries"].map(kind => ({
+  ...["preview-map-review", "map-off", "unmapped", "failure-retry", "empty", "own-map-entry", "two-countries", "city-and-address"].map(kind => ({
     name: `${kind}-${width}`, kind, width,
   })),
 ]);
@@ -114,6 +114,10 @@ async function runCase(browser, origin, item) {
   } : item.kind === "two-countries" && row.city === "Vancouver" ? {
     ...row, venue: "Fixture Seattle Hall", venueKey: "fixture-seattle-hall", city: "Seattle",
     lat: 47.606, lng: -122.332, countryCode: "US", country: "United States",
+  } : item.kind === "city-and-address" ? {
+    ...row, venue: "", venueKey: "", locationPrecision: "city",
+    eventAddress: row.city === "Vancouver" ? "10 Waterfront Road" : "",
+    ...(row.id === concerts[1].id ? { artist: concerts[0].artist, date: concerts[0].date } : {}),
   } : row);
   const state = { historyUnavailable: item.kind === "failure-retry", calls: [], routeErrors: [], pageErrors: [], consoleErrors: [], reports: [] };
   page.on("pageerror", error => state.pageErrors.push(error.message));
@@ -157,12 +161,12 @@ async function runCase(browser, origin, item) {
       const postMatch = url.pathname.match(/^\/api\/posts\/(p_concert_fixture_\d+)(\/comments)?$/);
       if (postMatch) {
         assert.equal(request.method(), "GET");
-        const row = concerts.find(concert => concert.postId === postMatch[1]);
+        const row = fixtureRows.find(concert => concert.postId === postMatch[1]);
         assert.ok(row, "Only an exact fixture concert may be opened.");
         if (postMatch[2]) return await json({ comments: [], hasMore: false, nextCursor: null });
         return await json({ post: {
           id: row.postId, userId: profileId, user: profile, kind: "concert", experienceType: "live",
-          artist: row.artist, venue: row.venue, city: row.city, date: row.date,
+          artist: row.artist, venue: row.venue, city: row.city, eventAddress: row.eventAddress || "", date: row.date,
           review: `Exact fixture review ${row.postId}.`, text: `Exact fixture review ${row.postId}.`,
           at: Date.parse(`${row.date}T20:00:00Z`), likes: 0, comments: 0,
           overall: row.rating, band: row.rating, room: row.rating, photos: [],
@@ -215,7 +219,7 @@ async function runCase(browser, origin, item) {
       assert.equal(await history.getByRole("button", { name: "See all concerts", exact: true }).count(), 0);
       await map.getByText("A map of nights to remember", { exact: true }).waitFor();
     } else {
-      await history.getByText(missingLocation ? "8 concerts · 2 venues" : item.kind === "two-countries" ? "8 concerts · 2 venues · 2 countries" : "8 concerts · 2 venues · 1 country", { exact: true }).waitFor();
+      await history.getByText(missingLocation ? "8 concerts · 2 venues" : item.kind === "city-and-address" ? "8 concerts · 2 city locations · 1 country" : item.kind === "two-countries" ? "8 concerts · 2 venues · 2 countries" : "8 concerts · 2 venues · 1 country", { exact: true }).waitFor();
       if (item.kind === "two-countries") await map.getByText("World", { exact: true }).waitFor();
       else if (!missingLocation) await map.getByText("North America", { exact: true }).waitFor();
       // Desktop has room for five rows; the phone preview stays at three.
@@ -229,10 +233,33 @@ async function runCase(browser, origin, item) {
         assert.equal(await map.count(), 0, "The hidden map must not mount.");
         assert.equal(await history.getByRole("button", { name: /concert map/ }).count(), 0);
       } else if (item.kind === "unmapped") {
-        await map.getByText("No mapped venues in this view", { exact: true }).waitFor();
+        await map.getByText("No mapped locations in this view", { exact: true }).waitFor();
         await map.getByText("8 concerts have no map location; still listed.", { exact: true }).waitFor();
         assert.equal(await map.getByRole("button").count(), 3, "Unmapped concerts must not create fabricated pins.");
         assert.equal(await history.getByText("Location not mapped", { exact: true }).count(), expectedPreview);
+      } else if (item.kind === "city-and-address") {
+        const cityPin = map.getByRole("button", { name: "Toronto. 4 logged concerts. Approximate city location.", exact: true });
+        const addressPin = map.getByRole("button", { name: "10 Waterfront Road, Vancouver. 4 logged concerts. Approximate city location.", exact: true });
+        await cityPin.click();
+        await history.getByText("IN THIS CITY", { exact: true }).waitFor();
+        assert.equal(await history.getByText("AT THIS VENUE", { exact: true }).count(), 0);
+        assert.equal(await history.getByText("Venue not recorded", { exact: true }).count(), 0);
+        await history.getByText("4 logged concerts · approximate city location", { exact: true }).waitFor();
+        await addressPin.click();
+        await history.getByText("4 logged concerts · Vancouver · approximate city location", { exact: true }).waitFor();
+        await waitFor(async () => await rows.count() === Math.min(expectedPreview, 4), "The address pin did not retain its original concerts.");
+        if (process.env.PIT_CONCERT_BROWSER_SCREENSHOTS === "1") {
+          mkdirSync(join(root, ".tmp"), { recursive: true });
+          await history.scrollIntoViewIfNeeded();
+          await page.screenshot({ path: join(root, ".tmp", `concert-history-address-selected-${item.width}.png`), fullPage: true });
+        }
+        const exact = fixtureRows[4];
+        await history.getByRole("button", { name: `Open review for ${exact.artist} at ${exact.eventAddress} · ${exact.city}`, exact: true }).click();
+        await page.getByText(`Exact fixture review ${exact.postId}.`, { exact: true }).last().waitFor();
+        assert.deepEqual(state.calls.filter(call => /^\/api\/posts\/[^/]+$/.test(call.path)).map(call => call.path), [`/api/posts/${exact.postId}`]);
+        assert.equal(state.calls.some(call => /\/api\/artists\//.test(call.path)), false, "A city/address review must open its review, not a guessed artist or venue page.");
+        await page.goBack();
+        await page.getByTestId("profile-concert-history").waitFor();
       } else if (item.kind === "preview-map-review") {
         const torontoPin = map.getByRole("button", { name: "Fixture Toronto Hall, Toronto. 4 logged concerts.", exact: true });
         const vancouverPin = map.getByRole("button", { name: "Fixture Vancouver Hall, Vancouver. 4 logged concerts.", exact: true });

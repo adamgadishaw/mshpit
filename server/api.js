@@ -1153,8 +1153,16 @@ function cleanPostRatingDims(value) {
   return out;
 }
 
-const postRow = db.prepare(`INSERT INTO posts (id,user_id,artist,venue,city,date,overall,band,room,dims,review,photos,photos_public,landing_showcase,campaign,setlist,tour,tags,tagged_user_ids,kind,song,playlist,artist_key,artist_mbid,venue_key,experience_type,online_title,youtube_url,youtube_video_id,client_mutation_id,client_mutation_hash,created_at)
-                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+function cleanEventAddress(value) {
+  if (value == null || value === "") return null;
+  if (typeof value !== "string" || [...value].length > LIMITS.eventAddress) {
+    throw new ApiError(400, "Use an event address of up to 240 characters.", "VALIDATION_FAILED");
+  }
+  return clean(value, { max: LIMITS.eventAddress }) || null;
+}
+
+const postRow = db.prepare(`INSERT INTO posts (id,user_id,artist,venue,city,date,overall,band,room,dims,review,photos,photos_public,landing_showcase,campaign,setlist,tour,tags,tagged_user_ids,kind,song,playlist,artist_key,artist_mbid,venue_key,experience_type,online_title,youtube_url,youtube_video_id,client_mutation_id,client_mutation_hash,created_at,event_address)
+                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
 const postByClientMutation = db.prepare("SELECT id,removed,client_mutation_hash FROM posts WHERE user_id=? AND client_mutation_id=? LIMIT 1");
 const postReceiptByClientMutation = db.prepare("SELECT post_id AS id,state,client_mutation_hash FROM post_create_receipts WHERE user_id=? AND client_mutation_id=? LIMIT 1");
 const insertPostCreateReceipt = db.prepare(`INSERT OR IGNORE INTO post_create_receipts
@@ -1237,7 +1245,7 @@ function resolveArtistBinding(name, claimedKey) {
 // Venues live in the bundled catalog rather than a table, so the normalized name
 // is the stable key. Recording it means a same-named room in another city is a
 // different venue the moment the catalog can tell them apart.
-const venueBinding = (name) => canonicalVenueKey(clean(name, { max: LIMITS.venue }));
+const venueBinding = (name) => canonicalVenueKey(clean(name, { max: LIMITS.venue })) || null;
 
 // A tagged YouTube video on a post. Only the canonical video id is authoritative.
 // Build the thumbnail URL ourselves so a post cannot persist an arbitrary remote
@@ -2268,6 +2276,10 @@ function canonicalAttendanceTicketCreateRequest(user, source, storedPost) {
 
 function canonicalCreateRequest(user, body, storedPost = null) {
   const source = body && typeof body === "object" && !Array.isArray(body) ? body : {};
+  const eventAddress = cleanEventAddress(source.eventAddress);
+  if (["status", "memory"].includes(source.kind) && eventAddress) {
+    throw new ApiError(400, "An event address can only be added to an in-person review.", "VALIDATION_FAILED");
+  }
   if (Object.prototype.hasOwnProperty.call(source, "attendanceTicket")) {
     if (source.kind !== "status") {
       throw new ApiError(400, "A Going ticket must be shared as a status post.", "VALIDATION_FAILED");
@@ -2395,7 +2407,10 @@ function canonicalCreateRequest(user, body, storedPost = null) {
     onlineTitle: { parse: (x) => clean(x, { max: 160 }) || null },
   });
   if (errs.length) throw new ApiError(400, errs[0]);
-  if (!onlineReview && !v.venue) throw new ApiError(400, "venue is required", "VALIDATION_FAILED");
+  if (!onlineReview && !v.venue && !v.city) throw new ApiError(400, "Add a venue or city for this concert.", "VALIDATION_FAILED");
+  if (eventAddress && (onlineReview || !v.city)) {
+    throw new ApiError(400, "Add a city with an in-person event address.", "VALIDATION_FAILED");
+  }
   const onlineLink = canonicalYouTubeReviewLink({
     youtubeUrl: source.youtubeUrl,
     youtubeVideoId: source.youtubeVideoId,
@@ -2423,8 +2438,9 @@ function canonicalCreateRequest(user, body, storedPost = null) {
     onlineTitle: onlineReview ? v.onlineTitle : null,
     youtubeUrl: onlineReview ? onlineLink?.youtubeUrl || null : null,
     youtubeVideoId: onlineReview ? onlineLink?.youtubeVideoId || null : null,
-    venue: onlineReview ? "" : v.venue,
+    venue: onlineReview ? "" : (v.venue || ""),
     city: onlineReview ? "" : (v.city || ""),
+    eventAddress: onlineReview ? null : eventAddress,
     date: onlineReview ? "" : (v.date || ""),
     band: onlineReview ? null : (v.band ?? null),
     room: onlineReview ? null : (v.room ?? null),
@@ -2450,6 +2466,7 @@ function canonicalCreateRequest(user, body, storedPost = null) {
     artist: values.artist,
     venue: values.venue,
     city: values.city,
+    "event address": values.eventAddress,
     review: values.review,
     "setlist entry": values.setlist,
     tour: values.tour,
@@ -2467,6 +2484,8 @@ function canonicalCreateRequest(user, body, storedPost = null) {
       venue: values.venue,
       venueKey: onlineReview ? null : venueBinding(values.venue),
       city: values.city,
+      // Omit empty addresses to preserve existing pre-migration retry hashes.
+      ...(values.eventAddress ? { eventAddress: values.eventAddress } : {}),
       date: values.date,
       overall: values.overall,
       band: values.band,
@@ -2516,6 +2535,8 @@ function canonicalStoredPost(row) {
     venue: kind === "status" || online.experienceType === "online" ? "" : clean(row?.venue, { max: LIMITS.venue }),
     venueKey: kind === "status" || online.experienceType === "online" ? null : row?.venue_key || venueBinding(row?.venue),
     city: kind === "status" || online.experienceType === "online" ? "" : clean(row?.city, { max: LIMITS.city }),
+    ...(kind !== "status" && online.experienceType !== "online" && row?.event_address
+      ? { eventAddress: clean(row.event_address, { max: 240 }) } : {}),
     date: kind === "status" || online.experienceType === "online" ? "" : cleanDate(row?.date) || "",
     overall: kind === "status" ? 0 : clampRating(row?.overall),
     band: kind === "status" || online.experienceType === "online" || row?.band == null ? null : clampRating(row.band),
@@ -2820,6 +2841,7 @@ function postJson(p, viewerId) {
     artist: p.artist,
     venue: online.experienceType === "online" ? "" : p.venue,
     city: online.experienceType === "online" ? "" : p.city,
+    eventAddress: (p.kind || "review") === "status" || online.experienceType === "online" ? null : clean(p.event_address, { max: 240 }) || null,
     date: online.experienceType === "online" ? "" : p.date,
     artistKey: p.artist_key || null, artistPublicSlug, artistMbid: p.artist_mbid || null,
     venueKey: online.experienceType === "online" ? null : p.venue_key || null,
@@ -6429,7 +6451,7 @@ export const routes = {
           "{}", v.review, JSON.stringify(v.photos), v.photosPublic, 0, v.campaign ? JSON.stringify(v.campaign) : null, "[]", null,
           "[]", JSON.stringify(transactionTaggedUserIds), "status", v.song ? JSON.stringify(v.song) : null, v.playlist ? JSON.stringify(v.playlist) : null,
           v.memorialMemory ? v.binding.artist_key : null, v.memorialMemory ? v.binding.artist_mbid : null, null,
-          "in_person", null, null, null, mutationId, mutationHash, now());
+          "in_person", null, null, null, mutationId, mutationHash, now(), null);
         if (mutationId) insertPostCreateReceipt.run(u.id, mutationId, mutationHash, id, now(), now());
         if (v.attendanceTicket) postAttendanceTicket.run(JSON.stringify(v.attendanceTicket), id, u.id);
         markOwnedMediaAssociated(db, { ownerId: u.id, urls: v.photos, at: now() });
@@ -6454,7 +6476,7 @@ export const routes = {
         JSON.stringify(v.dims), v.review, JSON.stringify(v.photos), v.photosPublic, v.landingShowcase, null, JSON.stringify(v.setlist), v.tour,
         JSON.stringify(v.tags), JSON.stringify(transactionTaggedUserIds), "review", v.song ? JSON.stringify(v.song) : null, null,
         v.binding.artist_key, v.binding.artist_mbid, v.experienceType === "online" ? null : venueBinding(v.venue),
-        v.experienceType, v.onlineTitle, v.youtubeUrl, v.youtubeVideoId, mutationId, mutationHash, now());
+        v.experienceType, v.onlineTitle, v.youtubeUrl, v.youtubeVideoId, mutationId, mutationHash, now(), v.eventAddress);
       if (mutationId) insertPostCreateReceipt.run(u.id, mutationId, mutationHash, id, now(), now());
       markOwnedMediaAssociated(db, { ownerId: u.id, urls: v.photos, at: now() });
       if (v.mediaSelection) attachPostMedia(db, { postId: id, ownerId: u.id, selection: v.mediaSelection, at: now() });
@@ -6485,7 +6507,7 @@ export const routes = {
 
     const body = ctx.body && typeof ctx.body === "object" && !Array.isArray(ctx.body) ? ctx.body : {};
     const has = (key) => Object.prototype.hasOwnProperty.call(body, key);
-    const editable = ["artist", "artistKey", "venue", "city", "date", "overall", "band", "room", "dims", "review", "photos", "mediaAssetIds", "photosPublic", "landingShowcase", "setlist", "tour", "tags", "taggedUserIds", "song", "playlistId", "campaign", "experienceType", "onlineTitle", "youtubeUrl", "youtubeVideoId"];
+    const editable = ["artist", "artistKey", "venue", "city", "eventAddress", "date", "overall", "band", "room", "dims", "review", "photos", "mediaAssetIds", "photosPublic", "landingShowcase", "setlist", "tour", "tags", "taggedUserIds", "song", "playlistId", "campaign", "experienceType", "onlineTitle", "youtubeUrl", "youtubeVideoId"];
     if (!editable.some(has)) throw new ApiError(400, "Make a change before saving this post.", "VALIDATION_FAILED");
 
     // Optimistic concurrency prevents two devices (or an old open edit sheet)
@@ -6501,7 +6523,7 @@ export const routes = {
     const next = { ...current };
     if (current.kind !== "status") next.tags = "[]";
     const currentMemorialMemory = current.kind === "status" && !!current.artist_key && !!current.artist_mbid && !!current.artist;
-    if (currentMemorialMemory && ["artist", "artistKey", "venue", "city", "date", "overall", "band", "room", "dims", "setlist", "tour", "tags", "landingShowcase", "experienceType", "onlineTitle", "youtubeUrl", "youtubeVideoId"].some(has)) {
+    if (currentMemorialMemory && ["artist", "artistKey", "venue", "city", "eventAddress", "date", "overall", "band", "room", "dims", "setlist", "tour", "tags", "landingShowcase", "experienceType", "onlineTitle", "youtubeUrl", "youtubeVideoId"].some(has)) {
       throw new ApiError(400, "A memorial fan memory can edit its words, people, song, and media, but it cannot become a live rating.", "VALIDATION_FAILED");
     }
     if (current.kind === "status" && ["experienceType", "onlineTitle", "youtubeUrl", "youtubeVideoId"].some(has)) {
@@ -6528,6 +6550,12 @@ export const routes = {
     textField("artist", LIMITS.artist, { required: true });
     textField("venue", LIMITS.venue);
     textField("city", LIMITS.city);
+    if (has("eventAddress")) {
+      next.event_address = cleanEventAddress(body.eventAddress);
+      if (current.kind === "status" && next.event_address) {
+        throw new ApiError(400, "An event address can only be added to an in-person review.", "VALIDATION_FAILED");
+      }
+    }
     // Stored ISO, same as create. A post still holding a legacy display-format
     // or mangled date is repaired by this rather than rejected, since the value
     // canonicalizes to the night it always meant. "" clears the field, which is
@@ -6635,6 +6663,9 @@ export const routes = {
       next.song = song ? JSON.stringify(song) : null;
     }
 
+    if (next.experience_type === "online" && has("eventAddress") && next.event_address) {
+      throw new ApiError(400, "An event address can only be added to an in-person review.", "VALIDATION_FAILED");
+    }
     if (current.kind !== "status" && next.experience_type === "online") {
       if (!next.youtube_url || !next.youtube_video_id) {
         throw new ApiError(400, "Add the YouTube link for this online concert.", "VALIDATION_FAILED");
@@ -6643,6 +6674,7 @@ export const routes = {
       // physical show identity through a forged or stale edit payload.
       next.venue = "";
       next.city = "";
+      next.event_address = null;
       next.date = "";
       next.band = null;
       next.room = null;
@@ -6655,8 +6687,11 @@ export const routes = {
       next.playlist = null;
       next.campaign = null;
     } else if (current.kind !== "status") {
-      if (!clean(next.venue, { max: LIMITS.venue })) {
-        throw new ApiError(400, "venue is required", "VALIDATION_FAILED");
+      if (!clean(next.venue, { max: LIMITS.venue }) && !clean(next.city, { max: LIMITS.city })) {
+        throw new ApiError(400, "Add a venue or city for this concert.", "VALIDATION_FAILED");
+      }
+      if (next.event_address && !clean(next.city, { max: LIMITS.city })) {
+        throw new ApiError(400, "Add a city with an in-person event address.", "VALIDATION_FAILED");
       }
       if ((has("onlineTitle") && next.online_title) || (has("youtubeUrl") && body.youtubeUrl) || (has("youtubeVideoId") && body.youtubeVideoId)) {
         throw new ApiError(400, "YouTube concert details can only be added to an online review.", "VALIDATION_FAILED");
@@ -6696,6 +6731,7 @@ export const routes = {
       artist: has("artist") ? next.artist : undefined,
       venue: has("venue") ? next.venue : undefined,
       city: has("city") ? next.city : undefined,
+      "event address": has("eventAddress") ? next.event_address : undefined,
       review: has("review") ? next.review : undefined,
       "setlist entry": has("setlist") ? cleanStringArray(body.setlist, { maxItems: 40, maxLen: 120 }) : undefined,
       tour: has("tour") ? next.tour : undefined,
@@ -6804,6 +6840,7 @@ export const routes = {
       ["artistKey", editBinding.artist_key, current.artist_key],
       ["venue", next.venue, current.venue],
       ["city", next.city, current.city],
+      ["eventAddress", next.event_address, current.event_address],
       ["date", next.date, current.date],
       ["overall", next.overall, current.overall],
       ["band", next.band, current.band],
@@ -6854,13 +6891,13 @@ export const routes = {
         addsOnlineVideo: legacyAddsOnlineVideo,
         publishesMedia: legacyPublishesMedia,
       });
-      const updated = db.prepare(`UPDATE posts SET artist=?,venue=?,city=?,date=?,overall=?,band=?,room=?,dims=?,review=?,photos=?,photos_public=?,landing_showcase=?,campaign=?,setlist=?,tour=?,tags=?,tagged_user_ids=?,song=?,playlist=?,artist_key=?,artist_mbid=?,venue_key=?,experience_type=?,online_title=?,youtube_url=?,youtube_video_id=?,updated_at=?
+      const updated = db.prepare(`UPDATE posts SET artist=?,venue=?,city=?,date=?,overall=?,band=?,room=?,dims=?,review=?,photos=?,photos_public=?,landing_showcase=?,campaign=?,setlist=?,tour=?,tags=?,tagged_user_ids=?,song=?,playlist=?,artist_key=?,artist_mbid=?,venue_key=?,experience_type=?,online_title=?,youtube_url=?,youtube_video_id=?,updated_at=?,event_address=?
         WHERE id=? AND user_id=? AND removed=0 AND COALESCE(updated_at,created_at)=?`)
         .run(next.artist, next.venue, next.city, next.date, next.overall, next.band, next.room, next.dims, next.review, next.photos, next.photos_public, next.landing_showcase, next.campaign, next.setlist, next.tour, next.tags, JSON.stringify(transactionTaggedUserIds), next.song, next.playlist,
           editBinding.artist_key, editBinding.artist_mbid, current.kind === "status" || next.experience_type === "online" ? null : venueBinding(next.venue),
           current.kind === "status" ? "in_person" : next.experience_type, current.kind === "status" ? null : next.online_title,
           current.kind === "status" ? null : next.youtube_url, current.kind === "status" ? null : next.youtube_video_id,
-          editedAt, current.id, u.id, currentVersion);
+          editedAt, current.kind === "status" ? null : next.event_address || null, current.id, u.id, currentVersion);
       if (Number(updated.changes || 0) !== 1) {
         throw new ApiError(409, "This review changed on another screen. Refresh before saving again.", "CONFLICT");
       }
@@ -6946,7 +6983,7 @@ export const routes = {
         // bindings, ratings, media and the content-derived request hash are
         // scrubbed. Retain only the opaque mutation id so a lost/stale create
         // retry can never resurrect this irreversibly deleted post.
-        db.prepare(`UPDATE posts SET removed=1,artist='',venue='',city='',date='',overall=0,
+        db.prepare(`UPDATE posts SET removed=1,artist='',venue='',city='',event_address=NULL,date='',overall=0,
           band=NULL,room=NULL,dims='{}',review='',photos='[]',photos_public=0,landing_showcase=0,campaign=NULL,
           setlist='[]',tour=NULL,tags='[]',tagged_user_ids='[]',song=NULL,playlist=NULL,artist_key=NULL,artist_mbid=NULL,
           venue_key=NULL,experience_type='in_person',online_title=NULL,youtube_url=NULL,youtube_video_id=NULL,

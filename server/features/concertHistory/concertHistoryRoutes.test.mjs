@@ -19,7 +19,7 @@ function fixture(t, options = {}) {
       is_banned INTEGER DEFAULT 0,dormant_at INTEGER,suspended_until INTEGER,extras TEXT DEFAULT '{}');
     CREATE TABLE blocks (blocker_id TEXT,blocked_id TEXT);
     CREATE TABLE posts (id TEXT PRIMARY KEY,user_id TEXT,kind TEXT DEFAULT 'review',experience_type TEXT DEFAULT 'in_person',
-      removed INTEGER DEFAULT 0,created_at INTEGER,artist TEXT,venue TEXT,venue_key TEXT,city TEXT,date TEXT,overall REAL,
+      removed INTEGER DEFAULT 0,created_at INTEGER,artist TEXT,venue TEXT,venue_key TEXT,city TEXT,event_address TEXT,date TEXT,overall REAL,
       photos_public INTEGER DEFAULT 0,photos TEXT DEFAULT '[]');
     CREATE INDEX idx_posts_user_history ON posts(user_id,removed,created_at DESC,id DESC);
     INSERT INTO users(id) VALUES ('author'),('reader');`);
@@ -62,7 +62,7 @@ test("physical reviews through today qualify; future plans, statuses, online, in
   f.add("future", { date: "2027-01-01" });
   f.add("invalid", { date: "2025-02-31" });
   f.add("removed", { removed: 1 });
-  f.add("missing-venue", { venue: " " });
+  f.add("missing-venue-and-city", { venue: " ", city: " " });
   const result = f.read();
   assert.deepEqual(result.concerts.map(({ id }) => id).sort(), ["legacy-date", "past", "today"]);
   assert.equal(result.concerts[0].lat, 43.664);
@@ -129,7 +129,7 @@ test("profile audience, restrictions and both block directions are checked befor
 
 test("map opt-out strips location and derived map coverage for member and owner without losing list rows", (t) => {
   const f = fixture(t);
-  f.add("known"); f.add("unknown", { venue_key: "unknown" });
+  f.add("known"); f.add("unknown", { venue_key: "unknown", city: "Unmapped City" });
   const visible = f.read();
   assert.equal(visible.coverage.unmappedCount, 1);
   f.database.prepare("UPDATE users SET extras=? WHERE id='author'").run(JSON.stringify({ concertMapVisible: false }));
@@ -140,7 +140,7 @@ test("map opt-out strips location and derived map coverage for member and owner 
     assert.equal(result.coverage.unmappedCount, null);
     assert.equal(result.concerts.length, 2);
     for (const row of result.concerts) for (const field of ["lat", "lng", "countryCode", "country"]) assert.equal(row[field], null);
-    assert.equal(result.concerts[0].city, "Toronto");
+    assert.deepEqual(result.concerts.map((row) => row.city).sort(), ["Toronto", "Unmapped City"]);
   }
 });
 
@@ -162,7 +162,7 @@ test("compact records do not hydrate full posts and malformed photo JSON is harm
   const rows = f.read({ user: { id: "reader" } }).concerts;
   assert.equal(rows.length, 2);
   assert.deepEqual(calls, [[null, "reader"], ["https://media.example/one.jpg", "reader"]]);
-  assert.deepEqual(Object.keys(rows[0]).sort(), ["artist", "city", "country", "countryCode", "date", "id", "lat", "lng", "photo", "postId", "rating", "venue", "venueKey"].sort());
+  assert.deepEqual(Object.keys(rows[0]).sort(), ["artist", "city", "eventAddress", "country", "countryCode", "date", "id", "lat", "lng", "photo", "postId", "rating", "venue", "venueKey"].sort());
 });
 
 test("thumbnail uses only the author's verified public image derivative and honors the photo visibility flag", (t) => {
@@ -195,10 +195,13 @@ test("location resolution requires an exact known venue identity plus nonconflic
   const resolve = createConcertHistoryLocationResolver(VENUES);
   assert.equal(resolve({ venue_key: "history toronto", city: "Toronto, Ontario, Canada" }).lat, 43.664);
   assert.equal(resolve({ venue: "History", city: "Toronto" }).countryCode, "CA");
-  for (const row of [{ venue_key: "unknown", venue: "History", city: "Toronto" },
-    { venue: "History", city: "Toronto, United States" }, { venue_key: "history", city: "London" },
-    { venue: "Histor", city: "Toronto" }, { venue: "History", home: { lat: 43, lng: -79 } }]) {
+  for (const row of [{ venue: "History", city: "Toronto, United States" }, { venue_key: "history", city: "London" },
+    { venue: "History", home: { lat: 43, lng: -79 } }]) {
     assert.deepEqual(resolve(row), EMPTY_CONCERT_LOCATION);
+  }
+  for (const row of [{ venue_key: "unknown", venue: "History", city: "Toronto" }, { venue: "Histor", city: "Toronto" }]) {
+    assert.equal(resolve(row).locationPrecision, "city", "unknown venues use the city, never another room's precise pin");
+    assert.equal(resolve(row).lat, 43.7);
   }
 });
 
@@ -207,11 +210,11 @@ test("ambiguous same-name cities fail closed; provider venue keys remain exact a
     ...VENUES, { ...VENUES[0], key: "history-other", lat: 43.7 },
     { ...VENUES[0], key: "provider:ticketmaster:Ab123" },
   ]);
-  assert.deepEqual(resolve({ venue: "History", city: "Toronto" }), EMPTY_CONCERT_LOCATION);
+  assert.equal(resolve({ venue: "History", city: "Toronto" }).locationPrecision, "city");
   assert.equal(resolve({ venue_key: "history", city: "Toronto" }).lat, 43.664);
   assert.equal(resolve({ venue_key: "provider:ticketmaster:Ab123", city: "Toronto" }).lat, 43.664);
-  assert.deepEqual(resolve({ venue_key: "provider:other:Ab123", city: "Toronto" }), EMPTY_CONCERT_LOCATION);
-  assert.deepEqual(resolve({ venue_key: "provider:ticketmaster:ab123", city: "Toronto" }), EMPTY_CONCERT_LOCATION);
+  assert.equal(resolve({ venue_key: "provider:other:Ab123", city: "Toronto" }).locationPrecision, "city");
+  assert.equal(resolve({ venue_key: "provider:ticketmaster:ab123", city: "Toronto" }).locationPrecision, "city");
 });
 
 test("coordinates are numeric and range checked without null/zero coercion", () => {
@@ -220,4 +223,59 @@ test("coordinates are numeric and range checked without null/zero coercion", () 
     assert.equal(result.lat, null); assert.equal(result.lng, null);
   }
   assert.equal(createConcertHistoryLocationResolver([{ ...VENUES[0], lat: 0, lng: 30 }])({ venue_key: "history", city: "Toronto" }).lat, 0);
+});
+
+test("city-only reviews remain in history, with bounded public address and approximate placement", (t) => {
+  const f = fixture(t);
+  f.add("city-only", { venue: "", venue_key: null, city: "Toronto, Ontario, Canada", event_address: "100 Public Event Lane" });
+  const row = f.read().concerts[0];
+  assert.equal(row.venue, "");
+  assert.equal(row.venueKey, null);
+  assert.equal(row.eventAddress, "100 Public Event Lane");
+  assert.equal(row.locationPrecision, "city");
+  assert.equal(row.lat, 43.7);
+  assert.equal(row.lng, -79.3);
+  f.database.prepare("UPDATE posts SET event_address=? WHERE id='city-only'").run("x".repeat(2000));
+  assert.equal(f.read().concerts[0].eventAddress.length, 240);
+  f.database.prepare("UPDATE posts SET event_address=? WHERE id='city-only'").run("\u{1F3DB}".repeat(200));
+  assert.equal(f.read().concerts[0].eventAddress.length, 240, "SQLite character bounds also honor the client UTF-16 payload limit");
+  f.database.prepare("UPDATE users SET extras=? WHERE id='author'").run(JSON.stringify({ concertMapVisible: false }));
+  const hidden = f.read().concerts[0];
+  assert.equal(hidden.lat, null);
+  assert.equal(hidden.lng, null);
+  assert.equal(hidden.countryCode, null);
+  assert.equal(hidden.locationPrecision, undefined);
+});
+
+test("city fallback rejects homonyms and conflicting qualifiers instead of guessing", () => {
+  const resolve = createConcertHistoryLocationResolver([
+    ...VENUES,
+    { key: "london-ca", name: "Ontario Hall", city: "London", region: "Ontario", country: "Canada", countryCode: "CA", lat: 42.984, lng: -81.245 },
+    null,
+  ]);
+  for (const city of ["London", "London, France", "Toronto, British Columbia, Canada", "Missing City, Canada"]) {
+    assert.deepEqual(resolve({ venue: "", city, eventAddress: "1 Private Road", home: { lat: 22, lng: 33 } }), EMPTY_CONCERT_LOCATION);
+  }
+  assert.equal(resolve({ city: "London, Ontario, Canada" }).countryCode, "CA");
+  assert.equal(resolve({ city: "London, England, United Kingdom" }).countryCode, "GB");
+  assert.equal(resolve({ city: "London, United Kingdom" }).locationPrecision, "city");
+});
+
+test("city coordinates use unique catalogue points and are stable across order and aliases", () => {
+  const venues = [VENUES[0], { ...VENUES[0], key: "other", lat: 43.8, lng: -79.6 }];
+  const point = createConcertHistoryLocationResolver(venues)({ city: "Toronto, Canada" });
+  assert.deepEqual(createConcertHistoryLocationResolver([...venues, { ...VENUES[0], key: "alias" }].reverse())({ city: "Toronto, Canada" }), point);
+  assert.equal(point.locationPrecision, "city");
+  assert.equal(point.lat, 43.7);
+  assert.equal(point.lng, -79.5);
+});
+
+test("rounded city fallback never fabricates Null Island or crosses the wrong side of the date line", () => {
+  const origin = createConcertHistoryLocationResolver([{ ...VENUES[0], lat: 0.01, lng: 0.01 }]);
+  assert.deepEqual(origin({ city: "Toronto, Canada" }), EMPTY_CONCERT_LOCATION);
+  const crossing = createConcertHistoryLocationResolver([
+    { ...VENUES[0], lat: -16.5, lng: 179.9 }, { ...VENUES[0], key: "across", lat: -16.4, lng: -179.9 },
+  ])({ city: "Toronto, Canada" });
+  assert.equal(Math.abs(crossing.lng), 180);
+  assert.equal(crossing.locationPrecision, "city");
 });

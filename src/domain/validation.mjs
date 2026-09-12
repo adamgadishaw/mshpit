@@ -13,7 +13,8 @@ export const LIMITS = Object.freeze({
   artist: 80,
   playlist: 60,
   venue: 80,
-  city: 60,
+  city: 240,
+  eventAddress: 240,
   date: 20,
 });
 

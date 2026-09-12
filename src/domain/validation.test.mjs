@@ -9,8 +9,8 @@ test("shared validation strips control and bidi spoofing characters", () => {
 
 test("shared content limits cover every post reconciliation field", () => {
   assert.deepEqual(
-    { artist: LIMITS.artist, venue: LIMITS.venue, city: LIMITS.city, date: LIMITS.date },
-    { artist: 80, venue: 80, city: 60, date: 20 },
+    { artist: LIMITS.artist, venue: LIMITS.venue, city: LIMITS.city, eventAddress: LIMITS.eventAddress, date: LIMITS.date },
+    { artist: 80, venue: 80, city: 240, eventAddress: 240, date: 20 },
   );
 });
 

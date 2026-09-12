@@ -17,7 +17,7 @@ test("review composer offers clear in-person and online choices without a new co
 test("online mode requires artist, rating, and a valid YouTube source instead of a venue", () => {
   const eligibility = source.slice(source.indexOf("const youtubeUrlValid"), source.indexOf("const submitBusy"));
   includes(eligibility, "artist.trim() && onlineRating > 0 && youtubeUrlValid");
-  includes(eligibility, "artist.trim() && venue.trim() && computed.overall > 0");
+  includes(eligibility, "artist.trim() && (venue.trim() || city.trim()) && (!eventAddress.trim() || city.trim()) && computed.overall > 0");
   includes(source, "Paste the link to the YouTube concert you are reviewing.");
   includes(source, "Paste a YouTube watch, Shorts, live, or youtu.be link.");
 });

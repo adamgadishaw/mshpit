@@ -64,17 +64,18 @@ export default function ProfileConcertMap({ model, selectedVenueKey, onSelectVen
           const multiple = cluster.venues.length > 1, venue = cluster.venues[0];
           const selectedCluster = cluster.venues.some((entry) => entry.key === selectedVenueKey);
           const count = cluster.venues.reduce((total, entry) => total + entry.concerts.length, 0);
-          const label = multiple ? `${cluster.venues.length} nearby venues, ${count} logged concerts. Choose a venue.`
+          const placeKind = cluster.venues.every((entry) => entry.hasVenue) ? "venues" : "locations";
+          const label = multiple ? `${cluster.venues.length} nearby ${placeKind}, ${count} logged concerts. Choose a location.`
             : `${venue.name}${venue.city ? `, ${venue.city}` : ""}. ${count} logged ${count === 1 ? "concert" : "concerts"}${venue.coordinates.precision === "city" ? ". Approximate city location" : ""}.`;
           return <Pressable key={cluster.key} accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ selected: selectedCluster }} {...(Platform.OS === "web" ? { "aria-pressed": selectedCluster } : {})} onHoverIn={() => preview(cluster)} onFocus={() => preview(cluster)} onPress={() => { preview(cluster); if (!multiple) onSelectVenue?.(venue.key); }} style={({ pressed, focused }) => [styles.pinTarget, { left: `${cluster.xPct * 100}%`, top: `${cluster.yPct * 100}%` }, selectedCluster && styles.selectedTarget, focused && focusRing, pressed && styles.pressed]}>
             <View style={[styles.pin, selectedCluster && styles.selectedPin]}><Text style={[styles.pinCount, selectedCluster && styles.selectedPinCount]}>{multiple || count > 1 ? count : ""}</Text>{!multiple && count === 1 ? <View style={[styles.pinDot, selectedCluster && styles.selectedDot]} /> : null}</View>
           </Pressable>;
         })}
-        {!clusters.length ? <View style={styles.noPins} pointerEvents="none"><Text style={styles.noPinsText}>{model.concertCount ? "No mapped venues in this view" : "A map of nights to remember"}</Text></View> : null}
+        {!clusters.length ? <View style={styles.noPins} pointerEvents="none"><Text style={styles.noPinsText}>{model.concertCount ? "No mapped locations in this view" : "A map of nights to remember"}</Text></View> : null}
       </View>
       {activeCluster ? <View style={styles.clusterChoices} accessibilityLiveRegion="polite">
-        <Text style={styles.hint}>Nearby venues · choose one</Text>
-        {activeCluster.venues.map((venue) => <Pressable key={venue.key} accessibilityRole="button" accessibilityLabel={`Show ${venue.concerts.length} logged concerts at ${venue.name}`} accessibilityState={{ selected: venue.key === selectedVenueKey }} {...(Platform.OS === "web" ? { "aria-pressed": venue.key === selectedVenueKey } : {})} onPress={() => onSelectVenue?.(venue.key)} style={({ pressed, focused }) => [styles.venueChoice, venue.key === selectedVenueKey && styles.venueChoiceSelected, focused && focusRing, pressed && styles.pressed]}><Icon name="pin" size={14} color={colors.amber} /><Text style={styles.venueChoiceText}>{venue.name}</Text><Text style={styles.venueCount}>{venue.concerts.length}</Text></Pressable>)}
+        <Text style={styles.hint}>Nearby locations · choose one</Text>
+        {activeCluster.venues.map((venue) => <Pressable key={venue.key} accessibilityRole="button" accessibilityLabel={`Show ${venue.concerts.length} logged concerts ${!venue.hasVenue && !venue.city ? "in" : "at"} ${venue.name}${venue.coordinates?.precision === "city" ? ". Approximate city location" : ""}`} accessibilityState={{ selected: venue.key === selectedVenueKey }} {...(Platform.OS === "web" ? { "aria-pressed": venue.key === selectedVenueKey } : {})} onPress={() => onSelectVenue?.(venue.key)} style={({ pressed, focused }) => [styles.venueChoice, venue.key === selectedVenueKey && styles.venueChoiceSelected, focused && focusRing, pressed && styles.pressed]}><Icon name="pin" size={14} color={colors.amber} /><Text style={styles.venueChoiceText}>{venue.name}</Text><Text style={styles.venueCount}>{venue.concerts.length}</Text></Pressable>)}
       </View> : null}
       <View style={styles.footnote}>
         <Text style={styles.hint}>{model.unmappedConcertCount ? `${model.unmappedConcertCount} ${model.unmappedConcertCount === 1 ? "concert has" : "concerts have"} no map location; still listed.` : "Select a pin or a concert to explore."}</Text>

@@ -36,7 +36,7 @@ test("feed comment previews are bounded, request-free, and have no inline compos
 test("concert posts link to the exact post and the canonical artist concert archive", () => {
   assert.ok(card.includes("concertPostContext(log)"));
   assert.ok(card.includes("href={canonicalPostHref}"));
-  assert.ok(card.includes(">View this show</Text>"));
+  assert.ok(card.includes('{reviewOnly ? "Open review" : "View this show"}</Text>'));
   assert.ok(card.includes("function TicketActionRail"));
   assert.ok(card.split("<TicketActionRail").length - 1 >= 2);
   assert.ok(card.split("compareHref={canCompareArtistShows ? postContext.artistConcertsHref : null}").length - 1 >= 2);

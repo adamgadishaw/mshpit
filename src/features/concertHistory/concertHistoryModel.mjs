@@ -25,7 +25,19 @@ export function concertCoordinates(row) {
     || !Number.isFinite(row.lat) || !Number.isFinite(row.lng)
     || row.lat < -90 || row.lat > 90 || row.lng < -180 || row.lng > 180) return null;
   if (row.locationPrecision && !["venue", "city"].includes(row.locationPrecision)) return null;
+  if (!text(row.venue) && row.locationPrecision !== "city") return null;
   return { lat: row.lat, lng: row.lng, precision: row.locationPrecision === "city" ? "city" : "venue" };
+}
+
+export function concertLocationLabel(row) {
+  const venue = text(row?.venue), address = text(row?.eventAddress), city = text(row?.city);
+  return [venue || address, city].filter(Boolean).join(" · ") || "Location not recorded";
+}
+
+export function concertLocationPhrase(row) {
+  if (text(row?.venue)) return `at ${text(row.venue)}`;
+  if (text(row?.eventAddress)) return `at ${concertLocationLabel(row)}`;
+  return text(row?.city) ? `in ${text(row.city)}` : "at an unrecorded location";
 }
 
 export function concertVenueKey(row) {
@@ -34,7 +46,13 @@ export function concertVenueKey(row) {
   // Catalogue venueKey binds a name, not a globally unique place. City is
   // always part of identity. Optional map-country metadata must not split a
   // private attendance row from its existing public review at the same room.
-  if (canonical) return JSON.stringify([`venue:${canonical}`, city]);
+  if (canonical && venue) return JSON.stringify([`venue:${canonical}`, city]);
+  const address = normalized(row?.eventAddress);
+  if (!venue && city && concertCoordinates(row)?.precision === "city") {
+    // One city pin can hold several separate nights. This is only map grouping;
+    // concertNightKey deliberately never deduplicates venue-less posts.
+    return JSON.stringify([address ? "address" : "city", address, city, concertCountry(row)?.code || "", row.lat, row.lng]);
+  }
   // Missing venue identity must never group unrelated unmapped concerts.
   return venue ? JSON.stringify([venue, city]) : `unknown:${text(row?.postId) || text(row?.id)}`;
 }
@@ -65,7 +83,8 @@ export function concertHistoryModel(rows = []) {
     if (country) countries.set(country.code, country);
     let venue = venueMap.get(concert.venueIdentity);
     if (!venue) {
-      venue = { key: concert.venueIdentity, name: text(concert.venue) || "Venue not recorded", city: text(concert.city), country, coordinates: null, concerts: [] };
+      const name = text(concert.venue) || text(concert.eventAddress) || text(concert.city) || "Location not recorded";
+      venue = { key: concert.venueIdentity, name, city: name === text(concert.city) ? "" : text(concert.city), hasVenue: !!text(concert.venue), country, coordinates: null, concerts: [] };
       venueMap.set(venue.key, venue);
     }
     venue.concerts.push(concert);
@@ -77,6 +96,7 @@ export function concertHistoryModel(rows = []) {
     concerts, venues, countries: [...countries.values()],
     concertCount: concerts.length, artistCount: artists.size,
     venueCount: venues.filter((venue) => venue.concerts.some((row) => text(row.venue))).length,
+    cityLocationCount: new Set(concerts.filter((row) => !text(row.venue) && text(row.city)).map((row) => JSON.stringify([normalized(row.city), concertCountry(row)?.code || ""]))).size,
     countryCount: countries.size,
     mappedConcertCount: concerts.filter((row) => concertCoordinates(row)).length,
     unmappedConcertCount: concerts.filter((row) => !concertCoordinates(row)).length,
@@ -133,7 +153,9 @@ export function clusterConcertMapPins(venues, viewport, width, height) {
 
 export function concertHistorySummary(model, complete) {
   const count = (value, label) => `${value.toLocaleString("en")} ${label}${value === 1 ? "" : "s"}`;
-  const parts = [count(model.concertCount, "concert"), count(model.venueCount, "venue")];
+  const parts = [count(model.concertCount, "concert")];
+  if (model.venueCount || !model.cityLocationCount) parts.push(count(model.venueCount, "venue"));
+  if (model.cityLocationCount) parts.push(count(model.cityLocationCount, "city location"));
   if (model.countryCount) parts.push(count(model.countryCount, "country").replace("countrys", "countries"));
   return `${parts.join(" · ")}${complete ? "" : " · partial history"}`;
 }

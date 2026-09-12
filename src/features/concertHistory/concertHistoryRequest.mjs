@@ -24,10 +24,11 @@ export function concertHistoryResponse(payload) {
     throw new TypeError("Concert history was not returned correctly.");
   }
   const concerts = payload.concerts.map((row) => {
-    if (!row || !text(row.id) || !text(row.postId) || !text(row.artist) || !text(row.venue)
+    if (!row || !text(row.id) || !text(row.postId) || !text(row.artist) || (!text(row.venue) && !text(row.city))
+      || (row.eventAddress != null && (typeof row.eventAddress !== "string" || row.eventAddress.length > 240))
       || !/^\d{4}-\d{2}-\d{2}$/.test(row.date)) throw new TypeError("Invalid concert history row.");
     const safe = {
-      id: row.id, postId: row.postId, artist: row.artist, venue: row.venue,
+      id: row.id, postId: row.postId, artist: row.artist, venue: text(row.venue), eventAddress: text(row.eventAddress),
       venueKey: text(row.venueKey), city: text(row.city), date: row.date,
       rating: typeof row.rating === "number" && Number.isFinite(row.rating) ? row.rating : null,
       photo: typeof row.photo === "string" ? row.photo : null,
@@ -36,7 +37,9 @@ export function concertHistoryResponse(payload) {
     };
     const located = typeof safe.lat === "number" && typeof safe.lng === "number"
       && Number.isFinite(safe.lat) && Number.isFinite(safe.lng)
-      && Math.abs(safe.lat) <= 90 && Math.abs(safe.lng) <= 180;
+      && Math.abs(safe.lat) <= 90 && Math.abs(safe.lng) <= 180
+      && (!safe.locationPrecision || ["venue", "city"].includes(safe.locationPrecision))
+      && (!!safe.venue || safe.locationPrecision === "city");
     return payload.mapVisible && located ? safe : withoutConcertLocation(safe);
   });
   return { concerts, nextCursor: payload.nextCursor, complete: payload.complete, mapVisible: payload.mapVisible };

@@ -110,6 +110,19 @@ for (const kind of ["status", "concert", "online"]) {
   });
 }
 
+test("city-only concert actions open the review without creating an unrecognized show", () => {
+  const f = fixture("concert");
+  const cityLog = { ...f.log, venue: "", city: "Toronto, Ontario, Canada", eventAddress: "955 Lake Shore Boulevard West" };
+  f.render({ log: cityLog });
+  const rail = f.find((node) => node.type?.name === "TicketActionRail");
+  assert.equal(rail.props.reviewOnly, true);
+  rail.props.onOpenShow();
+  assert.deepEqual(f.calls.post, [[cityLog]]);
+  assert.deepEqual(f.calls.show, []);
+  const action = nodes(rail.type(rail.props)).find((node) => node.props?.accessibilityLabel === "Open Fixture Artist review");
+  assert.ok(action, "the label describes the review instead of inventing a show");
+});
+
 test("comments without an in-app post callback retain a real browser link, not a show callback", () => {
   const f = fixture("concert", { onComment: undefined, onOpenPost: undefined });
   const comments = f.find((node) => /^Comments,/.test(node.props.accessibilityLabel || "")).props;

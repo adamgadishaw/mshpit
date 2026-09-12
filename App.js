@@ -119,7 +119,7 @@ import { analyticsDwellBucket } from "./src/domain/analyticsPolicy.mjs";
 import { ownedPlayerEnvelope, playerQueueWithEntryIds, restoreOwnedPlayerState } from "./src/domain/player-session.mjs";
 import { playerLookupIntent } from "./src/domain/playback.mjs";
 import { profileManagementAction, publicIdentityTarget } from "./src/domain/artistWorkspace.mjs";
-import { prepareShowNavigation } from "./src/domain/showNavigation.mjs";
+import { isCityOnlyReview, prepareShowNavigation } from "./src/domain/showNavigation.mjs";
 import { isOnlineReview } from "./src/domain/onlineReview.mjs";
 import { readSensitiveFragmentToken, readSensitiveLinkToken, scrubSensitiveLinkToken } from "./src/domain/sensitiveLinkTokens.mjs";
 import { verifiedMutationDecision } from "./src/domain/emailVerificationUx.mjs";
@@ -887,7 +887,7 @@ function Root() {
         }
         else if (entity.kind === "show") {
           const post = await readPublicPost(entity.id).catch(() => null);
-          if (!cancelled && post) setStack([{}, post.kind === "status" || isOnlineReview(post) ? { post } : { openLog: post }]);
+          if (!cancelled && post) setStack([{}, post.kind === "status" || isOnlineReview(post) || isCityOnlyReview(post) ? { post } : { openLog: post }]);
         }
         else if (entity.kind === "event" || entity.kind === "concert") {
           setStack([{}, { openLog: { ...entity, performanceEvent: true } }]);
@@ -1006,7 +1006,7 @@ function Root() {
   // the exact performance projection produced by calendarShowFromPost.
   const openShow = (log, analytics = {}) => {
     if (!log) return;
-    if ((log.kind === "status" && log.performanceEvent !== true) || isOnlineReview(log)) return openPost(log, analytics);
+    if ((log.kind === "status" && log.performanceEvent !== true) || isOnlineReview(log) || isCityOnlyReview(log)) return openPost(log, analytics);
     const navigation = prepareShowNavigation(log);
     if (!navigation) return;
     const { destination } = navigation;

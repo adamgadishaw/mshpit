@@ -7,7 +7,7 @@ import { canonicalYouTubeReviewUrl, normalizeReviewExperienceType } from "./onli
 
 const DIMENSION_KEYS = ["performance", "setlist", "sound", "venue", "crowd", "experience"];
 const EDITABLE_KEYS = new Set([
-  "artist", "artistKey", "venue", "city", "date", "overall", "band", "room", "dims",
+  "artist", "artistKey", "venue", "city", "eventAddress", "date", "overall", "band", "room", "dims",
   "review", "photos", "mediaAssetIds", "photosPublic", "landingShowcase", "setlist", "tour", "tags", "taggedUserIds", "song", "playlistId", "campaign",
   "experienceType", "onlineTitle", "youtubeUrl",
 ]);
@@ -72,6 +72,7 @@ function intendedValue(key, value) {
     case "artistKey": return clean(value, { max: 120 }) || null;
     case "venue": return clean(value, { max: LIMITS.venue });
     case "city": return clean(value, { max: LIMITS.city });
+    case "eventAddress": return clean(value, { max: LIMITS.eventAddress }) || null;
     case "date": return value ? toIsoDate(clean(value, { max: LIMITS.date })) : "";
     case "overall": return clampRating(value);
     case "band":
@@ -116,6 +117,7 @@ function storedValue(post, key) {
       if (value !== "in_person" && value !== "online") return INVALID_STORED_VALUE;
       break;
     case "onlineTitle":
+    case "eventAddress":
     case "youtubeUrl":
       if (value !== null && value !== undefined && typeof value !== "string") return INVALID_STORED_VALUE;
       break;

@@ -16,6 +16,7 @@ import TapStars from "../components/TapStars";
 import Button from "../components/Button";
 import SheetHeader from "../components/SheetHeader";
 import DatePicker from "../components/DatePicker";
+import ConcertLocationFields from "../components/ConcertLocationFields";
 import { isDurableMediaUrl, reportMediaPickerError } from "../lib/mediaUpload";
 import { api } from "../lib/api";
 import { formatDate, initialComposerDate, toIsoDate, todayIso } from "../domain/dates.mjs";
@@ -72,6 +73,7 @@ import {
 import { MAX_POST_TAGGED_PEOPLE, normalizeTaggedPeople } from "../domain/postFriendTags.mjs";
 import { composerEngagementPrompt } from "../domain/postCompleteness.mjs";
 import { COMPOSER_ARTIST_SEARCH_LIMIT } from "../features/artistSearch/artistSearchApi.mjs";
+import { readCityDirectory } from "../features/cities/cityApi.mjs";
 import {
   IN_PERSON_REVIEW_EXPERIENCE,
   ONLINE_REVIEW_EXPERIENCE,
@@ -251,6 +253,7 @@ export default function LogScreen({
   const [artist, setArtist] = useState(editing?.artist || prefill?.artist || "");
   const [venue, setVenue] = useState(initialExperienceType === ONLINE_REVIEW_EXPERIENCE ? "" : editing?.venue || prefill?.venue || "");
   const [city, setCity] = useState(initialExperienceType === ONLINE_REVIEW_EXPERIENCE ? "" : editing?.city || prefill?.city || "");
+  const [eventAddress, setEventAddress] = useState(initialExperienceType === ONLINE_REVIEW_EXPERIENCE ? "" : editing?.eventAddress || editing?.event_address || prefill?.eventAddress || "");
   const [tour, setTour] = useState(initialExperienceType === ONLINE_REVIEW_EXPERIENCE ? "" : editing?.tour || prefill?.tour || "");
   const [onlineTitle, setOnlineTitle] = useState(editing?.onlineTitle || editing?.online_title || prefill?.onlineTitle || prefill?.online_title || "");
   const [youtubeUrl, setYoutubeUrl] = useState(editing?.youtubeUrl || editing?.youtube_url || prefill?.youtubeUrl || prefill?.youtube_url || "");
@@ -943,7 +946,7 @@ export default function LogScreen({
     ? canPostStatus
     : isOnlineReview
       ? artist.trim() && onlineRating > 0 && youtubeUrlValid
-      : artist.trim() && venue.trim() && computed.overall > 0;
+      : artist.trim() && (venue.trim() || city.trim()) && (!eventAddress.trim() || city.trim()) && computed.overall > 0;
   const canPost = !!canPostBase && pendingMediaAssets.length === 0;
   const submitBusy = uploadingPhotos || resolvingSong || posting || artistAttaching;
   const engagementPrompt = useMemo(() => protectedLegacyMemory ? null : composerEngagementPrompt({
@@ -978,6 +981,7 @@ export default function LogScreen({
     artistKey: artistPicked ? artistKey : null,
     venue,
     city,
+    eventAddress,
     tour,
     date,
     onlineTitle,
@@ -996,7 +1000,7 @@ export default function LogScreen({
     photosPublic,
     landingShowcase: !isOnlineReview && photosPublic && landingShowcase && hasLandingCompatiblePhoto,
     panels: { song: showSong, photos: showPhotos, people: !isStatus && !isOnlineReview && showPeople },
-  }), [draftId, postType, isStatus, isOnlineReview, campaign, experienceType, artist, artistPicked, artistKey, venue, city, tour, date, onlineTitle, youtubeUrl, onlineRating, dims, review, taggedPeople, song, songUrl, preservedPlaylist, photos, draftMediaProject, photosPublic, landingShowcase, hasLandingCompatiblePhoto, showSong, showPhotos, showPeople]);
+  }), [draftId, postType, isStatus, isOnlineReview, campaign, experienceType, artist, artistPicked, artistKey, venue, city, eventAddress, tour, date, onlineTitle, youtubeUrl, onlineRating, dims, review, taggedPeople, song, songUrl, preservedPlaylist, photos, draftMediaProject, photosPublic, landingShowcase, hasLandingCompatiblePhoto, showSong, showPhotos, showPeople]);
   const draftFingerprint = useMemo(() => composerDraftFingerprint(currentDraft), [currentDraft]);
   const hasContent = useMemo(() => composerDraftHasContent(currentDraft), [currentDraft]);
   const hasPendingMedia = pendingMediaAssets.length > 0;
@@ -1097,6 +1101,7 @@ export default function LogScreen({
     setCampaign(restored.campaign);
     setExperienceType(restored.experienceType);
     setArtist(restored.artist); setArtistPicked(!!restored.artistKey); setArtistKey(restored.artistKey); setVenue(restored.venue); setVenuePicked(!!restored.venue); setCity(restored.city);
+    setEventAddress(restored.eventAddress || "");
     const restoredPhotos = restored.photos.filter(isDurableMediaUrl);
     const restoredProject = normalizeMediaProject(restored.mediaProject);
     const restoredPending = restoredProject.assets
@@ -1305,6 +1310,7 @@ export default function LogScreen({
         } : {
           venue: venue.trim(),
           city: city.trim(),
+          eventAddress: eventAddress.trim(),
           tour: tour.trim() || null,
           date,
           overall: submittedRatings.overall,
@@ -1575,15 +1581,16 @@ export default function LogScreen({
           </>
         ) : (
           <>
-        <View style={{ flexDirection: "row", gap: 10 }}>
-          <View style={{ flex: 1.4 }}>
-            <TextInput style={styles.input} placeholder="Venue" placeholderTextColor={colors.textFaint} value={venue} onChangeText={(text) => { setVenue(text); setVenuePicked(false); }} />
+        <View>
+          <Text style={styles.fieldLabel}>VENUE <Text style={styles.optional}>optional with a city</Text></Text>
+          <View>
+            <TextInput style={styles.input} placeholder="Venue" placeholderTextColor={colors.textFaint} value={venue} onChangeText={(text) => { setVenue(text); setVenuePicked(false); }} maxLength={80} accessibilityLabel="Concert venue, optional with a city" />
             {venueHits.length > 0 && (
               <View style={styles.hits}>
                 {venueHits.map((hit) => (
                   <Pressable key={`${hit.name}|${hit.place}`} style={styles.hit} onPress={() => {
                     setVenue(hit.name);
-                    setCity((hit.place || "").split(",")[0]?.trim() || "");
+                    setCity(hit.place || "");
                     setVenuePicked(true);
                     setVenueHits([]);
                   }}>
@@ -1600,8 +1607,8 @@ export default function LogScreen({
               <View style={styles.linked}><Icon name="check" size={12} color={colors.good} /><Text style={styles.linkedTxt}>Venue selected: {venue.trim()}</Text></View>
             )}
           </View>
-          <TextInput style={[styles.input, { flex: 1 }]} placeholder="City" placeholderTextColor={colors.textFaint} value={city} onChangeText={setCity} />
         </View>
+        <ConcertLocationFields city={city} eventAddress={eventAddress} onCityChange={setCity} onEventAddressChange={setEventAddress} readCities={readCityDirectory} />
 
         {officialEventName ? (
           <View style={styles.officialEventCard} accessible accessibilityRole="text" accessibilityLabel={`Event listing name: ${officialEventName}`}>

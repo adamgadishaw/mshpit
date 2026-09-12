@@ -24,6 +24,7 @@ import useReducedMotion from "../hooks/useReducedMotion";
 import { PublicPressableLink, PublicTextLink } from "./PublicWebLinks";
 import { artistPath, cityPath, profilePath, venuePath } from "../domain/urls.mjs";
 import { cityIdentityForLocation } from "../cityIdentity.js";
+import { isCityOnlyReview } from "../domain/showNavigation.mjs";
 import { CityNavigationContext } from "./cities/CityNavigationContext";
 import { buildAttendanceTicketPreview } from "../domain/attendanceTicket.mjs";
 import { calendarShowFromPost } from "../domain/calendarShows.mjs";
@@ -130,7 +131,7 @@ function ViewTally({ count, palette = null }) {
   );
 }
 
-function TicketActionRail({ showHref, onOpenShow, compareHref, onCompare, artist, palette = null }) {
+function TicketActionRail({ showHref, onOpenShow, compareHref, onCompare, artist, reviewOnly = false, palette = null }) {
   if (!showHref && !compareHref) return null;
   const accent = palette?.accentColor || colors.amber;
   const secondary = palette?.accentColor || colors.cool;
@@ -151,10 +152,10 @@ function TicketActionRail({ showHref, onOpenShow, compareHref, onCompare, artist
           href={showHref}
           onNavigate={onOpenShow}
           style={({ pressed }) => [styles.ticketAction, pressed && styles.ticketActionPressed]}
-          accessibilityLabel={`View ${artist || "this"} show`}
+          accessibilityLabel={reviewOnly ? `Open ${artist || "concert"} review` : `View ${artist || "this"} show`}
         >
           <Icon name="ticket" size={15} color={accent} />
-          <Text style={[styles.ticketActionText, { color: textColor }]} numberOfLines={2}>View this show</Text>
+          <Text style={[styles.ticketActionText, { color: textColor }]} numberOfLines={2}>{reviewOnly ? "Open review" : "View this show"}</Text>
           <Icon name="chevron-right" size={13} color={accent} />
         </PublicPressableLink>
       ) : null}
@@ -204,6 +205,7 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
   const postContext = useMemo(() => concertPostContext(log), [log]);
   const canonicalPostHref = postContext.showHref;
   const isOnlineReview = (log.experienceType || log.experience_type) === ONLINE_REVIEW_EXPERIENCE;
+  const cityOnlyReview = isCityOnlyReview(log);
   const youtubeUrl = isOnlineReview
     ? canonicalYouTubeReviewUrl(
       log.youtubeUrl || log.youtube_url,
@@ -518,10 +520,11 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
                   {titledPerformance ? (
                     <><PublicTextLink href={artistHref} onNavigate={() => onOpenArtist?.(log.artist)} style={styles.performanceArtist}>{log.artist}</PublicTextLink><Text style={styles.dim}> · </Text></>
                   ) : null}
-                  <PublicTextLink href={venueHref} onNavigate={() => onOpenVenue?.(log.venue)} style={styles.performanceVenue}>{log.venue}</PublicTextLink>
-                  {!!log.city && <Text style={styles.dim}> · <PublicTextLink href={cityHref} onNavigate={cityIdentity && onOpenCity ? () => onOpenCity(cityIdentity) : undefined} style={styles.dim}>{log.city}</PublicTextLink></Text>}
+                  {!!log.venue && <PublicTextLink href={venueHref} onNavigate={() => onOpenVenue?.(log.venue)} style={styles.performanceVenue}>{log.venue}</PublicTextLink>}
+                  {!!log.city && <Text style={styles.dim}>{log.venue ? " · " : ""}<PublicTextLink href={cityHref} onNavigate={cityIdentity && onOpenCity ? () => onOpenCity(cityIdentity) : undefined} style={styles.dim}>{log.city}</PublicTextLink></Text>}
                   {!!log.date && <Text style={styles.performanceDate}> · {formatDate(log.date, log.date)}</Text>}
                 </Text>
+                {!!log.eventAddress && <Text selectable style={styles.seenTxt} numberOfLines={2}>Event address: {log.eventAddress}</Text>}
                 {log.seen > 1 ? <Text style={styles.seenTxt}>{ordinal(log.seen)} time in the pit</Text> : null}
               </>
             )}
@@ -530,7 +533,8 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
         {!isOnlineReview ? (
           <TicketActionRail
             showHref={canonicalPostHref}
-            onOpenShow={() => (onOpenShow || onOpen)?.(log)}
+            onOpenShow={cityOnlyReview ? openPostDetail : () => (onOpenShow || onOpen)?.(log)}
+            reviewOnly={cityOnlyReview}
             compareHref={canCompareArtistShows ? postContext.artistConcertsHref : null}
             onCompare={openArtistShows}
             artist={postContext.artist}
@@ -627,8 +631,8 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
             <View style={styles.stubRow}>
               <View style={{ flex: 1 }}>
                 <Text style={styles.venueLine}>
-                  <PublicTextLink href={venueHref} onNavigate={() => onOpenVenue?.(log.venue)} style={styles.venueLink}>{log.venue}</PublicTextLink>
-                  <Text style={styles.dim}> · <PublicTextLink href={cityHref} onNavigate={cityIdentity && onOpenCity ? () => onOpenCity(cityIdentity) : undefined} style={styles.dim}>{log.city}</PublicTextLink></Text>
+                  {!!log.venue && <PublicTextLink href={venueHref} onNavigate={() => onOpenVenue?.(log.venue)} style={styles.venueLink}>{log.venue}</PublicTextLink>}
+                  <Text style={styles.dim}>{log.venue && log.city ? " · " : ""}<PublicTextLink href={cityHref} onNavigate={cityIdentity && onOpenCity ? () => onOpenCity(cityIdentity) : undefined} style={styles.dim}>{log.city}</PublicTextLink></Text>
                 </Text>
                 <Text style={styles.factors}>{factors}</Text>
               </View>

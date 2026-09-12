@@ -1,4 +1,13 @@
 import { hasPostDiscussion } from "./showDiscussion.mjs";
+import { isOnlineReview } from "./onlineReview.mjs";
+
+// A city-only review is still a real post, but has no exact performance or
+// venue identity. Keep its links on the review instead of inventing Venue TBA.
+export function isCityOnlyReview(log) {
+  return hasPostDiscussion(log) && log.kind !== "status" && !isOnlineReview(log)
+    && log.performanceEvent !== true && !log.archiveShowKey
+    && !String(log.venue || "").trim() && !!String(log.city || "").trim();
+}
 
 const validPostId = (value) => {
   if (typeof value === "number") return Number.isSafeInteger(value) && value > 0;

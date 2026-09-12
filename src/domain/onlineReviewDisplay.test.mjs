@@ -60,7 +60,7 @@ test("online cards and public links route to post detail instead of the physical
   assert.match(feed, /onComment,/);
   assert.match(profile, /onOpenPost=\{capabilities\.openPost \? openPost : undefined\}/);
   assert.match(profile, /onOpenPost,/);
-  assert.match(app, /isOnlineReview\(log\)\) return openPost\(log, analytics\)/);
-  assert.match(app, /post\.kind === "status" \|\| isOnlineReview\(post\) \? \{ post \} : \{ openLog: post \}/);
+  assert.match(app, /isOnlineReview\(log\) \|\| isCityOnlyReview\(log\)\) return openPost\(log, analytics\)/);
+  assert.match(app, /post\.kind === "status" \|\| isOnlineReview\(post\) \|\| isCityOnlyReview\(post\) \? \{ post \} : \{ openLog: post \}/);
   assert.match(app, /<ProfileScreen[^>]*onOpenPost=\{openPost\}/);
 });

@@ -4,7 +4,7 @@ import { colors, focusRing, mono, radius, shadow, space } from "../../theme";
 import Icon from "../../components/Icon";
 import SmartImage from "../../components/SmartImage";
 import { formatDate } from "../../domain/dates.mjs";
-import { concertCoordinates, concertHistoryModel, concertHistorySummary } from "./concertHistoryModel.mjs";
+import { concertCoordinates, concertHistoryModel, concertHistorySummary, concertLocationLabel, concertLocationPhrase } from "./concertHistoryModel.mjs";
 
 const ProfileConcertMap = lazy(() => import("./ProfileConcertMap"));
 const PAGE_SIZE = 20;
@@ -28,16 +28,16 @@ function ConcertRow({ concert, selected, onSelect, onOpen, opening }) {
   const hasRating = typeof concert.rating === "number" && Number.isFinite(concert.rating) && concert.rating >= 0 && concert.rating <= 5;
   const coordinates = concertCoordinates(concert);
   return <View style={[styles.row, selected && styles.selectedRow]} testID={`concert-history-row-${concert.id}`}>
-    <Pressable accessibilityRole="button" accessibilityLabel={`${concert.artist || "Artist not recorded"}, ${concert.venue || "Venue not recorded"}, ${date}. Select concert on map.`} accessibilityState={{ selected }} {...(Platform.OS === "web" ? { "aria-pressed": selected } : {})} onPress={onSelect} onHoverIn={onSelect} onFocus={onSelect} style={({ pressed, focused }) => [styles.rowMain, focused && focusRing, pressed && styles.pressed]}>
+    <Pressable accessibilityRole="button" accessibilityLabel={`${concert.artist || "Artist not recorded"}, ${concertLocationLabel(concert)}, ${date}. Select concert on map.`} accessibilityState={{ selected }} {...(Platform.OS === "web" ? { "aria-pressed": selected } : {})} onPress={onSelect} onHoverIn={onSelect} onFocus={onSelect} style={({ pressed, focused }) => [styles.rowMain, focused && focusRing, pressed && styles.pressed]}>
       <View style={styles.thumbnail}>{concert.photo ? <SmartImage uri={concert.photo} mediaKind="image" style={StyleSheet.absoluteFill} contain={false} previewWidth={144} accessible={false} /> : <Icon name="ticket" size={22} color={colors.amber} />}</View>
       <View style={styles.rowText}>
         <Text numberOfLines={1} style={styles.artist}>{concert.artist || "Artist not recorded"}</Text>
-        <Text numberOfLines={1} style={styles.venue}>{concert.venue || "Venue not recorded"}{concert.city ? ` · ${concert.city}` : ""}</Text>
+        <Text numberOfLines={1} style={styles.venue}>{concertLocationLabel(concert)}</Text>
         <View style={styles.rowMeta}><Text style={styles.date}>{date}</Text>{hasRating ? <View style={styles.rating}><Icon name="star" size={11} color={colors.gold} filled /><Text style={styles.ratingText}>{concert.rating.toFixed(1)}</Text></View> : null}</View>
         {!coordinates || coordinates.precision === "city" ? <Text style={styles.locationHint}>{coordinates ? "Approximate city location" : "Location not mapped"}</Text> : null}
       </View>
     </Pressable>
-    <Pressable accessibilityRole="button" accessibilityLabel={`${opening ? "Opening" : `${openLabel} for`} ${concert.artist || "concert"} at ${concert.venue || "unknown venue"}`} accessibilityState={{ disabled: opening || !onOpen, busy: opening }} disabled={opening || !onOpen} onPress={onOpen} style={({ pressed, focused }) => [styles.openReview, focused && focusRing, pressed && styles.pressed, opening && styles.disabled]}>
+    <Pressable accessibilityRole="button" accessibilityLabel={`${opening ? "Opening" : `${openLabel} for`} ${concert.artist || "concert"} ${concertLocationPhrase(concert)}`} accessibilityState={{ disabled: opening || !onOpen, busy: opening }} disabled={opening || !onOpen} onPress={onOpen} style={({ pressed, focused }) => [styles.openReview, focused && focusRing, pressed && styles.pressed, opening && styles.disabled]}>
       {opening ? <ActivityIndicator size="small" color={colors.amber} /> : <Icon name="chevron-right" size={17} color={colors.amber} />}
       <Text style={styles.openReviewText}>{opening ? "Opening…" : openLabel}</Text>
     </Pressable>
@@ -78,16 +78,16 @@ export default function ConcertHistory({ concerts = EMPTY, status = "loading", c
       <View style={[styles.body, desktop && mapVisible && styles.bodyWide]}>
         {mapVisible ? <View style={[styles.mapColumn, desktop && styles.mapColumnWide]}><HistoryMapBoundary><Suspense fallback={<View style={styles.mapFallback}><ActivityIndicator size="small" color={colors.amber} /><Text style={styles.hint}>Loading the concert map…</Text></View>}><ProfileConcertMap model={model} selectedVenueKey={selectedVenue?.key || null} compact={!desktop} onSelectVenue={selectVenue} onPreviewVenue={selectVenue} /></Suspense></HistoryMapBoundary></View> : null}
         <View style={styles.listColumn}>
-          <View style={styles.listHeading}><Text style={styles.listTitle}>{selection.filter && selectedVenue ? "AT THIS VENUE" : "RECENT CONCERTS"}</Text>{selection.filter ? <HistoryButton label="All concerts" onPress={() => setSelection((current) => ({ ...current, filter: false }))} /> : null}</View>
+          <View style={styles.listHeading}><Text style={styles.listTitle}>{selection.filter && selectedVenue ? selectedVenue.coordinates?.precision === "city" ? "IN THIS CITY" : selectedVenue.hasVenue ? "AT THIS VENUE" : "AT THIS LOCATION" : "RECENT CONCERTS"}</Text>{selection.filter ? <HistoryButton label="All concerts" onPress={() => setSelection((current) => ({ ...current, filter: false }))} /> : null}</View>
           {selectedVenue ? <View style={styles.selectionDetail} accessibilityLiveRegion="polite"><Icon name="pin" size={14} color={colors.amber} /><View style={styles.selectionText}><Text style={styles.selectionTitle}>{selectedVenue.name}</Text><Text style={styles.hint}>{selectedVenue.concerts.length} logged {selectedVenue.concerts.length === 1 ? "concert" : "concerts"}{selectedVenue.city ? ` · ${selectedVenue.city}` : ""}{selectedVenue.coordinates?.precision === "city" ? " · approximate city location" : ""}</Text></View>{!selection.filter ? <HistoryButton label="View here" onPress={() => selectVenue(selectedVenue.key)} /> : null}</View> : null}
           {openingError ? <Text selectable accessibilityRole="alert" style={styles.error}>{openingError}</Text> : null}
           {status === "error" ? <View style={styles.feedback} accessibilityLiveRegion="polite"><Text selectable style={styles.error}>{typeof error === "string" && error ? error : "Concert history could not be loaded. Your saved concerts have not changed."}</Text>{onRetry ? <HistoryButton label="Retry concert history" onPress={onRetry} /> : null}</View> : null}
           {loading ? <View style={styles.feedback} accessibilityLiveRegion="polite"><ActivityIndicator size="small" color={colors.amber} /><Text style={styles.hint}>Finding logged concerts…</Text></View> : null}
-          {!loading && status !== "error" && !model.concertCount ? <View style={styles.empty}><Icon name="ticket" size={27} color={colors.textFaint} /><Text style={styles.emptyTitle}>{complete ? "No concerts logged yet" : "No concerts in this part of the history"}</Text><Text style={styles.hint}>{complete ? "Concert reviews will appear here with their dates and venues." : "Load more history to check for older concert logs."}</Text></View> : null}
+          {!loading && status !== "error" && !model.concertCount ? <View style={styles.empty}><Icon name="ticket" size={27} color={colors.textFaint} /><Text style={styles.emptyTitle}>{complete ? "No concerts logged yet" : "No concerts in this part of the history"}</Text><Text style={styles.hint}>{complete ? "Concert reviews will appear here with their dates and locations." : "Load more history to check for older concert logs."}</Text></View> : null}
           <View style={styles.rows}>{visible.map((concert) => <ConcertRow key={concert.id} concert={concert} selected={concert.id === selection.concertId || !selection.concertId && concert.venueIdentity === selection.venueKey} onSelect={() => selectRow(concert)} onOpen={onOpenConcert ? () => onOpenConcert(concert) : undefined} opening={openingId === concert.id || !!openingId && openingId === concert.postId} />)}</View>
           {!expanded && (hasLocalMore || hasRemoteMore) && !loading && (status !== "error" || model.concertCount > 0) ? <HistoryButton label="See all concerts" icon="chevron-down" expanded={false} onPress={expand} style={styles.expandButton} /> : null}
           {expanded ? <View style={styles.listFooter}>{hasLocalMore || hasRemoteMore ? <HistoryButton label={loadingMore ? "Loading more concerts…" : "Load more concerts"} disabled={loadingMore || !hasLocalMore && !onLoadMore} onPress={loadMore} style={styles.loadMoreButton} /> : null}<HistoryButton label="See less" expanded onPress={() => { setExpanded(false); setLimit(PAGE_SIZE); }} /></View> : null}
-          {selection.filter && !complete ? <Text style={styles.hint}>Venue results cover the loaded history. Load more to include older concerts.</Text> : null}
+          {selection.filter && !complete ? <Text style={styles.hint}>Location results cover the loaded history. Load more to include older concerts.</Text> : null}
         </View>
       </View>
     </View>

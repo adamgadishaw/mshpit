@@ -1,4 +1,5 @@
 import { toIsoDate } from "../../../src/domain/dates.mjs";
+import { clean, LIMITS } from "../../../src/domain/validation.mjs";
 import { inPersonReviewSql } from "../../onlineReviews.js";
 import { concertMapVisibleFor } from "../../profilePreferences.js";
 import { safeOwnedReadyMediaUrl } from "../../publicMedia.js";
@@ -42,6 +43,7 @@ export function concertHistoryRoutes({
   const query = (cursor) => database.prepare(`SELECT p.id,p.user_id,p.created_at,p.overall,p.photos_public,
       substr(p.artist,1,120) artist,substr(p.venue,1,160) venue,
       substr(p.city,1,240) city,substr(p.date,1,40) date,substr(p.venue_key,1,200) venue_key,
+      substr(p.event_address,1,240) event_address,
       CASE WHEN json_valid(p.photos) THEN CASE WHEN json_type(p.photos)='array'
         THEN substr(json_extract(p.photos,'$[0]'),1,2048) ELSE NULL END ELSE NULL END photo_candidate
     FROM posts p WHERE p.user_id=? AND p.removed=0 AND ${inPersonReviewSql("p")}
@@ -74,12 +76,13 @@ export function concertHistoryRoutes({
       const today = new Date(now()).toISOString().slice(0, 10);
       const concerts = scanned.flatMap((row) => {
         const date = toIsoDate(row.date);
-        if (!date || date > today || !row.artist.trim() || !row.venue.trim()) return [];
+        if (!date || date > today || !row.artist.trim() || (!row.venue.trim() && !row.city.trim())) return [];
         const rating = Number(row.overall);
         const location = mapVisible ? resolveLocation(row) : EMPTY_CONCERT_LOCATION;
         return [{
           id: row.id, postId: row.id, artist: row.artist, venue: row.venue,
           venueKey: row.venue_key || null, city: row.city, date,
+          eventAddress: clean(row.event_address, { max: LIMITS.eventAddress }) || null,
           rating: Number.isFinite(rating) && rating >= 0 && rating <= 5 ? rating : null,
           // One bounded authored image candidate, accepted only by the existing
           // verified-ready media guard. No full post/asset hydration or fetching.
