@@ -11,17 +11,18 @@ export function normalizeVenuePageSection(value) {
   return SECTION_KEYS.has(key) ? key : "overview";
 }
 
-export function venuePageSectionModel(value) {
-  const active = normalizeVenuePageSection(value);
+export function venuePageSectionModel(value, { signedIn = true } = {}) {
+  const requested = normalizeVenuePageSection(value);
+  const active = !signedIn && requested === "reviews" ? "overview" : requested;
   const overview = active === "overview";
   return Object.freeze({
     active,
     condensed: overview,
     showGuide: overview,
     showUpcoming: overview || active === "shows",
-    showReputation: overview || active === "reviews",
-    showPhotos: overview || active === "reviews",
-    showReviews: overview || active === "reviews",
+    showReputation: signedIn && (overview || active === "reviews"),
+    showPhotos: signedIn && (overview || active === "reviews"),
+    showReviews: signedIn && (overview || active === "reviews"),
     showHistory: active === "shows",
   });
 }

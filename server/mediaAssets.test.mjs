@@ -2007,12 +2007,12 @@ test("asset PATCH stages photo revisions and swaps the ready rendition only afte
     params: { id: created.asset.id },
     body: { altText: "Corrected after publishing" },
   });
-  const publicPost = routes["GET /api/users/:id/posts"]({
+  const publicPost = routes["GET /api/posts/:id"]({
     user: null,
     ip: "asset-patch-public-read",
-    params: { id: owner.id },
+    params: { id: published.id },
     query: {},
-  }).posts.find((post) => post.id === published.id);
+  }).post;
   assert.equal(publicPost.media[0].altText, "Corrected after publishing");
 });
 
@@ -2722,12 +2722,12 @@ test("post creation projects stable media and grandfathers stored URL-only media
   assert.equal(stable.post.media[0].url, deliveryUrl);
   assert.equal(stable.post.media[0].sourceUrl, null);
   assert.equal(stable.post.media[0].altText, "Singer reaching toward the front row");
-  const publicStable = routes["GET /api/users/:id/posts"]({
+  const publicStable = routes["GET /api/posts/:id"]({
     user: null,
     ip: "stable-media-public-read",
-    params: { id: user.id },
+    params: { id: stable.id },
     query: {},
-  }).posts.find((post) => post.id === stable.id);
+  }).post;
   assert.equal(publicStable.media[0].sourceUrl, deliveryUrl);
   assert.notEqual(publicStable.media[0].sourceUrl, created.upload.storageLocator,
     "non-owners never receive the original source reference");

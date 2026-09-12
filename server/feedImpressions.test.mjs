@@ -85,8 +85,7 @@ test("impression batches are authenticated, idempotent, private, and exclude ine
   assert.equal(memberPost.viewerSeen.count, 1);
   assert.equal(Number.isInteger(memberPost.viewerSeen.firstSeenAt), true);
   assert.equal(Number.isInteger(memberPost.viewerSeen.lastSeenAt), true);
-  const guestPost = routes["GET /api/feed"]({ user: null, query: { limit: "20" } }).posts
-    .find((post) => post.id === "p_impression_live");
+  const guestPost = routes["GET /api/posts/:id"]({ user: null, params: { id: "p_impression_live" } }).post;
   assert.equal(guestPost.viewCount, 1);
   assert.equal(Object.hasOwn(guestPost, "viewerSeen"), false, "private viewer history is not projected to guests");
 

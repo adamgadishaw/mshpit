@@ -23,7 +23,7 @@ test("feed posts expose only the canonical slug of their bound artist", () => {
   insert.run("bound_artist_post", "slugowner", "Earl Sweatshirt", "earl sweatshirt", "History", 5, 2);
   insert.run("free_text_artist_post", "slugowner", "Earl Sweatshirt", null, "History", 4, 1);
 
-  const posts = routes["GET /api/feed"]({ user: null, query: { limit: "10" } }).posts;
+  const posts = routes["GET /api/feed"]({ user: q.userById.get("slugowner"), query: { limit: "10" } }).posts;
   assert.equal(posts.find((post) => post.id === "bound_artist_post")?.artistPublicSlug, "earl-sweatshirt");
   assert.equal(posts.find((post) => post.id === "free_text_artist_post")?.artistPublicSlug, null);
 });

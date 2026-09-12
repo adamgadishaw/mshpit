@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import AccountSnapshotPrompt from "../components/AccountSnapshotPrompt";
 import { View, Text, StyleSheet, ScrollView, Pressable, Image, TextInput, ActivityIndicator, Linking, Alert } from "react-native";
 import { colors, displayFont, focusRing, mono, radius, shadow, space } from "../theme";
 import { useStore, isStaff } from "../store";
@@ -281,6 +282,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
   const [contentWidth, setContentWidth] = useState(0);
   const artistWide = contentWidth >= 840;
   const setActiveSection = (section) => {
+    if (!session && section === "community") return onRequireAuth?.();
     setSectionSelection({ artistKey: a.profileKey, section });
     pageScroll.current?.scrollTo?.({ y: 0, animated: false });
   };
@@ -300,7 +302,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
   // lookup has answered. This prevents a protected legacy action from flashing
   // on screen—or starting its data request—during the initial async check.
   const profileServicesAvailable = memorialKnown && !legacyMode;
-  const sectionModel = artistPageSectionModel(activeSection, { legacyMode: !profileServicesAvailable });
+  const sectionModel = artistPageSectionModel(activeSection, { legacyMode: !profileServicesAvailable, signedIn: !!session });
   const playerEnabled = profileServicesAvailable && ENABLE_MUSIC_PLAYER && typeof onPlay === "function";
   const playlistEnabled = profileServicesAvailable && ENABLE_MUSIC_PLAYER && typeof onAddToPlaylist === "function";
   const badges = artistBadges(a.name);
@@ -337,8 +339,8 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
   const visibleGallery = artistPagePreview(gallery, { condensed: true, limit: ARTIST_OVERVIEW_LIMITS.gallery });
   const { resource: topReviewsResource, reload: retryTopReviews } = useArtistTopReviews({
     accountId: session?.id || null,
-    name: a.name,
-    artistKey: a.profileKey,
+    name: session ? a.name : null,
+    artistKey: session ? a.profileKey : null,
     limit: 3,
   });
   const topReviewsPresentation = selectArtistReviewsPresentation(topReviewsResource, a.nights, { limit: 3, memorialMode: deceased });
@@ -885,7 +887,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
             profileUri={profileUri}
             gallery={heroGallery}
             compact
-            onOpenMedia={onOpenPhotos}
+            onOpenMedia={session ? onOpenPhotos : () => onRequireAuth?.()}
           />
         ) : (
           <SpotifyArtistPhoto artist={meta} artistName={a.name} />
@@ -905,7 +907,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
                 <Text style={styles.editTxt}>Edit artist page</Text>
               </Pressable>
             ) : null}
-            {!ownsArtistPage && profileOwnerId && onReport ? (
+            {session && !ownsArtistPage && profileOwnerId && onReport ? (
               <Pressable
                 style={styles.reportProfileBtn}
                 onPress={() => onReport({
@@ -931,7 +933,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
           <View style={[styles.heroDetails, artistWide && styles.heroDetailsWide]}>
         <View style={styles.identityHeader}>
           <View style={styles.avatarWrap}>
-            <Avatar user={avatarUser} size={52} onPress={() => onOpenPhotos?.(profileAvatarPhotos || (meta?.photos?.length ? meta.photos : profileUri ? [profileUri] : []), 0)} />
+            <Avatar user={avatarUser} size={52} onPress={() => { if (!session) return onRequireAuth?.(); onOpenPhotos?.(profileAvatarPhotos || (meta?.photos?.length ? meta.photos : profileUri ? [profileUri] : []), 0); }} />
           </View>
         <View style={styles.headInfo}>
           <View style={styles.nameRow}>
@@ -1068,6 +1070,8 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
           </View>
         </View>
         <ArtistPageSectionNav active={sectionModel.active} onChange={setActiveSection} memorialMode={deceased} legacyMode={!profileServicesAvailable} statusPending={!memorialKnown} />
+
+        {!session ? <AccountSnapshotPrompt title={`More with ${a.name}`} body="Follow this artist, share your concert memories, and join the conversation. Artist details and show dates are open to browse." onRequireAuth={onRequireAuth} /> : null}
 
 
         {session && !ownsArtistPage && followUi.error ? (

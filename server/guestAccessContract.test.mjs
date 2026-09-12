@@ -8,6 +8,8 @@ const dataDir = mkdtempSync(join(tmpdir(), "pit-guest-access-"));
 process.env.PIT_DATA_DIR = dataDir;
 const { db, q } = await import("./db.js");
 const { ApiError, routes } = await import("./api.js");
+const { createSession, destroySession } = await import("./auth.js");
+const { readAuthorizedRequest } = await import("./requestAuthorization.js");
 after(() => { db.close(); rmSync(dataDir, { recursive: true, force: true }); });
 
 const ownerId = "u_guest_contract_owner";
@@ -50,6 +52,8 @@ function context(overrides = {}) {
 // Real registered handlers: guests must be rejected before input validation,
 // database writes or any null-session access, including async media handlers.
 const memberRoutes = [
+  "GET /api/feed", "GET /api/feed/for-you", "POST /api/feed/revalidate", "GET /api/clips",
+  "GET /api/users/:id/posts", "GET /api/users/:id/concert-history",
   "POST /api/posts/:id/like", "POST /api/posts/:id/comments", "DELETE /api/posts/:postId/comments/:id",
   "POST /api/posts", "PATCH /api/posts/:id", "DELETE /api/posts/:id",
   "POST /api/users/:id/follow", "POST /api/users/:id/block", "POST /api/users/:id/mute",
@@ -94,16 +98,13 @@ for (const route of memberRoutes) {
 
 const publicReads = [
   ["GET /api/me", {}, (result) => assert.equal(result.user, null)],
-  ["GET /api/feed", {}, (result) => assert.ok(result.posts.some((post) => post.id === postId))],
-  ["GET /api/feed/for-you", {}, (result) => assert.ok(result.posts.some((post) => post.id === postId))],
   ["GET /api/posts/:id", {}, (result) => assert.equal(result.post.id, postId)],
   ["GET /api/posts/:id/comments", {}, (result) => assert.equal(result.comments[0].text, "Public review comment")],
-  ["POST /api/feed/revalidate", { body: { postIds: [postId] } }, (result) => assert.deepEqual(result.invalidPostIds, [])],
   ["POST /api/media/reactions", { body: { urls: [] } }, (result) => assert.deepEqual(result.reactions, {})],
   ["GET /api/artists", { query: { q: artistName } }, (result) => assert.ok(result.artists.some((artist) => artist.name === artistName))],
   ["GET /api/artists/:key/profile", {}, (result) => {
     assert.equal(result.profile.bio, "Public artist biography");
-    assert.equal(result.posts[0].text, "Public artist update");
+    assert.deepEqual(result.posts, []);
   }],
   ["GET /api/artists/:key/memorial", {}, (result) => assert.equal(result.memorial, null)],
   ["GET /api/artists/:key/live-summary", {}],
@@ -115,7 +116,6 @@ const publicReads = [
   ["GET /api/users/:id/followers", { params: { id: ownerId } }],
   ["GET /api/users/:id/following", { params: { id: ownerId } }],
   ["GET /api/users/:id/badges", { params: { id: ownerId } }],
-  ["GET /api/users/:id/posts", { params: { id: ownerId } }, (result) => assert.ok(result.posts.some((post) => post.id === postId))],
   ["GET /api/users/:id/playlists", { params: { id: ownerId } }, (result) => assert.equal(result.playlists[0].id, playlistId)],
   ["GET /api/playlists/:id", { params: { id: playlistId } }, (result) => assert.equal(result.playlist.id, playlistId)],
   ["GET /api/fanclubs/:artist/meta", {}, (result) => assert.equal(result.members, 0)],
@@ -159,4 +159,120 @@ test("guest Like and Comment submissions reject valid payloads and preserve the 
   assert.equal(db.prepare("SELECT COUNT(*) AS count FROM artist_tourdate_refresh_queue WHERE artist_key=?").get(artistKey).count, 0,
     "guest artist reads must not enqueue provider refreshes");
   assert.equal(providerCalls, 0);
+});
+
+test("guest artist snapshots skip the update query while members retain published updates", (t) => {
+  const prepare = db.prepare;
+  const spy = t.mock.method(db, "prepare", function (sql, ...args) {
+    assert.doesNotMatch(sql, /FROM artist_posts\b/iu, "guest snapshots must not hydrate member artist updates");
+    return prepare.call(this, sql, ...args);
+  });
+  for (const user of [null, undefined]) {
+    const headers = {};
+    const snapshot = routes["GET /api/artists/:key/profile"](context({
+      user, setHeader: (name, value) => { headers[name] = value; },
+    }));
+    assert.equal(snapshot.profile.bio, "Public artist biography");
+    assert.deepEqual(snapshot.posts, []);
+    assert.equal(headers["Cache-Control"], "private, no-store");
+  }
+  spy.mock.restore();
+  const member = routes["GET /api/artists/:key/profile"](context({ user: q.userById.get(ownerId) }));
+  assert.equal(member.posts[0].text, "Public artist update");
+});
+
+const feedRoutes = ["GET /api/feed", "GET /api/feed/for-you", "POST /api/feed/revalidate", "GET /api/clips"];
+
+test("member feeds reject guests before parsing cursors or starting recommendation work", () => {
+  const guardedQuery = new Proxy({}, { get() { throw new Error("Guest queries must not be inspected"); } });
+  const guardedBody = new Proxy({}, { get() { throw new Error("Guest bodies must not be inspected"); } });
+  for (const route of feedRoutes) {
+    const headers = {};
+    assert.throws(() => routes[route](context({
+      query: guardedQuery, body: guardedBody, setHeader: (name, value) => { headers[name] = value; },
+    })), { status: 401, code: "AUTH_REQUIRED" });
+    assert.equal(headers["Cache-Control"], "private, no-store");
+  }
+});
+
+test("signed-in feed reads retain their projections and are never publicly cacheable", () => {
+  const user = q.userById.get(ownerId);
+  for (const route of feedRoutes) {
+    const headers = {};
+    const result = routes[route](context({
+      user, body: { postIds: [postId] }, setHeader: (name, value) => { headers[name] = value; },
+    }));
+    assert.equal(headers["Cache-Control"], "private, no-store");
+    if (route === "POST /api/feed/revalidate") assert.deepEqual(result.invalidPostIds, []);
+    else if (route === "GET /api/clips") assert.ok(Array.isArray(result.clips));
+    else assert.ok(result.posts.some((post) => post.id === postId));
+  }
+});
+
+test("feed dispatch rechecks sessions and restrictions instead of trusting a captured account", () => {
+  const user = q.userById.get(ownerId);
+  for (const route of feedRoutes) {
+    let rechecked = 0;
+    assert.throws(() => routes[route](context({ user, assertCurrentSession() {
+      rechecked++;
+      throw new ApiError(401, "Log in first.", "AUTH_REQUIRED");
+    } })), { status: 401, code: "AUTH_REQUIRED" });
+    assert.equal(rechecked, 1);
+    for (const restriction of [{ is_banned: 1 }, { suspended_until: Date.now() + 60_000 }]) {
+      assert.throws(() => routes[route](context({ user, assertCurrentSession: () => ({ ...user, ...restriction }) })), {
+        status: 403, code: "FORBIDDEN",
+      });
+    }
+  }
+});
+
+test("feed routes resolve real sessions and cannot reuse authority after logout or expiry", async () => {
+  for (const route of feedRoutes) {
+    const [method, pathname] = route.split(" ");
+    for (const mode of ["logout", "expiry"]) {
+      const session = createSession(ownerId);
+      const authorized = await readAuthorizedRequest({
+        token: session.token, method, pathname, readBody: () => ({ postIds: [postId] }),
+      });
+      const requestContext = { ...context(), ...authorized };
+      assert.doesNotThrow(() => routes[route](requestContext), "signed-in readers can browse before email verification");
+      if (mode === "logout") destroySession(session.token);
+      else db.prepare("UPDATE sessions SET expires_at=0 WHERE user_id=?").run(ownerId);
+      assert.throws(() => routes[route](requestContext), { status: 401, code: "AUTH_REQUIRED" });
+      const next = await readAuthorizedRequest({ token: session.token, method, pathname, readBody: () => ({}) });
+      assert.equal(next.user, null);
+      assert.throws(() => routes[route]({ ...context(), ...next }), { status: 401, code: "AUTH_REQUIRED" });
+      assert.equal(routes["GET /api/posts/:id"](context()).post.id, postId,
+        "losing a session does not make the shared public review disappear");
+    }
+  }
+});
+
+test("profile histories require a current account while profile headers stay public", async () => {
+  const profileContext = context({ params: { id: ownerId } });
+  const before = db.prepare("SELECT total_changes() AS count").get().count;
+  for (const route of ["GET /api/users/:id/posts", "GET /api/users/:id/concert-history"]) {
+    const headers = {};
+    const args = { ...profileContext, setHeader: (name, value) => { headers[name] = value; } };
+    assert.throws(() => routes[route](args), { status: 401, code: "AUTH_REQUIRED" });
+    assert.equal(headers["Cache-Control"], "private, no-store");
+  }
+  assert.equal(db.prepare("SELECT total_changes() AS count").get().count, before);
+  for (const route of ["GET /api/users/:id/posts", "GET /api/users/:id/concert-history"]) {
+    const session = createSession(ownerId);
+    const authorized = await readAuthorizedRequest({ token: session.token, method: "GET",
+      pathname: route.slice(4).replace(":id", ownerId), readBody: () => ({}) });
+    const headers = {};
+    const args = { ...profileContext, ...authorized, setHeader: (name, value) => { headers[name] = value; } };
+    const result = routes[route](args);
+    assert.equal(headers["Cache-Control"], "private, no-store");
+    const records = result.posts || result.concerts;
+    assert.ok(records.some((record) => record.id === postId));
+    destroySession(session.token);
+    assert.throws(() => routes[route](args), { status: 401, code: "AUTH_REQUIRED" });
+  }
+  const snapshot = routes["GET /api/users/:id"](profileContext);
+  assert.equal(snapshot.user.id, ownerId);
+  assert.equal(Object.hasOwn(snapshot, "posts"), false);
+  assert.equal(Object.hasOwn(snapshot, "concerts"), false);
 });

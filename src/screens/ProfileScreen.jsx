@@ -27,6 +27,7 @@ import ExpandableText from "../components/ExpandableText";
 import { useConcertHistory } from "../features/concertHistory/useConcertHistory";
 import { concertNightKey } from "../features/concertHistory/concertHistoryModel.mjs";
 import ConcertHistory from "../features/concertHistory/ConcertHistory";
+import AccountSnapshotPrompt from "../components/AccountSnapshotPrompt";
 
 const EMPTY_PROFILE_STATE = Object.freeze({ status: "loading", user: null, error: "" });
 const EMPTY_LIST = Object.freeze([]);
@@ -113,17 +114,21 @@ const ProfileTicketRow = memo(function ProfileTicketRow({ log, actionsRef, capab
 });
 
 // Public member profile: musical identity, live history, media, plans, and posts.
-export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenPost, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onManageProfile, onMessage, onReport, onEditPost, onOpenPhotos, onRemoveMyPostTag, onOpenFollowList, onOpenBadges, onRequireAuth }) {
+export default function ProfileScreen({ userId, initialSection = null, onClose, onOpenShow, onOpenPost, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onManageProfile, onMessage, onReport, onEditPost, onOpenPhotos, onRemoveMyPostTag, onOpenFollowList, onOpenBadges, onRequireAuth }) {
   const appActive = useAppActive();
   const { session, authReady, chatAuthEpoch, userById, logsByUser, isFollowing, follow, unfollow, followerCount, followingCount, goingFor, myAttendance, userBadges, sharedShows, loadUser, isBlocked, blockUser, unblockUser, isMuted, muteUser, unmuteUser, userPoints, userAchievements, loadRewards, deleteOwnPost } = useStore();
   const profileScope = accountTargetScope(session?.id, `profile:${userId || ""}`);
   const profileScopeRef = useRef(profileScope);
   profileScopeRef.current = profileScope;
+  const profileScrollRef = useRef(null);
+  const concertFocusRef = useRef(null);
+  const concertLayoutRef = useRef(null);
+  const [concertLayout, setConcertLayout] = useState(null);
   const postActionsRef = useRef({});
   const [profileRevision, setProfileRevision] = useState(0);
   const [profileState, setProfileState] = useState(() => ({ scope: profileScope, value: EMPTY_PROFILE_STATE }));
   const profileView = scopedScreenValue(profileState, profileScope, EMPTY_PROFILE_STATE);
-  const history = useProfileHistory({ accountId: session?.id, targetId: userId, enabled: !!userId && profileView.status !== "missing" });
+  const history = useProfileHistory({ accountId: session?.id, targetId: userId, enabled: !!session && !!userId && profileView.status !== "missing" });
   const confirmedUser = profileView.user?.id === userId ? profileView.user : null;
   const cachedUser = confirmedUser || userById(userId);
   // The shared public-profile cache keeps only server-approved public profile
@@ -141,11 +146,11 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenPost,
   concertScopeRef.current = concertScope;
   const concertHistory = useConcertHistory({
     accountId: session?.id || null, authEpoch: chatAuthEpoch, targetId: userId,
-    enabled: authReady && !!user, mapVisible: user?.concertMapVisible !== false,
+    enabled: authReady && !!session && !!user, mapVisible: user?.concertMapVisible !== false,
   });
   const historyOwnsLogs = history.posts.length > 0 || history.status === "ready";
   const cachedLogs = user && !historyOwnsLogs ? logsByUser(user.id) : EMPTY_LIST;
-  const logs = user ? (historyOwnsLogs ? history.posts : cachedLogs) : EMPTY_LIST;
+  const logs = session && user ? (historyOwnsLogs ? history.posts : cachedLogs) : EMPTY_LIST;
   const reviews = useMemo(() => selectConcertReviews(logs), [logs]);
   const timeline = useMemo(() => selectProfileTimeline(logs), [logs]);
   const going = user && isSelf ? goingFor(user.id) : EMPTY_LIST;
@@ -224,11 +229,34 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenPost,
     updateHistoryPost: history.updatePost,
   };
   useEffect(() => {
-    if (!userId) return undefined;
+    if (initialSection !== "concert-history") { concertFocusRef.current = null; return; }
+    if (!session || !user || concertLayout?.scope !== profileScope) return;
+    if (history.status === "idle" || history.status === "loading" || history.status === "refreshing") return;
+    const focusKey = `${profileScope}:concert-history`;
+    if (concertFocusRef.current === focusKey) return;
+    // Gallery/upcoming rows can arrive above the map with the history response.
+    // Let their layout settle, then use the newest measured anchor, not the
+    // earlier loading-state position. Never keep snapping after user scrolling.
+    let secondFrame = null;
+    const firstFrame = requestAnimationFrame(() => {
+      secondFrame = requestAnimationFrame(() => {
+        const layout = concertLayoutRef.current;
+        if (profileScopeRef.current !== profileScope || layout?.scope !== profileScope) return;
+        concertFocusRef.current = focusKey;
+        profileScrollRef.current?.scrollTo?.({ y: Math.max(0, layout.y - 12), animated: false });
+      });
+    });
+    return () => {
+      cancelAnimationFrame(firstFrame);
+      if (secondFrame !== null) cancelAnimationFrame(secondFrame);
+    };
+  }, [initialSection, profileScope, session?.id, user?.id, concertLayout, history.status]);
+  useEffect(() => {
+    if (!session || !userId) return undefined;
     const controller = new AbortController();
     void loadRewards(userId, { signal: controller.signal });
     return () => controller.abort();
-  }, [userId]);
+  }, [userId, session?.id]);
   // Always refresh from the server: fills real follower counts, and makes profiles
   // we've never cached (a follower from a notification) open instead of blanking.
   useEffect(() => {
@@ -269,9 +297,9 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenPost,
       const requestScope = profileScope;
       const [outcome, historyOutcome, rewards, concertsOutcome] = await Promise.all([
         loadUser(userId, { signal }),
-        history.retry(),
-        loadRewards(userId, { signal }),
-        concertHistory.refresh(),
+        session ? history.retry() : null,
+        session ? loadRewards(userId, { signal }) : null,
+        session ? concertHistory.refresh() : null,
       ]);
       if (signal.aborted || profileScopeRef.current !== requestScope) return { stale: true };
       setProfileState({
@@ -349,7 +377,7 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenPost,
           <View style={styles.backCircle}><Icon name="chevron-left" size={20} color={colors.text} /></View>
         </Pressable>
         <Text style={styles.topTitle}>@{user.handle}</Text>
-        {!isSelf && onReport ? (
+        {session && !isSelf && onReport ? (
           <Pressable
             style={styles.profileReportBtn}
             onPress={() => onReport({
@@ -374,7 +402,7 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenPost,
         onRefresh={refreshProfile}
         accessibilityLabel={`Refresh ${user.name || "member"} profile`}
       >
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <ScrollView ref={profileScrollRef} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         {profileView.status === "stale" && (
           <View style={styles.staleProfile} accessibilityRole="alert" accessibilityLiveRegion="polite">
             <Text style={styles.staleProfileText}>{profileView.error}</Text>
@@ -446,6 +474,14 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenPost,
           )}
         </View>
 
+        {!session ? (
+          <AccountSnapshotPrompt
+            title={`Meet ${user.name} on Mshpit`}
+            body="Sign in to see their concert history, photos, and posts, or connect over the music you share."
+            onRequireAuth={onRequireAuth}
+            style={{ marginHorizontal: 16, marginTop: 16 }}
+          />
+        ) : <>
         <View style={styles.statsRow}>
           <Stat value={historyCount(reviews.length)} label="REVIEWS" />
           <Stat value={planned.length} label="UPCOMING" />
@@ -569,6 +605,11 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenPost,
           );
         })}
 
+        <View onLayout={(event) => {
+          const y = event.nativeEvent.layout.y;
+          concertLayoutRef.current = { scope: profileScope, y };
+          setConcertLayout((current) => current?.scope === profileScope && current.y === y ? current : { scope: profileScope, y });
+        }}>
         <ConcertHistory
             key={concertScope}
             concerts={concertRows}
@@ -583,6 +624,7 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenPost,
             openingError={concertHistory.openingError}
             mapVisible={user.concertMapVisible !== false && concertHistory.mapVisible}
         />
+        </View>
 
         {/* their posts, the same feed card as home, so a profile reads like a
             wall of everything this person has posted (Facebook/Letterboxd style) */}
@@ -620,6 +662,7 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenPost,
             <Text style={styles.historyButtonText}>{history.loadingMore ? "Loading earlier posts..." : "Load earlier posts"}</Text>
           </Pressable>
         )}
+        </>}
 
       </ScrollView>
       </VinylRefreshBoundary>

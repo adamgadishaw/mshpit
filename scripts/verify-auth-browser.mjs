@@ -28,6 +28,7 @@ const fixtureResetToken = "fixture-reset-token-0123456789";
 const fixtureOwnerToken = "fixture-owner-token-0123456789";
 
 const cases = [
+  ...[390, 1280].map(width => ({ name: `guest-member-tabs-${width}`, kind: "guest-member-tabs", width })),
   ...[390, 1280].flatMap(width => [
     ...["concert", "status", "online", "going"].map(postKind => ({ name: `guest-like-${postKind}-${width}`, kind: "guest-like", postKind, width })),
     { name: `guest-comments-${width}`, kind: "guest-comments", width },
@@ -214,7 +215,6 @@ async function semanticFormCase(page, origin, item, state, { landing, feed, you 
     if (await button.isVisible()) await button.click();
     else {
       await page.getByRole("tab", { name: "You", exact: true }).click();
-      await page.getByText("LOG IN / SIGN UP", { exact: true }).click();
     }
     await page.getByRole("heading", { name: "Good to see you.", exact: true }).waitFor();
   };
@@ -367,9 +367,9 @@ async function runCase(browser, origin, item) {
   const guestStart = guestCase || item.kind.startsWith("login") || ["startup-401", "forms-login", "forms-signup", "forms-reset"].includes(item.kind);
   const publicPost = {
     id: "p_guest_browser", userId: "public-author", user: { id: "public-author", name: "Public Author", handle: "public-author", role: "fan" },
-    kind: ["status", "going"].includes(item.postKind) ? "status" : "concert",
+    kind: ["status", "going"].includes(item.postKind) ? "status" : "review",
     experienceType: item.postKind === "online" ? "online" : "live",
-    artist: "Fixture Artist", venue: "Fixture Venue", city: "Toronto", date: "2026-09-01",
+    artist: "Fixture Artist", artistKey: "fixture-artist", venue: "Fixture Venue", city: "Toronto", date: "2026-09-01",
     review: "A public concert memory worth sharing.", text: "A public concert memory worth sharing.",
     at: Date.now() - 60_000, likes: 3, comments: 1, overall: 4, band: 4, room: 4,
     photos: item.kind === "guest-photo" ? [`${origin}/fixture-photo.png?first`, `${origin}/fixture-photo.png?second`] : [`${origin}/fixture-photo.png`],
@@ -380,7 +380,8 @@ async function runCase(browser, origin, item) {
     offline: item.kind === "startup-offline", badPassword: item.kind === "login-retry",
     logoutUnavailable: item.kind === "logout-failed", phase: "start",
     calls: [], pageErrors: [], consoleErrors: [], reports: [], routeErrors: [],
-    releaseLogin: null, releaseSwitch: null, loginCompleted: false, connected: item.kind !== "forms-connect", credentialUrlLeaks: [],
+    releaseLogin: null, releaseSwitch: null, releaseDiscover: null, holdDiscover: item.kind === "login-canceled",
+    loginCompleted: false, connected: item.kind !== "forms-connect", credentialUrlLeaks: [],
   };
   page.on("pageerror", error => state.pageErrors.push(error.message));
   page.on("console", message => { if (message.type() === "error") state.consoleErrors.push(message.text()); });
@@ -400,6 +401,12 @@ async function runCase(browser, origin, item) {
       }
       if (!url.pathname.startsWith("/api/")) {
         if (url.origin === origin && url.pathname === "/fixture-photo.png") return await route.fulfill({ contentType: "image/png", body: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==", "base64") });
+        if (url.origin === origin && state.holdDiscover && /\/DiscoverScreen-[a-f0-9]+\.js$/.test(url.pathname)) {
+          // Keep the destination suspended after Back. The old auth tree may
+          // still be mounted, so only synchronous navigation cancellation can
+          // prevent the held login response from adopting an account.
+          await new Promise(fulfill => { state.releaseDiscover = fulfill; });
+        }
         if (url.origin === origin) return await route.continue();
         return await route.abort();
       }
@@ -407,6 +414,12 @@ async function runCase(browser, origin, item) {
       const account = request.headers()["x-pit-expected-account"] || null;
       state.calls.push({ path: url.pathname, method: request.method(), account, phase: state.phase });
       if (url.pathname === "/api/client-errors") { state.reports.push(body); return await json({ ok: true }); }
+      if (guestCase && url.pathname === "/api/resolve") return await json({ entity: { kind: "show", id: publicPost.id, path: `/post/${publicPost.id}` } });
+      if (guestCase && url.pathname === "/api/artists/fixture-artist/memorial") return await json({ memorial: null });
+      if (guestCase && url.pathname === "/api/venues/fixture%20venue/photos") return await json({ photos: [], state: "ready" });
+      if (guestCase && url.pathname.startsWith("/api/shows/")) return await json({ show: null });
+      if (guestCase && url.pathname.startsWith("/api/going/") && url.pathname.endsWith("/attendees")) return await json({ attendees: [], total: 0, scope: "everyone" });
+      if (guestCase && url.pathname.startsWith("/api/lounges/") && url.pathname.endsWith("/meta")) return await json({ status: "open", messages: 0 });
       if (url.pathname === "/api/me") {
         if (state.offline) return await route.abort("internetdisconnected");
         if (item.kind === "startup-401") return await json({ error: "Session expired", code: "UNAUTHORIZED" }, 401);
@@ -480,7 +493,10 @@ async function runCase(browser, origin, item) {
         state.phase = "switched";
         return await json({ ok: true, user: bob });
       }
-      if (url.pathname.startsWith("/api/feed")) return await json({ posts: guestCase ? [publicPost] : [], hasMore: false, hiddenPostIds: [] });
+      if (url.pathname.startsWith("/api/feed")) {
+        if (!state.user) return await json({ error: "Sign in to view the feed.", code: "UNAUTHORIZED" }, 401);
+        return await json({ posts: guestCase ? [publicPost] : [], hasMore: false, hiddenPostIds: [] });
+      }
       if (guestCase && url.pathname === `/api/posts/${publicPost.id}/comments` && request.method() === "GET") return await json({ comments: [{ id: "c_guest_fixture", postId: publicPost.id, userId: "public-reader", name: "Public Reader", text: "A public comment to read.", at: Date.now() - 30_000 }] });
       if (guestCase && url.pathname === `/api/posts/${publicPost.id}` && request.method() === "GET") return await json({ post: publicPost });
       if (guestCase && url.pathname === "/api/media/reactions") return await json({ reactions: {} });
@@ -541,14 +557,27 @@ async function runCase(browser, origin, item) {
   let failure = null;
   try {
     const entry = item.kind === "forms-reset" ? `${origin}/#reset=${fixtureResetToken}`
-      : item.kind === "forms-owner" ? `${origin}/#ownerApproval=${fixtureOwnerToken}` : origin;
+      : item.kind === "forms-owner" ? `${origin}/#ownerApproval=${fixtureOwnerToken}`
+      : guestCase && item.kind !== "guest-member-tabs" ? `${origin}/post/${publicPost.id}` : origin;
     await page.goto(entry, { waitUntil: "networkidle", timeout: timeoutMs });
-    if (guestCase) {
+    if (item.kind === "guest-member-tabs") {
       await landing();
       await page.getByRole("button", { name: "Log in", exact: true }).last().click();
       await page.getByRole("heading", { name: "Good to see you.", exact: true }).waitFor();
       await page.goBack();
-      await feed();
+      for (const tab of ["Feed", "You"]) {
+        await page.getByRole("tab", { name: tab, exact: true }).click();
+        await page.getByRole("heading", { name: "Good to see you.", exact: true }).waitFor();
+        assert.equal(await page.getByText("Your life's musical journey", { exact: true }).count(), 0);
+        await page.goBack();
+      }
+      await page.getByRole("tab", { name: "Search", exact: true }).click();
+      assert.equal(await page.getByRole("heading", { name: "Good to see you.", exact: true }).count(), 0);
+      assert.deepEqual(state.calls.filter(call => call.path.startsWith("/api/feed") || /\/api\/users\/.*\/(posts|concert-history)$/.test(call.path)), []);
+    } else if (guestCase) {
+      if (publicPost.kind === "review" && publicPost.experienceType !== "online") {
+        await page.getByText("Open the original fan post", { exact: true }).click();
+      }
       const like = () => page.getByRole("button", { name: "Like, 3 likes", exact: true }).last();
       await like().waitFor();
       const after = state.calls.length;
@@ -567,7 +596,6 @@ async function runCase(browser, origin, item) {
         await page.getByRole("textbox", { name: "Email", exact: true }).fill(alice.email);
         await page.getByLabel("Password", { exact: true }).fill(fixturePassword);
         await page.getByRole("button", { name: "Log in", exact: true }).last().click();
-        await feed();
         await like().waitFor();
         await page.waitForTimeout(250);
         assert.equal(state.calls.some(call => call.path.endsWith("/like")), false, "Signing in must not replay the guest Like.");
@@ -599,6 +627,7 @@ async function runCase(browser, origin, item) {
         await like().waitFor();
       }
       const guestCalls = state.calls.slice(after);
+      assert.deepEqual(state.calls.filter(call => call.phase === "start" && call.path.startsWith("/api/feed")), [], "Guest public reviews must not load a private feed.");
       const beforeSignIn = item.kind === "guest-like-login" ? guestCalls.filter(call => call.phase === "start" && call.path !== "/api/login") : guestCalls;
       assert.deepEqual(beforeSignIn.filter(call => call.method !== "GET" && call.path !== "/api/media/reactions"), [], "Guest controls must not send mutations, authentication attempts, or crash reports.");
       assert.deepEqual(guestCalls.filter(call => /\/api\/artists\//.test(call.path)), [], "Social controls must not navigate to or load the post's artist.");
@@ -619,6 +648,7 @@ async function runCase(browser, origin, item) {
       if (item.kind === "login-canceled") {
         await waitFor(() => typeof state.releaseLogin === "function", "Login request was not held by the fixture.");
         await page.goBack();
+        await waitFor(() => typeof state.releaseDiscover === "function", "Discover destination must remain suspended during canceled login.");
         await page.getByRole("heading", { name: "Good to see you.", exact: true }).waitFor({ state: "hidden" });
         const after = await startGuestGuard();
         state.releaseLogin();
@@ -627,6 +657,8 @@ async function runCase(browser, origin, item) {
         await waitFor(() => state.user === null, "Canceled login left the server session authenticated; compensating logout was missing.");
         await page.waitForTimeout(250);
         await assertGuestPrivacy(after);
+        state.holdDiscover = false;
+        state.releaseDiscover(); state.releaseDiscover = null;
         await page.reload({ waitUntil: "networkidle" });
         await landing();
         await forceIdentity();
@@ -727,6 +759,7 @@ async function runCase(browser, origin, item) {
   finally {
     state.releaseLogin?.();
     state.releaseSwitch?.();
+    state.releaseDiscover?.();
     await context.close();
   }
   return {

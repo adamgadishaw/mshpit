@@ -19,6 +19,11 @@ const profile = Object.freeze({
   home: { city: "Toronto, Ontario, Canada" }, genres: [], favoriteArtists: [],
   profileAudience: "everyone", concertMapVisible: true,
 });
+const member = Object.freeze({
+  ...profile, id: "concert-fixture-viewer", name: "Fixture Viewer", handle: "fixtureviewer",
+  email: "concert-fixture@example.test", emailVerified: true, onboardingVersion: 1,
+  analyticsOptOut: true, ageBand: "18_plus", termsVersion: "2026-09-02",
+});
 const concerts = Object.freeze(Array.from({ length: 8 }, (_, index) => {
   const number = String(index + 1).padStart(2, "0");
   const toronto = index < 4;
@@ -33,7 +38,7 @@ const concerts = Object.freeze(Array.from({ length: 8 }, (_, index) => {
   });
 }));
 const cases = [390, 1280].flatMap(width => [
-  ...["preview-map-review", "map-off", "unmapped", "failure-retry", "empty"].map(kind => ({
+  ...["preview-map-review", "map-off", "unmapped", "failure-retry", "empty", "own-map-entry", "two-countries"].map(kind => ({
     name: `${kind}-${width}`, kind, width,
   })),
 ]);
@@ -103,8 +108,12 @@ async function runCase(browser, origin, item) {
   page.setDefaultTimeout(timeoutMs);
   const mapVisible = item.kind !== "map-off";
   const missingLocation = !mapVisible || item.kind === "unmapped";
+  const viewer = item.kind === "own-map-entry" ? { ...member, id: profileId, name: profile.name, handle: profile.handle } : member;
   const fixtureRows = item.kind === "empty" ? [] : concerts.map(row => missingLocation ? {
     ...row, lat: null, lng: null, country: null, countryCode: null,
+  } : item.kind === "two-countries" && row.city === "Vancouver" ? {
+    ...row, venue: "Fixture Seattle Hall", venueKey: "fixture-seattle-hall", city: "Seattle",
+    lat: 47.606, lng: -122.332, countryCode: "US", country: "United States",
   } : row);
   const state = { historyUnavailable: item.kind === "failure-retry", calls: [], routeErrors: [], pageErrors: [], consoleErrors: [], reports: [] };
   page.on("pageerror", error => state.pageErrors.push(error.message));
@@ -121,7 +130,14 @@ async function runCase(browser, origin, item) {
       }
       state.calls.push({ path: url.pathname, query: url.search, method: request.method(), account: request.headers()["x-pit-expected-account"] || null });
       if (url.pathname === "/api/client-errors") { state.reports.push(request.postDataJSON()); return await json({ ok: true }); }
-      if (url.pathname === "/api/me") return await json({ user: null });
+      if (url.pathname === "/api/me") return await json({ user: viewer });
+      if (["/api/me/blocked", "/api/me/muted"].includes(url.pathname)) return await json({ users: [] });
+      if (url.pathname === "/api/me/notifications") return await json({ notifications: [] });
+      if (url.pathname === "/api/me/threads") return await json({ threads: [] });
+      if (url.pathname === "/api/me/following") return await json({ following: [] });
+      if (url.pathname === "/api/me/fanclubs") return await json({ fanClubs: [] });
+      if (url.pathname === "/api/me/going") return await json({ going: [] });
+      if (url.pathname === "/api/me/artist-recommendations") return await json({ recommendations: [] });
       if (url.pathname === "/api/resolve") {
         assert.equal(url.searchParams.get("path"), "/@fixtureprofile");
         return await json({ entity: { kind: "profile", id: profileId, path: "/@fixtureprofile" } });
@@ -129,6 +145,8 @@ async function runCase(browser, origin, item) {
       if (url.pathname === `/api/users/${profileId}`) return await json({ user: { ...profile, concertMapVisible: mapVisible }, followers: 0, following: 0, isFollowing: false });
       if (url.pathname === `/api/users/${profileId}/posts`) return await json({ posts: [], hasMore: false, nextCursor: null });
       if (url.pathname === `/api/users/${profileId}/rewards`) return await json({ points: 0, earnedIds: [] });
+      if (url.pathname === `/api/users/${viewer.id}/posts`) return await json({ posts: [], hasMore: false, nextCursor: null });
+      if (url.pathname === `/api/users/${viewer.id}/rewards`) return await json({ points: 0, earnedIds: [] });
       if (url.pathname === `/api/users/${profileId}/concert-history`) {
         assert.equal(request.method(), "GET");
         assert.equal(url.searchParams.get("limit"), "200");
@@ -163,9 +181,23 @@ async function runCase(browser, origin, item) {
   });
   let failure = null;
   try {
-    await page.goto(`${origin}/@fixtureprofile`, { waitUntil: "networkidle", timeout: timeoutMs });
+    await page.goto(item.kind === "own-map-entry" ? origin : `${origin}/@fixtureprofile`, { waitUntil: "networkidle", timeout: timeoutMs });
+    if (item.kind === "own-map-entry") {
+      await page.getByRole("tab", { name: "You", exact: true }).click();
+      await page.getByTestId("you-concert-history").waitFor();
+      assert.equal(await page.getByTestId("profile-concert-history").count(), 0, "You must link to the existing profile map, not duplicate it.");
+      await page.getByRole("button", { name: "Open your concert history and map", exact: true }).click();
+    }
     const history = page.getByTestId("profile-concert-history");
     await history.waitFor();
+    if (item.kind === "own-map-entry") {
+      await waitFor(async () => {
+        const rect = await history.boundingBox();
+        return !!rect && rect.y >= 0 && rect.y < 280;
+      }, "The own-map entry must scroll directly to concert history, not the top of the profile.");
+      const heading = await history.getByRole("heading", { name: "Concert history", exact: true }).boundingBox();
+      assert.ok(heading && heading.y >= 80 && heading.y < 330, "The shortcut must leave the section heading below the fixed profile header.");
+    }
     await history.scrollIntoViewIfNeeded();
     const rows = history.locator('[data-testid^="concert-history-row-"]');
     const map = history.getByTestId("profile-concert-map");
@@ -183,7 +215,9 @@ async function runCase(browser, origin, item) {
       assert.equal(await history.getByRole("button", { name: "See all concerts", exact: true }).count(), 0);
       await map.getByText("A map of nights to remember", { exact: true }).waitFor();
     } else {
-      await history.getByText(missingLocation ? "8 concerts · 2 venues" : "8 concerts · 2 venues · 1 country", { exact: true }).waitFor();
+      await history.getByText(missingLocation ? "8 concerts · 2 venues" : item.kind === "two-countries" ? "8 concerts · 2 venues · 2 countries" : "8 concerts · 2 venues · 1 country", { exact: true }).waitFor();
+      if (item.kind === "two-countries") await map.getByText("World", { exact: true }).waitFor();
+      else if (!missingLocation) await map.getByText("North America", { exact: true }).waitFor();
       // Desktop has room for five rows; the phone preview stays at three.
       const expectedPreview = item.width < 620 ? 3 : 5;
       await waitFor(async () => await rows.count() === expectedPreview, `Expected ${expectedPreview} compact preview rows.`);
@@ -215,7 +249,7 @@ async function runCase(browser, origin, item) {
         const exact = concerts[0];
         await history.getByRole("button", { name: `Open review for ${exact.artist} at ${exact.venue}`, exact: true }).click();
         await page.getByText(`Exact fixture review ${exact.postId}.`, { exact: true }).last().waitFor();
-        await page.getByRole("button", { name: "Sign in to comment", exact: true }).waitFor();
+        await page.getByRole("button", { name: "Send comment", exact: true }).waitFor();
         const reads = state.calls.filter(call => /^\/api\/posts\/[^/]+$/.test(call.path));
         assert.deepEqual(reads.map(call => call.path), [`/api/posts/${exact.postId}`], "Open review must read the exact selected review once.");
         assert.equal(state.calls.some(call => /\/api\/artists\//.test(call.path)), false, "Open review must not open an artist page.");
@@ -234,7 +268,8 @@ async function runCase(browser, origin, item) {
     assert.deepEqual(state.pageErrors, [], "Uncaught browser error.");
     assert.deepEqual(state.reports, [], "The app sent a crash receipt.");
     assert.deepEqual(state.calls.filter(call => call.method !== "GET" && call.path !== "/api/media/reactions"), [], "Reading concert history must not mutate account data.");
-    assert.equal(state.calls.some(call => call.account !== null && call.account !== "guest"), false, "Guest history requests must not impersonate an account.");
+    assert.equal(state.calls.some(call => call.account !== null && call.account !== "guest" && call.account !== viewer.id), false, "History requests must not impersonate a different account.");
+    assert.equal(state.calls.filter(call => call.path.endsWith("/concert-history")).every(call => call.account === viewer.id), true, "Concert history must be bound to the signed-in viewer.");
     assert.equal(state.consoleErrors.some(message => /TypeError|ReferenceError|Minified React error/.test(message)), false, "Runtime console exception.");
   } catch (error) { failure = error.message; }
   finally { await context.close(); }

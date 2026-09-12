@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { colors, displayFont, focusRing, mono, radius, shadow, space } from "../theme";
@@ -23,7 +23,7 @@ function AuthPressable({ accessibilityState = {}, disabled, ...props }) {
   return <Pressable {...props} disabled={disabled} accessibilityState={state} {...signupAriaProps(Platform.OS, state)} />;
 }
 
-export default function AuthScreen({ onDone, onCancel, onModeChange, initialMode = "login", addAccount = false, initialEmail = "" }) {
+export default function AuthScreen({ onDone, onCancel, onModeChange, navigationAbortRef, initialMode = "login", addAccount = false, initialEmail = "" }) {
   const { login, signup, forgotPassword, session } = useStore();
   const insets = useSafeAreaInsets();
   const [mode, setMode] = useState(initialMode === "signup" ? "signup" : "login");
@@ -64,6 +64,27 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, initialMode
   const currentAvailability = availability.resource.status === "ready" ? availability.resource.data : null;
 
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; authAttempt.current?.abort(); }; }, []);
+  useLayoutEffect(() => {
+    if (!navigationAbortRef) return undefined;
+    // A lazy destination may suspend before this screen unmounts. Navigation
+    // must cancel the identity-changing request synchronously, not wait for
+    // passive cleanup while a late response is still able to sign somebody in.
+    const abortPending = () => {
+      const attempt = authAttempt.current;
+      if (!attempt) return;
+      authAttempt.current = null;
+      attempt.abort();
+      busyRef.current = false;
+      if (mounted.current) {
+        setBusyAction(null); setPassword(""); setCurrentPassword("");
+        setAccounts(null); setSignupChoice(null);
+      }
+    };
+    navigationAbortRef.current = abortPending;
+    return () => {
+      if (navigationAbortRef.current === abortPending) navigationAbortRef.current = null;
+    };
+  }, [navigationAbortRef]);
   useEffect(() => {
     scroll.current?.scrollTo?.({ y: 0, animated: false });
     if (!error) heading.current?.focus?.();
@@ -114,12 +135,17 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, initialMode
       const result = creating
         ? await signup({ ...signupFormPayload({ ...accountValues(), city, genres, ageBand, agreed, analyticsConsent }), ...(addAccount ? { addAccount, currentPassword } : {}), createAdditional }, { signal: attempt.signal })
         : await login(email.trim(), password, accountId, { signal: attempt.signal });
-      if (!mounted.current) return;
+      if (!mounted.current || attempt.signal.aborted || authAttempt.current !== attempt) return;
       if (result?.ok) {
         if (result.needsAccountChoice) { setSignupChoice(result); return; }
         if (result.chooseAccount) { setSignupChoice(null); setAccounts(result.accounts); return; }
         setPassword(""); setShowPassword(false);
         setAccounts(null); setCurrentPassword("");
+        // Completion itself navigates Back. It is no longer cancellation and
+        // must not revoke the session that the server has just confirmed.
+        authAttempt.current = null;
+        busyRef.current = false;
+        setBusyAction(null);
         onDone?.(creating ? "signup" : "login");
       } else {
         const handleTaken = result?.error?.serverCode === "HANDLE_TAKEN" || result?.code === "HANDLE_TAKEN"
@@ -128,11 +154,13 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, initialMode
         showError({ field: handleTaken ? "handle" : null, message: readableError(result?.error, "That request did not complete. Please try again.") });
       }
     } catch (failure) {
-      if (mounted.current) showError({ message: readableError(failure, "Couldn't connect. Check your connection and try again.") });
+      if (mounted.current && !attempt.signal.aborted && authAttempt.current === attempt) showError({ message: readableError(failure, "Couldn't connect. Check your connection and try again.") });
     } finally {
-      if (authAttempt.current === attempt) authAttempt.current = null;
-      busyRef.current = false;
-      if (mounted.current) setBusyAction(null);
+      if (authAttempt.current === attempt) {
+        authAttempt.current = null;
+        busyRef.current = false;
+        if (mounted.current && !attempt.signal.aborted) setBusyAction(null);
+      }
     }
   };
   const close = () => {

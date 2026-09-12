@@ -1158,6 +1158,7 @@ export function StoreProvider({ children }) {
     mutationRevision: feedMutationRevisionRef.current,
   });
   const hydrateFeed = async ({ resetPagination = true, signal } = {}) => {
+    if (!authReadyRef.current || !feedAccountIdRef.current || signal?.aborted) return null;
     const refresh = feedRefreshRef.current;
     if (refresh.inFlight) return null;
     const sequence = ++refresh.sequence;
@@ -1177,15 +1178,17 @@ export function StoreProvider({ children }) {
       let algorithm = "music-affinity-v2";
       try {
         payload = await api(`/api/feed/for-you?limit=${FEED_PAGE_LIMIT}`, {
+          expectedAccountId: read.accountId,
           context: "Refreshing your recommended concert feed",
           silent: true,
           signal,
         });
         algorithm = payload?.algorithm?.id || algorithm;
       } catch (error) {
-        if (!isCurrent(error)) throw error;
+        if (!isCurrent(error) || error?.status === 401 || error?.status === 403) throw error;
         fallback = true;
         payload = await api(`/api/feed?limit=${FEED_PAGE_LIMIT}`, {
+          expectedAccountId: read.accountId,
           context: "Loading the chronological concert feed",
           silent: true,
           signal,
@@ -1238,6 +1241,7 @@ export function StoreProvider({ children }) {
     }
   };
   const loadMoreFeed = async () => {
+    if (!authReadyRef.current || !feedAccountIdRef.current) return false;
     // React state does not update until the next render. FlatList may fire
     // onEndReached more than once in that window, so use an immediate lock too.
     if (feedRefreshRef.current.inFlight || feedLoadMoreRef.current || feedLoadingMore || !feedHasMore || !feedNextCursor) return false;
@@ -1256,18 +1260,20 @@ export function StoreProvider({ children }) {
       if (mode === "for-you") {
         try {
           payload = await api(`/api/feed/for-you?limit=${FEED_PAGE_LIMIT}&cursor=${encodeURIComponent(feedNextCursor)}`, {
+            expectedAccountId: request.read.accountId,
             context: "Loading more recommended concert posts",
             silent: true,
             signal,
           });
           algorithm = payload?.algorithm?.id || algorithm;
         } catch (error) {
-          if (!isCurrent(error)) throw error;
+          if (!isCurrent(error) || error?.status === 401 || error?.status === 403) throw error;
           // Recommendation cursors are intentionally incompatible with the
           // chronological endpoint. Preserve existing card positions while a
           // legacy first page establishes a compatible cursor.
           fallback = true;
           payload = await api(`/api/feed?limit=${FEED_PAGE_LIMIT}`, {
+            expectedAccountId: request.read.accountId,
             context: "Loading the chronological concert feed",
             silent: true,
             signal,
@@ -1277,6 +1283,7 @@ export function StoreProvider({ children }) {
         }
       } else {
         payload = await api(`/api/feed?limit=${FEED_PAGE_LIMIT}&before=${encodeURIComponent(feedNextCursor)}`, {
+          expectedAccountId: request.read.accountId,
           context: "Loading more concert reviews",
           silent: true,
           signal,
@@ -1316,6 +1323,7 @@ export function StoreProvider({ children }) {
   };
   const revalidateCachedFeed = async ({ signal } = {}) => {
     const accountId = sessionRef.current?.id || null;
+    if (!authReadyRef.current || !accountId || signal?.aborted) return null;
     const allIds = feedRef.current.map((post) => post?.id)
       .filter((id) => typeof id === "string" && /^p_[A-Za-z0-9_-]{1,77}$/.test(id));
     const start = allIds.length ? feedRevalidationOffsetRef.current % allIds.length : 0;
@@ -1355,9 +1363,11 @@ export function StoreProvider({ children }) {
   // appends the next page. Returns the merged list so the screen can swap in
   // one setState.
   const loadClips = async ({ before, signal } = {}) => {
+    const accountId = sessionRef.current?.id;
+    if (!authReadyRef.current || !accountId) return { ok: false, clips: [], nextCursor: null };
     try {
       const q = before ? `?limit=12&before=${encodeURIComponent(before)}` : "?limit=12";
-      const { clips, nextCursor } = await api("/api/clips" + q, { context: "Loading concert clips", silent: true, signal });
+      const { clips, nextCursor } = await api("/api/clips" + q, { context: "Loading concert clips", silent: true, signal, expectedAccountId: accountId });
       return { ok: true, clips: Array.isArray(clips) ? clips.map((c) => normalizeServerPost(c)) : [], nextCursor: nextCursor || null };
     } catch (error) { return { ok: false, clips: [], nextCursor: before || null, error }; }
   };
@@ -1369,7 +1379,7 @@ export function StoreProvider({ children }) {
     // Production starts with an untrusted guest-shaped client state while the
     // HttpOnly cookie is validated. Starting a personalized feed in that window
     // only guarantees that a confirmed account will abort and repeat the work.
-    if (!authReady) return undefined;
+    if (!authReady || !session?.id) return undefined;
     const controller = new AbortController();
     void hydrateFeed({ resetPagination: true, signal: controller.signal });
     return () => {

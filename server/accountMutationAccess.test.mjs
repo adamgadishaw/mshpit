@@ -51,6 +51,17 @@ test("unverified users cannot publish, interact, finalize media, or use future m
   for (const [method, pathname] of socialMutations) denied({ method, pathname, user: unverified }, "EMAIL_VERIFICATION_REQUIRED");
 });
 
+test("feed revalidation is a read, but nearby feed mutation paths retain verification checks", () => {
+  for (const user of [unverified, dormant]) {
+    assert.equal(gate({ method: "POST", pathname: "/api/feed/revalidate", user }), true);
+    const code = user.dormant_at ? "FORBIDDEN" : "EMAIL_VERIFICATION_REQUIRED";
+    for (const [method, pathname] of [
+      ["PATCH", "/api/feed/revalidate"], ["POST", "/api/feed/revalidate/publish"],
+      ["POST", "/api/feed/preferences/p_test"], ["POST", "/api/feed/impressions"],
+    ]) denied({ method, pathname, user }, code);
+  }
+});
+
 test("unverified source and derivative uploads retain their specific verification error", () => {
   for (const pathname of ["/api/media/assets", "/api/media/presign", "/api/media/assets/asset_123/variants"]) {
     denied({ method: "POST", pathname, user: unverified }, "MEDIA_EMAIL_VERIFICATION_REQUIRED");
@@ -58,7 +69,7 @@ test("unverified source and derivative uploads retain their specific verificatio
 });
 
 test("privacy-only profile patches remain available but cannot carry public or privileged fields", () => {
-  const body = { theme: "stage", profileAudience: "only_me", directMessagePolicy: "nobody", searchIndexingOptOut: true, ageBand: "18_plus" };
+  const body = { theme: "stage", profileAudience: "only_me", directMessagePolicy: "nobody", searchIndexingOptOut: true, concertMapVisible: false, ageBand: "18_plus" };
   for (const user of [unverified, dormant]) {
     const code = user.dormant_at ? "FORBIDDEN" : "EMAIL_VERIFICATION_REQUIRED";
     assert.equal(gate({ method: "PATCH", pathname: "/api/me", body, user }), true);

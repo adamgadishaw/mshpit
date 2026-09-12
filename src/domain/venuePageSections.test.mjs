@@ -62,7 +62,7 @@ test("venue photo previews open the matching item in the complete gallery", () =
 
 test("venue screen renders bounded previews instead of every show at once", () => {
   assert.doesNotThrow(() => parse(venueScreen, { sourceType: "module", plugins: ["jsx"] }));
-  assert.match(venueScreen, /<VenuePageSectionNav active=\{activeSection\} onChange=\{setActiveSection\} \/>/);
+  assert.match(venueScreen, /<VenuePageSectionNav active=\{sectionModel\.active\} onChange=\{setActiveSection\} \/>/);
   assert.match(venueScreen, /sectionModel\.showGuide/);
   assert.match(venueScreen, /<VenueVisitGuide/);
   assert.match(venueScreen, /venuePagePreview\(upcomingWindow\.rows, \{ condensed: sectionModel\.condensed, limit: 3 \}\)/);

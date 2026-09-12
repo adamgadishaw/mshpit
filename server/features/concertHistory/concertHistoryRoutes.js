@@ -30,12 +30,12 @@ function pageLimit(value, ApiError) {
 }
 
 export function concertHistoryRoutes({
-  database, ApiError, visibleProfileOrNull, blockedEitherWay, rateLimit,
+  database, ApiError, requireUser, visibleProfileOrNull, blockedEitherWay, rateLimit,
   now = () => Date.now(), venues = trustedCityVenues(),
   projectPhoto = (row, viewerId) => (viewerId === row.user_id || row.photos_public === 1)
     ? safeOwnedReadyMediaUrl(database, { ownerId: row.user_id, url: row.photo_candidate, kind: "image" }) : null,
 }) {
-  if (!database?.prepare || [ApiError, visibleProfileOrNull, blockedEitherWay, rateLimit, now].some((value) => typeof value !== "function")) {
+  if (!database?.prepare || [ApiError, requireUser, visibleProfileOrNull, blockedEitherWay, rateLimit, now].some((value) => typeof value !== "function")) {
     throw new TypeError("Concert history requires complete boundary dependencies");
   }
   const resolveLocation = createConcertHistoryLocationResolver(venues);
@@ -52,13 +52,15 @@ export function concertHistoryRoutes({
 
   return Object.freeze({
     "GET /api/users/:id/concert-history": (ctx) => {
+      ctx.setHeader?.("Cache-Control", "private, no-store");
+      const viewer = requireUser(ctx);
       const targetId = text(ctx.params?.id, 200);
-      const viewerId = ctx.user?.id || null;
+      const viewerId = viewer.id;
       // Identical profile audience and two-way block gates to profile posts.
       if (!targetId || (viewerId !== targetId && blockedEitherWay(viewerId, targetId))) {
         throw new ApiError(404, "This profile isn't available.", "NOT_FOUND");
       }
-      const target = visibleProfileOrNull(targetId, ctx.user);
+      const target = visibleProfileOrNull(targetId, viewer);
       if (!target) throw new ApiError(404, "This profile isn't available.", "NOT_FOUND");
       rateLimit(ctx, "concert-history", 120, TEN_MINUTES);
       const limit = pageLimit(ctx.query?.limit, ApiError);
@@ -72,7 +74,7 @@ export function concertHistoryRoutes({
       const today = new Date(now()).toISOString().slice(0, 10);
       const concerts = scanned.flatMap((row) => {
         const date = toIsoDate(row.date);
-        if (!date || date >= today || !row.artist.trim() || !row.venue.trim()) return [];
+        if (!date || date > today || !row.artist.trim() || !row.venue.trim()) return [];
         const rating = Number(row.overall);
         const location = mapVisible ? resolveLocation(row) : EMPTY_CONCERT_LOCATION;
         return [{
@@ -89,7 +91,6 @@ export function concertHistoryRoutes({
       const nextCursor = hasMore && last ? Buffer.from(JSON.stringify({
         v: 1, targetId, createdAt: last.created_at, id: last.id,
       })).toString("base64url") : null;
-      ctx.setHeader?.("Cache-Control", "no-store");
       return {
         concerts, nextCursor, hasMore, complete: !hasMore, mapVisible,
         coverage: {

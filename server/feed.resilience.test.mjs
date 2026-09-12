@@ -45,7 +45,7 @@ test("one corrupt post does not take down the feed for everyone", () => {
   good.run("p_bad", "u_feed", "Artist", "Venue", "City", "2026-01-02", 5, 5, 5, "bad row",
     "{broken", "[not-json", "{\"wrong\":\"type\"}", "null", "review", Date.now());
 
-  const result = routes["GET /api/feed"]({ query: { limit: 20 }, user: null });
+  const result = routes["GET /api/feed"]({ query: { limit: 20 }, user: q.userById.get("u_feed") });
   const posts = result.posts || result.items || [];
   assert.ok(posts.length >= 2, `expected both posts back, got ${posts.length}`);
 

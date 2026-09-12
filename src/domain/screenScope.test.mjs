@@ -82,7 +82,7 @@ test("the Store scopes viewer-derived caches and projects discovery at render ti
   const feedRefreshEnd = source.indexOf("// Canonical server snapshot", feedRefreshStart);
   assert.ok(feedRefreshStart >= 0 && feedRefreshEnd > feedRefreshStart);
   const feedRefresh = source.slice(feedRefreshStart, feedRefreshEnd);
-  assert.match(feedRefresh, /if \(!authReady\) return undefined;/, "feed startup must wait for the cookie identity handshake");
+  assert.match(feedRefresh, /if \(!authReady \|\| !session\?\.id\) return undefined;/, "feed startup must wait for a confirmed member account");
   assert.match(feedRefresh, /\}, \[authReady, session\?\.id\]\);/, "auth readiness must restart the feed exactly once in its confirmed scope");
   assert.doesNotMatch(feedRefresh, /setInterval|setTimeout|AppState|visibilitychange/, "feed freshness must remain deliberate rather than polling on focus");
   const sidebarStart = source.indexOf("// The server ranks real provider dates");

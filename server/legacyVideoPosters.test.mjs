@@ -318,7 +318,7 @@ test("an exact trusted release restores its verified owned clip without minting 
   assert.equal(db.prepare("SELECT status FROM legacy_video_posters WHERE post_id=?").get(entry.postId).status, "verified",
     "an idempotent release boot cannot demote a verified cover");
 
-  const feed = routes["GET /api/feed"]({ query: {}, ip: "legacy-poster-feed" });
+  const feed = routes["GET /api/feed"]({ user, query: {}, ip: "legacy-poster-feed" });
   const projected = feed.posts.find((post) => post.id === entry.postId);
   assert.deepEqual(projected.photos, [entry.sourceUrl],
     "the immutable release restores only its exact owned source slot");
@@ -420,7 +420,7 @@ test("author removal retires the derivative while leaving unrelated covers alone
     [second.sourceUrl, first.sourceUrl],
     "partial video enrichment follows canonical photo order without inventing image descriptors",
   );
-  const projected = routes["GET /api/feed"]({ query: {}, ip: "legacy-multi-photo-feed" }).posts
+  const projected = routes["GET /api/feed"]({ user, query: {}, ip: "legacy-multi-photo-feed" }).posts
     .find((post) => post.id === first.postId);
   assert.deepEqual(projected.photos, [second.sourceUrl, first.sourceUrl]);
   assert.deepEqual(projected.media, verifiedDescriptors);

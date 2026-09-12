@@ -30,19 +30,20 @@ export function normalizeArtistPageSection(value, { legacyMode = false } = {}) {
   return allowed.has(key) ? key : "overview";
 }
 
-export function artistPageSectionModel(value, { legacyMode = false } = {}) {
-  const active = normalizeArtistPageSection(value, { legacyMode });
+export function artistPageSectionModel(value, { legacyMode = false, signedIn = true } = {}) {
+  const requested = normalizeArtistPageSection(value, { legacyMode });
+  const active = !signedIn && requested === "community" ? "overview" : requested;
   const overview = active === "overview";
   return Object.freeze({
     active,
     condensed: overview,
     legacyMode,
     showLive: !legacyMode && (overview || active === "shows"),
-    showCommunity: overview || active === "community",
-    showMusic: !legacyMode && active === "about",
+    showCommunity: signedIn && (overview || active === "community"),
+    showMusic: signedIn && !legacyMode && active === "about",
     showAbout: active === "about" || (legacyMode && overview),
     loadFullArchive: !legacyMode && active === "shows",
-    loadDiscography: !legacyMode && active === "about",
+    loadDiscography: signedIn && !legacyMode && active === "about",
   });
 }
 

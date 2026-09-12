@@ -4182,7 +4182,7 @@ export const routes = {
     rateLimit: limit,
     requireVerifiedUser,
   }),
-  ...concertHistoryRoutes({ database: db, ApiError, visibleProfileOrNull, blockedEitherWay, rateLimit: limit, now }),
+  ...concertHistoryRoutes({ database: db, ApiError, requireUser, visibleProfileOrNull, blockedEitherWay, rateLimit: limit, now }),
   ...artistReviewRoutes({
     database: db,
     ApiError,
@@ -6100,10 +6100,12 @@ export const routes = {
 
   // ---- feed / posts ----
   "GET /api/feed": (ctx) => {
+    ctx.setHeader?.("Cache-Control", "private, no-store");
+    const user = requireUser(ctx);
     const { cursor, limit: lim } = pageRequest(ctx, 30, 100);
     const requestedOffset = Number(ctx.query?.offset);
     const off = !cursor && Number.isSafeInteger(requestedOffset) && requestedOffset > 0 ? Math.min(requestedOffset, 1_000_000) : 0;
-    const viewer = ctx.user?.id;
+    const viewer = user.id;
     const blockSql = viewer ? `AND NOT EXISTS (
       SELECT 1 FROM blocks b WHERE (b.blocker_id=? AND b.blocked_id=p.user_id) OR (b.blocker_id=p.user_id AND b.blocked_id=?)
     ) AND NOT EXISTS (SELECT 1 FROM account_mutes mute WHERE mute.muter_id=? AND mute.muted_id=p.user_id)` : "";
@@ -6115,7 +6117,7 @@ export const routes = {
     if (!cursor) args.push(off);
     // Moderators see which cards carry open reports right on the feed, so
     // flagged content is visible in context instead of only in the queue.
-    const staff = accountIsPublic(ctx.user) && (ctx.user.role === "admin" || ctx.user.role === "moderator");
+    const staff = accountIsPublic(user) && (user.role === "admin" || user.role === "moderator");
     const flagSql = staff ? `, (SELECT COUNT(*) FROM reports r WHERE r.target_type = 'post' AND r.target_id = p.id AND r.status = 'open') AS open_reports` : "";
     const found = db.prepare(`
       SELECT p.*, u.name AS u_name, u.handle AS u_handle, u.initials AS u_initials, u.avatar_uri AS u_avatar, u.avatar_color AS u_color,
@@ -6144,23 +6146,25 @@ export const routes = {
   // cards halfway through a scroll. The legacy chronological route above stays
   // available to old clients and as the new client's outage fallback.
   "GET /api/feed/for-you": (ctx) => {
+    ctx.setHeader?.("Cache-Control", "private, no-store");
+    const user = requireUser(ctx);
     limit(ctx, "for-you-feed", 180, 10 * 60 * 1000);
     const requested = Number(ctx.query?.limit);
     const pageSize = Number.isSafeInteger(requested) && requested > 0 ? Math.min(requested, 50) : 20;
     const result = recommendedFeedPage({
-      viewer: ctx.user || null,
+      viewer: user,
       cursor: ctx.query?.cursor || null,
       limit: pageSize,
       at: now(),
     });
-    const muted = mutedIdSet(ctx.user?.id);
+    const muted = mutedIdSet(user.id);
     const visibleRecommendedRows = result.rows.filter((row) => !muted.has(row.user_id));
     const projectedRows = attachPostImpressionStats(db, attachViewerLikes(
       db,
-      withTaggedPeople(withCommentPreviews(visibleRecommendedRows, ctx.user?.id), ctx.user?.id),
-      ctx.user?.id,
-    ), ctx.user?.id);
-    const projected = projectPostPage(projectedRows, ctx.user?.id).map((post) => ({
+      withTaggedPeople(withCommentPreviews(visibleRecommendedRows, user.id), user.id),
+      user.id,
+    ), user.id);
+    const projected = projectPostPage(projectedRows, user.id).map((post) => ({
       ...post,
       recommendation: result.recommendations.get(post.id),
     }));
@@ -6172,6 +6176,8 @@ export const routes = {
   // preferences are immediate safety state. Revalidate the bounded local cache
   // without reranking or resetting its cursor; the client removes tombstones.
   "POST /api/feed/revalidate": (ctx) => {
+    ctx.setHeader?.("Cache-Control", "private, no-store");
+    const user = requireUser(ctx);
     limit(ctx, "feed-revalidate", 120, 10 * 60 * 1000);
     const requested = Array.isArray(ctx.body?.postIds) ? ctx.body.postIds : [];
     const postIds = [...new Set(requested
@@ -6179,17 +6185,13 @@ export const routes = {
       .slice(0, 200))];
     if (!postIds.length) return { invalidPostIds: [] };
     const placeholders = postIds.map(() => "?").join(",");
-    const blockSql = ctx.user?.id ? `AND NOT EXISTS (SELECT 1 FROM blocks b WHERE
+    const blockSql = `AND NOT EXISTS (SELECT 1 FROM blocks b WHERE
       (b.blocker_id=? AND b.blocked_id=p.user_id) OR (b.blocker_id=p.user_id AND b.blocked_id=?))
-      AND NOT EXISTS (SELECT 1 FROM account_mutes mute WHERE mute.muter_id=? AND mute.muted_id=p.user_id)` : "";
-    const preferenceSql = ctx.user?.id
-      ? "AND NOT EXISTS (SELECT 1 FROM recommendation_preferences rp WHERE rp.user_id=? AND rp.post_id=p.id)"
-      : "";
-    const args = [...postIds, now()];
-    if (ctx.user?.id) args.push(ctx.user.id, ctx.user.id, ctx.user.id, ctx.user.id);
+      AND NOT EXISTS (SELECT 1 FROM account_mutes mute WHERE mute.muter_id=? AND mute.muted_id=p.user_id)`;
+    const preferenceSql = "AND NOT EXISTS (SELECT 1 FROM recommendation_preferences rp WHERE rp.user_id=? AND rp.post_id=p.id)";
+    const args = [...postIds, user.id, user.id, user.id, user.id];
     const live = new Set(db.prepare(`SELECT p.id FROM posts p JOIN users u ON u.id=p.user_id
-      WHERE p.id IN (${placeholders}) AND p.removed=0 AND u.is_banned=0
-        AND (u.suspended_until IS NULL OR u.suspended_until<=?)
+      WHERE p.id IN (${placeholders}) AND p.removed=0 AND ${activeAccountSql("u")}
         ${blockSql} ${preferenceSql}`).all(...args).map((row) => row.id));
     return { invalidPostIds: postIds.filter((id) => !live.has(id)) };
   },
@@ -6263,8 +6265,10 @@ export const routes = {
   // post projection (so likes/comments/artist all work) plus a `clips` array of
   // just the video URLs. Blocks respected; same (created_at,id) cursor as feed.
   "GET /api/clips": (ctx) => {
+    ctx.setHeader?.("Cache-Control", "private, no-store");
+    const user = requireUser(ctx);
     const { cursor, limit: lim } = pageRequest(ctx, 12, 30);
-    const viewer = ctx.user?.id;
+    const viewer = user.id;
     const blockSql = viewer ? `AND NOT EXISTS (
       SELECT 1 FROM blocks b WHERE (b.blocker_id=? AND b.blocked_id=p.user_id) OR (b.blocker_id=p.user_id AND b.blocked_id=?)
     )` : "";
@@ -6334,8 +6338,10 @@ export const routes = {
   },
 
   "GET /api/users/:id/posts": (ctx) => {
-    if (ctx.user?.id !== ctx.params.id && blockedEitherWay(ctx.user?.id, ctx.params.id)) throw new ApiError(404, "This profile isn't available.", "NOT_FOUND");
-    if (!visibleProfileOrNull(ctx.params.id, ctx.user)) throw new ApiError(404, "This profile isn't available.", "NOT_FOUND");
+    ctx.setHeader?.("Cache-Control", "private, no-store");
+    const viewer = requireUser(ctx);
+    if (viewer.id !== ctx.params.id && blockedEitherWay(viewer.id, ctx.params.id)) throw new ApiError(404, "This profile isn't available.", "NOT_FOUND");
+    if (!visibleProfileOrNull(ctx.params.id, viewer)) throw new ApiError(404, "This profile isn't available.", "NOT_FOUND");
     // Shipped clients called this endpoint without pagination and received the
     // newest 100 posts. Preserve that compatibility window; current clients
     // explicitly request 30 and page with the new cursor contract (capped 50).
@@ -6362,9 +6368,9 @@ export const routes = {
     return {
       posts: projectPostPage(attachPostImpressionStats(db, attachViewerLikes(
         db,
-        withTaggedPeople(withCommentPreviews(rows, ctx.user?.id), ctx.user?.id),
-        ctx.user?.id,
-      ), ctx.user?.id), ctx.user?.id),
+        withTaggedPeople(withCommentPreviews(rows, viewer.id), viewer.id),
+        viewer.id,
+      ), viewer.id), viewer.id),
       nextCursor,
     };
   },
@@ -9063,6 +9069,7 @@ export const routes = {
   ...artistLiveSummaryRoutes({ service: artistLiveSummaryService, rateLimit: limit, decodedPathParam,
     resolveArtist: resolveCatalogArtistReference }),
   "GET /api/artists/:key/profile": (ctx) => {
+    ctx.setHeader?.("Cache-Control", "private, no-store");
     const key = decodedPathParam(ctx, "key", { max: 200, label: "artist link" }).toLowerCase();
     const catalogArtist = resolveCatalogArtistReference(key);
     const profileKey = catalogArtist?.norm || key;
@@ -9096,7 +9103,9 @@ export const routes = {
     const canManageFeed = legacyProfile
       ? ctx.user?.role === "admin"
       : canManageArtistProfile(ctx.user, profileKey, p);
-    const posts = p?.removed || (!p?.feed_enabled && !canManageFeed) ? [] : db.prepare(`SELECT post.id,post.user_id,post.text,post.created_at
+    // Guest snapshots retain the public biography/artwork but never hydrate the
+    // artist's member-only update feed, even when publishing is enabled.
+    const posts = !viewer || p?.removed || (!p?.feed_enabled && !canManageFeed) ? [] : db.prepare(`SELECT post.id,post.user_id,post.text,post.created_at
       FROM artist_posts post JOIN users author ON author.id=post.user_id
       WHERE post.artist_key=? AND post.removed=0 AND ${activeAccountSql("author")}
         ${legacyProfile ? "AND author.role='admin'" : ""}

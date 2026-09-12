@@ -27,15 +27,23 @@ function MapControl({ label, icon, onPress, disabled = false }) {
 
 export default function ProfileConcertMap({ model, selectedVenueKey, onSelectVenue, onPreviewVenue, compact = false }) {
   const [width, setWidth] = useState(360), [zoom, setZoom] = useState(1), [clusterKey, setClusterKey] = useState(null);
+  const [cameraCenter, setCameraCenter] = useState(null);
   const frame = useMemo(() => concertHistoryFrame(model), [model]);
   const height = compact ? 228 : 272;
   const selected = model.venues.find((venue) => venue.key === selectedVenueKey);
-  const center = zoom > 1 ? selected?.coordinates : null;
+  // Hover/focus previews change the connected list, never the camera. Keeping
+  // camera position separate prevents pins jumping away underneath a pointer
+  // or keyboard focus while somebody explores an already-zoomed map.
+  const center = zoom > 1 ? cameraCenter : null;
   const box = useMemo(() => concertMapViewport(frame, width, height, zoom, center), [frame, width, height, zoom, center]);
   const clusters = useMemo(() => clusterConcertMapPins(model.venues, box, width, height), [model.venues, box, width, height]);
   const highlightedCodes = useMemo(() => model.countries.map((country) => country.code), [model.countries]);
   const activeCluster = clusters.find((cluster) => cluster.key === clusterKey && cluster.venues.length > 1);
-  useEffect(() => { setZoom(1); setClusterKey(null); }, [frame.name]);
+  useEffect(() => { setZoom(1); setClusterKey(null); setCameraCenter(null); }, [frame.name]);
+  const zoomIn = () => {
+    if (selected?.coordinates) setCameraCenter(selected.coordinates);
+    setZoom((value) => Math.min(8, value * 1.6));
+  };
   const preview = (cluster) => {
     setClusterKey(cluster.key);
     if (cluster.venues.length === 1) onPreviewVenue?.(cluster.venues[0].key);
@@ -46,8 +54,8 @@ export default function ProfileConcertMap({ model, selectedVenueKey, onSelectVen
         <View style={styles.caption}><Icon name="globe" size={15} color={colors.amber} /><Text style={styles.frameLabel}>{frame.name}</Text></View>
         <View style={styles.controls}>
           <MapControl label="Zoom out concert map" icon="minus" disabled={zoom <= 1} onPress={() => setZoom((value) => Math.max(1, value / 1.6))} />
-          <MapControl label="Zoom in concert map" icon="plus" disabled={zoom >= 8} onPress={() => setZoom((value) => Math.min(8, value * 1.6))} />
-          <MapControl label="Reset concert map view" icon="globe" onPress={() => { setZoom(1); setClusterKey(null); }} />
+          <MapControl label="Zoom in concert map" icon="plus" disabled={zoom >= 8} onPress={zoomIn} />
+          <MapControl label="Reset concert map view" icon="globe" onPress={() => { setZoom(1); setClusterKey(null); setCameraCenter(null); }} />
         </View>
       </View>
       <View style={[styles.canvas, { height }]} onLayout={(event) => { const next = event.nativeEvent.layout.width; if (next > 0) setWidth(next); }}>

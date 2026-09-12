@@ -96,7 +96,7 @@ function concert(account, suffix, createdAt) {
     .run(id, account.id, "Public Artist", venue.name, venue.key, venue.city, "2025-05-01", 4, "Existing public concert review", "review", createdAt);
   return id;
 }
-const history = (account, viewer = null, query = {}) => routes["GET /api/users/:id/concert-history"]({
+const history = (account, viewer = account, query = {}) => routes["GET /api/users/:id/concert-history"]({
   user: viewer, params: { id: account.id }, query, ip: "127.0.0.1", setHeader() {},
 });
 
@@ -104,14 +104,15 @@ test("actual history route removes map metadata immediately after opt-out, inclu
   const account = user(), visitor = user();
   concert(account, "first", 200);
   const nextId = concert(account, "second", 100);
-  const first = history(account, null, { limit: "1" });
+  const first = history(account, visitor, { limit: "1" });
   assert.equal(first.mapVisible, true);
   assert.equal(first.concerts[0].lat, venue.lat);
   assert.equal(first.concerts[0].countryCode, venue.countryCode);
   assert.ok(first.nextCursor);
   const stored = db.prepare("SELECT * FROM posts WHERE user_id=? ORDER BY id").all(account.id);
   patch(account, { concertMapVisible: false });
-  for (const viewer of [null, visitor, account]) {
+  assert.throws(() => history(account, null), { status: 401, code: "AUTH_REQUIRED" });
+  for (const viewer of [visitor, account]) {
     const response = history(account, viewer, { limit: "1", before: first.nextCursor });
     assert.equal(response.mapVisible, false);
     assert.equal(response.coverage.unmappedCount, null);
@@ -130,9 +131,10 @@ test("actual history route removes map metadata immediately after opt-out, inclu
 test("actual history endpoint follows profile audience for guests, members and the owner", () => {
   const account = user(), visitor = user();
   concert(account, "audience", 100);
-  assert.equal(history(account).concerts.length, 1);
+  assert.throws(() => history(account, null), { status: 401, code: "AUTH_REQUIRED" });
+  assert.equal(history(account, visitor).concerts.length, 1);
   db.prepare("UPDATE users SET profile_audience='members' WHERE id=?").run(account.id);
-  assert.throws(() => history(account), { status: 404, code: "NOT_FOUND" });
+  assert.throws(() => history(account, null), { status: 401, code: "AUTH_REQUIRED" });
   assert.equal(history(account, visitor).concerts.length, 1);
   db.prepare("UPDATE users SET profile_audience='only_me' WHERE id=?").run(account.id);
   assert.throws(() => history(account, visitor), { status: 404, code: "NOT_FOUND" });
@@ -150,7 +152,8 @@ test("actual history cursor never bypasses current blocks or restricted author v
   }
   for (const [column, value, reset] of [["is_banned", 1, 0], ["suspended_until", Date.now() + 60_000, null], ["dormant_at", Date.now(), null]]) {
     db.prepare(`UPDATE users SET ${column}=? WHERE id=?`).run(value, account.id);
-    for (const viewer of [null, visitor, account]) assert.throws(() => history(account, viewer, { before: nextCursor }), { status: 404, code: "NOT_FOUND" });
+    assert.throws(() => history(account, null, { before: nextCursor }), { status: 401, code: "AUTH_REQUIRED" });
+    for (const viewer of [visitor, account]) assert.throws(() => history(account, viewer, { before: nextCursor }), { status: 404, code: "NOT_FOUND" });
     db.prepare(`UPDATE users SET ${column}=? WHERE id=?`).run(reset, account.id);
   }
 });
@@ -158,8 +161,8 @@ test("actual history cursor never bypasses current blocks or restricted author v
 test("actual history cursors remain target-bound and public rows expose only the compact contract", () => {
   const account = user(), other = user();
   concert(account, "new", 200); concert(account, "old", 100); concert(other, "other", 100);
-  const response = history(account, null, { limit: "1" });
-  assert.throws(() => history(other, null, { before: response.nextCursor }), { status: 400 });
+  const response = history(account, other, { limit: "1" });
+  assert.throws(() => history(other, account, { before: response.nextCursor }), { status: 400 });
   assert.deepEqual(Object.keys(response.concerts[0]).sort(), ["id", "postId", "artist", "venue", "venueKey", "city", "date", "rating", "photo", "lat", "lng", "countryCode", "country"].sort());
   assert.equal(response.concerts[0].photo, null);
 });

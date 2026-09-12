@@ -195,3 +195,16 @@ test("nearby map pins expose every venue, use exact projection, and offer manual
   label(view, "Reset concert map view").props.onPress();
   assert.equal(f.render().nodes.find((node) => node.type === "Svg").props.viewBox, svgBefore);
 });
+
+test("hover previews cannot pan an already-zoomed map underneath its focused pin", () => {
+  const concerts = rows(2).map((row, index) => ({ ...row, lat: index ? 49.28 : 43.65, lng: index ? -123.12 : -79.38 }));
+  const history = model.concertHistoryModel(concerts);
+  const f = fixture({ component: "map", model: history, selectedVenueKey: history.venues[0].key });
+  label(f.render(), "Zoom in concert map").props.onPress();
+  const zoomed = f.render();
+  const box = zoomed.nodes.find((node) => node.type === "Svg").props.viewBox;
+  const previewed = f.render({ selectedVenueKey: history.venues[1].key });
+  assert.equal(previewed.nodes.find((node) => node.type === "Svg").props.viewBox, box);
+  label(previewed, "Zoom in concert map").props.onPress();
+  assert.notEqual(f.render().nodes.find((node) => node.type === "Svg").props.viewBox, box);
+});

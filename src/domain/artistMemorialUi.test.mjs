@@ -56,7 +56,7 @@ test("name-only artist archives resolve a canonical catalogue key before checkin
 test("artist and show screens fail closed until memorial status is authoritative", () => {
   assert.match(source, /const liveAvailable = memorialAvailability === "living"/);
   assert.match(source, /const profileServicesAvailable = memorialKnown && !legacyMode/);
-  assert.match(source, /artistPageSectionModel\(activeSection, \{ legacyMode: !profileServicesAvailable \}\)/);
+  assert.match(source, /artistPageSectionModel\(activeSection, \{ legacyMode: !profileServicesAvailable, signedIn: !!session \}\)/);
   assert.match(source, /useArtistOverview\(\{[\s\S]*?enabled: profileServicesAvailable/);
   assert.match(source, /sectionModel\.showLive && liveAvailable && \([\s\S]*?<ArtistUpcomingShows/);
   assert.match(source, /liveAvailable \? "CONCERT RATINGS" : "ARTIST STATUS"/);

@@ -8,6 +8,8 @@ The map is a separately loaded bundle. A map-loading failure leaves the list usa
 
 The profile replaces its old Past Shows summary with this section; Upcoming Shows and the original posts remain. `GET /api/users/:id/concert-history` reads compact past in-person review metadata, independently of the feed's 30-post page. It checks the same profile audience, account availability, and two-way blocks as profile posts. Every page is checked again and sent with `Cache-Control: no-store`.
 
+The You dashboard has a direct Concert history entry that opens this same section on the member's profile. It does not create another map or fetch a second history into the dashboard. Guest profiles show the public identity snapshot and a sign-in prompt instead of personal concert history.
+
 Pages scan at most 201 candidate rows using the existing author/creation-time index and return at most 200 concerts. The client automatically drains five pages, then offers explicit continuation with partial counts. Empty filtered pages still advance. No provider calls, full post bodies, photo bytes, or video hydration are needed for the map. A single thumbnail is included only if the existing media ownership/readiness and photo visibility checks allow it.
 
 Only exact stored venue identities or unique normalized venue-name-and-city matches supply pins. Unknown and ambiguous locations remain in the list. Future plans, online reviews, and old Going/Interested records do not become attended concerts. The owner's already-recorded private Went entries remain in their own list, unpinned; they are never added to another viewer's response. When a review and private attendance entry identify the same night, the review takes precedence.
@@ -35,6 +37,7 @@ On a local profile with at least six logged concerts, check a wide viewport and 
 - Tab through pins, zoom controls, rows, review buttons, and expansion. Focus is visible. Every action has a 44-pixel or larger target.
 - Exercise See all, Load more, and See less. A partial history is explicitly labelled; paging must not turn loaded counts into a claimed lifetime total.
 - One confirmed country frames its continent; concerts in two countries frame the world. Try manual zoom and reset, including a Pacific venue.
+- While zoomed, hover/focus previews change only the linked concert list. The map camera stays still until an explicit zoom or reset, keeping the pin under the pointer.
 - A concert without coordinates remains listed with Location not mapped. Explicit city precision is labelled approximate. No coordinate is inferred from a name.
 - Disable map visibility, simulate history load failure, and simulate review-open failure: list access and inline retry/error feedback remain available.
 - Compare light and dark themes for text contrast, card borders, focus, and selected rows.

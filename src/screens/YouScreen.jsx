@@ -36,7 +36,7 @@ function Reveal({ delay = 0, children, style }) {
 
 // The You tab is the private dashboard for memories, nearby activity, and
 // account tools. The public Profile screen owns live history, media, and posts.
-export default function YouScreen({ onLogin, onLogout, onManageProfile, onSettings, onAdmin, onRequestArtist, onOpenProfile, onOpenArtist, onOpen, onOpenPost, onActivity, onInbox, onCalendar, onOpenNearby, homeCity }) {
+export default function YouScreen({ onLogin, onLogout, onManageProfile, onSettings, onAdmin, onRequestArtist, onOpenProfile, onOpenConcertHistory, onOpenArtist, onOpen, onOpenPost, onActivity, onInbox, onCalendar, onOpenNearby, homeCity }) {
   const {
     session,
     logsByUser,
@@ -281,6 +281,17 @@ export default function YouScreen({ onLogin, onLogout, onManageProfile, onSettin
         </View>
       </Reveal>
 
+      {!!onOpenConcertHistory && (
+        <Pressable testID="you-concert-history" style={styles.historyLink} onPress={onOpenConcertHistory} accessibilityRole="button" accessibilityLabel="Open your concert history and map">
+          <View style={styles.historyLinkIcon}><Icon name="map" size={20} color={colors.amber} /></View>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={styles.historyLinkTitle}>Your concert history</Text>
+            <Text style={styles.historyLinkSub}>Explore your map and every logged night.</Text>
+          </View>
+          <Icon name="chevron-right" size={18} color={colors.textDim} />
+        </Pressable>
+      )}
+
       {/* ---- NEAR YOU: local venues + upcoming shows, back on the You tab ---- */}
       {session && onOpenNearby && (
         <Reveal delay={50}>
@@ -422,7 +433,7 @@ const styles = StyleSheet.create({
   memoryAction: { minHeight: 44, flexGrow: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingHorizontal: 10, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.amber, backgroundColor: colors.bgElev },
   memoryActionText: { color: colors.amber, fontSize: 11.5, fontWeight: "800" },
   actionStatus: { color: colors.textDim, fontSize: 11.5, marginTop: 8 },
-  historyLink: { minHeight: 68, flexDirection: "row", alignItems: "center", gap: 11, marginBottom: 10, padding: 11, borderRadius: radius.md, borderWidth: 1, borderColor: colors.amber, backgroundColor: colors.bgElev },
+  historyLink: { minHeight: 68, flexDirection: "row", alignItems: "center", gap: 11, marginTop: 16, padding: 11, borderRadius: radius.md, borderWidth: 1, borderColor: colors.amber, backgroundColor: colors.bgElev },
   historyLinkIcon: { width: 42, height: 42, borderRadius: 21, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
   historyLinkTitle: { color: colors.text, fontSize: 14, fontWeight: "800" },
   historyLinkSub: { color: colors.textDim, fontSize: 11.5, marginTop: 2 },

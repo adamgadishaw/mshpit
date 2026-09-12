@@ -65,8 +65,8 @@ test("stale player routes are sanitized on restore, push, and replace", async ()
   assert.match(app, /const sanitized = sanitizeDisabledMusicPlayerNavigationFrame\(prepared\);/);
   assert.match(app, /isMusicPlayerNavigationFrame\(prepared\)[\s\S]*?return null;/);
   assert.match(app, /const top = prepareAvailableNavigationFrame\(saved\[saved\.length - 1\]\);/);
-  assert.match(app, /const commitGo = \(candidate\) => \{\s*const frame = prepareAvailableNavigationFrame\(candidate\);\s*if \(!frame\) return;/);
-  assert.match(app, /const commitReplace = \(candidate\) => \{\s*const frame = prepareAvailableNavigationFrame\(candidate\);\s*if \(!frame\) return;/);
+  assert.match(app, /const commitGo = \(candidate\) => \{\s*const frame = navigationFrameForAccount\(prepareAvailableNavigationFrame\(candidate\), session\?\.id\);\s*if \(!frame\) return;/);
+  assert.match(app, /const commitReplace = \(candidate\) => \{\s*const frame = navigationFrameForAccount\(prepareAvailableNavigationFrame\(candidate\), session\?\.id\);\s*if \(!frame\) return;/);
   assert.match(app, /else if \(MUSIC_PLAYER_ENABLED && nav\.addToPlaylist\)/);
   assert.match(app, /else if \(MUSIC_PLAYER_ENABLED && nav\.listeningHistory\)/);
 });

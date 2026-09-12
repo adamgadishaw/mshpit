@@ -187,7 +187,9 @@ test("legacy artist APIs freeze ownership and media services but keep written co
   assert.equal(publicProfile.legacyProfile, true);
   assert.equal(publicProfile.profile.ownerId, null);
   assert.equal(publicProfile.profile.bio, "A staff-maintained historical note.");
-  assert.deepEqual(publicProfile.posts.map((post) => post.text), ["A staff-curated educational note."]);
+  assert.deepEqual(publicProfile.posts, [], "guest legacy profiles retain biography but omit the artist update feed");
+  const memberProfile = routes["GET /api/artists/:key/profile"]({ user: fan, params: { key: ARTIST_KEY } });
+  assert.deepEqual(memberProfile.posts.map((post) => post.text), ["A staff-curated educational note."]);
   const catalogResult = routes["GET /api/artists"]({
     ip: "legacy-fan-club-catalog-policy",
     query: { q: ARTIST_NAME, limit: 5 },

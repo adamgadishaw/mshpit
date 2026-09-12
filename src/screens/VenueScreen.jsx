@@ -20,12 +20,13 @@ import { refreshScope } from "../domain/scopedRefresh.mjs";
 import { normalizeVenuePhotoProviderIdentity } from "../domain/venuePhotos.mjs";
 import { venueGuideModel } from "../domain/venueGuide.mjs";
 import ExpandableText from "../components/ExpandableText";
+import AccountSnapshotPrompt from "../components/AccountSnapshotPrompt";
 
 const REVIEW_BATCH = 8;
 const HISTORY_BATCH = 12;
 const UPCOMING_BATCH = 6;
 
-export default function VenueScreen({ venueName, venueIdentity = null, onClose, onOpenShow, onOpenArtist, onReviewVenue, onOpenProfile, onOpenPhotos, onReport }) {
+export default function VenueScreen({ venueName, venueIdentity = null, onClose, onOpenShow, onOpenArtist, onReviewVenue, onOpenProfile, onOpenPhotos, onReport, onRequireAuth }) {
   const { width } = useWindowDimensions();
   const wide = width >= 760;
   const {
@@ -48,18 +49,21 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
   const [venueGuideError, setVenueGuideError] = useState("");
   const [sectionSelection, setSectionSelection] = useState(() => ({ venueName: venue.name, section: "overview" }));
   const activeSection = sectionSelection.venueName === venue.name ? sectionSelection.section : "overview";
-  const sectionModel = venuePageSectionModel(activeSection);
-  const setActiveSection = (section) => setSectionSelection({ venueName: venue.name, section });
+  const sectionModel = venuePageSectionModel(activeSection, { signedIn: !!session });
+  const setActiveSection = (section) => {
+    if (!session && section === "reviews") return onRequireAuth?.();
+    setSectionSelection({ venueName: venue.name, section });
+  };
 
   useEffect(() => {
     const controller = new AbortController();
     setVisibleReviewCount(REVIEW_BATCH);
     setVisibleHistoryCount(HISTORY_BATCH);
     setVisibleUpcomingCount(UPCOMING_BATCH);
-    void loadVenueReviews(venue.name, { signal: controller.signal });
+    if (session) void loadVenueReviews(venue.name, { signal: controller.signal });
     void loadVenuePhotos(venue.name, { ...photoIdentity, signal: controller.signal }).catch(() => { /* architecture: allow-empty-catch -- the venue page retains its licensed empty state and visible retry control */ });
     return () => controller.abort();
-  }, [venue.name, photoIdentity?.source, photoIdentity?.providerVenueId, venuePhotoPrivacyRevision]);
+  }, [venue.name, photoIdentity?.source, photoIdentity?.providerVenueId, venuePhotoPrivacyRevision, session?.id]);
 
   const fanRating = venueRating(venue.name);
   const fullGridPhotos = venueTopPhotos(venue.name, wide ? 24 : 18);
@@ -75,7 +79,7 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
     if (user) onOpenProfile?.(user.id);
   };
   const openPhotoWidget = photos.length
-    ? (photo, fallbackIndex = 0) => onOpenPhotos?.(photos, venuePhotoViewerIndex(photos, photo, fallbackIndex))
+    ? (photo, fallbackIndex = 0) => { if (!session) return onRequireAuth?.(); onOpenPhotos?.(photos, venuePhotoViewerIndex(photos, photo, fallbackIndex)); }
     : undefined;
   const venueRefreshScope = refreshScope(session?.id, "venue", venue.name);
   const openVenueGuideAction = (action) => {
@@ -87,7 +91,7 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
     scope: venueRefreshScope,
     task: async ({ signal }) => {
       const [reviewResult, refreshedPhotos] = await Promise.all([
-        loadVenueReviews(venue.name, { signal }),
+        session ? loadVenueReviews(venue.name, { signal }) : Promise.resolve(null),
         loadVenuePhotos(venue.name, { ...photoIdentity, force: true, signal }),
       ]);
       if (reviewResult?.ok === false && reviewResult?.error) throw reviewResult.error;
@@ -130,13 +134,17 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
         </View>
 
         <View style={styles.metrics}>
-          <Metric value={venue.avgRoom > 0 ? venue.avgRoom.toFixed(1) : "—"} label="ROOM SCORE" icon="volume" accent={venue.avgRoom > 0} />
-          <Metric value={fanRating > 0 ? fanRating.toFixed(1) : "—"} label="FAN SCORE" icon="star" />
-          <Metric value={venue.totalShows} label="SHOWS LOGGED" icon="music" />
+          {session ? <>
+            <Metric value={venue.avgRoom > 0 ? venue.avgRoom.toFixed(1) : "—"} label="ROOM SCORE" icon="volume" accent={venue.avgRoom > 0} />
+            <Metric value={fanRating > 0 ? fanRating.toFixed(1) : "—"} label="FAN SCORE" icon="star" />
+            <Metric value={venue.totalShows} label="SHOWS LOGGED" icon="music" />
+          </> : null}
           <Metric value={venue.upcoming.length} label="UPCOMING" icon="calendar" accent={venue.upcoming.length > 0} />
         </View>
 
-        <VenuePageSectionNav active={activeSection} onChange={setActiveSection} />
+        <VenuePageSectionNav active={sectionModel.active} onChange={setActiveSection} />
+
+        {!session ? <AccountSnapshotPrompt title="Venue reviews and concert photos" body="Sign in to read fan reviews, view concert photos, or review this venue. Shows, directions, and visitor information are open to browse." onRequireAuth={onRequireAuth} /> : null}
 
         {sectionModel.showGuide ? (
           <Section title="Plan your visit" kicker="VENUE GUIDE">
@@ -206,7 +214,7 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
           </View>
           <Pressable
             style={({ pressed, focused }) => [styles.reviewButton, pressed && styles.buttonPressed, focused && focusRing]}
-            onPress={() => onReviewVenue?.(venue.name)}
+            onPress={() => { if (!session) return onRequireAuth?.(); onReviewVenue?.(venue.name); }}
             accessibilityRole="button"
             accessibilityLabel={`Review ${venue.name}`}
           >

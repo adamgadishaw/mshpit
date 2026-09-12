@@ -60,6 +60,7 @@ function feedHarness() {
   const calls = [];
   const events = [];
   const refs = {
+    authReadyRef: { current: true },
     feedAccountIdRef: { current: "A" },
     accountMutationEpochRef: { current: 1 },
     feedRefreshRef: { current: { inFlight: false, sequence: 1 } },
@@ -194,4 +195,30 @@ test("feed tickets reject account roundtrips, cancellation and identity changes"
   assert.equal(feedReadIsCurrent(read, current, { error: { serverCode: "IDENTITY_CHANGED" } }), false);
   assert.equal(feedReadIsCurrent(read, current, { error: { name: "AbortError" } }), false);
   assert.equal(feedReadIsCurrent(read, current, { signal: { aborted: true } }), false);
+});
+
+test("guest and unconfirmed feed reads stop before transport or pagination state changes", async () => {
+  for (const guest of [true, false]) {
+    const h = feedHarness();
+    if (guest) h.refs.feedAccountIdRef.current = null;
+    else h.refs.authReadyRef.current = false;
+    assert.equal(await h.render().hydrateFeed(), null);
+    assert.equal(await h.render().loadMoreFeed(), false);
+    assert.deepEqual(h.calls, []);
+    assert.equal(h.state.loading, false);
+  }
+});
+
+test("authorization failures never retry against an alternate feed endpoint", async () => {
+  for (const action of ["hydrateFeed", "loadMoreFeed"]) {
+    for (const status of [401, 403]) {
+      const h = feedHarness();
+      const pending = h.render()[action]();
+      assert.equal(h.calls[0].options.expectedAccountId, "A");
+      h.calls[0].reject(Object.assign(new Error("Not authorized"), { status }));
+      assert.equal(await pending, false);
+      assert.equal(h.calls.length, 1);
+      assert.equal(h.state.loading, false);
+    }
+  }
 });

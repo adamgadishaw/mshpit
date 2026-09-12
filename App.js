@@ -126,6 +126,7 @@ import { verifiedMutationDecision } from "./src/domain/emailVerificationUx.mjs";
 import { needsSignupOnboarding } from "./src/domain/signupOnboarding.mjs";
 import { replaceNavigationFrame } from "./src/domain/navigationStack.mjs";
 import { restoredMainTab } from "./src/domain/startupCacheState.mjs";
+import { memberTabRequiresAccount, memberFrameRequiresAccount, navigationFrameForAccount, visibleMainTab } from "./src/domain/memberAccess.mjs";
 import { desktopRightRailLayout } from "./src/domain/desktopRailLayout.mjs";
 import { filterDiscoverSceneRows } from "./src/domain/discoverScene.mjs";
 import { calendarFocusForPost } from "./src/domain/calendarShows.mjs";
@@ -226,6 +227,7 @@ function Root() {
 
   // Restore the last tab on reload so a refresh doesn't dump you back on the feed.
   const [tab, setTab] = useState(() => restoredMainTab(web ? load("pit.tab", "feed") : "feed"));
+  const activeTab = visibleMainTab(tab, session?.id);
   // Navigation is a STACK of frames. Each frame is one overlay screen, e.g.
   // { artistName } or { profileId }; the top frame is what's showing. An empty
   // base frame ({}) means "just the tab screens." Opening a screen PUSHES a
@@ -264,6 +266,7 @@ function Root() {
   // lets browser and Android Back consult the latest form state without forcing
   // the entire shell to rerender on every keystroke.
   const composerCloseGuardRef = useRef(null);
+  const authNavigationAbortRef = useRef(null);
   const bypassNextPopRef = useRef(null);
   const [pendingComposerPicker, setPendingComposerPicker] = useState(null);
 
@@ -502,7 +505,7 @@ function Root() {
     demoEnabled: ENABLE_DEMO_DATA,
     readPersisted: load,
   }));
-  const analyticsScreen = analyticsScreenKey({ landing, tab, nav });
+  const analyticsScreen = analyticsScreenKey({ landing, tab: activeTab, nav });
   // Configure before React evaluates the active child screen. This preserves
   // the true SPA surface even when its public URL intentionally remains root.
   configureClientCrashSurface(analyticsScreen);
@@ -529,13 +532,15 @@ function Root() {
   // so the hardware/browser Back button pops the same stack the in-app back
   // buttons do (both funnel through popstate below).
   const runAfterComposerClose = (action, cancel = () => {}) => {
+    const proceed = () => { authNavigationAbortRef.current?.(); action(); };
     const guard = composerCloseGuardRef.current;
-    if (guard) { guard({ proceed: action, cancel }); return; }
-    action();
+    if (guard) { guard({ proceed, cancel }); return; }
+    proceed();
   };
   const commitGo = (candidate) => {
-    const frame = prepareAvailableNavigationFrame(candidate);
+    const frame = navigationFrameForAccount(prepareAvailableNavigationFrame(candidate), session?.id);
     if (!frame) return;
+    if (frame.auth && stackRef.current[stackRef.current.length - 1]?.auth) return;
     const next = [...stackRef.current, frame];
     stackRef.current = next;
     setStack(next);
@@ -555,7 +560,7 @@ function Root() {
   // Swap the top screen without growing the stack — for lateral moves where the
   // previous screen shouldn't come back (menu → target, signup → pick-artists).
   const commitReplace = (candidate) => {
-    const frame = prepareAvailableNavigationFrame(candidate);
+    const frame = navigationFrameForAccount(prepareAvailableNavigationFrame(candidate), session?.id);
     if (!frame) return;
     const previous = stackRef.current;
     const next = replaceNavigationFrame(previous, frame);
@@ -614,7 +619,10 @@ function Root() {
       ? { artistName: target.artistName }
       : { profileId: target.userId || id };
   };
-  const popStack = () => setStack((s) => (s.length > 1 ? s.slice(0, -1) : s));
+  const popStack = () => {
+    authNavigationAbortRef.current?.();
+    setStack((s) => (s.length > 1 ? s.slice(0, -1) : s));
+  };
   const requestComposerPop = (onCancel = () => {}) => {
     runAfterComposerClose(popStack, onCancel);
   };
@@ -644,6 +652,7 @@ function Root() {
   };
   const clear = () => runAfterComposerClose(commitClear);
   const switchTab = (key) => runAfterComposerClose(() => {
+    if (!session && memberTabRequiresAccount(key)) { openSignIn(); return; }
     // Discover is a secondary, comparatively rich surface. Keep it out of the
     // first-load bundle, but start its guarded chunk request in the same user
     // gesture that selects the tab so the suspense state is as short as the
@@ -1165,7 +1174,7 @@ function Root() {
   if (nav.photos) overlay = <PhotoViewer photos={nav.photos.images} index={nav.photos.index} postId={nav.photos.postId} returnFocusRef={mediaViewerOpenerRef} session={session} mediaReactions={mediaReactions} loadMediaReactions={loadMediaReactions} toggleMediaReaction={toggleMediaReaction} track={track} onReport={openReport} onClose={back} onRememberIndex={rememberPhotoIndex} onRequireAuth={openSignIn} />;
   else if (MUSIC_PLAYER_ENABLED && nav.addToPlaylist) overlay = <PlaylistPickerScreen track={nav.addToPlaylist} onClose={back} />;
   else if (nav.followList) overlay = <FollowListScreen userId={nav.followList.userId} mode={nav.followList.mode} onClose={back} onOpenProfile={openProfile} />;
-  else if (nav.auth) overlay = <AuthScreen initialMode={nav.authMode} onModeChange={(mode) => { const frame = updatedAuthFrame(stackRef.current[stackRef.current.length - 1], mode); if (frame) commitReplace(frame); }} onDone={back} onCancel={back} onOpenCity={(city) => replace({ cityGuide: city })} />;
+  else if (nav.auth) overlay = <AuthScreen navigationAbortRef={authNavigationAbortRef} initialMode={nav.authMode} onModeChange={(mode) => { const frame = updatedAuthFrame(stackRef.current[stackRef.current.length - 1], mode); if (frame) commitReplace(frame); }} onDone={back} onCancel={back} onOpenCity={(city) => replace({ cityGuide: city })} />;
   else if (nav.signupSetup && session) overlay = <SignupOnboardingScreen key={session.id} session={session} onComplete={(options) => finishSignupOnboarding(options)} onClose={back} closeGuardRef={composerCloseGuardRef} />;
   else if (nav.welcomeGuide && session) overlay = <WelcomeScreen onClose={back} onOpenFanClubs={() => replace({ fanClubs: true })} onOpenNearby={() => replace({ nearby: true, nearbyTab: "shows" })} onOpenArtists={() => replace({ pickArtists: true })} onReview={() => requireVerifiedMutation("review", () => replace({ logging: true }))} />;
   else if (nav.pickArtists) overlay = <PickArtistsScreen onDone={clear} onSkip={clear} onRequireVerification={() => setVerificationPrompt("artistPicks")} />;
@@ -1180,7 +1189,7 @@ function Root() {
   else if (nav.notifications) overlay = <NotificationsScreen onClose={back} onOpenProfile={openProfile} onOpenThread={openThread} onOpen={openShow} onOpenPost={openPost} />;
   else if (nav.calendar) overlay = <CalendarScreen initialDate={nav.calendarDate} initialView={nav.calendarView} onClose={back} onOpen={openShow} onOpenArtist={openArtist} />;
   else if (ENABLE_CLIPS && nav.clips) overlay = <ClipsScreen onClose={back} onOpenPost={openPost} onOpenProfile={openProfile} onOpenArtist={openArtist} onRequireAuth={openSignIn} />;
-  else if (nav.profileId) overlay = <ProfileScreen userId={nav.profileId} onClose={back} onOpenShow={openShow} onOpenPost={openPost} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenArtistArchive={openArtistArchive} onOpenVenue={openVenue} onManageProfile={openProfileManagement} onPreview={musicPreviewAction} onMessage={openThread} onReport={openReport} onEditPost={openPostEditor} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onRemoveMyPostTag={removePostTag} onOpenFollowList={openFollowList} onOpenBadges={openBadges} onRequireAuth={openSignIn} />;
+  else if (nav.profileId) overlay = <ProfileScreen userId={nav.profileId} initialSection={nav.profileSection} onClose={back} onOpenShow={openShow} onOpenPost={openPost} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenArtistArchive={openArtistArchive} onOpenVenue={openVenue} onManageProfile={openProfileManagement} onPreview={musicPreviewAction} onMessage={openThread} onReport={openReport} onEditPost={openPostEditor} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onRemoveMyPostTag={removePostTag} onOpenFollowList={openFollowList} onOpenBadges={openBadges} onRequireAuth={openSignIn} />;
   else if (nav.fanClub) overlay = <FanClubScreen artist={nav.fanClub} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} onReport={openReport} onRequireAuth={openSignIn} />;
   else if (nav.artistHub) overlay = <ArtistHubScreen onClose={back} onPreview={(name) => name && go({ artistPreview: name })} onEditPage={(name) => name && requireVerifiedMutation("artist", () => go({ editArtist: name }))} onEditAccount={() => requireVerifiedMutation("profile", () => go({ editProfile: true }))} onTourDates={() => requireVerifiedMutation("artist", () => go({ bulk: true }))} onCampaignPost={() => requireVerifiedMutation("artist", () => go({ logging: true, postMode: "campaign" }))} onPlay={musicPlayerAction} />;
   else if (nav.artistGallery) overlay = <ArtistGalleryScreen artistName={nav.artistGallery.name} artistKey={nav.artistGallery.artistKey} legacyMode={nav.artistGallery.legacyMode === true} onClose={back} onOpenPhotos={openPhotos} />;
@@ -1189,7 +1198,7 @@ function Root() {
   else if (nav.artistArchive) overlay = <ArtistArchiveScreen artistName={nav.artistArchive.name} artistKey={nav.artistArchive.artistKey} onClose={back} onOpenShow={openShow} onOpenTour={(tour, resolvedArtistKey) => openArtistTour(nav.artistArchive.name, resolvedArtistKey || nav.artistArchive.artistKey, tour)} onOpenPhotos={openPhotos} onOpenProfile={openProfile} />;
   else if (nav.artistTour) overlay = <TourArchiveScreen artistName={nav.artistTour.name} artistKey={nav.artistTour.artistKey} tourKey={nav.artistTour.tourKey} tourName={nav.artistTour.tourName} onClose={back} onOpenShow={openShow} onOpenPost={openPost} onOpenPhotos={openPhotos} onOpenProfile={openProfile} />;
   else if (nav.artistName) overlay = <ArtistScreen artistName={nav.artistName} onClose={back} onOpenPost={openPost} onOpenShow={openShow} onOpenArchive={openArtistArchive} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onShareMemory={(name, artistKey, options = {}) => requireVerifiedMutation("post", () => go({ logging: true, postMode: "memory", legacyArtistProfile: options.legacyProfile === true, prefill: { artist: name, artistKey } }))} onOpenPhotos={openPhotos} onOpenGallery={openArtistGallery} onOpenProfile={openProfile} onManageArtistProfile={() => go({ artistHub: true })} onEditArtistProfile={(name) => name && requireVerifiedMutation("artist", () => go({ editArtist: name }))} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} onReport={openReport} onRequireAuth={openSignIn} />;
-  else if (nav.venueName) overlay = <VenueScreen venueName={nav.venueName} venueIdentity={nav.venue || null} onClose={back} onOpenShow={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onReviewVenue={openVenueReview} onOpenProfile={openProfile} onOpenPhotos={openPhotos} onReport={openReport} />;
+  else if (nav.venueName) overlay = <VenueScreen venueName={nav.venueName} venueIdentity={nav.venue || null} onClose={back} onOpenShow={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onReviewVenue={openVenueReview} onOpenProfile={openProfile} onOpenPhotos={openPhotos} onReport={openReport} onRequireAuth={openSignIn} />;
   else if (nav.nearby) overlay = <NearbyScreen onClose={back} onOpenVenue={openVenue} onOpenArtist={openArtist} initialTab={nav.nearbyTab} />;
   else if (nav.cityGuide) overlay = <CityScreen city={nav.cityGuide} accountId={session?.id || null} onClose={back} onOpenCity={openCity} onOpenVenue={openVenue} onOpenArtist={openArtist} onOpenShow={openShow} onOpenPhotos={openPhotos} />;
   else if (nav.venues) overlay = <VenuesScreen initialRegion={nav.discoverRegion} onClose={back} onOpenVenue={openVenue} />;
@@ -1231,6 +1240,12 @@ function Root() {
     />
   );
 
+  // Stored overlays are only navigation hints, never proof of authentication.
+  // Replacing the element before reconciliation also prevents its load effects.
+  if (!session && memberFrameRequiresAccount(nav)) {
+    overlay = <AuthScreen navigationAbortRef={authNavigationAbortRef} onModeChange={(mode) => commitReplace({ auth: true, authMode: mode })} onDone={back} onCancel={back} />;
+  }
+
   const hydratedPublicLinks = publicNavigationLinks(nav, { resolveUser: userById });
   const showMobilePublicTrail = shouldShowMobilePublicTrail(nav);
   const hydratedDirectoryArtists = nav.directory === "artists"
@@ -1270,7 +1285,7 @@ function Root() {
 
   const tabScreens = (
             <View style={styles.screen}>
-              {tab === "feed" && (
+              {activeTab === "feed" && !!session && (
                 <FeedScreen
                   onRequireAuth={openSignIn}
                   feed={feed}
@@ -1340,9 +1355,9 @@ function Root() {
                   onRemoveMyPostTag={removePostTag}
                 />
               )}
-              {tab === "search" && <SearchScreen onOpen={openShow} onOpenArtist={openArtist} onOpenCity={openCity} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenProfile={openProfile} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} />}
-              {tab === "discover" && <DiscoverScreen initialProgramme={publicDirectoryProgramme(nav)} onOpenTopRated={(discoverRegion) => go({ topRated: true, discoverRegion })} onOpenEvents={(discoverRegion) => openPublicDirectory("events", { region: discoverRegion })} onOpen={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenNearby={() => go({ nearby: true })} onOpenFanClubs={() => go({ fanClubs: true })} onOpenVenues={(discoverRegion) => go({ venues: true, discoverRegion })} onOpenLounge={(lounge) => go({ lounge })} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} onOpenProfile={openProfile} />}
-              {tab === "you" && (
+              {activeTab === "search" && <SearchScreen onOpen={openShow} onOpenArtist={openArtist} onOpenCity={openCity} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenProfile={openProfile} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} />}
+              {activeTab === "discover" && <DiscoverScreen initialProgramme={publicDirectoryProgramme(nav)} onOpenTopRated={(discoverRegion) => go({ topRated: true, discoverRegion })} onOpenEvents={(discoverRegion) => openPublicDirectory("events", { region: discoverRegion })} onOpen={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenNearby={() => go({ nearby: true })} onOpenFanClubs={() => go({ fanClubs: true })} onOpenVenues={(discoverRegion) => go({ venues: true, discoverRegion })} onOpenLounge={(lounge) => go({ lounge })} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} onOpenProfile={openProfile} />}
+              {activeTab === "you" && !!session && (
                 <YouScreen
                   onLogin={() => go({ auth: true })}
                   onLogout={signOut}
@@ -1353,6 +1368,7 @@ function Root() {
                   onOpenProfile={openProfile}
                   onOpenArtist={openArtist}
                   onOpen={openShow}
+                  onOpenConcertHistory={() => session && go({ profileId: session.id, profileSection: "concert-history" })}
                   onOpenPost={openPost}
                   onActivity={openNotifications}
                   onInbox={openInbox}
@@ -1372,7 +1388,7 @@ function Root() {
   const desktop = (
     <View style={styles.deskOuter}>
       <DesktopTopNav
-        tab={tab}
+        tab={activeTab}
         setTab={switchTab}
         session={session}
         unread={session ? inboxUnread() : 0}
@@ -1527,7 +1543,7 @@ function Root() {
                     <>
                       <Suspense fallback={<ScreenLoading />}>{tabScreens}</Suspense>
                       <View style={styles.tabbar}>
-                        {LEFT.map((t) => <TabButton key={t.key} tab={t} active={tab} onPress={switchTab} />)}
+                        {LEFT.map((t) => <TabButton key={t.key} tab={t} active={activeTab} onPress={switchTab} />)}
                         <View style={styles.fabCol}>
                           <Pressable
                             style={styles.fab}
@@ -1541,7 +1557,7 @@ function Root() {
                           </Pressable>
                           <Text style={styles.fabLabel}>Post</Text>
                         </View>
-                        {RIGHT.map((t) => <TabButton key={t.key} tab={t} active={tab} onPress={switchTab} />)}
+                        {RIGHT.map((t) => <TabButton key={t.key} tab={t} active={activeTab} onPress={switchTab} />)}
                       </View>
                     </>
                   )}

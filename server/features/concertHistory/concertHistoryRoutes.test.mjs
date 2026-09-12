@@ -27,6 +27,10 @@ function fixture(t, options = {}) {
   const headers = {};
   const wrapped = { prepare(sql) { queried.push(sql); return database.prepare(sql); } };
   const route = concertHistoryRoutes({ database: wrapped, ApiError,
+    requireUser(ctx) {
+      if (!ctx.user) throw new ApiError(401, "Log in first.", "AUTH_REQUIRED");
+      return ctx.assertCurrentSession?.() || ctx.user;
+    },
     visibleProfileOrNull(id, viewer) {
       const user = database.prepare("SELECT * FROM users WHERE id=?").get(id);
       return profileAudienceAllows(user, viewer) ? user : null;
@@ -37,7 +41,7 @@ function fixture(t, options = {}) {
     },
     rateLimit() {}, now: () => NOW, venues: VENUES, ...options,
   })["GET /api/users/:id/concert-history"];
-  const read = ({ user = null, query = {}, target = "author" } = {}) => route({ user, query, params: { id: target }, setHeader(key, value) { headers[key] = value; } });
+  const read = ({ user = { id: "reader" }, query = {}, target = "author" } = {}) => route({ user, query, params: { id: target }, setHeader(key, value) { headers[key] = value; } });
   const add = (id, patch = {}) => {
     const post = { id, user_id: "author", created_at: 10, artist: "A Band", venue: "History", venue_key: "history",
       city: "Toronto", date: "2025-08-01", overall: 4, ...patch };
@@ -47,7 +51,7 @@ function fixture(t, options = {}) {
   return { database, add, read, queried, headers };
 }
 
-test("only past physical reviews qualify; plans, statuses, online, invalid dates and removed posts do not", (t) => {
+test("physical reviews through today qualify; future plans, statuses, online, invalid dates and removed posts do not", (t) => {
   const f = fixture(t);
   f.add("past");
   f.add("legacy-date", { date: "2024 · 06 · 21" });
@@ -60,13 +64,13 @@ test("only past physical reviews qualify; plans, statuses, online, invalid dates
   f.add("removed", { removed: 1 });
   f.add("missing-venue", { venue: " " });
   const result = f.read();
-  assert.deepEqual(result.concerts.map(({ id }) => id).sort(), ["legacy-date", "past"]);
+  assert.deepEqual(result.concerts.map(({ id }) => id).sort(), ["legacy-date", "past", "today"]);
   assert.equal(result.concerts[0].lat, 43.664);
   assert.equal(result.complete, true);
   assert.equal(result.hasMore, false);
   assert.equal(result.nextCursor, null);
   assert.deepEqual(result.coverage, { source: "visible_reviews", includesPrivateAttendance: false, unmappedCount: 0 });
-  assert.equal(f.headers["Cache-Control"], "no-store");
+  assert.equal(f.headers["Cache-Control"], "private, no-store");
 });
 
 test("cursor pages are bounded, deterministic at timestamp ties, and do not reread newly inserted head rows", (t) => {
@@ -105,7 +109,7 @@ test("profile audience, restrictions and both block directions are checked befor
   const first = f.read({ query: { limit: 1 } });
   const denied = (options) => assert.throws(() => f.read(options), { status: 404, code: "NOT_FOUND" });
   f.database.prepare("UPDATE users SET profile_audience='members' WHERE id='author'").run();
-  denied({ query: { before: first.nextCursor } });
+  assert.throws(() => f.read({ user: null, query: { before: first.nextCursor } }), { status: 401, code: "AUTH_REQUIRED" });
   assert.equal(f.read({ user: { id: "reader" } }).concerts.length, 2);
   f.database.prepare("UPDATE users SET profile_audience='only_me' WHERE id='author'").run();
   denied({ user: { id: "reader" } });
@@ -123,13 +127,14 @@ test("profile audience, restrictions and both block directions are checked befor
   denied({ target: "missing" });
 });
 
-test("map opt-out strips location and derived map coverage for guest, member and owner without losing list rows", (t) => {
+test("map opt-out strips location and derived map coverage for member and owner without losing list rows", (t) => {
   const f = fixture(t);
   f.add("known"); f.add("unknown", { venue_key: "unknown" });
   const visible = f.read();
   assert.equal(visible.coverage.unmappedCount, 1);
   f.database.prepare("UPDATE users SET extras=? WHERE id='author'").run(JSON.stringify({ concertMapVisible: false }));
-  for (const user of [null, { id: "reader" }, { id: "author" }]) {
+  assert.throws(() => f.read({ user: null }), { status: 401, code: "AUTH_REQUIRED" });
+  for (const user of [{ id: "reader" }, { id: "author" }]) {
     const result = f.read({ user });
     assert.equal(result.mapVisible, false);
     assert.equal(result.coverage.unmappedCount, null);
@@ -175,14 +180,14 @@ test("thumbnail uses only the author's verified public image derivative and hono
   f.add("raw-source", { photos_public: 1, photos: JSON.stringify(["https://media.example/private-source"]) });
   f.add("foreign-image", { photos_public: 1, photos: JSON.stringify(["https://media.example/other.jpg"]) });
   const photos = (user) => Object.fromEntries(f.read({ user }).concerts.map(({ id, photo }) => [id, photo]));
-  assert.deepEqual(photos(null), { "raw-source": null, "public-image": "https://media.example/safe.jpg", "private-image": null, "foreign-image": null });
+  assert.deepEqual(photos({ id: "reader" }), { "raw-source": null, "public-image": "https://media.example/safe.jpg", "private-image": null, "foreign-image": null });
   assert.equal(photos({ id: "author" })["private-image"], "https://media.example/safe.jpg");
   for (const update of ["UPDATE media_objects SET status='deleted' WHERE object_key='render-key'",
     "UPDATE media_objects SET status='associated',storage_scope='private' WHERE object_key='render-key'",
     "UPDATE media_objects SET storage_scope='public' WHERE object_key='render-key'; UPDATE media_variants SET verification_origin='untrusted'",
     "UPDATE media_variants SET verification_origin='private_derivative_v1'; UPDATE media_assets SET owner_id='reader'"]) {
     f.database.exec(update);
-    assert.equal(photos(null)["public-image"], null);
+    assert.equal(photos({ id: "reader" })["public-image"], null);
   }
 });
 

@@ -139,7 +139,7 @@ test("a second account's verification and cancellation cannot change or delete O
   assert.equal(getSession(ownerSession.token).user_id, owner.id);
 });
 
-test("every registered write route is verification-gated unless it is an explicit account-rights exception", () => {
+test("every registered write route is verification-gated unless it is an explicit account-rights or read-only exception", () => {
   const rights = new Set([
     "POST /api/signup", "POST /api/login", "POST /api/logout", "POST /api/forgot", "POST /api/reset",
     "POST /api/verify-email", "POST /api/verify-email/resend", "POST /api/signup/cancel",
@@ -150,17 +150,24 @@ test("every registered write route is verification-gated unless it is an explici
     "DELETE /api/media/assets/:id",
   ]);
   const user = { id: "route-coverage-only", email_verified_at: 0, role: "fan" };
+  const readOnly = new Set(["POST /api/feed/revalidate"]);
   let checked = 0;
   for (const route of Object.keys(routes)) {
     const [method, pathname] = route.split(" ");
     if (["GET", "HEAD", "OPTIONS"].includes(method)) continue;
     checked++;
     const request = { method, pathname, user, body: { bio: "This public edit must be gated" } };
-    if (rights.has(route)) assert.equal(assertAccountMutationAccess(request), true, route);
+    if (rights.has(route) || readOnly.has(route)) assert.equal(assertAccountMutationAccess(request), true, route);
     else assert.throws(() => assertAccountMutationAccess(request),
       (error) => error.status === 403 && ["EMAIL_VERIFICATION_REQUIRED", "MEDIA_EMAIL_VERIFICATION_REQUIRED"].includes(error.code), route);
   }
   assert.ok(checked > 75, "exercise the live route registry, including future writers");
+  for (const [method, pathname] of [["PUT", "/api/feed/revalidate"], ["PATCH", "/api/feed/revalidate"],
+    ["DELETE", "/api/feed/revalidate"], ["POST", "/api/feed/revalidate/publish"]]) {
+    assert.throws(() => assertAccountMutationAccess({ method, pathname, user }), {
+      status: 403, code: "EMAIL_VERIFICATION_REQUIRED",
+    });
+  }
 });
 
 test("verification gates real bio and DM handlers before persistence but permits a verified bio edit", () => {

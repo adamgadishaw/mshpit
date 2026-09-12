@@ -4,6 +4,7 @@ import test from "node:test";
 import { runInNewContext } from "node:vm";
 import { parse } from "@babel/parser";
 import { replaceNavigationFrame } from "./navigationStack.mjs";
+import { navigationFrameForAccount } from "./memberAccess.mjs";
 
 const source = readFileSync(new URL("../../App.js", import.meta.url), "utf8");
 const syntax = parse(source, { sourceType: "module", plugins: ["jsx"] });
@@ -28,7 +29,7 @@ const snapshot = (value) => JSON.parse(JSON.stringify(value));
 // Execute the actual App callbacks, not a copy of their stack/history policy.
 // State writes queue until flush(), like a React render boundary. History Back
 // invokes App's real popstate callback, including the composer close guard.
-function appNavigation(initialStack = [{}], { web = true, prepare = (frame) => frame } = {}) {
+function appNavigation(initialStack = [{}], { web = true, prepare = (frame) => frame, session = { id: "navigation-fixture" } } = {}) {
   let state = initialStack;
   const queued = [];
   const calls = [];
@@ -54,10 +55,11 @@ function appNavigation(initialStack = [{}], { web = true, prepare = (frame) => f
   };
   const guardRef = { current: null };
   functions = runInNewContext(actualFunctions, {
-    web, stackRef, replaceNavigationFrame, prepareAvailableNavigationFrame: prepare,
+    web, stackRef, replaceNavigationFrame, prepareAvailableNavigationFrame: prepare, navigationFrameForAccount, session,
     pathForFrame: (frame) => frame.path || null,
     setStack: (update) => queued.push(update), window: { history },
     composerCloseGuardRef: guardRef, bypassNextPopRef: { current: null },
+    authNavigationAbortRef: { current: null },
     sessionRef: { current: { id: "navigation-fixture" } }, setLanding: () => {},
   });
   return {
@@ -86,6 +88,19 @@ test("App root replacement pushes browser history and its real Back reaches tabs
   assert.deepEqual(app.state, [{}]);
   assert.equal(app.cursor, 0);
   assert.deepEqual(app.calls.map((call) => call.method), ["pushState", "back"]);
+});
+
+test("guest protected navigation opens one auth frame and Back keeps the public destination", () => {
+  const venue = { venueName: "Example Hall", path: "/venue/example" };
+  const app = appNavigation([{}, venue], { session: null });
+  app.commitGo({ reporting: { id: "member" } });
+  app.commitGo({ inbox: true });
+  app.flush();
+  assert.deepEqual(app.state, [{}, venue, { auth: true }]);
+  assert.equal(app.calls.filter(call => call.method === "pushState").length, 1);
+  app.back();
+  app.flush();
+  assert.deepEqual(app.state, [{}, venue]);
 });
 
 test("App lateral replacement preserves prior stack and replaces only the browser's top entry", () => {

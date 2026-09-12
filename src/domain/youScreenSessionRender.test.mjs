@@ -92,12 +92,12 @@ function fixture() {
     },
   });
   return {
-    render(nextSession) {
+    render(nextSession, props = {}) {
       session = nextSession;
       stateIndex = 0;
       refIndex = 0;
       archiveCalls.length = 0;
-      const tree = module.exports.default({});
+      const tree = module.exports.default(props);
       assert.equal(archiveCalls.length, 1);
       return { tree, archive: archiveCalls[0] };
     },
@@ -134,6 +134,24 @@ test("a signed-in dashboard starts without a selected memory or archive request"
   const rendered = fixture().render(accountA);
   assert.match(renderedText(rendered.tree), /Account A/);
   assertNoSelectedMemory(rendered);
+});
+
+test("the own-dashboard map entry opens the existing profile history without duplicating it", () => {
+  const f = fixture();
+  let opened = 0;
+  const props = { onOpenConcertHistory: () => { opened += 1; } };
+  const account = f.render(accountA, props);
+  const entries = nodes(account.tree).filter((node) => node.props?.testID === "you-concert-history");
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].props.accessibilityRole, "button");
+  assert.equal(entries[0].props.accessibilityLabel, "Open your concert history and map");
+  assert.equal(opened, 0, "rendering the entry must not navigate");
+  entries[0].props.onPress();
+  assert.equal(opened, 1);
+  assert.equal(nodes(account.tree).some((node) => node.props?.testID === "profile-concert-history"), false);
+  for (const session of [null, undefined]) {
+    assert.equal(nodes(f.render(session, props).tree).some((node) => node.props?.testID === "you-concert-history"), false);
+  }
 });
 for (const [label, nextSessions] of [["logout then account switch", [null, accountB]], ["direct account switch", [accountB]]]) {
   test(`a selected memory stays private during ${label}, before effects run`, () => {

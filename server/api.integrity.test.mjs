@@ -2696,7 +2696,8 @@ test("disabled artist feeds conceal updates from public and non-owners while rem
   assert.equal(read(admin).posts[0]?.text, "UNPUBLISHED_ARTIST_UPDATE", "admins retain management visibility");
 
   db.prepare("UPDATE artist_profiles SET feed_enabled=1 WHERE artist_key=?").run(key);
-  assert.equal(read(undefined).posts[0]?.text, "UNPUBLISHED_ARTIST_UPDATE", "enabling the feed publishes its updates");
+  assert.deepEqual(read(undefined).posts, [], "guest snapshots do not include the enabled artist update feed");
+  assert.equal(read(outsider).posts[0]?.text, "UNPUBLISHED_ARTIST_UPDATE", "enabling the feed publishes its updates to signed-in members");
 });
 
 test("unresolved artist search names expire after 30 days and the enrichment queue stays bounded", () => {
@@ -3873,12 +3874,12 @@ test("feed cursor pagination is stable while offset remains compatible", () => {
     db.prepare("INSERT INTO posts (id,user_id,artist,venue,overall,created_at) VALUES (?,?,?,?,?,?)")
       .run(`cursor_post_${i}`, user.id, "Artist", "Venue", 4, 1000 + i);
   }
-  const first = routes["GET /api/feed"]({ user: null, query: { limit: "3" } });
+  const first = routes["GET /api/feed"]({ user, query: { limit: "3" } });
   assert.deepEqual(first.posts.map((p) => p.id), ["cursor_post_7", "cursor_post_6", "cursor_post_5"]);
   assert.equal(typeof first.nextCursor, "string");
-  const second = routes["GET /api/feed"]({ user: null, query: { limit: "3", before: first.nextCursor } });
+  const second = routes["GET /api/feed"]({ user, query: { limit: "3", before: first.nextCursor } });
   assert.deepEqual(second.posts.map((p) => p.id), ["cursor_post_4", "cursor_post_3", "cursor_post_2"]);
-  const offset = routes["GET /api/feed"]({ user: null, query: { limit: "2", offset: "2" } });
+  const offset = routes["GET /api/feed"]({ user, query: { limit: "2", offset: "2" } });
   assert.deepEqual(offset.posts.map((p) => p.id), ["cursor_post_5", "cursor_post_4"]);
 });
 
@@ -4756,8 +4757,8 @@ test("For You is global-first, cursor-stable, and an allegation alone cannot sup
     .run("rep_for_you_open", "post", "p_for_you_6", "Unadjudicated report", reporter.id, "open", Date.now());
 
   clearRecommendationSnapshotsForTests();
-  const first = routes["GET /api/feed/for-you"]({ user: null, ip: "for-you-test", query: { limit: "3" } });
-  const second = routes["GET /api/feed/for-you"]({ user: null, ip: "for-you-test", query: { limit: "3", cursor: first.nextCursor } });
+  const first = routes["GET /api/feed/for-you"]({ user: reporter, ip: "for-you-test", query: { limit: "3" } });
+  const second = routes["GET /api/feed/for-you"]({ user: reporter, ip: "for-you-test", query: { limit: "3", cursor: first.nextCursor } });
   const ids = [...first.posts, ...second.posts].map((post) => post.id);
   assert.equal(new Set(ids).size, ids.length, "snapshot pages never duplicate a post");
   assert.equal(first.algorithm.candidateSource, "global");
@@ -4765,8 +4766,8 @@ test("For You is global-first, cursor-stable, and an allegation alone cannot sup
   assert.equal(first.posts.every((post) => post.recommendation?.algorithm === first.algorithm.id), true);
   assert.equal(first.posts.every((post) => post.recommendation?.algorithmVersion === 2 && post.recommendation?.feedContext?.startsWith("discover:")), true);
 
-  const repeated = routes["GET /api/feed/for-you"]({ user: null, ip: "for-you-test", query: { limit: "3" } });
-  assert.deepEqual(repeated.posts.map((post) => post.id), first.posts.map((post) => post.id), "unexpired guest snapshot is reused");
+  const repeated = routes["GET /api/feed/for-you"]({ user: reporter, ip: "for-you-test", query: { limit: "3" } });
+  assert.deepEqual(repeated.posts.map((post) => post.id), first.posts.map((post) => post.id), "unexpired account snapshot is reused");
   assert.equal(repeated.nextCursor, first.nextCursor);
 
   // Traverse the snapshot instead of assuming a reported post must rank in the
@@ -4776,7 +4777,7 @@ test("For You is global-first, cursor-stable, and an allegation alone cannot sup
   const snapshotIds = [...snapshotPosts.map((post) => post.id)];
   let cursor = first.nextCursor;
   while (cursor) {
-    const page = routes["GET /api/feed/for-you"]({ user: null, ip: "for-you-test", query: { limit: "50", cursor } });
+    const page = routes["GET /api/feed/for-you"]({ user: reporter, ip: "for-you-test", query: { limit: "50", cursor } });
     snapshotPosts.push(...page.posts);
     snapshotIds.push(...page.posts.map((post) => post.id));
     cursor = page.nextCursor;
@@ -4790,12 +4791,12 @@ test("For You is global-first, cursor-stable, and an allegation alone cannot sup
 
   db.prepare("INSERT INTO posts (id,user_id,artist,venue,city,overall,review,photos,created_at) VALUES (?,?,?,?,?,?,?,?,?)")
     .run("p_for_you_fresh", author.id, "Fresh Global Artist", "Global Venue", "Toronto", 5, "A newly published review must enter an already-open feed on its next head refresh.", "[]", Date.now());
-  const refreshed = routes["GET /api/feed/for-you"]({ user: null, ip: "for-you-test", query: { limit: "3" } });
+  const refreshed = routes["GET /api/feed/for-you"]({ user: reporter, ip: "for-you-test", query: { limit: "3" } });
   assert.notEqual(refreshed.nextCursor, repeated.nextCursor, "a newly-created post replaces the active head snapshot");
   const refreshedIds = [...refreshed.posts.map((post) => post.id)];
   cursor = refreshed.nextCursor;
   while (cursor) {
-    const page = routes["GET /api/feed/for-you"]({ user: null, ip: "for-you-test", query: { limit: "50", cursor } });
+    const page = routes["GET /api/feed/for-you"]({ user: reporter, ip: "for-you-test", query: { limit: "50", cursor } });
     refreshedIds.push(...page.posts.map((post) => post.id));
     cursor = page.nextCursor;
   }
@@ -4825,6 +4826,13 @@ test("feed cache revalidation returns authoritative moderation, block, and prefe
   db.prepare("INSERT INTO blocks (blocker_id,blocked_id,created_at) VALUES (?,?,?)").run(author.id, viewer.id, Date.now());
   result = revalidate({ user: viewer, ip: "revalidate-test", body: { postIds: ["p_revalidate_live"] } });
   assert.deepEqual(result.invalidPostIds, ["p_revalidate_live"], "an incoming author block invalidates an already-cached card");
+  db.prepare("DELETE FROM blocks WHERE blocker_id=? AND blocked_id=?").run(author.id, viewer.id);
+  db.prepare("UPDATE users SET dormant_at=? WHERE id=?").run(Date.now(), author.id);
+  result = revalidate({ user: viewer, ip: "revalidate-test", body: { postIds: ["p_revalidate_live"] } });
+  assert.deepEqual(result.invalidPostIds, ["p_revalidate_live"], "author dormancy invalidates the same cached cards hidden by fresh feed reads");
+  db.prepare("UPDATE users SET dormant_at=NULL WHERE id=?").run(author.id);
+  result = revalidate({ user: viewer, ip: "revalidate-test", body: { postIds: ["p_revalidate_live"] } });
+  assert.deepEqual(result.invalidPostIds, [], "reactivation restores eligible content without rewriting the post");
 });
 
 test("admin Deezer enrichment records provider evidence and preserves staff authority", async () => {
