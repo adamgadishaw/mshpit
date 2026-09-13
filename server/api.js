@@ -226,7 +226,7 @@ import {
   publicTourDateVenueFields,
   publicTourDateVenueName,
 } from "./publicTourDateVenueProjection.js";
-import { publicTourDateProviderFields } from "./tourDateMetadata.js";
+import { publicTourDateArtistProjection, publicTourDateProviderFields } from "./tourDateMetadata.js";
 import { isOwnerId, ownerAccount, readOwnerIdentity } from "./ownerIdentity.js";
 import {
   createOwnerApprovalRequest,
@@ -960,6 +960,7 @@ function tourDateRangePage(viewer, range, timestamp) {
 }
 
 function tourDateJson(row) {
+  const projectedArtist = publicTourDateArtistProjection(row);
   let billedArtists = [];
   if (row.music_evidence) {
     try {
@@ -970,7 +971,7 @@ function tourDateJson(row) {
   }
   return {
     id: row.id,
-    artist: row.artist,
+    artist: projectedArtist.artist,
     venue: row.venue,
     place: row.place,
     lat: row.lat,
@@ -1818,6 +1819,14 @@ const possibleLegacyTicketDates = db.prepare(`SELECT id,artist,venue,place,date 
   WHERE date=? AND lower(trim(artist))=lower(trim(?))
     AND lower(trim(COALESCE(NULLIF(trim(venue),''),NULLIF(trim(place),''),'Venue TBA')))=lower(trim(?))
   ORDER BY id LIMIT 2`);
+const ATTENDANCE_ALIAS_MAX_CANDIDATES = 200;
+db.function("pit_attendance_venue_alias", { deterministic: true }, (venue) => normalizeShowAliasKey(
+  ticketText(publicTourDateVenueName({ venue }), LIMITS.venue) || "Venue TBA",
+));
+const possibleProjectedAttendanceDates = db.prepare(`SELECT id,artist,venue,place,date,
+    source,owner_id,music_evidence,substr(billed_artists,1,16001) AS billed_artists FROM tour_dates
+  WHERE date=? AND pit_attendance_venue_alias(venue)=?
+  ORDER BY id LIMIT ${ATTENDANCE_ALIAS_MAX_CANDIDATES + 1}`);
 
 function ticketSecretKey(value, depth = 0) {
   if (!value || typeof value !== "object" || depth > 4) return null;
@@ -2100,21 +2109,32 @@ function exactAttendanceTourDateShow(user, tourDateId, at = now()) {
   }, at)) visibleTicketTourDate(user, id, at);
 
   const providerFields = publicTourDateProviderFields(row);
-  const artist = ticketText(row.artist, LIMITS.artist);
+  const projectedArtist = publicTourDateArtistProjection(row);
+  const artist = ticketText(projectedArtist.artist, LIMITS.artist);
   const venue = ticketText(publicTourDateVenueName(row), LIMITS.venue) || "Venue TBA";
   const date = cleanDate(row.date);
   if (!artist || !date) throw new ApiError(404, "That event is not available.", "NOT_FOUND");
   const legacyKey = normalizeShowAliasKey(`${artist}|${venue}|${date}`);
-  const matches = legacyKey ? possibleLegacyTicketDates.all(date, artist, venue)
-    .filter((entry) => normalizeShowAliasKey(
-      `${entry.artist}|${entry.venue || entry.place || "Venue TBA"}|${entry.date}`,
-    ) === legacyKey) : [];
+  const storedLegacyKey = normalizeShowAliasKey(`${ticketText(row.artist, LIMITS.artist)}|${venue}|${date}`);
+  // A display correction cannot turn a name tuple into event authority. Count
+  // both stored and projected identities across the entire bounded venue/day
+  // set, including hidden rows; an incomplete scan never claims an alias.
+  const candidates = possibleProjectedAttendanceDates.all(date, normalizeShowAliasKey(venue));
+  const provenLegacyAliases = candidates.length > ATTENDANCE_ALIAS_MAX_CANDIDATES ? []
+    : [...new Set([legacyKey, storedLegacyKey].filter(Boolean))].filter((alias) => {
+      const matches = candidates.filter((entry) => {
+        const entryVenue = ticketText(publicTourDateVenueName(entry), LIMITS.venue) || "Venue TBA";
+        return [entry.artist, publicTourDateArtistProjection(entry).artist].some((name) =>
+          normalizeShowAliasKey(`${ticketText(name, LIMITS.artist)}|${entryVenue}|${entry.date}`) === alias);
+      });
+      return matches.length === 1 && matches[0].id === id;
+    });
   const startAt = Date.parse(row.start_date_time || "");
   const provider = ticketText(row.source, 40)?.toLowerCase() || null;
   return {
     tourDateId: id,
     artist,
-    artistKey: ticketText(row.artist_key, 180),
+    artistKey: projectedArtist.bindingAllowed ? ticketText(row.artist_key, 180) : null,
     venue,
     venueKey: row.venue ? venueBinding(row.venue) || null : null,
     city: ticketText(row.venue_city || String(row.place || "").split(",")[0], LIMITS.city) || "",
@@ -2128,7 +2148,8 @@ function exactAttendanceTourDateShow(user, tourDateId, at = now()) {
     provider: providerFields.providerEventId ? provider : null,
     providerEventId: provider && providerFields.providerEventId ? providerFields.providerEventId : null,
     legacyKey,
-    claimLegacyAlias: matches.length === 1 && matches[0].id === id,
+    claimLegacyAlias: provenLegacyAliases.includes(legacyKey),
+    provenLegacyAliases,
   };
 }
 
@@ -7091,29 +7112,61 @@ export const routes = {
   },
 
   "POST /api/posts/:id/comments": (ctx) => {
-    const u = requireUser(ctx);
+    requireUser(ctx);
     limit(ctx, "comment", 60, 60 * 60 * 1000);
     const text = clean(ctx.body?.text, { max: LIMITS.message, newlines: true });
     if (!text) throw new ApiError(400, "Say something first.");
     assertSafeAuthoredText(text, { field: "comment" });
-    const targetPost = db.prepare("SELECT user_id,artist FROM posts WHERE id=? AND removed=0").get(ctx.params.id);
-    if (!targetPost || !publicAccountOrNull(targetPost.user_id)) throw new ApiError(404, "No such post.");
-    if (blockedEitherWay(u.id, targetPost.user_id)) throw new ApiError(403, "This interaction isn't available.", "FORBIDDEN");
-    // A reply must point at a real comment on THIS post; ignore anything else.
-    let parentId = clean(ctx.body?.parentId, { max: 60 }) || null;
-    const parent = parentId ? db.prepare("SELECT user_id FROM comments WHERE id=? AND post_id=? AND removed=0").get(parentId, ctx.params.id) : null;
-    if (parentId && !parent) parentId = null;
-    if (parent && blockedEitherWay(u.id, parent.user_id)) throw new ApiError(403, "This reply isn't available.", "FORBIDDEN");
-    const id = uid("c");
-    atomicWrite(() => {
-      db.prepare("INSERT INTO comments (id,post_id,user_id,text,parent_id,created_at) VALUES (?,?,?,?,?,?)").run(id, ctx.params.id, u.id, text, parentId, now());
+    const mutationId = chatClientMutationId(ctx.body?.clientMutationId);
+    const requestedParentId = clean(ctx.body?.parentId, { max: 60 }) || null;
+    // Bind the original request, not a parent whose live visibility or existence
+    // may change between a committed request and its lost-response retry.
+    const mutationHash = mutationId ? postMutationHash({ postId: ctx.params.id, text, parentId: requestedParentId }) : null;
+    // Match the canonical feed/post aggregate, not a count of raw rows. Read
+    // it under the writer transaction after authorization (and any insertion),
+    // so a lost-response replay can reconcile a stale local badge precisely.
+    const response = (id, parentId, duplicate = false) => ({
+      id, parentId,
+      commentCount: db.prepare(`SELECT COUNT(*) count FROM comments c JOIN users cu ON cu.id=c.user_id
+        WHERE c.post_id=? AND c.removed=0 AND ${activeAccountSql("cu")}`).get(ctx.params.id).count,
+      ...(duplicate ? { duplicate: true } : {}),
+    });
+    return atomicWrite(() => {
+      // Read authority, target visibility and the retry row under the same
+      // writer lock as insertion; a second server process cannot race them.
+      const u = requireUser(ctx);
+      const targetPost = db.prepare("SELECT user_id,artist FROM posts WHERE id=? AND removed=0").get(ctx.params.id);
+      if (!targetPost || !publicAccountOrNull(targetPost.user_id)) throw new ApiError(404, "No such post.");
+      if (blockedEitherWay(u.id, targetPost.user_id)) throw new ApiError(403, "This interaction isn't available.", "FORBIDDEN");
+      const existing = mutationId ? db.prepare(`SELECT id,parent_id,removed,client_mutation_hash FROM comments
+        WHERE user_id=? AND client_mutation_id=?`).get(u.id, mutationId) : null;
+      if (existing) {
+        if (existing.client_mutation_hash !== mutationHash) {
+          throw new ApiError(409, "That retry token belongs to a different comment.", "IDEMPOTENCY_MISMATCH");
+        }
+        if (existing.removed) throw new ApiError(409, "That comment was already removed.", "CONFLICT");
+        // A historical parent may now be a tombstone. Do not rebind the reply,
+        // but still honor any block established after the original submission.
+        const parent = existing.parent_id ? db.prepare("SELECT user_id FROM comments WHERE id=? AND post_id=?")
+          .get(existing.parent_id, ctx.params.id) : null;
+        if (parent && blockedEitherWay(u.id, parent.user_id)) throw new ApiError(403, "This reply isn't available.", "FORBIDDEN");
+        return response(existing.id, existing.parent_id || null, true);
+      }
+      // Preserve legacy invalid-parent fallback only for a genuinely new write.
+      let parentId = requestedParentId;
+      const parent = parentId ? db.prepare("SELECT user_id FROM comments WHERE id=? AND post_id=? AND removed=0").get(parentId, ctx.params.id) : null;
+      if (parentId && !parent) parentId = null;
+      if (parent && blockedEitherWay(u.id, parent.user_id)) throw new ApiError(403, "This reply isn't available.", "FORBIDDEN");
+      const id = uid("c");
+      db.prepare(`INSERT INTO comments (id,post_id,user_id,text,parent_id,client_mutation_id,client_mutation_hash,created_at)
+        VALUES (?,?,?,?,?,?,?,?)`).run(id, ctx.params.id, u.id, text, parentId, mutationId, mutationHash, now());
       const notification = { postId: ctx.params.id, artist: targetPost.artist, text: text.slice(0, 80) };
       addNotif(targetPost.user_id, u.id, "comment", notification);
       // Reply, post-owner alert and parent-author alert are one durable write;
       // failure cannot leave a published comment behind a failed API response.
       if (parent && parent.user_id !== targetPost.user_id) addNotif(parent.user_id, u.id, "comment", notification);
+      return response(id, parentId);
     });
-    return { id, parentId };
   },
 
   // Members can retract only their own comment. Keep replies from other people:

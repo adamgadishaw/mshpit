@@ -126,7 +126,8 @@ test("PostScreen member reply and send preserve the parent comment and clear the
   input.props.onChangeText("  A deliberate member reply  ");
   f.render();
   await f.find((node) => node.props.accessibilityLabel === "Send comment").props.onPress();
-  assert.deepEqual(f.calls.comments, [[f.log.id, "A deliberate member reply", "c_public"]]);
+  assert.deepEqual(f.calls.comments[0].slice(0, 3), [f.log.id, "A deliberate member reply", "c_public"]);
+  assert.match(f.calls.comments[0][3].clientMutationId, /^[A-Za-z0-9_-]{8,100}$/);
   assert.deepEqual(f.calls.auth, []);
   f.render();
   assert.equal(f.find((node) => node.type === "TextInput").props.value, "");
@@ -159,6 +160,25 @@ const inputComment = (f, text) => {
   f.render();
   return f.find((node) => node.props.accessibilityLabel === "Send comment").props.onPress;
 };
+
+test("PostScreen keeps the same delivery key after a lost response or rejected intent until the draft changes", async () => {
+  const f = fixture("PostScreen", { id: "member" }, {}, { addComment: async () => ({ ok: false }) });
+  await inputComment(f, "Retry this comment")();
+  const key = f.calls.comments[0][3].clientMutationId;
+  f.render();
+  await f.find((node) => node.props.accessibilityLabel === "Send comment").props.onPress();
+  assert.equal(f.calls.comments[1][3].clientMutationId, key);
+  await inputComment(f, "A genuinely new draft")();
+  assert.notEqual(f.calls.comments[2][3].clientMutationId, key);
+});
+
+test("PostScreen gives a completed new comment intent a different key even for identical text", async () => {
+  const f = fixture("PostScreen", { id: "member" });
+  await inputComment(f, "Same words")();
+  f.render();
+  await inputComment(f, "Same words")();
+  assert.notEqual(f.calls.comments[0][3].clientMutationId, f.calls.comments[1][3].clientMutationId);
+});
 
 test("PostScreen handles simultaneous Enter and tap as one comment submission", async () => {
   const request = deferred();

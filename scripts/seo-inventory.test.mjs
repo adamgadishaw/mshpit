@@ -64,3 +64,17 @@ test("runtime SEO inventory fails duplicate canonicals and snapshot count drift"
     "SNAPSHOT_COUNT_MISMATCH",
   ]);
 });
+
+test("inventory groups later sitemap shards correctly and distinguishes city guides", () => {
+  const paths = ["/sitemaps/events.xml", "/sitemaps/events-10.xml", "/sitemaps/events-19.xml", "/sitemaps/events-100.xml", "/sitemaps/cities.xml"];
+  const documents = Object.fromEntries(paths.map((path, index) => [path,
+    urlsetParts([{ path: index === 4 ? "/city/ca/toronto" : `/event/example-${index}` }], ORIGIN)[0],
+  ]));
+  const inventory = inventoryFromSitemapSnapshot({
+    generatedAt: 1_725_000_000_000, paths, stats: { totalUrls: 5 },
+    xmlFor(path) { return documents[path]; },
+  });
+  assert.equal(inventory.ok, true);
+  assert.deepEqual(inventory.datasetCounts, { events: 4, cities: 1 });
+  assert.deepEqual(inventory.routeCounts, { events: 4, "city-guides": 1 });
+});

@@ -15,6 +15,8 @@
 
 ## Focused security and UX audit
 
+The [September 13 account and search follow-up](account-and-search-foundation-audit-2026-09-13.md) extends the interaction-boundary review to durable comment retries, staff callbacks, settings ordering, and public artist/SEO identity. It records fresh public probes and distinguishes them from production database and long-term uptime evidence.
+
 The follow-up [account foundation security audit](account-foundation-security-audit-2026-09-12.md) records the layer-by-layer permission matrix, reproduced concurrency fixes, read-only database findings, primary-source research, and remaining risks. It distinguishes local evidence from production verification and is not a claim that every vulnerability has been eliminated.
 
 Fixed false signup success, implicit Owner fallback, unavailable account swapping, unverified public mutations, a stale-password session race, and post-commit activity bookkeeping turning successful writes into failures. Bio tests cover SQL-shaped text as literal content, escaped HTML/structured data, executable URL rejection, upload ownership, and forged role/verification fields. These tests found no bio injection exploit in the existing escaping and ownership controls.

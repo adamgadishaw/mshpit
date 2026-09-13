@@ -6,6 +6,7 @@ import { accountMutationIsCurrent, captureAccountMutation } from "./accountMutat
 import { clean, clampRating, LIMITS } from "./validation.mjs";
 import { createChatClientMutationId } from "./chatDelivery.mjs";
 import { createTicketRegistry } from "./latestWins.mjs";
+import { createAccountPreferenceWrites } from "./accountPreferenceWrites.mjs";
 
 // Run the production Store declarations, not reimplementations of their guards.
 const source = readFileSync(new URL("../store.js", import.meta.url), "utf8");
@@ -20,8 +21,8 @@ const preferenceCases = [
   ["setAnnouncementEmailsEnabled", false, "updateAnnouncementEmailPreference", "marketingOptOut", true],
 ];
 const names = [
-  "renderedAccountMutation", "currentMutationActor", "adoptAccountPreference",
-  ...preferenceCases.map(([name]) => name), "exportMyData", "addComment", "deleteOwnComment",
+  "renderedAccountMutation", "currentMutationActor", "adoptAccountPreference", "writeAccountPreference",
+  ...preferenceCases.map(([name]) => name), "exportMyData", "writePostComment", "addComment", "deleteOwnComment",
   "removeMyPostTag", "setGoingIntent", "addLoungeMessage", "addFanClubMessage", "sendDM",
   "rate", "markThreadRead", "joinFanClub", "addVenueReview", "applyMyAttendanceMutation",
   "updateProfile", "updateArtistProfile", "addArtistPost", "removeArtistPost",
@@ -44,6 +45,8 @@ function fixture({ actor = owner, ready = true, demo = false } = {}) {
   const calls = [], writes = [], effects = [];
   const sessionRef = { current: actor }, authReadyRef = { current: ready }, accountMutationEpochRef = { current: 1 };
   const state = { session: actor, users: actor ? [actor] : [], clubs: {}, directory: [{ artist: "Artist", members: 2 }], reviews: {} };
+  state.comments = {};
+  state.feed = [{ id: "post", comments: 0, commentPreview: [] }];
   state.albums = { [ratingKey]: { [owner.id]: 3 } };
   state.ratings = { [aggregateKey(actor?.id)]: { avg: 3, count: 1, mine: actor?.id ? 3 : 0 } };
   const ratingRegistry = createTicketRegistry();
@@ -51,11 +54,14 @@ function fixture({ actor = owner, ready = true, demo = false } = {}) {
   const request = (name) => (...args) => new Promise((resolve, reject) => calls.push({ name, args, resolve, reject }));
   const dependencies = {
     session: actor, sessionRef, authReadyRef, accountMutationEpochRef,
-    captureAccountMutation, accountMutationIsCurrent, clean, clampRating, LIMITS, createChatClientMutationId,
+    captureAccountMutation, accountMutationIsCurrent, clean, clampRating, LIMITS, createChatClientMutationId, createAccountPreferenceWrites,
     ENABLE_DEMO_DATA: demo, MEDIA_POST_MAX_ATTACHMENTS: 20,
     norm: (value) => String(value || "").trim().toLowerCase(), fcKey: (value) => String(value || "").trim().toLowerCase(),
     localCommandError: (code) => ({ ok: false, code }),
-    commentCache: { capture: () => ({ accountId: sessionRef.current?.id || null }) },
+    commentCache: { capture: () => captureAccountMutation(sessionRef.current?.id, accountMutationEpochRef.current) },
+    commentClaimIsCurrent: (claim) => accountMutationIsCurrent(claim, sessionRef.current?.id, accountMutationEpochRef.current),
+    setComments: update("comments"), setFeed: update("feed"), feed: state.feed, feedMutationRevisionRef: { current: 0 },
+    postOwner: () => "post-owner", notify: (...args) => effects.push(["notify", ...args]),
     setUsers: update("users"), setSession: update("session"), publicProfileCacheEntry: (user) => user,
     api: request("api"), track: (...args) => effects.push(args),
     applyTheme: (...args) => effects.push(["theme", ...args]),
@@ -140,6 +146,129 @@ for (const [name, value, helper, field, expected] of preferenceCases) {
     }
   });
 }
+
+test("same-field privacy requests dispatch in user order without blocking independent fields", async () => {
+  const f = fixture();
+  const first = f.actions.setProfileAudience("members");
+  const next = f.actions.setProfileAudience("only_me");
+  const independent = f.actions.setDirectMessagePolicy("nobody");
+  assert.equal(f.calls.length, 2);
+  assert.equal(f.calls[1].name, "updateDirectMessagePreference");
+  f.calls[1].resolve({ user: { ...owner, directMessagePolicy: "nobody" } });
+  assert.equal((await independent).ok, true);
+  f.calls[0].resolve({ user: { ...owner, profileAudience: "members" } });
+  assert.equal((await first).ok, true);
+  await tick();
+  assert.equal(f.calls[2].args[0], "only_me");
+  f.calls[2].resolve({ user: { ...owner, profileAudience: "only_me" } });
+  assert.equal((await next).ok, true);
+  assert.equal(f.state.session.profileAudience, "only_me");
+  assert.equal(f.state.session.directMessagePolicy, "nobody");
+});
+
+test("failed second privacy write preserves the first confirmed value and a failed first does not block retry", async () => {
+  for (const failFirst of [false, true]) {
+    const f = fixture();
+    const first = f.actions.setProfileAudience("members");
+    const next = f.actions.setProfileAudience("only_me");
+    if (failFirst) f.calls[0].reject(new Error("Rejected first choice"));
+    else f.calls[0].resolve({ user: { ...owner, profileAudience: "members" } });
+    await first; await tick();
+    assert.equal(f.calls.length, 2);
+    if (failFirst) f.calls[1].resolve({ user: { ...owner, profileAudience: "only_me" } });
+    else f.calls[1].reject(new Error("Rejected second choice"));
+    assert.equal((await next).ok, failFirst);
+    assert.equal(f.state.session.profileAudience, failFirst ? "only_me" : "members");
+  }
+});
+
+test("queued privacy requests cannot dispatch after logout or an account round trip", async () => {
+  const f = fixture();
+  const first = f.actions.setProfileAudience("members");
+  const next = f.actions.setProfileAudience("only_me");
+  f.adopt(other); f.adopt(owner);
+  f.calls[0].resolve({ user: { ...owner, profileAudience: "members" } });
+  assert.equal((await first).ok, false);
+  assert.equal((await next).ok, false);
+  assert.equal(f.calls.length, 1);
+  assert.equal(f.state.session.profileAudience, "everyone");
+});
+
+test("comment retry confirms the original row and authoritative count without repeated notification", async () => {
+  const f = fixture();
+  const options = { clientMutationId: "comment_retry_same_key" };
+  const first = f.actions.addComment("post", "My comment", "missing-parent", options);
+  assert.equal(f.calls[0].args[1].body.clientMutationId, options.clientMutationId);
+  f.calls[0].reject(new Error("Server committed; connection lost before response"));
+  assert.equal((await first).ok, false);
+  assert.deepEqual(f.state.comments.post, []);
+  const retry = f.actions.addComment("post", "My comment", "missing-parent", options);
+  f.calls[1].resolve({ id: "server-comment", parentId: null, duplicate: true, commentCount: 1 });
+  assert.equal((await retry).ok, true);
+  assert.equal(f.state.comments.post.length, 1);
+  assert.equal(f.state.comments.post[0].parentId, null);
+  assert.equal(f.state.feed[0].comments, 1);
+  assert.deepEqual(f.effects, []);
+  // A retry after the canonical row was independently refreshed must also stay single.
+  const duplicate = f.actions.addComment("post", "My comment", "missing-parent", options);
+  f.calls[2].resolve({ id: "server-comment", parentId: null, duplicate: true, commentCount: 1 });
+  await duplicate;
+  assert.equal(f.state.comments.post.length, 1);
+  assert.equal(f.state.feed[0].comments, 1);
+});
+
+test("per-post comment writes cannot return reversed counts and a later authoritative lower count is respected", async () => {
+  const f = fixture();
+  const first = f.actions.addComment("post", "First");
+  const second = f.actions.addComment("post", "Second");
+  assert.equal(f.calls.length, 1, "the second view queues its write rather than racing the first view");
+  f.calls[0].resolve({ id: "first", parentId: null, commentCount: 1 });
+  await first; await tick();
+  assert.equal(f.state.feed[0].comments, 1);
+  assert.equal(f.calls.length, 2);
+  f.calls[1].resolve({ id: "second", parentId: null, commentCount: 2 });
+  await second;
+  assert.equal(f.state.feed[0].comments, 2);
+  const remove = f.actions.deleteOwnComment("post", "first");
+  const replay = f.actions.addComment("post", "Second", null, { clientMutationId: "comment_second_intent" });
+  await tick();
+  assert.equal(f.calls.length, 3, "a delete and a subsequent replay share the post's ordering boundary");
+  f.calls[2].resolve({ tombstone: false });
+  await remove; await tick();
+  assert.equal(f.calls.length, 4);
+  f.calls[3].resolve({ id: "second", parentId: null, duplicate: true, commentCount: 1 });
+  await replay;
+  assert.equal(f.state.feed[0].comments, 1, "canonical deletion counts must not be hidden by Math.max");
+  assert.deepEqual(f.state.comments.post.map((comment) => comment.id), ["second"]);
+});
+
+test("comment writes for different posts stay independent and queued writes stop on account handoff", async () => {
+  const f = fixture();
+  const first = f.actions.addComment("post", "First");
+  const queued = f.actions.addComment("post", "Second");
+  const independent = f.actions.addComment("other-post", "Independent");
+  assert.equal(f.calls.length, 2);
+  f.adopt(other); f.adopt(owner);
+  f.calls[0].resolve({ id: "first", parentId: null, commentCount: 1 });
+  f.calls[1].resolve({ id: "other", parentId: null, commentCount: 1 });
+  await Promise.all([first, queued, independent]);
+  assert.equal(f.calls.length, 2);
+});
+
+test("new comments adopt authoritative counts and notify once, while late comment results stay out of replacement accounts", async () => {
+  const f = fixture();
+  const first = f.actions.addComment("post", "My comment");
+  f.calls[0].resolve({ id: "server-comment", parentId: null, commentCount: 4 });
+  assert.equal((await first).ok, true);
+  assert.equal(f.state.feed[0].comments, 4);
+  assert.equal(f.effects.filter(([name]) => name === "notify").length, 1);
+  const second = f.actions.addComment("post", "Another comment");
+  f.adopt(other); f.adopt(owner);
+  const before = JSON.stringify(f.state);
+  f.calls[1].resolve({ id: "stale-comment", parentId: null, commentCount: 5 });
+  assert.equal((await second).stale, true);
+  assert.equal(JSON.stringify(f.state), before);
+});
 
 test("concurrent independent privacy responses cannot undo a completed preference", async () => {
   const f = fixture();

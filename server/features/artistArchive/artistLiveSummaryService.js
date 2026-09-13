@@ -1,6 +1,10 @@
 import { activeAccountSql } from "../../accountVisibility.js";
 import { artistHasLegacyMemorial, artistHasPublishedMemorial, tourDateHasNoPublishedMemorialSql } from "../../artistMemorialTourDateVisibility.js";
-import { canonicalBillingIdentity, storedBillingMatchesArtist } from "../../artistBillingIdentity.js";
+import {
+  providerBillingIdentity,
+  storedBillingAllowsArtistBinding,
+  storedBillingMatchesArtist,
+} from "../../artistBillingIdentity.js";
 import { currentOrUpcomingTourDateSql } from "../../tourDateLifecycle.js";
 import { ApiError } from "../../errors.js";
 import { inPersonReviewSql } from "../../onlineReviews.js";
@@ -73,9 +77,11 @@ export function createArtistLiveSummaryService({ database, projectDate, clock = 
   providersConfigured = () => !!(process.env.TICKETMASTER_KEY || process.env.BANDSINTOWN_APP_ID) } = {}) {
   if (!database?.prepare || typeof projectDate !== "function") throw new TypeError("Artist live summary dependencies are missing");
   database.function("pit_artist_identity", { deterministic: true }, pitArtistIdentity);
-  database.function("pit_live_billing_identity", { deterministic: true }, canonicalBillingIdentity);
+  database.function("pit_live_billing_identity", { deterministic: true }, providerBillingIdentity);
   database.function("pit_live_billing_matches", { deterministic: true },
     (source, evidence, billed, name) => storedBillingMatchesArtist(source, evidence, billed, name) ? 1 : 0);
+  database.function("pit_live_billing_allows_binding", { deterministic: true },
+    (source, evidence, billed, name) => storedBillingAllowsArtistBinding(source, evidence, billed, name) ? 1 : 0);
   database.function("pit_artist_event_current", { deterministic: true }, (date, end, timezone, at) =>
     isCurrentOrUpcomingLiveEvent({ date, eventEndDate: end, eventTimezone: timezone }, Number(at)) ? 1 : 0);
   const candidates = artistScheduleCandidateIndex(database);
@@ -116,8 +122,10 @@ export function createArtistLiveSummaryService({ database, projectDate, clock = 
   )`;
   const eventWhere = `FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id
     WHERE td.id IN (SELECT id FROM candidate_ids) AND COALESCE(td.music_qualified,1)=1
-      AND (td.artist_key=@key OR (td.artist_key IS NULL AND LOWER(td.artist)=LOWER(@name)
-        AND @uniqueName=1)
+      AND ((((td.artist_key=@key) OR (td.artist_key IS NULL AND LOWER(td.artist)=LOWER(@name)
+          AND @uniqueName=1))
+        AND (td.owner_id IS NOT NULL
+          OR pit_live_billing_allows_binding(td.source,td.music_evidence,td.billed_artists,@name)=1))
         OR (td.owner_id IS NULL AND pit_live_billing_matches(td.source,td.music_evidence,td.billed_artists,@name)=1
           AND @uniqueBilling=1))
       AND ${currentOrUpcomingTourDateSql("td").replaceAll("?", "@floor")}

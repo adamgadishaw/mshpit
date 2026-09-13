@@ -1087,6 +1087,72 @@ test("artist post and tour updates resolve through the canonical artist norm", (
 });
 
 
+test("artist sitemap cannot borrow eligibility or modification dates from unresolved stored identities", () => {
+  const name = "Sitemap Identity Boundary";
+  const slug = "sitemap-identity-boundary";
+  const norm = normName(name);
+  const oldAt = Date.parse("2026-04-01T00:00:00Z");
+  const newerAt = Date.parse("2026-08-01T00:00:00Z");
+  addArtist(name, slug, { updatedAt: oldAt });
+  const entryFor = (rows, family) => artistSitemapEntries(db, {
+    candidates: { posts: [], upcomingEvents: [], [family]: rows },
+  }).find(row => row.path === `/artist/${slug}`);
+  try {
+    for (const family of ["posts", "upcomingEvents"]) {
+      const row = { artist: name, meaningfulText: true, readyMedia: [], updated_at: newerAt };
+      for (const artist_key of ["unresolved:another-artist", ""]) {
+        assert.equal(entryFor([{ ...row, artist_key }], family), undefined,
+          `${family}: a non-null unresolved key does not index a same-name artist`);
+      }
+      assert.equal(entryFor([{ ...row, artist_key: null }], family)?.lastmod, newerAt,
+        `${family}: unique legacy name remains supported`);
+      assert.equal(entryFor([{ ...row, artist: "Previous Display Name", artist_key: norm }], family)?.lastmod, newerAt,
+        `${family}: a known identity survives a changed display name`);
+    }
+    db.prepare("UPDATE artists SET bio=? WHERE norm=?").run("Substantive artist biography. ".repeat(4), norm);
+    for (const family of ["posts", "upcomingEvents"]) {
+      assert.equal(entryFor([{ artist: name, artist_key: "unresolved:other", meaningfulText: true,
+        readyMedia: [], updated_at: newerAt }], family)?.lastmod, oldAt,
+      `${family}: unrelated content cannot claim a fresh modification date`);
+    }
+  } finally {
+    db.prepare("DELETE FROM artists WHERE norm=?").run(norm);
+  }
+});
+
+test("artist sitemap rejects stale provider bindings contradicted by billing evidence", () => {
+  const name = "Sitemap Dotted Act.";
+  const slug = "sitemap-dotted-act";
+  const norm = normName(name);
+  const oldAt = Date.parse("2026-04-01T00:00:00Z");
+  const newerAt = Date.parse("2026-08-01T00:00:00Z");
+  addArtist(name, slug, { updatedAt: oldAt });
+  const providerRow = { artist: name, artist_key: norm, owner_id: null,
+    source: "ticketmaster", music_evidence: "provider-music-attraction", updated_at: newerAt };
+  const entryFor = (row) => artistSitemapEntries(db, {
+    candidates: { posts: [], upcomingEvents: [row] },
+  }).find(row => row.path === `/artist/${slug}`);
+  try {
+    for (const billed_artists of [JSON.stringify(["Sitemap Dotted Act"]), "not-json", "{}", '"Sitemap Dotted Act."']) {
+      assert.equal(entryFor({ ...providerRow, billed_artists }), undefined,
+        "unsupported provider billing cannot make the artist indexable");
+    }
+    assert.equal(entryFor({ ...providerRow, billed_artists: JSON.stringify(["Other Headliner", name]) })?.lastmod, newerAt,
+      "an exactly billed supporting artist remains eligible");
+    for (const billed_artists of [null, "", "[]"]) {
+      assert.equal(entryFor({ ...providerRow, billed_artists })?.lastmod, newerAt,
+        "legacy provider records without billing retain explicit bindings");
+    }
+    assert.equal(entryFor({ ...providerRow, owner_id: "member", billed_artists: "[]" })?.lastmod, newerAt,
+      "member-authored dates retain their separate authority");
+    db.prepare("UPDATE artists SET bio=? WHERE norm=?").run("Substantive artist biography. ".repeat(4), norm);
+    assert.equal(entryFor({ ...providerRow, billed_artists: JSON.stringify(["Sitemap Dotted Act"]) })?.lastmod, oldAt,
+      "a retained bad provider key does not claim a fresh update");
+  } finally {
+    db.prepare("DELETE FROM artists WHERE norm=?").run(norm);
+  }
+});
+
 test("collection sitemaps use exact qualified totals and every emitted page is nonempty", () => {
   const author = addUser("u_sitemap_candidate_mismatch", "sitemapcandidatemismatch");
   for (let index = 0; index < 100; index += 1) {

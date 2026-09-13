@@ -14,8 +14,8 @@ function mutationSlice(startMarker, endMarker) {
   return store.slice(start, end);
 }
 
-function assertServerFirst(source, stateCall) {
-  const awaitServer = source.indexOf("await api(");
+function assertServerFirst(source, stateCall, transport = "api") {
+  const awaitServer = source.indexOf(`await ${transport}(`);
   const adoptState = source.indexOf(stateCall);
   assert.ok(awaitServer >= 0, "mutation must await the server");
   assert.ok(adoptState > awaitServer, `${stateCall} must occur only after server confirmation`);
@@ -27,9 +27,18 @@ function assertServerFirst(source, stateCall) {
 
 test("artist request decisions are server-first canonical commands", () => {
   const source = mutationSlice("const reviewArtistRequest =", "const approveArtist =");
-  assertServerFirst(source, "setRequests(");
-  assert.ok(source.indexOf("setUsers(") > source.indexOf("await api("));
+  assertServerFirst(source, "setRequests(", "staffApi");
+  assert.ok(source.indexOf("setUsers(") > source.indexOf("await staffApi("));
+  assert.match(source, /const actor = currentMutationActor\(\)/);
+  assert.match(source, /actor\.role !== "admin"/);
   assert.match(source, /staffScope !== staffScopeFor\(sessionRef\.current\)/);
+  const transport = mutationSlice("const staffApi =", "const commitStaffAction =");
+  assert.match(transport, /expectedAccountId: session\.id/);
+  assert.equal((transport.match(/assertStaffMutation\(scope\)/g) || []).length, 2,
+    "staff transport must assert the initiating scope before and after its request");
+  const ownership = mutationSlice("const staffMutationStillOwned =", "const assertStaffMutation =");
+  assert.match(ownership, /currentMutationActor\(\)/);
+  assert.match(ownership, /renderedStaffEpoch === staffReadsRef\.current\.epoch/);
   assert.match(admin, /await \(action === "approve"[\s\S]*approveArtist\(request\.id, \{ signal: controller\.signal \}\)/);
   assert.match(admin, /That request was not[\s\S]*Nothing changed/);
   assert.match(admin, /error\?\.retryable/);

@@ -10,6 +10,7 @@ import { BadgeRow } from "../components/Badge";
 import { LIMITS } from "../domain/validation.mjs";
 import { applyPostLocalOverride, withRemovedSelfPostTag } from "../domain/postLocalOverrides.mjs";
 import { accountTargetScope } from "../domain/screenScope.mjs";
+import { createChatClientMutationId } from "../domain/chatDelivery.mjs";
 import { PublicTextLink } from "../components/PublicWebLinks";
 import { profilePath } from "../domain/urls.mjs";
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
@@ -208,10 +209,12 @@ export default function PostScreen({ log, onClose, onRequireAuth, onOpenProfile,
 
   const showComments = () => scrollRef.current?.scrollToEnd({ animated: true });
   const changeCommentText = (value) => {
+    if (value !== commentSubmitRef.current.draft?.text) commentSubmitRef.current.intent = null;
     commentSubmitRef.current.draft = { ...commentSubmitRef.current.draft, text: value };
     setText(value);
   };
   const changeCommentReply = (value) => {
+    if ((value?.id || null) !== commentSubmitRef.current.draft?.parentId) commentSubmitRef.current.intent = null;
     commentSubmitRef.current.draft = { ...commentSubmitRef.current.draft, parentId: value?.id || null };
     setReplyTo(value);
   };
@@ -225,15 +228,21 @@ export default function PostScreen({ log, onClose, onRequireAuth, onOpenProfile,
     const t = text.trim();
     if (!t || sending || commentSubmitRef.current.active || commentScopeRef.current !== commentScope) return;
     // A synchronous lock covers Enter + tap before React renders the busy state.
-    const operation = { scope: commentScope, text, parentId: replyTo?.id || null };
+    const previous = commentSubmitRef.current.intent;
+    const parentId = replyTo?.id || null;
+    const intent = previous?.scope === commentScope && previous.text === t && previous.parentId === parentId
+      ? previous : { scope: commentScope, text: t, parentId, clientMutationId: createChatClientMutationId("comment") };
+    commentSubmitRef.current.intent = intent;
+    const operation = { scope: commentScope, text, parentId, intent };
     commentSubmitRef.current.active = operation;
     const isCurrent = () => commentSubmitRef.current.active === operation && commentScopeRef.current === operation.scope;
     setSending(true);
     setSendError("");
     try {
-      const result = await addComment(log.id, t, operation.parentId);
+      const result = await addComment(log.id, t, operation.parentId, { clientMutationId: intent.clientMutationId });
       if (!isCurrent()) return;
       if (result?.ok) {
+        if (commentSubmitRef.current.intent === intent) commentSubmitRef.current.intent = null;
         const draft = commentSubmitRef.current.draft;
         // Keep anything the member typed while the previous comment was sending.
         if (draft.text === operation.text && draft.parentId === operation.parentId) {

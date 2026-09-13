@@ -3482,8 +3482,28 @@ test("tour-date batches are owner-authorized, atomic, canonical, and release-gat
     .run("provider_unsafe_ticket", "Provider Band", "Unsafe Hall", "Toronto, Ontario", publicSharedDate,
       "https://ticketmaster.com.evil-site.com/phish", "ticketmaster", Date.now(),
       "https://s1.ticketm.net/dam/a/provider/unsafe.jpg", "Ticketmaster", 1920, 1080);
+  db.prepare(`INSERT INTO artists (norm,name,created_at,updated_at) VALUES (?,?,?,?)`)
+    .run("sports-dot-api-fixture", "sports.", Date.now(), Date.now());
+  const providerArtistFixture = db.prepare(`INSERT INTO tour_dates
+    (id,artist,artist_key,venue,place,date,ticket_url,sold_out,source,updated_at,release_at,
+      event_name,event_kind,music_evidence,billed_artists)
+    VALUES (?,?,?,?,?,?,?,0,?,?,0,?,'concert',?,?)`);
+  providerArtistFixture.run(
+    "provider_artist_collision", "sports.", "sports-dot-api-fixture", "Collision Hall", "Toronto, Ontario", publicSharedDate, "",
+    "ticketmaster", Date.now(), "JUNGLE - World Tour 2027", "ticketmaster:classification:music", '["Jungle","Sports"]',
+  );
+  providerArtistFixture.run(
+    "provider_artist_exact_support", "sports.", "sports-dot-api-fixture", "Support Hall", "Boston, Massachusetts", publicSharedDate, "",
+    "ticketmaster", Date.now(), "Jungle with sports.", "ticketmaster:classification:music", '["Jungle","sports."]',
+  );
   const publicTourDates = routes["GET /api/tourdates"]({}).tourDates;
   const publicSharedTourDate = publicTourDates.find((row) => row.id === "provider_shared_release");
+  assert.equal(publicSharedTourDate?.artist, "Provider Band",
+    "legacy provider dates with no billing payload keep their stored public artist");
+  assert.equal(publicTourDates.find((row) => row.id === "provider_artist_collision")?.artist, "Jungle",
+    "the interactive API repairs an artist binding contradicted by provider billing");
+  assert.equal(publicTourDates.find((row) => row.id === "provider_artist_exact_support")?.artist, "sports.",
+    "the interactive API preserves an exactly evidenced support artist");
   assert.equal(publicSharedTourDate?.ticketUrl, "https://www.ticketmaster.ca/event/1");
   assert.deepEqual(publicSharedTourDate?.eventImage, {
     uri: "https://s1.ticketm.net/dam/a/provider/show.jpg",
@@ -3513,6 +3533,10 @@ test("tour-date batches are owner-authorized, atomic, canonical, and release-gat
   assert.deepEqual(guestDiscovery.upcomingEvents.find((row) => row.id === "provider_shared_release")?.eventImage,
     publicSharedTourDate.eventImage,
     "tour-date and discovery projections expose the same attributed provider image descriptor");
+  assert.equal(guestDiscovery.upcomingEvents.find((row) => row.id === "provider_shared_release")?.artist, "Provider Band");
+  assert.equal(guestDiscovery.upcomingEvents.find((row) => row.id === "provider_artist_collision")?.artist, "Jungle",
+    "discovery uses the same repaired provider artist identity as the tour-date API");
+  assert.equal(guestDiscovery.upcomingEvents.find((row) => row.id === "provider_artist_exact_support")?.artist, "sports.");
   assert.equal(guestDiscovery.upcomingEvents.find((row) => row.id === "provider_unsafe_ticket")?.eventImage, null);
   const guestSharedVenue = guestDiscovery.trendingVenues.find((row) => row.name === "Valid Hall");
   assert.equal(guestSharedVenue?.upcoming, 1, "hidden dates do not influence a public venue count");
@@ -3572,8 +3596,10 @@ test("tour-date batches are owner-authorized, atomic, canonical, and release-gat
   "memorialized artists have no current or future dates in discovery");
   db.prepare("DELETE FROM artist_memorials WHERE artist_key=?").run("api tour fixture 2822");
   db.prepare("DELETE FROM artists WHERE norm=?").run("api tour fixture 2822");
-  db.prepare("DELETE FROM tour_dates WHERE owner_id IN (?,?) OR id IN (?,?,?)")
-    .run(artist.id, admin.id, "provider_release_compat", "provider_shared_release", "provider_unsafe_ticket");
+  db.prepare("DELETE FROM tour_dates WHERE owner_id IN (?,?) OR id IN (?,?,?,?,?)")
+    .run(artist.id, admin.id, "provider_release_compat", "provider_shared_release", "provider_unsafe_ticket",
+      "provider_artist_collision", "provider_artist_exact_support");
+  db.prepare("DELETE FROM artists WHERE norm=?").run("sports-dot-api-fixture");
 });
 
 test("tour-date range browsing is bounded, cursor-paged, canonical-location scoped, and privacy safe", () => {

@@ -32,6 +32,7 @@ import {
   recommendationPreferenceMutationKey,
 } from "./domain/recommendationPreferenceMutation.mjs";
 import { createAccountReadCoordinator } from "./domain/accountReadCoordinator.mjs";
+import { createAccountPreferenceWrites } from "./domain/accountPreferenceWrites.mjs";
 import { hiddenRecommendationIds } from "./domain/startupCacheState.mjs";
 import { commentRequestCacheKey } from "./domain/commentCache.mjs";
 import {
@@ -712,6 +713,7 @@ export function StoreProvider({ children }) {
   moderationConsoleRef.current = moderationConsole;
   const staffReadsRef = useRef(null);
   if (!staffReadsRef.current) staffReadsRef.current = createStaffReadCoordinator();
+  const renderedStaffEpoch = staffReadsRef.current.epoch;
   const staffStateScopeRef = useRef(staffScopeFor(session));
 
   const resetStaffState = () => {
@@ -2056,15 +2058,15 @@ export function StoreProvider({ children }) {
   const adminSetTrackVideo = async ({ title, artist, url, none, provider, sourceId }) => {
     const scope = staffScopeFor(sessionRef.current);
     try {
-      const r = await api("/api/admin/tracks/override", { method: "POST", context: "Pinning the correct song video", body: { title, artist, url: url || undefined, none: !!none, provider: provider || undefined, sourceId: sourceId || undefined } });
-      if (scope && scope === staffScopeFor(sessionRef.current)) {
+      const r = await staffApi("/api/admin/tracks/override", { method: "POST", context: "Pinning the correct song video", body: { title, artist, url: url || undefined, none: !!none, provider: provider || undefined, sourceId: sourceId || undefined } });
+      if (staffMutationStillOwned(scope)) {
         staffReadsRef.current.invalidate("moderation", sessionRef.current);
         // The override route atomically actions its matching report(s). Refresh
         // that authoritative queue before resolving so the staff UI removes the
         // row without issuing a conflicting second dismiss mutation.
         try { await loadModerationConsole(); } catch {}
       }
-      return { ok: true, ...r };
+      return staffMutationStillOwned(scope) ? { ok: true, ...r } : { ok: false, stale: true };
     } catch (error) { return { ok: false, error }; }
   };
   // Admin: every current pin, live from the server (survives any refresh).
@@ -2072,7 +2074,7 @@ export function StoreProvider({ children }) {
     try { const { overrides } = await api("/api/admin/tracks/overrides", { silent: true }); return overrides || []; } catch { return []; }
   };
   const removeTrackOverride = async ({ title, artist, provider, sourceId }) => {
-    try { await api("/api/admin/tracks/override", { method: "DELETE", context: "Removing a song video pin", body: { title, artist, provider: provider || undefined, sourceId: sourceId || undefined } }); return { ok: true }; } catch (error) { return { ok: false, error }; }
+    try { await staffApi("/api/admin/tracks/override", { method: "DELETE", context: "Removing a song video pin", body: { title, artist, provider: provider || undefined, sourceId: sourceId || undefined } }); return { ok: true }; } catch (error) { return { ok: false, error }; }
   };
   // Staff first paint comes from one privacy-projected server response. The
   // strict loader rejects on failure so the console can distinguish offline or
@@ -2128,14 +2130,14 @@ export function StoreProvider({ children }) {
 
   const moderateReport = async ({ action, reportId, reason = "" } = {}) => {
     const actionScope = staffScopeFor(sessionRef.current);
-    const result = await api("/api/admin/moderation/actions", {
+    const result = await staffApi("/api/admin/moderation/actions", {
       method: "POST",
       body: { action, reportId, ...(reason ? { reason } : {}) },
       context: action === "dismiss" ? "Dismissing this report" : "Removing reported content",
     });
     // The server may have committed just before this account signed out. Do not
     // repopulate the next session with the previous staff member's result.
-    if (!actionScope || actionScope !== staffScopeFor(sessionRef.current)) return result;
+    assertStaffMutation(actionScope);
     staffReadsRef.current.invalidate("moderation", sessionRef.current);
     const status = action === "dismiss" ? "dismissed" : "actioned";
     setReports((current) => current.map((report) => report.id === reportId ? { ...report, status } : report));
@@ -3770,43 +3772,39 @@ export function StoreProvider({ children }) {
   };
   const actionReport = (repId) => {
     const r = reports.find((x) => x.id === repId);
-    return moderateReport({ action: "remove", reportId: repId })
-      .then(() => {
-        if (r?.targetType === "post" || !r?.targetType) setRemovedIds((ids) => (ids.includes(r.targetId) ? ids : [...ids, r.targetId]));
+    return commitStaffAction(() => moderateReport({ action: "remove", reportId: repId }), () => {
+        if (r?.targetId && (r.targetType === "post" || !r.targetType)) setRemovedIds((ids) => (ids.includes(r.targetId) ? ids : [...ids, r.targetId]));
         setReports((rs) => rs.map((x) => (x.id === repId ? { ...x, status: "actioned" } : x)));
-        return true;
-      })
-      .catch(() => false);
+      });
   };
   const dismissReport = (repId) => {
-    return moderateReport({ action: "dismiss", reportId: repId })
-      .then(() => { setReports((rs) => rs.map((x) => (x.id === repId ? { ...x, status: "dismissed" } : x))); return true; })
-      .catch(() => false);
+    return commitStaffAction(() => moderateReport({ action: "dismiss", reportId: repId }),
+      () => setReports((rs) => rs.map((x) => (x.id === repId ? { ...x, status: "dismissed" } : x))));
   };
   const moderateContent = async (type, id, removed) => {
     const scope = staffScopeFor(sessionRef.current);
-    const result = await api(`/api/admin/content/${type}/${id}`, {
+    const result = await staffApi(`/api/admin/content/${type}/${id}`, {
       method: "POST",
       body: { removed },
       context: removed ? "Removing community content" : "Restoring community content",
     });
-    if (scope && scope === staffScopeFor(sessionRef.current)) {
+    assertStaffMutation(scope);
+    if (staffMutationStillOwned(scope)) {
       staffReadsRef.current.invalidate("moderation", sessionRef.current);
       loadModerationConsole().catch(() => {});
     }
     return result;
   };
-  const removeContent = (id) => moderateContent("post", id, true)
-    .then(() => { setRemovedIds((rows) => (rows.includes(id) ? rows : [...rows, id])); return true; })
-    .catch(() => false);
-  const restoreContent = (id) => moderateContent("post", id, false)
-    .then(() => { setRemovedIds((rows) => rows.filter((value) => value !== id)); return true; })
-    .catch(() => false);
+  const removeContent = (id) => commitStaffAction(() => moderateContent("post", id, true),
+    () => setRemovedIds((rows) => (rows.includes(id) ? rows : [...rows, id])));
+  const restoreContent = (id) => commitStaffAction(() => moderateContent("post", id, false),
+    () => setRemovedIds((rows) => rows.filter((value) => value !== id)));
 
   // Artist account requests
   const requestArtist = async (artistName, note) => {
-    const actor = sessionRef.current;
+    const actor = currentMutationActor();
     if (!actor) return { ok: false, error: "Log in first." };
+    const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
     const an = clean(artistName, { max: LIMITS.artist });
     if (an.length < 2) return { ok: false, error: "Enter the artist name." };
     const cleanNote = clean(note, { max: LIMITS.note, newlines: true });
@@ -3816,7 +3814,9 @@ export function StoreProvider({ children }) {
         body: { artistName: an, note: cleanNote },
         context: "Requesting an artist account",
         silent: true,
+        expectedAccountId: actor.id,
       });
+      if (!accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current)) return { ok: false, stale: true };
       const request = confirmedArtistRequest(response, {
         userId: actor.id,
         artistName: an,
@@ -3830,7 +3830,7 @@ export function StoreProvider({ children }) {
     }
   };
   const reviewArtistRequest = async (reqId, decision, { signal } = {}) => {
-    const actor = sessionRef.current;
+    const actor = currentMutationActor();
     const context = decision === "approved" ? "Approving this artist request" : "Rejecting this artist request";
     if (!actor) return localCommandError("PIT-AUTH-001", context);
     if (actor.role !== "admin") return localCommandError("PIT-AUTH-002", context);
@@ -3840,7 +3840,7 @@ export function StoreProvider({ children }) {
     const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
     const staffScope = staffScopeFor(actor);
     try {
-      const response = await api(`/api/admin/artist-requests/${encodeURIComponent(reqId)}/${decision === "approved" ? "approve" : "reject"}`, {
+      const response = await staffApi(`/api/admin/artist-requests/${encodeURIComponent(reqId)}/${decision === "approved" ? "approve" : "reject"}`, {
         method: "POST",
         context,
         silent: true,
@@ -4323,12 +4323,18 @@ export function StoreProvider({ children }) {
     setSession(merged);
     return merged;
   };
+  const writeAccountPreference = (actor, mutation, field, write) => {
+    // Reuse the account boundary's ref rather than adding another Store hook.
+    const queue = accountMutationEpochRef.preferenceWrites ||= createAccountPreferenceWrites();
+    return queue.run(`${mutation.accountId}:${mutation.epoch}:${field}`,
+      () => accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current), write);
+  };
   const setProfileSearchIndexingEnabled = async (enabled) => {
     const actor = currentMutationActor();
     if (!actor) return { ok: false };
     const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
     try {
-      const { user } = await updateProfileSearchIndexingPreference(enabled, { expectedAccountId: actor.id });
+      const { user } = await writeAccountPreference(actor, mutation, "searchIndexingOptOut", () => updateProfileSearchIndexingPreference(enabled, { expectedAccountId: actor.id }));
       const merged = adoptAccountPreference(actor, mutation, user, "searchIndexingOptOut", true);
       return merged ? { ok: true, user: merged } : { ok: false, stale: true };
     } catch (error) {
@@ -4341,7 +4347,7 @@ export function StoreProvider({ children }) {
     if (!actor || !["nobody", "people_i_follow", "mutuals"].includes(policy)) return { ok: false };
     const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
     try {
-      const { user } = await updateDirectMessagePreference(policy, { expectedAccountId: actor.id });
+      const { user } = await writeAccountPreference(actor, mutation, "directMessagePolicy", () => updateDirectMessagePreference(policy, { expectedAccountId: actor.id }));
       const merged = adoptAccountPreference(actor, mutation, user, "directMessagePolicy");
       return merged ? { ok: true, user: merged } : { ok: false, stale: true };
     } catch (error) {
@@ -4354,7 +4360,7 @@ export function StoreProvider({ children }) {
     if (!actor || (actor.ageBand || "unknown") !== "unknown" || !["13_17", "18_plus"].includes(ageBand)) return { ok: false };
     const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
     try {
-      const { user } = await classifyAccountAgeBand(ageBand, { expectedAccountId: actor.id });
+      const { user } = await writeAccountPreference(actor, mutation, "ageBand", () => classifyAccountAgeBand(ageBand, { expectedAccountId: actor.id }));
       const merged = adoptAccountPreference(actor, mutation, user, "ageBand");
       return merged ? { ok: true, user: merged } : { ok: false, stale: true };
     } catch (error) {
@@ -4367,7 +4373,7 @@ export function StoreProvider({ children }) {
     if (!actor || !["everyone", "members", "only_me"].includes(audience)) return { ok: false };
     const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
     try {
-      const { user } = await updateProfileAudience(audience, { expectedAccountId: actor.id });
+      const { user } = await writeAccountPreference(actor, mutation, "profileAudience", () => updateProfileAudience(audience, { expectedAccountId: actor.id }));
       const merged = adoptAccountPreference(actor, mutation, user, "profileAudience");
       return merged ? { ok: true, user: merged } : { ok: false, stale: true };
     } catch (error) { return { ok: false, error }; }
@@ -4378,7 +4384,7 @@ export function StoreProvider({ children }) {
     if (!actor) return { ok: false };
     const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
     try {
-      const { user } = await updateAnnouncementEmailPreference(enabled, { expectedAccountId: actor.id });
+      const { user } = await writeAccountPreference(actor, mutation, "marketingOptOut", () => updateAnnouncementEmailPreference(enabled, { expectedAccountId: actor.id }));
       const merged = adoptAccountPreference(actor, mutation, user, "marketingOptOut");
       return merged ? { ok: true, user: merged } : { ok: false, stale: true };
     } catch (error) {
@@ -4446,7 +4452,12 @@ export function StoreProvider({ children }) {
     commentCache.trackRequest(requestKey, request);
     return request;
   };
-  const addComment = (id, text, parentId = null) => {
+  const writePostComment = (claim, postId, write) => {
+    const queue = accountMutationEpochRef.commentWrites ||= createAccountPreferenceWrites();
+    return queue.run(JSON.stringify([claim.accountId, claim.epoch, postId]),
+      () => commentClaimIsCurrent(claim), write);
+  };
+  const addComment = (id, text, parentId = null, { clientMutationId = createChatClientMutationId("comment") } = {}) => {
     const t = clean(text, { max: LIMITS.message, newlines: true });
     const actor = currentMutationActor();
     const claim = commentCache.capture();
@@ -4456,11 +4467,18 @@ export function StoreProvider({ children }) {
     setComments((m) => ({ ...m, [id]: [...(m[id] || []), c] }));
     // Write-through + adopt the server id so a later loadComments() dedupes it
     // instead of showing my comment twice.
-    return api(`/api/posts/${id}/comments`, { method: "POST", body: { text: t, parentId: parentId || null }, context: "Adding your post comment", expectedAccountId: claim.accountId })
-      .then(({ id: sid }) => {
+    return writePostComment(claim, id, () => api(`/api/posts/${id}/comments`, { method: "POST", body: { text: t, parentId: parentId || null, clientMutationId }, context: "Adding your post comment", expectedAccountId: claim.accountId }))
+      .then(({ id: sid, parentId: acceptedParentId = parentId || null, duplicate = false, commentCount }) => {
         if (!commentClaimIsCurrent(claim)) return { ok: false, stale: true };
-        const published = { ...c, id: sid || localId, pending: false, createdAt: c.at };
-        setComments((m) => ({ ...m, [id]: (m[id] || []).map((x) => (x.id === localId ? published : x)) }));
+        if (!sid) throw new Error("The server did not confirm your comment. Your draft is still available to retry.");
+        const published = { ...c, id: sid, parentId: acceptedParentId, pending: false, createdAt: c.at };
+        setComments((m) => {
+          const current = m[id] || [];
+          const confirmed = current.find((comment) => comment.id === sid);
+          return { ...m, [id]: current.filter((comment) => comment.id !== localId && comment.id !== sid)
+            .concat(confirmed ? { ...published, ...confirmed, pending: false, parentId: acceptedParentId } : published)
+            .sort((a, b) => (a.at || 0) - (b.at || 0)) };
+        });
         feedMutationRevisionRef.current += 1;
         setFeed((posts) => posts.map((post) => {
           if (post.id !== id) return post;
@@ -4470,13 +4488,16 @@ export function StoreProvider({ children }) {
           return {
             ...post,
             ...(Array.isArray(post.commentPreview) ? { commentPreview: preview } : {}),
-            comments: (Number(post.comments) || 0) + 1,
+            comments: Number.isFinite(commentCount) && commentCount >= 0
+              ? commentCount : (Number(post.comments) || 0) + (duplicate ? 0 : 1),
           };
         }));
         const owner = postOwner(id);
-        track("interaction", { postId: id, action: "comment", surface: "afterparty" });
-        if (owner) notify(owner, "comment", { postId: id, artist: feed.find((l) => l.id === id)?.artist, text: t.slice(0, 60) });
-        return { ok: true, id: sid || localId };
+        if (!duplicate) {
+          track("interaction", { postId: id, action: "comment", surface: "afterparty" });
+          if (owner) notify(owner, "comment", { postId: id, artist: feed.find((l) => l.id === id)?.artist, text: t.slice(0, 60) });
+        }
+        return { ok: true, id: sid, duplicate: !!duplicate };
       })
       .catch((error) => {
         if (!commentClaimIsCurrent(claim)) return { ok: false, stale: true };
@@ -4488,11 +4509,11 @@ export function StoreProvider({ children }) {
     const actor = currentMutationActor();
     const claim = commentCache.capture();
     if (!actor || actor.id !== claim.accountId || !postId || !commentId || !commentClaimIsCurrent(claim)) return Promise.resolve({ ok: false });
-    return api(`/api/posts/${postId}/comments/${commentId}`, {
+    return writePostComment(claim, postId, () => api(`/api/posts/${postId}/comments/${commentId}`, {
       method: "DELETE",
       context: "Deleting your comment",
       expectedAccountId: claim.accountId,
-    }).then(({ tombstone }) => {
+    })).then(({ tombstone }) => {
       if (!commentClaimIsCurrent(claim)) return { ok: false, stale: true };
       setComments((all) => {
         const current = all[postId] || [];
@@ -5530,7 +5551,31 @@ export function StoreProvider({ children }) {
       setUsers((current) => current.map((user) => user.id === id ? { ...user, ...publicPatch } : user));
     }
   };
-  const staffMutationStillOwned = (scope) => !!scope && scope === staffScopeFor(sessionRef.current);
+  const staffMutationStillOwned = (scope) => !!scope && !!currentMutationActor()
+    && renderedStaffEpoch === staffReadsRef.current.epoch
+    && scope === staffScopeFor(session) && scope === staffScopeFor(sessionRef.current);
+  const assertStaffMutation = (scope) => {
+    if (!staffMutationStillOwned(scope)) throw new AppError("Your staff session changed. Reopen this control before trying again.", {
+      status: 409, serverCode: "IDENTITY_CHANGED", context: "Updating moderation", source: "staff-session",
+    });
+  };
+  const staffApi = async (path, options = {}) => {
+    const scope = staffScopeFor(session);
+    assertStaffMutation(scope);
+    const result = await api(path, { ...options, expectedAccountId: session.id });
+    assertStaffMutation(scope);
+    return result;
+  };
+  const commitStaffAction = async (write, commit) => {
+    const scope = staffScopeFor(session);
+    try {
+      assertStaffMutation(scope);
+      await write();
+      assertStaffMutation(scope);
+      commit();
+      return true;
+    } catch { return false; }
+  };
   const invalidateStaffMemberReads = () => {
     staffReadsRef.current.invalidate("members", sessionRef.current);
     staffReadsRef.current.invalidate("moderation", sessionRef.current);
@@ -5545,7 +5590,7 @@ export function StoreProvider({ children }) {
   const banUser = async (id) => {
     const scope = staffScopeFor(sessionRef.current);
     try {
-      await api(`/api/admin/users/${id}/ban`, { method: "POST", context: "Banning this account" });
+      await staffApi(`/api/admin/users/${id}/ban`, { method: "POST", context: "Banning this account" });
       if (staffMutationStillOwned(scope)) {
         invalidateStaffMemberReads();
         patchStaffMember(id, { isBanned: true });
@@ -5556,7 +5601,7 @@ export function StoreProvider({ children }) {
   const unbanUser = async (id) => {
     const scope = staffScopeFor(sessionRef.current);
     try {
-      await api(`/api/admin/users/${id}/unban`, { method: "POST", context: "Unbanning this account" });
+      await staffApi(`/api/admin/users/${id}/unban`, { method: "POST", context: "Unbanning this account" });
       if (staffMutationStillOwned(scope)) {
         invalidateStaffMemberReads();
         patchStaffMember(id, { isBanned: false, suspendedUntil: null });
@@ -5567,7 +5612,7 @@ export function StoreProvider({ children }) {
   const suspendUser = async (id, days = 7) => {
     const scope = staffScopeFor(sessionRef.current);
     try {
-      const { suspendedUntil } = await api(`/api/admin/users/${id}/suspend`, { method: "POST", body: { days }, context: "Timing out this account" });
+      const { suspendedUntil } = await staffApi(`/api/admin/users/${id}/suspend`, { method: "POST", body: { days }, context: "Timing out this account" });
       if (staffMutationStillOwned(scope)) {
         invalidateStaffMemberReads();
         patchStaffMember(id, { suspendedUntil });
@@ -5578,7 +5623,7 @@ export function StoreProvider({ children }) {
   const liftSuspension = async (id) => {
     const scope = staffScopeFor(sessionRef.current);
     try {
-      await api(`/api/admin/users/${id}/unsuspend`, { method: "POST", context: "Lifting this timeout" });
+      await staffApi(`/api/admin/users/${id}/unsuspend`, { method: "POST", context: "Lifting this timeout" });
       if (staffMutationStillOwned(scope)) {
         invalidateStaffMemberReads();
         patchStaffMember(id, { suspendedUntil: null });
@@ -5656,10 +5701,10 @@ export function StoreProvider({ children }) {
   const prepareMemorialArtist = async (value, { signal } = {}) => {
     const context = "Finding exact artist for memorial";
     const name = artistMemorialPreparationName(value);
-    const sessionAtStart = sessionRef.current;
+    const sessionAtStart = currentMutationActor();
     const accountId = sessionAtStart?.id || null;
     const scope = staffScopeFor(sessionAtStart);
-    if (!accountId || sessionAtStart?.role !== "admin" || !scope) {
+    if (!accountId || sessionAtStart?.role !== "admin" || !staffMutationStillOwned(scope)) {
       throw new AppError("Memorial preparation requires an administrator session.", {
         status: 403,
         serverCode: "FORBIDDEN",
@@ -5675,7 +5720,7 @@ export function StoreProvider({ children }) {
     if (signal?.aborted) {
       throw signal.reason || new Error("The exact artist lookup was cancelled.");
     }
-    if (staffScopeFor(sessionRef.current) !== scope) {
+    if (!staffMutationStillOwned(scope)) {
       throw new AppError("Your administrator session changed. Search again before preparing this memorial.", {
         status: 409,
         serverCode: "IDENTITY_CHANGED",
@@ -5696,12 +5741,12 @@ export function StoreProvider({ children }) {
       return { thin: [], missing: [], thinTotal: 0 };
     }
   };
-  const enrichArtists = async (names) => { try { const r = await api("/api/admin/artists/enrich", { method: "POST", body: { names } }); return r.enriched || 0; } catch { return 0; } };
-  const purgeArtist = async (norm) => { try { await api("/api/admin/artists/purge", { method: "POST", body: { norm } }); } catch {} };
+  const enrichArtists = async (names) => { try { const r = await staffApi("/api/admin/artists/enrich", { method: "POST", body: { names } }); return r.enriched || 0; } catch { return 0; } };
+  const purgeArtist = async (norm) => { try { await staffApi("/api/admin/artists/purge", { method: "POST", body: { norm } }); return true; } catch { return false; } };
   // Kick off / poll the background "grow the catalog to N artists" job (admin).
   const startCatalogSeed = async (addOrOpts) => {
     const body = typeof addOrOpts === "object" && addOrOpts ? addOrOpts : { add: addOrOpts };
-    try { return await api("/api/admin/catalog/seed", { method: "POST", body }); } catch { return { started: false }; }
+    try { return await staffApi("/api/admin/catalog/seed", { method: "POST", body }); } catch { return { started: false }; }
   };
   const catalogSeedStatus = async ({ signal, strict = false } = {}) => {
     try {
@@ -5711,7 +5756,7 @@ export function StoreProvider({ children }) {
       return null;
     }
   };
-  const stopCatalogSeed = async () => { try { return await api("/api/admin/catalog/seed", { method: "DELETE" }); } catch { return null; } };
+  const stopCatalogSeed = async () => { try { return await staffApi("/api/admin/catalog/seed", { method: "DELETE" }); } catch { return null; } };
   // Durable job history, so the console can show what a run actually did even
   // after a restart (an in-memory "done" once hid a run that added nothing).
   const catalogSeedRuns = async ({ signal, strict = false } = {}) => {
@@ -5724,19 +5769,17 @@ export function StoreProvider({ children }) {
   };
 
   // moderation: drop a single chat/lounge/comment message (staff)
-  const removeLoungeMessage = (key, msgId) => moderateContent("lounge_message", msgId, true)
-    .then(() => { setLounge((L) => ({ ...L, [key]: (L[key] || []).filter((m) => m.id !== msgId) })); return true; }).catch(() => false);
+  const removeLoungeMessage = (key, msgId) => commitStaffAction(() => moderateContent("lounge_message", msgId, true),
+    () => setLounge((L) => ({ ...L, [key]: (L[key] || []).filter((m) => m.id !== msgId) })));
   const removeComment = (logId, cId) => {
     const claim = commentCache.capture();
-    return moderateContent("comment", cId, true)
-      .then(() => {
-        if (!commentClaimIsCurrent(claim)) return false;
+    return commitStaffAction(() => moderateContent("comment", cId, true), () => {
+        if (!commentClaimIsCurrent(claim)) return;
         setComments((m) => ({ ...m, [logId]: (m[logId] || []).filter((c) => c.id !== cId) }));
-        return true;
-      }).catch(() => false);
+      });
   };
-  const removeFanClubMessage = (artistKey, msgId) => moderateContent("fan_message", msgId, true)
-    .then(() => { setFanClubMsgs((L) => ({ ...L, [artistKey]: (L[artistKey] || []).filter((m) => m.id !== msgId) })); return true; }).catch(() => false);
+  const removeFanClubMessage = (artistKey, msgId) => commitStaffAction(() => moderateContent("fan_message", msgId, true),
+    () => setFanClubMsgs((L) => ({ ...L, [artistKey]: (L[artistKey] || []).filter((m) => m.id !== msgId) })));
   // Fan/artist changes apply immediately. Any transition to or from a head role
   // only creates a Founder approval request; a pending response must never make
   // the member look promoted or demoted before that separate decision lands.
@@ -5755,7 +5798,8 @@ export function StoreProvider({ children }) {
     }
     const scope = staffScopeFor(sessionRef.current);
     try {
-      const result = await api(`/api/admin/users/${id}/role`, { method: "POST", body: { role, handle }, context: "Changing this account role" });
+      const result = await staffApi(`/api/admin/users/${id}/role`, { method: "POST", body: { role, handle }, context: "Changing this account role" });
+      if (!staffMutationStillOwned(scope)) return { ok: false, stale: true };
       const appliedPatch = confirmedRoleMutationPatch(result);
       if (result?.pending !== true && !appliedPatch) {
         return { ok: false, error: new Error("The server did not confirm the resulting role and username.") };
@@ -5781,7 +5825,7 @@ export function StoreProvider({ children }) {
     const verified = !!val;
     const scope = staffScopeFor(sessionRef.current);
     try {
-      await api(`/api/admin/users/${id}/verified`, { method: "POST", body: { verified }, context: "Updating verification" });
+      await staffApi(`/api/admin/users/${id}/verified`, { method: "POST", body: { verified }, context: "Updating verification" });
       if (staffMutationStillOwned(scope)) {
         invalidateStaffMemberReads();
         patchStaffMember(id, { verified }, { publicPatch: { verified } });
@@ -5797,7 +5841,7 @@ export function StoreProvider({ children }) {
     if (!isStaff(sessionRef.current?.role)) return false;
     const scope = staffScopeFor(sessionRef.current);
     try {
-      await api(`/api/admin/users/${id}/verify-email`, { method: "POST", body: {}, context: "Confirming a member's email" });
+      await staffApi(`/api/admin/users/${id}/verify-email`, { method: "POST", body: {}, context: "Confirming a member's email" });
       if (staffMutationStillOwned(scope)) {
         invalidateStaffMemberReads();
         patchStaffMember(id, { emailVerified: true });
@@ -5811,7 +5855,7 @@ export function StoreProvider({ children }) {
     const sponsor = !!val;
     const scope = staffScopeFor(sessionRef.current);
     try {
-      await api(`/api/admin/users/${id}/sponsor`, { method: "POST", body: { sponsor }, context: "Updating sponsorship" });
+      await staffApi(`/api/admin/users/${id}/sponsor`, { method: "POST", body: { sponsor }, context: "Updating sponsorship" });
       if (staffMutationStillOwned(scope)) {
         invalidateStaffMemberReads();
         patchStaffMember(id, { sponsor }, { publicPatch: { sponsor } });

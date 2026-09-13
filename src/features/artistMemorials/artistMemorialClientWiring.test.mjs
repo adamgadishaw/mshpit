@@ -27,7 +27,13 @@ test("the store strictly prepares one exact memorial artist in the initiating ad
   assert.match(method, /signal,/);
   assert.match(method, /context,/);
   assert.match(method, /expectedAccountId: accountId/);
-  assert.match(method, /staffScopeFor\(sessionRef\.current\) !== scope/);
+  assert.match(method, /const sessionAtStart = currentMutationActor\(\)/);
+  assert.equal((method.match(/!staffMutationStillOwned\(scope\)/g) || []).length, 2,
+    "both lookup entry and result adoption must reject a changed account or role epoch");
+  const ownership = between(store, "const staffMutationStillOwned =", "const assertStaffMutation =");
+  assert.match(ownership, /currentMutationActor\(\)/);
+  assert.match(ownership, /renderedStaffEpoch === staffReadsRef\.current\.epoch/);
+  assert.match(ownership, /scope === staffScopeFor\(session\) && scope === staffScopeFor\(sessionRef\.current\)/);
   assert.match(method, /const artist = await prepareArtistMemorialCandidate/);
   assert.match(method, /cacheArtists\(\[artist\]\)/);
   assert.match(method, /return artist;/);

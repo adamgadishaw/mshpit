@@ -193,6 +193,10 @@ export function createShowAttendanceRepository(database) {
       publicEligible: providerBacked ? 1 : 0,
       legacyKey: normalizeShowAliasKey(input?.legacyKey),
       claimLegacyAlias: input?.claimLegacyAlias === true,
+      // Only the server-owned event resolver supplies these independently
+      // proven aliases; never copy aliases from a member's request body.
+      provenLegacyAliases: Array.isArray(input?.provenLegacyAliases)
+        ? [...new Set(input.provenLegacyAliases.slice(0, 2).map(normalizeShowAliasKey).filter(Boolean))] : [],
       createdAt: at,
       updatedAt: at,
     };
@@ -222,13 +226,20 @@ export function createShowAttendanceRepository(database) {
     return values;
   }
 
+  function provenLegacyKeys(descriptor) {
+    return [...new Set([
+      ...(descriptor.claimLegacyAlias && descriptor.legacyKey ? [descriptor.legacyKey] : []),
+      ...descriptor.provenLegacyAliases,
+    ])];
+  }
+
   function legacyClaimCandidate(descriptor) {
-    if (!descriptor.claimLegacyAlias || !descriptor.legacyKey) return null;
-    const candidate = showByAlias.get(LEGACY_ALIAS_TYPE, descriptor.legacyKey)
-      || showByCanonicalKey.get(descriptor.legacyKey);
-    return candidate && candidate.identity_source === "member_legacy_alias"
-      && !candidate.tour_date_id && !candidate.provider && !candidate.provider_event_id
-      ? candidate : null;
+    for (const key of provenLegacyKeys(descriptor)) {
+      const candidate = showByAlias.get(LEGACY_ALIAS_TYPE, key) || showByCanonicalKey.get(key);
+      if (candidate && candidate.identity_source === "member_legacy_alias"
+        && !candidate.tour_date_id && !candidate.provider && !candidate.provider_event_id) return candidate;
+    }
+    return null;
   }
 
   function resolveExactShow(input) {
@@ -249,8 +260,9 @@ export function createShowAttendanceRepository(database) {
     }
     row = exactShowRow(descriptor);
     if (!row) throw new Error("Exact show identity could not be allocated");
-    if (descriptor.claimLegacyAlias && descriptor.legacyKey) {
-      insertAlias.run(LEGACY_ALIAS_TYPE, descriptor.legacyKey, row.id, at);
+    for (const key of provenLegacyKeys(descriptor)) {
+      // INSERT OR IGNORE preserves an existing independently assigned room.
+      insertAlias.run(LEGACY_ALIAS_TYPE, key, row.id, at);
     }
     return resolveShow(row.id);
   }
@@ -402,7 +414,10 @@ export function createShowAttendanceRepository(database) {
     const show = resolveExactShow(input);
     if (show) return ownAttendance(userId, show.id);
     const descriptor = exactShowDescriptor(input, 0);
-    if (descriptor?.claimLegacyAlias && descriptor.legacyKey) return ownAttendance(userId, descriptor.legacyKey);
+    for (const key of descriptor ? provenLegacyKeys(descriptor) : []) {
+      const existing = ownAttendance(userId, key);
+      if (existing.attendance) return existing;
+    }
     return { show: null, attendance: null };
   }
 
@@ -410,7 +425,9 @@ export function createShowAttendanceRepository(database) {
     const show = ensureExactShow(descriptor, values.at);
     return writeAttendance({
       ...values,
-      key: descriptor.legacyKey || show.id,
+      // An ambiguous, unclaimed display tuple cannot affect another room's
+      // legacy attendance during either an update or a removal.
+      key: legacyKeyForShow(show, descriptor.legacyKey) || show.id,
       show,
       artist: descriptor.artist,
       artistKey: descriptor.artistKey,

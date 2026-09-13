@@ -24,6 +24,7 @@ import { projectedOnlineReviewFields } from "../../onlineReviews.js";
 import { archiveShowKey } from "../artistArchive/artistArchiveKeys.js";
 import { venueCoordinates, venueGuideModel } from "../../../src/domain/venueGuide.mjs";
 import { publicVenueFacts } from "../../venueFacts.js";
+import { publicTourDateArtistProjection } from "../../tourDateMetadata.js";
 import { publicEventMetadata, publicVenueMetadataName } from "./publicMetadataPresentation.js";
 import {
   isCurrentOrUpcomingPublicMusicEvent,
@@ -561,7 +562,8 @@ function eventAllowsTicketOffer(event, today = null) {
 
 function eventCard(row, paths) {
   if (!row?.id || !isIndexableMusicEventRecord(row)) return null;
-  const artist = cleanLine(row.artist, 160);
+  const projectedArtist = publicTourDateArtistProjection(row);
+  const artist = cleanLine(projectedArtist.artist, 160);
   const venue = cleanLine(row.venue, 180);
   const date = validDate(row.date);
   if (!artist || !venue || !date) return null;
@@ -592,7 +594,7 @@ function eventCard(row, paths) {
     schemaName: (providerEvidence ? cleanLine(row.event_name, 220) : null) || artist,
     path: canonicalEventPath(paths, row),
     artist,
-    artistPath: relatedArtistPath(paths, row),
+    artistPath: projectedArtist.bindingAllowed ? relatedArtistPath(paths, row) : null,
     venue,
     venuePath: canonicalVenuePath(paths, row),
     providerVenueId: cleanLine(row.venue_provider_id, 180) || null,

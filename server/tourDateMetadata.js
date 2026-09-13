@@ -1,3 +1,5 @@
+import { storedBillingAllowsArtistBinding } from "./artistBillingIdentity.js";
+
 const cleanLine = (value, maxLength = 160) => {
   if (typeof value !== "string" && typeof value !== "number") return null;
   const text = String(value).replace(/\s+/g, " ").trim();
@@ -15,6 +17,35 @@ const identity = (value) => String(value || "")
 const TOUR_TOKEN = /\btour\b/i;
 const SPECIAL_EVENT_TOKEN = /\b(?:festival|fest|fair|fairs|rodeo|carnival|exhibition|expo)\b/i;
 const TITLE_SEPARATOR = /\s+(?:[-\u2013\u2014|])\s+|:\s+/;
+
+function evidencedBilledArtistNames(row) {
+  if (!cleanLine(row?.music_evidence, 120)
+    || typeof row?.billed_artists !== "string"
+    || row.billed_artists.length > 16_000) return [];
+  let values;
+  try { values = JSON.parse(row.billed_artists); } catch { return []; }
+  if (!Array.isArray(values)) return [];
+  return values.slice(0, 20)
+    .filter((value) => typeof value === "string" && value.trim() && value.length <= 160)
+    .map((value) => cleanLine(value))
+    .filter(Boolean);
+}
+
+export function publicTourDateArtistProjection(row) {
+  const storedArtist = cleanLine(row?.artist);
+  const memberAuthored = row?.owner_id != null;
+  const bindingAllowed = !!storedArtist && (memberAuthored || storedBillingAllowsArtistBinding(
+    row?.source,
+    row?.music_evidence,
+    row?.billed_artists,
+    storedArtist,
+  ));
+  const billedArtists = evidencedBilledArtistNames(row);
+  return {
+    artist: bindingAllowed ? storedArtist : billedArtists[0] || storedArtist,
+    bindingAllowed,
+  };
+}
 
 // Ticketmaster Discovery supplies an official event title, not a dedicated
 // music-tour field. Keep the original title separately and only promote one

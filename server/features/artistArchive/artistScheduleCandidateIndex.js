@@ -1,4 +1,4 @@
-import { canonicalBillingIdentity, storedBillingIdentities } from "../../artistBillingIdentity.js";
+import { providerBillingIdentity, storedBillingIdentities } from "../../artistBillingIdentity.js";
 import { ApiError } from "../../errors.js";
 
 const shared = new WeakMap();
@@ -62,7 +62,7 @@ export function artistScheduleCandidateIndex(database) {
       let sourceRows = 0, artistRows = 0, memberships = 0;
       for (const row of artists.iterate()) {
         if (++artistRows > MAX_SOURCE_ROWS) failCapacity();
-        const key = canonicalBillingIdentity(row.name);
+        const key = providerBillingIdentity(row.name);
         nameCounts.set(key, (nameCounts.get(key) || 0) + 1);
       }
       for (const row of events.iterate()) {
@@ -82,7 +82,7 @@ export function artistScheduleCandidateIndex(database) {
   const index = Object.freeze({
     candidates(name) {
       const state = refresh();
-      const identity = canonicalBillingIdentity(name);
+      const identity = providerBillingIdentity(name);
       const unambiguous = state.nameCounts.get(identity) === 1;
       const ids = unambiguous ? state.billing.get(identity) || [] : [];
       if (ids.length > MAX_ARTIST_CANDIDATES) throw capacityError();

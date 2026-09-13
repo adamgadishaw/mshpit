@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { deriveTourNameFromEventTitle, publicTourDateProviderFields } from "./tourDateMetadata.js";
+import {
+  deriveTourNameFromEventTitle,
+  publicTourDateArtistProjection,
+  publicTourDateProviderFields,
+} from "./tourDateMetadata.js";
 
 test("tour-name derivation accepts one explicit concert tour segment", () => {
   assert.equal(deriveTourNameFromEventTitle({
@@ -68,4 +72,46 @@ test("provider projection preserves official title and distinguishes absent acce
     eventStatus: "onsale",
   });
   assert.equal(publicTourDateProviderFields({}).accessStartApproximate, null);
+});
+
+test("public artist projection repairs contradicted provider bindings without changing legacy or member rows", () => {
+  const collision = {
+    artist: "sports.",
+    artist_key: "sports-dot",
+    source: "ticketmaster",
+    music_evidence: "ticketmaster:classification:music",
+    billed_artists: '["Jungle","Sports"]',
+  };
+  assert.deepEqual(publicTourDateArtistProjection(collision), {
+    artist: "Jungle",
+    bindingAllowed: false,
+  });
+  assert.deepEqual(publicTourDateArtistProjection({
+    ...collision,
+    billed_artists: '["Jungle","sports."]',
+  }), {
+    artist: "sports.",
+    bindingAllowed: true,
+  });
+  assert.deepEqual(publicTourDateArtistProjection({
+    ...collision,
+    billed_artists: "[]",
+  }), {
+    artist: "sports.",
+    bindingAllowed: true,
+  });
+  assert.deepEqual(publicTourDateArtistProjection({
+    ...collision,
+    owner_id: "member",
+  }), {
+    artist: "sports.",
+    bindingAllowed: true,
+  });
+  assert.deepEqual(publicTourDateArtistProjection({
+    ...collision,
+    music_evidence: null,
+  }), {
+    artist: "sports.",
+    bindingAllowed: false,
+  });
 });

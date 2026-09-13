@@ -12,7 +12,7 @@ import {
 } from "../src/domain/eventLifecycle.mjs";
 import { publicTicketmasterEventImage } from "./providerEventImage.js";
 import { publicTourDateVenueFields } from "./publicTourDateVenueProjection.js";
-import { publicTourDateProviderFields } from "./tourDateMetadata.js";
+import { publicTourDateArtistProjection, publicTourDateProviderFields } from "./tourDateMetadata.js";
 import { catalogTotals } from "./catalogTotals.js";
 import { eligiblePopularityArtists } from "./artistPopularityEligibility.js";
 import { artistHasLegacyMemorial } from "./artistMemorialTourDateVisibility.js";
@@ -67,9 +67,10 @@ function evidenceBackedEventFields(row) {
 }
 
 function publicEvent(row) {
+  const projectedArtist = publicTourDateArtistProjection(row);
   return {
     id: row.id,
-    artist: row.artist,
+    artist: projectedArtist.artist,
     venue: row.venue,
     place: row.place,
     lat: row.lat,

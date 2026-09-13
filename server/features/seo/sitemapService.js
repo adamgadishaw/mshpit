@@ -1,5 +1,6 @@
 import { activeAccountSql } from "../../accountVisibility.js";
 import { profileAllowsSearchIndexingSql } from "../../profileSearchIndexing.js";
+import { storedBillingAllowsArtistBinding } from "../../artistBillingIdentity.js";
 import { postMediaProjectionByPost } from "../../mediaAssets.js";
 import { publicPageSitemapEntries } from "../../publicPages.js";
 import { publicTicketmasterEventImage } from "../../providerEventImage.js";
@@ -521,11 +522,15 @@ export function artistSitemapEntries(database, { now = Date.now(), candidates = 
   }
 
   const postUpdates = new Map();
+  // A stored identity is authoritative even when it no longer resolves. Only
+  // legacy rows without an identity may use an unambiguous display-name match,
+  // matching the public document repository's authorization/projection rule.
+  const canonicalArtistFor = (row) => row.artist_key != null
+    ? artistByNorm.get(String(row.artist_key).trim().toLowerCase())
+    : artistByName.get(String(row.artist || "").trim().toLowerCase());
   for (const row of candidates?.posts || visiblePostCandidates(database)) {
     if (!row.meaningfulText && !(row.photos_public && row.readyMedia.length)) continue;
-    const byKey = artistByNorm.get(String(row.artist_key || "").trim().toLowerCase());
-    const byName = artistByName.get(String(row.artist || "").trim().toLowerCase());
-    const artistKey = (byKey || byName)?.norm;
+    const artistKey = canonicalArtistFor(row)?.norm;
     if (!artistKey) continue;
     postUpdates.set(artistKey, newest(postUpdates.get(artistKey), row.updated_at, row.created_at));
   }
@@ -535,10 +540,15 @@ export function artistSitemapEntries(database, { now = Date.now(), candidates = 
     .filter((row) => isCurrentOrUpcomingPublicMusicEvent(row, today)
       && (row.owner_id != null || Number(row.provider_active) === 1));
   for (const row of upcomingEvents) {
-    const byKey = artistByNorm.get(String(row.artist_key || "").trim().toLowerCase());
-    const byName = artistByName.get(String(row.artist || "").trim().toLowerCase());
-    const artistKey = (byKey || byName)?.norm;
-    if (artistKey) tourUpdates.set(artistKey, newest(tourUpdates.get(artistKey), row.updated_at));
+    const artist = canonicalArtistFor(row);
+    if (!artist) continue;
+    // Retained exact-demand imports can contain a bad artist_key. Provider
+    // billing evidence must support the catalog identity before it makes that
+    // artist indexable or updates its modification date. Member dates and
+    // legacy records without provider billing retain their existing policy.
+    if (row.owner_id == null
+      && !storedBillingAllowsArtistBinding(row.source, row.music_evidence, row.billed_artists, artist.name)) continue;
+    tourUpdates.set(artist.norm, newest(tourUpdates.get(artist.norm), row.updated_at));
   }
 
   const profileDetails = new Map(database.prepare(`SELECT ap.artist_key,ap.bio,ap.updated_at

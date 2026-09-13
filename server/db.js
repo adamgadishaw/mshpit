@@ -34,6 +34,7 @@ import { ensureSharedEmailSchema } from "./features/accountOnboarding/sharedEmai
 import { ensureAccountLifecycleSchema } from "./features/accountLifecycle/accountLifecycleSchema.js";
 import { ensureErrorAlertSchema } from "./errorAlertDelivery.js";
 import { seedReviewedArtistIdentities } from "./reviewedArtistIdentities.js";
+import { ensureCommentMutationSchema } from "./commentMutationSchema.js";
 
 export const artistSearchKey = (value) => String(value || "")
   .normalize("NFKD")
@@ -2117,6 +2118,7 @@ db.exec(`INSERT OR IGNORE INTO post_create_receipts
   WHERE client_mutation_id IS NOT NULL
     AND (removed=1 OR client_mutation_hash IS NOT NULL)`);
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_dms_client_mutation ON dms(from_id, client_mutation_id) WHERE client_mutation_id IS NOT NULL");
+ensureCommentMutationSchema(db);
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_fcm_client_mutation ON fan_club_messages(user_id, client_mutation_id) WHERE client_mutation_id IS NOT NULL");
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_lounge_client_mutation ON lounge_messages(user_id, client_mutation_id) WHERE client_mutation_id IS NOT NULL");
 // Backfill only a single exact normalized display-name match. Ambiguous and

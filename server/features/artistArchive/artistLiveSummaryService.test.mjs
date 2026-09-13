@@ -14,7 +14,8 @@ function fixture() {
     INSERT INTO users(id) VALUES ('viewer'),('fan'),('blocked');
     CREATE TABLE blocks(blocker_id TEXT,blocked_id TEXT);
     CREATE TABLE artists(norm TEXT PRIMARY KEY,name TEXT,mbid TEXT);
-    INSERT INTO artists VALUES ('alpha','Alpha','mbid-alpha'),('beta','Beta','mbid-beta'),('chris brown','Chris Brown','mbid-chris'),('usher','Usher','mbid-usher');
+    INSERT INTO artists VALUES ('alpha','Alpha','mbid-alpha'),('beta','Beta','mbid-beta'),('chris brown','Chris Brown','mbid-chris'),('usher','Usher','mbid-usher'),
+      ('sports','Sports','mbid-sports'),('sports-dot','sports.','mbid-sports-dot');
     CREATE TABLE artist_memorials(artist_key TEXT,artist_mbid TEXT,status TEXT,death_date TEXT);
     CREATE TABLE artist_tourdate_refresh_queue(artist_key TEXT PRIMARY KEY,status TEXT,attempted_at INTEGER,succeeded_at INTEGER,
       ticketmaster_coverage_limited INTEGER DEFAULT 0,last_error_code TEXT);
@@ -181,6 +182,26 @@ test("retained verified joint billing reaches both individual pages exactly once
     f.addDate("unverified", { artist: "Chris Brown & Somebody", music_evidence: "music", billed_artists: '["Chris Brown & Somebody"]' });
     assert.deepEqual(f.read({}, null, "chris brown").schedule.items.map((row) => row.id), ["joint"]);
     assert.deepEqual(f.read({}, null, "usher").schedule.items.map((row) => row.id), ["joint"]);
+  } finally { f.database.close(); }
+});
+
+test("provider billing never merges Sports with the distinct punctuated sports. identity", () => {
+  const f = fixture();
+  try {
+    f.addDate("plain-support", { artist_key: "jungle", artist: "Jungle", date: "2026-10-01",
+      music_evidence: "ticketmaster:classification:music", billed_artists: '["Jungle","Sports"]' });
+    f.addDate("punctuated-support", { artist_key: "jungle", artist: "Jungle", date: "2026-10-02",
+      music_evidence: "ticketmaster:classification:music", billed_artists: '["Jungle","sports."]' });
+    // The old fuzzy exact-demand import could key this row to sports. even
+    // though its provider billing only proved the different artist Sports.
+    f.addDate("previously-miskeyed", { artist_key: "sports-dot", artist: "sports.", date: "2026-10-03",
+      music_evidence: "ticketmaster:classification:music", billed_artists: '["Jungle","Sports"]' });
+    f.addDate("keyless-contradiction", { artist_key: null, artist: "sports.", date: "2026-10-04",
+      music_evidence: "ticketmaster:classification:music", billed_artists: '["Jungle","Sports"]' });
+    assert.deepEqual(f.read({}, null, "sports-dot").schedule.items.map((row) => row.id), ["punctuated-support"]);
+    assert.deepEqual(f.read({}, null, "sports").schedule.items.map((row) => row.id), [
+      "plain-support", "previously-miskeyed", "keyless-contradiction",
+    ]);
   } finally { f.database.close(); }
 });
 

@@ -1470,6 +1470,34 @@ test("provider-evidenced festivals expose cohesive visible and structured event 
   }
 });
 
+test("provider billing cannot project a punctuation-colliding artist relationship", () => {
+  const database = createDatabase();
+  try {
+    addArtist(database, { key: "sports-dot", name: "sports.", mbid: OTHER_MBID });
+    database.prepare("INSERT INTO tour_dates "
+      + "(id,artist,artist_key,venue,place,date,start_date_time,event_name,event_kind,music_qualified,"
+      + "music_evidence,billed_artists,venue_address_line1,venue_city,venue_country_code,"
+      + "source,provider_event_id,release_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)").run(
+      "jungle-sports", "sports.", "sports-dot", "Auditorio", "Zapopan, Mexico",
+      "2027-03-17", "2027-03-17T20:00:00-06:00", "JUNGLE - World Tour 2027",
+      "concert", 1, "ticketmaster:classification:music", JSON.stringify(["Jungle", "Sports"]),
+      "100 Music Way", "Zapopan", "MX", "ticketmaster", "tm-jungle-sports",
+    );
+    const documents = service(database);
+    const event = documents.eventDocument({ id: "jungle-sports", today: "2026-08-25", at: NOW });
+    const schema = event.jsonLd.find((node) => node["@type"] === "MusicEvent");
+    assert.equal(event.event.artist, "Jungle");
+    assert.equal(event.event.artistPath, null);
+    assert.deepEqual(schema.performer, [
+      { "@type": "MusicGroup", name: "Jungle" },
+      { "@type": "MusicGroup", name: "Sports" },
+    ]);
+    assert.equal(event.breadcrumbs.some((crumb) => crumb.path === "/artist/sports-dot"), false);
+  } finally {
+    database.close();
+  }
+});
+
 test("bounded member-authored ranges preserve their kind and end date in structured data", () => {
   const database = createDatabase();
   try {

@@ -8,7 +8,7 @@ import {
 } from "../server/features/seo/sitemapService.js";
 
 function shardDataset(pathname) {
-  const match = /^\/sitemaps\/([a-z0-9-]+?)(?:-[2-9][0-9]*)?\.xml$/.exec(String(pathname || ""));
+  const match = /^\/sitemaps\/([a-z0-9-]+?)(?:-(?:[2-9]|[1-9][0-9]+))?\.xml$/.exec(String(pathname || ""));
   return match?.[1] || "unknown";
 }
 
@@ -19,6 +19,7 @@ function primaryLocations(xml) {
 function routeFamily(value) {
   const pathname = new URL(value).pathname;
   if (pathname === "/") return "home";
+  if (/^\/city\/[a-z]{2}\/[^/]+$/.test(pathname)) return "city-guides";
   if (/^\/(venues|concerts)\/[a-z]{2}\/[^/]+(?:\/|$)/.test(pathname)) return "city-directories";
   if (/^\/(artists|events|venues|concerts)(?:\/|$)/.test(pathname)) return "directories";
   if (/^\/artist\/[^/]+\/concerts(?:\/|$)/.test(pathname)) return "artist-archives";
