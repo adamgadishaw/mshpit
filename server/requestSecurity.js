@@ -230,11 +230,20 @@ export function readJsonBody(req, { limit = 256 * 1024 } = {}) {
       if (unsupported) return reject(new ApiError(415, "Request body must be JSON.", "MEDIA_TYPE_UNSUPPORTED"));
       if (tooLarge) return reject(new ApiError(413, "Request too large.", "REQUEST_TOO_LARGE"));
       if (!chunks.length) return resolve({});
+      let body;
       try {
-        resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+        body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
       } catch {
-        reject(new ApiError(400, "Invalid JSON.", "VALIDATION_FAILED"));
+        return reject(new ApiError(400, "Invalid JSON.", "VALIDATION_FAILED"));
       }
+      // API commands have named fields. A valid JSON scalar/array is not a
+      // command: treating it as an empty object can trigger a toggle or let a
+      // route dereference null. Reject it once before authorization/dispatch.
+      // Nested arrays and null fields remain valid for batches and clearing.
+      if (!body || typeof body !== "object" || Array.isArray(body)) {
+        return reject(new ApiError(400, "Request body must be a JSON object.", "VALIDATION_FAILED"));
+      }
+      resolve(body);
     });
     req.on("aborted", () => reject(new ApiError(400, "Bad request.", "VALIDATION_FAILED")));
     req.on("error", () => reject(new ApiError(400, "Bad request.", "VALIDATION_FAILED")));

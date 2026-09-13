@@ -49,9 +49,9 @@ export function ensureLinkedAccountsSchema(database) {
   `);
 }
 
-export function createLinkedAccounts({ database, ApiError, requireSessionUser, limit, verifyPassword,
+export function createLinkedAccounts({ database, ApiError, requireSessionUser, limit, verifyPasswordForUser,
   atomicWrite, createSession, sessionTtlForRole, publicUser, now = Date.now, onAuthenticated = () => {} }) {
-  if (!database?.prepare || [ApiError, requireSessionUser, limit, verifyPassword, atomicWrite,
+  if (!database?.prepare || [ApiError, requireSessionUser, limit, verifyPasswordForUser, atomicWrite,
     createSession, sessionTtlForRole, publicUser, now, onAuthenticated].some((dependency) => typeof dependency !== "function")) {
     throw new TypeError("Linked accounts require complete authentication boundary dependencies");
   }
@@ -137,8 +137,13 @@ export function createLinkedAccounts({ database, ApiError, requireSessionUser, l
       .all(normalizedEmail(email));
     const matching = [];
     if (typeof password !== "string" || !password || password.length > 100) return matching;
-    for (const user of candidates) {
-      if (await verifyPassword(password, user.pass_hash)) matching.push(user);
+    // Match login/signup's fixed two-slot work. The injected verifier must use
+    // its real dummy scrypt record for missing accounts; skipping that work
+    // exposes hidden sibling existence through connect/reset/password timing.
+    // This equalizes password work, not all database or response timings.
+    for (let slot = 0; slot < 2; slot++) {
+      const user = candidates[slot];
+      if (await verifyPasswordForUser(password, user?.pass_hash) && user) matching.push(user);
     }
     return matching;
   }

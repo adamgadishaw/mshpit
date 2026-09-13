@@ -18,6 +18,9 @@ const callback = provider?.body.body.flatMap((node) => node.type === "VariableDe
   .find((node) => node.id?.name === "updateProfile")?.init;
 assert.ok(callback, "The production updateProfile callback must exist");
 const productionCallback = source.slice(callback.start, callback.end);
+const guards = provider.body.body.flatMap((node) => node.type === "VariableDeclaration" ? node.declarations : [])
+  .filter((node) => ["renderedAccountMutation", "currentMutationActor"].includes(node.id?.name))
+  .map((node) => `const ${source.slice(node.start, node.end)};`).join("\n");
 
 const owner = {
   id: "account-a", name: "Night Fan", handle: "nightfan", email: "private@example.test",
@@ -34,6 +37,7 @@ function fixture() {
   const accountMutationEpochRef = { current: 1 };
   const calls = [], writes = [], pendingState = [];
   const dependencies = {
+    session: initial, authReadyRef: { current: true },
     sessionRef, accountMutationEpochRef, captureAccountMutation, accountMutationIsCurrent,
     clean, cleanName, cleanHandle, isHandle, LIMITS, profileGenreSelection, publicProfileCacheEntry,
     ENABLE_DEMO_DATA: false,
@@ -43,7 +47,7 @@ function fixture() {
     // The production callback itself must publish its confirmed reference.
     setSession: (update) => { writes.push("session"); pendingState.push(update); },
   };
-  const updateProfile = new Function(...Object.keys(dependencies), `"use strict"; return (${productionCallback});`)(...Object.values(dependencies));
+  const updateProfile = new Function(...Object.keys(dependencies), `"use strict"; ${guards}\nreturn (${productionCallback});`)(...Object.values(dependencies));
   const flush = () => {
     for (const update of pendingState.splice(0)) state.session = typeof update === "function" ? update(state.session) : update;
   };
@@ -89,14 +93,15 @@ test("setup photo saves remain unchanged while pending and publish only confirme
   assert.deepEqual(f.calls[0].options.body, patch);
 
   const user = { ...owner, ...patch, profileUpdatedAt: 200, handleChangeAvailableAt: 900 };
+  const expectedUser = { ...owner, ...patch, profileUpdatedAt: 200 };
   f.calls[0].resolve({ user });
   const result = await pending;
-  assert.deepEqual(result, { ok: true, user, patch });
-  assert.deepEqual(f.sessionRef.current, user, "confirmed session reference must update before React renders");
+  assert.deepEqual(result, { ok: true, user: expectedUser, patch });
+  assert.deepEqual(f.sessionRef.current, expectedUser, "confirmed changed fields update before React renders, not unrelated cooldown data");
   assert.deepEqual(f.state.session, before.session, "the fixture still has an uncommitted React state update");
   f.flush();
   assert.deepEqual(f.state.session, f.sessionRef.current);
-  assert.deepEqual(f.state.users, [publicProfileCacheEntry(user), neighbor]);
+  assert.deepEqual(f.state.users, [publicProfileCacheEntry(expectedUser), neighbor]);
   for (const key of ["email", "ageBand", "emailVerified", "onboardingVersion", "handleChangeAvailableAt", "termsAcceptedAt", "analyticsOptOut"]) {
     assert.equal(Object.hasOwn(f.state.users[0], key), false, `${key} must not leak into the persisted people cache`);
   }
@@ -193,17 +198,17 @@ test("an unchanged response to photo removal cannot advance the onboarding confi
   assert.equal(f.sessionRef.current.banner, owner.banner);
 });
 
-test("the next same-account save reads confirmed session metadata before a React render", async () => {
+test("the next same-account save reads confirmed profile fields without replaying consent metadata", async () => {
   const f = fixture();
   const first = f.save({ handle: "newnightfan" });
-  const firstUser = { ...owner, handle: "newnightfan", handleChangeAvailableAt: 123456, termsAcceptedAt: 321 };
-  f.calls[0].resolve({ user: firstUser });
+  const firstUser = { ...owner, handle: "newnightfan", handleChangeAvailableAt: 123456 };
+  f.calls[0].resolve({ user: { ...firstUser, termsAcceptedAt: 321 } });
   assert.equal((await first).ok, true);
   assert.equal(f.state.session.handle, owner.handle, "React state has intentionally not been flushed");
   assert.equal(f.sessionRef.current.handle, firstUser.handle);
 
   const second = f.save({ nowPlaying: { title: "New song", artist: "Artist" } });
-  assert.equal(f.calls[1].options.body.extras.termsAcceptedAt, 321, "follow-up writes must merge the latest confirmed consent metadata");
+  assert.deepEqual(f.calls[1].options.body.extras, { nowPlaying: { title: "New song", artist: "Artist" } }, "the server merges music changes without a stale consent or theme snapshot");
   assert.equal(f.calls[1].options.expectedAccountId, owner.id);
   f.calls[1].resolve({ user: { ...firstUser, nowPlaying: f.calls[1].options.body.extras.nowPlaying } });
   assert.equal((await second).ok, true);
@@ -211,4 +216,5 @@ test("the next same-account save reads confirmed session metadata before a React
   assert.deepEqual(f.state.session, f.sessionRef.current);
   assert.equal(f.sessionRef.current.handleChangeAvailableAt, 123456);
   assert.equal(f.sessionRef.current.analyticsOptOut, true);
+  assert.equal(f.sessionRef.current.termsAcceptedAt, owner.termsAcceptedAt);
 });

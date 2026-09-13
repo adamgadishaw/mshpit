@@ -56,11 +56,12 @@ async function main() {
   child.once("exit", () => { exited = true; });
   const checks = [];
   const check = async (name, work) => { await work(); checks.push(name); console.log(JSON.stringify({ name, passed: true })); };
-  const request = async (path, { cookie, expected, method = "GET", body } = {}) => {
+  const request = async (path, { cookie, expected, method = "GET", body, rawBody, requestOrigin = origin } = {}) => {
+    const hasBody = body !== undefined || rawBody !== undefined;
     const response = await fetch(origin + path, { method, redirect: "error", headers: {
       ...(cookie ? { Cookie: cookie } : {}), ...(expected ? { "X-Pit-Expected-Account": expected } : {}),
-      ...(body ? { "Content-Type": "application/json", Origin: origin } : {}),
-    }, ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(timeoutMs) });
+      ...(hasBody ? { "Content-Type": "application/json", Origin: requestOrigin } : {}),
+    }, ...(hasBody ? { body: rawBody ?? JSON.stringify(body) } : {}), signal: AbortSignal.timeout(timeoutMs) });
     const serialized = response.headers.getSetCookie().find(value => value.startsWith(`${fixture.cookieName}=`));
     return { status: response.status, data: await response.json(), headers: response.headers, cookie: serialized?.split(";", 1)[0] };
   };
@@ -146,6 +147,53 @@ async function main() {
       assert.equal(changed.status, 200); assert.ok(changed.cookie); assert.ok(changed.cookie !== old[0], "Password change must rotate the cookie.");
       for (const cookie of old) assert.equal((await request("/api/me", { cookie })).data.user, null);
       assert.equal((await request("/api/me", { cookie: changed.cookie })).data.user.id, fixture.change.id);
+    });
+    await check("real-http-invalid-commands-cannot-toggle-an-account-relationship", async () => {
+      const reader = fixture.readers[0];
+      const auth = { cookie: reader.cookie, expected: reader.id };
+      const before = await request("/api/me/following", auth);
+      assert.equal(before.status, 200);
+      for (const rawBody of ["null", "[]", '[{"following":true}]', '"follow"', "true", "false", "0", "1", "{"]) {
+        const result = await request(`/api/users/${fixture.bob.id}/follow`, { ...auth, method: "POST", rawBody });
+        assert.equal(result.status, 400);
+        assert.equal(result.data.code, "VALIDATION_FAILED");
+        assert.equal(result.headers.get("cache-control"), "no-store");
+      }
+      assert.deepEqual((await request("/api/me/following", auth)).data.following, before.data.following);
+    });
+    await check("real-http-cross-site-and-wrong-account-writes-fail-closed", async () => {
+      const reader = fixture.readers[1];
+      const auth = { cookie: reader.cookie, expected: reader.id };
+      const before = await request("/api/me/following", auth);
+      const path = `/api/users/${fixture.bob.id}/follow`;
+      const foreign = await request(path, { ...auth, method: "POST", requestOrigin: "https://foreign.example.test", body: { following: true } });
+      assert.equal(foreign.status, 403);
+      const wrongAccount = await request(path, { ...auth, expected: fixture.alice.id, method: "POST", body: { following: true } });
+      assert.equal(wrongAccount.status, 409);
+      assert.equal(wrongAccount.data.code, "IDENTITY_CHANGED");
+      const guest = await request(path, { expected: "guest", method: "POST", body: { following: true } });
+      assert.equal(guest.status, 401);
+      assert.deepEqual((await request("/api/me/following", auth)).data.following, before.data.following);
+    });
+    await check("real-http-profile-cannot-mass-assign-authority-or-leak-private-fields", async () => {
+      const reader = fixture.readers[2];
+      const auth = { cookie: reader.cookie, expected: reader.id };
+      const before = (await request("/api/me", auth)).data.user;
+      const changed = await request("/api/me", { ...auth, method: "PATCH", body: {
+        role: "admin", email: "different@example.test", email_verified_at: 0,
+        pass_hash: "not-a-password-hash", id: fixture.bob.id,
+      } });
+      assert.equal(changed.status, 200);
+      const after = (await request("/api/me", auth)).data.user;
+      for (const field of ["id", "email", "role", "emailVerified"]) assert.deepEqual(after[field], before[field]);
+      const publicProfile = await request(`/api/users/${reader.id}`, { cookie: fixture.readers[3].cookie, expected: fixture.readers[3].id });
+      assert.equal(publicProfile.status, 200);
+      for (const field of ["email", "emailVerified", "pass_hash", "reset_hash", "signup_cancel_hash", "home_lat", "home_lng"]) {
+        assert.equal(Object.hasOwn(publicProfile.data.user, field), false, `Private field ${field} must not be projected.`);
+      }
+      // The city label is intentionally public; exact saved coordinates are not.
+      assert.deepEqual(publicProfile.data.user.home, { city: before.home.city });
+      assert.equal(publicProfile.headers.get("cache-control"), "no-store");
     });
     const concurrency = [];
     for (const count of [5, 10, 50, 100]) await check(`real-authenticated-me-parallel-${count}`, async () => {

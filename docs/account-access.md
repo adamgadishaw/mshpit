@@ -15,6 +15,8 @@
 
 ## Focused security and UX audit
 
+The follow-up [account foundation security audit](account-foundation-security-audit-2026-09-12.md) records the layer-by-layer permission matrix, reproduced concurrency fixes, read-only database findings, primary-source research, and remaining risks. It distinguishes local evidence from production verification and is not a claim that every vulnerability has been eliminated.
+
 Fixed false signup success, implicit Owner fallback, unavailable account swapping, unverified public mutations, a stale-password session race, and post-commit activity bookkeeping turning successful writes into failures. Bio tests cover SQL-shaped text as literal content, escaped HTML/structured data, executable URL rejection, upload ownership, and forged role/verification fields. These tests found no bio injection exploit in the existing escaping and ownership controls.
 
 Local browser checks cover 320/390/844/1280px layouts, explicit duplicate signup choice, linked and older-session account switching, avatar/banner upload and refresh, failed-save retry, cancellation, per-account password change, and expired verification recovery. Network calls are mocked in those browser checks. Separate localhost HTTP regressions use real signup, verification, session cookies and protected routes against isolated temporary databases. This is focused code and regression testing, not a production penetration test or a claim that vulnerabilities are impossible.

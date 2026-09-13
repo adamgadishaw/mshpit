@@ -4077,7 +4077,7 @@ export function eraseAccountForInactivity(user, { at = now(), reason = "inactivi
 }
 
 const linkedAccounts = createLinkedAccounts({ database: db, ApiError, requireSessionUser, limit,
-  verifyPassword, atomicWrite, createSession, sessionTtlForRole, publicUser, now });
+  verifyPasswordForUser, atomicWrite, createSession, sessionTtlForRole, publicUser, now });
 
 // route table: "METHOD /path" -> handler(ctx) ; :params exposed as ctx.params
 export const routes = {
@@ -5666,29 +5666,14 @@ export const routes = {
     }
     const ageBandClassificationPending = hasAgeBand && storedAgeBand === "unknown";
     const incomingExtras = hasExtras ? canonicalProfileExtras(ctx.body.extras, { strict: true }) : null;
-    let serializedExtras = hasExtras && incomingExtras.valid ? serializeProfileExtras(incomingExtras.value) : undefined;
+    const serializedExtras = hasExtras && incomingExtras.valid ? serializeProfileExtras(incomingExtras.value) : undefined;
     if (hasExtras && (!incomingExtras.valid || serializedExtras === null)) {
       throw new ApiError(400, `extras must be a JSON object no larger than ${PROFILE_EXTRAS_MAX_BYTES} bytes.`);
     }
     if (hasExtras) {
-      // Consent and terms timestamps are server-authored account records. The
-      // search-indexing choice has a dedicated boolean field below. A generic
-      // compatibility-envelope patch may neither forge nor erase any of them.
-      const requested = incomingExtras.value;
-      const current = canonicalProfileExtras(parseStoredProfileExtras(u.extras)).value;
-      for (const key of ["consentAt", "analyticsConsentAt", "termsAcceptedAt", "termsVersion", "analyticsOptOut", "searchIndexingOptOut", "concertMapVisible"]) {
-        if (current[key] === undefined) delete requested[key];
-        else requested[key] = current[key];
-      }
-      const pendingHandle = pendingSignupHandle(parseStoredProfileExtras(u.extras));
-      if (pendingHandle) requested.pendingSignupHandle = pendingHandle;
-      serializedExtras = serializeProfileExtras(requested);
-      if (serializedExtras === null) {
-        throw new ApiError(400, `profile metadata must be no larger than ${PROFILE_EXTRAS_MAX_BYTES} bytes.`, "VALIDATION_FAILED");
-      }
       assertSafeAuthoredFields({
-        "now-playing title": requested.nowPlaying?.title,
-        "now-playing artist": requested.nowPlaying?.artist,
+        "now-playing title": incomingExtras.value.nowPlaying?.title,
+        "now-playing artist": incomingExtras.value.nowPlaying?.artist,
       });
     }
 
@@ -5767,17 +5752,11 @@ export const routes = {
     if (v.directMessagePolicy) { sets.push("dm_policy = ?"); args.push(v.directMessagePolicy); }
     if (v.profileAudience) { sets.push("profile_audience = ?"); args.push(v.profileAudience); }
     if (ageBandClassificationPending) { sets.push("age_band = ?"); args.push(v.ageBand); }
-    // Theme is stored inside the extras blob, so it survives sign-out and follows
-    // the account. Merge it with an extras patch when both arrive together.
-    if (v.theme || v.searchIndexingOptOut !== undefined || v.concertMapVisible !== undefined) {
-      const cur = parseStoredProfileExtras(v.extras ?? u.extras);
-      if (v.theme) cur.theme = v.theme;
-      if (v.searchIndexingOptOut !== undefined) cur.searchIndexingOptOut = v.searchIndexingOptOut;
-      if (v.concertMapVisible !== undefined) cur.concertMapVisible = v.concertMapVisible;
-      const encoded = serializeProfileExtras(cur);
-      if (!encoded) throw new ApiError(400, `profile metadata must be no larger than ${PROFILE_EXTRAS_MAX_BYTES} bytes.`);
-      sets.push("extras = ?"); args.push(encoded);
-    } else if (v.extras !== undefined) { sets.push("extras = ?"); args.push(v.extras); }
+    // Reserve the extras argument now; merge against the current row only after
+    // taking the write lock so independent preference/music changes survive.
+    const updatesExtras = hasExtras || !!v.theme || v.searchIndexingOptOut !== undefined || v.concertMapVisible !== undefined;
+    const extrasArgumentIndex = updatesExtras ? args.length : -1;
+    if (updatesExtras) { sets.push("extras = ?"); args.push(null); }
     if (sets.length) {
       sets.push("profile_updated_at = ?");
       args.push(now());
@@ -5788,6 +5767,29 @@ export const routes = {
     ].filter(Boolean);
     atomicWrite(() => {
       ctx.assertCurrentSession?.();
+      if (updatesExtras) {
+        const stored = parseStoredProfileExtras(q.userById.get(u.id)?.extras);
+        const next = hasExtras ? canonicalProfileExtras(stored).value : { ...stored };
+        if (hasExtras) {
+          // Only explicitly submitted editable keys change. Consent/Terms and
+          // analytics/privacy records remain server-owned; dedicated fields
+          // below override only their own preferences. Null songs and an empty
+          // playlists array are explicit clears, while omission retains data.
+          for (const key of ["theme", "nowPlaying", "treble", "bass", "playlists"]) {
+            if (Object.hasOwn(incomingExtras.value, key)) next[key] = incomingExtras.value[key];
+          }
+          const pendingHandle = pendingSignupHandle(stored);
+          if (pendingHandle) next.pendingSignupHandle = pendingHandle;
+        }
+        if (v.theme) next.theme = v.theme;
+        if (v.searchIndexingOptOut !== undefined) next.searchIndexingOptOut = v.searchIndexingOptOut;
+        if (v.concertMapVisible !== undefined) next.concertMapVisible = v.concertMapVisible;
+        const encoded = serializeProfileExtras(next);
+        if (encoded === null) {
+          throw new ApiError(400, `profile metadata must be no larger than ${PROFILE_EXTRAS_MAX_BYTES} bytes.`, "VALIDATION_FAILED");
+        }
+        args[extrasArgumentIndex] = encoded;
+      }
       associateNewFinalizedImageUrls(
         u.id,
         [v.banner, v.avatarUri],
@@ -5924,12 +5926,21 @@ export const routes = {
     const u = requireUser(ctx);
     limit(ctx, "follow", 60, 10 * 60 * 1000);
     if (u.id === ctx.params.id) throw new ApiError(400, "You can't follow yourself.");
-    if (!visibleProfileOrNull(ctx.params.id, u)) throw new ApiError(404, "No such user.");
-    if (blockedEitherWay(u.id, ctx.params.id)) throw new ApiError(403, "You can't follow this account.");
     const has = !!db.prepare("SELECT 1 FROM follows WHERE follower_id=? AND followee_id=?").get(u.id, ctx.params.id);
     const following = desiredState(ctx.body, "following", has);
-    if (!following && has) db.prepare("DELETE FROM follows WHERE follower_id=? AND followee_id=?").run(u.id, ctx.params.id);
-    else if (following && !has) { db.prepare("INSERT INTO follows (follower_id,followee_id) VALUES (?,?)").run(u.id, ctx.params.id); addNotif(ctx.params.id, u.id, "follow"); }
+    // Revoking my own relationship never requires access to the target's live
+    // profile. The same response covers private, restricted and missing users;
+    // it discloses only my requested state, not their identity or existence.
+    if (!following) {
+      db.prepare("DELETE FROM follows WHERE follower_id=? AND followee_id=?").run(u.id, ctx.params.id);
+      return { following: false };
+    }
+    if (!visibleProfileOrNull(ctx.params.id, u)) throw new ApiError(404, "No such user.");
+    if (blockedEitherWay(u.id, ctx.params.id)) throw new ApiError(403, "You can't follow this account.");
+    if (!has) atomicWrite(() => {
+      db.prepare("INSERT INTO follows (follower_id,followee_id) VALUES (?,?)").run(u.id, ctx.params.id);
+      addNotif(ctx.params.id, u.id, "follow");
+    });
     return { following };
   },
 
@@ -6948,16 +6959,21 @@ export const routes = {
   "POST /api/posts/:id/like": (ctx) => {
     const u = requireUser(ctx);
     limit(ctx, "like", 120, 10 * 60 * 1000);
+    const has = !!db.prepare("SELECT 1 FROM likes WHERE post_id=? AND user_id=?").get(ctx.params.id, u.id);
+    const liked = desiredState(ctx.body, "liked", has);
+    // Content becoming unavailable must not trap the caller's own saved like.
+    // No content lookup or public metadata is needed to revoke that relation.
+    if (!liked) {
+      db.prepare("DELETE FROM likes WHERE post_id=? AND user_id=?").run(ctx.params.id, u.id);
+      return { liked: false };
+    }
     const targetPost = db.prepare("SELECT user_id,artist FROM posts WHERE id=? AND removed=0").get(ctx.params.id);
     if (!targetPost || !publicAccountOrNull(targetPost.user_id)) throw new ApiError(404, "No such post.");
     if (blockedEitherWay(u.id, targetPost.user_id)) throw new ApiError(403, "This interaction isn't available.", "FORBIDDEN");
-    const has = !!db.prepare("SELECT 1 FROM likes WHERE post_id=? AND user_id=?").get(ctx.params.id, u.id);
-    const liked = desiredState(ctx.body, "liked", has);
-    if (!liked && has) db.prepare("DELETE FROM likes WHERE post_id=? AND user_id=?").run(ctx.params.id, u.id);
-    else if (liked && !has) {
+    if (!has) atomicWrite(() => {
       db.prepare("INSERT INTO likes (post_id,user_id) VALUES (?,?)").run(ctx.params.id, u.id);
       addNotif(targetPost.user_id, u.id, "like", { postId: ctx.params.id, artist: targetPost.artist });
-    }
+    });
     return { liked };
   },
 
@@ -7089,11 +7105,14 @@ export const routes = {
     if (parentId && !parent) parentId = null;
     if (parent && blockedEitherWay(u.id, parent.user_id)) throw new ApiError(403, "This reply isn't available.", "FORBIDDEN");
     const id = uid("c");
-    db.prepare("INSERT INTO comments (id,post_id,user_id,text,parent_id,created_at) VALUES (?,?,?,?,?,?)").run(id, ctx.params.id, u.id, text, parentId, now());
-    const p = db.prepare("SELECT user_id, artist FROM posts WHERE id=?").get(ctx.params.id);
-    if (p) addNotif(p.user_id, u.id, "comment", { postId: ctx.params.id, artist: p.artist, text: text.slice(0, 80) });
-    // Also ping the parent comment's author (if it's someone else) so replies notify.
-    if (parentId) { const pc = db.prepare("SELECT user_id FROM comments WHERE id=?").get(parentId); if (pc && pc.user_id !== (p && p.user_id)) addNotif(pc.user_id, u.id, "comment", { postId: ctx.params.id, artist: p?.artist, text: text.slice(0, 80) }); }
+    atomicWrite(() => {
+      db.prepare("INSERT INTO comments (id,post_id,user_id,text,parent_id,created_at) VALUES (?,?,?,?,?,?)").run(id, ctx.params.id, u.id, text, parentId, now());
+      const notification = { postId: ctx.params.id, artist: targetPost.artist, text: text.slice(0, 80) };
+      addNotif(targetPost.user_id, u.id, "comment", notification);
+      // Reply, post-owner alert and parent-author alert are one durable write;
+      // failure cannot leave a published comment behind a failed API response.
+      if (parent && parent.user_id !== targetPost.user_id) addNotif(parent.user_id, u.id, "comment", notification);
+    });
     return { id, parentId };
   },
 

@@ -9,11 +9,12 @@ export function fetchDirectMessageSummaries({ signal, expectedAccountId } = {}) 
   });
 }
 
-export function writeDirectMessageRead(otherId, { signal } = {}) {
+export function writeDirectMessageRead(otherId, { signal, expectedAccountId } = {}) {
   return api(`/api/dms/${encodeURIComponent(otherId)}/read`, {
     method: "POST",
     context: "Marking this conversation as read",
     silent: true,
     signal,
+    expectedAccountId,
   });
 }

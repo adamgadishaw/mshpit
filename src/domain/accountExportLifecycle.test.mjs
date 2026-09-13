@@ -28,6 +28,7 @@ function fixture(stage, { shareFailure = false, switchDuringShare = false, creat
   } };
   const dependencies = {
     session: sessionRef.current, sessionRef, accountMutationEpochRef, captureAccountMutation, accountMutationIsCurrent,
+    currentMutationActor: () => sessionRef.current,
     requestAccountExport: async (_password, options) => { calls.push("request"); assert.equal(options.expectedAccountId, "a"); if (stage === "request") await barrier.promise; return { account: "a", messages: ["fixture-private-content"] }; },
     loadFileSystem: async () => { calls.push("modules"); if (stage === "modules") await barrier.promise; return fileSystem; },
     loadSharing: async () => ({

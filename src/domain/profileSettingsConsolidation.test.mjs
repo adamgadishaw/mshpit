@@ -32,7 +32,7 @@ test("Settings owns a server-confirmed member search-indexing opt-out", () => {
   assert.match(settings, /Public posts and artist pages can still appear/);
   assert.match(settings, /accessibilityState=\{\{ checked: profileSearchIndexingEnabled, busy: savingSearchIndexing \}\}/);
   assert.match(store, /const setProfileSearchIndexingEnabled = async \(enabled\) =>/);
-  assert.match(store, /updateProfileSearchIndexingPreference\(enabled\)/);
+  assert.match(store, /updateProfileSearchIndexingPreference\(enabled, \{ expectedAccountId: actor\.id \}\)/);
   assert.match(accountPrivacyApi, /body: \{ searchIndexingOptOut: !enabled \}/);
   assert.match(store, /sessionRef\.current = merged;\s+setSession\(merged\)/);
   assert.match(

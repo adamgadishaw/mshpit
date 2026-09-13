@@ -14,7 +14,7 @@ const nodes = (node) => !node || typeof node !== "object" ? [] : Array.isArray(n
 
 // Execute production components and callbacks. Only platform, rendering and
 // store seams are replaced; domain projections are their real implementations.
-function fixture(name, initialSession, overrides = {}) {
+function fixture(name, initialSession, overrides = {}, storeOverrides = {}) {
   const calls = { auth: [], comments: [], likes: [], close: [], show: [], scroll: [], focus: [], remember: [], order: [] };
   const slots = [];
   let cursor = 0;
@@ -52,7 +52,7 @@ function fixture(name, initialSession, overrides = {}) {
     if (dependency === "../store") return { useStore: () => ({ session, feed: [],
       commentsFor: () => [{ id: "c_public", userId: "author", name: "Public Author", text: "Public comment" }],
       userById: () => null, userBadges: () => [], loadComments: async () => ({ ok: true }),
-      addComment: async (...args) => { calls.comments.push(args); return { ok: true }; },
+      addComment: async (...args) => { calls.comments.push(args); return storeOverrides.addComment ? storeOverrides.addComment(...args) : { ok: true }; },
       deleteOwnComment: () => assert.fail("guest must not delete"), deleteOwnPost: () => assert.fail("guest must not delete"),
     }) };
     if (dependency === "../hooks/useScopedRefresh") return () => ({ refresh() {}, refreshing: false });
@@ -149,6 +149,71 @@ test("PostScreen send guard rejects a guest even when a nonempty draft reaches t
   }
 });
 
+const deferred = () => {
+  let resolve, reject;
+  const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+};
+const inputComment = (f, text) => {
+  f.find((node) => node.type === "TextInput").props.onChangeText(text);
+  f.render();
+  return f.find((node) => node.props.accessibilityLabel === "Send comment").props.onPress;
+};
+
+test("PostScreen handles simultaneous Enter and tap as one comment submission", async () => {
+  const request = deferred();
+  const f = fixture("PostScreen", { id: "member" }, {}, { addComment: () => request.promise });
+  const send = inputComment(f, "Send once");
+  const first = send();
+  await send();
+  assert.equal(f.calls.comments.length, 1, "a second event before rerender must not dispatch");
+  request.resolve({ ok: true });
+  await first;
+  f.render();
+  assert.equal(f.find((node) => node.type === "TextInput").props.value, "");
+});
+
+test("PostScreen preserves a newer draft even if the previous request finishes before rerender", async () => {
+  const request = deferred();
+  const f = fixture("PostScreen", { id: "member" }, {}, { addComment: () => request.promise });
+  const pending = inputComment(f, "First comment")();
+  f.find((node) => node.type === "TextInput").props.onChangeText("Next comment");
+  request.resolve({ ok: true });
+  await pending;
+  f.render();
+  assert.equal(f.find((node) => node.type === "TextInput").props.value, "Next comment");
+  assert.equal(f.find((node) => node.props.accessibilityLabel === "Send comment").props.disabled, false);
+});
+
+for (const failure of ["rejection", "result"]) {
+  test(`PostScreen ${failure} preserves the draft, releases the send lock and offers a visible error`, async () => {
+    const request = deferred();
+    const f = fixture("PostScreen", { id: "member" }, {}, { addComment: () => request.promise });
+    const pending = inputComment(f, "Keep my draft")();
+    if (failure === "rejection") request.reject(new Error("Network unavailable"));
+    else request.resolve({ ok: false });
+    await pending;
+    f.render();
+    assert.equal(f.find((node) => node.type === "TextInput").props.value, "Keep my draft");
+    assert.equal(f.find((node) => node.props.accessibilityLabel === "Send comment").props.disabled, false);
+    assert.match(f.find((node) => node.props.accessibilityRole === "alert").props.children, /draft is still here/);
+  });
+}
+
+test("PostScreen ignores stale sends and late completion after the displayed post changes", async () => {
+  const request = deferred();
+  const f = fixture("PostScreen", { id: "member" }, {}, { addComment: () => request.promise });
+  const send = inputComment(f, "Old post draft");
+  const pending = send();
+  f.render({ log: { ...f.log, id: "another-post" } });
+  await send();
+  request.resolve({ ok: true });
+  await pending;
+  assert.equal(f.calls.comments.length, 1);
+  f.render();
+  assert.equal(f.find((node) => node.type === "TextInput").props.value, "Old post draft", "late success cannot touch this screen state; Root remounts the new scope");
+});
+
 test("PhotoViewer guest heart remembers the displayed index before auth without closing or liking", () => {
   const f = fixture("PhotoViewer");
   f.find((node) => node.props.accessibilityLabel === "Next media").props.onPress();
@@ -213,6 +278,10 @@ const rootFunction = (name) => {
   assert.ok(node, `Root must provide ${name}`);
   return appSource.slice(node.start, node.end);
 };
+
+test("Root remounts the private comment composer when either account or post changes", () => {
+  assert.match(appSource, /<PostScreen key=\{`\$\{session\?\.id \|\| "guest"\}:\$\{nav\.post\.id\}`\}/);
+});
 
 test("Root consistently wires every public guest action surface to the single sign-in entry", () => {
   const expected = {

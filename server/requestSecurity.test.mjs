@@ -183,6 +183,19 @@ test("JSON body policy preserves invalid-json and size errors", async () => {
   );
 });
 
+test("API JSON envelopes reject null, arrays and primitives before route dispatch", async () => {
+  for (const body of ["null", "[]", '[{"liked":false}]', '"liked"', "true", "false", "0", "1"]) {
+    await assert.rejects(
+      readJsonBody(request(body, { "content-type": "application/json" })),
+      (error) => error.status === 400 && error.code === "VALIDATION_FAILED",
+      `Expected an object envelope, not ${body}`,
+    );
+  }
+  assert.deepEqual(await readJsonBody(request('{"liked":false,"items":[],"photo":null}', {
+    "content-type": "application/json",
+  })), { liked: false, items: [], photo: null });
+});
+
 test("outside Render, direct callers cannot forge CF-Connecting-IP or either side of XFF", () => {
   const directPublic = request("", {
     "cf-connecting-ip": "203.0.113.200",

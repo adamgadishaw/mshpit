@@ -982,6 +982,12 @@ export function StoreProvider({ children }) {
     // synchronous identity boundary instead of waiting for a passive effect.
     // Scoped keys and response guards below provide a second line of defense.
     setRatingAgg({});
+    if (!ENABLE_DEMO_DATA) {
+      // Optimistic device maps are not server confirmations. Retire them with
+      // their account so a failed old write cannot reappear after a roundtrip.
+      setAlbumRatings({});
+      setSongRatings({});
+    }
     seenCountCache.current.clear();
     setDiscoverySidebarResource(createLoadState({ status: "loading", data: EMPTY_DISCOVERY_SIDEBAR }));
     tourDateReadRef.current.sequence += 1;
@@ -3303,29 +3309,43 @@ export function StoreProvider({ children }) {
   // `mergePatch` (already-sanitized profile fields) is persisted in the same
   // write, used at signup so the artist picks aren't lost to the reload.
   const chooseTheme = async (next, mergePatch = null) => {
-    if (session) {
+    const actor = currentMutationActor();
+    const mutation = renderedAccountMutation;
+    const isCurrent = () => accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current);
+    if (!isCurrent() || (session?.id && !actor)) return { ok: false, stale: true };
+    if (actor) {
       const extra = mergePatch || {};
-      const updated = { ...session, ...extra, theme: next };
-      setUsers((all) => all.map((u) => (u.id === session.id
+      const updated = { ...actor, ...extra, theme: next };
+      setUsers((all) => all.map((u) => (u.id === actor.id
         ? (ENABLE_DEMO_DATA ? { ...u, ...extra, theme: next } : publicProfileCacheEntry({ ...u, ...extra, theme: next }))
         : u)));
       setSession(updated);
       if (ENABLE_DEMO_DATA) save("pit.session", updated); // demo-only local identity
-      try { await api("/api/me", { method: "PATCH", body: { theme: next, ...extra } }); } catch {}
+      try {
+        await api("/api/me", { method: "PATCH", body: { theme: next, ...extra }, expectedAccountId: actor.id });
+      } catch {
+        // API reports sync failures; local appearance remains usable offline.
+        // A departed account must never cause a reload of the replacement one.
+        if (!isCurrent()) return { ok: false, stale: true };
+      }
     }
-    applyTheme(next, session?.id || null);
+    if (!isCurrent()) return { ok: false, stale: true };
+    applyTheme(next, actor?.id || null);
+    return { ok: true };
   };
 
   const updateProfile = (patch, { expectedAccountId, signal, optimistic = true } = {}) => {
-    const actor = sessionRef.current;
+    const actor = currentMutationActor();
     if (!actor) return Promise.resolve({ ok: false });
     if ((expectedAccountId && expectedAccountId !== actor.id) || signal?.aborted) {
       return Promise.resolve({ ok: false, stale: true, error: "Your account changed. Reopen profile setup." });
     }
     const previousSession = actor;
     const accountMutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
-    // Sanitize the free-text fields; pass structured fields (home, songs) through.
-    const safe = { ...patch };
+    // General profile edits cannot optimistically adopt permissions or replay a
+    // whole privacy/consent snapshot. Those choices have dedicated mutations.
+    const editableFields = ["name", "bio", "handle", "avatarUri", "banner", "concertMapVisible", "home", "genres", "favoriteArtists", "nowPlaying", "treble", "bass", "playlists"];
+    const safe = Object.fromEntries(editableFields.filter((key) => Object.hasOwn(patch || {}, key)).map((key) => [key, patch[key]]));
     if (Object.prototype.hasOwnProperty.call(safe, "genres")) {
       const genreSelection = profileGenreSelection(safe.genres);
       if (!genreSelection.valid) return Promise.resolve({ ok: false, error: genreSelection.error });
@@ -3343,10 +3363,6 @@ export function StoreProvider({ children }) {
     }
     if (Array.isArray(safe.favoriteArtists)) safe.favoriteArtists = safe.favoriteArtists.map((n) => clean(n, { max: 80 })).filter(Boolean).slice(0, 50);
     if ("name" in safe) safe.initials = (safe.name.match(/\p{L}|\p{N}/gu) || ["?"]).slice(0, 2).join("").toUpperCase();
-    if (optimistic) setUsers((all) => all.map((u) => (u.id === actor.id
-      ? (ENABLE_DEMO_DATA ? { ...u, ...safe } : publicProfileCacheEntry({ ...u, ...safe }))
-      : u)));
-    if (optimistic) setSession((current) => current?.id === actor.id ? { ...current, ...safe } : current);
     // Persist to the server so profile edits (incl. your @handle) survive sign-out
     // and follow you to a new device. The server is the authority on handle
     // uniqueness, re-absorb its response so a taken handle reverts cleanly.
@@ -3356,15 +3372,19 @@ export function StoreProvider({ children }) {
     if (Array.isArray(safe.genres)) body.genres = safe.genres;
     if (Array.isArray(safe.favoriteArtists)) body.favoriteArtists = safe.favoriteArtists;
 
-    // Music picks live in the bounded profile extras object on the server. Send
-    // the complete known set whenever one changes so saving a song cannot erase
-    // the account theme or its recorded Terms consent.
-    const extraKeys = ["theme", "consentAt", "analyticsConsentAt", "termsAcceptedAt", "termsVersion", "analyticsOptOut", "nowPlaying", "treble", "bass", "playlists"];
-    if (["analyticsOptOut", "nowPlaying", "treble", "bass", "playlists"].some((key) => key in safe)) {
-      const merged = { ...previousSession, ...safe };
-      body.extras = Object.fromEntries(extraKeys.filter((key) => merged[key] !== undefined).map((key) => [key, merged[key]]));
-    }
+    // The server merges this bounded envelope. Send changed music fields only;
+    // never replay older theme, consent, privacy, or unrelated music choices.
+    const changedExtras = ["nowPlaying", "treble", "bass", "playlists"].filter((key) => key in safe);
+    if (changedExtras.length) body.extras = Object.fromEntries(changedExtras.map((key) => [key, safe[key]]));
     if (!Object.keys(body).length) return Promise.resolve({ ok: true, patch: safe });
+
+    if (optimistic) {
+      sessionRef.current = { ...sessionRef.current, ...safe };
+      setUsers((all) => all.map((u) => (u.id === actor.id
+        ? (ENABLE_DEMO_DATA ? { ...u, ...safe } : publicProfileCacheEntry({ ...u, ...safe }))
+        : u)));
+      setSession((current) => current?.id === actor.id ? { ...current, ...safe } : current);
+    }
 
     return api("/api/me", { method: "PATCH", body, context: "Saving your profile", expectedAccountId: actor.id, signal })
       .then(({ user }) => {
@@ -3372,25 +3392,43 @@ export function StoreProvider({ children }) {
           return { ok: false, stale: true };
         }
         if (user?.id !== actor.id) throw new Error("Mshpit could not confirm the profile save. Please try again.");
-        if (user) {
-          setUsers((all) => all.map((u) => (u.id === user.id
-            ? (ENABLE_DEMO_DATA ? { ...u, ...user } : publicProfileCacheEntry({ ...u, ...user }))
-            : u)));
-          sessionRef.current = { ...sessionRef.current, ...user };
-          setSession((s) => ({ ...s, ...user }));
-        }
-        return { ok: true, user, patch: safe };
+        const confirmedFields = new Set(Object.keys(safe));
+        if ("handle" in safe) { confirmedFields.add("handleChangeAvailableAt"); confirmedFields.add("pendingSignupHandle"); }
+        const confirmed = Object.fromEntries([...confirmedFields].filter((key) => Object.hasOwn(user, key)).map((key) => [key, user[key]]));
+        const mergeConfirmed = (current) => {
+          const next = { ...current, ...confirmed };
+          if (Number.isFinite(user.profileUpdatedAt)) next.profileUpdatedAt = Math.max(Number(current?.profileUpdatedAt) || 0, user.profileUpdatedAt);
+          return next;
+        };
+        setUsers((all) => all.map((u) => (u.id === actor.id
+          ? (ENABLE_DEMO_DATA ? mergeConfirmed(u) : publicProfileCacheEntry(mergeConfirmed(u)))
+          : u)));
+        sessionRef.current = mergeConfirmed(sessionRef.current);
+        setSession((current) => current?.id === actor.id ? mergeConfirmed(current) : current);
+        return { ok: true, user: sessionRef.current, patch: safe };
       })
       .catch((error) => {
         if (!accountMutationIsCurrent(accountMutation, sessionRef.current?.id, accountMutationEpochRef.current)) {
           return { ok: false, stale: true, error };
         }
-        // Server rejected something (e.g. handle taken / cooldown / role tag).
-        // Restore the last server-backed snapshot instead of leaving a false save.
-        if (optimistic) setUsers((all) => all.map((u) => (u.id === previousSession.id
-          ? (ENABLE_DEMO_DATA ? previousSession : publicProfileCacheEntry(previousSession))
-          : u)));
-        if (optimistic) setSession(previousSession);
+        // Roll back this edit's optimistic fields only. An independent privacy
+        // change or a newer different value must survive the failed request.
+        if (optimistic) {
+          const rollback = (current) => {
+            if (current?.id !== actor.id) return current;
+            const next = { ...current };
+            for (const [key, value] of Object.entries(safe)) {
+              if (JSON.stringify(current[key]) !== JSON.stringify(value)) continue;
+              if (Object.hasOwn(previousSession, key)) next[key] = previousSession[key];
+              else delete next[key];
+            }
+            return next;
+          };
+          setUsers((all) => all.map((u) => u.id === actor.id
+            ? (ENABLE_DEMO_DATA ? rollback(u) : publicProfileCacheEntry(rollback(u))) : u));
+          sessionRef.current = rollback(sessionRef.current);
+          setSession(rollback);
+        }
         return { ok: false, error };
       });
   };
@@ -4207,7 +4245,7 @@ export function StoreProvider({ children }) {
   // Personal data backup: pull the server's portable account export and hand it
   // to the user as a downloadable JSON file.
   const exportMyData = async (password) => {
-    const actor = sessionRef.current;
+    const actor = currentMutationActor();
     if (!actor?.id) return { ok: false, error: "Log in before exporting your data." };
     const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
     const current = () => accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current);
@@ -4271,77 +4309,78 @@ export function StoreProvider({ children }) {
     }
   };
 
+  // A preference response includes a whole account snapshot. Adopt only the
+  // changed field so concurrent privacy requests cannot revert each other.
+  const adoptAccountPreference = (actor, mutation, user, field, cachePublic = false) => {
+    if (!accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current)
+      || user?.id !== actor.id || !Object.prototype.hasOwnProperty.call(user, field)) return null;
+    const patch = { [field]: user[field] };
+    const merged = { ...sessionRef.current, ...patch };
+    if (cachePublic) setUsers((all) => all.map((entry) => entry.id === actor.id
+      ? (ENABLE_DEMO_DATA ? { ...entry, ...patch } : publicProfileCacheEntry({ ...entry, ...patch }))
+      : entry));
+    sessionRef.current = merged;
+    setSession(merged);
+    return merged;
+  };
   const setProfileSearchIndexingEnabled = async (enabled) => {
-    if (!session?.id) return { ok: false };
-    const accountId = session.id;
+    const actor = currentMutationActor();
+    if (!actor) return { ok: false };
+    const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
     try {
-      const { user } = await updateProfileSearchIndexingPreference(enabled);
-      if (!user || sessionRef.current?.id !== accountId) return { ok: false };
-      const merged = { ...sessionRef.current, ...user };
-      setUsers((all) => all.map((entry) => entry.id === accountId
-        ? (ENABLE_DEMO_DATA ? { ...entry, ...user } : publicProfileCacheEntry({ ...entry, ...user }))
-        : entry));
-      sessionRef.current = merged;
-      setSession(merged);
-      return { ok: true, user: merged };
+      const { user } = await updateProfileSearchIndexingPreference(enabled, { expectedAccountId: actor.id });
+      const merged = adoptAccountPreference(actor, mutation, user, "searchIndexingOptOut", true);
+      return merged ? { ok: true, user: merged } : { ok: false, stale: true };
     } catch (error) {
       return { ok: false, error };
     }
   };
 
   const setDirectMessagePolicy = async (policy) => {
-    if (!session?.id || !["nobody", "people_i_follow", "mutuals"].includes(policy)) return { ok: false };
-    const accountId = session.id;
+    const actor = currentMutationActor();
+    if (!actor || !["nobody", "people_i_follow", "mutuals"].includes(policy)) return { ok: false };
+    const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
     try {
-      const { user } = await updateDirectMessagePreference(policy);
-      if (!user || sessionRef.current?.id !== accountId) return { ok: false };
-      const merged = { ...sessionRef.current, ...user };
-      sessionRef.current = merged;
-      setSession(merged);
-      return { ok: true, user: merged };
+      const { user } = await updateDirectMessagePreference(policy, { expectedAccountId: actor.id });
+      const merged = adoptAccountPreference(actor, mutation, user, "directMessagePolicy");
+      return merged ? { ok: true, user: merged } : { ok: false, stale: true };
     } catch (error) {
       return { ok: false, error };
     }
   };
 
   const setAgeBandClassification = async (ageBand) => {
-    if (!session?.id || (session.ageBand || "unknown") !== "unknown" || !["13_17", "18_plus"].includes(ageBand)) return { ok: false };
-    const accountId = session.id;
+    const actor = currentMutationActor();
+    if (!actor || (actor.ageBand || "unknown") !== "unknown" || !["13_17", "18_plus"].includes(ageBand)) return { ok: false };
+    const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
     try {
-      const { user } = await classifyAccountAgeBand(ageBand);
-      if (!user || sessionRef.current?.id !== accountId) return { ok: false };
-      const merged = { ...sessionRef.current, ...user };
-      sessionRef.current = merged;
-      setSession(merged);
-      return { ok: true, user: merged };
+      const { user } = await classifyAccountAgeBand(ageBand, { expectedAccountId: actor.id });
+      const merged = adoptAccountPreference(actor, mutation, user, "ageBand");
+      return merged ? { ok: true, user: merged } : { ok: false, stale: true };
     } catch (error) {
       return { ok: false, error };
     }
   };
 
   const setProfileAudience = async (audience) => {
-    if (!session?.id || !["everyone", "members", "only_me"].includes(audience)) return { ok: false };
-    const accountId = session.id;
+    const actor = currentMutationActor();
+    if (!actor || !["everyone", "members", "only_me"].includes(audience)) return { ok: false };
+    const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
     try {
-      const { user } = await updateProfileAudience(audience);
-      if (!user || sessionRef.current?.id !== accountId) return { ok: false };
-      const merged = { ...sessionRef.current, ...user };
-      sessionRef.current = merged;
-      setSession(merged);
-      return { ok: true, user: merged };
+      const { user } = await updateProfileAudience(audience, { expectedAccountId: actor.id });
+      const merged = adoptAccountPreference(actor, mutation, user, "profileAudience");
+      return merged ? { ok: true, user: merged } : { ok: false, stale: true };
     } catch (error) { return { ok: false, error }; }
   };
 
   const setAnnouncementEmailsEnabled = async (enabled) => {
-    if (!session?.id) return { ok: false };
-    const accountId = session.id;
+    const actor = currentMutationActor();
+    if (!actor) return { ok: false };
+    const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
     try {
-      const { user } = await updateAnnouncementEmailPreference(enabled);
-      if (!user || sessionRef.current?.id !== accountId) return { ok: false };
-      const merged = { ...sessionRef.current, ...user };
-      sessionRef.current = merged;
-      setSession(merged);
-      return { ok: true, user: merged };
+      const { user } = await updateAnnouncementEmailPreference(enabled, { expectedAccountId: actor.id });
+      const merged = adoptAccountPreference(actor, mutation, user, "marketingOptOut");
+      return merged ? { ok: true, user: merged } : { ok: false, stale: true };
     } catch (error) {
       return { ok: false, error };
     }
@@ -4409,10 +4448,10 @@ export function StoreProvider({ children }) {
   };
   const addComment = (id, text, parentId = null) => {
     const t = clean(text, { max: LIMITS.message, newlines: true });
-    const actor = sessionRef.current;
+    const actor = currentMutationActor();
     const claim = commentCache.capture();
     if (!actor || !t || actor.id !== claim.accountId || !commentClaimIsCurrent(claim)) return Promise.resolve({ ok: false });
-    const localId = "c_" + Date.now();
+    const localId = createChatClientMutationId("comment");
     const c = { id: localId, userId: actor.id, name: actor.name, initials: actor.initials, avatarUri: actor.avatarUri, avatarColor: actor.avatarColor, role: actor.role, text: t, parentId: parentId || null, at: Date.now(), likes: 0, pending: true };
     setComments((m) => ({ ...m, [id]: [...(m[id] || []), c] }));
     // Write-through + adopt the server id so a later loadComments() dedupes it
@@ -4446,7 +4485,7 @@ export function StoreProvider({ children }) {
       });
   };
   const deleteOwnComment = (postId, commentId) => {
-    const actor = sessionRef.current;
+    const actor = currentMutationActor();
     const claim = commentCache.capture();
     if (!actor || actor.id !== claim.accountId || !postId || !commentId || !commentClaimIsCurrent(claim)) return Promise.resolve({ ok: false });
     return api(`/api/posts/${postId}/comments/${commentId}`, {
@@ -4507,11 +4546,12 @@ export function StoreProvider({ children }) {
       });
   };
   const removeMyPostTag = async (postId) => {
-    const actor = sessionRef.current;
+    const actor = currentMutationActor();
     if (!actor?.id || !postId) return { ok: false };
+    const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
     try {
-      const response = await removeMyPostTagRequest(postId);
-      if (sessionRef.current?.id !== actor.id) return { ok: false, stale: true };
+      const response = await removeMyPostTagRequest(postId, { expectedAccountId: actor.id });
+      if (!accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current)) return { ok: false, stale: true };
       feedMutationRevisionRef.current += 1;
       setFeed((all) => all.map((post) => post.id === postId ? {
         ...post,
@@ -4728,7 +4768,7 @@ export function StoreProvider({ children }) {
   };
 
   const applyMyAttendanceMutation = (show, result) => {
-    const actor = sessionRef.current;
+    const actor = currentMutationActor();
     if (!actor?.id || !show || !result?.showId || goingRef.attendance.accountId !== actor.id) return false;
     const reconciled = reconcileAttendancePlan({
       attendanceRows: goingRef.attendance.rows,
@@ -4760,7 +4800,7 @@ export function StoreProvider({ children }) {
     setGoing(next);
   };
   const setGoingIntent = (log, desired, context) => {
-    const actor = sessionRef.current;
+    const actor = currentMutationActor();
     if (!actor || !log) return Promise.resolve({ ok: false });
     const key = concertKey(log);
     const tourDateId = goingTourDateId(log);
@@ -4789,6 +4829,7 @@ export function StoreProvider({ children }) {
         method: "POST",
         body: { ...entry, going: desired },
         context,
+        expectedAccountId: actor.id,
       }),
     });
     goingPendingRef.current = { ...goingPendingRef.current, [scope]: operation.revision };
@@ -4855,6 +4896,7 @@ export function StoreProvider({ children }) {
         method: "POST",
         body: { text: item.text, clientMutationId: item.clientMutationId },
         context: item.context,
+        expectedAccountId: item.ownerId,
       });
       if (!id) throw new Error("Message delivery was not confirmed");
       const live = chatOutboxRef.current.find((entry) => entry.id === localId);
@@ -4955,7 +4997,7 @@ export function StoreProvider({ children }) {
   };
   const addLoungeMessage = (key, text) => {
     const t = clean(text, { max: LIMITS.message, newlines: true });
-    const actor = sessionRef.current;
+    const actor = currentMutationActor();
     if (!actor || !key || !t) return Promise.resolve({ ok: false, retryable: false });
     const clientMutationId = nextChatMutationId("lounge");
     const localId = chatOutboxMessageId(clientMutationId);
@@ -4995,6 +5037,9 @@ export function StoreProvider({ children }) {
   );
   const aggKey = (kind, artist, title) => ratingAggregateKey(activeAccountId, kind, artist, title);
   const aggRate = (map, artist, title) => {
+    // Only the explicit offline demo can aggregate device-local votes. In
+    // production these maps may contain unconfirmed optimistic/legacy rows.
+    if (!ENABLE_DEMO_DATA) return { avg: 0, count: 0, mine: 0 };
     const r = map[rKey(artist, title)];
     if (!r) return { avg: 0, count: 0, mine: 0 };
     const vals = Object.values(r);
@@ -5012,11 +5057,12 @@ export function StoreProvider({ children }) {
 
   const loadRating = (kind, artist, title) => {
     const accountId = sessionRef.current?.id || null;
+    const mutation = captureAccountMutation(accountId, accountMutationEpochRef.current);
     const aggregateKey = ratingAggregateKey(accountId, kind, artist, title);
     const ticket = claimRatingTicket(aggregateKey);
-    api(`/api/ratings?kind=${kind}&ref=${encodeURIComponent(rKey(artist, title))}`)
+    api(`/api/ratings?kind=${kind}&ref=${encodeURIComponent(rKey(artist, title))}`, { expectedAccountId: accountId })
       .then((r) => {
-        if ((sessionRef.current?.id || null) !== accountId
+        if (!accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current)
           || !ratingTicketIsCurrent(aggregateKey, ticket)) return; // account changed or a newer rating won
         setRatingAgg((m) => ({ ...m, [aggregateKey]: { avg: r.avg, count: r.count, mine: r.mine } }));
       })
@@ -5025,9 +5071,10 @@ export function StoreProvider({ children }) {
   const albumRating = (artist, title) => ratingAgg[aggKey("album", artist, title)] || aggRate(albumRatings, artist, title);
   const songRating = (artist, title) => ratingAgg[aggKey("song", artist, title)] || aggRate(songRatings, artist, title);
   const rate = (kind, setMap, artist, title, n) => {
-    const actor = sessionRef.current;
+    const actor = currentMutationActor();
     if (!actor) return;
     const accountId = actor.id;
+    const mutation = captureAccountMutation(accountId, accountMutationEpochRef.current);
     const nn = clampRating(n);
     const key = rKey(artist, title);
     const aggregateKey = ratingAggregateKey(accountId, kind, artist, title);
@@ -5037,16 +5084,17 @@ export function StoreProvider({ children }) {
     const ticket = claimRatingTicket(aggregateKey);
     setMap((m) => ({ ...m, [key]: { ...(m[key] || {}), [accountId]: nn } }));
     setRatingAgg((m) => { const cur = m[aggregateKey]; return cur ? { ...m, [aggregateKey]: { ...cur, mine: nn } } : m; });
-    api("/api/ratings", { method: "POST", body: { kind, ref: key, rating: nn }, context: `Rating this ${kind}` })
+    api("/api/ratings", { method: "POST", body: { kind, ref: key, rating: nn }, context: `Rating this ${kind}`, expectedAccountId: actor.id })
       .then((r) => {
-        if ((sessionRef.current?.id || null) !== accountId
+        if (!accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current)
           || !ratingTicketIsCurrent(aggregateKey, ticket)) return; // account changed or superseded
         setRatingAgg((m) => ({ ...m, [aggregateKey]: { avg: r.avg, count: r.count, mine: r.mine } }));
       })
       .catch(() => {
         // Only the newest attempt may roll back. Otherwise rating twice quickly
         // and having the FIRST request fail would undo the second, successful one.
-        if (!ratingTicketIsCurrent(aggregateKey, ticket)) return;
+        if (!accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current)
+          || !ratingTicketIsCurrent(aggregateKey, ticket)) return;
         setMap((m) => {
           const ratings = { ...(m[key] || {}) };
           if (previous == null) delete ratings[accountId]; else ratings[accountId] = previous;
@@ -5056,9 +5104,8 @@ export function StoreProvider({ children }) {
         });
         setRatingAgg((m) => {
           const next = { ...m };
-          // The local A rating still needs rollback after an A -> B handoff, but
-          // never restore A's viewer-specific aggregate into B's fresh cache.
-          if ((sessionRef.current?.id || null) === accountId && previousAggregate) {
+          // Rollback belongs to the initiating account epoch, including A -> B -> A.
+          if (previousAggregate) {
             next[aggregateKey] = previousAggregate;
           } else {
             delete next[aggregateKey];
@@ -5137,7 +5184,7 @@ export function StoreProvider({ children }) {
   };
   const addFanClubMessage = (artist, text) => {
     const t = clean(text, { max: LIMITS.message, newlines: true });
-    const actor = sessionRef.current;
+    const actor = currentMutationActor();
     const key = fcKey(artist);
     if (!actor || !key || !t) return Promise.resolve({ ok: false, retryable: false });
     const clientMutationId = nextChatMutationId("fan");
@@ -5165,8 +5212,11 @@ export function StoreProvider({ children }) {
   };
   const isFanClubMember = (artist) => (fanClubs[session?.id] || []).some((a) => norm(a) === norm(artist));
   const joinFanClub = (artist) => {
-    if (!session) return Promise.resolve({ ok: false, joined: false });
-    const accountId = session.id;
+    const actor = currentMutationActor();
+    if (!actor) return Promise.resolve({ ok: false, joined: false });
+    const accountId = actor.id;
+    const mutation = captureAccountMutation(accountId, accountMutationEpochRef.current);
+    const isCurrent = () => accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current);
     const has = isFanClubMember(artist);
     const enc = encodeURIComponent(norm(artist));
     const joined = !has;
@@ -5182,14 +5232,16 @@ export function StoreProvider({ children }) {
         : rows);
     };
     applyMembership(joined, has);
-    return api(`/api/fanclubs/${enc}/join`, { method: "POST", body: { joined }, context: joined ? "Joining this fan club" : "Leaving this fan club" })
+    return api(`/api/fanclubs/${enc}/join`, { method: "POST", body: { joined }, context: joined ? "Joining this fan club" : "Leaving this fan club", expectedAccountId: accountId })
       .then((result) => {
+        if (!isCurrent()) return { ok: false, stale: true };
         const confirmed = typeof result?.joined === "boolean" ? result.joined : joined;
         if (confirmed !== joined) applyMembership(confirmed, joined);
         if (confirmed && !has) track("join_fanclub");
         return { ok: true, joined: confirmed };
       })
       .catch(() => {
+        if (!isCurrent()) return { ok: false, stale: true };
         applyMembership(has, joined);
         return { ok: false, joined: has };
       });
@@ -5295,7 +5347,7 @@ export function StoreProvider({ children }) {
   };
   const updateArtistProfile = async (name, patch) => {
     const context = "Saving this artist page";
-    const actor = sessionRef.current;
+    const actor = currentMutationActor();
     if (!actor || !(isStaff(actor.role)
       || (actor.role === "artist" && norm(actor.artistName) === norm(name)))) {
       return localCommandError(actor ? "PIT-AUTH-002" : "PIT-AUTH-001", context);
@@ -5353,7 +5405,7 @@ export function StoreProvider({ children }) {
   const addArtistPost = async (name, text, { signal } = {}) => {
     const t = clean(text, { max: LIMITS.message, newlines: true });
     const context = "Publishing this artist update";
-    const actor = sessionRef.current;
+    const actor = currentMutationActor();
     const artistKey = norm(name);
     if (!actor) return localCommandError("PIT-AUTH-001", context);
     const ownsTarget = isStaff(actor.role)
@@ -5362,7 +5414,7 @@ export function StoreProvider({ children }) {
     if (!t) return localCommandError("PIT-REQ-002", context);
     const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
     const cacheClaim = artistPageCache.claim(`artist-post-mutation:${artistKey}`, actor.id);
-    const localId = "ap_" + Date.now();
+    const localId = createChatClientMutationId("artist-post");
     const p = { id: localId, userId: actor.id, text: t, ts: "now" };
     const removeOptimisticPost = () => setArtistPosts((current) => ({
       ...current,
@@ -5380,6 +5432,7 @@ export function StoreProvider({ children }) {
         context,
         silent: true,
         signal,
+        expectedAccountId: actor.id,
       });
       if (!id) throw new Error("The artist update did not return an id.");
       const currentActor = sessionRef.current;
@@ -5402,7 +5455,7 @@ export function StoreProvider({ children }) {
     }
   };
   const removeArtistPost = async (name, id, { signal } = {}) => {
-    const actor = sessionRef.current;
+    const actor = currentMutationActor();
     const artistKey = norm(name);
     const context = "Removing this artist update";
     if (!actor) return localCommandError("PIT-AUTH-001", context);
@@ -5420,6 +5473,7 @@ export function StoreProvider({ children }) {
         context,
         silent: true,
         signal,
+        expectedAccountId: actor.id,
       });
       if (response?.ok !== true) return localCommandError("PIT-API-001", context);
       const currentActor = sessionRef.current;
@@ -5833,18 +5887,23 @@ export function StoreProvider({ children }) {
         : { ok: false, error }));
   };
   const addVenueReview = (venueName, { rating, text, photos, photosPublic = false }) => {
-    if (!session) return Promise.resolve({ ok: false });
-    const localId = "vr_" + Date.now();
+    const actor = currentMutationActor();
+    if (!actor) return Promise.resolve({ ok: false });
+    const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
+    const isCurrent = () => accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current);
+    const localId = createChatClientMutationId("venue-review");
     const selectedPhotos = (photos || []).slice(0, MEDIA_POST_MAX_ATTACHMENTS);
-    const r = { id: localId, userId: session.id, name: session.name, initials: session.initials, rating: clampRating(rating), text: clean(text, { max: LIMITS.review, newlines: true }), photos: photosPublic ? selectedPhotos : [], ts: "now" };
+    const r = { id: localId, userId: actor.id, name: actor.name, initials: actor.initials, rating: clampRating(rating), text: clean(text, { max: LIMITS.review, newlines: true }), photos: photosPublic ? selectedPhotos : [], ts: "now" };
     setVenueReviews((m) => ({ ...m, [norm(venueName)]: [r, ...(m[norm(venueName)] || [])] }));
     const enc = encodeURIComponent(norm(venueName));
-    return api(`/api/venues/${enc}/reviews`, { method: "POST", body: { rating: r.rating, text: r.text, photos: selectedPhotos, photosPublic: !!photosPublic }, context: "Posting your venue review" })
+    return api(`/api/venues/${enc}/reviews`, { method: "POST", body: { rating: r.rating, text: r.text, photos: selectedPhotos, photosPublic: !!photosPublic }, context: "Posting your venue review", expectedAccountId: actor.id })
       .then(({ id }) => {
+        if (!isCurrent()) return { ok: false, stale: true };
         if (id) setVenueReviews((m) => ({ ...m, [norm(venueName)]: (m[norm(venueName)] || []).map((x) => (x.id === localId ? { ...x, id } : x)) }));
         return { ok: true, id: id || localId };
       })
       .catch((error) => {
+        if (!isCurrent()) return { ok: false, stale: true };
         setVenueReviews((m) => ({ ...m, [norm(venueName)]: (m[norm(venueName)] || []).filter((x) => x.id !== localId) }));
         return { ok: false, error };
       });
@@ -6109,7 +6168,7 @@ export function StoreProvider({ children }) {
   };
   const sendDM = (otherId, text) => {
     const t = clean(text, { max: LIMITS.message, newlines: true });
-    const actor = sessionRef.current;
+    const actor = currentMutationActor();
     if (!actor || !otherId || !t || blockedIdsRef.current.includes(otherId)) {
       return Promise.resolve({ ok: false, retryable: false });
     }
@@ -6136,7 +6195,7 @@ export function StoreProvider({ children }) {
     });
   };
   const markThreadRead = async (otherId) => {
-    const actor = sessionRef.current;
+    const actor = currentMutationActor();
     const context = "Marking this conversation as read";
     if (!actor || !otherId) return localCommandError("PIT-AUTH-001", context);
     const key = dmKey(actor.id, otherId);
@@ -6146,7 +6205,7 @@ export function StoreProvider({ children }) {
     }
     const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
     try {
-      const response = await writeDirectMessageRead(otherId);
+      const response = await writeDirectMessageRead(otherId, { expectedAccountId: actor.id });
       const cursor = normalizeDirectMessageReadCursor(response?.readCursor);
       if (response?.ok !== true) return localCommandError("PIT-API-001", context);
       if (!accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current)) {

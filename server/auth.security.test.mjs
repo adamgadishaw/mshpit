@@ -33,7 +33,9 @@ const {
   sessionTtlForRole,
   verifyPassword,
   verifyPasswordForUser,
+  verifyPasswordForUserAsync,
 } = await import("./auth.js");
+const { passwordWork } = await import("./passwordWork.js");
 const { BOOTSTRAP_ADMIN_IDENTITY_KEY, reconcileAdminAccount } = await import("./adminBootstrap.js");
 const {
   RECOVERY_RESPONSE_FLOOR_MAX_MS,
@@ -1049,6 +1051,25 @@ test("nonexistent-user password checks still execute a real scrypt verification 
   assert.equal(verifyPasswordForUser("correct-password", stored), true);
   assert.equal(verifyPasswordForUser("wrong-password", stored), false);
   assert.equal(verifyPasswordForUser("any-password", null), false);
+});
+
+test("async absent-account checks enter the same bounded password queue as real credentials", async () => {
+  const record = hashPassword("dummy-padding-password1");
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const occupied = Array.from({ length: 34 }, () => passwordWork(() => gate));
+  try {
+    for (const stored of [record, undefined, null, ""]) {
+      await assert.rejects(verifyPasswordForUserAsync("wrong-password2", stored), { code: "RATE_LIMITED" },
+        "missing account records must not bypass the expensive password-work boundary");
+    }
+  } finally {
+    release();
+    await Promise.all(occupied);
+  }
+  assert.equal(await verifyPasswordForUserAsync("dummy-padding-password1", record), true);
+  assert.equal(await verifyPasswordForUserAsync("not-a-real-account-password", undefined), false,
+    "even knowledge of the public dummy password cannot authenticate a nonexistent account");
 });
 
 test("production uses a host-only high-priority cookie while development keeps its legacy name", () => {

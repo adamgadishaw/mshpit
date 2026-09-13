@@ -110,6 +110,7 @@ export default function PostScreen({ log, onClose, onRequireAuth, onOpenProfile,
   const [text, setText] = useState("");
   const [replyTo, setReplyTo] = useState(null); // { id, name } or null (= reply to the post)
   const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState("");
   const commentScope = accountTargetScope(session?.id, `post-comments:${String(log.id || "")}`);
   const [commentRequestVersion, setCommentRequestVersion] = useState(0);
   const [commentResource, setCommentResource] = useState(() => ({
@@ -122,6 +123,9 @@ export default function PostScreen({ log, onClose, onRequireAuth, onOpenProfile,
   const inputRef = useRef(null);
   const commentScopeRef = useRef(commentScope);
   commentScopeRef.current = commentScope;
+  const commentSubmitRef = useRef({ active: null, draft: null });
+  commentSubmitRef.current.draft = { text, parentId: replyTo?.id || null };
+  useEffect(() => () => { commentSubmitRef.current.active = null; }, []);
 
   // Hydrate once on open (and on an explicit retry). Comments are not a live
   // chat, so this detail screen no longer spends a request every 15 seconds.
@@ -203,19 +207,46 @@ export default function PostScreen({ log, onClose, onRequireAuth, onOpenProfile,
   }, [flat]);
 
   const showComments = () => scrollRef.current?.scrollToEnd({ animated: true });
+  const changeCommentText = (value) => {
+    commentSubmitRef.current.draft = { ...commentSubmitRef.current.draft, text: value };
+    setText(value);
+  };
+  const changeCommentReply = (value) => {
+    commentSubmitRef.current.draft = { ...commentSubmitRef.current.draft, parentId: value?.id || null };
+    setReplyTo(value);
+  };
   const reply = (comment) => {
     if (!session?.id) { onRequireAuth?.(); return; }
-    setReplyTo({ id: comment.id, name: comment.name || userById?.(comment.userId)?.name });
+    changeCommentReply({ id: comment.id, name: comment.name || userById?.(comment.userId)?.name });
     inputRef.current?.focus();
   };
   const send = async () => {
     if (!session?.id) { onRequireAuth?.(); return; }
     const t = text.trim();
-    if (!t || sending) return;
+    if (!t || sending || commentSubmitRef.current.active || commentScopeRef.current !== commentScope) return;
+    // A synchronous lock covers Enter + tap before React renders the busy state.
+    const operation = { scope: commentScope, text, parentId: replyTo?.id || null };
+    commentSubmitRef.current.active = operation;
+    const isCurrent = () => commentSubmitRef.current.active === operation && commentScopeRef.current === operation.scope;
     setSending(true);
-    const result = await addComment(log.id, t, replyTo?.id || null);
-    setSending(false);
-    if (result?.ok) { setText(""); setReplyTo(null); }
+    setSendError("");
+    try {
+      const result = await addComment(log.id, t, operation.parentId);
+      if (!isCurrent()) return;
+      if (result?.ok) {
+        const draft = commentSubmitRef.current.draft;
+        // Keep anything the member typed while the previous comment was sending.
+        if (draft.text === operation.text && draft.parentId === operation.parentId) {
+          setText(""); setReplyTo(null);
+        }
+      } else {
+        setSendError(result?.error?.userMessage || "Your comment was not sent. Your draft is still here; try again.");
+      }
+    } catch {
+      if (isCurrent()) setSendError("Your comment was not sent. Your draft is still here; try again.");
+    } finally {
+      if (isCurrent()) { commentSubmitRef.current.active = null; setSending(false); }
+    }
   };
 
   const removeComment = (comment) => {
@@ -295,10 +326,11 @@ export default function PostScreen({ log, onClose, onRequireAuth, onOpenProfile,
         </View>
       ) : (
         <View style={styles.composerWrap}>
+          {!!sendError && <Text accessibilityRole="alert" style={styles.threadErrorCopy}>{sendError}</Text>}
           {replyTo && (
             <View style={styles.replyingTo}>
               <Text style={styles.replyingTxt} numberOfLines={1}>Replying to {replyTo.name || "comment"}</Text>
-              <Pressable onPress={() => setReplyTo(null)} hitSlop={8}><Icon name="x" size={13} color={colors.textDim} /></Pressable>
+              <Pressable onPress={() => changeCommentReply(null)} hitSlop={8}><Icon name="x" size={13} color={colors.textDim} /></Pressable>
             </View>
           )}
           <View style={styles.composer}>
@@ -308,7 +340,7 @@ export default function PostScreen({ log, onClose, onRequireAuth, onOpenProfile,
               placeholder={replyTo ? "Write a reply..." : "Reply to this post..."}
               placeholderTextColor={colors.textFaint}
               value={text}
-              onChangeText={setText}
+              onChangeText={changeCommentText}
               onSubmitEditing={send}
               returnKeyType="send"
               multiline

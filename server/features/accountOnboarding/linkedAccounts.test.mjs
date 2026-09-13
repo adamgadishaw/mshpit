@@ -55,7 +55,7 @@ function fixture(t, options = {}) {
     catch (error) { db.exec("ROLLBACK"); throw error; }
   }
   const service = createLinkedAccounts({
-    database: db, ApiError, verifyPassword: options.verifyPassword || verify, atomicWrite, createSession,
+    database: db, ApiError, verifyPasswordForUser: options.verifyPassword || verify, atomicWrite, createSession,
     sessionTtlForRole: ttl, now: () => at,
     requireSessionUser: (ctx) => {
       if (!ctx.user) throw new ApiError(401, "Log in", "AUTH_REQUIRED");
@@ -103,6 +103,27 @@ test("same salted-password proof is browser-local, minimal, and non-enumerating"
   assert.throws(() => f.swap(member, otherBrowser, owner.id), { code: "FORBIDDEN" });
   assert.equal(f.count("linked_account_pairs"), 1);
   assert.equal(f.count("linked_account_session_grants"), 1);
+});
+
+test("matching account proofs always reserve two verification slots without exposing sibling count", async (t) => {
+  for (const count of [0, 1, 2]) {
+    const checks = [];
+    const f = fixture(t, { verifyPassword: async (password, stored) => {
+      checks.push(stored);
+      return verify(password, stored);
+    } });
+    const users = Array.from({ length: count }, () => f.addUser());
+    const matched = await f.service.matchingPasswordUsers({ email: "shared@example.test", password: "Matching-pass1" });
+    assert.equal(checks.length, 2, `${count} accounts must still reserve two expensive verification slots`);
+    assert.deepEqual(matched.map((user) => user.id), users.map((user) => user.id));
+    assert.equal(checks.filter((stored) => stored === undefined).length, 2 - count,
+      "absent records must reach the dummy-record verifier, not skip password work");
+    checks.length = 0;
+    assert.deepEqual(await f.service.matchingPasswordUsers({ email: "shared@example.test", password: "Wrong-pass2" }), []);
+    assert.equal(checks.length, 2, "an invalid password must not short-circuit sibling checks");
+    assert.equal(f.count("linked_account_pairs"), 0);
+    assert.equal(f.count("linked_account_session_grants"), 0);
+  }
 });
 
 test("matching email alone, matching password alone, and whitespace variants never link", async (t) => {

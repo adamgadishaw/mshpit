@@ -2841,12 +2841,111 @@ test("PATCH /api/me schemas extras, filters public song text, and keeps trusted 
   });
   assert.equal(protectedPreference.user.searchIndexingOptOut, true,
     "generic extras writes cannot silently erase the dedicated privacy preference");
-  assert.deepEqual(JSON.parse(q.userById.get(user.id).extras), { theme: "neon", searchIndexingOptOut: true });
+  assert.deepEqual(JSON.parse(q.userById.get(user.id).extras), {
+    theme: "neon", nowPlaying: { title: "Safe Song", artist: "Safe Artist" }, searchIndexingOptOut: true,
+  });
 
   const optedIn = handler({
     user: q.userById.get(user.id), ip: "profile-test", body: { searchIndexingOptOut: false },
   });
   assert.equal(optedIn.user.searchIndexingOptOut, false);
+});
+
+test("PATCH /api/me extras merges changed keys with the current record and preserves explicit clears", () => {
+  const user = addUser("u_extras_merge", "extras-merge@example.com", "extrasmerge");
+  const song = { title: "Saved song", artist: "Saved artist" };
+  const stored = {
+    theme: "forest", nowPlaying: song, treble: song, bass: song,
+    playlists: [{ id: "saved", name: "Saved list", tracks: [song] }],
+    consentAt: 10, analyticsConsentAt: 20, termsAcceptedAt: 30, termsVersion: "recorded",
+    analyticsOptOut: false, searchIndexingOptOut: true, concertMapVisible: false,
+    pendingSignupHandle: "preferred_name", legacyUnknown: "quarantined",
+  };
+  db.prepare("UPDATE users SET extras=? WHERE id=?").run(JSON.stringify(stored), user.id);
+  // `user` deliberately predates the saved record; session snapshots are not
+  // the authority for unrelated extras when an independent write has won.
+  const handler = routes["PATCH /api/me"];
+  const patch = (body) => handler({ user, ip: "extras-merge-test", body });
+  const changedSong = { title: "Changed song", artist: "Changed artist" };
+  patch({ extras: { treble: changedSong } });
+  const expected = { ...stored, treble: changedSong };
+  delete expected.legacyUnknown;
+  assert.deepEqual(JSON.parse(q.userById.get(user.id).extras), expected);
+  patch({ extras: {} });
+  assert.deepEqual(JSON.parse(q.userById.get(user.id).extras), expected, "empty extras does not erase other fields");
+  patch({ extras: { nowPlaying: null, bass: null, playlists: [] } });
+  assert.deepEqual(JSON.parse(q.userById.get(user.id).extras), {
+    ...expected, nowPlaying: null, bass: null, playlists: [],
+  });
+});
+
+test("PATCH /api/me extras keeps server-owned fields and dedicated overrides authoritative at commit", () => {
+  const user = addUser("u_extras_commit", "extras-commit@example.com", "extrascommit");
+  const current = {
+    theme: "forest", treble: { title: "Current song", artist: "Current artist" },
+    consentAt: 10, analyticsConsentAt: 20, termsAcceptedAt: 30, termsVersion: "recorded",
+    analyticsOptOut: false, searchIndexingOptOut: true, concertMapVisible: false,
+    pendingSignupHandle: "preferred_name",
+  };
+  let checks = 0;
+  routes["PATCH /api/me"]({
+    user, ip: "extras-commit-test",
+    assertCurrentSession() {
+      checks += 1;
+      if (checks === 2) db.prepare("UPDATE users SET extras=? WHERE id=?").run(JSON.stringify(current), user.id);
+      return user;
+    },
+    body: {
+      theme: "neon", searchIndexingOptOut: false, concertMapVisible: true,
+      extras: {
+        theme: "stage", bass: { title: "New song", artist: "New artist" },
+        consentAt: 100, analyticsConsentAt: 200, termsAcceptedAt: 300, termsVersion: "forged",
+        analyticsOptOut: true, searchIndexingOptOut: true, concertMapVisible: false,
+      },
+    },
+  });
+  assert.equal(checks, 2);
+  assert.deepEqual(JSON.parse(q.userById.get(user.id).extras), {
+    ...current, theme: "neon", searchIndexingOptOut: false, concertMapVisible: true,
+    bass: { title: "New song", artist: "New artist" },
+  });
+});
+
+test("PATCH /api/me dedicated preference-only patches retain current nonmusic metadata", () => {
+  const user = addUser("u_extras_preferences", "extras-preferences@example.com", "extraspreferences");
+  const current = {
+    theme: "forest", termsAcceptedAt: 30, termsVersion: "recorded", analyticsOptOut: true,
+    searchIndexingOptOut: true, concertMapVisible: false, pendingSignupHandle: "preferred_name",
+    legacyMetadata: { retained: true },
+  };
+  db.prepare("UPDATE users SET extras=? WHERE id=?").run(JSON.stringify(current), user.id);
+  const patch = (body) => routes["PATCH /api/me"]({ user, ip: "extras-preferences-test", body });
+  patch({ theme: "neon" });
+  patch({ concertMapVisible: true });
+  patch({ searchIndexingOptOut: false });
+  patch({ bio: "Unrelated profile edit", directMessagePolicy: "nobody", profileAudience: "only_me" });
+  assert.deepEqual(JSON.parse(q.userById.get(user.id).extras), {
+    ...current, theme: "neon", concertMapVisible: true, searchIndexingOptOut: false,
+  });
+  assert.equal(q.userById.get(user.id).dm_policy, "nobody");
+  assert.equal(q.userById.get(user.id).profile_audience, "only_me");
+});
+
+test("PATCH /api/me rejects oversized merged extras without changing any profile field", () => {
+  const user = addUser("u_extras_size", "extras-size@example.com", "extrassize");
+  const song = { title: "t".repeat(200), artist: "a".repeat(120) };
+  const current = { playlists: [{ id: "saved", name: "Saved list", tracks: Array.from({ length: 22 }, () => song) }] };
+  const incoming = { treble: song, bass: song };
+  assert.ok(Buffer.byteLength(JSON.stringify(current)) < 8000);
+  assert.ok(Buffer.byteLength(JSON.stringify(incoming)) < 8000);
+  assert.ok(Buffer.byteLength(JSON.stringify({ ...current, ...incoming })) > 8000);
+  db.prepare("UPDATE users SET extras=? WHERE id=?").run(JSON.stringify(current), user.id);
+  assert.throws(() => routes["PATCH /api/me"]({
+    user, ip: "extras-size-test", body: { bio: "Must not be saved", extras: incoming },
+  }), (error) => error instanceof ApiError && error.status === 400 && error.code === "VALIDATION_FAILED");
+  const after = q.userById.get(user.id);
+  assert.equal(after.bio, user.bio);
+  assert.deepEqual(JSON.parse(after.extras), current);
 });
 
 test("signup records Terms separately while optional analytics defaults off", async () => {
