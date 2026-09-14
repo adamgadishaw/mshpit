@@ -16,6 +16,7 @@ import {
 import { sendTemplate } from "./emailService.js";
 import { isProduction } from "./environment.js";
 import { privateErrorLabel } from "./errors.js";
+import { collectSeriousErrorPatterns, formatSeriousErrorPatterns } from "./siteHealthErrorPatterns.js";
 import { parseMailFrom } from "./mailer.js";
 import {
   mediaConfigured,
@@ -241,27 +242,6 @@ function count(database, sql, ...params) {
   catch { return null; }
 }
 
-function seriousErrorStats(database, since) {
-  const bucketStart = Math.floor(Number(since) / HOUR_MS) * HOUR_MS;
-  try {
-    const row = database.prepare(`SELECT COALESCE(SUM(b.count),0) occurrences,
-        COUNT(DISTINCT b.fingerprint) kinds
-      FROM error_occurrence_buckets b
-      JOIN error_events e ON e.fingerprint=b.fingerprint
-      WHERE b.hour_start>=? AND (e.level='fatal' OR e.status=0 OR e.status>=500)
-        AND NOT (
-          e.method='GET' AND e.route='/api/readiness'
-          AND e.status=503 AND e.code='MEDIA_STORAGE_UNAVAILABLE'
-        )`).get(bucketStart);
-    return {
-      occurrences: Math.max(0, Number(row?.occurrences) || 0),
-      kinds: Math.max(0, Number(row?.kinds) || 0),
-    };
-  } catch {
-    return null;
-  }
-}
-
 function groupedEmailStats(database, since) {
   const result = { sent: 0, failed: 0, skipped: 0 };
   try {
@@ -296,7 +276,7 @@ function publishingEnabled(env) {
   return TRUE_VALUES.has(String(env?.PIT_VIDEO_PUBLISHING_ENABLED || "").trim().toLowerCase());
 }
 
-/** Build a fixed, aggregate-only snapshot suitable for founder email. */
+/** Build bounded aggregates and allowlisted diagnostic metadata for founder email. */
 export function collectSiteHealthDigest(database, {
   env = process.env,
   at = Date.now(),
@@ -330,7 +310,7 @@ export function collectSiteHealthDigest(database, {
 
   // Hourly counters keep the readout windowed. The lifetime fingerprint row is
   // useful for diagnosis but must never be mislabeled as today's volume.
-  const serverFaults24h = seriousErrorStats(database, at - DAY_MS);
+  const serverFaults24h = collectSeriousErrorPatterns(database, { since: at - DAY_MS, until: at });
   const mail24h = groupedEmailStats(database, at - DAY_MS);
   const pendingOwnerApprovals = count(database, `SELECT COUNT(*) count FROM owner_approval_requests
     WHERE status='pending' AND expires_at>?`, at);
@@ -383,6 +363,7 @@ export function collectSiteHealthDigest(database, {
     `Media: public and private storage configured ${yesNo(publicMediaConfigured && privateVideoConfigured)}; private-source privacy proof ready ${yesNo(privateIsolation.ready)}; video verifier ready ${yesNo(verifier.ready)}`,
     `Cleanup: retrying ${numberOrUnavailable(mediaRetry)}; dead-letter ${numberOrUnavailable(mediaDead)}`,
     `App and server faults: ${numberOrUnavailable(serverFaults24h?.occurrences)} occurrence(s) across ${numberOrUnavailable(serverFaults24h?.kinds)} serious pattern(s) in the hourly-bucketed last 24h`,
+    ...formatSeriousErrorPatterns(serverFaults24h),
     `Owner approvals: ${numberOrUnavailable(pendingOwnerApprovals)} pending`,
     `Attention codes: ${issues.length ? issues.join(", ") : "none"}${warnings.length ? `; watch codes: ${warnings.join(", ")}` : ""}`,
     "Coverage limit: this in-process check cannot prove public DNS, Render control-plane/build status, Google Workspace delivery, or reachability while the app is down. Keep external Render and uptime notifications enabled.",
@@ -415,6 +396,7 @@ export function collectSiteHealthDigest(database, {
       mediaCleanupDeadLetter: mediaDead,
       activeServerErrorOccurrences: serverFaults24h?.occurrences ?? null,
       activeServerErrorKinds: serverFaults24h?.kinds ?? null,
+      serverFaultWindow: serverFaults24h,
       pendingOwnerApprovals,
       issues: Object.freeze(issues),
       warnings: Object.freeze(warnings),

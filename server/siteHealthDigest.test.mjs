@@ -228,7 +228,7 @@ test("a failed delivery waits for its durable backoff and then retries", async (
   assert.equal(attempts, 2);
 });
 
-test("health content is aggregate-only and states what the process cannot verify", () => {
+test("health content allows diagnostic metadata without member data and states coverage limits", () => {
   const at = Date.parse("2026-01-17T14:00:00Z");
   db.prepare(`INSERT INTO error_events
     (fingerprint,level,code,status,method,route,cause,last_request_id,count,first_seen,last_seen)
@@ -267,12 +267,15 @@ test("health content is aggregate-only and states what the process cannot verify
   assert.equal(digest.aggregate.mail24h.failed, 1);
   assert.equal(digest.aggregate.pendingOwnerApprovals, 1);
   for (const forbidden of [
-    "person@example.com", "/api/users/private-person", "C:/private/raw/path",
+    "person@example.com", "/api/users/private-person", "C:/private/raw/path", "secret-fingerprint", "PRIVATE_FAILURE",
     "request-private", "private summary", "private-origin.example", "private-public-bucket",
     "private-source-bucket", "private-access-key", "private-media-secret", "resend-secret-value",
   ]) assert.equal(serialized.includes(forbidden), false, `digest leaked ${forbidden}`);
   assert.match(digest.detail, /cannot prove public DNS, Render control-plane\/build status, Google Workspace delivery/u);
   assert.match(digest.detail, /local receipt is written only after the backup child confirms a private remote upload/u);
+  assert.equal(digest.aggregate.serverFaultWindow.patterns[0].code, "UNKNOWN");
+  assert.equal(digest.aggregate.serverFaultWindow.patterns[0].route, null);
+  assert.match(digest.detail, /Fault window:/u);
 });
 
 test("health digest distinguishes unconfigured, current, and stale off-host backup evidence", () => {
@@ -327,6 +330,10 @@ test("strict readiness polling is component state, not 127 app crashes", () => {
   assert.equal(digest.aggregate.activeServerErrorKinds, 1);
   assert.equal(digest.aggregate.activeServerErrorOccurrences, 2);
   assert.equal(digest.aggregate.warnings.includes("server_error_patterns"), true);
+  assert.equal(digest.aggregate.serverFaultWindow.patterns.length, 1);
+  assert.equal(digest.aggregate.serverFaultWindow.patterns[0].occurrences, 2);
+  assert.match(digest.detail, /2x 503 POST \/api\/media\/assets\/:id\/finalize \/ MEDIA_STORAGE_UNAVAILABLE/u);
+  assert.equal(digest.detail.includes("/api/readiness"), false);
 });
 
 test("live deployment stamps are production-only and use a bounded commit readout", async () => {

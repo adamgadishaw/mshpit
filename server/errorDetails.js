@@ -7,7 +7,7 @@
 // detail for each grouped problem instead: the first application stack frames,
 // the redacted message and its cause chain, and the release that produced it.
 //
-// It exists for the owner's alert email. Public failures still use the stable
+// It exists for the owner's alert email and authenticated diagnostics. Public failures still use the stable
 // PIT-* catalogue, and Render's log line still prints only the error class
 // (safeLogging.js), because those audiences must not see internals.
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
@@ -154,8 +154,8 @@ function statements(database) {
         VALUES (@fingerprint,@release,@location,@reason,@at)
         ON CONFLICT(fingerprint) DO UPDATE SET
           release=excluded.release,
-          location=COALESCE(excluded.location,error_event_details.location),
-          reason=COALESCE(excluded.reason,error_event_details.reason),
+          location=excluded.location,
+          reason=excluded.reason,
           updated_at=excluded.updated_at`),
       prune: database.prepare("DELETE FROM error_event_details WHERE fingerprint NOT IN (SELECT fingerprint FROM error_events)"),
     };
@@ -167,7 +167,9 @@ function statements(database) {
 /**
  * Keep the latest detail for a grouped problem. An occurrence without a
  * location or reason (a caller that had no error object) keeps the previous
- * detail rather than erasing it. Returns whether anything was written.
+ * detail rather than erasing it. A new capture replaces both fields together:
+ * an older location must not be attributed to a newer reason or release.
+ * Returns whether anything was written.
  */
 export function recordErrorDetail(database, { fingerprint, location, reason, release = currentRelease(), at = Date.now() } = {}) {
   if (typeof fingerprint !== "string" || !FINGERPRINT_RE.test(fingerprint)) return false;
@@ -185,14 +187,17 @@ export function recordErrorDetail(database, { fingerprint, location, reason, rel
   return true;
 }
 
-export function errorDetailsByFingerprint(database, fingerprints) {
+export function errorDetailsByFingerprint(database, fingerprints, { includeCapturedAt = false } = {}) {
   const wanted = [...new Set((Array.isArray(fingerprints) ? fingerprints : [])
     .filter((value) => typeof value === "string" && FINGERPRINT_RE.test(value)))].slice(0, 200);
   const details = new Map();
   if (!wanted.length) return details;
-  const rows = database.prepare(`SELECT fingerprint,release,location,reason FROM error_event_details
+  const rows = database.prepare(`SELECT fingerprint,release,location,reason,updated_at FROM error_event_details
     WHERE fingerprint IN (${wanted.map(() => "?").join(",")})`).all(...wanted);
-  for (const row of rows) details.set(row.fingerprint, { release: row.release, location: row.location, reason: row.reason });
+  for (const row of rows) details.set(row.fingerprint, {
+    release: row.release, location: row.location, reason: row.reason,
+    ...(includeCapturedAt ? { capturedAt: Number.isSafeInteger(row.updated_at) && row.updated_at > 0 ? row.updated_at : null } : {}),
+  });
   return details;
 }
 
@@ -203,8 +208,8 @@ export function pruneErrorDetails(database) {
 /** Bounded copy for a frozen alert batch; null when there is nothing to say. */
 export function boundedAlertDetail(detail) {
   if (!detail || typeof detail !== "object") return null;
-  const location = boundedText(detail.location, ERROR_DETAIL_LIMITS.location);
-  const reason = boundedText(detail.reason, ERROR_DETAIL_LIMITS.reason);
+  const location = boundedText(redactDiagnosticText(detail.location, { max: ERROR_DETAIL_LIMITS.location }), ERROR_DETAIL_LIMITS.location);
+  const reason = boundedText(redactDiagnosticText(detail.reason, { max: ERROR_DETAIL_LIMITS.reason }), ERROR_DETAIL_LIMITS.reason);
   if (!location && !reason) return null;
   const bounded = {};
   if (location) bounded.location = location;

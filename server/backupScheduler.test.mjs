@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { startPeriodicJob } from "./periodicJobScheduler.js";
 import {
   backupDirectory,
   backupChildEnvironment,
@@ -20,6 +21,263 @@ import {
   shouldRunScheduledBackup,
   startBackupScheduler,
 } from "./backupScheduler.js";
+
+function privateBackupFixtureEnvironment(directory) {
+  return {
+    NODE_ENV: "production", PIT_DATA_DIR: directory,
+    BACKUP_S3_ENDPOINT: "https://private.example",
+    BACKUP_S3_BUCKET: "pit-private-backups",
+    BACKUP_S3_ACCESS_KEY_ID: "backup-id",
+    BACKUP_S3_SECRET_ACCESS_KEY: "backup-secret",
+    MEDIA_BUCKET: "pit-public-media",
+  };
+}
+
+function backupSchedulerTimers() {
+  const once = [];
+  const repeating = [];
+  const cleared = new Set();
+  const handle = (callback, delay) => ({ callback, delay, unref() {} });
+  return {
+    once, repeating, cleared,
+    setTimer(callback, delay) { const value = handle(callback, delay); once.push(value); return value; },
+    clearTimer(value) { cleared.add(value); },
+    setRepeatingTimer(callback, delay) { const value = handle(callback, delay); repeating.push(value); return value; },
+    clearRepeatingTimer(value) { cleared.add(value); },
+  };
+}
+
+test("enabling private off-host storage does not wait for a fresh local-only snapshot to expire", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "pit-backup-enable-offhost-"));
+  const env = privateBackupFixtureEnvironment(directory);
+  let calls = 0;
+  let scheduler;
+  try {
+    mkdirSync(backupDirectory(env));
+    const backupName = "pit-20260914-130000.db";
+    writeFileSync(join(backupDirectory(env), backupName), "verified local snapshot");
+    scheduler = startBackupScheduler({
+      env,
+      logger: { log() {}, warn() {}, error() {} },
+      run: async () => {
+        calls += 1;
+        recordOffhostBackupReceipt(env, { backupName });
+        return { uploaded: true };
+      },
+    });
+    assert.equal(await scheduler.trigger(), true);
+    assert.equal(calls, 1, "a current local copy is not evidence of a private remote upload");
+    assert.equal(await scheduler.trigger(), true);
+    assert.equal(calls, 1, "fresh local and off-host proof suppress duplicate work");
+  } finally {
+    await scheduler?.stop();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+for (const [label, receipt, expectedCalls] of [
+  ["missing", () => null, 1],
+  ["malformed", () => "{torn", 1],
+  ["future-dated", (backupName) => JSON.stringify({ version: 1, backupName, uploadedAt: Date.now() + 60 * 60_000 }), 1],
+  ["overdue", (backupName) => JSON.stringify({ version: 1, backupName, uploadedAt: Date.now() - 27 * 60 * 60_000 }), 1],
+  ["current", (backupName) => JSON.stringify({ version: 1, backupName, uploadedAt: Date.now() - 2 * 60 * 60_000 }), 0],
+]) {
+  test(`a fresh local snapshot respects ${label} off-host receipt evidence`, async () => {
+    const directory = mkdtempSync(join(tmpdir(), "pit-backup-evidence-"));
+    const env = privateBackupFixtureEnvironment(directory);
+    let calls = 0;
+    let scheduler;
+    try {
+      mkdirSync(backupDirectory(env));
+      const backupName = "pit-20260914-130000.db";
+      writeFileSync(join(backupDirectory(env), backupName), "verified local snapshot");
+      const content = receipt(backupName);
+      if (content !== null) writeFileSync(join(backupDirectory(env), ".offhost-upload-receipt-v1.json"), content);
+      scheduler = startBackupScheduler({
+        env, logger: { log() {}, warn() {}, error() {} },
+        run: async () => { calls += 1; return { uploaded: true }; },
+      });
+      await scheduler.trigger();
+      assert.equal(calls, expectedCalls);
+    } finally {
+      await scheduler?.stop();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+}
+
+test("unconfigured private storage preserves the local-only daily cadence", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "pit-backup-local-only-"));
+  const env = { NODE_ENV: "production", PIT_DATA_DIR: directory };
+  let calls = 0;
+  let scheduler;
+  try {
+    mkdirSync(backupDirectory(env));
+    const snapshot = join(backupDirectory(env), "pit-20260914-130000.db");
+    writeFileSync(snapshot, "verified local snapshot");
+    scheduler = startBackupScheduler({
+      env, logger: { log() {}, warn() {}, error() {} },
+      run: async () => { calls += 1; return { uploaded: false }; },
+    });
+    await scheduler.trigger();
+    assert.equal(calls, 0);
+    const overdue = new Date(Date.now() - 25 * 60 * 60_000);
+    utimesSync(snapshot, overdue, overdue);
+    await scheduler.trigger();
+    assert.equal(calls, 1);
+  } finally {
+    await scheduler?.stop();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+for (const [label, ageMinutes, expectedCalls] of [
+  ["initial backup completion", 24 * 60 - 5, 1],
+  ["bounded recovery completion", 24 * 60 - 39, 1],
+  ["genuinely recent recovery point", 24 * 60 - 41, 0],
+]) {
+  test(`daily backup timer does not lose a day after ${label}`, async () => {
+    const directory = mkdtempSync(join(tmpdir(), "pit-backup-cadence-phase-"));
+    const env = privateBackupFixtureEnvironment(directory);
+    const timers = backupSchedulerTimers();
+    let calls = 0;
+    let scheduler;
+    try {
+      mkdirSync(backupDirectory(env));
+      const backupName = "pit-20260914-130000.db";
+      const snapshot = join(backupDirectory(env), backupName);
+      writeFileSync(snapshot, "verified local and privately uploaded snapshot");
+      const completedAt = Date.now() - ageMinutes * 60_000;
+      utimesSync(snapshot, new Date(completedAt), new Date(completedAt));
+      recordOffhostBackupReceipt(env, { backupName, uploadedAt: completedAt });
+      scheduler = startBackupScheduler({
+        env, logger: { log() {}, warn() {}, error() {} },
+        run: async () => { calls += 1; return { uploaded: true }; },
+        schedule: (options) => startPeriodicJob({ ...options, ...timers }),
+      });
+      assert.equal(timers.repeating[0].delay, 24 * 60 * 60_000);
+      await timers.repeating[0].callback();
+      assert.equal(calls, expectedCalls);
+      assert.equal(timers.once.length, 1, "cadence alignment must not allocate additional retry timers");
+    } finally {
+      await scheduler?.stop();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+}
+
+test("missing off-host proof coalesces concurrent triggers without overlapping backup work", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "pit-backup-singleflight-"));
+  const env = privateBackupFixtureEnvironment(directory);
+  let calls = 0;
+  let release;
+  let enter;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const entered = new Promise((resolve) => { enter = resolve; });
+  let scheduler;
+  try {
+    mkdirSync(backupDirectory(env));
+    const backupName = "pit-20260914-130000.db";
+    writeFileSync(join(backupDirectory(env), backupName), "verified local snapshot");
+    scheduler = startBackupScheduler({
+      env, logger: { log() {}, warn() {}, error() {} },
+      run: async () => {
+        calls += 1;
+        enter();
+        await gate;
+        recordOffhostBackupReceipt(env, { backupName });
+        return { uploaded: true };
+      },
+    });
+    const first = scheduler.trigger();
+    const duplicate = scheduler.trigger();
+    assert.equal(first, duplicate);
+    await entered;
+    assert.equal(calls, 1);
+    release();
+    await first;
+    await scheduler.trigger();
+    assert.equal(calls, 1);
+  } finally {
+    release();
+    await scheduler?.stop();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("unavailable off-host storage gets one recovery retry, then waits for the daily interval", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "pit-backup-retry-bounded-"));
+  const env = privateBackupFixtureEnvironment(directory);
+  const timers = backupSchedulerTimers();
+  let calls = 0;
+  let scheduler;
+  try {
+    mkdirSync(backupDirectory(env));
+    writeFileSync(join(backupDirectory(env), "pit-20260914-130000.db"), "verified local snapshot");
+    scheduler = startBackupScheduler({
+      env, logger: { log() {}, warn() {}, error() {} },
+      run: async () => { calls += 1; throw new Error("private provider unavailable"); },
+      schedule: (options) => startPeriodicJob({ ...options, ...timers }),
+    });
+    assert.equal(timers.repeating[0].delay, 24 * 60 * 60_000);
+    await timers.once[0].callback();
+    assert.equal(calls, 1);
+    assert.equal(timers.once[1].delay, 15 * 60_000);
+    await timers.once[1].callback();
+    assert.equal(calls, 2);
+    assert.equal(timers.once.length, 2, "failed recovery must not create a retry loop");
+    await timers.repeating[0].callback();
+    assert.equal(calls, 3);
+    assert.equal(timers.once.length, 3, "only the next daily slot opens a new recovery window");
+  } finally {
+    await scheduler?.stop();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("a confirmed upload whose receipt write fails recovers the receipt without a second upload", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "pit-backup-receipt-retry-"));
+  const env = privateBackupFixtureEnvironment(directory);
+  const timers = backupSchedulerTimers();
+  let spawns = 0;
+  let scheduler;
+  try {
+    mkdirSync(backupDirectory(env));
+    writeFileSync(join(backupDirectory(env), "pit-20260914-120000.db"), "verified local snapshot");
+    const receiptPath = join(backupDirectory(env), ".offhost-upload-receipt-v1.json");
+    mkdirSync(receiptPath);
+    const backupName = "pit-20260914-130000.db";
+    const fakeSpawn = () => {
+      spawns += 1;
+      const child = new EventEmitter();
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      queueMicrotask(() => {
+        writeFileSync(join(backupDirectory(env), backupName), "verified uploaded snapshot");
+        child.emit("close", 0);
+      });
+      return child;
+    };
+    scheduler = startBackupScheduler({
+      env, logger: { log() {}, warn() {}, error() {} },
+      run: ({ signal }) => runScheduledBackup({ env, signal, spawnProcess: fakeSpawn }),
+      schedule: (options) => startPeriodicJob({ ...options, ...timers }),
+    });
+    assert.equal(await timers.once[0].callback(), false);
+    assert.equal(spawns, 1);
+    assert.equal(offhostBackupReceipt(env), null);
+    rmSync(receiptPath, { recursive: true });
+    assert.equal(await timers.once[1].callback(), true);
+    assert.equal(offhostBackupReceipt(env).backupName, backupName);
+    assert.equal(spawns, 1, "the child already confirmed its upload; only its receipt needs repair");
+    assert.equal(timers.once.length, 2);
+    await scheduler.trigger();
+    assert.equal(spawns, 1);
+  } finally {
+    await scheduler?.stop();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test("production backups default on, explicit values fail closed, and development stays quiet", () => {
   assert.equal(backupSchedulerEnabled({ NODE_ENV: "production" }), true);

@@ -8,12 +8,12 @@ import SheetHeader from "../components/SheetHeader";
 import EmailConsole from "../components/EmailConsole";
 import BadgeConsole from "../components/BadgeConsole";
 import ModerationConsole from "../components/moderation/ModerationConsole";
+import AdminErrorPanel from "../components/moderation/AdminErrorPanel";
 import SuggestionInbox from "../components/moderation/SuggestionInbox";
 import ArtistMemorialConsole from "../components/moderation/ArtistMemorialConsole";
 import ArtistDeathWatchPanel from "../components/moderation/ArtistDeathWatchPanel";
 import CityPagesEditor from "../features/cities/CityPagesEditor";
 import { normalizeAdminMemberQuery } from "../domain/moderationConsole.mjs";
-import { formatErrorOccurrenceTime } from "../domain/errorDiagnostics.mjs";
 import { staffScopeFor } from "../domain/staffReadCoordinator.mjs";
 import { readAdminHealth } from "../features/admin/services/adminHealthApi.mjs";
 import {
@@ -409,10 +409,18 @@ export default function AdminScreen({ onClose }) {
   // Per-user badge overrides after a grant/revoke. The member list comes from the
   // store, so this holds the fresher server answer without refetching all 500.
   const [memberBadges, setMemberBadges] = useState({});
-  const [errorLog, setErrorLog] = useState(null);
+  const [errorLogState, setErrorLogState] = useState({ owner: null, data: null, loading: false, error: "" });
   const activeStaffSession = useRef(session);
   activeStaffSession.current = session;
   const artistRequestScope = staffScopeFor(session);
+  // The identity token changes on every account/role boundary, including A-B-A.
+  // Render masking is immediate; effect cleanup alone leaves one stale frame.
+  const errorLogOwner = useRef({ scope: null });
+  const errorScope = iAmAdmin ? artistRequestScope : null;
+  if (errorLogOwner.current.scope !== errorScope) errorLogOwner.current = { scope: errorScope };
+  const diagnosticsOwner = errorLogOwner.current;
+  const currentErrorLogState = errorLogState.owner === diagnosticsOwner ? errorLogState : null;
+  const errorLog = currentErrorLogState?.data || null;
   const memorialAdmin = useArtistMemorialAdmin({
     accountId: session?.id || null,
     sessionScope: artistRequestScope,
@@ -518,24 +526,46 @@ export default function AdminScreen({ onClose }) {
     return () => { cancelled = true; };
   }, [activeTab, iAmAdmin]);
 
+  const loadErrorLog = async ({ signal } = {}) => {
+    if (!diagnosticsOwner.scope || errorLogOwner.current !== diagnosticsOwner) return;
+    const request = Symbol("site-errors");
+    diagnosticsOwner.request = request;
+    setErrorLogState({ owner: diagnosticsOwner, data: null, loading: true, error: "" });
+    try {
+      const data = await readAdminErrors({ signal });
+      if (!signal?.aborted && errorLogOwner.current === diagnosticsOwner && diagnosticsOwner.request === request) {
+        setErrorLogState({ owner: diagnosticsOwner, data, loading: false, error: "" });
+      }
+    } catch (error) {
+      if (!signal?.aborted && errorLogOwner.current === diagnosticsOwner && diagnosticsOwner.request === request) {
+        setErrorLogState({ owner: diagnosticsOwner, data: null, loading: false, error: "Site errors could not be loaded. Try again." });
+        captureAppError(error, { code: "PIT-ADMIN-ERRORS-001", context: "Loading site errors", source: "admin-console", severity: "warning", toast: false });
+      }
+    }
+  };
   useEffect(() => {
-    if (activeTab !== "overview" || !iAmAdmin) return;
-    let cancelled = false;
-    readAdminErrors()
-      .then((r) => { if (!cancelled) setErrorLog(r); })
-      .catch((error) => {
-        if (!cancelled) captureAppError(error, { code: "PIT-ADMIN-ERRORS-001", context: "Loading site errors", source: "admin-console", severity: "warning", toast: false });
-      });
-    return () => { cancelled = true; };
-  }, [activeTab, iAmAdmin]);
+    if (activeTab !== "overview" || !diagnosticsOwner.scope) {
+      setErrorLogState({ owner: diagnosticsOwner, data: null, loading: false, error: "" });
+      return undefined;
+    }
+    const controller = new AbortController();
+    void loadErrorLog({ signal: controller.signal });
+    return () => { controller.abort(); diagnosticsOwner.request = null; };
+  }, [activeTab, diagnosticsOwner]);
 
   // Proves the alert path without waiting for an incident. It cannot invent
   // errors, so a clean window correctly sends nothing and says so.
   const sendTestAlert = async () => {
+    if (!diagnosticsOwner.scope || errorLogOwner.current !== diagnosticsOwner || !errorLog) return;
+    const setTestResult = (testResult) => {
+      if (errorLogOwner.current !== diagnosticsOwner) return;
+      setErrorLogState((previous) => previous.owner === diagnosticsOwner && previous.data
+        ? { ...previous, data: { ...previous.data, testResult } } : previous);
+    };
     try {
       const r = await sendAdminErrorTestAlert();
-      setErrorLog((prev) => ({ ...prev, testResult: r.sent ? "Sent." : `Not sent: ${r.reason}` }));
-    } catch { setErrorLog((prev) => ({ ...prev, testResult: "That didn't work." })); }
+      setTestResult(r.sent ? "Sent." : `Not sent: ${r.reason}`);
+    } catch { setTestResult("That didn't work."); }
   };
 
   const toggleMemberBadge = async (userId, slug, held) => {
@@ -658,17 +688,33 @@ export default function AdminScreen({ onClose }) {
         return { catalogResult, seedResult, runResult };
       }
       if (activeTab === "overview") {
-        const [moderation, members, health, errors] = await Promise.all([
-          loadModerationConsole({ signal }),
-          loadAdminMembersStrict({ signal }),
-          readAdminHealth({ signal }),
-          readAdminErrors({ signal }),
-        ]);
-        if (!signal.aborted && staffScopeFor(activeStaffSession.current) === artistRequestScope) {
-          setHealth(health);
-          setErrorLog(errors);
+        const errorRequest = Symbol("site-errors-refresh");
+        diagnosticsOwner.request = errorRequest;
+        try {
+          const [moderation, members, health, errors] = await Promise.all([
+            loadModerationConsole({ signal }),
+            loadAdminMembersStrict({ signal }),
+            readAdminHealth({ signal }),
+            readAdminErrors({ signal }),
+          ]);
+          if (!signal.aborted && staffScopeFor(activeStaffSession.current) === artistRequestScope) {
+            setHealth(health);
+            if (errorLogOwner.current === diagnosticsOwner && diagnosticsOwner.request === errorRequest) {
+              setErrorLogState({ owner: diagnosticsOwner, data: errors, loading: false, error: "" });
+            }
+          }
+          return { moderation, members, health, errors };
+        } catch (error) {
+          if (!signal.aborted && errorLogOwner.current === diagnosticsOwner && diagnosticsOwner.request === errorRequest) {
+            setErrorLogState((previous) => ({
+              owner: diagnosticsOwner,
+              data: previous.owner === diagnosticsOwner ? previous.data : null,
+              loading: false,
+              error: "Overview refresh could not finish. Retry loading site errors.",
+            }));
+          }
+          throw error;
         }
-        return { moderation, members, health, errors };
       }
       return { ok: false, unsupported: true };
     },
@@ -784,44 +830,15 @@ export default function AdminScreen({ onClose }) {
               <View style={styles.stat}><Text style={[styles.statN, bannedCount ? { color: colors.danger } : null]}>{bannedCount}</Text><Text style={styles.statL}>banned</Text></View>
             </View>
 
-            {/* Windowed totals and retained problem counts are deliberately
-                labelled separately; a retained row is not proof of a fresh failure. */}
-            {errorLog && (
-              <View style={[styles.healthCard, errorLog.last24h?.occurrences > 0 && styles.healthCardBad]}>
-                <Text style={styles.healthTitle}>APP + SERVER ERRORS</Text>
-                <Text style={[styles.healthState, { color: errorLog.last24h?.occurrences > 0 ? colors.danger : colors.good }]}>
-                  {errorLog.last24h?.occurrences
-                    ? `${errorLog.last24h.occurrences} in the last 24h across ${errorLog.last24h.kinds} kind${errorLog.last24h.kinds === 1 ? "" : "s"}.`
-                    : "Nothing in the last 24 hours."}
-                </Text>
-                <Text style={styles.healthSub}>
-                  {errorLog.last7Days?.occurrences || 0} in 7 days /{" "}
-                  {errorLog.alerts?.enabled
-                    ? `alerts to ${errorLog.alerts.to || "(no ADMIN_EMAIL)"}, at most one digest every ${errorLog.alerts.cooldownMinutes}m`
-                    : "alerts are switched off (ERROR_ALERTS_ENABLED)"}
-                </Text>
-                {health?.commit ? (
-                  <Text selectable style={styles.healthSub}>Current release: {health.commit} (error releases are not recorded).</Text>
-                ) : null}
-                <Text style={styles.healthSub}>Retained totals below include older occurrences, not just the last 24 hours.</Text>
-                {(errorLog.errors || []).slice(0, 8).map((e) => (
-                  <View key={e.fingerprint} style={styles.errEntry}>
-                    <Text selectable style={styles.errRow}>
-                      {e.count} retained total / {e.level === "fatal" ? "FATAL" : e.status} {e.method} {e.route || "(no route)"} / {e.code}
-                      {e.cause && e.cause !== "unclassified" ? ` (${e.cause})` : ""}
-                    </Text>
-                    <Text selectable style={styles.errRow}>Last occurred: {formatErrorOccurrenceTime(e.lastSeen) || "Unknown time"}</Text>
-                    {e.lastRequestId ? <Text selectable style={styles.errRow}>Request ID: {e.lastRequestId}</Text> : null}
-                  </View>
-                ))}
-                <View style={styles.errActions}>
-                  <Pressable style={styles.errTestBtn} onPress={sendTestAlert}>
-                    <Text style={styles.errTestTxt}>Send a test alert</Text>
-                  </Pressable>
-                  {errorLog.testResult ? <Text style={styles.healthSub}>{errorLog.testResult}</Text> : null}
-                </View>
-              </View>
-            )}
+            <AdminErrorPanel
+              key={artistRequestScope}
+              errorLog={errorLog}
+              loading={!currentErrorLogState || currentErrorLogState.loading}
+              loadError={currentErrorLogState?.error || ""}
+              currentRelease={health?.commit}
+              onRetry={() => { void loadErrorLog(); }}
+              onSendTestAlert={sendTestAlert}
+            />
           </>
         )}
 
@@ -1184,16 +1201,6 @@ export default function AdminScreen({ onClose }) {
 }
 
 const styles = StyleSheet.create({
-  healthCard: { backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 14, gap: 4, marginTop: 12 },
-  healthCardBad: { borderColor: colors.danger },
-  healthTitle: { color: colors.textDim, fontSize: 11, fontWeight: "800", letterSpacing: 1, fontFamily: mono },
-  healthState: { fontSize: 13.5, fontWeight: "700" },
-  healthSub: { color: colors.textDim, fontSize: 12 },
-  errEntry: { gap: 3, marginTop: 8 },
-  errRow: { color: colors.textDim, fontSize: 11, fontFamily: mono },
-  errActions: { flexDirection: "row", alignItems: "center", gap: 10, marginTop: 10 },
-  errTestBtn: { alignSelf: "flex-start", paddingHorizontal: 12, paddingVertical: 7, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line },
-  errTestTxt: { color: colors.text, fontSize: 11, fontWeight: "700" },
   wrap: { flex: 1, backgroundColor: colors.bg },
   // One readable column for the whole console. Applied to the title row, the tab
   // bar and the scroll content together: capping only the content would leave the

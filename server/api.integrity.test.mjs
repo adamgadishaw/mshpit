@@ -523,6 +523,7 @@ test("player provider routes propagate disconnects and downgrade ordinary previe
 });
 
 test("public video capability requires exact private-derivative negotiation plus live storage and verifier", async () => {
+  const previousFetch = globalThis.fetch;
   const keys = [
     "NODE_ENV", "PIT_VIDEO_PUBLISHING_ENABLED", "PIT_VIDEO_VERIFIER_HOSTPORT", "PIT_VIDEO_VERIFIER_SECRET",
     "MEDIA_ENDPOINT", "MEDIA_BUCKET", "MEDIA_SOURCE_BUCKET", "MEDIA_REGION", "MEDIA_ACCESS_KEY_ID", "MEDIA_SECRET_ACCESS_KEY",
@@ -717,7 +718,6 @@ test("public video capability requires exact private-derivative negotiation plus
       .get(legacyAdmin.id, "video-route-admin");
     const terminalLedger = db.prepare("SELECT upload_expires_at FROM media_objects WHERE object_key=?")
       .get(terminalDraft.source_key);
-    const previousFetch = globalThis.fetch;
     const cachedFastDraft = routes["POST /api/media/assets"]({
       user: legacyAdmin,
       ip: "video-route-cached-fast-create",
@@ -766,7 +766,7 @@ test("public video capability requires exact private-derivative negotiation plus
     const cachedFetchGate = deferred();
     globalThis.fetch = async () => {
       await cachedFetchGate.promise;
-      return new Response(null, { status: 503 });
+      return new Response("private-provider-body token=background-secret member@example.com", { status: 503 });
     };
     const cachedBody = {
       width: 1_280,
@@ -776,15 +776,23 @@ test("public video capability requires exact private-derivative negotiation plus
       editRecipe: { coverMs: 0 },
     };
     const cachedNodeEnv = process.env.NODE_ENV;
+    const faultsBeforeCachedJob = db.prepare(`SELECT COALESCE(SUM(count),0) count FROM error_events
+      WHERE method='POST' AND route='/api/media/assets/:id/finalize'`).get().count;
+    const initialFinalizeRequestId = "123e4567-e89b-42d3-a456-426614174041";
+    const joiningFinalizeRequestId = "123e4567-e89b-42d3-a456-426614174042";
+    const initialFinalizeContext = {
+      user: legacyAdmin,
+      ip: "video-route-cached-client-start",
+      params: { id: cachedDraft.id },
+      body: cachedBody,
+      requestId: initialFinalizeRequestId,
+    };
     process.env.NODE_ENV = "test";
     try {
-      await assert.rejects(routes["POST /api/media/assets/:id/finalize"]({
-        user: legacyAdmin,
-        ip: "video-route-cached-client-start",
-        params: { id: cachedDraft.id },
-        body: cachedBody,
-      }), (error) => error.status === 429 && error.code === "RATE_LIMITED"
+      await assert.rejects(routes["POST /api/media/assets/:id/finalize"](initialFinalizeContext),
+      (error) => error.status === 429 && error.code === "RATE_LIMITED"
         && /upload is saved/u.test(error.message));
+      initialFinalizeContext.requestId = "123e4567-e89b-42d3-a456-426614174043";
       const issuancesBeforeRetry = db.prepare("SELECT COUNT(*) count FROM media_upload_issuances").get().count;
       const cachedDuplicate = routes["POST /api/media/assets"]({
         user: legacyAdmin,
@@ -806,6 +814,7 @@ test("public video capability requires exact private-derivative negotiation plus
         ip: "video-route-cached-client-join",
         params: { id: cachedDraft.id },
         body: cachedBody,
+        requestId: joiningFinalizeRequestId,
       }), (error) => error.status === 429 && error.code === "RATE_LIMITED"
         && /upload is saved/u.test(error.message));
     } finally {
@@ -825,13 +834,62 @@ test("public video capability requires exact private-derivative negotiation plus
     assert.equal(cachedFailed.finalize.error.retryable, true);
     assert.equal(cachedFailed.asset.status, "upload_pending",
       "a transient worker/storage failure does not cancel cached-client source bytes");
-    const observedBackgroundFailure = db.prepare(`SELECT code,status,method,route,cause,count FROM error_events
+    const observedBackgroundFailure = db.prepare(`SELECT fingerprint,code,status,method,route,cause,count,last_request_id FROM error_events
       WHERE method='POST' AND route='/api/media/assets/:id/finalize' ORDER BY last_seen DESC LIMIT 1`).get();
     assert.equal(observedBackgroundFailure.code, "MEDIA_STORAGE_UNAVAILABLE");
     assert.equal(observedBackgroundFailure.status, 503);
     assert.equal(observedBackgroundFailure.count >= 1, true);
+    assert.equal(observedBackgroundFailure.last_request_id, initialFinalizeRequestId,
+      "the detached job retains its original request, not a retry's or a later mutable context's ID");
     assert.equal(JSON.stringify(observedBackgroundFailure).includes("objects.example.com"), false,
       "detached-job observability stores only the route pattern and sanitized error identity");
+    const backgroundDetail = db.prepare("SELECT location,reason FROM error_event_details WHERE fingerprint=?")
+      .get(observedBackgroundFailure.fingerprint);
+    assert.ok(backgroundDetail, "detached failures preserve the original error for founder-only diagnosis");
+    assert.match(backgroundDetail.location, /server\/mediaAssets\.js:\d+:\d+/u);
+    assert.match(backgroundDetail.reason, /MEDIA_STORAGE_UNAVAILABLE/u);
+    assert.match(backgroundDetail.reason, /MediaStorageRequest \[head_http_503\]/u);
+    for (const secretText of ["private-provider-body", "background-secret", "member@example.com", "objects.example.com", "health-secret"])
+      assert.equal(JSON.stringify(backgroundDetail).includes(secretText), false, `private diagnostic leaked ${secretText}`);
+    assert.deepEqual(Object.keys(cachedFailed.finalize.error).sort(), ["code", "message", "retryable", "status"]);
+    for (const privateText of ["head_http_503", "mediaAssets.js", initialFinalizeRequestId, joiningFinalizeRequestId,
+      "private-provider-body", "background-secret", "member@example.com"])
+      assert.equal(JSON.stringify(cachedFailed.finalize).includes(privateText), false, `public polling leaked ${privateText}`);
+
+    const faultCount = () => db.prepare(`SELECT COALESCE(SUM(count),0) count FROM error_events
+      WHERE method='POST' AND route='/api/media/assets/:id/finalize'`).get().count;
+    const faultsAfterRealFailure = faultCount();
+    assert.equal(faultsAfterRealFailure, faultsBeforeCachedJob + 1,
+      "transport retries and joined HTTP requests still produce only one detached-job fault");
+    const cancelledDraft = routes["POST /api/media/assets"]({
+      user: legacyAdmin,
+      ip: "video-route-cancelled-create",
+      body: videoBody("video-route-cancelled"),
+    }).asset;
+    let cancellationEntered = false;
+    const cancellationGate = deferred();
+    const cancellationSettled = deferred();
+    globalThis.fetch = async () => {
+      cancellationEntered = true;
+      await cancellationGate.promise;
+      cancellationSettled.resolve();
+      return new Response(null, { status: 503 });
+    };
+    const cancelledStart = await routes["POST /api/media/assets/:id/finalize"]({
+      user: legacyAdmin,
+      ip: "video-route-cancelled-start",
+      params: { id: cancelledDraft.id },
+      body: { ...cachedBody, async: true },
+      requestId: "123e4567-e89b-42d3-a456-426614174044",
+    });
+    assert.deepEqual(cancelledStart.finalize, { state: "processing" });
+    await eventually(() => cancellationEntered, Boolean);
+    routes["DELETE /api/media/assets/:id"]({ user: legacyAdmin, params: { id: cancelledDraft.id } });
+    cancellationGate.resolve();
+    await cancellationSettled.promise;
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(faultCount(), faultsAfterRealFailure,
+      "an owner-cancelled job does not count as a serious server fault when its late storage response fails");
 
     globalThis.fetch = async (_url, request = {}) => {
       const method = String(request.method || "GET").toUpperCase();
@@ -912,6 +970,8 @@ test("public video capability requires exact private-derivative negotiation plus
     assert.equal(terminalOutcome.finalize.error.code, "MEDIA_TYPE_UNSUPPORTED");
     assert.equal(terminalOutcome.finalize.error.status, 415);
     assert.equal(terminalOutcome.finalize.error.retryable, false);
+    assert.equal(faultCount(), faultsAfterRealFailure,
+      "a detached caller abort or unsupported file is not recorded as another serious server fault");
     assert.equal(JSON.stringify(terminalOutcome).includes("terminal-incompatible-source"), false,
       "polling never exposes object generations, causes, stacks, or verifier details");
     assert.equal(db.prepare("SELECT 1 FROM media_assets WHERE id=?").get(terminalDraft.id), undefined,
@@ -943,6 +1003,8 @@ test("public video capability requires exact private-derivative negotiation plus
       .get(fan.id).count, 40,
     "clip source creation has neither the old ten-per-day cap nor a hidden thirty-per-ten-minute route cap");
   } finally {
+    globalThis.fetch = previousFetch;
+    resetVideoFinalizeJobsForTests();
     resetVideoVerifierStateForTests();
     for (const key of keys) {
       if (previous[key] === undefined) delete process.env[key];

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { formatErrorOccurrenceTime } from "./errorDiagnostics.mjs";
+import { formatErrorOccurrenceTime, formatErrorObservedHour } from "./errorDiagnostics.mjs";
 
 test("error occurrence times include a stable date, precise time, and explicit timezone", () => {
   assert.equal(formatErrorOccurrenceTime(Date.UTC(2026, 8, 9, 19, 1, 2, 123)), "2026-09-09 19:01:02.123 UTC");
@@ -11,18 +11,22 @@ test("error occurrence times include a stable date, precise time, and explicit t
   }
 });
 
+test("hourly aggregation timestamps do not imply a precise occurrence time", () => {
+  assert.equal(formatErrorObservedHour(Date.UTC(2026, 8, 14, 12, 33)), "2026-09-14 12:00 UTC (hour bucket)");
+  assert.equal(formatErrorObservedHour(null), "");
+});
+
 test("moderation distinguishes retained totals and exposes untruncated, selectable trace details", () => {
   const screen = readFileSync(new URL("../screens/AdminScreen.jsx", import.meta.url), "utf8");
-  const start = screen.indexOf("(errorLog.errors || []).slice(0, 8).map");
-  const end = screen.indexOf("<View style={styles.errActions}>", start);
-  assert.ok(start >= 0 && end > start, "keep the diagnostic list bounded to eight rows");
-  const rows = screen.slice(start, end);
-  assert.match(rows, /\{e\.count\} retained total/);
-  assert.match(rows, /\{e\.method\} \{e\.route/);
-  assert.match(rows, /e\.cause/);
-  assert.match(rows, /Last occurred: \{formatErrorOccurrenceTime\(e\.lastSeen\)/);
-  assert.match(rows, /<Text selectable style=\{styles\.errRow\}>Request ID: \{e\.lastRequestId\}/);
-  assert.doesNotMatch(rows, /numberOfLines|ellipsizeMode/);
-  assert.match(screen, /Retained totals below include older occurrences, not just the last 24 hours/);
-  assert.match(screen, /Current release: \{health\.commit\} \(error releases are not recorded\)/);
+  const panel = readFileSync(new URL("../components/moderation/AdminErrorPanel.jsx", import.meta.url), "utf8");
+  assert.match(screen, /<AdminErrorPanel\s+key=\{artistRequestScope\}/);
+  assert.match(screen, /errorLogState\.owner === diagnosticsOwner/);
+  assert.match(panel, /const PAGE_SIZE = 8/);
+  assert.match(panel, /const MAX_RETAINED_PATTERNS = 50/);
+  assert.match(panel, /\{error\.count\} retained total/);
+  assert.match(panel, /Last occurred: \{formatErrorOccurrenceTime\(error\.lastSeen\)/);
+  assert.match(panel, /<Text selectable style=\{styles\.row\}>Request ID: \{error\.lastRequestId\}/);
+  assert.doesNotMatch(panel, /numberOfLines|ellipsizeMode|error releases are not recorded/);
+  assert.match(panel, /Retained totals below include older occurrences, not just the last 24 hours/);
+  assert.match(panel, /Captured release: \{error\.detail\.release/);
 });

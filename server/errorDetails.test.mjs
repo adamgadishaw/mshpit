@@ -125,7 +125,10 @@ test("the latest detail is kept per problem without erasing it on a detail-less 
   assert.equal(recordErrorDetail(db, { fingerprint: "fp2", reason: "Error: token=abc for jane@example.com" }), true);
 
   const details = errorDetailsByFingerprint(db, ["fp1", "fp2", "missing", 7]);
-  assert.deepEqual(details.get("fp1"), { release: "455488a1b2c3", location: "server/a.js:1:1", reason: "Error: second" });
+  assert.deepEqual(details.get("fp1"), { release: "455488a1b2c3", location: null, reason: "Error: second" });
+  assert.deepEqual(errorDetailsByFingerprint(db, ["fp1"], { includeCapturedAt: true }).get("fp1"), {
+    release: "455488a1b2c3", location: null, reason: "Error: second", capturedAt: 2,
+  }, "a detail-less occurrence cannot make an older capture look current");
   assert.equal(details.get("fp2").reason, "Error: token=<redacted> for <email>");
   assert.equal(details.has("missing"), false);
 
@@ -143,6 +146,7 @@ test("alert lines render only what is known, bounded", () => {
   assert.equal(formatErrorDetailLines({ release: "4603cb3e6084" }), "");
   assert.equal(formatErrorDetailLines(null), "");
   assert.equal(boundedAlertDetail({ location: "x".repeat(1000) }).location.length, 240);
+  assert.equal(boundedAlertDetail({ reason: "token=abc jane@example.com" }).reason, "token=<redacted> <email>");
 });
 
 test("a provider failure keeps the upstream status in the cause chain", () => {

@@ -28,6 +28,7 @@ const fixtureResetToken = "fixture-reset-token-0123456789";
 const fixtureOwnerToken = "fixture-owner-token-0123456789";
 
 const cases = [
+  ...[390, 1280].map(width => ({ name: `admin-error-diagnostics-${width}`, kind: "admin-errors", width })),
   ...[390, 1280].map(width => ({ name: `composer-location-${width}`, kind: "composer-location", width })),
   ...[390, 1280].map(width => ({ name: `guest-member-tabs-${width}`, kind: "guest-member-tabs", width })),
   ...[390, 1280].flatMap(width => [
@@ -365,6 +366,7 @@ async function runCase(browser, origin, item) {
   const page = await context.newPage();
   page.setDefaultTimeout(timeoutMs);
   const guestCase = item.kind.startsWith("guest-");
+  const diagnosticsCase = item.kind === "admin-errors";
   const locationCase = item.kind === "composer-location";
   const guestStart = guestCase || item.kind.startsWith("login") || ["startup-401", "forms-login", "forms-signup", "forms-reset"].includes(item.kind);
   const publicPost = {
@@ -378,7 +380,7 @@ async function runCase(browser, origin, item) {
     ...(item.postKind === "going" ? { attendanceTicket: { artist: "Fixture Artist", venue: "Fixture Venue", city: "Toronto", date: "2026-10-01", tour: "Fixture Tour" } } : {}),
   };
   const state = {
-    user: guestStart ? null : item.kind === "forms-owner" ? { ...alice, role: "admin", owner: true } : alice,
+    user: guestStart ? null : item.kind === "forms-owner" || diagnosticsCase ? { ...alice, role: "admin", owner: true } : alice,
     offline: item.kind === "startup-offline", badPassword: item.kind === "login-retry",
     logoutUnavailable: item.kind === "logout-failed", phase: "start",
     calls: [], pageErrors: [], consoleErrors: [], reports: [], routeErrors: [],
@@ -487,6 +489,21 @@ async function runCase(browser, origin, item) {
       }
       if (url.pathname === "/api/admin/moderation") return await json({ reports: [], recentActions: [], nextCursor: null });
       if (url.pathname === "/api/admin/artist-requests") return await json({ requests: [] });
+      if (diagnosticsCase && url.pathname === "/api/admin/members") return await json({ users: [state.user], total: 1, banned: 0, verified: 1, regions: [], nextCursor: null });
+      if (diagnosticsCase && url.pathname === "/api/moderation/artist-death-watch") return await json({ candidates: [], counts: { pending: 0, dismissed: 0, memorialized: 0 }, running: false });
+      if (diagnosticsCase && url.pathname === "/api/admin/health") return await json({ commit: "fixture-current-release" });
+      if (diagnosticsCase && url.pathname === "/api/admin/errors") {
+        assert.equal(state.user?.owner, true, "Diagnostic detail fixture is owner-only.");
+        const hour = Date.UTC(2026, 8, 14, 12);
+        const patterns = Array.from({ length: 10 }, (_, index) => ({ fingerprint: `${"a".repeat(63)}${index}`, code: `FIXTURE-${index}`, count: 40 + index,
+          level: "error", status: 503, method: "POST", route: "/api/media/assets/:id/finalize", cause: "TypeError", lastSeen: hour,
+          lastRequestId: `fixture-request-${index}`, detail: { release: "fixture-captured-release", location: "server/mediaRoutes.js:142:18",
+            reason: `Fixture owner-only diagnostic ${index}: storage probe unavailable [redacted]`, capturedAt: hour - 3600000 } }));
+        return await json({ last24h: { occurrences: 9, kinds: 4 }, last7Days: { occurrences: 14 }, alerts: { enabled: true, to: "owner@example.test", cooldownMinutes: 30 },
+          serious24h: { occurrences: 7, kinds: 3, startedAt: hour - 24 * 3600000, collectedThrough: hour + 61000, omittedKinds: 0,
+            patterns: patterns.slice(0, 3).map((pattern, index) => ({ ...pattern, occurrences: [3, 2, 2][index], firstObservedHour: hour - 3600000, lastObservedHour: hour })) },
+          errors: patterns });
+      }
       if (url.pathname === "/api/owner-approvals/review") {
         assert.equal(request.method(), "POST"); assert.equal(body.token, fixtureOwnerToken);
         return await json({ review: {
@@ -587,7 +604,35 @@ async function runCase(browser, origin, item) {
       : item.kind === "forms-owner" ? `${origin}/#ownerApproval=${fixtureOwnerToken}`
       : guestCase && item.kind !== "guest-member-tabs" ? `${origin}/post/${publicPost.id}` : origin;
     await page.goto(entry, { waitUntil: "networkidle", timeout: timeoutMs });
-    if (locationCase) {
+    if (diagnosticsCase) {
+      await feed();
+      await you(alice);
+      await page.getByText("Moderation", { exact: true }).click();
+      await page.getByText("7 serious occurrences across 3 patterns in the hourly-bucketed last 24h.", { exact: true }).waitFor();
+      await page.getByText("Current release: fixture-current-release", { exact: true }).waitFor();
+      await page.getByText("Captured release: fixture-captured-release", { exact: true }).first().waitFor();
+      assert.equal(await page.getByTestId("serious-error-pattern").count(), 3);
+      assert.equal(await page.getByTestId("retained-error-pattern").count(), 8);
+      await page.getByRole("button", { name: "Show more error patterns", exact: true }).click();
+      assert.equal(await page.getByTestId("retained-error-pattern").count(), 10);
+      await page.getByText("Request ID: fixture-request-9", { exact: true }).waitFor();
+      const overflow = await page.evaluate(() => ({
+        page: document.documentElement.scrollWidth > window.innerWidth + 1,
+        rows: [...document.querySelectorAll('[data-testid="retained-error-pattern"], [data-testid="serious-error-pattern"]')].some(element => {
+          const bounds = element.getBoundingClientRect();
+          return bounds.left < -1 || bounds.right > window.innerWidth + 1 || element.scrollWidth > element.clientWidth + 1;
+        }),
+      }));
+      assert.deepEqual(overflow, { page: false, rows: false }, "Diagnostic text or rows overflowed the viewport.");
+      await page.getByRole("button", { name: "Show fewer error patterns", exact: true }).click();
+      assert.equal(await page.getByTestId("retained-error-pattern").count(), 8);
+      state.user = bob;
+      state.phase = "diagnostics-account-changed";
+      await forceIdentity();
+      await page.getByTestId("retained-error-pattern").first().waitFor({ state: "hidden" });
+      assert.equal((await page.locator("body").innerText()).includes("Fixture owner-only diagnostic"), false, "Previous owner detail survived an account change.");
+      assert.deepEqual(state.consoleErrors, [], "Diagnostics emitted a browser console error.");
+    } else if (locationCase) {
       await feed();
       await page.getByRole("button", { name: "Log a show", exact: true }).last().click();
       const cityInput = page.getByLabel("Concert city, region and country", { exact: true });

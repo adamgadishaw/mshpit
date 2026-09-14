@@ -85,7 +85,7 @@ This immutable receipt is hash-chained to the previous Mshpit security receipt. 
 
 {{detail}}
 
-This readout contains privacy-safe operational aggregates only. It excludes member identities, search text, messages, posts, media URLs, network addresses, and credentials.`,
+This readout contains privacy-safe operational aggregates and allowlisted diagnostic metadata. It excludes member identities, search text, messages, posts, media URLs, network addresses, and credentials.`,
     cta_label: "Open moderation",
     cta_url: "{{origin}}",
   },

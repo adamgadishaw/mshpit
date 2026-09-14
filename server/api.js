@@ -22,6 +22,8 @@ import { publicArtistPhoto } from "./artistPhotoCatalog.js";
 import { resolveReviewedArtistAlias } from "./reviewedArtistIdentities.js";
 import { BADGE_COLORS, BADGE_GLYPHS, BADGE_KINDS, validateBadge } from "../src/domain/badgeArt.mjs";
 import { alertCooldownMs, alertRecipient, alertsEnabled, errorStats, maybeAlert, recentErrors, recordError } from "./errorLog.js";
+import { boundedAlertDetail, errorDetailsByFingerprint } from "./errorDetails.js";
+import { collectSeriousErrorPatterns } from "./siteHealthErrorPatterns.js";
 import { genreClaim, resolveGenre, storedClaims, upsertClaim, withoutSource } from "../src/domain/genre.mjs";
 import { profileGenreSelection } from "../src/domain/genrePreferences.mjs";
 import {
@@ -3532,7 +3534,7 @@ function videoFinalizeOperationFingerprint(body) {
   return createHash("sha256").update(encoded || "null").digest("hex");
 }
 
-function observeBackgroundVideoFinalizeFailure(error) {
+function observeBackgroundVideoFinalizeFailure(error, requestId) {
   const status = error instanceof ApiError ? error.status : 500;
   if (status < 500) return;
   const code = error instanceof ApiError ? error.code : "INTERNAL_ERROR";
@@ -3545,6 +3547,8 @@ function observeBackgroundVideoFinalizeFailure(error) {
     method: "POST",
     route: "/api/media/assets/:id/finalize",
     cause,
+    error,
+    requestId,
   });
   setTimeout(() => {
     maybeAlert().catch((alertError) => {
@@ -4507,6 +4511,7 @@ export const routes = {
       const ownerId = u.id;
       const assetId = ctx.params.id;
       const requestIp = String(ctx.ip || "unknown");
+      const requestId = typeof ctx.requestId === "string" ? ctx.requestId : null;
       const operationFingerprint = videoFinalizeOperationFingerprint(finalizeBody);
       const started = startVideoFinalizeJob({
         ownerId,
@@ -4537,7 +4542,7 @@ export const routes = {
             // Do not create an error event or attempt terminal cleanup after
             // the DELETE route has already retired this exact draft.
             if (jobSignal.aborted) throw jobSignal.reason || error;
-            observeBackgroundVideoFinalizeFailure(error);
+            observeBackgroundVideoFinalizeFailure(error, requestId);
             if (isTerminalMediaSourceFailure(error)) {
               cancelMediaAsset(db, { ownerId, assetId, at: now() });
             }
@@ -8536,16 +8541,32 @@ export const routes = {
   // Aggregated app and server errors. Deduplicated by problem, so `count` is the volume
   // and each row is one thing to fix.
   "GET /api/admin/errors": (ctx) => {
-    requireAdmin(ctx);
-    const dayAgo = Date.now() - 24 * 60 * 60 * 1000;
-    const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    const actor = requireAdmin(ctx);
+    const at = Date.now();
+    const dayAgo = at - 24 * 60 * 60 * 1000;
+    const weekAgo = at - 7 * 24 * 60 * 60 * 1000;
+    const errors = recentErrors(50);
+    let details = new Map();
+    if (isOwnerId(db, actor.id)) {
+      try {
+        details = errorDetailsByFingerprint(db, errors.map((e) => e.fingerprint), { includeCapturedAt: true });
+      } catch {
+        // architecture: allow-empty-catch -- missing companion detail must not hide the primary error ledger
+      }
+    }
     return {
-      errors: recentErrors(50).map((e) => ({
-        fingerprint: e.fingerprint, level: e.level, code: e.code, status: e.status,
-        method: e.method, route: e.route, cause: e.cause, count: e.count,
-        firstSeen: e.first_seen, lastSeen: e.last_seen,
-        lastRequestId: e.last_request_id,
-      })),
+      errors: errors.map((e) => {
+        const captured = details.get(e.fingerprint);
+        const detail = boundedAlertDetail(captured);
+        return {
+          fingerprint: e.fingerprint, level: e.level, code: e.code, status: e.status,
+          method: e.method, route: e.route, cause: e.cause, count: e.count,
+          firstSeen: e.first_seen, lastSeen: e.last_seen,
+          lastRequestId: e.last_request_id,
+          ...(detail ? { detail: { ...detail, capturedAt: captured.capturedAt } } : {}),
+        };
+      }),
+      serious24h: collectSeriousErrorPatterns(db, { since: dayAgo, until: at }),
       last24h: errorStats(dayAgo),
       last7Days: errorStats(weekAgo),
       alerts: { enabled: alertsEnabled(), cooldownMinutes: Math.round(alertCooldownMs() / 60000), to: alertRecipient() || null },

@@ -191,6 +191,14 @@ function backupAbortError(signal) {
     : new DOMException("Database backup stopped.", "AbortError");
 }
 
+class BackupReceiptWriteError extends Error {
+  constructor(cause, receipt) {
+    super("Private backup upload completed, but its local receipt could not be written.", { cause });
+    this.name = "BackupReceiptWriteError";
+    this.receipt = Object.freeze(receipt);
+  }
+}
+
 export function runScheduledBackup({ env = process.env, spawnProcess = spawn, processTimeoutMs, signal } = {}) {
   if (signal?.aborted) return Promise.reject(backupAbortError(signal));
   return new Promise((resolveRun, rejectRun) => {
@@ -262,13 +270,11 @@ export function runScheduledBackup({ env = process.env, spawnProcess = spawn, pr
           finish(new Error("backup process reported success without publishing a new snapshot"));
           return;
         }
+        const receipt = { backupName: published.name, uploadedAt: Date.now() };
         try {
-          recordOffhostBackupReceipt(env, {
-            backupName: published.name,
-            uploadedAt: Date.now(),
-          });
+          recordOffhostBackupReceipt(env, receipt);
         } catch (error) {
-          finish(error);
+          finish(new BackupReceiptWriteError(error, receipt));
           return;
         }
       }
@@ -309,13 +315,56 @@ export function startBackupScheduler({
   for (const warning of backupStartupWarnings(env)) {
     logger.warn?.(`[pit] backup warning: ${warning}.`);
   }
+  const cadenceMs = Math.max(60_000, Number(intervalMs) || 24 * 60 * 60 * 1000);
+  const startupDelayMs = Math.max(1_000, Number(initialDelayMs) || 5 * 60 * 1000);
+  const recoveryDelayMs = Math.max(60_000, Number(retryDelayMs) || BACKUP_RETRY_DELAY_MS);
+  const childTimeoutMs = boundedBackupTimeout(env?.BACKUP_PROCESS_TIMEOUT_MS, 10 * 60 * 1000, {
+    min: 30_000, max: 30 * 60 * 1000,
+  });
+  // The shared scheduler's regular timer starts at process startup, while a
+  // snapshot's mtime is its completion time. With a strict 24h freshness gate,
+  // a first backup at +5m (or its recovery retry) makes the +24h tick skip an
+  // entire day. Allow only that bounded completion window: normally 40m, never
+  // over 90m or 1/16 of the cadence. Timers still run daily, not every 40m.
+  const completionGraceMs = Math.min(90 * 60_000, cadenceMs / 16,
+    startupDelayMs + recoveryDelayMs + 2 * childTimeoutMs);
+  const freshnessIntervalMs = Math.max(60_000, cadenceMs - completionGraceMs);
+  // One confirmed child result may survive a receipt-write error until this
+  // scheduler's bounded recovery retry. Retrying that write must not upload the
+  // same recovery point again. A restart loses this in-memory evidence and must
+  // conservatively establish a new confirmed upload instead.
+  let pendingReceipt = null;
   return schedule({
-    initialDelayMs: Math.max(1_000, Number(initialDelayMs) || 5 * 60 * 1000),
-    intervalMs: Math.max(60_000, Number(intervalMs) || 24 * 60 * 60 * 1000),
-    retryDelayMs: Math.max(60_000, Number(retryDelayMs) || BACKUP_RETRY_DELAY_MS),
+    initialDelayMs: startupDelayMs,
+    intervalMs: cadenceMs,
+    retryDelayMs: recoveryDelayMs,
     run: ({ signal } = {}) => runBackgroundJob(async () => {
-      if (!shouldRunScheduledBackup(latestBackupAt(env), Date.now(), intervalMs)) return;
-      const result = await run({ signal });
+      const observedAt = Date.now();
+      const latest = latestBackupSnapshot(env);
+      const offhostConfigured = offhostBackupConfigured(env);
+      if (pendingReceipt) {
+        if (offhostConfigured && latest?.name === pendingReceipt.backupName
+          && !shouldRunScheduledBackup(pendingReceipt.uploadedAt, observedAt, cadenceMs)) {
+          recordOffhostBackupReceipt(env, pendingReceipt);
+        }
+        // Do not retain stale evidence or a snapshot since removed/replaced.
+        // A failed write throws above and leaves the one pending receipt intact.
+        pendingReceipt = null;
+      }
+      const localDue = shouldRunScheduledBackup(latest?.updatedAt || 0, observedAt, freshnessIntervalMs);
+      const offhostDue = offhostConfigured && shouldRunScheduledBackup(
+        backupOperationalStatus(env, { now: observedAt }).latestOffhostBackupAt || 0,
+        observedAt, freshnessIntervalMs,
+      );
+      // Fresh local-only snapshots must not postpone initial off-host coverage,
+      // a missing/invalid receipt, or an overdue remote recovery point.
+      if (!localDue && !offhostDue) return;
+      let result;
+      try { result = await run({ signal }); }
+      catch (error) {
+        if (error instanceof BackupReceiptWriteError) pendingReceipt = error.receipt;
+        throw error;
+      }
       logger.log?.(`[pit] database backup verified${result?.uploaded ? " and uploaded off-host" : " on persistent disk"}.`);
     }),
     report: (error, { willRetry, retryDelayMs: scheduledRetryMs } = {}) => logger.error?.(
