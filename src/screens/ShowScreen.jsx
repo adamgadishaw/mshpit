@@ -41,12 +41,77 @@ import { normalizeAttendanceTicketShow } from "../domain/attendanceTicket.mjs";
 import { normalizeVenuePhotoProviderIdentity } from "../domain/venuePhotos.mjs";
 import { isLegacyArtistMemorial } from "../domain/artistLegacy.mjs";
 import useCanonicalArtistIdentity from "../hooks/useCanonicalArtistIdentity";
+import usePublicEventSnapshot from "../hooks/usePublicEventSnapshot";
+import { publicEventCandidateId, readablePublicEventSnapshot } from "../domain/publicEventSnapshot.mjs";
 
 const CROWD_FILTER_LABELS = Object.freeze({
   everyone: "Everyone",
   following: "Following",
   friends: "Friends",
 });
+
+// Public listings are useful even when a club-night/event name is not a
+// catalogue artist. This intentionally receives only the validated server
+// snapshot: no local post data or artist-only interaction callbacks.
+function PublicEventSnapshotPanel({ event, status, onRetry, onOpenVenue }) {
+  const loading = status === "loading" || status === "refreshing";
+  if (!event) return (
+    <ScrollView contentContainerStyle={styles.content}>
+      <View style={styles.reviewUnavailable} accessibilityLiveRegion="polite">
+        {loading ? <ActivityIndicator color={colors.amber} /> : <Icon name="calendar" size={18} color={colors.amber} />}
+        <View style={styles.reviewUnavailableCopy}>
+          <Text style={styles.reviewUnavailableTitle}>{loading ? "Loading event details" : status === "error" ? "Event details could not load" : "This event is not available"}</Text>
+          <Text style={styles.reviewUnavailableText}>{loading ? "Checking this event's public listing." : "Try again to check this event's current listing."}</Text>
+          {!loading ? <Pressable style={styles.reviewUnavailableRetry} onPress={onRetry} accessibilityRole="button" accessibilityLabel="Retry loading event details">
+            <Text style={styles.reviewUnavailableRetryText}>Try again</Text>
+          </Pressable> : null}
+        </View>
+      </View>
+    </ScrollView>
+  );
+  const venue = { name: event.venue, source: event.source, providerVenueId: event.providerVenueId };
+  return (
+    <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <View style={styles.ticket}>
+        <Text style={styles.ticketKicker}>EVENT DETAILS</Text>
+        <Text style={styles.artist}>{event.name}</Text>
+        <View style={styles.perfWrap}><View style={styles.dashed} /></View>
+        <View style={styles.stubRow}>
+          <Pressable style={{ flex: 1 }} onPress={() => onOpenVenue?.(venue)} accessibilityRole="button" accessibilityLabel={`Open ${event.venue}'s venue page`}>
+            <Text style={styles.stubLabel}>THE ROOM</Text>
+            <Text style={styles.venueLink}>{event.venue}</Text>
+            {!!event.city && <Text style={styles.stubCity}>{event.city}</Text>}
+          </Pressable>
+          <View style={styles.stubDivider} />
+          <View style={styles.stubDateColumn}>
+            <Text style={styles.stubLabel}>THE DATE</Text>
+            <Text style={styles.date}>{formatDate(event.date, event.date)}</Text>
+            {event.soldOut ? <Text style={styles.soldOut}>SOLD OUT</Text> : null}
+          </View>
+        </View>
+      </View>
+      {event.ticketUrl ? <Pressable style={styles.ticketsBtn} onPress={() => { void openTicketLink(event.ticketUrl); }} accessibilityRole="link" accessibilityLabel={`Get tickets for ${event.name} at ${event.venue}`}>
+        <Text style={styles.ticketsTxt}>Get tickets</Text>
+      </Pressable> : null}
+      <View style={styles.reviewUnavailable} accessibilityLiveRegion="polite">
+        <View style={styles.reviewUnavailableCopy}>
+          <Text style={styles.reviewUnavailableTitle}>The event is here. Artist features are separate.</Text>
+          <Text style={styles.reviewUnavailableText}>This listing's date and venue are available. Artist profiles and live ratings need a verified artist match; an event name is not always an artist.</Text>
+          {status === "error" ? <Text style={styles.reviewUnavailableText}>The latest refresh failed. Showing the event details already loaded.</Text> : null}
+          <Pressable style={styles.reviewUnavailableRetry} onPress={onRetry} disabled={loading} accessibilityRole="button" accessibilityState={{ busy: loading, disabled: loading }} accessibilityLabel="Refresh event details and artist availability">
+            <Text style={styles.reviewUnavailableRetryText}>{loading ? "Refreshing…" : "Refresh details"}</Text>
+          </Pressable>
+        </View>
+      </View>
+      <Pressable style={styles.seeBtn} onPress={() => onOpenVenue?.(venue)} accessibilityRole="button" accessibilityLabel={`Open ${event.venue}'s venue page`}>
+        <Icon name="pin" size={16} color={colors.amber} />
+        <Text style={styles.seeTxt}>See this venue</Text>
+        <Icon name="chevron-right" size={16} color={colors.textDim} />
+      </Pressable>
+    </ScrollView>
+  );
+}
+
 function ReviewMediaTile({ media, author, postId, onOpenPhotos }) {
   const [index, setIndex] = useState(0);
   const items = Array.isArray(media) ? media : [];
@@ -110,6 +175,8 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
   const legacyNorm = { ...log, artist: legacyArtist, venue: legacyVenue, city: legacyCity };
   const legacyKey = concertKey(legacyNorm);
   const accountId = session?.id || null;
+  const publicEventId = publicEventCandidateId(log);
+  const { resource: publicEventResource, reload: reloadPublicEvent } = usePublicEventSnapshot({ eventId: publicEventId, accountId });
   const [showDocumentRead, setShowDocumentRead] = useState(null);
   const documentIdentity = showDocumentIdentity(legacyKey, accountId);
   const trustedShow = ENABLE_CANONICAL_SHOW_READ
@@ -165,6 +232,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
   });
   const deceased = memorialAvailability === "deceased";
   const legacyMode = isLegacyArtistMemorial(memorialResource.data);
+  const publicEventSnapshot = readablePublicEventSnapshot(publicEventResource, { eventId: publicEventId, accountId, legacyMode });
   const liveActionsAvailable = memorialAvailability === "living";
   const memorialChecking = memorialAvailability === "checking";
   const showPageAllowed = artistIdentityStatus === "ready"
@@ -175,6 +243,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
       ? "checking"
       : "unavailable";
   const retryProfileStatus = artistIdentityStatus === "unavailable" ? retryArtistIdentity : retryMemorial;
+  const retryPublicEvent = () => { reloadPublicEvent(); retryProfileStatus(); };
   const ticketEvent = useMemo(() => ({
     ...norm,
     artistName: artist,
@@ -477,15 +546,20 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
   return (
     <View style={styles.wrap}>
       <ScreenHeader
-        kicker={presentation.screenKicker}
-        title={eventTitle}
+        kicker={!showPageAllowed && publicEventId && !legacyMode ? "EVENT DETAILS" : presentation.screenKicker}
+        title={!showPageAllowed && publicEventSnapshot ? publicEventSnapshot.name : eventTitle}
         onBack={onClose}
         backLabel={`Leave ${eventTitle} ${socialObjectLabel} page`}
         backHint="Returns to the artist, post, or page you came from"
       />
 
       {!showPageAllowed ? (
-        <LegacyArtistArchiveGate
+        publicEventId && !legacyMode ? <PublicEventSnapshotPanel
+          event={publicEventSnapshot}
+          status={publicEventResource.status}
+          onRetry={retryPublicEvent}
+          onOpenVenue={onOpenVenue}
+        /> : <LegacyArtistArchiveGate
           artistName={artist}
           state={profileGateState}
           onBack={onClose}

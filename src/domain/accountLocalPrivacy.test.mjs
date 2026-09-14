@@ -260,7 +260,9 @@ test("the shell discards composer and navigation memory before a confirmed accou
   assert.match(source, /remove\(ACTIVE_COMPOSER_KEY\)/);
   assert.match(source, /remove\(PENDING_COMPOSER_PICKER_KEY\)/);
   assert.match(source, /setPendingComposerPicker\(null\)/);
-  assert.match(source, /setStack\(\[\{\}\]\)/);
+  assert.match(source, /const next = \{ stack: \[\{\}\], tab: "feed", landing: !nextAccountId, accountId: nextAccountId \}/);
+  assert.match(source, /browserHistoryRef\.current\?\.clear\(\)/);
+  assert.match(source, /applyNavigation\(next\)/);
 });
 
 test("the feed filter projects the incoming account before passive adoption", () => {

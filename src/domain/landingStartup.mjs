@@ -1,5 +1,3 @@
-import { isPublicEntityPath } from "./urls.mjs";
-
 const safeRead = (readPersisted, key, fallback) => {
   if (typeof readPersisted !== "function") return fallback;
   try {
@@ -28,7 +26,7 @@ export function initialLandingState({
     // reload, including when browser storage is unavailable or stale.
     if (path === "/") return true;
     // Shared public destinations hydrate inside the app for guests and members.
-    if (path === "/artists" || path === "/events" || isPublicEntityPath(path)) return false;
+    return false;
   }
 
   const entered = !!safeRead(readPersisted, "pit.entered", false);
@@ -38,6 +36,7 @@ export function initialLandingState({
 
 export function landingRenderSurface({ authReady = false, session = null, landing = true } = {}) {
   if (!authReady) return "pending";
-  if (session) return "app";
+  // Authentication controls member capabilities, not what the home URL means.
+  // Explicit Intro/Home and its reload must display the same public page.
   return landing ? "landing" : "app";
 }

@@ -5,10 +5,11 @@ import { runInNewContext } from "node:vm";
 import { parse } from "@babel/parser";
 import { replaceNavigationFrame } from "./navigationStack.mjs";
 import { navigationFrameForAccount } from "./memberAccess.mjs";
+import { createBrowserHistory } from "./browserHistory.mjs";
 
 const source = readFileSync(new URL("../../App.js", import.meta.url), "utf8");
 const syntax = parse(source, { sourceType: "module", plugins: ["jsx"] });
-const names = ["runAfterComposerClose", "commitGo", "commitReplace", "popStack", "requestComposerPop", "back", "onPop"];
+const names = ["cancelPublicRoute", "applyNavigation", "writeNavigation", "runAfterComposerClose", "commitGo", "commitReplace", "popStack", "requestComposerPop", "back", "onPop"];
 const declarations = new Map();
 function visit(node) {
   if (!node || typeof node !== "object") return;
@@ -29,41 +30,56 @@ const snapshot = (value) => JSON.parse(JSON.stringify(value));
 // Execute the actual App callbacks, not a copy of their stack/history policy.
 // State writes queue until flush(), like a React render boundary. History Back
 // invokes App's real popstate callback, including the composer close guard.
-function appNavigation(initialStack = [{}], { web = true, prepare = (frame) => frame, session = { id: "navigation-fixture" } } = {}) {
+function appNavigation(initialStack = [{}], { web = true, prepare = (frame) => frame, session = { id: "navigation-fixture" }, onRestore = () => assert.fail("fixture unexpectedly missed its cached destination") } = {}) {
   let state = initialStack;
-  const queued = [];
-  const calls = [];
-  let cursor = initialStack.length - 1;
-  const entries = initialStack.map((frame, index) => ({ state: { pit: index ? "nav" : "base" }, url: frame.path || "/" }));
-  const stackRef = { current: state };
-  let functions;
+  const queued = [], calls = [], entries = [{ state: null, url: "/" }];
+  let cursor = 0, functions;
+  const location = { pathname: "/", href: "https://fixture.test/" };
+  const updateLocation = () => { location.pathname = entries[cursor].url; location.href = "https://fixture.test" + location.pathname; };
+  const move = (delta) => {
+    const index = cursor + delta;
+    if (index < 0 || index >= entries.length) return;
+    cursor = index; updateLocation(); functions.onPop({ state: entries[cursor].state });
+  };
   const history = {
+    get state() { return entries[cursor].state; },
     pushState(value, title, url) {
       calls.push({ method: "pushState", value, url });
       entries.splice(cursor + 1);
-      entries.push({ state: value, url: url || entries[cursor].url });
-      cursor++;
+      entries.push({ state: value, url: new URL(url || location.pathname, location.href).pathname });
+      cursor++; updateLocation();
     },
     replaceState(value, title, url) {
       calls.push({ method: "replaceState", value, url });
-      entries[cursor] = { state: value, url: url || entries[cursor].url };
+      entries[cursor] = { state: value, url: new URL(url || location.pathname, location.href).pathname };
+      updateLocation();
     },
-    back() {
-      calls.push({ method: "back" });
-      if (cursor > 0) { cursor--; functions.onPop(); }
-    },
+    back() { calls.push({ method: "back" }); move(-1); },
+    forward() { calls.push({ method: "forward" }); move(1); },
+    go(delta) { calls.push({ method: "go", delta }); move(delta); },
   };
+  const stackRef = { current: initialStack };
+  const navigationRef = { current: { stack: initialStack, tab: "discover", landing: false, accountId: session?.id || null } };
+  const browser = createBrowserHistory({ history, location });
+  const base = { ...navigationRef.current, stack: [{}] };
+  browser.initialize(base);
+  for (let i = 1; i < initialStack.length; i++) browser.write({ ...base, stack: initialStack.slice(0, i + 1) }, initialStack[i].path);
+  calls.length = 0;
   const guardRef = { current: null };
+  const sessionRef = { current: session };
   functions = runInNewContext(actualFunctions, {
-    web, stackRef, replaceNavigationFrame, prepareAvailableNavigationFrame: prepare, navigationFrameForAccount, session,
-    pathForFrame: (frame) => frame.path || null,
-    setStack: (update) => queued.push(update), window: { history },
+    web, stackRef, navigationRef, replaceNavigationFrame, prepareAvailableNavigationFrame: prepare, navigationFrameForAccount, session,
+    pathForFrame: (frame) => frame.path || null, serverDocumentNavigationPath: () => null,
+    setStack: (update) => queued.push(update), setTab: () => {}, setLanding: () => {},
+    window: { history, location }, browser, browserHistoryRef: { current: browser },
+    publicRouteRequestRef: { current: null },
+    setPublicNavigationNotice: () => {},
+    restoreBrowserPathRef: { current: onRestore },
     composerCloseGuardRef: guardRef, bypassNextPopRef: { current: null },
-    authNavigationAbortRef: { current: null },
-    sessionRef: { current: { id: "navigation-fixture" } }, setLanding: () => {},
+    authNavigationAbortRef: { current: null }, sessionRef,
   });
   return {
-    ...functions, calls, entries, stackRef, guardRef,
+    ...functions, calls, entries, stackRef, guardRef, history, sessionRef,
     get cursor() { return cursor; },
     get state() { return snapshot(state); },
     flush() {
@@ -164,6 +180,32 @@ test("App rejects unavailable destinations before changing either stack or histo
   assert.deepEqual(app.calls, []);
 });
 
+test("App Forward restores the selected screen instead of popping it again", () => {
+  const app = appNavigation();
+  app.commitGo({ artistName: "Band", path: "/artist/band" });
+  app.commitGo({ post: { id: "p" }, path: "/post/p" });
+  app.back(); app.flush();
+  assert.equal(app.state.at(-1).artistName, "Band");
+  app.history.forward(); app.flush();
+  assert.equal(app.state.at(-1).post.id, "p");
+  assert.equal(app.entries[app.cursor].url, "/post/p");
+});
+
+test("canceling browser Back preserves the Forward chain", () => {
+  const app = appNavigation();
+  app.commitGo({ artistName: "Band", path: "/artist/band" });
+  app.commitGo({ post: { id: "p" }, path: "/post/p" });
+  app.back(); app.flush();
+  const length = app.entries.length;
+  app.guardRef.current = ({ cancel }) => cancel();
+  app.back(); app.flush();
+  assert.equal(app.entries.length, length);
+  assert.equal(app.state.at(-1).artistName, "Band");
+  app.guardRef.current = null;
+  app.history.forward(); app.flush();
+  assert.equal(app.state.at(-1).post.id, "p");
+});
+
 test("App browser Back cancelled by an editing guard restores the consumed history entry", () => {
   const app = appNavigation([{}, { signupSetup: true }]);
   let request;
@@ -174,10 +216,25 @@ test("App browser Back cancelled by an editing guard restores the consumed histo
   assert.equal(app.cursor, 0);
   request.cancel();
   assert.equal(app.cursor, 1);
-  assert.deepEqual(app.calls.map((call) => call.method), ["back", "pushState"]);
+  assert.deepEqual(app.calls.map((call) => call.method), ["back", "go"]);
   app.guardRef.current = null;
   app.back();
   app.flush();
   assert.deepEqual(app.state, [{}]);
   assert.equal(app.cursor, 0);
+});
+
+test("App account-boundary Back keeps only a public post ID hint and re-resolves content", () => {
+  const requests = [];
+  const guestPost = { post: { id: "p", review: "Old guest content" }, path: "/post/p" };
+  const app = appNavigation([{}, guestPost], { session: null, onRestore: (path, options) => requests.push(snapshot({ path, options })) });
+  app.commitGo({ auth: true, path: "/login" });
+  app.flush();
+  app.sessionRef.current = { id: "new-member" };
+  app.back();
+  app.flush();
+  assert.deepEqual(requests, [{ path: "/post/p", options: { publicFrameHint: { postId: "p" } } }]);
+  assert.equal(app.state.at(-1).auth, true, "old guest content is not painted before the fresh resolver completes");
+  assert.match(source, /const restoreBrowserPath = async \(path, \{ replace: replaceUrl = false, publicFrameHint = null \}/);
+  assert.match(source, /publicBrowserDestination\(path, \{\s*accountId, signal: controller\.signal, publicFrameHint,/);
 });

@@ -41,6 +41,6 @@ test("the actual startup and landing callers use their validated projections", (
   const landing = readFileSync(new URL("../screens/LandingScreen.jsx", import.meta.url), "utf8");
   assert.match(store, /loadRecommendationHiddenIds = .*new Set\(hiddenRecommendationIds\(/);
   assert.match(store, /if \(!Array\.isArray\(hiddenPostIds\)\) return/);
-  assert.match(app, /useState\(\(\) => restoredMainTab\(/);
+  assert.match(app, /useState\(\(\) => \(web && mainTabForPath\(window\.location\.pathname\)\) \|\| restoredMainTab\(/);
   assert.match(landing, /landingLiveItems\(discoverySidebar\?\.upcomingEvents\)/);
 });

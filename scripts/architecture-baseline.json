@@ -259,10 +259,6 @@
     "src/domain/post-payload.mjs"
   ],
   "unexplainedEmptyCatchSignaturesByFile": {
-    "App.js": {
-      "count": 7,
-      "fingerprint": "16db71068a9761bf536c"
-    },
     "server/api.js": {
       "count": 10,
       "fingerprint": "0eeadf6b7593a1b82d1e"
@@ -457,10 +453,6 @@
     }
   },
   "ambiguousAsyncResultSignaturesByFile": {
-    "App.js": {
-      "count": 1,
-      "fingerprint": "3b9bc393e377e0c78f89"
-    },
     "server/wikidataChannels.js": {
       "count": 1,
       "fingerprint": "73fcade72c0a0ebbb7ef"

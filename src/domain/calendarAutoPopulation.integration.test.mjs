@@ -26,7 +26,7 @@ test("successful dated logs navigate to their canonical Calendar date while plai
 
   assert.match(app, /calendarFocusForPost\(result\?\.post, new Date\(\)\)/);
   assert.match(app, /commitReplace\(\{\s*calendar:\s*true,\s*calendarDate:\s*calendarFocus\.date,\s*calendarView:\s*calendarFocus\.view,/s);
-  assert.match(app, /else \{[\s\S]*commitClear\(\);\s*setTab\("feed"\);/);
+  assert.match(app, /writeNavigation\(\{ \.\.\.navigationRef\.current, stack: \[\{\}\], tab: "feed", landing: false \}, "\/feed", "replace"\)/);
   assert.match(app, /<CalendarScreen initialDate=\{nav\.calendarDate\} initialView=\{nav\.calendarView\}/);
 
   assert.match(store, /upsertProfileHistoryPost\(postingActor\.id, postingActor\.id, safe\)/,

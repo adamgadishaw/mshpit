@@ -13,7 +13,7 @@ process.env.PIT_DATA_DIR = dataDir;
 process.env.PUBLIC_ORIGIN = "https://www.example.com";
 
 const { db, q, normName } = await import("./db.js");
-const { enforceHtmlRobotsMeta, metadataFor, resolveEntity, headTagsFor, injectHead, renderNotFoundDocument, refreshSitemapSnapshot, sitemapXml, sitemapForPath, seoHttpPlan } = await import("./seo.js");
+const { enforceHtmlRobotsMeta, metadataFor, resolveEntity, headTagsFor, pageHeadFor, injectHead, renderNotFoundDocument, refreshSitemapSnapshot, sitemapXml, sitemapForPath, seoHttpPlan } = await import("./seo.js");
 const { postSitemapEntries, profileSitemapEntries } = await import("./features/seo/sitemapService.js");
 const { artistPath, concertPath, eventPath, profilePath, showPath, venuePath } = await import("../src/domain/urls.mjs");
 
@@ -26,6 +26,25 @@ function addUser(id, handle) {
   q.insertUser.run(id, `${handle}@example.com`, handle, handle, "hash", "fan", null, null, null, "SE", "#111111", Date.now());
   return q.userById.get(id);
 }
+
+test("navigation metadata exactly reuses public SSR policy and never indexes app-only pages", () => {
+  for (const path of ["/", "/feed", "/you", "/login", "/signup", "/search", "/settings", "/missing/unknown"]) {
+    assert.equal(pageHeadFor(path).head, headTagsFor(path), path);
+  }
+  for (const path of ["/feed", "/you", "/login", "/signup", "/search", "/settings", "/missing/unknown"]) {
+    assert.match(pageHeadFor(path).head, /name="robots" content="noindex,follow"/, path);
+    assert.doesNotMatch(pageHeadFor(path).head, /rel="canonical"/, path);
+  }
+  assert.match(pageHeadFor("/", { PIT_ENV: "staging" }).head, /noindex,nofollow/);
+  assert.doesNotMatch(pageHeadFor("/", { PIT_ENV: "staging" }).head, /rel="canonical"/);
+  for (const [path, title] of [["/feed", "Your feed"], ["/you", "Your profile"], ["/login", "Log in"], ["/signup", "Create an account"]]) {
+    assert.ok(pageHeadFor(path).head.includes(`<title>${title} | Mshpit</title>`));
+  }
+  const plan = seoHttpPlan("/");
+  const noindexVariant = injectHead('<html><head></head><body><div id="root"></div></body></html>', "/", { ...plan, indexable: false });
+  assert.match(noindexVariant, /name="robots" content="noindex,follow"/);
+  assert.doesNotMatch(noindexVariant, /rel="canonical"/, "query/route noindex policy cannot retain a conflicting canonical");
+});
 
 function addPost(id, userId, { artist, venue, overall, room, createdAt }) {
   db.prepare(`INSERT INTO posts
@@ -444,8 +463,10 @@ test("thin public entities keep unique SSR at 200/noindex while real event evide
   assert.equal([...thinHtml.matchAll(/name="robots"/g)].length, 1);
   assert.match(thinHtml, /name="robots" content="noindex,follow"/);
   assert.doesNotMatch(thinHtml, /content="index,follow/);
-  assert.equal([...thinHtml.matchAll(/rel="canonical"/g)].length, 1);
-  assert.match(thinHtml, /rel="canonical" href="https:\/\/www\.example\.com\/event\/seo_thin_public_event"/);
+  assert.equal([...thinHtml.matchAll(/rel="canonical"/g)].length, 0,
+    "effective noindex policy is shared by SSR and client head, not just robots overrides");
+  assert.match(thinHtml, /og:url" content="https:\/\/www\.example\.com\/event\/seo_thin_public_event"/,
+    "the event retains its durable public URL even while excluded from search");
 
   const ticketOnlyPath = eventPath("seo_ticket_only_public_event");
   const ticketOnlyPlan = seoHttpPlan(ticketOnlyPath);

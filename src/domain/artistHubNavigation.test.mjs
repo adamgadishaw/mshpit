@@ -48,8 +48,8 @@ test("authoritative artist identities survive uncached people and direct-link na
   assert.match(app, /const publicIdentityFrame = \(id, authoritativeUser = null\)/);
   assert.match(app, /openProfile\(u\.id, u\)/);
   assert.match(app, /openProfile\(hit\.id, hit\)/);
-  assert.match(app, /const resolvedUser = knownUser \|\| \(await loadUser\(entity\.id\)\)\?\.user \|\| null/);
-  assert.match(app, /publicIdentityFrame\(entity\.id, resolvedUser\)/);
+  assert.match(app, /const user = userById\?\.\(entity\.id\) \|\| \(await loadUser\(entity\.id, \{ signal: controller\.signal \}\)\)\?\.user \|\| null/);
+  assert.match(app, /publicIdentityFrame\(entity\.id, user\)/);
   assert.doesNotMatch(app, /entity\.kind === "profile"\) setStack\(\[\{\}, \{ profileId: entity\.id \}\]\)/);
 });
 

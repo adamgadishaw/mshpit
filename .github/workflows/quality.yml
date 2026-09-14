@@ -37,3 +37,30 @@ jobs:
           TOURDATE_REFRESH_ENABLED: "true"
           EMAIL_CAMPAIGN_RECOVERY_ENABLED: "false"
           PIT_ALLOW_EMPTY_DB_BOOTSTRAP: "true"
+
+  browser-regressions:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      CI: "true"
+      EXPO_NO_TELEMETRY: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build:web
+      # Match the locally verified browser runtime without adding a production
+      # dependency, modifying the lockfile, or installing unpinned CLI code.
+      - name: Install pinned browser test runtime
+        run: npm install --no-save --package-lock=false --ignore-scripts playwright@1.62.1
+      - name: Install Chromium and runner dependencies
+        run: node node_modules/playwright/cli.js install --with-deps chromium
+      # These suites serve the exported bundle on loopback and intercept every
+      # API. They need no secrets, database, production URL, or real accounts.
+      - run: npm run verify:auth-browser
+      - run: npm run verify:navigation-browser

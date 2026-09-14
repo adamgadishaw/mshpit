@@ -103,7 +103,7 @@ async function main() {
     let loginCookie, switchCookie;
     await check("real-browser-login-choice-and-reload", async () => {
       await page.goto(origin, { waitUntil: "networkidle" });
-      await page.getByRole("button", { name: "Log in", exact: true }).last().click();
+      await page.getByRole("link", { name: "Log in", exact: true }).last().click();
       await page.getByRole("textbox", { name: "Email", exact: true }).fill(fixture.alice.email);
       await page.getByLabel("Password", { exact: true }).fill(fixture.password);
       await page.getByLabel("Password", { exact: true }).press("Enter");
@@ -116,7 +116,20 @@ async function main() {
       await page.getByText("Settings", { exact: true }).click();
       await page.getByText("Switch account", { exact: true }).click();
       await page.getByRole("button", { name: `${fixture.bob.name}, @${fixture.bob.handle}, switch account`, exact: true }).click();
-      await feed(); switchCookie = await browserCookie(); assert.ok(switchCookie !== loginCookie, "Switch must rotate the cookie.");
+      try { await feed(); }
+      catch (error) {
+        const currentId = (await request("/api/me", { cookie: await browserCookie() })).data.user?.id;
+        const text = await page.locator("body").innerText();
+        console.error(JSON.stringify({ switchNavigation: {
+          pathname: new URL(page.url()).pathname,
+          account: currentId === fixture.alice.id ? "alice" : currentId === fixture.bob.id ? "bob" : currentId ? "other" : "guest",
+          intro: text.includes("LIVE MUSIC, REMEMBERED"), switcher: text.includes("Your profiles"),
+          aliceProfile: text.includes(fixture.alice.name), bobProfile: text.includes(fixture.bob.name),
+          pageErrors: pageErrors.length, crashReports: receipts.length,
+        } }));
+        throw error;
+      }
+      switchCookie = await browserCookie(); assert.ok(switchCookie !== loginCookie, "Switch must rotate the cookie.");
       assert.equal((await request("/api/me", { cookie: loginCookie })).data.user, null);
       await page.reload({ waitUntil: "networkidle" }); await feed(); await you(fixture.bob);
       const mismatch = await request("/api/me/threads", { cookie: switchCookie, expected: fixture.alice.id });

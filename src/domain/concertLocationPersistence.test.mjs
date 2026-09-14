@@ -86,6 +86,7 @@ test("city-only reviews open their original post and never acquire a fake show i
   assert.equal(isCityOnlyReview({ ...review, experienceType: "online" }), false);
   assert.equal(isCityOnlyReview({ ...review, userId: null }), false);
   const app = readFileSync(new URL("../../App.js", import.meta.url), "utf8");
-  assert.match(app, /isCityOnlyReview\(post\) \? \{ post \} : \{ openLog: post \}/);
+  const destination = readFileSync(new URL("./publicBrowserDestination.mjs", import.meta.url), "utf8");
+  assert.match(destination, /isCityOnlyReview\(post\) \? \{ post \} : \{ openLog: post \}/);
   assert.match(app, /isCityOnlyReview\(log\)\) return openPost\(log, analytics\)/);
 });

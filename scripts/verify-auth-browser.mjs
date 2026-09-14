@@ -213,8 +213,10 @@ async function semanticFormCase(page, origin, item, state, { landing, feed, you 
   };
   const count = path => state.calls.filter(call => call.path === path && call.method === "POST").length;
   const openLogin = async () => {
+    const link = page.getByRole("link", { name: "Log in", exact: true }).last();
     const button = page.getByRole("button", { name: "Log in", exact: true }).last();
-    if (await button.isVisible()) await button.click();
+    if (await link.isVisible()) await link.click();
+    else if (await button.isVisible()) await button.click();
     else {
       await page.getByRole("tab", { name: "You", exact: true }).click();
     }
@@ -441,6 +443,11 @@ async function runCase(browser, origin, item) {
       if (locationCase && /^\/api\/posts\/[^/]+\/comments$/.test(url.pathname)) return await json({ comments: [] });
       if (locationCase && url.pathname === "/api/media/reactions") return await json({ reactions: {} });
       if (url.pathname === "/api/client-errors") { state.reports.push(body); return await json({ ok: true }); }
+      if (url.pathname === "/api/page-head") {
+        const path = url.searchParams.get("path") || "/";
+        assert.match(path, /^\/[a-zA-Z0-9_/-]*$/, "Browser fixture metadata needs an inert local path.");
+        return await json({ path, head: `<title>Auth fixture ${path}</title><meta name="robots" content="noindex,nofollow">` });
+      }
       if (guestCase && url.pathname === "/api/resolve") return await json({ entity: { kind: "show", id: publicPost.id, path: `/post/${publicPost.id}` } });
       if (guestCase && url.pathname === "/api/artists/fixture-artist/memorial") return await json({ memorial: null });
       if (guestCase && url.pathname === "/api/venues/fixture%20venue/photos") return await json({ photos: [], state: "ready" });
@@ -560,6 +567,9 @@ async function runCase(browser, origin, item) {
       if (url.pathname.endsWith("/posts")) return await json({ posts: [], hasMore: false });
       if (url.pathname === "/api/me/artist-recommendations") return await json({ artists: [] });
       if (url.pathname === "/api/discover/overview") return await json({ artists: [], venues: [], events: [], genres: [], countries: [] });
+      if (url.pathname === "/api/fanclubs") return await json({ clubs: [] });
+      if (url.pathname === "/api/artists") return await json({ artists: [] });
+      if (url.pathname === "/api/cities") return await json({ cities: [] });
       throw new Error(`Missing fixture for ${request.method()} ${url.pathname}`);
     } catch (error) {
       // A canceled request may no longer accept its simulated response; this
@@ -602,8 +612,17 @@ async function runCase(browser, origin, item) {
   try {
     const entry = item.kind === "forms-reset" ? `${origin}/#reset=${fixtureResetToken}`
       : item.kind === "forms-owner" ? `${origin}/#ownerApproval=${fixtureOwnerToken}`
-      : guestCase && item.kind !== "guest-member-tabs" ? `${origin}/post/${publicPost.id}` : origin;
-    await page.goto(entry, { waitUntil: "networkidle", timeout: timeoutMs });
+      // Keep cancellation's destination genuinely suspended. The canonical
+      // welcome page is already loaded before its own login, so it cannot
+      // recreate this race by holding an unrelated Discover chunk anymore.
+      : item.kind === "login-canceled" ? `${origin}/discover`
+      : item.kind === "guest-member-tabs" ? `${origin}/search`
+      : guestCase && item.kind !== "guest-member-tabs" ? `${origin}/post/${publicPost.id}`
+      // '/' is the welcome page for everyone. Tests of an existing member's
+      // private workspace start at its explicit URL instead of relying on a
+      // session-dependent meaning for the same root document.
+      : guestStart ? origin : `${origin}/feed`;
+    await page.goto(entry, { waitUntil: item.kind === "login-canceled" ? "domcontentloaded" : "networkidle", timeout: timeoutMs });
     if (diagnosticsCase) {
       await feed();
       await you(alice);
@@ -683,10 +702,9 @@ async function runCase(browser, origin, item) {
       await waitFor(() => state.locationWrites.length === 3, "Address removal was not submitted.");
       assert.equal(state.locationWrites[2].body.eventAddress, null, "A cleared address must explicitly remove the stored value.");
     } else if (item.kind === "guest-member-tabs") {
-      await landing();
-      await page.getByRole("button", { name: "Log in", exact: true }).last().click();
-      await page.getByRole("heading", { name: "Good to see you.", exact: true }).waitFor();
-      await page.goBack();
+      // Public tab navigation has its own route; canceling welcome-page login
+      // correctly returns Intro rather than implicitly entering the app.
+      await page.getByLabel("Search Mshpit", { exact: true }).waitFor();
       for (const tab of ["Feed", "You"]) {
         await page.getByRole("tab", { name: tab, exact: true }).click();
         await page.getByRole("heading", { name: "Good to see you.", exact: true }).waitFor();
@@ -756,8 +774,14 @@ async function runCase(browser, origin, item) {
     } else if (item.kind.startsWith("forms-")) {
       await semanticFormCase(page, origin, item, state, { landing, feed, you });
     } else if (item.kind.startsWith("login")) {
-      await landing();
-      await page.getByRole("button", { name: "Log in", exact: true }).last().click();
+      if (item.kind === "login-canceled") {
+        await waitFor(() => typeof state.releaseDiscover === "function", "Discover must be suspended before opening login.");
+        if (item.width < 620) await page.getByRole("tab", { name: "You", exact: true }).click();
+        else await page.getByRole("button", { name: "Log in", exact: true }).last().click();
+      } else {
+        await landing();
+        await page.getByRole("link", { name: "Log in", exact: true }).last().click();
+      }
       await page.getByRole("textbox", { name: "Email", exact: true }).fill(alice.email);
       await page.getByLabel("Password", { exact: true }).fill("fixture-password1");
       await page.getByRole("button", { name: "Log in", exact: true }).last().click();
@@ -782,7 +806,8 @@ async function runCase(browser, origin, item) {
         state.holdDiscover = false;
         state.releaseDiscover(); state.releaseDiscover = null;
         await page.reload({ waitUntil: "networkidle" });
-        await landing();
+        await page.getByRole("heading", { name: "Discover", exact: true }).waitFor();
+        assert.equal(new URL(page.url()).pathname, "/discover", "Canceled contextual login must retain its public destination on reload.");
         await forceIdentity();
         await page.waitForTimeout(250);
         await assertGuestPrivacy(after);

@@ -25,7 +25,10 @@ export default function AccountSwitcher({ session, switchAccount, onClose, onLog
       const result = action === "switch" ? await switchAccount(accountId, { expectedAccountId: sourceId, signal: controller.signal })
         : action === "connect" ? await connectLinkedAccounts(sourceId, password, { signal: controller.signal })
           : await loadLinkedAccounts(sourceId, { signal: controller.signal });
-      if (action === "switch" && result?.ok) { if (mounted.current && !controller.signal.aborted) onClose?.(); return; }
+      // The authoritative account boundary owns navigation after a switch.
+      // Calling this old screen's Back callback can race that reset and move
+      // the newly selected account away from Feed into the previous URL.
+      if (action === "switch" && result?.ok) return;
       if (!mounted.current || owner.current !== sourceId) return;
       if (action === "switch") throw result?.error || new Error("Could not confirm the account switch. Try again.");
       if (!Array.isArray(result?.accounts) || !result.accounts.some((row) => row.id === sourceId && row.isCurrent)) throw new Error("Could not load your accounts. Try again.");

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { parse } from "@babel/parser";
 import {
   LIVE_EVENT_SCOPE,
   liveEventLineupLabel,
@@ -28,7 +29,25 @@ test("provider-backed festivals and fairs keep their event identity in the UI", 
 test("the in-app event detail preserves event title, lineup, and date range presentation", () => {
   const source = readFileSync(new URL("../screens/ShowScreen.jsx", import.meta.url), "utf8");
   assert.match(source, /const eventTitle = liveEventTitle\(norm\)/);
-  assert.match(source, /title=\{eventTitle\}/);
+  let titleExpression;
+  const visit = (node) => {
+    if (!node || typeof node !== "object") return;
+    if (node.type === "JSXAttribute" && node.name?.name === "title") {
+      const expression = node.value?.expression;
+      if (expression && source.slice(expression.start, expression.end).includes("publicEventSnapshot")) titleExpression = expression;
+    }
+    for (const value of Object.values(node)) {
+      if (Array.isArray(value)) value.forEach(visit);
+      else if (value && typeof value === "object") visit(value);
+    }
+  };
+  visit(parse(source, { sourceType: "module", plugins: ["jsx"] }).program);
+  assert.ok(titleExpression, "header must distinguish the verified public event snapshot from artist archive presentation");
+  const headerTitle = new Function("showPageAllowed", "publicEventSnapshot", "eventTitle", `return (${source.slice(titleExpression.start, titleExpression.end)});`);
+  assert.equal(headerTitle(true, null, "City Music Festival"), "City Music Festival");
+  assert.equal(headerTitle(true, { name: "Other event" }, "City Music Festival"), "City Music Festival", "an archive page retains its event identity");
+  assert.equal(headerTitle(false, null, "City Music Festival"), "City Music Festival");
+  assert.equal(headerTitle(false, { name: "Club 1BD Toronto" }, "Unverified artist"), "Club 1BD Toronto", "read-only fallback uses the server-authorized event title");
   assert.match(source, /LINEUP · \{eventLineup\}/);
   assert.match(source, /formatDate\(eventEndDate, eventEndDate\)/);
   assert.match(source, /onReview\?\.\(norm\)/, "event presentation must preserve the existing exact-show review payload");

@@ -118,7 +118,8 @@ import {
   legacyImageRecoveryHealth,
 } from "./legacyPostImageRecovery.js";
 import { discoverySidebar } from "./discovery.js";
-import { publicDocumentForPath, resolveEntity, sitemapSnapshotHealth } from "./seo.js";
+import { pageHeadFor, publicDocumentForPath, resolveEntity, sitemapSnapshotHealth } from "./seo.js";
+import { pageHeadRoutes } from "./features/seo/pageHeadRoutes.js";
 import { userRewards } from "./rewards.js";
 import { prepareVerification, completeVerification, resendVerification, sendWelcomeOnce, verificationEnabled } from "./verification.js";
 import {
@@ -4106,6 +4107,7 @@ const linkedAccounts = createLinkedAccounts({ database: db, ApiError, requireSes
 
 // route table: "METHOD /path" -> handler(ctx) ; :params exposed as ctx.params
 export const routes = {
+  ...pageHeadRoutes({ ApiError, rateLimit: limit, pageHeadFor }),
   ...capacityHandshakeRoutes({
     ApiError,
     databasePath: DATABASE_PATH,

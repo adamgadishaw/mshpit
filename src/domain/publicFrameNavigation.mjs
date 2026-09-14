@@ -18,6 +18,8 @@ const text = (value) => String(value ?? "").trim();
 // never written into browser history.
 export function publicFramePath(frame, { resolveArtistMeta, resolveUser } = {}) {
   if (!frame) return null;
+  if (frame.privacy) return "/privacy";
+  if (frame.terms) return "/terms";
   if (frame.cityGuide) return frame.cityGuide.directory ? "/cities" : cityPath(frame.cityGuide);
   if (frame.venues) return "/venues";
   if (frame.auth) return frame.authMode === "signup" ? "/signup" : "/login";
@@ -41,7 +43,8 @@ export function publicFramePath(frame, { resolveArtistMeta, resolveUser } = {}) 
   if (frame.openLog?.performanceEvent && frame.openLog?.id) return eventPath(frame.openLog.id);
   if (frame.profileId) {
     const user = resolveUser?.(frame.profileId);
-    return user?.handle ? profilePath(user.handle) : null;
+    const handle = frame.profileHandle || user?.handle;
+    return handle ? profilePath(handle) : null;
   }
   return null;
 }
@@ -53,15 +56,6 @@ export function publicEntryFrame(pathname) {
   if (pathname === "/signup") return { auth: true, authMode: "signup" };
   if (pathname === "/login") return { auth: true, authMode: "login" };
   return null;
-}
-
-// A direct entry has no in-app parent. Give its Close/Back action a real root
-// URL, while leaving the existing history chain untouched for in-app auth.
-export function hydratePublicEntryHistory(history, pathname) {
-  if (!publicEntryFrame(pathname)) return false;
-  history.replaceState({ pit: "root" }, "", "/");
-  history.pushState({ pit: "nav" }, "", pathname);
-  return true;
 }
 
 export function updatedAuthFrame(frame, mode) {
@@ -80,7 +74,7 @@ export function publicDirectoryProgramme(frame) {
 // URL opens the same ArtistArchiveScreen as an in-app click.
 export function publicCollectionHydration(pathname) {
   const collection = parsePublicCollectionPath(pathname);
-  if (collection?.type !== "artist-concerts") return null;
+  if (collection?.type !== "artist-concerts" || collection.page !== 1 || collection.nonCanonicalPageOne) return null;
   return Object.freeze({
     type: collection.type,
     publicSlug: collection.artistSlug,

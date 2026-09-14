@@ -1,3 +1,18 @@
+import { serverDocumentNavigationPath } from "./browserNavigation.mjs";
+
+/**
+ * Some public collection URLs have complete server-rendered pagination but no
+ * equivalent client screen yet. Keep that honest document, including its links
+ * and browser history, instead of replacing it with an unrelated app screen.
+ * Only the exact server marker is authoritative; a bare Expo/dev shell still
+ * mounts normally and is never left as an empty page.
+ */
+export function shouldPreservePublicDocument(documentObject, pathname) {
+  if (!serverDocumentNavigationPath(pathname)) return false;
+  const root = documentObject?.getElementById?.("root");
+  return !!root?.querySelector?.(":scope > .seo-document");
+}
+
 /**
  * Remove the crawler-readable document immediately before Expo mounts.
  *

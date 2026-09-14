@@ -131,7 +131,8 @@ function LandingLiveRow({ item, onPress }) {
   );
 }
 
-export default function LandingScreen({ onLogin, onSignup, onBrowse, onBrowseCategory, onSuggestion, onOpenEvent, onExploreLounges }) {
+export default function LandingScreen({ session = null, onLogin, onSignup, onOpenFeed, onOpenYou, onBrowse, onBrowseCategory, onSuggestion, onOpenEvent, onExploreLounges }) {
+  const signedIn = !!session?.id;
   const { discoverySidebar } = useStore();
   const { width, height, fontScale } = useWindowDimensions();
   const { wide, compact, scrollPitch } = landingLayoutMode({ width, height, fontScale });
@@ -310,7 +311,7 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse, onBrowseCat
         <Rect x="0" y="0" width="100%" height="100%" fill={wide ? "url(#scrimH)" : "url(#scrimCenter)"} />
       </Svg>
 
-      {/* ---- top bar: brand + login ---- */}
+      {/* ---- top bar: brand + account entry ---- */}
       <View style={[styles.topbar, scrollPitch && styles.topbarScrolled, compact && styles.topbarCompact, styles.boxNonePointerEvents]}>
         <View style={styles.brandLockup} accessibilityRole="text" accessibilityLabel="Mshpit, live music remembered">
           <BrandMark size={34} />
@@ -322,9 +323,10 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse, onBrowseCat
         <WebPublicNav hidden={compact} />
         <LandingAction
           kind="login"
-          title="Log in"
-          onPress={onLogin}
-          accessibilityHint="Opens the Mshpit sign-in form"
+          title={signedIn ? "You" : "Log in"}
+          href={signedIn ? "/you" : "/login"}
+          onPress={signedIn ? onOpenYou : onLogin}
+          accessibilityHint={signedIn ? "Open your Mshpit profile" : "Opens the Mshpit sign-in form"}
         />
       </View>
 
@@ -364,19 +366,19 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse, onBrowseCat
               onPress={onBrowse}
               fullWidth={compact}
               compact={compact}
-              accessibilityHint="Browse upcoming concerts without creating an account"
+              accessibilityHint={signedIn ? "Browse upcoming concerts" : "Browse upcoming concerts without creating an account"}
             />
             <LandingAction
-              title={LANDING_IDENTITY_COPY.signupAction}
-              href="/signup"
-              onPress={onSignup}
+              title={signedIn ? "Open your feed" : LANDING_IDENTITY_COPY.signupAction}
+              href={signedIn ? "/feed" : "/signup"}
+              onPress={signedIn ? onOpenFeed : onSignup}
               fullWidth={compact}
               compact={compact}
-              accessibilityHint="Create a Mshpit account to share your own nights"
+              accessibilityHint={signedIn ? "Open your Mshpit feed" : "Create a Mshpit account to share your own nights"}
             />
           </View>
 
-          <View style={[styles.browseLinks, !wide && styles.browseLinksCentered]} accessibilityLabel="Explore without an account">
+          <View style={[styles.browseLinks, !wide && styles.browseLinksCentered]} accessibilityLabel={signedIn ? "Explore live music" : "Explore without an account"}>
             {LANDING_BROWSE_LINKS.map((item) => (
               <PublicPressableLink key={item.key} href={item.href} accessibilityLabel={item.label} onNavigate={() => onBrowseCategory?.(item.key)}
                 style={({ focused, pressed }) => [styles.browseLink, focused && focusRing, pressed && styles.actionPressed]}>

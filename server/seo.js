@@ -48,9 +48,11 @@ import {
   publicMusicEventCandidateSql,
 } from "./features/seo/publicEntityPolicy.js";
 import { effectiveTourDateEndSql } from "./tourDateLifecycle.js";
-import { tourDateHasNoPublishedMemorialSql } from "./artistMemorialTourDateVisibility.js";
+import { artistHasLegacyMemorial, tourDateHasNoPublishedMemorialSql } from "./artistMemorialTourDateVisibility.js";
+import { publicTourDateArtistProjection } from "./tourDateMetadata.js";
 import { inPersonReviewSql } from "./onlineReviews.js";
 import { hasSubstantiveVenueGuide } from "./venueFacts.js";
+import { appPageTitle } from "../src/domain/appPageMetadata.mjs";
 
 const SITE_NAME = "Mshpit";
 const DEFAULT_TITLE = "Mshpit — Concert reviews, photos and live music discovery";
@@ -93,11 +95,12 @@ const memberByHandle = db.prepare(`SELECT u.id,u.name,u.handle,u.extras FROM use
   WHERE u.handle=? AND u.profile_audience='everyone' AND ${activeAccountSql("u")} LIMIT 1`);
 const publicPostIdentity = db.prepare(`SELECT p.id FROM posts p JOIN users u ON u.id=p.user_id
   WHERE p.id=? AND p.removed=0 AND ${activeAccountSql("u")} LIMIT 1`);
-const publicEventIdentity = db.prepare(`SELECT td.id,td.event_name,td.artist,td.venue,td.place,td.date,
+const publicEventIdentity = db.prepare(`SELECT td.id,td.event_name,td.artist,td.artist_key,td.venue,td.place,td.date,
     td.start_date_time,td.start_local_time,td.event_timezone,td.event_status,td.ticket_url,td.sold_out,
     td.source,td.owner_id,td.venue_provider_id,td.event_kind,td.music_qualified,
-    td.music_evidence,td.billed_artists,td.event_end_date
+    td.music_evidence,td.billed_artists,td.event_end_date,canonical_artist.norm AS canonical_artist_key
   FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id
+  LEFT JOIN artists canonical_artist ON canonical_artist.norm=td.artist_key
   WHERE td.id=?1 AND td.release_at<=?2
     AND ${publicMusicEventCandidateSql("td")}
     AND (td.owner_id IS NULL OR ${activeAccountSql("owner")})
@@ -232,13 +235,23 @@ function eventResolution(id, at = Date.now()) {
   const today = new Date(instant).toISOString().slice(0, 10);
   const event = publicEventIdentity.get(String(id || ""), instant, today);
   if (!event || !isStrictCalendarDate(event.date)) return null;
+  // A public event snapshot is permission to read this one eligible event, not
+  // to unlock its artist page or member actions. Apply the same protected legacy
+  // identity boundary as the event service before adding the server-only marker.
+  if (artistHasLegacyMemorial(db, { artistKey: event.artist_key, artist: event.artist })) return null;
+  const artistProjection = publicTourDateArtistProjection(event);
+  const artistKey = artistProjection.bindingAllowed ? event.canonical_artist_key || null : null;
   const path = eventPath(event.id);
   return {
     entity: {
       kind: "event",
       id: event.id,
-      name: event.event_name || `${event.artist} at ${event.venue}`,
-      artist: event.artist,
+      publicEventSnapshot: true,
+      name: event.event_name || `${artistProjection.artist} at ${event.venue}`,
+      eventName: event.event_name || null,
+      eventKind: event.event_kind || "concert",
+      artist: artistProjection.artist,
+      artistKey,
       venue: event.venue,
       place: event.place || "",
       city: event.place || "",
@@ -249,6 +262,8 @@ function eventResolution(id, at = Date.now()) {
       eventStatus: event.event_status || "scheduled",
       ticketUrl: projectedTourDateTicketUrl(event) || null,
       soldOut: !!event.sold_out,
+      source: event.source || null,
+      providerVenueId: event.venue_provider_id || null,
       performanceEvent: true,
       path,
     },
@@ -667,11 +682,12 @@ function defaultHead(pathname) {
   const path = cleanPathname(pathname) || "/";
   const url = `${origin()}${path}`;
   const image = `${origin()}/og.png`;
-  return `<title>${esc(DEFAULT_TITLE)}</title>
+  const title = appPageTitle(path) || DEFAULT_TITLE;
+  return `<title>${esc(title)}</title>
     <meta name="description" content="${esc(DEFAULT_DESCRIPTION)}" />
     <meta property="og:site_name" content="${SITE_NAME}" />
     <meta property="og:type" content="website" />
-    <meta property="og:title" content="${esc(DEFAULT_TITLE)}" />
+    <meta property="og:title" content="${esc(title)}" />
     <meta property="og:description" content="${esc(DEFAULT_DESCRIPTION)}" />
     <meta property="og:url" content="${esc(url)}" />
     <meta property="og:image" content="${esc(image)}" />
@@ -681,11 +697,13 @@ function defaultHead(pathname) {
 }
 
 function headTagsForRoute(pathname, route, env) {
+  const indexable = route.type === "document" && !!route.document
+    && route.indexable !== false && route.document.indexable !== false && isProduction(env);
   const tags = route.type === "document" && route.document
-    ? renderPublicDocumentHead(route.document)
+    ? renderPublicDocumentHead({ ...route.document, indexable })
     : defaultHead(pathname);
   return withRobotsMeta(tags, {
-    indexable: route.type === "document" && !!route.document && route.indexable !== false,
+    indexable,
     env,
   });
 }
@@ -693,6 +711,21 @@ function headTagsForRoute(pathname, route, env) {
 export function headTagsFor(pathname, env = process.env) {
   const route = publicRoute(pathname);
   return headTagsForRoute(pathname, route, env);
+}
+
+// Navigation gets the exact server-authored head without rendering or sending
+// the HTML body and without provider requests. Resolve at most one canonical
+// redirect; privacy, publication and environment rules stay owned by publicRoute.
+export function pageHeadFor(pathname, env = process.env) {
+  let route = publicRoute(pathname);
+  if (route.type === "unavailable") return null;
+  let target = pathname;
+  if (route.type === "redirect" && route.location?.startsWith("/") && !route.location.startsWith("//")) {
+    target = route.location;
+    route = publicRoute(target);
+  }
+  if (route.type === "unavailable") return null;
+  return { path: pathname, head: headTagsForRoute(target, route, env) };
 }
 
 function replaceHead(html, tags) {

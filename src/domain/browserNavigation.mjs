@@ -1,4 +1,16 @@
-import { isPublicEntityPath } from "./urls.mjs";
+import { isPublicEntityPath, parsePublicCollectionPath } from "./urls.mjs";
+
+export const MAIN_TAB_PATHS = Object.freeze({ feed: "/feed", search: "/search", discover: "/discover", you: "/you" });
+export const mainTabForPath = (path) => Object.keys(MAIN_TAB_PATHS).find((tab) => MAIN_TAB_PATHS[tab] === path) || null;
+
+// Preserve server-owned location filters and pagination, never substitute page 1.
+export function serverDocumentNavigationPath(pathname) {
+  const path = String(pathname || "/").split(/[?#]/)[0];
+  const collection = parsePublicCollectionPath(path);
+  if (!collection) return null;
+  return collection.page > 1 || collection.nonCanonicalPageOne
+    || ["concerts", "city-concerts", "city-venues"].includes(collection.type) ? path : null;
+}
 
 // Browser history is the durable navigation authority on web. A persisted
 // overlay is useful only when there is no meaningful browser destination to

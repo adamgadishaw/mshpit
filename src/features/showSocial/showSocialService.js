@@ -5,12 +5,15 @@ import {
   readShowLoungeMeta as readShowLoungeMetaWithApi,
   writeShowAttendance as writeShowAttendanceWithApi,
 } from "./showSocialApi.mjs";
+import { readPublicEventSnapshot as readPublicEventSnapshotWithApi } from "./publicEventSnapshotApi.mjs";
 
 // Screens consume domain-named operations; only this feature boundary owns the
 // shared PIT transport and its authenticated-cookie semantics.
 export const readShowCrowdAttendance = (options) => readShowCrowdAttendanceWithApi(options, { apiCall: api });
 
 export const readShowDocument = (options) => readShowDocumentWithApi(options, { apiCall: api });
+
+export const readPublicEventSnapshot = (options) => readPublicEventSnapshotWithApi(options, { apiCall: api });
 
 export const readShowLoungeMeta = (options) => readShowLoungeMetaWithApi(options, { apiCall: api });
 

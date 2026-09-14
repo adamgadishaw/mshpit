@@ -1,7 +1,32 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { readPublicPost, resolvePublicEntity } from "./publicNavigationApi.mjs";
+import { readPublicPost, resolveNavigationArtist, resolvePublicEntity } from "./publicNavigationApi.mjs";
+
+test("artist navigation forwards cancellation and retains provider eligibility", async () => {
+  const controller = new AbortController();
+  const calls = [];
+  const result = await resolveNavigationArtist(" A$AP Rocky ", { signal: controller.signal }, {
+    apiCall: async (path, options) => {
+      calls.push({ path, options });
+      return { artist: { id: "rocky", name: "A$AP Rocky" }, transient: true };
+    },
+  });
+  assert.equal(calls[0].path, "/api/artists/resolve?name=A%24AP%20Rocky");
+  assert.equal(calls[0].options.signal, controller.signal);
+  assert.equal(calls[0].options.silent, true);
+  assert.equal(result.transient, true);
+  controller.abort();
+  assert.equal(calls[0].options.signal.aborted, true);
+});
+
+test("artist navigation refuses missing and oversized names without requests", async () => {
+  const apiCall = () => assert.fail("invalid navigation must not request a provider");
+  for (const name of ["", " ", "x".repeat(201)]) {
+    assert.equal(await resolveNavigationArtist(name, {}, { apiCall }), null);
+  }
+  assert.equal(await resolveNavigationArtist("Unknown", {}, { apiCall: async () => ({ artist: null }) }), null);
+});
 
 test("public entity resolution encodes the complete canonical pathname", async () => {
   const calls = [];

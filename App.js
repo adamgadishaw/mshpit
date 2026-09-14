@@ -77,24 +77,25 @@ import { getPendingImagePickerResult } from "./src/lib/imagePickerRecovery";
 import { lazyWithRetry } from "./src/lib/lazyWithRetry";
 import { recordFeedImpressionForSession } from "./src/features/feedImpressions/feedImpressionService";
 import useFeedImpressionSession from "./src/features/feedImpressions/useFeedImpressionSession";
-import { artistPath, eventPath, parsePath, parseCityPath, isPublicEntityPath } from "./src/domain/urls.mjs";
+import { artistPath, eventPath } from "./src/domain/urls.mjs";
 import { cityIdentityForLocation } from "./src/cityIdentity.js";
 import { CityNavigationContext } from "./src/components/cities/CityNavigationContext";
-import { shouldRestorePersistedStack } from "./src/domain/browserNavigation.mjs";
+import { shouldRestorePersistedStack, MAIN_TAB_PATHS, mainTabForPath, serverDocumentNavigationPath } from "./src/domain/browserNavigation.mjs";
+import { createBrowserHistory } from "./src/domain/browserHistory.mjs";
+import { publicBrowserDestination } from "./src/domain/publicBrowserDestination.mjs";
+import { needsPublicFrameIdentity, resolvePublicFrameIdentity } from "./src/domain/publicFrameIdentity.mjs";
 import { initialLandingState, landingRenderSurface } from "./src/domain/landingStartup.mjs";
 import { publicNavigationLinks, shouldShowMobilePublicTrail } from "./src/domain/publicNavigationLinks.mjs";
 import {
-  publicCollectionHydration,
-  hydratePublicEntryHistory,
   publicDirectoryProgramme,
-  publicEntryFrame,
   publicFramePath,
-  resolvedPublicCollectionFrame,
   updatedAuthFrame,
 } from "./src/domain/publicFrameNavigation.mjs";
 import {
+  createPublicPageHeadController,
   readPublicPost,
   resolvePublicEntity,
+  resolveNavigationArtist,
 } from "./src/features/publicNavigation/publicNavigationService";
 import {
   composerNavigationTransition,
@@ -226,7 +227,7 @@ function Root() {
   };
 
   // Restore the last tab on reload so a refresh doesn't dump you back on the feed.
-  const [tab, setTab] = useState(() => restoredMainTab(web ? load("pit.tab", "feed") : "feed"));
+  const [tab, setTab] = useState(() => (web && mainTabForPath(window.location.pathname)) || restoredMainTab(web ? load("pit.tab", "feed") : "feed"));
   const activeTab = visibleMainTab(tab, session?.id);
   // Navigation is a STACK of frames. Each frame is one overlay screen, e.g.
   // { artistName } or { profileId }; the top frame is what's showing. An empty
@@ -505,6 +506,37 @@ function Root() {
     demoEnabled: ENABLE_DEMO_DATA,
     readPersisted: load,
   }));
+  const navigationRef = useRef({ stack, tab, landing, accountId: session?.id || null });
+  navigationRef.current = { stack, tab, landing, accountId: session?.id || null };
+  const browserHistoryRef = useRef(null);
+  const pageHeadRef = useRef(null);
+  const publicRouteRequestRef = useRef(null);
+  const restoreBrowserPathRef = useRef(null);
+  const [publicNavigationNotice, setPublicNavigationNotice] = useState(null);
+  const cancelPublicRoute = () => {
+    publicRouteRequestRef.current?.abort();
+    publicRouteRequestRef.current = null;
+    setPublicNavigationNotice(null);
+  };
+  const applyNavigation = (next) => {
+    navigationRef.current = next;
+    stackRef.current = next.stack;
+    setStack(next.stack);
+    setTab(next.tab);
+    setLanding(next.landing);
+  };
+  const writeNavigation = (next, path, mode = "push") => {
+    cancelPublicRoute();
+    if (web) {
+      browserHistoryRef.current?.capture(navigationRef.current);
+      try { browserHistoryRef.current?.write(next, path, mode); }
+      catch {
+        // History failure must not paint a page underneath another page's URL.
+        if (path) { window.location.assign(path); return; }
+      }
+    }
+    applyNavigation(next);
+  };
   const analyticsScreen = analyticsScreenKey({ landing, tab: activeTab, nav });
   // Configure before React evaluates the active child screen. This preserves
   // the true SPA surface even when its public URL intentionally remains root.
@@ -538,24 +570,15 @@ function Root() {
     proceed();
   };
   const commitGo = (candidate) => {
-    const frame = navigationFrameForAccount(prepareAvailableNavigationFrame(candidate), session?.id);
+    let frame = navigationFrameForAccount(prepareAvailableNavigationFrame(candidate), session?.id);
     if (!frame) return;
     if (frame.auth && stackRef.current[stackRef.current.length - 1]?.auth) return;
-    const next = [...stackRef.current, frame];
-    stackRef.current = next;
-    setStack(next);
-    if (web) {
-      try {
-        // The third argument is the whole point: it changes the address bar
-        // without a navigation, so PlayerBar (a sibling of the content area)
-        // is never unmounted and audio does not restart. Never use
-        // location.href or a plain anchor here - that is a full page load,
-        // which stops playback and re-parses the entire bundle.
-        window.history.pushState({ pit: "nav" }, "", pathForFrame(frame) || undefined);
-      } catch {
-        // architecture: allow-empty-catch -- history mirroring is best effort; the in-memory stack remains authoritative.
-      }
-    }
+    if (frame.auth && navigationRef.current.landing) frame = { ...frame, authFromLanding: true };
+    const previous = stackRef.current;
+    const next = previous.length >= 64 ? [{}, ...previous.slice(-62), frame] : [...previous, frame];
+    const path = pathForFrame(frame);
+    if (web && serverDocumentNavigationPath(path)) { window.location.assign(path); return; }
+    writeNavigation({ ...navigationRef.current, stack: next, tab: frame.directory ? "discover" : navigationRef.current.tab, landing: false }, path);
   };
   // Swap the top screen without growing the stack — for lateral moves where the
   // previous screen shouldn't come back (menu → target, signup → pick-artists).
@@ -564,25 +587,39 @@ function Root() {
     if (!frame) return;
     const previous = stackRef.current;
     const next = replaceNavigationFrame(previous, frame);
-    stackRef.current = next;
-    setStack(next);
-    if (web) {
-      try {
-        const method = next.length > previous.length ? "pushState" : "replaceState";
-        window.history[method]({ pit: "nav" }, "", pathForFrame(frame) || undefined);
-      }
-      catch {
-        // architecture: allow-empty-catch -- history mirroring is best effort; the in-memory stack remains authoritative.
-      }
+    const path = pathForFrame(frame);
+    if (web && serverDocumentNavigationPath(path)) { window.location.assign(path); return; }
+    writeNavigation({ ...navigationRef.current, stack: next, tab: frame.directory ? "discover" : navigationRef.current.tab, landing: false }, path, next.length > previous.length ? "push" : "replace");
+  };
+  const navigateCandidate = async (candidate, transition) => {
+    const options = { resolveArtistMeta: remoteArtistMeta, resolveUser: userById };
+    const commit = transition === "replace" ? commitReplace : commitGo;
+    if (!web || !needsPublicFrameIdentity(candidate, options)) { commit(candidate); return; }
+    cancelPublicRoute();
+    const controller = new AbortController();
+    const accountId = session?.id || null;
+    publicRouteRequestRef.current = controller;
+    const current = () => publicRouteRequestRef.current === controller && !controller.signal.aborted
+      && accountId === (sessionRef.current?.id || null);
+    setPublicNavigationNotice({ loading: true, candidate, transition });
+    try {
+      const result = await resolvePublicFrameIdentity(candidate, {
+        ...options, signal: controller.signal, resolveArtist: resolveNavigationArtist, loadUser, profileFrame: publicIdentityFrame,
+      });
+      if (!current()) return;
+      if (result) commit(result.frame);
+      else setPublicNavigationNotice({ loading: false, candidate, transition });
+    } catch {
+      if (current()) setPublicNavigationNotice({ loading: false, candidate, transition });
     }
   };
   const go = (candidate) => {
     const current = stackRef.current[stackRef.current.length - 1];
     if (isComposerFrame(current) && isComposerFrame(candidate)) return;
     const transition = composerNavigationTransition(current);
-    runAfterComposerClose(() => (transition === "replace" ? commitReplace(candidate) : commitGo(candidate)));
+    runAfterComposerClose(() => navigateCandidate(candidate, transition));
   };
-  const replace = (frame) => runAfterComposerClose(() => commitReplace(frame));
+  const replace = (frame) => runAfterComposerClose(() => navigateCandidate(frame, "replace"));
   // Keep the current public screen under sign-in; repeated taps must not stack
   // duplicate auth frames. Signing in never replays a guest's attempted action.
   const openSignIn = () => {
@@ -617,22 +654,46 @@ function Root() {
     const target = publicIdentityTarget(user || { id });
     return target.kind === "artist"
       ? { artistName: target.artistName }
-      : { profileId: target.userId || id };
+      : { profileId: target.userId || id, ...(user?.handle ? { profileHandle: user.handle } : {}) };
   };
   const popStack = () => {
     authNavigationAbortRef.current?.();
-    setStack((s) => (s.length > 1 ? s.slice(0, -1) : s));
+    const next = stackRef.current.length > 1 ? stackRef.current.slice(0, -1) : stackRef.current;
+    applyNavigation({ ...navigationRef.current, stack: next });
   };
   const requestComposerPop = (onCancel = () => {}) => {
     runAfterComposerClose(popStack, onCancel);
   };
   // Back one screen. On web, route through history.back() so the browser Back
   // button and in-app back share one code path (the popstate handler pops).
-  const back = () => { if (web) { try { window.history.back(); return; } catch {} } requestComposerPop(); };
+  const back = () => {
+    if (web) {
+      if (!browserHistoryRef.current?.canGoBack()) { runAfterComposerClose(() => restoreBrowserPathRef.current?.("/", { replace: true })); return; }
+      window.history.back();
+      return;
+    }
+    requestComposerPop();
+  };
+  // Direct entry and Intro sign-in enter Feed after authentication. Cancellation
+  // still goes back to Intro, while contextual event/profile sign-in retains
+  // that exact parent through normal Back. No stale session closure is needed.
+  const finishAuthentication = () => {
+    if (navigationRef.current.stack.at(-1)?.authFromLanding === true
+      || (web && !browserHistoryRef.current?.canGoBack())) {
+      writeNavigation({ ...navigationRef.current, stack: [{}], tab: "feed", landing: false }, MAIN_TAB_PATHS.feed, "replace");
+      return;
+    }
+    back();
+  };
+  const finishPasswordReset = () => {
+    clearResetUrl();
+    writeNavigation({ ...navigationRef.current, stack: [{}], tab: "feed", landing: false }, MAIN_TAB_PATHS.feed, "replace");
+  };
   // Successful mutations must close without re-running the dirty form prompt,
   // but still mirror the pop into browser history.
   const finishComposerBack = () => {
     if (web) {
+      if (!browserHistoryRef.current?.canGoBack()) { restoreBrowserPathRef.current?.("/", { replace: true }); return; }
       try {
         const marker = {};
         bypassNextPopRef.current = marker;
@@ -647,8 +708,8 @@ function Root() {
   };
   // Jump straight to the tab screens (after posting, tab switches, brand tap).
   const commitClear = () => {
-    setStack([{}]);
-    if (web) { try { window.history.replaceState({ pit: "root" }, "", "/"); } catch {} }
+    const nextTab = visibleMainTab(navigationRef.current.tab, session?.id);
+    writeNavigation({ ...navigationRef.current, stack: [{}], tab: nextTab, landing: false }, MAIN_TAB_PATHS[nextTab], "replace");
   };
   const clear = () => runAfterComposerClose(commitClear);
   const switchTab = (key) => runAfterComposerClose(() => {
@@ -660,16 +721,13 @@ function Root() {
     if (key === "search") SearchScreen.preload?.().catch(() => { /* architecture: allow-empty-catch -- Tab intent warming is optional; Suspense owns visible loading and retry. */ });
     if (key === "discover") DiscoverScreen.preload?.().catch(() => { /* architecture: allow-empty-catch -- Tab intent warming is optional; Suspense owns visible loading and retry. */ });
     if (key === "you") YouScreen.preload?.().catch(() => { /* architecture: allow-empty-catch -- Tab intent warming is optional; Suspense owns visible loading and retry. */ });
-    setTab(key);
-    commitClear();
+    writeNavigation({ ...navigationRef.current, stack: [{}], tab: key, landing: false }, MAIN_TAB_PATHS[key]);
   });
   const openPublicDirectory = (directory, { region } = {}) => {
     if (directory !== "artists" && directory !== "events") return;
     runAfterComposerClose(() => {
       // architecture: allow-empty-catch -- Directory chunk preloading is optional; Suspense owns the visible loading and retry state.
       DiscoverScreen.preload?.().catch(() => {});
-      setLanding(false);
-      setTab("discover");
       commitGo({
         directory,
         ...(directory === "events" && region && region !== "Worldwide" ? { discoverRegion: region } : {}),
@@ -695,10 +753,7 @@ function Root() {
   };
 
   const enter = () => {
-    setLanding(false);
     save("pit.entered", true);
-    // Arm one history entry so browser Back from the app root returns to landing.
-    if (web) { try { window.history.pushState({ pit: "app" }, ""); } catch {} }
   };
   const stopAndClearPlayback = () => {
     setPlayer(null);
@@ -714,9 +769,7 @@ function Root() {
   const commitExitToLanding = () => {
     stopAndClearPlayback();
     save("pit.entered", false);
-    setTab("feed");
-    setStack([{}]);
-    setLanding(true);
+    writeNavigation({ ...navigationRef.current, tab: "feed", stack: [{}], landing: true }, "/");
   };
   const exitToLanding = () => runAfterComposerClose(commitExitToLanding);
   const signOut = () => runAfterComposerClose(() => { logout(); commitExitToLanding(); });
@@ -746,163 +799,116 @@ function Root() {
     setPreview(null);
     setVerificationPrompt(null);
     setAcctOpen(false);
-    setTab("feed");
-    setStack([{}]);
-    if (!nextAccountId) {
-      save("pit.entered", false);
-      setLanding(true);
-    }
+    cancelPublicRoute();
+    browserHistoryRef.current?.clear();
+    const next = { stack: [{}], tab: "feed", landing: !nextAccountId, accountId: nextAccountId };
+    // Do not recapture the departing frame: this render already has the new
+    // account id, but its old photo/composer props belong to the previous one.
+    applyNavigation(next);
+    try { browserHistoryRef.current?.write(next, nextAccountId ? "/feed" : "/", "replace"); }
+    catch { if (web) window.location.replace(nextAccountId ? "/feed" : "/"); }
+    if (!nextAccountId) save("pit.entered", false);
   }, [authReady, session?.id]);
 
   // Persist tab + nav stack so a reload lands exactly where you were.
   useEffect(() => { if (web) save("pit.tab", tab); }, [tab]);
   useEffect(() => { if (web) save("pit.stack", stack); }, [stack]);
 
-  // Wire browser/hardware Back to the nav stack. If there's a screen to pop, pop
-  // it; at the root, guests fall back to the landing and signed-in users are kept
-  // in-app (re-arm a history entry so a stray Back never boots them off the site).
+  // Browser history owns destinations. Back and Forward are symmetric; cached
+  // sheets are visit/account scoped and public links re-resolve when not cached.
   const sessionRef = useRef(session);
   sessionRef.current = session;
-  useEffect(() => {
-    if (!web) return;
-    // Arm a base history buffer so the very first Back press is caught here
-    // rather than navigating away from the site — PLUS one entry per restored
-    // overlay so browser/in-app Back pops the restored stack 1:1 (otherwise a
-    // deep restored stack would send Back off the site on the first press).
+  const restoreBrowserPath = async (path, { replace: replaceUrl = false, publicFrameHint = null } = {}) => {
+    cancelPublicRoute();
+    const controller = new AbortController();
+    publicRouteRequestRef.current = controller;
+    const accountId = sessionRef.current?.id || null;
+    const current = () => publicRouteRequestRef.current === controller && !controller.signal.aborted
+      && accountId === (sessionRef.current?.id || null);
+    applyNavigation({ stack: [{}, { routeLoading: path }], tab: "discover", landing: false, accountId });
     try {
-      window.history.pushState({ pit: "base" }, "");
-      for (let i = 0; i < stackRef.current.length - 1; i++) window.history.pushState({ pit: "nav" }, "");
-    } catch {}
-    const onPop = () => {
-      if (stackRef.current.length > 1) {
-        if (bypassNextPopRef.current) {
-          bypassNextPopRef.current = null;
-          popStack();
+      const destination = await publicBrowserDestination(path, {
+        accountId, signal: controller.signal, publicFrameHint,
+        resolveEntity: resolvePublicEntity, readPost: readPublicPost,
+        profileFrame: async (entity) => {
+          const user = userById?.(entity.id) || (await loadUser(entity.id, { signal: controller.signal }))?.user || null;
+          return publicIdentityFrame(entity.id, user);
+        },
+      });
+      if (!current() || !destination) return;
+      const { path: canonical, ...next } = destination;
+      // Canonical redirects replace this position, never grow a duplicate link.
+      if (replaceUrl || canonical !== window.location.pathname) browserHistoryRef.current?.write(next, canonical, "replace");
+      else browserHistoryRef.current?.capture(next);
+      applyNavigation(next);
+    } catch {
+      if (!current()) return;
+      const next = { stack: [{}, { routeError: path }], tab: "discover", landing: false, accountId };
+      browserHistoryRef.current?.capture(next);
+      applyNavigation(next);
+    }
+  };
+  restoreBrowserPathRef.current = restoreBrowserPath;
+
+  useEffect(() => {
+    if (!web) return undefined;
+    const browser = createBrowserHistory({ history: window.history, location: window.location });
+    pageHeadRef.current = createPublicPageHeadController({ document: window.document, location: window.location });
+    browserHistoryRef.current = browser;
+    browser.initialize(navigationRef.current);
+    const onPop = (event) => {
+      const transition = browser.preparePop(event?.state);
+      if (!transition) return;
+      const proceed = () => {
+        if (!transition.accept()) return;
+        cancelPublicRoute();
+        const snapshot = transition.snapshot;
+        if (snapshot && snapshot.accountId === (sessionRef.current?.id || null)
+          && !snapshot.stack.at(-1)?.routeLoading) {
+          applyNavigation(snapshot);
         } else {
-          // The browser already moved back one history entry. If the composer
-          // declines, restore the entry so the stack and browser stay aligned.
-          requestComposerPop(() => {
-            try { window.history.pushState({ pit: "nav" }, ""); } catch {}
+          // Re-read content under the current account. Only the prior public
+          // post presentation survives; no guest/member payload is reused.
+          const postId = Array.isArray(snapshot?.stack) ? snapshot.stack.at(-1)?.post?.id : null;
+          restoreBrowserPathRef.current?.(transition.path, {
+            publicFrameHint: typeof postId === "string" && postId.length > 0 && postId.length <= 200
+              ? { postId } : null,
           });
         }
-      }
-      else if (!sessionRef.current) setLanding(true);
-      else { try { window.history.pushState({ pit: "root" }, ""); } catch {} }
+      };
+      if (bypassNextPopRef.current) { bypassNextPopRef.current = null; proceed(); }
+      else runAfterComposerClose(proceed, transition.cancel);
     };
     window.addEventListener("popstate", onPop);
-    return () => window.removeEventListener("popstate", onPop);
-  }, []);
+    return () => {
+      cancelPublicRoute();
+      window.removeEventListener("popstate", onPop);
+      browser.clear();
+      browserHistoryRef.current = null;
+      pageHeadRef.current?.dispose();
+      pageHeadRef.current = null;
+    };
+  }, [web]);
 
-  // Open whatever URL the visitor arrived on. Runs once: a shared link, a search
-  // result, or a refresh must land on the page it names rather than the home
-  // feed. The server already served the right metadata for this path; this is
-  // what makes the app agree with it.
-  //
-  // Resolution is server-side (`/api/resolve`) because a root slug like
-  // "/turnstile" is ambiguous between a handle, an artist and a venue, and the
-  // client has no way to settle that without the catalogue. Doing it in one
-  // place also guarantees a crawler and a visitor get the same page.
+  const browserEntryReadyRef = useRef(false);
   useEffect(() => {
-    if (!web) return;
-    let cancelled = false;
-    const path = window.location.pathname;
-    if (!path || path === "/") return;
-    const entryFrame = publicEntryFrame(path);
-    if (entryFrame) {
-      setLanding(false);
-      const next = [{}, entryFrame];
-      stackRef.current = next;
-      setStack(next);
-      try { hydratePublicEntryHistory(window.history, path); } catch {
-        // architecture: allow-empty-catch -- The entry screen remains usable when browser history is unavailable.
-      }
-      return;
+    if (!web || !authReady || browserEntryReadyRef.current) return;
+    browserEntryReadyRef.current = true;
+    restoreBrowserPathRef.current?.(window.location.pathname, { replace: true });
+  }, [web, authReady]);
+
+  useEffect(() => {
+    if (web && !nav.routeLoading) browserHistoryRef.current?.capture(navigationRef.current);
+  }, [web, stack, tab, landing, session?.id]);
+
+  useEffect(() => {
+    if (!web || browserHistoryRef.current?.path !== window.location.pathname) return;
+    const canonical = nav.routeLoading ? null : pathForFrame(nav);
+    if (canonical && canonical !== window.location.pathname) {
+      browserHistoryRef.current?.write(navigationRef.current, canonical, "replace");
     }
-    const cityRoute = parseCityPath(path);
-    if (cityRoute || path === "/cities") {
-      setLanding(false);
-      setStack([{}, { cityGuide: cityRoute || { directory: true } }]);
-      return;
-    }
-    const collectionHydration = publicCollectionHydration(path);
-    if (collectionHydration) {
-      setLanding(false);
-      (async () => {
-        try {
-          const entity = await resolvePublicEntity(collectionHydration.resolvePath);
-          const frame = resolvedPublicCollectionFrame(collectionHydration, entity);
-          if (cancelled || !frame) return;
-          setStack([{}, frame]);
-          try { window.history.pushState({ pit: "nav" }, "", path); } catch {
-            // architecture: allow-empty-catch -- app state already owns the resolved public archive.
-          }
-        } catch {
-          // architecture: allow-empty-catch -- server-rendered archive content remains visible when client hydration is unavailable.
-        }
-      })();
-      return () => { cancelled = true; };
-    }
-    if (path === "/artists" || path === "/events") {
-      setLanding(false);
-      setTab("discover");
-      setStack([{}, { directory: path.slice(1) }]);
-      try { window.history.pushState({ pit: "nav" }, "", path); } catch {
-        // architecture: allow-empty-catch -- History is a best-effort web enhancement; app state already owns the requested directory.
-      }
-      return;
-    }
-    if (!isPublicEntityPath(path)) return;
-    (async () => {
-      try {
-        const entity = await resolvePublicEntity(path);
-        if (cancelled || !entity) return;
-        // Land inside the app, not on the marketing page: someone following a
-        // link to a band wants the band.
-        setLanding(false);
-        if (entity.kind === "artist") {
-          const canonical = parsePath(entity.path);
-          setStack([{}, {
-            artistName: entity.name,
-            ...(canonical?.type === "artist" ? { artistPublicSlug: canonical.value } : {}),
-          }]);
-        }
-        else if (entity.kind === "venue") setStack([{}, {
-          venueName: entity.name,
-          venue: {
-            name: entity.name,
-            providerVenueId: entity.providerVenueId || entity.venue_provider_id || null,
-            source: entity.source || null,
-          },
-        }]);
-        else if (entity.kind === "profile") {
-          const targetId = String(entity.id || "");
-          const knownUser = String(sessionRef.current?.id || "") === targetId
-            ? sessionRef.current
-            : userById?.(entity.id);
-          // `/@handle` links resolve before the people cache is guaranteed to be
-          // warm. Carry the authoritative public user through this navigation so
-          // a named artist cannot briefly reopen the duplicate member profile.
-          const resolvedUser = knownUser || (await loadUser(entity.id))?.user || null;
-          if (!cancelled) setStack([{}, publicIdentityFrame(entity.id, resolvedUser)]);
-        }
-        else if (entity.kind === "show") {
-          const post = await readPublicPost(entity.id).catch(() => null);
-          if (!cancelled && post) setStack([{}, post.kind === "status" || isOnlineReview(post) || isCityOnlyReview(post) ? { post } : { openLog: post }]);
-        }
-        else if (entity.kind === "event" || entity.kind === "concert") {
-          setStack([{}, { openLog: { ...entity, performanceEvent: true } }]);
-        }
-        // One history entry for the opened screen, so Back returns to the feed
-        // rather than leaving the site.
-        if (!cancelled) { try { window.history.pushState({ pit: "nav" }, "", path); } catch {} }
-      } catch {
-        // An unresolvable link just opens the app; the URL is left alone so it
-        // can be read or corrected rather than silently rewritten.
-      }
-    })();
-    return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    pageHeadRef.current?.sync(window.location.pathname + window.location.search);
+  }, [web, stack, tab, landing, remoteArtistMeta, userById]);
 
   // Android hardware back: pop the stack when we have somewhere to go.
   useEffect(() => {
@@ -968,8 +974,7 @@ function Root() {
       } else {
         // Ordinary text/photo statuses have no show identity and keep the
         // familiar feed destination; they are never blocked by Calendar rules.
-        commitClear();
-        setTab("feed");
+        writeNavigation({ ...navigationRef.current, stack: [{}], tab: "feed", landing: false }, "/feed", "replace");
       }
     }
     return result;
@@ -1168,13 +1173,22 @@ function Root() {
   const openVenueReview = (name) => requireVerifiedMutation("review", () => go({ venueReview: name }));
   const removePostTag = (postId) => requireVerifiedMutation("interact", () => removeMyPostTag(postId));
 
-  let overlay = null;
+  let overlay = nav.routeLoading ? <ScreenLoading /> : nav.routeError ? (
+    <View style={[styles.screenLoading, { padding: 24 }]} testID="public-route-error">
+      <Text accessibilityRole="header" style={{ color: colors.text, fontSize: 22, fontWeight: "700" }}>This page couldn’t load.</Text>
+      <Text style={styles.screenLoadingTxt}>It may be unavailable or the connection was interrupted.</Text>
+      <Pressable accessibilityRole="button" onPress={() => restoreBrowserPathRef.current?.(nav.routeError)} style={{ padding: 16 }}>
+        <Text style={{ color: colors.amber }}>Try again</Text>
+      </Pressable>
+      <Pressable accessibilityRole="button" onPress={back} style={{ padding: 16 }}><Text style={{ color: colors.text }}>Go back</Text></Pressable>
+    </View>
+  ) : null;
   // Auth is a modal that must win over any page overlay — requireAuth() can fire
   // from inside a venue/show/profile page, and the login sheet has to surface.
   if (nav.photos) overlay = <PhotoViewer photos={nav.photos.images} index={nav.photos.index} postId={nav.photos.postId} returnFocusRef={mediaViewerOpenerRef} session={session} mediaReactions={mediaReactions} loadMediaReactions={loadMediaReactions} toggleMediaReaction={toggleMediaReaction} track={track} onReport={openReport} onClose={back} onRememberIndex={rememberPhotoIndex} onRequireAuth={openSignIn} />;
   else if (MUSIC_PLAYER_ENABLED && nav.addToPlaylist) overlay = <PlaylistPickerScreen track={nav.addToPlaylist} onClose={back} />;
   else if (nav.followList) overlay = <FollowListScreen userId={nav.followList.userId} mode={nav.followList.mode} onClose={back} onOpenProfile={openProfile} />;
-  else if (nav.auth) overlay = <AuthScreen navigationAbortRef={authNavigationAbortRef} initialMode={nav.authMode} onModeChange={(mode) => { const frame = updatedAuthFrame(stackRef.current[stackRef.current.length - 1], mode); if (frame) commitReplace(frame); }} onDone={back} onCancel={back} onOpenCity={(city) => replace({ cityGuide: city })} />;
+  else if (nav.auth) overlay = <AuthScreen navigationAbortRef={authNavigationAbortRef} initialMode={nav.authMode} onModeChange={(mode) => { const frame = updatedAuthFrame(stackRef.current[stackRef.current.length - 1], mode); if (frame) commitReplace(frame); }} onDone={finishAuthentication} onCancel={back} onOpenCity={(city) => replace({ cityGuide: city })} />;
   else if (nav.signupSetup && session) overlay = <SignupOnboardingScreen key={session.id} session={session} onComplete={(options) => finishSignupOnboarding(options)} onClose={back} closeGuardRef={composerCloseGuardRef} />;
   else if (nav.welcomeGuide && session) overlay = <WelcomeScreen onClose={back} onOpenFanClubs={() => replace({ fanClubs: true })} onOpenNearby={() => replace({ nearby: true, nearbyTab: "shows" })} onOpenArtists={() => replace({ pickArtists: true })} onReview={() => requireVerifiedMutation("review", () => replace({ logging: true }))} />;
   else if (nav.pickArtists) overlay = <PickArtistsScreen onDone={clear} onSkip={clear} onRequireVerification={() => setVerificationPrompt("artistPicks")} />;
@@ -1273,7 +1287,7 @@ function Root() {
     : [];
   const openHydratedPublicTarget = (target) => {
     if (!target) return;
-    if (target.type === "home") { switchTab("feed"); return; }
+    if (target.type === "home") { exitToLanding(); return; }
     if (target.type === "directory") { openPublicDirectory(target.value); return; }
     if (target.type === "artist") { openArtist(target.value); return; }
     if (target.type === "venue") { openVenue(target.value); return; }
@@ -1394,7 +1408,7 @@ function Root() {
         unread={session ? inboxUnread() : 0}
         notifUnread={session ? unreadNotifications() : 0}
         compact={width < 1500}
-        onHome={() => switchTab("feed")}
+        onHome={exitToLanding}
         onLogIntent={preloadComposer}
         onLog={() => requireVerifiedMutation("post", () => go({ logging: true, postMode: "status" }))}
         onActivity={openNotifications}
@@ -1462,6 +1476,13 @@ function Root() {
     <View style={styles.root}>
       <SafeAreaView style={styles.safe}>
         <StatusBar style={themeIsDark ? "light" : "dark"} />
+        {publicNavigationNotice && (
+          <View accessibilityLiveRegion="polite" style={{ padding: 12, backgroundColor: colors.bgElev, flexDirection: "row", alignItems: "center", gap: 12 }}>
+            <Text style={{ flex: 1, color: colors.text }}>{publicNavigationNotice.loading ? "Opening page…" : "This artist or profile could not be opened."}</Text>
+            {!publicNavigationNotice.loading && <Pressable accessibilityRole="button" onPress={() => runAfterComposerClose(() => navigateCandidate(publicNavigationNotice.candidate, publicNavigationNotice.transition))} style={{ padding: 10 }}><Text style={{ color: colors.amber }}>Try again</Text></Pressable>}
+            <Pressable accessibilityRole="button" onPress={cancelPublicRoute} style={{ padding: 10 }}><Text style={{ color: colors.text }}>Cancel</Text></Pressable>
+          </View>
+        )}
 
         {/* Reserve space for the reminder instead of covering mobile controls.
             Optional setup has its own confirmation/resend controls. */}
@@ -1478,7 +1499,10 @@ function Root() {
           <ScreenLoading />
         ) : landingSurface === "landing" ? (
           <LandingScreen
-            onLogin={() => { enter(); go({ auth: true, authMode: "login" }); }}
+            session={session}
+            onOpenFeed={() => switchTab("feed")}
+            onOpenYou={() => switchTab("you")}
+            onLogin={() => { enter(); if (session) switchTab("feed"); else go({ auth: true, authMode: "login" }); }}
             onSignup={() => { enter(); go({ auth: true, authMode: "signup" }); }}
             onBrowse={() => openPublicDirectory("events")}
             onBrowseCategory={(category) => {
@@ -1598,7 +1622,7 @@ function Root() {
 
         {resetToken && (
           <View style={styles.welcomeModal}>
-            <ResetPasswordScreen token={resetToken} onDone={clearResetUrl} onCancel={clearResetUrl} />
+            <ResetPasswordScreen token={resetToken} onDone={finishPasswordReset} onCancel={clearResetUrl} />
           </View>
         )}
 
