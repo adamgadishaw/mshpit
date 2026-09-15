@@ -223,13 +223,18 @@ test("scheduler is explicit on hosted runtimes and uses shared admission and per
   const logger = { log() {}, error() {} };
   assert.equal(startArtistKnowledgeScheduler({ env: { RENDER: "true" }, logger }), null);
   assert.equal(startArtistKnowledgeScheduler({ env: { ARTIST_KNOWLEDGE_ENABLED: "typo" }, logger }), null);
-  let options, coordinated = 0, received;
+  let options, coordinated = 0, received, clock = AT;
   const handle = {};
   assert.equal(startArtistKnowledgeScheduler({ env: { ARTIST_KNOWLEDGE_ENABLED: "true", ARTIST_KNOWLEDGE_BATCH: "999" }, logger,
-    schedule: (value) => { options = value; return handle; }, coordinate: async (job) => { coordinated++; return job(); },
+    now: () => clock, schedule: (value) => { options = value; return handle; }, coordinate: async (job) => { coordinated++; return job(); },
     service: { runBatch: async (value) => { received = value; return { checked: 0 }; } } }), handle);
   assert.equal(options.intervalMs, 60_000); assert.equal(options.initialDelayMs, 180_000);
-  const signal = new AbortController().signal; await options.run({ signal });
+  const signal = new AbortController().signal;
+  await options.run({ signal });
+  clock += 60_000; await options.run({ signal });
+  clock += 60_000; await options.run({ signal });
+  assert.equal(coordinated, 0, "one-minute interval ticks must preserve the full cold-start grace");
+  clock += 60_000; await options.run({ signal });
   assert.equal(coordinated, 1); assert.equal(received.signal, signal); assert.equal(received.respectCadence, true);
 });
 

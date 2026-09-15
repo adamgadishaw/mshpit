@@ -282,10 +282,11 @@ export function createArtistKnowledgeRefresher({
 
 export function startArtistKnowledgeScheduler({
   database, directory, databasePath, env = process.env, logger = console,
-  schedule = startPeriodicJob, coordinate = runBackgroundJob, service,
+  schedule = startPeriodicJob, coordinate = runBackgroundJob, service, now = Date.now,
 } = {}) {
   if (!backgroundJobEnabled(env, "ARTIST_KNOWLEDGE_ENABLED")) return null;
-  const refresher = service || createArtistKnowledgeRefresher({ database, env,
+  const startupReadyAt = now() + 3 * MINUTE;
+  const refresher = service || createArtistKnowledgeRefresher({ database, env, now,
     storageReady: () => artistKnowledgeStorageReady(directory, databasePath),
     databaseBytes: () => artistKnowledgeDatabaseBytes(databasePath),
     memoryReady: () => artistKnowledgeMemoryReady() });
@@ -293,8 +294,11 @@ export function startArtistKnowledgeScheduler({
   return schedule({
     initialDelayMs: 3 * MINUTE, intervalMs: MINUTE,
     run: ({ signal }) => {
-      const control = database ? readCatalogKnowledgeControl(database, { env }) : null;
-      if (control && (control.mode === "paused" || control.nextPassAt > Date.now())) return false;
+      // The scheduler's interval ticks independently of initialDelayMs. Keep
+      // every early/manual tick out of the shared queue during cold start.
+      if (now() < startupReadyAt) return false;
+      const control = database ? readCatalogKnowledgeControl(database, { env, at: now() }) : null;
+      if (control && (control.mode === "paused" || control.nextPassAt > now())) return false;
       return coordinate(async () => {
         const stats = await refresher.runBatch({ signal, respectCadence: true });
         if (!stats.waiting) logger.log?.(`[pit] artist knowledge: lanes=${stats.lanes || 1} checked=${stats.checked} filled=${stats.filled} bios=${stats.bios} countries=${stats.countries} deferred=${stats.unmatched} providerFailures=${stats.failed} storagePaused=${stats.storagePaused} memoryPaused=${stats.memoryPaused} budgetPaused=${stats.budgetPaused} capPaused=${stats.capPaused}`);
