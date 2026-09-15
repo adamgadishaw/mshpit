@@ -27,7 +27,7 @@ export function upkeepFixture(mode = "maintenance") {
         fieldCoverage: { biographyPresent: 20000, biographyMissing: 9161, biographyProtected: 1000, countryPresent: 21000, countryMissing: 9161 } },
     },
     artistKnowledge: { enabled: true, state: mode === "paused" ? "paused" : "recent",
-      lastPass: { at, checked: 23, filled: 20, unmatched: 2, failed: 1, lanes: 3 },
+      lastPass: { at, checked: 23, filled: 20, bios: 18, countries: 4, unmatched: 2, failed: 0, deferred: 1, stoppedEarly: true, lanes: 3 },
       ledger: { filled: 987 }, cooldownUntil: null },
     storage: { status: "healthy", checkedAt: at, databaseBytes: 148 * 1024 ** 2,
       walBytes: 15 * 1024 ** 2, freeBytes: 3953 * 1024 ** 2, snapshotHeadroomBytes: 512 * 1024 ** 2,
@@ -37,7 +37,7 @@ export function upkeepFixture(mode = "maintenance") {
       venues: { name: "Saved provider venue facts", scope: "Names and locations from provider records." },
       events: { name: "Ticketmaster / Bandsintown", scope: "Published dates and venue links." },
     },
-    sourceRefresh: { state: "failed", at, lastSuccessAt: null, stage: "fetching", category: "provider_network" },
+    sourceRefresh: { enabled: false, configured: true, state: "failed", at, lastSuccessAt: null, stage: "fetching", category: "provider_network" },
     seo: { state: "ready", lastBuiltAt: at, totalUrls: 43200, nextRefreshMinutes: 15,
       indexingState: "not_measured", sitemapUrl: "https://catalog-fixture.invalid/sitemap.xml" },
   };
@@ -151,6 +151,11 @@ async function scenario(browser, origin, width, kind) {
     }
     await panel.getByText("30,161", { exact: true }).waitFor();
     await panel.getByText(/Google indexing: not measured here/).waitFor();
+    await panel.getByText(/These controls do not run venue or event page enrichment/).waitFor();
+    await panel.getByText(/18 biographies and 4 countries/).waitFor();
+    await panel.getByText(/Interrupted work stays queued/).waitFor();
+    await panel.getByText(/Show-date refresh \(not venue page enrichment\)/).waitFor();
+    await panel.getByText(/Show-date scheduler: Disabled/).waitFor();
     assert.equal(state.posts, 0, "Opening or refreshing the panel must not start work.");
     const catchUp = panel.getByRole("button", { name: "Start catalog catch-up", exact: true });
     await catchUp.click();

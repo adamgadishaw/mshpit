@@ -7,7 +7,7 @@ import { backgroundJobEnabled } from "../../backgroundJobs.js";
 
 const sources = Object.freeze({
   artist: Object.freeze({ name: "Wikidata / Wikipedia", scope: "Exact artist identities; missing biography and country fields. Staff edits and claimed profiles stay protected." }),
-  venues: Object.freeze({ name: "Saved provider venue facts", scope: "Locations and calendars from verified event/venue IDs. Capacity and accessibility claims are not invented." }),
+  venues: Object.freeze({ name: "Event-linked venue facts only", scope: "Show refreshes can update linked locations and calendars. There is no scheduled venue biography or photo gap-filling worker; artist catch-up does not fill venue pages." }),
   events: Object.freeze({ name: "Ticketmaster / Bandsintown", scope: "Scheduled, bounded show-date refreshes stored locally. User-created shows stay protected." }),
 });
 

@@ -2,7 +2,7 @@ import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
 import Button from "../../components/Button";
 import { colors, mono, radius } from "../../theme";
 import useCatalogMaintenance from "./useCatalogMaintenance";
-import { catalogBytes, catalogCount, catalogModeLabel, catalogTime } from "./catalogMaintenanceState.mjs";
+import { catalogBytes, catalogCount, catalogModeLabel, catalogTime, catalogSourceSchedulerLabel } from "./catalogMaintenanceState.mjs";
 
 function Datum({ label, value, detail }) {
   return <View style={styles.datum}>
@@ -34,7 +34,7 @@ export default function CatalogMaintenancePanel({ accountId, role, active = true
       <View style={styles.headingCopy}>
         <Text style={styles.eyebrow}>CATALOG UPKEEP</Text>
         <Text accessibilityRole="header" style={styles.title}>Fill the gaps. Keep the facts.</Text>
-        <Text style={styles.copy}>Source-backed checks of the artists already here. Staff edits stay protected; this does not grow the catalog or generate unsourced copy.</Text>
+        <Text style={styles.copy}>Automatic artist biography and country gap filling. These controls do not run venue or event page enrichment. Staff edits stay protected; no unsourced copy is generated.</Text>
       </View>
       <Button small title="Refresh upkeep status" accessibilityLabel="Refresh catalog upkeep status" variant="secondary"
         disabled={!active || state.loading || !!state.pendingMode} loading={state.loading}
@@ -80,7 +80,7 @@ export default function CatalogMaintenancePanel({ accountId, role, active = true
             <Datum label="Waiting to retry" value={catalogCount(progress.retrying)} />
             <Datum label="Latest-result fills" value={catalogCount(progress.filled ?? knowledge?.ledger?.filled)} detail="Artist records whose latest result filled a field; not every completed page." />
           </View>
-          {progress.fieldCoverage ? <Text selectable style={styles.hint}>Biographies: {catalogCount(progress.fieldCoverage.biographyPresent)} present, {catalogCount(progress.fieldCoverage.biographyMissing)} missing, {catalogCount(progress.fieldCoverage.biographyProtected)} protected by staff. Countries: {catalogCount(progress.fieldCoverage.countryPresent)} present, {catalogCount(progress.fieldCoverage.countryMissing)} missing.</Text> : null}
+          {progress.fieldCoverage ? <Text selectable style={styles.hint}>Biographies: {catalogCount(progress.fieldCoverage.biographyPresent)} present, {catalogCount(progress.fieldCoverage.biographyMissing)} missing, {catalogCount(progress.fieldCoverage.biographyProtected)} protected by an existing artist profile. Countries: {catalogCount(progress.fieldCoverage.countryPresent)} present, {catalogCount(progress.fieldCoverage.countryMissing)} missing.</Text> : null}
           <Text selectable style={styles.hint}>Initial eligible sweep finished: {catalogTime(catalog.initialSweepFinishedAt)}. Unmatched or identity-missing records can still need review afterward.</Text>
         </Section>
         <Section title="Work and provider limits">
@@ -92,7 +92,8 @@ export default function CatalogMaintenancePanel({ accountId, role, active = true
           </View>
           <Text selectable style={styles.copy}>Worker evidence: {knowledge?.state?.replaceAll("_", " ") || "Unavailable"}.</Text>
           <Text selectable style={styles.hint}>Last pass: {catalogTime(pass?.at)} · Next due: {catalogTime(catalog.nextPassAt)} · Provider cooldown until: {catalogTime(knowledge?.cooldownUntil)}</Text>
-          {pass ? <Text selectable style={styles.hint}>Last pass checked {catalogCount(pass.checked)}; filled {catalogCount(pass.filled)}; unmatched {catalogCount(pass.unmatched)}; failed {catalogCount(pass.failed)}. This is a pass summary, not a lifetime total.</Text> : null}
+          {pass ? <Text selectable style={styles.hint}>Last pass checked {catalogCount(pass.checked)}; filled {catalogCount(pass.filled)} artist records: {catalogCount(pass.bios)} biographies and {catalogCount(pass.countries)} countries. Unmatched {catalogCount(pass.unmatched)}; provider failures {catalogCount(pass.failed)}; interrupted checks {catalogCount(pass.deferred)}. This is a pass summary, not a lifetime total.</Text> : null}
+          {pass?.stoppedEarly ? <Text selectable style={styles.hint}>The batch yielded before all checks finished. Interrupted work stays queued; this does not mean the catalogue is complete.</Text> : null}
         </Section>
       </>}
       <Section title="Storage safeguards">
@@ -110,7 +111,8 @@ export default function CatalogMaintenancePanel({ accountId, role, active = true
         {["artist", "venues", "events"].map(key => <Text selectable key={key} style={styles.copy}>
           {key === "artist" ? "Artists" : key === "venues" ? "Venues" : "Events"}: {data.sources?.[key]?.name || "Source status unavailable."}{data.sources?.[key]?.scope ? ` — ${data.sources[key].scope}` : ""}
         </Text>)}
-        <Text selectable style={data.sourceRefresh?.state === "failed" ? styles.error : styles.copy}>Venue / event refresh: {data.sourceRefresh?.state || "Unverified"}. Last success: {catalogTime(data.sourceRefresh?.lastSuccessAt)}.</Text>
+        <Text selectable style={styles.copy}>Show-date scheduler: {catalogSourceSchedulerLabel(data.sourceRefresh)}. Separate from artist upkeep controls.</Text>
+        <Text selectable style={data.sourceRefresh?.state === "failed" ? styles.error : styles.copy}>Show-date refresh (not venue page enrichment): saved result {data.sourceRefresh?.state || "Unverified"} at {catalogTime(data.sourceRefresh?.at)}. Last success: {catalogTime(data.sourceRefresh?.lastSuccessAt)}. Historical evidence, not a live running indicator.</Text>
         {data.sourceRefresh?.state === "failed" ? <Text selectable style={styles.hint}>Latest attempt: {catalogTime(data.sourceRefresh.at)} · stage: {data.sourceRefresh.stage || "Unavailable"} · category: {data.sourceRefresh.category || "Unavailable"}. Saved public data remains separate from this failed refresh.</Text> : null}
         <View style={styles.grid}>
           <Datum label="Sitemap evidence" value={data.seo?.state || "Unavailable"} detail={`Built: ${catalogTime(data.seo?.lastBuiltAt)}`} />

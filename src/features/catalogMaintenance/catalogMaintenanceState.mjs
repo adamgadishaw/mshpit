@@ -80,3 +80,10 @@ export function catalogTime(value) {
 export function catalogModeLabel(mode) {
   return ({ catch_up: "Catch-up", maintenance: "Maintenance", paused: "Paused" })[mode] || "Unconfirmed";
 }
+
+export function catalogSourceSchedulerLabel(sourceRefresh) {
+  if (sourceRefresh?.enabled === false) return "Disabled";
+  if (sourceRefresh?.configured === false) return "Provider configuration missing";
+  if (sourceRefresh?.enabled === true && sourceRefresh?.configured === true) return "Enabled";
+  return "Unverified";
+}

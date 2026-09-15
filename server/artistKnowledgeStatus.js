@@ -20,10 +20,12 @@ function parsePass(text, at) {
   try { parsed = JSON.parse(text); } catch { return null; }
   if (!parsed || Array.isArray(parsed) || timestamp(parsed.at) === null || parsed.at > at
     || COUNTS.some((key) => count(parsed[key]) === null)
+    || (parsed.deferred !== undefined && count(parsed.deferred) === null)
     || FLAGS.some((key) => typeof parsed[key] !== "boolean")
     || OPTIONAL_FLAGS.some((key) => parsed[key] !== undefined && typeof parsed[key] !== "boolean")) return null;
   return Object.freeze({ at: parsed.at,
     ...Object.fromEntries(COUNTS.map((key) => [key, parsed[key]])),
+    deferred: parsed.deferred ?? null,
     ...Object.fromEntries(FLAGS.map((key) => [key, parsed[key]])),
     ...Object.fromEntries(OPTIONAL_FLAGS.map((key) => [key, parsed[key] === true])),
     lanes: Number.isInteger(parsed.lanes) && parsed.lanes >= 1 && parsed.lanes <= 3 ? parsed.lanes : 1,

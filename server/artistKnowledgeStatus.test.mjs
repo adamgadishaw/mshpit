@@ -62,6 +62,21 @@ test("idle means the last pass checked no candidates, not catalog completion", (
   assert.equal(collectArtistKnowledgeStatus(f.database, { env: { ...env, ARTIST_KNOWLEDGE_BATCH: "999" }, at: AT }).limits.maxArtistsPerPass, 10);
 });
 
+test("interrupted checks stay separate from provider failures; old passes do not invent a count", (t) => {
+  const f = fixture(t);
+  f.set("last-pass", pass());
+  assert.equal(collectArtistKnowledgeStatus(f.database, { env, at: AT }).lastPass.deferred, null);
+  f.set("last-pass", pass({ deferred: 3, stoppedEarly: true, failed: 0 }));
+  const status = collectArtistKnowledgeStatus(f.database, { env, at: AT });
+  assert.equal(status.lastPass.deferred, 3);
+  assert.equal(status.lastPass.failed, 0);
+  assert.equal(status.state, "deferred");
+  for (const deferred of [-1, "3", null]) {
+    f.set("last-pass", pass({ deferred }));
+    assert.equal(collectArtistKnowledgeStatus(f.database, { env, at: AT }).state, "unavailable");
+  }
+});
+
 test("corrupt and future telemetry is unavailable rather than invented successful progress", (t) => {
   const f = fixture(t);
   for (const value of ["broken", "[]", pass({ at: AT + 1 }), pass({ filled: -1 }), pass({ checked: "10" }), pass({ storagePaused: "false" }), "x".repeat(5000)]) {

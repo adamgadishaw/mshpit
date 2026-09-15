@@ -4,6 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import { createArtistKnowledgeRefresher, artistKnowledgeStorageReady, startArtistKnowledgeScheduler,
   artistKnowledgeMemoryReady, artistKnowledgeDatabaseBytes } from "./artistKnowledgeRefresh.js";
 import { readCatalogKnowledgeControl, setCatalogKnowledgeMode, collectCatalogKnowledgeControl } from "./catalogKnowledgeControl.js";
+import { ArtistKnowledgeProviderError } from "./artistKnowledgeProvider.js";
 
 const MBID = "11111111-1111-4111-8111-111111111111";
 const OTHER = "22222222-2222-4222-8222-222222222222";
@@ -191,7 +192,8 @@ test("duplicate ticks share work; cancellation saves nothing and leaves a retrya
   assert.equal(f.service.runBatch(), first); assert.equal(calls, 1);
   controller.abort(); release(result());
   await assert.rejects(first, { name: "AbortError" });
-  assert.equal(f.row().bio, null); assert.equal(f.check().status, "failed");
+  assert.equal(f.row().bio, null); assert.equal(f.check().status, "leased");
+  assert.equal(f.check().failures, 0); assert.equal(f.check().claim_token, null);
 });
 
 test("active leases prevent duplicate work across service instances; expiry resumes safely", async (t) => {
@@ -331,4 +333,82 @@ test("growth accounting includes WAL and fails closed for inaccessible files", (
     return { size: 100 };
   } }), 100);
   assert.equal(artistKnowledgeDatabaseBytes("db", { stat: () => { throw new Error("unavailable"); } }), null);
+});
+
+test("normal pass deadline defers three healthy lanes without provider failures or long backoff", async (t) => {
+  let clock = AT, slow = true;
+  const env = { ARTIST_KNOWLEDGE_MODE: "catch_up" };
+  const f = fixture(t, { env, now: () => clock, fetchKnowledge: async () => {
+    if (slow) await new Promise(resolve => setTimeout(resolve, 1100));
+    return result();
+  } });
+  for (let i = 0; i < 3; i++) f.insert(`artist-${i}`);
+  const stats = await f.service.runBatch({ budgetMs: 1000, respectCadence: true });
+  assert.equal(stats.checked, 3); assert.equal(stats.failed, 0); assert.equal(stats.deferred, 3);
+  assert.equal(stats.stoppedEarly, true); assert.equal(stats.failureCategory, null);
+  assert.equal(f.database.prepare("SELECT value FROM app_meta WHERE key='artist-knowledge:v1:cooldown'").get(), undefined);
+  for (let i = 0; i < 3; i++) {
+    const row = f.check(`artist-${i}`);
+    assert.equal(row.status, "leased"); assert.equal(row.failures, 0);
+    assert.equal(row.claim_token, null); assert.equal(row.next_attempt_at, AT + 120_000);
+    assert.equal(f.row(`artist-${i}`).bio, null);
+  }
+  clock += 120_000; slow = false;
+  const resumed = await f.service.runBatch({ respectCadence: true });
+  assert.equal(resumed.filled, 3);
+  assert.equal(readCatalogKnowledgeControl(f.database, { env, at: clock }).budget.attempts, 6);
+});
+
+test("a real outage backs off only its failing row; cancelled neighbours keep prior failure counts", async (t) => {
+  let calls = 0;
+  const retryAt = AT + 3_600_000;
+  const f = fixture(t, { env: { ARTIST_KNOWLEDGE_MODE: "catch_up" },
+    fetchKnowledge: async ({ signal }) => {
+      if (++calls === 1) throw new ArtistKnowledgeProviderError("private provider body", {
+        code: "wikidata_unavailable", status: 503, retryAt });
+      await new Promise(resolve => setImmediate(resolve));
+      if (signal.aborted) throw signal.reason;
+      return result();
+    } });
+  f.insert("a"); f.insert("b"); f.insert("c");
+  f.database.prepare("INSERT INTO artist_knowledge_checks VALUES (?,?,'failed',?,?,2,NULL)")
+    .run("c", MBID, AT - 1000, AT);
+  const stats = await f.service.runBatch({ respectCadence: true });
+  assert.equal(stats.failed, 1); assert.equal(stats.deferred, 2);
+  assert.equal(stats.failureCategory, "wikidata_unavailable"); assert.equal(stats.cooldownUntil, retryAt);
+  assert.equal(f.check("a").status, "failed"); assert.equal(f.check("a").failures, 1);
+  assert.equal(f.check("a").next_attempt_at, retryAt);
+  assert.equal(f.check("b").status, "leased"); assert.equal(f.check("b").failures, 0);
+  assert.equal(f.check("c").status, "leased"); assert.equal(f.check("c").failures, 2);
+  assert.equal(f.check("b").claim_token, null); assert.equal(f.check("c").claim_token, null);
+  const cooling = await f.service.runBatch();
+  assert.equal(cooling.coolingDown, true); assert.equal(cooling.cooldownUntil, retryAt);
+  assert.equal(calls, 3);
+});
+
+test("provider failure diagnostics are fixed categories, never raw messages or arbitrary codes", async (t) => {
+  const f = fixture(t, { fetchKnowledge: async () => {
+    throw Object.assign(new Error("secret provider body"), { code: "token@example.test/private" });
+  } });
+  f.insert(); const stats = await f.service.runBatch();
+  assert.equal(stats.failureCategory, "provider_error");
+  assert.equal(stats.cooldownUntil, AT + 30 * 60_000);
+  assert.doesNotMatch(JSON.stringify(stats), /secret|token|example/);
+});
+
+test("scheduler logs no-match separately from interrupted work and exposes idle pause reasons", async () => {
+  let options, clock = AT;
+  const lines = [];
+  startArtistKnowledgeScheduler({
+    env: { ARTIST_KNOWLEDGE_ENABLED: "true" }, now: () => clock,
+    logger: { log: line => lines.push(line), error() {} },
+    schedule: value => { options = value; return {}; }, coordinate: async job => job(),
+    service: { runBatch: async () => ({ lanes: 3, checked: 5, filled: 2, bios: 2, countries: 0,
+      unmatched: 1, deferred: 2, failed: 0, failureCategory: null, cooldownUntil: clock + 60_000,
+      coolingDown: true, stoppedEarly: true, modePaused: false,
+      storagePaused: false, memoryPaused: false, budgetPaused: false, capPaused: false }) },
+  });
+  clock += 180_000; await options.run({ signal: new AbortController().signal });
+  assert.match(lines.at(-1), /noMatch=1 deferred=2 providerFailures=0/);
+  assert.match(lines.at(-1), /failureCategory=none cooldownUntil=\d+ coolingDown=true stoppedEarly=true modePaused=false/);
 });

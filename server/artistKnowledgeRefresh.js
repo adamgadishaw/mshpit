@@ -16,6 +16,12 @@ import { ensureCatalogKnowledgeControl, readCatalogKnowledgeControl, reserveCata
 const MINUTE = 60_000, DAY = 24 * 60 * MINUTE;
 const COOLDOWN_KEY = "artist-knowledge:v1:cooldown";
 const SUMMARY_KEY = "artist-knowledge:v1:last-pass";
+const providerFailureCategory = (error) => {
+  const code = typeof error?.code === "string" ? error.code : "";
+  return code === "knowledge_busy"
+    || /^(?:wikidata|wikipedia)_(?:rate_limited|unavailable|maxlag|timeout|network|response|rejected|redirect)$/.test(code)
+    ? code : "provider_error";
+};
 const clamp = (value, fallback, min, max) => Number.isFinite(Number(value))
   ? Math.max(min, Math.min(max, Math.floor(Number(value)))) : fallback;
 const blank = (value) => value == null || (typeof value === "string" && !value.trim());
@@ -105,6 +111,8 @@ export function createArtistKnowledgeRefresher({
     WHERE artist_knowledge_checks.next_attempt_at<=excluded.attempted_at OR artist_knowledge_checks.mbid<>excluded.mbid`);
   const finish = database.prepare(`UPDATE artist_knowledge_checks SET status=?,next_attempt_at=?,failures=?,claim_token=NULL
     WHERE artist_key=? AND mbid=? AND claim_token=?`);
+  const defer = database.prepare(`UPDATE artist_knowledge_checks SET status='leased',next_attempt_at=?,claim_token=NULL
+    WHERE artist_key=? AND mbid=? AND claim_token=?`);
   const check = database.prepare("SELECT * FROM artist_knowledge_checks WHERE artist_key=?");
   const update = database.prepare(`UPDATE artists SET bio=?,country=?,data=?,updated_at=?
     WHERE norm=? AND mbid IS ? AND data IS ? AND bio IS ? AND country IS ?`);
@@ -173,7 +181,8 @@ export function createArtistKnowledgeRefresher({
   let active = null;
   async function run({ limit, signal, budgetMs = 45_000, respectCadence = false } = {}) {
     const control = readCatalogKnowledgeControl(database, { env, at: now() });
-    const stats = { checked: 0, filled: 0, bios: 0, countries: 0, unmatched: 0, failed: 0, stale: 0,
+    const stats = { checked: 0, filled: 0, bios: 0, countries: 0, unmatched: 0, failed: 0, stale: 0, deferred: 0,
+      failureCategory: null, cooldownUntil: null,
       coolingDown: false, storagePaused: false, stoppedEarly: false,
       memoryPaused: false, budgetPaused: false, capPaused: false, modePaused: false,
       lanes: control?.limits.lanes || 1 };
@@ -195,13 +204,26 @@ export function createArtistKnowledgeRefresher({
     // time; admin pause/resume and process restarts cannot accelerate the loop.
     if (respectCadence && !reserveCatalogKnowledgePass(database, { env, at: now() })) return { ...stats, waiting: true };
     if (!safeToContinue()) return recordPass(stats);
-    if (Number(meta.get(COOLDOWN_KEY)?.value) > now()) return recordPass({ ...stats, coolingDown: true });
+    const cooldownUntil = Number(meta.get(COOLDOWN_KEY)?.value);
+    if (Number.isSafeInteger(cooldownUntil) && cooldownUntil > now()) {
+      return recordPass({ ...stats, coolingDown: true, cooldownUntil });
+    }
     const deadline = AbortSignal.timeout(clamp(budgetMs, 45_000, 1000, 45_000));
     const stop = new AbortController();
     const workSignal = AbortSignal.any([deadline, stop.signal, ...(signal ? [signal] : [])]);
     const rows = due.all(now(), clamp(limit, control.limits.maxArtistsPerPass, 1, control.limits.maxArtistsPerPass));
     let cursor = 0;
     const pauseError = () => Object.assign(new Error("Optional catalog work paused"), { code: "CATALOG_PAUSED" });
+    const deferClaim = (row, mbid, token) => {
+      const at = now();
+      const nextPassAt = readCatalogKnowledgeControl(database, { env, at })?.nextPassAt;
+      const dueAt = Math.max(at + 1000,
+        nextPassAt > at ? nextPassAt : at + control.limits.intervalMinutes * MINUTE);
+      // A normal time slice, shutdown, quota/resource pause or peer cancellation
+      // is not an artist/provider failure. Keep prior real failures unchanged,
+      // release ownership, and let the ordinary next pass reclaim this row.
+      if (Number(defer.run(dueAt, row.norm, mbid, token).changes) === 1) stats.deferred += 1;
+    };
     const beforeRequest = () => {
       if (!safeToContinue()) throw pauseError();
       if (Number(meta.get(COOLDOWN_KEY)?.value) > now()) { stats.coolingDown = true; throw pauseError(); }
@@ -237,8 +259,8 @@ export function createArtistKnowledgeRefresher({
           finish.run("skipped", at + 30 * DAY, 0, row.norm, mbid, token); continue;
         }
         if (!reserveCatalogKnowledgeBudget(database, "attempts", { env, at })) {
-          // Preserve the lease for a short recovery window; a budget pause is
-          // not a factual no-match and must not mark the sweep complete.
+          // A budget pause is not a factual no-match or provider failure.
+          deferClaim(row, mbid, token);
           stats.budgetPaused = true; return;
         }
         stats.checked += 1;
@@ -248,14 +270,19 @@ export function createArtistKnowledgeRefresher({
           aborted(workSignal);
           if (!safeToContinue()) throw pauseError();
         } catch (error) {
+          if (signal?.aborted || deadline.aborted || stop.signal.aborted || error?.code === "CATALOG_PAUSED") {
+            deferClaim(row, mbid, token);
+            if (deadline.aborted || stop.signal.aborted) stats.stoppedEarly = true;
+            aborted(signal);
+            return;
+          }
           const failures = Math.min(10, Number(check.get(row.norm)?.failures || 0) + 1);
           const retryAt = Math.max(now() + Math.min(DAY, 30 * MINUTE * 2 ** (failures - 1)),
             Number.isFinite(Number(error?.retryAt)) ? Number(error.retryAt) : 0);
-          if (error?.code !== "CATALOG_PAUSED") finish.run("failed", retryAt, failures, row.norm, mbid, token);
-          aborted(signal);
-          if (deadline.aborted || stop.signal.aborted) { stats.stoppedEarly = true; return; }
-          if (error?.code === "CATALOG_PAUSED") return;
+          finish.run("failed", retryAt, failures, row.norm, mbid, token);
           setMeta.run(COOLDOWN_KEY, String(retryAt)); stats.failed += 1;
+          stats.failureCategory = providerFailureCategory(error);
+          stats.cooldownUntil = retryAt;
           stop.abort(new DOMException("Provider cooldown", "AbortError"));
           return;
         }
@@ -301,7 +328,7 @@ export function startArtistKnowledgeScheduler({
       if (control && (control.mode === "paused" || control.nextPassAt > now())) return false;
       return coordinate(async () => {
         const stats = await refresher.runBatch({ signal, respectCadence: true });
-        if (!stats.waiting) logger.log?.(`[pit] artist knowledge: lanes=${stats.lanes || 1} checked=${stats.checked} filled=${stats.filled} bios=${stats.bios} countries=${stats.countries} deferred=${stats.unmatched} providerFailures=${stats.failed} storagePaused=${stats.storagePaused} memoryPaused=${stats.memoryPaused} budgetPaused=${stats.budgetPaused} capPaused=${stats.capPaused}`);
+        if (!stats.waiting) logger.log?.(`[pit] artist knowledge: lanes=${stats.lanes || 1} checked=${stats.checked} filled=${stats.filled} bios=${stats.bios} countries=${stats.countries} noMatch=${stats.unmatched} deferred=${stats.deferred || 0} providerFailures=${stats.failed} failureCategory=${stats.failureCategory || "none"} cooldownUntil=${stats.cooldownUntil || 0} coolingDown=${stats.coolingDown} stoppedEarly=${stats.stoppedEarly} modePaused=${stats.modePaused} storagePaused=${stats.storagePaused} memoryPaused=${stats.memoryPaused} budgetPaused=${stats.budgetPaused} capPaused=${stats.capPaused}`);
       });
     },
     report: (error) => logger.error?.(`[pit] artist knowledge paused safely cause=${privateErrorLabel(error)}`),

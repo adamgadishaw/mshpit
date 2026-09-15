@@ -1,8 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createCatalogMaintenanceController, catalogBytes, catalogCount, catalogTime } from "./catalogMaintenanceState.mjs";
+import { createCatalogMaintenanceController, catalogBytes, catalogCount, catalogTime, catalogSourceSchedulerLabel } from "./catalogMaintenanceState.mjs";
 const payload = (mode = "maintenance") => ({ catalog: { mode, limits: {}, progress: {} } });
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
+
+test("historical provider success cannot hide a disabled or unconfigured scheduler", () => {
+  assert.equal(catalogSourceSchedulerLabel({ state: "succeeded", enabled: false, configured: true }), "Disabled");
+  assert.equal(catalogSourceSchedulerLabel({ state: "succeeded", enabled: true, configured: false }), "Provider configuration missing");
+  assert.equal(catalogSourceSchedulerLabel({ state: "succeeded" }), "Unverified");
+  assert.equal(catalogSourceSchedulerLabel({ enabled: true, configured: true }), "Enabled");
+});
 function setup(overrides = {}) {
   const states = [];
   let changes = 0;
