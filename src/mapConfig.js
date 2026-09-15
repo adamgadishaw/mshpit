@@ -17,9 +17,9 @@ export const HAS_MAP = MAP_PROVIDER !== null;
 // land, cool water, muted streets, amber highways. This is the "Google snapshot
 // that matches the theme."
 const GOOGLE_DARK_STYLE = [
-  { elementType: "geometry", color: "0x0f131c" },
-  { elementType: "labels.text.fill", color: "0x8088a0" },
-  { elementType: "labels.text.stroke", color: "0x0b0e16" },
+  { element: "geometry", color: "0x0f131c" },
+  { element: "labels.text.fill", color: "0x8088a0" },
+  { element: "labels.text.stroke", color: "0x0b0e16" },
   { feature: "poi.park", element: "geometry", color: "0x16241c" },
   { feature: "poi", element: "labels.text.fill", color: "0x6b7280" },
   { feature: "road", element: "geometry", color: "0x262d43" },

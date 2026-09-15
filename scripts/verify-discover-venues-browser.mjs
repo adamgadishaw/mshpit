@@ -8,6 +8,7 @@ import { mkdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, extname, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { fixtureApiResponse } from "./verify-navigation-browser.mjs";
+import { arenaVenueEntries } from "../src/domain/majorVenueFacts.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const screenshotDirectory = join(root, ".tmp", "discover-venues-browser");
@@ -17,7 +18,7 @@ const mapSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="420"
 const event = (id, venue, providerVenueId, { city = "Toronto", region = "Ontario", country = "Canada", lat = 43.65, lng = -79.38, day = 1 } = {}) => Object.freeze({
   id, artist: `Fixture Band ${id}`, artistKey: `fixture-${id}`, venue, providerVenueId, source: "ticketmaster",
   place: [city, region, country].filter(Boolean).join(", "), venueCity: city, venueRegion: region, venueCountry: country,
-  venueCountryCode: country === "Canada" ? "CA" : "PT", lat, lng,
+  venueCountryCode: ({ Canada: "CA", Portugal: "PT", "United Kingdom": "GB" })[country], lat, lng,
   date: `${fixtureYear}-09-${String(day).padStart(2, "0")}`, releaseAt: 0, providerActive: true,
 });
 export const discoverVenueEvents = Object.freeze([
@@ -27,14 +28,125 @@ export const discoverVenueEvents = Object.freeze([
   event("echo", "Z Fixture Écho Room", "fixture-echo", { lat: 43.68, lng: -79.32, day: 20 }),
   event("unmapped", "Fixture Unmapped Room", "fixture-unmapped", { lat: null, lng: null, day: 21 }),
   event("lisbon", "Fixture Lisbon Room", "fixture-lisbon", { city: "Lisbon", region: "", country: "Portugal", lat: 38.735, lng: -9.14, day: 22 }),
+  event("london-coliseum", "Fixture London Coliseum", "fixture-london-coliseum", { city: "London", region: "", country: "United Kingdom", lat: 51.5097, lng: -.1267, day: 23 }),
+  event("london-palladium", "Fixture London Palladium", "fixture-london-palladium", { city: "London", region: "", country: "United Kingdom", lat: 51.5143, lng: -.1408, day: 24 }),
+  event("london-river", "Fixture London River Room", "fixture-london-river", { city: "London", region: "", country: "United Kingdom", lat: 51.5019, lng: -.018, day: 25 }),
 ]);
+
+// Parse the outgoing provider request independently of the app's projection.
+// A generic mocked image alone can conceal a basemap 180 degrees from its pins.
+export function requestedVenueBasemap(value) {
+  const url = new URL(value);
+  let provider, lat, lng, zoom, width, height;
+  if (url.hostname === "maps.googleapis.com" && url.pathname === "/maps/api/staticmap") {
+    provider = "google";
+    [lat, lng] = (url.searchParams.get("center") || "").split(",").map(Number);
+    zoom = Number(url.searchParams.get("zoom"));
+    [width, height] = (url.searchParams.get("size") || "").split("x").map(Number);
+  } else if (url.hostname === "api.mapbox.com") {
+    provider = "mapbox";
+    const match = url.pathname.match(/\/static\/([^/]+)\/(\d+)x(\d+)(?:@2x)?$/);
+    assert.ok(match, "Expected a center-based Mapbox static image request.");
+    [lng, lat, zoom] = match[1].split(",").map(Number);
+    width = Number(match[2]); height = Number(match[3]);
+  } else assert.fail("Unexpected basemap provider or path.");
+  assert.ok([lat, lng, zoom, width, height].every(Number.isFinite), "Basemap coordinates and dimensions must be numeric.");
+  assert.ok(Math.abs(lat) <= 85 && Math.abs(lng) <= 180 && zoom >= 0 && zoom <= 22 && width > 0 && height > 0, "Basemap coordinates and dimensions must be valid.");
+  return { provider, lat, lng, zoom, width, height };
+}
+
+export function assertVenueBasemapCity(basemap, city) {
+  const cities = { Toronto: [43.65, -79.38], Lisbon: [38.735, -9.14], London: [51.51, -.13] };
+  const center = cities[city];
+  assert.ok(center, "Map assertions need an explicitly known fixture city.");
+  assert.ok(Math.abs(basemap.lat - center[0]) < .5 && Math.abs(basemap.lng - center[1]) < .5,
+    `The requested ${city} basemap must cover that city, not another part of Earth (${basemap.lat}, ${basemap.lng}).`);
+  const googleEquivalentZoom = basemap.zoom + (basemap.provider === "mapbox" ? 1 : 0);
+  assert.ok(googleEquivalentZoom >= 9 && googleEquivalentZoom <= 14, `${city} needs a usable city/street zoom, not a world map.`);
+  assert.deepEqual([basemap.width, basemap.height], [640, 420], "The image and overlay must use the same logical aspect ratio.");
+}
+
+// Provider pixels: independent sin-based Mercator form, not discoverVenueMap().
+export function requestedVenuePixel(basemap, coordinate) {
+  const worldSize = (basemap.provider === "mapbox" ? 512 : 256) * 2 ** basemap.zoom;
+  const mercatorY = lat => { const sine = Math.sin(lat * Math.PI / 180); return .5 - Math.log((1 + sine) / (1 - sine)) / (4 * Math.PI); };
+  const longitudeDelta = ((coordinate.lng - basemap.lng + 540) % 360) - 180;
+  return { x: basemap.width / 2 + longitudeDelta / 360 * worldSize,
+    y: basemap.height / 2 + (mercatorY(coordinate.lat) - mercatorY(basemap.lat)) * worldSize };
+}
+
+export function venuePinLabelPattern(name) {
+  const escaped = String(name).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`^Map pin \\d+: (?:.*?, )?${escaped}(?:, |\\. Tap to cycle venues$|$)`);
+}
+
+export function requestedVenueGroupPixel(basemap, coordinates) {
+  assert.ok(coordinates.length, "A map cluster needs at least one coordinate.");
+  const points = coordinates.map(coordinate => requestedVenuePixel(basemap, coordinate));
+  return { x: points.reduce((sum, point) => sum + point.x, 0) / points.length,
+    y: points.reduce((sum, point) => sum + point.y, 0) / points.length };
+}
+
+export function venuePinMembers(label) {
+  assert.match(label || "", /^Map pin \d+: /, "A map pin must identify its venues accessibly.");
+  return label.replace(/^Map pin \d+: /, "").replace(/\. Tap to cycle venues$/, "").split(", ");
+}
+
+async function assertCityMap(page, state, city, mode) {
+  const map = page.locator(`[aria-label="Venue locations in ${city}"]`);
+  await map.waitFor();
+  let basemap;
+  if (mode === "fallback") {
+    await map.getByText("LOCATION PLOT · STREET MAP UNAVAILABLE", { exact: true }).waitFor();
+    basemap = state.mapRequests.at(-1);
+  } else {
+    const image = map.locator(`[aria-label="Street map of ${city}"]`);
+    await image.waitFor();
+    await page.waitForFunction(label => {
+      const node = document.querySelector(`[aria-label="${label}"]`);
+      const image = node?.matches("img") ? node : node?.querySelector("img");
+      return image?.complete && image.naturalWidth > 0;
+    }, `Street map of ${city}`);
+    const source = await image.evaluate(node => { const image = node.matches("img") ? node : node.querySelector("img"); return image.currentSrc || image.src; });
+    basemap = requestedVenueBasemap(source);
+    assert.ok(state.mapRequests.some(request => JSON.stringify(request) === JSON.stringify(basemap)), "The visible basemap must correspond to an intercepted outgoing request.");
+  }
+  assert.ok(basemap, `Expected an actual outgoing ${city} basemap request.`);
+  assertVenueBasemapCity(basemap, city);
+  const mapBox = await map.boundingBox();
+  // Public coordinate facts are safe to reuse; the provider projection above is
+  // intentionally independent of both the app projection and cluster helper.
+  const coordinates = new Map(arenaVenueEntries.map(([, row]) => row).filter(row => row.place.split(",")[0] === city).map(row => [row.name, row]));
+  discoverVenueEvents.filter(row => row.venueCity === city && row.lat != null && row.lng != null).forEach(row => coordinates.set(row.venue, row));
+  let checkedPins = 0;
+  const hitboxes = [];
+  for (const pin of await map.getByRole("button", { name: /^Map pin / }).all()) {
+    const members = venuePinMembers(await pin.getAttribute("aria-label"));
+    const box = await pin.boundingBox();
+    assert.ok(box && mapBox, `The ${members.join(", ")} overlay must be measurable.`);
+    hitboxes.push({ ...box, members });
+    if (!members.every(name => coordinates.has(name))) continue;
+    checkedPins++;
+    const expected = requestedVenueGroupPixel(basemap, members.map(name => coordinates.get(name)));
+    const actual = { x: (box.x + box.width / 2 - mapBox.x) * basemap.width / mapBox.width, y: (box.y + box.height / 2 - mapBox.y) * basemap.height / mapBox.height };
+    assert.ok(Math.abs(actual.x - expected.x) < 2 && Math.abs(actual.y - expected.y) < 2,
+      `${city}: ${members.join(", ")} must land on its requested basemap coordinate/cluster centroid, not merely inside an unrelated mock image.`);
+  }
+  assert.ok(checkedPins > 0, `The ${city} basemap regression must compare at least one real fixture pin.`);
+  for (let i = 0; i < hitboxes.length; i++) for (let j = i + 1; j < hitboxes.length; j++) {
+    const first = hitboxes[i], second = hitboxes[j];
+    const overlapWidth = Math.min(first.x + first.width, second.x + second.width) - Math.max(first.x, second.x);
+    const overlapHeight = Math.min(first.y + first.height, second.y + second.height) - Math.max(first.y, second.y);
+    assert.ok(overlapWidth <= .5 || overlapHeight <= .5, `${city}: nearby pin hitboxes must not block each other (${first.members.join(", ")} / ${second.members.join(", ")}).`);
+  }
+}
 
 export function discoverVenueFixture(pathname, options = {}) {
   assert.equal(options.method || "GET", "GET", "The guest venue explorer must not mutate data.");
   if (pathname === "/api/tourdates") return { tourDates: discoverVenueEvents };
   if (pathname === "/api/discover/overview") return {
-    chart: { rows: [], source: "popularity" }, genres: [], countries: [{ country: "Canada", count: 16 }, { country: "Portugal", count: 1 }],
-    eventCoverage: { total: discoverVenueEvents.length, venueTotal: 14, countries: [{ country: "Canada", count: 16 }, { country: "Portugal", count: 1 }] },
+    chart: { rows: [], source: "popularity" }, genres: [], countries: [{ country: "Canada", count: 16 }, { country: "Portugal", count: 1 }, { country: "United Kingdom", count: 3 }],
+    eventCoverage: { total: discoverVenueEvents.length, venueTotal: 17, countries: [{ country: "Canada", count: 16 }, { country: "Portugal", count: 1 }, { country: "United Kingdom", count: 3 }] },
   };
   return fixtureApiResponse(pathname, { ...options, member: false });
 }
@@ -66,7 +178,7 @@ async function selected(locator, value = true) {
 
 async function scenario(browser, origin, width, mode) {
   const context = await browser.newContext({ viewport: { width, height: 900 }, isMobile: width < 620, hasTouch: width < 620, serviceWorkers: "block" });
-  const state = { errors: [], calls: [], maps: 0, reports: [], closing: false };
+  const state = { errors: [], calls: [], maps: 0, mapRequests: [], reports: [], closing: false };
   await context.addInitScript(allowedOrigin => {
     if (location.origin === allowedOrigin) localStorage.setItem("pit_theme", "stage");
   }, origin);
@@ -75,6 +187,7 @@ async function scenario(browser, origin, width, mode) {
     try {
       if (mapHosts.has(url.hostname)) {
         assert.equal(request.method(), "GET"); state.maps++;
+        state.mapRequests.push(requestedVenueBasemap(url));
         return await route.fulfill({ contentType: mode === "fallback" ? "image/png" : "image/svg+xml", body: mode === "fallback" ? "intentionally invalid fixture image" : mapSvg });
       }
       if (url.origin !== origin) return await route.abort();
@@ -95,9 +208,20 @@ async function scenario(browser, origin, width, mode) {
   const page = await context.newPage(); page.setDefaultTimeout(12_000);
   page.on("pageerror", error => state.errors.push(error.message));
   page.on("console", message => { if (message.type() === "error") state.errors.push(message.text()); });
-  const pin = name => page.getByRole("button", { name: new RegExp(`^Map pin \\d+: ${name}$`) });
+  const pin = name => page.getByRole("button", { name: venuePinLabelPattern(name) });
   const room = name => page.getByRole("button", { name: new RegExp(`^Select venue \\d+: ${name}$`) });
   const view = name => page.getByRole("button", { name: `View venue ${name}`, exact: true });
+  const selectPin = async name => {
+    // Use the actual reachable touch target, never a forced click or a list
+    // shortcut. Repeated taps intentionally cycle crowded map clusters.
+    for (let attempt = 0; attempt < 24; attempt++) {
+      if (await view(name).count()) return;
+      const before = await page.getByRole("button", { name: /^View venue / }).getAttribute("aria-label");
+      if (width < 620) await pin(name).tap(); else await pin(name).click();
+      await page.waitForFunction(previous => document.querySelector('[aria-label^="View venue "]')?.getAttribute("aria-label") !== previous, before);
+    }
+    assert.fail(`Repeated normal map-pin taps must reach ${name}.`);
+  };
   const name = `discover-venues-${mode}-${width}`;
   try {
     await page.goto(origin + "/discover", { waitUntil: "domcontentloaded", timeout: 12_000 });
@@ -106,14 +230,19 @@ async function scenario(browser, origin, width, mode) {
     await page.getByRole("button", { name: "Explore Toronto, Ontario, Canada", exact: true }).click();
     await view("Fixture Harbour Hall").waitFor();
     await selected(page.getByRole("button", { name: "Explore Toronto, Ontario, Canada", exact: true }));
+    await assertCityMap(page, state, "Toronto", mode);
     if (mode === "fallback") await page.getByText("LOCATION PLOT · STREET MAP UNAVAILABLE", { exact: true }).waitFor();
     const map = page.locator('[aria-label="Venue locations in Toronto"]');
     const legendHeading = page.getByText("THE VENUE LIST", { exact: true });
     const mapBox = await map.boundingBox(), legendBox = await legendHeading.boundingBox();
     assert.ok(mapBox && mapBox.height > 160 && legendBox, "The map and venue legend must have usable dimensions.");
     if (width < 900) {
-      const mapToListGap = legendBox.y - (mapBox.y + mapBox.height);
-      assert.ok(mapToListGap >= 0 && mapToListGap <= 65, `The mobile venue list must follow the map, not a collapsed flex gap (${mapToListGap}px).`);
+      const captionBox = await page.getByText(/^\d+ venues plotted ·/).boundingBox();
+      assert.ok(captionBox, "The mobile map caption must remain visible.");
+      const mapToCaptionGap = captionBox.y - (mapBox.y + mapBox.height);
+      const captionToListGap = legendBox.y - (captionBox.y + captionBox.height);
+      assert.ok(mapToCaptionGap >= 0 && mapToCaptionGap <= 20 && captionToListGap >= 0 && captionToListGap <= 40,
+        `The mobile venue list must follow its wrapped map caption without a collapsed flex gap (${mapToCaptionGap}px / ${captionToListGap}px).`);
     }
     await room("Fixture Harbour Hall").scrollIntoViewIfNeeded();
     const firstRoomBox = await room("Fixture Harbour Hall").boundingBox();
@@ -121,7 +250,7 @@ async function scenario(browser, origin, width, mode) {
     await page.screenshot({ path: join(screenshotDirectory, `${name}-list.png`), fullPage: true });
     await map.evaluate(node => node.scrollIntoView({ block: "start" }));
     await page.screenshot({ path: join(screenshotDirectory, `${name}-map.png`), fullPage: true });
-    await pin("Fixture Basement").click();
+    await selectPin("Fixture Basement");
     await view("Fixture Basement").waitFor();
     await selected(pin("Fixture Basement")); await selected(room("Fixture Basement"));
     await room("Fixture Harbour Hall").click();
@@ -141,6 +270,28 @@ async function scenario(browser, origin, width, mode) {
     await selected(page.getByRole("button", { name: "Explore Lisbon, Portugal", exact: true }));
     await selected(page.getByRole("button", { name: "Explore Toronto, Ontario, Canada", exact: true }), false);
     assert.equal(await view("Fixture Harbour Hall").count(), 0, "City change resets the previous city's venue selection.");
+    await assertCityMap(page, state, "Lisbon", mode);
+    await page.getByRole("button", { name: "Explore London, United Kingdom", exact: true }).click();
+    await view("Fixture London Coliseum").waitFor();
+    await selected(page.getByRole("button", { name: "Explore London, United Kingdom", exact: true }));
+    await selected(page.getByRole("button", { name: "Explore Lisbon, Portugal", exact: true }), false);
+    await assertCityMap(page, state, "London", mode);
+    await selectPin("Fixture London River Room");
+    await view("Fixture London River Room").waitFor();
+    await selected(pin("Fixture London River Room")); await selected(room("Fixture London River Room"));
+    if (width < 620) {
+      assert.equal(await pin("Fixture London River Room").getAttribute("aria-label"), await pin("The O2 Arena").getAttribute("aria-label"), "Nearby London venues must share a mobile target instead of hiding each other.");
+      assert.match(await pin("Fixture London River Room").getAttribute("aria-label"), /Tap to cycle venues$/);
+    }
+    await selectPin("The O2 Arena");
+    await view("The O2 Arena").waitFor();
+    await selected(pin("The O2 Arena")); await selected(room("The O2 Arena"));
+    await selectPin("Fixture London River Room");
+    await view("Fixture London River Room").waitFor();
+    await selected(pin("Fixture London River Room")); await selected(room("Fixture London River Room"));
+    await assertCityMap(page, state, "London", mode);
+    await page.locator('[aria-label="Venue locations in London"]').scrollIntoViewIfNeeded();
+    await page.screenshot({ path: join(screenshotDirectory, `${name}-london.png`), fullPage: true });
     await search.fill("A definitely absent venue xyz");
     await page.getByText("No matching venues in Worldwide", { exact: true }).waitFor();
     await page.getByRole("button", { name: "Clear city search", exact: true }).click();

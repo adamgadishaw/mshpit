@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildDiscoverVenueCities, discoverVenueCoordinate, discoverVenueMap, filterDiscoverVenueCities, findDiscoverVenueMatch } from "./discoverVenues.mjs";
+import { buildDiscoverVenueCities, clusterDiscoverVenuePins, discoverVenueCoordinate, discoverVenueMap, filterDiscoverVenueCities, findDiscoverVenueMatch } from "./discoverVenues.mjs";
 
 const now = Date.parse("2026-09-15T12:00:00Z");
 const venue = (name, id, place = "Toronto, Ontario, Canada", coord = { lat: 43.65, lng: -79.38 }) => ({ row: {
@@ -66,8 +66,141 @@ test("pins and map share finite in-bounds Mercator projection including antimeri
     for (const coord of coords) { const point = map.project(coord); assert.ok(point.x > 0 && point.x < 1); assert.ok(point.y > 0 && point.y < 1); }
   }
 });
+// Compute provider pixels from the returned geographic center, independently
+// of the overlay fit: in-bounds pins alone cannot catch a detached basemap.
+function providerPixel(map, point) {
+  let longitudeDelta = point.lng - map.center.lng;
+  while (longitudeDelta > 180) longitudeDelta -= 360;
+  while (longitudeDelta < -180) longitudeDelta += 360;
+  const worldSize = 256 * 2 ** map.zoom;
+  const northing = lat => {
+    const sine = Math.sin(lat * Math.PI / 180);
+    return Math.log((1 + sine) / (1 - sine)) / (4 * Math.PI);
+  };
+  return {
+    x: map.width / 2 + longitudeDelta * worldSize / 360,
+    y: map.height / 2 + (northing(map.center.lat) - northing(point.lat)) * worldSize,
+  };
+}
+
+function assertProviderAlignment(map, coords) {
+  for (const coord of coords) {
+    const overlay = map.project(coord);
+    const provider = providerPixel(map, coord);
+    assert.ok(Math.abs(overlay.x * map.width - provider.x) < 1e-7, "pin longitude must match the requested basemap center");
+    assert.ok(Math.abs(overlay.y * map.height - provider.y) < 1e-7, "pin latitude must match the requested basemap center");
+  }
+}
+
+for (const [city, coords] of [
+  ["London", [{ lat: 51.5074, lng: -0.1278 }, { lat: 51.539, lng: -0.1426 }, { lat: 51.503, lng: -0.019 }]],
+  ["Toronto", [{ lat: 43.6387, lng: -79.3806 }, { lat: 43.6655, lng: -79.4112 }, { lat: 43.6656, lng: -79.3114 }]],
+]) {
+  test(`${city} basemap centers on the venue cluster and its pixels match the overlay`, () => {
+    for (const [width, height] of [[640, 420], [320, 210]]) {
+      const map = discoverVenueMap(coords, width, height);
+      const midpointLng = (Math.min(...coords.map(p => p.lng)) + Math.max(...coords.map(p => p.lng))) / 2;
+      assert.ok(Math.abs(map.center.lng - midpointLng) < 1e-9, "map must not request the opposite hemisphere");
+      assert.ok(map.center.lat >= Math.min(...coords.map(p => p.lat)) && map.center.lat <= Math.max(...coords.map(p => p.lat)));
+      assertProviderAlignment(map, coords);
+    }
+  });
+}
+
+for (const [direction, coords, expectedLng] of [
+  ["east", [{ lat: -16.5, lng: 179.8 }, { lat: -16.4, lng: -179.4 }], -179.8],
+  ["west", [{ lat: -16.5, lng: 179.4 }, { lat: -16.4, lng: -179.8 }], 179.8],
+]) {
+  test(`antimeridian ${direction} wrap keeps the provider center and pins aligned in either input order`, () => {
+    for (const points of [coords, [...coords].reverse()]) {
+      const map = discoverVenueMap(points);
+      assert.ok(Math.abs(map.center.lng - expectedLng) < 1e-9);
+      assert.ok(map.center.lng >= -180 && map.center.lng < 180);
+      assertProviderAlignment(map, points);
+      for (const point of points) {
+        const pixel = providerPixel(map, point);
+        assert.ok(pixel.x > 0 && pixel.x < map.width);
+        assert.ok(pixel.y > 0 && pixel.y < map.height);
+      }
+    }
+  });
+}
 test("new provider rooms can surface from fresh event data without mutating the index", () => {
   const rows = [venue("Room", "a")]; const before = structuredClone(rows);
   const cities = build(rows, [event("new", "new", "New room", { city: "Ottawa, Ontario, Canada", lat: 45.42, lng: -75.7 })]);
   assert.equal(cities.length, 2); assert.deepEqual(rows, before);
+});
+
+const pinProjection = { width: 1000, height: 1000, project: coord => ({ x: coord.lng / 100, y: coord.lat / 100 }) };
+const pin = (id, x, y = .5) => ({ id, coord: { lat: y * 100, lng: x * 100 } });
+
+test("venue pin clustering combines overlapping square hit targets but leaves separated buttons alone", () => {
+  const points = [pin("a", .2), pin("b", .23, .53), pin("c", .4), pin("d", .23, .7)];
+  const before = structuredClone(points);
+  const groups = clusterDiscoverVenuePins(points, pinProjection);
+  assert.deepEqual(groups.map(group => group.venues.map(v => v.id)), [["a", "b"], ["c"], ["d"]]);
+  assert.ok(Math.abs(groups[0].position.x - .215) < 1e-12);
+  assert.ok(Math.abs(groups[0].position.y - .515) < 1e-12);
+  assert.equal(groups[0].venues[0], points[0]);
+  assert.deepEqual(points, before);
+});
+
+test("colocated venue pins remain individually available in one stable cluster", () => {
+  const points = Array.from({ length: 24 }, (_, index) => pin(`room-${index}`, .5));
+  const groups = clusterDiscoverVenuePins(points, pinProjection);
+  assert.equal(groups.length, 1);
+  assert.deepEqual(groups[0].venues, points);
+  assert.deepEqual(groups[0].position, { x: .5, y: .5 });
+});
+
+test("rendered mobile size recomputes collisions without changing geographic centroids", () => {
+  const points = [pin("a", .2), pin("b", .3)];
+  assert.equal(clusterDiscoverVenuePins(points, pinProjection).length, 2);
+  const mobile = clusterDiscoverVenuePins(points, pinProjection, { width: 390, height: 260 });
+  assert.equal(mobile.length, 1);
+  assert.deepEqual(mobile[0].position, { x: .25, y: .5 });
+  assert.deepEqual(mobile[0].venues, points);
+});
+
+test("chain collisions terminate with weighted centroids and no overlapping group hit targets", () => {
+  const points = [pin("a", .2), pin("b", .23), pin("c", .26), pin("d", .5), pin("e", .525), pin("f", .6)];
+  const groups = clusterDiscoverVenuePins(points, pinProjection);
+  assert.deepEqual(groups.map(group => group.venues.map(v => v.id)), [["a", "b", "c"], ["d", "e"], ["f"]]);
+  assert.ok(Math.abs(groups[0].position.x - .23) < 1e-12, "merged groups must weight all original venues equally");
+  assert.deepEqual(clusterDiscoverVenuePins(points, pinProjection), groups);
+  assert.deepEqual(groups.flatMap(group => group.venues), points);
+  for (let i = 0; i < groups.length; i += 1) {
+    for (let j = i + 1; j < groups.length; j += 1) {
+      const dx = Math.abs(groups[i].position.x - groups[j].position.x) * pinProjection.width;
+      const dy = Math.abs(groups[i].position.y - groups[j].position.y) * pinProjection.height;
+      assert.ok(dx >= 48 || dy >= 48);
+    }
+  }
+});
+
+test("clustering preserves source order after merging interleaved groups", () => {
+  const points = [pin("a", .2), pin("b", .25), pin("c", .22)];
+  const groups = clusterDiscoverVenuePins(points, pinProjection);
+  assert.equal(groups.length, 1);
+  assert.deepEqual(groups[0].venues, points);
+});
+
+test("clustering skips invalid coordinates and refuses unusable geometry", () => {
+  const points = [pin("real", .5), { id: "missing" }, { coord: { lat: null, lng: 0 } }, { coord: { lat: 100, lng: 0 } }];
+  assert.deepEqual(clusterDiscoverVenuePins(points, pinProjection)[0].venues, [points[0]]);
+  for (const options of [{ width: 0 }, { height: -1 }, { diameter: 0 }, { width: NaN }]) {
+    assert.deepEqual(clusterDiscoverVenuePins(points, pinProjection, options), []);
+  }
+  assert.deepEqual(clusterDiscoverVenuePins(points, { project: () => ({ x: Infinity, y: .5 }) }, { width: 640, height: 420 }), []);
+  assert.deepEqual(clusterDiscoverVenuePins(points, null), []);
+});
+
+test("real city clusters fit the projected image at mobile and desktop sizes", () => {
+  const points = [{ id: "a", coord: { lat: 51.5074, lng: -.1278 } }, { id: "b", coord: { lat: 51.5075, lng: -.128 } }, { id: "c", coord: { lat: 51.539, lng: -.1426 } }];
+  const projection = discoverVenueMap(points);
+  for (const width of [320, 390, 640]) {
+    const groups = clusterDiscoverVenuePins(points, projection, { width, height: width * projection.height / projection.width });
+    assert.equal(groups.reduce((sum, group) => sum + group.venues.length, 0), points.length);
+    for (const { position } of groups) assert.ok(position.x > 0 && position.x < 1 && position.y > 0 && position.y < 1);
+  }
 });

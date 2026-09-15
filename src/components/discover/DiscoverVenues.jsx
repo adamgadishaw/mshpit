@@ -3,7 +3,7 @@ import { Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWin
 import { colors, displayFont, focusRing, font, mono, radius, space } from "../../theme";
 import { countryForCity } from "../../geo";
 import { HAS_MAP, MAP_PROVIDER, mapStaticUrl } from "../../mapConfig";
-import { buildDiscoverVenueCities, discoverVenueMap, filterDiscoverVenueCities, findDiscoverVenueMatch } from "../../domain/discoverVenues.mjs";
+import { buildDiscoverVenueCities, clusterDiscoverVenuePins, discoverVenueMap, filterDiscoverVenueCities, findDiscoverVenueMatch } from "../../domain/discoverVenues.mjs";
 import { eventDateMeta, venueHomePlaceId } from "../../domain/venueDiscovery.mjs";
 import Icon from "../Icon";
 
@@ -12,6 +12,7 @@ const feedback = ({ pressed, hovered, focused }) => [hovered && styles.hover, pr
 
 function VenueMap({ venues, selected, onSelect, city, compact }) {
   const [failedUrl, setFailedUrl] = useState(null);
+  const [mapSize, setMapSize] = useState({ width: 640, height: 420 });
   const points = useMemo(() => {
     const mapped = venues.filter(venue => venue.coord);
     const first = mapped.slice(0, 24);
@@ -23,36 +24,36 @@ function VenueMap({ venues, selected, onSelect, city, compact }) {
   const url = projection && HAS_MAP ? mapStaticUrl(projection.center, MAP_PROVIDER === "mapbox" ? Math.max(0, projection.zoom - 1) : projection.zoom, projection.width, projection.height)
     .replace("attribution=false&logo=false", "attribution=true&logo=true") : null;
   const showMap = !!url && failedUrl !== url;
-  // Co-located rooms share one button; repeated taps cycle those rooms instead
-  // of hiding smaller venues underneath another marker. The list is equivalent.
-  const clusters = new Map();
-  points.forEach(venue => {
-    const key = `${venue.coord.lat.toFixed(5)},${venue.coord.lng.toFixed(5)}`;
-    clusters.set(key, [...(clusters.get(key) || []), venue]);
-  });
+  // Group overlapping touch targets at the actual rendered size, not only
+  // identical coordinates. Repeated taps cycle rooms; the list is equivalent.
+  const clusters = useMemo(() => clusterDiscoverVenuePins(points, projection, mapSize), [points, projection, mapSize]);
+  const measureMap = ({ nativeEvent }) => {
+    const width = Math.round(nativeEvent.layout.width), height = Math.round(nativeEvent.layout.height);
+    if (!(width > 0 && height > 0)) return;
+    setMapSize(current => current.width === width && current.height === height ? current : { width, height });
+  };
   return <View style={[styles.mapColumn, compact && styles.columnChild]}>
-    <View style={styles.map} accessibilityLabel={`Venue locations in ${city}`}>
+    <View style={styles.map} onLayout={measureMap} accessibilityLabel={`Venue locations in ${city}`}>
       {showMap ? <Image source={{ uri: url }} style={StyleSheet.absoluteFill} resizeMode="stretch" onError={() => setFailedUrl(url)} accessibilityLabel={`Street map of ${city}`} />
         : <View pointerEvents="none" style={StyleSheet.absoluteFill}>
           {[20, 40, 60, 80].map(offset => <View key={`h${offset}`} style={[styles.gridLine, { top: `${offset}%`, left: 0, right: 0, height: 1 }]} />)}
           {[20, 40, 60, 80].map(offset => <View key={`v${offset}`} style={[styles.gridLine, { left: `${offset}%`, top: 0, bottom: 0, width: 1 }]} />)}
           <Text style={styles.plotLabel}>{projection ? "LOCATION PLOT · STREET MAP UNAVAILABLE" : "VENUE COORDINATES NOT YET AVAILABLE"}</Text>
         </View>}
-      {[...clusters.values()].map(group => {
+      {clusters.map(({ venues: group, position }) => {
         const active = group.some(row => row.id === selected);
         const venue = group.find(row => row.id === selected) || group[0];
-        const position = projection.project(venue.coord);
         const number = venues.findIndex(row => row.id === venue.id) + 1;
         return <Pressable key={group[0].id} onPress={() => onSelect(group[(group.findIndex(row => row.id === selected) + 1) % group.length].id)}
           accessibilityRole="button" accessibilityLabel={`Map pin ${number}: ${group.map(row => row.name).join(", ")}${group.length > 1 ? ". Tap to cycle venues" : ""}`}
           accessibilityState={{ selected: active }} aria-pressed={active} accessibilityHint="Selects this venue in the list and shows its upcoming concerts."
           title={group.map(row => row.name).join(" · ")}
           style={state => [styles.pinTarget, { left: `${position.x * 100}%`, top: `${position.y * 100}%`, zIndex: active ? 2 : 1 }, ...feedback(state)]}>
-          <View style={[styles.pin, active && styles.pinSelected]}><Text style={[styles.pinText, active && styles.pinTextSelected]}>{group.length > 1 && !active ? `${group.length}×` : number}</Text></View>
+          <View style={[styles.pin, active && styles.pinSelected]}><Text style={[styles.pinText, active && styles.pinTextSelected]}>{group.length > 1 ? `${group.length}×` : number}</Text></View>
         </Pressable>;
       })}
     </View>
-    <View style={styles.mapCaption}><Icon name="pin" size={14} color={colors.textDim} /><Text style={styles.small}>{points.length} venues plotted · select a pin or a room below</Text></View>
+    <View style={styles.mapCaption}><Icon name="pin" size={14} color={colors.textDim} /><Text style={[styles.small, { flex: 1 }]}>{points.length} venues plotted · nearby pins are grouped; tap to cycle venues or use the list</Text></View>
   </View>;
 }
 

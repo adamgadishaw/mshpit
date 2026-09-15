@@ -97,6 +97,50 @@ export function discoverVenueMap(points, width = 640, height = 420) {
     Math.log2((width - 100) / (256 * Math.max(.0001, Math.max(...xs) - Math.min(...xs)))),
     Math.log2((height - 100) / (256 * Math.max(.0001, Math.max(...ys) - Math.min(...ys))))))));
   const scale = 256 * 2 ** zoom;
-  return { width, height, zoom, center: { lat: Math.atan(Math.sinh(Math.PI * (1 - 2 * cy))) * 180 / Math.PI, lng: ((cx * 360 + 540) % 360) - 180 },
+  // cx is a normalized world coordinate, not a longitude. Wrap its world
+  // copies before converting to degrees; adding 540 here requests a basemap
+  // on the opposite side of Earth while leaving the local pin overlay intact.
+  const centerLng = ((cx % 1 + 1) % 1) * 360 - 180;
+  return { width, height, zoom, center: { lat: Math.atan(Math.sinh(Math.PI * (1 - 2 * cy))) * 180 / Math.PI, lng: centerLng },
     project: point => ({ x: .5 + (unwrap(point.lng) - cx) * scale / width, y: .5 + (y(point.lat) - cy) * scale / height }) };
+}
+
+// Group overlapping hit targets at the rendered size, not the static image's
+// source dimensions. A group stays at the mean of its real venue positions;
+// buttons are never spread into invented geographic locations.
+export function clusterDiscoverVenuePins(points, projection, { width = projection?.width, height = projection?.height, diameter = 48 } = {}) {
+  if (!Array.isArray(points) || typeof projection?.project !== "function"
+    || !Number.isFinite(width) || width <= 0 || !Number.isFinite(height) || height <= 0
+    || !Number.isFinite(diameter) || diameter <= 0) return [];
+  const clusters = [];
+  for (const [index, venue] of points.entries()) {
+    const coord = discoverVenueCoordinate(venue);
+    if (!coord) continue;
+    const position = projection.project(coord);
+    if (!Number.isFinite(position?.x) || !Number.isFinite(position?.y)
+      || position.x < 0 || position.x > 1 || position.y < 0 || position.y > 1) continue;
+    clusters.push({ members: [{ index, venue }], sumX: position.x, sumY: position.y });
+  }
+  let merged = true;
+  while (merged) {
+    merged = false;
+    for (let i = 0; i < clusters.length && !merged; i += 1) {
+      for (let j = i + 1; j < clusters.length; j += 1) {
+        const first = clusters[i], second = clusters[j];
+        const dx = Math.abs(first.sumX / first.members.length - second.sumX / second.members.length) * width;
+        const dy = Math.abs(first.sumY / first.members.length - second.sumY / second.members.length) * height;
+        if (dx >= diameter || dy >= diameter) continue;
+        first.members.push(...second.members);
+        first.sumX += second.sumX;
+        first.sumY += second.sumY;
+        clusters.splice(j, 1);
+        merged = true;
+        break;
+      }
+    }
+  }
+  return clusters.map(cluster => ({
+    venues: cluster.members.sort((a, b) => a.index - b.index).map(member => member.venue),
+    position: { x: cluster.sumX / cluster.members.length, y: cluster.sumY / cluster.members.length },
+  }));
 }
