@@ -731,7 +731,8 @@ test("tour-date provider failures keep safe actionable categories", async () => 
   assert.equal(tourDateProviderFailureCategory(refused), "provider_refused");
   assert.equal(tourDateProviderFailureCategory(limited), "provider_rate_limited");
   assert.equal(tourDateProviderFailureCategory(unavailable), "provider_unavailable");
-  assert.equal(tourDateProviderFailureCategory(new TypeError("fetch failed")), "provider_network");
+  assert.equal(tourDateProviderFailureCategory(new TypeError("db.transaction is not a function")), "provider_refresh_failed");
+  assert.equal(tourDateProviderFailureCategory(new TypeError("fetch failed", { cause: { code: "ECONNRESET" } })), "provider_network");
 
   const collected = await collectNamedTourProviderResults([
     { source: "ticketmaster", run: async () => { throw limited; } },

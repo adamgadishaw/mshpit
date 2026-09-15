@@ -70,3 +70,4 @@ jobs:
       - run: npm run verify:navigation-browser
       - run: npm run verify:discover-photos-browser
       - run: npm run verify:discover-venues-browser
+      - run: npm run verify:catalog-maintenance-browser

@@ -1,12 +1,14 @@
 // Read-only, aggregate operational evidence. Never fetch providers, create a
 // schema, or return artist/member identities from a health request.
 import { backgroundJobEnabled } from "./backgroundJobs.js";
+import { readCatalogKnowledgeControl } from "./catalogKnowledgeControl.js";
 
 const MINUTE = 60_000;
 const LAST_PASS = "artist-knowledge:v1:last-pass";
 const COOLDOWN = "artist-knowledge:v1:cooldown";
 const COUNTS = ["checked", "filled", "bios", "countries", "unmatched", "failed", "stale"];
 const FLAGS = ["coolingDown", "storagePaused", "stoppedEarly"];
+const OPTIONAL_FLAGS = ["memoryPaused", "budgetPaused", "capPaused", "modePaused"];
 const STATES = ["filled", "no_match", "skipped", "failed", "leased"];
 const count = (value) => Number.isSafeInteger(value) && value >= 0 ? value : null;
 const timestamp = (value) => Number.isSafeInteger(value) && value >= 0 ? value : null;
@@ -18,10 +20,13 @@ function parsePass(text, at) {
   try { parsed = JSON.parse(text); } catch { return null; }
   if (!parsed || Array.isArray(parsed) || timestamp(parsed.at) === null || parsed.at > at
     || COUNTS.some((key) => count(parsed[key]) === null)
-    || FLAGS.some((key) => typeof parsed[key] !== "boolean")) return null;
+    || FLAGS.some((key) => typeof parsed[key] !== "boolean")
+    || OPTIONAL_FLAGS.some((key) => parsed[key] !== undefined && typeof parsed[key] !== "boolean")) return null;
   return Object.freeze({ at: parsed.at,
     ...Object.fromEntries(COUNTS.map((key) => [key, parsed[key]])),
     ...Object.fromEntries(FLAGS.map((key) => [key, parsed[key]])),
+    ...Object.fromEntries(OPTIONAL_FLAGS.map((key) => [key, parsed[key] === true])),
+    lanes: Number.isInteger(parsed.lanes) && parsed.lanes >= 1 && parsed.lanes <= 3 ? parsed.lanes : 1,
   });
 }
 
@@ -57,15 +62,21 @@ export function collectArtistKnowledgeStatus(database, { env = process.env, at =
     const rawCooldown = meta.get(COOLDOWN)?.value;
     const cooldownUntil = rawCooldown == null ? null : timestamp(Number(rawCooldown));
     const lastPassAgeMinutes = lastPass ? Math.floor((at - lastPass.at) / MINUTE) : null;
+    const control = readCatalogKnowledgeControl(database, { env, at });
     const state = !enabled ? "disabled"
       : (rawPass != null && !lastPass) || (rawCooldown != null && cooldownUntil === null) ? "unavailable"
+      : control?.mode === "paused" || lastPass?.modePaused ? "paused"
       : cooldownUntil > at ? "cooling_down"
       : !lastPass ? "awaiting_first_pass"
       : lastPassAgeMinutes > 45 ? "stale"
       : lastPass.storagePaused ? "storage_paused"
+      : lastPass.memoryPaused ? "memory_paused"
+      : lastPass.capPaused ? "growth_paused"
+      : lastPass.budgetPaused ? "budget_paused"
       : lastPass.stoppedEarly || lastPass.failed > 0 ? "deferred"
       : lastPass.checked === 0 ? "idle" : "recent";
-    return Object.freeze({ ...base, state, lastPass, lastPassAgeMinutes, cooldownUntil, ledger: readLedger(database, at) });
+    return Object.freeze({ ...base, limits: control?.limits || limits, mode: control?.mode || "maintenance",
+      state, lastPass, lastPassAgeMinutes, cooldownUntil, ledger: readLedger(database, at) });
   } catch {
     // No database paths, SQL, provider errors, or private data enter diagnostics.
     return Object.freeze({ ...base, state: enabled ? "unavailable" : "disabled" });
@@ -77,6 +88,7 @@ export function artistKnowledgeWatchCodes(status) {
   return ({ unavailable: ["artist_knowledge_status_unavailable"], stale: ["artist_knowledge_stale"],
     awaiting_first_pass: ["artist_knowledge_unverified"],
     storage_paused: ["artist_knowledge_storage_paused"], cooling_down: ["artist_knowledge_provider_cooldown"],
+    growth_paused: ["artist_knowledge_growth_paused"], memory_paused: ["artist_knowledge_memory_paused"],
   })[status.state] || [];
 }
 

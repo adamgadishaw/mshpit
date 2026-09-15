@@ -7,6 +7,7 @@ import { publicTicketmasterEventImage } from "../../providerEventImage.js";
 import { publicVenuePhotoPool } from "../../venuePhotoCatalog.js";
 import { hasSubstantiveVenueGuide, publicVenueFacts, publicVenuePlace } from "../../venueFacts.js";
 import { isLegacyArtistMemorial } from "../../../src/domain/artistLegacy.mjs";
+import { artistKnowledgeDisplayBio } from "../../../src/domain/artistKnowledge.mjs";
 import {
   artistConcertsPath,
   artistPath,
@@ -497,15 +498,34 @@ export function artistSitemapEntries(database, { now = Date.now(), candidates = 
   const requestedAt = Number(now);
   const at = Number.isSafeInteger(requestedAt) && requestedAt >= 0 ? requestedAt : Date.now();
   const today = new Date(at).toISOString().slice(0, 10);
-  const artistStatement = database.prepare(`SELECT norm,name,public_slug,bio,mbid,updated_at FROM artists
+  const profileDetails = new Map(database.prepare(`SELECT ap.artist_key,ap.bio,ap.bio_staff_curated,ap.updated_at,
+      CASE WHEN ap.owner_id IS NULL OR ${activeAccountSql("owner")} THEN 1 ELSE 0 END AS owner_public
+    FROM artist_profiles ap LEFT JOIN users owner ON owner.id=ap.owner_id
+    WHERE ap.removed=0`).all().map((row) => [row.artist_key, row]));
+  const artistStatement = database.prepare(`SELECT norm,name,public_slug,bio,mbid,updated_at,
+      CASE WHEN json_valid(data) THEN json_extract(data,'$.artistKnowledge') ELSE NULL END AS knowledge
+    FROM artists
       WHERE public_slug IS NOT NULL AND trim(public_slug)<>''
       ORDER BY rank_score DESC,norm`);
   const artistRows = [];
   // Retain identity and exact eligibility, not every catalogue biography, while
   // the shared candidate/identity reducers are alive during a refresh.
   for (const row of artistStatement.iterate()) {
-    const { bio, ...identity } = row;
-    artistRows.push({ ...identity, substantiveBio: String(bio || "").replace(/\s+/g, " ").trim().length >= 80 });
+    const { bio, knowledge, ...identity } = row;
+    const profile = profileDetails.get(row.norm);
+    const publicProfile = Number(profile?.owner_public) === 1;
+    // Match the public renderer: a deliberate staff clear stays empty, and an
+    // imported biography whose exact identity/citation is no longer valid is
+    // not useful crawl evidence. Stream only the small provenance object, not
+    // each artist's complete provider payload, and retain only the eligibility.
+    const selectedBio = Number(profile?.bio_staff_curated) === 1
+      ? publicProfile ? profile.bio : null
+      : (publicProfile && profile.bio) || bio;
+    let imported = null;
+    try { imported = knowledge ? JSON.parse(knowledge) : null; }
+    catch { imported = null; }
+    const displayBio = artistKnowledgeDisplayBio({ artistKnowledge: imported }, { mbid: row.mbid, bio: selectedBio });
+    artistRows.push({ ...identity, substantiveBio: String(displayBio || "").replace(/\s+/g, " ").trim().length >= 80 });
   }
   const artistByNorm = new Map(artistRows.map((row) => [String(row.norm || "").trim().toLowerCase(), row]));
   const artistByName = new Map();
@@ -551,10 +571,6 @@ export function artistSitemapEntries(database, { now = Date.now(), candidates = 
     tourUpdates.set(artist.norm, newest(tourUpdates.get(artist.norm), row.updated_at));
   }
 
-  const profileDetails = new Map(database.prepare(`SELECT ap.artist_key,ap.bio,ap.updated_at
-    FROM artist_profiles ap LEFT JOIN users owner ON owner.id=ap.owner_id
-    WHERE ap.removed=0 AND (ap.owner_id IS NULL OR ${activeAccountSql("owner")})`).all()
-    .map((row) => [row.artist_key, row]));
   const officialUpdates = new Map(database.prepare(`SELECT post.artist_key,MAX(post.created_at) AS lastmod
     FROM artist_posts post
     JOIN artist_profiles ap ON ap.artist_key=post.artist_key AND ap.removed=0 AND ap.feed_enabled=1
@@ -580,9 +596,7 @@ export function artistSitemapEntries(database, { now = Date.now(), candidates = 
   }
 
   return artistRows.filter((row) => memorialDetails.has(row.norm)
-      || (profileDetails.get(row.norm)?.bio
-        ? String(profileDetails.get(row.norm).bio).replace(/\s+/g, " ").trim().length >= 80
-        : row.substantiveBio)
+      || row.substantiveBio
       || postUpdates.has(row.norm)
       || tourUpdates.has(row.norm))
     .map((row) => ({
@@ -593,7 +607,7 @@ export function artistSitemapEntries(database, { now = Date.now(), candidates = 
       legacy: isLegacyArtistMemorial(memorialDetails.get(row.norm)?.memorial),
       lastmod: newest(
         row.updated_at,
-        profileDetails.get(row.norm)?.updated_at,
+        Number(profileDetails.get(row.norm)?.owner_public) === 1 ? profileDetails.get(row.norm).updated_at : null,
         officialUpdates.get(row.norm),
         postUpdates.get(row.norm),
         tourUpdates.get(row.norm),

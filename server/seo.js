@@ -41,6 +41,7 @@ import {
   isSitemapRequestPath,
 } from "./features/seo/sitemapService.js";
 import { createSitemapSnapshotManager } from "./features/seo/sitemapSnapshotManager.js";
+import { projectCatalogSeoMaintenanceStatus } from "./features/seo/catalogSeoMaintenanceStatus.js";
 import { decodeArchiveShowKey } from "./features/artistArchive/artistArchiveKeys.js";
 import {
   isStrictCalendarDate,
@@ -777,6 +778,7 @@ export const loadSitemapSnapshot = () => sitemapSnapshots.load();
 export const refreshSitemapSnapshot = (options) => sitemapSnapshots.refresh(options);
 export const drainSitemapSnapshotRefresh = () => sitemapSnapshots.drain();
 export const sitemapSnapshotHealth = () => sitemapSnapshots.health();
+export const catalogSeoMaintenanceStatus = () => projectCatalogSeoMaintenanceStatus(sitemapSnapshots.health());
 
 export function sitemapXml() {
   return sitemapForPath("/sitemap.xml");

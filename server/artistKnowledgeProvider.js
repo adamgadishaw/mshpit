@@ -145,23 +145,33 @@ async function dispose(response) {
   catch { /* architecture: allow-empty-catch -- failed response disposal must not replace the original provider error. */ }
 }
 
-// One bounded queue serializes complete lookups. The same request-start gate
+// Bounded lookups may overlap slow responses, but ONE request-start gate
 // covers both Wikimedia hosts, including the country-label request. Tests can
 // inject a clock/wait without weakening the production minimum spacing.
 export function createArtistKnowledgeProvider({ clock = Date.now, wait = pause, timeoutMs = 8000, minimumIntervalMs = 1100, maxPending = 4 } = {}) {
-  const interval = Math.max(1000, Number(minimumIntervalMs) || 1100);
+  const interval = Math.max(1100, Number(minimumIntervalMs) || 1100);
   const timeout = Math.max(10, Math.min(8000, Number(timeoutMs) || 8000));
   const capacity = Math.max(1, Math.min(8, Math.trunc(Number(maxPending) || 4)));
-  let tail = Promise.resolve(), pending = 0, lastStarted = null, cooldown = null;
+  let startGate = Promise.resolve(), pending = 0, lastStarted = null, cooldown = null;
 
-  async function requestJson(url, { provider, signal, fetchImpl, now }) {
+  async function requestJson(url, { provider, signal, fetchImpl, now, beforeRequest }) {
     aborted(signal);
     if (![WIKIDATA_API, WIKIPEDIA_API].includes(url.origin + url.pathname) || url.username || url.password || url.hash) throw responseError(provider);
-    if (lastStarted != null) {
-      let remaining = lastStarted + interval - clock();
-      while (remaining > 0) { await wait(remaining, { signal }); aborted(signal); remaining = lastStarted + interval - clock(); }
-    }
-    lastStarted = clock();
+    const admission = startGate.then(async () => {
+      aborted(signal);
+      if (lastStarted != null) {
+        let remaining = lastStarted + interval - clock();
+        while (remaining > 0) { await wait(remaining, { signal }); aborted(signal); remaining = lastStarted + interval - clock(); }
+      }
+      if (cooldown?.retryAt > now()) throw new ArtistKnowledgeProviderError("Artist knowledge requests are cooling down.", cooldown);
+      // Counts are reserved durably BEFORE every outbound request, not per
+      // complete lookup. A paused/capped lane cannot continue downloading.
+      await beforeRequest?.();
+      aborted(signal);
+      lastStarted = clock();
+    });
+    startGate = admission.then(() => undefined, () => undefined);
+    await admission;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(new DOMException("Knowledge request timed out", "TimeoutError")), timeout);
     const combined = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
@@ -189,7 +199,10 @@ export function createArtistKnowledgeProvider({ clock = Date.now, wait = pause, 
     } catch (error) {
       void dispose(response);
       aborted(signal);
-      if (error instanceof ArtistKnowledgeProviderError) throw error;
+      if (error instanceof ArtistKnowledgeProviderError) {
+        if (error.retryAt) cooldown = { code: error.code, status: error.status, retryAt: error.retryAt };
+        throw error;
+      }
       throw new ArtistKnowledgeProviderError(`${provider} could not complete the request.`, {
         code: `${provider}_${controller.signal.aborted ? "timeout" : error?.name === "BoundedJsonResponseError" ? "response" : "network"}`,
         retryAt: now() + 60_000, cause: error,
@@ -197,13 +210,13 @@ export function createArtistKnowledgeProvider({ clock = Date.now, wait = pause, 
     } finally { clearTimeout(timer); }
   }
 
-  async function lookup({ mbid, needBio = true, needCountry = true, signal, fetchImpl = fetch, now = Date.now }) {
+  async function lookup({ mbid, needBio = true, needCountry = true, signal, fetchImpl = fetch, now = Date.now, beforeRequest }) {
     aborted(signal);
     const exact = exactMbid(mbid);
     if (!exact) throw new TypeError("Artist knowledge requires one valid MusicBrainz ID.");
     if (!needBio && !needCountry) return null;
     if (cooldown?.retryAt > now()) throw new ArtistKnowledgeProviderError("Artist knowledge requests are cooling down.", cooldown);
-    const read = (endpoint, parameters, provider = "wikidata") => requestJson(actionUrl(endpoint, parameters), { provider, signal, fetchImpl, now });
+    const read = (endpoint, parameters, provider = "wikidata") => requestJson(actionUrl(endpoint, parameters), { provider, signal, fetchImpl, now, beforeRequest });
     const match = parseArtistKnowledgeSearch(await read(WIKIDATA_API, {
       action: "query", list: "search", srsearch: `haswbstatement:P434=${exact}`, srnamespace: "0", srlimit: "2", srinfo: "totalhits", srprop: "",
     }));
@@ -233,11 +246,10 @@ export function createArtistKnowledgeProvider({ clock = Date.now, wait = pause, 
     try { aborted(options?.signal); } catch (error) { return Promise.reject(error); }
     if (pending >= capacity) return Promise.reject(new ArtistKnowledgeProviderError("Artist knowledge queue is full.", { code: "knowledge_busy", retryAt: (options?.now || Date.now)() + 60_000 }));
     pending++;
-    const result = tail.then(() => lookup(options)).catch((error) => {
+    const result = Promise.resolve().then(() => lookup(options)).catch((error) => {
       if (error instanceof ArtistKnowledgeProviderError && error.retryAt) cooldown = { code: error.code, status: error.status, retryAt: error.retryAt };
       throw error;
     }).finally(() => { pending--; });
-    tail = result.then(() => undefined, () => undefined);
     return options?.signal ? awaitWithAbort(result, options.signal) : result;
   };
 }

@@ -4,11 +4,14 @@ import { randomUUID } from "node:crypto";
 import { statfsSync, statSync } from "node:fs";
 import { artistBiographyIdentity } from "../src/domain/artistBiography.mjs";
 import { artistKnowledgeFieldIsStale, projectArtistKnowledgeSource } from "../src/domain/artistKnowledge.mjs";
-import { fetchArtistKnowledge } from "./artistKnowledgeProvider.js";
+import { fetchArtistKnowledge, ARTIST_KNOWLEDGE_BIO_LIMIT } from "./artistKnowledgeProvider.js";
 import { backgroundJobEnabled } from "./backgroundJobs.js";
 import { runBackgroundJob } from "./backgroundJobCoordinator.js";
 import { startPeriodicJob } from "./periodicJobScheduler.js";
 import { privateErrorLabel } from "./errors.js";
+import { memoryWorkSnapshot } from "./memoryAdmission.js";
+import { ensureCatalogKnowledgeControl, readCatalogKnowledgeControl, reserveCatalogKnowledgeBudget,
+  reserveCatalogKnowledgePass, catalogKnowledgeGrowthReady, completeCatalogKnowledgeSweep } from "./catalogKnowledgeControl.js";
 
 const MINUTE = 60_000, DAY = 24 * 60 * MINUTE;
 const COOLDOWN_KEY = "artist-knowledge:v1:cooldown";
@@ -52,14 +55,35 @@ export function artistKnowledgeStorageReady(directory, databasePath, {
     catch (error) { if (error?.code !== "ENOENT") throw error; }
     const available = Number(disk.bavail) * Number(disk.bsize);
     return Number.isFinite(available) && Number.isFinite(bytes) && Number.isFinite(walBytes)
-      && available >= Math.max(256 * 1024 * 1024, (bytes + walBytes) * 2);
+      && available >= Math.max(512 * 1024 * 1024, (bytes + walBytes) * 2);
+  } catch { return false; }
+}
+
+export function artistKnowledgeDatabaseBytes(databasePath, { stat = statSync } = {}) {
+  try {
+    let bytes = Number(stat(databasePath).size);
+    try { bytes += Number(stat(`${databasePath}-wal`).size); }
+    catch (error) { if (error?.code !== "ENOENT") throw error; }
+    return Number.isSafeInteger(bytes) && bytes >= 0 ? bytes : null;
+  } catch { return null; }
+}
+
+export function artistKnowledgeMemoryReady({ snapshot = memoryWorkSnapshot } = {}) {
+  try {
+    const state = snapshot();
+    return Number.isFinite(state.limitBytes) && state.limitBytes > 0
+      && Number.isFinite(state.usedBytes) && Number.isFinite(state.reservedBytes)
+      && state.usedBytes + state.reservedBytes + 192 * 1024 ** 2 < state.limitBytes
+      && !(state.queued > 0) && !(state.activeKinds || []).some((kind) => kind !== "background");
   } catch { return false; }
 }
 
 export function createArtistKnowledgeRefresher({
   database, fetchKnowledge = fetchArtistKnowledge, now = Date.now, storageReady = () => true,
+  memoryReady = () => true, databaseBytes = () => 0, env = process.env,
 } = {}) {
   ensureArtistKnowledgeSchema(database);
+  ensureCatalogKnowledgeControl(database, { env, at: now() });
   const meta = database.prepare("SELECT value FROM app_meta WHERE key=?");
   const setMeta = database.prepare("INSERT INTO app_meta(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value");
   const read = database.prepare(`SELECT a.*,p.artist_key AS profile_exists
@@ -116,7 +140,7 @@ export function createArtistKnowledgeRefresher({
         const knowledge = { ...previous, version: 1, mbid, wikidataId: result.wikidataId, wikidataUrl: result.wikidataUrl };
         const candidate = { ...knowledge, bio: result.bio, bioSource: result.bioSource };
         if (!current.profile_exists && blank(bio) && blank(data.bio)
-          && typeof result.bio === "string" && result.bio.length <= 6000
+          && typeof result.bio === "string" && [...result.bio].length <= ARTIST_KNOWLEDGE_BIO_LIMIT
           && projectArtistKnowledgeSource({ artistKnowledge: candidate }, { mbid, bio: result.bio })) {
           bio = result.bio; knowledge.bio = bio; knowledge.bioSource = result.bioSource;
           data.bio = bio; bios = 1;
@@ -147,66 +171,107 @@ export function createArtistKnowledgeRefresher({
   }
 
   let active = null;
-  async function run({ limit = 10, signal, budgetMs = 45_000 } = {}) {
+  async function run({ limit, signal, budgetMs = 45_000, respectCadence = false } = {}) {
+    const control = readCatalogKnowledgeControl(database, { env, at: now() });
     const stats = { checked: 0, filled: 0, bios: 0, countries: 0, unmatched: 0, failed: 0, stale: 0,
-      coolingDown: false, storagePaused: false, stoppedEarly: false };
+      coolingDown: false, storagePaused: false, stoppedEarly: false,
+      memoryPaused: false, budgetPaused: false, capPaused: false, modePaused: false,
+      lanes: control?.limits.lanes || 1 };
     const recordPass = (result) => {
       setMeta.run(SUMMARY_KEY, JSON.stringify({ ...result, at: now() }));
       return result;
     };
+    const safeToContinue = () => {
+      const liveControl = readCatalogKnowledgeControl(database, { env, at: now() });
+      if (!liveControl || ["paused", "disabled"].includes(liveControl.effectiveMode)) stats.modePaused = true;
+      if (!storageReady()) stats.storagePaused = true;
+      if (!memoryReady()) stats.memoryPaused = true;
+      if (!stats.storagePaused && !catalogKnowledgeGrowthReady(database, databaseBytes())) stats.capPaused = true;
+      return !(stats.modePaused || stats.storagePaused || stats.memoryPaused || stats.capPaused || stats.budgetPaused);
+    };
     aborted(signal);
-    if (!storageReady()) return recordPass({ ...stats, storagePaused: true });
+    if (!control || ["paused", "disabled"].includes(control.effectiveMode)) return recordPass({ ...stats, modePaused: true });
+    // Normal ticks preserve prior evidence while waiting for the durable due
+    // time; admin pause/resume and process restarts cannot accelerate the loop.
+    if (respectCadence && !reserveCatalogKnowledgePass(database, { env, at: now() })) return { ...stats, waiting: true };
+    if (!safeToContinue()) return recordPass(stats);
     if (Number(meta.get(COOLDOWN_KEY)?.value) > now()) return recordPass({ ...stats, coolingDown: true });
     const deadline = AbortSignal.timeout(clamp(budgetMs, 45_000, 1000, 45_000));
-    const workSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
-    const rows = due.all(now(), clamp(limit, 10, 1, 10));
-    for (const item of rows) {
-      aborted(signal);
-      if (deadline.aborted) { stats.stoppedEarly = true; break; }
-      const row = read.get(item.norm), mbid = artistBiographyIdentity(row?.mbid);
-      if (!row) continue;
-      if (!mbid) {
-        // Legacy malformed IDs must not permanently occupy the first slice.
-        const token = randomUUID(), at = now(), invalid = String(row.mbid).toLowerCase();
-        if (Number(claim.run(row.norm, invalid, at, at + 10 * MINUTE, token).changes) === 1) {
-          finish.run("skipped", at + 30 * DAY, 0, row.norm, invalid, token);
-        }
-        continue;
+    const stop = new AbortController();
+    const workSignal = AbortSignal.any([deadline, stop.signal, ...(signal ? [signal] : [])]);
+    const rows = due.all(now(), clamp(limit, control.limits.maxArtistsPerPass, 1, control.limits.maxArtistsPerPass));
+    let cursor = 0;
+    const pauseError = () => Object.assign(new Error("Optional catalog work paused"), { code: "CATALOG_PAUSED" });
+    const beforeRequest = () => {
+      if (!safeToContinue()) throw pauseError();
+      if (Number(meta.get(COOLDOWN_KEY)?.value) > now()) { stats.coolingDown = true; throw pauseError(); }
+      if (!reserveCatalogKnowledgeBudget(database, "requests", { env, at: now() })) {
+        stats.budgetPaused = true; throw pauseError();
       }
-      const data = objectData(row.data);
-      const staleBio = artistKnowledgeFieldIsStale(data, { mbid, field: "bio", value: row.bio });
-      const staleCountry = artistKnowledgeFieldIsStale(data, { mbid, field: "country", value: row.country });
-      const needBio = !!data && !row.profile_exists && (blank(row.bio) || staleBio)
-        && (blank(data.bio) || (staleBio && data.bio === row.bio));
-      const needCountry = !!data && (blank(row.country) || staleCountry)
-        && (blank(data.country) || (staleCountry && data.country === row.country));
-      const at = now(), token = randomUUID();
-      if (Number(claim.run(row.norm, mbid, at, at + 10 * MINUTE, token).changes) !== 1) continue;
-      if (!needBio && !needCountry) {
-        finish.run("skipped", at + 30 * DAY, 0, row.norm, mbid, token); continue;
-      }
-      stats.checked += 1;
-      let result;
-      try {
-        result = await fetchKnowledge({ mbid, needBio, needCountry, signal: workSignal });
-        aborted(workSignal);
-      } catch (error) {
-        const failures = Math.min(10, Number(check.get(row.norm)?.failures || 0) + 1);
-        const retryAt = Math.max(now() + Math.min(DAY, 30 * MINUTE * 2 ** (failures - 1)),
-          Number.isFinite(Number(error?.retryAt)) ? Number(error.retryAt) : 0);
-        finish.run("failed", retryAt, failures, row.norm, mbid, token);
+    };
+    async function lane() {
+      while (cursor < rows.length) {
         aborted(signal);
-        if (deadline.aborted) { stats.stoppedEarly = true; break; }
-        // An outage is provider-wide, not an artist miss. Pause the entire pass
-        // durably so a deploy cannot restart a failing download loop.
-        setMeta.run(COOLDOWN_KEY, String(retryAt)); stats.failed += 1; break;
+        if (workSignal.aborted) { stats.stoppedEarly = true; return; }
+        if (!safeToContinue()) return;
+        const item = rows[cursor++];
+        const row = read.get(item.norm), mbid = artistBiographyIdentity(row?.mbid);
+        if (!row) continue;
+        if (!mbid) {
+          const token = randomUUID(), at = now(), invalid = String(row.mbid).toLowerCase();
+          if (Number(claim.run(row.norm, invalid, at, at + 10 * MINUTE, token).changes) === 1) {
+            finish.run("skipped", at + 30 * DAY, 0, row.norm, invalid, token);
+          }
+          continue;
+        }
+        const data = objectData(row.data);
+        const staleBio = artistKnowledgeFieldIsStale(data, { mbid, field: "bio", value: row.bio });
+        const staleCountry = artistKnowledgeFieldIsStale(data, { mbid, field: "country", value: row.country });
+        const needBio = !!data && !row.profile_exists && (blank(row.bio) || staleBio)
+          && (blank(data.bio) || (staleBio && data.bio === row.bio));
+        const needCountry = !!data && (blank(row.country) || staleCountry)
+          && (blank(data.country) || (staleCountry && data.country === row.country));
+        const at = now(), token = randomUUID();
+        if (Number(claim.run(row.norm, mbid, at, at + 10 * MINUTE, token).changes) !== 1) continue;
+        if (!needBio && !needCountry) {
+          finish.run("skipped", at + 30 * DAY, 0, row.norm, mbid, token); continue;
+        }
+        if (!reserveCatalogKnowledgeBudget(database, "attempts", { env, at })) {
+          // Preserve the lease for a short recovery window; a budget pause is
+          // not a factual no-match and must not mark the sweep complete.
+          stats.budgetPaused = true; return;
+        }
+        stats.checked += 1;
+        let result;
+        try {
+          result = await fetchKnowledge({ mbid, needBio, needCountry, signal: workSignal, beforeRequest, now });
+          aborted(workSignal);
+          if (!safeToContinue()) throw pauseError();
+        } catch (error) {
+          const failures = Math.min(10, Number(check.get(row.norm)?.failures || 0) + 1);
+          const retryAt = Math.max(now() + Math.min(DAY, 30 * MINUTE * 2 ** (failures - 1)),
+            Number.isFinite(Number(error?.retryAt)) ? Number(error.retryAt) : 0);
+          if (error?.code !== "CATALOG_PAUSED") finish.run("failed", retryAt, failures, row.norm, mbid, token);
+          aborted(signal);
+          if (deadline.aborted || stop.signal.aborted) { stats.stoppedEarly = true; return; }
+          if (error?.code === "CATALOG_PAUSED") return;
+          setMeta.run(COOLDOWN_KEY, String(retryAt)); stats.failed += 1;
+          stop.abort(new DOMException("Provider cooldown", "AbortError"));
+          return;
+        }
+        // Synchronous, short savepoint: lanes never hold a write transaction
+        // across a network await, and current identity/profile edits win.
+        const saved = persist(row, result, token, now());
+        stats.bios += saved.bios; stats.countries += saved.countries;
+        if (saved.bios || saved.countries) stats.filled += 1;
+        else if (saved.stale) stats.stale += 1;
+        else stats.unmatched += 1;
       }
-      const saved = persist(row, result, token, now());
-      stats.bios += saved.bios; stats.countries += saved.countries;
-      if (saved.bios || saved.countries) stats.filled += 1;
-      else if (saved.stale) stats.stale += 1;
-      else stats.unmatched += 1;
     }
+    const outcomes = await Promise.allSettled(Array.from({ length: control.limits.lanes }, () => lane()));
+    const failedLane = outcomes.find((outcome) => outcome.status === "rejected");
+    if (failedLane) throw failedLane.reason;
+    if (!stats.failed && !stats.stoppedEarly && safeToContinue()) completeCatalogKnowledgeSweep(database, { at: now() });
     return recordPass(stats);
   }
   return { runBatch(options) {
@@ -220,15 +285,21 @@ export function startArtistKnowledgeScheduler({
   schedule = startPeriodicJob, coordinate = runBackgroundJob, service,
 } = {}) {
   if (!backgroundJobEnabled(env, "ARTIST_KNOWLEDGE_ENABLED")) return null;
-  const refresher = service || createArtistKnowledgeRefresher({ database,
-    storageReady: () => artistKnowledgeStorageReady(directory, databasePath) });
-  logger.log?.("[pit] artist knowledge enrichment on; exact identities, missing fields only, max 10 per 15m.");
+  const refresher = service || createArtistKnowledgeRefresher({ database, env,
+    storageReady: () => artistKnowledgeStorageReady(directory, databasePath),
+    databaseBytes: () => artistKnowledgeDatabaseBytes(databasePath),
+    memoryReady: () => artistKnowledgeMemoryReady() });
+  logger.log?.("[pit] artist knowledge enrichment on; bounded catch-up/maintenance, shared provider gate and durable budgets.");
   return schedule({
-    initialDelayMs: 3 * MINUTE, intervalMs: 15 * MINUTE,
-    run: ({ signal }) => coordinate(async () => {
-      const stats = await refresher.runBatch({ signal, limit: clamp(env.ARTIST_KNOWLEDGE_BATCH, 10, 1, 10) });
-      if (stats.checked || stats.storagePaused) logger.log?.(`[pit] artist knowledge: checked=${stats.checked} filled=${stats.filled} bios=${stats.bios} countries=${stats.countries} deferred=${stats.unmatched} providerFailures=${stats.failed} storagePaused=${stats.storagePaused}`);
-    }),
+    initialDelayMs: 3 * MINUTE, intervalMs: MINUTE,
+    run: ({ signal }) => {
+      const control = database ? readCatalogKnowledgeControl(database, { env }) : null;
+      if (control && (control.mode === "paused" || control.nextPassAt > Date.now())) return false;
+      return coordinate(async () => {
+        const stats = await refresher.runBatch({ signal, respectCadence: true });
+        if (!stats.waiting) logger.log?.(`[pit] artist knowledge: lanes=${stats.lanes || 1} checked=${stats.checked} filled=${stats.filled} bios=${stats.bios} countries=${stats.countries} deferred=${stats.unmatched} providerFailures=${stats.failed} storagePaused=${stats.storagePaused} memoryPaused=${stats.memoryPaused} budgetPaused=${stats.budgetPaused} capPaused=${stats.capPaused}`);
+      });
+    },
     report: (error) => logger.error?.(`[pit] artist knowledge paused safely cause=${privateErrorLabel(error)}`),
   });
 }

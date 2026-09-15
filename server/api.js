@@ -120,7 +120,7 @@ import {
   legacyImageRecoveryHealth,
 } from "./legacyPostImageRecovery.js";
 import { discoverySidebar } from "./discovery.js";
-import { pageHeadFor, publicDocumentForPath, resolveEntity, sitemapSnapshotHealth } from "./seo.js";
+import { pageHeadFor, publicDocumentForPath, resolveEntity, sitemapSnapshotHealth, catalogSeoMaintenanceStatus } from "./seo.js";
 import { pageHeadRoutes } from "./features/seo/pageHeadRoutes.js";
 import { userRewards } from "./rewards.js";
 import { prepareVerification, completeVerification, resendVerification, sendWelcomeOnce, verificationEnabled } from "./verification.js";
@@ -147,6 +147,8 @@ import { backgroundJobEnabled } from "./backgroundJobs.js";
 import { backupOperationalStatus, backupSchedulerEnabled } from "./backupScheduler.js";
 import { collectStorageHealth } from "./storageHealth.js";
 import { collectArtistKnowledgeStatus } from "./artistKnowledgeStatus.js";
+import { createCatalogMaintenanceService } from "./features/catalogMaintenance/catalogMaintenanceService.js";
+import { catalogMaintenanceRoutes } from "./features/catalogMaintenance/catalogMaintenanceRoutes.js";
 import { requestMetrics } from "./requestMetrics.js";
 import {
   mediaPublishingCapabilitiesForRuntime,
@@ -3734,6 +3736,8 @@ function scheduleClientCrashAlert() {
 const peopleSuggestionService = createPeopleSuggestionService(db, { projectUser: publicUser });
 const artistRecommendationService = createArtistRecommendationService(db);
 const artistLiveSummaryService = createArtistLiveSummaryService({ database: db, projectDate: tourDateJson, clock: now });
+const catalogMaintenanceService = createCatalogMaintenanceService({ database: db, databasePath: DATABASE_PATH,
+  now, seoStatus: catalogSeoMaintenanceStatus });
 const messageRelationshipContextService = createMessageRelationshipContextService(db);
 
 function deploymentReadinessProjection() {
@@ -4139,6 +4143,8 @@ export const routes = {
   ...linkedAccounts.routes,
   ...cityGuideRoutes({ database: db, ApiError, requireAdmin, rateLimit: limit, now }),
   ...artistBiographyRoutes({ database: db, ApiError, requireAdmin, rateLimit: limit, now, publicArtist }),
+  ...catalogMaintenanceRoutes({ database: db, ApiError, requireAdmin, rateLimit: limit, now,
+    ...catalogMaintenanceService }),
   ...artistRecommendationRoutes({
     service: artistRecommendationService,
     requireUser,

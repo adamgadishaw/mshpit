@@ -92,3 +92,15 @@ test("repeated staff polling bounds ledger scans to one per minute", (t) => {
   collectArtistKnowledgeStatus(database, { env, at: AT + 60_000 });
   assert.equal(reads, 2);
 });
+
+test("resource, daily budget and owner pause states stay distinct from successful work", t => {
+  const f = fixture(t);
+  for (const [flag, state] of [["memoryPaused", "memory_paused"], ["capPaused", "growth_paused"],
+    ["budgetPaused", "budget_paused"], ["modePaused", "paused"]]) {
+    f.set("last-pass", pass({ [flag]: true, lanes: 3 }));
+    const status = collectArtistKnowledgeStatus(f.database, { env, at: AT });
+    assert.equal(status.state, state); assert.equal(status.lastPass.lanes, 3);
+  }
+  f.set("last-pass", pass({ capPaused: "yes" }));
+  assert.equal(collectArtistKnowledgeStatus(f.database, { env, at: AT }).state, "unavailable");
+});

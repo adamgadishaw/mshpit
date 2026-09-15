@@ -59,7 +59,7 @@ test("artist sitemap streams biographies and retains only exact normalized text 
     get(target, property) {
       if (property === "prepare") return sql => {
         const statement = target.prepare(sql);
-        if (!String(sql).startsWith("SELECT norm,name,public_slug,bio,mbid,updated_at FROM artists")) return statement;
+        if (!String(sql).startsWith("SELECT norm,name,public_slug,bio,mbid,updated_at,")) return statement;
         return {
           all() { throw new Error("Sitemap must not materialize the complete biography column"); },
           *iterate() { streamed += 1; yield* statement.iterate(); },

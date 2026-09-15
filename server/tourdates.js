@@ -10,6 +10,7 @@ import { dirname, join } from "node:path";
 import { backgroundJobEnabled } from "./backgroundJobs.js";
 import { runBackgroundJob } from "./backgroundJobCoordinator.js";
 import { privateErrorLabel } from "./errors.js";
+import { recordTourDateMaintenancePass, tourDateFailureLocation } from "./tourDateMaintenanceStatus.js";
 import { canonicalTicketUrl } from "../src/domain/ticketLinks.mjs";
 import { bandsintownMusicEvent, ticketmasterMusicEvent } from "./musicEventClassification.js";
 import { selectTicketmasterEventImage } from "./providerEventImage.js";
@@ -175,7 +176,10 @@ export function tourDateProviderFailureCategory(error, signal) {
   if (status === 408 || status === 504) return "provider_timeout";
   if (status >= 500) return "provider_unavailable";
   if (error?.name === "AbortError") return "provider_timeout";
-  if (error instanceof TypeError) return "provider_network";
+  // Only the HTTP boundary can classify an untyped fetch TypeError as a
+  // network failure. A local SQLite/programming TypeError is not an outage.
+  if (["ECONNRESET", "ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "UND_ERR_SOCKET"].includes(code)
+    || ["ECONNRESET", "ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "UND_ERR_SOCKET"].includes(error?.cause?.code)) return "provider_network";
   return "provider_refresh_failed";
 }
 
@@ -377,15 +381,22 @@ function storedArtistCursor() {
   return db.prepare("SELECT value FROM app_meta WHERE key=?").get(ARTIST_CURSOR_KEY)?.value || "";
 }
 
-function markRefreshComplete(at = Date.now(), artistCursor = null) {
+export function persistTourDateRefreshCompletion(database, { at = Date.now(), artistCursor = null } = {}) {
   const timestamp = Number(at);
   if (!Number.isSafeInteger(timestamp) || timestamp < 0) throw new TypeError("refresh completion time must be a non-negative integer");
-  const write = db.prepare("INSERT INTO app_meta (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value");
-  db.transaction(() => {
+  const write = database.prepare("INSERT INTO app_meta (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value");
+  // db is node:sqlite DatabaseSync, not better-sqlite3. Completion markers
+  // must commit together or a successful sweep is retried after a TypeError.
+  database.exec("SAVEPOINT tourdate_refresh_complete");
+  try {
     write.run(LAST_REFRESH_KEY, String(timestamp));
     write.run(INGESTION_REVISION_KEY, TOURDATE_INGESTION_REVISION);
     if (typeof artistCursor === "string") write.run(ARTIST_CURSOR_KEY, artistCursor);
-  })();
+    database.exec("RELEASE tourdate_refresh_complete");
+  } catch (error) {
+    database.exec("ROLLBACK TO tourdate_refresh_complete; RELEASE tourdate_refresh_complete");
+    throw error;
+  }
 }
 
 function storedCountryCursor() {
@@ -471,7 +482,8 @@ async function getJSON(url, { signal } = {}) {
     if (error?.providerCategory) throw error;
     const category = timedOut
       ? "provider_timeout"
-      : tourDateProviderFailureCategory(error, ctrl.signal.aborted ? null : signal);
+      : error instanceof TypeError ? "provider_network"
+        : tourDateProviderFailureCategory(error, ctrl.signal.aborted ? null : signal);
     throw tourDateProviderError(category, error);
   } finally {
     clearTimeout(t);
@@ -1348,7 +1360,14 @@ async function refresh({ signal } = {}) {
   throwIfAborted(signal);
   running = true;
   const t0 = Date.now();
+  let stage = "starting";
+  const recordPass = (state, extra = {}) => {
+    try { recordTourDateMaintenancePass(db, { state, stage, at: Date.now(), startedAt: t0, ...extra }); }
+    catch { /* architecture: allow-empty-catch -- optional aggregate diagnostics must not fail a catalog refresh */ }
+  };
   try {
+    recordPass("running");
+    stage = "selection";
     const cat = JSON.parse(readFileSync(CATALOG, "utf8"));
     const artistSelection = selectTourDateRefreshArtists(db, {
       limit: LIMIT,
@@ -1390,6 +1409,7 @@ async function refresh({ signal } = {}) {
     for (const a of artists) {
       throwIfAborted(signal);
       try {
+        stage = "artist_fetch";
         const result = await fetchDates(a.name, { signal });
         throwIfAborted(signal);
         providerSuccesses += result.successes;
@@ -1397,6 +1417,7 @@ async function refresh({ signal } = {}) {
         stopOnProviderOutage(result);
         recordOutcomes(result.outcomes, a.name);
         const now = Date.now();
+        stage = "artist_write";
         db.exec("BEGIN");
         upsertProviderTourDateRows(db, result.rows, { seenAt: now });
         db.exec("COMMIT");
@@ -1414,6 +1435,7 @@ async function refresh({ signal } = {}) {
     for (const { city } of cities) {
       throwIfAborted(signal);
       try {
+        stage = "city_fetch";
         let marketResult = null;
         const result = await collectNamedTourProviderResults([KEY ? {
           source: "ticketmaster",
@@ -1428,6 +1450,7 @@ async function refresh({ signal } = {}) {
         stopOnProviderOutage(result);
         recordOutcomes(result.outcomes);
         const now = Date.now();
+        stage = "city_write";
         if (marketResult) persistTicketmasterMarketResult(db, {
           market: { city },
           result: marketResult,
@@ -1444,6 +1467,7 @@ async function refresh({ signal } = {}) {
     for (const countryCode of countryBatch.countries) {
       throwIfAborted(signal);
       try {
+        stage = "country_fetch";
         let marketResult = null;
         const result = await collectNamedTourProviderResults([
           {
@@ -1461,6 +1485,7 @@ async function refresh({ signal } = {}) {
         stopOnProviderOutage(result);
         recordOutcomes(result.outcomes);
         const now = Date.now();
+        stage = "country_write";
         if (marketResult) persistTicketmasterMarketResult(db, {
           market: { countryCode },
           result: marketResult,
@@ -1475,6 +1500,7 @@ async function refresh({ signal } = {}) {
       await sleep(TM_REQUEST_DELAY_MS, signal);
     }
     throwIfAborted(signal);
+    stage = "reconciliation";
     if (!hasSuccessfulTourProviderWork(providerSuccesses)) {
       throw tourDateProviderError(strongestTourDateProviderFailure(providerFailureCategories));
     }
@@ -1494,13 +1520,17 @@ async function refresh({ signal } = {}) {
     // stale deactivation is isolated to exact successful artist scopes, so any
     // useful provider work advances the normal interval. A total outage still
     // throws above and intentionally leaves the refresh due.
-    markRefreshComplete(Date.now(), artistSelection.nextCursor);
+    persistTourDateRefreshCompletion(db, { at: Date.now(), artistCursor: artistSelection.nextCursor });
+    stage = "complete";
+    recordPass("succeeded", { rows: total, providerSuccesses, providerFailures });
     console.log(`[pit] tour dates refreshed: ${total} dates / ${artists.length} artists + ${cities.length} member cities + ${countryBatch.countries.length} global markets (${providerSuccesses} provider calls ok, ${providerFailures} failed) in ${Math.round((Date.now() - t0) / 1000)}s`);
   } catch (e) {
+    recordPass(signal?.aborted ? "cancelled" : "failed", { category: tourDateProviderFailureCategory(e, signal), error: e });
     if (!signal?.aborted) {
       console.error(
         `[pit] tour-date refresh failed cause=${privateErrorLabel(e)}`
-        + ` category=${tourDateProviderFailureCategory(e, signal)}`,
+        + ` category=${tourDateProviderFailureCategory(e, signal)}`
+        + ` stage=${stage} where=${tourDateFailureLocation(e) || "unavailable"}`,
       );
     }
     throw e;

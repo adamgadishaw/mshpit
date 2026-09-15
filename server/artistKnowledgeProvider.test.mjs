@@ -196,7 +196,7 @@ test("timeouts bound both response headers and a stalled body; caller abort rema
   assert.equal(noRequest.calls.length, 0);
 });
 
-test("concurrent lookups are serialized and spaced; capacity and queued cancellation are bounded", async () => {
+test("concurrent request starts are serialized and spaced; capacity and queued cancellation are bounded", async () => {
   const f = fixture([search([]), search([]), search([])]);
   assert.deepEqual(await Promise.all([f.run(), f.run(), f.run()]), [null, null, null]);
   assert.deepEqual(f.calls.map(call => call.at), [AT, AT + 1100, AT + 2200]);
@@ -212,4 +212,48 @@ test("concurrent lookups are serialized and spaced; capacity and queued cancella
   release(json(search([])));
   assert.equal(await first, null);
   assert.equal(limited.calls.length, 1);
+});
+
+test("three lookups overlap slow responses without multiplying aggregate request-start rate", async () => {
+  let clock = AT;
+  const starts = [], releases = [];
+  const provider = createArtistKnowledgeProvider({ clock: () => clock, wait: async ms => { clock += ms; } });
+  const fetchImpl = () => {
+    starts.push(clock);
+    return new Promise(resolve => releases.push(() => resolve(json(search([])))));
+  };
+  const runs = [1, 2, 3].map(() => provider({ mbid: MBID, fetchImpl, now: () => clock }));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(releases.length, 3, "three response reads can overlap");
+  assert.deepEqual(starts, [AT, AT + 1100, AT + 2200]);
+  releases.forEach(release => release());
+  assert.deepEqual(await Promise.all(runs), [null, null, null]);
+});
+
+test("durable per-request admission can stop later provider steps before fetching", async () => {
+  let reserved = 0;
+  const f = fixture([search(), entity()]);
+  await assert.rejects(f.run({ beforeRequest: () => {
+    if (++reserved > 2) throw Object.assign(new Error("Paused"), { code: "CATALOG_PAUSED" });
+  } }), error => error.code === "CATALOG_PAUSED");
+  assert.equal(f.calls.length, 2);
+});
+
+test("a shared cooldown is rechecked at the gate after another lane reports an outage", async () => {
+  let clock = AT;
+  let releaseWait;
+  const calls = [];
+  const provider = createArtistKnowledgeProvider({ clock: () => clock, wait: () => new Promise(resolve => { releaseWait = resolve; }) });
+  const first = provider({ mbid: MBID, now: () => clock, fetchImpl: async () => {
+    calls.push(clock); return new Response("unavailable", { status: 503, headers: { "retry-after": "120" } });
+  } });
+  const second = provider({ mbid: OTHER_MBID, now: () => clock, fetchImpl: async () => {
+    calls.push(clock); return json(search([]));
+  } });
+  const outcomes = Promise.allSettled([first, second]);
+  await new Promise(resolve => setImmediate(resolve));
+  clock += 1100; releaseWait();
+  const results = await outcomes;
+  assert.equal(results.every(value => value.status === "rejected"), true);
+  assert.equal(calls.length, 1);
 });

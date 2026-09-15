@@ -32,6 +32,7 @@ import { captureAppError } from "../lib/diagnostics";
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import useScopedRefresh from "../hooks/useScopedRefresh";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
+import CatalogMaintenancePanel from "../features/catalogMaintenance/CatalogMaintenancePanel";
 
 const ADMIN_ONLY_TABS = new Set([
   "overview", "analytics", "catalog", "email", "cities", "badges", "suggestions", "memorials", "requests",
@@ -680,12 +681,13 @@ export default function AdminScreen({ onClose }) {
         return { members, badges };
       }
       if (activeTab === "catalog") {
-        const [catalogResult, seedResult, runResult] = await Promise.all([
+        const [catalogResult, seedResult, runResult, upkeepResult] = await Promise.all([
           refreshCatalog({ signal, strict: true }),
           refreshSeed({ signal, strict: true }),
           refreshRuns({ signal, strict: true }),
+          adminRefreshRegistry.current.catalogUpkeep?.(),
         ]);
-        return { catalogResult, seedResult, runResult };
+        return { catalogResult, seedResult, runResult, upkeepResult };
       }
       if (activeTab === "overview") {
         const errorRequest = Symbol("site-errors-refresh");
@@ -978,6 +980,7 @@ export default function AdminScreen({ onClose }) {
         {/* ---- CATALOG ---- */}
         {activeTab === "catalog" && (
           <>
+            {iAmAdmin ? <CatalogMaintenancePanel key={`catalog-upkeep:${session?.id}:${session?.role}`} accountId={session?.id} role={session?.role} active={appActive} refreshRegistry={adminRefreshRegistry} /> : null}
             <Text style={styles.policy}>Artists people looked up. Seed them from Deezer (photo, popularity, top songs) on demand, the targeted alternative to a blind bulk dump. Purge dead or typo entries.</Text>
 
             {/* Grow the whole catalog across all genres, in the background */}

@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { createArtistKnowledgeRefresher, artistKnowledgeStorageReady, startArtistKnowledgeScheduler } from "./artistKnowledgeRefresh.js";
+import { createArtistKnowledgeRefresher, artistKnowledgeStorageReady, startArtistKnowledgeScheduler,
+  artistKnowledgeMemoryReady, artistKnowledgeDatabaseBytes } from "./artistKnowledgeRefresh.js";
+import { readCatalogKnowledgeControl, setCatalogKnowledgeMode, collectCatalogKnowledgeControl } from "./catalogKnowledgeControl.js";
 
 const MBID = "11111111-1111-4111-8111-111111111111";
 const OTHER = "22222222-2222-4222-8222-222222222222";
@@ -13,7 +15,7 @@ const result = (mbid = MBID) => ({ mbid, wikidataId: "Q123", wikidataUrl: "https
     licenseUrl: "https://creativecommons.org/licenses/by-sa/4.0/", modified: true,
     mbid, wikidataId: "Q123", retrievedAt: AT } });
 
-function fixture(t, { fetchKnowledge = async () => result(), storageReady, now = () => AT } = {}) {
+function fixture(t, { fetchKnowledge = async () => result(), storageReady, memoryReady, databaseBytes, env = {}, now = () => AT } = {}) {
   const database = new DatabaseSync(":memory:");
   database.exec(`PRAGMA foreign_keys=ON;
     CREATE TABLE artists(norm TEXT PRIMARY KEY,name TEXT,mbid TEXT,bio TEXT,country TEXT,data TEXT,rank_score INTEGER,updated_at INTEGER);
@@ -23,7 +25,7 @@ function fixture(t, { fetchKnowledge = async () => result(), storageReady, now =
   const insert = (norm = "example", options = {}) => database.prepare("INSERT INTO artists VALUES (?,?,?,?,?,?,?,?)")
     .run(norm, norm, options.mbid ?? MBID, options.bio ?? null, options.country ?? null,
       options.data ?? "{}", options.rank ?? 1, AT);
-  const service = createArtistKnowledgeRefresher({ database, fetchKnowledge, now, storageReady });
+  const service = createArtistKnowledgeRefresher({ database, fetchKnowledge, now, storageReady, memoryReady, databaseBytes, env });
   return { database, service, insert, row: (key = "example") => database.prepare("SELECT * FROM artists WHERE norm=?").get(key),
     check: (key = "example") => database.prepare("SELECT * FROM artist_knowledge_checks WHERE artist_key=?").get(key) };
 }
@@ -208,11 +210,11 @@ test("disk guard reserves backup headroom and fails closed on unknown metrics", 
   assert.equal(artistKnowledgeStorageReady("dir", "db", options(512 * 1024 ** 2, 400 * 1024 ** 2)), false);
   assert.equal(artistKnowledgeStorageReady("dir", "db", { statfs: () => { throw new Error("unavailable"); } }), false);
   assert.equal(artistKnowledgeStorageReady("dir", "db", {
-    statfs: () => ({ bavail: 500 * 1024 ** 2, bsize: 1 }),
+    statfs: () => ({ bavail: 550 * 1024 ** 2, bsize: 1 }),
     stat: (path) => ({ size: path.endsWith("-wal") ? 200 * 1024 ** 2 : 100 * 1024 ** 2 }),
   }), false);
   assert.equal(artistKnowledgeStorageReady("dir", "db", {
-    statfs: () => ({ bavail: 500 * 1024 ** 2, bsize: 1 }),
+    statfs: () => ({ bavail: 600 * 1024 ** 2, bsize: 1 }),
     stat: (path) => { if (path.endsWith("-wal")) throw Object.assign(new Error("absent"), { code: "ENOENT" }); return { size: 100 }; },
   }), true);
 });
@@ -226,7 +228,102 @@ test("scheduler is explicit on hosted runtimes and uses shared admission and per
   assert.equal(startArtistKnowledgeScheduler({ env: { ARTIST_KNOWLEDGE_ENABLED: "true", ARTIST_KNOWLEDGE_BATCH: "999" }, logger,
     schedule: (value) => { options = value; return handle; }, coordinate: async (job) => { coordinated++; return job(); },
     service: { runBatch: async (value) => { received = value; return { checked: 0 }; } } }), handle);
-  assert.equal(options.intervalMs, 900_000); assert.equal(options.initialDelayMs, 180_000);
+  assert.equal(options.intervalMs, 60_000); assert.equal(options.initialDelayMs, 180_000);
   const signal = new AbortController().signal; await options.run({ signal });
-  assert.equal(coordinated, 1); assert.equal(received.signal, signal); assert.equal(received.limit, 10);
+  assert.equal(coordinated, 1); assert.equal(received.signal, signal); assert.equal(received.respectCadence, true);
+});
+
+test("catch-up runs three lanes, keeps all claims distinct, then returns to one maintenance lane", async (t) => {
+  let active = 0, peak = 0;
+  const f = fixture(t, { env: { ARTIST_KNOWLEDGE_MODE: "catch_up" }, fetchKnowledge: async () => {
+    active++; peak = Math.max(peak, active);
+    await new Promise(resolve => setImmediate(resolve));
+    active--; return result();
+  } });
+  for (let i = 0; i < 9; i++) f.insert(`artist-${i}`);
+  const stats = await f.service.runBatch();
+  assert.equal(stats.checked, 9); assert.equal(stats.filled, 9); assert.equal(peak, 3);
+  const control = collectCatalogKnowledgeControl(f.database, { at: AT });
+  assert.equal(control.mode, "maintenance"); assert.equal(control.limits.lanes, 1);
+  assert.equal(control.initialSweepFinishedAt, AT); assert.equal(control.budget.attempts, 9);
+  assert.equal(control.progress.totalArtists, 9); assert.equal(control.progress.alreadyComplete, 9);
+});
+
+test("no match is unresolved, missing identity is review work, not a completed catalog", async (t) => {
+  const f = fixture(t, { env: { ARTIST_KNOWLEDGE_MODE: "catch_up" }, fetchKnowledge: async () => null });
+  f.insert(); f.insert("unknown", { mbid: "no-identity" });
+  await f.service.runBatch();
+  const control = collectCatalogKnowledgeControl(f.database, { at: AT });
+  assert.equal(control.mode, "maintenance"); assert.equal(control.progress.unresolved, 1);
+  assert.equal(control.progress.needsIdentity, 1); assert.equal(control.progress.alreadyComplete, 0);
+});
+
+test("daily attempt/request caps and due time survive pause/resume and worker recreation", async (t) => {
+  let calls = 0, clock = AT;
+  const env = { ARTIST_KNOWLEDGE_MODE: "catch_up", ARTIST_KNOWLEDGE_DAILY_ARTISTS: "2", ARTIST_KNOWLEDGE_DAILY_REQUESTS: "2" };
+  const fetchKnowledge = async ({ beforeRequest }) => { beforeRequest(); calls++; return null; };
+  const f = fixture(t, { env, now: () => clock, fetchKnowledge });
+  for (let i = 0; i < 5; i++) f.insert(`artist-${i}`);
+  const stats = await f.service.runBatch({ respectCadence: true });
+  assert.equal(stats.budgetPaused, true); assert.equal(calls, 2);
+  setCatalogKnowledgeMode(f.database, "paused", { at: clock, env });
+  setCatalogKnowledgeMode(f.database, "catch_up", { at: clock, env });
+  const restarted = createArtistKnowledgeRefresher({ database: f.database, env, now: () => clock, fetchKnowledge });
+  assert.equal((await restarted.runBatch({ respectCadence: true })).waiting, true);
+  clock += 600_001;
+  assert.equal((await restarted.runBatch()).budgetPaused, true); assert.equal(calls, 2);
+  const budget = readCatalogKnowledgeControl(f.database, { env, at: clock }).budget;
+  assert.equal(budget.attempts, 2); assert.equal(budget.requests, 2);
+  clock += 86400_000;
+  await restarted.runBatch(); assert.equal(calls, 4);
+});
+
+test("disk/memory/growth/mode changes during requests stop writes, not just later batches", async (t) => {
+  for (const kind of ["disk", "memory", "growth", "mode"]) {
+    let ready = true, bytes = 1024;
+    let f;
+    f = fixture(t, { storageReady: () => kind !== "disk" || ready,
+      memoryReady: () => kind !== "memory" || ready, databaseBytes: () => bytes,
+      fetchKnowledge: async () => {
+        ready = false; bytes += 257 * 1024 ** 2;
+        if (kind === "mode") setCatalogKnowledgeMode(f.database, "paused", { at: AT });
+        return result();
+      } });
+    f.insert(); const stats = await f.service.runBatch();
+    assert.equal(f.row().bio, null); assert.equal(f.row().country, null);
+    assert.equal(stats[{ disk: "storagePaused", memory: "memoryPaused", growth: "capPaused", mode: "modePaused" }[kind]], true);
+    assert.equal(f.check().status, "leased");
+  }
+});
+
+test("actual provider request budget can stop halfway through a lookup without publishing partial facts", async (t) => {
+  let requests = 0;
+  const f = fixture(t, { env: { ARTIST_KNOWLEDGE_DAILY_REQUESTS: "2" },
+    fetchKnowledge: async ({ beforeRequest }) => {
+      for (let i = 0; i < 4; i++) { beforeRequest(); requests++; }
+      return result();
+    } });
+  f.insert(); const stats = await f.service.runBatch();
+  assert.equal(stats.budgetPaused, true); assert.equal(requests, 2);
+  assert.equal(f.row().bio, null); assert.equal(f.check().status, "leased");
+});
+
+test("runtime memory guard yields to uploads, queued interactions, and unavailable metrics", () => {
+  const healthy = { limitBytes: 2048 * 1024 ** 2, usedBytes: 400 * 1024 ** 2, reservedBytes: 128 * 1024 ** 2,
+    activeKinds: ["background"], queued: 0 };
+  assert.equal(artistKnowledgeMemoryReady({ snapshot: () => healthy }), true);
+  for (const change of [{ queued: 1 }, { activeKinds: ["background", "image"] }, { limitBytes: null },
+    { usedBytes: 2000 * 1024 ** 2 }]) {
+    assert.equal(artistKnowledgeMemoryReady({ snapshot: () => ({ ...healthy, ...change }) }), false);
+  }
+  assert.equal(artistKnowledgeMemoryReady({ snapshot: () => { throw new Error("unavailable"); } }), false);
+});
+
+test("growth accounting includes WAL and fails closed for inaccessible files", () => {
+  assert.equal(artistKnowledgeDatabaseBytes("db", { stat: path => ({ size: path.endsWith("-wal") ? 200 : 100 }) }), 300);
+  assert.equal(artistKnowledgeDatabaseBytes("db", { stat: path => {
+    if (path.endsWith("-wal")) throw Object.assign(new Error("absent"), { code: "ENOENT" });
+    return { size: 100 };
+  } }), 100);
+  assert.equal(artistKnowledgeDatabaseBytes("db", { stat: () => { throw new Error("unavailable"); } }), null);
 });
