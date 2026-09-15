@@ -11,7 +11,7 @@ import { createServer } from "node:http";
 import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { join, extname, normalize, dirname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { db, q, publicUser, pruneMissingArtists } from "./db.js";
+import { db, q, publicUser, pruneMissingArtists, DATABASE_DIRECTORY, DATABASE_PATH } from "./db.js";
 import { artistDeathWatchService, eraseAccountForInactivity, routes } from "./api.js";
 import { ApiError, errorEnvelope } from "./errors.js";
 import { readAuthorizedRequest } from "./requestAuthorization.js";
@@ -55,6 +55,7 @@ import {
   stopArtistPhotoSeedScheduler,
 } from "./artistPhotoSeedScheduler.js";
 import { startCacheWarmScheduler } from "./cacheWarmer.js";
+import { startArtistKnowledgeScheduler } from "./artistKnowledgeRefresh.js";
 import { startBackupScheduler } from "./backupScheduler.js";
 import { startMediaDeletionScheduler } from "./mediaDeletion.js";
 import { startFounderOperationsScheduler } from "./siteHealthDigest.js";
@@ -824,6 +825,7 @@ let legacyImageRecoveryScheduler = null;
 let artistDeathWatchScheduler = null;
 let tourDateScheduler = null;
 let cacheWarmScheduler = null;
+let artistKnowledgeScheduler = null;
 let backupScheduler = null;
 let mediaDeletionScheduler = null;
 let accountLifecycleScheduler = null;
@@ -842,6 +844,7 @@ function shutdown(exitCode = 0) {
   const artistDeathWatchStop = artistDeathWatchScheduler?.stop() || Promise.resolve();
   const tourDateStop = tourDateScheduler?.stop({ abortActive: true }) || Promise.resolve();
   const cacheWarmStop = cacheWarmScheduler?.stop({ abortActive: true }) || Promise.resolve();
+  const artistKnowledgeStop = artistKnowledgeScheduler?.stop({ abortActive: true }) || Promise.resolve();
   const backupStop = backupScheduler?.stop({ abortActive: true }) || Promise.resolve();
   const mediaDeletionStop = mediaDeletionScheduler?.stop({ abortActive: true }) || Promise.resolve();
   const accountLifecycleStop = accountLifecycleScheduler?.stop() || Promise.resolve();
@@ -867,6 +870,8 @@ function shutdown(exitCode = 0) {
     catch (error) { console.error(`[pit] tour-date scheduler shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     try { await cacheWarmStop; }
     catch (error) { console.error(`[pit] catalogue enrichment shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
+    try { await artistKnowledgeStop; }
+    catch (error) { console.error(`[pit] artist knowledge shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     try { await backupStop; }
     catch (error) { console.error(`[pit] database backup shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     try { await mediaDeletionStop; }
@@ -1005,6 +1010,9 @@ async function startServer() {
     startBackgroundRuntime("/startup/artist-photos", () => startArtistPhotoSeedScheduler()); // Spotify artist-page images, bounded and never on a foreground read
     artistDeathWatchScheduler = startBackgroundRuntime("/startup/death-watch", () => startArtistDeathWatchScheduler({ service: artistDeathWatchService }));
     cacheWarmScheduler = startBackgroundRuntime("/startup/catalog-warm", () => startCacheWarmScheduler()); // runs keyless catalogue enrichment; provider playback warming obeys the shared product gate
+    artistKnowledgeScheduler = startBackgroundRuntime("/startup/artist-knowledge", () => startArtistKnowledgeScheduler({
+      database: db, directory: DATABASE_DIRECTORY, databasePath: DATABASE_PATH,
+    })); // Exact Wikidata/Wikipedia identity, bounded missing-field enrichment only.
     backupScheduler = startBackgroundRuntime("/startup/database-backup", () => startBackupScheduler()); // verified daily SQLite snapshot on /data; private off-host copy when configured
     mediaDeletionScheduler = startBackgroundRuntime("/startup/media-deletion", () => startMediaDeletionScheduler({ database: db })); // bounded, durable cleanup of active user-media objects only
     accountLifecycleScheduler = startBackgroundRuntime("/startup/account-inactivity", () => startAccountLifecycleScheduler({

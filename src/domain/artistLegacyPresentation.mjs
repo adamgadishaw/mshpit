@@ -19,7 +19,7 @@ export function artistLegacyPresentation({
   const catalog = record(catalogArtist);
   if (!legacyMode) {
     return Object.freeze({
-      bio: text(cached.ownerBio) || text(catalog.bio),
+      bio: cached.bioStaffCurated === true ? text(cached.ownerBio) : text(cached.ownerBio) || text(catalog.bio),
       bannerUri: text(cached.banner) || text(catalog.photo),
       profileUri: text(cached.photo) || text(catalog.photo),
       profileAvatarUri: text(cached.profileAvatarUri),
@@ -35,7 +35,7 @@ export function artistLegacyPresentation({
   const current = confirmedPage?.legacyProfile === true ? record(confirmedPage) : null;
   const profile = current ? record(current.profile) : {};
   return Object.freeze({
-    bio: text(profile.bio) || text(catalog.bio),
+    bio: profile.bioStaffCurated === true ? text(profile.bio) : text(profile.bio) || text(catalog.bio),
     bannerUri: text(profile.banner) || text(catalog.photo),
     profileUri: text(profile.avatarUri) || text(catalog.photo),
     profileAvatarUri: text(profile.avatarUri),

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { fixtureApiResponse, injectCollectionFixture, navigationCases, serverCollectionPaths, clientCollectionPaths, postPath, eventPath } from "./verify-navigation-browser.mjs";
+import { fixtureApiResponse, injectCollectionFixture, navigationCases, serverCollectionPaths, clientCollectionPaths, postPath, eventPath, artistPath, navigationArtist } from "./verify-navigation-browser.mjs";
 
 test("navigation fixture import is inert and scenarios cover both mobile and desktop", () => {
   assert.equal(new Set(navigationCases.map(item => item.name)).size, navigationCases.length);
@@ -49,6 +49,17 @@ test("public resolver fixtures cannot silently substitute one entity for another
   assert.throws(() => fixtureApiResponse("/api/resolve", { resolvedPath: "/artist/not-fixtured" }), /unrelated URL/);
   assert.equal(fixtureApiResponse("/api/posts/p_navigation_fixture").post.id, postPath.split("/").at(-1));
   assert.deepEqual(fixtureApiResponse("/api/me"), { user: null });
+});
+
+test("artist attribution browser fixture covers licensed text, staff replacement and deliberate clear", () => {
+  assert.equal(navigationCases.filter(item => item.kind === "artist-attribution").length, 1);
+  assert.equal(fixtureApiResponse("/api/resolve", { resolvedPath: artistPath }).entity.kind, "artist");
+  assert.deepEqual(fixtureApiResponse("/api/artists/resolve"), { artist: navigationArtist });
+  const path = "/api/artists/fixture%20artist/profile";
+  assert.equal(fixtureApiResponse(path).profile, null);
+  assert.deepEqual(fixtureApiResponse(path, { artistBioMode: "cleared" }).profile, { bioStaffCurated: true, bio: null });
+  assert.equal(fixtureApiResponse(path, { artistBioMode: "replacement" }).profile.bioStaffCurated, true);
+  assert.throws(() => fixtureApiResponse(path, { artistBioMode: "arbitrary" }), /Unknown artist biography/);
 });
 
 test("fixture page metadata is path-specific and cannot turn a private tab into a canonical public page", () => {

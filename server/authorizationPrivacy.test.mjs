@@ -473,6 +473,7 @@ test("admin photo-only artist save confirms the public photo when the existing b
   assert.deepEqual(result.profile, {
     ownerId: null,
     bio: null,
+    bioStaffCurated: true,
     banner: null,
     avatarUri: avatar.url,
     feedEnabled: false,
@@ -488,7 +489,7 @@ test("admin photo-only artist save confirms the public photo when the existing b
   }).profile.avatarUri, avatar.url);
 });
 
-test("artist profile save treats an explicitly empty biography as a clear", () => {
+test("admin biography clears preserve curation authority in storage and public reads", () => {
   const adminSeed = addUser("artist_bio_clear_admin", { role: "fan" });
   db.prepare("UPDATE users SET role='admin' WHERE id=?").run(adminSeed.id);
   const admin = q.userById.get(adminSeed.id);
@@ -496,17 +497,51 @@ test("artist profile save treats an explicitly empty biography as a clear", () =
     (artist_key,owner_id,bio,feed_enabled,updated_at)
     VALUES ('artist bio clear',NULL,'Old biography',0,?)`).run(Date.now());
 
-  const result = routes["PATCH /api/artists/:key/profile"]({
-    user: admin,
-    ip: "artist-bio-clear",
-    params: { key: "artist bio clear" },
-    body: { bio: "   " },
-  });
+  for (const bio of ["A staff biography.", "", "   "]) {
+    const result = routes["PATCH /api/artists/:key/profile"]({
+      user: admin,
+      ip: "artist-bio-clear",
+      params: { key: "artist bio clear" },
+      body: { bio },
+    });
+    const expectedBio = bio.trim() || null;
+    assert.equal(result.ok, true);
+    assert.equal(result.profile.bio, expectedBio);
+    assert.equal(result.profile.bioStaffCurated, true);
+    assert.deepEqual({ ...db.prepare(`SELECT bio,bio_staff_curated FROM artist_profiles
+      WHERE artist_key='artist bio clear'`).get() }, { bio: expectedBio, bio_staff_curated: 1 });
+    const publicProfile = routes["GET /api/artists/:key/profile"]({
+      params: { key: "artist bio clear" },
+    }).profile;
+    assert.equal(publicProfile.bio, expectedBio);
+    assert.equal(publicProfile.bioStaffCurated, true);
+  }
 
-  assert.equal(result.ok, true);
-  assert.equal(result.profile.bio, null);
-  assert.equal(db.prepare(`SELECT bio FROM artist_profiles
-    WHERE artist_key='artist bio clear'`).get().bio, null);
+  const unrelatedEdit = routes["PATCH /api/artists/:key/profile"]({
+    user: admin, ip: "artist-bio-clear-unrelated", params: { key: "artist bio clear" },
+    body: { feedEnabled: true },
+  });
+  assert.equal(unrelatedEdit.profile.bio, null);
+  assert.equal(unrelatedEdit.profile.bioStaffCurated, true, "omitted biography leaves the deliberate clear intact");
+});
+
+test("artist-authored biography writes never inherit or forge staff curation", () => {
+  const owner = addUser("artist_bio_author", { role: "artist", artistName: "Artist Bio Author" });
+  const key = "artist bio author";
+  db.prepare(`INSERT INTO artist_profiles
+    (artist_key,owner_id,bio,bio_staff_curated,feed_enabled,updated_at)
+    VALUES (?,?,'Old staff biography',1,0,?)`).run(key, owner.id, Date.now());
+
+  for (const bio of ["The artist's own biography.", ""]) {
+    const result = routes["PATCH /api/artists/:key/profile"]({
+      user: q.userById.get(owner.id), ip: "artist-bio-author", params: { key },
+      body: { bio, bioStaffCurated: true, bio_staff_curated: 1 },
+    });
+    assert.equal(result.profile.bio, bio || null);
+    assert.equal(result.profile.bioStaffCurated, false);
+    assert.equal(db.prepare("SELECT bio_staff_curated FROM artist_profiles WHERE artist_key=?").get(key).bio_staff_curated, 0);
+    assert.equal(routes["GET /api/artists/:key/profile"]({ params: { key } }).profile.bioStaffCurated, false);
+  }
 });
 
 test("artist profile publication requires the finalized descriptor purpose for each slot", () => {

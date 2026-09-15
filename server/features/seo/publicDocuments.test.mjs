@@ -307,6 +307,83 @@ function service(database) {
   return createPublicDocumentService({ database, origin: "https://www.example.com" });
 }
 
+function importedBiography(bio = "Alpha is a Canadian band formed in Toronto.") {
+  return { artistKnowledge: { version: 1, mbid: ARTIST_MBID, wikidataId: "Q123",
+    wikidataUrl: "https://www.wikidata.org/wiki/Q123", bio,
+    bioSource: { provider: "wikipedia", url: "https://en.wikipedia.org/wiki/Alpha_(band)",
+      revisionUrl: "https://en.wikipedia.org/w/index.php?oldid=123456789", license: "CC BY-SA 4.0",
+      licenseUrl: "https://creativecommons.org/licenses/by-sa/4.0/", modified: true,
+      mbid: ARTIST_MBID, wikidataId: "Q123", retrievedAt: NOW } } };
+}
+
+test("ordinary and legacy artist documents attribute imported biographies without exposing provider records", () => {
+  const database = createDatabase();
+  try {
+    const data = importedBiography();
+    addArtist(database, { bio: data.artistKnowledge.bio, data });
+    const documents = service(database);
+    for (const legacy of [false, true]) {
+      if (legacy) assert.equal(saveMemorial(database, { deathDate: "1969-12-31" }).ok, true);
+      const document = documents.artistDocument({ artistKey: "alpha", at: NOW });
+      assert.deepEqual(document.artist.bioSource, data.artistKnowledge.bioSource);
+      assert.equal(document.artist.artistKnowledge, undefined);
+      const html = documents.render(document);
+      assert.match(html, /Edited excerpt from/);
+      assert.match(html, /href="https:\/\/en\.wikipedia\.org\/wiki\/Alpha_\(band\)"[^>]*>Wikipedia contributors<\/a>/);
+      assert.match(html, /href="https:\/\/en\.wikipedia\.org\/w\/index\.php\?oldid=123456789"[^>]*>Source revision<\/a>/);
+      assert.match(html, /href="https:\/\/creativecommons\.org\/licenses\/by-sa\/4\.0\/" rel="license noopener noreferrer">CC BY-SA 4\.0<\/a>/);
+    }
+  } finally { database.close(); }
+});
+
+test("biography display formatting retains attribution, but bad identity or source suppresses imported text", () => {
+  const database = createDatabase();
+  try {
+    const data = importedBiography("Alpha  is a Canadian band.\r\n\r\nAn edited excerpt.");
+    addArtist(database, { bio: data.artistKnowledge.bio, data });
+    const documents = service(database);
+    const document = documents.artistDocument({ artistKey: "alpha", at: NOW });
+    assert.equal(document.artist.bio, "Alpha is a Canadian band.\n\nAn edited excerpt.");
+    assert.deepEqual(document.artist.bioSource, data.artistKnowledge.bioSource);
+    database.prepare("UPDATE artists SET mbid=? WHERE norm='alpha'").run(OTHER_MBID);
+    const rebound = documents.artistDocument({ artistKey: "alpha", at: NOW });
+    assert.equal(rebound.artist.bio, "");
+    assert.equal(rebound.artist.bioSource, null);
+    assert.doesNotMatch(documents.render(rebound), /Alpha is a Canadian band|Wikipedia contributors|CC BY-SA/);
+    data.artistKnowledge.bioSource.url = 'javascript:alert("unsafe")';
+    database.prepare("UPDATE artists SET mbid=?,data=? WHERE norm='alpha'").run(ARTIST_MBID, JSON.stringify(data));
+    const unsafe = documents.artistDocument({ artistKey: "alpha", at: NOW });
+    assert.equal(unsafe.artist.bio, "");
+    assert.doesNotMatch(documents.render(unsafe), /javascript:|Wikipedia contributors/);
+    database.prepare("UPDATE artists SET bio='An independent staff replacement.' WHERE norm='alpha'").run();
+    const replacement = documents.artistDocument({ artistKey: "alpha", at: NOW });
+    assert.equal(replacement.artist.bio, "An independent staff replacement.");
+    assert.equal(replacement.artist.bioSource, null);
+  } finally { database.close(); }
+});
+
+test("staff replacements and deliberate clears never restore imported catalogue biographies", () => {
+  const database = createDatabase();
+  try {
+    const data = importedBiography();
+    addArtist(database, { bio: data.artistKnowledge.bio, data });
+    addUser(database, "staff");
+    database.exec("UPDATE users SET role='admin' WHERE id='staff'");
+    database.prepare("INSERT INTO artist_profiles(artist_key,owner_id,bio,bio_staff_curated) VALUES('alpha','staff',?,1)").run("Staff replacement.");
+    const documents = service(database);
+    for (const legacy of [false, true]) {
+      if (legacy) assert.equal(saveMemorial(database, { deathDate: "1969-12-31" }).ok, true);
+      for (const bio of ["Staff replacement.", "", null]) {
+        database.prepare("UPDATE artist_profiles SET bio=? WHERE artist_key='alpha'").run(bio);
+        const document = documents.artistDocument({ artistKey: "alpha", at: NOW });
+        assert.equal(document.artist.bio, bio || "");
+        assert.equal(document.artist.bioSource, null);
+        assert.doesNotMatch(documents.render(document), /Wikipedia contributors|CC BY-SA|Alpha is a Canadian band/);
+      }
+    }
+  } finally { database.close(); }
+});
+
 test("artist SEO and the app share complete public calendar counts and eligible reviewer/show reputation", () => {
   const database = createDatabase();
   try {

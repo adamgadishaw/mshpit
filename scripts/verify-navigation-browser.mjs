@@ -21,6 +21,16 @@ export const navigationUser = Object.freeze({
 });
 export const postPath = "/post/p_navigation_fixture";
 export const eventPath = "/event/tm_navigation_fixture";
+export const artistPath = "/artist/fixture-artist";
+export const navigationArtist = Object.freeze({
+  name: "Fixture Artist", key: "fixture-artist", publicSlug: "fixture-artist",
+  mbid: "12345678-1234-4234-8234-123456789abc", country: "Canada",
+  bio: "Fixture Artist is a Canadian band. This biography is a licensed navigation fixture excerpt.",
+  bioSource: Object.freeze({ provider: "wikipedia", url: "https://en.wikipedia.org/wiki/Fixture_Artist",
+    revisionUrl: "https://en.wikipedia.org/w/index.php?oldid=123456789", license: "CC BY-SA 4.0",
+    licenseUrl: "https://creativecommons.org/licenses/by-sa/4.0/", modified: true,
+    mbid: "12345678-1234-4234-8234-123456789abc", wikidataId: "Q123", retrievedAt: 1787659200000 }),
+});
 export const serverCollectionPaths = Object.freeze([
   "/concerts", "/events/page/2", "/artists/page/2", "/venues/us/davis", "/artist/fixture-artist/concerts/page/2",
 ]);
@@ -39,6 +49,7 @@ export const navigationCases = Object.freeze([
     ...clientCollectionPaths.map(path => ({ name: `client-collection-${path.slice(1)}-${width}`, kind: "client-document", path, width })),
     ...serverCollectionPaths.map((path, index) => ({ name: `server-collection-${index + 1}-${width}`, kind: "server-document", path, width })),
   ]),
+  { name: "artist-biography-attribution-1280", kind: "artist-attribution", path: artistPath, width: 1280 },
 ]);
 
 export function injectCollectionFixture(html, path) {
@@ -49,7 +60,7 @@ export function injectCollectionFixture(html, path) {
   return html.replace('<div id="root">', '<div id="root">' + document);
 }
 
-export function fixtureApiResponse(pathname, { member = false, method = "GET", resolvedPath = postPath } = {}) {
+export function fixtureApiResponse(pathname, { member = false, method = "GET", resolvedPath = postPath, artistBioMode = "imported" } = {}) {
   if (pathname === "/api/client-errors" && method === "POST") return { ok: true };
   assert.equal(method, "GET", `Navigation must not mutate data: ${method} ${pathname}`);
   if (pathname === "/api/me") return { user: member ? navigationUser : null };
@@ -59,6 +70,7 @@ export function fixtureApiResponse(pathname, { member = false, method = "GET", r
     return { path: resolvedPath, head: `<title>Navigation fixture ${resolvedPath}</title><meta name="robots" content="${privatePage ? "noindex,nofollow" : "index,follow"}">${privatePage ? "" : `<link rel="canonical" href="${resolvedPath}">`}` };
   }
   if (pathname === "/api/resolve") {
+    if (resolvedPath === artistPath) return { entity: { kind: "artist", name: navigationArtist.name, path: artistPath } };
     if (resolvedPath === eventPath) return { entity: { kind: "event", id: "tm_navigation_fixture", path: eventPath, publicEventSnapshot: true, name: "Fixture Artist Live",
       artist: "Fixture Artist", artistKey: "fixture-artist", venue: "Fixture Venue", city: "Toronto", date: "2026-10-01" } };
     assert.equal(resolvedPath, postPath, "The fixture must not resolve an unrelated URL as a post.");
@@ -78,10 +90,22 @@ export function fixtureApiResponse(pathname, { member = false, method = "GET", r
   if (pathname === "/api/discover/overview") return { artists: [], venues: [], events: [], genres: [], countries: [] };
   if (pathname === "/api/discover/chart") return { rows: [], source: "fixture" };
   if (pathname === "/api/artists") return { artists: [] };
+  if (pathname === "/api/artists/resolve") return { artist: navigationArtist };
+  if (pathname === "/api/artists/photos") return { photos: [] };
+  if (["/api/artists/fixture%20artist/profile", "/api/artists/fixture-artist/profile"].includes(pathname)) {
+    assert.ok(["imported", "replacement", "cleared"].includes(artistBioMode), "Unknown artist biography fixture mode.");
+    return { profile: artistBioMode === "imported" ? null : { bioStaffCurated: true,
+      bio: artistBioMode === "cleared" ? null : "Staff replacement biography fixture." }, posts: [], legacyProfile: false };
+  }
+  if (["/api/artists/fixture%20artist/live-summary", "/api/artists/fixture-artist/live-summary"].includes(pathname)) return {
+    artist: { key: navigationArtist.key, name: navigationArtist.name },
+    reputation: { avgRating: null, ratingCount: 0, reviewCount: 0, showCount: 0 },
+    schedule: { items: [], total: 0, hasMore: false, nextCursor: null, legacy: false, coverage: { status: "fresh" } },
+  };
   if (pathname === "/api/fanclubs") return { clubs: [] };
   if (pathname === "/api/venues") return { venues: [] };
   if (pathname === "/api/cities") return { cities: [] };
-  if (pathname === "/api/artists/fixture-artist/memorial") return { memorial: null };
+  if (["/api/artists/fixture-artist/memorial", "/api/artists/fixture%20artist/memorial"].includes(pathname)) return { memorial: null };
   if (pathname === "/api/venues/fixture%20venue/photos") return { photos: [], state: "ready" };
   if (pathname.startsWith("/api/shows/")) return { show: null };
   if (pathname.startsWith("/api/going/") && pathname.endsWith("/attendees")) return { attendees: [], total: 0, scope: "everyone" };
@@ -184,7 +208,7 @@ async function visiblePage(page, path) {
 
 async function runCase(browser, origin, item) {
   const context = await browser.newContext({ viewport: { width: item.width, height: 844 }, isMobile: item.width < 620, hasTouch: item.width < 620, serviceWorkers: "block" });
-  const state = { member: !!item.member, calls: [], pageErrors: [], consoleErrors: [], reports: [], routeErrors: [], releaseResolve: null, resolveReleased: false, snapshots: [] };
+  const state = { member: !!item.member, artistBioMode: "imported", calls: [], pageErrors: [], consoleErrors: [], reports: [], routeErrors: [], releaseResolve: null, resolveReleased: false, snapshots: [] };
   await context.addInitScript(({ user, origin }) => {
     // The context script also runs in a new tab's opaque about:blank document.
     // Do not access storage there (or in any non-fixture document).
@@ -216,7 +240,7 @@ async function runCase(browser, origin, item) {
         await new Promise(done => { state.releaseResolve = done; });
         state.resolveReleased = true;
       }
-      const body = fixtureApiResponse(url.pathname, { member: state.member, method: request.method(), resolvedPath: url.searchParams.get("path") || undefined });
+      const body = fixtureApiResponse(url.pathname, { member: state.member, method: request.method(), resolvedPath: url.searchParams.get("path") || undefined, artistBioMode: state.artistBioMode });
       await route.fulfill({ contentType: "application/json", body: JSON.stringify(body) });
     } catch (error) {
       if (item.kind === "delayed" && url.pathname === "/api/resolve" && state.resolveReleased && /closed|disposed|handled|aborted|canceled|cancelled/i.test(error.message)) return;
@@ -343,6 +367,32 @@ async function runCase(browser, origin, item) {
       } else {
         await intro(page, item.width); await landing(page); await assertPath(page, "/");
         await page.goBack({ waitUntil: "networkidle" }); await visiblePage(page, start); await assertPath(page, start);
+      }
+    } else if (item.kind === "artist-attribution") {
+      for (const mode of ["imported", "replacement", "cleared"]) {
+        state.artistBioMode = mode;
+        if (mode !== "imported") await page.reload({ waitUntil: "networkidle" });
+        await page.getByRole("tab", { name: "About artist page section", exact: true }).click();
+        await assertPath(page, artistPath);
+        await assertPageIdentity(page, artistPath);
+        if (mode === "imported") {
+          await page.getByText(navigationArtist.bio, { exact: true }).last().waitFor();
+          await page.getByText("Edited excerpt from Wikipedia.", { exact: true }).last().waitFor();
+          for (const [label, href] of [["Wikipedia contributors", navigationArtist.bioSource.url],
+            ["Source revision", navigationArtist.bioSource.revisionUrl], ["CC BY-SA 4.0", navigationArtist.bioSource.licenseUrl]]) {
+            const citation = page.getByRole("link", { name: label, exact: true }).last();
+            await citation.scrollIntoViewIfNeeded(); await citation.waitFor({ state: "visible" });
+            assert.equal(await citation.getAttribute("href"), href, `${label} must retain its real source URL.`);
+          }
+        } else {
+          if (mode === "replacement") await page.getByText("Staff replacement biography fixture.", { exact: true }).last().waitFor();
+          assert.equal(await page.getByText(navigationArtist.bio, { exact: true }).count(), 0, "A staff override must not refill the imported biography.");
+          for (const label of ["Wikipedia contributors", "Source revision", "CC BY-SA 4.0"]) {
+            assert.equal(await page.getByRole("link", { name: label, exact: true }).count(), 0, "An overridden or cleared biography must not inherit the import citation.");
+          }
+          assert.equal(await page.getByText("Edited excerpt from Wikipedia.", { exact: true }).count(), 0);
+        }
+        await snapshot(`biography ${mode}`);
       }
     } else if (item.kind === "missing-document") {
       await page.getByTestId("public-route-error").waitFor();

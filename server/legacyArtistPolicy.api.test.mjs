@@ -169,6 +169,23 @@ test("legacy artist APIs freeze ownership and media services but keep written co
   const storedStaffBio = db.prepare("SELECT bio,bio_staff_curated FROM artist_profiles WHERE artist_key=?").get(ARTIST_KEY);
   assert.equal(storedStaffBio.bio, "A staff-maintained historical note.");
   assert.equal(storedStaffBio.bio_staff_curated, 1);
+  assert.equal(staffEdit.profile.bioStaffCurated, true);
+
+  const staffClear = routes["PATCH /api/artists/:key/profile"]({
+    user: admin, ip: "legacy-staff-profile-clear", params: { key: ARTIST_KEY },
+    body: { bio: "" },
+  });
+  assert.equal(staffClear.profile.bio, null);
+  assert.equal(staffClear.profile.bioStaffCurated, true,
+    "an intentional staff clear remains authoritative on protected legacy pages");
+  assert.equal(db.prepare("SELECT bio_staff_curated FROM artist_profiles WHERE artist_key=?").get(ARTIST_KEY).bio_staff_curated, 1);
+  const clearedPublic = routes["GET /api/artists/:key/profile"]({ params: { key: ARTIST_KEY } });
+  assert.equal(clearedPublic.profile.bio, null);
+  assert.equal(clearedPublic.profile.bioStaffCurated, true);
+  routes["PATCH /api/artists/:key/profile"]({
+    user: admin, ip: "legacy-staff-profile-restore", params: { key: ARTIST_KEY },
+    body: { bio: "A staff-maintained historical note." },
+  });
 
   assert.deepEqual(routes["DELETE /api/artists/:key/posts/:id"]({
     user: artist, params: { key: ARTIST_KEY, id: "legacy_owner_update" },

@@ -41,6 +41,7 @@ import { refreshScope } from "../domain/scopedRefresh.mjs";
 import ExpandableText from "../components/ExpandableText";
 import BrandMark from "../components/BrandMark";
 import { artistBiographyRows } from "../domain/artistBiography.mjs";
+import { publicArtistKnowledgeSource } from "../domain/artistKnowledge.mjs";
 import { useArtistOverview } from "../features/artistOverview/useArtistOverview";
 import ArtistUpcomingShows from "../components/artist/ArtistUpcomingShows";
 
@@ -63,6 +64,27 @@ const TRACK_REPORT_TYPES = [
   { key: "missing", label: "Missing song" },
   { key: "other", label: "Other" },
 ];
+
+function ArtistBiographyAttribution({ source }) {
+  if (!source) return null;
+  const openSource = (url) => Linking.openURL(url).catch(() => Alert.alert("Source unavailable", "The source could not open. Please try again."));
+  return (
+    <View style={styles.bioAttribution} accessibilityLabel="Biography source and license">
+      <Text selectable style={styles.bioAttributionNotice}>Edited excerpt from Wikipedia.</Text>
+      <View style={styles.bioAttributionLinks}>
+        <PublicPressableLink href={source.url} onNavigate={() => openSource(source.url)} style={styles.bioAttributionLink}>
+          <Text style={styles.bioAttributionText}>Wikipedia contributors</Text>
+        </PublicPressableLink>
+        <PublicPressableLink href={source.revisionUrl} onNavigate={() => openSource(source.revisionUrl)} style={styles.bioAttributionLink}>
+          <Text style={styles.bioAttributionText}>Source revision</Text>
+        </PublicPressableLink>
+        <PublicPressableLink href={source.licenseUrl} onNavigate={() => openSource(source.licenseUrl)} style={styles.bioAttributionLink}>
+          <Text style={styles.bioAttributionText}>{source.license}</Text>
+        </PublicPressableLink>
+      </View>
+    </View>
+  );
+}
 
 function ArtistPageSectionNav({ active, onChange, memorialMode = false, legacyMode = false, statusPending = false }) {
   const tabs = artistPageSectionsForMode({ legacyMode });
@@ -415,6 +437,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
     posts,
     heroGallery,
   } = artistPresentation;
+  const bioSource = publicArtistKnowledgeSource(meta, { bio });
   const hasRegularHeroImage = artistCinematicMedia({
     bannerUri,
     profileUri,
@@ -994,6 +1017,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
             {!legacyMode && !!bio && (
               <View style={styles.heroIntro}>
                 <Text style={styles.bio}>{artistPageSynopsis(bio, { condensed: true, limit: artistWide ? 220 : 160 }).text}</Text>
+                <ArtistBiographyAttribution source={bioSource} />
               </View>
             )}
         {!legacyMode ? <View style={styles.repCard}>
@@ -1157,6 +1181,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
               moreAccessibilityLabel={`Read the full ${a.name} biography`}
               lessAccessibilityLabel={`Show a shorter ${a.name} biography`}
             />
+            <ArtistBiographyAttribution source={bioSource} />
           </View>
         ) : null}
 
@@ -1464,6 +1489,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
               moreAccessibilityLabel={`Read the full ${a.name} biography`}
               lessAccessibilityLabel={`Show a shorter ${a.name} biography`}
             />
+            <ArtistBiographyAttribution source={bioSource} />
           </>
         )}
 
@@ -1884,6 +1910,11 @@ const styles = StyleSheet.create({
   listenBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, paddingVertical: 13 },
   listenTxt: { color: colors.amber, fontSize: 14, fontWeight: "700" },
   bio: { color: colors.textDim, fontSize: 14, lineHeight: 21 },
+  bioAttribution: { marginTop: 8, gap: 2 },
+  bioAttributionNotice: { color: colors.textFaint, fontSize: 11, lineHeight: 16 },
+  bioAttributionLinks: { flexDirection: "row", flexWrap: "wrap", columnGap: 14 },
+  bioAttributionLink: { minHeight: 44, justifyContent: "center" },
+  bioAttributionText: { color: colors.amber, fontSize: 11, fontWeight: "700", textDecorationLine: "underline" },
   bioToggle: { alignSelf: "flex-start", minHeight: 44, flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 2 },
   bioToggleText: { color: colors.amber, fontSize: 12.5, fontWeight: "900" },
   artistFacts: { flexDirection: "row", alignItems: "stretch", gap: 1, marginTop: 12, overflow: "hidden", borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.lineSoft },

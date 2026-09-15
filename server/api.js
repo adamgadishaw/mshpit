@@ -3590,6 +3590,7 @@ function publicArtistProfileProjection(profile) {
   return {
     ownerId: profile.owner_id || null,
     bio: profile.bio ?? null,
+    bioStaffCurated: Number(profile.bio_staff_curated) === 1,
     // A successful mutation must return the same verified media projection that
     // public reads use. This keeps the editor from treating a database write as
     // complete while the next artist-page render still has different artwork.
@@ -3613,6 +3614,7 @@ function publicLegacyArtistProfileProjection(profile) {
     // Only durable staff-curation provenance can publish educational copy.
     // Ownership can later be removed, so owner_id is not a safe proxy.
     bio: profile.bio_staff_curated ? (profile.bio ?? null) : null,
+    bioStaffCurated: Number(profile.bio_staff_curated) === 1,
     banner: adminMedia("banner"),
     avatarUri: adminMedia("avatar"),
     feedEnabled: !!profile.feed_enabled,
@@ -9296,7 +9298,9 @@ export const routes = {
     const sets = [], args = [];
     if (v.bio !== undefined) {
       sets.push("bio=?", "bio_staff_curated=?");
-      args.push(v.bio, u.role === "admin" && !!v.bio ? 1 : 0);
+      // An intentional staff clear is still an editorial decision. Retain its
+      // authority so provider enrichment cannot refill it as a missing bio.
+      args.push(v.bio, u.role === "admin" ? 1 : 0);
     }
     if (bannerChanged) {
       sets.push("banner=?", "banner_owner_id=?");

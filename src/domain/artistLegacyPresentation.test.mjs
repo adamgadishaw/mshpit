@@ -3,6 +3,20 @@ import test from "node:test";
 
 import { artistLegacyPresentation } from "./artistLegacyPresentation.mjs";
 
+test("explicit staff-cleared biographies never fall back to the imported catalogue", () => {
+  const catalogArtist = { bio: "An automatically imported biography." };
+  for (const bio of [null, "", "   "]) {
+    assert.equal(artistLegacyPresentation({ catalogArtist,
+      cachedArtist: { ownerBio: bio, bioStaffCurated: true },
+    }).bio, null);
+    assert.equal(artistLegacyPresentation({ legacyMode: true, catalogArtist,
+      confirmedPage: { legacyProfile: true, profile: { bio, bioStaffCurated: true } },
+    }).bio, null);
+  }
+  assert.equal(artistLegacyPresentation({ catalogArtist, cachedArtist: { ownerBio: null } }).bio,
+    catalogArtist.bio, "an uncurated empty profile still uses existing catalogue behavior");
+});
+
 test("a legacy transition immediately masks cached owner identity and posts", () => {
   assert.deepEqual(artistLegacyPresentation({
     legacyMode: true,

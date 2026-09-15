@@ -8,6 +8,15 @@ const evidenced = (genre) => ({
   genreClaims: [{ value: genre, source: "staff", at: 1 }],
 });
 
+test("artistSummary preserves the staff-clear provenance independently of biography truthiness", () => {
+  for (const bio of [null, "", "A curated biography"]) {
+    const summary = buildArtistSummary({ profile: { bio, bioStaffCurated: true } });
+    assert.equal(summary.bioStaffCurated, true);
+    assert.equal(summary.ownerBio, bio || null);
+  }
+  assert.equal(buildArtistSummary({ profile: { bioStaffCurated: "true" } }).bioStaffCurated, false);
+});
+
 test("artistSummary preserves a matching persisted catalog key instead of reconstructing punctuation", () => {
   const summary = buildArtistSummary({
     name: "A$AP Rocky", key: "a$ap rocky",

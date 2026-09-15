@@ -107,6 +107,12 @@ services:
       # cold start and the service has durable storage/headroom.
       - key: CACHE_WARM_ENABLED
         value: "false"
+      # Independent, bounded metadata-only worker; does not re-enable the old
+      # playback/catalogue warm. Pauses on low memory/disk or provider failures.
+      - key: ARTIST_KNOWLEDGE_ENABLED
+        value: "true"
+      - key: ARTIST_KNOWLEDGE_BATCH
+        value: "10"
       # Password recovery is disabled gracefully until both values are set. Never
       # log or expose reset links as a substitute for transactional email.
       - key: RESEND_API_KEY

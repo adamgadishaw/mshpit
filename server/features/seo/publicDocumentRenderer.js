@@ -3,6 +3,7 @@ import { canonicalYouTubeReviewLink } from "../../onlineReviews.js";
 import { renderCityGuideMain, renderCityDirectoryMain } from "./cityGuideDocument.js";
 import { CITY_GUIDE_STYLES } from "./cityGuideStyles.js";
 import { artistBiographyRows } from "../../../src/domain/artistBiography.mjs";
+import { validateArtistKnowledgeSource } from "../../../src/domain/artistKnowledge.mjs";
 import { publicEventTimeLabel } from "./publicMetadataPresentation.js";
 
 const esc = (value) => String(value ?? "")
@@ -230,6 +231,8 @@ function artistMain(document) {
     artist.country ? `<div><dt>From</dt><dd>${esc(artist.country)}</dd></div>` : "",
   ].filter(Boolean).join("");
   const biography = artistBiographyRows(artist.biographyFacts).map((fact) => `<div><dt>${esc(fact.label)}</dt><dd>${esc(fact.value)} <a href="${esc(fact.sourceUrl)}" rel="noopener noreferrer">Source</a></dd></div>`).join("");
+  const bioSource = artist.bio && validateArtistKnowledgeSource(artist.bioSource, { mbid: artist.bioSource?.mbid });
+  const bioAttribution = bioSource ? `<p class="micro bio-attribution">Edited excerpt from <a href="${esc(bioSource.url)}" rel="noopener noreferrer">Wikipedia contributors</a>. <a href="${esc(bioSource.revisionUrl)}" rel="noopener noreferrer">Source revision</a> · <a href="${esc(bioSource.licenseUrl)}" rel="license noopener noreferrer">${esc(bioSource.license)}</a>.</p>` : "";
   const nextShow = nextEvent ? `<div class="artist-next"><p class="eyebrow">Next show</p><h2>${link(nextEvent.path, nextEvent.name)}</h2><p><time datetime="${esc(nextEvent.startDateTime || nextEvent.date)}">${esc(longDateLabel(nextEvent.date) || nextEvent.date)}${publicEventTimeLabel(nextEvent.localTime) ? ` at ${esc(publicEventTimeLabel(nextEvent.localTime))}` : ""}</time> · ${link(nextEvent.venuePath, nextEvent.venue)}${nextEvent.place ? ` · ${esc(nextEvent.place)}` : ""}</p></div>` : "";
   const events = document.events.map((event) => `<li><time datetime="${esc(event.startDateTime || event.date)}"><strong>${esc(dateLabel(event.date))}</strong>${publicEventTimeLabel(event.localTime) ? `<small>${esc(publicEventTimeLabel(event.localTime))}</small>` : ""}</time><div><h3>${link(event.path, event.name)}</h3><p>${link(event.venuePath, event.venue)}${event.place ? ` · ${esc(event.place)}` : ""}</p></div>${event.soldOut ? '<span class="pill">Sold out</span>' : event.statusLabel !== "scheduled" ? `<span class="pill">${esc(event.statusLabel)}</span>` : ""}</li>`).join("");
   const concerts = legacyMode ? "" : (document.concerts || []).map((concert) => `<li><time datetime="${esc(concert.date)}"><strong>${esc(dateLabel(concert.date))}</strong></time><div><h3>${link(concert.path, concert.venue)}</h3>${concert.city ? `<p>${esc(concert.city)}</p>` : ""}</div><span class="archive-score">${memorialMode ? `${esc(concert.reviewCount)} ${concert.reviewCount === 1 ? "fan memory" : "fan memories"}` : `${concert.averageRating != null ? `${esc(concert.averageRating.toFixed(1))}/5 · ` : ""}${esc(concert.ratingCount)} ${concert.ratingCount === 1 ? "rating" : "ratings"}`}</span></li>`).join("");
@@ -262,7 +265,7 @@ function artistMain(document) {
       <p class="eyebrow">${legacyMode ? "Educational legacy profile" : memorialMode ? "In memory" : "Artist on Mshpit"}</p>
       <h1>${esc(artist.name)}</h1>
       ${artist.genres.length ? `<p class="genres">${esc(artist.genres.join(" · "))}</p>` : ""}
-      ${artist.bio ? `<div class="bio">${paragraphs(artist.bio)}</div>` : ""}
+      ${artist.bio ? `<div class="bio">${paragraphs(artist.bio)}</div>${bioAttribution}` : ""}
       ${legacyMode ? `<p class="artist-guide-copy">A protected educational page for biography, music history and written community memories. Live dates, tour archives, new media uploads and fan clubs are closed.</p>` : !memorialMode ? `<p class="artist-guide-copy">Fan reviews, concert photos and upcoming dates in one place.</p>` : ""}
       <dl class="stats artist-facts">${artistFacts}</dl>
       ${nextShow}

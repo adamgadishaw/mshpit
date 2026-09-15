@@ -37,6 +37,7 @@ export function buildArtistSummary({
     photoCredit: prof.avatarUri ? null : cat.photoCredit || null,
     banner: prof.banner || null,
     ownerBio: prof.bio || null,
+    bioStaffCurated: prof.bioStaffCurated === true,
     ownerId: prof.ownerId || null,
     // Catalog keys can differ from display-name spelling. Only a matching,
     // persisted identity may replace the legacy name-key while metadata loads.

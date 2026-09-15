@@ -12,6 +12,7 @@ import {
 import { projectedTourDateTicketUrl } from "../../../src/domain/ticketLinks.mjs";
 import { projectArtistGenre } from "../../../src/domain/genre.mjs";
 import { projectArtistBiography } from "../../../src/domain/artistBiography.mjs";
+import { artistKnowledgeDisplayBio, artistKnowledgeDisplayCountry, projectArtistKnowledgeSource } from "../../../src/domain/artistKnowledge.mjs";
 import { SUPPORT_EMAIL } from "../../../src/domain/contact.mjs";
 import { LANDING_IDENTITY_COPY } from "../../../src/domain/landingPresentation.mjs";
 import { isLegacyArtistMemorial } from "../../../src/domain/artistLegacy.mjs";
@@ -931,9 +932,17 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         .map((asset) => asset.kind === "image" ? asset.url : asset.posterUrl)
         .find(Boolean) || null;
       const name = cleanLine(source.name, 160);
-      const staffLegacyBio = Number(raw.profile?.bio_staff_curated) === 1 ? raw.profile?.bio : null;
+      const staffCuratedBio = Number(raw.profile?.bio_staff_curated) === 1;
       const profileBio = profilePublic ? raw.profile?.bio : null;
-      const bio = cleanBody(legacyMode ? staffLegacyBio || source.bio : profileBio || source.bio, 2_000);
+      // An explicit staff clear is content, not a missing value to refill.
+      const selectedBio = staffCuratedBio ? (legacyMode || profilePublic ? raw.profile?.bio : null)
+        : legacyMode ? source.bio : profileBio || source.bio;
+      const knowledgeData = parseObject(source.data);
+      const displayBio = artistKnowledgeDisplayBio(knowledgeData, { mbid: source.mbid, bio: selectedBio });
+      const bio = cleanBody(displayBio, 2_000);
+      // Validate the exact selected text before harmless display formatting or
+      // excerpting. Formatting an imported excerpt does not remove its credit.
+      const bioSource = bio ? projectArtistKnowledgeSource(knowledgeData, { mbid: source.mbid, bio: displayBio }) : null;
       const reviewCount = count(raw.stats?.review_count);
       const ratingCount = count(raw.stats?.rating_count ?? raw.stats?.review_count);
       const averageRating = memorial ? null : rating(raw.stats?.average_rating);
@@ -1084,7 +1093,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         imageWidth: socialProfileImage?.width || null,
         imageHeight: socialProfileImage?.height || null,
         imageMimeType: socialProfileImage?.mimeType || null,
-        artist: Object.freeze({ name, bio, genres: publicArtistGenres(source), country: cleanLine(source.country, 100) || null, biographyFacts }),
+        artist: Object.freeze({ name, bio, bioSource, genres: publicArtistGenres(source), country: cleanLine(artistKnowledgeDisplayCountry(knowledgeData, { mbid: source.mbid, country: source.country }), 100) || null, biographyFacts }),
         memorial,
         stats: Object.freeze({ reviewCount, ratingCount, averageRating, upcomingTotal }),
         reviews,

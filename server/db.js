@@ -10,6 +10,7 @@ import { createHash } from "node:crypto";
 import { toIsoDate } from "../src/domain/dates.mjs";
 import { projectArtistGenre } from "../src/domain/genre.mjs";
 import { preserveArtistBiography, projectArtistBiography } from "../src/domain/artistBiography.mjs";
+import { artistKnowledgeDisplayBio, artistKnowledgeDisplayCountry, projectArtistKnowledgeSource } from "../src/domain/artistKnowledge.mjs";
 import { ensureArtistScheduleRevisionSchema } from "./features/artistArchive/artistScheduleCandidateIndex.js";
 import { slugify } from "../src/domain/urls.mjs";
 import { readFileSync } from "node:fs";
@@ -2721,6 +2722,10 @@ export function artistRow(key, a, source = "musicbrainz") {
   try { previous = JSON.parse(existing?.data || "{}"); }
   catch { /* architecture: allow-empty-catch -- corrupt legacy metadata cannot supply optional facts. */ }
   a = preserveArtistBiography(previous, a);
+  // Sparse catalogue/provider writes must not detach a downloaded biography
+  // from its license and exact identity. Only the enrichment worker updates it.
+  if (previous?.artistKnowledge) a = { ...a, artistKnowledge: previous.artistKnowledge };
+  if (previous?.artistKnowledgePrevious) a = { ...a, artistKnowledgePrevious: previous.artistKnowledgePrevious };
   const name = a.name || key;
   const rank = (a.popularity != null ? a.popularity * 1000 : 0) + (a.albums?.length || 0) * 10 + ((a.topTracks?.length || 0) ? 5 : 0);
   return {
@@ -2791,7 +2796,7 @@ export function publicArtist(r) {
     // architecture: allow-empty-catch -- corrupt legacy metadata contributes no optional public fields.
   }
   const projectedData = { ...data };
-  for (const key of ["spotifyPhotoCheckedAt", "spotifyPhotoNoMatchSince", "spotifyPhotoLastResult", "biographyStaff", "biographyProvider", "beginYear", "formed"]) {
+  for (const key of ["spotifyPhotoCheckedAt", "spotifyPhotoNoMatchSince", "spotifyPhotoLastResult", "biographyStaff", "biographyProvider", "artistKnowledge", "artistKnowledgePrevious", "bioSource", "beginYear", "formed"]) {
     delete projectedData[key];
   }
   const spotifyId = publicSpotifyId(r.spotify_id || data.spotifyId);
@@ -2817,15 +2822,17 @@ export function publicArtist(r) {
   // stale value; `data` carries the authoritative claims and wins.
   const projectedGenre = projectArtistGenre(data, r.genre);
   const biographyFacts = projectArtistBiography(data, { artistMbid: r.mbid });
+  const bio = artistKnowledgeDisplayBio(data, { mbid: r.mbid, bio: r.bio });
   return {
     // `key` is the catalog's stable identity. The composer sends it back when a
     // suggestion is picked, so a review binds to this artist rather than to
     // whatever string was typed.
     ...projectedData, key: r.norm, name: r.name, publicSlug: r.public_slug || null,
-    photo: spotifyCdnHostedUrl(r.photo) ? null : r.photo, bio: r.bio, mbid: r.mbid, spotifyId: spotifyId || null,
+    photo: spotifyCdnHostedUrl(r.photo) ? null : r.photo, bio, mbid: r.mbid, spotifyId: spotifyId || null,
+    bioSource: projectArtistKnowledgeSource(data, { mbid: r.mbid, bio }),
     biographyFacts,
     formed: biographyFacts?.formedDate?.slice(0, 4) || null,
-    country: r.country, popularity: r.popularity,
+    country: artistKnowledgeDisplayCountry(data, { mbid: r.mbid, country: r.country }), popularity: r.popularity,
     genre: projectedGenre.genre,
     genreHint: projectedGenre.genreHint,
     genreSource: projectedGenre.genreSource,
