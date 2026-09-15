@@ -15,6 +15,10 @@ export async function publicBrowserDestination(path, { accountId = null, signal,
   if (tab) return !accountId && memberTabRequiresAccount(tab)
     ? framed({ auth: true, authMode: "login" }, "/login") : { ...base, tab, path };
   const entry = publicEntryFrame(path);
+  // A valid cookie restored on /login (including a theme reload or Forward)
+  // belongs in the account, not in a second credential form. Explicit linked
+  // account creation has its own member-owned flow and is not this public route.
+  if (entry?.auth && accountId) return { ...base, tab: "feed", path: "/feed" };
   if (entry) return framed(entry);
   if (path === "/privacy" || path === "/terms") return framed({ [path.slice(1)]: true });
   const city = parseCityPath(path);

@@ -1,0 +1,177 @@
+#!/usr/bin/env node
+// Real exported app, synthetic public venues and loopback-only API responses.
+// External map images are mocked, never downloaded or billed during this test.
+import assert from "node:assert/strict";
+import { createServer } from "node:http";
+import { createRequire } from "node:module";
+import { mkdirSync, readFileSync, statSync } from "node:fs";
+import { dirname, extname, join, resolve, sep } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { fixtureApiResponse } from "./verify-navigation-browser.mjs";
+
+const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const screenshotDirectory = join(root, ".tmp", "discover-venues-browser");
+const mapHosts = new Set(["maps.googleapis.com", "api.mapbox.com"]);
+const fixtureYear = new Date().getUTCFullYear() + 1;
+const mapSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="420"><rect width="640" height="420" fill="#0f1a24"/><path d="M0 90H640M0 210H640M0 330H640M100 0V420M320 0V420M540 0V420" stroke="#485768" stroke-width="3"/><text x="16" y="24" font-family="sans-serif" font-size="12" fill="#b9c6d4">Synthetic basemap — no external map request</text></svg>`;
+const event = (id, venue, providerVenueId, { city = "Toronto", region = "Ontario", country = "Canada", lat = 43.65, lng = -79.38, day = 1 } = {}) => Object.freeze({
+  id, artist: `Fixture Band ${id}`, artistKey: `fixture-${id}`, venue, providerVenueId, source: "ticketmaster",
+  place: [city, region, country].filter(Boolean).join(", "), venueCity: city, venueRegion: region, venueCountry: country,
+  venueCountryCode: country === "Canada" ? "CA" : "PT", lat, lng,
+  date: `${fixtureYear}-09-${String(day).padStart(2, "0")}`, releaseAt: 0, providerActive: true,
+});
+export const discoverVenueEvents = Object.freeze([
+  ...[1, 2, 3].map(day => event(`harbour-${day}`, "Fixture Harbour Hall", "fixture-harbour", { lat: 43.63, lng: -79.35, day })),
+  ...[4, 5].map(day => event(`basement-${day}`, "Fixture Basement", "fixture-basement", { lat: 43.66, lng: -79.41, day })),
+  ...Array.from({ length: 9 }, (_, index) => event(`room-${index}`, `A Fixture Room ${index}`, `fixture-room-${index}`, { lat: 43.7 + index * .004, lng: -79.49 + index * .006, day: index + 6 })),
+  event("echo", "Z Fixture Écho Room", "fixture-echo", { lat: 43.68, lng: -79.32, day: 20 }),
+  event("unmapped", "Fixture Unmapped Room", "fixture-unmapped", { lat: null, lng: null, day: 21 }),
+  event("lisbon", "Fixture Lisbon Room", "fixture-lisbon", { city: "Lisbon", region: "", country: "Portugal", lat: 38.735, lng: -9.14, day: 22 }),
+]);
+
+export function discoverVenueFixture(pathname, options = {}) {
+  assert.equal(options.method || "GET", "GET", "The guest venue explorer must not mutate data.");
+  if (pathname === "/api/tourdates") return { tourDates: discoverVenueEvents };
+  if (pathname === "/api/discover/overview") return {
+    chart: { rows: [], source: "popularity" }, genres: [], countries: [{ country: "Canada", count: 16 }, { country: "Portugal", count: 1 }],
+    eventCoverage: { total: discoverVenueEvents.length, venueTotal: 14, countries: [{ country: "Canada", count: 16 }, { country: "Portugal", count: 1 }] },
+  };
+  return fixtureApiResponse(pathname, { ...options, member: false });
+}
+
+async function localServer() {
+  const directory = resolve(root, process.env.PIT_NAVIGATION_BROWSER_DIST || "dist");
+  const htmlPath = join(directory, "index.html");
+  assert.ok(statSync(htmlPath).isFile(), "Build the current web export first.");
+  const mime = { ".js": "text/javascript", ".html": "text/html", ".css": "text/css", ".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp", ".svg": "image/svg+xml", ".ttf": "font/ttf", ".woff2": "font/woff2" };
+  const server = createServer((request, response) => {
+    const url = new URL(request.url, "http://fixture.invalid");
+    if (request.method !== "GET" || url.pathname.startsWith("/api/")) return void response.writeHead(405).end();
+    let file;
+    try { file = resolve(directory, `.${decodeURIComponent(url.pathname)}`); } catch { return void response.writeHead(400).end(); }
+    if (!file.startsWith(directory + sep)) return void response.writeHead(400).end();
+    try { if (!statSync(file).isFile()) file = htmlPath; } catch { file = htmlPath; }
+    response.writeHead(200, { "Content-Type": mime[extname(file)] || "application/octet-stream", "Cache-Control": "no-store" });
+    response.end(readFileSync(file));
+  });
+  await new Promise((done, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", done); });
+  return { server, origin: `http://127.0.0.1:${server.address().port}` };
+}
+
+async function selected(locator, value = true) {
+  await locator.waitFor();
+  const actual = await locator.getAttribute("aria-pressed") ?? await locator.getAttribute("aria-selected");
+  assert.equal(actual, String(value), `Selected venue controls need an accessible selected/pressed state: ${await locator.evaluate(node => node.outerHTML.slice(0, 900))}`);
+}
+
+async function scenario(browser, origin, width, mode) {
+  const context = await browser.newContext({ viewport: { width, height: 900 }, isMobile: width < 620, hasTouch: width < 620, serviceWorkers: "block" });
+  const state = { errors: [], calls: [], maps: 0, reports: [], closing: false };
+  await context.addInitScript(allowedOrigin => {
+    if (location.origin === allowedOrigin) localStorage.setItem("pit_theme", "stage");
+  }, origin);
+  await context.route("**/*", async route => {
+    const request = route.request(), url = new URL(request.url());
+    try {
+      if (mapHosts.has(url.hostname)) {
+        assert.equal(request.method(), "GET"); state.maps++;
+        return await route.fulfill({ contentType: mode === "fallback" ? "image/png" : "image/svg+xml", body: mode === "fallback" ? "intentionally invalid fixture image" : mapSvg });
+      }
+      if (url.origin !== origin) return await route.abort();
+      if (!url.pathname.startsWith("/api/")) return await route.continue();
+      state.calls.push({ path: url.pathname, method: request.method() });
+      if (url.pathname === "/api/client-errors") {
+        state.reports.push(request.postDataJSON());
+        return await route.fulfill({ contentType: "application/json", body: JSON.stringify({ ok: true }) });
+      }
+      const body = discoverVenueFixture(url.pathname, { method: request.method(), resolvedPath: url.searchParams.get("path") || undefined });
+      await route.fulfill({ contentType: "application/json", body: JSON.stringify(body) });
+    } catch (error) {
+      if (state.closing || /closed|disposed|handled|aborted|canceled|cancelled/i.test(error.message)) return;
+      state.errors.push(error.message);
+      await route.abort().catch(() => {});
+    }
+  });
+  const page = await context.newPage(); page.setDefaultTimeout(12_000);
+  page.on("pageerror", error => state.errors.push(error.message));
+  page.on("console", message => { if (message.type() === "error") state.errors.push(message.text()); });
+  const pin = name => page.getByRole("button", { name: new RegExp(`^Map pin \\d+: ${name}$`) });
+  const room = name => page.getByRole("button", { name: new RegExp(`^Select venue \\d+: ${name}$`) });
+  const view = name => page.getByRole("button", { name: `View venue ${name}`, exact: true });
+  const name = `discover-venues-${mode}-${width}`;
+  try {
+    await page.goto(origin + "/discover", { waitUntil: "domcontentloaded", timeout: 12_000 });
+    await page.getByRole("tab", { name: "Venues", exact: true }).click();
+    await page.getByRole("heading", { name: "Find a place. Find a show.", exact: true }).waitFor();
+    await page.getByRole("button", { name: "Explore Toronto, Ontario, Canada", exact: true }).click();
+    await view("Fixture Harbour Hall").waitFor();
+    await selected(page.getByRole("button", { name: "Explore Toronto, Ontario, Canada", exact: true }));
+    if (mode === "fallback") await page.getByText("LOCATION PLOT · STREET MAP UNAVAILABLE", { exact: true }).waitFor();
+    const map = page.locator('[aria-label="Venue locations in Toronto"]');
+    const legendHeading = page.getByText("THE VENUE LIST", { exact: true });
+    const mapBox = await map.boundingBox(), legendBox = await legendHeading.boundingBox();
+    assert.ok(mapBox && mapBox.height > 160 && legendBox, "The map and venue legend must have usable dimensions.");
+    if (width < 900) {
+      const mapToListGap = legendBox.y - (mapBox.y + mapBox.height);
+      assert.ok(mapToListGap >= 0 && mapToListGap <= 65, `The mobile venue list must follow the map, not a collapsed flex gap (${mapToListGap}px).`);
+    }
+    await room("Fixture Harbour Hall").scrollIntoViewIfNeeded();
+    const firstRoomBox = await room("Fixture Harbour Hall").boundingBox();
+    assert.ok(firstRoomBox && firstRoomBox.height >= 44 && firstRoomBox.y < 900 && firstRoomBox.y + firstRoomBox.height > 0, "The first venue row must be visible and touchable after scrolling.");
+    await page.screenshot({ path: join(screenshotDirectory, `${name}-list.png`), fullPage: true });
+    await map.evaluate(node => node.scrollIntoView({ block: "start" }));
+    await page.screenshot({ path: join(screenshotDirectory, `${name}-map.png`), fullPage: true });
+    await pin("Fixture Basement").click();
+    await view("Fixture Basement").waitFor();
+    await selected(pin("Fixture Basement")); await selected(room("Fixture Basement"));
+    await room("Fixture Harbour Hall").click();
+    await view("Fixture Harbour Hall").waitFor();
+    await selected(pin("Fixture Harbour Hall")); await selected(room("Fixture Harbour Hall"));
+    const search = page.getByRole("textbox", { name: "Find a city or venue", exact: true });
+    await search.fill("Fixture Echo");
+    await view("Z Fixture Écho Room").waitFor();
+    await selected(room("Z Fixture Écho Room")); await selected(pin("Z Fixture Écho Room"));
+    assert.ok(await room("Z Fixture Écho Room").isVisible(), "An accent-insensitive venue search reveals the room, not just its city.");
+    await search.fill("Fixture Unmapped Room");
+    await view("Fixture Unmapped Room").waitFor();
+    assert.equal(await pin("Fixture Unmapped Room").count(), 0, "Missing coordinates cannot become an ocean pin.");
+    await search.fill("");
+    await page.getByRole("button", { name: "Explore Lisbon, Portugal", exact: true }).click();
+    await view("Fixture Lisbon Room").waitFor(); await selected(pin("Fixture Lisbon Room"));
+    await selected(page.getByRole("button", { name: "Explore Lisbon, Portugal", exact: true }));
+    await selected(page.getByRole("button", { name: "Explore Toronto, Ontario, Canada", exact: true }), false);
+    assert.equal(await view("Fixture Harbour Hall").count(), 0, "City change resets the previous city's venue selection.");
+    await search.fill("A definitely absent venue xyz");
+    await page.getByText("No matching venues in Worldwide", { exact: true }).waitFor();
+    await page.getByRole("button", { name: "Clear city search", exact: true }).click();
+    await page.getByRole("button", { name: "Explore Toronto, Ontario, Canada", exact: true }).click();
+    await room("Fixture Basement").focus(); await page.keyboard.press("Enter");
+    await view("Fixture Basement").waitFor(); await selected(pin("Fixture Basement"));
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1), false, "Explorer must not create horizontal document overflow.");
+    assert.equal(state.calls.some(call => call.path.startsWith("/api/feed")), false);
+    assert.deepEqual(state.calls.filter(call => call.method !== "GET"), [], "Guest browsing cannot issue mutations.");
+    assert.deepEqual(state.reports, [], "No client crash reports may be emitted.");
+    assert.deepEqual(state.errors, [], "No browser errors or missing fixtures may be hidden.");
+    assert.ok(state.maps > 0, "Export with an inert EXPO_PUBLIC_GOOGLE_MAPS_KEY=fixture-only so this test covers successful and failed map images; all map traffic is intercepted locally.");
+    await page.getByRole("heading", { name: "Find a place. Find a show.", exact: true }).scrollIntoViewIfNeeded();
+    await page.screenshot({ path: join(screenshotDirectory, `${name}.png`), fullPage: true });
+    console.log(JSON.stringify({ name, passed: true, mockedMapRequests: state.maps }));
+  } catch (error) {
+    await page.screenshot({ path: join(screenshotDirectory, `${name}-failed.png`), fullPage: true }).catch(() => {});
+    console.error(JSON.stringify({ name, error: error.message, state, body: (await page.locator("body").innerText()).slice(-5500) }));
+    throw error;
+  } finally { state.closing = true; await context.close(); }
+}
+
+export async function main() {
+  const require = createRequire(import.meta.url);
+  const { chromium } = require(process.env.PIT_PLAYWRIGHT_MODULE || "playwright");
+  mkdirSync(screenshotDirectory, { recursive: true });
+  const { server, origin } = await localServer(); let browser;
+  try {
+    browser = await chromium.launch({ headless: true, ...(process.env.PIT_BROWSER_EXECUTABLE ? { executablePath: process.env.PIT_BROWSER_EXECUTABLE } : {}) });
+    for (const width of [390, 1280]) for (const mode of ["map", "fallback"]) await scenario(browser, origin, width, mode);
+    console.log(JSON.stringify({ passed: 4, failed: 0, network: "isolated fixtures only", screenshots: screenshotDirectory }));
+  } finally { await browser?.close(); await new Promise(done => server.close(done)); }
+}
+if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) main().catch(error => { console.error(error.message); process.exitCode = 1; });

@@ -31,13 +31,13 @@ function PhotoTile({ photo, index, onOpen, width }) {
   );
 }
 
-export const DiscoverPhotos = memo(function DiscoverPhotos({ photos, photoUris, compact, width, onOpenPhotos }) {
+export const DiscoverPhotos = memo(function DiscoverPhotos({ photos, photoUris, compact, width, onOpenPhotos, title = "Popular photos and videos", detail = "The most-liked concert photos and clips shared by fans" }) {
   const [containerWidth, setContainerWidth] = useState(null);
   const layout = discoveryGridLayout(containerWidth ?? Math.min(width, 1040) - (compact ? 54 : 86));
   if (!photos.length) return null;
   return (
     <View style={[styles.panel, compact && styles.panelCompact]}>
-      <SectionHeading eyebrow="FAN PHOTOS AND VIDEOS" title="Popular photos and videos" detail="The most-liked concert photos and clips shared by fans" />
+      <SectionHeading eyebrow="FAN PHOTOS AND VIDEOS" title={title} detail={detail} />
       <View style={[styles.grid, { gap: layout.gap }]} onLayout={(event) => setContainerWidth(event.nativeEvent.layout.width)} accessibilityLabel="Popular concert photos and videos">
         {photos.map((photo, index) => <PhotoTile key={`${photo.logId}_${photo.uri}_${index}`} photo={photo} index={index} width={layout.tileWidth} onOpen={() => onOpenPhotos?.(photoUris, index)} />)}
       </View>

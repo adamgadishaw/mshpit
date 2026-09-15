@@ -146,6 +146,7 @@ import { wikidataProviderStatus } from "./wikidataChannels.js";
 import { backgroundJobEnabled } from "./backgroundJobs.js";
 import { backupOperationalStatus, backupSchedulerEnabled } from "./backupScheduler.js";
 import { collectStorageHealth } from "./storageHealth.js";
+import { collectArtistKnowledgeStatus } from "./artistKnowledgeStatus.js";
 import { requestMetrics } from "./requestMetrics.js";
 import {
   mediaPublishingCapabilitiesForRuntime,
@@ -159,6 +160,7 @@ import {
   waitForVideoFinalizeCompletion,
 } from "./videoFinalizeJobs.js";
 import { discoverChart, discoverCountries, discoverGenres, discoverOverview } from "./discoverService.js";
+import { discoverPhotoRoutes } from "./features/discoverPhotos/discoverPhotoRoutes.js";
 import {
   applyModerationAction,
   moderationOverview,
@@ -3779,6 +3781,7 @@ function staffHealthProjection(actor) {
         capacity: collectStorageHealth(db, { databasePath: DATABASE_PATH }),
       },
       traffic: requestMetrics.snapshot(),
+      artistKnowledge: collectArtistKnowledgeStatus(db),
       mediaObjectStorageConfigured: mediaConfigured(process.env),
       privateVideoSourceStorageConfigured: privateVideoMediaConfigured(process.env),
       privateMediaIsolation: readiness.privateMediaIsolation,
@@ -4088,6 +4091,7 @@ const linkedAccounts = createLinkedAccounts({ database: db, ApiError, requireSes
 
 // route table: "METHOD /path" -> handler(ctx) ; :params exposed as ctx.params
 export const routes = {
+  ...discoverPhotoRoutes({ database: db, rateLimit: limit, ApiError }),
   ...pageHeadRoutes({ ApiError, rateLimit: limit, pageHeadFor }),
   ...capacityHandshakeRoutes({
     ApiError,

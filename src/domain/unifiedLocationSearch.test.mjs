@@ -11,6 +11,7 @@ import {
   UNIFIED_LOCATION_SEARCH_RESULT_LIMIT,
 } from "./unifiedLocationSearch.mjs";
 import { arenaVenues } from "../seed/arenas.js";
+import { buildDiscoverVenueCities } from "./discoverVenues.mjs";
 
 const providerRows = [
   {
@@ -130,4 +131,32 @@ test("one tour-date snapshot reuses its venue index without retaining old arrays
   const second = memoizedUnifiedVenueSearchIndex({ tourDates, curatedVenues: arenaVenues });
   assert.equal(first, second);
   assert.notEqual(first, memoizedUnifiedVenueSearchIndex({ tourDates: [...tourDates], curatedVenues: arenaVenues }));
+});
+
+test("missing, invalid, and out-of-range venue coordinates stay absent in the shared index", () => {
+  const project = (fields) => createUnifiedVenueSearchIndex({
+    tourDates: [{ ...providerRows[0], ...fields }], now: Date.UTC(2098, 0, 1),
+  })[0].row.coord;
+  for (const invalid of [null, undefined, "", "  ", false, true, [], {}, NaN, Infinity, "not a coordinate"]) {
+    assert.equal(project({ lat: invalid, lng: 1 }), null);
+    assert.equal(project({ lat: 1, lng: invalid }), null);
+    assert.equal(project({ coord: { lat: invalid, lng: invalid } }), null);
+  }
+  for (const [lat, lng] of [[91, 0], [-91, 0], [0, 181], [0, -181]]) {
+    assert.equal(project({ lat, lng }), null);
+  }
+  assert.deepEqual(project({ lat: 0, lng: "0" }), { lat: 0, lng: 0 }, "real zero coordinates are not fabricated absences");
+  assert.deepEqual(project({ coord: { lat: "43.64", lng: "-79.38" } }), { lat: 43.64, lng: -79.38 });
+});
+
+test("the Discover map never turns an index venue with null coordinates into an ocean pin", () => {
+  const event = { ...providerRows[0], venue: "Toronto Test Room", place: "Toronto, Ontario, Canada",
+    venueCity: "Toronto", venueCountryCode: "CA", lat: null, lng: null };
+  const now = Date.UTC(2098, 0, 1);
+  const index = createUnifiedVenueSearchIndex({ tourDates: [event], now });
+  const cities = buildDiscoverVenueCities(index, [event], { now });
+  assert.equal(cities.length, 1);
+  assert.equal(cities[0].mapped, 0);
+  assert.equal(cities[0].venues[0].coord, null);
+  assert.equal(cities[0].venues[0].shows.length, 1, "an unmapped venue and its real show remain browsable");
 });

@@ -75,6 +75,8 @@
     "verify:production-media": "node scripts/verify-production-media.mjs",
     "verify:auth-browser": "node scripts/verify-auth-browser.mjs",
     "verify:navigation-browser": "node scripts/verify-navigation-browser.mjs",
+    "verify:discover-photos-browser": "node scripts/verify-discover-photos-browser.mjs",
+    "verify:discover-venues-browser": "node scripts/verify-discover-venues-browser.mjs",
     "verify:auth-real-server": "node scripts/verify-auth-real-server.mjs",
     "verify:production": "npm run verify:production-core && npm run verify:production-media && npm run verify:seo-catalog && npm run verify:seo",
     "inventory:seo": "node scripts/seo-inventory.mjs",

@@ -191,6 +191,16 @@ test("App Forward restores the selected screen instead of popping it again", () 
   assert.equal(app.entries[app.cursor].url, "/post/p");
 });
 
+test("App Forward cannot reopen a cached sign-in screen for an already confirmed member", () => {
+  const restores = [];
+  const app = appNavigation([{}, { auth: true, path: "/login" }], { onRestore: (path, options) => restores.push({ path, options }) });
+  app.history.back(); app.flush();
+  app.history.forward(); app.flush();
+  assert.equal(restores.length, 1);
+  assert.equal(restores[0].path, "/login", "the common authenticated route resolver decides the new destination");
+  assert.equal(app.state.at(-1).auth, undefined, "the stale auth form never remounts");
+});
+
 test("canceling browser Back preserves the Forward chain", () => {
   const app = appNavigation();
   app.commitGo({ artistName: "Band", path: "/artist/band" });

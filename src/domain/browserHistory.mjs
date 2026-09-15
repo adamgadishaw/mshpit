@@ -1,9 +1,31 @@
+import { parsePath, postPath } from "./urls.mjs";
+
 const VERSION = "mshpit-navigation-v1";
 const validState = (state) => state?.pit === VERSION && typeof state.key === "string"
   && Number.isSafeInteger(state.index) && state.index >= 0;
 
-// Only opaque positions go into persisted browser history. Drafts and member
-// data stay in bounded visit-local memory, cleared when the account changes.
+// A public post URL can display the concert summary or the original discussion.
+// Persist only that allowlisted view choice; derive its ID from the current URL
+// and always re-fetch content under the current account after a reload.
+export function publicPresentationHintFromHistory(state, path) {
+  if (!validState(state) || state.presentation !== "post") return null;
+  const parsed = parsePath(path);
+  const id = parsed?.type === "show" ? parsed.value : null;
+  return typeof id === "string" && id.length <= 200 && postPath(id) === path ? { postId: id } : null;
+}
+
+const positionOnly = (state, path) => ({ pit: VERSION, key: state.key, index: state.index,
+  ...(publicPresentationHintFromHistory(state, path) ? { presentation: "post" } : {}),
+});
+const withPresentation = (state, snapshot, path) => {
+  const postId = snapshot?.stack?.at(-1)?.post?.id;
+  const presentation = typeof postId === "string" && postId.length > 0 && postId.length <= 200 && postPath(postId) === path;
+  return { pit: VERSION, key: state.key, index: state.index, ...(presentation ? { presentation: "post" } : {}) };
+};
+
+// Only opaque positions and the optional public view enum enter browser history.
+// Drafts and member data stay in bounded visit-local memory, cleared when the
+// account changes. No object from history can grant access to a post.
 export function createBrowserHistory({ history, location, limit = 80 }) {
   const capacity = Math.min(80, Math.max(1, Number.isSafeInteger(limit) ? limit : 80));
   const records = new Map();
@@ -20,19 +42,29 @@ export function createBrowserHistory({ history, location, limit = 80 }) {
   };
   const fresh = (index) => ({ pit: VERSION, key: `${visit}-${++sequence}`, index });
   const initialize = (snapshot) => {
-    current = validState(history.state) ? history.state : fresh(0);
+    current = validState(history.state) ? positionOnly(history.state, location.pathname) : fresh(0);
     currentPath = location.pathname || "/";
     history.replaceState(current, "", location.href || currentPath);
     remember(current, snapshot, currentPath);
   };
-  const capture = (snapshot) => { if (current) remember(current, snapshot, currentPath); };
+  const capture = (snapshot) => {
+    if (!current) return;
+    if (location.pathname === currentPath && !snapshot?.stack?.at(-1)?.routeLoading) {
+      const next = withPresentation(current, snapshot, currentPath);
+      if (next.presentation !== current.presentation) {
+        history.replaceState(next, "", location.href || currentPath);
+        current = next;
+      }
+    }
+    remember(current, snapshot, currentPath);
+  };
   const write = (snapshot, path = currentPath, mode = "push") => {
     if (!current) initialize(snapshot);
     generation++;
     restoringKey = null;
     const destination = path || currentPath;
     const replace = mode === "replace";
-    const next = fresh(current.index + (replace ? 0 : 1));
+    const next = withPresentation(fresh(current.index + (replace ? 0 : 1)), snapshot, destination);
     history[replace ? "replaceState" : "pushState"](next, "", destination);
     current = next;
     currentPath = destination;
@@ -43,11 +75,12 @@ export function createBrowserHistory({ history, location, limit = 80 }) {
     const token = ++generation;
     const previous = current;
     const previousPath = currentPath;
-    const target = validState(state) ? state : fresh(0);
     const path = location.pathname || "/";
+    const target = validState(state) ? positionOnly(state, path) : fresh(0);
     const cached = records.get(target.key);
     return {
       path,
+      publicFrameHint: publicPresentationHintFromHistory(target, path),
       snapshot: cached?.path === path ? cached.snapshot : null,
       accept() {
         if (generation !== token) return false;

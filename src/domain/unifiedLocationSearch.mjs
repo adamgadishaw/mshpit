@@ -101,9 +101,15 @@ export function searchUnifiedEventIndex(index, query, {
 }
 
 const coordinate = (row) => {
-  const lat = Number(row?.coord?.lat ?? row?.lat);
-  const lng = Number(row?.coord?.lng ?? row?.lng);
-  return Number.isFinite(lat) && Number.isFinite(lng) ? { lat, lng } : null;
+  const rawLat = row?.coord?.lat ?? row?.lat;
+  const rawLng = row?.coord?.lng ?? row?.lng;
+  // Preserve absence through the shared index. Once null becomes numeric zero,
+  // downstream maps cannot distinguish a missing location from a real (0, 0).
+  const numeric = (value) => (typeof value === "number" || typeof value === "string")
+    && String(value).trim() !== "";
+  if (!numeric(rawLat) || !numeric(rawLng)) return null;
+  const lat = Number(rawLat), lng = Number(rawLng);
+  return Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180 ? { lat, lng } : null;
 };
 
 const venueSourceIdentity = (row, name, location) => {

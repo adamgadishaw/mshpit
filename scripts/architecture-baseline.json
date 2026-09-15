@@ -64,12 +64,12 @@
       "useState:venuePhotoPools:setVenuePhotoPools",
       "useState:venueReviews:setVenueReviews"
     ],
-    "maxHookCalls": 145,
+    "maxHookCalls": 144,
     "allowedHookCalls": {
       "useAccountArtistPageCache": 1,
       "useAccountCommentCache": 1,
       "useContext": 1,
-      "useEffect": 30,
+      "useEffect": 29,
       "usePersisted": 4,
       "usePrivateEphemeral": 8,
       "useRef": 53,
@@ -392,8 +392,8 @@
       "fingerprint": "a7d7591efd0f54f47090"
     },
     "src/store.js": {
-      "count": 15,
-      "fingerprint": "55c37529fc984ed52de6"
+      "count": 14,
+      "fingerprint": "e21ffc424bee03d9d74f"
     },
     "src/theme.js": {
       "count": 4,

@@ -150,9 +150,13 @@ export function createArtistKnowledgeRefresher({
   async function run({ limit = 10, signal, budgetMs = 45_000 } = {}) {
     const stats = { checked: 0, filled: 0, bios: 0, countries: 0, unmatched: 0, failed: 0, stale: 0,
       coolingDown: false, storagePaused: false, stoppedEarly: false };
+    const recordPass = (result) => {
+      setMeta.run(SUMMARY_KEY, JSON.stringify({ ...result, at: now() }));
+      return result;
+    };
     aborted(signal);
-    if (!storageReady()) return { ...stats, storagePaused: true };
-    if (Number(meta.get(COOLDOWN_KEY)?.value) > now()) return { ...stats, coolingDown: true };
+    if (!storageReady()) return recordPass({ ...stats, storagePaused: true });
+    if (Number(meta.get(COOLDOWN_KEY)?.value) > now()) return recordPass({ ...stats, coolingDown: true });
     const deadline = AbortSignal.timeout(clamp(budgetMs, 45_000, 1000, 45_000));
     const workSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
     const rows = due.all(now(), clamp(limit, 10, 1, 10));
@@ -203,8 +207,7 @@ export function createArtistKnowledgeRefresher({
       else if (saved.stale) stats.stale += 1;
       else stats.unmatched += 1;
     }
-    setMeta.run(SUMMARY_KEY, JSON.stringify({ ...stats, at: now() }));
-    return stats;
+    return recordPass(stats);
   }
   return { runBatch(options) {
     if (!active) active = run(options || {}).finally(() => { active = null; });

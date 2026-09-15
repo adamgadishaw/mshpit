@@ -54,6 +54,10 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build:web
+        # Inert fixture only. Every map request is intercepted on loopback;
+        # no provider key, billing account, or production network is involved.
+        env:
+          EXPO_PUBLIC_GOOGLE_MAPS_KEY: fixture-only
       # Match the locally verified browser runtime without adding a production
       # dependency, modifying the lockfile, or installing unpinned CLI code.
       - name: Install pinned browser test runtime
@@ -64,3 +68,5 @@ jobs:
       # API. They need no secrets, database, production URL, or real accounts.
       - run: npm run verify:auth-browser
       - run: npm run verify:navigation-browser
+      - run: npm run verify:discover-photos-browser
+      - run: npm run verify:discover-venues-browser

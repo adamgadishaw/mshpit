@@ -28,6 +28,11 @@ const fixtureResetToken = "fixture-reset-token-0123456789";
 const fixtureOwnerToken = "fixture-owner-token-0123456789";
 
 const cases = [
+  ...[390, 1280].flatMap(width => [
+    { name: `login-theme-${width}`, kind: "login", width, accountTheme: "daylight" },
+    { name: `guest-like-theme-no-replay-${width}`, kind: "guest-like-login", width, accountTheme: "daylight" },
+    ...["login", "signup"].map(route => ({ name: `member-${route}-route-${width}`, kind: "member-auth-route", width, entryPath: `/${route}`, accountTheme: "daylight" })),
+  ]),
   ...[390, 1280].map(width => ({ name: `admin-error-diagnostics-${width}`, kind: "admin-errors", width })),
   ...[390, 1280].map(width => ({ name: `composer-location-${width}`, kind: "composer-location", width })),
   ...[390, 1280].map(width => ({ name: `guest-member-tabs-${width}`, kind: "guest-member-tabs", width })),
@@ -370,6 +375,7 @@ async function runCase(browser, origin, item) {
   const guestCase = item.kind.startsWith("guest-");
   const diagnosticsCase = item.kind === "admin-errors";
   const locationCase = item.kind === "composer-location";
+  const fixtureMember = item.accountTheme ? { ...alice, theme: item.accountTheme } : alice;
   const guestStart = guestCase || item.kind.startsWith("login") || ["startup-401", "forms-login", "forms-signup", "forms-reset"].includes(item.kind);
   const publicPost = {
     id: "p_guest_browser", userId: "public-author", user: { id: "public-author", name: "Public Author", handle: "public-author", role: "fan" },
@@ -382,14 +388,20 @@ async function runCase(browser, origin, item) {
     ...(item.postKind === "going" ? { attendanceTicket: { artist: "Fixture Artist", venue: "Fixture Venue", city: "Toronto", date: "2026-10-01", tour: "Fixture Tour" } } : {}),
   };
   const state = {
-    user: guestStart ? null : item.kind === "forms-owner" || diagnosticsCase ? { ...alice, role: "admin", owner: true } : alice,
+    user: guestStart ? null : item.kind === "forms-owner" || diagnosticsCase ? { ...alice, role: "admin", owner: true } : fixtureMember,
     offline: item.kind === "startup-offline", badPassword: item.kind === "login-retry",
     logoutUnavailable: item.kind === "logout-failed", phase: "start",
     calls: [], pageErrors: [], consoleErrors: [], reports: [], routeErrors: [],
     releaseLogin: null, releaseSwitch: null, releaseDiscover: null, holdDiscover: item.kind === "login-canceled",
     loginCompleted: false, connected: item.kind !== "forms-connect", credentialUrlLeaks: [],
     locationPost: null, locationWrites: [], releaseCitySearch: null,
+    documents: [],
   };
+  page.on("request", request => {
+    if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
+      state.documents.push({ path: new URL(request.url()).pathname, phase: state.phase });
+    }
+  });
   page.on("pageerror", error => state.pageErrors.push(error.message));
   page.on("console", message => { if (message.type() === "error") state.consoleErrors.push(message.text()); });
   await page.addInitScript(initialBrowserState, {
@@ -465,7 +477,7 @@ async function runCase(browser, origin, item) {
         if (item.kind === "login-choice" && !body.accountId) return await json({ chooseAccount: true, accounts: [alice, bob] });
         // Model server-side success even when a browser aborts or discards the
         // response. Cancellation must compensate, not merely hide the result.
-        state.user = body.accountId === bob.id ? bob : alice;
+        state.user = body.accountId === bob.id ? bob : fixtureMember;
         state.phase = "signed-in";
         await json({ user: state.user });
         state.loginCompleted = true;
@@ -610,7 +622,8 @@ async function runCase(browser, origin, item) {
   };
   let failure = null;
   try {
-    const entry = item.kind === "forms-reset" ? `${origin}/#reset=${fixtureResetToken}`
+    const entry = item.entryPath ? `${origin}${item.entryPath}`
+      : item.kind === "forms-reset" ? `${origin}/#reset=${fixtureResetToken}`
       : item.kind === "forms-owner" ? `${origin}/#ownerApproval=${fixtureOwnerToken}`
       // Keep cancellation's destination genuinely suspended. The canonical
       // welcome page is already loaded before its own login, so it cannot
@@ -623,7 +636,15 @@ async function runCase(browser, origin, item) {
       // session-dependent meaning for the same root document.
       : guestStart ? origin : `${origin}/feed`;
     await page.goto(entry, { waitUntil: item.kind === "login-canceled" ? "domcontentloaded" : "networkidle", timeout: timeoutMs });
-    if (diagnosticsCase) {
+    if (item.kind === "member-auth-route") {
+      await feed();
+      assert.equal(new URL(page.url()).pathname, "/feed", "An already confirmed member must not reopen an authentication form.");
+      assert.equal(await page.getByLabel("Password", { exact: true }).count(), 0);
+      await page.reload({ waitUntil: "networkidle" });
+      await feed();
+      assert.equal(new URL(page.url()).pathname, "/feed");
+      assert.equal(state.calls.filter(call => call.path === "/api/login").length, 0, "Restoring an existing session must not send a new login.");
+    } else if (diagnosticsCase) {
       await feed();
       await you(alice);
       await page.getByText("Moderation", { exact: true }).click();
@@ -742,6 +763,10 @@ async function runCase(browser, origin, item) {
         await like().click();
         await page.getByRole("button", { name: "Unlike, 4 likes", exact: true }).waitFor();
         await waitFor(() => state.calls.some(call => call.path.endsWith("/like")), "The deliberate signed-in Like was not sent.");
+        await page.goForward({ waitUntil: "networkidle" });
+        await feed();
+        assert.equal(new URL(page.url()).pathname, "/feed", "Forward to completed sign-in must resolve to the signed-in account, not a cached auth form.");
+        assert.equal(await page.getByLabel("Password", { exact: true }).count(), 0);
       } else if (item.kind === "guest-like") {
         await promptAndReturn(() => like().click());
         await like().waitFor();
@@ -895,6 +920,15 @@ async function runCase(browser, origin, item) {
       assert.ok(state.calls.filter(call => call.path === "/api/me").length >= 2);
     }
     await page.waitForTimeout(250);
+    if (item.accountTheme) {
+      assert.deepEqual(await page.evaluate(() => ({ theme: localStorage.getItem("pit_theme"), owner: localStorage.getItem("pit_theme_owner") })),
+        { theme: item.accountTheme, owner: alice.id }, "The confirmed member's saved theme must be applied and owner-scoped.");
+      assert.equal(await page.getByLabel("Password", { exact: true }).count(), 0, "Theme reload must not reopen the sign-in form.");
+      assert.deepEqual(state.documents.filter(document => document.phase === "signed-in" && ["/login", "/signup"].includes(document.path)), [],
+        "Applying the account theme must wait until authentication navigation owns the destination URL.");
+      assert.equal(state.calls.filter(call => call.path === "/api/login").length, item.kind === "member-auth-route" ? 0 : 1,
+        "Theme recovery must not repeat an identity-changing login request.");
+    }
     assert.deepEqual(state.routeErrors, [], "Fixture/interception failure.");
     assert.deepEqual(state.pageErrors, [], "Uncaught browser error.");
     assert.deepEqual(state.reports, [], "The app sent a crash receipt.");

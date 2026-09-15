@@ -6,12 +6,13 @@ import { countryForCity } from "../geo";
 import Icon from "../components/Icon";
 import DiscoverChart from "../components/discover/DiscoverChart";
 import DiscoverGenres from "../components/discover/DiscoverGenres";
-import { DiscoverPhotos } from "../components/discover/DiscoverCommunity";
+import DiscoverVenues from "../components/discover/DiscoverVenues";
+import DiscoverPhotoPanel from "../features/discoverPhotos/DiscoverPhotoPanel";
 import DiscoverEventBanner from "../components/discover/DiscoverEventBanner";
 import DiscoverProgrammeNav from "../components/discover/DiscoverProgrammeNav";
 import { discoverEventRecovery } from "../components/discover/discovery-recovery.mjs";
 import { MetricTile, OverviewState, QuickAction, SectionHeading } from "../components/discover/DiscoverPrimitives";
-import { UpcomingEventCard, VenueDiscoveryCard } from "../components/VenueDiscoveryCards";
+import { UpcomingEventCard } from "../components/VenueDiscoveryCards";
 import { EventScopeToggle, PopularLoungeCard } from "../components/LiveDiscoveryCards";
 import { PublicPressableLink } from "../components/PublicWebLinks";
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
@@ -100,7 +101,7 @@ export default function DiscoverScreen({
     tourDates,
     refreshTourDates,
     refreshDiscoverySidebar,
-    searchVenues,
+    venueDirectoryIndex,
     myAttendance = [],
   } = useStore();
   const { width } = useWindowDimensions();
@@ -251,20 +252,6 @@ export default function DiscoverScreen({
     blockedIds,
     limit: 4,
   }), [blockedIds, eventBannerMedia, visibleLiveEvents]);
-  const homeSceneSelected = discoverCountryIdentity(region) === discoverCountryIdentity(homeCountry);
-  const knownSceneVenues = region === "Worldwide" ? [] : searchVenues(region, 3);
-  const venueRowsSource = sceneProjection.venues.length
-    ? "events"
-    : knownSceneVenues.length
-      ? "catalog"
-      : "none";
-  const venueRows = venueRowsSource === "events"
-    ? sceneProjection.venues.slice(0, 3)
-    : venueRowsSource === "catalog"
-      ? knownSceneVenues
-      : (!tourDates.length && homeSceneSelected && Array.isArray(discoverySidebar?.trendingVenues)
-        ? discoverySidebar.trendingVenues.slice(0, 3)
-        : []);
   const loungeRows = useMemo(() => filterDiscoverSceneRows(
     projectPopularLounges(discoverySidebar?.popularLounges, { limit: 12 }),
     { region, countryForCity, limit: 4 },
@@ -777,74 +764,9 @@ export default function DiscoverScreen({
       </View>}
 
       {programme === "cities" && <View nativeID="discover-panel-cities" accessibilityRole="tabpanel" aria-labelledby="discover-tab-cities"><CityDiscoveryTiles country={region === "Worldwide" ? "" : region} limit={6} onOpenCity={openCity} registerRefresh={registerCityRefresh} /></View>}
-      {programme === "venues" && <View nativeID="discover-panel-venues" accessibilityRole="tabpanel" aria-labelledby="discover-tab-venues" style={styles.programmePanel}><View style={styles.nearSection}>
-        <SectionHeading
-          eyebrow="AROUND YOU"
-          title="Near you"
-          detail={homeCity ? `Shows, festivals, and venues near ${homeCity}.` : "Add your home area to see nearby events."}
-        />
-        <Pressable
-          style={({ pressed }) => [styles.nearHero, pressed && styles.cardPressed]}
-          onPress={onOpenNearby}
-          accessibilityRole="button"
-          accessibilityLabel={homeCity ? `Find live events near ${homeCity}` : "Find live events near you"}
-        >
-          <View style={styles.nearHeroIcon}><Icon name="map" size={24} color={colors.good} /></View>
-          <View style={styles.venueHeroCopy}>
-            <Text style={styles.venueHeroTitle}>{homeCity ? `What’s on near ${homeCity}` : "Add your home area"}</Text>
-            <Text style={styles.venueHeroDetail}>See nearby events on a map or by date.</Text>
-          </View>
-          <Icon name="chevron-right" size={21} color={colors.good} />
-        </Pressable>
-      </View>
-
-      <View style={styles.venueSection}>
-        <SectionHeading
-          eyebrow="PLACES TO GO"
-          title="Venues"
-          detail={region === "Worldwide"
-            ? "Browse venues, cities, and upcoming lineups."
-            : venueRowsSource === "catalog"
-              ? `Known venues in ${region}. New shows appear here when they are listed.`
-              : `Venues with upcoming events in ${region}.`}
-          action={(
-            <Pressable style={styles.sectionAction} onPress={() => onOpenVenues?.(region)} accessibilityRole="button" accessibilityLabel="Browse all venues">
-              <Text style={styles.sectionActionText}>Browse all</Text>
-              <Icon name="chevron-right" size={14} color={colors.cool} />
-            </Pressable>
-          )}
-        />
-        <Pressable
-          style={({ pressed }) => [styles.venueHero, pressed && styles.cardPressed]}
-          onPress={() => onOpenVenues?.(region)}
-          accessibilityRole="button"
-          accessibilityLabel="Browse venues"
-          accessibilityHint="Browse venues by city and upcoming events"
-        >
-          <View style={styles.venueHeroIcon}><Icon name="pin" size={24} color={colors.cool} /></View>
-          <View style={styles.venueHeroCopy}>
-            <Text style={styles.venueHeroTitle}>Find a venue</Text>
-            <Text style={styles.venueHeroDetail}>{region === "Worldwide"
-              ? "Browse venues around the world."
-              : venueRowsSource === "catalog"
-                ? `Browse known venues in ${region} and check for new listings.`
-                : `Browse venues and upcoming events in ${region}.`}</Text>
-          </View>
-          <Icon name="chevron-right" size={21} color={colors.cool} />
-        </Pressable>
-        {venueRows.length > 0 ? (
-          <View style={styles.venueRows}>
-            {venueRows.map((venue) => (
-              <VenueDiscoveryCard key={venue.identity || `${venue.name}|${venue.place || ""}`} venue={venue} compact onPress={() => onOpenVenue?.(venue)} />
-            ))}
-          </View>
-        ) : (
-          <View style={styles.liveEmpty} accessibilityLiveRegion="polite">
-            <Icon name="pin" size={19} color={colors.textFaint} />
-            <Text style={styles.liveEmptyText}>No venues with upcoming events are listed for {region} yet.</Text>
-          </View>
-        )}
-      </View></View>}
+      {programme === "venues" && <View nativeID="discover-panel-venues" accessibilityRole="tabpanel" aria-labelledby="discover-tab-venues" style={styles.programmePanel}>
+        <DiscoverVenues region={region} homeCity={homeCity} session={session} venueDirectoryIndex={venueDirectoryIndex} tourDates={tourDates} onOpenVenue={onOpenVenue} onOpenEvent={onOpen} onOpenVenues={onOpenVenues} />
+      </View>}
 
       {programme === "shows" && <View style={styles.quickSection}>
         <SectionHeading eyebrow="MORE TO EXPLORE" title="More ways to explore" detail="Top-rated shows and artist communities" />
@@ -905,8 +827,7 @@ export default function DiscoverScreen({
         />
       ) : null}</View>}
       {programme === "photos" && <View nativeID="discover-panel-photos" accessibilityRole="tabpanel" aria-labelledby="discover-tab-photos">
-        <DiscoverPhotos photos={scenePhotos} photoUris={photoUris} compact={compact} width={width} onOpenPhotos={openPhotos} />
-        {!scenePhotos.length && <View style={styles.liveEmpty} accessibilityLiveRegion="polite"><Icon name="photo" size={20} color={colors.textFaint} /><Text style={styles.liveEmptyText}>No concert photos or videos are shared for {region} yet.</Text></View>}
+        <DiscoverPhotoPanel region={region} accountId={session?.id || "guest"} compact={compact} width={width} onOpenPhotos={openPhotos} removedIds={removedIds} blockedIds={blockedIds} />
       </View>}
     </ScrollView>
     </VinylRefreshBoundary>

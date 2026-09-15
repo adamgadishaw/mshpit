@@ -10,6 +10,8 @@ const files = {
   genres: await read("../components/discover/DiscoverGenres.jsx"),
   primitives: await read("../components/discover/DiscoverPrimitives.jsx"),
   banner: await read("../components/discover/DiscoverEventBanner.jsx"),
+  venues: await read("../components/discover/DiscoverVenues.jsx"),
+  photos: await read("../features/discoverPhotos/DiscoverPhotoPanel.jsx"),
 };
 const combined = Object.values(files).join("\n");
 
@@ -21,14 +23,15 @@ test("Discover explains its purpose and area controls in everyday language", () 
   assert.match(files.screen, /accessibilityLabel="Choose an area to explore"/);
   assert.match(files.screen, /More areas/);
   assert.match(files.screen, /title="Upcoming events"/);
-  assert.match(files.screen, /title="Near you"/);
-  assert.match(files.screen, /title="Venues"/);
+  assert.match(files.venues, /Find a place\. Find a show\./);
+  assert.match(files.venues, /Find a city or venue/);
 });
 
 test("Discover sections say plainly what people will find or do", () => {
-  assert.match(files.screen, /Shows, festivals, and venues near/);
-  assert.match(files.screen, /See nearby events on a map or by date\./);
-  assert.match(files.screen, /Find a venue/);
+  assert.match(files.venues, /Explore a city’s venues, then see what’s on their stages\./);
+  assert.match(files.venues, /Coming up in/);
+  assert.match(files.venues, /View venue/);
+  assert.match(files.photos, /Public concert photos and clips/);
   assert.match(files.screen, /Top-rated shows and artist communities/);
   assert.match(files.screen, /The most active concert conversations\. Private member data is not used\./);
   assert.match(files.community, /Popular photos and videos/);

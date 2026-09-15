@@ -81,7 +81,7 @@ import { artistPath, eventPath } from "./src/domain/urls.mjs";
 import { cityIdentityForLocation } from "./src/cityIdentity.js";
 import { CityNavigationContext } from "./src/components/cities/CityNavigationContext";
 import { shouldRestorePersistedStack, MAIN_TAB_PATHS, mainTabForPath, serverDocumentNavigationPath } from "./src/domain/browserNavigation.mjs";
-import { createBrowserHistory } from "./src/domain/browserHistory.mjs";
+import { createBrowserHistory, publicPresentationHintFromHistory } from "./src/domain/browserHistory.mjs";
 import { publicBrowserDestination } from "./src/domain/publicBrowserDestination.mjs";
 import { needsPublicFrameIdentity, resolvePublicFrameIdentity } from "./src/domain/publicFrameIdentity.mjs";
 import { initialLandingState, landingRenderSurface } from "./src/domain/landingStartup.mjs";
@@ -133,6 +133,7 @@ import { filterDiscoverSceneRows } from "./src/domain/discoverScene.mjs";
 import { calendarFocusForPost } from "./src/domain/calendarShows.mjs";
 import { homeShowCountdownPlan } from "./src/domain/homeShowCountdown.mjs";
 import { countryForCity } from "./src/geo";
+import { accountThemeNavigationReady } from "./src/domain/accountThemeNavigation.mjs";
 import {
   PLAYER_POSITION_STORAGE_KEY,
   PLAYER_STATE_STORAGE_KEY,
@@ -203,6 +204,7 @@ function Root() {
     remoteArtistMeta,
     resolveYouTube, invalidateYouTube, youtubeVideoRejected, resolveDeezerPreview,
     youtubeLookupStatus, mediaReactions, loadMediaReactions, toggleMediaReaction,
+    syncAccountTheme,
     removeMyPostTag,
   } = useStore();
   useFeedImpressionSession(session);
@@ -509,6 +511,7 @@ function Root() {
   const navigationRef = useRef({ stack, tab, landing, accountId: session?.id || null });
   navigationRef.current = { stack, tab, landing, accountId: session?.id || null };
   const browserHistoryRef = useRef(null);
+  const browserEntryPresentationRef = useRef(web ? publicPresentationHintFromHistory(window.history.state, window.location.pathname) : null);
   const pageHeadRef = useRef(null);
   const publicRouteRequestRef = useRef(null);
   const restoreBrowserPathRef = useRef(null);
@@ -864,7 +867,8 @@ function Root() {
         cancelPublicRoute();
         const snapshot = transition.snapshot;
         if (snapshot && snapshot.accountId === (sessionRef.current?.id || null)
-          && !snapshot.stack.at(-1)?.routeLoading) {
+          && !snapshot.stack.at(-1)?.routeLoading
+          && !(snapshot.stack.at(-1)?.auth && sessionRef.current?.id)) {
           applyNavigation(snapshot);
         } else {
           // Re-read content under the current account. Only the prior public
@@ -872,7 +876,7 @@ function Root() {
           const postId = Array.isArray(snapshot?.stack) ? snapshot.stack.at(-1)?.post?.id : null;
           restoreBrowserPathRef.current?.(transition.path, {
             publicFrameHint: typeof postId === "string" && postId.length > 0 && postId.length <= 200
-              ? { postId } : null,
+              ? { postId } : transition.publicFrameHint,
           });
         }
       };
@@ -894,8 +898,29 @@ function Root() {
   useEffect(() => {
     if (!web || !authReady || browserEntryReadyRef.current) return;
     browserEntryReadyRef.current = true;
-    restoreBrowserPathRef.current?.(window.location.pathname, { replace: true });
+    restoreBrowserPathRef.current?.(window.location.pathname, { replace: true, publicFrameHint: browserEntryPresentationRef.current });
+    browserEntryPresentationRef.current = null;
   }, [web, authReady]);
+
+  // A saved appearance may require a document reload. The confirmed route,
+  // rather than an arbitrary delay after login, owns when that reload is safe.
+  // Read the live navigation ref: initial URL hydration can begin earlier in
+  // this same effect flush, before its loading frame has rendered.
+  const accountThemeSyncRef = useRef(null);
+  useEffect(() => {
+    if (authReady && !session?.id) accountThemeSyncRef.current = null;
+    if (!accountThemeNavigationReady({
+      authReady, accountId: session?.id,
+      frame: navigationRef.current.stack.at(-1),
+      sensitiveFlow: !!(resetToken || ownerApprovalToken),
+    })) return;
+    const previous = accountThemeSyncRef.current;
+    if (previous?.accountId === session.id && previous?.theme === session.theme) return;
+    accountThemeSyncRef.current = { accountId: session.id, theme: session.theme };
+    syncAccountTheme();
+    // Account theme synchronization reads the authoritative Store refs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authReady, session?.id, session?.theme, stack, resetToken, ownerApprovalToken]);
 
   useEffect(() => {
     if (web && !nav.routeLoading) browserHistoryRef.current?.capture(navigationRef.current);

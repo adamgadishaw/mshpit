@@ -2178,6 +2178,7 @@ db.exec("CREATE INDEX IF NOT EXISTS idx_going_cursor ON going(concert_key, creat
 db.exec("CREATE INDEX IF NOT EXISTS idx_going_lounge_identity ON going(lower(concert_key), user_id)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_follows_followee_follower ON follows(followee_id, follower_id)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_posts_landing_media ON posts(landing_showcase, photos_public, removed, kind, created_at DESC, id DESC)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_posts_discover_photos ON posts(created_at DESC, id DESC) WHERE removed=0 AND photos_public=1");
 db.exec("CREATE INDEX IF NOT EXISTS idx_posts_venue_visibility ON posts(venue_key, removed, created_at DESC) WHERE venue_key IS NOT NULL");
 // Artist profile Top Reviews scans only substantive, live review posts. Keep
 // both canonical-key and legacy-name reads bounded without bloating the general

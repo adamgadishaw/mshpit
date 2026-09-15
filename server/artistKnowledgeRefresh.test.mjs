@@ -159,6 +159,28 @@ test("batch size is capped and lack of storage starts no downloads", async (t) =
   g.insert(); assert.equal((await g.service.runBatch()).storagePaused, true); assert.equal(g.check(), undefined);
 });
 
+test("a paused pass replaces old successful telemetry without changing the artist ledger", async (t) => {
+  let clock = AT, ready = true;
+  const f = fixture(t, { now: () => clock, storageReady: () => ready });
+  f.insert(); await f.service.runBatch();
+  const summary = () => JSON.parse(f.database.prepare("SELECT value FROM app_meta WHERE key='artist-knowledge:v1:last-pass'").get().value);
+  assert.equal(summary().filled, 1);
+  const priorCheck = { ...f.check() };
+  clock += 900_000; ready = false;
+  await f.service.runBatch();
+  assert.equal(summary().storagePaused, true);
+  assert.equal(summary().filled, 0);
+  assert.equal(summary().at, clock);
+  assert.deepEqual({ ...f.check() }, priorCheck);
+  ready = true; clock += 900_000;
+  f.database.prepare("INSERT INTO app_meta(key,value) VALUES ('artist-knowledge:v1:cooldown',?)").run(String(clock + 3600_000));
+  await f.service.runBatch();
+  assert.equal(summary().coolingDown, true);
+  assert.equal(summary().storagePaused, false);
+  assert.equal(summary().at, clock);
+  assert.deepEqual({ ...f.check() }, priorCheck);
+});
+
 test("duplicate ticks share work; cancellation saves nothing and leaves a retryable ledger", async (t) => {
   let release, calls = 0;
   const f = fixture(t, { fetchKnowledge: async () => { calls++; return new Promise((resolve) => { release = resolve; }); } });

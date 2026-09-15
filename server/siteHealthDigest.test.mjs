@@ -26,6 +26,7 @@ const { ownerIdentityDeliveryScope } = await import("./ownerApprovals.js");
 const { backupDirectory, recordOffhostBackupReceipt } = await import("./backupScheduler.js");
 const { db, q } = await import("./db.js");
 const { collectStorageHealth } = await import("./storageHealth.js");
+const { ensureArtistKnowledgeSchema } = await import("./artistKnowledgeRefresh.js");
 
 const markerPattern = "operations.site_health_digest.v1:*";
 const founderIdentity = Object.freeze({
@@ -301,6 +302,29 @@ test("critical disk capacity appears in founder attention codes without paths or
   assert.match(digest.detail, /disk free 100 MiB \(1%\)/);
   assert.match(digest.detail, /disk_space_critical/);
   assert.doesNotMatch(JSON.stringify(digest), /private-member-database|pit\.db|statfs|SQLITE_/);
+});
+
+test("founder digest includes source-backed enrichment progress and paused evidence without identities", () => {
+  ensureArtistKnowledgeSchema(db);
+  const at = Date.parse("2026-09-15T13:00:00Z");
+  const key = "artist-knowledge:v1:last-pass";
+  const prior = db.prepare("SELECT value FROM app_meta WHERE key=?").get(key);
+  db.prepare("INSERT OR REPLACE INTO app_meta(key,value) VALUES (?,?)").run(key, JSON.stringify({
+    at, checked: 0, filled: 0, bios: 0, countries: 0, unmatched: 0, failed: 0, stale: 0,
+    coolingDown: false, storagePaused: true, stoppedEarly: false,
+    privateNote: "member-secret@private.example", artistName: "Do not export stored identifiers",
+  }));
+  try {
+    const digest = collectSiteHealthDigest(db, { env: { ...productionEnv, ARTIST_KNOWLEDGE_ENABLED: "true" }, at });
+    assert.equal(digest.aggregate.artistKnowledge.state, "storage_paused");
+    assert.equal(digest.aggregate.warnings.includes("artist_knowledge_storage_paused"), true);
+    assert.match(digest.detail, /Artist knowledge: scheduled yes; evidence storage_paused/);
+    assert.match(digest.detail, /not complete artist\/venue\/event pages/);
+    assert.doesNotMatch(JSON.stringify(digest), /member-secret|private\.example|Do not export/);
+  } finally {
+    if (prior) db.prepare("UPDATE app_meta SET value=? WHERE key=?").run(prior.value, key);
+    else db.prepare("DELETE FROM app_meta WHERE key=?").run(key);
+  }
 });
 
 test("health digest distinguishes unconfigured, current, and stale off-host backup evidence", () => {

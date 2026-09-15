@@ -1092,16 +1092,21 @@ export function StoreProvider({ children }) {
   // device choice leaked one member's appearance into the next member's session
   // on a shared browser. Account ownership keeps reload-loop protection without
   // treating the computer itself as the user.
-  useEffect(() => {
-    if (!session?.theme) return;
+  // Root invokes this only after authentication and destination navigation have
+  // settled. Applying an account theme can reload the document; a session
+  // effect here can race asynchronous browser Back and reload `/login`.
+  const syncAccountTheme = () => {
+    const account = sessionRef.current;
+    if (!authReadyRef.current || !account?.theme) return;
     const { theme: localTheme, ownerId } = storedThemeSelection();
-    if (localTheme && ownerId === session.id) {
-      if (session.theme !== localTheme) api("/api/me", { method: "PATCH", body: { theme: localTheme } }).catch(() => {});
+    if (localTheme && ownerId === account.id) {
+      if (account.theme !== localTheme) api("/api/me", { method: "PATCH", body: { theme: localTheme }, expectedAccountId: account.id }).catch(() => {
+        // architecture: allow-empty-catch -- The owner-scoped device appearance remains usable when best-effort cross-device preference synchronization is offline; this never changes authentication.
+      });
     } else {
-      syncThemeFromAccount(session.theme, session.id);
+      syncThemeFromAccount(account.theme, account.id);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session?.theme]);
+  };
   // Keep dormant playlist data intact while avoiding hidden bootstrap traffic.
   useEffect(() => {
     if (!MUSIC_PLAYER_ENABLED) return;
@@ -6915,7 +6920,7 @@ export function StoreProvider({ children }) {
   const value = {
     users, adminMembers, adminMemberDirectory, session, authReady, feed, removedIds, blockedIds, requests, tourDates, reports, moderationConsole, follows, discoverySidebar, discoverySidebarStatus,
     userById, userByHandle, logsByUser, sharedShows,
-    login, signup, logout, switchLinkedAccount, deleteAccount, forgotPassword, resetPassword, confirmEmailVerification, resendEmailVerification, updateProfile, completeSignupOnboarding, setAnalyticsEnabled, setProfileSearchIndexingEnabled, setDirectMessagePolicy, setAgeBandClassification, setProfileAudience, setAnnouncementEmailsEnabled, chooseTheme,
+    login, signup, logout, switchLinkedAccount, deleteAccount, forgotPassword, resetPassword, confirmEmailVerification, resendEmailVerification, updateProfile, completeSignupOnboarding, setAnalyticsEnabled, setProfileSearchIndexingEnabled, setDirectMessagePolicy, setAgeBandClassification, setProfileAudience, setAnnouncementEmailsEnabled, chooseTheme, syncAccountTheme,
     addLog, editLog, reportContent, actionReport, dismissReport, removeContent, restoreContent,
     requestArtist, approveArtist, rejectArtist,
     addTourDatesBatch,
@@ -6936,7 +6941,7 @@ export function StoreProvider({ children }) {
     loadDiscoverTourDateRange,
     visibleFeed, followingFeed, refreshFeed, loadMoreFeed, feedHasMore, feedLoadingMore, loadClips, notInterested, undoNotInterested, refreshTourDates, refreshDiscoverySidebar, visibleTourDates, artistSummary, venueSummary,
     localVenues, regionShows, localFeed, recommendedShows, venueCoord, locationCenter,
-    searchVenues, venuesByCity, venueUpcomingCount,
+    searchVenues, venuesByCity, venueUpcomingCount, venueDirectoryIndex: venueSearchIndex,
     allArtists, topArtists, artistsAlphabetical, upcomingEvents, trendingVenues,
     isVerifiedArtist, isTop100, artistRank, artistBadges, userBadges,
     activityStats, userAchievements, userPoints, loadRewards,

@@ -22,6 +22,19 @@ test("root and all tabs round-trip with account gates", async () => {
     } else assert.equal(guest.tab, tab);
   }
 });
+
+test("confirmed members leave public authentication URLs without repeating login", async () => {
+  for (const path of ["/login", "/signup"]) {
+    const member = await publicBrowserDestination(path, { accountId: "member", resolveEntity: () => assert.fail("auth routes need no provider lookup") });
+    assert.equal(member.path, "/feed");
+    assert.equal(member.tab, "feed");
+    assert.deepEqual(member.stack, [{}]);
+    assert.equal(member.accountId, "member");
+    const guest = await publicBrowserDestination(path);
+    assert.equal(guest.path, path);
+    assert.equal(guest.stack.at(-1).auth, true, "unknown or expired sessions still require authentication");
+  }
+});
 test("server-owned collections never silently hydrate a different page", async () => {
   for (const path of ["/concerts", "/events/page/2", "/artists/page/3", "/venues/us/davis", "/concerts/ca/toronto/page/2", "/artist/sports/concerts/page/2"]) {
     assert.equal(serverDocumentNavigationPath(path), path);

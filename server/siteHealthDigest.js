@@ -10,6 +10,7 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { collectStorageHealth, formatStorageHealth } from "./storageHealth.js";
 import { requestMetrics, formatRequestMetrics } from "./requestMetrics.js";
+import { collectArtistKnowledgeStatus, artistKnowledgeWatchCodes, formatArtistKnowledgeStatus } from "./artistKnowledgeStatus.js";
 
 import {
   backupOperationalStatus,
@@ -293,6 +294,7 @@ export function collectSiteHealthDigest(database, {
   const persistentStorageConfigured = !!String(env?.PIT_DATA_DIR || "").trim();
   const storageHealth = storageHealthImpl(database, { databasePath: join(String(env?.PIT_DATA_DIR || "."), "pit.db"), at });
   const traffic = requestMetrics.snapshot();
+  const artistKnowledge = collectArtistKnowledgeStatus(database, { env, at });
   const backupEnabled = backupSchedulerEnabled(env);
   let backupAgeHours = null;
   try { backupAgeHours = ageHours(at, latestBackupAt(env)); }
@@ -325,6 +327,7 @@ export function collectSiteHealthDigest(database, {
   const warnings = [];
   issues.push(...storageHealth.issues);
   warnings.push(...storageHealth.warnings);
+  warnings.push(...artistKnowledgeWatchCodes(artistKnowledge));
   if (!databaseReady) issues.push("database_unavailable");
   if (!persistentStorageConfigured) issues.push("persistent_storage_unconfigured");
   if (!mailConfigured || !replyToValid) issues.push("mail_unconfigured");
@@ -368,6 +371,7 @@ export function collectSiteHealthDigest(database, {
     `Core: database ready ${yesNo(databaseReady)}; persistent data directory configured ${yesNo(persistentStorageConfigured)}`,
     formatStorageHealth(storageHealth),
     formatRequestMetrics(traffic),
+    formatArtistKnowledgeStatus(artistKnowledge),
     `Mail: configured ${yesNo(mailConfigured)}; reply routing valid ${yesNo(replyToValid)}; last 24h sent ${numberOrUnavailable(mail24h?.sent)}, failed ${numberOrUnavailable(mail24h?.failed)}, skipped ${numberOrUnavailable(mail24h?.skipped)}`,
     `Backups: scheduled ${yesNo(backupEnabled)}; latest verified local snapshot age ${backupAgeHours === null ? "unavailable" : `${backupAgeHours}h`}; private off-host destination configured ${yesNo(offhostConfigured)}; latest confirmed off-host upload age ${offhostBackupAgeHours === null ? "unavailable" : `${offhostBackupAgeHours}h`}; off-host evidence ${backupOperations.offhostStatus}`,
     `Media: public and private storage configured ${yesNo(publicMediaConfigured && privateVideoConfigured)}; private-source privacy proof ready ${yesNo(privateIsolation.ready)}; video verifier ready ${yesNo(verifier.ready)}`,
@@ -392,6 +396,7 @@ export function collectSiteHealthDigest(database, {
       persistentStorageConfigured,
       storageHealth,
       traffic,
+      artistKnowledge,
       mailConfigured,
       replyToValid,
       mail24h,

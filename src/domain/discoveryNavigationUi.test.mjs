@@ -12,14 +12,14 @@ test("desktop discovery rail promotes signed-in lounges without retaining the ve
   assert.match(source, /onOpenDiscover/);
 });
 
-test("Discover leads with upcoming events, then Near you, then Venues, while retaining deeper discovery", async () => {
+test("Discover retains upcoming events and deeper discovery alongside its connected venue explorer", async () => {
   const source = await read("../screens/DiscoverScreen.jsx");
   const upcoming = source.indexOf('title="Upcoming events"');
-  const nearby = source.indexOf('title="Near you"');
-  const venue = source.indexOf('title="Venues"');
+  const venue = source.indexOf("<DiscoverVenues");
+  const explorer = await read("../components/discover/DiscoverVenues.jsx");
   const chart = source.indexOf("<DiscoverChart");
   const genres = source.indexOf("<DiscoverGenres");
-  assert.ok(upcoming >= 0 && nearby > upcoming && venue > nearby, "Discover should read Upcoming, Near you, then Venues");
+  assert.ok(upcoming >= 0 && venue > upcoming, "Shows and the venue explorer must remain available in programme order");
   assert.ok(venue >= 0 && chart > venue, "the Venue destination should precede charts");
   assert.ok(genres > chart, "genre exploration should remain available later in the page");
   assert.match(source, /EventScopeToggle/);
@@ -32,7 +32,9 @@ test("Discover leads with upcoming events, then Near you, then Venues, while ret
   assert.match(source, /eventImage[\s\S]*source: "provider"[\s\S]*provider: "ticketmaster"/);
   assert.match(source, /const liveEvents = useMemo\(\(\) => upcomingEventsForScope/);
   assert.match(source, /accessibilityLabel="Browse all events"/);
-  assert.equal((source.match(/title="Near you"/g) || []).length, 1, "Near you should not be duplicated in the shortcut grid");
+  assert.equal((source.match(/<DiscoverVenues/g) || []).length, 1, "The map and list are one coherent explorer");
+  assert.match(explorer, /<VenueMap venues=\{venues\} selected=\{selected\?\.id\} onSelect=\{selectVenue\}/);
+  assert.match(explorer, /onPress=\{\(\) => selectVenue\(venue\.id\)\}/);
   assert.equal((source.match(/title="Find venues"/g) || []).length, 0, "Venues already owns a full section");
   assert.match(source, /const sceneProjection = useMemo\(\(\) => projectDiscoverScene\(rangeMatchesScene \? eventRange\.rows : tourDates, \{[\s\S]*region,[\s\S]*eventLimit: 12,[\s\S]*venueLimit: 8,[\s\S]*countryForCity,[\s\S]*\}\), \[eventRange\.rows, rangeMatchesScene, region, tourDates\]\)/);
   assert.match(source, /const initialRangeEvents = useMemo\(\(\) => selectDiscoverRangeEvents\([\s\S]*localEvents : sceneProjection\.events/);
@@ -45,8 +47,8 @@ test("Discover leads with upcoming events, then Near you, then Venues, while ret
   assert.match(source, /complete: overview\.eventCoverage\.status === "ready"/);
   assert.match(source, /supportedCountries: DISCOVER_SUPPORTED_EVENT_COUNTRIES/);
   assert.match(source, /const sceneChoiceLimit = compact \? 3 : 12/);
-  assert.match(source, /const knownSceneVenues = region === "Worldwide" \? \[\] : searchVenues\(region, 3\)/);
-  assert.match(source, /Known venues in \$\{region\}\. New shows appear here when they are listed\./);
+  assert.match(source, /venueDirectoryIndex=\{venueDirectoryIndex\}/);
+  assert.match(explorer, /No upcoming dates in this snapshot/);
   assert.match(source, />\{compactDiscoverNumber\(country\.count\)\} upcoming</);
   assert.match(source, /worldLabel=\{region\}/);
   assert.match(source, /key=\{`events:\$\{liveScope\}:\$\{discoverCountryIdentity\(region\)\}`\}/);
@@ -68,7 +70,7 @@ test("Discover keeps scene controls inside their card and makes genre exploratio
   assert.match(screen, /attendanceRows=\{sceneAttendance\}/);
   assert.match(screen, /filterDiscoverSceneRows\(photos/);
   assert.match(screen, /filterDiscoverSceneRows\([\s\S]*projectPopularLounges/);
-  assert.match(screen, /sceneProjection\.venues/);
+  assert.match(screen, /<DiscoverVenues region=\{region\}/);
   assert.match(genres, /<SoundDonut/);
   assert.match(genres, /From shows you attended/);
   assert.match(genres, /Genre information is not ready/);
