@@ -25,6 +25,7 @@ const {
 const { ownerIdentityDeliveryScope } = await import("./ownerApprovals.js");
 const { backupDirectory, recordOffhostBackupReceipt } = await import("./backupScheduler.js");
 const { db, q } = await import("./db.js");
+const { collectStorageHealth } = await import("./storageHealth.js");
 
 const markerPattern = "operations.site_health_digest.v1:*";
 const founderIdentity = Object.freeze({
@@ -276,6 +277,30 @@ test("health content allows diagnostic metadata without member data and states c
   assert.equal(digest.aggregate.serverFaultWindow.patterns[0].code, "UNKNOWN");
   assert.equal(digest.aggregate.serverFaultWindow.patterns[0].route, null);
   assert.match(digest.detail, /Fault window:/u);
+});
+
+test("critical disk capacity appears in founder attention codes without paths or raw errors", () => {
+  const at = Date.parse("2026-09-15T13:00:00Z");
+  let observedPath = null;
+  const digest = collectSiteHealthDigest(db, {
+    env: { ...productionEnv, PIT_DATA_DIR: "C:/private-member-database" }, at,
+    storageHealthImpl(database, options) {
+      observedPath = options.databasePath;
+      return collectStorageHealth(database, {
+        ...options,
+        stat: () => ({ size: 1024 ** 2 }),
+        statfs: () => ({ blocks: 10000, bavail: 100, bsize: 1024 ** 2 }),
+        monotonicNow: () => 1,
+      });
+    },
+  });
+  assert.ok(observedPath.includes("private-member-database"));
+  assert.equal(digest.status, "needs_attention");
+  assert.ok(digest.aggregate.issues.includes("disk_space_critical"));
+  assert.equal(digest.aggregate.storageHealth.freePercent, 1);
+  assert.match(digest.detail, /disk free 100 MiB \(1%\)/);
+  assert.match(digest.detail, /disk_space_critical/);
+  assert.doesNotMatch(JSON.stringify(digest), /private-member-database|pit\.db|statfs|SQLITE_/);
 });
 
 test("health digest distinguishes unconfigured, current, and stale off-host backup evidence", () => {

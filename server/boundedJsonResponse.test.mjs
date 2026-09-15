@@ -65,6 +65,16 @@ test("bounded JSON reader keeps invalid JSON and cancellation distinguishable", 
   );
 });
 
+test("body cancellation rejection cannot escape as an unhandled process failure", async () => {
+  const controller = new AbortController();
+  const pending = readBoundedJsonResponse(new Response(new ReadableStream({
+    cancel() { return Promise.reject(new Error("transport already closed")); },
+  })), { signal: controller.signal });
+  controller.abort();
+  await assert.rejects(pending, { name: "AbortError" });
+  await new Promise((resolve) => setImmediate(resolve));
+});
+
 test("json-only injected adapters remain size checked", async () => {
   assert.deepEqual(
     await readBoundedJsonResponse({ json: async () => ({ ok: true }) }, { maxBytes: 32 }),

@@ -18,6 +18,9 @@ import { readAuthorizedRequest } from "./requestAuthorization.js";
 import { maybeAlert, pruneErrors, recordError } from "./errorLog.js";
 import { createAlertDrainScheduler } from "./alertDrainScheduler.js";
 import { startMemoryMonitor } from "./memoryAdmission.js";
+import { observeRequestResponse } from "./requestMetrics.js";
+import { startStorageMaintenance } from "./storageMaintenanceScheduler.js";
+import { pruneExpiredProviderData } from "./musicProviders.js";
 import { sitemapStartupRefreshDecision } from "./features/seo/sitemapSnapshotManager.js";
 import {
   injectHead,
@@ -82,7 +85,7 @@ import { publicPageFor, renderPublicPage } from "./publicPages.js";
 import { SECURITY_TXT_PATH, securityTxtResponse } from "./securityTxt.js";
 import { staticAssetCacheControl } from "./staticAssetCache.js";
 import { randomUUID } from "node:crypto";
-import { createApiResponseHeaders, createApiResponseHeaderSetter } from "./responseHeaders.js";
+import { apiRetryAfterHeaders, createApiResponseHeaders, createApiResponseHeaderSetter } from "./responseHeaders.js";
 import { CAPACITY_CHALLENGE_HEADER } from "./capacityHandshake.js";
 import { binaryApiResponsePayload } from "./binaryApiResponse.js";
 import { reconcileAdminAccount } from "./adminBootstrap.js";
@@ -231,7 +234,7 @@ function sendCrawlerText(req, res, status, body, extra = {}) {
 
 function sendApiError(res, error, requestId, extra = {}) {
   const safe = error instanceof ApiError ? error : new ApiError(500, "Something broke on our end, it's been logged.", "INTERNAL_ERROR");
-  return send(res, safe.status, errorEnvelope(safe, requestId), createApiResponseHeaders(extra));
+  return send(res, safe.status, errorEnvelope(safe, requestId), createApiResponseHeaders({ ...extra, ...apiRetryAfterHeaders(safe) }));
 }
 
 function withRequestId(body, requestId) {
@@ -519,6 +522,7 @@ async function handleRequest(req, res) {
     query = Object.fromEntries(u.searchParams);
     hasQueryString = u.search.length > 1;
   } catch { return sendApiError(res, new ApiError(400, "Bad URL.", "VALIDATION_FAILED"), requestId); }
+  observeRequestResponse(req, res, { pathname });
 
   try {
     assertProductionRequestHost({
@@ -757,8 +761,6 @@ process.on("uncaughtExceptionMonitor", (error, origin) => {
 // Hourly maintenance owns its failure at the timer boundary. A transient
 // cleanup error should be visible, but it is not an unknown process-level bug.
 setInterval(() => {
-  try { sweepExpiredSessions(); }
-  catch (error) { console.error(`[pit] expired-session sweep failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
   try { pruneErrors(); }
   catch (error) { console.error(`[pit] error-log prune failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
   try { pruneMissingArtists(); }
@@ -833,10 +835,12 @@ let privateMediaIsolationMonitor = null;
 let sitemapRefreshTimer = null;
 let sitemapRetryTimer = null;
 let memoryMonitor = null;
+let storageMaintenance = null;
 function shutdown(exitCode = 0) {
   if (shuttingDown) return;
   shuttingDown = true;
   memoryMonitor?.stop();
+  storageMaintenance?.stop();
   console.log("\n[pit] shutting down…");
   const campaignStop = emailCampaignScheduler?.stop() || Promise.resolve();
   const founderOperationsStop = founderOperationsScheduler?.stop() || Promise.resolve();
@@ -984,6 +988,9 @@ async function startServer() {
     console.error(`[seo] persisted sitemap rejected safely: category=${loadedSitemap.reason}`);
   }
   await listenForServer(server, PORT);
+  storageMaintenance = startBackgroundRuntime("/startup/storage-maintenance", () => startStorageMaintenance({
+    database: db, databasePath: DATABASE_PATH, pruneProviders: pruneExpiredProviderData, sweepSessions: sweepExpiredSessions,
+  }));
   console.log(`[pit] up on http://localhost:${PORT} ${PROD ? "(production)" : "(dev)"}, serving API${existsSync(DIST) ? " + web build" : " (no dist/ yet)"}`);
     try { pruneEmailOperationalData(db); }
     catch (error) { console.error(`[mail] startup retention sweep failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }

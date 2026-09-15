@@ -187,3 +187,24 @@ export async function attachArtistSuggestion(artist, {
   settledCachesByClient.get(apiClient)?.clear();
   return { ...persisted, key, name: persistedName, transient: false };
 }
+
+// Keep unavailable and no-match distinct. Interactive callers handle this
+// error inline; metadata-only callers can retain their already displayed data.
+export async function fetchResolvedArtist(name, { signal, apiClient } = {}) {
+  if (typeof apiClient !== "function") throw new TypeError("Artist lookup requires an API client.");
+  if (signal?.aborted) throw abortError(signal);
+  const term = String(name || "").trim();
+  if (!term || [...term].length > 120) return null;
+  const result = await apiClient(`/api/artists/resolve?name=${encodeURIComponent(term)}`, {
+    signal, silent: true, timeoutMs: 8_000, context: "Looking up an artist",
+  });
+  if (signal?.aborted) throw abortError(signal);
+  return result?.artist ? { ...result.artist, transient: result.transient === true } : null;
+}
+
+export function artistLookupFailureMessage(error) {
+  if (error?.serverCode === "PROVIDER_UNAVAILABLE" || error?.code === "PROVIDER_UNAVAILABLE") {
+    return "Artist information is temporarily unavailable. Your search is still here; try again shortly or choose an artist already in the results.";
+  }
+  return "The artist lookup could not finish. Check your connection and try again.";
+}

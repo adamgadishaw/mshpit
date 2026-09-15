@@ -434,8 +434,8 @@
       "fingerprint": "01e0028f751a5ee02884"
     },
     "src/store.js": {
-      "count": 98,
-      "fingerprint": "f561eacdce7fdb855dc2"
+      "count": 97,
+      "fingerprint": "464617d2fb10ec0cda69"
     }
   },
   "legacyClientContractShapesByFile": {
@@ -478,8 +478,8 @@
       "fingerprint": "039cbb3caffd0e821ab6"
     },
     "src/store.js": {
-      "count": 33,
-      "fingerprint": "dfbf2715e57bd3e6be53"
+      "count": 32,
+      "fingerprint": "233dbc129b6e28fccac0"
     }
   },
   "allowedUnusedCanonicalExports": []

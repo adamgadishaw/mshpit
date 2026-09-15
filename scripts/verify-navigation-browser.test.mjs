@@ -6,7 +6,7 @@ test("navigation fixture import is inert and scenarios cover both mobile and des
   assert.equal(new Set(navigationCases.map(item => item.name)).size, navigationCases.length);
   for (const width of [390, 1280]) {
     const cases = navigationCases.filter(item => item.width === width);
-    for (const kind of ["deep-link", "delayed", "guest-tabs", "member-tabs", "home", "signed-in-root", "account-boundary", "server-document", "client-document", "missing-document"]) {
+    for (const kind of ["deep-link", "delayed", "guest-tabs", "artist-lookup-recovery", "member-tabs", "home", "signed-in-root", "account-boundary", "server-document", "client-document", "missing-document"]) {
       assert.ok(cases.some(item => item.kind === kind), `${kind} is missing at ${width}px`);
     }
     assert.deepEqual(cases.filter(item => item.kind === "deep-link").map(item => item.path), [postPath, eventPath]);

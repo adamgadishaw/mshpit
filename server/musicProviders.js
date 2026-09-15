@@ -6,6 +6,7 @@ import {
   trackOverrideIdentityKey,
 } from "./trackIdentity.js";
 import { PROVIDER_JSON_LIMITS, readBoundedJsonResponse } from "./boundedJsonResponse.js";
+import { discardProviderResponse, providerRetryAfterMs } from "./providerResponsePolicy.js";
 
 const DEEZER_DISCOGRAPHY_TTL_MS = 24 * 60 * 60 * 1000;
 const DEEZER_PREVIEW_MAX_TTL_MS = 5 * 60 * 1000;
@@ -184,13 +185,14 @@ function providerFetchScope(fetchImpl) {
 }
 
 export class ProviderError extends Error {
-  constructor(provider, status, message, { retryable = true, code = "provider_error", cause } = {}) {
+  constructor(provider, status, message, { retryable = true, code = "provider_error", cause, retryAfterMs = null } = {}) {
     super(message, cause ? { cause } : undefined);
     this.name = "ProviderError";
     this.provider = provider;
     this.status = Number(status) || 502;
     this.retryable = retryable;
     this.code = code;
+    this.retryAfterMs = retryAfterMs;
   }
 }
 
@@ -632,7 +634,9 @@ export async function providerJson(provider, url, { timeoutMs = 10_000, fetchImp
     throw new ProviderError(provider, 502, `${provider} could not be reached.`, { code: "network", cause: error });
   }
   if (!response.ok) {
+    discardProviderResponse(response);
     throw new ProviderError(provider, response.status, providerMessage(provider, response.status), {
+      retryAfterMs: providerRetryAfterMs(response),
       code: response.status === 429 ? "rate_limited" : response.status === 403 ? "quota_or_forbidden" : "http_error",
       retryable: response.status >= 500 || response.status === 429 || response.status === 403,
     });
@@ -738,17 +742,21 @@ async function findDeezerArtistCandidatesUnshared(name, { fetchImpl, limit, sign
     fetchImpl,
     signal,
   });
-  return (data?.data || [])
+  if (!Array.isArray(data?.data)) {
+    throw new ProviderError("Deezer", 502, "Deezer returned an invalid artist response.", { code: "invalid_payload" });
+  }
+  return data.data.slice(0, limit)
     .filter((a) => a?.id && a?.name)
     .map((a) => ({ id: a.id, name: a.name, fans: Number(a.nb_fan) || 0, albums: Number(a.nb_album) || 0, photo: a.picture_medium || a.picture || null }));
 }
 
 export async function findDeezerArtistCandidates(name, { fetchImpl = fetch, limit = 8, signal } = {}) {
   throwIfAborted(signal);
+  limit = Math.max(1, Math.min(40, Math.trunc(Number(limit)) || 8));
   const normalizedName = String(name || "").trim();
   return coalescedProviderJob({
     map: deezerArtistCandidateInflight,
-    key: `${normalizeMusicText(normalizedName)}|${limit}|${providerFetchScope(fetchImpl)}`,
+    key: `${normalizeTrackIdentityText(normalizedName)}|${limit}|${providerFetchScope(fetchImpl)}`,
     signal,
     abandonedMessage: "All Deezer artist-search callers disconnected.",
     run: (jobSignal) => findDeezerArtistCandidatesUnshared(normalizedName, {
@@ -1792,9 +1800,9 @@ function rememberRejectedCachedMatch(key, row, rejected) {
   });
 }
 
-let lastProviderPruneAt = 0;
+let nextProviderPruneAt = 0;
 export function pruneExpiredProviderData(at = Date.now(), { force = false } = {}) {
-  if (!force && at - lastProviderPruneAt < 60 * 60 * 1000) {
+  if (!force && at < nextProviderPruneAt) {
     return {
       youtube: 0,
       provider: 0,
@@ -1805,7 +1813,6 @@ export function pruneExpiredProviderData(at = Date.now(), { force = false } = {}
       skipped: true,
     };
   }
-  lastProviderPruneAt = at;
   const youtube = ytStmts.deleteExpired.run(at, at - days(30)).changes;
   const providerExpired = providerCacheStmts.deleteExpired.run(at).changes;
   const providerIdentityOverflow = providerCacheStmts.trimMusicBrainzResolutions
@@ -1815,24 +1822,35 @@ export function pruneExpiredProviderData(at = Date.now(), { force = false } = {}
   // recorded misses after 30 days when their provenance is YouTube/legacy.
   const artistChannels = db.prepare(`UPDATE artists
     SET youtube_channel_id=NULL,youtube_channel_at=0,youtube_channel_source=NULL
-    WHERE youtube_channel_at > 0 AND youtube_channel_at <= ?
-      AND COALESCE(youtube_channel_source,'') NOT LIKE 'wikidata%'`).run(at - YOUTUBE_POLICY_MAX_AGE_MS).changes;
+    WHERE norm IN (SELECT norm FROM artists
+      WHERE youtube_channel_at > 0 AND youtube_channel_at <= ?
+        AND COALESCE(youtube_channel_source,'') NOT LIKE 'wikidata%'
+      ORDER BY youtube_channel_at,norm LIMIT 500)`).run(at - YOUTUBE_POLICY_MAX_AGE_MS).changes;
   // A Wikidata channel pointer is CC0 and may remain, but `source='wikidata'`
   // means PIT validated its title/existence with YouTube API data. Downgrade
   // that dormant trust marker and erase its validation timestamp at 30 days.
   const artistValidations = db.prepare(`UPDATE artists
     SET youtube_channel_at=0,youtube_channel_source='wikidata_unverified'
-    WHERE youtube_channel_id IS NOT NULL
-      AND youtube_channel_at > 0 AND youtube_channel_at <= ?
-      AND youtube_channel_source LIKE 'wikidata%'`).run(at - YOUTUBE_POLICY_MAX_AGE_MS).changes;
+    WHERE norm IN (SELECT norm FROM artists
+      WHERE youtube_channel_id IS NOT NULL
+        AND youtube_channel_at > 0 AND youtube_channel_at <= ?
+        AND youtube_channel_source LIKE 'wikidata%'
+      ORDER BY youtube_channel_at,norm LIMIT 500)`).run(at - YOUTUBE_POLICY_MAX_AGE_MS).changes;
   // The shared MBID cache carries the same YouTube-derived validation bit.
   // Preserve its CC0 MBID -> channel pointer, but persistently erase trust and
   // age so the next access performs a fresh provider check.
   const wikidataValidations = db.prepare(`UPDATE wikidata_channel_checks
     SET validated=0,checked_at=0
-    WHERE checked_at > 0 AND checked_at <= ?`).run(at - YOUTUBE_POLICY_MAX_AGE_MS).changes;
-  const playbackFailures = db.prepare("DELETE FROM youtube_playback_failures WHERE created_at <= ?")
+    WHERE mbid IN (SELECT mbid FROM wikidata_channel_checks
+      WHERE checked_at > 0 AND checked_at <= ? ORDER BY checked_at LIMIT 500)`).run(at - YOUTUBE_POLICY_MAX_AGE_MS).changes;
+  const playbackFailures = db.prepare(`DELETE FROM youtube_playback_failures WHERE rowid IN (
+    SELECT rowid FROM youtube_playback_failures WHERE created_at <= ? ORDER BY created_at LIMIT 500)`)
     .run(at - YOUTUBE_POLICY_MAX_AGE_MS).changes;
+  const backlog = [youtube, providerExpired, providerIdentityOverflow, artistChannels,
+    artistValidations, wikidataValidations, playbackFailures].some((count) => count >= 500);
+  // A full batch schedules another small off-request pass, not an unbounded
+  // transaction. Cache readers still enforce expiry before serving any data.
+  nextProviderPruneAt = at + (backlog ? 60_000 : 60 * 60_000);
   return {
     youtube,
     provider,
@@ -1840,13 +1858,13 @@ export function pruneExpiredProviderData(at = Date.now(), { force = false } = {}
     artistValidations,
     wikidataValidations,
     playbackFailures,
+    backlog,
     skipped: false,
   };
 }
 
-// A restart is an inexpensive opportunity to remove dormant expired API data;
-// the daily warmer also calls this for long-running processes.
-pruneExpiredProviderData(Date.now(), { force: true });
+// The server's isolated maintenance timer owns startup and backlog cleanup.
+// Database cleanup failure must never prevent importing the API or listening.
 
 function youtubeUrl(path, params, apiKey) {
   const query = new URLSearchParams({ ...params, key: apiKey });
@@ -2008,7 +2026,6 @@ async function resolveYouTubeTrackUnshared(title, artist, {
     });
   }
   const currentTime = Date.now();
-  pruneExpiredProviderData(currentTime);
   const recordingIdentity = youtubeRecordingIdentity(sourceProvider, sourceId);
   const spotifyProof = recordingIdentity.startsWith("spotify:")
     ? spotifyCatalogueTrackProof({ sourceId, title, artist })

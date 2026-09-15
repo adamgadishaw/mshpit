@@ -96,8 +96,10 @@ test("the backup subprocess receives only its least-privilege environment", () =
   assert.match(call[1][0].replaceAll("\\", "/"), /\/scripts\/backup-db\.mjs$/);
   assert.equal(call[2].env.NODE_ENV, "production");
   assert.equal(call[2].env.PIT_DATA_DIR, "/data");
-  assert.equal(call[2].env.BACKUP_S3_ACCESS_KEY_ID, "backup-id");
-  assert.equal(call[2].env.BACKUP_S3_SECRET_ACCESS_KEY, "backup-secret");
+  assert.equal(call[2].env.BACKUP_S3_ACCESS_KEY_ID, undefined);
+  assert.equal(call[2].env.BACKUP_S3_SECRET_ACCESS_KEY, undefined);
+  assert.equal(call[1].includes("--upload"), false, "startup never waits for a remote provider");
+  assert.equal(call[2].windowsHide, true);
   assert.equal(Object.hasOwn(call[2].env, "ADMIN_PASSWORD"), false);
   assert.equal(Object.hasOwn(call[2].env, "RESEND_API_KEY"), false);
   assert.equal(Object.hasOwn(call[2].env, "MEDIA_SECRET_ACCESS_KEY"), false);

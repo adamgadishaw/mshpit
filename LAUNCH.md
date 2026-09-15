@@ -64,10 +64,14 @@ The production server schedules this verified snapshot daily when
 `BACKUP_ENABLED=true` (also the production default). It serializes with the other
 heavy maintenance work and skips a run when a fresh snapshot already exists.
 This protects against a bad live database file, not loss of the whole disk.
-Each run stays under a `.partial-*` name until verification and any requested
-off-host upload succeed, then publishes atomically; partial files never count as
-fresh. Bounded process/upload deadlines keep a wedged provider or SQLite child
+Each run stays under a `.partial-*` name until local verification succeeds, then
+publishes atomically; partial files never count as fresh. An unavailable off-host
+provider does not discard that verified local snapshot, and local freshness does
+not suppress a missing/overdue off-host upload receipt. Bounded process/upload deadlines keep a wedged provider or SQLite child
 from owning the maintenance queue indefinitely.
+
+See `BACKUP_OPERATIONS.md` for private destination setup, streaming/checksum
+verification, disk headroom, retention costs, and the required restore drill.
 
 Prove a restore rather than assuming one:
 

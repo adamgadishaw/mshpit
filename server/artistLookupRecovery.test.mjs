@@ -165,9 +165,10 @@ test("concurrent identical artist lookups share one MusicBrainz request", async 
     };
     const first = routes["GET /api/artists/resolve"](context({}, { name: "Coalesced Artist Fixture" }));
     await started;
-    const second = routes["GET /api/artists/resolve"](context({}, { name: "Coalesced Artist Fixture" }));
+    const rest = Array.from({ length: 11 }, () => routes["GET /api/artists/resolve"](context({}, { name: "Coalesced Artist Fixture" })));
     releaseFetch();
-    const results = await Promise.all([first, second]);
+    const results = await Promise.all([first, ...rest]);
+    assert.equal(results.length, 12);
     assert.equal(calls, 1);
     assert.equal(results[0].artist.mbid, results[1].artist.mbid);
   } finally {
@@ -216,7 +217,7 @@ test("expired exact identity cache survives pruning and serves during a later ou
     pruneExpiredProviderData(Date.now(), { force: true });
     assert.ok(providerCacheStmts.get.get(cacheKey), "hourly pruning preserves the bounded last-known identity record");
 
-    globalThis.fetch = async () => ({ ok: false, status: 503 });
+    globalThis.fetch = async () => { assert.fail("A stale exact identity must not wait on any provider"); };
     const served = await routes["GET /api/artists/resolve"](context({}, { name: artist.name }));
     assert.equal(served.artist.mbid, artist.id);
     assert.equal(served.cached, true);
@@ -237,4 +238,34 @@ test("an artist never resolved before still fails honestly during an outage", as
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("repeated failed unknown lookups do not repeatedly call either provider or invent no-match", async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  try {
+    globalThis.fetch = async () => { calls += 1; return { ok: false, status: 503 }; };
+    for (let index = 0; index < 3; index += 1) {
+      await assert.rejects(routes["GET /api/artists/resolve"](context({}, { name: "Repeated Outage Fixture" })),
+        (error) => error.status === 502 && error.code === "PROVIDER_UNAVAILABLE" && error.retryAfterMs > 0);
+    }
+    assert.ok(calls <= 2, "at most one MusicBrainz and one Deezer request during the short failure cooldown");
+    assert.equal(artistStmts.byNorm.get("repeated outage fixture"), undefined);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test("outage fallbacks preserve non-Latin names and never collapse distinct accented artists", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async (url) => {
+      if (String(url).includes("musicbrainz.org")) return { ok: false, status: 503 };
+      const query = new URL(url).searchParams.get("q");
+      return new Response(JSON.stringify({ data: [{ id: 8282, name: query === "宇多田ヒカル" ? query : "Zoe Fixture" }] }));
+    };
+    const actual = await routes["GET /api/artists/resolve"](context({}, { name: "宇多田ヒカル" }));
+    assert.equal(actual.artist.name, "宇多田ヒカル");
+    assert.equal(actual.providerFallback, "deezer");
+    await assert.rejects(routes["GET /api/artists/resolve"](context({}, { name: "Zoé Fixture" })),
+      (error) => error.code === "PROVIDER_UNAVAILABLE");
+  } finally { globalThis.fetch = originalFetch; }
 });

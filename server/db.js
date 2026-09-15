@@ -2413,6 +2413,20 @@ if (!db.prepare("SELECT 1 FROM app_meta WHERE key=?").get(isoDateMigration)) {
 ensureSharedEmailSchema(db);
 ensureAccountLifecycleSchema(db);
 
+// Expiry work runs synchronously in the web process. Index the exact predicates
+// and cap each delete so a retention backlog cannot monopolize the event loop.
+// Identity recovery records deliberately remain outside the expiring cache.
+db.exec(`CREATE INDEX IF NOT EXISTS idx_sessions_expiry ON sessions(expires_at,token_hash);
+  CREATE INDEX IF NOT EXISTS idx_yt_cache_expiry ON yt_cache(expires_at,updated_at,key);
+  CREATE INDEX IF NOT EXISTS idx_provider_cache_prunable_expiry ON provider_cache(expires_at,key)
+    WHERE key NOT LIKE 'mbresolve:v1:%';
+  CREATE INDEX IF NOT EXISTS idx_provider_cache_identity_recency ON provider_cache(updated_at DESC,key)
+    WHERE key LIKE 'mbresolve:v1:%';
+  CREATE INDEX IF NOT EXISTS idx_artists_channel_expiry ON artists(youtube_channel_at,norm)
+    WHERE youtube_channel_at > 0;`);
+
+export const STORAGE_MAINTENANCE_BATCH_SIZE = 500;
+
 // --- tiny helpers ------------------------------------------------------------
 export const q = {
   userByEmail: db.prepare("SELECT * FROM users WHERE lower(trim(email)) = lower(trim(?)) ORDER BY created_at,id LIMIT 1"),
@@ -2424,7 +2438,9 @@ export const q = {
   insertSession: db.prepare("INSERT INTO sessions (token_hash,user_id,created_at,expires_at,ip,ua) VALUES (?,?,?,?,?,?)"),
   sessionByHash: db.prepare("SELECT * FROM sessions WHERE token_hash = ?"),
   deleteSession: db.prepare("DELETE FROM sessions WHERE token_hash = ?"),
-  deleteExpiredSessions: db.prepare("DELETE FROM sessions WHERE expires_at < ?"),
+  deleteExpiredSessions: db.prepare(`DELETE FROM sessions WHERE token_hash IN (
+    SELECT token_hash FROM sessions WHERE expires_at < ? ORDER BY expires_at,token_hash
+    LIMIT ${STORAGE_MAINTENANCE_BATCH_SIZE})`),
 };
 
 // Email management: owner-editable templates, broadcasts, the per-recipient
@@ -2596,9 +2612,10 @@ export const ytStmts = {
   invalidate: db.prepare(`UPDATE yt_cache SET video_id=NULL,
     metadata='{"invalidated":true}',score=NULL,updated_at=?,expires_at=?,rejected_ids=?
     WHERE key=?`),
-  deleteExpired: db.prepare(`DELETE FROM yt_cache
-    WHERE (expires_at IS NOT NULL AND expires_at <= ?)
-       OR (expires_at IS NULL AND updated_at <= ?)`),
+  deleteExpired: db.prepare(`DELETE FROM yt_cache WHERE key IN (
+    SELECT key FROM yt_cache WHERE expires_at <= ?
+    UNION ALL SELECT key FROM yt_cache WHERE expires_at IS NULL AND updated_at <= ?
+    LIMIT ${STORAGE_MAINTENANCE_BATCH_SIZE})`),
 };
 
 export const providerCacheStmts = {
@@ -2608,12 +2625,12 @@ export const providerCacheStmts = {
   // Exact MusicBrainz name/MBID pairs are immutable public identity recovery
   // records. Keep them after freshness expires so an upstream outage cannot
   // erase the last known answer; the separate cap prevents unbounded growth.
-  deleteExpired: db.prepare("DELETE FROM provider_cache "
-    + "WHERE expires_at < ? AND key NOT LIKE 'mbresolve:v1:%'"),
-  trimMusicBrainzResolutions: db.prepare("DELETE FROM provider_cache "
-    + "WHERE key LIKE 'mbresolve:v1:%' AND key NOT IN ("
-    + "SELECT key FROM provider_cache WHERE key LIKE 'mbresolve:v1:%' "
-    + "ORDER BY updated_at DESC,key ASC LIMIT ?)"),
+  deleteExpired: db.prepare(`DELETE FROM provider_cache WHERE key IN (
+    SELECT key FROM provider_cache WHERE expires_at < ? AND key NOT LIKE 'mbresolve:v1:%'
+    ORDER BY expires_at,key LIMIT ${STORAGE_MAINTENANCE_BATCH_SIZE})`),
+  trimMusicBrainzResolutions: db.prepare(`DELETE FROM provider_cache WHERE key IN (
+    SELECT key FROM provider_cache WHERE key LIKE 'mbresolve:v1:%'
+    ORDER BY updated_at DESC,key ASC LIMIT ${STORAGE_MAINTENANCE_BATCH_SIZE} OFFSET ?)`),
 };
 
 // --- Artist catalog statements + helpers -------------------------------------

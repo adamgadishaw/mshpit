@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import {
+  BACKUP_WORKING_RESERVE_BYTES,
   backupRetentionCount,
   backupSourceManifest,
   backupTableCounts,
@@ -125,7 +126,7 @@ test("backup verification rejects referential corruption without exposing row co
     database.close();
     assert.throws(
       () => verifyBackupSnapshot(path),
-      /foreign_key_check failed \(1 violation\(s\)\)/,
+      /foreign_key_check failed \(1 violation\(s\) or more\)/,
     );
   } finally {
     rmSync(directory, { recursive: true, force: true });
@@ -269,6 +270,27 @@ test("backup CLI creates, verifies, and retains a VACUUM INTO snapshot end to en
   }
 });
 
+test("failed off-host configuration keeps the verified local recovery point but returns failure", () => {
+  const root = mkdtempSync(join(tmpdir(), "pit-backup-local-survives-"));
+  const dataDirectory = join(root, "data");
+  const backupDirectory = join(root, "backups");
+  mkdirSync(dataDirectory);
+  try {
+    createSnapshot(dataDirectory, "pit.db");
+    const result = spawnSync(process.execPath, [BACKUP_SCRIPT, "--upload"], {
+      encoding: "utf8", windowsHide: true,
+      env: { ...process.env, PIT_DATA_DIR: dataDirectory, BACKUP_DIR: backupDirectory,
+        BACKUP_S3_ENDPOINT: "", BACKUP_S3_BUCKET: "", BACKUP_S3_ACCESS_KEY_ID: "", BACKUP_S3_SECRET_ACCESS_KEY: "" },
+    });
+    assert.notEqual(result.status, 0, "remote failure must remain a failed job for retry/reporting");
+    assert.match(result.stderr, /BACKUP_CONFIG_INVALID/);
+    const snapshots = readdirSync(backupDirectory);
+    assert.equal(snapshots.length, 1);
+    assert.match(snapshots[0], /^pit-\d{8}-\d{6}\.db$/);
+    assert.deepEqual(verifyBackupSnapshot(join(backupDirectory, snapshots[0])), snapshotCounts());
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("backup retention reserves one verified replacement slot before VACUUM INTO", () => {
   const root = mkdtempSync(join(tmpdir(), "pit-backup-rollover-"));
   const dataDirectory = join(root, "data");
@@ -316,9 +338,9 @@ test("backup space planning prunes the oldest snapshots only when that makes the
     { fits: true, remove: ["pit-20260801-010203.db", "pit-20260802-010203.db"] });
   assert.deepEqual(snapshotsToFreeSpace({ snapshots, freeBytes: 200, requiredBytes: 900 }), { fits: false, remove: [] },
     "the newest recovery point is never chosen, and history is kept when pruning cannot make room");
-  assert.deepEqual(snapshotsToFreeSpace({ snapshots, freeBytes: Number.NaN, requiredBytes: 900 }), { fits: true, remove: [] },
-    "unknown free space takes no preflight action");
-  assert.equal(requiredBackupBytes(1_000, 200), 1_320);
+  assert.deepEqual(snapshotsToFreeSpace({ snapshots, freeBytes: Number.NaN, requiredBytes: 900 }), { fits: false, remove: [] },
+    "unknown free space cannot admit a copy or discard recovery history");
+  assert.equal(requiredBackupBytes(1_000, 200), 1_320 + BACKUP_WORKING_RESERVE_BYTES);
   assert.equal(isDiskFullError(Object.assign(new Error("database or disk is full"), { errcode: 13 })), true);
   assert.equal(isDiskFullError(Object.assign(new Error("write failed"), { code: "ENOSPC" })), true);
   assert.equal(isDiskFullError(new Error("integrity_check failed: corrupt")), false);
@@ -341,7 +363,7 @@ test("backup preflight prunes the oldest snapshots when free space cannot hold t
 
     const result = spawnSync(process.execPath, [BACKUP_SCRIPT], {
       encoding: "utf8", windowsHide: true,
-      env: { ...process.env, PIT_DATA_DIR: dataDirectory, BACKUP_DIR: backupDirectory, BACKUP_KEEP: "7", PIT_TEST_BACKUP_FREE_BYTES: "1" },
+      env: { ...process.env, PIT_DATA_DIR: dataDirectory, BACKUP_DIR: backupDirectory, BACKUP_KEEP: "7", PIT_TEST_BACKUP_FREE_BYTES: String(BACKUP_WORKING_RESERVE_BYTES + 1) },
     });
 
     assert.equal(result.status, 0, result.stderr || result.stdout);
@@ -418,6 +440,30 @@ test("production ignores the backup space test fixtures", () => {
     assert.doesNotMatch(result.stdout, /space\s+(preflight|disk full)/);
     assert.equal(existsSync(older), true);
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("insufficient or unknown space refuses before retention or snapshot writes", () => {
+  for (const freeBytes of ["0", "unknown"]) {
+    const root = mkdtempSync(join(tmpdir(), "pit-backup-space-refusal-"));
+    const dataDirectory = join(root, "data");
+    const backupDirectory = join(root, "backups");
+    mkdirSync(dataDirectory);
+    mkdirSync(backupDirectory);
+    try {
+      createSnapshot(dataDirectory, "pit.db");
+      const names = ["pit-20260801-010203.db", "pit-20260802-010203.db"];
+      for (const name of names) createSnapshot(backupDirectory, name);
+      const result = spawnSync(process.execPath, [BACKUP_SCRIPT], {
+        encoding: "utf8", windowsHide: true,
+        env: { ...process.env, NODE_ENV: "test", PIT_DATA_DIR: dataDirectory,
+          BACKUP_DIR: backupDirectory, BACKUP_KEEP: "2", PIT_TEST_BACKUP_FREE_BYTES: freeBytes },
+      });
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /BACKUP_DISK_SPACE/);
+      assert.deepEqual(readdirSync(backupDirectory).sort(), names);
+      for (const name of names) assert.deepEqual(verifyBackupSnapshot(join(backupDirectory, name)), snapshotCounts());
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  }
 });
 
 test("backup retention ignores date-named directories without deleting their contents", () => {

@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import test from "node:test";
 import { buildArtistSummary } from "../../domain/artistSummary.mjs";
 import { createArtistOverviewController } from "./artistOverviewController.mjs";
+import { fetchResolvedArtist } from "../artistSearch/artistSearchApi.mjs";
 
 const require = createRequire(import.meta.url);
 const hookSource = require("@babel/core").transformSync(
@@ -73,22 +74,28 @@ const settle = () => new Promise((resolve) => setImmediate(resolve));
 
 test("Store public lookup preserves the response transient marker before summary adoption", async () => {
   const source = readFileSync(new URL("../../store.js", import.meta.url), "utf8");
-  const start = source.indexOf("  const resolveArtist = async (name) => {");
+  const start = source.indexOf("  const resolveArtist = async (name,");
   const end = source.indexOf("  const remoteArtistMeta =", start);
   assert.ok(start >= 0 && end > start, "The real Store artist resolver must be available");
-  const createResolver = new Function("remoteArtists", "norm", "api", "cacheArtists",
+  const createResolver = new Function("remoteArtists", "norm", "api", "cacheArtists", "fetchResolvedArtist",
     source.slice(start, end) + "\nreturn resolveArtist;");
   for (const transient of [true, false]) {
     const cache = [];
     const lookup = createResolver({}, (name) => name.trim().toLowerCase(),
       async () => ({ artist: { name: persisted.name, key: persisted.key }, transient }),
-      (artists) => cache.push(...artists));
+      (artists) => cache.push(...artists), fetchResolvedArtist);
     const artist = await lookup(persisted.name);
     assert.equal(artist.transient, transient);
     assert.equal(cache[0].transient, transient);
     assert.equal(buildArtistSummary({ name: persisted.name, key: "a$ap rocky", remoteArtist: artist }).profileKey,
       transient ? "a$ap rocky" : persisted.key);
   }
+  const unavailable = new AppError("Provider unavailable", { serverCode: "PROVIDER_UNAVAILABLE", retryable: true });
+  const lookup = createResolver({}, (name) => name.trim().toLowerCase(),
+    async () => { throw unavailable; }, () => assert.fail("failures must not cache a fake artist"), fetchResolvedArtist);
+  assert.equal(await lookup("Optional metadata"), null, "an optional enrichment cannot remove the existing page");
+  await assert.rejects(lookup("Interactive search", { throwOnError: true }), (error) => error === unavailable,
+    "interactive lookup must not mislabel an outage as a missing artist");
 });
 
 test("a persisted canonical key arriving after initial 404 restarts the actual overview hook", async () => {

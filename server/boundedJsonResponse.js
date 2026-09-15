@@ -82,7 +82,7 @@ export async function readBoundedJsonResponse(response, {
     const parts = [];
     let received = 0;
     const abort = () => {
-      try { void reader.cancel(abortReason(signal)); }
+      try { Promise.resolve(reader.cancel(abortReason(signal))).catch(() => undefined); }
       catch { /* architecture: allow-empty-catch -- the caller's abort remains the authoritative cancellation result */ }
     };
     signal?.addEventListener?.("abort", abort, { once: true });

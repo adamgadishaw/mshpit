@@ -120,7 +120,7 @@ import { fetchDirectMessageSummaries, writeDirectMessageRead } from "./features/
 import { removeMyPostTagRequest } from "./features/postTags/services/postTagApi.mjs";
 import { saveMemoryPostEdit } from "./features/postEditing/services/memoryPostEditApi.mjs";
 import { searchPeopleRequest } from "./features/people/services/peopleSearchApi.mjs";
-import { attachArtistSuggestion, fetchArtistSuggestions, mergeArtistSearchCacheEntry, refreshArtistCatalogEntry } from "./features/artistSearch/artistSearchApi.mjs";
+import { attachArtistSuggestion, fetchArtistSuggestions, fetchResolvedArtist, mergeArtistSearchCacheEntry, refreshArtistCatalogEntry } from "./features/artistSearch/artistSearchApi.mjs";
 import { useAccountCommentCache } from "./features/comments/useAccountCommentCache";
 import { useAccountArtistPageCache } from "./features/artistPage/useAccountArtistPageCache";
 import { artistMemorialPreparationName } from "./domain/artistMemorialCandidate.mjs";
@@ -1777,16 +1777,19 @@ export function StoreProvider({ children }) {
   };
   // Public lookup never creates a catalog row. Preserve its transient marker so
   // a provider preview cannot be mistaken for a persisted artist identity.
-  const resolveArtist = async (name) => {
+  const resolveArtist = async (name, { signal, throwOnError = false } = {}) => {
     const k = norm(name);
     if (remoteArtists[k]) return remoteArtists[k];
     try {
-      const result = await api(`/api/artists/resolve?name=${encodeURIComponent(name)}`);
-      const artist = result.artist ? { ...result.artist, transient: result.transient === true } : null;
+      const artist = await fetchResolvedArtist(name, { apiClient: api, signal });
       if (artist) cacheArtists([artist]);
       return artist;
     }
-    catch { return null; }
+    catch (error) {
+      if (throwOnError || signal?.aborted) throw error;
+      // architecture: allow-ambiguous-result -- optional artist metadata retains displayed data; interactive search explicitly requests strict errors
+      return null;
+    }
   };
   const remoteArtistMeta = (name) => remoteArtists[norm(name)] || null;
   // Full discography (albums + tracklists) from the server (Deezer-backed).

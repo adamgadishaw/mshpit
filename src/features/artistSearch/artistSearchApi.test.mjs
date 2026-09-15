@@ -7,9 +7,27 @@ import {
   COMPOSER_ARTIST_SEARCH_LIMIT,
   attachArtistSuggestion,
   fetchArtistSuggestions,
+  fetchResolvedArtist,
+  artistLookupFailureMessage,
   mergeArtistSearchCacheEntry,
   refreshArtistCatalogEntry,
 } from "./artistSearchApi.mjs";
+
+test("interactive artist resolution distinguishes a provider failure from a genuine no-match", async () => {
+  const error = Object.assign(new Error("provider down"), { serverCode: "PROVIDER_UNAVAILABLE" });
+  await assert.rejects(fetchResolvedArtist("Unavailable", { apiClient: async () => { throw error; } }), (value) => value === error);
+  assert.match(artistLookupFailureMessage(error), /temporarily unavailable/);
+  assert.doesNotMatch(artistLookupFailureMessage(error), /not find/);
+  assert.equal(await fetchResolvedArtist("Missing", { apiClient: async () => ({ artist: null }) }), null);
+  const controller = new AbortController();
+  const artist = await fetchResolvedArtist("Saved", { signal: controller.signal, apiClient: async (_path, options) => {
+    assert.equal(options.signal, controller.signal);
+    assert.equal(options.silent, true);
+    assert.equal(options.timeoutMs, 8_000);
+    return { artist: { name: "Saved" }, transient: true };
+  } });
+  assert.equal(artist.transient, true);
+});
 
 test("composer artist lookup uses the catalog first and only falls back remotely on a miss", async () => {
   const calls = [];

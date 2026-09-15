@@ -46,11 +46,17 @@ export function runStartupBackup({ env = process.env, spawn = spawnSync } = {}) 
     min: 30_000,
     max: 30 * 60 * 1000,
   });
+  const localBackupEnv = backupChildEnvironment(env);
+  for (const key of Object.keys(localBackupEnv)) {
+    if (key.startsWith("BACKUP_S3_")) delete localBackupEnv[key];
+  }
   const result = spawn(process.execPath, [BACKUP_SCRIPT], {
     cwd: ROOT,
-    // The pre-migration path gets the same least-privilege environment as the
-    // scheduled backup worker—never admin, mail, provider, or media secrets.
-    env: backupChildEnvironment(env),
+    // Startup requires a local pre-migration recovery point, not an available
+    // storage provider. No --upload and no remote credentials: daily off-host
+    // durability/retries belong to the scheduler, not every restart.
+    env: localBackupEnv,
+    windowsHide: true,
     stdio: "inherit",
     // VACUUM/integrity verification is intentionally a hard startup gate, but
     // a wedged child must not leave the persistent-disk service down forever.

@@ -40,6 +40,7 @@ export const navigationCases = Object.freeze([
     ...[postPath, eventPath].map(path => ({ name: `deep-link-${width < 620 ? "home" : "intro"}-${path.startsWith("/post") ? "post" : "event"}-${width}`, kind: "deep-link", path, width })),
     { name: `delayed-resolution-${width}`, kind: "delayed", path: postPath, width },
     { name: `guest-tabs-${width}`, kind: "guest-tabs", width },
+    { name: `artist-lookup-recovery-${width}`, kind: "artist-lookup-recovery", width },
     { name: `member-tabs-${width}`, kind: "member-tabs", member: true, width },
     { name: `home-link-${width}`, kind: "home", path: postPath, width },
     { name: `home-link-member-${width}`, kind: "home", path: postPath, member: true, width },
@@ -208,7 +209,7 @@ async function visiblePage(page, path) {
 
 async function runCase(browser, origin, item) {
   const context = await browser.newContext({ viewport: { width: item.width, height: 844 }, isMobile: item.width < 620, hasTouch: item.width < 620, serviceWorkers: "block" });
-  const state = { member: !!item.member, artistBioMode: "imported", calls: [], pageErrors: [], consoleErrors: [], reports: [], routeErrors: [], releaseResolve: null, resolveReleased: false, snapshots: [] };
+  const state = { member: !!item.member, artistBioMode: "imported", calls: [], pageErrors: [], consoleErrors: [], reports: [], routeErrors: [], releaseResolve: null, resolveReleased: false, releaseLookup: null, lookupAttempts: 0, expectedLookupErrors: 0, snapshots: [] };
   await context.addInitScript(({ user, origin }) => {
     // The context script also runs in a new tab's opaque about:blank document.
     // Do not access storage there (or in any non-fixture document).
@@ -225,7 +226,16 @@ async function runCase(browser, origin, item) {
     page.setDefaultTimeout(timeoutMs);
     page.setDefaultNavigationTimeout(timeoutMs);
     page.on("pageerror", error => state.pageErrors.push(error.message));
-    page.on("console", message => { if (message.type() === "error") state.consoleErrors.push(message.text()); });
+    page.on("console", message => {
+      if (message.type() !== "error") return;
+      // A deliberately injected HTTP 502 is expected browser network feedback,
+      // not an uncaught application failure. Match its exact endpoint and code;
+      // every other console error still fails the case.
+      if (item.kind === "artist-lookup-recovery"
+        && message.location().url.startsWith(origin + "/api/artists/resolve?")
+        && /Failed to load resource:.*502/.test(message.text())) state.expectedLookupErrors += 1;
+      else state.consoleErrors.push(message.text());
+    });
   });
   await context.route("**/*", async route => {
     const request = route.request();
@@ -236,6 +246,25 @@ async function runCase(browser, origin, item) {
       if (!url.pathname.startsWith("/api/")) return await route.continue();
       state.calls.push({ path: url.pathname, method: request.method(), query: url.search });
       if (url.pathname === "/api/client-errors") state.reports.push(request.postDataJSON());
+      if (item.kind === "artist-lookup-recovery" && url.pathname === "/api/analytics/guest-search") {
+        assert.equal(request.method(), "POST");
+        const payload = request.postDataJSON();
+        assert.deepEqual(Object.keys(payload).sort(), ["kind", "outcome", "resultBucket"],
+          "Guest search analytics must not carry the search text or an account identity.");
+        return await route.fulfill({ contentType: "application/json", body: JSON.stringify({ ok: true }) });
+      }
+      if (item.kind === "artist-lookup-recovery" && url.pathname === "/api/artists/resolve") {
+        assert.equal(request.method(), "GET");
+        assert.equal(url.searchParams.get("name"), navigationArtist.name);
+        state.lookupAttempts += 1;
+        if (state.lookupAttempts === 1) {
+          await new Promise(done => { state.releaseLookup = done; });
+          state.releaseLookup = null;
+          return await route.fulfill({ status: 502, contentType: "application/json", headers: { "Retry-After": "30" },
+            body: JSON.stringify({ error: "Artist provider is temporarily unavailable.", code: "PROVIDER_UNAVAILABLE",
+              retryable: true, requestId: "navigation-provider-outage-fixture" }) });
+        }
+      }
       if (item.kind === "delayed" && url.pathname === "/api/resolve" && !state.resolveReleased) {
         await new Promise(done => { state.releaseResolve = done; });
         state.resolveReleased = true;
@@ -281,6 +310,41 @@ async function runCase(browser, origin, item) {
       assert.equal(await page.getByText("Navigation fixture concert memory.", { exact: true }).count(), 0, "A stale resolver replaced the newer Intro destination.");
       assert.equal(state.calls.filter(call => call.path === "/api/posts/p_navigation_fixture").length, before, "A canceled navigation continued its dependent post fetch.");
       await page.reload({ waitUntil: "networkidle" }); await landing(page); await assertPath(page, "/");
+    } else if (item.kind === "artist-lookup-recovery") {
+      await visiblePage(page, "/search");
+      const field = page.getByLabel("Search Mshpit", { exact: true });
+      await field.fill(navigationArtist.name);
+      await page.getByText(`No matches for ${navigationArtist.name.toLowerCase()}.`, { exact: true }).first().waitFor();
+      const label = `Search the full artist directory for ${navigationArtist.name}`;
+      const lookup = page.getByRole("button", { name: label, exact: true });
+      await lookup.click();
+      await waitFor(() => !!state.releaseLookup, "The interactive artist lookup did not reach the fixture.");
+      assert.equal(await lookup.isDisabled(), true, "Repeated submission must be disabled while lookup is pending.");
+      await lookup.getByRole("progressbar").waitFor();
+      assert.equal(await field.inputValue(), navigationArtist.name);
+      state.releaseLookup();
+      const error = page.getByText("Artist information is temporarily unavailable. Your search is still here; try again shortly or choose an artist already in the results.", { exact: true });
+      await error.waitFor();
+      await page.waitForFunction(name => {
+        const action = [...document.querySelectorAll('[role="button"]')].find(node => node.getAttribute("aria-label") === name);
+        return action && action.getAttribute("aria-busy") !== "true" && action.getAttribute("aria-disabled") !== "true";
+      }, label);
+      assert.equal(await lookup.isEnabled(), true, "Provider failure must release the action for an explicit retry.");
+      assert.equal(await lookup.getByRole("progressbar").count(), 0, "Provider failure must remove the pending spinner.");
+      assert.equal(await field.inputValue(), navigationArtist.name, "Failure must retain the original query.");
+      assert.equal(await page.getByText(`Mshpit could not find an artist named ${navigationArtist.name}.`, { exact: true }).count(), 0,
+        "An upstream outage must not be presented as a missing artist.");
+      await assertPath(page, "/search");
+      assert.equal(state.lookupAttempts, 1, "The app must not automatically amplify the provider failure with retries.");
+      await snapshot("provider unavailable with retained query");
+      await lookup.click();
+      await page.getByRole("tab", { name: "About artist page section", exact: true }).waitFor();
+      await assertPath(page, artistPath);
+      await assertPageIdentity(page, artistPath);
+      assert.equal(state.lookupAttempts, 2, "One explicit retry should recover without duplicate lookup work.");
+      assert.equal(await error.count(), 0);
+      assert.equal(state.expectedLookupErrors, 1, "Only the intentionally injected failed response may appear as a browser network error.");
+      await snapshot("explicit retry opens resolved artist");
     } else if (item.kind === "guest-tabs") {
       await visiblePage(page, "/search"); await assertPath(page, "/search");
       await openTab("Discover"); await visiblePage(page, "/discover"); await assertPath(page, "/discover");
@@ -410,9 +474,10 @@ async function runCase(browser, origin, item) {
     await snapshot("failure").catch(() => {});
   } finally {
     state.releaseResolve?.();
+    state.releaseLookup?.();
     await context.close();
   }
-  return { name: item.name, passed: !failure, ...(failure ? { failure, ...state, releaseResolve: undefined } : {}) };
+  return { name: item.name, passed: !failure, ...(failure ? { failure, ...state, releaseResolve: undefined, releaseLookup: undefined } : {}) };
 }
 
 export async function main() {

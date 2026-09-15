@@ -14,6 +14,15 @@ export function createApiResponseHeaders(initial = {}) {
   return { "Cache-Control": "no-store", ...initial };
 }
 
+// Retry timing is typed server state, never a raw provider header or message.
+// It belongs on errors too; route-local headers are otherwise lost on throw.
+export function apiRetryAfterHeaders(error) {
+  const delay = error?.retryAfterMs;
+  if (!(error?.status === 429 || (error?.status >= 500 && error?.status <= 599))
+    || typeof delay !== "number" || !Number.isFinite(delay) || delay <= 0) return {};
+  return { "Retry-After": String(Math.max(1, Math.min(3600, Math.ceil(delay / 1000)))) };
+}
+
 export function createApiResponseHeaderSetter(target) {
   return (name, value) => {
     const canonical = ALLOWED_API_RESPONSE_HEADERS.get(String(name || "").trim().toLowerCase());

@@ -26,6 +26,7 @@ import { accountTargetScope, isCurrentScreenRequest, scopedScreenValue } from ".
 import { createUnifiedEventSearchIndex, searchUnifiedEventIndex } from "../domain/unifiedLocationSearch.mjs";
 import { openTicketLink } from "../lib/ticketLinks";
 import { recordGuestSearch } from "../features/analytics/services/guestSearchAnalyticsApi.mjs";
+import { artistLookupFailureMessage } from "../features/artistSearch/artistSearchApi.mjs";
 import { ENABLE_DEMO_DATA, ENABLE_MUSIC_PLAYER } from "../config/runtime.mjs";
 import CityDiscoveryTiles from "../features/cities/CityDiscoveryTiles";
 import { availableSearchCategories } from "../components/discover/discovery-recovery.mjs";
@@ -549,8 +550,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
   const recentIcon = (type) => (type === "venue" ? "pin" : type === "person" ? "you" : type === "query" ? "search" : "music");
   const recentTint = (type) => (type === "venue" ? colors.cool : type === "person" ? colors.gold : colors.amber);
 
-  // First person to search a not-yet-catalogued artist: resolve it from
-  // MusicBrainz on the server (creates the page), then open it.
+  // Unknown artists are read-only provider previews, not new catalogue rows.
   const lookUp = async (name) => {
     if (lookupBusy) return;
     const target = String(name || "").trim().toLowerCase();
@@ -561,7 +561,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
       && isCurrentScreenRequest(lookupRequestRef.current, request);
     updateLookupState({ busy: true, message: "" });
     try {
-      const artist = await resolveArtist(name);
+      const artist = await resolveArtist(name, { throwOnError: true });
       if (!isCurrent()) return;
       if (!artist?.name) {
         updateLookupState({ message: `Mshpit could not find an artist named ${name}.` });
@@ -569,8 +569,8 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
       }
       addRecentSearch?.({ type: "artist", label: artist.name });
       onOpenArtist?.(artist);
-    } catch {
-      if (isCurrent()) updateLookupState({ message: `Mshpit could not look up ${name}. Check your connection and try again.` });
+    } catch (error) {
+      if (isCurrent()) updateLookupState({ message: artistLookupFailureMessage(error) });
     } finally {
       if (isCurrent()) updateLookupState({ busy: false });
     }

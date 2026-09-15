@@ -20,6 +20,8 @@ import { AUDIENCES, audienceSize, campaignProgress, drainCampaign, pauseCampaign
 import { db, DATABASE_PATH, q, emailStmts, badgeStmts, customBadgesFor, publicUser as storedPublicUser, parseJsonArray, parseJsonObject, artistStmts, publicArtist, artistRow, artistSearchKey, normName, pruneMissingArtists, providerCacheStmts } from "./db.js";
 import { publicArtistPhoto } from "./artistPhotoCatalog.js";
 import { resolveReviewedArtistAlias } from "./reviewedArtistIdentities.js";
+import { createArtistLookupWork } from "./artistLookupWork.js";
+import { discardProviderResponse, providerRetryAfterMs } from "./providerResponsePolicy.js";
 import { BADGE_COLORS, BADGE_GLYPHS, BADGE_KINDS, validateBadge } from "../src/domain/badgeArt.mjs";
 import { alertCooldownMs, alertRecipient, alertsEnabled, errorStats, maybeAlert, recentErrors, recordError } from "./errorLog.js";
 import { boundedAlertDetail, errorDetailsByFingerprint } from "./errorDetails.js";
@@ -143,6 +145,8 @@ import { sameTrackOverrideIdentity } from "./trackIdentity.js";
 import { wikidataProviderStatus } from "./wikidataChannels.js";
 import { backgroundJobEnabled } from "./backgroundJobs.js";
 import { backupOperationalStatus, backupSchedulerEnabled } from "./backupScheduler.js";
+import { collectStorageHealth } from "./storageHealth.js";
+import { requestMetrics } from "./requestMetrics.js";
 import {
   mediaPublishingCapabilitiesForRuntime,
 } from "../src/domain/mediaPublishingCapabilities.mjs";
@@ -3012,34 +3016,8 @@ function musicBrainzArtistProjection(candidate) {
   };
 }
 
-const musicBrainzArtistCandidateInflight = new Map();
-
-function waitForSharedMusicBrainzCandidates(job, signal) {
-  if (signal?.aborted) return Promise.reject(signal.reason || new DOMException("Aborted", "AbortError"));
-  job.waiters += 1;
-  return new Promise((resolve, reject) => {
-    let finished = false;
-    const release = () => {
-      if (finished) return false;
-      finished = true;
-      signal?.removeEventListener("abort", onAbort);
-      job.waiters = Math.max(0, job.waiters - 1);
-      if (!job.settled && job.waiters === 0 && !job.controller.signal.aborted) {
-        job.controller.abort(new DOMException("All artist-lookup callers disconnected.", "AbortError"));
-      }
-      return true;
-    };
-    const onAbort = () => {
-      if (!release()) return;
-      reject(signal.reason || new DOMException("Aborted", "AbortError"));
-    };
-    signal?.addEventListener("abort", onAbort, { once: true });
-    job.promise.then(
-      (value) => { if (release()) resolve(value); },
-      (error) => { if (release()) reject(error); },
-    );
-  });
-}
+const musicBrainzArtistCandidateWork = createArtistLookupWork();
+const deezerArtistFallbackWork = createArtistLookupWork({ deadlineMs: 1_500, resultTtlMs: 60_000 });
 
 async function readMusicBrainzArtistCandidatesUnshared(name, { signal, priority = "normal" } = {}) {
   return runMusicBrainzRequest(async () => {
@@ -3066,7 +3044,9 @@ async function readMusicBrainzArtistCandidatesUnshared(name, { signal, priority 
       });
     }
     if (!response.ok) {
+      discardProviderResponse(response);
       throw new ProviderError("MusicBrainz", response.status, "MusicBrainz did not return a usable response.", {
+        retryAfterMs: providerRetryAfterMs(response),
         code: response.status === 429
           ? "rate_limited"
           : response.status >= 500
@@ -3089,31 +3069,25 @@ async function readMusicBrainzArtistCandidatesUnshared(name, { signal, priority 
         cause: error,
       });
     }
-    return (Array.isArray(payload?.artists) ? payload.artists : [])
+    if (!Array.isArray(payload?.artists)) {
+      throw new ProviderError("MusicBrainz", 502, "MusicBrainz returned an invalid artist response.", { code: "invalid_payload" });
+    }
+    const candidates = payload.artists.slice(0, 5)
       .map(musicBrainzArtistProjection)
       .filter(Boolean);
+    if (payload.artists.length && !candidates.length) {
+      throw new ProviderError("MusicBrainz", 502, "MusicBrainz returned invalid artist identities.", { code: "invalid_payload" });
+    }
+    return candidates;
   }, { signal, priority });
 }
 
 async function readMusicBrainzArtistCandidates(name, { signal, priority = "normal" } = {}) {
   const key = normalizedMusicBrainzArtistName(name);
   if (!key) return [];
-  let job = musicBrainzArtistCandidateInflight.get(key);
-  if (!job) {
-    const controller = new AbortController();
-    job = { controller, promise: null, settled: false, waiters: 0 };
-    job.promise = readMusicBrainzArtistCandidatesUnshared(name, {
-      signal: controller.signal,
-      priority,
-    }).finally(() => {
-      job.settled = true;
-      if (musicBrainzArtistCandidateInflight.get(key) === job) {
-        musicBrainzArtistCandidateInflight.delete(key);
-      }
-    });
-    musicBrainzArtistCandidateInflight.set(key, job);
-  }
-  return waitForSharedMusicBrainzCandidates(job, signal);
+  return musicBrainzArtistCandidateWork(key, (jobSignal) => readMusicBrainzArtistCandidatesUnshared(name, {
+    signal: jobSignal, priority,
+  }), { signal });
 }
 
 async function resolveFromMusicBrainz(name, { requireExactIdentity = false, signal, priority = "normal" } = {}) {
@@ -3130,12 +3104,14 @@ async function resolveFromMusicBrainz(name, { requireExactIdentity = false, sign
     candidates = await readMusicBrainzArtistCandidates(name, { signal, priority });
   } catch (error) {
     if (signal?.aborted) throw signal.reason || error;
-    throw new ApiError(
+    const failure = new ApiError(
       502,
       "MusicBrainz is unavailable right now. Retry the artist lookup before continuing.",
       "PROVIDER_UNAVAILABLE",
       error,
     );
+    failure.retryAfterMs = Math.max(1_000, Number(error?.retryAfterMs) || 30_000);
+    throw failure;
   }
 
   const exact = candidates.filter(
@@ -3207,19 +3183,20 @@ function rememberMusicBrainzResolution(name, artist) {
 // name. Ambiguous same-name acts deliberately remain unresolved for the
 // listener to choose through the existing candidates flow.
 async function resolveFromDeezerExactName(name, { signal } = {}) {
-  const requested = normalizeMusicText(name);
+  const requested = normalizedMusicBrainzArtistName(name);
   if (!requested) return null;
   let candidates;
   try {
-    candidates = await findDeezerArtistCandidates(name, { limit: 10, signal });
+    candidates = await deezerArtistFallbackWork(name.normalize("NFKC").toLowerCase(), (jobSignal) =>
+      findDeezerArtistCandidates(name, { limit: 10, signal: jobSignal }), { signal });
   } catch (error) {
     if (signal?.aborted) throw signal.reason || error;
-    if (error instanceof ProviderError) return null;
+    if (error?.retryable || error instanceof ProviderError) return null;
     throw error;
   }
   const exact = new Map(
     candidates
-      .filter((candidate) => normalizeMusicText(candidate?.name) === requested)
+      .filter((candidate) => normalizedMusicBrainzArtistName(candidate?.name) === requested)
       .map((candidate) => [String(candidate.id), candidate]),
   );
   if (exact.size !== 1) return null;
@@ -3799,7 +3776,9 @@ function staffHealthProjection(actor) {
         configured: readiness.storageConfigured,
         databaseFilePresent: readiness.databaseFilePresent,
         bootstrapAllowed: readiness.bootstrapAllowed,
+        capacity: collectStorageHealth(db, { databasePath: DATABASE_PATH }),
       },
+      traffic: requestMetrics.snapshot(),
       mediaObjectStorageConfigured: mediaConfigured(process.env),
       privateVideoSourceStorageConfigured: privateVideoMediaConfigured(process.env),
       privateMediaIsolation: readiness.privateMediaIsolation,
@@ -4870,7 +4849,9 @@ export const routes = {
       created: false,
     };
     const remembered = cachedMusicBrainzResolution(name);
-    if (remembered?.fresh) {
+    // A stale exact identity is still a safer immediate answer than waiting on
+    // an upstream service. Explicit attachment revalidates the provider ID.
+    if (remembered) {
       return {
         artist: {
           ...publicArtist(artistRow(remembered.artist.name, remembered.artist, "musicbrainz")),
@@ -4879,6 +4860,7 @@ export const routes = {
         created: false,
         transient: true,
         cached: true,
+        ...(!remembered.fresh ? { stale: true } : {}),
       };
     }
     limit(ctx, "resolve", 90, 10 * 60 * 1000); // cap outbound MB lookups per client
@@ -4889,18 +4871,6 @@ export const routes = {
       // A provider outage must not fail a lookup this catalogue has already
       // answered. Every other failure, including no exact match, still fails.
       if (error?.code !== "PROVIDER_UNAVAILABLE") throw error;
-      if (remembered) {
-        return {
-          artist: {
-            ...publicArtist(artistRow(remembered.artist.name, remembered.artist, "musicbrainz")),
-            fanClubAvailable: true,
-          },
-          created: false,
-          transient: true,
-          cached: true,
-          stale: true,
-        };
-      }
       const fallback = await resolveFromDeezerExactName(name, { signal: ctx.signal });
       if (!fallback) throw error;
       return {

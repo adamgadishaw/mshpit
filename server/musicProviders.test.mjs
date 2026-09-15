@@ -28,6 +28,7 @@ const {
   providerJson,
   pruneExpiredProviderData,
   getFreshDeezerPreview,
+  findDeezerArtistCandidates,
   resolveYouTubeTrack,
   scoreYouTubeCandidate,
   searchCatalogSongs,
@@ -58,6 +59,51 @@ function deferred() {
   });
   return { promise, resolve, reject };
 }
+
+test("generic provider failures dispose their body and preserve Retry-After", async () => {
+  let disposed = 0;
+  await assert.rejects(providerJson("Fixture", "https://example.invalid", {
+    fetchImpl: async () => ({ ok: false, status: 503, headers: new Headers({ "Retry-After": "120" }),
+      body: { cancel: async () => { disposed += 1; } } }),
+  }), (error) => error.status === 503 && error.retryAfterMs === 120_000);
+  assert.equal(disposed, 1);
+});
+
+test("distinct non-Latin artist searches cannot share a stripped-empty cache identity", async () => {
+  let calls = 0;
+  const fetchImpl = async (url) => {
+    calls += 1;
+    const name = new URL(url).searchParams.get("q");
+    return { ok: true, json: async () => ({ data: [{ id: calls, name }] }) };
+  };
+  const [first, second] = await Promise.all([
+    findDeezerArtistCandidates("宇多田ヒカル", { fetchImpl }),
+    findDeezerArtistCandidates("椎名林檎", { fetchImpl }),
+  ]);
+  assert.equal(calls, 2);
+  assert.equal(first[0].name, "宇多田ヒカル");
+  assert.equal(second[0].name, "椎名林檎");
+});
+
+test("provider cleanup advances bounded metadata batches off the lookup path", () => {
+  const at = Date.now(), old = at - 31 * 24 * 60 * 60_000;
+  const add = db.prepare("INSERT INTO wikidata_channel_checks(mbid,channel_id,validated,checked_at) VALUES(?,?,1,?)");
+  db.exec("BEGIN");
+  try {
+    for (let index = 0; index < 650; index += 1) add.run(`bounded-prune-${index}`, "UC_fixture", old);
+    db.exec("COMMIT");
+  } catch (error) { db.exec("ROLLBACK"); throw error; }
+  const first = pruneExpiredProviderData(at, { force: true });
+  assert.equal(first.wikidataValidations, 500);
+  assert.equal(first.backlog, true);
+  assert.equal(pruneExpiredProviderData(at + 59_000).skipped, true);
+  const second = pruneExpiredProviderData(at + 61_000);
+  assert.equal(second.wikidataValidations, 150);
+  assert.equal(second.backlog, false);
+  assert.equal(pruneExpiredProviderData(at + 62_000).skipped, true);
+  const source = readFileSync(new URL("./musicProviders.js", import.meta.url), "utf8");
+  assert.doesNotMatch(source.slice(source.indexOf("async function resolveYouTubeTrackUnshared")), /pruneExpiredProviderData\(currentTime\)/);
+});
 
 function songCatalogFixture() {
   const database = new DatabaseSync(":memory:");

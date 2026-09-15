@@ -4,6 +4,18 @@ import { spawnSync } from "node:child_process";
 
 import { createMusicBrainzRequestThrottle } from "./musicBrainzRequestThrottle.js";
 
+test("provider Retry-After immediately pauses all callers for the requested bounded interval", async () => {
+  let now = 1_000, calls = 0;
+  const run = createMusicBrainzRequestThrottle({ clock: () => now, wait: async (ms) => { now += ms; } });
+  const error = Object.assign(new Error("maintenance"), { status: 503, retryAfterMs: 120_000 });
+  await assert.rejects(run(async () => { calls += 1; throw error; }), { status: 503 });
+  assert.equal(run.status().retryAt, 121_000);
+  await assert.rejects(run(async () => { calls += 1; }), { code: "circuit_open" });
+  assert.equal(calls, 1);
+  now = 121_000;
+  assert.equal(await run(async () => "recovered"), "recovered");
+});
+
 test("a CLI process stays alive until its awaited queued MusicBrainz request completes", () => {
   const moduleUrl = new URL("./musicBrainzRequestThrottle.js", import.meta.url).href;
   const result = spawnSync(process.execPath, ["--input-type=module", "-e", `

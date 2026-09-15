@@ -7,6 +7,9 @@
 // public internet can reach an otherwise healthy process. Those require an
 // external monitor; the email says so instead of overstating what it verified.
 import { randomUUID } from "node:crypto";
+import { join } from "node:path";
+import { collectStorageHealth, formatStorageHealth } from "./storageHealth.js";
+import { requestMetrics, formatRequestMetrics } from "./requestMetrics.js";
 
 import {
   backupOperationalStatus,
@@ -281,12 +284,15 @@ export function collectSiteHealthDigest(database, {
   env = process.env,
   at = Date.now(),
   uptimeSeconds = process.uptime(),
+  storageHealthImpl = collectStorageHealth,
 } = {}) {
   let databaseReady = false;
   try { databaseReady = database.prepare("SELECT 1 ok").get()?.ok === 1; }
   catch { databaseReady = false; }
 
   const persistentStorageConfigured = !!String(env?.PIT_DATA_DIR || "").trim();
+  const storageHealth = storageHealthImpl(database, { databasePath: join(String(env?.PIT_DATA_DIR || "."), "pit.db"), at });
+  const traffic = requestMetrics.snapshot();
   const backupEnabled = backupSchedulerEnabled(env);
   let backupAgeHours = null;
   try { backupAgeHours = ageHours(at, latestBackupAt(env)); }
@@ -317,6 +323,8 @@ export function collectSiteHealthDigest(database, {
 
   const issues = [];
   const warnings = [];
+  issues.push(...storageHealth.issues);
+  warnings.push(...storageHealth.warnings);
   if (!databaseReady) issues.push("database_unavailable");
   if (!persistentStorageConfigured) issues.push("persistent_storage_unconfigured");
   if (!mailConfigured || !replyToValid) issues.push("mail_unconfigured");
@@ -358,6 +366,8 @@ export function collectSiteHealthDigest(database, {
     `Generated: ${new Date(at).toISOString()} (${SITE_HEALTH_TIME_ZONE} daily slot)`,
     `Release: ${commit || "unavailable"}; process uptime: ${Math.max(0, Math.floor(Number(uptimeSeconds) || 0))} seconds`,
     `Core: database ready ${yesNo(databaseReady)}; persistent data directory configured ${yesNo(persistentStorageConfigured)}`,
+    formatStorageHealth(storageHealth),
+    formatRequestMetrics(traffic),
     `Mail: configured ${yesNo(mailConfigured)}; reply routing valid ${yesNo(replyToValid)}; last 24h sent ${numberOrUnavailable(mail24h?.sent)}, failed ${numberOrUnavailable(mail24h?.failed)}, skipped ${numberOrUnavailable(mail24h?.skipped)}`,
     `Backups: scheduled ${yesNo(backupEnabled)}; latest verified local snapshot age ${backupAgeHours === null ? "unavailable" : `${backupAgeHours}h`}; private off-host destination configured ${yesNo(offhostConfigured)}; latest confirmed off-host upload age ${offhostBackupAgeHours === null ? "unavailable" : `${offhostBackupAgeHours}h`}; off-host evidence ${backupOperations.offhostStatus}`,
     `Media: public and private storage configured ${yesNo(publicMediaConfigured && privateVideoConfigured)}; private-source privacy proof ready ${yesNo(privateIsolation.ready)}; video verifier ready ${yesNo(verifier.ready)}`,
@@ -380,6 +390,8 @@ export function collectSiteHealthDigest(database, {
       uptimeSeconds: Math.max(0, Math.floor(Number(uptimeSeconds) || 0)),
       databaseReady,
       persistentStorageConfigured,
+      storageHealth,
+      traffic,
       mailConfigured,
       replyToValid,
       mail24h,

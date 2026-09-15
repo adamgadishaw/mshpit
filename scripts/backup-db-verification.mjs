@@ -86,9 +86,11 @@ export function boundedBackupTimeout(value, fallback, { min = 1_000, max = 30 * 
 
 // A VACUUM INTO copy can need as much space as the live database plus its WAL;
 // the extra tenth covers page rounding and a WAL that grows during the copy.
+// Additional headroom protects live writes after a successful copy.
+export const BACKUP_WORKING_RESERVE_BYTES = 64 * 1024 * 1024;
 export function requiredBackupBytes(databaseBytes, walBytes = 0) {
   const total = Math.max(0, Number(databaseBytes) || 0) + Math.max(0, Number(walBytes) || 0);
-  return total + Math.ceil(total / 10);
+  return total + Math.ceil(total / 10) + BACKUP_WORKING_RESERVE_BYTES;
 }
 
 export function isDiskFullError(error) {
@@ -100,11 +102,12 @@ export function isDiskFullError(error) {
 // arrive newest first. The newest verified recovery point is never chosen, and
 // nothing is chosen when pruning every older snapshot still would not make room:
 // deleting history that cannot rescue the backup only loses recovery points.
-// Unknown free space takes no preflight action.
+// Unknown free space takes no destructive action and does not admit the copy.
 export function snapshotsToFreeSpace({ snapshots = [], freeBytes, requiredBytes } = {}) {
   const free = Number(freeBytes);
   const needed = Number(requiredBytes);
-  if (!Number.isFinite(free) || !Number.isFinite(needed) || free >= needed) return { fits: true, remove: [] };
+  if (!Number.isFinite(free) || !Number.isFinite(needed) || free < 0 || needed < 0) return { fits: false, remove: [] };
+  if (free >= needed) return { fits: true, remove: [] };
   const remove = [];
   let available = free;
   for (let index = snapshots.length - 1; index >= 1 && available < needed; index -= 1) {
@@ -139,11 +142,11 @@ export function verifyBackupSnapshot(path, expected = null, sourceManifest = nul
     const integrity = snapshot.prepare("PRAGMA integrity_check").get();
     const verdict = String(Object.values(integrity)[0] || "");
     if (verdict !== "ok") throw new Error(`integrity_check failed: ${verdict}`);
-    const foreignKeyFailures = snapshot.prepare("PRAGMA foreign_key_check").all();
-    if (foreignKeyFailures.length) {
+    const foreignKeyFailure = snapshot.prepare("PRAGMA foreign_key_check").get();
+    if (foreignKeyFailure) {
       // Do not print table/row samples: recovery output can be copied into
       // third-party incident tickets. The count is enough to reject the copy.
-      throw new Error(`foreign_key_check failed (${foreignKeyFailures.length} violation(s))`);
+      throw new Error("foreign_key_check failed (1 violation(s) or more)");
     }
 
     const applicationId = Number(snapshot.prepare("PRAGMA application_id").get()?.application_id || 0);

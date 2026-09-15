@@ -122,10 +122,11 @@ export function createMusicBrainzRequestThrottle({
     );
   }
 
-  function openBreaker(at) {
+  function openBreaker(at, error) {
     breakerTrips += 1;
     const cooldown = Math.min(breakerMaximum, breakerBase * (2 ** Math.min(8, breakerTrips - 1)));
-    breakerOpenUntil = Number(at) + cooldown;
+    const requested = Math.max(0, Number(error?.retryAfterMs) || 0);
+    breakerOpenUntil = Number(at) + Math.max(cooldown, Math.min(60 * 60_000, requested));
   }
 
   function beforeProviderRequest() {
@@ -158,7 +159,7 @@ export function createMusicBrainzRequestThrottle({
     // catalogue/genre/memorial request until one bounded half-open probe.
     if (providerRefusedRequests(error)) {
       consecutiveFailures += 1;
-      openBreaker(Number(clock()));
+      openBreaker(Number(clock()), error);
       return;
     }
     if (deterministicProviderResponse(error)) {
@@ -171,8 +172,8 @@ export function createMusicBrainzRequestThrottle({
     // request errors all fail closed. An unfamiliar error must not reset a
     // half-open circuit and release the queued background fan-out.
     consecutiveFailures += 1;
-    if (probe || error?.status === 429 || consecutiveFailures >= failureThreshold) {
-      openBreaker(Number(clock()));
+    if (probe || error?.status === 429 || Number(error?.retryAfterMs) > 0 || consecutiveFailures >= failureThreshold) {
+      openBreaker(Number(clock()), error);
     }
   }
 

@@ -17,12 +17,11 @@
 // requires its own private BACKUP_S3_* credentials and refuses to run if it is
 // pointed at the media bucket.
 import { DatabaseSync } from "node:sqlite";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statfsSync, statSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, renameSync, statfsSync, statSync, unlinkSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { presignS3Request } from "../server/media.js";
 import { registerPitSqliteFunctions } from "../server/sqliteFunctions.js";
-import { privateBackupStorageConfig, verifyPrivateBackupBucket } from "../server/backupStorageSecurity.js";
+import { uploadPrivateBackup } from "../server/backupTransfer.js";
 import {
   backupRetentionCount,
   backupSourceManifest,
@@ -51,62 +50,6 @@ const UPLOAD_TIMEOUT_MS = boundedBackupTimeout(process.env.BACKUP_UPLOAD_TIMEOUT
 function stamp(d = new Date()) {
   const p = (n, w = 2) => String(n).padStart(w, "0");
   return `${d.getUTCFullYear()}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}-${p(d.getUTCHours())}${p(d.getUTCMinutes())}${p(d.getUTCSeconds())}`;
-}
-
-async function upload(path, publishedName = basename(path)) {
-  const need = ["BACKUP_S3_ENDPOINT", "BACKUP_S3_BUCKET", "BACKUP_S3_ACCESS_KEY_ID", "BACKUP_S3_SECRET_ACCESS_KEY"];
-  const missing = need.filter((k) => !String(process.env[k] || "").trim());
-  if (missing.length) throw new Error(`--upload needs ${missing.join(", ")}`);
-  const config = privateBackupStorageConfig(process.env);
-  if (!config) throw new Error("Refusing off-host upload: private backup storage is not safely configured.");
-  const { endpoint, bucket } = config;
-  const key = `db/${publishedName}`;
-  // Configuration labels are not proof of privacy. Fail before reading the
-  // database snapshot unless anonymous listing and object reads are denied.
-  await verifyPrivateBackupBucket({ env: process.env, objectKey: key });
-  const body = readFileSync(path);
-  const url = presignS3Request({
-    method: "PUT",
-    url: `${endpoint.origin}${endpoint.pathname.replace(/\/+$/, "")}/${bucket}/${key}`,
-    region: String(process.env.BACKUP_S3_REGION || "auto").trim(),
-    accessKeyId: process.env.BACKUP_S3_ACCESS_KEY_ID.trim(),
-    secretAccessKey: process.env.BACKUP_S3_SECRET_ACCESS_KEY.trim(),
-    headers: { "Content-Length": String(body.byteLength) },
-    expiresIn: 900,
-  });
-  const res = await fetch(url, {
-    method: "PUT",
-    body,
-    headers: { "Content-Length": String(body.byteLength) },
-    signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
-  });
-  if (!res.ok) {
-    // Provider bodies can echo object names or credential-adjacent request
-    // details. The status is sufficient for the scheduler's retry decision.
-    const error = new Error("Off-host backup upload failed.");
-    error.code = `HTTP_${res.status}`;
-    throw error;
-  }
-  // Re-check the exact uploaded key. If a provider policy changed between
-  // preflight and PUT, never report the copy as verified/private and attempt an
-  // immediate authenticated removal before surfacing the failure.
-  try {
-    await verifyPrivateBackupBucket({ env: process.env, objectKey: key });
-  } catch (privacyError) {
-    try {
-      const deleteUrl = presignS3Request({
-        method: "DELETE",
-        url: `${endpoint.origin}${endpoint.pathname.replace(/\/+$/, "")}/${bucket}/${key}`,
-        region: String(process.env.BACKUP_S3_REGION || "auto").trim(),
-        accessKeyId: process.env.BACKUP_S3_ACCESS_KEY_ID.trim(),
-        secretAccessKey: process.env.BACKUP_S3_SECRET_ACCESS_KEY.trim(),
-        expiresIn: 60,
-      });
-      await fetch(deleteUrl, { method: "DELETE", signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS) });
-    } catch {}
-    throw privacyError;
-  }
-  return key;
 }
 
 function completedSnapshots() {
@@ -153,7 +96,7 @@ function freeBackupBytes() {
     const stats = statfsSync(BACKUP_DIR);
     return Number(stats.bavail) * Number(stats.bsize);
   } catch (error) {
-    console.log(`space     free space unavailable (${error?.code || "unknown"}); preflight skipped`);
+    console.log(`space     free space unavailable (${error?.code || "unknown"}); copy deferred`);
     return Number.NaN;
   }
 }
@@ -163,11 +106,14 @@ function freeBackupBytes() {
 // completed snapshots only when that makes the copy fit; the newest always stays.
 function makeRoomForCopy(requiredBytes) {
   const plan = snapshotsToFreeSpace({ snapshots: completedSnapshots(), freeBytes: freeBackupBytes(), requiredBytes });
+  if (!plan.fits) {
+    throw Object.assign(new Error("Backup deferred: disk space cannot safely hold a new snapshot and write headroom."), {
+      code: "BACKUP_DISK_SPACE",
+    });
+  }
   for (const name of plan.remove) unlinkSync(join(BACKUP_DIR, name));
   if (plan.remove.length) {
     console.log(`space     preflight: pruned ${plan.remove.length} oldest snapshot(s) so a ${megabytes(requiredBytes)} MB copy fits`);
-  } else if (!plan.fits) {
-    console.log(`space     preflight: pruning older snapshots cannot free ${megabytes(requiredBytes)} MB; the disk needs more room`);
   }
 }
 
@@ -177,6 +123,7 @@ function copyDatabaseInto(path) {
   const source = new DatabaseSync(SOURCE);
   registerPitSqliteFunctions(source);
   try {
+    source.exec("PRAGMA cache_size=-8192; PRAGMA busy_timeout=1000");
     if (simulatedDiskFullPending) {
       simulatedDiskFullPending = false;
       throw Object.assign(new Error("database or disk is full"), { errcode: 13 });
@@ -198,12 +145,13 @@ if (verifyAt !== -1) {
 if (!existsSync(SOURCE)) { console.error(`No database at ${SOURCE}. Set PIT_DATA_DIR.`); process.exit(1); }
 mkdirSync(BACKUP_DIR, { recursive: true });
 
+const walPath = `${SOURCE}-wal`;
+// An impossible copy must not destroy history during retention rotation.
+makeRoomForCopy(requiredBackupBytes(statSync(SOURCE).size, existsSync(walPath) ? statSync(walPath).size : 0));
 const rollover = reserveReplacementSlot();
 if (rollover.dropped) {
   console.log(`preflight ${rollover.kept} verified snapshot(s) kept, ${rollover.dropped} oldest pruned for replacement capacity`);
 }
-const walPath = `${SOURCE}-wal`;
-makeRoomForCopy(requiredBackupBytes(statSync(SOURCE).size, existsSync(walPath) ? statSync(walPath).size : 0));
 const live = new DatabaseSync(SOURCE, { readOnly: true });
 registerPitSqliteFunctions(live);
 let expected;
@@ -233,18 +181,27 @@ try {
     // second failure still refuses, as before.
     if (!isDiskFullError(error)) throw error;
     if (existsSync(partial)) unlinkSync(partial);
-    const { dropped } = prune(1);
-    if (!dropped) throw error;
-    console.log(`space     disk full during copy: pruned ${dropped} older snapshot(s), kept the newest, retrying once`);
+    // Recheck after the failed copy: concurrent writes may have consumed the
+    // initial margin. Never delete additional recovery history if a retry still
+    // cannot fit with write headroom, or if disk metrics are now unavailable.
+    const beforeRetry = completedSnapshots().length;
+    makeRoomForCopy(requiredBackupBytes(statSync(SOURCE).size, existsSync(walPath) ? statSync(walPath).size : 0));
+    prune(1);
+    const totalDropped = beforeRetry - completedSnapshots().length;
+    if (!totalDropped) throw error;
+    console.log(`space     disk full during copy: pruned ${totalDropped} older snapshot(s), kept the newest, retrying once`);
     copyDatabaseInto(partial);
   }
 
   got = verifyBackupSnapshot(partial, expected, sourceManifest);
   bytes = statSync(partial).size;
-  // When off-host durability was requested, do not publish a fresh local final
-  // that would suppress the next scheduler retry unless that upload succeeded.
-  if (args.includes("--upload")) uploadedAt = await upload(partial, basename(dest));
+  // Keep the verified local recovery point even if the provider is unavailable.
+  // The scheduler checks off-host receipts independently of local freshness, so
+  // this does not suppress a missing/overdue remote retry or claim remote success.
   renameSync(partial, dest);
+  if (args.includes("--upload")) uploadedAt = await uploadPrivateBackup(dest, {
+    publishedName: basename(dest), timeoutMs: UPLOAD_TIMEOUT_MS,
+  });
 } catch (error) {
   try { if (existsSync(partial)) unlinkSync(partial); } catch {}
   throw error;
