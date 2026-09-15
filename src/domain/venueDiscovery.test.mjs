@@ -76,6 +76,45 @@ test("picked locations resolve against the complete place instead of a same-name
   }, [{ place: "Chicago, Illinois, United States Of America", coord: { lat: 41.88, lng: -87.67 } }]).lat, 41.88);
 });
 
+test("missing or invalid venue coordinates never manufacture a city center at zero", () => {
+  const place = { city: "London", state: "England", country: "United Kingdom" };
+  const invalid = [null, undefined, "", "   ", false, true, NaN, Infinity, -Infinity, "no-location", [], {}];
+  for (const value of invalid) {
+    for (const coord of [{ lat: value, lng: -.12 }, { lat: 51.5, lng: value }]) {
+      const center = locationCenterFromVenues(place, [{ place: "London, England, United Kingdom", coord }]);
+      assert.equal(center.lat, null, `invalid ${String(value)} must not create a latitude`);
+      assert.equal(center.lng, null, `invalid ${String(value)} must not create a longitude`);
+    }
+  }
+  for (const coord of [{ lat: 91, lng: 0 }, { lat: -91, lng: 0 }, { lat: 0, lng: 181 }, { lat: 0, lng: -181 }]) {
+    const center = locationCenterFromVenues(place, [{ place: "London, England, United Kingdom", coord }]);
+    assert.equal(center.lat, null);
+    assert.equal(center.lng, null);
+  }
+});
+
+test("invalid matching venues do not pull a real London center toward the equator", () => {
+  const venues = [
+    { place: "London, England, United Kingdom", coord: { lat: 51.5, lng: -.12 } },
+    { place: "London, England, United Kingdom", coord: { lat: null, lng: null } },
+    { place: "London, England, United Kingdom", coord: { lat: "", lng: "" } },
+    { place: "London, England, United Kingdom", coord: { lat: false, lng: false } },
+  ];
+  const before = structuredClone(venues);
+  const center = locationCenterFromVenues({ city: "London", state: "England", country: "United Kingdom" }, venues);
+  assert.equal(center.lat, 51.5);
+  assert.equal(center.lng, -.12);
+  assert.deepEqual(venues, before);
+});
+
+test("real zero coordinates and numeric provider strings remain valid city positions", () => {
+  for (const coord of [{ lat: 0, lng: 0 }, { lat: 51.5, lng: 0 }, { lat: 0, lng: 36.8 }, { lat: " 0 ", lng: "36.8" }]) {
+    const center = locationCenterFromVenues({ city: "Fixture" }, [{ place: "Fixture", coord }]);
+    assert.equal(center.lat, Number(coord.lat));
+    assert.equal(center.lng, Number(coord.lng));
+  }
+});
+
 test("directory totals are bounded and derived only from supplied city counts", () => {
   assert.deepEqual(venueDirectoryTotals([
     { count: 3, upcoming: 5 },
@@ -123,4 +162,58 @@ test("same-named cities produce exactly one home directory match", () => {
   ];
   assert.equal(venueHomePlaceId({ city: "London", lat: 51.5072, lng: -0.1276 }, cities), cities[1].id);
   assert.equal(venueHomePlaceId({ city: "London", state: "Ontario", country: "Canada" }, cities), cities[0].id);
+});
+
+test("missing home coordinates do not rank cities by distance from Null Island", () => {
+  const cities = [
+    { id: "a", city: "Fixture", venues: [{ coord: { lat: 60, lng: 60 } }] },
+    { id: "b", city: "Fixture", venues: [{ coord: { lat: 1, lng: 1 } }] },
+  ];
+  for (const value of [null, "", " ", false, [], {}]) {
+    assert.equal(venueHomePlaceId({ city: "Fixture", lat: value, lng: value }, cities), "a");
+  }
+});
+
+test("invalid venue coordinates cannot win home-city proximity matching", () => {
+  const cities = [
+    { id: "a-invalid", city: "Fixture", venues: [{ coord: { lat: null, lng: null } }] },
+    { id: "b-real", city: "Fixture", venues: [{ coord: { lat: "1", lng: "1" } }] },
+  ];
+  assert.equal(venueHomePlaceId({ city: "Fixture", lat: 0, lng: 0 }, cities), "b-real");
+});
+
+test("nearest map points reject corrupt coordinates before sorting or applying the cap", () => {
+  const input = [
+    { name: "Empty", lat: "", lng: "", distanceKm: 0 },
+    { name: "Boolean", lat: false, lng: false, distanceKm: 0 },
+    { name: "Out of range", lat: 100, lng: 200, distanceKm: 0 },
+    { name: "Not finite", lat: NaN, lng: 0, distanceKm: 0 },
+    { name: "Real zero", lat: 0, lng: 0, distanceKm: 1 },
+    { name: "Provider string", lat: "51.5", lng: "0", distanceKm: 2 },
+  ];
+  const before = structuredClone(input);
+  const points = nearestMapPoints(input, 2);
+  assert.deepEqual(points.map(point => point.name), ["Real zero", "Provider string"]);
+  assert.equal(points[0].lat, 0);
+  assert.equal(points[1].lat, 51.5);
+  assert.deepEqual(input, before);
+});
+
+test("city centers and home proximity remain local across the antimeridian", () => {
+  const venues = [
+    { place: "Fixture, Fiji", coord: { lat: -16.5, lng: 179.9 } },
+    { place: "Fixture, Fiji", coord: { lat: -16.5, lng: -179.9 } },
+  ];
+  const cities = [
+    { id: "a-dateline", city: "Fixture", venues },
+    { id: "b-distant", city: "Fixture", venues: [{ coord: { lat: -16.5, lng: 170 } }] },
+  ];
+  for (const rows of [venues, [...venues].reverse()]) {
+    const center = locationCenterFromVenues({ city: "Fixture", country: "Fiji" }, rows);
+    assert.equal(center.lat, -16.5);
+    assert.equal(Math.abs(center.lng), 180);
+  }
+  for (const lng of [179.95, -179.95]) {
+    assert.equal(venueHomePlaceId({ city: "Fixture", lat: -16.5, lng }, cities), "a-dateline");
+  }
 });

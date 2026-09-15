@@ -4,6 +4,8 @@ import Svg, {
 } from "react-native-svg";
 import { colors, mono } from "../theme";
 import { haversineKm } from "../data";
+import { mapPoint } from "../domain/mapCoordinates.mjs";
+import { linearProjector } from "../lib/mapProject";
 
 // A detailed, modern dark map - generated to look like a real street network
 // (road hierarchy + casing, water with a coastline, parks, named streets, a
@@ -34,19 +36,16 @@ const rng = (seed) => { let a = seed; return () => { a |= 0; a = (a + 0x6d2b79f5
 const STREETS = ["Market St", "Mission St", "Valencia St", "Folsom St", "Howard St", "Grand Ave", "Bay St", "Harbor Dr", "Union St", "Pine St", "Oak St", "Hill St", "Main St", "Broadway", "Cedar Ave", "Park Blvd", "Lincoln Ave", "5th Ave", "9th St", "King St"];
 
 export default function CityMap({ points = [], highlight, label, pinLabel, showPins = true }) {
+  points = (Array.isArray(points) ? points : []).map(mapPoint).filter(Boolean);
+  highlight = mapPoint(highlight);
   const all = highlight ? [...points, highlight] : points;
   const coords = all.filter((p) => p && p.lat != null && p.lng != null);
   if (coords.length === 0) return null;
 
-  let minLat = Math.min(...coords.map((p) => p.lat)), maxLat = Math.max(...coords.map((p) => p.lat));
-  let minLng = Math.min(...coords.map((p) => p.lng)), maxLng = Math.max(...coords.map((p) => p.lng));
-  const MIN = 0.05;
-  if (maxLat - minLat < MIN) { const c = (minLat + maxLat) / 2; minLat = c - MIN / 2; maxLat = c + MIN / 2; }
-  if (maxLng - minLng < MIN) { const c = (minLng + maxLng) / 2; minLng = c - MIN / 2; maxLng = c + MIN / 2; }
-  const padLat = (maxLat - minLat) * 0.16, padLng = (maxLng - minLng) * 0.16;
-  minLat -= padLat; maxLat += padLat; minLng -= padLng; maxLng += padLng;
-  const X = (lng) => PAD + ((lng - minLng) / (maxLng - minLng)) * (W - 2 * PAD);
-  const Y = (lat) => PAD + ((maxLat - lat) / (maxLat - minLat)) * (H - 2 * PAD);
+  const projection = linearProjector(coords);
+  const { minLat, maxLat, minLng, maxLng } = projection.box;
+  const X = (lng) => projection.xPct(lng) * W;
+  const Y = (lat) => projection.yPct(lat) * H;
   const cLat = (minLat + maxLat) / 2;
 
   const rand = rng(hash(label || "city"));

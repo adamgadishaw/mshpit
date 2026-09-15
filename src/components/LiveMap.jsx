@@ -5,6 +5,7 @@ import { GOOGLE_KEY } from "../mapConfig";
 import { proxied, isHttp } from "../lib/img";
 import Stars from "./Stars";
 import { venueMapPhotoPresentation, verifiedHttpsUrl } from "../domain/venuePhotoProvenance.mjs";
+import { mapPoint } from "../domain/mapCoordinates.mjs";
 
 // A REAL, interactive Google map (pan / zoom / clickable pins), the "actual map
 // embedded in the program." Renders on web when a Google key is present; on
@@ -111,16 +112,23 @@ export default function LiveMap({ points = [], highlight, focalName, label, onOp
   const [failed, setFailed] = useState(false);
   const [hover, setHover] = useState(null); // { x, y, point }
 
-  const finitePoint = (point) => {
-    const lat = Number(point?.lat);
-    const lng = Number(point?.lng);
-    return Number.isFinite(lat) && Number.isFinite(lng) ? { ...point, lat, lng } : null;
-  };
-  const clean = (Array.isArray(points) ? points : []).map(finitePoint).filter(Boolean);
-  const focal = finitePoint(highlight);
+  const clean = (Array.isArray(points) ? points : []).map(mapPoint).filter(Boolean);
+  const focal = mapPoint(highlight);
   const all = focal ? [...clean, { ...focal, name: focalName, focal: true }] : clean;
   // A signature that changes when the plotted set changes, so we re-fit.
   const sig = all.map((p) => `${p.name}:${p.lat.toFixed(4)},${p.lng.toFixed(4)}`).join("|");
+
+  const clearMap = () => {
+    clearTimeout(hoverTimerRef.current);
+    markersRef.current.forEach(marker => marker.setMap(null));
+    markersRef.current = [];
+    overlayRef.current?.setMap(null);
+    if (mapRef.current) window.google?.maps?.event?.clearInstanceListeners(mapRef.current);
+    mapRef.current = null;
+    overlayRef.current = null;
+    projRef.current = null;
+  };
+  useEffect(() => () => { if (web) clearMap(); }, []);
 
   // A bad-key / unauthorized-API failure can happen after the map inits, so also
   // listen for the global auth-failure signal and fall back when it fires.
@@ -134,7 +142,12 @@ export default function LiveMap({ points = [], highlight, focalName, label, onOp
   }, []);
 
   useEffect(() => {
-    if (!web || all.length === 0) return;
+    if (!web) return;
+    if (all.length === 0) {
+      clearMap();
+      setHover(null);
+      return;
+    }
     let cancelled = false;
     loadMaps()
       .then((maps) => {
@@ -225,7 +238,7 @@ export default function LiveMap({ points = [], highlight, focalName, label, onOp
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sig]);
 
-  if (!web || failed) return null;
+  if (!web || failed || all.length === 0) return null;
 
   return (
     <View style={[styles.wrap, height ? { aspectRatio: undefined, height } : null]}>

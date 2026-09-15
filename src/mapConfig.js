@@ -7,6 +7,8 @@
 //
 // Free tiers cover plenty for launch. Without a key, the drawn CityMap is used
 // so the app is never blank.
+import { mapCoordinate } from "./domain/mapCoordinates.mjs";
+
 export const GOOGLE_KEY = process.env.EXPO_PUBLIC_GOOGLE_MAPS_KEY || "";
 const MAPBOX_TOKEN = process.env.EXPO_PUBLIC_MAPBOX_TOKEN || "";
 
@@ -49,7 +51,9 @@ function googleStyleParams() {
 
 // Build a static image URL for a center + integer zoom + logical WxH.
 export function mapStaticUrl(center, zoom, w, h) {
-  const { lat, lng } = center;
+  const coord = mapCoordinate(center);
+  if (!coord) return null;
+  const { lat, lng } = coord;
   if (MAP_PROVIDER === "google") {
     return (
       `https://maps.googleapis.com/maps/api/staticmap?center=${lat},${lng}` +

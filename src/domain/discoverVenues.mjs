@@ -1,6 +1,7 @@
 import { discoverRowMatchesRegion, discoverVenueIdentity } from "./discoverScene.mjs";
 import { isVenuePlaceActionable, venuePlaceIdentity } from "./venueDiscovery.mjs";
 import { isCurrentOrUpcomingLiveEvent, compareCurrentAndUpcomingLiveEvents } from "./eventLifecycle.mjs";
+import { mapCoordinate } from "./mapCoordinates.mjs";
 
 const text = (value) => String(value ?? "").trim();
 const norm = (value) => text(value).normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
@@ -13,9 +14,8 @@ export function discoverVenueCoordinate(row) {
   const point = row?.coord || row;
   const lat = point?.lat ?? point?.venueLat;
   const lng = point?.lng ?? point?.venueLng;
-  if (lat == null || lng == null || text(lat) === "" || text(lng) === "" || typeof lat === "boolean" || typeof lng === "boolean") return null;
-  const coord = { lat: Number(lat), lng: Number(lng) };
-  return Number.isFinite(coord.lat) && Number.isFinite(coord.lng) && Math.abs(coord.lat) <= 85 && Math.abs(coord.lng) <= 180 ? coord : null;
+  const coord = mapCoordinate({ lat, lng });
+  return coord && Math.abs(coord.lat) <= 85 ? coord : null;
 }
 
 // One bounded pass over the existing local index + dates. Never one request (or

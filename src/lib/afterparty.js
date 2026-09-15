@@ -1,3 +1,5 @@
+import { mapCoordinate } from "../domain/mapCoordinates.mjs";
+
 // Nearby after-show discovery must stay truthful. Pit does not have a live
 // Places data source, so it must never manufacture business names, distances,
 // or opening hours. These are category searches that hand the decision to live
@@ -33,16 +35,8 @@ export const AFTERPARTY_CATEGORIES = Object.freeze([
   }),
 ]);
 
-const finiteCoordinate = (value) => {
-  if (value == null || (typeof value === "string" && !value.trim()) || typeof value === "boolean") return null;
-  return Number.isFinite(Number(value)) ? Number(value) : null;
-};
-
 export function verifiedVenueCoordinate(coord) {
-  const lat = finiteCoordinate(coord?.lat);
-  const lng = finiteCoordinate(coord?.lng);
-  if (lat == null || lng == null || lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
-  return { lat, lng };
+  return mapCoordinate(coord);
 }
 
 export function mapsSearch(query, coord) {

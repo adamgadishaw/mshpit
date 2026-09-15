@@ -1,4 +1,5 @@
 import { toIsoDate } from "./dates.mjs";
+import { mapCoordinate } from "./mapCoordinates.mjs";
 
 const MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
 
@@ -88,6 +89,18 @@ export function isVenuePlaceActionable(value) {
 // city-name-only lookup. This is deliberately fail-honest: when no matching
 // mapped venue exists, return null coordinates rather than silently borrowing a
 // same-named city in another state or country.
+const wrapVenueLongitude = lng => lng >= 180 ? lng - 360 : lng < -180 ? lng + 360 : lng;
+function coordinateCenter(coords) {
+  const longitudes = coords.map(coord => coord.lng);
+  const crossesDateline = Math.max(...longitudes) - Math.min(...longitudes) > 180;
+  const anchor = longitudes[0];
+  const sum = coords.reduce((total, coord) => ({
+    lat: total.lat + coord.lat,
+    lng: total.lng + (crossesDateline ? anchor + wrapVenueLongitude(coord.lng - anchor) : coord.lng),
+  }), { lat: 0, lng: 0 });
+  return { lat: sum.lat / coords.length, lng: wrapVenueLongitude(sum.lng / coords.length) };
+}
+
 export function locationCenterFromVenues(place, venues = []) {
   const city = String(place?.city || "").trim();
   const state = String(place?.state || "").trim();
@@ -100,21 +113,16 @@ export function locationCenterFromVenues(place, venues = []) {
     if (!venue?.coord || parts[0] !== wantedCity) return false;
     if (wantedState && !parts.slice(1).includes(wantedState)) return false;
     if (wantedCountry && !parts.slice(1).includes(wantedCountry)) return false;
-    return Number.isFinite(Number(venue.coord.lat)) && Number.isFinite(Number(venue.coord.lng));
-  });
+    return true;
+  }).map(venue => mapCoordinate(venue.coord)).filter(Boolean);
   const label = String(place?.label || [city, state, country].filter(Boolean).join(", ")).trim();
   if (!matches.length) return { city, state, country, label, lat: null, lng: null };
-  const sum = matches.reduce((total, venue) => ({
-    lat: total.lat + Number(venue.coord.lat),
-    lng: total.lng + Number(venue.coord.lng),
-  }), { lat: 0, lng: 0 });
   return {
     city,
     state,
     country,
     label,
-    lat: sum.lat / matches.length,
-    lng: sum.lng / matches.length,
+    ...coordinateCenter(matches),
   };
 }
 
@@ -151,17 +159,15 @@ export function venueHomePlaceId(home, cities = []) {
     if (candidates.some((entry) => entry.id === exactId)) return exactId;
   }
 
-  const homeLat = Number(home?.lat);
-  const homeLng = Number(home?.lng);
-  if (Number.isFinite(homeLat) && Number.isFinite(homeLng)) {
+  const homeCoord = mapCoordinate(home);
+  if (homeCoord) {
+    const { lat: homeLat, lng: homeLng } = homeCoord;
     const ranked = candidates.map((entry) => {
-      const coords = (entry.venues || []).map((venue) => venue?.coord).filter((coord) => Number.isFinite(Number(coord?.lat)) && Number.isFinite(Number(coord?.lng)));
+      const coords = (entry.venues || []).map((venue) => mapCoordinate(venue?.coord)).filter(Boolean);
       if (!coords.length) return { id: entry.id, distance: Infinity };
-      const center = coords.reduce((sum, coord) => ({ lat: sum.lat + Number(coord.lat), lng: sum.lng + Number(coord.lng) }), { lat: 0, lng: 0 });
-      center.lat /= coords.length;
-      center.lng /= coords.length;
+      const center = coordinateCenter(coords);
       const lngScale = Math.cos((homeLat * Math.PI) / 180);
-      return { id: entry.id, distance: (center.lat - homeLat) ** 2 + ((center.lng - homeLng) * lngScale) ** 2 };
+      return { id: entry.id, distance: (center.lat - homeLat) ** 2 + (wrapVenueLongitude(center.lng - homeLng) * lngScale) ** 2 };
     }).sort((a, b) => a.distance - b.distance || String(a.id).localeCompare(String(b.id)));
     if (Number.isFinite(ranked[0]?.distance)) return ranked[0].id;
   }
@@ -193,9 +199,12 @@ export function eventDateMeta(value, now = new Date()) {
 
 export function nearestMapPoints(points = [], limit = 60) {
   const safeLimit = Math.max(1, Number(limit) || 1);
-  return points
-    .filter((point) => point && point.lat != null && point.lng != null)
-    .slice()
+  return (Array.isArray(points) ? points : [])
+    .map((point) => {
+      const coord = mapCoordinate(point);
+      return coord ? { ...point, ...coord } : null;
+    })
+    .filter(Boolean)
     .sort((a, b) => (Number(a.distanceKm) || 0) - (Number(b.distanceKm) || 0))
     .slice(0, safeLimit);
 }

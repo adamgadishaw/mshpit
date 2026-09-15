@@ -82,6 +82,7 @@ import {
 } from "./lib/productAnalytics";
 import { analyticsDurationBucket } from "./domain/analyticsPolicy.mjs";
 import { isVenuePlaceActionable, locationCenterFromVenues, venuePlaceIdentity } from "./domain/venueDiscovery.mjs";
+import { mapCoordinate } from "./domain/mapCoordinates.mjs";
 import { countryForCity } from "./geo";
 import {
   confirmEmailWithReconciliation,
@@ -6459,11 +6460,12 @@ export function StoreProvider({ children }) {
     const k = canonicalVenueKey(name) || norm(name);
     const sameVenue = (value) => (canonicalVenueKey(value) || norm(value)) === k;
     const cat = venueCatalogEntry(name);
-    if (cat && cat.lat != null) return { lat: cat.lat, lng: cat.lng };
-    const rs = ratedShows.find((r) => sameVenue(r.venue));
-    if (rs) return { lat: rs.lat, lng: rs.lng };
-    const event = tourDates.find((date) => sameVenue(date.venue) && date.lat != null && date.lng != null);
-    return event ? { lat: event.lat, lng: event.lng } : null;
+    const catalogCoord = mapCoordinate(cat);
+    if (catalogCoord) return catalogCoord;
+    const rs = ratedShows.find((r) => sameVenue(r.venue) && mapCoordinate(r));
+    if (rs) return mapCoordinate(rs);
+    const event = tourDates.find((date) => sameVenue(date.venue) && mapCoordinate(date));
+    return mapCoordinate(event);
   };
 
   const allVenues = () => {
@@ -6779,7 +6781,8 @@ export function StoreProvider({ children }) {
 
   // Venues within `maxKm` of a center (defaults to your home city), nearest first.
   const localVenues = (maxKm = 75, center = home) => {
-    if (!center || center.lat == null) return [];
+    center = mapCoordinate(center);
+    if (!center) return [];
     return allVenues()
       .filter((v) => v.coord)
       .map((v) => ({
@@ -6795,7 +6798,8 @@ export function StoreProvider({ children }) {
 
   // Upcoming shows in a region (within maxKm of center), nearest first, with soldOut.
   const regionShows = (maxKm = 75, center = home) => {
-    if (!center || center.lat == null) return [];
+    center = mapCoordinate(center);
+    if (!center) return [];
     return tourDates
       .filter((t) => isUpcomingEventDate(t) && t.releaseAt <= Date.now())
       .map((t) => ({ ...t, coord: venueCoord(t.venue), genre: artistGenre(t.artist) }))

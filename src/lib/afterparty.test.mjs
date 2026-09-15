@@ -34,4 +34,6 @@ test("verified venue coordinates accept finite numeric input and reject ambiguou
   assert.equal(verifiedVenueCoordinate({ lat: "", lng: -79.4 }), null);
   assert.equal(verifiedVenueCoordinate({ lat: "   ", lng: -79.4 }), null);
   assert.equal(verifiedVenueCoordinate({ lat: Number.NaN, lng: -79.4 }), null);
+  for (const invalid of [[], [0], {}, false]) assert.equal(verifiedVenueCoordinate({ lat: invalid, lng: 0 }), null);
+  assert.deepEqual(verifiedVenueCoordinate({ lat: 0, lng: "0" }), { lat: 0, lng: 0 });
 });

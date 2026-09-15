@@ -5,6 +5,7 @@ import LiveMap from "./LiveMap";
 import { HAS_MAP, MAP_PROVIDER, GOOGLE_KEY, mapStaticUrl } from "../mapConfig";
 import { linearProjector, pixelProjector, MAP_W, MAP_H } from "../lib/mapProject";
 import { colors, mono, radius } from "../theme";
+import { mapPoint } from "../domain/mapCoordinates.mjs";
 
 const web = Platform.OS === "web" && typeof window !== "undefined";
 
@@ -15,8 +16,9 @@ const web = Platform.OS === "web" && typeof window !== "undefined";
 export default function ConcertMap({ points = [], highlight, focalName, label, onOpenVenue, onPressPoint, height }) {
   const [active, setActive] = useState(null);
   const [liveFailed, setLiveFailed] = useState(false);
-  const all = highlight ? [...points, highlight] : points;
-  const coords = all.filter((p) => p && p.lat != null && p.lng != null);
+  const cleanPoints = (Array.isArray(points) ? points : []).map(mapPoint).filter(Boolean);
+  const focal = mapPoint(highlight);
+  const coords = focal ? [...cleanPoints, focal] : cleanPoints;
   if (coords.length === 0) return null;
 
   // Interactive Google map (web only). If the JS API fails to load, drop through
@@ -24,8 +26,8 @@ export default function ConcertMap({ points = [], highlight, focalName, label, o
   if (web && MAP_PROVIDER === "google" && GOOGLE_KEY && !liveFailed) {
     return (
       <LiveMap
-        points={points}
-        highlight={highlight}
+        points={cleanPoints}
+        highlight={focal}
         focalName={focalName}
         label={label}
         onOpenVenue={onOpenVenue}
@@ -39,7 +41,7 @@ export default function ConcertMap({ points = [], highlight, focalName, label, o
 
   const proj = HAS_MAP ? pixelProjector(coords, MAP_W, MAP_H) : linearProjector(coords);
   const at = (p) => ({ left: `${proj.xPct(p.lng) * 100}%`, top: `${proj.yPct(p.lat) * 100}%` });
-  const others = points.filter((p) => p && p.lat != null && (!focalName || p.name !== focalName));
+  const others = cleanPoints.filter((p) => !focalName || p.name !== focalName);
 
   const tap = (name) => {
     if (!name) return;
@@ -50,9 +52,9 @@ export default function ConcertMap({ points = [], highlight, focalName, label, o
   return (
     <View style={styles.wrap}>
       {HAS_MAP ? (
-        <Image source={{ uri: mapStaticUrl(proj.center, proj.zoom, MAP_W, MAP_H) }} style={StyleSheet.absoluteFill} resizeMode="cover" />
+        <Image source={{ uri: mapStaticUrl(proj.center, MAP_PROVIDER === "mapbox" ? Math.max(0, proj.zoom - 1) : proj.zoom, MAP_W, MAP_H) }} style={StyleSheet.absoluteFill} resizeMode="stretch" />
       ) : (
-        <CityMap points={points} highlight={highlight} label={label} showPins={false} />
+        <CityMap points={cleanPoints} highlight={focal} label={label} showPins={false} />
       )}
 
       <View style={[StyleSheet.absoluteFill, styles.boxNonePointerEvents]}>
@@ -67,9 +69,9 @@ export default function ConcertMap({ points = [], highlight, focalName, label, o
             onPress={() => tap(p.name)}
           />
         ))}
-        {highlight && (
+        {focal && (
           <Pin
-            pos={at(highlight)}
+            pos={at(focal)}
             name={focalName}
             focal
             show

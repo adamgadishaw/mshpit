@@ -16,6 +16,8 @@ test("venue guide keeps only verified capacity and coordinate values", () => {
   assert.deepEqual(venueCoordinates({ lat: 43.6435, lng: -79.3791 }), { lat: 43.6435, lng: -79.3791 });
   assert.equal(venueCoordinates({ lat: 91, lng: -79 }), null);
   assert.equal(venueCoordinates({ lat: 43, lng: null }), null);
+  for (const invalid of [" ", [], [0], {}, false]) assert.equal(venueCoordinates({ lat: invalid, lng: 0 }), null);
+  assert.deepEqual(venueCoordinates({ lat: 0, lng: "0" }), { lat: 0, lng: 0 });
 });
 
 test("venue place matching tolerates region wording but not another city or country", () => {
@@ -46,4 +48,10 @@ test("sparse venue guides remain useful without pretending an unknown location i
   assert.equal(guide.capacity, null);
   assert.match(guide.seatingSummary, /vary by event/u);
   assert.deepEqual(guide.actions, []);
+});
+
+test("unmapped venue directions use the real name and place, never coerced ocean coordinates", () => {
+  const guide = venueGuideModel({ name: "London Room", place: "London, United Kingdom", coord: { lat: " ", lng: " " } });
+  const directions = guide.actions.find(row => row.id === "directions");
+  assert.equal(new URL(directions.url).searchParams.get("destination"), "London Room, London, United Kingdom");
 });

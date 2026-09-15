@@ -1,4 +1,5 @@
 import { canonicalVenueCountry, isVenuePlaceActionable } from "./venueDiscovery.mjs";
+import { mapCoordinate } from "./mapCoordinates.mjs";
 
 const clean = (value) => String(value || "").replace(/\s+/gu, " ").trim();
 const identity = (value) => clean(value)
@@ -13,12 +14,6 @@ const placeEdges = (value) => {
     city: identity(parts[0]),
     country: identity(canonicalVenueCountry(parts.length > 1 ? parts.at(-1) : "")),
   };
-};
-
-const coordinate = (value, minimum, maximum) => {
-  if (value == null || value === "" || typeof value === "boolean") return null;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed >= minimum && parsed <= maximum ? parsed : null;
 };
 
 export function venuePlacesMatch(left, right) {
@@ -37,9 +32,8 @@ export function venueCapacity(value) {
 }
 
 export function venueCoordinates(value) {
-  const lat = coordinate(value?.lat, -90, 90);
-  const lng = coordinate(value?.lng, -180, 180);
-  return lat == null || lng == null ? null : Object.freeze({ lat, lng });
+  const coord = mapCoordinate(value);
+  return coord ? Object.freeze(coord) : null;
 }
 
 const mapsDirectionsUrl = (destination, travelMode = null) => {

@@ -10,6 +10,7 @@ import { UpcomingEventCard, VenueDiscoveryCard } from "../components/VenueDiscov
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
 import { nearestMapPoints } from "../domain/venueDiscovery.mjs";
+import { mapCoordinate } from "../domain/mapCoordinates.mjs";
 import { nearbyInitialTab, nearbyLocationPrompt } from "../domain/nearbyEntry.mjs";
 import useScopedRefresh from "../hooks/useScopedRefresh";
 import { openTicketLink } from "../lib/ticketLinks";
@@ -48,7 +49,7 @@ export default function NearbyScreen({ onClose, onOpenVenue, onOpenArtist, initi
     );
   }
 
-  const hasCoords = center?.lat != null && center?.lng != null;
+  const hasCoords = !!mapCoordinate(center);
   const locationPrompt = nearbyLocationPrompt(center);
   const venues = hasCoords ? localVenues(km, center) : [];
   const shows = hasCoords ? regionShows(km, center) : [];

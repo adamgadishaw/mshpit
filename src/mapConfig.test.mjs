@@ -22,4 +22,8 @@ test("Google static maps target the requested place and scope dark colors to the
   assert.ok(styles.includes("element:labels.text.stroke|color:0x0b0e16"));
   assert.ok(styles.includes("feature:road|element:geometry|color:0x262d43"));
   assert.ok(styles.every(style => !style.startsWith("color:")), "Label colors must never recolor the entire basemap.");
+  for (const invalid of [null, {}, { lat: null, lng: null }, { lat: " ", lng: "" }, { lat: false, lng: [] }, { lat: 91, lng: 0 }]) {
+    assert.equal(config.mapStaticUrl(invalid, 12, 640, 420), null, "Missing coordinates must not trigger a fake-origin map request.");
+  }
+  assert.equal(new URL(config.mapStaticUrl({ lat: 0, lng: "0" }, 12, 640, 420)).searchParams.get("center"), "0,0");
 });
