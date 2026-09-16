@@ -4,6 +4,7 @@ import test from "node:test";
 import { parse } from "@babel/parser";
 import { apiIdentityBarrierDecision } from "../domain/apiIdentityState.mjs";
 import { createRequestControl } from "./requestControl.mjs";
+import { retryAfterDelayMs } from "./retryAfter.mjs";
 
 // Execute the actual client transport with isolated fetch/platform seams. No
 // server, cookies, user data, or React Native runtime is used by these tests.
@@ -26,13 +27,16 @@ function fixture() {
     Platform: { OS: "test" }, apiBaseForRuntime: () => "http://fixture.invalid",
     AppError: class extends Error { constructor(message, options = {}) { super(message); Object.assign(this, options); } },
     captureAppError: (error) => { diagnostics.push(error); return error; },
-    apiIdentityBarrierDecision, createRequestControl, photoCreditUrlFromLinkHeader: () => null,
+    apiIdentityBarrierDecision, createRequestControl, retryAfterDelayMs, photoCreditUrlFromLinkHeader: () => null,
     fetch: async (url, options) => { requests.push({ url, options }); return response.promise; },
   };
   const transport = new Function(...Object.keys(bindings), `${body}\nreturn { api, apiBinary, configureApiIdentity, waiting: () => identityWaiters.size };`)(...Object.values(bindings));
   transport.configureApiIdentity("a");
   return {
     ...transport, requests, diagnostics,
+    fail: ({ status = 502, retryAfter = "30", retryable = true } = {}) => response.resolve(new Response(JSON.stringify({ code: "PROVIDER_UNAVAILABLE", retryable }), {
+      status, headers: { "Content-Type": "application/json", "Retry-After": retryAfter },
+    })),
     finish: (binary = false) => response.resolve(new Response(binary ? new Uint8Array([137, 80, 78, 71]) : JSON.stringify({ private: "account-a" }), {
       status: 200, headers: { "Content-Type": binary ? "image/png" : "application/json" },
     })),
@@ -40,6 +44,21 @@ function fixture() {
 }
 
 for (const binary of [false, true]) {
+  test(`${binary ? "binary" : "JSON"} error retains a bounded manual retry hint without retrying the request`, async () => {
+    for (const [options, expected] of [
+      [{}, 30_000], [{ retryAfter: "999999999" }, 3_600_000],
+      [{ retryAfter: "Infinity" }, undefined], [{ retryAfter: "-1" }, undefined],
+      [{ status: 401 }, undefined], [{ status: 502, retryable: false }, undefined],
+    ]) {
+      const f = fixture();
+      const pending = (binary ? f.apiBinary : f.api)("/api/artists/resolve?name=fixture", { silent: true }).catch(error => error);
+      f.fail(options);
+      const error = await pending;
+      assert.equal(error.retryAfterMs, expected);
+      assert.equal(error.serverCode, "PROVIDER_UNAVAILABLE");
+      assert.equal(f.requests.length, 1);
+    }
+  });
   for (const transition of ["logout", "switch", "roundtrip", "revalidation"]) {
     test(`${binary ? "binary" : "JSON"} explicit account response is fenced after ${transition}`, async () => {
       const f = fixture();

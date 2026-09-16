@@ -21,6 +21,7 @@ import { db, DATABASE_PATH, q, emailStmts, badgeStmts, customBadgesFor, publicUs
 import { publicArtistPhoto } from "./artistPhotoCatalog.js";
 import { resolveReviewedArtistAlias } from "./reviewedArtistIdentities.js";
 import { createArtistLookupWork } from "./artistLookupWork.js";
+import { createArtistFallbackCache, isOptionalArtistCacheStorageFailure } from "./artistFallbackCache.js";
 import { discardProviderResponse, providerRetryAfterMs } from "./providerResponsePolicy.js";
 import { BADGE_COLORS, BADGE_GLYPHS, BADGE_KINDS, validateBadge } from "../src/domain/badgeArt.mjs";
 import { alertCooldownMs, alertRecipient, alertsEnabled, errorStats, maybeAlert, recentErrors, recordError } from "./errorLog.js";
@@ -3022,6 +3023,11 @@ function musicBrainzArtistProjection(candidate) {
 
 const musicBrainzArtistCandidateWork = createArtistLookupWork();
 const deezerArtistFallbackWork = createArtistLookupWork({ deadlineMs: 1_500, resultTtlMs: 60_000 });
+const artistFallbackCache = createArtistFallbackCache(db);
+// A public preview may be fuzzy or ambiguous. Only a unique exact provider
+// identity is eligible for durable name-based recovery; never persist whichever
+// namesake happened to be returned first. WeakSet adds no unbounded retention.
+const cacheableMusicBrainzResolutions = new WeakSet();
 
 async function readMusicBrainzArtistCandidatesUnshared(name, { signal, priority = "normal" } = {}) {
   return runMusicBrainzRequest(async () => {
@@ -3114,16 +3120,21 @@ async function resolveFromMusicBrainz(name, { requireExactIdentity = false, sign
       "PROVIDER_UNAVAILABLE",
       error,
     );
-    failure.retryAfterMs = Math.max(1_000, Number(error?.retryAfterMs) || 30_000);
+    const retryAfter = Number(error?.retryAfterMs);
+    failure.retryAfterMs = Number.isFinite(retryAfter) && retryAfter > 0
+      ? Math.max(1_000, Math.min(3_600_000, retryAfter)) : 30_000;
     throw failure;
   }
 
   const exact = candidates.filter(
     (candidate) => normalizedMusicBrainzArtistName(candidate.name) === requestedIdentity,
   );
-  if (!requireExactIdentity) return exact[0] || candidates[0] || null;
-
   const exactByIdentity = new Map(exact.map((candidate) => [candidate.mbid, candidate]));
+  if (!requireExactIdentity) {
+    const selected = exact[0] || candidates[0] || null;
+    if (selected && exactByIdentity.size === 1) cacheableMusicBrainzResolutions.add(selected);
+    return selected;
+  }
   if (!exactByIdentity.size) {
     throw new ApiError(
       404,
@@ -3176,10 +3187,17 @@ function cachedMusicBrainzResolution(name) {
 
 function rememberMusicBrainzResolution(name, artist) {
   const key = musicBrainzResolveCacheKey(name);
-  if (!key || !artist?.mbid
+  if (!key || !artist?.mbid || !cacheableMusicBrainzResolutions.has(artist)
     || normalizedMusicBrainzArtistName(artist.name) !== normalizedMusicBrainzArtistName(name)) return;
   const at = Date.now();
-  providerCacheStmts.set.run(key, JSON.stringify(artist), at, at + MUSICBRAINZ_RESOLVE_CACHE_MS);
+  try {
+    providerCacheStmts.set.run(key, JSON.stringify(artist), at, at + MUSICBRAINZ_RESOLVE_CACHE_MS);
+  } catch (error) {
+    // Recoverable cache storage pressure must not discard a successful lookup.
+    // Database corruption/schema failures still surface; the storage health
+    // checks remain responsible for reporting disk capacity independently.
+    if (!isOptionalArtistCacheStorageFailure(error)) throw error;
+  }
 }
 
 // Deezer is a request-scoped availability fallback, not an identity authority.
@@ -3200,7 +3218,9 @@ async function resolveFromDeezerExactName(name, { signal } = {}) {
   }
   const exact = new Map(
     candidates
-      .filter((candidate) => normalizedMusicBrainzArtistName(candidate?.name) === requested)
+      .filter((candidate) => normalizedMusicBrainzArtistName(candidate?.name) === requested
+        && /^[1-9]\d{0,15}$/.test(String(candidate?.id || ""))
+        && Number.isSafeInteger(Number(candidate.id)))
       .map((candidate) => [String(candidate.id), candidate]),
   );
   if (exact.size !== 1) return null;
@@ -4877,6 +4897,22 @@ export const routes = {
         ...(!remembered.fresh ? { stale: true } : {}),
       };
     }
+    // A previously successful, unique-exact fallback remains a request-scoped
+    // preview, not a catalogue identity or permission to attach an artist.
+    // The small durable cache survives restarts and expires after 24 hours.
+    const fallbackRemembered = artistFallbackCache.get(name);
+    if (fallbackRemembered) {
+      return {
+        artist: {
+          ...publicArtist(artistRow(fallbackRemembered.name, fallbackRemembered, "deezer")),
+          fanClubAvailable: true,
+        },
+        created: false,
+        transient: true,
+        cached: true,
+        providerFallback: "deezer",
+      };
+    }
     limit(ctx, "resolve", 90, 10 * 60 * 1000); // cap outbound MB lookups per client
     let mb;
     try {
@@ -4887,6 +4923,7 @@ export const routes = {
       if (error?.code !== "PROVIDER_UNAVAILABLE") throw error;
       const fallback = await resolveFromDeezerExactName(name, { signal: ctx.signal });
       if (!fallback) throw error;
+      artistFallbackCache.remember(name, fallback);
       return {
         artist: {
           ...publicArtist(artistRow(fallback.name, fallback, "deezer")),
@@ -4900,6 +4937,7 @@ export const routes = {
     if (!mb) {
       const fallback = await resolveFromDeezerExactName(name, { signal: ctx.signal });
       if (!fallback) return { artist: null, created: false };
+      artistFallbackCache.remember(name, fallback);
       return {
         artist: {
           ...publicArtist(artistRow(fallback.name, fallback, "deezer")),

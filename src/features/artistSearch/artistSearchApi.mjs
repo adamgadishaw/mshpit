@@ -199,10 +199,22 @@ export async function fetchResolvedArtist(name, { signal, apiClient } = {}) {
     signal, silent: true, timeoutMs: 8_000, context: "Looking up an artist",
   });
   if (signal?.aborted) throw abortError(signal);
+  if (!result || !Object.hasOwn(result, "artist") || (result.artist !== null
+    && (typeof result.artist !== "object" || Array.isArray(result.artist)
+      || typeof result.artist.name !== "string" || !result.artist.name.trim()))) {
+    throw new Error("The artist lookup returned an invalid response.");
+  }
   return result?.artist ? { ...result.artist, transient: result.transient === true } : null;
 }
 
 export function artistLookupFailureMessage(error) {
+  if (/^PIT-AUTH-/.test(String(error?.code || "")) || [401, 403].includes(Number(error?.status))
+    || error?.serverCode === "IDENTITY_CHANGED") {
+    return "Your account could not complete this lookup. Sign in again or check your access, then try again.";
+  }
+  if (Number(error?.status) === 429) {
+    return "Artist lookup is temporarily busy. Your search is still here; wait a moment before trying again.";
+  }
   if (error?.serverCode === "PROVIDER_UNAVAILABLE" || error?.code === "PROVIDER_UNAVAILABLE") {
     return "Artist information is temporarily unavailable. Your search is still here; try again shortly or choose an artist already in the results.";
   }

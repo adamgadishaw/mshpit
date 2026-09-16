@@ -30,7 +30,7 @@ export async function settleUnifiedSearchRequests(requests = {}) {
     .filter(([key, request]) => ["people", "artists", "songs"].includes(key) && request);
   const settled = await Promise.allSettled(entries.map(([, request]) => request));
   const result = {
-    people: [], artists: [], songs: [], attempted: entries.length, succeeded: 0, failures: [], aborted: false,
+    people: [], artists: [], songs: [], attempted: entries.length, succeeded: 0, failures: [], errors: {}, aborted: false,
   };
   settled.forEach((outcome, index) => {
     const key = entries[index][0];
@@ -40,6 +40,7 @@ export async function settleUnifiedSearchRequests(requests = {}) {
       return;
     }
     result.failures.push(key);
+    result.errors[key] = outcome.reason;
     if (outcome.reason?.name === "AbortError") result.aborted = true;
   });
   return result;

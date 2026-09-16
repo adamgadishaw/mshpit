@@ -273,7 +273,7 @@ async function runCase(browser, origin, item) {
         if (state.lookupAttempts === 1) {
           await new Promise(done => { state.releaseLookup = done; });
           state.releaseLookup = null;
-          return await route.fulfill({ status: 502, contentType: "application/json", headers: { "Retry-After": "30" },
+          return await route.fulfill({ status: 502, contentType: "application/json", headers: { "Retry-After": "1" },
             body: JSON.stringify({ error: "Artist provider is temporarily unavailable.", code: "PROVIDER_UNAVAILABLE",
               retryable: true, requestId: "navigation-provider-outage-fixture" }) });
         }
@@ -333,16 +333,23 @@ async function runCase(browser, origin, item) {
       await lookup.click();
       await waitFor(() => !!state.releaseLookup, "The interactive artist lookup did not reach the fixture.");
       assert.equal(await lookup.isDisabled(), true, "Repeated submission must be disabled while lookup is pending.");
+      await lookup.dispatchEvent("click");
+      assert.equal(state.lookupAttempts, 1, "A synchronous repeated click must not duplicate provider work.");
       await lookup.getByRole("progressbar").waitFor();
       assert.equal(await field.inputValue(), navigationArtist.name);
       state.releaseLookup();
       const error = page.getByText("Artist information is temporarily unavailable. Your search is still here; try again shortly or choose an artist already in the results.", { exact: true });
       await error.waitFor();
+      assert.equal(await lookup.isDisabled(), true, "Retry-After must keep the failed directory action disabled briefly.");
+      await lookup.dispatchEvent("click");
+      assert.equal(state.lookupAttempts, 1, "A cooldown click must not retry a known provider outage.");
+      assert.equal(await page.getByText(`No matches for “${navigationArtist.name}”.`, { exact: true }).count(), 0,
+        "An unavailable directory must not also claim that there are no matches.");
       await page.waitForFunction(name => {
         const action = [...document.querySelectorAll('[role="button"]')].find(node => node.getAttribute("aria-label") === name);
         return action && action.getAttribute("aria-busy") !== "true" && action.getAttribute("aria-disabled") !== "true";
       }, label);
-      assert.equal(await lookup.isEnabled(), true, "Provider failure must release the action for an explicit retry.");
+      assert.equal(await lookup.isEnabled(), true, "The bounded cooldown must release the action for an explicit retry.");
       assert.equal(await lookup.getByRole("progressbar").count(), 0, "Provider failure must remove the pending spinner.");
       assert.equal(await field.inputValue(), navigationArtist.name, "Failure must retain the original query.");
       assert.equal(await page.getByText(`Mshpit could not find an artist named ${navigationArtist.name}.`, { exact: true }).count(), 0,

@@ -54,6 +54,19 @@ test("composer artist lookup uses the catalog first and only falls back remotely
   assert.ok(calls.every((call) => call.options.timeoutMs === 8_000));
 });
 
+test("malformed lookup responses remain errors instead of becoming false not-found answers", async () => {
+  for (const payload of [null, {}, { artist: {} }, { artist: [] }, { artist: { name: "" } }]) {
+    await assert.rejects(fetchResolvedArtist("Requested", { apiClient: async () => payload }), /invalid response/);
+  }
+  assert.match(artistLookupFailureMessage({ status: 403 }), /check your access/);
+  assert.match(artistLookupFailureMessage({ status: 429 }), /temporarily busy/);
+  const artist = await fetchResolvedArtist("Saved Preview", { apiClient: async () => ({
+    artist: { name: "Saved Preview", key: "saved-preview", publicSlug: "saved-preview" },
+    cached: true, providerFallback: "deezer", transient: true,
+  }) });
+  assert.equal(artist.transient, true, "a remembered provider preview never becomes a durable artist");
+});
+
 test("catalog hits, short text, result limits, and duplicate identities stay bounded", async () => {
   const calls = [];
   const apiClient = async (path) => {

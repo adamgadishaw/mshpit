@@ -4,13 +4,17 @@ import test from "node:test";
 
 const source = (relative) => readFileSync(new URL(relative, import.meta.url), "utf8");
 
-test("post artist picker is debounced, abortable, bounded, and can search beyond the ingested catalog", () => {
+test("post artist picker is catalogue-only while typing, with an explicit bounded directory search", () => {
   const composer = source("../screens/LogScreen.jsx");
   const store = source("../store.js");
   const artistSearch = source("../features/artistSearch/artistSearchApi.mjs");
 
   assert.match(composer, /const controller = new AbortController\(\)/);
-  assert.match(composer, /searchArtistsApi\(q, \{[\s\S]*?throwOnError: true,[\s\S]*?limit: COMPOSER_ARTIST_SEARCH_LIMIT,[\s\S]*?remoteFallback: true/);
+  assert.match(composer, /searchArtistsApi\(q, \{[\s\S]*?throwOnError: true,[\s\S]*?limit: COMPOSER_ARTIST_SEARCH_LIMIT,[\s\S]*?remoteFallback: false/);
+  assert.doesNotMatch(composer, /remoteFallback: true/);
+  assert.match(composer, /const searchBeyondCatalogue = async/);
+  assert.match(composer, /fetchResolvedArtist\(q, \{[\s\S]*?signal: request\.controller\.signal,[\s\S]*?apiClient: api/);
+  assert.match(composer, /accessibilityLabel="Search beyond catalogue"/);
   assert.match(composer, /\}\), 320\)/, "composer artist lookup remains debounced");
   assert.match(composer, /sequence === artistRequestRef\.current/);
   assert.doesNotMatch(store, /artistSearchCacheRef/, "search caching stays out of the Store hook");

@@ -22,11 +22,13 @@ import {
   withoutBlockedPersonSearches,
 } from "../domain/unifiedSearch.mjs";
 import { searchLiveAnnouncement } from "../domain/searchAccessibility.mjs";
-import { accountTargetScope, isCurrentScreenRequest, scopedScreenValue } from "../domain/screenScope.mjs";
+import { accountTargetScope, scopedScreenValue } from "../domain/screenScope.mjs";
 import { createUnifiedEventSearchIndex, searchUnifiedEventIndex } from "../domain/unifiedLocationSearch.mjs";
 import { openTicketLink } from "../lib/ticketLinks";
 import { recordGuestSearch } from "../features/analytics/services/guestSearchAnalyticsApi.mjs";
 import { artistLookupFailureMessage } from "../features/artistSearch/artistSearchApi.mjs";
+import { createArtistLookupController } from "../features/artistSearch/artistLookupController.mjs";
+import { artistSearchRowIdentity, mergeArtistSearchResults, settleArtistSearchSnapshot } from "../features/artistSearch/artistSearchResults.mjs";
 import { ENABLE_DEMO_DATA, ENABLE_MUSIC_PLAYER } from "../config/runtime.mjs";
 import CityDiscoveryTiles from "../features/cities/CityDiscoveryTiles";
 import { availableSearchCategories } from "../components/discover/discovery-recovery.mjs";
@@ -172,12 +174,12 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
     session, blockedIds, isFollowing, follow, unfollow, searchPeople, searchArtistsApi, resolveArtist,
     recentSearches, addRecentSearch, removeRecentSearch, clearRecentSearches, searchSongsApi } = useStore();
   const searchAccountScope = accountTargetScope(session?.id, "search");
-  const lookupRequestRef = useRef({ sequence: 0, scope: searchAccountScope, target: null });
+  const lookupRequestRef = useRef(null);
+  if (!lookupRequestRef.current) lookupRequestRef.current = createArtistLookupController();
   const [queryState, setQueryState] = useState(() => ({ scope: searchAccountScope, value: "" }));
   const q = scopedScreenValue(queryState, searchAccountScope, "");
   const setQ = (value) => {
-    const active = lookupRequestRef.current;
-    lookupRequestRef.current = { sequence: active.sequence + 1, scope: searchAccountScope, target: null };
+    lookupRequestRef.current.cancel();
     setQueryState({ scope: searchAccountScope, value: String(value || "") });
   };
   const [focused, setFocused] = useState(false);
@@ -215,6 +217,14 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
   lookupScopeRef.current = lookupScope;
   const [lookupState, setLookupState] = useState(() => ({ scope: lookupScope, value: EMPTY_LOOKUP_STATE }));
   const { busy: lookupBusy, message: actionMessage } = scopedScreenValue(lookupState, lookupScope, EMPTY_LOOKUP_STATE);
+  const [, refreshLookupCooldown] = useState(0);
+  const lookupRetryAt = lookupRequestRef.current.retryAt(searchAccountScope);
+  const lookupCoolingDown = lookupRetryAt > Date.now();
+  useEffect(() => {
+    if (!lookupRetryAt) return undefined;
+    const timer = setTimeout(() => refreshLookupCooldown((value) => value + 1), Math.max(1, lookupRetryAt - Date.now()));
+    return () => clearTimeout(timer);
+  }, [lookupRetryAt, searchAccountScope]);
   const updateLookupState = (changes) => setLookupState((current) => ({
     scope: lookupScope,
     value: { ...scopedScreenValue(current, lookupScope, EMPTY_LOOKUP_STATE), ...changes },
@@ -240,6 +250,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
   fanClubDirectoryLoaderRef.current = loadFanClubsDirectory;
 
   useEffect(() => {
+    lookupRequestRef.current.reset();
     surfaceRefreshControllerRef.current?.abort();
     surfaceRefreshControllerRef.current = null;
     if (searchRefreshWaiterRef.current) {
@@ -262,8 +273,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
       searchRefreshWaiterRef.current = null;
       waiter.resolve(false);
     }
-    const active = lookupRequestRef.current;
-    lookupRequestRef.current = { sequence: active.sequence + 1, scope: null, target: null };
+    lookupRequestRef.current.reset();
   }, []);
   useEffect(() => {
     // Stop the previous request as soon as the text changes, not after the next
@@ -346,7 +356,8 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
         })
         .catch((error) => {
           if (live && !controller.signal.aborted && error?.name !== "AbortError") {
-            setArtistCache({ scope: requestScope, rows: [] });
+            setArtistCache((current) => settleArtistSearchSnapshot(current, { scope: requestScope, error }));
+            setSearchError("Artist results could not refresh. Please try again.");
           }
         })
         .finally(() => {
@@ -374,7 +385,9 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
         if (!live || controller.signal.aborted || remote.aborted) return;
         requestSucceeded = remote.failures.length === 0 && remote.succeeded > 0;
         setPeopleCache({ scope: peopleScope, query: searchQuery, rows: remote.people });
-        setArtistCache({ scope: requestScope, rows: remote.artists });
+        setArtistCache((current) => settleArtistSearchSnapshot(current, {
+          scope: requestScope, rows: remote.artists, error: remote.errors.artists,
+        }));
         setSongCache({ scope: requestScope, rows: remote.songs });
 
         const localResultCount = localResultCountRef.current;
@@ -470,22 +483,19 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
   );
 
   const searchedArtists = useMemo(() => {
-    const map = new Map();
-    const add = (name, genre, memorial = null) => { const k = name.toLowerCase(); if (name && !map.has(k)) map.set(k, { name, genre, memorial }); };
-    // DB catalog first (notable-first, includes on-demand-resolved artists).
-    dbArtists.forEach((a) => add(a.name, a.genre, a.memorial));
     if (!settledQuery) {
       // The API already returned ranked browse rows. Only fall back to a local
       // alphabetical sort while that first response is unavailable.
-      if (!map.size) artistsAlphabetical(24).forEach((a) => add(a.name, a.genre));
-      return [...map.values()].slice(0, 24);
+      return mergeArtistSearchResults(dbArtists, dbArtists.length ? [] : artistsAlphabetical(24), 24);
     }
+    const localRows = [];
+    const add = (name, genre) => localRows.push({ name, genre });
     ratedShows.forEach((s) => s.artist.toLowerCase().includes(settledQuery) && add(s.artist, s.genre));
     tourDates.forEach((t) => t.artist.toLowerCase().includes(settledQuery) && add(t.artist, t.genre));
     // This mutable fixture is development-only. Production must not scan a
     // second full artist catalog after the indexed server result arrives.
     if (ENABLE_DEMO_DATA) Object.values(ingestedArtists).forEach((a) => a.name.toLowerCase().includes(settledQuery) && add(a.name, a.genre));
-    return [...map.values()].slice(0, 30);
+    return mergeArtistSearchResults(dbArtists, localRows);
   }, [settledQuery, tourDates, dbArtists]);
   const artists = queryIsSettled ? searchedArtists : [];
 
@@ -523,6 +533,8 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
     const payload = artist && typeof artist === "object" ? artist : null;
     const name = String(payload?.name || artist || "").trim();
     if (!name) return;
+    lookupRequestRef.current.cancel();
+    updateLookupState({ busy: false, message: "" });
     addRecentSearch?.({ type: "artist", label: name });
     onOpenArtist?.(payload || name);
   };
@@ -552,16 +564,14 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
 
   // Unknown artists are read-only provider previews, not new catalogue rows.
   const lookUp = async (name) => {
-    if (lookupBusy) return;
-    const target = String(name || "").trim().toLowerCase();
-    const active = lookupRequestRef.current;
-    const request = { sequence: active.sequence + 1, scope: lookupScope, target };
-    lookupRequestRef.current = request;
-    const isCurrent = () => lookupScopeRef.current === request.scope
-      && isCurrentScreenRequest(lookupRequestRef.current, request);
+    const request = lookupRequestRef.current.begin(searchAccountScope, name);
+    if (!request) return;
+    const requestScope = lookupScope;
+    const isCurrent = () => lookupScopeRef.current === requestScope
+      && lookupRequestRef.current.isCurrent(request);
     updateLookupState({ busy: true, message: "" });
     try {
-      const artist = await resolveArtist(name, { throwOnError: true });
+      const artist = await resolveArtist(name, { signal: request.controller.signal, throwOnError: true });
       if (!isCurrent()) return;
       if (!artist?.name) {
         updateLookupState({ message: `Mshpit could not find an artist named ${name}.` });
@@ -570,9 +580,13 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
       addRecentSearch?.({ type: "artist", label: artist.name });
       onOpenArtist?.(artist);
     } catch (error) {
-      if (isCurrent()) updateLookupState({ message: artistLookupFailureMessage(error) });
+      if (isCurrent()) {
+        lookupRequestRef.current.fail(request, error);
+        updateLookupState({ message: artistLookupFailureMessage(error) });
+      }
     } finally {
       if (isCurrent()) updateLookupState({ busy: false });
+      lookupRequestRef.current.finish(request);
     }
   };
   const openTicket = (event) => openTicketLink(event.ticketUrl, {
@@ -715,13 +729,13 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
           title={showBrowse ? "SUGGESTED ARTISTS" : "ARTISTS"} count={artists.length}
           onShowAll={expandCategory("artists", artists)}
           rows={[
-            ...artistRows.map((a) => <ArtistRow key={a.name} name={a.name} genre={a.genre} memorial={a.memorial} onPress={() => openArtist(a)} />),
+            ...artistRows.map((a) => <ArtistRow key={artistSearchRowIdentity(a)} name={a.name} genre={a.genre} memorial={a.memorial} onPress={() => openArtist(a)} />),
             showCategory("artists") && query.length >= 2 && !exactArtist ? (
-              <Pressable key="_lookup" style={styles.row} onPress={() => lookUp(q.trim())} disabled={lookupBusy} accessibilityRole="button" accessibilityLabel={`Search the full artist directory for ${q.trim()}`} accessibilityHint="Use this when the artist is not on Mshpit yet" accessibilityState={{ busy: lookupBusy, disabled: lookupBusy }}>
+              <Pressable key="_lookup" style={styles.row} onPress={() => lookUp(q.trim())} disabled={lookupBusy || lookupCoolingDown} accessibilityRole="button" accessibilityLabel={`Search the full artist directory for ${q.trim()}`} accessibilityHint={lookupCoolingDown ? "The artist directory is temporarily unavailable. Retry will be available shortly." : "Use this when the artist is not on Mshpit yet"} accessibilityState={{ busy: lookupBusy, disabled: lookupBusy || lookupCoolingDown }}>
                 <View style={[styles.dot, { borderColor: colors.good }]}><Icon name="search" size={14} color={colors.good} /></View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.rowName} numberOfLines={1}>Search the full directory for “{q.trim()}”</Text>
-                  <Text style={styles.rowSub} numberOfLines={1}>Find an artist who is not on Mshpit yet</Text>
+                  <Text style={styles.rowSub} numberOfLines={1}>{lookupCoolingDown ? "Please wait before trying the directory again" : "Find an artist who is not on Mshpit yet"}</Text>
                 </View>
                 {lookupBusy ? <ActivityIndicator size="small" color={colors.good} /> : <Icon name="chevron-right" size={16} color={colors.textDim} />}
               </Pressable>
@@ -773,7 +787,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
           ))}
         />
 
-        {!visibleSearchError && visibleResultState === "no-results" && (
+        {!visibleSearchError && !actionMessage && visibleResultState === "no-results" && (
           <View style={styles.empty} accessibilityLiveRegion="polite">
             <Text style={styles.emptyTitle} selectable>No {activeCategory === "all" ? "matches" : activeCategoryLabel.toLowerCase()} for “{q}”.</Text>
             <Text style={styles.emptyDetail}>{alternativeCategories.length ? "There are matches in other categories." : "Try a shorter name, another spelling, or a city."}</Text>

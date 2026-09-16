@@ -8,6 +8,7 @@ import { createRequestControl } from "./requestControl.mjs";
 import { apiIdentityBarrierDecision } from "../domain/apiIdentityState.mjs";
 import { apiBaseForRuntime } from "../domain/apiOrigin.mjs";
 import { photoCreditUrlFromLinkHeader } from "../domain/httpLinkHeader.mjs";
+import { retryAfterDelayMs } from "./retryAfter.mjs";
 
 const DEV_WEB = Platform.OS === "web" && typeof window !== "undefined" && window.location.port === "8081";
 const CONFIGURED_ORIGIN = (process.env.EXPO_PUBLIC_API_URL || "").replace(/\/+$/, "");
@@ -235,6 +236,8 @@ export async function api(path, { method = "GET", body, context, silent = false,
       context: operation,
       source: "api",
     });
+    const retryAfterMs = retryAfterDelayMs(res.headers?.get?.("retry-after"), { status: res.status, retryable: err.retryable });
+    if (retryAfterMs != null) err.retryAfterMs = retryAfterMs;
     throw apiFailure(err, { path, method: verb, context: operation, silent });
   }
   // Even a correctly bound response can finish after this tab deliberately
@@ -357,6 +360,8 @@ export async function apiBinary(path, {
       context: operation,
       source: "api",
     });
+    const retryAfterMs = retryAfterDelayMs(res.headers?.get?.("retry-after"), { status: res.status, retryable: err.retryable });
+    if (retryAfterMs != null) err.retryAfterMs = retryAfterMs;
     throw apiFailure(err, { path, method: verb, context: operation, silent });
   }
 

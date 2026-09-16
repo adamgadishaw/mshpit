@@ -72,7 +72,8 @@ import {
 } from "../domain/artistCampaignPost.mjs";
 import { MAX_POST_TAGGED_PEOPLE, normalizeTaggedPeople } from "../domain/postFriendTags.mjs";
 import { composerEngagementPrompt } from "../domain/postCompleteness.mjs";
-import { COMPOSER_ARTIST_SEARCH_LIMIT } from "../features/artistSearch/artistSearchApi.mjs";
+import { COMPOSER_ARTIST_SEARCH_LIMIT, artistLookupFailureMessage, fetchResolvedArtist } from "../features/artistSearch/artistSearchApi.mjs";
+import { createArtistLookupController } from "../features/artistSearch/artistLookupController.mjs";
 import { readCityDirectory } from "../features/cities/cityApi.mjs";
 import {
   IN_PERSON_REVIEW_EXPERIENCE,
@@ -269,18 +270,47 @@ export default function LogScreen({
   const [artistLoading, setArtistLoading] = useState(false);
   const [artistAttaching, setArtistAttaching] = useState(false);
   const [artistError, setArtistError] = useState("");
+  const [artistDirectoryLoading, setArtistDirectoryLoading] = useState(false);
+  const [artistDirectoryRetryAt, setArtistDirectoryRetryAt] = useState(0);
+  const [artistSearchNotice, setArtistSearchNotice] = useState("");
   const [artistPicked, setArtistPicked] = useState(!!editing?.artistKey || !!prefill?.artistKey);
   // The identity behind the name. Picking a suggestion binds the review to that
   // catalog entity; typing over it drops the binding, so free text can never
   // inherit the last artist's page. The server re-checks this before storing.
   const [artistKey, setArtistKey] = useState(editing?.artistKey || prefill?.artistKey || null);
   const artistRequestRef = useRef(0);
+  const artistCatalogControllerRef = useRef(null);
+  const artistDirectoryRef = useRef(null);
+  if (!artistDirectoryRef.current) artistDirectoryRef.current = createArtistLookupController();
   const artistAttachRef = useRef({ sequence: 0, controller: null });
+  useEffect(() => {
+    artistDirectoryRef.current.reset();
+    setArtistDirectoryLoading(false);
+    setArtistDirectoryRetryAt(0);
+    setArtistSearchNotice("");
+    return () => artistDirectoryRef.current.cancel();
+  }, [session?.id]);
+  useEffect(() => {
+    if (!artistDirectoryRetryAt) return;
+    const timer = setTimeout(() => setArtistDirectoryRetryAt(0), Math.max(0, artistDirectoryRetryAt - Date.now()));
+    return () => clearTimeout(timer);
+  }, [artistDirectoryRetryAt]);
   useEffect(() => {
     const q = artist.trim();
     const sequence = ++artistRequestRef.current;
     const controller = new AbortController();
+    artistCatalogControllerRef.current = controller;
+    artistDirectoryRef.current.cancel();
+    setArtistDirectoryLoading(false);
+    setArtistSearchNotice("");
     if (artistPicked || artistAttaching || q.length < 2) {
+      setArtistHits([]);
+      setArtistLoading(false);
+      setArtistError("");
+      return () => controller.abort();
+    }
+    const task = accountTasks.begin(session?.id, controller);
+    if (!task) {
       setArtistHits([]);
       setArtistLoading(false);
       setArtistError("");
@@ -292,24 +322,66 @@ export default function LogScreen({
       signal: controller.signal,
       throwOnError: true,
       limit: COMPOSER_ARTIST_SEARCH_LIMIT,
-      remoteFallback: true,
+      remoteFallback: false,
     }).then((list) => {
-      if (!controller.signal.aborted && sequence === artistRequestRef.current) {
+      if (task.isCurrent() && sequence === artistRequestRef.current) {
         setArtistHits((list || []).slice(0, COMPOSER_ARTIST_SEARCH_LIMIT));
       }
     }).catch((error) => {
-      if (!controller.signal.aborted && error?.name !== "AbortError" && sequence === artistRequestRef.current) {
-        setArtistHits([]);
+      if (task.isCurrent() && error?.name !== "AbortError" && sequence === artistRequestRef.current) {
         setArtistError("Artist search could not update. Check your connection and try again.");
       }
     }).finally(() => {
-      if (!controller.signal.aborted && sequence === artistRequestRef.current) setArtistLoading(false);
+      if (task.isCurrent() && sequence === artistRequestRef.current) setArtistLoading(false);
+      task.finish();
     }), 320);
-    return () => { clearTimeout(id); controller.abort(); };
-  }, [artist, artistAttaching, artistPicked]);
+    return () => { clearTimeout(id); controller.abort(); task.finish(); };
+  }, [artist, artistAttaching, artistPicked, session?.id]);
   useEffect(() => () => artistAttachRef.current.controller?.abort(), []);
 
+  const searchBeyondCatalogue = async () => {
+    const q = artist.trim();
+    if (artistPicked || artistAttaching || artistLoading || q.length < 3) return;
+    const lookup = artistDirectoryRef.current;
+    const request = lookup.begin(session?.id, q);
+    if (!request) return;
+    const task = accountTasks.begin(session?.id, request.controller);
+    if (!task) { lookup.cancel(); return; }
+    const sequence = ++artistRequestRef.current;
+    artistCatalogControllerRef.current?.abort();
+    setArtistDirectoryLoading(true);
+    setArtistError("");
+    setArtistSearchNotice("");
+    const isCurrent = () => task.isCurrent() && lookup.isCurrent(request) && sequence === artistRequestRef.current;
+    try {
+      const resolved = await fetchResolvedArtist(q, {
+        signal: request.controller.signal,
+        apiClient: api,
+      });
+      if (!isCurrent()) return;
+      if (resolved) {
+        const identity = (row) => String(row?.key || row?.norm || row?.name || "").trim().toLowerCase();
+        setArtistHits((current) => [resolved, ...current.filter((row) => identity(row) !== identity(resolved))]
+          .slice(0, COMPOSER_ARTIST_SEARCH_LIMIT));
+      } else setArtistSearchNotice("No additional artist found in the full directory. You can keep this name and post without linking an artist page.");
+    } catch (error) {
+      if (!isCurrent() || error?.name === "AbortError") return;
+      setArtistDirectoryRetryAt(lookup.fail(request, error));
+      setArtistError(artistLookupFailureMessage(error));
+    } finally {
+      if (isCurrent()) setArtistDirectoryLoading(false);
+      lookup.finish(request);
+      task.finish();
+    }
+  };
+
   const changeArtistText = (value) => {
+    ++artistRequestRef.current;
+    artistCatalogControllerRef.current?.abort();
+    artistDirectoryRef.current.cancel();
+    setArtistDirectoryLoading(false);
+    setArtistSearchNotice("");
+    setArtistHits([]);
     artistAttachRef.current.controller?.abort();
     artistAttachRef.current = { sequence: artistAttachRef.current.sequence + 1, controller: null };
     setArtistAttaching(false);
@@ -320,6 +392,11 @@ export default function LogScreen({
   };
 
   const chooseArtist = async (candidate) => {
+    ++artistRequestRef.current;
+    artistCatalogControllerRef.current?.abort();
+    artistDirectoryRef.current.cancel();
+    setArtistDirectoryLoading(false);
+    setArtistSearchNotice("");
     artistAttachRef.current.controller?.abort();
     const sequence = artistAttachRef.current.sequence + 1;
     const name = String(candidate?.name || "").trim();
@@ -1593,7 +1670,7 @@ export default function LogScreen({
             onChangeText={changeArtistText}
             autoCapitalize="words"
             accessibilityLabel="Artist"
-            accessibilityState={{ busy: artistLoading || artistAttaching }}
+            accessibilityState={{ busy: artistLoading || artistDirectoryLoading || artistAttaching }}
           />
           {artistHits.length > 0 && (
             <View style={styles.hits}>
@@ -1616,6 +1693,15 @@ export default function LogScreen({
             </View>
           )}
           {artistLoading && <Text style={styles.lookupStatus} accessibilityLiveRegion="polite">Searching artists...</Text>}
+          {!artistPicked && !artistAttaching && artist.trim().length >= 3 && (
+            <Button title={artistDirectoryRetryAt > Date.now() ? "Try directory again shortly" : "Search beyond catalogue"}
+              variant="secondary" small loading={artistDirectoryLoading}
+              disabled={artistLoading || artistDirectoryRetryAt > Date.now()}
+              accessibilityLabel="Search beyond catalogue"
+              accessibilityHint="Search the full artist directory for this name. Your post stays here."
+              onPress={() => { void searchBeyondCatalogue(); }} style={{ marginBottom: 10 }} />
+          )}
+          {!!artistSearchNotice && <Text style={styles.lookupStatus} accessibilityLiveRegion="polite">{artistSearchNotice}</Text>}
           {artistAttaching && <Text style={styles.lookupStatus} accessibilityLiveRegion="polite">Adding this artist to the post...</Text>}
           {!!artistError && <Text style={styles.lookupError} accessibilityLiveRegion="assertive">{artistError}</Text>}
           {artistPicked && !!artist.trim() && (
