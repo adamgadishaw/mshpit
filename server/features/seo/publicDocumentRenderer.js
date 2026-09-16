@@ -413,6 +413,12 @@ function directoryMain(document) {
   const artists = (document.artists || []).map((artist) => `<li class="artist-card"><p class="eyebrow">${artist.genre.length ? esc(artist.genre.slice(0, 2).join(" · ")) : "Artist page"}</p><h2>${link(artist.path, artist.name)}</h2>${artist.description ? `<p>${esc(artist.description)}</p>` : ""}</li>`).join("");
   const events = (document.events || []).map((event) => `<li><time datetime="${esc(event.startDateTime || event.date)}"><strong>${esc(dateLabel(event.date))}</strong></time><div><h2>${link(event.path, event.name)}</h2><p>${link(event.artistPath, event.artist)} · ${link(event.venuePath, event.venue)}${event.place ? ` · ${esc(event.place)}` : ""}</p></div>${event.soldOut ? '<span class="pill">Sold out</span>' : ""}</li>`).join("");
   const venues = (document.venues || []).map((venue) => {
+    const upcomingCount = Number.isSafeInteger(venue.upcomingCount) && venue.upcomingCount > 0
+      ? venue.upcomingCount : null;
+    const nextDate = upcomingCount && typeof venue.nextDate === "string" ? longDateLabel(venue.nextDate) : null;
+    const activity = upcomingCount
+      ? `<p class="micro">${esc(upcomingCount)} upcoming ${upcomingCount === 1 ? "show" : "shows"}${nextDate ? ` · Next: <time datetime="${esc(venue.nextDate)}">${esc(nextDate)}</time>` : ""}</p>`
+      : "";
     const featured = venue.featuredEvent
       ? `<p>Next: ${link(venue.featuredEvent.path, venue.featuredEvent.name)} · ${link(venue.featuredEvent.artistPath, venue.featuredEvent.artist)}</p>`
       : venue.featuredArtist ? `<p>Recently documented with ${link(venue.featuredArtistPath, venue.featuredArtist)}</p>` : "";
@@ -421,7 +427,7 @@ function directoryMain(document) {
     const licenseUrl = publicHttpsUrl(venue.photo?.licenseUrl);
     const modificationNotice = cleanCaption(venue.photo?.modificationNotice);
     const photo = photoUrl ? `<figure class="directory-venue-photo"><img src="${esc(photoUrl)}" alt="${esc(venue.photo?.alt || `${venue.name} venue photo`)}" loading="lazy" decoding="async" referrerpolicy="no-referrer" /><figcaption>${esc(venue.photo?.attribution || "Venue photo")}${sourcePage ? ` · <a href="${esc(sourcePage)}" rel="nofollow noopener noreferrer">Source</a>` : ""}${licenseUrl ? ` · <a href="${esc(licenseUrl)}" rel="nofollow noopener noreferrer">License</a>` : ""}${modificationNotice ? ` · ${esc(modificationNotice)}` : ""}</figcaption></figure>` : `<div class="directory-venue-fallback" role="img" aria-label="${esc(`${venue.name} venue artwork`)}"><span>MSHPIT VENUE</span><strong>${esc(venue.name)}</strong></div>`;
-    return `<li class="artist-card venue-directory-card">${photo}<p class="eyebrow">Live music venue</p><h2>${link(venue.path, venue.name)}</h2>${venue.place ? `<p>${esc(venue.place)}</p>` : ""}${featured}${venue.reviewCount ? `<p class="micro">${esc(venue.reviewCount)} ${venue.reviewCount === 1 ? "review" : "reviews"}</p>` : ""}</li>`;
+    return `<li class="artist-card venue-directory-card">${photo}<p class="eyebrow">Live music venue</p><h2>${link(venue.path, venue.name)}</h2>${venue.place ? `<p>${esc(venue.place)}</p>` : ""}${activity}${featured}${venue.reviewCount ? `<p class="micro">${esc(venue.reviewCount)} ${venue.reviewCount === 1 ? "review" : "reviews"}</p>` : ""}</li>`;
   }).join("");
   const concerts = (document.concerts || []).map((concert) => `<li><time datetime="${esc(concert.date)}"><strong>${esc(dateLabel(concert.date))}</strong></time><div><h2>${link(concert.path, `${concert.artist} at ${concert.venue}`)}</h2><p>${link(concert.artistPath, concert.artist)} · ${link(concert.venuePath, concert.venue)}${concert.city ? ` · ${esc(concert.city)}` : ""}</p></div><span class="archive-score">${concert.averageRating != null ? `${esc(concert.averageRating.toFixed(1))}/5 · ` : "No rating yet · "}${esc(concert.reviewCount)} ${concert.reviewCount === 1 ? "review" : "reviews"}</span></li>`).join("");
   const pageSuffix = document.page > 1 ? ` — Page ${esc(document.page)}` : "";

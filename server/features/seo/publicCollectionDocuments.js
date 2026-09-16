@@ -132,9 +132,17 @@ function venueItem(row,identity) {
     source:row?.source,
     providerVenueId:row?.venue_provider_id,
   })[0] || null;
+  // These are already privacy-filtered, deduplicated SQL aggregates. Preserve
+  // their evidence instead of turning a useful city directory into names only.
+  const upcomingCount = Number.isSafeInteger(row?.item_count) && row.item_count > 0
+    ? row.item_count : null;
+  const nextDate = upcomingCount && typeof row?.next_date === "string" && isStrictCalendarDate(row.next_date)
+    ? row.next_date : null;
   return Object.freeze({
     name,path,
     place: cleanLine([identity.city,region,country].filter(Boolean).join(", "),180) || null,
+    upcomingCount,
+    nextDate,
     image: photo?.uri || null,
     photo: photo ? Object.freeze({
       url: photo.uri,

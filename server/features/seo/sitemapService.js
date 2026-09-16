@@ -637,33 +637,67 @@ export function hasIndexableEventEvidence({
   return Boolean(eligibleFanContent || completeRichEvent);
 }
 
-function eventEvidenceKey(row) {
-  const artist = String(row?.artist || "").toLowerCase();
-  const venue = String(row?.venue || "").toLowerCase();
+// SQLite's built-in LOWER/NOCASE fold ASCII only. Match the public event
+// repository exactly rather than collapsing distinct Unicode identities here.
+const eventEvidenceCase = (value) => String(value || "").replace(/[A-Z]/g, (letter) => letter.toLowerCase());
+
+function eventEvidenceKey(row, artist) {
+  const venue = eventEvidenceCase(row?.venue);
   const date = String(row?.date || "");
   return artist && venue && isStrictCalendarDate(date)
     ? JSON.stringify([artist, venue, date])
     : null;
 }
 
-function eligibleFanEvidenceByEvent(posts) {
-  const evidence = new Map();
+function eligibleFanEvidenceByEvent(database, posts) {
+  const byIdentity = new Map();
+  const byLegacyName = new Map();
+  const requestedKeys = new Set();
+  const legacyNameCounts = new Map();
   for (const row of posts || []) {
     if (row.kind != null && row.kind !== "review") continue;
     if ((row.experience_type || "in_person") !== "in_person") continue;
     if (!row.meaningfulText && !(row.photos_public && row.readyMedia?.length)) continue;
-    const key = eventEvidenceKey(row);
-    if (key) evidence.set(key, newest(evidence.get(key), row.updated_at, row.created_at));
+    const bound = row.artist_key != null;
+    const artist = bound ? String(row.artist_key) : eventEvidenceCase(row.artist);
+    const key = eventEvidenceKey(row, artist);
+    if (!key) continue;
+    const evidence = bound ? byIdentity : byLegacyName;
+    evidence.set(key, newest(evidence.get(key), row.updated_at, row.created_at));
+    if (bound) requestedKeys.add(artist);
+    else legacyNameCounts.set(artist, 0);
   }
-  return evidence;
+  const knownKeys = new Set();
+  // One streamed catalogue pass, not a query per event. Retain only identities
+  // used by eligible public reviews; biographies/provider payloads stay out.
+  if (requestedKeys.size || legacyNameCounts.size) {
+    for (const artist of database.prepare("SELECT norm,LOWER(name) AS event_fan_name FROM artists").iterate()) {
+      if (requestedKeys.has(artist.norm)) knownKeys.add(artist.norm);
+      if (legacyNameCounts.has(artist.event_fan_name)) {
+        legacyNameCounts.set(artist.event_fan_name, Math.min(2, legacyNameCounts.get(artist.event_fan_name) + 1));
+      }
+    }
+  }
+  return (row) => {
+    // eventById preserves a non-null stored key and permits its legacy lookup
+    // by LOWER(TRIM(name)) only when the event has no stored key at all.
+    const artistKey = row.artist_key != null ? String(row.artist_key)
+      : eventEvidenceCase(String(row.artist || "").replace(/^ +| +$/g, ""));
+    const identityLastmod = knownKeys.has(artistKey)
+      ? byIdentity.get(eventEvidenceKey(row, artistKey)) : null;
+    const name = eventEvidenceCase(row.artist);
+    const legacyLastmod = legacyNameCounts.has(name) && legacyNameCounts.get(name) <= 1
+      ? byLegacyName.get(eventEvidenceKey(row, name)) : null;
+    return newest(identityLastmod, legacyLastmod);
+  };
 }
 
 export function eventSitemapEntries(database, options = {}) {
   const candidates = options.candidates || null;
   const events = visibleUpcomingEvents(database, options);
-  const fanEvidence = eligibleFanEvidenceByEvent(candidates?.posts || visiblePostCandidates(database));
+  const fanEvidence = eligibleFanEvidenceByEvent(database, candidates?.posts || visiblePostCandidates(database));
   return events.flatMap((row) => {
-    const fanLastmod = fanEvidence.get(eventEvidenceKey(row));
+    const fanLastmod = fanEvidence(row);
     if (!hasIndexableEventEvidence({
       eligibleFanContent: Boolean(fanLastmod),
       completeRichEvent: hasCompleteRichMusicEventRecord(row),

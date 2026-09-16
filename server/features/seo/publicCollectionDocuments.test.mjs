@@ -119,7 +119,7 @@ test("city venue documents have clean page metadata, safe venue links, JSON-LD p
           {
             venue_identity:"provider:ticketmaster:venue-100",venue:"Provider Hall",
             source:"Ticketmaster",venue_provider_id:"Venue-100",venue_region:"Ontario",
-            venue_country:"Canada",latest_at:1_725_000_000_000,
+            venue_country:"Canada",latest_at:1_725_000_000_000,item_count:3,next_date:"2026-09-19",
           },
           {
             venue_identity:"name:independent room",venue:"Independent Room",
@@ -150,6 +150,10 @@ test("city venue documents have clean page metadata, safe venue links, JSON-LD p
   assert.equal(second.relatedLabel,"Concerts in Toronto, Canada");
   assert.equal(second.heading,"Concert venues in Toronto, Canada");
   assert.equal(second.venues[0].path,"/venue/ticketmaster-venue-100");
+  assert.equal(second.venues[0].upcomingCount,3);
+  assert.equal(second.venues[0].nextDate,"2026-09-19");
+  assert.equal(first.indexable,true);
+  assert.equal(second.indexable,false,"activity evidence does not change pagination eligibility");
   assert.equal(second.venues[1].path,"/venue/independent-room");
   assert.equal(second.venues[2].path,null,"an unproven name remains visible text without a dead link");
   assert.deepEqual(second.breadcrumbs.map((crumb) => crumb.name),["Mshpit","Venues","Toronto, Canada - Page 2"]);
@@ -159,8 +163,73 @@ test("city venue documents have clean page metadata, safe venue links, JSON-LD p
   assert.match(rendered,/Toronto, Canada/);
   assert.match(rendered,/<h1>Concert venues in Toronto, Canada — Page 2<\/h1>/u);
   assert.match(rendered,/Provider Hall/);
+  assert.match(rendered,/3 upcoming shows · Next: <time datetime="2026-09-19">September 19, 2026<\/time>/u);
   assert.equal(rendered.includes('href="/concerts/ca/toronto"'),true);
   assert.doesNotMatch(rendered,/href="\/venue\/unproven-room"/u);
+});
+
+function venueActivityDocument(row = {}) {
+  return createPublicCollectionDocumentService({
+    origin:ORIGIN,
+    repository:fakeRepository({ readCityVenues:() => cityCollectionFixture({
+      venues:[{ venue_identity:"name:history",venue:"History",...row }],
+    }) }),
+  }).cityVenuesDocument();
+}
+
+test("city venue activity preserves existing counts and strict dates with singular and plural copy", () => {
+  for (const [count,date,label] of [[1,"2026-09-19","September 19, 2026"],[2,"2028-02-29","February 29, 2028"]]) {
+    const document = venueActivityDocument({ item_count:count,next_date:date });
+    assert.equal(document.venues[0].upcomingCount,count);
+    assert.equal(document.venues[0].nextDate,date);
+    assert.equal(Object.isFrozen(document.venues[0]),true);
+    const html = renderPublicDocument(document);
+    assert.ok(html.includes(String(count) + " upcoming " + (count === 1 ? "show" : "shows") + " · Next: "));
+    assert.ok(html.includes('<time datetime="' + date + '">' + label + '</time>'));
+    assertItemParity(document,document.venues);
+  }
+});
+
+test("missing or malformed city venue counts never invent upcoming activity", () => {
+  for (const count of [undefined,null,0,-1,1.5,NaN,Infinity,Number.MAX_SAFE_INTEGER + 1,"2",true,[],{}]) {
+    const document = venueActivityDocument({ item_count:count,next_date:"2026-09-19" });
+    assert.equal(document.venues[0].upcomingCount,null);
+    assert.equal(document.venues[0].nextDate,null);
+    const html = renderPublicDocument(document);
+    assert.doesNotMatch(html,/upcoming shows?|Next: <time/u);
+  }
+});
+
+test("missing or malformed next dates omit the date without losing a verified upcoming count", () => {
+  for (const date of [undefined,null,"","2026-02-29","2026-13-01","2026-12-32",
+    '2026-12-01"><img src=x onerror="alert(1)">',"2026-12-01T00:00:00Z"," 2026-12-01 ",[],20261201]) {
+    const document = venueActivityDocument({ item_count:2,next_date:date });
+    assert.equal(document.venues[0].upcomingCount,2);
+    assert.equal(document.venues[0].nextDate,null);
+    const html = renderPublicDocument(document);
+    assert.match(html,/<p class="micro">2 upcoming shows<\/p>/u);
+    assert.doesNotMatch(html,/Next: <time|<img src=x/u);
+  }
+});
+
+test("venue activity rendering keeps stored labels escaped and rejects malformed direct fields", () => {
+  const document = venueActivityDocument({
+    venue:'Hall <img src=x onerror="alert(1)">',item_count:1,next_date:"2026-09-19",
+  });
+  const html = renderPublicDocument(document);
+  assert.match(html,/Hall &lt;img src=x onerror=&quot;alert\(1\)&quot;&gt;/u);
+  assert.doesNotMatch(html,/<img src=x/u);
+  assert.match(html,/1 upcoming show · Next:/u);
+
+  const forgedCount = renderPublicDocument({ ...document,venues:[{
+    ...document.venues[0],upcomingCount:'<img src=x onerror="alert(1)">',
+  }] });
+  assert.doesNotMatch(forgedCount,/upcoming shows?|Next: <time|<img src=x/u);
+  const forgedDate = renderPublicDocument({ ...document,venues:[{
+    ...document.venues[0],nextDate:'2026-09-19"><img src=x onerror="alert(1)">',
+  }] });
+  assert.match(forgedDate,/<p class="micro">1 upcoming show<\/p>/u);
+  assert.doesNotMatch(forgedDate,/Next: <time|<img src=x/u);
 });
 
 test("city venue directories show licensed venue photos in cards, social metadata, and MusicVenue items", () => {

@@ -9,6 +9,7 @@ import {
 } from "../../../src/domain/urls.mjs";
 import { createPublicCollectionRepository } from "./publicCollectionRepository.js";
 import { createPublicDocumentRepository } from "./publicDocumentRepository.js";
+import { createPublicDocumentService } from "./publicDocuments.js";
 import { archiveShowKey } from "../artistArchive/artistArchiveKeys.js";
 import { createArtistMemorialRepository } from "../artistMemorials/artistMemorialRepository.js";
 import { createArtistMemorialService } from "../artistMemorials/artistMemorialService.js";
@@ -28,6 +29,7 @@ const {
   SITEMAP_MAX_URLS,
   buildSitemapDatasets,
   artistSitemapEntries,
+  eventSitemapEntries,
   createSitemapSnapshot,
   hasIndexableEventEvidence,
   isSitemapRequestPath,
@@ -45,6 +47,80 @@ test("a ticket URL alone is not indexable event evidence", () => {
   }), false);
   assert.equal(hasIndexableEventEvidence({ eligibleFanContent: true }), true);
   assert.equal(hasIndexableEventEvidence({ completeRichEvent: true }), true);
+});
+
+test("event sitemap fan evidence matches public HTML's bound and legacy artist identities", () => {
+  const at = Date.parse("2026-09-16T12:00:00Z");
+  const user = addUser("u_sitemap_event_identity", "sitemapeventidentity");
+  const docs = createPublicDocumentService({ database: db, origin: "https://www.example.com" });
+  const cases = [
+    { label: "different bound namesakes", artists: [["one", "Namesake"], ["two", "Namesake"]], eventKey: "one", postKey: "two", expected: false },
+    { label: "same key with a previous display name", artists: [["one", "Namesake"], ["two", "Namesake"]], eventKey: "one", postKey: "one", postName: "Previous Name", expected: true },
+    { label: "ambiguous unbound review", artists: [["one", "Namesake"], ["two", "Namesake"]], eventKey: "one", postKey: null, expected: false },
+    { label: "unambiguous unbound review", artists: [["one", "Namesake"]], eventKey: "one", postKey: null, expected: true },
+    { label: "uncatalogued unbound review", artists: [], eventKey: null, postKey: null, expected: true },
+    { label: "orphaned bound review cannot become name evidence", artists: [], eventKey: null, postKey: "missing", expected: false },
+    { label: "legacy event key lookup", artists: [["name", "Namesake"]], eventKey: null, postKey: "name", expected: true },
+    { label: "removed review stays excluded", artists: [["one", "Namesake"]], eventKey: "one", postKey: "one", removed: true, expected: false },
+    { label: "restricted author stays excluded", artists: [["one", "Namesake"]], eventKey: "one", postKey: "one", banned: true, expected: false },
+    { label: "Unicode names remain distinct under SQLite NOCASE", artists: [], eventKey: null, postKey: null, eventName: "Äct", postName: "äct", expected: false },
+    { label: "Unicode venues remain distinct under SQLite LOWER", artists: [], eventKey: null, postKey: null, eventVenue: "Ä Hall", postVenue: "ä Hall", expected: false },
+  ];
+  for (const [index, sample] of cases.entries()) {
+    const prefix = `Sitemap Identity ${index} `;
+    const eventName = prefix + (sample.eventName || "Namesake");
+    const postName = prefix + (sample.postName || sample.eventName || "Namesake");
+    const keyFor = (key) => key == null ? null : key === "name" ? eventName.toLowerCase() : `sitemap-identity-${index}-${key}`;
+    const eventId = `td_sitemap_identity_${index}`;
+    const postId = `p_sitemap_identity_${index}`;
+    const artistKeys = sample.artists.map(([key]) => keyFor(key));
+    try {
+      for (const [key, name] of sample.artists) {
+        db.prepare("INSERT INTO artists(norm,name,public_slug,data,created_at,updated_at) VALUES(?,?,?,'{}',?,?)")
+          .run(keyFor(key), prefix + name, `sitemap-identity-${index}-${key}`, at, at);
+      }
+      db.prepare(`INSERT INTO tour_dates(id,artist,artist_key,venue,place,date,source,updated_at,event_name)
+        VALUES(?,?,?,?,?,'2026-10-01','test',?,?)`).run(eventId, eventName, keyFor(sample.eventKey), sample.eventVenue || "Sitemap Identity Hall", "Toronto", at, eventName);
+      db.prepare(`INSERT INTO posts(id,user_id,artist,artist_key,venue,venue_key,city,date,overall,review,photos,
+        photos_public,removed,created_at,updated_at,kind)
+        VALUES(?,?,?,?,?,'sitemap identity hall','Toronto','2026-10-01',4,?,'[]',0,0,?,?,'review')`).run(
+        postId, user.id, postName, keyFor(sample.postKey), sample.postVenue || sample.eventVenue || "Sitemap Identity Hall",
+        "A substantive firsthand concert review describing the music and crowd, attached to its exact artist identity.", at, at + 1_000,
+      );
+      if (sample.removed) db.prepare("UPDATE posts SET removed=1 WHERE id=?").run(postId);
+      if (sample.banned) db.prepare("UPDATE users SET is_banned=1 WHERE id=?").run(user.id);
+      const document = docs.eventDocument({ id: eventId, at });
+      assert.ok(document, sample.label);
+      assert.equal(document.jsonLd.some(node => node["@type"] === "MusicEvent"), false, "fixture needs fan evidence rather than a complete address");
+      assert.equal(document.posts.length > 0, sample.expected, `${sample.label}: public HTML evidence`);
+      const entry = eventSitemapEntries(db, { now: at }).find(row => row.path === `/event/${eventId}`);
+      assert.equal(Boolean(entry), sample.expected, `${sample.label}: sitemap agrees with public HTML`);
+      if (entry) assert.equal(entry.lastmod, at + 1_000);
+    } finally {
+      db.prepare("UPDATE users SET is_banned=0 WHERE id=?").run(user.id);
+      db.prepare("DELETE FROM posts WHERE id=?").run(postId);
+      db.prepare("DELETE FROM tour_dates WHERE id=?").run(eventId);
+      for (const key of artistKeys) db.prepare("DELETE FROM artists WHERE norm=?").run(key);
+    }
+  }
+  db.prepare("DELETE FROM users WHERE id=?").run(user.id);
+});
+
+test("event fan evidence streams catalogue identities once regardless of event count", () => {
+  const at = Date.parse("2026-09-16T12:00:00Z");
+  const base = { artist: "One Artist", artist_key: "one-key", venue: "One Hall", date: "2026-10-01",
+    owner_id: null, provider_active: 1, updated_at: at };
+  const events = Array.from({ length: 2_000 }, (_, index) => ({ ...base, id: `bounded-evidence-${index}` }));
+  let identityReads = 0;
+  const database = { prepare(sql) {
+    assert.equal(sql, "SELECT norm,LOWER(name) AS event_fan_name FROM artists");
+    return { *iterate() { identityReads += 1; yield { norm: "one-key", event_fan_name: "one artist" }; } };
+  } };
+  const posts = [{ ...base, kind: "review", meaningfulText: true, readyMedia: [], created_at: at }];
+  assert.equal(eventSitemapEntries(database, { now: at, candidates: { upcomingEvents: events, posts } }).length, events.length);
+  assert.equal(identityReads, 1, "no per-event lookup queries or full catalogue payloads");
+  assert.equal(eventSitemapEntries(database, { now: at, candidates: { upcomingEvents: events, posts: [] } }).length, 0);
+  assert.equal(identityReads, 1, "no identity scan when there is no fan evidence");
 });
 
 test("artist sitemap streams biographies and retains only exact normalized text eligibility", () => {
@@ -337,6 +413,7 @@ test("segmented sitemaps contain only substantive canonical public pages", async
   addArtist("Thin Sitemap Artist", "thin-sitemap-artist");
   addArtist("Banned Sitemap Artist", "banned-sitemap-artist");
   addArtist("Touring Sitemap Artist", "touring-sitemap-artist");
+  addArtist("Fan Evidence Artist", "fan-evidence-artist");
   addArtist("Memorial Sitemap Artist", "memorial-sitemap-artist", { mbid: MEMORIAL_MBID });
   addArtist("Draft Memorial Sitemap Artist", "draft-memorial-sitemap-artist", {
     mbid: "52345678-1234-4234-8234-123456789abc",

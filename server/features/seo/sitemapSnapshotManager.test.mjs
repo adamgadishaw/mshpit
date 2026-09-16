@@ -258,7 +258,7 @@ test("payload validation enforces canonical host, shard membership, and global U
     stats: valid.stats,
   };
   assert.equal(validateSitemapSnapshotPayload(payload, { env: ENV }).stats.totalUrls, 1);
-  assert.equal(SITEMAP_SNAPSHOT_REVISION, 7);
+  assert.equal(SITEMAP_SNAPSHOT_REVISION, 8);
   assert.throws(
     () => validateSitemapSnapshotPayload({ ...payload, revision: 1 }, { env: ENV }),
     /SITEMAP_SNAPSHOT_REVISION/,
@@ -324,7 +324,7 @@ test("startup reuses only a fresh validated snapshot from the current sitemap re
   }
 });
 
-test("the artist provenance policy rejects fresh revision 6 XML and persists one revision 7 rebuild", async () => {
+test("the event identity policy rejects fresh revision 7 XML and persists one revision 8 rebuild", async () => {
   const now = 1_725_000_000_000;
   let builds = 0;
   const { dataDir, manager } = createTempManager({
@@ -339,7 +339,7 @@ test("the artist provenance policy rejects fresh revision 6 XML and persists one
     const paths = [...previous.paths];
     writeFileSync(manager.persistedPath, JSON.stringify({
       version: 1,
-      revision: 6,
+      revision: 7,
       generatedAt: now,
       paths,
       documents: Object.fromEntries(["/sitemap.xml", ...paths].map(path => [path, previous.xmlFor(path)])),
@@ -356,11 +356,11 @@ test("the artist provenance policy rejects fresh revision 6 XML and persists one
     const refreshed = await manager.refresh({ force: decision.force });
     assert.equal(refreshed.ok, true);
     assert.equal(builds, 1);
-    assert.equal(refreshed.snapshot.revision, 7);
+    assert.equal(refreshed.snapshot.revision, 8);
     assert.match(manager.lookup("/sitemaps/pages.xml").body, /evergreen-policy/);
     const persisted = JSON.parse(readFileSync(manager.persistedPath, "utf8"));
-    assert.equal(persisted.revision, 7);
-    assert.equal(validateSitemapSnapshotPayload(persisted, { env: ENV }).revision, 7);
+    assert.equal(persisted.revision, 8);
+    assert.equal(validateSitemapSnapshotPayload(persisted, { env: ENV }).revision, 8);
     assert.equal(sitemapStartupRefreshDecision(refreshed, { now }).refresh, false);
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
