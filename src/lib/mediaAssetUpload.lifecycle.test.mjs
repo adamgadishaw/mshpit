@@ -67,6 +67,18 @@ test("resuming an owner draft binds the read and skips device bytes", async () =
   assert.deepEqual(f.calls, ["read"]);
 });
 
+test("a saved remote-only draft resumes without a vanished camera-roll URL", async () => {
+  const f = fixture({ resume: true });
+  assert.equal((await f.run({ asset: { ...f.asset, uri: "", runtimeFile: null } })).status, "ready");
+  assert.deepEqual(f.calls, ["read"], "resume must not re-read or re-upload private device bytes");
+});
+
+test("a new selection without a local source or server identity still fails before any work", async () => {
+  const f = fixture();
+  await assert.rejects(f.run({ asset: { ...f.asset, uri: "" } }), { code: "MEDIA_SOURCE_INVALID" });
+  assert.deepEqual(f.calls, []);
+});
+
 test("missing or invalid account identity rejects before reading a private device file", async () => {
   for (const expectedAccountId of [undefined, null, "", "  ", 1]) {
     const f = fixture(); await assert.rejects(f.run({ expectedAccountId }), { code: "MEDIA_ACCOUNT_REQUIRED" });

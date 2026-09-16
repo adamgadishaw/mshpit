@@ -439,7 +439,17 @@ export default function LogScreen({
   const [postError, setPostError] = useState("");
   const [photos, setPhotos] = useState(() => (editing?.photos || []).filter(isDurableMediaUrl));
   const [mediaProject, setMediaProject] = useState(() => mediaProjectForPost(editing));
-  const [pendingMediaAssets, setPendingMediaAssets] = useState([]);
+  const [pendingMediaAssets, renderPendingMediaAssets] = useState([]);
+  const pendingMediaAssetsRef = useRef(pendingMediaAssets);
+  const mediaRetryOperationRef = useRef(null);
+  const mediaRestoreOperationRef = useRef(null);
+  // Recovery and remote cleanup can finish after another action changed the
+  // selection. Keep its identity current synchronously, not only after render.
+  function setPendingMediaAssets(update) {
+    const next = typeof update === "function" ? update(pendingMediaAssetsRef.current) : update;
+    pendingMediaAssetsRef.current = next;
+    renderPendingMediaAssets(next);
+  }
   // Artist-page reuse is a separate, explicit permission. New posts and older
   // posts without a stored choice fail closed; editing preserves a real opt-in.
   const [photosPublic, setPhotosPublic] = useState(editing?.photosPublic === true);
@@ -854,7 +864,9 @@ export default function LogScreen({
   const cancelUpload = async () => {
     uploadControllerRef.current?.abort();
     setMediaError("Upload stopped. Your original photos and videos are still here so you can try again.");
-    await retireRemoteDrafts();
+    // Stop pauses this attempt; it does not discard the selected source. A
+    // DELETE here races Retry and destroys its resumable identity. Explicit
+    // Remove still retires that source, and abandoned drafts age out normally.
   };
 
   const removeAttachedMedia = (index) => {
@@ -874,36 +886,48 @@ export default function LogScreen({
   };
 
   const retryPendingMedia = async () => {
-    if (!pendingMediaAssets.length || uploadOperationRef.current || submitBusy) return;
+    if (!pendingMediaAssetsRef.current.length || uploadOperationRef.current || mediaRetryOperationRef.current || submitBusy) return;
     const task = accountTasks.begin(user?.id);
     if (!task) return;
+    const operation = Symbol("media-recovery");
+    mediaRetryOperationRef.current = operation;
+    const selected = pendingMediaAssetsRef.current;
+    const selectedIds = new Set(selected.map((asset) => asset.id));
     setMediaError("");
     try {
       // New picker assets upload directly while this composer is alive. Only
       // legacy app-owned draft copies need filesystem recovery; a remote asset
       // id can resume from the server without reading the local source again.
-      const staged = pendingMediaAssets.filter((asset) => asset.durableLocalUri && !asset.assetId);
+      const staged = selected.filter((asset) => asset.durableLocalUri && !asset.assetId);
       const recoverableStaged = await recoverMediaDraftAssets(staged);
-      if (!task.isCurrent()) return;
-      if (recoverableStaged.length !== staged.length) {
+      if (!task.isCurrent() || uploadOperationRef.current) return;
+      const recoveredIds = new Set(recoverableStaged.map((asset) => asset.id));
+      // Never resurrect a removed selection or restore an identity that cleanup
+      // retired while filesystem recovery was pending. Newly added items belong
+      // to their own upload attempt, not this earlier Retry gesture.
+      const current = pendingMediaAssetsRef.current.filter((asset) => selectedIds.has(asset.id));
+      if (current.some((asset) => asset.durableLocalUri && !asset.assetId && !recoveredIds.has(asset.id))) {
         throw new Error("A selected photo or video is no longer available on this device. Choose it again before continuing.");
       }
-      const recoveredIds = new Set(recoverableStaged.map((asset) => asset.id));
-      const originals = pendingMediaAssets
+      const originals = current
         .filter((asset) => asset.assetId || !asset.durableLocalUri || recoveredIds.has(asset.id))
         .map((asset, index) => originalMediaProjectAsset(asset, index));
-      setPendingMediaAssets(originals);
+      if (!originals.length) return;
+      setPendingMediaAssets((latest) => latest.map((asset) => originals.find((original) => original.id === asset.id) || asset));
       await uploadOriginalMedia(originals);
     } catch (error) {
       if (task.isCurrent()) setMediaError(error?.message || "Mshpit could not recover the original files. Choose them again and retry.");
     } finally {
+      if (mediaRetryOperationRef.current === operation) mediaRetryOperationRef.current = null;
       task.finish();
     }
   };
 
   const removePendingMedia = (id) => {
-    const target = pendingMediaAssets.find((asset) => asset.id === id);
+    const target = pendingMediaAssetsRef.current.find((asset) => asset.id === id);
+    if (!target) return;
     setPendingMediaAssets((current) => current.filter((asset) => asset.id !== id));
+    setMediaError("");
     void retireRemoteDrafts([id]);
     void releaseMediaDraftAsset(target);
   };
@@ -1004,7 +1028,7 @@ export default function LogScreen({
   const draftFingerprint = useMemo(() => composerDraftFingerprint(currentDraft), [currentDraft]);
   const hasContent = useMemo(() => composerDraftHasContent(currentDraft), [currentDraft]);
   const hasPendingMedia = pendingMediaAssets.length > 0;
-  const hasUnpersistablePendingMedia = pendingMediaAssets.some((asset) => !asset.sourceUrl && !asset.durableLocalUri);
+  const hasUnpersistablePendingMedia = pendingMediaAssets.some((asset) => !asset.sourceUrl && !asset.assetId && !asset.durableLocalUri);
   const initialFingerprintRef = useRef(null);
   if (initialFingerprintRef.current === null) initialFingerprintRef.current = draftFingerprint;
   const composerDirty = draftFingerprint !== initialFingerprintRef.current;
@@ -1088,6 +1112,40 @@ export default function LogScreen({
     allowNextCloseRef.current = true;
     onCancel?.();
   };
+  async function recoverRestoredMedia(restoredPending, restoredDraftId) {
+    // A later restore supersedes this one even when both name the same draft.
+    mediaRestoreOperationRef.current = null;
+    // A completed source PUT is recoverable by its owner-only server identity;
+    // it must not be rejected because a browser no longer has its picker URL.
+    const staged = restoredPending.filter((asset) => asset.durableLocalUri && !asset.assetId);
+    if (!staged.length) return;
+    const task = accountTasks.begin(user?.id);
+    if (!task) return;
+    const operation = Symbol("restored-media");
+    mediaRestoreOperationRef.current = operation;
+    const restoredById = new Map(staged.map((asset) => [asset.id, asset]));
+    const isCurrent = () => task.isCurrent() && draftIdRef.current === restoredDraftId
+      && mediaRestoreOperationRef.current === operation;
+    try {
+      const recoverable = await recoverMediaDraftAssets(staged);
+      if (!isCurrent()) return;
+      const recoveredIds = new Set(recoverable.map((asset) => asset.id));
+      let missing = false;
+      setPendingMediaAssets((current) => current.filter((asset) => {
+        const previous = restoredById.get(asset.id);
+        if (!previous || asset.assetId || asset.durableLocalUri !== previous.durableLocalUri || recoveredIds.has(asset.id)) return true;
+        missing = true;
+        return false;
+      }));
+      if (missing) setMediaError("One selected photo or video is no longer available on this device. The rest of your draft is safe; choose that item again.");
+    } catch {
+      if (isCurrent()) setMediaError("Mshpit could not check the saved media on this device. Your draft is unchanged; try the upload again.");
+    } finally {
+      if (mediaRestoreOperationRef.current === operation) mediaRestoreOperationRef.current = null;
+      task.finish();
+    }
+  }
+
   const resume = (d) => {
     const restored = normalizeComposerDraft(d);
     const restoredFingerprint = composerDraftFingerprint(restored);
@@ -1109,12 +1167,7 @@ export default function LogScreen({
       .map((asset, index) => originalMediaProjectAsset(asset, index));
     const restoredReady = restoredProject.assets.filter((asset) => !!asset.sourceUrl && !restoredPending.some((pending) => pending.id === asset.id));
     setTour(restored.tour); setDate(restored.experienceType === ONLINE_REVIEW_EXPERIENCE ? "" : toIsoDate(restored.date) || restored.date || todayStr); setOnlineTitle(restored.onlineTitle); setYoutubeUrl(restored.youtubeUrl); setOnlineRating(restored.onlineRating); setDims(restored.dims); setReview(restored.review); setTaggedPeople(restored.postType === "review" && restored.experienceType !== ONLINE_REVIEW_EXPERIENCE ? restored.taggedPeople : []); setSong(restored.song); setSongUrl(restored.songUrl); setPreservedPlaylist(restored.playlist); setPhotos(restoredPhotos); setMediaProject(normalizeMediaProject({ assets: restoredReady })); setPendingMediaAssets(restoredPending); setPhotosPublic(restored.photosPublic); setLandingShowcase(restored.landingShowcase && hasLandingCompatibleImage(restoredPhotos));
-    if (restoredPending.length) {
-      void recoverMediaDraftAssets(restoredPending).then((recoverable) => {
-        setPendingMediaAssets(recoverable.map((asset, index) => originalMediaProjectAsset(asset, index)));
-        if (recoverable.length < restoredPending.length) setMediaError("One selected photo or video is no longer available on this device. The rest of your draft is safe; choose that item again.");
-      });
-    }
+    void recoverRestoredMedia(restoredPending, restored.id);
     setShowSong(restored.panels.song); setShowPhotos(restored.panels.photos); setShowPeople(restored.postType === "review" && restored.experienceType !== ONLINE_REVIEW_EXPERIENCE && (restored.panels.people || restored.taggedPeople.length > 0));
   };
 
@@ -1822,7 +1875,7 @@ export default function LogScreen({
             <Icon name={uploadingPhotos ? "clock" : "camera"} size={16} color={colors.amber} />
             <View style={{ flex: 1 }}>
               <Text style={styles.pendingMediaTitle}>{uploadingPhotos ? "Uploading your originals" : "Ready to try again"}</Text>
-              <Text style={styles.pendingMediaCopy}>{pendingMediaAssets.length} selected {pendingMediaAssets.length === 1 ? "item will" : "items will"} upload without filters or edits.</Text>
+              <Text style={styles.pendingMediaCopy}>{pendingMediaAssets.length} {pendingMediaAssets.length === 1 ? "file waiting" : "files waiting"} to upload. Finished uploads stay attached.</Text>
             </View>
             {!uploadingPhotos && (
               <Pressable style={styles.pendingMediaRetry} onPress={retryPendingMedia} disabled={submitBusy} accessibilityRole="button" accessibilityLabel="Retry uploading selected photos and videos">

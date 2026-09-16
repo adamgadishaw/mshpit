@@ -9,6 +9,7 @@ import {
   resumeExistingMediaSourceV1,
 } from "./mediaAssetFinalize.mjs";
 import { resolveRequestTimeout } from "./requestControl.mjs";
+import { shouldContinueMediaBatch } from "../domain/mediaBatchPolicy.mjs";
 
 const input = Object.freeze({
   assetId: "ma_abcdefgh12345678",
@@ -18,6 +19,53 @@ const input = Object.freeze({
 
 const ready = () => ({ asset: { id: input.assetId, status: "ready" }, finalize: { state: "completed" } });
 const processing = () => ({ asset: { id: input.assetId, status: "upload_pending" }, finalize: { state: "processing" } });
+
+const rejectedSource = () => ({ asset: null, finalize: { state: "failed", error: {
+  code: "MEDIA_TYPE_UNSUPPORTED", status: 415, retryable: false,
+  message: "That clip format could not be processed.",
+} } });
+
+test("terminal source cleanup preserves the rejection and allows the next batch item", async () => {
+  const calls = [];
+  let clock = 1_000;
+  await assert.rejects(finalizeMediaSourceV1({
+    ...input,
+    now: () => clock,
+    wait: async (ms) => { clock += ms; },
+    apiCall: async (_path, options) => {
+      calls.push(options.method);
+      return options.method === "POST" ? processing() : rejectedSource();
+    },
+  }), (error) => {
+    assert.equal(error.code, "MEDIA_TYPE_UNSUPPORTED");
+    assert.equal(error.status, 415);
+    assert.equal(error.retryable, false);
+    assert.equal(shouldContinueMediaBatch(error), true);
+    return true;
+  });
+  assert.deepEqual(calls, ["POST", "GET"], "never retry a source the server already retired");
+});
+
+test("resuming a retired source surfaces its terminal rejection instead of a missing-source loop", async () => {
+  let reads = 0;
+  await assert.rejects(resumeExistingMediaSourceV1({
+    asset: { assetId: input.assetId, status: "selected" },
+    kind: "video",
+    body: input.body,
+    apiCall: async () => { reads += 1; return rejectedSource(); },
+  }), (error) => error.code === "MEDIA_TYPE_UNSUPPORTED" && shouldContinueMediaBatch(error));
+  assert.equal(reads, 1);
+});
+
+test("a failure for a different returned asset cannot bypass upload identity validation", async () => {
+  const wrong = { ...rejectedSource(), asset: { id: "ma_someone_else" } };
+  await assert.rejects(finalizeMediaSourceV1({ ...input, apiCall: async () => wrong }),
+    { code: "MEDIA_ASSET_INVALID" });
+  await assert.rejects(resumeExistingMediaSourceV1({
+    asset: { assetId: input.assetId }, kind: "video", body: input.body,
+    apiCall: async () => wrong,
+  }), { code: "MEDIA_ASSET_INVALID" });
+});
 
 test("an immediately ready source uses a bounded request inside the longer resumable processing envelope", async () => {
   let captured;

@@ -122,7 +122,8 @@ test("composer exposes no filter, crop, cover, trim, or media-editor entry point
     "activeTab",
   ]) excludes(source, removed);
   includes(source, "Uploading your originals");
-  includes(source, 'items will"} upload without filters or edits');
+  includes(source, 'to upload. Finished uploads stay attached.');
+  excludes(source, "upload without filters or edits");
 });
 
 test("picker requests iOS permission before original passthrough selection", () => {

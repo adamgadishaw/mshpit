@@ -63,6 +63,19 @@ function processingFailure(value) {
   return error;
 }
 
+function assertMediaSourceIdentity(value, assetId, message) {
+  if (value?.asset?.id === assetId) return;
+  // A terminal source rejection retires its temporary asset row. The owner-only
+  // endpoint still returns the scoped job failure with `asset: null`. Preserve
+  // that failure so the batch can skip this file rather than repeatedly trying
+  // to resume a deleted source. A different non-null identity is never accepted.
+  if (value?.asset === null) {
+    const failed = processingFailure(value);
+    if (failed) throw failed;
+  }
+  throw mediaSourceError("MEDIA_ASSET_INVALID", message);
+}
+
 function deadlineFailure(lastError) {
   const error = new Error("PIT is still processing this clip. Your upload is saved—try again to resume it.",
     lastError ? { cause: lastError } : undefined);
@@ -116,9 +129,7 @@ export async function finalizeMediaSourceV1({
       ...options, signal: requestSignal, silent: true,
     }), { signal, timeoutMs: options.timeoutMs || 20_000 });
     assertActive();
-    if (value?.asset?.id !== assetId) {
-      throw mediaSourceError("MEDIA_ASSET_INVALID", "The media verification identity changed. Try again from your saved selection.");
-    }
+    assertMediaSourceIdentity(value, assetId, "The media verification identity changed. Try again from your saved selection.");
     return value;
   };
   // Video finalization owns the authoritative public rendition and must reach
@@ -289,9 +300,7 @@ export async function resumeExistingMediaSourceV1({
     silent: true,
   }), { ...recovery, signal, onRetry: () => onStage?.("reconnecting-source") });
   if (signal?.aborted) throw abortError(signal);
-  if (result?.asset?.id !== assetId) {
-    throw mediaSourceError("MEDIA_ASSET_INVALID", "That PIT media source is no longer available.");
-  }
+  assertMediaSourceIdentity(result, assetId, "That PIT media source is no longer available.");
   if (result.asset.status === "upload_pending") {
     result = await finalizeMediaSourceV1({ apiCall, assetId, kind, body, signal, onStage });
   }

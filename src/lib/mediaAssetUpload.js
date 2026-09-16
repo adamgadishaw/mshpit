@@ -61,7 +61,9 @@ export async function uploadOriginalMediaAsset({
   const prepareAsset = services.prepareAsset || prepareMediaUploadAsset;
   const uploadPrepared = services.uploadPrepared || uploadPreparedMediaAsset;
   abortIfNeeded();
-  if (!asset?.id || !asset?.uri) {
+  // Saved drafts intentionally omit temporary camera-roll/blob URLs. Once the
+  // source PUT completed, its account-scoped server ID is enough to resume.
+  if (!asset?.id || (!asset?.assetId && !asset?.uri)) {
     throw mediaPipelineError("MEDIA_SOURCE_INVALID", "Choose that media again before uploading.");
   }
 

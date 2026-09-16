@@ -5,9 +5,10 @@ import { parse } from "@babel/parser";
 import { createAccountTaskScope } from "../domain/accountTaskScope.mjs";
 import { shouldContinueMediaBatch } from "../domain/mediaBatchPolicy.mjs";
 import { createMediaTransferProgressPublisher } from "../domain/mediaTransferProgress.mjs";
+import { retireMediaAssetDrafts } from "../lib/mediaAssetDraftCleanup.mjs";
 import {
   mediaProjectPublishedMedia, mediaProjectRequiresLegacyUpload,
-  originalMediaProjectAsset, reconcileMediaProjectSelection,
+  originalMediaProjectAsset, reconcileMediaProjectSelection, normalizeMediaProjectAsset,
 } from "../domain/mediaProject.mjs";
 
 function find(node, predicate) {
@@ -163,7 +164,7 @@ function composerUploadFixture() {
       .map((name) => [name, (value) => events.push({ name, value })])),
   };
   const run = compileComposerUpload(bindings);
-  return { accountTasks, upload, started, events, uploadControllerRef, run: () => run(pickerResult.assets) };
+  return { accountTasks, upload, started, events, uploadControllerRef, bindings, run: () => run(pickerResult.assets) };
 }
 
 test("composer rejects an old-account upload completion and its late progress", async () => {
@@ -231,4 +232,226 @@ test("rejected publication retains the draft for the current owner", async () =>
   const f = submitFixture(), run = f.run(); f.response.resolve({ ok: false, error: new Error("Sign in again") }); await run;
   assert.equal(f.events.includes("deleteDraft"), false);
   assert.equal(f.events.filter((event) => event === "setPostError").length, 2);
+});
+
+const compileComposerRetry = callback("LogScreen.jsx", "LogScreen", "retryPendingMedia");
+const compilePendingSetter = callback("LogScreen.jsx", "LogScreen", "setPendingMediaAssets");
+function composerRetryFixture(initial = [originalMediaProjectAsset({
+  id: "local:clip", assetId: "ma_source", kind: "video", uri: "blob:original", durationMs: 2_000,
+})]) {
+  const accountTasks = scope(), recovery = deferred(), events = [], uploads = [];
+  const pendingMediaAssetsRef = { current: initial }, mediaRetryOperationRef = { current: null };
+  const uploadOperationRef = { current: null };
+  const setPendingMediaAssets = compilePendingSetter({
+    pendingMediaAssetsRef,
+    renderPendingMediaAssets: (value) => events.push({ name: "pending", value }),
+  });
+  let recoveryCalls = 0;
+  const bindings = {
+    accountTasks, user: { id: "a" }, pendingMediaAssets: initial, pendingMediaAssetsRef,
+    mediaRetryOperationRef, uploadOperationRef, submitBusy: false,
+    setMediaError: (value) => events.push({ name: "error", value }),
+    recoverMediaDraftAssets: () => { recoveryCalls += 1; return recovery.promise; },
+    originalMediaProjectAsset, setPendingMediaAssets,
+    uploadOriginalMedia: async (assets) => { uploads.push(assets); },
+  };
+  return { ...bindings, recovery, events, uploads, run: compileComposerRetry(bindings),
+    recoveryCalls: () => recoveryCalls };
+}
+
+test("Stop pauses upload without deleting the source needed by Retry", async () => {
+  const controller = new AbortController(), errors = [], retired = [];
+  const cancel = callback("LogScreen.jsx", "LogScreen", "cancelUpload")({
+    uploadControllerRef: { current: controller },
+    setMediaError: (value) => errors.push(value),
+    retireRemoteDrafts: async () => retired.push("deleted"),
+  });
+  await cancel();
+  assert.equal(controller.signal.aborted, true);
+  assert.deepEqual(retired, [], "a pause must not destroy the resumable server source");
+  assert.match(errors.at(-1), /still here.*try again/u);
+});
+
+test("Retry cannot resurrect a source identity retired during recovery", async () => {
+  const f = composerRetryFixture(), deletion = deferred();
+  const original = f.pendingMediaAssetsRef.current[0];
+  const remoteDraftAssetIdsRef = { current: new Map([[original.id, original.assetId]]) };
+  const retire = callback("LogScreen.jsx", "LogScreen", "retireRemoteDrafts")({
+    remoteDraftAssetIdsRef, accountTasks: f.accountTasks, user: { id: "a" }, retireMediaAssetDrafts,
+    api: () => deletion.promise, setPendingMediaAssets: f.setPendingMediaAssets, normalizeMediaProjectAsset,
+  });
+  const cleaning = retire(), retrying = f.run();
+  deletion.resolve({ removed: true }); await cleaning;
+  assert.equal(f.pendingMediaAssetsRef.current[0].assetId, null);
+  f.recovery.resolve([]); await retrying;
+  assert.equal(f.uploads.length, 1);
+  assert.equal(f.uploads[0][0].assetId, null, "retry may upload the retained original, never the deleted source");
+  assert.equal(f.uploads[0][0].uri, "blob:original");
+  assert.equal(f.pendingMediaAssetsRef.current[0].assetId, null);
+});
+
+test("removing the failed pending item clears its error and cannot be undone by Retry", async () => {
+  const f = composerRetryFixture(), retired = [], released = [];
+  const removePending = callback("LogScreen.jsx", "LogScreen", "removePendingMedia")({
+    pendingMediaAssets: f.pendingMediaAssetsRef.current, pendingMediaAssetsRef: f.pendingMediaAssetsRef,
+    setPendingMediaAssets: f.setPendingMediaAssets, setMediaError: f.setMediaError,
+    retireRemoteDrafts: async (ids) => retired.push(ids), releaseMediaDraftAsset: async (asset) => released.push(asset.id),
+  });
+  const retrying = f.run();
+  f.setMediaError("That PIT media source is no longer available.");
+  removePending("local:clip");
+  assert.equal(f.events.at(-1).value, "");
+  f.recovery.resolve([]); await retrying;
+  assert.deepEqual(f.pendingMediaAssetsRef.current, []);
+  assert.deepEqual(f.uploads, []);
+  assert.deepEqual(retired, [["local:clip"]]);
+  assert.deepEqual(released, ["local:clip"]);
+});
+
+test("Retry uses the latest identity and preserves selections added while recovery waits", async () => {
+  const f = composerRetryFixture(), retrying = f.run();
+  const added = originalMediaProjectAsset({ id: "local:new", kind: "image", uri: "blob:new" });
+  f.setPendingMediaAssets((current) => [{ ...current[0], assetId: "ma_replacement" }, added]);
+  f.recovery.resolve([]); await retrying;
+  assert.deepEqual(f.uploads[0].map((asset) => asset.assetId), ["ma_replacement"]);
+  assert.deepEqual(f.pendingMediaAssetsRef.current.map((asset) => asset.id), ["local:clip", "local:new"]);
+});
+
+test("double Retry shares one recovery and releases its lock after completion", async () => {
+  const f = composerRetryFixture(), first = f.run(), second = f.run();
+  assert.equal(f.recoveryCalls(), 1);
+  f.recovery.resolve([]); await Promise.all([first, second]);
+  assert.equal(f.uploads.length, 1);
+  assert.equal(f.mediaRetryOperationRef.current, null);
+});
+
+test("failed recovery releases the Retry lock without losing selections", async () => {
+  const f = composerRetryFixture(), first = f.run();
+  f.recovery.reject(new Error("Device source temporarily unavailable")); await first;
+  assert.equal(f.mediaRetryOperationRef.current, null);
+  assert.equal(f.pendingMediaAssetsRef.current.length, 1);
+  await f.run();
+  assert.equal(f.recoveryCalls(), 2);
+  assert.equal(f.mediaRetryOperationRef.current, null);
+  assert.deepEqual(f.uploads, []);
+});
+
+test("late Retry recovery cannot touch another account or a dismissed composer", async () => {
+  for (const boundary of ["logout", "switch", "round-trip", "unmount"]) {
+    const f = composerRetryFixture(), retrying = f.run();
+    crossBoundary(f.accountTasks, boundary);
+    const before = f.events.length;
+    f.recovery.resolve([]); await retrying;
+    assert.equal(f.events.length, before, boundary);
+    assert.deepEqual(f.uploads, [], boundary);
+    assert.equal(f.mediaRetryOperationRef.current, null, boundary);
+  }
+});
+
+test("Retry does not race a newer upload that started during recovery", async () => {
+  const f = composerRetryFixture(), retrying = f.run();
+  f.uploadOperationRef.current = { token: Symbol("newer-upload") };
+  f.recovery.resolve([]); await retrying;
+  assert.deepEqual(f.uploads, []);
+  assert.equal(f.mediaRetryOperationRef.current, null);
+});
+
+const compileRestoredRecovery = callback("LogScreen.jsx", "LogScreen", "recoverRestoredMedia");
+function restoredRecoveryFixture() {
+  const local = originalMediaProjectAsset({ id: "local:restored", kind: "video", durationMs: 2_000,
+    uri: "file:///cache/pit-studio/a/draft/clip.mov", durableLocalUri: "file:///cache/pit-studio/a/draft/clip.mov" });
+  const remote = originalMediaProjectAsset({ id: "remote:restored", kind: "video", assetId: "ma_remote", uri: "", durationMs: 2_000 });
+  const f = composerRetryFixture([local, remote]), calls = [];
+  const draftIdRef = { current: "draft-a" }, mediaRestoreOperationRef = { current: null };
+  const recover = compileRestoredRecovery({ accountTasks: f.accountTasks, user: { id: "a" }, draftIdRef,
+    mediaRestoreOperationRef, setPendingMediaAssets: f.setPendingMediaAssets, setMediaError: f.setMediaError,
+    recoverMediaDraftAssets: (assets) => { calls.push(assets); return f.recovery.promise; } });
+  return { ...f, local, remote, calls, draftIdRef, mediaRestoreOperationRef, recover };
+}
+
+test("restored remote-only uploads remain recoverable without the original device file", async () => {
+  const f = restoredRecoveryFixture();
+  f.setPendingMediaAssets([f.remote]);
+  await f.recover([f.remote], "draft-a");
+  assert.deepEqual(f.calls, [], "remote sources must not pass through local file existence checks");
+  assert.deepEqual(f.pendingMediaAssetsRef.current, [f.remote]);
+  const unpersistable = callback("LogScreen.jsx", "LogScreen", "hasUnpersistablePendingMedia");
+  assert.equal(unpersistable({ pendingMediaAssets: [f.remote] }), false);
+  assert.equal(unpersistable({ pendingMediaAssets: [{ uri: "blob:unsent" }] }), true);
+});
+
+test("restored media checks only local files and preserves remote sources when a local file is missing", async () => {
+  const f = restoredRecoveryFixture(), checking = f.recover([f.local, f.remote], "draft-a");
+  assert.deepEqual(f.calls[0].map((asset) => asset.id), [f.local.id]);
+  f.recovery.resolve([]); await checking;
+  assert.deepEqual(f.pendingMediaAssetsRef.current, [f.remote]);
+  assert.match(f.events.at(-1).value, /no longer available on this device/u);
+  assert.equal(f.mediaRestoreOperationRef.current, null);
+});
+
+test("late saved-draft recovery preserves removed, added, replaced and newly uploaded selections", async () => {
+  for (const change of ["removed", "replaced", "uploaded"]) {
+    const f = restoredRecoveryFixture(), checking = f.recover([f.local, f.remote], "draft-a");
+    const added = originalMediaProjectAsset({ id: "local:added", kind: "image", uri: "blob:new" });
+    const replacement = change === "replaced"
+      ? { ...f.local, durableLocalUri: "file:///cache/pit-studio/a/draft/other.mov" }
+      : { ...f.local, assetId: "ma_newly_uploaded" };
+    const expected = [...(change === "removed" ? [] : [replacement]), f.remote, added];
+    f.setPendingMediaAssets(expected);
+    f.recovery.resolve([]); await checking;
+    assert.deepEqual(f.pendingMediaAssetsRef.current, expected, change);
+    assert.equal(f.events.some((event) => event.name === "error"), false, change);
+  }
+});
+
+test("saved-draft recovery is fenced by account, draft id and restore generation", async () => {
+  for (const boundary of ["logout", "switch", "round-trip", "unmount", "draft", "new-restore"]) {
+    const f = restoredRecoveryFixture(), checking = f.recover([f.local, f.remote], "draft-a");
+    if (boundary === "draft") f.draftIdRef.current = "draft-b";
+    else if (boundary === "new-restore") await f.recover([f.remote], "draft-a");
+    else crossBoundary(f.accountTasks, boundary);
+    const before = f.events.length;
+    f.recovery.resolve([]); await checking;
+    assert.equal(f.events.length, before, boundary);
+    assert.deepEqual(f.pendingMediaAssetsRef.current, [f.local, f.remote], boundary);
+  }
+});
+
+test("failed saved-draft checks retain selections and report a retryable local check", async () => {
+  const f = restoredRecoveryFixture(), checking = f.recover([f.local, f.remote], "draft-a");
+  f.recovery.reject(new Error("Temporary device failure")); await checking;
+  assert.deepEqual(f.pendingMediaAssetsRef.current, [f.local, f.remote]);
+  assert.match(f.events.at(-1).value, /draft is unchanged/u);
+  assert.equal(f.mediaRestoreOperationRef.current, null);
+});
+
+test("a terminal rejected clip does not block later files or detach successful uploads", async () => {
+  const f = composerUploadFixture(), attempted = [], retired = [];
+  const selected = ["first", "rejected", "last"].map((id) => originalMediaProjectAsset({
+    id, kind: "video", uri: `blob:${id}`, durationMs: 2_000,
+  }));
+  const state = { pending: selected, project: { assets: [] }, photos: [] };
+  const bindings = { ...f.bindings,
+    setPendingMediaAssets: (update) => { state.pending = typeof update === "function" ? update(state.pending) : update; },
+    setMediaProject: (value) => { state.project = value; },
+    setPhotos: (value) => { state.photos = value; },
+    retireRemoteDrafts: async (ids) => retired.push(ids),
+    uploadOriginalMediaAsset: async ({ asset, expectedAccountId }) => {
+      assert.equal(expectedAccountId, "a");
+      attempted.push(asset.id);
+      if (asset.id === "rejected") throw Object.assign(new Error("That clip format is unsupported"), {
+        status: 415, code: "MEDIA_TYPE_UNSUPPORTED",
+      });
+      return { ...asset, assetId: `ma_${asset.id}`, sourceUrl: `https://media.example.org/${asset.id}.mp4`,
+        posterUrl: `https://media.example.org/${asset.id}.jpg`, status: "ready" };
+    },
+  };
+  const result = await compileComposerUpload(bindings)(selected);
+  assert.equal(result.ok, true);
+  assert.equal(result.partial, true);
+  assert.deepEqual(attempted, ["first", "rejected", "last"]);
+  assert.deepEqual(state.project.assets.map((asset) => asset.assetId), ["ma_first", "ma_last"]);
+  assert.deepEqual(state.photos, ["https://media.example.org/first.mp4", "https://media.example.org/last.mp4"]);
+  assert.deepEqual(state.pending, []);
+  assert.deepEqual(retired, [["rejected"]]);
 });

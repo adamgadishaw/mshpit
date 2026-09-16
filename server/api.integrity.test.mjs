@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
 import { LEGAL_ACCEPTANCE_VERSION } from "../src/domain/privacyDisclosures.mjs";
+import { resumeExistingMediaSourceV1 } from "../src/lib/mediaAssetFinalize.mjs";
+import { shouldContinueMediaBatch } from "../src/domain/mediaBatchPolicy.mjs";
 
 const dataDir = mkdtempSync(join(tmpdir(), "pit-api-integrity-"));
 process.env.PIT_DATA_DIR = dataDir;
@@ -970,6 +972,19 @@ test("public video capability requires exact private-derivative negotiation plus
     assert.equal(terminalOutcome.finalize.error.code, "MEDIA_TYPE_UNSUPPORTED");
     assert.equal(terminalOutcome.finalize.error.status, 415);
     assert.equal(terminalOutcome.finalize.error.retryable, false);
+    await assert.rejects(resumeExistingMediaSourceV1({
+      asset: { assetId: terminalDraft.id, status: "selected" },
+      kind: "video",
+      body: {},
+      apiCall: async (path) => {
+        assert.equal(path, `/api/media/assets/${terminalDraft.id}`);
+        return routes["GET /api/media/assets/:id"]({
+          user: legacyAdmin,
+          params: { id: terminalDraft.id },
+        });
+      },
+    }), (error) => error.code === "MEDIA_TYPE_UNSUPPORTED" && shouldContinueMediaBatch(error),
+    "the actual owner-only rejection response must not strand the remaining album in a missing-source retry loop");
     assert.equal(faultCount(), faultsAfterRealFailure,
       "a detached caller abort or unsupported file is not recorded as another serious server fault");
     assert.equal(JSON.stringify(terminalOutcome).includes("terminal-incompatible-source"), false,
