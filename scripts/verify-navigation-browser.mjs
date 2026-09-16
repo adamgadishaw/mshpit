@@ -31,6 +31,12 @@ export const navigationArtist = Object.freeze({
     licenseUrl: "https://creativecommons.org/licenses/by-sa/4.0/", modified: true,
     mbid: "12345678-1234-4234-8234-123456789abc", wikidataId: "Q123", retrievedAt: 1787659200000 }),
 });
+// Discover returns a compact row. The biography must come from the database
+// profile response, not accidentally ride along with this navigation fixture.
+export const navigationArtistCard = Object.freeze({
+  name: navigationArtist.name, key: navigationArtist.key, publicSlug: navigationArtist.publicSlug,
+  country: navigationArtist.country, rank: 1, popularity: 99,
+});
 export const serverCollectionPaths = Object.freeze([
   "/concerts", "/events/page/2", "/artists/page/2", "/venues/us/davis", "/artist/fixture-artist/concerts/page/2",
 ]);
@@ -41,6 +47,7 @@ export const navigationCases = Object.freeze([
     { name: `delayed-resolution-${width}`, kind: "delayed", path: postPath, width },
     { name: `guest-tabs-${width}`, kind: "guest-tabs", width },
     { name: `artist-lookup-recovery-${width}`, kind: "artist-lookup-recovery", width },
+    { name: `discover-canonical-artist-${width}`, kind: "discover-canonical-artist", path: "/discover", width },
     { name: `member-tabs-${width}`, kind: "member-tabs", member: true, width },
     { name: `home-link-${width}`, kind: "home", path: postPath, width },
     { name: `home-link-member-${width}`, kind: "home", path: postPath, member: true, width },
@@ -61,7 +68,7 @@ export function injectCollectionFixture(html, path) {
   return html.replace('<div id="root">', '<div id="root">' + document);
 }
 
-export function fixtureApiResponse(pathname, { member = false, method = "GET", resolvedPath = postPath, artistBioMode = "imported" } = {}) {
+export function fixtureApiResponse(pathname, { member = false, method = "GET", resolvedPath = postPath, artistBioMode = "imported", discoverArtist = false } = {}) {
   if (pathname === "/api/client-errors" && method === "POST") return { ok: true };
   assert.equal(method, "GET", `Navigation must not mutate data: ${method} ${pathname}`);
   if (pathname === "/api/me") return { user: member ? navigationUser : null };
@@ -88,14 +95,20 @@ export function fixtureApiResponse(pathname, { member = false, method = "GET", r
   if (pathname === "/api/media/reactions") return { reactions: {} };
   if (pathname === "/api/discovery/sidebar") return { upcomingEvents: [], suggestedUsers: [], topArtists: [], trendingVenues: [], popularLounges: [], landingMedia: [], catalogTotals: { artists: 40, venues: 80 } };
   if (pathname === "/api/tourdates") return { tourDates: [] };
-  if (pathname === "/api/discover/overview") return { artists: [], venues: [], events: [], genres: [], countries: [] };
+  if (pathname === "/api/discover/overview") return {
+    artists: [], venues: [], events: [], genres: [], countries: [],
+    ...(discoverArtist ? { chart: { rows: [navigationArtistCard], source: "popularity" }, catalogTotal: 1 } : {}),
+  };
   if (pathname === "/api/discover/chart") return { rows: [], source: "fixture" };
   if (pathname === "/api/artists") return { artists: [] };
-  if (pathname === "/api/artists/resolve") return { artist: navigationArtist };
+  if (pathname === "/api/artists/resolve") {
+    assert.equal(discoverArtist, false, "A canonical Discover artist must open without the remote artist resolver.");
+    return { artist: navigationArtist };
+  }
   if (pathname === "/api/artists/photos") return { photos: [] };
   if (["/api/artists/fixture%20artist/profile", "/api/artists/fixture-artist/profile"].includes(pathname)) {
     assert.ok(["imported", "replacement", "cleared"].includes(artistBioMode), "Unknown artist biography fixture mode.");
-    return { profile: artistBioMode === "imported" ? null : { bioStaffCurated: true,
+    return { artist: navigationArtist, profile: artistBioMode === "imported" ? null : { bioStaffCurated: true,
       bio: artistBioMode === "cleared" ? null : "Staff replacement biography fixture." }, posts: [], legacyProfile: false };
   }
   if (["/api/artists/fixture%20artist/live-summary", "/api/artists/fixture-artist/live-summary"].includes(pathname)) return {
@@ -269,7 +282,7 @@ async function runCase(browser, origin, item) {
         await new Promise(done => { state.releaseResolve = done; });
         state.resolveReleased = true;
       }
-      const body = fixtureApiResponse(url.pathname, { member: state.member, method: request.method(), resolvedPath: url.searchParams.get("path") || undefined, artistBioMode: state.artistBioMode });
+      const body = fixtureApiResponse(url.pathname, { member: state.member, method: request.method(), resolvedPath: url.searchParams.get("path") || undefined, artistBioMode: state.artistBioMode, discoverArtist: item.kind === "discover-canonical-artist" });
       await route.fulfill({ contentType: "application/json", body: JSON.stringify(body) });
     } catch (error) {
       if (item.kind === "delayed" && url.pathname === "/api/resolve" && state.resolveReleased && /closed|disposed|handled|aborted|canceled|cancelled/i.test(error.message)) return;
@@ -345,6 +358,24 @@ async function runCase(browser, origin, item) {
       assert.equal(await error.count(), 0);
       assert.equal(state.expectedLookupErrors, 1, "Only the intentionally injected failed response may appear as a browser network error.");
       await snapshot("explicit retry opens resolved artist");
+    } else if (item.kind === "discover-canonical-artist") {
+      await visiblePage(page, "/discover");
+      await page.getByRole("tab", { name: "Artists", exact: true }).click();
+      const card = page.getByRole("link", { name: `Open ${navigationArtist.name}`, exact: true }).first();
+      await card.waitFor();
+      assert.equal(await card.getAttribute("href"), artistPath, "Discover must retain the canonical public artist path.");
+      await snapshot("canonical Discover artist card");
+      await card.click();
+      await page.getByRole("tab", { name: "About artist page section", exact: true }).click();
+      await assertPath(page, artistPath);
+      await assertPageIdentity(page, artistPath);
+      await page.getByText(navigationArtist.bio, { exact: true }).last().waitFor();
+      assert.ok(state.calls.some(call => ["/api/artists/fixture-artist/profile", "/api/artists/fixture%20artist/profile"].includes(call.path)),
+        "Opening the compact Discover card must hydrate its database profile.");
+      assert.equal(state.calls.some(call => call.path === "/api/artists/resolve"), false,
+        "A canonical Discover card must not depend on a remote name lookup.");
+      assert.equal(await page.getByTestId("public-route-error").count(), 0);
+      await snapshot("canonical artist database biography");
     } else if (item.kind === "guest-tabs") {
       await visiblePage(page, "/search"); await assertPath(page, "/search");
       await openTab("Discover"); await visiblePage(page, "/discover"); await assertPath(page, "/discover");

@@ -5,6 +5,7 @@ import { createArtistKnowledgeRefresher, artistKnowledgeStorageReady, startArtis
   artistKnowledgeMemoryReady, artistKnowledgeDatabaseBytes } from "./artistKnowledgeRefresh.js";
 import { readCatalogKnowledgeControl, setCatalogKnowledgeMode, collectCatalogKnowledgeControl } from "./catalogKnowledgeControl.js";
 import { ArtistKnowledgeProviderError } from "./artistKnowledgeProvider.js";
+import { rememberDiscoverArtists } from "./discoverArtistPriority.js";
 
 const MBID = "11111111-1111-4111-8111-111111111111";
 const OTHER = "22222222-2222-4222-8222-222222222222";
@@ -30,6 +31,23 @@ function fixture(t, { fetchKnowledge = async () => result(), storageReady, memor
   return { database, service, insert, row: (key = "example") => database.prepare("SELECT * FROM artists WHERE norm=?").get(key),
     check: (key = "example") => database.prepare("SELECT * FROM artist_knowledge_checks WHERE artist_key=?").get(key) };
 }
+
+test("Discover artists get first attention without starving catalogue work or bypassing retry times", async (t) => {
+  const calls = [];
+  const f = fixture(t, { fetchKnowledge: async ({ mbid }) => { calls.push(mbid); return result(mbid); } });
+  f.insert("ordinary", { rank: 100 });
+  f.insert("discover-one", { mbid: OTHER, rank: 0 });
+  f.insert("discover-two", { rank: 0 });
+  rememberDiscoverArtists(f.database, [{ key: "discover-one" }, { key: "discover-two" }], AT);
+  const stats = await f.service.runBatch({ limit: 2 });
+  assert.deepEqual(calls, [OTHER, MBID]);
+  assert.equal(stats.prioritized, 1);
+  assert.equal(f.check("ordinary").status, "filled");
+  assert.equal(f.check("discover-two"), undefined);
+  f.database.prepare(`INSERT INTO artist_knowledge_checks VALUES (?,?,'failed',?,?,1,NULL)`)
+    .run("discover-two", MBID, AT, AT + 3600000);
+  assert.equal((await f.service.runBatch()).checked, 0, "Discover cannot override retry cooldowns");
+});
 
 test("fills only missing fields and persists exact source; second pass makes no calls", async (t) => {
   let calls = 0;

@@ -25,6 +25,7 @@ import {
   verifyVideoVerifierResponse,
   VIDEO_VERIFIER_MAX_DISCARDED_QUICKTIME_TRACKS,
   VIDEO_VERIFIER_PROTOCOL_VERSION,
+  VIDEO_VERIFIER_SOURCE_ADMISSION_REVISION,
 } from "./videoVerifierProtocol.js";
 
 const SECRET = "video-verifier-service-secret-at-least-thirty-two-bytes";
@@ -148,6 +149,7 @@ test("worker authenticates health, caps request bytes before JSON parse, and rej
     const health = await authenticatedResponse(first, "/v2/health", signed.nonce);
     assert.equal(health.decoder.ffmpeg, true);
     assert.equal(health.poster.decoded, true);
+    assert.equal(health.sourceAdmissionRevision, VIDEO_VERIFIER_SOURCE_ADMISSION_REVISION);
     assert.deepEqual(health.sourceTypes, ["video/mp4", "video/quicktime"]);
     assert.deepEqual(health.sourceCodecs, {
       "video/mp4": ["h264", "hevc"],
@@ -221,6 +223,12 @@ test("job validation binds exact origin/key/generation and enforces the coded-wo
   const config = getVideoVerifierServiceConfig(ENV);
   assert.equal(validateVideoVerifierJob(validJob(), config).structural.sampleCount, 300);
   assert.equal(validateVideoVerifierJob(validJob({
+    structural: { ...validJob().structural, sourceAdmissionRevision: 2 },
+  }), config).structural.sourceAdmissionRevision, 2);
+  assert.throws(() => validateVideoVerifierJob(validJob({
+    structural: { ...validJob().structural, sourceAdmissionRevision: 3 },
+  }), config), { code: "incompatible_protocol" });
+  assert.equal(validateVideoVerifierJob(validJob({
     structural: { ...validJob().structural, sourceCodec: "hevc" },
   }), config).structural.sourceCodec, "hevc");
   assert.throws(() => validateVideoVerifierJob(validJob({
@@ -249,6 +257,24 @@ test("job validation binds exact origin/key/generation and enforces the coded-wo
   assert.throws(() => validateVideoVerifierJob(validJob({
     output: { ...validJob().output, uploadUrl: unsignedCachePolicy.toString() },
   }), config), { code: "invalid_request" }, "the exact cache header must be covered by SigV4");
+});
+
+test("signed source rejection identifies the exact worker admission policy", async () => {
+  const { service, origin } = await startService({ verifyJob: async () => {
+    throw Object.assign(new Error("private decoder detail"), { status: 422, code: "unsupported_media" });
+  } });
+  try {
+    const signed = signedRequest("/v2/verify", validJob({
+      structural: { ...validJob().structural, sourceAdmissionRevision: 2 },
+    }));
+    const response = await postSigned(origin, "/v2/verify", signed);
+    assert.equal(response.status, 422);
+    assert.deepEqual(await authenticatedResponse(response, "/v2/verify", signed.nonce), {
+      ok: false, code: "unsupported_media", sourceAdmissionRevision: 2,
+    });
+  } finally {
+    await service.close();
+  }
 });
 
 test("an exact source generation loss is a conflict before decoder work", async () => {
@@ -286,6 +312,7 @@ function videoProbe({
   codedWidth = 1_920,
   codedHeight = 1_088,
   metadataStreams = [],
+  frameRate = "30/1",
 } = {}) {
   return JSON.stringify({
     streams: [{
@@ -301,8 +328,8 @@ function videoProbe({
       coded_height: codedHeight,
       field_order: fieldOrder,
       ...(omitSampleAspectRatio ? {} : { sample_aspect_ratio: sampleAspectRatio }),
-      avg_frame_rate: "30/1",
-      r_frame_rate: "30/1",
+      avg_frame_rate: frameRate,
+      r_frame_rate: frameRate,
       disposition: { attached_pic: 0 },
       tags: rotation ? { rotate: String(rotation) } : {},
       side_data_list: rotation ? [{ rotation }] : [],
@@ -354,6 +381,7 @@ test("delivery strategy remuxes only bounded unrotated H.264 and preserves every
     { codec: "h264", audioCodec: "aac", rotation: 0, width: 1_921, height: 1_080 },
     { codec: "h264", audioCodec: "aac", rotation: 0, width: 1_920, height: 1_081 },
     { codec: "h264", audioCodec: "mp3", rotation: 0, width: 1_920, height: 1_080 },
+    { codec: "h264", audioCodec: "aac", rotation: 0, width: 1_920, height: 1_080, frameRate: 240 },
   ]) assert.equal(videoDeliveryStrategy(video), "transcode");
 });
 
@@ -433,6 +461,92 @@ test("authoritative bounded H.264 job strips metadata by remux, fully decodes ou
     assert.deepEqual(await readdir(root), [], "all per-job temp directories are removed");
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("bounded 120/240 FPS sources normalize to 60 FPS and portrait 4K keeps its signed envelope", async (context) => {
+  for (const fixture of [
+    { label: "120fps", frameRate: 120, width: 1_920, height: 1_080, codedWidth: 1_920, codedHeight: 1_088 },
+    { label: "240fps", frameRate: 240, width: 1_920, height: 1_080, codedWidth: 1_920, codedHeight: 1_088 },
+    { label: "portrait-4k", frameRate: 30, width: 2_160, height: 3_840, codedWidth: 2_160, codedHeight: 3_840 },
+  ]) {
+    await context.test(fixture.label, async () => {
+      const root = await mkdtemp(join(tmpdir(), "pit-verifier-source-compatibility-"));
+      const { width, height, codedWidth, codedHeight } = fixture;
+      const runProcess = fakeRunner({
+        probe: videoProbe({ ...fixture, rotation: 0, level: 52, frameRate: `${fixture.frameRate}/1` }),
+        deliveryProbe: videoProbe({ rotation: 0, frameRate: "60/1" }),
+      });
+      try {
+        const result = await runVideoVerifierJob(validJob({
+          structural: { ...validJob().structural, width, height, codedWidth, codedHeight, sampleCount: fixture.frameRate * 10 },
+        }), {
+          config: getVideoVerifierServiceConfig(ENV),
+          fetchImpl: async (url, request) => request.method === "PUT"
+            ? new Response(null, { status: 200 })
+            : new Response(SOURCE, {
+              status: 200,
+              headers: { "content-type": "video/mp4", "content-length": String(SOURCE.byteLength), etag: ETAG },
+            }),
+          runProcess,
+          signal: AbortSignal.timeout(5_000),
+          temporaryRoot: root,
+        });
+        assert.equal(result.video.width, width);
+        assert.equal(result.video.height, height);
+        const creation = runProcess.calls.find((call) => call.executable === "ffmpeg" && call.args.at(-1)?.endsWith("delivery.mp4"));
+        assert.equal(creation.args.includes("libx264"), true);
+        const filter = creation.args[creation.args.indexOf("-vf") + 1];
+        assert.equal(filter.startsWith("fps=60,"), fixture.frameRate > 60);
+        assert.equal(runProcess.calls.some((call) => call.executable === "ffmpeg"
+          && call.args.includes("null") && call.args.some((arg) => String(arg).endsWith("delivery.mp4"))), true);
+        assert.deepEqual(await readdir(root), []);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+test("source FPS, aggregate work, and delivery FPS guards remain independent", async (context) => {
+  const config = getVideoVerifierServiceConfig(ENV);
+  assert.throws(() => validateVideoVerifierJob(validJob({
+    structural: { ...validJob().structural, width: 4_096, height: 4_096, codedWidth: 4_096, codedHeight: 4_096 },
+  }), config), { code: "invalid_request" }, "rotating the allowed axes must not admit oversized square frames");
+  assert.throws(() => validateVideoVerifierJob(validJob({
+    structural: { ...validJob().structural, sampleCount: 2_500 },
+  }), config), { code: "invalid_request" });
+  assert.throws(() => validateVideoVerifierJob(validJob({
+    structural: { ...validJob().structural, width: 2_160, height: 3_840, codedWidth: 2_160, codedHeight: 3_840,
+      sampleCount: 10_000, durationMs: MEDIA_VIDEO_MAX_DURATION_MS },
+  }), config), { code: "invalid_request" });
+  for (const fixture of [
+    { label: "source-over-fps", sourceFps: 300, deliveryFps: 60 },
+    { label: "delivery-over-fps", sourceFps: 240, deliveryFps: 120 },
+  ]) {
+    await context.test(fixture.label, async () => {
+      const root = await mkdtemp(join(tmpdir(), "pit-verifier-fps-guard-"));
+      try {
+        await assert.rejects(() => runVideoVerifierJob(validJob({
+          structural: { ...validJob().structural, sampleCount: 2_400 },
+        }), {
+          config,
+          fetchImpl: async () => new Response(SOURCE, {
+            status: 200,
+            headers: { "content-type": "video/mp4", "content-length": String(SOURCE.byteLength), etag: ETAG },
+          }),
+          runProcess: fakeRunner({
+            probe: videoProbe({ rotation: 0, level: 52, frameRate: `${fixture.sourceFps}/1` }),
+            deliveryProbe: videoProbe({ rotation: 0, frameRate: `${fixture.deliveryFps}/1` }),
+          }),
+          signal: AbortSignal.timeout(5_000),
+          temporaryRoot: root,
+        }), { code: "unsupported_media" });
+        assert.deepEqual(await readdir(root), []);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    });
   }
 });
 

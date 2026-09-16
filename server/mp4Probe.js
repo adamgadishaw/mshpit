@@ -4,6 +4,7 @@ import { ApiError } from "./errors.js";
 import { getMediaConfig, presignS3Request } from "./media.js";
 import {
   VIDEO_VERIFIER_MAX_DISCARDED_QUICKTIME_TRACKS,
+  VIDEO_VERIFIER_SOURCE_ADMISSION_REVISION,
   VIDEO_VERIFIER_SOURCE_CONTENT_TYPES,
   videoVerifierSourceExtension,
 } from "./videoVerifierProtocol.js";
@@ -11,6 +12,8 @@ import {
   MEDIA_VIDEO_MAX_DURATION_MS,
   MEDIA_VIDEO_MAX_FRAME_RATE,
   MEDIA_VIDEO_MAX_SAMPLES,
+  MEDIA_VIDEO_SOURCE_MAX_LONG_EDGE,
+  MEDIA_VIDEO_SOURCE_MAX_SHORT_EDGE,
 } from "../src/domain/mediaUploadPolicy.mjs";
 
 
@@ -28,8 +31,8 @@ const MAX_MEDIA_SAMPLES = 250_000;
 // Full-decode admission is intentionally narrower than the table parser's
 // memory bound. One video sample is one compressed picture for the admitted AVC
 // layout, so these checks cap both frame rate and pixels decoded before an
-// account can occupy the isolated verifier. The envelope admits a ten-minute
-// 1080p60 concert clip, while rejecting high-sample-rate and 4K decode bombs.
+// account can occupy the isolated verifier. Short high-frame-rate and 4K clips
+// share the fixed total work budget of a ten-minute 1080p60 concert clip.
 const MAX_VIDEO_SAMPLES_PER_SECOND = MEDIA_VIDEO_MAX_FRAME_RATE;
 const MAX_VIDEO_SAMPLE_SLACK = 2;
 // 1080p is coded as 120x68 macroblocks (1920x1088), so use coded
@@ -47,18 +50,17 @@ const MAX_WALL_MS = 12_000;
 // joins the already-running proof.
 export const MAX_CONCURRENT_MP4_STRUCTURAL_PROBES = 2;
 const MAX_CLIP_DURATION_MS = MEDIA_VIDEO_MAX_DURATION_MS;
-const MAX_VIDEO_WIDTH = 4_096;
-const MAX_VIDEO_HEIGHT = 2_160;
+const MAX_VIDEO_EDGE = MEDIA_VIDEO_SOURCE_MAX_LONG_EDGE;
 
 const VIDEO_SAMPLE_ENTRIES = new Set(["avc1", "avc3", "hvc1"]);
 const QUICKTIME_VIDEO_SAMPLE_ENTRIES = new Set(["avc1", "hvc1"]);
 const AUDIO_SAMPLE_ENTRIES = new Set(["mp4a"]);
 const AVC_PROFILES = new Set([66, 77, 100]);
-const AVC_LEVELS = new Set([9, 10, 11, 12, 13, 20, 21, 22, 30, 31, 32, 40, 41, 42, 50, 51]);
+const AVC_LEVELS = new Set([9, 10, 11, 12, 13, 20, 21, 22, 30, 31, 32, 40, 41, 42, 50, 51, 52]);
 const AVC_LEVEL_MAX_FRAME_MBS = new Map([
   [9, 99], [10, 99], [11, 396], [12, 396], [13, 396], [20, 396],
   [21, 792], [22, 1_620], [30, 1_620], [31, 3_600], [32, 5_120],
-  [40, 8_192], [41, 8_192], [42, 8_704], [50, 22_080], [51, 36_864],
+  [40, 8_192], [41, 8_192], [42, 8_704], [50, 22_080], [51, 36_864], [52, 36_864],
 ]);
 const AAC_SAMPLE_RATES = Object.freeze([
   96_000, 88_200, 64_000, 48_000, 44_100, 32_000, 24_000,
@@ -466,11 +468,26 @@ function parseSampleTimeline(buffer, stts, timescale) {
   }
   let duration = 0n;
   let totalSamples = 0n;
+  let requiresHighFrameRateAdmission = false;
+  let timingDeltaGcd = 0;
   let cursor = stts.payloadStart + 8;
   for (let index = 0; index < entryCount; index += 1) {
     const sampleCount = buffer.readUInt32BE(cursor);
     const sampleDelta = buffer.readUInt32BE(cursor + 4);
     if (!sampleCount || !sampleDelta) throw unsupported();
+    // A longer movie/audio track or slow VFR segment must not hide a fast
+    // video run from the rolling-worker compatibility requirement.
+    if (timescale > 60 * sampleDelta) requiresHighFrameRateAdmission = true;
+    // FFprobe's nominal rate can reflect a shared timing base for VFR even
+    // when no individual run exceeds 60 FPS (for example 24/30 => 120).
+    // The bounded Euclidean reduction protects that case without rejecting it.
+    let timingDelta = sampleDelta;
+    while (timingDelta) {
+      const remainder = timingDeltaGcd % timingDelta;
+      timingDeltaGcd = timingDelta;
+      timingDelta = remainder;
+    }
+    if (timescale > 60 * timingDeltaGcd) requiresHighFrameRateAdmission = true;
     duration += BigInt(sampleCount) * BigInt(sampleDelta);
     totalSamples += BigInt(sampleCount);
     cursor += 8;
@@ -478,7 +495,7 @@ function parseSampleTimeline(buffer, stts, timescale) {
   const durationMs = (duration * 1_000n + BigInt(timescale) - 1n) / BigInt(timescale);
   if (durationMs <= 0n || durationMs > BigInt(Number.MAX_SAFE_INTEGER)) throw unsupported();
   if (totalSamples > BigInt(MAX_MEDIA_SAMPLES)) throw unsupported();
-  return { durationMs: Number(durationMs), sampleCount: Number(totalSamples) };
+  return { durationMs: Number(durationMs), sampleCount: Number(totalSamples), requiresHighFrameRateAdmission };
 }
 
 function parseSampleSizes(buffer, stsz) {
@@ -732,7 +749,8 @@ function parseSpsDimensions(sequence) {
     - (cropTop + cropBottom) * cropUnitY;
   const frameMacroblocks = pictureWidthInMbs * pictureHeightInMapUnits * (2 - frameMbsOnly);
   if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1
-      || width > MAX_VIDEO_WIDTH || height > MAX_VIDEO_HEIGHT
+      || Math.max(width, height) > MAX_VIDEO_EDGE
+      || Math.min(width, height) > MEDIA_VIDEO_SOURCE_MAX_SHORT_EDGE
       || frameMacroblocks > (AVC_LEVEL_MAX_FRAME_MBS.get(sequence[3]) || 0)) {
     throw unsupported();
   }
@@ -805,13 +823,16 @@ function validateAvcConfiguration(buffer, entry, fixedPayloadBytes, parseState, 
   return {
     dimensions: sequenceDimensions[0],
     nalLengthSize: (payload[4] & 0x03) + 1,
+    ...(level === 52 ? { sourceAdmissionRevision: VIDEO_VERIFIER_SOURCE_ADMISSION_REVISION } : {}),
   };
 }
 
-function validateHevcConfiguration(buffer, entry, fixedPayloadBytes, parseState) {
+function validateHevcConfiguration(buffer, entry, fixedPayloadBytes, parseState, contentType) {
   const childrenStart = entry.payloadStart + fixedPayloadBytes;
   if (childrenStart >= entry.end) throw unsupported();
-  const children = listBoxes(buffer, childrenStart, entry.end, parseState);
+  const children = listSampleEntryBoxes(buffer, childrenStart, entry.end, parseState, {
+    allowQuickTimeZeroPadding: contentType === "video/quicktime",
+  });
   if (children.some((child) => child.type === "sinf"
       || DOLBY_VISION_CONFIGURATION_BOXES.has(child.type))) throw unsupported();
   const pixelAspect = onlyBox(children, "pasp", { required: false });
@@ -835,7 +856,7 @@ function validateHevcConfiguration(buffer, entry, fixedPayloadBytes, parseState)
       || (payload[13] & 0xf0) !== 0xf0 || (payload[15] & 0xfc) !== 0xfc
       || (payload[16] & 0xfc) !== 0xfc || (payload[17] & 0xf8) !== 0xf8
       || (payload[18] & 0xf8) !== 0xf8 || chromaFormat !== 1
-      || lumaDepthMinus8 !== chromaDepthMinus8 || lumaDepthMinus8 > 1
+      || lumaDepthMinus8 !== chromaDepthMinus8 || ![0, 2].includes(lumaDepthMinus8)
       || (profile === 1 && lumaDepthMinus8 !== 0)
       || ![1, 2, 4].includes(lengthSize) || arrayCount < 3 || arrayCount > 16) {
     throw unsupported();
@@ -880,9 +901,10 @@ function validateVideoEntry(buffer, entry, parseState, contentType) {
   if (buffer.readUInt16BE(entry.payloadStart + 6) !== 1) throw unsupported();
   const width = buffer.readUInt16BE(entry.payloadStart + 24);
   const height = buffer.readUInt16BE(entry.payloadStart + 26);
-  if (!width || !height || width > MAX_VIDEO_WIDTH || height > MAX_VIDEO_HEIGHT) throw unsupported();
+  if (!width || !height || Math.max(width, height) > MAX_VIDEO_EDGE
+      || Math.min(width, height) > MEDIA_VIDEO_SOURCE_MAX_SHORT_EDGE) throw unsupported();
   const configuration = entry.type === "hvc1"
-    ? validateHevcConfiguration(buffer, entry, fixedPayloadBytes, parseState)
+    ? validateHevcConfiguration(buffer, entry, fixedPayloadBytes, parseState, contentType)
     : validateAvcConfiguration(buffer, entry, fixedPayloadBytes, parseState, contentType);
   if (entry.type === "avc1"
       && (configuration.dimensions.width !== width || configuration.dimensions.height !== height)) throw unsupported();
@@ -896,6 +918,7 @@ function validateVideoEntry(buffer, entry, parseState, contentType) {
     frameMacroblocks: (codedWidth / 16) * (codedHeight / 16),
     nalLengthSize: configuration.nalLengthSize,
     codec: entry.type === "hvc1" ? "hevc" : "h264",
+    ...(configuration.sourceAdmissionRevision ? { sourceAdmissionRevision: configuration.sourceAdmissionRevision } : {}),
   };
 }
 
@@ -1111,6 +1134,8 @@ function parseSampleDescriptions(buffer, stsd, handlerType, parseState, contentT
     }
     return {
       descriptionCount: entries.length,
+      sourceAdmissionRevision: descriptions.some((entry) => entry.sourceAdmissionRevision === VIDEO_VERIFIER_SOURCE_ADMISSION_REVISION)
+        ? VIDEO_VERIFIER_SOURCE_ADMISSION_REVISION : undefined,
       dimensions: {
         width: descriptions[0].width,
         height: descriptions[0].height,
@@ -1158,6 +1183,8 @@ function parseTrack(buffer, trak, parseState, mdats, contentType) {
     dimensions: descriptions.dimensions,
     durationMs: Math.max(mediaDuration.durationMs, sampleTimeline.durationMs),
     sampleCount: sampleTimeline.sampleCount,
+    sourceAdmissionRevision: handlerType === "vide" && sampleTimeline.requiresHighFrameRateAdmission
+      ? VIDEO_VERIFIER_SOURCE_ADMISSION_REVISION : descriptions.sourceAdmissionRevision,
     firstSample: handlerType === "vide" ? {
       ...firstSample,
       ...descriptions.sampleConfigs[firstSample.descriptionIndex - 1],
@@ -1190,7 +1217,8 @@ function parseMoov(buffer, parseState, mdats, contentType) {
   if (durationMs > MAX_CLIP_DURATION_MS) throw unsupported();
   const sampleLimit = Math.floor((durationMs * MAX_VIDEO_SAMPLES_PER_SECOND) / 1_000) + MAX_VIDEO_SAMPLE_SLACK;
   const codedPixelSamples = BigInt(video.dimensions.frameMacroblocks) * 256n * BigInt(video.sampleCount);
-  if (video.sampleCount > sampleLimit || codedPixelSamples > MAX_VIDEO_CODED_PIXEL_SAMPLES) throw unsupported();
+  if (video.sampleCount > sampleLimit || video.sampleCount > MEDIA_VIDEO_MAX_SAMPLES
+      || codedPixelSamples > MAX_VIDEO_CODED_PIXEL_SAMPLES) throw unsupported();
   return {
     durationMs,
     width: video.dimensions.width,
@@ -1199,6 +1227,11 @@ function parseMoov(buffer, parseState, mdats, contentType) {
     codedHeight: video.dimensions.codedHeight,
     sampleCount: video.sampleCount,
     videoSamples: [video.firstSample],
+    // The previous decoder already supports Main 10 and portrait geometry.
+    // Only Level 5.2 or >60 FPS needs the newer worker; do not gate older clips.
+    ...(video.sourceAdmissionRevision === VIDEO_VERIFIER_SOURCE_ADMISSION_REVISION
+      || video.sampleCount > Math.floor((durationMs * 60) / 1_000) + MAX_VIDEO_SAMPLE_SLACK
+      ? { sourceAdmissionRevision: VIDEO_VERIFIER_SOURCE_ADMISSION_REVISION } : {}),
     ...(contentType === "video/quicktime" ? {
       sourceContainer: "quicktime",
       sourceCodec: video.firstSample.codec,

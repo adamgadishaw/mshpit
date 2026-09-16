@@ -23,10 +23,12 @@ test("fan-club chat and metadata stay closed until canonical memorial policy all
 });
 
 test("legacy profile identity and editorial content require a current projected response", () => {
-  assert.match(artist, /const currentConfirmedArtistPage = confirmedArtistPage\?\.scope === artistPageProofScope/);
-  assert.match(artist, /if \(controller\.signal\.aborted \|\| !result\?\.ok\) return/);
-  assert.match(artist, /legacyProfile: result\.legacyProfile === true/);
-  assert.match(artist, /legacyProfile: pageResult\.legacyProfile === true/);
+  assert.match(artist, /const artistPageResource = projectLoadState\(confirmedArtistPage, artistPageProofScope\)/);
+  assert.match(artist, /const currentConfirmedArtistPage = artistPageResource\.data/);
+  assert.match(artist, /const artistPageProofScope = [^\n]*artistPageCacheEpoch/);
+  assert.match(artist, /isLoadCancellation\(result\?\.error, controller\.signal\) \|\| ticket !== artistPageReadSequence\.current/);
+  assert.match(artist, /settleArtistPageRead\(current, \{ scope: artistPageProofScope, result,/);
+  assert.match(artist, /settleArtistPageRead\(current, \{ scope: artistPageProofScope, result: pageResult,/);
   assert.match(artist, /confirmedPage: currentConfirmedArtistPage/);
   assert.match(artist, /gallery=\{heroGallery\}/);
   assert.doesNotMatch(artist, /gallery=\{gallery\}[\s\S]{0,100}ArtistCinematicCarousel/);

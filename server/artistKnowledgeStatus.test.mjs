@@ -77,6 +77,18 @@ test("interrupted checks stay separate from provider failures; old passes do not
   }
 });
 
+test("Discover priority counters are bounded and old passes do not invent evidence", (t) => {
+  const f = fixture(t);
+  f.set("last-pass", pass());
+  assert.equal(collectArtistKnowledgeStatus(f.database, { env, at: AT }).lastPass.prioritized, null);
+  f.set("last-pass", pass({ prioritized: 2 }));
+  assert.equal(collectArtistKnowledgeStatus(f.database, { env, at: AT }).lastPass.prioritized, 2);
+  for (const prioritized of [-1, 4, "2", null]) {
+    f.set("last-pass", pass({ prioritized }));
+    assert.equal(collectArtistKnowledgeStatus(f.database, { env, at: AT }).state, "unavailable");
+  }
+});
+
 test("corrupt and future telemetry is unavailable rather than invented successful progress", (t) => {
   const f = fixture(t);
   for (const value of ["broken", "[]", pass({ at: AT + 1 }), pass({ filled: -1 }), pass({ checked: "10" }), pass({ storagePaused: "false" }), "x".repeat(5000)]) {

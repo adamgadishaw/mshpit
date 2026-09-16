@@ -199,8 +199,9 @@ function compatibleMp4(bytes, durationMs, { videoSampleEntry = "avc1", container
     hevcHeader[13] = 0xf0;
     hevcHeader[15] = 0xfc;
     hevcHeader[16] = 0xfd;
-    hevcHeader[17] = 0xf9;
-    hevcHeader[18] = 0xf9;
+    // hvcC stores the literal bit depth minus eight: Main 10 is 2, not 1.
+    hevcHeader[17] = 0xfa;
+    hevcHeader[18] = 0xfa;
     hevcHeader[21] = 0x03;
     hevcHeader[22] = 3;
     const hevcParameterArray = (type) => Buffer.from([

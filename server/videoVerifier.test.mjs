@@ -17,6 +17,7 @@ import {
   verifyVideoVerifierRequest,
   VIDEO_VERIFIER_PIPELINE_VERSION,
   VIDEO_VERIFIER_PROTOCOL_VERSION,
+  VIDEO_VERIFIER_SOURCE_ADMISSION_REVISION,
 } from "./videoVerifierProtocol.js";
 import { verifyPrivateMediaBucketIsolation } from "./media.js";
 import { PUBLIC_MEDIA_CACHE_CONTROL } from "./mediaDeliveryPolicy.js";
@@ -72,6 +73,7 @@ function healthyPayload() {
     ok: true,
     protocol: VIDEO_VERIFIER_PROTOCOL_VERSION,
     pipeline: VIDEO_VERIFIER_PIPELINE_VERSION,
+    sourceAdmissionRevision: VIDEO_VERIFIER_SOURCE_ADMISSION_REVISION,
     decoder: { ffmpeg: true, ffprobe: true, version: "ffmpeg test" },
     poster: { generated: true, decoded: true },
     storage: { privateInput: true, sanitizedOutput: true },
@@ -243,6 +245,83 @@ test("a legacy worker blocks HEVC MP4 before dispatch while H.264 MP4 stays retr
   const h264 = await verifyVideoObject(verificationInput({ fetchImpl: verifierFetch }));
   assert.equal(h264.delivery.contentType, "video/mp4");
   assert.equal(verifierFetches, 1);
+});
+
+test("newly admitted sources defer on legacy admission health while baseline uploads keep working", async (context) => {
+  for (const revision of [undefined, null, 1, 3, "2"]) {
+    await context.test(`worker-revision-${String(revision)}`, async () => {
+      resetVideoVerifierStateForTests();
+      const payload = healthyPayload();
+      if (revision === undefined) delete payload.sourceAdmissionRevision;
+      else payload.sourceAdmissionRevision = revision;
+      const status = await refreshVideoVerifierHealth({
+        env: ENV,
+        fetchImpl: (url, request) => signedResponse({ path: new URL(url).pathname, request, payload }),
+      });
+      assert.equal(status.ready, true, "Legacy health remains available to existing source formats.");
+      let fetches = 0;
+      let reservations = 0;
+      const fetchImpl = (url, request) => {
+        fetches += 1;
+        return signedResponse({ path: new URL(url).pathname, request, payload: decodedPayload });
+      };
+      const baseline = await verifyVideoObject(verificationInput({ fetchImpl }));
+      assert.equal(baseline.delivery.contentType, "video/mp4");
+      assert.equal(fetches, 1);
+      await assert.rejects(() => verifyVideoObject(verificationInput({
+        structural: { ...STRUCTURAL, sourceAdmissionRevision: 2 },
+        beforeStart: () => { reservations += 1; },
+        fetchImpl,
+      })), (error) => error.status === 503 && error.code === "MEDIA_STORAGE_UNAVAILABLE");
+      assert.equal(fetches, 1, "New source support must be proven before a worker POST.");
+      assert.equal(reservations, 0, "A deferred source consumes no decoder reservation.");
+    });
+  }
+});
+
+test("new admission revision requires fresh health and is bound into the dispatched structural proof", async () => {
+  const structural = { ...STRUCTURAL, sampleCount: 2_400, sourceAdmissionRevision: 2 };
+  let fetches = 0;
+  const fetchImpl = (url, request) => {
+    fetches += 1;
+    const payload = verifyVideoVerifierRequest({ secret: SECRET, path: new URL(url).pathname, body: request.body, headers: request.headers }).payload;
+    assert.equal(payload.structural.sourceAdmissionRevision, 2);
+    return signedResponse({ path: new URL(url).pathname, request, payload: decodedPayload });
+  };
+  await assert.rejects(() => verifyVideoObject(verificationInput({ structural, fetchImpl })),
+    (error) => error.status === 503 && error.code === "MEDIA_STORAGE_UNAVAILABLE");
+  await refreshVideoVerifierHealth({
+    env: ENV, at: Date.now() - VIDEO_VERIFIER_HEALTH_FRESH_MS - 1_000,
+    fetchImpl: (url, request) => signedResponse({ path: new URL(url).pathname, request, payload: healthyPayload() }),
+  });
+  await assert.rejects(() => verifyVideoObject(verificationInput({ structural, fetchImpl })),
+    (error) => error.status === 503 && error.code === "MEDIA_STORAGE_UNAVAILABLE");
+  assert.equal(fetches, 0);
+  await refreshVideoVerifierHealth({
+    env: ENV,
+    fetchImpl: (url, request) => signedResponse({ path: new URL(url).pathname, request, payload: healthyPayload() }),
+  });
+  assert.equal((await verifyVideoObject(verificationInput({ structural, fetchImpl }))).delivery.contentType, "video/mp4");
+  assert.equal(fetches, 1);
+});
+
+test("a worker rollback after health cannot terminally reject newly admitted sources under an older policy", async (context) => {
+  for (const revision of [undefined, 1, 2, 3]) {
+    await context.test(`verdict-revision-${String(revision)}`, async () => {
+      await refreshVideoVerifierHealth({
+        env: ENV,
+        fetchImpl: (url, request) => signedResponse({ path: new URL(url).pathname, request, payload: healthyPayload() }),
+      });
+      await assert.rejects(() => verifyVideoObject(verificationInput({
+        structural: { ...STRUCTURAL, sourceAdmissionRevision: 2 },
+        fetchImpl: (url, request) => signedResponse({
+          path: new URL(url).pathname, request, status: 422,
+          payload: { ok: false, code: "unsupported_media", ...(revision !== undefined ? { sourceAdmissionRevision: revision } : {}) },
+        }),
+      })), (error) => error.status === (revision === 2 ? 415 : 503)
+        && error.code === (revision === 2 ? "MEDIA_TYPE_UNSUPPORTED" : "MEDIA_STORAGE_UNAVAILABLE"));
+    });
+  }
 });
 
 test("health rejects malformed codec capability claims", async () => {

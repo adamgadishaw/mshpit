@@ -5,12 +5,17 @@ const MEBIBYTE = 1024 * 1024;
 // PIT does not meter a member's lifetime uploads.
 export const MEDIA_PHOTO_SOURCE_MAX_BYTES = 30 * MEBIBYTE;
 export const MEDIA_VIDEO_SOURCE_MAX_BYTES = 500 * MEBIBYTE;
+export const MEDIA_VIDEO_SOURCE_MAX_LONG_EDGE = 4_096;
+export const MEDIA_VIDEO_SOURCE_MAX_SHORT_EDGE = 2_160;
 export const MEDIA_VIDEO_MAX_DURATION_MS = 10 * 60_000;
 export const MEDIA_VIDEO_MIN_DURATION_MS = 1_000;
 export const MEDIA_POST_MAX_ATTACHMENTS = 20;
-export const MEDIA_VIDEO_MAX_FRAME_RATE = 60;
+export const MEDIA_VIDEO_MAX_FRAME_RATE = 240;
+export const MEDIA_VIDEO_DELIVERY_MAX_FRAME_RATE = 60;
+// Faster camera clips consume the same fixed frame/work budget sooner. Do not
+// derive this from the source FPS ceiling: that would quadruple decoder work.
 export const MEDIA_VIDEO_MAX_SAMPLES = Math.floor(
-  (MEDIA_VIDEO_MAX_DURATION_MS * MEDIA_VIDEO_MAX_FRAME_RATE) / 1_000,
+  (MEDIA_VIDEO_MAX_DURATION_MS * MEDIA_VIDEO_DELIVERY_MAX_FRAME_RATE) / 1_000,
 ) + 2;
 
 export function mediaUploadLimitLabel(bytes) {

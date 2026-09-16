@@ -20,6 +20,7 @@ import { projectDiscoveryCatalogTotals, resolveDiscoveryCatalogTotal } from "./d
 import { buildArtistSummary } from "./domain/artistSummary.mjs";
 import { confirmedArtistProfileMutation } from "./domain/artistPageEditor.mjs";
 import { artistPageResourceKind } from "./domain/artistPageCache.mjs";
+import { artistPageAccessDenied } from "./domain/artistPageRead.mjs";
 import { ENABLE_DEMO_DATA, remoteIdentityValidationEnabled } from "./config/runtime.mjs";
 import { MUSIC_PLAYER_ENABLED } from "./domain/musicPlayerAvailability.mjs";
 import { isUpcomingEventDate, PERSISTED_FEED_LIMIT, persistedTourDateCache, publicProfileCacheEntry, sanitizePersistedStoreValue, sanitizeTourDates } from "./domain/dataPolicy.mjs";
@@ -5333,12 +5334,13 @@ export function StoreProvider({ children }) {
     const claim = artistPageCache.claim(artistPageResourceKind(artistKey), accountId);
     const enc = encodeURIComponent(artistKey);
     try {
-      const { profile, posts, legacyProfile } = await api(`/api/artists/${enc}/profile`, {
+      const { artist, profile, posts, legacyProfile } = await api(`/api/artists/${enc}/profile`, {
         signal,
         silent: true,
         context,
+        expectedAccountId: accountId,
       });
-      if ((sessionRef.current?.id || null) !== accountId
+      if (signal?.aborted || (sessionRef.current?.id || null) !== accountId
         || !artistPageCache.isCurrent(claim, accountId)) {
         return localCommandError("PIT-AUTH-004", context);
       }
@@ -5348,6 +5350,11 @@ export function StoreProvider({ children }) {
       if (!Array.isArray(posts)) throw new Error("The artist updates response was invalid.");
       if (typeof legacyProfile !== "boolean") {
         throw new Error("The artist profile policy response was invalid.");
+      }
+      if (artist != null && (typeof artist !== "object" || Array.isArray(artist)
+        || typeof artist.name !== "string" || !artist.name.trim()
+        || typeof artist.key !== "string" || !artist.key.trim() || artist.transient === true)) {
+        throw new Error("The artist catalog response was invalid.");
       }
       const normalizedProfile = profile || {};
       const normalizedPosts = posts.map((post) => ({
@@ -5364,6 +5371,9 @@ export function StoreProvider({ children }) {
         { claim },
       );
       if (!committed) return localCommandError("PIT-AUTH-004", context);
+      // This is a persisted catalog projection, not a provider preview. Only
+      // commit it after the same account/block/latest-read fences as the page.
+      if (artist) cacheArtists([{ ...artist, transient: false }]);
       return commandSuccess({
         scope,
         profile: normalizedProfile,
@@ -5372,6 +5382,11 @@ export function StoreProvider({ children }) {
         loadedAt: Date.now(),
       });
     } catch (error) {
+      if (artistPageAccessDenied(error) && (sessionRef.current?.id || null) === accountId) {
+        // Transport failures may keep the same viewer's content, but an access
+        // denial revokes that artist's owner overlay and policy proof.
+        artistPageCache.resolveRefresh(artistKey, { ok: true, profile: {}, posts: [] }, { claim });
+      }
       return commandError(error, context);
     }
   };

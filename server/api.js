@@ -9187,6 +9187,9 @@ export const routes = {
     const key = decodedPathParam(ctx, "key", { max: 200, label: "artist link" }).toLowerCase();
     const catalogArtist = resolveCatalogArtistReference(key);
     const profileKey = catalogArtist?.norm || key;
+    // Profile content and catalog metadata share one local read. Opening a
+    // known artist must not depend on an additional upstream identity lookup.
+    const catalogSnapshot = catalogArtist ? { artist: publicArtist(catalogArtist) } : {};
     const legacyProfile = artistHasLegacyMemorial(db, {
       artistKey: profileKey,
       artist: catalogArtist?.name || null,
@@ -9205,7 +9208,7 @@ export const routes = {
     // both directions just like profiles and posts elsewhere; the client can
     // still render provider/catalog metadata beneath this null overlay.
     if (!legacyProfile && p?.owner_id && (blocked.has(p.owner_id) || !publicAccountOrNull(p.owner_id))) {
-      return { profile: null, posts: [], legacyProfile: false };
+      return { ...catalogSnapshot, profile: null, posts: [], legacyProfile: false };
     }
     const viewer = ctx.user?.id || null;
     const blockSql = viewer ? `AND NOT EXISTS (SELECT 1 FROM blocks b WHERE
@@ -9230,6 +9233,7 @@ export const routes = {
       // a pre-memorial owner snapshot that was already in flight or on disk.
       // Without this marker, old owner copy could be relabelled as editorial.
       legacyProfile,
+      ...catalogSnapshot,
       // Slot owners are storage provenance, not public authors. The claim owner
       // controls page visibility; uploader block/account state must not make
       // staff-seeded catalog artwork disappear.

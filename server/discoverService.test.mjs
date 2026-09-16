@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
 import { registerPitSqliteFunctions } from "./sqliteFunctions.js";
+import { discoverArtistPriorityKeys } from "./discoverArtistPriority.js";
 
 // discoverService's production singleton imports db.js. Give that harmless
 // default handle its own directory so this fixture never contends with parallel
@@ -83,6 +84,7 @@ function fixture() {
       venue_country_code TEXT,venue_country TEXT,owner_id TEXT,updated_at INTEGER
     );
     ALTER TABLE artists ADD COLUMN mbid TEXT;
+    ALTER TABLE artists ADD COLUMN public_slug TEXT;
     ALTER TABLE tour_dates ADD COLUMN event_end_date TEXT;
     ALTER TABLE tour_dates ADD COLUMN event_timezone TEXT;
     ALTER TABLE tour_dates ADD COLUMN event_kind TEXT;
@@ -113,6 +115,21 @@ function fixtureDiscoverService(database, options = {}) {
     .map((row) => row.norm));
   return createDiscoverService({ database, ...options, reviewedArtistNorms });
 }
+
+test("Discover preserves canonical profile identity and prioritizes only returned catalogue artists", () => {
+  const database = fixture();
+  try {
+    database.prepare("UPDATE artists SET public_slug=? WHERE norm=?").run("alpha-band-collision", "alpha");
+    const at = 1800000000000;
+    const service = fixtureDiscoverService(database, { clock: () => at });
+    const rows = service.chart({ country: "Canada", limit: 3 }).rows;
+    const alpha = rows.find(row => row.name === "Alpha");
+    assert.equal(alpha.key, "alpha");
+    assert.equal(alpha.publicSlug, "alpha-band-collision", "never derive a different slug from the display name");
+    assert.deepEqual(discoverArtistPriorityKeys(database, at).sort(), rows.map(row => row.key).sort());
+    assert.equal(discoverArtistPriorityKeys(database, at).includes("bravo"), false, "not returned in this chart");
+  } finally { database.close(); }
+});
 
 test("canonicalGenre collapses conservative aliases", () => {
   assert.equal(canonicalGenre(" hip hop "), "Hip-Hop");

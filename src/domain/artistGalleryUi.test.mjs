@@ -70,8 +70,11 @@ test("Spotify artist imagery is fixed-host, unaltered, attributed, and limited t
   assert.doesNotMatch(icon, /case "spotify":/,
     "generic icons must not imitate Spotify's supplied mark");
   assert.match(artist, /<SpotifyArtistPhoto artist=\{meta\} artistName=\{a\.name\}/);
-  assert.match(artist, /if \(!remoteArtistMeta\(a\.name\)\) resolveArtist\(a\.name\)/,
-    "bundled artists still load their current server-side Spotify provenance");
+  assert.match(artist, /void loadArtistPage\(a\.name, \{ signal: controller\.signal \}\)/,
+    "bundled artists still load current server-side Spotify provenance with the profile snapshot");
+  assert.match(artist, /const resolvedMeta = remoteArtistMeta\(a\.name\)/);
+  assert.doesNotMatch(artist, /resolveArtist\(a\.name\)/,
+    "profile reads must not add an upstream identity-resolution dependency");
   assert.doesNotMatch(carousel, /spotifyPhoto|Spotify/);
 });
 

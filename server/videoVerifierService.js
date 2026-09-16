@@ -9,9 +9,13 @@ import { pipeline } from "node:stream/promises";
 import { pathToFileURL } from "node:url";
 
 import {
+  MEDIA_VIDEO_DELIVERY_MAX_FRAME_RATE,
   MEDIA_VIDEO_MAX_DURATION_MS,
+  MEDIA_VIDEO_MAX_FRAME_RATE,
   MEDIA_VIDEO_MAX_SAMPLES,
   MEDIA_VIDEO_SOURCE_MAX_BYTES,
+  MEDIA_VIDEO_SOURCE_MAX_LONG_EDGE,
+  MEDIA_VIDEO_SOURCE_MAX_SHORT_EDGE,
 } from "../src/domain/mediaUploadPolicy.mjs";
 
 import { PUBLIC_MEDIA_CACHE_CONTROL } from "./mediaDeliveryPolicy.js";
@@ -20,6 +24,7 @@ import {
   VIDEO_VERIFIER_MAX_DISCARDED_QUICKTIME_TRACKS,
   VIDEO_VERIFIER_PIPELINE_VERSION,
   VIDEO_VERIFIER_PROTOCOL_VERSION,
+  VIDEO_VERIFIER_SOURCE_ADMISSION_REVISION,
   VIDEO_VERIFIER_SOURCE_CODECS,
   VIDEO_VERIFIER_SOURCE_CONTENT_TYPES,
   signVideoVerifierResponse,
@@ -30,7 +35,7 @@ import {
 const REQUEST_MAX_BYTES = 16 * 1024;
 const VIDEO_MAX_BYTES = MEDIA_VIDEO_SOURCE_MAX_BYTES;
 const VIDEO_MAX_DURATION_MS = MEDIA_VIDEO_MAX_DURATION_MS;
-const VIDEO_MAX_EDGE = 4_096;
+const VIDEO_MAX_EDGE = MEDIA_VIDEO_SOURCE_MAX_LONG_EDGE;
 const VIDEO_MAX_SAMPLES = MEDIA_VIDEO_MAX_SAMPLES;
 const DELIVERY_MAX_WIDTH = 1_920;
 const DELIVERY_MAX_HEIGHT = 1_080;
@@ -278,19 +283,25 @@ export function validateVideoVerifierJob(payload, config) {
     durationMs: boundedInteger(payload?.structural?.durationMs, { min: 1, max: VIDEO_MAX_DURATION_MS, label: "Video duration" }),
     sourceContainer: payload?.structural?.sourceContainer,
     sourceCodec: payload?.structural?.sourceCodec,
+    sourceAdmissionRevision: payload?.structural?.sourceAdmissionRevision,
   };
   const quickTimeStructural = sourceContentType !== "video/quicktime"
     || (structural.sourceContainer === "quicktime" && new Set(["h264", "hevc"]).has(structural.sourceCodec));
   const mp4Structural = sourceContentType !== "video/mp4"
     || (structural.sourceContainer === undefined
       && (structural.sourceCodec === undefined || structural.sourceCodec === "hevc"));
-  const sampleLimit = Math.floor((structural.durationMs * 60) / 1_000) + 2;
+  const sampleLimit = Math.floor((structural.durationMs * MEDIA_VIDEO_MAX_FRAME_RATE) / 1_000) + 2;
   const codedWork = BigInt(structural.codedWidth) * BigInt(structural.codedHeight) * BigInt(structural.sampleCount);
   if (structural.codedWidth % 16 !== 0 || structural.codedHeight % 16 !== 0
       || structural.codedWidth < structural.width || structural.codedHeight < structural.height
+      || Math.min(structural.width, structural.height) > MEDIA_VIDEO_SOURCE_MAX_SHORT_EDGE
       || structural.sampleCount > sampleLimit || codedWork > VIDEO_MAX_CODED_PIXEL_SAMPLES
       || !quickTimeStructural || !mp4Structural) {
     throw serviceError("invalid_request", "Video decode-work proof is invalid.");
+  }
+  if (structural.sourceAdmissionRevision !== undefined
+      && structural.sourceAdmissionRevision !== VIDEO_VERIFIER_SOURCE_ADMISSION_REVISION) {
+    throw serviceError("incompatible_protocol", "Source admission revision is incompatible.");
   }
   const poster = {
     timeMs: boundedInteger(payload?.poster?.timeMs, { min: 0, max: structural.durationMs - 1, label: "Poster time" }),
@@ -415,6 +426,7 @@ async function probeVideo(filePath, config, {
   signal,
   sourceContentType = "video/mp4",
   structural,
+  maxFrameRate = MEDIA_VIDEO_MAX_FRAME_RATE,
 }) {
   const result = await runProcess(config.ffprobe, [
     "-v", "error",
@@ -456,7 +468,7 @@ async function probeVideo(filePath, config, {
     || (videoProfile === "Main 10" && new Set(["yuv420p", "yuv420p10le"]).has(video[0]?.pix_fmt));
   const codecProfileValid = h264
     ? new Set(["Baseline", "Constrained Baseline", "Main", "High"]).has(videoProfile)
-      && Number.isInteger(videoLevel) && videoLevel >= 10 && videoLevel <= 51
+      && Number.isInteger(videoLevel) && videoLevel >= 10 && videoLevel <= 52
       && video[0]?.pix_fmt === "yuv420p"
     : hevc
       && hevcProfileValid
@@ -513,14 +525,15 @@ async function probeVideo(filePath, config, {
       || video[0]?.field_order !== "progressive"
       || !sourceAspectAccepted
       || video[0]?.disposition?.attached_pic === 1
-      || !Number.isFinite(avgFps) || avgFps <= 0 || avgFps > 60.01
-      || !Number.isFinite(realFps) || realFps <= 0 || realFps > 60.01
+      || !Number.isFinite(avgFps) || avgFps <= 0 || avgFps > maxFrameRate + 0.01
+      || !Number.isFinite(realFps) || realFps <= 0 || realFps > maxFrameRate + 0.01
       || audio.length > 1 || audio.some((stream) => stream?.codec_name !== "aac" || stream?.codec_tag_string !== "mp4a")
       || (audio.length && (audioProfile !== "LC"
         || !new Set([1, 2]).has(Number(audio[0]?.channels))
         || !new Set(["mono", "stereo"]).has(String(audio[0]?.channel_layout || ""))
         || !Number.isInteger(sampleRate) || sampleRate < 8_000 || sampleRate > 48_000))
       || !Number.isSafeInteger(codedWidth) || !Number.isSafeInteger(codedHeight)
+      || Math.min(widthValue, heightValue) > MEDIA_VIDEO_SOURCE_MAX_SHORT_EDGE
       || !codedReportMatches
       || estimatedSamples > VIDEO_MAX_SAMPLES || estimatedCodedWork > VIDEO_MAX_CODED_PIXEL_SAMPLES
       || unknown.length
@@ -548,6 +561,7 @@ async function probeVideo(filePath, config, {
     codedHeight,
     durationMs,
     rotation,
+    frameRate: Math.max(avgFps, realFps),
     codec: hevc ? "hevc" : "h264",
     audioCodec: audio.length ? "aac" : "none",
   };
@@ -575,6 +589,9 @@ export function videoDeliveryStrategy(video = {}) {
   return video?.codec === "h264"
     && new Set(["aac", "none"]).has(video?.audioCodec)
     && Number(video?.rotation) === 0
+    && (video?.frameRate === undefined
+      || (Number.isFinite(video.frameRate) && video.frameRate > 0
+        && video.frameRate <= MEDIA_VIDEO_DELIVERY_MAX_FRAME_RATE + 0.01))
     && Number.isSafeInteger(video?.width)
     && video.width >= 1
     && video.width <= DELIVERY_MAX_WIDTH
@@ -594,6 +611,9 @@ async function createSanitizedDelivery(
   { runProcess, directory, signal },
 ) {
   const strategy = videoDeliveryStrategy(sourceVideo);
+  const frameRateFilter = sourceVideo.frameRate > MEDIA_VIDEO_DELIVERY_MAX_FRAME_RATE + 0.01
+    ? `fps=${MEDIA_VIDEO_DELIVERY_MAX_FRAME_RATE},`
+    : "";
   const commonInput = [
     "-nostdin", "-v", "error", "-xerror", "-err_detect", "explode",
     "-threads", "2", "-filter_threads", "1",
@@ -609,7 +629,7 @@ async function createSanitizedDelivery(
         "-c:v", "copy", "-c:a", "copy",
       ]
     : [
-        `-vf`, `scale=w='min(${DELIVERY_MAX_WIDTH},iw)':h='min(${DELIVERY_MAX_HEIGHT},ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1`,
+        `-vf`, `${frameRateFilter}scale=w='min(${DELIVERY_MAX_WIDTH},iw)':h='min(${DELIVERY_MAX_HEIGHT},ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1`,
         // Concert footage is often grainy enough that unconstrained CRF H.264 can
         // expand beyond the bounded delivery contract even from a smaller HEVC
         // source. VBV keeps the sanitized output inside that contract while CRF
@@ -637,6 +657,7 @@ async function createSanitizedDelivery(
     // that signed envelope also lets reviewed iPhone AVC files retain their
     // valid implicit square-pixel representation when ffprobe omits SAR.
     structural: strategy === "remux" ? structural : undefined,
+    maxFrameRate: MEDIA_VIDEO_DELIVERY_MAX_FRAME_RATE,
   });
   if (video.rotation !== 0) throw serviceError("delivery_invalid", "Sanitized delivery retained rotation metadata.");
   if (strategy === "remux" && (video.codec !== "h264"
@@ -913,7 +934,7 @@ function safeFailurePayload(error) {
   // No decoder stderr, filenames, source URL, query string, object key, or
   // user-controlled metadata crosses this boundary.
   const code = /^[a-z_]{2,40}$/.test(String(error?.code || "")) ? error.code : "verification_failed";
-  return { ok: false, code };
+  return { ok: false, code, sourceAdmissionRevision: VIDEO_VERIFIER_SOURCE_ADMISSION_REVISION };
 }
 
 function makeNonceLedger() {
@@ -1023,6 +1044,7 @@ export function createVideoVerifierService({
             ok: true,
             protocol: VIDEO_VERIFIER_PROTOCOL_VERSION,
             pipeline: VIDEO_VERIFIER_PIPELINE_VERSION,
+            sourceAdmissionRevision: VIDEO_VERIFIER_SOURCE_ADMISSION_REVISION,
             decoder: { ffmpeg: true, ffprobe: true, version: ready.ffmpegVersion },
             poster: { generated: true, decoded: true },
             storage: { privateInput: true, sanitizedOutput: true },

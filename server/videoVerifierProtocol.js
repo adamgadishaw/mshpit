@@ -10,6 +10,9 @@ import {
 // instances instead of publishing with weaker or longer-lived caching.
 export const VIDEO_VERIFIER_PROTOCOL_VERSION = "pit-video-verifier-v3";
 export const VIDEO_VERIFIER_PIPELINE_VERSION = "private-derivative-v1";
+// Optional per-source compatibility claim. Only newly supported AVC Level 5.2
+// or >60 FPS sources require this; existing uploads retain legacy-worker support.
+export const VIDEO_VERIFIER_SOURCE_ADMISSION_REVISION = 2;
 export const VIDEO_VERIFIER_CLOCK_SKEW_MS = 60_000;
 // Both the web structural gate and the isolated decoder must admit the same
 // bounded set of disposable QuickTime metadata tracks. Keeping the ceiling in

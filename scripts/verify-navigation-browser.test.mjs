@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { fixtureApiResponse, injectCollectionFixture, navigationCases, serverCollectionPaths, clientCollectionPaths, postPath, eventPath, artistPath, navigationArtist } from "./verify-navigation-browser.mjs";
+import { fixtureApiResponse, injectCollectionFixture, navigationCases, serverCollectionPaths, clientCollectionPaths, postPath, eventPath, artistPath, navigationArtist, navigationArtistCard } from "./verify-navigation-browser.mjs";
 
 test("navigation fixture import is inert and scenarios cover both mobile and desktop", () => {
   assert.equal(new Set(navigationCases.map(item => item.name)).size, navigationCases.length);
   for (const width of [390, 1280]) {
     const cases = navigationCases.filter(item => item.width === width);
-    for (const kind of ["deep-link", "delayed", "guest-tabs", "artist-lookup-recovery", "member-tabs", "home", "signed-in-root", "account-boundary", "server-document", "client-document", "missing-document"]) {
+    for (const kind of ["deep-link", "delayed", "guest-tabs", "artist-lookup-recovery", "discover-canonical-artist", "member-tabs", "home", "signed-in-root", "account-boundary", "server-document", "client-document", "missing-document"]) {
       assert.ok(cases.some(item => item.kind === kind), `${kind} is missing at ${width}px`);
     }
     assert.deepEqual(cases.filter(item => item.kind === "deep-link").map(item => item.path), [postPath, eventPath]);
@@ -56,10 +56,26 @@ test("artist attribution browser fixture covers licensed text, staff replacement
   assert.equal(fixtureApiResponse("/api/resolve", { resolvedPath: artistPath }).entity.kind, "artist");
   assert.deepEqual(fixtureApiResponse("/api/artists/resolve"), { artist: navigationArtist });
   const path = "/api/artists/fixture%20artist/profile";
+  assert.deepEqual(fixtureApiResponse(path).artist, navigationArtist);
   assert.equal(fixtureApiResponse(path).profile, null);
   assert.deepEqual(fixtureApiResponse(path, { artistBioMode: "cleared" }).profile, { bioStaffCurated: true, bio: null });
   assert.equal(fixtureApiResponse(path, { artistBioMode: "replacement" }).profile.bioStaffCurated, true);
   assert.throws(() => fixtureApiResponse(path, { artistBioMode: "arbitrary" }), /Unknown artist biography/);
+});
+
+test("canonical Discover artist fixtures require database hydration without any remote name lookup", () => {
+  const options = { discoverArtist: true };
+  const overview = fixtureApiResponse("/api/discover/overview", options);
+  assert.deepEqual(overview.chart.rows, [navigationArtistCard]);
+  assert.equal(navigationArtistCard.publicSlug, artistPath.split("/").at(-1));
+  assert.equal(Object.hasOwn(navigationArtistCard, "bio"), false, "The compact card cannot conceal a missing profile fetch.");
+  assert.equal(Object.hasOwn(navigationArtistCard, "bioSource"), false);
+  for (const path of ["/api/artists/fixture%20artist/profile", "/api/artists/fixture-artist/profile"]) {
+    assert.equal(fixtureApiResponse(path, options).artist.bio, navigationArtist.bio);
+  }
+  assert.throws(() => fixtureApiResponse("/api/artists/resolve", options), /must open without the remote artist resolver/);
+  assert.deepEqual(fixtureApiResponse("/api/artists/resolve"), { artist: navigationArtist }, "Interactive lookup cases keep their explicit resolver fixture.");
+  assert.deepEqual(navigationCases.filter(item => item.kind === "discover-canonical-artist").map(item => item.path), ["/discover", "/discover"]);
 });
 
 test("fixture page metadata is path-specific and cannot turn a private tab into a canonical public page", () => {

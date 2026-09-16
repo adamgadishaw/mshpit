@@ -13,7 +13,7 @@ import ScreenHeader from "../components/ScreenHeader";
 import SmartImage from "../components/SmartImage";
 import Badge, { BadgeRow } from "../components/Badge";
 import { proxied, isHttp } from "../lib/img";
-import { api } from "../lib/api";
+import { api, AppError } from "../lib/api";
 import { loadSelectedArtistDiscography } from "../lib/artistDiscographyApi";
 import { formatDate } from "../domain/dates.mjs";
 import { discographyIdentityCopy, discographyPresentation } from "../domain/discographyView.mjs";
@@ -44,6 +44,12 @@ import { artistBiographyRows } from "../domain/artistBiography.mjs";
 import { publicArtistKnowledgeSource } from "../domain/artistKnowledge.mjs";
 import { useArtistOverview } from "../features/artistOverview/useArtistOverview";
 import ArtistUpcomingShows from "../components/artist/ArtistUpcomingShows";
+import { beginLoadState, createLoadState, isLoadCancellation, projectLoadState } from "../domain/loadState.mjs";
+import { settleArtistPageRead } from "../domain/artistPageRead.mjs";
+
+const invalidArtistPageResponse = new AppError("This artist page could not be confirmed. Please try again.", {
+  code: "PIT-API-001", context: "Loading this artist page", source: "artist-page", retryable: true,
+});
 
 const compactCount = (value) => {
   const count = Number(value) || 0;
@@ -289,15 +295,15 @@ function TopReviewCard({ review, rank, artistName, onOpenPost, onOpenShow, onOpe
 export default function ArtistScreen({ artistName, previewAsFan = false, onClose, onOpenPost, onOpenShow, onOpenArchive, onOpenVenue, onOpenFanClub, onShareMemory, onOpenPhotos, onOpenGallery, onOpenProfile, onManageArtistProfile, onEditArtistProfile, onPlay, onAddToPlaylist, onReport, onRequireAuth }) {
   const { session, artistSummary, albumRating, songRating, rateAlbum, rateSong, loadRating,
     isArtistOwner, artistPostsFor, loadArtistPage, artistPageCacheEpoch,
-    artistGallery, loadArtistPhotos, removePhoto, artistBadges, remoteArtistMeta, resolveArtist,
+    artistGallery, loadArtistPhotos, removePhoto, artistBadges, remoteArtistMeta,
     artistDiscography, artistSeenCount, reportTrack, updateProfile, isFanClubMember, joinFanClub,
-    refreshArtistCatalogMetadata } = useStore();
+  } = useStore();
   const a = artistSummary(artistName);
-  const artistPageProofScope = refreshScope(session?.id, "artist-page-proof", a.profileKey || a.name);
-  const [confirmedArtistPage, setConfirmedArtistPage] = useState(null);
-  const currentConfirmedArtistPage = confirmedArtistPage?.scope === artistPageProofScope
-    ? confirmedArtistPage.page
-    : null;
+  const artistPageProofScope = refreshScope(session?.id, "artist-page-proof", `${a.profileKey || a.name}:${artistPageCacheEpoch}`);
+  const [confirmedArtistPage, setConfirmedArtistPage] = useState(() => createLoadState());
+  const artistPageReadSequence = useRef(0);
+  const artistPageResource = projectLoadState(confirmedArtistPage, artistPageProofScope);
+  const currentConfirmedArtistPage = artistPageResource.data;
   const [sectionSelection, setSectionSelection] = useState(() => ({ artistKey: a.profileKey, section: "overview" }));
   const activeSection = sectionSelection.artistKey === a.profileKey ? sectionSelection.section : "overview";
   const pageScroll = useRef(null);
@@ -328,8 +334,8 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
   const playerEnabled = profileServicesAvailable && ENABLE_MUSIC_PLAYER && typeof onPlay === "function";
   const playlistEnabled = profileServicesAvailable && ENABLE_MUSIC_PLAYER && typeof onAddToPlaylist === "function";
   const badges = artistBadges(a.name);
-  // Metadata: bundled catalog first, else the DB catalog (resolved from
-  // MusicBrainz on demand if we've never seen this artist, no empty pages).
+  // Metadata stays visible from the bundled/in-memory catalog while the
+  // profile request refreshes it from the database, without provider fan-out.
   const bundledMeta = artistMeta(a.name);
   const resolvedMeta = remoteArtistMeta(a.name);
   const meta = bundledMeta && resolvedMeta
@@ -348,7 +354,6 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
   // handled.
   const bundledAlbums = meta?.albums || [];
   const biographyRows = artistBiographyRows(meta?.biographyFacts);
-  useEffect(() => { if (!remoteArtistMeta(a.name)) resolveArtist(a.name); }, [a.name]);
   // Pull the artist's fan photos from the server so the rolling gallery shows
   // every public post photo ever, not just posts sitting in this device's feed.
   useEffect(() => {
@@ -820,47 +825,36 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
   // aggregates for each album/song rating shown on the page.
   useEffect(() => {
     const controller = new AbortController();
+    const ticket = ++artistPageReadSequence.current;
+    setConfirmedArtistPage((current) => beginLoadState(current, { scope: artistPageProofScope }));
     void loadArtistPage(a.name, { signal: controller.signal }).then((result) => {
-      if (controller.signal.aborted || !result?.ok) return;
-      setConfirmedArtistPage({
-        scope: artistPageProofScope,
-        page: {
-          legacyProfile: result.legacyProfile === true,
-          profile: result.profile || null,
-          posts: Array.isArray(result.posts) ? result.posts : [],
-        },
-      });
+      if (isLoadCancellation(result?.error, controller.signal) || ticket !== artistPageReadSequence.current) return;
+      setConfirmedArtistPage((current) => settleArtistPageRead(current, { scope: artistPageProofScope, result, invalidResponseError: invalidArtistPageResponse }));
     });
     return () => controller.abort();
     // The legacy store facade recreates actions as state changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [a.name, artistPageCacheEpoch, artistPageProofScope]);
-  const artistRefreshScope = refreshScope(session?.id, "artist", a.profileKey || a.name);
+  const artistRefreshScope = refreshScope(session?.id, "artist", `${a.profileKey || a.name}:${artistPageCacheEpoch}`);
   const { refresh: refreshArtist, refreshing: artistRefreshing } = useScopedRefresh({
     scope: artistRefreshScope,
     task: async ({ signal }) => {
+      const ticket = ++artistPageReadSequence.current;
+      setConfirmedArtistPage((current) => beginLoadState(current, { scope: artistPageProofScope }));
       const settled = await Promise.allSettled([
         loadArtistPage(a.name, { signal }),
         loadArtistPhotos(a.name, a.profileKey, { signal }),
-        refreshArtistCatalogMetadata(a.name, { signal }),
         ...(profileServicesAvailable ? [artistOverview.refresh({ signal })] : []),
         ...(sectionModel.loadFullArchive ? [refreshLiveArchive({ signal })] : []),
       ]);
       const results = settled.map((result) => result.status === "fulfilled" ? result.value : { ok: false, error: result.reason });
-      const [pageResult, photoResult, metadataResult] = results;
-      if (!signal.aborted && pageResult?.ok) {
-        setConfirmedArtistPage({
-          scope: artistPageProofScope,
-          page: {
-            legacyProfile: pageResult.legacyProfile === true,
-            profile: pageResult.profile || null,
-            posts: Array.isArray(pageResult.posts) ? pageResult.posts : [],
-          },
-        });
+      const [pageResult, photoResult] = results;
+      if (!isLoadCancellation(pageResult?.error, signal) && ticket === artistPageReadSequence.current) {
+        setConfirmedArtistPage((current) => settleArtistPageRead(current, { scope: artistPageProofScope, result: pageResult, invalidResponseError: invalidArtistPageResponse }));
       }
       const failure = results.find((result) => result?.ok === false && result?.error);
       if (failure?.error) throw failure.error;
-      return { pageResult, photoResult, metadataResult };
+      return { pageResult, photoResult };
     },
   });
   useEffect(() => {
@@ -1094,6 +1088,15 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
           </View>
         </View>
         <ArtistPageSectionNav active={sectionModel.active} onChange={setActiveSection} memorialMode={deceased} legacyMode={!profileServicesAvailable} statusPending={!memorialKnown} />
+
+        {artistPageResource.status === "error" ? (
+          <View style={styles.followFeedbackError} accessibilityLiveRegion="polite">
+            <Text style={styles.followFeedbackErrorText} selectable>{artistPageResource.error.message}</Text>
+            <Pressable style={styles.memorialRetry} onPress={refreshArtist} disabled={artistRefreshing} accessibilityRole="button" accessibilityLabel={`Retry loading ${a.name}'s profile`}>
+              <Text style={styles.memorialRetryText}>Try again</Text>
+            </Pressable>
+          </View>
+        ) : null}
 
         {!session ? <AccountSnapshotPrompt title={`More with ${a.name}`} body="Follow this artist, share your concert memories, and join the conversation. Artist details and show dates are open to browse." onRequireAuth={onRequireAuth} /> : null}
 

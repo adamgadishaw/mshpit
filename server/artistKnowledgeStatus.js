@@ -21,11 +21,13 @@ function parsePass(text, at) {
   if (!parsed || Array.isArray(parsed) || timestamp(parsed.at) === null || parsed.at > at
     || COUNTS.some((key) => count(parsed[key]) === null)
     || (parsed.deferred !== undefined && count(parsed.deferred) === null)
+    || (parsed.prioritized !== undefined && (count(parsed.prioritized) === null || parsed.prioritized > parsed.checked))
     || FLAGS.some((key) => typeof parsed[key] !== "boolean")
     || OPTIONAL_FLAGS.some((key) => parsed[key] !== undefined && typeof parsed[key] !== "boolean")) return null;
   return Object.freeze({ at: parsed.at,
     ...Object.fromEntries(COUNTS.map((key) => [key, parsed[key]])),
     deferred: parsed.deferred ?? null,
+    prioritized: parsed.prioritized ?? null,
     ...Object.fromEntries(FLAGS.map((key) => [key, parsed[key]])),
     ...Object.fromEntries(OPTIONAL_FLAGS.map((key) => [key, parsed[key] === true])),
     lanes: Number.isInteger(parsed.lanes) && parsed.lanes >= 1 && parsed.lanes <= 3 ? parsed.lanes : 1,

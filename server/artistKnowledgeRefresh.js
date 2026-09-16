@@ -10,6 +10,7 @@ import { runBackgroundJob } from "./backgroundJobCoordinator.js";
 import { startPeriodicJob } from "./periodicJobScheduler.js";
 import { privateErrorLabel } from "./errors.js";
 import { memoryWorkSnapshot } from "./memoryAdmission.js";
+import { discoverArtistPriorityKeys, interleaveDiscoverPriority } from "./discoverArtistPriority.js";
 import { ensureCatalogKnowledgeControl, readCatalogKnowledgeControl, reserveCatalogKnowledgeBudget,
   reserveCatalogKnowledgePass, catalogKnowledgeGrowthReady, completeCatalogKnowledgeSweep } from "./catalogKnowledgeControl.js";
 
@@ -94,14 +95,16 @@ export function createArtistKnowledgeRefresher({
   const setMeta = database.prepare("INSERT INTO app_meta(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value");
   const read = database.prepare(`SELECT a.*,p.artist_key AS profile_exists
     FROM artists a LEFT JOIN artist_profiles p ON p.artist_key=a.norm WHERE a.norm=?`);
-  const due = database.prepare(`SELECT a.norm FROM artists a
+  const dueSql = `SELECT a.norm FROM artists a
     LEFT JOIN artist_profiles p ON p.artist_key=a.norm
     LEFT JOIN artist_knowledge_checks c ON c.artist_key=a.norm
     WHERE length(a.mbid)=36
       AND ((trim(COALESCE(a.bio,''))='' AND p.artist_key IS NULL) OR trim(COALESCE(a.country,''))=''
         OR c.mbid<>lower(a.mbid) OR c.status IN ('failed','leased'))
-      AND (c.artist_key IS NULL OR c.mbid<>lower(a.mbid) OR c.next_attempt_at<=?)
-    ORDER BY COALESCE(c.attempted_at,0),a.rank_score DESC,a.norm LIMIT ?`);
+      AND (c.artist_key IS NULL OR c.mbid<>lower(a.mbid) OR c.next_attempt_at<=?)`;
+  const dueOrder = " ORDER BY COALESCE(c.attempted_at,0),a.rank_score DESC,a.norm LIMIT ?";
+  const priorityDue = database.prepare(`${dueSql} AND a.norm IN (SELECT value FROM json_each(?))${dueOrder}`);
+  const regularDue = database.prepare(`${dueSql} AND a.norm NOT IN (SELECT value FROM json_each(?))${dueOrder}`);
   const claim = database.prepare(`INSERT INTO artist_knowledge_checks
     (artist_key,mbid,status,attempted_at,next_attempt_at,failures,claim_token)
     VALUES (?,?,'leased',?,?,0,?) ON CONFLICT(artist_key) DO UPDATE SET
@@ -181,7 +184,7 @@ export function createArtistKnowledgeRefresher({
   let active = null;
   async function run({ limit, signal, budgetMs = 45_000, respectCadence = false } = {}) {
     const control = readCatalogKnowledgeControl(database, { env, at: now() });
-    const stats = { checked: 0, filled: 0, bios: 0, countries: 0, unmatched: 0, failed: 0, stale: 0, deferred: 0,
+    const stats = { checked: 0, prioritized: 0, filled: 0, bios: 0, countries: 0, unmatched: 0, failed: 0, stale: 0, deferred: 0,
       failureCategory: null, cooldownUntil: null,
       coolingDown: false, storagePaused: false, stoppedEarly: false,
       memoryPaused: false, budgetPaused: false, capPaused: false, modePaused: false,
@@ -211,7 +214,13 @@ export function createArtistKnowledgeRefresher({
     const deadline = AbortSignal.timeout(clamp(budgetMs, 45_000, 1000, 45_000));
     const stop = new AbortController();
     const workSignal = AbortSignal.any([deadline, stop.signal, ...(signal ? [signal] : [])]);
-    const rows = due.all(now(), clamp(limit, control.limits.maxArtistsPerPass, 1, control.limits.maxArtistsPerPass));
+    const selectionAt = now();
+    const passLimit = clamp(limit, control.limits.maxArtistsPerPass, 1, control.limits.maxArtistsPerPass);
+    const priorityKeys = new Set(discoverArtistPriorityKeys(database, selectionAt));
+    const priorityJson = JSON.stringify([...priorityKeys]);
+    const rows = interleaveDiscoverPriority(
+      priorityKeys.size ? priorityDue.all(selectionAt, priorityJson, passLimit) : [],
+      regularDue.all(selectionAt, priorityJson, passLimit), passLimit);
     let cursor = 0;
     const pauseError = () => Object.assign(new Error("Optional catalog work paused"), { code: "CATALOG_PAUSED" });
     const deferClaim = (row, mbid, token) => {
@@ -264,6 +273,7 @@ export function createArtistKnowledgeRefresher({
           stats.budgetPaused = true; return;
         }
         stats.checked += 1;
+        if (priorityKeys.has(row.norm)) stats.prioritized += 1;
         let result;
         try {
           result = await fetchKnowledge({ mbid, needBio, needCountry, signal: workSignal, beforeRequest, now });

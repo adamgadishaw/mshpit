@@ -2732,15 +2732,21 @@ test("artist-owned profile UGC honors blocks in both directions without hiding c
   db.prepare("INSERT INTO artist_posts (id,artist_key,user_id,text,created_at) VALUES (?,?,?,?,?)")
     .run("artist_block_post", key, owner.id, "OWNER_UPDATE_MUST_HIDE", Date.now());
   const getProfile = () => routes["GET /api/artists/:key/profile"]({ user: viewer, params: { key } });
+  const getOverlay = () => {
+    const { artist, ...overlay } = getProfile();
+    assert.equal(artist.key, key, "the local public catalog identity survives the owner block");
+    assert.equal(JSON.stringify(artist).includes("OWNER_"), false, "catalog metadata never includes owner-authored overrides");
+    return overlay;
+  };
 
   assert.equal(getProfile().profile.bio, "OWNER_BIO_MUST_HIDE");
   assert.equal(getProfile().posts[0].text, "OWNER_UPDATE_MUST_HIDE");
   db.prepare("INSERT INTO blocks (blocker_id,blocked_id,created_at) VALUES (?,?,?)").run(owner.id, viewer.id, Date.now());
-  assert.deepEqual(getProfile(), { profile: null, posts: [], legacyProfile: false },
+  assert.deepEqual(getOverlay(), { profile: null, posts: [], legacyProfile: false },
     "an incoming block hides the complete owner-authored overlay without misclassifying the catalog artist");
   db.prepare("DELETE FROM blocks WHERE blocker_id=? AND blocked_id=?").run(owner.id, viewer.id);
   db.prepare("INSERT INTO blocks (blocker_id,blocked_id,created_at) VALUES (?,?,?)").run(viewer.id, owner.id, Date.now());
-  assert.deepEqual(getProfile(), { profile: null, posts: [], legacyProfile: false },
+  assert.deepEqual(getOverlay(), { profile: null, posts: [], legacyProfile: false },
     "an outgoing block hides the same overlay without misclassifying the catalog artist");
 
   const catalog = routes["GET /api/artists"]({ user: viewer, query: { q: "blocksafecatalogartist", limit: 5 } });

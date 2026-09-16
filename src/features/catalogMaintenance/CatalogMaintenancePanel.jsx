@@ -93,6 +93,7 @@ export default function CatalogMaintenancePanel({ accountId, role, active = true
           <Text selectable style={styles.copy}>Worker evidence: {knowledge?.state?.replaceAll("_", " ") || "Unavailable"}.</Text>
           <Text selectable style={styles.hint}>Last pass: {catalogTime(pass?.at)} · Next due: {catalogTime(catalog.nextPassAt)} · Provider cooldown until: {catalogTime(knowledge?.cooldownUntil)}</Text>
           {pass ? <Text selectable style={styles.hint}>Last pass checked {catalogCount(pass.checked)}; filled {catalogCount(pass.filled)} artist records: {catalogCount(pass.bios)} biographies and {catalogCount(pass.countries)} countries. Unmatched {catalogCount(pass.unmatched)}; provider failures {catalogCount(pass.failed)}; interrupted checks {catalogCount(pass.deferred)}. This is a pass summary, not a lifetime total.</Text> : null}
+          {pass?.prioritized != null ? <Text selectable style={styles.hint}>Discover priority: {catalogCount(pass.prioritized)} of the last pass's checks were for artists recently shown in Discover. Regular catalogue work continues within the same allowance.</Text> : null}
           {pass?.stoppedEarly ? <Text selectable style={styles.hint}>The batch yielded before all checks finished. Interrupted work stays queued; this does not mean the catalogue is complete.</Text> : null}
         </Section>
       </>}

@@ -7,6 +7,7 @@ import { PUBLIC_MEDIA_CACHE_CONTROL } from "./mediaDeliveryPolicy.js";
 import {
   VIDEO_VERIFIER_PIPELINE_VERSION,
   VIDEO_VERIFIER_PROTOCOL_VERSION,
+  VIDEO_VERIFIER_SOURCE_ADMISSION_REVISION,
   VIDEO_VERIFIER_SOURCE_CODECS,
   VIDEO_VERIFIER_SOURCE_CONTENT_TYPES,
   signVideoVerifierRequest,
@@ -49,6 +50,7 @@ const runtime = {
   ffmpegVersion: null,
   sourceTypes: [],
   sourceCodecs: {},
+  sourceAdmissionRevision: null,
 };
 
 function cleanHostport(value) {
@@ -190,6 +192,8 @@ function noteHealthy(config, payload, at, { capabilities = null } = {}) {
     ? payload.decoder.version.slice(0, 80)
     : runtime.ffmpegVersion;
   if (capabilities) {
+    runtime.sourceAdmissionRevision = Number.isSafeInteger(payload?.sourceAdmissionRevision)
+      ? payload.sourceAdmissionRevision : null;
     runtime.sourceTypes = [...capabilities.sourceTypes];
     runtime.sourceCodecs = Object.fromEntries(capabilities.sourceTypes.map((type) => [
       type,
@@ -246,7 +250,9 @@ async function verifierRequest({ path, payload, env, fetchImpl, signal, timeoutM
       throw new ApiError(429, "Clip verification is busy. Try again shortly.", "RATE_LIMITED");
     }
     if (response?.status === 422) {
-      if (WORKER_SOURCE_REJECTION_CODES.has(decoded?.code)) {
+      const sourceRevisionMatches = payload?.structural?.sourceAdmissionRevision === undefined
+        || decoded?.sourceAdmissionRevision === payload.structural.sourceAdmissionRevision;
+      if (WORKER_SOURCE_REJECTION_CODES.has(decoded?.code) && sourceRevisionMatches) {
         throw new ApiError(415, "That clip could not pass authoritative decoding.", "MEDIA_TYPE_UNSUPPORTED");
       }
       // The signed worker distinguishes an incompatible source from failures
@@ -314,6 +320,7 @@ export function videoVerifierRuntimeStatus(env = process.env, at = Date.now()) {
     ageMs,
     lastErrorCode: sameRuntime ? runtime.lastErrorCode : null,
     ffmpegVersion: sameRuntime ? runtime.ffmpegVersion : null,
+    sourceAdmissionRevision: sameRuntime ? runtime.sourceAdmissionRevision : null,
     sourceTypes: sameRuntime && runtime.lastSuccessAt ? [...runtime.sourceTypes] : [],
     sourceCodecs: sameRuntime && runtime.lastSuccessAt
       ? Object.fromEntries(runtime.sourceTypes.map((type) => [type, [...(runtime.sourceCodecs[type] || [])]]))
@@ -519,6 +526,9 @@ async function performVerification({
         ...(structural.sourceCodec !== undefined
           ? { sourceCodec: structural.sourceCodec }
           : {}),
+        ...(structural.sourceAdmissionRevision !== undefined
+          ? { sourceAdmissionRevision: structural.sourceAdmissionRevision }
+          : {}),
       },
       poster: {
         timeMs: posterTimeMs,
@@ -576,6 +586,8 @@ export async function verifyVideoObject({
       || !Number.isSafeInteger(Number(structural?.codedHeight)) || Number(structural.codedHeight) < Number(structural?.height)
       || !Number.isSafeInteger(Number(structural?.sampleCount)) || Number(structural.sampleCount) < 1
       || !quickTimeStructural || !mp4Structural
+      || (structural?.sourceAdmissionRevision !== undefined
+        && structural.sourceAdmissionRevision !== VIDEO_VERIFIER_SOURCE_ADMISSION_REVISION)
       || !Number.isSafeInteger(Number(posterTimeMs)) || Number(posterTimeMs) < 0
       || Number(posterTimeMs) >= Number(structural?.durationMs)) {
     throw new ApiError(500, "Clip verification request is invalid.", "INTERNAL_ERROR");
@@ -621,6 +633,7 @@ export async function verifyVideoObject({
       durationMs: Number(structural?.durationMs),
       sourceContainer: structural?.sourceContainer || null,
       sourceCodec: structural?.sourceCodec || null,
+      sourceAdmissionRevision: structural?.sourceAdmissionRevision || null,
     },
     posterTimeMs: Number(posterTimeMs),
     outputKey: output.key,
@@ -630,6 +643,14 @@ export async function verifyVideoObject({
       throw new ApiError(429, "Clip verification is busy. Try again shortly.", "RATE_LIMITED");
     }
     return waitForActiveVerification(activeVerification, signal);
+  }
+  // Only newly admitted AVC5.2/high-FPS sources need a newer decoder. Retain
+  // ordinary uploads on legacy workers; defer these new sources before POST
+  // or demand reservation until their exact admission revision is proven.
+  if (structural?.sourceAdmissionRevision === VIDEO_VERIFIER_SOURCE_ADMISSION_REVISION
+      && (!videoVerifierRuntimeStatus(env).ready
+        || runtime.sourceAdmissionRevision !== VIDEO_VERIFIER_SOURCE_ADMISSION_REVISION)) {
+    throw new ApiError(503, "Clip processing is temporarily unavailable for that video format. Try again later.", "MEDIA_STORAGE_UNAVAILABLE");
   }
   // This hook is deliberately synchronous and runs only after the global slot
   // decision. A denied actor therefore cannot poison a same-object follower,
@@ -767,4 +788,5 @@ export function resetVideoVerifierStateForTests() {
   runtime.ffmpegVersion = null;
   runtime.sourceTypes = [];
   runtime.sourceCodecs = {};
+  runtime.sourceAdmissionRevision = null;
 }

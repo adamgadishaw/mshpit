@@ -6,6 +6,7 @@ import { inPersonReviewSql } from "./onlineReviews.js";
 import { eligiblePopularityArtists } from "./artistPopularityEligibility.js";
 import { createEventCoverageService } from "./features/discovery/eventCoverageService.js";
 import { ARTIST_GENRE_SQL_COLUMNS, projectArtistGenreColumns } from "./artistGenreProjection.js";
+import { rememberDiscoverArtists } from "./discoverArtistPriority.js";
 
 const ARTIST_RATING_CANDIDATE_LIMIT = 5_000;
 const POPULARITY_RANKING_CANDIDATE_LIMIT = 1_200;
@@ -59,6 +60,8 @@ function chartRow(name, artist, rank, extra = {}) {
   const firstTrack = Array.isArray(data.topTracks) ? data.topTracks[0] : null;
   return {
     rank,
+    key: artist?.norm || null,
+    publicSlug: artist?.public_slug || null,
     name: artist?.name || name,
     genre: projectedGenre(artist, data),
     popularity: artist?.popularity ?? null,
@@ -189,7 +192,13 @@ export function createDiscoverService({ database = db, clock = Date.now, reviewe
     }).filter(Boolean);
   }
 
-  function chart({ by = "popularity", country = "", genre = "", limit = 24 } = {}) {
+  function chart(options = {}) {
+    const result = buildChart(options);
+    rememberDiscoverArtists(database, result.rows, clock());
+    return result;
+  }
+
+  function buildChart({ by = "popularity", country = "", genre = "", limit = 24 } = {}) {
     const source = by === "plays" ? "plays" : "popularity";
     const rowLimit = limitBetween(limit, 24, 3, 60);
     const countryFilter = text(country);

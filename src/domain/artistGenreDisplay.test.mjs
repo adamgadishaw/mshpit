@@ -14,6 +14,8 @@ test("artist pages show only the verified public genre and explain missing evide
 });
 
 test("artist pull-to-refresh invalidates DB metadata without provider resolution", () => {
-  assert.match(artistScreen, /refreshArtistCatalogMetadata\(a\.name, \{ signal \}\)/);
+  assert.match(artistScreen, /loadArtistPage\(a\.name, \{ signal \}\)/);
+  assert.doesNotMatch(artistScreen, /resolveArtist\(a\.name/);
+  assert.match(storeSource, /if \(artist\) cacheArtists\(\[\{ \.\.\.artist, transient: false \}\]\)/);
   assert.match(storeSource, /refreshArtistCatalogEntry\(name, \{ signal, apiClient: api \}\)/);
 });
