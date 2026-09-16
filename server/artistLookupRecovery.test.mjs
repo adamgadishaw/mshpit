@@ -23,6 +23,45 @@ test("reviewed missing artist is registered and both exact spellings find its ca
   }
 });
 
+test("Russ search and profile resolve locally during provider outages without conflating Russ Millions", async () => {
+  const russMbid = "9ddf4b19-dd14-45d9-b056-49541b16dc80";
+  const millionsMbid = "176271d4-4465-46ba-bb87-c01e22ebe3a1";
+  artistStmts.upsert.run(artistRow("russ millions", { name: "Russ Millions", mbid: millionsMbid }, "test"));
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => { calls += 1; throw new Error("Stored Russ reads must not call any provider"); };
+  db.exec("PRAGMA query_only=ON");
+  try {
+    for (const requested of ["Russ", "russ", " RUSS "]) {
+      const search = routes["GET /api/artists"](context({}, { q: requested, limit: "12" }));
+      assert.equal(search.artists[0].key, "russ");
+      assert.equal(search.artists[0].mbid, russMbid);
+      const resolved = await routes["GET /api/artists/resolve"](context({}, { name: requested }));
+      assert.equal(resolved.artist.key, "russ");
+      assert.equal(resolved.artist.mbid, russMbid);
+      assert.equal(resolved.artist.publicSlug, "russ");
+      assert.equal(resolved.created, false);
+      assert.equal(resolved.transient, undefined);
+      assert.equal(resolved.artist.bio, null, "identity repair does not invent a biography");
+    }
+    const profile = routes["GET /api/artists/:key/profile"](context({ key: "russ" }));
+    assert.equal(profile.artist.mbid, russMbid);
+    assert.equal(profile.legacyProfile, false);
+    const publicLink = routes["GET /api/resolve"](context({}, { path: "/artist/russ" }));
+    assert.equal(publicLink.entity.name, "Russ");
+    const liveSummary = routes["GET /api/artists/:key/live-summary"](context({ key: "russ" }));
+    assert.deepEqual(liveSummary.artist, { key: "russ", name: "Russ" });
+    assert.equal(liveSummary.schedule.total, 0, "a new identity does not invent tour dates");
+    const separate = await routes["GET /api/artists/resolve"](context({}, { name: "Russ Millions" }));
+    assert.equal(separate.artist.mbid, millionsMbid);
+    assert.equal(separate.artist.key, "russ millions");
+    assert.equal(calls, 0);
+  } finally {
+    db.exec("PRAGMA query_only=OFF");
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("reviewed alias resolves locally and reads actual stored dates through the registered route", async () => {
   const date = new Date(Date.now() + 31 * 86400000).toISOString().slice(0, 10);
   db.prepare(`INSERT INTO tour_dates(id,artist,artist_key,venue,place,date,source,updated_at)

@@ -4,6 +4,8 @@ import { DatabaseSync } from "node:sqlite";
 import { REVIEWED_ARTIST_IDENTITIES, resolveReviewedArtistAlias, seedReviewedArtistIdentities } from "./reviewedArtistIdentities.js";
 
 const reviewed = REVIEWED_ARTIST_IDENTITIES[0];
+const russ = REVIEWED_ARTIST_IDENTITIES.find((record) => record.name === "Russ");
+const russMillionsMbid = "176271d4-4465-46ba-bb87-c01e22ebe3a1";
 const otherMbid = "00000000-0000-4000-8000-000000000002";
 
 function makeArtistRow(norm, data, source) {
@@ -13,7 +15,7 @@ function makeArtistRow(norm, data, source) {
     popularity: null, rank_score: 0, data: JSON.stringify(data), source, created_at: 100, updated_at: 100 };
 }
 
-function fixture(t) {
+function fixture(t, records = [reviewed]) {
   const database = new DatabaseSync(":memory:");
   t.after(() => database.close());
   database.exec(`CREATE TABLE artists (
@@ -23,7 +25,7 @@ function fixture(t) {
     created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL);
     CREATE INDEX idx_artists_mbid_lower ON artists(lower(mbid));
     CREATE TABLE artist_profiles (artist_key TEXT PRIMARY KEY,owner_id TEXT,bio TEXT,updated_at INTEGER);`);
-  const seed = (options = {}) => seedReviewedArtistIdentities(database, { makeArtistRow, ...options });
+  const seed = (options = {}) => seedReviewedArtistIdentities(database, { makeArtistRow, records, ...options });
   const add = (norm, mbid, fields = {}) => {
     const row = { ...makeArtistRow(norm, { name: norm, mbid }, "existing"), ...fields };
     const keys = Object.keys(row);
@@ -45,6 +47,49 @@ test("reviewed identity adds only sourced facts and repeats without mutation", (
   assert.equal(snapshot[0].source, "reviewed-identity");
   assert.deepEqual(f.seed(), { inserted: 0, existing: 1, conflicts: 0 });
   assert.deepEqual(f.rows(), snapshot);
+});
+
+test("the reviewed registry adds the verified US Russ identity without inferring biography or merging Russ Millions", (t) => {
+  assert.equal(russ?.mbid, "9ddf4b19-dd14-45d9-b056-49541b16dc80");
+  assert.equal(russ.sourceUrl, `https://musicbrainz.org/artist/${russ.mbid}`);
+  assert.deepEqual(russ.aliases, []);
+  const f = fixture(t, REVIEWED_ARTIST_IDENTITIES);
+  f.add("russ millions", russMillionsMbid, { name: "Russ Millions", bio: "Existing separate artist" });
+  const beforeMillions = f.rows()[0];
+  assert.deepEqual(f.seed(), { inserted: REVIEWED_ARTIST_IDENTITIES.length, existing: 0, conflicts: 0 });
+  const inserted = f.rows().find((row) => row.norm === "russ");
+  assert.equal(inserted.mbid, russ.mbid);
+  assert.deepEqual(JSON.parse(inserted.data), russ);
+  for (const field of ["bio", "genre", "photo", "popularity", "country", "formed"]) assert.equal(inserted[field], null);
+  assert.equal(resolveReviewedArtistAlias(f.database, "Russ")?.norm, "russ");
+  assert.equal(resolveReviewedArtistAlias(f.database, "Russ Millions"), null);
+  assert.deepEqual(f.rows().find((row) => row.norm === "russ millions"), beforeMillions);
+  const snapshot = f.rows();
+  assert.deepEqual(f.seed(), { inserted: 0, existing: REVIEWED_ARTIST_IDENTITIES.length, conflicts: 0 });
+  assert.deepEqual(f.rows(), snapshot);
+});
+
+test("Russ registration preserves existing conflicting identity and owner content", (t) => {
+  for (const mbid of [null, otherMbid, russMillionsMbid]) {
+    const f = fixture(t, [russ]);
+    f.add("russ", mbid, { name: "Russ", bio: "Existing artist biography", public_slug: "existing-russ" });
+    f.database.prepare("INSERT INTO artist_profiles VALUES (?,?,?,?)").run("russ", "owner", "Owner content", 50);
+    const rows = f.rows();
+    const profile = f.database.prepare("SELECT * FROM artist_profiles").get();
+    assert.deepEqual(f.seed(), { inserted: 0, existing: 0, conflicts: 1 });
+    assert.deepEqual(f.rows(), rows);
+    assert.deepEqual(f.database.prepare("SELECT * FROM artist_profiles").get(), profile);
+    assert.equal(resolveReviewedArtistAlias(f.database, "Russ"), null);
+  }
+});
+
+test("a previously stored Russ MBID remains local under its original key and immutable slug", (t) => {
+  const f = fixture(t, [russ]);
+  f.add("old-russ-key", russ.mbid, { name: "Russ", public_slug: "russ-original", bio: "Existing sourced biography" });
+  const rows = f.rows();
+  assert.deepEqual(f.seed(), { inserted: 0, existing: 1, conflicts: 0 });
+  assert.deepEqual(f.rows(), rows);
+  assert.equal(resolveReviewedArtistAlias(f.database, "Russ")?.norm, "old-russ-key");
 });
 
 test("reviewed seed never overwrites rich artist metadata or owner profile", (t) => {

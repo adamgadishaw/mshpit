@@ -8,6 +8,12 @@ export const REVIEWED_ARTIST_IDENTITIES = Object.freeze([
     aliases: Object.freeze(["ASAP Rocky"]),
     sourceUrl: "https://musicbrainz.org/artist/25b7b584-d952-4662-a8b9-dd8cdfbfeb64/aliases",
   }),
+  Object.freeze({
+    name: "Russ",
+    mbid: "9ddf4b19-dd14-45d9-b056-49541b16dc80",
+    aliases: Object.freeze([]),
+    sourceUrl: "https://musicbrainz.org/artist/9ddf4b19-dd14-45d9-b056-49541b16dc80",
+  }),
 ]);
 
 const exactName = (value) => typeof value === "string" ? value.trim().toLowerCase() : "";
