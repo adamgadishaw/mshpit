@@ -55,7 +55,9 @@ test("official provider titles remain distinct while clear tour names prefill th
   assert.match(composer, /editing\?\.tour \|\| prefill\?\.tour \|\| ""/);
   assert.doesNotMatch(composer, /prefill\?\.tour \|\| prefill\?\.eventName/);
   assert.match(composer, /EVENT LISTING NAME/);
-  assert.match(composer, /TOUR OR SPECIAL EVENT/);
+  assert.match(composer, /accessibilityLabel="Tour or special event details"/);
+  assert.match(composer, /Add tour or special event/);
+  assert.match(composer, /\{showTour && <>[\s\S]*?accessibilityLabel="Tour or special event name"/);
   assert.match(card, /const performance = useMemo\(\(\) => reviewCardPerformance\(log\), \[log\]\)/);
   assert.match(card, /const performanceTitle = performance\.primary/);
   assert.match(card, /styles\.performanceCard/);

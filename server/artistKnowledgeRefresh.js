@@ -102,7 +102,10 @@ export function createArtistKnowledgeRefresher({
       AND ((trim(COALESCE(a.bio,''))='' AND p.artist_key IS NULL) OR trim(COALESCE(a.country,''))=''
         OR c.mbid<>lower(a.mbid) OR c.status IN ('failed','leased'))
       AND (c.artist_key IS NULL OR c.mbid<>lower(a.mbid) OR c.next_attempt_at<=?)`;
-  const dueOrder = " ORDER BY COALESCE(c.attempted_at,0),a.rank_score DESC,a.norm LIMIT ?";
+  // Finish interrupted checks before starting another whole catalogue slice.
+  // Otherwise thousands of never-checked rows evict every small provider
+  // checkpoint before its owner gets a turn, wasting the request allowance.
+  const dueOrder = " ORDER BY CASE WHEN c.status='leased' THEN 0 ELSE 1 END,COALESCE(c.attempted_at,0),a.rank_score DESC,a.norm LIMIT ?";
   const priorityDue = database.prepare(`${dueSql} AND a.norm IN (SELECT value FROM json_each(?))${dueOrder}`);
   const regularDue = database.prepare(`${dueSql} AND a.norm NOT IN (SELECT value FROM json_each(?))${dueOrder}`);
   const claim = database.prepare(`INSERT INTO artist_knowledge_checks

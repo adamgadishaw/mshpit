@@ -17,9 +17,9 @@ export function upkeepFixture(mode = "maintenance") {
   const at = 1789488000000;
   return {
     catalog: { mode, nextPassAt: at + 120000, updatedAt: at, initialSweepFinishedAt: null,
-      limits: { lanes: mode === "catch_up" ? 3 : 1, maxArtistsPerPass: mode === "catch_up" ? 40 : 10,
+      limits: { lanes: mode === "catch_up" ? 10 : 1, maxArtistsPerPass: mode === "catch_up" ? 40 : 10,
         intervalMinutes: mode === "catch_up" ? 2 : 15, maxPassSeconds: 45,
-        maxAttemptsPerDay: 3000, maxRequestsPerDay: 12000, providerSpacingMs: 1100,
+        maxAttemptsPerDay: 10000, maxRequestsPerDay: 12000, providerSpacingMs: 1100,
         maxResponseKiB: 512, maxBiographyCharacters: 1200, maxGrowthMiB: 256 },
       budget: { utcDay: "2026-09-15", attempts: 23, requests: 69 },
       progress: { totalArtists: 30161, eligible: 9000, unprocessed: 8000, needsIdentity: 800,
@@ -29,6 +29,11 @@ export function upkeepFixture(mode = "maintenance") {
     artistKnowledge: { enabled: true, state: mode === "paused" ? "paused" : "recent",
       lastPass: { at, checked: 23, filled: 20, bios: 18, countries: 4, unmatched: 2, failed: 0, deferred: 1, stoppedEarly: true, lanes: 3 },
       ledger: { filled: 987 }, cooldownUntil: null },
+    artistPhotos: { enabled: true, configured: true, phase: mode === "paused" ? "paused" : "waiting",
+      lastPass: { at, attempted: 20, filled: 18, noMatch: 2, failed: 0 } },
+    venuePhotos: { installed: true, enabled: true, configured: true, state: mode === "paused" ? "paused" : "filled",
+      counts: { filled: 12, no_match: 4 }, attemptsToday: 16, reservedTotalBytes: 2 * 1024 ** 2,
+      nextPassAt: at + 900000, limits: { attemptsPerDay: 100, totalBytes: 256 * 1024 ** 2 } },
     storage: { status: "healthy", checkedAt: at, databaseBytes: 148 * 1024 ** 2,
       walBytes: 15 * 1024 ** 2, freeBytes: 3953 * 1024 ** 2, snapshotHeadroomBytes: 512 * 1024 ** 2,
       issues: [], warnings: [] },
@@ -151,7 +156,10 @@ async function scenario(browser, origin, width, kind) {
     }
     await panel.getByText("30,161", { exact: true }).waitFor();
     await panel.getByText(/Google indexing: not measured here/).waitFor();
-    await panel.getByText(/These controls do not run venue or event page enrichment/).waitFor();
+    await panel.getByText(/Artist facts, profile photos and venue photography have separate bounded queues/).waitFor();
+    await panel.getByText("Photo workers", { exact: true }).waitFor();
+    await panel.getByText("18 saved / 20 checked", { exact: true }).waitFor();
+    await panel.getByText("Verified venue photos saved", { exact: true }).waitFor();
     await panel.getByText(/18 biographies and 4 countries/).waitFor();
     await panel.getByText(/Interrupted work stays queued/).waitFor();
     await panel.getByText(/Show-date refresh \(not venue page enrichment\)/).waitFor();

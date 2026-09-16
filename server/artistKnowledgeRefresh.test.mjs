@@ -61,6 +61,17 @@ test("fills only missing fields and persists exact source; second pass makes no 
   await f.service.runBatch(); assert.equal(calls, 1);
 });
 
+test("interrupted checks finish before fresh low-value work evicts their source checkpoints", async t => {
+  const f = fixture(t);
+  f.insert("interrupted", { rank: 1 }); f.insert("new", { rank: 100 });
+  f.database.prepare("INSERT INTO artist_knowledge_checks VALUES (?,?,'leased',?,?,0,NULL)")
+    .run("interrupted", MBID, AT - 120000, AT);
+  const stats = await f.service.runBatch({ limit: 1 });
+  assert.equal(stats.filled, 1);
+  assert.equal(f.check("interrupted").status, "filled");
+  assert.equal(f.check("new"), undefined);
+});
+
 test("a worker pass retains its priority snapshot when newer Discover hints evict the originals", async (t) => {
   let calls = 0, f;
   f = fixture(t, { fetchKnowledge: async () => {
@@ -296,20 +307,20 @@ test("scheduler is explicit on hosted runtimes and uses shared admission and per
   assert.equal(coordinated, 1); assert.equal(received.signal, signal); assert.equal(received.respectCadence, true);
 });
 
-test("catch-up runs three lanes, keeps all claims distinct, then returns to one maintenance lane", async (t) => {
+test("catch-up runs ten lanes, keeps all claims distinct, then returns to one maintenance lane", async (t) => {
   let active = 0, peak = 0;
   const f = fixture(t, { env: { ARTIST_KNOWLEDGE_MODE: "catch_up" }, fetchKnowledge: async () => {
     active++; peak = Math.max(peak, active);
     await new Promise(resolve => setImmediate(resolve));
     active--; return result();
   } });
-  for (let i = 0; i < 9; i++) f.insert(`artist-${i}`);
+  for (let i = 0; i < 19; i++) f.insert(`artist-${i}`);
   const stats = await f.service.runBatch();
-  assert.equal(stats.checked, 9); assert.equal(stats.filled, 9); assert.equal(peak, 3);
+  assert.equal(stats.checked, 19); assert.equal(stats.filled, 19); assert.equal(peak, 10);
   const control = collectCatalogKnowledgeControl(f.database, { at: AT });
   assert.equal(control.mode, "maintenance"); assert.equal(control.limits.lanes, 1);
-  assert.equal(control.initialSweepFinishedAt, AT); assert.equal(control.budget.attempts, 9);
-  assert.equal(control.progress.totalArtists, 9); assert.equal(control.progress.alreadyComplete, 9);
+  assert.equal(control.initialSweepFinishedAt, AT); assert.equal(control.budget.attempts, 19);
+  assert.equal(control.progress.totalArtists, 19); assert.equal(control.progress.alreadyComplete, 19);
 });
 
 test("no match is unresolved, missing identity is review work, not a completed catalog", async (t) => {

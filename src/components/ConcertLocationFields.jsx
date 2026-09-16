@@ -9,7 +9,9 @@ const cityLabel = (city) => [city.city, city.region, city.country].filter(Boolea
 
 // These fields describe the concert, never the member's home. The directory is
 // an optional spelling aid; a failed search cannot prevent a manual location.
-export default function ConcertLocationFields({ city = "", eventAddress = "", onCityChange, onEventAddressChange, readCities }) {
+export default function ConcertLocationFields({ city = "", eventAddress = "", onCityChange, onEventAddressChange, readCities, compact = false }) {
+  const [addressExpanded, setAddressExpanded] = useState(false);
+  const showAddress = !compact || addressExpanded || !!eventAddress.trim();
   const [searchEnabled, setSearchEnabled] = useState(false);
   const [search, setSearch] = useState(EMPTY_SEARCH);
   const activeRequest = useRef(null);
@@ -94,6 +96,13 @@ export default function ConcertLocationFields({ city = "", eventAddress = "", on
       ) : visibleSearch.status === "ready" && !visibleSearch.cities.length ? (
         <Text style={styles.hint} accessibilityLiveRegion="polite">No matching city? Keep the city, region and country you entered.</Text>
       ) : <Text style={styles.hint}>No known venue? A city is enough. Include the region and country to help place your concert.</Text>}
+      {compact && !showAddress && (
+        <Pressable style={styles.addressAction} accessibilityRole="button" accessibilityLabel="Add an optional public event address" accessibilityState={{ expanded: false }} onPress={() => { stopSearch(); setAddressExpanded(true); }}>
+          <Icon name="pin" size={14} color={colors.textDim} />
+          <Text style={styles.addressActionText}>Add a public event address <Text style={styles.optional}>optional</Text></Text>
+        </Pressable>
+      )}
+      {showAddress && <>
       <Text style={styles.label}>PUBLIC EVENT ADDRESS <Text style={styles.optional}>optional</Text></Text>
       <TextInput
         style={styles.input}
@@ -111,11 +120,14 @@ export default function ConcertLocationFields({ city = "", eventAddress = "", on
       {!!eventAddress.trim() && !city.trim() && (
         <Text style={styles.error} accessibilityLiveRegion="polite">Add the city for this address before posting.</Text>
       )}
+      </>}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
+  addressAction: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: 8 },
+  addressActionText: { color: colors.textDim, fontSize: 12, lineHeight: 18 },
   fields: { minWidth: 0, marginTop: 12, marginBottom: 16 },
   label: { color: colors.textDim, fontFamily: mono, fontSize: 10, fontWeight: "800", letterSpacing: 1.2, marginBottom: 8 },
   optional: { color: colors.textFaint, fontFamily: undefined, fontWeight: "500", letterSpacing: 0 },

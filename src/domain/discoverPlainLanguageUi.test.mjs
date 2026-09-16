@@ -23,14 +23,18 @@ test("Discover explains its purpose and area controls in everyday language", () 
   assert.match(files.screen, /accessibilityLabel="Choose an area to explore"/);
   assert.match(files.screen, /More areas/);
   assert.match(files.screen, /title="Upcoming events"/);
-  assert.match(files.venues, /Find a place\. Find a show\./);
+  assert.match(files.venues, /Explore venues/);
   assert.match(files.venues, /Find a city or venue/);
 });
 
 test("Discover sections say plainly what people will find or do", () => {
-  assert.match(files.venues, /Explore a city’s venues, then see what’s on their stages\./);
-  assert.match(files.venues, /Coming up in/);
+  assert.match(files.venues, /Choose a city, select a venue, then see its details and upcoming shows\./);
+  assert.match(files.venues, /1 · CHOOSE A CITY/);
+  assert.match(files.venues, /2 · SELECT A VENUE/);
+  assert.match(files.venues, /Coming up elsewhere in/);
   assert.match(files.venues, /View venue/);
+  assert.match(files.venues, /Show fewer shows/);
+  assert.doesNotMatch(files.venues, /Open the venue to see all/);
   assert.match(files.photos, /Public concert photos and clips/);
   assert.match(files.screen, /Top-rated shows and artist communities/);
   assert.match(files.screen, /The most active concert conversations\. Private member data is not used\./);

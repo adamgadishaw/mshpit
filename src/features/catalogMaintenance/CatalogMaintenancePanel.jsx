@@ -26,6 +26,8 @@ export default function CatalogMaintenancePanel({ accountId, role, active = true
   const limits = catalog?.limits || {};
   const progress = catalog?.progress || {};
   const storage = data?.storage;
+  const artistPhotos = data?.artistPhotos;
+  const venuePhotos = data?.venuePhotos;
   const blocked = !state.confirmed || !catalog || !active || !!state.pendingMode || knowledge?.enabled === false;
   const mode = catalog?.mode;
   if (!state.available) return null;
@@ -34,7 +36,7 @@ export default function CatalogMaintenancePanel({ accountId, role, active = true
       <View style={styles.headingCopy}>
         <Text style={styles.eyebrow}>CATALOG UPKEEP</Text>
         <Text accessibilityRole="header" style={styles.title}>Fill the gaps. Keep the facts.</Text>
-        <Text style={styles.copy}>Automatic artist biography and country gap filling. These controls do not run venue or event page enrichment. Staff edits stay protected; no unsourced copy is generated.</Text>
+        <Text style={styles.copy}>Artist facts, profile photos and venue photography have separate bounded queues. See what each is doing below. Staff edits stay protected; no unsourced copy is generated.</Text>
       </View>
       <Button small title="Refresh upkeep status" accessibilityLabel="Refresh catalog upkeep status" variant="secondary"
         disabled={!active || state.loading || !!state.pendingMode} loading={state.loading}
@@ -91,12 +93,31 @@ export default function CatalogMaintenancePanel({ accountId, role, active = true
             <Datum label="Today's provider requests" value={`${catalogCount(catalog.budget?.requests)} / ${catalogCount(limits.maxRequestsPerDay)}`} detail={`Shared request spacing: ${catalogCount(limits.providerSpacingMs)} ms.`} />
           </View>
           <Text selectable style={styles.copy}>Worker evidence: {knowledge?.state?.replaceAll("_", " ") || "Unavailable"}.</Text>
+          {knowledge?.state === "budget_paused" ? <Text selectable style={styles.notice}>The daily allowance has been reached. Work resumes after {catalogTime(catalog.budgetResetAt)}; adding lanes does not bypass this shared limit.</Text> : null}
+          <Text selectable style={styles.hint}>These are bounded background tasks, not ten paid servers or AI writers. All lanes share one provider allowance. Interrupted checks reuse small verified-source checkpoints; no full articles or images are downloaded by the biography worker.</Text>
           <Text selectable style={styles.hint}>Last pass: {catalogTime(pass?.at)} · Next due: {catalogTime(catalog.nextPassAt)} · Provider cooldown until: {catalogTime(knowledge?.cooldownUntil)}</Text>
           {pass ? <Text selectable style={styles.hint}>Last pass checked {catalogCount(pass.checked)}; filled {catalogCount(pass.filled)} artist records: {catalogCount(pass.bios)} biographies and {catalogCount(pass.countries)} countries. Unmatched {catalogCount(pass.unmatched)}; provider failures {catalogCount(pass.failed)}; interrupted checks {catalogCount(pass.deferred)}. This is a pass summary, not a lifetime total.</Text> : null}
           {pass?.prioritized != null ? <Text selectable style={styles.hint}>Discover priority: {catalogCount(pass.prioritized)} of the last pass's checks were for artists recently shown in Discover. Regular catalogue work continues within the same allowance.</Text> : null}
           {pass?.stoppedEarly ? <Text selectable style={styles.hint}>The batch yielded before all checks finished. Interrupted work stays queued; this does not mean the catalogue is complete.</Text> : null}
         </Section>
       </>}
+      <Section title="Photo workers">
+        <View style={styles.grid}>
+          <Datum label="Artist photos" value={artistPhotos?.phase?.replaceAll("_", " ") || "Unverified"}
+            detail={artistPhotos?.pauseReason ? artistPhotos.pauseReason.replaceAll("_", " ") : "Exact stored Spotify identities; attributed provider images, not local image downloads."} />
+          <Datum label="Latest artist photo pass" value={artistPhotos?.lastPass ? `${catalogCount(artistPhotos.lastPass.filled)} saved / ${catalogCount(artistPhotos.lastPass.attempted)} checked` : "Not recorded"}
+            detail={catalogTime(artistPhotos?.lastPass?.at)} />
+          <Datum label="Venue photos" value={venuePhotos?.state?.replaceAll("_", " ") || "Unverified"}
+            detail="Missing photos for identified venues with upcoming shows. Ambiguous or unlicensed images are not published." />
+          <Datum label="Verified venue photos saved" value={catalogCount(venuePhotos?.counts?.filled ?? (venuePhotos?.installed ? 0 : null))}
+            detail={`${catalogCount(venuePhotos?.counts?.no_match ?? (venuePhotos?.installed ? 0 : null))} checked without an accepted photo.`} />
+          <Datum label="Venue photo checks today" value={venuePhotos ? `${catalogCount(venuePhotos.attemptsToday)} / ${catalogCount(venuePhotos.limits?.attemptsPerDay)}` : "Unverified"}
+            detail={`Next scheduled pass: ${catalogTime(venuePhotos?.nextPassAt)}`} />
+          <Datum label="Venue image storage allowance used" value={catalogBytes(venuePhotos?.reservedTotalBytes)}
+            detail={`Hard cap: ${catalogBytes(venuePhotos?.limits?.totalBytes)}. Includes unresolved upload reservations.`} />
+        </View>
+        <Text selectable style={styles.hint}>More lanes cannot create missing source material or reuse rights. Photo checks retain existing curated images and never substitute a same-named venue in another city. Photo storage is capped separately from biography database growth.</Text>
+      </Section>
       <Section title="Storage safeguards">
         <View style={styles.grid}>
           <Datum label="Database" value={catalogBytes(storage?.databaseBytes)} />

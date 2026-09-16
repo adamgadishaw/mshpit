@@ -1,4 +1,5 @@
 import { readBoundedJsonResponse } from "./boundedJsonResponse.js";
+import { createArtistKnowledgeMemo } from "./artistKnowledgeMemo.js";
 
 const WIKIDATA_API = "https://www.wikidata.org/w/api.php";
 const WIKIPEDIA_API = "https://en.wikipedia.org/w/api.php";
@@ -148,11 +149,13 @@ async function dispose(response) {
 // Bounded lookups may overlap slow responses, but ONE request-start gate
 // covers both Wikimedia hosts, including the country-label request. Tests can
 // inject a clock/wait without weakening the production minimum spacing.
-export function createArtistKnowledgeProvider({ clock = Date.now, wait = pause, timeoutMs = 8000, minimumIntervalMs = 1100, maxPending = 4 } = {}) {
+export function createArtistKnowledgeProvider({ clock = Date.now, wait = pause, timeoutMs = 8000, minimumIntervalMs = 1100, maxPending = 10 } = {}) {
   const interval = Math.max(1100, Number(minimumIntervalMs) || 1100);
   const timeout = Math.max(10, Math.min(8000, Number(timeoutMs) || 8000));
-  const capacity = Math.max(1, Math.min(8, Math.trunc(Number(maxPending) || 4)));
+  const capacity = Math.max(1, Math.min(10, Math.trunc(Number(maxPending) || 10)));
   let startGate = Promise.resolve(), pending = 0, lastStarted = null, cooldown = null;
+  const checkpoints = createArtistKnowledgeMemo();
+  const countryLabels = createArtistKnowledgeMemo({ maxEntries: 256, ttlMs: 24 * 60 * 60_000 });
 
   async function requestJson(url, { provider, signal, fetchImpl, now, beforeRequest }) {
     aborted(signal);
@@ -217,27 +220,40 @@ export function createArtistKnowledgeProvider({ clock = Date.now, wait = pause, 
     if (!needBio && !needCountry) return null;
     if (cooldown?.retryAt > now()) throw new ArtistKnowledgeProviderError("Artist knowledge requests are cooling down.", cooldown);
     const read = (endpoint, parameters, provider = "wikidata") => requestJson(actionUrl(endpoint, parameters), { provider, signal, fetchImpl, now, beforeRequest });
-    const match = parseArtistKnowledgeSearch(await read(WIKIDATA_API, {
+    let progress = checkpoints.get(exact, now());
+    const match = progress?.match || parseArtistKnowledgeSearch(await read(WIKIDATA_API, {
       action: "query", list: "search", srsearch: `haswbstatement:P434=${exact}`, srnamespace: "0", srlimit: "2", srinfo: "totalhits", srprop: "",
     }));
     if (!match) return null;
-    const identity = parseArtistKnowledgeEntity(await read(WIKIDATA_API, {
+    if (!progress) progress = { match, startedAt: now() };
+    checkpoints.set(exact, progress, progress.startedAt);
+    const identity = progress.identity || parseArtistKnowledgeEntity(await read(WIKIDATA_API, {
       action: "wbgetentities", ids: match, props: "claims|sitelinks", sitefilter: "enwiki",
     }), { mbid: exact, wikidataId: match });
     if (!identity) return null;
+    progress.identity = identity;
+    checkpoints.set(exact, progress, progress.startedAt);
     const result = { mbid: exact, wikidataId: match, wikidataUrl: `https://www.wikidata.org/wiki/${match}` };
     if (needBio && identity.wikipediaTitle) {
-      const biography = parseArtistKnowledgeWikipedia(await read(WIKIPEDIA_API, {
+      const biography = progress.biography || parseArtistKnowledgeWikipedia(await read(WIKIPEDIA_API, {
         action: "query", titles: identity.wikipediaTitle, prop: "extracts|pageprops|info", ppprop: "wikibase_item|disambiguation",
         inprop: "url", redirects: "1", exintro: "1", explaintext: "1", exchars: String(ARTIST_KNOWLEDGE_BIO_LIMIT), exlimit: "1",
       }, "wikipedia"), { mbid: exact, wikidataId: match, retrievedAt: Math.trunc(now()) });
-      if (biography) Object.assign(result, biography);
+      if (biography) {
+        progress.biography = biography;
+        checkpoints.set(exact, progress, progress.startedAt);
+        Object.assign(result, biography);
+      }
     }
     if (needCountry && identity.countryId) {
-      const country = parseArtistKnowledgeCountry(await read(WIKIDATA_API, {
+      const cachedCountry = countryLabels.get(identity.countryId, now());
+      const country = cachedCountry || parseArtistKnowledgeCountry(await read(WIKIDATA_API, {
         action: "wbgetentities", ids: identity.countryId, props: "labels", languages: "en", languagefallback: "0",
       }), identity.countryId);
-      if (country) result.country = country;
+      if (country) {
+        if (!cachedCountry) countryLabels.set(identity.countryId, country, now());
+        result.country = country;
+      }
     }
     return result;
   }

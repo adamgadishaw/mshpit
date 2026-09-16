@@ -16,6 +16,24 @@ const MAX_LIMIT = 24;
 
 let cachedCatalog;
 let cachedIndex;
+let runtimePhotoReader = null;
+
+export function registerRuntimeVenuePhotoReader(reader) {
+  if (typeof reader !== "function") throw new TypeError("Venue photo reader must be a function");
+  runtimePhotoReader = reader;
+  return () => { if (runtimePhotoReader === reader) runtimePhotoReader = null; };
+}
+
+// An explicit bundled row, including an empty rights-removal row, outranks
+// optional automatic enrichment. A name binding is used only when verified.
+export function venuePhotoCatalogControlsIdentity(name, { source, providerVenueId } = {}) {
+  const index = venuePhotoCatalogIndex();
+  const providerKey = providerVenuePhotoCatalogKey(source, providerVenueId);
+  if (!providerKey) return !!index.resolveName(name);
+  if (index.pools.has(providerKey)) return true;
+  const bound = venuePhotoCatalogBinding(source, providerVenueId);
+  return !!bound && canonicalVenueKey(bound) === canonicalVenueKey(name) && !!index.resolveName(bound);
+}
 
 function venuePhotoCatalog() {
   if (cachedCatalog !== undefined) return cachedCatalog;
@@ -129,11 +147,22 @@ export function publicVenuePhotoPool(venueName, {
   // a known renamed building. An explicit provider row (including an empty row
   // after a rights removal) always remains authoritative.
   const hasProviderPool = !!providerKey && index.pools.has(providerKey);
-  const licensed = providerKey
+  let licensed = providerKey
     ? (hasProviderPool
       ? (index.pools.get(providerKey) || [])
       : (index.pools.get(verifiedProviderCatalogKey) || []))
     : (index.pools.get(catalogKey) || []);
+
+  // Never substitute automatic photography for a bundled record (including
+  // an empty revoked row), a test-supplied catalogue, or an unscoped name.
+  if (!customCatalog && providerKey && !hasProviderPool && !verifiedProviderCatalogKey && runtimePhotoReader) {
+    try {
+      const photo = licensedVenuePhoto(runtimePhotoReader(providerKey));
+      licensed = photo ? [photo] : [];
+    } catch {
+      // architecture: allow-empty-catch -- optional photo metadata must not break a public venue read when its ledger is unavailable.
+    }
+  }
 
   const seen = new Set();
   const result = [];

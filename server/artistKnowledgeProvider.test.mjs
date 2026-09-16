@@ -257,3 +257,52 @@ test("a shared cooldown is rechecked at the gate after another lane reports an o
   assert.equal(results.every(value => value.status === "rejected"), true);
   assert.equal(calls.length, 1);
 });
+
+test("a deferred lookup resumes validated steps without spending the request budget again", async () => {
+  const f = fixture();
+  let spent = 0;
+  await assert.rejects(f.run({ beforeRequest: () => {
+    if (++spent > 2) throw Object.assign(new Error("Time slice ended"), { code: "CATALOG_PAUSED" });
+  } }), error => error.code === "CATALOG_PAUSED");
+  assert.equal(f.calls.length, 2);
+  const resumed = await f.run();
+  assert.equal(resumed.country, "Canada");
+  assert.ok(resumed.bio);
+  assert.equal(f.calls.length, 4, "the two already validated source requests are reused");
+  resumed.bioSource.wikidataId = "Q999";
+  assert.equal((await f.run()).bioSource.wikidataId, "Q42", "caller cannot mutate cached source proof");
+  assert.equal(f.calls.length, 4);
+});
+
+test("country labels are shared across exact identities, never artist facts", async () => {
+  const second = entity({ claims: { P434: [claim("P434", OTHER_MBID)], P495: [claim("P495", { id: "Q16" })] } });
+  const f = fixture([search(), entity(), country, search(), second]);
+  const first = await f.run({ needBio: false });
+  const next = await f.run({ mbid: OTHER_MBID, needBio: false });
+  assert.equal(first.country, "Canada"); assert.equal(next.country, "Canada");
+  assert.equal(next.mbid, OTHER_MBID);
+  assert.equal(f.calls.length, 5, "one validated country label serves both artist checks");
+});
+
+test("source checkpoints expire and revalidate identity instead of extending forever on reads", async () => {
+  const f = fixture([search(), entity(), wiki(), country, search([])]);
+  await f.run();
+  assert.equal(await f.run({ now: () => AT + 60 * 60_000 + 1 }), null);
+  assert.equal(f.calls.length, 5);
+});
+
+test("ten catch-up slots retain the same shared request rate and reject an eleventh", async () => {
+  let clock = AT;
+  const starts = [], releases = [];
+  const provider = createArtistKnowledgeProvider({ clock: () => clock, wait: async ms => { clock += ms; } });
+  const options = { mbid: MBID, now: () => clock, fetchImpl: () => {
+    starts.push(clock); return new Promise(resolve => releases.push(() => resolve(json(search([])))));
+  } };
+  const runs = Array.from({ length: 10 }, () => provider(options));
+  await assert.rejects(provider(options), error => error.code === "knowledge_busy");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(starts.length, 10);
+  assert.ok(starts.every((start, i) => i === 0 || start - starts[i - 1] >= 1100));
+  releases.forEach(release => release());
+  await Promise.all(runs);
+});

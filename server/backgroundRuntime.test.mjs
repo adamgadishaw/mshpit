@@ -129,6 +129,7 @@ test("server startup owns its listener and starts core schedulers through the op
     ["artist-tourdate-demand", "startArtistTourDateDemandRefresh"],
     ["artist-genres", "startMusicBrainzGenreRefreshScheduler"],
     ["artist-photos", "startArtistPhotoSeedScheduler"],
+    ["venue-photos", "startVenuePhotoScheduler"],
     ["death-watch", "startArtistDeathWatchScheduler"],
     ["catalog-warm", "startCacheWarmScheduler"],
     ["database-backup", "startBackupScheduler"],

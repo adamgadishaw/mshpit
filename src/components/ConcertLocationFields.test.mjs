@@ -202,3 +202,27 @@ test("clearing the city and unmounting both retire pending requests", async () =
   await tick();
   assert.equal(f.writes.length, before);
 });
+
+test("compact composer defers optional address entry and its privacy copy until requested", () => {
+  const f = fixture({ compact: true });
+  assert.doesNotMatch(f.text(), /Don't add a private home address/);
+  f.typeCity("Tor");
+  f.labelled("Add an optional public event address").onPress();
+  f.flushTimers();
+  assert.equal(f.calls.length, 0, "opening address cancels city lookup before the next render");
+  f.render();
+  assert.equal(f.labelled("Public event address, optional").value, "");
+  assert.match(f.text(), /Don't add a private home address/);
+  f.labelled("Public event address, optional").onChangeText("123 Public Road");
+  f.render();
+  assert.equal(f.labelled("Public event address, optional").value, "123 Public Road");
+});
+
+test("compact composer never hides an existing or restored event address", () => {
+  const f = fixture({ compact: true, eventAddress: "123 Public Road" });
+  assert.equal(f.labelled("Public event address, optional").value, "123 Public Road");
+  assert.match(f.text(), /Add the city for this address before posting/);
+  const empty = fixture({ compact: true });
+  empty.render({ eventAddress: "Restored public address" });
+  assert.equal(empty.labelled("Public event address, optional").value, "Restored public address");
+});

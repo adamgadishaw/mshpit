@@ -39,6 +39,7 @@ import {
   youtubeReviewThumbnailUrl,
 } from "../domain/onlineReview.mjs";
 import { buildPostShareModel } from "../domain/socialShareCard.mjs";
+import { reviewRatingSummary } from "../domain/reviewRatingSummary.mjs";
 
 // "3rd time in the pit" needs a real ordinal, not "3th".
 const ordinal = (n) => {
@@ -297,14 +298,10 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
   const { count: likeCount, liked } = likeInfo(log.id, log.likes || 0);
   const commentCount = commentsFor(log.id).length || log.comments || 0;
   const viewCount = Math.max(0, Math.trunc(Number(log.viewCount) || 0));
-  // Server posts can arrive with null scores (photo-only posts); never crash the feed.
-  const band = log.band ?? 0, room = log.room ?? 0, overall = log.overall ?? 0;
+  const { band, room, overall, factors, hasDimensions } = reviewRatingSummary(log);
   const performance = useMemo(() => reviewCardPerformance(log), [log]);
   const performanceTitle = performance.primary;
   const titledPerformance = performance.showArtistInMeta;
-  const factors = log.dims
-    ? `Band ${band.toFixed(1)} · Room ${room.toFixed(1)} · Night ${(((log.dims.crowd || 0) + (log.dims.experience || 0)) / 2 || overall).toFixed(1)}`
-    : `Band ${band.toFixed(1)} · Room ${room.toFixed(1)}`;
 
   // A plain status update: a Facebook/Twitter-style social card (no ticket stub,
   // no score, no artist/venue line) with the comment section preloaded below.
@@ -584,7 +581,7 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
             <SpinStar size={40} />
             <View style={{ flex: 1 }}>
               <Text style={styles.statsScore}>{overall.toFixed(1)} <Text style={styles.statsOutOf}>/ 5</Text></Text>
-              <Text style={styles.statsSub}>{isOnlineReview ? "Your online concert score" : log.dims && Object.values(log.dims).some((v) => v > 0) ? "How the night broke down" : "Band vs room"}</Text>
+              <Text style={styles.statsSub}>{isOnlineReview ? "Your online concert score" : hasDimensions && factors ? "The details you rated" : factors ? "Band vs room" : "Your overall score"}</Text>
             </View>
           </View>
           {isOnlineReview
@@ -634,7 +631,7 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
                   {!!log.venue && <PublicTextLink href={venueHref} onNavigate={() => onOpenVenue?.(log.venue)} style={styles.venueLink}>{log.venue}</PublicTextLink>}
                   <Text style={styles.dim}>{log.venue && log.city ? " · " : ""}<PublicTextLink href={cityHref} onNavigate={cityIdentity && onOpenCity ? () => onOpenCity(cityIdentity) : undefined} style={styles.dim}>{log.city}</PublicTextLink></Text>
                 </Text>
-                <Text style={styles.factors}>{factors}</Text>
+                {!!factors && <Text style={styles.factors}>{factors}</Text>}
               </View>
               <Text style={styles.date}>{formatDate(log.date, log.date)}</Text>
             </View>

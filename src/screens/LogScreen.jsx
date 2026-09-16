@@ -19,7 +19,8 @@ import DatePicker from "../components/DatePicker";
 import ConcertLocationFields from "../components/ConcertLocationFields";
 import { isDurableMediaUrl, reportMediaPickerError } from "../lib/mediaUpload";
 import { api } from "../lib/api";
-import { formatDate, initialComposerDate, toIsoDate, todayIso } from "../domain/dates.mjs";
+import { formatDate, initialComposerDate, todayIso } from "../domain/dates.mjs";
+import { composerLogRequirement, composerRatingDims, hasDetailedComposerRatings, restoredComposerDate } from "../domain/composerLogDetails.mjs";
 import { mediaDisplayKind, mediaPosterUri } from "../domain/postMediaDisplay.mjs";
 import {
   composerDraftFingerprint,
@@ -186,19 +187,7 @@ function postErrorMessage(error) {
 }
 
 function postDims(post) {
-  const stored = post?.dims && typeof post.dims === "object" ? post.dims : {};
-  const value = (candidate, fallback = 0) => Number.isFinite(Number(candidate)) ? Number(candidate) : Number(fallback) || 0;
-  const overall = value(post?.overall);
-  const band = value(post?.band, overall);
-  const room = value(post?.room, overall);
-  return {
-    performance: value(stored.performance, band),
-    setlist: value(stored.setlist, band),
-    sound: value(stored.sound, room),
-    venue: value(stored.venue, room),
-    crowd: value(stored.crowd, overall),
-    experience: value(stored.experience, overall),
-  };
+  return composerRatingDims(post);
 }
 
 export default function LogScreen({
@@ -445,6 +434,8 @@ export default function LogScreen({
     ? postDims(editing)
     : { performance: 0, setlist: 0, sound: 0, venue: 0, crowd: 0, experience: 0 });
   const [ratingsDirty, setRatingsDirty] = useState(false);
+  const [showDetailedRatings, setShowDetailedRatings] = useState(() => !!editing && hasDetailedComposerRatings(postDims(editing)));
+  const [showTour, setShowTour] = useState(!!(editing?.tour || prefill?.tour));
   const [review, setReview] = useState(editing?.review || "");
   const [song, setSong] = useState(editing?.song || null);
   const [songUrl, setSongUrl] = useState(editing?.song?.url || "");
@@ -677,11 +668,11 @@ export default function LogScreen({
   };
   const [posting, setPosting] = useState(false);
   // Show date, defaults to today so logging stays one-tap, but you can set the
-  // real date of a past show. Years run from this year back to 2000, descending.
+  // real date of a past show, or deliberately leave it unknown.
   const today = new Date();
   // Held and submitted as canonical ISO; rendered through formatDate below.
   const todayStr = todayIso(today);
-  const PAST_YEARS = Array.from({ length: today.getFullYear() - 1999 }, (_, i) => today.getFullYear() - i);
+  const PAST_YEARS = Array.from({ length: today.getFullYear() - 1899 }, (_, i) => today.getFullYear() - i);
   // An existing post may still hold a legacy display-format date, so normalize
   // on open: editing a show must not rewrite which performance it belongs to.
   const [date, setDate] = useState(initialExperienceType === ONLINE_REVIEW_EXPERIENCE ? "" : initialComposerDate({
@@ -701,7 +692,7 @@ export default function LogScreen({
     // request payload still strip incompatible fields, but an accidental tap
     // no longer destroys a venue review or an online review in progress.
     setShowDate(false);
-    if (next === IN_PERSON_REVIEW_EXPERIENCE && !date) setDate(todayStr);
+    // A deliberately unknown date stays unknown when switching back.
   };
 
   async function uploadOriginalMedia(selectedAssets) {
@@ -1078,7 +1069,7 @@ export default function LogScreen({
       : artist.trim() && (venue.trim() || city.trim()) && (!eventAddress.trim() || city.trim()) && computed.overall > 0;
   const canPost = !!canPostBase && pendingMediaAssets.length === 0;
   const submitBusy = uploadingPhotos || resolvingSong || posting || artistAttaching;
-  const engagementPrompt = useMemo(() => protectedLegacyMemory ? null : composerEngagementPrompt({
+  const engagementPrompt = useMemo(() => protectedLegacyMemory || (!isStatus && !isOnlineReview) ? null : composerEngagementPrompt({
     kind: isStatus ? "status" : "review",
     experienceType,
     canPost: !!canPostBase,
@@ -1271,9 +1262,11 @@ export default function LogScreen({
       .filter((asset) => asset.status !== "ready" && (asset.durableLocalUri || asset.assetId))
       .map((asset, index) => originalMediaProjectAsset(asset, index));
     const restoredReady = restoredProject.assets.filter((asset) => !!asset.sourceUrl && !restoredPending.some((pending) => pending.id === asset.id));
-    setTour(restored.tour); setDate(restored.experienceType === ONLINE_REVIEW_EXPERIENCE ? "" : toIsoDate(restored.date) || restored.date || todayStr); setOnlineTitle(restored.onlineTitle); setYoutubeUrl(restored.youtubeUrl); setOnlineRating(restored.onlineRating); setDims(restored.dims); setReview(restored.review); setTaggedPeople(restored.postType === "review" && restored.experienceType !== ONLINE_REVIEW_EXPERIENCE ? restored.taggedPeople : []); setSong(restored.song); setSongUrl(restored.songUrl); setPreservedPlaylist(restored.playlist); setPhotos(restoredPhotos); setMediaProject(normalizeMediaProject({ assets: restoredReady })); setPendingMediaAssets(restoredPending); setPhotosPublic(restored.photosPublic); setLandingShowcase(restored.landingShowcase && hasLandingCompatibleImage(restoredPhotos));
+    setTour(restored.tour); setDate(restored.experienceType === ONLINE_REVIEW_EXPERIENCE ? "" : restoredComposerDate(restored.date)); setOnlineTitle(restored.onlineTitle); setYoutubeUrl(restored.youtubeUrl); setOnlineRating(restored.onlineRating); setDims(restored.dims); setReview(restored.review); setTaggedPeople(restored.postType === "show" && restored.experienceType !== ONLINE_REVIEW_EXPERIENCE ? restored.taggedPeople : []); setSong(restored.song); setSongUrl(restored.songUrl); setPreservedPlaylist(restored.playlist); setPhotos(restoredPhotos); setMediaProject(normalizeMediaProject({ assets: restoredReady })); setPendingMediaAssets(restoredPending); setPhotosPublic(restored.photosPublic); setLandingShowcase(restored.landingShowcase && hasLandingCompatibleImage(restoredPhotos));
+    setShowDetailedRatings(hasDetailedComposerRatings(restored.dims));
+    setShowTour(!!restored.tour);
     void recoverRestoredMedia(restoredPending, restored.id);
-    setShowSong(restored.panels.song); setShowPhotos(restored.panels.photos); setShowPeople(restored.postType === "review" && restored.experienceType !== ONLINE_REVIEW_EXPERIENCE && (restored.panels.people || restored.taggedPeople.length > 0));
+    setShowSong(restored.panels.song); setShowPhotos(restored.panels.photos); setShowPeople(restored.postType === "show" && restored.experienceType !== ONLINE_REVIEW_EXPERIENCE && (restored.panels.people || restored.taggedPeople.length > 0));
   };
 
   useEffect(() => {
@@ -1472,8 +1465,8 @@ export default function LogScreen({
           tour: tour.trim() || null,
           date,
           overall: submittedRatings.overall,
-          band: submittedRatings.band || submittedRatings.overall,
-          room: submittedRatings.room || submittedRatings.overall,
+          band: submittedRatings.band || null,
+          room: submittedRatings.room || null,
           dims,
           setlist: editing?.setlist || [],
           inTourWindow: editing?.inTourWindow || false,
@@ -1635,6 +1628,7 @@ export default function LogScreen({
           </>
         ) : (
           <>
+        <Text style={styles.quickLogHint}>Start with what you remember. One rating is enough; extra details are optional.</Text>
         <Text style={styles.fieldLabel}>HOW DID YOU EXPERIENCE IT?</Text>
         <View style={styles.experienceModeRow} accessibilityRole="tablist">
           <Pressable
@@ -1773,9 +1767,14 @@ export default function LogScreen({
             {venuePicked && !!venue.trim() && (
               <View style={styles.linked}><Icon name="check" size={12} color={colors.good} /><Text style={styles.linkedTxt}>Venue selected: {venue.trim()}</Text></View>
             )}
+            {!!venue.trim() && (
+              <Pressable style={styles.optionalAction} onPress={() => { setVenue(""); setVenuePicked(false); setVenueHits([]); }} accessibilityRole="button" accessibilityLabel="Leave the venue unknown and use the city">
+                <Text style={styles.optionalActionText}>Don't remember the venue? Use just the city</Text>
+              </Pressable>
+            )}
           </View>
         </View>
-        <ConcertLocationFields city={city} eventAddress={eventAddress} onCityChange={setCity} onEventAddressChange={setEventAddress} readCities={readCityDirectory} />
+        <ConcertLocationFields city={city} eventAddress={eventAddress} onCityChange={setCity} onEventAddressChange={setEventAddress} readCities={readCityDirectory} compact />
 
         {officialEventName ? (
           <View style={styles.officialEventCard} accessible accessibilityRole="text" accessibilityLabel={`Event listing name: ${officialEventName}`}>
@@ -1788,7 +1787,13 @@ export default function LogScreen({
           </View>
         ) : null}
 
-        <Text style={styles.fieldLabel}>TOUR OR SPECIAL EVENT <Text style={styles.optional}>optional</Text></Text>
+        <Pressable style={styles.detailDisclosure} onPress={() => setShowTour((value) => !value)} accessibilityRole="button" accessibilityState={{ expanded: showTour }} accessibilityLabel="Tour or special event details">
+          <Icon name="ticket" size={16} color={colors.textDim} />
+          <Text style={styles.detailDisclosureText}>{tour.trim() || "Add tour or special event"}</Text>
+          <Text style={styles.optional}>optional</Text>
+          <Icon name={showTour ? "chevron-down" : "chevron-right"} size={16} color={colors.textDim} />
+        </Pressable>
+        {showTour && <>
         <TextInput style={styles.input} placeholder="e.g. CHROMAKOPIA Tour, OVO Fest" placeholderTextColor={colors.textFaint} value={tour} onChangeText={setTour} maxLength={80} accessibilityLabel="Tour or special event name" />
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.presets} keyboardShouldPersistTaps="handled">
           {TOUR_PRESETS.map((p) => {
@@ -1800,40 +1805,58 @@ export default function LogScreen({
             );
           })}
         </ScrollView>
+        </>}
 
-        <Text style={[styles.fieldLabel, { marginTop: 18 }]}>WHEN?</Text>
-        <Pressable style={styles.dateBtn} onPress={() => setShowDate((s) => !s)}>
+        <Text style={[styles.fieldLabel, { marginTop: 18 }]}>WHEN? <Text style={styles.optional}>optional</Text></Text>
+        <Pressable style={styles.dateBtn} onPress={() => setShowDate((s) => !s)} accessibilityRole="button" accessibilityLabel="Choose concert date" accessibilityState={{ expanded: showDate }}>
           <Icon name="calendar" size={16} color={colors.amber} />
-          <Text style={styles.dateTxt}>{date === todayStr ? "Today" : formatDate(date, date)}</Text>
+          <Text style={styles.dateTxt}>{!date ? "Date not remembered" : date === todayStr ? "Today" : formatDate(date, date)}</Text>
           <Icon name={showDate ? "chevron-down" : "chevron-right"} size={16} color={colors.textDim} />
         </Pressable>
+        <View style={styles.dateActions}>
+          <Pressable style={styles.optionalAction} onPress={() => { setDate(""); setShowDate(false); }} accessibilityRole="button" accessibilityLabel="I don't remember the concert date" accessibilityState={{ selected: !date }}>
+            <Text style={[styles.optionalActionText, !date && { color: colors.amber }]}>I don't remember the date</Text>
+          </Pressable>
+          {date !== todayStr && <Pressable style={styles.optionalAction} onPress={() => { setDate(todayStr); setShowDate(false); }} accessibilityRole="button" accessibilityLabel="Use today as the concert date"><Text style={styles.optionalActionText}>Use today</Text></Pressable>}
+        </View>
+        {!date && <Text style={styles.detailHint}>No date will be guessed. Add it later to place this show in dated concert history.</Text>}
         {showDate && (
           <View style={styles.datePickerWrap}>
             <DatePicker value={date} years={PAST_YEARS} defaultYear={today.getFullYear()} onChange={setDate} />
           </View>
         )}
 
-        {/* live weighted overall */}
-        <View style={styles.overallCard}>
-          <Text style={styles.overallNum}>{computed.overall ? computed.overall.toFixed(1) : "-"}</Text>
-          <View>
-            <Stars value={computed.overall} size={18} />
-            <Text style={styles.overallSub}>overall score · based on the ratings below</Text>
+        <View style={styles.quickRatingCard}>
+          <Text style={styles.onlineRatingLabel}>HOW WAS THE SHOW?</Text>
+          <View style={styles.quickRatingRow}>
+            <TapStars value={dims.experience} onChange={(value) => setDim("experience", value)} size={32} gap={5} color={colors.amber} />
+            <Text style={styles.onlineRatingValue}>{dims.experience ? dims.experience.toFixed(1) : "—"}</Text>
           </View>
+          <Text style={styles.detailHint}>Your overall experience. Leave any detailed scores you don't remember unrated.</Text>
+          {!!dims.experience && <Pressable style={styles.optionalAction} onPress={() => setDim("experience", 0)} accessibilityRole="button" accessibilityLabel="Clear overall experience rating"><Text style={styles.optionalActionText}>Clear this rating</Text></Pressable>}
         </View>
 
-        {/* six factors - tap the stars, no plus/minus */}
-        {GROUPS.map((g) => (
+        <Pressable style={styles.detailDisclosure} onPress={() => setShowDetailedRatings((value) => !value)} accessibilityRole="button" accessibilityState={{ expanded: showDetailedRatings }} accessibilityLabel="Detailed concert ratings">
+          <Icon name="star" size={16} color={colors.textDim} />
+          <Text style={styles.detailDisclosureText}>{hasDetailedComposerRatings(dims) ? "Detailed ratings added" : "Rate the band, room or crowd"}</Text>
+          <Text style={styles.optional}>optional</Text>
+          <Icon name={showDetailedRatings ? "chevron-down" : "chevron-right"} size={16} color={colors.textDim} />
+        </Pressable>
+        {showDetailedRatings && GROUPS.map((g) => (
           <View key={g} style={styles.group}>
             <Text style={[styles.groupLabel, { color: GROUP_COLOR[g] }]}>{g}</Text>
-            {RATING_DIMS.filter((d) => d.group === g).map((d) => (
+            {RATING_DIMS.filter((d) => d.group === g && d.key !== "experience").map((d) => (
               <View key={d.key} style={styles.factorRow}>
-                <Text style={styles.factorLabel}>{d.label}</Text>
-                <TapStars value={dims[d.key]} onChange={(v) => setDim(d.key, v)} size={26} gap={4} color={GROUP_COLOR[g]} />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.factorLabel}>{d.label}</Text>
+                  {dims[d.key] > 0 && <Pressable style={styles.clearRating} onPress={() => setDim(d.key, 0)} accessibilityRole="button" accessibilityLabel={`Leave ${d.label.toLowerCase()} unrated`}><Text style={styles.optionalActionText}>Leave unrated</Text></Pressable>}
+                </View>
+                <TapStars value={dims[d.key]} onChange={(v) => setDim(d.key, v)} size={25} gap={4} color={GROUP_COLOR[g]} />
               </View>
             ))}
           </View>
         ))}
+        {hasDetailedComposerRatings(dims) && <View style={styles.overallCard}><Text style={styles.overallNum}>{computed.overall.toFixed(1)}</Text><View><Stars value={computed.overall} size={18} /><Text style={styles.overallSub}>Combined score · only the factors you rated</Text></View></View>}
           </>
         )}
 
@@ -2115,6 +2138,7 @@ export default function LogScreen({
             </View>
           </View>
         ) : null}
+        {!isStatus && !isOnlineReview && <Text style={styles.submitHint} accessibilityLiveRegion="polite">{composerLogRequirement({ artist, venue, city, eventAddress, overall: computed.overall })}</Text>}
         <Button title={posting ? (editing ? "Saving changes..." : "Posting...") : uploadingPhotos ? "Uploading media..." : resolvingSong ? "Checking video..." : editing ? "Save changes" : isStatus ? "Post" : "Post to feed"} icon="check" onPress={submit} disabled={!canPost || submitBusy} style={{ marginTop: engagementPrompt ? 14 : 28 }} />
         {!editing && hasContent && (
           <Pressable style={styles.saveDraft} onPress={stash} disabled={submitBusy}>
@@ -2128,6 +2152,17 @@ export default function LogScreen({
 }
 
 const styles = StyleSheet.create({
+  quickLogHint: { color: colors.textDim, fontSize: 13, lineHeight: 20, marginBottom: 18 },
+  detailHint: { color: colors.textDim, fontSize: 12, lineHeight: 18, marginTop: 6 },
+  optionalAction: { minHeight: 44, justifyContent: "center", paddingVertical: 8 },
+  optionalActionText: { color: colors.textDim, fontSize: 12, lineHeight: 18, textDecorationLine: "underline" },
+  detailDisclosure: { minHeight: 48, flexDirection: "row", alignItems: "center", gap: 9, paddingVertical: 12, borderBottomWidth: 1, borderColor: colors.lineSoft, marginBottom: 10 },
+  detailDisclosureText: { color: colors.text, fontSize: 13, fontWeight: "700", flex: 1 },
+  dateActions: { flexDirection: "row", flexWrap: "wrap", columnGap: 20 },
+  quickRatingCard: { padding: 14, marginTop: 16, marginBottom: 8, borderWidth: 1, borderColor: colors.line, borderRadius: radius.md, backgroundColor: colors.surface },
+  quickRatingRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 },
+  clearRating: { minHeight: 44, justifyContent: "center", alignSelf: "flex-start" },
+  submitHint: { color: colors.textDim, fontSize: 12, lineHeight: 18, marginTop: 20 },
   modeRow: { flexDirection: "row", gap: 8, backgroundColor: colors.bgElev, borderRadius: radius.pill, padding: 4, borderWidth: 1, borderColor: colors.lineSoft, marginBottom: 18 },
   modeBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7, paddingVertical: 10, borderRadius: radius.pill },
   modeBtnOn: { backgroundColor: colors.amberStrong },

@@ -46,7 +46,7 @@ test("mode switching preserves unfinished work while payload normalization strip
     'setYoutubeUrl("")',
     "setOnlineRating(0)",
   ]) assert.equal(transition.includes(statement), false, `Mode switch must preserve: ${statement}`);
-  includes(transition, "if (next === IN_PERSON_REVIEW_EXPERIENCE && !date) setDate(todayStr)");
+  assert.equal(transition.includes("setDate("), false, "An unknown concert date must not silently become today");
   assert.equal(transition.includes("setPhotos("), false);
   assert.equal(transition.includes("setMediaProject("), false);
   assert.equal(transition.includes("setPendingMediaAssets("), false);

@@ -8,9 +8,11 @@ test("catalog browser fixture uses only a synthetic administrator", () => {
   assert.match(upkeepAdmin.id, /fixture/);
 });
 test("upkeep fixtures distinguish multiple lanes from Google indexing proof", () => {
-  assert.equal(upkeepFixture("catch_up").catalog.limits.lanes, 3);
+  assert.equal(upkeepFixture("catch_up").catalog.limits.lanes, 10);
   assert.equal(upkeepFixture("maintenance").catalog.limits.lanes, 1);
   assert.equal(upkeepFixture().seo.indexingState, "not_measured");
+  assert.equal(upkeepFixture().artistPhotos.lastPass.filled, 18);
+  assert.equal(upkeepFixture().venuePhotos.counts.filled, 12);
   assert.throws(() => upkeepFixture("run-now"));
 });
 test("unrelated staff fixture writes are refused", () => {

@@ -59,6 +59,7 @@ import {
 } from "./artistPhotoSeedScheduler.js";
 import { startCacheWarmScheduler } from "./cacheWarmer.js";
 import { startArtistKnowledgeScheduler } from "./artistKnowledgeRefresh.js";
+import { startVenuePhotoScheduler } from "./venuePhotoEnrichment.js";
 import { startBackupScheduler } from "./backupScheduler.js";
 import { startMediaDeletionScheduler } from "./mediaDeletion.js";
 import { startFounderOperationsScheduler } from "./siteHealthDigest.js";
@@ -828,6 +829,7 @@ let artistDeathWatchScheduler = null;
 let tourDateScheduler = null;
 let cacheWarmScheduler = null;
 let artistKnowledgeScheduler = null;
+let venuePhotoScheduler = null;
 let backupScheduler = null;
 let mediaDeletionScheduler = null;
 let accountLifecycleScheduler = null;
@@ -849,6 +851,7 @@ function shutdown(exitCode = 0) {
   const tourDateStop = tourDateScheduler?.stop({ abortActive: true }) || Promise.resolve();
   const cacheWarmStop = cacheWarmScheduler?.stop({ abortActive: true }) || Promise.resolve();
   const artistKnowledgeStop = artistKnowledgeScheduler?.stop({ abortActive: true }) || Promise.resolve();
+  const venuePhotoStop = venuePhotoScheduler?.stop({ abortActive: true }) || Promise.resolve();
   const backupStop = backupScheduler?.stop({ abortActive: true }) || Promise.resolve();
   const mediaDeletionStop = mediaDeletionScheduler?.stop({ abortActive: true }) || Promise.resolve();
   const accountLifecycleStop = accountLifecycleScheduler?.stop() || Promise.resolve();
@@ -876,6 +879,8 @@ function shutdown(exitCode = 0) {
     catch (error) { console.error(`[pit] catalogue enrichment shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     try { await artistKnowledgeStop; }
     catch (error) { console.error(`[pit] artist knowledge shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
+    try { await venuePhotoStop; }
+    catch (error) { console.error(`[pit] venue photo shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     try { await backupStop; }
     catch (error) { console.error(`[pit] database backup shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     try { await mediaDeletionStop; }
@@ -1020,6 +1025,9 @@ async function startServer() {
     artistKnowledgeScheduler = startBackgroundRuntime("/startup/artist-knowledge", () => startArtistKnowledgeScheduler({
       database: db, directory: DATABASE_DIRECTORY, databasePath: DATABASE_PATH,
     })); // Exact Wikidata/Wikipedia identity, bounded missing-field enrichment only.
+    venuePhotoScheduler = startBackgroundRuntime("/startup/venue-photos", () => startVenuePhotoScheduler({
+      database: db, directory: DATABASE_DIRECTORY, databasePath: DATABASE_PATH,
+    })); // Verified venue photography; capped object storage, never visitor-triggered downloads.
     backupScheduler = startBackgroundRuntime("/startup/database-backup", () => startBackupScheduler()); // verified daily SQLite snapshot on /data; private off-host copy when configured
     mediaDeletionScheduler = startBackgroundRuntime("/startup/media-deletion", () => startMediaDeletionScheduler({ database: db })); // bounded, durable cleanup of active user-media objects only
     accountLifecycleScheduler = startBackgroundRuntime("/startup/account-inactivity", () => startAccountLifecycleScheduler({

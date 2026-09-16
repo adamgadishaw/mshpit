@@ -382,3 +382,44 @@ test("scheduled photo seeding reports a sanitized provider failure even before a
   ]);
   await stopArtistPhotoSeedScheduler();
 });
+
+test("moderation pause blocks scheduled photo work and is rechecked during each pass", async () => {
+  let mode = "paused", runs = 0, purges = 0;
+  const reports = [];
+  const state = startArtistPhotoSeedScheduler({
+    env: { ARTIST_PHOTO_SEED_ENABLED: "true", SPOTIFY_CLIENT_ID: "id", SPOTIFY_CLIENT_SECRET: "secret" },
+    initialDelayMs: 60_000, intervalMs: 60_000,
+    readControl: () => ({ mode }), catalogStatus: () => ({ running: false }),
+    migrateLegacy: () => 0, purgeExpired: () => { purges += 1; }, purgeAll: () => 0,
+    report: { update: (value) => reports.push(value), finish: () => {} },
+    runBatch: async ({ shouldStop }) => {
+      runs += 1; assert.equal(shouldStop(), false); mode = "paused"; assert.equal(shouldStop(), true);
+      return { attempted: 1, filled: 1, noMatch: 0, failed: 0, stopped: true };
+    }, logger: { log() {}, error() {} },
+  });
+  try {
+    assert.deepEqual(await state.trigger(), { skipped: "catalog_paused" }); assert.equal(runs, 0);
+    assert.equal(reports.at(-1).pauseReason, "catalog_paused");
+    mode = "maintenance"; await state.trigger(); assert.equal(runs, 1);
+    assert.equal(reports.at(-1).phase, "paused"); assert.equal(reports.at(-1).pauseReason, "catalog_paused");
+    assert.equal(purges, 0, "pausing maintenance also prevents expiry mutation after this pass");
+  } finally { await stopArtistPhotoSeedScheduler(); }
+});
+
+test("photo progress write failure cannot turn a successful provider pass into an unhandled rejection", async () => {
+  const errors = [];
+  const state = startArtistPhotoSeedScheduler({
+    env: { ARTIST_PHOTO_SEED_ENABLED: "true", SPOTIFY_CLIENT_ID: "id", SPOTIFY_CLIENT_SECRET: "secret" },
+    initialDelayMs: 60_000, intervalMs: 60_000,
+    readControl: () => ({ mode: "maintenance" }), catalogStatus: () => ({ running: false }),
+    migrateLegacy: () => 0, purgeExpired: () => 0, purgeAll: () => 0,
+    report: { update() {}, finish() { throw Object.assign(new Error("secret database path"), { code: "SQLITE_BUSY" }); } },
+    runBatch: async () => ({ attempted: 1, filled: 1, noMatch: 0, failed: 0 }),
+    logger: { log() {}, error: (value) => errors.push(value) },
+  });
+  try {
+    const result = await state.trigger();
+    assert.equal(result.filled, 1); assert.equal(result.failed, 0);
+    assert.equal(errors.length, 1); assert.doesNotMatch(errors[0], /secret database path/);
+  } finally { await stopArtistPhotoSeedScheduler(); }
+});

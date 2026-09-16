@@ -30,7 +30,7 @@ function parsePass(text, at) {
     prioritized: parsed.prioritized ?? null,
     ...Object.fromEntries(FLAGS.map((key) => [key, parsed[key]])),
     ...Object.fromEntries(OPTIONAL_FLAGS.map((key) => [key, parsed[key] === true])),
-    lanes: Number.isInteger(parsed.lanes) && parsed.lanes >= 1 && parsed.lanes <= 3 ? parsed.lanes : 1,
+    lanes: Number.isInteger(parsed.lanes) && parsed.lanes >= 1 && parsed.lanes <= 10 ? parsed.lanes : 1,
   });
 }
 

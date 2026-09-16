@@ -18,6 +18,7 @@ import { privateErrorLabel } from "./errors.js";
 import { runBackgroundJob } from "./backgroundJobCoordinator.js";
 import { runMusicBrainzRequest } from "./musicBrainzRequestThrottle.js";
 import { PROVIDER_JSON_LIMITS, readBoundedJsonResponse } from "./boundedJsonResponse.js";
+import { discoverArtistPriorityKeys, interleaveDiscoverPriority } from "./discoverArtistPriority.js";
 import {
   findSpotifyArtistPhoto,
   safeSpotifyArtistId,
@@ -280,6 +281,7 @@ const photoFillCursorSet = db.prepare(`INSERT INTO app_meta (key,value) VALUES (
   ON CONFLICT(key) DO UPDATE SET value=excluded.value`);
 const spotifyPhotoBackoffDelete = db.prepare("DELETE FROM app_meta WHERE key=?");
 const missingPhotoPredicate = `photo IS NULL
+AND NOT EXISTS (SELECT 1 FROM artist_profiles ap WHERE ap.artist_key=artists.norm AND (ap.removed=1 OR NULLIF(TRIM(ap.avatar_uri),'') IS NOT NULL))
 AND (
   (length(spotify_id)=22 AND spotify_id NOT GLOB '*[^A-Za-z0-9]*')
   OR (
@@ -294,19 +296,14 @@ AND (
   OR EXISTS (SELECT 1 FROM fan_club_members fcm WHERE fcm.artist=artists.norm)
   OR EXISTS (SELECT 1 FROM tour_dates td WHERE td.artist_key=artists.norm AND td.provider_active=1)
   OR EXISTS (SELECT 1 FROM artist_tourdate_refresh_queue arq WHERE arq.artist_key=artists.norm)
+  OR norm IN (SELECT value FROM json_each($priority))
 )
 AND (
   data IS NULL OR json_valid(data)=0
-  OR COALESCE(CAST(json_extract(data,'$.spotifyPhotoCheckedAt') AS INTEGER),0) < ?
+  OR COALESCE(CAST(json_extract(data,'$.spotifyPhotoCheckedAt') AS INTEGER),0) < $before
 )`;
 const photoFillPendingCount = db.prepare(`SELECT COUNT(*) c FROM artists WHERE ${missingPhotoPredicate}`);
-const photoFillColumns = "norm,name,genre,photo,mbid,spotify_id,country,formed,popularity,data,source";
-const photoFillAfterCursor = db.prepare(`SELECT ${photoFillColumns}
-  FROM artists WHERE ${missingPhotoPredicate} AND norm > ? ORDER BY norm LIMIT ?`);
-const photoFillFromStart = db.prepare(`SELECT ${photoFillColumns}
-  FROM artists WHERE ${missingPhotoPredicate} ORDER BY norm LIMIT ?`);
-const photoFillThroughCursor = db.prepare(`SELECT ${photoFillColumns}
-  FROM artists WHERE ${missingPhotoPredicate} AND norm <= ? ORDER BY norm LIMIT ?`);
+const photoFillColumns = "norm,name,genre,photo,mbid,spotify_id,country,formed,popularity,data,source,updated_at";
 
 export const photoFillRefreshBefore = (at = Date.now()) => Number(at) - SPOTIFY_PHOTO_RECHECK_MS;
 
@@ -530,25 +527,25 @@ export function migrateLegacySpotifyArtistPhotoData(at = Date.now()) {
 }
 
 export function photoFillPendingTotal(at = Date.now()) {
-  return Number(photoFillPendingCount.get(photoFillRefreshBefore(at))?.c) || 0;
+  return Number(photoFillPendingCount.get({ $before: photoFillRefreshBefore(at), $priority: JSON.stringify(discoverArtistPriorityKeys(db, at)) })?.c) || 0;
 }
 
-function loadPhotoFillBatch(cursor, limit) {
-  const bounded = Math.max(1, Math.min(PHOTO_FILL_LIMIT, Number(limit) || PHOTO_FILL_LIMIT));
-  const refreshBefore = photoFillRefreshBefore();
-  if (!cursor) {
-    return {
-      rows: photoFillFromStart.all(refreshBefore, bounded),
-      total: photoFillPendingTotal(),
-      wrapped: false,
-    };
-  }
-  const after = photoFillAfterCursor.all(refreshBefore, cursor, bounded);
+export function loadPhotoFillBatch(cursor, limit, { database = db, at = Date.now() } = {}) {
+  const bounded = Math.max(1, Math.min(PHOTO_FILL_LIMIT, Math.floor(Number(limit)) || PHOTO_FILL_LIMIT));
+  const priorityKeys = discoverArtistPriorityKeys(database, at);
+  const params = { $before: photoFillRefreshBefore(at), $priority: JSON.stringify(priorityKeys), $limit: bounded };
+  const priority = priorityKeys.length ? database.prepare(`SELECT ${photoFillColumns} FROM artists
+    WHERE ${missingPhotoPredicate} AND norm IN (SELECT value FROM json_each($priority)) ORDER BY norm LIMIT $limit`).all(params) : [];
+  const regularSql = `SELECT ${photoFillColumns} FROM artists WHERE ${missingPhotoPredicate}
+    AND norm NOT IN (SELECT value FROM json_each($priority))`;
+  const after = database.prepare(`${regularSql} AND norm > $cursor ORDER BY norm LIMIT $limit`).all({ ...params, $cursor: String(cursor || "") });
   const remaining = bounded - after.length;
-  const before = remaining > 0 ? photoFillThroughCursor.all(refreshBefore, cursor, remaining) : [];
+  const before = cursor && remaining > 0
+    ? database.prepare(`${regularSql} AND norm <= $cursor ORDER BY norm LIMIT $limit`).all({ ...params, $cursor: String(cursor), $limit: remaining }) : [];
+  const regular = [...after, ...before];
   return {
-    rows: [...after, ...before],
-    total: photoFillPendingTotal(),
+    rows: interleaveDiscoverPriority(priority.map((row) => ({ ...row, photoPriority: true })), regular, bounded),
+    total: Number(database.prepare(`SELECT COUNT(*) c FROM artists WHERE ${missingPhotoPredicate}`).get({ $before: params.$before, $priority: params.$priority })?.c) || 0,
     wrapped: before.length > 0,
   };
 }
@@ -633,12 +630,38 @@ export function mergePhotoFillData(row, data, enriched) {
   };
 }
 
-function persistPhotoFill(row, enriched) {
+export function persistPhotoFill(row, enriched, { database = db, at = Date.now() } = {}) {
+  // Provider calls await outside SQLite. Re-read afterward and reject an
+  // identity change; never resurrect a deleted artist or overwrite a photo
+  // supplied while the request was in flight.
+  const current = database.prepare(`SELECT ${photoFillColumns} FROM artists WHERE norm=?`).get(row.norm);
+  if (!current || ["name", "mbid", "spotify_id"].some((field) => (current[field] || "") !== (row[field] || ""))) return null;
+  if (current.photo || database.prepare("SELECT 1 FROM artist_profiles WHERE artist_key=? AND (removed=1 OR NULLIF(TRIM(avatar_uri),'') IS NOT NULL)").get(row.norm)) return null;
   let data = {};
-  try { data = JSON.parse(row.data || "{}"); } catch { /* Corrupt metadata is repaired from typed/provider fields. */ }
-  const merged = mergePhotoFillData(row, data, enriched);
-  if (!merged) return false;
-  artistStmts.upsert.run(artistRow(row.norm, merged, row.source || "deezer"));
+  let requestedData = {};
+  try { data = JSON.parse(current.data || "{}"); requestedData = JSON.parse(row.data || "{}"); } catch { return null; }
+  if (!data || typeof data !== "object" || Array.isArray(data) || !requestedData || typeof requestedData !== "object" || Array.isArray(requestedData)) return null;
+  if (data.photo || ["spotifyId", "deezerId"].some((field) => String(data[field] || "") !== String(requestedData[field] || ""))) return null;
+  const expectedSpotifyId = safeSpotifyArtistId(current.spotify_id || data.spotifyId);
+  if (enriched?.provider === "spotify" && enriched.noMatch !== true && safeSpotifyArtistId(enriched.spotifyId) !== expectedSpotifyId) return null;
+  if (Number(data.spotifyPhotoCheckedAt) > Number(requestedData.spotifyPhotoCheckedAt || 0)) return null;
+  const merged = mergePhotoFillData(current, data, enriched);
+  if (!merged) return null;
+  // Only photo-provider fields are owned here. Typed biography, provenance,
+  // rankings and identity must not be rewritten by an unrelated image fetch.
+  const photoFields = enriched?.provider === "spotify"
+    ? ["spotifyId", "spotifyPhoto", "spotifyPhotoWidth", "spotifyPhotoHeight", "spotifyPhotoCheckedAt", "spotifyPhotoNoMatchSince", "spotifyPhotoLastResult", "photoSource", "photoCredit", "photoSourceUrl", "photoDisplayPolicy"]
+    : ["photo", "photoCredit"];
+  const next = { ...data };
+  for (const field of photoFields) {
+    if (Object.hasOwn(merged, field)) next[field] = merged[field];
+    else delete next[field];
+  }
+  const saved = database.prepare(`UPDATE artists SET photo=?,data=?,updated_at=?
+    WHERE norm=? AND data IS ? AND updated_at IS ? AND name IS ? AND mbid IS ? AND spotify_id IS ? AND photo IS NULL
+    AND NOT EXISTS (SELECT 1 FROM artist_profiles ap WHERE ap.artist_key=artists.norm AND (ap.removed=1 OR NULLIF(TRIM(ap.avatar_uri),'') IS NOT NULL))`)
+    .run(enriched?.provider === "spotify" ? null : merged.photo || null, JSON.stringify(next), at, current.norm, current.data, current.updated_at, current.name, current.mbid, current.spotify_id);
+  if (Number(saved.changes) !== 1) return null;
   if (enriched?.provider === "spotify" && enriched.noMatch === true) return false;
   return !!(merged.photo || merged.spotifyPhoto);
 }
@@ -717,13 +740,15 @@ export async function fillMissingArtistPhotos({
   persistArtist = persistPhotoFill,
   pause = sleep,
 } = {}) {
-  const bounded = Math.max(1, Math.min(PHOTO_FILL_LIMIT, Number(limit) || PHOTO_FILL_LIMIT));
+  const bounded = Math.max(1, Math.min(PHOTO_FILL_LIMIT, Math.floor(Number(limit)) || PHOTO_FILL_LIMIT));
   const initialCursor = String(readCursor() || "");
   const batch = loadBatch(initialCursor, bounded) || {};
   const rows = Array.isArray(batch.rows) ? batch.rows.slice(0, bounded) : [];
   let attempted = 0;
   let filled = 0;
   let noMatch = 0;
+  let skipped = 0;
+  let priorityAttempted = 0;
   let lastAttempted = initialCursor;
   let providerFailure = null;
 
@@ -741,13 +766,16 @@ export async function fillMissingArtistPhotos({
       break;
     }
 
-    const persistedPhoto = enriched ? !!persistArtist(row, enriched) : false;
+    if (shouldStop() || signal?.aborted) break;
+    const persistedPhoto = enriched ? persistArtist(row, enriched) : false;
     const savedPhoto = enriched?.noMatch === true ? false : persistedPhoto;
     attempted += 1;
-    if (savedPhoto) filled += 1;
+    if (persistedPhoto === null) skipped += 1;
+    else if (savedPhoto) filled += 1;
     else noMatch += 1;
-    lastAttempted = row.norm;
-    writeCursor(lastAttempted);
+    // Priority work never jumps the durable ordinary-catalogue cursor ahead.
+    if (row.photoPriority === true) priorityAttempted += 1;
+    else { lastAttempted = row.norm; writeCursor(lastAttempted); }
     tick({ phase: "photos", attempted, filled, noMatch, failed: 0, of: rows.length });
     await pause(80);
   }
@@ -758,6 +786,8 @@ export async function fillMissingArtistPhotos({
     attempted,
     filled,
     noMatch,
+    skipped,
+    priorityAttempted,
     failed: providerFailure ? 1 : 0,
     providerFailure,
     stopped,

@@ -2,6 +2,7 @@ import {
   compareCurrentAndUpcomingLiveEvents,
   isCurrentOrUpcomingLiveEvent,
 } from "./eventLifecycle.mjs";
+import { venueListingProviderIdentity } from "./venueListingIdentity.mjs";
 
 const text = (value, max = 180) => typeof value === "string"
   ? value.replace(/[\u0000-\u001f\u007f]/g, "").replace(/\s+/g, " ").trim().slice(0, max)
@@ -231,9 +232,8 @@ const eventIdentity = (event) => text(event?.id, 240)
   || [event?.artist, event?.venue, event?.date].map((value) => text(value).toLocaleLowerCase()).join("|");
 
 export function discoverVenueIdentity(event, { countryForCity } = {}) {
-  const source = text(event?.source, 40).toLocaleLowerCase();
-  const providerVenueId = text(event?.providerVenueId ?? event?.venue_provider_id, 180).toLocaleLowerCase();
-  if (source && providerVenueId) return `provider:${source}:${providerVenueId}`;
+  const provider = venueListingProviderIdentity(event);
+  if (provider) return provider;
   const place = text(event?.place, 240);
   const placeParts = place.split(",").map((part) => part.trim()).filter(Boolean);
   const name = text(event?.venue, 160).toLocaleLowerCase();

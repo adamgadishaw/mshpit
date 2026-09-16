@@ -1,6 +1,7 @@
 import { isUpcomingEventDate } from "./dataPolicy.mjs";
 import { discoverRowCountryLabel } from "./discoverScene.mjs";
 import { canonicalVenueKey, venueLookupKeys } from "./venueIdentity.mjs";
+import { venueListingProviderIdentity } from "./venueListingIdentity.mjs";
 
 export const UNIFIED_EVENT_SEARCH_INDEX_LIMIT = 5000;
 export const UNIFIED_VENUE_SEARCH_INDEX_LIMIT = 7500;
@@ -113,9 +114,8 @@ const coordinate = (row) => {
 };
 
 const venueSourceIdentity = (row, name, location) => {
-  const source = clean(row?.source, 40).toLocaleLowerCase("en");
-  const providerVenueId = clean(row?.providerVenueId ?? row?.venue_provider_id, 180);
-  if (source && providerVenueId) return `provider:${source}:${normalized(providerVenueId)}`;
+  const provider = venueListingProviderIdentity(row);
+  if (provider) return provider;
   return `venue:${normalized(name)}:${normalized(location.city)}:${normalized(location.country || location.place)}`;
 };
 
@@ -164,7 +164,15 @@ export function createUnifiedVenueSearchIndex({
     const searchParts = [name, ...venueLookupKeys(name), location.place, location.city, location.region, location.country];
     if (existing) {
       searchParts.forEach((part) => part && existing.searchParts.add(part));
-      if (event && visibleUpcoming(row, at)) existing.row.upcoming += 1;
+      const eventId = clean(row.id, 240);
+      if (event && visibleUpcoming(row, at) && (!eventId || !existing.eventIds.has(eventId))) existing.row.upcoming += 1;
+      if (event && eventId) existing.eventIds.add(eventId);
+      // Prefer the reviewed primary listing when both are present, without
+      // inventing a provider id when only its partner inventory was loaded.
+      if (providerScoped && identity === `provider:${source.toLocaleLowerCase("en")}:${providerVenueId.toLocaleLowerCase("en")}`) {
+        existing.row.source = source;
+        existing.row.providerVenueId = providerVenueId;
+      }
       if (!existing.row.coord) existing.row.coord = coordinate(row);
       if (!existing.row.place && location.place) existing.row.place = location.place;
       if (!existing.row.capacity && Number(row?.capacity) > 0) existing.row.capacity = Number(row.capacity);
@@ -186,6 +194,7 @@ export function createUnifiedVenueSearchIndex({
         upcoming: event && visibleUpcoming(row, at) ? 1 : 0,
       },
       searchParts: new Set(searchParts.filter(Boolean)),
+      eventIds: new Set(event && clean(row.id, 240) ? [clean(row.id, 240)] : []),
     });
     if (!anchorTargets.has(mergeIdentity)) anchorTargets.set(mergeIdentity, storageIdentity);
   };

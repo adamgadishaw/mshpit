@@ -8,6 +8,9 @@ import {
 } from "./catalogSeed.js";
 import { privateErrorLabel } from "./errors.js";
 import { spotifyArtistPhotoConfigured } from "./spotifyArtistPhotos.js";
+import { createArtistPhotoSeedReporter } from "./artistPhotoSeedStatus.js";
+import { db } from "./db.js";
+import { readCatalogKnowledgeControl } from "./catalogKnowledgeControl.js";
 
 const DEFAULT_BATCH = 20;
 const DEFAULT_INTERVAL_MS = 15 * 60 * 1000;
@@ -44,6 +47,9 @@ export function startArtistPhotoSeedScheduler({
   migrateLegacy = migrateLegacySpotifyArtistPhotoData,
   purgeExpired = purgeExpiredSpotifyArtistPhotoData,
   purgeAll = purgeSpotifyArtistPhotoData,
+  report: providedReporter = null,
+  clock = Date.now,
+  readControl = () => readCatalogKnowledgeControl(db, { env, at: clock() }),
   logger = console,
 } = {}) {
   const seedRequested = ENABLED_VALUES.has(
@@ -67,6 +73,11 @@ export function startArtistPhotoSeedScheduler({
     return null;
   }
   if (scheduler) return scheduler;
+  const reporter = providedReporter || createArtistPhotoSeedReporter({ database: db, clock });
+  const report = Object.fromEntries(["update", "finish"].map((method) => [method, (...args) => {
+    try { reporter[method]?.(...args); }
+    catch (error) { logger.error?.(`[pit] artist photo progress could not be recorded cause=${privateErrorLabel(error)}`); }
+  }]));
   try {
     migrateLegacy();
   } catch (error) {
@@ -75,23 +86,50 @@ export function startArtistPhotoSeedScheduler({
   const limit = boundedBatch(env.ARTIST_PHOTO_SEED_BATCH);
   const controller = new AbortController();
   const state = { first: null, timer: null, running: null, stopped: false, trigger: null, stop: null };
+  const scheduledAt = clock();
+  const cadenceMs = Math.max(60_000, intervalMs);
+  const nextPassAt = () => scheduledAt + (Math.floor(Math.max(0, clock() - scheduledAt) / cadenceMs) + 1) * cadenceMs;
+  const failureReason = (code) => ({
+    CATALOG_PHOTOS_RATE_LIMITED: "rate_limited", CATALOG_PHOTOS_QUOTA_EXCEEDED: "quota_exceeded",
+    CATALOG_PHOTOS_AUTHENTICATION_FAILED: "authentication_failed", CATALOG_PHOTOS_AUTH_REVOKED: "access_revoked",
+    CATALOG_PHOTOS_PROVIDER_UNAVAILABLE: "provider_unavailable",
+  }[code] || "provider_unavailable");
   const trigger = () => {
     if (state.stopped || state.running) return state.running;
-    if (catalogStatus()?.running) return Promise.resolve({ skipped: "catalog_job_running" });
+    if (readControl()?.mode === "paused") {
+      report.update({ phase: "paused", pauseReason: "catalog_paused", nextPassAt: nextPassAt() });
+      return Promise.resolve({ skipped: "catalog_paused" });
+    }
+    if (catalogStatus()?.running) {
+      report.update({ phase: "paused", pauseReason: "catalog_job_running", nextPassAt: nextPassAt() });
+      return Promise.resolve({ skipped: "catalog_job_running" });
+    }
+    let startedAt = null;
+    report.update({ phase: "queued", nextPassAt: nextPassAt() });
     state.running = runBackgroundJob(async () => {
+      startedAt = clock();
+      // The shared coordinator can queue this pass behind another job. Recheck
+      // the current control before beginning any migration or provider work.
+      if (controller.signal.aborted || readControl()?.mode === "paused") {
+        return { attempted: 0, filled: 0, failed: 0, stopped: true, modePaused: readControl()?.mode === "paused" };
+      }
+      report.update({ phase: "running", nextPassAt: nextPassAt() });
       migrateLegacy();
       const stats = await runBatch({
         limit,
         signal: controller.signal,
-        shouldStop: () => controller.signal.aborted,
+        shouldStop: () => controller.signal.aborted || readControl()?.mode === "paused",
       });
       if (stats?.providerFailure?.code === "CATALOG_PHOTOS_AUTH_REVOKED") purgeAll();
-      else if (!stats?.providerFailure && Number(stats?.failed) === 0 && Number(stats?.attempted) > 0) {
+      else if (!stats?.providerFailure && Number(stats?.failed) === 0 && Number(stats?.attempted) > 0 && readControl()?.mode !== "paused") {
         purgeExpired();
       }
-      return stats;
+      return { ...stats, modePaused: readControl()?.mode === "paused" };
     })
       .then((stats) => {
+        const pauseReason = state.stopped ? "shutdown" : stats?.modePaused ? "catalog_paused" : stats?.providerFailure ? failureReason(stats.providerFailure.code) : null;
+        report.finish(stats, { startedAt, pauseReason });
+        report.update({ phase: state.stopped ? "stopped" : pauseReason ? "paused" : "waiting", pauseReason, nextPassAt: state.stopped ? null : nextPassAt() });
         if (Number(stats?.failed) > 0) {
           const provider = safeLogToken(stats?.providerFailure?.provider, "provider");
           const code = safeLogToken(stats?.providerFailure?.code, "unavailable");
@@ -102,6 +140,9 @@ export function startArtistPhotoSeedScheduler({
         return stats;
       })
       .catch((error) => {
+        const pauseReason = state.stopped ? "shutdown" : error?.code === "MEMORY_PRESSURE" ? "resource_pressure" : "job_failed";
+        report.finish({ failed: pauseReason === "job_failed" ? 1 : 0 }, { startedAt, pauseReason });
+        report.update({ phase: state.stopped ? "stopped" : "paused", pauseReason, nextPassAt: state.stopped ? null : nextPassAt() });
         if (!state.stopped && error?.name !== "AbortError") {
           logger.error?.(`[pit] artist photo seeding failed safely cause=${privateErrorLabel(error)}`);
         }
@@ -111,6 +152,7 @@ export function startArtistPhotoSeedScheduler({
     return state.running;
   };
   state.trigger = trigger;
+  report.update({ phase: "waiting", nextPassAt: clock() + Math.max(0, initialDelayMs) });
   state.first = setTimeout(trigger, Math.max(0, initialDelayMs));
   state.first.unref?.();
   state.timer = setInterval(trigger, Math.max(60_000, intervalMs));
@@ -118,6 +160,7 @@ export function startArtistPhotoSeedScheduler({
   state.stop = ({ abortActive = true } = {}) => {
     if (state.stopped) return state.running || Promise.resolve();
     state.stopped = true;
+    report.update({ phase: "stopped", pauseReason: "shutdown" });
     clearTimeout(state.first);
     clearInterval(state.timer);
     if (abortActive) controller.abort(new DOMException("Server stopping", "AbortError"));

@@ -13,10 +13,13 @@ const save = (database, state) => database.prepare("INSERT INTO app_meta(key,val
 
 export function catalogKnowledgeLimits(mode, env = {}) {
   const catchUp = mode === "catch_up";
-  return Object.freeze({ lanes: catchUp ? 3 : 1,
+  return Object.freeze({ lanes: catchUp ? clamp(env.ARTIST_KNOWLEDGE_CATCHUP_LANES, 10, 10) : 1,
     maxArtistsPerPass: catchUp ? clamp(env.ARTIST_KNOWLEDGE_CATCHUP_BATCH, 40, 40) : clamp(env.ARTIST_KNOWLEDGE_BATCH, 10, 10),
     intervalMinutes: catchUp ? 2 : 15, maxPassSeconds: 45,
-    maxAttemptsPerDay: clamp(env.ARTIST_KNOWLEDGE_DAILY_ARTISTS, catchUp ? 3000 : 960, 3000),
+    // A missing source may cost only one request; do not stop useful catch-up
+    // at 3,000 such checks while most of the provider allowance is unused.
+    // This does NOT increase network rate, the 12,000-request cap or disk growth.
+    maxAttemptsPerDay: clamp(env.ARTIST_KNOWLEDGE_DAILY_ARTISTS, catchUp ? 10000 : 960, catchUp ? 10000 : 3000),
     maxRequestsPerDay: clamp(env.ARTIST_KNOWLEDGE_DAILY_REQUESTS, 12000, 12000),
     providerSpacingMs: 1100, maxResponseKiB: 512, maxBiographyCharacters: 1200,
     maxGrowthMiB: 256 });
@@ -53,7 +56,8 @@ export function readCatalogKnowledgeControl(database, { env = process.env, at = 
   return { mode: state.mode, effectiveMode: backgroundJobEnabled(env, "ARTIST_KNOWLEDGE_ENABLED") ? state.mode : "disabled",
     nextPassAt: state.nextPassAt, updatedAt: state.updatedAt,
     initialSweepFinishedAt: state.initialSweepFinishedAt, baselineBytes: state.baselineBytes,
-    limits: catalogKnowledgeLimits(state.mode, env), budget };
+    limits: catalogKnowledgeLimits(state.mode, env), budget,
+    budgetResetAt: Date.parse(`${budget.utcDay}T00:00:00.000Z`) + 24 * 60 * MINUTE };
 }
 
 export function setCatalogKnowledgeMode(database, mode, { env = process.env, at = Date.now() } = {}) {

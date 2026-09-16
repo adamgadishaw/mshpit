@@ -19,11 +19,14 @@ test("defaults are bounded, catch-up is explicit, and invalid requested mode cha
   assert.equal(readCatalogKnowledgeControl(db, { at: AT }).mode, "maintenance");
   assert.throws(() => setCatalogKnowledgeMode(db, "unlimited", { at: AT }), TypeError);
   const control = setCatalogKnowledgeMode(db, "catch_up", { at: AT });
-  assert.equal(control.limits.lanes, 3); assert.equal(control.limits.intervalMinutes, 2);
+  assert.equal(control.limits.lanes, 10); assert.equal(control.limits.intervalMinutes, 2);
   const limits = catalogKnowledgeLimits("catch_up", { ARTIST_KNOWLEDGE_CATCHUP_BATCH: "999999",
     ARTIST_KNOWLEDGE_DAILY_ARTISTS: "999999", ARTIST_KNOWLEDGE_DAILY_REQUESTS: "999999" });
-  assert.equal(limits.maxArtistsPerPass, 40); assert.equal(limits.maxAttemptsPerDay, 3000);
+  assert.equal(limits.maxArtistsPerPass, 40); assert.equal(limits.maxAttemptsPerDay, 10000);
   assert.equal(limits.maxRequestsPerDay, 12000); assert.equal(limits.maxGrowthMiB, 256);
+  assert.equal(catalogKnowledgeLimits("catch_up", { ARTIST_KNOWLEDGE_CATCHUP_LANES: "999" }).lanes, 10);
+  assert.equal(catalogKnowledgeLimits("catch_up", { ARTIST_KNOWLEDGE_CATCHUP_LANES: "2" }).lanes, 2);
+  assert.equal(control.budgetResetAt, Date.parse("2026-09-16T00:00:00Z"));
 });
 
 test("mode changes preserve daily counters, work due time, and storage baseline", t => {

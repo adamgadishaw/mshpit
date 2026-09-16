@@ -682,6 +682,7 @@ async function runCase(browser, origin, item) {
       await page.getByRole("button", { name: "Use Toronto, Ontario, Canada", exact: true }).click();
       assert.equal(await cityInput.inputValue(), "Toronto, Ontario, Canada");
       assert.equal(await page.getByLabel("Concert venue, optional with a city", { exact: true }).inputValue(), "");
+      await page.getByRole("button", { name: "Add an optional public event address", exact: true }).click();
       await addressInput.fill("123 Queen Street West");
       const bounds = await cityInput.boundingBox();
       assert.ok(bounds && bounds.x >= 0 && bounds.x + bounds.width <= item.width + 1, "City input escaped the mobile viewport.");
