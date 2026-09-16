@@ -293,12 +293,25 @@ export async function resumeExistingMediaSourceV1({
   // even if this owner read is interrupted.
   onRemoteDraft?.({ assetId, duplicate: true, sourceUploaded: true });
   onStage?.("checking-source");
-  let result = await recoverMediaRequest(({ signal: requestSignal }) => apiCall(path, {
-    context: "Checking your PIT media source",
-    signal: requestSignal,
-    timeoutMs: 10_000,
-    silent: true,
-  }), { ...recovery, signal, onRetry: () => onStage?.("reconnecting-source") });
+  let result;
+  try {
+    result = await recoverMediaRequest(({ signal: requestSignal }) => apiCall(path, {
+      context: "Checking your PIT media source",
+      signal: requestSignal,
+      timeoutMs: 10_000,
+      silent: true,
+    }), { ...recovery, signal, onRetry: () => onStage?.("reconnecting-source") });
+  } catch (error) {
+    if (signal?.aborted) throw abortError(signal);
+    // Only an explicit missing result from this owner-bound GET permits a
+    // retained device original to be uploaded again. Auth, identity, malformed
+    // responses and failures from a later finalize must never take this path.
+    if (Number(error?.status) === 404
+      && (error?.serverCode || error?.body?.code || error?.code) === "NOT_FOUND") {
+      throw mediaSourceError("MEDIA_SOURCE_MISSING", "That unfinished upload is no longer available. Choose its original file again.");
+    }
+    throw error;
+  }
   if (signal?.aborted) throw abortError(signal);
   assertMediaSourceIdentity(result, assetId, "That PIT media source is no longer available.");
   if (result.asset.status === "upload_pending") {

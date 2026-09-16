@@ -437,8 +437,20 @@ export default function LogScreen({
   };
   const [songError, setSongError] = useState("");
   const [postError, setPostError] = useState("");
-  const [photos, setPhotos] = useState(() => (editing?.photos || []).filter(isDurableMediaUrl));
-  const [mediaProject, setMediaProject] = useState(() => mediaProjectForPost(editing));
+  const [photos, renderPhotos] = useState(() => (editing?.photos || []).filter(isDurableMediaUrl));
+  const photosRef = useRef(photos);
+  function setPhotos(update) {
+    const next = typeof update === "function" ? update(photosRef.current) : update;
+    photosRef.current = next;
+    renderPhotos(next);
+  }
+  const [mediaProject, renderMediaProject] = useState(() => mediaProjectForPost(editing));
+  const mediaProjectRef = useRef(mediaProject);
+  function setMediaProject(update) {
+    const next = typeof update === "function" ? update(mediaProjectRef.current) : update;
+    mediaProjectRef.current = next;
+    renderMediaProject(next);
+  }
   const [pendingMediaAssets, renderPendingMediaAssets] = useState([]);
   const pendingMediaAssetsRef = useRef(pendingMediaAssets);
   const mediaRetryOperationRef = useRef(null);
@@ -645,7 +657,7 @@ export default function LogScreen({
     // A URL-only historical post cannot safely mix attachment identity models
     // in one PATCH. New additions fail closed until the legacy attachments are
     // removed; every accepted upload uses stable IDs and verified derivatives.
-    const legacyCompatibility = mediaProjectRequiresLegacyUpload(mediaProject, photos);
+    const legacyCompatibility = mediaProjectRequiresLegacyUpload(mediaProjectRef.current, photosRef.current);
     try {
       if (legacyCompatibility) {
         throw new Error("This older post cannot safely mix new media with URL-only attachments. Remove all old media first, or publish the new media in a separate post.");
@@ -681,7 +693,15 @@ export default function LogScreen({
                 fraction: progress.fraction,
               });
             },
-            onRemoteDraft: ({ assetId, sourceUploaded }) => {
+            onRemoteDraft: ({ assetId, sourceUploaded, retiredAssetId }) => {
+              if (operationIsActive() && retiredAssetId) {
+                if (remoteDraftAssetIdsRef.current.get(asset.id) === retiredAssetId) remoteDraftAssetIdsRef.current.delete(asset.id);
+                setPendingMediaAssets((current) => current.map((candidate, candidateIndex) => (
+                  candidate.id === asset.id && candidate.assetId === retiredAssetId
+                    ? originalMediaProjectAsset({ ...candidate, assetId: null }, candidateIndex)
+                    : candidate
+                )));
+              }
               if (operationIsActive() && assetId) {
                 remoteDraftAssetIdsRef.current.set(asset.id, assetId);
                 if (sourceUploaded !== true) return;
@@ -717,7 +737,7 @@ export default function LogScreen({
         // retry resumes with only the unfinished selections instead of
         // orphaning completed uploads or uploading them twice.
         const committedProject = reconcileMediaProjectSelection(
-          mediaProject,
+          mediaProjectRef.current,
           completedSelections,
           completedAssets,
         );
@@ -731,7 +751,10 @@ export default function LogScreen({
       if (rejectedAssets.length) {
         const noun = rejectedAssets.length === 1 ? "item" : "items";
         if (ownsOperation()) {
-          setMediaError(`${rejectedAssets.length} selected ${noun} could not be attached because its file type or size was not accepted. The rest finished.`);
+          const reason = rejectedAssets.some(({ error }) => error?.code === "MEDIA_SOURCE_MISSING")
+            ? "could not be recovered or accepted. Choose any missing originals again to include them"
+            : "could not be attached because its file type or size was not accepted";
+          setMediaError(`${rejectedAssets.length} selected ${noun} ${reason}. The rest finished.`);
         }
         return {
           ok: completedAssets.length > 0,
@@ -899,6 +922,7 @@ export default function LogScreen({
       // legacy app-owned draft copies need filesystem recovery; a remote asset
       // id can resume from the server without reading the local source again.
       const staged = selected.filter((asset) => asset.durableLocalUri && !asset.assetId);
+      const stagedById = new Map(staged.map((asset) => [asset.id, asset]));
       const recoverableStaged = await recoverMediaDraftAssets(staged);
       if (!task.isCurrent() || uploadOperationRef.current) return;
       const recoveredIds = new Set(recoverableStaged.map((asset) => asset.id));
@@ -906,15 +930,19 @@ export default function LogScreen({
       // retired while filesystem recovery was pending. Newly added items belong
       // to their own upload attempt, not this earlier Retry gesture.
       const current = pendingMediaAssetsRef.current.filter((asset) => selectedIds.has(asset.id));
-      if (current.some((asset) => asset.durableLocalUri && !asset.assetId && !recoveredIds.has(asset.id))) {
-        throw new Error("A selected photo or video is no longer available on this device. Choose it again before continuing.");
-      }
+      const missingIds = new Set(current.filter((asset) => asset.durableLocalUri && !asset.assetId
+        && stagedById.get(asset.id)?.durableLocalUri === asset.durableLocalUri && !recoveredIds.has(asset.id))
+        .map((asset) => asset.id));
       const originals = current
-        .filter((asset) => asset.assetId || !asset.durableLocalUri || recoveredIds.has(asset.id))
+        .filter((asset) => !missingIds.has(asset.id))
         .map((asset, index) => originalMediaProjectAsset(asset, index));
-      if (!originals.length) return;
-      setPendingMediaAssets((latest) => latest.map((asset) => originals.find((original) => original.id === asset.id) || asset));
-      await uploadOriginalMedia(originals);
+      setPendingMediaAssets((latest) => latest.filter((asset) => !missingIds.has(asset.id))
+        .map((asset) => originals.find((original) => original.id === asset.id) || asset));
+      const result = originals.length ? await uploadOriginalMedia(originals) : null;
+      if (task.isCurrent() && missingIds.size && !result?.error) {
+        const missingCopy = `${missingIds.size} original ${missingIds.size === 1 ? "file is" : "files are"} no longer available on this device. Choose them again to include them.`;
+        setMediaError((currentError) => [currentError, missingCopy].filter(Boolean).join(" "));
+      }
     } catch (error) {
       if (task.isCurrent()) setMediaError(error?.message || "Mshpit could not recover the original files. Choose them again and retry.");
     } finally {

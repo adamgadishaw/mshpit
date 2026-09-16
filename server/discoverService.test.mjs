@@ -240,6 +240,26 @@ test("popularity chart filters by canonical genre and country", () => {
   }
 });
 
+test("canonical identity survives overview, plays, and genre chart projections", () => {
+  const database = fixture();
+  try {
+    database.exec("UPDATE artists SET public_slug=norm || '-catalogue-collision'");
+    const service = fixtureDiscoverService(database);
+    const groups = [
+      service.overview({ country: "Canada" }).chart.rows,
+      service.chart({ by: "plays", country: "Canada" }).rows,
+      service.chart({ genre: "Hip-Hop", country: "Canada" }).rows,
+    ];
+    for (const rows of groups) {
+      assert.ok(rows.length);
+      for (const row of rows) {
+        assert.equal(row.key, row.name.toLowerCase());
+        assert.equal(row.publicSlug, `${row.key}-catalogue-collision`);
+      }
+    }
+  } finally { database.close(); }
+});
+
 test("popularity chart skips unreviewed provider rows with inconsistent identity data", () => {
   const database = fixture();
   try {
@@ -277,6 +297,7 @@ test("genre artists put confidence-ranked MSHpit live ratings before separate po
     addPost.run("echo-one", "member-1", "Echo", "echo", "Hall C", "hall-c", "Toronto, Canada", "2026-03-01", 5, "Perfect night", null, "review", "in_person", 0, 2, 2);
     addPost.run("echo-online", "member-2", "Echo", "echo", "YouTube", "youtube", "Online", "2026-03-02", 5, "Stream review", null, "review", "online", 0, 5, 5);
 
+    database.exec("UPDATE artists SET public_slug=norm || '-catalogue-collision'");
     const result = fixtureDiscoverService(database).chart({ genre: "Hip-Hop", country: "Canada", limit: 12 });
     assert.deepEqual(result.ratedRows.map((row) => row.name), ["Alpha", "Echo"], "sample confidence beats a lone perfect rating");
     assert.deepEqual(
@@ -288,6 +309,10 @@ test("genre artists put confidence-ranked MSHpit live ratings before separate po
     );
     assert.deepEqual(result.popularRows.map((row) => row.name), ["Foxtrot"], "provider popularity remains a separate, deduplicated group");
     assert.deepEqual(result.rows.map((row) => row.rankingGroup), ["top-reviewed", "top-reviewed", "popular"]);
+    for (const row of [...result.ratedRows, ...result.popularRows, ...result.rows]) {
+      assert.equal(row.key, row.name.toLowerCase());
+      assert.equal(row.publicSlug, `${row.key}-catalogue-collision`);
+    }
   } finally {
     database.close();
   }

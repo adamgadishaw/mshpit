@@ -17,9 +17,9 @@ import {
 
 export const VIDEO_VERIFIER_HEALTH_FRESH_MS = 90_000;
 export const VIDEO_VERIFIER_HEALTH_INTERVAL_MS = 30_000;
-// Background finalization gives the isolated worker 110 seconds. Leave time
-// for signed response verification and database commit while still allowing a
-// full ten-minute HEVC phone clip to normalize.
+// The isolated worker has a 15-minute hard deadline. Leave one extra minute
+// for signed response verification and database commit; this is a safety
+// ceiling for admitted work, not the expected processing time.
 export const VIDEO_VERIFIER_JOB_TIMEOUT_MS = 16 * 60_000;
 export const VIDEO_VERIFIER_MAX_RESPONSE_BYTES = 3 * 1024 * 1024;
 export const VIDEO_VERIFIER_MAX_POSTER_BYTES = 1_500_000;
@@ -51,6 +51,8 @@ const runtime = {
   sourceTypes: [],
   sourceCodecs: {},
   sourceAdmissionRevision: null,
+  sourceAdmissionProofAt: null,
+  sourceAdmissionFingerprint: null,
 };
 
 function cleanHostport(value) {
@@ -183,7 +185,14 @@ function healthSourceCapabilities(payload) {
   return { sourceTypes: [...sourceTypes], sourceCodecs };
 }
 
+function clearSourceAdmissionProof() {
+  runtime.sourceAdmissionRevision = null;
+  runtime.sourceAdmissionProofAt = null;
+  runtime.sourceAdmissionFingerprint = null;
+}
+
 function noteHealthy(config, payload, at, { capabilities = null } = {}) {
+  if (runtime.sourceAdmissionFingerprint !== config.fingerprint) clearSourceAdmissionProof();
   runtime.fingerprint = config.fingerprint;
   runtime.lastAttemptAt = at;
   runtime.lastSuccessAt = at;
@@ -192,8 +201,13 @@ function noteHealthy(config, payload, at, { capabilities = null } = {}) {
     ? payload.decoder.version.slice(0, 80)
     : runtime.ffmpegVersion;
   if (capabilities) {
-    runtime.sourceAdmissionRevision = Number.isSafeInteger(payload?.sourceAdmissionRevision)
-      ? payload.sourceAdmissionRevision : null;
+    if (Number.isSafeInteger(payload?.sourceAdmissionRevision) && payload.sourceAdmissionRevision > 0) {
+      runtime.sourceAdmissionRevision = payload.sourceAdmissionRevision;
+      runtime.sourceAdmissionProofAt = at;
+      runtime.sourceAdmissionFingerprint = config.fingerprint;
+    } else {
+      clearSourceAdmissionProof();
+    }
     runtime.sourceTypes = [...capabilities.sourceTypes];
     runtime.sourceCodecs = Object.fromEntries(capabilities.sourceTypes.map((type) => [
       type,
@@ -203,6 +217,7 @@ function noteHealthy(config, payload, at, { capabilities = null } = {}) {
 }
 
 function noteFailure(config, error, at) {
+  clearSourceAdmissionProof();
   runtime.fingerprint = config?.fingerprint || null;
   runtime.lastAttemptAt = at;
   runtime.lastErrorCode = String(error?.code || "VIDEO_VERIFIER_UNAVAILABLE").slice(0, 80);
@@ -311,16 +326,25 @@ export function videoVerifierRuntimeStatus(env = process.env, at = Date.now()) {
     && Number.isSafeInteger(admission?.expiresAt)
     && at >= admission.admittedAt
     && at <= admission.expiresAt;
+  const ready = !!(freshProof || admittedActiveProof);
+  // A successful ordinary job proves decoder availability, not its admission
+  // policy. The optional revision therefore keeps its own signed-health clock
+  // and configuration identity; neither jobs nor their lease may renew it.
+  const freshSourceAdmissionProof = ready
+    && runtime.sourceAdmissionFingerprint === config.fingerprint
+    && Number.isSafeInteger(runtime.sourceAdmissionProofAt)
+    && at >= runtime.sourceAdmissionProofAt
+    && at - runtime.sourceAdmissionProofAt <= VIDEO_VERIFIER_HEALTH_FRESH_MS;
   return {
     configured: config.configured,
-    ready: !!(freshProof || admittedActiveProof),
+    ready,
     pipeline: VIDEO_VERIFIER_PIPELINE_VERSION,
     lastSuccessAt: sameRuntime ? runtime.lastSuccessAt || null : null,
     lastAttemptAt: sameRuntime ? runtime.lastAttemptAt || null : null,
     ageMs,
     lastErrorCode: sameRuntime ? runtime.lastErrorCode : null,
     ffmpegVersion: sameRuntime ? runtime.ffmpegVersion : null,
-    sourceAdmissionRevision: sameRuntime ? runtime.sourceAdmissionRevision : null,
+    sourceAdmissionRevision: freshSourceAdmissionProof ? runtime.sourceAdmissionRevision : null,
     sourceTypes: sameRuntime && runtime.lastSuccessAt ? [...runtime.sourceTypes] : [],
     sourceCodecs: sameRuntime && runtime.lastSuccessAt
       ? Object.fromEntries(runtime.sourceTypes.map((type) => [type, [...(runtime.sourceCodecs[type] || [])]]))
@@ -647,9 +671,10 @@ export async function verifyVideoObject({
   // Only newly admitted AVC5.2/high-FPS sources need a newer decoder. Retain
   // ordinary uploads on legacy workers; defer these new sources before POST
   // or demand reservation until their exact admission revision is proven.
+  const sourceAdmissionStatus = videoVerifierRuntimeStatus(env);
   if (structural?.sourceAdmissionRevision === VIDEO_VERIFIER_SOURCE_ADMISSION_REVISION
-      && (!videoVerifierRuntimeStatus(env).ready
-        || runtime.sourceAdmissionRevision !== VIDEO_VERIFIER_SOURCE_ADMISSION_REVISION)) {
+      && (!sourceAdmissionStatus.ready
+        || sourceAdmissionStatus.sourceAdmissionRevision !== VIDEO_VERIFIER_SOURCE_ADMISSION_REVISION)) {
     throw new ApiError(503, "Clip processing is temporarily unavailable for that video format. Try again later.", "MEDIA_STORAGE_UNAVAILABLE");
   }
   // This hook is deliberately synchronous and runs only after the global slot
@@ -788,5 +813,5 @@ export function resetVideoVerifierStateForTests() {
   runtime.ffmpegVersion = null;
   runtime.sourceTypes = [];
   runtime.sourceCodecs = {};
-  runtime.sourceAdmissionRevision = null;
+  clearSourceAdmissionProof();
 }

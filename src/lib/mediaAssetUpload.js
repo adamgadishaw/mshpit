@@ -87,17 +87,29 @@ export async function uploadOriginalMediaAsset({
   if (assetId) {
     // Resume an interrupted source verification without reading or uploading
     // the same private device file again.
-    result = await resumeExistingMediaSourceV1({
-      apiCall,
-      asset,
-      kind,
-      body: sourceFinalizeBody,
-      signal,
-      onStage,
-      onRemoteDraft,
-      recovery: services.recovery,
-    });
-  } else {
+    try {
+      result = await resumeExistingMediaSourceV1({
+        apiCall,
+        asset,
+        kind,
+        body: sourceFinalizeBody,
+        signal,
+        onStage,
+        onRemoteDraft,
+        recovery: services.recovery,
+      });
+    } catch (error) {
+      abortIfNeeded();
+      const localUri = String(asset.durableLocalUri || asset.uri || "");
+      const file = asset.runtimeFile || asset.file;
+      const hasDeviceOriginal = (typeof Blob !== "undefined" && file instanceof Blob && file.size > 0)
+        || /^(?:blob:|file:\/\/|content:\/\/)/i.test(localUri);
+      if (error?.code !== "MEDIA_SOURCE_MISSING" || !hasDeviceOriginal) throw error;
+      onRemoteDraft?.({ retiredAssetId: assetId });
+      assetId = null;
+    }
+  }
+  if (!assetId) {
     const sourcePrepared = await boundedMediaRequest(() => prepareAsset({ ...asset, file: asset.runtimeFile || asset.file }, {
       optimizeWeb: false,
       context: "Preparing the original media",

@@ -3469,6 +3469,10 @@ function runtimeMediaPublishingCapabilities() {
         pipeline: verifier.pipeline,
         sourceTypes: verifier.sourceTypes,
         sourceCodecs: verifier.sourceCodecs,
+        // Optional capability evidence, not a new gate for baseline uploads.
+        // Only a currently ready worker may advertise its signed revision.
+        ...(Number.isSafeInteger(verifier.sourceAdmissionRevision) && verifier.sourceAdmissionRevision > 0
+          ? { sourceAdmissionRevision: verifier.sourceAdmissionRevision } : {}),
       }
     : { photos, videos: false };
 }

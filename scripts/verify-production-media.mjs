@@ -97,8 +97,14 @@ export async function verifyProductionMedia({
   origin = DEFAULT_PRODUCTION_MEDIA_ORIGIN,
   timeoutMs = PRODUCTION_MEDIA_CHECK_TIMEOUT_MS,
   fetchImpl = globalThis.fetch,
+  requireSourceAdmissionRevision,
 } = {}) {
   if (typeof fetchImpl !== "function") throw new TypeError("A fetch implementation is required.");
+  if (requireSourceAdmissionRevision !== undefined
+      && (!Number.isSafeInteger(requireSourceAdmissionRevision) || requireSourceAdmissionRevision < 1
+        || requireSourceAdmissionRevision > 1_000)) {
+    throw new TypeError("Required source admission revision must be an integer from 1 to 1000.");
+  }
   const url = productionMediaHealthUrl(origin);
   const signal = AbortSignal.timeout(boundedTimeout(timeoutMs));
   let response;
@@ -132,24 +138,32 @@ export async function verifyProductionMedia({
   if (!exactHealthyCapability(payload)) {
     throw new Error("Production video publishing is not ready for the exact client pipeline.");
   }
+  const sourceRevision = payload.capabilities.mediaPublishing.sourceAdmissionRevision;
+  const verifiedRevision = Number.isSafeInteger(sourceRevision) && sourceRevision > 0 ? sourceRevision : null;
+  if (requireSourceAdmissionRevision !== undefined && verifiedRevision !== requireSourceAdmissionRevision) {
+    throw new Error(`Production video source support revision ${requireSourceAdmissionRevision} is not ready; baseline video readiness does not prove the expanded format support.`);
+  }
   return Object.freeze({
     ok: true,
     url,
     pipeline: VIDEO_PUBLISHING_PIPELINE_VERSION,
     state: "ready",
     sourceTypes: Object.freeze([...payload.capabilities.mediaPublishing.sourceTypes]),
+    ...(verifiedRevision !== null ? { sourceAdmissionRevision: verifiedRevision } : {}),
   });
 }
 
 function cliOptions(argv) {
   let origin = DEFAULT_PRODUCTION_MEDIA_ORIGIN;
   let timeoutMs = PRODUCTION_MEDIA_CHECK_TIMEOUT_MS;
+  let requireSourceAdmissionRevision;
   for (let index = 0; index < argv.length; index += 1) {
     if (argv[index] === "--origin" && argv[index + 1]) origin = argv[++index];
     else if (argv[index] === "--timeout-ms" && argv[index + 1]) timeoutMs = argv[++index];
-    else throw new Error("Usage: npm run verify:production-media -- [--origin https://www.mshpit.com] [--timeout-ms 10000]");
+    else if (argv[index] === "--require-source-revision" && argv[index + 1]) requireSourceAdmissionRevision = Number(argv[++index]);
+    else throw new Error("Usage: npm run verify:production-media -- [--origin https://www.mshpit.com] [--timeout-ms 10000] [--require-source-revision 2]");
   }
-  return { origin, timeoutMs };
+  return { origin, timeoutMs, requireSourceAdmissionRevision };
 }
 
 const invokedDirectly = process.argv[1]
@@ -164,7 +178,8 @@ if (invokedDirectly) {
   if (options) {
     verifyProductionMedia(options)
       .then((result) => {
-        console.log(`PASS  Production video publishing is ready (${result.pipeline}; ${result.sourceTypes.join(", ")}).`);
+        const revision = result.sourceAdmissionRevision ? `; source support revision ${result.sourceAdmissionRevision}` : "; baseline formats only verified";
+        console.log(`PASS  Production video publishing is ready (${result.pipeline}; ${result.sourceTypes.join(", ")}${revision}).`);
       })
       .catch((error) => {
         console.error(`FAIL  ${error?.message || "Production video publishing verification failed."}`);

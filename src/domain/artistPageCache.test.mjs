@@ -60,6 +60,26 @@ test("a block boundary clears personalized artist data and fences its in-flight 
   assert.equal(reads.isCurrent(claim, "u_a"), false);
 });
 
+test("switching A to B to A cannot revive an abandoned profile read with a recycled ticket", () => {
+  const reads = createArtistPageReadCoordinator();
+  const resource = artistPageResourceKind("the artist");
+  const abandoned = reads.claim(resource, "u_a");
+  const accountA = createArtistPageCacheState("u_a");
+  reads.reset();
+  const accountB = handoffArtistPageCache(accountA, "u_b");
+  const foreign = reads.claim(resource, "u_b");
+  reads.reset();
+  const returnedA = handoffArtistPageCache(accountB, "u_a");
+  const latest = reads.claim(resource, "u_a");
+  assert.ok(returnedA.boundaryEpoch > accountA.boundaryEpoch);
+  assert.equal(reads.isCurrent(abandoned, "u_a"), false);
+  assert.equal(reads.isCurrent(foreign, "u_a"), false);
+  assert.equal(reads.isCurrent(latest, "u_a"), true);
+  const refresh = reads.claim(resource, "u_a");
+  assert.equal(reads.isCurrent(latest, "u_a"), false);
+  assert.equal(reads.isCurrent(refresh, "u_a"), true);
+});
+
 test("a failed same-viewer refresh retains the last confirmed snapshot", () => {
   const confirmed = createArtistPageCacheState("u_a", {
     profiles: { turnstile: { bio: "last confirmed" } },

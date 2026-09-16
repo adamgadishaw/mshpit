@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { artistPath } from "./urls.mjs";
 
 import {
   buildDiscoverArtistSpotlight,
@@ -302,6 +303,53 @@ test("an unclassified catalogue still shows honest recent/popular artists instea
   assert.deepEqual(fallback.rows.map((row) => row.discoveryReason), ["Popular now", "Popular now"]);
   assert.equal(fallback.rows.some((row) => row.genre), false, "fallback must not invent a genre");
   assert.equal(fallback.source, "popular");
+});
+
+test("recent attendance preserves a matching Discover artist's canonical link and saved metadata", () => {
+  const artist = { key: "the artist", name: "The Artist", publicSlug: "the-artist-band-7", photo: "saved.jpg", topTrack: { title: "Saved track" } };
+  for (const attendance of [{ artist: "The Artist", artistKey: "the artist" }, { artist: "The Artist" }]) {
+    const overview = normalizeDiscoverOverview({ chart: { rows: [artist] } });
+    const spotlight = buildDiscoverArtistSpotlight({
+      fallbackRows: overview.chart.rows,
+      attendanceRows: [{ ...attendance, state: "went", date: "2026-09-01" }],
+    });
+    const [row] = filterDiscoverRows(spotlight.rows, "The Artist");
+    assert.equal(row.key, artist.key);
+    assert.equal(row.publicSlug, artist.publicSlug);
+    assert.equal(artistPath(row), "/artist/the-artist-band-7");
+    assert.equal(row.photo, "saved.jpg");
+    assert.equal(row.topTrack.title, "Saved track");
+    assert.equal(row.discoveryReason, "Recently attended");
+    assert.equal(spotlight.rows.length, 1);
+  }
+});
+
+test("recent attendance never borrows a conflicting or loosely similar artist's canonical link", () => {
+  for (const attendance of [
+    { artist: "The Artist", artistKey: "another artist" },
+    { artist: "The Artist", artistPublicSlug: "another-artist" },
+    { artist: "The-Artist" },
+  ]) {
+    const row = { key: "the artist", name: "The Artist", publicSlug: "the-artist-band-7" };
+    const attendanceRows = [{ ...attendance, state: "went", date: "2026-09-01" }];
+    const spotlight = buildDiscoverArtistSpotlight({ fallbackRows: [row], attendanceRows });
+    assert.notEqual(spotlight.rows[0].publicSlug, row.publicSlug);
+    const filtered = buildDiscoverArtistSpotlight({ genreRows: [row], attendanceRows, selectedGenre: "Rock" });
+    assert.equal(filtered.recentCount, 0);
+    assert.equal(filtered.rows[0].discoveryReason, "Popular in Rock");
+  }
+});
+
+test("an older Discover row cannot erase the canonical slug already present on attendance", () => {
+  for (const selectedGenre of [null, "Rock"]) {
+    const rows = [{ key: "the artist", name: "The Artist", publicSlug: null }];
+    const spotlight = buildDiscoverArtistSpotlight({
+      genreRows: rows, fallbackRows: rows, selectedGenre,
+      attendanceRows: [{ artist: "The Artist", artistKey: "the artist", artistPublicSlug: "the-artist-band-7", state: "went" }],
+    });
+    assert.equal(artistPath(spotlight.rows[0]), "/artist/the-artist-band-7");
+    assert.equal(spotlight.recentCount, 1);
+  }
 });
 
 test("genre artist spotlight preserves global artist names outside Latin script", () => {

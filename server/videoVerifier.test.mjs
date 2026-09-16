@@ -324,6 +324,61 @@ test("a worker rollback after health cannot terminally reject newly admitted sou
   }
 });
 
+test("a successful baseline job cannot renew an expired source-admission proof", async () => {
+  await refreshVideoVerifierHealth({
+    env: ENV, at: Date.now() - VIDEO_VERIFIER_HEALTH_FRESH_MS - 1_000,
+    fetchImpl: (url, request) => signedResponse({ path: new URL(url).pathname, request, payload: healthyPayload() }),
+  });
+  let fetches = 0;
+  const fetchImpl = (url, request) => {
+    fetches += 1;
+    return signedResponse({ path: new URL(url).pathname, request, payload: decodedPayload });
+  };
+  await verifyVideoObject(verificationInput({ fetchImpl }));
+  const status = videoVerifierRuntimeStatus(ENV);
+  assert.equal(status.ready, true, "ordinary successful processing still proves baseline readiness");
+  assert.equal(status.sourceAdmissionRevision, null, "a job result cannot refresh the older signed health revision");
+  let reservations = 0;
+  await assert.rejects(() => verifyVideoObject(verificationInput({
+    structural: { ...STRUCTURAL, sourceAdmissionRevision: 2 }, fetchImpl,
+    beforeStart: () => { reservations += 1; },
+  })), (error) => error.status === 503 && error.code === "MEDIA_STORAGE_UNAVAILABLE");
+  assert.equal(fetches, 1, "new formats defer before POST while a fresh revision proof is missing");
+  assert.equal(reservations, 0);
+  await refreshVideoVerifierHealth({
+    env: ENV,
+    fetchImpl: (url, request) => signedResponse({ path: new URL(url).pathname, request, payload: healthyPayload() }),
+  });
+  assert.equal(videoVerifierRuntimeStatus(ENV).sourceAdmissionRevision, 2);
+});
+
+test("source-admission evidence clears on failed health and cannot cross verifier configuration", async (context) => {
+  for (const reason of ["failed-health", "changed-worker"]) {
+    await context.test(reason, async () => {
+      resetVideoVerifierStateForTests();
+      await refreshVideoVerifierHealth({
+        env: ENV,
+        fetchImpl: (url, request) => signedResponse({ path: new URL(url).pathname, request, payload: healthyPayload() }),
+      });
+      const env = reason === "changed-worker" ? { ...ENV, PIT_VIDEO_VERIFIER_HOSTPORT: "pit-video-verifier-next:10001" } : ENV;
+      if (reason === "failed-health") {
+        await refreshVideoVerifierHealth({ env, fetchImpl: async () => { throw new Error("offline"); } });
+      }
+      assert.equal(videoVerifierRuntimeStatus(env).sourceAdmissionRevision, null);
+      await verifyVideoObject(verificationInput({ env,
+        fetchImpl: (url, request) => signedResponse({ path: new URL(url).pathname, request, payload: decodedPayload }),
+      }));
+      assert.equal(videoVerifierRuntimeStatus(env).ready, true, "baseline uploads retain their existing recovery behavior");
+      assert.equal(videoVerifierRuntimeStatus(env).sourceAdmissionRevision, null,
+        "successful baseline decoding cannot resurrect invalidated revision evidence");
+      await assert.rejects(() => verifyVideoObject(verificationInput({ env,
+        structural: { ...STRUCTURAL, sourceAdmissionRevision: 2 },
+        fetchImpl: async () => { assert.fail("new formats cannot dispatch without current signed health"); },
+      })), (error) => error.status === 503 && error.code === "MEDIA_STORAGE_UNAVAILABLE");
+    });
+  }
+});
+
 test("health rejects malformed codec capability claims", async () => {
   const payload = healthyPayload();
   payload.sourceCodecs["video/mp4"] = ["hevc"];
@@ -637,6 +692,8 @@ test("an admitted active verification holds only its exact fresh health proof fo
 
   assert.equal(videoVerifierRuntimeStatus(ENV, at + VIDEO_VERIFIER_HEALTH_FRESH_MS + 1).ready, true,
     "the admitted job does not make video publishing disappear when the ordinary probe ages out");
+  assert.equal(videoVerifierRuntimeStatus(ENV, at + VIDEO_VERIFIER_HEALTH_FRESH_MS + 1).sourceAdmissionRevision, null,
+    "the active-job lease cannot extend the separately signed source-admission proof");
   assert.equal(videoVerifierRuntimeStatus(ENV, at + VIDEO_VERIFIER_JOB_TIMEOUT_MS + 5_000).ready, false,
     "a hung job cannot keep an arbitrarily stale worker marked ready");
 

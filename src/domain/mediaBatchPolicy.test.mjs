@@ -7,6 +7,7 @@ test("a bad individual file is skipped without cancelling later selections", () 
   assert.equal(shouldContinueMediaBatch({ status: 413, serverCode: "MEDIA_TOO_LARGE" }), true);
   assert.equal(shouldContinueMediaBatch({ status: 415, serverCode: "MEDIA_TYPE_UNSUPPORTED" }), true);
   assert.equal(shouldContinueMediaBatch({ code: "PIT-UPLOAD-002" }), true);
+  assert.equal(shouldContinueMediaBatch({ code: "MEDIA_SOURCE_MISSING" }), true);
 });
 
 test("network and service-wide failures stop a media batch immediately", () => {
@@ -16,5 +17,7 @@ test("network and service-wide failures stop a media batch immediately", () => {
     { serverCode: "RATE_LIMITED", status: 429 },
     { serverCode: "MEDIA_STORAGE_UNAVAILABLE", status: 503 },
     { code: "PIT-NET-002", status: 0 },
+    { status: 404, serverCode: "NOT_FOUND" },
+    { code: "MEDIA_ASSET_INVALID" },
   ]) assert.equal(shouldContinueMediaBatch(error), false);
 });

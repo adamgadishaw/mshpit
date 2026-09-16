@@ -558,7 +558,7 @@ test("public video capability requires exact private-derivative negotiation plus
     assert.throws(() => routes["GET /api/readiness"]({}),
       (error) => error.status === 503 && error.code === "MEDIA_STORAGE_UNAVAILABLE",
       "private storage readiness alone cannot bypass the verifier gate");
-    const verifierHealth = (sourceTypes) => async (url, request) => {
+    const verifierHealth = (sourceTypes, sourceAdmissionRevision) => async (url, request) => {
       const path = new URL(url).pathname;
       const authenticated = verifyVideoVerifierRequest({
         secret,
@@ -579,6 +579,7 @@ test("public video capability requires exact private-derivative negotiation plus
           storage: { privateInput: true, sanitizedOutput: true },
           sourceTypes,
           sourceCodecs: Object.fromEntries(sourceTypes.map((type) => [type, ["h264", "hevc"]])),
+          ...(sourceAdmissionRevision !== undefined ? { sourceAdmissionRevision } : {}),
           concurrency: 1,
         },
       });
@@ -621,6 +622,15 @@ test("public video capability requires exact private-derivative negotiation plus
           "video/quicktime": ["h264", "hevc"],
         },
       });
+    await refreshVideoVerifierHealth({
+      env: process.env,
+      fetchImpl: verifierHealth(["video/mp4", "video/quicktime"], 2),
+    });
+    const expandedHealth = routes["GET /api/health"]({ query: { mediaPipeline: "private-derivative-v1" } });
+    assert.equal(expandedHealth.capabilities.mediaPublishing.sourceAdmissionRevision, 2,
+      "a ready signed worker can expose expanded format readiness without secrets");
+    assert.equal(routes["GET /api/health"]({ query: {} }).capabilities.mediaPublishing.sourceAdmissionRevision, undefined,
+      "legacy health remains unchanged");
     process.env.MEDIA_SOURCE_BUCKET = process.env.MEDIA_BUCKET;
     const degraded = routes["GET /api/health"]({ query: { mediaPipeline: "private-derivative-v1" } });
     assert.equal(degraded.ok, true, "core liveness survives an unavailable optional media provider");

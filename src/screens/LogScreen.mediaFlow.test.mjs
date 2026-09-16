@@ -49,7 +49,7 @@ test("original upload leaves admission to the authenticated route and keeps prog
   includes(upload, 'fraction: stage === "ready" ? 1 : 0');
   excludes(upload, 'stage.startsWith("verifying-") ? 1');
   includes(source, "uploadControllerRef.current?.abort()");
-  includes(upload, "onRemoteDraft: ({ assetId, sourceUploaded }) =>");
+  includes(upload, "onRemoteDraft: ({ assetId, sourceUploaded, retiredAssetId }) =>");
   includes(upload, "if (sourceUploaded !== true) return");
   includes(upload, "originalMediaProjectAsset({ ...candidate, assetId }, candidateIndex)");
   const retirement = source.slice(source.indexOf("async function retireRemoteDrafts"), source.indexOf("const refreshMediaPublishingCapabilities"));

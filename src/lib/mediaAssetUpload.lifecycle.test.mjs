@@ -79,6 +79,71 @@ test("a new selection without a local source or server identity still fails befo
   assert.deepEqual(f.calls, []);
 });
 
+test("an expired owner source uploads its retained local original once under the same account", async () => {
+  const f = fixture({ resume: true, boundary: (name) => {
+    if (name === "read") throw Object.assign(new Error("Gone"), { status: 404, serverCode: "NOT_FOUND" });
+  } });
+  assert.equal((await f.run()).status, "ready");
+  assert.deepEqual(f.calls, ["read", "prepare", "create", "transfer", "finalize"]);
+  assert.deepEqual(f.drafts[1], { retiredAssetId: "remote-a" });
+  assert.equal(f.requests.every(({ options }) => options.expectedAccountId === "a"), true);
+});
+
+test("missing remote-only sources never fetch a public URL as a replacement original", async () => {
+  for (const uri of ["", "https://media.example.org/private-original.mp4"]) {
+    const f = fixture({ resume: true, boundary: (name) => {
+      if (name === "read") throw Object.assign(new Error("Gone"), { status: 404, serverCode: "NOT_FOUND" });
+    } });
+    await assert.rejects(f.run({ asset: { ...f.asset, uri } }), { code: "MEDIA_SOURCE_MISSING" });
+    assert.deepEqual(f.calls, ["read"]);
+  }
+});
+
+test("auth, identity, temporary and ambiguous missing errors never restart the local source", async () => {
+  for (const error of [
+    { status: 401 }, { status: 403 }, { status: 409, serverCode: "IDENTITY_CHANGED" },
+    { status: 409, serverCode: "CONFLICT" },
+    { status: 503, serverCode: "MEDIA_STORAGE_UNAVAILABLE" }, { status: 404 },
+    { status: 404, serverCode: "ROUTE_NOT_FOUND" }, { code: "MEDIA_ASSET_INVALID" },
+  ]) {
+    const f = fixture({ resume: true, boundary: (name) => { if (name === "read") throw Object.assign(new Error("Cannot resume"), error); } });
+    await assert.rejects(f.run());
+    assert.equal(f.calls.every((name) => name === "read"), true, JSON.stringify(error));
+    assert.equal(f.drafts.some((draft) => draft.retiredAssetId), false);
+  }
+});
+
+test("sign-out while the expired-source fallback prepares cannot issue a fresh upload", async () => {
+  const f = fixture({ resume: true, boundary: (name, { setAccount }) => {
+    if (name === "read") throw Object.assign(new Error("Gone"), { status: 404, serverCode: "NOT_FOUND" });
+    if (name === "prepare") setAccount(null);
+  } });
+  await assert.rejects(f.run(), { status: 401 });
+  assert.deepEqual(f.calls, ["read", "prepare", "create"]);
+  assert.deepEqual(f.mutations, []);
+});
+
+test("a failed fresh finalize cannot loop back into missing-source replacement", async () => {
+  const f = fixture({ resume: true, boundary: (name) => {
+    if (name === "read" || name === "finalize") throw Object.assign(new Error("Gone"), { status: 404, serverCode: "NOT_FOUND" });
+  } });
+  await assert.rejects(f.run(), { status: 404, serverCode: "NOT_FOUND" });
+  assert.deepEqual(f.calls, ["read", "prepare", "create", "transfer", "finalize"]);
+  assert.equal(f.drafts.filter((draft) => draft.retiredAssetId).length, 1);
+});
+
+test("cancellation at the missing-source read cannot restart device preparation", async () => {
+  const f = fixture({ resume: true, boundary: (name, { controller }) => {
+    if (name === "read") {
+      controller.abort();
+      throw Object.assign(new Error("Gone"), { status: 404, serverCode: "NOT_FOUND" });
+    }
+  } });
+  await assert.rejects(f.run(), { name: "AbortError" });
+  assert.deepEqual(f.calls, ["read"]);
+  assert.equal(f.drafts.some((draft) => draft.retiredAssetId), false);
+});
+
 test("missing or invalid account identity rejects before reading a private device file", async () => {
   for (const expectedAccountId of [undefined, null, "", "  ", 1]) {
     const f = fixture(); await assert.rejects(f.run({ expectedAccountId }), { code: "MEDIA_ACCOUNT_REQUIRED" });

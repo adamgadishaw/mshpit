@@ -92,6 +92,34 @@ test("production media verifier accepts only a plain HTTPS origin", () => {
   assert.throws(() => productionMediaHealthUrl("https://www.mshpit.com/not-an-origin"), /plain HTTPS origin/);
 });
 
+test("expanded source readiness requires the exact advertised revision without breaking baseline checks", async () => {
+  for (const revision of [undefined, null, "2", 0, -2, 1, 2.5, 3]) {
+    const payload = healthyPayload();
+    payload.capabilities.mediaPublishing.sourceAdmissionRevision = revision;
+    const fetchImpl = async () => jsonResponse(payload);
+    assert.equal((await verifyProductionMedia({ fetchImpl })).ok, true);
+    await assert.rejects(verifyProductionMedia({ fetchImpl, requireSourceAdmissionRevision: 2 }),
+      /source support revision 2 is not ready/);
+  }
+  const payload = healthyPayload();
+  payload.capabilities.mediaPublishing.sourceAdmissionRevision = 2;
+  const result = await verifyProductionMedia({
+    fetchImpl: async () => jsonResponse(payload), requireSourceAdmissionRevision: 2,
+  });
+  assert.equal(result.sourceAdmissionRevision, 2);
+});
+
+test("invalid required source revisions fail before making a network request", async () => {
+  let calls = 0;
+  for (const revision of [null, "2", 0, -1, 1.5, 1001, NaN, Infinity]) {
+    await assert.rejects(verifyProductionMedia({
+      requireSourceAdmissionRevision: revision,
+      fetchImpl: async () => { calls += 1; return jsonResponse(healthyPayload()); },
+    }), /integer from 1 to 1000/);
+  }
+  assert.equal(calls, 0);
+});
+
 test("production media verifier fails closed on transport and response-shape errors", async () => {
   await assert.rejects(
     verifyProductionMedia({ fetchImpl: async () => jsonResponse(healthyPayload(), { status: 503 }) }),

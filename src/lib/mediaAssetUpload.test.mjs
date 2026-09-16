@@ -48,7 +48,7 @@ test("unknown picker dimensions and duration are omitted instead of fabricated",
 });
 
 test("an interrupted upload resumes by stable asset id without re-reading the device source", () => {
-  const branch = source.slice(source.indexOf("if (assetId)"), source.indexOf("} else {", source.indexOf("if (assetId)")));
+  const branch = source.slice(source.indexOf("if (assetId)"), source.indexOf("if (!assetId) {", source.indexOf("if (assetId)")));
   includes(branch, "resumeExistingMediaSourceV1");
   includes(branch, "onRemoteDraft");
   excludes(branch, "prepareAsset");

@@ -149,19 +149,25 @@ test("a picker returning to a dismissed composer cannot stage private device med
 });
 
 const compileComposerUpload = callback("LogScreen.jsx", "LogScreen", "uploadOriginalMedia");
+const compileProjectSetter = callback("LogScreen.jsx", "LogScreen", "setMediaProject");
+const compilePhotosSetter = callback("LogScreen.jsx", "LogScreen", "setPhotos");
 function composerUploadFixture() {
   const accountTasks = scope(), upload = deferred(), started = deferred(), events = [];
   const uploadControllerRef = { current: null }, uploadOperationRef = { current: null };
+  const mediaProjectRef = { current: { version: 1, assets: [] } };
+  const photosRef = { current: [] };
   const bindings = {
     accountTasks, user: { id: "a" }, originalMediaProjectAsset, MEDIA_POST_MAX_ATTACHMENTS: 8,
     uploadControllerRef, uploadOperationRef, uploadingPhotos: false, posting: false,
     createMediaTransferProgressPublisher, mediaProjectRequiresLegacyUpload,
-    mediaProject: { version: 1, assets: [] }, photos: [], reconcileMediaProjectSelection, mediaProjectPublishedMedia,
+    mediaProject: mediaProjectRef.current, mediaProjectRef, photos: [], photosRef, reconcileMediaProjectSelection, mediaProjectPublishedMedia,
     shouldContinueMediaBatch, remoteDraftAssetIdsRef: { current: new Map() },
     releaseMediaDraftAsset: async () => {}, retireRemoteDrafts: async () => {},
     uploadOriginalMediaAsset: (options) => { started.resolve(options); return upload.promise; },
-    ...Object.fromEntries(["setUploadProgress", "setUploadingPhotos", "setMediaError", "setPendingMediaAssets", "setMediaProject", "setPhotos"]
+    ...Object.fromEntries(["setUploadProgress", "setUploadingPhotos", "setMediaError", "setPendingMediaAssets"]
       .map((name) => [name, (value) => events.push({ name, value })])),
+    setMediaProject: compileProjectSetter({ mediaProjectRef, renderMediaProject: (value) => events.push({ name: "setMediaProject", value }) }),
+    setPhotos: compilePhotosSetter({ photosRef, renderPhotos: (value) => events.push({ name: "setPhotos", value }) }),
   };
   const run = compileComposerUpload(bindings);
   return { accountTasks, upload, started, events, uploadControllerRef, bindings, run: () => run(pickerResult.assets) };
@@ -317,6 +323,23 @@ test("Retry uses the latest identity and preserves selections added while recove
   assert.deepEqual(f.pendingMediaAssetsRef.current.map((asset) => asset.id), ["local:clip", "local:new"]);
 });
 
+test("Retry never calls an unchecked replacement local source missing", async () => {
+  for (const initiallyRemote of [true, false]) {
+    const asset = originalMediaProjectAsset({ id: "local:clip", kind: "video", durationMs: 2_000,
+      uri: "file:///cache/pit-studio/a/draft/original.mov", durableLocalUri: "file:///cache/pit-studio/a/draft/original.mov",
+      ...(initiallyRemote ? { assetId: "ma_retired" } : {}),
+    });
+    const f = composerRetryFixture([asset]), running = f.run();
+    const latest = { ...asset, assetId: null,
+      ...(initiallyRemote ? {} : { durableLocalUri: "file:///cache/pit-studio/a/draft/replacement.mov" }),
+    };
+    f.setPendingMediaAssets([latest]); f.recovery.resolve([]); await running;
+    assert.equal(f.uploads.length, 1);
+    assert.equal(f.uploads[0][0].durableLocalUri, latest.durableLocalUri);
+    assert.equal(f.pendingMediaAssetsRef.current.length, 1);
+  }
+});
+
 test("double Retry shares one recovery and releases its lock after completion", async () => {
   const f = composerRetryFixture(), first = f.run(), second = f.run();
   assert.equal(f.recoveryCalls(), 1);
@@ -433,7 +456,7 @@ test("a terminal rejected clip does not block later files or detach successful u
   const state = { pending: selected, project: { assets: [] }, photos: [] };
   const bindings = { ...f.bindings,
     setPendingMediaAssets: (update) => { state.pending = typeof update === "function" ? update(state.pending) : update; },
-    setMediaProject: (value) => { state.project = value; },
+    setMediaProject: (value) => { state.project = value; f.bindings.mediaProjectRef.current = value; },
     setPhotos: (value) => { state.photos = value; },
     retireRemoteDrafts: async (ids) => retired.push(ids),
     uploadOriginalMediaAsset: async ({ asset, expectedAccountId }) => {
@@ -454,4 +477,54 @@ test("a terminal rejected clip does not block later files or detach successful u
   assert.deepEqual(state.photos, ["https://media.example.org/first.mp4", "https://media.example.org/last.mp4"]);
   assert.deepEqual(state.pending, []);
   assert.deepEqual(retired, [["rejected"]]);
+});
+
+test("a delayed Retry does not restore removed ready media or discard newly attached media", async () => {
+  const f = composerUploadFixture();
+  const ready = (id) => originalMediaProjectAsset({ id, assetId: `ma_${id}`, kind: "image", status: "ready",
+    sourceUrl: `https://media.example.org/${id}.jpg` });
+  const removed = ready("removed"), retained = ready("retained"), added = ready("added");
+  f.bindings.mediaProject = { assets: [removed, retained] };
+  f.bindings.photos = [removed.sourceUrl, retained.sourceUrl];
+  const pending = originalMediaProjectAsset({ id: "pending", kind: "image", uri: "blob:pending" });
+  const uploadFromBeforeRecovery = compileComposerUpload({ ...f.bindings,
+    uploadOriginalMediaAsset: async () => ({ ...pending, ...ready("pending") }),
+  });
+  // The callback has already captured the old render, as Retry does across its
+  // filesystem await. Later composer edits must still win at reconciliation.
+  f.bindings.setMediaProject({ assets: [retained, added] });
+  f.bindings.setPhotos([retained.sourceUrl, added.sourceUrl]);
+  await uploadFromBeforeRecovery([pending]);
+  assert.deepEqual(f.bindings.mediaProjectRef.current.assets.map((asset) => asset.id), ["retained", "added", "pending"]);
+});
+
+test("two finished attachments survive Retry with six pending files including a lost local and expired remote source", async () => {
+  const finished = ["ready-one", "ready-two"].map((id) => originalMediaProjectAsset({
+    id, assetId: `ma_${id}`, kind: "video", status: "ready", sourceUrl: `https://media.example.org/${id}.mp4`,
+  }));
+  const pending = ["lost-local", "expired-remote", "photo-one", "photo-two", "photo-three", "photo-four"].map((id) => originalMediaProjectAsset({
+    id, kind: id.startsWith("photo") ? "image" : "video", uri: id === "expired-remote" ? "" : `blob:${id}`,
+    ...(id === "expired-remote" ? { assetId: "ma_expired" } : {}),
+    ...(id === "lost-local" ? { uri: "file:///cache/pit-studio/a/draft/lost.mov", durableLocalUri: "file:///cache/pit-studio/a/draft/lost.mov" } : {}),
+  }));
+  const retry = composerRetryFixture(pending), upload = composerUploadFixture(), attempted = [];
+  upload.bindings.mediaProjectRef.current = { assets: finished };
+  let message = "";
+  const setMediaError = (value) => { message = typeof value === "function" ? value(message) : value; };
+  const uploadBatch = compileComposerUpload({ ...upload.bindings, accountTasks: retry.accountTasks,
+    setPendingMediaAssets: retry.setPendingMediaAssets, setMediaError,
+    uploadOriginalMediaAsset: async ({ asset }) => {
+      attempted.push(asset.id);
+      if (asset.id === "expired-remote") throw Object.assign(new Error("Missing original"), { code: "MEDIA_SOURCE_MISSING" });
+      assert.equal(asset.edit.filter, "original", "fresh photos remain original-only");
+      return { ...asset, assetId: `ma_${asset.id}`, status: "ready", sourceUrl: `https://media.example.org/${asset.id}.jpg` };
+    },
+  });
+  const retryBatch = compileComposerRetry({ ...retry, setMediaError, uploadOriginalMedia: uploadBatch });
+  const running = retryBatch(); retry.recovery.resolve([]); await running;
+  assert.deepEqual(attempted, ["expired-remote", "photo-one", "photo-two", "photo-three", "photo-four"]);
+  assert.equal(upload.bindings.mediaProjectRef.current.assets.length, 6, "two finished plus four recoverable photos stay attached");
+  assert.deepEqual(retry.pendingMediaAssetsRef.current, []);
+  assert.match(message, /could not be recovered/u);
+  assert.match(message, /1 original file is no longer available/u);
 });

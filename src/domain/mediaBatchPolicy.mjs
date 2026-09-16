@@ -8,6 +8,7 @@ export function shouldContinueMediaBatch(error) {
   const code = String(error?.code || "");
   return status === 413
     || status === 415
+    || code === "MEDIA_SOURCE_MISSING"
     || serverCode === "MEDIA_TOO_LARGE"
     || serverCode === "MEDIA_TYPE_UNSUPPORTED"
     || code === "PIT-UPLOAD-002"

@@ -8,8 +8,8 @@ Budget: the current topology adds **one production-only Render Starter private s
 
 `private-derivative-v1` accepts a new clip only after PIT has:
 
-1. uploaded an immutable MP4 source to a distinct private ingest bucket with no public URL;
-2. checked its bounded MP4 structure and H.264/AAC sample tables;
+1. uploaded an immutable MP4 or QuickTime MOV source to a distinct private ingest bucket with no public URL;
+2. checked its bounded container structure and supported H.264/HEVC and AAC sample tables;
 3. granted the private verifier a short-lived, `If-Match`-bound signed GET for that exact object generation;
 4. fully decoded the clip with FFmpeg, transcoded it to a metadata-stripped H.264/AAC public derivative, and independently decoded that derivative;
 5. uploaded the derivative through a create-only signed PUT, then independently HEAD- and SHA-256-verified it from the control plane; and
@@ -31,7 +31,7 @@ Source of truth:
 - Client negotiation: `src/domain/mediaPublishingCapabilities.mjs`
 - Client preflight: `src/domain/mediaPublishingPreflight.mjs`
 
-Current hard bounds are MP4 only, at most 100 MiB and 60 seconds, one progressive H.264 video track, at most one AAC-LC mono/stereo audio track, and one verifier job at a time. The server remains authoritative even when picker preflight passes.
+Current source-code bounds are at most 500 MiB and ten minutes, one supported progressive H.264 or HEVC video track, at most one AAC-LC mono/stereo audio track, and one verifier job at a time. The long edge is at most 4096 pixels and the short edge at most 2160, regardless of orientation. Source rates up to 240 fps share the unchanged total-frame and coded-pixel-work budget; delivery is capped at 60 fps. These ceilings are not a promise that a ten-minute 4K/240 fps clip fits the work budget. Corrupt, encrypted, unsupported Dolby Vision/hev1, and over-budget sources remain rejected. The server remains authoritative even when picker preflight passes. Verify the deployed source-support revision below before claiming the expanded formats are live.
 
 ## Render topology
 
@@ -120,13 +120,13 @@ For terminally rejected uploads, verify immediate deletion is queued. A user-can
 Do not promote unless all of the following are true:
 
 - 100% of expected-accept cases accept and 100% of expected-reject cases reject, with no incorrect poster, rotation, duplicate publish, or cross-account/object result.
-- At least 20 sequential real valid finalizations complete: p95 authoritative finalize time is at most 40 seconds and every worker job finishes before its 50-second service timeout (the web controller stops at 55 seconds).
+- At least 20 sequential real baseline clips complete with p95 authoritative finalize time at most 40 seconds. Separately measure representative expanded-format clips; every worker job must finish before the current 15-minute service timeout (the web controller stops at 16 minutes). These are maximum safety deadlines, not target response times or proof that a given phone video has passed.
 - The 95–100 MiB upload finishes on each tested client/network within the client's 10-minute ceiling; progress is monotonic and cancellation becomes visible within 2 seconds.
 - For 30 uninterrupted minutes after the matrix, authenticated health remains `ready=true`, `ageMs<=90000`, and has no `lastErrorCode`; the worker has no OOM, crash, unexpected restart, temp-file residue growth, or unsigned/sensitive log output.
 - The deliberate outage turns negotiated publishing off within 30 seconds of the first failed scheduled check and recovery takes no more than 60 seconds after the verifier is listening. Unversioned health never advertises video.
-- The single-slot busy test returns a controlled `429`; it does not exceed the 50-second job bound, burn permits for coalesced/busy work, or leave a source/variant marked ready without authoritative provenance.
+- The single-slot busy test returns a controlled `429`; it does not exceed the configured job bound, burn permits for coalesced/busy work, or leave a source/variant marked ready without authoritative provenance.
 
-Any failed bullet blocks production. Increase verifier resources or narrow the admitted video envelope if worst-case `D` cannot stay under 50 seconds; do not raise timeouts as the first response.
+Any failed canary blocks claiming that scenario as production-verified. Investigate resource use and workload bounds if the worst case misses its configured deadline; do not raise timeouts or buy more capacity as an automatic response.
 
 ## Production enable sequence
 
@@ -145,6 +145,12 @@ Do not call the feature released merely because the private service built or the
 
 ## Monitoring
 
+### Expanded source-support release check
+
+Baseline video health and expanded format support are separate evidence. After the web service and verifier have deployed the compatibility fixes, run `npm run verify:production-media -- --require-source-revision 2`. This read-only check requires a ready signed worker with source-support revision 2, as projected by the negotiated public health endpoint. Missing, stale/unready, older or mismatched revision evidence fails this strict check. The normal check remains compatible with existing baseline upload support and labels that limitation explicitly.
+
+This is diagnostic only: it adds no global upload gate and does not disable ordinary videos while the services roll out. Sources that need the new revision already receive a retryable failure if an older verifier is still serving; their private source is preserved. Passing health proves the declared capability, not end-to-end decoding of a member's file. Retain the real-file canary and resource checks below. Local fixture tests without FFmpeg do not count as a decoder canary.
+
 Use authenticated `GET /api/admin/health`; never expose its response publicly. Watch:
 
 - `capabilities.mediaPublishing` for the actual server-side gate;
@@ -153,7 +159,7 @@ Use authenticated `GET /api/admin/health`; never expose its response publicly. W
 - web counts for media create/finalize `409`, `415`, `429`, and `503`; and
 - verifier CPU/memory, restarts, job duration, temp-disk growth, and signed health failures.
 
-The web scheduler checks every 30 seconds and considers health stale after 90 seconds. A new failed check makes readiness false immediately. A controlled `429` is expected when two different objects contend for the one decoder slot; sustained `429`s mean capacity is insufficient. Current application demand limits are 10 video creates/user/day, 20/IP/day, 200/global/day, and 12 verifications/user/hour, 24/IP/hour, 60/global/hour.
+The web scheduler checks every 30 seconds and considers health stale after 90 seconds. A new failed check makes readiness false immediately. A controlled `429` is expected when two different objects contend for the one decoder slot; sustained `429`s need capacity investigation. Current verification fairness limits are 240/user/hour, 480/IP/hour and 2,000/global/hour; source creation has no daily count quota. Durable outstanding-object/byte and rolling-byte/ticket safety limits still apply independently.
 
 Logs may contain only coarse result codes/timings. Never log HMAC headers, request bodies, presigned source URLs, `If-Match` values, object capabilities, secrets, or poster bytes.
 

@@ -5,7 +5,7 @@ import { createArtistKnowledgeRefresher, artistKnowledgeStorageReady, startArtis
   artistKnowledgeMemoryReady, artistKnowledgeDatabaseBytes } from "./artistKnowledgeRefresh.js";
 import { readCatalogKnowledgeControl, setCatalogKnowledgeMode, collectCatalogKnowledgeControl } from "./catalogKnowledgeControl.js";
 import { ArtistKnowledgeProviderError } from "./artistKnowledgeProvider.js";
-import { rememberDiscoverArtists } from "./discoverArtistPriority.js";
+import { rememberDiscoverArtists, discoverArtistPriorityKeys, DISCOVER_PRIORITY_LIMIT } from "./discoverArtistPriority.js";
 
 const MBID = "11111111-1111-4111-8111-111111111111";
 const OTHER = "22222222-2222-4222-8222-222222222222";
@@ -59,6 +59,44 @@ test("fills only missing fields and persists exact source; second pass makes no 
   assert.equal(JSON.parse(f.row().data).artistKnowledge.bioSource.revisionUrl, result().bioSource.revisionUrl);
   assert.equal(f.check().status, "filled");
   await f.service.runBatch(); assert.equal(calls, 1);
+});
+
+test("a worker pass retains its priority snapshot when newer Discover hints evict the originals", async (t) => {
+  let calls = 0, f;
+  f = fixture(t, { fetchKnowledge: async () => {
+    if (++calls === 1) {
+      for (let i = 0; i < DISCOVER_PRIORITY_LIMIT; i++) {
+        rememberDiscoverArtists(f.database, [{ key: `new-discover-${i}` }], AT);
+      }
+    }
+    return result();
+  } });
+  f.insert("ordinary", { rank: 100 });
+  for (let i = 0; i < 4; i++) f.insert(`priority-${i}`, { rank: 0 });
+  rememberDiscoverArtists(f.database, Array.from({ length: 4 }, (_, i) => ({ key: `priority-${i}` })), AT);
+  const stats = await f.service.runBatch({ limit: 5 });
+  assert.equal(stats.checked, 5);
+  assert.equal(stats.prioritized, 4);
+  assert.equal(f.check("ordinary").status, "filled");
+  for (let i = 0; i < 4; i++) assert.equal(f.check(`priority-${i}`).status, "filled");
+  assert.equal(discoverArtistPriorityKeys(f.database, AT).some(key => key.startsWith("priority-")), false);
+});
+
+test("new Discover hints cannot bypass exhausted artist or provider-request budgets", async (t) => {
+  for (const cap of ["ARTIST_KNOWLEDGE_DAILY_ARTISTS", "ARTIST_KNOWLEDGE_DAILY_REQUESTS"]) {
+    let requests = 0;
+    const env = { [cap]: "2" };
+    const f = fixture(t, { env, fetchKnowledge: async ({ beforeRequest }) => { beforeRequest(); requests++; return result(); } });
+    for (let i = 0; i < 6; i++) f.insert(`priority-${i}`);
+    rememberDiscoverArtists(f.database, Array.from({ length: 6 }, (_, i) => ({ key: `priority-${i}` })), AT);
+    assert.equal((await f.service.runBatch()).budgetPaused, true);
+    assert.equal(requests, 2);
+    f.insert("new-discover");
+    rememberDiscoverArtists(f.database, [{ key: "new-discover" }], AT);
+    assert.equal((await f.service.runBatch()).budgetPaused, true);
+    assert.equal(requests, 2);
+    assert.equal(f.row("new-discover").bio, null);
+  }
 });
 
 test("existing text and rich metadata survive; profile rows suppress biography downloads", async (t) => {

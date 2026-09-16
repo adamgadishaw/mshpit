@@ -313,6 +313,9 @@ function videoProbe({
   codedHeight = 1_088,
   metadataStreams = [],
   frameRate = "30/1",
+  realFrameRate = frameRate,
+  frameCount,
+  duration = "10.000",
 } = {}) {
   return JSON.stringify({
     streams: [{
@@ -329,14 +332,15 @@ function videoProbe({
       field_order: fieldOrder,
       ...(omitSampleAspectRatio ? {} : { sample_aspect_ratio: sampleAspectRatio }),
       avg_frame_rate: frameRate,
-      r_frame_rate: frameRate,
+      r_frame_rate: realFrameRate,
+      ...(frameCount === undefined ? {} : { nb_frames: frameCount }),
       disposition: { attached_pic: 0 },
       tags: rotation ? { rotate: String(rotation) } : {},
       side_data_list: rotation ? [{ rotation }] : [],
     }, ...metadataStreams],
     format: {
       format_name: "mov,mp4,m4a,3gp,3g2,mj2",
-      duration: "10.000",
+      duration,
       tags: { major_brand: majorBrand, compatible_brands: compatibleBrands },
     },
   });
@@ -545,6 +549,91 @@ test("source FPS, aggregate work, and delivery FPS guards remain independent", a
         assert.deepEqual(await readdir(root), []);
       } finally {
         await rm(root, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+test("exact source frame-count agreement prevents VFR and longer-audio work overestimates", async (context) => {
+  for (const fixture of [
+    { label: "VFR common timing base", duration: "600.000", sampleCount: 18_000, frameRate: "30/1", realFrameRate: "120/1" },
+    { label: "five-second video with longer audio", duration: "400.000", sampleCount: 600, frameRate: "120/1", realFrameRate: "120/1",
+      metadataStreams: [{ codec_type: "audio", codec_name: "aac", codec_tag_string: "mp4a", profile: "LC", channels: 2,
+        channel_layout: "stereo", sample_rate: "48000" }] },
+    { label: "portrait VFR within exact coded-pixel budget", duration: "300.000", sampleCount: 9_000,
+      frameRate: "30/1", realFrameRate: "120/1", width: 2_160, height: 3_840, codedWidth: 2_160, codedHeight: 3_840 },
+  ]) {
+    await context.test(fixture.label, async () => {
+      const { sampleCount, duration } = fixture;
+      const { width, height, codedWidth, codedHeight } = { ...validJob().structural, ...fixture };
+      const runProcess = fakeRunner({
+        probe: videoProbe({ ...fixture, rotation: 0, frameCount: String(sampleCount) }),
+        deliveryProbe: videoProbe({ rotation: 0, duration, frameRate: "60/1" }),
+      });
+      let uploads = 0;
+      const result = await runVideoVerifierJob(validJob({
+        structural: { ...validJob().structural, width, height, codedWidth, codedHeight, sampleCount,
+          durationMs: Number(duration) * 1_000, sourceAdmissionRevision: VIDEO_VERIFIER_SOURCE_ADMISSION_REVISION },
+      }), {
+        config: getVideoVerifierServiceConfig(ENV),
+        fetchImpl: async (url, request) => {
+          if (request.method === "PUT") { uploads += 1; return new Response(null, { status: 200 }); }
+          return new Response(SOURCE, {
+            status: 200,
+            headers: { "content-type": "video/mp4", "content-length": String(SOURCE.byteLength), etag: ETAG },
+          });
+        },
+        runProcess,
+        signal: AbortSignal.timeout(5_000),
+      });
+      assert.equal(result.video.durationMs, Number(duration) * 1_000);
+      assert.equal(uploads, 1);
+      const sourceProbe = runProcess.calls.find((call) => call.executable === "ffprobe");
+      assert.match(sourceProbe.args[sourceProbe.args.indexOf("-show_entries") + 1], /,nb_frames,/);
+      const creation = runProcess.calls.find((call) => call.executable === "ffmpeg" && call.args.at(-1)?.endsWith("delivery.mp4"));
+      assert.match(creation.args[creation.args.indexOf("-vf") + 1], /^fps=60,/);
+      assert.equal(runProcess.calls.some((call) => call.executable === "ffmpeg"
+        && call.args.includes("null") && call.args.some((arg) => String(arg).endsWith("delivery.mp4"))), true,
+      "output still receives a complete decode after normalization");
+    });
+  }
+});
+
+test("source count agreement never relaxes unknown counts, disagreement, or delivery work", async (context) => {
+  for (const fixture of [
+    ...[undefined, "N/A", "0", "-1", "18000.5", "9007199254740992"].map((frameCount) => ({
+      label: `conservative count ${frameCount}`, frameCount, realFrameRate: "120/1",
+    })),
+    { label: "explicit frame-count disagreement", frameCount: "17999", realFrameRate: "30/1" },
+    { label: "delivery estimate is not replaced by the signed source count", frameCount: "18000", realFrameRate: "30/1",
+      // This rounded rate is within the FPS tolerance but exceeds the fixed
+      // delivery sample-count budget over ten minutes. Remux carries the source
+      // envelope, but must not inherit the source-only exact-count exception.
+      deliveryProbe: videoProbe({ rotation: 0, duration: "600.000", frameRate: "60005/1000", frameCount: "18000" }) },
+  ]) {
+    await context.test(fixture.label, async () => {
+      const runProcess = fakeRunner({
+        probe: videoProbe({ rotation: 0, duration: "600.000", frameRate: "30/1",
+          realFrameRate: fixture.realFrameRate, frameCount: fixture.frameCount }),
+        ...(fixture.deliveryProbe ? { deliveryProbe: fixture.deliveryProbe } : {}),
+      });
+      await assert.rejects(() => runVideoVerifierJob(validJob({
+        structural: { ...validJob().structural, sampleCount: 18_000, durationMs: 600_000 },
+      }), {
+        config: getVideoVerifierServiceConfig(ENV),
+        fetchImpl: async (url, request) => {
+          assert.notEqual(request.method, "PUT", "a rejected probe cannot publish a delivery");
+          return new Response(SOURCE, {
+            status: 200,
+            headers: { "content-type": "video/mp4", "content-length": String(SOURCE.byteLength), etag: ETAG },
+          });
+        },
+        runProcess,
+        signal: AbortSignal.timeout(5_000),
+      }), { code: "unsupported_media" });
+      if (!fixture.deliveryProbe) {
+        assert.equal(runProcess.calls.some((call) => call.executable === "ffmpeg"), false,
+          "source disagreement or an unbounded estimate stops before decoding");
       }
     });
   }

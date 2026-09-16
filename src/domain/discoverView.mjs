@@ -282,17 +282,17 @@ const artistNameIdentity = (value) => text(value)
   .replace(/[^\p{L}\p{N}]+/gu, "")
   .slice(0, 160);
 
-const artistIdentitySet = (row) => new Set([
-  text(row?.artistKey),
-  text(row?.key),
-  text(row?.publicSlug),
-  text(row?.public_slug),
-  artistNameIdentity(row?.name || row?.artist),
-].filter(Boolean).map((value) => value.toLocaleLowerCase()));
-
 const sameArtist = (left, right) => {
-  const leftIds = artistIdentitySet(left);
-  return [...artistIdentitySet(right)].some((identity) => leftIds.has(identity));
+  const key = (row) => text(row?.artistKey || row?.key).toLocaleLowerCase();
+  const slug = (row) => text(row?.publicSlug || row?.public_slug || row?.artistPublicSlug).toLocaleLowerCase();
+  const leftKey = key(left), rightKey = key(right);
+  const leftSlug = slug(left), rightSlug = slug(right);
+  // A display-name match must never override conflicting canonical identities.
+  if (leftKey && rightKey && leftKey !== rightKey) return false;
+  if (leftSlug && rightSlug && leftSlug !== rightSlug) return false;
+  if ((leftKey && rightKey) || (leftSlug && rightSlug)) return true;
+  const name = (row) => text(row?.name || row?.artist).normalize("NFKC").toLocaleLowerCase();
+  return !!name(left) && name(left) === name(right);
 };
 
 export function buildDiscoverArtistSpotlight({
@@ -321,16 +321,27 @@ export function buildDiscoverArtistSpotlight({
   };
 
   for (const attendance of recentAttendance) {
+    const matches = baseRows.filter((row) => sameArtist(row, attendance));
+    const matchingRow = matches.length === 1 ? matches[0] : null;
+    const recentRow = {
+      name: attendance.artist,
+      artistKey: attendance.artistKey || null,
+      publicSlug: attendance.artistPublicSlug || null,
+      photo: attendance.artistPhoto || null,
+    };
+    // Either snapshot may be older and omit the canonical public slug.
+    const artistRow = matchingRow ? {
+      ...recentRow,
+      ...matchingRow,
+      publicSlug: matchingRow.publicSlug || matchingRow.public_slug || recentRow.publicSlug,
+      photo: matchingRow.photo || recentRow.photo,
+    } : recentRow;
     if (selectedGenre) {
-      const matchingRow = baseRows.find((row) => sameArtist(row, attendance));
-      if (matchingRow) add(matchingRow, "Recently attended");
+      if (matchingRow) add(artistRow, "Recently attended");
     } else {
-      add({
-        name: attendance.artist,
-        artistKey: attendance.artistKey || null,
-        publicSlug: attendance.artistPublicSlug || null,
-        photo: attendance.artistPhoto || null,
-      }, "Recently attended");
+      // Attendance snapshots need not contain a public slug. Reuse the known
+      // catalogue projection so highlighting a recent show cannot drop it.
+      add(artistRow, "Recently attended");
     }
   }
 

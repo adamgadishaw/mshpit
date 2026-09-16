@@ -426,13 +426,14 @@ async function probeVideo(filePath, config, {
   signal,
   sourceContentType = "video/mp4",
   structural,
+  useStructuralSampleCount = false,
   maxFrameRate = MEDIA_VIDEO_MAX_FRAME_RATE,
 }) {
   const result = await runProcess(config.ffprobe, [
     "-v", "error",
     "-protocol_whitelist", "file,pipe",
     "-f", "mov",
-    "-show_entries", "stream=codec_type,codec_name,codec_tag_string,profile,level,pix_fmt,width,height,coded_width,coded_height,field_order,sample_aspect_ratio,avg_frame_rate,r_frame_rate,channels,channel_layout,sample_rate:stream_disposition=attached_pic:stream_tags=rotate:stream_side_data=rotation:format=format_name,duration:format_tags=major_brand,compatible_brands",
+    "-show_entries", "stream=codec_type,codec_name,codec_tag_string,profile,level,pix_fmt,width,height,coded_width,coded_height,field_order,sample_aspect_ratio,avg_frame_rate,r_frame_rate,nb_frames,channels,channel_layout,sample_rate:stream_disposition=attached_pic:stream_tags=rotate:stream_side_data=rotation:format=format_name,duration:format_tags=major_brand,compatible_brands",
     "-of", "json",
     filePath,
   ], { cwd: directory, signal });
@@ -515,11 +516,21 @@ async function probeVideo(filePath, config, {
   const estimatedSamples = Number.isFinite(avgFps) && Number.isFinite(realFps) && Number.isSafeInteger(durationMs)
     ? Math.ceil(Math.max(avgFps, realFps) * (durationMs / 1_000))
     : VIDEO_MAX_SAMPLES + 1;
+  // r_frame_rate is a guessed common timestamp base, not a frame count; the
+  // format duration can also include audio beyond the video. Only replace that
+  // conservative estimate for the source when FFprobe's positive integer count
+  // agrees exactly with the signed, bounded STTS/STSZ proof. Missing/unknown
+  // counts retain the estimate, and delivery probes never use this exception.
+  const reportedSamples = useStructuralSampleCount && /^[1-9][0-9]*$/.test(String(video[0]?.nb_frames ?? ""))
+    ? Number(video[0].nb_frames) : Number.NaN;
+  const hasReportedSamples = Number.isSafeInteger(reportedSamples);
+  const sourceCountMatches = hasReportedSamples && reportedSamples === structural?.sampleCount;
+  const workSamples = sourceCountMatches ? reportedSamples : estimatedSamples;
   const workWidth = hasStructuralEnvelope ? structuralCodedWidth : roundedDisplayWidth;
   const workHeight = hasStructuralEnvelope ? structuralCodedHeight : roundedDisplayHeight;
   const estimatedCodedWork = Number.isSafeInteger(workWidth)
-      && Number.isSafeInteger(workHeight) && Number.isSafeInteger(estimatedSamples)
-    ? BigInt(workWidth) * BigInt(workHeight) * BigInt(estimatedSamples)
+      && Number.isSafeInteger(workHeight) && Number.isSafeInteger(workSamples)
+    ? BigInt(workWidth) * BigInt(workHeight) * BigInt(workSamples)
     : VIDEO_MAX_CODED_PIXEL_SAMPLES + 1n;
   if (video.length !== 1 || (!h264 && !hevc) || !codecProfileValid
       || video[0]?.field_order !== "progressive"
@@ -535,7 +546,8 @@ async function probeVideo(filePath, config, {
       || !Number.isSafeInteger(codedWidth) || !Number.isSafeInteger(codedHeight)
       || Math.min(widthValue, heightValue) > MEDIA_VIDEO_SOURCE_MAX_SHORT_EDGE
       || !codedReportMatches
-      || estimatedSamples > VIDEO_MAX_SAMPLES || estimatedCodedWork > VIDEO_MAX_CODED_PIXEL_SAMPLES
+      || (hasReportedSamples && !sourceCountMatches)
+      || workSamples > VIDEO_MAX_SAMPLES || estimatedCodedWork > VIDEO_MAX_CODED_PIXEL_SAMPLES
       || unknown.length
       || discardedQuickTime.length > VIDEO_VERIFIER_MAX_DISCARDED_QUICKTIME_TRACKS
       || !containerValid
@@ -819,6 +831,7 @@ export async function runVideoVerifierJob(payload, {
       signal,
       sourceContentType: job.contentType,
       structural: job.structural,
+      useStructuralSampleCount: true,
     });
     if (video.width !== job.structural.width
         || video.height !== job.structural.height
