@@ -56,7 +56,9 @@ export default function DiscoverVenues({ region = "Worldwide", homeCity = "", ve
   const [query, setQuery] = useState("");
   const [cityQuery, setCityQuery] = useState("");
   const [cityPickerOpen, setCityPickerOpen] = useState(false);
-  const [mapOpen, setMapOpen] = useState(false);
+  // The map is a primary discovery feature. Hiding it is the viewer's choice,
+  // never a prerequisite step before they can explore venues geographically.
+  const [mapOpen, setMapOpen] = useState(true);
   const [chosenCity, setChosenCity] = useState(null);
   const [chosenVenue, setChosenVenue] = useState(null);
   const [expandedShowsFor, setExpandedShowsFor] = useState(null);
@@ -90,7 +92,7 @@ export default function DiscoverVenues({ region = "Worldwide", homeCity = "", ve
   useEffect(() => { if (chosenVenue) revealVenue(chosenVenue); }, [chosenVenue, visible]);
   useEffect(() => {
     setChosenCity(null); setChosenVenue(null); setExpandedShowsFor(null); setQuery("");
-    setCityQuery(""); setVisible(8); setCityLimit(6); setCityPickerOpen(false); setMapOpen(false);
+    setCityQuery(""); setVisible(8); setCityLimit(6); setCityPickerOpen(false); setMapOpen(true);
     pendingReveal.current = null;
   }, [region]);
 

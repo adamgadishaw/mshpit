@@ -251,8 +251,9 @@ async function scenario(browser, origin, width, mode) {
     await changeCity("Toronto", "Ontario, Canada");
     await room("Fixture Harbour Hall").waitFor();
     assert.equal(await page.locator('[aria-label^="Upcoming shows at "]').count(), 0, "The initial list must not open a second detail panel.");
-    assert.equal(await page.locator('[aria-label^="Venue locations in "]').count(), 0, "Maps are optional, not a prerequisite to browsing.");
-    assert.equal(state.maps, 0, "Browsing the initial venue list must not fetch a map image.");
+    assert.equal(await page.locator('[aria-label^="Venue locations in "]').count(), 1, "The venue map must be visible without an extra click.");
+    await assertCityMap(page, state, "Toronto", mode);
+    assert.ok(state.maps > 0, "Opening Venues must load its map alongside the venue list.");
     const firstRoomBox = await room("Fixture Harbour Hall").boundingBox();
     assert.ok(firstRoomBox && firstRoomBox.height >= 44, "The venue's direct open target must be touch-sized.");
     await page.getByRole("heading", { name: "Venues in Toronto", exact: true }).scrollIntoViewIfNeeded();
@@ -269,6 +270,8 @@ async function scenario(browser, origin, width, mode) {
     await page.getByRole("button", { name: "Hide 4 upcoming shows at Fixture Harbour Hall", exact: true }).click();
     assert.equal(await shows("Fixture Harbour Hall").count(), 0);
 
+    await page.getByRole("button", { name: "Hide venue map", exact: true }).click();
+    assert.equal(await page.locator('[aria-label^="Venue locations in "]').count(), 0, "The viewer may still explicitly hide the map.");
     await page.getByRole("button", { name: "Show venue map", exact: true }).click();
     await assertCityMap(page, state, "Toronto", mode);
     const map = page.locator('[aria-label="Venue locations in Toronto"]');
@@ -350,7 +353,6 @@ async function scenario(browser, origin, width, mode) {
     assert.deepEqual(state.reports, [], "No client crash reports may be emitted.");
     assert.deepEqual(state.errors, [], "No browser errors or missing fixtures may be hidden.");
     assert.ok(state.maps > 0, "Build with an inert EXPO_PUBLIC_GOOGLE_MAPS_KEY=fixture-only; all map traffic stays local.");
-    await page.getByRole("button", { name: "Hide venue map", exact: true }).click();
     await page.getByRole("heading", { name: "Venues in London", exact: true }).scrollIntoViewIfNeeded();
     await page.screenshot({ path: join(screenshotDirectory, `${name}.png`), fullPage: true });
     await room("Fixture London River Room").focus(); await page.keyboard.press("Enter");
@@ -360,6 +362,7 @@ async function scenario(browser, origin, width, mode) {
     await page.getByRole("heading", { name: /^Venues in / }).waitFor();
     await page.waitForURL(origin + "/discover");
     assert.equal(new URL(page.url()).pathname, "/discover", "Browser Back must restore the Discover route.");
+    assert.equal(await page.locator('[aria-label^="Venue locations in "]').count(), 1, "Returning to Venues keeps the map part of the main experience.");
     assert.deepEqual(state.reports, []);
     assert.deepEqual(state.errors, [], "Primary venue navigation must not hide missing API fixture errors.");
     console.log(JSON.stringify({ name, passed: true, mockedMapRequests: state.maps }));

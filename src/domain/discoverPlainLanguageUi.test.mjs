@@ -31,7 +31,8 @@ test("Discover sections say plainly what people will find or do", () => {
   assert.match(files.venues, /Open venue/);
   assert.match(files.venues, /Opens the full venue page/);
   assert.match(files.venues, /Show map/);
-  assert.match(files.venues, /const \[mapOpen, setMapOpen\] = useState\(false\)/);
+  assert.match(files.venues, /const \[mapOpen, setMapOpen\] = useState\(true\)/);
+  assert.match(files.venues, /setCityPickerOpen\(false\); setMapOpen\(true\)/);
   assert.match(files.venues, /cityPickerOpen &&/);
   assert.doesNotMatch(files.venues, /1 · CHOOSE A CITY|2 · SELECT A VENUE|Coming up elsewhere in|Selected venue:/);
   assert.match(files.venues, /Show fewer shows/);
