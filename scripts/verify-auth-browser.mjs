@@ -680,6 +680,10 @@ async function runCase(browser, origin, item) {
       await page.getByLabel("Artist", { exact: true }).fill("Fixture Artist");
       await cityInput.fill("Tor");
       await page.getByRole("button", { name: "Use Toronto, Ontario, Canada", exact: true }).click();
+      // A completed click does not guarantee the controlled input's React commit
+      // has painted yet, especially on a busy mobile CI runner. Wait for the
+      // exact selection, never a delay or a replacement click that hides failure.
+      await page.waitForFunction(() => document.querySelector('input[aria-label="Concert city, region and country"]')?.value === "Toronto, Ontario, Canada", null, { timeout: timeoutMs });
       assert.equal(await cityInput.inputValue(), "Toronto, Ontario, Canada");
       assert.equal(await page.getByLabel("Concert venue, optional with a city", { exact: true }).inputValue(), "");
       assert.equal(await addressInput.isVisible(), true, "Public event address must be visible without expanding a hidden field.");
