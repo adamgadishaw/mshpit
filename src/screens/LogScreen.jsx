@@ -445,8 +445,6 @@ export default function LogScreen({
     ? postDims(editing)
     : { performance: 0, setlist: 0, sound: 0, venue: 0, crowd: 0, experience: 0 });
   const [ratingsDirty, setRatingsDirty] = useState(false);
-  const [showDetailedRatings, setShowDetailedRatings] = useState(() => !!editing && hasDetailedComposerRatings(postDims(editing)));
-  const [showTour, setShowTour] = useState(!!(editing?.tour || prefill?.tour));
   const [review, setReview] = useState(editing?.review || "");
   const [song, setSong] = useState(editing?.song || null);
   const [songUrl, setSongUrl] = useState(editing?.song?.url || "");
@@ -1312,8 +1310,6 @@ export default function LogScreen({
       .map((asset, index) => originalMediaProjectAsset(asset, index));
     const restoredReady = restoredProject.assets.filter((asset) => !!asset.sourceUrl && !restoredPending.some((pending) => pending.id === asset.id));
     setTour(restored.tour); setDate(restored.experienceType === ONLINE_REVIEW_EXPERIENCE ? "" : restoredComposerDate(restored.date)); setOnlineTitle(restored.onlineTitle); setYoutubeUrl(restored.youtubeUrl); setOnlineRating(restored.onlineRating); setDims(restored.dims); setReview(restored.review); setTaggedPeople(restored.postType === "show" && restored.experienceType !== ONLINE_REVIEW_EXPERIENCE ? restored.taggedPeople : []); setSong(restored.song); setSongUrl(restored.songUrl); setPreservedPlaylist(restored.playlist); setPhotos(restoredPhotos); setMediaProject(normalizeMediaProject({ assets: restoredReady })); setPendingMediaAssets(restoredPending); setPhotosPublic(restored.photosPublic); setLandingShowcase(restored.landingShowcase && hasLandingCompatibleImage(restoredPhotos));
-    setShowDetailedRatings(hasDetailedComposerRatings(restored.dims));
-    setShowTour(!!restored.tour);
     void recoverRestoredMedia(restoredPending, restored.id);
     setShowSong(restored.panels.song); setShowPhotos(restored.panels.photos); setShowPeople(restored.postType === "show" && restored.experienceType !== ONLINE_REVIEW_EXPERIENCE && (restored.panels.people || restored.taggedPeople.length > 0));
   };
@@ -1823,7 +1819,7 @@ export default function LogScreen({
             )}
           </View>
         </View>
-        <ConcertLocationFields city={city} eventAddress={eventAddress} onCityChange={setCity} onEventAddressChange={setEventAddress} readCities={readCityDirectory} compact />
+        <ConcertLocationFields city={city} eventAddress={eventAddress} onCityChange={setCity} onEventAddressChange={setEventAddress} readCities={readCityDirectory} />
 
         {officialEventName ? (
           <View style={styles.officialEventCard} accessible accessibilityRole="text" accessibilityLabel={`Event listing name: ${officialEventName}`}>
@@ -1836,13 +1832,7 @@ export default function LogScreen({
           </View>
         ) : null}
 
-        <Pressable style={styles.detailDisclosure} onPress={() => setShowTour((value) => !value)} accessibilityRole="button" accessibilityState={{ expanded: showTour }} accessibilityLabel="Tour or special event details">
-          <Icon name="ticket" size={16} color={colors.textDim} />
-          <Text style={styles.detailDisclosureText}>{tour.trim() || "Add tour or special event"}</Text>
-          <Text style={styles.optional}>optional</Text>
-          <Icon name={showTour ? "chevron-down" : "chevron-right"} size={16} color={colors.textDim} />
-        </Pressable>
-        {showTour && <>
+        <Text style={styles.fieldLabel}>TOUR OR SPECIAL EVENT <Text style={styles.optional}>optional</Text></Text>
         <TextInput style={styles.input} placeholder="e.g. CHROMAKOPIA Tour, OVO Fest" placeholderTextColor={colors.textFaint} value={tour} onChangeText={setTour} maxLength={80} accessibilityLabel="Tour or special event name" />
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.presets} keyboardShouldPersistTaps="handled">
           {TOUR_PRESETS.map((p) => {
@@ -1854,8 +1844,6 @@ export default function LogScreen({
             );
           })}
         </ScrollView>
-        </>}
-
         <Text style={[styles.fieldLabel, { marginTop: 18 }]}>WHEN? <Text style={styles.optional}>optional</Text></Text>
         <Pressable style={styles.dateBtn} onPress={() => setShowDate((s) => !s)} accessibilityRole="button" accessibilityLabel="Choose concert date" accessibilityState={{ expanded: showDate }}>
           <Icon name="calendar" size={16} color={colors.amber} />
@@ -1885,13 +1873,8 @@ export default function LogScreen({
           {!!dims.experience && <Pressable style={styles.optionalAction} onPress={() => setDim("experience", 0)} accessibilityRole="button" accessibilityLabel="Clear overall experience rating"><Text style={styles.optionalActionText}>Clear this rating</Text></Pressable>}
         </View>
 
-        <Pressable style={styles.detailDisclosure} onPress={() => setShowDetailedRatings((value) => !value)} accessibilityRole="button" accessibilityState={{ expanded: showDetailedRatings }} accessibilityLabel="Detailed concert ratings">
-          <Icon name="star" size={16} color={colors.textDim} />
-          <Text style={styles.detailDisclosureText}>{hasDetailedComposerRatings(dims) ? "Detailed ratings added" : "Rate the band, room or crowd"}</Text>
-          <Text style={styles.optional}>optional</Text>
-          <Icon name={showDetailedRatings ? "chevron-down" : "chevron-right"} size={16} color={colors.textDim} />
-        </Pressable>
-        {showDetailedRatings && GROUPS.map((g) => (
+        <Text style={[styles.fieldLabel, { marginTop: 18 }]}>BAND, ROOM & CROWD <Text style={styles.optional}>optional</Text></Text>
+        {GROUPS.map((g) => (
           <View key={g} style={styles.group}>
             <Text style={[styles.groupLabel, { color: GROUP_COLOR[g] }]}>{g}</Text>
             {RATING_DIMS.filter((d) => d.group === g && d.key !== "experience").map((d) => (
@@ -2216,8 +2199,6 @@ const styles = StyleSheet.create({
   detailHint: { color: colors.textDim, fontSize: 12, lineHeight: 18, marginTop: 6 },
   optionalAction: { minHeight: 44, justifyContent: "center", paddingVertical: 8 },
   optionalActionText: { color: colors.textDim, fontSize: 12, lineHeight: 18, textDecorationLine: "underline" },
-  detailDisclosure: { minHeight: 48, flexDirection: "row", alignItems: "center", gap: 9, paddingVertical: 12, borderBottomWidth: 1, borderColor: colors.lineSoft, marginBottom: 10 },
-  detailDisclosureText: { color: colors.text, fontSize: 13, fontWeight: "700", flex: 1 },
   dateActions: { flexDirection: "row", flexWrap: "wrap", columnGap: 20 },
   quickRatingCard: { padding: 14, marginTop: 16, marginBottom: 8, borderWidth: 1, borderColor: colors.line, borderRadius: radius.md, backgroundColor: colors.surface },
   quickRatingRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 },

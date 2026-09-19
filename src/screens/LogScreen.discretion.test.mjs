@@ -48,7 +48,8 @@ test("real draft restoration preserves unknown date, city-only location, sparse 
   assert.equal(values.City, "Toronto, Ontario, Canada");
   assert.equal(values.Dims.experience, 4);
   assert.equal(values.Dims.performance, 0);
-  assert.equal(values.ShowDetailedRatings, false);
+  assert.equal(values.ShowDetailedRatings, undefined, "Restoring a sparse draft must not collapse detailed ratings.");
+  assert.equal(values.ShowTour, undefined, "Restoring a draft must not collapse the tour field.");
   assert.deepEqual(values.TaggedPeople.map((person) => person.id), ["friend"]);
   assert.equal(values.ShowPeople, true);
   assert.equal(values.ArtistKey, "saved-artist");
@@ -103,10 +104,11 @@ test("real submission sends unknown details honestly and failed saves keep the d
   assert.deepEqual(deleted, ["draft"]);
 });
 
-test("optional disclosures have explicit accessible expansion and clear-to-unknown controls", () => {
-  assert.match(source, /showDetailedRatings && GROUPS\.map/);
-  assert.match(source, /accessibilityState=\{\{ expanded: showDetailedRatings \}\}/);
-  assert.match(source, /accessibilityState=\{\{ expanded: showTour \}\}/);
+test("optional details stay visible without disclosures and retain clear-to-unknown controls", () => {
+  assert.match(source, /\{GROUPS\.map/);
+  assert.doesNotMatch(source, /showDetailedRatings|showTour|detailDisclosure/);
+  assert.match(source, /TOUR OR SPECIAL EVENT/);
+  assert.doesNotMatch(source, /<ConcertLocationFields[^>]*\bcompact\b/);
   assert.match(source, /accessibilityLabel="I don't remember the concert date"/);
   assert.match(source, /accessibilityLabel="Leave the venue unknown and use the city"/);
   assert.match(source, /accessibilityLabel=\{`Leave \$\{d\.label\.toLowerCase\(\)\} unrated`\}/);
