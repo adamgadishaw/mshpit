@@ -78,3 +78,20 @@ test("authored concert SQL accepts only fixed aliases and bound viewer reference
   assert.throws(() => artistAuthoredTourDateVisibleSql("td; DROP TABLE users"), /Invalid/);
   assert.throws(() => artistAuthoredTourDateVisibleSql("td", "'forged' OR 1=1"), /Invalid/);
 });
+
+test("holding a provider-catalog artist withdraws that owner's dates but not independent provider imports", () => {
+  const { owner, artist, id } = published();
+  // Simulate an existing imported catalogue identity with a legitimately owned page.
+  db.prepare("UPDATE artists SET source='musicbrainz' WHERE norm=?").run(artist.key);
+  const admin = member();
+  db.prepare("UPDATE users SET role='admin' WHERE id=?").run(admin.id);
+  routes["POST /api/admin/artists/:key/identity-review"]({ user: q.userById.get(admin.id),
+    params: { key: encodeURIComponent(artist.key) }, body: { action: "hold", reason: "Artist account identity is under manual review." } });
+  assert.equal(visibleTourDateRowsFrom(db, null, { id, at }).length, 0);
+  assert.equal(visibleTourDateRowsFrom(db, owner, { id, at }).length, 0);
+  assert.equal(documents.readEvent({ id, at }), null);
+  assert.equal(materializeSitemapCandidates(db, { now: at }).tourDates.some(row => row.id === id), false);
+  db.prepare("UPDATE tour_dates SET owner_id=NULL,source='ticketmaster' WHERE id=?").run(id);
+  assert.equal(visibleTourDateRowsFrom(db, null, { id, at }).length, 1);
+  assert.ok(documents.readEvent({ id, at }), "an independent provider import is still a public fact");
+});

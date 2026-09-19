@@ -12,7 +12,7 @@ function fixture() {
     CREATE TABLE users (id TEXT PRIMARY KEY,is_banned INTEGER DEFAULT 0,suspended_until INTEGER,dormant_at INTEGER,profile_audience TEXT DEFAULT 'everyone');
     INSERT INTO users (id,is_banned,suspended_until) VALUES ('member',0,NULL),('banned',1,NULL),('suspended',0,9999999999999);
     CREATE TABLE artists (norm TEXT PRIMARY KEY,name TEXT,mbid TEXT,source TEXT);
-    CREATE TABLE artist_profiles (artist_key TEXT PRIMARY KEY,owner_id TEXT,removed INTEGER DEFAULT 0);
+    CREATE TABLE artist_profiles (artist_key TEXT PRIMARY KEY,owner_id TEXT,removed INTEGER DEFAULT 0,identity_review_status TEXT DEFAULT 'clear');
     CREATE TABLE artist_memorials (artist_key TEXT,artist_mbid TEXT,status TEXT);
     CREATE TABLE tour_dates (
       id TEXT PRIMARY KEY,artist TEXT DEFAULT 'Artist',artist_key TEXT,

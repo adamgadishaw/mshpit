@@ -1,6 +1,7 @@
 import { ApiError } from "../../errors.js";
 import { clean, LIMITS } from "../../validate.js";
 import { assertSafeAuthoredText } from "../../contentSafety.js";
+import { ensureArtistVerificationSchema } from "./artistVerification.js";
 
 export function artistPageName(value) {
   if (typeof value !== "string" || [...value].length > LIMITS.artist
@@ -33,6 +34,7 @@ export function pendingArtistSignupIntent(extras) {
 }
 
 export function ensureArtistAccountSchema(database, at = Date.now()) {
+  ensureArtistVerificationSchema(database);
   database.exec(`CREATE INDEX IF NOT EXISTS idx_artist_requests_user_created
     ON artist_requests(user_id,created_at DESC,id DESC)`);
   const marker = "artist-accounts:approved-check-backfill:v1";

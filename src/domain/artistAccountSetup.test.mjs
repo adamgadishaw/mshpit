@@ -8,6 +8,7 @@ import { artistWorkspaceModel } from "./artistWorkspace.mjs";
 const setup = readFileSync(new URL("../screens/RequestArtistScreen.jsx", import.meta.url), "utf8");
 const hub = readFileSync(new URL("../screens/ArtistHubScreen.jsx", import.meta.url), "utf8");
 const page = readFileSync(new URL("../screens/ArtistScreen.jsx", import.meta.url), "utf8");
+const identityStatus = readFileSync(new URL("../components/ArtistIdentityStatus.jsx", import.meta.url), "utf8");
 
 test("artist setup offers a reviewed claim only for an authoritative duplicate", () => {
   assert.deepEqual(artistSetupFailure({ code: "ARTIST_PAGE_EXISTS", error: "Already listed" }), { message: "Already listed", existingPage: true });
@@ -38,7 +39,7 @@ test("artist setup is one account-scoped form with visible choices and safe conf
   assert.match(setup, /session\?\.emailVerified === true && account\.status === "ready"/);
   assert.match(setup, /await resendEmailVerification\(\{ signal: controller\.signal \}\)/);
   assert.match(setup, /await createArtistPage\(artistName\.trim\(\), bio\.trim\(\), \{ signal: controller\.signal \}\)/);
-  assert.match(setup, /await requestArtist\(artistName\.trim\(\), note\.trim\(\), \{ signal: controller\.signal \}\)/);
+  assert.match(setup, /await requestArtist\(artistName\.trim\(\), reviewNote, \{ signal: controller\.signal,/);
   assert.match(setup, /if \(!mounted\.current \|\| controller\.signal\.aborted \|\| operation\.current !== controller\) return;/);
   assert.match(setup, /operation\.current\?\.abort\(\)/);
   assert.match(setup, /if \(!ownsPage \|\| done\) return;[\s\S]*?setMode\("claim"\);[\s\S]*?setArtistName\(session\.artistName\)/);
@@ -55,8 +56,9 @@ test("free artist workspace exposes media tools and a separate owner-reviewed ch
   assert.match(hub, /title="Live photos & videos"[\s\S]*?onPress=\{onMediaPost\}/);
   assert.match(hub, /title="Promote a concert or release"[\s\S]*?onPress=\{onCampaignPost\}/);
   assert.match(hub, /two featured promotions per day/);
-  assert.match(hub, /Request or check verification/);
-  assert.match(hub, /onPress=\{onRequestVerification\}/);
+  assert.match(hub, /ArtistIdentityStatus accountId=\{session\?\.id\}/);
+  assert.match(identityStatus, /Request or check verification/);
+  assert.match(identityStatus, /onPress=\{onRequestVerification\}/);
   const model = artistWorkspaceModel({ session: { id: "artist-new", role: "artist", artistName: "New Band", verified: false } });
   assert.equal(model.authorized, true);
   assert.equal(model.completion.some((item) => item.key === "catalog"), false, "do not offer an Add music task with no editor");

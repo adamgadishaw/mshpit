@@ -14,7 +14,7 @@ function fixture() {
     INSERT INTO users(id) VALUES ('viewer'),('fan'),('blocked');
     CREATE TABLE blocks(blocker_id TEXT,blocked_id TEXT);
     CREATE TABLE artists(norm TEXT PRIMARY KEY,name TEXT,mbid TEXT,source TEXT);
-    CREATE TABLE artist_profiles (artist_key TEXT PRIMARY KEY,owner_id TEXT,removed INTEGER DEFAULT 0);
+    CREATE TABLE artist_profiles (artist_key TEXT PRIMARY KEY,owner_id TEXT,removed INTEGER DEFAULT 0,identity_review_status TEXT DEFAULT 'clear');
     INSERT INTO artists(norm,name,mbid) VALUES ('alpha','Alpha','mbid-alpha'),('beta','Beta','mbid-beta'),('chris brown','Chris Brown','mbid-chris'),('usher','Usher','mbid-usher'),
       ('sports','Sports','mbid-sports'),('sports-dot','sports.','mbid-sports-dot');
     CREATE TABLE artist_memorials(artist_key TEXT,artist_mbid TEXT,status TEXT,death_date TEXT);

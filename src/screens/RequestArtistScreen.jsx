@@ -5,6 +5,8 @@ import { useStore } from "../store";
 import Icon from "../components/Icon";
 import SheetHeader from "../components/SheetHeader";
 import { artistSetupFailure, artistVerificationNotice } from "../domain/artistAccountSetup.mjs";
+import ArtistVerificationFields from "../components/ArtistVerificationFields";
+import { artistChallengeState, instagramHandle, instagramStoryUrl, verificationExpiry } from "../domain/artistVerificationProof.mjs";
 
 export default function RequestArtistScreen(props) {
   const { session } = useStore();
@@ -14,12 +16,18 @@ export default function RequestArtistScreen(props) {
 }
 
 function ArtistPageSetup({ onClose, onCreated }) {
-  const { session, requestArtist, createArtistPage, loadArtistAccount, resendEmailVerification } = useStore();
+  const { session, requestArtist, createArtistPage, loadArtistAccount, resendEmailVerification, createArtistVerificationChallenge } = useStore();
   const ownsPage = session?.role === "artist" && !!session?.artistName;
   const [mode, setMode] = useState(ownsPage ? "claim" : "create");
   const [artistName, setArtistName] = useState(session?.artistName || session?.pendingArtistIntent?.artistName || "");
   const [bio, setBio] = useState("");
   const [note, setNote] = useState("");
+  const [proofMethod, setProofMethod] = useState("manual");
+  const [handle, setHandle] = useState("");
+  const [challenge, setChallenge] = useState(null);
+  const [storyUrl, setStoryUrl] = useState("");
+  const [generating, setGenerating] = useState(false);
+  const [clock, setClock] = useState(Date.now());
   const [done, setDone] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -55,6 +63,12 @@ function ArtistPageSetup({ onClose, onCreated }) {
         if (controller.signal.aborted) return;
         if (!result?.ok) throw new Error(artistSetupFailure(result).message);
         setAccount({ status: "ready", value: result, error: "" });
+        if (result.verificationChallenge) {
+          setChallenge(result.verificationChallenge);
+          setClock(Date.now());
+          setHandle((current) => current || result.verificationChallenge.instagramHandle || "");
+          setProofMethod("instagram_story");
+        }
         const savedName = result.artist?.name || result.pendingArtistIntent?.artistName;
         if (savedName) setArtistName((current) => current || savedName);
       } catch (failure) {
@@ -64,10 +78,40 @@ function ArtistPageSetup({ onClose, onCreated }) {
     return () => controller.abort();
   }, [retry]);
 
-  const verification = artistVerificationNotice(account.value?.verification?.status, ownsPage);
+  useEffect(() => {
+    const remaining = verificationExpiry(challenge?.expiresAt) - Date.now();
+    if (!challenge || remaining <= 0) return;
+    const timer = setTimeout(() => setClock(Date.now()), Math.min(remaining + 10, 2_147_483_647));
+    return () => clearTimeout(timer);
+  }, [challenge]);
+  const challengeState = artistChallengeState(challenge, { artistName, handle, now: clock });
+  const expiredPending = account.value?.verification?.status === "pending" && !!account.value?.verificationChallenge
+    && verificationExpiry(account.value.verificationChallenge.expiresAt) <= clock;
+  const identityHeld = account.value?.identityReview?.held === true;
+  const verification = artistVerificationNotice(expiredPending ? "expired" : account.value?.verification?.status, ownsPage, identityHeld);
   const verificationScreen = ownsPage && done?.mode !== "create";
   const valid = session?.emailVerified === true && account.status === "ready" && artistName.trim().length >= 2
-    && !(mode === "claim" && verification.locked);
+    && !(mode === "claim" && verification.locked)
+    && (mode === "create" || (proofMethod === "instagram_story"
+      ? challengeState === "active" && !!instagramStoryUrl(storyUrl, handle) && (!note.trim() || note.trim().length >= 8)
+      : note.trim().length >= 12));
+  const reviewNote = note.trim() || (proofMethod === "instagram_story" ? `Official Instagram Story challenge from @${instagramHandle(handle)}.` : "");
+  const makeChallenge = async () => {
+    if (busy || operation.current || session?.emailVerified !== true || account.status !== "ready" || !instagramHandle(handle) || artistName.trim().length < 2 || verification.locked) return;
+    const controller = new AbortController(); operation.current = controller;
+    setBusy(true); setGenerating(true); setError("");
+    try {
+      const result = await createArtistVerificationChallenge(artistName.trim(), instagramHandle(handle), { signal: controller.signal });
+      if (!mounted.current || controller.signal.aborted || operation.current !== controller) return;
+      if (result?.ok) { setChallenge(result.challenge); setClock(Date.now()); setStoryUrl(""); }
+      else setError(artistSetupFailure(result).message);
+    } catch (failure) {
+      if (mounted.current && !controller.signal.aborted) setError(artistSetupFailure(failure).message);
+    } finally {
+      if (operation.current === controller) operation.current = null;
+      if (mounted.current && !controller.signal.aborted) { setBusy(false); setGenerating(false); }
+    }
+  };
   const chooseMode = (nextMode) => {
     if (busy || ownsPage) return;
     setMode(nextMode);
@@ -84,7 +128,7 @@ function ArtistPageSetup({ onClose, onCreated }) {
     try {
       const result = mode === "create"
         ? await createArtistPage(artistName.trim(), bio.trim(), { signal: controller.signal })
-        : await requestArtist(artistName.trim(), note.trim(), { signal: controller.signal });
+        : await requestArtist(artistName.trim(), reviewNote, { signal: controller.signal, ...(proofMethod === "instagram_story" ? { challengeId: challenge.id, storyUrl: instagramStoryUrl(storyUrl, handle) } : {}) });
       if (!mounted.current || controller.signal.aborted || operation.current !== controller) return;
       if (result?.ok) setDone({ mode, result });
       else {
@@ -133,9 +177,9 @@ function ArtistPageSetup({ onClose, onCreated }) {
         {done ? (
           <View style={styles.doneBox}>
             <Icon name="check" size={28} color={colors.good} />
-            <Text style={styles.doneTitle}>{done.mode === "create" ? "Your artist page is ready" : "Request sent for review"}</Text>
+            <Text style={styles.doneTitle}>{done.mode === "create" ? done.result?.identityReview?.held ? "Your page is awaiting identity review" : "Your artist page is ready" : "Request sent for review"}</Text>
             <Text style={styles.doneTxt} accessibilityLiveRegion="polite" role="status">{done.mode === "create"
-              ? "Add your photos, bio, live clips, and upcoming shows in Artist HQ. Your page does not have a verified check yet; you can request that separately."
+              ? done.result?.identityReview?.held ? "Your page has been saved but is held from public discovery while its identity is reviewed. Open Artist HQ and submit official proof. This is different from simply being unverified." : "Add your photos, bio, live clips, and upcoming shows in Artist HQ. Your page does not have a verified check yet; you can request that separately."
               : "The Mshpit owner will review your evidence before granting the artist check or access to an existing page. Your private verification details are not published."}</Text>
             <Pressable style={styles.primary} onPress={() => done.mode === "create" && onCreated ? onCreated(done.result) : onClose?.()} accessibilityRole="button">
               <Text style={styles.primaryTxt}>{done.mode === "create" ? "OPEN ARTIST HQ" : "DONE"}</Text>
@@ -160,13 +204,15 @@ function ArtistPageSetup({ onClose, onCreated }) {
             {account.status === "loading" && <View style={styles.notice} accessibilityRole="progressbar" accessibilityLabel="Checking artist account"><ActivityIndicator color={colors.amber} /><Text style={styles.noticeText}>Checking your artist account…</Text></View>}
             {account.status === "error" && <View style={styles.notice}><Text selectable style={styles.error} accessibilityRole="alert">{account.error}</Text><Pressable style={styles.secondary} onPress={() => setRetry((value) => value + 1)} accessibilityRole="button"><Text style={styles.secondaryTxt}>Try again</Text></Pressable></View>}
             {account.status === "ready" && mode === "claim" && verification.message ? <View style={styles.notice}><Text selectable style={styles.noticeText}>{verification.message}</Text></View> : null}
+            {identityHeld && <View style={styles.notice}><Text style={styles.choiceTitle}>Identity review hold</Text><Text style={styles.noticeText}>This page is held from public discovery while Mshpit checks a possible identity conflict. An unverified page and a held page are different. Submit official evidence; a moderator must explicitly release the hold.</Text></View>}
             <Text style={styles.label}>ARTIST / BAND NAME</Text>
             <TextInput style={styles.input} value={artistName} onChangeText={(value) => { setArtistName(value); setError(""); setExistingPage(false); }} placeholder="Your artist or band name" placeholderTextColor={colors.textFaint} maxLength={80} editable={!busy && !ownsPage} returnKeyType="next" accessibilityLabel="Artist or band name" accessibilityState={{ disabled: busy || ownsPage }} />
             {mode === "create" ? <>
               <Text style={styles.label}>SHORT BIO · OPTIONAL</Text>
               <TextInput style={[styles.input, styles.multiline]} value={bio} onChangeText={setBio} placeholder="Introduce your music and live shows. You can edit this later." placeholderTextColor={colors.textFaint} maxLength={240} multiline editable={!busy} accessibilityLabel="Artist biography, optional" />
-              <Text style={styles.noticeText}>You can publish from your new page before requesting verification. The artist check is granted only after Mshpit reviews your identity. Normal upload and community safety limits apply.</Text>
+              <Text style={styles.noticeText}>New pages are unverified. A possible name or identity conflict may place the page on hold for review before public discovery. Existing artists should be claimed, never copied. The artist check requires official proof. Normal upload and safety limits apply.</Text>
             </> : <>
+              <ArtistVerificationFields method={proofMethod} onMethod={setProofMethod} handle={handle} onHandle={setHandle} challenge={challenge} challengeState={challengeState} storyUrl={storyUrl} onStoryUrl={setStoryUrl} onChallenge={makeChallenge} disabled={busy || verification.locked} generating={generating} canGenerate={session?.emailVerified === true && account.status === "ready" && !!instagramHandle(handle) && artistName.trim().length >= 2 && !verification.locked && !["active", "submitted"].includes(challengeState)} />
               <Text style={styles.label}>HOW WE CAN VERIFY YOU</Text>
               <TextInput style={[styles.input, styles.multiline]} value={note} onChangeText={(value) => { setNote(value); setError(""); }} placeholder="Official website, artist social account, label, or manager contact we can check" placeholderTextColor={colors.textFaint} maxLength={500} multiline editable={!busy && !verification.locked} accessibilityLabel="Artist verification details" accessibilityHint="Private evidence of your relationship to this artist. Do not include passwords or identity documents." accessibilityState={{ disabled: busy || verification.locked }} />
               <Text style={styles.noticeText}>These details are private to the review team. Never include passwords or identity documents. An existing page stays unchanged until your claim is approved.</Text>

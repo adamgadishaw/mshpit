@@ -58,7 +58,7 @@ function createDatabase() {
       artist_key TEXT PRIMARY KEY,bio TEXT,bio_staff_curated INTEGER NOT NULL DEFAULT 0,
       banner TEXT,banner_owner_id TEXT,
       avatar_uri TEXT,avatar_owner_id TEXT,feed_enabled INTEGER NOT NULL DEFAULT 0,
-      owner_id TEXT,removed INTEGER NOT NULL DEFAULT 0,updated_at INTEGER
+      owner_id TEXT,removed INTEGER NOT NULL DEFAULT 0,updated_at INTEGER,identity_review_status TEXT DEFAULT 'clear'
     );
     CREATE TABLE artist_posts (
       id TEXT PRIMARY KEY,artist_key TEXT NOT NULL,user_id TEXT,text TEXT NOT NULL,

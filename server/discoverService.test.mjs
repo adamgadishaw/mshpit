@@ -70,7 +70,7 @@ function fixture() {
       is_banned INTEGER NOT NULL DEFAULT 0,
       suspended_until INTEGER,dormant_at INTEGER,profile_audience TEXT DEFAULT 'everyone'
     );
-    CREATE TABLE artist_profiles(artist_key TEXT PRIMARY KEY,owner_id TEXT,removed INTEGER DEFAULT 0);
+    CREATE TABLE artist_profiles(artist_key TEXT PRIMARY KEY,owner_id TEXT,removed INTEGER DEFAULT 0,identity_review_status TEXT DEFAULT 'clear');
     CREATE TABLE blocks(blocker_id TEXT,blocked_id TEXT);
     INSERT INTO users (id,is_banned,suspended_until) VALUES ('member-1', 0, NULL), ('member-2', 0, NULL), ('banned-member', 1, NULL);
     CREATE TABLE plays (artist TEXT, user_id TEXT, created_at INTEGER);

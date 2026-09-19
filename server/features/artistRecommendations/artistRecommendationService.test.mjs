@@ -16,7 +16,7 @@ function database() {
       norm TEXT PRIMARY KEY,name TEXT,public_slug TEXT,photo TEXT,country TEXT,popularity INTEGER,
       rank_score INTEGER DEFAULT 0,genre TEXT,mbid TEXT,data TEXT DEFAULT '{}',source TEXT
     );
-    CREATE TABLE artist_profiles(artist_key TEXT PRIMARY KEY,owner_id TEXT,removed INTEGER DEFAULT 0);
+    CREATE TABLE artist_profiles(artist_key TEXT PRIMARY KEY,owner_id TEXT,removed INTEGER DEFAULT 0,identity_review_status TEXT DEFAULT 'clear');
     CREATE TABLE artist_memorials (artist_key TEXT,status TEXT,artist_mbid TEXT);
     CREATE TABLE fan_club_members (artist TEXT,user_id TEXT);
     CREATE TABLE posts (

@@ -504,7 +504,7 @@ export function artistSitemapEntries(database, { now = Date.now(), candidates = 
   const profileDetails = new Map(database.prepare(`SELECT ap.artist_key,ap.bio,ap.bio_staff_curated,ap.updated_at,
       CASE WHEN ap.owner_id IS NULL OR ${activeAccountSql("owner")} THEN 1 ELSE 0 END AS owner_public
     FROM artist_profiles ap LEFT JOIN users owner ON owner.id=ap.owner_id
-    WHERE ap.removed=0`).all().map((row) => [row.artist_key, row]));
+    WHERE ap.removed=0 AND COALESCE(ap.identity_review_status,'clear') IN ('clear','approved')`).all().map((row) => [row.artist_key, row]));
   const artistStatement = database.prepare(`SELECT norm,name,public_slug,bio,mbid,updated_at,
       CASE WHEN json_valid(data) THEN json_extract(data,'$.artistKnowledge') ELSE NULL END AS knowledge
     FROM artists
@@ -578,6 +578,7 @@ export function artistSitemapEntries(database, { now = Date.now(), candidates = 
   const officialUpdates = new Map(database.prepare(`SELECT post.artist_key,MAX(post.created_at) AS lastmod
     FROM artist_posts post
     JOIN artist_profiles ap ON ap.artist_key=post.artist_key AND ap.removed=0 AND ap.feed_enabled=1
+      AND COALESCE(ap.identity_review_status,'clear') IN ('clear','approved')
     JOIN users owner ON owner.id=ap.owner_id
     JOIN users author ON author.id=post.user_id
     WHERE post.removed=0 AND ${activeAccountSql("owner")} AND ${activeAccountSql("author")}

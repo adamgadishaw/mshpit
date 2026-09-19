@@ -17,7 +17,7 @@ const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR
 const mediaId = "ma_artist_fixture01";
 const mediaUrl = "https://media.example.test/artist-live.png";
 
-async function localServer() {
+export async function localServer() {
   const directory = resolve(root, process.env.PIT_ARTIST_ACCOUNT_BROWSER_DIST || "dist");
   const htmlPath = join(directory, "index.html");
   assert.ok(statSync(htmlPath).isFile(), "Export the current web build before running this script.");
@@ -39,11 +39,16 @@ async function localServer() {
 async function scenario(browser, origin, width, kind) {
   const context = await browser.newContext({ viewport: { width, height: 900 }, isMobile: width < 620, hasTouch: width < 620, serviceWorkers: "block" });
   const initial = kind === "email" ? null : { ...navigationUser, verified: false,
-    ...(kind === "pending" ? { role: "artist", artistName: navigationArtist.name } : {}) };
-  const state = { user: initial, owns: kind === "pending", verification: kind === "pending" ? "pending" : "not_requested", failSaves: kind === "create", failAccount: kind === "create", writes: [], errors: [], reports: [], calls: [], closing: false, mailChecks: 0 };
+    ...(["pending", "story", "expired"].includes(kind) ? { role: "artist", artistName: navigationArtist.name } : {}) };
+  const storyCode = "MSHPIT-ABCD-EF01-2345-6789";
+  const storyChallenge = { id: "av_fixture", method: "instagram_story", artistName: navigationArtist.name, instagramHandle: "fixture.artist", code: storyCode, status: "active", expiresAt: Date.now() + 86_400_000 };
+  const state = { user: initial, owns: ["pending", "story", "expired"].includes(kind), verification: ["pending", "expired"].includes(kind) ? "pending" : "not_requested", challenge: kind === "expired" ? { ...storyChallenge, status: "expired", expiresAt: Date.now() - 5000 } : null,
+    failChallenge: kind === "story", failSubmission: kind === "story", failSaves: kind === "create", failAccount: kind === "create", writes: [], errors: [], reports: [], calls: [], closing: false, mailChecks: 0 };
   const accountPayload = () => ({ ok: true, user: state.user, artist: state.owns ? navigationArtist : null,
     profile: state.owns ? { ownerId: state.user.id, bio, feedEnabled: true, verified: false } : null,
     verification: { status: state.verification, requestId: state.verification === "pending" ? "ar_fixture" : null },
+    verificationChallenge: state.challenge,
+    identityReview: { held: kind === "story", status: kind === "story" ? "pending" : "clear", reasons: [], matches: [] },
     pendingArtistIntent: state.user?.pendingArtistIntent || null });
   const page = await context.newPage(); page.setDefaultTimeout(15_000);
   await page.addInitScript(user => {
@@ -53,7 +58,7 @@ async function scenario(browser, origin, width, kind) {
   page.on("pageerror", error => state.errors.push(error.message));
   page.on("console", message => {
     if (message.type() !== "error") return;
-    if ([origin + "/api/artist-pages", origin + "/api/artist-account"].includes(message.location().url) && /409|503/.test(message.text())) return;
+    if (["/api/artist-pages", "/api/artist-account", "/api/artist-verification-challenges", "/api/artist-requests"].map(path => origin + path).includes(message.location().url) && /409|503/.test(message.text())) return;
     state.errors.push(message.text());
   });
   await context.route("**/*", async route => {
@@ -100,11 +105,22 @@ async function scenario(browser, origin, width, kind) {
         return await json(accountPayload());
       }
       if (url.pathname === "/api/artist-requests") {
-        assert.equal(method, "POST"); assert.equal(kind, "duplicate");
-        assert.equal(body.artistName, navigationArtist.name); assert.match(body.note, /official artist website/);
+        assert.equal(method, "POST"); assert.ok(["duplicate", "story", "expired"].includes(kind));
+        assert.equal(body.artistName, navigationArtist.name);
+        if (kind === "duplicate") assert.match(body.note, /official artist website/);
+        else { assert.equal(body.challengeId, storyChallenge.id); assert.equal(body.storyUrl, "https://www.instagram.com/stories/fixture.artist/123456/"); assert.ok(body.note.length >= 8); }
         assert.equal(request.headers()["x-pit-expected-account"], navigationUser.id);
-        state.verification = "pending"; state.writes.push({ path: url.pathname, body });
+        state.writes.push({ path: url.pathname, body });
+        if (state.failSubmission) return await json({ error: "The review request could not be saved. Please retry.", code: "PROVIDER_UNAVAILABLE" }, 503);
+        state.verification = "pending";
         return await json({ ok: true, id: "ar_fixture" });
+      }
+      if (url.pathname === "/api/artist-verification-challenges") {
+        assert.equal(method, "POST"); assert.equal(body.artistName, navigationArtist.name);
+        assert.equal(body.instagramHandle, "fixture.artist"); assert.equal(body.method, "instagram_story");
+        state.writes.push({ path: url.pathname, body });
+        if (state.failChallenge) return await json({ error: "The verification code is temporarily unavailable. Please retry.", code: "PROVIDER_UNAVAILABLE" }, 503);
+        state.challenge = storyChallenge; return await json({ ok: true, challenge: storyChallenge });
       }
       if (url.pathname === "/api/media/assets" && method === "POST") {
         assert.equal(kind, "create"); assert.equal(body.contentType, "image/png");
@@ -170,7 +186,39 @@ async function scenario(browser, origin, width, kind) {
       await page.getByText("Your artist page is ready", { exact: true }).waitFor();
     } else {
       await page.goto(origin + "/you", { waitUntil: "domcontentloaded" });
-      if (kind === "pending") {
+      if (["story", "expired"].includes(kind)) {
+        await page.getByRole("button", { name: "Manage profile", exact: true }).last().click();
+        if (kind === "story") await page.getByText("Your artist page is on identity-review hold", { exact: true }).waitFor();
+        await page.getByRole("button", { name: "Request or check verification", exact: true }).click();
+        await page.getByRole("radio", { name: "Instagram Story code", exact: true }).click();
+        const handle = page.getByLabel("Official artist Instagram handle", { exact: true });
+        await handle.fill("@fixture.artist");
+        const generate = () => page.getByRole("button", { name: kind === "expired" ? "Generate a fresh Story code" : "Create my Story code", exact: true });
+        await generate().click();
+        if (kind === "story") {
+          await page.getByText("A music or ticket provider is temporarily unavailable.", { exact: true }).waitFor();
+          assert.equal(await handle.inputValue(), "@fixture.artist");
+          state.failChallenge = false; await generate().click();
+        }
+        await page.getByText(storyCode, { exact: true }).waitFor();
+        assert.equal(await page.getByRole("button", { name: "Current Story code ready", exact: true }).isDisabled(), true);
+        const url = page.getByLabel("Instagram Story URL", { exact: true });
+        const send = () => page.getByRole("button", { name: "SEND FOR REVIEW", exact: true });
+        await url.fill("https://instagram.com/fixture.artist/");
+        assert.equal(await send().isDisabled(), true);
+        await url.fill("https://www.instagram.com/stories/fixture.artist/123456/");
+        await page.getByText(storyCode, { exact: true }).scrollIntoViewIfNeeded();
+        await screenshot("story-proof");
+        await send().click();
+        if (kind === "story") {
+          await page.getByText("A music or ticket provider is temporarily unavailable.", { exact: true }).waitFor();
+          assert.equal(await url.inputValue(), "https://www.instagram.com/stories/fixture.artist/123456/");
+          assert.equal(await page.getByText(storyCode, { exact: true }).count(), 1);
+          state.failSubmission = false; await send().click();
+        }
+        await page.getByText("Request sent for review", { exact: true }).waitFor();
+        assert.equal(state.user.verified, false);
+      } else if (kind === "pending") {
         await page.getByRole("button", { name: "Manage profile", exact: true }).last().click();
         await page.getByRole("button", { name: "Live photos & videos", exact: true }).waitFor();
         assert.equal(await page.getByText("VERIFIED ARTIST", { exact: true }).count(), 0);
@@ -268,8 +316,8 @@ export async function main() {
   const { server, origin } = await localServer(); let browser;
   try {
     browser = await chromium.launch({ headless: true, ...(process.env.PIT_BROWSER_EXECUTABLE ? { executablePath: process.env.PIT_BROWSER_EXECUTABLE } : {}) });
-    for (const width of [375, 1280]) for (const kind of ["create", "duplicate", "email", "pending"]) await scenario(browser, origin, width, kind);
-    console.log(JSON.stringify({ passed: 8, failed: 0, network: "isolated fixtures only", screenshots: shots }));
+    for (const width of [375, 1280]) for (const kind of ["create", "duplicate", "email", "pending", "story", "expired"]) await scenario(browser, origin, width, kind);
+    console.log(JSON.stringify({ passed: 12, failed: 0, network: "isolated fixtures only", screenshots: shots }));
   } finally { await browser?.close(); await new Promise(done => server.close(done)); }
 }
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) main().catch(error => { console.error(error.message); process.exitCode = 1; });

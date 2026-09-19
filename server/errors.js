@@ -22,6 +22,7 @@ export const ERROR_CATALOG = Object.freeze({
   ARTIST_LEGACY_READ_ONLY: { status: 409, retryable: false },
   ARTIST_PAGE_EXISTS: { status: 409, retryable: false },
   ARTIST_PAGE_LIMIT: { status: 409, retryable: false },
+  ARTIST_IDENTITY_REVIEW_REQUIRED: { status: 409, retryable: false },
   ACCOUNT_CHANGED: { status: 409, retryable: false },
   ALREADY_VERIFIED: { status: 409, retryable: false },
   CHECK_IN_UNAVAILABLE: { status: 409, retryable: false },

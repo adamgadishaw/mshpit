@@ -3059,8 +3059,15 @@ export function customBadgesFor(userId) {
   }));
 }
 
+const heldPublicArtistIdentity = db.prepare(`SELECT 1 FROM artist_profiles
+  WHERE artist_key=? AND owner_id=? AND identity_review_status IN ('pending','rejected')`);
+
 export function publicUser(u, { self = false, badges = false } = {}) {
   if (!u) return null;
+  // An identity hold is private moderation state. Keep the member account
+  // usable, but never advertise the held artist identity or a stale check.
+  const hideArtistIdentity = !self && u.role === "artist" && !!u.artist_name
+    && !!heldPublicArtistIdentity.get(normName(u.artist_name), u.id);
 
   // Extras hold optional client profile fields (theme, consent record, music
   // picks). They are user-controlled, so they must never replace typed/trusted
@@ -3093,10 +3100,10 @@ export function publicUser(u, { self = false, badges = false } = {}) {
     id: u.id,
     name: u.name,
     handle: u.handle,
-    role: u.role,
-    verified: !!u.verified,
+    role: hideArtistIdentity ? "fan" : u.role,
+    verified: !hideArtistIdentity && !!u.verified,
     sponsor: !!u.sponsor,
-    artistName: u.artist_name || undefined,
+    artistName: hideArtistIdentity ? undefined : u.artist_name || undefined,
     home: u.home_city ? {
       city: u.home_city,
       ...(self ? { lat: u.home_lat, lng: u.home_lng } : {}),

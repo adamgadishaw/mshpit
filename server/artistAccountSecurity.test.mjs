@@ -125,7 +125,10 @@ test("only staff approval grants a check and replaying an old approval cannot un
   }));
   assert.equal(request.status, "pending");
   assert.equal(q.userById.get(user.id).verified, 0);
-  const approve = actor => routes["POST /api/admin/artist-requests/:id/approve"](context(actor, {}, { params: { id: request.id } }));
+  const approve = actor => routes["POST /api/admin/artist-requests/:id/approve"](context(actor, {
+    method: "manual", reason: "Reviewed the official artist website and account ownership.",
+    officialAccountConfirmed: true, ownershipConfirmed: true, reviewedUrl: "https://artist.example/about",
+  }, { params: { id: request.id } }));
   failure(() => approve(q.userById.get(user.id)), 403);
   const admin = member({ role: "admin" });
   assert.equal(approve(admin).ok, true);

@@ -18,7 +18,7 @@ const names = ["renderedAccountMutation", "currentMutationActor", "renderedStaff
   "adminSetTrackVideo", "removeTrackOverride", "moderateReport", "moderateContent", "actionReport", "dismissReport", "removeContent", "restoreContent",
   "banUser", "unbanUser", "suspendUser", "liftSuspension", "setUserRole", "setVerified", "markEmailVerified", "setSponsor",
   "enrichArtists", "purgeArtist", "startCatalogSeed", "stopCatalogSeed", "removeLoungeMessage", "removeFanClubMessage", "removeComment", "prepareMemorialArtist",
-  "artistAccountCommand", "requestArtist", "reviewArtistRequest", "approveArtist", "rejectArtist"];
+  "artistAccountCommand", "requestArtist", "reviewArtistRequest", "approveArtist", "rejectArtist", "reviewArtistIdentity"];
 const callbacks = names.map((name) => {
   const node = declarations.find((entry) => entry.id?.name === name);
   assert.ok(node, name);
@@ -45,6 +45,7 @@ const callsFor = {
   prepareMemorialArtist: (a) => a.prepareMemorialArtist("Artist"),
   approveArtist: (a) => a.approveArtist("artist-request"),
   rejectArtist: (a) => a.rejectArtist("artist-request"),
+  reviewArtistIdentity: (a) => a.reviewArtistIdentity("artist", "hold", { reason: "Possible impersonation under review." }),
 };
 
 function fixture(actor = admin, ready = true) {

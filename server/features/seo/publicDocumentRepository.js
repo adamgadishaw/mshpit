@@ -171,7 +171,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
           AND banner_staff.role='admin' AND ${activeAccountSql("banner_staff")}
       ) THEN 1 ELSE 0 END AS banner_staff_public
     FROM artist_profiles ap LEFT JOIN users owner ON owner.id=ap.owner_id
-    WHERE ap.artist_key=? AND ap.removed=0 LIMIT 1`);
+    WHERE ap.artist_key=? AND ap.removed=0 AND COALESCE(ap.identity_review_status,'clear') IN ('clear','approved') LIMIT 1`);
   const artistReviews = database.prepare(`SELECT ${PUBLIC_POST_COLUMNS}
     FROM posts p JOIN users u ON u.id=p.user_id
     WHERE p.removed=0 AND (COALESCE(p.kind,'review')='review' OR (

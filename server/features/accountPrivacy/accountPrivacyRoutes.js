@@ -1,3 +1,5 @@
+import { exportArtistVerification } from "../artistAccounts/artistVerificationExport.js";
+
 const EXPORT_LIMIT_WINDOW_MS = 10 * 60 * 1000;
 const EMAIL_PREFERENCE_WINDOW_MS = 60 * 60 * 1000;
 
@@ -185,6 +187,7 @@ export function accountPrivacyRoutes({
         messagesReceived: database.prepare("SELECT from_id,text,removed,created_at FROM dms WHERE to_id=? ORDER BY created_at DESC LIMIT 1000").all(user.id)
           .map((row) => ({ from: accountReference(row.from_id), text: row.text, removed: !!row.removed, createdAt: row.created_at })),
         artistAccount: {
+          ...exportArtistVerification(database, user.id),
           requests: database.prepare("SELECT id,artist_name,note,status,created_at FROM artist_requests WHERE user_id=? ORDER BY created_at DESC").all(user.id)
             .map((row) => ({ id: row.id, artistName: row.artist_name, note: row.note, status: row.status, createdAt: row.created_at })),
           profiles: database.prepare("SELECT artist_key,bio,banner,avatar_uri,feed_enabled,updated_at FROM artist_profiles WHERE owner_id=?").all(user.id)

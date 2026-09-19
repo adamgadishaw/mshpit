@@ -29,6 +29,7 @@ import Button from "../components/Button";
 import Icon from "../components/Icon";
 import ScreenHeader from "../components/ScreenHeader";
 import SmartImage from "../components/SmartImage";
+import ArtistIdentityStatus from "../components/ArtistIdentityStatus";
 
 const UPDATE_LIMIT = 1000;
 
@@ -178,6 +179,7 @@ export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEdit
     artistProfile,
     artistPostsFor,
     loadArtistPage,
+    loadArtistAccount,
     addArtistPost,
     removeArtistPost,
     remoteArtistMeta,
@@ -423,14 +425,7 @@ export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEdit
             <ActionTile icon="you" title="Personal account" detail="Edit your username, city, favorite genres, and artists." onPress={onEditAccount} accent={colors.good} />
           </View>
 
-          {session?.verified !== true && onRequestVerification ? <View style={styles.pageReadNotice}>
-            <Icon name="shield" size={22} color={colors.amber} />
-            <View style={styles.pageReadCopy}>
-              <Text style={styles.pageReadTitle}>Your page is active. The artist check is separate.</Text>
-              <Text style={styles.pageReadText}>Keep creating for free. Submit official evidence when you are ready; the Mshpit owner reviews it before granting the check.</Text>
-              <Pressable style={styles.pageReadRetry} onPress={onRequestVerification} accessibilityRole="button"><Text style={styles.pageReadRetryText}>Request or check verification</Text></Pressable>
-            </View>
-          </View> : null}
+          <ArtistIdentityStatus accountId={session?.id} loadArtistAccount={loadArtistAccount} onRequestVerification={onRequestVerification} />
 
           <View style={[styles.columns, !wide && styles.columnsStack]}>
             {hasConfirmedArtistPage ? <View style={[styles.panel, styles.readinessPanel]}>

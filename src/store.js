@@ -3828,7 +3828,8 @@ export function StoreProvider({ children }) {
   const createArtistPage = (artistName, bio = "", options = {}) => artistAccountCommand({ ...options, artistName, bio, create: true });
   // Claims and verification use the same reviewed request queue.
   const requestArtist = (artistName, note, options = {}) => artistAccountCommand({ ...options, artistName, note, requestReview: true });
-  const reviewArtistRequest = async (reqId, decision, { signal } = {}) => {
+  const createArtistVerificationChallenge = (artistName, instagramHandle, options = {}) => artistAccountCommand({ ...options, artistName, instagramHandle, createChallenge: true });
+  const reviewArtistRequest = async (reqId, decision, { signal, ...evidence } = {}) => {
     const actor = currentMutationActor();
     const context = decision === "approved" ? "Approving this artist request" : "Rejecting this artist request";
     if (!actor) return localCommandError("PIT-AUTH-001", context);
@@ -3841,6 +3842,7 @@ export function StoreProvider({ children }) {
     try {
       const response = await staffApi(`/api/admin/artist-requests/${encodeURIComponent(reqId)}/${decision === "approved" ? "approve" : "reject"}`, {
         method: "POST",
+        body: evidence,
         context,
         silent: true,
         signal,
@@ -3869,6 +3871,29 @@ export function StoreProvider({ children }) {
   };
   const approveArtist = (reqId, options) => reviewArtistRequest(reqId, "approved", options);
   const rejectArtist = (reqId, options) => reviewArtistRequest(reqId, "rejected", options);
+  const searchArtistIdentities = async (query, { signal } = {}) => {
+    const scope = staffScopeFor(currentMutationActor());
+    const response = await staffApi(`/api/admin/artist-identities?q=${encodeURIComponent(String(query || "").trim().slice(0, 80))}`, { signal, silent: true, context: "Finding artist pages for identity review" });
+    assertStaffMutation(scope);
+    return Array.isArray(response?.artists) ? response.artists : [];
+  };
+  const reviewArtistIdentity = async (artistKey, action, { signal, ...evidence } = {}) => {
+    const actor = currentMutationActor();
+    const context = "Reviewing artist page identity";
+    if (!actor || actor.role !== "admin") return localCommandError("PIT-AUTH-002", context);
+    const scope = staffScopeFor(actor);
+    const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
+    try {
+      const response = await staffApi(`/api/admin/artists/${encodeURIComponent(artistKey)}/identity-review`, { method: "POST", body: { action, ...evidence }, signal, silent: true, context });
+      if (response?.ok !== true || !response.identityReview) return localCommandError("PIT-API-001", context);
+      if (!accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current) || scope !== staffScopeFor(sessionRef.current)) return localCommandError("PIT-AUTH-004", context);
+      setRequests((current) => current.map((request) => request.artistKey === artistKey ? { ...request, identityReview: response.identityReview } : request));
+      return commandSuccess(response);
+    } catch (error) {
+      if (isLoadCancellation(error, signal)) throw error;
+      return commandError(error, context);
+    }
+  };
 
   // Tour dates - bulk batch with a scheduled release time.
   const addTourDatesBatch = async (list, releaseAt) => {
@@ -6930,7 +6955,7 @@ export function StoreProvider({ children }) {
     userById, userByHandle, logsByUser, sharedShows,
     login, signup, logout, switchLinkedAccount, deleteAccount, forgotPassword, resetPassword, confirmEmailVerification, resendEmailVerification, updateProfile, completeSignupOnboarding, setAnalyticsEnabled, setProfileSearchIndexingEnabled, setDirectMessagePolicy, setAgeBandClassification, setProfileAudience, setAnnouncementEmailsEnabled, chooseTheme, syncAccountTheme,
     addLog, editLog, reportContent, actionReport, dismissReport, removeContent, restoreContent,
-    requestArtist, approveArtist, rejectArtist, createArtistPage, loadArtistAccount,
+    requestArtist, approveArtist, rejectArtist, createArtistPage, loadArtistAccount, createArtistVerificationChallenge, reviewArtistIdentity, searchArtistIdentities,
     addTourDatesBatch,
     isFollowing, follow, unfollow, followerCount, followingCount, absorbUsers, searchPeople, loadMembers, memberCount,
     recentSearches, addRecentSearch, removeRecentSearch, clearRecentSearches,

@@ -1,4 +1,5 @@
 import { cleanHandle } from "../../../src/domain/validation.mjs";
+import { assessArtistIdentityRisk } from "../artistAccounts/artistIdentityRisk.js";
 
 export const HANDLE_COOLDOWN_DAYS = 10;
 
@@ -45,7 +46,10 @@ export function claimPendingSignupHandle(database, user, at = Date.now()) {
   const taken = mayClaim
     ? database.prepare("SELECT id FROM users WHERE handle=? AND id<>?").get(preferred, user.id)
     : null;
-  if (mayClaim && !taken) {
+  // Recheck at the actual claim: new protected artists may have been added
+  // after signup. Keep the safe temporary handle; never fail email verification.
+  const protectedIdentity = mayClaim && assessArtistIdentityRisk(database, { handle: preferred }).requiresReview;
+  if (mayClaim && !taken && !protectedIdentity) {
     database.prepare("UPDATE users SET handle=?,extras=?,profile_updated_at=? WHERE id=?")
       .run(preferred, JSON.stringify(extras), at, user.id);
   } else {

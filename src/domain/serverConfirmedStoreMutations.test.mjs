@@ -39,7 +39,7 @@ test("artist request decisions are server-first canonical commands", () => {
   const ownership = mutationSlice("const staffMutationStillOwned =", "const assertStaffMutation =");
   assert.match(ownership, /currentMutationActor\(\)/);
   assert.match(ownership, /renderedStaffEpoch === staffReadsRef\.current\.epoch/);
-  assert.match(admin, /await \(action === "approve"[\s\S]*approveArtist\(request\.id, \{ signal: controller\.signal \}\)/);
+  assert.match(admin, /await \(action === "approve"[\s\S]*approveArtist\(request\.id, \{ \.\.\.evidence, signal: controller\.signal \}\)/);
   assert.match(admin, /That request was not[\s\S]*Nothing changed/);
   assert.match(admin, /error\?\.retryable/);
 });

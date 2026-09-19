@@ -174,7 +174,9 @@ test("artist approval binds owner_id and refuses a duplicate normalized identity
     .run("approval-session", first.id, Date.now(), Date.now() + 60_000);
 
   assert.deepEqual(routes["POST /api/admin/artist-requests/:id/approve"]({
-    user: admin, params: { id: "request_first_artist" }, body: {},
+    user: admin, params: { id: "request_first_artist" }, body: { method: "manual",
+      reason: "Reviewed the established official website and confirmed artist ownership.",
+      officialAccountConfirmed: true, ownershipConfirmed: true, reviewedUrl: "https://artist.example/official" },
   }), { ok: true });
   assert.equal(db.prepare("SELECT owner_id FROM artist_profiles WHERE artist_key='approval artist'").get().owner_id, first.id);
   assert.equal(db.prepare("SELECT COUNT(*) count FROM sessions WHERE user_id=?").get(first.id).count, 0,

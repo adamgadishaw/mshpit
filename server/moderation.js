@@ -561,6 +561,13 @@ function moderateContent(ctx, targetType, targetId, action, reason) {
     throw new ApiError(400, "Content actions must be remove or restore.", "VALIDATION_FAILED");
   }
   return transaction(() => {
+    if (action === "restore" && ["post", "artist_post"].includes(targetType)) {
+      const table = targetType === "post" ? "posts" : "artist_posts";
+      const held = db.prepare(`SELECT 1 FROM ${table} content JOIN artist_profiles profile
+        ON profile.artist_key=content.artist_key AND profile.owner_id=content.user_id
+        WHERE content.id=? AND profile.identity_review_status IN ('pending','rejected') LIMIT 1`).get(targetId);
+      if (held) throw new ApiError(409, "Resolve the artist identity hold before restoring this artist-authored content.", "ARTIST_IDENTITY_REVIEW_REQUIRED");
+    }
     const result = setContentRemoved(ctx, targetType, targetId, action === "remove", reason);
     return {
       ok: true,

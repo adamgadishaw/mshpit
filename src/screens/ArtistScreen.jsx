@@ -960,6 +960,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
           <View style={styles.nameRow}>
             <Text style={[styles.heroName, !artistWide && styles.heroNameCompact]}>{a.name}</Text>
             {badges.length ? <BadgeRow badges={badges} size={20} style={styles.nameBadges} /> : null}
+            {profileOwnerId && currentConfirmedArtistPage?.profile?.verified === false ? <Text style={styles.memorialChipText} accessibilityLabel="Unverified artist-managed page">ARTIST-MANAGED · IDENTITY UNVERIFIED</Text> : null}
             {deceased ? (
               <View accessible style={styles.memorialChip} accessibilityLabel={`${a.name}, remembered in tribute`}>
                 <Icon name="dove" size={13} color={colors.gold} strokeWidth={1.8} />

@@ -5,6 +5,20 @@ import { signupAccountError, signupFormPayload } from "../../domain/signupForm.m
 import { publicProfileCacheEntry } from "../../domain/dataPolicy.mjs";
 
 const response = { ok: true, user: { id: "member", role: "artist", verified: false }, artist: { key: "new-band" }, profile: { ownerId: "member", verified: false } };
+test("Instagram challenge command is same-account scoped and rejects mismatched or stale proof", async () => {
+  const challenge = { id: "av_test", method: "instagram_story", artistName: "New Band", instagramHandle: "new.band", code: "MSHPIT-TEST", status: "active", expiresAt: Date.now() + 86_400_000 };
+  const options = { accountId: "member", artistName: "New Band", instagramHandle: "new.band", createChallenge: true };
+  for (const invalid of [false, "handle", "account"]) {
+    let current = true;
+    const result = await runArtistAccountCommand(options, { isCurrent: () => current, fail: error => ({ ok: false, error }),
+      apiCall: async (path, request) => { assert.equal(path, "/api/artist-verification-challenges"); assert.equal(request.expectedAccountId, "member");
+        assert.deepEqual(request.body, { artistName: "New Band", method: "instagram_story", instagramHandle: "new.band" });
+        if (invalid === "account") current = false;
+        return { ok: true, challenge: { ...challenge, ...(invalid === "handle" ? { instagramHandle: "other" } : {}) } };
+      } });
+    assert.equal(result.ok, invalid === false);
+  }
+});
 test("artist commands do not begin or adopt a response after an account switch", async () => {
   for (const changeDuringRequest of [false, true]) {
     let current = changeDuringRequest;

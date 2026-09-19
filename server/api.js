@@ -20,6 +20,7 @@ import { AUDIENCES, audienceSize, campaignProgress, drainCampaign, pauseCampaign
 import { db, DATABASE_PATH, q, emailStmts, badgeStmts, customBadgesFor, publicUser as storedPublicUser, parseJsonArray, parseJsonObject, artistStmts, publicArtist, artistRow, artistSearchKey, normName, pruneMissingArtists, providerCacheStmts } from "./db.js";
 import { publicArtistPhoto } from "./artistPhotoCatalog.js";
 import { resolveReviewedArtistAlias } from "./reviewedArtistIdentities.js";
+import { assessArtistIdentityRisk, assertMemberIdentityAllowed } from "./features/artistAccounts/artistIdentityRisk.js";
 import { createArtistLookupWork } from "./artistLookupWork.js";
 import { resolveArtistPreviewWithFallback } from "./artistPreviewRecovery.js";
 import { createArtistFallbackCache, isOptionalArtistCacheStorageFailure } from "./artistFallbackCache.js";
@@ -85,6 +86,7 @@ import { artistResolveRoutes } from "./features/artistSearch/artistResolveRoutes
 import { artistArchiveRoutes } from "./features/artistArchive/artistArchiveRoutes.js";
 import { createArtistLiveSummaryService } from "./features/artistArchive/artistLiveSummaryService.js";
 import { artistLiveSummaryRoutes } from "./features/artistArchive/artistLiveSummaryRoutes.js";
+import { artistIdentityHeld } from "./features/artistAccounts/artistVerification.js";
 import { archiveShowKeyForPost } from "./features/artistArchive/postArchiveIdentity.js";
 import { accountPrivacyRoutes } from "./features/accountPrivacy/accountPrivacyRoutes.js";
 import { artistDiscographyRoutes } from "./features/artistDiscography/artistDiscographyRoutes.js";
@@ -766,6 +768,15 @@ function assertArtistManagementCandidate(user, key) {
   if (profile?.removed) throw new ApiError(403, "This artist page is unavailable while moderation reviews it.", "FORBIDDEN");
   const ownerId = profile?.owner_id;
   if (ownerId && ownerId !== user.id) throw new ApiError(403, "Not your page.", "FORBIDDEN");
+}
+
+function assertArtistPublicationAllowed(user) {
+  const current = user?.id ? q.userById.get(user.id) : null;
+  if (current?.role !== "artist") return;
+  const profile = db.prepare("SELECT owner_id,identity_review_status FROM artist_profiles WHERE artist_key=?").get(normName(current.artist_name));
+  if (profile?.owner_id === current.id && artistIdentityHeld(profile)) {
+    throw new ApiError(409, "This artist identity is awaiting review. You can edit your private page draft and submit verification, but cannot publish yet.", "ARTIST_IDENTITY_REVIEW_REQUIRED");
+  }
 }
 
 function assertArtistPostCleanupCandidate(user, key) {
@@ -1513,7 +1524,7 @@ function signupHandleAvailability(ctx) {
   limitAuthentication(ctx, "signup-handle", { ipMax: 60, ipWindowMs: 10 * 60 * 1000 });
   ctx.setHeader?.("Cache-Control", "no-store");
   const handle = validateSignupHandle(ctx.query?.handle);
-  return { handle, available: !q.userByHandle.get(handle) };
+  return { handle, available: !q.userByHandle.get(handle) && !assessArtistIdentityRisk(db, { handle }).requiresReview };
 }
 
 function storedPostTaggedUserIds(value) {
@@ -3621,7 +3632,7 @@ function publicArtistProfileProjection(profile) {
   const owner = profile.owner_id ? q.userById.get(profile.owner_id) : null;
   return {
     ownerId: profile.owner_id || null,
-    verified: !!owner?.verified && owner.role === "artist" && accountIsPublic(owner)
+    verified: !artistIdentityHeld(profile) && !!owner?.verified && owner.role === "artist" && accountIsPublic(owner)
       && normName(owner.artist_name) === profile.artist_key,
     bio: profile.bio ?? null,
     bioStaffCurated: Number(profile.bio_staff_curated) === 1,
@@ -3630,7 +3641,7 @@ function publicArtistProfileProjection(profile) {
     // complete while the next artist-page render still has different artwork.
     banner: safePublicArtistProfileImage(profile, "banner"),
     avatarUri: safePublicArtistProfileImage(profile, "avatar"),
-    feedEnabled: !!profile.feed_enabled,
+    feedEnabled: !artistIdentityHeld(profile) && !!profile.feed_enabled,
   };
 }
 
@@ -3658,7 +3669,7 @@ function publicLegacyArtistProfileProjection(profile) {
 const ARTIST_PROFILE_SNAPSHOT_FIELDS = Object.freeze([
   "artist_key",
   "owner_id", "bio", "bio_staff_curated", "banner", "banner_owner_id", "avatar_uri", "avatar_owner_id",
-  "feed_enabled", "removed", "updated_at",
+  "feed_enabled", "removed", "updated_at", "identity_review_status",
 ]);
 const artistProfileSnapshotByKey = db.prepare(`SELECT ${ARTIST_PROFILE_SNAPSHOT_FIELDS.join(",")}
   FROM artist_profiles WHERE artist_key=?`);
@@ -5038,6 +5049,7 @@ export const routes = {
     const requestedArtistKey = normName(clean(ctx.query.artistKey, { max: 120 }));
     const catalogArtist = resolveCatalogArtistReference(requestedArtistKey || name);
     if (catalogArtist && !artistCatalogVisibleTo(db, catalogArtist, ctx.user)) return { photos: [] };
+    if (catalogArtist?.source === "artist-created" && artistIdentityHeld(db.prepare("SELECT identity_review_status FROM artist_profiles WHERE artist_key=?").get(catalogArtist.norm))) return { photos: [] };
     const identitySql = requestedArtistKey ? "p.artist_key=?" : "LOWER(p.artist)=LOWER(?)";
     const blockSql = viewerId ? `AND NOT EXISTS (SELECT 1 FROM blocks b WHERE
       (b.blocker_id=? AND b.blocked_id=p.user_id) OR (b.blocker_id=p.user_id AND b.blocked_id=?))` : "";
@@ -5430,6 +5442,7 @@ export const routes = {
     assertSafeAuthoredFields({ "profile name": v.name, city: v.city });
     const preferredHandle = Object.hasOwn(ctx.body || {}, "handle")
       ? validateSignupHandle(ctx.body.handle) : undefined;
+    assertMemberIdentityAllowed(db, { name: v.name, handle: preferredHandle });
     // Check only claimed names, identically for new and existing emails. This
     // preference remains private and is claimed atomically on verification.
     if (preferredHandle && q.userByHandle.get(preferredHandle)) {
@@ -5500,6 +5513,8 @@ export const routes = {
             if (!actor?.email_verified_at || actor.pass_hash !== ctx.user.pass_hash || cleanEmail(actor.email) !== v.email) throw new ApiError(409, "Your account changed. Log in again before adding an account.", "CONFLICT");
           }
           if (accounts.length >= 2) throw new ApiError(409, "This email already has two accounts. Log in, reset your password, or use another email.", "CONFLICT");
+          // Catalogue protection may change while password hashing is running.
+          assertMemberIdentityAllowed(db, { name: v.name, handle: preferredHandle });
           q.insertUser.run(id, v.email, v.name, privateSignupHandle(), passwordHash,
             "fan", v.city ?? null, v.lat ?? null, v.lng ?? null, initials, colors[Math.floor(Math.random() * colors.length)], createdAt);
           db.prepare("UPDATE users SET extras=? WHERE id=?").run(JSON.stringify({
@@ -5861,6 +5876,12 @@ export const routes = {
     ].filter(Boolean);
     atomicWrite(() => {
       ctx.assertCurrentSession?.();
+      const identityMember = q.userById.get(u.id);
+      assertMemberIdentityAllowed(db, {
+        ownerId: u.id,
+        name: v.name && v.name !== identityMember?.name ? v.name : undefined,
+        handle: v.handle && v.handle !== identityMember?.handle ? v.handle : undefined,
+      });
       if (updatesExtras) {
         const stored = parseStoredProfileExtras(q.userById.get(u.id)?.extras);
         const next = hasExtras ? canonicalProfileExtras(stored).value : { ...stored };
@@ -6178,6 +6199,7 @@ export const routes = {
 
   "POST /api/tourdates": (ctx) => {
     const user = requireUser(ctx);
+    assertArtistPublicationAllowed(user);
     limit(ctx, "tour-date-batch", 20, 60 * 60 * 1000);
     const batch = cleanTourDateBatch(ctx, user);
     if (user.role === "artist") assertArtistManagementCandidate(user, normName(batch.artist));
@@ -6201,6 +6223,7 @@ export const routes = {
     const rows = atomicWrite(() => {
       ctx.assertCurrentSession?.();
       if (user.role === "artist") claimArtistManagement(q.userById.get(user.id), normName(batch.artist));
+      assertArtistPublicationAllowed(user);
       return batch.dates.map((entry) => {
         const existing = db.prepare(`SELECT id FROM tour_dates
           WHERE owner_id=? AND lower(artist)=lower(?) AND lower(venue)=lower(?)
@@ -6511,6 +6534,7 @@ export const routes = {
 
   "POST /api/posts": (ctx) => {
     const u = requireUser(ctx);
+    assertArtistPublicationAllowed(u);
     const mutationId = clientMutationId(ctx.body?.clientMutationId);
     const receipt = mutationId ? postReceiptByClientMutation.get(u.id, mutationId) : null;
     const existing = mutationId ? (receipt || postByClientMutation.get(u.id, mutationId)) : null;
@@ -6609,6 +6633,7 @@ export const routes = {
 
   "PATCH /api/posts/:id": (ctx) => {
     const u = requireUser(ctx);
+    assertArtistPublicationAllowed(u);
     limit(ctx, "post-edit", 60, 60 * 60 * 1000);
     const current = db.prepare("SELECT * FROM posts WHERE id=? AND removed=0").get(ctx.params.id);
     if (!current) throw new ApiError(404, "That post is unavailable. Refresh the feed and try again.", "NOT_FOUND");
@@ -8617,6 +8642,7 @@ export const routes = {
     const target = q.userById.get(ctx.params.id);
     if (!target) throw new ApiError(404, "No such user.", "NOT_FOUND");
     const verified = ctx.body?.verified ? 1 : 0;
+    if (verified) assertArtistPublicationAllowed(target);
     if (Number(target.verified) !== verified) atomicWrite(() => {
       const changed = db.prepare("UPDATE users SET verified=? WHERE id=? AND verified<>?").run(verified, ctx.params.id, verified).changes === 1;
       if (changed) moderationRecord(ctx, verified ? "grant_verification" : "remove_verification", "user", target.id, ctx.body?.reason || "", { verified: !!target.verified }, { verified: !!verified });
@@ -9279,6 +9305,9 @@ export const routes = {
       }
     }
     const p = db.prepare("SELECT * FROM artist_profiles WHERE artist_key=?").get(profileKey);
+    if (artistIdentityHeld(p) && ctx.user?.id !== p.owner_id && ctx.user?.role !== "admin") {
+      return { ...catalogSnapshot, profile: null, posts: [], legacyProfile };
+    }
     const blocked = blockedIdSet(ctx.user?.id);
     // Owner overrides are ordinary user-authored UGC. A block must hide them in
     // both directions just like profiles and posts elsewhere; the client can
@@ -9430,6 +9459,7 @@ export const routes = {
   },
   "POST /api/artists/:key/posts": (ctx) => {
     const u = requireUser(ctx);
+    assertArtistPublicationAllowed(u);
     // Ownership is already checked below, so abuse is bounded to your own page.
     // This bounds the volume as well, matching the other post routes.
     limit(ctx, "artist-post", 40, 60 * 60 * 1000);
@@ -9441,6 +9471,7 @@ export const routes = {
     const id = uid("ap");
     atomicWrite(() => {
       claimArtistManagement(u, key);
+      assertArtistPublicationAllowed(u);
       db.prepare("INSERT INTO artist_posts (id,artist_key,user_id,text,created_at) VALUES (?,?,?,?,?)").run(id, key, u.id, text, now());
     });
     return { id };

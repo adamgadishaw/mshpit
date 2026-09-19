@@ -12,6 +12,8 @@ import AdminErrorPanel from "../components/moderation/AdminErrorPanel";
 import SuggestionInbox from "../components/moderation/SuggestionInbox";
 import ArtistMemorialConsole from "../components/moderation/ArtistMemorialConsole";
 import ArtistDeathWatchPanel from "../components/moderation/ArtistDeathWatchPanel";
+import ArtistIdentityReviewCard from "../components/moderation/ArtistIdentityReviewCard";
+import ArtistIdentitySafetyPanel from "../components/moderation/ArtistIdentitySafetyPanel";
 import CityPagesEditor from "../features/cities/CityPagesEditor";
 import { normalizeAdminMemberQuery } from "../domain/moderationConsole.mjs";
 import { staffScopeFor } from "../domain/staffReadCoordinator.mjs";
@@ -392,7 +394,7 @@ export default function AdminScreen({ onClose }) {
   const {
     requests, users, adminMembers, adminMemberDirectory, feed, removedIds, reports, moderationConsole, session,
     comments, fanClubMsgs, lounge,
-    approveArtist, rejectArtist, removeContent, restoreContent,
+    approveArtist, rejectArtist, reviewArtistIdentity, searchArtistIdentities, removeContent, restoreContent,
     suspendUser, liftSuspension, banUser, unbanUser, setUserRole, setVerified, markEmailVerified, setSponsor,
     removeComment, removeFanClubMessage, removeLoungeMessage,
     loadAdminMembersStrict, loadMoreAdminMembersStrict, adminStats, adminArtistQueue, enrichArtists, purgeArtist, startCatalogSeed, catalogSeedStatus, stopCatalogSeed, catalogSeedRuns,
@@ -455,7 +457,7 @@ export default function AdminScreen({ onClose }) {
     setArtistRequestAction({ scope: artistRequestScope, requestId: null, action: null, status: "idle", error: null });
     return () => artistRequestActionRef.current.controller?.abort();
   }, [artistRequestScope]);
-  const reviewArtistRequest = async (request, action) => {
+  const reviewArtistRequest = async (request, action, evidence = {}) => {
     const scope = staffScopeFor(activeStaffSession.current);
     if (!scope || artistRequestActionRef.current.controller) return;
     const controller = new AbortController();
@@ -464,25 +466,27 @@ export default function AdminScreen({ onClose }) {
       scope,
       requestId: request.id,
       action,
+      evidence,
       controller,
     };
     artistRequestActionRef.current = operation;
-    setArtistRequestAction({ scope, requestId: request.id, action, status: "pending", error: null });
+    setArtistRequestAction({ scope, requestId: request.id, action, evidence, status: "pending", error: null });
     try {
       const result = await (action === "approve"
-        ? approveArtist(request.id, { signal: controller.signal })
-        : rejectArtist(request.id, { signal: controller.signal }));
+        ? approveArtist(request.id, { ...evidence, signal: controller.signal })
+        : action === "reject" ? rejectArtist(request.id, { ...evidence, signal: controller.signal })
+          : reviewArtistIdentity(request.artistKey, action, { ...evidence, signal: controller.signal }));
       if (artistRequestActionRef.current !== operation
         || staffScopeFor(activeStaffSession.current) !== scope) return;
       if (result.ok) {
         setArtistRequestAction({ scope, requestId: null, action: null, status: "idle", error: null });
       } else {
-        setArtistRequestAction({ scope, requestId: request.id, action, status: "error", error: result.error });
+        setArtistRequestAction({ scope, requestId: request.id, action, evidence, status: "error", error: result.error });
       }
     } catch (error) {
       if (!controller.signal.aborted && artistRequestActionRef.current === operation
         && staffScopeFor(activeStaffSession.current) === scope) {
-        setArtistRequestAction({ scope, requestId: request.id, action, status: "error", error });
+        setArtistRequestAction({ scope, requestId: request.id, action, evidence, status: "error", error });
       }
     } finally {
       if (artistRequestActionRef.current === operation) {
@@ -1142,11 +1146,12 @@ export default function AdminScreen({ onClose }) {
         {/* ---- REQUESTS ---- */}
         {activeTab === "requests" && (
           <>
-            <Text style={styles.policy}>Review the official evidence before granting an artist check. New-page owners can already post for free. An existing-page claim also grants management access; verify that relationship carefully. Checks can be removed in Members.</Text>
+            <ArtistIdentitySafetyPanel key={`artist-identity-safety:${artistRequestScope}`} searchArtists={searchArtistIdentities} reviewIdentity={reviewArtistIdentity} />
+            <Text style={styles.policy}>Verify the established official identity and this member's authority before granting a check. A name, follower count, screenshot or supplied URL alone is not proof. Identity holds are separate from ordinary unverified pages. Ownership claims also grant management access.</Text>
             {scopedArtistRequestAction.status === "error" && (
               <View style={styles.requestError} accessibilityRole="alert" accessibilityLiveRegion="assertive">
                 <Text selectable style={styles.requestErrorText}>
-                  That request was not {scopedArtistRequestAction.action === "approve" ? "approved" : "rejected"}. Nothing changed. {scopedArtistRequestAction.error?.userMessage || scopedArtistRequestAction.error?.message || "Try again."}
+                  That request was not {scopedArtistRequestAction.action === "approve" ? "approved" : scopedArtistRequestAction.action === "reject" ? "rejected" : "updated"}. Nothing changed. {scopedArtistRequestAction.error?.userMessage || scopedArtistRequestAction.error?.message || "Try again."}
                 </Text>
                 <View style={styles.requestErrorActions}>
                   {scopedArtistRequestAction.error?.retryable && pending.some((request) => request.id === scopedArtistRequestAction.requestId) ? (
@@ -1154,7 +1159,7 @@ export default function AdminScreen({ onClose }) {
                       style={styles.requestRetry}
                       onPress={() => {
                         const request = pending.find((entry) => entry.id === scopedArtistRequestAction.requestId);
-                        if (request) void reviewArtistRequest(request, scopedArtistRequestAction.action);
+                        if (request) void reviewArtistRequest(request, scopedArtistRequestAction.action, scopedArtistRequestAction.evidence);
                       }}
                       accessibilityRole="button"
                       accessibilityLabel="Retry artist request review"
@@ -1176,25 +1181,8 @@ export default function AdminScreen({ onClose }) {
             {pending.length === 0 && <Text style={styles.empty}>No pending requests.</Text>}
             {pending.map((r) => {
               const u = userFor(r.userId);
-              const approveBusy = scopedArtistRequestAction.status === "pending" && scopedArtistRequestAction.requestId === r.id && scopedArtistRequestAction.action === "approve";
-              const rejectBusy = scopedArtistRequestAction.status === "pending" && scopedArtistRequestAction.requestId === r.id && scopedArtistRequestAction.action === "reject";
               const reviewBusy = scopedArtistRequestAction.status === "pending";
-              return (
-                <View key={r.id} style={styles.card}>
-                  <Text style={styles.artist}>{r.artistName}</Text>
-                  <Text style={styles.sub}>{r.kind === "verification" ? "Artist check - page already managed by this account" : "Ownership claim - grants access to this artist page"}</Text>
-                  <Text style={styles.sub}>requested by {u ? `${u.name} (@${u.handle})` : "unknown"}</Text>
-                  {!!r.note && <Text style={styles.note}>"{r.note}"</Text>}
-                  <View style={styles.actions}>
-                    <Pressable style={[styles.btn, styles.approve, reviewBusy && styles.pillDisabled]} onPress={() => void reviewArtistRequest(r, "approve")} disabled={reviewBusy} accessibilityRole="button" accessibilityState={{ disabled: reviewBusy, busy: approveBusy }}>
-                      {approveBusy ? <ActivityIndicator size="small" color="#0C1A0F" /> : <Icon name="check" size={15} color="#0C1A0F" />}<Text style={styles.approveTxt}>{approveBusy ? "Approving..." : r.kind === "verification" ? "Grant artist check" : "Approve claim & check"}</Text>
-                    </Pressable>
-                    <Pressable style={[styles.btn, styles.reject, reviewBusy && styles.pillDisabled]} onPress={() => void reviewArtistRequest(r, "reject")} disabled={reviewBusy} accessibilityRole="button" accessibilityState={{ disabled: reviewBusy, busy: rejectBusy }}>
-                      {rejectBusy ? <ActivityIndicator size="small" color={colors.danger} /> : <Icon name="x" size={15} color={colors.danger} />}<Text style={styles.rejectTxt}>{rejectBusy ? "Rejecting..." : "Reject"}</Text>
-                    </Pressable>
-                  </View>
-                </View>
-              );
+              return <ArtistIdentityReviewCard key={`${artistRequestScope}:${r.id}`} request={r} member={u} busy={reviewBusy} action={scopedArtistRequestAction.requestId === r.id ? scopedArtistRequestAction.action : null} onReview={reviewArtistRequest} />;
             })}
           </>
         )}

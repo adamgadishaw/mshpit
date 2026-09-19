@@ -18,7 +18,7 @@ function createDatabase() {
       norm TEXT PRIMARY KEY,name TEXT NOT NULL,public_slug TEXT,genre TEXT,data TEXT,bio TEXT,mbid TEXT,updated_at INTEGER,source TEXT
     );
     CREATE TABLE artist_profiles (
-      artist_key TEXT PRIMARY KEY,owner_id TEXT,removed INTEGER NOT NULL DEFAULT 0
+      artist_key TEXT PRIMARY KEY,owner_id TEXT,removed INTEGER NOT NULL DEFAULT 0,identity_review_status TEXT DEFAULT 'clear'
     );
     CREATE TABLE artist_memorials (
       artist_key TEXT PRIMARY KEY,artist_mbid TEXT,status TEXT NOT NULL,death_date TEXT
