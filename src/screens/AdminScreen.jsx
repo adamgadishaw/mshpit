@@ -1142,7 +1142,7 @@ export default function AdminScreen({ onClose }) {
         {/* ---- REQUESTS ---- */}
         {activeTab === "requests" && (
           <>
-            <Text style={styles.policy}>Fans requesting an official artist account. Approve to let them post tour dates for their artist.</Text>
+            <Text style={styles.policy}>Review the official evidence before granting an artist check. New-page owners can already post for free. An existing-page claim also grants management access; verify that relationship carefully. Checks can be removed in Members.</Text>
             {scopedArtistRequestAction.status === "error" && (
               <View style={styles.requestError} accessibilityRole="alert" accessibilityLiveRegion="assertive">
                 <Text selectable style={styles.requestErrorText}>
@@ -1182,11 +1182,12 @@ export default function AdminScreen({ onClose }) {
               return (
                 <View key={r.id} style={styles.card}>
                   <Text style={styles.artist}>{r.artistName}</Text>
+                  <Text style={styles.sub}>{r.kind === "verification" ? "Artist check - page already managed by this account" : "Ownership claim - grants access to this artist page"}</Text>
                   <Text style={styles.sub}>requested by {u ? `${u.name} (@${u.handle})` : "unknown"}</Text>
                   {!!r.note && <Text style={styles.note}>"{r.note}"</Text>}
                   <View style={styles.actions}>
                     <Pressable style={[styles.btn, styles.approve, reviewBusy && styles.pillDisabled]} onPress={() => void reviewArtistRequest(r, "approve")} disabled={reviewBusy} accessibilityRole="button" accessibilityState={{ disabled: reviewBusy, busy: approveBusy }}>
-                      {approveBusy ? <ActivityIndicator size="small" color="#0C1A0F" /> : <Icon name="check" size={15} color="#0C1A0F" />}<Text style={styles.approveTxt}>{approveBusy ? "Approving..." : "Approve"}</Text>
+                      {approveBusy ? <ActivityIndicator size="small" color="#0C1A0F" /> : <Icon name="check" size={15} color="#0C1A0F" />}<Text style={styles.approveTxt}>{approveBusy ? "Approving..." : r.kind === "verification" ? "Grant artist check" : "Approve claim & check"}</Text>
                     </Pressable>
                     <Pressable style={[styles.btn, styles.reject, reviewBusy && styles.pillDisabled]} onPress={() => void reviewArtistRequest(r, "reject")} disabled={reviewBusy} accessibilityRole="button" accessibilityState={{ disabled: reviewBusy, busy: rejectBusy }}>
                       {rejectBusy ? <ActivityIndicator size="small" color={colors.danger} /> : <Icon name="x" size={15} color={colors.danger} />}<Text style={styles.rejectTxt}>{rejectBusy ? "Rejecting..." : "Reject"}</Text>

@@ -314,7 +314,7 @@ function ConfirmedArtistProfileEditor({
   );
 }
 
-// The verified artist account and Pit staff edit the public artist page.
+// The owning artist account and Pit staff edit the public artist page.
 // Personal member-profile details remain in the separate profile editor.
 export default function EditArtistProfileScreen({ artistName, onClose }) {
   const {
@@ -376,7 +376,7 @@ export default function EditArtistProfileScreen({ artistName, onClose }) {
     return (
       <View style={styles.wrap}>
         <SheetHeader title="Edit artist page" onClose={onClose} />
-        <Text style={styles.denied}>Only the verified {artist.name} account or Mshpit staff can edit this artist page.</Text>
+        <Text style={styles.denied}>Only the account that owns {artist.name}'s page or Mshpit staff can edit it.</Text>
       </View>
     );
   }

@@ -51,7 +51,7 @@ function fixture() {
   database.exec(`
     CREATE TABLE artists (
       norm TEXT PRIMARY KEY, name TEXT NOT NULL, genre TEXT, country TEXT,
-      popularity INTEGER, rank_score REAL, photo TEXT, data TEXT
+      popularity INTEGER, rank_score REAL, photo TEXT, data TEXT,source TEXT
     );
     CREATE TABLE artist_projection_revision (singleton INTEGER PRIMARY KEY, revision INTEGER NOT NULL DEFAULT 0);
     INSERT INTO artist_projection_revision VALUES (1, 0);
@@ -68,8 +68,10 @@ function fixture() {
     CREATE TABLE users (
       id TEXT PRIMARY KEY,
       is_banned INTEGER NOT NULL DEFAULT 0,
-      suspended_until INTEGER,dormant_at INTEGER
+      suspended_until INTEGER,dormant_at INTEGER,profile_audience TEXT DEFAULT 'everyone'
     );
+    CREATE TABLE artist_profiles(artist_key TEXT PRIMARY KEY,owner_id TEXT,removed INTEGER DEFAULT 0);
+    CREATE TABLE blocks(blocker_id TEXT,blocked_id TEXT);
     INSERT INTO users (id,is_banned,suspended_until) VALUES ('member-1', 0, NULL), ('member-2', 0, NULL), ('banned-member', 1, NULL);
     CREATE TABLE plays (artist TEXT, user_id TEXT, created_at INTEGER);
     CREATE TABLE posts (
@@ -115,6 +117,31 @@ function fixtureDiscoverService(database, options = {}) {
     .map((row) => row.norm));
   return createDiscoverService({ database, ...options, reviewedArtistNorms });
 }
+
+test("member-created artist discovery rechecks privacy despite a warm genre cache and respects blocks", () => {
+  const database = fixture();
+  try {
+    database.prepare("UPDATE artists SET source='artist-created' WHERE norm='alpha'").run();
+    database.prepare("INSERT INTO artist_profiles(artist_key,owner_id) VALUES('alpha','member-1')").run();
+    const service = fixtureDiscoverService(database);
+    const hasAlpha = options => service.chart(options).rows.some(row => row.key === "alpha");
+    assert.equal(hasAlpha(), true);
+    const before = service.genres({ country: "Canada" });
+    const genreBefore = before.genres.find(row => row.genre === "Hip-Hop").count;
+    database.prepare("UPDATE users SET profile_audience='only_me' WHERE id='member-1'").run();
+    assert.equal(hasAlpha(), false);
+    const after = service.genres({ country: "Canada" });
+    assert.equal(after.genres.find(row => row.genre === "Hip-Hop")?.count || 0, genreBefore - 1);
+    assert.equal(after.catalogTotal, before.catalogTotal - 1);
+    database.prepare("UPDATE users SET profile_audience='everyone' WHERE id='member-1'").run();
+    database.prepare("INSERT INTO blocks VALUES('member-2','member-1')").run();
+    assert.equal(hasAlpha({ viewer: { id: "member-2" } }), false);
+    assert.equal(hasAlpha(), true, "a block affects that signed-in viewer, not unrelated public readers");
+    database.prepare("UPDATE users SET is_banned=1 WHERE id='member-1'").run();
+    assert.equal(hasAlpha(), false);
+    assert.equal(service.overview({ viewer: { id: "member-2" } }).chart.rows.some(row => row.key === "alpha"), false);
+  } finally { database.close(); }
+});
 
 test("Discover preserves canonical profile identity and prioritizes only returned catalogue artists", () => {
   const database = fixture();
@@ -186,7 +213,7 @@ test("the projection cache is reused briefly and invalidates immediately on genr
   const database = {
     prepare(sql) {
       const statement = raw.prepare(sql);
-      if (sql.startsWith("SELECT a.norm,a.country,")) {
+      if (sql.startsWith("SELECT a.norm,a.source,a.country,")) {
         scans += 1;
         return { *iterate() {
           for (const row of statement.iterate()) {

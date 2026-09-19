@@ -6,7 +6,7 @@ import test from "node:test";
 import * as concertMemories from "./concertMemories.mjs";
 import * as concertMemoryGallery from "./concertMemoryGallery.mjs";
 import * as dates from "./dates.mjs";
-import * as artistWorkspace from "./artistWorkspace.mjs";
+import * as artistWorkspace from "./artistAccountIdentity.mjs";
 import * as profileTimeline from "./profileTimeline.mjs";
 
 const require = createRequire(import.meta.url);
@@ -68,7 +68,7 @@ function fixture() {
     "../domain/dates.mjs": dates,
     "../domain/concertMemories.mjs": concertMemories,
     "../domain/concertMemoryGallery.mjs": concertMemoryGallery,
-    "../domain/artistWorkspace.mjs": artistWorkspace,
+    "../domain/artistAccountIdentity.mjs": artistWorkspace,
     "../domain/profileTimeline.mjs": profileTimeline,
     "../features/profileHistory/useProfileHistory": {
       useProfileHistory: ({ accountId }) => ({ posts: rowsFor(accountId), status: "ready", complete: true, retry: unexpectedAction }),

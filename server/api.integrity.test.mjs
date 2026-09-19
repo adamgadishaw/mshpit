@@ -3041,7 +3041,7 @@ test("PATCH /api/me rejects oversized merged extras without changing any profile
   assert.deepEqual(JSON.parse(after.extras), current);
 });
 
-test("signup records Terms separately while optional analytics defaults off", async () => {
+test("signup records Terms separately and keeps artist setup private while optional analytics defaults off", async () => {
   let sessionCookie;
   const email = "default-private@example.com";
   const result = await routes["POST /api/signup"]({
@@ -3056,6 +3056,7 @@ test("signup records Terms separately while optional analytics defaults off", as
       ageBand: "18_plus",
       termsVersion: LEGAL_ACCEPTANCE_VERSION,
       analyticsConsent: false,
+      artistIntent: { artistName: "Private Signup Artist" },
     },
     setSession: (value) => { sessionCookie = value; },
   });
@@ -3065,6 +3066,10 @@ test("signup records Terms separately while optional analytics defaults off", as
   assert.equal(result.verificationRequired, true);
   assert.equal(result.user.id, created.id);
   assert.equal(result.user.emailVerified, false);
+  assert.equal(result.user.role, "fan", "artist intent cannot grant public artist authority before email confirmation");
+  assert.deepEqual(result.user.pendingArtistIntent, { artistName: "Private Signup Artist" });
+  assert.equal(publicUser(q.userByEmail.get(email)).pendingArtistIntent, undefined);
+  assert.equal(artistStmts.byNorm.get("private signup artist"), undefined, "signup intent never reserves a public catalog identity");
   assert.ok(created.termsAcceptedAt);
   assert.equal(created.termsVersion, LEGAL_ACCEPTANCE_VERSION);
   assert.equal(created.analyticsConsentAt, undefined);

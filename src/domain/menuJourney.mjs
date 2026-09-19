@@ -49,7 +49,7 @@ export function journeyMenuModel({ session = null, inboxUnread = 0, notification
       ? [{ key: "tourDates", icon: "calendar", title: "Events & tour dates", detail: "Publish festivals, fairs, and artist dates" }]
       : []),
     ...(role === "fan"
-      ? [{ key: "requestArtist", icon: "shield", title: "Claim an artist profile", detail: "Verify your relationship to an artist" }]
+      ? [{ key: "requestArtist", icon: "music", title: "Create or claim artist page", detail: "Free photos, videos, promotions and concert dates using this account" }]
       : []),
   ] : [];
 

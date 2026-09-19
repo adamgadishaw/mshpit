@@ -8,6 +8,7 @@
 
 import { DATABASE_DIRECTORY, DATABASE_PATH, db, artistStmts, normName } from "./db.js";
 import { activeAccountSql } from "./accountVisibility.js";
+import { artistCatalogVisibleTo } from "./artistCatalogVisibility.js";
 import { htmlRobotsDirective, isProduction } from "./environment.js";
 import { profileAllowsSearchIndexing } from "./profileSearchIndexing.js";
 import { projectedTourDateTicketUrl } from "../src/domain/ticketLinks.mjs";
@@ -196,7 +197,7 @@ function cleanPathname(value) {
 
 function artistResolution(slug) {
   const artist = artistStmts.byPublicSlug.get(String(slug || "").trim());
-  if (!artist) return null;
+  if (!artistCatalogVisibleTo(db, artist)) return null;
   const path = artistPath(artist);
   return {
     entity: { kind: "artist", name: artist.name, artistKey: artist.norm, path },

@@ -64,18 +64,18 @@ test("artist request review state changes only after a confirmed decision", () =
 
 test("the store awaits persistence before inserting or returning success", () => {
   const storeSource = readFileSync(new URL("../store.js", import.meta.url), "utf8");
-  const start = storeSource.indexOf("const requestArtist =");
-  const end = storeSource.indexOf("const approveArtist =", start);
-  assert.ok(start >= 0 && end > start, "requestArtist mutation should be present");
-  const mutation = storeSource.slice(start, end);
-  const awaitServer = mutation.indexOf("await api(");
+  assert.match(storeSource, /const requestArtist = .*artistAccountCommand\(/);
+  assert.match(storeSource, /runArtistAccountCommand/);
+  const module = readFileSync(new URL("../features/artistPage/artistAccountApi.mjs", import.meta.url), "utf8");
+  const mutation = module.slice(module.indexOf("export async function submitArtistReview"));
+  const awaitServer = mutation.indexOf("await apiCall(");
   const insertConfirmed = mutation.indexOf("setRequests(");
-  const returnSuccess = mutation.indexOf("return { ok: true");
+  const returnSuccess = mutation.indexOf("return commandSuccess(");
 
-  assert.match(mutation, /const requestArtist = async/);
+  assert.match(mutation, /export async function submitArtistReview/);
   assert.ok(awaitServer >= 0, "requestArtist must await the server");
   assert.ok(insertConfirmed > awaitServer, "local state must only change after the server resolves");
   assert.ok(returnSuccess > insertConfirmed, "success must only return after the confirmed row is inserted");
-  assert.match(mutation, /if \(!request\) return \{ ok: false/);
+  assert.match(mutation, /if \(!request\) return fail\(/);
   assert.doesNotMatch(mutation, /Date\.now\(\)|\.catch\(\(\) => \{\}\)/);
 });

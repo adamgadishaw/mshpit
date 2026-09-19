@@ -72,7 +72,7 @@ test("the walkthrough saves both profile images with account-bound confirmation 
   assert.match(onboarding, /controller.abort\(\)/);
   assert.match(onboarding, /accessibilityRole="progressbar"/);
   assert.match(onboarding, /accessibilityLiveRegion="assertive"/);
-  assert.match(onboarding, /\[destination, setDestination\] = useState\("feed"\)/);
+  assert.match(onboarding, /\[destination, setDestination\] = useState\(session.pendingArtistIntent \? "artistPage" : "feed"\)/);
   assert.match(onboarding, /onPress=\{onClose\} accessibilityRole="button" accessibilityLabel="Back to browsing"/);
   assert.match(onboarding, /closeGuardRef.current = guard/);
   assert.match(onboarding, /title="Leave setup"/);

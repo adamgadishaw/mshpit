@@ -55,7 +55,7 @@ test("authentication forms expose autofill, live errors, and real pending locks"
 
 test("artist requests only show success after the mutation result succeeds", () => {
   assert.match(source.requestArtist, /await requestArtist/);
-  assert.match(source.requestArtist, /if \(result\?\.ok\) setDone\(true\)/);
+  assert.match(source.requestArtist, /if \(result\?\.ok\) setDone\(\{ mode, result \}\)/);
   assert.match(source.requestArtist, /disabled=\{!valid \|\| busy\}/);
   assert.match(source.requestArtist, /accessibilityRole="alert"/);
 });

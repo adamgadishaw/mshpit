@@ -7,6 +7,7 @@ import { staffScopeFor } from "./staffReadCoordinator.mjs";
 import { confirmedRoleMutationPatch } from "./moderationConsole.mjs";
 import { clean, LIMITS } from "./validation.mjs";
 import { commandSuccess } from "./commandResult.mjs";
+import * as artistAccountApi from "../features/artistPage/artistAccountApi.mjs";
 import { ARTIST_REQUEST_CONFIRMATION_ERROR, artistRequestFailureMessage, confirmedArtistRequest, mergeConfirmedArtistRequest, reconcileConfirmedArtistRequestDecision } from "./artistRequestMutation.mjs";
 
 const source = readFileSync(new URL("../store.js", import.meta.url), "utf8");
@@ -17,11 +18,11 @@ const names = ["renderedAccountMutation", "currentMutationActor", "renderedStaff
   "adminSetTrackVideo", "removeTrackOverride", "moderateReport", "moderateContent", "actionReport", "dismissReport", "removeContent", "restoreContent",
   "banUser", "unbanUser", "suspendUser", "liftSuspension", "setUserRole", "setVerified", "markEmailVerified", "setSponsor",
   "enrichArtists", "purgeArtist", "startCatalogSeed", "stopCatalogSeed", "removeLoungeMessage", "removeFanClubMessage", "removeComment", "prepareMemorialArtist",
-  "requestArtist", "reviewArtistRequest", "approveArtist", "rejectArtist"];
+  "artistAccountCommand", "requestArtist", "reviewArtistRequest", "approveArtist", "rejectArtist"];
 const callbacks = names.map((name) => {
   const node = declarations.find((entry) => entry.id?.name === name);
   assert.ok(node, name);
-  return `const ${source.slice(node.start, node.end)};`;
+  return `const ${source.slice(node.start, node.end).replace('import("./features/artistPage/artistAccountApi.mjs")', 'importArtistAccount()')};`;
 }).join("\n");
 const admin = { id: "staff-a", role: "admin" };
 const fan = { id: "fan", role: "fan" };
@@ -61,6 +62,7 @@ function fixture(actor = admin, ready = true) {
     captureAccountMutation, accountMutationIsCurrent, staffScopeFor, confirmedRoleMutationPatch,
     clean, LIMITS, ARTIST_REQUEST_CONFIRMATION_ERROR, artistRequestFailureMessage, confirmedArtistRequest, mergeConfirmedArtistRequest, reconcileConfirmedArtistRequestDecision,
     commandSuccess, commandError: (error) => ({ ok: false, error }), localCommandError: (code) => ({ ok: false, code }),
+    importArtistAccount: async () => artistAccountApi, absorbServerUser: (user) => effects.push(user),
     isLoadCancellation: (_error, signal) => !!signal?.aborted, requests: state.requests, setRequests: setter("requests"),
     api: request, AppError: class extends Error { constructor(message, data) { super(message); Object.assign(this, data); } },
     staffReadsRef: { current: staffCoordinator },
@@ -163,6 +165,7 @@ test("artist request decisions preserve pending state on server rejection or mis
 test("member artist requests are account-bound and late confirmation cannot create a replacement account's local request", async () => {
   const f = fixture(fan);
   const pending = f.actions.requestArtist("New Artist", "Management contact available");
+  await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(f.effects, []);
   assert.equal(f.calls[0].args[1].expectedAccountId, fan.id);
   f.adopt(admin); f.adopt(fan);
@@ -174,6 +177,7 @@ test("member artist requests are account-bound and late confirmation cannot crea
   assert.equal(f.calls.length, 1);
   const active = fixture(fan);
   const request = active.actions.requestArtist("New Artist", "Note");
+  await new Promise((resolve) => setImmediate(resolve));
   active.calls[0].resolve({ id: "confirmed-request" });
   assert.equal((await request).ok, true);
   assert.equal(active.state.requests[0].id, "confirmed-request");

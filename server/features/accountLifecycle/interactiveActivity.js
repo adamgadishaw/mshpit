@@ -9,7 +9,7 @@ const INTERACTIVE_ROUTES = new Set([
   "POST /api/playlists", "PATCH /api/playlists/:id", "DELETE /api/playlists/:id",
   "POST /api/dms/:otherId", "POST /api/fanclubs/:artist/join", "POST /api/fanclubs/:artist/messages",
   "POST /api/lounges/:key/messages", "POST /api/going", "POST /api/ratings", "POST /api/tourdates",
-  "POST /api/reports", "POST /api/tracks/report", "POST /api/artist-requests", "POST /api/suggestions",
+  "POST /api/reports", "POST /api/tracks/report", "POST /api/artist-requests", "POST /api/artist-pages", "POST /api/suggestions",
   "POST /api/venues/:key/reviews", "PATCH /api/artists/:key/profile",
   "POST /api/artists/:key/posts", "DELETE /api/artists/:key/posts/:id",
   "POST /api/feed/preferences/:postId", "DELETE /api/feed/preferences/:postId",

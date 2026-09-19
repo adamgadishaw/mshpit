@@ -1,4 +1,5 @@
 import { activeAccountSql } from "../../accountVisibility.js";
+import { artistAuthoredTourDateVisibleSql } from "../../artistAuthoredTourDateVisibility.js";
 import { artistHasLegacyMemorial, artistHasPublishedMemorial, tourDateHasNoPublishedMemorialSql } from "../../artistMemorialTourDateVisibility.js";
 import {
   providerBillingIdentity,
@@ -132,6 +133,7 @@ export function createArtistLiveSummaryService({ database, projectDate, clock = 
       AND ${tourDateHasNoPublishedMemorialSql("td")}
       AND pit_artist_event_current(td.date,td.event_end_date,td.event_timezone,@at)=1
       AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1)
+      AND (${artistAuthoredTourDateVisibleSql("td")} OR (@publicPreview=0 AND ${artistAuthoredTourDateVisibleSql("td", "@viewer")}))
       AND (td.owner_id IS NULL OR (${activeAccountSql("owner")}))
       AND (td.release_at<=@at OR (@publicPreview=0 AND (td.owner_id=@viewer OR @admin=1)))
       AND (@viewer IS NULL OR td.owner_id IS NULL OR NOT EXISTS(SELECT 1 FROM blocks b WHERE

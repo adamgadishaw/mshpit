@@ -19,7 +19,7 @@ import { formatDate } from "../domain/dates.mjs";
 import { discographyIdentityCopy, discographyPresentation } from "../domain/discographyView.mjs";
 import { mediaDisplayItems, mediaDisplayKind, mediaPosterUri } from "../domain/postMediaDisplay.mjs";
 import { trackReportDescriptor, trackReportIdentityKey } from "../domain/trackReportIdentity.mjs";
-import { artistWorkspaceOwnsArtist } from "../domain/artistWorkspace.mjs";
+import { artistWorkspaceOwnsArtist } from "../domain/artistAccountIdentity.mjs";
 import { selectArtistReviewsPresentation } from "../features/artistReviews/artistReviewsState.mjs";
 import { useArtistTopReviews } from "../features/artistReviews/useArtistTopReviews";
 import { useArtistEventArchive } from "../features/artistEvents/useArtistEventArchive";
@@ -456,6 +456,10 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
   const artistPostsVisible = legacyMode
     ? posts.length > 0
     : profileServicesAvailable && (a.feedEnabled || canManagePublicPage) && (posts.length > 0 || !sectionModel.condensed);
+  // Server-filtered public artist media and page updates are also useful to a
+  // visitor arriving from a concert link. Keep member reviews/chat gated while
+  // allowing these public promotion previews without a second account wall.
+  const publicArtistPreview = profileServicesAvailable && sectionModel.active === "overview";
   const fanClubMember = !!session && isFanClubMember(a.name);
   const followUi = useArtistFollowFanClub({
     accountId: session?.id || null,
@@ -1353,14 +1357,14 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
 
         {/* The overview stays bounded; the gallery owns the full collection and
             pagination after the schedule and review previews. */}
-        {sectionModel.showCommunity && (gallery.length > 0 || !sectionModel.condensed) && (
+        {(sectionModel.showCommunity || publicArtistPreview) && (gallery.length > 0 || !sectionModel.condensed) && (
           <>
             <View style={styles.galleryHeading}>
               <View style={{ flex: 1, minWidth: 0 }}>
                 <Text style={styles.sectionLabel}>{legacyMode ? "ARCHIVE & COMMUNITY PHOTOS" : "PHOTOS & VIDEOS"}</Text>
                 <Text style={styles.bio}>{legacyMode
                   ? "Existing public images remain part of this protected community record. New photo and video uploads are closed; written memories remain open."
-                  : sectionModel.condensed ? "A quick look at public fan photos and videos." : "Public fan photos and videos, along with artist images. Private and moderated media is not shown."}</Text>
+                  : sectionModel.condensed ? "Live photos and videos shared by the artist and the crowd." : "Public artist and fan photos and videos. Private and moderated media is not shown."}</Text>
               </View>
               {onOpenGallery ? (
                 <Pressable
@@ -1429,7 +1433,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
             Legacy pages expose only staff-curated history notes. They must never
             borrow the artist's avatar/name or imply that the artist published
             them. Modern artist posts keep their existing owner presentation. */}
-        {sectionModel.showCommunity && artistPostsVisible && (
+        {(sectionModel.showCommunity || publicArtistPreview) && artistPostsVisible && (
           <>
             <View style={styles.feedHead}>
               <Text style={styles.sectionLabel}>{legacyMode ? "MSHPIT HISTORY NOTES" : "ARTIST POSTS"}{posts.length ? ` · ${posts.length}` : ""}</Text>

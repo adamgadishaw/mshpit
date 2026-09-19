@@ -151,10 +151,6 @@ import { accountMutationIsCurrent, captureAccountMutation } from "./domain/accou
 import { captureFeedRead, feedReadIsCurrent } from "./domain/feedPagination.mjs";
 import { commandFailure, commandSuccess } from "./domain/commandResult.mjs";
 import {
-  ARTIST_REQUEST_CONFIRMATION_ERROR,
-  artistRequestFailureMessage,
-  confirmedArtistRequest,
-  mergeConfirmedArtistRequest,
   reconcileConfirmedArtistRequestDecision,
 } from "./domain/artistRequestMutation.mjs";
 import { reconcileConfirmedArtistPostRemoval } from "./domain/artistPostMutation.mjs";
@@ -429,7 +425,7 @@ export const artistRankOf = (name) => ARTIST_RANK.get((name || "").trim().toLowe
 
 // role → the official badge it earns (Pit team / moderator / verified artist).
 export const roleBadge = (role) =>
-  role === "admin" ? "staff" : role === "moderator" ? "mod" : role === "artist" ? "verified" : null;
+  role === "admin" ? "staff" : role === "moderator" ? "mod" : null;
 
 // Bump when the Terms/Privacy change materially, so we can tell who consented to
 // which version (recorded on the account at sign-up).
@@ -3023,7 +3019,7 @@ export function StoreProvider({ children }) {
     return candidate;
   };
 
-  const signup = async ({ name, handle, email, password, city, location = null, genres = [], ageBand, agreedToTerms, analyticsConsent = false, addAccount = false, currentPassword, createAdditional = false }, { signal } = {}) => {
+  const signup = async ({ name, handle, email, password, city, location = null, genres = [], ageBand, agreedToTerms, analyticsConsent = false, addAccount = false, currentPassword, createAdditional = false, artistIntent }, { signal } = {}) => {
     const nm = cleanName(name);
     const em = cleanEmail(email);
     if (!isName(nm)) return { ok: false, error: "Enter a name (letters or numbers, up to 40 chars)." };
@@ -3043,7 +3039,7 @@ export function StoreProvider({ children }) {
       try {
         return await performAuthentication(() => api("/api/signup", {
           method: "POST",
-          body: { name: nm, ...(handle !== undefined ? { handle: cleanHandle(handle) } : {}), email: em, password, city, lat: srvCoords?.lat, lng: srvCoords?.lng, genres: genreSelection.genres, ageBand, analyticsConsent: !!analyticsConsent, termsVersion: TERMS_VERSION, ...(addAccount ? { addAccount, currentPassword } : {}), ...(createAdditional ? { createAdditional: true } : {}) },
+          body: { name: nm, ...(handle !== undefined ? { handle: cleanHandle(handle) } : {}), email: em, password, city, lat: srvCoords?.lat, lng: srvCoords?.lng, genres: genreSelection.genres, ageBand, analyticsConsent: !!analyticsConsent, termsVersion: TERMS_VERSION, ...(artistIntent ? { artistIntent } : {}), ...(addAccount ? { addAccount, currentPassword } : {}), ...(createAdditional ? { createAdditional: true } : {}) },
           context: "Creating your Pit account",
           silent: true,
           skipIdentityCheck: !addAccount,
@@ -3052,7 +3048,7 @@ export function StoreProvider({ children }) {
           if (response?.needsAccountChoice && Array.isArray(response.accounts) && response.accounts.length > 0 && response.accounts.length <= 2) return { ok: true, needsAccountChoice: true, accounts: response.accounts, canCreate: response.canCreate === true };
           if (response?.created === true && response.user?.id) {
             absorbServerUser(response.user, { announce: true });
-            return { ok: true, created: true };
+            return { ok: true, created: true, accountId: response.user.id };
           }
           void logout();
           return { ok: false, error: "That request did not complete. Please try again." };
@@ -3810,35 +3806,28 @@ export function StoreProvider({ children }) {
   const restoreContent = (id) => commitStaffAction(() => moderateContent("post", id, false),
     () => setRemovedIds((rows) => rows.filter((value) => value !== id)));
 
-  // Artist account requests
-  const requestArtist = async (artistName, note) => {
+  // Artist pages extend the current login, never create a second account.
+  const artistAccountCommand = async (options) => {
     const actor = currentMutationActor();
     if (!actor) return { ok: false, error: "Log in first." };
     const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
-    const an = clean(artistName, { max: LIMITS.artist });
-    if (an.length < 2) return { ok: false, error: "Enter the artist name." };
-    const cleanNote = clean(note, { max: LIMITS.note, newlines: true });
     try {
-      const response = await api("/api/artist-requests", {
-        method: "POST",
-        body: { artistName: an, note: cleanNote },
-        context: "Requesting an artist account",
-        silent: true,
-        expectedAccountId: actor.id,
+      const { runArtistAccountCommand } = await import("./features/artistPage/artistAccountApi.mjs");
+      const result = await runArtistAccountCommand({ ...options, accountId: actor.id }, {
+        apiCall: api, confirmUser: absorbServerUser, cacheArtists, setRequests,
+        fail: (error) => commandError(error, "Managing your artist page"),
+        isCurrent: () => accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current),
       });
-      if (!accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current)) return { ok: false, stale: true };
-      const request = confirmedArtistRequest(response, {
-        userId: actor.id,
-        artistName: an,
-        note: cleanNote,
-      });
-      if (!request) return { ok: false, error: ARTIST_REQUEST_CONFIRMATION_ERROR };
-      setRequests((current) => mergeConfirmedArtistRequest(current, request));
-      return { ok: true, request };
+      // Keep the legacy Store-facing shape while the feature owns canonical commands.
+      return result.ok ? { ...result.value, ok: true } : { ...result, code: result.error?.serverCode || result.error?.code };
     } catch (error) {
-      return { ok: false, error: artistRequestFailureMessage(error) };
+      return { ok: false, error: error.userMessage || error.message, code: error.serverCode || error.code, status: error.status };
     }
   };
+  const loadArtistAccount = (options = {}) => artistAccountCommand(options);
+  const createArtistPage = (artistName, bio = "", options = {}) => artistAccountCommand({ ...options, artistName, bio, create: true });
+  // Claims and verification use the same reviewed request queue.
+  const requestArtist = (artistName, note, options = {}) => artistAccountCommand({ ...options, artistName, note, requestReview: true });
   const reviewArtistRequest = async (reqId, decision, { signal } = {}) => {
     const actor = currentMutationActor();
     const context = decision === "approved" ? "Approving this artist request" : "Rejecting this artist request";
@@ -3864,10 +3853,10 @@ export function StoreProvider({ children }) {
       setRequests((current) => reconcileConfirmedArtistRequestDecision(current, { requestId: reqId, status: decision }));
       if (decision === "approved") {
         setUsers((current) => current.map((account) => (account.id === request.userId
-          ? { ...account, role: "artist", artistName: request.artistName }
+          ? { ...account, role: "artist", artistName: request.artistName, verified: true }
           : account)));
         if (sessionRef.current?.id === request.userId) {
-          const nextSession = { ...sessionRef.current, role: "artist", artistName: request.artistName };
+          const nextSession = { ...sessionRef.current, role: "artist", artistName: request.artistName, verified: true };
           sessionRef.current = nextSession;
           setSession(nextSession);
         }
@@ -6583,7 +6572,7 @@ export function StoreProvider({ children }) {
   // name (Twitter-style: only claimed + approved get the check).
   const isVerifiedArtist = (name) => {
     const k = norm(name);
-    return !!k && users.some((u) => isArtist(u.role) && norm(u.artistName) === k);
+    return !!k && artistProfiles[k]?.verified === true;
   };
   const artistRank = (name) => artistRankOf(name);
   const isTop100 = (name) => { const r = artistRankOf(name); return !!r && r <= 100; };
@@ -6941,7 +6930,7 @@ export function StoreProvider({ children }) {
     userById, userByHandle, logsByUser, sharedShows,
     login, signup, logout, switchLinkedAccount, deleteAccount, forgotPassword, resetPassword, confirmEmailVerification, resendEmailVerification, updateProfile, completeSignupOnboarding, setAnalyticsEnabled, setProfileSearchIndexingEnabled, setDirectMessagePolicy, setAgeBandClassification, setProfileAudience, setAnnouncementEmailsEnabled, chooseTheme, syncAccountTheme,
     addLog, editLog, reportContent, actionReport, dismissReport, removeContent, restoreContent,
-    requestArtist, approveArtist, rejectArtist,
+    requestArtist, approveArtist, rejectArtist, createArtistPage, loadArtistAccount,
     addTourDatesBatch,
     isFollowing, follow, unfollow, followerCount, followingCount, absorbUsers, searchPeople, loadMembers, memberCount,
     recentSearches, addRecentSearch, removeRecentSearch, clearRecentSearches,

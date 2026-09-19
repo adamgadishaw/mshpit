@@ -1,4 +1,6 @@
 import { activeAccountSql } from "../../accountVisibility.js";
+import { artistAuthoredTourDateVisibleSql } from "../../artistAuthoredTourDateVisibility.js";
+import { publicArtistCatalogSql } from "../../artistCatalogVisibility.js";
 import { slugify } from "../../../src/domain/urls.mjs";
 import { archiveIdentityPart } from "../artistArchive/artistArchiveKeys.js";
 import { currentOrUpcomingTourDateSql, effectiveTourDateEndSql } from "../../tourDateLifecycle.js";
@@ -24,6 +26,7 @@ const structuredLocationSql = (a) => `TRIM(COALESCE(${a}.venue_city,''))<>'' AND
 const publicTourVisibility = (a, owner, at) => `${a}.release_at<=${at}
   AND ${publicMusicEventCandidateSql(a)}
   AND ${publicIndexableMusicEventSql(a)}
+  AND ${artistAuthoredTourDateVisibleSql(a)}
   AND (${a}.owner_id IS NULL OR ${activeAccountSql(owner)})
   AND (${a}.owner_id IS NOT NULL OR COALESCE(${a}.provider_active,1)=1)`;
 
@@ -33,6 +36,7 @@ const noStructuredShowLocationCollisionSql = (alias = "p", at = "?4", today = "?
   WHERE LOWER(TRIM(public_location.artist))=LOWER(TRIM(${alias}.artist))
     AND LOWER(TRIM(public_location.venue))=LOWER(TRIM(${alias}.venue))
     AND public_location.date=${alias}.date AND public_location.release_at<=${at}
+    AND ${artistAuthoredTourDateVisibleSql("public_location")}
     AND (public_location.owner_id IS NULL OR ${activeAccountSql("public_location_owner")})
     AND (public_location.owner_id IS NOT NULL OR COALESCE(public_location.provider_active,1)=1
       OR ${effectiveTourDateEndSql("public_location")}<${today})
@@ -250,11 +254,14 @@ export function createPublicCollectionRepository(database) {
   LIMIT ?7 OFFSET ?8`);
 
   const artistByKey = database.prepare(`SELECT norm,name,public_slug,genre,bio,mbid,updated_at
-    FROM artists WHERE norm=? AND public_slug IS NOT NULL AND TRIM(public_slug)<>'' LIMIT 2`);
+    FROM artists WHERE norm=? AND public_slug IS NOT NULL AND TRIM(public_slug)<>''
+      AND ${publicArtistCatalogSql("artists")} LIMIT 2`);
   const artistBySlug = database.prepare(`SELECT norm,name,public_slug,genre,bio,mbid,updated_at
-    FROM artists WHERE public_slug=? COLLATE NOCASE AND TRIM(public_slug)<>'' LIMIT 2`);
+    FROM artists WHERE public_slug=? COLLATE NOCASE AND TRIM(public_slug)<>''
+      AND ${publicArtistCatalogSql("artists")} LIMIT 2`);
   const artistByName = database.prepare(`SELECT norm,name,public_slug,genre,bio,mbid,updated_at
     FROM artists WHERE name=? COLLATE NOCASE AND public_slug IS NOT NULL AND TRIM(public_slug)<>''
+      AND ${publicArtistCatalogSql("artists")}
     ORDER BY norm LIMIT 2`);
 
   const artistConcerts = database.prepare(`WITH eligible_posts AS (

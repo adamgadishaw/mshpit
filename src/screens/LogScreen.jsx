@@ -31,6 +31,7 @@ import {
   shouldScheduleComposerDraftPersistence,
 } from "../domain/composerDraft.mjs";
 import { composerCloseDecision } from "../domain/composerClosePolicy.mjs";
+import { composerArtistMediaConsent } from "../domain/composerArtistMediaConsent.mjs";
 import { PENDING_COMPOSER_PICKER_KEY } from "../domain/composerRecovery.mjs";
 import { postMediaPickerOptions } from "../domain/mediaPickerOptions.mjs";
 import { launchComposerMediaLibrary } from "../lib/composerMediaPicker";
@@ -542,6 +543,7 @@ export default function LogScreen({
   // Artist-page reuse is a separate, explicit permission. New posts and older
   // posts without a stored choice fail closed; editing preserves a real opt-in.
   const [photosPublic, setPhotosPublic] = useState(editing?.photosPublic === true);
+  const artistMediaConsent = composerArtistMediaConsent({ postType, user, artist, photosPublic });
   const [landingShowcase, setLandingShowcase] = useState(editing?.landingShowcase === true && hasLandingCompatibleImage(editing?.photos));
   const hasLandingCompatiblePhoto = useMemo(() => hasLandingCompatibleImage(photos), [photos]);
   useEffect(() => {
@@ -1472,7 +1474,7 @@ export default function LogScreen({
             photos: durablePhotos,
             ...(stableMediaAssetIds ? { mediaAssetIds: stableMediaAssetIds } : {}),
             media: publishedMedia,
-            photosPublic: isMemorialMemory && photosPublic,
+            photosPublic: artistMediaConsent.photosPublic,
             campaign: isCampaign ? campaign : null,
           } : {}),
           likes: editing?.likes || 0,
@@ -2136,12 +2138,13 @@ export default function LogScreen({
         )}
         {!!mediaError && <Text style={styles.songError}>{mediaError}</Text>}
 
-        {(!isStatus || isMemorialMemory) && photos.length > 0 && (
+        {artistMediaConsent.available && photos.length > 0 && (
           <Pressable
             style={styles.consent}
             accessibilityRole="checkbox"
             accessibilityState={{ checked: photosPublic }}
-            accessibilityLabel={`Share my photos on ${artist || "the artist"}'s public page`}
+            {...(Platform.OS === "web" ? { "aria-checked": photosPublic } : {})}
+            accessibilityLabel={`Share my photos and videos on ${artistMediaConsent.artistName}'s public page`}
             accessibilityHint="Turning this off also removes permission to feature a photo in Mshpit community highlights."
             onPress={() => setPhotosPublic((value) => {
             const next = !value;
@@ -2149,7 +2152,7 @@ export default function LogScreen({
             return next;
           })}>
             <View style={[styles.check, photosPublic && styles.checkOn]}>{photosPublic && <Icon name="check" size={13} color="#1A1206" />}</View>
-            <Text style={styles.consentTxt}>Show these photos on {artist || "the artist"}'s public page. The most-liked photos may appear first. You can change this later.</Text>
+            <Text style={styles.consentTxt}>Also show these photos and videos on {artistMediaConsent.artistName}'s public page. Your account privacy settings still apply. You can change this later.</Text>
           </Pressable>
         )}
         {!isStatus && !isOnlineReview && hasLandingCompatiblePhoto && (

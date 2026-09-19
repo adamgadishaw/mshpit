@@ -78,7 +78,7 @@
   },
   "legacyApi": {
     "file": "server/api.js",
-    "maxInlineRoutes": 162,
+    "maxInlineRoutes": 158,
     "allowedInlineRoutes": [
       "DELETE /api/admin/catalog/seed",
       "DELETE /api/admin/email/templates/:key",
@@ -92,7 +92,6 @@
       "GET /api/admin/analytics",
       "GET /api/admin/analytics/users/:id",
       "GET /api/admin/artist-queue",
-      "GET /api/admin/artist-requests",
       "GET /api/admin/badges",
       "GET /api/admin/badges/:id/holders",
       "GET /api/admin/catalog/runs",
@@ -170,8 +169,6 @@
       "PATCH /api/media/assets/:id",
       "PATCH /api/playlists/:id",
       "PATCH /api/posts/:id",
-      "POST /api/admin/artist-requests/:id/approve",
-      "POST /api/admin/artist-requests/:id/reject",
       "POST /api/admin/artists/enrich",
       "POST /api/admin/artists/genre",
       "POST /api/admin/artists/purge",
@@ -200,7 +197,6 @@
       "POST /api/admin/users/:id/unsuspend",
       "POST /api/admin/users/:id/verified",
       "POST /api/admin/users/:id/verify-email",
-      "POST /api/artist-requests",
       "POST /api/artists/:key/posts",
       "POST /api/dms/:otherId",
       "POST /api/events",
@@ -434,8 +430,8 @@
       "fingerprint": "01e0028f751a5ee02884"
     },
     "src/store.js": {
-      "count": 97,
-      "fingerprint": "464617d2fb10ec0cda69"
+      "count": 96,
+      "fingerprint": "090c2ce4fc9a6a574ae3"
     }
   },
   "legacyClientContractShapesByFile": {

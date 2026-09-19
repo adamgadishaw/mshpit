@@ -39,7 +39,7 @@ test("menu vocabulary names identical destinations consistently", () => {
   const model = journeyMenuModel({ session: { id: "fan", role: "fan" } });
   assert.equal(model.account[0].title, "Manage profile");
   assert.equal(model.account[1].title, "Settings");
-  assert.equal(model.account.at(-1).title, "Claim an artist profile");
+  assert.equal(model.account.at(-1).title, "Create or claim artist page");
   assert.equal(model.discover.find((item) => item.key === "venues").title, "Find venues");
   assert.equal(model.discover.find((item) => item.key === "topRated").title, "Top-rated shows");
 });

@@ -29,6 +29,8 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, navigationA
   const [mode, setMode] = useState(initialMode === "signup" ? "signup" : "login");
   const [step, setStep] = useState(1);
   const [name, setName] = useState("");
+  const [artistSignup, setArtistSignup] = useState(false);
+  const [artistName, setArtistName] = useState("");
   const [handle, setHandle] = useState("");
   const [email, setEmail] = useState(addAccount ? session?.email || "" : initialEmail);
   const [currentPassword, setCurrentPassword] = useState("");
@@ -104,7 +106,7 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, navigationA
     setMode(next); setStep(1); setSentTo(null); setShowPassword(false); clearError();
     onModeChange?.(next);
   };
-  const accountValues = () => ({ name, handle, email, password });
+  const accountValues = () => ({ name, handle, email, password, ...(artistSignup ? { artistIntent: { artistName } } : {}) });
   const accountFailure = () => signupAccountError(accountValues(), currentAvailability)
     || (availability.resource.scope === cleanHandle(handle) && availability.resource.status === "error"
       && Number(availability.resource.error?.status) === 400 ? { field: "handle", message: handleStatus.message } : null);
@@ -146,7 +148,7 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, navigationA
         authAttempt.current = null;
         busyRef.current = false;
         setBusyAction(null);
-        onDone?.(creating ? "signup" : "login");
+        onDone?.(creating ? "signup" : "login", { artistSetup: creating && artistSignup, accountId: result.accountId });
       } else {
         const handleTaken = result?.error?.serverCode === "HANDLE_TAKEN" || result?.code === "HANDLE_TAKEN"
           || /username.*taken|handle.*taken/i.test(readableError(result?.error, ""));
@@ -261,6 +263,14 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, navigationA
 
           {/* Keep credentials associated through music/account selection; never persist them. */}
           {mode !== "forgot" ? <View style={[styles.credentials, (signupChoice || accounts || (signupMode && step === 2)) && styles.hiddenCredentials]}>
+              {signupMode && <View style={styles.section}>
+                <Text style={styles.fieldLabel}>How will you use Mshpit?</Text>
+                <View style={styles.fieldPair} accessibilityRole="radiogroup" accessibilityLabel="Account purpose">
+                  {[[false, "Music fan"], [true, "Artist or band"]].map(([value, title]) => <AuthPressable key={title} disabled={busy} accessibilityRole="radio" accessibilityState={{ checked: artistSignup === value }} onPress={() => { setArtistSignup(value); clearError(); }} style={controlStyle([styles.genreChip, artistSignup === value && styles.selectedChip], busy)}><Text style={[styles.genreText, artistSignup === value && styles.selectedText]}>{title}</Text></AuthPressable>)}
+                </View>
+                <Text style={styles.hint}>One free account. Artists can publish a page, live photos and videos, promotions, and upcoming concerts. No separate login.</Text>
+                {artistSignup && field("artistName", "Artist or band name", artistName, setArtistName, { maxLength: 60, hint: "After confirming your email, create a new page or claim an existing one. The artist check requires Mshpit approval." })}
+              </View>}
               {signupMode && addAccount ? <>{field("currentPassword", "Current account password", currentPassword, setCurrentPassword, { maxLength: 100, autoComplete: "current-password" })}<Text style={styles.hint}>Up to two accounts can use a verified email. Use the same password for a choice at login, or different passwords to sign straight into the matching account.</Text></> : null}
               {signupMode ? <View style={styles.fieldPair}>
                 {field("name", "Name", name, setName, { paired: true, maxLength: 40, autoComplete: "name", textContentType: "name", onSubmit: () => inputs.current.handle?.focus?.() })}
@@ -329,7 +339,7 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, navigationA
             <AuthPressable style={controlStyle(styles.textButton, busy)} onPress={() => changeMode(signupMode ? "login" : "signup")} disabled={busy} accessibilityRole="button"><Text style={styles.link}>{signupMode ? "Have an account? Log in" : "No account? Sign up"}</Text></AuthPressable>
           </>}
         </CredentialForm>
-        {mode !== "forgot" ? <View style={styles.ticketFooter}><Icon name="shield" size={16} color={colors.amber} /><Text style={styles.footerText}>Artist? Start with a personal account, then choose Claim artist profile. Every claim is reviewed.</Text></View> : null}
+        {mode !== "forgot" ? <View style={styles.ticketFooter}><Icon name="shield" size={16} color={colors.amber} /><Text style={styles.footerText}>Artist pages are free. Creating a page does not grant a verified check. Existing page claims and verification are reviewed by Mshpit.</Text></View> : null}
       </View>
     </ScrollView>
   </KeyboardAvoidingView>;

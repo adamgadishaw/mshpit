@@ -11,10 +11,14 @@ function createDatabase() {
   const db = new DatabaseSync(":memory:");
   db.exec(`
     CREATE TABLE users (
-      id TEXT PRIMARY KEY,is_banned INTEGER NOT NULL DEFAULT 0,suspended_until INTEGER,dormant_at INTEGER
+      id TEXT PRIMARY KEY,is_banned INTEGER NOT NULL DEFAULT 0,suspended_until INTEGER,dormant_at INTEGER,
+      profile_audience TEXT NOT NULL DEFAULT 'everyone'
     );
     CREATE TABLE artists (
-      norm TEXT PRIMARY KEY,name TEXT NOT NULL,public_slug TEXT,genre TEXT,data TEXT,bio TEXT,mbid TEXT,updated_at INTEGER
+      norm TEXT PRIMARY KEY,name TEXT NOT NULL,public_slug TEXT,genre TEXT,data TEXT,bio TEXT,mbid TEXT,updated_at INTEGER,source TEXT
+    );
+    CREATE TABLE artist_profiles (
+      artist_key TEXT PRIMARY KEY,owner_id TEXT,removed INTEGER NOT NULL DEFAULT 0
     );
     CREATE TABLE artist_memorials (
       artist_key TEXT PRIMARY KEY,artist_mbid TEXT,status TEXT NOT NULL,death_date TEXT

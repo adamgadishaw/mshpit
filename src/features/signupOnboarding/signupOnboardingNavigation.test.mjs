@@ -51,7 +51,7 @@ test("an account change or logout after completion starts cannot redirect the ne
 });
 
 test("successful completion opens only an explicitly chosen destination", async () => {
-  for (const [destination, route] of [["shows", { nearby: true, nearbyTab: "shows" }], ["artists", { pickArtists: true }], ["review", { logging: true }]]) {
+  for (const [destination, route] of [["artistPage", { reqArtist: true }], ["shows", { nearby: true, nearbyTab: "shows" }], ["artists", { pickArtists: true }], ["review", { logging: true }]]) {
     const f = fixture(), controller = new AbortController();
     const pending = f.finish({ destination, expectedAccountId: "account-a", signal: controller.signal });
     // Publishing the confirmed version must not unmount the optional route.

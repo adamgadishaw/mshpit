@@ -33,7 +33,7 @@ export function artistArchiveRoutes({
     if (!artistKey) {
       throw new ApiError(400, "Refresh the artist page before opening its archive.", "VALIDATION_FAILED");
     }
-    const canonicalName = artistKey ? clean(resolveArtistName(artistKey), { max: 120 }) || null : null;
+    const canonicalName = artistKey ? clean(resolveArtistName(artistKey, ctx), { max: 120 }) || null : null;
     if (artistKey && canonicalName && requestedName && normName(requestedName) !== normName(canonicalName)) {
       throw new ApiError(400, "That artist identity changed. Refresh the artist page and try again.", "VALIDATION_FAILED");
     }

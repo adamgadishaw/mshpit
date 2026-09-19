@@ -2,6 +2,7 @@ import { db, normName } from "./db.js";
 import { projectArtistGenre } from "../src/domain/genre.mjs";
 import { createTopRatedShowService } from "./features/discovery/topRatedShowService.js";
 import { activeAccountSql } from "./accountVisibility.js";
+import { artistCatalogVisibleTo, publicArtistCatalogSql } from "./artistCatalogVisibility.js";
 import { inPersonReviewSql } from "./onlineReviews.js";
 import { eligiblePopularityArtists } from "./artistPopularityEligibility.js";
 import { createEventCoverageService } from "./features/discovery/eventCoverageService.js";
@@ -91,22 +92,32 @@ export function createDiscoverService({ database = db, clock = Date.now, reviewe
   function projectedArtists() {
     const version = projectionVersion();
     const current = clock();
-    if (projectionCache.version === version && current - projectionCache.at < PROJECTION_TTL_MS) return projectionCache.rows;
+    if (projectionCache.version === version && current - projectionCache.at < PROJECTION_TTL_MS) return visibleProjectionRows(projectionCache.rows);
     const rows = [];
     // Do not hydrate photos, albums, or tracks to classify a small genre label.
     // Keep the former data.mbid evidence boundary even for legacy rows whose
     // typed MBID column has not been populated yet.
-    for (const row of database.prepare(`SELECT a.norm,a.country,${ARTIST_GENRE_SQL_COLUMNS},
+    for (const row of database.prepare(`SELECT a.norm,a.source,a.country,${ARTIST_GENRE_SQL_COLUMNS},
         CASE WHEN json_valid(a.data) THEN substr(CAST(json_extract(a.data,'$.mbid') AS TEXT),1,36) END AS genre_data_mbid
       FROM artists a`).iterate()) {
       rows.push({
         norm: row.norm,
+        source: row.source,
         country: row.country || null,
         genre: canonicalGenre(projectArtistGenreColumns({ ...row, genre_mbid: row.genre_data_mbid })),
       });
     }
     projectionCache = { version, at: current, rows };
-    return rows;
+    return visibleProjectionRows(rows);
+  }
+
+  function visibleProjectionRows(rows) {
+    if (!rows.some(row => row.source === "artist-created")) return rows;
+    // The genre cache is keyed by catalogue revision, not account privacy.
+    // Recheck self-created owners in one bounded projection read on every use.
+    const allowed = new Set(database.prepare(`SELECT a.norm FROM artists a
+      WHERE a.source='artist-created' AND ${publicArtistCatalogSql("a")}`).all().map(row => row.norm));
+    return rows.filter(row => row.source !== "artist-created" || allowed.has(row.norm));
   }
 
   function artistNormsForGenre(value, country = "") {
@@ -118,7 +129,7 @@ export function createDiscoverService({ database = db, clock = Date.now, reviewe
       .map((row) => row.norm);
   }
 
-  function topReviewedArtistsForGenre(artistNorms, limit = 6) {
+  function topReviewedArtistsForGenre(artistNorms, limit = 6, viewer = null) {
     const eligible = new Set((Array.isArray(artistNorms) ? artistNorms : []).map(normName).filter(Boolean));
     if (!eligible.size) return [];
     const identities = JSON.stringify([...eligible]);
@@ -182,7 +193,7 @@ export function createDiscoverService({ database = db, clock = Date.now, reviewe
       .map((artist) => [artist.norm, artist]));
     return ranked.map((row, index) => {
       const artist = byNorm.get(row.artistNorm);
-      if (!artist) return null;
+      if (!artistCatalogVisibleTo(database, artist, viewer)) return null;
       return chartRow(artist.name, artist, index + 1, {
         rankingGroup: "top-reviewed",
         avgRating: Number(row.avgRating.toFixed(2)),
@@ -198,7 +209,7 @@ export function createDiscoverService({ database = db, clock = Date.now, reviewe
     return result;
   }
 
-  function buildChart({ by = "popularity", country = "", genre = "", limit = 24 } = {}) {
+  function buildChart({ by = "popularity", country = "", genre = "", limit = 24, viewer = null } = {}) {
     const source = by === "plays" ? "plays" : "popularity";
     const rowLimit = limitBetween(limit, 24, 3, 60);
     const countryFilter = text(country);
@@ -226,7 +237,8 @@ export function createDiscoverService({ database = db, clock = Date.now, reviewe
       }
       sql += " GROUP BY LOWER(TRIM(p.artist)) HAVING COUNT(DISTINCT p.user_id) >= ? ORDER BY play_count DESC, play_name LIMIT 240";
       params.push(PUBLIC_PLAY_MIN_LISTENERS);
-      const rows = database.prepare(sql).all(...params);
+      const rows = database.prepare(sql).all(...params)
+        .filter(row => artistCatalogVisibleTo(database, row, viewer));
       const coarseCount = (value) => {
         const count = Math.max(PUBLIC_PLAY_MIN_LISTENERS, Number(value) || 0);
         const bands = [3, 5, 10, 25, 50, 100, 250, 500, 1_000, 2_500, 5_000, 10_000, 25_000, 50_000, 100_000];
@@ -260,7 +272,8 @@ export function createDiscoverService({ database = db, clock = Date.now, reviewe
       Math.max(genreFilter ? 60 : 240, rowLimit * (genreFilter ? 8 : 20)),
     );
     params.push(candidateLimit);
-    const rows = eligiblePopularityArtists(database.prepare(sql).all(...params), {
+    const rows = eligiblePopularityArtists(database.prepare(sql).all(...params)
+      .filter(row => artistCatalogVisibleTo(database, row, viewer)), {
       reviewedArtistNorms,
       limit: genreFilter ? Math.min(60, rowLimit * 2) : rowLimit,
     });
@@ -269,7 +282,7 @@ export function createDiscoverService({ database = db, clock = Date.now, reviewe
     }));
     if (!genreFilter) return { source, label, live: true, rows: popularRows };
 
-    const ratedRows = topReviewedArtistsForGenre(artistNorms, Math.min(6, rowLimit));
+    const ratedRows = topReviewedArtistsForGenre(artistNorms, Math.min(6, rowLimit), viewer);
     const ratedNames = new Set(ratedRows.map((row) => normName(row.name)));
     const distinctPopular = popularRows
       .filter((row) => !ratedNames.has(normName(row.name)))
@@ -301,7 +314,8 @@ export function createDiscoverService({ database = db, clock = Date.now, reviewe
     const result = sorted.slice(0, rowLimit).map(([genre, count]) => ({ genre, count, pct: total ? count / total : 0 }));
     const other = sorted.slice(rowLimit).reduce((sum, [, count]) => sum + count, 0);
     if (other > 0) result.push({ genre: "Other", count: other, pct: total ? other / total : 0 });
-    const catalogTotal = Number(database.prepare("SELECT COUNT(*) AS count FROM artists").get()?.count) || 0;
+    const catalogTotal = Number(database.prepare(`SELECT COUNT(*) AS count FROM artists
+      WHERE ${publicArtistCatalogSql("artists")}`).get()?.count) || 0;
     return { total, distinctGenres: sorted.length, catalogTotal, genres: result };
   }
 
@@ -310,7 +324,7 @@ export function createDiscoverService({ database = db, clock = Date.now, reviewe
     const rows = database.prepare(`
       SELECT country, COUNT(*) AS count
       FROM artists
-      WHERE country IS NOT NULL AND TRIM(country) <> ''
+      WHERE country IS NOT NULL AND TRIM(country) <> '' AND ${publicArtistCatalogSql("artists")}
       GROUP BY country
       HAVING count >= ?
       ORDER BY count DESC, country
@@ -319,8 +333,8 @@ export function createDiscoverService({ database = db, clock = Date.now, reviewe
     return { countries: rows.map((row) => ({ country: row.country, count: Number(row.count) || 0 })) };
   }
 
-  function overview({ by = "popularity", country = "Worldwide" } = {}) {
-    const chartResult = chart({ by, country, limit: 24 });
+  function overview({ by = "popularity", country = "Worldwide", viewer = null } = {}) {
+    const chartResult = chart({ by, country, limit: 24, viewer });
     const genreResult = genres({ country, limit: 8 });
     return {
       chart: chartResult,

@@ -237,8 +237,8 @@ test("manual upload cancellation still clears the current composer's busy state"
 });
 
 const compileSubmit = callback("LogScreen.jsx", "LogScreen", "submit");
-function submitFixture() {
-  const accountTasks = scope(), response = deferred(), events = [];
+function submitFixture({ photosPublic = false } = {}) {
+  const accountTasks = scope(), response = deferred(), events = [], posts = [];
   const bindings = {
     accountTasks, user: { id: "a", name: "A", handle: "a", initials: "A" },
     canPost: true, submitBusy: false, submitOperationRef: { current: false },
@@ -247,13 +247,25 @@ function submitFixture() {
     isDurableMediaUrl: () => true, mediaAssetIdsMatchingPhotos: () => [], mediaProject: { assets: [] },
     mediaProjectPublishedMedia, isStatus: true, isMemorialMemory: false, protectedLegacyMemory: false,
     editing: null, review: "A private draft", memoryTextOnly: false, song: null, isCampaign: false,
-    onPost: () => { events.push("post"); return response.promise; },
+    artistMediaConsent: { photosPublic },
+    onPost: (post) => { events.push("post"); posts.push(post); return response.promise; },
     postErrorMessage: (error) => error?.message || "Failed", draftIdRef: { current: "draft-a" }, composerId: "composer-a",
     ...Object.fromEntries(["setPosting", "setPostError", "deleteDraft", "setDraftId", "setSavedDraftFingerprint", "onDraftIdentity"]
       .map((name) => [name, () => events.push(name)])),
   };
-  return { accountTasks, response, events, run: compileSubmit(bindings) };
+  return { accountTasks, response, events, posts, run: compileSubmit(bindings) };
 }
+
+test("status publication transmits the explicit normalized artist gallery choice", async () => {
+  for (const photosPublic of [false, true]) {
+    const f = submitFixture({ photosPublic }), run = f.run();
+    assert.equal(f.posts.length, 1);
+    assert.equal(f.posts[0].photosPublic, photosPublic);
+    assert.equal(f.posts[0].campaign, null);
+    assert.equal(f.posts[0].artist, undefined, "the server owns artist attribution for ordinary posts");
+    f.response.resolve({ ok: true }); await run;
+  }
+});
 
 test("late publish success cannot delete another account's draft or update its composer", async () => {
   for (const boundary of ["logout", "switch", "round-trip", "unmount"]) {

@@ -166,6 +166,7 @@ test("artist approval binds owner_id and refuses a duplicate normalized identity
   const admin = q.userById.get(adminSeed.id);
   const first = addUser("approval_first");
   const second = addUser("approval_second");
+  db.prepare("UPDATE users SET email_verified_at=? WHERE id IN (?,?)").run(Date.now(), first.id, second.id);
   const insert = db.prepare("INSERT INTO artist_requests (id,user_id,artist_name,note,status,created_at) VALUES (?,?,?,?, 'pending',?)");
   insert.run("request_first_artist", first.id, "Approval Artist", "", Date.now());
   insert.run("request_duplicate_artist", second.id, "  APPROVAL ARTIST  ", "", Date.now() + 1);
@@ -472,6 +473,7 @@ test("admin photo-only artist save confirms the public photo when the existing b
   assert.equal(result.ok, true);
   assert.deepEqual(result.profile, {
     ownerId: null,
+    verified: false,
     bio: null,
     bioStaffCurated: true,
     banner: null,

@@ -1,4 +1,5 @@
 import { activeAccountSql } from "../../accountVisibility.js";
+import { artistAuthoredTourDateVisibleSql } from "../../artistAuthoredTourDateVisibility.js";
 import { tourDateHasNoPublishedMemorialSql } from "../../artistMemorialTourDateVisibility.js";
 import { currentOrUpcomingTourDateSql } from "../../tourDateLifecycle.js";
 import { isCurrentOrUpcomingLiveEvent, liveEventQueryFloorDate } from "../../../src/domain/eventLifecycle.mjs";
@@ -36,6 +37,7 @@ export function createEventCoverageService({ database, clock = Date.now } = {}) 
       LEFT JOIN users owner ON owner.id=td.owner_id
       WHERE COALESCE(td.music_qualified,1)=1
         AND td.release_at<=?1
+        AND ${artistAuthoredTourDateVisibleSql("td")}
         AND (td.owner_id IS NULL OR (${activeAccountSql("owner")}))
         AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1)
         AND ${currentOrUpcomingTourDateSql("td", "?2")}

@@ -369,7 +369,7 @@ export default function ProfileScreen({ userId, initialSection = null, onClose, 
   // On someone else's profile we only show ones they marked public; you always
   // see all of your own. Stable descriptors keep posters, edits, and alt text.
   const following = isFollowing(user.id);
-  const roleLabel = user.role === "admin" ? "ADMIN" : user.role === "artist" ? "VERIFIED ARTIST" : "FAN";
+  const roleLabel = user.role === "admin" ? "ADMIN" : user.role === "artist" ? user.verified ? "VERIFIED ARTIST" : "ARTIST" : "FAN";
   return (
     <View style={styles.wrap}>
       <View style={styles.topbar}>

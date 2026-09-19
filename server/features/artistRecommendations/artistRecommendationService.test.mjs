@@ -10,12 +10,13 @@ function database() {
       id TEXT PRIMARY KEY,name TEXT,handle TEXT,role TEXT DEFAULT 'fan',verified INTEGER DEFAULT 0,
       avatar_uri TEXT,avatar_color TEXT,initials TEXT,profile_updated_at INTEGER DEFAULT 0,
       home_city TEXT,genres TEXT DEFAULT '[]',favorite_artists TEXT DEFAULT '[]',
-      is_banned INTEGER DEFAULT 0,suspended_until INTEGER,dormant_at INTEGER
+      is_banned INTEGER DEFAULT 0,suspended_until INTEGER,dormant_at INTEGER,profile_audience TEXT DEFAULT 'everyone'
     );
     CREATE TABLE artists (
       norm TEXT PRIMARY KEY,name TEXT,public_slug TEXT,photo TEXT,country TEXT,popularity INTEGER,
-      rank_score INTEGER DEFAULT 0,genre TEXT,mbid TEXT,data TEXT DEFAULT '{}'
+      rank_score INTEGER DEFAULT 0,genre TEXT,mbid TEXT,data TEXT DEFAULT '{}',source TEXT
     );
+    CREATE TABLE artist_profiles(artist_key TEXT PRIMARY KEY,owner_id TEXT,removed INTEGER DEFAULT 0);
     CREATE TABLE artist_memorials (artist_key TEXT,status TEXT,artist_mbid TEXT);
     CREATE TABLE fan_club_members (artist TEXT,user_id TEXT);
     CREATE TABLE posts (
@@ -71,6 +72,34 @@ function insertArtist(db, { key, name, genre = "Indie", rank = 100, photo = null
     key, name, `${key}-slug`, photo || `https://images.example/${key}.jpg`, "Canada", rank, rank, genre, mbid, genreData(genre),
   );
 }
+
+test("self-created artist recommendations cannot escape private, removed, restricted or blocked ownership", () => {
+  const db = database();
+  try {
+    insertUser(db, { id: "viewer", genres: ["Indie"] });
+    insertUser(db, { id: "owner" });
+    insertArtist(db, { key: "created", name: "New Created Act", rank: 900 });
+    insertArtist(db, { key: "provider", name: "Provider Act", rank: 800 });
+    db.prepare("UPDATE artists SET source='artist-created' WHERE norm='created'").run();
+    db.prepare("INSERT INTO artist_profiles(artist_key,owner_id) VALUES('created','owner')").run();
+    const service = createArtistRecommendationService(db);
+    const viewer = db.prepare("SELECT * FROM users WHERE id='viewer'").get();
+    const recommended = () => service.list(viewer).recommendations.map(row => row.artist.key);
+    assert.ok(recommended().includes("created"));
+    db.prepare("UPDATE users SET profile_audience='only_me' WHERE id='owner'").run();
+    assert.equal(recommended().includes("created"), false);
+    db.prepare("UPDATE users SET profile_audience='everyone' WHERE id='owner'").run();
+    db.prepare("INSERT INTO blocks VALUES('owner','viewer')").run();
+    assert.equal(recommended().includes("created"), false);
+    db.prepare("DELETE FROM blocks").run();
+    db.prepare("UPDATE users SET is_banned=1 WHERE id='owner'").run();
+    assert.equal(recommended().includes("created"), false);
+    assert.ok(recommended().includes("provider"));
+    db.prepare("UPDATE users SET is_banned=0 WHERE id='owner'").run();
+    db.prepare("UPDATE artist_profiles SET removed=1 WHERE artist_key='created'").run();
+    assert.equal(recommended().includes("created"), false);
+  } finally { db.close(); }
+});
 
 function insertSafeAvatar(db, userId) {
   const assetId = `${userId}-avatar`;

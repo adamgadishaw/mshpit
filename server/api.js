@@ -182,6 +182,9 @@ import { accountSecurityRoutes } from "./features/accountOnboarding/accountSecur
 import { createLinkedAccounts } from "./features/accountOnboarding/linkedAccounts.js";
 import { accountLifecycleDecision } from "./features/accountLifecycle/accountLifecycle.js";
 import { claimPendingSignupHandle, handleChangeAvailableAt, HANDLE_COOLDOWN_DAYS, normalizedProfileHandle, pendingSignupHandle } from "./features/accountOnboarding/signupHandle.js";
+import { artistSignupIntent, pendingArtistSignupIntent } from "./features/artistAccounts/artistAccountPolicy.js";
+import { artistAccountRoutes } from "./features/artistAccounts/artistAccountRoutes.js";
+import { artistCatalogVisibleTo } from "./artistCatalogVisibility.js";
 import { cityGuideRoutes } from "./features/cities/cityGuideRoutes.js";
 import { artistBiographyRoutes } from "./features/artists/artistBiographyRoutes.js";
 import { musicBrainzBiographyFacts } from "../src/domain/artistBiography.mjs";
@@ -451,6 +454,9 @@ function maybeEnqueueArtistTourDateDemandRefresh(ctx, artistKey) {
   // allowance must never turn a public artist read into a 429 response.
   if (!accountIsPublic(user, now())) return false;
   if (artistHasLegacyMemorial(db, { artistKey })) return false;
+  // Self-created identities have no independently matched provider identity.
+  // Their own dates are local; a page view must not infer another same-named act.
+  if (artistStmts.byNorm.get(artistKey)?.source === "artist-created") return false;
   try {
     if (!rateLimit(
       `artist-tourdate-demand:user:${user.id}`,
@@ -756,7 +762,9 @@ function assertArtistManagementCandidate(user, key) {
   if (user?.role === "admin") return;
   if (!artistIdentityMatches(user, key)) throw new ApiError(403, "Not your page.", "FORBIDDEN");
   if (isLegacyArtistProfile(key)) throw legacyArtistReadOnlyError();
-  const ownerId = db.prepare("SELECT owner_id FROM artist_profiles WHERE artist_key=?").get(key)?.owner_id;
+  const profile = db.prepare("SELECT owner_id,removed FROM artist_profiles WHERE artist_key=?").get(key);
+  if (profile?.removed) throw new ApiError(403, "This artist page is unavailable while moderation reviews it.", "FORBIDDEN");
+  const ownerId = profile?.owner_id;
   if (ownerId && ownerId !== user.id) throw new ApiError(403, "Not your page.", "FORBIDDEN");
 }
 
@@ -1737,6 +1745,7 @@ function cleanArtistCampaign(value, {
   if (!currentArtistKey) {
     throw new ApiError(403, "Only an approved artist account can publish an artist drop.", "FORBIDDEN");
   }
+  assertArtistManagementCandidate(user, currentArtistKey);
   if (isLegacyArtistProfile(currentArtistKey, currentArtistName)) {
     throw legacyArtistReadOnlyError(
       "Legacy artist pages keep staff-curated history and community memories, but do not publish artist drops.",
@@ -2360,6 +2369,20 @@ function canonicalCreateRequest(user, body, storedPost = null) {
       committedCampaign: parsedStoredObject(storedPost?.campaign),
       allowCommittedReplay: !!storedPost,
     });
+    // Artist promo attaches to the same owned catalog identity as the page.
+    // A retry uses the committed identity, including older unbound posts, so a
+    // later rename/revocation cannot rewrite the original idempotency hash.
+    const statusOwner = user?.role === "artist" && user.artist_name
+      ? db.prepare("SELECT artist_key FROM artist_profiles WHERE artist_key=? AND owner_id=? AND removed=0")
+        .get(normName(user.artist_name), user.id)
+      : null;
+    const campaignArtist = storedPost
+      ? { name: storedPost.artist || "", key: storedPost.artist_key || null }
+      : campaign || statusOwner
+        ? { name: user.artist_name, key: campaign?.artistKey || statusOwner.artist_key }
+        : null;
+    const publishedArtist = memorialMemory ? v.artist : campaignArtist?.name || "";
+    const publishedBinding = binding || (campaignArtist?.key ? { artist_key: campaignArtist.key, artist_mbid: null } : null);
     const values = {
       review: v.review || "",
       photos: stableMedia ? stableMedia.photos : (v.photos || []),
@@ -2373,8 +2396,8 @@ function canonicalCreateRequest(user, body, storedPost = null) {
       taggedUserIds,
       mediaSelection: stableMedia,
       memorialMemory,
-      artist: memorialMemory ? v.artist : "",
-      binding,
+      artist: publishedArtist,
+      binding: publishedBinding,
     };
     assertSafeAuthoredFields({
       post: values.review,
@@ -2389,8 +2412,8 @@ function canonicalCreateRequest(user, body, storedPost = null) {
       values,
       canonical: {
         kind: memorialMemory ? "memory" : "status",
-        artist: memorialMemory ? v.artist : "",
-        artistKey: memorialMemory ? binding.artist_key : null,
+        artist: publishedArtist,
+        artistKey: publishedBinding?.artist_key || null,
         venue: "",
         venueKey: null,
         city: "",
@@ -2858,7 +2881,9 @@ function postJson(p, viewerId) {
   // source missing them fails closed rather than reviving revoked styling.
   const campaignAuthorized = !!storedCampaign?.artistKey
     && p.u_role === "artist"
-    && normName(p.u_artist_name) === normName(storedCampaign.artistKey);
+    && normName(p.u_artist_name) === normName(storedCampaign.artistKey)
+    && db.prepare("SELECT 1 FROM artist_profiles WHERE artist_key=? AND owner_id=? AND removed=0")
+      .get(normName(storedCampaign.artistKey), p.user_id);
   let campaign = campaignAuthorized ? storedCampaign : null;
   const campaignBackground = campaign?.backgroundAssetId
     ? media.find((asset) => asset.id === campaign.backgroundAssetId && asset.kind === "image")
@@ -3593,8 +3618,11 @@ function safePublicArtistProfileImage(profile, slot) {
 
 function publicArtistProfileProjection(profile) {
   if (!profile || profile.removed) return null;
+  const owner = profile.owner_id ? q.userById.get(profile.owner_id) : null;
   return {
     ownerId: profile.owner_id || null,
+    verified: !!owner?.verified && owner.role === "artist" && accountIsPublic(owner)
+      && normName(owner.artist_name) === profile.artist_key,
     bio: profile.bio ?? null,
     bioStaffCurated: Number(profile.bio_staff_curated) === 1,
     // A successful mutation must return the same verified media projection that
@@ -3628,6 +3656,7 @@ function publicLegacyArtistProfileProjection(profile) {
 }
 
 const ARTIST_PROFILE_SNAPSHOT_FIELDS = Object.freeze([
+  "artist_key",
   "owner_id", "bio", "bio_staff_curated", "banner", "banner_owner_id", "avatar_uri", "avatar_owner_id",
   "feed_enabled", "removed", "updated_at",
 ]);
@@ -4212,7 +4241,11 @@ export const routes = {
       avatarColor: user.avatarColor,
     }),
     rateLimit: limit,
-    resolveArtistName: (key) => artistStmts.byNorm.get(key)?.name || null,
+    resolveArtistName: (key, ctx) => {
+      const artist = resolveCatalogArtistReference(key);
+      if (artist && !artistCatalogVisibleTo(db, artist, ctx?.user)) throw new ApiError(404, "This artist page is unavailable.", "NOT_FOUND");
+      return artist?.name || null;
+    },
   }),
   ...accountPrivacyRoutes({
     database: db,
@@ -4240,7 +4273,13 @@ export const routes = {
     ApiError,
     clean,
     clearMissingArtist: (key) => artistStmts.clearMissing.run(key),
-    findArtist: (key) => artistStmts.byNorm.get(key) || null,
+    findArtist: (key, ctx) => {
+      const artist = artistStmts.byNorm.get(key) || null;
+      if (artist && !artistCatalogVisibleTo(db, artist, ctx?.user)) {
+        throw new ApiError(404, "This artist page is unavailable.", "NOT_FOUND");
+      }
+      return artist;
+    },
     normName,
     persistExactMusicBrainzIdentity,
     projectArtist: publicArtist,
@@ -4256,7 +4295,11 @@ export const routes = {
     projectPost: postJson,
     projectPosts: projectPostPage,
     rateLimit: limit,
-    resolveArtistName: (key) => artistStmts.byNorm.get(key)?.name || null,
+    resolveArtistName: (key, ctx) => {
+      const artist = resolveCatalogArtistReference(key);
+      if (artist && !artistCatalogVisibleTo(db, artist, ctx?.user)) throw new ApiError(404, "This artist page is unavailable.", "NOT_FOUND");
+      return artist?.name || null;
+    },
   }),
   ...postTagRoutes({
     database: db,
@@ -4751,6 +4794,7 @@ export const routes = {
     const reviewedAlias = term && !artistStmts.byNorm.get(term)
       ? resolveReviewedArtistAlias(db, term) : null;
     if (reviewedAlias) rows = [reviewedAlias, ...rows.filter((row) => row.norm !== reviewedAlias.norm)].slice(0, lim);
+    rows = rows.filter((row) => artistCatalogVisibleTo(db, row, ctx.user));
     // A signed-in exact catalog lookup may queue a provider refresh, but this
     // read never waits for it. Anonymous/type-ahead/partial searches cannot
     // spend provider quota or fill the durable queue.
@@ -4873,6 +4917,7 @@ export const routes = {
     const name = clean(ctx.query.name, { max: 120 });
     if (!name) throw new ApiError(400, "Missing name.");
     const existing = resolveCatalogArtistReference(name);
+    if (existing && !artistCatalogVisibleTo(db, existing, ctx.user)) return { artist: null, created: false };
     if (existing) return {
       artist: {
         ...publicArtist(existing),
@@ -4991,6 +5036,8 @@ export const routes = {
     limit(ctx, "artist-photos", 120, 10 * 60 * 1000);
     const viewerId = ctx.user?.id || null;
     const requestedArtistKey = normName(clean(ctx.query.artistKey, { max: 120 }));
+    const catalogArtist = resolveCatalogArtistReference(requestedArtistKey || name);
+    if (catalogArtist && !artistCatalogVisibleTo(db, catalogArtist, ctx.user)) return { photos: [] };
     const identitySql = requestedArtistKey ? "p.artist_key=?" : "LOWER(p.artist)=LOWER(?)";
     const blockSql = viewerId ? `AND NOT EXISTS (SELECT 1 FROM blocks b WHERE
       (b.blocker_id=? AND b.blocked_id=p.user_id) OR (b.blocker_id=p.user_id AND b.blocked_id=?))` : "";
@@ -4999,7 +5046,11 @@ export const routes = {
     const rows = db.prepare(`SELECT p.id,p.user_id,p.photos,p.created_at,u.name AS by
       FROM posts p JOIN users u ON u.id=p.user_id
       WHERE ${identitySql} AND p.removed=0 AND p.photos_public=1 AND p.photos!='[]'
-        AND u.is_banned=0 AND (u.suspended_until IS NULL OR u.suspended_until<=?) ${blockSql}
+        AND u.is_banned=0 AND u.dormant_at IS NULL AND (u.suspended_until IS NULL OR u.suspended_until<=?)
+        AND (p.kind!='status' OR p.artist_key IS NULL OR p.artist_mbid IS NOT NULL OR EXISTS (
+          SELECT 1 FROM artist_profiles managed WHERE managed.artist_key=p.artist_key
+            AND managed.owner_id=p.user_id AND managed.removed=0 AND u.role='artist'
+            AND lower(trim(u.artist_name))=p.artist_key)) ${blockSql}
       ORDER BY p.created_at DESC,p.id DESC LIMIT 40`).all(...args);
     const stableMedia = postMediaStateByPost(db, rows.map((row) => row.id));
     const legacyMedia = legacyVideoPosterDescriptorsByPost(db, rows.map((row) => row.id));
@@ -5144,21 +5195,23 @@ export const routes = {
     const n = Math.min(60, Math.max(3, Number(ctx.query.limit) || 24));
     const genre = clean(ctx.query.genre, { max: 60 });
     const country = clean(ctx.query.country, { max: 60 });
-    ctx.setHeader?.("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
-    return discoverChart({ by, limit: n, genre, country });
+    // Authenticated charts honor private ownership and blocks; never share
+    // those results across accounts through a browser or intermediary cache.
+    ctx.setHeader?.("Cache-Control", ctx.user?.id ? "private, no-store" : "public, max-age=60, stale-while-revalidate=300");
+    return discoverChart({ by, limit: n, genre, country, viewer: ctx.user || null });
   },
   // Genre distribution for the pie, canonicalized (optionally scoped to a country).
   "GET /api/discover/genres": (ctx) => {
     const country = clean(ctx.query.country, { max: 60 });
     const n = Math.min(12, Math.max(4, Number(ctx.query.n) || 8));
     ctx.setHeader?.("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
-    return discoverGenres({ country, limit: n });
+    return discoverGenres({ country, limit: n, viewer: ctx.user || null });
   },
   // Country distribution for the region chips (biggest scenes first).
   "GET /api/discover/countries": (ctx) => {
     const min = Math.max(1, Number(ctx.query.min) || 5);
     ctx.setHeader?.("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
-    return discoverCountries({ min });
+    return discoverCountries({ min, viewer: ctx.user || null });
   },
   // One coherent first-paint payload replaces three sequential phone requests.
   // The data is public and changes slowly, so a short shared cache absorbs repeat
@@ -5166,8 +5219,8 @@ export const routes = {
   "GET /api/discover/overview": (ctx) => {
     const by = ctx.query.by === "plays" ? "plays" : "popularity";
     const country = clean(ctx.query.country, { max: 60 }) || "Worldwide";
-    ctx.setHeader?.("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
-    const { memberTotal: _privateMemberTotal, ...overview } = discoverOverview({ by, country });
+    ctx.setHeader?.("Cache-Control", ctx.user?.id ? "private, no-store" : "public, max-age=60, stale-while-revalidate=300");
+    const { memberTotal: _privateMemberTotal, ...overview } = discoverOverview({ by, country, viewer: ctx.user || null });
     return overview;
   },
 
@@ -5354,6 +5407,7 @@ export const routes = {
       targetMax: 5,
     });
     const genreSelection = profileGenreSelection(ctx.body?.genres);
+    const pendingArtistIntent = artistSignupIntent(ctx.body?.artistIntent);
     if (!genreSelection.valid) {
       throw new ApiError(400, genreSelection.error, "VALIDATION_FAILED");
     }
@@ -5453,6 +5507,7 @@ export const routes = {
             termsVersion: CURRENT_TERMS_VERSION,
             ...(v.analyticsConsent ? { analyticsConsentAt: createdAt } : {}),
             ...(preferredHandle ? { pendingSignupHandle: preferredHandle } : {}),
+            ...(pendingArtistIntent ? { pendingArtistIntent } : {}),
           }), id);
           db.prepare("UPDATE users SET genres=? WHERE id=?").run(JSON.stringify(v.genres), id);
           // Only accounts created through signup enter the first-run flow.
@@ -5819,6 +5874,8 @@ export const routes = {
           }
           const pendingHandle = pendingSignupHandle(stored);
           if (pendingHandle) next.pendingSignupHandle = pendingHandle;
+          const pendingArtist = pendingArtistSignupIntent(stored);
+          if (pendingArtist) next.pendingArtistIntent = pendingArtist;
         }
         if (v.theme) next.theme = v.theme;
         if (v.searchIndexingOptOut !== undefined) next.searchIndexingOptOut = v.searchIndexingOptOut;
@@ -6123,6 +6180,7 @@ export const routes = {
     const user = requireUser(ctx);
     limit(ctx, "tour-date-batch", 20, 60 * 60 * 1000);
     const batch = cleanTourDateBatch(ctx, user);
+    if (user.role === "artist") assertArtistManagementCandidate(user, normName(batch.artist));
     if (user.role !== "admin" && isLegacyArtistProfile(normName(batch.artist), batch.artist)) {
       throw legacyArtistReadOnlyError(
         "Legacy artist pages do not accept artist-submitted tour or concert dates.",
@@ -6140,33 +6198,37 @@ export const routes = {
     }
     const writtenAt = now();
     const source = user.role === "artist" ? "artist-submitted" : "admin-submitted";
-    const rows = atomicWrite(() => batch.dates.map((entry) => {
-      const existing = db.prepare(`SELECT id FROM tour_dates
-        WHERE owner_id=? AND lower(artist)=lower(?) AND lower(venue)=lower(?)
-          AND lower(place)=lower(?) AND date=? LIMIT 1`)
-        .get(user.id, batch.artist, entry.venue, entry.place, entry.date);
-      const updatedAt = Math.max(writtenAt, Date.parse(`${entry.date}T00:00:00.000Z`) || writtenAt);
-      const id = existing?.id || uid("td");
-      if (existing) {
-        db.prepare(`UPDATE tour_dates SET artist=?,venue=?,place=?,lat=NULL,lng=NULL,ticket_url=?,sold_out=0,
-          source=?,updated_at=?,release_at=?,event_name=?,event_kind=?,event_end_date=?,billed_artists=?,
-          music_evidence=?,music_qualified=1,event_source_url=? WHERE id=? AND owner_id=?`)
-          .run(batch.artist, entry.venue, entry.place, entry.ticketUrl, source, updatedAt, batch.releaseAt,
-            entry.eventName || null, entry.eventKind || "concert", entry.eventEndDate || null,
-            JSON.stringify(entry.billedArtists || []), entry.eventName ? "staff:verified-official-source" : null,
-            entry.eventSourceUrl || null, id, user.id);
-      } else {
-        db.prepare(`INSERT INTO tour_dates
-          (id,artist,venue,place,lat,lng,date,ticket_url,sold_out,source,updated_at,owner_id,release_at,
-            event_name,event_kind,event_end_date,billed_artists,music_evidence,music_qualified,event_source_url)
-          VALUES (?,?,?,?,NULL,NULL,?,?,0,?,?,?,?,?,?,?,?,?,1,?)`)
-          .run(id, batch.artist, entry.venue, entry.place, entry.date, entry.ticketUrl, source, updatedAt, user.id, batch.releaseAt,
-            entry.eventName || null, entry.eventKind || "concert", entry.eventEndDate || null,
-            JSON.stringify(entry.billedArtists || []), entry.eventName ? "staff:verified-official-source" : null,
-            entry.eventSourceUrl || null);
-      }
-      return db.prepare("SELECT * FROM tour_dates WHERE id=?").get(id);
-    }));
+    const rows = atomicWrite(() => {
+      ctx.assertCurrentSession?.();
+      if (user.role === "artist") claimArtistManagement(q.userById.get(user.id), normName(batch.artist));
+      return batch.dates.map((entry) => {
+        const existing = db.prepare(`SELECT id FROM tour_dates
+          WHERE owner_id=? AND lower(artist)=lower(?) AND lower(venue)=lower(?)
+            AND lower(place)=lower(?) AND date=? LIMIT 1`)
+          .get(user.id, batch.artist, entry.venue, entry.place, entry.date);
+        const updatedAt = Math.max(writtenAt, Date.parse(`${entry.date}T00:00:00.000Z`) || writtenAt);
+        const id = existing?.id || uid("td");
+        if (existing) {
+          db.prepare(`UPDATE tour_dates SET artist=?,venue=?,place=?,lat=NULL,lng=NULL,ticket_url=?,sold_out=0,
+            source=?,updated_at=?,release_at=?,event_name=?,event_kind=?,event_end_date=?,billed_artists=?,
+            music_evidence=?,music_qualified=1,event_source_url=? WHERE id=? AND owner_id=?`)
+            .run(batch.artist, entry.venue, entry.place, entry.ticketUrl, source, updatedAt, batch.releaseAt,
+              entry.eventName || null, entry.eventKind || "concert", entry.eventEndDate || null,
+              JSON.stringify(entry.billedArtists || []), entry.eventName ? "staff:verified-official-source" : null,
+              entry.eventSourceUrl || null, id, user.id);
+        } else {
+          db.prepare(`INSERT INTO tour_dates
+            (id,artist,venue,place,lat,lng,date,ticket_url,sold_out,source,updated_at,owner_id,release_at,
+              event_name,event_kind,event_end_date,billed_artists,music_evidence,music_qualified,event_source_url)
+            VALUES (?,?,?,?,NULL,NULL,?,?,0,?,?,?,?,?,?,?,?,?,1,?)`)
+            .run(id, batch.artist, entry.venue, entry.place, entry.date, entry.ticketUrl, source, updatedAt, user.id, batch.releaseAt,
+              entry.eventName || null, entry.eventKind || "concert", entry.eventEndDate || null,
+              JSON.stringify(entry.billedArtists || []), entry.eventName ? "staff:verified-official-source" : null,
+              entry.eventSourceUrl || null);
+        }
+        return db.prepare("SELECT * FROM tour_dates WHERE id=?").get(id);
+      });
+    });
     return { tourDates: rows.map(tourDateJson) };
   },
 
@@ -6497,10 +6559,18 @@ export const routes = {
             publishesMedia: !!v.photosPublic,
           });
         }
-        postRow.run(id, u.id, v.memorialMemory ? v.artist : "", "", "", "", 0, null, null,
+        if (v.campaign) claimArtistManagement(q.userById.get(u.id), v.campaign.artistKey);
+        if (v.binding?.artist_key && !v.memorialMemory) {
+          const currentActor = q.userById.get(u.id);
+          const currentPage = db.prepare("SELECT owner_id,removed FROM artist_profiles WHERE artist_key=?").get(v.binding.artist_key);
+          if (currentPage?.removed || !artistIdentityMatches(currentActor, v.binding.artist_key) || currentPage?.owner_id !== u.id) {
+            throw new ApiError(403, "This account no longer manages that artist page.", "FORBIDDEN");
+          }
+        }
+        postRow.run(id, u.id, v.artist || "", "", "", "", 0, null, null,
           "{}", v.review, JSON.stringify(v.photos), v.photosPublic, 0, v.campaign ? JSON.stringify(v.campaign) : null, "[]", null,
           "[]", JSON.stringify(transactionTaggedUserIds), "status", v.song ? JSON.stringify(v.song) : null, v.playlist ? JSON.stringify(v.playlist) : null,
-          v.memorialMemory ? v.binding.artist_key : null, v.memorialMemory ? v.binding.artist_mbid : null, null,
+          v.binding?.artist_key || null, v.binding?.artist_mbid || null, null,
           "in_person", null, null, null, mutationId, mutationHash, now(), null);
         if (mutationId) insertPostCreateReceipt.run(u.id, mutationId, mutationHash, id, now(), now());
         if (v.attendanceTicket) postAttendanceTicket.run(JSON.stringify(v.attendanceTicket), id, u.id);
@@ -6841,7 +6911,10 @@ export const routes = {
     } else if (current.kind === "status") {
       const campaign = normalizeArtistCampaign(parsedStoredObject(current.campaign));
       const currentArtistKey = u.role === "artist" ? normName(u.artist_name) : null;
-      if (campaign && (!currentArtistKey || currentArtistKey !== normName(campaign.artistKey))) {
+      const managed = campaign && currentArtistKey
+        ? db.prepare("SELECT 1 FROM artist_profiles WHERE artist_key=? AND owner_id=? AND removed=0").get(currentArtistKey, u.id)
+        : null;
+      if (campaign && (!currentArtistKey || currentArtistKey !== normName(campaign.artistKey) || !managed)) {
         // An old client does not know to submit `campaign:null`. Treat any
         // ordinary edit after role/name revocation as the point where the stale
         // capability is durably removed instead of letting rewritten copy keep
@@ -6858,10 +6931,16 @@ export const routes = {
     // Re-resolve the binding on every edit: renaming the artist must move the
     // review to that artist's page, and retyping it as free text must drop the
     // binding rather than leave the post pointing at the previous entity.
+    const nextArtistCampaign = current.kind === "status" ? normalizeArtistCampaign(parsedStoredObject(next.campaign)) : null;
+    const retainedArtistPage = current.kind === "status" && current.artist_key && artistIdentityMatches(u, current.artist_key)
+      && db.prepare("SELECT 1 FROM artist_profiles WHERE artist_key=? AND owner_id=? AND removed=0").get(current.artist_key, u.id)
+      ? current.artist_key : null;
+    const editedArtistPage = nextArtistCampaign?.artistKey || retainedArtistPage;
+    if (current.kind === "status" && !currentMemorialMemory) next.artist = editedArtistPage ? u.artist_name : "";
     const editBinding = current.kind === "status"
       ? currentMemorialMemory
         ? { artist_key: current.artist_key, artist_mbid: current.artist_mbid }
-        : { artist_key: null, artist_mbid: null }
+        : { artist_key: editedArtistPage || null, artist_mbid: null }
       : resolveArtistBinding(next.artist, has("artistKey") ? body.artistKey : current.artist_key);
     // The legacy boundary belongs to the canonical artist identity, not to one
     // post kind. Historical reviews and older clients must not be able to add
@@ -6929,6 +7008,14 @@ export const routes = {
       assertPostTagRecipientBudget(u.id, transactionNewlyTaggedUserIds, { postId: current.id });
       if (currentMemorialMemory) {
         assertArtistAcceptsMemorialMemory({ artistKey: current.artist_key, artist: current.artist });
+      }
+      if (nextArtistCampaign) claimArtistManagement(q.userById.get(u.id), nextArtistCampaign.artistKey);
+      if (editBinding.artist_key && current.kind === "status" && !currentMemorialMemory) {
+        const currentActor = q.userById.get(u.id);
+        const currentPage = db.prepare("SELECT owner_id,removed FROM artist_profiles WHERE artist_key=?").get(editBinding.artist_key);
+        if (currentPage?.removed || !artistIdentityMatches(currentActor, editBinding.artist_key) || currentPage?.owner_id !== u.id) {
+          throw new ApiError(403, "This account no longer manages that artist page.", "FORBIDDEN");
+        }
       }
       // Re-evaluate after BEGIN IMMEDIATE so a memorial published concurrently
       // cannot race one final media addition onto the newly protected page.
@@ -9156,65 +9243,25 @@ export const routes = {
     return { id };
   },
 
-  // ---- artist requests + owned profiles (slice 7) ----
-  "POST /api/artist-requests": (ctx) => {
-    const u = requireUser(ctx);
-    limit(ctx, "artistreq", 5, 60 * 60 * 1000);
-    const artistName = clean(ctx.body?.artistName, { max: LIMITS.artist });
-    if (!artistName || artistName.length < 2) throw new ApiError(400, "Enter the artist name.");
-    if (isLegacyArtistProfile(normName(artistName), artistName)) throw legacyArtistReadOnlyError();
-    const note = clean(ctx.body?.note, { max: LIMITS.note, newlines: true }) || "";
-    assertSafeAuthoredFields({ "artist name": artistName, "request note": note });
-    const id = uid("ar");
-    db.prepare("INSERT INTO artist_requests (id,user_id,artist_name,note,status,created_at) VALUES (?,?,?,?,'pending',?)")
-      .run(id, u.id, artistName, note, now());
-    return { id };
-  },
-  "GET /api/admin/artist-requests": (ctx) => {
-    requireAdmin(ctx);
-    const rows = db.prepare("SELECT * FROM artist_requests WHERE status='pending' ORDER BY created_at DESC LIMIT 200").all();
-    return { requests: rows.map((r) => ({ id: r.id, userId: r.user_id, artistName: r.artist_name, note: r.note, status: r.status })) };
-  },
-  "POST /api/admin/artist-requests/:id/approve": (ctx) => {
-    requireAdmin(ctx);
-    const r = db.prepare("SELECT * FROM artist_requests WHERE id=?").get(ctx.params.id);
-    if (!r) throw new ApiError(404, "No such request.");
-    const key = normName(r.artist_name);
-    if (isLegacyArtistProfile(key, r.artist_name)) throw legacyArtistReadOnlyError();
-    atomicWrite(() => {
-      const target = q.userById.get(r.user_id);
-      if (!target) throw new ApiError(404, "The requesting account no longer exists.", "NOT_FOUND");
-      const conflictingAccount = matchingArtistAccountIds(key).find((id) => id !== target.id);
-      const profile = db.prepare("SELECT owner_id FROM artist_profiles WHERE artist_key=?").get(key);
-      if (conflictingAccount || (profile?.owner_id && profile.owner_id !== target.id)
-        || (target.role === "artist" && target.artist_name && normName(target.artist_name) !== key)) {
-        throw new ApiError(409, "That artist identity is already assigned to another account.", "CONFLICT");
-      }
-      db.prepare("UPDATE artist_requests SET status='approved' WHERE id=?").run(r.id);
-      const roleChanged = db.prepare("UPDATE users SET role='artist', artist_name=? WHERE id=? AND (role<>'artist' OR artist_name IS NOT ?)")
-        .run(r.artist_name, r.user_id, r.artist_name).changes === 1;
-      if (roleChanged) db.prepare("DELETE FROM sessions WHERE user_id=?").run(r.user_id);
-      if (profile) {
-        const bound = db.prepare("UPDATE artist_profiles SET owner_id=?,updated_at=? WHERE artist_key=? AND (owner_id IS NULL OR owner_id=?)")
-          .run(target.id, now(), key, target.id).changes === 1;
-        if (!bound) throw new ApiError(409, "That artist page changed while approval was being saved.", "CONFLICT");
-      } else {
-        db.prepare("INSERT INTO artist_profiles (artist_key,owner_id,updated_at) VALUES (?,?,?)").run(key, target.id, now());
-      }
-    });
-    return { ok: true };
-  },
-  "POST /api/admin/artist-requests/:id/reject": (ctx) => {
-    requireAdmin(ctx);
-    db.prepare("UPDATE artist_requests SET status='rejected' WHERE id=?").run(ctx.params.id);
-    return { ok: true };
-  },
+  // Artist creation is part of the signed-in account; existing pages still
+  // require a reviewed claim, and only staff can grant the verified check.
+  ...artistAccountRoutes({ db, q, ApiError, clean, LIMITS, normName, artistSearchKey, artistStmts, artistRow,
+    publicArtist, publicUser, publicProfile: publicArtistProfileProjection, accountIsPublic,
+    requireUser, requireAdmin, atomicWrite, limit, uid, now, assertSafeAuthoredText,
+    isLegacyArtistProfile, legacyArtistReadOnlyError, resolveReviewedArtistAlias, moderationRecord }),
   ...artistLiveSummaryRoutes({ service: artistLiveSummaryService, rateLimit: limit, decodedPathParam,
-    resolveArtist: resolveCatalogArtistReference }),
+    resolveArtist: (key, ctx) => {
+      const artist = resolveCatalogArtistReference(key);
+      if (artist && !artistCatalogVisibleTo(db, artist, ctx?.user)) throw new ApiError(404, "This artist page is unavailable.", "NOT_FOUND");
+      return artist;
+    } }),
   "GET /api/artists/:key/profile": (ctx) => {
     ctx.setHeader?.("Cache-Control", "private, no-store");
     const key = decodedPathParam(ctx, "key", { max: 200, label: "artist link" }).toLowerCase();
     const catalogArtist = resolveCatalogArtistReference(key);
+    if (catalogArtist && !artistCatalogVisibleTo(db, catalogArtist, ctx.user)) {
+      throw new ApiError(404, "This artist page is unavailable.", "NOT_FOUND");
+    }
     const profileKey = catalogArtist?.norm || key;
     // Profile content and catalog metadata share one local read. Opening a
     // known artist must not depend on an additional upstream identity lookup.

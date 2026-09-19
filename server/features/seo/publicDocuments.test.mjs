@@ -27,7 +27,7 @@ function createDatabase() {
     );
     CREATE TABLE artists (
       norm TEXT PRIMARY KEY,name TEXT NOT NULL,public_slug TEXT,genre TEXT,data TEXT,bio TEXT,mbid TEXT,country TEXT,formed TEXT,
-      popularity INTEGER,rank_score INTEGER NOT NULL DEFAULT 0,updated_at INTEGER
+      popularity INTEGER,rank_score INTEGER NOT NULL DEFAULT 0,updated_at INTEGER,source TEXT
     );
     CREATE TABLE artist_memorials (
       artist_key TEXT PRIMARY KEY,artist_mbid TEXT,artist_name TEXT NOT NULL,

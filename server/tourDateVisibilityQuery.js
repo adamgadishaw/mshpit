@@ -1,4 +1,5 @@
 import { accountIsPublic, activeAccountSql } from "./accountVisibility.js";
+import { artistAuthoredTourDateVisibleSql } from "./artistAuthoredTourDateVisibility.js";
 import {
   currentOrUpcomingTourDateSql,
   effectiveTourDateEndSql,
@@ -75,6 +76,7 @@ export function visibleTourDateRowsFrom(database, viewer, {
   if (viewer?.id) {
     return database.prepare(`SELECT td.* FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id WHERE ${filterSql}
       (${publicProviderSql} OR (${activeAccountSql("owner")} AND (td.release_at<=? OR td.owner_id=?)
+        AND ${artistAuthoredTourDateVisibleSql("td", `?${prefix.length + 3}`)}
         AND NOT EXISTS (SELECT 1 FROM blocks b WHERE
           (b.blocker_id=? AND b.blocked_id=td.owner_id) OR
           (b.blocker_id=td.owner_id AND b.blocked_id=?))))
@@ -82,7 +84,8 @@ export function visibleTourDateRowsFrom(database, viewer, {
       .all(...prefix, publicDate, at, viewer.id, viewer.id, viewer.id, rowLimit);
   }
   return database.prepare(`SELECT td.* FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id WHERE ${filterSql}
-    (${publicProviderSql} OR (${activeAccountSql("owner")} AND td.release_at<=?))
+    (${publicProviderSql} OR (${activeAccountSql("owner")} AND td.release_at<=?
+      AND ${artistAuthoredTourDateVisibleSql("td")}))
     ORDER BY td.date ASC,td.id ASC LIMIT ?`)
     .all(...prefix, publicDate, at, rowLimit);
 }

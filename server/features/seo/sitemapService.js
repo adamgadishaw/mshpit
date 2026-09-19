@@ -1,4 +1,6 @@
 import { activeAccountSql } from "../../accountVisibility.js";
+import { artistAuthoredTourDateVisibleSql } from "../../artistAuthoredTourDateVisibility.js";
+import { publicArtistCatalogSql } from "../../artistCatalogVisibility.js";
 import { profileAllowsSearchIndexingSql } from "../../profileSearchIndexing.js";
 import { storedBillingAllowsArtistBinding } from "../../artistBillingIdentity.js";
 import { postMediaProjectionByPost } from "../../mediaAssets.js";
@@ -364,6 +366,7 @@ function visibleTourDateCandidates(database, {
       AND ${publicMusicEventCandidateSql("td")}
       AND td.date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
       AND TRIM(COALESCE(td.artist,''))<>'' AND TRIM(COALESCE(td.venue,''))<>''
+      AND ${artistAuthoredTourDateVisibleSql("td")}
       AND (td.owner_id IS NULL OR ${activeAccountSql("owner")})
       AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1 OR ${effectiveTourDateEndSql("td")}<?)
       AND (? IS NULL OR td.date>? OR (td.date=? AND td.id>?))
@@ -506,6 +509,7 @@ export function artistSitemapEntries(database, { now = Date.now(), candidates = 
       CASE WHEN json_valid(data) THEN json_extract(data,'$.artistKnowledge') ELSE NULL END AS knowledge
     FROM artists
       WHERE public_slug IS NOT NULL AND trim(public_slug)<>''
+        AND ${publicArtistCatalogSql("artists")}
       ORDER BY rank_score DESC,norm`);
   const artistRows = [];
   // Retain identity and exact eligibility, not every catalogue biography, while

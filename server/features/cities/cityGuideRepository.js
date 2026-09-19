@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { artistAuthoredTourDateVisibleSql } from "../../artistAuthoredTourDateVisibility.js";
 import { artistPath, eventPath, postPath, slugify, venuePath } from "../../../src/domain/urls.mjs";
 import { canonicalVenueKey } from "../../../src/domain/venueIdentity.mjs";
 import { activeAccountSql } from "../../accountVisibility.js";
@@ -19,6 +20,7 @@ const registryCaches=new WeakMap();
 const bounded = (value, fallback, maximum) => Number.isSafeInteger(Number(value)) && Number(value)>0 ? Math.min(Number(value),maximum) : fallback;
 const parseObject = (value) => { try { const parsed = JSON.parse(value || "{}"); return parsed && !Array.isArray(parsed) && typeof parsed === "object" ? parsed : {}; } catch { return {}; } };
 const publicTour = (alias,owner) => `${alias}.release_at<=?1 AND ${publicMusicEventCandidateSql(alias)} AND ${publicIndexableMusicEventSql(alias)}
+  AND ${artistAuthoredTourDateVisibleSql(alias)}
   AND (${alias}.owner_id IS NULL OR ${activeAccountSql(owner)})
   AND (${alias}.owner_id IS NOT NULL OR COALESCE(${alias}.provider_active,1)=1 OR ${alias}.date<?2)`;
 const cityWhere = (alias) => `TRIM(COALESCE(${alias}.venue_city,''))<>''

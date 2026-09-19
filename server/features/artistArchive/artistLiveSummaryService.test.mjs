@@ -13,8 +13,9 @@ function fixture() {
     CREATE TABLE users(id TEXT PRIMARY KEY,is_banned INTEGER DEFAULT 0,suspended_until INTEGER,dormant_at INTEGER,profile_audience TEXT DEFAULT 'everyone');
     INSERT INTO users(id) VALUES ('viewer'),('fan'),('blocked');
     CREATE TABLE blocks(blocker_id TEXT,blocked_id TEXT);
-    CREATE TABLE artists(norm TEXT PRIMARY KEY,name TEXT,mbid TEXT);
-    INSERT INTO artists VALUES ('alpha','Alpha','mbid-alpha'),('beta','Beta','mbid-beta'),('chris brown','Chris Brown','mbid-chris'),('usher','Usher','mbid-usher'),
+    CREATE TABLE artists(norm TEXT PRIMARY KEY,name TEXT,mbid TEXT,source TEXT);
+    CREATE TABLE artist_profiles (artist_key TEXT PRIMARY KEY,owner_id TEXT,removed INTEGER DEFAULT 0);
+    INSERT INTO artists(norm,name,mbid) VALUES ('alpha','Alpha','mbid-alpha'),('beta','Beta','mbid-beta'),('chris brown','Chris Brown','mbid-chris'),('usher','Usher','mbid-usher'),
       ('sports','Sports','mbid-sports'),('sports-dot','sports.','mbid-sports-dot');
     CREATE TABLE artist_memorials(artist_key TEXT,artist_mbid TEXT,status TEXT,death_date TEXT);
     CREATE TABLE artist_tourdate_refresh_queue(artist_key TEXT PRIMARY KEY,status TEXT,attempted_at INTEGER,succeeded_at INTEGER,
@@ -85,7 +86,7 @@ test("billing candidates refresh for insert, rename, ownership and deletion with
     assert.equal(f.read().schedule.total, 0);
     f.database.exec("UPDATE tour_dates SET owner_id=NULL WHERE id='joint'");
     assert.equal(f.read().schedule.total, 1);
-    f.database.exec("INSERT INTO artists VALUES('alpha-alias','ALPHA',NULL)");
+    f.database.exec("INSERT INTO artists(norm,name,mbid) VALUES('alpha-alias','ALPHA',NULL)");
     assert.equal(f.read().schedule.total, 0);
     f.database.exec("UPDATE artists SET name='Not Alpha' WHERE norm='alpha-alias'");
     assert.equal(f.read().schedule.total, 1);
@@ -169,7 +170,7 @@ test("canonical primary keys and verified individual billing match, not tribute 
     f.addDate("bad-json", { artist: "Beta", billed_artists: "{", music_evidence: "music" });
     f.addDate("not-evidence", { artist: "Beta", billed_artists: '["Alpha"]' });
     assert.deepEqual(f.read().schedule.items.map((row) => row.id), ["lineup", "renamed"]);
-    f.database.exec("INSERT INTO artists VALUES ('another-alpha','Alpha','different-mbid')");
+    f.database.exec("INSERT INTO artists(norm,name,mbid) VALUES ('another-alpha','Alpha','different-mbid')");
     assert.deepEqual(f.read().schedule.items.map((row) => row.id), ["renamed"]);
   } finally { f.database.close(); }
 });

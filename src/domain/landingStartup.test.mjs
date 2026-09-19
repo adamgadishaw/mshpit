@@ -150,6 +150,19 @@ test("actual authentication completion sends Intro/direct entry to Feed but pres
   }
 });
 
+test("artist-purpose signup opens page setup before the session render, never during ordinary login", async () => {
+  const calls = [];
+  const finish = new Function("writeNavigation", "MAIN_TAB_PATHS", "web", "navigationRef", "back", `return (${await actualAppFunction("finishAuthentication")});`)(
+    (next, path, mode) => calls.push({ next, path, mode }), { feed: "/feed" }, false, { current: { accountId: null, stack: [{ auth: true }] } }, () => calls.push("back"),
+  );
+  finish("signup", { artistSetup: true, accountId: "artist-applicant" });
+  assert.deepEqual(calls, [{ next: { accountId: "artist-applicant", stack: [{}, { reqArtist: true }], tab: "feed", landing: false }, path: "/feed", mode: "replace" }]);
+  finish("login", { artistSetup: true });
+  assert.equal(calls.at(-1), "back");
+  finish("signup", { artistSetup: true });
+  assert.equal(calls.at(-1), "back", "unconfirmed signup must not enter artist setup");
+});
+
 test("actual password reset completion consumes its token before opening Feed independently of stale account state", async () => {
   const calls = [];
   const current = { stack: [{}], tab: "discover", landing: true, accountId: null };

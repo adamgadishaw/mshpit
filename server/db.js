@@ -36,6 +36,7 @@ import { ensureAccountLifecycleSchema } from "./features/accountLifecycle/accoun
 import { ensureErrorAlertSchema } from "./errorAlertDelivery.js";
 import { seedReviewedArtistIdentities } from "./reviewedArtistIdentities.js";
 import { ensureCommentMutationSchema } from "./commentMutationSchema.js";
+import { ensureArtistAccountSchema, pendingArtistSignupIntent } from "./features/artistAccounts/artistAccountPolicy.js";
 
 export const artistSearchKey = (value) => String(value || "")
   .normalize("NFKD")
@@ -1968,6 +1969,7 @@ try {
       SELECT RAISE(ABORT,'artist public slug is immutable');
     END`);
   ensureArtistMemorialSchema(db);
+  ensureArtistAccountSchema(db);
   // Image codecs are outside the MP4 compatibility gate. This also gives image
   // rows created before the codec columns an honest, non-pending state.
   db.prepare("UPDATE media_assets SET codec_status='not_applicable' WHERE kind='image' AND codec_status='pending'").run();
@@ -3121,6 +3123,7 @@ export function publicUser(u, { self = false, badges = false } = {}) {
       directMessagePolicy: u.dm_policy || "mutuals",
       profileAudience: u.profile_audience || "everyone",
       emailVerified: !!u.email_verified_at,
+      pendingArtistIntent: pendingArtistSignupIntent(parseJsonObject(u.extras)),
       ...(!u.email_verified_at ? { pendingSignupHandle: pendingSignupHandle(parseJsonObject(u.extras)) || null } : {}),
       handleChangeAvailableAt: handleChangeAvailableAt(u.handle_changed_at),
       ...(Number.isSafeInteger(onboardingVersion) && onboardingVersion >= 0 ? { onboardingVersion } : {}),

@@ -7,11 +7,12 @@ import SheetHeader from "../components/SheetHeader";
 import Icon from "../components/Icon";
 import Avatar from "../components/Avatar";
 import ThemeSwatch, { themeGridStyle } from "../components/ThemeSwatch";
-import { profileManagementAction } from "../domain/artistWorkspace.mjs";
+import { profileManagementAction } from "../domain/artistAccountIdentity.mjs";
 import { SUPPORT_EMAIL, SUPPORT_URL } from "../domain/contact.mjs";
 import { visibleThemeChoices } from "../domain/themeChoices.mjs";
 import AccountPasswordForm from "../features/signupOnboarding/AccountPasswordForm";
-import AuthScreen from "./AuthScreen";
+import { lazyWithRetry } from "../lib/lazyWithRetry";
+const AuthScreen = lazyWithRetry(() => import("./AuthScreen"), "AuthScreen");
 import AccountSwitcher from "../features/signupOnboarding/AccountSwitcher";
 import CredentialForm, { CredentialInput, CredentialLabel, CredentialSubmit } from "../components/credential-form";
 

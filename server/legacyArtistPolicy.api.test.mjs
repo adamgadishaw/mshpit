@@ -27,6 +27,7 @@ const AMBIGUOUS_FAN_CLUB = "Ambiguous\u00a0 Fan Club Artist";
 function addUser(id, role = "fan", artistName = null) {
   q.insertUser.run(id, id + "@example.com", id, id, "test-hash", role,
     "Toronto", 43.65, -79.38, id.slice(0, 2).toUpperCase(), "#123456", Date.now());
+  db.prepare("UPDATE users SET email_verified_at=? WHERE id=?").run(Date.now(), id);
   if (artistName) db.prepare("UPDATE users SET artist_name=? WHERE id=?").run(artistName, id);
   return q.userById.get(id);
 }

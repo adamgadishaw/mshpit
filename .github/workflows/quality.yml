@@ -67,6 +67,7 @@ jobs:
       # These suites serve the exported bundle on loopback and intercept every
       # API. They need no secrets, database, production URL, or real accounts.
       - run: npm run verify:auth-browser
+      - run: npm run verify:artist-account-browser
       - run: npm run verify:navigation-browser
       - run: npm run verify:discover-photos-browser
       - run: npm run verify:discover-venues-browser

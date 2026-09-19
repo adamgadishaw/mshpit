@@ -1,5 +1,6 @@
 import { artistStmts, db, publicArtist } from "./db.js";
 import { activeAccountSql } from "./accountVisibility.js";
+import { artistCatalogVisibleTo } from "./artistCatalogVisibility.js";
 import { visibleTourDateRows } from "./tourDateVisibility.js";
 import { projectedTourDateTicketUrl } from "../src/domain/ticketLinks.mjs";
 import { projectPopularLounges } from "../src/domain/liveDiscovery.mjs";
@@ -263,7 +264,8 @@ export function discoverySidebar(viewer, {
     .map(({ locality, ...venue }) => ({ ...venue, local: locality >= 4 }));
 
   const topArtistLimit = Math.max(1, Math.min(40, artistLimit));
-  const topArtistCandidates = artistStmts.top.all(Math.min(800, Math.max(160, topArtistLimit * 20)));
+  const topArtistCandidates = artistStmts.top.all(Math.min(800, Math.max(160, topArtistLimit * 20)))
+    .filter(row => artistCatalogVisibleTo(db, row, viewer));
   const topArtists = eligiblePopularityArtists(topArtistCandidates, { limit: topArtistLimit }).map((row) => {
     const artist = publicArtist(row);
     return { name: artist.name, genre: artist.genre || null, photo: artist.photo || null, popularity: artist.popularity ?? null, avg: 0 };

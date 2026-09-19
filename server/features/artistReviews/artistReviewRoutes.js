@@ -31,7 +31,8 @@ export function artistReviewRoutes({
       rateLimit(ctx, "artist-reviews", 120, TEN_MINUTES);
       const artistKey = normName(clean(ctx.query?.artistKey, { max: 120 })) || null;
       const requestedName = clean(ctx.query?.name, { max: 120 }) || null;
-      const canonicalName = artistKey ? clean(resolveArtistName(artistKey), { max: 120 }) || null : null;
+      const resolvedName = resolveArtistName(artistKey || requestedName, ctx);
+      const canonicalName = artistKey ? clean(resolvedName, { max: 120 }) || null : null;
       if (artistKey && canonicalName && requestedName && normName(requestedName) !== normName(canonicalName)) {
         throw new ApiError(400, "That artist identity changed. Refresh the artist page and try again.", "VALIDATION_FAILED");
       }

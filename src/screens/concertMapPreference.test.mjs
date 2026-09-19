@@ -35,6 +35,7 @@ function fixture(initial = { id: "account-a", concertMapVisible: true, ageBand: 
       },
     },
     "react/jsx-runtime": { jsx, jsxs: jsx, Fragment: "Fragment" },
+    "../lib/lazyWithRetry": { lazyWithRetry: (_load, name) => name },
     "expo-constants": { expoConfig: { version: "test" } },
     "react-native": { Linking: {}, View: "View", Text: "Text", ScrollView: "ScrollView", Pressable: "Pressable", StyleSheet: { create: (value) => value } },
     "../theme": { colors: {}, radius: {}, THEMES: [], themeKey: "stage", space: (value) => value },

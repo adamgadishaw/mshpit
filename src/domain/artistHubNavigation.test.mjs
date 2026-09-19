@@ -87,13 +87,15 @@ test("Artist HQ exposes one primary action for each distinct job", () => {
   assert.equal((hub.match(/onPress=\{onTourDates\}/g) || []).length, 1, "one upcoming-shows action");
   assert.equal((hub.match(/onPress=\{onEditAccount\}/g) || []).length, 1, "one personal-account action");
   assert.match(hub, />Preview artist page<\/Text>/);
-  assert.match(hub, /title="Featured feed post"/);
+  assert.match(hub, /title="Live photos & videos"/);
+  assert.match(hub, /title="Promote a concert or release"/);
+  assert.equal((hub.match(/onPress=\{onMediaPost\}/g) || []).length, 1, "one normal live-media post action, distinct from capped featured promotions");
   assert.match(hub, /title="Upcoming shows"/);
 });
 
 test("Artist HQ launches the artist-only campaign composer and the feed renders its trusted presentation", () => {
   assert.match(hub, /onCampaignPost/);
-  assert.match(hub, /title="Featured feed post"/);
+  assert.match(hub, /title="Promote a concert or release"/);
   assert.match(app, /onCampaignPost=\{\(\) => requireVerifiedMutation\("artist", \(\) => go\(\{ logging: true, postMode: "campaign" \}\)\)\}/);
   assert.match(composer, /user\?\.role === "artist"/);
   assert.match(composer, /campaign: isCampaign \? campaign : null/);

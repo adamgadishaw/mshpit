@@ -1,48 +1,8 @@
+import { artistWorkspaceIdentity } from "./artistAccountIdentity.mjs";
+export { artistWorkspaceIdentity, profileManagementDestination, profileManagementAction, artistWorkspaceOwnsArtist, publicIdentityTarget } from "./artistAccountIdentity.mjs";
+
 const text = (value) => typeof value === "string" ? value.trim() : "";
 const rows = (value) => Array.isArray(value) ? value.filter(Boolean) : [];
-
-export function artistWorkspaceIdentity(session) {
-  const artistName = text(session?.artistName);
-  return session?.role === "artist" && artistName
-    ? { accountId: String(session.id || ""), artistName }
-    : null;
-}
-
-// Artists have one top-level profile-management doorway. The regular member
-// editor remains the safe fallback for every other account, including an artist
-// role whose approved artist identity has not been attached yet.
-export function profileManagementDestination(session) {
-  return artistWorkspaceIdentity(session) ? "artistHub" : "editProfile";
-}
-
-// Every shell surface consumes the same action descriptor. The destination can
-// differ by account type, but the user-facing promise never does: this is the
-// one place to manage the identity they use on Pit.
-export function profileManagementAction(session) {
-  const destination = profileManagementDestination(session);
-  return {
-    key: "manageProfile",
-    destination,
-    icon: destination === "artistHub" ? "music" : "edit",
-    title: "Manage profile",
-    detail: destination === "artistHub"
-      ? "Artist page, posts, and upcoming shows"
-      : "Profile photo, bio, favorite music, and personal details",
-  };
-}
-
-export function artistWorkspaceOwnsArtist(session, artistName) {
-  const identity = artistWorkspaceIdentity(session);
-  return !!identity && identity.artistName.toLocaleLowerCase() === text(artistName).toLocaleLowerCase();
-}
-
-// A verified artist account has one public identity: its official artist page.
-// Other accounts keep the member profile used by handles, follows, and diaries.
-export function publicIdentityTarget(user) {
-  const identity = artistWorkspaceIdentity(user);
-  if (identity) return { kind: "artist", artistName: identity.artistName };
-  return { kind: "profile", userId: String(user?.id || "") };
-}
 
 function nextShow(upcoming) {
   return rows(upcoming).slice().sort((left, right) => {
@@ -74,11 +34,10 @@ export function artistWorkspaceModel({ session, summary = {}, profile = {}, post
     completionItem("avatar", "Add a profile photo", "Help fans recognize the artist across Mshpit.", hasAvatar, "edit"),
     completionItem("banner", "Add a page banner", "Use a wide live photo, current artwork, or promotion image.", hasBanner, "edit"),
     completionItem("bio", "Write a bio", "Tell fans what the artist is doing now.", bio.length >= 40, "edit"),
-    completionItem("catalog", "Add music", "Connect songs so fans can listen from the artist page.", topTracks.length > 0, "preview"),
     completionItem("show", "Add an upcoming show", "Give fans a show they can plan for.", upcoming.length > 0, "tour"),
     completionItem("tickets", "Add a ticket link", "Link fans to an official ticket page.", hasTicket, "tour"),
     completionItem("feed", "Show artist posts", "Let fans see short posts on the artist page.", feedEnabled, "edit"),
-    completionItem("update", "Publish the first artist post", "Share release news, a live clip, a ticket alert, or a studio update.", updates.length > 0, "post"),
+    completionItem("update", "Publish the first artist post", "Share release news, a ticket alert, or a studio update.", updates.length > 0, "post"),
   ];
   const completeCount = completion.filter((item) => item.complete).length;
   const score = Math.round((completeCount / completion.length) * 100);

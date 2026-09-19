@@ -1,4 +1,6 @@
 import { activeAccountSql } from "../../accountVisibility.js";
+import { artistAuthoredTourDateVisibleSql } from "../../artistAuthoredTourDateVisibility.js";
+import { artistCatalogVisibleTo } from "../../artistCatalogVisibility.js";
 import { ARTIST_GENRE_SQL_COLUMNS, projectArtistGenreColumns } from "../../artistGenreProjection.js";
 import { tourDateHasNoPublishedMemorialSql } from "../../artistMemorialTourDateVisibility.js";
 import { inPersonReviewSql } from "../../onlineReviews.js";
@@ -106,7 +108,7 @@ export function createArtistRecommendationService(database) {
   // effect; this keeps Unicode name-only identities consistent everywhere.
   database.function?.("pit_artist_identity", { deterministic: true }, pitArtistIdentity);
 
-  const candidateArtists = database.prepare(`SELECT a.norm,a.name,a.public_slug,a.photo,a.country,
+  const candidateArtists = database.prepare(`SELECT a.norm,a.name,a.public_slug,a.photo,a.country,a.source,
       a.popularity,a.rank_score,${ARTIST_GENRE_SQL_COLUMNS}
     FROM artists a
     WHERE NOT EXISTS (SELECT 1 FROM artist_memorials memorial
@@ -252,6 +254,7 @@ export function createArtistRecommendationService(database) {
       FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id
       WHERE td.artist_key IN (${placeholders(keys)}) AND td.release_at<=?
         AND COALESCE(td.music_qualified,1)=1
+        AND ${artistAuthoredTourDateVisibleSql("td")}
         AND (td.owner_id IS NULL OR ${activeAccountSql("owner")})
         AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1)
         AND NOT EXISTS (SELECT 1 FROM blocks b WHERE td.owner_id IS NOT NULL AND
@@ -312,7 +315,8 @@ export function createArtistRecommendationService(database) {
       const { signals, exclude, genres } = collectSignals(viewer);
       if (!signals.size && !genres.size) return { recommendations: [], personalized: false, signalCount: 0 };
 
-      const catalog = candidateArtists.all(CANDIDATE_LIMIT).map((row) => ({
+      const catalog = candidateArtists.all(CANDIDATE_LIMIT)
+        .filter(row => artistCatalogVisibleTo(database, row, viewer)).map((row) => ({
         ...row,
         genre: projectArtistGenreColumns(row),
       }));
@@ -322,12 +326,13 @@ export function createArtistRecommendationService(database) {
       // explain a recommendation without loading a catalog blob or querying per card.
       const missingSignalKeys = [...signals.keys()].filter((key) => !catalogByKey.has(key)).slice(0, MAX_SIGNAL_ROWS);
       if (missingSignalKeys.length) {
-        const anchors = database.prepare(`SELECT a.norm,a.name,a.public_slug,a.photo,a.country,
+        const anchors = database.prepare(`SELECT a.norm,a.name,a.public_slug,a.photo,a.country,a.source,
             a.popularity,a.rank_score,${ARTIST_GENRE_SQL_COLUMNS}
           FROM artists a WHERE a.norm IN (${placeholders(missingSignalKeys)})
             AND NOT EXISTS (SELECT 1 FROM artist_memorials memorial
               WHERE memorial.artist_key=a.norm AND memorial.status='published')`).all(...missingSignalKeys);
         for (const row of anchors) {
+          if (!artistCatalogVisibleTo(database, row, viewer)) continue;
           const projected = { ...row, genre: projectArtistGenreColumns(row) };
           catalogByKey.set(row.norm, projected);
           catalog.push(projected);

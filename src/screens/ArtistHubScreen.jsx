@@ -111,8 +111,8 @@ function Unauthorized({ onClose }) {
       <ScreenHeader kicker="ARTIST HQ" title="Artist account required" onBack={onClose} />
       <View style={styles.denied}>
         <View style={styles.deniedIcon}><Icon name="lock" size={28} color={colors.amber} /></View>
-        <Text style={styles.deniedTitle}>Sign in with a verified artist account</Text>
-        <Text style={styles.deniedCopy}>A verified artist account can edit its artist page, publish posts, and add upcoming shows.</Text>
+        <Text style={styles.deniedTitle}>Set up your artist page first</Text>
+        <Text style={styles.deniedCopy}>Create a free artist page or claim an existing one from your account. There is no separate artist login.</Text>
       </View>
     </View>
   );
@@ -169,7 +169,7 @@ function ArtistPageReadNotice({ resource, onRetry }) {
   );
 }
 
-export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEditAccount, onTourDates, onCampaignPost }) {
+export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEditAccount, onTourDates, onCampaignPost, onMediaPost, onRequestVerification }) {
   const { width } = useWindowDimensions();
   const wide = width >= 820;
   const {
@@ -373,8 +373,8 @@ export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEdit
             <View style={styles.heroGlow} />
             <View style={styles.heroTopline}>
               <View style={styles.verifiedPill}>
-                <Badge type="verified" size={15} tooltip={false} />
-                <Text style={styles.verifiedText}>VERIFIED ARTIST ACCOUNT</Text>
+                {session?.verified === true ? <Badge type="verified" size={15} tooltip={false} /> : <Icon name="music" size={15} color={colors.amber} />}
+                <Text style={styles.verifiedText}>{session?.verified === true ? "VERIFIED ARTIST" : "ARTIST PAGE · FREE"}</Text>
               </View>
               <Pressable onPress={() => onPreview?.(artistName)} style={({ pressed, focused }) => [styles.previewPill, pressed && styles.pressed, focused && focusRing]} accessibilityRole="button" accessibilityLabel="Preview artist page as a fan">
                 <Icon name="you" size={14} color={colors.text} />
@@ -387,7 +387,7 @@ export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEdit
                 <View style={styles.heroCopy}>
                   <Text style={styles.heroKicker}>MANAGE YOUR ARTIST PAGE</Text>
                   <Text style={styles.heroName} numberOfLines={2}>{artistName}</Text>
-                  <Text style={styles.heroSub}>Update the page, share news, and add upcoming shows and ticket links.</Text>
+                  <Text style={styles.heroSub}>Your photos, live videos, news, and upcoming concerts. One account. All free.</Text>
                 </View>
               </View>
             </View>
@@ -417,10 +417,20 @@ export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEdit
               disabled={!hasConfirmedArtistPage}
               accent={colors.magenta}
             />
-            <ActionTile icon="star" title="Featured feed post" detail="Create a feed post with a custom background." onPress={onCampaignPost} accent={colors.amber} />
+            <ActionTile icon="photo" title="Live photos & videos" detail="Share concert clips, photos, and updates. Normal post and upload safety limits apply." onPress={onMediaPost} accent={colors.amber} />
+            <ActionTile icon="star" title="Promote a concert or release" detail="Create a featured post or tour poster. Up to two featured promotions per day; ordinary media posts stay separate." onPress={onCampaignPost} accent={colors.magenta} />
             <ActionTile icon="calendar" title="Upcoming shows" detail="Add shows, official ticket links, and dates." onPress={onTourDates} accent={colors.cool} />
             <ActionTile icon="you" title="Personal account" detail="Edit your username, city, favorite genres, and artists." onPress={onEditAccount} accent={colors.good} />
           </View>
+
+          {session?.verified !== true && onRequestVerification ? <View style={styles.pageReadNotice}>
+            <Icon name="shield" size={22} color={colors.amber} />
+            <View style={styles.pageReadCopy}>
+              <Text style={styles.pageReadTitle}>Your page is active. The artist check is separate.</Text>
+              <Text style={styles.pageReadText}>Keep creating for free. Submit official evidence when you are ready; the Mshpit owner reviews it before granting the check.</Text>
+              <Pressable style={styles.pageReadRetry} onPress={onRequestVerification} accessibilityRole="button"><Text style={styles.pageReadRetryText}>Request or check verification</Text></Pressable>
+            </View>
+          </View> : null}
 
           <View style={[styles.columns, !wide && styles.columnsStack]}>
             {hasConfirmedArtistPage ? <View style={[styles.panel, styles.readinessPanel]}>

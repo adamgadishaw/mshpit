@@ -15,7 +15,8 @@ export function signupAriaProps(platform, state = {}, value = {}) {
   return props;
 }
 
-export function signupAccountError({ name, handle, email, password } = {}, availability = null) {
+export function signupAccountError({ name, handle, email, password, artistIntent } = {}, availability = null) {
+  if (artistIntent && (typeof artistIntent.artistName !== "string" || artistIntent.artistName.trim().length < 2 || artistIntent.artistName.trim().length > 60)) return { field: "artistName", message: "Use 2–60 characters for your artist or band name." };
   if (!isName(name)) return { field: "name", message: "Add your name to continue." };
   if (!isHandle(handle)) return { field: "handle", message: "Use 3 to 20 letters, numbers, or underscores for your @username." };
   if (!isEmail(email)) return { field: "email", message: "Enter a valid email address." };
@@ -34,12 +35,13 @@ export function signupMusicError({ genres, ageBand, agreed } = {}) {
   return null;
 }
 
-export function signupFormPayload({ name, handle, email, password, city, genres, ageBand, agreed, analyticsConsent } = {}) {
-  const error = signupAccountError({ name, handle, email, password }) || signupMusicError({ genres, ageBand, agreed });
+export function signupFormPayload({ name, handle, email, password, city, genres, ageBand, agreed, analyticsConsent, artistIntent } = {}) {
+  const error = signupAccountError({ name, handle, email, password, artistIntent }) || signupMusicError({ genres, ageBand, agreed });
   if (error) throw new TypeError(error.message);
   return { name: cleanName(name), handle: cleanHandle(handle), email: cleanEmail(email), password,
     city: city?.city, location: city || null, genres: profileGenreSelection(genres).genres,
-    ageBand, agreedToTerms: true, analyticsConsent: analyticsConsent === true };
+    ageBand, agreedToTerms: true, analyticsConsent: analyticsConsent === true,
+    ...(artistIntent ? { artistIntent: { artistName: artistIntent.artistName.trim() } } : {}) };
 }
 
 export function signupHandlePresentation(resource, value) {

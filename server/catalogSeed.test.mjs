@@ -19,15 +19,16 @@ const catalogSeedSource = readFileSync(new URL("./catalogSeed.js", import.meta.u
 
 test("genre backfill streams narrow provenance and wraps after its cursor with a bounded identity batch", () => {
   const raw = new DatabaseSync(":memory:");
-  raw.exec("CREATE TABLE artists (norm TEXT PRIMARY KEY,genre TEXT,popularity INTEGER,rank_score REAL,data TEXT)");
+  raw.exec("CREATE TABLE artists (norm TEXT PRIMARY KEY,genre TEXT,popularity INTEGER,rank_score REAL,data TEXT,source TEXT)");
   try {
-    const insert = raw.prepare("INSERT INTO artists VALUES (?,?,?,?,?)");
+    const insert = raw.prepare("INSERT INTO artists(norm,genre,popularity,rank_score,data) VALUES (?,?,?,?,?)");
     for (const [index, norm] of ["a", "b", "c", "d", "e"].entries()) {
       insert.run(norm, "Rock", 100 - index, index, norm === "d" ? "{malformed" : JSON.stringify({
         genreClaims: norm === "c" ? [{ value: "Rock", source: "staff", at: 1 }] : [],
         topTracks: [{ title: "Ignored" }], unused: "metadata".repeat(2000),
       }));
     }
+    raw.prepare("INSERT INTO artists(norm,genre,popularity,rank_score,data,source) VALUES ('self-created','Rock',100,100,'{}','artist-created')").run();
     let narrowReads = 0;
     const database = { prepare(sql) {
       const statement = raw.prepare(sql);
@@ -53,6 +54,7 @@ test("genre backfill streams narrow provenance and wraps after its cursor with a
     assert.deepEqual(selectGenreBackfillCandidates({ database, cursor: "b", limit: 2 }), ["d", "e"]);
     assert.deepEqual(selectGenreBackfillCandidates({ database, cursor: "d", limit: 3 }), ["e", "a", "b"]);
     assert.deepEqual(selectGenreBackfillCandidates({ database, cursor: "missing", limit: 10 }), ["a", "b", "d", "e"]);
+    assert.deepEqual(selectGenreBackfillCandidates({ database, cursor: "self-created", limit: 10 }), ["a", "b", "d", "e"], "an ineligible cursor cannot starve provider-backed work");
     assert.deepEqual(selectGenreBackfillCandidates({ database, cursor: "e", limit: 10 }), ["a", "b", "d", "e"]);
     assert.ok(narrowReads > 5);
     assert.deepEqual(selectGenreBackfillCandidates({ database, limit: 0 }), []);
@@ -747,6 +749,19 @@ test("background Deezer enrichment treats an auto-saved identity as a self-heali
   assert.equal(enriched, null);
   assert.deepEqual(lookupOptions, { hintId: 7001 });
   assert.equal(Object.hasOwn(lookupOptions, "preferredId"), false);
+});
+
+test("name-only enrichment never guesses a provider namesake for a self-created artist", async () => {
+  const key = "owner-created provider namesake";
+  artistStmts.upsert.run(artistRow(key, { name: "Owner-created Provider Namesake", deezerId: 7001 }, "artist-created"));
+  const before = artistStmts.byNorm.get(key);
+  let lookups = 0;
+  const result = await deezerEnrich(before.name, {
+    findArtist: async () => { lookups += 1; throw new Error("A provider hint cannot validate a self-created identity"); },
+  });
+  assert.equal(result, null);
+  assert.equal(lookups, 0);
+  assert.deepEqual(artistStmts.byNorm.get(key), before);
 });
 
 test("genre backfill saves a corrected Deezer identity while clearing the former proof", () => {

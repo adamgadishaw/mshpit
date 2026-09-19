@@ -43,7 +43,7 @@ export default function SignupOnboardingScreen({ session, initialStep = 1, onCom
   const [cancelPrompt, setCancelPrompt] = useState(false);
   const [leaveRequest, setLeaveRequest] = useState(null);
   const [handleLocked, setHandleLocked] = useState(() => signupHandleLocked(session));
-  const [destination, setDestination] = useState("feed");
+  const [destination, setDestination] = useState(session.pendingArtistIntent ? "artistPage" : "feed");
   const [touched, setTouched] = useState(false);
   const busy = !!operation;
   const dirty = Object.keys(signupProfilePatch(draft, saved)).length > 0;
@@ -64,7 +64,7 @@ export default function SignupOnboardingScreen({ session, initialStep = 1, onCom
     setDraft(next); setSaved(next); setStep(initialStep === 2 ? 2 : 1);
     setHandleLocked(signupHandleLocked(session));
     setOperation(null); setError(""); setStatus(""); setDiscardPrompt(false);
-    setLeaveRequest(null); setCancelPrompt(false); setDestination("feed");
+    setLeaveRequest(null); setCancelPrompt(false); setDestination(session.pendingArtistIntent ? "artistPage" : "feed");
   }, [session.id, initialStep]);
   useEffect(() => {
     if (!closeGuardRef) return undefined;
@@ -238,7 +238,7 @@ export default function SignupOnboardingScreen({ session, initialStep = 1, onCom
           <Text style={styles.title} accessibilityRole="header">You’re on the list.</Text>
           <Text style={styles.subtitle}>{homeCity ? "Welcome to the music in " + homeCity + ". " : "Make yourself at home. "}Browse at your own pace. Everything below is optional.</Text>
           {city && <View style={{ marginBottom: space(4) }}><CityWelcomeCard city={city} compact hideActions /></View>}
-          <WelcomeGuide selected={destination} onChoose={setDestination} busy={busy} includeExplore />
+          <WelcomeGuide selected={destination} onChoose={setDestination} busy={busy} includeExplore includeArtistSetup={session.role === "fan"} />
           <Text style={styles.savedNote}>Finish setup marks your profile ready. Exploring now keeps your account and saved progress, subject to the inactivity policy. Confirm your email before posting, messaging or following anyone.</Text>
         </>}
         {discardPrompt && <View style={styles.discard} accessibilityRole="alert"><Text style={styles.discardTitle}>Keep your changes?</Text><Text style={styles.hint}>Some profile changes aren’t saved yet.</Text><Button title="Save and continue" onPress={() => void continueProfile()} /><Button title="Finish setup without these changes" variant="secondary" onPress={() => void finish("feed", true)} /><Button title="Cancel signup" variant="secondary" onPress={() => setCancelPrompt(true)} /></View>}

@@ -33,7 +33,7 @@ const MenuScreen = lazyWithRetry(() => import("./src/screens/MenuScreen"), "Menu
 const PhotoViewer = lazyWithRetry(() => import("./src/components/PhotoViewer"), "PhotoViewer");
 const LogScreen = lazyWithRetry(() => import("./src/screens/LogScreen"), "LogScreen");
 const TopRatedScreen = lazyWithRetry(() => import("./src/screens/TopRatedScreen"), "TopRatedScreen");
-import AuthScreen from "./src/screens/AuthScreen";
+const AuthScreen = lazyWithRetry(() => import("./src/screens/AuthScreen"), "AuthScreen");
 const AdminScreen = lazyWithRetry(() => import("./src/screens/AdminScreen"), "AdminScreen");
 const BulkTourDatesScreen = lazyWithRetry(() => import("./src/screens/BulkTourDatesScreen"), "BulkTourDatesScreen");
 const RequestArtistScreen = lazyWithRetry(() => import("./src/screens/RequestArtistScreen"), "RequestArtistScreen");
@@ -119,7 +119,7 @@ import {
 import { analyticsDwellBucket } from "./src/domain/analyticsPolicy.mjs";
 import { ownedPlayerEnvelope, playerQueueWithEntryIds, restoreOwnedPlayerState } from "./src/domain/player-session.mjs";
 import { playerLookupIntent } from "./src/domain/playback.mjs";
-import { profileManagementAction, publicIdentityTarget } from "./src/domain/artistWorkspace.mjs";
+import { profileManagementAction, publicIdentityTarget } from "./src/domain/artistAccountIdentity.mjs";
 import { isCityOnlyReview, prepareShowNavigation } from "./src/domain/showNavigation.mjs";
 import { isOnlineReview } from "./src/domain/onlineReview.mjs";
 import { readSensitiveFragmentToken, readSensitiveLinkToken, scrubSensitiveLinkToken } from "./src/domain/sensitiveLinkTokens.mjs";
@@ -684,7 +684,13 @@ function Root() {
   // Direct entry and Intro sign-in enter Feed after authentication. Cancellation
   // still goes back to Intro, while contextual event/profile sign-in retains
   // that exact parent through normal Back. No stale session closure is needed.
-  const finishAuthentication = () => {
+  const finishAuthentication = (mode, { artistSetup = false, accountId } = {}) => {
+    if (mode === "signup" && artistSetup && accountId) {
+      // Signup has confirmed this account; React may not have rendered its
+      // session yet. Do not let the old guest closure send it back to login.
+      writeNavigation({ ...navigationRef.current, accountId, stack: [{}, { reqArtist: true }], tab: "feed", landing: false }, MAIN_TAB_PATHS.feed, "replace");
+      return;
+    }
     if (navigationRef.current.stack.at(-1)?.authFromLanding === true
       || (web && !browserHistoryRef.current?.canGoBack())) {
       writeNavigation({ ...navigationRef.current, stack: [{}], tab: "feed", landing: false }, MAIN_TAB_PATHS.feed, "replace");
@@ -1239,7 +1245,7 @@ function Root() {
   else if (ENABLE_CLIPS && nav.clips) overlay = <ClipsScreen onClose={back} onOpenPost={openPost} onOpenProfile={openProfile} onOpenArtist={openArtist} onRequireAuth={openSignIn} />;
   else if (nav.profileId) overlay = <ProfileScreen userId={nav.profileId} initialSection={nav.profileSection} onClose={back} onOpenShow={openShow} onOpenPost={openPost} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenArtistArchive={openArtistArchive} onOpenVenue={openVenue} onManageProfile={openProfileManagement} onPreview={musicPreviewAction} onMessage={openThread} onReport={openReport} onEditPost={openPostEditor} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onRemoveMyPostTag={removePostTag} onOpenFollowList={openFollowList} onOpenBadges={openBadges} onRequireAuth={openSignIn} />;
   else if (nav.fanClub) overlay = <FanClubScreen artist={nav.fanClub} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} onReport={openReport} onRequireAuth={openSignIn} />;
-  else if (nav.artistHub) overlay = <ArtistHubScreen onClose={back} onPreview={(name) => name && go({ artistPreview: name })} onEditPage={(name) => name && requireVerifiedMutation("artist", () => go({ editArtist: name }))} onEditAccount={() => requireVerifiedMutation("profile", () => go({ editProfile: true }))} onTourDates={() => requireVerifiedMutation("artist", () => go({ bulk: true }))} onCampaignPost={() => requireVerifiedMutation("artist", () => go({ logging: true, postMode: "campaign" }))} onPlay={musicPlayerAction} />;
+  else if (nav.artistHub) overlay = <ArtistHubScreen onClose={back} onPreview={(name) => name && go({ artistPreview: name })} onEditPage={(name) => name && requireVerifiedMutation("artist", () => go({ editArtist: name }))} onEditAccount={() => requireVerifiedMutation("profile", () => go({ editProfile: true }))} onTourDates={() => requireVerifiedMutation("artist", () => go({ bulk: true }))} onMediaPost={() => requireVerifiedMutation("artist", () => go({ logging: true, postMode: "status" }))} onCampaignPost={() => requireVerifiedMutation("artist", () => go({ logging: true, postMode: "campaign" }))} onRequestVerification={() => requireVerifiedMutation("artist", () => go({ reqArtist: true }))} onPlay={musicPlayerAction} />;
   else if (nav.artistGallery) overlay = <ArtistGalleryScreen artistName={nav.artistGallery.name} artistKey={nav.artistGallery.artistKey} legacyMode={nav.artistGallery.legacyMode === true} onClose={back} onOpenPhotos={openPhotos} />;
   else if (nav.artistPreview) overlay = <ArtistScreen artistName={nav.artistPreview} previewAsFan onClose={back} onOpenPost={openPost} onOpenShow={openShow} onOpenArchive={openArtistArchive} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenPhotos={openPhotos} onOpenGallery={openArtistGallery} onOpenProfile={openProfile} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} onRequireAuth={openSignIn} />;
   else if (nav.editArtist) overlay = <EditArtistProfileScreen artistName={nav.editArtist} onClose={back} />;
@@ -1264,7 +1270,7 @@ function Root() {
   else if (nav.topRated) overlay = <TopRatedScreen initialRegion={nav.discoverRegion} onClose={back} onOpen={openShow} />;
   else if (nav.admin) overlay = <AdminScreen onClose={back} />;
   else if (nav.bulk) overlay = <BulkTourDatesScreen onClose={back} />;
-  else if (nav.reqArtist) overlay = <RequestArtistScreen onClose={back} />;
+  else if (nav.reqArtist) overlay = <RequestArtistScreen key={session?.id || "guest"} onClose={back} onCreated={() => commitReplace({ artistHub: true })} />;
   else if (nav.menu) overlay = (
     <MenuScreen
       onClose={back}
@@ -1494,7 +1500,8 @@ function Root() {
     // not unmount it. An aborted signal means the person actually left: never
     // redirect them when a late completion response arrives.
     if (result?.ok && expectedAccountId === sessionRef.current?.id && !signal?.aborted) {
-      if (openArtistPicker || destination === "artists") commitReplace({ pickArtists: true });
+      if (destination === "artistPage") commitReplace({ reqArtist: true });
+      else if (openArtistPicker || destination === "artists") commitReplace({ pickArtists: true });
       else if (destination === "shows") commitReplace({ nearby: true, nearbyTab: "shows" });
       else if (destination === "review") {
         if (!requireVerifiedMutation("review", () => { commitReplace({ logging: true }); return true; })) finishComposerBack();

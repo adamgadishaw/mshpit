@@ -9,9 +9,10 @@ const NOW = Date.parse("2026-09-07T02:00:00Z");
 function fixture() {
   const database = registerPitSqliteFunctions(new DatabaseSync(":memory:"));
   database.exec(`
-    CREATE TABLE users (id TEXT PRIMARY KEY,is_banned INTEGER DEFAULT 0,suspended_until INTEGER,dormant_at INTEGER);
+    CREATE TABLE users (id TEXT PRIMARY KEY,is_banned INTEGER DEFAULT 0,suspended_until INTEGER,dormant_at INTEGER,profile_audience TEXT DEFAULT 'everyone');
     INSERT INTO users (id,is_banned,suspended_until) VALUES ('member',0,NULL),('banned',1,NULL),('suspended',0,9999999999999);
-    CREATE TABLE artists (norm TEXT PRIMARY KEY,name TEXT,mbid TEXT);
+    CREATE TABLE artists (norm TEXT PRIMARY KEY,name TEXT,mbid TEXT,source TEXT);
+    CREATE TABLE artist_profiles (artist_key TEXT PRIMARY KEY,owner_id TEXT,removed INTEGER DEFAULT 0);
     CREATE TABLE artist_memorials (artist_key TEXT,artist_mbid TEXT,status TEXT);
     CREATE TABLE tour_dates (
       id TEXT PRIMARY KEY,artist TEXT DEFAULT 'Artist',artist_key TEXT,
@@ -55,7 +56,7 @@ test("public coverage excludes hidden, removed-provider, non-music, expired and 
     add("nonmusic", { music_qualified: 0 });
     add("expired", { date: "2026-09-01" });
     add("bad-range", { date: "2026-01-01", event_end_date: "2026-12-31", event_kind: "multi_day" });
-    database.exec("INSERT INTO artists VALUES ('legacy','Legacy','mbid'); INSERT INTO artist_memorials VALUES ('legacy','mbid','published');");
+    database.exec("INSERT INTO artists(norm,name,mbid) VALUES ('legacy','Legacy','mbid'); INSERT INTO artist_memorials VALUES ('legacy','mbid','published');");
     add("memorial", { artist: "Legacy", artist_key: "legacy" });
     const result = createEventCoverageService({ database, clock: () => NOW }).read();
     assert.equal(result.total, 1);

@@ -8,10 +8,11 @@ const MOVES = [
   { destination: "review", icon: "camera", title: "Remember the night", detail: "Rate a concert, share your photos, and tag who came with you." },
 ];
 
-export default function WelcomeGuide({ selected, onChoose, busy = false, includeExplore = false }) {
-  const moves = includeExplore
+export default function WelcomeGuide({ selected, onChoose, busy = false, includeExplore = false, includeArtistSetup = false }) {
+  const baseMoves = includeExplore
     ? [{ destination: "feed", icon: "discover", title: "Just explore", detail: "Back to browsing. No need to pick a show, follow anyone or post." }, ...MOVES]
     : MOVES;
+  const moves = includeArtistSetup ? [{ destination: "artistPage", icon: "music", title: "Set up my artist page", detail: "Free live photos, videos, promotions and concerts. Use this account; request your artist check separately." }, ...baseMoves] : baseMoves;
   return <View style={styles.moves} accessibilityRole={selected === undefined ? undefined : "radiogroup"} accessibilityLabel={selected === undefined ? undefined : "Choose where to start"}>
     {moves.map(({ destination, icon, title, detail }, index) => <Pressable
       key={destination} onPress={() => onChoose(destination)} disabled={busy}

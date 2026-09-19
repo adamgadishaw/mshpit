@@ -33,7 +33,7 @@ export function artistResolveRoutes({
         throw new ApiError(400, "Choose one artist before attaching it.", "VALIDATION_FAILED");
       }
       const key = normName(name);
-      const existing = findArtist(key);
+      const existing = findArtist(key, ctx);
       if (existing) {
         if (expectedMbid && String(existing.mbid || "").toLowerCase() !== expectedMbid.toLowerCase()) {
           throw new ApiError(409, "That artist identity changed. Search again before attaching it.", "CONFLICT");

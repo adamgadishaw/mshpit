@@ -116,6 +116,10 @@ export async function mbTag(tag, offset, {
 // distinct releases agree. A compilation or collaboration cannot decide it.
 export async function deezerEnrich(name, { findArtist = findDeezerArtist } = {}) {
   const row = artistStmts.byNorm.get(normName(name));
+  // A self-created name is not proof that a provider's namesake is the same
+  // act. Preserve owner-authored identities until an exact provider identity
+  // is independently established; this name/hint search cannot establish it.
+  if (row?.source === "artist-created") return null;
   let existing = {};
   try { existing = JSON.parse(row?.data || "{}"); } catch { /* Corrupt legacy metadata fails closed to an empty provider hint. */ }
   const match = await findArtist(name, { hintId: existing.deezerId || null });
@@ -211,7 +215,7 @@ export async function crawlArtists({ target = 10000, perTag = 600, shouldStop = 
 // popularity, top tracks (so Discover shows a real "top song") and a genre when
 // they don't have one. Resumable.
 export async function enrichThin({ shouldStop = () => false, tick = () => {} } = {}) {
-  const rows = db.prepare("SELECT norm FROM artists WHERE popularity IS NULL").all();
+  const rows = db.prepare("SELECT norm FROM artists WHERE popularity IS NULL AND COALESCE(source,'')!='artist-created'").all();
   const currentArtist = db.prepare("SELECT norm,name,genre,mbid,country,formed,data FROM artists WHERE norm=?");
   let ranked = 0, done = 0;
   for (const identity of rows) {
@@ -244,6 +248,7 @@ export async function enrichThin({ shouldStop = () => false, tick = () => {} } =
 export async function enrichSongs({ shouldStop = () => false, tick = () => {} } = {}) {
   const rows = db.prepare(`SELECT norm FROM artists
     WHERE popularity IS NOT NULL AND (data IS NULL OR data NOT LIKE '%"topTracks":[{%')
+      AND COALESCE(source,'')!='artist-created'
     ORDER BY popularity DESC`).all();
   const currentArtist = db.prepare("SELECT norm,name,genre,data FROM artists WHERE norm=?");
   let filled = 0, done = 0;
@@ -851,10 +856,11 @@ export function selectGenreBackfillCandidates({
   const take = Math.max(0, Math.min(500, Math.trunc(Number(limit) || 0)));
   const pending = [];
   if (!take || shouldStop()) return pending;
-  const hasCursor = Boolean(cursor && database.prepare("SELECT 1 FROM artists WHERE norm=?").get(cursor));
+  const hasCursor = Boolean(cursor && database.prepare("SELECT 1 FROM artists WHERE norm=? AND COALESCE(source,'')!='artist-created'").get(cursor));
   // Sort identities only: even SQLite's temporary ordering must not carry the
   // provenance payload of every artist at once.
   const ordered = database.prepare(`SELECT norm FROM artists
+    WHERE COALESCE(source,'')!='artist-created'
     ORDER BY popularity IS NULL, popularity DESC, rank_score DESC, norm`);
   const genreFields = database.prepare(`SELECT norm,genre,
       CASE WHEN json_valid(data) THEN json_object(

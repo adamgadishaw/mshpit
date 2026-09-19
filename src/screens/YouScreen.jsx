@@ -11,7 +11,7 @@ import { useStore, isStaff, isMod } from "../store";
 import { formatDate } from "../domain/dates.mjs";
 import { concertMemoryShareText, selectConcertMemories, selectedConcertMemoryForAccount } from "../domain/concertMemories.mjs";
 import { concertMemoryGallery } from "../domain/concertMemoryGallery.mjs";
-import { profileManagementAction } from "../domain/artistWorkspace.mjs";
+import { profileManagementAction } from "../domain/artistAccountIdentity.mjs";
 import { selectConcertReviews } from "../domain/profileTimeline.mjs";
 import { useProfileHistory } from "../features/profileHistory/useProfileHistory";
 import { useArtistEventReviews } from "../features/artistEvents/useArtistEventArchive";
@@ -173,7 +173,7 @@ export default function YouScreen({ onLogin, onLogout, onManageProfile, onSettin
     );
   }
 
-  const roleLabel = session.role === "admin" ? "ADMIN" : session.role === "artist" ? "VERIFIED ARTIST" : "FAN";
+  const roleLabel = session.role === "admin" ? "ADMIN" : session.role === "artist" ? session.verified ? "VERIFIED ARTIST" : "ARTIST" : "FAN";
   const historyCount = (value) => `${value}${history.complete ? "" : "+"}`;
   const year = new Date().getFullYear();
   const showsThisYear = concertLogs.filter((l) => String(l.date || "").includes(String(year))).length;
@@ -191,7 +191,7 @@ export default function YouScreen({ onLogin, onLogout, onManageProfile, onSettin
     { icon: "mail", label: "Inbox", badge: unread, onPress: onInbox },
     { icon: "calendar", label: "Calendar", onPress: onCalendar },
     isMod(session.role) && { icon: "shield", label: "Moderation", onPress: onAdmin },
-    session.role === "fan" && { icon: "shield", label: "Claim artist profile", onPress: onRequestArtist },
+    session.role === "fan" && { icon: "music", label: "Create or claim artist page", onPress: onRequestArtist },
     { icon: "logout", label: "Log out", danger: true, onPress: onLogout },
   ].filter(Boolean);
 

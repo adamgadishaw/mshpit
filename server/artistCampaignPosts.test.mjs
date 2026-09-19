@@ -81,6 +81,47 @@ test("only a named approved artist can publish campaign styling", () => {
   }
 });
 
+test("a self-created artist publishes ordinary show media without consuming the featured-promo allowance", () => {
+  const member = addUser("ordinaryartistmedia");
+  db.prepare("UPDATE users SET email_verified_at=? WHERE id=?").run(Date.now(), member.id);
+  const created = routes["POST /api/artist-pages"]({ user: member, ip: member.id, body: { artistName: "Independent Camera Club" } });
+  const owner = q.userById.get(member.id);
+  let last;
+  for (let index = 0; index < 3; index++) {
+    const media = addReadyImage(owner.id, `ma_artistordinary${index}00000`);
+    last = routes["POST /api/posts"]({ user: owner, ip: owner.id, body: {
+      kind: "status", review: `Live from the room ${index}`, mediaAssetIds: [media.id], photosPublic: index < 2,
+      artist: "Forged Different Artist", artistKey: "forged-different-artist",
+    } });
+    assert.equal(last.post.artistKey, created.artist.key);
+    assert.equal(last.post.artist, created.artist.name);
+    assert.equal(last.post.campaign, null);
+    assert.equal(db.prepare("SELECT artist_mbid FROM posts WHERE id=?").get(last.id).artist_mbid, null);
+  }
+  const gallery = () => routes["GET /api/artists/photos"]({ query: { name: created.artist.name, artistKey: created.artist.key }, ip: "ordinary-gallery" }).photos;
+  assert.equal(gallery().length, 2, "only explicitly opted-in photos enter the artist gallery");
+  routes["PATCH /api/posts/:id"]({ user: owner, ip: owner.id, params: { id: last.id }, body: { review: "A live memory worth keeping", photosPublic: true } });
+  assert.equal(gallery().length, 3, "ordinary status edits preserve the authoritative artist binding");
+  assert.equal(q.userById.get(owner.id).verified, 0, "publishing never grants a check");
+  db.prepare("UPDATE artist_profiles SET removed=1 WHERE artist_key=?").run(created.artist.key);
+  assert.deepEqual(gallery(), [], "page moderation withdraws regular media from its gallery");
+});
+
+test("an unverified-check artist can publish owned upcoming concerts but a same-named account cannot", () => {
+  const member = addUser("ownedartistdates");
+  db.prepare("UPDATE users SET email_verified_at=? WHERE id=?").run(Date.now(), member.id);
+  const created = routes["POST /api/artist-pages"]({ user: member, ip: member.id, body: { artistName: "Tomorrow's Local Band" } });
+  const owner = q.userById.get(member.id);
+  const dates = [{ venue: "Local Music Room", place: "Toronto, Canada", date: new Date(Date.now() + 7 * 86_400_000).toISOString().slice(0, 10) }];
+  const published = routes["POST /api/tourdates"]({ user: owner, ip: owner.id, body: { dates } });
+  assert.equal(published.tourDates.length, 1);
+  assert.equal(published.tourDates[0].artist, created.artist.name);
+  const impostor = addUser("artistdatesimpostor", "artist", created.artist.name);
+  assert.throws(() => routes["POST /api/tourdates"]({ user: impostor, ip: impostor.id, body: { dates } }),
+    (error) => error.status === 403 && error.code === "FORBIDDEN");
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM tour_dates WHERE owner_id=?").get(impostor.id).count, 0);
+});
+
 test("artist campaign posts share the ordinary post substrate and server-owned identity", () => {
   const artist = addUser("campaignartist", "artist", "Turnstile");
   const result = routes["POST /api/posts"]({

@@ -136,7 +136,7 @@ export default function BulkTourDatesScreen({ onClose }) {
     return (
       <View style={styles.wrap}>
         <Header onClose={closeScreen} title="TOUR DATES" />
-        <Text style={styles.denied}>Only approved artist accounts and administrators can publish live dates.</Text>
+        <Text style={styles.denied}>Create or claim your artist page to publish live dates. Page owners and administrators can use this free tool.</Text>
       </View>
     );
   }

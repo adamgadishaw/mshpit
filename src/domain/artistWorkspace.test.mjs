@@ -89,5 +89,5 @@ test("the next move is deterministic and missing ticket links remain honest", ()
   assert.equal(model.nextShow.id, "sooner");
   assert.equal(model.nextMove.key, "banner");
   assert.equal(model.completion.find((item) => item.key === "tickets").complete, false);
-  assert.equal(model.score, 25);
+  assert.equal(model.score, 29);
 });
