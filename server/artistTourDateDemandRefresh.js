@@ -876,8 +876,10 @@ export function createArtistTourDateDemandRefreshService({
     if (!autoSchedule || !started || stopped || draining || !hasProvider()) return;
     const at = clock();
     recover(at);
-    const due = Number(nextDue.get()?.due_at);
-    if (!Number.isFinite(due)) {
+    const dueValue = nextDue.get()?.due_at;
+    const due = Number(dueValue);
+    // MIN returns NULL for an empty queue; Number(null) would spin forever.
+    if (dueValue == null || !Number.isFinite(due)) {
       clearTimer();
       return;
     }

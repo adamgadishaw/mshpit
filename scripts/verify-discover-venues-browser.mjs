@@ -147,6 +147,7 @@ async function assertCityMap(page, state, city, mode) {
 export function discoverVenueFixture(pathname, options = {}) {
   assert.equal(options.method || "GET", "GET", "The guest venue explorer must not mutate data.");
   if (pathname === "/api/tourdates") return { tourDates: discoverVenueEvents };
+  if (pathname === "/api/venues/fixture%20london%20river%20room/photos") return { photos: [], fanPhotos: [], state: "ready" };
   if (pathname === "/api/discover/overview") return {
     chart: { rows: [], source: "popularity" }, genres: [], countries: [{ country: "Canada", count: 16 }, { country: "Portugal", count: 1 }, { country: "United Kingdom", count: 3 }],
     eventCoverage: { total: discoverVenueEvents.length, venueTotal: 17, countries: [{ country: "Canada", count: 16 }, { country: "Portugal", count: 1 }, { country: "United Kingdom", count: 3 }] },
@@ -184,6 +185,15 @@ async function scenario(browser, origin, width, mode) {
   const state = { errors: [], calls: [], maps: 0, mapRequests: [], reports: [], closing: false };
   await context.addInitScript(allowedOrigin => {
     if (location.origin === allowedOrigin) localStorage.setItem("pit_theme", "stage");
+    window.__venueHistory = [];
+    for (const method of ["pushState", "replaceState"]) {
+      const original = history[method];
+      history[method] = function(state, title, url) {
+        window.__venueHistory.push({ method, url, index: state?.index });
+        return original.apply(this, arguments);
+      };
+    }
+    addEventListener("popstate", () => window.__venueHistory.push({ method: "popstate", url: location.pathname }));
   }, origin);
   await context.route("**/*", async route => {
     const request = route.request(), url = new URL(request.url());
@@ -212,140 +222,150 @@ async function scenario(browser, origin, width, mode) {
   page.on("pageerror", error => state.errors.push(error.message));
   page.on("console", message => { if (message.type() === "error") state.errors.push(message.text()); });
   const pin = name => page.getByRole("button", { name: venuePinLabelPattern(name) });
-  const room = name => page.getByRole("button", { name: new RegExp(`^Select venue \\d+: ${name}$`) });
-  const view = name => page.getByRole("button", { name: `View venue ${name}`, exact: true });
+  const room = name => page.getByRole("button", { name: `Open venue ${name}`, exact: true });
+  const shows = name => page.locator(`[aria-label="Upcoming shows at ${name}"]`);
   const selectPin = async name => {
-    // Use the actual reachable touch target, never a forced click or a list
-    // shortcut. Repeated taps intentionally cycle crowded map clusters.
+    // Exercise reachable clustered targets, not forced clicks or list shortcuts.
     for (let attempt = 0; attempt < 24; attempt++) {
-      if (await view(name).count()) return;
-      const before = await page.getByRole("button", { name: /^View venue / }).getAttribute("aria-label");
+      if (await shows(name).count()) return;
+      const current = page.locator('[aria-label^="Upcoming shows at "]');
+      const before = await current.count() ? await current.getAttribute("aria-label") : null;
       if (width < 620) await pin(name).tap(); else await pin(name).click();
-      await page.waitForFunction(previous => document.querySelector('[aria-label^="View venue "]')?.getAttribute("aria-label") !== previous, before);
+      await page.waitForFunction(previous => document.querySelector('[aria-label^="Upcoming shows at "]')?.getAttribute("aria-label") !== previous, before);
     }
     assert.fail(`Repeated normal map-pin taps must reach ${name}.`);
+  };
+  const changeCity = async (city, region) => {
+    await page.getByRole("button", { name: "Change city", exact: true }).click();
+    const citySearch = page.getByRole("textbox", { name: "Find a city", exact: true });
+    await citySearch.fill(city);
+    await page.getByRole("button", { name: `Explore ${city}, ${region}`, exact: true }).click();
+    await page.getByRole("heading", { name: `Venues in ${city}`, exact: true }).waitFor();
+    assert.equal(await citySearch.count(), 0, "Picking a city closes the city disclosure.");
   };
   const name = `discover-venues-${mode}-${width}`;
   try {
     await page.goto(origin + "/discover", { waitUntil: "domcontentloaded", timeout: 12_000 });
     await page.getByRole("tab", { name: "Venues", exact: true }).click();
-    await page.getByRole("heading", { name: "Explore venues", exact: true }).waitFor();
-    await page.getByRole("button", { name: "Explore Toronto, Ontario, Canada", exact: true }).click();
-    await view("Fixture Harbour Hall").waitFor();
-    await selected(page.getByRole("button", { name: "Explore Toronto, Ontario, Canada", exact: true }));
-    await assertCityMap(page, state, "Toronto", mode);
-    if (mode === "fallback") await page.getByText("LOCATION PLOT · STREET MAP UNAVAILABLE", { exact: true }).waitFor();
-    const map = page.locator('[aria-label="Venue locations in Toronto"]');
-    const legendHeading = page.getByText("2 · SELECT A VENUE", { exact: true });
-    const mapBox = await map.boundingBox(), legendBox = await legendHeading.boundingBox();
-    assert.ok(mapBox && mapBox.height > 160 && legendBox, "The map and venue legend must have usable dimensions.");
-    if (width < 900) {
-      const captionBox = await page.getByText(/^\d+ venues plotted/).boundingBox();
-      assert.ok(captionBox, "The mobile map caption must remain visible.");
-      const mapToCaptionGap = captionBox.y - (mapBox.y + mapBox.height);
-      const detailBox = await page.locator('[aria-label="Selected venue: Fixture Harbour Hall"]').boundingBox();
-      const detailToListGap = legendBox.y - (detailBox.y + detailBox.height);
-      assert.ok(mapToCaptionGap >= 0 && mapToCaptionGap <= 20 && detailToListGap >= 0 && detailToListGap <= 40,
-        `The mobile map, current venue preview and venue list must remain together (${mapToCaptionGap}px / ${detailToListGap}px).`);
-    }
-    await room("Fixture Harbour Hall").scrollIntoViewIfNeeded();
+    await page.getByRole("heading", { name: /^Venues in / }).waitFor();
+    await changeCity("Toronto", "Ontario, Canada");
+    await room("Fixture Harbour Hall").waitFor();
+    assert.equal(await page.locator('[aria-label^="Upcoming shows at "]').count(), 0, "The initial list must not open a second detail panel.");
+    assert.equal(await page.locator('[aria-label^="Venue locations in "]').count(), 0, "Maps are optional, not a prerequisite to browsing.");
+    assert.equal(state.maps, 0, "Browsing the initial venue list must not fetch a map image.");
     const firstRoomBox = await room("Fixture Harbour Hall").boundingBox();
-    assert.ok(firstRoomBox && firstRoomBox.height >= 44 && firstRoomBox.y < 900 && firstRoomBox.y + firstRoomBox.height > 0, "The first venue row must be visible and touchable after scrolling.");
+    assert.ok(firstRoomBox && firstRoomBox.height >= 44, "The venue's direct open target must be touch-sized.");
+    await page.getByRole("heading", { name: "Venues in Toronto", exact: true }).scrollIntoViewIfNeeded();
     await page.screenshot({ path: join(screenshotDirectory, `${name}-list.png`), fullPage: true });
-    await map.evaluate(node => node.scrollIntoView({ block: "start" }));
+
+    const harbourToggle = page.getByRole("button", { name: "Show 4 upcoming shows at Fixture Harbour Hall", exact: true });
+    await harbourToggle.focus(); await page.keyboard.press("Enter");
+    const harbourShows = shows("Fixture Harbour Hall").getByRole("button", { name: /^View Fixture Band harbour-/ });
+    assert.equal(await harbourShows.count(), 3, "Show disclosure initially reveals a bounded preview.");
+    await shows("Fixture Harbour Hall").getByRole("button", { name: "Show all 4 listed shows at Fixture Harbour Hall", exact: true }).click();
+    assert.equal(await harbourShows.count(), 4);
+    await shows("Fixture Harbour Hall").getByRole("button", { name: "Show fewer listed shows at Fixture Harbour Hall", exact: true }).click();
+    assert.equal(await harbourShows.count(), 3);
+    await page.getByRole("button", { name: "Hide 4 upcoming shows at Fixture Harbour Hall", exact: true }).click();
+    assert.equal(await shows("Fixture Harbour Hall").count(), 0);
+
+    await page.getByRole("button", { name: "Show venue map", exact: true }).click();
+    await assertCityMap(page, state, "Toronto", mode);
+    const map = page.locator('[aria-label="Venue locations in Toronto"]');
+    const mapBox = await map.boundingBox();
+    assert.ok(mapBox && mapBox.height >= 160, "The optional map has a usable size even on narrow phones.");
+    await map.scrollIntoViewIfNeeded();
     await page.screenshot({ path: join(screenshotDirectory, `${name}-map.png`), fullPage: true });
-    const harbourPreview = page.locator('[aria-label="Selected venue: Fixture Harbour Hall"]');
-    const harbourShows = harbourPreview.getByRole("button", { name: /^View Fixture Band harbour-/ });
-    assert.equal(await harbourShows.count(), width < 900 ? 1 : 3);
-    await harbourPreview.getByRole("button", { name: "Show all 4 listed shows at Fixture Harbour Hall", exact: true }).click();
-    assert.equal(await harbourShows.count(), 4, "All loaded shows must be available directly within the selected venue preview.");
-    await harbourPreview.getByRole("button", { name: "Show fewer listed shows at Fixture Harbour Hall", exact: true }).click();
-    assert.equal(await harbourShows.count(), width < 900 ? 1 : 3);
     await selectPin("Fixture Basement");
-    await view("Fixture Basement").waitFor();
-    await selected(pin("Fixture Basement")); await selected(room("Fixture Basement"));
-    await room("Fixture Harbour Hall").click();
-    await view("Fixture Harbour Hall").waitFor();
-    await selected(pin("Fixture Harbour Hall")); await selected(room("Fixture Harbour Hall"));
+    await selected(pin("Fixture Basement"));
+    assert.equal(await shows("Fixture Basement").count(), 1);
     await selectPin("Z Fixture Écho Room");
-    await selected(room("Z Fixture Écho Room"));
-    await page.waitForFunction(() => {
-      const list = document.querySelector('[data-testid="discover-venue-list"]');
-      const active = list?.querySelector('[aria-pressed="true"]');
-      if (!list || !active) return false;
-      const parent = list.getBoundingClientRect(), row = active.getBoundingClientRect();
-      return row.top >= parent.top - 1 && row.bottom <= parent.bottom + 1;
-    });
-    const search = page.getByRole("textbox", { name: "Find a city or venue", exact: true });
+    await room("Z Fixture Écho Room").waitFor();
+    assert.equal(await shows("Z Fixture Écho Room").count(), 1, "A map selection reveals a venue outside the initial row window.");
+    const revealed = await room("Z Fixture Écho Room").boundingBox();
+    assert.ok(revealed && revealed.y < 900 && revealed.y + revealed.height > 0, "A map selection scrolls the selected venue into view.");
+
+    const search = page.getByRole("textbox", { name: "Search venues in Toronto", exact: true });
     await search.fill("REBEL");
-    assert.equal(await room("REBEL").count(), 1, "Reviewed duplicate REBEL listings should be one selectable venue.");
-    assert.equal(await room("NOIR \\(inside REBEL\\)").count(), 1, "A different room inside REBEL must remain separate.");
-    await room("REBEL").click();
-    const rebelPreview = page.locator('[aria-label="Selected venue: REBEL"]');
-    if (width < 900) await rebelPreview.getByRole("button", { name: "Show all 2 listed shows at REBEL", exact: true }).click();
-    assert.equal(await rebelPreview.getByRole("button", { name: /^View Fixture Band rebel-/ }).count(), 2,
-      "The merged REBEL preview must retain shows from both original provider venue IDs.");
-    assert.equal(await page.getByText(/^Open the venue to see all/).count(), 0, "The preview must not promise a separate detail route has the merged inventory.");
-    await room("NOIR \\(inside REBEL\\)").click();
-    await room("REBEL").click();
-    assert.equal(await rebelPreview.getByRole("button", { name: /^View Fixture Band rebel-/ }).count(), width < 900 ? 1 : 2,
-      "Selecting another venue resets the expanded show window.");
+    assert.equal(await room("REBEL").count(), 1, "Reviewed duplicate REBEL listings are one direct-open venue.");
+    assert.equal(await room("NOIR (inside REBEL)").count(), 1, "A separately identified room stays separate.");
+    await page.getByRole("button", { name: "Show 2 upcoming shows at REBEL", exact: true }).click();
+    assert.equal(await shows("REBEL").getByRole("button", { name: /^View Fixture Band rebel-/ }).count(), 2, "Both original REBEL provider IDs retain their shows.");
+    assert.equal(await page.getByText(/^Open the venue to see all/).count(), 0);
+    await page.getByRole("button", { name: "Show 1 upcoming show at NOIR (inside REBEL)", exact: true }).click();
+    assert.equal(await shows("REBEL").count(), 0, "Only one venue's optional show preview is open at a time.");
+
     await search.fill("Fixture Echo");
-    await view("Z Fixture Écho Room").waitFor();
-    await selected(room("Z Fixture Écho Room")); await selected(pin("Z Fixture Écho Room"));
-    assert.ok(await room("Z Fixture Écho Room").isVisible(), "An accent-insensitive venue search reveals the room, not just its city.");
-    assert.equal(await room("Fixture Harbour Hall").count(), 0, "Venue-name search must filter unrelated list rows.");
-    assert.equal(await pin("Fixture Harbour Hall").count(), 0, "The map must show the same filtered venues as its list.");
+    await room("Z Fixture Écho Room").waitFor();
+    assert.equal(await room("Fixture Harbour Hall").count(), 0);
+    assert.equal(await pin("Fixture Harbour Hall").count(), 0, "The optional map and list use the same city-scoped search.");
+    assert.equal(await page.getByRole("heading", { name: "Venues in Toronto", exact: true }).count(), 1, "Typing a venue name must never switch cities.");
     await search.fill("Fixture Unmapped Room");
-    await view("Fixture Unmapped Room").waitFor();
-    assert.equal(await pin("Fixture Unmapped Room").count(), 0, "Missing coordinates cannot become an ocean pin.");
-    await page.getByText("Map location not confirmed. Venue details and shows are still available.", { exact: true }).waitFor();
-    await search.fill("");
-    await page.getByRole("button", { name: "Explore Lisbon, Portugal", exact: true }).click();
-    await view("Fixture Lisbon Room").waitFor(); await selected(pin("Fixture Lisbon Room"));
-    await selected(page.getByRole("button", { name: "Explore Lisbon, Portugal", exact: true }));
-    await selected(page.getByRole("button", { name: "Explore Toronto, Ontario, Canada", exact: true }), false);
-    assert.equal(await view("Fixture Harbour Hall").count(), 0, "City change resets the previous city's venue selection.");
+    await room("Fixture Unmapped Room").waitFor();
+    assert.equal(await pin("Fixture Unmapped Room").count(), 0, "Missing coordinates cannot turn into an ocean pin.");
+    await page.getByText("VENUE COORDINATES NOT YET AVAILABLE", { exact: true }).waitFor();
+    await page.getByRole("button", { name: "Show 1 upcoming show at Fixture Unmapped Room", exact: true }).click();
+    await page.getByText("Map location not confirmed. You can still open this venue and its shows.", { exact: true }).waitFor();
+
+    await search.fill("A definitely absent venue xyz");
+    await page.getByText('No venues match “A definitely absent venue xyz”', { exact: true }).waitFor();
+    await page.getByRole("button", { name: "Show all venues in Toronto", exact: true }).click();
+    await room("Fixture Harbour Hall").waitFor();
+    await page.getByRole("button", { name: "Hide venue map", exact: true }).click();
+    assert.equal(await page.locator('[aria-label^="Venue locations in "]').count(), 0);
+
+    const cityDisclosure = page.getByRole("button", { name: "Change city", exact: true });
+    await cityDisclosure.focus(); await page.keyboard.press("Enter");
+    const citySearch = page.getByRole("textbox", { name: "Find a city", exact: true });
+    await citySearch.fill("There is no such city xyz");
+    await page.getByText("No cities match. Try another name or change the country above.", { exact: true }).waitFor();
+    assert.equal(await room("Fixture Harbour Hall").count(), 1, "An unsuccessful city search cannot hide the current city's venues.");
+    await page.getByRole("button", { name: "Clear city search", exact: true }).click();
+    await cityDisclosure.click();
+
+    await changeCity("Lisbon", "Portugal");
+    await room("Fixture Lisbon Room").waitFor();
+    assert.equal(await room("Fixture Harbour Hall").count(), 0);
+    assert.equal(await page.locator('[aria-label^="Upcoming shows at "]').count(), 0, "Changing city resets the previous venue selection.");
+    await page.getByRole("button", { name: "Show venue map", exact: true }).click();
     await assertCityMap(page, state, "Lisbon", mode);
-    await page.getByRole("button", { name: "Explore London, United Kingdom", exact: true }).click();
-    await view("Fixture London Coliseum").waitFor();
-    await selected(page.getByRole("button", { name: "Explore London, United Kingdom", exact: true }));
-    await selected(page.getByRole("button", { name: "Explore Lisbon, Portugal", exact: true }), false);
+    await changeCity("London", "United Kingdom");
+    await room("Fixture London Coliseum").waitFor();
     await assertCityMap(page, state, "London", mode);
     await selectPin("Fixture London River Room");
-    await view("Fixture London River Room").waitFor();
-    await selected(pin("Fixture London River Room")); await selected(room("Fixture London River Room"));
+    await selected(pin("Fixture London River Room"));
     if (width < 620) {
-      assert.equal(await pin("Fixture London River Room").getAttribute("aria-label"), await pin("The O2 Arena").getAttribute("aria-label"), "Nearby London venues must share a mobile target instead of hiding each other.");
-      assert.match(await pin("Fixture London River Room").getAttribute("aria-label"), /Tap to cycle venues$/);
+      assert.equal(await pin("Fixture London River Room").getAttribute("aria-label"), await pin("The O2 Arena").getAttribute("aria-label"), "Nearby rooms share a usable mobile map target.");
     }
     await selectPin("The O2 Arena");
-    await view("The O2 Arena").waitFor();
-    await selected(pin("The O2 Arena")); await selected(room("The O2 Arena"));
+    await selected(pin("The O2 Arena"));
     await selectPin("Fixture London River Room");
-    await view("Fixture London River Room").waitFor();
-    await selected(pin("Fixture London River Room")); await selected(room("Fixture London River Room"));
+    await selected(pin("Fixture London River Room"));
     await assertCityMap(page, state, "London", mode);
     await page.locator('[aria-label="Venue locations in London"]').scrollIntoViewIfNeeded();
     await page.screenshot({ path: join(screenshotDirectory, `${name}-london.png`), fullPage: true });
-    await search.fill("A definitely absent venue xyz");
-    await page.getByText("No matching venues in Worldwide", { exact: true }).waitFor();
-    await page.getByRole("button", { name: "Clear city search", exact: true }).click();
-    await page.getByRole("button", { name: "Explore Toronto, Ontario, Canada", exact: true }).click();
-    await room("Fixture Basement").focus(); await page.keyboard.press("Enter");
-    await view("Fixture Basement").waitFor(); await selected(pin("Fixture Basement"));
-    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1), false, "Explorer must not create horizontal document overflow.");
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1), false, "Explorer must not create horizontal overflow.");
     assert.equal(state.calls.some(call => call.path.startsWith("/api/feed")), false);
     assert.deepEqual(state.calls.filter(call => call.method !== "GET"), [], "Guest browsing cannot issue mutations.");
     assert.deepEqual(state.reports, [], "No client crash reports may be emitted.");
     assert.deepEqual(state.errors, [], "No browser errors or missing fixtures may be hidden.");
-    assert.ok(state.maps > 0, "Export with an inert EXPO_PUBLIC_GOOGLE_MAPS_KEY=fixture-only so this test covers successful and failed map images; all map traffic is intercepted locally.");
-    await page.getByRole("heading", { name: "Explore venues", exact: true }).scrollIntoViewIfNeeded();
+    assert.ok(state.maps > 0, "Build with an inert EXPO_PUBLIC_GOOGLE_MAPS_KEY=fixture-only; all map traffic stays local.");
+    await page.getByRole("button", { name: "Hide venue map", exact: true }).click();
+    await page.getByRole("heading", { name: "Venues in London", exact: true }).scrollIntoViewIfNeeded();
     await page.screenshot({ path: join(screenshotDirectory, `${name}.png`), fullPage: true });
+    await room("Fixture London River Room").focus(); await page.keyboard.press("Enter");
+    await page.getByRole("heading", { name: "Fixture London River Room", exact: true }).waitFor();
+    assert.match(new URL(page.url()).pathname, /^\/venue\/.*fixture-london-river/, "Opening a venue must update the browser address, not only the visible panel.");
+    await page.goBack();
+    await page.getByRole("heading", { name: /^Venues in / }).waitFor();
+    await page.waitForURL(origin + "/discover");
+    assert.equal(new URL(page.url()).pathname, "/discover", "Browser Back must restore the Discover route.");
+    assert.deepEqual(state.reports, []);
+    assert.deepEqual(state.errors, [], "Primary venue navigation must not hide missing API fixture errors.");
     console.log(JSON.stringify({ name, passed: true, mockedMapRequests: state.maps }));
   } catch (error) {
     await page.screenshot({ path: join(screenshotDirectory, `${name}-failed.png`), fullPage: true }).catch(() => {});
-    console.error(JSON.stringify({ name, error: error.message, state, body: (await page.locator("body").innerText()).slice(-5500) }));
+    console.error(JSON.stringify({ name, error: error.message, state, history: await page.evaluate(() => window.__venueHistory), body: (await page.locator("body").innerText()).slice(-5500) }));
     throw error;
   } finally { state.closing = true; await context.close(); }
 }

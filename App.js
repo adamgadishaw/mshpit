@@ -231,6 +231,10 @@ function Root() {
   // Restore the last tab on reload so a refresh doesn't dump you back on the feed.
   const [tab, setTab] = useState(() => (web && mainTabForPath(window.location.pathname)) || restoredMainTab(web ? load("pit.tab", "feed") : "feed"));
   const activeTab = visibleMainTab(tab, session?.id);
+  // Detail overlays unmount Discover. Keep only its public destination here,
+  // scoped to this viewer, so Back does not unexpectedly switch to Shows.
+  const [discoverDestination, setDiscoverDestination] = useState(() => ({ accountId: session?.id || null, programme: "shows" }));
+  const rememberedDiscoverProgramme = discoverDestination.accountId === (session?.id || null) ? discoverDestination.programme : "shows";
   // Navigation is a STACK of frames. Each frame is one overlay screen, e.g.
   // { artistName } or { profileId }; the top frame is what's showing. An empty
   // base frame ({}) means "just the tab screens." Opening a screen PUSHES a
@@ -928,6 +932,11 @@ function Root() {
 
   useEffect(() => {
     if (!web || browserHistoryRef.current?.path !== window.location.pathname) return;
+    // A popstate can run before this render's passive effects are flushed.
+    // Never replace its new URL with the public frame we just navigated away
+    // from; applyNavigation updates this ref before scheduling the next render.
+    if (navigationRef.current.stack !== stack || navigationRef.current.tab !== tab
+      || navigationRef.current.landing !== landing) return;
     const canonical = nav.routeLoading ? null : pathForFrame(nav);
     if (canonical && canonical !== window.location.pathname) {
       browserHistoryRef.current?.write(navigationRef.current, canonical, "replace");
@@ -1395,7 +1404,7 @@ function Root() {
                 />
               )}
               {activeTab === "search" && <SearchScreen onOpen={openShow} onOpenArtist={openArtist} onOpenCity={openCity} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenProfile={openProfile} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} />}
-              {activeTab === "discover" && <DiscoverScreen initialProgramme={publicDirectoryProgramme(nav)} onOpenTopRated={(discoverRegion) => go({ topRated: true, discoverRegion })} onOpenEvents={(discoverRegion) => openPublicDirectory("events", { region: discoverRegion })} onOpen={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenNearby={() => go({ nearby: true })} onOpenFanClubs={() => go({ fanClubs: true })} onOpenVenues={(discoverRegion) => go({ venues: true, discoverRegion })} onOpenLounge={(lounge) => go({ lounge })} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} onOpenProfile={openProfile} />}
+              {activeTab === "discover" && <DiscoverScreen key={session?.id || "guest"} initialProgramme={publicDirectoryProgramme(nav)} rememberedProgramme={rememberedDiscoverProgramme} onProgrammeChange={(programme) => setDiscoverDestination({ accountId: session?.id || null, programme })} onOpenTopRated={(discoverRegion) => go({ topRated: true, discoverRegion })} onOpenEvents={(discoverRegion) => openPublicDirectory("events", { region: discoverRegion })} onOpen={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenNearby={() => go({ nearby: true })} onOpenFanClubs={() => go({ fanClubs: true })} onOpenVenues={(discoverRegion) => go({ venues: true, discoverRegion })} onOpenLounge={(lounge) => go({ lounge })} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} onOpenProfile={openProfile} />}
               {activeTab === "you" && !!session && (
                 <YouScreen
                   onLogin={() => go({ auth: true })}

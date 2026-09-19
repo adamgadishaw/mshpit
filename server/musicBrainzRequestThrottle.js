@@ -122,10 +122,16 @@ export function createMusicBrainzRequestThrottle({
     );
   }
 
+  function retryDelay(error, at) {
+    // Some background providers report an absolute Retry-After deadline. It
+    // protects interactive callers too, not just that individual scheduler.
+    return Math.max(0, Number(error?.retryAfterMs) || 0, (Number(error?.retryAt) || 0) - at);
+  }
+
   function openBreaker(at, error) {
     breakerTrips += 1;
     const cooldown = Math.min(breakerMaximum, breakerBase * (2 ** Math.min(8, breakerTrips - 1)));
-    const requested = Math.max(0, Number(error?.retryAfterMs) || 0);
+    const requested = retryDelay(error, Number(at));
     breakerOpenUntil = Number(at) + Math.max(cooldown, Math.min(60 * 60_000, requested));
   }
 
@@ -172,7 +178,7 @@ export function createMusicBrainzRequestThrottle({
     // request errors all fail closed. An unfamiliar error must not reset a
     // half-open circuit and release the queued background fan-out.
     consecutiveFailures += 1;
-    if (probe || error?.status === 429 || Number(error?.retryAfterMs) > 0 || consecutiveFailures >= failureThreshold) {
+    if (probe || Number(error?.status) === 429 || retryDelay(error, Number(clock())) > 0 || consecutiveFailures >= failureThreshold) {
       openBreaker(Number(clock()), error);
     }
   }

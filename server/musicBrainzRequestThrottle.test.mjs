@@ -16,6 +16,16 @@ test("provider Retry-After immediately pauses all callers for the requested boun
   assert.equal(await run(async () => "recovered"), "recovered");
 });
 
+test("absolute Retry-After from a background feature protects every MusicBrainz caller", async () => {
+  let now = 10_000, calls = 0;
+  const run = createMusicBrainzRequestThrottle({ clock: () => now, wait: async (ms) => { now += ms; } });
+  const error = Object.assign(new Error("memorial provider unavailable"), { status: 503, retryAt: now + 120_000 });
+  await assert.rejects(run(async () => { calls++; throw error; }), { status: 503 });
+  assert.equal(run.status().retryAt, 130_000);
+  await assert.rejects(run(async () => { calls++; }, { priority: "interactive" }), { code: "circuit_open" });
+  assert.equal(calls, 1);
+});
+
 test("a CLI process stays alive until its awaited queued MusicBrainz request completes", () => {
   const moduleUrl = new URL("./musicBrainzRequestThrottle.js", import.meta.url).href;
   const result = spawnSync(process.execPath, ["--input-type=module", "-e", `

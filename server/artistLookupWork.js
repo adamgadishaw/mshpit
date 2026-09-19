@@ -60,23 +60,42 @@ export function createArtistLookupWork({
       if (active.size >= maxActive) throw busy();
       const controller = new AbortController();
       job = { controller, done: false, waiters: 0, promise: null };
-      const timer = setTimeout(() => controller.abort(Object.assign(new Error("Artist lookup exceeded its deadline."), {
+      const timeout = () => Object.assign(new Error("Artist lookup exceeded its deadline."), {
         name: "ArtistLookupTimeoutError", status: 504, code: "provider_timeout", retryable: true,
-      })), deadlineMs);
-      job.promise = Promise.resolve().then(() => work(controller.signal)).then((value) => {
+      });
+      const deadlineAt = clock() + deadlineMs;
+      const timer = setTimeout(() => controller.abort(timeout()), deadlineMs);
+      const workPromise = Promise.resolve().then(() => {
+        // A caller can leave in the same turn, before this callback starts.
+        // Do not invoke a provider adapter that may ignore an already-aborted signal.
+        if (controller.signal.aborted) throw abortReason(controller.signal);
+        return work(controller.signal);
+      }).then((value) => {
+        // A busy event loop may dispatch the provider completion before its
+        // overdue timer. It still must not publish an answer after the deadline.
+        if (!controller.signal.aborted && clock() >= deadlineAt) controller.abort(timeout());
         if (controller.signal.aborted) throw abortReason(controller.signal);
         remember(key, { value }, resultTtlMs);
         return value;
+      });
+      // Aborting a callback is not enough: some fetch adapters/body readers do
+      // not settle promptly. Release listeners at the deadline, but retain the
+      // capacity reservation until the underlying work actually unwinds.
+      job.promise = new Promise((resolve, reject) => {
+        const cancelled = () => reject(abortReason(controller.signal));
+        controller.signal.addEventListener("abort", cancelled, { once: true });
+        workPromise.then(resolve, reject).finally(() => {
+          controller.signal.removeEventListener("abort", cancelled);
+          job.done = true;
+          clearTimeout(timer);
+          if (active.get(key) === job) active.delete(key);
+        });
       }).catch((error) => {
         if (error?.name !== "AbortError" && (!controller.signal.aborted || controller.signal.reason?.name === "ArtistLookupTimeoutError")) {
           const retry = Number(error?.retryAfterMs);
           remember(key, { error }, Math.max(failureTtlMs, Math.min(60 * 60_000, Number.isFinite(retry) ? retry : 0)));
         }
         throw error;
-      }).finally(() => {
-        job.done = true;
-        clearTimeout(timer);
-        if (active.get(key) === job) active.delete(key);
       });
       active.set(key, job);
     }

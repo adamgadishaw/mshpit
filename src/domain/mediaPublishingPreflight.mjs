@@ -4,6 +4,7 @@ import {
   mediaUploadLimitLabel,
 } from "./mediaUploadPolicy.mjs";
 import { mediaSourceSizeAllowed } from "./mediaEdit.mjs";
+import { mediaMimeFromName } from "./mediaMime.mjs";
 
 export const MEDIA_PREFLIGHT_CODES = Object.freeze({
   imageTooLarge: "IMAGE_TOO_LARGE",
@@ -18,8 +19,17 @@ const issue = (code, message) => ({ code, message });
 // entering the upload queue while upload preparation can measure a missing size.
 export function mediaPublishingPreflightIssue(asset = {}) {
   const kind = asset?.kind === "video" ? "video" : "image";
-  if (!mediaSourceSizeAllowed(asset)) {
-    return kind === "video"
+  const file = asset.runtimeFile || asset.file;
+  const declared = String(asset.mimeType || file?.type || "").split(";", 1)[0].trim().toLowerCase();
+  // Some iCloud files have no useful MIME or extension. Their fallback UI kind
+  // is image, not evidence that they are photos. Permit a bounded prefix sniff
+  // before applying the smaller photo limit; never upload unclassified bytes.
+  const needsSniff = kind !== "video" && typeof Blob !== "undefined" && file instanceof Blob
+    && (!declared || declared === "application/octet-stream")
+    && !mediaMimeFromName(asset.fileName || file.name || asset.uri);
+  const safetyKind = needsSniff ? "video" : kind;
+  if (!mediaSourceSizeAllowed({ ...asset, kind: safetyKind }, needsSniff ? file.size : asset.fileSize)) {
+    return safetyKind === "video"
       ? issue(MEDIA_PREFLIGHT_CODES.videoTooLarge, ("That clip is over the " + mediaUploadLimitLabel(MEDIA_VIDEO_SOURCE_MAX_BYTES) + " upload limit. Choose a shorter or smaller copy before uploading it."))
       : issue(MEDIA_PREFLIGHT_CODES.imageTooLarge, ("That photo is over the " + mediaUploadLimitLabel(MEDIA_PHOTO_SOURCE_MAX_BYTES) + " upload limit. Choose a smaller copy before uploading it."));
   }

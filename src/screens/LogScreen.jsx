@@ -33,6 +33,7 @@ import {
 import { composerCloseDecision } from "../domain/composerClosePolicy.mjs";
 import { PENDING_COMPOSER_PICKER_KEY } from "../domain/composerRecovery.mjs";
 import { postMediaPickerOptions } from "../domain/mediaPickerOptions.mjs";
+import { launchComposerMediaLibrary } from "../lib/composerMediaPicker";
 import { shouldContinueMediaBatch } from "../domain/mediaBatchPolicy.mjs";
 import { MEDIA_POST_MAX_ATTACHMENTS } from "../domain/mediaUploadPolicy.mjs";
 import {
@@ -113,6 +114,16 @@ function AttachChip({ icon, label, active, count, onPress, disabled }) {
 
 function PendingMediaPreview({ asset, accessibilityLabel }) {
   const kind = mediaDisplayKind(asset);
+  // Avoid decoding a whole iPhone album just for waiting thumbnails. Verified,
+  // resized deliveries replace these tiles as each sequential upload finishes.
+  if (Platform.OS === "web" && kind !== "video") {
+    return (
+      <View style={[StyleSheet.absoluteFill, styles.pendingVideoPreview]} accessible accessibilityRole="image" accessibilityLabel={accessibilityLabel}>
+        <Icon name="camera" size={22} color={colors.amber} />
+        <Text style={styles.pendingVideoPreviewText}>PHOTO</Text>
+      </View>
+    );
+  }
   if (kind === "video") {
     const posterUri = mediaPosterUri(asset);
     // Never hand a pending local video URI to SmartImage. That path can mount
@@ -539,6 +550,8 @@ export default function LogScreen({
     if (!hasLandingCompatiblePhoto) setLandingShowcase(false);
   }, [hasLandingCompatiblePhoto]);
   const [uploadingPhotos, setUploadingPhotos] = useState(false);
+  const [pickingMedia, setPickingMedia] = useState(false);
+  const pickerOperationRef = useRef(null);
   const [uploadProgress, setUploadProgress] = useState(null);
   const [mediaError, setMediaError] = useState("");
   const [mediaPublishingCapabilities, setMediaPublishingCapabilities] = useState(DEFAULT_MEDIA_PUBLISHING_CAPABILITIES);
@@ -551,9 +564,17 @@ export default function LogScreen({
   const submissionIdRef = useRef(editing?.id || submissionId());
   const submitOperationRef = useRef(false);
   useEffect(() => () => {
+    pickerOperationRef.current?.abort();
+    pickerOperationRef.current = null;
+    if (Platform.OS === "web") void releaseMediaDraftAssets(pendingMediaAssetsRef.current);
     uploadControllerRef.current?.abort();
     uploadOperationRef.current = null;
   }, []);
+  useEffect(() => {
+    pickerOperationRef.current?.abort();
+    pickerOperationRef.current = null;
+    setPickingMedia(false);
+  }, [user?.id]);
 
   async function retireRemoteDrafts(localIds = null) {
     const selected = localIds ? new Set(localIds) : null;
@@ -761,7 +782,7 @@ export default function LogScreen({
                 fraction: progress.fraction,
               });
             },
-            onRemoteDraft: ({ assetId, sourceUploaded, retiredAssetId }) => {
+            onRemoteDraft: ({ assetId, sourceUploaded, retiredAssetId, kind: sourceKind }) => {
               if (operationIsActive() && retiredAssetId) {
                 if (remoteDraftAssetIdsRef.current.get(asset.id) === retiredAssetId) remoteDraftAssetIdsRef.current.delete(asset.id);
                 setPendingMediaAssets((current) => current.map((candidate, candidateIndex) => (
@@ -779,7 +800,7 @@ export default function LogScreen({
                 // fresh upload capability instead of trusting incomplete bytes.
                 setPendingMediaAssets((current) => current.map((candidate, candidateIndex) => (
                   candidate.id === asset.id
-                    ? originalMediaProjectAsset({ ...candidate, assetId }, candidateIndex)
+                    ? originalMediaProjectAsset({ ...candidate, assetId, kind: ["image", "video"].includes(sourceKind) ? sourceKind : candidate.kind }, candidateIndex)
                     : candidate
                 )));
               }
@@ -853,11 +874,21 @@ export default function LogScreen({
 
   async function stageSelectedAssets(assets) {
     const task = accountTasks.begin(user?.id);
-    if (!task) return;
+    if (!task) {
+      if (Platform.OS === "web") void releaseMediaDraftAssets(assets);
+      return;
+    }
     task.finish();
-    if (uploadOperationRef.current || uploadingPhotos || posting || !Array.isArray(assets) || !assets.length) return;
+    if (uploadOperationRef.current || uploadingPhotos || posting || !Array.isArray(assets) || !assets.length) {
+      if (Platform.OS === "web") void releaseMediaDraftAssets(assets);
+      return;
+    }
     const remaining = Math.max(0, MEDIA_POST_MAX_ATTACHMENTS - photos.length - pendingMediaAssets.length);
-    if (!remaining) return;
+    if (!remaining) {
+      if (Platform.OS === "web") void releaseMediaDraftAssets(assets);
+      return;
+    }
+    if (Platform.OS === "web") void releaseMediaDraftAssets(assets.slice(remaining));
     const candidateAssets = mediaProjectFromPicker(
       assets.slice(0, remaining),
       `${submissionIdRef.current}:${Date.now().toString(36)}`,
@@ -867,12 +898,14 @@ export default function LogScreen({
       { allowLivePhotoVideo: true },
     ).assets.map((asset, index) => originalMediaProjectAsset(asset, index));
     const preflight = mediaPublishingPreflightSelection(candidateAssets, { platform: Platform.OS });
+    if (Platform.OS === "web") void releaseMediaDraftAssets(preflight.rejected.map(({ asset }) => asset));
     const selected = preflight.accepted;
     const notices = [];
     if (preflight.rejected.length) notices.push(mediaPublishingPreflightMessage(preflight.rejected));
     setMediaError(notices.join(" "));
     if (!selected.length) return;
     if (mediaProjectRequiresLegacyUpload(mediaProject, photos)) {
+      if (Platform.OS === "web") void releaseMediaDraftAssets(selected);
       setMediaError("This older post still uses legacy attachments. Remove all of its existing media before adding a new photo or clip, or publish the new media in a separate post.");
       return;
     }
@@ -887,7 +920,7 @@ export default function LogScreen({
   }
 
   const addPhoto = async () => {
-    if (uploadOperationRef.current || uploadingPhotos || posting) return;
+    if (pickerOperationRef.current || uploadOperationRef.current || uploadingPhotos || posting) return;
     // The picker is a local draft boundary, not a service-health boundary.
     // Always let people choose either media type and keep this call inside the
     // original web user gesture. The authenticated API remains authoritative.
@@ -903,6 +936,8 @@ export default function LogScreen({
     let pickerRequestId = null;
     const task = accountTasks.begin(user?.id);
     if (!task) return;
+    pickerOperationRef.current = task.controller;
+    setPickingMedia(true);
     try {
       // SDK 57 requires library permission to return an original iOS video via
       // Passthrough. Ask before opening Photos so the prompt never appears only
@@ -926,14 +961,14 @@ export default function LogScreen({
         pickerRequestId = `picker_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
         save(PENDING_COMPOSER_PICKER_KEY, { composerId, draftId: durableDraftId || null, requestId: pickerRequestId });
       }
-      res = await ImagePicker.launchImageLibraryAsync(postMediaPickerOptions({
+      res = await launchComposerMediaLibrary(postMediaPickerOptions({
         platform: Platform.OS,
         remaining,
         iosPassthroughPreset: ImagePicker.VideoExportPreset.Passthrough,
         iosCurrentRepresentation: ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Current,
         allowPhotos: pickerCapabilities.photos,
         allowVideos: pickerCapabilities.videos,
-      }));
+      }), { signal: task.controller.signal });
     } catch (error) {
       if (task.isCurrent()) {
         if (pickerRequestId) remove(PENDING_COMPOSER_PICKER_KEY);
@@ -941,14 +976,28 @@ export default function LogScreen({
       }
       task.finish();
       return;
+    } finally {
+      if (pickerOperationRef.current === task.controller) {
+        pickerOperationRef.current = null;
+        if (task.ownsScope()) setPickingMedia(false);
+      }
     }
-    if (!task.isCurrent()) { task.finish(); return; }
+    if (!task.isCurrent()) {
+      if (Platform.OS === "web") void releaseMediaDraftAssets(res?.assets);
+      task.finish();
+      return;
+    }
     if (pickerRequestId) remove(PENDING_COMPOSER_PICKER_KEY);
     if (!res || res.canceled || !res.assets?.length) {
       task.finish();
       return;
     }
-    try { await stageSelectedAssets(res.assets); }
+    try {
+      await stageSelectedAssets(res.assets);
+      if (task.isCurrent() && res.omittedCount > 0) {
+        setMediaError((current) => [current, `${res.omittedCount} extra selected files did not fit in this post. Add them to another post.`].filter(Boolean).join(" "));
+      }
+    }
     finally { task.finish(); }
   };
 
@@ -1068,7 +1117,7 @@ export default function LogScreen({
       ? artist.trim() && onlineRating > 0 && youtubeUrlValid
       : artist.trim() && (venue.trim() || city.trim()) && (!eventAddress.trim() || city.trim()) && computed.overall > 0;
   const canPost = !!canPostBase && pendingMediaAssets.length === 0;
-  const submitBusy = uploadingPhotos || resolvingSong || posting || artistAttaching;
+  const submitBusy = pickingMedia || uploadingPhotos || resolvingSong || posting || artistAttaching;
   const engagementPrompt = useMemo(() => protectedLegacyMemory || (!isStatus && !isOnlineReview) ? null : composerEngagementPrompt({
     kind: isStatus ? "status" : "review",
     experienceType,
@@ -2007,6 +2056,17 @@ export default function LogScreen({
 
         {!memoryTextOnly && (showPhotos || photos.length > 0 || pendingMediaAssets.length > 0) && (
         <View style={styles.attachPanel}>
+        {pickingMedia && Platform.OS === "web" && (
+          <View style={styles.pendingMedia}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.pendingMediaTitle}>Choose photos or videos</Text>
+              <Text style={styles.pendingMediaCopy}>If Photos has closed without returning your files, cancel and choose them again.</Text>
+            </View>
+            <Pressable style={styles.uploadCancelButton} onPress={() => pickerOperationRef.current?.abort()} accessibilityRole="button" accessibilityLabel="Cancel media selection">
+              <Text style={styles.uploadCancel}>Cancel</Text>
+            </Pressable>
+          </View>
+        )}
         {pendingMediaAssets.length > 0 ? (
           <View style={styles.pendingMedia}>
             <Icon name={uploadingPhotos ? "clock" : "camera"} size={16} color={colors.amber} />

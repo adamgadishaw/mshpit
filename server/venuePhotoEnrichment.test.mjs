@@ -5,6 +5,7 @@ import { createVenuePhotoRefresher, venuePhotoEnrichmentEnabled, readVenuePhotoE
   revokeRuntimeVenuePhoto, VENUE_PHOTO_LIMITS } from "./venuePhotoEnrichment.js";
 import { setCatalogKnowledgeMode } from "./catalogKnowledgeControl.js";
 import { publicVenuePhotoPool, registerRuntimeVenuePhotoReader } from "./venuePhotoCatalog.js";
+import { createRuntimeVenuePhotoReader } from "./runtimeVenuePhotoReader.js";
 
 const BASE = 1_800_000_000_000, DAY = 86_400_000, MiB = 1024 ** 2;
 const env = { RENDER: "true", ARTIST_KNOWLEDGE_ENABLED: "true", MEDIA_PUBLIC_BASE_URL: "https://media.example/base" };
@@ -65,6 +66,23 @@ test("identity correction after publication hides the image immediately", async 
   const f = fixture(); await f.worker.run();
   f.database.prepare("UPDATE tour_dates SET venue_city='Ottawa'").run();
   assert.equal(f.worker.readPhoto("provider:ticketmaster:one"), null);
+});
+
+test("isolated photo reader requires no writes and preserves revocation and identity checks", async () => {
+  const f = fixture(); await f.worker.run();
+  f.database.exec("PRAGMA query_only=ON");
+  const read = createRuntimeVenuePhotoReader(f.database, { env });
+  assert.equal(read("provider:ticketmaster:one").uri, photo.uri);
+  assert.equal(read("provider:other:one"), null);
+  assert.equal(createRuntimeVenuePhotoReader(f.database, { env: {} })("provider:ticketmaster:one"), null);
+  f.database.exec("PRAGMA query_only=OFF");
+  revokeRuntimeVenuePhoto(f.database, "provider:ticketmaster:one");
+  assert.equal(read("provider:ticketmaster:one"), null);
+  const blank = new DatabaseSync(":memory:");
+  blank.exec("PRAGMA query_only=ON");
+  assert.equal(createRuntimeVenuePhotoReader(blank)("provider:ticketmaster:one"), null);
+  assert.equal(blank.prepare("SELECT COUNT(*) AS n FROM sqlite_master").get().n, 0);
+  blank.close();
 });
 
 test("unconfigured storage and resource pressure stop visibly before network work", async () => {

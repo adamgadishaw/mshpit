@@ -23,16 +23,17 @@ test("Discover explains its purpose and area controls in everyday language", () 
   assert.match(files.screen, /accessibilityLabel="Choose an area to explore"/);
   assert.match(files.screen, /More areas/);
   assert.match(files.screen, /title="Upcoming events"/);
-  assert.match(files.venues, /Explore venues/);
-  assert.match(files.venues, /Find a city or venue/);
+  assert.match(files.venues, /accessibilityLabel="Change city"/);
+  assert.match(files.venues, /Search venues in/);
 });
 
 test("Discover sections say plainly what people will find or do", () => {
-  assert.match(files.venues, /Choose a city, select a venue, then see its details and upcoming shows\./);
-  assert.match(files.venues, /1 · CHOOSE A CITY/);
-  assert.match(files.venues, /2 · SELECT A VENUE/);
-  assert.match(files.venues, /Coming up elsewhere in/);
-  assert.match(files.venues, /View venue/);
+  assert.match(files.venues, /Open venue/);
+  assert.match(files.venues, /Opens the full venue page/);
+  assert.match(files.venues, /Show map/);
+  assert.match(files.venues, /const \[mapOpen, setMapOpen\] = useState\(false\)/);
+  assert.match(files.venues, /cityPickerOpen &&/);
+  assert.doesNotMatch(files.venues, /1 · CHOOSE A CITY|2 · SELECT A VENUE|Coming up elsewhere in|Selected venue:/);
   assert.match(files.venues, /Show fewer shows/);
   assert.doesNotMatch(files.venues, /Open the venue to see all/);
   assert.match(files.photos, /Public concert photos and clips/);

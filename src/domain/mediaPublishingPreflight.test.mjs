@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { MEDIA_PHOTO_SOURCE_MAX_BYTES, MEDIA_VIDEO_SOURCE_MAX_BYTES } from "./mediaUploadPolicy.mjs";
 
 import {
   MEDIA_PREFLIGHT_CODES,
@@ -58,4 +59,18 @@ test("mixed selections skip only sources beyond the shared byte-safety ceiling",
   assert.deepEqual(result.accepted, [photo, metadataPoor, webm]);
   assert.deepEqual(result.rejected.map((item) => item.code), [MEDIA_PREFLIGHT_CODES.videoTooLarge]);
   assert.doesNotMatch(mediaPublishingPreflightMessage(result.rejected), /selected items were skipped/);
+});
+
+test("only genuinely unclassified browser files defer the photo ceiling until byte sniffing", () => {
+  const file = new Blob(["camera source"]);
+  Object.defineProperty(file, "size", { value: MEDIA_PHOTO_SOURCE_MAX_BYTES + 1 });
+  const unknown = { kind: "image", fileName: "icloud-original", mimeType: "", fileSize: file.size, runtimeFile: file };
+  assert.equal(mediaPublishingPreflightIssue(unknown), null);
+  assert.equal(mediaPublishingPreflightIssue({ ...unknown, mimeType: "application/octet-stream" }), null);
+  for (const patch of [{ mimeType: "image/heic" }, { fileName: "camera.jpg" }, { runtimeFile: null }]) {
+    assert.equal(mediaPublishingPreflightIssue({ ...unknown, ...patch }).code, MEDIA_PREFLIGHT_CODES.imageTooLarge);
+  }
+  const huge = new Blob(["camera source"]);
+  Object.defineProperty(huge, "size", { value: MEDIA_VIDEO_SOURCE_MAX_BYTES + 1 });
+  assert.equal(mediaPublishingPreflightIssue({ ...unknown, fileSize: huge.size, runtimeFile: huge }).code, MEDIA_PREFLIGHT_CODES.videoTooLarge);
 });

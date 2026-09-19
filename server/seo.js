@@ -6,7 +6,7 @@
 // facts. React replaces the preview when it starts; private/session state is
 // never projected into this layer.
 
-import { DATABASE_DIRECTORY, db, artistStmts, normName } from "./db.js";
+import { DATABASE_DIRECTORY, DATABASE_PATH, db, artistStmts, normName } from "./db.js";
 import { activeAccountSql } from "./accountVisibility.js";
 import { htmlRobotsDirective, isProduction } from "./environment.js";
 import { profileAllowsSearchIndexing } from "./profileSearchIndexing.js";
@@ -41,6 +41,7 @@ import {
   isSitemapRequestPath,
 } from "./features/seo/sitemapService.js";
 import { createSitemapSnapshotManager } from "./features/seo/sitemapSnapshotManager.js";
+import { createIsolatedSitemapBuilder } from "./features/seo/sitemapProcess.js";
 import { projectCatalogSeoMaintenanceStatus } from "./features/seo/catalogSeoMaintenanceStatus.js";
 import { decodeArchiveShowKey } from "./features/artistArchive/artistArchiveKeys.js";
 import {
@@ -772,6 +773,7 @@ const sitemapSnapshots = createSitemapSnapshotManager({
   database: db,
   dataDir: DATABASE_DIRECTORY,
   env: process.env,
+  buildSnapshot: createIsolatedSitemapBuilder({ databasePath: DATABASE_PATH }),
 });
 
 export const loadSitemapSnapshot = () => sitemapSnapshots.load();

@@ -1,11 +1,17 @@
 const normalized = value => String(value ?? "").trim().normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().slice(0, 100);
 
-// City queries keep the whole city; venue queries narrow both its map and list.
+// City selection and venue search are separate: typing never changes city.
+export function discoverVenueCityMatches(cities, query) {
+  const needle = normalized(query);
+  return needle ? cities.filter(city => normalized(`${city.city} ${city.region}`).includes(needle)) : cities;
+}
+
+// The same city-scoped matches feed both the optional map and primary list.
 export function discoverVenueExplorerRows(city, query) {
   if (!city) return [];
   const venues = Array.isArray(city.venues) ? city.venues : [];
   const needle = normalized(query);
-  if (!needle || normalized(`${city.city} ${city.region}`).includes(needle)) return venues;
+  if (!needle) return venues;
   return venues.filter(venue => normalized(venue.name).includes(needle));
 }
 

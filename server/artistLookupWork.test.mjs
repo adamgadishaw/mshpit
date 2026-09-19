@@ -98,3 +98,37 @@ test("invalid limits cannot create an unbounded map or infinite eviction loop", 
     assert.throws(() => createArtistLookupWork(options), RangeError);
   }
 });
+
+test("deadline releases callers even if provider ignores abort, without releasing the physical reservation", async () => {
+  const run = createArtistLookupWork({ maxActive: 1, deadlineMs: 15 });
+  let release, signal;
+  const pending = run("stuck", (requestSignal) => {
+    signal = requestSignal;
+    return new Promise((resolve) => { release = resolve; });
+  });
+  await assert.rejects(pending, { code: "provider_timeout" });
+  assert.equal(signal.aborted, true);
+  assert.equal(run.status().active, 1, "an uncooperative provider cannot make room for unbounded replacement work");
+  await assert.rejects(run("other", async () => assert.fail("must not overlap")), { code: "queue_saturated" });
+  release(["late wrong success"]);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(run.status().active, 0);
+  await assert.rejects(run("stuck", async () => assert.fail("short failure cooldown remains")), { code: "provider_timeout" });
+});
+
+test("an overdue completion cannot beat a delayed event-loop deadline timer", async () => {
+  let now = 1_000;
+  const run = createArtistLookupWork({ clock: () => now, deadlineMs: 100 });
+  await assert.rejects(run("late", async () => { now += 101; return ["late"]; }), { code: "provider_timeout" });
+});
+
+test("same-turn cancellation does not invoke work before the provider callback starts", async () => {
+  const run = createArtistLookupWork();
+  const controller = new AbortController();
+  const pending = run("not-started", () => assert.fail("cancelled callback must not run"), { signal: controller.signal });
+  controller.abort();
+  await assert.rejects(pending, { name: "AbortError" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(run.status(), { active: 0, cached: 0 });
+  assert.equal(await run("not-started", async () => "new lookup"), "new lookup");
+});

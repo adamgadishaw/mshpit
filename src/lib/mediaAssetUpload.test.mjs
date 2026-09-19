@@ -9,7 +9,7 @@ const excludes = (text, needle) => assert.ok(!text.includes(needle), `Expected s
 
 test("the client uploader is original-only and cannot accept any media transformation", () => {
   includes(upload, "export async function uploadOriginalMediaAsset");
-  includes(upload, "const sourceRecipe = defaultMediaEdit(kind, { durationMs: asset.durationMs })");
+  includes(upload, "let sourceRecipe = defaultMediaEdit(kind, { durationMs: asset.durationMs })");
   excludes(upload, "renderedAsset");
   excludes(upload, "asset.edit");
   excludes(upload, "videoEditRequiresExport");
@@ -20,8 +20,8 @@ test("the client uploader is original-only and cannot accept any media transform
 });
 
 test("source finalization is the single metadata save boundary", () => {
-  const recipe = source.indexOf("const sourceRecipe = defaultMediaEdit(kind, { durationMs: asset.durationMs })");
-  const finalizeBody = source.indexOf("const sourceFinalizeBody =");
+  const recipe = source.indexOf("let sourceRecipe = defaultMediaEdit(kind, { durationMs: asset.durationMs })");
+  const finalizeBody = source.indexOf("let sourceFinalizeBody =");
   const finalize = source.indexOf("result = await finalizeMediaSourceV1");
   assert.ok(recipe >= 0 && recipe < finalizeBody);
   assert.ok(finalizeBody < finalize);
@@ -37,8 +37,8 @@ test("source finalization is the single metadata save boundary", () => {
 
 test("unknown picker dimensions and duration are omitted instead of fabricated", () => {
   const finalizeBody = source.slice(
-    source.indexOf("const sourceFinalizeBody ="),
-    source.indexOf("let assetId =", source.indexOf("const sourceFinalizeBody =")),
+    source.indexOf("let sourceFinalizeBody ="),
+    source.indexOf("let assetId =", source.indexOf("let sourceFinalizeBody =")),
   );
   includes(finalizeBody, "sourceWidth === null ? {} : { width: sourceWidth }");
   includes(finalizeBody, "sourceHeight === null ? {} : { height: sourceHeight }");
@@ -74,8 +74,8 @@ test("source transfer forwards byte progress and exposes cancellable remote draf
   const transfer = source.indexOf("await boundedMediaRequest(({ signal: transferSignal }) => uploadPrepared(sourcePrepared", created);
   assert.ok(created >= 0 && transfer > created);
   includes(source.slice(created, transfer), 'created.asset.status !== "ready"');
-  includes(source.slice(created, transfer), "onRemoteDraft?.({ assetId, duplicate: !!created.duplicate, sourceUploaded: false })");
-  includes(source.slice(transfer), "onRemoteDraft?.({ assetId, duplicate: !!created.duplicate, sourceUploaded: true })");
+  includes(source.slice(created, transfer), "onRemoteDraft?.({ assetId, kind, duplicate: !!created.duplicate, sourceUploaded: false })");
+  includes(source.slice(transfer), "onRemoteDraft?.({ assetId, kind, duplicate: !!created.duplicate, sourceUploaded: true })");
 });
 
 test("video publication still requires the server verifier's durable poster", () => {

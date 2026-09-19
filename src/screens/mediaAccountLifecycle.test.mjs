@@ -118,34 +118,69 @@ for (const [file, component, name, resultSetter] of photoCases) {
 const compileComposerPicker = callback("LogScreen.jsx", "LogScreen", "addPhoto");
 function composerPickerFixture(platform = "ios") {
   const accountTasks = scope(), permission = deferred(), picker = deferred();
-  const events = [];
+  const events = [], picking = [], released = [], pickerSignals = [];
+  const pickerOperationRef = { current: null };
   const run = compileComposerPicker({
-    accountTasks, user: { id: "a" }, uploadOperationRef: { current: null }, uploadingPhotos: false, posting: false,
+    accountTasks, user: { id: "a" }, pickerOperationRef, uploadOperationRef: { current: null }, uploadingPhotos: false, posting: false,
     refreshMediaPublishingCapabilities: () => {}, mediaProjectRequiresLegacyUpload: () => false, mediaProject: {},
     photos: [], pendingMediaAssets: [], MEDIA_POST_MAX_ATTACHMENTS: 8, composerId: null, Platform: { OS: platform },
     ImagePicker: { requestMediaLibraryPermissionsAsync: () => permission.promise,
-      launchImageLibraryAsync: () => { events.push("picker"); return picker.promise; },
       VideoExportPreset: { Passthrough: 0 }, UIImagePickerPreferredAssetRepresentationMode: { Current: 1 } },
+    launchComposerMediaLibrary: (_options, { signal }) => { events.push("picker"); pickerSignals.push(signal); return picker.promise; },
+    setPickingMedia: (value) => picking.push(value),
+    releaseMediaDraftAssets: async (assets) => released.push(assets),
     Alert: { alert: () => events.push("permission-alert") }, postMediaPickerOptions: () => ({}),
     setMediaError: () => events.push("error"), reportMediaPickerError: () => events.push("picker-error"),
     stageSelectedAssets: async () => events.push("stage"),
   });
-  return { accountTasks, permission, picker, events, run };
+  return { accountTasks, permission, picker, events, picking, released, pickerSignals, pickerOperationRef, run };
 }
 
 test("iOS denied photo permission never launches the picker or uploads", async () => {
   const f = composerPickerFixture(), run = f.run(); f.permission.resolve({ granted: false }); await run;
   assert.deepEqual(f.events, ["permission-alert"]);
+  assert.deepEqual(f.picking, [true, false]);
+  assert.equal(f.pickerOperationRef.current, null);
 });
 
 test("account changes during the iOS permission prompt cannot launch Photos afterward", async () => {
   const f = composerPickerFixture(), run = f.run(); f.accountTasks.setAccount("b");
   f.permission.resolve({ granted: true }); await run; assert.deepEqual(f.events, []);
+  assert.deepEqual(f.picking, [true], "a stale permission callback cannot alter another account's UI");
+  assert.equal(f.pickerOperationRef.current, null);
 });
 
-test("a picker returning to a dismissed composer cannot stage private device media", async () => {
-  const f = composerPickerFixture("web"), run = f.run(); f.accountTasks.dispose();
-  f.picker.resolve(pickerResult); await run; assert.deepEqual(f.events, ["picker"]);
+test("a late composer picker cannot stage private media after logout, switch, round trip, or unmount", async () => {
+  for (const boundary of ["logout", "switch", "round-trip", "unmount"]) {
+    const f = composerPickerFixture("web"), run = f.run();
+    crossBoundary(f.accountTasks, boundary);
+    assert.equal(f.pickerSignals[0].aborted, true, boundary);
+    f.picker.resolve(pickerResult); await run;
+    assert.deepEqual(f.events, ["picker"], boundary);
+    assert.deepEqual(f.released, [pickerResult.assets], "late browser handles must be released instead of transferred to the next account");
+    assert.deepEqual(f.picking, [true], boundary);
+    assert.equal(f.pickerOperationRef.current, null, boundary);
+  }
+});
+
+test("a manual picker cancellation clears current busy state and releases a noncooperative late selection", async () => {
+  const f = composerPickerFixture("web"), run = f.run();
+  f.pickerOperationRef.current.abort();
+  f.picker.resolve(pickerResult); await run;
+  assert.deepEqual(f.events, ["picker"]);
+  assert.deepEqual(f.picking, [true, false]);
+  assert.deepEqual(f.released, [pickerResult.assets]);
+  assert.equal(f.pickerOperationRef.current, null);
+});
+
+test("double-open is fenced synchronously while a successful owner selection stages exactly once", async () => {
+  const f = composerPickerFixture("web"), first = f.run(), second = f.run();
+  assert.deepEqual(f.events, ["picker"]);
+  f.picker.resolve(pickerResult); await Promise.all([first, second]);
+  assert.deepEqual(f.events, ["picker", "stage"]);
+  assert.deepEqual(f.picking, [true, false]);
+  assert.deepEqual(f.released, [], "the upload pipeline owns a successfully staged File until completion or discard");
+  assert.equal(f.pickerOperationRef.current, null);
 });
 
 const compileComposerUpload = callback("LogScreen.jsx", "LogScreen", "uploadOriginalMedia");

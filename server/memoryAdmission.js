@@ -5,7 +5,8 @@ const MIB = 1024 * 1024;
 // Admission estimates include native decoder memory, not just the V8 heap.
 // These are reservations, not a claim that Node can enforce a hard RSS cap.
 export const MEMORY_WORK_BYTES = Object.freeze({ image: 768 * MIB, share: 384 * MIB,
-  sitemap: 256 * MIB, background: 128 * MIB });
+  // Isolated builder: bounded 384MiB heap plus SQLite/IPC/native headroom.
+  sitemap: 576 * MIB, background: 128 * MIB });
 
 function positiveBytes(value) {
   const number = Number(value);
@@ -63,6 +64,7 @@ export function createMemoryAdmission({ readMemory = createMemoryReader(),
   maxQueuedWaiters = 8, maxQueuedRetainedBytes = 64 * MIB,
   retryIntervalMs = 100, setTimer = setTimeout, clearTimer = clearTimeout } = {}) {
   const active = new Map();
+  const preemptors = new Map();
   const waiters = [];
   let reservedBytes = 0;
   let queuedRetainedBytes = 0;
@@ -117,8 +119,9 @@ export function createMemoryAdmission({ readMemory = createMemoryReader(),
     }, retryDelay);
     retryTimer?.unref?.();
   };
-  const createLease = (kind, bytes) => {
+  const createLease = (kind, bytes, onPreempt) => {
       active.set(kind, bytes);
+      if (kind === "sitemap" && typeof onPreempt === "function") preemptors.set(kind, onPreempt);
       reservedBytes += bytes;
       admitted += 1;
       admittedByKind[kind] += 1;
@@ -128,8 +131,17 @@ export function createMemoryAdmission({ readMemory = createMemoryReader(),
         released = true;
         reservedBytes = Math.max(0, reservedBytes - bytes);
         active.delete(kind);
+        preemptors.delete(kind);
         drain();
       } });
+  };
+  const preemptMaintenance = (priority) => {
+    if (priority !== 0) return;
+    for (const [kind, cancel] of preemptors) {
+      preemptors.delete(kind);
+      try { cancel(); }
+      catch { /* architecture: allow-empty-catch -- a failed cancellation cannot release a still-active worker reservation */ }
+    }
   };
   const removeWaiter = (waiter) => {
     const index = waiters.indexOf(waiter);
@@ -161,7 +173,7 @@ export function createMemoryAdmission({ readMemory = createMemoryReader(),
     scheduleRetry();
   }
   return Object.freeze({ snapshot,
-    tryAcquire(kind) {
+    tryAcquire(kind, { onPreempt } = {}) {
       const bytes = workSize(kind);
       // Synchronous maintenance must never jump ahead of an interactive caller
       // that is already waiting for a short-lived native-memory reservation.
@@ -170,7 +182,7 @@ export function createMemoryAdmission({ readMemory = createMemoryReader(),
         deniedByKind[kind] += 1;
         return null;
       }
-      return createLease(kind, bytes);
+      return createLease(kind, bytes, onPreempt);
     },
     acquire(kind, { signal = null, timeoutMs = 10_000, retainedBytes = 0, priority } = {}) {
       const bytes = workSize(kind);
@@ -205,14 +217,17 @@ export function createMemoryAdmission({ readMemory = createMemoryReader(),
         waiters.push(waiter);
         signal?.addEventListener("abort", waiter.onAbort, { once: true });
         if (signal?.aborted) waiter.onAbort();
-        else scheduleRetry();
+        else {
+          preemptMaintenance(waiter.priority);
+          scheduleRetry();
+        }
       });
     },
   });
 }
 
 const memoryAdmission = createMemoryAdmission();
-export const tryAcquireMemoryWork = (kind) => memoryAdmission.tryAcquire(kind);
+export const tryAcquireMemoryWork = (kind, options) => memoryAdmission.tryAcquire(kind, options);
 export const acquireMemoryWork = (kind, options) => memoryAdmission.acquire(kind, options);
 export const memoryWorkSnapshot = () => memoryAdmission.snapshot();
 

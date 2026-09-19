@@ -8,7 +8,7 @@ import { readCatalogKnowledgeControl } from "./catalogKnowledgeControl.js";
 import { lookupVenuePhoto } from "./venuePhotoProvider.js";
 import { registerRuntimeVenuePhotoReader, venuePhotoCatalogControlsIdentity } from "./venuePhotoCatalog.js";
 import { providerVenuePhotoCatalogKey } from "./venuePhotoCatalogIdentity.js";
-import { licensedVenuePhoto } from "../src/domain/venuePhotoProvenance.mjs";
+import { createRuntimeVenuePhotoReader, runtimeVenuePhotoIdentity as fingerprint } from "./runtimeVenuePhotoReader.js";
 import { isMirroredVenuePhoto } from "../scripts/lib/venue-photo-mirror-batch.mjs";
 import { mirrorLicensedVenuePhoto, venuePhotoMirrorConfigured } from "../scripts/lib/venue-photo-mirror.mjs";
 
@@ -16,7 +16,6 @@ const MINUTE = 60_000, DAY = 86_400_000, MiB = 1024 ** 2;
 export const VENUE_PHOTO_LIMITS = Object.freeze({ attemptsPerDay: 100, dailyBytes: 20 * MiB,
   totalBytes: 256 * MiB, imageBytes: MiB, batch: 3, ledgerRows: 20_000, intervalMinutes: 15 });
 const day = at => new Date(at).toISOString().slice(0, 10);
-const fingerprint = row => JSON.stringify([row?.name, row?.city, row?.country].map(value => String(value || "").trim().toLowerCase()));
 
 export function venuePhotoEnrichmentEnabled(env = process.env) {
   const explicit = Object.hasOwn(env, "VENUE_PHOTO_ENRICHMENT_ENABLED");
@@ -122,15 +121,7 @@ export function createVenuePhotoRefresher({ database, lookup = lookupVenuePhoto,
     && !controlsIdentity(venue.name, venue);
   let active = null;
 
-  function readPhoto(key) {
-    if (typeof key !== "string" || !key.startsWith("provider:ticketmaster:")) return null;
-    const row = read.get(key);
-    if (row?.status !== "filled" || !row.photo_json || row.photo_json.length > 16000) return null;
-    let photo;
-    try { photo = JSON.parse(row.photo_json); } catch { return null; }
-    const current = currentIdentity.get(String(key).slice("provider:ticketmaster:".length));
-    return current && fingerprint(current) === row.identity && isMirroredVenuePhoto(photo, env) ? licensedVenuePhoto(photo) : null;
-  }
+  const readPhoto = createRuntimeVenuePhotoReader(database, { env });
 
   async function pass({ signal } = {}) {
     if (!venuePhotoEnrichmentEnabled(env)) { mark("disabled"); return false; }

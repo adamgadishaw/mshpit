@@ -1,7 +1,8 @@
 import { api } from "./api";
 import { isDurableMediaUrl, prepareMediaUploadAsset, uploadPreparedMediaAsset } from "./mediaUpload";
 import { finalizeMediaSourceV1, resumeExistingMediaSourceV1 } from "./mediaAssetFinalize.mjs";
-import { defaultMediaEdit } from "../domain/mediaEdit.mjs";
+import { defaultMediaEdit, mediaSourceMaxBytes, mediaSourceSizeAllowed } from "../domain/mediaEdit.mjs";
+import { mediaUploadLimitLabel } from "../domain/mediaUploadPolicy.mjs";
 import { mediaSourceClientAssetId } from "../domain/mediaUploadIdentity.mjs";
 import { boundedMediaRequest, recoverMediaRequest } from "../domain/mediaRequestRecovery.mjs";
 import { mediaUploadTimeoutMs } from "../domain/mediaUploadDeadline.mjs";
@@ -67,12 +68,12 @@ export async function uploadOriginalMediaAsset({
     throw mediaPipelineError("MEDIA_SOURCE_INVALID", "Choose that media again before uploading.");
   }
 
-  const kind = asset.kind === "video" ? "video" : "image";
-  const sourceRecipe = defaultMediaEdit(kind, { durationMs: asset.durationMs });
+  let kind = asset.kind === "video" ? "video" : "image";
+  let sourceRecipe = defaultMediaEdit(kind, { durationMs: asset.durationMs });
   const sourceWidth = optionalSourceDimension(asset.width);
   const sourceHeight = optionalSourceDimension(asset.height);
   const sourceDurationMs = optionalSourceDuration(asset.durationMs);
-  const sourceFinalizeBody = {
+  let sourceFinalizeBody = {
     ...(sourceWidth === null ? {} : { width: sourceWidth }),
     ...(sourceHeight === null ? {} : { height: sourceHeight }),
     ...(kind === "video" && sourceDurationMs !== null ? { durationMs: sourceDurationMs } : {}),
@@ -115,6 +116,25 @@ export async function uploadOriginalMediaAsset({
       context: "Preparing the original media",
     }), { signal, timeoutMs: 30_000 });
     abortIfNeeded();
+    // Safari/iCloud may omit MIME metadata, and a file extension is only a
+    // hint. Preparation sniffs source bytes; use that result for the original
+    // recipe and required video poster rather than sending an image recipe
+    // for a real clip (or the reverse). Server probing remains authoritative.
+    if (["image", "video"].includes(sourcePrepared.kind) && sourcePrepared.kind !== kind) {
+      kind = sourcePrepared.kind;
+      sourceRecipe = defaultMediaEdit(kind, { durationMs: kind === "video" ? asset.durationMs : 0 });
+      sourceFinalizeBody = { ...sourceFinalizeBody, editRecipe: sourceRecipe };
+      delete sourceFinalizeBody.durationMs;
+      delete sourceFinalizeBody.deliveryMode;
+      if (kind === "image") sourceFinalizeBody.deliveryMode = "server";
+      else if (sourceDurationMs !== null) sourceFinalizeBody.durationMs = sourceDurationMs;
+    }
+    if (!mediaSourceSizeAllowed({ kind }, sourcePrepared.fileSize)) {
+      const error = mediaPipelineError("MEDIA_TOO_LARGE", `That ${kind === "video" ? "clip" : "photo"} is over the ${mediaUploadLimitLabel(mediaSourceMaxBytes({ kind }))} upload limit. Choose a smaller copy.`);
+      error.status = 413;
+      error.retryable = false;
+      throw error;
+    }
     const clientAssetId = mediaSourceClientAssetId({
       localId: asset.id,
       fileSize: sourcePrepared.fileSize,
@@ -142,7 +162,7 @@ export async function uploadOriginalMediaAsset({
     }
     assetId = created.asset.id;
     if (created.asset.status !== "ready") {
-      onRemoteDraft?.({ assetId, duplicate: !!created.duplicate, sourceUploaded: false });
+      onRemoteDraft?.({ assetId, kind, duplicate: !!created.duplicate, sourceUploaded: false });
     }
     if (created.upload) {
       onStage?.("uploading-source");
@@ -152,7 +172,7 @@ export async function uploadOriginalMediaAsset({
         onProgress: (progress) => { if (!signal?.aborted && !transferSignal.aborted) onProgress?.({ ...progress, stage: "uploading-source" }); },
       }), { signal, timeoutMs: mediaUploadTimeoutMs(sourcePrepared) });
       abortIfNeeded();
-      onRemoteDraft?.({ assetId, duplicate: !!created.duplicate, sourceUploaded: true });
+      onRemoteDraft?.({ assetId, kind, duplicate: !!created.duplicate, sourceUploaded: true });
     }
 
     result = await finalizeMediaSourceV1({
@@ -179,6 +199,7 @@ export async function uploadOriginalMediaAsset({
   if (finalAsset?.id !== assetId || finalAsset.status !== "ready" || !isDurableMediaUrl(finalAsset.url)) {
     throw mediaPipelineError("MEDIA_FINALIZE_PENDING", "Mshpit is still preparing that media item. Try the final step again.");
   }
+  if (["image", "video"].includes(finalAsset.kind)) kind = finalAsset.kind;
   if (kind === "video" && !finalAsset.posterUrl) {
     throw mediaPipelineError("VIDEO_POSTER_REQUIRED", "The video preview was not verified. Try that upload again.");
   }
@@ -188,9 +209,14 @@ export async function uploadOriginalMediaAsset({
   onStage?.("ready");
   return {
     ...asset,
+    kind,
     edit: authoritativeOriginalRecipe,
     assetId: finalAsset.id,
-    uri: finalAsset.sourceUrl || asset.uri,
+    uri: finalAsset.sourceUrl || finalAsset.url,
+    // Verified delivery and the owner-scoped asset id replace the transient
+    // File. Retaining it pins entire iPhone albums in memory after upload.
+    runtimeFile: null,
+    file: null,
     durableLocalUri: null,
     draftManaged: false,
     sourceUrl: finalAsset.url,

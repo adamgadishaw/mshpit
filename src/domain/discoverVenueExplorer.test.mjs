@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { discoverVenueCityChoices, discoverVenueExplorerRows, discoverVenueMapPoints } from "./discoverVenueExplorer.mjs";
+import { discoverVenueCityChoices, discoverVenueCityMatches, discoverVenueExplorerRows, discoverVenueMapPoints } from "./discoverVenueExplorer.mjs";
 
 const venues = [
   { id: "a", name: "REBEL", coord: { lat: 43.64, lng: -79.34 } },
@@ -18,11 +18,17 @@ test("venue-name queries narrow the same rows used by the list and map", () => {
   assert.deepEqual(discoverVenueExplorerRows(null, "rebel"), []);
 });
 
-test("city and region searches retain the full city without copying or mutating venue identities", () => {
-  for (const query of ["", "toronto", "ONTARIO", "Canada"]) {
-    assert.equal(discoverVenueExplorerRows(toronto, query), venues);
-  }
+test("city selection and venue-name search stay separate without changing venue identities", () => {
+  assert.equal(discoverVenueExplorerRows(toronto, ""), venues);
+  for (const query of ["toronto", "ONTARIO", "Canada"]) assert.deepEqual(discoverVenueExplorerRows(toronto, query), []);
   assert.equal(discoverVenueExplorerRows(toronto, "REBEL")[0], venues[0]);
+  const cities = [toronto, { id: "montreal", city: "Montréal", region: "Quebec, Canada", venues: [] }];
+  assert.equal(discoverVenueCityMatches(cities, ""), cities);
+  assert.deepEqual(discoverVenueCityMatches(cities, " Ontario "), [toronto]);
+  assert.deepEqual(discoverVenueCityMatches(cities, "montreal"), [cities[1]]);
+  assert.deepEqual(discoverVenueCityMatches(cities, "canada"), cities);
+  assert.deepEqual(discoverVenueCityMatches(cities, "REBEL"), []);
+  assert.deepEqual(discoverVenueCityMatches([], "toronto"), []);
 });
 
 test("city buttons keep their order when switching instead of jumping under a second tap", () => {

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { DISCOVER_PROGRAMME_SECTIONS, discoverProgrammeKey, discoverProgrammeKeyboardTarget } from "./discoverProgramme.mjs";
+import { DISCOVER_PROGRAMME_SECTIONS, discoverProgrammeKey, discoverProgrammeKeyboardTarget, restoredDiscoverProgramme } from "./discoverProgramme.mjs";
 
 test("Discover keeps all five destinations without inventing routes or changing area", () => {
   assert.deepEqual(DISCOVER_PROGRAMME_SECTIONS.map(({ key }) => key), ["shows", "artists", "venues", "cities", "photos"]);
@@ -18,10 +18,35 @@ test("Discover keyboard navigation wraps and supports Home and End", () => {
   for (const key of ["Tab", "Enter", "Escape", "a"]) assert.equal(discoverProgrammeKeyboardTarget("shows", key), null);
 });
 
+test("Discover restores its in-app destination while explicit directory links keep priority", () => {
+  for (const { key } of DISCOVER_PROGRAMME_SECTIONS) assert.equal(restoredDiscoverProgramme(undefined, key), key);
+  assert.equal(restoredDiscoverProgramme("artists", "venues"), "artists");
+  assert.equal(restoredDiscoverProgramme("shows", "venues"), "shows");
+  assert.equal(restoredDiscoverProgramme(undefined, "invalid"), "shows");
+  assert.equal(restoredDiscoverProgramme("invalid", "venues"), "shows");
+  const app = read("../../App.js");
+  assert.match(app, /rememberedProgramme=\{rememberedDiscoverProgramme\}/);
+  assert.match(app, /onProgrammeChange=\{\(programme\) => setDiscoverDestination/);
+  assert.match(app, /discoverDestination\.accountId === \(session\?\.id \|\| null\)/);
+  assert.match(app, /<DiscoverScreen key=\{session\?\.id \|\| "guest"\}/);
+});
+
+test("a departed render cannot overwrite the URL just restored by browser Back", () => {
+  const app = read("../../App.js");
+  const effect = app.slice(app.indexOf("if (!web || browserHistoryRef.current?.path !== window.location.pathname) return;"));
+  const guard = effect.indexOf("navigationRef.current.stack !== stack");
+  const canonical = effect.indexOf("const canonical = nav.routeLoading");
+  assert.ok(guard >= 0 && guard < canonical, "Canonical writes must fence out departed render state.");
+  assert.match(effect.slice(0, canonical), /navigationRef\.current\.tab !== tab/);
+  assert.match(effect.slice(0, canonical), /navigationRef\.current\.landing !== landing/);
+});
+
 const read = (name) => readFileSync(new URL(name, import.meta.url), "utf8");
 test("Discover renders only the selected destination and keeps filter state independent", () => {
   const source = read("../screens/DiscoverScreen.jsx");
-  assert.match(source, /const \[programme, setProgramme\] = useState\(\(\) => discoverProgrammeKey\(initialProgramme\)\)/);
+  assert.match(source, /const \[programme, setProgramme\] = useState\(\(\) => restoredDiscoverProgramme\(initialProgramme, rememberedProgramme\)\)/);
+  assert.match(source, /const rememberProgramme = useLatestCallback\(onProgrammeChange\)/);
+  assert.match(source, /rememberProgramme\(programme\)/);
   assert.match(source, /if \(initialProgramme !== undefined\) setProgramme\(discoverProgrammeKey\(initialProgramme\)\)/);
   assert.match(source, /const \[areaExpanded, setAreaExpanded\] = useState\(false\)/);
   assert.match(source, /const \[dateExpanded, setDateExpanded\] = useState\(false\)/);

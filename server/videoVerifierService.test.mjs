@@ -11,6 +11,7 @@ import { PUBLIC_MEDIA_CACHE_CONTROL } from "./mediaDeliveryPolicy.js";
 import {
   MEDIA_VIDEO_MAX_DURATION_MS,
   MEDIA_VIDEO_MAX_SAMPLES,
+  MEDIA_VIDEO_SOURCE_MAX_BYTES,
 } from "../src/domain/mediaUploadPolicy.mjs";
 
 import {
@@ -19,6 +20,7 @@ import {
   runVideoVerifierJob,
   validateVideoVerifierJob,
   videoDeliveryStrategy,
+  videoTranscodeBitrateBudget,
 } from "./videoVerifierService.js";
 import {
   signVideoVerifierRequest,
@@ -387,6 +389,89 @@ test("delivery strategy remuxes only bounded unrotated H.264 and preserves every
     { codec: "h264", audioCodec: "mp3", rotation: 0, width: 1_920, height: 1_080 },
     { codec: "h264", audioCodec: "aac", rotation: 0, width: 1_920, height: 1_080, frameRate: 240 },
   ]) assert.equal(videoDeliveryStrategy(video), "transcode");
+});
+
+test("transcode rates reserve complete audio, VBV burst, and container headroom within the output cap", () => {
+  const short = videoTranscodeBitrateBudget(10_000);
+  assert.deepEqual(short, { maxRate: 11_000_000, bufferSize: 22_000_000, audioRate: 160_000 });
+  const longest = videoTranscodeBitrateBudget(MEDIA_VIDEO_MAX_DURATION_MS);
+  assert.deepEqual(longest, { maxRate: 6_445_000, bufferSize: 12_890_000, audioRate: 160_000 });
+  assert.ok((short.maxRate + short.audioRate) * 600 / 8 > MEDIA_VIDEO_SOURCE_MAX_BYTES,
+    "the former constant ceiling could exceed the accepted byte cap on a ten-minute noisy clip");
+  let previousRate = Number.POSITIVE_INFINITY;
+  for (const durationMs of Array.from({ length: 601 }, (_, index) => Math.max(1, index * 1_000))) {
+    const budget = videoTranscodeBitrateBudget(durationMs);
+    const worstCaseStreamBytes = ((budget.maxRate + budget.audioRate) * durationMs / 1_000 + budget.bufferSize) / 8;
+    assert.ok(worstCaseStreamBytes <= Math.floor(MEDIA_VIDEO_SOURCE_MAX_BYTES * 0.95) - 1_048_576);
+    assert.ok(budget.maxRate <= previousRate, "longer clips must not gain a higher byte rate");
+    assert.ok(budget.maxRate > 0 && budget.maxRate <= 11_000_000);
+    previousRate = budget.maxRate;
+  }
+});
+
+test("transcode output budgeting rejects invalid or over-contract durations", () => {
+  for (const durationMs of [undefined, null, "600000", 0, -1, 0.5, Number.NaN, Number.POSITIVE_INFINITY,
+    MEDIA_VIDEO_MAX_DURATION_MS + 1, Number.MAX_SAFE_INTEGER]) {
+    assert.throws(() => videoTranscodeBitrateBudget(durationMs), { code: "invalid_request" });
+  }
+});
+
+test("long HEVC and maximum-rate source jobs apply byte-safe transcode arguments without truncating", async (context) => {
+  for (const fixture of [
+    { label: "ten-minute HEVC concert", duration: "600.000", frameRate: 60, sampleCount: 36_000, maxRate: 6_445_000 },
+    { label: "maximum 240fps source", duration: "150.000", frameRate: 240, sampleCount: 36_000, maxRate: 11_000_000 },
+  ]) {
+    await context.test(fixture.label, async () => {
+      const root = await mkdtemp(join(tmpdir(), "pit-verifier-bitrate-"));
+      const audio = [{ codec_type: "audio", codec_name: "aac", codec_tag_string: "mp4a", profile: "LC",
+        channels: 2, channel_layout: "stereo", sample_rate: "48000" }];
+      const runProcess = fakeRunner({
+        probe: videoProbe({ codec: "hevc", profile: "Main 10", rotation: 0, duration: fixture.duration,
+          frameRate: `${fixture.frameRate}/1`, frameCount: String(fixture.sampleCount), metadataStreams: audio }),
+        deliveryProbe: videoProbe({ rotation: 0, duration: fixture.duration, frameRate: "60/1", metadataStreams: audio }),
+      });
+      let uploads = 0;
+      try {
+        const result = await runVideoVerifierJob(validJob({ structural: { ...validJob().structural,
+          durationMs: Number(fixture.duration) * 1_000, sampleCount: fixture.sampleCount,
+          sourceAdmissionRevision: VIDEO_VERIFIER_SOURCE_ADMISSION_REVISION,
+        } }), {
+          config: getVideoVerifierServiceConfig(ENV),
+          fetchImpl: async (url, request) => {
+            if (request.method === "PUT") { uploads += 1; return new Response(null, { status: 200 }); }
+            return new Response(SOURCE, { status: 200,
+              headers: { "content-type": "video/mp4", "content-length": String(SOURCE.byteLength), etag: ETAG } });
+          },
+          runProcess,
+          signal: AbortSignal.timeout(5_000),
+          temporaryRoot: root,
+        });
+        const creation = runProcess.calls.find((call) => call.executable === "ffmpeg"
+          && call.args.at(-1)?.endsWith("delivery.mp4"));
+        const option = (key) => creation.args[creation.args.indexOf(key) + 1];
+        assert.equal(Number(option("-maxrate")), fixture.maxRate);
+        assert.equal(Number(option("-bufsize")), fixture.maxRate * 2);
+        assert.equal(Number(option("-b:a")), 160_000);
+        const worstCaseStreamBytes = ((Number(option("-maxrate")) + Number(option("-b:a"))) * Number(fixture.duration)
+          + Number(option("-bufsize"))) / 8;
+        assert.ok(worstCaseStreamBytes < MEDIA_VIDEO_SOURCE_MAX_BYTES);
+        assert.equal(creation.args.includes("-fs") || creation.args.includes("-t"), false,
+          "do not silently truncate a member's clip to meet the output cap");
+        assert.equal(option("-crf"), "21");
+        assert.equal(option("-pix_fmt"), "yuv420p");
+        assert.equal(option("-vf").startsWith("fps=60,"), fixture.frameRate > 60);
+        assert.equal(result.delivery.durationMs, Number(fixture.duration) * 1_000);
+        assert.equal(result.delivery.width, 1_920);
+        assert.equal(result.delivery.height, 1_080);
+        assert.equal(runProcess.calls.some((call) => call.executable === "ffmpeg" && call.args.includes("null")
+          && call.args.some((arg) => String(arg).endsWith("delivery.mp4"))), true);
+        assert.equal(uploads, 1);
+        assert.deepEqual(await readdir(root), []);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+  }
 });
 
 test("authoritative bounded H.264 job strips metadata by remux, fully decodes output, and cleans temp state", async () => {

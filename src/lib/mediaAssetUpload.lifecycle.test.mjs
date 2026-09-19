@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { parse } from "@babel/parser";
-import { defaultMediaEdit } from "../domain/mediaEdit.mjs";
+import { defaultMediaEdit, mediaSourceMaxBytes, mediaSourceSizeAllowed } from "../domain/mediaEdit.mjs";
+import { mediaUploadLimitLabel, MEDIA_PHOTO_SOURCE_MAX_BYTES, MEDIA_VIDEO_SOURCE_MAX_BYTES } from "../domain/mediaUploadPolicy.mjs";
 import { mediaSourceClientAssetId } from "../domain/mediaUploadIdentity.mjs";
 import { finalizeMediaSourceV1, resumeExistingMediaSourceV1 } from "./mediaAssetFinalize.mjs";
 import { boundedMediaRequest, recoverMediaRequest } from "../domain/mediaRequestRecovery.mjs";
@@ -15,24 +16,24 @@ const body = parse(source, { sourceType: "module" }).program.body
   .map((node) => source.slice(node.start, node.end)).join("\n");
 const uploadWithFinalizer = (finalize = finalizeMediaSourceV1) => new Function("api", "isDurableMediaUrl", "prepareMediaUploadAsset", "uploadPreparedMediaAsset",
   "finalizeMediaSourceV1", "resumeExistingMediaSourceV1", "defaultMediaEdit", "mediaSourceClientAssetId",
-  "boundedMediaRequest", "recoverMediaRequest", "mediaUploadTimeoutMs",
+  "boundedMediaRequest", "recoverMediaRequest", "mediaUploadTimeoutMs", "mediaSourceMaxBytes", "mediaSourceSizeAllowed", "mediaUploadLimitLabel",
   `${body}\nreturn uploadOriginalMediaAsset;`)(
   () => { throw new Error("Unexpected default transport"); },
   (url) => /^https:\/\//u.test(url || ""),
   () => { throw new Error("Unexpected device preparation"); },
   () => { throw new Error("Unexpected device transfer"); },
   finalize, resumeExistingMediaSourceV1, defaultMediaEdit, mediaSourceClientAssetId,
-  boundedMediaRequest, recoverMediaRequest, mediaUploadTimeoutMs,
+  boundedMediaRequest, recoverMediaRequest, mediaUploadTimeoutMs, mediaSourceMaxBytes, mediaSourceSizeAllowed, mediaUploadLimitLabel,
 );
 const upload = uploadWithFinalizer();
 
-function fixture({ boundary = () => {}, resume = false } = {}) {
+function fixture({ boundary = () => {}, resume = false, readyPatch = {} } = {}) {
   const calls = [], mutations = [], stages = [], requests = [], drafts = [];
   const controller = new AbortController();
   let account = "a";
   const asset = { id: "local-a", uri: "file:///camera.jpg", kind: "image", width: 64, height: 64,
     ...(resume ? { assetId: "remote-a" } : {}) };
-  const ready = { id: "remote-a", status: "ready", url: "https://media.example.org/verified.jpg" };
+  const ready = { id: "remote-a", status: "ready", url: "https://media.example.org/verified.jpg", ...readyPatch };
   const step = async (name) => { calls.push(name); await boundary(name, { controller, setAccount: (next) => { account = next; } }); };
   const services = {
     recovery: { wait: async () => {} },
@@ -62,6 +63,75 @@ test("create, transfer and finalize preserve one initiating account", async () =
   assert.equal(f.stages.at(-1), "ready");
 });
 
+test("ready media releases its browser File reference and replaces the local URL with verified delivery", async () => {
+  const f = fixture();
+  const selectedFile = new Blob(["camera original"]);
+  const ready = await f.run({ asset: { ...f.asset, uri: "blob:camera", file: selectedFile, runtimeFile: selectedFile } });
+  assert.equal(ready.runtimeFile, null);
+  assert.equal(ready.file, null);
+  assert.equal(ready.uri, "https://media.example.org/verified.jpg");
+  assert.equal(ready.assetId, "remote-a");
+});
+
+test("source-byte kind overrides missing picker video metadata and still requires a verified poster", async () => {
+  const f = fixture({ readyPatch: { url: "https://media.example.org/verified.mp4", posterUrl: "https://media.example.org/poster.jpg", durationMs: 42_000 } });
+  const ready = await f.run({ asset: { ...f.asset, kind: "image", width: 0, height: 0, durationMs: 0 } }, {
+    prepareAsset: async () => ({ kind: "video", contentType: "video/quicktime", fileSize: 80, name: "camera.mov" }),
+  });
+  const body = f.requests.find(({ path }) => path.endsWith("/finalize")).options.body;
+  assert.equal(body.deliveryMode, undefined);
+  assert.equal(body.durationMs, undefined);
+  assert.equal(body.width, undefined);
+  assert.equal(body.height, undefined);
+  assert.deepEqual(body.editRecipe, defaultMediaEdit("video", { durationMs: 0 }));
+  assert.equal(ready.kind, "video");
+  assert.equal(ready.durationMs, 42_000);
+  assert.equal(ready.posterUrl, "https://media.example.org/poster.jpg");
+  assert.equal(f.drafts.at(-1).kind, "video", "Retry must retain the byte-sniffed source kind.");
+
+  const missingPoster = fixture();
+  await assert.rejects(missingPoster.run({}, {
+    prepareAsset: async () => ({ kind: "video", contentType: "video/mp4", fileSize: 80, name: "camera.mp4" }),
+  }), { code: "VIDEO_POSTER_REQUIRED" });
+});
+
+test("a byte-sniffed image cannot keep a stale picker video recipe", async () => {
+  const f = fixture();
+  const ready = await f.run({ asset: { ...f.asset, kind: "video", durationMs: 10_000 } }, {
+    prepareAsset: async () => ({ kind: "image", contentType: "image/jpeg", fileSize: 80, name: "photo.jpg" }),
+  });
+  const body = f.requests.find(({ path }) => path.endsWith("/finalize")).options.body;
+  assert.equal(body.deliveryMode, "server");
+  assert.equal(body.durationMs, undefined);
+  assert.deepEqual(body.editRecipe, defaultMediaEdit("image", { durationMs: 0 }));
+  assert.equal(ready.kind, "image");
+});
+
+test("sniffed size limits apply before create or transfer, including unclassified originals", async () => {
+  for (const kind of ["image", "video"]) {
+    const limit = kind === "video" ? MEDIA_VIDEO_SOURCE_MAX_BYTES : MEDIA_PHOTO_SOURCE_MAX_BYTES;
+    const f = fixture();
+    await assert.rejects(f.run({}, { prepareAsset: async () => ({ kind, contentType: `${kind}/fixture`, fileSize: limit + 1, name: "untyped" }) }), { status: 413, retryable: false });
+    assert.deepEqual(f.requests, []);
+    assert.deepEqual(f.calls, []);
+    assert.deepEqual(f.drafts, []);
+  }
+  const f = fixture({ readyPatch: { posterUrl: "https://media.example.org/poster.jpg" } });
+  const ready = await f.run({}, { prepareAsset: async () => ({ kind: "video", contentType: "video/mp4", fileSize: MEDIA_PHOTO_SOURCE_MAX_BYTES + 1, name: "untyped" }) });
+  assert.equal(ready.kind, "video", "A valid clip must not inherit the smaller photo ceiling.");
+  assert.equal(f.requests[0].options.body.fileSize, MEDIA_PHOTO_SOURCE_MAX_BYTES + 1);
+});
+
+test("failed verification retains the original File and local handle for a deliberate retry", async () => {
+  const f = fixture({ boundary: (step) => { if (step === "finalize") throw Object.assign(new Error("Busy"), { status: 429, code: "RATE_LIMITED" }); } });
+  const file = new Blob(["original"]);
+  const asset = { ...f.asset, uri: "blob:pending", runtimeFile: file };
+  await assert.rejects(f.run({ asset }), { status: 429 });
+  assert.equal(asset.runtimeFile, file);
+  assert.equal(asset.uri, "blob:pending");
+  assert.equal(f.stages.includes("ready"), false);
+});
+
 test("resuming an owner draft binds the read and skips device bytes", async () => {
   const f = fixture({ resume: true }); assert.equal((await f.run()).status, "ready");
   assert.deepEqual(f.calls, ["read"]);
@@ -71,6 +141,14 @@ test("a saved remote-only draft resumes without a vanished camera-roll URL", asy
   const f = fixture({ resume: true });
   assert.equal((await f.run({ asset: { ...f.asset, uri: "", runtimeFile: null } })).status, "ready");
   assert.deepEqual(f.calls, ["read"], "resume must not re-read or re-upload private device bytes");
+});
+
+test("resumed uploads adopt authoritative source kind and cannot bypass the video poster requirement", async () => {
+  const f = fixture({ resume: true, readyPatch: { kind: "video", url: "https://media.example.org/clip.mp4", posterUrl: "https://media.example.org/poster.jpg" } });
+  const ready = await f.run();
+  assert.equal(ready.kind, "video");
+  const missing = fixture({ resume: true, readyPatch: { kind: "video", url: "https://media.example.org/clip.mp4" } });
+  await assert.rejects(missing.run(), { code: "VIDEO_POSTER_REQUIRED" });
 });
 
 test("a new selection without a local source or server identity still fails before any work", async () => {
@@ -188,7 +266,7 @@ test("temporary creation failures recover with the identical client upload ident
   assert.equal(new Set(creations.map(({ options }) => JSON.stringify(options.body))).size, 1);
   assert.equal(creations.every(({ options }) => options.silent === true), true);
   assert.equal(JSON.stringify(f.asset), before, "Recovery never changes the selected source or draft");
-  assert.deepEqual(f.drafts, [{ assetId: "remote-a", duplicate: false, sourceUploaded: false }, { assetId: "remote-a", duplicate: false, sourceUploaded: true }]);
+  assert.deepEqual(f.drafts, [{ assetId: "remote-a", kind: "image", duplicate: false, sourceUploaded: false }, { assetId: "remote-a", kind: "image", duplicate: false, sourceUploaded: true }]);
 });
 
 test("exhausted creation recovery preserves selection and cannot upload bytes or report ready", async () => {

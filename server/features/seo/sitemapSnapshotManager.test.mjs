@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -94,6 +94,76 @@ test("sitemap lookups never build and distinguish unavailable, missing, and unre
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
   }
+});
+
+test("interactive preemption preserves the last good snapshot without counting a server failure", async () => {
+  let preempt, releaseWorker, aborted = false, releases = 0, first = true;
+  const { dataDir, manager } = createTempManager({
+    acquireRefreshLease(options) { preempt = options.onPreempt; return { release() { releases++; } }; },
+    buildSnapshot({ signal }) {
+      if (first) { first = false; return testSnapshot("before-upload"); }
+      return new Promise((_resolve, reject) => {
+        releaseWorker = () => reject(signal.reason);
+        signal.addEventListener("abort", () => { aborted = true; }, { once: true });
+      });
+    },
+  });
+  try {
+    assert.equal((await manager.refresh()).ok, true);
+    const before = manager.xmlFor("/sitemaps/pages.xml");
+    const pending = manager.refresh({ force: true });
+    await new Promise(resolve => setImmediate(resolve));
+    preempt();
+    assert.equal(aborted, true);
+    assert.equal(releases, 1, "preemption itself cannot release a still-running child");
+    releaseWorker();
+    const result = await pending;
+    assert.equal(result.reason, "resource_pressure");
+    assert.equal(manager.xmlFor("/sitemaps/pages.xml"), before);
+    assert.equal(manager.health().consecutiveFailures, 0);
+    assert.equal(releases, 2);
+  } finally { rmSync(dataDir, { recursive: true, force: true }); }
+});
+
+test("preemption during persistence setup leaves the committed snapshot and no partial file", async () => {
+  let preempt, first = true, releases = 0;
+  const { dataDir, manager } = createTempManager({
+    acquireRefreshLease(options) { preempt = options.onPreempt; return { release() { releases++; } }; },
+    buildSnapshot() {
+      if (first) { first = false; return testSnapshot("committed"); }
+      const snapshot = testSnapshot("must-not-publish");
+      let scheduled = false;
+      return { ...snapshot, xmlFor(path) {
+        if (!scheduled) { scheduled = true; queueMicrotask(() => preempt()); }
+        return snapshot.xmlFor(path);
+      } };
+    },
+  });
+  try {
+    assert.equal((await manager.refresh()).ok, true);
+    const before = readFileSync(manager.persistedPath, "utf8");
+    assert.equal((await manager.refresh({ force: true })).reason, "resource_pressure");
+    assert.equal(readFileSync(manager.persistedPath, "utf8"), before);
+    assert.match(manager.xmlFor("/sitemaps/pages.xml"), /committed/);
+    assert.equal(readdirSync(dataDir).filter(name => name.endsWith(".tmp")).length, 0);
+    assert.equal(releases, 2);
+    assert.equal(manager.health().consecutiveFailures, 0);
+  } finally { rmSync(dataDir, { recursive: true, force: true }); }
+});
+
+test("an unrelated storage failure is not hidden merely because preemption was requested", async () => {
+  let preempt;
+  const { dataDir, manager } = createTempManager({
+    acquireRefreshLease(options) { preempt = options.onPreempt; return { release() {} }; },
+    buildSnapshot() {
+      preempt();
+      throw Object.assign(new Error("storage full"), { code: "ENOSPC" });
+    },
+  });
+  try {
+    assert.equal((await manager.refresh()).reason, "refresh_storage");
+    assert.equal(manager.health().consecutiveFailures, 1);
+  } finally { rmSync(dataDir, { recursive: true, force: true }); }
 });
 
 test("concurrent refreshes coalesce, persist atomically, and load before serving", async () => {

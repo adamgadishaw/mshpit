@@ -238,7 +238,7 @@ export function createSitemapSnapshotManager({
   retryMaximumMs = 15 * 60 * 1_000,
   deferBuild = () => new Promise((resolve) => setImmediate(resolve)),
   maximumPersistedBytes = SITEMAP_MAX_PERSISTED_SNAPSHOT_BYTES,
-  acquireRefreshLease = () => tryAcquireMemoryWork("sitemap"),
+  acquireRefreshLease = (options = {}) => tryAcquireMemoryWork("sitemap", options),
 } = {}) {
   if (!database?.prepare) throw new TypeError("Sitemap snapshot manager requires a database");
   if (typeof dataDir !== "string" || !dataDir.trim()) throw new TypeError("Sitemap snapshot manager requires the configured data directory");
@@ -337,22 +337,31 @@ export function createSitemapSnapshotManager({
     }
   };
 
-  const persist = async (payload) => {
+  const persist = async (payload, { signal } = {}) => {
+    const checkCancelled = () => { if (signal?.aborted) throw signal.reason; };
+    checkCancelled();
     await mkdir(dataDir, { recursive: true });
     const temporaryPath = `${persistedPath}.${process.pid}.${Number(now())}.tmp`;
     let temporaryHandle = null;
     try {
+      checkCancelled();
       temporaryHandle = await open(temporaryPath, "wx", 0o600);
       let writtenBytes = 0;
       for (const chunk of sitemapSnapshotJsonChunks(payload)) {
+        checkCancelled();
         writtenBytes += Buffer.byteLength(chunk, "utf8");
         if (writtenBytes > persistedByteLimit) throw new TypeError("SITEMAP_SNAPSHOT_FILE_SIZE");
         await temporaryHandle.writeFile(chunk, { encoding: "utf8" });
       }
+      checkCancelled();
       await temporaryHandle.sync();
+      checkCancelled();
       await temporaryHandle.close();
       temporaryHandle = null;
+      checkCancelled();
       await rename(temporaryPath, persistedPath);
+      // Rename commits a complete validated snapshot. Finish publication after
+      // this boundary even if an interactive request arrives during directory fsync.
       try {
         const directoryHandle = await open(dataDir, "r");
         try { await directoryHandle.sync(); } finally { await directoryHandle.close(); }
@@ -383,17 +392,20 @@ export function createSitemapSnapshotManager({
     refreshStartedAt = requestedAt;
     refreshPromise = (async () => {
       let lease = null;
+      const controller = new AbortController();
+      const preempted = Object.assign(new Error("Sitemap yields to interactive work."), { code: "sitemap_preempted" });
       try {
         await deferBuild();
-        lease = acquireRefreshLease({ phase: "refresh" });
+        lease = acquireRefreshLease({ phase: "refresh", onPreempt: () => controller.abort(preempted) });
         if (!lease) {
           lastDeferredAt = Number(now());
           nextRetryAt = lastDeferredAt + DEFAULT_RETRY_SECONDS * 1_000;
           return Object.freeze({ ok: false, reason: "resource_pressure", retryAt: nextRetryAt });
         }
-        const built = await buildSnapshot({ database, env, now: requestedAt });
+        const built = await buildSnapshot({ database, env, now: requestedAt, signal: controller.signal });
+        if (controller.signal.aborted) throw controller.signal.reason;
         const payload = payloadFromSnapshot(built, env);
-        await persist(payload);
+        await persist(payload, { signal: controller.signal });
         current = hydratedSnapshot(payload);
         source = "refresh";
         lastSuccessAt = Number(now());
@@ -403,6 +415,11 @@ export function createSitemapSnapshotManager({
         nextRetryAt = null;
         return Object.freeze({ ok: true, snapshot: current });
       } catch (error) {
+        if (error === preempted) {
+          lastDeferredAt = Number(now());
+          nextRetryAt = lastDeferredAt + DEFAULT_RETRY_SECONDS * 1_000;
+          return Object.freeze({ ok: false, reason: "resource_pressure", retryAt: nextRetryAt });
+        }
         consecutiveFailures += 1;
         lastFailureAt = Number(now());
         lastFailureCategory = failureCategory(error, "refresh");

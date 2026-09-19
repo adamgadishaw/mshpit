@@ -49,9 +49,9 @@ test("original upload leaves admission to the authenticated route and keeps prog
   includes(upload, 'fraction: stage === "ready" ? 1 : 0');
   excludes(upload, 'stage.startsWith("verifying-") ? 1');
   includes(source, "uploadControllerRef.current?.abort()");
-  includes(upload, "onRemoteDraft: ({ assetId, sourceUploaded, retiredAssetId }) =>");
+  includes(upload, "onRemoteDraft: ({ assetId, sourceUploaded, retiredAssetId, kind: sourceKind }) =>");
   includes(upload, "if (sourceUploaded !== true) return");
-  includes(upload, "originalMediaProjectAsset({ ...candidate, assetId }, candidateIndex)");
+  includes(upload, 'originalMediaProjectAsset({ ...candidate, assetId, kind: ["image", "video"].includes(sourceKind) ? sourceKind : candidate.kind }, candidateIndex)');
   const retirement = source.slice(source.indexOf("async function retireRemoteDrafts"), source.indexOf("const refreshMediaPublishingCapabilities"));
   includes(retirement, "remoteDraftAssetIdsRef.current.get(localId) === assetId");
   includes(retirement, "normalizeMediaProjectAsset({ ...asset, assetId: null }, index)");
@@ -150,13 +150,25 @@ test("picker requests iOS permission before original passthrough selection", () 
   includes(picker, "const pickerCapabilities = { photos: true, videos: true }");
   includes(picker, "void refreshMediaPublishingCapabilities({ background: true })");
   const permission = picker.indexOf("await ImagePicker.requestMediaLibraryPermissionsAsync()");
-  const launch = picker.indexOf("await ImagePicker.launchImageLibraryAsync(");
+  const launch = picker.indexOf("await launchComposerMediaLibrary(");
   assert.ok(permission >= 0 && launch > permission);
   includes(picker, "if (!permission?.granted)");
   includes(picker, "await stageSelectedAssets(res.assets)");
   excludes(picker, "await refreshMediaPublishingCapabilities");
   includes(source, 'const mediaAttachmentLabel = "Photo / video"');
   includes(source, 'const mediaAddLabel = "Add media"');
+});
+
+test("picker is synchronously fenced and an abandoned Safari selection can be canceled", () => {
+  const picker = source.slice(source.indexOf("const addPhoto"), source.indexOf("const cancelUpload"));
+  includes(picker, "if (pickerOperationRef.current || uploadOperationRef.current");
+  includes(picker, "pickerOperationRef.current = task.controller");
+  includes(picker, "signal: task.controller.signal");
+  includes(picker, "} finally {");
+  includes(picker, "pickerOperationRef.current === task.controller");
+  includes(picker, "releaseMediaDraftAssets(res?.assets)");
+  includes(source, 'accessibilityLabel="Cancel media selection"');
+  includes(source, "const submitBusy = pickingMedia || uploadingPhotos");
 });
 
 test("pending Android picker recovery does not wait for or get consumed by media health", () => {

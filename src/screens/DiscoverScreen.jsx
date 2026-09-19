@@ -19,7 +19,7 @@ import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import CityDiscoveryTiles from "../features/cities/CityDiscoveryTiles";
 import { CityNavigationContext } from "../components/cities/CityNavigationContext";
 import { eventPath } from "../domain/urls.mjs";
-import { discoverProgrammeKey } from "../domain/discoverProgramme.mjs";
+import { discoverProgrammeKey, restoredDiscoverProgramme } from "../domain/discoverProgramme.mjs";
 import { buildDiscoverEventBannerSlides } from "../domain/discoverEventBanner.mjs";
 import {
   DISCOVER_AREA_SCOPE,
@@ -77,6 +77,8 @@ function useLatestCallback(callback) {
 
 export default function DiscoverScreen({
   initialProgramme,
+  rememberedProgramme,
+  onProgrammeChange,
   onOpen,
   onOpenTopRated,
   onOpenEvents,
@@ -110,7 +112,9 @@ export default function DiscoverScreen({
   const veryCompact = width < 380;
   const wide = width >= 900;
   const actionBasis = veryCompact ? "100%" : "48%";
-  const [programme, setProgramme] = useState(() => discoverProgrammeKey(initialProgramme));
+  const [programme, setProgramme] = useState(() => restoredDiscoverProgramme(initialProgramme, rememberedProgramme));
+  const rememberProgramme = useLatestCallback(onProgrammeChange);
+  useEffect(() => { rememberProgramme(programme); }, [programme, rememberProgramme]);
   useEffect(() => {
     if (initialProgramme !== undefined) setProgramme(discoverProgrammeKey(initialProgramme));
   }, [initialProgramme]);

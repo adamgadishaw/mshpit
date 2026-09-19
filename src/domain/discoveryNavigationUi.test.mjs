@@ -33,8 +33,8 @@ test("Discover retains upcoming events and deeper discovery alongside its connec
   assert.match(source, /const liveEvents = useMemo\(\(\) => upcomingEventsForScope/);
   assert.match(source, /accessibilityLabel="Browse all events"/);
   assert.equal((source.match(/<DiscoverVenues/g) || []).length, 1, "The map and list are one coherent explorer");
-  assert.match(explorer, /<VenueMap venues=\{venues\} selected=\{selected\?\.id\} onSelect=\{selectVenue\}/);
-  assert.match(explorer, /onPress=\{\(\) => selectVenue\(venue\.id\)\}/);
+  assert.match(explorer, /mapOpen && <VenueMap venues=\{venues\} selected=\{chosenVenue\} onSelect=\{selectMapVenue\}/);
+  assert.match(explorer, /onPress=\{\(\) => onOpenVenue\?\.\(venue\)\}/);
   assert.equal((source.match(/title="Find venues"/g) || []).length, 0, "Venues already owns a full section");
   assert.match(source, /const sceneProjection = useMemo\(\(\) => projectDiscoverScene\(rangeMatchesScene \? eventRange\.rows : tourDates, \{[\s\S]*region,[\s\S]*eventLimit: 12,[\s\S]*venueLimit: 8,[\s\S]*countryForCity,[\s\S]*\}\), \[eventRange\.rows, rangeMatchesScene, region, tourDates\]\)/);
   assert.match(source, /const initialRangeEvents = useMemo\(\(\) => selectDiscoverRangeEvents\([\s\S]*localEvents : sceneProjection\.events/);
@@ -48,7 +48,7 @@ test("Discover retains upcoming events and deeper discovery alongside its connec
   assert.match(source, /supportedCountries: DISCOVER_SUPPORTED_EVENT_COUNTRIES/);
   assert.match(source, /const sceneChoiceLimit = compact \? 3 : 12/);
   assert.match(source, /venueDirectoryIndex=\{venueDirectoryIndex\}/);
-  assert.match(explorer, /No upcoming dates in this snapshot/);
+  assert.match(explorer, /No upcoming shows listed/);
   assert.match(source, />\{compactDiscoverNumber\(country\.count\)\} upcoming</);
   assert.match(source, /worldLabel=\{region\}/);
   assert.match(source, /key=\{`events:\$\{liveScope\}:\$\{discoverCountryIdentity\(region\)\}`\}/);

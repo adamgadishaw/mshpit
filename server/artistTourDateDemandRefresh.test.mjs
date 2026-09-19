@@ -427,6 +427,37 @@ test("provider failure survives restart and retries after its durable backoff", 
   assert.equal(db.prepare("SELECT status,attempt_count FROM artist_tourdate_refresh_queue").get().attempt_count, 0);
 });
 
+test("empty and settled demand queues sleep until new work arrives", async () => {
+  const nowRef = { value: 2_125_000_000_000 };
+  const timers = [];
+  let admissions = 0;
+  const service = testService({
+    nowRef, autoSchedule: true,
+    runJob: (job) => { admissions += 1; return Promise.resolve().then(job); },
+    refreshArtist: async () => ({ rows: [], complete: true }),
+    setTimerFn(callback, delay) {
+      const timer = { callback, delay, unref() {} };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimerFn() {},
+  });
+  service.start();
+  assert.equal(timers.length, 0, "NULL must not become an immediately due timestamp");
+  assert.equal(admissions, 0);
+  addArtist("New Demand");
+  assert.equal(service.enqueue({ artistKey: "new demand", authenticated: true }).queued, true);
+  assert.equal(timers.length, 1, "enqueue wakes an idle scheduler");
+  timers[0].callback();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(admissions, 1);
+  assert.equal(timers.length, 1, "cooldown-only queue does not schedule empty jobs");
+  nowRef.value += 5001;
+  assert.equal(service.enqueue({ artistKey: "new demand", authenticated: true }).queued, true);
+  assert.equal(timers.length, 2, "new demand wakes after cooldown");
+  await service.stop();
+});
+
 test("memory admission defers the exact-artist queue without provider failure or a hot retry loop", async () => {
   addArtist("Capacity Artist");
   const nowRef = { value: 2_125_000_000_000 };

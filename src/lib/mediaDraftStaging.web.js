@@ -1,3 +1,5 @@
+import { releaseComposerPickerAsset } from "./composerMediaPicker.web.mjs";
+
 export async function stageMediaDraftAssets(assets) {
   return Array.isArray(assets) ? assets : [];
 }
@@ -8,8 +10,10 @@ export async function recoverMediaDraftAssets(assets) {
     || /^blob:/i.test(String(asset?.uri || "")));
 }
 
-export async function releaseMediaDraftAsset() { return false; }
-export async function releaseMediaDraftAssets() {}
+export async function releaseMediaDraftAsset(asset) { return releaseComposerPickerAsset(asset); }
+export async function releaseMediaDraftAssets(assets) {
+  for (const asset of Array.isArray(assets) ? assets : []) releaseComposerPickerAsset(asset);
+}
 export async function pruneStaleMediaDraftAssets() { return 0; }
 // Web picker/blob handles are not copied into durable PIT-owned storage, so
 // there is no account directory to erase. Treat the no-op as successful.

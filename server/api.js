@@ -21,6 +21,7 @@ import { db, DATABASE_PATH, q, emailStmts, badgeStmts, customBadgesFor, publicUs
 import { publicArtistPhoto } from "./artistPhotoCatalog.js";
 import { resolveReviewedArtistAlias } from "./reviewedArtistIdentities.js";
 import { createArtistLookupWork } from "./artistLookupWork.js";
+import { resolveArtistPreviewWithFallback } from "./artistPreviewRecovery.js";
 import { createArtistFallbackCache, isOptionalArtistCacheStorageFailure } from "./artistFallbackCache.js";
 import { discardProviderResponse, providerRetryAfterMs } from "./providerResponsePolicy.js";
 import { BADGE_COLORS, BADGE_GLYPHS, BADGE_KINDS, validateBadge } from "../src/domain/badgeArt.mjs";
@@ -4914,15 +4915,13 @@ export const routes = {
       };
     }
     limit(ctx, "resolve", 90, 10 * 60 * 1000); // cap outbound MB lookups per client
-    let mb;
-    try {
-      mb = await resolveFromMusicBrainz(name, { signal: ctx.signal, priority: "interactive" });
-    } catch (error) {
-      // A provider outage must not fail a lookup this catalogue has already
-      // answered. Every other failure, including no exact match, still fails.
-      if (error?.code !== "PROVIDER_UNAVAILABLE") throw error;
-      const fallback = await resolveFromDeezerExactName(name, { signal: ctx.signal });
-      if (!fallback) throw error;
+    const preview = await resolveArtistPreviewWithFallback({
+      signal: ctx.signal,
+      primary: (signal) => resolveFromMusicBrainz(name, { signal, priority: "interactive" }),
+      fallback: (signal) => resolveFromDeezerExactName(name, { signal }),
+    });
+    if (preview.provider === "deezer") {
+      const fallback = preview.artist;
       artistFallbackCache.remember(name, fallback);
       return {
         artist: {
@@ -4934,20 +4933,8 @@ export const routes = {
         providerFallback: "deezer",
       };
     }
-    if (!mb) {
-      const fallback = await resolveFromDeezerExactName(name, { signal: ctx.signal });
-      if (!fallback) return { artist: null, created: false };
-      artistFallbackCache.remember(name, fallback);
-      return {
-        artist: {
-          ...publicArtist(artistRow(fallback.name, fallback, "deezer")),
-          fanClubAvailable: true,
-        },
-        created: false,
-        transient: true,
-        providerFallback: "deezer",
-      };
-    }
+    const mb = preview.artist;
+    if (!mb) return { artist: null, created: false };
     rememberMusicBrainzResolution(name, mb);
     return {
       artist: { ...publicArtist(artistRow(mb.name, mb, "musicbrainz")), fanClubAvailable: true },

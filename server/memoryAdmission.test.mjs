@@ -137,6 +137,41 @@ test("aborting a memory waiter immediately releases its retained-byte budget", a
   image.release();
 });
 
+test("interactive uploads preempt sitemap work once but wait for its actual release", async () => {
+  const admission = createMemoryAdmission({ readMemory: healthy });
+  let cancellations = 0;
+  const sitemap = admission.tryAcquire("sitemap", { onPreempt() { cancellations++; } });
+  assert.equal(admission.snapshot().reservedBytes, 576 * MIB);
+  const background = admission.acquire("background", { timeoutMs: 1000 });
+  assert.equal(cancellations, 0, "ordinary maintenance cannot cancel a sitemap");
+  let admitted = false;
+  const photo = admission.acquire("image", { timeoutMs: 1000 }).then(lease => { admitted = true; return lease; });
+  assert.equal(cancellations, 1);
+  const share = admission.acquire("share", { timeoutMs: 1000 });
+  assert.equal(cancellations, 1, "one worker receives only one cancellation");
+  await Promise.resolve();
+  assert.equal(admitted, false, "cancellation is not proof of process death");
+  sitemap.release();
+  const photoLease = await photo;
+  assert.ok(photoLease);
+  photoLease.release();
+  const shareLease = await share;
+  assert.ok(shareLease);
+  shareLease.release();
+  (await background).release();
+});
+
+test("a failed sitemap cancellation never releases its memory reservation", async () => {
+  const admission = createMemoryAdmission({ readMemory: healthy });
+  const sitemap = admission.tryAcquire("sitemap", { onPreempt() { throw new Error("not stopped"); } });
+  const controller = new AbortController();
+  const photo = admission.acquire("image", { signal: controller.signal });
+  assert.deepEqual(admission.snapshot().activeKinds, ["sitemap"]);
+  controller.abort();
+  await assert.rejects(photo, { name: "AbortError" });
+  sitemap.release();
+});
+
 test("under memory pressure heavy work is deferred without allocating a wait queue", () => {
   const admission = createMemoryAdmission({ readMemory: () => ({ ...healthy(), usedBytes: 2000 * MIB }) });
   for (let index = 0; index < 10000; index += 1) assert.equal(admission.tryAcquire("share"), null);

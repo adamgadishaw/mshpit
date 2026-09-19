@@ -11,6 +11,12 @@ export function discoverProgrammeKey(value) {
   return DISCOVER_PROGRAMME_SECTIONS.some((section) => section.key === value) ? value : "shows";
 }
 
+// A public directory deep link wins; otherwise restore the current app's
+// destination after a detail overlay unmounts Discover. No browser storage.
+export function restoredDiscoverProgramme(initialProgramme, rememberedProgramme) {
+  return discoverProgrammeKey(initialProgramme === undefined ? rememberedProgramme : initialProgramme);
+}
+
 export function discoverProgrammeKeyboardTarget(current, key) {
   const sections = DISCOVER_PROGRAMME_SECTIONS;
   const index = sections.findIndex((section) => section.key === discoverProgrammeKey(current));

@@ -39,6 +39,13 @@ const VIDEO_MAX_EDGE = MEDIA_VIDEO_SOURCE_MAX_LONG_EDGE;
 const VIDEO_MAX_SAMPLES = MEDIA_VIDEO_MAX_SAMPLES;
 const DELIVERY_MAX_WIDTH = 1_920;
 const DELIVERY_MAX_HEIGHT = 1_080;
+const DELIVERY_VIDEO_MAX_RATE = 11_000_000;
+const DELIVERY_AUDIO_RATE = 160_000;
+const DELIVERY_VBV_SECONDS = 2;
+// Keep mux tables, encoder overshoot/padding and other container overhead out
+// of the elementary-stream allowance. The final on-disk byte guard remains
+// authoritative; an FFmpeg rate setting is not a substitute for that check.
+const DELIVERY_STREAM_BUDGET_BYTES = Math.floor(VIDEO_MAX_BYTES * 0.95) - 1_048_576;
 const VIDEO_MAX_CODED_PIXEL_SAMPLES = 120n * 68n * 256n * BigInt(MEDIA_VIDEO_MAX_SAMPLES);
 const POSTER_MAX_BYTES = 1_500_000;
 const POSTER_MAX_EDGE = 1_280;
@@ -614,6 +621,23 @@ export function videoDeliveryStrategy(video = {}) {
     : "transcode";
 }
 
+export function videoTranscodeBitrateBudget(durationMs) {
+  if (!Number.isSafeInteger(durationMs) || durationMs < 1 || durationMs > VIDEO_MAX_DURATION_MS) {
+    throw serviceError("invalid_request", "Video duration is invalid for the delivery byte budget.");
+  }
+  const seconds = durationMs / 1_000;
+  // Reserve the complete AAC allowance even for silent sources, and account
+  // for one full VBV buffer in addition to the sustained video rate. A fixed
+  // 11 Mbps ceiling alone could expand a ten-minute HEVC source beyond 500 MiB.
+  const availableVideoBits = DELIVERY_STREAM_BUDGET_BYTES * 8 - DELIVERY_AUDIO_RATE * seconds;
+  const maxRate = Math.min(DELIVERY_VIDEO_MAX_RATE,
+    Math.floor(availableVideoBits / (seconds + DELIVERY_VBV_SECONDS) / 1_000) * 1_000);
+  if (!Number.isSafeInteger(maxRate) || maxRate < 1_000) {
+    throw serviceError("invalid_request", "Video has no safe delivery bitrate allowance.");
+  }
+  return { maxRate, bufferSize: maxRate * DELIVERY_VBV_SECONDS, audioRate: DELIVERY_AUDIO_RATE };
+}
+
 async function createSanitizedDelivery(
   sourcePath,
   deliveryPath,
@@ -623,6 +647,7 @@ async function createSanitizedDelivery(
   { runProcess, directory, signal },
 ) {
   const strategy = videoDeliveryStrategy(sourceVideo);
+  const bitrate = strategy === "transcode" ? videoTranscodeBitrateBudget(sourceVideo.durationMs) : null;
   const frameRateFilter = sourceVideo.frameRate > MEDIA_VIDEO_DELIVERY_MAX_FRAME_RATE + 0.01
     ? `fps=${MEDIA_VIDEO_DELIVERY_MAX_FRAME_RATE},`
     : "";
@@ -644,12 +669,13 @@ async function createSanitizedDelivery(
         `-vf`, `${frameRateFilter}scale=w='min(${DELIVERY_MAX_WIDTH},iw)':h='min(${DELIVERY_MAX_HEIGHT},ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1`,
         // Concert footage is often grainy enough that unconstrained CRF H.264 can
         // expand beyond the bounded delivery contract even from a smaller HEVC
-        // source. VBV keeps the sanitized output inside that contract while CRF
-        // still spends fewer bits on easier scenes.
+        // source. Duration-aware VBV reserves audio/container/burst headroom;
+        // CRF still spends fewer bits on easier scenes and short clips retain
+        // the existing 11 Mbps ceiling. Never truncate output with -fs or -t.
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
-        "-maxrate", "11M", "-bufsize", "22M",
+        "-maxrate", String(bitrate.maxRate), "-bufsize", String(bitrate.bufferSize),
         "-profile:v", "high", "-level:v", "4.2", "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-profile:a", "aac_low", "-ac", "2", "-ar", "48000", "-b:a", "160k",
+        "-c:a", "aac", "-profile:a", "aac_low", "-ac", "2", "-ar", "48000", "-b:a", String(bitrate.audioRate),
       ];
   await runProcess(config.ffmpeg, [
     ...commonInput,
