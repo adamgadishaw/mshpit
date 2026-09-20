@@ -141,6 +141,7 @@ export function clientCrashDiagnostic(error, { origin } = {}) {
   if (message) diagnostic.message = message;
   if (typeof origin !== "string" || !/^https?:\/\//.test(origin)) return diagnostic;
   const frames = errorField(error, "stack").slice(0, 16_384).split("\n").slice(0, 24);
+  let runtimeLocation = null;
   for (const frame of frames) {
     // WebKit names top-level frames "global code" and "module code"; every browser on
     // iPhone is WebKit, so a crash during module evaluation has only those frames.
@@ -161,10 +162,19 @@ export function clientCrashDiagnostic(error, { origin } = {}) {
       const location = normalizeClientCrashLocation({
         asset, line: Number(match[2]), column: Number(match[3]),
       });
-      if (location) return { ...diagnostic, location };
+      if (!location) continue;
+      // Metro throws unknown-module errors inside its own loader. That frame is
+      // identical for every screen and only points back into Expo. Prefer the
+      // next app chunk frame so a future report identifies the failing surface,
+      // but retain it as a fallback when the browser supplies no later frame.
+      if (asset.startsWith("__expo-metro-runtime-")) {
+        runtimeLocation ||= location;
+        continue;
+      }
+      return { ...diagnostic, location };
     } catch { /* Malformed or non-first-party frames are not diagnostic locations. */ }
   }
-  return diagnostic;
+  return runtimeLocation ? { ...diagnostic, location: runtimeLocation } : diagnostic;
 }
 
 export const CLIENT_CRASH_KINDS = Object.freeze(Object.keys(CRASH_CODES));

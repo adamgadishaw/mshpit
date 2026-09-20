@@ -236,7 +236,7 @@ export async function api(path, { method = "GET", body, context, silent = false,
       context: operation,
       source: "api",
     });
-    const retryAfterMs = retryAfterDelayMs(res.headers?.get?.("retry-after"), { status: res.status, retryable: err.retryable });
+    const retryAfterMs = retryAfterDelayMs(res.headers?.get?.("retry-after"), { status: res.status, retryable: err.retryable, code: err.serverCode });
     if (retryAfterMs != null) err.retryAfterMs = retryAfterMs;
     throw apiFailure(err, { path, method: verb, context: operation, silent });
   }
@@ -360,7 +360,7 @@ export async function apiBinary(path, {
       context: operation,
       source: "api",
     });
-    const retryAfterMs = retryAfterDelayMs(res.headers?.get?.("retry-after"), { status: res.status, retryable: err.retryable });
+    const retryAfterMs = retryAfterDelayMs(res.headers?.get?.("retry-after"), { status: res.status, retryable: err.retryable, code: err.serverCode });
     if (retryAfterMs != null) err.retryAfterMs = retryAfterMs;
     throw apiFailure(err, { path, method: verb, context: operation, silent });
   }

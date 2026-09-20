@@ -93,7 +93,7 @@ test("pending local videos render a picker still or lightweight tile without sta
 test("submit claims a synchronous lock and checkpoints its exact id before either post request", () => {
   includes(source, "const submitOperationRef = useRef(false)");
   const submit = source.slice(source.indexOf("const submit = async () =>"), source.indexOf("\n\n  return (", source.indexOf("const submit = async () =>")));
-  includes(submit, "if (!canPost || submitBusy || submitOperationRef.current) return");
+  includes(submit, "if (!canPost || submitBusy || postCoolingDown || featuredPostingBlocked || submitOperationRef.current) return");
   const claim = submit.indexOf("submitOperationRef.current = true");
   const posting = submit.indexOf("setPosting(true)");
   const checkpoint = submit.indexOf("persistDraftSnapshot(normalizeComposerDraft({");

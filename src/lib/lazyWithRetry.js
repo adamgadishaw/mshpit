@@ -22,6 +22,12 @@ export function isStaleChunkError(error) {
   return name === "ChunkLoadError"
     || /chunkloaderror/i.test(code)
     || /loading (?:css )?chunk .+ failed/i.test(message)
+    // Expo's web runtime can load the chunk itself but still find that its
+    // module registry belongs to a different bundle graph. This is the same
+    // stale-deploy class as a missing hashed asset, and one guarded reload is
+    // the only safe repair. The sessionStorage guard below prevents a loop if
+    // a current build is genuinely broken.
+    || /^Requiring unknown module "\d{1,9}"\.$/i.test(message)
     || /\b404\b/i.test(message);
 }
 

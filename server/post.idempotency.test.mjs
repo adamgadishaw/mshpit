@@ -9,6 +9,7 @@ process.env.PIT_DATA_DIR = dataDir;
 
 const { db, q } = await import("./db.js");
 const { ApiError, routes } = await import("./api.js");
+const { apiRetryAfterHeaders } = await import("./responseHeaders.js");
 
 after(() => {
   db.close();
@@ -257,4 +258,36 @@ test("a receipt committed by a competing creator resolves as duplicate or payloa
     () => create({ user, ip: "race-loser-conflict", body: { ...body, review: "Losing payload" } }),
     (error) => error instanceof ApiError && error.code === "POST_MUTATION_CONFLICT",
   );
+});
+
+test("the hourly post limit returns retry guidance without breaking an idempotent retry", () => {
+  const user = addUser("postratelimit");
+  const create = routes["POST /api/posts"];
+  const bodies = Array.from({ length: 20 }, (_, index) => ({
+    clientMutationId: `post_rate_limit_${String(index).padStart(3, "0")}`,
+    kind: "status",
+    review: `Ordinary post ${index}`,
+  }));
+  const first = create({ user, ip: "post-rate-first", body: bodies[0] });
+  for (const body of bodies.slice(1)) create({ user, ip: "post-rate-fill", body });
+
+  assert.throws(
+    () => create({
+      user,
+      ip: "post-rate-denied",
+      body: { clientMutationId: "post_rate_limit_021", kind: "status", review: "One too many" },
+    }),
+    (error) => {
+      assert.ok(error instanceof ApiError);
+      assert.equal(error.status, 429);
+      assert.equal(error.code, "RATE_LIMITED");
+      assert.ok(error.retryAfterMs >= 1_000 && error.retryAfterMs <= 60 * 60 * 1_000);
+      assert.match(apiRetryAfterHeaders(error)["Retry-After"], /^\d+$/);
+      return true;
+    },
+  );
+
+  const duplicate = create({ user, ip: "post-rate-idempotent-retry", body: bodies[0] });
+  assert.equal(duplicate.duplicate, true);
+  assert.equal(duplicate.id, first.id);
 });

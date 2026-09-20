@@ -54,6 +54,9 @@ test("SPA screen projection distinguishes tab and overlay crashes without retain
   assert.equal(clientErrorSurfaceFromScreen("artist_gallery"), "artist");
   assert.equal(clientErrorSurfaceFromScreen("venue_review"), "venue");
   assert.equal(clientErrorSurfaceFromScreen("media_viewer"), "post");
+  assert.equal(clientErrorSurfaceFromScreen("post_create"), "post");
+  assert.equal(clientErrorSurfaceFromScreen("post_edit"), "post");
+  assert.equal(clientErrorSurfaceFromScreen("show"), "show");
   assert.equal(clientErrorSurfaceFromScreen("account_delete"), "settings");
   for (const privateValue of ["artist_private-id", "profile:@private", "search?q=private", null, {}]) {
     assert.equal(clientErrorSurfaceFromScreen(privateValue), "app");
@@ -76,6 +79,29 @@ test("a browser error projects only allowlisted classification and an emitted-as
   assert.equal(JSON.stringify(diagnostic).includes(origin), false);
   error.stack = `privateFunction@${origin}/_expo/static/js/web/${asset}:3:10`;
   assert.deepEqual(clientCrashDiagnostic(error, { origin }).location, { asset, line: 3, column: 10 });
+});
+
+test("a Metro loader crash reports the following app chunk instead of Expo's generic runtime", () => {
+  const runtime = "__expo-metro-runtime-" + "a".repeat(32) + ".js";
+  const screen = "ShowScreen-" + "b".repeat(32) + ".js";
+  const error = new Error('Requiring unknown module "624"');
+  error.stack = [
+    'Error: Requiring unknown module "624"',
+    "    at metroRequire (" + origin + "/_expo/static/js/web/" + runtime + ":282:12)",
+    "    at renderShow (" + origin + "/_expo/static/js/web/" + screen + ":19:7)",
+  ].join("\n");
+
+  assert.deepEqual(clientCrashDiagnostic(error, { origin }), {
+    errorType: "Error",
+    diagnosis: "unknown",
+    message: "Requiring unknown module #624",
+    location: { asset: screen, line: 19, column: 7 },
+  });
+
+  error.stack = "    at metroRequire (" + origin + "/_expo/static/js/web/" + runtime + ":282:12)";
+  assert.deepEqual(clientCrashDiagnostic(error, { origin }).location, {
+    asset: runtime, line: 282, column: 12,
+  });
 });
 
 test("only known React invariant markers become diagnosis buckets", () => {

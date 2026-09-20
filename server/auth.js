@@ -143,6 +143,7 @@ export function sweepExpiredSessions() {
 // --- rate limiting -----------------------------------------------------------
 const buckets = new Map(); // key -> { count, resetAt }
 const MAX_RATE_LIMIT_BUCKETS = 50_000;
+const MAX_RATE_LIMIT_RETRY_AFTER_MS = 60 * 60 * 1000;
 
 function pruneExpiredRateLimitBuckets(now) {
   for (const [key, bucket] of buckets) {
@@ -182,6 +183,32 @@ export function rateLimit(key, max, windowMs) {
   }
   b.count++;
   return b.count <= max;
+}
+
+export function rateLimitAvailable(key, max, windowMs, cost = 1) {
+  const now = Date.now();
+  const bucket = buckets.get(key);
+  const active = bucket && bucket.resetAt > now ? bucket : null;
+  const requested = Math.max(1, Math.floor(Number(cost) || 1));
+  if (active) return active.count + requested <= max;
+  return hasRateLimitBucketCapacity([key], now);
+}
+
+// The boolean limiter deliberately stays tiny for the many existing call
+// sites. A denied HTTP request can ask for the matching bounded retry hint
+// immediately afterwards. Node runs both synchronous calls in one turn, so
+// the bucket cannot change between denial and this lookup.
+export function rateLimitRetryAfterMs(key, fallbackWindowMs = 60_000, maxMs = MAX_RATE_LIMIT_RETRY_AFTER_MS) {
+  const now = Date.now();
+  const bucket = buckets.get(key);
+  const fallback = Number.isFinite(Number(fallbackWindowMs)) && Number(fallbackWindowMs) > 0
+    ? Number(fallbackWindowMs)
+    : 60_000;
+  const remaining = bucket?.resetAt > now ? bucket.resetAt - now : fallback;
+  const ceiling = Number.isFinite(Number(maxMs)) && Number(maxMs) > 0
+    ? Number(maxMs)
+    : MAX_RATE_LIMIT_RETRY_AFTER_MS;
+  return Math.max(1_000, Math.min(ceiling, Math.ceil(remaining)));
 }
 
 // Reserve several process-local buckets as one unit. Callers that still have a

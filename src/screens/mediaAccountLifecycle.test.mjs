@@ -10,6 +10,7 @@ import {
   mediaProjectPublishedMedia, mediaProjectRequiresLegacyUpload,
   originalMediaProjectAsset, reconcileMediaProjectSelection, normalizeMediaProjectAsset,
 } from "../domain/mediaProject.mjs";
+import { artistCampaignLimitCooldownMs, postRateLimitCooldownMs } from "../domain/postRetryCooldown.mjs";
 
 function find(node, predicate) {
   if (!node || typeof node !== "object") return null;
@@ -237,11 +238,23 @@ test("manual upload cancellation still clears the current composer's busy state"
 });
 
 const compileSubmit = callback("LogScreen.jsx", "LogScreen", "submit");
+const compileShowPostFailure = callback("LogScreen.jsx", "LogScreen", "showPostFailure");
 function submitFixture({ photosPublic = false } = {}) {
   const accountTasks = scope(), response = deferred(), events = [], posts = [];
+  const setPostError = () => events.push("setPostError");
+  const showPostFailure = compileShowPostFailure({
+    artistCampaignLimitCooldownMs,
+    setFeaturedRetryAt: (value) => events.push(`featuredRetryAt:${value > 0 ? "future" : "clear"}`),
+    postRateLimitCooldownMs,
+    setPostRetryClock: () => events.push("setPostRetryClock"),
+    setPostRetryAt: (value) => events.push(`setPostRetryAt:${value > 0 ? "future" : "clear"}`),
+    setPostError,
+    postErrorMessage: (error) => error?.message || "Failed",
+  });
   const bindings = {
     accountTasks, user: { id: "a", name: "A", handle: "a", initials: "A" },
-    canPost: true, submitBusy: false, submitOperationRef: { current: false },
+    canPost: true, submitBusy: false, postCoolingDown: false, featuredPostingBlocked: false,
+    submitOperationRef: { current: false },
     persistDraftSnapshot: () => events.push("checkpoint"), normalizeComposerDraft: (value) => value,
     currentDraft: { id: "draft-a" }, submissionIdRef: { current: "post-a" }, photos: [],
     isDurableMediaUrl: () => true, mediaAssetIdsMatchingPhotos: () => [], mediaProject: { assets: [] },
@@ -249,8 +262,8 @@ function submitFixture({ photosPublic = false } = {}) {
     editing: null, review: "A private draft", memoryTextOnly: false, song: null, isCampaign: false,
     artistMediaConsent: { photosPublic },
     onPost: (post) => { events.push("post"); posts.push(post); return response.promise; },
-    postErrorMessage: (error) => error?.message || "Failed", draftIdRef: { current: "draft-a" }, composerId: "composer-a",
-    ...Object.fromEntries(["setPosting", "setPostError", "deleteDraft", "setDraftId", "setSavedDraftFingerprint", "onDraftIdentity"]
+    showPostFailure, setPostError, draftIdRef: { current: "draft-a" }, composerId: "composer-a",
+    ...Object.fromEntries(["setPosting", "deleteDraft", "setDraftId", "setSavedDraftFingerprint", "onDraftIdentity"]
       .map((name) => [name, () => events.push(name)])),
   };
   return { accountTasks, response, events, posts, run: compileSubmit(bindings) };
@@ -285,6 +298,19 @@ test("rejected publication retains the draft for the current owner", async () =>
   const f = submitFixture(), run = f.run(); f.response.resolve({ ok: false, error: new Error("Sign in again") }); await run;
   assert.equal(f.events.includes("deleteDraft"), false);
   assert.equal(f.events.filter((event) => event === "setPostError").length, 2);
+});
+
+test("a Featured quota failure retains the draft and blocks only Featured mode", async () => {
+  const f = submitFixture(), run = f.run();
+  f.response.resolve({
+    ok: false,
+    error: { status: 429, serverCode: "ARTIST_CAMPAIGN_LIMIT", retryAfterMs: 3_600_000 },
+  });
+  await run;
+  assert.equal(f.events.includes("deleteDraft"), false);
+  assert.equal(f.events.includes("featuredRetryAt:future"), true);
+  assert.equal(f.events.includes("setPostRetryAt:clear"), true);
+  assert.equal(f.events.includes("setPostRetryAt:future"), false, "ordinary posting must not inherit the Featured quota");
 });
 
 const compileComposerRetry = callback("LogScreen.jsx", "LogScreen", "retryPendingMedia");

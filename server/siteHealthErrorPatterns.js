@@ -9,7 +9,7 @@ const KNOWN_CODES = new Set([
   ...Object.keys(ERROR_CATALOG), "UNKNOWN", "UNHANDLED", "PROCESS",
   "PIT-APP-001", "PIT-APP-002", "PIT-APP-003",
 ]);
-const KNOWN_METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "PROCESS"]);
+const KNOWN_METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "PROCESS", "CLIENT"]);
 // This is deliberately a small, exact diagnostic vocabulary, not another
 // router. Other routes still have code/status/fingerprint for moderation lookup.
 const KNOWN_ROUTES = new Set([

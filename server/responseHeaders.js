@@ -20,7 +20,8 @@ export function apiRetryAfterHeaders(error) {
   const delay = error?.retryAfterMs;
   if (!(error?.status === 429 || (error?.status >= 500 && error?.status <= 599))
     || typeof delay !== "number" || !Number.isFinite(delay) || delay <= 0) return {};
-  return { "Retry-After": String(Math.max(1, Math.min(3600, Math.ceil(delay / 1000)))) };
+  const maxSeconds = error?.code === "ARTIST_CAMPAIGN_LIMIT" ? 86_400 : 3_600;
+  return { "Retry-After": String(Math.max(1, Math.min(maxSeconds, Math.ceil(delay / 1000)))) };
 }
 
 export function createApiResponseHeaderSetter(target) {

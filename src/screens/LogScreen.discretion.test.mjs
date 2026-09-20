@@ -73,7 +73,8 @@ test("real experience toggle leaves a deliberately unknown date untouched", () =
 test("real submission sends unknown details honestly and failed saves keep the draft for retry", async () => {
   const posted = [], checkpoints = [], deleted = [], errors = [];
   const bindings = {
-    canPost: true, submitBusy: false, submitOperationRef: { current: false }, user: { id: "owner" },
+    canPost: true, submitBusy: false, postCoolingDown: false, featuredPostingBlocked: false,
+    submitOperationRef: { current: false }, user: { id: "owner" },
     accountTasks: { begin: () => ({ isCurrent: () => true, finish: () => {} }) },
     setPosting: () => {}, setPostError: (value) => errors.push(value),
     persistDraftSnapshot: (value) => checkpoints.push(value), normalizeComposerDraft,
@@ -84,7 +85,8 @@ test("real submission sends unknown details honestly and failed saves keep the d
     venue: "", city: "Toronto", eventAddress: "", tour: "", date: "", submittedRatings: { overall: 4, band: 0, room: 0 },
     dims: { experience: 4, performance: 0 }, photosPublic: false, landingShowcase: false, review: "", taggedPeople: [], song: null,
     onPost: async (post) => { posted.push(post); return posted.length === 1 ? { ok: false, error: new Error("Try again") } : { ok: true }; },
-    postErrorMessage: (error) => error.message, draftIdRef: { current: "draft" }, deleteDraft: (id) => deleted.push(id),
+    showPostFailure: (error) => errors.push(error.message),
+    draftIdRef: { current: "draft" }, deleteDraft: (id) => deleted.push(id),
     setDraftId: () => {}, setSavedDraftFingerprint: () => {}, composerId: "composer", onDraftIdentity: () => {},
   };
   const submit = callback("submit", bindings);

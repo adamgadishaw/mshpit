@@ -40,6 +40,7 @@ import {
 import { deezerEnrichmentGenreFields } from "./deezerGenre.js";
 import { ARTIST_GENRE_SQL_COLUMNS, projectArtistGenreColumns } from "./artistGenreProjection.js";
 import { hashPasswordAsync as hashPassword, verifyPasswordAsync as verifyPassword, verifyPasswordForUserAsync as verifyPasswordForUser, createSession, destroySession, rateLimit, reserveRateLimits, sessionTtlForRole } from "./auth.js";
+import { enforceRateLimit, enforceRateLimitGroup } from "./rateLimitEnforcement.js";
 import { opaqueId } from "./ids.js";
 import { createRecoveryResponseFloor } from "./authResponseFloor.js";
 import { startCatalogSeed, catalogSeedStatus, stopCatalogSeed, deezerEnrich, catalogSeedRequestOptions } from "./catalogSeed.js";
@@ -429,12 +430,37 @@ function assertModerationRank(actor, target) {
     throw new ApiError(403, "Staff accounts require administrator review.", "FORBIDDEN");
   }
 }
-function limit(ctx, name, max, windowMs) {
+function limit(ctx, name, max, windowMs, options) {
   // Authenticated activity is primarily limited per account so users behind the
   // same carrier/proxy do not consume one shared posting or messaging bucket.
   const actor = ctx.user?.id ? `user:${ctx.user.id}` : `ip:${ctx.ip}`;
-  if (!rateLimit(`${name}:${actor}`, max, windowMs)) throw new ApiError(429, "Too many requests, slow down and try again.", "RATE_LIMITED");
+  enforceRateLimit(`${name}:${actor}`, max, windowMs, options);
 }
+
+function postWriteLimits(ctx, { edit = false, campaign = false } = {}) {
+  const actor = ctx.user?.id ? `user:${ctx.user.id}` : `ip:${ctx.ip}`;
+  const requests = [];
+  if (campaign) {
+    requests.push({
+      key: `artist-campaign:${actor}`,
+      max: 2,
+      windowMs: 24 * 60 * 60 * 1000,
+      options: ARTIST_CAMPAIGN_LIMIT_OPTIONS,
+    });
+  }
+  requests.push({
+    key: `${edit ? "post-edit" : "post"}:${actor}`,
+    max: edit ? 60 : 20,
+    windowMs: 60 * 60 * 1000,
+  });
+  enforceRateLimitGroup(requests);
+}
+
+const ARTIST_CAMPAIGN_LIMIT_OPTIONS = Object.freeze({
+  code: "ARTIST_CAMPAIGN_LIMIT",
+  message: "Featured artist posts are limited to two per day. Turn off Featured to publish this as a regular post, or try Featured again after the daily quota resets.",
+  retryAfterMaxMs: 24 * 60 * 60 * 1000,
+});
 function visibleProfileOrNull(id, viewer = null) {
   const user = q.userById.get(id);
   return profileAudienceAllows(user, viewer) ? user : null;
@@ -6548,13 +6574,14 @@ export const routes = {
     const mutationHash = mutationId ? postMutationHash(request.canonical) : null;
     const duplicate = resolvePostCreateRetry(u.id, mutationId, mutationHash);
     if (duplicate) return duplicate;
-    limit(ctx, "post", 20, 60 * 60 * 1000);
+    postWriteLimits(ctx, {
+      campaign: request.kind === "status" && !!request.values.campaign,
+    });
 
     // A plain status/update ("post whatever", not a concert review) shares the
     // posts table so it keeps the same feed, likes, comments, and moderation.
     if (request.kind === "status") {
       const v = request.values;
-      if (v.campaign) limit(ctx, "artist-campaign", 2, 24 * 60 * 60 * 1000);
       const id = uid("p");
       const racedDuplicate = atomicWrite(() => {
         ctx.assertCurrentSession?.();
@@ -6636,7 +6663,6 @@ export const routes = {
   "PATCH /api/posts/:id": (ctx) => {
     const u = requireUser(ctx);
     assertArtistPublicationAllowed(u);
-    limit(ctx, "post-edit", 60, 60 * 60 * 1000);
     const current = db.prepare("SELECT * FROM posts WHERE id=? AND removed=0").get(ctx.params.id);
     if (!current) throw new ApiError(404, "That post is unavailable. Refresh the feed and try again.", "NOT_FOUND");
     // Author-only, deliberately including admins: a review is someone's own
@@ -6922,6 +6948,7 @@ export const routes = {
     const availableCampaignMedia = editedMediaSelection
       ? artistCampaignMediaRows(editedMediaSelection)
       : currentPostCampaignMediaRows(current.id, u.id);
+    let addsCampaign = false;
     if (has("campaign")) {
       if (currentMemorialMemory) throw new ApiError(400, "Featured styling cannot be added to a memorial fan memory.", "VALIDATION_FAILED");
       if (current.kind !== "status") {
@@ -6933,7 +6960,7 @@ export const routes = {
         mediaRows: availableCampaignMedia,
         committedCampaign: currentCampaign,
       });
-      if (!currentCampaign && campaign) limit(ctx, "artist-campaign", 2, 24 * 60 * 60 * 1000);
+      addsCampaign = !currentCampaign && !!campaign;
       next.campaign = campaign ? JSON.stringify(campaign) : null;
     } else if (current.kind === "status") {
       const campaign = normalizeArtistCampaign(parsedStoredObject(current.campaign));
@@ -7014,6 +7041,7 @@ export const routes = {
       }
       assertArtistAcceptsLiveRating({ artistKey: editBinding.artist_key, artist: next.artist });
     }
+    postWriteLimits(ctx, { edit: true, campaign: addsCampaign });
     const nextTaggedUserIds = storedPostTaggedUserIds(next.tagged_user_ids);
     atomicWrite(() => {
       ctx.assertCurrentSession?.();

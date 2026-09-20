@@ -9,6 +9,7 @@ process.env.PIT_DATA_DIR = dataDir;
 
 const { db, q } = await import("./db.js");
 const { ApiError, routes } = await import("./api.js");
+const { apiRetryAfterHeaders } = await import("./responseHeaders.js");
 
 after(() => {
   db.close();
@@ -32,6 +33,16 @@ function addUser(id, role = "fan", artistName = null) {
   );
   if (artistName) db.prepare("UPDATE users SET artist_name=? WHERE id=?").run(artistName, id);
   return q.userById.get(id);
+}
+
+function isArtistCampaignLimit(error) {
+  assert.ok(error instanceof ApiError);
+  assert.equal(error.status, 429);
+  assert.equal(error.code, "ARTIST_CAMPAIGN_LIMIT");
+  assert.match(error.message, /turn off Featured.*regular post/i);
+  assert.ok(error.retryAfterMs >= 1_000 && error.retryAfterMs <= 24 * 60 * 60 * 1_000);
+  assert.match(apiRetryAfterHeaders(error)["Retry-After"], /^\d+$/);
+  return true;
 }
 
 function addReadyImage(ownerId, id = "ma_campaignasset123456") {
@@ -256,8 +267,18 @@ test("artist drops have a smaller daily allowance than ordinary posts", () => {
   for (let index = 0; index < 2; index += 1) {
     create({ user: artist, ip: `campaign-rate-${index}`, body: { kind: "status", review: `Drop ${index}`, campaign: campaign() } });
   }
+  for (let index = 0; index < 25; index += 1) {
+    assert.throws(
+      () => create({ user: artist, ip: `campaign-rate-denied-${index}`, body: { kind: "status", review: `Denied drop ${index}`, campaign: campaign() } }),
+      isArtistCampaignLimit,
+    );
+  }
+  for (let index = 0; index < 18; index += 1) {
+    const ordinary = create({ user: artist, ip: `campaign-rate-ordinary-${index}`, body: { kind: "status", review: `Ordinary ${index}` } });
+    assert.equal(ordinary.post.campaign, null);
+  }
   assert.throws(
-    () => create({ user: artist, ip: "campaign-rate-third", body: { kind: "status", review: "Drop 3", campaign: campaign() } }),
+    () => create({ user: artist, ip: "campaign-rate-ordinary-overflow", body: { kind: "status", review: "Ordinary overflow" } }),
     (error) => error instanceof ApiError && error.status === 429 && error.code === "RATE_LIMITED",
   );
 });
@@ -288,7 +309,7 @@ test("converting ordinary statuses cannot bypass the artist drop allowance", () 
       params: { id: ordinary[2].id },
       body: { campaign: campaign(), version: ordinary[2].post.version },
     }),
-    (error) => error instanceof ApiError && error.status === 429 && error.code === "RATE_LIMITED",
+    isArtistCampaignLimit,
   );
   assert.equal(db.prepare("SELECT campaign FROM posts WHERE id=?").get(ordinary[2].id).campaign, null);
 });

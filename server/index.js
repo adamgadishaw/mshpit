@@ -101,6 +101,7 @@ import { safeRequestFailureContext } from "./safeLogging.js";
 import { healthRateLimitPolicy } from "./healthAvailability.js";
 import { shouldRecordGeneralRequestFailure } from "./requestFailureObservability.js";
 import { crawlerFileRateLimitPolicy } from "./crawlerFileRateLimit.js";
+import { enforceRateLimit } from "./rateLimitEnforcement.js";
 import {
   allowedUnsafeRequestOrigins,
   assertProductionRequestHost,
@@ -631,7 +632,7 @@ async function handleRequest(req, res) {
         // other. Guests still share by address, which is the best available key.
         const sessionToken = parseCookies(req.headers.cookie)[ACTIVE_SESSION_COOKIE];
         const flooder = getSession(sessionToken)?.user_id || `ip:${ip}`;
-        if (!rateLimit(`global:${flooder}`, 300, 60 * 1000)) return sendApiError(res, new ApiError(429, "Too many requests.", "RATE_LIMITED"), requestId, cors);
+        enforceRateLimit(`global:${flooder}`, 300, 60 * 1000, { message: "Too many requests." });
       }
 
       const match = matchRoute(req.method, pathname);

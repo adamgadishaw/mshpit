@@ -51,7 +51,7 @@ test("client error ingestion stores a finite fingerprint plus a readable reason"
     level: "fatal",
     code: "PIT-APP-001",
     status: 0,
-    method: "POST",
+    method: "CLIENT",
     route: "/client/artist",
     cause: "RenderError.Ios",
     requestId: f.ctx.requestId,
@@ -74,6 +74,7 @@ test("unhandled promises remain serious without being mislabeled fatal", () => {
   f.handler({ ...f.ctx, body: { kind: "promise", platform: "web", surface: "feed" } });
   assert.equal(f.recorded[0].level, "error");
   assert.equal(f.recorded[0].code, "PIT-APP-003");
+  assert.equal(f.recorded[0].method, "CLIENT");
 });
 
 test("diagnostic reports preserve finite classifications and only server-approved locations", () => {

@@ -47,6 +47,15 @@ import {
 } from "../domain/mediaPublishingPreflight.mjs";
 import { createMediaTransferProgressPublisher, mediaUploadProgressCopy } from "../domain/mediaTransferProgress.mjs";
 import { hasLandingCompatibleImage } from "../domain/landingShowcase.mjs";
+import {
+  FEATURED_RETRY_READY_MESSAGE,
+  POST_RETRY_READY_MESSAGE,
+  artistCampaignLimitCooldownMs,
+  isArtistCampaignLimitError,
+  postRateLimitCooldownMs,
+  postRetryCooldownMessage,
+  postRetryRemainingSeconds,
+} from "../domain/postRetryCooldown.mjs";
 import { remove, save } from "../lib/persist";
 import { uploadOriginalMediaAsset } from "../lib/mediaAssetUpload";
 import { retireMediaAssetDrafts } from "../lib/mediaAssetDraftCleanup.mjs";
@@ -193,6 +202,7 @@ function postErrorMessage(error) {
   const status = Number(error?.status || error?.body?.status);
   if (code === "POST_REMOVED") return "That post was removed on another device. Close this composer and start a new post.";
   if (status === 409) return "That post changed on another device. Close this composer, reopen the latest version, and apply your changes again.";
+  if (code === "ARTIST_CAMPAIGN_LIMIT") return "You've used today's two Featured posts. Turn off Featured to publish this as a regular post, or try Featured again after the daily quota resets.";
   if (code === "RATE_LIMITED" || status === 429) return "You're posting quickly. Wait a moment and try again — your post is still here.";
   if (error?.offline || status === 0 || (!status && error?.message)) return "Couldn't reach Pit. Check your connection and try again — nothing was lost.";
   return "That didn't post. Your review is still here, give it another try.";
@@ -688,6 +698,37 @@ export default function LogScreen({
     setShowPhotos((visible) => !visible);
   };
   const [posting, setPosting] = useState(false);
+  const [featuredRetryAt, setFeaturedRetryAt] = useState(0);
+  const [postRetryAt, setPostRetryAt] = useState(0);
+  const [postRetryClock, setPostRetryClock] = useState(() => Date.now());
+  const postRetrySeconds = postRetryRemainingSeconds(postRetryAt, postRetryClock);
+  const featuredRetrySeconds = postRetryRemainingSeconds(featuredRetryAt, postRetryClock);
+  const postCoolingDown = postRetrySeconds > 0;
+  const featuredPostingBlocked = featuredRetrySeconds > 0 && isCampaign;
+  const postRetryReady = postError === POST_RETRY_READY_MESSAGE || postError === FEATURED_RETRY_READY_MESSAGE;
+  useEffect(() => {
+    if (!postRetryAt && !featuredRetryAt) return undefined;
+    const tick = () => {
+      const current = Date.now();
+      setPostRetryClock(current);
+      if (postRetryAt && current >= postRetryAt) {
+        setPostRetryAt(0);
+        setPostError(POST_RETRY_READY_MESSAGE);
+      }
+      if (featuredRetryAt && current >= featuredRetryAt) {
+        setFeaturedRetryAt(0);
+        setPostError(FEATURED_RETRY_READY_MESSAGE);
+      }
+    };
+    tick();
+    const timer = setInterval(tick, 250);
+    return () => clearInterval(timer);
+  }, [featuredRetryAt, postRetryAt]);
+  useEffect(() => {
+    setFeaturedRetryAt(0);
+    setPostRetryAt(0);
+    setPostRetryClock(Date.now());
+  }, [user?.id]);
   // Show date, defaults to today so logging stays one-tap, but you can set the
   // real date of a past show, or deliberately leave it unknown.
   const today = new Date();
@@ -1434,8 +1475,26 @@ export default function LogScreen({
     return () => { if (closeGuardRef.current === guard) closeGuardRef.current = null; };
   }, [closeGuardRef]);
 
+  const showPostFailure = (error) => {
+    const campaignCooldownMs = artistCampaignLimitCooldownMs(error);
+    if (campaignCooldownMs) {
+      const current = Date.now();
+      setPostRetryClock(current);
+      setFeaturedRetryAt(current + campaignCooldownMs);
+    }
+    const cooldownMs = postRateLimitCooldownMs(error);
+    if (cooldownMs) {
+      const current = Date.now();
+      setPostRetryClock(current);
+      setPostRetryAt(current + cooldownMs);
+    } else {
+      setPostRetryAt(0);
+    }
+    setPostError(postErrorMessage(error));
+  };
+
   const submit = async () => {
-    if (!canPost || submitBusy || submitOperationRef.current) return;
+    if (!canPost || submitBusy || postCoolingDown || featuredPostingBlocked || submitOperationRef.current) return;
     const task = accountTasks.begin(user?.id);
     if (!task) return;
     // React state does not update until the next render. Claim the operation
@@ -1482,7 +1541,7 @@ export default function LogScreen({
         });
         if (!task.isCurrent()) return;
         if (result?.ok === false) {
-          setPostError(postErrorMessage(result.error));
+          showPostFailure(result.error);
           return;
         }
         if (draftIdRef.current) deleteDraft(draftIdRef.current);
@@ -1534,14 +1593,14 @@ export default function LogScreen({
       // WHY: previously a rejected post silently left the composer open with no
       // message, which read as "it didn't go through" for no visible reason.
       if (!task.isCurrent()) return;
-      if (result?.ok === false) { setPostError(postErrorMessage(result.error)); return; }
+      if (result?.ok === false) { showPostFailure(result.error); return; }
       if (draftIdRef.current) deleteDraft(draftIdRef.current);
       draftIdRef.current = null;
       setDraftId(null);
       setSavedDraftFingerprint(null);
       onDraftIdentity?.(composerId, null);
     } catch (error) {
-      if (task.isCurrent()) setPostError(postErrorMessage(error));
+      if (task.isCurrent()) showPostFailure(error);
     } finally {
       submitOperationRef.current = false;
       if (task.isCurrent()) setPosting(false);
@@ -1551,10 +1610,10 @@ export default function LogScreen({
 
   return (
     <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-      <SheetHeader title={editing ? (isMemorialMemory ? "Edit fan memory" : isCampaign ? "Edit featured post" : isOnlineReview ? "Edit online review" : "Edit post") : protectedLegacyMemory ? "Share a written memory" : isMemorialMemory ? "Share a fan memory" : isCampaign ? "New featured post" : isStatus ? "New post" : isOnlineReview ? "Review an online concert" : "Log a show"} onClose={onCancel} leadDisabled={submitBusy} action={{ label: posting ? (editing ? "Saving..." : "Posting...") : uploadingPhotos ? "Uploading..." : resolvingSong ? "Checking..." : editing ? "Save" : "Post", onPress: submit, disabled: !canPost || submitBusy }} />
+      <SheetHeader title={editing ? (isMemorialMemory ? "Edit fan memory" : isCampaign ? "Edit featured post" : isOnlineReview ? "Edit online review" : "Edit post") : protectedLegacyMemory ? "Share a written memory" : isMemorialMemory ? "Share a fan memory" : isCampaign ? "New featured post" : isStatus ? "New post" : isOnlineReview ? "Review an online concert" : "Log a show"} onClose={onCancel} leadDisabled={submitBusy} action={{ label: posting ? (editing ? "Saving..." : "Posting...") : uploadingPhotos ? "Uploading..." : resolvingSong ? "Checking..." : editing ? "Save" : "Post", onPress: submit, disabled: !canPost || submitBusy || postCoolingDown || featuredPostingBlocked }} />
 
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-        {!!postError && <View style={styles.postErrorBox}><Icon name="flag" size={14} color={colors.danger} /><Text style={styles.postErrorTxt}>{postError}</Text></View>}
+        {!!postError && <View style={[styles.postErrorBox, postRetryReady && styles.postReadyBox]} accessibilityRole="alert" accessibilityLiveRegion="polite"><Icon name={postCoolingDown ? "clock" : postRetryReady ? "check" : "flag"} size={14} color={postRetryReady ? colors.good : colors.danger} /><Text style={[styles.postErrorTxt, postRetryReady && styles.postReadyTxt]}>{postCoolingDown ? postRetryCooldownMessage(postRetrySeconds) : postError}</Text></View>}
         {!editing && !isMemorialMemory && (
           <View style={styles.modeRow}>
             <Pressable style={[styles.modeBtn, isStatus && !isCampaign && styles.modeBtnOn]} onPress={() => { setPostType("status"); setCampaign(null); }} accessibilityRole="button" accessibilityState={{ selected: isStatus && !isCampaign }} accessibilityLabel="Create a regular post">
@@ -2185,7 +2244,7 @@ export default function LogScreen({
           </View>
         ) : null}
         {!isStatus && !isOnlineReview && <Text style={styles.submitHint} accessibilityLiveRegion="polite">{composerLogRequirement({ artist, venue, city, eventAddress, overall: computed.overall })}</Text>}
-        <Button title={posting ? (editing ? "Saving changes..." : "Posting...") : uploadingPhotos ? "Uploading media..." : resolvingSong ? "Checking video..." : editing ? "Save changes" : isStatus ? "Post" : "Post to feed"} icon="check" onPress={submit} disabled={!canPost || submitBusy} style={{ marginTop: engagementPrompt ? 14 : 28 }} />
+        <Button title={posting ? (editing ? "Saving changes..." : "Posting...") : uploadingPhotos ? "Uploading media..." : resolvingSong ? "Checking video..." : editing ? "Save changes" : isStatus ? "Post" : "Post to feed"} icon="check" onPress={submit} disabled={!canPost || submitBusy || postCoolingDown || featuredPostingBlocked} style={{ marginTop: engagementPrompt ? 14 : 28 }} />
         {!editing && hasContent && (
           <Pressable style={styles.saveDraft} onPress={stash} disabled={submitBusy}>
             <Icon name="edit" size={14} color={colors.textDim} />
@@ -2279,6 +2338,8 @@ const styles = StyleSheet.create({
   songError: { color: colors.danger, fontSize: 12.5, lineHeight: 18, marginTop: 7 },
   postErrorBox: { flexDirection: "row", alignItems: "center", gap: space(1.5), backgroundColor: colors.surface, borderColor: colors.danger, borderWidth: 1, borderRadius: radius.md, padding: space(2.5), marginTop: space(3) },
   postErrorTxt: { flex: 1, color: colors.danger, fontSize: 13, lineHeight: 18, fontWeight: "600" },
+  postReadyBox: { borderColor: colors.good },
+  postReadyTxt: { color: colors.good },
   peopleSelected: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 10 },
   personChip: { minHeight: 44, maxWidth: "100%", flexDirection: "row", alignItems: "center", gap: 7, paddingHorizontal: 9, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.amber, backgroundColor: colors.surface },
   personChipText: { maxWidth: 180, color: colors.text, fontSize: 12.5, fontWeight: "800" },

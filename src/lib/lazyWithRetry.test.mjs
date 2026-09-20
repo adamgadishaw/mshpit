@@ -68,6 +68,29 @@ test("a stale chunk after a deploy reloads exactly once", async () => {
   assert.match(elementText(fallback), /Updating Mshpit…/);
 });
 
+test("an Expo Metro module-graph mismatch reloads once and cannot loop", async () => {
+  const h = harness();
+  const metroMismatch = async () => { throw new Error('Requiring unknown module "624".'); };
+
+  const mod = await loadChunk(metroMismatch, { name: "ShowScreen", ...h });
+  assert.equal(h.reloadCount(), 1, "fresh HTML and runtime get one chance to repair the module graph");
+  assert.equal(h.store.get("pit.chunkReload.ShowScreen"), "1");
+  assert.equal(typeof mod.default, "function");
+
+  await assert.rejects(
+    () => loadChunk(metroMismatch, { name: "ShowScreen", ...h }),
+    /Requiring unknown module "624"/,
+  );
+  assert.equal(h.reloadCount(), 1, "a persistently broken current build must surface instead of reloading forever");
+});
+
+test("an unrelated error that merely mentions an unknown module does not reload", async () => {
+  const h = harness();
+  const unrelated = async () => { throw new Error('Requiring unknown module "624" while saving.'); };
+  await assert.rejects(() => loadChunk(unrelated, { name: "Composer", ...h }), /while saving/);
+  assert.equal(h.reloadCount(), 0);
+});
+
 test("a reload that returns normally leaves an accessible manual escape", async () => {
   const h = harness();
   const stale = async () => { throw new Error("Loading chunk failed: 404"); };

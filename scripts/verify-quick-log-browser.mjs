@@ -12,7 +12,19 @@ import { fixtureApiResponse, navigationUser } from "./verify-navigation-browser.
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const shots = join(root, ".tmp", "quick-log-browser");
 const review = "I remember the music, not the exact date. Fixture only.";
+const featuredReview = "Featured fixture copy must survive the quota fallback.";
 const failureCopy = "That didn't post. Your review is still here, give it another try.";
+const retryReadyCopy = "Your post is still here. You can try posting again now.";
+const featuredQuotaCopy = "You've used today's two Featured posts. Turn off Featured to publish this as a regular post, or try Featured again after the daily quota resets.";
+const featuredArtistUser = Object.freeze({
+  ...navigationUser,
+  name: "Fixture Artist",
+  handle: "fixtureartist",
+  initials: "FA",
+  role: "artist",
+  artistName: "Fixture Artist",
+  verified: true,
+});
 
 export function assertQuickLogPayload(body) {
   assert.equal(body.artist, "Fixture Artist");
@@ -49,7 +61,7 @@ async function localServer() {
 
 async function scenario(browser, origin, width) {
   const context = await browser.newContext({ viewport: { width, height: 900 }, isMobile: width < 620, hasTouch: width < 620, serviceWorkers: "block" });
-  const state = { writes: [], errors: [], reports: [], calls: [], closing: false, failSaves: true };
+  const state = { writes: [], errors: [], reports: [], calls: [], closing: false, failureMode: "rate" };
   const page = await context.newPage(); page.setDefaultTimeout(12_000);
   await page.addInitScript(user => {
     localStorage.setItem("pit_theme", "stage");
@@ -59,12 +71,12 @@ async function scenario(browser, origin, width) {
   page.on("pageerror", error => state.errors.push(error.message));
   page.on("console", message => {
     if (message.type() !== "error") return;
-    if (message.location().url === origin + "/api/posts" && /500/.test(message.text())) return;
+    if (message.location().url === origin + "/api/posts" && /(?:429|500)/.test(message.text())) return;
     state.errors.push(message.text());
   });
   await context.route("**/*", async route => {
     const request = route.request(), url = new URL(request.url());
-    const json = (body, status = 200) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
+    const json = (body, status = 200, headers = {}) => route.fulfill({ status, contentType: "application/json", headers, body: JSON.stringify(body) });
     try {
       if (url.origin !== origin) return await route.abort();
       if (!url.pathname.startsWith("/api/")) return await route.continue();
@@ -74,7 +86,13 @@ async function scenario(browser, origin, width) {
       if (url.pathname === "/api/posts" && request.method() === "POST") {
         assert.equal(request.headers()["x-pit-expected-account"], navigationUser.id);
         const body = request.postDataJSON(); assertQuickLogPayload(body); state.writes.push(body);
-        if (state.failSaves) return await json({ error: "Simulated save failure", code: "INTERNAL_ERROR" }, 500);
+        if (state.failureMode === "rate") return await json({
+          error: "Too many requests, slow down and try again.",
+          code: "RATE_LIMITED",
+          status: 429,
+          retryable: true,
+        }, 429, { "Retry-After": "1" });
+        if (state.failureMode === "internal") return await json({ error: "Simulated save failure", code: "INTERNAL_ERROR" }, 500);
         assert.ok(body.clientMutationId);
         assert.equal(body.clientMutationId, state.writes[0].clientMutationId, "Retry must preserve its idempotent submission ID.");
         return await json({ post: { ...body, id: "p_quick_log_fixture", user: navigationUser, userId: navigationUser.id, kind: "review", at: Date.now(), likes: 0, comments: 0 }, created: true });
@@ -120,6 +138,20 @@ async function scenario(browser, origin, width) {
     await page.getByText("BAND, ROOM & CROWD", { exact: false }).scrollIntoViewIfNeeded();
     await page.screenshot({ path: join(shots, `quick-log-${width}-ratings.png`) });
     await post.click();
+    await page.getByText(/Posting is paused for \d+ second.*Your post is still here\./).waitFor();
+    const rateLimitedAttempts = state.writes.length;
+    assert.equal(rateLimitedAttempts, 1, "A 429 response must not be retried automatically.");
+    assert.equal(await post.isDisabled(), true, "Retry-After must temporarily disable repeated publishing taps.");
+    await post.dispatchEvent("click");
+    await page.waitForTimeout(100);
+    assert.equal(state.writes.length, rateLimitedAttempts, "A click during the cooldown must not start another request.");
+    assert.equal(await artist.inputValue(), "Fixture Artist");
+    assert.equal(await reviewInput.inputValue(), review);
+    await page.getByText(retryReadyCopy, { exact: true }).waitFor();
+    assert.equal(await post.isEnabled(), true);
+
+    state.failureMode = "internal";
+    await post.click();
     await page.getByText(failureCopy, { exact: true }).waitFor();
     const failedAttempts = state.writes.length;
     assert.ok(failedAttempts >= 1); assert.equal(await artist.inputValue(), "Fixture Artist");
@@ -131,7 +163,7 @@ async function scenario(browser, origin, width) {
     assert.equal(await post.isEnabled(), true);
     await page.getByText(failureCopy, { exact: true }).scrollIntoViewIfNeeded();
     await page.screenshot({ path: join(shots, `quick-log-${width}-failed-save.png`) });
-    state.failSaves = false;
+    state.failureMode = null;
     await post.click();
     await artist.waitFor({ state: "hidden" });
     await page.getByText(review, { exact: true }).waitFor();
@@ -154,6 +186,100 @@ async function scenario(browser, origin, width) {
   } finally { state.closing = true; await context.close(); }
 }
 
+async function featuredQuotaScenario(browser, origin, width) {
+  const context = await browser.newContext({ viewport: { width, height: 900 }, isMobile: width < 620, hasTouch: width < 620, serviceWorkers: "block" });
+  const state = { writes: [], errors: [], reports: [], calls: [], closing: false };
+  const page = await context.newPage(); page.setDefaultTimeout(12_000);
+  await page.addInitScript(user => {
+    localStorage.setItem("pit_theme", "stage");
+    localStorage.setItem("pit.session", JSON.stringify(user));
+    localStorage.setItem("pit.users", JSON.stringify([user]));
+  }, featuredArtistUser);
+  page.on("pageerror", error => state.errors.push(error.message));
+  page.on("console", message => {
+    if (message.type() !== "error") return;
+    if (message.location().url === origin + "/api/posts" && /429/.test(message.text())) return;
+    state.errors.push(message.text());
+  });
+  await context.route("**/*", async route => {
+    const request = route.request(), url = new URL(request.url());
+    const json = (body, status = 200, headers = {}) => route.fulfill({ status, contentType: "application/json", headers, body: JSON.stringify(body) });
+    try {
+      // Every non-loopback request is aborted before it can leave this isolated
+      // browser context. The scenario never touches production or a real account.
+      if (url.origin !== origin) return await route.abort();
+      if (!url.pathname.startsWith("/api/")) return await route.continue();
+      state.calls.push({ path: url.pathname, method: request.method() });
+      if (url.pathname === "/api/client-errors") { state.reports.push(request.postDataJSON()); return await json({ ok: true }); }
+      if (url.pathname === "/api/health") return await json({ ok: true, capabilities: { mediaPublishing: { photos: true, videos: true } } });
+      if (url.pathname === "/api/me") return await json({ user: featuredArtistUser });
+      if (url.pathname === "/api/posts" && request.method() === "POST") {
+        assert.equal(request.headers()["x-pit-expected-account"], featuredArtistUser.id);
+        const body = request.postDataJSON(); state.writes.push(body);
+        assert.equal(body.kind, "status");
+        assert.equal(body.review, featuredReview);
+        assert.ok(body.clientMutationId);
+        if (state.writes.length === 1) {
+          assert.equal(body.campaign?.version, 1);
+          assert.ok(body.campaign?.treatment, "The first attempt must remain a Featured post.");
+          return await json({
+            error: "Featured artist posts are limited to two per day. Turn off Featured to publish this as a regular post, or try Featured again after the daily quota resets.",
+            code: "ARTIST_CAMPAIGN_LIMIT",
+            status: 429,
+            retryable: true,
+          }, 429, { "Retry-After": "3600" });
+        }
+        assert.equal(state.writes.length, 2, "The quota fallback must perform exactly one regular-post write.");
+        assert.equal(body.campaign, null, "Switching to Share must remove Featured presentation metadata.");
+        assert.equal(body.clientMutationId, state.writes[0].clientMutationId, "The regular fallback must keep the idempotent submission ID.");
+        return await json({ post: { ...body, id: "p_featured_quota_fixture", user: featuredArtistUser, userId: featuredArtistUser.id, kind: "status", at: Date.now(), likes: 0, comments: 0 }, created: true });
+      }
+      return await json(fixtureApiResponse(url.pathname, { member: true, method: request.method(), resolvedPath: url.searchParams.get("path") || undefined }));
+    } catch (error) {
+      if (state.closing || /closed|disposed|handled|aborted|cancelled/i.test(error.message)) return;
+      state.errors.push(error.message); await route.abort().catch(() => {});
+    }
+  });
+  try {
+    await page.goto(origin + "/feed", { waitUntil: "domcontentloaded" });
+    await page.getByLabel("Make a post", { exact: true }).last().click();
+    const composerText = page.getByPlaceholder("Write about music, a show, or what you plan to see next...", { exact: true });
+    await composerText.waitFor();
+    await page.getByRole("button", { name: "Create a featured artist post", exact: true }).click();
+    await composerText.fill(featuredReview);
+    const submit = page.getByRole("button", { name: "Post", exact: true }).last();
+    assert.equal(await submit.isEnabled(), true);
+    await submit.click();
+
+    await page.getByText(featuredQuotaCopy, { exact: true }).waitFor();
+    assert.equal(state.writes.length, 1);
+    assert.equal(await submit.isDisabled(), true, "Featured must stay blocked after its daily quota is exhausted.");
+    await submit.dispatchEvent("click");
+    await page.waitForTimeout(100);
+    assert.equal(state.writes.length, 1, "A disabled Featured submit must not repeat the rejected write.");
+    assert.equal(await composerText.inputValue(), featuredReview, "The quota response must not discard draft text.");
+    await page.screenshot({ path: join(shots, `quick-log-featured-${width}-quota.png`) });
+
+    await page.getByRole("button", { name: "Create a regular post", exact: true }).click();
+    assert.equal(await composerText.inputValue(), featuredReview, "Switching to Share must retain the draft text.");
+    assert.equal(await submit.isEnabled(), true, "The Featured quota must not disable an ordinary post.");
+    await submit.click();
+    await composerText.waitFor({ state: "hidden" });
+    await page.getByText(featuredReview, { exact: true }).waitFor();
+
+    assert.equal(state.writes.length, 2);
+    assert.equal(state.writes[1].campaign, null);
+    assert.deepEqual(state.calls.filter(call => call.method !== "GET").map(call => call.path), ["/api/posts", "/api/posts"]);
+    assert.deepEqual(state.reports, []);
+    assert.deepEqual(state.errors, []);
+    console.log(JSON.stringify({ name: `quick-log-featured-quota-${width}`, passed: true, simulatedPosts: state.writes.length }));
+  } catch (error) {
+    await page.screenshot({ path: join(shots, `quick-log-featured-${width}-failed.png`) }).catch(() => {});
+    console.error(JSON.stringify({ error: error.message, state, body: (await page.locator("body").innerText()).slice(-7000) }));
+    throw error;
+  } finally { state.closing = true; await context.close(); }
+}
+
 export async function main() {
   const require = createRequire(import.meta.url);
   const { chromium } = require(process.env.PIT_PLAYWRIGHT_MODULE || "playwright");
@@ -162,7 +288,8 @@ export async function main() {
   try {
     browser = await chromium.launch({ headless: true, ...(process.env.PIT_BROWSER_EXECUTABLE ? { executablePath: process.env.PIT_BROWSER_EXECUTABLE } : {}) });
     for (const width of [375, 1280]) await scenario(browser, origin, width);
-    console.log(JSON.stringify({ passed: 2, failed: 0, network: "isolated fixtures only", screenshots: shots }));
+    for (const width of [375, 1280]) await featuredQuotaScenario(browser, origin, width);
+    console.log(JSON.stringify({ passed: 4, failed: 0, network: "isolated fixtures only", screenshots: shots }));
   } finally { await browser?.close(); await new Promise(done => server.close(done)); }
 }
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) main().catch(error => { console.error(error.message); process.exitCode = 1; });

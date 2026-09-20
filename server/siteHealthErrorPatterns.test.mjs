@@ -41,7 +41,7 @@ function fixture(t) {
 test("serious totals and ranked pattern counts share a window, never retained lifetime counts", (t) => {
   const { event, bucket, read } = fixture(t);
   const media = event({ code: "MEDIA_STORAGE_UNAVAILABLE", status: 503, method: "POST", route: "/api/media/assets/:id/finalize" });
-  const client = event({ code: "PIT-APP-001", level: "fatal", status: 0, method: "POST", route: "/client/landing" });
+  const client = event({ code: "PIT-APP-001", level: "fatal", status: 0, method: "CLIENT", route: "/client/landing" });
   const provider = event({ code: "PROVIDER_UNAVAILABLE", status: 502, route: "/api/artists/resolve" });
   bucket(media, START, 3);
   bucket(media, START + HOUR, 1);
@@ -60,7 +60,9 @@ test("serious totals and ranked pattern counts share a window, never retained li
   assert.equal(report.patterns[0].lastObservedHour, START + HOUR, "a later retained occurrence is not the affected window hour");
   assert.equal(report.patterns[0].fingerprint, media);
   assert.ok(Object.isFrozen(report.patterns[0]));
-  assert.match(formatSeriousErrorPatterns(report).join("\n"), /4x 503 POST \/api\/media\/assets\/:id\/finalize/);
+  const formatted = formatSeriousErrorPatterns(report).join("\n");
+  assert.match(formatted, /4x 503 POST \/api\/media\/assets\/:id\/finalize/);
+  assert.match(formatted, /2x FATAL CLIENT \/client\/landing/);
 });
 
 test("historical snapshots exclude future hours and state the approximate boundary-hour range", (t) => {

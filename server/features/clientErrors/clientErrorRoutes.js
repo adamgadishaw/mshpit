@@ -65,7 +65,10 @@ export function clientErrorRoutes({
         level: report.kind === "promise" ? "error" : "fatal",
         code: report.code,
         status: 0,
-        method: "POST",
+        // This labels the browser failure, not the HTTP method used to upload
+        // telemetry. Calling it POST made crawler render crashes look exactly
+        // like failed member submissions in owner emails and Moderation.
+        method: "CLIENT",
         route: "/client/" + report.surface,
         cause: clientCrashCause(CAUSES[report.kind][report.platform], report, resolveCrashLocation),
         requestId: ctx.requestId,
