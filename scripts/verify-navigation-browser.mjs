@@ -44,6 +44,10 @@ export const clientCollectionPaths = Object.freeze(["/artists", "/events", "/ven
 export const navigationCases = Object.freeze([
   ...[390, 1280].flatMap(width => [
     ...[postPath, eventPath].map(path => ({ name: `deep-link-${width < 620 ? "home" : "intro"}-${path.startsWith("/post") ? "post" : "event"}-${width}`, kind: "deep-link", path, width })),
+    { name: `query-entry-tracking-${width}`, kind: "query-entry", path: `${eventPath}?utm_source=google&gclid=fixture-click`, queryIndexable: true, width },
+    { name: `query-entry-functional-${width}`, kind: "query-entry", path: `${eventPath}?sort=recent`, queryIndexable: false, width },
+    { name: `query-entry-directory-${width}`, kind: "query-entry", path: "/events?sort=recent", queryIndexable: false, width },
+    { name: `query-server-collection-${width}`, kind: "query-server-collection", path: "/events/page/2?sort=recent", width },
     { name: `delayed-resolution-${width}`, kind: "delayed", path: postPath, width },
     { name: `guest-tabs-${width}`, kind: "guest-tabs", width },
     { name: `artist-lookup-recovery-${width}`, kind: "artist-lookup-recovery", width },
@@ -66,6 +70,16 @@ export function injectCollectionFixture(html, path) {
   const document = `<main class="seo-document"><h1>Navigation fixture collection: ${path}</h1><p>This is a complete server-rendered collection, not a fabricated client page.</p><a href="${next}">Next fixture collection</a><a href="/">Fixture home</a></main>`;
   assert.match(html, /<div id="root">/, "The generated Expo document needs its expected root.");
   return html.replace('<div id="root">', '<div id="root">' + document);
+}
+
+function injectQueryMetadataFixture(html, url) {
+  if (![eventPath, "/events", ...serverCollectionPaths].includes(url.pathname) || !url.search) return html;
+  const indexable = url.search === "?utm_source=google&gclid=fixture-click";
+  const head = `<title>Navigation fixture ${url.pathname}</title><meta name="robots" content="${indexable ? "index,follow" : "noindex,follow"}">${indexable ? `<link rel="canonical" href="${url.pathname}">` : ""}`;
+  return html.replace(/<title[^>]*>[\s\S]*?<\/title>/gi, "")
+    .replace(/<meta\b[^>]*\bname=["']robots["'][^>]*>/gi, "")
+    .replace(/<link\b[^>]*\brel=["']canonical["'][^>]*>/gi, "")
+    .replace("</head>", head + "</head>");
 }
 
 export function fixtureApiResponse(pathname, { member = false, method = "GET", resolvedPath = postPath, artistBioMode = "imported", discoverArtist = false } = {}) {
@@ -165,7 +179,8 @@ async function localBuildServer() {
     if (!path.startsWith(directory + sep) || !files.has(path)) path = join(directory, "index.html");
     response.setHeader("content-type", mime[extname(path)] || "application/octet-stream");
     response.setHeader("cache-control", "no-store");
-    const body = path === join(directory, "index.html") ? injectCollectionFixture(html, url.pathname) : files.get(path);
+    const body = path === join(directory, "index.html")
+      ? injectQueryMetadataFixture(injectCollectionFixture(html, url.pathname), url) : files.get(path);
     response.end(request.method === "HEAD" ? undefined : body);
   });
   await new Promise((done, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", done); });
@@ -310,6 +325,46 @@ async function runCase(browser, origin, item) {
       await visiblePage(page, start); await assertPath(page, start); await assertPageIdentity(page, start); await snapshot("back deep link");
       await page.goForward({ waitUntil: "networkidle" });
       await landing(page); await assertPath(page, "/"); await assertPageIdentity(page, "/"); await snapshot("forward intro");
+    } else if (item.kind === "query-entry") {
+      const expectedQuery = new URL(start, origin).search;
+      const expectedPath = new URL(start, origin).pathname;
+      const assertEntry = async () => {
+        await visiblePage(page, expectedPath);
+        await assertPath(page, expectedPath);
+        assert.equal(new URL(page.url()).search, expectedQuery, "Startup hydration must not erase a public document's query.");
+        await page.waitForFunction(expected => document.querySelector('meta[name="robots"]')?.content === expected,
+          item.queryIndexable ? "index,follow" : "noindex,follow");
+        const metadata = await page.evaluate(() => ({
+          canonical: document.querySelector('link[rel="canonical"]')?.href || null,
+          history: JSON.stringify(history.state),
+        }));
+        assert.equal(metadata.canonical, item.queryIndexable ? origin + expectedPath : null);
+        assert.equal(metadata.history.includes(expectedQuery.slice(1)), false, "Query values must never enter browser history state.");
+        assert.equal(state.calls.some(call => call.path === "/api/page-head" && /sort|recent|utm_|gclid|fixture-click/.test(decodeURIComponent(call.query))), false,
+          "Page metadata requests must never disclose query values.");
+      };
+      await assertEntry(); await snapshot("query entry preserves metadata policy");
+      await page.reload({ waitUntil: "networkidle" }); await assertEntry();
+      await intro(page, item.width); await landing(page); await assertPageIdentity(page, "/");
+      assert.equal(new URL(page.url()).search, "", "A real destination change must leave the prior page's query behind.");
+      await page.goBack({ waitUntil: "networkidle" }); await assertEntry();
+      await snapshot("query entry after browser Back");
+    } else if (item.kind === "query-server-collection") {
+      const expected = new URL(start, origin);
+      const assertCollection = async () => {
+        await page.getByRole("heading", { name: `Navigation fixture collection: ${expected.pathname}`, exact: true }).waitFor();
+        assert.equal(new URL(page.url()).search, expected.search);
+        assert.equal(await page.locator('meta[name="robots"]').getAttribute("content"), "noindex,follow");
+        assert.equal(await page.locator('link[rel="canonical"]').count(), 0);
+        assert.equal(await page.locator("#root > .seo-document").count(), 1);
+      };
+      await assertCollection();
+      assert.equal(state.calls.length, 0, "A complete server collection must not mount an unrelated client screen.");
+      await page.reload({ waitUntil: "networkidle" }); await assertCollection();
+      await page.getByRole("link", { name: "Fixture home", exact: true }).click();
+      await landing(page); await assertPath(page, "/");
+      await page.goBack({ waitUntil: "networkidle" }); await assertCollection();
+      await snapshot("server collection retains query and noindex");
     } else if (item.kind === "delayed") {
       await waitFor(() => !!state.releaseResolve, "The initial public resolver was not held.");
       if (item.width < 620) await page.goBack({ waitUntil: "domcontentloaded" });

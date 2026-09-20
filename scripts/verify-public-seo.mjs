@@ -722,6 +722,26 @@ async function verifyNotFound(origin, options) {
   return "HTTP 404 with noindex";
 }
 
+async function verifyQueryVariants(origin, options) {
+  for (const suffix of ["?utm_source=google&utm_medium=organic", "?gclid=seo-verification-click"]) {
+    const response = await request(`${origin}/${suffix}`, options);
+    requireStatus(response, 200, "tracking URL");
+    requireContentType(response, ["text/html"], "tracking URL");
+    verifyHtmlMetadata(response, response.body, origin, "/", ["WebSite", "Organization"]);
+  }
+  const response = await request(`${origin}/?utm_source=google&q=seo-verification-private-query`, options);
+  requireStatus(response, 200, "functional query URL");
+  requireContentType(response, ["text/html"], "functional query URL");
+  if (!hasNoindex(response, response.body) || linkHrefs(response.body, "canonical").length
+    || httpCanonicalLinks(response.headers.get("link")).length) {
+    throw new Error("functional/private query must remain noindex without a canonical");
+  }
+  if (!/\bno-store\b/i.test(response.headers.get("cache-control") || "")) {
+    throw new Error("functional/private query must not be shared-cacheable");
+  }
+  return "tracking links keep the clean canonical; functional queries stay noindex/no-store";
+}
+
 export async function verifyPublicSeo({
   origin = DEFAULT_ORIGIN,
   timeoutMs = DEFAULT_TIMEOUT_MS,
@@ -752,6 +772,7 @@ export async function verifyPublicSeo({
   await check("Sitemaps", () => verifySitemaps(finalOrigin, options));
   await check("Home HTML", () => verifyIndexablePage(finalOrigin, "/", ["WebSite", "Organization"], options));
   await check("About HTML", () => verifyIndexablePage(finalOrigin, "/about", ["AboutPage", "Organization"], options));
+  await check("Tracking URL policy", () => verifyQueryVariants(finalOrigin, options));
   await check("404 policy", () => verifyNotFound(finalOrigin, options));
   return { ok: checks.every((item) => item.ok), origin: finalOrigin, checks };
 }

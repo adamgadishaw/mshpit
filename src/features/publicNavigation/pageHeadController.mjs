@@ -1,4 +1,5 @@
 import { APP_PAGE_TITLES as PRIVATE_TITLES, appPageTitle } from "../../domain/appPageMetadata.mjs";
+import { hasOnlyPublicTrackingQuery } from "../../domain/publicTrackingQuery.mjs";
 
 const MAX_HEAD_LENGTH = 128_000;
 const META_NAMES = new Set([
@@ -19,6 +20,11 @@ const MANAGED_SELECTOR = [
 
 function pagePath(value) {
   const path = String(value || "/").split("#")[0];
+  const separator = path.indexOf("?");
+  if (separator >= 0 && hasOnlyPublicTrackingQuery(path.slice(separator))) {
+    const clean = path.slice(0, separator);
+    return clean.length <= 500 && /^\/(?!\/)/.test(clean) && !/[\\\u0000-\u0020\u007f]/.test(clean) ? clean : null;
+  }
   return path.length <= 500 && /^\/(?!\/)/.test(path) && !/[\\\u0000-\u0020\u007f]/.test(path) ? path : null;
 }
 

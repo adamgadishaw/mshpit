@@ -75,6 +75,44 @@ test("noindex metadata drops any inherited canonical and oversized input never r
   assert.equal(readPageHead(fakeDocument([["title", {}, "Unverified"]]), origin), null);
 });
 
+test("tracking-only navigation reuses clean public identity and never sends click IDs to the server", async () => {
+  const document = fakeDocument(head("Home", "/"), new Map([["PUBLIC_HEAD", head("Artist", "/artist/one")]]));
+  const calls = [];
+  const location = { origin, pathname: "/", search: "?utm_source=google" };
+  const controller = createPageHeadController({ document, location, apiCall: async (url) => {
+    calls.push(url);
+    return { path: "/artist/one", head: "PUBLIC_HEAD" };
+  } });
+  assert.equal(await controller.sync("/?utm_source=google"), true);
+  assert.equal(calls.length, 0);
+  assert.equal(await controller.sync("/artist/one?gclid=private-click-id&utm_campaign=tour"), true);
+  assert.deepEqual(calls, ["/api/page-head?path=%2Fartist%2Fone"]);
+  assert.equal(document.head.querySelector('link[rel="canonical"]').getAttribute("href"), origin + "/artist/one");
+  assert.doesNotMatch(JSON.stringify(document.nodes), /private-click-id|utm_campaign/);
+  assert.equal(await controller.sync("/artist/one?utm_source=new-campaign"), true);
+  assert.equal(calls.length, 1, "all tracking variants share one clean metadata cache key");
+  assert.equal(location.search, "?utm_source=google", "metadata does not rewrite attribution in the address bar");
+});
+
+test("tracking does not make private/thin pages or mixed functional queries indexable", async () => {
+  const document = fakeDocument(head("Home", "/"), new Map([["THIN_HEAD", head("Thin artist", "/artist/thin", "noindex,follow")], ["SEARCH_HEAD", head("Search", "/search", "noindex,follow")]]));
+  let calls = 0;
+  const controller = createPageHeadController({ document, location: { origin, pathname: "/" }, apiCall: async (url) => {
+    calls += 1; const path = new URL(url, origin).searchParams.get("path");
+    return { path, head: path === "/search" ? "SEARCH_HEAD" : "THIN_HEAD" };
+  } });
+  assert.equal(await controller.sync("/artist/thin?gclid=x"), true);
+  assert.match(robotsOf(document), /noindex/);
+  for (const path of ["/login?gclid=x", "/search?utm_source=google", "/artist/one?gclid=x&token=private-token",
+    "/artist/one?utm_source=google&city=Toronto", "/artist/one?utm_unknown=value"]) {
+    assert.equal(await controller.sync(path), true);
+    assert.match(robotsOf(document), /noindex/);
+    assert.equal(document.head.querySelector('link[rel="canonical"]'), null);
+    assert.doesNotMatch(JSON.stringify(document.nodes), /private-token|utm_unknown/);
+  }
+  assert.equal(calls, 2, "only the two clean public projections are requested");
+});
+
 test("applying metadata removes the previous identity but preserves unrelated scripts and resources", () => {
   const document = fakeDocument([...head("Old artist", "/artist/old"), ["script", { src: "/bundle.js" }], ["link", { rel: "stylesheet", href: "/app.css" }]]);
   const next = readPageHead(fakeDocument(head("New concert", "/event/new")), origin);

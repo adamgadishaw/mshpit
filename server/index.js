@@ -22,6 +22,7 @@ import { observeRequestResponse } from "./requestMetrics.js";
 import { startStorageMaintenance } from "./storageMaintenanceScheduler.js";
 import { pruneExpiredProviderData } from "./musicProviders.js";
 import { sitemapStartupRefreshDecision } from "./features/seo/sitemapSnapshotManager.js";
+import { hasOnlyPublicTrackingQuery } from "../src/domain/publicTrackingQuery.mjs";
 import {
   injectHead,
   drainSitemapSnapshotRefresh,
@@ -454,7 +455,7 @@ function serveWebShell(req, res, pathname, {
   res.end(html);
 }
 
-function serveSeoRoute(req, res, pathname, { hasQueryString = false } = {}) {
+function serveSeoRoute(req, res, pathname, { search = "" } = {}) {
   const plan = seoHttpPlan(pathname);
   if (plan.type === "redirect") {
     res.writeHead(plan.status || 301, {
@@ -465,7 +466,9 @@ function serveSeoRoute(req, res, pathname, { hasQueryString = false } = {}) {
     return res.end();
   }
   if (plan.type === "document") {
-    const responsePlan = hasQueryString ? { ...plan, indexable: false } : plan;
+    // Attribution links represent the same public document, not a new indexable
+    // variant. Its clean canonical remains; private/thin page policy still wins.
+    const responsePlan = hasOnlyPublicTrackingQuery(search) ? plan : { ...plan, indexable: false };
     return serveWebShell(req, res, pathname, {
       noindex: responsePlan.indexable === false,
       plan: responsePlan,
@@ -516,12 +519,12 @@ async function handleRequest(req, res) {
     if (!res.writableEnded) abortRequest();
   });
   res.setHeader("X-Request-Id", requestId);
-  let pathname = "/", query = {}, routePattern = "", hasQueryString = false;
+  let pathname = "/", query = {}, routePattern = "", search = "";
   try {
     const u = new URL(req.url, "http://x");
     pathname = u.pathname;
     query = Object.fromEntries(u.searchParams);
-    hasQueryString = u.search.length > 1;
+    search = u.search;
   } catch { return sendApiError(res, new ApiError(400, "Bad URL.", "VALIDATION_FAILED"), requestId); }
   observeRequestResponse(req, res, { pathname });
 
@@ -700,7 +703,7 @@ async function handleRequest(req, res) {
       return res.end();
     }
     if (serveStatic(req, res, pathname)) return;
-    return serveSeoRoute(req, res, pathname, { hasQueryString });
+    return serveSeoRoute(req, res, pathname, { search });
   } catch (e) {
     // A client disconnect is an expected cancellation boundary, not an
     // application failure. Downstream storage/decoder helpers may wrap the

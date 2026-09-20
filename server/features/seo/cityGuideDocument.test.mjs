@@ -29,7 +29,7 @@ test("empty city shells stay noindex; real history or venues permit indexing", (
   const empty = projectCityGuideDocument(guide());
   assert.equal(empty.indexable, false);
   assert.match(renderPublicDocumentHead(empty), /noindex,follow/);
-  assert.equal(empty.title, "Toronto live music guide | Mshpit");
+  assert.equal(empty.title, "Toronto, Canada live music guide | Mshpit");
   assert.doesNotMatch(empty.description, /upcoming|reviews|photos|history/i);
   assert.equal(projectCityGuideDocument(guide({editorial:{history:"A documented city music history with original researched context. ".repeat(3)}})).indexable, true);
 });
@@ -37,11 +37,11 @@ test("empty city shells stay noindex; real history or venues permit indexing", (
 test("default city metadata describes available venues and concerts without inventing community content", () => {
   const venue = { name: "Main Hall", path: "/venue/main-hall" };
   const venues = projectCityGuideDocument(guide({ venues: [venue] }));
-  assert.equal(venues.title, "Toronto live music venues & guide | Mshpit");
+  assert.equal(venues.title, "Toronto, Canada live music venues & guide | Mshpit");
   assert.match(venues.description, /Main Hall/);
   assert.doesNotMatch(venues.description, /upcoming|reviews|photos|history/i);
   const shows = projectCityGuideDocument(guide({ venues: [venue], upcoming: [{ artist: "Band", path: "/event/1" }] }));
-  assert.equal(shows.title, "Toronto concerts & live music venues | Mshpit");
+  assert.equal(shows.title, "Toronto, Canada concerts & live music venues | Mshpit");
   assert.match(shows.description, /upcoming concert listings/);
   assert.doesNotMatch(shows.description, /reviews|photos|history/i);
 });
@@ -135,4 +135,34 @@ test("city photo anchors reject untrusted destinations and retain actual photogr
   assert.doesNotMatch(html, /href="\/\/outside|href="\/post\/a"/);
   assert.match(html, /alt="&lt;stage&gt;"/);
   assert.match(renderPublicDocumentHead(doc), /property="og:image:alt" content="&lt;stage&gt;"/);
+});
+
+test("default metadata distinguishes same-name cities without regions and preserves managed titles", () => {
+  const uk = projectCityGuideDocument(guide({ city: { city: "London", citySlug: "london", country: "United Kingdom", countryCode: "GB" } }));
+  const ca = projectCityGuideDocument(guide({ city: { city: "London", citySlug: "london", country: "Canada", countryCode: "CA" } }));
+  assert.equal(uk.title, "London, United Kingdom live music guide | Mshpit");
+  assert.equal(ca.title, "London, Canada live music guide | Mshpit");
+  assert.notEqual(uk.canonicalUrl, ca.canonicalUrl);
+  assert.match(uk.description, /London, United Kingdom/);
+  const withRegion = projectCityGuideDocument(guide({ city: { ...city, region: "Ontario" } }));
+  assert.equal(withRegion.title, "Toronto, Ontario live music guide | Mshpit");
+  const explicit = projectCityGuideDocument(guide({ editorial: { seoTitle: "Toronto's researched guide" } }));
+  assert.equal(explicit.title, "Toronto's researched guide | Mshpit");
+});
+
+test("city venue cards retain known show counts and capacity without manufacturing absent facts", () => {
+  const doc = projectCityGuideDocument(guide({ venues: [
+    { name: "Active Hall", path: "/venue/active", upcomingCount: 3, capacity: 1250 },
+    { name: "One Show Hall", path: "/venue/one", upcomingCount: 1 },
+    { name: "Quiet Hall", path: "/venue/quiet", upcomingCount: 0 },
+    { name: "Unknown Hall", path: "/venue/unknown" },
+    { name: "Invalid Facts Hall", path: "/venue/invalid", upcomingCount: -1, capacity: "unknown" },
+  ] }));
+  const html = renderPublicDocumentMain(doc);
+  assert.match(html, /Active Hall<\/a><\/h3><p class="micro">3 upcoming shows · Listed capacity: 1,250<\/p>/);
+  assert.match(html, /One Show Hall<\/a><\/h3><p class="micro">1 upcoming show<\/p>/);
+  assert.match(html, /Quiet Hall<\/a><\/h3><p class="micro">No upcoming shows listed<\/p>/);
+  assert.match(html, /Unknown Hall<\/a><\/h3><\/li>/);
+  assert.match(html, /Invalid Facts Hall<\/a><\/h3><\/li>/);
+  assert.doesNotMatch(html, /-1 upcoming|Listed capacity: unknown/);
 });

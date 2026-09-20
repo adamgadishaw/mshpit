@@ -419,7 +419,8 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
   // only the latest public location, never return historical rows as upcoming
   // shows, and keep exact provider identity alongside the indexed public slug.
   const venueLocationByProvider = database.prepare(`SELECT td.place,td.venue_city,td.venue_region,
-      td.venue_country,td.venue_country_code
+      td.venue_country,td.venue_country_code,td.venue_address_line1,td.venue_address_line2,
+      td.venue_postal_code,td.lat,td.lng
     FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id
     WHERE pit_venue_public_slug(td.source,td.venue_provider_id)=?
       AND td.source IS ? AND td.venue_provider_id=?
@@ -437,7 +438,8 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
   // Preserve a known locality here so a same-named building elsewhere cannot
   // acquire curated facts simply because its upcoming calendar is empty.
   const venueLocationByName = database.prepare(`SELECT td.place,td.venue_city,td.venue_region,
-      td.venue_country,td.venue_country_code
+      td.venue_country,td.venue_country_code,td.venue_address_line1,td.venue_address_line2,
+      td.venue_postal_code,td.lat,td.lng
     FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id
     WHERE pit_public_slug(td.venue)=? AND LOWER(TRIM(td.venue))=LOWER(TRIM(?))
       AND TRIM(COALESCE(td.venue,''))<>'' AND td.release_at<=?
@@ -848,17 +850,22 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
       const posts = providerId
         ? []
         : venuePostsByName.all(key, venueName, bounded(postLimit, 8, 16));
-      const events = providerId
-        ? venueEventsByProvider.all(providerSource, providerId, instant, day, bounded(eventLimit, 8, 16))
-        : venueEventsByName.all(venueName, instant, day, bounded(eventLimit, 8, 16));
+      // Peek one row past the preview instead of scanning every show merely to
+      // display a count. Eight preview rows must not look like a total of eight.
+      const eventPageSize = bounded(eventLimit, 8, 16);
+      const eventRows = providerId
+        ? venueEventsByProvider.all(providerSource, providerId, instant, day, eventPageSize + 1)
+        : venueEventsByName.all(venueName, instant, day, eventPageSize + 1);
+      const events = eventRows.slice(0, eventPageSize);
       const location = providerId ? venueLocationByProvider.get(
         pitVenuePublicSlug(providerSource, providerId), providerSource, providerId, instant, day,
       ) : venueLocationByName.get(pitPublicSlug(venueName), venueName, instant, day);
       return {
         venue: { key, name: venueName, providerVenueId: providerId || null, source: providerSource,
-          place: publicVenuePlace(location) },
+          place: publicVenuePlace(location), location: location || null },
         posts,
         events,
+        eventsHasMore: eventRows.length > eventPageSize,
         venueReviews: venueReviews?.read({ venueKey: key, limit: 8 }) || {
           reviews: [],
           stats: { reviewCount: 0, ratingCount: 0, averageRating: null },

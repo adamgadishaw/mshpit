@@ -272,6 +272,17 @@ function* urlsetRowParts(entries, base, limits = {}) {
   }
 }
 
+// Match the public document's visible body before applying quality thresholds:
+// imported control characters must not count as words that HTML removes.
+function substantiveVisibleText(value, minimum, maximum = 8_000) {
+  const visible = String(value ?? "")
+    .replace(/\r\n?/g, "\n")
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, " ")
+    .split("\n").map((line) => line.replace(/[ \t]+/g, " ").trim()).join("\n")
+    .replace(/\n{3,}/g, "\n\n").trim().slice(0, maximum);
+  return visible.replace(/\s+/g, " ").trim().length >= minimum;
+}
+
 export function urlsetParts(entries, base, limits = {}) {
   return Array.from(urlsetRowParts(entries, base, limits), renderUrlsetRows);
 }
@@ -309,7 +320,16 @@ function visiblePostCandidates(database, limit = -1, { maximumRows = SITEMAP_MAX
   const rows = [];
   const statement = database.prepare(`SELECT p.id,p.user_id,p.artist,p.artist_key,p.venue,p.venue_key,p.city,p.date,
       p.kind,p.experience_type,p.online_title,p.youtube_url,p.youtube_video_id,p.overall,p.review,p.photos_public,
-      p.created_at,p.updated_at,u.name AS author_name,u.handle AS author_handle
+      p.created_at,p.updated_at,u.name AS author_name,u.handle AS author_handle,
+      CASE WHEN COALESCE(u.profile_audience,'everyone')='everyone' AND (
+        COALESCE(p.kind,'review')='review' OR (
+          p.kind='status' AND p.artist_key IS NOT NULL AND p.artist_mbid IS NOT NULL AND p.overall=0
+          AND EXISTS (SELECT 1 FROM artist_memorials memory_memorial
+            WHERE memory_memorial.artist_key=p.artist_key
+              AND lower(memory_memorial.artist_mbid)=lower(p.artist_mbid)
+              AND memory_memorial.status='published')
+        )
+      ) THEN 1 ELSE 0 END AS artist_review_eligible
     FROM posts p JOIN users u ON u.id=p.user_id
     WHERE p.removed=0 AND ${activeAccountSql("u")}
       AND (LENGTH(TRIM(COALESCE(p.review,'')))>=40
@@ -340,6 +360,9 @@ function visiblePostCandidates(database, limit = -1, { maximumRows = SITEMAP_MAX
   }
   return rows.map((row) => ({
     ...row,
+    // This source classification is also used by archive/rating reducers.
+    // A public in-person rating can remain useful when display sanitization
+    // removes its review text; keep that existing shared evidence boundary.
     meaningfulText: String(row.review || "").replace(/\s+/g, " ").trim().length >= 40,
     readyMedia: mediaByPost.get(row.id) || [],
   }));
@@ -486,7 +509,7 @@ export function profileSitemapEntries(database, { candidates = null } = {}) {
         )
       )
       ORDER BY u.created_at DESC,u.id DESC`).all()
-    .filter((row) => String(row.bio || "").replace(/\s+/g, " ").trim().length >= 60 || latestPostByUser.has(row.id))
+    .filter((row) => substantiveVisibleText(row.bio, 60, 2_000) || latestPostByUser.has(row.id))
     .map((row) => ({
       path: profilePath(row.handle),
       lastmod: newest(row.created_at, row.profile_updated_at, latestPostByUser.get(row.id)),
@@ -529,7 +552,7 @@ export function artistSitemapEntries(database, { now = Date.now(), candidates = 
     try { imported = knowledge ? JSON.parse(knowledge) : null; }
     catch { imported = null; }
     const displayBio = artistKnowledgeDisplayBio({ artistKnowledge: imported }, { mbid: row.mbid, bio: selectedBio });
-    artistRows.push({ ...identity, substantiveBio: String(displayBio || "").replace(/\s+/g, " ").trim().length >= 80 });
+    artistRows.push({ ...identity, substantiveBio: substantiveVisibleText(displayBio, 80, 2_000) });
   }
   const artistByNorm = new Map(artistRows.map((row) => [String(row.norm || "").trim().toLowerCase(), row]));
   const artistByName = new Map();
@@ -553,6 +576,14 @@ export function artistSitemapEntries(database, { now = Date.now(), candidates = 
     ? artistByNorm.get(String(row.artist_key).trim().toLowerCase())
     : artistByName.get(String(row.artist || "").trim().toLowerCase());
   for (const row of candidates?.posts || visiblePostCandidates(database)) {
+    // General status posts and restricted-profile reviews are not projected on
+    // public artist pages. The SQL flag preserves the exact, published
+    // identity-bound memorial-memory exception without treating every status
+    // mention as content for an otherwise empty artist page.
+    const artistReviewEligible = row.artist_review_eligible == null
+      ? row.kind == null || row.kind === "review"
+      : Number(row.artist_review_eligible) === 1;
+    if (!artistReviewEligible) continue;
     if (!row.meaningfulText && !(row.photos_public && row.readyMedia.length)) continue;
     const artistKey = canonicalArtistFor(row)?.norm;
     if (!artistKey) continue;
@@ -1035,7 +1066,10 @@ function citySitemapEntries({ candidates, venueEntries, concerts }) {
   for (const [showKey, detail] of showDetails) {
     if (detail.locations.size !== 1) continue;
     const { row, identity, locationKey } = detail.representative;
-    if (row.date < candidates.today) continue;
+    // A bounded festival or multi-day show remains current through its end
+    // date, just as it does in the public city-directory repository. A start
+    // date alone would remove a useful city directory while its shows run.
+    if (!isCurrentOrUpcomingPublicMusicEvent(row, candidates.today)) continue;
     const providerVenueId = String(row.venue_provider_id || "").trim();
     const evidence = venueNameEvidence.get(displayIdentity(row.venue));
     const safeNameOnly = !providerVenueId && evidence

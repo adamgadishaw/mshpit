@@ -38,6 +38,7 @@ async function fixture({
   omitAbout = false,
   nonCanonicalPageOne = false,
   redirectAlias = false,
+  trackingProblem = "",
 } = {}) {
   let origin;
   let aliasOrigin;
@@ -62,6 +63,20 @@ Sitemap: ${origin}/sitemap.xml
       const about = omitAbout ? "" : `<url><loc>${origin}/about</loc></url>`;
       const pageOne = nonCanonicalPageOne ? `<url><loc>${origin}/artists/page/1</loc></url>` : "";
       response.writeHead(200, { "content-type": "application/xml" }).end(`<?xml version="1.0"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:image="http://www.google.com/schemas/sitemap-image/1.1"><url><loc>${origin}/</loc><image:image><image:loc>https://media.example.test/public/cover.jpg</image:loc></image:image></url>${about}${duplicate}${pageOne}</urlset>`);
+      return;
+    }
+    if (request.url.startsWith("/?")) {
+      const functional = request.url.includes("&q=");
+      let html = page(origin, "/");
+      const noindex = functional || trackingProblem === "noindex";
+      if (noindex) html = html.replace('content="index,follow"', 'content="noindex,follow"').replace(/<link rel="canonical"[^>]*>/, "");
+      if (!functional && trackingProblem === "wrong-canonical") html = html.replace(`href="${origin}/"`, `href="${origin}${request.url}"`);
+      response.writeHead(200, {
+        "content-type": "text/html; charset=utf-8",
+        "cache-control": functional && trackingProblem !== "privacy-cache" ? "no-store" : "public, max-age=0",
+        "x-robots-tag": noindex ? "noindex,follow" : "index,follow",
+        ...(noindex ? {} : { link: `<${origin}/>; rel="canonical"` }),
+      }).end(html);
       return;
     }
     if (request.url === "/" || request.url === "/about") {
@@ -204,7 +219,7 @@ test("the full public SEO contract passes and ignores off-origin media locs", as
   const report = await verifyPublicSeo({ origin: site.origin, timeoutMs: 2_000 });
   assert.equal(report.ok, true, formatReport(report));
   assert.deepEqual(report.checks.map((item) => item.name), [
-    "Canonical origin", "robots.txt", "Sitemaps", "Home HTML", "About HTML", "404 policy",
+    "Canonical origin", "robots.txt", "Sitemaps", "Home HTML", "About HTML", "Tracking URL policy", "404 policy",
   ]);
   assert.match(report.checks.find((item) => item.name === "Sitemaps").detail, /2 unique public URLs/);
 });
@@ -384,6 +399,23 @@ test("social metadata, JSON-LD types, and crawlable directory anchors are enforc
     const report = await verifyPublicSeo({ origin: site.origin, timeoutMs: 2_000 });
     assert.equal(report.ok, false);
     assert.match(report.checks.find((item) => item.name === checkName).detail, expected);
+  }
+});
+
+test("tracking variants enforce canonical indexing without exposing functional queries", async (context) => {
+  for (const [trackingProblem, expected] of [
+    ["noindex", /noindex/],
+    ["wrong-canonical", /canonical link/],
+    ["privacy-cache", /must not be shared-cacheable/],
+  ]) {
+    const site = await fixture({ trackingProblem });
+    closeAfter(context, site.server);
+    const report = await verifyPublicSeo({ origin: site.origin, timeoutMs: 2_000 });
+    assert.equal(report.ok, false);
+    const check = report.checks.find((item) => item.name === "Tracking URL policy");
+    assert.equal(check.ok, false);
+    assert.match(check.detail, expected);
+    assert.doesNotMatch(check.detail, /seo-verification-private-query/);
   }
 });
 

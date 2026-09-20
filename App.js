@@ -77,7 +77,7 @@ import { getPendingImagePickerResult } from "./src/lib/imagePickerRecovery";
 import { lazyWithRetry } from "./src/lib/lazyWithRetry";
 import { recordFeedImpressionForSession } from "./src/features/feedImpressions/feedImpressionService";
 import useFeedImpressionSession from "./src/features/feedImpressions/useFeedImpressionSession";
-import { artistPath, eventPath } from "./src/domain/urls.mjs";
+import { artistPath, eventPath, parsePublicCollectionPath } from "./src/domain/urls.mjs";
 import { cityIdentityForLocation } from "./src/cityIdentity.js";
 import { CityNavigationContext } from "./src/components/cities/CityNavigationContext";
 import { shouldRestorePersistedStack, MAIN_TAB_PATHS, mainTabForPath, serverDocumentNavigationPath } from "./src/domain/browserNavigation.mjs";
@@ -850,8 +850,16 @@ function Root() {
       });
       if (!current() || !destination) return;
       const { path: canonical, ...next } = destination;
+      // Hydrating the same public document is not a navigation. Keep its query
+      // in the address bar so SSR and client metadata agree about tracking-only
+      // versus functional variants. History state still contains opaque IDs,
+      // never query values; consumed credential links retain their cleanup.
+      const preservePublicQuery = canonical === window.location.pathname && !!window.location.search
+        && (parsePublicCollectionPath(canonical)
+          || /^\/(?:$|discover$|cities$|(?:artist|venue|event|concert|post|u|city)\/)/.test(canonical))
+        && !resetToken && !verifyToken && !unsubToken && !ownerApprovalToken;
       // Canonical redirects replace this position, never grow a duplicate link.
-      if (replaceUrl || canonical !== window.location.pathname) browserHistoryRef.current?.write(next, canonical, "replace");
+      if (!preservePublicQuery && (replaceUrl || canonical !== window.location.pathname)) browserHistoryRef.current?.write(next, canonical, "replace");
       else browserHistoryRef.current?.capture(next);
       applyNavigation(next);
     } catch {

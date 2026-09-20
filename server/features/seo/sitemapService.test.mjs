@@ -40,6 +40,7 @@ const {
   sitemapXmlFor,
   urlsetParts,
 } = await import("./sitemapService.js");
+const { seoHttpPlan } = await import("../../seo.js");
 
 test("a ticket URL alone is not indexable event evidence", () => {
   assert.equal(hasIndexableEventEvidence({
@@ -123,11 +124,93 @@ test("event fan evidence streams catalogue identities once regardless of event c
   assert.equal(identityReads, 1, "no identity scan when there is no fan evidence");
 });
 
+test("artist sitemap review evidence matches public HTML kind and author visibility", () => {
+  const at = Date.parse("2026-09-19T12:00:00Z");
+  const user = addUser("u_sitemap_artist_review_policy", "sitemapartistreviewpolicy");
+  const cases = [
+    { label: "ordinary-status", kind: "status", audience: "everyone", expected: false },
+    { label: "in-person-review", kind: "review", audience: "everyone", expected: true },
+    { label: "online-review", kind: "review", audience: "everyone", experience: "online", expected: true },
+    { label: "member-review", kind: "review", audience: "members", expected: false },
+    { label: "private-review", kind: "review", audience: "only_me", expected: false },
+    { label: "control-text-with-rating", kind: "review", audience: "everyone", review: "\u0001".repeat(80), expected: true },
+  ];
+  try {
+    for (const sample of cases) {
+      const name = `Sitemap Policy ${sample.label}`, slug = `sitemap-policy-${sample.label}`;
+      const postId = `p_${slug}`, key = normName(name);
+      addArtist(name, slug);
+      addPost(postId, user.id, { artist: name, kind: sample.kind, createdAt: at,
+        review: sample.review || "A detailed public review describing the performance, music, venue and the moments that made this show memorable." });
+      db.prepare("UPDATE users SET profile_audience=? WHERE id=?").run(sample.audience, user.id);
+      db.prepare("UPDATE posts SET experience_type=? WHERE id=?").run(sample.experience || "in_person", postId);
+      try {
+        const path = `/artist/${slug}`;
+        const entry = artistSitemapEntries(db, { now: at }).find((row) => row.path === path);
+        const page = seoHttpPlan(path);
+        assert.equal(page.type, "document", sample.label);
+        assert.equal(page.indexable, sample.expected, `${sample.label}: public HTML`);
+        assert.equal(Boolean(entry), sample.expected, `${sample.label}: sitemap parity`);
+        if (sample.label === "control-text-with-rating") {
+          assert.equal(page.document.reviews[0].text, "");
+          assert.equal(page.document.concerts[0].ratingCount, 1,
+            "sanitizing text does not erase the independently public concert rating");
+          assert.equal(entry.lastmod, at + 1_000);
+        }
+        if (!sample.expected) {
+          db.prepare("UPDATE artists SET bio=? WHERE norm=?").run("A useful independently sourced biography about the artist's music and their distinctive live performances for fans.", key);
+          assert.equal(artistSitemapEntries(db, { now: at }).find((row) => row.path === path)?.lastmod,
+            1_700_000_000_000, `${sample.label}: excluded review cannot refresh artist lastmod`);
+        }
+      } finally {
+        db.prepare("DELETE FROM posts WHERE id=?").run(postId);
+        db.prepare("DELETE FROM artists WHERE norm=?").run(key);
+      }
+    }
+  } finally { db.prepare("DELETE FROM users WHERE id=?").run(user.id); }
+});
+
+test("artist sitemap preserves only published identity-bound memorial status evidence", () => {
+  const at = Date.parse("2026-09-19T12:00:00Z");
+  const user = addUser("u_sitemap_memory_policy", "sitemapmemorypolicy");
+  const name = "Sitemap Memory Policy", slug = "sitemap-memory-policy", key = normName(name);
+  const mbid = "72345678-1234-4234-8234-123456789abc";
+  addArtist(name, slug, { mbid });
+  const memorials = createArtistMemorialService({ repository: createArtistMemorialRepository(db) });
+  assert.equal(memorials.upsert({ status: "published", deathDate: "2026-09-01",
+    summary: "A lasting musical legacy remembered by listeners and the communities their performances brought together.",
+    thankYou: "Thank you for the music and memories.", accomplishments: ["A lasting catalogue"],
+    sourceUrl: "https://news.example.org/sitemap-memory", sourceTitle: "Verified public announcement",
+    confirmedIndividual: true, restartSpotlight: false,
+  }, { artistKey: key, artistName: name, artistMbid: mbid, at }).ok, true);
+  addPost("p_sitemap_memory_policy", user.id, { artist: name, kind: "status", createdAt: at + 1000,
+    review: "A detailed community memory about the music and the impact this artist had on the people who heard them perform." });
+  db.prepare("UPDATE posts SET artist_mbid=?,overall=0 WHERE id='p_sitemap_memory_policy'").run(mbid);
+  const entry = () => artistSitemapEntries(db, { now: at + 2000 }).find((row) => row.path === `/artist/${slug}`);
+  try {
+    assert.equal(entry()?.lastmod, at + 2000, "published exact memory updates the artist page");
+    assert.equal(seoHttpPlan(`/artist/${slug}`).document.reviews.length, 1);
+    db.prepare("UPDATE posts SET artist_mbid=? WHERE id='p_sitemap_memory_policy'")
+      .run("82345678-1234-4234-8234-123456789abc");
+    assert.equal(entry()?.lastmod, at, "a mismatched artist MBID cannot refresh the memorial");
+    assert.equal(seoHttpPlan(`/artist/${slug}`).document.reviews.length, 0);
+    db.prepare("UPDATE posts SET artist_mbid=? WHERE id='p_sitemap_memory_policy'").run(mbid);
+    db.prepare("UPDATE users SET profile_audience='members' WHERE id=?").run(user.id);
+    assert.equal(entry()?.lastmod, at, "restricted-profile memory stays outside public artist evidence");
+  } finally {
+    db.prepare("DELETE FROM posts WHERE id='p_sitemap_memory_policy'").run();
+    db.prepare("DELETE FROM artist_memorials WHERE artist_key=?").run(key);
+    db.prepare("DELETE FROM artists WHERE norm=?").run(key);
+    db.prepare("DELETE FROM users WHERE id=?").run(user.id);
+  }
+});
+
 test("artist sitemap streams biographies and retains only exact normalized text eligibility", () => {
   const cases = [
     ["Streamed Long Biography", "streamed-long-bio", "Verified music history. ".repeat(2_000), true],
     ["Streamed Padded Biography", "streamed-padded-bio", " \n".repeat(20_000) + "short", false],
     ["Streamed Boundary Biography", "streamed-boundary-bio", "x".repeat(80), true],
+    ["Streamed Control Biography", "streamed-control-bio", "\u0001".repeat(80), false],
   ];
   for (const [name, slug, bio] of cases) addArtist(name, slug, { bio });
   let streamed = 0;
@@ -947,6 +1030,69 @@ test("qualified collection, city, and artist archive pages are complete, canonic
   assert.deepEqual(cityXml, sitemapXmlFor("/sitemaps/cities.xml", { database: db, ...options }));
 });
 
+test("city venue sitemaps retain ongoing ranges and match public-directory exclusions", () => {
+  const at = Date.parse("2026-09-19T12:00:00Z");
+  const owner = addUser("u_sitemap_range_owner", "sitemaprangeowner");
+  const key = normName("Sitemap Range Owner");
+  addArtist("Sitemap Range Owner", "sitemap-range-owner");
+  db.prepare("INSERT INTO artist_profiles(artist_key,owner_id,removed,updated_at) VALUES(?,?,0,?)")
+    .run(key, owner.id, at);
+  const cases = [
+    { label: "festival", kind: "festival", expected: true },
+    { label: "fair", kind: "fair", expected: true },
+    { label: "multi-day", kind: "multi_day", expected: true },
+    { label: "member-range", kind: "concert", owned: true, expected: true },
+    { label: "end-day", kind: "festival", end: "2026-09-19", expected: true },
+    { label: "cancelled-public", kind: "festival", status: "cancelled", expected: true },
+    { label: "expired", kind: "festival", end: "2026-09-18", expected: false },
+    { label: "invalid-long-range", kind: "multi_day", end: "2027-09-22", expected: false },
+    { label: "ordinary-past-concert", kind: "concert", expected: false },
+    { label: "inactive", kind: "festival", inactive: true, expected: false },
+    { label: "inactive-cancelled", kind: "festival", inactive: true, status: "cancelled", expected: false },
+    { label: "unreleased", kind: "festival", unreleased: true, expected: false },
+    { label: "held", kind: "festival", owned: true, held: true, expected: false },
+    { label: "banned-owner", kind: "festival", owned: true, banned: true, expected: false },
+  ];
+  const repository = createPublicCollectionRepository(db);
+  try {
+    for (const sample of cases) {
+      const city = `Sitemap Range ${sample.label}`, citySlug = `sitemap-range-${sample.label}`;
+      const ids = Array.from({ length: 3 }, (_, index) => `td_range_${sample.label}_${index}`);
+      db.prepare("UPDATE users SET is_banned=? WHERE id=?").run(sample.banned ? 1 : 0, owner.id);
+      db.prepare("UPDATE artist_profiles SET identity_review_status=? WHERE artist_key=?")
+        .run(sample.held ? "pending" : "clear", key);
+      try {
+        for (const [index, id] of ids.entries()) {
+          db.prepare(`INSERT INTO tour_dates
+            (id,artist,artist_key,venue,place,date,event_end_date,source,venue_provider_id,venue_city,
+              venue_country_code,updated_at,release_at,provider_active,event_kind,music_qualified,
+              music_evidence,billed_artists,owner_id,event_status)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,'provider_classification',?,?,?)`).run(
+            id, "Sitemap Range Owner", key, `${city} Hall ${index % 2}`, `${city}, Canada`,
+            `2026-09-${16 + index}`, sample.end || "2026-09-22", "ticketmaster",
+            `range-${sample.label}-${index % 2}`, city, "CA", at,
+            sample.unreleased ? at + 60_000 : 0, sample.inactive ? 0 : 1, sample.kind,
+            JSON.stringify(["Sitemap Range Owner"]), sample.owned ? owner.id : null, sample.status || null,
+          );
+        }
+        const directory = repository.readCityVenues({ countryCode: "CA", citySlug, at, today: "2026-09-19" });
+        assert.equal(Boolean(directory), sample.expected, `${sample.label}: public directory`);
+        if (directory) assert.equal(directory.venues.length, 2, sample.label);
+        const entry = buildSitemapDatasets(db, { now: at }).get("cities")
+          .find((row) => row.path === `/venues/ca/${citySlug}`);
+        assert.equal(Boolean(entry), sample.expected, `${sample.label}: sitemap agrees`);
+        if (entry) assert.equal(entry.lastmod, at, "range inclusion does not fabricate modification dates");
+      } finally {
+        for (const id of ids) db.prepare("DELETE FROM tour_dates WHERE id=?").run(id);
+      }
+    }
+  } finally {
+    db.prepare("DELETE FROM artist_profiles WHERE artist_key=?").run(key);
+    db.prepare("DELETE FROM artists WHERE norm=?").run(key);
+    db.prepare("DELETE FROM users WHERE id=?").run(owner.id);
+  }
+});
+
 test("legacy artists remain indexed while their tour archive entry point is omitted", () => {
   const artist = "Protected Legacy Sitemap Artist";
   const artistKey = normName(artist);
@@ -1130,6 +1276,7 @@ test("artist post and tour updates resolve through the canonical artist norm", (
     artist: artistName,
     review: "A substantive public account of this artist's performance, sound, crowd, set, and the lasting concert memory.",
     createdAt: postAt,
+    kind: "review",
   });
   db.prepare("UPDATE posts SET artist_key=? WHERE id=?")
     .run(artistNorm, "p_sitemap_artist_identity");

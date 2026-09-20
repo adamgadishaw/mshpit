@@ -29,7 +29,10 @@ export function projectCityGuideDocument(guide, { origin = "https://www.mshpit.c
   });
   // Only untouched defaults become evidence-aware. Managed city SEO copy and
   // long editorial introductions retain their existing precedence and limits.
-  const defaults = publicCityMetadata(locationLabel, guide, photos);
+  // Sparse provider city records often have no region. Keep same-named cities
+  // in different countries distinguishable without overriding managed copy.
+  const defaultLocationLabel = [city, text(guide.city.region || guide.city.country || guide.city.countryCode, 100)].filter(Boolean).join(", ");
+  const defaults = publicCityMetadata(defaultLocationLabel, guide, photos);
   const searchTitle = text(editorial.seoTitle, 80)
     || (copy.citySeoTitle === DEFAULT_CITY_COPY.citySeoTitle ? defaults.title : format(copy.citySeoTitle, locationLabel)) || heading;
   const description = text(editorial.seoDescription, 200) || text(editorial.intro, 300)
@@ -94,7 +97,19 @@ export function renderCityGuideMain(document) {
     const timeLabel = publicEventTimeLabel(row.startLocalTime);
     return `<li><time datetime="${esc(row.date)}">${esc(dateLabel)}</time><div><h3>${link(row.path, title)}</h3>${row.eventName && row.eventName !== title ? `<p>${esc(row.eventName)}</p>` : ""}<p>${link(row.venuePath, row.venue)}${timeLabel ? " · " + esc(timeLabel) : ""}</p></div></li>`;
   }).join("")}</ol>`;
-  const venues = (guide.venues || []).map((row) => `<li><h3>${link(row.path, row.name)}</h3>${row.place ? `<p>${esc(row.place)}</p>` : ""}</li>`).join("");
+  const venues = (guide.venues || []).map((row) => {
+    // These are already-public repository facts, not generated descriptions.
+    // Missing values stay absent; a known zero does not become a missing count.
+    const upcomingCount = Number.isSafeInteger(row.upcomingCount) && row.upcomingCount >= 0
+      ? row.upcomingCount : null;
+    const capacity = Number.isSafeInteger(row.capacity) && row.capacity > 0 ? row.capacity : null;
+    const facts = [
+      upcomingCount == null ? null : upcomingCount === 0 ? "No upcoming shows listed"
+        : `${upcomingCount.toLocaleString("en")} upcoming ${upcomingCount === 1 ? "show" : "shows"}`,
+      capacity == null ? null : `Listed capacity: ${capacity.toLocaleString("en")}`,
+    ].filter(Boolean);
+    return `<li><h3>${link(row.path, row.name)}</h3>${row.place ? `<p>${esc(row.place)}</p>` : ""}${facts.length ? `<p class="micro">${facts.map(esc).join(" · ")}</p>` : ""}</li>`;
+  }).join("");
   const artists = (guide.artists || []).map((row) => `<li><h3>${link(row.path, row.name)}</h3>${row.description ? paragraphs(row.description) : ""}</li>`).join("");
   const performing = (guide.performingArtists || []).map((row) => `<li><h3>${link(row.path, row.name)}</h3></li>`).join("");
   const jumpLinks = [["today", "todayTitle"], ...(guide.upcoming?.length ? [["upcoming", "upcomingTitle"]] : []),

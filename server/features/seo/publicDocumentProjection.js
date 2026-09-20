@@ -1314,7 +1314,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         ...(schemaEvent ? { mainEntity: { "@id": schemaEvent["@id"] } } : {
           about: [
             { "@type": "Thing", name: event.artist, ...(event.artistPath ? { url: absolute(publicOrigin, event.artistPath) } : {}) },
-            { "@type": "MusicVenue", name: event.venue, url: absolute(publicOrigin, event.venuePath) },
+            { "@type": "MusicVenue", name: event.venue, ...(event.venuePath ? { url: absolute(publicOrigin, event.venuePath) } : {}) },
           ],
         }),
         ...(posts.length ? { hasPart: posts.map((post) => ({ "@id": `${absolute(publicOrigin, post.path)}#posting` })) } : {}),
@@ -1429,7 +1429,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         ...(concertEvent ? { mainEntity: { "@id": concertEvent["@id"] } } : {
           about: [
             { "@type": "Thing", name: artist, ...(artistCanonicalPath ? { url: absolute(publicOrigin, artistCanonicalPath) } : {}) },
-            { "@type": "MusicVenue", name: venue, url: absolute(publicOrigin, venueCanonicalPath) },
+            { "@type": "MusicVenue", name: venue, ...(venueCanonicalPath ? { url: absolute(publicOrigin, venueCanonicalPath) } : {}) },
           ],
         }),
       };
@@ -1477,6 +1477,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       const mediaByPost = publicMediaForRows(database, raw.posts || [], { galleryOnly: true, maxPerPost: 3 });
       const posts = (raw.posts || []).map((row) => postCard(row, mediaByPost.get(row.id), publicPaths));
       const events = (raw.events || []).map((row) => eventCard(row, publicPaths)).filter(Boolean);
+      const eventsHasMore = raw.eventsHasMore === true;
       const venueReviews = (raw.venueReviews?.reviews || []).slice(0, 8).flatMap((review) => {
         const id = cleanLine(review?.id, 120);
         const text = cleanBody(review?.text, 8_000);
@@ -1526,16 +1527,41 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         modificationNotice: null,
       }) : null);
       const image = heroPhoto?.url || null;
-      const contentPlace = events.find((event) => event.place)?.place || posts.find((post) => post.city)?.city
-        || cleanLine(raw.venue?.place, 300) || null;
+      const storedPlace = cleanLine(raw.venue?.place, 300) || null;
+      const contentPlace = events.find((event) => event.place)?.place || storedPlace
+        || posts.find((post) => post.city)?.city || null;
       const curatedFacts = publicVenueFacts({
         name,
         place: contentPlace,
         providerVenueId: raw.venue?.providerVenueId,
       });
       const place = contentPlace || curatedFacts?.place || null;
-      const address = events.find((event) => event.address)?.address || null;
-      const coord = events.find((event) => event.coord)?.coord || curatedFacts?.coord || null;
+      const currentAddress = events.find((event) => event.address)?.address || null;
+      const historicalAddress = eventAddress(raw.venue.location || {});
+      const locationText = (value) => cleanLine(value, 300).normalize("NFKC").toLocaleLowerCase("en").replace(/\s*,\s*/gu, ",");
+      // A shared city/country cannot prove the same building or region. Keep
+      // historical coordinates only when every present structured address
+      // component agrees, and never reconcile unknown street/region aliases.
+      const sameStoredPlace = !contentPlace || locationText(contentPlace) === locationText(storedPlace);
+      const sameStoredAddress = !currentAddress || ["streetAddress", "addressLocality", "addressRegion", "postalCode", "addressCountry"]
+        .every((field) => !currentAddress[field] || locationText(currentAddress[field]) === locationText(historicalAddress?.[field]));
+      // A postal-code-only or region-only row deliberately has no projected
+      // PostalAddress, but still carries evidence that can contradict history.
+      // Compare all source components of the public preview, not only the
+      // fields which survived the structured-data minimums.
+      const eventIds = new Set(events.map((event) => event.id));
+      const historicalCoord = venueCoordinates(raw.venue.location);
+      const sameSourceLocation = (raw.events || []).filter((row) => eventIds.has(String(row.id))).every((row) => {
+        if (!["venue_address_line1", "venue_address_line2", "venue_city", "venue_region", "venue_postal_code", "venue_country_code", "venue_country"]
+          .every((field) => !locationText(row[field]) || locationText(row[field]) === locationText(raw.venue.location?.[field]))) return false;
+        const hasCoordinateEvidence = [row.lat, row.lng].some((value) => value != null && String(value).trim() !== "");
+        if (!hasCoordinateEvidence) return true;
+        const currentCoord = venueCoordinates(row);
+        return !!currentCoord && !!historicalCoord && currentCoord.lat === historicalCoord.lat && currentCoord.lng === historicalCoord.lng;
+      });
+      const historicalLocation = sameStoredPlace && sameStoredAddress && sameSourceLocation ? raw.venue.location : null;
+      const address = currentAddress || (historicalLocation ? historicalAddress : null);
+      const coord = events.find((event) => event.coord)?.coord || venueCoordinates(historicalLocation) || curatedFacts?.coord || null;
       const capacity = curatedFacts?.capacity || null;
       const guide = venueGuideModel({ name, place, capacity, coord });
       const guideActionIds = new Set((guide.actions || []).map((action) => cleanLine(action?.id, 40)));
@@ -1575,7 +1601,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
           ? `${reviewCount} public ${reviewCount === 1 ? "review" : "reviews"} with a ${averageRating.toFixed(1)}/5 community rating from ${ratingCount} ${ratingCount === 1 ? "rating" : "ratings"}.`
           : `${reviewCount} public ${reviewCount === 1 ? "review" : "reviews"}.`);
       }
-      if (hasUpcomingConcerts) descriptionParts.push(`See ${events.length} upcoming ${events.length === 1 ? "concert" : "concerts"}.`);
+      if (hasUpcomingConcerts) descriptionParts.push(`See ${eventsHasMore ? "the next " : ""}${events.length} upcoming ${events.length === 1 ? "concert" : "concerts"}.`);
       if (hasCapacity) descriptionParts.push(`Listed capacity: ${guide.capacityLabel}.`);
       if (hasVisitLinks) descriptionParts.push(`Find ${visitTopicLabel} links.`);
       if (descriptionParts.length === 1) descriptionParts.push("View available venue details.");
@@ -1653,6 +1679,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         venueReviews: Object.freeze(venueReviews),
         posts,
         events,
+        eventsHasMore,
         breadcrumbs,
         jsonLd: [Object.freeze(venueEntity), Object.freeze({
           "@context": "https://schema.org",

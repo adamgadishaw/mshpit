@@ -44,7 +44,7 @@ import {
 import { createSitemapSnapshotManager } from "./features/seo/sitemapSnapshotManager.js";
 import { createIsolatedSitemapBuilder } from "./features/seo/sitemapProcess.js";
 import { projectCatalogSeoMaintenanceStatus } from "./features/seo/catalogSeoMaintenanceStatus.js";
-import { decodeArchiveShowKey } from "./features/artistArchive/artistArchiveKeys.js";
+import { archiveIdentityPart, archiveShowKey, decodeArchiveShowKey } from "./features/artistArchive/artistArchiveKeys.js";
 import {
   isStrictCalendarDate,
   publicIndexableMusicEventSql,
@@ -278,15 +278,22 @@ function eventResolution(id, at = Date.now()) {
 function concertResolution(showKey) {
   const decoded = decodeArchiveShowKey(showKey);
   if (!decoded || !isStrictCalendarDate(decoded.date)) return null;
-  const concert = publicConcertIdentity.get(decoded.artistIdentity, decoded.venueIdentity, decoded.date);
+  const artistIdentity = archiveIdentityPart(decoded.artistIdentity);
+  const venueIdentity = archiveIdentityPart(decoded.venueIdentity);
+  const concert = publicConcertIdentity.get(artistIdentity, venueIdentity, decoded.date);
   if (!concert) return null;
-  const path = concertPath(showKey);
+  // The legacy key included display-city text, while the archive identity and
+  // sitemap deliberately do not. Re-encode the resolved identity so those old
+  // bookmarks (and equivalent JSON/base64 spellings) cannot self-canonicalize
+  // multiple copies of the same concert. Unknown identities still fail above.
+  const canonicalKey = archiveShowKey({ artistIdentity, venueIdentity, date: decoded.date });
+  const path = concertPath(canonicalKey);
   return {
     entity: {
       kind: "concert",
-      id: showKey,
-      showKey,
-      archiveShowKey: showKey,
+      id: canonicalKey,
+      showKey: canonicalKey,
+      archiveShowKey: canonicalKey,
       artist: concert.artist,
       venue: concert.venue,
       city: concert.city || "",
@@ -298,7 +305,7 @@ function concertResolution(showKey) {
       path,
     },
     canonicalPath: path,
-    documentRequest: { kind: "concert", showKey, canonicalPath: path },
+    documentRequest: { kind: "concert", showKey: canonicalKey, canonicalPath: path },
   };
 }
 
@@ -420,7 +427,7 @@ const APP_SCREENS = new Set([
 function publicRoute(pathname) {
   const path = cleanPathname(pathname);
   if (!path) return { type: "not-found", status: 404 };
-  if (path.toLowerCase() === "/cities") {
+  if (/^\/cities\/*$/iu.test(path)) {
     const document = safePublicDocument(() => publicDocuments.citiesDocument({ at: Date.now() }));
     if (document === PUBLIC_DOCUMENT_UNAVAILABLE) return { type: "unavailable", status: 503 };
     if (!document) return { type: "not-found", status: 404 };
@@ -540,6 +547,14 @@ function publicRoute(pathname) {
     const identity = entityResolution(path);
     if (!identity) return { type: "not-found", status: 404 };
     if (identity.canonicalPath && identity.canonicalPath !== path) {
+      if (identity.entity?.kind === "concert") {
+        // A legacy archive key must not redirect to a page rejected by the
+        // full public-content or conflicting-location checks. Only aliases
+        // need this extra bounded projection; canonical requests hydrate below.
+        const target = hydrateResolution(identity);
+        if (target.unavailable) return { type: "unavailable", status: 503 };
+        if (!target.document) return { type: "not-found", status: 404 };
+      }
       return { type: "redirect", status: 301, location: identity.canonicalPath, entity: identity.entity };
     }
     const resolution = hydrateResolution(identity);

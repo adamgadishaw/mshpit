@@ -395,14 +395,14 @@ function venueMain(document) {
   const venueFacts = [
     venue.place ? `<div><dt>Location</dt><dd>${esc(venue.place)}</dd></div>` : "",
     guide.capacityLabel ? `<div><dt>Listed capacity</dt><dd>${esc(guide.capacityLabel)}</dd></div>` : "",
-    `<div><dt>Upcoming shows</dt><dd>${esc(document.events.length)}</dd></div>`,
+    `<div><dt>Upcoming shows${document.eventsHasMore ? " preview" : ""}</dt><dd>${esc(document.events.length)}${document.eventsHasMore ? "+" : ""}</dd></div>`,
     `<div><dt>Public reviews</dt><dd>${esc(reviewStats.reviewCount)}</dd></div>`,
   ].filter(Boolean).join("");
   return `<main id="main">
     ${breadcrumbs(document)}
     <section class="profile-hero venue-hero">${heroPhoto}<div class="venue-hero-copy"><p class="eyebrow">Concert venue guide</p><h1>${esc(venue.name)}</h1>${venue.place ? `<p class="hero-copy">${esc(venue.place)}</p>` : ""}${address}<p class="hero-copy venue-rating">${rating} · ${publicReviewCount}</p><dl class="venue-facts">${venueFacts}</dl></div></section>
     <section class="section venue-guide"><div class="section-heading"><div><p class="eyebrow">Before the show</p><h2>Seating, parking and transport</h2></div></div><div class="venue-guide-grid"><article><p class="eyebrow">Seating &amp; layout</p><h3>${guide.capacityLabel ? `${esc(guide.capacityLabel)} listed capacity` : "Check the event layout"}</h3><p>${esc(guide.seatingSummary)}</p></article><div class="venue-guide-actions">${guideActions || "<p>Parking and transit links will appear when this venue has a verified location.</p>"}</div></div></section>
-    ${events ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">On the calendar</p><h2>Upcoming concerts</h2></div></div><ol class="event-list">${events}</ol></section>` : ""}
+    ${events ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">On the calendar</p><h2>Upcoming concerts</h2>${document.eventsHasMore ? `<p class="micro">Showing the next ${esc(document.events.length)} listed concerts.</p>` : ""}</div></div><ol class="event-list">${events}</ol></section>` : ""}
     ${venueReviews ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">About the room</p><h2>Recent venue reviews</h2></div><span>${publicReviewCount}</span></div><div class="post-list">${venueReviews}</div></section>` : `<section class="section empty-state"><p class="eyebrow">About the room</p><h2>No public venue reviews yet.</h2><p>Be the first to share what the sound, sightlines and atmosphere were like.</p></section>`}
     ${posts ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">From the floor</p><h2>Reviews and photos</h2></div></div><div class="post-list">${posts}</div></section>` : ""}
   </main>`;

@@ -1332,6 +1332,9 @@ test("concert pages keep media visible but emit no Review schema without an addr
     assert.doesNotMatch(serialized, /#review/);
     assert.equal(document.concert.artistPath, null);
     assert.equal(Object.hasOwn(document.jsonLd[0].about[0], "url"), false);
+    assert.equal(document.concert.venuePath, null);
+    assert.equal(Object.hasOwn(document.jsonLd[0].about[1], "url"), false,
+      "an unknown venue URL must not identify the venue as the site homepage");
     assert.equal(document.breadcrumbs.some((crumb) => crumb.name === "Unlisted Artist"), false);
     assert.equal(document.reviews.some((review) => review.id === "unlisted-gallery" && review.media.length === 1), true);
     assert.match(html, /Unlisted Artist/);
@@ -1341,6 +1344,26 @@ test("concert pages keep media visible but emit no Review schema without an addr
     database.close();
   }
 });
+test("event fallback schema omits unknown venue URLs instead of assigning the site homepage", () => {
+  const database = createDatabase();
+  try {
+    database.prepare(`INSERT INTO tour_dates (id,artist,venue,date,release_at)
+      VALUES ('unknown-venue-url','Unlisted Band','A Name Only Hall','2026-09-01',0)`).run();
+    const document = service(database).eventDocument({ id: "unknown-venue-url", today: "2026-08-25", at: NOW });
+    assert.ok(document);
+    const page = document.jsonLd.find((node) => node["@type"] === "WebPage");
+    const venue = page.about.find((node) => node["@type"] === "MusicVenue");
+    assert.equal(venue.name, "A Name Only Hall");
+    assert.equal(Object.hasOwn(venue, "url"), false);
+    assert.equal(document.event.venuePath, null);
+
+    database.prepare("UPDATE tour_dates SET source='ticketmaster',venue_provider_id='known-room' WHERE id='unknown-venue-url'").run();
+    const identified = service(database).eventDocument({ id: "unknown-venue-url", today: "2026-08-25", at: NOW });
+    assert.equal(identified.jsonLd.find((node) => node["@type"] === "WebPage").about[1].url,
+      "https://www.example.com/venue/ticketmaster-known-room");
+  } finally { database.close(); }
+});
+
 test("event ticket offers require a supported future purchasable state and missing artists stay plain text", () => {
   const database = createDatabase();
   try {
