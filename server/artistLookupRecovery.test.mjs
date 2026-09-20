@@ -62,6 +62,51 @@ test("Russ search and profile resolve locally during provider outages without co
   }
 });
 
+for (const [artistName, artistKey, artistMbid, publicSlug] of [
+  ["Imran Khan", "imran khan", "ea4c3e59-f2bc-4880-942e-fbeaa64d8573", "imran-khan"],
+  ["Moon Walker", "moon walker", "5c4c2df9-63ba-4605-a965-5ea11db27cf5", "moon-walker"],
+]) test(`${artistName}'s Discover performer resolves to one stored profile and existing show without any provider lookup`, async () => {
+  const eventId = `reviewed-${publicSlug}-date`;
+  const date = new Date(Date.now() + 31 * 86400000).toISOString().slice(0, 10);
+  assert.equal(artistStmts.byNorm.get(artistKey)?.mbid, artistMbid, "boot registers the reviewed missing musician");
+  // Existing market imports predate registration and legitimately have no key.
+  db.prepare(`INSERT INTO tour_dates(id,artist,artist_key,venue,place,date,source,updated_at,music_evidence,billed_artists)
+    VALUES(?,?,NULL,?,?,?,?,?,?,?)`).run(eventId, artistName, "Fixture Hall", "Toronto", date,
+    "ticketmaster", Date.now(), "ticketmaster:classification:music", JSON.stringify([artistName]));
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => { calls += 1; throw new Error("Stored artist reads must not call any provider"); };
+  db.exec("PRAGMA query_only=ON");
+  try {
+    const search = routes["GET /api/artists"](context({}, { q: artistName, limit: "5" }));
+    assert.equal(search.artists[0].key, artistKey);
+    const resolved = await routes["GET /api/artists/resolve"](context({}, { name: artistName }));
+    assert.equal(resolved.artist.mbid, artistMbid);
+    assert.equal(resolved.artist.publicSlug, publicSlug);
+    assert.equal(resolved.transient, undefined);
+    assert.equal(resolved.created, false);
+    for (const reference of [artistKey, artistName, publicSlug]) {
+      const params = { key: encodeURIComponent(reference) };
+      const profile = routes["GET /api/artists/:key/profile"](context(params));
+      assert.equal(profile.artist.key, artistKey);
+      assert.equal(profile.artist.mbid, artistMbid);
+      assert.equal(profile.legacyProfile, false);
+      const summary = routes["GET /api/artists/:key/live-summary"](context(params));
+      assert.deepEqual(summary.artist, { key: artistKey, name: artistName });
+      assert.equal(summary.schedule.total, 1);
+      assert.equal(summary.schedule.items[0].id, eventId);
+    }
+    const publicLink = routes["GET /api/resolve"](context({}, { path: `/artist/${publicSlug}` }));
+    assert.equal(publicLink.entity.name, artistName);
+    const archive = routes["GET /api/artists/archive"](context({}, { artistKey, name: artistName }));
+    assert.equal(archive.archive.upcoming[0].id, eventId);
+    assert.equal(calls, 0);
+  } finally {
+    db.exec("PRAGMA query_only=OFF");
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("reviewed alias resolves locally and reads actual stored dates through the registered route", async () => {
   const date = new Date(Date.now() + 31 * 86400000).toISOString().slice(0, 10);
   db.prepare(`INSERT INTO tour_dates(id,artist,artist_key,venue,place,date,source,updated_at)

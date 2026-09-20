@@ -2,6 +2,7 @@ import {
   LEGACY_ARTIST_DEATH_DATE_CUTOFF,
   isLegacyArtistMemorial,
 } from "../src/domain/artistLegacy.mjs";
+import { tourDateArtistBindingAllowedSql } from "./providerArtistBinding.js";
 
 const sqlAlias = (value) => {
   const alias = String(value || "");
@@ -20,6 +21,7 @@ export function tourDateHasNoPublishedMemorialSql(alias = "td") {
     JOIN artists remembered
       ON remembered.norm=memorial.artist_key AND remembered.mbid=memorial.artist_mbid
     WHERE memorial.status='published' AND memorial.artist_mbid IS NOT NULL
+      AND ${tourDateArtistBindingAllowedSql(table)}
       AND (
         (${table}.artist_key IS NOT NULL AND ${table}.artist_key=remembered.norm)
         OR (${table}.artist_key IS NULL

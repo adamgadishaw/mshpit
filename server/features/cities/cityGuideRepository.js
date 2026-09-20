@@ -8,6 +8,7 @@ import { publicVenuePhotoPool } from "../../venuePhotoCatalog.js";
 import { publicTicketmasterEventImage } from "../../providerEventImage.js";
 import { currentOrUpcomingTourDateSql } from "../../tourDateLifecycle.js";
 import { tourDateHasNoPublishedMemorialSql } from "../../artistMemorialTourDateVisibility.js";
+import { tourDateArtistBindingAllowedSql, tourDateArtistIdentityPending } from "../../providerArtistBinding.js";
 import { inPersonReviewSql } from "../../onlineReviews.js";
 import { installPublicMusicEventPolicySql, publicIndexableMusicEventSql, publicMusicEventCandidateSql } from "../seo/publicEntityPolicy.js";
 import { DEFAULT_CITY_COPY, EMPTY_CITY_EDITORIAL } from "./cityCopy.js";
@@ -93,6 +94,7 @@ export function createCityGuideRepository(database) {
     COUNT(DISTINCT lower(trim(td.venue))||char(31)||td.date) AS show_count
     FROM tour_dates td JOIN artists a ON a.norm=td.artist_key LEFT JOIN users owner ON owner.id=td.owner_id
     WHERE ${cityWhere("td")} AND ${publicTour("td","owner")}
+      AND ${tourDateArtistBindingAllowedSql("td")}
     GROUP BY a.norm ORDER BY show_count DESC,a.rank_score DESC,a.name COLLATE NOCASE LIMIT 12`);
   const fanPhotos = database.prepare(`SELECT p.id AS post_id,p.artist,p.venue,p.date,p.created_at,v.public_url,v.width,v.height,
       a.alt_text, a.id AS asset_id
@@ -113,6 +115,7 @@ export function createCityGuideRepository(database) {
         (b.blocker_id=?5 AND b.blocked_id=p.user_id) OR (b.blocked_id=?5 AND b.blocker_id=p.user_id)))
       AND (EXISTS (SELECT 1 FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id
         WHERE ${cityWhere("td")} AND ${publicTour("td","owner")}
+          AND ${tourDateArtistBindingAllowedSql("td")}
           AND lower(trim(td.venue))=lower(trim(p.venue)) AND td.date=p.date
           AND ((p.artist_key IS NOT NULL AND td.artist_key=p.artist_key) OR
             (p.artist_key IS NULL AND lower(trim(td.artist))=lower(trim(p.artist)))))
@@ -124,6 +127,7 @@ export function createCityGuideRepository(database) {
                 AND (collision.country_code<>cv.country_code OR collision.city_slug<>cv.city_slug))))
       AND NOT EXISTS (SELECT 1 FROM tour_dates other LEFT JOIN users other_owner ON other_owner.id=other.owner_id
         WHERE ${publicTour("other","other_owner")} AND TRIM(COALESCE(other.venue_city,''))<>''
+          AND ${tourDateArtistBindingAllowedSql("other")}
           AND UPPER(TRIM(other.venue_country_code)) GLOB '[A-Z][A-Z]' AND LENGTH(TRIM(other.venue_country_code))=2
           AND lower(trim(other.venue))=lower(trim(p.venue)) AND other.date=p.date
           AND lower(trim(other.artist))=lower(trim(p.artist)) AND NOT (${cityWhere("other")}))
@@ -184,7 +188,9 @@ export function createCityGuideRepository(database) {
       if (seenEvents.has(identity)) continue;
       seenEvents.add(identity);
       const image=publicTicketmasterEventImage(event);
-      const item={id:event.id,artist:event.artist,artistKey:event.artist_key || null,eventName:event.event_name || event.artist,
+      const artistIdentityPending=tourDateArtistIdentityPending(event);
+      const item={id:event.id,artist:event.artist,artistKey:artistIdentityPending ? null : event.artist_key || null,
+        ...(artistIdentityPending ? {artistIdentityPending:true} : {}),eventName:event.event_name || event.artist,
         date:event.date,endDate:event.event_end_date || null,startLocalTime:event.start_local_time || null,
         timeZone:zone,venue:event.venue,venuePath:venuePath({name:event.venue,source:event.source,providerVenueId:event.venue_provider_id}),
         path:eventPath(event.id),image:image?.uri || null,url:cityHttpsUrl(event.ticket_url) || null};

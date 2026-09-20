@@ -14,7 +14,7 @@ export function canonicalArtistIdentity({ artistName = null, artistKey = null, c
   const candidateMatches = !!requestedName
     && !!candidateName
     && normalizedName(requestedName) === normalizedName(candidateName);
-  const candidateKey = candidateMatches
+  const candidateKey = candidateMatches && catalogArtist?.transient !== true
     ? text(catalogArtist?.key || catalogArtist?.norm || catalogArtist?.artistKey)
     : "";
   const key = text(artistKey) || candidateKey;

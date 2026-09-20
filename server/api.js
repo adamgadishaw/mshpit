@@ -1004,6 +1004,7 @@ function tourDateJson(row) {
   return {
     id: row.id,
     artist: projectedArtist.artist,
+    artistKey: projectedArtist.bindingAllowed ? row.artist_key || null : null,
     venue: row.venue,
     place: row.place,
     lat: row.lat,
@@ -2167,6 +2168,7 @@ function exactAttendanceTourDateShow(user, tourDateId, at = now()) {
   return {
     tourDateId: id,
     artist,
+    artistIdentityPending: providerFields.artistIdentityPending,
     artistKey: projectedArtist.bindingAllowed ? ticketText(row.artist_key, 180) : null,
     venue,
     venueKey: row.venue ? venueBinding(row.venue) || null : null,

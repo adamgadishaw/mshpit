@@ -52,7 +52,7 @@ import {
 } from "./features/seo/publicEntityPolicy.js";
 import { effectiveTourDateEndSql } from "./tourDateLifecycle.js";
 import { artistHasLegacyMemorial, tourDateHasNoPublishedMemorialSql } from "./artistMemorialTourDateVisibility.js";
-import { publicTourDateArtistProjection } from "./tourDateMetadata.js";
+import { publicTourDateArtistProjection, publicTourDateProviderFields } from "./tourDateMetadata.js";
 import { inPersonReviewSql } from "./onlineReviews.js";
 import { hasSubstantiveVenueGuide } from "./venueFacts.js";
 import { appPageTitle } from "../src/domain/appPageMetadata.mjs";
@@ -101,7 +101,7 @@ const publicPostIdentity = db.prepare(`SELECT p.id FROM posts p JOIN users u ON 
 const publicEventIdentity = db.prepare(`SELECT td.id,td.event_name,td.artist,td.artist_key,td.venue,td.place,td.date,
     td.start_date_time,td.start_local_time,td.event_timezone,td.event_status,td.ticket_url,td.sold_out,
     td.source,td.owner_id,td.venue_provider_id,td.event_kind,td.music_qualified,
-    td.music_evidence,td.billed_artists,td.event_end_date,canonical_artist.norm AS canonical_artist_key
+    td.music_evidence,td.billed_artists,td.event_end_date,td.artist_identity_status,canonical_artist.norm AS canonical_artist_key
   FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id
   LEFT JOIN artists canonical_artist ON canonical_artist.norm=td.artist_key
   WHERE td.id=?1 AND td.release_at<=?2
@@ -241,7 +241,8 @@ function eventResolution(id, at = Date.now()) {
   // A public event snapshot is permission to read this one eligible event, not
   // to unlock its artist page or member actions. Apply the same protected legacy
   // identity boundary as the event service before adding the server-only marker.
-  if (artistHasLegacyMemorial(db, { artistKey: event.artist_key, artist: event.artist })) return null;
+  const artistIdentityPending = publicTourDateProviderFields(event).artistIdentityPending;
+  if (!artistIdentityPending && artistHasLegacyMemorial(db, { artistKey: event.artist_key, artist: event.artist })) return null;
   const artistProjection = publicTourDateArtistProjection(event);
   const artistKey = artistProjection.bindingAllowed ? event.canonical_artist_key || null : null;
   const path = eventPath(event.id);
@@ -255,6 +256,7 @@ function eventResolution(id, at = Date.now()) {
       eventKind: event.event_kind || "concert",
       artist: artistProjection.artist,
       artistKey,
+      artistIdentityPending,
       venue: event.venue,
       place: event.place || "",
       city: event.place || "",

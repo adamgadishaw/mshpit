@@ -21,6 +21,7 @@ function fixture() {
     CREATE TABLE artist_tourdate_refresh_queue(artist_key TEXT PRIMARY KEY,status TEXT,attempted_at INTEGER,succeeded_at INTEGER,
       ticketmaster_coverage_limited INTEGER DEFAULT 0,last_error_code TEXT);
     CREATE TABLE tour_dates(id TEXT PRIMARY KEY,artist_key TEXT,artist TEXT DEFAULT 'Alpha',venue TEXT DEFAULT 'Hall',
+      artist_identity_status TEXT,
       date TEXT DEFAULT '2026-10-01',event_end_date TEXT,event_timezone TEXT,owner_id TEXT,release_at INTEGER DEFAULT 0,
       source TEXT DEFAULT 'ticketmaster',provider_active INTEGER DEFAULT 1,music_qualified INTEGER DEFAULT 1,
       event_kind TEXT DEFAULT 'concert',music_evidence TEXT,billed_artists TEXT,venue_city TEXT DEFAULT 'Toronto',venue_country_code TEXT DEFAULT 'CA');
@@ -43,6 +44,22 @@ function fixture() {
   return { database, addDate: (id, fields) => add("tour_dates", id, fields),
     addPost: (id, fields) => add("posts", id, fields), read };
 }
+
+test("pending and conflicting provider identities cannot bind by key, display name, or cached billing", () => {
+  const f = fixture();
+  try {
+    f.addDate("exact", { artist_key: "alpha" });
+    f.addDate("name", { artist_key: null });
+    f.addDate("billing", { artist_key: "beta", artist: "Beta", music_evidence: "music", billed_artists: '["Beta","Alpha"]' });
+    f.addDate("owned", { artist_key: "alpha", owner_id: "fan", artist_identity_status: "pending" });
+    assert.equal(f.read().schedule.total, 4);
+    f.database.exec("UPDATE tour_dates SET artist_identity_status='conflict' WHERE id='exact'; UPDATE tour_dates SET artist_identity_status='pending' WHERE id IN ('name','billing')");
+    f.database.exec("PRAGMA query_only=ON");
+    assert.deepEqual(f.read().schedule.items.map(({ id }) => id), ["owned"]);
+    f.database.exec("PRAGMA query_only=OFF; UPDATE tour_dates SET artist_identity_status='registered' WHERE owner_id IS NULL");
+    assert.equal(f.read().schedule.total, 4, "reviewed registration immediately restores eligible existing bindings");
+  } finally { f.database.close(); }
+});
 
 test("shared billing candidates never cache current visibility or viewer privacy", () => {
   const f = fixture();

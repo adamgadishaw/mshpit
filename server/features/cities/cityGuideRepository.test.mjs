@@ -14,6 +14,7 @@ function fixture() {
     CREATE TABLE artist_profiles (artist_key TEXT PRIMARY KEY,owner_id TEXT,removed INTEGER DEFAULT 0,identity_review_status TEXT DEFAULT 'clear');
     CREATE TABLE artist_memorials(artist_key TEXT,artist_mbid TEXT,status TEXT,death_date TEXT);
     CREATE TABLE tour_dates(id TEXT PRIMARY KEY,artist TEXT,artist_key TEXT,venue TEXT,date TEXT,source TEXT,
+      artist_identity_status TEXT,
       venue_provider_id TEXT,provider_event_id TEXT,venue_city TEXT,venue_region TEXT,venue_country TEXT,venue_country_code TEXT,
       event_name TEXT,event_kind TEXT DEFAULT 'concert',music_qualified INTEGER DEFAULT 1,music_evidence TEXT,billed_artists TEXT DEFAULT '[]',
       event_end_date TEXT,release_at INTEGER DEFAULT 0,updated_at INTEGER DEFAULT 0,owner_id TEXT,provider_active INTEGER DEFAULT 1,
@@ -50,6 +51,24 @@ function fixture() {
   }
   return {db,event,photo,repository:()=>createCityGuideRepository(db)};
 }
+
+test("city guides retain held events but do not borrow namesake artist links or fan photos", () => {
+  const f=fixture();
+  try {
+    f.event();f.photo();
+    f.db.exec("DELETE FROM city_catalog_venues");
+    const repository=f.repository(),options={countryCode:"CA",citySlug:"toronto",at:AT};
+    assert.equal(repository.getGuide(options).performingArtists.length,1);
+    assert.equal(repository.getGuide(options).photos.length,1);
+    f.db.exec("UPDATE tour_dates SET artist_identity_status='pending'; PRAGMA query_only=ON");
+    const guide=repository.getGuide(options);
+    assert.equal(guide.upcoming.length,1);
+    assert.equal(guide.upcoming[0].artistKey,null);
+    assert.equal(guide.upcoming[0].artistIdentityPending,true);
+    assert.equal(guide.performingArtists.length,0);
+    assert.equal(guide.photos.length,0);
+  } finally {f.db.close();}
+});
 
 test("all trusted cities remain addressable without upcoming events, and cities are isolated by country",()=>{
   const f=fixture();f.event();f.event({id:"lisbon",city:"Lisbon",countryCode:"PT",date:"2026-09-09",timezone:"Europe/Lisbon"});

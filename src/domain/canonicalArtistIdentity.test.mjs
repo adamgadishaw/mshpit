@@ -47,3 +47,16 @@ test("identity scopes normalize harmless display differences", () => {
     "earth, wind & fire:artist/key",
   );
 });
+
+test("provider previews never become persisted identity proof but explicit attached keys survive", () => {
+  const catalogArtist = { name: "Imran Khan", key: "imran khan", publicSlug: "imran-khan", transient: true };
+  assert.deepEqual(canonicalArtistIdentity({ artistName: "Imran Khan", catalogArtist }), {
+    artistName: "Imran Khan", artistKey: null,
+  });
+  assert.deepEqual(canonicalArtistIdentity({ artistName: "Imran Khan", artistKey: "stored-event-artist", catalogArtist }), {
+    artistName: "Imran Khan", artistKey: "stored-event-artist",
+  });
+  assert.deepEqual(canonicalArtistIdentity({ artistName: "Imran Khan", catalogArtist: { ...catalogArtist, transient: false } }), {
+    artistName: "Imran Khan", artistKey: "imran khan",
+  });
+});

@@ -37,12 +37,21 @@ export function normalizePublicEventSnapshot(entity, requestedId) {
     path: eventPath(id),
     city: text(entity.city || entity.place),
     artistKey: text(entity.artistKey, 180) || null,
+    ...(typeof entity.artistIdentityPending === "boolean" ? { artistIdentityPending: entity.artistIdentityPending } : {}),
     source: text(entity.source, 40) || null,
     providerVenueId: text(entity.providerVenueId, 180) || null,
     eventStatus: text(entity.eventStatus, 40),
     ticketUrl: text(entity.ticketUrl, 2048) || null,
     soldOut: entity.soldOut === true,
   });
+}
+
+// A conservative navigation restriction can be lifted only by a new explicit
+// server answer. Older responses without this field must not clear a conflict.
+export function publicEventArtistIdentityPending(log, snapshot = null, { status = null } = {}) {
+  if (snapshot?.artistIdentityPending === true) return true;
+  if (status === "ready" && snapshot?.artistIdentityPending === false) return false;
+  return log?.artistIdentityPending === true;
 }
 
 export function readablePublicEventSnapshot(resource, { eventId, accountId, legacyMode = false } = {}) {

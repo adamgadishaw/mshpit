@@ -62,6 +62,7 @@ test("provider projection preserves official title and distinguishes absent acce
     access_start_approximate: 0,
     event_status: "onsale",
   }), {
+    artistIdentityPending: false,
     providerEventId: "tm-42",
     eventName: "Foundation Artist - HALO TOUR",
     tourName: "HALO TOUR",
@@ -72,6 +73,19 @@ test("provider projection preserves official title and distinguishes absent acce
     eventStatus: "onsale",
   });
   assert.equal(publicTourDateProviderFields({}).accessStartApproximate, null);
+});
+
+test("unresolved provider identities retain event billing but cannot link a namesake artist", () => {
+  for (const artist_identity_status of ["pending", "conflict"]) {
+    const row = { artist: "Namesake", artist_key: "namesake", source: "ticketmaster",
+      artist_identity_status, music_evidence: "ticketmaster:classification:music", billed_artists: '["Namesake"]' };
+    assert.equal(publicTourDateArtistProjection(row).artist, "Namesake");
+    assert.equal(publicTourDateArtistProjection(row).bindingAllowed, false);
+    assert.equal(publicTourDateProviderFields(row).artistIdentityPending, true);
+    assert.equal(publicTourDateProviderFields({ ...row, artist_identity_status: "registered" }).artistIdentityPending, false);
+    assert.equal(publicTourDateArtistProjection({ ...row, artist_identity_status: "registered" }).bindingAllowed, true);
+    assert.equal(publicTourDateProviderFields({ ...row, owner_id: "member" }).artistIdentityPending, false);
+  }
 });
 
 test("public artist projection repairs contradicted provider bindings without changing legacy or member rows", () => {

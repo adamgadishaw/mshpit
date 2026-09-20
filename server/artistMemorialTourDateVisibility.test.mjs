@@ -22,6 +22,7 @@ function fixture() {
       artist_key TEXT PRIMARY KEY,artist_mbid TEXT,status TEXT NOT NULL,death_date TEXT
     );
     CREATE TABLE tour_dates (
+      artist_identity_status TEXT,
       id TEXT PRIMARY KEY,artist TEXT,artist_key TEXT,owner_id TEXT,release_at INTEGER NOT NULL DEFAULT 0,
       date TEXT,event_end_date TEXT,event_kind TEXT,music_evidence TEXT,billed_artists TEXT,
       music_qualified INTEGER,provider_active INTEGER NOT NULL DEFAULT 1
@@ -39,6 +40,20 @@ function fixture() {
     (id,artist,artist_key,date,event_end_date,music_qualified,provider_active) VALUES (?,?,?,?,?,1,1)`);
   return { database, addArtist, addMemorial, addDate };
 }
+
+test("provider identity holds preserve events without inheriting a namesake memorial or artist calendar", () => {
+  const { database, addArtist, addMemorial, addDate } = fixture();
+  try {
+    addArtist.run("remembered", "Remembered Artist", "mbid-remembered");
+    addMemorial.run("remembered", "mbid-remembered", "published");
+    addDate.run("held-key", "Remembered Artist", "remembered", "2026-09-10", null);
+    addDate.run("held-name", "Remembered Artist", null, "2026-09-11", null);
+    database.exec("UPDATE tour_dates SET artist_identity_status='conflict' WHERE id='held-key'; UPDATE tour_dates SET artist_identity_status='pending' WHERE id='held-name'; PRAGMA query_only=ON");
+    const options = { today: "2026-08-28", at: Date.UTC(2026, 7, 28) };
+    assert.deepEqual(visibleTourDateRowsFrom(database, null, options).map(({ id }) => id), ["held-key", "held-name"]);
+    assert.deepEqual(visibleTourDateRowsFrom(database, null, { ...options, artist: "Remembered Artist" }), []);
+  } finally { database.close(); }
+});
 
 test("tour-date memorial SQL rejects unsafe aliases", () => {
   assert.throws(() => tourDateHasNoPublishedMemorialSql("td;drop"), /Invalid tour-date SQL alias/);

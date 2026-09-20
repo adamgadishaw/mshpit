@@ -81,6 +81,7 @@ function fixture() {
       removed INTEGER NOT NULL DEFAULT 0,created_at INTEGER,updated_at INTEGER
     );
     CREATE TABLE tour_dates (
+      artist_identity_status TEXT,
       id TEXT PRIMARY KEY,artist TEXT,artist_key TEXT,venue TEXT,place TEXT,date TEXT,
       source TEXT,venue_provider_id TEXT,venue_city TEXT,venue_region TEXT,
       venue_country_code TEXT,venue_country TEXT,owner_id TEXT,updated_at INTEGER

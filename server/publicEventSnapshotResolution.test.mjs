@@ -65,6 +65,7 @@ test("an exact eligible event without a catalogue artist resolves to a read-only
   assert.equal(entity.path, path);
   assert.equal(entity.publicEventSnapshot, true);
   assert.equal(entity.artistKey, null);
+  assert.equal(entity.artistIdentityPending, false);
   assert.equal(entity.artist, "Club 1BD");
   assert.equal(entity.eventName, "Club 1BD: Toronto");
   assert.equal(entity.eventKind, "concert");
@@ -76,6 +77,27 @@ test("an exact eligible event without a catalogue artist resolves to a read-only
   assert.equal(Object.hasOwn(entity, "ownerId"), false);
   assert.equal(Object.hasOwn(entity, "owner_id"), false);
   assert.equal(Object.hasOwn(entity, "canInteract"), false);
+});
+
+test("pending or conflicting event identities keep exact show details without a namesake link", () => {
+  const key = "snapshot-unrelated-namesake";
+  const name = "Snapshot Unrelated Namesake";
+  const mbid = "82345678-1234-4234-8234-123456789abc";
+  addArtist(key, name, mbid);
+  addMemorial(key, name, mbid, "1960-04-02");
+  for (const status of ["pending", "conflict"]) {
+    const id = `snapshot-${status}-identity`;
+    const path = addEvent(id, { artist: name, artistKey: null, billedArtists: [name] });
+    db.prepare("UPDATE tour_dates SET artist_identity_status=? WHERE id=?").run(status, id);
+    const entity = resolveEntity(path);
+    assert.equal(entity?.publicEventSnapshot, true);
+    assert.equal(entity.artistIdentityPending, true);
+    assert.equal(entity.artistKey, null);
+    assert.equal(entity.artist, name);
+    assert.equal(entity.venue, "History");
+    assert.equal(entity.ticketUrl, "https://www.ticketmaster.ca/event/fixture");
+    assert.equal(seoHttpPlan(path).status, 200);
+  }
 });
 
 test("the snapshot marker is never returned for missing, unreleased, invalid, or restricted events", () => {

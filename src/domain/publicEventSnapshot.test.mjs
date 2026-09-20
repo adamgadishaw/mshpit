@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { beginLoadState, rejectLoadState, resolveLoadState } from "./loadState.mjs";
-import { normalizePublicEventSnapshot, publicEventCandidateId, publicEventSnapshotScope, readablePublicEventSnapshot } from "./publicEventSnapshot.mjs";
+import { normalizePublicEventSnapshot, publicEventArtistIdentityPending, publicEventCandidateId, publicEventSnapshotScope, readablePublicEventSnapshot } from "./publicEventSnapshot.mjs";
 
 const id = "tm_1718v0G65fQaZWw";
 const entity = { id, kind: "event", path: `/event/${id}`, publicEventSnapshot: true,
@@ -27,6 +27,28 @@ test("wrong identity, unsigned caller flags, non-events, malformed dates and inc
   assert.equal(normalizePublicEventSnapshot(entity, ""), null);
   assert.equal(normalizePublicEventSnapshot(null, id), null);
   assert.equal(normalizePublicEventSnapshot({ ...entity, date: "2036-06-14" }, id).date, "2036-06-14", "public listings must not inherit the diary input's moving two-year limit");
+});
+
+test("pending event artist identities stay restricted until an explicit fresh server confirmation", () => {
+  const pending = { artistIdentityPending: true };
+  assert.equal(publicEventArtistIdentityPending(pending), true);
+  assert.equal(publicEventArtistIdentityPending(pending, normalizePublicEventSnapshot(entity, id)), true,
+    "an older response without the new marker cannot lift an identity restriction");
+  for (const invalid of ["false", 0, null]) {
+    const snapshot = normalizePublicEventSnapshot({ ...entity, artistIdentityPending: invalid }, id);
+    assert.equal(Object.hasOwn(snapshot, "artistIdentityPending"), false);
+    assert.equal(publicEventArtistIdentityPending(pending, snapshot), true);
+  }
+  const restricted = normalizePublicEventSnapshot({ ...entity, artistIdentityPending: true }, id);
+  assert.equal(publicEventArtistIdentityPending({}, restricted), true);
+  const confirmed = normalizePublicEventSnapshot({ ...entity, artistIdentityPending: false }, id);
+  assert.equal(publicEventArtistIdentityPending(pending, confirmed, { status: "ready" }), false);
+  for (const status of [null, "loading", "refreshing", "error"]) {
+    assert.equal(publicEventArtistIdentityPending(pending, confirmed, { status }), true,
+      "retained confirmation cannot override a pending navigation identity while the fresh read is incomplete or failed");
+    assert.equal(publicEventArtistIdentityPending({}, restricted, { status }), true,
+      "a previously confirmed restriction remains conservative during refresh failures");
+  }
 });
 
 test("review posts, protected archive inputs and arbitrary flags cannot nominate a public fallback", () => {

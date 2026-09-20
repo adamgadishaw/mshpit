@@ -116,6 +116,19 @@ test("Show document identity rejects stale account and Show responses by constru
   assert.notEqual(showDocumentIdentity("show-a", "fan-a"), showDocumentIdentity("show-b", "fan-a"));
 });
 
+test("Show documents preserve explicit artist identity restrictions without coercing legacy values", () => {
+  const input = { id: `show_${"e".repeat(64)}`, canonicalKey: "ticketmaster:identity-pending", artist: "Namesake", artistKey: null };
+  for (const flag of [true, false]) {
+    const show = normalizeShowDocument({ show: { ...input, artistIdentityPending: flag } });
+    assert.equal(show.artistIdentityPending, flag);
+    assert.equal(show.artistKey, null);
+  }
+  for (const flag of [undefined, null, 0, 1, "true", "false"]) {
+    const show = normalizeShowDocument({ ...input, artistIdentityPending: flag });
+    assert.equal(Object.hasOwn(show, "artistIdentityPending"), false);
+  }
+});
+
 test("authoritative lifecycle presentation never mislabels happening, postponed, or cancelled Shows", () => {
   const trusted = (lifecycle) => showPresentationModel({
     lifecycle,

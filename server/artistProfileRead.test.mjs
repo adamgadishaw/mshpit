@@ -79,3 +79,31 @@ test("the local profile snapshot preserves trusted Spotify attribution without e
     assert.equal(calls, 0);
   } finally { globalThis.fetch = originalFetch; }
 });
+
+test("legacy non-object artist metadata never crashes a local profile or spreads scalar keys", () => {
+  const legacyKey = "legacy metadata profile fixture";
+  const legacyName = "Legacy Metadata Profile Fixture";
+  artistStmts.upsert.run(artistRow(legacyKey, {
+    name: legacyName, mbid: "00000000-0000-4000-8000-000000000051",
+    photo: "https://images.example.org/retained.jpg", bio: "Retained catalogue biography",
+  }, "test"));
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => { calls += 1; throw new Error("Legacy catalogue reads must stay local"); };
+  try {
+    for (const data of [null, "null", "[]", '[{"photo":"https://untrusted.example/array.jpg"}]', '"unexpected text"', "42", "true", "{malformed"]) {
+      db.prepare("UPDATE artists SET data=? WHERE norm=?").run(data, legacyKey);
+      const { artist } = read(legacyKey);
+      assert.equal(artist.key, legacyKey);
+      assert.equal(artist.name, legacyName);
+      assert.equal(artist.bio, "Retained catalogue biography");
+      assert.equal(artist.photo, "https://images.example.org/retained.jpg");
+      assert.equal(artist.spotifyId, null);
+      assert.equal(Object.keys(artist).some((field) => /^\d+$/u.test(field)), false);
+      assert.equal(artistStmts.byNorm.get(legacyKey).data, data, "a public read does not repair or rewrite stored metadata");
+    }
+    db.prepare("UPDATE artists SET data=? WHERE norm=?").run('{"hometown":"Stored place"}', legacyKey);
+    assert.equal(read(legacyKey).artist.hometown, "Stored place", "valid object metadata is retained");
+    assert.equal(calls, 0);
+  } finally { globalThis.fetch = originalFetch; }
+});

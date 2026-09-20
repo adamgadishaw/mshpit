@@ -7,6 +7,7 @@ import { createPublicCollectionDocumentService } from "./publicCollectionDocumen
 import { createPublicDocumentProjector } from "./publicDocumentProjection.js";
 import { decodeArchiveShowKey } from "../artistArchive/artistArchiveKeys.js";
 import { isLegacyArtistMemorial } from "../../../src/domain/artistLegacy.mjs";
+import { tourDateArtistIdentityPending } from "../../providerArtistBinding.js";
 import { createArtistLiveSummaryService } from "../artistArchive/artistLiveSummaryService.js";
 import { createCityGuideRepository } from "../cities/cityGuideRepository.js";
 import { projectCityGuideDocument, projectCityDirectoryDocument } from "./cityGuideDocument.js";
@@ -125,7 +126,7 @@ export function createPublicDocumentService({ database, origin, paths, artistMem
     eventDocument(options = {}) {
       const raw = repository.readEvent(options);
       if (!raw) return null;
-      if (isLegacyArtistIdentity({
+      if (!tourDateArtistIdentityPending(raw.event) && isLegacyArtistIdentity({
         artistKey: raw.event.artist_key,
         name: raw.event.artist,
         at: options.at,

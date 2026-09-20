@@ -42,7 +42,7 @@ import { normalizeVenuePhotoProviderIdentity } from "../domain/venuePhotos.mjs";
 import { isLegacyArtistMemorial } from "../domain/artistLegacy.mjs";
 import useCanonicalArtistIdentity from "../hooks/useCanonicalArtistIdentity";
 import usePublicEventSnapshot from "../hooks/usePublicEventSnapshot";
-import { publicEventCandidateId, readablePublicEventSnapshot } from "../domain/publicEventSnapshot.mjs";
+import { publicEventArtistIdentityPending, publicEventCandidateId, readablePublicEventSnapshot } from "../domain/publicEventSnapshot.mjs";
 
 const CROWD_FILTER_LABELS = Object.freeze({
   everyone: "Everyone",
@@ -53,7 +53,7 @@ const CROWD_FILTER_LABELS = Object.freeze({
 // Public listings are useful even when a club-night/event name is not a
 // catalogue artist. This intentionally receives only the validated server
 // snapshot: no local post data or artist-only interaction callbacks.
-function PublicEventSnapshotPanel({ event, status, onRetry, onOpenVenue }) {
+function PublicEventSnapshotPanel({ event, status, onRetry, onOpenVenue, artistIdentityPending = false }) {
   const loading = status === "loading" || status === "refreshing";
   if (!event) return (
     <ScrollView contentContainerStyle={styles.content}>
@@ -95,8 +95,10 @@ function PublicEventSnapshotPanel({ event, status, onRetry, onOpenVenue }) {
       </Pressable> : null}
       <View style={styles.reviewUnavailable} accessibilityLiveRegion="polite">
         <View style={styles.reviewUnavailableCopy}>
-          <Text style={styles.reviewUnavailableTitle}>The event is here. Artist features are separate.</Text>
-          <Text style={styles.reviewUnavailableText}>This listing's date and venue are available. Artist profiles and live ratings need a verified artist match; an event name is not always an artist.</Text>
+          <Text style={styles.reviewUnavailableTitle}>{artistIdentityPending ? "Artist profile not linked yet" : "The event is here. Artist features are separate."}</Text>
+          <Text style={styles.reviewUnavailableText}>{artistIdentityPending
+            ? "This show is available, but its artist identity still needs a confirmed match. To avoid opening a different artist with the same name, profile, ratings and archive links are paused. You can still view the date, venue and available tickets."
+            : "This listing's date and venue are available. Artist profiles and live ratings need a verified artist match; an event name is not always an artist."}</Text>
           {status === "error" ? <Text style={styles.reviewUnavailableText}>The latest refresh failed. Showing the event details already loaded.</Text> : null}
           <Pressable style={styles.reviewUnavailableRetry} onPress={onRetry} disabled={loading} accessibilityRole="button" accessibilityState={{ busy: loading, disabled: loading }} accessibilityLabel="Refresh event details and artist availability">
             <Text style={styles.reviewUnavailableRetryText}>{loading ? "Refreshing…" : "Refresh details"}</Text>
@@ -177,6 +179,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
   const accountId = session?.id || null;
   const publicEventId = publicEventCandidateId(log);
   const { resource: publicEventResource, reload: reloadPublicEvent } = usePublicEventSnapshot({ eventId: publicEventId, accountId });
+  const eventIdentitySnapshot = readablePublicEventSnapshot(publicEventResource, { eventId: publicEventId, accountId });
   const [showDocumentRead, setShowDocumentRead] = useState(null);
   const documentIdentity = showDocumentIdentity(legacyKey, accountId);
   const trustedShow = ENABLE_CANONICAL_SHOW_READ
@@ -184,6 +187,8 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
     && showDocumentRead.status === "ready"
     ? showDocumentRead.show
     : null;
+  const artistIdentityPending = trustedShow?.artistIdentityPending === true
+    || publicEventArtistIdentityPending(log, eventIdentitySnapshot, { status: publicEventResource.status });
   const venue = trustedShow?.venue || legacyVenue;
   const city = trustedShow?.city || legacyCity;
   const artist = trustedShow?.artist || legacyArtist;
@@ -192,7 +197,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
   const norm = {
     ...log,
     artist,
-    artistKey: trustedShow?.artistKey || log.artistKey,
+    artistKey: artistIdentityPending ? null : trustedShow?.artistKey || log.artistKey,
     venue,
     venueKey: trustedShow?.venueKey || log.venueKey,
     city,
@@ -220,6 +225,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
   } = useCanonicalArtistIdentity({
     artistName: artist,
     artistKey: norm.artistKey || null,
+    enabled: !artistIdentityPending,
   });
   const {
     resource: memorialResource,
@@ -228,14 +234,14 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
   } = useArtistMemorial({
     accountId,
     artistKey: memorialArtistKey,
-    enabled: artistIdentityStatus === "ready" && !!memorialArtistKey,
+    enabled: !artistIdentityPending && artistIdentityStatus === "ready" && !!memorialArtistKey,
   });
   const deceased = memorialAvailability === "deceased";
   const legacyMode = isLegacyArtistMemorial(memorialResource.data);
   const publicEventSnapshot = readablePublicEventSnapshot(publicEventResource, { eventId: publicEventId, accountId, legacyMode });
   const liveActionsAvailable = memorialAvailability === "living";
   const memorialChecking = memorialAvailability === "checking";
-  const showPageAllowed = artistIdentityStatus === "ready"
+  const showPageAllowed = !artistIdentityPending && artistIdentityStatus === "ready"
     && (liveActionsAvailable || (deceased && !legacyMode));
   const profileGateState = legacyMode
     ? "legacy"
@@ -557,6 +563,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
         publicEventId && !legacyMode ? <PublicEventSnapshotPanel
           event={publicEventSnapshot}
           status={publicEventResource.status}
+          artistIdentityPending={artistIdentityPending}
           onRetry={retryPublicEvent}
           onOpenVenue={onOpenVenue}
         /> : <LegacyArtistArchiveGate

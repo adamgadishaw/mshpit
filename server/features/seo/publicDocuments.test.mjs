@@ -65,6 +65,7 @@ function createDatabase() {
       removed INTEGER NOT NULL DEFAULT 0,created_at INTEGER NOT NULL
     );
     CREATE TABLE tour_dates (
+      artist_identity_status TEXT,
       id TEXT PRIMARY KEY,artist TEXT NOT NULL,artist_key TEXT,venue TEXT,place TEXT,lat REAL,lng REAL,date TEXT,ticket_url TEXT,
       sold_out INTEGER NOT NULL DEFAULT 0,source TEXT,updated_at INTEGER NOT NULL DEFAULT 0,
       owner_id TEXT,release_at INTEGER NOT NULL DEFAULT 0,provider_event_id TEXT,event_name TEXT,
@@ -1361,6 +1362,34 @@ test("event fallback schema omits unknown venue URLs instead of assigning the si
     const identified = service(database).eventDocument({ id: "unknown-venue-url", today: "2026-08-25", at: NOW });
     assert.equal(identified.jsonLd.find((node) => node["@type"] === "WebPage").about[1].url,
       "https://www.example.com/venue/ticketmaster-known-room");
+  } finally { database.close(); }
+});
+
+test("held provider identities keep useful event pages without namesake profiles, reviews, or legacy memorials", () => {
+  const database = createDatabase();
+  try {
+    addUser(database, "active");
+    addArtist(database);
+    addPost(database, { id: "wrong-review", date: "2026-09-01", review: "THIS_REVIEW_BELONGS_TO_THE_OTHER_ARTIST and must not be joined by display name." });
+    database.prepare(`INSERT INTO tour_dates
+      (id,artist,artist_key,venue,date,ticket_url,event_status,venue_city,venue_country_code,artist_identity_status)
+      VALUES ('held-event','Alpha','alpha','History','2026-09-01','https://www.ticketmaster.ca/event/100','scheduled','Toronto','CA','pending')`).run();
+    const documents = service(database);
+    const options = { id: "held-event", today: "2026-08-25", at: NOW };
+    for (const status of ["pending", "conflict"]) {
+      database.prepare("UPDATE tour_dates SET artist_identity_status=?").run(status);
+      database.exec("PRAGMA query_only=ON");
+      const document = documents.eventDocument(options);
+      assert.ok(document);
+      assert.equal(document.event.artistPath, null);
+      assert.equal(document.event.ticketUrl, "https://www.ticketmaster.ca/event/100");
+      assert.doesNotMatch(documents.render(document), /THIS_REVIEW_BELONGS_TO_THE_OTHER_ARTIST|href="\/artist\/alpha"/);
+      database.exec("PRAGMA query_only=OFF");
+    }
+    saveMemorial(database, { deathDate: "1960-08-25" });
+    assert.ok(documents.eventDocument(options), "an unrelated same-name legacy memorial cannot erase this event");
+    database.exec("UPDATE tour_dates SET artist_identity_status='registered'");
+    assert.equal(documents.eventDocument(options), null, "a confirmed binding still respects its own memorial policy");
   } finally { database.close(); }
 });
 

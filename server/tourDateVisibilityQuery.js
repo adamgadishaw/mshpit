@@ -5,6 +5,7 @@ import {
   effectiveTourDateEndSql,
 } from "./tourDateLifecycle.js";
 import { tourDateHasNoPublishedMemorialSql } from "./artistMemorialTourDateVisibility.js";
+import { tourDateArtistBindingAllowedSql } from "./providerArtistBinding.js";
 
 // Pure database-injected query path. Keeping this separate from the production
 // singleton prevents unit tests and repositories with their own connection from
@@ -41,6 +42,7 @@ export function visibleTourDateRowsFrom(database, viewer, {
     prefix.push(through);
   }
   if (artist) {
+    filters.push(tourDateArtistBindingAllowedSql("td"));
     filters.push("LOWER(td.artist)=LOWER(?)");
     prefix.push(artist);
   }

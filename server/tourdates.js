@@ -22,6 +22,7 @@ import {
 import { PROVIDER_JSON_LIMITS, readBoundedJsonResponse } from "./boundedJsonResponse.js";
 import { startPeriodicJob } from "./periodicJobScheduler.js";
 import { artistBillingIdentity, ticketmasterAttractionMatchesArtist, ticketmasterBilledArtists } from "./artistBillingIdentity.js";
+import { ensureProviderArtistRegistrationSchema, registerProviderArtistRows, ticketmasterPrimaryArtistIdentity } from "./providerArtistRegistration.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CATALOG = join(HERE, "..", "src", "seed", "catalog.generated.json");
@@ -43,7 +44,7 @@ const MARKET_COVERAGE_KEY_PREFIX = "tourdates:ticketmaster-market-coverage:v1:";
 // Bump this only when a deployed collector materially changes what it can
 // discover. The persisted value makes that release run once even when the
 // ordinary freshness clock is still recent, without replaying on every deploy.
-export const TOURDATE_INGESTION_REVISION = "live-catalog-demand-partitioned-90d-v3";
+export const TOURDATE_INGESTION_REVISION = "live-catalog-demand-partitioned-90d-artist-identity-v4";
 function throwIfAborted(signal) {
   if (!signal?.aborted) return;
   throw signal.reason instanceof Error
@@ -680,6 +681,7 @@ export function ticketmasterRows(data, { requestedArtist = null } = {}) {
     const matchesRequestedArtist = !requestedArtist
       || attractions.some((attraction) => ticketmasterAttractionMatchesArtist(attraction, requestedArtist));
     const artist = requestedArtist || attractions[0]?.name || event.name;
+    const artistIdentity = ticketmasterPrimaryArtistIdentity(event, { artist, musicEvidence: musicEvent.evidence });
     const date = optionalText(event.dates?.start?.localDate);
     if (!artist || !venue?.name || !date || !matchesRequestedArtist) continue;
     const localTime = optionalText(event.dates?.start?.localTime);
@@ -699,6 +701,9 @@ export function ticketmasterRows(data, { requestedArtist = null } = {}) {
       sold_out: 0,
       source: "ticketmaster",
       provider_event_id: optionalText(event.id),
+      provider_artist_id: artistIdentity?.id || null,
+      provider_artist_name: artistIdentity?.name || null,
+      artist_identity_status: artistIdentity?.status || null,
       event_name: officialEventName,
       tour_name: deriveTourNameFromEventTitle({
         eventName: officialEventName,
@@ -1160,7 +1165,7 @@ const PROVIDER_VENUE_SNAPSHOT_ASSIGNMENTS_SQL = [
 
 const PROVIDER_TOUR_DATE_UPSERT_SQL = `
   INSERT INTO tour_dates (
-    id,artist,artist_key,venue,place,lat,lng,date,ticket_url,sold_out,source,updated_at,
+    id,artist,artist_key,provider_artist_id,artist_identity_status,venue,place,lat,lng,date,ticket_url,sold_out,source,updated_at,
     provider_event_id,event_name,tour_name,start_date_time,start_local_time,
     access_start_date_time,access_start_approximate,event_timezone,event_status,
     venue_provider_id,venue_address_line1,venue_address_line2,venue_city,venue_region,
@@ -1168,7 +1173,7 @@ const PROVIDER_TOUR_DATE_UPSERT_SQL = `
     event_kind,music_qualified,music_evidence,billed_artists,event_end_date,
     event_image_url,event_image_attribution,event_image_width,event_image_height
   ) VALUES (
-    @id,@artist,@artist_key,@venue,@place,@lat,@lng,@date,@ticket_url,@sold_out,@source,@updated_at,
+    @id,@artist,@artist_key,@provider_artist_id,@artist_identity_status,@venue,@place,@lat,@lng,@date,@ticket_url,@sold_out,@source,@updated_at,
     @provider_event_id,@event_name,@tour_name,@start_date_time,@start_local_time,
     @access_start_date_time,@access_start_approximate,@event_timezone,@event_status,
     @venue_provider_id,@venue_address_line1,@venue_address_line2,@venue_city,@venue_region,
@@ -1178,10 +1183,12 @@ const PROVIDER_TOUR_DATE_UPSERT_SQL = `
   )
   ON CONFLICT(id) DO UPDATE SET
     artist=excluded.artist,artist_key=excluded.artist_key,venue=excluded.venue,place=excluded.place,
+    provider_artist_id=excluded.provider_artist_id,artist_identity_status=excluded.artist_identity_status,
     lat=excluded.lat,lng=excluded.lng,date=excluded.date,ticket_url=excluded.ticket_url,
     sold_out=excluded.sold_out,source=excluded.source,
     updated_at=CASE WHEN
       excluded.artist IS NOT tour_dates.artist OR excluded.artist_key IS NOT tour_dates.artist_key OR excluded.venue IS NOT tour_dates.venue
+      OR excluded.provider_artist_id IS NOT tour_dates.provider_artist_id OR excluded.artist_identity_status IS NOT tour_dates.artist_identity_status
       OR excluded.place IS NOT tour_dates.place OR excluded.lat IS NOT tour_dates.lat
       OR excluded.lng IS NOT tour_dates.lng OR excluded.date IS NOT tour_dates.date
       OR excluded.ticket_url IS NOT tour_dates.ticket_url OR excluded.sold_out IS NOT tour_dates.sold_out
@@ -1229,11 +1236,13 @@ const PROVIDER_TOUR_DATE_UPSERT_SQL = `
     provider_active=excluded.provider_active,last_seen_at=excluded.last_seen_at
   WHERE tour_dates.owner_id IS NULL`;
 
-function providerTourDateWrite(row, seenAt, artistKey) {
+function providerTourDateWrite(row, seenAt, identity) {
   return {
     id: row.id,
     artist: row.artist,
-    artist_key: artistKey,
+    artist_key: identity.artistKey,
+    provider_artist_id: identity.providerArtistId,
+    artist_identity_status: identity.status,
     venue: row.venue ?? null,
     place: row.place ?? null,
     lat: optionalCoordinate(row.lat),
@@ -1312,18 +1321,37 @@ export function reconcileStaleProviderTourDatesForArtists(database, {
   }
 }
 
-export function upsertProviderTourDateRows(database, rows, { seenAt = Date.now() } = {}) {
+export function upsertProviderTourDateRows(database, rows, { seenAt = Date.now(), registrationLimits } = {}) {
   const timestamp = Number(seenAt);
   if (!Number.isSafeInteger(timestamp) || timestamp < 0) throw new TypeError("seenAt must be a non-negative integer");
+  ensureProviderArtistRegistrationSchema(database);
   const statement = database.prepare(PROVIDER_TOUR_DATE_UPSERT_SQL);
-  const artistMatches = database.prepare("SELECT norm FROM artists WHERE lower(trim(name))=lower(trim(?)) ORDER BY norm LIMIT 2");
+  const existingEvent = database.prepare("SELECT owner_id,provider_artist_id,artist_identity_status FROM tour_dates WHERE id=?");
   let changed = 0;
-  for (const row of rows || []) {
-    const matches = artistMatches.all(row?.artist || "");
-    const artistKey = matches.length === 1 ? matches[0].norm : null;
-    changed += Number(statement.run(providerTourDateWrite(row, timestamp, artistKey)).changes) || 0;
+  database.exec("SAVEPOINT provider_tourdate_upsert");
+  try {
+    // A provider ID collision with an authored event is not permission to
+    // register its performer, even though the event upsert itself is guarded.
+    const writable = (rows || []).filter((row) => row?.owner_id == null && existingEvent.get(row?.id ?? null)?.owner_id == null);
+    const identities = registerProviderArtistRows(database, writable, { at: timestamp, limits: registrationLimits });
+    writable.forEach((row, index) => {
+      const previous = existingEvent.get(row?.id ?? null);
+      const identity = { ...identities[index] };
+      // Missing attraction evidence on a later partial response does not clear
+      // an unresolved identity, even if its display name now matches a row.
+      if (["pending", "conflict"].includes(previous?.artist_identity_status) && identity.status == null) {
+        identity.status = previous.artist_identity_status;
+        identity.artistKey = null;
+      }
+      if (identity.status && !identity.providerArtistId) identity.providerArtistId = previous?.provider_artist_id || null;
+      changed += Number(statement.run(providerTourDateWrite(row, timestamp, identity)).changes) || 0;
+    });
+    database.exec("RELEASE provider_tourdate_upsert");
+    return changed;
+  } catch (error) {
+    database.exec("ROLLBACK TO provider_tourdate_upsert; RELEASE provider_tourdate_upsert");
+    throw error;
   }
-  return changed;
 }
 
 export function persistTicketmasterMarketResult(database, {

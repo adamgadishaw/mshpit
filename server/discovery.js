@@ -72,6 +72,7 @@ function publicEvent(row) {
   return {
     id: row.id,
     artist: projectedArtist.artist,
+    artistKey: projectedArtist.bindingAllowed ? row.artist_key || null : null,
     venue: row.venue,
     place: row.place,
     lat: row.lat,

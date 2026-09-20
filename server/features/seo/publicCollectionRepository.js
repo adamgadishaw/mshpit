@@ -9,6 +9,7 @@ import {
   tourDateHasNoPublishedMemorialSql,
 } from "../../artistMemorialTourDateVisibility.js";
 import { inPersonReviewSql } from "../../onlineReviews.js";
+import { tourDateArtistBindingAllowedSql } from "../../providerArtistBinding.js";
 import {
   PUBLIC_ENTITY_THRESHOLDS,
   installPublicMusicEventPolicySql,
@@ -34,6 +35,7 @@ const noStructuredShowLocationCollisionSql = (alias = "p", at = "?4", today = "?
   SELECT COUNT(DISTINCT pit_structured_show_location(public_location.venue_city,public_location.venue_country_code)) AS location_count FROM tour_dates public_location
   LEFT JOIN users public_location_owner ON public_location_owner.id=public_location.owner_id
   WHERE LOWER(TRIM(public_location.artist))=LOWER(TRIM(${alias}.artist))
+    AND ${tourDateArtistBindingAllowedSql("public_location")}
     AND LOWER(TRIM(public_location.venue))=LOWER(TRIM(${alias}.venue))
     AND public_location.date=${alias}.date AND public_location.release_at<=${at}
     AND ${artistAuthoredTourDateVisibleSql("public_location")}
@@ -185,6 +187,7 @@ export function createPublicCollectionRepository(database) {
     FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id
     WHERE ${publicTourVisibility("td", "owner", "?1")}
       AND ${validCalendarDateSql("td")} AND ${structuredLocationSql("td")} AND td.date<=?2
+      AND ${tourDateArtistBindingAllowedSql("td")}
       AND TRIM(COALESCE(td.artist,''))<>'' AND TRIM(COALESCE(td.venue,''))<>''
       AND UPPER(TRIM(td.venue_country_code))=?3 AND LOWER(TRIM(td.venue_city))=LOWER(?4)
       AND ${noLocationConflictSql("td")}

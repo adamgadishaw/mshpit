@@ -1093,8 +1093,9 @@ function Root() {
     if (!name) return;
     track("view_artist_archive");
     const cachedArtist = remoteArtistMeta?.(name);
-    const resolvedArtistKey = artistKey || cachedArtist?.key || cachedArtist?.norm || null;
-    const resolvedPublicSlug = publicSlug || cachedArtist?.publicSlug || null;
+    const storedArtist = cachedArtist?.transient === true ? null : cachedArtist;
+    const resolvedArtistKey = artistKey || storedArtist?.key || storedArtist?.norm || null;
+    const resolvedPublicSlug = publicSlug || storedArtist?.publicSlug || null;
     go({ artistArchive: { name, artistKey: resolvedArtistKey, ...(resolvedPublicSlug ? { publicSlug: resolvedPublicSlug } : {}) } });
   };
   const openArtistTour = (name, artistKey, tour) => {

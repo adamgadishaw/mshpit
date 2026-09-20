@@ -24,6 +24,7 @@ function createDatabase() {
       artist_key TEXT PRIMARY KEY,artist_mbid TEXT,status TEXT NOT NULL,death_date TEXT
     );
     CREATE TABLE tour_dates (
+      artist_identity_status TEXT,
       id TEXT PRIMARY KEY,artist TEXT NOT NULL,artist_key TEXT,venue TEXT,place TEXT,date TEXT,
       source TEXT,updated_at INTEGER NOT NULL DEFAULT 0,owner_id TEXT,release_at INTEGER NOT NULL DEFAULT 0,
       provider_event_id TEXT,venue_provider_id TEXT,venue_city TEXT,venue_region TEXT,
@@ -229,6 +230,28 @@ test("city concert directories require three eligible archives across two venues
     assert.equal(recovered.itemCount,3);
     assert.equal(recovered.concerts.some((row) => row.date === "2026-02-31"),false);
     assert.equal(Object.hasOwn(recovered.concerts[0],"user_id"),false);
+  } finally { db.close(); }
+});
+
+test("pending provider shows cannot supply same-name artist review evidence to city concert directories", () => {
+  const db = createDatabase();
+  try {
+    addUser(db, "active");
+    addArtist(db);
+    for (const [index, venue] of [[1, "North"], [2, "South"], [3, "North"]]) {
+      const date = `2026-08-0${index}`;
+      addTour(db, { id: `held-${index}`, venue, date, providerVenueId: venue.toLowerCase() });
+      addPost(db, { id: `namesake-${index}`, venue, date });
+    }
+    const repository = createPublicCollectionRepository(db);
+    const options = { countryCode: "CA", citySlug: "toronto", at: NOW, today: TODAY };
+    assert.equal(repository.readCityConcerts(options).itemCount, 3);
+    db.exec("UPDATE tour_dates SET artist_identity_status='pending'; PRAGMA query_only=ON");
+    assert.equal(repository.readCityConcerts(options), null);
+    db.exec("PRAGMA query_only=OFF; UPDATE tour_dates SET artist_identity_status='conflict'");
+    assert.equal(repository.readCityConcerts(options), null);
+    db.exec("UPDATE tour_dates SET artist_identity_status='registered'");
+    assert.equal(repository.readCityConcerts(options).itemCount, 3);
   } finally { db.close(); }
 });
 

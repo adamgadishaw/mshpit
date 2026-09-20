@@ -1,4 +1,5 @@
 import { storedBillingAllowsArtistBinding } from "./artistBillingIdentity.js";
+import { tourDateArtistIdentityPending } from "./providerArtistBinding.js";
 
 const cleanLine = (value, maxLength = 160) => {
   if (typeof value !== "string" && typeof value !== "number") return null;
@@ -34,7 +35,8 @@ function evidencedBilledArtistNames(row) {
 export function publicTourDateArtistProjection(row) {
   const storedArtist = cleanLine(row?.artist);
   const memberAuthored = row?.owner_id != null;
-  const bindingAllowed = !!storedArtist && (memberAuthored || storedBillingAllowsArtistBinding(
+  const pendingIdentity = tourDateArtistIdentityPending(row);
+  const bindingAllowed = !pendingIdentity && !!storedArtist && (memberAuthored || storedBillingAllowsArtistBinding(
     row?.source,
     row?.music_evidence,
     row?.billed_artists,
@@ -71,6 +73,9 @@ export function deriveTourNameFromEventTitle({ eventName, artist, eventKind } = 
 export function publicTourDateProviderFields(row) {
   const approximate = row?.access_start_approximate;
   return {
+    // Explicit false lets a refreshed authoritative event clear a stale pending
+    // marker; absent client-local metadata is not proof that identity is ready.
+    artistIdentityPending: tourDateArtistIdentityPending(row),
     providerEventId: cleanLine(row?.provider_event_id),
     eventName: cleanLine(row?.event_name),
     tourName: cleanLine(row?.tour_name),

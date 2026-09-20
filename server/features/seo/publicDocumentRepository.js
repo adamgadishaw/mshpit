@@ -19,6 +19,7 @@ import {
 import { inPersonReviewSql } from "../../onlineReviews.js";
 import { pitPublicSlug, pitVenuePublicSlug } from "../../sqliteFunctions.js";
 import { publicVenuePlace } from "../../venueFacts.js";
+import { tourDateArtistBindingAllowedSql, tourDateArtistIdentityPending } from "../../providerArtistBinding.js";
 
 const bounded = (value, fallback, maximum) => {
   const parsed = Number(value);
@@ -80,6 +81,7 @@ function noStructuredShowLocationCollisionSql(alias = "p") {
     SELECT COUNT(DISTINCT pit_structured_show_location(public_location.venue_city,public_location.venue_country_code)) AS location_count FROM tour_dates public_location
     LEFT JOIN users public_location_owner ON public_location_owner.id=public_location.owner_id
     WHERE LOWER(TRIM(public_location.artist))=LOWER(TRIM(${alias}.artist))
+      AND ${tourDateArtistBindingAllowedSql("public_location")}
       AND LOWER(TRIM(public_location.venue))=LOWER(TRIM(${alias}.venue))
       AND public_location.date=${alias}.date AND public_location.release_at<=?
       AND ${artistAuthoredTourDateVisibleSql("public_location")}
@@ -220,6 +222,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
     WHERE (td.artist_key=? OR (td.artist_key IS NULL AND LOWER(td.artist)=LOWER(?)
         AND (SELECT COUNT(*) FROM artists event_artist_identity
           WHERE event_artist_identity.name=td.artist COLLATE NOCASE)=1))
+      AND ${tourDateArtistBindingAllowedSql("td")}
       AND td.release_at<=? AND ${currentOrUpcomingPublicMusicEventSql("td", "?4")}
       AND ${tourDateHasNoPublishedMemorialSql("td")}
       AND ${publicMusicEventCandidateSql("td")}
@@ -288,8 +291,8 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
 
   const eventById = database.prepare(`SELECT td.*,a.norm AS artist_key,a.public_slug AS artist_public_slug,
       a.genre AS artist_genre,a.bio AS artist_bio,a.updated_at AS artist_updated_at
-    FROM tour_dates td LEFT JOIN artists a ON a.norm=td.artist_key
-      OR (td.artist_key IS NULL AND a.norm=LOWER(TRIM(td.artist)))
+    FROM tour_dates td LEFT JOIN artists a ON ${tourDateArtistBindingAllowedSql("td")}
+      AND (a.norm=td.artist_key OR (td.artist_key IS NULL AND a.norm=LOWER(TRIM(td.artist))))
     LEFT JOIN users owner ON owner.id=td.owner_id
     WHERE td.id=? AND td.release_at<=?
       AND ${publicMusicEventCandidateSql("td")}
@@ -355,6 +358,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
       COUNT(DISTINCT pit_structured_show_location(td.venue_city,td.venue_country_code)) AS location_count
     FROM tour_dates td LEFT JOIN users location_owner ON location_owner.id=td.owner_id
     WHERE LOWER(TRIM(td.artist))=LOWER(TRIM(?)) AND LOWER(TRIM(td.venue))=LOWER(TRIM(?))
+      AND ${tourDateArtistBindingAllowedSql("td")}
       AND td.date=? AND td.release_at<=?
       AND ${publicMusicEventCandidateSql("td")}
       AND ${artistAuthoredTourDateVisibleSql("td")}
@@ -364,8 +368,9 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
   const concertEvent = database.prepare(`SELECT td.*,a.norm AS artist_key,a.public_slug AS artist_public_slug
     FROM tour_dates td
     LEFT JOIN users owner ON owner.id=td.owner_id
-    LEFT JOIN artists a ON a.norm=LOWER(TRIM(td.artist))
+    LEFT JOIN artists a ON ${tourDateArtistBindingAllowedSql("td")} AND a.norm=LOWER(TRIM(td.artist))
     WHERE pit_archive_identity(td.artist)=?
+      AND ${tourDateArtistBindingAllowedSql("td")}
       AND pit_archive_identity(td.venue)=?
       AND td.date=? AND td.release_at<=?
       AND ${publicMusicEventCandidateSql("td")}
@@ -391,7 +396,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
 
   const venueEventsByName = database.prepare(`SELECT td.*,a.norm AS artist_key,a.public_slug AS artist_public_slug FROM tour_dates td
     LEFT JOIN users owner ON owner.id=td.owner_id
-    LEFT JOIN artists a ON a.norm=LOWER(TRIM(td.artist))
+    LEFT JOIN artists a ON ${tourDateArtistBindingAllowedSql("td")} AND a.norm=LOWER(TRIM(td.artist))
     WHERE LOWER(td.venue)=LOWER(?)
       AND td.release_at<=? AND ${currentOrUpcomingPublicMusicEventSql("td", "?3")}
       AND ${tourDateHasNoPublishedMemorialSql("td")}
@@ -404,7 +409,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
 
   const venueEventsByProvider = database.prepare(`SELECT td.*,a.norm AS artist_key,a.public_slug AS artist_public_slug FROM tour_dates td
     LEFT JOIN users owner ON owner.id=td.owner_id
-    LEFT JOIN artists a ON a.norm=LOWER(TRIM(td.artist))
+    LEFT JOIN artists a ON ${tourDateArtistBindingAllowedSql("td")} AND a.norm=LOWER(TRIM(td.artist))
     WHERE td.source IS ? AND td.venue_provider_id=?
       AND td.release_at<=? AND ${currentOrUpcomingPublicMusicEventSql("td", "?4")}
       AND ${tourDateHasNoPublishedMemorialSql("td")}
@@ -473,6 +478,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
         WHERE (td.artist_key=a.norm OR (td.artist_key IS NULL AND LOWER(TRIM(td.artist))=LOWER(TRIM(a.name))
           AND (SELECT COUNT(*) FROM artists directory_event_identity
             WHERE directory_event_identity.name=td.artist COLLATE NOCASE)=1))
+          AND ${tourDateArtistBindingAllowedSql("td")}
           AND td.release_at<=? AND ${currentOrUpcomingPublicMusicEventSql("td", "?2")}
           AND ${tourDateHasNoPublishedMemorialSql("td")}
           AND ${publicMusicEventCandidateSql("td")}
@@ -492,7 +498,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
   const directoryEvents = database.prepare(`SELECT td.*,a.norm AS artist_key,a.public_slug AS artist_public_slug,
       COUNT(*) OVER () AS directory_total FROM tour_dates td
     LEFT JOIN users owner ON owner.id=td.owner_id
-    LEFT JOIN artists a ON a.norm=LOWER(TRIM(td.artist))
+    LEFT JOIN artists a ON ${tourDateArtistBindingAllowedSql("td")} AND a.norm=LOWER(TRIM(td.artist))
     WHERE td.release_at<=? AND ${currentOrUpcomingPublicMusicEventSql("td", "?2")}
       AND ${tourDateHasNoPublishedMemorialSql("td")}
       AND ${publicMusicEventCandidateSql("td")}
@@ -553,7 +559,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
       td.venue_address_line1,td.venue_address_line2,td.venue_postal_code,td.updated_at
     FROM tour_dates td
     LEFT JOIN users owner ON owner.id=td.owner_id
-    LEFT JOIN artists a ON a.norm=LOWER(TRIM(td.artist))
+    LEFT JOIN artists a ON ${tourDateArtistBindingAllowedSql("td")} AND a.norm=LOWER(TRIM(td.artist))
     LEFT JOIN venue_name_quality quality ON quality.venue_name=LOWER(TRIM(td.venue))
     LEFT JOIN post_location_quality post_quality ON post_quality.venue_name=LOWER(TRIM(td.venue))
     WHERE td.release_at<=? AND ${currentOrUpcomingPublicMusicEventSql("td", "?4")} AND date(td.date)=td.date
@@ -808,7 +814,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
       if (!event) return null;
       return {
         event,
-        posts: eventRelatedPosts.all(event.artist_key || "", event.artist, event.venue, event.date,
+        posts: tourDateArtistIdentityPending(event) ? [] : eventRelatedPosts.all(event.artist_key || "", event.artist, event.venue, event.date,
           bounded(relatedLimit, 6, 12)),
       };
     },

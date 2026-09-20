@@ -37,6 +37,17 @@ export const navigationArtistCard = Object.freeze({
   name: navigationArtist.name, key: navigationArtist.key, publicSlug: navigationArtist.publicSlug,
   country: navigationArtist.country, rank: 1, popularity: 99,
 });
+// A real reported artist name with synthetic show data. No provider requests or
+// production catalogue writes occur in these isolated browser cases.
+export const discoverShowArtist = Object.freeze({ name: "Imran Khan", key: "imran khan", publicSlug: "imran-khan", transient: false });
+export const discoverShowArtistPath = "/artist/imran-khan";
+export const discoverArtistEvent = Object.freeze({
+  id: "tm_discover_artist_fixture", artist: discoverShowArtist.name, artistKey: discoverShowArtist.key,
+  venue: "Fixture Venue", city: "Toronto", place: "Toronto, Ontario, Canada", venueCountry: "Canada", venueCountryCode: "CA",
+  source: "ticketmaster", providerActive: true, date: new Date(Date.now() + 2 * 86400000).toISOString().slice(0, 10), releaseAt: 0,
+  ticketUrl: "https://www.ticketmaster.ca/event/navigation-fixture",
+});
+export const discoverArtistEventPath = `/event/${discoverArtistEvent.id}`;
 export const serverCollectionPaths = Object.freeze([
   "/concerts", "/events/page/2", "/artists/page/2", "/venues/us/davis", "/artist/fixture-artist/concerts/page/2",
 ]);
@@ -52,6 +63,9 @@ export const navigationCases = Object.freeze([
     { name: `guest-tabs-${width}`, kind: "guest-tabs", width },
     { name: `artist-lookup-recovery-${width}`, kind: "artist-lookup-recovery", width },
     { name: `discover-canonical-artist-${width}`, kind: "discover-canonical-artist", path: "/discover", width },
+    { name: `discover-show-artist-${width}`, kind: "discover-show-artist", path: "/discover", width },
+    { name: `discover-show-artist-recovery-${width}`, kind: "discover-show-artist-recovery", path: "/discover", width },
+    { name: `discover-show-artist-conflict-${width}`, kind: "discover-show-artist-conflict", path: "/discover", width },
     { name: `member-tabs-${width}`, kind: "member-tabs", member: true, width },
     { name: `home-link-${width}`, kind: "home", path: postPath, width },
     { name: `home-link-member-${width}`, kind: "home", path: postPath, member: true, width },
@@ -82,9 +96,27 @@ function injectQueryMetadataFixture(html, url) {
     .replace("</head>", head + "</head>");
 }
 
-export function fixtureApiResponse(pathname, { member = false, method = "GET", resolvedPath = postPath, artistBioMode = "imported", discoverArtist = false } = {}) {
+export function fixtureApiResponse(pathname, { member = false, method = "GET", resolvedPath = postPath, artistBioMode = "imported", discoverArtist = false, discoverShow = false, artistLookupTransient = false, artistIdentityPending = false } = {}) {
   if (pathname === "/api/client-errors" && method === "POST") return { ok: true };
   assert.equal(method, "GET", `Navigation must not mutate data: ${method} ${pathname}`);
+  if (discoverShow) {
+    const event = { ...discoverArtistEvent, artistKey: artistIdentityPending ? null : discoverArtistEvent.artistKey, artistIdentityPending };
+    if (pathname === "/api/tourdates") return { tourDates: [event], nextCursor: null };
+    if (pathname === "/api/resolve" && resolvedPath === discoverArtistEventPath) return { entity: {
+      ...event, kind: "event", name: discoverShowArtist.name, path: discoverArtistEventPath, publicEventSnapshot: true,
+    } };
+    if (pathname === "/api/resolve" && resolvedPath === discoverShowArtistPath) return { entity: {
+      kind: "artist", name: discoverShowArtist.name, artistKey: discoverShowArtist.key, path: discoverShowArtistPath,
+    } };
+    if (pathname === "/api/artists/resolve") return { artist: discoverShowArtist, transient: artistLookupTransient, created: false };
+    if (pathname === "/api/artists/imran%20khan/profile") return { artist: discoverShowArtist, profile: null, posts: [], legacyProfile: false };
+    if (pathname === "/api/artists/imran%20khan/memorial") return { memorial: null };
+    if (pathname === "/api/artists/imran%20khan/live-summary") return {
+      artist: discoverShowArtist,
+      reputation: { avgRating: null, ratingCount: 0, reviewCount: 0, showCount: 0 },
+      schedule: { items: [discoverArtistEvent], total: 1, hasMore: false, nextCursor: null, legacy: false, coverage: { status: "fresh" } },
+    };
+  }
   if (pathname === "/api/me") return { user: member ? navigationUser : null };
   if (pathname === "/api/page-head") {
     assert.match(resolvedPath, /^\/[a-zA-Z0-9_/-]*$/, "Fixture metadata paths must be inert local paths.");
@@ -297,7 +329,14 @@ async function runCase(browser, origin, item) {
         await new Promise(done => { state.releaseResolve = done; });
         state.resolveReleased = true;
       }
-      const body = fixtureApiResponse(url.pathname, { member: state.member, method: request.method(), resolvedPath: url.searchParams.get("path") || undefined, artistBioMode: state.artistBioMode, discoverArtist: item.kind === "discover-canonical-artist" });
+      const discoverShow = item.kind.startsWith("discover-show-artist");
+      if (discoverShow && url.pathname === "/api/artists/resolve") {
+        assert.equal(url.searchParams.get("name"), discoverShowArtist.name);
+        state.lookupAttempts += 1;
+      }
+      const body = fixtureApiResponse(url.pathname, { member: state.member, method: request.method(), resolvedPath: url.searchParams.get("path") || undefined, artistBioMode: state.artistBioMode, discoverArtist: item.kind === "discover-canonical-artist", discoverShow,
+        artistIdentityPending: item.kind === "discover-show-artist-conflict" && !state.identityConfirmed,
+        artistLookupTransient: item.kind === "discover-show-artist-recovery" && !state.catalogRepaired });
       await route.fulfill({ contentType: "application/json", body: JSON.stringify(body) });
     } catch (error) {
       if (item.kind === "delayed" && url.pathname === "/api/resolve" && state.resolveReleased && /closed|disposed|handled|aborted|canceled|cancelled/i.test(error.message)) return;
@@ -438,6 +477,60 @@ async function runCase(browser, origin, item) {
         "A canonical Discover card must not depend on a remote name lookup.");
       assert.equal(await page.getByTestId("public-route-error").count(), 0);
       await snapshot("canonical artist database biography");
+    } else if (item.kind.startsWith("discover-show-artist")) {
+      await visiblePage(page, "/discover");
+      await page.getByRole("tab", { name: "Shows", exact: true }).click();
+      const card = page.getByRole("link", { name: `Open ${discoverShowArtist.name} at ${discoverArtistEvent.venue}`, exact: true }).first();
+      await card.waitFor();
+      assert.equal(await card.getAttribute("href"), discoverArtistEventPath);
+      await snapshot("Discover Shows event card");
+      await card.click();
+      await assertPath(page, discoverArtistEventPath);
+      await assertPageIdentity(page, discoverArtistEventPath);
+      const openArtist = page.getByRole("button", { name: `Open ${discoverShowArtist.name}'s profile`, exact: true }).first();
+      if (item.kind === "discover-show-artist-conflict") {
+        const notice = page.getByText("Artist profile not linked yet", { exact: true });
+        await notice.waitFor();
+        assert.equal(await openArtist.count(), 0, "An unresolved collision must not link a namesake artist.");
+        assert.equal(state.lookupAttempts, 0, "A flagged identity collision must not fall back to a display-name provider lookup.");
+        assert.equal(state.calls.some(call => call.path === "/api/artists/imran%20khan/memorial"), false,
+          "An unrelated namesake's memorial status cannot decide this event's availability.");
+        assert.equal(await page.getByRole("button", { name: "Open Fixture Venue's venue page", exact: true }).first().isEnabled(), true);
+        assert.equal(await page.getByRole("link", { name: "Get tickets for Imran Khan at Fixture Venue", exact: true }).isEnabled(), true);
+        await snapshot("identity collision retains event and venue/ticket links");
+        await page.getByRole("button", { name: "Refresh event details and artist availability", exact: true }).click();
+        await notice.waitFor();
+        assert.equal(state.lookupAttempts, 0, "Refresh cannot bypass an unchanged pending identity restriction.");
+        state.identityConfirmed = true;
+        await page.getByRole("button", { name: "Refresh event details and artist availability", exact: true }).click();
+        await notice.waitFor({ state: "hidden" });
+      }
+      await openArtist.waitFor();
+      await snapshot("show detail artist link");
+      await openArtist.click();
+      if (item.kind === "discover-show-artist-recovery") {
+        const unavailable = page.getByText("This artist or profile could not be opened.", { exact: true });
+        await unavailable.waitFor();
+        await assertPath(page, discoverArtistEventPath);
+        assert.equal(state.lookupAttempts, 1, "A transient provider preview must not trigger automatic retries or a fabricated page.");
+        assert.equal(state.calls.some(call => call.path === "/api/artists/imran%20khan/profile"), false);
+        await snapshot("preview-only artist stays on show");
+        state.catalogRepaired = true;
+        await page.getByRole("button", { name: "Try again", exact: true }).last().click();
+        await unavailable.waitFor({ state: "hidden" });
+      }
+      await page.getByRole("tab", { name: "About artist page section", exact: true }).waitFor();
+      await assertPath(page, discoverShowArtistPath);
+      await assertPageIdentity(page, discoverShowArtistPath);
+      await waitFor(() => state.calls.some(call => call.path === "/api/artists/imran%20khan/profile"), "The show artist must hydrate its local profile.");
+      assert.equal(state.lookupAttempts, item.kind === "discover-show-artist-recovery" ? 2 : 1);
+      assert.equal(await page.getByText("This artist or profile could not be opened.", { exact: true }).count(), 0);
+      assert.equal(await page.getByTestId("public-route-error").count(), 0);
+      await snapshot("stored artist opened from show without reloading");
+      await page.goBack({ waitUntil: "networkidle" });
+      await assertPath(page, discoverArtistEventPath);
+      await openArtist.waitFor();
+      await snapshot("Back restores the same show");
     } else if (item.kind === "guest-tabs") {
       await visiblePage(page, "/search"); await assertPath(page, "/search");
       await openTab("Discover"); await visiblePage(page, "/discover"); await assertPath(page, "/discover");

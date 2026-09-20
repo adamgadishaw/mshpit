@@ -35,6 +35,7 @@ import { ensureSharedEmailSchema } from "./features/accountOnboarding/sharedEmai
 import { ensureAccountLifecycleSchema } from "./features/accountLifecycle/accountLifecycleSchema.js";
 import { ensureErrorAlertSchema } from "./errorAlertDelivery.js";
 import { seedReviewedArtistIdentities } from "./reviewedArtistIdentities.js";
+import { ensureProviderArtistRegistrationSchema } from "./providerArtistRegistration.js";
 import { ensureCommentMutationSchema } from "./commentMutationSchema.js";
 import { ensureArtistAccountSchema, pendingArtistSignupIntent } from "./features/artistAccounts/artistAccountPolicy.js";
 
@@ -1952,6 +1953,7 @@ try {
   ensureCitySchema(db);
   ensureLoungeSchema(db);
   ensureArtistPublicSlugs(db);
+  ensureProviderArtistRegistrationSchema(db);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_media_objects_owner_accounting_status_bytes
     ON media_objects(owner_id,accounting_class,status,byte_size)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_media_upload_issuances_owner_accounting_at_bytes
@@ -2815,6 +2817,9 @@ export function publicArtist(r) {
   catch {
     // architecture: allow-empty-catch -- corrupt legacy metadata contributes no optional public fields.
   }
+  // Valid JSON is not necessarily metadata: legacy null/scalar/array payloads
+  // must not crash a stored artist's page or leak indexed array/string keys.
+  data = objectData(data);
   const projectedData = { ...data };
   for (const key of ["spotifyPhotoCheckedAt", "spotifyPhotoNoMatchSince", "spotifyPhotoLastResult", "biographyStaff", "biographyProvider", "artistKnowledge", "artistKnowledgePrevious", "bioSource", "beginYear", "formed"]) {
     delete projectedData[key];

@@ -36,6 +36,7 @@ function database() {
     );
     CREATE INDEX idx_show_attendance_user_updated ON show_attendance(user_id,updated_at DESC,show_id);
     CREATE TABLE tour_dates (
+      artist_identity_status TEXT,
       id TEXT PRIMARY KEY,artist_key TEXT,artist TEXT,release_at INTEGER DEFAULT 0,music_qualified INTEGER DEFAULT 1,
       owner_id TEXT,provider_active INTEGER DEFAULT 1,date TEXT,event_end_date TEXT,event_status TEXT,
       start_date_time TEXT,start_local_time TEXT,event_name TEXT,tour_name TEXT,venue TEXT,venue_city TEXT,
@@ -181,6 +182,11 @@ test("artist recommendations use real taste signals, public upcoming dates, and 
     assert.equal(recommendation.liveRating, 4.5, "online and blocked reviews cannot alter the visible live rating");
     assert.equal(recommendation.reviewCount, 1);
     assert.equal(recommendation.nextDate.id, "next-date");
+    db.exec("UPDATE tour_dates SET artist_identity_status='conflict' WHERE id='next-date'");
+    const held = service.list(db.prepare("SELECT * FROM users WHERE id='me'").get(), {
+      limit: 6, at: Date.parse("2030-01-01T12:00:00Z"),
+    });
+    assert.equal(held.recommendations[0].nextDate, null, "a same-name provider identity hold cannot advertise this artist's date");
     assert.equal(recommendation.socialProof.count, 1);
     assert.equal(recommendation.socialProof.friendCount, 1);
     assert.equal(recommendation.socialProof.people[0].id, "friend");

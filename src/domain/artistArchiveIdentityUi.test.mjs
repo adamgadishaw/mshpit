@@ -7,8 +7,27 @@ const hook = readFileSync(new URL("../hooks/useCanonicalArtistIdentity.js", impo
 
 test("archive navigation carries a cached canonical key when one is available", () => {
   assert.match(app, /const cachedArtist = remoteArtistMeta\?\.\(name\)/);
-  assert.match(app, /const resolvedArtistKey = artistKey \|\| cachedArtist\?\.key \|\| cachedArtist\?\.norm \|\| null/);
+  assert.match(app, /const resolvedArtistKey = artistKey \|\| storedArtist\?\.key \|\| storedArtist\?\.norm \|\| null/);
   assert.match(app, /artistArchive: \{ name, artistKey: resolvedArtistKey/);
+});
+
+test("archive clicks never promote cached provider previews to attached route identities", () => {
+  const start = app.indexOf("  const openArtistArchive =");
+  const end = app.indexOf("  const openArtistTour =", start);
+  assert.ok(start >= 0 && end > start);
+  const createOpenArchive = new Function("remoteArtistMeta", "go", "track",
+    app.slice(start, end) + "\nreturn openArtistArchive;");
+  const frames = [];
+  const cached = { name: "Imran Khan", key: "imran khan", publicSlug: "imran-khan", transient: true };
+  const openArchive = createOpenArchive(() => cached, (frame) => frames.push(frame), () => {});
+  openArchive(cached.name);
+  assert.deepEqual(frames.pop(), { artistArchive: { name: cached.name, artistKey: null } },
+    "the existing public identity resolver must still validate a preview-only artist");
+  openArchive(cached.name, "trusted-attached-key", "trusted-public-slug");
+  assert.deepEqual(frames.pop(), { artistArchive: { name: cached.name, artistKey: "trusted-attached-key", publicSlug: "trusted-public-slug" } });
+  cached.transient = false;
+  openArchive(cached.name);
+  assert.deepEqual(frames.pop(), { artistArchive: { name: cached.name, artistKey: cached.key, publicSlug: cached.publicSlug } });
 });
 
 test("name-only archive resolution is scoped, retryable, and never falls back to a display name", () => {

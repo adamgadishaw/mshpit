@@ -1,5 +1,6 @@
 import { activeAccountSql } from "../../accountVisibility.js";
 import { artistAuthoredTourDateVisibleSql } from "../../artistAuthoredTourDateVisibility.js";
+import { tourDateArtistBindingAllowedSql } from "../../providerArtistBinding.js";
 import { artistCatalogVisibleTo } from "../../artistCatalogVisibility.js";
 import { ARTIST_GENRE_SQL_COLUMNS, projectArtistGenreColumns } from "../../artistGenreProjection.js";
 import { tourDateHasNoPublishedMemorialSql } from "../../artistMemorialTourDateVisibility.js";
@@ -253,6 +254,7 @@ export function createArtistRecommendationService(database) {
         ROW_NUMBER() OVER (PARTITION BY td.artist_key ORDER BY td.date,COALESCE(td.start_local_time,''),td.id) position
       FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id
       WHERE td.artist_key IN (${placeholders(keys)}) AND td.release_at<=?
+        AND ${tourDateArtistBindingAllowedSql("td")}
         AND COALESCE(td.music_qualified,1)=1
         AND ${artistAuthoredTourDateVisibleSql("td")}
         AND (td.owner_id IS NULL OR ${activeAccountSql("owner")})

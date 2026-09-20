@@ -1,4 +1,5 @@
 import { normalizeShowAliasKey, normalizeStableShowId } from "./showIdentity.js";
+import { tourDateArtistIdentityPending } from "../../providerArtistBinding.js";
 
 function attendanceView(row) {
   if (!row) return null;
@@ -22,6 +23,10 @@ export function createShowRepository(database) {
   // All identity lookups use primary/unique indexes. This read path never calls
   // the lazy attendance allocator, so an unknown URL cannot create catalogue data.
   const byId = database.prepare("SELECT * FROM shows WHERE id=?");
+  const sourceById = database.prepare("SELECT owner_id,artist_identity_status FROM tour_dates WHERE id=?");
+  const sourceByProvider = database.prepare(`SELECT owner_id,artist_identity_status FROM tour_dates
+    WHERE owner_id IS NULL AND source=? AND provider_event_id=?
+      AND artist_identity_status IN ('pending','conflict') LIMIT 1`);
   const canonicalId = database.prepare("SELECT id FROM shows WHERE canonical_key=?");
   const aliasShowIds = database.prepare(`SELECT show_id AS id FROM show_aliases
     WHERE alias_value=? GROUP BY show_id ORDER BY show_id LIMIT 2`);
@@ -58,6 +63,12 @@ export function createShowRepository(database) {
     const attendance = viewerId ? attendanceByViewer.get(row.id, viewerId) : null;
     const isPublic = !!row.public_eligible && providerBacked(row);
     if (!isPublic && !attendance) return null;
+    // A stored Show can predate provider identity review. Recheck its source
+    // without mutating it so stale performer keys cannot bypass a later hold.
+    const exactSource = row.tour_date_id ? sourceById.get(row.tour_date_id) : null;
+    const sources = exactSource ? [exactSource] : providerBacked(row)
+      ? sourceByProvider.all(row.provider, row.provider_event_id) : [];
+    const artistIdentityPending = sources.some(tourDateArtistIdentityPending);
     return {
       id: row.id,
       canonicalKey: row.canonical_key,
@@ -66,9 +77,10 @@ export function createShowRepository(database) {
         value: alias.alias_value,
       })),
       artist: row.artist || "",
-      artistKey: row.artist_key || null,
+      artistKey: artistIdentityPending ? null : row.artist_key || null,
+      ...(artistIdentityPending ? { artistIdentityPending: true } : {}),
       performers: performersByShow.all(row.id).map((performer) => ({
-        key: performer.performer_key,
+        key: artistIdentityPending ? null : performer.performer_key,
         name: performer.performer_name || "",
         role: performer.role,
         position: performer.position,

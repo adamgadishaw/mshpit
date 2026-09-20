@@ -38,6 +38,7 @@ export function normalizeShowDocument(payload) {
       .filter((alias) => alias.type && alias.value) : [],
     artist: text(source.artist),
     artistKey: text(source.artistKey),
+    ...(typeof source.artistIdentityPending === "boolean" ? { artistIdentityPending: source.artistIdentityPending } : {}),
     performers: Array.isArray(source.performers) ? source.performers
       .map((performer) => ({
         key: text(performer?.key),

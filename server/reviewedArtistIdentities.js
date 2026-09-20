@@ -14,6 +14,23 @@ export const REVIEWED_ARTIST_IDENTITIES = Object.freeze([
     aliases: Object.freeze([]),
     sourceUrl: "https://musicbrainz.org/artist/9ddf4b19-dd14-45d9-b056-49541b16dc80",
   }),
+  Object.freeze({
+    // The MusicBrainz bhangra artist links to https://imrankhanworld.com/;
+    // Ticketmaster lists his Unforgettable Era show at REBEL. Register only
+    // that reviewed identity, not dates/biography or another same-named act.
+    name: "Imran Khan",
+    mbid: "ea4c3e59-f2bc-4880-942e-fbeaa64d8573",
+    aliases: Object.freeze([]),
+    sourceUrl: "https://musicbrainz.org/artist/ea4c3e59-f2bc-4880-942e-fbeaa64d8573",
+  }),
+  Object.freeze({
+    // The US rock identity links to listentomoonwalker.com and its releases
+    // match that artist-owned site. Do not alias the distinct "Moonwalker".
+    name: "Moon Walker",
+    mbid: "5c4c2df9-63ba-4605-a965-5ea11db27cf5",
+    aliases: Object.freeze([]),
+    sourceUrl: "https://musicbrainz.org/artist/5c4c2df9-63ba-4605-a965-5ea11db27cf5",
+  }),
 ]);
 
 const exactName = (value) => typeof value === "string" ? value.trim().toLowerCase() : "";

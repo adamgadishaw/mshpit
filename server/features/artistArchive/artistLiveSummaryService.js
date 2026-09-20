@@ -7,6 +7,7 @@ import {
   storedBillingMatchesArtist,
 } from "../../artistBillingIdentity.js";
 import { currentOrUpcomingTourDateSql } from "../../tourDateLifecycle.js";
+import { tourDateArtistBindingAllowedSql } from "../../providerArtistBinding.js";
 import { ApiError } from "../../errors.js";
 import { inPersonReviewSql } from "../../onlineReviews.js";
 import { pitArtistIdentity } from "../../sqliteFunctions.js";
@@ -123,6 +124,7 @@ export function createArtistLiveSummaryService({ database, projectDate, clock = 
   )`;
   const eventWhere = `FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id
     WHERE td.id IN (SELECT id FROM candidate_ids) AND COALESCE(td.music_qualified,1)=1
+      AND ${tourDateArtistBindingAllowedSql("td")}
       AND ((((td.artist_key=@key) OR (td.artist_key IS NULL AND LOWER(td.artist)=LOWER(@name)
           AND @uniqueName=1))
         AND (td.owner_id IS NOT NULL

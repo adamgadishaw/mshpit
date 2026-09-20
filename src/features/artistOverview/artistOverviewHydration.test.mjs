@@ -118,6 +118,45 @@ test("a persisted canonical key arriving after initial 404 restarts the actual o
   } finally { h.dispose(); }
 });
 
+test("an explicit artist retry refreshes a cached provider preview and adopts the imported page", async () => {
+  const source = readFileSync(new URL("../../store.js", import.meta.url), "utf8");
+  const start = source.indexOf("  const resolveArtist = async (name,");
+  const end = source.indexOf("  const remoteArtistMeta =", start);
+  assert.ok(start >= 0 && end > start);
+  const createResolver = new Function("remoteArtists", "norm", "api", "cacheArtists", "fetchResolvedArtist",
+    source.slice(start, end) + "\nreturn resolveArtist;");
+  const normalize = (name) => name.trim().toLowerCase();
+  const preview = { name: "Imran Khan", key: "imran khan", publicSlug: "imran-khan", transient: true };
+  const catalog = { [normalize(preview.name)]: preview };
+  const cached = [];
+  const calls = [];
+  const unavailable = new AppError("Temporary network failure", { code: "PIT-NET-001", retryable: true });
+  let response = unavailable;
+  const lookup = createResolver(catalog, normalize, async (path, options) => {
+    calls.push({ path, options });
+    if (response instanceof Error) throw response;
+    return response;
+  }, (artists) => {
+    cached.push(...artists);
+    for (const artist of artists) catalog[normalize(artist.name)] = artist;
+  }, fetchResolvedArtist);
+
+  assert.equal(await lookup(preview.name), null, "a failed retry cannot pass the old preview as persisted identity");
+  assert.equal(catalog[normalize(preview.name)], preview, "optional metadata stays available after a transport failure");
+  assert.equal(cached.length, 0);
+  response = { artist: { ...preview, transient: false }, transient: false };
+  const controller = new AbortController();
+  const recovered = await lookup(preview.name, { signal: controller.signal });
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].path, "/api/artists/resolve?name=Imran%20Khan");
+  assert.equal(calls[1].options.signal, controller.signal);
+  assert.equal(recovered.transient, false);
+  assert.equal(recovered.publicSlug, "imran-khan");
+  assert.equal(cached.length, 1);
+  assert.equal(await lookup(preview.name), recovered, "durable catalogue entries still use the local cache");
+  assert.equal(calls.length, 2, "rendering a stored artist must not restart provider lookups");
+});
+
 test("transient hydration never changes scope and a late name-key response cannot replace canonical dates", async () => {
   const h = harness();
   try {

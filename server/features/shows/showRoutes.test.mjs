@@ -20,6 +20,7 @@ function fixture() {
   const database = new DatabaseSync(":memory:");
   database.exec(`
     PRAGMA foreign_keys=ON;
+    CREATE TABLE tour_dates (id TEXT PRIMARY KEY,owner_id TEXT,artist_identity_status TEXT,source TEXT,provider_event_id TEXT);
     CREATE TABLE users (
       id TEXT PRIMARY KEY, is_banned INTEGER NOT NULL DEFAULT 0,
       suspended_until INTEGER, email_verified_at INTEGER NOT NULL DEFAULT 1
@@ -68,6 +69,26 @@ function context(key, user = null) {
     headers,
   };
 }
+
+test("stable shows recheck provider identity holds without exposing stale artist or performer keys", () => {
+  const { database, repository } = fixture();
+  try {
+    database.prepare("INSERT INTO tour_dates(id,source,provider_event_id,artist_identity_status) VALUES (?,?,?,?)")
+      .run("source-7", "ticketmaster", "event-7", "conflict");
+    database.exec("PRAGMA query_only=ON");
+    const held = repository.read(SHOW_ID);
+    assert.equal(held.artistIdentityPending, true);
+    assert.equal(held.artistKey, null);
+    assert.equal(held.performers[0].key, null);
+    assert.equal(held.performers[0].name, "The Artist");
+    assert.equal(held.venue, "The Room");
+    assert.equal(held.publicEligible, true);
+    database.exec("PRAGMA query_only=OFF; UPDATE shows SET tour_date_id='source-7'; UPDATE tour_dates SET artist_identity_status='registered'");
+    assert.equal(repository.read(SHOW_ID).artistKey, "the-artist");
+    database.exec("UPDATE tour_dates SET artist_identity_status='pending'");
+    assert.equal(repository.read(SHOW_ID).artistKey, null, "exact source holds also override stale stored Show keys");
+  } finally { database.close(); }
+});
 
 test("canonical ID and provider alias resolve the same bounded public Show document", () => {
   const { database, routes } = fixture();

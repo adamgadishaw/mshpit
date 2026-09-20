@@ -5,6 +5,8 @@ import { REVIEWED_ARTIST_IDENTITIES, resolveReviewedArtistAlias, seedReviewedArt
 
 const reviewed = REVIEWED_ARTIST_IDENTITIES[0];
 const russ = REVIEWED_ARTIST_IDENTITIES.find((record) => record.name === "Russ");
+const imran = REVIEWED_ARTIST_IDENTITIES.find((record) => record.name === "Imran Khan");
+const moon = REVIEWED_ARTIST_IDENTITIES.find((record) => record.name === "Moon Walker");
 const russMillionsMbid = "176271d4-4465-46ba-bb87-c01e22ebe3a1";
 const otherMbid = "00000000-0000-4000-8000-000000000002";
 
@@ -67,6 +69,66 @@ test("the reviewed registry adds the verified US Russ identity without inferring
   const snapshot = f.rows();
   assert.deepEqual(f.seed(), { inserted: 0, existing: REVIEWED_ARTIST_IDENTITIES.length, conflicts: 0 });
   assert.deepEqual(f.rows(), snapshot);
+});
+
+test("Imran registration adds only the reviewed musician identity and is idempotent", (t) => {
+  assert.equal(imran?.mbid, "ea4c3e59-f2bc-4880-942e-fbeaa64d8573");
+  assert.equal(imran.sourceUrl, `https://musicbrainz.org/artist/${imran.mbid}`);
+  assert.deepEqual(imran.aliases, []);
+  const f = fixture(t, [imran]);
+  assert.deepEqual(f.seed(), { inserted: 1, existing: 0, conflicts: 0 });
+  const snapshot = f.rows();
+  assert.equal(snapshot[0].norm, "imran khan");
+  assert.equal(snapshot[0].public_slug, "imran-khan");
+  assert.equal(snapshot[0].mbid, imran.mbid);
+  assert.deepEqual(JSON.parse(snapshot[0].data), imran);
+  for (const field of ["bio", "genre", "photo", "popularity", "country", "formed"]) assert.equal(snapshot[0][field], null);
+  assert.deepEqual(f.seed(), { inserted: 0, existing: 1, conflicts: 0 });
+  assert.deepEqual(f.rows(), snapshot);
+});
+
+test("Imran registration never overwrites an unproven namesake or duplicates the existing musician", (t) => {
+  for (const mbid of [null, otherMbid]) {
+    const f = fixture(t, [imran]);
+    f.add("imran khan", mbid, { name: "Imran Khan", public_slug: "existing-namesake", bio: "Existing account biography" });
+    f.database.prepare("INSERT INTO artist_profiles VALUES (?,?,?,?)").run("imran khan", "owner", "Owner content", 50);
+    const snapshot = f.rows();
+    const profile = f.database.prepare("SELECT * FROM artist_profiles").get();
+    assert.deepEqual(f.seed(), { inserted: 0, existing: 0, conflicts: 1 });
+    assert.deepEqual(f.rows(), snapshot);
+    assert.deepEqual(f.database.prepare("SELECT * FROM artist_profiles").get(), profile);
+    assert.equal(resolveReviewedArtistAlias(f.database, "Imran Khan"), null);
+  }
+  const f = fixture(t, [imran]);
+  f.add("existing-imran-musician", imran.mbid, { name: "Imran Khan", public_slug: "imran-original" });
+  const snapshot = f.rows();
+  assert.deepEqual(f.seed(), { inserted: 0, existing: 1, conflicts: 0 });
+  assert.deepEqual(f.rows(), snapshot);
+  assert.equal(resolveReviewedArtistAlias(f.database, "Imran Khan")?.norm, "existing-imran-musician");
+});
+
+test("Moon Walker registration stays exact, repeatable and separate from unproven same-name acts", (t) => {
+  assert.equal(moon?.mbid, "5c4c2df9-63ba-4605-a965-5ea11db27cf5");
+  assert.equal(moon.sourceUrl, `https://musicbrainz.org/artist/${moon.mbid}`);
+  assert.deepEqual(moon.aliases, []);
+  const f = fixture(t, [moon]);
+  assert.deepEqual(f.seed(), { inserted: 1, existing: 0, conflicts: 0 });
+  const snapshot = f.rows();
+  assert.equal(snapshot[0].norm, "moon walker");
+  assert.equal(snapshot[0].public_slug, "moon-walker");
+  assert.deepEqual(JSON.parse(snapshot[0].data), moon);
+  for (const field of ["bio", "genre", "photo", "popularity", "country", "formed"]) assert.equal(snapshot[0][field], null);
+  assert.equal(resolveReviewedArtistAlias(f.database, "Moonwalker"), null, "no inferred spelling alias");
+  assert.deepEqual(f.seed(), { inserted: 0, existing: 1, conflicts: 0 });
+  assert.deepEqual(f.rows(), snapshot);
+  for (const mbid of [null, otherMbid]) {
+    const conflicting = fixture(t, [moon]);
+    conflicting.add("moon walker", mbid, { name: "Moon Walker", bio: "Namesake's existing content" });
+    const before = conflicting.rows();
+    assert.deepEqual(conflicting.seed(), { inserted: 0, existing: 0, conflicts: 1 });
+    assert.deepEqual(conflicting.rows(), before);
+    assert.equal(resolveReviewedArtistAlias(conflicting.database, "Moon Walker"), null);
+  }
 });
 
 test("Russ registration preserves existing conflicting identity and owner content", (t) => {

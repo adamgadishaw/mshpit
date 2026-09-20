@@ -1,18 +1,35 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { fixtureApiResponse, injectCollectionFixture, navigationCases, serverCollectionPaths, clientCollectionPaths, postPath, eventPath, artistPath, navigationArtist, navigationArtistCard } from "./verify-navigation-browser.mjs";
+import { fixtureApiResponse, injectCollectionFixture, navigationCases, serverCollectionPaths, clientCollectionPaths, postPath, eventPath, artistPath, navigationArtist, navigationArtistCard, discoverShowArtist, discoverArtistEvent, discoverArtistEventPath } from "./verify-navigation-browser.mjs";
 
 test("navigation fixture import is inert and scenarios cover both mobile and desktop", () => {
   assert.equal(new Set(navigationCases.map(item => item.name)).size, navigationCases.length);
   for (const width of [390, 1280]) {
     const cases = navigationCases.filter(item => item.width === width);
-    for (const kind of ["deep-link", "delayed", "guest-tabs", "artist-lookup-recovery", "discover-canonical-artist", "member-tabs", "home", "signed-in-root", "account-boundary", "server-document", "client-document", "missing-document"]) {
+    for (const kind of ["deep-link", "delayed", "guest-tabs", "artist-lookup-recovery", "discover-canonical-artist", "discover-show-artist", "discover-show-artist-recovery", "discover-show-artist-conflict", "member-tabs", "home", "signed-in-root", "account-boundary", "server-document", "client-document", "missing-document"]) {
       assert.ok(cases.some(item => item.kind === kind), `${kind} is missing at ${width}px`);
     }
     assert.deepEqual(cases.filter(item => item.kind === "deep-link").map(item => item.path), [postPath, eventPath]);
     assert.deepEqual(cases.filter(item => item.kind === "server-document").map(item => item.path), serverCollectionPaths);
     assert.deepEqual(cases.filter(item => item.kind === "client-document").map(item => item.path), clientCollectionPaths);
   }
+});
+
+test("Discover show fixtures carry the real click path and distinguish provider previews from stored profiles", () => {
+  const options = { discoverShow: true };
+  assert.deepEqual(fixtureApiResponse("/api/tourdates", options).tourDates, [{ ...discoverArtistEvent, artistIdentityPending: false }]);
+  const conflict = fixtureApiResponse("/api/tourdates", { ...options, artistIdentityPending: true }).tourDates[0];
+  assert.equal(conflict.artistIdentityPending, true);
+  assert.equal(conflict.artistKey, null);
+  assert.equal(conflict.ticketUrl, discoverArtistEvent.ticketUrl);
+  const entity = fixtureApiResponse("/api/resolve", { ...options, resolvedPath: discoverArtistEventPath }).entity;
+  assert.equal(entity.kind, "event");
+  assert.equal(entity.artist, discoverShowArtist.name);
+  assert.equal(entity.publicEventSnapshot, true);
+  assert.equal(fixtureApiResponse("/api/artists/resolve", { ...options, artistLookupTransient: true }).transient, true);
+  assert.equal(fixtureApiResponse("/api/artists/resolve", options).transient, false);
+  assert.equal(fixtureApiResponse("/api/artists/imran%20khan/profile", options).artist.key, discoverShowArtist.key);
+  assert.throws(() => fixtureApiResponse("/api/artists/resolve", { ...options, method: "POST" }), /must not mutate/);
 });
 
 test("server collection fixture retains Expo scripts and only marks supported exact paths", () => {
