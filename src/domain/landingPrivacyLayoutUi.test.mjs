@@ -5,7 +5,6 @@ import test from "node:test";
 const source = (relative) => readFileSync(new URL(relative, import.meta.url), "utf8");
 const landing = source("../screens/LandingScreen.jsx");
 const presentation = source("./landingPresentation.mjs");
-const journey = source("./homeJourney.mjs");
 
 test("phone landing has one genuine scroll owner without a fixed-height clipping trap", () => {
   assert.equal((landing.match(/<ScrollView\b/g) || []).length, 1);
@@ -21,26 +20,13 @@ test("phone landing has one genuine scroll owner without a fixed-height clipping
   assert.doesNotMatch(landing, /scrollNarrow:\s*\{[^}]*(?:height|maxHeight):/s);
 });
 
-test("phone proof cards stay in three equal readable columns", () => {
-  assert.match(landing, /proofRailCompact:\s*\{[^}]*flexDirection:\s*"row"[^}]*flexWrap:\s*"nowrap"/s);
-  assert.match(landing, /proofItemCompact:\s*\{[^}]*flex:\s*1[^}]*flexBasis:\s*0[^}]*flexDirection:\s*"column"/s);
-  assert.match(landing, /compact\s*\?\s*styles\.proofItemDividerCompact/);
-  assert.doesNotMatch(landing, /proofItemCompactFull|proofItemDividerCompactFull/);
-});
-
-test("phone live header lets its title shrink without clipping the worldwide badge", () => {
-  assert.match(landing, /<View style=\{styles\.liveRailHeadCopy\}>/);
-  assert.match(landing, /liveRailHeadCopy:\s*\{\s*flex:\s*1,\s*minWidth:\s*0\s*\}/);
-  assert.match(landing, /worldPill:\s*\{[^}]*flexShrink:\s*0/s);
-});
-
-test("landing copy names the exact actions and removes theatrical placeholders", () => {
-  const combined = `${landing}\n${presentation}\n${journey}`;
-  assert.match(combined, /Find a show, log and rate it, share a review or photo, and connect with other fans\./);
-  assert.match(combined, /Find concerts/);
-  assert.match(combined, /Upcoming concerts and show discussions/);
-  assert.match(combined, /concert venues/);
-  assert.doesNotMatch(combined, /Shows ahead\. Rooms waiting\.|Find → Attend → Log → Share → Connect|rooms in the PIT|Explore the PIT/);
+test("landing copy is one promise and two actions, without the retired busy sections", () => {
+  const combined = `${landing}\n${presentation}`;
+  assert.match(combined, /Remember every show\./);
+  assert.match(combined, /Browse concerts/);
+  assert.match(combined, /Create an account/);
+  assert.doesNotMatch(landing, /proofRail|journeyRail|liveRail|feedbackLink|kickerLine|scrimAmber|HOME_JOURNEY_LINE|What would make you come back/);
+  assert.doesNotMatch(combined, /Shows ahead\. Rooms waiting\.|Find \u2192 Attend|rooms in the PIT|Explore the PIT/);
 });
 
 test("landing uses one bounded community photo layer with a direct fallback", () => {
@@ -71,17 +57,21 @@ test("landing uses one bounded community photo layer with a direct fallback", ()
   assert.doesNotMatch(landing, /pit-favicon-v1/);
 });
 
-test("compact phone hero keeps secondary sections out of the first-screen composition", () => {
-  assert.match(landing, /\{!compact && <View[\s\S]*styles\.journeyRail/);
-  assert.match(landing, /\{!compact && hasLandingLive \? \(/);
-  assert.match(landing, /\{!compact && !!onSuggestion && \(/);
+test("compact phone hero is the headline, one sentence and two full-width actions", () => {
   assert.match(landing, /title=\{LANDING_IDENTITY_COPY\.browseAction\}/);
-  assert.match(landing, /headlineCompact:\s*\{[^}]*fontSize:\s*34[^}]*lineHeight:\s*36/s);
-  assert.match(landing, /proofItemCompact:\s*\{[^}]*minHeight:\s*78/s);
+  assert.match(landing, /headlineCompact:\s*\{[^}]*fontSize:\s*36[^}]*lineHeight:\s*39/s);
+  assert.match(landing, /subCompact:\s*\{[^}]*fontSize:\s*15/s);
+  assert.equal((landing.match(/fullWidth=\{compact\}/g) || []).length, 2);
+});
+
+test("landing text stays at 12px or larger", () => {
+  const sizes = [...landing.matchAll(/fontSize:\s*([\d.]+)/g)].map((match) => Number(match[1]));
+  assert.ok(sizes.length > 0);
+  assert.deepEqual(sizes.filter((size) => size < 12), []);
 });
 
 test("landing header keeps one distinct information link instead of duplicate directory destinations", () => {
-  const header = landing.slice(landing.indexOf("function WebPublicNav"), landing.indexOf("function landingDateLabel"));
+  const header = landing.slice(landing.indexOf("function WebPublicNav"), landing.indexOf("function LandingPhotoCredit"));
   assert.match(header, /href="\/about"[\s\S]*?>About<\/Text>/);
   assert.doesNotMatch(header, /href="\/artists"|href="\/events"/);
 });

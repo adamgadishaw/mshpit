@@ -114,7 +114,7 @@ const ProfileTicketRow = memo(function ProfileTicketRow({ log, actionsRef, capab
 });
 
 // Public member profile: musical identity, live history, media, plans, and posts.
-export default function ProfileScreen({ userId, initialSection = null, onClose, onOpenShow, onOpenPost, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onManageProfile, onMessage, onReport, onEditPost, onOpenPhotos, onRemoveMyPostTag, onOpenFollowList, onOpenBadges, onRequireAuth }) {
+export default function ProfileScreen({ userId, initialSection = null, asTab = false, ownerTools = null, children = null, onClose, onOpenShow, onOpenPost, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onManageProfile, onMessage, onReport, onEditPost, onOpenPhotos, onRemoveMyPostTag, onOpenFollowList, onOpenBadges, onRequireAuth }) {
   const appActive = useAppActive();
   const { session, authReady, chatAuthEpoch, userById, logsByUser, isFollowing, follow, unfollow, followerCount, followingCount, goingFor, myAttendance, userBadges, sharedShows, loadUser, isBlocked, blockUser, unblockUser, isMuted, muteUser, unmuteUser, userPoints, userAchievements, loadRewards, deleteOwnPost } = useStore();
   const profileScope = accountTargetScope(session?.id, `profile:${userId || ""}`);
@@ -326,9 +326,11 @@ export default function ProfileScreen({ userId, initialSection = null, onClose, 
     return (
       <View style={styles.wrap}>
         <View style={styles.topbar}>
-          <Pressable style={styles.backBtn} onPress={onClose} hitSlop={12} accessibilityRole="button" accessibilityLabel="Go back">
-            <View style={styles.backCircle}><Icon name="chevron-left" size={20} color={colors.text} /></View>
-          </Pressable>
+          {asTab ? <View style={{ width: 40 }} /> : (
+            <Pressable style={styles.backBtn} onPress={onClose} hitSlop={12} accessibilityRole="button" accessibilityLabel="Go back">
+              <View style={styles.backCircle}><Icon name="chevron-left" size={20} color={colors.text} /></View>
+            </Pressable>
+          )}
           <Text style={styles.topTitle}>{missing ? "Unavailable" : "Profile"}</Text>
           <View style={{ width: 40 }} />
         </View>
@@ -373,11 +375,37 @@ export default function ProfileScreen({ userId, initialSection = null, onClose, 
   return (
     <View style={styles.wrap}>
       <View style={styles.topbar}>
-        <Pressable style={styles.backBtn} onPress={onClose} hitSlop={12} accessibilityRole="button" accessibilityLabel="Go back">
-          <View style={styles.backCircle}><Icon name="chevron-left" size={20} color={colors.text} /></View>
-        </Pressable>
-        <Text style={styles.topTitle}>@{user.handle}</Text>
-        {session && !isSelf && onReport ? (
+        {asTab ? (
+          <Text style={[styles.topTitle, styles.topTitleTab]} numberOfLines={1} accessibilityRole="header">@{user.handle}</Text>
+        ) : (
+          <>
+            <Pressable style={styles.backBtn} onPress={onClose} hitSlop={12} accessibilityRole="button" accessibilityLabel="Go back">
+              <View style={styles.backCircle}><Icon name="chevron-left" size={20} color={colors.text} /></View>
+            </Pressable>
+            <Text style={styles.topTitle}>@{user.handle}</Text>
+          </>
+        )}
+        {asTab && isSelf && ownerTools?.length ? (
+          <View style={styles.ownerTools}>
+            {ownerTools.map((tool) => (
+              <Pressable
+                key={tool.key}
+                style={styles.ownerTool}
+                onPress={tool.onPress}
+                hitSlop={4}
+                accessibilityRole="button"
+                accessibilityLabel={tool.label + (tool.badge > 0 ? `, ${tool.badge} new` : "")}
+              >
+                <Icon name={tool.icon} size={18} color={colors.text} />
+                {tool.badge > 0 && (
+                  <View style={styles.ownerToolBadge}>
+                    <Text style={styles.ownerToolBadgeText}>{tool.badge > 99 ? "99+" : tool.badge}</Text>
+                  </View>
+                )}
+              </Pressable>
+            ))}
+          </View>
+        ) : session && !isSelf && onReport ? (
           <Pressable
             style={styles.profileReportBtn}
             onPress={() => onReport({
@@ -401,6 +429,7 @@ export default function ProfileScreen({ userId, initialSection = null, onClose, 
         refreshing={profileRefreshing}
         onRefresh={refreshProfile}
         accessibilityLabel={`Refresh ${user.name || "member"} profile`}
+        testID="profile-refresh"
       >
       <ScrollView ref={profileScrollRef} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         {profileView.status === "stale" && (
@@ -473,6 +502,9 @@ export default function ProfileScreen({ userId, initialSection = null, onClose, 
             )
           )}
         </View>
+
+        {/* The owner's private block (the You tab passes concert memories here). */}
+        {isSelf ? children : null}
 
         {!session ? (
           <AccountSnapshotPrompt
@@ -688,6 +720,11 @@ const styles = StyleSheet.create({
   backCircle: { width: 36, height: 36, borderRadius: 18, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },
   topTitle: { color: colors.text, fontSize: 14, fontWeight: "800" },
   profileReportBtn: { width: 40, height: 40, borderRadius: 20, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },
+  topTitleTab: { flex: 1, minWidth: 0, fontSize: 16, paddingLeft: 4 },
+  ownerTools: { flexDirection: "row", alignItems: "center", gap: 6 },
+  ownerTool: { width: 40, height: 40, borderRadius: 20, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface, alignItems: "center", justifyContent: "center" },
+  ownerToolBadge: { position: "absolute", top: -4, right: -4, minWidth: 18, height: 18, borderRadius: 9, paddingHorizontal: 4, backgroundColor: colors.magenta, alignItems: "center", justifyContent: "center" },
+  ownerToolBadgeText: { color: "#FFFFFF", fontSize: 12, lineHeight: 14, fontWeight: "800" },
   content: { paddingBottom: 48 },
   staleProfile: { minHeight: 48, flexDirection: "row", alignItems: "center", gap: 10, marginHorizontal: 16, marginBottom: 10, paddingHorizontal: 12, paddingVertical: 8, borderRadius: radius.md, borderWidth: 1, borderColor: colors.amber, backgroundColor: colors.surface },
   staleProfileText: { flex: 1, color: colors.textDim, fontSize: 12, lineHeight: 17 },

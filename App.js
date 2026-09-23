@@ -1267,7 +1267,7 @@ function Root() {
   else if (nav.venues) overlay = <VenuesScreen initialRegion={nav.discoverRegion} onClose={back} onOpenVenue={openVenue} />;
   else if (nav.fanClubs) overlay = <FanClubsScreen onClose={back} onOpenFanClub={openFanClub} />;
   else if (nav.suggestion) overlay = <SuggestionBoxScreen onClose={back} initialSurface={nav.suggestion.surface} />;
-  else if (nav.settings) overlay = <SettingsScreen initialAccountAction={nav.accountAction === "switch" ? "switch" : null} onClose={back} onFinishSetup={needsSignupOnboarding(session) ? () => go({ signupSetup: true }) : undefined} onManageProfile={openProfileManagement} onOpenProfile={() => (session ? openProfile(session.id) : go({ auth: true }))} onOpenPrivacy={() => go({ privacy: true })} onOpenTerms={() => go({ terms: true })} onOpenDiagnostics={() => { if (canViewDiagnostics) go({ diagnostics: true }); }} onOpenDeleteAccount={() => go({ deleteAccount: true })} onLogout={signOut} />;
+  else if (nav.settings) overlay = <SettingsScreen initialAccountAction={nav.accountAction === "switch" ? "switch" : null} onClose={back} onFinishSetup={needsSignupOnboarding(session) ? () => go({ signupSetup: true }) : undefined} onManageProfile={openProfileManagement} onOpenProfile={() => (session ? openProfile(session.id) : go({ auth: true }))} onOpenPrivacy={() => go({ privacy: true })} onOpenTerms={() => go({ terms: true })} onOpenDiagnostics={() => { if (canViewDiagnostics) go({ diagnostics: true }); }} onOpenDeleteAccount={() => go({ deleteAccount: true })} onLogout={signOut} onOpenModeration={() => go({ admin: true })} onRequestArtist={() => requireVerifiedMutation("artist", () => go({ reqArtist: true }))} />;
   else if (nav.deleteAccount) overlay = <DeleteAccountScreen onClose={back} onDeleted={onAccountDeleted} />;
   else if (nav.diagnostics && canViewDiagnostics) overlay = <DiagnosticsScreen onClose={back} />;
   else if (nav.privacy) overlay = <PrivacyScreen onClose={back} />;
@@ -1419,28 +1419,24 @@ function Root() {
                 />
               )}
               {activeTab === "search" && <SearchScreen onOpen={openShow} onOpenArtist={openArtist} onOpenCity={openCity} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenProfile={openProfile} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} />}
-              {activeTab === "discover" && <DiscoverScreen key={session?.id || "guest"} initialProgramme={publicDirectoryProgramme(nav)} rememberedProgramme={rememberedDiscoverProgramme} onProgrammeChange={(programme) => setDiscoverDestination({ accountId: session?.id || null, programme })} onOpenTopRated={(discoverRegion) => go({ topRated: true, discoverRegion })} onOpenEvents={(discoverRegion) => openPublicDirectory("events", { region: discoverRegion })} onOpen={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenNearby={() => go({ nearby: true })} onOpenFanClubs={() => go({ fanClubs: true })} onOpenVenues={(discoverRegion) => go({ venues: true, discoverRegion })} onOpenLounge={(lounge) => go({ lounge })} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} onOpenProfile={openProfile} />}
+              {activeTab === "discover" && <DiscoverScreen key={session?.id || "guest"} initialProgramme={publicDirectoryProgramme(nav)} rememberedProgramme={rememberedDiscoverProgramme} onProgrammeChange={(programme) => setDiscoverDestination({ accountId: session?.id || null, programme })} onOpenTopRated={(discoverRegion) => go({ topRated: true, discoverRegion })} onOpenEvents={(discoverRegion) => openPublicDirectory("events", { region: discoverRegion })} onOpen={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenNearby={() => go({ nearby: true })} onOpenFanClubs={() => go({ fanClubs: true })} onOpenVenues={(discoverRegion) => go({ venues: true, discoverRegion })} onOpenLounge={(lounge) => go({ lounge })} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} onOpenProfile={openProfile} onManageTaste={openProfileManagement} />}
               {activeTab === "you" && !!session && (
                 <YouScreen
                   onLogin={() => go({ auth: true })}
-                  onLogout={signOut}
-                  onAdmin={() => go({ admin: true })}
-                  onRequestArtist={() => requireVerifiedMutation("artist", () => go({ reqArtist: true }))}
                   onManageProfile={openProfileManagement}
                   onSettings={() => go({ settings: true })}
-                  onOpenProfile={openProfile}
-                  onOpenArtist={openArtist}
                   onOpen={openShow}
-                  onOpenConcertHistory={() => session && go({ profileId: session.id, profileSection: "concert-history" })}
                   onOpenPost={openPost}
                   onActivity={openNotifications}
                   onInbox={openInbox}
                   onCalendar={() => go({ calendar: true })}
-                  onListeningHistory={musicListeningHistoryAction}
-                  onOpenNearby={() => go({ nearby: true })}
-                  homeCity={session?.home?.city}
-                  onPlay={musicPlayerAction}
-                  onOpenArtist={openArtist}
+                  profile={{
+                    onOpenShow: openShow, onOpenPost: openPost, onOpenProfile: openProfile, onOpenArtist: openArtist,
+                    onOpenArtistArchive: openArtistArchive, onOpenVenue: openVenue, onPreview: musicPreviewAction,
+                    onMessage: openThread, onReport: openReport, onEditPost: openPostEditor, onOpenPhotos: openPhotos,
+                    onPlay: musicPlayerAction, onRemoveMyPostTag: removePostTag, onOpenFollowList: openFollowList,
+                    onOpenBadges: openBadges, onRequireAuth: openSignIn,
+                  }}
                 />
               )}
             </View>
@@ -1561,9 +1557,6 @@ function Root() {
               if (category === "venues") go({ venues: true });
               if (category === "cities") go({ cityGuide: { directory: true } });
             }}
-            onOpenEvent={(event) => { enter(); openShow(event); }}
-            onExploreLounges={() => { enter(); setTab("discover"); go({ auth: true, authMode: "login" }); }}
-            onSuggestion={() => { enter(); go({ suggestion: { surface: "landing" } }); }}
           />
         ) : status !== "ok" ? (
           nav.deleteAccount ? overlay : <AccountGate username={session?.email} status={status} until={session?.suspendedUntil} onLogout={signOut} onExport={exportMyData} onDelete={() => go({ deleteAccount: true })} />

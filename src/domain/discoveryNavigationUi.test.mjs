@@ -80,23 +80,13 @@ test("Discover keeps scene controls inside their card and makes genre exploratio
   assert.match(donut, /importantForAccessibility="no-hide-descendants"/);
 });
 
-test("logged-out landing labels events worldwide and explains lounges without activity-derived rows", async () => {
-  const source = await read("../screens/LandingScreen.jsx");
-  assert.match(source, />WORLDWIDE</);
-  assert.match(source, />CONCERT LOUNGES</);
-  assert.match(source, /Specific active rooms are shown after sign in/);
-  assert.doesNotMatch(source, /live\?\.popularLounges/);
-  assert.doesNotMatch(source, /messageCount/);
-  assert.doesNotMatch(source, /attendeeCount/);
-});
-
 test("landing keeps one stable scroll and owned-art shell while live discovery reveals inside it", async () => {
   const source = await read("../screens/LandingScreen.jsx");
   assert.equal((source.match(/<ScrollView\b/g) || []).length, 1);
   assert.doesNotMatch(source, /const Pitch =|<Pitch|landingScrollPitch|landingOverlayCredit/);
   assert.match(source, /const \{ discoverySidebar \} = useStore\(\)/);
   assert.doesNotMatch(source, /const catalogTotals = discoverStats\(\)/);
-  assert.match(source, /discoverySidebar\?\.upcomingEvents/);
+  assert.doesNotMatch(source, /upcomingEvents/, "the landing page no longer lists events");
   assert.doesNotMatch(source, /setLandingLive|live\?\.upcomingEvents|\{ media, totals, live \}/);
   assert.match(source, /<Svg width="100%" height="100%"/);
   assert.doesNotMatch(source, /\/api\/landing\/media|landingSlideUri|styles\.inlineFoot/);
@@ -109,7 +99,6 @@ test("App routes venue and lounge discovery through existing navigation without 
   const source = await read("../../App.js");
   assert.match(source, /onOpenVenue=\{openVenue\}/);
   assert.match(source, /onOpenLounge=\{\(lounge\) => go\(\{ lounge \}\)\}/);
-  assert.match(source, /onExploreLounges=.*setTab\("discover"\).*authMode: "login"/s);
   assert.match(source, /onOpenEvents=\{\(discoverRegion\) => openPublicDirectory\("events", \{ region: discoverRegion \}\)\}/);
   assert.match(source, /onOpenVenues=\{\(discoverRegion\) => go\(\{ venues: true, discoverRegion \}\)\}/);
   assert.match(source, /nav\.artistGallery/);

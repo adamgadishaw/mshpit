@@ -35,8 +35,7 @@ test("Artist HQ navigation modules remain parseable", () => {
 test("named artists get one profile-management doorway across account surfaces", () => {
   assert.match(menu, /onManageProfile/);
   assert.match(menu, /manageProfile: onManageProfile/);
-  assert.match(you, /const profileAction = profileManagementAction\(session\)/);
-  assert.match(you, /label: profileAction\.title, onPress: onManageProfile/);
+  assert.match(you, /onManageProfile=\{onManageProfile\}/);
   assert.match(app, /onManageProfile=\{replaceProfileManagement\}/);
   assert.match(app, /onManageProfile=\{openProfileManagement\}/);
   assert.match(profile, /accessibilityLabel="Manage profile"/);

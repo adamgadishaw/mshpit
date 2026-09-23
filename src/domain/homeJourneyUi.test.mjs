@@ -11,9 +11,9 @@ const post = source("../screens/PostScreen.jsx");
 const profile = source("../screens/ProfileScreen.jsx");
 const app = source("../../App.js");
 
-test("landing and home explain the same compact concert-social journey", () => {
-  assert.ok(landing.includes("HOME_JOURNEY_LINE"));
-  assert.ok(landing.includes("HOW MSHPIT WORKS"));
+test("home explains the compact concert-social journey once, on the feed", () => {
+  assert.ok(!landing.includes("HOME_JOURNEY_LINE"), "the landing page stays a single promise");
+  assert.ok(!landing.includes("HOW MSHPIT WORKS"));
   assert.ok(feed.includes("HOME_JOURNEY_LINE"));
   assert.ok(feed.includes("homeGuideStorageKey(accountId)"));
   assert.ok(!feed.includes("pit.gsDismissed"));

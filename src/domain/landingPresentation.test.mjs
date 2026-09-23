@@ -4,9 +4,7 @@ import test from "node:test";
 import {
   LANDING_IDENTITY_COPY,
   LANDING_BROWSE_LINKS,
-  landingKicker,
   landingLayoutMode,
-  landingProofItems,
 } from "./landingPresentation.mjs";
 
 test("landing uses scrolling, inline attribution on short and narrow viewports", () => {
@@ -42,42 +40,21 @@ test("landing uses scrolling, inline attribution on short and narrow viewports",
   });
 });
 
-test("landing proof is truthful product context and never a member count", () => {
-  const items = landingProofItems({ venues: 123.9, artists: 456 });
-  assert.deepEqual(items.map(({ title }) => title), ["VENUES", "ARTISTS", "ARTIST + VENUE"]);
-  assert.deepEqual(items.map(({ detail }) => detail), [
-    "123 concert venues",
-    "456 artists",
-    "Rate the artist and venue separately",
-  ]);
-  const copy = JSON.stringify(items).toLowerCase();
-  assert.equal(/\bmembers?\b/.test(copy), false);
-  assert.equal(/\busers?\b/.test(copy), false);
-});
-
-test("landing proof never turns an unknown loading state into a false zero", () => {
-  const items = landingProofItems();
-  assert.equal(items[0].detail, "Concert venues to explore");
-  assert.equal(items[1].detail, "Artists to explore");
-  assert.doesNotMatch(JSON.stringify(items), /\b0 (?:artists|concert venues)\b/);
-});
-
-test("landing identity describes the product in plain language", () => {
-  assert.equal(landingKicker(false), "REMEMBER THE NIGHT. FIND WHAT'S NEXT.");
-  assert.equal(landingKicker(true), "REMEMBER. RATE. DISCOVER.");
+test("landing says one plain thing and offers two ways in", () => {
+  assert.deepEqual(Object.keys(LANDING_IDENTITY_COPY).sort(), ["body", "browseAction", "compactHeadline", "headline", "signupAction"]);
+  assert.equal(LANDING_IDENTITY_COPY.headline, "Remember every show.");
+  assert.equal(LANDING_IDENTITY_COPY.compactHeadline.replace("\n", " "), LANDING_IDENTITY_COPY.headline);
   assert.equal(LANDING_IDENTITY_COPY.signupAction, "Create an account");
-  assert.equal(LANDING_IDENTITY_COPY.browseAction, "Find concerts");
-  assert.match(LANDING_IDENTITY_COPY.body, /concert reviews/i);
-  assert.match(LANDING_IDENTITY_COPY.body, /photos from the crowd/i);
-  assert.match(LANDING_IDENTITY_COPY.body, /venue guides/i);
-  assert.match(LANDING_IDENTITY_COPY.headline, /next show/i);
-  assert.match(LANDING_IDENTITY_COPY.headlineAccent, /crowd/i);
+  assert.equal(LANDING_IDENTITY_COPY.browseAction, "Browse concerts");
+  assert.match(LANDING_IDENTITY_COPY.body, /rate the artist and the venue separately/i);
 
   const identity = Object.values(LANDING_IDENTITY_COPY).join(" ");
-  assert.doesNotMatch(identity, /\b(?:diary|journal|social network|musical journey)\b/i);
+  assert.doesNotMatch(identity, /\b(?:diary|journal|social network|musical journey|unleash|elevate|seamless)\b/i);
+  assert.doesNotMatch(identity, /\u2014/, "public copy never uses em-dashes");
 });
 
 test("public browsing paths are distinct and do not force signup", () => {
   assert.deepEqual(LANDING_BROWSE_LINKS.map(({ href }) => href), ["/artists", "/venues", "/cities"]);
   assert.equal(new Set(LANDING_BROWSE_LINKS.map(({ key }) => key)).size, 3);
+  assert.deepEqual(LANDING_BROWSE_LINKS.map(({ label }) => label), ["Artists", "Venues", "Cities"]);
 });

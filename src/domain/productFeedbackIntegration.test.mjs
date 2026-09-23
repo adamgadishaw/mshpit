@@ -9,12 +9,11 @@ const [app, landing, menu, admin] = await Promise.all([
   readFile(new URL("../screens/AdminScreen.jsx", import.meta.url), "utf8"),
 ]);
 
-test("one suggestion screen is reachable from both pre-signup and universal menu entry points", () => {
+test("one suggestion screen is reachable from the menu, signed in or out, and not from the first screen", () => {
   assert.match(app, /SuggestionBoxScreen/);
   assert.match(app, /nav\.suggestion/);
-  assert.match(app, /surface: "landing"/);
   assert.match(app, /surface: "menu"/);
-  assert.match(landing, /What would make you come back\?/);
+  assert.doesNotMatch(landing, /What would make you come back\?|onSuggestion/);
   assert.match(menu, /suggestion: onSuggestion/);
 });
 

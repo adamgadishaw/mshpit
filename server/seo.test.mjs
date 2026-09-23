@@ -292,8 +292,8 @@ test("crawlable HTML contains semantic content and keeps the interactive bundle"
     '<script src="/_expo/static/js/web/index-test.js" defer></script>\n</body>',
   );
   const html = injectHead(shell, "/");
-  assert.match(html, /<h1>Find your next show\.<br \/><em>Hear from the crowd\.<\/em><\/h1>/);
-  assert.match(html, /REMEMBER THE NIGHT\. FIND WHAT&#39;S NEXT\./);
+  assert.match(html, /<h1>Remember every show\.<\/h1>/);
+  assert.doesNotMatch(html, /REMEMBER THE NIGHT|Hear from the crowd/);
   assert.match(html, /<script src="\/mshpit-web-boot-v1\.js"><\/script>/);
   assert.match(html, /<script src="\/_expo\/static\/js\/web\/index-test\.js" defer><\/script>/);
   assert.match(html, /https:\/\/www\.example\.com\/og\.png/);

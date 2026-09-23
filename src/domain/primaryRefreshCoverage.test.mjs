@@ -9,7 +9,7 @@ const sources = Object.freeze({
   Search: read("../screens/SearchScreen.jsx"),
   Discover: read("../screens/DiscoverScreen.jsx"),
   Calendar: read("../screens/CalendarScreen.jsx"),
-  You: read("../screens/YouScreen.jsx"),
+  Profile: read("../screens/ProfileScreen.jsx"),
   RightRail: read("../components/Rails.jsx"),
 });
 const matrix = Object.freeze([
@@ -17,7 +17,7 @@ const matrix = Object.freeze([
   { name: "Search", testID: "search-refresh", handler: "refreshSearch", scope: /searchAccountScope/ },
   { name: "Discover", testID: "discover-refresh", handler: "refreshDiscover", scope: /accountId/ },
   { name: "Calendar", testID: "calendar-refresh", handler: "refreshCalendar", scope: /session\?\.id/ },
-  { name: "You", testID: "you-refresh", handler: "refreshDashboard", scope: /session\?\.id/ },
+  { name: "Profile", testID: "profile-refresh", handler: "refreshProfile", scope: /session\?\.id/ },
 ]);
 
 function functionSlice(source, name, nextMarker = "\n  const ") {
@@ -36,7 +36,7 @@ test("every meaningful primary data surface owns one accessible vinyl refresh bo
     assert.equal((source.match(/<VinylRefreshBoundary\b/g) || []).length, 1, `${entry.name} has one refresh owner`);
     assert.match(source, new RegExp(`testID="${entry.testID}"`));
     assert.match(source, new RegExp(`onRefresh=\\{${entry.handler}\\}`));
-    assert.match(source, /accessibilityLabel="Refresh/i);
+    assert.match(source, /accessibilityLabel=(?:"|\{`)Refresh/i);
     assert.match(source, /accessibilityRole="alert"|accessibilityRole=\{[^}]*"alert"/);
     assert.match(source, entry.scope);
     assert.doesNotMatch(source, /<RefreshControl\b|refreshControl=/, `${entry.name} must delegate native pull ownership to the shared boundary`);
@@ -79,12 +79,6 @@ test("each pull awaits its bounded current-surface loaders and keeps existing co
   assert.match(calendar, /history\.retry/);
   assert.match(calendar, /serverTime/);
 
-  const dashboard = functionSlice(sources.You, "refreshDashboard", "\n\n  \/\/");
-  assert.match(dashboard, /Promise\.allSettled/);
-  assert.match(dashboard, /history\.retry/);
-  assert.match(dashboard, /loadRewards/);
-  assert.match(dashboard, /loadInboxThreads/);
-  assert.match(dashboard, /refreshNotifications/);
 
 });
 
@@ -120,9 +114,16 @@ test("desktop right rail has no in-app refresh owner", () => {
 test("refresh is deliberate rather than focus polling, and the shared UI never fetches data", () => {
   for (const entry of matrix) {
     const source = sources[entry.name];
-    const handler = functionSlice(source, entry.handler);
+    // A surface may take its handler from the shared scoped-refresh hook; then
+    // the task it hands the hook is the handler body that must not poll.
+    const hooked = source.match(new RegExp(`refresh: ${entry.handler}[^}]*\\} = useScopedRefresh\\(\\{`));
+    const handler = hooked
+      ? source.slice(hooked.index, source.indexOf("\n  });", hooked.index))
+      : functionSlice(source, entry.handler);
+    assert.ok(handler.length > 40, `${entry.handler} body must be found`);
     assert.doesNotMatch(handler, /AppState|visibilitychange|setInterval|requestAnimationFrame/);
   }
+  assert.doesNotMatch(read("../hooks/useScopedRefresh.js"), /AppState|visibilitychange|setInterval|requestAnimationFrame/);
   const vinyl = read("../components/VinylRefreshBoundary.jsx");
   assert.doesNotMatch(vinyl, /\bfetch\s*\(|\bapi\s*\(|setInterval|visibilitychange|AppState/);
 });

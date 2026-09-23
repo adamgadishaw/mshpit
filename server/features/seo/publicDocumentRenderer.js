@@ -1,4 +1,4 @@
-import { LANDING_IDENTITY_COPY, LANDING_BROWSE_LINKS, landingKicker } from "../../../src/domain/landingPresentation.mjs";
+import { LANDING_IDENTITY_COPY, LANDING_BROWSE_LINKS } from "../../../src/domain/landingPresentation.mjs";
 import { canonicalYouTubeReviewLink } from "../../onlineReviews.js";
 import { renderCityGuideMain, renderCityDirectoryMain } from "./cityGuideDocument.js";
 import { CITY_GUIDE_STYLES } from "./cityGuideStyles.js";
@@ -176,11 +176,10 @@ function homeMain(document) {
   const posts = document.posts.map((post) => compactPost(post)).join("");
   return `<main id="main">
     <section class="hero landing-hero">
-      <p class="eyebrow">${esc(landingKicker(false))}</p>
-      <h1>${esc(LANDING_IDENTITY_COPY.headline)}<br /><em>${esc(LANDING_IDENTITY_COPY.headlineAccent)}</em></h1>
+      <h1>${esc(LANDING_IDENTITY_COPY.headline)}</h1>
       <p class="hero-copy">${esc(LANDING_IDENTITY_COPY.body)}</p>
-      <div class="actions"><a class="button primary" href="/events">${esc(LANDING_IDENTITY_COPY.browseAction)}</a><a class="button" href="/signup">${esc(LANDING_IDENTITY_COPY.signupAction)}</a></div>
-      <div class="actions landing-browse" aria-label="Explore without an account">${LANDING_BROWSE_LINKS.map((item) => link(item.href, item.label)).join("")}</div>
+      <div class="actions"><a class="button primary" href="/signup">${esc(LANDING_IDENTITY_COPY.signupAction)}</a><a class="button" href="/events">${esc(LANDING_IDENTITY_COPY.browseAction)}</a></div>
+      <div class="actions landing-browse" aria-label="Browse without an account">${LANDING_BROWSE_LINKS.map((item) => link(item.href, item.label)).join("")}</div>
     </section>
     ${artists ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">In the pit now</p><h2>Artists worth exploring</h2></div><a href="/artists">Browse all artists</a></div><ul class="artist-grid">${artists}</ul></section>` : ""}
     ${posts ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">From the crowd</p><h2>Nights people remember</h2></div><a href="/feed">Open the feed</a></div><div class="post-list">${posts}</div></section>` : ""}

@@ -70,11 +70,11 @@ test("artist recommendation resources project empty synchronously across account
   assert.equal(refreshing.status, "loading");
 });
 
-test("You artist recommendations use a cancellable feature hook and show real reasons, dates, and public social proof", () => {
+test("Discover artist recommendations use a cancellable feature hook and show real reasons, dates, and public social proof", () => {
   const hook = source("./useArtistRecommendations.js");
   const service = source("./services/artistRecommendationApi.mjs");
   const rail = source("./ArtistRecommendationsRail.jsx");
-  const you = source("../../screens/YouScreen.jsx");
+  const discover = source("../../screens/DiscoverScreen.jsx");
   const app = source("../../../App.js");
   assert.match(hook, /AbortController/);
   assert.match(hook, /projectArtistRecommendationResource/);
@@ -83,7 +83,8 @@ test("You artist recommendations use a cancellable feature hook and show real re
   assert.match(rail, /NEXT SHOW/);
   assert.match(rail, /proof\.people\.map/);
   assert.match(rail, /useWindowDimensions/);
-  assert.match(you, /artistRecommendations\.refresh\(\{ signal: controller\.signal \}\)/);
-  assert.match(you, /<ArtistRecommendationsRail/);
+  assert.match(discover, /artistRecommendations\.refresh\(\{ signal: controller\.signal \}\)/);
+  assert.match(discover, /<ArtistRecommendationsRail/);
+  assert.match(discover, /programme === "artists"[\s\S]{0,200}<ArtistRecommendationsRail/);
   assert.match(app, /onOpenArtist=\{openArtist\}/);
 });

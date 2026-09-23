@@ -62,7 +62,7 @@ function Toggle({ value, busy = false }) {
   );
 }
 
-export default function SettingsScreen({ onClose, onManageProfile, onFinishSetup, onOpenProfile, onOpenPrivacy, onOpenTerms, onOpenDiagnostics, onOpenDeleteAccount, onLogout, initialAccountAction = null }) {
+export default function SettingsScreen({ onClose, onManageProfile, onFinishSetup, onOpenProfile, onOpenPrivacy, onOpenTerms, onOpenDiagnostics, onOpenDeleteAccount, onLogout, onOpenModeration, onRequestArtist, initialAccountAction = null }) {
   const { session, deleteAccount, switchLinkedAccount, chooseTheme, blockedUsers, unblockUser, blockedDirectoryStatus, refreshBlockedDirectory, isBlockMutationPending, mutedUsers, unmuteUser, exportMyData, setAnalyticsEnabled, setProfileSearchIndexingEnabled, setDirectMessagePolicy, setAgeBandClassification, setProfileAudience, setAnnouncementEmailsEnabled, updateProfile } = useStore();
   const blocked = session ? blockedUsers() : [];
   const muted = session ? mutedUsers() : [];
@@ -481,6 +481,8 @@ export default function SettingsScreen({ onClose, onManageProfile, onFinishSetup
         {session && (
           <>
             <View style={{ height: 12 }} />
+            {isMod(session.role) && onOpenModeration && <Row icon="shield" label="Moderation" sub="Reports, members, and site health" onPress={onOpenModeration} />}
+            {session.role === "fan" && onRequestArtist && <Row icon="music" label="Create or claim an artist page" sub="For musicians and the people who run their pages" onPress={onRequestArtist} />}
             <Row icon="logout" label="Log out" danger onPress={onLogout} />
             <Text style={styles.section}>DANGER ZONE</Text>
             <Row icon="trash" label="Delete account" sub="Permanently remove your account and activity" danger onPress={onOpenDeleteAccount} />

@@ -3,43 +3,24 @@ const boundedCount = (value) => {
   return Number.isFinite(number) ? Math.max(0, Math.trunc(number)) : 0;
 };
 
-const optionalCount = (value) => {
-  if (value == null || value === "") return null;
-  const number = Number(value);
-  return Number.isFinite(number) ? Math.max(0, Math.trunc(number)) : null;
-};
-
-// PIT's landing voice should describe the actual product in a way another
-// music app could not borrow unchanged: remember the shows, express taste,
-// and find the next night through the people around them. Keep these lines in
-// one presentation contract so responsive variants and future redesigns do
-// not drift back into generic journal or social-network language.
+// The landing says what Mshpit is in words another music app could not borrow
+// unchanged: keep the shows you went to, rate the artist and the room on their
+// own, and see the night through the people who were there. One headline, one
+// sentence, two actions. Keep them here so responsive variants cannot drift.
 export const LANDING_IDENTITY_COPY = Object.freeze({
-  kicker: "REMEMBER THE NIGHT. FIND WHAT'S NEXT.",
-  compactKicker: "REMEMBER. RATE. DISCOVER.",
-  headline: "Find your next show.",
-  headlineAccent: "Hear from the crowd.",
-  body: "Read concert reviews, see photos from the crowd, and explore upcoming shows. Find artists and venue guides, then keep a record of your own nights.",
+  headline: "Remember every show.",
+  // Phones break the headline on purpose instead of stranding one word.
+  compactHeadline: "Remember\nevery show.",
+  body: "Log the concerts you go to, rate the artist and the venue separately, and see photos and reviews from people who were there.",
   signupAction: "Create an account",
-  browseAction: "Find concerts",
+  browseAction: "Browse concerts",
 });
 
 export const LANDING_BROWSE_LINKS = Object.freeze([
   { key: "artists", href: "/artists", label: "Artists" },
-  { key: "venues", href: "/venues", label: "Venue guides", compactLabel: "Venues" },
-  { key: "cities", href: "/cities", label: "Music cities", compactLabel: "Cities" },
+  { key: "venues", href: "/venues", label: "Venues" },
+  { key: "cities", href: "/cities", label: "Cities" },
 ]);
-
-export function landingKicker(compact = false) {
-  return compact ? LANDING_IDENTITY_COPY.compactKicker : LANDING_IDENTITY_COPY.kicker;
-}
-
-// Optional discovery rows must not be able to take down the entire app shell.
-export function landingLiveItems(value) {
-  return Array.isArray(value)
-    ? value.filter((event) => event && typeof event === "object" && !Array.isArray(event)).slice(0, 3)
-    : [];
-}
 
 // Keep the hero's layout decisions in one pure model. Width alone is not
 // enough: a landscape laptop window can be wide and still too short for a
@@ -57,32 +38,4 @@ export function landingLayoutMode({ width, height, fontScale = 1 } = {}) {
     scrollPitch: !wide || short || largeType,
     overlayCredit: wide && !short && !largeType,
   };
-}
-
-// Landing proof stays grounded in the shipped catalogue and product behavior.
-// There is deliberately no account/member metric here: PIT should earn trust
-// by explaining the product, not by turning its signup total into social proof.
-export function landingProofItems({ venues, artists } = {}) {
-  const venueCount = optionalCount(venues);
-  const artistCount = optionalCount(artists);
-  return [
-    {
-      key: "venues",
-      icon: "pin",
-      title: "VENUES",
-      detail: venueCount == null ? "Concert venues to explore" : `${venueCount.toLocaleString("en-US")} concert venues`,
-    },
-    {
-      key: "artists",
-      icon: "music",
-      title: "ARTISTS",
-      detail: artistCount == null ? "Artists to explore" : `${artistCount.toLocaleString("en-US")} artists`,
-    },
-    {
-      key: "ratings",
-      icon: "star",
-      title: "ARTIST + VENUE",
-      detail: "Rate the artist and venue separately",
-    },
-  ];
 }

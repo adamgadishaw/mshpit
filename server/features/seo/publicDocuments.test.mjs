@@ -501,7 +501,8 @@ test("home document is substantive, contains WebSite JSON-LD, and excludes restr
     const html = documents.render(document);
 
     assert.equal(document.title, "Concert reviews, upcoming shows & venue guides | Mshpit");
-    assert.match(document.description, /^Read concert reviews, see photos from the crowd, and explore upcoming shows\./);
+    assert.match(document.description, /^Log the concerts you go to, rate the artist and the venue separately/);
+    assert.ok(document.description.length <= 160, "the home description fits a search snippet");
     assert.equal(document.jsonLd[0]["@type"], "WebSite");
     assert.equal(document.jsonLd[1]["@type"], "Organization");
     assert.equal(document.jsonLd[1].alternateName, "PIT");
@@ -512,9 +513,10 @@ test("home document is substantive, contains WebSite JSON-LD, and excludes restr
     assert.match(html, /Crowd energy &amp; joy &lt;b&gt;all night&lt;\/b&gt;/);
     assert.doesNotMatch(html, /BANNED PRIVATE COPY/);
     assert.doesNotMatch(html, /\b\d[\d,]* members\b/i);
-    assert.match(html, /<h1>Find your next show\.<br \/><em>Hear from the crowd\.<\/em><\/h1>/);
-    assert.match(html, />Create an account<\/a>/);
-    assert.match(html, /href="\/events"[^>]*>Find concerts<\/a>/);
+    assert.match(html, /<h1>Remember every show\.<\/h1>/);
+    assert.match(html, /href="\/signup"[^>]*>Create an account<\/a>/);
+    assert.match(html, /href="\/events"[^>]*>Browse concerts<\/a>/);
+    assert.doesNotMatch(html, /landing-hero">\s*<p class="eyebrow">/, "the landing hero has no slogan eyebrow");
     assert.doesNotMatch(html, /Remember every show\.<br \/><em>Find your people/);
   } finally {
     database.close();

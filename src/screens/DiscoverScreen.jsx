@@ -16,6 +16,8 @@ import { UpcomingEventCard } from "../components/VenueDiscoveryCards";
 import { EventScopeToggle, PopularLoungeCard } from "../components/LiveDiscoveryCards";
 import { PublicPressableLink } from "../components/PublicWebLinks";
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
+import ArtistRecommendationsRail from "../features/artistRecommendations/ArtistRecommendationsRail";
+import { useArtistRecommendations } from "../features/artistRecommendations/useArtistRecommendations";
 import CityDiscoveryTiles from "../features/cities/CityDiscoveryTiles";
 import { CityNavigationContext } from "../components/cities/CityNavigationContext";
 import { eventPath } from "../domain/urls.mjs";
@@ -89,6 +91,8 @@ export default function DiscoverScreen({
   onOpenVenues,
   onOpenLounge,
   onOpenPhotos,
+  onOpenProfile,
+  onManageTaste,
 }) {
   const {
     session,
@@ -475,6 +479,14 @@ export default function DiscoverScreen({
   };
   const retryGenre = useCallback(() => requestGenre({ force: true }), [requestGenre]);
 
+  // Personal artist picks live with the other artist discovery, signed in only.
+  const artistRecommendations = useArtistRecommendations({
+    accountId: session?.id,
+    enabled: !!session,
+    limit: 6,
+    profileRevision: session?.profileUpdatedAt || 0,
+  });
+
   const refreshDiscover = useCallback(async () => {
     if (pullRefreshControllerRef.current) return false;
     const controller = new AbortController();
@@ -491,6 +503,7 @@ export default function DiscoverScreen({
       refreshDiscoverySidebar?.({ signal: controller.signal }),
       refreshLoadedRange,
       programme === "cities" && cityRefreshRef.current ? cityRefreshRef.current({ signal: controller.signal }) : Promise.resolve(true),
+      session ? artistRecommendations.refresh({ signal: controller.signal }) : Promise.resolve(true),
     ]);
     if (controller.signal.aborted || pullRefreshControllerRef.current !== controller) return false;
     const failed = results.some((result) => result.status === "rejected"
@@ -500,7 +513,7 @@ export default function DiscoverScreen({
     setPullRefreshing(false);
     pullRefreshControllerRef.current = null;
     return !failed;
-  }, [eventRange.days, eventRange.scopeKey, eventRange.status, programme, rangeScopeKey, refreshDiscoverySidebar, refreshTourDates, requestEventRange, requestGenre, requestOverview, selectedGenre, selectedRangeDays]);
+  }, [artistRecommendations.refresh, eventRange.days, eventRange.scopeKey, eventRange.status, programme, rangeScopeKey, refreshDiscoverySidebar, refreshTourDates, requestEventRange, requestGenre, requestOverview, selectedGenre, selectedRangeDays, session]);
 
   const overviewStatus = overviewRequestState.scopeKey === overviewScopeKey
     ? overviewRequestState.status
@@ -806,7 +819,15 @@ export default function DiscoverScreen({
         </View>
       )}
 
-      {programme === "artists" && <View nativeID="discover-panel-artists" accessibilityRole="tabpanel" aria-labelledby="discover-tab-artists" style={styles.programmePanel}>{!showOverviewContent ? (
+      {programme === "artists" && <View nativeID="discover-panel-artists" accessibilityRole="tabpanel" aria-labelledby="discover-tab-artists" style={styles.programmePanel}>{session && (
+        <ArtistRecommendationsRail
+          resource={artistRecommendations.resource}
+          onOpenArtist={onOpenArtist}
+          onOpenProfile={onOpenProfile}
+          onManageTaste={onManageTaste}
+          onRetry={artistRecommendations.retry}
+        />
+      )}{!showOverviewContent ? (
         <OverviewState state={overviewState} region={region} onRetry={() => requestOverview({ force: true })} onWorldwide={() => pickRegion("Worldwide")} />
       ) : (
         <>

@@ -53,6 +53,7 @@ function fixture() {
     "../components/Avatar": "Avatar",
     "../components/SmartImage": "SmartImage",
     "../components/ConcertMemoryModal": "ConcertMemoryModal",
+    "../lib/lazyWithRetry": { lazyWithRetry: () => "ProfileScreen" },
     "../components/VinylRefreshBoundary": "VinylRefreshBoundary",
     "../components/Badge": { BadgeRow: "BadgeRow" },
     "../features/artistRecommendations/ArtistRecommendationsRail": "ArtistRecommendationsRail",
@@ -132,25 +133,36 @@ for (const session of [null, undefined]) {
 }
 test("a signed-in dashboard starts without a selected memory or archive request", () => {
   const rendered = fixture().render(accountA);
-  assert.match(renderedText(rendered.tree), /Account A/);
+  assert.ok(nodes(rendered.tree).some((node) => node.type === "ProfileScreen" && node.props.userId === accountA.id));
   assertNoSelectedMemory(rendered);
 });
 
-test("the own-dashboard map entry opens the existing profile history without duplicating it", () => {
+test("the You tab renders the member's own profile with owner tools instead of a second profile card", () => {
   const f = fixture();
-  let opened = 0;
-  const props = { onOpenConcertHistory: () => { opened += 1; } };
-  const account = f.render(accountA, props);
-  const entries = nodes(account.tree).filter((node) => node.props?.testID === "you-concert-history");
-  assert.equal(entries.length, 1);
-  assert.equal(entries[0].props.accessibilityRole, "button");
-  assert.equal(entries[0].props.accessibilityLabel, "Open your concert history and map");
-  assert.equal(opened, 0, "rendering the entry must not navigate");
-  entries[0].props.onPress();
-  assert.equal(opened, 1);
-  assert.equal(nodes(account.tree).some((node) => node.props?.testID === "profile-concert-history"), false);
+  const opened = [];
+  const props = {
+    onInbox: () => opened.push("inbox"),
+    onActivity: () => opened.push("activity"),
+    onCalendar: () => opened.push("calendar"),
+    onSettings: () => opened.push("settings"),
+    onManageProfile: () => opened.push("manage"),
+    profile: { onOpenShow: () => opened.push("show") },
+  };
+  const { tree } = f.render(accountA, props);
+  const profiles = nodes(tree).filter((node) => node.type === "ProfileScreen");
+  assert.equal(profiles.length, 1);
+  const [profile] = profiles;
+  assert.equal(profile.props.userId, accountA.id);
+  assert.equal(profile.props.asTab, true);
+  assert.equal(profile.props.onOpenShow, props.profile.onOpenShow, "profile navigation is passed through unchanged");
+  assert.deepEqual(Array.from(profile.props.ownerTools, (tool) => tool.label), ["Inbox", "Activity", "Calendar", "Settings"]);
+  assert.deepEqual(opened, [], "rendering must not navigate");
+  for (const tool of profile.props.ownerTools) tool.onPress();
+  profile.props.onManageProfile();
+  assert.deepEqual(opened, ["inbox", "activity", "calendar", "settings", "manage"]);
+  assert.doesNotMatch(renderedText(tree), /View public profile|TOOLS|Near you/);
   for (const session of [null, undefined]) {
-    assert.equal(nodes(f.render(session, props).tree).some((node) => node.props?.testID === "you-concert-history"), false);
+    assert.equal(nodes(f.render(session, props).tree).some((node) => node.type === "ProfileScreen"), false);
   }
 });
 for (const [label, nextSessions] of [["logout then account switch", [null, accountB]], ["direct account switch", [accountB]]]) {
