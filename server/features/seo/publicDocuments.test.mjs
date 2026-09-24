@@ -1884,7 +1884,7 @@ test("Discover is a substantive public hub while Search stays useful and noindex
       "malformed provider text is not emitted to crawler-visible HTML");
     assert.equal(discover.posts.some((post) => post.id === "discover-review"), true);
     const discoverHtml = documents.render(discover);
-    assert.match(discoverHtml, /Discover music through the people who were there/);
+    assert.match(discoverHtml, /Discover concerts, artists and venues/);
     assert.match(discoverHtml, /Discover Artist|Discovery Hall/);
     assert.doesNotMatch(discoverHtml, /RESTRICTED DISCOVERY COPY/);
     assert.match(discoverHtml, /name="robots" content="index,follow/);

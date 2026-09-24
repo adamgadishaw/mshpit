@@ -515,10 +515,10 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
           />
         ) : <>
         <View style={styles.statsRow}>
-          <Stat value={historyCount(reviews.length)} label="REVIEWS" />
-          <Stat value={planned.length} label="UPCOMING" />
-          <Stat value={followerCount(user.id)} label="FOLLOWERS" onPress={() => onOpenFollowList?.(user.id, "followers")} />
-          <Stat value={followingCount(user.id)} label="FOLLOWING" onPress={() => onOpenFollowList?.(user.id, "following")} />
+          <Stat value={historyCount(reviews.length)} label="Reviews" />
+          <Stat value={planned.length} label="Upcoming" />
+          <Stat value={followerCount(user.id)} label="Followers" onPress={() => onOpenFollowList?.(user.id, "followers")} />
+          <Stat value={followingCount(user.id)} label="Following" onPress={() => onOpenFollowList?.(user.id, "following")} />
         </View>
 
         {/* Rewards: points + badges earned, tap for the full legend. */}
@@ -564,7 +564,7 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
             <View style={styles.tasteMatchHead}>
               <View style={styles.tasteMatchIcon}><Icon name="music" size={16} color={colors.cool} /></View>
               <View style={{ flex: 1 }}>
-                <Text style={styles.tasteMatchEyebrow}>TASTE MATCH</Text>
+                <Text style={styles.tasteMatchEyebrow}>Taste match</Text>
                 <Text style={styles.tasteMatchSummary}>{match.summary}</Text>
               </View>
             </View>
@@ -589,7 +589,7 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
         {/* Media gallery, using the same resilient descriptor pipeline as You. */}
         {gallery.length > 0 && (
           <>
-            <Text style={styles.sectionLabel}>MEDIA · {historyCount(gallery.length)}</Text>
+            <Text style={styles.sectionLabel}>Media · {historyCount(gallery.length)}</Text>
             <View style={styles.gallery}>
               {galleryPreview.map((g, i) => (
                 <ProfileMediaTile key={g.id || `${g.postId || "post"}:${g.uri}:${i}`} item={g} index={i} viewerItems={galleryViewerItems} onOpenPhotos={onOpenPhotos} />
@@ -613,7 +613,7 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
 
         {/* One calendar projection powers both this summary and Calendar. A
             dated post appears here immediately; plain statuses remain posts. */}
-        <Text style={styles.sectionLabel}>UPCOMING SHOWS · {planned.length}</Text>
+        <Text style={styles.sectionLabel}>Upcoming shows · {planned.length}</Text>
         {planned.length === 0 && <Text style={styles.empty}>No upcoming shows yet.</Text>}
         {planned.map((p) => {
           const target = showDateMs(p.date);
@@ -660,7 +660,7 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
 
         {/* their posts, the same feed card as home, so a profile reads like a
             wall of everything this person has posted (Facebook/Letterboxd style) */}
-        <Text style={styles.sectionLabel}>{isSelf ? "YOUR POSTS" : "POSTS"} · {historyCount(logs.length)}</Text>
+        <Text style={styles.sectionLabel}>{isSelf ? "Your posts" : "Posts"} · {historyCount(logs.length)}</Text>
         {logs.length === 0 && !historyLoading && (
           <Text style={styles.empty}>{isSelf ? "You haven't posted yet. Tap “Make a post” to log a show or share an update." : "No posts yet."}</Text>
         )}
@@ -772,7 +772,7 @@ const styles = StyleSheet.create({
   tasteMatch: { gap: 10, marginTop: 12, marginHorizontal: 16, padding: 14, borderRadius: radius.md, borderWidth: 1, borderColor: colors.cool, backgroundColor: "rgba(65,184,213,0.07)" },
   tasteMatchHead: { flexDirection: "row", alignItems: "center", gap: 11 },
   tasteMatchIcon: { width: 34, height: 34, borderRadius: 17, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.cool, backgroundColor: colors.bgElev },
-  tasteMatchEyebrow: { color: colors.cool, fontSize: 10, letterSpacing: 1.4, fontWeight: "900" },
+  tasteMatchEyebrow: { color: colors.cool, fontSize: 12, fontWeight: "800" },
   tasteMatchSummary: { color: colors.text, fontSize: 13.5, lineHeight: 19, fontWeight: "700", marginTop: 2 },
   tasteMatchChips: { flexDirection: "row", flexWrap: "wrap", gap: 7 },
   tasteMatchArtistChip: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 11, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.amber, backgroundColor: colors.bgElev },
@@ -782,13 +782,13 @@ const styles = StyleSheet.create({
   tasteMatchBasis: { color: colors.textFaint, fontSize: 10.5, lineHeight: 15 },
   stat: { flex: 1, alignItems: "center" },
   statVal: { color: colors.text, fontFamily: mono, fontSize: 20, fontWeight: "800" },
-  statLabel: { color: colors.textFaint, fontSize: 9, letterSpacing: 1, marginTop: 4, fontWeight: "700" },
+  statLabel: { color: colors.textDim, fontSize: 12, marginTop: 4, fontWeight: "600" },
   nowCard: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: colors.bgElev, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, marginHorizontal: 16, marginTop: 12, padding: 12 },
   nowLabel: { color: colors.good, fontSize: 9, letterSpacing: 1, fontWeight: "800" },
   nowTxt: { color: colors.text, fontSize: 13, marginTop: 3 },
   listenBtn: { borderWidth: 1, borderColor: colors.good, borderRadius: radius.pill, paddingHorizontal: 14, paddingVertical: 7 },
   listenTxt: { color: colors.good, fontSize: 12, fontWeight: "800" },
-  sectionLabel: { color: colors.textFaint, fontSize: 11, letterSpacing: 1.5, fontWeight: "700", marginTop: space(6), marginBottom: space(2), marginHorizontal: 16 },
+  sectionLabel: { color: colors.text, fontSize: 16, lineHeight: 21, fontWeight: "800", marginTop: space(6), marginBottom: space(2), marginHorizontal: 16 },
   countdownBox: { alignItems: "flex-end" },
   countdownT: { color: colors.amber, fontFamily: mono, fontSize: 15, fontWeight: "800", letterSpacing: 0.5, fontVariant: ["tabular-nums"] },
   countdownLabel: { color: colors.textFaint, fontSize: 9.5, letterSpacing: 1, marginTop: 1, textTransform: "uppercase" },

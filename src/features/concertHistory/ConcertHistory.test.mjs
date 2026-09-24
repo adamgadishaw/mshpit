@@ -128,8 +128,8 @@ test("city-only and address reviews remain readable and filter under a city head
   assert.equal(f.calls.open[0].postId, "post-0");
   mapNode(initial).props.onSelectVenue(model.concertVenueKey(cityRows[0]));
   const selected = f.render();
-  assert.match(textContent(selected), /IN THIS CITY/);
-  assert.doesNotMatch(textContent(selected), /AT THIS VENUE/);
+  assert.match(textContent(selected), /In this city/);
+  assert.doesNotMatch(textContent(selected), /At this venue/);
   assert.match(textContent(selected), /approximate city location/);
   assert.equal(historyRows(selected).length, 2);
   const address = { ...cityRows[0], eventAddress: "10 Queen Street" };

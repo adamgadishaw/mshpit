@@ -48,7 +48,7 @@ test("menu badges reject malformed and negative counts", () => {
   const model = journeyMenuModel({ inboxUnread: -7, notifications: "not-a-number", includeActivity: false });
   assert.deepEqual(model.connection, [
     { key: "inbox", icon: "mail", title: "Inbox", detail: "Your messages", badge: 0 },
-    { key: "suggestion", icon: "comment", title: "Suggestion box", detail: "Tell Pit what feels missing or confusing" },
+    { key: "suggestion", icon: "comment", title: "Suggestion box", detail: "Tell us what feels missing or confusing" },
   ]);
 });
 

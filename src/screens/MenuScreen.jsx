@@ -19,7 +19,7 @@ const ACCENTS = {
 function SectionHeading({ eyebrow, title, detail }) {
   return (
     <View style={styles.sectionHeading}>
-      <Text style={styles.sectionEyebrow}>{eyebrow}</Text>
+      {!!eyebrow && <Text style={styles.sectionEyebrow}>{eyebrow}</Text>}
       <Text style={styles.sectionTitle} accessibilityRole="header">{title}</Text>
       {!!detail && <Text style={styles.sectionDetail}>{detail}</Text>}
     </View>
@@ -192,9 +192,8 @@ export default function MenuScreen({ onClose, onNear, onVenues, onFanClubs, onTo
           <View style={[styles.columns, wide && styles.columnsWide]}>
             <View style={styles.primaryColumn}>
               <SectionHeading
-                eyebrow="DISCOVER"
-                title="Find your next night"
-                detail="Follow the sound from your city to the top-rated shows people are talking about."
+                title="Discover"
+                detail="Shows, venues and fan clubs near you and around the world."
               />
               <View style={styles.tileGrid}>
                 {model.discover.map((item) => (
@@ -206,13 +205,13 @@ export default function MenuScreen({ onClose, onNear, onVenues, onFanClubs, onTo
             <View style={[styles.sideColumn, wide && styles.sideColumnWide]}>
               {!!onHowItWorks && (
                 <View style={styles.sideSection}>
-                  <SectionHeading eyebrow="START HERE" title="Make your first night count" />
+                  <SectionHeading title="Getting started" />
                   <ListGroup
                     items={[{
                       key: "howItWorks",
                       icon: "discover",
-                      title: "How MSHpit works",
-                      detail: "Discover a show, attend, log the night, and find your people.",
+                      title: "How Mshpit works",
+                      detail: "Find a show, log it, rate the artist and the venue, and see who else was there.",
                     }]}
                     actions={actions}
                   />
@@ -220,13 +219,13 @@ export default function MenuScreen({ onClose, onNear, onVenues, onFanClubs, onTo
               )}
 
               <View style={styles.sideSection}>
-                <SectionHeading eyebrow="CONNECTIONS" title="Stay in the loop" />
+                <SectionHeading title="Messages and activity" />
                 <ListGroup items={model.connection} actions={actions} />
               </View>
 
               {session ? (
                 <View style={styles.sideSection}>
-                  <SectionHeading eyebrow="ACCOUNT" title="Make Pit yours" />
+                  <SectionHeading title="Account" />
                   <ListGroup items={model.account} actions={actions} />
                   <View style={styles.logoutWrap}>
                     <ListRow item={{ icon: "logout", title: "Log out" }} onPress={onLogout} last danger />
@@ -235,7 +234,7 @@ export default function MenuScreen({ onClose, onNear, onVenues, onFanClubs, onTo
               ) : (
                 <>
                   <View style={styles.sideSection}>
-                    <SectionHeading eyebrow="APPEARANCE" title="Set the mood" detail="Your theme applies across Pit. Log in to save it to your account." />
+                    <SectionHeading title="Theme" detail="Your theme applies across Mshpit. Log in to save it to your account." />
                     <View style={styles.themePanel}>
                       <View style={styles.themeGrid}>
                         {guestThemeChoices.map((theme) => (
@@ -247,7 +246,7 @@ export default function MenuScreen({ onClose, onNear, onVenues, onFanClubs, onTo
                   {!!onBackToLanding && (
                     <View style={styles.sideSection}>
                       <ListGroup
-                        items={[{ key: "welcome", icon: "chevron-left", title: "Welcome screen", detail: "Return to Pit's opening page" }]}
+                        items={[{ key: "welcome", icon: "chevron-left", title: "Welcome screen", detail: "Back to the Mshpit home page" }]}
                         actions={{ welcome: onBackToLanding }}
                       />
                     </View>

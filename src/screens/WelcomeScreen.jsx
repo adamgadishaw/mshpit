@@ -21,7 +21,7 @@ export default function WelcomeScreen({ onClose, onOpenFanClubs, onOpenNearby, o
     <SheetHeader title="Welcome to Mshpit" onBack={onClose} />
     <ScrollView contentContainerStyle={[styles.content, { paddingBottom: Math.max(insets.bottom, 24) }]}>
       <View style={styles.brand}><BrandMark size={32} color={colors.amber} /><Text style={styles.kicker}>LIVE MUSIC, REMEMBERED</Text></View>
-      <Text style={styles.title} accessibilityRole="header">How MSHpit works</Text>
+      <Text style={styles.title} accessibilityRole="header">How Mshpit works</Text>
       <Text style={styles.subtitle}>Hey {String(session?.name || "there").split(" ")[0]}. Mshpit is a social network for live music. Find your next show, remember your last one, and meet the people in between.</Text>
       <View style={styles.ticket}>
         <Text style={styles.ticketHeading}>Your next move</Text>

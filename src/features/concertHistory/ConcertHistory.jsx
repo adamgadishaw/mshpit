@@ -70,7 +70,7 @@ export default function ConcertHistory({ concerts = EMPTY, status = "loading", c
     <View testID="profile-concert-history" style={styles.ticket} onLayout={(event) => { const next = event.nativeEvent.layout.width; if (next > 0) setWidth(next); }}>
       <View style={styles.heading}>
         <View style={styles.headingIcon}><Icon name="ticket" size={23} color={colors.amber} /></View>
-        <View style={styles.headingText}><Text style={styles.eyebrow}>THE LIVE ARCHIVE</Text><Text style={styles.title} accessibilityRole="header">Concert history</Text><Text style={styles.subheading}>Logged nights, place by place.</Text></View>
+        <View style={styles.headingText}><Text style={styles.title} accessibilityRole="header">Concert history</Text><Text style={styles.subheading}>Every show you have logged, on a map.</Text></View>
         <View style={styles.countStamp}><Text style={styles.count}>{model.concertCount.toLocaleString("en")}{complete ? "" : "+"}</Text><Text style={styles.countLabel}>LOGGED</Text></View>
       </View>
       <View style={styles.tearLine} />
@@ -78,7 +78,7 @@ export default function ConcertHistory({ concerts = EMPTY, status = "loading", c
       <View style={[styles.body, desktop && mapVisible && styles.bodyWide]}>
         {mapVisible ? <View style={[styles.mapColumn, desktop && styles.mapColumnWide]}><HistoryMapBoundary><Suspense fallback={<View style={styles.mapFallback}><ActivityIndicator size="small" color={colors.amber} /><Text style={styles.hint}>Loading the concert map…</Text></View>}><ProfileConcertMap model={model} selectedVenueKey={selectedVenue?.key || null} compact={!desktop} onSelectVenue={selectVenue} onPreviewVenue={selectVenue} /></Suspense></HistoryMapBoundary></View> : null}
         <View style={styles.listColumn}>
-          <View style={styles.listHeading}><Text style={styles.listTitle}>{selection.filter && selectedVenue ? selectedVenue.coordinates?.precision === "city" ? "IN THIS CITY" : selectedVenue.hasVenue ? "AT THIS VENUE" : "AT THIS LOCATION" : "RECENT CONCERTS"}</Text>{selection.filter ? <HistoryButton label="All concerts" onPress={() => setSelection((current) => ({ ...current, filter: false }))} /> : null}</View>
+          <View style={styles.listHeading}><Text style={styles.listTitle}>{selection.filter && selectedVenue ? selectedVenue.coordinates?.precision === "city" ? "In this city" : selectedVenue.hasVenue ? "At this venue" : "At this location" : "Recent concerts"}</Text>{selection.filter ? <HistoryButton label="All concerts" onPress={() => setSelection((current) => ({ ...current, filter: false }))} /> : null}</View>
           {selectedVenue ? <View style={styles.selectionDetail} accessibilityLiveRegion="polite"><Icon name="pin" size={14} color={colors.amber} /><View style={styles.selectionText}><Text style={styles.selectionTitle}>{selectedVenue.name}</Text><Text style={styles.hint}>{selectedVenue.concerts.length} logged {selectedVenue.concerts.length === 1 ? "concert" : "concerts"}{selectedVenue.city ? ` · ${selectedVenue.city}` : ""}{selectedVenue.coordinates?.precision === "city" ? " · approximate city location" : ""}</Text></View>{!selection.filter ? <HistoryButton label="View here" onPress={() => selectVenue(selectedVenue.key)} /> : null}</View> : null}
           {openingError ? <Text selectable accessibilityRole="alert" style={styles.error}>{openingError}</Text> : null}
           {status === "error" ? <View style={styles.feedback} accessibilityLiveRegion="polite"><Text selectable style={styles.error}>{typeof error === "string" && error ? error : "Concert history could not be loaded. Your saved concerts have not changed."}</Text>{onRetry ? <HistoryButton label="Retry concert history" onPress={onRetry} /> : null}</View> : null}
@@ -104,7 +104,7 @@ const styles = StyleSheet.create({
   subheading: { color: colors.textDim, fontSize: 12 },
   countStamp: { alignItems: "center", paddingLeft: space(3), borderLeftWidth: 1, borderLeftColor: colors.line },
   count: { color: colors.amber, fontFamily: mono, fontSize: 25, fontWeight: "800", fontVariant: ["tabular-nums"] },
-  countLabel: { color: colors.textFaint, fontFamily: mono, fontSize: 8, letterSpacing: 1 },
+  countLabel: { color: colors.textFaint, fontFamily: mono, fontSize: 12, letterSpacing: 0.5 },
   tearLine: { borderTopWidth: 1, borderTopColor: colors.line, borderStyle: "dashed", marginHorizontal: space(4) },
   summary: { color: colors.textDim, fontSize: 11, lineHeight: 17, paddingHorizontal: space(4), paddingVertical: space(3) },
   body: { gap: space(3), paddingHorizontal: space(3), paddingBottom: space(3) },
@@ -114,7 +114,7 @@ const styles = StyleSheet.create({
   mapFallback: { minHeight: 272, backgroundColor: colors.bgElev, borderRadius: radius.sm, alignItems: "center", justifyContent: "center", padding: space(4), gap: space(3) },
   listColumn: { flex: 1, minWidth: 0, gap: space(2) },
   listHeading: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", minHeight: 36 },
-  listTitle: { color: colors.textFaint, fontSize: 9, fontFamily: mono, letterSpacing: 1.4, fontWeight: "700" },
+  listTitle: { color: colors.text, fontSize: 15, fontWeight: "800" },
   selectionDetail: { flexDirection: "row", alignItems: "center", gap: space(2), padding: space(2), borderRadius: radius.sm, backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.line },
   selectionText: { flex: 1, minWidth: 0 },
   selectionTitle: { color: colors.text, fontSize: 12, fontWeight: "700" },

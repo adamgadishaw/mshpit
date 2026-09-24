@@ -71,7 +71,7 @@ export default function ProfileConcertMap({ model, selectedVenueKey, onSelectVen
             <View style={[styles.pin, selectedCluster && styles.selectedPin]}><Text style={[styles.pinCount, selectedCluster && styles.selectedPinCount]}>{multiple || count > 1 ? count : ""}</Text>{!multiple && count === 1 ? <View style={[styles.pinDot, selectedCluster && styles.selectedDot]} /> : null}</View>
           </Pressable>;
         })}
-        {!clusters.length ? <View style={styles.noPins} pointerEvents="none"><Text style={styles.noPinsText}>{model.concertCount ? "No mapped locations in this view" : "A map of nights to remember"}</Text></View> : null}
+        {!clusters.length ? <View style={styles.noPins} pointerEvents="none"><Text style={styles.noPinsText}>{model.concertCount ? "No mapped locations in this view" : "Log a show to put it on the map."}</Text></View> : null}
       </View>
       {activeCluster ? <View style={styles.clusterChoices} accessibilityLiveRegion="polite">
         <Text style={styles.hint}>Nearby locations · choose one</Text>

@@ -181,8 +181,8 @@ function homeMain(document) {
       <div class="actions"><a class="button primary" href="/signup">${esc(LANDING_IDENTITY_COPY.signupAction)}</a><a class="button" href="/events">${esc(LANDING_IDENTITY_COPY.browseAction)}</a></div>
       <div class="actions landing-browse" aria-label="Browse without an account">${LANDING_BROWSE_LINKS.map((item) => link(item.href, item.label)).join("")}</div>
     </section>
-    ${artists ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">In the pit now</p><h2>Artists worth exploring</h2></div><a href="/artists">Browse all artists</a></div><ul class="artist-grid">${artists}</ul></section>` : ""}
-    ${posts ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">From the crowd</p><h2>Nights people remember</h2></div><a href="/feed">Open the feed</a></div><div class="post-list">${posts}</div></section>` : ""}
+    ${artists ? `<section class="section"><div class="section-heading"><div><h2>Artists on Mshpit</h2></div><a href="/artists">Browse all artists</a></div><ul class="artist-grid">${artists}</ul></section>` : ""}
+    ${posts ? `<section class="section"><div class="section-heading"><div><h2>Recent reviews</h2></div><a href="/feed">Open the feed</a></div><div class="post-list">${posts}</div></section>` : ""}
   </main>`;
 }
 
@@ -196,18 +196,18 @@ function discoverMain(document) {
   const posts = document.posts.map((post) => compactPost(post)).join("");
   return `<main id="main">
     ${breadcrumbs(document)}
-    <section class="directory-hero"><p class="eyebrow">Explore the live archive</p><h1>Discover music through the people who were there.</h1><p>${esc(document.description)}</p><div class="actions"><a class="button primary" href="/events">Browse upcoming concerts</a><a class="button" href="/artists">Explore artists</a></div></section>
-    ${artists ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">Artists on Mshpit</p><h2>Live pages worth exploring</h2></div><a href="/artists">Browse the artist directory</a></div><ul class="artist-grid">${artists}</ul></section>` : ""}
-    ${events ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">Coming up</p><h2>Concerts around the world</h2></div><a href="/events">Browse all upcoming concerts</a></div><ol class="event-list">${events}</ol></section>` : ""}
-    ${posts ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">From the crowd</p><h2>Reviews people are responding to</h2></div></div><div class="post-list">${posts}</div></section>` : ""}
+    <section class="directory-hero"><h1>Discover concerts, artists and venues.</h1><p>${esc(document.description)}</p><div class="actions"><a class="button primary" href="/events">Browse upcoming concerts</a><a class="button" href="/artists">Explore artists</a></div></section>
+    ${artists ? `<section class="section"><div class="section-heading"><div><h2>Artists</h2></div><a href="/artists">Browse the artist directory</a></div><ul class="artist-grid">${artists}</ul></section>` : ""}
+    ${events ? `<section class="section"><div class="section-heading"><div><h2>Upcoming concerts</h2></div><a href="/events">Browse all upcoming concerts</a></div><ol class="event-list">${events}</ol></section>` : ""}
+    ${posts ? `<section class="section"><div class="section-heading"><div><h2>Recent reviews</h2></div></div><div class="post-list">${posts}</div></section>` : ""}
   </main>`;
 }
 
 function searchMain(document) {
   return `<main id="main">
     ${breadcrumbs(document)}
-    <section class="directory-hero"><p class="eyebrow">Find it on Mshpit</p><h1>Search artists, concerts and people.</h1><p>${esc(document.description)}</p><div class="actions"><a class="button primary" href="/artists">Browse artists</a><a class="button" href="/events">Browse upcoming concerts</a><a class="button" href="/discover">Open Discover</a></div></section>
-    <section class="section empty-state"><p class="eyebrow">More ways to explore</p><h2>Start with a place.</h2><p>Find a venue for your next night out, or explore the shows and music history of a city.</p><div class="actions"><a class="button" href="/venues">Find venues</a><a class="button" href="/cities">Explore music cities</a></div></section>
+    <section class="directory-hero"><h1>Search artists, concerts and people.</h1><p>${esc(document.description)}</p><div class="actions"><a class="button primary" href="/artists">Browse artists</a><a class="button" href="/events">Browse upcoming concerts</a><a class="button" href="/discover">Open Discover</a></div></section>
+    <section class="section empty-state"><h2>Browse by place</h2><p>Find a venue for your next night out, or explore the shows and music history of a city.</p><div class="actions"><a class="button" href="/venues">Find venues</a><a class="button" href="/cities">Explore music cities</a></div></section>
   </main>`;
 }
 
