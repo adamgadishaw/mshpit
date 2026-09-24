@@ -1445,7 +1445,8 @@ export async function runVideoVerifierSelfTest({
       name: "clip.mpg",
       contentType: "video/mpeg",
       size: "720x480",
-      encode: ["-vf", "setsar=32/27", "-c:v", "mpeg2video", "-flags", "+ilme+ildct", "-top", "1", "-c:a", "mp2"],
+      // FFmpeg 9 removed `-top`; setfield marks the frames top-field-first.
+      encode: ["-vf", "setsar=32/27,setfield=tff", "-c:v", "mpeg2video", "-flags", "+ilme+ildct", "-c:a", "mp2"],
     },
   ];
   const results = [];
