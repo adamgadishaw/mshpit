@@ -582,6 +582,18 @@ async function runCase(browser, origin, item) {
       if (url.pathname === "/api/fanclubs") return await json({ clubs: [] });
       if (url.pathname === "/api/artists") return await json({ artists: [] });
       if (url.pathname === "/api/cities") return await json({ cities: [] });
+      // The You tab is the member's own profile, so it loads the same profile
+      // sections any profile does.
+      const profileMatch = url.pathname.match(/^\/api\/users\/(auth-fixture-[ab])(\/(?:posts|rewards|concert-history|playlists))?$/);
+      if (profileMatch && request.method() === "GET") {
+        const account = state.user?.id === profileMatch[1] ? state.user : profileMatch[1] === bob.id ? bob : alice;
+        if (!profileMatch[2]) return await json({ user: account, followers: 0, following: 0, isFollowing: false });
+        if (profileMatch[2] === "/posts") return await json({ posts: [], hasMore: false, nextCursor: null });
+        if (profileMatch[2] === "/rewards") return await json({ points: 0, earnedIds: [] });
+        if (profileMatch[2] === "/playlists") return await json({ playlists: [] });
+        return await json({ concerts: [], nextCursor: null, hasMore: false, complete: true, mapVisible: false,
+          coverage: { source: "visible_reviews", includesPrivateAttendance: false, unmappedCount: null } });
+      }
       throw new Error(`Missing fixture for ${request.method()} ${url.pathname}`);
     } catch (error) {
       // A canceled request may no longer accept its simulated response; this
@@ -596,7 +608,7 @@ async function runCase(browser, origin, item) {
       await route.abort().catch(() => {});
     }
   });
-  const landing = () => page.getByRole("link", { name: "Find concerts", exact: true }).waitFor();
+  const landing = () => page.getByRole("link", { name: "Browse concerts", exact: true }).waitFor();
   const feed = () => page.getByText("Your life's musical journey", { exact: true }).waitFor();
   const you = async user => {
     await page.getByRole("tab", { name: "You", exact: true }).click();
@@ -647,6 +659,8 @@ async function runCase(browser, origin, item) {
     } else if (diagnosticsCase) {
       await feed();
       await you(alice);
+      // Moderation and Log out live in Settings, reached from the You tab.
+      await page.getByRole("button", { name: "Settings", exact: true }).click();
       await page.getByText("Moderation", { exact: true }).click();
       await page.getByText("7 serious occurrences across 3 patterns in the hourly-bucketed last 24h.", { exact: true }).waitFor();
       await page.getByText("Current release: fixture-current-release", { exact: true }).waitFor();
@@ -854,6 +868,7 @@ async function runCase(browser, origin, item) {
     } else if (item.kind === "logout" || item.kind === "logout-failed") {
       await feed();
       await you(alice);
+      await page.getByRole("button", { name: "Settings", exact: true }).click();
       await page.getByText("Log out", { exact: true }).click();
       await landing();
       const after = await startGuestGuard();

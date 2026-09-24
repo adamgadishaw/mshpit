@@ -67,7 +67,9 @@ async function scenario(browser, origin, width) {
   const shot = suffix => page.screenshot({ path: join(shots, `moderation-${width}-${suffix}.png`) });
   try {
     await page.goto(origin + '/you', { waitUntil: 'domcontentloaded' });
-    await page.getByRole('button', { name: 'Moderation', exact: true }).click();
+    // Moderation lives in Settings, reached from the You tab.
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    await page.getByRole('button', { name: /^Moderation/ }).click();
     await page.getByRole('tab', { name: /^Requests/ }).click();
     const grant = () => page.getByRole('button', { name: 'Grant artist check', exact: true });
     await grant().waitFor(); assert.equal(await grant().isDisabled(), true);

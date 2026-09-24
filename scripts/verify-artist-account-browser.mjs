@@ -229,7 +229,9 @@ async function scenario(browser, origin, width, kind) {
         await screenshot("verification-pending");
         assert.equal(state.writes.length, 0);
       } else {
-        await page.getByRole("button", { name: "Create or claim artist page", exact: true }).click();
+        // Creating or claiming an artist page lives in Settings, reached from the You tab.
+        await page.getByRole("button", { name: "Settings", exact: true }).click();
+        await page.getByRole("button", { name: /^Create or claim an artist page/ }).click();
         const name = page.getByLabel("Artist or band name", { exact: true });
         await name.fill(navigationArtist.name);
         await page.getByLabel("Artist biography, optional", { exact: true }).fill(bio);

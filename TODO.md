@@ -235,6 +235,9 @@ remains a broad context whose changing value can rerender unrelated consumers.
   AV1 needs libdav1d added to `Dockerfile.video-verifier`.
 - **Photo rejections:** reproduce with a real file the owner says was refused.
 - **Gallery:** pinch to zoom on photos.
+- **Browser script:** `scripts/verify-concert-history-browser.mjs` still expects the
+  old separate You tab ("you-concert-history" link). It is not in CI or
+  `npm run check`; update it to the You tab that is now the member's profile.
 - **Copy:** about 200 small all-caps labels remain inside cards and forms, and
   ticket-style labels on the show page ("ONE NIGHT ONLY").
 - **Animated story:** an MP4 version of the share card needs a render service

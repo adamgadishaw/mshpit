@@ -385,27 +385,7 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
             <Text style={styles.topTitle}>@{user.handle}</Text>
           </>
         )}
-        {asTab && isSelf && ownerTools?.length ? (
-          <View style={styles.ownerTools}>
-            {ownerTools.map((tool) => (
-              <Pressable
-                key={tool.key}
-                style={styles.ownerTool}
-                onPress={tool.onPress}
-                hitSlop={4}
-                accessibilityRole="button"
-                accessibilityLabel={tool.label + (tool.badge > 0 ? `, ${tool.badge} new` : "")}
-              >
-                <Icon name={tool.icon} size={18} color={colors.text} />
-                {tool.badge > 0 && (
-                  <View style={styles.ownerToolBadge}>
-                    <Text style={styles.ownerToolBadgeText}>{tool.badge > 99 ? "99+" : tool.badge}</Text>
-                  </View>
-                )}
-              </Pressable>
-            ))}
-          </View>
-        ) : session && !isSelf && onReport ? (
+        {asTab && isSelf && ownerTools?.length ? null : session && !isSelf && onReport ? (
           <Pressable
             style={styles.profileReportBtn}
             onPress={() => onReport({
@@ -424,6 +404,31 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
           </Pressable>
         ) : <View style={{ width: 40 }} />}
       </View>
+      {asTab && isSelf && ownerTools?.length ? (
+        // Your own tools, each with its name under the icon, in one row that
+        // fits a 320px phone.
+        <View style={styles.ownerTools}>
+          {ownerTools.map((tool) => (
+            <Pressable
+              key={tool.key}
+              style={({ pressed }) => [styles.ownerTool, pressed && styles.ownerToolPressed]}
+              onPress={tool.onPress}
+              accessibilityRole="button"
+              accessibilityLabel={tool.label + (tool.badge > 0 ? `, ${tool.badge} new` : "")}
+            >
+              <View>
+                <Icon name={tool.icon} size={18} color={colors.text} />
+                {tool.badge > 0 && (
+                  <View style={styles.ownerToolBadge}>
+                    <Text style={styles.ownerToolBadgeText}>{tool.badge > 99 ? "99+" : tool.badge}</Text>
+                  </View>
+                )}
+              </View>
+              <Text style={styles.ownerToolLabel} numberOfLines={1}>{tool.label}</Text>
+            </Pressable>
+          ))}
+        </View>
+      ) : null}
 
       <VinylRefreshBoundary
         refreshing={profileRefreshing}
@@ -721,9 +726,11 @@ const styles = StyleSheet.create({
   topTitle: { color: colors.text, fontSize: 14, fontWeight: "800" },
   profileReportBtn: { width: 40, height: 40, borderRadius: 20, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },
   topTitleTab: { flex: 1, minWidth: 0, fontSize: 16, paddingLeft: 4 },
-  ownerTools: { flexDirection: "row", alignItems: "center", gap: 6 },
-  ownerTool: { width: 40, height: 40, borderRadius: 20, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface, alignItems: "center", justifyContent: "center" },
-  ownerToolBadge: { position: "absolute", top: -4, right: -4, minWidth: 18, height: 18, borderRadius: 9, paddingHorizontal: 4, backgroundColor: colors.magenta, alignItems: "center", justifyContent: "center" },
+  ownerTools: { flexDirection: "row", gap: 8, paddingHorizontal: 12, paddingBottom: 10 },
+  ownerTool: { flex: 1, minWidth: 0, minHeight: 56, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface, alignItems: "center", justifyContent: "center", gap: 4, paddingVertical: 8, paddingHorizontal: 4 },
+  ownerToolPressed: { opacity: 0.8 },
+  ownerToolLabel: { color: colors.text, fontSize: 12, lineHeight: 16, fontWeight: "700" },
+  ownerToolBadge: { position: "absolute", top: -7, right: -13, minWidth: 18, height: 18, borderRadius: 9, paddingHorizontal: 4, backgroundColor: colors.magenta, alignItems: "center", justifyContent: "center" },
   ownerToolBadgeText: { color: "#FFFFFF", fontSize: 12, lineHeight: 14, fontWeight: "800" },
   content: { paddingBottom: 48 },
   staleProfile: { minHeight: 48, flexDirection: "row", alignItems: "center", gap: 10, marginHorizontal: 16, marginBottom: 10, paddingHorizontal: 12, paddingVertical: 8, borderRadius: radius.md, borderWidth: 1, borderColor: colors.amber, backgroundColor: colors.surface },

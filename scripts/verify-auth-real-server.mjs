@@ -137,9 +137,9 @@ async function main() {
     });
     await check("real-browser-logout-reload-and-old-cookie-replay", async () => {
       await page.getByText("Log out", { exact: true }).click();
-      await page.getByRole("link", { name: "Find concerts", exact: true }).waitFor();
+      await page.getByRole("link", { name: "Browse concerts", exact: true }).waitFor();
       await page.reload({ waitUntil: "networkidle" });
-      await page.getByRole("link", { name: "Find concerts", exact: true }).waitFor();
+      await page.getByRole("link", { name: "Browse concerts", exact: true }).waitFor();
       assert.equal((await request("/api/me", { cookie: switchCookie })).data.user, null);
       assert.equal((await request("/api/me/threads", { cookie: switchCookie })).status, 401);
       assert.equal((await page.locator("body").innerText()).includes(fixture.bob.name), false);

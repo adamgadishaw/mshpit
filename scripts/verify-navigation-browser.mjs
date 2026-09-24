@@ -176,6 +176,12 @@ export function fixtureApiResponse(pathname, { member = false, method = "GET", r
     "/api/me/threads": { threads: [] }, "/api/me/following": { following: [] }, "/api/me/fanclubs": { fanClubs: [] },
     "/api/me/going": { going: [] }, "/api/me/artist-recommendations": { artists: [] },
     "/api/users/navigation-fixture-user/posts": { posts: [], hasMore: false },
+    // The You tab is the member's own profile and loads its sections.
+    "/api/users/navigation-fixture-user": { user: navigationUser, followers: 0, following: 0, isFollowing: false },
+    "/api/users/navigation-fixture-user/rewards": { points: 0, earnedIds: [] },
+    "/api/users/navigation-fixture-user/playlists": { playlists: [] },
+    "/api/users/navigation-fixture-user/concert-history": { concerts: [], nextCursor: null, hasMore: false, complete: true, mapVisible: false,
+      coverage: { source: "visible_reviews", includesPrivateAttendance: false, unmappedCount: null } },
   };
   if (Object.hasOwn(privateFixtures, pathname)) { assert.ok(member, `Guest private read: ${pathname}`); return privateFixtures[pathname]; }
   throw new Error(`Missing navigation fixture: ${method} ${pathname}`);
@@ -244,7 +250,7 @@ async function assertPageIdentity(page, path) {
   else assert.equal(identity.robots, "index,follow");
 }
 
-const landing = page => page.getByRole("link", { name: "Find concerts", exact: true }).waitFor();
+const landing = page => page.getByRole("link", { name: "Browse concerts", exact: true }).waitFor();
 const login = page => page.getByRole("heading", { name: "Good to see you.", exact: true });
 async function intro(page, width) {
   const desktopIntro = page.getByRole("button", { name: "Back to intro", exact: true });
@@ -647,7 +653,7 @@ async function runCase(browser, origin, item) {
     } else if (item.kind === "missing-document") {
       await page.getByTestId("public-route-error").waitFor();
       await assertPath(page, start);
-      assert.equal(await page.getByRole("link", { name: "Find concerts", exact: true }).count(), 0, "Unsupported collection falsely became the landing page.");
+      assert.equal(await page.getByRole("link", { name: "Browse concerts", exact: true }).count(), 0, "Unsupported collection falsely became the landing page.");
       assert.equal(await page.locator("#root > .seo-document").count(), 0);
     }
     await page.waitForTimeout(100);

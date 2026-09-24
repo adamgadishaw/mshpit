@@ -245,7 +245,8 @@ async function featuredQuotaScenario(browser, origin, width) {
     await page.getByLabel("Make a post", { exact: true }).last().click();
     const composerText = page.getByPlaceholder("Write about music, a show, or what you plan to see next...", { exact: true });
     await composerText.waitFor();
-    await page.getByRole("button", { name: "Create a featured artist post", exact: true }).click();
+    const featured = page.getByRole("switch", { name: "Make this a featured artist post", exact: true });
+    await featured.click();
     await composerText.fill(featuredReview);
     const submit = page.getByRole("button", { name: "Post", exact: true }).last();
     assert.equal(await submit.isEnabled(), true);
@@ -260,7 +261,7 @@ async function featuredQuotaScenario(browser, origin, width) {
     assert.equal(await composerText.inputValue(), featuredReview, "The quota response must not discard draft text.");
     await page.screenshot({ path: join(shots, `quick-log-featured-${width}-quota.png`) });
 
-    await page.getByRole("button", { name: "Create a regular post", exact: true }).click();
+    await featured.click();
     assert.equal(await composerText.inputValue(), featuredReview, "Switching to Share must retain the draft text.");
     assert.equal(await submit.isEnabled(), true, "The Featured quota must not disable an ordinary post.");
     await submit.click();
