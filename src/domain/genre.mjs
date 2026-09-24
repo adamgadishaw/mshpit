@@ -28,6 +28,9 @@ export const GENRE_SOURCES = {
   // A provider stating the artist's genre directly, rather than a release-level
   // label or a search/crawl inference.
   provider: { rank: 3, confidence: 0.8, evidence: true },
+  // Ticketmaster's own classification of the exact performer it sells tickets
+  // for (one attraction id). Coarse ("Rock", "Hip-Hop") but stated directly.
+  ticketmaster: { rank: 3, confidence: 0.8, evidence: true },
   // A human decision. Always wins, never overwritten by an automated run.
   staff: { rank: 4, confidence: 1, evidence: true },
 };

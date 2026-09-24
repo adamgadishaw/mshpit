@@ -21,6 +21,7 @@ import { normalizeVenuePhotoProviderIdentity } from "../domain/venuePhotos.mjs";
 import { venueGuideModel } from "../domain/venueGuide.mjs";
 import ExpandableText from "../components/ExpandableText";
 import ResearchedAbout from "../components/ResearchedAbout";
+import { VenueVisitorDetails } from "../components/WebProfileBlocks";
 import AccountSnapshotPrompt from "../components/AccountSnapshotPrompt";
 
 const REVIEW_BATCH = 8;
@@ -158,6 +159,11 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
               wide={wide}
               error={venueGuideError}
               onOpen={openVenueGuideAction}
+            />
+            <VenueVisitorDetails
+              venueName={venue.name}
+              providerVenueId={String(photoIdentity?.source || "").toLowerCase() === "ticketmaster" ? photoIdentity.providerVenueId : null}
+              city={String(venue.place || "").split(",")[0].trim() || null}
             />
           </Section>
         ) : null}

@@ -6,6 +6,40 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-09-24 web profile agents (no AI): Ticketmaster records + Wikidata
+
+The owner prefers agents that pull from the web over AI research, because
+MusicBrainz alone holds pages back. Root cause found: artists created from
+Ticketmaster shows (`source='ticketmaster-attraction'`, up to 10,000) have no
+MusicBrainz ID, and the Wikipedia biography worker only runs on artists with
+one, so those pages could never fill. The Ticketmaster attraction behind each
+show already lists the performer's MusicBrainz ID, Wikipedia page, official
+links and genre; the importer kept only its id.
+
+- `server/features/providerProfiles/`: a scheduled worker (every 10 minutes,
+  at most `TICKETMASTER_PROFILE_DAILY_REQUESTS`, default 1,500 of the 5,000
+  daily Discovery calls) reads `/attractions/{id}` for mapped performers
+  (empty pages first, most recently seen first) and `/venues/{id}` for venues
+  with the most shows.
+- A MusicBrainz ID is stored on an artist only when the artist has none, no
+  other artist has it, and Wikidata has exactly one item with that ID whose
+  English name or alias is the performer's name (or, from a Wikipedia link,
+  whose single ID and name match). Provenance goes in `data.mbidEvidence`.
+  The existing Wikipedia worker then fills the biography and country.
+- Ticketmaster's genre becomes a `ticketmaster` genre claim (rank 3, like a
+  direct provider statement), so it outranks crawl and tag guesses but never a
+  staff decision.
+- Pages: `GET /api/artists/:key/links` (official site, Instagram, YouTube,
+  Wikipedia and so on, restricted to each service's own host) shown as
+  "Official links" in the artist About section; `GET /api/venues/:key/details`
+  (box office, pickup, payment, parking, accessibility, entry rules, ages)
+  shown under "Plan your visit", only when the Ticketmaster venue id belongs
+  to a show at a venue with that name. Images are not used.
+- `PROVIDER_PROFILES_ENABLED=true` in render.yaml; runs on the existing
+  `TICKETMASTER_KEY`. Pausing catalog upkeep pauses it. The admin catalog
+  screen has a Web profiles section. The Claude research agent stays off
+  unless `ANTHROPIC_API_KEY` is added.
+
 ## 2026-09-24 web research agent for empty artist and venue pages
 
 The owner noted many artist and venue pages stay empty because MusicBrainz and

@@ -113,6 +113,14 @@ services:
         value: "true"
       - key: ARTIST_KNOWLEDGE_BATCH
         value: "10"
+      # Web profile agents: the Ticketmaster performer and venue records behind
+      # imported shows (links, genre, box office, parking, accessibility), with
+      # MusicBrainz IDs confirmed through Wikidata. Uses TICKETMASTER_KEY; at
+      # most TICKETMASTER_PROFILE_DAILY_REQUESTS of the 5,000 daily calls.
+      - key: PROVIDER_PROFILES_ENABLED
+        value: "true"
+      - key: TICKETMASTER_PROFILE_DAILY_REQUESTS
+        value: "1500"
       # Claude web research for artist and venue pages the other sources leave
       # empty: a short summary and facts, each linked to its source. Idle until
       # the owner adds ANTHROPIC_API_KEY (console.anthropic.com -> API keys).

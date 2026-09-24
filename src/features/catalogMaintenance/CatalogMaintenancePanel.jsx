@@ -29,6 +29,7 @@ export default function CatalogMaintenancePanel({ accountId, role, active = true
   const artistPhotos = data?.artistPhotos;
   const venuePhotos = data?.venuePhotos;
   const research = data?.research;
+  const webProfiles = data?.webProfiles;
   const blocked = !state.confirmed || !catalog || !active || !!state.pendingMode || knowledge?.enabled === false;
   const mode = catalog?.mode;
   if (!state.available) return null;
@@ -102,6 +103,20 @@ export default function CatalogMaintenancePanel({ accountId, role, active = true
           {pass?.stoppedEarly ? <Text selectable style={styles.hint}>The batch yielded before all checks finished. Interrupted work stays queued; this does not mean the catalogue is complete.</Text> : null}
         </Section>
       </>}
+      <Section title="Web profiles">
+        <View style={styles.grid}>
+          <Datum label="Profile agent" value={!webProfiles ? "Unverified" : !webProfiles.configured ? "Waiting for Ticketmaster key" : webProfiles.enabled ? "On" : "Off"}
+            detail={webProfiles ? `${catalogCount(webProfiles.today?.requests)} / ${catalogCount(webProfiles.dailyRequests)} Ticketmaster calls today.` : ""} />
+          <Datum label="Performer records" value={catalogCount(webProfiles?.artists?.found)}
+            detail={webProfiles ? `${catalogCount(webProfiles.artists?.idsAdded)} MusicBrainz IDs confirmed by Wikidata and added, which lets the biography worker fill those pages. ${catalogCount(webProfiles.artists?.idsUnconfirmed)} not confirmed.` : ""} />
+          <Datum label="Venue records" value={catalogCount(webProfiles?.venues?.found)}
+            detail={webProfiles ? `${catalogCount(webProfiles.venues?.missing)} no longer listed by Ticketmaster.` : ""} />
+          <Datum label="Today" value={webProfiles ? `${catalogCount(webProfiles.today?.artists)} performers, ${catalogCount(webProfiles.today?.venues)} venues` : "Unverified"}
+            detail={webProfiles ? `${catalogCount(webProfiles.today?.idsAdded)} IDs and ${catalogCount(webProfiles.today?.genresAdded)} genres added.` : ""} />
+        </View>
+        {webProfiles?.lastError ? <Text selectable style={styles.error}>Last problem: {String(webProfiles.lastError.code || "").replaceAll("_", " ")} at {catalogTime(webProfiles.lastError.at)}. The agent retries on its own.</Text> : null}
+        <Text selectable style={styles.hint}>Reads the Ticketmaster records behind imported shows: official links, genre, and venue box office, parking, accessibility and entry rules. It never changes an existing ID, biography or staff genre. Pausing catalog upkeep above pauses it too.</Text>
+      </Section>
       <Section title="Web research">
         <View style={styles.grid}>
           <Datum label="Research agent" value={!research ? "Unverified" : !research.configured ? "Waiting for API key" : research.enabled ? "On" : "Off"}
@@ -145,8 +160,8 @@ export default function CatalogMaintenancePanel({ accountId, role, active = true
         {[...(storage?.issues || []), ...(storage?.warnings || [])].length ? <Text selectable style={styles.error}>{[...(storage?.issues || []), ...(storage?.warnings || [])].join(" · ").replaceAll("_", " ")}</Text> : null}
       </Section>
       <Section title="Sources and Google readiness">
-        {["artist", "venues", "events", "research"].map(key => <Text selectable key={key} style={styles.copy}>
-          {key === "artist" ? "Artists" : key === "venues" ? "Venues" : key === "events" ? "Events" : "Research"}: {data.sources?.[key]?.name || "Source status unavailable."}{data.sources?.[key]?.scope ? ` — ${data.sources[key].scope}` : ""}
+        {["artist", "venues", "events", "profiles", "research"].map(key => <Text selectable key={key} style={styles.copy}>
+          {key === "artist" ? "Artists" : key === "venues" ? "Venues" : key === "events" ? "Events" : key === "profiles" ? "Web profiles" : "Research"}: {data.sources?.[key]?.name || "Source status unavailable."}{data.sources?.[key]?.scope ? ` — ${data.sources[key].scope}` : ""}
         </Text>)}
         <Text selectable style={styles.copy}>Show-date scheduler: {catalogSourceSchedulerLabel(data.sourceRefresh)}. Separate from artist upkeep controls.</Text>
         <Text selectable style={data.sourceRefresh?.state === "failed" ? styles.error : styles.copy}>Show-date refresh (not venue page enrichment): saved result {data.sourceRefresh?.state || "Unverified"} at {catalogTime(data.sourceRefresh?.at)}. Last success: {catalogTime(data.sourceRefresh?.lastSuccessAt)}. Historical evidence, not a live running indicator.</Text>

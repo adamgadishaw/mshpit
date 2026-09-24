@@ -248,9 +248,18 @@ remains a broad context whose changing value can rerender unrelated consumers.
 - **Video:** after the deploy, the owner re-posts the TikTok clip; read the
   converter log's `converted ... by remux|transcode` or `failed ... at <step>`
   line for it. Confirm an MKV or AVI upload now gets past creation.
-- **Research agent key:** the owner adds `ANTHROPIC_API_KEY` in Render, then
+- **Web profiles:** after the first day, check the admin Web profiles counts
+  (records, IDs added) and spot-check a few artist pages that gained a
+  Wikipedia biography. Next sources without AI: Wikidata venue facts (capacity,
+  opening year, coordinates, Commons photo) matched by name and location;
+  OpenStreetMap venue tags; optional Last.fm (free key) bios and tags and
+  setlist.fm (free key) past setlists.
+- **Research agent key (optional, owner prefers no AI for now):** the owner adds `ANTHROPIC_API_KEY` in Render, then
   checks the admin catalog screen's Web research section after the first pass
   (about 3 minutes after the deploy that follows).
+- **Bundle headroom:** initial JavaScript is 510.2 of 512 KiB gzip after the
+  artist/venue page blocks. Before adding more to screens in the first bundle,
+  lazy-load the artist and venue About blocks or split ArtistScreen.
 - **Research images:** feed `images` (Commons file pages) into the
   licence-checked venue photo pipeline by exact file title, and add an
   equivalent artist path. Stored but unused today.
