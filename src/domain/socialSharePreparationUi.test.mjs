@@ -68,6 +68,7 @@ function harness({ timeoutMs = 500, entry = "default" } = {}) {
     "react-native-safe-area-context": { SafeAreaView: "SafeAreaView" },
     "../theme": { colors: {}, radius: {}, shadow: {}, space: (value) => value },
     "./Icon": { __esModule: true, default: "Icon" },
+    "./ShareCardReveal": { __esModule: true, default: "ShareCardReveal", ShareCardPrinting: "ShareCardPrinting" },
     "../domain/socialShareCard.mjs": { socialShareIntentUrl: () => "https://fixture.invalid/share" },
     "../domain/shareCardPreparation.mjs": { prepareShareCardAsset: (prepare, options) => prepareShareCardAsset(prepare, { ...options, timeoutMs }) },
     "../lib/diagnostics": { AppError, captureAppError: (error) => diagnostics.push(error) },

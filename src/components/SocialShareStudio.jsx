@@ -16,8 +16,9 @@ import {
 import { socialShareIntentUrl } from "../domain/socialShareCard.mjs";
 import { prepareShareCardAsset } from "../domain/shareCardPreparation.mjs";
 import { AppError, captureAppError } from "../lib/diagnostics";
-import { colors, displayFont, font, mono, radius, shadow, space } from "../theme";
+import { colors, displayFont, font, radius, shadow, space } from "../theme";
 import Icon from "./Icon";
+import ShareCardReveal, { ShareCardPrinting } from "./ShareCardReveal";
 
 const KIND_ACCENTS = Object.freeze({
   going: "#FF8C42",
@@ -62,13 +63,7 @@ function AuthoritativeShareCardPlaceholder({ status }) {
       accessibilityLabel={unavailable ? "Share artwork unavailable" : "Preparing the final share artwork"}
       accessibilityState={{ busy: !unavailable }}
     >
-      <View style={styles.previewPlaceholder}>
-        <Icon name={unavailable ? "x" : "photo"} size={26} color={colors.textFaint} />
-        <Text style={styles.placeholderBrand}>MSHPIT</Text>
-        <Text style={styles.placeholderCopy}>
-          {unavailable ? "THE FINAL CARD ISN’T AVAILABLE YET" : "PREPARING THE FINAL CARD"}
-        </Text>
-      </View>
+      <ShareCardPrinting unavailable={unavailable} />
     </View>
   );
 }
@@ -262,7 +257,7 @@ export default function SocialShareStudio({ accountId = null, model, onClose }) 
         if (result?.mode === "native-share-sheet") {
           return "Your share sheet opened with the card and Mshpit link. Choose an app, review it, and post when ready.";
         }
-        return `${label} opened with the card and Mshpit link. Review it there—nothing was posted automatically.`;
+        return `${label} opened with the card and Mshpit link. Review it there. Nothing was posted automatically.`;
       },
     );
   };
@@ -319,9 +314,8 @@ export default function SocialShareStudio({ accountId = null, model, onClose }) 
           <View style={[styles.handle, desktop && styles.handleDesktop]} />
           <View style={styles.topbar}>
             <View style={styles.topbarCopy}>
-              <Text style={[styles.kicker, { color: accent }]}>SHARE FROM MSHPIT</Text>
               <Text style={styles.sheetTitle}>{model.kind === "review" ? "Share your review" : "Share your night"}</Text>
-              <Text style={styles.sheetIntro}>A clean card with the key details, plus a link you can share.</Text>
+              <Text style={styles.sheetIntro}>A Story-sized card with a link back to Mshpit.</Text>
             </View>
             <Pressable accessibilityLabel="Close share preview" accessibilityRole="button" hitSlop={10} onPress={onClose} style={styles.closeButton}>
               <Icon name="x" size={20} color={colors.text} />
@@ -334,14 +328,14 @@ export default function SocialShareStudio({ accountId = null, model, onClose }) 
             showsVerticalScrollIndicator={false}
           >
             {preparedAsset?.previewUri ? (
-              <View style={styles.finalPreview}>
+              <ShareCardReveal key={preparedAsset.previewUri} style={styles.finalPreview}>
                 <ExpoImage
                   source={{ uri: preparedAsset.previewUri }}
                   style={styles.finalPreviewImage}
                   contentFit="contain"
                   accessibilityLabel={model.accessibilityLabel}
                 />
-              </View>
+              </ShareCardReveal>
             ) : <AuthoritativeShareCardPlaceholder status={assetState.status} />}
             {preparedAsset?.photoCreditUrl ? (
               <Pressable
@@ -367,8 +361,8 @@ export default function SocialShareStudio({ accountId = null, model, onClose }) 
                 {shareArtworkRequired
                 ? "This ticket needs a rights-cleared artist photo. A Mshpit admin or verified artist can add one on the artist page."
                 : assetState.status === "loading"
-                ? "Preparing the final share card…"
-                : "The artwork is unavailable right now. You can still copy the link."}
+                ? "This takes a few seconds."
+                : "The card could not be made right now. You can still copy the link."}
               </Text>
             ) : null}
             {assetState.status === "unavailable" && !shareArtworkRequired ? (
@@ -384,7 +378,7 @@ export default function SocialShareStudio({ accountId = null, model, onClose }) 
                   busyAction && styles.disabled,
                 ]}
               >
-                <Text style={styles.retryButtonText}>TRY AGAIN</Text>
+                <Text style={styles.retryButtonText}>Try again</Text>
               </Pressable>
             ) : null}
 
@@ -440,7 +434,7 @@ export default function SocialShareStudio({ accountId = null, model, onClose }) 
               ) : null}
             </View>
             <Text style={styles.platformNote}>
-              The iPhone and Android apps can open Instagram’s Story editor. Supported browsers open your device’s share options. Browsers cannot choose a destination or post automatically; other browsers download the card and open the X or Facebook web composer.
+              The iPhone and Android apps can open Instagram’s Story editor. In a browser you get your device’s share options or a download. Nothing is ever posted for you.
             </Text>
             {feedback ? (
               <Text
@@ -468,36 +462,32 @@ const styles = StyleSheet.create({
   handleDesktop: { height: 0, marginTop: 0, opacity: 0 },
   topbar: { minHeight: 86, flexDirection: "row", alignItems: "center", gap: space(3), paddingHorizontal: space(5), paddingVertical: space(3), borderBottomWidth: 1, borderBottomColor: colors.lineSoft },
   topbarCopy: { flex: 1, minWidth: 0 },
-  kicker: { fontFamily: mono, fontSize: 9, fontWeight: "900", letterSpacing: 1.5 },
-  sheetTitle: { color: colors.text, fontFamily: displayFont, fontSize: 22, fontWeight: "900", letterSpacing: -0.35, marginTop: 3 },
-  sheetIntro: { color: colors.textDim, fontFamily: font, fontSize: 12, lineHeight: 17, marginTop: 3 },
+  sheetTitle: { color: colors.text, fontFamily: displayFont, fontSize: 22, fontWeight: "900", letterSpacing: -0.35 },
+  sheetIntro: { color: colors.textDim, fontFamily: font, fontSize: 13, lineHeight: 18, marginTop: 3 },
   closeButton: { width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
   content: { padding: space(4), gap: space(3) },
   finalPreview: { width: "100%", maxWidth: 300, aspectRatio: 9 / 16, alignSelf: "center", borderRadius: radius.md, overflow: "hidden", backgroundColor: "#090A0D", ...shadow.card },
   finalPreviewImage: { width: "100%", height: "100%" },
   photoSource: { width: "100%", maxWidth: 300, minHeight: 44, alignSelf: "center", flexDirection: "row", alignItems: "center", gap: space(2), borderBottomWidth: 1, borderBottomColor: colors.lineSoft, paddingHorizontal: space(1), paddingVertical: space(2) },
-  photoSourceLabel: { color: colors.text, fontFamily: displayFont, fontSize: 11.5, fontWeight: "800" },
-  photoSourceDetail: { flex: 1, minWidth: 0, color: colors.textFaint, fontFamily: font, fontSize: 10.5, textAlign: "right" },
-  previewPlaceholder: { flex: 1, alignItems: "center", justifyContent: "center", gap: space(3), padding: space(5), borderWidth: 1, borderColor: colors.line },
-  placeholderBrand: { color: colors.text, fontFamily: displayFont, fontSize: 18, fontWeight: "900", letterSpacing: 5 },
-  placeholderCopy: { maxWidth: 210, color: colors.textFaint, fontFamily: mono, fontSize: 9, lineHeight: 15, fontWeight: "800", letterSpacing: 1.5, textAlign: "center" },
-  cardStatus: { color: colors.textFaint, fontFamily: mono, fontSize: 9, lineHeight: 14, textAlign: "center", letterSpacing: 0.5 },
+  photoSourceLabel: { color: colors.text, fontFamily: displayFont, fontSize: 13, fontWeight: "800" },
+  photoSourceDetail: { flex: 1, minWidth: 0, color: colors.textDim, fontFamily: font, fontSize: 12, textAlign: "right" },
+  cardStatus: { color: colors.textDim, fontFamily: font, fontSize: 13, lineHeight: 18, textAlign: "center" },
   retryButton: { minHeight: 44, alignSelf: "center", alignItems: "center", justifyContent: "center", borderRadius: radius.pill, borderCurve: "continuous", borderWidth: 1, borderColor: colors.amber + "80", backgroundColor: colors.surface, paddingHorizontal: space(5) },
-  retryButtonText: { color: colors.amber, fontFamily: mono, fontSize: 10, fontWeight: "900", letterSpacing: 1.5 },
+  retryButtonText: { color: colors.amber, fontFamily: displayFont, fontSize: 14, fontWeight: "800" },
   actionsGrid: { flexDirection: "row", flexWrap: "wrap", gap: space(2), marginTop: space(1) },
   shareAction: { minWidth: 0, minHeight: 68, flexGrow: 1, flexBasis: 230, flexDirection: "row", alignItems: "center", gap: space(3), borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface, paddingHorizontal: space(3), paddingVertical: space(2) },
   actionMark: { width: 38, height: 38, flexShrink: 0, alignItems: "center", justifyContent: "center", borderRadius: 12, borderWidth: 1, backgroundColor: colors.bgElev },
   actionMarkText: { fontFamily: displayFont, fontSize: 17, fontWeight: "900" },
   actionCopy: { flex: 1, minWidth: 0 },
-  actionLabel: { color: colors.text, fontFamily: displayFont, fontSize: 13, fontWeight: "900" },
-  actionDetail: { color: colors.textDim, fontFamily: font, fontSize: 10.5, lineHeight: 14, marginTop: 2 },
-  platformNote: { color: colors.textDim, fontFamily: font, fontSize: 11, lineHeight: 16, paddingHorizontal: space(1) },
+  actionLabel: { color: colors.text, fontFamily: displayFont, fontSize: 14, fontWeight: "900" },
+  actionDetail: { color: colors.textDim, fontFamily: font, fontSize: 12, lineHeight: 16, marginTop: 2 },
+  platformNote: { color: colors.textDim, fontFamily: font, fontSize: 12, lineHeight: 17, paddingHorizontal: space(1) },
   feedback: { borderRadius: radius.sm, borderWidth: 1, padding: space(3), fontFamily: font, fontSize: 12, lineHeight: 17 },
   feedbackSuccess: { color: colors.good, borderColor: colors.good + "70", backgroundColor: colors.surface },
   feedbackError: { color: colors.danger, borderColor: colors.danger + "70", backgroundColor: colors.surface },
   shareTrigger: { minWidth: 44, minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, borderRadius: radius.sm },
   shareTriggerLabelled: { alignSelf: "flex-start", borderWidth: 1, borderColor: colors.line, backgroundColor: colors.bgElev, paddingHorizontal: space(3) },
-  shareTriggerText: { fontFamily: displayFont, fontSize: 12, fontWeight: "900" },
+  shareTriggerText: { fontFamily: displayFont, fontSize: 13, fontWeight: "900" },
   pressed: { opacity: 0.76, transform: [{ scale: 0.98 }] },
   disabled: { opacity: 0.44 },
 });

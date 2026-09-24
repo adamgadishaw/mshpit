@@ -19,7 +19,7 @@ import {
 
 const CARD_WIDTH = 1080;
 const CARD_HEIGHT = 1920;
-const CARD_VERSION = "mshpit-social-story-v6";
+const CARD_VERSION = "mshpit-social-story-v7";
 const CANONICAL_ORIGIN = "https://www.mshpit.com";
 const MAX_RENDER_BYTES = 4 * 1024 * 1024;
 const MAX_ARTWORK_INPUT_BYTES = 6 * 1024 * 1024;
@@ -34,8 +34,8 @@ const DEFAULT_TOTAL_WORK_TIMEOUT_MS = 4_000;
 const PREPARED_ARTWORK_RENDER = Symbol("preparedArtworkRender");
 
 const COPY = Object.freeze({
-  going: Object.freeze({ label: "GOING", kicker: "A SHOW WORTH COUNTING DOWN TO" }),
-  interested: Object.freeze({ label: "INTERESTED", kicker: "ONE TO KEEP ON THE CALENDAR" }),
+  going: Object.freeze({ label: "GOING", kicker: "Going to this show" }),
+  interested: Object.freeze({ label: "INTERESTED", kicker: "Interested in this show" }),
   review: Object.freeze({ label: "REVIEW", kicker: "RATED LIVE BY AN MSHPIT MEMBER" }),
 });
 
@@ -287,11 +287,11 @@ export function eventShareCardModel(document, intent, {
     variant: intent,
     label: COPY[intent].label,
     kicker: author
-      ? `${author} IS ${intent === "going" ? "GOING" : "INTERESTED"}`
+      ? `${author} is ${intent === "going" ? "going" : "interested"}`
       : COPY[intent].kicker,
     statement: intent === "going"
       ? `${author || "A Mshpit fan"} is going to ${artist}${subtitle ? ` for ${subtitle}` : ""}.`
-      : `${author || "A Mshpit fan"} is interested in ${artist}${subtitle ? ` — ${subtitle}` : ""}.`,
+      : `${author || "A Mshpit fan"} is interested in ${artist}${subtitle ? ` for ${subtitle}` : ""}.`,
     artist,
     subtitle,
     venue,
@@ -516,166 +516,159 @@ function shareSvgDefs(palette, extra = "") {
   </defs>`;
 }
 
+// Instagram lays its own bars over roughly the top 250 and bottom 340 pixels of
+// a story, so everything readable sits inside y 250 to 1560. The reviewer, the
+// artist and the rating lead; the brand appears once, on the tear-off stub.
+const REVIEW_CARD = Object.freeze({ x: 60, y: 250, width: 960, height: 1310, hero: 620, stubTop: 1430 });
+
+function starPoints(cx, cy, outer, inner) {
+  const points = [];
+  for (let index = 0; index < 10; index += 1) {
+    const radius = index % 2 === 0 ? outer : inner;
+    const angle = (Math.PI / 5) * index - Math.PI / 2;
+    points.push(`${(cx + radius * Math.cos(angle)).toFixed(1)},${(cy + radius * Math.sin(angle)).toFixed(1)}`);
+  }
+  return points.join(" ");
+}
+
+function reviewStarsSvg(rating, { x, cy, outer = 26, inner = 11, gap = 12, fill = "#ffb347", empty = "#3a3642" }) {
+  const halves = Math.max(0, Math.min(10, Math.round(Number(rating) * 2)));
+  let svg = "";
+  for (let index = 0; index < 5; index += 1) {
+    const cx = x + outer + index * (outer * 2 + gap);
+    const points = starPoints(cx, cy, outer, inner);
+    svg += `<polygon points="${points}" fill="${empty}"/>`;
+    const filledHalves = Math.max(0, Math.min(2, halves - index * 2));
+    if (filledHalves === 2) svg += `<polygon points="${points}" fill="${fill}"/>`;
+    else if (filledHalves === 1) {
+      svg += `<clipPath id="halfStar${index}"><rect x="${cx - outer}" y="${cy - outer}" width="${outer}" height="${outer * 2}"/></clipPath>`
+        + `<polygon points="${points}" fill="${fill}" clip-path="url(#halfStar${index})"/>`;
+    }
+  }
+  return { svg, width: 5 * outer * 2 + 4 * gap };
+}
+
 function reviewShareSvg(model, artworkDataUri) {
   const palette = paletteFor(model);
   const hasArtwork = !!safeArtworkDataUri(artworkDataUri);
-  const kickerLines = wrapMeasuredLines(model.kicker, {
-    maxWidth: 700, fontSize: 18, letterSpacing: 3, maxLines: 1, monospace: true,
-  });
-  const artistLines = wrapMeasuredLines(model.artist, {
-    maxWidth: 904, fontSize: 74, letterSpacing: -1.5, maxLines: 2,
-  });
-  const subtitleLines = wrapMeasuredLines(model.subtitle, {
-    maxWidth: 904, fontSize: 30, maxLines: 2,
-  });
-  const quoteLines = wrapMeasuredLines(model.quote, {
-    maxWidth: 820, fontSize: 29, maxLines: 4,
-  });
-  const artistY = artistLines.length > 1 ? 735 : 790;
-  const subtitleY = artistY + (artistLines.length * 80) + 18;
-  const placeLine = [model.venue, model.place].filter(Boolean).join(" · ");
-  const scheduleLine = [model.date, model.time].filter(Boolean).join(" · ");
-  const placeLines = wrapMeasuredLines(placeLine || "DETAILS ON MSHPIT", {
-    maxWidth: 430, fontSize: 27, maxLines: 2,
-  });
-  const scheduleLines = wrapMeasuredLines(scheduleLine || "OPEN FOR DETAILS", {
-    maxWidth: 400, fontSize: 27, maxLines: 1,
-  });
+  const card = REVIEW_CARD;
+  const left = card.x + 44;
+  const right = card.x + card.width - 44;
+  const heroBottom = card.y + card.hero;
+  const reviewer = /^an mshpit member$/iu.test(String(model.kicker || "")) || !model.kicker ? "A Mshpit member" : model.kicker;
+  const artistLines = wrapMeasuredLines(model.artist, { maxWidth: 872, fontSize: 84, letterSpacing: -1.5, maxLines: 2 });
+  const subtitleLines = wrapMeasuredLines(model.subtitle, { maxWidth: 872, fontSize: 32, maxLines: 1 });
+  const reviewerLines = wrapMeasuredLines(`${reviewer}'s review`, { maxWidth: 872, fontSize: 36, maxLines: 1 });
+  const quoteLines = wrapMeasuredLines(model.quote, { maxWidth: 800, fontSize: 36, maxLines: 4 });
+  const metaLines = wrapMeasuredLines([model.venue, model.place, model.date].filter(Boolean).join(" · ") || "Details on Mshpit", { maxWidth: 872, fontSize: 28, maxLines: 2 });
+  const lastArtistBaseline = subtitleLines.length ? heroBottom - 70 : heroBottom - 36;
+  const artistY = lastArtistBaseline - (artistLines.length - 1) * 88;
+  const rating = Number(model.rating);
+  const hasRating = Number.isFinite(rating) && rating > 0;
+  const stars = hasRating ? reviewStarsSvg(rating, { x: left, cy: 1034 }) : null;
+  const quoteTop = hasRating ? 1150 : 1060;
+  // Measured from the last quote baseline, so a four-line quote and two meta
+  // lines still clear the tear line at stubTop.
+  const metaTop = quoteLines.length ? quoteTop + (quoteLines.length - 1) * 50 + 64 : quoteTop;
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${CARD_WIDTH}" height="${CARD_HEIGHT}" viewBox="0 0 ${CARD_WIDTH} ${CARD_HEIGHT}">
-  ${shareSvgDefs(palette, '<clipPath id="reviewCard"><rect x="40" y="190" width="1000" height="1460" rx="42"/></clipPath><clipPath id="reviewHero"><rect x="40" y="328" width="1000" height="632"/></clipPath>')}
+  ${shareSvgDefs(palette, `<clipPath id="reviewCard"><rect x="${card.x}" y="${card.y}" width="${card.width}" height="${card.height}" rx="40"/></clipPath><clipPath id="reviewHero"><rect x="${card.x}" y="${card.y}" width="${card.width}" height="${card.hero}"/></clipPath>`)}
   <rect width="${CARD_WIDTH}" height="${CARD_HEIGHT}" fill="#0b0815"/>
   <rect x="0" y="0" width="${CARD_WIDTH}" height="12" fill="url(#accent)"/>
-  <text x="62" y="104" fill="#fff8ee" font-family="Courier New, monospace" font-size="18" font-weight="800" letter-spacing="4">LIVE MUSIC, REMEMBERED</text>
   <g data-layout="review-photo" filter="url(#shadow)" clip-path="url(#reviewCard)">
-    <rect x="40" y="190" width="1000" height="1460" rx="42" fill="#090a0e"/>
-    <rect x="40" y="190" width="1000" height="10" fill="url(#accent)"/>
-    <rect x="40" y="200" width="1000" height="128" fill="#090a0e"/>
-    <rect x="40" y="328" width="1000" height="632" fill="#15121a"/>
-    ${artworkImage(artworkDataUri, { x: 40, y: 328, width: 1000, height: 632, clipId: "reviewHero" })}
-    ${hasArtwork ? '<rect x="40" y="328" width="1000" height="632" fill="url(#photoScrim)"/>' : '<rect x="40" y="328" width="1000" height="6" fill="url(#accent)" opacity="0.75"/>'}
-    <rect x="40" y="960" width="1000" height="690" fill="#090a0e"/>
+    <rect x="${card.x}" y="${card.y}" width="${card.width}" height="${card.height}" rx="40" fill="#0f0d14"/>
+    <rect x="${card.x}" y="${card.y}" width="${card.width}" height="${card.hero}" fill="#17141d"/>
+    ${artworkImage(artworkDataUri, { x: card.x, y: card.y, width: card.width, height: card.hero, clipId: "reviewHero" })}
+    ${hasArtwork ? "" : `<rect x="${card.x}" y="${card.y}" width="${card.width}" height="${card.hero}" fill="url(#accent)" data-hero="no-photo"/>${communityMarkSvg({ x: card.x + card.width - 170, y: card.y + 220, scale: 0.42, opacity: 0.16 })}`}
+    <rect x="${card.x}" y="${card.y}" width="${card.width}" height="${card.hero}" fill="url(#photoScrim)"/>
   </g>
-  ${communityMarkSvg({ x: 98, y: 264, scale: 0.075, opacity: 1 })}
-  <text x="152" y="273" fill="#fff8ee" font-family="Arial, Helvetica, sans-serif" font-size="28" font-weight="900" letter-spacing="8">MSHPIT</text>
-  <text x="154" y="299" fill="#858895" font-family="Courier New, monospace" font-size="12" font-weight="800" letter-spacing="2.6">LIVE MUSIC, REMEMBERED</text>
-  <rect x="814" y="239" width="174" height="50" rx="25" fill="none" stroke="${palette.end}" stroke-width="3"/>
-  <text x="901" y="271" text-anchor="middle" fill="${palette.end}" font-family="Courier New, monospace" font-size="17" font-weight="900" letter-spacing="3">${escapeXml(model.label)}</text>
-  ${svgTextLines(kickerLines, { x: 88, y: artistY - 72, lineHeight: 24, fontSize: 18, fill: "#d6d1c9", weight: 900, family: "Courier New, monospace", letterSpacing: 3 })}
-  ${svgTextLines(artistLines, { x: 84, y: artistY, lineHeight: 80, fontSize: 74, fill: "#fff8ee", weight: 900, letterSpacing: -1.5 })}
-  ${svgTextLines(subtitleLines, { x: 88, y: subtitleY, lineHeight: 38, fontSize: 30, fill: palette.end, weight: 800 })}
-  <text x="88" y="1022" fill="#858895" font-family="Courier New, monospace" font-size="15" font-weight="900" letter-spacing="2.5">VENUE / CITY</text>
-  ${svgTextLines(placeLines, { x: 88, y: 1064, lineHeight: 34, fontSize: 27, fill: "#fff8ee", weight: 800 })}
-  <line x1="555" y1="1005" x2="555" y2="1112" stroke="#30323b" stroke-width="2"/>
-  <text x="992" y="1022" text-anchor="end" fill="#858895" font-family="Courier New, monospace" font-size="15" font-weight="900" letter-spacing="2.5">DATE / TIME</text>
-  <text x="992" y="1066" text-anchor="end" fill="#fff8ee" font-family="Arial, Helvetica, sans-serif" font-size="27" font-weight="800">${escapeXml(scheduleLines[0] || "OPEN FOR DETAILS")}</text>
-  <line x1="88" y1="1152" x2="992" y2="1152" stroke="#30323b" stroke-width="2"/>
-  ${model.rating ? `<rect x="88" y="1200" width="78" height="78" rx="20" fill="url(#accent)"/><text x="127" y="1252" text-anchor="middle" fill="#090a0e" font-family="Arial, Helvetica, sans-serif" font-size="34" font-weight="900">★</text><text x="192" y="1255" fill="#fff8ee" font-family="Courier New, monospace" font-size="58" font-weight="900">${escapeXml(model.rating)}</text><text x="318" y="1248" fill="#858895" font-family="Courier New, monospace" font-size="16" font-weight="800" letter-spacing="2">FAN SCORE / 5</text>` : ""}
-  ${quoteLines.length ? `<text x="88" y="1344" fill="${palette.end}" font-family="Arial, Helvetica, sans-serif" font-size="52" font-weight="900">“</text>${svgTextLines(quoteLines, { x: 126, y: 1350, lineHeight: 42, fontSize: 29, fill: "#d7d4cc", weight: 600 })}` : ""}
-  <line x1="78" y1="1510" x2="1002" y2="1510" stroke="#3d3f49" stroke-width="2" stroke-dasharray="8 10"/>
-  <circle cx="40" cy="1510" r="18" fill="#0b0815"/><circle cx="1040" cy="1510" r="18" fill="#0b0815"/>
-  <text x="88" y="1580" fill="#858895" font-family="Courier New, monospace" font-size="16" font-weight="900" letter-spacing="3">OPEN THE REVIEW ON MSHPIT</text>
-  <text x="992" y="1580" text-anchor="end" fill="${palette.end}" font-family="Courier New, monospace" font-size="19" font-weight="900" letter-spacing="2">MSHPIT.COM</text>
-  <text x="540" y="1784" text-anchor="middle" fill="#fff8ee" font-family="Arial, Helvetica, sans-serif" font-size="34" font-weight="900" letter-spacing="9">MSHPIT</text>
-  <text x="540" y="1827" text-anchor="middle" fill="#858895" font-family="Courier New, monospace" font-size="16" font-weight="800" letter-spacing="3.4">SEE THE FULL NIGHT</text>
+  ${svgTextLines(artistLines, { x: left, y: artistY, lineHeight: 88, fontSize: 84, fill: "#fff8ee", weight: 900, letterSpacing: -1.5 })}
+  ${svgTextLines(subtitleLines, { x: left + 2, y: heroBottom - 26, lineHeight: 40, fontSize: 32, fill: palette.end, weight: 800 })}
+  ${svgTextLines(reviewerLines, { x: left, y: heroBottom + 78, lineHeight: 44, fontSize: 36, fill: "#fff8ee", weight: 800 })}
+  ${stars ? `<g data-section="review-rating">${stars.svg}<text x="${left + stars.width + 26}" y="1056" fill="#fff8ee" font-family="Arial, Helvetica, sans-serif" font-size="64" font-weight="900">${escapeXml(model.rating)}<tspan fill="#8d8a96" font-size="32" font-weight="700" dx="10">/ 5</tspan></text></g>` : ""}
+  ${quoteLines.length ? `<text x="${left - 4}" y="${quoteTop + 22}" fill="${palette.end}" font-family="Georgia, Times New Roman, serif" font-size="84" font-weight="900">“</text>${svgTextLines(quoteLines, { x: left + 50, y: quoteTop, lineHeight: 50, fontSize: 36, fill: "#e3dfd6", weight: 600 })}` : ""}
+  ${svgTextLines(metaLines, { x: left, y: metaTop, lineHeight: 38, fontSize: 28, fill: "#a9a5b1", weight: 700 })}
+  <line x1="${card.x + 30}" y1="${card.stubTop}" x2="${card.x + card.width - 30}" y2="${card.stubTop}" stroke="#3d3a46" stroke-width="3" stroke-dasharray="10 12"/>
+  <circle cx="${card.x}" cy="${card.stubTop}" r="22" fill="#0b0815"/><circle cx="${card.x + card.width}" cy="${card.stubTop}" r="22" fill="#0b0815"/>
+  ${communityMarkSvg({ x: left + 22, y: card.stubTop + 66, scale: 0.07, opacity: 1 })}
+  <text x="${left + 64}" y="${card.stubTop + 77}" fill="#fff8ee" font-family="Arial, Helvetica, sans-serif" font-size="30" font-weight="900" letter-spacing="7">MSHPIT</text>
+  <text x="${right}" y="${card.stubTop + 76}" text-anchor="end" fill="${palette.end}" font-family="Arial, Helvetica, sans-serif" font-size="30" font-weight="800">Read it on mshpit.com</text>
 </svg>`;
 }
+
+// The attendance ticket shares the review card's frame and safe area. It gives
+// the photo more room, since an upcoming show has no rating or quote to carry.
+const ATTENDANCE_CARD = Object.freeze({ x: 60, y: 250, width: 960, height: 1310, hero: 700, stubTop: 1410 });
 
 function attendanceShareSvg(model, artworkDataUri, selectedArtwork = null) {
   const palette = paletteFor(model);
   const hasArtwork = !!safeArtworkDataUri(artworkDataUri);
-  const heroTop = 328;
-  const heroBottom = 960;
-  const kickerFontSize = 18;
-  const kickerLineHeight = 24;
-  const subtitleFontSize = 30;
-  const subtitleLineHeight = 38;
-  const artistFontSize = 74;
-  const artistLineHeight = 80;
-  const kickerLines = wrapMeasuredLines(model.kicker, {
-    maxWidth: 820,
-    fontSize: kickerFontSize,
-    letterSpacing: 3,
-    maxLines: 1,
-    monospace: true,
-  });
-  const subtitleLines = wrapMeasuredLines(model.subtitle, {
-    maxWidth: 904, fontSize: subtitleFontSize, maxLines: 2,
-  });
-  const artistLines = wrapMeasuredLines(model.artist, {
-    maxWidth: 904, fontSize: artistFontSize, letterSpacing: -1.5, maxLines: 2,
-  });
-  let heroCursor = heroBottom - 42;
-  const subtitleY = subtitleLines.length
-    ? heroCursor - ((subtitleLines.length - 1) * subtitleLineHeight)
-    : null;
-  if (subtitleLines.length) {
-    heroCursor = subtitleY - 48;
-  }
-  const artistY = heroCursor - ((Math.max(1, artistLines.length) - 1) * artistLineHeight);
-  const kickerY = artistY - 78 - ((Math.max(1, kickerLines.length) - 1) * kickerLineHeight);
-  const statementLines = wrapMeasuredLines(model.statement, {
-    maxWidth: 904, fontSize: 24, maxLines: 2,
-  });
-  const placeLine = [model.venue, model.place].filter(Boolean).join(" · ");
-  const placeLines = wrapMeasuredLines(placeLine || "DETAILS ON MSHPIT", {
-    maxWidth: 430, fontSize: 27, maxLines: 2,
-  });
-  const scheduleLine = [model.date, model.time].filter(Boolean).join(" · ");
-  const scheduleLines = wrapMeasuredLines(scheduleLine || "OPEN FOR DETAILS", {
-    maxWidth: 400, fontSize: 27, maxLines: 1,
-  });
+  const card = ATTENDANCE_CARD;
+  const left = card.x + 44;
+  const right = card.x + card.width - 44;
+  const heroBottom = card.y + card.hero;
+  const cardBottom = card.y + card.height;
+  const column = card.x + card.width / 2 + 20;
+  const artistLines = wrapMeasuredLines(model.artist, { maxWidth: 872, fontSize: 84, letterSpacing: -1.5, maxLines: 2 });
+  const subtitleLines = wrapMeasuredLines(model.subtitle, { maxWidth: 872, fontSize: 32, maxLines: 1 });
+  const subtitleY = subtitleLines.length ? heroBottom - 40 : 0;
+  const lastArtistBaseline = subtitleLines.length ? heroBottom - 90 : heroBottom - 48;
+  const artistY = lastArtistBaseline - (artistLines.length - 1) * 88;
+  const memberLines = wrapMeasuredLines(model.kicker, { maxWidth: 872, fontSize: 36, maxLines: 1 });
+  const dateLines = wrapMeasuredLines(model.date || "Date to be announced", { maxWidth: 380, fontSize: 44, maxLines: 1 });
+  const timeLines = wrapMeasuredLines(model.time, { maxWidth: 380, fontSize: 34, maxLines: 1 });
+  const venueLines = wrapMeasuredLines(model.venue || "Details on Mshpit", { maxWidth: 400, fontSize: 40, maxLines: 2 });
+  const placeLines = wrapMeasuredLines(model.place, { maxWidth: 400, fontSize: 28, maxLines: 1 });
+  const detailTop = heroBottom + 170;
+  const placeY = detailTop + 54 + venueLines.length * 48;
+  const stampText = model.variant === "going" ? "GOING" : "INTERESTED";
+  const stampWidth = Math.round(estimatedTextWidth(stampText, { fontSize: 40, letterSpacing: 5 }) + 72);
+  const stampX = right - stampWidth + 12;
+  const stampY = card.stubTop - 52;
   const cropAlignment = artworkCropAlignment(selectedArtwork);
   const register = model.variant === "going"
-    ? '<rect x="40" y="318" width="420" height="10" fill="#ff5a3d"/><rect x="460" y="318" width="330" height="10" fill="#b82d8e"/><rect x="790" y="318" width="250" height="10" fill="#3f74ce"/>'
-    : `<rect x="40" y="318" width="500" height="10" fill="${palette.start}"/><rect x="540" y="318" width="500" height="10" fill="${palette.end}"/>`;
+    ? `<rect x="${card.x}" y="${card.y}" width="420" height="10" fill="#ff5a3d"/><rect x="${card.x + 420}" y="${card.y}" width="300" height="10" fill="#b82d8e"/><rect x="${card.x + 720}" y="${card.y}" width="240" height="10" fill="#3f74ce"/>`
+    : `<rect x="${card.x}" y="${card.y}" width="480" height="10" fill="${palette.start}"/><rect x="${card.x + 480}" y="${card.y}" width="480" height="10" fill="${palette.end}"/>`;
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${CARD_WIDTH}" height="${CARD_HEIGHT}" viewBox="0 0 ${CARD_WIDTH} ${CARD_HEIGHT}">
-  ${shareSvgDefs(palette, '<clipPath id="attendanceCard"><rect x="40" y="180" width="1000" height="1500" rx="42"/></clipPath><clipPath id="attendanceHero"><rect x="40" y="328" width="1000" height="632"/></clipPath><clipPath id="attendanceHeroCopy"><rect x="70" y="350" width="940" height="590"/></clipPath><clipPath id="attendancePlace"><rect x="80" y="1024" width="450" height="92"/></clipPath><clipPath id="attendanceStatement"><rect x="80" y="1190" width="920" height="96"/></clipPath>')}
+  ${shareSvgDefs(palette, `<clipPath id="attendanceCard"><rect x="${card.x}" y="${card.y}" width="${card.width}" height="${card.height}" rx="40"/></clipPath><clipPath id="attendanceHero"><rect x="${card.x}" y="${card.y}" width="${card.width}" height="${card.hero}"/></clipPath><clipPath id="attendanceHeroCopy"><rect x="${card.x + 20}" y="${card.y + 30}" width="${card.width - 40}" height="${card.hero - 40}"/></clipPath><clipPath id="attendancePlace"><rect x="${column}" y="${detailTop - 10}" width="${right - column}" height="${card.stubTop - detailTop - 60}"/></clipPath>`)}
   <rect width="${CARD_WIDTH}" height="${CARD_HEIGHT}" fill="#0b0715"/>
   <rect x="0" y="0" width="${CARD_WIDTH}" height="12" fill="url(#accent)"/>
-  <text x="62" y="108" fill="#fff8ee" font-family="Courier New, monospace" font-size="18" font-weight="800" letter-spacing="4">YOUR NIGHT. YOUR TICKET.</text>
   <g data-layout="attendance-ticket" filter="url(#shadow)" clip-path="url(#attendanceCard)">
-    <rect x="40" y="180" width="1000" height="1500" rx="42" fill="#1d1434"/>
-    <rect x="40" y="180" width="1000" height="138" fill="#0b0a0f"/>
+    <rect x="${card.x}" y="${card.y}" width="${card.width}" height="${card.height}" rx="40" fill="#1d1434"/>
+    <rect x="${card.x}" y="${card.y}" width="${card.width}" height="${card.hero}" fill="#121018"/>
+    ${hasArtwork ? `${artworkImage(artworkDataUri, { x: card.x, y: card.y, width: card.width, height: card.hero, clipId: "attendanceHero", preserveAspectRatio: cropAlignment })}<rect x="${card.x}" y="${card.y}" width="${card.width}" height="${card.hero}" fill="url(#photoScrim)"/>` : `<rect x="${card.x}" y="${heroBottom - 8}" width="${card.width}" height="8" fill="url(#accent)"/>`}
     ${register}
-    <rect x="40" y="328" width="1000" height="632" fill="#121018"/>
-    ${hasArtwork ? `${artworkImage(artworkDataUri, { x: 40, y: 328, width: 1000, height: 632, clipId: "attendanceHero", preserveAspectRatio: cropAlignment })}<rect x="40" y="328" width="1000" height="632" fill="url(#photoScrim)"/>` : '<rect x="40" y="328" width="1000" height="632" fill="#17141d"/><rect x="40" y="328" width="1000" height="6" fill="url(#accent)" opacity="0.75"/>'}
-    <rect x="40" y="960" width="1000" height="390" fill="#1d1434"/>
-    <rect x="40" y="1350" width="1000" height="330" fill="#251940"/>
+    <rect x="${card.x}" y="${card.stubTop}" width="${card.width}" height="${cardBottom - card.stubTop}" fill="#251940"/>
   </g>
-  ${communityMarkSvg({ x: 98, y: 250, scale: 0.075, opacity: 1 })}
-  <text x="152" y="250" fill="#fff8ee" font-family="Arial, Helvetica, sans-serif" font-size="27" font-weight="900" letter-spacing="7">MSHPIT</text>
-  <text x="154" y="281" fill="#858895" font-family="Courier New, monospace" font-size="12" font-weight="800" letter-spacing="2.6">LIVE MUSIC, REMEMBERED</text>
-  <g data-section="attendance-hero-copy" data-kicker-y="${kickerY}" data-artist-y="${artistY}" data-artist-lines="${artistLines.length}" data-subtitle-y="${subtitleY || 0}" data-subtitle-lines="${subtitleLines.length}" clip-path="url(#attendanceHeroCopy)">
-    ${svgTextLines(kickerLines, { x: 88, y: kickerY, lineHeight: kickerLineHeight, fontSize: kickerFontSize, fill: "#d6d1c9", weight: 900, family: "Courier New, monospace", letterSpacing: 3 })}
-    ${svgTextLines(artistLines, { x: 84, y: artistY, lineHeight: artistLineHeight, fontSize: artistFontSize, fill: "#fff8ee", weight: 900, letterSpacing: -1.5 })}
-    ${subtitleLines.length ? svgTextLines(subtitleLines, { x: 88, y: subtitleY, lineHeight: subtitleLineHeight, fontSize: subtitleFontSize, fill: palette.end, weight: 800 }) : ""}
+  <g data-section="attendance-hero-copy" data-artist-y="${artistY}" data-artist-lines="${artistLines.length}" data-subtitle-y="${subtitleY}" data-subtitle-lines="${subtitleLines.length}" data-hero-bottom="${heroBottom}" clip-path="url(#attendanceHeroCopy)">
+    ${svgTextLines(artistLines, { x: left, y: artistY, lineHeight: 88, fontSize: 84, fill: "#fff8ee", weight: 900, letterSpacing: -1.5 })}
+    ${svgTextLines(subtitleLines, { x: left + 2, y: subtitleY, lineHeight: 40, fontSize: 32, fill: palette.start, weight: 800 })}
   </g>
-  <g data-section="attendance-meta">
-    <text x="88" y="1018" fill="#9e97ad" font-family="Courier New, monospace" font-size="15" font-weight="900" letter-spacing="2.5">VENUE / CITY</text>
-    <g clip-path="url(#attendancePlace)">${svgTextLines(placeLines, { x: 88, y: 1060, lineHeight: 34, fontSize: 27, fill: "#fff8ee", weight: 800 })}</g>
-    <line x1="555" y1="1002" x2="555" y2="1124" stroke="#554966" stroke-width="2"/>
-    <text x="992" y="1018" text-anchor="end" fill="#9e97ad" font-family="Courier New, monospace" font-size="15" font-weight="900" letter-spacing="2.5">DATE / TIME</text>
-    <text x="992" y="1062" text-anchor="end" fill="#fff8ee" font-family="Arial, Helvetica, sans-serif" font-size="27" font-weight="800">${escapeXml(scheduleLines[0] || "OPEN FOR DETAILS")}</text>
-    <line x1="88" y1="1152" x2="992" y2="1152" stroke="#554966" stroke-width="2"/>
-    <text x="88" y="1196" fill="${palette.end}" font-family="Courier New, monospace" font-size="15" font-weight="900" letter-spacing="2.5">YOUR NIGHT</text>
-    <g clip-path="url(#attendanceStatement)">${svgTextLines(statementLines, { x: 88, y: 1240, lineHeight: 32, fontSize: 24, fill: "#ddd6e8", weight: 800 })}</g>
+  <g data-section="attendance-meta" data-detail-top="${detailTop}">
+    ${svgTextLines(memberLines, { x: left, y: heroBottom + 78, lineHeight: 44, fontSize: 36, fill: "#fff8ee", weight: 800 })}
+    <line x1="${left}" y1="${heroBottom + 112}" x2="${right}" y2="${heroBottom + 112}" stroke="#3b2f52" stroke-width="2"/>
+    <text x="${left}" y="${detailTop}" fill="#a79fb8" font-family="Arial, Helvetica, sans-serif" font-size="26" font-weight="700">Date</text>
+    ${svgTextLines(dateLines, { x: left, y: detailTop + 54, lineHeight: 50, fontSize: 44, fill: "#fff8ee", weight: 900 })}
+    ${svgTextLines(timeLines, { x: left, y: detailTop + 102, lineHeight: 40, fontSize: 34, fill: "#ddd6e8", weight: 700 })}
+    <line x1="${column - 30}" y1="${detailTop - 30}" x2="${column - 30}" y2="${detailTop + 150}" stroke="#3b2f52" stroke-width="2"/>
+    <text x="${column}" y="${detailTop}" fill="#a79fb8" font-family="Arial, Helvetica, sans-serif" font-size="26" font-weight="700">Where</text>
+    <g clip-path="url(#attendancePlace)">
+      ${svgTextLines(venueLines, { x: column, y: detailTop + 54, lineHeight: 48, fontSize: 40, fill: "#fff8ee", weight: 900 })}
+      ${svgTextLines(placeLines, { x: column, y: placeY, lineHeight: 36, fontSize: 28, fill: "#b9b2c6", weight: 700 })}
+    </g>
   </g>
-  <line x1="78" y1="1350" x2="1002" y2="1350" stroke="#695d78" stroke-width="2" stroke-dasharray="8 10"/>
-  <circle cx="40" cy="1350" r="18" fill="#0b0715"/><circle cx="1040" cy="1350" r="18" fill="#0b0715"/>
-  <text x="540" y="1343" text-anchor="middle" fill="#9e97ad" font-family="Courier New, monospace" font-size="13" font-weight="900" letter-spacing="3">MSHPIT RSVP</text>
-  <g transform="rotate(-3 180 1480)">
-    <rect x="88" y="1410" width="250" height="132" rx="26" fill="none" stroke="${palette.end}" stroke-width="5"/>
-    <text x="213" y="1488" text-anchor="middle" fill="${palette.end}" font-family="Courier New, monospace" font-size="31" font-weight="900" letter-spacing="3">RSVP</text>
+  <line x1="${card.x + 30}" y1="${card.stubTop}" x2="${card.x + card.width - 30}" y2="${card.stubTop}" stroke="#6a5a86" stroke-width="3" stroke-dasharray="10 12"/>
+  <circle cx="${card.x}" cy="${card.stubTop}" r="22" fill="#0b0715"/><circle cx="${card.x + card.width}" cy="${card.stubTop}" r="22" fill="#0b0715"/>
+  <g data-section="attendance-stamp" transform="rotate(-6 ${stampX + stampWidth / 2} ${stampY + 52})" opacity="0.92">
+    <rect x="${stampX}" y="${stampY}" width="${stampWidth}" height="104" rx="22" fill="#1d1434" fill-opacity="0.55" stroke="${palette.start}" stroke-width="6"/>
+    <rect x="${stampX + 10}" y="${stampY + 10}" width="${stampWidth - 20}" height="84" rx="14" fill="none" stroke="${palette.start}" stroke-width="2"/>
+    <text x="${stampX + stampWidth / 2}" y="${stampY + 67}" text-anchor="middle" fill="${palette.start}" font-family="Arial, Helvetica, sans-serif" font-size="40" font-weight="900" letter-spacing="5">${stampText}</text>
   </g>
-  <text x="390" y="1438" fill="#9e97ad" font-family="Courier New, monospace" font-size="14" font-weight="900" letter-spacing="2.4">SEATING</text>
-  <text x="390" y="1482" fill="#fff8ee" font-family="Arial, Helvetica, sans-serif" font-size="27" font-weight="900">NOT SHARED</text>
-  <text x="992" y="1456" text-anchor="end" fill="${palette.end}" font-family="Courier New, monospace" font-size="18" font-weight="900" letter-spacing="3">VIEW SHOW →</text>
-  <line x1="774" y1="1490" x2="992" y2="1490" stroke="${palette.end}" stroke-width="3"/>
-  <text x="540" y="1800" text-anchor="middle" fill="#fff8ee" font-family="Arial, Helvetica, sans-serif" font-size="34" font-weight="900" letter-spacing="9">MSHPIT</text>
-  <text x="540" y="1842" text-anchor="middle" fill="#9e97ad" font-family="Courier New, monospace" font-size="16" font-weight="800" letter-spacing="3.4">OPEN THE SHOW ON MSHPIT</text>
-  <text x="540" y="1882" text-anchor="middle" fill="#5f596a" font-family="Courier New, monospace" font-size="10" font-weight="700" letter-spacing="2.4">NOT VALID FOR ENTRY</text>
+  ${communityMarkSvg({ x: left + 22, y: card.stubTop + 66, scale: 0.07, opacity: 1 })}
+  <text x="${left + 64}" y="${card.stubTop + 77}" fill="#fff8ee" font-family="Arial, Helvetica, sans-serif" font-size="30" font-weight="900" letter-spacing="7">MSHPIT</text>
+  <text x="${left}" y="${card.stubTop + 124}" fill="${palette.start}" font-family="Arial, Helvetica, sans-serif" font-size="28" font-weight="800">See it on mshpit.com</text>
+  <text x="${right}" y="${card.stubTop + 124}" text-anchor="end" fill="#8f86a3" font-family="Arial, Helvetica, sans-serif" font-size="22" font-weight="700">Not valid for entry</text>
 </svg>`;
 }
 

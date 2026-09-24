@@ -30,6 +30,13 @@ test("posts and exact event attendance share through one reusable studio", () =>
   assert.doesNotMatch(studio, /LocalShareCard|model\.artworkUri/,
     "raw client artwork must not masquerade as the final server-rendered card");
   assert.match(studio, /<AuthoritativeShareCardPlaceholder status=\{assetState\.status\} \/>/);
+  assert.match(studio, /<ShareCardReveal key=\{preparedAsset\.previewUri\} style=\{styles\.finalPreview\}>/,
+    "each finished card prints in once, and a new card replays the reveal");
+  assert.doesNotMatch(studio, /SHARE FROM MSHPIT|PREPARING THE FINAL CARD|>TRY AGAIN<|\u2014/u,
+    "the share sheet speaks in plain sentence case");
+  const reveal = source("../components/ShareCardReveal.jsx");
+  assert.match(reveal, /useReducedMotion\(\)/, "the reveal respects Reduce Motion");
+  assert.match(reveal, /if \(reduceMotion\) \{\s*rise\.setValue\(1\);/);
   assert.match(studio, /accessibilityLabel="Retry share artwork"/);
   assert.match(studio, /setRenderAttempt\(\(attempt\) => attempt \+ 1\)/);
   assert.match(studio, /\[accountId, renderAttempt, renderModel\]/,

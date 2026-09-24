@@ -193,7 +193,7 @@ test("event artwork requires the member's exact saved Going or Interested state"
   assert.equal(result.headers["Cache-Control"], "private, no-store");
   assert.equal(result.headers.Link, '<https://www.mshpit.com/event/event_123>; rel="canonical"');
   assert.equal(ctx.headers["Cache-Control"], "private, no-store");
-  assert.equal(going.renderedModels[0].kicker, "Alex IS GOING");
+  assert.equal(going.renderedModels[0].kicker, "Alex is going");
 
   const mismatch = fixture({ attendanceState: "interested" });
   await assert.rejects(

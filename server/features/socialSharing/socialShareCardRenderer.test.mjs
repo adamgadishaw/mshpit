@@ -109,7 +109,7 @@ test("event and review models accept only public projection fields and canonical
   assert.equal(review.kicker, "Alex");
   assert.equal(
     eventShareCardModel(eventDocument(), "interested", { authorName: "Alex" }).kicker,
-    "Alex IS INTERESTED",
+    "Alex is interested",
   );
   const serialized = JSON.stringify({ event, review });
   for (const secret of [
@@ -252,29 +252,27 @@ test("portrait preparation preserves the pixels needed by explicit focal alignme
     "the review hero keeps its existing centered crop");
 });
 
-test("attendance cards keep one ticket geometry and place the RSVP disclaimer in bottom fine print", () => {
+test("attendance cards keep one ticket geometry and put the entry disclaimer on the stub", () => {
   const model = eventShareCardModel(eventDocument(), "going");
   const withoutPhoto = socialShareCardSvg(model);
   const withPhoto = socialShareCardSvg(model, {
     artworkDataUri: "data:image/jpeg;base64,/9j/2Q==",
   });
   const geometry = (svg) => ({
-    hero: /data-section="attendance-hero-copy" data-kicker-y="(\d+)" data-artist-y="(\d+)"[\s\S]*?data-subtitle-y="(\d+)"/u.exec(svg)?.slice(1),
-    meta: /data-section="attendance-meta"/u.test(svg),
+    hero: /data-section="attendance-hero-copy" data-artist-y="(\d+)"[\s\S]*?data-subtitle-y="(\d+)"/u.exec(svg)?.slice(1),
+    meta: /data-section="attendance-meta" data-detail-top="(\d+)"/u.exec(svg)?.[1],
   });
 
   assert.deepEqual(geometry(withoutPhoto), geometry(withPhoto));
   for (const svg of [withoutPhoto, withPhoto]) {
-    assert.match(svg, /<rect x="40" y="328" width="1000" height="632" fill="#121018"\/>/u);
-    assert.match(svg, /<rect x="40" y="960" width="1000" height="390" fill="#1d1434"\/>/u);
-    assert.match(svg, /<rect x="40" y="1350" width="1000" height="330" fill="#251940"\/>/u);
-    assert.match(svg, />MSHPIT<\/text>/u);
-    assert.match(svg, />LIVE MUSIC, REMEMBERED<\/text>/u);
-    assert.match(svg, />MSHPIT RSVP<\/text>/u);
-    assert.match(svg, />RSVP<\/text>/u);
-    assert.doesNotMatch(svg, /SOCIAL RSVP|MSHPIT \/ GOING/u);
-    assert.ok(svg.indexOf("NOT VALID FOR ENTRY") > svg.indexOf("OPEN THE SHOW ON MSHPIT"));
+    assert.match(svg, /<rect x="60" y="250" width="960" height="700" fill="#121018"\/>/u);
+    assert.match(svg, /<rect x="60" y="1410" width="960" height="150" fill="#251940"\/>/u);
+    assert.equal((svg.match(/>MSHPIT</gu) || []).length, 1, "one wordmark, on the stub");
+    assert.match(svg, /data-section="attendance-stamp"[\s\S]*>GOING<\/text>/u);
+    assert.doesNotMatch(svg, /LIVE MUSIC, REMEMBERED|MSHPIT RSVP|SOCIAL RSVP|MSHPIT \/ GOING/u);
+    assert.ok(svg.indexOf("Not valid for entry") > svg.indexOf("See it on mshpit.com"));
   }
+  assert.match(socialShareCardSvg(eventShareCardModel(eventDocument(), "interested")), />INTERESTED<\/text>/u);
 });
 
 test("share models never normalize impossible calendar dates into a different day", () => {
@@ -302,12 +300,13 @@ test("SVG artwork bounds pathological words, escapes authored text, and uses one
   assert.match(svg, /…/u);
   assert.match(svg, />MSHPIT</u);
   assert.doesNotMatch(svg, /MSH PIT/u);
-  assert.match(svg, /OPEN THE REVIEW ON MSHPIT/u);
-  assert.doesNotMatch(svg, /OPEN THE SHOW ON MSHPIT/u);
+  assert.match(svg, /Read it on mshpit\.com/u);
+  assert.doesNotMatch(svg, /LIVE MUSIC, REMEMBERED|SEE THE FULL NIGHT/u, "the review card carries the brand once, on its stub");
+  assert.doesNotMatch(svg, /See it on mshpit\.com/u);
 
   const eventSvg = socialShareCardSvg(eventShareCardModel(eventDocument(), "going"));
-  assert.match(eventSvg, /OPEN THE SHOW ON MSHPIT/u);
-  assert.doesNotMatch(eventSvg, /OPEN THE REVIEW ON MSHPIT/u);
+  assert.match(eventSvg, /See it on mshpit\.com/u);
+  assert.doesNotMatch(eventSvg, /Read it on mshpit\.com/u);
 });
 
 test("photo attendance layout keeps worst-case authored text inside the hero and metadata regions", async () => {
@@ -322,15 +321,14 @@ test("photo attendance layout keeps worst-case authored text inside the hero and
   const svg = socialShareCardSvg(model, {
     artworkDataUri: "data:image/jpeg;base64,/9j/2Q==",
   });
-  const hero = /data-section="attendance-hero-copy" data-kicker-y="(\d+)" data-artist-y="(\d+)" data-artist-lines="(\d+)" data-subtitle-y="(\d+)" data-subtitle-lines="(\d+)"/u.exec(svg);
+  const hero = /data-section="attendance-hero-copy" data-artist-y="(\d+)" data-artist-lines="(\d+)" data-subtitle-y="(\d+)" data-subtitle-lines="(\d+)" data-hero-bottom="(\d+)"/u.exec(svg);
   assert.ok(hero);
-  const [, kickerY, artistY, artistLineCount, subtitleY, subtitleLineCount] = hero.map(Number);
-  assert.ok(kickerY < artistY);
-  assert.ok(artistY + ((artistLineCount - 1) * 80) < subtitleY);
-  assert.ok(subtitleY + ((subtitleLineCount - 1) * 38) < 960);
+  const [, artistY, artistLineCount, subtitleY, subtitleLineCount, heroBottom] = hero.map(Number);
+  assert.ok(artistY - 84 > 250, "the artist starts below the top of the card");
+  assert.ok(artistY + ((artistLineCount - 1) * 88) < subtitleY);
+  assert.ok(subtitleY + ((subtitleLineCount - 1) * 40) < heroBottom);
   assert.match(svg, /clip-path="url\(#attendanceHeroCopy\)"/u);
   assert.match(svg, /clip-path="url\(#attendancePlace\)"/u);
-  assert.match(svg, /clip-path="url\(#attendanceStatement\)"/u);
   assert.match(svg, /…/u);
   const photo = await sharp({
     create: {
@@ -464,14 +462,15 @@ test("renderer rejects unsupported decoded formats and artwork above the pixel c
   assert.ok(oversized.length < socialShareCardConstants.artworkInputBytes);
   assert.ok(4_001 * 3_000 > socialShareCardConstants.artworkInputPixels);
 
+  const pixel = async (bytes) => [...await sharp(bytes)
+    .extract({ left: 500, top: 500, width: 1, height: 1 })
+    .removeAlpha()
+    .raw()
+    .toBuffer()];
+  const noPhoto = await pixel(await renderSocialShareCardPng(model));
   for (const artworkBytes of [oversized, unsupported]) {
     const output = await renderSocialShareCardPng(model, { artworkBytes });
-    const sample = await sharp(output)
-      .extract({ left: 500, top: 500, width: 1, height: 1 })
-      .removeAlpha()
-      .raw()
-      .toBuffer();
-    assert.ok(sample[0] < 100, "rejected artwork must use the dark no-photo hero");
+    assert.deepEqual(await pixel(output), noPhoto, "rejected artwork renders exactly like a card with no photo");
   }
 });
 
@@ -897,4 +896,34 @@ test("a share request deadline never releases memory while its native renderer i
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(released, true);
   } finally { clearTimeout(keepAlive); releaseRender(); }
+});
+
+test("the review story keeps its content inside Instagram's safe area and leads with the reviewer and rating", () => {
+  const svg = socialShareCardSvg(reviewShareCardModel(reviewDocument()));
+  const baselines = [...svg.matchAll(/<text[^>]* y="(\d+(?:\.\d+)?)"/gu)].map((match) => Number(match[1]));
+  assert.ok(baselines.length > 5);
+  assert.ok(Math.min(...baselines) >= 250, `text starts at ${Math.min(...baselines)}; Instagram covers the top 250px`);
+  assert.ok(Math.max(...baselines) <= 1580, `text ends at ${Math.max(...baselines)}; Instagram covers the bottom of the story`);
+  assert.match(svg, />Alex&apos;s review<\/text>/u, "the reviewer leads, escaped like all authored text");
+  assert.match(svg, /data-section="review-rating"/u);
+  assert.equal((svg.match(/<polygon /gu) || []).length >= 5, true, "five drawn stars");
+  assert.equal((svg.match(/>MSHPIT</gu) || []).length, 1, "one wordmark");
+  const sizes = [...svg.matchAll(/font-size="(\d+)"/gu)].map((match) => Number(match[1]));
+  assert.ok(Math.min(...sizes) >= 28, `smallest story text is ${Math.min(...sizes)}px; below 28 it is unreadable on a phone`);
+  assert.doesNotMatch(svg, /\u2014/u);
+});
+
+test("the event story drops copy Instagram covers or that says nothing to a viewer", () => {
+  const svg = socialShareCardSvg(eventShareCardModel(eventDocument(), "going", { authorName: "Alex" }));
+  assert.doesNotMatch(svg, /YOUR NIGHT\. YOUR TICKET\.|>SEATING<|>NOT SHARED<|OPEN THE SHOW ON MSHPIT|VIEW SHOW/u);
+  assert.match(svg, />Alex is going<\/text>/u);
+  const baselines = [...svg.matchAll(/<text[^>]* y="(\d+(?:\.\d+)?)"/gu)].map((match) => Number(match[1]));
+  assert.ok(Math.min(...baselines) >= 250, `text starts at ${Math.min(...baselines)}; Instagram covers the top 250px`);
+  assert.ok(Math.max(...baselines) <= 1580, `text ends at ${Math.max(...baselines)}; Instagram covers the bottom of the story`);
+  const sizes = [...svg.matchAll(/font-size="(\d+)"/gu)].map((match) => Number(match[1]));
+  assert.ok(Math.min(...sizes) >= 22, `smallest story text is ${Math.min(...sizes)}px`);
+  assert.equal(eventShareCardModel(eventDocument(), "going").kicker, "Going to this show", "no slogan when the member has no name");
+  const interested = eventShareCardModel(eventDocument(), "interested", { authorName: "Alex" });
+  assert.equal(interested.kicker, "Alex is interested");
+  assert.doesNotMatch(JSON.stringify(interested), /\u2014/u);
 });
