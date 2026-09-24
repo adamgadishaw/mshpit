@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Linking, View, Text, StyleSheet, Pressable, Platform, Modal } from "react-native";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Animated, Linking, View, Text, StyleSheet, Pressable, PanResponder, Platform, Modal } from "react-native";
 import { useEvent } from "expo";
 import { useVideoPlayer, VideoView } from "expo-video";
 import { colors, focusRing, mono, radius } from "../theme";
@@ -8,6 +8,8 @@ import ClipPoster from "./ClipPoster";
 import SmartImage from "./SmartImage";
 import { mediaDisplayKind, mediaDisplayUri, mediaPosterUri } from "../domain/postMediaDisplay.mjs";
 import {
+  galleryGestureAction,
+  galleryGestureAxis,
   galleryItemPostId,
   galleryKeyAction,
   normalizedGalleryIndex,
@@ -285,6 +287,36 @@ export default function PhotoViewer({
   const reactionScope = reactionItems.map((item) => `${item.postId}:${item.url}`).join("|");
   const prev = () => setI((x) => (x - 1 + photos.length) % photos.length);
   const next = () => setI((x) => (x + 1) % photos.length);
+
+  // Touch: swipe a photo sideways to move, pull it down to close. The photo
+  // follows the finger and springs back when the drag is too short. The
+  // responder claims only a clear move, so a tap still reaches its target.
+  const swipeDrag = useRef(new Animated.ValueXY()).current;
+  const swipeAxis = useRef(null);
+  const swipeTargets = useRef({});
+  swipeTargets.current = { next, prev, onClose, count: photos.length };
+  const settleSwipe = (from = null) => {
+    if (from) swipeDrag.setValue(from);
+    Animated.spring(swipeDrag, { toValue: { x: 0, y: 0 }, bounciness: 0, speed: 18, useNativeDriver: !web }).start();
+  };
+  const swipe = useMemo(() => PanResponder.create({
+    onMoveShouldSetPanResponder: (_, gesture) => galleryGestureAxis(gesture) !== null,
+    onPanResponderGrant: (_, gesture) => { swipeAxis.current = galleryGestureAxis(gesture); },
+    onPanResponderMove: (_, gesture) => {
+      if (swipeAxis.current === "x") swipeDrag.setValue({ x: gesture.dx, y: 0 });
+      else if (swipeAxis.current === "y") swipeDrag.setValue({ x: 0, y: Math.max(0, gesture.dy) });
+    },
+    onPanResponderRelease: (_, gesture) => {
+      const targets = swipeTargets.current;
+      const action = galleryGestureAction({ axis: swipeAxis.current, dx: gesture.dx, dy: gesture.dy, count: targets.count });
+      swipeAxis.current = null;
+      if (action === "close") { targets.onClose?.(); return; }
+      if (action === "next") { targets.next(); settleSwipe({ x: 72, y: 0 }); return; }
+      if (action === "prev") { targets.prev(); settleSwipe({ x: -72, y: 0 }); return; }
+      settleSwipe();
+    },
+    onPanResponderTerminate: () => { swipeAxis.current = null; settleSwipe(); },
+  }), [swipeDrag]); // eslint-disable-line react-hooks/exhaustive-deps
   const dotWindowSize = 12;
   const dotStart = Math.max(0, Math.min(
     i - Math.floor(dotWindowSize / 2),
@@ -456,7 +488,11 @@ export default function PhotoViewer({
             renders here instead of a black void. Clips get a real player. */}
         {video
           ? <ClipStage key={uri} uri={uri} posterUri={posterUri} postId={currentPostId} onTrack={track} altText={altText} width={mediaWidth} height={mediaHeight} />
-          : <SmartImage uri={uri} mediaKind="image" style={styles.img} contain accessibilityLabel={altText || "Full-size photo"} />}
+          : (
+            <Animated.View style={[styles.swipeLayer, { transform: swipeDrag.getTranslateTransform() }]} {...swipe.panHandlers}>
+              <SmartImage uri={uri} mediaKind="image" style={styles.img} contain accessibilityLabel={altText || "Full-size photo"} />
+            </Animated.View>
+          )}
         {photos.length > 1 && (
           <>
             <Pressable style={[styles.arrow, { left: 10 }]} onPress={prev} hitSlop={10} accessibilityRole="button" accessibilityLabel="Previous media">
@@ -548,6 +584,7 @@ const styles = StyleSheet.create({
   closeBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: "rgba(255,255,255,0.1)", alignItems: "center", justifyContent: "center" },
   stage: { flex: 1, minWidth: 0, minHeight: 0, overflow: "hidden" },
   img: { flex: 1, backgroundColor: "transparent" },
+  swipeLayer: { flex: 1 },
   clipStageBounds: { flex: 1, width: "100%", height: "100%", minWidth: 0, minHeight: 0, alignItems: "center", justifyContent: "center", overflow: "hidden" },
   clipViewport: { flex: 1, width: "100%", height: "100%", minWidth: 0, minHeight: 0, overflow: "hidden", backgroundColor: "#06070b" },
   clipViewportWeb: { maxWidth: 1280, alignSelf: "center" },

@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
+  galleryGestureAction,
+  galleryGestureAxis,
   galleryItemPostId,
   galleryKeyAction,
   normalizedGalleryIndex,
@@ -141,4 +143,23 @@ test("the viewer captures its opener before RN Web mounts the modal portal", asy
   assert.match(viewer, /const currentPostId = galleryItemPostId\(p, postId\)/);
   assert.match(viewer, /<ClipStage[^>]*postId=\{currentPostId\}/);
   assert.match(viewer, /toggleMediaReaction\(uri, currentPostId\)/);
+});
+
+test("gallery drags pick one axis only after they clearly move", () => {
+  assert.equal(galleryGestureAxis({ dx: 5, dy: 3 }), null, "a tap wobble is not a swipe");
+  assert.equal(galleryGestureAxis({ dx: -40, dy: 6 }), "x");
+  assert.equal(galleryGestureAxis({ dx: 4, dy: 50 }), "y");
+  assert.equal(galleryGestureAxis({ dx: 4, dy: -50 }), null, "an upward flick never dismisses");
+  assert.equal(galleryGestureAxis({ dx: 30, dy: 28 }), null, "a diagonal is ambiguous and ignored");
+  assert.equal(galleryGestureAxis({ dx: "x", dy: undefined }), null);
+});
+
+test("gallery swipes move between items and a long pull down closes", () => {
+  assert.equal(galleryGestureAction({ axis: "x", dx: -80, count: 3 }), "next");
+  assert.equal(galleryGestureAction({ axis: "x", dx: 80, count: 3 }), "prev");
+  assert.equal(galleryGestureAction({ axis: "x", dx: -30, count: 3 }), null, "a short drag springs back");
+  assert.equal(galleryGestureAction({ axis: "x", dx: -200, count: 1 }), null, "a single item has nowhere to go");
+  assert.equal(galleryGestureAction({ axis: "y", dy: 150, count: 1 }), "close");
+  assert.equal(galleryGestureAction({ axis: "y", dy: 90, count: 3 }), null);
+  assert.equal(galleryGestureAction({ axis: null, dx: -200, dy: 200, count: 3 }), null);
 });

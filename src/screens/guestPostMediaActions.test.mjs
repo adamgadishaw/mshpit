@@ -45,6 +45,13 @@ function fixture(name, initialSession, overrides = {}, storeOverrides = {}) {
       ActivityIndicator: "ActivityIndicator", View: "View", Text: "Text", ScrollView: "ScrollView",
       Pressable: "Pressable", TextInput: "TextInput", Modal: "Modal", Alert: { alert() {} }, Linking: {},
       Platform: { OS: "web" }, StyleSheet: { create: (styles) => styles, absoluteFill: {}, absoluteFillObject: {} },
+      // The viewer's swipe layer: a still value and a gesture layer that never fires.
+      Animated: {
+        View: "Animated.View",
+        ValueXY: class { setValue() {} getTranslateTransform() { return []; } },
+        spring: () => ({ start() {} }),
+      },
+      PanResponder: { create: () => ({ panHandlers: {} }) },
     };
     if (dependency === "expo") return { useEvent: () => ({}) };
     if (dependency === "expo-video") return { VideoView: "VideoView", useVideoPlayer: () => ({}) };
