@@ -65,7 +65,8 @@ ENV NODE_ENV=production \
 
 USER node
 # Convert real AVI, Matroska, WebM-labelled and interlaced MPEG clips with the
-# exact commands a member upload uses. A failure here stops the image build.
+# exact commands a member upload uses (universal admission). A failure here
+# stops the image build, so Render keeps the converter that is already running.
 RUN node server/videoVerifierService.js --self-test
 EXPOSE 10001
 STOPSIGNAL SIGTERM
