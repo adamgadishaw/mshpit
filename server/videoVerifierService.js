@@ -1405,6 +1405,26 @@ export function createVideoVerifierService({
   };
 }
 
+// The self-test's own runner keeps FFmpeg's error text so a failed image build
+// names the exact step and reason. Only generated test clips pass through it.
+function selfTestRunner(executable, args, { cwd } = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(executable, args, { cwd, env: safeChildEnvironment(cwd), stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    const stdout = [];
+    const stderr = [];
+    child.stdout.on("data", (chunk) => stdout.push(chunk));
+    child.stderr.on("data", (chunk) => stderr.push(chunk));
+    child.on("error", reject);
+    child.on("close", (code) => {
+      const out = Buffer.concat(stdout).toString("utf8");
+      const err = Buffer.concat(stderr).toString("utf8");
+      if (code === 0) { resolve({ stdout: out, stderr: err }); return; }
+      const step = `${executable.split("/").pop()} ${args.filter((arg) => !String(arg).startsWith("/")).slice(0, 40).join(" ")}`;
+      reject(Object.assign(new Error(`${step} (exit ${code}): ${err.trim().split("\n").slice(-6).join(" | ")}`), { code: "decode_failed", status: 422 }));
+    });
+  });
+}
+
 // Run by the image build (`--self-test`). FFmpeg makes small clips in formats
 // the MP4/MOV path rejects and each is converted exactly as a member upload
 // would be. A wrong command fails the build, so Render keeps the running worker.
@@ -1413,7 +1433,7 @@ export async function runVideoVerifierSelfTest({
     ffmpeg: cleanExecutable(process.env.PIT_FFMPEG_PATH, "ffmpeg"),
     ffprobe: cleanExecutable(process.env.PIT_FFPROBE_PATH, "ffprobe"),
   },
-  runProcess = runVerifierProcess,
+  runProcess = selfTestRunner,
   temporaryRoot = tmpdir(),
 } = {}) {
   const directory = await mkdtemp(join(temporaryRoot, "pit-video-selftest-"));
@@ -1457,7 +1477,11 @@ export async function runVideoVerifierSelfTest({
 
 async function main() {
   if (process.argv.includes("--self-test")) {
-    const results = await runVideoVerifierSelfTest();
+    const results = await runVideoVerifierSelfTest().catch((error) => {
+      const causes = [];
+      for (let cause = error; cause; cause = cause.cause) causes.push(cause.message);
+      throw new Error(`self-test failed: ${causes.join(" <- caused by: ")}`);
+    });
     process.stdout.write(`[video-verifier] self-test converted ${results.map((item) => `${item.name} ${item.width}x${item.height}`).join(", ")}\n`);
     return;
   }
