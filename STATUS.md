@@ -6,11 +6,18 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
-## 2026-09-23 design makeover branch (awaiting owner review)
+## 2026-09-24 design makeover (owner reviewed, merged to master)
 
-Branch `design/opus-makeover`, local only. The owner asked for review before
-anything is pushed, so none of this is on `master` or deployed. `npm run check`
-passes on the branch head: 5,356 tests, initial JS 505.2 KiB of 512 KiB.
+Built on `design/opus-makeover` and held for the owner's review, which
+approved it on 2026-09-24 after seeing it locally. It was fast-forwarded onto
+`master` (no other commits had landed) and pushed. `npm run check` passed on the
+branch and on `master`.
+
+- Landing logo: the community mark sits above the headline with its two rings
+  turning against each other, ten turns one way and ten back, ending upright
+  and holding still between runs. Only the logo is drawn; the owner rejected a
+  version with ticks, a centre star and sparks. It is decorative, ignores
+  pointers and stays still with Reduce Motion.
 
 - Landing: one headline, one sentence, two buttons. The proof tiles, live rail
   and slogan kicker are gone, and the server-rendered home page matches.

@@ -4,6 +4,7 @@ import { Image as ExpoImage } from "expo-image";
 import Svg, { Defs, LinearGradient, Stop, Rect } from "react-native-svg";
 import { displayFont, focusRing, mono, radius } from "../theme";
 import BrandMark from "../components/BrandMark";
+import LandingPortalMark from "../components/LandingPortalMark";
 import { PublicPressableLink } from "../components/PublicWebLinks";
 import { useStore } from "../store";
 import {
@@ -254,6 +255,11 @@ export default function LandingScreen({ session = null, onLogin, onSignup, onOpe
         automaticallyAdjustsScrollIndicatorInsets
       >
         <View style={[wide ? styles.blockWide : styles.blockNarrow, compact && styles.blockNarrowCompact]}>
+          <LandingPortalMark
+            size={compact ? 88 : wide ? 180 : 144}
+            animate={appActive && !reduceMotion}
+            style={compact ? styles.portalCompact : styles.portal}
+          />
           <Text
             style={[styles.headline, !wide && styles.headlineNarrow, compact && styles.headlineCompact]}
             accessibilityRole="header"
@@ -337,6 +343,8 @@ const styles = StyleSheet.create({
   blockNarrow: { width: "100%", maxWidth: 560, alignItems: "center" },
   blockNarrowCompact: { maxWidth: 380 },
 
+  portal: { marginBottom: 20 },
+  portalCompact: { marginBottom: 10 },
   headline: {
     color: "#FFFFFF", fontFamily: displayFont, fontSize: 64, lineHeight: 66, fontWeight: "900", letterSpacing: -1.6,
     ...(Platform.OS === "web" ? { textShadow: "0 1px 18px rgba(0,0,0,0.55)" } : { textShadowColor: "rgba(0,0,0,0.55)", textShadowRadius: 18 }),
