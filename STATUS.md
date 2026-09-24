@@ -6,6 +6,23 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-09-24 video converter now takes every format (live)
+
+- Live since about 14:20 UTC: `/api/health?mediaPipeline=private-derivative-v1`
+  lists all thirteen source types, and the converter reports `universal-v1`.
+- Why it took several pushes: the push carrying the converter change failed
+  GitHub's `browser-regressions` check (the tests expected the old landing and
+  You screens), so Render's `checksPass` trigger skipped it; the fix-up push
+  touched no file in the converter's build filter, so Render did not rebuild
+  it. A converter-file commit triggered the build, whose new `--self-test`
+  then failed because FFmpeg 9 removed the `-top` encoder option used for the
+  interlaced MPEG sample (`setfield=tff` replaces it). The AVI, Matroska and
+  WebM samples had already converted. Each failed build left the previous
+  converter running.
+- The self-test now reports the exact FFmpeg command and error text.
+- Lesson: when a converter change lands with failing checks, the next green
+  push must touch a build-filter path (or use Manual Deploy) to ship it.
+
 ## 2026-09-24 design makeover (owner reviewed, merged to master)
 
 Built on `design/opus-makeover` and held for the owner's review, which
