@@ -45,12 +45,12 @@ const PAGES = Object.freeze({
     note: "Mshpit is an independent fan community. Artist, venue, and ticket-provider names identify the subject of a page and do not imply endorsement.",
     sections: [
       {
-        heading: "A live-music history built with other fans",
-        paragraphs: ["Members can record the date, artist, venue, rating, review, and media from a concert. Those memories build a personal live-music history while contributing to artist and concert communities that help other fans understand what a show actually felt like."],
+        heading: "What you can do here",
+        paragraphs: ["Log a concert with the date, artist and venue, then add a rating, a review, photos or video. Your logged shows make up your concert history, and your review also appears on the artist, venue and concert pages so other fans can see how the night went."],
       },
       {
-        heading: "Discovery through real live-music taste",
-        paragraphs: ["Mshpit connects artist pages, upcoming event information, venue pages, and reviews. The goal is to make discovery feel human: not only what is popular, but what moved people whose taste you trust."],
+        heading: "Finding your next show",
+        paragraphs: ["Artist, venue and event pages link to each other and to the reviews written about them. You can follow people whose reviews you agree with and see the shows they are going to."],
         links: [link("Browse artists", "/artists"), link("Browse upcoming concerts", "/events")],
       },
       {

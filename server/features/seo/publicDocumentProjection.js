@@ -989,9 +989,9 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       const upcomingSignal = hasUpcomingShows
         ? `${upcomingTotal} upcoming ${upcomingTotal === 1 ? "show" : "shows"}` : null;
       const artistTitle = legacyMode
-        ? `${name} legacy — biography and community memories | Mshpit`
+        ? `${name} legacy: biography and community memories | Mshpit`
         : memorial
-        ? `Remembering ${name} — music, shows and fan memories | Mshpit`
+        ? `Remembering ${name}: music, shows and fan memories | Mshpit`
         : hasReviews && hasUpcomingShows
         ? `${name} concert reviews & upcoming shows | Mshpit`
         : hasReviews && hasFanPhotos && averageRating != null
@@ -1207,9 +1207,9 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       const isOnlineReview = card.kind === "review" && card.experienceType === "online";
       const isReview = card.kind === "review" && !!card.artist;
       const headline = isOnlineReview
-        ? `${card.onlineTitle || card.artist || "Online concert"} — ${card.author.name}'s online concert review`
+        ? `${card.onlineTitle || card.artist || "Online concert"}: ${card.author.name}'s online concert review`
         : isReview
-        ? `${card.artist}${card.venue ? ` at ${card.venue}` : ""} — ${card.author.name}'s review`
+        ? `${card.artist}${card.venue ? ` at ${card.venue}` : ""}: ${card.author.name}'s review`
         : `${card.author.name}: ${summary(card.text, 72) || "a music update"}`;
       const description = summary(card.text || `${headline}.`);
       const imageUrls = media.flatMap((asset) => asset.kind === "image" ? [asset.url] : (asset.posterUrl ? [asset.posterUrl] : []));
@@ -1442,7 +1442,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       return Object.freeze({
         kind: "concert",
         siteName: SITE_NAME,
-        title: `${artist} at ${venue} — reviews from ${date} | Mshpit`,
+        title: `${artist} at ${venue}, ${date}: fan reviews | Mshpit`,
         description,
         canonicalPath: path,
         canonicalUrl: pageUrl,
@@ -1813,7 +1813,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       const titleBase = isArtists ? "Artists with live reviews and concert archives"
         : isVenues ? "Concert venues, reviews and upcoming shows"
           : isConcerts ? "Fan-rated concert archive" : "Upcoming concerts around the world";
-      const title = titleBase + (page > 1 ? ' — Page ' + page : '') + ' | Mshpit';
+      const title = titleBase + (page > 1 ? ' - Page ' + page : '') + ' | Mshpit';
       const description = isArtists
         ? "Browse artist pages with reviews, concert photos, upcoming shows and historical live archives on Mshpit."
         : isVenues
@@ -1824,7 +1824,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       const directoryLabel = isArtists ? "Artists" : isVenues ? "Venues" : isConcerts ? "Concert archive" : "Events";
       const breadcrumbs = Object.freeze([
         Object.freeze({ name: "Mshpit", path: "/" }),
-        Object.freeze({ name: page > 1 ? `${directoryLabel} — Page ${page}` : directoryLabel, path }),
+        Object.freeze({ name: page > 1 ? `${directoryLabel} - Page ${page}` : directoryLabel, path }),
       ]);
       const directoryItems = isArtists ? artists : isVenues ? venues : isConcerts ? concerts : events;
       const items = directoryItems.slice(0, 100).map((item, index) => {

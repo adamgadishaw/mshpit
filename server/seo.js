@@ -56,11 +56,11 @@ import { publicTourDateArtistProjection, publicTourDateProviderFields } from "./
 import { inPersonReviewSql } from "./onlineReviews.js";
 import { hasSubstantiveVenueGuide } from "./venueFacts.js";
 import { appPageTitle } from "../src/domain/appPageMetadata.mjs";
+import { LANDING_IDENTITY_COPY } from "../src/domain/landingPresentation.mjs";
 
 const SITE_NAME = "Mshpit";
-const DEFAULT_TITLE = "Mshpit — Concert reviews, photos and live music discovery";
-const DEFAULT_DESCRIPTION =
-  "Log the concerts that shape your story, share the nights you were there, and discover live music through people whose taste you trust.";
+const DEFAULT_TITLE = "Mshpit: concert reviews, photos and live music discovery";
+const DEFAULT_DESCRIPTION = LANDING_IDENTITY_COPY.body;
 
 function configuredOrigin(env = process.env) {
   try {
@@ -647,7 +647,7 @@ function legacyMetadata(resolution) {
       kind: "venue",
       name: entity.name,
       path: entity.path,
-      title: `${entity.name} — live music on Mshpit`,
+      title: `${entity.name} | Live music on Mshpit`,
       description: `Open ${entity.name} on Mshpit.`,
       image: null,
     };

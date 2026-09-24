@@ -161,7 +161,7 @@ test("city venue documents have clean page metadata, safe venue links, JSON-LD p
   assertItemParity(second,second.venues);
   const rendered = renderPublicDocument(second);
   assert.match(rendered,/Toronto, Canada/);
-  assert.match(rendered,/<h1>Concert venues in Toronto, Canada — Page 2<\/h1>/u);
+  assert.match(rendered,/<h1>Concert venues in Toronto, Canada - Page 2<\/h1>/u);
   assert.match(rendered,/Provider Hall/);
   assert.match(rendered,/3 upcoming shows · Next: <time datetime="2026-09-19">September 19, 2026<\/time>/u);
   assert.equal(rendered.includes('href="/concerts/ca/toronto"'),true);
@@ -360,7 +360,7 @@ test("artist archive documents use the known artist identity, exact pagination, 
   assert.equal(second.concerts[0].path,`/concert/${encodeURIComponent(expectedKey)}`);
   const rendered = renderPublicDocument(second);
   assert.equal(rendered.includes('href="/artist/bruno-mars"'),true);
-  assert.match(rendered,/<h1>Bruno Mars concert archive — Page 2<\/h1>/u);
+  assert.match(rendered,/<h1>Bruno Mars concert archive - Page 2<\/h1>/u);
 });
 
 test("unqualified repository results and missing canonical artist identity return null", () => {

@@ -7,10 +7,10 @@ const today = "2026-09-01";
 
 test("event metadata uses the actual event, venue, city and readable calendar date without invented content", () => {
   const metadata = publicEventMetadata(event(), { today });
-  assert.equal(metadata.title, "River Band at Main Hall — Sep 8, 2026 | Mshpit");
-  assert.match(metadata.description, /River Band at Main Hall in Toronto, ON — Sep 8, 2026/);
+  assert.equal(metadata.title, "River Band at Main Hall, Sep 8, 2026 | Mshpit");
+  assert.match(metadata.description, /River Band at Main Hall in Toronto, ON on Sep 8, 2026/);
   assert.doesNotMatch(metadata.description, /tickets|memories|photos|reviews|brings live music/i);
-  assert.equal(publicEventMetadata(event({ name: "River Festival" }), { today }).heading, "River Festival at Main Hall — Sep 8, 2026");
+  assert.equal(publicEventMetadata(event({ name: "River Festival" }), { today }).heading, "River Festival at Main Hall, Sep 8, 2026");
 });
 
 test("cancelled, postponed and rescheduled metadata communicates the known lifecycle before the event name", () => {

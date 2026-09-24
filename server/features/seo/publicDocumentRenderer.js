@@ -429,10 +429,10 @@ function directoryMain(document) {
     return `<li class="artist-card venue-directory-card">${photo}<p class="eyebrow">Live music venue</p><h2>${link(venue.path, venue.name)}</h2>${venue.place ? `<p>${esc(venue.place)}</p>` : ""}${activity}${featured}${venue.reviewCount ? `<p class="micro">${esc(venue.reviewCount)} ${venue.reviewCount === 1 ? "review" : "reviews"}</p>` : ""}</li>`;
   }).join("");
   const concerts = (document.concerts || []).map((concert) => `<li><time datetime="${esc(concert.date)}"><strong>${esc(dateLabel(concert.date))}</strong></time><div><h2>${link(concert.path, `${concert.artist} at ${concert.venue}`)}</h2><p>${link(concert.artistPath, concert.artist)} · ${link(concert.venuePath, concert.venue)}${concert.city ? ` · ${esc(concert.city)}` : ""}</p></div><span class="archive-score">${concert.averageRating != null ? `${esc(concert.averageRating.toFixed(1))}/5 · ` : "No rating yet · "}${esc(concert.reviewCount)} ${concert.reviewCount === 1 ? "review" : "reviews"}</span></li>`).join("");
-  const pageSuffix = document.page > 1 ? ` — Page ${esc(document.page)}` : "";
-  const defaultHeading = kind === "artists" ? "Artists in the live archive"
+  const pageSuffix = document.page > 1 ? ` - Page ${esc(document.page)}` : "";
+  const defaultHeading = kind === "artists" ? "Artists on Mshpit"
     : kind === "venues" ? "Concert venues on Mshpit"
-      : kind === "concerts" ? "Concert nights fans remember" : "Upcoming concerts worldwide";
+      : kind === "concerts" ? "Concerts fans have reviewed" : "Upcoming concerts";
   const heading = cleanCaption(document.heading) || defaultHeading;
   const label = kind === "artists" ? "Artist directory"
     : kind === "venues" ? "Venue directory"

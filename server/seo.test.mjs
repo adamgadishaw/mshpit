@@ -101,10 +101,10 @@ test("SEO metadata, entity routing, and sitemap exclude restricted authors", asy
   assert.equal(metadataFor(profilePath(banned.handle)), null);
   const restrictedHead = headTagsFor(profilePath(suspended.handle));
   assert.match(restrictedHead, /og:type" content="website"/i);
-  assert.match(restrictedHead, /Mshpit — Concert reviews, photos and live music discovery/);
+  assert.match(restrictedHead, /Mshpit: concert reviews, photos and live music discovery/);
   assert.doesNotMatch(restrictedHead, /reviews live music/i);
   const restrictedShell = injectHead("<html><head><title>Pit</title></head></html>", profilePath(suspended.handle));
-  assert.match(restrictedShell, /Mshpit — Concert reviews, photos and live music discovery/,
+  assert.match(restrictedShell, /Mshpit: concert reviews, photos and live music discovery/,
     "the static share shell falls back instead of caching restricted identity copy");
 
   assert.equal(metadataFor(showPath("seo_active_show"))?.kind, "show");

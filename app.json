@@ -2,7 +2,7 @@
   "expo": {
     "name": "Mshpit",
     "slug": "pit",
-    "description": "Log the concerts that shape your story and discover your next unforgettable show.",
+    "description": "Log the concerts you go to, rate the artist and the venue separately, and see photos and reviews from people who were there.",
     "version": "1.0.0",
     "scheme": "mshpit",
     "orientation": "portrait",

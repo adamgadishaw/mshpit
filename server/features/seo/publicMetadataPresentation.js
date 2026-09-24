@@ -45,7 +45,7 @@ export function publicEventMetadata(event, { today, posts = [] } = {}) {
   const past = isStrictCalendarDate(today) && isStrictCalendarDate(lastDate) && lastDate < today;
   const prefix = cancelled ? "Cancelled: " : postponed ? "Postponed: " : rescheduled ? "Rescheduled: " : event?.soldOut && !past ? "Sold out: " : "";
   const dateLabel = publicEventDateLabel(event?.date, event?.endDate);
-  const heading = `${prefix}${identity}${dateLabel ? ` — ${dateLabel}` : ""}`;
+  const heading = `${prefix}${identity}${dateLabel ? `, ${dateLabel}` : ""}`;
   const hasMemories = posts.some((post) => line(post?.text) || post?.media?.length);
   const hasPhotos = posts.some((post) => post?.media?.some((asset) => asset.kind === "image"));
   const details = cancelled ? "This event is cancelled." : postponed ? "The listed date is postponed; check the organizer for updates."
@@ -54,7 +54,7 @@ export function publicEventMetadata(event, { today, posts = [] } = {}) {
   return {
     heading,
     title: `${heading} | Mshpit`,
-    description: publicMetadataSummary(`${prefix}${identity}${place ? ` in ${place}` : ""}${dateLabel ? ` — ${dateLabel}` : ""}. ${details}${community}`),
+    description: publicMetadataSummary(`${prefix}${identity}${place ? ` in ${place}` : ""}${dateLabel ? ` on ${dateLabel}` : ""}. ${details}${community}`),
   };
 }
 

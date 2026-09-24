@@ -1089,7 +1089,7 @@ test("pre-1970 memorial artists render educational legacy profiles without tour 
     assert.notEqual(legacy.image, formerAvatarUrl);
     assert.notEqual(legacy.image, fanImageUrl,
       "former-owner and community media never become the legacy identity image");
-    assert.match(legacy.title, /Alpha legacy — biography and community memories/);
+    assert.match(legacy.title, /Alpha legacy: biography and community memories/);
     assert.match(html, /Educational legacy profile/);
     assert.match(html, /protected educational page/);
     assert.match(html, /Community memories/);
@@ -1418,7 +1418,7 @@ test("event ticket offers require a supported future purchasable state and missi
     const scheduled = documents.eventDocument(options);
     const scheduledHtml = documents.render(scheduled);
 
-    assert.equal(scheduled.title, "Unlisted Touring Artist at World Hall — Sep 1, 2026 | Mshpit");
+    assert.equal(scheduled.title, "Unlisted Touring Artist at World Hall, Sep 1, 2026 | Mshpit");
     assert.match(scheduled.description, /Toronto/);
     assert.doesNotMatch(scheduled.description, /memories|photos|reviews|brings live music/i);
 
@@ -1553,7 +1553,7 @@ test("provider-evidenced festivals expose cohesive visible and structured event 
     });
     const html = documents.render(document);
     const schema = document.jsonLd.find((node) => node["@type"] === "MusicEvent");
-    assert.equal(document.title, "Lollapalooza at Festival Park — Sep 1–4, 2026 | Mshpit");
+    assert.equal(document.title, "Lollapalooza at Festival Park, Sep 1–4, 2026 | Mshpit");
     assert.equal(document.event.eventKind, "festival");
     assert.deepEqual(document.event.billedArtists, ["Headliner One", "Headliner Two"]);
     assert.equal(schema.name, "Lollapalooza");
@@ -1570,7 +1570,7 @@ test("provider-evidenced festivals expose cohesive visible and structured event 
     assert.equal(document.imageProvenance, "provider");
     assert.equal(document.imageWidth, 1920);
     assert.equal(document.imageHeight, 1080);
-    assert.match(html, /<h1>Lollapalooza at Festival Park — Sep 1–4, 2026<\/h1>/);
+    assert.match(html, /<h1>Lollapalooza at Festival Park, Sep 1–4, 2026<\/h1>/);
     assert.match(html, /Lineup:<\/strong> Headliner One · Headliner Two/);
     assert.match(html, /src="https:\/\/s1\.ticketm\.net\/dam\/a\/festival\.jpg"/);
     assert.match(html, /property="og:image:alt" content="Lollapalooza event image"/);
@@ -2086,7 +2086,7 @@ test("global venue and concert directories are bounded, canonical, substantive, 
     assert.equal(providerVenue.featuredEvent.path, "/event/directory-event-01");
     assert.equal(providerVenue.featuredArtistPath, "/artist/alpha");
     const venueHtml = documents.render(venuePageTwo);
-    assert.match(venueHtml, /<h1>Concert venues on Mshpit — Page 2<\/h1>/);
+    assert.match(venueHtml, /<h1>Concert venues on Mshpit - Page 2<\/h1>/);
     assert.match(venueHtml, /href="\/venues">Previous page<\/a>/);
     assert.match(venueHtml, /href="\/event\//);
     assert.match(venueHtml, /href="\/artist\/alpha"/);
@@ -2120,7 +2120,7 @@ test("global venue and concert directories are bounded, canonical, substantive, 
     assert.equal(concertPageOne.concerts[0].artistPath, "/artist/alpha");
     assert.match(concertPageOne.concerts[0].path, /^\/concert\//);
     const concertHtml = documents.render(concertPageOne);
-    assert.match(concertHtml, /<h1>Concert nights fans remember<\/h1>/);
+    assert.match(concertHtml, /<h1>Concerts fans have reviewed<\/h1>/);
     assert.match(concertHtml, /Archive &lt;Room&gt; 13/);
     assert.doesNotMatch(concertHtml, /Archive <Room> 13/);
     assert.match(concertHtml, /No rating yet/);
