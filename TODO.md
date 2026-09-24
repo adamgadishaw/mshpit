@@ -225,6 +225,20 @@ remains a broad context whose changing value can rerender unrelated consumers.
 - Keep feed/list virtualization, lazy media, bounded windows, and abortable
   requests as regression gates.
 
+## Design makeover follow-ups (after the owner reviews `design/opus-makeover`)
+
+- **Search coverage decision:** decide whether provider-only event and
+  catalogue pages stay in the sitemap (about 72,800 URLs against about 109
+  member-made pages).
+- **Video uploads:** deploy and verify the private `pit-video-verifier` service,
+  then confirm a phone video posts end to end.
+- **Photo rejections:** reproduce with a real file the owner says was refused.
+- **Gallery:** pinch to zoom on photos.
+- **Copy:** about 200 small all-caps labels remain inside cards and forms, and
+  ticket-style labels on the show page ("ONE NIGHT ONLY").
+- **Animated story:** an MP4 version of the share card needs a render service
+  with ffmpeg.
+
 ## P1 product and operations backlog
 
 1. **Notifications:** refresh on screen focus/realtime delivery, persist read

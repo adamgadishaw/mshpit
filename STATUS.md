@@ -6,6 +6,40 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-09-23 design makeover branch (awaiting owner review)
+
+Branch `design/opus-makeover`, local only. The owner asked for review before
+anything is pushed, so none of this is on `master` or deployed. `npm run check`
+passes on the branch head: 5,356 tests, initial JS 505.2 KiB of 512 KiB.
+
+- Landing: one headline, one sentence, two buttons. The proof tiles, live rail
+  and slogan kicker are gone, and the server-rendered home page matches.
+- You tab: it is now your own profile, with Inbox, Activity, Calendar and
+  Settings as icons and your memories above the stats. Moderation and "Create
+  or claim an artist page" moved to Settings; taste management moved to
+  Discover.
+- Posting: every post starts as a plain post. "Add a show you went to" turns it
+  into a review in place, and "Remove show" turns it back without losing text.
+- Gallery: photos swipe sideways between items and pull down to close. Videos
+  keep their arrows so a swipe never fights the scrubber.
+- Share cards: both Instagram Story cards keep all text inside y 250 to 1560,
+  where Instagram does not draw its own bars. The review card has drawn stars and
+  the reviewer's name; text-only reviews get a gradient instead of a grey block.
+  The going card has a GOING or INTERESTED stamp on the stub. The share sheet
+  prints the card in with one sweep of light, and skips it with Reduce Motion.
+- Search titles and descriptions: no em-dashes, no slogan descriptions. The
+  default description, app description and About page match the landing.
+- Copy: slogan headings and the small capitals above screen and section titles
+  are gone or sentence case at 12px or larger.
+
+Not in this branch, and why:
+- Video uploads are off in production until the private `pit-video-verifier`
+  Render service is deployed and healthy. That is a dashboard task.
+- Rejected photos need a real failing file from the owner to reproduce.
+- About 72,800 sitemap URLs are provider event and catalogue pages against
+  about 109 member-made pages. Removing the thin ones from Google is an owner
+  decision because it changes search traffic.
+
 ## 2026-09-12 upstream provider alerts
 
 - `GET /api/artists/resolve` returned 502 `PROVIDER_UNAVAILABLE` twice on
