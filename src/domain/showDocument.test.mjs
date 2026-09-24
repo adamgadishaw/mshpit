@@ -43,7 +43,7 @@ test("a real multi-day event remains happening through its inclusive end date", 
 
   assert.equal(showLifecycleView(completed, 0, false, during, cne).lifecycle, "happening");
   assert.equal(showLifecycleView(completed, 0, false, after, cne).lifecycle, "completed");
-  assert.equal(showPresentationModel(showLifecycleView(null, 0, false, during, cne)).screenKicker, "HAPPENING NOW",
+  assert.equal(showPresentationModel(showLifecycleView(null, 0, false, during, cne)).screenKicker, "Happening now",
     "the event payload can preserve honest presentation while a canonical read is unavailable");
 });
 
@@ -136,7 +136,7 @@ test("authoritative lifecycle presentation never mislabels happening, postponed,
     trusted: true,
   });
   assert.deepEqual(trusted("happening"), {
-    screenKicker: "HAPPENING NOW",
+    screenKicker: "Happening now",
     ticketKicker: "LIVE · HAPPENING NOW",
     showCountdown: false,
     showPostEvent: false,
@@ -152,7 +152,7 @@ test("authoritative lifecycle presentation never mislabels happening, postponed,
 
 test("presentation preserves the exact legacy upcoming/past split without a trusted document", () => {
   assert.deepEqual(showPresentationModel({ upcoming: true, trusted: false }), {
-    screenKicker: "UPCOMING PERFORMANCE",
+    screenKicker: "Upcoming concert",
     ticketKicker: "ONE NIGHT · NOT YET PLAYED",
     showCountdown: true,
     showPostEvent: false,

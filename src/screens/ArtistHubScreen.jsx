@@ -33,15 +33,10 @@ import ArtistIdentityStatus from "../components/ArtistIdentityStatus";
 
 const UPDATE_LIMIT = 1000;
 
-function Eyebrow({ children, tone = colors.amber }) {
-  return <Text style={[styles.eyebrow, { color: tone }]}>{children}</Text>;
-}
-
-function SectionTitle({ eyebrow, title, detail, right }) {
+function SectionTitle({ title, detail, right }) {
   return (
     <View style={styles.sectionHead}>
       <View style={styles.sectionCopy}>
-        <Eyebrow>{eyebrow}</Eyebrow>
         <Text style={styles.sectionTitle} accessibilityRole="header">{title}</Text>
         {!!detail && <Text style={styles.sectionDetail}>{detail}</Text>}
       </View>
@@ -109,7 +104,7 @@ function CompletionRow({ item, onPress }) {
 function Unauthorized({ onClose }) {
   return (
     <View style={styles.wrap}>
-      <ScreenHeader kicker="ARTIST HQ" title="Artist account required" onBack={onClose} />
+      <ScreenHeader kicker="Artist tools" title="Artist account required" onBack={onClose} />
       <View style={styles.denied}>
         <View style={styles.deniedIcon}><Icon name="lock" size={28} color={colors.amber} /></View>
         <Text style={styles.deniedTitle}>Set up your artist page first</Text>
@@ -366,7 +361,7 @@ export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEdit
 
   return (
     <View style={styles.wrap}>
-      <ScreenHeader kicker="ARTIST HQ" title={artistName} onBack={onClose} />
+      <ScreenHeader kicker="Artist tools" title={artistName} onBack={onClose} />
       <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
         <View style={styles.container}>
           <View style={styles.hero}>
@@ -429,7 +424,7 @@ export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEdit
 
           <View style={[styles.columns, !wide && styles.columnsStack]}>
             {hasConfirmedArtistPage ? <View style={[styles.panel, styles.readinessPanel]}>
-              <SectionTitle eyebrow="PAGE SETUP" title="Finish your artist page" detail="Check what fans can see and use right now." />
+              <SectionTitle title="Finish your artist page" detail="Check what fans can see and use right now." />
               <View style={styles.scoreRow}>
                 <View style={[styles.scoreDisc, { borderColor: scoreColor }]}>
                   <Text style={[styles.score, { color: scoreColor }]}>{model.score}</Text>
@@ -459,7 +454,7 @@ export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEdit
             </View> : null}
 
             <View style={[styles.panel, styles.publishPanel]}>
-              <SectionTitle eyebrow="POST TO YOUR ARTIST PAGE" title="Artist post" detail="Share a short update directly on the artist page." />
+              <SectionTitle title="Artist post" detail="Share a short update directly on the artist page." />
               {hasConfirmedArtistPage && !model.feedEnabled ? (
                 <View style={styles.feedWarning}>
                   <Icon name="lock" size={16} color={colors.gold} />
@@ -597,7 +592,7 @@ export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEdit
 
           <View style={[styles.columns, !wide && styles.columnsStack]}>
             <View style={[styles.panel, styles.livePanel]}>
-              <SectionTitle eyebrow="LIVE DESK" title={nextShow ? "The next room" : "Put the next room on the map"} detail="Keep the public path from discovery to the door clean." right={<View style={styles.liveIcon}><Icon name="ticket" size={19} color={colors.cool} /></View>} />
+              <SectionTitle title={nextShow ? "The next room" : "Put the next room on the map"} detail="Keep the public path from discovery to the door clean." right={<View style={styles.liveIcon}><Icon name="ticket" size={19} color={colors.cool} /></View>} />
               {nextShow ? (
                 <View style={styles.showCard}>
                   <View style={styles.dateBlock}>
@@ -692,7 +687,6 @@ const styles = StyleSheet.create({
   livePanel: { minHeight: 350 },
   sectionHead: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: space(3), marginBottom: space(5) },
   sectionCopy: { flex: 1, minWidth: 0 },
-  eyebrow: { fontFamily: mono, fontSize: 9, fontWeight: "900", letterSpacing: 1.5, marginBottom: space(1) },
   sectionTitle: { color: colors.text, fontFamily: displayFont, fontSize: 22, lineHeight: 27, fontWeight: "900", letterSpacing: -0.55 },
   sectionDetail: { color: colors.textDim, fontSize: 13, lineHeight: 19, marginTop: space(1), maxWidth: 520 },
   scoreRow: { flexDirection: "row", alignItems: "center", gap: space(4), paddingBottom: space(5), borderBottomWidth: 1, borderBottomColor: colors.lineSoft },

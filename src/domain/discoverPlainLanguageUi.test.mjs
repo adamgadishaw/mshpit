@@ -16,7 +16,7 @@ const files = {
 const combined = Object.values(files).join("\n");
 
 test("Discover explains its purpose and area controls in everyday language", () => {
-  assert.match(files.screen, /FIND MUSIC AND SHOWS/);
+  assert.doesNotMatch(files.screen, /FIND MUSIC AND SHOWS/, "the title and one sentence say what Discover is");
   assert.match(files.screen, /See upcoming events, popular artists, venues, and fan picks in one place\./);
   assert.match(files.screen, /CHOOSE AN AREA/);
   assert.match(files.screen, /COUNTRY OR REGION/);
@@ -45,11 +45,11 @@ test("Discover sections say plainly what people will find or do", () => {
 });
 
 test("artist and genre sections avoid chart and catalogue jargon", () => {
-  assert.match(files.chart, /POPULAR ARTISTS/);
+  assert.doesNotMatch(files.chart, /eyebrow=/, "a section title needs no capitals above it");
   assert.match(files.chart, /title=\{source === "plays" \? "What members are playing" : "Popular artists"\}/);
   assert.match(files.chart, /Search artists, genres, or songs/);
   assert.match(files.chart, /Clear search/);
-  assert.match(files.genres, /BROWSE BY GENRE/);
+  assert.doesNotMatch(files.genres, /eyebrow=|BROWSE BY GENRE/);
   assert.match(files.genres, /title="Genres"/);
   assert.match(files.genres, /From shows you attended/);
   assert.match(files.genres, /Genre information is not ready/);

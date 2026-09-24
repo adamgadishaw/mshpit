@@ -101,7 +101,7 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
 
   return (
     <View style={styles.wrap}>
-      <ScreenHeader kicker="VENUE GUIDE" title={venue.name} onBack={onClose} />
+      <ScreenHeader kicker="Venue" title={venue.name} onBack={onClose} />
       <VinylRefreshBoundary
         refreshing={venueRefreshing}
         onRefresh={refreshVenue}
@@ -147,7 +147,7 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
         {!session ? <AccountSnapshotPrompt title="Venue reviews and concert photos" body="Sign in to read fan reviews, view concert photos, or review this venue. Shows, directions, and visitor information are open to browse." onRequireAuth={onRequireAuth} /> : null}
 
         {sectionModel.showGuide ? (
-          <Section title="Plan your visit" kicker="VENUE GUIDE">
+          <Section title="Plan your visit">
             <VenueVisitGuide
               guide={venueGuide}
               wide={wide}
@@ -159,7 +159,7 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
 
         {sectionModel.showUpcoming ? (
           venue.upcoming.length > 0 ? (
-            <Section title="Upcoming shows" kicker="UPCOMING HERE" count={venue.upcoming.length}>
+            <Section title="Upcoming shows" count={venue.upcoming.length}>
               <View style={styles.stack}>
                 {visibleUpcoming.map((event) => (
                   <UpcomingEventCard
@@ -196,7 +196,7 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
         ) : null}
 
         {sectionModel.showReputation ? (
-        <Section title="The room, according to fans" kicker="ROOM REPUTATION">
+        <Section title="The room, according to fans">
           <View style={[styles.reputationGrid, wide && styles.reputationGridWide]}>
             <View style={styles.scorePanel}>
               <Text style={styles.scoreValue}>{venue.avgRoom > 0 ? venue.avgRoom.toFixed(1) : "—"}</Text>
@@ -225,7 +225,7 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
         ) : null}
 
         {sectionModel.showPhotos && gridPhotos.length > 0 ? (
-          <Section title="Fan photos" kicker="FAN PHOTOS" count={fullGridPhotos.length}>
+          <Section title="Fan photos" count={fullGridPhotos.length}>
             <View style={styles.photoGrid}>
               {gridPhotos.map((photo, index) => (
                 <SmartImage
@@ -246,7 +246,7 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
         ) : null}
 
         {sectionModel.showReviews ? (
-        <Section title="Fan notes" kicker="REVIEWS" count={reviews.length}>
+        <Section title="Fan notes" count={reviews.length}>
           {reviews.length ? (
             <View style={styles.stack}>
               {visibleReviews.map((review) => {
@@ -353,7 +353,7 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
         ) : null}
 
         {sectionModel.showHistory ? (
-        <Section title="Concert history" kicker="SHOWS HERE" count={venue.nights.length}>
+        <Section title="Concert history" count={venue.nights.length}>
           {venue.nights.length ? (
             <View style={styles.stack}>
               {visibleNights.map((night) => (
@@ -490,12 +490,11 @@ function Metric({ value, label, icon, accent = false }) {
   );
 }
 
-function Section({ title, kicker, count, children }) {
+function Section({ title, count, children }) {
   return (
     <View style={styles.section}>
       <View style={styles.sectionHeader}>
         <View style={styles.flexCopy}>
-          <Text style={styles.sectionKicker}>{kicker}</Text>
           <Text style={styles.sectionTitle}>{title}</Text>
         </View>
         {Number.isFinite(count) ? <View style={styles.countPill}><Text style={styles.countText}>{count}</Text></View> : null}
@@ -572,8 +571,7 @@ const styles = StyleSheet.create({
   guideUnavailableText: { flex: 1, color: colors.textDim, fontSize: 12.5, lineHeight: 18 },
   section: { width: "100%", maxWidth: "100%", minWidth: 0, alignSelf: "stretch", gap: 10 },
   sectionHeader: { minWidth: 0, minHeight: 40, flexDirection: "row", alignItems: "flex-end", gap: 12 },
-  sectionKicker: { color: colors.textFaint, fontFamily: mono, fontSize: 9, fontWeight: "900", letterSpacing: 1.5 },
-  sectionTitle: { color: colors.text, fontFamily: displayFont, fontSize: 21, fontWeight: "900", letterSpacing: -0.4, marginTop: 3 },
+  sectionTitle: { color: colors.text, fontFamily: displayFont, fontSize: 21, fontWeight: "900", letterSpacing: -0.4 },
   countPill: { minWidth: 30, height: 28, flexShrink: 0, alignItems: "center", justifyContent: "center", paddingHorizontal: 8, borderRadius: 14, backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.line },
   countText: { color: colors.amber, fontFamily: mono, fontSize: 11, fontWeight: "900", fontVariant: ["tabular-nums"] },
   stack: { width: "100%", maxWidth: "100%", minWidth: 0, alignSelf: "stretch", gap: 10 },

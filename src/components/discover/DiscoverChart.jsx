@@ -77,7 +77,6 @@ function DiscoverChart({ rows, source, info, query, onQuery, onOpenArtist, onPla
   return (
     <View style={styles.panel}>
       <SectionHeading
-        eyebrow="POPULAR ARTISTS"
         title={source === "plays" ? "What members are playing" : "Popular artists"}
         detail={source === "plays" ? "Most played by members" : "Based on current artist popularity"}
         action={info?.live ? <View style={styles.livePill} accessible accessibilityLabel={source === "plays" ? "Live member list" : "Current artist list"}><View style={styles.liveDot} /><Text style={styles.liveText}>{source === "plays" ? "LIVE" : "CURRENT"}</Text></View> : null}

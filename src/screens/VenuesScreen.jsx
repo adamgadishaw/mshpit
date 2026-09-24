@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { FlatList, Platform, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
-import { colors, displayFont, focusRing, mono, radius, shadow } from "../theme";
+import { colors, displayFont, focusRing, font, mono, radius, shadow } from "../theme";
 import { useStore } from "../store";
 import ScreenHeader from "../components/ScreenHeader";
 import Icon from "../components/Icon";
@@ -91,7 +91,7 @@ export default function VenuesScreen({ initialRegion = "Worldwide", onClose, onO
 
   return (
     <View style={styles.wrap}>
-      <ScreenHeader kicker="VENUES" title={title} onBack={goBack} />
+      <ScreenHeader title={title} onBack={goBack} />
       <VinylRefreshBoundary
         refreshing={venuesRefreshing}
         onRefresh={refreshVenues}
@@ -118,13 +118,12 @@ export default function VenuesScreen({ initialRegion = "Worldwide", onClose, onO
             {mode === "cities" ? (
               <View style={styles.hero}>
                 <View style={styles.heroGlow} />
-                <Text style={styles.eyebrow}>YOUR NEXT FAVOURITE ROOM</Text>
                 <Text style={styles.heroTitle}>Find concert venues and upcoming shows.</Text>
-                <Text style={styles.heroBody}>Explore rooms by city, see where shows are landing, and learn which venues fans trust.</Text>
+                <Text style={styles.heroBody}>Browse venues by city, see what is coming up at each one, and read what fans say about them.</Text>
                 <View style={styles.statsRow}>
-                  <DirectoryStat value={totals.venues} label="VENUES" />
-                  <DirectoryStat value={totals.cities} label="CITIES" />
-                  <DirectoryStat value={totals.upcoming} label="SHOWS AHEAD" accent />
+                  <DirectoryStat value={totals.venues} label="Venues" />
+                  <DirectoryStat value={totals.cities} label="Cities" />
+                  <DirectoryStat value={totals.upcoming} label="Upcoming shows" accent />
                 </View>
               </View>
             ) : null}
@@ -163,8 +162,7 @@ export default function VenuesScreen({ initialRegion = "Worldwide", onClose, onO
 
             <View style={styles.sectionHead}>
               <View>
-                <Text style={styles.sectionKicker}>{mode === "cities" ? "CITY GUIDE" : mode === "search" ? "SEARCH RESULTS" : "ROOMS TO EXPLORE"}</Text>
-                <Text style={styles.sectionTitle}>{mode === "cities" ? "Browse the live-music map" : `${data.length} ${data.length === 1 ? "venue" : "venues"}`}</Text>
+                <Text style={styles.sectionTitle}>{mode === "cities" ? "Cities" : `${data.length} ${data.length === 1 ? "venue" : "venues"}`}</Text>
               </View>
               {mode === "search" ? <Text style={styles.queryLabel} numberOfLines={1}>“{query}”</Text> : null}
             </View>
@@ -204,14 +202,13 @@ const styles = StyleSheet.create({
   refreshError: { color: colors.danger, fontSize: 12.5, lineHeight: 18 },
   hero: { minHeight: 250, justifyContent: "flex-end", overflow: "hidden", padding: 24, borderRadius: radius.lg, borderCurve: "continuous", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, ...shadow.card },
   heroGlow: { position: "absolute", width: 300, height: 300, borderRadius: 150, top: -170, right: -55, backgroundColor: colors.amber, opacity: 0.13, ...Platform.select({ web: { filter: "blur(12px)" } }) },
-  eyebrow: { color: colors.amber, fontFamily: mono, fontSize: 10, fontWeight: "900", letterSpacing: 1.8 },
   heroTitle: { maxWidth: 620, color: colors.text, fontFamily: displayFont, fontSize: 30, lineHeight: 34, fontWeight: "900", letterSpacing: -0.8, marginTop: 8 },
   heroBody: { maxWidth: 620, color: colors.textDim, fontSize: 14, lineHeight: 21, marginTop: 8 },
   statsRow: { flexDirection: "row", alignItems: "stretch", gap: 8, marginTop: 22 },
   stat: { flex: 1, minWidth: 0, padding: 11, borderRadius: radius.sm, backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.lineSoft },
   statValue: { color: colors.text, fontFamily: mono, fontSize: 20, fontWeight: "900", fontVariant: ["tabular-nums"] },
   statValueAccent: { color: colors.amber },
-  statLabel: { color: colors.textFaint, fontFamily: mono, fontSize: 8, fontWeight: "800", letterSpacing: 0.8, marginTop: 3 },
+  statLabel: { color: colors.textDim, fontFamily: font, fontSize: 12, fontWeight: "700", marginTop: 3 },
   searchField: { minHeight: 52, flexDirection: "row", alignItems: "center", gap: 10, paddingLeft: 15, paddingRight: 6, backgroundColor: colors.surface, borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderColor: colors.line, ...shadow.control },
   input: { flex: 1, minWidth: 0, color: colors.text, fontSize: 15, paddingVertical: 13 },
   clearButton: { width: 42, height: 42, alignItems: "center", justifyContent: "center", borderRadius: radius.sm },
@@ -221,7 +218,6 @@ const styles = StyleSheet.create({
   overviewBody: { color: colors.textDim, fontSize: 12, marginTop: 3 },
   overviewUpcoming: { color: colors.amber, fontFamily: mono, fontSize: 11, fontWeight: "800" },
   sectionHead: { minHeight: 48, flexDirection: "row", alignItems: "flex-end", justifyContent: "space-between", gap: 12, paddingTop: 4 },
-  sectionKicker: { color: colors.textFaint, fontFamily: mono, fontSize: 9, fontWeight: "900", letterSpacing: 1.5 },
   sectionTitle: { color: colors.text, fontFamily: displayFont, fontSize: 18, fontWeight: "900", marginTop: 3 },
   queryLabel: { maxWidth: "45%", color: colors.amber, fontSize: 12, fontStyle: "italic" },
   cityCard: { minHeight: 94, flexDirection: "row", alignItems: "center", gap: 13, padding: 15, borderRadius: radius.md, borderCurve: "continuous", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft, ...shadow.card, ...Platform.select({ web: { cursor: "pointer", transitionDuration: "120ms", transitionProperty: "background-color, border-color, transform" } }) },

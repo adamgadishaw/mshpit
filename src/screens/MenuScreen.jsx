@@ -180,7 +180,7 @@ export default function MenuScreen({ onClose, onNear, onVenues, onFanClubs, onTo
 
   return (
     <View style={styles.wrap}>
-      <ScreenHeader kicker="MENU" title="Menu" onBack={onClose} />
+      <ScreenHeader title="Menu" onBack={onClose} />
       <ScrollView
         contentInsetAdjustmentBehavior="automatic"
         contentContainerStyle={styles.content}

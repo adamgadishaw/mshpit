@@ -50,7 +50,7 @@ export default function FollowListScreen({ userId, mode = "followers", onClose, 
 
   return (
     <View style={styles.wrap}>
-      <ScreenHeader kicker={owner ? `@${owner.handle}` : "PROFILE"} title={title} onBack={onClose} />
+      <ScreenHeader kicker={owner ? `@${owner.handle}` : "Profile"} title={title} onBack={onClose} />
       <VinylRefreshBoundary
         refreshing={followListRefreshing}
         onRefresh={refreshFollowList}

@@ -38,10 +38,10 @@ function GenreArtist({ row, index, onOpen, onPlay, onAdd }) {
   );
 }
 
-function GenreArtistGroup({ eyebrow, detail, rows, empty, onOpenArtist, onPlay, onAdd }) {
+function GenreArtistGroup({ title, detail, rows, empty, onOpenArtist, onPlay, onAdd }) {
   return (
     <View style={styles.artistGroup}>
-      <Text style={styles.groupEyebrow}>{eyebrow}</Text>
+      <Text style={styles.groupTitle} accessibilityRole="header">{title}</Text>
       <Text style={styles.groupDetail}>{detail}</Text>
       {rows.length ? (
         <View style={styles.artistList}>
@@ -104,7 +104,7 @@ function DiscoverGenres({
     ? "From shows you attended"
     : selected ? "Popular in " + selected : "Popular now";
   const spotlightDetail = hasRankedGenreRows
-    ? "MSHpit live ratings and catalog popularity are shown separately."
+    ? "Mshpit live ratings and catalog popularity are shown separately."
     : spotlight.recentCount
     ? "Starts with artists from your recent shows, then adds popular artists."
     : selected ? "Popular artists in " + selected + "." : "Popular artists to start with.";
@@ -112,7 +112,6 @@ function DiscoverGenres({
   return (
     <View style={styles.panel}>
       <SectionHeading
-        eyebrow="BROWSE BY GENRE"
         title="Genres"
         detail={hasGenres
           ? verifiedTotal.toLocaleString() + " artists grouped by genre in " + region + "."
@@ -198,8 +197,8 @@ function DiscoverGenres({
           ) : hasRankedGenreRows ? (
             <View style={styles.rankedGroups}>
               <GenreArtistGroup
-                eyebrow="TOP REVIEWED LIVE"
-                detail="Ranked with real MSHpit ratings and sample size, so one perfect score does not automatically win."
+                title="Top rated live"
+                detail="Ranked with real Mshpit ratings and sample size, so one perfect score does not automatically win."
                 rows={reviewedRows}
                 empty={`No ${selected} artist has a qualifying live rating yet.`}
                 onOpenArtist={onOpenArtist}
@@ -207,7 +206,7 @@ function DiscoverGenres({
                 onAdd={onAdd}
               />
               <GenreArtistGroup
-                eyebrow={`POPULAR IN ${selected.toUpperCase()}`}
+                title={`Popular in ${selected}`}
                 detail="Popular catalog artists with a verified genre."
                 rows={popularRows}
                 empty={`No additional popular ${selected} artists are available yet.`}
@@ -261,8 +260,8 @@ const styles = StyleSheet.create({
   artistList: { borderRadius: radius.md, overflow: "hidden", borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surface },
   rankedGroups: { gap: 16 },
   artistGroup: { gap: 7 },
-  groupEyebrow: { color: colors.amber, fontFamily: mono, fontSize: 9, fontWeight: "900", letterSpacing: 1.1 },
-  groupDetail: { color: colors.textDim, fontFamily: font, fontSize: 10.5, lineHeight: 15 },
+  groupTitle: { color: colors.text, fontFamily: displayFont, fontSize: 15, fontWeight: "800" },
+  groupDetail: { color: colors.textDim, fontFamily: font, fontSize: 12, lineHeight: 17 },
   groupEmpty: { color: colors.textDim, fontFamily: font, fontSize: 11.5, lineHeight: 17, padding: 12, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surface },
   artistRow: { minHeight: 64, flexDirection: "row", alignItems: "center", gap: 9, paddingHorizontal: 10, paddingVertical: 7 },
   artistBorder: { borderTopWidth: 1, borderTopColor: colors.lineSoft },

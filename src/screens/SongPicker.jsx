@@ -15,7 +15,7 @@ const EMPTY_SEARCH = Object.freeze({ status: "idle", rows: [], error: "" });
 // real index (the catalogue's ~2,500 songs first, then the provider), which is
 // the same source the search screen uses. The bundled list is kept only as the
 // idle suggestion before anyone types, so the screen is never blank.
-export default function SongPicker({ kicker = "PICK A SONG", onSelect, onClose }) {
+export default function SongPicker({ kicker = "Pick a song", onSelect, onClose }) {
   const { searchSongsApi, session } = useStore();
   const [q, setQ] = useState("");
   const [revision, setRevision] = useState(0);

@@ -552,7 +552,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
   return (
     <View style={styles.wrap}>
       <ScreenHeader
-        kicker={!showPageAllowed && publicEventId && !legacyMode ? "EVENT DETAILS" : presentation.screenKicker}
+        kicker={!showPageAllowed && publicEventId && !legacyMode ? "Event details" : presentation.screenKicker}
         title={!showPageAllowed && publicEventSnapshot ? publicEventSnapshot.name : eventTitle}
         onBack={onClose}
         backLabel={`Leave ${eventTitle} ${socialObjectLabel} page`}

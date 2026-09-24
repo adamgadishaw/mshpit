@@ -870,7 +870,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
   return (
     <View style={styles.wrap}>
       <ScreenHeader
-        kicker={legacyMode ? "LEGACY ARTIST" : "ARTIST PROFILE"}
+        kicker={legacyMode ? "Legacy artist" : "Artist"}
         title={a.name}
         onBack={onClose}
         backLabel={`Leave ${a.name} artist profile`}
@@ -1745,7 +1745,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
           <>
             <Text style={styles.sectionLabel}>POPULAR SONGS</Text>
             <Text style={styles.bio}>
-              {spotTracks.length ? "Their biggest tracks, with fan ratings from the MSHpit community." : "Rate the songs you know. Community favorites rise with real fan input."}
+              {spotTracks.length ? "Their biggest tracks, with fan ratings from the Mshpit community." : "Rate the songs you know. Community favorites rise with real fan input."}
             </Text>
             {songs.map((s) => {
               const sr = songRating(a.name, s.title);

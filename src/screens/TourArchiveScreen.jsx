@@ -276,7 +276,7 @@ export default function TourArchiveScreen({ artistName, artistKey, tourKey, tour
 
   return (
     <View style={styles.wrap}>
-      <ScreenHeader kicker={legacyMode ? "LEGACY ARTIST" : "TOUR ARCHIVE"} title={tour?.name || tourName || artistName || "Tour"} onBack={onClose} />
+      <ScreenHeader kicker={legacyMode ? "Legacy artist" : "Tour"} title={tour?.name || tourName || artistName || "Tour"} onBack={onClose} />
       {!archiveAllowed ? (
         <LegacyArtistArchiveGate
           artistName={artistName}

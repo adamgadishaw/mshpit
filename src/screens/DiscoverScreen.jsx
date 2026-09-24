@@ -570,7 +570,6 @@ export default function DiscoverScreen({
       <View style={[styles.hero, compact && styles.heroCompact]}>
         <View pointerEvents="none" style={styles.heroStripe}><View style={styles.stripeWarm} /><View style={styles.stripePink} /><View style={styles.stripeCool} /></View>
         <View style={styles.heroCopy}>
-          <Text style={styles.kicker}>FIND MUSIC AND SHOWS</Text>
           <Text style={[styles.title, compact && styles.titleCompact]} accessibilityRole="header">Discover</Text>
           {!compact && <Text style={styles.tagline}>See upcoming events, popular artists, venues, and fan picks in one place.</Text>}
         </View>
@@ -642,7 +641,6 @@ export default function DiscoverScreen({
         <View style={styles.livePanel}>
           <View style={[styles.livePanelHead, compact && styles.livePanelHeadCompact]}>
             <SectionHeading
-              eyebrow="PLAN A NIGHT OUT"
               title="Upcoming events"
               detail={liveScope === LIVE_EVENT_SCOPE.LOCAL ? liveScopeLabel({ scope: liveScope, homeCity }) : region}
               action={(
@@ -786,7 +784,7 @@ export default function DiscoverScreen({
       </View>}
 
       {programme === "shows" && <View style={styles.quickSection}>
-        <SectionHeading eyebrow="MORE TO EXPLORE" title="More ways to explore" detail="Top-rated shows and artist communities" />
+        <SectionHeading title="More ways to explore" detail="Top-rated shows and artist communities" />
         <View style={styles.quickGrid}>
           <QuickAction icon="trophy" title="Top-rated shows" detail={region === "Worldwide" ? "Shows members rated highest" : `Highly rated shows in ${region}`} tint={colors.gold} onPress={() => onOpenTopRated?.(region)} basis={actionBasis} />
           <QuickAction icon="you" title="Fan clubs" detail="Meet other fans of an artist" tint={colors.magenta} onPress={onOpenFanClubs} basis={actionBasis} />
@@ -796,7 +794,7 @@ export default function DiscoverScreen({
       {programme === "artists" && <View style={[styles.metrics, compact && styles.metricsCompact]}>{metrics.map((metric) => <MetricTile key={metric.label} {...metric} compact={compact} />)}</View>}
 
       {programme === "shows" && <View style={styles.loungePanel}>
-        <SectionHeading eyebrow="CONCERT CONVERSATIONS" title="Popular lounges" detail={region === "Worldwide" ? "The most active concert conversations. Private member data is not used." : `Active concert conversations in ${region}. Private member data is not used.`} />
+        <SectionHeading title="Popular lounges" detail={region === "Worldwide" ? "The most active concert conversations. Private member data is not used." : `Active concert conversations in ${region}. Private member data is not used.`} />
         {loungeRows.length === 0 ? (
           <View style={styles.liveEmpty}>
             <Icon name="comment" size={19} color={colors.textFaint} />
@@ -871,7 +869,6 @@ const styles = StyleSheet.create({
   stripePink: { flex: 1, backgroundColor: colors.magenta },
   stripeCool: { flex: 1, backgroundColor: colors.cool },
   programmePanel: { gap: 18, minWidth: 0, width: "100%" },
-  kicker: { color: colors.amber, fontFamily: mono, fontSize: 10.5, fontWeight: "900", letterSpacing: 2.1 },
   title: { color: colors.text, fontFamily: displayFont, fontSize: 40, lineHeight: 46, fontWeight: "900", letterSpacing: -1.2, paddingTop: 5 },
   titleCompact: { fontSize: 34, lineHeight: 40 },
   tagline: { color: colors.textDim, fontFamily: font, fontSize: 15, lineHeight: 22, paddingTop: 6, maxWidth: 560 },

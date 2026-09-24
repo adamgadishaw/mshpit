@@ -92,7 +92,7 @@ export default function NearbyScreen({ onClose, onOpenVenue, onOpenArtist, initi
 
   return (
     <View style={styles.wrap}>
-      <ScreenHeader kicker="LOCAL LINEUP" title="Near you" onBack={onClose} />
+      <ScreenHeader title="Near you" onBack={onClose} />
       <VinylRefreshBoundary
         refreshing={nearbyRefreshing}
         onRefresh={refreshNearby}

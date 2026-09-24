@@ -87,7 +87,7 @@ export default function VenueReviewScreen({ venueName, onClose }) {
 
   return (
     <View style={styles.wrap}>
-      <ScreenHeader kicker="REVIEW VENUE" title={venueName} onBack={onClose}
+      <ScreenHeader kicker="Review this venue" title={venueName} onBack={onClose}
         right={
           <Pressable style={[styles.postBtn, (!canPost || submitBusy) && styles.postBtnOff]} onPress={canPost && !submitBusy ? save : undefined} accessibilityRole="button" accessibilityLabel="Post review" accessibilityState={{ disabled: !canPost || submitBusy }}>
             <Text style={[styles.postTxt, (!canPost || submitBusy) && styles.postTxtOff]}>{posting ? "Posting..." : uploadingPhotos ? "Uploading..." : "Post"}</Text>

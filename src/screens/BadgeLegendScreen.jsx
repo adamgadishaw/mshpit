@@ -24,7 +24,7 @@ export default function BadgeLegendScreen({ onClose, userId }) {
 
   return (
     <View style={styles.wrap}>
-      <ScreenHeader kicker="REWARDS" title="Badges" onBack={onClose} />
+      <ScreenHeader title="Badges" onBack={onClose} />
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         {/* points / tier */}
         <View style={styles.hero}>

@@ -104,7 +104,7 @@ export default function InboxScreen({ onClose, onOpenThread }) {
 
   return (
     <View style={styles.wrap}>
-      <ScreenHeader kicker="MESSAGES" title="Inbox" onBack={onClose} />
+      <ScreenHeader title="Inbox" onBack={onClose} />
 
       {session && (
         <View style={styles.composeBar}>

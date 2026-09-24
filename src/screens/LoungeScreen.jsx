@@ -142,7 +142,7 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
       : "This Lounge closed 24 hours after doors opened.";
     return (
       <View style={styles.wrap}>
-        <ScreenHeader kicker="LOUNGE CLOSED" title={log.artist} onBack={onClose} />
+        <ScreenHeader kicker="Lounge closed" title={log.artist} onBack={onClose} />
         <View style={styles.gate} accessibilityRole="summary">
           <View style={styles.gateIcon}><Icon name="lock" size={30} color={colors.amber} /></View>
           <Text style={styles.gateTitle}>This show's Lounge has closed</Text>
@@ -190,7 +190,7 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
   if (!entered) {
     return (
       <View style={styles.wrap}>
-        <ScreenHeader kicker="LOUNGE" title={log.artist} onBack={onClose} />
+        <ScreenHeader kicker="Lounge" title={log.artist} onBack={onClose} />
         <View style={styles.gate}>
           <View style={styles.gateIcon}><Icon name="comment" size={30} color={colors.amber} /></View>
           <Text style={styles.gateTitle}>Concert Lounge</Text>
@@ -218,7 +218,7 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
 
   return (
     <KeyboardAvoidingView style={styles.wrap} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-      <ScreenHeader kicker={`LOUNGE · ${log.venue}`} title={log.artist} onBack={onClose} />
+      <ScreenHeader kicker={`Lounge · ${log.venue}`} title={log.artist} onBack={onClose} />
       <VinylRefreshBoundary
         refreshing={loungeRefreshing}
         onRefresh={refreshLounge}

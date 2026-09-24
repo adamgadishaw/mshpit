@@ -299,7 +299,7 @@ export default function ArtistArchiveScreen({ artistName, artistKey, onClose, on
 
   return (
     <View style={styles.wrap}>
-      <ScreenHeader kicker={legacyMode ? "LEGACY ARTIST" : "LIVE ARCHIVE"} title={resolvedArtistName || artistName || "Artist"} onBack={onClose} />
+      <ScreenHeader kicker={legacyMode ? "Legacy artist" : "Concert archive"} title={resolvedArtistName || artistName || "Artist"} onBack={onClose} />
       {!archiveAllowed ? (
         <LegacyArtistArchiveGate
           artistName={resolvedArtistName || artistName}

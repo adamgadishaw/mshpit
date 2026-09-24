@@ -131,7 +131,7 @@ export default function ThreadScreen({ otherId, onClose, onOpenProfile, onOpenPr
 
   return (
     <KeyboardAvoidingView style={styles.wrap} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-      <ScreenHeader kicker="DIRECT MESSAGE" title={other?.name || "Chat"} onBack={onClose}
+      <ScreenHeader kicker="Direct message" title={other?.name || "Chat"} onBack={onClose}
         right={<Pressable style={styles.profileButton} onPress={() => onOpenProfile?.(otherId)} accessibilityRole="button" accessibilityLabel={`View ${other?.name || "member"} profile`}><Avatar user={other} size={32} /></Pressable>} />
 
       <VinylRefreshBoundary

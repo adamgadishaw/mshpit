@@ -275,7 +275,6 @@ export default function CalendarScreen({ initialDate = null, initialView = CALEN
   return (
     <View style={styles.wrap}>
       <ScreenHeader
-        kicker="WHAT'S ON"
         title="Calendar"
         onBack={onClose}
         right={<Pressable style={styles.todayTarget} onPress={() => { setCursor({ y: today.getFullYear(), m: today.getMonth() }); setSelected(todayKey); }} accessibilityRole="button" accessibilityLabel="Go to today"><Text style={styles.todayBtn}>Today</Text></Pressable>}

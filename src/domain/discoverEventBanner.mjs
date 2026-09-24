@@ -115,7 +115,7 @@ function normalizeMedia(media) {
     uri: safeHttpsUrl(media.uri || media.url || media.sourceUrl),
     source: fan ? "fan" : source,
     provider: normalize(media.provider, 80).toLocaleLowerCase() || null,
-    by: creator || (fan ? "MSHpit community" : "Rights-approved event media"),
+    by: creator || (fan ? "Mshpit community" : "Rights-approved event media"),
     altText: normalize(media.altText || media.alt, 320) || null,
     postId: normalize(media.postId || media.logId, 240) || null,
     ownerId: normalize(media.ownerId || media.userId, 240) || null,

@@ -3,11 +3,10 @@ import { colors, displayFont, font, mono, radius, shadow } from "../../theme";
 import Icon from "../Icon";
 import { compactDiscoverNumber } from "../../domain/discoverView.mjs";
 
-export function SectionHeading({ eyebrow, title, detail, action }) {
+export function SectionHeading({ title, detail, action }) {
   return (
     <View style={styles.sectionHeading}>
       <View style={styles.sectionHeadingCopy}>
-        {!!eyebrow && <Text style={styles.sectionEyebrow}>{eyebrow}</Text>}
         <Text style={styles.sectionTitle} accessibilityRole="header">{title}</Text>
         {!!detail && <Text style={styles.sectionDetail}>{detail}</Text>}
       </View>
@@ -95,7 +94,6 @@ export const primitiveStyles = StyleSheet.create({
 const styles = StyleSheet.create({
   sectionHeading: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 12 },
   sectionHeadingCopy: { flex: 1, minWidth: 0 },
-  sectionEyebrow: { color: colors.amber, fontFamily: mono, fontSize: 9.5, fontWeight: "900", letterSpacing: 1.4 },
   sectionTitle: { color: colors.text, fontFamily: displayFont, fontSize: 21, lineHeight: 26, fontWeight: "900", letterSpacing: -0.35, paddingTop: 2 },
   sectionDetail: { color: colors.textDim, fontFamily: font, fontSize: 12.5, lineHeight: 18, paddingTop: 3 },
   quickAction: { flexGrow: 1, minWidth: 0, minHeight: 88, flexDirection: "row", alignItems: "center", gap: 10, padding: 13, borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surface, ...shadow.card },

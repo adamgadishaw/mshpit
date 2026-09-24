@@ -29,7 +29,7 @@ test("artist picks no longer silently rewrite explicit genre preferences", () =>
 });
 
 test("Discover labels MSHpit live ratings separately from catalog popularity", () => {
-  assert.match(discoverGenres, /TOP REVIEWED LIVE/);
+  assert.match(discoverGenres, /title="Top rated live"/);
   assert.match(discoverGenres, /ratingCount/);
   assert.match(discoverGenres, /Popular catalog artists with a verified genre/);
   assert.match(discoverGenres, /one perfect score does not automatically win/);

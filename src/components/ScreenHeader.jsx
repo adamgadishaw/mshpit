@@ -1,5 +1,5 @@
 import { View, Text, StyleSheet, Pressable } from "react-native";
-import { colors, displayFont, focusRing, mono, radius, shadow, space } from "../theme";
+import { colors, displayFont, focusRing, font, radius, shadow, space } from "../theme";
 import Icon from "./Icon";
 
 // Prominent, consistent header for detail screens: a round back button and a
@@ -24,7 +24,7 @@ const styles = StyleSheet.create({
   back: { width: 44, height: 44, borderRadius: radius.sm, borderCurve: "continuous", backgroundColor: colors.surfaceAlt, borderWidth: 1, borderBottomWidth: 3, borderColor: colors.line, alignItems: "center", justifyContent: "center", ...shadow.control },
   backPressed: { transform: [{ translateY: 2 }], boxShadow: "inset 0 1px 3px rgba(0,0,0,0.18)" },
   titleBox: { flex: 1 },
-  kicker: { color: colors.amber, fontSize: 10, letterSpacing: 1.5, fontWeight: "800", fontFamily: mono, marginBottom: 1 },
+  kicker: { color: colors.textDim, fontFamily: font, fontSize: 12, fontWeight: "700", marginBottom: 1 },
   title: { color: colors.text, fontFamily: displayFont, fontSize: 20, fontWeight: "800", letterSpacing: -0.35 },
   right: { minWidth: 40, alignItems: "flex-end" },
 });

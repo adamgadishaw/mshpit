@@ -90,7 +90,7 @@ test("artist gallery is a stable in-app subroute linked from owner and fan previ
 test("legacy galleries keep existing public media but present it as a closed historical record", () => {
   assert.match(app, /legacyMode=\{nav\.artistGallery\.legacyMode === true\}/);
   assert.match(gallery, /legacyMode = false/);
-  assert.match(gallery, /legacyMode \? "LEGACY ARCHIVE" : "ARTIST PHOTOS"/);
+  assert.match(gallery, /legacyMode \? "Legacy artist" : "Photos"/);
   assert.match(gallery, /A protected visual record\./);
   assert.match(gallery, /New uploads are closed/);
   assert.match(gallery, /No preserved public photos/);

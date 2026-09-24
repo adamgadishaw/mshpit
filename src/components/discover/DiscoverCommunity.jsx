@@ -37,7 +37,7 @@ export const DiscoverPhotos = memo(function DiscoverPhotos({ photos, photoUris, 
   if (!photos.length) return null;
   return (
     <View style={[styles.panel, compact && styles.panelCompact]}>
-      <SectionHeading eyebrow="FAN PHOTOS AND VIDEOS" title={title} detail={detail} />
+      <SectionHeading title={title} detail={detail} />
       <View style={[styles.grid, { gap: layout.gap }]} onLayout={(event) => setContainerWidth(event.nativeEvent.layout.width)} accessibilityLabel="Popular concert photos and videos">
         {photos.map((photo, index) => <PhotoTile key={`${photo.logId}_${photo.uri}_${index}`} photo={photo} index={index} width={layout.tileWidth} onOpen={() => onOpenPhotos?.(photoUris, index)} />)}
       </View>

@@ -95,7 +95,7 @@ export function showPresentationModel(lifecycleView) {
   const view = lifecycleView || {};
   if (view.lifecycle === "happening") {
     return {
-      screenKicker: "HAPPENING NOW",
+      screenKicker: "Happening now",
       ticketKicker: "LIVE · HAPPENING NOW",
       showCountdown: false,
       showPostEvent: false,
@@ -106,7 +106,7 @@ export function showPresentationModel(lifecycleView) {
   if (view.trusted !== true) {
     const upcoming = view.upcoming === true;
     return {
-      screenKicker: upcoming ? "UPCOMING PERFORMANCE" : "PERFORMANCE",
+      screenKicker: upcoming ? "Upcoming concert" : "Concert",
       ticketKicker: upcoming ? "ONE NIGHT · NOT YET PLAYED" : "ONE NIGHT ONLY",
       showCountdown: upcoming,
       showPostEvent: !upcoming,
@@ -117,7 +117,7 @@ export function showPresentationModel(lifecycleView) {
   switch (view.lifecycle) {
     case "postponed":
       return {
-        screenKicker: "POSTPONED PERFORMANCE",
+        screenKicker: "Postponed",
         ticketKicker: "THIS SHOW IS POSTPONED",
         showCountdown: false,
         showPostEvent: false,
@@ -126,7 +126,7 @@ export function showPresentationModel(lifecycleView) {
       };
     case "cancelled":
       return {
-        screenKicker: "CANCELLED PERFORMANCE",
+        screenKicker: "Cancelled",
         ticketKicker: "THIS SHOW WAS CANCELLED",
         showCountdown: false,
         showPostEvent: false,
@@ -135,7 +135,7 @@ export function showPresentationModel(lifecycleView) {
       };
     case "completed":
       return {
-        screenKicker: "PERFORMANCE",
+        screenKicker: "Concert",
         ticketKicker: "ONE NIGHT ONLY",
         showCountdown: false,
         showPostEvent: true,
@@ -144,7 +144,7 @@ export function showPresentationModel(lifecycleView) {
       };
     default:
       return {
-        screenKicker: "UPCOMING PERFORMANCE",
+        screenKicker: "Upcoming concert",
         ticketKicker: "ONE NIGHT · NOT YET PLAYED",
         showCountdown: true,
         showPostEvent: false,

@@ -141,7 +141,7 @@ export default function FanClubScreen({ artist, onClose, onOpenProfile, onOpenPr
   if (!fanClubAllowed) {
     return (
       <View style={styles.wrap}>
-        <ScreenHeader kicker={legacyMode ? "LEGACY ARTIST" : "FAN CLUB"} title={displayArtistName} onBack={onClose} />
+        <ScreenHeader kicker={legacyMode ? "Legacy artist" : "Fan club"} title={displayArtistName} onBack={onClose} />
         <LegacyArtistArchiveGate
           artistName={displayArtistName}
           state={profileGateState}
@@ -155,7 +155,7 @@ export default function FanClubScreen({ artist, onClose, onOpenProfile, onOpenPr
   if (!member) {
     return (
       <View style={styles.wrap}>
-        <ScreenHeader kicker="FAN CLUB" title={displayArtistName} onBack={onClose} />
+        <ScreenHeader kicker="Fan club" title={displayArtistName} onBack={onClose} />
         <View style={styles.gate}>
           <SpinningRecord size={92} playing color={colors.amberStrong} art={art} />
           <Text style={styles.gateTitle}>{displayArtistName} Fan Club</Text>
@@ -179,7 +179,7 @@ export default function FanClubScreen({ artist, onClose, onOpenProfile, onOpenPr
 
   return (
     <KeyboardAvoidingView style={styles.wrap} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-      <ScreenHeader kicker={`FAN CLUB · ${fanClubCount(fanClubTarget)} members`} title={displayArtistName} onBack={onClose}
+      <ScreenHeader kicker={`Fan club · ${fanClubCount(fanClubTarget)} members`} title={displayArtistName} onBack={onClose}
         right={<Pressable onPress={toggleMembership} disabled={joining}><Text style={styles.leave}>{joining ? "leaving…" : "leave"}</Text></Pressable>} />
       <VinylRefreshBoundary
         refreshing={fanClubRefreshing}

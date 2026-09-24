@@ -71,7 +71,7 @@ export default function ArtistGalleryScreen({ artistName, artistKey = null, lega
 
   return (
     <View style={styles.wrap}>
-      <ScreenHeader kicker={legacyMode ? "LEGACY ARCHIVE" : "ARTIST PHOTOS"} title={resolvedName} onBack={onClose} />
+      <ScreenHeader kicker={legacyMode ? "Legacy artist" : "Photos"} title={resolvedName} onBack={onClose} />
       <VinylRefreshBoundary
         refreshing={refreshing}
         onRefresh={refreshGallery}

@@ -196,7 +196,7 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
 
   return (
     <View style={styles.wrap}>
-      <ScreenHeader kicker="SOCIAL" title="Activity" onBack={onClose} />
+      <ScreenHeader title="Activity" onBack={onClose} />
       <VinylRefreshBoundary
         refreshing={activityRefreshing}
         onRefresh={refreshActivity}

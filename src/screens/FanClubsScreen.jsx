@@ -81,7 +81,7 @@ export default function FanClubsScreen({ onClose, onOpenFanClub }) {
 
   return (
     <View style={styles.wrap}>
-      <ScreenHeader kicker="COMMUNITY" title="Fan clubs" onBack={onClose} />
+      <ScreenHeader title="Fan clubs" onBack={onClose} />
 
       <View style={styles.fieldWrap}>
         <View style={styles.field}>
