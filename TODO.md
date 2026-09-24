@@ -243,6 +243,22 @@ remains a broad context whose changing value can rerender unrelated consumers.
 - **Animated story:** an MP4 version of the share card needs a render service
   with ffmpeg.
 
+## Video posting and catalog research follow-ups (2026-09-24)
+
+- **Video:** after the deploy, the owner re-posts the TikTok clip; read the
+  converter log's `converted ... by remux|transcode` or `failed ... at <step>`
+  line for it. Confirm an MKV or AVI upload now gets past creation.
+- **Research agent key:** the owner adds `ANTHROPIC_API_KEY` in Render, then
+  checks the admin catalog screen's Web research section after the first pass
+  (about 3 minutes after the deploy that follows).
+- **Research images:** feed `images` (Commons file pages) into the
+  licence-checked venue photo pipeline by exact file title, and add an
+  equivalent artist path. Stored but unused today.
+- **Research at volume:** move the backlog to the Message Batches API (half
+  price) once single-page quality is confirmed on real pages.
+- **Research staff UI:** a Hide button on researched artist and venue pages
+  for admins (the route exists).
+
 ## P1 product and operations backlog
 
 1. **Notifications:** refresh on screen focus/realtime delivery, persist read

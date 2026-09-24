@@ -20,6 +20,7 @@ import { refreshScope } from "../domain/scopedRefresh.mjs";
 import { normalizeVenuePhotoProviderIdentity } from "../domain/venuePhotos.mjs";
 import { venueGuideModel } from "../domain/venueGuide.mjs";
 import ExpandableText from "../components/ExpandableText";
+import ResearchedAbout from "../components/ResearchedAbout";
 import AccountSnapshotPrompt from "../components/AccountSnapshotPrompt";
 
 const REVIEW_BATCH = 8;
@@ -145,6 +146,10 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
         <VenuePageSectionNav active={sectionModel.active} onChange={setActiveSection} />
 
         {!session ? <AccountSnapshotPrompt title="Venue reviews and concert photos" body="Sign in to read fan reviews, view concert photos, or review this venue. Shows, directions, and visitor information are open to browse." onRequireAuth={onRequireAuth} /> : null}
+
+        {sectionModel.showGuide ? (
+          <ResearchedAbout kind="venue" entityKey={venue.name} city={String(venue.place || "").split(",")[0].trim() || null} label="ABOUT THIS VENUE" />
+        ) : null}
 
         {sectionModel.showGuide ? (
           <Section title="Plan your visit">

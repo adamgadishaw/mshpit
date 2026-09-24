@@ -6,6 +6,36 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-09-24 web research agent for empty artist and venue pages
+
+The owner noted many artist and venue pages stay empty because MusicBrainz and
+Wikidata run dry, and asked for an AI agent with web search to fill them.
+
+- `server/features/catalogResearch/`: a background worker that asks Claude
+  (default `claude-sonnet-5`, Messages API with the `web_search_20250305`
+  server tool and a `record_findings` tool) to research one page at a time.
+  Artists with no biography and no claimed owner or staff profile text, and
+  venues identified by name plus city, go in order of shows on file, then
+  artists by popularity. Artists and venues alternate.
+- Publishing rules (`catalogResearchFindings.js`): only a `confident` match; a
+  2 to 4 sentence summary that names the subject, has no links, no em dashes,
+  and cites at least one page; each fact must cite a page that appeared in
+  that run's own search results, so sources cannot be invented. Unsure and
+  not-found results are stored but never shown. A failed or unsure refresh
+  keeps the last good result. Image suggestions are limited to Wikimedia
+  Commons file pages and stored for the licence-checked photo pipeline; they
+  are not displayed yet.
+- Pages: `GET /api/artists/:key/research` and `GET /api/venues/:key/research`
+  (venue research only for the matching city). Artist pages without a
+  biography and venue overviews show a short "About" block with facts and
+  "Summarised from" source links; pages without research look as before.
+- Controls: needs `ANTHROPIC_API_KEY` (Render secret, owner to add) and
+  `CATALOG_RESEARCH_ENABLED=true` (in render.yaml). Spending stops for the day
+  at `CATALOG_RESEARCH_DAILY_USD` (default $5, about 40 to 100 pages). Pausing
+  catalog upkeep pauses research. Staff can hide a wrong result with
+  `POST /api/moderation/catalog-research/hide` (audited). The admin catalog
+  screen shows spend, pages filled and the last error.
+
 ## 2026-09-24 posting no longer waits on video conversion
 
 The owner reported a TikTok clip stuck in a "processing" loop and asked for

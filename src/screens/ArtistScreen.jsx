@@ -8,6 +8,7 @@ import { SONGS } from "../seed/songs";
 import Stars from "../components/Stars";
 import TapStars from "../components/TapStars";
 import Icon from "../components/Icon";
+import ResearchedAbout from "../components/ResearchedAbout";
 import Avatar from "../components/Avatar";
 import ScreenHeader from "../components/ScreenHeader";
 import SmartImage from "../components/SmartImage";
@@ -1501,6 +1502,10 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
           </>
         )}
 
+
+        {sectionModel.showAbout && (!legacyMode || sectionModel.active === "about") && !bio && (
+          <ResearchedAbout kind="artist" entityKey={a.profileKey} label="THE ARTIST" />
+        )}
 
         {sectionModel.showAbout && biographyRows.length > 0 && (
           <View style={styles.aboutFacts} accessibilityLabel="Verified artist biography facts">

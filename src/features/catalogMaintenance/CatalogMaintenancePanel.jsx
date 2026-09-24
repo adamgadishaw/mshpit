@@ -28,6 +28,7 @@ export default function CatalogMaintenancePanel({ accountId, role, active = true
   const storage = data?.storage;
   const artistPhotos = data?.artistPhotos;
   const venuePhotos = data?.venuePhotos;
+  const research = data?.research;
   const blocked = !state.confirmed || !catalog || !active || !!state.pendingMode || knowledge?.enabled === false;
   const mode = catalog?.mode;
   if (!state.available) return null;
@@ -101,6 +102,20 @@ export default function CatalogMaintenancePanel({ accountId, role, active = true
           {pass?.stoppedEarly ? <Text selectable style={styles.hint}>The batch yielded before all checks finished. Interrupted work stays queued; this does not mean the catalogue is complete.</Text> : null}
         </Section>
       </>}
+      <Section title="Web research">
+        <View style={styles.grid}>
+          <Datum label="Research agent" value={!research ? "Unverified" : !research.configured ? "Waiting for API key" : research.enabled ? "On" : "Off"}
+            detail={research?.configured ? `Model: ${research.model}` : "Add ANTHROPIC_API_KEY in Render to start it."} />
+          <Datum label="Spent today" value={research ? `$${Number(research.today?.spentUsd || 0).toFixed(2)} / $${Number(research.dailyBudgetUsd || 0).toFixed(2)}` : "Unverified"}
+            detail={research ? `${catalogCount(research.today?.runs)} pages researched, ${catalogCount(research.today?.published)} published today.` : ""} />
+          <Datum label="Artist pages filled" value={catalogCount(research?.artists?.found)}
+            detail={research ? `${catalogCount(research.artists?.unsure)} unsure and ${catalogCount(research.artists?.notFound)} with nothing reliable found. ${catalogCount(research.artists?.hidden)} hidden by staff.` : ""} />
+          <Datum label="Venue pages filled" value={catalogCount(research?.venues?.found)}
+            detail={research ? `${catalogCount(research.venues?.unsure)} unsure and ${catalogCount(research.venues?.notFound)} with nothing reliable found. ${catalogCount(research.venues?.hidden)} hidden by staff.` : ""} />
+        </View>
+        {research?.lastError ? <Text selectable style={styles.error}>Last problem: {String(research.lastError.code || "").replaceAll("_", " ")} at {catalogTime(research.lastError.at)}. The agent retries on its own.</Text> : null}
+        <Text selectable style={styles.hint}>Only pages with no biography are researched, busiest shows first. Every fact links to the page it came from, and results the agent was not sure about are never shown. Pausing catalog upkeep above pauses research too.</Text>
+      </Section>
       <Section title="Photo workers">
         <View style={styles.grid}>
           <Datum label="Artist photos" value={artistPhotos?.phase?.replaceAll("_", " ") || "Unverified"}
@@ -130,8 +145,8 @@ export default function CatalogMaintenancePanel({ accountId, role, active = true
         {[...(storage?.issues || []), ...(storage?.warnings || [])].length ? <Text selectable style={styles.error}>{[...(storage?.issues || []), ...(storage?.warnings || [])].join(" · ").replaceAll("_", " ")}</Text> : null}
       </Section>
       <Section title="Sources and Google readiness">
-        {["artist", "venues", "events"].map(key => <Text selectable key={key} style={styles.copy}>
-          {key === "artist" ? "Artists" : key === "venues" ? "Venues" : "Events"}: {data.sources?.[key]?.name || "Source status unavailable."}{data.sources?.[key]?.scope ? ` — ${data.sources[key].scope}` : ""}
+        {["artist", "venues", "events", "research"].map(key => <Text selectable key={key} style={styles.copy}>
+          {key === "artist" ? "Artists" : key === "venues" ? "Venues" : key === "events" ? "Events" : "Research"}: {data.sources?.[key]?.name || "Source status unavailable."}{data.sources?.[key]?.scope ? ` — ${data.sources[key].scope}` : ""}
         </Text>)}
         <Text selectable style={styles.copy}>Show-date scheduler: {catalogSourceSchedulerLabel(data.sourceRefresh)}. Separate from artist upkeep controls.</Text>
         <Text selectable style={data.sourceRefresh?.state === "failed" ? styles.error : styles.copy}>Show-date refresh (not venue page enrichment): saved result {data.sourceRefresh?.state || "Unverified"} at {catalogTime(data.sourceRefresh?.at)}. Last success: {catalogTime(data.sourceRefresh?.lastSuccessAt)}. Historical evidence, not a live running indicator.</Text>

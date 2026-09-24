@@ -166,6 +166,8 @@ export function fixtureApiResponse(pathname, { member = false, method = "GET", r
   if (pathname === "/api/venues") return { venues: [] };
   if (pathname === "/api/cities") return { cities: [] };
   if (["/api/artists/fixture-artist/memorial", "/api/artists/fixture%20artist/memorial"].includes(pathname)) return { memorial: null };
+  // Researched page summaries: none in these fixtures, so pages look as before.
+  if (/^\/api\/(?:artists|venues)\/[^/]+\/research$/u.test(pathname)) return { research: null };
   if (pathname === "/api/venues/fixture%20venue/photos") return { photos: [], state: "ready" };
   if (pathname.startsWith("/api/shows/")) return { show: null };
   if (pathname.startsWith("/api/going/") && pathname.endsWith("/attendees")) return { attendees: [], total: 0, scope: "everyone" };

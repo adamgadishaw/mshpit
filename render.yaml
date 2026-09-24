@@ -113,6 +113,20 @@ services:
         value: "true"
       - key: ARTIST_KNOWLEDGE_BATCH
         value: "10"
+      # Claude web research for artist and venue pages the other sources leave
+      # empty: a short summary and facts, each linked to its source. Idle until
+      # the owner adds ANTHROPIC_API_KEY (console.anthropic.com -> API keys).
+      # Spending stops for the day at CATALOG_RESEARCH_DAILY_USD (about 5 to
+      # 12 cents a page with claude-sonnet-5). Pausing catalog upkeep in the
+      # admin screen pauses it too.
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: CATALOG_RESEARCH_ENABLED
+        value: "true"
+      - key: CATALOG_RESEARCH_DAILY_USD
+        value: "5"
+      - key: CATALOG_RESEARCH_MODEL
+        value: "claude-sonnet-5"
       # Password recovery is disabled gracefully until both values are set. Never
       # log or expose reset links as a substitute for transactional email.
       - key: RESEND_API_KEY

@@ -159,6 +159,7 @@ test("Render never stores private credentials in the tracked blueprint", async (
     "ADMIN_EMAIL",
     "ADMIN_PASSWORD",
     "YOUTUBE_API_KEY",
+    "ANTHROPIC_API_KEY",
     "RESEND_API_KEY",
     "TICKETMASTER_KEY",
     "MEDIA_ACCESS_KEY_ID",

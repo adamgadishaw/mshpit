@@ -89,6 +89,8 @@ import { artistResolveRoutes } from "./features/artistSearch/artistResolveRoutes
 import { artistArchiveRoutes } from "./features/artistArchive/artistArchiveRoutes.js";
 import { createArtistLiveSummaryService } from "./features/artistArchive/artistLiveSummaryService.js";
 import { artistLiveSummaryRoutes } from "./features/artistArchive/artistLiveSummaryRoutes.js";
+import { catalogResearchRoutes } from "./features/catalogResearch/catalogResearchRoutes.js";
+import { startCatalogResearchScheduler } from "./features/catalogResearch/catalogResearchService.js";
 import { artistIdentityHeld } from "./features/artistAccounts/artistVerification.js";
 import { archiveShowKeyForPost } from "./features/artistArchive/postArchiveIdentity.js";
 import { accountPrivacyRoutes } from "./features/accountPrivacy/accountPrivacyRoutes.js";
@@ -3796,6 +3798,10 @@ function retryVideoProcessingForOwner(ctx) {
     },
   });
   return { asset: ownedMediaAsset(db, { ownerId: u.id, assetId: ctx.params.id, at: now() }), finalize: started.finalize };
+}
+
+export function startCatalogResearch() {
+  return startCatalogResearchScheduler({ database: db });
 }
 
 export function startVideoProcessingRetries() {
@@ -9468,6 +9474,11 @@ export const routes = {
       const artist = resolveCatalogArtistReference(key);
       if (artist && !artistCatalogVisibleTo(db, artist, ctx?.user)) throw new ApiError(404, "This artist page is unavailable.", "NOT_FOUND");
       return artist;
+    } }),
+  ...catalogResearchRoutes({ database: db, ApiError, rateLimit: limit, decodedPathParam, canonicalVenueKey, requireAdmin, now,
+    resolveArtist: (key, ctx) => {
+      const artist = resolveCatalogArtistReference(key);
+      return artist && artistCatalogVisibleTo(db, artist, ctx?.user) ? artist : null;
     } }),
   "GET /api/artists/:key/profile": (ctx) => {
     ctx.setHeader?.("Cache-Control", "private, no-store");
