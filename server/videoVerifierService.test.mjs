@@ -28,6 +28,7 @@ import {
   VIDEO_VERIFIER_MAX_DISCARDED_QUICKTIME_TRACKS,
   VIDEO_VERIFIER_PROTOCOL_VERSION,
   VIDEO_VERIFIER_SOURCE_ADMISSION_REVISION,
+  VIDEO_VERIFIER_UNIVERSAL_ADMISSION,
 } from "./videoVerifierProtocol.js";
 
 const SECRET = "video-verifier-service-secret-at-least-thirty-two-bytes";
@@ -1157,4 +1158,180 @@ test("direct worker entrypoint listens on an explicit allowed port", async () =>
     if (child.exitCode === null) child.kill("SIGTERM");
     await exited;
   }
+});
+
+function universalJob({ extension = "webm", contentType = "video/webm", posterTimeMs = 2_000 } = {}) {
+  const base = validJob();
+  const { structural, ...rest } = base;
+  void structural;
+  return {
+    ...rest,
+    admission: VIDEO_VERIFIER_UNIVERSAL_ADMISSION,
+    object: {
+      ...base.object,
+      key: `users/u_video/post/source.${extension}`,
+      contentType,
+      downloadUrl: capabilityUrl(`source.${extension}`),
+    },
+    poster: { ...base.poster, timeMs: posterTimeMs },
+  };
+}
+
+function universalProbe({ streams, duration = "12.000" }) {
+  return JSON.stringify({ streams, format: { format_name: "matroska,webm", duration } });
+}
+
+function universalRunner({ probe, failTranscode = false, failProbe = false }) {
+  const calls = [];
+  const runProcess = async (executable, args, options) => {
+    calls.push({ executable, args: [...args], options });
+    const sourceArg = args.some((value) => /source\.[a-z0-9]+$/.test(String(value)) && !String(value).endsWith(".mp4"));
+    if (executable === "ffprobe" && sourceArg) {
+      if (failProbe) throw Object.assign(new Error("probe failed"), { status: 422, code: "decode_failed" });
+      return { stdout: probe, stderr: "" };
+    }
+    if (executable === "ffprobe" && args.some((value) => String(value).endsWith("delivery.mp4"))) {
+      return { stdout: videoProbe({ rotation: 0, width: 1_080, height: 1_920, codedWidth: 1_088, codedHeight: 1_920 }), stderr: "" };
+    }
+    if (executable === "ffprobe") {
+      return { stdout: JSON.stringify({ streams: [{ codec_type: "video", codec_name: "mjpeg", width: 720, height: 1_280 }] }), stderr: "" };
+    }
+    const output = args.at(-1);
+    if (failTranscode && typeof output === "string" && output.endsWith("delivery.mp4")) {
+      throw Object.assign(new Error("decoder exit=1"), { status: 422, code: "decode_failed" });
+    }
+    if (typeof output === "string" && output.endsWith("poster.jpg")) await writeFile(output, POSTER);
+    if (typeof output === "string" && output.endsWith("delivery.mp4")) await writeFile(output, SOURCE);
+    return { stdout: "", stderr: "" };
+  };
+  runProcess.calls = calls;
+  return runProcess;
+}
+
+function universalFetch(contentType) {
+  return async (url, request) => {
+    if (request.method === "PUT") return new Response(null, { status: 200 });
+    return new Response(SOURCE, {
+      status: 200,
+      headers: { "content-type": contentType, "content-length": String(SOURCE.byteLength), etag: ETAG },
+    });
+  };
+}
+
+async function runUniversal(job, runProcess, contentType) {
+  const root = await mkdtemp(join(tmpdir(), "pit-verifier-universal-"));
+  try {
+    const result = await runVideoVerifierJob(job, {
+      config: getVideoVerifierServiceConfig(ENV),
+      fetchImpl: universalFetch(contentType),
+      runProcess,
+      signal: AbortSignal.timeout(5_000),
+      temporaryRoot: root,
+    });
+    assert.deepEqual(await readdir(root), [], "temporary files are removed");
+    return result;
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+test("universal jobs take any listed container without the MP4 structural proof", () => {
+  const config = getVideoVerifierServiceConfig(ENV);
+  const accepted = validateVideoVerifierJob(universalJob(), config);
+  assert.equal(accepted.universal, true);
+  assert.equal(accepted.structural, null);
+  assert.equal(validateVideoVerifierJob(universalJob({ extension: "avi", contentType: "video/x-msvideo" }), config).contentType, "video/x-msvideo");
+  assert.equal(validateVideoVerifierJob(universalJob({ posterTimeMs: MEDIA_VIDEO_MAX_DURATION_MS - 1 }), config).poster.timeMs, MEDIA_VIDEO_MAX_DURATION_MS - 1,
+    "the length is unknown until the worker reads the file");
+  assert.throws(() => validateVideoVerifierJob(universalJob({ posterTimeMs: MEDIA_VIDEO_MAX_DURATION_MS }), config));
+  assert.throws(() => validateVideoVerifierJob(universalJob({ extension: "avi", contentType: "video/webm" }), config),
+    (error) => error.code === "invalid_request", "the key extension must match the declared container");
+  assert.throws(() => validateVideoVerifierJob({ ...universalJob(), admission: undefined }, config),
+    "without universal admission a WebM still needs the MP4/MOV proof");
+  assert.throws(() => validateVideoVerifierJob({ ...universalJob(), admission: "everything" }, config),
+    (error) => error.code === "incompatible_protocol");
+});
+
+test("a WebM with VP9, Opus, cover art and subtitles converts to H.264/AAC from forced demuxing", async () => {
+  const probe = universalProbe({ streams: [
+    { index: 0, codec_type: "video", codec_name: "mjpeg", width: 600, height: 600, disposition: { attached_pic: 1 } },
+    { index: 1, codec_type: "video", codec_name: "vp9", width: 1_080, height: 1_920, field_order: "progressive", avg_frame_rate: "0/0", r_frame_rate: "1000/1", disposition: { attached_pic: 0 } },
+    { index: 2, codec_type: "subtitle", codec_name: "webvtt" },
+    { index: 3, codec_type: "audio", codec_name: "opus", channels: 2 },
+  ] });
+  const runProcess = universalRunner({ probe });
+  const result = await runUniversal(universalJob({ posterTimeMs: 11_990 }), runProcess, "video/webm");
+  assert.equal(result.video.codec, "vp9");
+  assert.equal(result.video.audioCodec, "opus");
+  assert.equal(result.delivery.codec, "h264");
+  assert.equal(result.poster.timeMs, 9_750, "the cover stays clear of the last frames of the shorter of source and copy");
+  assert.equal(Object.hasOwn(result.video, "demuxer"), false, "internal probe fields stay inside the worker");
+
+  const sourceCalls = runProcess.calls.filter((call) => call.args.some((value) => String(value).endsWith("source.webm")));
+  assert.equal(sourceCalls.length, 2, "one probe and one conversion read the member file");
+  for (const call of sourceCalls) {
+    assert.deepEqual(call.args.slice(call.args.indexOf("-f"), call.args.indexOf("-f") + 2), ["-f", "matroska"], "never format guessing");
+    assert.ok(call.args.includes("-protocol_whitelist") && call.args.includes("file,pipe"));
+  }
+  const transcode = sourceCalls.find((call) => call.executable === "ffmpeg").args;
+  assert.deepEqual(transcode.filter((value, index) => transcode[index - 1] === "-map"), ["0:1", "0:3"],
+    "the real picture and first decodable audio, never the cover art or subtitles");
+  assert.equal(transcode.includes("-xerror"), false, "a phone recording with one bad frame still converts");
+  const filter = transcode[transcode.indexOf("-vf") + 1];
+  assert.match(filter, /^fps=30,/, "an unbelievable 1000 fps timebase delivers at 30");
+  assert.match(filter, /if\(gt\(iw,ih\),min\(1920,iw\),min\(1080,iw\)\)/, "portrait keeps its 1080 width");
+  assert.ok(transcode.includes("libx264") && transcode.includes("aac"));
+  assert.ok(transcode.includes("-map_metadata") && transcode.includes("-1"), "metadata including location is dropped");
+  const outputDecode = runProcess.calls.find((call) => call.executable === "ffmpeg"
+    && call.args.some((value) => String(value).endsWith("delivery.mp4")) && call.args.at(-1) === "-");
+  assert.ok(outputDecode.args.includes("-xerror"), "the published copy is still decoded strictly");
+});
+
+test("interlaced, non-square MPEG is deinterlaced and squared before bounding", async () => {
+  const probe = universalProbe({ streams: [
+    { index: 0, codec_type: "video", codec_name: "mpeg2video", width: 720, height: 480, field_order: "tt", sample_aspect_ratio: "32:27", avg_frame_rate: "30000/1001", r_frame_rate: "30000/1001" },
+    { index: 1, codec_type: "audio", codec_name: "mp2", channels: 2 },
+  ] });
+  const runProcess = universalRunner({ probe });
+  await runUniversal(universalJob({ extension: "mpg", contentType: "video/mpeg" }), runProcess, "video/mpeg");
+  const transcode = runProcess.calls.find((call) => call.executable === "ffmpeg" && call.args.some((value) => String(value).endsWith("source.mpg"))).args;
+  assert.deepEqual(transcode.slice(transcode.indexOf("-f"), transcode.indexOf("-f") + 2), ["-f", "mpeg"]);
+  assert.match(transcode[transcode.indexOf("-vf") + 1], /^yadif=deint=interlaced,fps=30,scale=w='trunc\(iw\*sar\/2\)\*2':h=ih,setsar=1,/);
+});
+
+test("universal sources the worker cannot read are signed source rejections, not retryable faults", async () => {
+  const cases = [
+    ["no decodable picture", { probe: universalProbe({ streams: [
+      { index: 0, codec_type: "video", codec_name: "av1", width: 1_280, height: 720 },
+      { index: 1, codec_type: "audio", codec_name: "opus", channels: 2 },
+    ] }) }],
+    ["over ten minutes", { probe: universalProbe({ duration: String(MEDIA_VIDEO_MAX_DURATION_MS / 1_000 + 1), streams: [
+      { index: 0, codec_type: "video", codec_name: "vp8", width: 640, height: 360, avg_frame_rate: "30/1", r_frame_rate: "30/1" },
+    ] }) }],
+    ["unreadable file", { probe: "", failProbe: true }],
+    ["damaged beyond decoding", { failTranscode: true, probe: universalProbe({ streams: [
+      { index: 0, codec_type: "video", codec_name: "vp8", width: 640, height: 360, avg_frame_rate: "30/1", r_frame_rate: "30/1" },
+    ] }) }],
+  ];
+  for (const [label, options] of cases) {
+    await assert.rejects(() => runUniversal(universalJob(), universalRunner(options), "video/webm"),
+      (error) => error.code === "unsupported_media" && error.status === 422, label);
+  }
+});
+
+test("a browser-recorded WebM that stores no length converts and takes the copy's measured length", async () => {
+  const probe = JSON.stringify({
+    streams: [
+      { index: 0, codec_type: "video", codec_name: "vp8", width: 1_280, height: 720, avg_frame_rate: "0/0", r_frame_rate: "1000/1" },
+      { index: 1, codec_type: "audio", codec_name: "opus", channels: 1 },
+    ],
+    format: { format_name: "matroska,webm" },
+  });
+  const runProcess = universalRunner({ probe });
+  const result = await runUniversal(universalJob({ posterTimeMs: 0 }), runProcess, "video/webm");
+  assert.equal(result.video.durationMs, 10_000, "measured from the converted copy");
+  assert.equal(result.delivery.durationMs, 10_000);
+  assert.equal(result.poster.timeMs, 0);
+  const transcode = runProcess.calls.find((call) => call.executable === "ffmpeg" && call.args.some((value) => String(value).endsWith("source.webm"))).args;
+  assert.ok(transcode.includes("-maxrate"), "an unknown length is budgeted as the longest allowed clip");
 });

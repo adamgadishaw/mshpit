@@ -31,10 +31,25 @@ passes on the branch head: 5,356 tests, initial JS 505.2 KiB of 512 KiB.
   default description, app description and About page match the landing.
 - Copy: slogan headings and the small capitals above screen and section titles
   are gone or sentence case at 12px or larger.
+- Clips in any common format: production video publishing was already live
+  (checked 2026-09-23: `/api/health?mediaPipeline=private-derivative-v1` reported
+  `ready`), but the converter accepted only MP4/MOV with H.264 or HEVC and a
+  long list of exact stream rules, so WebM, MKV, AVI, VP9, interlaced, anamorphic,
+  10-bit H.264, multi-audio and similar clips were refused. The converter now
+  advertises `universal-v1` in separate health fields. When it does, the site
+  skips the MP4-only structural pre-check and the converter reads the file with
+  the demuxer its declared container calls for (never format guessing), picks the
+  first decodable picture and audio, and always re-encodes to the same strict
+  H.264/AAC MP4 with metadata stripped and a server-made cover. Budgets are
+  unchanged: 500 MB, ten minutes, 4096 by 2160, 240 fps. An older site ignores
+  the new fields and an older converter never receives a universal job, so the
+  web and converter deploys can land in either order. The converter image build
+  now converts real AVI, Matroska and interlaced MPEG clips (`--self-test`); a
+  failure stops that build and Render keeps the running converter.
 
 Not in this branch, and why:
-- Video uploads are off in production until the private `pit-video-verifier`
-  Render service is deployed and healthy. That is a dashboard task.
+- AV1 clips are still refused: software AV1 decoding needs libdav1d in the
+  converter image, which is not added yet.
 - Rejected photos need a real failing file from the owner to reproduce.
 - About 72,800 sitemap URLs are provider event and catalogue pages against
   about 109 member-made pages. Removing the thin ones from Google is an owner

@@ -2170,7 +2170,7 @@ test("stable media creation rejects disabled video before reserving a ticket and
         }),
         (error) => error.status === 415
           && error.code === "MEDIA_TYPE_UNSUPPORTED"
-          && /being prepared/i.test(error.message),
+          && /Clip uploads are paused/i.test(error.message),
       );
     }
     assert.deepEqual({

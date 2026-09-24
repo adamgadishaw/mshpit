@@ -158,6 +158,7 @@ import { requestMetrics } from "./requestMetrics.js";
 import {
   mediaPublishingCapabilitiesForRuntime,
 } from "../src/domain/mediaPublishingCapabilities.mjs";
+import { normalizedVideoMimeType } from "../src/domain/mediaMime.mjs";
 import { verifyVideoObject, videoVerifierRuntimeStatus } from "./videoVerifier.js";
 import { VIDEO_VERIFIER_PIPELINE_VERSION } from "./videoVerifierProtocol.js";
 import {
@@ -3552,7 +3553,11 @@ function runtimeMediaPublishingCapabilities() {
         photos,
         videos: true,
         pipeline: verifier.pipeline,
-        sourceTypes: verifier.sourceTypes,
+        // A converter with universal admission takes every listed format; the
+        // MP4/MOV list stays first for apps that only understand those.
+        sourceTypes: verifier.universal
+          ? [...new Set([...verifier.sourceTypes, ...verifier.universalSourceTypes])]
+          : verifier.sourceTypes,
         sourceCodecs: verifier.sourceCodecs,
         // Optional capability evidence, not a new gate for baseline uploads.
         // Only a currently ready worker may advertise its signed revision.
@@ -3567,7 +3572,8 @@ function videoRequestBody(body) {
 }
 
 function normalizedRequestedMediaType(body) {
-  return String(body?.contentType || "").split(";", 1)[0].trim().toLowerCase();
+  const type = String(body?.contentType || "").split(";", 1)[0].trim().toLowerCase();
+  return normalizedVideoMimeType(type) || type;
 }
 
 function runtimeAcceptsVideoSourceType(capabilities, contentType) {
@@ -4505,7 +4511,9 @@ export const routes = {
       // the same fail-closed production boundary as the composer.
       throw new ApiError(
         415,
-        "New clip publishing is being prepared. Existing clips remain viewable; photos can still be published.",
+        mediaCapabilities?.videos === true
+          ? "That video format can't be converted right now. Try again soon."
+          : "Clip uploads are paused for a moment. Photos can still be posted.",
         "MEDIA_TYPE_UNSUPPORTED",
       );
     }
@@ -4627,6 +4635,7 @@ export const routes = {
               at: now(),
               authoritativeVideoVerifier: verifyVideoObject,
               authoritativePosterRequired: true,
+              universalVideoAdmission: videoVerifierRuntimeStatus(process.env).universal === true,
               assertAuthorized: ctx.assertCurrentSession,
               beforeAuthoritativeVerify: () => {
                 ctx.assertCurrentSession?.();
@@ -4668,7 +4677,7 @@ export const routes = {
         // finishes normally for the next retry.
         throw new ApiError(
           429,
-          "PIT is still processing this clip. Your upload is saved—try again to resume it.",
+          "Mshpit is still converting this clip. Your upload is saved, so try again to pick it up.",
           "RATE_LIMITED",
         );
       }

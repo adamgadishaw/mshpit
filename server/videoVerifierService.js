@@ -27,8 +27,11 @@ import {
   VIDEO_VERIFIER_SOURCE_ADMISSION_REVISION,
   VIDEO_VERIFIER_SOURCE_CODECS,
   VIDEO_VERIFIER_SOURCE_CONTENT_TYPES,
+  VIDEO_VERIFIER_UNIVERSAL_ADMISSION,
+  VIDEO_VERIFIER_UNIVERSAL_SOURCE_TYPES,
   signVideoVerifierResponse,
   videoVerifierSourceExtension,
+  videoVerifierUniversalPosterTimeMs,
   verifyVideoVerifierRequest,
 } from "./videoVerifierProtocol.js";
 
@@ -59,6 +62,44 @@ const NONCE_CACHE_MAX = 2_048;
 const SOURCE_OBJECT_KEY = /^users\/[A-Za-z0-9_-]{1,128}\/post\/[A-Za-z0-9_-]{1,240}\.(?:mp4|mov)$/;
 const OUTPUT_OBJECT_KEY = /^users\/[A-Za-z0-9_-]{1,128}\/post\/[A-Za-z0-9_-]{1,240}\.mp4$/;
 const SOURCE_CONTENT_TYPES = new Set(VIDEO_VERIFIER_SOURCE_CONTENT_TYPES);
+const UNIVERSAL_SOURCE_TYPES = new Set(VIDEO_VERIFIER_UNIVERSAL_SOURCE_TYPES);
+const UNIVERSAL_SOURCE_OBJECT_KEY = /^users\/[A-Za-z0-9_-]{1,128}\/post\/[A-Za-z0-9_-]{1,240}\.[a-z0-9]{2,4}$/;
+// A universal clip is always read with the demuxer its container calls for,
+// never by FFmpeg's format guessing. Playlist and concat formats that can refer
+// to other files are therefore unreachable, on top of the file-only protocol
+// whitelist and an FFmpeg built without networking.
+const UNIVERSAL_DEMUXERS = Object.freeze({
+  "video/mp4": "mov",
+  "video/quicktime": "mov",
+  "video/x-m4v": "mov",
+  "video/3gpp": "mov",
+  "video/3gpp2": "mov",
+  "video/webm": "matroska",
+  "video/x-matroska": "matroska",
+  "video/ogg": "ogg",
+  "video/x-msvideo": "avi",
+  "video/mpeg": "mpeg",
+  "video/mp2t": "mpegts",
+  "video/x-ms-wmv": "asf",
+  "video/x-flv": "flv",
+});
+// Decoders this FFmpeg build has in software. A clip needs one of these video
+// streams; other streams (cover art, subtitles, timecode, unknown data) are
+// left behind. AV1 is absent because software AV1 needs libdav1d.
+const UNIVERSAL_VIDEO_CODECS = new Set([
+  "h264", "hevc", "vp8", "vp9", "mpeg4", "mpeg2video", "mpeg1video", "h263", "h263p",
+  "msmpeg4v1", "msmpeg4v2", "msmpeg4v3", "wmv1", "wmv2", "wmv3", "vc1", "theora", "flv1",
+  "vp6", "vp6f", "vp6a", "prores", "mjpeg", "dvvideo", "cinepak", "svq3",
+]);
+const UNIVERSAL_AUDIO_CODECS = new Set([
+  "aac", "mp3", "mp2", "mp1", "opus", "vorbis", "ac3", "eac3", "flac", "alac", "dts",
+  "pcm_s16le", "pcm_s16be", "pcm_s24le", "pcm_s24be", "pcm_s32le", "pcm_s32be",
+  "pcm_f32le", "pcm_f32be", "pcm_u8", "pcm_mulaw", "pcm_alaw",
+  "wmav1", "wmav2", "wmapro", "amr_nb", "amr_wb", "adpcm_ima_qt", "adpcm_ima_wav", "adpcm_ms",
+  "nellymoser", "speex",
+]);
+// Used when a variable-frame-rate source reports no believable rate.
+const UNIVERSAL_DEFAULT_FRAME_RATE = 30;
 const STRONG_ETAG = /^"[\x21\x23-\x7e]{1,200}"$/u;
 const SHA256 = /^[a-f0-9]{64}$/;
 const FORBIDDEN_RENDER_PORTS = new Set([10_000, 18_012, 18_013, 19_099]);
@@ -222,18 +263,57 @@ function expectedObjectPath(storageBase, bucket, objectKey) {
   return `${prefix}/${[bucket, ...objectKey.split("/")].map(encode).join("/")}`;
 }
 
+// The MP4/MOV path carries the site's bounded container proof; the worker
+// re-checks it before spending its single decoder slot.
+function validatedStructuralProof(payload, sourceContentType) {
+  const structural = {
+    width: boundedInteger(payload?.structural?.width, { min: 1, max: VIDEO_MAX_EDGE, label: "Video width" }),
+    height: boundedInteger(payload?.structural?.height, { min: 1, max: VIDEO_MAX_EDGE, label: "Video height" }),
+    codedWidth: boundedInteger(payload?.structural?.codedWidth, { min: 16, max: VIDEO_MAX_EDGE, label: "Coded video width" }),
+    codedHeight: boundedInteger(payload?.structural?.codedHeight, { min: 16, max: VIDEO_MAX_EDGE, label: "Coded video height" }),
+    sampleCount: boundedInteger(payload?.structural?.sampleCount, { min: 1, max: VIDEO_MAX_SAMPLES, label: "Video sample count" }),
+    durationMs: boundedInteger(payload?.structural?.durationMs, { min: 1, max: VIDEO_MAX_DURATION_MS, label: "Video duration" }),
+    sourceContainer: payload?.structural?.sourceContainer,
+    sourceCodec: payload?.structural?.sourceCodec,
+    sourceAdmissionRevision: payload?.structural?.sourceAdmissionRevision,
+  };
+  const quickTimeStructural = sourceContentType !== "video/quicktime"
+    || (structural.sourceContainer === "quicktime" && new Set(["h264", "hevc"]).has(structural.sourceCodec));
+  const mp4Structural = sourceContentType !== "video/mp4"
+    || (structural.sourceContainer === undefined
+      && (structural.sourceCodec === undefined || structural.sourceCodec === "hevc"));
+  const sampleLimit = Math.floor((structural.durationMs * MEDIA_VIDEO_MAX_FRAME_RATE) / 1_000) + 2;
+  const codedWork = BigInt(structural.codedWidth) * BigInt(structural.codedHeight) * BigInt(structural.sampleCount);
+  if (structural.codedWidth % 16 !== 0 || structural.codedHeight % 16 !== 0
+      || structural.codedWidth < structural.width || structural.codedHeight < structural.height
+      || Math.min(structural.width, structural.height) > MEDIA_VIDEO_SOURCE_MAX_SHORT_EDGE
+      || structural.sampleCount > sampleLimit || codedWork > VIDEO_MAX_CODED_PIXEL_SAMPLES
+      || !quickTimeStructural || !mp4Structural) {
+    throw serviceError("invalid_request", "Video decode-work proof is invalid.");
+  }
+  if (structural.sourceAdmissionRevision !== undefined
+      && structural.sourceAdmissionRevision !== VIDEO_VERIFIER_SOURCE_ADMISSION_REVISION) {
+    throw serviceError("incompatible_protocol", "Source admission revision is incompatible.");
+  }
+  return structural;
+}
+
 export function validateVideoVerifierJob(payload, config) {
   if (payload?.protocol !== VIDEO_VERIFIER_PROTOCOL_VERSION) {
     throw serviceError("incompatible_protocol", "Verifier protocol is incompatible.");
   }
+  if (payload?.admission !== undefined && payload.admission !== VIDEO_VERIFIER_UNIVERSAL_ADMISSION) {
+    throw serviceError("incompatible_protocol", "Source admission mode is incompatible.");
+  }
+  const universal = payload?.admission === VIDEO_VERIFIER_UNIVERSAL_ADMISSION;
   const object = payload?.object;
   const objectKey = String(object?.key || "");
   const sourceContentType = String(object?.contentType || "");
   const byteSize = boundedInteger(object?.byteSize, { min: 1, max: VIDEO_MAX_BYTES, label: "Object size" });
   const etag = String(object?.etag || "");
   const sourceExtension = videoVerifierSourceExtension(sourceContentType);
-  const sourceIdentityValid = SOURCE_OBJECT_KEY.test(objectKey)
-    && SOURCE_CONTENT_TYPES.has(sourceContentType)
+  const sourceIdentityValid = (universal ? UNIVERSAL_SOURCE_OBJECT_KEY : SOURCE_OBJECT_KEY).test(objectKey)
+    && (universal ? UNIVERSAL_SOURCE_TYPES : SOURCE_CONTENT_TYPES).has(sourceContentType)
     && !!sourceExtension && objectKey.endsWith(`.${sourceExtension}`);
   if (!sourceIdentityValid || !STRONG_ETAG.test(etag)) {
     throw serviceError("invalid_request", "Object identity is invalid.");
@@ -281,37 +361,13 @@ export function validateVideoVerifierJob(payload, config) {
   if (!downloadHeaders || Object.keys(downloadHeaders).length !== 1 || downloadHeaders["If-Match"] !== etag) {
     throw serviceError("invalid_request", "Object generation binding is invalid.");
   }
-  const structural = {
-    width: boundedInteger(payload?.structural?.width, { min: 1, max: VIDEO_MAX_EDGE, label: "Video width" }),
-    height: boundedInteger(payload?.structural?.height, { min: 1, max: VIDEO_MAX_EDGE, label: "Video height" }),
-    codedWidth: boundedInteger(payload?.structural?.codedWidth, { min: 16, max: VIDEO_MAX_EDGE, label: "Coded video width" }),
-    codedHeight: boundedInteger(payload?.structural?.codedHeight, { min: 16, max: VIDEO_MAX_EDGE, label: "Coded video height" }),
-    sampleCount: boundedInteger(payload?.structural?.sampleCount, { min: 1, max: VIDEO_MAX_SAMPLES, label: "Video sample count" }),
-    durationMs: boundedInteger(payload?.structural?.durationMs, { min: 1, max: VIDEO_MAX_DURATION_MS, label: "Video duration" }),
-    sourceContainer: payload?.structural?.sourceContainer,
-    sourceCodec: payload?.structural?.sourceCodec,
-    sourceAdmissionRevision: payload?.structural?.sourceAdmissionRevision,
-  };
-  const quickTimeStructural = sourceContentType !== "video/quicktime"
-    || (structural.sourceContainer === "quicktime" && new Set(["h264", "hevc"]).has(structural.sourceCodec));
-  const mp4Structural = sourceContentType !== "video/mp4"
-    || (structural.sourceContainer === undefined
-      && (structural.sourceCodec === undefined || structural.sourceCodec === "hevc"));
-  const sampleLimit = Math.floor((structural.durationMs * MEDIA_VIDEO_MAX_FRAME_RATE) / 1_000) + 2;
-  const codedWork = BigInt(structural.codedWidth) * BigInt(structural.codedHeight) * BigInt(structural.sampleCount);
-  if (structural.codedWidth % 16 !== 0 || structural.codedHeight % 16 !== 0
-      || structural.codedWidth < structural.width || structural.codedHeight < structural.height
-      || Math.min(structural.width, structural.height) > MEDIA_VIDEO_SOURCE_MAX_SHORT_EDGE
-      || structural.sampleCount > sampleLimit || codedWork > VIDEO_MAX_CODED_PIXEL_SAMPLES
-      || !quickTimeStructural || !mp4Structural) {
-    throw serviceError("invalid_request", "Video decode-work proof is invalid.");
-  }
-  if (structural.sourceAdmissionRevision !== undefined
-      && structural.sourceAdmissionRevision !== VIDEO_VERIFIER_SOURCE_ADMISSION_REVISION) {
-    throw serviceError("incompatible_protocol", "Source admission revision is incompatible.");
-  }
+  const structural = universal ? null : validatedStructuralProof(payload, sourceContentType);
   const poster = {
-    timeMs: boundedInteger(payload?.poster?.timeMs, { min: 0, max: structural.durationMs - 1, label: "Poster time" }),
+    timeMs: boundedInteger(payload?.poster?.timeMs, {
+      min: 0,
+      max: (structural ? structural.durationMs : VIDEO_MAX_DURATION_MS) - 1,
+      label: "Poster time",
+    }),
     maxBytes: boundedInteger(payload?.poster?.maxBytes, { min: 4, max: POSTER_MAX_BYTES, label: "Poster size limit" }),
     maxEdge: boundedInteger(payload?.poster?.maxEdge, { min: 64, max: POSTER_MAX_EDGE, label: "Poster edge limit" }),
   };
@@ -357,6 +413,7 @@ export function validateVideoVerifierJob(payload, config) {
   return {
     objectKey, byteSize, contentType: sourceContentType, etag, downloadUrl, downloadHeaders, structural, poster, expires,
     output: { key: outputKey, uploadUrl, uploadHeaders },
+    universal,
   };
 }
 
@@ -586,6 +643,116 @@ async function probeVideo(filePath, config, {
   };
 }
 
+function probedFrameRate(value) {
+  const match = /^([0-9]+)\/([1-9][0-9]*)$/.exec(String(value || ""));
+  const rate = match ? Number(match[1]) / Number(match[2]) : Number.NaN;
+  return Number.isFinite(rate) && rate > 0 ? rate : Number.NaN;
+}
+
+// Reads any admitted container without the MP4-only structural proof. The
+// resource budgets are the same: ten minutes, 4096 by 2160, 240 fps and the
+// shared decode-work ceiling. A file FFprobe cannot read is the member's
+// file, so it is a signed source rejection rather than a retryable fault.
+export async function probeUniversalVideo(filePath, contentType, config, { runProcess, directory, signal }) {
+  const demuxer = UNIVERSAL_DEMUXERS[contentType];
+  if (!demuxer) throw serviceError("unsupported_media", "Clip container is not supported.");
+  let result;
+  try {
+    result = await runProcess(config.ffprobe, [
+      "-v", "error",
+      "-protocol_whitelist", "file,pipe",
+      "-f", demuxer,
+      "-show_entries", "stream=index,codec_type,codec_name,width,height,field_order,sample_aspect_ratio,avg_frame_rate,r_frame_rate,nb_frames,duration,channels:stream_disposition=attached_pic:stream_tags=rotate:stream_side_data=rotation:format=duration",
+      "-of", "json",
+      filePath,
+    ], { cwd: directory, signal });
+  } catch (error) {
+    if (error?.code === "decode_failed") throw serviceError("unsupported_media", "Clip could not be read.", { cause: error });
+    throw error;
+  }
+  let probe;
+  try { probe = parseProbeJson(result.stdout, "Video"); }
+  catch (error) { throw serviceError("unsupported_media", "Clip could not be read.", { cause: error }); }
+  const streams = Array.isArray(probe.streams) ? probe.streams : [];
+  const video = streams.find((stream) => stream?.codec_type === "video"
+    && stream?.disposition?.attached_pic !== 1
+    && UNIVERSAL_VIDEO_CODECS.has(String(stream?.codec_name || "")));
+  const audio = streams.find((stream) => stream?.codec_type === "audio"
+    && UNIVERSAL_AUDIO_CODECS.has(String(stream?.codec_name || ""))
+    && Number(stream?.channels) >= 1);
+  const width = Number(video?.width);
+  const height = Number(video?.height);
+  const seconds = [probe.format?.duration, video?.duration].map(Number).find((value) => Number.isFinite(value) && value > 0);
+  // Browser recordings (MediaRecorder WebM) often store no length at all. The
+  // conversion then runs within the job deadline and the converted copy's
+  // measured length is checked against the same ten-minute limit.
+  const durationMs = Number.isFinite(Number(seconds)) ? Math.round(Number(seconds) * 1_000) : null;
+  const knownDuration = Number.isSafeInteger(durationMs) && durationMs > 0;
+  // Variable-frame-rate recordings often report a timebase such as 1000/1 as
+  // their rate. Only a believable rate is used; otherwise budget at 60 fps and
+  // deliver at 30.
+  const frames = /^[1-9][0-9]*$/.test(String(video?.nb_frames ?? "")) ? Number(video.nb_frames) : Number.NaN;
+  const reportedRates = [probedFrameRate(video?.avg_frame_rate), probedFrameRate(video?.r_frame_rate),
+    Number.isSafeInteger(frames) && knownDuration ? frames / (durationMs / 1_000) : Number.NaN]
+    .filter((rate) => Number.isFinite(rate) && rate <= MEDIA_VIDEO_MAX_FRAME_RATE + 0.01);
+  const sourceFrameRate = reportedRates.length ? Math.max(...reportedRates) : Number.NaN;
+  const budgetFrameRate = Number.isFinite(sourceFrameRate) ? sourceFrameRate : MEDIA_VIDEO_DELIVERY_MAX_FRAME_RATE;
+  const outputFrameRate = Number.isFinite(sourceFrameRate)
+    ? Math.max(1, Math.min(MEDIA_VIDEO_DELIVERY_MAX_FRAME_RATE, Math.round(sourceFrameRate)))
+    : UNIVERSAL_DEFAULT_FRAME_RATE;
+  const codedWidth = Math.ceil(width / 16) * 16;
+  const codedHeight = Math.ceil(height / 16) * 16;
+  const samples = knownDuration ? Math.ceil(budgetFrameRate * (durationMs / 1_000)) : 0;
+  const codedWork = Number.isSafeInteger(codedWidth) && Number.isSafeInteger(codedHeight)
+    ? BigInt(codedWidth) * BigInt(codedHeight) * BigInt(samples)
+    : VIDEO_MAX_CODED_PIXEL_SAMPLES + 1n;
+  if (!video
+      || !Number.isSafeInteger(width) || width < 2 || width > VIDEO_MAX_EDGE
+      || !Number.isSafeInteger(height) || height < 2 || height > VIDEO_MAX_EDGE
+      || Math.min(width, height) > MEDIA_VIDEO_SOURCE_MAX_SHORT_EDGE
+      || (knownDuration && durationMs > VIDEO_MAX_DURATION_MS)
+      || samples > VIDEO_MAX_SAMPLES || codedWork > VIDEO_MAX_CODED_PIXEL_SAMPLES) {
+    throw serviceError("unsupported_media", "Clip is outside the supported size, length or format.");
+  }
+  const rotations = [
+    video?.tags?.rotate,
+    ...(Array.isArray(video?.side_data_list) ? video.side_data_list.map((item) => item?.rotation) : []),
+  ].filter((value) => value !== undefined && value !== null && value !== "")
+    .map((value) => ((Math.round(Number(value)) % 360) + 360) % 360)
+    .filter((value) => [0, 90, 180, 270].includes(value));
+  return {
+    width,
+    height,
+    codedWidth,
+    codedHeight,
+    durationMs: knownDuration ? durationMs : null,
+    rotation: rotations[0] || 0,
+    frameRate: Number.isFinite(sourceFrameRate) ? sourceFrameRate : UNIVERSAL_DEFAULT_FRAME_RATE,
+    codec: String(video.codec_name),
+    audioCodec: audio ? String(audio.codec_name) : "none",
+    universal: true,
+    demuxer,
+    videoIndex: Number(video.index),
+    audioIndex: audio ? Number(audio.index) : null,
+    interlaced: !new Set(["progressive", "unknown", "", "undefined"]).has(String(video?.field_order ?? "")),
+    outputFrameRate,
+  };
+}
+
+function publicVideoSummary(video) {
+  return {
+    width: video.width,
+    height: video.height,
+    codedWidth: video.codedWidth,
+    codedHeight: video.codedHeight,
+    durationMs: video.durationMs,
+    rotation: video.rotation,
+    frameRate: video.frameRate,
+    codec: video.codec,
+    audioCodec: video.audioCodec,
+  };
+}
+
 async function decodeAllStreams(filePath, config, { runProcess, directory, signal }) {
   await runProcess(config.ffmpeg, [
     "-nostdin",
@@ -646,17 +813,42 @@ async function createSanitizedDelivery(
   config,
   { runProcess, directory, signal },
 ) {
-  const strategy = videoDeliveryStrategy(sourceVideo);
-  const bitrate = strategy === "transcode" ? videoTranscodeBitrateBudget(sourceVideo.durationMs) : null;
+  const universal = sourceVideo?.universal === true;
+  const strategy = universal ? "transcode" : videoDeliveryStrategy(sourceVideo);
+  // An unknown universal length is budgeted as the longest allowed clip.
+  const bitrate = strategy === "transcode"
+    ? videoTranscodeBitrateBudget(sourceVideo.durationMs ?? VIDEO_MAX_DURATION_MS)
+    : null;
   const frameRateFilter = sourceVideo.frameRate > MEDIA_VIDEO_DELIVERY_MAX_FRAME_RATE + 0.01
     ? `fps=${MEDIA_VIDEO_DELIVERY_MAX_FRAME_RATE},`
     : "";
-  const commonInput = [
-    "-nostdin", "-v", "error", "-xerror", "-err_detect", "explode",
-    "-threads", "2", "-filter_threads", "1",
-    "-protocol_whitelist", "file,pipe", "-f", "mov", "-i", sourcePath,
-    "-map", "0:v:0", "-map", "0:a:0?",
-  ];
+  // A universal source is only ever read by this conversion and ffprobe. It is
+  // decoded tolerantly, the way a phone recording with one damaged frame still
+  // plays, and the output below is then decoded strictly before publication.
+  const commonInput = universal
+    ? [
+        "-nostdin", "-v", "error",
+        "-threads", "2", "-filter_threads", "1",
+        "-protocol_whitelist", "file,pipe", "-f", sourceVideo.demuxer, "-i", sourcePath,
+        "-map", `0:${sourceVideo.videoIndex}`,
+        ...(Number.isSafeInteger(sourceVideo.audioIndex) ? ["-map", `0:${sourceVideo.audioIndex}`] : []),
+      ]
+    : [
+        "-nostdin", "-v", "error", "-xerror", "-err_detect", "explode",
+        "-threads", "2", "-filter_threads", "1",
+        "-protocol_whitelist", "file,pipe", "-f", "mov", "-i", sourcePath,
+        "-map", "0:v:0", "-map", "0:a:0?",
+      ];
+  // Universal sources may be interlaced or use non-square pixels. Square the
+  // pixels first, then bound the long edge at 1920 and the short edge at 1080
+  // so a portrait clip keeps its full 1080 width.
+  const videoFilter = universal
+    ? `${sourceVideo.interlaced ? "yadif=deint=interlaced," : ""}fps=${sourceVideo.outputFrameRate},`
+      + "scale=w='trunc(iw*sar/2)*2':h=ih,setsar=1,"
+      + `scale=w='if(gt(iw,ih),min(${DELIVERY_MAX_WIDTH},iw),min(${DELIVERY_MAX_HEIGHT},iw))'`
+      + `:h='if(gt(iw,ih),min(${DELIVERY_MAX_HEIGHT},ih),min(${DELIVERY_MAX_WIDTH},ih))'`
+      + ":force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1"
+    : `${frameRateFilter}scale=w='min(${DELIVERY_MAX_WIDTH},iw)':h='min(${DELIVERY_MAX_HEIGHT},ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1`;
   const output = strategy === "remux"
     ? [
         // The source has already passed the strict H.264/AAC/container probe.
@@ -666,7 +858,7 @@ async function createSanitizedDelivery(
         "-c:v", "copy", "-c:a", "copy",
       ]
     : [
-        `-vf`, `${frameRateFilter}scale=w='min(${DELIVERY_MAX_WIDTH},iw)':h='min(${DELIVERY_MAX_HEIGHT},ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1`,
+        `-vf`, videoFilter,
         // Concert footage is often grainy enough that unconstrained CRF H.264 can
         // expand beyond the bounded delivery contract even from a smaller HEVC
         // source. Duration-aware VBV reserves audio/container/burst headroom;
@@ -677,12 +869,21 @@ async function createSanitizedDelivery(
         "-profile:v", "high", "-level:v", "4.2", "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-profile:a", "aac_low", "-ac", "2", "-ar", "48000", "-b:a", String(bitrate.audioRate),
       ];
-  await runProcess(config.ffmpeg, [
-    ...commonInput,
-    ...output,
-    "-map_metadata", "-1", "-map_chapters", "-1", "-metadata:s:v:0", "rotate=0",
-    "-movflags", "+faststart", "-brand", "mp42", "-f", "mp4", "-y", deliveryPath,
-  ], { cwd: directory, signal });
+  try {
+    await runProcess(config.ffmpeg, [
+      ...commonInput,
+      ...output,
+      "-map_metadata", "-1", "-map_chapters", "-1", "-metadata:s:v:0", "rotate=0",
+      "-movflags", "+faststart", "-brand", "mp42", "-f", "mp4", "-y", deliveryPath,
+    ], { cwd: directory, signal });
+  } catch (error) {
+    // Only the member's file is read here for a universal source, so a
+    // failed conversion means FFmpeg could not decode that file.
+    if (universal && error?.code === "decode_failed") {
+      throw serviceError("unsupported_media", "Clip could not be decoded.", { cause: error });
+    }
+    throw error;
+  }
   const file = await stat(deliveryPath);
   if (!file.isFile() || file.size < 16 || file.size > VIDEO_MAX_BYTES) {
     throw serviceError("delivery_invalid", "Sanitized delivery is outside its byte limit.");
@@ -851,19 +1052,24 @@ export async function runVideoVerifierJob(payload, {
   const posterPath = join(directory, "poster.jpg");
   try {
     await downloadExactObject(job, sourcePath, { fetchImpl, signal });
-    const video = await probeVideo(sourcePath, config, {
-      runProcess,
-      directory,
-      signal,
-      sourceContentType: job.contentType,
-      structural: job.structural,
-      useStructuralSampleCount: true,
-    });
-    if (video.width !== job.structural.width
-        || video.height !== job.structural.height
-        || (job.structural.sourceCodec !== undefined && video.codec !== job.structural.sourceCodec)
-        || Math.abs(video.durationMs - job.structural.durationMs) > 1_500) {
-      throw serviceError("metadata_mismatch", "Decoded clip does not match structural preflight.", { status: 409 });
+    let video;
+    if (job.universal) {
+      video = await probeUniversalVideo(sourcePath, job.contentType, config, { runProcess, directory, signal });
+    } else {
+      video = await probeVideo(sourcePath, config, {
+        runProcess,
+        directory,
+        signal,
+        sourceContentType: job.contentType,
+        structural: job.structural,
+        useStructuralSampleCount: true,
+      });
+      if (video.width !== job.structural.width
+          || video.height !== job.structural.height
+          || (job.structural.sourceCodec !== undefined && video.codec !== job.structural.sourceCodec)
+          || Math.abs(video.durationMs - job.structural.durationMs) > 1_500) {
+        throw serviceError("metadata_mismatch", "Decoded clip does not match structural preflight.", { status: 409 });
+      }
     }
     // The following xerror/err_detect transcode necessarily decodes every
     // selected source frame and audio packet. A separate full source decode was
@@ -876,7 +1082,19 @@ export async function runVideoVerifierJob(payload, {
       config,
       { runProcess, directory, signal },
     );
-    const poster = await generateAndVerifyPoster(deliveryPath, posterPath, job, delivery.video, config, { runProcess, directory, signal });
+    // A source that stored no length takes the converted copy's measurement,
+    // which the strict delivery probe has already held to ten minutes.
+    if (video.durationMs === null) video = { ...video, durationMs: delivery.video.durationMs };
+    const posterJob = job.universal
+      ? {
+          ...job,
+          poster: {
+            ...job.poster,
+            timeMs: videoVerifierUniversalPosterTimeMs(job.poster.timeMs, Math.min(video.durationMs, delivery.video.durationMs)),
+          },
+        }
+      : job;
+    const poster = await generateAndVerifyPoster(deliveryPath, posterPath, posterJob, delivery.video, config, { runProcess, directory, signal });
     if (!SHA256.test(poster.sha256)) throw serviceError("poster_invalid", "Generated cover hash is invalid.");
     const published = await uploadSanitizedDelivery(job, deliveryPath, delivery, { fetchImpl, signal });
     return {
@@ -884,7 +1102,7 @@ export async function runVideoVerifierJob(payload, {
       protocol: VIDEO_VERIFIER_PROTOCOL_VERSION,
       pipeline: VIDEO_VERIFIER_PIPELINE_VERSION,
       object: { key: job.objectKey, byteSize: job.byteSize, contentType: job.contentType, etag: job.etag },
-      video,
+      video: job.universal ? publicVideoSummary(video) : video,
       delivery: published,
       poster,
     };
@@ -1092,6 +1310,8 @@ export function createVideoVerifierService({
               type,
               [...VIDEO_VERIFIER_SOURCE_CODECS[type]],
             ])),
+            universalAdmission: VIDEO_VERIFIER_UNIVERSAL_ADMISSION,
+            universalSourceTypes: [...VIDEO_VERIFIER_UNIVERSAL_SOURCE_TYPES],
             concurrency: 1,
           },
         });
@@ -1185,7 +1405,62 @@ export function createVideoVerifierService({
   };
 }
 
+// Run by the image build (`--self-test`). FFmpeg makes small clips in formats
+// the MP4/MOV path rejects and each is converted exactly as a member upload
+// would be. A wrong command fails the build, so Render keeps the running worker.
+export async function runVideoVerifierSelfTest({
+  config = {
+    ffmpeg: cleanExecutable(process.env.PIT_FFMPEG_PATH, "ffmpeg"),
+    ffprobe: cleanExecutable(process.env.PIT_FFPROBE_PATH, "ffprobe"),
+  },
+  runProcess = runVerifierProcess,
+  temporaryRoot = tmpdir(),
+} = {}) {
+  const directory = await mkdtemp(join(temporaryRoot, "pit-video-selftest-"));
+  const samples = [
+    { name: "clip.avi", contentType: "video/x-msvideo", encode: ["-c:v", "mpeg4", "-c:a", "pcm_s16le"] },
+    { name: "clip.mkv", contentType: "video/x-matroska", encode: ["-c:v", "mpeg4", "-c:a", "ac3"] },
+    { name: "clip.webm", contentType: "video/webm", encode: ["-c:v", "mpeg4", "-c:a", "ac3", "-f", "matroska"] },
+    {
+      name: "clip.mpg",
+      contentType: "video/mpeg",
+      size: "720x480",
+      encode: ["-vf", "setsar=32/27", "-c:v", "mpeg2video", "-flags", "+ilme+ildct", "-top", "1", "-c:a", "mp2"],
+    },
+  ];
+  const results = [];
+  try {
+    for (const sample of samples) {
+      const sourcePath = join(directory, sample.name);
+      await runProcess(config.ffmpeg, [
+        "-nostdin", "-v", "error",
+        "-f", "lavfi", "-i", `testsrc2=size=${sample.size || "320x240"}:rate=25`,
+        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100",
+        "-t", "1", ...sample.encode, "-y", sourcePath,
+      ], { cwd: directory });
+      const video = await probeUniversalVideo(sourcePath, sample.contentType, config, { runProcess, directory });
+      const deliveryPath = join(directory, `${sample.name}.delivery.mp4`);
+      const delivery = await createSanitizedDelivery(sourcePath, deliveryPath, video, null, config, { runProcess, directory });
+      if (delivery.video.codec !== "h264" || delivery.video.audioCodec !== "aac") {
+        throw new Error(`${sample.name} did not convert to H.264/AAC.`);
+      }
+      await generateAndVerifyPoster(deliveryPath, join(directory, `${sample.name}.jpg`), {
+        poster: { timeMs: videoVerifierUniversalPosterTimeMs(500, delivery.video.durationMs), maxBytes: POSTER_MAX_BYTES, maxEdge: POSTER_MAX_EDGE },
+      }, delivery.video, config, { runProcess, directory });
+      results.push({ name: sample.name, width: delivery.video.width, height: delivery.video.height });
+    }
+    return results;
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
 async function main() {
+  if (process.argv.includes("--self-test")) {
+    const results = await runVideoVerifierSelfTest();
+    process.stdout.write(`[video-verifier] self-test converted ${results.map((item) => `${item.name} ${item.width}x${item.height}`).join(", ")}\n`);
+    return;
+  }
   const service = createVideoVerifierService();
   if (!service.config.configured) {
     // Configuration names are not emitted because even a missing-name list can
@@ -1205,5 +1480,8 @@ async function main() {
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
-  void main();
+  main().catch((error) => {
+    process.stderr.write(`[video-verifier] ${error?.message || "failed"}\n`);
+    process.exitCode = 1;
+  });
 }

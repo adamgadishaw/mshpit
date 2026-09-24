@@ -5,6 +5,8 @@ import {
   timingSafeEqual,
 } from "node:crypto";
 
+import { VIDEO_EXTENSION_BY_MIME, VIDEO_SOURCE_MIME_TYPES } from "../src/domain/mediaMime.mjs";
+
 // v3 requires the public delivery PUT to carry PIT's exact signed cache policy.
 // A rolling deploy therefore fails closed between old/new web and verifier
 // instances instead of publishing with weaker or longer-lived caching.
@@ -24,11 +26,24 @@ export const VIDEO_VERIFIER_SOURCE_CODECS = Object.freeze({
   "video/quicktime": Object.freeze(["h264", "hevc"]),
 });
 
+// Universal admission: the worker converts any common container and codec it
+// can decode into the same H.264/AAC MP4 delivery. It is advertised in its own
+// health fields, so a site that predates it keeps reading the unchanged MP4/MOV
+// fields above and never sends a job the worker cannot take.
+export const VIDEO_VERIFIER_UNIVERSAL_ADMISSION = "universal-v1";
+export const VIDEO_VERIFIER_UNIVERSAL_SOURCE_TYPES = VIDEO_SOURCE_MIME_TYPES;
+
+// A universal clip's cover stays clear of its last frames, where a seek can
+// land after the final picture. Both sides compute the same value.
+export function videoVerifierUniversalPosterTimeMs(requestedMs, durationMs) {
+  const requested = Math.max(0, Math.round(Number(requestedMs) || 0));
+  const duration = Math.max(0, Math.round(Number(durationMs) || 0));
+  return Math.min(requested, Math.max(0, duration - 250));
+}
+
 export function videoVerifierSourceExtension(contentType) {
   const type = String(contentType || "").split(";", 1)[0].trim().toLowerCase();
-  if (type === "video/mp4") return "mp4";
-  if (type === "video/quicktime") return "mov";
-  return null;
+  return VIDEO_EXTENSION_BY_MIME[type] || null;
 }
 
 const NONCE = /^[A-Za-z0-9_-]{22,64}$/;

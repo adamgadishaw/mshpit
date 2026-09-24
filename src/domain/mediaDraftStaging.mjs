@@ -1,3 +1,5 @@
+import { VIDEO_EXTENSION_BY_MIME } from "./mediaMime.mjs";
+
 const MAX_URI = 3_000;
 export const MEDIA_DRAFT_CACHE_RETENTION_MS = 7 * 24 * 60 * 60_000;
 const EXTENSION_BY_MIME = Object.freeze({
@@ -8,9 +10,7 @@ const EXTENSION_BY_MIME = Object.freeze({
   "image/heic": "heic",
   "image/heif": "heif",
   "image/avif": "avif",
-  "video/mp4": "mp4",
-  "video/quicktime": "mov",
-  "video/webm": "webm",
+  ...VIDEO_EXTENSION_BY_MIME,
 });
 
 function extensionFromPath(value) {

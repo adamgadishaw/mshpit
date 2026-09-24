@@ -6,6 +6,7 @@ import {
   PHOTO_MAX_EDGE,
   videoEditRequiresExport,
 } from "../src/domain/mediaEdit.mjs";
+import { VIDEO_SOURCE_MIME_TYPES } from "../src/domain/mediaMime.mjs";
 import {
   MEDIA_POST_MAX_ATTACHMENTS,
   MEDIA_VIDEO_MAX_DURATION_MS,
@@ -52,7 +53,10 @@ const CLIENT_ID = /^[A-Za-z0-9._:-]{8,120}$/;
 // their own foreign-key linkage table; do not mint unusable stable descriptors.
 const COMPOSER_PURPOSES = new Set(["post"]);
 const IMAGE_VARIANT_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
-const VERIFIED_VIDEO_SOURCE_TYPES = new Set(VIDEO_VERIFIER_SOURCE_CONTENT_TYPES);
+// Every accepted container. MP4 and MOV also have the bounded structural
+// path; the others need a converter that advertises universal admission, which
+// the upload route checks before any storage is reserved.
+const VERIFIED_VIDEO_SOURCE_TYPES = new Set([...VIDEO_VERIFIER_SOURCE_CONTENT_TYPES, ...VIDEO_SOURCE_MIME_TYPES]);
 const MAX_RECIPE_BYTES = 16 * 1024;
 const MAX_VIDEO_DURATION_MS = MEDIA_VIDEO_MAX_DURATION_MS;
 const MAX_VIDEO_DURATION_DRIFT_MS = 1_500;
@@ -214,7 +218,7 @@ function assetCreateInput(body) {
   const clientAssetId = cleanClientId(body?.clientAssetId, "Media retry token");
   const kind = file.contentType.startsWith("video/") ? "video" : "image";
   if (kind === "video" && !VERIFIED_VIDEO_SOURCE_TYPES.has(file.contentType)) {
-    throw new ApiError(415, "New PIT clips must use MP4 or QuickTime MOV.", "MEDIA_TYPE_UNSUPPORTED");
+    throw new ApiError(415, "That video format is not supported.", "MEDIA_TYPE_UNSUPPORTED");
   }
   const canonical = {
     clientAssetId,
@@ -1561,6 +1565,7 @@ export async function finalizeMediaAsset(database, {
   fetchImpl = globalThis.fetch,
   authoritativeVideoVerifier = null,
   authoritativePosterRequired = false,
+  universalVideoAdmission = false,
   beforeAuthoritativeVerify,
   assertAuthorized,
   imageProcessor = defaultImageProcessor,
@@ -1776,22 +1781,28 @@ export async function finalizeMediaAsset(database, {
       throw new ApiError(503, "The clip could not be inspected in storage yet. Try again.", "MEDIA_STORAGE_UNAVAILABLE");
     }
     const declared = input;
-    let structural;
-    try {
-      structural = await verifyMp4Compatibility({
-        objectKey: row.source_key,
-        expectedBytes: row.byte_size,
-        contentType: row.mime_type,
-        ifMatch: stored.etag,
-        env,
-        fetchImpl,
-        signal,
-        storageScope: row.source_storage_scope || "public",
-      });
-    } catch (error) {
-      throw terminalVideoSourceFailure(error);
+    // With a converter that takes any format, the file itself is the proof:
+    // the converter measures it. The bounded MP4/MOV parser stays for a
+    // converter that has not advertised universal admission.
+    const universal = universalVideoAdmission === true && typeof authoritativeVideoVerifier === "function";
+    let structural = null;
+    if (!universal) {
+      try {
+        structural = await verifyMp4Compatibility({
+          objectKey: row.source_key,
+          expectedBytes: row.byte_size,
+          contentType: row.mime_type,
+          ifMatch: stored.etag,
+          env,
+          fetchImpl,
+          signal,
+          storageScope: row.source_storage_scope || "public",
+        });
+      } catch (error) {
+        throw terminalVideoSourceFailure(error);
+      }
     }
-    const structurallyNormalized = authoritativeVideoFinalize(row, body, declared, structural);
+    const structurallyNormalized = structural ? authoritativeVideoFinalize(row, body, declared, structural) : declared;
     if (typeof authoritativeVideoVerifier === "function") {
       assertAuthorized?.();
       const preparedDelivery = prepareAuthoritativeDelivery(database, {
@@ -1809,7 +1820,8 @@ export async function finalizeMediaAsset(database, {
           expectedBytes: row.byte_size,
           contentType: row.mime_type,
           ifMatch: stored.etag,
-          structural,
+          structural: structural || undefined,
+          universal,
           posterTimeMs: Number(structurallyNormalized.editRecipe.coverMs),
           env,
           fetchImpl,
@@ -1828,12 +1840,17 @@ export async function finalizeMediaAsset(database, {
       if (!decoded || typeof decoded !== "object") {
         throw new ApiError(503, "Clip decoding is unavailable. Try again later.", "MEDIA_STORAGE_UNAVAILABLE");
       }
-      if (Number(decoded.width) !== Number(structural.width)
+      if (structural && (Number(decoded.width) !== Number(structural.width)
           || Number(decoded.height) !== Number(structural.height)
-          || Math.abs(Number(decoded.durationMs) - Number(structural.durationMs)) > MAX_VIDEO_DURATION_DRIFT_MS) {
+          || Math.abs(Number(decoded.durationMs) - Number(structural.durationMs)) > MAX_VIDEO_DURATION_DRIFT_MS)) {
         throw new ApiError(409, "The decoded clip does not match its container metadata.", "CONFLICT");
       }
-      input = authoritativeVideoFinalize(row, body, declared, decoded);
+      // A universal clip's length is only known now, and its cover may have
+      // moved clear of the last frames. Record the cover the converter made.
+      const decodedBody = structural || !Number.isSafeInteger(Number(decoded.poster?.timeMs))
+        ? body
+        : { ...body, editRecipe: { ...(body?.editRecipe && typeof body.editRecipe === "object" ? body.editRecipe : {}), coverMs: Number(decoded.poster.timeMs) } };
+      input = authoritativeVideoFinalize(row, decodedBody, declared, decoded);
       codecVerified = true;
       stagedAuthoritativeDelivery = await stageAuthoritativeDelivery(database, {
         ownerId,

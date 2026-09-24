@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { MEDIA_VIDEO_SOURCE_MAX_BYTES } from "../src/domain/mediaUploadPolicy.mjs";
+import { MEDIA_VIDEO_MAX_DURATION_MS, MEDIA_VIDEO_SOURCE_MAX_BYTES } from "../src/domain/mediaUploadPolicy.mjs";
 import { ApiError } from "./errors.js";
 import { createMediaDownloadCapability, privateVideoMediaConfigured } from "./media.js";
 import { PUBLIC_MEDIA_CACHE_CONTROL } from "./mediaDeliveryPolicy.js";
@@ -10,8 +10,11 @@ import {
   VIDEO_VERIFIER_SOURCE_ADMISSION_REVISION,
   VIDEO_VERIFIER_SOURCE_CODECS,
   VIDEO_VERIFIER_SOURCE_CONTENT_TYPES,
+  VIDEO_VERIFIER_UNIVERSAL_ADMISSION,
+  VIDEO_VERIFIER_UNIVERSAL_SOURCE_TYPES,
   signVideoVerifierRequest,
   videoVerifierSourceExtension,
+  videoVerifierUniversalPosterTimeMs,
   verifyVideoVerifierResponse,
 } from "./videoVerifierProtocol.js";
 
@@ -31,6 +34,9 @@ const STRONG_ETAG = /^"[\x21\x23-\x7e]{1,200}"$/u;
 const SOURCE_OBJECT_KEY = /^users\/[A-Za-z0-9_-]{1,128}\/post\/[A-Za-z0-9_-]{1,240}\.(?:mp4|mov)$/;
 const OUTPUT_OBJECT_KEY = /^users\/[A-Za-z0-9_-]{1,128}\/post\/[A-Za-z0-9_-]{1,240}\.mp4$/;
 const SOURCE_CONTENT_TYPES = new Set(VIDEO_VERIFIER_SOURCE_CONTENT_TYPES);
+const UNIVERSAL_SOURCE_TYPES = new Set(VIDEO_VERIFIER_UNIVERSAL_SOURCE_TYPES);
+const UNIVERSAL_SOURCE_OBJECT_KEY = /^users\/[A-Za-z0-9_-]{1,128}\/post\/[A-Za-z0-9_-]{1,240}\.[a-z0-9]{2,4}$/;
+const CODEC_NAME = /^[a-z0-9_]{1,32}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
 const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 // `decode_failed` is emitted by the generic child-process runner for source,
@@ -50,6 +56,7 @@ const runtime = {
   ffmpegVersion: null,
   sourceTypes: [],
   sourceCodecs: {},
+  universalSourceTypes: [],
   sourceAdmissionRevision: null,
   sourceAdmissionProofAt: null,
   sourceAdmissionFingerprint: null,
@@ -185,6 +192,14 @@ function healthSourceCapabilities(payload) {
   return { sourceTypes: [...sourceTypes], sourceCodecs };
 }
 
+// A worker that converts any format says so in its own health fields. Only
+// types this site also knows are kept, and MP4 must be among them.
+function healthUniversalSourceTypes(payload) {
+  if (payload?.universalAdmission !== VIDEO_VERIFIER_UNIVERSAL_ADMISSION || !Array.isArray(payload?.universalSourceTypes)) return [];
+  const types = payload.universalSourceTypes.filter((type, index, all) => UNIVERSAL_SOURCE_TYPES.has(type) && all.indexOf(type) === index);
+  return types.includes("video/mp4") ? types : [];
+}
+
 function clearSourceAdmissionProof() {
   runtime.sourceAdmissionRevision = null;
   runtime.sourceAdmissionProofAt = null;
@@ -209,6 +224,7 @@ function noteHealthy(config, payload, at, { capabilities = null } = {}) {
       clearSourceAdmissionProof();
     }
     runtime.sourceTypes = [...capabilities.sourceTypes];
+    runtime.universalSourceTypes = healthUniversalSourceTypes(payload);
     runtime.sourceCodecs = Object.fromEntries(capabilities.sourceTypes.map((type) => [
       type,
       [...capabilities.sourceCodecs[type]],
@@ -349,6 +365,8 @@ export function videoVerifierRuntimeStatus(env = process.env, at = Date.now()) {
     sourceCodecs: sameRuntime && runtime.lastSuccessAt
       ? Object.fromEntries(runtime.sourceTypes.map((type) => [type, [...(runtime.sourceCodecs[type] || [])]]))
       : {},
+    universal: ready && runtime.universalSourceTypes.length > 0,
+    universalSourceTypes: sameRuntime && runtime.lastSuccessAt ? [...runtime.universalSourceTypes] : [],
   };
 }
 
@@ -464,6 +482,17 @@ function verifiedDecode(payload, {
       || Math.abs(Number(video.durationMs) - Number(structural.durationMs)) > 1_500) {
     throw new ApiError(409, "The decoded clip does not match its container metadata.", "CONFLICT");
   }
+  return {
+    width: Number(video.width),
+    height: Number(video.height),
+    durationMs: Number(video.durationMs),
+    rotation: Number(video.rotation),
+    delivery: checkedDelivery(delivery, video, outputKey),
+    poster: verifiedPoster(payload.poster, posterTimeMs),
+  };
+}
+
+function checkedDelivery(delivery, video, outputKey) {
   if (delivery?.key !== outputKey || delivery?.contentType !== "video/mp4"
       || delivery?.codec !== "h264" || !new Set(["aac", "none"]).has(delivery?.audioCodec)
       || delivery?.rotation !== 0 || !SHA256.test(String(delivery?.sha256 || ""))
@@ -477,21 +506,46 @@ function verifiedDecode(payload, {
     throw new ApiError(503, "Clip verification returned an invalid delivery.", "MEDIA_STORAGE_UNAVAILABLE");
   }
   return {
+    key: outputKey,
+    contentType: "video/mp4",
+    byteSize: Number(delivery.byteSize),
+    sha256: String(delivery.sha256),
+    width: Number(delivery.width),
+    height: Number(delivery.height),
+    durationMs: Number(delivery.durationMs),
+    rotation: 0,
+  };
+}
+
+// A universal source may use any container and codec, so only the shape of
+// the worker's measurements is checked; the converted copy is held to the same
+// strict H.264/AAC delivery contract as every other clip.
+function verifiedUniversalDecode(payload, { objectKey, expectedBytes, contentType, ifMatch, posterTimeMs, outputKey }) {
+  const video = payload?.video;
+  const dimensions = [video?.width, video?.height, video?.codedWidth, video?.codedHeight];
+  if (payload?.protocol !== VIDEO_VERIFIER_PROTOCOL_VERSION
+      || payload?.pipeline !== VIDEO_VERIFIER_PIPELINE_VERSION
+      || payload?.object?.key !== objectKey
+      || payload?.object?.etag !== ifMatch
+      || Number(payload?.object?.byteSize) !== expectedBytes
+      || payload?.object?.contentType !== contentType
+      || !CODEC_NAME.test(String(video?.codec || ""))
+      || !(video?.audioCodec === "none" || CODEC_NAME.test(String(video?.audioCodec || "")))
+      || ![0, 90, 180, 270].includes(Number(video?.rotation))
+      || !dimensions.every((value) => Number.isSafeInteger(Number(value)) && Number(value) >= 1 && Number(value) <= 4_096)
+      || !Number.isSafeInteger(Number(video?.durationMs)) || Number(video.durationMs) < 1
+      || Number(video.durationMs) > MEDIA_VIDEO_MAX_DURATION_MS) {
+    throw new ApiError(503, "Clip verification returned an invalid result.", "MEDIA_STORAGE_UNAVAILABLE");
+  }
+  const delivery = checkedDelivery(payload?.delivery, video, outputKey);
+  return {
     width: Number(video.width),
     height: Number(video.height),
     durationMs: Number(video.durationMs),
     rotation: Number(video.rotation),
-    delivery: {
-      key: outputKey,
-      contentType: "video/mp4",
-      byteSize: Number(delivery.byteSize),
-      sha256: String(delivery.sha256),
-      width: Number(delivery.width),
-      height: Number(delivery.height),
-      durationMs: Number(delivery.durationMs),
-      rotation: 0,
-    },
-    poster: verifiedPoster(payload.poster, posterTimeMs),
+    delivery,
+    poster: verifiedPoster(payload.poster,
+      videoVerifierUniversalPosterTimeMs(posterTimeMs, Math.min(Number(video.durationMs), delivery.durationMs))),
   };
 }
 
@@ -518,6 +572,7 @@ async function performVerification({
   contentType,
   ifMatch,
   structural,
+  universal = false,
   posterTimeMs,
   env,
   fetchImpl,
@@ -537,7 +592,7 @@ async function performVerification({
         downloadUrl: capability.downloadUrl,
         downloadHeaders: capability.requiredHeaders,
       },
-      structural: {
+      ...(universal ? { admission: VIDEO_VERIFIER_UNIVERSAL_ADMISSION } : { structural: {
         width: Number(structural.width),
         height: Number(structural.height),
         codedWidth: Number(structural.codedWidth),
@@ -553,7 +608,7 @@ async function performVerification({
         ...(structural.sourceAdmissionRevision !== undefined
           ? { sourceAdmissionRevision: structural.sourceAdmissionRevision }
           : {}),
-      },
+      } }),
       poster: {
         timeMs: posterTimeMs,
         contentType: "image/jpeg",
@@ -573,9 +628,13 @@ async function performVerification({
     timeoutMs: VIDEO_VERIFIER_JOB_TIMEOUT_MS,
     maxResponseBytes: VIDEO_VERIFIER_MAX_RESPONSE_BYTES,
   });
-  const decoded = verifiedDecode(result.decoded, {
-    objectKey, expectedBytes, contentType, ifMatch, structural, posterTimeMs, outputKey: output.key,
-  });
+  const decoded = universal
+    ? verifiedUniversalDecode(result.decoded, {
+      objectKey, expectedBytes, contentType, ifMatch, posterTimeMs, outputKey: output.key,
+    })
+    : verifiedDecode(result.decoded, {
+      objectKey, expectedBytes, contentType, ifMatch, structural, posterTimeMs, outputKey: output.key,
+    });
   noteHealthy(result.config, result.decoded, Date.now());
   return decoded;
 }
@@ -586,6 +645,7 @@ export async function verifyVideoObject({
   contentType = "video/mp4",
   ifMatch,
   structural,
+  universal = false,
   posterTimeMs,
   env = process.env,
   fetchImpl = globalThis.fetch,
@@ -596,14 +656,21 @@ export async function verifyVideoObject({
   if (signal?.aborted) throw signal.reason || new DOMException("Aborted", "AbortError");
   const normalizedContentType = String(contentType || "").split(";", 1)[0].trim().toLowerCase();
   const sourceExtension = videoVerifierSourceExtension(normalizedContentType);
-  const sourceKeyValid = SOURCE_OBJECT_KEY.test(String(objectKey || ""))
+  const sourceKeyValid = (universal ? UNIVERSAL_SOURCE_OBJECT_KEY : SOURCE_OBJECT_KEY).test(String(objectKey || ""))
     && !!sourceExtension && String(objectKey).endsWith(`.${sourceExtension}`);
+  // A universal job has no structural proof: the worker measures the file.
+  const universalRequestInvalid = !sourceKeyValid || !UNIVERSAL_SOURCE_TYPES.has(normalizedContentType)
+    || !Number.isSafeInteger(Number(expectedBytes)) || Number(expectedBytes) < 1 || Number(expectedBytes) > MEDIA_VIDEO_SOURCE_MAX_BYTES
+    || !STRONG_ETAG.test(String(ifMatch || ""))
+    || structural != null
+    || !Number.isSafeInteger(Number(posterTimeMs)) || Number(posterTimeMs) < 0
+    || Number(posterTimeMs) >= MEDIA_VIDEO_MAX_DURATION_MS;
   const quickTimeStructural = normalizedContentType !== "video/quicktime"
     || (structural?.sourceContainer === "quicktime" && new Set(["h264", "hevc"]).has(structural?.sourceCodec));
   const mp4Structural = normalizedContentType !== "video/mp4"
     || (structural?.sourceContainer === undefined
       && (structural?.sourceCodec === undefined || structural?.sourceCodec === "hevc"));
-  if (!sourceKeyValid || !SOURCE_CONTENT_TYPES.has(normalizedContentType)
+  if (universal ? universalRequestInvalid : (!sourceKeyValid || !SOURCE_CONTENT_TYPES.has(normalizedContentType)
       || !Number.isSafeInteger(Number(expectedBytes)) || Number(expectedBytes) < 1 || Number(expectedBytes) > MEDIA_VIDEO_SOURCE_MAX_BYTES
       || !STRONG_ETAG.test(String(ifMatch || ""))
       || !Number.isSafeInteger(Number(structural?.codedWidth)) || Number(structural.codedWidth) < Number(structural?.width)
@@ -613,7 +680,7 @@ export async function verifyVideoObject({
       || (structural?.sourceAdmissionRevision !== undefined
         && structural.sourceAdmissionRevision !== VIDEO_VERIFIER_SOURCE_ADMISSION_REVISION)
       || !Number.isSafeInteger(Number(posterTimeMs)) || Number(posterTimeMs) < 0
-      || Number(posterTimeMs) >= Number(structural?.durationMs)) {
+      || Number(posterTimeMs) >= Number(structural?.durationMs))) {
     throw new ApiError(500, "Clip verification request is invalid.", "INTERNAL_ERROR");
   }
   if (!output || !OUTPUT_OBJECT_KEY.test(String(output.key || "")) || output.key === objectKey
@@ -633,9 +700,10 @@ export async function verifyVideoObject({
     && runtime.fingerprint === config.fingerprint
     && runtime.lastSuccessAt > 0;
   const sourceCodec = structural?.sourceCodec || "h264";
-  if (provenCapabilities
-      && (!runtime.sourceTypes.includes(normalizedContentType)
-        || !runtime.sourceCodecs[normalizedContentType]?.includes(sourceCodec))) {
+  if (provenCapabilities && (universal
+    ? !runtime.universalSourceTypes.includes(normalizedContentType)
+    : (!runtime.sourceTypes.includes(normalizedContentType)
+      || !runtime.sourceCodecs[normalizedContentType]?.includes(sourceCodec)))) {
     throw new ApiError(
       503,
       "Clip verification is temporarily unavailable for that video format. Try again later.",
@@ -644,6 +712,7 @@ export async function verifyVideoObject({
   }
   const identity = createHash("sha256").update(JSON.stringify({
     pipeline: VIDEO_VERIFIER_PIPELINE_VERSION,
+    admission: universal ? VIDEO_VERIFIER_UNIVERSAL_ADMISSION : null,
     objectKey,
     expectedBytes: Number(expectedBytes),
     contentType: normalizedContentType,
@@ -720,6 +789,7 @@ export async function verifyVideoObject({
     contentType: normalizedContentType,
     ifMatch,
     structural,
+    universal,
     posterTimeMs: Number(posterTimeMs),
     env,
     fetchImpl,
@@ -813,5 +883,6 @@ export function resetVideoVerifierStateForTests() {
   runtime.ffmpegVersion = null;
   runtime.sourceTypes = [];
   runtime.sourceCodecs = {};
+  runtime.universalSourceTypes = [];
   clearSourceAdmissionProof();
 }

@@ -275,6 +275,7 @@ services:
         - server/mediaDeliveryPolicy.js
         - server/videoVerifierProtocol.js
         - server/videoVerifierService.js
+        - src/domain/mediaMime.mjs
         - src/domain/mediaUploadPolicy.mjs
     maxShutdownDelaySeconds: 60
     envVars:

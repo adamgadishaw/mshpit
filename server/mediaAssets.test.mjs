@@ -3066,3 +3066,67 @@ test("rejected and rate-limited creates cannot renew drafts while a committed po
     "rate limiting after media preflight must not renew an unattached draft");
   assert.equal(db.prepare("SELECT 1 FROM post_media WHERE asset_id=?").get(limitedMedia.assetId), undefined);
 });
+
+test("a converter with universal admission takes a WebM without the MP4 pre-check and records its cover", async () => {
+  const user = addUser("u_universal_webm");
+  const created = createMediaAsset(db, {
+    ownerId: user.id,
+    body: sourceBody({ clientAssetId: "universal-webm-source", contentType: "video/webm", fileSize: 2_000_000, name: "screen.webm" }),
+    assetId: "ma_universal_webm_source_01",
+  });
+  assert.equal(created.upload.key.endsWith(".webm"), true);
+  assert.equal(created.upload.storageScope, "private", "originals stay private; only the converted copy is public");
+  const sourceRequests = [];
+  const storage = verifiedMp4WithPoster(2_000_000, 12_000);
+  const fetchImpl = async (url, request = {}) => {
+    if (new URL(url).pathname.endsWith(".webm")) {
+      const method = String(request.method || "GET").toUpperCase();
+      sourceRequests.push(method);
+      if (method !== "HEAD") return { status: 405, headers: new Headers() };
+      return { status: 200, headers: new Headers({ "content-length": "2000000", "content-type": "video/webm", etag: '"fixture-webm"' }) };
+    }
+    return storage(url, request);
+  };
+  let seen = null;
+  const finalized = await finalizeMediaAsset(db, {
+    ownerId: user.id,
+    assetId: created.asset.id,
+    // A browser picker usually knows nothing about a WebM's size or length.
+    body: { editRecipe: { kind: "video", coverMs: 11_990 } },
+    fetchImpl,
+    universalVideoAdmission: true,
+    authoritativeVideoVerifier: async (input) => {
+      seen = input;
+      return authoritativeFixtureDecodeWithPoster({
+        structural: { width: 1_080, height: 1_920, durationMs: 12_000 },
+        posterTimeMs: 11_750,
+        output: input.output,
+      });
+    },
+    authoritativePosterRequired: true,
+  });
+  assert.equal(seen.universal, true);
+  assert.equal(seen.structural, undefined, "no MP4 proof exists for a WebM");
+  assert.equal(seen.posterTimeMs, 11_990);
+  assert.deepEqual(sourceRequests, ["HEAD"], "the member file is not range-probed on the site");
+  assert.equal(finalized.asset.status, "ready");
+  assert.equal(finalized.asset.codecStatus, "verified");
+  assert.equal(finalized.asset.url.endsWith(".mp4"), true);
+  assert.equal(finalized.asset.durationMs, 12_000);
+  assert.equal(finalized.asset.posterTimeMs, 11_750, "the recipe records the cover the converter made");
+  assert.ok(finalized.asset.posterUrl, "the cover is live, so the clip can be posted");
+
+  const strict = createMediaAsset(db, {
+    ownerId: user.id,
+    body: sourceBody({ clientAssetId: "strict-webm-source", contentType: "video/webm", fileSize: 2_000_000, name: "old.webm" }),
+    assetId: "ma_strict_webm_source_0001",
+  });
+  await assert.rejects(() => finalizeMediaAsset(db, {
+    ownerId: user.id,
+    assetId: strict.asset.id,
+    body: { editRecipe: { kind: "video", coverMs: 0 } },
+    fetchImpl,
+    authoritativeVideoVerifier: async () => { throw new Error("must not decode"); },
+    authoritativePosterRequired: true,
+  }), (error) => error.status === 415, "a converter without universal admission keeps the MP4/MOV rule");
+});

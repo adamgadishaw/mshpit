@@ -230,8 +230,9 @@ remains a broad context whose changing value can rerender unrelated consumers.
 - **Search coverage decision:** decide whether provider-only event and
   catalogue pages stay in the sitemap (about 72,800 URLs against about 109
   member-made pages).
-- **Video uploads:** deploy and verify the private `pit-video-verifier` service,
-  then confirm a phone video posts end to end.
+- **Video formats:** after the converter redeploys, confirm its health shows
+  `universalAdmission: universal-v1`, then post a WebM and an AVI end to end.
+  AV1 needs libdav1d added to `Dockerfile.video-verifier`.
 - **Photo rejections:** reproduce with a real file the owner says was refused.
 - **Gallery:** pinch to zoom on photos.
 - **Copy:** about 200 small all-caps labels remain inside cards and forms, and

@@ -51,6 +51,7 @@ test("the expensive verifier rebuilds only when one of its complete runtime inpu
     "server/mediaDeliveryPolicy.js",
     "server/videoVerifierProtocol.js",
     "server/videoVerifierService.js",
+    "src/domain/mediaMime.mjs",
     "src/domain/mediaUploadPolicy.mjs",
   ]) {
     assert.ok(verifier.split("\n").some((line) => line.trim() === `- ${runtimeInput}`),

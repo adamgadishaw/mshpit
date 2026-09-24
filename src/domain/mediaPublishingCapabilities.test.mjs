@@ -45,6 +45,11 @@ test("the client trusts only the explicit boolean health capability", () => {
     capabilities: { mediaPublishing: { photos: true, videos: true, pipeline: VIDEO_PUBLISHING_PIPELINE_VERSION,
       sourceTypes: ["video/mp4", "video/quicktime"] } },
   }).sourceTypes, ["video/mp4", "video/quicktime"]);
+  assert.deepEqual(mediaPublishingCapabilitiesFromHealth({
+    capabilities: { mediaPublishing: { photos: true, videos: true, pipeline: VIDEO_PUBLISHING_PIPELINE_VERSION,
+      sourceTypes: ["video/mp4", "video/quicktime", "video/webm", "video/x-msvideo", "video/x-matroska", "application/x-shockwave-flash"] } },
+  }).sourceTypes, ["video/mp4", "video/quicktime", "video/webm", "video/x-msvideo", "video/x-matroska"],
+  "a converter that takes any format is honoured, and only real video types pass");
 });
 
 test("composer availability copy accurately reports each negotiated media type", () => {

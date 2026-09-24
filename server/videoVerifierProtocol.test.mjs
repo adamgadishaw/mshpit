@@ -3,9 +3,12 @@ import test from "node:test";
 
 import {
   VIDEO_VERIFIER_SOURCE_CONTENT_TYPES,
+  VIDEO_VERIFIER_UNIVERSAL_ADMISSION,
+  VIDEO_VERIFIER_UNIVERSAL_SOURCE_TYPES,
   signVideoVerifierRequest,
   signVideoVerifierResponse,
   videoVerifierSourceExtension,
+  videoVerifierUniversalPosterTimeMs,
   verifyVideoVerifierRequest,
   verifyVideoVerifierResponse,
 } from "./videoVerifierProtocol.js";
@@ -18,7 +21,20 @@ test("source media types have one shared exact extension contract", () => {
   assert.deepEqual(VIDEO_VERIFIER_SOURCE_CONTENT_TYPES, ["video/mp4", "video/quicktime"]);
   assert.equal(videoVerifierSourceExtension("Video/MP4; codecs=avc1"), "mp4");
   assert.equal(videoVerifierSourceExtension("video/quicktime"), "mov");
-  assert.equal(videoVerifierSourceExtension("video/webm"), null);
+  assert.equal(videoVerifierSourceExtension("video/webm"), "webm");
+  assert.equal(videoVerifierSourceExtension("video/x-msvideo"), "avi");
+  assert.equal(videoVerifierSourceExtension("video/x-unknown"), null);
+});
+
+test("universal admission covers every accepted container and keeps covers off the last frames", () => {
+  assert.equal(VIDEO_VERIFIER_UNIVERSAL_ADMISSION, "universal-v1");
+  for (const type of ["video/mp4", "video/quicktime", "video/webm", "video/x-matroska", "video/x-msvideo", "video/mpeg", "video/mp2t", "video/x-ms-wmv", "video/ogg", "video/3gpp", "video/x-flv"]) {
+    assert.ok(VIDEO_VERIFIER_UNIVERSAL_SOURCE_TYPES.includes(type), type);
+  }
+  assert.equal(videoVerifierUniversalPosterTimeMs(1_500, 60_000), 1_500);
+  assert.equal(videoVerifierUniversalPosterTimeMs(59_990, 60_000), 59_750);
+  assert.equal(videoVerifierUniversalPosterTimeMs(400, 100), 0);
+  assert.equal(videoVerifierUniversalPosterTimeMs(-5, 60_000), 0);
 });
 
 test("video verifier protocol binds request path, timestamp, nonce, and exact body", () => {

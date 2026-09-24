@@ -56,7 +56,7 @@ WORKDIR /app
 COPY --from=ffmpeg-build /opt/ffmpeg /opt/ffmpeg
 COPY --chown=node:node package.json ./package.json
 COPY --chown=node:node server/mediaDeliveryPolicy.js server/videoVerifierProtocol.js server/videoVerifierService.js ./server/
-COPY --chown=node:node src/domain/mediaUploadPolicy.mjs ./src/domain/
+COPY --chown=node:node src/domain/mediaMime.mjs src/domain/mediaUploadPolicy.mjs ./src/domain/
 
 ENV NODE_ENV=production \
     PIT_FFMPEG_PATH=/opt/ffmpeg/bin/ffmpeg \
@@ -64,6 +64,9 @@ ENV NODE_ENV=production \
     PORT=10001
 
 USER node
+# Convert real AVI, Matroska, WebM-labelled and interlaced MPEG clips with the
+# exact commands a member upload uses. A failure here stops the image build.
+RUN node server/videoVerifierService.js --self-test
 EXPOSE 10001
 STOPSIGNAL SIGTERM
 CMD ["node", "server/videoVerifierService.js"]

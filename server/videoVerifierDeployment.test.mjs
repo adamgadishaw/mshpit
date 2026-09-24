@@ -26,8 +26,11 @@ test("video verifier container pins its runtime and drops root privileges", () =
   assert.match(dockerfile, /PIT_FFMPEG_PATH=\/opt\/ffmpeg\/bin\/ffmpeg/);
   assert.match(dockerfile, /PIT_FFPROBE_PATH=\/opt\/ffmpeg\/bin\/ffprobe/);
   assert.match(dockerfile,
-    /COPY --chown=node:node src\/domain\/mediaUploadPolicy\.mjs \.\/src\/domain\//,
+    /COPY --chown=node:node src\/domain\/mediaMime\.mjs src\/domain\/mediaUploadPolicy\.mjs \.\/src\/domain\//,
     "the runtime image must include every non-server module imported by the verifier");
+  assert.match(dockerfile, /^RUN node server\/videoVerifierService\.js --self-test$/m,
+    "the build converts real AVI, Matroska and interlaced MPEG clips before the image can ship");
+  assert.ok(dockerfile.indexOf("--self-test") > dockerfile.indexOf("USER node"), "the self-test runs without root");
   assert.match(dockerfile, /^USER node$/m);
   assert.match(dockerfile, /^CMD \["node", "server\/videoVerifierService\.js"\]$/m);
 });

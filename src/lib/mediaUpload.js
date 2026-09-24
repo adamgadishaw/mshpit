@@ -5,7 +5,7 @@ import { AppError, captureAppError } from "./diagnostics";
 import { webImageOptimizationPlan } from "./mediaImagePolicy.mjs";
 import { mediaPutStatusAccepted } from "../domain/mediaUploadPolicy.mjs";
 import { normalizeMediaTransferProgress } from "../domain/mediaTransferProgress.mjs";
-import { resolveMediaMimeType } from "../domain/mediaMime.mjs";
+import { resolveMediaMimeType, VIDEO_EXTENSION_BY_MIME } from "../domain/mediaMime.mjs";
 import { normalizeProfileImageAsset } from "./profileImageNormalizer";
 import { createMediaUploadDeadline, mediaUploadTimeoutMs } from "../domain/mediaUploadDeadline.mjs";
 import { uploadBinaryWithProgress } from "./webBinaryUpload.mjs";
@@ -32,9 +32,7 @@ const EXTENSION_BY_MIME = Object.freeze({
   "image/heic": "heic",
   "image/heif": "heif",
   "image/avif": "avif",
-  "video/mp4": "mp4",
-  "video/webm": "webm",
-  "video/quicktime": "mov",
+  ...VIDEO_EXTENSION_BY_MIME,
 });
 
 export function isDurableMediaUrl(value) {

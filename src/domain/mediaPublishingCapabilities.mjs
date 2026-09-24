@@ -6,7 +6,11 @@ export const DEFAULT_MEDIA_PUBLISHING_CAPABILITIES = Object.freeze({
   sourceTypes: Object.freeze([]),
 });
 
-const VIDEO_SOURCE_TYPES = Object.freeze(["video/mp4", "video/quicktime"]);
+import { VIDEO_SOURCE_MIME_TYPES } from "./mediaMime.mjs";
+
+// The server lists what its converter takes; the app accepts any type it also
+// knows. MP4 must lead the list, as it has since clips launched.
+const VIDEO_SOURCE_TYPES = VIDEO_SOURCE_MIME_TYPES;
 
 // A boolean rollout switch is not proof that the full ingest path is ready.
 // The client opts in only when health also advertises the exact contract whose

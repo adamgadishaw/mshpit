@@ -8,6 +8,7 @@ import {
   MEDIA_PHOTO_SOURCE_MAX_BYTES,
   MEDIA_VIDEO_SOURCE_MAX_BYTES,
 } from "../src/domain/mediaUploadPolicy.mjs";
+import { normalizedVideoMimeType, VIDEO_EXTENSION_BY_MIME } from "../src/domain/mediaMime.mjs";
 
 export { PUBLIC_MEDIA_CACHE_CONTROL } from "./mediaDeliveryPolicy.js";
 
@@ -30,11 +31,7 @@ const TYPES = Object.freeze({
   "image/heif": "heif",
   "image/avif": "avif",
 });
-const VIDEO_TYPES = Object.freeze({
-  "video/mp4": "mp4",
-  "video/webm": "webm",
-  "video/quicktime": "mov",
-});
+const VIDEO_TYPES = VIDEO_EXTENSION_BY_MIME;
 const PROCESSOR_IMAGE_TYPES = Object.freeze({
   "image/jpeg": "jpg",
   "image/png": "png",
@@ -361,13 +358,14 @@ export function validateMediaRequest(body) {
   if (!PURPOSES[purpose]) {
     throw new ApiError(400, "Choose a supported photo destination.", "VALIDATION_FAILED");
   }
-  const contentType = typeof body?.contentType === "string" ? body.contentType.split(";", 1)[0].trim().toLowerCase() : "";
+  const declaredType = typeof body?.contentType === "string" ? body.contentType.split(";", 1)[0].trim().toLowerCase() : "";
+  const contentType = normalizedVideoMimeType(declaredType) || declaredType;
   const isVideo = !!VIDEO_TYPES[contentType];
   const videoAllowed = !!PURPOSES[purpose].videoMaxBytes;
   const extension = TYPES[contentType] || (videoAllowed ? VIDEO_TYPES[contentType] : undefined);
   if (!extension) {
     if (isVideo) throw new ApiError(415, "Video isn't supported here. Clips can be attached to posts and reviews.", "MEDIA_TYPE_UNSUPPORTED");
-    throw new ApiError(415, "That format is not supported. Photos: JPEG, PNG, WebP, GIF, HEIC. Clips: MP4, WebM, MOV.", "MEDIA_TYPE_UNSUPPORTED");
+    throw new ApiError(415, "That format is not supported. Photos: JPEG, PNG, WebP, GIF, HEIC. Clips: any common video format.", "MEDIA_TYPE_UNSUPPORTED");
   }
   const fileSize = Number(body?.fileSize);
   if (!Number.isSafeInteger(fileSize) || fileSize < 1) {

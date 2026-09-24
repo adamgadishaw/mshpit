@@ -18,6 +18,8 @@ import {
   VIDEO_VERIFIER_PIPELINE_VERSION,
   VIDEO_VERIFIER_PROTOCOL_VERSION,
   VIDEO_VERIFIER_SOURCE_ADMISSION_REVISION,
+  VIDEO_VERIFIER_UNIVERSAL_ADMISSION,
+  VIDEO_VERIFIER_UNIVERSAL_SOURCE_TYPES,
 } from "./videoVerifierProtocol.js";
 import { verifyPrivateMediaBucketIsolation } from "./media.js";
 import { PUBLIC_MEDIA_CACHE_CONTROL } from "./mediaDeliveryPolicy.js";
@@ -840,4 +842,97 @@ test("pre-abort and abort during health wait start no reservation or verifier jo
   await assert.rejects(() => waiting, { name: "AbortError" });
   assert.deepEqual({ starts, verifyFetches }, { starts: 0, verifyFetches: 0 });
   healthGate.resolve();
+});
+
+function universalHealthPayload() {
+  return {
+    ...healthyPayload(),
+    universalAdmission: VIDEO_VERIFIER_UNIVERSAL_ADMISSION,
+    universalSourceTypes: [...VIDEO_VERIFIER_UNIVERSAL_SOURCE_TYPES],
+  };
+}
+
+function universalDecodedPayload(requestPayload, { posterTimeMs } = {}) {
+  const base = decodedPayload({ ...requestPayload, structural: { ...STRUCTURAL, width: 1_080, height: 1_920, codedWidth: 1_088, codedHeight: 1_920, durationMs: 12_000 } });
+  return {
+    ...base,
+    video: { ...base.video, codec: "vp9", audioCodec: "opus" },
+    delivery: { ...base.delivery, audioCodec: "aac" },
+    poster: { ...base.poster, timeMs: posterTimeMs ?? Math.min(requestPayload.poster.timeMs, 11_750) },
+  };
+}
+
+async function refreshWith(payload, at = Date.now()) {
+  await refreshVideoVerifierHealth({
+    env: ENV,
+    at,
+    fetchImpl: (url, request) => signedResponse({ path: new URL(url).pathname, request, payload }),
+  });
+  return at;
+}
+
+function universalInput(fetchImpl, overrides = {}) {
+  return verificationInput({
+    objectKey: "users/u_video/post/source.webm",
+    contentType: "video/webm",
+    structural: undefined,
+    universal: true,
+    posterTimeMs: 11_990,
+    fetchImpl,
+    ...overrides,
+  });
+}
+
+test("a converter's universal admission unlocks every format while the MP4/MOV fields stay unchanged", async () => {
+  let at = await refreshWith(universalHealthPayload());
+  let status = videoVerifierRuntimeStatus(ENV, at + 1);
+  assert.equal(status.universal, true);
+  assert.ok(status.universalSourceTypes.includes("video/webm") && status.universalSourceTypes.includes("video/x-msvideo"));
+  assert.deepEqual(status.sourceTypes, ["video/mp4", "video/quicktime"], "an older site still reads the same list");
+
+  at = await refreshWith(healthyPayload(), at + 2);
+  assert.equal(videoVerifierRuntimeStatus(ENV, at + 1).universal, false, "a converter without it keeps the strict path");
+
+  at = await refreshWith({ ...universalHealthPayload(), universalAdmission: "everything" }, at + 2);
+  assert.equal(videoVerifierRuntimeStatus(ENV, at + 1).universal, false);
+
+  at = await refreshWith({ ...universalHealthPayload(), universalSourceTypes: ["video/webm", "application/x-shockwave-flash"] }, at + 2);
+  assert.equal(videoVerifierRuntimeStatus(ENV, at + 1).universal, false, "MP4 must be among the listed formats");
+});
+
+test("a universal WebM job carries no structural proof and binds the converter's cover time", async () => {
+  await refreshWith(universalHealthPayload());
+  let observed;
+  const result = await verifyVideoObject(universalInput(async (url, request) => {
+    observed = verifyVideoVerifierRequest({ secret: SECRET, path: new URL(url).pathname, body: request.body, headers: request.headers }).payload;
+    return signedResponse({ path: new URL(url).pathname, request, payload: (payload) => universalDecodedPayload(payload) });
+  }));
+  assert.equal(observed.admission, VIDEO_VERIFIER_UNIVERSAL_ADMISSION);
+  assert.equal(Object.hasOwn(observed, "structural"), false);
+  assert.equal(observed.object.contentType, "video/webm");
+  assert.equal(result.durationMs, 12_000);
+  assert.equal(result.poster.timeMs, 11_750, "clear of the last frames");
+  assert.equal(result.delivery.contentType, "video/mp4");
+
+  resetVideoVerifierStateForTests();
+  await refreshWith(universalHealthPayload());
+  await assert.rejects(() => verifyVideoObject(universalInput((url, request) => signedResponse({
+    path: new URL(url).pathname,
+    request,
+    payload: (payload) => universalDecodedPayload(payload, { posterTimeMs: 11_990 }),
+  }))), (error) => error.status === 503, "a cover the site did not ask for is refused");
+});
+
+test("the site never sends a universal job the converter has not advertised", async () => {
+  await refreshWith(healthyPayload());
+  let dispatched = 0;
+  await assert.rejects(() => verifyVideoObject(universalInput(async (url, request) => {
+    if (new URL(url).pathname === "/v2/verify") dispatched += 1;
+    return signedResponse({ path: new URL(url).pathname, request, payload: healthyPayload() });
+  })), (error) => error.status === 503);
+  assert.equal(dispatched, 0);
+
+  await assert.rejects(() => verifyVideoObject(universalInput(async () => {
+    throw new Error("must not call the converter");
+  }, { structural: STRUCTURAL })), (error) => error.status === 500, "a universal job never carries a structural proof");
 });
