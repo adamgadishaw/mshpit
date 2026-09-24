@@ -1219,6 +1219,26 @@ CREATE TABLE IF NOT EXISTS post_media (
 );
 CREATE INDEX IF NOT EXISTS idx_post_media_asset ON post_media(asset_id);
 
+-- One row per clip conversion that has not finished. The in-process
+-- coordinator runs each attempt; this row lets a restart, a deploy or a failed
+-- attempt pick the clip up again without the member doing anything, and lets
+-- a post go out while its clip is still converting. The body is the owner's
+-- original finalize request (dimensions, cover time, alt text), never URLs.
+CREATE TABLE IF NOT EXISTS media_processing_jobs (
+  asset_id          TEXT PRIMARY KEY REFERENCES media_assets(id) ON DELETE CASCADE,
+  owner_id          TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  body              TEXT NOT NULL,
+  fingerprint       TEXT NOT NULL CHECK (length(fingerprint) = 64),
+  state             TEXT NOT NULL CHECK (state IN ('running','retry','failed')),
+  attempts          INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at   INTEGER,
+  last_error_code   TEXT,
+  last_error_status INTEGER,
+  created_at        INTEGER NOT NULL,
+  updated_at        INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_media_processing_jobs_due ON media_processing_jobs(state, next_attempt_at);
+
 -- Five URL-only clips predate stable media_assets. Their source remains on the
 -- grandfathered post URL path, but a trusted release backfill can attach one
 -- immutable, server-verified cover without claiming that the clip itself passed

@@ -24,7 +24,7 @@ test("confirmed legacy profiles open a words-only memory composer", () => {
   assert.match(composer, /const protectedLegacyMemory = !editing && isMemorialMemory && legacyArtistProfile === true/);
   assert.match(composer, /const memoryTextOnly = memoryEditLocked \|\| protectedLegacyMemory/);
   assert.match(composer, /!memoryTextOnly && !isOnlineReview && \(showSong \|\| song\?\.videoId\)/);
-  assert.match(composer, /!memoryTextOnly && \(showPhotos \|\| photos\.length > 0 \|\| pendingMediaAssets\.length > 0\)/);
+  assert.match(composer, /!memoryTextOnly && \(showPhotos \|\| photos\.length > 0 \|\| convertingClips\.length > 0 \|\| pendingMediaAssets\.length > 0\)/);
   assert.match(composer, /protectedLegacyMemory \? \{ legacyArtistProfile: true \} : \{\}/);
   assert.match(store, /buildMemoryCreateBody\(safe, \{ textOnly: log\.legacyArtistProfile === true \}\)/);
 });

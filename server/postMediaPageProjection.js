@@ -34,6 +34,7 @@ export function attachPostMediaPageProjection(database, posts, {
         stable: Object.freeze({
           assets: stable?.assetsByPost?.get(id) || [],
           linkedAssetIds: [],
+          converting: stable?.convertingByPost?.get(id) || [],
         }),
         legacy: legacy?.get(id) || [],
       }));

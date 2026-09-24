@@ -1,3 +1,4 @@
+import { isVideoFileName } from "../domain/mediaMime.mjs";
 import { File as ExpoFile } from "expo-file-system";
 import { ImageManipulator, SaveFormat } from "expo-image-manipulator";
 import { Skia } from "@shopify/react-native-skia";
@@ -103,7 +104,7 @@ function validVideoAsset(asset) {
   if (!asset || typeof asset !== "object" || typeof asset.uri !== "string" || !asset.uri.trim()) return false;
   const mime = String(asset.mimeType || "").toLowerCase();
   const name = String(asset.fileName || asset.uri);
-  return asset.type === "video" || mime.startsWith("video/") || /\.(mp4|mov|m4v|webm)(?:[?#]|$)/i.test(name);
+  return asset.type === "video" || mime.startsWith("video/") || isVideoFileName(name);
 }
 
 // expo-video returns a native SharedRef rather than raw pixels. For automatic

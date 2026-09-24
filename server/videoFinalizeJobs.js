@@ -21,6 +21,10 @@ const FAILURE_MESSAGES = Object.freeze({
 });
 
 const jobs = new Map();
+// The converter works on one clip at a time. Clips from an album, or from two
+// members at once, wait their turn here instead of reaching the converter
+// together and failing as "busy". The chain itself never rejects.
+let runQueue = Promise.resolve();
 
 const jobKey = (ownerId, assetId) => `${String(ownerId)}\u0000${String(assetId)}`;
 
@@ -105,12 +109,14 @@ export function startVideoFinalizeJob({ ownerId, assetId, fingerprint, run, at =
 
   // Queue the work after the route has constructed its response. The job owns
   // its verifier lifecycle; an HTTP disconnect must not abort shared work.
-  const promise = Promise.resolve().then(() => {
+  const turn = runQueue.then(() => {
     if (entry.controller.signal.aborted) {
       throw entry.controller.signal.reason || new DOMException("Media finalization was cancelled.", "AbortError");
     }
     return run({ signal: entry.controller.signal });
-  }).then((result) => {
+  });
+  runQueue = turn.then(() => undefined, () => undefined);
+  const promise = turn.then((result) => {
     if (result?.asset?.status !== "ready") {
       throw new ApiError(503, "Clip processing did not produce a ready asset.", "MEDIA_STORAGE_UNAVAILABLE");
     }
@@ -186,6 +192,14 @@ export function waitForVideoFinalizeCompletion(completion, {
   });
 }
 
+// True while any clip is converting or waiting its turn in this process.
+export function videoFinalizeJobActive() {
+  for (const entry of jobs.values()) {
+    if (entry.state === "processing") return true;
+  }
+  return false;
+}
+
 export function resetVideoFinalizeJobsForTests() {
   for (const entry of jobs.values()) {
     if (entry.state === "processing" && !entry.controller.signal.aborted) {
@@ -193,4 +207,5 @@ export function resetVideoFinalizeJobsForTests() {
     }
   }
   jobs.clear();
+  runQueue = Promise.resolve();
 }

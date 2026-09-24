@@ -12,7 +12,7 @@ import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { join, extname, normalize, dirname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { db, q, publicUser, pruneMissingArtists, DATABASE_DIRECTORY, DATABASE_PATH } from "./db.js";
-import { artistDeathWatchService, eraseAccountForInactivity, routes } from "./api.js";
+import { artistDeathWatchService, eraseAccountForInactivity, routes, startVideoProcessingRetries } from "./api.js";
 import { ApiError, errorEnvelope } from "./errors.js";
 import { readAuthorizedRequest } from "./requestAuthorization.js";
 import { maybeAlert, pruneErrors, recordError } from "./errorLog.js";
@@ -1050,6 +1050,7 @@ async function startServer() {
     }));
     legacyVideoPosterScheduler = startBackgroundRuntime("/startup/legacy-video-posters", () => startLegacyVideoPosterVerificationScheduler({ database: db }));
     startBackgroundRuntime("/startup/video-verifier-health", () => startVideoVerifierHealthScheduler());
+    startBackgroundRuntime("/startup/video-processing", () => startVideoProcessingRetries()); // resumes clip conversions after a restart and retries failed attempts
     // Sitemap reads serve only the validated persisted/current LKG. Reuse a
     // fresh current-revision snapshot across deploys; missing, stale, future,
     // or incompatible snapshots still rebuild after readiness. HTTP reads never

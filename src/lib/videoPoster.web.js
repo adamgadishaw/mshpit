@@ -1,3 +1,4 @@
+import { isVideoFileName } from "../domain/mediaMime.mjs";
 import {
   VIDEO_POSTER_ERROR_CODES,
   VideoPosterError,
@@ -57,7 +58,7 @@ function validVideoAsset(asset) {
   const uri = String(asset.uri || "");
   const mime = String(asset.mimeType || asset.file?.type || "").toLowerCase();
   const name = String(asset.fileName || asset.file?.name || uri);
-  return !!uri && (asset.type === "video" || mime.startsWith("video/") || /\.(mp4|mov|m4v|webm)(?:[?#]|$)/i.test(name));
+  return !!uri && (asset.type === "video" || mime.startsWith("video/") || isVideoFileName(name));
 }
 
 function localVideoSource(asset) {

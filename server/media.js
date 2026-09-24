@@ -8,7 +8,7 @@ import {
   MEDIA_PHOTO_SOURCE_MAX_BYTES,
   MEDIA_VIDEO_SOURCE_MAX_BYTES,
 } from "../src/domain/mediaUploadPolicy.mjs";
-import { normalizedVideoMimeType, VIDEO_EXTENSION_BY_MIME } from "../src/domain/mediaMime.mjs";
+import { MEDIA_OBJECT_EXTENSION_PATTERN, normalizedVideoMimeType, VIDEO_EXTENSION_BY_MIME } from "../src/domain/mediaMime.mjs";
 
 export { PUBLIC_MEDIA_CACHE_CONTROL } from "./mediaDeliveryPolicy.js";
 
@@ -47,7 +47,9 @@ const REQUIRED_ENV = [
   "MEDIA_SECRET_ACCESS_KEY",
   "MEDIA_PUBLIC_BASE_URL",
 ];
-const OWNED_OBJECT_KEY = /^users\/[A-Za-z0-9_-]{1,128}\/(?:avatar|banner|post|review|venue)\/[A-Za-z0-9_-]{1,240}\.(?:jpg|png|webp|gif|heic|heif|avif|mp4|webm|mov)$/;
+const OWNED_OBJECT_KEY = new RegExp(
+  `^users/[A-Za-z0-9_-]{1,128}/(?:avatar|banner|post|review|venue)/[A-Za-z0-9_-]{1,240}\\.(?:${MEDIA_OBJECT_EXTENSION_PATTERN})$`,
+);
 const STRONG_ETAG = /^"[\x21\x23-\x7e]{1,200}"$/u;
 
 let privateIsolationState = Object.freeze({

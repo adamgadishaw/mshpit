@@ -66,8 +66,9 @@ import {
   releaseMediaDraftAssets,
 } from "../lib/mediaDraftStaging";
 import {
-  mediaAssetIdsMatchingPhotos,
+  mediaProjectConvertingAssets,
   mediaProjectPublishedMedia,
+  mediaProjectSubmissionAssetIds,
   mediaProjectFromPost,
   mediaProjectFromPicker,
   mediaProjectRequiresLegacyUpload,
@@ -802,6 +803,9 @@ export default function LogScreen({
             asset,
             expectedAccountId: task.accountId,
             signal: controller.signal,
+            // A clip is attached as soon as its original is uploaded. The
+            // server converts it and adds it to the post when it is ready.
+            postWhileConverting: true,
             onStage: (stage) => {
               if (!operationIsActive()) return;
               progressPublisher.publish({
@@ -925,7 +929,8 @@ export default function LogScreen({
       if (Platform.OS === "web") void releaseMediaDraftAssets(assets);
       return;
     }
-    const remaining = Math.max(0, MEDIA_POST_MAX_ATTACHMENTS - photos.length - pendingMediaAssets.length);
+    const remaining = Math.max(0, MEDIA_POST_MAX_ATTACHMENTS - photos.length
+      - mediaProjectConvertingAssets(mediaProjectRef.current).length - pendingMediaAssets.length);
     if (!remaining) {
       if (Platform.OS === "web") void releaseMediaDraftAssets(assets);
       return;
@@ -972,7 +977,8 @@ export default function LogScreen({
       setMediaError("Remove all existing media from this older post before adding a new photo or clip. This prevents an unsafe mix of legacy URLs and verified PIT media.");
       return;
     }
-    const remaining = Math.max(0, MEDIA_POST_MAX_ATTACHMENTS - photos.length - pendingMediaAssets.length);
+    const remaining = Math.max(0, MEDIA_POST_MAX_ATTACHMENTS - photos.length
+      - mediaProjectConvertingAssets(mediaProjectRef.current).length - pendingMediaAssets.length);
     if (!remaining) return;
     let res;
     let pickerRequestId = null;
@@ -1110,6 +1116,17 @@ export default function LogScreen({
     }
   };
 
+  // Removing a clip that is still converting also stops its conversion.
+  const removeConvertingClip = (id) => {
+    const target = mediaProjectRef.current.assets.find((asset) => asset.id === id);
+    if (!target) return;
+    setMediaProject((current) => removeMediaProjectAsset(current, id));
+    setMediaError("");
+    if (target.assetId && user?.id) {
+      void retireMediaAssetDrafts({ assetIds: [target.assetId], apiCall: api, expectedAccountId: user.id });
+    }
+  };
+
   const removePendingMedia = (id) => {
     const target = pendingMediaAssetsRef.current.find((asset) => asset.id === id);
     if (!target) return;
@@ -1150,9 +1167,10 @@ export default function LogScreen({
       }
     : computed;
   const youtubeUrlValid = isValidYouTubeSourceUrl(youtubeUrl);
+  const convertingClips = mediaProjectConvertingAssets(mediaProject);
   const canPostStatus = protectedLegacyMemory
     ? !!review.trim()
-    : !!(review.trim() || photos.filter(isDurableMediaUrl).length || song?.videoId);
+    : !!(review.trim() || photos.filter(isDurableMediaUrl).length || convertingClips.length || song?.videoId);
   const canPostBase = isStatus
     ? canPostStatus
     : isOnlineReview
@@ -1514,7 +1532,9 @@ export default function LogScreen({
         submissionId: submissionIdRef.current,
       }));
       const durablePhotos = photos.filter(isDurableMediaUrl);
-      const stableMediaAssetIds = mediaAssetIdsMatchingPhotos(mediaProject, durablePhotos);
+      // Clips still converting go out with the post by ID; they appear on it
+      // once the server finishes them.
+      const stableMediaAssetIds = mediaProjectSubmissionAssetIds(mediaProject, durablePhotos);
       const publishedMedia = mediaProjectPublishedMedia(mediaProject)
         .filter((item) => durablePhotos.includes(item.url));
       if (isStatus) {
@@ -2006,7 +2026,7 @@ export default function LogScreen({
         {!memoryTextOnly ? <>
         <Text style={styles.attachLabel}>ADD TO YOUR POST</Text>
         <View style={styles.attachBar}>
-          <AttachChip icon="camera" label={mediaAttachmentLabel} active={showPhotos || photos.length > 0 || pendingMediaAssets.length > 0} count={photos.length + pendingMediaAssets.length} onPress={toggleMediaPanel} disabled={submitBusy} />
+          <AttachChip icon="camera" label={mediaAttachmentLabel} active={showPhotos || photos.length > 0 || convertingClips.length > 0 || pendingMediaAssets.length > 0} count={photos.length + convertingClips.length + pendingMediaAssets.length} onPress={toggleMediaPanel} disabled={submitBusy} />
           {!isOnlineReview && <AttachChip icon="play" label="YouTube" active={showSong || !!song?.videoId} onPress={() => setShowSong((v) => !v)} disabled={submitBusy} />}
           {!isStatus && !isOnlineReview ? <AttachChip icon="you" label="People with you" active={showPeople || taggedPeople.length > 0} count={taggedPeople.length} onPress={() => setShowPeople((v) => !v)} disabled={submitBusy} /> : null}
         </View>
@@ -2135,7 +2155,7 @@ export default function LogScreen({
         </View>
         )}
 
-        {!memoryTextOnly && (showPhotos || photos.length > 0 || pendingMediaAssets.length > 0) && (
+        {!memoryTextOnly && (showPhotos || photos.length > 0 || convertingClips.length > 0 || pendingMediaAssets.length > 0) && (
         <View style={styles.attachPanel}>
         {pickingMedia && Platform.OS === "web" && (
           <View style={styles.pendingMedia}>
@@ -2189,6 +2209,18 @@ export default function LogScreen({
               </Pressable>
             </View>
           );})}
+          {convertingClips.map((asset, index) => (
+            <View key={asset.id} style={[styles.thumb, styles.pendingThumb]}>
+              <PendingMediaPreview
+                asset={asset}
+                accessibilityLabel={`${asset.altText || `Clip ${photos.length + index + 1}`}, uploaded and converting`}
+              />
+              <View style={styles.pendingThumbBadge}><Text style={styles.pendingThumbBadgeText}>Converting</Text></View>
+              <Pressable style={styles.removeThumb} onPress={() => removeConvertingClip(asset.id)} disabled={submitBusy} accessibilityRole="button" accessibilityLabel={`Remove clip ${photos.length + index + 1}`}>
+                <Icon name="x" size={12} color="#fff" />
+              </Pressable>
+            </View>
+          ))}
           {pendingMediaAssets.map((asset, index) => (
             <View key={asset.id} style={[styles.thumb, styles.pendingThumb]}>
               <PendingMediaPreview
@@ -2201,7 +2233,7 @@ export default function LogScreen({
               </Pressable>
             </View>
           ))}
-          {photos.length + pendingMediaAssets.length < MEDIA_POST_MAX_ATTACHMENTS && (
+          {photos.length + convertingClips.length + pendingMediaAssets.length < MEDIA_POST_MAX_ATTACHMENTS && (
             <Pressable style={styles.addThumb} onPress={addPhoto} disabled={submitBusy} accessibilityRole="button" accessibilityLabel={mediaAddLabel}>
               <Icon name="camera" size={20} color={colors.amber} />
               <Text style={styles.addThumbTxt}>{uploadProgress ? `${uploadProgress.current}/${uploadProgress.total}` : mediaAddLabel}</Text>
@@ -2231,6 +2263,11 @@ export default function LogScreen({
               <Text style={styles.uploadCancel}>Cancel</Text>
             </Pressable>
           </View>
+        )}
+        {convertingClips.length > 0 && !uploadingPhotos && (
+          <Text style={styles.convertingNote} accessibilityLiveRegion="polite">
+            {convertingClips.length === 1 ? "Your clip is uploaded." : `${convertingClips.length} clips are uploaded.`} You can post now. {convertingClips.length === 1 ? "It shows up" : "They show up"} on your post as soon as {convertingClips.length === 1 ? "it's" : "they're"} converted, usually within a few minutes.
+          </Text>
         )}
         {!!mediaError && <Text style={styles.songError}>{mediaError}</Text>}
 
@@ -2458,6 +2495,7 @@ const styles = StyleSheet.create({
   uploadStatusCopy: { flex: 1, gap: 6 },
   uploadStatusTxt: { color: colors.textDim, fontSize: 12.5, lineHeight: 18 },
   uploadProgressTrack: { height: 4, overflow: "hidden", borderRadius: 2, backgroundColor: colors.lineSoft },
+  convertingNote: { color: colors.textDim, fontSize: 12, lineHeight: 17, marginTop: 8 },
   uploadProgressFill: { height: "100%", borderRadius: 2, backgroundColor: colors.amber },
   uploadCancelButton: { minWidth: 58, minHeight: 44, paddingHorizontal: 8, alignItems: "center", justifyContent: "center", borderRadius: radius.sm },
   uploadCancel: { color: colors.danger, fontSize: 12.5, fontWeight: "800" },

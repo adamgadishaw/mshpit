@@ -104,6 +104,9 @@ export async function finalizeMediaSourceV1({
   now = Date.now,
   wait = waitForPoll,
   pollIntervalMs = MEDIA_SOURCE_FINALIZE_POLL_INTERVAL_MS,
+  // A clip may be posted while it converts. Once the server says it has the
+  // clip and is converting it, there is nothing left for this device to do.
+  returnWhenProcessing = false,
 } = {}) {
   if (typeof apiCall !== "function" || typeof assetId !== "string" || !assetId) {
     throw new Error("PIT could not verify that media source.");
@@ -185,11 +188,15 @@ export async function finalizeMediaSourceV1({
     });
   };
 
+  const handedOff = (value) => returnWhenProcessing && value?.finalize?.state === "processing"
+    && value?.asset?.status !== "ready";
+
   let current;
   reportStage("starting-source");
   try {
     current = await submit();
     noteProcessing(current);
+    if (handedOff(current)) return current;
   } catch (error) {
     if (signal?.aborted) throw abortError(signal);
     if (!retryableRequestFailure(error)) throw error;
@@ -237,6 +244,7 @@ export async function finalizeMediaSourceV1({
     }
 
     if (completed(current)) return current;
+    if (handedOff(current)) return current;
     const polledFailure = processingFailure(current);
     if (polledFailure && (!retryableRequestFailure(polledFailure) || submissions >= MAX_RESTART_SUBMISSIONS)) throw polledFailure;
     if (noteProcessing(current)) continue;
@@ -249,6 +257,7 @@ export async function finalizeMediaSourceV1({
       try {
         current = await submit();
         noteProcessing(current);
+        if (handedOff(current)) return current;
       } catch (error) {
         if (signal?.aborted) throw abortError(signal);
         if (!retryableRequestFailure(error)) throw error;
@@ -274,6 +283,7 @@ export async function resumeExistingMediaSourceV1({
   onStage,
   onRemoteDraft,
   recovery,
+  returnWhenProcessing = false,
 } = {}) {
   const assetId = typeof asset?.assetId === "string" ? asset.assetId : "";
   if (typeof apiCall !== "function" || !assetId) {
@@ -315,7 +325,8 @@ export async function resumeExistingMediaSourceV1({
   if (signal?.aborted) throw abortError(signal);
   assertMediaSourceIdentity(result, assetId, "That PIT media source is no longer available.");
   if (result.asset.status === "upload_pending") {
-    result = await finalizeMediaSourceV1({ apiCall, assetId, kind, body, signal, onStage });
+    if (returnWhenProcessing && result.finalize?.state === "processing") return result;
+    result = await finalizeMediaSourceV1({ apiCall, assetId, kind, body, signal, onStage, returnWhenProcessing });
   }
   return result;
 }

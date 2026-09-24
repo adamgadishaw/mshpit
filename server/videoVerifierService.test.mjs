@@ -18,6 +18,7 @@ import {
   createVideoVerifierService,
   getVideoVerifierServiceConfig,
   runVideoVerifierJob,
+  universalRemuxEligible,
   validateVideoVerifierJob,
   videoDeliveryStrategy,
   videoTranscodeBitrateBudget,
@@ -1334,4 +1335,154 @@ test("a browser-recorded WebM that stores no length converts and takes the copy'
   assert.equal(result.poster.timeMs, 0);
   const transcode = runProcess.calls.find((call) => call.executable === "ffmpeg" && call.args.some((value) => String(value).endsWith("source.webm"))).args;
   assert.ok(transcode.includes("-maxrate"), "an unknown length is budgeted as the longest allowed clip");
+});
+
+const STEREO_AAC = { codec_type: "audio", codec_name: "aac", codec_tag_string: "mp4a", profile: "LC", channels: 2, channel_layout: "stereo", sample_rate: "44100" };
+
+function tiktokStyleProbe(overrides = {}) {
+  return JSON.stringify({
+    streams: [
+      { index: 0, codec_type: "video", codec_name: "h264", width: 1_080, height: 1_920, field_order: "progressive",
+        sample_aspect_ratio: "1:1", avg_frame_rate: "30/1", r_frame_rate: "30/1", ...overrides },
+      { index: 1, codec_type: "audio", codec_name: "aac", channels: 2 },
+    ],
+    format: { format_name: "mov,mp4,m4a,3gp,3g2,mj2", duration: "10.000" },
+  });
+}
+
+// A runner for MP4 sources: `deliveryProbes` answers the strict probes of the
+// output in order, so a test can make the fast copy fail its checks.
+function mp4Runner({ probe, deliveryProbes }) {
+  const calls = [];
+  const answers = [...deliveryProbes];
+  const runProcess = async (executable, args, options) => {
+    calls.push({ executable, args: [...args], options });
+    const source = args.some((value) => String(value).endsWith("source.mp4"));
+    if (executable === "ffprobe" && source) return { stdout: probe, stderr: "" };
+    if (executable === "ffprobe" && args.some((value) => String(value).endsWith("delivery.mp4"))) {
+      return { stdout: answers.length > 1 ? answers.shift() : answers[0], stderr: "" };
+    }
+    if (executable === "ffprobe") {
+      return { stdout: JSON.stringify({ streams: [{ codec_type: "video", codec_name: "mjpeg", width: 720, height: 1_280 }] }), stderr: "" };
+    }
+    const output = args.at(-1);
+    if (typeof output === "string" && output.endsWith("poster.jpg")) await writeFile(output, POSTER);
+    if (typeof output === "string" && output.endsWith("delivery.mp4")) await writeFile(output, SOURCE);
+    return { stdout: "", stderr: "" };
+  };
+  runProcess.calls = calls;
+  return runProcess;
+}
+
+async function runLoggedMp4(runProcess) {
+  const root = await mkdtemp(join(tmpdir(), "pit-verifier-remux-"));
+  const lines = [];
+  try {
+    const result = await runVideoVerifierJob(universalJob({ extension: "mp4", contentType: "video/mp4", posterTimeMs: 1_000 }), {
+      config: getVideoVerifierServiceConfig(ENV),
+      fetchImpl: universalFetch("video/mp4"),
+      runProcess,
+      signal: AbortSignal.timeout(5_000),
+      temporaryRoot: root,
+      log: (line) => lines.push(line),
+    });
+    return { result, lines };
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+test("web-ready phone and TikTok clips are repackaged instead of re-encoded", () => {
+  const ready = {
+    universal: true, demuxer: "mov", codec: "h264", audioCodec: "aac", rotation: 0, interlaced: false,
+    frameRate: 30, durationMs: 15_000, width: 1_080, height: 1_920, sampleAspectRatio: "1:1",
+  };
+  assert.equal(universalRemuxEligible(ready), true);
+  assert.equal(universalRemuxEligible({ ...ready, sampleAspectRatio: "" }), true, "an unset pixel shape is stated as square");
+  assert.equal(universalRemuxEligible({ ...ready, audioCodec: "none" }), true);
+  assert.equal(universalRemuxEligible({ ...ready, width: 1_920, height: 1_080 }), true);
+  for (const [label, change] of [
+    ["HEVC", { codec: "hevc" }],
+    ["Opus audio", { audioCodec: "opus" }],
+    ["a WebM container", { demuxer: "matroska" }],
+    ["rotated phone footage", { rotation: 90 }],
+    ["interlaced", { interlaced: true }],
+    ["above 60 fps", { frameRate: 120 }],
+    ["an unknown length", { durationMs: null }],
+    ["4K", { width: 2_160, height: 3_840 }],
+    ["non-square pixels", { sampleAspectRatio: "4:3" }],
+    ["the strict MP4 path", { universal: false }],
+  ]) assert.equal(universalRemuxEligible({ ...ready, ...change }), false, label);
+});
+
+test("a TikTok-style MP4 is copied, checked strictly and never re-encoded", async () => {
+  const runProcess = mp4Runner({
+    probe: tiktokStyleProbe(),
+    deliveryProbes: [videoProbe({ rotation: 0, width: 1_080, height: 1_920, codedWidth: 1_080, codedHeight: 1_920, metadataStreams: [STEREO_AAC] })],
+  });
+  const { result, lines } = await runLoggedMp4(runProcess);
+  assert.equal(result.delivery.codec, "h264");
+  assert.equal(result.delivery.width, 1_080);
+  assert.equal(result.delivery.height, 1_920);
+  const conversions = runProcess.calls.filter((call) => call.executable === "ffmpeg"
+    && call.args.some((value) => String(value).endsWith("source.mp4")));
+  assert.equal(conversions.length, 1);
+  const copy = conversions[0].args;
+  assert.deepEqual(copy.slice(copy.indexOf("-c:v"), copy.indexOf("-c:v") + 4), ["-c:v", "copy", "-c:a", "copy"]);
+  assert.ok(copy.includes("h264_metadata=sample_aspect_ratio=1/1"));
+  assert.ok(copy.includes("-map_metadata") && copy.includes("-1"), "location and device metadata are still dropped");
+  assert.equal(runProcess.calls.some((call) => call.args.includes("libx264")), false);
+  const strictDecode = runProcess.calls.find((call) => call.executable === "ffmpeg"
+    && call.args.some((value) => String(value).endsWith("delivery.mp4")) && call.args.at(-1) === "-");
+  assert.ok(strictDecode.args.includes("-xerror"), "the copy is decoded strictly before it is published");
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /^converted video\/mp4 h264\/aac 1080x1920 10\.0s by remux in /);
+  assert.match(lines[0], /download [0-9.]+s, probe [0-9.]+s, convert [0-9.]+s, cover [0-9.]+s, upload [0-9.]+s/);
+});
+
+test("a copy the strict checks reject is converted in full rather than refused", async () => {
+  const runProcess = mp4Runner({
+    probe: tiktokStyleProbe(),
+    deliveryProbes: [
+      videoProbe({ rotation: 0, width: 1_080, height: 1_920, codedWidth: 1_080, codedHeight: 1_920, fieldOrder: "unknown" }),
+      videoProbe({ rotation: 0, width: 1_080, height: 1_920, codedWidth: 1_080, codedHeight: 1_920 }),
+    ],
+  });
+  const { result, lines } = await runLoggedMp4(runProcess);
+  assert.equal(result.delivery.codec, "h264");
+  const conversions = runProcess.calls.filter((call) => call.executable === "ffmpeg"
+    && call.args.some((value) => String(value).endsWith("source.mp4")));
+  assert.equal(conversions.length, 2, "one fast copy, then one full conversion");
+  assert.ok(conversions[1].args.includes("libx264"));
+  assert.match(lines.join("\n"), /fast repackage skipped, converting in full: unsupported_media/);
+  assert.match(lines.at(-1), / by transcode in /);
+});
+
+test("a failed job logs the step it stopped at and the decoder's reason", async () => {
+  const runProcess = mp4Runner({ probe: tiktokStyleProbe(), deliveryProbes: ["not json"] });
+  const failing = async (executable, args, options) => {
+    if (executable === "ffmpeg" && args.includes("libx264")) {
+      throw Object.assign(new Error("Media decode failed."), { code: "decode_failed", status: 422,
+        cause: new Error("decoder exit=1 signal=none: [h264] no frame! | source.mp4: Invalid data found") });
+    }
+    return runProcess(executable, args, options);
+  };
+  const root = await mkdtemp(join(tmpdir(), "pit-verifier-remux-"));
+  const lines = [];
+  try {
+    await assert.rejects(runVideoVerifierJob(universalJob({ extension: "mp4", contentType: "video/mp4", posterTimeMs: 1_000 }), {
+      config: getVideoVerifierServiceConfig(ENV),
+      fetchImpl: universalFetch("video/mp4"),
+      runProcess: failing,
+      signal: AbortSignal.timeout(5_000),
+      temporaryRoot: root,
+      log: (line) => lines.push(line),
+    }), (error) => error.code === "unsupported_media" && error.verifierStep === "convert");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+  const failure = lines.at(-1);
+  assert.match(failure, /^failed video\/mp4 at convert after [0-9.]+s \(download [0-9.]+s, probe [0-9.]+s\): unsupported_media/);
+  assert.match(failure, /no frame!/, "the decoder's own words reach the private log");
+  assert.equal(/https?:/u.test(lines.join(" ")), false, "signed storage URLs never reach the log");
 });

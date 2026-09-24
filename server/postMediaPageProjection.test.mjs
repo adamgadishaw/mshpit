@@ -56,7 +56,7 @@ test("large pages are chunked to the media projectors' bounded 100-post contract
   ]);
   assert.equal(projected.length, rows.length);
   assert.deepEqual(preloadedPostMedia(projected.at(-1)), {
-    stable: { assets: [], linkedAssetIds: [] },
+    stable: { assets: [], linkedAssetIds: [], converting: [] },
     legacy: [],
   });
 });

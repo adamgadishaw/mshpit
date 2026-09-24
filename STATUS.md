@@ -6,6 +6,52 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-09-24 posting no longer waits on video conversion
+
+The owner reported a TikTok clip stuck in a "processing" loop and asked for
+posting to be fixed properly, with nothing removed. Production logs were not
+available to this session, so the fix covers every path that could produce the
+loop and adds the logging needed to see the next failure.
+
+- Post while converting: once a clip's original is uploaded and the server has
+  recorded its conversion, the composer attaches it ("Converting" tile) and the
+  post can go out. The clip is linked to the post but hidden until ready, then
+  joins the post's media list in the slot it was posted in, with its objects
+  bound to the post so orphan cleanup never takes them. Only the author sees a
+  "still converting" note under the post, which refreshes the feed when the
+  clip is ready and offers "Try again" if conversion stopped. Editing the post
+  never detaches a converting clip. A clip the converter cannot read stays on
+  the post (never deleted) and the author is told.
+- Durable conversions: new `media_processing_jobs` table. Every conversion is
+  recorded; a restart makes interrupted ones due, and a scheduler
+  (`/startup/video-processing`) retries temporary failures on a growing
+  schedule (30 s up to 1 h, nine attempts, about 2.5 h) without the member
+  keeping a screen open. A busy converter costs no attempt; unreadable files
+  and repeated conflicts stop. `POST /api/media/assets/:id/processing/retry`
+  lets the owner ask again after a final failure.
+- One conversion at a time on the site too: clips from an album or two members
+  queue in `videoFinalizeJobs.js` instead of racing the single-slot converter
+  and failing as busy. A converter that missed one health check keeps the
+  formats it last reported, so finalize no longer refuses clips during a blip.
+- Fast path: web-ready H.264/AAC MP4/MOV clips (TikTok, Instagram, most phone
+  video) with no rotation, square pixels, up to 1920x1080 and 60 fps are
+  repackaged instead of re-encoded, which takes seconds on the one-CPU
+  converter. The copy passes the same strict probe and full decode; anything it
+  fails is converted in full, so the shortcut cannot refuse a clip. The build
+  self-test now includes a portrait H.264/AAC sample that must take this path
+  and an anamorphic one that must not.
+- Converter logs: each job logs its format, size, every step's time and how it
+  ended, including FFmpeg's last lines on failure (no keys or signed URLs).
+  A tolerant decode that prints many warnings no longer fails on the 64 KiB
+  output cap; only the tail of stderr is kept.
+- Real bug fixed: storage-key checks (`server/media.js`,
+  `server/mediaDeletion.js`, `src/domain/mediaUploadTicket.mjs`) only allowed
+  `.mp4/.webm/.mov` for video, so MKV, AVI, MPG, TS, WMV, FLV, 3GP, 3G2, M4V
+  and OGV uploads failed at creation although the site advertised them. All
+  three now build from `MEDIA_OBJECT_EXTENSIONS` in `mediaMime.mjs`. The web
+  picker and client type detection also recognise every container by
+  extension, so a typeless MKV is no longer treated as a 30 MB-limited photo.
+
 ## 2026-09-24 video converter now takes every format (live)
 
 - Live since about 14:20 UTC: `/api/health?mediaPipeline=private-derivative-v1`

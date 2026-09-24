@@ -80,7 +80,7 @@ test("real submission sends unknown details honestly and failed saves keep the d
     persistDraftSnapshot: (value) => checkpoints.push(value), normalizeComposerDraft,
     currentDraft: { postType: "show", artist: "Artist", city: "Toronto", date: "", dims: { experience: 4 } },
     submissionIdRef: { current: "same-request" }, photos: [], isDurableMediaUrl: () => true,
-    mediaProject: { assets: [] }, mediaAssetIdsMatchingPhotos: () => [], mediaProjectPublishedMedia: () => [],
+    mediaProject: { assets: [] }, mediaProjectSubmissionAssetIds: () => [], mediaProjectPublishedMedia: () => [],
     isStatus: false, isOnlineReview: false, editing: null, artist: "Artist", artistPicked: true, artistKey: "saved-artist",
     venue: "", city: "Toronto", eventAddress: "", tour: "", date: "", submittedRatings: { overall: 4, band: 0, room: 0 },
     dims: { experience: 4, performance: 0 }, photosPublic: false, landingShowcase: false, review: "", taggedPeople: [], song: null,

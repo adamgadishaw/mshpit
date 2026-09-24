@@ -1,3 +1,4 @@
+import { isVideoFileName } from "../domain/mediaMime.mjs";
 import { MEDIA_POST_MAX_ATTACHMENTS } from "../domain/mediaUploadPolicy.mjs";
 
 // Only URLs created by this picker may be revoked. Other components can own
@@ -21,7 +22,9 @@ export function launchComposerMediaLibrary(options = {}, { signal, document: doc
   const limit = Math.max(1, Math.min(MEDIA_POST_MAX_ATTACHMENTS, Math.floor(Number(options.selectionLimit) || 1)));
   const input = doc.createElement("input");
   input.type = "file";
-  input.accept = "image/*,video/mp4,video/quicktime,video/x-m4v,video/*";
+  // Extensions as well as types: some systems map .mkv, .ts or .wmv to no
+  // video type at all, which would hide them from the file dialog.
+  input.accept = "image/*,video/*,.mp4,.m4v,.mov,.qt,.3gp,.3g2,.webm,.mkv,.ogv,.avi,.mpg,.mpeg,.ts,.mts,.m2ts,.wmv,.flv";
   input.multiple = options.allowsMultipleSelection === true;
   input.style.display = "none";
   input.setAttribute("data-testid", "composer-file-input");
@@ -52,7 +55,7 @@ export function launchComposerMediaLibrary(options = {}, { signal, document: doc
           ownedUrls.set(uri, () => urlApi.revokeObjectURL(uri));
           assets.push({ uri, file, fileName: file.name, fileSize: file.size,
             mimeType: file.type, width: 0, height: 0,
-            type: /^video\//i.test(file.type) || /\.(?:mp4|m4v|mov|webm)$/i.test(file.name) ? "video" : "image" });
+            type: /^video\//i.test(file.type) || isVideoFileName(file.name) ? "video" : "image" });
         }
         finish({ canceled: assets.length === 0, assets: assets.length ? assets : null,
           omittedCount: Math.max(0, (input.files?.length || 0) - count) });

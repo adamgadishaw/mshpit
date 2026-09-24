@@ -37,7 +37,9 @@ async function localServer() {
 
 async function scenario(browser, origin, width) {
   const context = await browser.newContext({ viewport: { width, height: 900 }, isMobile: width < 620, hasTouch: width < 620, serviceWorkers: "block" });
-  const state = { creates: [], puts: [], finalizes: [], reads: [], reports: [], errors: [], closing: false, clipReady: false };
+  let releaseClipFinalize;
+  const clipFinalizeGate = new Promise((done) => { releaseClipFinalize = done; });
+  const state = { creates: [], puts: [], finalizes: [], reads: [], reports: [], errors: [], closing: false, clipReady: false, holdClipFinalize: true };
   const page = await context.newPage(); page.setDefaultTimeout(12_000);
   await page.addInitScript(user => {
     localStorage.setItem("pit_theme", "stage");
@@ -96,10 +98,13 @@ async function scenario(browser, origin, width) {
           if (id === "fixture_clip") {
             assert.equal(body.deliveryMode, undefined, "Unknown picker MIME must not finalize sniffed video as an image.");
             assert.equal(body.durationMs, undefined, "The picker must not invent a clip duration.");
+            // Stall the first hand-off, like a phone losing signal right
+            // after the original finished uploading.
+            if (state.holdClipFinalize) await clipFinalizeGate;
           }
         } else { assert.equal(request.method(), "GET"); state.reads.push(id); }
         return await json(id === "fixture_photo" || state.clipReady ? { asset: ready(id), finalize: { state: "ready" } }
-          : { asset: { id, status: "upload_pending" }, finalize: { state: "processing" } });
+          : { asset: { id, kind: id === "fixture_clip" ? "video" : "image", status: "upload_pending" }, finalize: { state: "processing" } });
       }
       return await json(fixtureApiResponse(url.pathname, { member: true, method: request.method(), resolvedPath: url.searchParams.get("path") || undefined }));
     } catch (error) {
@@ -128,7 +133,7 @@ async function scenario(browser, origin, width) {
     ]);
     await page.getByRole("button", { name: "Remove media 1", exact: true }).waitFor();
     await page.waitForFunction(() => window.__pickerHandles.revoked.length >= 1);
-    await page.getByRole("progressbar", { name: /Processing original/ }).waitFor();
+    await page.getByRole("progressbar", { name: /Starting media check/ }).waitFor();
     assert.equal(state.finalizes.length, 2, "A selected video must reach verification without any browser metadata decode.");
     await page.getByRole("button", { name: "Cancel media upload", exact: true }).click();
     const retry = page.getByRole("button", { name: "Retry uploading selected photos and videos", exact: true });
@@ -137,9 +142,13 @@ async function scenario(browser, origin, width) {
     assert.equal(await review.inputValue(), "Keep this concert memory during interrupted uploads.");
     assert.equal(await page.getByRole("button", { name: "Remove media 1", exact: true }).isEnabled(), true);
     await page.screenshot({ path: join(shots, `media-${width}-paused.png`) });
-    state.clipReady = true;
+    state.holdClipFinalize = false;
+    releaseClipFinalize();
     await retry.click();
-    await page.getByRole("button", { name: "Remove media 2", exact: true }).waitFor();
+    // The server has the original and is converting it: the clip is attached
+    // at once and the post can go out without waiting for the conversion.
+    await page.getByRole("button", { name: "Remove clip 2", exact: true }).waitFor();
+    await page.getByText(/Your clip is uploaded\. You can post now\./).waitFor();
     await page.waitForFunction(() => window.__pickerHandles.revoked.length === 2);
     assert.deepEqual(state.puts, ["fixture_photo", "fixture_clip"], "Retry must not re-upload completed source bytes.");
     assert.equal(state.creates.length, 2, "Retry must use the owner-scoped remote identity.");

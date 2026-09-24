@@ -11,6 +11,7 @@ import CommentPreview from "./AfterpartyPreview";
 import ExpandableText from "./ExpandableText";
 import { POST_CONTENT_PREVIEW_LIMIT } from "../domain/contentPreview.mjs";
 import PostMediaGrid from "./PostMediaGrid";
+import ConvertingClipNotice from "./ConvertingClipNotice";
 import SongAttachment from "./SongAttachment";
 import { useStore } from "../store";
 import { BadgeRow } from "./Badge";
@@ -190,7 +191,14 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
   // Comments are public post navigation, never a fallback to artist/show detail.
   // Leave the callback absent when unavailable so the canonical web href works.
   const openComments = onComment || onOpenPost ? () => (onComment || onOpenPost)(log) : undefined;
-  const { userById, likeInfo, toggleLike, commentsFor, session, userBadges, deleteOwnPost } = useStore();
+  const { userById, likeInfo, toggleLike, commentsFor, session, userBadges, deleteOwnPost, refreshFeed } = useStore();
+  // The server lists converting clips only to the author; check the id too so
+  // a cached card can never show it to someone else on a shared device.
+  const convertingClips = Array.isArray(log.convertingMedia) && session?.id && log.userId === session.id
+    ? log.convertingMedia : [];
+  const convertingNotice = convertingClips.length > 0
+    ? <ConvertingClipNotice clips={convertingClips} onReady={() => { void refreshFeed?.(); }} />
+    : null;
   const pressLike = (event) => {
     event?.stopPropagation?.();
     event?.nativeEvent?.stopPropagation?.();
@@ -426,6 +434,7 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
         {statusMedia.length > 0 && (
           <PostMediaGrid media={statusMedia} viewable={mediaViewable} openerScope={log.id} onOpen={onOpenPhotos ? (i, opener) => onOpenPhotos(postMedia, postMedia.indexOf(statusMedia[i]), log.id, opener) : undefined} />
         )}
+        {convertingNotice}
 
         <RecommendationWhy recommendation={recommendation} expanded={whyOpen} onToggle={() => setWhyOpen((current) => !current)} palette={campaignTreatment} />
 
@@ -614,6 +623,7 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
       {postMedia.length > 0 && (
         <PostMediaGrid media={postMedia} viewable={mediaViewable} openerScope={log.id} onOpen={onOpenPhotos ? (i, opener) => onOpenPhotos(postMedia, i, log.id, opener) : undefined} />
       )}
+      {convertingNotice}
 
       {!isOnlineReview && (
         <>

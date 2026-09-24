@@ -841,9 +841,15 @@ test("public video capability requires exact private-derivative negotiation plus
         ip: "video-route-cached-client-poll",
         params: { id: cachedDraft.id },
       }),
-      (value) => value.finalize.state === "failed",
+      (value) => Number.isSafeInteger(value.finalize.retryAt),
     );
-    assert.equal(cachedFailed.finalize.error.retryable, true);
+    assert.equal(cachedFailed.finalize.state, "processing",
+      "a temporary failure is retried automatically, so the clip is still on its way");
+    assert.ok(cachedFailed.finalize.retryAt > Date.now(), "the next automatic attempt is scheduled");
+    const durableRetry = db.prepare("SELECT state,attempts,last_error_code,last_error_status FROM media_processing_jobs WHERE asset_id=?")
+      .get(cachedDraft.id);
+    assert.deepEqual({ ...durableRetry }, { state: "retry", attempts: 1, last_error_code: "MEDIA_STORAGE_UNAVAILABLE", last_error_status: 503 },
+      "the conversion is written down so a restart or the retry scheduler picks it up");
     assert.equal(cachedFailed.asset.status, "upload_pending",
       "a transient worker/storage failure does not cancel cached-client source bytes");
     const observedBackgroundFailure = db.prepare(`SELECT fingerprint,code,status,method,route,cause,count,last_request_id FROM error_events
@@ -863,7 +869,7 @@ test("public video capability requires exact private-derivative negotiation plus
     assert.match(backgroundDetail.reason, /MediaStorageRequest \[head_http_503\]/u);
     for (const secretText of ["private-provider-body", "background-secret", "member@example.com", "objects.example.com", "health-secret"])
       assert.equal(JSON.stringify(backgroundDetail).includes(secretText), false, `private diagnostic leaked ${secretText}`);
-    assert.deepEqual(Object.keys(cachedFailed.finalize.error).sort(), ["code", "message", "retryable", "status"]);
+    assert.deepEqual(Object.keys(cachedFailed.finalize).sort(), ["attempts", "retryAt", "state"]);
     for (const privateText of ["head_http_503", "mediaAssets.js", initialFinalizeRequestId, joiningFinalizeRequestId,
       "private-provider-body", "background-secret", "member@example.com"])
       assert.equal(JSON.stringify(cachedFailed.finalize).includes(privateText), false, `public polling leaked ${privateText}`);

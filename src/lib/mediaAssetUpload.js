@@ -41,6 +41,8 @@ export async function uploadOriginalMediaAsset({
   onStage,
   onProgress,
   onRemoteDraft,
+  // Post a clip while it converts: return as soon as the server has it.
+  postWhileConverting = false,
 } = {}, services = {}) {
   if (typeof expectedAccountId !== "string" || !expectedAccountId.trim()) {
     throw mediaPipelineError("MEDIA_ACCOUNT_REQUIRED", "An account identity is required to upload media.");
@@ -98,6 +100,7 @@ export async function uploadOriginalMediaAsset({
         onStage,
         onRemoteDraft,
         recovery: services.recovery,
+        returnWhenProcessing: postWhileConverting && kind === "video",
       });
     } catch (error) {
       abortIfNeeded();
@@ -182,7 +185,29 @@ export async function uploadOriginalMediaAsset({
       signal,
       body: sourceFinalizeBody,
       onStage,
+      returnWhenProcessing: postWhileConverting && kind === "video",
     });
+  }
+
+  if (postWhileConverting && result?.asset?.id === assetId && (result.asset.kind || kind) === "video"
+      && result.asset.status !== "ready" && result.finalize?.state === "processing") {
+    // The server has the original and is converting it; the clip goes out with
+    // the post and appears there once it is ready. Keep the local preview only.
+    onStage?.("ready");
+    return {
+      ...asset,
+      kind: "video",
+      assetId,
+      runtimeFile: null,
+      file: null,
+      durableLocalUri: null,
+      draftManaged: false,
+      sourceUrl: null,
+      mimeType: result.asset.mimeType || asset.mimeType,
+      status: "processing",
+      progress: 1,
+      errorCode: null,
+    };
   }
 
   // Finalization already persisted the normalized original recipe and alt text

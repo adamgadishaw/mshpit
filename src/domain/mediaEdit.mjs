@@ -1,3 +1,4 @@
+import { isVideoFileName } from "./mediaMime.mjs";
 import {
   MEDIA_PHOTO_SOURCE_MAX_BYTES,
   MEDIA_VIDEO_MAX_DURATION_MS,
@@ -306,7 +307,7 @@ export function mediaDraftAssetFromPicker(asset = {}, index = 0) {
   // available picker signal identifies it, then let byte sniffing and the
   // server verifier make the authoritative format decision during upload.
   const kind = asset.type === "video" || asset.type === "pairedVideo"
-    || declaredMime.startsWith("video/") || /\.(?:mp4|mov|m4v|webm)$/i.test(sourceName)
+    || declaredMime.startsWith("video/") || isVideoFileName(sourceName)
     || (Number.isFinite(declaredDuration) && declaredDuration > 0)
     ? "video"
     : "image";

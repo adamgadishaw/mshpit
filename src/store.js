@@ -349,6 +349,7 @@ const sameServerPost = (a, b) => !!a && !!b
   && JSON.stringify(a.commentPreview || null) === JSON.stringify(b.commentPreview || null)
   && JSON.stringify(a.user || null) === JSON.stringify(b.user || null)
   && JSON.stringify(a.taggedPeople || []) === JSON.stringify(b.taggedPeople || [])
+  && JSON.stringify(a.convertingMedia || []) === JSON.stringify(b.convertingMedia || [])
   && sameMediaDisplayItems(a, b);
 
 const demoUsers = [

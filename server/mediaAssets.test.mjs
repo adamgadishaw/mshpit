@@ -49,6 +49,8 @@ const {
 } = await import("./mediaDeletion.js");
 const { inspectImageBytes } = await import("./imageInspection.js");
 const { startVideoFinalizeJob, videoFinalizeState } = await import("./videoFinalizeJobs.js");
+const { recordVideoProcessingRequest, noteVideoProcessingOutcome } = await import("./videoProcessingQueue.js");
+const { ApiError } = await import("./errors.js");
 
 after(() => {
   db.close();
@@ -3129,4 +3131,124 @@ test("a converter with universal admission takes a WebM without the MP4 pre-chec
     authoritativeVideoVerifier: async () => { throw new Error("must not decode"); },
     authoritativePosterRequired: true,
   }), (error) => error.status === 415, "a converter without universal admission keeps the MP4/MOV rule");
+});
+
+test("a clip still converting can be posted, stays hidden until ready, then joins its post", async () => {
+  let user = addUser("u_post_while_converting");
+  db.prepare("UPDATE users SET email_verified_at=? WHERE id=?").run(Date.now(), user.id);
+  user = q.userById.get(user.id);
+  const viewer = addUser("u_post_while_converting_viewer");
+  const created = createMediaAsset(db, {
+    ownerId: user.id,
+    body: sourceBody({ clientAssetId: "converting-clip-source", contentType: "video/webm", fileSize: 2_000_000, name: "clip.webm" }),
+    assetId: "ma_converting_clip_source_1",
+  });
+  const postBody = { kind: "status", review: "", mediaAssetIds: [created.asset.id], clientMutationId: "post-while-converting-0001" };
+  assert.throws(() => routes["POST /api/posts"]({ user, ip: "converting-post-early", body: postBody }),
+    (error) => error.status === 409 && /Finish every media upload/.test(error.message),
+    "a clip whose conversion was never started cannot be posted");
+
+  recordVideoProcessingRequest(db, {
+    ownerId: user.id,
+    assetId: created.asset.id,
+    body: { editRecipe: { kind: "video", coverMs: 0 } },
+    fingerprint: "e".repeat(64),
+  });
+  const posted = routes["POST /api/posts"]({ user, ip: "converting-post", body: postBody });
+  assert.deepEqual(posted.post.photos, [], "nothing public exists until the clip is converted");
+  assert.deepEqual(posted.post.media, []);
+  assert.deepEqual(posted.post.convertingMedia, [{ id: created.asset.id, kind: "video", state: "processing" }],
+    "the author sees the clip is on its way");
+  assert.equal(db.prepare("SELECT status FROM media_objects WHERE object_key=?").get(created.upload.key).status, "associated",
+    "the posted original is bound to the post, so orphan cleanup never takes it");
+  const publicRead = () => routes["GET /api/posts/:id"]({ user: viewer, ip: "converting-post-viewer", params: { id: posted.id }, query: {} }).post;
+  assert.deepEqual(publicRead().media, []);
+  assert.equal(Object.hasOwn(publicRead(), "convertingMedia"), false, "only the author sees conversion state");
+
+  const { updated_at: updatedAt, created_at: createdAt } = db.prepare("SELECT updated_at,created_at FROM posts WHERE id=?").get(posted.id);
+  const version = updatedAt || createdAt;
+  routes["PATCH /api/posts/:id"]({
+    user,
+    ip: "converting-post-edit",
+    params: { id: posted.id },
+    body: { review: "Added a caption while it converts", mediaAssetIds: [], photos: [], version },
+  });
+  assert.deepEqual(db.prepare("SELECT asset_id FROM post_media WHERE post_id=?").all(posted.id).map((row) => row.asset_id),
+    [created.asset.id], "an edit from a screen that cannot see the clip never detaches it");
+
+  const storage = verifiedMp4WithPoster(2_000_000, 12_000);
+  const fetchImpl = async (url, request = {}) => {
+    if (new URL(url).pathname.endsWith(".webm")) {
+      return { status: 200, headers: new Headers({ "content-length": "2000000", "content-type": "video/webm", etag: '"converting-webm"' }) };
+    }
+    return storage(url, request);
+  };
+  const finalized = await finalizeMediaAsset(db, {
+    ownerId: user.id,
+    assetId: created.asset.id,
+    body: { editRecipe: { kind: "video", coverMs: 0 } },
+    fetchImpl,
+    universalVideoAdmission: true,
+    authoritativeVideoVerifier: async (input) => authoritativeFixtureDecodeWithPoster({
+      structural: { width: 1_080, height: 1_920, durationMs: 12_000 },
+      posterTimeMs: 0,
+      output: input.output,
+    }),
+    authoritativePosterRequired: true,
+  });
+  noteVideoProcessingOutcome(db, { assetId: created.asset.id });
+  assert.equal(finalized.asset.status, "ready");
+  assert.deepEqual(JSON.parse(db.prepare("SELECT photos FROM posts WHERE id=?").get(posted.id).photos), [finalized.asset.url],
+    "the finished clip joins the post's media list");
+  const after = publicRead();
+  assert.equal(after.media.length, 1);
+  assert.equal(after.media[0].url, finalized.asset.url);
+  assert.ok(after.media[0].posterUrl, "it arrives with its cover");
+  const ownerAfter = routes["GET /api/posts/:id"]({ user, ip: "converting-post-owner", params: { id: posted.id }, query: {} }).post;
+  assert.equal(Object.hasOwn(ownerAfter, "convertingMedia"), false);
+  for (const variant of db.prepare("SELECT object_key FROM media_variants WHERE asset_id=? AND status='verified'").all(created.asset.id)) {
+    assert.equal(db.prepare("SELECT status FROM media_objects WHERE object_key=?").get(variant.object_key).status, "associated",
+      "the converted copy and cover are bound to the post too");
+  }
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM media_processing_jobs WHERE asset_id=?").get(created.asset.id).count, 0);
+});
+
+test("a posted clip the converter cannot read stays on the post and its author is told", () => {
+  let user = addUser("u_post_convert_failed");
+  db.prepare("UPDATE users SET email_verified_at=? WHERE id=?").run(Date.now(), user.id);
+  user = q.userById.get(user.id);
+  const created = createMediaAsset(db, {
+    ownerId: user.id,
+    body: sourceBody({ clientAssetId: "failed-clip-source", contentType: "video/x-msvideo", fileSize: 2_000_000, name: "old.avi" }),
+    assetId: "ma_failed_clip_source_0001",
+  });
+  recordVideoProcessingRequest(db, { ownerId: user.id, assetId: created.asset.id, body: {}, fingerprint: "f".repeat(64) });
+  const posted = routes["POST /api/posts"]({
+    user,
+    ip: "failed-clip-post",
+    body: { kind: "status", review: "Old camcorder tape", mediaAssetIds: [created.asset.id], clientMutationId: "post-failed-clip-0001" },
+  });
+  db.prepare("UPDATE media_processing_jobs SET attempts=1 WHERE asset_id=?").run(created.asset.id);
+  const outcome = noteVideoProcessingOutcome(db, {
+    assetId: created.asset.id,
+    error: new ApiError(415, "That clip could not pass authoritative decoding.", "MEDIA_TYPE_UNSUPPORTED"),
+  });
+  assert.equal(outcome.state, "failed");
+  const ownerView = routes["GET /api/posts/:id"]({ user, ip: "failed-clip-owner", params: { id: posted.id }, query: {} }).post;
+  assert.deepEqual(ownerView.convertingMedia, [{ id: created.asset.id, kind: "video", state: "failed" }]);
+  assert.equal(ownerView.review, "Old camcorder tape", "the post itself is untouched");
+  const polled = routes["GET /api/media/assets/:id"]({ user, ip: "failed-clip-poll", params: { id: created.asset.id } });
+  assert.equal(polled.finalize.state, "failed");
+  assert.equal(polled.finalize.error.retryable, false);
+  assert.match(polled.finalize.error.message, /couldn't be converted/);
+  assert.ok(db.prepare("SELECT 1 FROM media_assets WHERE id=?").get(created.asset.id), "the original is kept, never deleted");
+  assert.throws(() => routes["POST /api/media/assets/:id/processing/retry"]({ user, ip: "failed-clip-retry", params: { id: created.asset.id } }),
+    (error) => error.status === 503 && error.code === "MEDIA_STORAGE_UNAVAILABLE",
+    "asking again without a converter says so instead of pretending to start");
+  assert.equal(db.prepare("SELECT state FROM media_processing_jobs WHERE asset_id=?").get(created.asset.id).state, "failed");
+  const stranger = addUser("u_post_convert_failed_stranger");
+  db.prepare("UPDATE users SET email_verified_at=? WHERE id=?").run(Date.now(), stranger.id);
+  assert.throws(() => routes["POST /api/media/assets/:id/processing/retry"]({
+    user: q.userById.get(stranger.id), ip: "failed-clip-retry-stranger", params: { id: created.asset.id },
+  }), (error) => error.status === 404, "nobody else can restart someone's clip");
 });

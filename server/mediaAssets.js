@@ -562,7 +562,10 @@ function createAuthoritativePosterVariant(database, {
   return withWrite(database, () => {
     const asset = database.prepare("SELECT * FROM media_assets WHERE id=? AND owner_id=?").get(assetId, ownerId);
     if (!asset) throw new ApiError(404, "That media item was not found.", "NOT_FOUND");
-    if (asset.kind !== "video" || database.prepare("SELECT 1 FROM post_media WHERE asset_id=?").get(asset.id)) {
+    // A published clip's cover never changes. A clip posted while it was still
+    // converting has no cover yet, so its first one is made here as usual.
+    if (asset.kind !== "video" || (asset.status === "ready"
+        && database.prepare("SELECT 1 FROM post_media WHERE asset_id=?").get(asset.id))) {
       throw new ApiError(409, "That clip cover can no longer be generated.", "CONFLICT");
     }
     touchLiveLedger(database, ownerId, asset.source_key, at);
@@ -1924,6 +1927,7 @@ export async function finalizeMediaAsset(database, {
       });
       database.prepare("UPDATE media_assets SET source_etag=? WHERE id=? AND owner_id=?")
         .run(stored.etag, row.id, ownerId);
+      if (row.kind === "video") syncConvertedClipIntoPost(database, { assetId: row.id, ownerId, at });
       return { asset: assetProjection(loadAsset(database, row.id), { owner: true }), duplicate: true };
     }
     if (!current || current.status !== "upload_pending") throw new ApiError(409, "That media item changed while it was finalizing.", "CONFLICT");
@@ -1957,6 +1961,7 @@ export async function finalizeMediaAsset(database, {
     });
     database.prepare("UPDATE media_assets SET source_etag=? WHERE id=? AND owner_id=?")
       .run(stored.etag, row.id, ownerId);
+    if (row.kind === "video") syncConvertedClipIntoPost(database, { assetId: row.id, ownerId, at });
     return { asset: assetProjection(loadAsset(database, row.id), { owner: true }), duplicate: false };
   });
 }
@@ -2996,12 +3001,30 @@ export function cleanMediaAssetIds(value, { optional = true } = {}) {
   return ids;
 }
 
+// A clip whose original is uploaded and whose conversion is queued or running
+// can go out with its post. It stays hidden until the converter finishes, then
+// joins the post in the slot it was posted in (see syncConvertedClipIntoPost).
+// A clip already attached to this same post stays attached whatever its state,
+// so editing the post never drops a clip that is still converting.
+function convertingClipSelectable(database, row, ownerId, currentPostId) {
+  if (!row || row.owner_id !== ownerId || row.purpose !== "post" || row.kind !== "video"
+      || row.status !== "upload_pending" || !isLiveLedgerStatus(row.source_ledger_status)) return false;
+  const link = database.prepare("SELECT post_id FROM post_media WHERE asset_id=?").get(row.id);
+  if (link) return !!currentPostId && link.post_id === currentPostId;
+  const job = database.prepare("SELECT state FROM media_processing_jobs WHERE asset_id=? AND owner_id=?").get(row.id, ownerId);
+  return !!job && job.state !== "failed";
+}
+
 export function mediaSelection(database, { ownerId, assetIds, currentPostId = null } = {}) {
   const ids = cleanMediaAssetIds(assetIds, { optional: false });
   const rows = [];
   for (const id of ids) {
     const row = loadAsset(database, id);
     const url = publishUrl(row);
+    if (convertingClipSelectable(database, row, ownerId, currentPostId)) {
+      rows.push({ row, url: null, converting: true });
+      continue;
+    }
     if (!row || row.owner_id !== ownerId || row.purpose !== "post" || row.status !== "ready" || !url) {
       throw new ApiError(409, "Finish every media upload before publishing.", "CONFLICT");
     }
@@ -3033,7 +3056,51 @@ export function mediaSelection(database, { ownerId, assetIds, currentPostId = nu
   // must not extend an unattached draft's cleanup lease. attachPostMedia reloads
   // the same rows under the post writer transaction and associates every object
   // only when the post itself can commit.
-  return { ids, rows, photos: rows.map((entry) => entry.url) };
+  return { ids, rows, photos: rows.filter((entry) => entry.url).map((entry) => entry.url) };
+}
+
+// Linked clips that have not finished converting, in post order.
+export function convertingPostMediaAssetIds(database, postId) {
+  return database.prepare(`SELECT pm.asset_id FROM post_media pm JOIN media_assets a ON a.id=pm.asset_id
+    WHERE pm.post_id=? AND a.kind='video' AND a.status!='ready' ORDER BY pm.position`)
+    .all(postId).map((row) => row.asset_id);
+}
+
+export function mediaAssetAttached(database, assetId) {
+  return !!database.prepare("SELECT 1 FROM post_media WHERE asset_id=?").get(assetId);
+}
+
+function storedUrlList(value) {
+  try {
+    const parsed = JSON.parse(value || "[]");
+    return Array.isArray(parsed) ? parsed.filter((item) => typeof item === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+// A clip posted while it was converting joins its post in the same write that
+// makes it ready: its new objects are bound to the post, so orphan cleanup can
+// never collect them, and the post's URL list gains the clip in the position it
+// was posted in. Old URL-only entries are kept and the clip is added after them.
+function syncConvertedClipIntoPost(database, { assetId, ownerId, at }) {
+  const link = database.prepare("SELECT post_id FROM post_media WHERE asset_id=?").get(assetId);
+  if (!link) return false;
+  for (const variant of database.prepare("SELECT object_key FROM media_variants WHERE asset_id=? AND status='verified'").all(assetId)) {
+    markObjectAssociated(database, ownerId, variant.object_key, at);
+  }
+  const post = database.prepare("SELECT photos,removed FROM posts WHERE id=?").get(link.post_id);
+  if (!post || post.removed) return false;
+  const stable = database.prepare("SELECT asset_id FROM post_media WHERE post_id=? ORDER BY position").all(link.post_id)
+    .map((entry) => publishUrl(loadAsset(database, entry.asset_id))).filter(Boolean);
+  const stored = storedUrlList(post.photos);
+  const stableUrls = new Set(stable);
+  const next = stored.every((url) => stableUrls.has(url))
+    ? stable
+    : [...stored, ...stable.filter((url) => !stored.includes(url))];
+  if (JSON.stringify(next) === JSON.stringify(stored)) return false;
+  database.prepare("UPDATE posts SET photos=? WHERE id=?").run(JSON.stringify(next), link.post_id);
+  return true;
 }
 
 export function attachPostMedia(database, { postId, ownerId, selection, at = Date.now() } = {}) {
@@ -3090,6 +3157,17 @@ export function postMediaAssetIds(database, postId) {
     .all(postId).map((row) => row.asset_id);
 }
 
+// Only the author sees that a clip on their post is still converting (or could
+// not be converted). Everyone else sees the post without it until it is ready.
+function convertingClipsForOwner(database, rows, ownerId) {
+  const pending = rows.filter((row) => ownerId && row.owner_id === ownerId && row.kind === "video" && row.status !== "ready");
+  if (!pending.length) return [];
+  const jobs = new Map(database.prepare(`SELECT asset_id,state FROM media_processing_jobs
+    WHERE asset_id IN (${pending.map(() => "?").join(",")})`).all(...pending.map((row) => row.id))
+    .map((job) => [job.asset_id, job.state]));
+  return pending.map((row) => ({ id: row.id, kind: "video", state: jobs.get(row.id) === "failed" || !jobs.has(row.id) ? "failed" : "processing" }));
+}
+
 export function postMediaState(database, postId, { ownerId = null } = {}) {
   const rows = postMediaRows(database, postId);
   return {
@@ -3097,6 +3175,7 @@ export function postMediaState(database, postId, { ownerId = null } = {}) {
     assets: rows
       .map((row) => assetProjection(row, { owner: ownerId === row.owner_id }))
       .filter((asset) => asset.status === "ready" && asset.url),
+    converting: convertingClipsForOwner(database, rows, ownerId),
   };
 }
 
@@ -3107,15 +3186,26 @@ export function postMediaProjection(database, postId, options = {}) {
 export function postMediaStateByPost(database, postIds, { ownerId = null } = {}) {
   const assetsByPost = new Map();
   const linkedPostIds = new Set();
+  const convertingRows = [];
   for (const row of postMediaRowsForPosts(database, postIds)) {
     linkedPostIds.add(row.post_id);
     const asset = assetProjection(row, { owner: ownerId === row.owner_id });
-    if (asset.status !== "ready" || !asset.url) continue;
+    if (asset.status !== "ready" || !asset.url) {
+      if (ownerId && row.owner_id === ownerId && row.kind === "video" && row.status !== "ready") convertingRows.push(row);
+      continue;
+    }
     const list = assetsByPost.get(row.post_id) || [];
     list.push(asset);
     assetsByPost.set(row.post_id, list);
   }
-  return { assetsByPost, linkedPostIds };
+  const convertingByPost = new Map();
+  const converting = convertingClipsForOwner(database, convertingRows, ownerId);
+  convertingRows.forEach((row, index) => {
+    const list = convertingByPost.get(row.post_id) || [];
+    list.push(converting[index]);
+    convertingByPost.set(row.post_id, list);
+  });
+  return { assetsByPost, linkedPostIds, convertingByPost };
 }
 
 export function postMediaProjectionByPost(database, postIds, options = {}) {

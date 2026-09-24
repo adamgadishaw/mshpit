@@ -124,7 +124,7 @@ function composerPickerFixture(platform = "ios") {
   const run = compileComposerPicker({
     accountTasks, user: { id: "a" }, pickerOperationRef, uploadOperationRef: { current: null }, uploadingPhotos: false, posting: false,
     refreshMediaPublishingCapabilities: () => {}, mediaProjectRequiresLegacyUpload: () => false, mediaProject: {},
-    photos: [], pendingMediaAssets: [], MEDIA_POST_MAX_ATTACHMENTS: 8, composerId: null, Platform: { OS: platform },
+    photos: [], pendingMediaAssets: [], mediaProjectConvertingAssets: () => [], mediaProjectRef: { current: { assets: [] } }, MEDIA_POST_MAX_ATTACHMENTS: 8, composerId: null, Platform: { OS: platform },
     ImagePicker: { requestMediaLibraryPermissionsAsync: () => permission.promise,
       VideoExportPreset: { Passthrough: 0 }, UIImagePickerPreferredAssetRepresentationMode: { Current: 1 } },
     launchComposerMediaLibrary: (_options, { signal }) => { events.push("picker"); pickerSignals.push(signal); return picker.promise; },
@@ -257,7 +257,7 @@ function submitFixture({ photosPublic = false } = {}) {
     submitOperationRef: { current: false },
     persistDraftSnapshot: () => events.push("checkpoint"), normalizeComposerDraft: (value) => value,
     currentDraft: { id: "draft-a" }, submissionIdRef: { current: "post-a" }, photos: [],
-    isDurableMediaUrl: () => true, mediaAssetIdsMatchingPhotos: () => [], mediaProject: { assets: [] },
+    isDurableMediaUrl: () => true, mediaProjectSubmissionAssetIds: () => [], mediaProject: { assets: [] },
     mediaProjectPublishedMedia, isStatus: true, isMemorialMemory: false, protectedLegacyMemory: false,
     editing: null, review: "A private draft", memoryTextOnly: false, song: null, isCampaign: false,
     artistMediaConsent: { photosPublic },

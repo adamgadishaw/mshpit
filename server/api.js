@@ -62,12 +62,14 @@ import {
   attachPostMedia,
   cleanMediaAssetIds,
   cancelMediaAsset,
+  convertingPostMediaAssetIds,
   createMediaAsset,
   createMediaVariant,
   deleteMediaAssets,
   finalizeMediaAsset,
   finalizeMediaVariant,
   isTerminalMediaSourceFailure,
+  mediaAssetAttached,
   mediaSelection,
   ownedMediaAsset,
   postMediaAssetIds,
@@ -164,9 +166,18 @@ import { VIDEO_VERIFIER_PIPELINE_VERSION } from "./videoVerifierProtocol.js";
 import {
   cancelVideoFinalizeJob,
   startVideoFinalizeJob,
+  videoFinalizeJobActive,
   videoFinalizeState,
   waitForVideoFinalizeCompletion,
 } from "./videoFinalizeJobs.js";
+import {
+  noteVideoProcessingAttemptStarted,
+  noteVideoProcessingOutcome,
+  postponeVideoProcessing,
+  recordVideoProcessingRequest,
+  startVideoProcessingScheduler,
+  videoProcessingState,
+} from "./videoProcessingQueue.js";
 import { discoverChart, discoverCountries, discoverGenres, discoverOverview } from "./discoverService.js";
 import { discoverPhotoRoutes } from "./features/discoverPhotos/discoverPhotoRoutes.js";
 import {
@@ -2394,7 +2405,7 @@ function canonicalCreateRequest(user, body, storedPost = null) {
         assertLegacyArtistContentWrite({
           artistKey: binding?.artist_key,
           artist: v.artist,
-          addsMedia: (stableMedia ? stableMedia.photos : (v.photos || [])).length > 0,
+          addsMedia: (stableMedia ? stableMedia.ids : (v.photos || [])).length > 0,
           addsSong: !!v.song,
           addsPlaylist: source.playlistId != null && source.playlistId !== "",
           publishesMedia: !!v.photosPublic,
@@ -2444,7 +2455,7 @@ function canonicalCreateRequest(user, body, storedPost = null) {
       "tagged song title": values.song?.title,
       "tagged song artist": values.song?.artist,
     });
-    if (!values.review && !values.photos.length && !values.song && !playlist) {
+    if (!values.review && !values.photos.length && !stableMedia?.ids?.length && !values.song && !playlist) {
       throw new ApiError(400, "Write something, add media, tag a song, or share a playlist to post.", "VALIDATION_FAILED");
     }
     return {
@@ -2968,6 +2979,10 @@ function postJson(p, viewerId) {
     // Release-only legacy descriptors are presentation metadata, not stable
     // composer assets and must never be sent back through mediaAssetIds.
     mediaAssetIds: stableMedia.assets.map((asset) => asset.id),
+    // Only the author's own view lists clips still converting on this post.
+    ...(viewerId && viewerId === p.user_id && stableMedia.converting?.length
+      ? { convertingMedia: stableMedia.converting.map((item) => ({ id: item.id, kind: item.kind, state: item.state })) }
+      : {}),
     // Separate homepage consent is owner-only account state, not social proof.
     ...(viewerId === p.user_id ? { landingShowcase: online.experienceType === "online" ? false : !!p.landing_showcase } : {}),
     setlist: online.experienceType === "online" ? [] : parseJsonArray(p.setlist),
@@ -3639,6 +3654,160 @@ function requireVideoPublishingActor(user) {
   throw new ApiError(403, "Confirm your email before uploading a video.", "MEDIA_EMAIL_VERIFICATION_REQUIRED");
 }
 
+// A converter that is busy with another clip, or that missed one health check,
+// still takes the formats it last reported. Only a real configuration gap or an
+// unknown format refuses a clip here; a converter outage is ridden out by the
+// durable retries below instead of failing the member's upload.
+function videoFinalizeAcceptsSourceType(contentType) {
+  const type = String(contentType || "").toLowerCase();
+  if (runtimeAcceptsVideoSourceType(runtimeMediaPublishingCapabilities(), type)) return true;
+  const production = process.env.NODE_ENV === "production";
+  const verifier = videoVerifierRuntimeStatus(process.env);
+  return mediaPublishingCapabilitiesForRuntime(process.env).videos === true
+    && mediaConfigured(process.env)
+    && privateVideoMediaConfigured(process.env)
+    && (!production || privateMediaIsolationStatus(process.env).ready)
+    && verifier.configured
+    && [...verifier.sourceTypes, ...verifier.universalSourceTypes].includes(type);
+}
+
+function videoConverterTakesAnyFormat(contentType) {
+  return videoVerifierRuntimeStatus(process.env).universalSourceTypes
+    .includes(String(contentType || "").toLowerCase());
+}
+
+// Starts (or joins) one clip conversion and writes it down so it survives a
+// restart. `member` is set when the owner's own request starts it; automatic
+// retries run without a session and without spending the owner's allowance.
+function startDurableVideoFinalize({ ownerId, assetId, contentType, body, fingerprint, member = null }) {
+  const started = startVideoFinalizeJob({
+    ownerId,
+    assetId,
+    fingerprint,
+    at: now(),
+    run: async ({ signal: jobSignal }) => {
+      noteVideoProcessingAttemptStarted(db, { assetId, at: now() });
+      try {
+        return await finalizeMediaAsset(db, {
+          ownerId,
+          assetId,
+          body,
+          at: now(),
+          authoritativeVideoVerifier: verifyVideoObject,
+          authoritativePosterRequired: true,
+          universalVideoAdmission: videoConverterTakesAnyFormat(contentType),
+          assertAuthorized: member?.assertAuthorized,
+          beforeAuthoritativeVerify: member
+            ? () => {
+                member.assertAuthorized?.();
+                return reserveVideoPublishingDemand({ ip: member.ip }, { id: ownerId }, "verify");
+              }
+            : undefined,
+          // Deliberately no caller signal: a browser disconnect or proxy
+          // timeout must not cancel the shared process-local job. The job's
+          // own signal is cancelled only when this owner deletes the draft.
+          signal: jobSignal,
+        });
+      } catch (error) {
+        // Owner cancellation is lifecycle control, not a production fault.
+        // Do not create an error event or attempt terminal cleanup after
+        // the DELETE route has already retired this exact draft.
+        if (jobSignal.aborted) throw jobSignal.reason || error;
+        observeBackgroundVideoFinalizeFailure(error, member?.requestId || null);
+        // An unposted draft the converter cannot read is retired. A clip that
+        // is already on a post is kept, and its owner sees it could not be
+        // converted instead of the post silently losing it.
+        if (isTerminalMediaSourceFailure(error) && !mediaAssetAttached(db, assetId)) {
+          cancelMediaAsset(db, { ownerId, assetId, at: now() });
+        }
+        throw error;
+      }
+    },
+  });
+  if (!started.joined) {
+    recordVideoProcessingRequest(db, { ownerId, assetId, body, fingerprint, at: now() });
+    started.completion.then(
+      () => noteVideoProcessingOutcome(db, { assetId, at: now() }),
+      (error) => {
+        const outcome = noteVideoProcessingOutcome(db, { assetId, error, at: now() });
+        if (outcome.state === "retry") {
+          console.log(`[media] clip conversion will retry automatically: attempt=${outcome.attempts} code=${error?.code || "error"}`);
+        } else if (outcome.state === "failed") {
+          console.error(`[media] clip conversion stopped after ${outcome.attempts ?? "?"} attempt(s): code=${error?.code || "error"} status=${error?.status || 500}`);
+        }
+      },
+    ).catch((error) => {
+      console.error(`[media] clip conversion bookkeeping failed safely: ${privateErrorLabel(error)}`);
+    });
+  }
+  return started;
+}
+
+function resumeVideoProcessing(job) {
+  const asset = db.prepare("SELECT mime_type,status,kind FROM media_assets WHERE id=? AND owner_id=?").get(job.asset_id, job.owner_id);
+  if (!asset || asset.kind !== "video") return;
+  if (!videoVerifierRuntimeStatus(process.env).ready) {
+    // Wait for the converter to answer its health check before spending an
+    // attempt; a redeploying converter is not the clip's fault.
+    postponeVideoProcessing(db, { assetId: job.asset_id, at: now() });
+    return;
+  }
+  let body;
+  try { body = JSON.parse(job.body); }
+  catch { body = {}; }
+  startDurableVideoFinalize({
+    ownerId: job.owner_id,
+    assetId: job.asset_id,
+    contentType: asset.mime_type,
+    body,
+    fingerprint: job.fingerprint,
+  });
+}
+
+// Tries a clip conversion again after it stopped. The owner's original request
+// is reused, so nothing needs to be uploaded again. mediaAssetRoutes registers
+// it as POST /api/media/assets/:id/processing/retry.
+function retryVideoProcessingForOwner(ctx) {
+  const u = requireUser(ctx);
+  requireVideoPublishingActor(u);
+  const row = db.prepare("SELECT kind,status,mime_type FROM media_assets WHERE id=? AND owner_id=?").get(ctx.params.id, u.id);
+  if (!row) throw new ApiError(404, "That media item was not found.", "NOT_FOUND");
+  if (row.kind !== "video" || row.status === "ready") {
+    return { asset: ownedMediaAsset(db, { ownerId: u.id, assetId: ctx.params.id, at: now() }), finalize: { state: "completed" } };
+  }
+  const job = db.prepare("SELECT body,fingerprint FROM media_processing_jobs WHERE asset_id=? AND owner_id=?").get(ctx.params.id, u.id);
+  if (!job) throw new ApiError(409, "Add that clip again to convert it.", "CONFLICT");
+  if (!videoFinalizeAcceptsSourceType(row.mime_type)) {
+    throw new ApiError(503, "Clip verification is temporarily unavailable. Try again later.", "MEDIA_STORAGE_UNAVAILABLE");
+  }
+  let body;
+  try { body = JSON.parse(job.body); }
+  catch { body = {}; }
+  const started = startDurableVideoFinalize({
+    ownerId: u.id,
+    assetId: ctx.params.id,
+    contentType: row.mime_type,
+    body,
+    fingerprint: job.fingerprint,
+    member: {
+      ip: String(ctx.ip || "unknown"),
+      requestId: typeof ctx.requestId === "string" ? ctx.requestId : null,
+      assertAuthorized: ctx.assertCurrentSession,
+    },
+  });
+  return { asset: ownedMediaAsset(db, { ownerId: u.id, assetId: ctx.params.id, at: now() }), finalize: started.finalize };
+}
+
+export function startVideoProcessingRetries() {
+  if (!videoVerifierRuntimeStatus(process.env).configured) return null;
+  return startVideoProcessingScheduler({
+    database: db,
+    resume: resumeVideoProcessing,
+    isBusy: videoFinalizeJobActive,
+    now,
+  });
+}
+
 function artistProfileSlotOwner(profile, slot) {
   if (!profile || (slot !== "avatar" && slot !== "banner")) return null;
   return profile[`${slot}_owner_id`] || profile.owner_id || null;
@@ -4258,7 +4427,8 @@ export const routes = {
     requireUser,
     reserveVolume: rateLimit,
   }),
-  ...mediaAssetRoutes({ database: db, requireUser, now, cancelFinalizeJob: cancelVideoFinalizeJob }),
+  ...mediaAssetRoutes({ database: db, requireUser, now, cancelFinalizeJob: cancelVideoFinalizeJob,
+    retryVideoProcessing: retryVideoProcessingForOwner }),
   ...mediaLegacyFinalizeRoutes({ database: db, requireUser, requireVerifiedMediaPublisher, now }),
   ...artistArchiveRoutes({
     database: db,
@@ -4565,10 +4735,9 @@ export const routes = {
       .get(ctx.params.id, u.id);
     if (!owned) throw new ApiError(404, "That media item was not found.", "NOT_FOUND");
     const video = owned?.kind === "video";
-    const capabilities = video ? runtimeMediaPublishingCapabilities() : null;
     if (video) {
       requireVideoPublishingActor(u);
-      if (!runtimeAcceptsVideoSourceType(capabilities, owned.mime_type)) {
+      if (!videoFinalizeAcceptsSourceType(owned.mime_type)) {
         throw new ApiError(503, "Clip verification is temporarily unavailable. Try again later.", "MEDIA_STORAGE_UNAVAILABLE");
       }
     }
@@ -4616,47 +4785,16 @@ export const routes = {
         await waitForPrivateMediaIsolationReady({ env: process.env, signal: ctx.signal });
         ctx.assertCurrentSession?.();
       }
-      const ownerId = u.id;
-      const assetId = ctx.params.id;
-      const requestIp = String(ctx.ip || "unknown");
-      const requestId = typeof ctx.requestId === "string" ? ctx.requestId : null;
-      const operationFingerprint = videoFinalizeOperationFingerprint(finalizeBody);
-      const started = startVideoFinalizeJob({
-        ownerId,
-        assetId,
-        fingerprint: operationFingerprint,
-        at: now(),
-        run: async ({ signal: jobSignal }) => {
-          try {
-            return await finalizeMediaAsset(db, {
-              ownerId,
-              assetId,
-              body: finalizeBody,
-              at: now(),
-              authoritativeVideoVerifier: verifyVideoObject,
-              authoritativePosterRequired: true,
-              universalVideoAdmission: videoVerifierRuntimeStatus(process.env).universal === true,
-              assertAuthorized: ctx.assertCurrentSession,
-              beforeAuthoritativeVerify: () => {
-                ctx.assertCurrentSession?.();
-                return reserveVideoPublishingDemand({ ip: requestIp }, { id: ownerId }, "verify");
-              },
-              // Deliberately no caller signal: a browser disconnect or proxy
-              // timeout must not cancel the shared process-local job. The job's
-              // own signal is cancelled only when this owner deletes the draft.
-              signal: jobSignal,
-            });
-          } catch (error) {
-            // Owner cancellation is lifecycle control, not a production fault.
-            // Do not create an error event or attempt terminal cleanup after
-            // the DELETE route has already retired this exact draft.
-            if (jobSignal.aborted) throw jobSignal.reason || error;
-            observeBackgroundVideoFinalizeFailure(error, requestId);
-            if (isTerminalMediaSourceFailure(error)) {
-              cancelMediaAsset(db, { ownerId, assetId, at: now() });
-            }
-            throw error;
-          }
+      const started = startDurableVideoFinalize({
+        ownerId: u.id,
+        assetId: ctx.params.id,
+        contentType: owned.mime_type,
+        body: finalizeBody,
+        fingerprint: videoFinalizeOperationFingerprint(finalizeBody),
+        member: {
+          ip: String(ctx.ip || "unknown"),
+          requestId: typeof ctx.requestId === "string" ? ctx.requestId : null,
+          assertAuthorized: ctx.assertCurrentSession,
         },
       });
       if (!asyncRequested) {
@@ -4713,7 +4851,13 @@ export const routes = {
       renew: knownFinalize.state !== "processing",
       at: now(),
     });
-    const finalize = videoFinalizeState({ ownerId: u.id, assetId: ctx.params.id, asset, at: now() });
+    let finalize = videoFinalizeState({ ownerId: u.id, assetId: ctx.params.id, asset, at: now() });
+    if (asset && asset.status !== "ready" && finalize.state !== "processing") {
+      // After a restart, or between automatic retries, the durable record is
+      // the truth: the clip is still on its way unless it finally failed.
+      const durable = videoProcessingState(db, { ownerId: u.id, assetId: ctx.params.id });
+      if (durable) finalize = durable;
+    }
     if (!asset && finalize.state === "idle") throw new ApiError(404, "That media item was not found.", "NOT_FOUND");
     return { asset, finalize };
   },
@@ -6762,7 +6906,10 @@ export const routes = {
 
     let editedMediaSelection = null;
     if (has("mediaAssetIds")) {
-      const ids = cleanMediaAssetIds(body.mediaAssetIds, { optional: false });
+      const requestedIds = cleanMediaAssetIds(body.mediaAssetIds, { optional: false });
+      // The edit screen only knows the clips that are already ready. One still
+      // converting stays on the post; it is never detached by an edit.
+      const ids = [...requestedIds, ...convertingPostMediaAssetIds(db, current.id).filter((id) => !requestedIds.includes(id))];
       editedMediaSelection = mediaSelection(db, { ownerId: u.id, assetIds: ids, currentPostId: current.id });
       if (has("photos")) {
         if (!Array.isArray(body.photos) || body.photos.some((item) => typeof item !== "string")) {
@@ -6951,7 +7098,8 @@ export const routes = {
     // sending the legacy URL array. Preserve any linked assets whose publish URL
     // is still present and detach only the ones it actually removed.
     if (!has("mediaAssetIds") && has("photos") && postMediaAssetIds(db, current.id).length) {
-      const retainedIds = assetIdsMatchingPostPhotos(db, { postId: current.id, photos: storedPhotos });
+      const matchedIds = assetIdsMatchingPostPhotos(db, { postId: current.id, photos: storedPhotos });
+      const retainedIds = [...matchedIds, ...convertingPostMediaAssetIds(db, current.id).filter((id) => !matchedIds.includes(id))];
       editedMediaSelection = mediaSelection(db, { ownerId: u.id, assetIds: retainedIds, currentPostId: current.id });
     }
     const availableCampaignMedia = editedMediaSelection
@@ -7216,6 +7364,7 @@ export const routes = {
         for (const mediaUrl of new Set([...deletable, ...deletableAssetUrls])) deleteReaction.run(mediaUrl);
         if (!post.removed) moderationRecord(ctx, "delete", "post", post.id, "author deleted", { removed: false }, { removed: true });
     });
+    for (const assetId of stableAssetIds) cancelVideoFinalizeJob({ ownerId: u.id, assetId, at: now() });
     return { ok: true, id: post.id };
   },
 

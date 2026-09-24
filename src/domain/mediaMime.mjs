@@ -29,6 +29,14 @@ export const VIDEO_EXTENSION_BY_MIME = Object.freeze({
   "video/x-flv": "flv",
 });
 export const VIDEO_SOURCE_MIME_TYPES = Object.freeze(Object.keys(VIDEO_EXTENSION_BY_MIME));
+// Every extension a stored original can end in. The storage-key checks on the
+// server and in the app are built from this one list, so a container added to
+// VIDEO_EXTENSION_BY_MIME can be uploaded everywhere at once.
+export const MEDIA_OBJECT_EXTENSIONS = Object.freeze([
+  "jpg", "png", "webp", "gif", "heic", "heif", "avif",
+  ...new Set(Object.values(VIDEO_EXTENSION_BY_MIME)),
+]);
+export const MEDIA_OBJECT_EXTENSION_PATTERN = MEDIA_OBJECT_EXTENSIONS.join("|");
 
 // Names some systems use for the same containers.
 const VIDEO_MIME_ALIASES = Object.freeze({
@@ -75,6 +83,13 @@ const MIME_BY_EXTENSION = Object.freeze({
 });
 
 const SUPPORTED_MIME_TYPES = new Set(Object.values(MIME_BY_EXTENSION));
+
+// True when a file name's extension is one of the video containers above. Used
+// when a browser or phone hands over a file with no type.
+export function isVideoFileName(value) {
+  const match = /\.([A-Za-z0-9]{1,5})$/u.exec(String(value || "").split(/[?#]/u, 1)[0]);
+  return !!match && String(MIME_BY_EXTENSION[match[1].toLowerCase()] || "").startsWith("video/");
+}
 
 export function normalizedVideoMimeType(value) {
   const type = String(value || "").split(";", 1)[0].trim().toLowerCase();

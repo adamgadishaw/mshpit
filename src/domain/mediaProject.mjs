@@ -6,13 +6,16 @@ import { mediaDisplayItems, mediaDisplayKind } from "./postMediaDisplay.mjs";
 export const MEDIA_PROJECT_VERSION = 1;
 export const MEDIA_PROJECT_MAX_ASSETS = MEDIA_POST_MAX_ATTACHMENTS;
 
-const STATUSES = new Set(["selected", "editing", "rendering", "uploading", "finalizing", "ready", "failed"]);
+// "processing" is a clip whose original is uploaded and whose conversion is
+// running on the server. It can be posted; it joins the post when it is ready.
+const STATUSES = new Set(["selected", "editing", "rendering", "uploading", "finalizing", "processing", "ready", "failed"]);
 const TRANSITIONS = Object.freeze({
   selected: new Set(["editing", "rendering", "uploading", "failed"]),
   editing: new Set(["selected", "rendering", "failed"]),
   rendering: new Set(["uploading", "failed"]),
-  uploading: new Set(["finalizing", "ready", "failed"]),
-  finalizing: new Set(["ready", "failed"]),
+  uploading: new Set(["finalizing", "processing", "ready", "failed"]),
+  finalizing: new Set(["processing", "ready", "failed"]),
+  processing: new Set(["ready", "failed"]),
   ready: new Set(["editing", "failed"]),
   failed: new Set(["selected", "editing", "rendering", "uploading", "finalizing"]),
 });
@@ -27,8 +30,10 @@ export function normalizeMediaProjectAsset(value = {}, index = 0) {
     ? String(value.durableLocalUri || value.uri)
     : null;
   const sourceUrl = remoteUrl(value.sourceUrl || value.uploadedUrl || (remoteUrl(base.uri) ? base.uri : null));
-  const status = STATUSES.has(value.status) ? value.status : (sourceUrl ? "ready" : "selected");
   const assetId = cleanId(value.assetId);
+  const requestedStatus = STATUSES.has(value.status) ? value.status : (sourceUrl ? "ready" : "selected");
+  // Only a server asset can be converting; anything else goes back to selected.
+  const status = requestedStatus === "processing" && !assetId ? "selected" : requestedStatus;
   const localId = cleanId(value.id) || assetId || `media_${index + 1}`;
   const posterUrl = remoteUrl(value.posterUrl || (remoteUrl(base.posterUri) ? base.posterUri : null));
   return {
@@ -272,6 +277,26 @@ export function serializableMediaProject(project) {
 export function mediaProjectReady(project) {
   const assets = normalizeMediaProject(project).assets;
   return assets.length > 0 && assets.every((asset) => asset.status === "ready" && !!asset.sourceUrl);
+}
+
+// Clips uploaded and converting on the server, in the order they were added.
+export function mediaProjectConvertingAssets(project) {
+  return normalizeMediaProject(project).assets
+    .filter((asset) => asset.status === "processing" && asset.assetId && asset.kind === "video");
+}
+
+// The asset IDs a post is published with: every ready item (which must match
+// `photos` exactly, as before) plus clips still converting, in project order.
+// Null keeps an old URL-only post on its compatibility path.
+export function mediaProjectSubmissionAssetIds(project, photos) {
+  const readyIds = mediaAssetIdsMatchingPhotos(project, photos);
+  const converting = mediaProjectConvertingAssets(project);
+  if (!converting.length || readyIds === null) return readyIds;
+  const ready = new Set(readyIds);
+  return normalizeMediaProject(project).assets
+    .filter((asset) => asset.assetId && ((asset.status === "ready" && asset.sourceUrl && ready.has(asset.assetId))
+      || (asset.status === "processing" && asset.kind === "video")))
+    .map((asset) => asset.assetId);
 }
 
 export function mediaProjectPublishedMedia(project) {

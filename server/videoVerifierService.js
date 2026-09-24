@@ -56,6 +56,7 @@ const POSTER_MAX_EDGE = 1_280;
 // while allowing the bounded transcode to finish on the production instance.
 const JOB_TIMEOUT_MS = 15 * 60_000;
 const COMMAND_OUTPUT_MAX_BYTES = 64 * 1024;
+const STDERR_TAIL_BYTES = 8 * 1024;
 const HEALTH_FRESH_MS = 60_000;
 const NONCE_TTL_MS = 2 * 60_000;
 const NONCE_CACHE_MAX = 2_048;
@@ -175,6 +176,12 @@ function safeChildEnvironment(directory) {
   };
 }
 
+// The last few decoder lines, on one line, for the private job log.
+function stderrTail(chunks) {
+  const text = Buffer.concat(chunks).toString("utf8").trim();
+  return text.split(/\r?\n/u).filter(Boolean).slice(-4).join(" | ").slice(-600) || "no decoder output";
+}
+
 function killProcessGroup(child) {
   if (!child?.pid) return;
   try {
@@ -225,15 +232,24 @@ export function runVerifierProcess(executable, args, {
       const bytes = Buffer.byteLength(chunk);
       if (stream === "stdout") stdoutBytes += bytes;
       else stderrBytes += bytes;
-      if (stdoutBytes + stderrBytes > outputLimit) {
+      if (stdoutBytes > outputLimit) {
         killProcessGroup(child);
-        finish(serviceError("decoder_output_invalid", "Decoder produced too much diagnostic output.", { status: 503 }));
+        finish(serviceError("decoder_output_invalid", "Decoder produced too much output.", { status: 503 }));
         return;
       }
       list.push(Buffer.from(chunk));
     };
+    // A phone clip with a few damaged frames can make the tolerant decoder
+    // print a warning per frame. Keep only the last part of that text for the
+    // job log instead of failing a conversion that is otherwise working.
+    const collectStderr = (chunk) => {
+      stderrBytes += Buffer.byteLength(chunk);
+      stderr.push(Buffer.from(chunk));
+      let kept = stderr.reduce((total, part) => total + part.byteLength, 0);
+      while (kept > STDERR_TAIL_BYTES && stderr.length > 1) kept -= stderr.shift().byteLength;
+    };
     child.stdout.on("data", (chunk) => collect(stdout, chunk, "stdout"));
-    child.stderr.on("data", (chunk) => collect(stderr, chunk, "stderr"));
+    child.stderr.on("data", collectStderr);
     child.on("error", (error) => finish(serviceError("decoder_unavailable", "Decoder process failed.", { status: 503, cause: error })));
     child.on("close", (code, closeSignal) => {
       if (abortError) {
@@ -243,13 +259,13 @@ export function runVerifierProcess(executable, args, {
       if (code !== 0) {
         finish(serviceError("decode_failed", "Media decode failed.", {
           status: 422,
-          cause: new Error(`decoder exit=${String(code)} signal=${String(closeSignal || "none")}`),
+          cause: new Error(`decoder exit=${String(code)} signal=${String(closeSignal || "none")}: ${stderrTail(stderr)}`),
         }));
         return;
       }
       finish(null, {
-        stdout: Buffer.concat(stdout, stdoutBytes).toString("utf8"),
-        stderr: Buffer.concat(stderr, stderrBytes).toString("utf8"),
+        stdout: Buffer.concat(stdout).toString("utf8"),
+        stderr: Buffer.concat(stderr).toString("utf8"),
       });
     });
     if (signal?.aborted) onAbort();
@@ -735,6 +751,7 @@ export async function probeUniversalVideo(filePath, contentType, config, { runPr
     videoIndex: Number(video.index),
     audioIndex: audio ? Number(audio.index) : null,
     interlaced: !new Set(["progressive", "unknown", "", "undefined"]).has(String(video?.field_order ?? "")),
+    sampleAspectRatio: String(video?.sample_aspect_ratio ?? ""),
     outputFrameRate,
   };
 }
@@ -805,15 +822,93 @@ export function videoTranscodeBitrateBudget(durationMs) {
   return { maxRate, bufferSize: maxRate * DELIVERY_VBV_SECONDS, audioRate: DELIVERY_AUDIO_RATE };
 }
 
+const SQUARE_OR_UNSET_ASPECT = new Set(["", "0:1", "1:1", "N/A", "undefined"]);
+
+// Most phone and app-saved clips (TikTok, Instagram, camera rolls) are already
+// H.264/AAC in MP4 at a size browsers play. Those are repackaged without
+// re-encoding, which takes seconds instead of minutes on the converter's one
+// CPU. The copy must still pass the same strict delivery probe and full decode
+// as a converted clip; anything it fails is converted in full instead, so this
+// shortcut can never be the reason a clip is refused.
+export function universalRemuxEligible(video = {}) {
+  const width = Number(video?.width);
+  const height = Number(video?.height);
+  return video?.universal === true
+    && video.demuxer === "mov"
+    && video.codec === "h264"
+    && new Set(["aac", "none"]).has(video.audioCodec)
+    && Number(video.rotation) === 0
+    && video.interlaced !== true
+    && Number.isFinite(video.frameRate) && video.frameRate > 0
+    && video.frameRate <= MEDIA_VIDEO_DELIVERY_MAX_FRAME_RATE + 0.01
+    && Number.isSafeInteger(video.durationMs) && video.durationMs > 0
+    && Number.isSafeInteger(width) && Number.isSafeInteger(height)
+    && Math.max(width, height) <= DELIVERY_MAX_WIDTH
+    && Math.min(width, height) <= DELIVERY_MAX_HEIGHT
+    && SQUARE_OR_UNSET_ASPECT.has(String(video.sampleAspectRatio ?? ""));
+}
+
+async function createUniversalRemux(sourcePath, deliveryPath, sourceVideo, config, { runProcess, directory, signal }) {
+  await runProcess(config.ffmpeg, [
+    "-nostdin", "-v", "error",
+    "-protocol_whitelist", "file,pipe", "-f", "mov", "-i", sourcePath,
+    "-map", `0:${sourceVideo.videoIndex}`,
+    ...(Number.isSafeInteger(sourceVideo.audioIndex) ? ["-map", `0:${sourceVideo.audioIndex}`] : []),
+    "-c:v", "copy", "-c:a", "copy",
+    // Many phones leave the pixel shape unset. Only square-pixel sources get
+    // here, so state it explicitly the way the delivery contract requires.
+    "-bsf:v", "h264_metadata=sample_aspect_ratio=1/1",
+    "-map_metadata", "-1", "-map_chapters", "-1", "-metadata:s:v:0", "rotate=0",
+    "-movflags", "+faststart", "-brand", "mp42", "-f", "mp4", "-y", deliveryPath,
+  ], { cwd: directory, signal });
+  const file = await stat(deliveryPath);
+  if (!file.isFile() || file.size < 16 || file.size > VIDEO_MAX_BYTES) {
+    throw serviceError("delivery_invalid", "Repackaged clip is outside its byte limit.");
+  }
+  const video = await probeVideo(deliveryPath, config, {
+    runProcess,
+    directory,
+    signal,
+    maxFrameRate: MEDIA_VIDEO_DELIVERY_MAX_FRAME_RATE,
+  });
+  if (video.rotation !== 0 || video.codec !== "h264"
+      || video.audioCodec !== sourceVideo.audioCodec
+      || video.width !== sourceVideo.width
+      || video.height !== sourceVideo.height
+      || Math.abs(video.durationMs - sourceVideo.durationMs) > 1_500) {
+    throw serviceError("delivery_invalid", "Repackaged clip changed its streams.");
+  }
+  await decodeAllStreams(deliveryPath, config, { runProcess, directory, signal });
+  return { file, video, strategy: "remux" };
+}
+
+// One line for the private converter log: the stable code plus the first
+// underlying cause. Never includes object keys or signed URLs.
+function jobFailureSummary(error) {
+  const parts = [String(error?.code || "error"), String(error?.message || "")].filter(Boolean);
+  for (let cause = error?.cause, depth = 0; cause && depth < 3; cause = cause.cause, depth += 1) {
+    if (cause?.message) parts.push(String(cause.message));
+  }
+  return parts.join(": ").replace(/https?:\/\/\S+/gu, "[url]").slice(0, 700);
+}
+
 async function createSanitizedDelivery(
   sourcePath,
   deliveryPath,
   sourceVideo,
   structural,
   config,
-  { runProcess, directory, signal },
+  { runProcess, directory, signal, log },
 ) {
   const universal = sourceVideo?.universal === true;
+  if (universal && universalRemuxEligible(sourceVideo)) {
+    try {
+      return await createUniversalRemux(sourcePath, deliveryPath, sourceVideo, config, { runProcess, directory, signal });
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      log?.(`fast repackage skipped, converting in full: ${jobFailureSummary(error)}`);
+    }
+  }
   const strategy = universal ? "transcode" : videoDeliveryStrategy(sourceVideo);
   // An unknown universal length is budgeted as the longest allowed clip.
   const bitrate = strategy === "transcode"
@@ -1041,6 +1136,7 @@ export async function runVideoVerifierJob(payload, {
   runProcess = runVerifierProcess,
   signal,
   temporaryRoot = tmpdir(),
+  log = null,
 } = {}) {
   if (!config?.configured || typeof fetchImpl !== "function") {
     throw serviceError("decoder_unavailable", "Verifier is not configured.", { status: 503 });
@@ -1050,8 +1146,21 @@ export async function runVideoVerifierJob(payload, {
   const sourcePath = join(directory, `source.${videoVerifierSourceExtension(job.contentType)}`);
   const deliveryPath = join(directory, "delivery.mp4");
   const posterPath = join(directory, "poster.jpg");
+  // Each step's time goes in the private job log, so a slow or failing clip
+  // shows exactly where it stopped. A failure carries the step it happened in.
+  const jobStartedAt = Date.now();
+  const timings = [];
+  let step = "download";
+  let stepStartedAt = jobStartedAt;
+  const nextStep = (name) => {
+    const at = Date.now();
+    timings.push(`${step} ${((at - stepStartedAt) / 1_000).toFixed(1)}s`);
+    step = name;
+    stepStartedAt = at;
+  };
   try {
     await downloadExactObject(job, sourcePath, { fetchImpl, signal });
+    nextStep("probe");
     let video;
     if (job.universal) {
       video = await probeUniversalVideo(sourcePath, job.contentType, config, { runProcess, directory, signal });
@@ -1074,14 +1183,16 @@ export async function runVideoVerifierJob(payload, {
     // The following xerror/err_detect transcode necessarily decodes every
     // selected source frame and audio packet. A separate full source decode was
     // redundant and doubled the slowest HEVC path without adding a new proof.
+    nextStep("convert");
     const delivery = await createSanitizedDelivery(
       sourcePath,
       deliveryPath,
       video,
       job.structural,
       config,
-      { runProcess, directory, signal },
+      { runProcess, directory, signal, log },
     );
+    nextStep("cover");
     // A source that stored no length takes the converted copy's measurement,
     // which the strict delivery probe has already held to ten minutes.
     if (video.durationMs === null) video = { ...video, durationMs: delivery.video.durationMs };
@@ -1096,7 +1207,12 @@ export async function runVideoVerifierJob(payload, {
       : job;
     const poster = await generateAndVerifyPoster(deliveryPath, posterPath, posterJob, delivery.video, config, { runProcess, directory, signal });
     if (!SHA256.test(poster.sha256)) throw serviceError("poster_invalid", "Generated cover hash is invalid.");
+    nextStep("upload");
     const published = await uploadSanitizedDelivery(job, deliveryPath, delivery, { fetchImpl, signal });
+    nextStep("done");
+    log?.(`converted ${job.contentType} ${video.codec}/${video.audioCodec} ${video.width}x${video.height} `
+      + `${(Number(delivery.video.durationMs) / 1_000).toFixed(1)}s by ${delivery.strategy} `
+      + `in ${((Date.now() - jobStartedAt) / 1_000).toFixed(1)}s (${timings.join(", ")})`);
     return {
       ok: true,
       protocol: VIDEO_VERIFIER_PROTOCOL_VERSION,
@@ -1106,6 +1222,13 @@ export async function runVideoVerifierJob(payload, {
       delivery: published,
       poster,
     };
+  } catch (error) {
+    if (error && typeof error === "object" && !error.verifierStep) {
+      try { Object.defineProperty(error, "verifierStep", { value: step, enumerable: false }); } catch { /* frozen */ }
+    }
+    log?.(`failed ${job.contentType} at ${step} after ${((Date.now() - jobStartedAt) / 1_000).toFixed(1)}s `
+      + `(${timings.join(", ") || "no step finished"}): ${jobFailureSummary(error)}`);
+    throw error;
   } finally {
     // The directory was created by mkdtemp under the configured temp root and
     // never contains user-derived path segments. Cleanup runs on success,
@@ -1218,6 +1341,7 @@ export function createVideoVerifierService({
   clock = () => Date.now(),
   verifyJob = runVideoVerifierJob,
   prerequisiteCheck = prerequisiteProbe,
+  log = null,
 } = {}) {
   const config = getVideoVerifierServiceConfig(env);
   const nonces = makeNonceLedger();
@@ -1318,6 +1442,7 @@ export function createVideoVerifierService({
         return;
       }
       if (activeJob || prerequisiteInFlight) {
+        log?.("busy: a clip arrived while another was converting");
         sendSigned(res, {
           config,
           path,
@@ -1338,12 +1463,16 @@ export function createVideoVerifierService({
       requestAbort.signal.addEventListener("abort", abortJob, { once: true });
       shutdown.signal.addEventListener("abort", abortJob, { once: true });
       const signal = AbortSignal.any([jobAbort.signal, AbortSignal.timeout(JOB_TIMEOUT_MS)]);
+      log?.(`start ${String(authenticated.payload?.object?.contentType || "video")} `
+        + `${Math.round(Number(authenticated.payload?.object?.byteSize) / 1_048_576 * 10) / 10} MiB`
+        + `${authenticated.payload?.admission ? " (any format)" : ""}`);
       const promise = verifyJob(authenticated.payload, {
         config,
         fetchImpl,
         runProcess,
         signal,
         temporaryRoot,
+        log,
       });
       activeJob = { promise, abort: abortJob };
       try {
@@ -1448,6 +1577,24 @@ export async function runVideoVerifierSelfTest({
       // FFmpeg 9 removed `-top`; setfield marks the frames top-field-first.
       encode: ["-vf", "setsar=32/27,setfield=tff", "-c:v", "mpeg2video", "-flags", "+ilme+ildct", "-c:a", "mp2"],
     },
+    {
+      // Shaped like a clip saved from TikTok or a phone: portrait H.264/AAC in
+      // MP4 at 44.1 kHz. It must take the fast repackage path.
+      name: "portrait.mp4",
+      contentType: "video/mp4",
+      size: "360x640",
+      rate: 30,
+      encode: ["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-profile:v", "high", "-c:a", "aac"],
+      strategy: "remux",
+    },
+    {
+      // The same clip with 4:3 non-square pixels cannot be copied as is.
+      name: "anamorphic.mp4",
+      contentType: "video/mp4",
+      size: "480x360",
+      encode: ["-vf", "setsar=4/3", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac"],
+      strategy: "transcode",
+    },
   ];
   const results = [];
   try {
@@ -1455,20 +1602,26 @@ export async function runVideoVerifierSelfTest({
       const sourcePath = join(directory, sample.name);
       await runProcess(config.ffmpeg, [
         "-nostdin", "-v", "error",
-        "-f", "lavfi", "-i", `testsrc2=size=${sample.size || "320x240"}:rate=25`,
+        "-f", "lavfi", "-i", `testsrc2=size=${sample.size || "320x240"}:rate=${sample.rate || 25}`,
         "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100",
         "-t", "1", ...sample.encode, "-y", sourcePath,
       ], { cwd: directory });
       const video = await probeUniversalVideo(sourcePath, sample.contentType, config, { runProcess, directory });
       const deliveryPath = join(directory, `${sample.name}.delivery.mp4`);
-      const delivery = await createSanitizedDelivery(sourcePath, deliveryPath, video, null, config, { runProcess, directory });
+      const skipped = [];
+      const delivery = await createSanitizedDelivery(sourcePath, deliveryPath, video, null, config, {
+        runProcess, directory, log: (line) => skipped.push(line),
+      });
       if (delivery.video.codec !== "h264" || delivery.video.audioCodec !== "aac") {
         throw new Error(`${sample.name} did not convert to H.264/AAC.`);
+      }
+      if (sample.strategy && delivery.strategy !== sample.strategy) {
+        throw new Error(`${sample.name} took the ${delivery.strategy} path instead of ${sample.strategy}. ${skipped.join(" ")}`);
       }
       await generateAndVerifyPoster(deliveryPath, join(directory, `${sample.name}.jpg`), {
         poster: { timeMs: videoVerifierUniversalPosterTimeMs(500, delivery.video.durationMs), maxBytes: POSTER_MAX_BYTES, maxEdge: POSTER_MAX_EDGE },
       }, delivery.video, config, { runProcess, directory });
-      results.push({ name: sample.name, width: delivery.video.width, height: delivery.video.height });
+      results.push({ name: sample.name, width: delivery.video.width, height: delivery.video.height, strategy: delivery.strategy });
     }
     return results;
   } finally {
@@ -1483,10 +1636,12 @@ async function main() {
       for (let cause = error; cause; cause = cause.cause) causes.push(cause.message);
       throw new Error(`self-test failed: ${causes.join(" <- caused by: ")}`);
     });
-    process.stdout.write(`[video-verifier] self-test converted ${results.map((item) => `${item.name} ${item.width}x${item.height}`).join(", ")}\n`);
+    process.stdout.write(`[video-verifier] self-test converted ${results.map((item) => `${item.name} ${item.width}x${item.height} by ${item.strategy}`).join(", ")}\n`);
     return;
   }
-  const service = createVideoVerifierService();
+  const service = createVideoVerifierService({
+    log: (line) => process.stdout.write(`[video-verifier] ${line}\n`),
+  });
   if (!service.config.configured) {
     // Configuration names are not emitted because even a missing-name list can
     // reveal deployment topology. Render records the nonzero exit.
