@@ -1242,7 +1242,7 @@ function Root() {
   else if (nav.welcomeGuide && session) overlay = <WelcomeScreen onClose={back} onOpenFanClubs={() => replace({ fanClubs: true })} onOpenNearby={() => replace({ nearby: true, nearbyTab: "shows" })} onOpenArtists={() => replace({ pickArtists: true })} onReview={() => requireVerifiedMutation("review", () => replace({ logging: true }))} />;
   else if (nav.pickArtists) overlay = <PickArtistsScreen onDone={clear} onSkip={clear} onRequireVerification={() => setVerificationPrompt("artistPicks")} />;
   else if (nav.editingPost) overlay = <LogScreen user={session} editing={nav.editingPost} composerId={nav.composerId} initialDraftId={nav.draftId} onDraftIdentity={updateComposerDraftIdentity} pendingMedia={pendingComposerPicker?.composerId === nav.composerId ? pendingComposerPicker : null} onPendingMediaConsumed={consumePendingComposerPicker} onPost={onEditLog} onCancel={back} closeGuardRef={composerCloseGuardRef} />;
-  else if (nav.logging) overlay = <LogScreen user={session} prefill={nav.prefill} defaultMode={nav.postMode || "show"} legacyArtistProfile={nav.legacyArtistProfile === true} composerId={nav.composerId} initialDraftId={nav.draftId} onDraftIdentity={updateComposerDraftIdentity} pendingMedia={pendingComposerPicker?.composerId === nav.composerId ? pendingComposerPicker : null} onPendingMediaConsumed={consumePendingComposerPicker} onPost={onAddLog} onCancel={back} closeGuardRef={composerCloseGuardRef} />;
+  else if (nav.logging) overlay = <LogScreen user={session} prefill={nav.prefill} defaultMode={nav.postMode || "status"} legacyArtistProfile={nav.legacyArtistProfile === true} composerId={nav.composerId} initialDraftId={nav.draftId} onDraftIdentity={updateComposerDraftIdentity} pendingMedia={pendingComposerPicker?.composerId === nav.composerId ? pendingComposerPicker : null} onPendingMediaConsumed={consumePendingComposerPicker} onPost={onAddLog} onCancel={back} closeGuardRef={composerCloseGuardRef} />;
   else if (nav.reporting) overlay = <ReportScreen target={nav.reporting} onClose={back} />;
   else if (nav.editProfile) overlay = <EditProfileScreen onClose={back} />;
   else if (nav.venueReview) overlay = <VenueReviewScreen venueName={nav.venueReview} onClose={back} />;
@@ -1376,7 +1376,7 @@ function Root() {
                   isBlocked={isBlocked}
                   onOpenCountdown={openShow}
                   onViewAllCountdown={() => go({ calendar: true })}
-                  onLogShow={() => requireVerifiedMutation("review", () => go({ logging: true }))}
+                  onLogShow={() => requireVerifiedMutation("review", () => go({ logging: true, postMode: "show" }))}
                   onOpenDiscover={() => switchTab("discover")}
                   onOpenInbox={openInbox}
                   onOpenNotifications={openNotifications}
@@ -1509,7 +1509,7 @@ function Root() {
       else if (openArtistPicker || destination === "artists") commitReplace({ pickArtists: true });
       else if (destination === "shows") commitReplace({ nearby: true, nearbyTab: "shows" });
       else if (destination === "review") {
-        if (!requireVerifiedMutation("review", () => { commitReplace({ logging: true }); return true; })) finishComposerBack();
+        if (!requireVerifiedMutation("review", () => { commitReplace({ logging: true, postMode: "show" }); return true; })) finishComposerBack();
       } else finishComposerBack();
     }
     return result;

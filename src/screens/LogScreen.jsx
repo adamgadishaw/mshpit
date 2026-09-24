@@ -218,7 +218,7 @@ export default function LogScreen({
   user,
   prefill,
   editing = null,
-  defaultMode = "show",
+  defaultMode = "status",
   legacyArtistProfile = false,
   closeGuardRef,
   composerId,
@@ -573,6 +573,7 @@ export default function LogScreen({
   const remoteDraftAssetIdsRef = useRef(new Map());
   const submissionIdRef = useRef(editing?.id || submissionId());
   const submitOperationRef = useRef(false);
+  const composerScrollRef = useRef(null);
   useEffect(() => () => {
     pickerOperationRef.current?.abort();
     pickerOperationRef.current = null;
@@ -1610,25 +1611,23 @@ export default function LogScreen({
 
   return (
     <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-      <SheetHeader title={editing ? (isMemorialMemory ? "Edit fan memory" : isCampaign ? "Edit featured post" : isOnlineReview ? "Edit online review" : "Edit post") : protectedLegacyMemory ? "Share a written memory" : isMemorialMemory ? "Share a fan memory" : isCampaign ? "New featured post" : isStatus ? "New post" : isOnlineReview ? "Review an online concert" : "Log a show"} onClose={onCancel} leadDisabled={submitBusy} action={{ label: posting ? (editing ? "Saving..." : "Posting...") : uploadingPhotos ? "Uploading..." : resolvingSong ? "Checking..." : editing ? "Save" : "Post", onPress: submit, disabled: !canPost || submitBusy || postCoolingDown || featuredPostingBlocked }} />
+      <SheetHeader title={editing ? (isMemorialMemory ? "Edit fan memory" : isCampaign ? "Edit featured post" : isOnlineReview ? "Edit online review" : "Edit post") : protectedLegacyMemory ? "Share a written memory" : isMemorialMemory ? "Share a fan memory" : isCampaign ? "New featured post" : isStatus ? "New post" : isOnlineReview ? "Review an online concert" : "Review a show"} onClose={onCancel} leadDisabled={submitBusy} action={{ label: posting ? (editing ? "Saving..." : "Posting...") : uploadingPhotos ? "Uploading..." : resolvingSong ? "Checking..." : editing ? "Save" : "Post", onPress: submit, disabled: !canPost || submitBusy || postCoolingDown || featuredPostingBlocked }} />
 
-      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+      <ScrollView ref={composerScrollRef} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         {!!postError && <View style={[styles.postErrorBox, postRetryReady && styles.postReadyBox]} accessibilityRole="alert" accessibilityLiveRegion="polite"><Icon name={postCoolingDown ? "clock" : postRetryReady ? "check" : "flag"} size={14} color={postRetryReady ? colors.good : colors.danger} /><Text style={[styles.postErrorTxt, postRetryReady && styles.postReadyTxt]}>{postCoolingDown ? postRetryCooldownMessage(postRetrySeconds) : postError}</Text></View>}
-        {!editing && !isMemorialMemory && (
+        {/* One way to post: the only choice before writing is an artist's
+            optional featured treatment. A show is attached below the text. */}
+        {!editing && !isMemorialMemory && isStatus && artistCampaignAllowed && (
           <View style={styles.modeRow}>
-            <Pressable style={[styles.modeBtn, isStatus && !isCampaign && styles.modeBtnOn]} onPress={() => { setPostType("status"); setCampaign(null); }} accessibilityRole="button" accessibilityState={{ selected: isStatus && !isCampaign }} accessibilityLabel="Create a regular post">
-              <Icon name="edit" size={15} color={isStatus && !isCampaign ? "#1A1206" : colors.textDim} />
-              <Text style={[styles.modeTxt, isStatus && !isCampaign && styles.modeTxtOn]}>Share</Text>
-            </Pressable>
-            {artistCampaignAllowed && (
-              <Pressable style={[styles.modeBtn, isCampaign && styles.modeBtnOn]} onPress={() => { setPostType("status"); setCampaign((current) => current || { version: 1, treatment: DEFAULT_ARTIST_CAMPAIGN_TREATMENT }); }} accessibilityRole="button" accessibilityState={{ selected: isCampaign }} accessibilityLabel="Create a featured artist post">
-                <Icon name="star" size={15} color={isCampaign ? "#1A1206" : colors.textDim} />
-                <Text style={[styles.modeTxt, isCampaign && styles.modeTxtOn]}>Featured</Text>
-              </Pressable>
-            )}
-            <Pressable style={[styles.modeBtn, !isStatus && styles.modeBtnOn]} onPress={() => { setPostType("show"); setCampaign(null); }} accessibilityRole="button" accessibilityState={{ selected: !isStatus }} accessibilityLabel="Log a concert">
-              <Icon name="star" size={15} color={!isStatus ? "#1A1206" : colors.textDim} />
-              <Text style={[styles.modeTxt, !isStatus && styles.modeTxtOn]}>Log show</Text>
+            <Pressable
+              style={[styles.modeBtn, isCampaign && styles.modeBtnOn]}
+              onPress={() => setCampaign((current) => current ? null : { version: 1, treatment: DEFAULT_ARTIST_CAMPAIGN_TREATMENT })}
+              accessibilityRole="switch"
+              accessibilityState={{ checked: isCampaign }}
+              accessibilityLabel="Make this a featured artist post"
+            >
+              <Icon name="star" size={15} color={isCampaign ? "#1A1206" : colors.textDim} />
+              <Text style={[styles.modeTxt, isCampaign && styles.modeTxtOn]}>Featured post</Text>
             </Pressable>
           </View>
         )}
@@ -1731,9 +1730,47 @@ export default function LogScreen({
               </View>
             </View>
           )}
+          {!editing && !isMemorialMemory && !isCampaign && (
+            <Pressable
+              style={({ pressed }) => [styles.addShow, pressed && styles.addShowPressed]}
+              onPress={() => {
+                setPostType("show");
+                // The show fields open above the text that was just written, so
+                // bring them into view instead of leaving them off-screen.
+                requestAnimationFrame(() => composerScrollRef.current?.scrollTo?.({ y: 0, animated: true }));
+              }}
+              disabled={submitBusy}
+              accessibilityRole="button"
+              accessibilityState={{ disabled: submitBusy }}
+              accessibilityLabel="Add a show you went to"
+              accessibilityHint="Rate the artist and the venue, and this post becomes a concert review"
+            >
+              <View style={styles.addShowIcon}><Icon name="ticket" size={18} color={colors.amber} /></View>
+              <View style={styles.addShowCopy}>
+                <Text style={styles.addShowTitle}>Add a show you went to</Text>
+                <Text style={styles.addShowDetail}>Rate the artist and the venue, and your post becomes a review.</Text>
+              </View>
+              <Icon name="plus" size={18} color={colors.amber} />
+            </Pressable>
+          )}
           </>
         ) : (
           <>
+        {!editing && (
+          <View style={styles.showAttached}>
+            <Icon name="ticket" size={15} color={colors.amber} />
+            <Text style={styles.showAttachedText}>This post is a review of a show.</Text>
+            <Pressable
+              onPress={() => setPostType("status")}
+              disabled={submitBusy}
+              hitSlop={10}
+              accessibilityRole="button"
+              accessibilityLabel="Remove the show and keep this as a regular post"
+            >
+              <Text style={styles.showAttachedAction}>Remove show</Text>
+            </Pressable>
+          </View>
+        )}
         <Text style={styles.quickLogHint}>Start with what you remember. One rating is enough; extra details are optional.</Text>
         <Text style={styles.fieldLabel}>HOW DID YOU EXPERIENCE IT?</Text>
         <View style={styles.experienceModeRow} accessibilityRole="tablist">
@@ -2266,6 +2303,15 @@ const styles = StyleSheet.create({
   quickRatingRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 },
   clearRating: { minHeight: 44, justifyContent: "center", alignSelf: "flex-start" },
   submitHint: { color: colors.textDim, fontSize: 12, lineHeight: 18, marginTop: 20 },
+  addShow: { minHeight: 64, flexDirection: "row", alignItems: "center", gap: 12, marginTop: 14, marginBottom: 4, paddingHorizontal: 14, paddingVertical: 12, borderRadius: radius.md, borderWidth: 1, borderStyle: "dashed", borderColor: colors.amber, backgroundColor: colors.bgElev },
+  addShowPressed: { opacity: 0.85 },
+  addShowIcon: { width: 38, height: 38, borderRadius: 19, alignItems: "center", justifyContent: "center", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line },
+  addShowCopy: { flex: 1, minWidth: 0 },
+  addShowTitle: { color: colors.text, fontSize: 15, lineHeight: 20, fontWeight: "800" },
+  addShowDetail: { color: colors.textDim, fontSize: 13, lineHeight: 18, marginTop: 2 },
+  showAttached: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 14, paddingHorizontal: 12, paddingVertical: 10, borderRadius: radius.md, backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.lineSoft },
+  showAttachedText: { flex: 1, minWidth: 0, color: colors.text, fontSize: 13, lineHeight: 18, fontWeight: "700" },
+  showAttachedAction: { color: colors.amber, fontSize: 13, lineHeight: 18, fontWeight: "800" },
   modeRow: { flexDirection: "row", gap: 8, backgroundColor: colors.bgElev, borderRadius: radius.pill, padding: 4, borderWidth: 1, borderColor: colors.lineSoft, marginBottom: 18 },
   modeBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7, paddingVertical: 10, borderRadius: radius.pill },
   modeBtnOn: { backgroundColor: colors.amberStrong },
