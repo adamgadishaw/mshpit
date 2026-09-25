@@ -256,6 +256,21 @@ remains a broad context whose changing value can rerender unrelated consumers.
 - **Photo spotlight:** tell a member when their photo becomes an artist page's
   lead image.
 
+## SEO and artist photo follow-ups (2026-09-25)
+
+- **After deploy:** watch `[artist-photos] deezer` log lines (checked, filled,
+  noMatch) and spot check a few Discover artists for the right face. If a
+  namesake slips through, raise the 20x dominance rule or the 1000 fan floor.
+- **Popular songs on artist pages:** the stored `topTracks` are old Spotify
+  data. Refresh from Deezer (`/artist/{id}/top`, keyless) before listing them
+  publicly.
+- **Related artists:** wait for the genre ingest fix (catalog genres are still
+  wrong for many artists) before adding "fans also like" by genre. Shared bills
+  or shared followers are safer signals.
+- **Venue pages:** add "other venues in {city}" links, like event pages now do.
+- **Artist titles without dates:** "<Artist> music artist profile" is weak;
+  consider "albums and concert reviews" once the discography is live.
+
 ## Visual polish follow-ups (2026-09-25)
 
 - **Place names:** Ticketmaster sends "United States Of America"; show it as

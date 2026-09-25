@@ -242,6 +242,8 @@ function artistMain(document) {
     return `<article class="update"><p>${esc(update.text)}</p>${date ? `<time datetime="${esc(date.iso)}">${esc(date.label)}</time>` : ""}</article>`;
   }).join("");
   const reviews = document.reviews.map((review) => compactPost(review, { hideRating: memorialMode })).join("");
+  const musicBrainz = publicHttpsUrl(document.musicBrainzUrl);
+  const discography = (document.discography || []).map((album) => `<li><strong>${esc(album.title)}</strong><span>${[album.year, album.type].filter(Boolean).map(esc).join(" · ")}</span></li>`).join("");
   const memorialDate = longDateLabel(document.memorial?.deathDate);
   const memorialSource = publicHttpsUrl(document.memorial?.citation?.url);
   const memorialAccomplishments = (Array.isArray(document.memorial?.accomplishments)
@@ -275,6 +277,7 @@ function artistMain(document) {
     ${biography ? `<section class="section"><h2>About ${esc(artist.name)}</h2><dl class="stats">${biography}</dl></section>` : ""}
     ${!memorialMode && events ? `<section class="section" id="shows"><div class="section-heading"><div><p class="eyebrow">On the road</p><h2>Upcoming shows</h2>${upcomingTotal > document.events.length ? `<p class="micro">Next ${document.events.length} of ${esc(upcomingTotal)} listed shows. The Shows tab on this artist page has the full schedule.</p>` : ""}</div></div><ol class="event-list">${events}</ol></section>` : ""}
     ${concerts ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">From the archive</p><h2>${memorialMode ? "Concert history" : "Top-rated concert nights"}</h2></div>${archiveLink}</div><ol class="event-list archive-list">${concerts}</ol></section>` : ""}
+    ${discography ? `<section class="section" id="discography"><div class="section-heading"><div><p class="eyebrow">On record</p><h2>${esc(artist.name)} albums and EPs</h2></div></div><ol class="discography">${discography}</ol>${musicBrainz ? `<p class="micro">Release list from <a href="${esc(musicBrainz)}" rel="noopener noreferrer">MusicBrainz</a>.</p>` : ""}</section>` : ""}
     ${updates ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">${legacyMode ? "Mshpit editorial" : "Official notes"}</p><h2>${legacyMode ? "History and context" : `From ${esc(artist.name)}`}</h2></div></div><div class="updates">${updates}</div></section>` : ""}
     ${reviews ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">${legacyMode ? "Community archive" : "People who were there"}</p><h2>${legacyMode ? "Community memories" : memorialMode ? "Fan memories" : "Top live reviews"}</h2></div></div><div class="post-list">${reviews}</div></section>` : ""}
   </main>`;
@@ -328,6 +331,33 @@ function eventDetails(event) {
   </dl>${ticket ? `<p class="ticket-action"><a class="button primary" href="${esc(ticket)}" rel="sponsored noopener noreferrer">View tickets</a><small>Tickets are handled by the linked provider.</small></p>` : ""}`;
 }
 
+function relatedEventItems(events, { artist = true, venue = true, place = false } = {}) {
+  return (events || []).map((event) => {
+    const time = publicEventTimeLabel(event.localTime);
+    const details = [
+      artist ? link(event.artistPath, event.artist) : "",
+      venue ? link(event.venuePath, event.venue) : "",
+      place && event.place ? esc(event.place) : "",
+    ].filter(Boolean).join(" · ");
+    return `<li><time datetime="${esc(event.startDateTime || event.date)}"><strong>${esc(dateLabel(event.date))}</strong>${time ? `<small>${esc(time)}</small>` : ""}</time><div><h3>${link(event.path, event.name)}</h3>${details ? `<p>${details}</p>` : ""}</div>${event.soldOut ? '<span class="pill">Sold out</span>' : ""}</li>`;
+  }).join("");
+}
+
+function relatedEventSections(document) {
+  const { event, related } = document;
+  if (!related) return "";
+  const section = (eyebrow, heading, items, action = "") => items
+    ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">${eyebrow}</p><h2>${heading}</h2></div>${action}</div><ol class="event-list">${items}</ol></section>`
+    : "";
+  return [
+    section("On tour", `More ${esc(event.artist)} dates`, relatedEventItems(related.artist, { artist: false, place: true }),
+      event.artistPath ? link(`${event.artistPath}#shows`, `All ${event.artist} shows`) : ""),
+    section("Same room", `Also at ${esc(event.venue)}`, relatedEventItems(related.venue, { venue: false }),
+      event.venuePath ? link(event.venuePath, "Venue guide") : ""),
+    related.cityName ? section("Same city", `More concerts in ${esc(related.cityName)}`, relatedEventItems(related.city)) : "",
+  ].join("");
+}
+
 function eventMain(document) {
   const { event } = document;
   const posts = document.posts.map((post) => compactPost(post)).join("");
@@ -345,6 +375,7 @@ function eventMain(document) {
       ${eventDetails(event)}
     </section>
     ${posts ? `<section class="section" data-mshpit-fan-backed="true"><div class="section-heading"><div><p class="eyebrow">People who were there</p><h2>Fan memories from this show</h2></div></div><div class="post-list">${posts}</div></section>` : `<section class="section empty-state"><p class="eyebrow">The archive starts here</p><h2>No fan memories have been shared for this date yet.</h2><p>After the show, fans can log a review and choose which photos appear in public galleries.</p></section>`}
+    ${relatedEventSections(document)}
   </main>`;
 }
 
@@ -535,6 +566,7 @@ const STYLES = `
   .landing-hero{position:relative;isolation:isolate;display:flex;min-height:min(720px,calc(100dvh - 5.5rem));max-width:none;margin-top:1.25rem;padding:clamp(3rem,8vw,6.5rem) clamp(1.4rem,6vw,5rem);flex-direction:column;justify-content:center;overflow:hidden;border:1px solid #423a34;border-radius:2rem;background:radial-gradient(circle at 78% 24%,rgba(255,145,72,.18),transparent 27rem),radial-gradient(circle at 18% 82%,rgba(44,128,133,.34),transparent 32rem),linear-gradient(145deg,#161b20,#0a0b0d 58%,#21150e)}
   .landing-hero::after{content:"";position:absolute;z-index:-1;inset:0;background:linear-gradient(90deg,rgba(5,6,8,.18),rgba(5,6,8,.04) 55%,rgba(5,6,8,.38));pointer-events:none}.landing-hero .eyebrow{display:flex;align-items:center;gap:.75rem;color:#f2a65a;letter-spacing:.26em}.landing-hero .eyebrow::before{content:"";width:2.25rem;height:2px;border-radius:2px;background:#ff9148;box-shadow:0 0 14px rgba(255,145,72,.7)}
   .landing-hero h1{max-width:800px;font-family:ui-rounded,"Arial Rounded MT Bold",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;font-size:clamp(3rem,7vw,5.4rem);font-style:normal;line-height:.98;letter-spacing:-.045em;text-shadow:0 2px 22px rgba(0,0,0,.55)}.landing-hero h1 em{color:#ff9148;font-style:normal;font-weight:900}.landing-hero .hero-copy{max-width:610px;color:#eee8df;font-size:clamp(1rem,2vw,1.25rem);line-height:1.55}.landing-hero .button{min-width:13rem;padding:1rem 1.35rem;text-align:center}.landing-hero .button.primary{background:#ff9148;border-color:#ffb07a;color:#160b05;box-shadow:0 10px 30px rgba(255,145,72,.2)}
+  .discography{list-style:none;padding:0;margin:0;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));column-gap:2rem}.discography li{display:flex;justify-content:space-between;align-items:baseline;gap:1rem;padding:.8rem 0;border-top:1px solid var(--line)}.discography span{color:var(--muted);font-size:.8rem;white-space:nowrap}@media(max-width:760px){.discography{grid-template-columns:1fr}}
   @media(max-width:900px){.directory-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.venue-hero,.venue-guide-grid{grid-template-columns:1fr}.venue-hero-photo,.venue-hero-fallback{order:0}.venue-hero-copy{order:1}}@media(max-width:760px){nav a:nth-child(n+4){display:none}.artist-grid,.updates,.directory-grid{grid-template-columns:1fr}.media-grid{grid-template-columns:1fr}.event-list li{grid-template-columns:5.5rem 1fr}.event-list .pill,.archive-score{grid-column:2}.event-facts,.venue-facts{grid-template-columns:1fr}.venue-guide-link{align-items:flex-start;flex-direction:column}.venue-guide-link span{text-align:left}.ticket-action{align-items:flex-start;flex-direction:column}.section-heading{align-items:start}.profile-hero h1,.hero h1,.directory-hero h1{font-size:clamp(3rem,15vw,5rem)}}
   @media(max-width:760px){.site-header nav a:not(:last-child){display:none}.site-header nav a:last-child{display:inline-block}.landing-hero{min-height:calc(100dvh - 5.5rem);margin-top:.75rem;border-radius:1.5rem;text-align:center}.landing-hero .eyebrow,.landing-hero .actions{justify-content:center}.landing-hero .hero-copy{margin-left:auto;margin-right:auto}.landing-hero .button{width:100%}.landing-hero h1{font-size:clamp(2.8rem,13vw,4.4rem)}}
 `;

@@ -1478,6 +1478,91 @@ test("event ticket offers require a supported future purchasable state and missi
   }
 });
 
+test("event pages link the artist's other dates, the venue's other nights and nearby shows once each", () => {
+  const database = createDatabase();
+  try {
+    addArtist(database);
+    addArtist(database, { key: "beta", name: "Beta", mbid: OTHER_MBID });
+    const insert = database.prepare(`INSERT INTO tour_dates
+      (id,artist,artist_key,venue,date,source,venue_provider_id,venue_city,venue_country_code,release_at)
+      VALUES (?,?,?,?,?,?,?,?,?,0)`);
+    insert.run("show-now", "Alpha", "alpha", "World Hall", "2026-09-01", "ticketmaster", "KV1", "Toronto", "CA");
+    insert.run("alpha-same-room", "Alpha", "alpha", "World Hall", "2026-09-02", "ticketmaster", "KV1", "Toronto", "CA");
+    insert.run("alpha-montreal", "Alpha", "alpha", "Big Room", "2026-09-10", "ticketmaster", "KV2", "Montreal", "CA");
+    insert.run("beta-same-room", "Beta", "beta", "World Hall", "2026-09-05", "ticketmaster", "KV1", "Toronto", "CA");
+    insert.run("gamma-first", "Gamma", null, "Small Room", "2026-09-06", "ticketmaster", "KV3", "Toronto", "CA");
+    insert.run("gamma-second", "Gamma", null, "Small Room", "2026-09-07", "ticketmaster", "KV3", "Toronto", "CA");
+    insert.run("other-toronto", "Delta", null, "Ohio Hall", "2026-09-08", "ticketmaster", "KV4", "Toronto", "US");
+    insert.run("too-far-out", "Epsilon", null, "Small Room", "2026-12-30", "ticketmaster", "KV3", "Toronto", "CA");
+    insert.run("already-played", "Zeta", null, "Small Room", "2026-08-01", "ticketmaster", "KV3", "Toronto", "CA");
+
+    const documents = service(database);
+    const document = documents.eventDocument({ id: "show-now", today: "2026-08-25", at: NOW });
+    const ids = (cards) => cards.map((card) => card.id);
+    assert.deepEqual(ids(document.related.artist), ["alpha-same-room", "alpha-montreal"]);
+    assert.deepEqual(ids(document.related.venue), ["beta-same-room"],
+      "an artist date at the same venue is listed under the artist only");
+    assert.deepEqual(ids(document.related.city), ["gamma-first"],
+      "one show per artist, same country only, and nothing past the window or already played");
+    assert.equal(document.related.cityName, "Toronto");
+
+    const html = documents.render(document);
+    assert.match(html, /<h2>More Alpha dates<\/h2>/);
+    assert.match(html, /<h2>Also at World Hall<\/h2>/);
+    assert.match(html, /<h2>More concerts in Toronto<\/h2>/);
+    assert.match(html, /href="\/artist\/alpha#shows">All Alpha shows<\/a>/);
+    for (const hidden of ["gamma-second", "other-toronto", "too-far-out", "already-played"]) {
+      assert.equal(html.includes(`/event/${hidden}"`), false, hidden);
+    }
+    const page = document.jsonLd.find((node) => node["@type"] === "WebPage");
+    assert.deepEqual(page.relatedLink, [
+      "https://www.example.com/event/alpha-same-room",
+      "https://www.example.com/event/alpha-montreal",
+      "https://www.example.com/event/beta-same-room",
+      "https://www.example.com/event/gamma-first",
+    ]);
+
+    const lonely = documents.eventDocument({ id: "alpha-montreal", today: "2026-08-25", at: NOW });
+    assert.deepEqual(ids(lonely.related.venue), []);
+    assert.deepEqual(ids(lonely.related.city), []);
+    assert.doesNotMatch(documents.render(lonely), /Also at|More concerts in/);
+  } finally {
+    database.close();
+  }
+});
+
+test("artist pages list an identity-matched MusicBrainz discography, newest first", () => {
+  const database = createDatabase();
+  try {
+    const albums = [
+      { title: "First Light", year: "2014", type: "Album" },
+      { title: "Greatest Hits", year: "2024", type: "Compilation" },
+      { title: "Night Moves EP", year: "2019", type: "EP" },
+      { title: "Live at the Hall", year: "2021", type: "Live album" },
+      { title: "Night Moves EP", year: "2019", type: "EP" },
+      { title: "Undated Demos", year: "", type: "Album" },
+    ];
+    addArtist(database, { data: { mbid: ARTIST_MBID, albums } });
+    addArtist(database, { key: "beta", name: "Beta", mbid: OTHER_MBID, data: { mbid: ARTIST_MBID, albums } });
+    const documents = service(database);
+
+    const document = documents.artistDocument({ artistKey: "alpha", at: NOW });
+    assert.deepEqual(document.discography.map((album) => album.title),
+      ["Live at the Hall", "Night Moves EP", "First Light", "Undated Demos"]);
+    const html = documents.render(document);
+    assert.match(html, /<h2>Alpha albums and EPs<\/h2>/);
+    assert.match(html, /<strong>Night Moves EP<\/strong><span>2019 · EP<\/span>/);
+    assert.match(html, /Release list from <a href="https:\/\/musicbrainz\.org\/artist\//);
+    assert.doesNotMatch(html, /Greatest Hits/);
+
+    const mismatched = documents.artistDocument({ artistKey: "beta", at: NOW });
+    assert.deepEqual(mismatched.discography, [], "albums fetched for another MusicBrainz identity are not shown");
+    assert.doesNotMatch(documents.render(mismatched), /albums and EPs/);
+  } finally {
+    database.close();
+  }
+});
+
 test("online concert reviews stay standalone and never become physical show or venue evidence", () => {
   const database = createDatabase();
   try {

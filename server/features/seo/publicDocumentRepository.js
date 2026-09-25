@@ -420,6 +420,24 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
       AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1)
     ORDER BY td.date ASC,td.id ASC LIMIT ?`);
 
+  // Other upcoming shows in the same city for an event page. The structured
+  // country code and city keep same-named cities apart, the conditions match
+  // idx_city_tour_location, and a bounded window keeps large cities cheap.
+  const cityEvents = database.prepare(`SELECT td.*,a.norm AS artist_key,a.public_slug AS artist_public_slug FROM tour_dates td
+    LEFT JOIN users owner ON owner.id=td.owner_id
+    LEFT JOIN artists a ON ${tourDateArtistBindingAllowedSql("td")} AND a.norm=LOWER(TRIM(td.artist))
+    WHERE upper(trim(td.venue_country_code))=?1 AND lower(trim(td.venue_city))=?2
+      AND trim(COALESCE(td.venue_city,''))<>''
+      AND lower(trim(td.venue))<>?3 AND LOWER(TRIM(td.artist))<>?4 AND td.id<>?5
+      AND td.release_at<=?6 AND ${currentOrUpcomingPublicMusicEventSql("td", "?7")} AND td.date<=?8
+      AND ${tourDateHasNoPublishedMemorialSql("td")}
+      AND ${publicMusicEventCandidateSql("td")}
+      AND ${publicIndexableMusicEventSql("td")}
+      AND ${artistAuthoredTourDateVisibleSql("td")}
+      AND (td.owner_id IS NULL OR ${activeAccountSql("owner")})
+      AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1)
+    ORDER BY td.date ASC,td.id ASC LIMIT ?9`);
+
   // A provider venue's location remains useful after its last concert. Read
   // only the latest public location, never return historical rows as upcoming
   // shows, and keep exact provider identity alongside the indexed public slug.
@@ -812,10 +830,35 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
         ? today : new Date(instant).toISOString().slice(0, 10);
       const event = eventById.get(eventId, instant, day, day) || null;
       if (!event) return null;
+      const identityPending = tourDateArtistIdentityPending(event);
+      const showLimit = bounded(relatedLimit, 6, 12);
+      // Related shows give the page real internal links: the artist's other
+      // dates, the room's other nights, and what else is on in the city.
+      const others = (rows, { onePerArtist = false } = {}) => {
+        const artists = new Set();
+        return rows.filter((row) => {
+          if (row.id === event.id) return false;
+          if (!onePerArtist) return true;
+          const artist = String(row.artist || "").trim().toLowerCase();
+          if (artists.has(artist)) return false;
+          artists.add(artist);
+          return true;
+        }).slice(0, showLimit);
+      };
+      const providerVenueId = typeof event.venue_provider_id === "string" ? event.venue_provider_id.trim() : "";
+      const countryCode = String(event.venue_country_code || "").trim().toUpperCase();
+      const city = String(event.venue_city || "").trim().toLowerCase();
+      const cityWindowEnd = new Date(Date.parse(`${day}T00:00:00Z`) + 90 * 86_400_000).toISOString().slice(0, 10);
       return {
         event,
-        posts: tourDateArtistIdentityPending(event) ? [] : eventRelatedPosts.all(event.artist_key || "", event.artist, event.venue, event.date,
-          bounded(relatedLimit, 6, 12)),
+        posts: identityPending ? [] : eventRelatedPosts.all(event.artist_key || "", event.artist, event.venue, event.date, showLimit),
+        artistEvents: identityPending ? [] : others(artistEvents.all(event.artist_key || "", event.artist, instant, day, showLimit + 1)),
+        venueEvents: others(providerVenueId
+          ? venueEventsByProvider.all(event.source ?? null, providerVenueId, instant, day, showLimit + 1)
+          : venueEventsByName.all(event.venue, instant, day, showLimit + 1)),
+        cityEvents: countryCode && city ? others(cityEvents.all(countryCode, city,
+          String(event.venue || "").trim().toLowerCase(), String(event.artist || "").trim().toLowerCase(),
+          event.id, instant, day, cityWindowEnd, showLimit * 4), { onePerArtist: true }) : [],
       };
     },
 
