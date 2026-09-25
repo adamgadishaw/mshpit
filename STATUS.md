@@ -15,9 +15,11 @@ August 4/5 audit/session log are historical journals, not current status.
   desktop "Back to intro" button, which does that on purpose (the deep-link
   cases cover it). The event page has no button named "Go back".
 - New browser regression case `discover-event-back` (390 and 1280): guest opens
-  /discover, opens the first event card, presses the page's Back arrow, lands
-  on /discover with Discover visible, and browser Forward/Back agree. It fails
-  when in-app Back is forced to Intro, so it guards the reported path.
+  /discover, opens the slideshow's event card, presses the page's Back arrow,
+  lands on /discover with Discover visible, browser Forward/Back agree, and the
+  same holds for the first event in the list. The fixture event carries
+  credited artwork (served locally) because the slideshow now needs a picture.
+  The case fails when in-app Back is forced to Intro.
 - Checks: `npm run check`, `git diff --check`, and all 57 navigation browser
   cases pass. `server/catalogPhotoIntegrity.test.mjs` failed once in the full
   run ("trigger ... already exists") and passed alone and on rerun; noted in
