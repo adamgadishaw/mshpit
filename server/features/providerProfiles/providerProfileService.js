@@ -74,22 +74,38 @@ function saveBudget(database, budget) {
     .run(BUDGET_KEY, JSON.stringify(budget));
 }
 
-// Performers seen most recently in shows first, and among them the ones whose
-// pages are still empty.
+const DISCOVER_WINDOW_DAYS = 30;
+const discoverWindow = (at) => {
+  const from = new Date(at).toISOString().slice(0, 10);
+  const to = new Date(at + DISCOVER_WINDOW_DAYS * 86_400_000).toISOString().slice(0, 10);
+  return { from, to };
+};
+
+// Discover is most visitors' first page, so performers with a show in the next
+// 30 days (Discover's default range) come first, then the most popular acts,
+// then everyone else. Within each group, empty pages and recent sightings lead.
 export function nextAttractionForProfile(database, { at = Date.now() } = {}) {
-  return database.prepare(`SELECT m.provider_id id,m.artist_key,a.name,a.mbid FROM provider_artist_identities m
+  const { from, to } = discoverWindow(at);
+  return database.prepare(`WITH soon AS (
+        SELECT DISTINCT artist_key FROM tour_dates WHERE artist_key IS NOT NULL AND date>=? AND date<=?
+      )
+      SELECT m.provider_id id,m.artist_key,a.name,a.mbid FROM provider_artist_identities m
       JOIN artists a ON a.norm=m.artist_key
       LEFT JOIN provider_profiles p ON p.provider='ticketmaster' AND p.kind='attraction' AND p.provider_id=m.provider_id
       WHERE m.provider='ticketmaster'
         AND (p.provider_id IS NULL OR (p.next_fetch_at<=? AND (p.status<>'leased' OR COALESCE(p.lease_until,0)<=?)))
-      ORDER BY (a.bio IS NULL OR trim(a.bio)='') DESC, m.last_seen_at DESC, m.provider_id LIMIT 1`).get(at, at) || null;
+      ORDER BY (m.artist_key IN (SELECT artist_key FROM soon)) DESC, (COALESCE(a.popularity,0)>=70) DESC,
+        (a.bio IS NULL OR trim(a.bio)='') DESC, m.last_seen_at DESC, m.provider_id LIMIT 1`).get(from, to, at, at) || null;
 }
 
-// Venues with the most shows on file first.
+// Venues hosting shows in Discover's window first, then those with the most
+// shows on file.
 export function nextVenueForProfile(database, { at = Date.now() } = {}) {
-  const rows = database.prepare(`SELECT venue_provider_id id,MIN(venue) name,COUNT(*) shows FROM tour_dates
+  const { from, to } = discoverWindow(at);
+  const rows = database.prepare(`SELECT venue_provider_id id,MIN(venue) name,COUNT(*) shows,
+        SUM(CASE WHEN date>=? AND date<=? THEN 1 ELSE 0 END) soon FROM tour_dates
       WHERE source='ticketmaster' AND venue_provider_id IS NOT NULL AND trim(venue_provider_id)<>''
-      GROUP BY venue_provider_id ORDER BY shows DESC, venue_provider_id LIMIT 3000`).all();
+      GROUP BY venue_provider_id ORDER BY soon DESC, shows DESC, venue_provider_id LIMIT 3000`).all(from, to);
   const due = database.prepare(`SELECT 1 FROM provider_profiles WHERE provider='ticketmaster' AND kind='venue' AND provider_id=?
       AND (next_fetch_at>? OR (status='leased' AND COALESCE(lease_until,0)>?))`);
   for (const row of rows) {

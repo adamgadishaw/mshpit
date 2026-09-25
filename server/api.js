@@ -95,6 +95,7 @@ import { crewRoutes } from "./features/crew/crewRoutes.js";
 import { artistUpdatesRoutes } from "./features/artistUpdates/artistUpdatesRoutes.js";
 import { createArtistNewsReader } from "./features/artistUpdates/artistNewsReader.js";
 import { startArtistNewsScheduler } from "./features/artistUpdates/artistNewsJob.js";
+import { startDeezerArtistPhotoScheduler } from "./features/artistPhotos/deezerArtistPhotoFill.js";
 import { artistPath as publicArtistPath, eventPath as publicEventPath } from "../src/domain/urls.mjs";
 import { CREW_ENABLED } from "../src/domain/crewAvailability.mjs";
 import { ensureCrewSchema } from "./features/crew/crewService.js";
@@ -3865,6 +3866,15 @@ const artistNewsReader = createArtistNewsReader(db, {
   eventPathFor: (id) => publicEventPath(id),
   artistPathFor: (row) => publicArtistPath({ name: row?.name, public_slug: row?.public_slug }),
 });
+
+// Artist photos from Deezer while Spotify is not configured; Discover's
+// artists first, since they are the first thing new visitors see.
+export function startArtistPhotos() {
+  return startDeezerArtistPhotoScheduler({
+    database: db,
+    fetchJson: (url, { signal } = {}) => providerJson("Deezer", url, { signal }),
+  });
+}
 
 export function readArtistNews(options) {
   return artistNewsReader.read(options);

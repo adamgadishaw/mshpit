@@ -23,6 +23,46 @@ August 4/5 audit/session log are historical journals, not current status.
   run ("trigger ... already exists") and passed alone and on rerun; noted in
   `TODO.md`.
 
+## 2026-09-25 SEO pass: related shows, discography, Deezer artist photos
+
+Production audit before this change: event pages had about 100 words and 4
+internal links, and an artist page with no tour (Drake) had 62 words and 2
+links. Canonicals, robots, sitemaps and JSON-LD were already fine.
+
+- Event pages (crawlable HTML) now list the artist's other upcoming dates, the
+  venue's other nights, and other concerts in the same city (same country
+  code, next 90 days, one show per artist), each show once across the three
+  lists, all through the same public event rules as the event pages
+  themselves. The WebPage JSON-LD carries them as `relatedLink`. On a local
+  catalogue copy a typical event page went to about 300 words and 25 links.
+- Artist pages list albums, EPs and live albums from MusicBrainz release
+  groups (newest first, up to 12, credited), only when the stored release list
+  was fetched for the artist's own MBID. Groups also get them as `album` in
+  structured data. Drake's page went from 62 to 139 words locally.
+- Artist photos: the Spotify photo pipeline is off, so most Discover artists
+  had no picture. A Deezer (keyless) filler now runs every 15 minutes when
+  Spotify is not configured (`ARTIST_PHOTO_DEEZER_ENABLED=true`): Discover's
+  artists first, then artists playing in the next 30 days, then popular acts.
+  It takes a photo only from an exact-name match with 1000+ fans that clearly
+  dominates any namesakes (20x the runner-up), skips Deezer's blank
+  placeholder, credits "Deezer", never replaces an existing photo, an owner's
+  avatar or a hidden profile, and does not retry a miss for 14 days. Pausing
+  catalog upkeep pauses it.
+
+## 2026-09-25 Discover first impressions: slideshow and agent priority
+
+- The Discover event slideshow only shows events that have a picture (fan
+  photo or credited Ticketmaster artwork); with none it is hidden and the event
+  list carries the section. The Pause button is gone at the owner's request:
+  autoplay rests while the slideshow is hovered, focused or touched, stops once
+  someone uses the arrows, and never runs with Reduce Motion. Each slide now
+  stays up 9 seconds instead of 6.5.
+- The Ticketmaster web profile worker fills Discover first: performers with a
+  show in the next 30 days (Discover's default range), then popular acts, then
+  everyone else; venues hosting shows in that window before venues with more
+  shows later. Many Ticketmaster events still have no picture because the feed
+  sends images without credit details, which we deliberately do not publish.
+
 ## 2026-09-25 Artist news hub, tour titles and photo credit (SEO)
 
 The owner wants Mshpit to be an information hub as well as a social network:

@@ -137,6 +137,7 @@ export function buildDiscoverEventBannerSlides({
   blockedIds = [],
   removedUris = [],
   limit = 6,
+  requireMedia = false,
 } = {}) {
   const blocked = new Set((Array.isArray(blockedIds) ? blockedIds : []).map(String));
   const removed = new Set((Array.isArray(removedUris) ? removedUris : []).map((value) => normalize(value, 2_000)));
@@ -177,6 +178,9 @@ export function buildDiscoverEventBannerSlides({
       return uri && !seenUris.has(uri);
     });
     const normalizedMedia = selected ? normalizeMedia(selected) : null;
+    // A slideshow is for pictures. With requireMedia, an event without one
+    // is left to the event list below instead of becoming a blank slide.
+    if (requireMedia && !normalizedMedia?.uri) continue;
     if (normalizedMedia?.uri) seenUris.add(normalizedMedia.uri);
     slides.push({
       id: eventKey,
