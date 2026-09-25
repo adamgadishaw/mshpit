@@ -22,18 +22,22 @@ const ago = (ts) => {
   return `${Math.floor(h / 24)}d`;
 };
 
+const crewMatchPhrase = (artist) => (artist ? `and you are a crew for ${artist}` : "and you are a crew for a show");
+
 const META = {
   follow: { icon: "you", tint: colors.cool, verb: "started following you" },
   like: { icon: "heart", tint: colors.magenta, verb: "liked your review" },
   comment: { icon: "comment", tint: colors.amber, verb: "commented on your review" },
   post_tag: { icon: "you", tint: colors.gold, verb: "tagged you in a post" },
   dm: { icon: "mail", tint: colors.good, verb: "sent you a message" },
+  crew_match: { icon: "heart", tint: colors.magenta, verb: "is your crew" },
   welcome: { icon: "star", tint: colors.amber, verb: "" },
 };
 
 function notificationCopy(notification, actorName) {
   if (notification.type === "welcome") return "Welcome to Pit! Follow people whose taste matches yours, log the shows you go to, and rate the band versus the room.";
   if (notification.type === "post_tag") return postTagNotificationCopy(actorName, notification.artist);
+  if (notification.type === "crew_match") return `${actorName || "Someone"} ${crewMatchPhrase(notification.artist)}`;
   const meta = META[notification.type] || META.like;
   const reference = (notification.type === "like" || notification.type === "comment") && notification.artist
     ? ` of ${notification.artist}`
@@ -289,12 +293,13 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
                   </Text>
                 ) : (
                   <Text style={styles.text}>
-                    <Text style={styles.who}>{actorName}</Text> {n.type === "post_tag" ? postTagNotificationPhrase(n.artist) : meta.verb}
+                    <Text style={styles.who}>{actorName}</Text> {n.type === "post_tag" ? postTagNotificationPhrase(n.artist) : n.type === "crew_match" ? crewMatchPhrase(n.artist) : meta.verb}
                     {(n.type === "like" || n.type === "comment") && n.artist ? <Text style={styles.ref}> of {n.artist}</Text> : null}
                   </Text>
                 )}
                 {n.type === "comment" && n.text ? <Text style={styles.preview} numberOfLines={1}>“{n.text}”</Text> : null}
                 {n.type === "dm" && n.text ? <Text style={styles.preview} numberOfLines={1}>“{n.text}”</Text> : null}
+                {n.type === "crew_match" ? <Text style={styles.preview} numberOfLines={1}>{n.text ? `${n.text} · ` : ""}Tap to say hi</Text> : null}
                 {bundle?.count > 1 ? <Text style={styles.bundleCount}>{bundle.count} RELATED ACTIVITIES</Text> : null}
               </View>
               {openingNotificationId === n.id && <ActivityIndicator size="small" color={colors.amber} />}

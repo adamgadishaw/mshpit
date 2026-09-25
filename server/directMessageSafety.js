@@ -14,7 +14,7 @@ export function isClassifiedAccountAgeBand(value) {
   return CLASSIFIED_ACCOUNT_AGE_BANDS.includes(value);
 }
 
-export function mayStartDirectMessage({ conversationExists = false, recipientPolicy = "mutuals", senderAgeBand = "unknown", recipientAgeBand = "unknown", senderFollowsRecipient = false, recipientFollowsSender = false } = {}) {
+export function mayStartDirectMessage({ conversationExists = false, recipientPolicy = "mutuals", senderAgeBand = "unknown", recipientAgeBand = "unknown", senderFollowsRecipient = false, recipientFollowsSender = false, crewMatched = false } = {}) {
   const senderBand = accountAgeBand(senderAgeBand);
   const recipientBand = accountAgeBand(recipientAgeBand);
   // Migrated accounts must make the same coarse safety choice as new accounts
@@ -39,6 +39,9 @@ export function mayStartDirectMessage({ conversationExists = false, recipientPol
   if (conversationExists) return { allowed: true, reason: "existing_conversation" };
   const policy = directMessagePolicy(recipientPolicy);
   if (policy === "nobody") return { allowed: false, reason: "recipient_closed" };
+  // Two adults who both said yes to going to a show together have each asked
+  // to hear from the other; that consent stands in for a mutual follow.
+  if (crewMatched) return { allowed: true, reason: "crew_match" };
   if (policy === "mutuals") return { allowed: mutual, reason: mutual ? "mutual" : "mutual_required" };
   return { allowed: !!recipientFollowsSender, reason: recipientFollowsSender ? "recipient_follows_sender" : "follow_required" };
 }

@@ -31,6 +31,10 @@ export function notificationBundleTarget(notification) {
   if (type === "dm") return text(notification?.actorId)
     ? `thread:${text(notification.actorId)}`
     : `notification:${notificationId(notification)}`;
+  // Each crew is its own person; two crews for one show never merge.
+  if (type === "crew_match") return text(notification?.actorId)
+    ? `crew:${text(notification.actorId)}:${text(notification?.postId)}`
+    : `notification:${notificationId(notification)}`;
   if (type === "like" || type === "comment" || type === "post_tag") return text(notification?.postId)
     ? `post:${text(notification.postId)}`
     : `notification:${notificationId(notification)}`;

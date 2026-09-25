@@ -1,6 +1,7 @@
 import { LANDING_IDENTITY_COPY, LANDING_BROWSE_LINKS } from "../../../src/domain/landingPresentation.mjs";
 import { canonicalYouTubeReviewLink } from "../../onlineReviews.js";
 import { renderCityGuideMain, renderCityDirectoryMain } from "./cityGuideDocument.js";
+import { renderCrewMain } from "../crew/crewDocuments.js";
 import { CITY_GUIDE_STYLES } from "./cityGuideStyles.js";
 import { artistBiographyRows } from "../../../src/domain/artistBiography.mjs";
 import { validateArtistKnowledgeSource } from "../../../src/domain/artistKnowledge.mjs";
@@ -326,6 +327,18 @@ function eventDetails(event) {
   </dl>${ticket ? `<p class="ticket-action"><a class="button primary" href="${esc(ticket)}" rel="sponsored noopener noreferrer">View tickets</a><small>Tickets are handled by the linked provider.</small></p>` : ""}`;
 }
 
+// Upcoming shows invite people to find someone to go with. Counts only.
+function crewSection(document) {
+  const crew = document.crew;
+  if (!crew) return "";
+  const going = Number(crew.going) || 0;
+  const looking = Number(crew.lookingForCrew) || 0;
+  const counts = [going ? `${going} going` : "", looking ? `${looking} looking for a crew` : ""].filter(Boolean).join(" · ");
+  return `<section class="section crew-invite"><div class="section-heading"><div><p class="eyebrow">Going alone?</p><h2>Find a crew for this show</h2></div></div>
+      <p class="hero-copy">${counts ? `${esc(counts)} on Mshpit. ` : ""}Meet fans going to the same show: grab a drink before doors, share a ride or split a hotel.</p>
+      <div class="actions"><a class="button primary" href="/crew">Find a crew</a></div></section>`;
+}
+
 function eventMain(document) {
   const { event } = document;
   const posts = document.posts.map((post) => compactPost(post)).join("");
@@ -342,6 +355,7 @@ function eventMain(document) {
       ${providerImage}
       ${eventDetails(event)}
     </section>
+    ${crewSection(document)}
     ${posts ? `<section class="section" data-mshpit-fan-backed="true"><div class="section-heading"><div><p class="eyebrow">People who were there</p><h2>Fan memories from this show</h2></div></div><div class="post-list">${posts}</div></section>` : `<section class="section empty-state"><p class="eyebrow">The archive starts here</p><h2>No fan memories have been shared for this date yet.</h2><p>After the show, fans can log a review and choose which photos appear in public galleries.</p></section>`}
   </main>`;
 }
@@ -454,6 +468,7 @@ function directoryMain(document) {
 }
 
 export function renderPublicDocumentMain(document) {
+  if (document?.kind === "crew") return renderCrewMain(document);
   if (document?.kind === "city-directory") return renderCityDirectoryMain(document);
   if (document?.kind === "city") return renderCityGuideMain(document);
   if (!document || !["home", "discover", "search", "artist", "member", "post", "event", "concert", "venue", "directory"].includes(document.kind)) return null;

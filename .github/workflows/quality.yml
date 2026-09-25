@@ -75,3 +75,4 @@ jobs:
       - run: npm run verify:catalog-maintenance-browser
       - run: npm run verify:quick-log-browser
       - run: npm run verify:media-upload-browser
+      - run: npm run verify:crew-browser

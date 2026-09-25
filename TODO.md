@@ -243,6 +243,21 @@ remains a broad context whose changing value can rerender unrelated consumers.
 - **Animated story:** an MP4 version of the share card needs a render service
   with ffmpeg.
 
+## Crew follow-ups (2026-09-24)
+
+- **Seed the first crews:** Crew only works once a few people in one city use
+  it. Point the owner's socials at `/crew` and a busy local show's event page.
+- **Share a crew invite:** a "Looking for a crew for X" share card (reuse the
+  share card renderer) so people bring friends from outside Mshpit.
+- **Crew in the Lounge:** show "N looking for a crew" in each show's Lounge
+  header, linking to the people deck.
+- **Group crews:** let a crew of two add a third person who also matched one
+  of them, as a small group chat.
+- **Reminders:** a notification the day before a show to crews who have not
+  messaged yet.
+- **Moderation:** add Crew seekers and swipes to the admin member view so staff
+  can see abuse patterns (for example, one account liking everyone).
+
 ## Video posting and catalog research follow-ups (2026-09-24)
 
 - **Video:** after the deploy, the owner re-posts the TikTok clip; read the
@@ -257,8 +272,8 @@ remains a broad context whose changing value can rerender unrelated consumers.
 - **Research agent key (optional, owner prefers no AI for now):** the owner adds `ANTHROPIC_API_KEY` in Render, then
   checks the admin catalog screen's Web research section after the first pass
   (about 3 minutes after the deploy that follows).
-- **Bundle headroom:** initial JavaScript is 510.2 of 512 KiB gzip after the
-  artist/venue page blocks. Before adding more to screens in the first bundle,
+- **Bundle headroom:** initial JavaScript is 510.4 of 512 KiB gzip after the
+  artist/venue page blocks and Crew. Before adding more to screens in the first bundle,
   lazy-load the artist and venue About blocks or split ArtistScreen.
 - **Research images:** feed `images` (Commons file pages) into the
   licence-checked venue photo pipeline by exact file title, and add an

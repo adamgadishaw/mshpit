@@ -82,6 +82,7 @@
     "verify:catalog-maintenance-browser": "node scripts/verify-catalog-maintenance-browser.mjs",
     "verify:quick-log-browser": "node scripts/verify-quick-log-browser.mjs",
     "verify:media-upload-browser": "node scripts/verify-media-upload-browser.mjs",
+    "verify:crew-browser": "node scripts/verify-crew-browser.mjs",
     "verify:auth-real-server": "node scripts/verify-auth-real-server.mjs",
     "verify:production": "npm run verify:production-core && npm run verify:production-media && npm run verify:seo-catalog && npm run verify:seo",
     "inventory:seo": "node scripts/seo-inventory.mjs",

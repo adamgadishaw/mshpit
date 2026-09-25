@@ -6,6 +6,43 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-09-24 Crew: swipe to find people to go to shows with
+
+The owner asked for a hook that keeps people coming back between concerts,
+like Tinder or TikTok, without changing what the site is. They picked "swipe
+to find show buddies" over a daily game (the Headliner game is parked in
+`git stash` on `feat/headliner-game`, not deleted).
+
+- Three opt-in steps (`server/features/crew/`): swipe upcoming shows in your
+  home city (or any city) to say going, interested or skip; turn on "Looking
+  for a crew" for a show with up to four purposes (meet before doors, ride,
+  hotel, spare or needed ticket, pit) and a 160 character note; then swipe
+  other people looking for a crew for that same show. Two yeses make a crew.
+- Safety lives on the server: adults (`18_plus`) with a confirmed email only
+  for seeking and people swiping; you are shown only to others seeking for
+  the same show; one-sided yeses are never revealed; blocks hide people both
+  ways; stopping hides you at once; every invalid swipe target gets the same
+  404 so nobody can probe. A crew counts as consent for direct messages
+  between the two adults (`crewMatched` in `directMessageSafety.js`), except
+  when the recipient closed messages to everyone. Teens are never reachable.
+- Client: `CrewScreen` (show deck, people deck, "Your crews", match sheet,
+  block/report sheet), `SwipeDeck` (drag or buttons; honours reduced motion),
+  entry points on Discover (banner), each upcoming show page ("Going alone?
+  Find a crew" with public counts), and the menu. A `crew_match` notification
+  opens the chat with that person.
+- SEO: `/crew` is a crawlable page (how it works, FAQ structured data, and up
+  to 24 upcoming public shows with counts only), in the sitemap and reserved
+  as a slug. Upcoming event pages gain a "Going alone?" section linking to it.
+- New tables (created at startup, no backfill): `crew_seekers`, `crew_swipes`,
+  `crew_matches`, `crew_show_passes`. No new keys or environment variables.
+- Checks: `server/features/crew/crew.test.mjs` (gating, visibility, blocks,
+  hidden one-sided likes, matches and DM consent, the public page) and a new
+  CI browser suite, `npm run verify:crew-browser`, which drags a card away by
+  touch at 375px and by mouse at 1280px, says going, sets up a crew, crews up
+  and checks the match. It caught a web bug fixed here: letting go of a drag
+  also clicked the card and opened the show. Initial JavaScript is 510.4 of
+  512 KiB gzip (Crew adds 0.2 KiB; the rest loads with its screens).
+
 ## 2026-09-24 web profile agents (no AI): Ticketmaster records + Wikidata
 
 The owner prefers agents that pull from the web over AI research, because

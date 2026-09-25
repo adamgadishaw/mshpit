@@ -91,6 +91,8 @@ import { createArtistLiveSummaryService } from "./features/artistArchive/artistL
 import { artistLiveSummaryRoutes } from "./features/artistArchive/artistLiveSummaryRoutes.js";
 import { catalogResearchRoutes } from "./features/catalogResearch/catalogResearchRoutes.js";
 import { providerProfileRoutes } from "./features/providerProfiles/providerProfileRoutes.js";
+import { crewRoutes } from "./features/crew/crewRoutes.js";
+import { crewMatchExists, ensureCrewSchema } from "./features/crew/crewService.js";
 import { startProviderProfileScheduler } from "./features/providerProfiles/providerProfileService.js";
 import { startCatalogResearchScheduler } from "./features/catalogResearch/catalogResearchService.js";
 import { artistIdentityHeld } from "./features/artistAccounts/artistVerification.js";
@@ -3802,6 +3804,35 @@ function retryVideoProcessingForOwner(ctx) {
   return { asset: ownedMediaAsset(db, { ownerId: u.id, assetId: ctx.params.id, at: now() }), finalize: started.finalize };
 }
 
+// What another adult looking for a crew sees about you: your public profile's
+// name, photo, home city, short bio and a few favourite artists. Never age,
+// email, coordinates or anything private.
+function crewPersonCard(userId) {
+  const row = q.userById.get(userId);
+  if (!row || !accountIsPublic(row)) return null;
+  const person = publicUser(row);
+  if (!person) return null;
+  return {
+    id: person.id,
+    name: person.name,
+    handle: person.handle,
+    initials: person.initials,
+    avatarUri: person.avatarUri,
+    avatarColor: person.avatarColor,
+    city: person.home?.city || null,
+    bio: typeof person.bio === "string" ? person.bio.slice(0, 160) : "",
+    favoriteArtists: Array.isArray(person.favoriteArtists) ? person.favoriteArtists.slice(0, 3) : [],
+  };
+}
+
+function notifyCrewMatch({ user, targetId, tourDateId }) {
+  const show = db.prepare("SELECT artist,venue,date FROM tour_dates WHERE id=?").get(tourDateId);
+  const detail = show ? [show.venue, show.date].filter(Boolean).join(" · ").slice(0, 80) : null;
+  // Each person hears about it from the other, so the ping opens that chat.
+  addNotif(targetId, user.id, "crew_match", { postId: tourDateId, artist: show?.artist || null, text: detail });
+  addNotif(user.id, targetId, "crew_match", { postId: tourDateId, artist: show?.artist || null, text: detail });
+}
+
 export function startWebProfiles() {
   return startProviderProfileScheduler({ database: db });
 }
@@ -4016,6 +4047,7 @@ function scheduleClientCrashAlert() {
 const peopleSuggestionService = createPeopleSuggestionService(db, { projectUser: publicUser });
 const artistRecommendationService = createArtistRecommendationService(db);
 const artistLiveSummaryService = createArtistLiveSummaryService({ database: db, projectDate: tourDateJson, clock: now });
+ensureCrewSchema(db);
 const catalogMaintenanceService = createCatalogMaintenanceService({ database: db, databasePath: DATABASE_PATH,
   now, seoStatus: catalogSeoMaintenanceStatus });
 const messageRelationshipContextService = createMessageRelationshipContextService(db);
@@ -7655,6 +7687,7 @@ export const routes = {
       recipientAgeBand: recipient.age_band,
       senderFollowsRecipient,
       recipientFollowsSender,
+      crewMatched: u.age_band === "18_plus" && recipient.age_band === "18_plus" && crewMatchExists(db, u.id, other),
     });
     if (!permission.allowed) {
       const message = permission.reason === "age_classification_required"
@@ -9481,6 +9514,20 @@ export const routes = {
       if (artist && !artistCatalogVisibleTo(db, artist, ctx?.user)) throw new ApiError(404, "This artist page is unavailable.", "NOT_FOUND");
       return artist;
     } }),
+  ...crewRoutes({
+    database: db,
+    ApiError,
+    rateLimit: limit,
+    requireUser,
+    requireVerifiedUser,
+    visibleTourDates: (user, options) => visibleTourDateRows(user, options),
+    projectShow: (row) => tourDateJson(row),
+    projectUser: crewPersonCard,
+    blockedEitherWay,
+    isAvailable: (id) => accountIsPublic(q.userById.get(id)),
+    notifyMatch: notifyCrewMatch,
+    now,
+  }),
   ...providerProfileRoutes({ database: db, ApiError, rateLimit: limit, decodedPathParam, canonicalVenueKey,
     resolveArtist: (key, ctx) => {
       const artist = resolveCatalogArtistReference(key);

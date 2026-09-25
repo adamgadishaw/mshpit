@@ -9,6 +9,7 @@ import DiscoverGenres from "../components/discover/DiscoverGenres";
 import DiscoverVenues from "../components/discover/DiscoverVenues";
 import DiscoverPhotoPanel from "../features/discoverPhotos/DiscoverPhotoPanel";
 import DiscoverEventBanner from "../components/discover/DiscoverEventBanner";
+import CrewBanner from "../components/discover/CrewBanner";
 import DiscoverProgrammeNav from "../components/discover/DiscoverProgrammeNav";
 import { discoverEventRecovery } from "../components/discover/discovery-recovery.mjs";
 import { MetricTile, OverviewState, QuickAction, SectionHeading } from "../components/discover/DiscoverPrimitives";
@@ -87,6 +88,7 @@ export default function DiscoverScreen({
   onOpenArtist,
   onOpenVenue,
   onOpenNearby,
+  onOpenCrew,
   onOpenFanClubs,
   onOpenVenues,
   onOpenLounge,
@@ -638,6 +640,7 @@ export default function DiscoverScreen({
       </View>}
 
       {programme === "shows" && <View nativeID="discover-panel-shows" accessibilityRole="tabpanel" aria-labelledby="discover-tab-shows" style={styles.upcomingSection}>
+        {onOpenCrew ? <CrewBanner onPress={onOpenCrew} compact={compact} /> : null}
         <View style={styles.livePanel}>
           <View style={[styles.livePanelHead, compact && styles.livePanelHeadCompact]}>
             <SectionHeading

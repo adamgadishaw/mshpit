@@ -30,7 +30,7 @@ export const RESERVED_SLUGS = new Set([
   // called "Artist" builds "/artist", which parsePath reads as a prefix with no
   // value and rejects. That put a dead link in the sitemap.
   "artist", "artists", "venue", "u", "post", "show", "event", "events", "concert", "concerts", "city", "cities",
-  "about", "admin", "api", "assets", "auth", "badges", "calendar", "clips",
+  "about", "admin", "api", "assets", "auth", "badges", "calendar", "clips", "crew",
   "contact", "discover", "download", "edit", "explore", "favicon.ico", "feed",
   "help", "home", "inbox", "legal", "login", "logout", "menu", "messages",
   "nearby", "new", "notifications", "playlist", "playlists", "press",

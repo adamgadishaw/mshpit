@@ -61,6 +61,7 @@ export function journeyMenuModel({ session = null, inboxUnread = 0, notification
       { key: "topRated", icon: "trophy", title: "Top-rated shows", detail: "The highest-rated nights close to home", accent: "gold" },
     ],
     connection: [
+      { key: "crew", icon: "heart", title: "Find a crew", detail: "Swipe shows and meet fans going too" },
       ...(includeActivity ? [{ key: "activity", icon: "bell", title: "Activity", detail: notificationCount ? `${notificationCount} new` : "Follows, likes, and replies", badge: notificationCount }] : []),
       { key: "inbox", icon: "mail", title: "Inbox", detail: unread ? `${unread} unread` : "Your messages", badge: unread },
       { key: "suggestion", icon: "comment", title: "Suggestion box", detail: "Tell us what feels missing or confusing" },

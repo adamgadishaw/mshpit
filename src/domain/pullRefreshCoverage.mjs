@@ -50,6 +50,7 @@ export const PULL_REFRESH_COVERAGE = Object.freeze([
   coverage("SuggestionBoxScreen.jsx", "form", "Suggestion composer must preserve unsaved work."),
   coverage("VenueReviewScreen.jsx", "form", "Review composer must preserve unsaved work."),
 
+  coverage("CrewScreen.jsx", "static", "Swipe decks own vertical drags (up means interested); each deck reloads when opened, and empty states offer a retry."),
   coverage("BadgeLegendScreen.jsx", "static", "Local badge reference; remote rewards refresh on Profile."),
   coverage("DiagnosticsScreen.jsx", "static", "Authorized local diagnostic history, not a remote feed."),
   coverage("LandingScreen.jsx", "static", "Public marketing/SEO surface with no account-scoped collection."),
