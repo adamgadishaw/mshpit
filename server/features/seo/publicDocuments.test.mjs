@@ -658,7 +658,7 @@ test("artist document uses only active UGC and references Event leaf pages witho
     const invalidMbidDocument = documents.artistDocument({ artistKey: "bad-mbid", today: "2026-08-25", at: Date.now() });
 
     assert.equal(document.jsonLd[0]["@type"], "CollectionPage");
-    assert.equal(document.title, "Alpha concert reviews & upcoming shows | Mshpit");
+    assert.equal(document.title, "Alpha Tour 2026: Dates, Tickets & Concert Reviews | Mshpit", "tour searches name the artist and the year");
     assert.match(document.description, /live rating from 1 rating and 1 upcoming show/u);
     assert.match(document.description, /fan-shared photos/u);
     assert.equal(document.jsonLd[0].about["@type"], "Thing");

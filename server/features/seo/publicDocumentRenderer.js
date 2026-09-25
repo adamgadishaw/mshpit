@@ -1,6 +1,7 @@
 import { LANDING_IDENTITY_COPY, LANDING_BROWSE_LINKS } from "../../../src/domain/landingPresentation.mjs";
 import { canonicalYouTubeReviewLink } from "../../onlineReviews.js";
 import { renderCityGuideMain, renderCityDirectoryMain } from "./cityGuideDocument.js";
+import { NEWS_STYLES, renderArtistNewsSection, renderNewsMain } from "../artistUpdates/newsDocuments.js";
 import { CITY_GUIDE_STYLES } from "./cityGuideStyles.js";
 import { artistBiographyRows } from "../../../src/domain/artistBiography.mjs";
 import { validateArtistKnowledgeSource } from "../../../src/domain/artistKnowledge.mjs";
@@ -270,6 +271,7 @@ function artistMain(document) {
       ${nextShow}
     </section>
     ${memorial}
+    ${!memorialMode ? renderArtistNewsSection(document) : ""}
     ${biography ? `<section class="section"><h2>About ${esc(artist.name)}</h2><dl class="stats">${biography}</dl></section>` : ""}
     ${!memorialMode && events ? `<section class="section" id="shows"><div class="section-heading"><div><p class="eyebrow">On the road</p><h2>Upcoming shows</h2>${upcomingTotal > document.events.length ? `<p class="micro">Next ${document.events.length} of ${esc(upcomingTotal)} listed shows. The Shows tab on this artist page has the full schedule.</p>` : ""}</div></div><ol class="event-list">${events}</ol></section>` : ""}
     ${concerts ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">From the archive</p><h2>${memorialMode ? "Concert history" : "Top-rated concert nights"}</h2></div>${archiveLink}</div><ol class="event-list archive-list">${concerts}</ol></section>` : ""}
@@ -454,6 +456,7 @@ function directoryMain(document) {
 }
 
 export function renderPublicDocumentMain(document) {
+  if (document?.kind === "news") return renderNewsMain(document);
   if (document?.kind === "city-directory") return renderCityDirectoryMain(document);
   if (document?.kind === "city") return renderCityGuideMain(document);
   if (!document || !["home", "discover", "search", "artist", "member", "post", "event", "concert", "venue", "directory"].includes(document.kind)) return null;
@@ -542,13 +545,13 @@ export function renderPublicDocumentShell(document) {
   // Keep the style element inside #root. React's createRoot replaces both the
   // semantic preview and these temporary styles when the interactive client
   // mounts, so crawler-first CSS cannot leak into the signed-in application.
-  return `<style data-mshpit-public-document>${STYLES}${["city", "city-directory"].includes(document.kind) ? CITY_GUIDE_STYLES : ""}
+  return `<style data-mshpit-public-document>${STYLES}${["city", "city-directory"].includes(document.kind) ? CITY_GUIDE_STYLES : ""}${["news", "artist"].includes(document.kind) ? NEWS_STYLES : ""}
     .landing-browse a{display:inline-flex;align-items:center;min-height:44px;padding:0 .35rem;font-weight:700}
     @media(max-width:760px){.site-header>div{flex-wrap:wrap;gap:.5rem}.site-header nav{width:100%;max-width:100%;overflow-x:auto;flex-wrap:nowrap;padding-bottom:.2rem}.site-header nav a,.site-header nav a:not(:last-child){display:inline-flex;flex-shrink:0;align-items:center;min-height:44px}.landing-browse{gap:1rem;justify-content:center}}
     </style>
     <div class="seo-document">
       <a class="skip" href="#main">Skip to content</a>
-      <header class="site-header"><div data-nosnippet><a class="brand" href="/" aria-label="Mshpit home">MSHPIT</a><nav aria-label="Main navigation"><a href="/artists">Artists</a><a href="/events">Upcoming shows</a><a href="/venues">Venues</a><a href="/cities">Music cities</a><a href="/concerts">Concert archive</a><a href="/search">Search</a><a href="/login">Log in</a></nav></div></header>
+      <header class="site-header"><div data-nosnippet><a class="brand" href="/" aria-label="Mshpit home">MSHPIT</a><nav aria-label="Main navigation"><a href="/artists">Artists</a><a href="/events">Upcoming shows</a><a href="/news">News</a><a href="/venues">Venues</a><a href="/cities">Music cities</a><a href="/concerts">Concert archive</a><a href="/search">Search</a><a href="/login">Log in</a></nav></div></header>
       ${main}
       <footer class="site-footer"><span data-nosnippet>© ${new Date().getUTCFullYear()} Mshpit</span><div data-nosnippet><a href="/about">About</a><a href="/contact">Contact</a><a href="/community-guidelines">Guidelines</a><a href="/ratings-methodology">Ratings</a><a href="/privacy">Privacy</a><a href="/terms">Terms</a><a href="/support">Support</a></div></footer>
     </div>`;

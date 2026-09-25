@@ -1221,6 +1221,7 @@ export function buildSitemapDatasets(database, { now = Date.now() } = {}) {
     }))
     : [];
   if (guideCities.length) pages.push({ path: "/cities" });
+  pages.push({ path: "/news" });
   const cities = [...citySitemapEntries({ candidates, venueEntries: venues, concerts }), ...guideCities];
   const artistArchives = artistArchiveSitemapEntries({ artistEntries: artists, concerts });
   const datasets = new Map([

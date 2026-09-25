@@ -7,6 +7,10 @@ export function notificationDestination(notification) {
     : { kind: "none" };
   // Someone joining your Lounge plan opens your plans, where its chat lives.
   if (notification.type === "plan_join") return { kind: "plans" };
+  // News about an artist someone follows opens that artist's page.
+  if (notification.type === "artist_update") return text(notification.artist)
+    ? { kind: "artist", artist: text(notification.artist) }
+    : { kind: "none" };
   if (notification.type === "dm") return text(notification.actorId)
     ? { kind: "thread", actorId: text(notification.actorId) }
     : { kind: "none" };

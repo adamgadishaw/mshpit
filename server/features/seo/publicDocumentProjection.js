@@ -26,6 +26,7 @@ import { archiveShowKey } from "../artistArchive/artistArchiveKeys.js";
 import { venueCoordinates, venueGuideModel } from "../../../src/domain/venueGuide.mjs";
 import { publicVenueFacts } from "../../venueFacts.js";
 import { publicTourDateArtistProjection } from "../../tourDateMetadata.js";
+import { tourYearsLabel } from "../../../src/domain/artistNews.mjs";
 import { publicEventMetadata, publicVenueMetadataName } from "./publicMetadataPresentation.js";
 import {
   isCurrentOrUpcomingPublicMusicEvent,
@@ -928,9 +929,24 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       // Historical community photos remain in the bounded memories section,
       // but never become the identity image or social preview for a protected
       // legacy profile. Only staff-curated profile media may represent it.
-      const fanImage = legacyMode ? null : reviews.flatMap((review) => review.media)
+      const fanImageReview = legacyMode ? null : reviews.find((review) => review.media
+        .some((asset) => asset.kind === "image" ? asset.url : asset.posterUrl)) || null;
+      const fanImage = fanImageReview ? fanImageReview.media
         .map((asset) => asset.kind === "image" ? asset.url : asset.posterUrl)
-        .find(Boolean) || null;
+        .find(Boolean) || null : null;
+      // The fan who took the photo is credited in search results, by name and
+      // with a link to their profile. That credit is part of why fans share.
+      const fanImageCredit = fanImage && fanImageReview?.author?.name ? Object.freeze({
+        "@type": "ImageObject",
+        contentUrl: fanImage,
+        url: fanImage,
+        creditText: `Photo by ${fanImageReview.author.name}${fanImageReview.author.handle ? ` (@${fanImageReview.author.handle})` : ""} on Mshpit`,
+        creator: Object.freeze({
+          "@type": "Person",
+          name: fanImageReview.author.name,
+          ...(fanImageReview.author.path ? { url: absolute(publicOrigin, fanImageReview.author.path) } : {}),
+        }),
+      }) : null;
       const name = cleanLine(source.name, 160);
       const staffCuratedBio = Number(raw.profile?.bio_staff_curated) === 1;
       const profileBio = profilePublic ? raw.profile?.bio : null;
@@ -988,10 +1004,16 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       const upcomingTotal = count(raw.upcomingTotal ?? events.length);
       const upcomingSignal = hasUpcomingShows
         ? `${upcomingTotal} upcoming ${upcomingTotal === 1 ? "show" : "shows"}` : null;
+      // People search "<artist> tour 2026". Name the years the upcoming dates
+      // actually fall in, and only when there are upcoming dates.
+      const tourYears = tourYearsLabel(events.map((event) => event.date));
+      const news = legacyMode || memorial ? [] : (Array.isArray(raw.news) ? raw.news : []).slice(0, 6);
       const artistTitle = legacyMode
         ? `${name} legacy: biography and community memories | Mshpit`
         : memorial
         ? `Remembering ${name}: music, shows and fan memories | Mshpit`
+        : hasReviews && hasUpcomingShows && tourYears
+        ? `${name} Tour ${tourYears}: Dates, Tickets & Concert Reviews | Mshpit`
         : hasReviews && hasUpcomingShows
         ? `${name} concert reviews & upcoming shows | Mshpit`
         : hasReviews && hasFanPhotos && averageRating != null
@@ -1002,6 +1024,8 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         ? `${name} concert reviews & live ratings | Mshpit`
         : hasReviews
         ? `${name} concert reviews | Mshpit`
+        : hasUpcomingShows && tourYears
+        ? `${name} Tour ${tourYears}: Concert Dates & Tickets | Mshpit`
         : hasUpcomingShows
         ? `${name} upcoming concerts & artist profile | Mshpit`
         : `${name} music artist profile | Mshpit`;
@@ -1025,6 +1049,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       const musicBrainzUrl = musicBrainzArtistUrl(source.mbid);
       const entityImage = profileImageSchema(avatarMedia, `${name} profile photo`)
         || profileImageSchema(bannerMedia, `${name} profile banner`)
+        || fanImageCredit
         || fanImage;
       const socialProfileImage = bannerMedia || avatarMedia;
       const biographyFacts = projectArtistBiography(parseObject(source.data), { artistMbid: source.mbid });
@@ -1039,6 +1064,14 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         ...(musicBrainzUrl ? { sameAs: [musicBrainzUrl] } : {}),
         ...((bio || memorial?.summary) ? { description: legacyMode ? memorial.summary : bio || memorial.summary } : {}),
         ...(entityImage ? { image: entityImage } : {}),
+        // Only a group can carry schema.org's album property.
+        ...(!memorial && biographyFacts?.artistType === "group" && news.some((item) => item.kind === "release") ? {
+          album: news.filter((item) => item.kind === "release").slice(0, 3).map((item) => ({
+            "@type": "MusicAlbum",
+            name: item.release.title,
+            ...(/^\d{4}-\d{2}-\d{2}$/u.test(String(item.release.releaseDate || "")) ? { datePublished: item.release.releaseDate } : {}),
+          })),
+        } : {}),
         ...(biographyFacts?.birthDate?.length === 10 ? { birthDate: biographyFacts.birthDate } : {}),
         ...(!memorial && biographyFacts?.formedDate?.length === 10 ? { foundingDate: biographyFacts.formedDate } : {}),
         ...(memorial ? {
@@ -1098,6 +1131,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         stats: Object.freeze({ reviewCount, ratingCount, averageRating, upcomingTotal }),
         reviews,
         updates,
+        news,
         events,
         concerts,
         archivePath,

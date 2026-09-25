@@ -92,6 +92,10 @@ import { artistLiveSummaryRoutes } from "./features/artistArchive/artistLiveSumm
 import { catalogResearchRoutes } from "./features/catalogResearch/catalogResearchRoutes.js";
 import { providerProfileRoutes } from "./features/providerProfiles/providerProfileRoutes.js";
 import { crewRoutes } from "./features/crew/crewRoutes.js";
+import { artistUpdatesRoutes } from "./features/artistUpdates/artistUpdatesRoutes.js";
+import { createArtistNewsReader } from "./features/artistUpdates/artistNewsReader.js";
+import { startArtistNewsScheduler } from "./features/artistUpdates/artistNewsJob.js";
+import { artistPath as publicArtistPath, eventPath as publicEventPath } from "../src/domain/urls.mjs";
 import { CREW_ENABLED } from "../src/domain/crewAvailability.mjs";
 import { ensureCrewSchema } from "./features/crew/crewService.js";
 import { ensureShowPlansSchema } from "./features/crew/showPlansService.js";
@@ -146,6 +150,7 @@ import {
   getDeezerDiscography,
   getFreshDeezerPreview,
   legacyTrackOverrideKey,
+  providerJson,
   normalizeMusicText,
   parseYouTubeVideoId,
   resolveYouTubeTrack,
@@ -3853,6 +3858,27 @@ function notifyPlanJoin({ plan, user }) {
 
 export function startWebProfiles() {
   return startProviderProfileScheduler({ database: db });
+}
+
+// Artist news: new releases and new tour dates, read the same way everywhere.
+const artistNewsReader = createArtistNewsReader(db, {
+  eventPathFor: (id) => publicEventPath(id),
+  artistPathFor: (row) => publicArtistPath({ name: row?.name, public_slug: row?.public_slug }),
+});
+
+export function readArtistNews(options) {
+  return artistNewsReader.read(options);
+}
+
+// Followers of an artist (its fan club) hear about its news. No actor: this
+// comes from Mshpit, not from another member.
+export function startArtistNews() {
+  return startArtistNewsScheduler({
+    database: db,
+    fetchJson: (url, { signal } = {}) => providerJson("Deezer", url, { signal }),
+    notify: (userId, update) => addNotif(userId, null, "artist_update", { postId: update.id, artist: update.artist_name, text: update.title }),
+    newId: uid,
+  });
 }
 
 export function startCatalogResearch() {
@@ -9557,6 +9583,16 @@ export const routes = {
     newId: uid,
     now,
   }) : {}),
+  ...artistUpdatesRoutes({
+    ApiError,
+    rateLimit: limit,
+    requireUser,
+    readNews: (options) => artistNewsReader.read(options),
+    resolveArtistKey: (ctx) => {
+      const artist = resolveCatalogArtistReference(decodedPathParam(ctx, "key", { max: 200, label: "artist link" }));
+      return artist && artistCatalogVisibleTo(db, artist, ctx?.user) ? artist.norm : null;
+    },
+  }),
   ...providerProfileRoutes({ database: db, ApiError, rateLimit: limit, decodedPathParam, canonicalVenueKey,
     resolveArtist: (key, ctx) => {
       const artist = resolveCatalogArtistReference(key);

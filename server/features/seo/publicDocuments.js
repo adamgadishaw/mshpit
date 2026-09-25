@@ -25,7 +25,7 @@ import {
  * public URL resolver owns ambiguous vanity-route precedence; this layer owns
  * only privacy-safe reads, public projection and HTML rendering.
  */
-export function createPublicDocumentService({ database, origin, paths, artistMemorialService = null } = {}) {
+export function createPublicDocumentService({ database, origin, paths, artistMemorialService = null, artistNews = null } = {}) {
   let artistLiveSummary;
   const repository = createPublicDocumentRepository(database, {
     venueReviews: createPublicVenueReviewService(database),
@@ -107,6 +107,7 @@ export function createPublicDocumentService({ database, origin, paths, artistMem
       });
       return projector.artist({
         ...raw,
+        news: artistNews ? artistNews({ artistKey: raw.artist.norm, limit: 6, at }).items : [],
         memorial: memorialDetail?.memorial || null,
         memorialUpdatedAt: memorialDetail?.updatedAt ?? null,
       }, options);

@@ -6,6 +6,39 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-09-25 Artist news hub, tour titles and photo credit (SEO)
+
+The owner wants Mshpit to be an information hub as well as a social network:
+new tours and new albums for the artists people follow, and more reasons to
+follow artists and share photos.
+
+- News engine (`server/features/artistUpdates/`): every 15 minutes it records
+  public tour dates Mshpit sees for the first time (one "N new tour dates
+  added" item per artist per day) and checks up to 30 followed or touring
+  artists a pass for new albums, EPs and singles on Deezer (keyless). The first
+  look at the catalogue and at each artist is a quiet baseline. Releases are
+  used only when the stored Deezer id still names exactly this artist with at
+  least 500 fans; a first sighting of a whole tour for an artist Mshpit had
+  never seen is recorded quietly. Tour dates go through the same public rules
+  as event pages, re-checked on every read. `ARTIST_NEWS_ENABLED=true` in
+  render.yaml; pausing catalog upkeep pauses it.
+- Alerts: followers (Follow button favourites and fan club members, not
+  banned) get an `artist_update` notification that opens the artist, at most
+  one per artist every 12 hours.
+- Pages: `/news` (app screen and crawlable page with MusicAlbum structured
+  data, in the sitemap and site nav, indexed once it has 3+ items), a "Latest
+  news" block on artist pages (app and public page) with a Follow prompt, a
+  "New this week" strip on Discover, and News in the menu.
+- Titles: artist pages with upcoming dates are now "<Artist> Tour 2026: Concert
+  Dates & Tickets" (or with reviews, "Dates, Tickets & Concert Reviews"),
+  naming the years the dates fall in.
+- Photos: fan photos on artist pages are credited ("Photos by ...", linked to
+  profiles), with an "Add photos" prompt, and the fan photo used as an artist
+  page's image carries creditText and creator in structured data so search
+  results can credit the photographer.
+- News UI lives in one lazy module (`src/components/news/NewsViews.jsx`), so
+  the first page load does not grow.
+
 ## 2026-09-25 Crew reworked as show swipe + Lounge plans (still switched off)
 
 The owner chose to keep the swipe only for shows and move meeting people into

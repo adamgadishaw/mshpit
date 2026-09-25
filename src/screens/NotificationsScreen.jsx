@@ -31,6 +31,7 @@ const META = {
   post_tag: { icon: "you", tint: colors.gold, verb: "tagged you in a post" },
   dm: { icon: "mail", tint: colors.good, verb: "sent you a message" },
   plan_join: { icon: "user-plus", tint: colors.good, verb: "joined your plan" },
+  artist_update: { icon: "music", tint: colors.amber, verb: "" },
   welcome: { icon: "star", tint: colors.amber, verb: "" },
 };
 
@@ -38,6 +39,7 @@ function notificationCopy(notification, actorName) {
   if (notification.type === "welcome") return "Welcome to Pit! Follow people whose taste matches yours, log the shows you go to, and rate the band versus the room.";
   if (notification.type === "post_tag") return postTagNotificationCopy(actorName, notification.artist);
   if (notification.type === "plan_join") return `${actorName || "Someone"} ${planJoinPhrase(notification.artist)}`;
+  if (notification.type === "artist_update") return `${notification.artist || "An artist you follow"}: ${notification.text || "new music"}`;
   const meta = META[notification.type] || META.like;
   const reference = (notification.type === "like" || notification.type === "comment") && notification.artist
     ? ` of ${notification.artist}`
@@ -47,7 +49,7 @@ function notificationCopy(notification, actorName) {
 
 // The activity feed, the social heartbeat that connects follows, likes, comments
 // and DMs into one place instead of leaving them scattered across the app.
-export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThread, onOpen, onOpenPost, onOpenPlans }) {
+export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThread, onOpen, onOpenPost, onOpenPlans, onOpenArtist }) {
   const { myNotifications, refreshNotifications, markNotificationsRead, feed, session } = useStore();
   const items = myNotifications();
   const accountId = session?.id || null;
@@ -157,6 +159,7 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
     if (destination.kind === "profile") return onOpenProfile?.(destination.actorId);
     if (destination.kind === "thread") return onOpenThread?.(destination.actorId);
     if (destination.kind === "plans") return onOpenPlans?.();
+    if (destination.kind === "artist") return onOpenArtist?.({ name: destination.artist });
     if (destination.kind === "local-post") return onOpenPost?.(destination.post);
     if (destination.kind === "unavailable") {
       setUnavailableNotice("This post is no longer available.");
@@ -281,13 +284,19 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
               accessibilityState={{ busy: openingNotificationId === n.id }}
             >
               <View style={styles.avatarWrap}>
-                <Avatar user={{ name: n.actorName, initials: n.actorInitials, avatarUri: n.actorUri, avatarColor: n.actorColor }} size={40} onPress={n.actorId ? () => onOpenProfile?.(n.actorId) : undefined} />
+                {n.type === "artist_update" ? (
+                  <View style={styles.newsMark}><Icon name="music" size={18} color={colors.amber} /></View>
+                ) : (
+                  <Avatar user={{ name: n.actorName, initials: n.actorInitials, avatarUri: n.actorUri, avatarColor: n.actorColor }} size={40} onPress={n.actorId ? () => onOpenProfile?.(n.actorId) : undefined} />
+                )}
                 <View style={[styles.badge, { backgroundColor: meta.tint }]}>
                   <Icon name={meta.icon} size={11} color="#0B0E16" filled />
                 </View>
               </View>
               <View style={{ flex: 1 }}>
-                {n.type === "welcome" ? (
+                {n.type === "artist_update" ? (
+                  <Text style={styles.text}><Text style={styles.who}>{n.artist || "An artist you follow"}</Text> {n.text || "has news"}</Text>
+                ) : n.type === "welcome" ? (
                   <Text style={styles.text}>
                     <Text style={styles.who}>Welcome to Pit! </Text>
                     Follow people whose taste matches yours, log the shows you go to, and rate the band vs. the room.
@@ -334,6 +343,7 @@ const styles = StyleSheet.create({
   row: { flexDirection: "row", alignItems: "center", gap: 12, padding: 12, borderRadius: radius.md, marginBottom: 4 },
   rowUnread: { backgroundColor: colors.bgElev },
   avatarWrap: { width: 40, height: 40 },
+  newsMark: { width: 40, height: 40, borderRadius: 20, alignItems: "center", justifyContent: "center", backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.line },
   badge: { position: "absolute", right: -3, bottom: -3, width: 20, height: 20, borderRadius: 10, borderWidth: 2, borderColor: colors.bg, alignItems: "center", justifyContent: "center" },
   text: { color: colors.text, fontSize: 14, lineHeight: 20 },
   who: { fontWeight: "800" },
