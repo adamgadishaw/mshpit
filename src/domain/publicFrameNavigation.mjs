@@ -10,6 +10,7 @@ import {
   venuePath,
 } from "./urls.mjs";
 import { showNavigationPostId } from "./showNavigation.mjs";
+import { CREW_ENABLED } from "./crewAvailability.mjs";
 
 const text = (value) => String(value ?? "").trim();
 
@@ -22,7 +23,7 @@ export function publicFramePath(frame, { resolveArtistMeta, resolveUser } = {}) 
   if (frame.terms) return "/terms";
   if (frame.cityGuide) return frame.cityGuide.directory ? "/cities" : cityPath(frame.cityGuide);
   if (frame.venues) return "/venues";
-  if (frame.crew) return "/crew";
+  if (CREW_ENABLED && frame.crew) return "/crew";
   if (frame.auth) return frame.authMode === "signup" ? "/signup" : "/login";
   if (frame.directory === "artists" || frame.directory === "events") return `/${frame.directory}`;
   if (frame.artistArchive?.name) {
@@ -54,7 +55,7 @@ export function publicFramePath(frame, { resolveArtistMeta, resolveUser } = {}) 
 // and in-app navigation on the same destination rather than the default feed.
 export function publicEntryFrame(pathname) {
   if (pathname === "/venues") return { venues: true };
-  if (pathname === "/crew") return { crew: true };
+  if (CREW_ENABLED && pathname === "/crew") return { crew: true };
   if (pathname === "/signup") return { auth: true, authMode: "signup" };
   if (pathname === "/login") return { auth: true, authMode: "login" };
   return null;

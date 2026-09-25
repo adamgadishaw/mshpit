@@ -92,6 +92,7 @@ import { artistLiveSummaryRoutes } from "./features/artistArchive/artistLiveSumm
 import { catalogResearchRoutes } from "./features/catalogResearch/catalogResearchRoutes.js";
 import { providerProfileRoutes } from "./features/providerProfiles/providerProfileRoutes.js";
 import { crewRoutes } from "./features/crew/crewRoutes.js";
+import { CREW_ENABLED } from "../src/domain/crewAvailability.mjs";
 import { crewMatchExists, ensureCrewSchema } from "./features/crew/crewService.js";
 import { startProviderProfileScheduler } from "./features/providerProfiles/providerProfileService.js";
 import { startCatalogResearchScheduler } from "./features/catalogResearch/catalogResearchService.js";
@@ -7687,7 +7688,7 @@ export const routes = {
       recipientAgeBand: recipient.age_band,
       senderFollowsRecipient,
       recipientFollowsSender,
-      crewMatched: u.age_band === "18_plus" && recipient.age_band === "18_plus" && crewMatchExists(db, u.id, other),
+      crewMatched: CREW_ENABLED && u.age_band === "18_plus" && recipient.age_band === "18_plus" && crewMatchExists(db, u.id, other),
     });
     if (!permission.allowed) {
       const message = permission.reason === "age_classification_required"
@@ -9514,7 +9515,8 @@ export const routes = {
       if (artist && !artistCatalogVisibleTo(db, artist, ctx?.user)) throw new ApiError(404, "This artist page is unavailable.", "NOT_FOUND");
       return artist;
     } }),
-  ...crewRoutes({
+  // Crew is on the back burner: none of its routes exist until it is switched on.
+  ...(CREW_ENABLED ? crewRoutes({
     database: db,
     ApiError,
     rateLimit: limit,
@@ -9527,7 +9529,7 @@ export const routes = {
     isAvailable: (id) => accountIsPublic(q.userById.get(id)),
     notifyMatch: notifyCrewMatch,
     now,
-  }),
+  }) : {}),
   ...providerProfileRoutes({ database: db, ApiError, rateLimit: limit, decodedPathParam, canonicalVenueKey,
     resolveArtist: (key, ctx) => {
       const artist = resolveCatalogArtistReference(key);

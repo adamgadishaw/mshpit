@@ -59,6 +59,7 @@ import { appPageTitle } from "../src/domain/appPageMetadata.mjs";
 import { LANDING_IDENTITY_COPY } from "../src/domain/landingPresentation.mjs";
 import { crewShowcaseCandidates, ensureCrewSchema } from "./features/crew/crewService.js";
 import { projectCrewDocument } from "./features/crew/crewDocuments.js";
+import { CREW_ENABLED } from "../src/domain/crewAvailability.mjs";
 
 const SITE_NAME = "Mshpit";
 const DEFAULT_TITLE = "Mshpit: concert reviews, photos and live music discovery";
@@ -456,7 +457,7 @@ function crewShowcase(at) {
 }
 
 function crewRoute(path) {
-  if (!/^\/crew\/*$/iu.test(path)) return null;
+  if (!CREW_ENABLED || !/^\/crew\/*$/iu.test(path)) return null;
   if (path !== "/crew") return { type: "redirect", status: 301, location: "/crew", canonicalPath: "/crew" };
   const document = safePublicDocument(() => projectCrewDocument({ origin: origin(), shows: crewShowcase(Date.now()) }));
   if (document === PUBLIC_DOCUMENT_UNAVAILABLE) return { type: "unavailable", status: 503 };

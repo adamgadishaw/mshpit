@@ -11,16 +11,21 @@ import {
 } from "./publicFrameNavigation.mjs";
 import { discoverProgrammeKey } from "./discoverProgramme.mjs";
 import { replaceNavigationFrame } from "./navigationStack.mjs";
+import { CREW_ENABLED } from "./crewAvailability.mjs";
 import { readFileSync } from "node:fs";
 
 test("public entry pages round-trip between links and navigation frames", () => {
-  for (const path of ["/venues", "/crew", "/signup", "/login"]) {
+  for (const path of ["/venues", ...(CREW_ENABLED ? ["/crew"] : []), "/signup", "/login"]) {
     assert.equal(publicFramePath(publicEntryFrame(path)), path);
   }
   assert.equal(publicEntryFrame("/venues/unknown"), null);
   assert.equal(publicEntryFrame("/settings"), null);
   assert.equal(publicFramePath({ signupSetup: true }), null, "Optional private setup does not become a public page");
-  assert.equal(publicFramePath({ crew: { tourDateId: "tm_1", artist: "Wet Leg" } }), "/crew", "one show's crew shares the public Crew page");
+  if (CREW_ENABLED) assert.equal(publicFramePath({ crew: { tourDateId: "tm_1", artist: "Wet Leg" } }), "/crew", "one show's crew shares the public Crew page");
+  else {
+    assert.equal(publicEntryFrame("/crew"), null, "Crew is on the back burner: /crew opens nothing");
+    assert.equal(publicFramePath({ crew: true }), null);
+  }
 });
 
 test("auth mode replacement preserves the existing underlying page and clears no account state", () => {

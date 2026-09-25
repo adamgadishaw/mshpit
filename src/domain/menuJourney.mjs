@@ -32,7 +32,7 @@ const homeCity = (session) => {
 
 // Menu destinations live in one pure model so redesigns cannot accidentally
 // strand a staff or artist-only route. MenuScreen only attaches callbacks.
-export function journeyMenuModel({ session = null, inboxUnread = 0, notifications = 0, includeActivity = true } = {}) {
+export function journeyMenuModel({ session = null, inboxUnread = 0, notifications = 0, includeActivity = true, includeCrew = false } = {}) {
   const city = homeCity(session);
   const unread = count(inboxUnread);
   const notificationCount = count(notifications);
@@ -61,7 +61,7 @@ export function journeyMenuModel({ session = null, inboxUnread = 0, notification
       { key: "topRated", icon: "trophy", title: "Top-rated shows", detail: "The highest-rated nights close to home", accent: "gold" },
     ],
     connection: [
-      { key: "crew", icon: "heart", title: "Find a crew", detail: "Swipe shows and meet fans going too" },
+      ...(includeCrew ? [{ key: "crew", icon: "heart", title: "Find a crew", detail: "Swipe shows and meet fans going too" }] : []),
       ...(includeActivity ? [{ key: "activity", icon: "bell", title: "Activity", detail: notificationCount ? `${notificationCount} new` : "Follows, likes, and replies", badge: notificationCount }] : []),
       { key: "inbox", icon: "mail", title: "Inbox", detail: unread ? `${unread} unread` : "Your messages", badge: unread },
       { key: "suggestion", icon: "comment", title: "Suggestion box", detail: "Tell us what feels missing or confusing" },

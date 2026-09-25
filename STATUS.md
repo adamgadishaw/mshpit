@@ -6,7 +6,27 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
-## 2026-09-24 Crew: swipe to find people to go to shows with
+## 2026-09-25 Crew switched off (back burner)
+
+The owner liked the idea but not the environment: Mshpit needs far more
+members before strangers can find each other for a show, and swiping on
+people brings privacy risks and dangers for members under 18 that Mshpit
+should not invite or promote the way apps like Yubo do. Crew is now a future
+addition, to be reworked to feel like Mshpit before it returns.
+
+- `CREW_ENABLED = false` in `src/domain/crewAvailability.mjs`, read by the
+  app, the API, the public page renderer and the sitemap builder. Off means:
+  no `/api/crew/*` routes, `/crew` is not a page (it falls through like any
+  unknown path), no sitemap entry, no "Going alone?" section on event pages,
+  no Discover banner, no show page card, no menu item, and a saved navigation
+  stack pointing at Crew reopens on the home tab. A crew no longer counts as
+  DM consent. Two tests fail if it is switched on without a deliberate change.
+- Kept for later, untouched: the Crew tables (created at startup, unused while
+  off), service, screens, swipe deck, tests, and `verify:crew-browser` (out of
+  CI while off). Crew was live for about a day with no promotion; any rows
+  from that day stay in the database, unused.
+
+## 2026-09-24 Crew: swipe to find people to go to shows with (now switched off)
 
 The owner asked for a hook that keeps people coming back between concerts,
 like Tinder or TikTok, without changing what the site is. They picked "swipe

@@ -2,6 +2,8 @@
 // Crew, end to end in the exported app: swipe shows, say going, look for a
 // crew, crew up with someone and see the match. Synthetic member, loopback
 // only, every API mocked. No real server, account or database is touched.
+// Crew is switched off (src/domain/crewAvailability.mjs), so this suite is out
+// of CI until it is switched back on; run it with a build that has Crew on.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";

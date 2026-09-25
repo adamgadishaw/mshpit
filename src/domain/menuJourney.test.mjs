@@ -17,12 +17,13 @@ test("journey menu keeps every public discovery and connection destination reach
 
   assert.equal(JOURNEY_TAGLINE, "Your life's musical journey");
   assert.deepEqual(model.discover.map(({ key }) => key), ["near", "venues", "fanClubs", "topRated"]);
-  assert.deepEqual(model.connection.map(({ key }) => key), ["crew", "activity", "inbox", "suggestion"]);
+  assert.deepEqual(model.connection.map(({ key }) => key), ["activity", "inbox", "suggestion"], "Crew stays hidden unless it is switched on");
   assert.equal(model.discover[0].detail, "Shows and scenes around Toronto");
-  assert.equal(model.connection[0].title, "Find a crew");
-  assert.equal(model.connection[1].detail, "2 new");
-  assert.equal(model.connection[2].detail, "3 unread");
-  assert.equal(model.connection[3].title, "Suggestion box");
+  assert.equal(model.connection[0].detail, "2 new");
+  assert.equal(model.connection[1].detail, "3 unread");
+  assert.equal(model.connection[2].title, "Suggestion box");
+  const withCrew = journeyMenuModel({ includeCrew: true });
+  assert.equal(withCrew.connection[0].title, "Find a crew");
 });
 
 test("role-specific account destinations expose one profile-management doorway", () => {
@@ -48,7 +49,6 @@ test("menu vocabulary names identical destinations consistently", () => {
 test("menu badges reject malformed and negative counts", () => {
   const model = journeyMenuModel({ inboxUnread: -7, notifications: "not-a-number", includeActivity: false });
   assert.deepEqual(model.connection, [
-    { key: "crew", icon: "heart", title: "Find a crew", detail: "Swipe shows and meet fans going too" },
     { key: "inbox", icon: "mail", title: "Inbox", detail: "Your messages", badge: 0 },
     { key: "suggestion", icon: "comment", title: "Suggestion box", detail: "Tell us what feels missing or confusing" },
   ]);

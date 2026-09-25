@@ -243,10 +243,20 @@ remains a broad context whose changing value can rerender unrelated consumers.
 - **Animated story:** an MP4 version of the share card needs a render service
   with ffmpeg.
 
-## Crew follow-ups (2026-09-24)
+## Crew follow-ups (back burner since 2026-09-25)
 
-- **Seed the first crews:** Crew only works once a few people in one city use
-  it. Point the owner's socials at `/crew` and a busy local show's event page.
+Crew is switched off (`src/domain/crewAvailability.mjs`). Before it returns:
+
+- **Rework it to feel like Mshpit:** keep swiping for shows; replace swiping
+  on people with something group-first and show-first (owner to choose the
+  direction). No appearance-first person cards, and nothing promoted to
+  teens or styled like a meet-strangers app.
+- **Launch gate:** enough active members per city that a show has people on
+  it; decide the threshold with the owner.
+- **Privacy and account data:** add Crew to `privacyDisclosures.mjs`, the
+  account export, and the privacy page before switching it on.
+- **Switch-on checklist:** flip `CREW_ENABLED`, update the two tests that
+  guard it, and add `npm run verify:crew-browser` back to CI.
 - **Share a crew invite:** a "Looking for a crew for X" share card (reuse the
   share card renderer) so people bring friends from outside Mshpit.
 - **Crew in the Lounge:** show "N looking for a crew" in each show's Lounge

@@ -37,3 +37,7 @@ export const ENABLE_CANONICAL_SHOW_READ = canonicalShowReadEnabled(
 // The platform-neutral product policy is shared with the web server and
 // background jobs so the paused surface cannot be re-enabled by client drift.
 export { MUSIC_PLAYER_ENABLED as ENABLE_MUSIC_PLAYER } from "../domain/musicPlayerAvailability.mjs";
+
+// Crew stays in the source tree but out of navigation until it is switched on
+// in crewAvailability.mjs, which the server and sitemap read too.
+export { CREW_ENABLED as ENABLE_CREW } from "../domain/crewAvailability.mjs";

@@ -111,7 +111,7 @@ import {
   restoreComposerFrame,
 } from "./src/domain/composerRecovery.mjs";
 import { trackKey } from "./src/domain/trackIdentity.mjs";
-import { ENABLE_CLIPS, ENABLE_DEMO_DATA } from "./src/config/runtime.mjs";
+import { ENABLE_CLIPS, ENABLE_CREW, ENABLE_DEMO_DATA } from "./src/config/runtime.mjs";
 import {
   MUSIC_PLAYER_ENABLED,
   isMusicPlayerNavigationFrame,
@@ -263,6 +263,7 @@ function Root() {
     // random back page"). Now: refresh lands you here; Back goes straight to the tab.
     const top = prepareAvailableNavigationFrame(saved[saved.length - 1]);
     if (!ENABLE_CLIPS && top?.clips) return [{}];
+    if (!ENABLE_CREW && top?.crew) return [{}];
     if (top?.diagnostics) return [{}];
     if (top?.signupSetup || top?.welcomeGuide) return [{}];
     return top && Object.keys(top).length ? [{}, top] : [{}];
@@ -1274,10 +1275,10 @@ function Root() {
   else if (nav.privacy) overlay = <PrivacyScreen onClose={back} />;
   else if (nav.terms) overlay = <TermsScreen onClose={back} />;
   else if (nav.lounge) overlay = <LoungeScreen log={nav.lounge} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} onOpenFanClub={openFanClub} onReport={openReport} onRequireAuth={openSignIn} />;
-  else if (nav.openLog) overlay = <ShowScreen log={nav.openLog} onClose={back} onPreview={musicPreviewAction} onReview={reviewShow} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenArchive={openArtistArchive} onOpenVenue={openVenue} onOpenLounge={(log) => go({ lounge: log })} onOpenCrew={(show) => go({ crew: show })} onOpenPost={openPost} onOpenPhotos={openPhotos} onRequireAuth={openSignIn} />;
+  else if (nav.openLog) overlay = <ShowScreen log={nav.openLog} onClose={back} onPreview={musicPreviewAction} onReview={reviewShow} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenArchive={openArtistArchive} onOpenVenue={openVenue} onOpenLounge={(log) => go({ lounge: log })} onOpenCrew={ENABLE_CREW ? (show) => go({ crew: show }) : undefined} onOpenPost={openPost} onOpenPhotos={openPhotos} onRequireAuth={openSignIn} />;
   else if (nav.post) overlay = <PostScreen key={`${session?.id || "guest"}:${nav.post.id}`} log={nav.post} onClose={back} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenArtistArchive={openArtistArchive} onOpenVenue={openVenue} onOpenShow={openShow} onReport={openReport} onEdit={openPostEditor} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onRemoveMyPostTag={removePostTag} onRequireAuth={openSignIn} />;
   else if (nav.badges) overlay = <BadgeLegendScreen userId={nav.badges.userId} onClose={back} />;
-  else if (nav.crew) overlay = <CrewScreen key={`${session?.id || "guest"}:${nav.crew?.tourDateId || "all"}`} initialShow={nav.crew?.tourDateId ? nav.crew : null} onClose={back} onOpenThread={openThread} onOpenShow={openShow} onRequireAuth={openSignIn} onOpenSettings={() => go({ settings: true })} onReport={openReport} />;
+  else if (ENABLE_CREW && nav.crew) overlay = <CrewScreen key={`${session?.id || "guest"}:${nav.crew?.tourDateId || "all"}`} initialShow={nav.crew?.tourDateId ? nav.crew : null} onClose={back} onOpenThread={openThread} onOpenShow={openShow} onRequireAuth={openSignIn} onOpenSettings={() => go({ settings: true })} onReport={openReport} />;
   else if (nav.topRated) overlay = <TopRatedScreen initialRegion={nav.discoverRegion} onClose={back} onOpen={openShow} />;
   else if (nav.admin) overlay = <AdminScreen onClose={back} />;
   else if (nav.bulk) overlay = <BulkTourDatesScreen onClose={back} />;
@@ -1285,7 +1286,7 @@ function Root() {
   else if (nav.menu) overlay = (
     <MenuScreen
       onClose={back}
-      onCrew={() => replace({ crew: true })}
+      onCrew={ENABLE_CREW ? () => replace({ crew: true }) : undefined}
       onNear={() => replace({ nearby: true })}
       onVenues={() => replace({ venues: true })}
       onFanClubs={() => replace({ fanClubs: true })}
@@ -1422,7 +1423,7 @@ function Root() {
                 />
               )}
               {activeTab === "search" && <SearchScreen onOpen={openShow} onOpenArtist={openArtist} onOpenCity={openCity} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenProfile={openProfile} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} />}
-              {activeTab === "discover" && <DiscoverScreen key={session?.id || "guest"} initialProgramme={publicDirectoryProgramme(nav)} rememberedProgramme={rememberedDiscoverProgramme} onProgrammeChange={(programme) => setDiscoverDestination({ accountId: session?.id || null, programme })} onOpenTopRated={(discoverRegion) => go({ topRated: true, discoverRegion })} onOpenEvents={(discoverRegion) => openPublicDirectory("events", { region: discoverRegion })} onOpen={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenCrew={() => go({ crew: true })} onOpenNearby={() => go({ nearby: true })} onOpenFanClubs={() => go({ fanClubs: true })} onOpenVenues={(discoverRegion) => go({ venues: true, discoverRegion })} onOpenLounge={(lounge) => go({ lounge })} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} onOpenProfile={openProfile} onManageTaste={openProfileManagement} />}
+              {activeTab === "discover" && <DiscoverScreen key={session?.id || "guest"} initialProgramme={publicDirectoryProgramme(nav)} rememberedProgramme={rememberedDiscoverProgramme} onProgrammeChange={(programme) => setDiscoverDestination({ accountId: session?.id || null, programme })} onOpenTopRated={(discoverRegion) => go({ topRated: true, discoverRegion })} onOpenEvents={(discoverRegion) => openPublicDirectory("events", { region: discoverRegion })} onOpen={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenCrew={ENABLE_CREW ? () => go({ crew: true }) : undefined} onOpenNearby={() => go({ nearby: true })} onOpenFanClubs={() => go({ fanClubs: true })} onOpenVenues={(discoverRegion) => go({ venues: true, discoverRegion })} onOpenLounge={(lounge) => go({ lounge })} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} onOpenProfile={openProfile} onManageTaste={openProfileManagement} />}
               {activeTab === "you" && !!session && (
                 <YouScreen
                   onLogin={() => go({ auth: true })}

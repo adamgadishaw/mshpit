@@ -5545,3 +5545,8 @@ test("playlist create defaults only omitted visibility and rejects invalid priva
   const legacy = create({ user: owner, ip: "playlist-visibility", body: body(undefined) });
   assert.equal(legacy.visibility, "public");
 });
+
+test("Crew is on the back burner: none of its API routes exist", () => {
+  assert.deepEqual(Object.keys(routes).filter((key) => key.includes("/api/crew")), [],
+    "Switch Crew on in src/domain/crewAvailability.mjs only when the owner decides to launch it.");
+});

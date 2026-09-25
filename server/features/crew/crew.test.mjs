@@ -21,6 +21,7 @@ import {
   swipeCrewPerson,
 } from "./crewService.js";
 import { projectCrewDocument, renderCrewMain } from "./crewDocuments.js";
+import { CREW_ENABLED } from "../../../src/domain/crewAvailability.mjs";
 
 const SHOW = "tm_Z7r9jZ1A7Gd";
 const OTHER_SHOW = "tm_Z7r9jZ1A7Ge";
@@ -174,4 +175,11 @@ test("the public Crew page lists busy upcoming shows by count only and escapes e
   assert.doesNotMatch(html, /evil\.example/u);
   assert.doesNotMatch(html, /u_ana|u_ben/u, "never who");
   assert.equal(renderCrewMain({ kind: "event" }), null);
+});
+
+test("Crew stays switched off until the owner launches it", () => {
+  // The owner put Crew on the back burner on 2026-09-25: not enough members
+  // yet, and it needs reworking to feel like Mshpit, not a swipe-on-people
+  // app. Change this test in the same commit that deliberately turns it on.
+  assert.equal(CREW_ENABLED, false);
 });

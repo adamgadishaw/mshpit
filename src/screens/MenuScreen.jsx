@@ -161,6 +161,7 @@ export default function MenuScreen({ onClose, onCrew, onNear, onVenues, onFanClu
     inboxUnread: session ? inboxUnread() : 0,
     notifications: session ? unreadNotifications() : 0,
     includeActivity: !!onActivity,
+    includeCrew: !!onCrew,
   });
   const actions = {
     crew: onCrew,

@@ -27,6 +27,7 @@ import { venueCoordinates, venueGuideModel } from "../../../src/domain/venueGuid
 import { publicVenueFacts } from "../../venueFacts.js";
 import { publicTourDateArtistProjection } from "../../tourDateMetadata.js";
 import { crewCountsForTourDate } from "../crew/crewService.js";
+import { CREW_ENABLED } from "../../../src/domain/crewAvailability.mjs";
 import { publicEventMetadata, publicVenueMetadataName } from "./publicMetadataPresentation.js";
 import {
   isCurrentOrUpcomingPublicMusicEvent,
@@ -1344,7 +1345,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         imageHeight: event.providerImage?.url ? event.providerImage.height : primaryAsset?.kind === "image" ? primaryAsset.height : null,
         imageMimeType: event.providerImage?.url ? null : primaryAsset?.kind === "image" ? primaryAsset.mimeType : null,
         event: publicEvent,
-        crew: publicEvent.date >= currentDate ? publicCrewCounts(database, raw.event.id) : null,
+        crew: CREW_ENABLED && publicEvent.date >= currentDate ? publicCrewCounts(database, raw.event.id) : null,
         posts,
         breadcrumbs,
         jsonLd: [schemaEvent ? Object.freeze(schemaEvent) : null, Object.freeze(pageSchema), Object.freeze(breadcrumbNode(publicOrigin, breadcrumbs))].filter(Boolean),
