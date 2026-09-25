@@ -9,6 +9,7 @@ import SheetHeader from "../components/SheetHeader";
 import CardGrid from "../components/CardGrid";
 import { proxied, isHttp } from "../lib/img";
 import { visibleThemeChoices } from "../domain/themeChoices.mjs";
+import { artistInitials } from "../domain/artistInitials.mjs";
 
 // Signup taste picker, choose the artists you love so the feed and
 // recommendations start personal instead of generic. Also reachable from Edit
@@ -28,7 +29,7 @@ function ArtistTile({ a, picked, onToggle, disabled = false }) {
         <Image accessible={false} source={{ uri: isHttp(a.photo) ? a.photo : a.photo }} style={styles.tileImg} resizeMode="cover" onError={() => setFailed(true)} />
       ) : (
         <View style={[styles.tileImg, styles.tileFallback]}>
-          <Text style={styles.tileInitials}>{a.name.slice(0, 2).toUpperCase()}</Text>
+          <Text style={styles.tileInitials}>{artistInitials(a.name)}</Text>
         </View>
       )}
       <View style={{ flex: 1 }}>

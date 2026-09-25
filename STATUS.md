@@ -39,6 +39,31 @@ follow artists and share photos.
 - News UI lives in one lazy module (`src/components/news/NewsViews.jsx`), so
   the first page load does not grow.
 
+## 2026-09-25 Visual polish, the little things (owner approved and merged)
+
+No flow, copy or layout changes; only how things look.
+
+- Stage (default theme) moves from blue-slate to neutral graphite so the
+  amber is the only warm thing on screen. Other themes are unchanged. The
+  contrast test still passes for every theme.
+- Fonts: headings use each platform's display face (SF Pro Display, Segoe UI
+  Variable Display); the old rounded stack fell back to Trebuchet MS on
+  Windows. Monospace labels prefer SF Mono or Cascadia Mono.
+- Buttons are flat and crisp: no thick 3D bottom edge, a hairline top light,
+  a quiet hover and a small press-in. The same edge is flattened on the
+  header back button, sheet headers, the top bar and a few one-off buttons.
+- Focus rings only show for keyboard users, and headings or alerts that the
+  app focuses for screen readers no longer grow a box on screen.
+- Selected toggles (Near you / Worldwide, Top / A-Z, Near / World) are a raised
+  neutral chip instead of solid orange, so orange means "do something".
+- The orange, pink and blue bars on the Discover header and the login card
+  become one short amber tab. The ticket card keeps its band.
+- Hard-edged decorative circles become blurred stage light on the web, and the
+  no-photo event banner shows a quiet music mark instead of a calendar blob.
+- Artist initials come from one helper (`src/domain/artistInitials.mjs`), so
+  the hero and avatar agree ("LR", not "LR" and "LI").
+- Checks: `npm run check` and all 9 CI browser suites pass on the branch.
+  Initial JavaScript is 510.8 of 512 KiB gzip.
 ## 2026-09-25 Crew reworked as show swipe + Lounge plans (still switched off)
 
 The owner chose to keep the swipe only for shows and move meeting people into

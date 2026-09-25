@@ -26,6 +26,7 @@ import {
   resolveLoadState,
 } from "../domain/loadState.mjs";
 import { accountTargetScope } from "../domain/screenScope.mjs";
+import { artistInitials } from "../domain/artistInitials.mjs";
 
 const AVATAR_IMAGE_HINT = profileImageSelectionHint("avatar");
 const BANNER_IMAGE_HINT = profileImageSelectionHint("banner");
@@ -212,7 +213,7 @@ function ConfirmedArtistProfileEditor({
 
   const preview = {
     avatarUri,
-    initials: artist.name.slice(0, 2).toUpperCase(),
+    initials: artistInitials(artist.name),
     avatarColor: colors.amber,
   };
 

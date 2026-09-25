@@ -23,7 +23,7 @@ if (Platform.OS === "web" && typeof document !== "undefined") {
     const el = document.createElement("style");
     el.id = "pit-safe-area";
     el.textContent = `
-      html, body { height: 100%; margin: 0; background: #07090F; }
+      html, body { height: 100%; margin: 0; background: #09090B; }
       #root {
         height: 100vh;                     /* fallback for old browsers */
         height: 100dvh;                    /* fit within Safari's toolbars */

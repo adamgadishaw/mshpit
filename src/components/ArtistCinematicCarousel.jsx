@@ -2,17 +2,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { AccessibilityInfo, Animated, Pressable, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { artistCinematicMedia } from "../domain/artistGalleryMedia.mjs";
 import useReducedMotion from "../hooks/useReducedMotion";
-import { colors, displayFont, focusRing, mono, radius, shadow } from "../theme";
+import { colors, displayFont, focusRing, glow, mono, radius, shadow } from "../theme";
 import Icon from "./Icon";
 import SmartImage from "./SmartImage";
+import { artistInitials } from "../domain/artistInitials.mjs";
 
-const initialsFor = (name) => String(name || "Artist")
-  .split(/\s+/)
-  .filter(Boolean)
-  .slice(0, 2)
-  .map((part) => part[0])
-  .join("")
-  .toUpperCase();
+const initialsFor = (name) => artistInitials(name, "A");
 
 export default function ArtistCinematicCarousel({
   artistName,
@@ -140,7 +135,7 @@ const styles = StyleSheet.create({
     ...shadow.card,
   },
   fallback: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center", overflow: "hidden", backgroundColor: colors.bgElev },
-  fallbackGlow: { position: "absolute", width: 420, height: 420, borderRadius: 210, top: -230, right: -110, backgroundColor: colors.amber, opacity: 0.18 },
+  fallbackGlow: { position: "absolute", width: 420, height: 420, borderRadius: 210, top: -230, right: -110, backgroundColor: colors.amber, opacity: 0.28, ...glow },
   fallbackInitials: { color: colors.text, fontFamily: displayFont, fontSize: 76, lineHeight: 82, fontWeight: "900", letterSpacing: -3, opacity: 0.9 },
   fallbackLabel: { color: colors.amber, fontFamily: mono, fontSize: 9, fontWeight: "900", letterSpacing: 2.4, marginTop: 8 },
   topScrim: { position: "absolute", left: 0, right: 0, top: 0, height: "30%", backgroundColor: "rgba(3,5,9,0.18)" },

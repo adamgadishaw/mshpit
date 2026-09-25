@@ -27,7 +27,7 @@ export function EventScopeToggle({ scope, onChange, localLabel = "Near you", wor
             accessibilityState={{ selected }}
             accessibilityLabel={"Show upcoming concerts " + option.label.toLocaleLowerCase()}
           >
-            <Icon name={option.value === LIVE_EVENT_SCOPE.WORLDWIDE ? "globe" : "pin"} size={13} color={selected ? "#1A1206" : colors.textDim} />
+            <Icon name={option.value === LIVE_EVENT_SCOPE.WORLDWIDE ? "globe" : "pin"} size={13} color={selected ? colors.amber : colors.textDim} />
             <Text style={[styles.scopeText, selected && styles.scopeTextSelected]} numberOfLines={1}>{option.label}</Text>
           </Pressable>
         );
@@ -82,9 +82,9 @@ const styles = StyleSheet.create({
   scopeToggleCompact: { width: "100%" },
   scopeOption: { minHeight: 40, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingHorizontal: 12, borderRadius: radius.pill, flexShrink: 1, ...Platform.select({ web: { cursor: "pointer" } }) },
   scopeOptionCompact: { flex: 1, paddingHorizontal: 8 },
-  scopeOptionSelected: { backgroundColor: colors.amberStrong },
+  scopeOptionSelected: { backgroundColor: colors.surfaceAlt, ...Platform.select({ web: { boxShadow: "inset 0 1px 0 rgba(255,255,255,0.06), 0 1px 2px rgba(0,0,0,0.3)" }, default: {} }) },
   scopeText: { color: colors.textDim, fontSize: 11.5, fontWeight: "800", flexShrink: 1 },
-  scopeTextSelected: { color: "#1A1206", fontWeight: "900" },
+  scopeTextSelected: { color: colors.text, fontWeight: "800" },
   loungeCard: { minHeight: 82, flexDirection: "row", alignItems: "center", gap: 11, padding: 12, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surface, ...Platform.select({ web: { cursor: "pointer", transitionDuration: "120ms", transitionProperty: "background-color, border-color, transform" } }) },
   loungeCardCompact: { minHeight: 68, padding: 9, gap: 8, backgroundColor: colors.bgElev },
   loungeMark: { width: 42, height: 42, borderRadius: 14, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.magenta + "66", backgroundColor: colors.magenta + "12" },

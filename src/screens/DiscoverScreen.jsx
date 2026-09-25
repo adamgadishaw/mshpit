@@ -574,7 +574,7 @@ export default function DiscoverScreen({
         </Text>
       ) : null}
       <View style={[styles.hero, compact && styles.heroCompact]}>
-        <View pointerEvents="none" style={styles.heroStripe}><View style={styles.stripeWarm} /><View style={styles.stripePink} /><View style={styles.stripeCool} /></View>
+        <View pointerEvents="none" style={styles.heroStripe} />
         <View style={styles.heroCopy}>
           <Text style={[styles.title, compact && styles.titleCompact]} accessibilityRole="header">Discover</Text>
           {!compact && <Text style={styles.tagline}>See upcoming events, popular artists, venues, and fan picks in one place.</Text>}
@@ -872,10 +872,7 @@ const styles = StyleSheet.create({
   hero: { minHeight: 118, overflow: "hidden", borderRadius: radius.lg, borderCurve: "continuous", padding: 20, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft, flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 12, ...shadow.card },
   heroCompact: { minHeight: 0, padding: 16 },
   heroCopy: { flex: 1, minWidth: 150, maxWidth: 650 },
-  heroStripe: { position: "absolute", top: 0, left: 0, right: 0, height: 3, flexDirection: "row" },
-  stripeWarm: { flex: 2, backgroundColor: colors.amberStrong },
-  stripePink: { flex: 1, backgroundColor: colors.magenta },
-  stripeCool: { flex: 1, backgroundColor: colors.cool },
+  heroStripe: { position: "absolute", top: 0, left: 24, width: 56, height: 3, borderBottomLeftRadius: 3, borderBottomRightRadius: 3, backgroundColor: colors.amberStrong },
   programmePanel: { gap: 18, minWidth: 0, width: "100%" },
   title: { color: colors.text, fontFamily: displayFont, fontSize: 40, lineHeight: 46, fontWeight: "900", letterSpacing: -1.2, paddingTop: 5 },
   titleCompact: { fontSize: 34, lineHeight: 40 },
