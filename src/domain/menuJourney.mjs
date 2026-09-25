@@ -59,6 +59,7 @@ export function journeyMenuModel({ session = null, inboxUnread = 0, notification
       { key: "venues", icon: "search", title: "Find venues", detail: "Explore rooms by city and lineup", accent: "cool" },
       { key: "fanClubs", icon: "comment", title: "Fan clubs", detail: "Join artist communities", accent: "magenta" },
       { key: "topRated", icon: "trophy", title: "Top-rated shows", detail: "The highest-rated nights close to home", accent: "gold" },
+      { key: "news", icon: "music", title: "News", detail: "New albums, singles and tour dates", accent: "amber" },
       ...(includeCrew ? [{ key: "crew", icon: "ticket", title: "Show swipe", detail: "Flip through upcoming shows and build your calendar", accent: "magenta" }] : []),
     ],
     connection: [

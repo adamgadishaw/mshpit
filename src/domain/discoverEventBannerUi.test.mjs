@@ -9,17 +9,19 @@ test("Discover event banner uses one cached Expo image and respects Reduce Motio
   assert.match(source, /cachePolicy="memory-disk"/);
   assert.match(source, /enforceEarlyResizing/);
   assert.match(source, /transition=\{reduceMotion \? 0 : 220\}/);
-  assert.match(source, /if \(!active \|\| !foreground \|\| paused \|\| reduceMotion/);
+  assert.match(source, /if \(!active \|\| !foreground \|\| paused \|\| holding \|\| reduceMotion/);
+  assert.match(source, /const AUTO_ADVANCE_MS = 9_000;/, "slides stay up long enough to read");
   assert.match(source, /AppState\.addEventListener\("change"/);
   assert.doesNotMatch(source, /\bAnimated\b/);
 });
 
-test("Discover event banner exposes manual controls and a no-image fallback", () => {
+test("Discover event banner exposes manual controls, pauses itself, and has a no-image fallback", () => {
   assert.match(source, /Previous event/);
   assert.match(source, /Next event/);
-  assert.match(source, /Auto-play disabled by Reduce Motion/);
-  assert.match(source, /Play event slideshow/);
-  assert.match(source, /Pause event slideshow/);
+  assert.doesNotMatch(source, /Pause event slideshow|PAUSE/, "no Pause button: the owner asked for it to go");
+  assert.match(source, /onMouseEnter=\{\(\) => setHolding\(true\)\}/);
+  assert.match(source, /onFocus=\{\(\) => setHolding\(true\)\}/);
+  assert.match(source, /onTouchStart=\{\(\) => setHolding\(true\)\}/);
   assert.match(source, /styles\.fallback/);
   assert.match(source, /onError=\{\(\) => setFailed/);
   assert.match(source, /const slideSetKey = useMemo/);
@@ -27,10 +29,9 @@ test("Discover event banner exposes manual controls and a no-image fallback", ()
   assert.match(source, /\}, \[slideSetKey\]\);/);
 });
 
-test("Discover event banner leaves nested controls reachable and gives Pause button semantics", () => {
+test("Discover event banner leaves nested controls reachable", () => {
   assert.match(source, /styles\.shell, compact && styles\.shellCompact\]\} accessible=\{false\}/);
   assert.match(source, /styles\.hero, compact && styles\.heroCompact\]\} accessible=\{false\}/);
-  assert.match(source, /accessibilityState=\{\{ disabled: reduceMotion \}\}/);
   assert.doesNotMatch(source, /accessibilityState=\{\{[^}]*checked:/);
 });
 

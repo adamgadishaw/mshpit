@@ -569,6 +569,7 @@ async function runCase(browser, origin, item) {
         return await json({ liked: true });
       }
       if (url.pathname === "/api/tourdates") return await json({ tourDates: [] });
+      if (url.pathname === "/api/news" || /^\/api\/artists\/[^/]+\/news$/u.test(url.pathname)) return await json({ items: [], nextCursor: null });
       if (url.pathname === "/api/discovery/sidebar") return await json({ upcomingEvents: [], suggestedUsers: [], topArtists: [], trendingVenues: [], popularLounges: [], landingMedia: [], catalogTotals: { artists: 40, venues: 80 } });
       if (["/api/me/blocked", "/api/me/muted"].includes(url.pathname)) return await json({ users: [] });
       if (url.pathname === "/api/me/notifications") return await json({ notifications: [] });

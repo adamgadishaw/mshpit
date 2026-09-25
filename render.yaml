@@ -119,6 +119,15 @@ services:
       # most TICKETMASTER_PROFILE_DAILY_REQUESTS of the 5,000 daily calls.
       - key: PROVIDER_PROFILES_ENABLED
         value: "true"
+      # Artist news: new releases from Deezer (keyless) and new public tour
+      # dates, with a note to each artist's fan club. The first pass is a quiet
+      # baseline. Pausing catalog upkeep pauses it too.
+      - key: ARTIST_NEWS_ENABLED
+        value: "true"
+      # Artist photos from Deezer (keyless, credited "Deezer") while Spotify is
+      # not configured: Discover's artists first, exact-name matches only.
+      - key: ARTIST_PHOTO_DEEZER_ENABLED
+        value: "true"
       - key: TICKETMASTER_PROFILE_DAILY_REQUESTS
         value: "1500"
       # Claude web research for artist and venue pages the other sources leave

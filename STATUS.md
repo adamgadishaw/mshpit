@@ -6,6 +6,79 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-09-25 SEO pass: related shows, discography, Deezer artist photos
+
+Production audit before this change: event pages had about 100 words and 4
+internal links, and an artist page with no tour (Drake) had 62 words and 2
+links. Canonicals, robots, sitemaps and JSON-LD were already fine.
+
+- Event pages (crawlable HTML) now list the artist's other upcoming dates, the
+  venue's other nights, and other concerts in the same city (same country
+  code, next 90 days, one show per artist), each show once across the three
+  lists, all through the same public event rules as the event pages
+  themselves. The WebPage JSON-LD carries them as `relatedLink`. On a local
+  catalogue copy a typical event page went to about 300 words and 25 links.
+- Artist pages list albums, EPs and live albums from MusicBrainz release
+  groups (newest first, up to 12, credited), only when the stored release list
+  was fetched for the artist's own MBID. Groups also get them as `album` in
+  structured data. Drake's page went from 62 to 139 words locally.
+- Artist photos: the Spotify photo pipeline is off, so most Discover artists
+  had no picture. A Deezer (keyless) filler now runs every 15 minutes when
+  Spotify is not configured (`ARTIST_PHOTO_DEEZER_ENABLED=true`): Discover's
+  artists first, then artists playing in the next 30 days, then popular acts.
+  It takes a photo only from an exact-name match with 1000+ fans that clearly
+  dominates any namesakes (20x the runner-up), skips Deezer's blank
+  placeholder, credits "Deezer", never replaces an existing photo, an owner's
+  avatar or a hidden profile, and does not retry a miss for 14 days. Pausing
+  catalog upkeep pauses it.
+
+## 2026-09-25 Discover first impressions: slideshow and agent priority
+
+- The Discover event slideshow only shows events that have a picture (fan
+  photo or credited Ticketmaster artwork); with none it is hidden and the event
+  list carries the section. The Pause button is gone at the owner's request:
+  autoplay rests while the slideshow is hovered, focused or touched, stops once
+  someone uses the arrows, and never runs with Reduce Motion. Each slide now
+  stays up 9 seconds instead of 6.5.
+- The Ticketmaster web profile worker fills Discover first: performers with a
+  show in the next 30 days (Discover's default range), then popular acts, then
+  everyone else; venues hosting shows in that window before venues with more
+  shows later. Many Ticketmaster events still have no picture because the feed
+  sends images without credit details, which we deliberately do not publish.
+
+## 2026-09-25 Artist news hub, tour titles and photo credit (SEO)
+
+The owner wants Mshpit to be an information hub as well as a social network:
+new tours and new albums for the artists people follow, and more reasons to
+follow artists and share photos.
+
+- News engine (`server/features/artistUpdates/`): every 15 minutes it records
+  public tour dates Mshpit sees for the first time (one "N new tour dates
+  added" item per artist per day) and checks up to 30 followed or touring
+  artists a pass for new albums, EPs and singles on Deezer (keyless). The first
+  look at the catalogue and at each artist is a quiet baseline. Releases are
+  used only when the stored Deezer id still names exactly this artist with at
+  least 500 fans; a first sighting of a whole tour for an artist Mshpit had
+  never seen is recorded quietly. Tour dates go through the same public rules
+  as event pages, re-checked on every read. `ARTIST_NEWS_ENABLED=true` in
+  render.yaml; pausing catalog upkeep pauses it.
+- Alerts: followers (Follow button favourites and fan club members, not
+  banned) get an `artist_update` notification that opens the artist, at most
+  one per artist every 12 hours.
+- Pages: `/news` (app screen and crawlable page with MusicAlbum structured
+  data, in the sitemap and site nav, indexed once it has 3+ items), a "Latest
+  news" block on artist pages (app and public page) with a Follow prompt, a
+  "New this week" strip on Discover, and News in the menu.
+- Titles: artist pages with upcoming dates are now "<Artist> Tour 2026: Concert
+  Dates & Tickets" (or with reviews, "Dates, Tickets & Concert Reviews"),
+  naming the years the dates fall in.
+- Photos: fan photos on artist pages are credited ("Photos by ...", linked to
+  profiles), with an "Add photos" prompt, and the fan photo used as an artist
+  page's image carries creditText and creator in structured data so search
+  results can credit the photographer.
+- News UI lives in one lazy module (`src/components/news/NewsViews.jsx`), so
+  the first page load does not grow.
+
 ## 2026-09-25 Visual polish, the little things (owner approved and merged)
 
 No flow, copy or layout changes; only how things look.

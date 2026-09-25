@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { Suspense, useState, useEffect, useRef } from "react";
 import AccountSnapshotPrompt from "../components/AccountSnapshotPrompt";
 import { View, Text, StyleSheet, ScrollView, Pressable, Image, TextInput, ActivityIndicator, Linking, Alert } from "react-native";
 import { colors, displayFont, focusRing, mono, radius, shadow, space } from "../theme";
@@ -49,6 +49,10 @@ import ArtistUpcomingShows from "../components/artist/ArtistUpcomingShows";
 import { beginLoadState, createLoadState, isLoadCancellation, projectLoadState } from "../domain/loadState.mjs";
 import { settleArtistPageRead } from "../domain/artistPageRead.mjs";
 import { artistInitials } from "../domain/artistInitials.mjs";
+import { lazyWithRetry } from "../lib/lazyWithRetry";
+import Button from "../components/Button";
+
+const ArtistNewsSection = lazyWithRetry(() => import("../components/news/NewsViews").then((module) => ({ default: module.ArtistNewsSection })), "ArtistNewsSection");
 
 const invalidArtistPageResponse = new AppError("This artist page could not be confirmed. Please try again.", {
   code: "PIT-API-001", context: "Loading this artist page", source: "artist-page", retryable: true,
@@ -367,6 +371,11 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
   }, [a.name, a.profileKey]);
   const gallery = artistGallery(a.name, 12, a.profileKey);
   const visibleGallery = artistPagePreview(gallery, { condensed: true, limit: ARTIST_OVERVIEW_LIMITS.gallery });
+  // The fans whose photos build this page, credited by name and linked to
+  // their profiles, in the order their photos appear.
+  const photographers = [...new Map(gallery
+    .filter((item) => item.source === "fan" && item.ownerId && item.by)
+    .map((item) => [item.ownerId, { id: item.ownerId, name: item.by }])).values()];
   const { resource: topReviewsResource, reload: retryTopReviews } = useArtistTopReviews({
     accountId: session?.id || null,
     name: session ? a.name : null,
@@ -1160,6 +1169,15 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
           </View>
         ) : null}
 
+        {/* New releases and tour dates, and the reason to follow. Loaded on
+            demand so artist pages add nothing to the first page load. */}
+        {profileServicesAvailable && sectionModel.active === "overview" && !legacyMode ? (
+          <Suspense fallback={null}>
+            <ArtistNewsSection artistName={a.name} following={!!session && followed}
+              onFollow={ownsArtistPage ? undefined : session ? followUi.toggleFollow : onRequireAuth} />
+          </Suspense>
+        ) : null}
+
         <ArtistMemorialTribute
           artistKey={a.profileKey}
           artistName={a.name}
@@ -1407,6 +1425,29 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
                   : "No public fan media yet. Shared concert photos will build this archive."}</Text>
               </View>
             )}
+            {photographers.length ? (
+              <Text style={styles.photoCredits}>
+                Photos by{" "}
+                {photographers.slice(0, 3).map((person, index) => (
+                  <Text key={person.id}>
+                    {index ? (index === photographers.slice(0, 3).length - 1 && photographers.length <= 3 ? " and " : ", ") : ""}
+                    <Text style={styles.photoCreditName} onPress={onOpenProfile ? () => onOpenProfile(person.id) : undefined}
+                      accessibilityRole={onOpenProfile ? "link" : undefined}>{person.name}</Text>
+                  </Text>
+                ))}
+                {photographers.length > 3 ? ` and ${photographers.length - 3} more` : ""}
+              </Text>
+            ) : null}
+            {!legacyMode && !deceased && typeof onShareMemory === "function" ? (
+              <View style={styles.photoInvite}>
+                <Icon name="camera" size={17} color={colors.amber} />
+                <Text style={styles.photoInviteText}>
+                  Were you at a {a.name} show? Share your photos. The best ones lead this page, credited to you here and in search results.
+                </Text>
+                <Button small variant="secondary" title="Add photos"
+                  onPress={() => (session ? onShareMemory(a.name, a.profileKey, {}) : onRequireAuth?.())} />
+              </View>
+            ) : null}
           </>
         )}
 
@@ -2014,6 +2055,10 @@ const styles = StyleSheet.create({
   galleryEmpty: { minHeight: 110, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10, marginTop: 10, padding: 18, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surface },
   galleryEmptyText: { flexShrink: 1, maxWidth: 420, color: colors.textDim, fontSize: 12.5, lineHeight: 18 },
   fanTile: { width: "31.8%", aspectRatio: 1, borderRadius: 8, overflow: "hidden", backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.lineSoft },
+  photoCredits: { color: colors.textDim, fontSize: 12.5, lineHeight: 18, marginTop: 8 },
+  photoCreditName: { color: colors.text, fontWeight: "700" },
+  photoInvite: { flexDirection: "row", alignItems: "center", gap: 12, marginTop: 12, padding: 12, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surface },
+  photoInviteText: { flex: 1, color: colors.textDim, fontSize: 13, lineHeight: 18 },
   creditTag: { position: "absolute", left: 0, right: 0, bottom: 0, backgroundColor: "rgba(5,6,10,0.62)", paddingHorizontal: 5, paddingVertical: 3 },
   creditTxt: { color: "rgba(255,255,255,0.82)", fontSize: 8 },
   modBtn: { position: "absolute", top: 4, right: 4, width: 22, height: 22, borderRadius: 11, backgroundColor: "rgba(214,69,69,0.92)", alignItems: "center", justifyContent: "center" },

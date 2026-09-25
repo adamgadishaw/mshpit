@@ -16,7 +16,7 @@ test("journey menu keeps every public discovery and connection destination reach
   });
 
   assert.equal(JOURNEY_TAGLINE, "Your life's musical journey");
-  assert.deepEqual(model.discover.map(({ key }) => key), ["near", "venues", "fanClubs", "topRated"]);
+  assert.deepEqual(model.discover.map(({ key }) => key), ["near", "venues", "fanClubs", "topRated", "news"]);
   assert.deepEqual(model.connection.map(({ key }) => key), ["activity", "inbox", "suggestion"], "Crew stays hidden unless it is switched on");
   assert.equal(model.discover[0].detail, "Shows and scenes around Toronto");
   assert.equal(model.connection[0].detail, "2 new");

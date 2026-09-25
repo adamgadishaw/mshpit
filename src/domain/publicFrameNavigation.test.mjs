@@ -15,7 +15,7 @@ import { CREW_ENABLED } from "./crewAvailability.mjs";
 import { readFileSync } from "node:fs";
 
 test("public entry pages round-trip between links and navigation frames", () => {
-  for (const path of ["/venues", ...(CREW_ENABLED ? ["/crew"] : []), "/signup", "/login"]) {
+  for (const path of ["/venues", "/news", ...(CREW_ENABLED ? ["/crew"] : []), "/signup", "/login"]) {
     assert.equal(publicFramePath(publicEntryFrame(path)), path);
   }
   assert.equal(publicEntryFrame("/venues/unknown"), null);

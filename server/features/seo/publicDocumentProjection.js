@@ -26,6 +26,7 @@ import { archiveShowKey } from "../artistArchive/artistArchiveKeys.js";
 import { venueCoordinates, venueGuideModel } from "../../../src/domain/venueGuide.mjs";
 import { publicVenueFacts } from "../../venueFacts.js";
 import { publicTourDateArtistProjection } from "../../tourDateMetadata.js";
+import { tourYearsLabel } from "../../../src/domain/artistNews.mjs";
 import { publicEventMetadata, publicVenueMetadataName } from "./publicMetadataPresentation.js";
 import {
   isCurrentOrUpcomingPublicMusicEvent,
@@ -231,6 +232,25 @@ function relatedArtistPath(paths, row) {
 function musicBrainzArtistUrl(value) {
   const mbid = cleanLine(value, 36).toLowerCase();
   return MUSICBRAINZ_ARTIST_ID.test(mbid) ? `https://musicbrainz.org/artist/${mbid}` : null;
+}
+
+// Studio albums, EPs and live albums from the artist's MusicBrainz release
+// groups, newest first. The list is only trusted when it was fetched for the
+// same MusicBrainz identity as the artist record.
+const DISCOGRAPHY_TYPES = new Set(["Album", "EP", "Live album"]);
+function artistDiscography(data, artistMbid, limit = 12) {
+  const identity = cleanLine(artistMbid, 36).toLowerCase();
+  if (!MUSICBRAINZ_ARTIST_ID.test(identity) || cleanLine(data?.mbid, 36).toLowerCase() !== identity) return [];
+  const seen = new Set();
+  return (Array.isArray(data.albums) ? data.albums : []).flatMap((album) => {
+    const title = cleanLine(album?.title, 200);
+    const type = DISCOGRAPHY_TYPES.has(album?.type) ? album.type : null;
+    const year = /^\d{4}$/u.test(String(album?.year ?? "")) ? String(album.year) : null;
+    const key = `${title.toLowerCase()}|${type}`;
+    if (!title || !type || seen.has(key)) return [];
+    seen.add(key);
+    return [Object.freeze({ title, type, year })];
+  }).sort((left, right) => (right.year || "").localeCompare(left.year || "")).slice(0, limit);
 }
 
 function canonicalEventPath(paths, row) {
@@ -928,9 +948,24 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       // Historical community photos remain in the bounded memories section,
       // but never become the identity image or social preview for a protected
       // legacy profile. Only staff-curated profile media may represent it.
-      const fanImage = legacyMode ? null : reviews.flatMap((review) => review.media)
+      const fanImageReview = legacyMode ? null : reviews.find((review) => review.media
+        .some((asset) => asset.kind === "image" ? asset.url : asset.posterUrl)) || null;
+      const fanImage = fanImageReview ? fanImageReview.media
         .map((asset) => asset.kind === "image" ? asset.url : asset.posterUrl)
-        .find(Boolean) || null;
+        .find(Boolean) || null : null;
+      // The fan who took the photo is credited in search results, by name and
+      // with a link to their profile. That credit is part of why fans share.
+      const fanImageCredit = fanImage && fanImageReview?.author?.name ? Object.freeze({
+        "@type": "ImageObject",
+        contentUrl: fanImage,
+        url: fanImage,
+        creditText: `Photo by ${fanImageReview.author.name}${fanImageReview.author.handle ? ` (@${fanImageReview.author.handle})` : ""} on Mshpit`,
+        creator: Object.freeze({
+          "@type": "Person",
+          name: fanImageReview.author.name,
+          ...(fanImageReview.author.path ? { url: absolute(publicOrigin, fanImageReview.author.path) } : {}),
+        }),
+      }) : null;
       const name = cleanLine(source.name, 160);
       const staffCuratedBio = Number(raw.profile?.bio_staff_curated) === 1;
       const profileBio = profilePublic ? raw.profile?.bio : null;
@@ -988,10 +1023,16 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       const upcomingTotal = count(raw.upcomingTotal ?? events.length);
       const upcomingSignal = hasUpcomingShows
         ? `${upcomingTotal} upcoming ${upcomingTotal === 1 ? "show" : "shows"}` : null;
+      // People search "<artist> tour 2026". Name the years the upcoming dates
+      // actually fall in, and only when there are upcoming dates.
+      const tourYears = tourYearsLabel(events.map((event) => event.date));
+      const news = legacyMode || memorial ? [] : (Array.isArray(raw.news) ? raw.news : []).slice(0, 6);
       const artistTitle = legacyMode
         ? `${name} legacy: biography and community memories | Mshpit`
         : memorial
         ? `Remembering ${name}: music, shows and fan memories | Mshpit`
+        : hasReviews && hasUpcomingShows && tourYears
+        ? `${name} Tour ${tourYears}: Dates, Tickets & Concert Reviews | Mshpit`
         : hasReviews && hasUpcomingShows
         ? `${name} concert reviews & upcoming shows | Mshpit`
         : hasReviews && hasFanPhotos && averageRating != null
@@ -1002,6 +1043,8 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         ? `${name} concert reviews & live ratings | Mshpit`
         : hasReviews
         ? `${name} concert reviews | Mshpit`
+        : hasUpcomingShows && tourYears
+        ? `${name} Tour ${tourYears}: Concert Dates & Tickets | Mshpit`
         : hasUpcomingShows
         ? `${name} upcoming concerts & artist profile | Mshpit`
         : `${name} music artist profile | Mshpit`;
@@ -1025,9 +1068,19 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       const musicBrainzUrl = musicBrainzArtistUrl(source.mbid);
       const entityImage = profileImageSchema(avatarMedia, `${name} profile photo`)
         || profileImageSchema(bannerMedia, `${name} profile banner`)
+        || fanImageCredit
         || fanImage;
       const socialProfileImage = bannerMedia || avatarMedia;
       const biographyFacts = projectArtistBiography(parseObject(source.data), { artistMbid: source.mbid });
+      const discography = Object.freeze(artistDiscography(knowledgeData, source.mbid));
+      const releaseAlbums = !memorial ? news.filter((item) => item.kind === "release").slice(0, 3).map((item) => ({
+        "@type": "MusicAlbum",
+        name: item.release.title,
+        ...(/^\d{4}-\d{2}-\d{2}$/u.test(String(item.release.releaseDate || "")) ? { datePublished: item.release.releaseDate } : {}),
+      })) : [];
+      const releaseNames = new Set(releaseAlbums.map((album) => album.name.toLowerCase()));
+      const schemaAlbums = [...releaseAlbums, ...discography.filter((album) => !releaseNames.has(album.title.toLowerCase()))
+        .map((album) => ({ "@type": "MusicAlbum", name: album.title, ...(album.year ? { datePublished: album.year } : {}) }))].slice(0, 12);
       const entity = {
         // Only sourced typed facts or an identity-bound memorial establish the
         // entity type. Ambiguous legacy catalog years establish no facts.
@@ -1039,6 +1092,8 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         ...(musicBrainzUrl ? { sameAs: [musicBrainzUrl] } : {}),
         ...((bio || memorial?.summary) ? { description: legacyMode ? memorial.summary : bio || memorial.summary } : {}),
         ...(entityImage ? { image: entityImage } : {}),
+        // Only a group can carry schema.org's album property.
+        ...(biographyFacts?.artistType === "group" && schemaAlbums.length ? { album: schemaAlbums } : {}),
         ...(biographyFacts?.birthDate?.length === 10 ? { birthDate: biographyFacts.birthDate } : {}),
         ...(!memorial && biographyFacts?.formedDate?.length === 10 ? { foundingDate: biographyFacts.formedDate } : {}),
         ...(memorial ? {
@@ -1098,6 +1153,9 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         stats: Object.freeze({ reviewCount, ratingCount, averageRating, upcomingTotal }),
         reviews,
         updates,
+        news,
+        discography,
+        musicBrainzUrl,
         events,
         concerts,
         archivePath,
@@ -1293,6 +1351,21 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       const imageProvenance = event.providerImage?.url ? "provider" : fanImage ? "fan-gallery" : null;
       const metadata = publicEventMetadata(publicEvent, { today: currentDate, posts });
       const description = metadata.description;
+      // Each related show is listed once: an artist date at the same venue
+      // belongs under the artist, not again under the venue.
+      const listedEvents = new Set([event.id]);
+      const relatedCards = (rows) => Object.freeze((Array.isArray(rows) ? rows : [])
+        .map((row) => eventCard(row, publicPaths))
+        .filter((card) => card && card.path !== path && !listedEvents.has(card.id) && listedEvents.add(card.id)));
+      const cityName = cleanLine(raw.event.venue_city, 120);
+      const related = Object.freeze({
+        artist: relatedCards(raw.artistEvents),
+        venue: relatedCards(raw.venueEvents),
+        city: relatedCards(raw.cityEvents),
+        cityName: cityName || null,
+      });
+      const relatedLinks = [...new Set([...related.artist, ...related.venue, ...related.city]
+        .map((card) => card.path).filter(Boolean).map((relatedPath) => absolute(publicOrigin, relatedPath)))].slice(0, 18);
       const breadcrumbs = Object.freeze([
         Object.freeze({ name: "Mshpit", path: "/" }),
         Object.freeze({ name: "Events", path: "/events" }),
@@ -1318,6 +1391,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
           ],
         }),
         ...(posts.length ? { hasPart: posts.map((post) => ({ "@id": `${absolute(publicOrigin, post.path)}#posting` })) } : {}),
+        ...(relatedLinks.length ? { relatedLink: relatedLinks } : {}),
       };
       return Object.freeze({
         kind: "event",
@@ -1335,6 +1409,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         imageMimeType: event.providerImage?.url ? null : primaryAsset?.kind === "image" ? primaryAsset.mimeType : null,
         event: publicEvent,
         posts,
+        related,
         breadcrumbs,
         jsonLd: [schemaEvent ? Object.freeze(schemaEvent) : null, Object.freeze(pageSchema), Object.freeze(breadcrumbNode(publicOrigin, breadcrumbs))].filter(Boolean),
       });
