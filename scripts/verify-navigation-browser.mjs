@@ -48,6 +48,13 @@ export const discoverArtistEvent = Object.freeze({
   ticketUrl: "https://www.ticketmaster.ca/event/navigation-fixture",
 });
 export const discoverArtistEventPath = `/event/${discoverArtistEvent.id}`;
+// Discover's slideshow only shows events with a credited picture. The image
+// URL never leaves the browser: the route handler answers it with a local PNG.
+export const discoverEventArtwork = Object.freeze({
+  uri: "https://images.fixture.invalid/discover-event.png", attribution: "Fixture Promoter",
+  sourcePage: "https://www.ticketmaster.ca/event/navigation-fixture", width: 1024, height: 576,
+});
+const fixturePng = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
 export const serverCollectionPaths = Object.freeze([
   "/concerts", "/events/page/2", "/artists/page/2", "/venues/us/davis", "/artist/fixture-artist/concerts/page/2",
 ]);
@@ -66,6 +73,7 @@ export const navigationCases = Object.freeze([
     { name: `discover-show-artist-${width}`, kind: "discover-show-artist", path: "/discover", width },
     { name: `discover-show-artist-recovery-${width}`, kind: "discover-show-artist-recovery", path: "/discover", width },
     { name: `discover-show-artist-conflict-${width}`, kind: "discover-show-artist-conflict", path: "/discover", width },
+    { name: `discover-event-back-${width}`, kind: "discover-event-back", path: "/discover", width },
     { name: `member-tabs-${width}`, kind: "member-tabs", member: true, width },
     { name: `home-link-${width}`, kind: "home", path: postPath, width },
     { name: `home-link-member-${width}`, kind: "home", path: postPath, member: true, width },
@@ -96,11 +104,12 @@ function injectQueryMetadataFixture(html, url) {
     .replace("</head>", head + "</head>");
 }
 
-export function fixtureApiResponse(pathname, { member = false, method = "GET", resolvedPath = postPath, artistBioMode = "imported", discoverArtist = false, discoverShow = false, artistLookupTransient = false, artistIdentityPending = false } = {}) {
+export function fixtureApiResponse(pathname, { member = false, method = "GET", resolvedPath = postPath, artistBioMode = "imported", discoverArtist = false, discoverShow = false, discoverArtwork = false, artistLookupTransient = false, artistIdentityPending = false } = {}) {
   if (pathname === "/api/client-errors" && method === "POST") return { ok: true };
   assert.equal(method, "GET", `Navigation must not mutate data: ${method} ${pathname}`);
   if (discoverShow) {
-    const event = { ...discoverArtistEvent, artistKey: artistIdentityPending ? null : discoverArtistEvent.artistKey, artistIdentityPending };
+    const event = { ...discoverArtistEvent, artistKey: artistIdentityPending ? null : discoverArtistEvent.artistKey, artistIdentityPending,
+      ...(discoverArtwork ? { eventImage: discoverEventArtwork } : {}) };
     if (pathname === "/api/tourdates") return { tourDates: [event], nextCursor: null };
     if (pathname === "/api/resolve" && resolvedPath === discoverArtistEventPath) return { entity: {
       ...event, kind: "event", name: discoverShowArtist.name, path: discoverArtistEventPath, publicEventSnapshot: true,
@@ -312,6 +321,10 @@ async function runCase(browser, origin, item) {
     const request = route.request();
     const url = new URL(request.url());
     try {
+      // The one external URL answered locally: the slideshow fixture's picture.
+      if (item.kind === "discover-event-back" && url.href === discoverEventArtwork.uri) {
+        return await route.fulfill({ contentType: "image/png", body: fixturePng });
+      }
       // Origin is checked before pathname: an external API can never inherit a fixture.
       if (url.origin !== origin) return await route.abort();
       if (!url.pathname.startsWith("/api/")) return await route.continue();
@@ -340,12 +353,12 @@ async function runCase(browser, origin, item) {
         await new Promise(done => { state.releaseResolve = done; });
         state.resolveReleased = true;
       }
-      const discoverShow = item.kind.startsWith("discover-show-artist");
+      const discoverShow = item.kind.startsWith("discover-show-artist") || item.kind === "discover-event-back";
       if (discoverShow && url.pathname === "/api/artists/resolve") {
         assert.equal(url.searchParams.get("name"), discoverShowArtist.name);
         state.lookupAttempts += 1;
       }
-      const body = fixtureApiResponse(url.pathname, { member: state.member, method: request.method(), resolvedPath: url.searchParams.get("path") || undefined, artistBioMode: state.artistBioMode, discoverArtist: item.kind === "discover-canonical-artist", discoverShow,
+      const body = fixtureApiResponse(url.pathname, { member: state.member, method: request.method(), resolvedPath: url.searchParams.get("path") || undefined, artistBioMode: state.artistBioMode, discoverArtist: item.kind === "discover-canonical-artist", discoverShow, discoverArtwork: item.kind === "discover-event-back",
         artistIdentityPending: item.kind === "discover-show-artist-conflict" && !state.identityConfirmed,
         artistLookupTransient: item.kind === "discover-show-artist-recovery" && !state.catalogRepaired });
       await route.fulfill({ contentType: "application/json", body: JSON.stringify(body) });
@@ -542,6 +555,30 @@ async function runCase(browser, origin, item) {
       await assertPath(page, discoverArtistEventPath);
       await openArtist.waitFor();
       await snapshot("Back restores the same show");
+    } else if (item.kind === "discover-event-back") {
+      // Reported on 2026-09-25: a guest who landed on /discover and opened the
+      // first event card must get Discover back from the event page's own Back
+      // arrow. Desktop's separate "Back to intro" control stays Intro-bound.
+      const upcoming = page.getByText("Upcoming events", { exact: true }).first();
+      const eventPage = page.getByRole("button", { name: "Open Fixture Venue's venue page", exact: true }).first();
+      const onDiscover = async () => {
+        await assertPath(page, "/discover"); await visiblePage(page, "/discover"); await upcoming.waitFor();
+        assert.equal(await page.getByRole("link", { name: "Browse concerts", exact: true }).count(), 0, "In-app Back from a Discover event fell through to Intro.");
+      };
+      const openAndReturn = async (card, label) => {
+        await card.waitFor(); await card.click();
+        await assertPath(page, discoverArtistEventPath); await eventPage.waitFor();
+        await snapshot(`event opened from ${label}`);
+        await page.getByRole("button", { name: new RegExp(`^Leave ${discoverShowArtist.name}\\b.* page$`) }).first().click();
+        await onDiscover(); await snapshot(`in-app Back from ${label} returns to Discover`);
+      };
+      await visiblePage(page, "/discover"); await upcoming.waitFor(); await assertPath(page, "/discover");
+      // The slideshow card (named "Open <event>. <date>") comes first, then the list.
+      await openAndReturn(page.getByRole("button", { name: new RegExp(`^Open ${discoverShowArtist.name}\\b.*\\b20\\d{2}\\b`) }).first(), "slideshow");
+      await page.goForward({ waitUntil: "networkidle" }); await assertPath(page, discoverArtistEventPath); await eventPage.waitFor();
+      await page.goBack({ waitUntil: "networkidle" }); await onDiscover();
+      await snapshot("browser Back agrees with in-app Back");
+      await openAndReturn(page.getByRole("link", { name: `Open ${discoverShowArtist.name} at ${discoverArtistEvent.venue}`, exact: true }).first(), "event list");
     } else if (item.kind === "guest-tabs") {
       await visiblePage(page, "/search"); await assertPath(page, "/search");
       await openTab("Discover"); await visiblePage(page, "/discover"); await assertPath(page, "/discover");
