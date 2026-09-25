@@ -414,3 +414,16 @@ test("large Discover metrics stay readable on narrow screens", () => {
   assert.equal(compactDiscoverNumber(1_250), "1.3K");
   assert.equal(compactDiscoverNumber(1_250_000), "1.3M");
 });
+
+test("genre labels read consistently and popular genres lead", async () => {
+  const { discoverGenreLabel, rankDiscoverGenres } = await import("./discoverView.mjs");
+  assert.equal(discoverGenreLabel("alternative rock"), "Alternative Rock");
+  assert.equal(discoverGenreLabel("hip hop"), "Hip Hop");
+  assert.equal(discoverGenreLabel("r&b"), "R&B");
+  assert.equal(discoverGenreLabel("Hip-Hop"), "Hip-Hop");
+  assert.equal(discoverGenreLabel(""), "");
+  const genres = [{ genre: "Black Metal", count: 462 }, { genre: "Indie", count: 325 }, { genre: "Pop", count: 120 }, { genre: "Hip-Hop", count: 211 }];
+  const popular = [{ genre: "Hip-Hop" }, { genre: "hip hop" }, { genre: "pop" }];
+  assert.deepEqual(rankDiscoverGenres(genres, popular).map((item) => item.genre), ["Hip-Hop", "Pop", "Black Metal", "Indie"]);
+  assert.deepEqual(rankDiscoverGenres(genres, []).map((item) => item.genre), ["Black Metal", "Indie", "Pop", "Hip-Hop"], "no popularity data keeps the server order");
+});

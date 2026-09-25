@@ -67,6 +67,7 @@ import {
   normalizeDiscoverArtistRows,
   normalizeDiscoverOverview,
   orderDiscoverCountries,
+  rankDiscoverGenres,
   selectDefaultDiscoverGenre,
   selectDiscoverPhotos,
   visibleDiscoverCountries,
@@ -458,9 +459,10 @@ export default function DiscoverScreen({
   }, [accountId, programme, rangeScopeKey]);
 
   useEffect(() => {
-    const nextGenre = selectDefaultDiscoverGenre(overview.genres, selectedGenre);
+    // Popular genres first, and the same 12 the genre chips offer.
+    const nextGenre = selectDefaultDiscoverGenre(rankDiscoverGenres(overview.genres, overview.chart.rows), selectedGenre, { limit: 12 });
     if (nextGenre !== selectedGenre) setSelectedGenre(nextGenre);
-  }, [overview.genres, selectedGenre]);
+  }, [overview.chart.rows, overview.genres, selectedGenre]);
 
   const pickRegion = (country) => {
     setQuery("");

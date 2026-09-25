@@ -251,10 +251,10 @@ export function visibleDiscoverCountries(countries, selectedCountry, { compact =
   return visible;
 }
 
-export function selectDefaultDiscoverGenre(genres, selectedGenre) {
+export function selectDefaultDiscoverGenre(genres, selectedGenre, { limit = 7 } = {}) {
   const selectable = (Array.isArray(genres) ? genres : [])
     .filter((item) => text(item?.genre) && text(item.genre) !== "Other")
-    .slice(0, 7);
+    .slice(0, limit);
   const selected = text(selectedGenre);
   if (selected && selectable.some((item) => item.genre === selected)) return selected;
   return selectable[0]?.genre || null;
@@ -388,4 +388,32 @@ export function compactDiscoverNumber(value) {
   if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(count >= 10_000_000 ? 0 : 1).replace(/\.0$/, "")}M`;
   if (count >= 1_000) return `${(count / 1_000).toFixed(count >= 100_000 ? 0 : 1).replace(/\.0$/, "")}K`;
   return String(count);
+}
+
+const KEEP_AS_IS = new Map([["r&b", "R&B"], ["edm", "EDM"], ["k-pop", "K-Pop"], ["j-pop", "J-Pop"], ["uk garage", "UK Garage"]]);
+const genreKey = (value) => text(value).toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+
+// Catalogue genre tags arrive in any case ("alternative rock", "Hip-Hop").
+// Show them consistently: title case, with a few well-known spellings kept.
+export function discoverGenreLabel(value) {
+  const raw = text(value);
+  if (!raw) return "";
+  const known = KEEP_AS_IS.get(raw.toLocaleLowerCase());
+  if (known) return known;
+  return raw.replace(/(^|[\s-])(\p{L})/gu, (match, lead, letter) => `${lead}${letter.toLocaleUpperCase()}`);
+}
+
+// Order genres the way people browse: by how many of the currently popular
+// artists carry each one, then by size. Raw counts alone let a niche tag with
+// many obscure catalogue entries lead the page.
+export function rankDiscoverGenres(genres, popularRows = []) {
+  const weight = new Map();
+  (Array.isArray(popularRows) ? popularRows : []).forEach((row, index) => {
+    const key = genreKey(row?.genre);
+    if (key) weight.set(key, (weight.get(key) || 0) + Math.max(1, 30 - index));
+  });
+  return (Array.isArray(genres) ? genres : [])
+    .map((item, index) => ({ item, index, score: weight.get(genreKey(item?.genre)) || 0 }))
+    .sort((left, right) => right.score - left.score || left.index - right.index)
+    .map((entry) => entry.item);
 }
