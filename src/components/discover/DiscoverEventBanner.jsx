@@ -6,7 +6,8 @@ import useReducedMotion from "../../hooks/useReducedMotion";
 import { calendarDateKey } from "../../domain/dataPolicy.mjs";
 import Icon from "../Icon";
 
-const AUTO_ADVANCE_MS = 6_500;
+// Long enough to read a title, a date and a venue before the next slide.
+const AUTO_ADVANCE_MS = 9_000;
 const LICENSED_SOURCES = new Set(["licensed", "commons", "openverse"]);
 const PROVIDER_SOURCES = new Set(["ticketmaster"]);
 
@@ -69,6 +70,9 @@ export default function DiscoverEventBanner({
     .join("\u0000"), [safeSlides]);
   const [index, setIndex] = useState(0);
   const [paused, setPaused] = useState(false);
+  // Autoplay rests while someone is pointing at, focused on or touching the
+  // slideshow, and stops for good once they step through it themselves.
+  const [holding, setHolding] = useState(false);
   const [failed, setFailed] = useState(() => new Set());
   const [foreground, setForeground] = useState(() => AppState.currentState === "active");
   const current = safeSlides[index] || null;
@@ -96,11 +100,11 @@ export default function DiscoverEventBanner({
   }, []);
 
   useEffect(() => {
-    if (!active || !foreground || paused || reduceMotion || safeSlides.length < 2) return undefined;
+    if (!active || !foreground || paused || holding || reduceMotion || safeSlides.length < 2) return undefined;
     const delay = Math.max(4_500, Math.min(15_000, Number(autoAdvanceMs) || AUTO_ADVANCE_MS));
     const timer = setInterval(() => setIndex((value) => (value + 1) % safeSlides.length), delay);
     return () => clearInterval(timer);
-  }, [active, autoAdvanceMs, foreground, paused, reduceMotion, safeSlides.length]);
+  }, [active, autoAdvanceMs, foreground, paused, holding, reduceMotion, safeSlides.length]);
 
   if (!current) return null;
 
@@ -119,7 +123,10 @@ export default function DiscoverEventBanner({
   };
 
   return (
-    <View style={[styles.shell, compact && styles.shellCompact]} accessible={false}>
+    <View style={[styles.shell, compact && styles.shellCompact]} accessible={false}
+      onMouseEnter={() => setHolding(true)} onMouseLeave={() => setHolding(false)}
+      onFocus={() => setHolding(true)} onBlur={() => setHolding(false)}
+      onTouchStart={() => setHolding(true)} onTouchEnd={() => setHolding(false)}>
       <View style={[styles.hero, compact && styles.heroCompact]} accessible={false}>
         <Pressable
           style={({ pressed, focused }) => [styles.eventAction, pressed && styles.heroPressed, focused && focusRing]}
@@ -195,16 +202,6 @@ export default function DiscoverEventBanner({
           <Pressable style={({ pressed, focused }) => [styles.control, pressed && styles.controlPressed, focused && focusRing]} onPress={() => move(-1)} accessibilityRole="button" accessibilityLabel="Previous event">
             <Icon name="chevron-left" size={18} color={colors.text} />
           </Pressable>
-          <Pressable
-            style={({ pressed, focused }) => [styles.autoplay, pressed && styles.controlPressed, focused && focusRing, reduceMotion && styles.autoplayDisabled]}
-            onPress={() => setPaused((value) => !value)}
-            disabled={reduceMotion}
-            accessibilityRole="button"
-            accessibilityState={{ disabled: reduceMotion }}
-            accessibilityLabel={reduceMotion ? "Auto-play disabled by Reduce Motion" : paused ? "Play event slideshow" : "Pause event slideshow"}
-          >
-            <Text style={styles.autoplayText}>{reduceMotion ? "AUTO-PLAY OFF" : paused ? "PLAY" : "PAUSE"}</Text>
-          </Pressable>
           <View style={styles.counter} accessible accessibilityLabel={`Event ${index + 1} of ${safeSlides.length}`}>
             <Text style={styles.counterText}>{index + 1} / {safeSlides.length}</Text>
           </View>
@@ -244,9 +241,6 @@ const styles = StyleSheet.create({
   controls: { minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "flex-end", gap: 7 },
   control: { width: 44, height: 44, alignItems: "center", justifyContent: "center", borderRadius: 22, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
   controlPressed: { opacity: 0.72, transform: [{ scale: 0.96 }] },
-  autoplay: { minWidth: 94, minHeight: 44, alignItems: "center", justifyContent: "center", paddingHorizontal: 13, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
-  autoplayDisabled: { opacity: 0.64 },
-  autoplayText: { color: colors.text, fontFamily: mono, fontSize: 9.5, fontWeight: "900", letterSpacing: 0.7 },
   counter: { minWidth: 48, minHeight: 32, alignItems: "center", justifyContent: "center", paddingHorizontal: 8, borderRadius: radius.pill, backgroundColor: colors.bgElev },
   counterText: { color: colors.textDim, fontFamily: mono, fontSize: 9.5, fontWeight: "900", fontVariant: ["tabular-nums"] },
 });

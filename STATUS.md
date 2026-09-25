@@ -6,6 +6,20 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-09-25 Discover first impressions: slideshow and agent priority
+
+- The Discover event slideshow only shows events that have a picture (fan
+  photo or credited Ticketmaster artwork); with none it is hidden and the event
+  list carries the section. The Pause button is gone at the owner's request:
+  autoplay rests while the slideshow is hovered, focused or touched, stops once
+  someone uses the arrows, and never runs with Reduce Motion. Each slide now
+  stays up 9 seconds instead of 6.5.
+- The Ticketmaster web profile worker fills Discover first: performers with a
+  show in the next 30 days (Discover's default range), then popular acts, then
+  everyone else; venues hosting shows in that window before venues with more
+  shows later. Many Ticketmaster events still have no picture because the feed
+  sends images without credit details, which we deliberately do not publish.
+
 ## 2026-09-25 Artist news hub, tour titles and photo credit (SEO)
 
 The owner wants Mshpit to be an information hub as well as a social network:

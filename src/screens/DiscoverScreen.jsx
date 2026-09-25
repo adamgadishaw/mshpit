@@ -265,6 +265,7 @@ export default function DiscoverScreen({
     media: eventBannerMedia,
     blockedIds,
     limit: 4,
+    requireMedia: true,
   }), [blockedIds, eventBannerMedia, visibleLiveEvents]);
   const loungeRows = useMemo(() => filterDiscoverSceneRows(
     projectPopularLounges(discoverySidebar?.popularLounges, { limit: 12 }),

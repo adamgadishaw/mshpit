@@ -91,3 +91,15 @@ test("removed, moderated, duplicate, and cross-event media cannot enter the reel
   assert.equal(slides.length, 1);
   assert.equal(slides[0].media, null);
 });
+
+test("with requireMedia, the slideshow only shows events that have a picture", () => {
+  const slides = buildDiscoverEventBannerSlides({
+    events,
+    media: [
+      { artist: "The Beaches", venue: "Exhibition Place", date: "2026-08-21", uri: "https://media.test/fan.jpg", source: "fan", photosPublic: true, by: "A Fan" },
+    ],
+    requireMedia: true,
+  });
+  assert.deepEqual(slides.map((slide) => slide.title), ["Canadian National Exhibition"]);
+  assert.deepEqual(buildDiscoverEventBannerSlides({ events, media: [], requireMedia: true }), [], "no pictures, no slideshow");
+});

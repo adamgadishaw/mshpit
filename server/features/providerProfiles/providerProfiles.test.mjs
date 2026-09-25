@@ -137,10 +137,25 @@ function database(t) {
       ('ticketmaster','TM_KNOWN','known','Known Act',1,200),
       ('ticketmaster','TM_TWIN','twin','Twin Act',1,100);
     INSERT INTO tour_dates VALUES ('1','Wet Leg','Brooklyn Steel','ticketmaster','V_STEEL','Brooklyn'),('2','Known Act','Brooklyn Steel','ticketmaster','V_STEEL','Brooklyn'),
-      ('3','Twin Act','The Fillmore','ticketmaster','V_FILL','San Francisco');`);
+      ('3','Twin Act','The Fillmore','ticketmaster','V_FILL','San Francisco');
+    ALTER TABLE tour_dates ADD COLUMN artist_key TEXT;
+    ALTER TABLE tour_dates ADD COLUMN date TEXT;
+    ALTER TABLE artists ADD COLUMN popularity INTEGER;`);
   ensureProviderProfileSchema(db);
   return db;
 }
+
+test("Discover comes first: performers and venues with shows in the next 30 days lead the queue", (t) => {
+  const db = database(t);
+  const at = Date.parse("2026-09-25T12:00:00Z");
+  db.prepare("UPDATE tour_dates SET artist_key='twin', date='2026-10-01' WHERE id='3'").run();
+  db.prepare("UPDATE tour_dates SET artist_key='wet leg', date='2027-03-01' WHERE id='1'").run();
+  assert.equal(nextAttractionForProfile(db, { at }).id, "TM_TWIN", "a show in Discover's window beats an older sighting");
+  assert.equal(nextVenueForProfile(db, { at }).id, "V_FILL", "a venue with a show soon beats one with more shows later");
+  db.prepare("UPDATE tour_dates SET date='2027-03-02' WHERE id='3'").run();
+  db.prepare("UPDATE artists SET popularity=95 WHERE norm='known'").run();
+  assert.equal(nextAttractionForProfile(db, { at }).id, "TM_KNOWN", "then the most popular acts");
+});
 
 test("a pass fills performers and venues, adds only confirmed IDs, and never overwrites", async (t) => {
   const db = database(t);
@@ -189,7 +204,7 @@ test("a pass fills performers and venues, adds only confirmed IDs, and never ove
     "a venue page cannot show another room's record");
   assert.deepEqual(readVenueProviderProfile(db, { venueKey: "Brooklyn Steel" })?.details, { parking: "Street parking only." },
     "a page opened from its link finds the one Ticketmaster venue with that name");
-  db.prepare("INSERT INTO tour_dates VALUES ('9','Other','Brooklyn Steel','ticketmaster','V_OTHER_STEEL','Sheffield')").run();
+  db.prepare("INSERT INTO tour_dates(id,artist,venue,source,venue_provider_id,venue_city) VALUES ('9','Other','Brooklyn Steel','ticketmaster','V_OTHER_STEEL','Sheffield')").run();
   assert.equal(readVenueProviderProfile(db, { venueKey: "Brooklyn Steel" }), null,
     "two rooms with one name and no city to tell them apart show nothing");
   assert.deepEqual(readVenueProviderProfile(db, { venueKey: "Brooklyn Steel", city: "Brooklyn" })?.details, { parking: "Street parking only." },
