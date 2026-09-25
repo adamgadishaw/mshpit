@@ -23,7 +23,7 @@ test("journey menu keeps every public discovery and connection destination reach
   assert.equal(model.connection[1].detail, "3 unread");
   assert.equal(model.connection[2].title, "Suggestion box");
   const withCrew = journeyMenuModel({ includeCrew: true });
-  assert.equal(withCrew.connection[0].title, "Find a crew");
+  assert.equal(withCrew.discover.at(-1).title, "Show swipe", "the show swipe sits with the other ways to find shows");
 });
 
 test("role-specific account destinations expose one profile-management doorway", () => {

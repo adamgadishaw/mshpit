@@ -1,4 +1,3 @@
-import { CREW_ENABLED } from "../../../src/domain/crewAvailability.mjs";
 import { activeAccountSql } from "../../accountVisibility.js";
 import { artistAuthoredTourDateVisibleSql } from "../../artistAuthoredTourDateVisibility.js";
 import { publicArtistCatalogSql } from "../../artistCatalogVisibility.js";
@@ -1222,7 +1221,6 @@ export function buildSitemapDatasets(database, { now = Date.now() } = {}) {
     }))
     : [];
   if (guideCities.length) pages.push({ path: "/cities" });
-  if (CREW_ENABLED) pages.push({ path: "/crew" });
   const cities = [...citySitemapEntries({ candidates, venueEntries: venues, concerts }), ...guideCities];
   const artistArchives = artistArchiveSitemapEntries({ artistEntries: artists, concerts });
   const datasets = new Map([

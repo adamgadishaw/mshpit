@@ -42,7 +42,6 @@ import { normalizeVenuePhotoProviderIdentity } from "../domain/venuePhotos.mjs";
 import { isLegacyArtistMemorial } from "../domain/artistLegacy.mjs";
 import useCanonicalArtistIdentity from "../hooks/useCanonicalArtistIdentity";
 import usePublicEventSnapshot from "../hooks/usePublicEventSnapshot";
-import CrewInvite from "../components/CrewInvite";
 import { publicEventArtistIdentityPending, publicEventCandidateId, readablePublicEventSnapshot } from "../domain/publicEventSnapshot.mjs";
 
 const CROWD_FILTER_LABELS = Object.freeze({
@@ -157,7 +156,7 @@ function ReviewMediaTile({ media, author, postId, onOpenPhotos }) {
 // community score and the setlist. It must render for ANY event shape - a
 // logged review, a bare tour date from the calendar, a lounge link - so every
 // field is guarded; a tour date has no score and that's a mode, not a crash.
-export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenProfile, onOpenArtist, onOpenArchive, onOpenVenue, onOpenLounge, onOpenCrew, onOpenPost, onOpenPhotos, onRequireAuth }) {
+export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenProfile, onOpenArtist, onOpenArchive, onOpenVenue, onOpenLounge, onOpenPost, onOpenPhotos, onRequireAuth }) {
   const { width } = useWindowDimensions();
   const tabletLayout = width >= 720;
   const archiveReviewTileStyle = width >= 1100
@@ -776,9 +775,6 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
             ? "Doors time was unavailable, so the Lounge closed 24 hours after show start."
             : "The Lounge closed 24 hours after doors opened."
           : "One Lounge for this exact show — available before, during, and until 24 hours after doors open."}</Text> : null}
-        {liveActionsAvailable && presentation.allowTickets && tourDateId && onOpenCrew ? (
-          <CrewInvite tourDateId={tourDateId} onPress={() => onOpenCrew({ tourDateId, artist: eventTitle, venue, date: norm.date })} />
-        ) : null}
         {liveActionsAvailable && goingTicketPrompt && tourDateId ? (
           <GoingTicketComposer
             event={ticketEvent}

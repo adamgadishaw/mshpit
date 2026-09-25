@@ -1,15 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { CREW_PURPOSES, crewCountLabel, crewDateLabel, crewPurposeLabels } from "./crew.mjs";
+import { crewDateLabel, goingLabel } from "./crew.mjs";
+import { PLAN_KINDS, planKindLabel, planSpotsLabel } from "./showPlans.mjs";
 import { notificationBundleKey } from "./notification-bundles.mjs";
-import { isReservedSlug } from "./urls.mjs";
-
-test("purpose labels ignore unknown ids, repeats and anything past four", () => {
-  assert.deepEqual(crewPurposeLabels(["ride", "ride", "nope", "hotel"]), ["Share a ride", "Split a hotel"]);
-  assert.equal(crewPurposeLabels(Object.keys(CREW_PURPOSES)).length, 4);
-  assert.deepEqual(crewPurposeLabels("ride"), []);
-});
+import { notificationDestination } from "./notificationDeepLink.mjs";
 
 test("show dates read as the venue's calendar day, never shifted by time zone", () => {
   assert.equal(crewDateLabel("2026-10-10", { today: "2026-10-10" }), "Tonight · Oct 10");
@@ -21,17 +16,23 @@ test("show dates read as the venue's calendar day, never shifted by time zone", 
   assert.equal(crewDateLabel(null), "");
 });
 
-test("counts read naturally and never go negative", () => {
-  assert.equal(crewCountLabel(0, "going"), "Be the first going");
-  assert.equal(crewCountLabel(12, "going"), "12 going");
-  assert.equal(crewCountLabel(3, "crew"), "3 looking for a crew");
-  assert.equal(crewCountLabel(1, "others"), "1 other looking");
-  assert.equal(crewCountLabel(-4, "others"), "0 others looking");
+test("going counts read naturally and never go negative", () => {
+  assert.equal(goingLabel(0), "Be the first going");
+  assert.equal(goingLabel(12), "12 going");
+  assert.equal(goingLabel(-3), "Be the first going");
 });
 
-test("each crew notification stays its own row and /crew is never an artist slug", () => {
-  const a = notificationBundleKey({ id: "n1", type: "crew_match", actorId: "u_a", postId: "tm_1" });
-  const b = notificationBundleKey({ id: "n2", type: "crew_match", actorId: "u_b", postId: "tm_1" });
+test("plan labels fall back safely", () => {
+  assert.equal(planKindLabel("ride"), "Share a ride");
+  assert.equal(planKindLabel("bogus"), PLAN_KINDS.other);
+  assert.equal(planSpotsLabel(1, 3), "1 of 3 spots taken");
+  assert.equal(planSpotsLabel(1, 1), "Full");
+  assert.equal(planSpotsLabel(0, 1), "0 of 1 spot taken");
+});
+
+test("a plan join opens your plans and each plan keeps its own notification row", () => {
+  assert.deepEqual(notificationDestination({ type: "plan_join", actorId: "u_a", postId: "plan_1" }), { kind: "plans" });
+  const a = notificationBundleKey({ id: "n1", type: "plan_join", actorId: "u_a", postId: "plan_1" });
+  const b = notificationBundleKey({ id: "n2", type: "plan_join", actorId: "u_b", postId: "plan_2" });
   assert.notEqual(a, b);
-  assert.equal(isReservedSlug("crew"), true);
 });

@@ -12,8 +12,6 @@ import {
 test("notification destinations preserve social intent", () => {
   assert.deepEqual(notificationDestination({ type: "follow", actorId: "fan-b" }), { kind: "profile", actorId: "fan-b" });
   assert.deepEqual(notificationDestination({ type: "dm", actorId: "fan-b" }), { kind: "thread", actorId: "fan-b" });
-  assert.deepEqual(notificationDestination({ type: "crew_match", actorId: "fan-b", postId: "tm_1" }), { kind: "thread", actorId: "fan-b" },
-    "a new crew opens the chat, not the tour date id stored as postId");
   assert.deepEqual(notificationDestination({ type: "comment", postId: "post-1" }), { kind: "post", postId: "post-1" });
   assert.deepEqual(notificationDestination({ type: "post_tag", postId: "post-1" }), { kind: "post", postId: "post-1" });
   assert.deepEqual(notificationDestination({ type: "like", postId: null }), { kind: "unavailable" });

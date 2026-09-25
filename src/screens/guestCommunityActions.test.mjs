@@ -52,6 +52,7 @@ function screenFixture(name, session = null, { loungeStatus = "open", provideAut
     "../domain/screenScope.mjs": { accountTargetScope, scopedScreenValue },
     "../domain/scopedRefresh.mjs": { refreshScope },
     "../domain/showSocial.mjs": { normalizeLoungeMeta: (value) => value },
+    "../config/runtime.mjs": { ENABLE_CREW: false },
     "../domain/postAuthor.mjs": { resolvePostAuthor: (value) => value },
     "../domain/artistLegacy.mjs": { isLegacyArtistMemorial: () => false },
     "../domain/fanClubDirectory.mjs": { fanClubSearchResults: () => [] },

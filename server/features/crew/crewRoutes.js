@@ -1,19 +1,20 @@
+import { CrewError, crewShowDeck, passCrewShow } from "./crewService.js";
 import {
-  CREW_PURPOSES,
-  CrewError,
-  crewCountsForTourDate,
-  crewPeopleDeck,
-  crewShowDeck,
-  listCrewMatches,
-  listMyCrewShows,
-  passCrewShow,
-  setCrewSeeking,
-  stopCrewSeeking,
-  swipeCrewPerson,
-} from "./crewService.js";
+  closeLoungePlan,
+  createLoungePlan,
+  joinLoungePlan,
+  leaveLoungePlan,
+  listLoungePlans,
+  listMyPlans,
+  listPlanMessages,
+  planLoungeKey,
+  postPlanMessage,
+  removePlanMember,
+} from "./showPlansService.js";
 
-// Crew API. Browsing the shows deck needs an account; everything that shows
-// you to other people also needs a confirmed email and an adult age group.
+// Show swipe and Lounge plans. Swiping needs an account. Plans also need a
+// confirmed email, an adult age group, a place on the show's Going list and
+// an open Lounge, the same gate as the Lounge's own messages.
 export function crewRoutes({
   database,
   ApiError,
@@ -24,8 +25,13 @@ export function crewRoutes({
   projectShow,
   projectUser,
   blockedEitherWay,
-  isAvailable = () => true,
-  notifyMatch = () => {},
+  loungeKeyParam,
+  openLounge,
+  loungeIsOpen = () => true,
+  isStaff = () => false,
+  assertSafeText = () => {},
+  notifyPlanJoin = () => {},
+  newId,
   now = Date.now,
 }) {
   const noStore = (ctx) => ctx.setHeader?.("Cache-Control", "private, no-store");
@@ -41,11 +47,18 @@ export function crewRoutes({
     }
   };
   const tourDateParam = (ctx) => (typeof ctx.params?.tourDateId === "string" ? decodeURIComponent(ctx.params.tourDateId) : "");
+  const planParam = (ctx) => (typeof ctx.params?.planId === "string" ? ctx.params.planId.slice(0, 80) : "");
+  // A plan is reachable only while its show's Lounge is open to this member.
+  const planGate = (ctx, user) => {
+    const key = planLoungeKey(database, planParam(ctx));
+    if (!key) throw new ApiError(404, "This plan is no longer open.", "NOT_FOUND");
+    openLounge(user, key);
+    return key;
+  };
+  const plansFor = (user, loungeKey) => run(() => listLoungePlans(database, { user, loungeKey, projectUser, blockedEitherWay }));
+  const plansAfterChange = (user, key) => (key && user.age_band === "18_plus" && loungeIsOpen(key) ? plansFor(user, key) : []);
+
   return {
-    "GET /api/crew/purposes": (ctx) => {
-      ctx.setHeader?.("Cache-Control", "public, max-age=3600");
-      return { purposes: Object.entries(CREW_PURPOSES).map(([id, label]) => ({ id, label })) };
-    },
     "GET /api/crew/shows": (ctx) => {
       const user = requireUser(ctx);
       rateLimit(ctx, "crew-deck", 120, 10 * 60_000);
@@ -64,54 +77,79 @@ export function crewRoutes({
       noStore(ctx);
       return run(() => passCrewShow(database, { user, tourDateId: tourDateParam(ctx), at: now() }));
     },
-    "GET /api/crew/shows/:tourDateId/counts": (ctx) => {
-      rateLimit(ctx, "crew-counts", 240, 60_000);
-      ctx.setHeader?.("Cache-Control", "public, max-age=60");
-      return { counts: crewCountsForTourDate(database, tourDateParam(ctx)) };
-    },
-    "PUT /api/crew/shows/:tourDateId/seeking": (ctx) => {
+
+    "GET /api/lounges/:key/plans": (ctx) => {
       const user = requireVerifiedUser(ctx);
-      rateLimit(ctx, "crew-seeking", 60, 60 * 60_000);
       noStore(ctx);
+      const key = loungeKeyParam(ctx);
+      openLounge(user, key);
+      return { plans: plansFor(user, key) };
+    },
+    "POST /api/lounges/:key/plans": (ctx) => {
+      const user = requireVerifiedUser(ctx);
+      noStore(ctx);
+      const key = loungeKeyParam(ctx);
+      const show = openLounge(user, key);
       const body = ctx.body && typeof ctx.body === "object" ? ctx.body : {};
-      return run(() => setCrewSeeking(database, {
-        user, tourDateId: tourDateParam(ctx), purposes: body.purposes, note: body.note, at: now(),
+      assertSafeText(body.text, "plan");
+      rateLimit(ctx, "plan-create", 10, 24 * 60 * 60_000);
+      run(() => createLoungePlan(database, {
+        user, loungeKey: key, show, kind: body.kind, text: body.text, spots: body.spots,
+        id: newId("plan"), at: now(), projectUser, blockedEitherWay,
       }));
+      return { plans: plansFor(user, key) };
     },
-    "DELETE /api/crew/shows/:tourDateId/seeking": (ctx) => {
+    "POST /api/plans/:planId/join": (ctx) => {
+      const user = requireVerifiedUser(ctx);
+      noStore(ctx);
+      const key = planGate(ctx, user);
+      rateLimit(ctx, "plan-join", 60, 24 * 60 * 60_000);
+      const result = run(() => joinLoungePlan(database, { user, planId: planParam(ctx), blockedEitherWay, at: now() }));
+      if (result.created) notifyPlanJoin({ plan: result.plan, user });
+      return { plans: plansFor(user, key) };
+    },
+    "POST /api/plans/:planId/leave": (ctx) => {
       const user = requireUser(ctx);
       noStore(ctx);
-      return run(() => stopCrewSeeking(database, { user, tourDateId: tourDateParam(ctx) }));
+      const key = planLoungeKey(database, planParam(ctx));
+      run(() => leaveLoungePlan(database, { user, planId: planParam(ctx) }));
+      return { plans: plansAfterChange(user, key) };
     },
-    "GET /api/crew/shows/:tourDateId/people": (ctx) => {
-      const user = requireVerifiedUser(ctx);
-      rateLimit(ctx, "crew-people", 120, 10 * 60_000);
-      noStore(ctx);
-      return run(() => crewPeopleDeck(database, {
-        user, tourDateId: tourDateParam(ctx), projectUser, blockedEitherWay, isAvailable,
-      }));
-    },
-    "POST /api/crew/shows/:tourDateId/people/:userId": (ctx) => {
-      const user = requireVerifiedUser(ctx);
-      rateLimit(ctx, "crew-swipe", 300, 24 * 60 * 60_000);
-      noStore(ctx);
-      const decision = ctx.body?.decision;
-      const result = run(() => swipeCrewPerson(database, {
-        user, tourDateId: tourDateParam(ctx), targetId: ctx.params?.userId, decision, blockedEitherWay, at: now(),
-      }));
-      if (result.matched && result.created) notifyMatch({ user, targetId: ctx.params.userId, tourDateId: tourDateParam(ctx) });
-      return { matched: result.matched, person: result.matched ? projectUser(ctx.params.userId) : null };
-    },
-    "GET /api/crew/me": (ctx) => {
+    "POST /api/plans/:planId/close": (ctx) => {
       const user = requireUser(ctx);
       noStore(ctx);
-      return {
-        eligible: user.age_band === "18_plus",
-        ageBand: user.age_band || "unknown",
-        emailConfirmed: !!user.email_verified_at,
-        shows: listMyCrewShows(database, { user }),
-        matches: listCrewMatches(database, { user, projectUser, blockedEitherWay }),
-      };
+      const key = planLoungeKey(database, planParam(ctx));
+      run(() => closeLoungePlan(database, { user, planId: planParam(ctx), staff: isStaff(user), at: now() }));
+      return { plans: plansAfterChange(user, key) };
+    },
+    "DELETE /api/plans/:planId/members/:userId": (ctx) => {
+      const user = requireUser(ctx);
+      noStore(ctx);
+      const key = planLoungeKey(database, planParam(ctx));
+      run(() => removePlanMember(database, { user, planId: planParam(ctx), memberId: ctx.params?.userId }));
+      return { plans: plansAfterChange(user, key) };
+    },
+    "GET /api/plans/:planId/messages": (ctx) => {
+      const user = requireVerifiedUser(ctx);
+      noStore(ctx);
+      planGate(ctx, user);
+      rateLimit(ctx, "plan-chat-read", 600, 10 * 60_000);
+      return run(() => listPlanMessages(database, {
+        user, planId: planParam(ctx), after: ctx.query?.after, blockedEitherWay, projectUser,
+      }));
+    },
+    "POST /api/plans/:planId/messages": (ctx) => {
+      const user = requireVerifiedUser(ctx);
+      noStore(ctx);
+      planGate(ctx, user);
+      assertSafeText(ctx.body?.text, "plan message");
+      rateLimit(ctx, "plan-chat", 120, 60 * 60_000);
+      return run(() => postPlanMessage(database, { user, planId: planParam(ctx), text: ctx.body?.text, id: newId("pm"), at: now() }));
+    },
+    "GET /api/me/plans": (ctx) => {
+      const user = requireUser(ctx);
+      noStore(ctx);
+      return { plans: listMyPlans(database, { user, projectUser, blockedEitherWay }).filter((plan) => loungeIsOpen(plan.show.loungeKey)) };
     },
   };
 }

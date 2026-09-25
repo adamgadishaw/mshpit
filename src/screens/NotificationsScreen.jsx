@@ -22,7 +22,7 @@ const ago = (ts) => {
   return `${Math.floor(h / 24)}d`;
 };
 
-const crewMatchPhrase = (artist) => (artist ? `and you are a crew for ${artist}` : "and you are a crew for a show");
+const planJoinPhrase = (artist) => (artist ? `joined your plan for ${artist}` : "joined your plan");
 
 const META = {
   follow: { icon: "you", tint: colors.cool, verb: "started following you" },
@@ -30,14 +30,14 @@ const META = {
   comment: { icon: "comment", tint: colors.amber, verb: "commented on your review" },
   post_tag: { icon: "you", tint: colors.gold, verb: "tagged you in a post" },
   dm: { icon: "mail", tint: colors.good, verb: "sent you a message" },
-  crew_match: { icon: "heart", tint: colors.magenta, verb: "is your crew" },
+  plan_join: { icon: "user-plus", tint: colors.good, verb: "joined your plan" },
   welcome: { icon: "star", tint: colors.amber, verb: "" },
 };
 
 function notificationCopy(notification, actorName) {
   if (notification.type === "welcome") return "Welcome to Pit! Follow people whose taste matches yours, log the shows you go to, and rate the band versus the room.";
   if (notification.type === "post_tag") return postTagNotificationCopy(actorName, notification.artist);
-  if (notification.type === "crew_match") return `${actorName || "Someone"} ${crewMatchPhrase(notification.artist)}`;
+  if (notification.type === "plan_join") return `${actorName || "Someone"} ${planJoinPhrase(notification.artist)}`;
   const meta = META[notification.type] || META.like;
   const reference = (notification.type === "like" || notification.type === "comment") && notification.artist
     ? ` of ${notification.artist}`
@@ -47,7 +47,7 @@ function notificationCopy(notification, actorName) {
 
 // The activity feed, the social heartbeat that connects follows, likes, comments
 // and DMs into one place instead of leaving them scattered across the app.
-export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThread, onOpen, onOpenPost }) {
+export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThread, onOpen, onOpenPost, onOpenPlans }) {
   const { myNotifications, refreshNotifications, markNotificationsRead, feed, session } = useStore();
   const items = myNotifications();
   const accountId = session?.id || null;
@@ -156,6 +156,7 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
     if (destination.kind === "none") return;
     if (destination.kind === "profile") return onOpenProfile?.(destination.actorId);
     if (destination.kind === "thread") return onOpenThread?.(destination.actorId);
+    if (destination.kind === "plans") return onOpenPlans?.();
     if (destination.kind === "local-post") return onOpenPost?.(destination.post);
     if (destination.kind === "unavailable") {
       setUnavailableNotice("This post is no longer available.");
@@ -293,13 +294,13 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
                   </Text>
                 ) : (
                   <Text style={styles.text}>
-                    <Text style={styles.who}>{actorName}</Text> {n.type === "post_tag" ? postTagNotificationPhrase(n.artist) : n.type === "crew_match" ? crewMatchPhrase(n.artist) : meta.verb}
+                    <Text style={styles.who}>{actorName}</Text> {n.type === "post_tag" ? postTagNotificationPhrase(n.artist) : n.type === "plan_join" ? planJoinPhrase(n.artist) : meta.verb}
                     {(n.type === "like" || n.type === "comment") && n.artist ? <Text style={styles.ref}> of {n.artist}</Text> : null}
                   </Text>
                 )}
                 {n.type === "comment" && n.text ? <Text style={styles.preview} numberOfLines={1}>“{n.text}”</Text> : null}
                 {n.type === "dm" && n.text ? <Text style={styles.preview} numberOfLines={1}>“{n.text}”</Text> : null}
-                {n.type === "crew_match" ? <Text style={styles.preview} numberOfLines={1}>{n.text ? `${n.text} · ` : ""}Tap to say hi</Text> : null}
+                {n.type === "plan_join" && n.text ? <Text style={styles.preview} numberOfLines={1}>“{n.text}”</Text> : null}
                 {bundle?.count > 1 ? <Text style={styles.bundleCount}>{bundle.count} RELATED ACTIVITIES</Text> : null}
               </View>
               {openingNotificationId === n.id && <ActivityIndicator size="small" color={colors.amber} />}

@@ -6,6 +6,39 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-09-25 Crew reworked as show swipe + Lounge plans (still switched off)
+
+The owner chose to keep the swipe only for shows and move meeting people into
+each show's existing Lounge as group plans, so nothing works like a
+swipe-on-people app or gets promoted to members under 18.
+
+- Show swipe (`CrewScreen`, `/crew` when on): flip through upcoming shows,
+  right for Going, up for Interested, left to skip. It only saves your own
+  attendance, so it is for every age. After "Going" it offers the Lounge.
+- Lounge plans (`server/features/crew/showPlansService.js`,
+  `src/components/crew/LoungePlans.jsx`): inside an open Lounge, adults with a
+  confirmed email see a Plans bar. A plan is a kind (ride, meet before doors,
+  hotel, spare ticket, pit, other), up to 140 characters and 1 to 8 spots.
+  Others tap "I'm in"; the host and members see who's in and share a plan
+  chat; nobody outside a plan sees its members or chat. Hosts can remove
+  people and close the plan, staff can close any plan, and members can leave
+  or report the host. Plans use the Lounge's own gate (going, Lounge open) and
+  close with it. Blocks keep people out of each other's plans; every reason a
+  plan cannot be joined gets the same answer. Joining notifies the host
+  (`plan_join`), which opens "Your plans".
+- Members under 18 (and unknown age) never see plans, "Your plans", or any
+  plan request; the browser suite checks this.
+- Removed: person cards and swiping, matches, the match notification, the
+  rule that let a match stand in for DM consent, the public `/crew` page, the
+  event-page "Going alone?" section and the show-page invite.
+- Tables: `show_plans`, `show_plan_members`, `show_plan_messages` (created at
+  startup, unused while off). The old `crew_seekers`, `crew_swipes` and
+  `crew_matches` are no longer created or read; any rows from the one day Crew
+  was live stay in the database untouched.
+- Checks: `server/features/crew/crew.test.mjs` (6 tests) and
+  `verify:crew-browser` (adult at 375 and 1280, teen at 375) pass against a
+  flag-on export in `.tmp/crew-dist`; the suite stays out of CI while off.
+
 ## 2026-09-25 Crew switched off (back burner)
 
 The owner liked the idea but not the environment: Mshpit needs far more

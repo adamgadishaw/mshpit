@@ -26,8 +26,6 @@ import { archiveShowKey } from "../artistArchive/artistArchiveKeys.js";
 import { venueCoordinates, venueGuideModel } from "../../../src/domain/venueGuide.mjs";
 import { publicVenueFacts } from "../../venueFacts.js";
 import { publicTourDateArtistProjection } from "../../tourDateMetadata.js";
-import { crewCountsForTourDate } from "../crew/crewService.js";
-import { CREW_ENABLED } from "../../../src/domain/crewAvailability.mjs";
 import { publicEventMetadata, publicVenueMetadataName } from "./publicMetadataPresentation.js";
 import {
   isCurrentOrUpcomingPublicMusicEvent,
@@ -751,15 +749,6 @@ function commentSchemaTree(comments, postingUrl, origin) {
   return comments.filter((comment) => !parentById.get(comment.id)).map(node);
 }
 
-// Identity-free Crew counts for an upcoming event page. A database without the
-// Crew or attendance tables (older snapshots, isolated tests) just has none.
-function publicCrewCounts(database, tourDateId) {
-  const tables = database.prepare(`SELECT COUNT(*) c FROM sqlite_master WHERE type='table'
-    AND name IN ('shows','show_attendance','crew_seekers')`).get()?.c;
-  if (tables !== 3) return Object.freeze({ going: 0, lookingForCrew: 0 });
-  return Object.freeze(crewCountsForTourDate(database, tourDateId));
-}
-
 export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGIN, paths = {} } = {}) {
   if (!database?.prepare) throw new TypeError("Public SEO projection requires a database");
   const publicOrigin = normalizedOrigin(origin);
@@ -1345,7 +1334,6 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         imageHeight: event.providerImage?.url ? event.providerImage.height : primaryAsset?.kind === "image" ? primaryAsset.height : null,
         imageMimeType: event.providerImage?.url ? null : primaryAsset?.kind === "image" ? primaryAsset.mimeType : null,
         event: publicEvent,
-        crew: CREW_ENABLED && publicEvent.date >= currentDate ? publicCrewCounts(database, raw.event.id) : null,
         posts,
         breadcrumbs,
         jsonLd: [schemaEvent ? Object.freeze(schemaEvent) : null, Object.freeze(pageSchema), Object.freeze(breadcrumbNode(publicOrigin, breadcrumbs))].filter(Boolean),

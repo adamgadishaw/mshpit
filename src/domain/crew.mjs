@@ -1,22 +1,4 @@
-// Shared words for Crew, used by the server rules and the screens alike.
-
-export const CREW_PURPOSES = Object.freeze({
-  meet_before: "Meet before doors",
-  ride: "Share a ride",
-  hotel: "Split a hotel",
-  spare_ticket: "Have a spare ticket",
-  need_ticket: "Need a ticket",
-  pit: "Someone for the pit",
-});
-
-export const CREW_PURPOSE_LIMIT = 4;
-export const CREW_NOTE_MAX = 160;
-
-export function crewPurposeLabels(ids) {
-  if (!Array.isArray(ids)) return [];
-  return [...new Set(ids)].filter((id) => typeof id === "string" && Object.hasOwn(CREW_PURPOSES, id))
-    .slice(0, CREW_PURPOSE_LIMIT).map((id) => CREW_PURPOSES[id]);
-}
+// Shared words for the show swipe.
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -39,10 +21,7 @@ export function crewDateLabel(value, { short = false, today = null } = {}) {
   return `${DAYS[date.getUTCDay()]} · ${monthDay}${sameYear ? "" : `, ${year}`}`;
 }
 
-export function crewCountLabel(count, kind) {
+export function goingLabel(count) {
   const n = Number.isFinite(Number(count)) ? Math.max(0, Math.floor(Number(count))) : 0;
-  if (kind === "going") return n ? `${n} going` : "Be the first going";
-  if (kind === "crew") return `${n} looking for a crew`;
-  if (kind === "others") return `${n} ${n === 1 ? "other" : "others"} looking`;
-  return String(n);
+  return n ? `${n} going` : "Be the first going";
 }

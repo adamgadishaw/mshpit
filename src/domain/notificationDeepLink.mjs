@@ -5,8 +5,9 @@ export function notificationDestination(notification) {
   if (notification.type === "follow") return text(notification.actorId)
     ? { kind: "profile", actorId: text(notification.actorId) }
     : { kind: "none" };
-  // A new crew opens the chat with that person, since saying hi is the next step.
-  if (notification.type === "dm" || notification.type === "crew_match") return text(notification.actorId)
+  // Someone joining your Lounge plan opens your plans, where its chat lives.
+  if (notification.type === "plan_join") return { kind: "plans" };
+  if (notification.type === "dm") return text(notification.actorId)
     ? { kind: "thread", actorId: text(notification.actorId) }
     : { kind: "none" };
   if (notification.type === "like" || notification.type === "comment" || notification.type === "post_tag") return text(notification.postId)

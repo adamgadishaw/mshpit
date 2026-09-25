@@ -169,8 +169,6 @@ export function fixtureApiResponse(pathname, { member = false, method = "GET", r
   // Researched page summaries: none in these fixtures, so pages look as before.
   if (/^\/api\/(?:artists|venues)\/[^/]+\/research$/u.test(pathname)) return { research: null };
   if (/^\/api\/artists\/[^/]+\/links$/u.test(pathname) || /^\/api\/venues\/[^/]+\/details$/u.test(pathname)) return { profile: null };
-  // Crew: public counts on a show page, nobody looking yet.
-  if (/^\/api\/crew\/shows\/[^/]+\/counts$/u.test(pathname)) return { counts: { going: 0, lookingForCrew: 0 } };
   if (pathname === "/api/venues/fixture%20venue/photos") return { photos: [], state: "ready" };
   if (pathname.startsWith("/api/shows/")) return { show: null };
   if (pathname.startsWith("/api/going/") && pathname.endsWith("/attendees")) return { attendees: [], total: 0, scope: "everyone" };
