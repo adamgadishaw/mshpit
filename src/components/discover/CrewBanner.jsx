@@ -3,21 +3,21 @@ import { Pressable, StyleSheet, Text, View } from "react-native";
 import Icon from "../Icon";
 import { colors, displayFont, radius, space } from "../../theme";
 
-// The Crew hook at the top of Discover's shows tab.
+// The show swipe, at the top of Discover's shows tab.
 export default function CrewBanner({ onPress, compact = false }) {
   return (
     <Pressable style={({ pressed }) => [styles.banner, compact && styles.compact, pressed && styles.pressed]} onPress={onPress}
-      accessibilityRole="button" accessibilityLabel="Find a crew. Swipe through shows and meet fans going too.">
+      accessibilityRole="button" accessibilityLabel="Show swipe. Flip through upcoming shows and build your concert calendar.">
       <View style={styles.faces} aria-hidden>
-        <View style={[styles.face, { backgroundColor: colors.amberStrong }]}><Icon name="you" size={18} color="#1A1206" /></View>
-        <View style={[styles.face, styles.faceOverlap, { backgroundColor: colors.magenta }]}><Icon name="heart" size={16} color="#fff" /></View>
+        <View style={[styles.face, { backgroundColor: colors.amberStrong }]}><Icon name="ticket" size={18} color="#1A1206" /></View>
+        <View style={[styles.face, styles.faceOverlap, { backgroundColor: colors.surfaceAlt }]}><Icon name="calendar" size={16} color={colors.amber} /></View>
       </View>
       <View style={{ flex: 1 }}>
-        <Text style={styles.kicker}>NEW · CREW</Text>
-        <Text style={[styles.title, compact && styles.titleCompact]}>Never go to a show alone</Text>
-        <Text style={styles.detail}>Swipe through shows, match with fans going too, then meet before doors or share a ride.</Text>
+        <Text style={styles.kicker}>SHOW SWIPE</Text>
+        <Text style={[styles.title, compact && styles.titleCompact]}>Find your next show</Text>
+        <Text style={styles.detail}>Flip through upcoming concerts near you. Right for going, up for interested, left to skip.</Text>
       </View>
-      <View style={styles.cta}><Text style={styles.ctaText}>Find a crew</Text><Icon name="chevron-right" size={15} color="#1A1206" /></View>
+      <View style={styles.cta}><Text style={styles.ctaText}>Start swiping</Text><Icon name="chevron-right" size={15} color="#1A1206" /></View>
     </Pressable>
   );
 }
@@ -32,7 +32,7 @@ const styles = StyleSheet.create({
   faces: { flexDirection: "row" },
   face: { width: 42, height: 42, borderRadius: 21, alignItems: "center", justifyContent: "center", borderWidth: 2, borderColor: colors.surface },
   faceOverlap: { marginLeft: -12 },
-  kicker: { color: colors.magenta, fontSize: 11, fontWeight: "900", letterSpacing: 1.2 },
+  kicker: { color: colors.amber, fontSize: 11, fontWeight: "900", letterSpacing: 1.2 },
   title: { color: colors.text, fontFamily: displayFont, fontSize: 24, fontWeight: "900", marginTop: 2 },
   titleCompact: { fontSize: 20 },
   detail: { color: colors.textDim, fontSize: 13.5, lineHeight: 19, marginTop: 4 },

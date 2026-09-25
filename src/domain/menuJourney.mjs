@@ -59,9 +59,9 @@ export function journeyMenuModel({ session = null, inboxUnread = 0, notification
       { key: "venues", icon: "search", title: "Find venues", detail: "Explore rooms by city and lineup", accent: "cool" },
       { key: "fanClubs", icon: "comment", title: "Fan clubs", detail: "Join artist communities", accent: "magenta" },
       { key: "topRated", icon: "trophy", title: "Top-rated shows", detail: "The highest-rated nights close to home", accent: "gold" },
+      ...(includeCrew ? [{ key: "crew", icon: "ticket", title: "Show swipe", detail: "Flip through upcoming shows and build your calendar", accent: "magenta" }] : []),
     ],
     connection: [
-      ...(includeCrew ? [{ key: "crew", icon: "heart", title: "Find a crew", detail: "Swipe shows and meet fans going too" }] : []),
       ...(includeActivity ? [{ key: "activity", icon: "bell", title: "Activity", detail: notificationCount ? `${notificationCount} new` : "Follows, likes, and replies", badge: notificationCount }] : []),
       { key: "inbox", icon: "mail", title: "Inbox", detail: unread ? `${unread} unread` : "Your messages", badge: unread },
       { key: "suggestion", icon: "comment", title: "Suggestion box", detail: "Tell us what feels missing or confusing" },

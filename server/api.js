@@ -93,7 +93,8 @@ import { catalogResearchRoutes } from "./features/catalogResearch/catalogResearc
 import { providerProfileRoutes } from "./features/providerProfiles/providerProfileRoutes.js";
 import { crewRoutes } from "./features/crew/crewRoutes.js";
 import { CREW_ENABLED } from "../src/domain/crewAvailability.mjs";
-import { crewMatchExists, ensureCrewSchema } from "./features/crew/crewService.js";
+import { ensureCrewSchema } from "./features/crew/crewService.js";
+import { ensureShowPlansSchema } from "./features/crew/showPlansService.js";
 import { startProviderProfileScheduler } from "./features/providerProfiles/providerProfileService.js";
 import { startCatalogResearchScheduler } from "./features/catalogResearch/catalogResearchService.js";
 import { artistIdentityHeld } from "./features/artistAccounts/artistVerification.js";
@@ -3805,10 +3806,9 @@ function retryVideoProcessingForOwner(ctx) {
   return { asset: ownedMediaAsset(db, { ownerId: u.id, assetId: ctx.params.id, at: now() }), finalize: started.finalize };
 }
 
-// What another adult looking for a crew sees about you: your public profile's
-// name, photo, home city, short bio and a few favourite artists. Never age,
-// email, coordinates or anything private.
-function crewPersonCard(userId) {
+// How someone appears in a Lounge plan: the name and photo already shown next
+// to their Lounge messages. Nothing else about them.
+function planMemberCard(userId) {
   const row = q.userById.get(userId);
   if (!row || !accountIsPublic(row)) return null;
   const person = publicUser(row);
@@ -3820,18 +3820,35 @@ function crewPersonCard(userId) {
     initials: person.initials,
     avatarUri: person.avatarUri,
     avatarColor: person.avatarColor,
-    city: person.home?.city || null,
-    bio: typeof person.bio === "string" ? person.bio.slice(0, 160) : "",
-    favoriteArtists: Array.isArray(person.favoriteArtists) ? person.favoriteArtists.slice(0, 3) : [],
+    profileUpdatedAt: person.profileUpdatedAt,
   };
 }
 
-function notifyCrewMatch({ user, targetId, tourDateId }) {
-  const show = db.prepare("SELECT artist,venue,date FROM tour_dates WHERE id=?").get(tourDateId);
-  const detail = show ? [show.venue, show.date].filter(Boolean).join(" · ").slice(0, 80) : null;
-  // Each person hears about it from the other, so the ping opens that chat.
-  addNotif(targetId, user.id, "crew_match", { postId: tourDateId, artist: show?.artist || null, text: detail });
-  addNotif(user.id, targetId, "crew_match", { postId: tourDateId, artist: show?.artist || null, text: detail });
+// The same gate as the Lounge's own messages: going to the show, and the
+// Lounge still open. Returns the show so a new plan can remember it.
+function planLoungeGate(user, key) {
+  if (!showAttendanceRepository.hasAttendeeAccess(user.id, key)) {
+    throw new ApiError(403, "Join this show's Going list before opening the lounge.", "LOUNGE_ATTENDANCE_REQUIRED");
+  }
+  const lifecycle = legacySafeLoungeSnapshot(key, now(), { register: true });
+  if (lifecycle.status === "closed") {
+    throw new ApiError(410, "This show's Lounge has closed. Keep the conversation going in the artist Fan Club.", "LOUNGE_CLOSED");
+  }
+  const show = showAttendanceRepository.resolveShow(key);
+  return { artist: show?.artist || lifecycle.artist || "", venue: show?.venue || "", date: show?.date || "" };
+}
+
+function planLoungeOpen(key) {
+  try {
+    return legacySafeLoungeSnapshot(key, now(), { register: false }).status !== "closed";
+  } catch {
+    // architecture: allow-empty-catch -- a protected legacy artist has no live Lounge, so its plans are not open
+    return false;
+  }
+}
+
+function notifyPlanJoin({ plan, user }) {
+  addNotif(plan.host_id, user.id, "plan_join", { postId: plan.id, artist: plan.show_artist || null, text: plan.text.slice(0, 80) });
 }
 
 export function startWebProfiles() {
@@ -4049,6 +4066,7 @@ const peopleSuggestionService = createPeopleSuggestionService(db, { projectUser:
 const artistRecommendationService = createArtistRecommendationService(db);
 const artistLiveSummaryService = createArtistLiveSummaryService({ database: db, projectDate: tourDateJson, clock: now });
 ensureCrewSchema(db);
+ensureShowPlansSchema(db);
 const catalogMaintenanceService = createCatalogMaintenanceService({ database: db, databasePath: DATABASE_PATH,
   now, seoStatus: catalogSeoMaintenanceStatus });
 const messageRelationshipContextService = createMessageRelationshipContextService(db);
@@ -7688,7 +7706,6 @@ export const routes = {
       recipientAgeBand: recipient.age_band,
       senderFollowsRecipient,
       recipientFollowsSender,
-      crewMatched: CREW_ENABLED && u.age_band === "18_plus" && recipient.age_band === "18_plus" && crewMatchExists(db, u.id, other),
     });
     if (!permission.allowed) {
       const message = permission.reason === "age_classification_required"
@@ -9515,7 +9532,8 @@ export const routes = {
       if (artist && !artistCatalogVisibleTo(db, artist, ctx?.user)) throw new ApiError(404, "This artist page is unavailable.", "NOT_FOUND");
       return artist;
     } }),
-  // Crew is on the back burner: none of its routes exist until it is switched on.
+  // Show swipe and Lounge plans are on the back burner: none of these routes
+  // exist until CREW_ENABLED is switched on.
   ...(CREW_ENABLED ? crewRoutes({
     database: db,
     ApiError,
@@ -9524,10 +9542,19 @@ export const routes = {
     requireVerifiedUser,
     visibleTourDates: (user, options) => visibleTourDateRows(user, options),
     projectShow: (row) => tourDateJson(row),
-    projectUser: crewPersonCard,
+    projectUser: planMemberCard,
     blockedEitherWay,
-    isAvailable: (id) => accountIsPublic(q.userById.get(id)),
-    notifyMatch: notifyCrewMatch,
+    loungeKeyParam: (ctx) => {
+      const key = decodedPathParam(ctx, "key", { max: 300, label: "lounge link" }).toLowerCase();
+      if (!key) throw new ApiError(400, "Bad lounge.", "VALIDATION_FAILED");
+      return key;
+    },
+    openLounge: planLoungeGate,
+    loungeIsOpen: planLoungeOpen,
+    isStaff: (user) => accountIsPublic(user) && (user.role === "admin" || user.role === "moderator"),
+    assertSafeText: (text, field) => { if (typeof text === "string" && text.trim()) assertSafeAuthoredText(text, { field }); },
+    notifyPlanJoin,
+    newId: uid,
     now,
   }) : {}),
   ...providerProfileRoutes({ database: db, ApiError, rateLimit: limit, decodedPathParam, canonicalVenueKey,

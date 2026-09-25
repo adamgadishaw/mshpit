@@ -5546,7 +5546,7 @@ test("playlist create defaults only omitted visibility and rejects invalid priva
   assert.equal(legacy.visibility, "public");
 });
 
-test("Crew is on the back burner: none of its API routes exist", () => {
-  assert.deepEqual(Object.keys(routes).filter((key) => key.includes("/api/crew")), [],
+test("the show swipe and Lounge plans are on the back burner: none of their API routes exist", () => {
+  assert.deepEqual(Object.keys(routes).filter((key) => /\/api\/crew|\/plans\b|\/api\/plans/u.test(key)), [],
     "Switch Crew on in src/domain/crewAvailability.mjs only when the owner decides to launch it.");
 });

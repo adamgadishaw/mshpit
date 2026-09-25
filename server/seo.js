@@ -57,8 +57,6 @@ import { inPersonReviewSql } from "./onlineReviews.js";
 import { hasSubstantiveVenueGuide } from "./venueFacts.js";
 import { appPageTitle } from "../src/domain/appPageMetadata.mjs";
 import { LANDING_IDENTITY_COPY } from "../src/domain/landingPresentation.mjs";
-import { crewShowcaseCandidates, ensureCrewSchema } from "./features/crew/crewService.js";
-import { projectCrewDocument } from "./features/crew/crewDocuments.js";
 import { CREW_ENABLED } from "../src/domain/crewAvailability.mjs";
 
 const SITE_NAME = "Mshpit";
@@ -427,49 +425,13 @@ const APP_SCREENS = new Set([
   "/messages", "/moderation", "/nearby", "/new", "/notifications",
   "/playlist", "/playlists", "/search", "/settings", "/signup", "/tour",
   "/venues", "/you",
+  // The show swipe is an app screen, and only exists while it is switched on.
+  ...(CREW_ENABLED ? ["/crew"] : []),
 ]);
-
-// Upcoming public shows with people going or looking for a crew. Each one goes
-// through the same public event check as its own page, so nothing private or
-// withdrawn is listed.
-function crewShowcase(at) {
-  const tables = db.prepare("SELECT COUNT(*) c FROM sqlite_master WHERE type='table' AND name IN ('shows','show_attendance')").get()?.c;
-  if (tables !== 2) return [];
-  ensureCrewSchema(db);
-  const today = new Date(at).toISOString().slice(0, 10);
-  const shows = [];
-  for (const candidate of crewShowcaseCandidates(db, { today, limit: 60 })) {
-    if (shows.length >= 24) break;
-    const event = eventResolution(candidate.tourDateId, at)?.entity;
-    if (!event) continue;
-    shows.push({
-      name: event.name,
-      artist: event.artist,
-      venue: event.venue,
-      place: event.place,
-      date: event.date,
-      path: eventPath(event.id),
-      going: candidate.going,
-      lookingForCrew: candidate.lookingForCrew,
-    });
-  }
-  return shows;
-}
-
-function crewRoute(path) {
-  if (!CREW_ENABLED || !/^\/crew\/*$/iu.test(path)) return null;
-  if (path !== "/crew") return { type: "redirect", status: 301, location: "/crew", canonicalPath: "/crew" };
-  const document = safePublicDocument(() => projectCrewDocument({ origin: origin(), shows: crewShowcase(Date.now()) }));
-  if (document === PUBLIC_DOCUMENT_UNAVAILABLE) return { type: "unavailable", status: 503 };
-  if (!document) return { type: "not-found", status: 404 };
-  return { type: "document", status: 200, canonicalPath: "/crew", indexable: document.indexable, document };
-}
 
 function publicRoute(pathname) {
   const path = cleanPathname(pathname);
   if (!path) return { type: "not-found", status: 404 };
-  const crew = crewRoute(path);
-  if (crew) return crew;
   if (/^\/cities\/*$/iu.test(path)) {
     const document = safePublicDocument(() => publicDocuments.citiesDocument({ at: Date.now() }));
     if (document === PUBLIC_DOCUMENT_UNAVAILABLE) return { type: "unavailable", status: 503 };

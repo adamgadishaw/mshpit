@@ -15,6 +15,8 @@ import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import { resolvePostAuthor } from "../domain/postAuthor.mjs";
 import useScopedRefresh from "../hooks/useScopedRefresh";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
+import { ENABLE_CREW } from "../config/runtime.mjs";
+import LoungePlans from "../components/crew/LoungePlans";
 
 const EMPTY_LOUNGE_ACTIONS = Object.freeze({ enteredRoom: null, entering: false, sending: false, text: "" });
 
@@ -219,6 +221,10 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
   return (
     <KeyboardAvoidingView style={styles.wrap} behavior={Platform.OS === "ios" ? "padding" : undefined}>
       <ScreenHeader kicker={`Lounge · ${log.venue}`} title={log.artist} onBack={onClose} />
+      {/* Group plans are for adults only and stay hidden from everyone else. */}
+      {ENABLE_CREW && loungeOpen && session?.ageBand === "18_plus" ? (
+        <LoungePlans loungeKey={key} session={session} onReport={onReport} onOpenProfile={onOpenProfile} />
+      ) : null}
       <VinylRefreshBoundary
         refreshing={loungeRefreshing}
         onRefresh={refreshLounge}
