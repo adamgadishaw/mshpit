@@ -263,6 +263,16 @@ remains a broad context whose changing value can rerender unrelated consumers.
   and check city matching still works.
 - **Bundle headroom:** 1.2 KiB left in the 512 KiB initial budget.
 
+## Test reliability follow-ups (2026-09-25)
+
+- **Flaky schema race:** `server/catalogPhotoIntegrity.test.mjs` failed once in
+  `npm run check` with "trigger trg_posts_legacy_author_tombstone already
+  exists" from `server/db.js`, then passed alone and on rerun. Test files run
+  in parallel against the one `PIT_DATA_DIR` that `scripts/run-tests.mjs`
+  creates, so two processes can race on the schema: that trigger is dropped
+  and recreated on every start. Wrap the drop and create in one immediate
+  transaction, or give each test file its own data dir.
+
 ## Crew follow-ups (back burner since 2026-09-25)
 
 Crew is switched off (`src/domain/crewAvailability.mjs`). Before it returns:

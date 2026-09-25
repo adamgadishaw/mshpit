@@ -6,6 +6,23 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-09-25 Discover event Back check (no app change)
+
+- Report: a guest who opens /discover, taps the first event card and presses
+  Back lands on Intro ("/"). Checked on production at 1280 and 390 wide: the
+  event page's own Back arrow ("Leave ... event page") returns to /discover
+  with Upcoming events showing. The only control that lands on "/" is the
+  desktop "Back to intro" button, which does that on purpose (the deep-link
+  cases cover it). The event page has no button named "Go back".
+- New browser regression case `discover-event-back` (390 and 1280): guest opens
+  /discover, opens the first event card, presses the page's Back arrow, lands
+  on /discover with Discover visible, and browser Forward/Back agree. It fails
+  when in-app Back is forced to Intro, so it guards the reported path.
+- Checks: `npm run check`, `git diff --check`, and all 57 navigation browser
+  cases pass. `server/catalogPhotoIntegrity.test.mjs` failed once in the full
+  run ("trigger ... already exists") and passed alone and on rerun; noted in
+  `TODO.md`.
+
 ## 2026-09-25 Artist news hub, tour titles and photo credit (SEO)
 
 The owner wants Mshpit to be an information hub as well as a social network:

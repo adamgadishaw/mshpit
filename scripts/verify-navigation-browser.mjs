@@ -66,6 +66,7 @@ export const navigationCases = Object.freeze([
     { name: `discover-show-artist-${width}`, kind: "discover-show-artist", path: "/discover", width },
     { name: `discover-show-artist-recovery-${width}`, kind: "discover-show-artist-recovery", path: "/discover", width },
     { name: `discover-show-artist-conflict-${width}`, kind: "discover-show-artist-conflict", path: "/discover", width },
+    { name: `discover-event-back-${width}`, kind: "discover-event-back", path: "/discover", width },
     { name: `member-tabs-${width}`, kind: "member-tabs", member: true, width },
     { name: `home-link-${width}`, kind: "home", path: postPath, width },
     { name: `home-link-member-${width}`, kind: "home", path: postPath, member: true, width },
@@ -340,7 +341,7 @@ async function runCase(browser, origin, item) {
         await new Promise(done => { state.releaseResolve = done; });
         state.resolveReleased = true;
       }
-      const discoverShow = item.kind.startsWith("discover-show-artist");
+      const discoverShow = item.kind.startsWith("discover-show-artist") || item.kind === "discover-event-back";
       if (discoverShow && url.pathname === "/api/artists/resolve") {
         assert.equal(url.searchParams.get("name"), discoverShowArtist.name);
         state.lookupAttempts += 1;
@@ -542,6 +543,29 @@ async function runCase(browser, origin, item) {
       await assertPath(page, discoverArtistEventPath);
       await openArtist.waitFor();
       await snapshot("Back restores the same show");
+    } else if (item.kind === "discover-event-back") {
+      // Reported on 2026-09-25: a guest who landed on /discover and opened the
+      // first event card must get Discover back from the event page's own Back
+      // arrow. Desktop's separate "Back to intro" control stays Intro-bound.
+      const upcoming = page.getByText("Upcoming events", { exact: true }).first();
+      await visiblePage(page, "/discover"); await upcoming.waitFor(); await assertPath(page, "/discover");
+      const card = page.getByRole("button", { name: new RegExp(`^Open ${discoverShowArtist.name}\\b.*\\b20\\d{2}\\b`) }).first();
+      await card.waitFor();
+      await snapshot("Discover first event card");
+      await card.click();
+      await assertPath(page, discoverArtistEventPath);
+      await page.getByRole("button", { name: "Open Fixture Venue's venue page", exact: true }).first().waitFor();
+      await snapshot("event opened from Discover");
+      await page.getByRole("button", { name: new RegExp(`^Leave ${discoverShowArtist.name}\\b.* page$`) }).first().click();
+      await assertPath(page, "/discover");
+      await visiblePage(page, "/discover"); await upcoming.waitFor();
+      assert.equal(await page.getByRole("link", { name: "Browse concerts", exact: true }).count(), 0, "In-app Back from a Discover event fell through to Intro.");
+      await snapshot("in-app Back returns to Discover");
+      await page.goForward({ waitUntil: "networkidle" }); await assertPath(page, discoverArtistEventPath);
+      await page.getByRole("button", { name: "Open Fixture Venue's venue page", exact: true }).first().waitFor();
+      await page.goBack({ waitUntil: "networkidle" }); await assertPath(page, "/discover");
+      await visiblePage(page, "/discover"); await upcoming.waitFor();
+      await snapshot("browser Back agrees with in-app Back");
     } else if (item.kind === "guest-tabs") {
       await visiblePage(page, "/search"); await assertPath(page, "/search");
       await openTab("Discover"); await visiblePage(page, "/discover"); await assertPath(page, "/discover");
