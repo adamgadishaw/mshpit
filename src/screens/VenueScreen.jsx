@@ -600,7 +600,7 @@ const styles = StyleSheet.create({
   reputationBody: { color: colors.textDim, fontSize: 12, lineHeight: 17, marginTop: 4 },
   reviewSignal: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 12 },
   reviewSignalText: { color: colors.textFaint, fontSize: 11 },
-  reviewButton: { width: "100%", maxWidth: "100%", minWidth: 0, minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingHorizontal: 16, borderRadius: radius.md, borderCurve: "continuous", backgroundColor: colors.amberStrong, borderWidth: 1, borderBottomWidth: 3, borderColor: colors.amber, borderBottomColor: colors.accentEdge, ...shadow.control, ...Platform.select({ web: { cursor: "pointer" } }) },
+  reviewButton: { width: "100%", maxWidth: "100%", minWidth: 0, minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingHorizontal: 16, borderRadius: radius.md, borderCurve: "continuous", backgroundColor: colors.amberStrong, borderWidth: 1, borderBottomWidth: 1, borderColor: colors.amber, borderBottomColor: colors.accentEdge, ...shadow.control, ...Platform.select({ web: { cursor: "pointer" } }) },
   reviewButtonText: { color: "#1A1206", fontFamily: displayFont, fontSize: 14, fontWeight: "900" },
   buttonPressed: { transform: [{ scale: 0.99 }], opacity: 0.9 },
   photoGrid: { width: "100%", maxWidth: "100%", minWidth: 0, flexDirection: "row", flexWrap: "wrap", gap: 7 },

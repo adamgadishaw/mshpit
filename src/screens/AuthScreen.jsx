@@ -252,7 +252,7 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, navigationA
     <ScrollView ref={scroll} contentContainerStyle={[styles.content, { paddingBottom: Math.max(insets.bottom, 16) + 24 }]} contentInsetAdjustmentBehavior="automatic" keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag" automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}>
       <View style={styles.ticket}>
         <View style={styles.brandRow}><BrandMark size={30} color={colors.amber} /><View><Text style={styles.wordmark}>MSHPIT</Text><Text style={styles.slogan}>LIVE MUSIC, REMEMBERED</Text></View></View>
-        <View style={styles.trim}><View style={styles.amberTrim} /><View style={styles.magentaTrim} /><View style={styles.coolTrim} /></View>
+        <View style={styles.trim} />
         <CredentialForm busy={busy} id={`pit-${mode}${addAccount ? "-additional" : ""}`} onSubmit={submitForm} disabled={busy} style={styles.cardBody}>
           {signupMode && !signupChoice ? <View style={styles.stepper} accessibilityRole="progressbar" accessibilityLabel="Account creation progress" accessibilityValue={progress} {...signupAriaProps(Platform.OS, {}, progress)}>
             <Text style={styles.stepKicker}>STEP {step} OF 2</Text><Text style={styles.stepName}>{step === 1 ? "Account / Music next" : "Music / Almost there"}</Text>
@@ -354,7 +354,7 @@ const styles = StyleSheet.create({
   brandRow: { flexDirection: "row", alignItems: "center", gap: 11, padding: space(4) },
   wordmark: { color: colors.text, fontFamily: mono, fontSize: 16, fontWeight: "900", letterSpacing: 3 },
   slogan: { color: colors.textFaint, fontFamily: mono, fontSize: 8, fontWeight: "700", letterSpacing: 1.3, marginTop: 4 },
-  trim: { flexDirection: "row", height: 4 }, amberTrim: { flex: 2, backgroundColor: colors.amberStrong }, magentaTrim: { flex: 1, backgroundColor: colors.magenta }, coolTrim: { flex: 1, backgroundColor: colors.cool },
+  trim: { height: 3, width: 56, marginLeft: 22, borderBottomLeftRadius: 3, borderBottomRightRadius: 3, backgroundColor: colors.amberStrong },
   cardBody: { padding: space(4), gap: 10, minWidth: 0 },
   stepper: { flexDirection: "row", justifyContent: "space-between", flexWrap: "wrap", gap: 6, paddingBottom: 8, borderBottomWidth: 1, borderBottomColor: colors.lineSoft, borderStyle: "dashed" },
   stepKicker: { color: colors.amber, fontFamily: mono, fontSize: 10, fontWeight: "800", letterSpacing: 1 },
@@ -381,7 +381,7 @@ const styles = StyleSheet.create({
   consentText: { flex: 1, minWidth: 0, color: colors.textDim, fontSize: 12.5, lineHeight: 18 },
   policyLinks: { flexDirection: "row", flexWrap: "wrap", columnGap: 16, paddingLeft: 32 },
   link: { color: colors.amber, fontSize: 12.5, fontWeight: "700" }, retry: { minHeight: 44, alignSelf: "flex-start", justifyContent: "center" },
-  primary: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10, minHeight: 50, backgroundColor: colors.amberStrong, borderColor: colors.amber, borderBottomColor: colors.accentEdge, borderWidth: 1, borderBottomWidth: 3, borderRadius: radius.md, paddingHorizontal: 16, marginTop: 6, ...shadow.control },
+  primary: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10, minHeight: 50, backgroundColor: colors.amberStrong, borderColor: colors.amber, borderBottomColor: colors.accentEdge, borderWidth: 1, borderBottomWidth: 1, borderRadius: radius.md, paddingHorizontal: 16, marginTop: 6, ...shadow.control },
   primaryText: { color: "#1A1206", fontFamily: displayFont, fontSize: 16, fontWeight: "900" },
   textButton: { minHeight: 44, justifyContent: "center", alignItems: "center" }, forgotButton: { minHeight: 44, alignSelf: "flex-end", justifyContent: "center" },
   error: { color: colors.danger, backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.danger, borderRadius: radius.sm, padding: 12, fontSize: 13, lineHeight: 19 },

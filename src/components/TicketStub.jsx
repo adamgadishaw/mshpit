@@ -1,7 +1,7 @@
 import { useContext, useMemo, useState } from "react";
 import { View, Text, StyleSheet, Pressable, Alert, Linking, Platform } from "react-native";
 import { Image as ExpoImage } from "expo-image";
-import { colors, displayFont, font, mono, radius, shadow, roleColor, space } from "../theme";
+import { colors, displayFont, font, glow, mono, radius, shadow, roleColor, space } from "../theme";
 import Stars from "./Stars";
 import Icon from "./Icon";
 import Avatar from "./Avatar";
@@ -709,8 +709,8 @@ const styles = StyleSheet.create({
   mediaStatusRegisterCool: { flex: 1, backgroundColor: colors.cool },
   campaignCard: { minHeight: 340, overflow: "hidden", padding: 12, borderColor: "rgba(242,166,90,0.42)", boxShadow: "0 18px 48px rgba(0,0,0,0.34)" },
   campaignBackdrop: { ...StyleSheet.absoluteFillObject, overflow: "hidden" },
-  campaignGlowLarge: { position: "absolute", width: 390, height: 390, borderRadius: 195, left: -150, top: -170 },
-  campaignGlowSmall: { position: "absolute", width: 250, height: 250, borderRadius: 125, right: -90, bottom: -100 },
+  campaignGlowLarge: { position: "absolute", width: 390, height: 390, borderRadius: 195, left: -150, top: -170, ...glow },
+  campaignGlowSmall: { position: "absolute", width: 250, height: 250, borderRadius: 125, right: -90, bottom: -100, ...glow },
   campaignTopline: { zIndex: 2, minHeight: 42, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 50 },
   campaignBadge: { flexDirection: "row", alignItems: "center", gap: 6, maxWidth: "72%", minHeight: 34, paddingHorizontal: 10, borderRadius: radius.pill, backgroundColor: "rgba(5,6,10,0.82)", borderWidth: 1 },
   campaignBadgeText: { flexShrink: 1, fontFamily: mono, fontSize: 8.5, fontWeight: "900", letterSpacing: 1.05 },

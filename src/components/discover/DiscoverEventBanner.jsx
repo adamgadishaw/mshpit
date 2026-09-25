@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { AccessibilityInfo, AppState, Linking, Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { Image } from "expo-image";
-import { colors, displayFont, focusRing, font, mono, radius, shadow } from "../../theme";
+import { colors, displayFont, focusRing, font, glow, mono, radius, shadow } from "../../theme";
 import useReducedMotion from "../../hooks/useReducedMotion";
 import { calendarDateKey } from "../../domain/dataPolicy.mjs";
 import Icon from "../Icon";
@@ -146,7 +146,7 @@ export default function DiscoverEventBanner({
             <View style={[StyleSheet.absoluteFill, styles.fallback]} accessible={false}>
               <View style={styles.fallbackGlowOne} />
               <View style={styles.fallbackGlowTwo} />
-              <Icon name="calendar" size={compact ? 42 : 58} color="rgba(255,255,255,0.32)" />
+              <Icon name="music" size={compact ? 42 : 58} color="rgba(255,255,255,0.16)" />
             </View>
           )}
           <View pointerEvents="none" style={styles.scrim} />
@@ -224,9 +224,9 @@ const styles = StyleSheet.create({
   heroCompact: { minHeight: 250 },
   eventAction: { ...StyleSheet.absoluteFillObject, overflow: "hidden" },
   heroPressed: { opacity: 0.94, transform: [{ scale: 0.995 }] },
-  fallback: { alignItems: "center", justifyContent: "center", overflow: "hidden", backgroundColor: "#181224" },
-  fallbackGlowOne: { position: "absolute", width: 380, height: 380, borderRadius: 190, top: -210, right: -80, backgroundColor: colors.amberStrong, opacity: 0.52 },
-  fallbackGlowTwo: { position: "absolute", width: 300, height: 300, borderRadius: 150, bottom: -180, left: -90, backgroundColor: colors.magenta, opacity: 0.46 },
+  fallback: { alignItems: "center", justifyContent: "center", overflow: "hidden", backgroundColor: colors.bgElev },
+  fallbackGlowOne: { position: "absolute", width: 380, height: 380, borderRadius: 190, top: -210, right: -80, backgroundColor: colors.amberStrong, opacity: 0.34, ...glow },
+  fallbackGlowTwo: { position: "absolute", width: 300, height: 300, borderRadius: 150, bottom: -180, left: -90, backgroundColor: colors.magenta, opacity: 0.22, ...glow },
   scrim: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(3,5,9,0.48)" },
   copy: { position: "absolute", left: 20, right: 20, bottom: 22, maxWidth: 700 },
   kicker: { color: "#FFB56B", fontFamily: mono, fontSize: 9.5, fontWeight: "900", letterSpacing: 1.8 },

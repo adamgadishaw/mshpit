@@ -26,6 +26,11 @@
         /* iOS bumps font sizes in landscape unless this is pinned. */
         -webkit-text-size-adjust: 100%;
       }
+      /* Headings and alerts that receive focus for screen readers should not
+         grow a focus box on screen; keyboard controls keep their own ring. */
+      [tabindex="-1"]:focus {
+        outline: none;
+      }
       #root {
         display: flex;
         height: 100%;
@@ -39,7 +44,7 @@
          the server-injected public document remains visible and readable. */
       html[data-mshpit-web-boot="pending"] body {
         overflow: hidden;
-        background: #07090f;
+        background: #09090b;
       }
       html[data-mshpit-web-boot="pending"] #root > .seo-document {
         visibility: hidden;
@@ -53,7 +58,7 @@
         place-items: center;
         background:
           radial-gradient(circle at 50% 42%, rgba(242, 166, 90, 0.1), transparent 20rem),
-          #07090f;
+          #09090b;
         color: #f2a65a;
         font: 900 clamp(1.35rem, 4vw, 2rem) / 1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
         letter-spacing: 0.32em;

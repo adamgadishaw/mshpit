@@ -243,6 +243,14 @@ remains a broad context whose changing value can rerender unrelated consumers.
 - **Animated story:** an MP4 version of the share card needs a render service
   with ffmpeg.
 
+## Visual polish follow-ups (2026-09-25)
+
+- **Owner review:** `design/little-things` waits for the owner before merging.
+- **Place names:** Ticketmaster sends "United States Of America"; show it as
+  "United States" (or at least "of") in the tour date and venue projections,
+  and check city matching still works.
+- **Bundle headroom:** 1.2 KiB left in the 512 KiB initial budget.
+
 ## Crew follow-ups (back burner since 2026-09-25)
 
 Crew is switched off (`src/domain/crewAvailability.mjs`). Before it returns:

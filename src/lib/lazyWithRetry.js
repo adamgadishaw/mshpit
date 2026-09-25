@@ -95,7 +95,7 @@ function updatingMshpitFallback(reload) {
           gap: 12,
           padding: 28,
           boxSizing: "border-box",
-          background: "#07090F",
+          background: "#09090B",
           color: "#F4EFE7",
           fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
           textAlign: "center",

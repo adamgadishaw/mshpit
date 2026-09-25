@@ -812,7 +812,7 @@ const styles = StyleSheet.create({
   titleWrap: { flex: 1, minWidth: 0 },
   kicker: { color: colors.amber, fontFamily: mono, fontSize: 9, fontWeight: "900", letterSpacing: 1.6 },
   title: { color: colors.text, fontFamily: displayFont, fontSize: 18, fontWeight: "900", letterSpacing: -0.25 },
-  applyButton: { minWidth: 96, height: 44, borderRadius: radius.pill, borderWidth: 1, borderBottomWidth: 3, borderColor: colors.amber, borderBottomColor: colors.accentEdge, backgroundColor: colors.amberStrong, paddingHorizontal: 14, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7, ...shadow.control },
+  applyButton: { minWidth: 96, height: 44, borderRadius: radius.pill, borderWidth: 1, borderBottomWidth: 1, borderColor: colors.amber, borderBottomColor: colors.accentEdge, backgroundColor: colors.amberStrong, paddingHorizontal: 14, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7, ...shadow.control },
   applyPressed: { transform: [{ translateY: 2 }] },
   applyDisabled: { backgroundColor: colors.surfaceAlt, borderColor: colors.line, opacity: 0.6 },
   applyText: { color: "#1A1206", fontFamily: displayFont, fontSize: 13, fontWeight: "900" },

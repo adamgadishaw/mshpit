@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { useStore } from "../store";
-import { colors, displayFont, focusRing, mono, radius, shadow, space } from "../theme";
+import { colors, displayFont, focusRing, glow, mono, radius, shadow, space } from "../theme";
 import ScreenHeader from "../components/ScreenHeader";
 import SmartImage from "../components/SmartImage";
 import Stars from "../components/Stars";
@@ -364,7 +364,7 @@ const styles = StyleSheet.create({
   pressed: { opacity: 0.76 },
 
   hero: { position: "relative", overflow: "hidden", gap: 14, padding: 20, borderRadius: radius.lg, borderCurve: "continuous", borderWidth: 1, borderColor: colors.line, backgroundColor: colors.bgElev, ...shadow.card },
-  heroGlow: { position: "absolute", width: 240, height: 240, borderRadius: 120, top: -130, right: -70, backgroundColor: `${colors.amberStrong}24` },
+  heroGlow: { position: "absolute", width: 240, height: 240, borderRadius: 120, top: -130, right: -70, backgroundColor: `${colors.amberStrong}24`, ...glow },
   heroMark: { width: 54, height: 54, borderRadius: 27, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.amber, backgroundColor: colors.surface },
   heroCopy: { maxWidth: 700, gap: 4 },
   heroKicker: { color: colors.amber, fontFamily: mono, fontSize: 10, fontWeight: "900", letterSpacing: 1.8 },

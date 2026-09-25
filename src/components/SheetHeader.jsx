@@ -50,12 +50,12 @@ export default function SheetHeader({ title, onClose, onBack, action, leadDisabl
 
 const styles = StyleSheet.create({
   wrap: { flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: space(4), paddingTop: space(1.5), paddingBottom: space(3), borderBottomWidth: 1, borderBottomColor: colors.lineSoft },
-  lead: { width: 44, height: 44, borderRadius: radius.sm, borderCurve: "continuous", backgroundColor: colors.surfaceAlt, borderWidth: 1, borderBottomWidth: 3, borderColor: colors.line, alignItems: "center", justifyContent: "center", ...shadow.control },
+  lead: { width: 44, height: 44, borderRadius: radius.sm, borderCurve: "continuous", backgroundColor: colors.surfaceAlt, borderWidth: 1, borderBottomWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center", ...shadow.control },
   leadOff: { opacity: 0.5 },
   controlPressed: { transform: [{ translateY: 2 }], boxShadow: "inset 0 1px 3px rgba(0,0,0,0.18)" },
   title: { flex: 1, color: colors.text, fontFamily: displayFont, fontSize: 17, fontWeight: "800", letterSpacing: -0.25, textAlign: "center" },
   spacer: { minWidth: 44 },
-  action: { minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7, backgroundColor: colors.amberStrong, borderRadius: radius.pill, borderWidth: 1, borderBottomWidth: 3, borderColor: colors.amber, borderBottomColor: colors.accentEdge, paddingHorizontal: 16, paddingVertical: 9, ...shadow.control },
+  action: { minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7, backgroundColor: colors.amberStrong, borderRadius: radius.pill, borderWidth: 1, borderBottomWidth: 1, borderColor: colors.amber, borderBottomColor: colors.accentEdge, paddingHorizontal: 16, paddingVertical: 9, ...shadow.control },
   actionPressed: { transform: [{ translateY: 2 }], boxShadow: "inset 0 1px 3px rgba(0,0,0,0.18)" },
   actionOff: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line },
   actionTxt: { color: "#1A1206", fontFamily: displayFont, fontSize: 14, fontWeight: "800" },

@@ -22,7 +22,7 @@ import {
   resolveLoadState,
 } from "../domain/loadState.mjs";
 import { accountTargetScope } from "../domain/screenScope.mjs";
-import { colors, displayFont, focusRing, mono, radius, shadow, space } from "../theme";
+import { colors, displayFont, focusRing, glow, mono, radius, shadow, space } from "../theme";
 import Avatar from "../components/Avatar";
 import Badge from "../components/Badge";
 import Button from "../components/Button";
@@ -30,6 +30,7 @@ import Icon from "../components/Icon";
 import ScreenHeader from "../components/ScreenHeader";
 import SmartImage from "../components/SmartImage";
 import ArtistIdentityStatus from "../components/ArtistIdentityStatus";
+import { artistInitials } from "../domain/artistInitials.mjs";
 
 const UPDATE_LIMIT = 1000;
 
@@ -269,7 +270,7 @@ export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEdit
   const avatarUser = {
     name: artistName,
     avatarUri: profile.avatarUri || summary.photo || catalog.photo || null,
-    initials: artistName.slice(0, 2).toUpperCase(),
+    initials: artistInitials(artistName),
     avatarColor: colors.amber,
   };
   const stats = model.stats;
@@ -653,7 +654,7 @@ const styles = StyleSheet.create({
   hero: { minHeight: 390, borderRadius: radius.lg, borderCurve: "continuous", overflow: "hidden", backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.line, padding: space(5), justifyContent: "space-between", ...shadow.card },
   heroFallback: { backgroundColor: colors.surfaceAlt },
   heroScrim: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(3,5,9,0.58)" },
-  heroGlow: { position: "absolute", left: -90, bottom: -130, width: 440, height: 330, borderRadius: 240, backgroundColor: colors.amberStrong + "2E" },
+  heroGlow: { position: "absolute", left: -90, bottom: -130, width: 440, height: 330, borderRadius: 240, backgroundColor: colors.amberStrong + "2E", ...glow },
   heroTopline: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: space(3) },
   verifiedPill: { flexDirection: "row", alignItems: "center", gap: 7, backgroundColor: "rgba(6,8,13,0.74)", borderRadius: radius.pill, paddingHorizontal: 11, paddingVertical: 7, borderWidth: 1, borderColor: "rgba(255,255,255,0.14)" },
   verifiedText: { color: "#F4EFE7", fontFamily: mono, fontSize: 9, fontWeight: "900", letterSpacing: 1.25 },
@@ -672,7 +673,7 @@ const styles = StyleSheet.create({
   statValue: { color: colors.text, fontFamily: displayFont, fontSize: 25, fontWeight: "900", letterSpacing: -0.6 },
   statLabel: { color: colors.textDim, fontSize: 11, fontFamily: mono, textTransform: "uppercase", letterSpacing: 0.8, marginTop: 2 },
   quickGrid: { flexDirection: "row", flexWrap: "wrap", gap: space(3) },
-  actionTile: { flex: 1, flexBasis: 250, minWidth: 220, flexDirection: "row", alignItems: "center", gap: space(3), minHeight: 94, padding: space(4), backgroundColor: colors.surface, borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderBottomWidth: 3, borderColor: colors.line, ...shadow.control },
+  actionTile: { flex: 1, flexBasis: 250, minWidth: 220, flexDirection: "row", alignItems: "center", gap: space(3), minHeight: 94, padding: space(4), backgroundColor: colors.surface, borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderBottomWidth: 1, borderColor: colors.line, ...shadow.control },
   actionTileDisabled: { opacity: 0.55 },
   actionIcon: { width: 44, height: 44, borderRadius: radius.sm, borderCurve: "continuous", borderWidth: 1, alignItems: "center", justifyContent: "center" },
   actionCopy: { flex: 1, minWidth: 0 },

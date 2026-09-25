@@ -6,9 +6,11 @@ import { writeThemePair } from "./domain/themeStorage.mjs";
 // load), so switching a theme saves the choice and reloads - the least invasive
 // way to re-theme a StyleSheet-based app.
 
+// Graphite rather than blue-slate: a dim room with the house lights down, so
+// the tungsten amber is the only warm thing on screen.
 const STAGE = {
-  bg: "#07090F", bgElev: "#0C1018", surface: "#10151F", surfaceAlt: "#1A2030",
-  line: "#232B42", lineSoft: "#1A202F", text: "#F4EFE7", textDim: "#9AA0B6", textFaint: "#8089A5",
+  bg: "#09090B", bgElev: "#0F0F12", surface: "#141418", surfaceAlt: "#1C1C22",
+  line: "#2A2A32", lineSoft: "#1E1E25", text: "#F4EFE7", textDim: "#A7A4AD", textFaint: "#8D8A95",
   amber: "#F2A65A", amberStrong: "#FF8C42", accentEdge: "#A94F1F", gold: "#E8B65A", magenta: "#ED5B8D", cool: "#5B8DEF", good: "#6FCF97", danger: "#ED5B8D",
 };
 
@@ -200,19 +202,20 @@ export const roleColor = (role) =>
   role === "admin" ? colors.magenta : role === "moderator" ? colors.good : role === "artist" ? colors.amber : null;
 
 // System-first stacks keep the app crisp without adding a font download to the
-// startup path. The rounded display stack gives labels and headings personality;
-// body copy stays neutral and highly readable.
+// startup path. Headings use each platform's display cut (SF Pro Display,
+// Segoe UI Variable Display) so they stay sharp everywhere; the old rounded
+// stack fell through to Trebuchet MS on Windows. Body copy stays neutral.
 export const font = Platform.select({
   ios: "System",
   android: "sans-serif",
-  default: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+  default: '-apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
 });
 export const displayFont = Platform.select({
-  ios: "Avenir Next",
+  ios: "System",
   android: "sans-serif-medium",
-  default: 'ui-rounded, "SF Pro Rounded", "Avenir Next", "Arial Rounded MT Bold", "Trebuchet MS", "Segoe UI", sans-serif',
+  default: '"SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI Variable Display", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
 });
-export const mono = Platform.select({ ios: "Menlo", android: "monospace", default: '"SFMono-Regular", Consolas, monospace' });
+export const mono = Platform.select({ ios: "Menlo", android: "monospace", default: 'ui-monospace, "SF Mono", "Cascadia Mono", "Segoe UI Mono", "Roboto Mono", Menlo, Consolas, monospace' });
 
 // A small radius scale keeps controls related while continuous curves make
 // cards feel less boxy. The two-pixel lift is deliberately subtle site-wide.
@@ -243,6 +246,18 @@ export const shadow = {
 // Web gets a visible keyboard-focus halo; native platforms keep their standard
 // accessibility focus treatment. Components can spread this into focused state.
 export const focusRing = Platform.select({
-  web: { outlineColor: colors.amber, outlineOffset: 2, outlineStyle: "solid", outlineWidth: 3 },
+  web: { outlineColor: colors.amber, outlineOffset: 2, outlineStyle: "solid", outlineWidth: 2 },
   default: {},
 });
+
+// Browsers also focus a button when it is clicked. The halo is for keyboard
+// users, so on the web it only shows when the browser says focus is visible.
+export function isKeyboardFocus(event) {
+  if (Platform.OS !== "web") return true;
+  const target = event?.nativeEvent?.target || event?.target;
+  try { return target?.matches ? target.matches(":focus-visible") : true; } catch { return true; }
+}
+
+// Decorative light behind heroes and empty artwork. A plain circle has a hard
+// edge and reads as a blob; blurring it on the web turns it into a stage wash.
+export const glow = Platform.select({ web: { filter: "blur(56px)" }, default: {} });

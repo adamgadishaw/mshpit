@@ -48,6 +48,7 @@ import { useArtistOverview } from "../features/artistOverview/useArtistOverview"
 import ArtistUpcomingShows from "../components/artist/ArtistUpcomingShows";
 import { beginLoadState, createLoadState, isLoadCancellation, projectLoadState } from "../domain/loadState.mjs";
 import { settleArtistPageRead } from "../domain/artistPageRead.mjs";
+import { artistInitials } from "../domain/artistInitials.mjs";
 
 const invalidArtistPageResponse = new AppError("This artist page could not be confirmed. Please try again.", {
   code: "PIT-API-001", context: "Loading this artist page", source: "artist-page", retryable: true,
@@ -453,7 +454,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
   const profileAvatarPhotos = profileAvatarUri
     ? [{ uri: profileAvatarUri, ...(profileOwnerId ? { ownerId: profileOwnerId } : {}), artistProfileKey: a.profileKey, by: a.name }]
     : null;
-  const avatarUser = { avatarUri: profileUri, initials: a.name.slice(0, 2).toUpperCase(), avatarColor: colors.amber };
+  const avatarUser = { avatarUri: profileUri, initials: artistInitials(a.name), avatarColor: colors.amber };
   const visiblePosts = artistPagePreview(posts.slice(0, 10), { condensed: sectionModel.condensed, limit: ARTIST_OVERVIEW_LIMITS.posts });
   const artistPostsVisible = legacyMode
     ? posts.length > 0
@@ -1920,9 +1921,9 @@ const styles = StyleSheet.create({
   artistPostReport: { width: 36, height: 36, borderRadius: 18, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.lineSoft },
   postText: { color: colors.textDim, fontSize: 14, lineHeight: 20 },
   artistActions: { flexDirection: "row", gap: 8, marginTop: 12 },
-  memoryBtn: { minHeight: 48, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, marginTop: 12, paddingHorizontal: 16, borderRadius: radius.md, backgroundColor: colors.gold, borderBottomWidth: 3, borderBottomColor: "#9A6A16" },
+  memoryBtn: { minHeight: 48, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, marginTop: 12, paddingHorizontal: 16, borderRadius: radius.md, backgroundColor: colors.gold, borderBottomWidth: 1, borderBottomColor: "#9A6A16" },
   memoryBtnText: { color: "#1A1206", fontSize: 14, fontWeight: "900" },
-  fcBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, backgroundColor: colors.amberStrong, borderRadius: radius.md, paddingVertical: 13, borderBottomWidth: 3, borderBottomColor: "#B65E1F" },
+  fcBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, backgroundColor: colors.amberStrong, borderRadius: radius.md, paddingVertical: 13, borderBottomWidth: 1, borderBottomColor: "#B65E1F" },
   fcTxt: { color: "#1A1206", fontSize: 14, fontWeight: "800" },
   listenBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, paddingVertical: 13 },
   listenTxt: { color: colors.amber, fontSize: 14, fontWeight: "700" },
