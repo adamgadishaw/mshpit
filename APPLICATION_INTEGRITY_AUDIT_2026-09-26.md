@@ -99,15 +99,42 @@ The final review-branch `npm run check` passed: 5,458 tests, zero known dependen
 vulnerabilities, syntax/architecture checks and production web export. Initial
 JavaScript is 500.4 KiB gzip against the existing 512 KiB budget. The targeted
 sitemap suite passes 21 tests; the integrity-audit suite passes 8 tests.
-The preceding remediation also passed the full check on master (5,457 tests);
-the historical-revocation upgrade guard adds one regression and requires a final
-post-merge check before pushing.
+The preceding remediation also passed the full check on master (5,457 tests).
+After the historical-revocation upgrade guard added one regression, the final
+post-merge master check passed all 5,458 tests before pushing.
 Isolated browser checks passed 4/4 posting scenarios (375/1280px, including quota
 recovery) and 10/10 Discover navigation scenarios (390/1280px, artist resolution,
 retry/conflict handling and Back navigation). They used only synthetic local
 fixtures, not production accounts or uploads.
 
-Both
-`mshpit` and `pit-video-verifier` must deploy the remediation: web-only deployment
-does not apply the decoder geometry protection. The existing converter Docker
-build runs real format/anamorphic self-tests; FFmpeg is unavailable locally.
+### Completed rollout
+
+- Code commits `1575dac` and `8b24a3a` were pushed to `origin/master`.
+- [GitHub Quality run 385](https://github.com/adamgadishaw/mshpit/actions/runs/36252508678)
+  passed both jobs: server/build plus hosted-setting tests, and all nine browser
+  suites (account access, artist accounts/identity, navigation, Discover photos
+  and venues, catalogue controls, quick logging, and media uploading).
+- `mshpit` deployment `dep-daruh2e7bikc739mpu5g` became live on `8b24a3a`
+  at 2026-09-26 15:55:04 UTC. The hosted web bundle was 498.1 KiB gzip.
+- `pit-video-verifier` deployment `dep-daruilgjo6nc739gda5g` became live on the
+  same commit at 15:49:01 UTC. Its filtered automatic deployment did not start
+  for this two-commit push; one targeted deployment was triggered after CI
+  succeeded and repeated checks confirmed none was queued. No cache was cleared.
+- The converter's actual Docker self-test passed AVI, Matroska, WebM, MPEG,
+  portrait MP4 and anamorphic MP4. FFmpeg was unavailable locally, so this
+  hosted build evidence is distinct from local command-level tests.
+- Post-deploy public core verification passed all eight probes; media readiness
+  passed for 13 formats, source admission revision 2. Discover overview took
+  2,069 ms; the other probes took 99–466 ms. These are individual probes, not
+  load-test percentiles or proof that every user flow is fast.
+- The new production startup backup reported structural integrity OK at
+  15:54:56 UTC; storage was healthy, database 198 MiB, free disk 3,549 MiB
+  (70.9%), read probe 0.02 ms. This still does not establish off-host recovery
+  or a complete live business-rule audit.
+- Error-level application logs across both services were empty in the reviewed
+  post-deploy window beginning 15:55:04 UTC. This is a bounded observation, not
+  a promise that no future failures can occur.
+
+No live test accounts, posts, uploads, bulk ownership changes or destructive
+database repairs were performed. The Cloudflare and production relational-audit
+access blockers above remain unresolved.

@@ -8,6 +8,12 @@ August 4/5 audit/session log are historical journals, not current status.
 
 ## 2026-09-26 independent application/database integrity review
 
+Release `8b24a3a` is live on both `mshpit` and `pit-video-verifier`. Full local
+checks passed on the review branch and again on master (5,458 tests); GitHub's
+server/hosted-setting and all browser jobs passed. Eight public API probes and
+production media readiness passed after deployment. Discover overview remains
+about 2 seconds in the single post-deploy probe; this is not a load-test claim.
+
 Reviewed completed production work at `7a3b7d2`; unfinished `pit-newsdesk`
 changes remain untouched. See `APPLICATION_INTEGRITY_AUDIT_2026-09-26.md` for
 reproductions, test evidence, release requirements and residual risks.
@@ -17,7 +23,7 @@ stale-editor media preservation, bounded decoder geometry, news visibility and
 pagination, draft-safe optional page preloads, video-gallery consent and paid
 research accounting. Research receipts have 35-day retention; Crew remains off.
 Historical moderator ownership removals also block legacy self-reclaims until
-staff approve a new claim. The final review-branch check passes 5,458 tests.
+staff approve a new claim.
 Local read-only database audit now has 44 checks, all passing. Production backup
 reported structural integrity OK, but a full live relational audit and off-host
 restore proof remain outstanding. Owner requested a new private R2 backup bucket;
