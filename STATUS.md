@@ -34,6 +34,10 @@ looked at the four events shown in the list.
   the artist page alone; otherwise the Deezer image becomes the artist's
   photo as before. An artist with a stored Deezer id is looked up by that id
   (the name must still match) instead of by name search.
+- Artist photos are square portraits, and cropping one into the wide desktop
+  banner cut off faces. On desktop an artist-photo slide now shows the whole
+  portrait beside the text over a blurred copy of itself; the phone banner is
+  close to square and still crops.
 - Discover chart rows now follow the same rule as artist pages: a
   Spotify-hosted image never goes in the generic `photo` field, so artist
   cards and lists cannot crop Spotify artwork.

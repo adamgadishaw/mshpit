@@ -116,6 +116,10 @@ export default function DiscoverEventBanner({
     AccessibilityInfo.announceForAccessibility?.(`${safeSlides[next].title}, event ${next + 1} of ${safeSlides.length}`);
   };
   const photoAlt = media?.altText || `${current.title}${current.venue ? ` at ${current.venue}` : ""}`;
+  // An artist photo is a square portrait. Cropping it into the wide desktop
+  // banner cuts off faces, so there it sits whole beside the text over a
+  // blurred copy of itself. The phone banner is close enough to square to crop.
+  const portrait = media?.source === "catalog" && !compact;
   const detail = [dateLabel(current.date, current.endDate), current.venue, current.place].filter(Boolean).join(" · ");
   const openAttribution = (url) => {
     if (Platform.OS === "web" || !url) return;
@@ -139,8 +143,9 @@ export default function DiscoverEventBanner({
           {media ? (
             <Image
               source={{ uri: media.uri }}
-              style={StyleSheet.absoluteFill}
+              style={[StyleSheet.absoluteFill, portrait && styles.portraitBackdrop]}
               contentFit="cover"
+              blurRadius={portrait ? 32 : undefined}
               cachePolicy="memory-disk"
               enforceEarlyResizing
               transition={reduceMotion ? 0 : 220}
@@ -157,7 +162,20 @@ export default function DiscoverEventBanner({
             </View>
           )}
           <View pointerEvents="none" style={styles.scrim} />
-          <View pointerEvents="none" style={styles.copy}>
+          {portrait ? (
+            <View pointerEvents="none" style={styles.portrait}>
+              <Image
+                source={{ uri: media.uri }}
+                style={StyleSheet.absoluteFill}
+                contentFit="cover"
+                cachePolicy="memory-disk"
+                transition={reduceMotion ? 0 : 220}
+                recyclingKey={`${current.id}:${media.uri}:portrait`}
+                accessible={false}
+              />
+            </View>
+          ) : null}
+          <View pointerEvents="none" style={[styles.copy, portrait && styles.copyBesidePortrait]}>
             <Text style={styles.kicker}>{current.phase === "active" ? "HAPPENING NOW" : current.endDate && current.endDate !== current.date ? "MULTI-DAY EVENT" : "UPCOMING EVENT"}</Text>
             <Text style={[styles.title, compact && styles.titleCompact]} numberOfLines={2}>{current.title}</Text>
             <Text style={styles.detail} numberOfLines={compact ? 2 : 1}>{detail}</Text>
@@ -227,6 +245,9 @@ const styles = StyleSheet.create({
   fallbackGlowTwo: { position: "absolute", width: 300, height: 300, borderRadius: 150, bottom: -180, left: -90, backgroundColor: colors.magenta, opacity: 0.22, ...glow },
   scrim: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(3,5,9,0.48)" },
   copy: { position: "absolute", left: 20, right: 20, bottom: 22, maxWidth: 700 },
+  copyBesidePortrait: { right: 250 },
+  portraitBackdrop: { transform: [{ scale: 1.15 }] },
+  portrait: { position: "absolute", top: 22, right: 22, width: 196, height: 196, overflow: "hidden", borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderColor: "rgba(255,255,255,0.18)", backgroundColor: colors.bgElev, ...shadow.card },
   kicker: { color: "#FFB56B", fontFamily: mono, fontSize: 9.5, fontWeight: "900", letterSpacing: 1.8 },
   title: { color: "#FFFFFF", fontFamily: displayFont, fontSize: 31, lineHeight: 36, fontWeight: "900", letterSpacing: -0.8, marginTop: 6 },
   titleCompact: { fontSize: 25, lineHeight: 30 },
