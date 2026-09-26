@@ -28,6 +28,10 @@ if (!existsSync(DB_PATH)) {
 
 const db = new DatabaseSync(DB_PATH, { readOnly: true });
 registerPitSqliteFunctions(db);
+// All checks must describe one committed snapshot. Without a read transaction,
+// concurrent conversion/deletion can look like a broken relationship between
+// otherwise individually valid queries. This never takes a writer lock.
+db.exec("BEGIN");
 const findings = [];
 const tables = new Set(db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map((r) => r.name));
 const auditVirtualTables = new Set(["pragma_foreign_key_check", "pragma_quick_check"]);
@@ -127,6 +131,34 @@ check("media variant ledger ownership mismatch", "fail",
   `SELECT v.id FROM media_variants v JOIN media_assets a ON a.id=v.asset_id
    JOIN media_objects o ON o.object_key=v.object_key WHERE a.owner_id<>o.owner_id LIMIT 20`,
   "a media rendition capability belongs to a different account");
+check("media processing job ownership mismatch", "fail",
+  `SELECT j.asset_id FROM media_processing_jobs j JOIN media_assets a ON a.id=j.asset_id
+   WHERE j.owner_id<>a.owner_id LIMIT 20`,
+  "a durable conversion job belongs to someone other than its asset owner");
+check("non-video asset in video processing queue", "fail",
+  `SELECT j.asset_id FROM media_processing_jobs j JOIN media_assets a ON a.id=j.asset_id
+   WHERE a.kind<>'video' LIMIT 20`,
+  "the video queue contains an asset it cannot safely process",
+  [["media_assets", "kind"]]);
+check("invalid media processing request", "fail",
+  `SELECT asset_id FROM media_processing_jobs
+   WHERE CASE WHEN json_valid(body) THEN json_type(body)<>'object' ELSE 1 END LIMIT 20`,
+  "a durable conversion request is not a JSON object");
+check("unscheduled media processing retry", "fail",
+  `SELECT asset_id FROM media_processing_jobs
+   WHERE state='retry' AND next_attempt_at IS NULL LIMIT 20`,
+  "a pending conversion cannot resume without a retry deadline");
+for (const role of ["render", "poster"]) {
+  check(`invalid media ${role} variant reference`, "fail",
+    `SELECT a.id FROM media_assets a LEFT JOIN media_variants v ON v.id=a.${role}_variant_id
+     WHERE a.${role}_variant_id IS NOT NULL AND (v.id IS NULL OR v.asset_id<>a.id OR v.role<>'${role}') LIMIT 20`,
+    "the active rendition is missing, belongs to another asset, or has the wrong role",
+    [["media_assets", `${role}_variant_id`], ["media_variants", "role"]]);
+}
+check("media revision ledger ownership mismatch", "fail",
+  `SELECT r.asset_id FROM media_asset_revisions r JOIN media_assets a ON a.id=r.asset_id
+   JOIN media_objects o ON o.object_key=r.object_key WHERE a.owner_id<>o.owner_id LIMIT 20`,
+  "an unfinished photo edit references another account's storage capability");
 check("linked grant session owner mismatch", "fail",
   `SELECT g.token_hash FROM linked_account_session_grants g JOIN sessions s ON s.token_hash=g.token_hash
    WHERE s.user_id NOT IN (g.user_a_id,g.user_b_id) LIMIT 20`,
@@ -183,6 +215,7 @@ check("device-local media URLs persisted", "fail",
   `SELECT id FROM posts WHERE photos LIKE '%"file:%' OR photos LIKE '%"blob:%' LIMIT 20`,
   "a file:/blob: URI was saved instead of an uploaded object URL");
 
+db.exec("COMMIT");
 db.close();
 
 // --- report ---

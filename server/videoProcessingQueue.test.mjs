@@ -129,3 +129,15 @@ test("a restart makes interrupted conversions due, and the scheduler runs one at
     scheduler.stop();
   }
 });
+
+test("revoked sessions stop automatic publication while converter contention remains retryable", () => {
+  const database = queueDatabase();
+  started(database, "ma_revoked");
+  const outcome = noteVideoProcessingOutcome(database, {
+    assetId: "ma_revoked", error: new ApiError(401, "Log in again.", "AUTH_REQUIRED"), at: 5_000,
+  });
+  assert.equal(outcome.state, "failed");
+  assert.equal(dueVideoProcessingJob(database, { at: Number.MAX_SAFE_INTEGER }), null,
+    "a fresh automatic retry cannot drop the rejected session context and publish anyway");
+  database.close();
+});

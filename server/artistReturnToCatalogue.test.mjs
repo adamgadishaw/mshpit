@@ -45,6 +45,7 @@ test("an admin can return a page claimed by mistake to a plain catalogue page", 
   assert.equal(page.feed_enabled, 0);
   assert.equal(page.avatar_uri, null, "the owner's own photo is removed");
   assert.equal(page.banner, "https://media.example.test/seeded-banner.jpg", "art someone else seeded stays");
+  assert.equal(q.userById.get(admin.id).role, "admin", "returning a staff-created page never demotes staff");
   const logged = db.prepare("SELECT action,target_id,reason FROM moderation_actions WHERE action='artist_return_to_catalogue'").get();
   assert.deepEqual({ ...logged }, { action: "artist_return_to_catalogue", target_id: "accidental star", reason });
   assert.equal(nextArtistsForDeezerPhoto(db, { limit: 50 }).some((row) => row.norm === "accidental star"), true,
@@ -52,4 +53,84 @@ test("an admin can return a page claimed by mistake to a plain catalogue page", 
 
   await assert.rejects(async () => invoke(admin, "accidental star", { reason }), (error) => error.status === 404,
     "a page with no owner has nothing to return");
+});
+
+test("removing an artist owner revokes legacy reclaim, verification and active sessions atomically", async () => {
+  const admin = account("admin");
+  const owner = account("artist");
+  const at = Date.now();
+  const key = "revoked fixture";
+  db.prepare("UPDATE users SET artist_name='Revoked Fixture',verified=1,email_verified_at=? WHERE id=?").run(at, owner.id);
+  db.prepare("INSERT INTO artists(norm,name,public_slug,source,created_at,updated_at) VALUES (?,?,?,'musicbrainz',?,?)")
+    .run(key, "Revoked Fixture", "revoked-fixture", at, at);
+  db.prepare("INSERT INTO artist_profiles(artist_key,owner_id,feed_enabled,updated_at) VALUES (?,?,1,?)").run(key, owner.id, at);
+  q.insertSession.run("revoked-fixture-session", owner.id, at, at + 60_000, "", "");
+  db.prepare("INSERT INTO artist_requests(id,user_id,artist_name,status,created_at) VALUES ('revoked-fixture-request',?,'Revoked Fixture','pending',?)")
+    .run(owner.id, at);
+  db.prepare(`INSERT INTO artist_verification_challenges(id,user_id,artist_key,artist_name,instagram_handle,code,created_at,expires_at,status)
+    VALUES ('revoked-fixture-proof',?,?,'Revoked Fixture','fixture','FIXTURE',?,?,'active')`).run(owner.id, key, at, at + 60_000);
+
+  invoke(admin, key, { reason: "Withdraw the mistaken artist ownership." });
+  const fresh = q.userById.get(owner.id);
+  assert.equal(fresh.role, "fan");
+  assert.equal(fresh.artist_name, null);
+  assert.equal(fresh.verified, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM sessions WHERE user_id=?").get(owner.id).c, 0);
+  assert.equal(db.prepare("SELECT status FROM artist_requests WHERE id='revoked-fixture-request'").get().status, "rejected");
+  assert.equal(db.prepare("SELECT status FROM artist_verification_challenges WHERE id='revoked-fixture-proof'").get().status, "revoked");
+  await assert.rejects(async () => routes["PATCH /api/artists/:key/profile"]({
+    user: fresh, body: { bio: "Attempt to silently reclaim the revoked artist." }, params: { key }, ip: owner.id,
+  }), (error) => error.status === 403);
+  assert.equal(db.prepare("SELECT owner_id FROM artist_profiles WHERE artist_key=?").get(key).owner_id, null);
+});
+
+test("a failed moderation audit rolls back ownership, privilege and session revocation together", () => {
+  const admin = account("admin");
+  const owner = account("artist");
+  const at = Date.now();
+  const key = "revocation rollback";
+  db.prepare("UPDATE users SET artist_name='Revocation Rollback',verified=1 WHERE id=?").run(owner.id);
+  db.prepare("INSERT INTO artists(norm,name,public_slug,created_at,updated_at) VALUES (?,?,?, ?,?)")
+    .run(key, "Revocation Rollback", "revocation-rollback", at, at);
+  db.prepare("INSERT INTO artist_profiles(artist_key,owner_id,updated_at) VALUES (?,?,?)").run(key, owner.id, at);
+  q.insertSession.run("rollback-fixture-session", owner.id, at, at + 60_000, "", "");
+  db.exec("CREATE TRIGGER revocation_audit_failure BEFORE INSERT ON moderation_actions WHEN NEW.action='artist_return_to_catalogue' BEGIN SELECT RAISE(ABORT,'synthetic audit failure'); END");
+  try {
+    assert.throws(() => invoke(admin, key, { reason: "Synthetic revocation rollback check." }), /synthetic audit failure/u);
+    assert.equal(db.prepare("SELECT owner_id FROM artist_profiles WHERE artist_key=?").get(key).owner_id, owner.id);
+    assert.equal(q.userById.get(owner.id).role, "artist");
+    assert.equal(q.userById.get(owner.id).verified, 1);
+    assert.equal(db.prepare("SELECT COUNT(*) c FROM sessions WHERE user_id=?").get(owner.id).c, 1);
+  } finally { db.exec("DROP TRIGGER revocation_audit_failure"); }
+});
+
+test("pre-upgrade returned pages cannot be implicitly reclaimed but reviewed staff approval still works", async () => {
+  const admin = account("admin");
+  const owner = account("artist");
+  const at = Date.now();
+  const key = "historical returned fixture";
+  db.prepare("UPDATE users SET artist_name='Historical Returned Fixture',verified=1,email_verified_at=? WHERE id=?").run(at, owner.id);
+  db.prepare("INSERT INTO artists(norm,name,public_slug,source,created_at,updated_at) VALUES (?,?,?,'musicbrainz',?,?)")
+    .run(key, "Historical Returned Fixture", "historical-returned-fixture", at, at);
+  db.prepare("INSERT INTO artist_profiles(artist_key,owner_id,updated_at) VALUES (?,NULL,?)").run(key, at);
+  db.prepare(`INSERT INTO moderation_actions(id,actor_id,action,target_type,target_id,reason,created_at)
+    VALUES ('historical-return-audit',?,'artist_return_to_catalogue','artist',?,'Pre-upgrade ownership removal.',?)`).run(admin.id, key, at);
+  const edit = () => routes["PATCH /api/artists/:key/profile"]({ user: q.userById.get(owner.id),
+    body: { bio: "A biography after staff confirms the new claim." }, params: { key }, ip: owner.id });
+  await assert.rejects(async () => edit(), (error) => error.status === 403 && error.code === "FORBIDDEN");
+  assert.equal(db.prepare("SELECT owner_id FROM artist_profiles WHERE artist_key=?").get(key).owner_id, null);
+  assert.equal(q.userById.get(owner.id).role, "artist", "the upgrade guard requires no destructive account migration");
+
+  db.prepare(`INSERT INTO artist_requests(id,user_id,artist_name,status,created_at)
+    VALUES ('historical-new-claim',?,'Historical Returned Fixture','pending',?)`).run(owner.id, at);
+  assert.deepEqual(routes["POST /api/admin/artist-requests/:id/approve"]({ user: admin,
+    params: { id: "historical-new-claim" }, body: { method: "manual",
+      reason: "Reviewed fresh official artist evidence and confirmed the new ownership.",
+      officialAccountConfirmed: true, ownershipConfirmed: true, reviewedUrl: "https://artist.example/official" },
+    ip: admin.id,
+  }), { ok: true });
+  assert.equal(db.prepare("SELECT owner_id FROM artist_profiles WHERE artist_key=?").get(key).owner_id, owner.id);
+  await edit();
+  assert.equal(db.prepare("SELECT bio FROM artist_profiles WHERE artist_key=?").get(key).bio,
+    "A biography after staff confirms the new claim.");
 });

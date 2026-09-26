@@ -3089,7 +3089,7 @@ function syncConvertedClipIntoPost(database, { assetId, ownerId, at }) {
   for (const variant of database.prepare("SELECT object_key FROM media_variants WHERE asset_id=? AND status='verified'").all(assetId)) {
     markObjectAssociated(database, ownerId, variant.object_key, at);
   }
-  const post = database.prepare("SELECT photos,removed FROM posts WHERE id=?").get(link.post_id);
+  const post = database.prepare("SELECT photos,removed,updated_at,created_at FROM posts WHERE id=?").get(link.post_id);
   if (!post || post.removed) return false;
   const stable = database.prepare("SELECT asset_id FROM post_media WHERE post_id=? ORDER BY position").all(link.post_id)
     .map((entry) => publishUrl(loadAsset(database, entry.asset_id))).filter(Boolean);
@@ -3099,7 +3099,12 @@ function syncConvertedClipIntoPost(database, { assetId, ownerId, at }) {
     ? stable
     : [...stored, ...stable.filter((url) => !stored.includes(url))];
   if (JSON.stringify(next) === JSON.stringify(stored)) return false;
-  database.prepare("UPDATE posts SET photos=? WHERE id=?").run(JSON.stringify(next), link.post_id);
+  // A composer opened before conversion finished did not know about this
+  // ready clip. Advance the same edit version used by PATCH so that stale
+  // media selections cannot silently detach and delete it.
+  const updatedAt = Math.max(at, Number(post.updated_at || post.created_at || 0) + 1);
+  database.prepare("UPDATE posts SET photos=?,updated_at=? WHERE id=?")
+    .run(JSON.stringify(next), updatedAt, link.post_id);
   return true;
 }
 

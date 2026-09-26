@@ -1,6 +1,10 @@
 # Pit security and privacy readiness
 
-Last reviewed: 2026-09-01
+Last scoped review: 2026-09-26
+
+The application/media/research follow-up is recorded in
+`APPLICATION_INTEGRITY_AUDIT_2026-09-26.md`. It supplements, rather than replaces,
+the broader September 1 review and its unresolved operational requirements.
 
 The detailed evidence, fixes, residual risk, and release gates for this review are
 recorded in `SECURITY_PRIVACY_TECHNICAL_AUDIT_2026-09-01.md`.

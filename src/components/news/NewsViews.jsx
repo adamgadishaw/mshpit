@@ -102,7 +102,7 @@ export function NewsScreen({ session = null, onClose, onOpenArtist, onRequireAut
             <Button small variant="secondary" title="Try again" onPress={() => load()} style={{ marginTop: space(3) }} />
           </View>
         ) : null}
-        {state.status === "ready" && !state.items.length ? (
+        {state.status === "ready" && !state.items.length && !state.cursor ? (
           <View style={styles.panel}>
             <Text style={styles.panelTitle}>{scope === "following" ? "Nothing new from your artists yet" : "No news yet"}</Text>
             <Text style={styles.panelText}>{scope === "following"
@@ -111,7 +111,7 @@ export function NewsScreen({ session = null, onClose, onOpenArtist, onRequireAut
           </View>
         ) : null}
         {state.items.map((item) => <NewsCard key={item.id} item={item} onOpenArtist={onOpenArtist} />)}
-        {state.cursor && state.items.length ? (
+        {state.cursor && state.status !== "loading" ? (
           <Button small variant="secondary" title="Show more" loading={state.status === "more"} onPress={() => load({ more: true })} style={{ alignSelf: "center", marginTop: space(2) }} />
         ) : null}
       </ScrollView>

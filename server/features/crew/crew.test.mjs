@@ -17,6 +17,8 @@ import {
   removePlanMember,
 } from "./showPlansService.js";
 import { CREW_ENABLED } from "../../../src/domain/crewAvailability.mjs";
+import { crewRoutes } from "./crewRoutes.js";
+import { ApiError } from "../../errors.js";
 
 const SHOW = "tm_Z7r9jZ1A7Gd";
 const OTHER_SHOW = "tm_Z7r9jZ1A7Ge";
@@ -160,4 +162,21 @@ test("the show swipe and plans stay switched off until the owner launches them",
   // The owner put this on the back burner on 2026-09-25: not enough members
   // yet. Change this test in the same commit that deliberately turns it on.
   assert.equal(CREW_ENABLED, false);
+});
+
+test("leaving cannot reveal another lounge, and former attendees may clean up without reading plans", (t) => {
+  const w = world(t);
+  const made = plan(w, w.users.ana);
+  const params = { planId: made.id };
+  const routes = crewRoutes({ database: w.db, ApiError, rateLimit: () => {}, requireUser: (ctx) => ctx.user,
+    requireVerifiedUser: (ctx) => { if (ctx.user.unverified) throw new ApiError(403, "Confirm email.", "FORBIDDEN"); return ctx.user; },
+    blockedEitherWay: w.blockedEitherWay, projectUser: w.projectUser,
+    openLounge: () => { throw new ApiError(403, "Attendance required.", "LOUNGE_ATTENDANCE_REQUIRED"); },
+    loungeIsOpen: () => true });
+  assert.throws(() => routes["POST /api/plans/:planId/leave"]({ user: w.users.cam, params }), (error) => error.status === 404,
+    "an outsider cannot use a no-op leave to read the lounge's plans");
+  joinLoungePlan(w.db, { user: w.users.ben, planId: made.id, blockedEitherWay: w.blockedEitherWay });
+  const result = routes["POST /api/plans/:planId/leave"]({ user: w.users.ben, params });
+  assert.deepEqual(result, { plans: [] }, "leaving after attendance changes does not return protected plans");
+  assert.equal(w.db.prepare("SELECT COUNT(*) c FROM show_plan_members WHERE user_id=?").get(w.users.ben.id).c, 0);
 });

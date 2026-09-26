@@ -230,3 +230,132 @@ test("pages read research through the routes and staff can hide a wrong result",
   assert.equal(read("wet leg").research, null, "hidden research leaves the page at once");
   assert.equal(db.prepare("SELECT action FROM moderation_actions").get().action, "catalog_research_hide");
 });
+
+test("a timed-out continuation preserves its earlier paid receipt and stops further spending that day", async (t) => {
+  const db = database(t);
+  db.exec("INSERT INTO artists(norm,name,rank_score) VALUES ('wet leg','Wet Leg',10),('other','Other',5)");
+  const at = Date.parse("2026-09-26T12:00:00Z");
+  const env = { ANTHROPIC_API_KEY: "fixture", CATALOG_RESEARCH_DAILY_USD: "1" };
+  const usage = { input_tokens: 1000, output_tokens: 100, server_tool_use: { web_search_requests: 1 } };
+  let requests = 0;
+  const fetchImpl = async () => {
+    requests += 1;
+    if (requests === 1) return Response.json({ stop_reason: "pause_turn", usage, content: [] });
+    throw Object.assign(new Error("synthetic timeout"), { code: "ETIMEDOUT" });
+  };
+  let caught;
+  const research = async (subject, options) => {
+    assert.equal(collectCatalogResearchStatus(db, { env, at }).today.spentUsd, 0.2, "reservation is durable before HTTP");
+    try { return await researchCatalogSubject(subject, { ...options, fetchImpl }); }
+    catch (error) { caught = error; throw error; }
+  };
+  const result = await runCatalogResearchPass({ database: db, env, now: () => at, research, maxItems: 3 });
+  assert.equal(caught.costMicroUsd, catalogResearchCostMicroUsd("claude-sonnet-5", usage));
+  assert.equal(caught.accountingUncertain, true);
+  assert.equal(result.stopped, "cost_unconfirmed");
+  assert.equal(db.prepare("SELECT status FROM catalog_research_spend").get().status, "uncertain");
+  assert.equal(collectCatalogResearchStatus(db, { env, at }).today.spentUsd, 0.2);
+  assert.equal((await runCatalogResearchPass({ database: db, env, now: () => at, research })).stopped, "cost_unconfirmed");
+  assert.equal(requests, 2, "another scheduler pass cannot make more paid requests");
+});
+
+test("research reserves without losing existing spend and settles only the charged day", async (t) => {
+  const db = database(t);
+  db.exec("INSERT INTO artists(norm,name,rank_score) VALUES ('wet leg','Wet Leg',10),('other','Other',5)");
+  const env = { ANTHROPIC_API_KEY: "fixture", CATALOG_RESEARCH_DAILY_USD: "1" };
+  let at = Date.parse("2026-09-26T23:59:59Z");
+  db.prepare("INSERT INTO app_meta(key,value) VALUES ('catalog-research:v1:budget',?)").run(JSON.stringify({
+    version: 1, utcDay: "2026-09-26", spentMicroUsd: 110_000, runs: 2, published: 1,
+  }));
+  let complete;
+  const resultFor = (costMicroUsd) => ({ findings: { match: "unsure" }, searchedUrls: [], costMicroUsd, model: "claude-sonnet-5" });
+  const first = runCatalogResearchPass({ database: db, env, now: () => at, maxItems: 1,
+    research: () => new Promise((resolve) => { complete = resolve; }) });
+  assert.equal(collectCatalogResearchStatus(db, { env, at }).today.spentUsd, 0.31, "old spend plus reservation");
+  assert.equal((await runCatalogResearchPass({ database: db, env, now: () => at, maxItems: 1 })).stopped, "reservation_pending",
+    "a restart or competing scheduler cannot ignore a pending paid call");
+  at += 2000;
+  await runCatalogResearchPass({ database: db, env, now: () => at, maxItems: 1, research: async () => resultFor(40_000) });
+  assert.equal(collectCatalogResearchStatus(db, { env, at }).today.spentUsd, 0.04);
+  complete(resultFor(30_000));
+  await first;
+  assert.equal(collectCatalogResearchStatus(db, { env, at }).today.spentUsd, 0.04, "yesterday's reservation is never subtracted from today's spend");
+  assert.deepEqual(db.prepare("SELECT utc_day,charged_micro_usd,status FROM catalog_research_spend ORDER BY utc_day").all().map((row) => ({ ...row })), [
+    { utc_day: "2026-09-26", charged_micro_usd: 30_000, status: "settled" },
+    { utc_day: "2026-09-27", charged_micro_usd: 40_000, status: "settled" },
+  ]);
+});
+
+test("a rejected continuation charges the earlier confirmed usage instead of zero", async () => {
+  let calls = 0;
+  const usage = { input_tokens: 1000, output_tokens: 200 };
+  await assert.rejects(researchCatalogSubject({ type: "artist", name: "Wet Leg" }, {
+    apiKey: "fixture", fetchImpl: async () => {
+      if (++calls === 1) return Response.json({ stop_reason: "pause_turn", content: [], usage });
+      return Response.json({ error: { type: "rate_limit_error" } }, { status: 429 });
+    },
+  }), (error) => error.code === "research_rate_limited" && error.accountingUncertain === false
+    && error.costMicroUsd === catalogResearchCostMicroUsd("claude-sonnet-5", usage));
+});
+
+test("research receipt retention preserves active-day accounting and prunes only old days", async (t) => {
+  const db = database(t);
+  const at = Date.parse("2026-09-26T12:00:00Z");
+  const env = { ANTHROPIC_API_KEY: "fixture", CATALOG_RESEARCH_DAILY_USD: "1" };
+  const dailyBudget = JSON.stringify({ version: 1, utcDay: "2026-09-26", spentMicroUsd: 600_000, runs: 3, published: 1 });
+  db.prepare("INSERT INTO app_meta(key,value) VALUES ('catalog-research:v1:budget',?)").run(dailyBudget);
+  const insert = db.prepare(`INSERT INTO catalog_research_spend
+    (token,utc_day,reserved_micro_usd,charged_micro_usd,status,created_at) VALUES (?,?,200000,200000,?,?)`);
+  for (const status of ["reserved", "uncertain", "settled"]) {
+    insert.run(`old_${status}`, "2026-08-21", status, at - 36 * 86_400_000);
+    insert.run(`today_${status}`, "2026-09-26", status, at);
+  }
+  insert.run("cutoff", "2026-08-22", "settled", at - 35 * 86_400_000);
+  insert.run("recent", "2026-09-25", "settled", at - 86_400_000);
+  await runCatalogResearchPass({ database: db, env, now: () => at, maxItems: 0,
+    research: async () => { assert.fail("retention must not issue paid requests"); } });
+  assert.deepEqual(db.prepare("SELECT token FROM catalog_research_spend ORDER BY token").all().map((row) => row.token),
+    ["cutoff", "recent", "today_reserved", "today_settled", "today_uncertain"]);
+  assert.equal(db.prepare("SELECT value FROM app_meta WHERE key='catalog-research:v1:budget'").get().value, dailyBudget,
+    "retention never rewrites or subtracts from the active daily spend evidence");
+  assert.equal(collectCatalogResearchStatus(db, { env, at }).today.spentUsd, 0.6);
+});
+
+test("a pause-turn continuation cannot exceed the remaining daily admission allowance", async (t) => {
+  const db = database(t);
+  db.exec("INSERT INTO artists(norm,name,rank_score) VALUES ('wet leg','Wet Leg',10),('other','Other',5)");
+  const at = Date.parse("2026-09-26T12:00:00Z");
+  const env = { ANTHROPIC_API_KEY: "fixture", CATALOG_RESEARCH_DAILY_USD: "0.20" };
+  const usage = { input_tokens: 10_000, output_tokens: 4_000, server_tool_use: { web_search_requests: 1 } };
+  let requests = 0;
+  let caught;
+  const result = await runCatalogResearchPass({ database: db, env, now: () => at, maxItems: 4,
+    research: async (subject, options) => {
+      assert.equal(options.budgetMicroUsd, 200_000);
+      try {
+        return await researchCatalogSubject(subject, { ...options, fetchImpl: async () => {
+          requests += 1;
+          return Response.json({ stop_reason: "pause_turn", usage, content: [] });
+        } });
+      } catch (error) { caught = error; throw error; }
+    },
+  });
+  assert.equal(requests, 1, "four $0.07 requests must not be admitted against a $0.20 daily allowance");
+  assert.equal(result.stopped, "research_budget");
+  assert.equal(caught.accountingUncertain, false);
+  assert.equal(caught.costMicroUsd, 70_000);
+  assert.equal(collectCatalogResearchStatus(db, { env, at }).today.spentUsd, 0.07);
+  assert.deepEqual({ ...db.prepare("SELECT charged_micro_usd,status FROM catalog_research_spend").get() },
+    { charged_micro_usd: 70_000, status: "settled" });
+});
+
+test("continuation admission uses the previous request's actual cost when it exceeds the reserve", async () => {
+  let requests = 0;
+  await assert.rejects(researchCatalogSubject({ type: "artist", name: "Wet Leg" }, {
+    apiKey: "fixture", budgetMicroUsd: 490_000, fetchImpl: async () => {
+      requests += 1;
+      return Response.json({ stop_reason: "pause_turn", content: [], usage: { input_tokens: 125_000, output_tokens: 0 } });
+    },
+  }), (error) => error.code === "research_budget" && error.accountingUncertain === false && error.costMicroUsd === 250_000);
+  assert.equal(requests, 1, "the next call needs $0.25 headroom after a $0.25 response, not only $0.20");
+});

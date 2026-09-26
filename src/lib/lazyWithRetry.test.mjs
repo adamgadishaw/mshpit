@@ -231,5 +231,53 @@ test("preloading a lazy screen shares one import with React's later render", asy
 
   const [first, second] = await Promise.all([Screen.preload(), Screen.preload()]);
   assert.equal(first, second);
+  assert.equal(await resolveLazyScreen(Screen), first.default);
   assert.equal(imports, 1, "concurrent warmups must not request the chunk twice");
+});
+
+async function resolveLazyScreen(Screen) {
+  try { return Screen._init(Screen._payload); }
+  catch (suspended) {
+    if (!suspended || typeof suspended.then !== "function") throw suspended;
+    await suspended;
+    return Screen._init(Screen._payload);
+  }
+}
+
+test("optional stale-screen warmup cannot reload a working page but navigation can recover", async () => {
+  const h = harness();
+  const previousWindow = globalThis.window;
+  globalThis.window = { sessionStorage: h.storage, location: { reload: h.reload } };
+  try {
+    const Screen = lazyWithRetry(async () => { throw new Error('Requiring unknown module "624".'); }, "WarmFailure");
+    await assert.rejects(() => Screen.preload(), /unknown module/);
+    assert.equal(h.reloadCount(), 0, "background work must never navigate away from the composer");
+    assert.equal(h.store.size, 0, "warmup must not spend the later navigation recovery guard");
+
+    const fallback = await resolveLazyScreen(Screen);
+    assert.equal(h.reloadCount(), 1, "opening the failed screen retains guarded recovery");
+    assert.match(elementText(fallback()), /Updating Mshpit/);
+  } finally {
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  }
+});
+
+test("navigation during a failed warmup retries as a foreground load", async () => {
+  let rejectWarmup;
+  let attempts = 0;
+  const actual = () => null;
+  const Screen = lazyWithRetry(() => {
+    attempts += 1;
+    if (attempts === 1) return new Promise((_resolve, reject) => { rejectWarmup = reject; });
+    if (attempts === 2) return Promise.reject(new TypeError("Failed to fetch"));
+    return Promise.resolve({ default: actual });
+  }, "NavigateDuringWarmup");
+  const warmup = Screen.preload();
+  const rejected = assert.rejects(warmup, /Failed to fetch/);
+  const navigation = resolveLazyScreen(Screen);
+  rejectWarmup(new TypeError("Failed to fetch"));
+  await rejected;
+  assert.equal(await navigation, actual);
+  assert.equal(attempts, 3, "render shares the warmup, then owns a fresh attempt after it fails");
 });

@@ -2271,7 +2271,7 @@ export default function LogScreen({
         )}
         {!!mediaError && <Text style={styles.songError}>{mediaError}</Text>}
 
-        {artistMediaConsent.available && photos.length > 0 && (
+        {artistMediaConsent.available && (photos.length > 0 || convertingClips.length > 0) && (
           <Pressable
             style={styles.consent}
             accessibilityRole="checkbox"

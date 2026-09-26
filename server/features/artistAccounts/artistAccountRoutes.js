@@ -312,6 +312,19 @@ export function artistAccountRoutes({
         if (Number(update.changes || 0) !== 1) {
           throw new ApiError(409, "That artist page changed while it was being updated. Refresh it and try again.", "CONFLICT");
         }
+        // Revocation must also remove the account-side legacy claim. Leaving
+        // role + artist_name behind lets the next profile edit claim this now
+        // unowned row again without staff approval.
+        const owner = q.userById.get(ownerId);
+        if (owner?.role === "artist" && normName(owner.artist_name) === key) {
+          db.prepare("UPDATE users SET role='fan',artist_name=NULL,verified=0,profile_updated_at=? WHERE id=?")
+            .run(now(), ownerId);
+          db.prepare("DELETE FROM sessions WHERE user_id=?").run(ownerId);
+        }
+        db.prepare("UPDATE artist_requests SET status='rejected' WHERE user_id=? AND lower(trim(artist_name))=? AND status IN ('pending','approved')")
+          .run(ownerId, key);
+        db.prepare("UPDATE artist_verification_challenges SET status='revoked' WHERE user_id=? AND artist_key=? AND status IN ('active','submitted')")
+          .run(ownerId, key);
         const released = [ownedAvatar ? existing.avatar_uri : null, ownedBanner ? existing.banner : null].filter(Boolean);
         enqueueOwnedMediaUrls(db, { ownerId, urls: unreferencedOwnedMediaUrls(db, { ownerId, urls: released }), at: now() });
         moderationRecord(ctx, "artist_return_to_catalogue", "artist", key, reason,

@@ -19,6 +19,7 @@ import {
   getVideoVerifierServiceConfig,
   runVideoVerifierJob,
   universalRemuxEligible,
+  universalDeliveryDimensions,
   validateVideoVerifierJob,
   videoDeliveryStrategy,
   videoTranscodeBitrateBudget,
@@ -1280,7 +1281,7 @@ test("a WebM with VP9, Opus, cover art and subtitles converts to H.264/AAC from 
   assert.equal(transcode.includes("-xerror"), false, "a phone recording with one bad frame still converts");
   const filter = transcode[transcode.indexOf("-vf") + 1];
   assert.match(filter, /^fps=30,/, "an unbelievable 1000 fps timebase delivers at 30");
-  assert.match(filter, /if\(gt\(iw,ih\),min\(1920,iw\),min\(1080,iw\)\)/, "portrait keeps its 1080 width");
+  assert.match(filter, /scale=w=1080:h=1920,setsar=1$/, "portrait keeps its 1080 width");
   assert.ok(transcode.includes("libx264") && transcode.includes("aac"));
   assert.ok(transcode.includes("-map_metadata") && transcode.includes("-1"), "metadata including location is dropped");
   const outputDecode = runProcess.calls.find((call) => call.executable === "ffmpeg"
@@ -1297,7 +1298,37 @@ test("interlaced, non-square MPEG is deinterlaced and squared before bounding", 
   await runUniversal(universalJob({ extension: "mpg", contentType: "video/mpeg" }), runProcess, "video/mpeg");
   const transcode = runProcess.calls.find((call) => call.executable === "ffmpeg" && call.args.some((value) => String(value).endsWith("source.mpg"))).args;
   assert.deepEqual(transcode.slice(transcode.indexOf("-f"), transcode.indexOf("-f") + 2), ["-f", "mpeg"]);
-  assert.match(transcode[transcode.indexOf("-vf") + 1], /^yadif=deint=interlaced,fps=30,scale=w='trunc\(iw\*sar\/2\)\*2':h=ih,setsar=1,/);
+  assert.match(transcode[transcode.indexOf("-vf") + 1], /^yadif=deint=interlaced,fps=30,scale=w=852:h=480,setsar=1$/);
+});
+
+test("delivery geometry keeps portrait, rotated and anamorphic frames inside the allocation budget", () => {
+  assert.deepEqual(universalDeliveryDimensions({ width: 1_080, height: 1_920, sampleAspectRatio: "1:1" }), { width: 1_080, height: 1_920 });
+  assert.deepEqual(universalDeliveryDimensions({ width: 1_920, height: 1_080, sampleAspectRatio: "1:1", rotation: 90 }), { width: 1_080, height: 1_920 });
+  assert.deepEqual(universalDeliveryDimensions({ width: 720, height: 480, sampleAspectRatio: "32:27" }), { width: 852, height: 480 });
+  for (const aspect of ["65535:1", "1:65535", "2147483647:1", "1:2147483647", "0:1", "N/A", ""]) {
+    for (const rotation of [0, 90, 180, 270]) {
+      const size = universalDeliveryDimensions({ width: 4_096, height: 2_160, sampleAspectRatio: aspect, rotation });
+      assert.ok(Math.max(size.width, size.height) <= 1_920 && Math.min(size.width, size.height) <= 1_080, aspect);
+      assert.ok(size.width >= 2 && size.height >= 2 && size.width % 2 === 0 && size.height % 2 === 0, aspect);
+    }
+  }
+  assert.throws(() => universalDeliveryDimensions({ width: 1_920, height: 1_080, sampleAspectRatio: "1:0" }),
+    (error) => error.code === "unsupported_media");
+});
+
+test("extreme sample aspect ratios never request an unbounded intermediate frame", async () => {
+  const probe = universalProbe({ streams: [
+    { index: 0, codec_type: "video", codec_name: "vp9", width: 1_920, height: 1_080,
+      field_order: "progressive", sample_aspect_ratio: "65535:1", avg_frame_rate: "30/1", r_frame_rate: "30/1" },
+  ] });
+  const runProcess = universalRunner({ probe });
+  await runUniversal(universalJob(), runProcess, "video/webm");
+  const transcode = runProcess.calls.find((call) => call.executable === "ffmpeg"
+    && call.args.some((value) => String(value).endsWith("source.webm"))).args;
+  const filter = transcode[transcode.indexOf("-vf") + 1];
+  assert.equal((filter.match(/scale=/gu) || []).length, 1,
+    "squaring pixels must not allocate the 125-million-pixel intermediate width before applying delivery limits");
+  assert.match(filter, /scale=w=1920:h=2,setsar=1$/u);
 });
 
 test("universal sources the worker cannot read are signed source rejections, not retryable faults", async () => {

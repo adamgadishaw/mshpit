@@ -149,7 +149,7 @@ export function joinLoungePlan(database, { user, planId, blockedEitherWay, at = 
 
 export function leaveLoungePlan(database, { user, planId }) {
   const plan = planRow(database, planId);
-  if (!plan) throw new CrewError(404, NOT_OPEN, "NOT_FOUND");
+  if (!plan || !isInPlan(database, plan, user.id)) throw new CrewError(404, NOT_OPEN, "NOT_FOUND");
   if (plan.host_id === user.id) throw new CrewError(409, "Hosts close their plan instead of leaving it.", "CONFLICT");
   database.prepare("DELETE FROM show_plan_members WHERE plan_id=? AND user_id=?").run(plan.id, user.id);
   return { left: true };
