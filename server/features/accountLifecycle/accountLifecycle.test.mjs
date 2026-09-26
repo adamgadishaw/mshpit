@@ -72,10 +72,11 @@ test("new rows initialize tracking at insert time, even with ancient created_at"
   const before = Date.now();
   db.prepare("INSERT INTO users (id,email,created_at) VALUES ('new','new@example.test',1)").run();
   const row = user(db, "new");
-  // SQLite stamps the row from its own clock, which can read a millisecond or
-  // two ahead of Node's; allow that skew rather than fail at random.
-  assert.ok(row.last_active_at >= before - 2);
-  assert.ok(row.last_active_at <= Date.now() + 2);
+  // SQLite stamps the row from its own clock. On Windows it drifts up to
+  // 15 ms from Node's, more under a loaded test run. The point is "now, not
+  // the ancient created_at", so a one second window is enough.
+  assert.ok(row.last_active_at >= before - 1000);
+  assert.ok(row.last_active_at <= Date.now() + 1000);
   assert.equal(row.inactivity_next_check_at, row.last_active_at + 365 * DAY);
 });
 

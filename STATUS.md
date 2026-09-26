@@ -56,8 +56,12 @@ Historical moderator ownership removals also block legacy self-reclaims until
 staff approve a new claim.
 Local read-only database audit now has 44 checks, all passing. Production backup
 reported structural integrity OK, but a full live relational audit and off-host
-restore proof remain outstanding. Owner requested a new private R2 backup bucket;
-creation is blocked by unavailable Cloudflare access, not marked complete.
+restore proof remain outstanding. The private R2 backup bucket `mshpit-backups`
+now exists (created 2026-09-26 in the owner's Cloudflare account, public access
+off, lifecycle rule deletes objects after 14 days). Still pending: the owner's
+restricted API token (Object Read & Write on that bucket only), the four
+`BACKUP_S3_*` values in the Render dashboard, a verified upload and a restore
+drill. Off-host backups are not live until a backup object is seen in the bucket.
 
 ## 2026-09-26 Search Console: image metadata and indexing
 
