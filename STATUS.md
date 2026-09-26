@@ -24,6 +24,9 @@ looked at the four events shown in the list.
   `artistPhoto: { uri, credit }` for rows bound to a public catalogue artist
   with a Deezer-credited, Deezer-hosted photo; removed profiles and unpublished
   member-created artists never lend one.
+- Discover chart rows now follow the same rule as artist pages: a
+  Spotify-hosted image never goes in the generic `photo` field, so artist
+  cards and lists cannot crop Spotify artwork.
 - Checked with a local build on production data (photos from a local
   catalogue copy): 69 of the loaded events had an artist photo and the
   slideshow showed 5 picture slides on desktop and phone. Coverage grows as the

@@ -1,4 +1,4 @@
-import { db, normName } from "./db.js";
+import { db, normName, spotifyCdnHostedUrl } from "./db.js";
 import { projectArtistGenre } from "../src/domain/genre.mjs";
 import { createTopRatedShowService } from "./features/discovery/topRatedShowService.js";
 import { activeAccountSql } from "./accountVisibility.js";
@@ -67,7 +67,9 @@ function chartRow(name, artist, rank, extra = {}) {
     genre: projectedGenre(artist, data),
     popularity: artist?.popularity ?? null,
     followers: data.followers ?? null,
-    photo: artist?.photo || null,
+    // Same rule as db.publicArtist: Spotify artwork never takes the generic,
+    // cropped photo path.
+    photo: artist?.photo && !spotifyCdnHostedUrl(artist.photo) ? artist.photo : null,
     topTrack: firstTrack?.title ? { title: firstTrack.title, url: firstTrack.url || null } : null,
     ...extra,
   };

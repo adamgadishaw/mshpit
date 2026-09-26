@@ -263,6 +263,20 @@ test("popularity chart filters by canonical genre and country", () => {
     assert.deepEqual(result.rows.map((row) => row.name), ["Alpha"]);
     assert.deepEqual(result.rows[0].topTrack, { title: "First", url: "first.mp3" });
     assert.equal(result.rows[0].followers, 120);
+    assert.equal(result.rows[0].photo, "alpha.jpg");
+  } finally {
+    database.close();
+  }
+});
+
+test("chart rows never pass Spotify artwork through the generic photo field", () => {
+  const database = fixture();
+  try {
+    database.prepare("UPDATE artists SET photo=? WHERE norm='alpha'").run("https://i.scdn.co/image/ab6761610000e5eb0000");
+    const rows = fixtureDiscoverService(database).chart({ limit: 10 }).rows;
+    const byName = Object.fromEntries(rows.map((row) => [row.name, row.photo]));
+    assert.equal(byName.Alpha, null, "Spotify artwork must stay uncropped beside a Spotify link");
+    assert.equal(byName.Bravo, "bravo.jpg");
   } finally {
     database.close();
   }

@@ -2812,7 +2812,7 @@ function spotifyCdnArtistImage(value) {
   }
 }
 
-function spotifyCdnHostedUrl(value) {
+export function spotifyCdnHostedUrl(value) {
   try {
     const url = new URL(String(value || ""));
     return url.protocol === "https:"
