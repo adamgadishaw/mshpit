@@ -75,6 +75,13 @@ profiles updated from the news. Built on `feat/news-desk`, merged to master.
   allowed, so it is not billing. Both jobs now log Anthropic's error type and a
   cleaned reason (`server/anthropicErrors.js`), and research stops a pass on a
   rejected request instead of marking page after page failed.
+- 45d9771 (browser fixtures for `/api/news-desk/stories`; browser-regressions
+  had failed since the merge, which blocked Render auto-deploy) deployed at
+  17:33 EDT. The logged reason for the 400: "This API key is not scoped to a
+  workspace, so this request must include the anthropic-workspace-id header".
+  Both keys in the Console are Organization-scoped and expire 2026-10-26. The
+  org has one workspace, Default, with no keys. Owner to create a key in the
+  Default workspace (no expiry) and replace `ANTHROPIC_API_KEY` in Render.
 
 ## 2026-09-26 Claude spending capped at $10 a month
 

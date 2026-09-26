@@ -245,10 +245,12 @@ remains a broad context whose changing value can rerender unrelated consumers.
 
 ## Mshpit News desk follow-ups (2026-09-26)
 
-- **Anthropic key rejected (2026-09-26):** both jobs are on but get 401/403.
-  Owner creates a new key in console.anthropic.com and replaces
-  `ANTHROPIC_API_KEY` in Render; then confirm `[news-desk] reports=...
-  published=...` and `[catalog-research] researched=...` lines appear.
+- **Anthropic key (2026-09-26):** the current key is Organization-scoped, so
+  every call 400s asking for a workspace. Owner creates a key in the Default
+  workspace with no expiry, replaces `ANTHROPIC_API_KEY` in Render, and deletes
+  the two Organization keys (both expire 2026-10-26); then confirm
+  `[news-desk] reports=... published=...` and `[catalog-research]
+  researched=...` lines appear.
 - **After deploy:** add `NEWS_DESK_ENABLED=true` in the Render dashboard (and
   `CATALOG_RESEARCH_ENABLED=true` for modest catalog filling), then watch
   `[news-desk]` and `[catalog-research]` log lines and the Anthropic console.
