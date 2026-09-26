@@ -6,6 +6,36 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-09-26 Mshpit News desk (review branch `feat/news-desk`, not on master)
+
+The owner asked for real music news on the feed, posted by @news_mod, instead
+of follow alerts buried in Discover. Built on `feat/news-desk`; waiting for the
+owner to review screenshots before merging.
+
+- Server (`server/features/newsDesk/`): every 20 minutes reads RSS from eight
+  outlets (Billboard, Rolling Stone, Variety, Pitchfork, Stereogum, NME,
+  Consequence, The Guardian). Reports are grouped into stories by headline overlap;
+  a story needs two independent publisher groups (Billboard, Rolling Stone and
+  Variety count as one group, PMC), three for deaths and legal news. Reviews,
+  polls, lists and gossip are skipped. Claude (`claude-opus-5`, low effort,
+  JSON schema output) writes the headline and a 2 to 3 sentence summary and can
+  decline. Each story becomes a status post from @news_mod with every outlet's
+  link. Limits: 8 stories a day, 3 per pass, $1 a day and $9 a month
+  (`NEWS_DESK_DAILY_USD`, `NEWS_DESK_MONTHLY_USD`); each call must fit its
+  worst-case price in what is left, and the actual cost is recorded after it. Off unless `NEWS_DESK_ENABLED` and `ANTHROPIC_API_KEY` are
+  set in the Render dashboard. Source links drop tracking parameters.
+- Feed: a News segment next to Following, Local and For You; news posts show
+  as story cards (headline, summary, artist photo, "Confirmed by" links); a
+  "Music news" panel in the desktop right rail and a strip on phones. The News
+  screen now has "Music news" and "Your artists" (follow alerts) tabs. The
+  Discover news strip is gone.
+- `/news` (crawlable page and sitemap) lists desk stories as NewsArticle items
+  with source citations, indexable from 3 stories.
+- Dry run against live feeds (no Claude calls) found 5 confirmed stories on
+  2026-09-26: U2 50th anniversary, Pearl Jam's new drummer, the New York
+  festival cancellations, Jingle Ball lineups and Ed Sheeran's Gillette shows.
+- Full `npm run check` passed on the branch (5,463 tests, first load 503.2 KiB).
+
 ## 2026-09-26 independent application/database integrity review
 
 Release `8b24a3a` is live on both `mshpit` and `pit-video-verifier`. Full local

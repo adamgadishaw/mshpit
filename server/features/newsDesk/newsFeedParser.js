@@ -26,10 +26,15 @@ const tag = (block, name) => {
   return match ? match[1] : "";
 };
 
+// Publishers' links, minus tracking parameters (utm_*, fbclid and the like).
 const httpsLink = (value) => {
   try {
     const url = new URL(String(value || "").trim());
-    return url.protocol === "https:" && !url.username && !url.password ? url.toString() : null;
+    if (url.protocol !== "https:" || url.username || url.password) return null;
+    for (const key of [...url.searchParams.keys()]) {
+      if (/^(utm_|fbclid$|gclid$|mc_|ref$|cmpid$)/iu.test(key)) url.searchParams.delete(key);
+    }
+    return url.toString();
   } catch {
     return null;
   }

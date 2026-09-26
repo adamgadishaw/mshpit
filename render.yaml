@@ -144,6 +144,18 @@ services:
         value: "5"
       - key: CATALOG_RESEARCH_MODEL
         value: "claude-sonnet-5"
+      # Mshpit News: every 20 minutes, reads eight music outlets' RSS feeds and
+      # posts a short summary from @news_mod when at least two independent
+      # outlets report the same story (three for deaths and legal news). Uses
+      # the same ANTHROPIC_API_KEY. At most 8 stories a day, and spending stops
+      # at NEWS_DESK_DAILY_USD per day or NEWS_DESK_MONTHLY_USD per month.
+      # Render does not sync these values; add them in the dashboard.
+      - key: NEWS_DESK_ENABLED
+        value: "true"
+      - key: NEWS_DESK_DAILY_USD
+        value: "1"
+      - key: NEWS_DESK_MONTHLY_USD
+        value: "9"
       # Password recovery is disabled gracefully until both values are set. Never
       # log or expose reset links as a substitute for transactional email.
       - key: RESEND_API_KEY

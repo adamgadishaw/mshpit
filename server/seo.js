@@ -60,6 +60,7 @@ import { LANDING_IDENTITY_COPY } from "../src/domain/landingPresentation.mjs";
 import { CREW_ENABLED } from "../src/domain/crewAvailability.mjs";
 import { createArtistNewsReader } from "./features/artistUpdates/artistNewsReader.js";
 import { projectNewsDocument } from "./features/artistUpdates/newsDocuments.js";
+import { createNewsDeskReader } from "./features/newsDesk/newsDeskService.js";
 
 const SITE_NAME = "Mshpit";
 const DEFAULT_TITLE = "Mshpit: concert reviews, photos and live music discovery";
@@ -79,6 +80,7 @@ export const origin = () => configuredOrigin(process.env);
 
 // New releases and new tour dates, read with the same public rules as the
 // event pages. Artist pages show their latest few; /news shows everyone's.
+const newsDesk = createNewsDeskReader(db);
 const artistNews = createArtistNewsReader(db, {
   eventPathFor: (id) => eventPath(id),
   artistPathFor: (row) => artistPath({ name: row?.name, public_slug: row?.public_slug }),
@@ -453,7 +455,7 @@ function newsRoute(path) {
   if (!/^\/news\/*$/iu.test(path)) return null;
   if (path !== "/news") return { type: "redirect", status: 301, location: "/news", canonicalPath: "/news" };
   const at = Date.now();
-  const document = safePublicDocument(() => projectNewsDocument({ origin: origin(), items: artistNews.read({ limit: 60, at }).items, at }));
+  const document = safePublicDocument(() => projectNewsDocument({ origin: origin(), stories: newsDesk.list({ limit: 40 }).stories, at }));
   if (document === PUBLIC_DOCUMENT_UNAVAILABLE) return { type: "unavailable", status: 503 };
   if (!document) return { type: "not-found", status: 404 };
   return { type: "document", status: 200, canonicalPath: "/news", indexable: document.indexable, document };

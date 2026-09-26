@@ -41,7 +41,7 @@ const {
   urlsetParts,
 } = await import("./sitemapService.js");
 const { seoHttpPlan } = await import("../../seo.js");
-const { ensureArtistUpdatesSchema } = await import("../artistUpdates/artistUpdatesService.js");
+const { ensureNewsDeskSchema } = await import("../newsDesk/newsDeskService.js");
 
 test("a ticket URL alone is not indexable event evidence", () => {
   assert.equal(hasIndexableEventEvidence({
@@ -725,18 +725,19 @@ test("segmented sitemaps contain only substantive canonical public pages", async
   assert.doesNotMatch(pages, /<loc>[^<]*\/search(?:[?<]|$)/, "internal search pages do not belong in the sitemap");
   assert.doesNotMatch(pages, /changefreq|priority/);
   assert.doesNotMatch(pages, /<loc>https:\/\/www\.example\.com\/news<\/loc>/, "a noindex news page stays out of the sitemap");
-  ensureArtistUpdatesSchema(db);
-  const addUpdate = db.prepare(`INSERT INTO artist_updates
-    (id,artist_key,artist_name,kind,dedupe_key,title,payload,source,occurred_at,created_at,updated_at)
-    VALUES (?,?,?,'release',?,?,?,'deezer',1,?,1)`);
+  ensureNewsDeskSchema(db);
+  const newsAuthor = db.prepare("SELECT id FROM users LIMIT 1").get().id;
   for (let index = 0; index < 3; index += 1) {
-    addUpdate.run(`news-${index}`, "news-artist", "News Artist", `news-${index}`, "New album",
-      JSON.stringify({ release: { title: `Record ${index}`, type: "album", releaseDate: "2026-09-01" } }), index + 1);
+    db.prepare("INSERT INTO posts (id,user_id,artist,venue,city,date,overall,review,kind,created_at) VALUES (?,?,'','','','',0,?,'status',?)")
+      .run(`news_story-${index}`, newsAuthor, "A confirmed story.", index + 1);
+    db.prepare(`INSERT INTO news_stories (id,status,headline,summary,sources,post_id,created_at,updated_at)
+      VALUES (?,'published',?,?,?,?,?,?)`).run(`story-${index}`, `Story ${index}`, "A confirmed story.",
+      JSON.stringify([{ name: "NME", url: "https://www.nme.com/a" }, { name: "Stereogum", url: "https://www.stereogum.com/a" }]), `news_story-${index}`, index + 1, index + 1);
   }
+  db.prepare("UPDATE posts SET removed=1 WHERE id='news_story-0'").run();
   assert.doesNotMatch(sitemapXmlFor("/sitemaps/pages.xml", { database: db }), /<loc>https:\/\/www\.example\.com\/news<\/loc>/,
-    "orphaned cached news cannot make the page indexable");
-  db.prepare("INSERT INTO artists(norm,name,data,source,created_at,updated_at) VALUES(?,?,'{}','deezer',1,1)")
-    .run("news-artist", "News Artist");
+    "a removed story post cannot make the page indexable");
+  db.prepare("UPDATE posts SET removed=0 WHERE id='news_story-0'").run();
   assert.match(sitemapXmlFor("/sitemaps/pages.xml", { database: db }), /<loc>https:\/\/www\.example\.com\/news<\/loc>/,
     "news joins the sitemap once the page is indexable");
   const events = sitemapXmlFor("/sitemaps/events.xml", { database: db, now: 1_725_000_000_000 });

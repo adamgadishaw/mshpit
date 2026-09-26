@@ -26,6 +26,8 @@ test("feeds parse into plain headlines, links and dates, RSS or Atom", () => {
   const atom = parseNewsFeed(`<feed><entry><title>U2 Play Old School</title><link href="https://example.test/u2"/><updated>2026-09-26T10:00:00Z</updated><summary>Anniversary</summary></entry></feed>`, { sourceId: "guardian" });
   assert.deepEqual(atom.map((item) => [item.title, item.url]), [["U2 Play Old School", "https://example.test/u2"]]);
   assert.equal(parseNewsFeed(rss([["No link", "javascript:alert(1)", 1]])).length, 0, "only https links");
+  assert.equal(parseNewsFeed(rss([["Tracked", "https://www.nme.com/news/a?utm_source=rss&amp;utm_medium=rss&amp;page=2", 1]]))[0].url,
+    "https://www.nme.com/news/a?page=2", "tracking parameters are removed");
 });
 
 test("rules keep news, drop lists, polls and gossip, and demand independent outlets", () => {

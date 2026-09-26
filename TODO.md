@@ -243,6 +243,19 @@ remains a broad context whose changing value can rerender unrelated consumers.
 - **Animated story:** an MP4 version of the share card needs a render service
   with ffmpeg.
 
+## Mshpit News desk follow-ups (2026-09-26)
+
+- **Before merge:** owner reviews the feed, rail panel and News screen
+  screenshots (branch `feat/news-desk`).
+- **After deploy:** add `NEWS_DESK_ENABLED=true` in the Render dashboard, then
+  watch `[news-desk]` log lines and the Anthropic console spend. The account's
+  $10 a month limit is shared with catalog research, which defaults to $5 a
+  day; keep research off or lower it so the news desk is not starved.
+- **Corrections:** an admin control to unpublish a story (today: delete the
+  @news_mod post, which hides it from the feed, `/news` and the sitemap).
+- **More outlets:** HotNewHipHop and Complex for hip-hop coverage if their RSS
+  feeds are stable; add them to a new publisher group.
+
 ## Artist news follow-ups (2026-09-25)
 
 - **After deploy:** watch `[artist-news]` log lines. The first pass is a quiet

@@ -1,4 +1,4 @@
-import { Suspense, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import { colors, displayFont, focusRing, font, mono, radius, shadow } from "../theme";
 import { useStore } from "../store";
@@ -24,9 +24,7 @@ import { CityNavigationContext } from "../components/cities/CityNavigationContex
 import { eventPath } from "../domain/urls.mjs";
 import { discoverProgrammeKey, restoredDiscoverProgramme } from "../domain/discoverProgramme.mjs";
 import { buildDiscoverEventBannerSlides } from "../domain/discoverEventBanner.mjs";
-import { lazyWithRetry } from "../lib/lazyWithRetry";
 
-const NewsStrip = lazyWithRetry(() => import("../components/news/NewsViews").then((module) => ({ default: module.NewsStrip })), "NewsStrip");
 import {
   DISCOVER_AREA_SCOPE,
   defaultDiscoverAreaChoice,
@@ -93,7 +91,6 @@ export default function DiscoverScreen({
   onOpenVenue,
   onOpenNearby,
   onOpenCrew,
-  onOpenNews,
   onOpenFanClubs,
   onOpenVenues,
   onOpenLounge,
@@ -654,7 +651,6 @@ export default function DiscoverScreen({
 
       {programme === "shows" && <View nativeID="discover-panel-shows" accessibilityRole="tabpanel" aria-labelledby="discover-tab-shows" style={styles.upcomingSection}>
         {onOpenCrew ? <CrewBanner onPress={onOpenCrew} compact={compact} /> : null}
-        {onOpenNews ? <Suspense fallback={null}><NewsStrip onOpenNews={onOpenNews} onOpenArtist={onOpenArtist} /></Suspense> : null}
         <View style={styles.livePanel}>
           <View style={[styles.livePanelHead, compact && styles.livePanelHeadCompact]}>
             <SectionHeading

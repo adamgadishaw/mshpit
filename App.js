@@ -209,8 +209,8 @@ function Root() {
     resolveYouTube, invalidateYouTube, youtubeVideoRejected, resolveDeezerPreview,
     youtubeLookupStatus, mediaReactions, loadMediaReactions, toggleMediaReaction,
     syncAccountTheme,
-    removeMyPostTag,
     loadPostForView,
+    removeMyPostTag,
   } = useStore();
   useFeedImpressionSession(session);
   const staff = isStaff(session?.role);
@@ -1462,7 +1462,7 @@ function Root() {
                 />
               )}
               {activeTab === "search" && <SearchScreen onOpen={openShow} onOpenArtist={openArtist} onOpenCity={openCity} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenProfile={openProfile} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} />}
-              {activeTab === "discover" && <DiscoverScreen key={session?.id || "guest"} initialProgramme={publicDirectoryProgramme(nav)} rememberedProgramme={rememberedDiscoverProgramme} onProgrammeChange={(programme) => setDiscoverDestination({ accountId: session?.id || null, programme })} onOpenTopRated={(discoverRegion) => go({ topRated: true, discoverRegion })} onOpenEvents={(discoverRegion) => openPublicDirectory("events", { region: discoverRegion })} onOpen={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenCrew={ENABLE_CREW ? () => go({ crew: true }) : undefined} onOpenNews={() => go({ news: true })} onOpenNearby={() => go({ nearby: true })} onOpenFanClubs={() => go({ fanClubs: true })} onOpenVenues={(discoverRegion) => go({ venues: true, discoverRegion })} onOpenLounge={(lounge) => go({ lounge })} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} onOpenProfile={openProfile} onManageTaste={openProfileManagement} />}
+              {activeTab === "discover" && <DiscoverScreen key={session?.id || "guest"} initialProgramme={publicDirectoryProgramme(nav)} rememberedProgramme={rememberedDiscoverProgramme} onProgrammeChange={(programme) => setDiscoverDestination({ accountId: session?.id || null, programme })} onOpenTopRated={(discoverRegion) => go({ topRated: true, discoverRegion })} onOpenEvents={(discoverRegion) => openPublicDirectory("events", { region: discoverRegion })} onOpen={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenCrew={ENABLE_CREW ? () => go({ crew: true }) : undefined} onOpenNearby={() => go({ nearby: true })} onOpenFanClubs={() => go({ fanClubs: true })} onOpenVenues={(discoverRegion) => go({ venues: true, discoverRegion })} onOpenLounge={(lounge) => go({ lounge })} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} onOpenProfile={openProfile} onManageTaste={openProfileManagement} />}
               {activeTab === "you" && !!session && (
                 <YouScreen
                   onLogin={() => go({ auth: true })}

@@ -131,19 +131,37 @@ test("news words read naturally", () => {
   assert.equal(tourYearsLabel([]), "");
 });
 
-test("the public news page lists releases and new dates, escapes everything, and waits for enough news to be indexed", async () => {
-  const { projectNewsDocument, renderNewsMain, renderArtistNewsSection } = await import("./newsDocuments.js");
+test("the public news page lists confirmed stories with their sources, escapes everything, and waits for enough stories", async () => {
+  const { projectNewsDocument, renderNewsMain } = await import("./newsDocuments.js");
+  const story = (id, headline, extra = {}) => ({
+    id, postId: `news_${id}`, headline, summary: "Two outlets report it.", category: "tour", publishedAt: NOW,
+    artists: [{ key: "wet leg", name: "Wet <Leg>", publicSlug: "wet-leg" }],
+    sources: [{ name: "NME", url: "https://www.nme.com/news/wet-leg" }, { name: "Stereogum", url: "https://www.stereogum.com/wet-leg" }],
+    ...extra,
+  });
+  const stories = [story("a", "Wet Leg announce tour"), story("b", "Second <story>", { sources: [{ name: "Bad", url: "javascript:alert(1)" }] })];
+  const document = projectNewsDocument({ stories, at: NOW });
+  assert.equal(document.indexable, false, "two stories is not enough for a search result yet");
+  assert.equal(projectNewsDocument({ stories: [...stories, story("c", "Third")], at: NOW }).indexable, true);
+  const article = document.jsonLd[0].mainEntity.itemListElement[0].item;
+  assert.equal(article["@type"], "NewsArticle");
+  assert.deepEqual(article.citation, ["https://www.nme.com/news/wet-leg", "https://www.stereogum.com/wet-leg"]);
+  const html = renderNewsMain(document);
+  assert.match(html, /Wet &lt;Leg&gt;/u);
+  assert.match(html, /Second &lt;story&gt;/u);
+  assert.match(html, /Confirmed by <a href="https:\/\/www\.nme\.com\/news\/wet-leg" rel="nofollow noopener noreferrer">NME<\/a>/u);
+  assert.doesNotMatch(html, /javascript:/u, "unsafe source links are dropped");
+});
+
+test("an artist page still lists that artist's new releases and tour dates", async () => {
+  const { renderArtistNewsSection } = await import("./newsDocuments.js");
   const items = [
     { id: "au_1", kind: "release", artist: { name: "Tame <Impala>", path: "/artist/tame-impala" }, title: "New single: Dracula",
       release: { title: "Dracula", type: "single", releaseDate: "2026-09-18", cover: "https://e-cdns-images.dzcdn.net/2.jpg", url: "https://www.deezer.com/album/2" } },
     { id: "au_2", kind: "shows", artist: { name: "Wet Leg", path: "/artist/wet-leg" }, title: "2 new tour dates added",
       shows: { count: 2, dates: [{ id: "tm_1", date: "2026-11-01", venue: "History", city: "Toronto", path: "/event/tm_1" }, { id: "tm_2", date: "2026-11-02", venue: "MTELUS", city: "Montreal", path: "//evil.example" }] } },
   ];
-  const document = projectNewsDocument({ items, at: NOW });
-  assert.equal(document.indexable, false, "two items is not enough for a search result yet");
-  assert.equal(projectNewsDocument({ items: [...items, items[0]], at: NOW }).indexable, true);
-  assert.equal(document.jsonLd[0].mainEntity.itemListElement[0].item["@type"], "MusicAlbum");
-  const html = renderNewsMain(document);
+  const html = renderArtistNewsSection({ news: items, artist: { name: "Wet Leg" } });
   assert.match(html, /Tame &lt;Impala&gt;/u);
   assert.match(html, /Listen on Deezer/u);
   assert.match(html, /href="\/event\/tm_1"/u);

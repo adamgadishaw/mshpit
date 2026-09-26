@@ -9,10 +9,13 @@ import { fetchArtistNews, fetchNews } from "../../lib/newsApi";
 import { newsDateLabel, releaseAvailability, releaseTypeLabel } from "../../domain/artistNews.mjs";
 import { localCalendarIso } from "../../domain/dates.mjs";
 import { colors, displayFont, radius, space } from "../../theme";
+import NewsStoryCard from "./NewsStoryCard";
+import useNewsDeskStories from "./useNewsDeskStories";
 
-// Every news view lives in this one module so the screens that show news
-// (the News screen, artist pages, Discover) share a single lazy chunk and
-// nothing is added to the first page load.
+// The News screen and the artist-page update rows share this lazy chunk.
+// "Music news" is the Mshpit News desk: stories independent outlets confirmed.
+// "Your artists" is different: new releases and tour dates from the artists
+// you follow, which also arrive as notifications.
 
 function openListen(url) {
   if (!/^https:\/\//u.test(String(url || ""))) return;
@@ -34,9 +37,13 @@ export function NewsCard({ item, onOpenArtist, showArtist = true }) {
   const label = release
     ? `${item.artist.name}, new ${releaseTypeLabel(release.type)}: ${release.title}`
     : `${item.artist.name}: ${item.title}`;
+  // Only a card that opens something is a button.
+  const Card = onOpenArtist ? Pressable : View;
+  const cardProps = onOpenArtist
+    ? { style: ({ pressed, hovered }) => [styles.card, hovered && styles.cardHover, pressed && styles.cardPressed], onPress: () => onOpenArtist(item.artist), accessibilityRole: "button", accessibilityLabel: `${label}. Open ${item.artist.name}.` }
+    : { style: styles.card, accessible: true, accessibilityLabel: label };
   return (
-    <Pressable style={({ pressed, hovered }) => [styles.card, hovered && styles.cardHover, pressed && styles.cardPressed]}
-      onPress={() => onOpenArtist?.(item.artist)} accessibilityRole="button" accessibilityLabel={`${label}. Open ${item.artist.name}.`}>
+    <Card {...cardProps}>
       <View style={styles.art}>
         {release?.cover ? (
           <SmartImage uri={release.cover} style={StyleSheet.absoluteFill} contain={false} accessibilityLabel={`${release.title} cover art`} accessible={false} />
@@ -57,18 +64,20 @@ export function NewsCard({ item, onOpenArtist, showArtist = true }) {
           </Pressable>
         ) : null}
       </View>
-      <Icon name="chevron-right" size={16} color={colors.textFaint} />
-    </Pressable>
+      {onOpenArtist ? <Icon name="chevron-right" size={16} color={colors.textFaint} /> : null}
+    </Card>
   );
 }
 
-// The full News screen: everyone's news, or just the artists you follow.
-export function NewsScreen({ session = null, onClose, onOpenArtist, onRequireAuth }) {
-  const [scope, setScope] = useState("all");
+// The full News screen: confirmed music news, or updates from your artists.
+export function NewsScreen({ session = null, onClose, onOpenArtist, onOpenStory, onRequireAuth }) {
+  const [scope, setScope] = useState("news");
+  const news = useNewsDeskStories({ enabled: scope === "news", limit: 20 });
   const [state, setState] = useState({ status: "loading", items: [], cursor: null });
   const request = useRef(0);
 
   const load = useCallback(async ({ more = false } = {}) => {
+    if (scope !== "following") return;
     const ticket = ++request.current;
     setState((current) => ({ ...current, status: more ? "more" : "loading", ...(more ? {} : { items: [] }) }));
     try {
@@ -85,15 +94,36 @@ export function NewsScreen({ session = null, onClose, onOpenArtist, onRequireAut
 
   return (
     <View style={styles.screen}>
-      <ScreenHeader kicker="News" title="New music & tour dates" onBack={onClose} />
+      <ScreenHeader kicker="Mshpit News" title="Music news" onBack={onClose} />
       <View style={styles.tabs} accessibilityRole="tablist">
-        {[["all", "Everyone"], ["following", "Artists you follow"]].map(([id, label]) => (
+        {[["news", "Music news"], ["following", "Your artists"]].map(([id, label]) => (
           <Pressable key={id} style={[styles.tab, scope === id && styles.tabOn]} accessibilityRole="tab" accessibilityState={{ selected: scope === id }}
             onPress={() => { if (id === "following" && !session) { onRequireAuth?.(); return; } setScope(id); }}>
             <Text style={[styles.tabText, scope === id && styles.tabTextOn]}>{label}</Text>
           </Pressable>
         ))}
       </View>
+      {scope === "news" ? (
+        <ScrollView contentContainerStyle={styles.content}>
+          {news.status === "loading" && !news.stories.length ? <ActivityIndicator color={colors.amber} style={{ marginTop: space(10) }} /> : null}
+          {news.status === "error" ? (
+            <View style={styles.panel}>
+              <Text style={styles.panelText}>News didn't load. Check your connection and try again.</Text>
+              <Button small variant="secondary" title="Try again" onPress={news.reload} style={{ marginTop: space(3) }} />
+            </View>
+          ) : null}
+          {news.status === "ready" && !news.stories.length ? (
+            <View style={styles.panel}>
+              <Text style={styles.panelTitle}>No stories yet</Text>
+              <Text style={styles.panelText}>Mshpit News posts a story once at least two independent music outlets report it.</Text>
+            </View>
+          ) : null}
+          {news.stories.map((story) => <NewsStoryCard key={story.id} story={story} onOpen={onOpenStory} onOpenArtist={onOpenArtist} />)}
+          {news.nextCursor ? (
+            <Button small variant="secondary" title="Show more" loading={news.status === "loading"} onPress={news.loadMore} style={{ alignSelf: "center", marginTop: space(2) }} />
+          ) : null}
+        </ScrollView>
+      ) : (
       <ScrollView contentContainerStyle={styles.content}>
         {state.status === "loading" ? <ActivityIndicator color={colors.amber} style={{ marginTop: space(10) }} /> : null}
         {state.status === "error" ? (
@@ -104,10 +134,8 @@ export function NewsScreen({ session = null, onClose, onOpenArtist, onRequireAut
         ) : null}
         {state.status === "ready" && !state.items.length && !state.cursor ? (
           <View style={styles.panel}>
-            <Text style={styles.panelTitle}>{scope === "following" ? "Nothing new from your artists yet" : "No news yet"}</Text>
-            <Text style={styles.panelText}>{scope === "following"
-              ? "Follow artists from their pages. New albums, singles and tour dates show up here, and you get a note when they land."
-              : "New releases and tour dates appear here as artists announce them."}</Text>
+            <Text style={styles.panelTitle}>Nothing new from your artists yet</Text>
+            <Text style={styles.panelText}>Follow artists from their pages. New albums, singles and tour dates show up here, and you get a note when they land.</Text>
           </View>
         ) : null}
         {state.items.map((item) => <NewsCard key={item.id} item={item} onOpenArtist={onOpenArtist} />)}
@@ -115,6 +143,7 @@ export function NewsScreen({ session = null, onClose, onOpenArtist, onRequireAut
           <Button small variant="secondary" title="Show more" loading={state.status === "more"} onPress={() => load({ more: true })} style={{ alignSelf: "center", marginTop: space(2) }} />
         ) : null}
       </ScrollView>
+      )}
     </View>
   );
 }
@@ -134,7 +163,7 @@ export function ArtistNewsSection({ artistName, following = false, onFollow }) {
   if (!items.length && following) return null;
   return (
     <View style={styles.section}>
-      <Text style={styles.sectionKicker}>LATEST NEWS</Text>
+      <Text style={styles.sectionKicker}>NEW MUSIC AND TOUR DATES</Text>
       {items.map((item) => <NewsCard key={item.id} item={item} showArtist={false} />)}
       {!following && onFollow ? (
         <View style={styles.followRow}>
@@ -143,30 +172,6 @@ export function ArtistNewsSection({ artistName, following = false, onFollow }) {
           <Button small title="Follow" onPress={onFollow} />
         </View>
       ) : null}
-    </View>
-  );
-}
-
-// A small "New this week" strip for Discover.
-export function NewsStrip({ onOpenNews, onOpenArtist }) {
-  const [items, setItems] = useState([]);
-  useEffect(() => {
-    const controller = new AbortController();
-    fetchNews({ limit: 3, signal: controller.signal })
-      .then((result) => setItems(result?.items || []))
-      .catch(() => setItems([]));
-    return () => controller.abort();
-  }, []);
-  if (!items.length) return null;
-  return (
-    <View style={styles.strip}>
-      <View style={styles.stripHead}>
-        <Text style={styles.stripTitle}>New this week</Text>
-        <Pressable onPress={onOpenNews} hitSlop={8} accessibilityRole="button" accessibilityLabel="Open all music news">
-          <Text style={styles.link}>All news</Text>
-        </Pressable>
-      </View>
-      {items.map((item) => <NewsCard key={item.id} item={item} onOpenArtist={onOpenArtist} />)}
     </View>
   );
 }
@@ -197,8 +202,4 @@ const styles = StyleSheet.create({
   sectionKicker: { color: colors.textFaint, fontSize: 11, fontWeight: "900", letterSpacing: 1.2 },
   followRow: { flexDirection: "row", alignItems: "center", gap: space(3), padding: space(3), borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.bgElev },
   followText: { flex: 1, color: colors.textDim, fontSize: 13.5, lineHeight: 19 },
-  strip: { gap: space(2), marginBottom: space(4) },
-  stripHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-  stripTitle: { color: colors.text, fontFamily: displayFont, fontSize: 18, fontWeight: "800" },
-  link: { color: colors.amber, fontWeight: "700", fontSize: 13 },
 });

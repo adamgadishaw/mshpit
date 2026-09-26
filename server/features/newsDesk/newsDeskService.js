@@ -240,30 +240,43 @@ export function createNewsDesk({ database, fetchText, summarize = null, now = Da
 }
 
 // Public reads: newest published stories whose post is still live.
-export function createNewsDeskReader(database) {
-  let ready = false;
+// `ensureSchema: false` is for read-only connections such as the sitemap
+// snapshot; a missing table there simply means no stories yet.
+const missingTable = (error) => /no such (table|column)/iu.test(String(error?.message));
+export function createNewsDeskReader(database, { ensureSchema = true } = {}) {
+  let ready = !ensureSchema;
   return {
-    list({ limit = 20, before = null } = {}) {
+    list(options = {}) {
       if (!ready) { ensureNewsDeskSchema(database); ready = true; }
-      const bounded = Math.max(1, Math.min(50, Number(limit) || 20));
-      const cursor = before && Number.isSafeInteger(before.createdAt) ? before : null;
-      const rows = database.prepare(`SELECT s.id,s.headline,s.summary,s.category,s.artist_keys,s.sources,s.post_id,s.created_at
-        FROM news_stories s JOIN posts p ON p.id=s.post_id
-        WHERE s.status='published' AND p.removed=0 ${cursor ? "AND (s.created_at<? OR (s.created_at=? AND s.id<?))" : ""}
-        ORDER BY s.created_at DESC,s.id DESC LIMIT ?`)
-        .all(...(cursor ? [cursor.createdAt, cursor.createdAt, cursor.id] : []), bounded + 1);
-      const artistLookup = database.prepare("SELECT norm,name,public_slug,photo,data FROM artists WHERE norm=?");
-      const stories = rows.slice(0, bounded).map((row) => newsStoryJson(row, artistLookup));
-      const last = rows.length > bounded ? rows[bounded - 1] : null;
-      return { stories, nextCursor: last ? { createdAt: last.created_at, id: last.id } : null };
+      try { return listStories(database, options); }
+      catch (error) { if (missingTable(error)) return { stories: [], nextCursor: null }; throw error; }
     },
     forPost(postId) {
       if (!ready) { ensureNewsDeskSchema(database); ready = true; }
-      const row = database.prepare(`SELECT id,headline,summary,category,artist_keys,sources,post_id,created_at FROM news_stories
-        WHERE post_id=? AND status='published'`).get(postId);
-      return row ? newsStoryJson(row, database.prepare("SELECT norm,name,public_slug,photo,data FROM artists WHERE norm=?")) : null;
+      try {
+        const row = database.prepare(`SELECT id,headline,summary,category,artist_keys,sources,post_id,created_at FROM news_stories
+          WHERE post_id=? AND status='published'`).get(postId);
+        return row ? newsStoryJson(row, database.prepare("SELECT norm,name,public_slug,photo,data FROM artists WHERE norm=?")) : null;
+      } catch (error) {
+        if (missingTable(error)) return null;
+        throw error;
+      }
     },
   };
+}
+
+function listStories(database, { limit = 20, before = null } = {}) {
+  const bounded = Math.max(1, Math.min(50, Number(limit) || 20));
+  const cursor = before && Number.isSafeInteger(before.createdAt) ? before : null;
+  const rows = database.prepare(`SELECT s.id,s.headline,s.summary,s.category,s.artist_keys,s.sources,s.post_id,s.created_at
+    FROM news_stories s JOIN posts p ON p.id=s.post_id
+    WHERE s.status='published' AND p.removed=0 ${cursor ? "AND (s.created_at<? OR (s.created_at=? AND s.id<?))" : ""}
+    ORDER BY s.created_at DESC,s.id DESC LIMIT ?`)
+    .all(...(cursor ? [cursor.createdAt, cursor.createdAt, cursor.id] : []), bounded + 1);
+  const artistLookup = database.prepare("SELECT norm,name,public_slug,photo,data FROM artists WHERE norm=?");
+  const stories = rows.slice(0, bounded).map((row) => newsStoryJson(row, artistLookup));
+  const last = rows.length > bounded ? rows[bounded - 1] : null;
+  return { stories, nextCursor: last ? { createdAt: last.created_at, id: last.id } : null };
 }
 
 function newsStoryJson(row, artistLookup) {

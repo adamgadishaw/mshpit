@@ -4,6 +4,7 @@ import { seedFeed, ratedShows, haversineKm, installDemoCatalogShows } from "./da
 import { clean, cleanEmail, isEmail, cleanName, isName, cleanHandle, isHandle, isPassword, clampRating, LIMITS } from "./domain/validation.mjs";
 import { load, remove, save } from "./lib/persist";
 import { api, AppError, captureAppError, configureApiIdentity } from "./lib/api";
+import { fetchPostById } from "./lib/newsDeskApi";
 import { authTransitions, AUTH_INTENT_KEY } from "./lib/authTransitions";
 import { classifyAccountAgeBand, requestAccountExport, updateAnnouncementEmailPreference, updateDirectMessagePreference, updateProfileAudience, updateProfileSearchIndexingPreference } from "./lib/accountPrivacyApi";
 import { requestFreshDeezerPreview } from "./lib/playbackApi";
@@ -3608,7 +3609,7 @@ export function StoreProvider({ children }) {
   const loadPostForView = async (id, { signal } = {}) => {
     if (typeof id !== "string" || !id || id.length > 200) return null;
     try {
-      const { post } = await api(`/api/posts/${encodeURIComponent(id)}`, { silent: true, signal, context: "Opening a news story" });
+      const { post } = await fetchPostById(id, { signal });
       return post ? normalizeServerPost(post) : null;
     } catch {
       // architecture: allow-ambiguous-result -- opening a story is optional; the reader stays where they were

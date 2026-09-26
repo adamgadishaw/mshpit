@@ -38,7 +38,8 @@ export function renderNewsItems(items, day) {
 
 export const NEWS_STYLES = `.news-list,.news-dates{list-style:none;margin:0;padding:0}.news-item{display:flex;gap:1rem;padding:1.1rem 0;border-top:1px solid var(--line)}
   .news-item img{width:96px;height:96px;border-radius:.6rem;object-fit:cover;flex-shrink:0}.news-item h3{margin:.2rem 0;font-size:1.2rem}
-  .news-dates li{padding:.2rem 0;color:#d8d0c5}.news-dates time{display:inline-block;min-width:6.5rem;color:var(--gold);font-weight:700}`;
+  .news-dates li{padding:.2rem 0;color:#d8d0c5}.news-dates time{display:inline-block;min-width:6.5rem;color:var(--gold);font-weight:700}
+  .news-story{padding:1.4rem 0;border-top:1px solid var(--line)}.news-story h2{margin:.35rem 0 .5rem;font-size:1.45rem;line-height:1.25}.news-story p{max-width:760px}.news-sources{color:var(--muted);font-size:.9rem}`;
 
 function albumSchema(item, origin) {
   const release = item.release;
@@ -55,38 +56,49 @@ function albumSchema(item, origin) {
 // An empty news page is not worth a search result yet.
 export const NEWS_INDEX_MIN_ITEMS = 3;
 
-export function projectNewsDocument({ origin = "https://www.mshpit.com", items = [], at = Date.now() } = {}) {
+// /news: stories from the Mshpit News desk, each confirmed by at least two
+// independent music outlets, with links to every outlet's report.
+export function projectNewsDocument({ origin = "https://www.mshpit.com", stories = [], at = Date.now() } = {}) {
   const canonicalPath = "/news";
   const canonicalUrl = new URL(canonicalPath, origin).href;
-  const day = new Date(at).toISOString().slice(0, 10);
-  const releases = items.filter((item) => item.kind === "release").slice(0, 30);
-  const shows = items.filter((item) => item.kind === "shows").slice(0, 30);
-  const names = [...new Set(items.map((item) => item.artist.name))].slice(0, 4);
-  const description = items.length
-    ? `New albums, EPs and singles and newly added tour dates${names.length ? ` from ${names.join(", ")} and more` : ""}. Follow artists on Mshpit to hear first.`
-    : "New albums, EPs and singles and newly added tour dates from the artists fans follow on Mshpit.";
+  const shown = (Array.isArray(stories) ? stories : []).filter((story) => story?.headline).slice(0, 40);
+  const lead = shown.slice(0, 2).map((story) => story.headline);
+  const description = lead.length
+    ? `Confirmed music news: ${lead.join(". ")}. Every story is reported by at least two independent outlets.`
+    : "Confirmed music news on Mshpit: tours, releases, festivals and the music business, each reported by at least two independent outlets.";
+  const organization = { "@type": "Organization", name: "Mshpit News", url: new URL("/", origin).href };
   return {
     kind: "news",
     siteName: "Mshpit",
-    heading: "New music and tour dates",
-    title: "New Music & Tour Announcements This Week | Mshpit",
-    description,
+    heading: "Music news",
+    title: "Music News: Tours, Releases & Festivals | Mshpit",
+    description: description.slice(0, 300),
     canonicalPath,
     canonicalUrl,
-    indexable: items.length >= NEWS_INDEX_MIN_ITEMS,
-    news: { releases, shows, day },
+    indexable: shown.length >= NEWS_INDEX_MIN_ITEMS,
+    news: { stories: shown, at },
     jsonLd: [{
       "@context": "https://schema.org",
       "@type": "CollectionPage",
       "@id": `${canonicalUrl}#page`,
-      name: "New music and tour dates",
+      name: "Music news",
       url: canonicalUrl,
       description,
-      ...(releases.length ? { mainEntity: {
+      ...(shown.length ? { mainEntity: {
         "@type": "ItemList",
-        name: "New releases",
-        numberOfItems: releases.length,
-        itemListElement: releases.map((item, index) => ({ "@type": "ListItem", position: index + 1, item: albumSchema(item, origin) })),
+        name: "Confirmed music news",
+        numberOfItems: shown.length,
+        itemListElement: shown.map((story, index) => ({ "@type": "ListItem", position: index + 1, item: {
+          "@type": "NewsArticle",
+          headline: story.headline.slice(0, 110),
+          ...(story.summary ? { description: story.summary } : {}),
+          datePublished: new Date(story.publishedAt).toISOString(),
+          author: organization,
+          publisher: organization,
+          ...(story.sources?.length ? { citation: story.sources.map((source) => source.url) } : {}),
+          ...(story.artists?.length ? { about: story.artists.map((artist) => ({ "@type": "MusicGroup", name: artist.name,
+            ...(safePath(artist.publicSlug ? `/artist/${artist.publicSlug}` : null) ? { url: new URL(`/artist/${artist.publicSlug}`, origin).href } : {}) })) } : {}),
+        } })),
       } } : {}),
     }, {
       "@context": "https://schema.org",
@@ -99,17 +111,31 @@ export function projectNewsDocument({ origin = "https://www.mshpit.com", items =
   };
 }
 
+function renderStory(story) {
+  const artists = (story.artists || []).map((artist) => artist.publicSlug && safePath(`/artist/${artist.publicSlug}`)
+    ? `<a href="/artist/${esc(artist.publicSlug)}">${esc(artist.name)}</a>` : esc(artist.name)).join(", ");
+  const sources = (story.sources || []).filter((source) => safeHttps(source.url))
+    .map((source) => `<a href="${esc(source.url)}" rel="nofollow noopener noreferrer">${esc(source.name)}</a>`).join(", ");
+  const published = new Date(story.publishedAt);
+  return `<article class="news-story">
+    <p class="eyebrow">${esc(String(story.category || "news").replace(/^\w/u, (letter) => letter.toUpperCase()))} · <time datetime="${esc(published.toISOString())}">${esc(published.toISOString().slice(0, 10))}</time></p>
+    <h2>${esc(story.headline)}</h2>
+    ${story.summary ? `<p>${esc(story.summary)}</p>` : ""}
+    ${artists ? `<p class="muted">About ${artists}</p>` : ""}
+    ${sources ? `<p class="news-sources">Confirmed by ${sources}</p>` : ""}
+  </article>`;
+}
+
 export function renderNewsMain(document) {
   if (document?.kind !== "news") return null;
-  const { releases, shows, day } = document.news;
+  const stories = document.news?.stories || [];
   return `<main id="main" class="news-page">
     <nav class="breadcrumbs" aria-label="Breadcrumb"><ol><li><a href="/">Mshpit</a></li><li><span aria-current="page">News</span></li></ol></nav>
-    <section class="hero"><p class="eyebrow">Mshpit news</p><h1>New music and tour dates</h1>
-      <p class="hero-copy">${esc(document.description)}</p>
-      <div class="actions"><a class="button primary" href="/signup">Follow your artists</a><a class="button" href="/events">Browse upcoming shows</a></div></section>
-    ${releases.length ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">Just released</p><h2>New albums, EPs and singles</h2></div></div>${renderNewsItems(releases, day)}</section>` : ""}
-    ${shows.length ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">Just added</p><h2>New tour dates</h2></div></div>${renderNewsItems(shows, day)}</section>` : ""}
-    ${!releases.length && !shows.length ? `<section class="section empty-state"><h2>News arrives as artists announce it.</h2><p>New releases and tour dates for the artists fans follow show up here.</p></section>` : ""}
+    <section class="hero"><p class="eyebrow">Mshpit News</p><h1>Music news</h1>
+      <p class="hero-copy">Tours, releases, festivals and the music business. Every story here is reported by at least two independent music outlets, with links to each report.</p>
+      <div class="actions"><a class="button primary" href="/signup">Join Mshpit</a><a class="button" href="/events">Browse upcoming shows</a></div></section>
+    ${stories.length ? `<section class="section news-stories">${stories.map(renderStory).join("")}</section>`
+      : `<section class="section empty-state"><h2>No confirmed stories yet.</h2><p>A story appears here once at least two independent outlets report it.</p></section>`}
   </main>`;
 }
 

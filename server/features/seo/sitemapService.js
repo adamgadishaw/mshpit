@@ -44,7 +44,7 @@ import {
 import { createPublicDocumentRepository } from "./publicDocumentRepository.js";
 import { foldedCityName } from "./publicCollectionRepository.js";
 import { createCityGuideRepository } from "../cities/cityGuideRepository.js";
-import { createArtistNewsReader } from "../artistUpdates/artistNewsReader.js";
+import { createNewsDeskReader } from "../newsDesk/newsDeskService.js";
 import { NEWS_INDEX_MIN_ITEMS } from "../artistUpdates/newsDocuments.js";
 import { effectiveTourDateEndSql } from "../../tourDateLifecycle.js";
 import {
@@ -1226,9 +1226,8 @@ export function buildSitemapDatasets(database, { now = Date.now() } = {}) {
   if (guideCities.length) pages.push({ path: "/cities" });
   // /news is noindex until it has enough items; listing it earlier only
   // shows up in Search Console as "Excluded by noindex". Same read as the page.
-  const newsItems = createArtistNewsReader(database, { ensureSchema: false })
-    .read({ limit: 60, at: candidates.generatedAt }).items;
-  if (newsItems.length >= NEWS_INDEX_MIN_ITEMS) pages.push({ path: "/news" });
+  const newsStories = createNewsDeskReader(database, { ensureSchema: false }).list({ limit: 40 }).stories;
+  if (newsStories.length >= NEWS_INDEX_MIN_ITEMS) pages.push({ path: "/news" });
   const cities = [...citySitemapEntries({ candidates, venueEntries: venues, concerts }), ...guideCities];
   const artistArchives = artistArchiveSitemapEntries({ artistEntries: artists, concerts });
   const datasets = new Map([
