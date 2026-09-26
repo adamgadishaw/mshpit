@@ -112,6 +112,31 @@ export function createArtistMatcher(database) {
   };
 }
 
+const artistNameKey = (name) => String(name || "").normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase()
+  .replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+
+// Stories published before artists were checked against Claude's list could
+// carry a headline word that happens to be an act ("Storm" in "due to storm")
+// or a passing mention. Keep only the artists the story's own headline names;
+// a story whose headline names none keeps what it has. Runs once.
+const ARTIST_REPAIR_KEY = "news-desk:artist-repair:v1";
+export function repairStoryArtists(database) {
+  ensureNewsDeskSchema(database);
+  if (database.prepare("SELECT 1 FROM app_meta WHERE key=?").get(ARTIST_REPAIR_KEY)) return 0;
+  const matchArtists = createArtistMatcher(database);
+  let repaired = 0;
+  for (const story of database.prepare("SELECT id,headline,artist_keys,post_id FROM news_stories WHERE status='published'").all()) {
+    const stored = parseJson(story.artist_keys, []);
+    const named = new Set(matchArtists(story.headline));
+    const kept = stored.filter((key) => named.has(key));
+    if (!kept.length || kept.length === stored.length) continue;
+    database.prepare("UPDATE news_stories SET artist_keys=?,updated_at=updated_at WHERE id=?").run(JSON.stringify(kept), story.id);
+    repaired += 1;
+  }
+  database.prepare("INSERT INTO app_meta(key,value) VALUES (?,?) ON CONFLICT(key) DO NOTHING").run(ARTIST_REPAIR_KEY, String(repaired));
+  return repaired;
+}
+
 export function createNewsDesk({ database, fetchText, fetchArticle = null, summarize = null, now = Date.now, newId = randomUUID, env = process.env, log = console }) {
   ensureNewsDeskSchema(database);
   const budget = newsDeskBudget(env);
@@ -217,7 +242,13 @@ export function createNewsDesk({ database, fetchText, fetchArticle = null, summa
     const postId = `news_${id}`;
     // Keep the independence rule even if Claude cites only same-company outlets.
     const supporting = isConfirmed(result.supporting) ? result.supporting : reports;
-    const artistKeys = [...new Set(supporting.flatMap((report) => report.artistKeys))].slice(0, 6);
+    // Headline matches, kept only when Claude names them as who the story is
+    // about: a headline word can be an unrelated act ("Storm"), and a passing
+    // mention ("Paul McCartney's drummer") is not the story.
+    const claimed = new Set((Array.isArray(result.artists) ? result.artists : []).map(artistNameKey).filter(Boolean));
+    const artistName = database.prepare("SELECT name FROM artists WHERE norm=?");
+    const artistKeys = [...new Set(supporting.flatMap((report) => report.artistKeys))]
+      .filter((key) => claimed.has(artistNameKey(artistName.get(key)?.name))).slice(0, 6);
     const lead = artistKeys[0] ? database.prepare("SELECT norm,name FROM artists WHERE norm=?").get(artistKeys[0]) : null;
     const sources = supporting.map((report) => ({ name: report.sourceName, url: report.url, title: report.title }));
     database.exec("BEGIN IMMEDIATE");

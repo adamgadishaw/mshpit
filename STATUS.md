@@ -82,6 +82,17 @@ profiles updated from the news. Built on `feat/news-desk`, merged to master.
   Both keys in the Console are Organization-scoped and expire 2026-10-26. The
   org has one workspace, Default, with no keys. Owner to create a key in the
   Default workspace (no expiry) and replace `ANTHROPIC_API_KEY` in Render.
+- Working, 18:07 EDT (key in the Default workspace): `[news-desk] reports=0
+  confirmed=12 published=2 declined=1 left=$0.23` (3 Claude calls, $0.07).
+  Published: Ed Sheeran's Gillette Stadium cancellations (Stereogum, Variety,
+  NME) and Pearl Jam's Ohana set with Abe Laboriel Jr. (Rolling Stone,
+  Stereogum, NME), each about 170 words with attribution. Bug found: the Ed
+  Sheeran story was tagged with the act "Storm" (headline word) and Pearl Jam
+  with Paul McCartney (passing mention). Fixed: tags are kept only when Claude
+  names the artist as the story's subject, and a one-time repair keeps only the
+  artists each earlier story's headline names. Catalog research reports
+  `cost_unconfirmed`: a call interrupted by one of today's restarts, so it
+  pauses until the UTC day ends (20:00 EDT) by design.
 
 ## 2026-09-26 Claude spending capped at $10 a month
 

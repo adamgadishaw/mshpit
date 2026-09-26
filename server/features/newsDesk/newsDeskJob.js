@@ -3,7 +3,7 @@ import { anthropicMonthlyCeilingMicroUsd } from "../../claudeSpendCeiling.js";
 import { anthropicErrorSummary } from "../../anthropicErrors.js";
 import { privateErrorLabel } from "../../errors.js";
 import { startPeriodicJob } from "../../periodicJobScheduler.js";
-import { createNewsDesk, newsDeskBudget } from "./newsDeskService.js";
+import { createNewsDesk, newsDeskBudget, repairStoryArtists } from "./newsDeskService.js";
 import { createNewsSummarizer } from "./newsSummarizer.js";
 
 const MINUTE = 60_000;
@@ -61,6 +61,8 @@ export function startNewsDeskScheduler({ database, env = process.env, now = Date
   if (!newsDeskConfigured(env) || !backgroundJobEnabled(env, "NEWS_DESK_ENABLED")) return null;
   const summarize = createNewsSummarizer({ apiKey: String(env.ANTHROPIC_API_KEY).trim() });
   const desk = createNewsDesk({ database, fetchText, fetchArticle, summarize, now, env });
+  const repaired = repairStoryArtists(database);
+  if (repaired) console.log(`[news-desk] tidied artist tags on ${repaired} earlier stories`);
   const budget = newsDeskBudget(env);
   console.log(`[news-desk] on: $${budget.dailyUsd}/day, $${budget.monthlyUsd}/month, shared Claude ceiling $${anthropicMonthlyCeilingMicroUsd(env) / 1_000_000}/month`);
   return startPeriodicJob({

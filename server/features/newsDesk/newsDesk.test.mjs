@@ -14,7 +14,7 @@ const { binaryApiResponsePayload } = await import("../../binaryApiResponse.js");
 const { createPublicDocumentService } = await import("../seo/publicDocuments.js");
 const { renderPublicDocumentHead, renderPublicDocumentMain } = await import("../seo/publicDocumentRenderer.js");
 const rules = await import("./newsStoryRules.js");
-const { createArtistMatcher, createNewsDesk, createNewsDeskReader, newsDeskBudget, NEWS_DESK_HANDLE } = await import("./newsDeskService.js");
+const { createArtistMatcher, createNewsDesk, createNewsDeskReader, newsDeskBudget, repairStoryArtists, NEWS_DESK_HANDLE } = await import("./newsDeskService.js");
 const { createNewsSummarizer, NEWS_MODEL, storyPrompt } = await import("./newsSummarizer.js");
 after(() => { db.close(); rmSync(directory, { recursive: true, force: true }); });
 
@@ -266,4 +266,31 @@ test("a story's page is a news article with its write-up, artist links, sources 
   const artistPage = pages.artistDocument({ artistKey: "u2" });
   assert.equal(artistPage.headlines[0].path, "/post/news_u2-1");
   assert.match(renderPublicDocumentMain(artistPage), /U2 in the news<\/h2>.*href="\/post\/news_u2-1"/su);
+});
+
+test("a story is tagged only with the artists Claude says it is about", async () => {
+  newsAccount();
+  for (const [norm, name] of [["ed sheeran", "Ed Sheeran"], ["storm", "Storm"]]) {
+    db.prepare(`INSERT INTO artists (norm,name,popularity,created_at,updated_at) VALUES (?,?,80,?,?)
+      ON CONFLICT(norm) DO UPDATE SET name=excluded.name,popularity=80`).run(norm, name, NOW, NOW);
+  }
+  const stormFeeds = {
+    "https://www.stereogum.com/category/news/feed/": rss([["Ed Sheeran Gillette Stadium Shows Canceled Due To Storm", "https://stereogum.test/sheeran", 2]]),
+    "https://www.nme.com/news/music/feed": rss([["Ed Sheeran Gillette Stadium shows canceled due to Storm warnings", "https://nme.test/sheeran", 1]]),
+  };
+  const summarize = async (reports) => ({ publish: true, reason: "", headline: "Ed Sheeran's Gillette Stadium shows canceled", category: "tour",
+    summary: "Severe weather canceled both shows.", body: "Both shows were canceled.", artists: ["Ed Sheeran"], supporting: reports, costUsd: 0.02 });
+  let sequence = 0;
+  const desk = createNewsDesk({ database: db, fetchText: async (url) => stormFeeds[url] || rss([]), summarize, now: () => NOW, env: {}, newId: () => `storm-${++sequence}` });
+  await desk.ingest();
+  assert.equal((await desk.publishPass()).published, 1);
+  assert.deepEqual(createNewsDeskReader(db).get("storm-1").artists.map((artist) => artist.name), ["Ed Sheeran"], "the act named Storm is not tagged");
+
+  // Stories published before this check are tidied once, from their headline.
+  db.prepare("UPDATE news_stories SET artist_keys=? WHERE id='storm-1'").run(JSON.stringify(["ed sheeran", "storm"]));
+  db.prepare("DELETE FROM app_meta WHERE key='news-desk:artist-repair:v1'").run();
+  assert.equal(repairStoryArtists(db) >= 1, true);
+  assert.deepEqual(JSON.parse(db.prepare("SELECT artist_keys FROM news_stories WHERE id='storm-1'").get().artist_keys), ["ed sheeran"]);
+  db.prepare("UPDATE news_stories SET artist_keys=? WHERE id='storm-1'").run(JSON.stringify(["ed sheeran", "storm"]));
+  assert.equal(repairStoryArtists(db), 0, "the repair runs once");
 });
