@@ -277,6 +277,12 @@ test("chart rows never pass Spotify artwork through the generic photo field", ()
     const byName = Object.fromEntries(rows.map((row) => [row.name, row.photo]));
     assert.equal(byName.Alpha, null, "Spotify artwork must stay uncropped beside a Spotify link");
     assert.equal(byName.Bravo, "bravo.jpg");
+
+    const discoverOnly = "https://cdn-images.dzcdn.net/images/artist/abc/1000x1000-000000-80-0-0.jpg";
+    const data = JSON.parse(database.prepare("SELECT data FROM artists WHERE norm='alpha'").get().data);
+    database.prepare("UPDATE artists SET data=? WHERE norm='alpha'").run(JSON.stringify({ ...data, discoverPhoto: { uri: discoverOnly, credit: "Deezer" } }));
+    const refreshed = fixtureDiscoverService(database).chart({ limit: 10 }).rows;
+    assert.equal(refreshed.find((row) => row.name === "Alpha").photo, discoverOnly, "the Discover-only Deezer image stands in");
   } finally {
     database.close();
   }

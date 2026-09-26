@@ -3,17 +3,22 @@ import { readCatalogKnowledgeControl } from "../../catalogKnowledgeControl.js";
 import { discoverArtistPriorityKeys } from "../../discoverArtistPriority.js";
 import { privateErrorLabel } from "../../errors.js";
 import { startPeriodicJob } from "../../periodicJobScheduler.js";
-import { spotifyArtistPhotoConfigured } from "../../spotifyArtistPhotos.js";
 
-// Artist photos from Deezer (keyless), credited "Deezer", for when Spotify is
-// not configured. Discover's artists go first, then artists touring soon, then
-// popular acts: those pages are what new visitors see.
+// Artist photos from Deezer (keyless), credited "Deezer". Discover's artists go
+// first, then artists touring soon, then popular acts: those pages are what new
+// visitors see.
 //
-// A photo is taken only from an exact-name Deezer match with an established
-// audience, and never Deezer's blank placeholder. The write is compare and
-// set: it never replaces an existing photo, an owner's avatar, or a hidden
-// profile, and every artist looked at is marked so a miss is not retried for
-// two weeks.
+// An artist with a stored Deezer id is looked up by that id and must still
+// carry the same name; otherwise only a clearly dominant exact-name match with
+// an established audience is used, and never Deezer's blank placeholder.
+//
+// Spotify artwork may only be shown uncropped beside a Spotify link, so it
+// cannot fill Discover's cropped cards and slideshow. For an artist whose page
+// already shows a Spotify photo, the Deezer image is kept as a Discover-only
+// `discoverPhoto` and the artist page is left alone. Otherwise it becomes the
+// artist's photo. The write is compare and set: it never replaces an existing
+// photo, an owner's avatar, or a hidden profile, and every artist looked at is
+// marked so it is not looked at again for two weeks.
 
 const MINUTE = 60_000;
 const RECHECK_MS = 14 * 24 * 60 * 60 * 1000;
@@ -28,6 +33,9 @@ export function usableDeezerPicture(url) {
   const value = String(url || "");
   return /^https:\/\/(?:e-)?cdns?-images\.dzcdn\.net\/images\/artist\/[0-9a-f]{32}\/\d+x\d+-[\w-]+\.jpg$/u.test(value) ? value : null;
 }
+
+const DEEZER_ID = /^[1-9]\d{0,11}$/u;
+const spotifyOwnsPagePhoto = (data) => data.photoSource === "spotify" || typeof data.spotifyPhoto === "string";
 
 // Deezer often has several exact namesakes ("Drake" has three). Take the one
 // with the most fans only when it clearly dominates the rest and has an
@@ -90,12 +98,24 @@ export async function runDeezerPhotoPass(database, { fetchJson, at = Date.now(),
     if (signal?.aborted) break;
     const data = parse(row.data);
     if (!data) continue;
-    const found = await fetchJson(`https://api.deezer.com/search/artist?q=${encodeURIComponent(row.name)}&limit=5`, { signal });
-    const match = dominantNamesake(found?.data, row.name);
+    const knownId = DEEZER_ID.test(String(data.deezerId ?? "")) ? String(data.deezerId) : null;
+    let match = null;
+    if (knownId) {
+      const artist = await fetchJson(`https://api.deezer.com/artist/${knownId}`, { signal });
+      match = artist && !artist.error && normalName(artist.name) === normalName(row.name)
+        && (Number(artist.nb_fan) || 0) >= MIN_FANS ? artist : null;
+    } else {
+      const found = await fetchJson(`https://api.deezer.com/search/artist?q=${encodeURIComponent(row.name)}&limit=5`, { signal });
+      match = dominantNamesake(found?.data, row.name);
+    }
     const picture = match ? usableDeezerPicture(match.picture_xl || match.picture_big) : null;
     outcome.checked += 1;
     if (picture) {
-      if (markChecked(database, row, data, at, { photo: picture, photoCredit: "Deezer", photoSource: "deezer", deezerId: data.deezerId || match.id })) outcome.filled += 1;
+      const deezerId = data.deezerId || match.id;
+      const fields = spotifyOwnsPagePhoto(data)
+        ? { discoverPhoto: { uri: picture, credit: "Deezer" }, deezerId }
+        : { photo: picture, photoCredit: "Deezer", photoSource: "deezer", deezerId };
+      if (markChecked(database, row, data, at, fields)) outcome.filled += 1;
     } else {
       markChecked(database, row, data, at);
       outcome.noMatch += 1;
@@ -105,8 +125,9 @@ export async function runDeezerPhotoPass(database, { fetchJson, at = Date.now(),
 }
 
 export function startDeezerArtistPhotoScheduler({ database, env = process.env, now = Date.now, fetchJson }) {
-  // The Spotify pipeline owns photos whenever it is configured.
-  if (spotifyArtistPhotoConfigured(env) || !backgroundJobEnabled(env, "ARTIST_PHOTO_DEEZER_ENABLED")) return null;
+  // Runs alongside the Spotify photo job: that one fills artist pages, this one
+  // makes sure Discover has pictures it is allowed to crop.
+  if (!backgroundJobEnabled(env, "ARTIST_PHOTO_DEEZER_ENABLED")) return null;
   return startPeriodicJob({
     initialDelayMs: 3 * MINUTE,
     intervalMs: 15 * MINUTE,

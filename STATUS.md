@@ -24,6 +24,16 @@ looked at the four events shown in the list.
   `artistPhoto: { uri, credit }` for rows bound to a public catalogue artist
   with a Deezer-credited, Deezer-hosted photo; removed profiles and unpublished
   member-created artists never lend one.
+- Production check: the Spotify photo job is live (Drake, Coldplay, Ed
+  Sheeran and Eminem have Spotify photos), so the Deezer filler had stood
+  down and Discover still had almost no usable pictures. Spotify artwork is
+  stored as `spotifyPhoto` and may only be shown uncropped beside a Spotify
+  link, so it cannot fill Discover's cards or slideshow. The Deezer filler now
+  runs alongside Spotify. For an artist whose page shows a Spotify photo it
+  stores a Discover-only `data.discoverPhoto` (Deezer, credited) and leaves
+  the artist page alone; otherwise the Deezer image becomes the artist's
+  photo as before. An artist with a stored Deezer id is looked up by that id
+  (the name must still match) instead of by name search.
 - Discover chart rows now follow the same rule as artist pages: a
   Spotify-hosted image never goes in the generic `photo` field, so artist
   cards and lists cannot crop Spotify artwork.
@@ -68,8 +78,9 @@ links. Canonicals, robots, sitemaps and JSON-LD were already fine.
   was fetched for the artist's own MBID. Groups also get them as `album` in
   structured data. Drake's page went from 62 to 139 words locally.
 - Artist photos: the Spotify photo pipeline is off, so most Discover artists
-  had no picture. A Deezer (keyless) filler now runs every 15 minutes when
-  Spotify is not configured (`ARTIST_PHOTO_DEEZER_ENABLED=true`): Discover's
+  had no picture. A Deezer (keyless) filler now runs every 15 minutes
+  (`ARTIST_PHOTO_DEEZER_ENABLED=true`; see the slideshow entry above for how
+  it works beside the Spotify photo job): Discover's
   artists first, then artists playing in the next 30 days, then popular acts.
   It takes a photo only from an exact-name match with 1000+ fans that clearly
   dominates any namesakes (20x the runner-up), skips Deezer's blank

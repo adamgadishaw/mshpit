@@ -53,3 +53,36 @@ test("a pass fills safe matches, marks misses, and never overwrites", async (t) 
   assert.equal(db.prepare("SELECT photo FROM artists WHERE norm='twin'").get().photo, null);
   assert.equal((await runDeezerPhotoPass(db, { fetchJson, at: NOW + 60_000 })).checked, 0, "a miss is not retried for two weeks");
 });
+
+test("a stored Deezer id is looked up directly and must still carry the artist's name", async (t) => {
+  const { db, add } = world(t);
+  add("coldplay", "Coldplay", { data: JSON.stringify({ deezerId: 892 }) });
+  add("renamed", "Renamed", { data: JSON.stringify({ deezerId: 555 }) });
+  const urls = [];
+  const fetchJson = async (url) => {
+    urls.push(url);
+    if (url.endsWith("/artist/892")) return { id: 892, name: "Coldplay", nb_fan: 12_000_000, picture_xl: PIC("c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0") };
+    if (url.endsWith("/artist/555")) return { id: 555, name: "Somebody Else", nb_fan: 90_000, picture_xl: PIC("5555555555555555aaaaaaaaaaaaaaaa") };
+    throw new Error(`unexpected ${url}`);
+  };
+  const result = await runDeezerPhotoPass(db, { fetchJson, at: NOW });
+  assert.deepEqual(result, { checked: 2, filled: 1, noMatch: 1 });
+  assert.equal(urls.some((url) => url.includes("/search/")), false, "no name search when the id is known");
+  assert.equal(db.prepare("SELECT photo FROM artists WHERE norm='coldplay'").get().photo, PIC("c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0"));
+  assert.equal(db.prepare("SELECT photo FROM artists WHERE norm='renamed'").get().photo, null);
+});
+
+test("an artist whose page shows a Spotify photo gets a Discover-only Deezer image", async (t) => {
+  const { db, add } = world(t);
+  const spotify = { deezerId: 246791, spotifyId: "3TVXtAsR1Inumwj472S9r4", spotifyPhoto: "https://i.scdn.co/image/ab6761610000e5eb0000", photoSource: "spotify", photoCredit: "Spotify" };
+  add("drake", "Drake", { data: JSON.stringify(spotify) });
+  const fetchJson = async () => ({ id: 246791, name: "Drake", nb_fan: 24_090_882, picture_xl: PIC("eb0ed5b21d1ea5af021fc074ded0e91f") });
+  assert.deepEqual(await runDeezerPhotoPass(db, { fetchJson, at: NOW }), { checked: 1, filled: 1, noMatch: 0 });
+  const drake = db.prepare("SELECT photo,data FROM artists WHERE norm='drake'").get();
+  const data = JSON.parse(drake.data);
+  assert.equal(drake.photo, null, "the artist page keeps its Spotify photo");
+  assert.deepEqual(data.discoverPhoto, { uri: PIC("eb0ed5b21d1ea5af021fc074ded0e91f"), credit: "Deezer" });
+  assert.equal(data.photoSource, "spotify");
+  assert.equal(data.photoCredit, "Spotify");
+  assert.equal(data.spotifyPhoto, spotify.spotifyPhoto);
+});

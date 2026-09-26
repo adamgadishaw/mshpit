@@ -8,6 +8,7 @@ import { eligiblePopularityArtists } from "./artistPopularityEligibility.js";
 import { createEventCoverageService } from "./features/discovery/eventCoverageService.js";
 import { ARTIST_GENRE_SQL_COLUMNS, projectArtistGenreColumns } from "./artistGenreProjection.js";
 import { rememberDiscoverArtists } from "./discoverArtistPriority.js";
+import { artistDiscoverPhotoUri } from "./features/artistPhotos/discoverPhoto.js";
 
 const ARTIST_RATING_CANDIDATE_LIMIT = 5_000;
 const POPULARITY_RANKING_CANDIDATE_LIMIT = 1_200;
@@ -68,8 +69,9 @@ function chartRow(name, artist, rank, extra = {}) {
     popularity: artist?.popularity ?? null,
     followers: data.followers ?? null,
     // Same rule as db.publicArtist: Spotify artwork never takes the generic,
-    // cropped photo path.
-    photo: artist?.photo && !spotifyCdnHostedUrl(artist.photo) ? artist.photo : null,
+    // cropped photo path. An artist whose page shows a Spotify photo offers its
+    // Discover-only Deezer image instead.
+    photo: (artist?.photo && !spotifyCdnHostedUrl(artist.photo) ? artist.photo : null) || artistDiscoverPhotoUri(data),
     topTrack: firstTrack?.title ? { title: firstTrack.title, url: firstTrack.url || null } : null,
     ...extra,
   };

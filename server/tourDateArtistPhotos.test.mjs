@@ -18,6 +18,9 @@ function database() {
   add.run("plain", "Plain", "http://cdn-images.dzcdn.net/images/artist/p/500x500.jpg", JSON.stringify({ photoCredit: "Deezer" }), null);
   add.run("spotify", "Spotify Hosted", "https://i.scdn.co/image/ab6761610000e5eb", JSON.stringify({ photoCredit: "Spotify" }), null);
   add.run("elsewhere", "Elsewhere", "https://cdn.test/e.jpg", JSON.stringify({ photoCredit: "Deezer" }), null);
+  add.run("spotify-page", "Spotify Page", null, JSON.stringify({ photoSource: "spotify", photoCredit: "Spotify",
+    discoverPhoto: { uri: "https://cdn-images.dzcdn.net/images/artist/d/500x500.jpg", credit: "Deezer" } }), null);
+  add.run("spotify-bad", "Spotify Bad", null, JSON.stringify({ discoverPhoto: { uri: "https://i.scdn.co/image/x", credit: "Deezer" } }), null);
   db.prepare("INSERT INTO artist_profiles (artist_key,removed) VALUES (?,1)").run("hidden");
   return db;
 }
@@ -26,10 +29,12 @@ test("Discover range rows borrow only a public, Deezer-hosted, Deezer-credited a
   const db = database();
   try {
     const withPhotos = createTourDateArtistPhotoReader(db);
-    const rows = withPhotos(["idles", "hidden", "uncredited", "broken", "self-made", "plain", "spotify", "elsewhere", null]
+    const rows = withPhotos(["idles", "spotify-page", "hidden", "uncredited", "broken", "self-made", "plain", "spotify", "elsewhere", "spotify-bad", null]
       .map((artistKey, index) => ({ id: `e${index}`, artistKey })));
     assert.deepEqual(rows[0].artistPhoto, { uri: "https://cdn-images.dzcdn.net/images/artist/a/500x500.jpg", credit: "Deezer" });
-    for (const row of rows.slice(1)) assert.equal(row.artistPhoto, undefined, row.artistKey);
+    assert.deepEqual(rows[1].artistPhoto, { uri: "https://cdn-images.dzcdn.net/images/artist/d/500x500.jpg", credit: "Deezer" },
+      "an artist whose page shows a Spotify photo lends its Discover-only Deezer image");
+    for (const row of rows.slice(2)) assert.equal(row.artistPhoto, undefined, row.artistKey);
     assert.deepEqual(withPhotos([]), []);
   } finally {
     db.close();
