@@ -136,6 +136,8 @@ import { calendarFocusForPost } from "./src/domain/calendarShows.mjs";
 import { homeShowCountdownPlan } from "./src/domain/homeShowCountdown.mjs";
 import { countryForCity } from "./src/geo";
 import { accountThemeNavigationReady } from "./src/domain/accountThemeNavigation.mjs";
+import { screenTransitionDirection, screenTransitionKey } from "./src/domain/screenTransition.mjs";
+import ScreenTransition from "./src/components/ScreenTransition";
 import {
   PLAYER_POSITION_STORAGE_KEY,
   PLAYER_STATE_STORAGE_KEY,
@@ -229,6 +231,18 @@ function Root() {
   const preloadComposer = () => {
     LogScreen.preload?.().catch(() => { /* architecture: allow-empty-catch -- Intent warming is optional; Suspense owns visible loading and retry. */ });
   };
+  const screenMotionRef = useRef({ key: null, depth: NaN, direction: "fade" });
+
+  // The pages people open most are fetched quietly once the first screen has
+  // settled, so moving to them shows the page, not a loading spinner.
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      for (const screen of [ArtistScreen, ShowScreen, VenueScreen, ProfileScreen, PostScreen]) {
+        screen.preload?.().catch(() => { /* architecture: allow-empty-catch -- Warming is optional; Suspense owns visible loading and retry. */ });
+      }
+    }, 4000);
+    return () => clearTimeout(timer);
+  }, []);
 
   // Restore the last tab on reload so a refresh doesn't dump you back on the feed.
   const [tab, setTab] = useState(() => (web && mainTabForPath(window.location.pathname)) || restoredMainTab(web ? load("pit.tab", "feed") : "feed"));
@@ -1316,6 +1330,19 @@ function Root() {
     overlay = <AuthScreen navigationAbortRef={authNavigationAbortRef} onModeChange={(mode) => commitReplace({ auth: true, authMode: mode })} onDone={back} onCancel={back} />;
   }
 
+  // Each new page gets a short entrance in the direction of travel. The key
+  // only changes when a different page shows, so a page never re-animates
+  // while it updates in place.
+  const screenKey = screenTransitionKey(overlay ? nav : null, activeTab);
+  if (screenMotionRef.current.key !== screenKey) {
+    screenMotionRef.current = {
+      key: screenKey,
+      depth: stack.length,
+      direction: screenTransitionDirection(screenMotionRef.current.depth, stack.length),
+    };
+  }
+  const screenDirection = screenMotionRef.current.direction;
+
   const hydratedPublicLinks = publicNavigationLinks(nav, { resolveUser: userById });
   const showMobilePublicTrail = shouldShowMobilePublicTrail(nav);
   const hydratedDirectoryArtists = nav.directory === "artists"
@@ -1483,7 +1510,9 @@ function Root() {
             onOpenArtist={openArtist}
             onOpenEvent={openShow}
           />
-          <Suspense fallback={<ScreenLoading />}>{overlay || tabScreens}</Suspense>
+          <Suspense fallback={<ScreenLoading />}>
+            <ScreenTransition key={screenKey} direction={screenDirection}>{overlay || tabScreens}</ScreenTransition>
+          </Suspense>
         </View>
         {showRightRail && <RightRail railWidth={rightRailLayout.width} topArtists={topArtists} artistsAlphabetical={artistsAlphabetical} upcomingEvents={upcomingEvents} discoverySidebar={discoverySidebar} discoverySidebarStatus={discoverySidebarStatus} accountId={session?.id || null} homeCity={session?.home?.city} countdownPlan={homeCountdown} onOpenCountdown={openShow} onViewAllCountdown={() => go({ calendar: true })} onOpenArtist={openArtist} onOpenProfile={openProfile} onFollowUser={follow} isFollowing={isFollowing} isBlocked={isBlocked} onOpenLounge={(lounge) => go({ lounge })} onOpenDiscover={() => switchTab("discover")} onOpenEvent={openShow} />}
       </View>
@@ -1613,9 +1642,9 @@ function Root() {
                     onOpenArtist={openArtist}
                     onOpenEvent={openShow}
                   />
-                  {overlay ? <Suspense fallback={<ScreenLoading />}>{overlay}</Suspense> : (
+                  {overlay ? <Suspense fallback={<ScreenLoading />}><ScreenTransition key={screenKey} direction={screenDirection}>{overlay}</ScreenTransition></Suspense> : (
                     <>
-                      <Suspense fallback={<ScreenLoading />}>{tabScreens}</Suspense>
+                      <Suspense fallback={<ScreenLoading />}><ScreenTransition key={screenKey} direction={screenDirection}>{tabScreens}</ScreenTransition></Suspense>
                       <View style={styles.tabbar}>
                         {LEFT.map((t) => <TabButton key={t.key} tab={t} active={activeTab} onPress={switchTab} />)}
                         <View style={styles.fabCol}>
@@ -1712,11 +1741,18 @@ function Root() {
   );
 }
 
+// A page that arrives within a moment never flashes a spinner; a slower one
+// shows it after 250ms so the wait is still visible.
 function ScreenLoading() {
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    const timer = setTimeout(() => setVisible(true), 250);
+    return () => clearTimeout(timer);
+  }, []);
   return (
     <View style={styles.screenLoading} accessibilityRole="progressbar" accessibilityLabel="Loading screen">
-      <ActivityIndicator size="small" color={colors.amber} />
-      <Text style={styles.screenLoadingTxt}>Loading...</Text>
+      {visible ? <ActivityIndicator size="small" color={colors.amber} /> : null}
+      {visible ? <Text style={styles.screenLoadingTxt}>Loading...</Text> : null}
     </View>
   );
 }

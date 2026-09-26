@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { colors, displayFont, focusRing, mono, radius, shadow, space } from "../theme";
@@ -8,8 +8,12 @@ import BrandMark from "../components/BrandMark";
 import SheetHeader from "../components/SheetHeader";
 import CredentialForm, { CredentialInput, CredentialLabel, CredentialSubmit } from "../components/credential-form";
 import LocationPicker from "../components/LocationPicker";
-import PrivacyScreen from "./PrivacyScreen";
-import TermsScreen from "./TermsScreen";
+import { lazyWithRetry } from "../lib/lazyWithRetry";
+
+// The policy pages load only when someone opens them, and share one chunk
+// with the app's own /privacy and /terms routes.
+const PrivacyScreen = lazyWithRetry(() => import("./PrivacyScreen"), "PrivacyScreen");
+const TermsScreen = lazyWithRetry(() => import("./TermsScreen"), "TermsScreen");
 import { PROFILE_GENRE_MAX, PROFILE_GENRE_OPTIONS } from "../domain/genrePreferences.mjs";
 import { cleanHandle, isEmail } from "../domain/validation.mjs";
 import { signupAccountError, signupAriaProps, signupFormPayload, signupHandlePresentation, signupMusicError } from "../domain/signupForm.mjs";
@@ -194,8 +198,8 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, navigationA
 
   // Inline readers and the location picker leave all form state mounted here.
   if (pickingCity) return <LocationPicker onClose={() => setPickingCity(false)} onSelect={(place) => { setCity(place); setPickingCity(false); }} />;
-  if (viewing === "terms") return <TermsScreen onClose={() => setViewing(null)} />;
-  if (viewing === "privacy") return <PrivacyScreen onClose={() => setViewing(null)} />;
+  if (viewing === "terms") return <Suspense fallback={null}><TermsScreen onClose={() => setViewing(null)} /></Suspense>;
+  if (viewing === "privacy") return <Suspense fallback={null}><PrivacyScreen onClose={() => setViewing(null)} /></Suspense>;
 
   const field = (key, label, value, change, options = {}) => (
     <View style={[styles.field, options.paired && styles.pairedField]} key={key}>

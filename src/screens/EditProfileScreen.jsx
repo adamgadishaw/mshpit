@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { Suspense, useState } from "react";
 import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, Image, Platform } from "react-native";
 import * as ImagePicker from "expo-image-picker";
 import { colors, radius } from "../theme";
@@ -7,7 +7,10 @@ import { useAccountTaskScope } from "../hooks/useAccountTaskScope";
 import Avatar from "../components/Avatar";
 import Icon from "../components/Icon";
 import LocationPicker from "../components/LocationPicker";
-import PickArtistsScreen from "./PickArtistsScreen";
+import { lazyWithRetry } from "../lib/lazyWithRetry";
+
+// Loaded only when someone opens the artist picker from their profile.
+const PickArtistsScreen = lazyWithRetry(() => import("./PickArtistsScreen"), "PickArtistsScreen");
 import Button from "../components/Button";
 import SheetHeader from "../components/SheetHeader";
 import { isDurableMediaUrl, reportMediaPickerError, uploadMediaAsset } from "../lib/mediaUpload";
@@ -59,11 +62,13 @@ export default function EditProfileScreen({ onClose }) {
 
   if (pickingArtists) {
     return (
-      <PickArtistsScreen
-        showTheme={false}
-        onDone={() => setPickingArtists(false)}
-        onSkip={() => setPickingArtists(false)}
-      />
+      <Suspense fallback={null}>
+        <PickArtistsScreen
+          showTheme={false}
+          onDone={() => setPickingArtists(false)}
+          onSkip={() => setPickingArtists(false)}
+        />
+      </Suspense>
     );
   }
 
