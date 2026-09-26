@@ -84,7 +84,7 @@ test("city guide cross-links omit unverified, ambiguous, and noncanonical identi
 
 test("city guide cross-links preserve a confirmed regional identity and tolerate absent metadata", () => {
   const raw = cityCollectionFixture({ countryCode:"US",country:"United States",city:"Portland",citySlug:"portland",region:"OR" });
-  const repository = fakeRepository({ readCityVenues:()=>raw });
+  const repository = fakeRepository({ readCityVenues:()=>raw,readCityConcerts:()=>raw });
   const cityGuideRepository = {
     listSitemapCities:()=>[{ countryCode:"US",citySlug:"portland-oregon",city:"Portland",path:"/city/us/portland-oregon" }],
     readCopy:()=>({ copy:{ cityGuideLink:"Music guide to {city}" } }),
@@ -132,6 +132,7 @@ test("city venue documents have clean page metadata, safe venue links, JSON-LD p
         ],
       };
     },
+    readCityConcerts: () => ({ kind:"city-concerts" }),
   });
   const documents = createPublicCollectionDocumentService({ repository,origin:ORIGIN });
   const first = documents.cityVenuesDocument({ countryCode:"ca",citySlug:"toronto",page:1 });
@@ -148,6 +149,11 @@ test("city venue documents have clean page metadata, safe venue links, JSON-LD p
   assert.equal(second.nextPath,"/venues/ca/toronto/page/3");
   assert.equal(second.relatedPath,"/concerts/ca/toronto");
   assert.equal(second.relatedLabel,"Concerts in Toronto, Canada");
+  const withoutConcerts = createPublicCollectionDocumentService({
+    repository:{ ...repository,readCityConcerts:() => null },origin:ORIGIN,
+  }).cityVenuesDocument({ countryCode:"ca",citySlug:"toronto",page:1 });
+  assert.equal(withoutConcerts.relatedPath,null,"no link to a concerts page that would 404");
+  assert.equal(withoutConcerts.relatedLinks.length,0);
   assert.equal(second.heading,"Concert venues in Toronto, Canada");
   assert.equal(second.venues[0].path,"/venue/ticketmaster-venue-100");
   assert.equal(second.venues[0].upcomingCount,3);
@@ -286,6 +292,7 @@ test("city concert documents escape hostile data, omit zero ratings, and keep li
         ],
       };
     },
+    readCityVenues: () => ({ kind:"city-venues" }),
   });
   const document = createPublicCollectionDocumentService({ repository,origin:ORIGIN })
     .cityConcertsDocument({ countryCode:"ca",citySlug:"toronto" });

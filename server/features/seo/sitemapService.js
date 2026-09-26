@@ -42,6 +42,7 @@ import {
   structuredCityIdentity,
 } from "./publicEntityPolicy.js";
 import { createPublicDocumentRepository } from "./publicDocumentRepository.js";
+import { foldedCityName } from "./publicCollectionRepository.js";
 import { createCityGuideRepository } from "../cities/cityGuideRepository.js";
 import { createArtistNewsReader } from "../artistUpdates/artistNewsReader.js";
 import { NEWS_INDEX_MIN_ITEMS } from "../artistUpdates/newsDocuments.js";
@@ -1019,7 +1020,7 @@ function citySitemapEntries({ candidates, venueEntries, concerts }) {
     const routeKey = structuredLocationRouteKey(identity);
     if (routeKey) {
       if (!cityNamesByRoute.has(routeKey)) cityNamesByRoute.set(routeKey, new Set());
-      cityNamesByRoute.get(routeKey).add(displayIdentity(identity.city));
+      cityNamesByRoute.get(routeKey).add(foldedCityName(identity.city));
     }
 
     const venueName = displayIdentity(row.venue);

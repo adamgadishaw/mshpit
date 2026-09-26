@@ -473,7 +473,8 @@ test("public city venue directories use the city repository's canonical guide an
     const documents = service(database);
     const directory = documents.cityVenuesDocument({ countryCode:"ca",citySlug:"toronto",at:NOW });
     assert.ok(directory);
-    assert.deepEqual(directory.relatedLinks[1],{ path:"/city/ca/toronto",label:"Read about music in Toronto" });
+    assert.deepEqual(directory.relatedLinks,[{ path:"/city/ca/toronto",label:"Read about music in Toronto" }],
+      "Toronto has no reviewed concerts yet, so there is no dead Concerts in Toronto link");
     assert.match(documents.render(directory),/href="\/city\/ca\/toronto"[^>]*>Read about music in Toronto<\/a>/u);
     assert.equal(documents.cityDocument({ countryCode:"ca",citySlug:"toronto",at:NOW }).canonicalPath,"/city/ca/toronto");
   } finally {

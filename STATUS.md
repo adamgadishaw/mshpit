@@ -31,8 +31,33 @@ errors.
   2026-09-25. "Discovered, not indexed" is about the size of the events
   sitemap (47,703 URLs); that is crawl budget on a young site and improves
   with page quality and internal links (the 2026-09-25 related-shows pass).
-- Still needed: the example URL exports for 404, 5xx, redirect and duplicate
-  canonical from Search Console, to check for patterns worth fixing.
+- From the owner's Search Console exports (404, 5xx, redirect, duplicate):
+  - 202 of 266 not-found URLs were `/venue/<name>` addresses. The name
+    resolver treated older Ticketmaster rows (no venue id or city, only
+    "New York, New York, United States Of America") as a second venue and
+    returned 404, even for Madison Square Garden. It now compares the city
+    part of a place, and several Ticketmaster records for one name in one
+    city count as one building (the record with the most shows is used).
+    Names in different cities still stay unresolved. On a local catalogue
+    copy this turned 68 of the 202 into redirects to the venue page (was 16).
+  - `/venues/ca/montreal` and `/venues/mx/ciudad-de-mexico` returned 404
+    because Ticketmaster spells the city with and without accents and the
+    city lookup gave up on two spellings. Spellings that differ only by
+    accents or capitals are now one city, in the pages and the sitemap.
+  - City pages linked "Concerts in <city>" and "Venues in <city>" even when
+    that page did not exist (Barcelona's venue page linked a 404). The link
+    now appears only when the page exists.
+  - 53 of 55 event 404s are events Ticketmaster removed or relisted; 404 is
+    right. The 9 server errors all answer normally now; 8 were crawled on
+    2026-09-20, which points at a restart or outage that day.
+  - The 348 duplicate event pages are nightly runs and two shows on one day
+    (ABBA Voyage at ABBA Arena, Putti Plutti Pott twice on Nov 28). Google
+    keeping one page per run is expected.
+- Background jobs: `ARTIST_NEWS_ENABLED` and `ARTIST_PHOTO_DEEZER_ENABLED`
+  were never set on the live service, so the news feed and the Deezer photo
+  filler have not run. Render is not applying new `render.yaml` values; the
+  owner needs to add them in the dashboard (and check the 2026-09-24
+  `PROVIDER_PROFILES_ENABLED`).
 
 ## 2026-09-26 Owner-approved: page transitions and Discover Artists redesign
 

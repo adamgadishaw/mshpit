@@ -261,11 +261,16 @@ remains a broad context whose changing value can rerender unrelated consumers.
 - **After deploy:** watch `[artist-photos] deezer` log lines (checked, filled,
   noMatch) and spot check a few Discover artists for the right face. If a
   namesake slips through, raise the 20x dominance rule or the 1000 fan floor.
-- **Search Console exports:** get the example URL lists for Not found (404),
-  Server error (5xx), Page with redirect, and Duplicate canonical, and look
-  for patterns (relisted Ticketmaster events, renamed artists, multi-night
-  runs that read as duplicates). Press Validate fix for image metadata after
-  the copyrightNotice deploy.
+- **Search Console follow-up:** after the 2026-09-26 deploys, press Validate
+  fix for image metadata and for Not found (404). Re-export 404s in a week;
+  the remaining `/venue/<name>` ones need a look at production data.
+- **Render env sync:** new `render.yaml` values do not reach the live service.
+  Find out whether the Blueprint needs a manual sync, and add a startup log
+  line listing which optional jobs are off so this shows up in logs.
+- **Slow city pages:** `/venues/us/sandy` took 2.3 s; time the city venue
+  query on production data and add an index or cache if needed.
+- **Same-day shows:** two shows of one artist at one venue on one day get the
+  same title; add the start time to tell them apart.
 - **Crawl budget:** if "Discovered, not indexed" stays near the events
   sitemap size, consider listing only events with a public artist page, or
   within the next few months, and let the rest be found through links.

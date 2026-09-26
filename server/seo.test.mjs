@@ -778,3 +778,34 @@ test("public city and artist collection routes are canonical, thresholded, linke
     assert.equal(seoHttpPlan(path).status, 404, path + " must fail closed");
   }
 });
+
+test("a venue name resolves despite older rows without a city and duplicate records in one city", () => {
+  const member = addUser("seo_garden_member", "seogardenfan");
+  const addEvent = db.prepare(`INSERT INTO tour_dates
+    (id,provider_event_id,event_name,artist,venue,place,date,source,updated_at,release_at,
+      venue_provider_id,venue_city,provider_active)
+    VALUES (?,?,?,?,?,?,?,?,?,0,?,?,1)`);
+  // Older provider rows were stored without the venue id or city, only a place.
+  addEvent.run("seo_garden_old", "tm-seo-garden-old", "Garden Artist", "Garden Artist", "SEO Garden",
+    "Gotham, New York, United States Of America", "2026-12-01", "ticketmaster", Date.now(), null, null);
+  addEvent.run("seo_garden_new", "tm-seo-garden-new", "Garden Artist", "Garden Artist", "SEO Garden",
+    "Gotham, New York, United States Of America", "2026-12-02", "ticketmaster", Date.now(), "garden-1", "Gotham");
+  db.prepare(`INSERT INTO posts
+    (id,user_id,artist,venue,venue_key,city,date,overall,room,review,photos,photos_public,created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,'[]',0,?)`).run("seo_garden_review", member.id, "Garden Artist", "SEO Garden",
+    normName("SEO Garden"), "Gotham, NY", "2026-08-20", 4, 4, "A firsthand review with enough detail about the sound and the crowd.", Date.now());
+  assert.equal(seoHttpPlan("/venue/seo-garden").location,
+    venuePath({ name: "SEO Garden", source: "ticketmaster", providerVenueId: "garden-1" }),
+    "a place's first part is its city, so old and new rows are one venue");
+
+  // One building listed under two Ticketmaster records in the same city.
+  addEvent.run("seo_double_a1", "tm-seo-double-a1", "Double Artist", "Double Artist", "SEO Double Hall",
+    "Gotham, United States", "2026-12-03", "ticketmaster", Date.now(), "double-a", "Gotham");
+  addEvent.run("seo_double_a2", "tm-seo-double-a2", "Double Artist", "Double Artist", "SEO Double Hall",
+    "Gotham, United States", "2026-12-04", "ticketmaster", Date.now(), "double-a", "Gotham");
+  addEvent.run("seo_double_b1", "tm-seo-double-b1", "Double Artist", "Double Artist", "SEO Double Hall",
+    "Gotham, United States", "2026-12-05", "ticketmaster", Date.now(), "double-b", "Gotham");
+  assert.equal(seoHttpPlan("/venue/seo-double-hall").location,
+    venuePath({ name: "SEO Double Hall", source: "ticketmaster", providerVenueId: "double-a" }),
+    "the record with the most shows stands for the building");
+});

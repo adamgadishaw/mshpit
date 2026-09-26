@@ -72,8 +72,10 @@ test("new rows initialize tracking at insert time, even with ancient created_at"
   const before = Date.now();
   db.prepare("INSERT INTO users (id,email,created_at) VALUES ('new','new@example.test',1)").run();
   const row = user(db, "new");
-  assert.ok(row.last_active_at >= before - 1);
-  assert.ok(row.last_active_at <= Date.now());
+  // SQLite stamps the row from its own clock, which can read a millisecond or
+  // two ahead of Node's; allow that skew rather than fail at random.
+  assert.ok(row.last_active_at >= before - 2);
+  assert.ok(row.last_active_at <= Date.now() + 2);
   assert.equal(row.inactivity_next_check_at, row.last_active_at + 365 * DAY);
 });
 

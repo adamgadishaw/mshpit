@@ -144,6 +144,24 @@ test("city venue qualification uses structured country/city and exact thresholds
   } finally { db.close(); }
 });
 
+test("one city spelled with and without accents is one city, not an ambiguity", () => {
+  const db = createDatabase();
+  try {
+    addUser(db,"active");
+    addArtist(db);
+    // Ticketmaster lists Montreal both ways; together they qualify.
+    addTour(db,{ id:"mtl-1",venue:"MTELUS",providerVenueId:"mtelus",city:"Montréal",date:"2026-12-01" });
+    addTour(db,{ id:"mtl-2",venue:"MTELUS",providerVenueId:"mtelus",city:"Montreal",date:"2026-12-02" });
+    addTour(db,{ id:"mtl-3",venue:"Le Balcon",providerVenueId:"balcon",city:"Montreal",date:"2026-12-03" });
+    const repo = createPublicCollectionRepository(db);
+    const montreal = repo.readCityVenues({ countryCode:"ca",citySlug:"montreal",at:NOW,today:TODAY });
+    assert.ok(montreal,"Montréal and Montreal are the same city");
+    assert.equal(montreal.itemCount,3);
+    assert.equal(montreal.venueCount,2);
+    assert.equal(montreal.city,"Montreal","the most common spelling names the page");
+  } finally { db.close(); }
+});
+
 test("city venue rows fail closed for collisions and exclude inactive, unreleased, restricted, and invalid records", () => {
   const db = createDatabase();
   try {

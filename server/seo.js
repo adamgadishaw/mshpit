@@ -151,8 +151,14 @@ const venueProviderByPublicSlug = db.prepare(`SELECT ${PUBLIC_VENUE_EVENT_IDENTI
     AND td.release_at<=? AND (td.owner_id IS NULL OR ${activeAccountSql("owner")})
     AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1 OR ${effectiveTourDateEndSql("td")}<?)
   ORDER BY td.updated_at DESC,td.id DESC LIMIT 1`);
+// The city part of a location. Older provider rows have no venue_city, only a
+// place such as "New York, New York, United States Of America"; its first part
+// is the city, so those rows and newer ones agree on where a venue is.
+const cityPartSql = (city, place) => `pit_public_slug(COALESCE(NULLIF(TRIM(${city}),''),
+    CASE WHEN instr(COALESCE(${place},''),',')>0 THEN substr(${place},1,instr(${place},',')-1) ELSE NULLIF(TRIM(${place}),'') END))`;
 const venueProvidersByNameSlug = db.prepare(`SELECT MAX(td.venue) AS venue,td.source,td.venue_provider_id,
-    MAX(COALESCE(NULLIF(td.venue_city,''),td.place)) AS city,MAX(td.updated_at) AS updated_at
+    MAX(COALESCE(NULLIF(td.venue_city,''),td.place)) AS city,MAX(${cityPartSql("td.venue_city", "td.place")}) AS city_identity,
+    COUNT(*) AS shows,MAX(td.updated_at) AS updated_at
   FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id
   WHERE pit_public_slug(td.venue)=? AND TRIM(COALESCE(td.venue,''))<>''
     AND td.venue_provider_id IS NOT NULL AND TRIM(td.venue_provider_id)<>''
@@ -160,9 +166,9 @@ const venueProvidersByNameSlug = db.prepare(`SELECT MAX(td.venue) AS venue,td.so
     AND td.release_at<=? AND (td.owner_id IS NULL OR ${activeAccountSql("owner")})
     AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1 OR ${effectiveTourDateEndSql("td")}<?)
   GROUP BY td.source,td.venue_provider_id
-  ORDER BY MAX(td.updated_at) DESC,td.source,td.venue_provider_id LIMIT 2`);
+  ORDER BY COUNT(*) DESC,MAX(td.updated_at) DESC,td.source,td.venue_provider_id LIMIT 6`);
 const venueEventIdentitiesByNameSlug = db.prepare(`SELECT LOWER(TRIM(td.venue)) AS venue_identity,
-    pit_public_slug(COALESCE(NULLIF(td.venue_city,''),NULLIF(td.place,''))) AS location_identity
+    ${cityPartSql("td.venue_city", "td.place")} AS location_identity
   FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id
   WHERE pit_public_slug(td.venue)=? AND TRIM(COALESCE(td.venue,''))<>''
     AND ${PUBLIC_VENUE_EVENT_EVIDENCE_SQL}
@@ -171,7 +177,7 @@ const venueEventIdentitiesByNameSlug = db.prepare(`SELECT LOWER(TRIM(td.venue)) 
   GROUP BY venue_identity,location_identity
   ORDER BY MAX(td.updated_at) DESC,venue_identity,location_identity LIMIT 2`);
 const venuePostIdentitiesByNameSlug = db.prepare(`SELECT LOWER(TRIM(p.venue)) AS venue_identity,
-    pit_public_slug(p.city) AS location_identity
+    ${cityPartSql("NULL", "p.city")} AS location_identity
   FROM posts p JOIN users u ON u.id=p.user_id
   WHERE pit_public_slug(p.venue)=? AND p.removed=0
     AND ${inPersonReviewSql("p")}
@@ -338,7 +344,11 @@ function venueIdentityKey(row) {
 
 function unambiguousVenueByNameSlug(requestedSlug, at, today) {
   const providers = venueProvidersByNameSlug.all(requestedSlug, at, today);
-  if (providers.length > 1) return null;
+  // One building can carry several Ticketmaster records. The same name in the
+  // same city is one venue, so the record with the most shows stands for it.
+  // The same name in different cities stays ambiguous.
+  const providerCities = new Set(providers.map((row) => row.city_identity || ""));
+  if (providers.length > 1 && (providerCities.size > 1 || providerCities.has(""))) return null;
 
   const identities = new Set([
     ...venueEventIdentitiesByNameSlug.all(requestedSlug, at, today),
@@ -346,7 +356,7 @@ function unambiguousVenueByNameSlug(requestedSlug, at, today) {
   ].map(venueIdentityKey).filter(Boolean));
   if (identities.size > 1) return null;
 
-  if (providers.length === 1) {
+  if (providers.length) {
     const providerSlug = canonicalVenueSlug(providers[0]);
     return providerSlug ? venueProviderByPublicSlug.get(providerSlug, at, today) || null : null;
   }

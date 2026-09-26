@@ -92,6 +92,10 @@ const requestedCitySlug = (value) => {
   const city = String(value || "").trim().toLowerCase();
   return city && slugify(city) === city ? city : null;
 };
+// Providers spell one city several ways ("Montréal" and "Montreal"). Names
+// that differ only by accents or capitals are the same city.
+export const foldedCityName = (value) => String(value || "").normalize("NFD")
+  .replace(/\p{M}/gu, "").trim().toLocaleLowerCase("en");
 
 /**
  * Bounded crawler collection reads. No method projects attendee or account
@@ -113,8 +117,9 @@ export function createPublicCollectionRepository(database) {
       AND TRIM(COALESCE(td.artist,''))<>'' AND TRIM(COALESCE(td.venue,''))<>''
       AND UPPER(TRIM(td.venue_country_code))=? AND pit_public_slug(td.venue_city)=?
   )
-  SELECT MIN(display_city) AS display_city,COALESCE(MIN(display_country),?) AS display_country
-  FROM candidates GROUP BY LOWER(display_city) ORDER BY LOWER(display_city) LIMIT 2`);
+  SELECT MIN(display_city) AS display_city,LOWER(display_city) AS city_key,
+    COALESCE(MIN(display_country),?) AS display_country,COUNT(*) AS spelling_count
+  FROM candidates GROUP BY LOWER(display_city) ORDER BY COUNT(*) DESC,LOWER(display_city) LIMIT 8`);
 
   const noLocationConflictSql = (td = "td") => `NOT EXISTS (
     SELECT 1 FROM tour_dates conflict
@@ -138,7 +143,7 @@ export function createPublicCollectionRepository(database) {
       AND ${validCalendarDateSql("td")} AND ${structuredLocationSql("td")} AND ${currentOrUpcomingTourDateSql("td", "?2")}
       AND ${tourDateHasNoPublishedMemorialSql("td")}
       AND TRIM(COALESCE(td.artist,''))<>'' AND TRIM(COALESCE(td.venue,''))<>''
-      AND UPPER(TRIM(td.venue_country_code))=?3 AND LOWER(TRIM(td.venue_city))=LOWER(?4)
+      AND UPPER(TRIM(td.venue_country_code))=?3 AND LOWER(TRIM(td.venue_city)) IN (SELECT value FROM json_each(?4))
       AND ${noLocationConflictSql("td")}
       AND (TRIM(COALESCE(td.venue_provider_id,''))<>'' OR NOT EXISTS (
         SELECT 1 FROM tour_dates venue_identity
@@ -189,7 +194,7 @@ export function createPublicCollectionRepository(database) {
       AND ${validCalendarDateSql("td")} AND ${structuredLocationSql("td")} AND td.date<=?2
       AND ${tourDateArtistBindingAllowedSql("td")}
       AND TRIM(COALESCE(td.artist,''))<>'' AND TRIM(COALESCE(td.venue,''))<>''
-      AND UPPER(TRIM(td.venue_country_code))=?3 AND LOWER(TRIM(td.venue_city))=LOWER(?4)
+      AND UPPER(TRIM(td.venue_country_code))=?3 AND LOWER(TRIM(td.venue_city)) IN (SELECT value FROM json_each(?4))
       AND ${noLocationConflictSql("td")}
     GROUP BY LOWER(TRIM(td.artist)),LOWER(TRIM(td.venue)),td.date
   )`;
@@ -311,10 +316,12 @@ export function createPublicCollectionRepository(database) {
     const city = requestedCitySlug(citySlug);
     if (!country || !city) return null;
     const matches = resolveCity.all(at,country,city,country);
-    if (matches.length !== 1) return null;
+    if (!matches.length || new Set(matches.map((row) => foldedCityName(row.display_city))).size !== 1) return null;
     return {
       countryCode: country,citySlug: city,
+      // The most common spelling names the page; every spelling feeds it.
       city: String(matches[0].display_city || "").trim(),
+      citySpellings: JSON.stringify(matches.map((row) => String(row.city_key || "").trim())),
       country: String(matches[0].display_country || country).trim() || country,
     };
   }
@@ -339,7 +346,7 @@ export function createPublicCollectionRepository(database) {
       if (!identity) return null;
       const pageSize = requestedPageSize(limit);
       const rows = cityVenues.all(
-        instant,day,identity.countryCode,identity.city,
+        instant,day,identity.countryCode,identity.citySpellings,
         PUBLIC_ENTITY_THRESHOLDS.cityVenueItems,PUBLIC_ENTITY_THRESHOLDS.cityVenueVenues,
         pageSize + 1,(pageNumber - 1) * pageSize,
       );
@@ -362,7 +369,7 @@ export function createPublicCollectionRepository(database) {
       if (!identity) return null;
       const pageSize = requestedPageSize(limit);
       const rows = cityConcerts.all(
-        instant,day,identity.countryCode,identity.city,
+        instant,day,identity.countryCode,identity.citySpellings,
         PUBLIC_ENTITY_THRESHOLDS.cityConcertItems,PUBLIC_ENTITY_THRESHOLDS.cityConcertVenues,
         pageSize + 1,(pageNumber - 1) * pageSize,
       );

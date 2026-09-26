@@ -250,6 +250,16 @@ export function createPublicCollectionDocumentService({ database,origin = DEFAUL
     return label ? [{ path:identity.path,label }] : [];
   }
 
+  const siblingExists = (kind,raw,options) => {
+    const read = kind === "concerts" ? source.readCityConcerts : source.readCityVenues;
+    try {
+      return !!read?.call(source,{ countryCode:raw.countryCode,citySlug:raw.citySlug,page:1,limit:1,at:options.at,today:options.today });
+    } catch {
+      // architecture: allow-empty-catch -- a failed sibling check only drops an optional link.
+      return false;
+    }
+  };
+
   const service = {
     cityVenuesDocument(options = {}) {
       const raw = source.readCityVenues(options);
@@ -274,7 +284,9 @@ export function createPublicCollectionDocumentService({ database,origin = DEFAUL
         kind:"venues",page,hasNext:raw.hasNext === true,path,pathFor,origin:publicOrigin,title,description,
         heading:`Concert venues in ${context}`,
         breadcrumbs,items:venues,
-        relatedPath:cityConcertsPath(raw),relatedLabel:`Concerts in ${context}`,
+        // Link the sibling page only when it exists; a dead "Concerts in"
+        // link was a steady source of 404s in Search Console.
+        relatedPath:siblingExists("concerts",raw,options) ? cityConcertsPath(raw) : null,relatedLabel:`Concerts in ${context}`,
         relatedLinks:cityGuideLinks(raw,options),
       });
     },
@@ -303,7 +315,7 @@ export function createPublicCollectionDocumentService({ database,origin = DEFAUL
         kind:"concerts",page,hasNext:raw.hasNext === true,path,pathFor,origin:publicOrigin,title,description,
         heading:`Concerts in ${context}`,
         breadcrumbs,items:concerts,
-        relatedPath:cityVenuesPath(raw),relatedLabel:`Venues in ${context}`,
+        relatedPath:siblingExists("venues",raw,options) ? cityVenuesPath(raw) : null,relatedLabel:`Venues in ${context}`,
         relatedLinks:cityGuideLinks(raw,options),
       });
     },
