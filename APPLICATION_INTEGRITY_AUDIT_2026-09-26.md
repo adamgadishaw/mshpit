@@ -71,8 +71,12 @@ persistent disk still has brief deploy downtime; do not represent it as zero-dow
    must not be reused. Remaining steps: restricted key scoped to that bucket,
    Render `BACKUP_S3_*` secrets, verified upload and an isolated
    restore/integrity drill. No successful receipt means no off-host claim.
-2. Research default remains USD 5/day (up to USD 150 over 30 days if consumed),
-   unless the live environment overrides it. Live billing/default override was
+2. Update 2026-09-26: the owner capped all Claude spending at USD 10 a month.
+   Research now defaults to USD 0.30/day and USD 4/month (a day is held to a
+   tenth of the month even if an old USD 5 daily setting is still in Render),
+   and research plus the news desk share `ANTHROPIC_MONTHLY_USD` (default 10)
+   per calendar month. Earlier finding: research defaulted to USD 5/day (up to
+   USD 150 over 30 days if consumed), unless the live environment overrode it. Live billing/default override was
    not established. Reservations are estimates, not a provider-enforced hard bill
    cap; an already-admitted request can exceed its estimate. Set provider-side
    spend limits and choose an explicit daily allowance before relying on this

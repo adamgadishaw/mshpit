@@ -122,7 +122,7 @@ export default function CatalogMaintenancePanel({ accountId, role, active = true
           <Datum label="Research agent" value={!research ? "Unverified" : !research.configured ? "Waiting for API key" : research.enabled ? "On" : "Off"}
             detail={research?.configured ? `Model: ${research.model}` : "Add ANTHROPIC_API_KEY in Render to start it."} />
           <Datum label="Spent today" value={research ? `$${Number(research.today?.spentUsd || 0).toFixed(2)} / $${Number(research.dailyBudgetUsd || 0).toFixed(2)}` : "Unverified"}
-            detail={research ? `${catalogCount(research.today?.runs)} pages researched, ${catalogCount(research.today?.published)} published today.` : ""} />
+            detail={research ? `${catalogCount(research.today?.runs)} pages researched, ${catalogCount(research.today?.published)} published today. This month: $${Number(research.monthSpentUsd || 0).toFixed(2)} of $${Number(research.monthlyBudgetUsd || 0).toFixed(2)}.` : ""} />
           <Datum label="Artist pages filled" value={catalogCount(research?.artists?.found)}
             detail={research ? `${catalogCount(research.artists?.unsure)} unsure and ${catalogCount(research.artists?.notFound)} with nothing reliable found. ${catalogCount(research.artists?.hidden)} hidden by staff.` : ""} />
           <Datum label="Venue pages filled" value={catalogCount(research?.venues?.found)}
