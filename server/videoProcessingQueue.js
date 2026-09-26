@@ -18,12 +18,13 @@ const CONFLICT_MAX_ATTEMPTS = 2;
 // The converter was busy with another clip. Not the clip's fault, not counted.
 const BUSY_RETRY_MS = 20_000;
 // Final answers about the file or the request. Another attempt cannot help.
-const FINAL_STATUSES = new Set([400, 403, 404, 413, 415, 422]);
+const FINAL_STATUSES = new Set([400, 401, 403, 404, 413, 415, 422]);
 
 const FAILURE_MESSAGES = Object.freeze({
   413: "That clip is too large to convert.",
   415: "That clip couldn't be converted. The file may be damaged or in a format we can't read.",
   422: "That clip couldn't be converted.",
+  429: "Clip processing is busy for this account or network. Try again later.",
 });
 
 function errorStatus(error) {
@@ -75,6 +76,11 @@ export function noteVideoProcessingOutcome(database, { assetId, error = null, at
     // already gone. If not, leave it for the next start to pick up.
     state = "retry";
     nextAttemptAt = at + BUSY_RETRY_MS;
+    countedAttempts = Math.max(0, attempts - 1);
+  } else if (status === 429 && error?.videoAdmissionDenied === true) {
+    // Only converter contention may retry without a new member request. An
+    // account/IP admission denial must be rechecked by that request's context.
+    state = "failed";
     countedAttempts = Math.max(0, attempts - 1);
   } else if (status === 429) {
     state = "retry";

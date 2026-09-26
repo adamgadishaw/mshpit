@@ -733,6 +733,10 @@ test("segmented sitemaps contain only substantive canonical public pages", async
     addUpdate.run(`news-${index}`, "news-artist", "News Artist", `news-${index}`, "New album",
       JSON.stringify({ release: { title: `Record ${index}`, type: "album", releaseDate: "2026-09-01" } }), index + 1);
   }
+  assert.doesNotMatch(sitemapXmlFor("/sitemaps/pages.xml", { database: db }), /<loc>https:\/\/www\.example\.com\/news<\/loc>/,
+    "orphaned cached news cannot make the page indexable");
+  db.prepare("INSERT INTO artists(norm,name,data,source,created_at,updated_at) VALUES(?,?,'{}','deezer',1,1)")
+    .run("news-artist", "News Artist");
   assert.match(sitemapXmlFor("/sitemaps/pages.xml", { database: db }), /<loc>https:\/\/www\.example\.com\/news<\/loc>/,
     "news joins the sitemap once the page is indexable");
   const events = sitemapXmlFor("/sitemaps/events.xml", { database: db, now: 1_725_000_000_000 });

@@ -3173,6 +3173,7 @@ test("a clip still converting can be posted, stays hidden until ready, then join
     params: { id: posted.id },
     body: { review: "Added a caption while it converts", mediaAssetIds: [], photos: [], version },
   });
+  const pendingEditVersion = db.prepare("SELECT updated_at FROM posts WHERE id=?").get(posted.id).updated_at;
   assert.deepEqual(db.prepare("SELECT asset_id FROM post_media WHERE post_id=?").all(posted.id).map((row) => row.asset_id),
     [created.asset.id], "an edit from a screen that cannot see the clip never detaches it");
 
@@ -3211,6 +3212,16 @@ test("a clip still converting can be posted, stays hidden until ready, then join
       "the converted copy and cover are bound to the post too");
   }
   assert.equal(db.prepare("SELECT COUNT(*) count FROM media_processing_jobs WHERE asset_id=?").get(created.asset.id).count, 0);
+  assert.throws(() => routes["PATCH /api/posts/:id"]({
+    user,
+    ip: "converting-post-stale-edit",
+    params: { id: posted.id },
+    body: { review: "Caption from the old composer", mediaAssetIds: [], photos: [], version: pendingEditVersion },
+  }), (error) => error.status === 409 && error.code === "CONFLICT",
+  "a composer opened before conversion completed must refresh instead of deleting the newly ready clip");
+  assert.deepEqual(db.prepare("SELECT asset_id FROM post_media WHERE post_id=?").all(posted.id).map((row) => row.asset_id),
+    [created.asset.id]);
+  assert.equal(db.prepare("SELECT status FROM media_assets WHERE id=?").get(created.asset.id).status, "ready");
 });
 
 test("a posted clip the converter cannot read stays on the post and its author is told", () => {

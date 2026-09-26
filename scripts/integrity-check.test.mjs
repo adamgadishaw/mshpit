@@ -143,6 +143,46 @@ function socialTables(database) {
     INSERT INTO linked_account_pairs VALUES('one','two');`);
 }
 
+test("durable media audit accepts valid work and rejects ownership, scheduling and rendition corruption", () => {
+  const state = fixture();
+  try {
+    addUser(state.insert, "one", "shared@example.test");
+    addUser(state.insert, "two", "shared@example.test");
+    addUser(state.insert, "three", "third@example.test");
+    socialTables(state.database);
+    state.database.exec(`ALTER TABLE media_assets ADD COLUMN kind TEXT DEFAULT 'video';
+      ALTER TABLE media_assets ADD COLUMN render_variant_id TEXT;
+      ALTER TABLE media_assets ADD COLUMN poster_variant_id TEXT;
+      ALTER TABLE media_variants ADD COLUMN role TEXT DEFAULT 'render';
+      CREATE TABLE media_processing_jobs(asset_id TEXT,owner_id TEXT,body TEXT,state TEXT,next_attempt_at INTEGER);
+      CREATE TABLE media_asset_revisions(asset_id TEXT,object_key TEXT);
+      UPDATE media_assets SET render_variant_id='variant-one';
+      INSERT INTO media_processing_jobs VALUES('asset-one','one','{}','retry',12345);
+      INSERT INTO media_objects VALUES('revision-key','one','pending');
+      INSERT INTO media_asset_revisions VALUES('asset-one','revision-key');`);
+    assert.equal(run(state.databasePath).status, 0);
+
+    state.database.exec(`UPDATE media_processing_jobs SET owner_id='two',body='private-corrupt-request',next_attempt_at=NULL;
+      UPDATE media_assets SET kind='image',poster_variant_id='variant-one';
+      UPDATE media_variants SET asset_id='asset-other';
+      UPDATE media_objects SET owner_id='two' WHERE object_key='revision-key';`);
+    const result = run(state.databasePath);
+    assert.equal(result.status, 1);
+    for (const name of ["media processing job ownership mismatch", "non-video asset in video processing queue",
+      "invalid media processing request", "unscheduled media processing retry", "invalid media render variant reference",
+      "invalid media poster variant reference", "media revision ledger ownership mismatch"]) {
+      assert.equal(result.report.findings.find((entry) => entry.name === name)?.count, 1, name);
+    }
+    assert.equal(result.stdout.includes("private-corrupt-request"), false);
+    assert.equal(state.database.prepare("SELECT body FROM media_processing_jobs").get().body, "private-corrupt-request");
+    state.database.exec("UPDATE media_processing_jobs SET body='[]'");
+    assert.equal(run(state.databasePath).report.findings.find((entry) => entry.name === "invalid media processing request")?.count, 1);
+  } finally {
+    state.database.close();
+    rmSync(state.directory, { recursive: true, force: true });
+  }
+});
+
 test("integrity audit catches both ends and cross-account relationships even without foreign keys", () => {
   const state = fixture();
   try {

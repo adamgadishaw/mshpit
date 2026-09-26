@@ -1,4 +1,5 @@
 import { isIndexableMusicEventRecord } from "../seo/publicEntityPolicy.js";
+import { artistCatalogVisibleTo } from "../../artistCatalogVisibility.js";
 import {
   ensureArtistUpdatesSchema,
   listArtistUpdates,
@@ -19,17 +20,20 @@ export function createArtistNewsReader(database, { eventPathFor, artistPathFor, 
     if (!ready) { ensureArtistUpdatesSchema(database); ready = true; }
   };
 
-  function visibleDates(ids, at) {
+  function visibleDates(ids, at, viewer) {
     const visible = new Map();
     if (!ids.length) return visible;
     const today = new Date(at).toISOString().slice(0, 10);
     for (let index = 0; index < ids.length; index += 200) {
       const chunk = ids.slice(index, index + 200);
       const params = Object.fromEntries(chunk.map((id, position) => [`id${position}`, id]));
+      const blockSql = viewer?.id ? `AND (td.owner_id IS NULL OR NOT EXISTS (SELECT 1 FROM blocks news_block
+        WHERE (news_block.blocker_id=@viewer AND news_block.blocked_id=td.owner_id)
+          OR (news_block.blocked_id=@viewer AND news_block.blocker_id=td.owner_id)))` : "";
       const rows = database.prepare(`SELECT td.id,td.artist,td.venue,td.date,td.event_name,td.owner_id,td.music_qualified,
           td.event_kind,td.music_evidence,td.billed_artists,td.event_end_date
-        FROM tour_dates td WHERE td.id IN (${chunk.map((_, position) => `@id${position}`).join(",")}) AND ${visibilitySql}`)
-        .all({ ...params, at, today });
+        FROM tour_dates td WHERE td.id IN (${chunk.map((_, position) => `@id${position}`).join(",")}) AND ${visibilitySql} ${blockSql}`)
+        .all({ ...params, at, today, ...(viewer?.id ? { viewer: viewer.id } : {}) });
       for (const row of rows) if (isIndexableMusicEventRecord(row)) visible.set(row.id, row);
     }
     return visible;
@@ -38,7 +42,7 @@ export function createArtistNewsReader(database, { eventPathFor, artistPathFor, 
   function artistsFor(rows) {
     const keys = [...new Set(rows.map((row) => row.artist_key))];
     const found = new Map();
-    const lookup = database.prepare("SELECT norm,name,public_slug,photo FROM artists WHERE norm=?");
+    const lookup = database.prepare("SELECT norm,name,public_slug,photo,source FROM artists WHERE norm=?");
     for (const key of keys) {
       const artist = lookup.get(key);
       if (artist) found.set(key, artist);
@@ -46,12 +50,15 @@ export function createArtistNewsReader(database, { eventPathFor, artistPathFor, 
     return found;
   }
 
-  function project(rows, at) {
+  function project(rows, at, viewer) {
     const day = new Date(at).toISOString().slice(0, 10);
-    const dates = visibleDates(tourDateIdsIn(rows), at);
+    const dates = visibleDates(tourDateIdsIn(rows), at, viewer);
     const artists = artistsFor(rows);
     return rows.map((row) => {
       const artist = artists.get(row.artist_key) || null;
+      // Cached news never grants publication rights to an artist whose owner
+      // has since hidden the page, been restricted, or blocked this reader.
+      if (!artistCatalogVisibleTo(database, artist, viewer)) return null;
       const item = projectArtistUpdate(row, { artist, visibleDates: dates, day, eventPathFor });
       if (!item) return null;
       return { ...item, artist: { ...item.artist, path: artistPathFor?.(artist || { name: row.artist_name }) || null } };
@@ -60,11 +67,22 @@ export function createArtistNewsReader(database, { eventPathFor, artistPathFor, 
 
   return Object.freeze({
     // A page of news; `followerId` limits it to the artists someone follows.
-    read({ artistKey = null, followerId = null, cursor = null, limit = 20, at = Date.now() } = {}) {
+    read({ artistKey = null, followerId = null, cursor = null, limit = 20, viewer = null, at = Date.now() } = {}) {
       prepare();
       try {
-        const { rows, nextCursor } = listArtistUpdates(database, { artistKey, followerId, cursor, limit });
-        return { items: project(rows, at), nextCursor };
+        const requested = Number(limit);
+        const size = Math.max(1, Math.min(60, Number.isFinite(requested) ? Math.floor(requested) || 20 : 20));
+        const items = [];
+        let nextCursor = cursor;
+        // Removed, blocked and expired news must not strand the next visible
+        // item behind an empty first page. Keep the database work bounded.
+        for (let scan = 0; scan < 10; scan += 1) {
+          const page = listArtistUpdates(database, { artistKey, followerId, cursor: nextCursor, limit: size - items.length });
+          items.push(...project(page.rows, at, viewer));
+          nextCursor = page.nextCursor;
+          if (items.length >= size || !nextCursor) break;
+        }
+        return { items, nextCursor };
       } catch (error) {
         // A snapshot or test database without the full catalogue schema has no
         // news to show; it must not take the page down with it.

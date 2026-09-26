@@ -196,14 +196,34 @@ export async function loadChunk(factory, {
 
 export function lazyWithRetry(factory, name = "chunk") {
   let pending = null;
+  let warming = false;
+  const start = (preload) => {
+    warming = preload;
+    // Background warming may run while someone is writing or uploading. A
+    // missing optional screen must not hard-reload that working page.
+    const operation = loadChunk(factory, { name, ...(preload ? { reload: null } : {}) }).then(
+      (module) => {
+        if (pending === operation) warming = false;
+        return module;
+      },
+      (error) => {
+        if (pending === operation) { pending = null; warming = false; }
+        throw error;
+      },
+    );
+    pending = operation;
+    return operation;
+  };
   const load = () => {
-    if (!pending) pending = loadChunk(factory, { name }).catch((error) => { pending = null; throw error; });
-    return pending;
+    if (!pending) return start(false);
+    // Navigation can join an in-flight warmup. If that optional attempt fails,
+    // the real screen load still gets its own guarded recovery path.
+    return warming ? pending.catch(() => load()) : pending;
   };
   const component = lazy(load);
   // Critical actions (notably the phone composer) can warm their tiny chunk
   // after the first screen settles, instead of making the first tap wait on a
   // cellular round trip. Rejections stay owned by the caller.
-  component.preload = load;
+  component.preload = () => pending || start(true);
   return component;
 }

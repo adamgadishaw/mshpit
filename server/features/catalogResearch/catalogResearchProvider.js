@@ -150,6 +150,8 @@ export async function researchCatalogSubject(subject, {
   signal,
   timeoutMs = 120_000,
   maxSearches = CATALOG_RESEARCH_MAX_SEARCHES,
+  budgetMicroUsd = Infinity,
+  requestReserveMicroUsd = 200_000,
 } = {}) {
   if (!apiKey) throw Object.assign(new Error("Research is not configured."), { code: "research_not_configured" });
   if (!CATALOG_RESEARCH_FACTS[subject?.type]) throw new TypeError("Unknown research subject type.");
@@ -160,8 +162,22 @@ export async function researchCatalogSubject(subject, {
   ];
   const searchedUrls = new Set();
   let usage = {};
+  let accountingUncertain = false;
+  let previousRequestCostMicroUsd = 0;
+  const allowance = budgetMicroUsd === Infinity ? Infinity
+    : Number.isFinite(budgetMicroUsd) ? Math.max(0, Math.floor(budgetMicroUsd)) : 0;
+  const requestReserve = Number.isFinite(requestReserveMicroUsd) ? Math.max(200_000, Math.ceil(requestReserveMicroUsd)) : 200_000;
+  try {
   for (let turn = 0; turn <= MAX_CONTINUATIONS; turn += 1) {
+    // A pause is another paid HTTP request. Admit it only when the remaining
+    // allowance covers both confirmed spending and a conservative next-call
+    // estimate. A single admitted request may still exceed that estimate;
+    // absolute billing ceilings require the provider's own spending controls.
+    if (catalogResearchCostMicroUsd(model, usage) + Math.max(requestReserve, previousRequestCostMicroUsd) > allowance) {
+      throw Object.assign(new Error("Research daily allowance cannot cover another request."), { code: "research_budget" });
+    }
     const requestSignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs);
+    accountingUncertain = true;
     const response = await fetchImpl(API_URL, {
       method: "POST",
       signal: requestSignal,
@@ -177,8 +193,14 @@ export async function researchCatalogSubject(subject, {
       if (!response.ok) return null;
       throw error;
     });
-    if (!response.ok) throw providerError(response.status, body);
+    if (!response.ok) {
+      accountingUncertain = false;
+      throw providerError(response.status, body);
+    }
     usage = addUsage(usage, body?.usage);
+    accountingUncertain = !body?.usage || !Number.isFinite(body.usage.input_tokens) || !Number.isFinite(body.usage.output_tokens);
+    if (accountingUncertain) throw Object.assign(new Error("Research usage could not be confirmed."), { code: "research_cost_unconfirmed" });
+    previousRequestCostMicroUsd = catalogResearchCostMicroUsd(model, body.usage);
     const content = Array.isArray(body?.content) ? body.content : [];
     for (const block of content) {
       if (block?.type === "web_search_tool_result" && Array.isArray(block.content)) {
@@ -201,4 +223,12 @@ export async function researchCatalogSubject(subject, {
     break;
   }
   return { findings: null, searchedUrls: [...searchedUrls], usage, costMicroUsd: catalogResearchCostMicroUsd(model, usage), model };
+  } catch (error) {
+    // Earlier pause-turn responses can already have incurred a charge. Keep
+    // their receipt even when a later request times out or is rejected.
+    const failure = error instanceof Error ? error : new Error("Research failed.");
+    failure.costMicroUsd = catalogResearchCostMicroUsd(model, usage);
+    failure.accountingUncertain = accountingUncertain;
+    throw failure;
+  }
 }

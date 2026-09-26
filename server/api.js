@@ -3695,8 +3695,18 @@ function videoConverterTakesAnyFormat(contentType) {
 
 // Starts (or joins) one clip conversion and writes it down so it survives a
 // restart. `member` is set when the owner's own request starts it; automatic
-// retries run without a session and without spending the owner's allowance.
-function startDurableVideoFinalize({ ownerId, assetId, contentType, body, fingerprint, member = null }) {
+// retries run without a session but retain current account and decoder-budget
+// checks before every costly attempt and before publication.
+export function startDurableVideoFinalize({ ownerId, assetId, contentType, body, fingerprint, member = null }) {
+  const assertAuthorized = () => {
+    member?.assertAuthorized?.();
+    const owner = q.userById.get(ownerId);
+    if (!owner) throw new ApiError(404, "That media item is no longer available.", "NOT_FOUND");
+    if (!accountIsPublic(owner, now())) {
+      throw new ApiError(403, "This account cannot publish media right now.", "FORBIDDEN");
+    }
+    requireVideoPublishingActor(owner);
+  };
   const started = startVideoFinalizeJob({
     ownerId,
     assetId,
@@ -3713,13 +3723,11 @@ function startDurableVideoFinalize({ ownerId, assetId, contentType, body, finger
           authoritativeVideoVerifier: verifyVideoObject,
           authoritativePosterRequired: true,
           universalVideoAdmission: videoConverterTakesAnyFormat(contentType),
-          assertAuthorized: member?.assertAuthorized,
-          beforeAuthoritativeVerify: member
-            ? () => {
-                member.assertAuthorized?.();
-                return reserveVideoPublishingDemand({ ip: member.ip }, { id: ownerId }, "verify");
-              }
-            : undefined,
+          assertAuthorized,
+          beforeAuthoritativeVerify: () => {
+            assertAuthorized();
+            return reserveVideoPublishingDemand({ ip: member?.ip }, { id: ownerId }, "verify");
+          },
           // Deliberately no caller signal: a browser disconnect or proxy
           // timeout must not cancel the shared process-local job. The job's
           // own signal is cancelled only when this owner deletes the draft.
@@ -3760,7 +3768,7 @@ function startDurableVideoFinalize({ ownerId, assetId, contentType, body, finger
   return started;
 }
 
-function resumeVideoProcessing(job) {
+export function resumeVideoProcessing(job) {
   const asset = db.prepare("SELECT mime_type,status,kind FROM media_assets WHERE id=? AND owner_id=?").get(job.asset_id, job.owner_id);
   if (!asset || asset.kind !== "video") return;
   if (!videoVerifierRuntimeStatus(process.env).ready) {
@@ -3772,7 +3780,7 @@ function resumeVideoProcessing(job) {
   let body;
   try { body = JSON.parse(job.body); }
   catch { body = {}; }
-  startDurableVideoFinalize({
+  return startDurableVideoFinalize({
     ownerId: job.owner_id,
     assetId: job.asset_id,
     contentType: asset.mime_type,
@@ -3990,7 +3998,10 @@ export function reserveVideoPublishingDemand(ctx, user, phase) {
   if (phase !== "verify") {
     throw new ApiError(500, "Clip publishing admission is invalid.", "INTERNAL_ERROR");
   }
-  const ipHash = createHash("sha256").update(String(ctx.ip || "unknown")).digest("hex").slice(0, 24);
+  // A durable retry has no active network request. Retain its real owner and
+  // global budget without inventing one shared IP for all background jobs.
+  const ipHash = typeof ctx?.ip === "string" && ctx.ip
+    ? createHash("sha256").update(ctx.ip).digest("hex").slice(0, 24) : null;
   const windowMs = 60 * 60 * 1000;
   const reservation = reserveRateLimits([
     // Keep count-based fairness only on the scarce decoder slot, where one
@@ -4000,11 +4011,11 @@ export function reserveVideoPublishingDemand(ctx, user, phase) {
       max: VIDEO_VERIFY_USER_HOURLY_LIMIT,
       windowMs,
     },
-    {
+    ...(ipHash ? [{
       key: `video-${phase}-ip:${ipHash}`,
       max: VIDEO_VERIFY_IP_HOURLY_LIMIT,
       windowMs,
-    },
+    }] : []),
     {
       key: `video-${phase}-global`,
       max: VIDEO_VERIFY_GLOBAL_HOURLY_LIMIT,
@@ -4012,7 +4023,11 @@ export function reserveVideoPublishingDemand(ctx, user, phase) {
     },
   ]);
   if (!reservation) {
-    throw new ApiError(429, "Clip publishing is busy for this account or network. Try again later.", "RATE_LIMITED");
+    const error = new ApiError(429, "Clip publishing is busy for this account or network. Try again later.", "RATE_LIMITED");
+    // A request denied by its IP or actor budget was never admitted. Retrying
+    // it without its original request context must not bypass that decision.
+    error.videoAdmissionDenied = true;
+    throw error;
   }
   return reservation;
 }

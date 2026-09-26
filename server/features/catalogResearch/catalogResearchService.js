@@ -18,6 +18,7 @@ import { catalogResearchModel, researchCatalogSubject } from "./catalogResearchP
 const BUDGET_KEY = "catalog-research:v1:budget";
 const MINUTE = 60_000;
 const DAY = 24 * 60 * MINUTE;
+const SPEND_RECEIPT_RETENTION_MS = 35 * DAY;
 const LEASE_MS = 20 * MINUTE;
 const REFRESH_MS = Object.freeze({ found: 180 * DAY, not_found: 60 * DAY, unsure: 90 * DAY });
 const FAILURE_BACKOFF_MS = Object.freeze([60 * MINUTE, 6 * 60 * MINUTE, DAY, 3 * DAY, 7 * DAY]);
@@ -54,7 +55,13 @@ export function ensureCatalogResearchSchema(database) {
     claim_token TEXT,
     PRIMARY KEY(entity_type, entity_key)
   );
-  CREATE INDEX IF NOT EXISTS idx_catalog_research_due ON catalog_research(entity_type, next_attempt_at);`);
+  CREATE INDEX IF NOT EXISTS idx_catalog_research_due ON catalog_research(entity_type, next_attempt_at);
+  CREATE TABLE IF NOT EXISTS catalog_research_spend (
+    token TEXT PRIMARY KEY,utc_day TEXT NOT NULL,reserved_micro_usd INTEGER NOT NULL,
+    charged_micro_usd INTEGER NOT NULL,status TEXT NOT NULL CHECK(status IN ('reserved','settled','uncertain')),
+    created_at INTEGER NOT NULL,settled_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_catalog_research_spend_day ON catalog_research_spend(utc_day,status);`);
 }
 
 function readBudget(database, at) {
@@ -79,6 +86,53 @@ function readBudget(database, at) {
 function saveBudget(database, budget) {
   database.prepare("INSERT INTO app_meta(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
     .run(BUDGET_KEY, JSON.stringify(budget));
+}
+
+function unresolvedSpend(database, day) {
+  return database.prepare("SELECT status FROM catalog_research_spend WHERE utc_day=? AND status<>'settled' LIMIT 1").get(day)?.status || null;
+}
+
+function pruneSpendReceipts(database, at) {
+  // The daily allowance lives in app_meta. Detailed receipts are kept for
+  // reconciliation for 35 days, including every unresolved current-day call.
+  // Old reservations cannot affect a new day's allowance.
+  database.prepare("DELETE FROM catalog_research_spend WHERE utc_day<?")
+    .run(utcDay(at - SPEND_RECEIPT_RETENTION_MS));
+}
+
+// Reserve before sending a paid request. The ledger survives a restart and
+// keeps old-day evidence when a request finishes after midnight.
+function reserveSpend(database, token, budget, at) {
+  database.exec("SAVEPOINT catalog_research_reserve");
+  try {
+    database.prepare(`INSERT INTO catalog_research_spend(token,utc_day,reserved_micro_usd,charged_micro_usd,status,created_at)
+      VALUES (?,?,?,?,'reserved',?)`).run(token, budget.utcDay, RUN_RESERVE_MICRO_USD, RUN_RESERVE_MICRO_USD, at);
+    saveBudget(database, { ...budget, spentMicroUsd: budget.spentMicroUsd + RUN_RESERVE_MICRO_USD, runs: budget.runs + 1 });
+    database.exec("RELEASE catalog_research_reserve");
+  } catch (error) {
+    database.exec("ROLLBACK TO catalog_research_reserve; RELEASE catalog_research_reserve");
+    throw error;
+  }
+}
+
+function settleSpend(database, token, { costMicroUsd, uncertain = false, at }) {
+  const row = database.prepare("SELECT * FROM catalog_research_spend WHERE token=? AND status='reserved'").get(token);
+  if (!row) return;
+  const confirmed = Number.isFinite(costMicroUsd) && costMicroUsd >= 0 ? Math.ceil(costMicroUsd) : 0;
+  const charged = uncertain ? Math.max(row.reserved_micro_usd, confirmed) : confirmed;
+  database.exec("SAVEPOINT catalog_research_settle");
+  try {
+    database.prepare("UPDATE catalog_research_spend SET status=?,charged_micro_usd=?,settled_at=? WHERE token=?")
+      .run(uncertain ? "uncertain" : "settled", charged, at, token);
+    const budget = readBudget(database, at);
+    if (budget.utcDay === row.utc_day) {
+      saveBudget(database, { ...budget, spentMicroUsd: Math.max(0, budget.spentMicroUsd - row.reserved_micro_usd + charged) });
+    }
+    database.exec("RELEASE catalog_research_settle");
+  } catch (error) {
+    database.exec("ROLLBACK TO catalog_research_settle; RELEASE catalog_research_settle");
+    throw error;
+  }
 }
 
 function dueRow(database, type, key, at) {
@@ -210,12 +264,15 @@ export async function runCatalogResearchPass({
   if (!catalogResearchConfigured(env)) return { ...outcome, stopped: "not_configured" };
   const control = readCatalogKnowledgeControl(database, { env, at: now() });
   if (control?.mode === "paused") return { ...outcome, stopped: "paused" };
+  pruneSpendReceipts(database, now());
   const cap = catalogResearchDailyBudgetMicroUsd(env);
   const model = catalogResearchModel(env);
   for (let index = 0; index < maxItems; index += 1) {
     if (signal?.aborted) return { ...outcome, stopped: "aborted" };
     const at = now();
     let budget = readBudget(database, at);
+    const unresolved = unresolvedSpend(database, budget.utcDay);
+    if (unresolved) return { ...outcome, stopped: unresolved === "uncertain" ? "cost_unconfirmed" : "reservation_pending" };
     if (budget.spentMicroUsd + RUN_RESERVE_MICRO_USD > cap) return { ...outcome, stopped: "daily_budget" };
     // Alternate artists and venues so neither backlog starves the other.
     const order = index % 2 === 0 ? ["artist", "venue"] : ["venue", "artist"];
@@ -227,21 +284,32 @@ export async function runCatalogResearchPass({
     if (!subject) return { ...outcome, stopped: "nothing_due" };
     const token = claimSubject(database, subject, at);
     if (!token) continue;
+    reserveSpend(database, token, budget, at);
     let result;
     try {
-      result = await research(subject, { apiKey: String(env.ANTHROPIC_API_KEY).trim(), model, fetchImpl, signal });
+      result = await research(subject, { apiKey: String(env.ANTHROPIC_API_KEY).trim(), model, fetchImpl, signal,
+        budgetMicroUsd: Math.max(0, cap - budget.spentMicroUsd), requestReserveMicroUsd: RUN_RESERVE_MICRO_USD });
     } catch (error) {
       const code = typeof error?.code === "string" ? error.code : "research_error";
-      finishSubject(database, subject, token, { status: "failed", reason: code, at: now() });
+      const uncertain = error?.accountingUncertain !== false || !Number.isFinite(error?.costMicroUsd);
+      settleSpend(database, token, { costMicroUsd: error?.costMicroUsd, uncertain, at: now() });
+      finishSubject(database, subject, token, { status: "failed", reason: code, costMicroUsd: Math.max(0, Number(error?.costMicroUsd) || 0), at: now() });
       budget = readBudget(database, now());
       saveBudget(database, { ...budget, lastRunAt: now(), lastError: { code, at: now() } });
       // A bad key, a rate limit or an overloaded API will not clear up by
       // trying the next page straight away.
-      if (["research_auth", "research_rate_limited", "research_overloaded", "research_unavailable"].includes(code) || signal?.aborted) {
+      if (["research_auth", "research_rate_limited", "research_overloaded", "research_unavailable", "research_budget"].includes(code) || signal?.aborted) {
         return { ...outcome, stopped: code };
       }
+      if (uncertain) return { ...outcome, stopped: "cost_unconfirmed" };
       continue;
     }
+    if (!Number.isFinite(result?.costMicroUsd) || result.costMicroUsd < 0) {
+      settleSpend(database, token, { uncertain: true, at: now() });
+      finishSubject(database, subject, token, { status: "failed", reason: "research_cost_unconfirmed", at: now() });
+      return { ...outcome, stopped: "cost_unconfirmed" };
+    }
+    settleSpend(database, token, { costMicroUsd: result.costMicroUsd, at: now() });
     outcome.researched += 1;
     const checked = validateCatalogResearchFindings(result.findings, {
       type: subject.type,
@@ -261,9 +329,7 @@ export async function runCatalogResearchPass({
     budget = readBudget(database, now());
     saveBudget(database, {
       ...budget,
-      spentMicroUsd: budget.spentMicroUsd + Math.max(0, Number(result.costMicroUsd) || 0),
-      runs: budget.runs + 1,
-      published: budget.published + (checked.ok ? 1 : 0),
+      published: budget.published + (checked.ok && budget.utcDay === utcDay(at) ? 1 : 0),
       lastRunAt: now(),
     });
   }
@@ -318,6 +384,7 @@ export function collectCatalogResearchStatus(database, { env = process.env, at =
     enabled: catalogResearchConfigured(env) && backgroundJobEnabled(env, "CATALOG_RESEARCH_ENABLED"),
     model: catalogResearchModel(env),
     dailyBudgetUsd: catalogResearchDailyBudgetMicroUsd(env) / 1_000_000,
+    accountingState: unresolvedSpend(database, budget.utcDay),
     today: {
       spentUsd: Math.round(budget.spentMicroUsd / 10_000) / 100,
       runs: budget.runs,

@@ -116,3 +116,34 @@ test("optional details stay visible without disclosures and retain clear-to-unkn
   assert.match(source, /accessibilityLabel=\{`Leave \$\{d\.label\.toLowerCase\(\)\} unrated`\}/);
   assert.match(source, /today\.getFullYear\(\) - 1899/);
 });
+
+test("video-only uploads offer gallery consent while converting and retain explicit opt-in", () => {
+  const container = find(ast, (node) => node.type === "JSXExpressionContainer"
+    && node.expression?.type === "LogicalExpression"
+    && node.expression.right?.type === "JSXElement"
+    && node.expression.right.openingElement?.name?.name === "Pressable"
+    && source.slice(node.start, node.end).includes('accessibilityLabel={`Share my photos and videos'));
+  assert.ok(container, "artist-gallery consent control exists");
+  const condition = container.expression.left;
+  const visible = new Function("artistMediaConsent", "photos", "convertingClips",
+    `return !!(${source.slice(condition.start, condition.end)});`);
+  assert.equal(visible({ available: true }, [], [{ assetId: "uploaded-clip" }]), true,
+    "conversion-only uploads must offer the same consent as ready photos");
+  assert.equal(visible({ available: true }, [], []), false);
+  assert.equal(visible({ available: false }, [], [{ assetId: "uploaded-clip" }]), false);
+
+  const action = find(container.expression.right, (node) => node.type === "JSXAttribute" && node.name?.name === "onPress").value.expression;
+  let photosPublic = false;
+  let landingShowcase = false;
+  const toggle = new Function("setPhotosPublic", "setLandingShowcase", `return (${source.slice(action.start, action.end)});`)(
+    (update) => { photosPublic = update(photosPublic); },
+    (value) => { landingShowcase = value; },
+  );
+  assert.equal(photosPublic, false, "conversion does not opt anyone in automatically");
+  toggle();
+  assert.equal(photosPublic, true);
+  landingShowcase = true;
+  toggle();
+  assert.equal(photosPublic, false);
+  assert.equal(landingShowcase, false, "revoking gallery consent still revokes showcase consent");
+});

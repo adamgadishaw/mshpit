@@ -892,6 +892,38 @@ function jobFailureSummary(error) {
   return parts.join(": ").replace(/https?:\/\/\S+/gu, "[url]").slice(0, 700);
 }
 
+export function universalDeliveryDimensions(video) {
+  const width = Number(video?.width);
+  const height = Number(video?.height);
+  if (![width, height].every((value) => Number.isSafeInteger(value) && value >= 2 && value <= VIDEO_MAX_EDGE)) {
+    throw serviceError("unsupported_media", "Clip dimensions are invalid.");
+  }
+  const rawAspect = String(video?.sampleAspectRatio ?? "");
+  let aspect = 1;
+  if (!new Set(["", "N/A", "0:1"]).has(rawAspect)) {
+    const parts = /^([0-9]{1,10}):([0-9]{1,10})$/u.exec(rawAspect);
+    if (!parts || Number(parts[1]) <= 0 || Number(parts[2]) <= 0) {
+      throw serviceError("unsupported_media", "Clip pixel shape is invalid.");
+    }
+    aspect = Number(parts[1]) / Number(parts[2]);
+  }
+  // FFmpeg auto-rotates before the filter graph. Work out the displayed size
+  // without allocating a squared-pixel intermediate: SAR is untrusted and can
+  // otherwise make a tiny source demand a frame hundreds of millions wide.
+  let displayWidth = width * aspect;
+  let displayHeight = height;
+  if (video?.rotation === 90 || video?.rotation === 270) {
+    [displayWidth, displayHeight] = [displayHeight, displayWidth];
+  }
+  const ratio = Math.min(1,
+    DELIVERY_MAX_WIDTH / Math.max(displayWidth, displayHeight),
+    DELIVERY_MAX_HEIGHT / Math.min(displayWidth, displayHeight));
+  return {
+    width: Math.max(2, Math.floor(displayWidth * ratio / 2) * 2),
+    height: Math.max(2, Math.floor(displayHeight * ratio / 2) * 2),
+  };
+}
+
 async function createSanitizedDelivery(
   sourcePath,
   deliveryPath,
@@ -934,15 +966,12 @@ async function createSanitizedDelivery(
         "-protocol_whitelist", "file,pipe", "-f", "mov", "-i", sourcePath,
         "-map", "0:v:0", "-map", "0:a:0?",
       ];
-  // Universal sources may be interlaced or use non-square pixels. Square the
-  // pixels first, then bound the long edge at 1920 and the short edge at 1080
-  // so a portrait clip keeps its full 1080 width.
+  // Apply the already-bounded final square-pixel size in one allocation. A
+  // portrait keeps its full 1080 width and anamorphic footage keeps its shape.
+  const dimensions = universal ? universalDeliveryDimensions(sourceVideo) : null;
   const videoFilter = universal
     ? `${sourceVideo.interlaced ? "yadif=deint=interlaced," : ""}fps=${sourceVideo.outputFrameRate},`
-      + "scale=w='trunc(iw*sar/2)*2':h=ih,setsar=1,"
-      + `scale=w='if(gt(iw,ih),min(${DELIVERY_MAX_WIDTH},iw),min(${DELIVERY_MAX_HEIGHT},iw))'`
-      + `:h='if(gt(iw,ih),min(${DELIVERY_MAX_HEIGHT},ih),min(${DELIVERY_MAX_WIDTH},ih))'`
-      + ":force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1"
+      + `scale=w=${dimensions.width}:h=${dimensions.height},setsar=1`
     : `${frameRateFilter}scale=w='min(${DELIVERY_MAX_WIDTH},iw)':h='min(${DELIVERY_MAX_HEIGHT},ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1`;
   const output = strategy === "remux"
     ? [

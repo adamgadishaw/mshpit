@@ -257,7 +257,8 @@ export function notifyFollowers(database, update, { notify, now = Date.now(), co
 // Newest first, with a (created_at, id) cursor. `followerId` limits it to the
 // artists that member follows.
 export function listArtistUpdates(database, { artistKey = null, followerId = null, cursor = null, limit = 20 } = {}) {
-  const size = Math.max(1, Math.min(60, Number(limit) || 20));
+  const requested = Number(limit);
+  const size = Math.max(1, Math.min(60, Number.isFinite(requested) ? Math.floor(requested) || 20 : 20));
   const where = [];
   const args = [];
   if (artistKey) { where.push("u.artist_key=?"); args.push(artistKey); }

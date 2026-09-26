@@ -56,7 +56,18 @@ export function crewRoutes({
     return key;
   };
   const plansFor = (user, loungeKey) => run(() => listLoungePlans(database, { user, loungeKey, projectUser, blockedEitherWay }));
-  const plansAfterChange = (user, key) => (key && user.age_band === "18_plus" && loungeIsOpen(key) ? plansFor(user, key) : []);
+  const plansAfterChange = (ctx, user, key) => {
+    if (!key || user.age_band !== "18_plus" || !loungeIsOpen(key)) return [];
+    try {
+      requireVerifiedUser(ctx);
+      openLounge(user, key);
+    } catch (error) {
+      // Cleanup is allowed after losing access; its response grants no read access.
+      if ([401, 403, 404, 410].includes(error?.status)) return [];
+      throw error;
+    }
+    return plansFor(user, key);
+  };
 
   return {
     "GET /api/crew/shows": (ctx) => {
@@ -113,21 +124,21 @@ export function crewRoutes({
       noStore(ctx);
       const key = planLoungeKey(database, planParam(ctx));
       run(() => leaveLoungePlan(database, { user, planId: planParam(ctx) }));
-      return { plans: plansAfterChange(user, key) };
+      return { plans: plansAfterChange(ctx, user, key) };
     },
     "POST /api/plans/:planId/close": (ctx) => {
       const user = requireUser(ctx);
       noStore(ctx);
       const key = planLoungeKey(database, planParam(ctx));
       run(() => closeLoungePlan(database, { user, planId: planParam(ctx), staff: isStaff(user), at: now() }));
-      return { plans: plansAfterChange(user, key) };
+      return { plans: plansAfterChange(ctx, user, key) };
     },
     "DELETE /api/plans/:planId/members/:userId": (ctx) => {
       const user = requireUser(ctx);
       noStore(ctx);
       const key = planLoungeKey(database, planParam(ctx));
       run(() => removePlanMember(database, { user, planId: planParam(ctx), memberId: ctx.params?.userId }));
-      return { plans: plansAfterChange(user, key) };
+      return { plans: plansAfterChange(ctx, user, key) };
     },
     "GET /api/plans/:planId/messages": (ctx) => {
       const user = requireVerifiedUser(ctx);
