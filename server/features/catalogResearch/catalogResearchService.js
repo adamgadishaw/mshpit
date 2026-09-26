@@ -177,16 +177,36 @@ function artistSubject(database, row) {
   };
 }
 
-// Artists with shows on file first (fans open those pages from the calendar),
-// then everyone else by popularity. Only pages with no biography, no claimed
-// owner and no staff-written profile text are eligible.
+// Artists in the news first, then artists with shows on file (fans open those
+// pages from the calendar), then everyone else by popularity. Only pages with
+// no biography, no claimed owner and no staff-written profile text are
+// eligible.
 const ARTIST_ELIGIBLE = `(a.bio IS NULL OR trim(a.bio)='')
   AND NOT EXISTS (SELECT 1 FROM artist_profiles p WHERE p.artist_key=a.norm AND p.removed=0
     AND (p.owner_id IS NOT NULL OR (p.bio IS NOT NULL AND trim(p.bio)<>'')))
   AND NOT EXISTS (SELECT 1 FROM catalog_research r WHERE r.entity_type='artist' AND r.entity_key=a.norm
     AND (r.status='hidden' OR r.next_attempt_at>?))`;
 
+// Artists in a Mshpit News story from the last 30 days go first: fans reading
+// the story are about to open their pages. Before the news desk has run there
+// is no story table, and nobody is in the news.
+function inTheNewsArtistRow(database, at) {
+  try {
+    return database.prepare(`SELECT a.norm,a.name,a.mbid,a.genre,a.country FROM
+        (SELECT j.value AS artist_key,MAX(s.created_at) latest FROM news_stories s, json_each(s.artist_keys) j
+          WHERE s.status='published' AND s.created_at>=? GROUP BY j.value) n
+        JOIN artists a ON a.norm=n.artist_key
+        WHERE ${ARTIST_ELIGIBLE}
+        ORDER BY n.latest DESC, a.norm LIMIT 1`).get(at - 30 * DAY, at);
+  } catch (error) {
+    if (/no such table/iu.test(String(error?.message))) return null;
+    throw error;
+  }
+}
+
 export function nextArtistResearchSubject(database, { at = Date.now() } = {}) {
+  const inTheNews = inTheNewsArtistRow(database, at);
+  if (inTheNews && text(inTheNews.name)) return artistSubject(database, inTheNews);
   const withShows = database.prepare(`SELECT a.norm,a.name,a.mbid,a.genre,a.country FROM
       (SELECT artist_key,COUNT(*) shows FROM tour_dates WHERE artist_key IS NOT NULL AND owner_id IS NULL
         GROUP BY artist_key ORDER BY shows DESC LIMIT 2000) t

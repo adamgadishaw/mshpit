@@ -118,7 +118,7 @@ export function NewsScreen({ session = null, onClose, onOpenArtist, onOpenStory,
               <Text style={styles.panelText}>Mshpit News posts a story once at least two independent music outlets report it.</Text>
             </View>
           ) : null}
-          {news.stories.map((story) => <NewsStoryCard key={story.id} story={story} onOpen={onOpenStory} onOpenArtist={onOpenArtist} />)}
+          {news.stories.map((story) => <NewsStoryCard key={story.id} story={story} accountId={session?.id || null} onOpen={onOpenStory} onOpenArtist={onOpenArtist} />)}
           {news.nextCursor ? (
             <Button small variant="secondary" title="Show more" loading={news.status === "loading"} onPress={news.loadMore} style={{ alignSelf: "center", marginTop: space(2) }} />
           ) : null}
@@ -149,8 +149,11 @@ export function NewsScreen({ session = null, onClose, onOpenArtist, onOpenStory,
 }
 
 // "Latest news" on an artist page, with the reason to follow right beside it.
-export function ArtistNewsSection({ artistName, following = false, onFollow }) {
+// The artist page's news: Mshpit News stories about the artist ("In the
+// news"), then their new releases and tour dates, then the reason to follow.
+export function ArtistNewsSection({ artistName, artistKey = null, following = false, onFollow, onOpenStory }) {
   const [items, setItems] = useState([]);
+  const headlines = useNewsDeskStories({ enabled: !!artistKey, limit: 3, artist: artistKey });
   useEffect(() => {
     if (!artistName) return undefined;
     const controller = new AbortController();
@@ -160,10 +163,17 @@ export function ArtistNewsSection({ artistName, following = false, onFollow }) {
       .catch(() => setItems([]));
     return () => controller.abort();
   }, [artistName]);
-  if (!items.length && following) return null;
+  const stories = artistKey ? headlines.stories : [];
+  if (!items.length && !stories.length && following) return null;
   return (
     <View style={styles.section}>
-      <Text style={styles.sectionKicker}>NEW MUSIC AND TOUR DATES</Text>
+      {stories.length ? (
+        <>
+          <Text style={styles.sectionKicker}>IN THE NEWS</Text>
+          {stories.map((story) => <NewsStoryCard key={story.id} story={story} compact onOpen={onOpenStory} />)}
+        </>
+      ) : null}
+      {items.length || !following ? <Text style={styles.sectionKicker}>NEW MUSIC AND TOUR DATES</Text> : null}
       {items.map((item) => <NewsCard key={item.id} item={item} showArtist={false} />)}
       {!following && onFollow ? (
         <View style={styles.followRow}>

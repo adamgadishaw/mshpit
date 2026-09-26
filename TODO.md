@@ -245,12 +245,15 @@ remains a broad context whose changing value can rerender unrelated consumers.
 
 ## Mshpit News desk follow-ups (2026-09-26)
 
-- **Before merge:** owner reviews the feed, rail panel and News screen
-  screenshots (branch `feat/news-desk`).
-- **After deploy:** add `NEWS_DESK_ENABLED=true` in the Render dashboard, then
-  watch `[news-desk]` log lines and the Anthropic console spend. The account's
-  $10 a month limit is shared with catalog research, which defaults to $5 a
-  day; keep research off or lower it so the news desk is not starved.
+- **After deploy:** add `NEWS_DESK_ENABLED=true` in the Render dashboard (and
+  `CATALOG_RESEARCH_ENABLED=true` for modest catalog filling), then watch
+  `[news-desk]` and `[catalog-research]` log lines and the Anthropic console.
+  Both share `ANTHROPIC_MONTHLY_USD` ($10 by default); news gets up to $6,
+  research up to $4.
+- **First real stories:** read the first few write-ups for tone, length and
+  attribution; tune the prompt in `newsSummarizer.js` if they drift.
+- **Share preview check:** paste a story link into X, Facebook and iMessage and
+  confirm the 1200x630 card shows (Cloudflare may cache the image for an hour).
 - **Corrections:** an admin control to unpublish a story (today: delete the
   @news_mod post, which hides it from the feed, `/news` and the sitemap).
 - **More outlets:** HotNewHipHop and Complex for hip-hop coverage if their RSS

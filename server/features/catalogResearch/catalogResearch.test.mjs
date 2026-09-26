@@ -388,3 +388,14 @@ test("continuation admission uses the previous request's actual cost when it exc
   }), (error) => error.code === "research_budget" && error.accountingUncertain === false && error.costMicroUsd === 250_000);
   assert.equal(requests, 1, "the next call needs $0.25 headroom after a $0.25 response, not only $0.20");
 });
+
+test("artists in the news are researched first, for a month", (t) => {
+  const db = database(t);
+  db.exec(`INSERT INTO artists(norm,name,rank_score) VALUES ('popular','Popular',100),('in the news','In The News',1);
+    CREATE TABLE news_stories (id TEXT PRIMARY KEY, status TEXT NOT NULL, artist_keys TEXT NOT NULL, created_at INTEGER NOT NULL);`);
+  db.prepare("INSERT INTO news_stories VALUES ('story','published',?,1000)").run(JSON.stringify(["in the news"]));
+  assert.equal(nextArtistResearchSubject(db, { at: 2_000 }).key, "in the news");
+  assert.equal(nextArtistResearchSubject(db, { at: 1_000 + 31 * 86_400_000 }).key, "popular", "old news no longer jumps the queue");
+  db.prepare("UPDATE news_stories SET status='declined'").run();
+  assert.equal(nextArtistResearchSubject(db, { at: 2_000 }).key, "popular", "only published stories count");
+});

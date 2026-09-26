@@ -1,7 +1,7 @@
 import { LANDING_IDENTITY_COPY, LANDING_BROWSE_LINKS } from "../../../src/domain/landingPresentation.mjs";
 import { canonicalYouTubeReviewLink } from "../../onlineReviews.js";
 import { renderCityGuideMain, renderCityDirectoryMain } from "./cityGuideDocument.js";
-import { NEWS_STYLES, renderArtistNewsSection, renderNewsMain } from "../artistUpdates/newsDocuments.js";
+import { NEWS_STYLES, renderArtistHeadlinesSection, renderArtistNewsSection, renderNewsMain } from "../artistUpdates/newsDocuments.js";
 import { CITY_GUIDE_STYLES } from "./cityGuideStyles.js";
 import { artistBiographyRows } from "../../../src/domain/artistBiography.mjs";
 import { validateArtistKnowledgeSource } from "../../../src/domain/artistKnowledge.mjs";
@@ -273,6 +273,7 @@ function artistMain(document) {
       ${nextShow}
     </section>
     ${memorial}
+    ${!memorialMode ? renderArtistHeadlinesSection(document) : ""}
     ${!memorialMode ? renderArtistNewsSection(document) : ""}
     ${biography ? `<section class="section"><h2>About ${esc(artist.name)}</h2><dl class="stats">${biography}</dl></section>` : ""}
     ${!memorialMode && events ? `<section class="section" id="shows"><div class="section-heading"><div><p class="eyebrow">On the road</p><h2>Upcoming shows</h2>${upcomingTotal > document.events.length ? `<p class="micro">Next ${document.events.length} of ${esc(upcomingTotal)} listed shows. The Shows tab on this artist page has the full schedule.</p>` : ""}</div></div><ol class="event-list">${events}</ol></section>` : ""}
@@ -301,6 +302,23 @@ function memberMain(document) {
   </main>`;
 }
 
+// A Mshpit News story: headline, lede, the write-up, artist links and every
+// outlet's report. Outlet links are nofollow; they are citations, not ads.
+function newsStoryMain(document) {
+  const story = document.news;
+  const date = dateTimeLabel(story.publishedAt);
+  const artists = story.artists.map((artist) => link(artist.path, artist.name)).join(", ");
+  const sources = story.sources.map((source) => `<a href="${esc(source.url)}" rel="nofollow noopener noreferrer">${esc(source.name)}</a>`).join(", ");
+  return `<article class="news-story">
+      <p class="eyebrow">Mshpit News · ${esc(story.category)}${date ? ` · <time datetime="${esc(date.iso)}">${esc(date.label)}</time>` : ""}</p>
+      <h1>${esc(story.headline)}</h1>
+      ${story.summary ? `<p class="hero-copy"><strong>${esc(story.summary)}</strong></p>` : ""}
+      ${paragraphs(story.body)}
+      ${artists ? `<p>About ${artists}</p>` : ""}
+      ${sources ? `<p class="news-sources">Confirmed by ${sources}</p>` : ""}
+    </article>`;
+}
+
 function postMain(document) {
   const comments = document.comments.map((comment) => {
     const date = dateTimeLabel(comment.publishedAt);
@@ -311,7 +329,7 @@ function postMain(document) {
   }).join("");
   return `<main id="main" class="post-page">
     ${breadcrumbs(document)}
-    ${compactPost(document.post, { full: true })}
+    ${document.news ? newsStoryMain(document) : compactPost(document.post, { full: true })}
     <section class="section comments"><div class="section-heading"><div><p class="eyebrow">${document.post.experienceType === "online" ? "Discussion" : "After the show"}</p><h2>Comments</h2></div><span>${esc(document.post.comments)}</span></div>${comments ? `<ol>${comments}</ol>` : '<p class="empty">No public comments yet.</p>'}</section>
   </main>`;
 }

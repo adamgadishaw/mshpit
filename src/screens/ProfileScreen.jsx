@@ -28,6 +28,7 @@ import { useConcertHistory } from "../features/concertHistory/useConcertHistory"
 import { concertNightKey } from "../features/concertHistory/concertHistoryModel.mjs";
 import ConcertHistory from "../features/concertHistory/ConcertHistory";
 import AccountSnapshotPrompt from "../components/AccountSnapshotPrompt";
+import NewsStoryCard from "../components/news/NewsStoryCard";
 
 const EMPTY_PROFILE_STATE = Object.freeze({ status: "loading", user: null, error: "" });
 const EMPTY_LIST = Object.freeze([]);
@@ -63,7 +64,7 @@ const ProfileMediaTile = memo(function ProfileMediaTile({ item, index, viewerIte
   );
 });
 
-const ProfileTicketRow = memo(function ProfileTicketRow({ log, actionsRef, capabilities }) {
+const ProfileTicketRow = memo(function ProfileTicketRow({ log, actionsRef, capabilities, accountId = null }) {
   const openShow = useCallback((...args) => actionsRef.current.onOpenShow?.(...args), [actionsRef]);
   const openPost = useCallback((...args) => actionsRef.current.onOpenPost?.(...args), [actionsRef]);
   const requireAuth = useCallback(() => actionsRef.current.onRequireAuth?.(), [actionsRef]);
@@ -91,6 +92,9 @@ const ProfileTicketRow = memo(function ProfileTicketRow({ log, actionsRef, capab
     }));
   }, [actionsRef]);
 
+  if (log.news) {
+    return <NewsStoryCard story={log.news} accountId={accountId} onOpen={capabilities.openPost ? () => openPost(log) : undefined} onOpenArtist={capabilities.openArtist ? openArtist : undefined} />;
+  }
   return (
     <TicketStub
       log={log}
@@ -680,6 +684,7 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
             <ProfileTicketRow
               key={l.id}
               log={l}
+              accountId={session?.id || null}
               actionsRef={postActionsRef}
               capabilities={profilePostCapabilities}
             />

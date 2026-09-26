@@ -5,6 +5,7 @@ import { acquireMemoryWork } from "../../memoryAdmission.js";
 import { renderIsolatedSocialShareCard } from "./socialShareCardProcess.js";
 
 import { eventPath, postPath } from "../../../src/domain/urls.mjs";
+import { newsCategoryLabel, newsSourceLine } from "../../../src/domain/newsDesk.mjs";
 import {
   absolutePhotoCreditUrl,
   licensedArtworkXmp,
@@ -37,7 +38,13 @@ const COPY = Object.freeze({
   going: Object.freeze({ label: "GOING", kicker: "Going to this show" }),
   interested: Object.freeze({ label: "INTERESTED", kicker: "Interested in this show" }),
   review: Object.freeze({ label: "REVIEW", kicker: "RATED LIVE BY AN MSHPIT MEMBER" }),
+  news: Object.freeze({ label: "NEWS", kicker: "MSHPIT NEWS" }),
+  "news-link": Object.freeze({ label: "NEWS", kicker: "MSHPIT NEWS" }),
 });
+
+// Link previews (og:image) are landscape; every other card is a 9:16 story.
+const LINK_CARD_WIDTH = 1200;
+const LINK_CARD_HEIGHT = 630;
 
 const PALETTES = Object.freeze({
   going: Object.freeze([
@@ -51,6 +58,12 @@ const PALETTES = Object.freeze({
   review: Object.freeze([
     Object.freeze({ start: "#edb12f", end: "#b82d68", ink: "#21170c" }),
     Object.freeze({ start: "#d58a22", end: "#5935a7", ink: "#21170c" }),
+  ]),
+  news: Object.freeze([
+    Object.freeze({ start: "#ff8a3d", end: "#ffb347", ink: "#1a1206" }),
+  ]),
+  "news-link": Object.freeze([
+    Object.freeze({ start: "#ff8a3d", end: "#ffb347", ink: "#1a1206" }),
   ]),
 });
 
@@ -337,6 +350,47 @@ export function reviewShareCardModel(document, { fallbackArtwork = [] } = {}) {
     rating: score,
     quote,
     artwork,
+    canonicalUrl: shareUrl,
+  });
+}
+
+// A Mshpit News story: headline, lede and the outlets that confirmed it. It
+// never carries a photo; provider artist images are not ours to redistribute.
+export function newsShareCardModel(story, { variant = "news" } = {}) {
+  if (!story || !["news", "news-link"].includes(variant)) return null;
+  const postId = strictId(story.postId);
+  const headline = cleanText(story.headline, 160);
+  if (!postId || !postId.startsWith("news_") || !headline) return null;
+  const shareUrl = canonicalUrl(postPath(postId));
+  const published = Number(story.publishedAt);
+  if (!shareUrl || !Number.isFinite(published)) return null;
+  const artists = (Array.isArray(story.artists) ? story.artists : [])
+    .map((artist) => cleanText(artist?.name, 80)).filter(Boolean).slice(0, 3);
+  const outlets = [...new Set((Array.isArray(story.sources) ? story.sources : [])
+    .map((source) => cleanText(source?.name, 60)).filter(Boolean))];
+  // The link preview has one short line for its sources.
+  const sources = variant === "news-link" && outlets.length > 3
+    ? `Confirmed by ${outlets.slice(0, 2).join(", ")} and ${outlets.length - 2} more`
+    : newsSourceLine({ sources: outlets.map((name) => ({ name })) });
+  return Object.freeze({
+    version: CARD_VERSION,
+    variant,
+    label: COPY[variant].label,
+    kicker: cleanText(newsCategoryLabel(story.category), 40).toUpperCase(),
+    statement: headline,
+    artist: headline,
+    headline,
+    lede: cleanReview(story.summary, 320),
+    about: artists.join(", "),
+    sources: cleanText(sources, 200),
+    subtitle: "",
+    venue: "",
+    place: "",
+    date: formatDate(new Date(published).toISOString().slice(0, 10)),
+    time: "",
+    rating: "",
+    quote: "",
+    artwork: Object.freeze([]),
     canonicalUrl: shareUrl,
   });
 }
@@ -672,8 +726,85 @@ function attendanceShareSvg(model, artworkDataUri, selectedArtwork = null) {
 </svg>`;
 }
 
+// The news story card: the same frame and Instagram safe area as the review
+// card, with the headline where a review has its photo.
+const NEWS_CARD = Object.freeze({ x: 60, y: 250, width: 960, height: 1310, stubTop: 1430 });
+// Black-weight headlines render wider than the width estimate assumes.
+const HEAVY_TEXT_WIDTH = 0.86;
+
+function newsShareSvg(model) {
+  const palette = paletteFor(model);
+  const card = NEWS_CARD;
+  const left = card.x + 56;
+  const right = card.x + card.width - 56;
+  const width = right - left;
+  const headlineLines = wrapMeasuredLines(model.headline, { maxWidth: width * HEAVY_TEXT_WIDTH, fontSize: 76, letterSpacing: -1, maxLines: 5 });
+  const headlineTop = card.y + 310;
+  const headlineBottom = headlineTop + (headlineLines.length - 1) * 84;
+  const ledeLines = wrapMeasuredLines(model.lede, { maxWidth: width, fontSize: 36, maxLines: 6 });
+  const ledeTop = headlineBottom + 96;
+  const aboutLines = wrapMeasuredLines(model.about ? `About ${model.about}` : "", { maxWidth: width, fontSize: 30, maxLines: 1 });
+  const aboutTop = ledeTop + Math.max(0, ledeLines.length - 1) * 52 + (ledeLines.length ? 72 : 0);
+  const sourceLines = wrapMeasuredLines(model.sources, { maxWidth: width, fontSize: 30, maxLines: 2 });
+  const sourceTop = card.stubTop - 60 - Math.max(0, sourceLines.length - 1) * 40;
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${CARD_WIDTH}" height="${CARD_HEIGHT}" viewBox="0 0 ${CARD_WIDTH} ${CARD_HEIGHT}">
+  ${shareSvgDefs(palette, `<clipPath id="newsCard"><rect x="${card.x}" y="${card.y}" width="${card.width}" height="${card.height}" rx="40"/></clipPath>`)}
+  <rect width="${CARD_WIDTH}" height="${CARD_HEIGHT}" fill="#0b0815"/>
+  <rect x="0" y="0" width="${CARD_WIDTH}" height="12" fill="url(#accent)"/>
+  <g data-layout="news-story" filter="url(#shadow)" clip-path="url(#newsCard)">
+    <rect x="${card.x}" y="${card.y}" width="${card.width}" height="${card.height}" rx="40" fill="#121016"/>
+    <rect x="${card.x}" y="${card.y}" width="${card.width}" height="12" fill="url(#accent)"/>
+    ${communityMarkSvg({ x: card.x + card.width - 150, y: card.y + 190, scale: 0.36, opacity: 0.07 })}
+  </g>
+  <rect x="${left}" y="${card.y + 72}" width="64" height="64" rx="16" fill="url(#accent)"/>
+  <path d="M${left + 24} ${card.y + 120}v-30l22-6v30" fill="none" stroke="${palette.ink}" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="${left + 19}" cy="${card.y + 120}" r="6" fill="${palette.ink}"/><circle cx="${left + 41}" cy="${card.y + 114}" r="6" fill="${palette.ink}"/>
+  <text x="${left + 88}" y="${card.y + 115}" fill="#fff8ee" font-family="Arial, Helvetica, sans-serif" font-size="32" font-weight="900" letter-spacing="6">MSHPIT NEWS</text>
+  <text x="${left}" y="${card.y + 196}" fill="${palette.start}" font-family="Arial, Helvetica, sans-serif" font-size="28" font-weight="800" letter-spacing="3">${escapeXml([model.kicker, model.date].filter(Boolean).join("  ·  "))}</text>
+  <g data-section="news-headline">${svgTextLines(headlineLines, { x: left, y: headlineTop, lineHeight: 84, fontSize: 76, fill: "#fff8ee", weight: 900, letterSpacing: -1 })}</g>
+  <g data-section="news-lede">${svgTextLines(ledeLines, { x: left, y: ledeTop, lineHeight: 52, fontSize: 36, fill: "#d9d4cc", weight: 600 })}</g>
+  ${svgTextLines(aboutLines, { x: left, y: aboutTop, lineHeight: 40, fontSize: 30, fill: palette.end, weight: 800 })}
+  ${sourceLines.length ? `<g data-section="news-sources"><path d="M${left} ${sourceTop - 10}l10 10 20-22" fill="none" stroke="#6fcf97" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>${svgTextLines(sourceLines, { x: left + 44, y: sourceTop, lineHeight: 40, fontSize: 30, fill: "#b9b3c2", weight: 700 })}</g>` : ""}
+  <line x1="${card.x + 30}" y1="${card.stubTop}" x2="${card.x + card.width - 30}" y2="${card.stubTop}" stroke="#3d3a46" stroke-width="3" stroke-dasharray="10 12"/>
+  <circle cx="${card.x}" cy="${card.stubTop}" r="22" fill="#0b0815"/><circle cx="${card.x + card.width}" cy="${card.stubTop}" r="22" fill="#0b0815"/>
+  ${communityMarkSvg({ x: left + 22, y: card.stubTop + 66, scale: 0.07, opacity: 1 })}
+  <text x="${left + 64}" y="${card.stubTop + 77}" fill="#fff8ee" font-family="Arial, Helvetica, sans-serif" font-size="30" font-weight="900" letter-spacing="7">MSHPIT</text>
+  <text x="${right}" y="${card.stubTop + 76}" text-anchor="end" fill="${palette.start}" font-family="Arial, Helvetica, sans-serif" font-size="30" font-weight="800">Read it on mshpit.com</text>
+</svg>`;
+}
+
+// The same story as a 1200x630 link preview for X, Facebook, iMessage and
+// Discord: brand, category, headline and sources, readable at thumbnail size.
+function newsLinkSvg(model) {
+  const palette = paletteFor(model);
+  const left = 72;
+  const width = LINK_CARD_WIDTH - left * 2;
+  const headlineLines = wrapMeasuredLines(model.headline, { maxWidth: width * HEAVY_TEXT_WIDTH, fontSize: 60, letterSpacing: -0.5, maxLines: 3 });
+  const sourceLines = wrapMeasuredLines(model.sources, { maxWidth: width - 260, fontSize: 26, maxLines: 1 });
+  const headlineTop = headlineLines.length >= 3 ? 262 : 300;
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${LINK_CARD_WIDTH}" height="${LINK_CARD_HEIGHT}" viewBox="0 0 ${LINK_CARD_WIDTH} ${LINK_CARD_HEIGHT}">
+  ${shareSvgDefs(palette)}
+  <rect width="${LINK_CARD_WIDTH}" height="${LINK_CARD_HEIGHT}" fill="#0f0d13"/>
+  <rect x="0" y="0" width="${LINK_CARD_WIDTH}" height="10" fill="url(#accent)"/>
+  ${communityMarkSvg({ x: LINK_CARD_WIDTH - 130, y: 150, scale: 0.4, opacity: 0.06 })}
+  <rect x="${left}" y="64" width="54" height="54" rx="14" fill="url(#accent)"/>
+  <path d="M${left + 20} 104v-25l19-5v25" fill="none" stroke="${palette.ink}" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="${left + 16}" cy="104" r="5" fill="${palette.ink}"/><circle cx="${left + 35}" cy="99" r="5" fill="${palette.ink}"/>
+  <text x="${left + 74}" y="100" fill="#fff8ee" font-family="Arial, Helvetica, sans-serif" font-size="28" font-weight="900" letter-spacing="5">MSHPIT NEWS</text>
+  <text x="${left}" y="172" fill="${palette.start}" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="800" letter-spacing="2">${escapeXml([model.kicker, model.date].filter(Boolean).join("  ·  "))}</text>
+  <g data-section="news-headline">${svgTextLines(headlineLines, { x: left, y: headlineTop, lineHeight: 70, fontSize: 60, fill: "#fff8ee", weight: 900, letterSpacing: -0.5 })}</g>
+  <line x1="${left}" y1="530" x2="${LINK_CARD_WIDTH - left}" y2="530" stroke="#2c2833" stroke-width="2"/>
+  ${sourceLines.length ? `<path d="M${left} 571l8 8 16-18" fill="none" stroke="#6fcf97" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>${svgTextLines(sourceLines, { x: left + 36, y: 580, lineHeight: 32, fontSize: 26, fill: "#b9b3c2", weight: 700 })}` : ""}
+  <text x="${LINK_CARD_WIDTH - left}" y="580" text-anchor="end" fill="${palette.start}" font-family="Arial, Helvetica, sans-serif" font-size="26" font-weight="800">mshpit.com</text>
+</svg>`;
+}
+
 export function socialShareCardSvg(model, { artworkDataUri = "", artwork = null } = {}) {
   if (!model || !COPY[model.variant]) throw new TypeError("A valid social share-card model is required");
+  if (model.variant === "news") return newsShareSvg(model);
+  if (model.variant === "news-link") return newsLinkSvg(model);
   return model.variant === "review"
     ? reviewShareSvg(model, artworkDataUri)
     : attendanceShareSvg(model, artworkDataUri, artwork);

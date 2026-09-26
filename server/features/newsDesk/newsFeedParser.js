@@ -45,6 +45,23 @@ const timestamp = (value) => {
   return Number.isFinite(parsed) ? parsed : null;
 };
 
+// The opening paragraphs of a publisher's article page: the facts a short
+// write-up needs, never the whole article. Only prose paragraphs count;
+// captions, newsletter prompts and credits are skipped.
+const BOILERPLATE = /\b(sign up|subscribe|newsletter|cookies?|all rights reserved|getty images|follow us|click here|advertisement|affiliate)\b/iu;
+export function articleLead(html, max = 900) {
+  const paragraphs = [];
+  let length = 0;
+  for (const match of String(html || "").matchAll(/<p\b[^>]*>([\s\S]*?)<\/p>/giu)) {
+    const text = plainText(match[1], 1200);
+    if (text.length < 80 || BOILERPLATE.test(text)) continue;
+    paragraphs.push(text);
+    length += text.length;
+    if (length >= max || paragraphs.length >= 4) break;
+  }
+  return paragraphs.join("\n\n").slice(0, max);
+}
+
 export function parseNewsFeed(xml, { sourceId } = {}) {
   const text = String(xml || "");
   const items = [];

@@ -90,6 +90,8 @@ const publicDocuments = createPublicDocumentService({
   database: db,
   origin: origin(),
   artistNews: (options) => artistNews.read(options),
+  // Mshpit News stories about the artist ("In the news" on the artist page).
+  artistHeadlines: ({ artistKey, limit }) => newsDesk.list({ artist: artistKey, limit }).stories,
   paths: {
     artist: (row) => artistPath({
       name: row?.name,

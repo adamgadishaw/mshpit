@@ -17,6 +17,7 @@ import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import useScopedRefresh from "../hooks/useScopedRefresh";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
 import { resolvePostAuthor } from "../domain/postAuthor.mjs";
+import NewsStoryCard from "../components/news/NewsStoryCard";
 
 const ago = (ts) => {
   if (!ts) return "";
@@ -276,10 +277,10 @@ export default function PostScreen({ log, onClose, onRequireAuth, onOpenProfile,
   return (
     <View style={styles.wrap}>
       <ScreenHeader
-        kicker={isOnlineReview ? "Online concert review" : activeLog.review ? "Review" : "Post"}
-        title="Original post"
+        kicker={activeLog.news ? "Mshpit News" : isOnlineReview ? "Online concert review" : activeLog.review ? "Review" : "Post"}
+        title={activeLog.news ? "Story" : "Original post"}
         onBack={onClose}
-        backLabel="Leave the original post"
+        backLabel={activeLog.news ? "Leave the story" : "Leave the original post"}
         backHint={isOnlineReview ? "Returns to the page or feed you came from" : "Returns to the show, artist, or feed you came from"}
       />
       <VinylRefreshBoundary
@@ -288,7 +289,9 @@ export default function PostScreen({ log, onClose, onRequireAuth, onOpenProfile,
         accessibilityLabel="Refresh post and comments"
       >
       <ScrollView ref={scrollRef} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-        <TicketStub log={activeLog} compactContent={false} showComments={false} onOpen={isOnlineReview ? undefined : () => onOpenShow?.(activeLog)} onOpenShow={isOnlineReview ? undefined : onOpenShow} onOpenProfile={onOpenProfile} onOpenArtist={onOpenArtist} onOpenArtistArchive={isOnlineReview ? undefined : onOpenArtistArchive} onOpenVenue={isOnlineReview ? undefined : onOpenVenue} onReport={onReport} onEdit={onEdit} onDelete={removePost} onOpenPhotos={onOpenPhotos} onPlay={onPlay} onRemoveMyPostTag={onRemoveMyPostTag} onSelfTagRemoved={reconcileSelfTagRemoval} onRequireAuth={onRequireAuth} onComment={showComments} onOpenPost={showComments} />
+        {activeLog.news ? (
+          <NewsStoryCard story={activeLog.news} full accountId={session?.id || null} onOpenArtist={onOpenArtist} />
+        ) : <TicketStub log={activeLog} compactContent={false} showComments={false} onOpen={isOnlineReview ? undefined : () => onOpenShow?.(activeLog)} onOpenShow={isOnlineReview ? undefined : onOpenShow} onOpenProfile={onOpenProfile} onOpenArtist={onOpenArtist} onOpenArtistArchive={isOnlineReview ? undefined : onOpenArtistArchive} onOpenVenue={isOnlineReview ? undefined : onOpenVenue} onReport={onReport} onEdit={onEdit} onDelete={removePost} onOpenPhotos={onOpenPhotos} onPlay={onPlay} onRemoveMyPostTag={onRemoveMyPostTag} onSelfTagRemoved={reconcileSelfTagRemoval} onRequireAuth={onRequireAuth} onComment={showComments} onOpenPost={showComments} />}
 
         <Text style={styles.sectionLabel}>
           {commentsUsable ? `${flat.length} COMMENT${flat.length === 1 ? "" : "S"}` : "COMMENTS"}

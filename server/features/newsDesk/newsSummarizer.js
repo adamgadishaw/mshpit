@@ -10,7 +10,9 @@ export const NEWS_MODEL = "claude-opus-5";
 // Claude Opus 5 list prices, used to keep the desk inside its daily budget.
 const INPUT_USD_PER_TOKEN = 5 / 1_000_000;
 const OUTPUT_USD_PER_TOKEN = 25 / 1_000_000;
-export const MAX_OUTPUT_TOKENS = 3_000;
+export const MAX_OUTPUT_TOKENS = 1_500;
+// Reports shown to Claude per story; more adds cost without adding facts.
+const MAX_REPORTS = 6;
 
 export const estimateCostUsd = ({ input_tokens = 0, output_tokens = 0 } = {}) =>
   input_tokens * INPUT_USD_PER_TOKEN + output_tokens * OUTPUT_USD_PER_TOKEN;
@@ -29,7 +31,9 @@ Publish only when all of these hold:
 
 When you publish:
 - headline: up to 90 characters, plain and factual, no clickbait, no exclamation marks, no emoji.
-- summary: two or three sentences. Use only facts that at least two reports state. No speculation, no opinions, no quotes longer than a few words. Write plainly, like a wire service. Do not use em dashes.
+- summary: one or two sentences, at most 280 characters. The lede shown on the feed card and the share image. Use only facts that at least two reports state.
+- body: the story itself, two or three short paragraphs, 120 to 200 words in total, separated by a blank line. Lead with what happened, then the key details (who, when, where, numbers), then any context the reports give. The main event must be stated by at least two reports; a detail only one report gives must be attributed to that outlet by name ("according to Rolling Stone"). Write it in your own words: never copy a sentence from a report, and quote at most a few words.
+- In every field: no speculation, no opinions, plain wire-service language. Do not use em dashes.
 - artists: the names of the artists the story is about, as the reports write them.
 - sourceIndexes: the numbers of the reports that describe this story.
 When you do not publish, set publish to false, give a short reason, and leave the other text fields empty.`;
@@ -41,24 +45,29 @@ const SCHEMA = {
     reason: { type: "string" },
     headline: { type: "string" },
     summary: { type: "string" },
+    body: { type: "string" },
     category: { type: "string", enum: [...NEWS_CATEGORIES] },
     artists: { type: "array", items: { type: "string" } },
     sourceIndexes: { type: "array", items: { type: "integer" } },
   },
-  required: ["publish", "reason", "headline", "summary", "category", "artists", "sourceIndexes"],
+  required: ["publish", "reason", "headline", "summary", "body", "category", "artists", "sourceIndexes"],
   additionalProperties: false,
 };
 
 export function storyPrompt(reports) {
-  const lines = reports.map((report, index) => [
+  const lines = reports.slice(0, MAX_REPORTS).map((report, index) => [
     `[${index + 1}] ${report.sourceName}, ${new Date(report.publishedAt).toISOString().slice(0, 10)}`,
     `Headline: ${report.title}`,
     report.description ? `Teaser: ${report.description}` : "",
+    report.lead ? `Opening paragraphs:\n${report.lead}` : "",
   ].filter(Boolean).join("\n"));
   return `Reports:\n\n${lines.join("\n\n")}\n\nDecide whether to publish, and write the post if so.`;
 }
 
 const clean = (value, max) => String(value || "").replace(/—/gu, ",").replace(/\s+/gu, " ").trim().slice(0, max);
+// Paragraphs survive; everything else is cleaned like a single line.
+const cleanParagraphs = (value, max) => String(value || "").split(/\n\s*\n/u)
+  .map((paragraph) => clean(paragraph, max)).filter(Boolean).slice(0, 4).join("\n\n").slice(0, max);
 
 export function createNewsSummarizer({ apiKey, client = null } = {}) {
   const anthropic = client || new Anthropic({ apiKey, maxRetries: 2, timeout: 120_000 });
@@ -77,13 +86,15 @@ export function createNewsSummarizer({ apiKey, client = null } = {}) {
     const text = response.content.find((block) => block.type === "text")?.text || "";
     let parsed;
     try { parsed = JSON.parse(text); } catch { return { publish: false, reason: "unreadable", costUsd }; }
+    const shown = Math.min(reports.length, MAX_REPORTS);
     const sourceIndexes = (Array.isArray(parsed.sourceIndexes) ? parsed.sourceIndexes : [])
-      .filter((index) => Number.isSafeInteger(index) && index >= 1 && index <= reports.length);
+      .filter((index) => Number.isSafeInteger(index) && index >= 1 && index <= shown);
     return {
       publish: parsed.publish === true,
       reason: clean(parsed.reason, 200),
       headline: clean(parsed.headline, 110),
-      summary: clean(parsed.summary, 700),
+      summary: clean(parsed.summary, 400),
+      body: cleanParagraphs(parsed.body, 1800),
       category: NEWS_CATEGORIES.includes(parsed.category) ? parsed.category : "other",
       artists: (Array.isArray(parsed.artists) ? parsed.artists : []).map((name) => clean(name, 120)).filter(Boolean).slice(0, 6),
       supporting: [...new Set(sourceIndexes)].map((index) => reports[index - 1]),

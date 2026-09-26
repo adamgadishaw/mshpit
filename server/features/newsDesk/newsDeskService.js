@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { NEWS_SOURCES, newsSourceById } from "./newsSources.js";
-import { parseNewsFeed } from "./newsFeedParser.js";
+import { claudeCeilingLeftMicroUsd } from "../../claudeSpendCeiling.js";
+import { NEWS_SOURCES, newsSourceById, sourceOwnsUrl } from "./newsSources.js";
+import { articleLead, parseNewsFeed } from "./newsFeedParser.js";
 import { clusterReports, headlineTokens, independentGroups, isConfirmed, looksLikeNews, newsCategory, similarity, storyCategory } from "./newsStoryRules.js";
 import { storyPrompt, worstCaseCostUsd } from "./newsSummarizer.js";
 import { artistDiscoverPhotoUri, deezerImageUrl } from "../artistPhotos/discoverPhoto.js";
@@ -19,10 +20,16 @@ export const NEWS_DESK_HANDLE = "news_mod";
 export const DAILY_STORY_LIMIT = 8;
 const STORIES_PER_PASS = 3;
 
+// A story costs about 2 cents, so $0.30 a day covers the daily story limit.
+// The desk also stops when all Claude features together reach the shared
+// monthly ceiling (server/claudeSpendCeiling.js).
 export const newsDeskBudget = (env = process.env) => ({
-  dailyUsd: positiveNumber(env.NEWS_DESK_DAILY_USD, 1),
-  monthlyUsd: positiveNumber(env.NEWS_DESK_MONTHLY_USD, 9),
+  dailyUsd: positiveNumber(env.NEWS_DESK_DAILY_USD, 0.3),
+  monthlyUsd: positiveNumber(env.NEWS_DESK_MONTHLY_USD, 6),
 });
+// Articles read per story: one per publisher group, so the write-up has more
+// than headlines to go on.
+const ARTICLES_PER_STORY = 4;
 function positiveNumber(value, fallback) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
@@ -58,6 +65,10 @@ export function ensureNewsDeskSchema(database) {
   CREATE INDEX IF NOT EXISTS idx_news_stories_recent ON news_stories(status, created_at DESC, id DESC);
   CREATE UNIQUE INDEX IF NOT EXISTS idx_news_stories_post ON news_stories(post_id) WHERE post_id IS NOT NULL;
   CREATE TABLE IF NOT EXISTS news_desk_spend (day TEXT PRIMARY KEY, usd REAL NOT NULL DEFAULT 0);`);
+  // The full write-up shown on a story's page, added after the first release.
+  if (!database.prepare("PRAGMA table_info(news_stories)").all().some((column) => column.name === "body")) {
+    database.exec("ALTER TABLE news_stories ADD COLUMN body TEXT NOT NULL DEFAULT ''");
+  }
 }
 
 const parseJson = (value, fallback) => { try { const parsed = JSON.parse(value); return parsed ?? fallback; } catch { return fallback; } };
@@ -66,14 +77,21 @@ const dayOf = (at) => new Date(at).toISOString().slice(0, 10);
 // Catalogue artists a headline names. Only artists with an audience take part,
 // names must appear as whole words, and single-word names must be capitalised
 // and at least four letters, so "Yes" or "Low" in a sentence do not count.
+// Shorter names count only when they look like nothing else: a digit or all
+// capitals, written exactly that way ("U2", "BTS", "SZA").
+const distinctShortName = (name) => /\d/u.test(name) || (/\p{Lu}/u.test(name) && name === name.toUpperCase());
 export function createArtistMatcher(database) {
   const byName = new Map();
+  const shortNames = new Map();
   let longest = 1;
   for (const row of database.prepare("SELECT norm,name FROM artists WHERE COALESCE(popularity,0)>=35").iterate()) {
     const name = String(row.name || "").trim();
     if (!name) continue;
     const words = name.split(/\s+/u).length;
-    if (words === 1 && name.length < 4) continue;
+    if (words === 1 && name.length < 4) {
+      if (name.length >= 2 && distinctShortName(name)) shortNames.set(name, row.norm);
+      continue;
+    }
     byName.set(name.toLowerCase(), row.norm);
     longest = Math.max(longest, Math.min(words, 6));
   }
@@ -83,7 +101,7 @@ export function createArtistMatcher(database) {
     for (let start = 0; start < words.length; start += 1) {
       for (let size = Math.min(longest, words.length - start); size >= 1; size -= 1) {
         const phrase = words.slice(start, start + size).join(" ");
-        const key = byName.get(phrase.toLowerCase());
+        const key = byName.get(phrase.toLowerCase()) || (size === 1 ? shortNames.get(phrase) : null);
         if (!key) continue;
         if (size === 1 && !/^\p{Lu}/u.test(phrase)) continue;
         found.add(key);
@@ -94,7 +112,7 @@ export function createArtistMatcher(database) {
   };
 }
 
-export function createNewsDesk({ database, fetchText, summarize = null, now = Date.now, newId = randomUUID, env = process.env, log = console }) {
+export function createNewsDesk({ database, fetchText, fetchArticle = null, summarize = null, now = Date.now, newId = randomUUID, env = process.env, log = console }) {
   ensureNewsDeskSchema(database);
   const budget = newsDeskBudget(env);
 
@@ -103,7 +121,28 @@ export function createNewsDesk({ database, fetchText, summarize = null, now = Da
   }
   function budgetLeft(at) {
     const day = dayOf(at);
-    return Math.min(budget.dailyUsd - spentSince(day), budget.monthlyUsd - spentSince(`${day.slice(0, 7)}-01`));
+    return Math.min(budget.dailyUsd - spentSince(day), budget.monthlyUsd - spentSince(`${day.slice(0, 7)}-01`),
+      claudeCeilingLeftMicroUsd(database, { env, at }) / 1_000_000);
+  }
+
+  // The opening paragraphs of up to four articles, one per publisher group,
+  // fetched only from each outlet's own site. A page that fails to load just
+  // leaves that report with its headline and teaser.
+  async function withArticleLeads(reports, signal) {
+    if (!fetchArticle) return reports;
+    const groups = new Set();
+    const chosen = new Set();
+    for (const report of reports) {
+      if (chosen.size >= ARTICLES_PER_STORY || groups.has(report.group)) continue;
+      if (!sourceOwnsUrl(newsSourceById(report.sourceId), report.url)) continue;
+      groups.add(report.group);
+      chosen.add(report.url);
+    }
+    return Promise.all(reports.map(async (report) => {
+      if (!chosen.has(report.url)) return report;
+      try { return { ...report, lead: articleLead(await fetchArticle(report.url, { signal })) }; }
+      catch { return report; }
+    }));
   }
   function recordSpend(at, usd) {
     if (!(usd > 0)) return;
@@ -185,8 +224,8 @@ export function createNewsDesk({ database, fetchText, summarize = null, now = Da
     try {
       database.prepare(`INSERT INTO posts (id,user_id,artist,artist_key,venue,city,date,overall,review,kind,created_at)
         VALUES (?,?,?,?,'','','',0,?,'status',?)`).run(postId, account.id, lead?.name || "", lead?.norm || null, result.summary, at);
-      database.prepare(`INSERT INTO news_stories (id,status,headline,summary,category,artist_keys,sources,post_id,cost_usd,created_at,updated_at)
-        VALUES (?,'published',?,?,?,?,?,?,?,?,?)`).run(id, result.headline, result.summary, result.category, JSON.stringify(artistKeys),
+      database.prepare(`INSERT INTO news_stories (id,status,headline,summary,body,category,artist_keys,sources,post_id,cost_usd,created_at,updated_at)
+        VALUES (?,'published',?,?,?,?,?,?,?,?,?,?)`).run(id, result.headline, result.summary, result.body || "", result.category, JSON.stringify(artistKeys),
         JSON.stringify(sources), postId, costUsd, at, at);
       const mark = database.prepare("UPDATE news_reports SET story_id=? WHERE url=?");
       for (const report of reports) mark.run(id, report.url);
@@ -220,8 +259,10 @@ export function createNewsDesk({ database, fetchText, summarize = null, now = Da
       .sort((left, right) => independentGroups(right) - independentGroups(left)
         || Math.max(...right.map((report) => report.publishedAt)) - Math.max(...left.map((report) => report.publishedAt)));
     outcome.confirmed = confirmed.length;
-    for (const reports of confirmed.slice(0, Math.min(STORIES_PER_PASS, Math.max(0, DAILY_STORY_LIMIT - publishedToday)))) {
+    for (const cluster of confirmed.slice(0, Math.min(STORIES_PER_PASS, Math.max(0, DAILY_STORY_LIMIT - publishedToday)))) {
       if (signal?.aborted) break;
+      if (budgetLeft(at) < worstCaseCostUsd(storyPrompt(cluster).length)) { outcome.skippedForBudget += 1; break; }
+      const reports = await withArticleLeads(cluster, signal);
       if (budgetLeft(at) < worstCaseCostUsd(storyPrompt(reports).length)) { outcome.skippedForBudget += 1; break; }
       const result = await summarize(reports, { signal });
       recordSpend(at, result.costUsd);
@@ -251,28 +292,36 @@ export function createNewsDeskReader(database, { ensureSchema = true } = {}) {
       try { return listStories(database, options); }
       catch (error) { if (missingTable(error)) return { stories: [], nextCursor: null }; throw error; }
     },
-    forPost(postId) {
-      if (!ready) { ensureNewsDeskSchema(database); ready = true; }
-      try {
-        const row = database.prepare(`SELECT id,headline,summary,category,artist_keys,sources,post_id,created_at FROM news_stories
-          WHERE post_id=? AND status='published'`).get(postId);
-        return row ? newsStoryJson(row, database.prepare("SELECT norm,name,public_slug,photo,data FROM artists WHERE norm=?")) : null;
-      } catch (error) {
-        if (missingTable(error)) return null;
-        throw error;
-      }
-    },
+    forPost(postId) { return readOne("post_id", postId); },
+    // One live story by its own id (the share image route).
+    get(id) { return readOne("id", id, { live: true }); },
   };
+  function readOne(column, value, { live = false } = {}) {
+    if (!ready) { ensureNewsDeskSchema(database); ready = true; }
+    try {
+      const row = database.prepare(`SELECT s.id,s.headline,s.summary,s.body,s.category,s.artist_keys,s.sources,s.post_id,s.created_at
+        FROM news_stories s ${live ? "JOIN posts p ON p.id=s.post_id AND p.removed=0" : ""}
+        WHERE s.${column === "id" ? "id" : "post_id"}=? AND s.status='published'`).get(String(value || ""));
+      return row ? newsStoryJson(row, database.prepare("SELECT norm,name,public_slug,photo,data FROM artists WHERE norm=?")) : null;
+    } catch (error) {
+      if (missingTable(error)) return null;
+      throw error;
+    }
+  }
 }
 
-function listStories(database, { limit = 20, before = null } = {}) {
+// `artist` narrows the list to stories about one catalogue artist (its key).
+function listStories(database, { limit = 20, before = null, artist = null } = {}) {
   const bounded = Math.max(1, Math.min(50, Number(limit) || 20));
   const cursor = before && Number.isSafeInteger(before.createdAt) ? before : null;
-  const rows = database.prepare(`SELECT s.id,s.headline,s.summary,s.category,s.artist_keys,s.sources,s.post_id,s.created_at
+  const artistKey = typeof artist === "string" && artist.trim() ? artist.trim().slice(0, 200) : null;
+  const rows = database.prepare(`SELECT s.id,s.headline,s.summary,s.body,s.category,s.artist_keys,s.sources,s.post_id,s.created_at
     FROM news_stories s JOIN posts p ON p.id=s.post_id
-    WHERE s.status='published' AND p.removed=0 ${cursor ? "AND (s.created_at<? OR (s.created_at=? AND s.id<?))" : ""}
+    WHERE s.status='published' AND p.removed=0
+      ${artistKey ? "AND EXISTS (SELECT 1 FROM json_each(s.artist_keys) j WHERE j.value=?)" : ""}
+      ${cursor ? "AND (s.created_at<? OR (s.created_at=? AND s.id<?))" : ""}
     ORDER BY s.created_at DESC,s.id DESC LIMIT ?`)
-    .all(...(cursor ? [cursor.createdAt, cursor.createdAt, cursor.id] : []), bounded + 1);
+    .all(...(artistKey ? [artistKey] : []), ...(cursor ? [cursor.createdAt, cursor.createdAt, cursor.id] : []), bounded + 1);
   const artistLookup = database.prepare("SELECT norm,name,public_slug,photo,data FROM artists WHERE norm=?");
   const stories = rows.slice(0, bounded).map((row) => newsStoryJson(row, artistLookup));
   const last = rows.length > bounded ? rows[bounded - 1] : null;
@@ -293,6 +342,7 @@ function newsStoryJson(row, artistLookup) {
     postId: row.post_id,
     headline: row.headline,
     summary: row.summary,
+    body: row.body || "",
     category: row.category,
     artists,
     sources,

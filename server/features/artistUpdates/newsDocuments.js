@@ -140,6 +140,23 @@ export function renderNewsMain(document) {
 }
 
 // The "Latest news" block on an artist's public page.
+// "In the news": Mshpit News stories about this artist, each linking to its
+// story page, newest first.
+export function renderArtistHeadlinesSection(document) {
+  const stories = Array.isArray(document?.headlines) ? document.headlines : [];
+  if (!stories.length) return "";
+  const items = stories.map((story) => {
+    const published = new Date(story.publishedAt);
+    const date = Number.isFinite(published.valueOf()) ? published.toISOString().slice(0, 10) : "";
+    const outlets = story.sources?.length ? `Confirmed by ${story.sources.slice(0, 4).join(", ")}` : "";
+    return `<li><h3>${safePath(story.path) ? `<a href="${esc(story.path)}">${esc(story.headline)}</a>` : esc(story.headline)}</h3>
+      ${story.summary ? `<p>${esc(story.summary)}</p>` : ""}
+      <p class="muted">${[date ? `<time datetime="${esc(date)}">${esc(date)}</time>` : "", esc(outlets)].filter(Boolean).join(" · ")}</p></li>`;
+  }).join("");
+  return `<section class="section"><div class="section-heading"><div><p class="eyebrow">Mshpit News</p><h2>${esc(document.artist?.name || "This artist")} in the news</h2></div></div><ul class="news-list">${items}</ul>
+    <p class="muted"><a href="/news">More music news</a></p></section>`;
+}
+
 export function renderArtistNewsSection(document) {
   const items = Array.isArray(document?.news) ? document.news : [];
   if (!items.length) return "";

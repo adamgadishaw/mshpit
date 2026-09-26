@@ -6,35 +6,62 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
-## 2026-09-26 Mshpit News desk (review branch `feat/news-desk`, not on master)
+## 2026-09-26 Mshpit News desk
 
 The owner asked for real music news on the feed, posted by @news_mod, instead
-of follow alerts buried in Discover. Built on `feat/news-desk`; waiting for the
-owner to review screenshots before merging.
+of follow alerts buried in Discover. After reviewing the first screenshots they
+asked for a share card like other posts, links to the artists' profiles, a real
+news write-up rather than a two-line blurb, spending inside $10 a month, and
+profiles updated from the news. Built on `feat/news-desk`, merged to master.
 
 - Server (`server/features/newsDesk/`): every 20 minutes reads RSS from eight
   outlets (Billboard, Rolling Stone, Variety, Pitchfork, Stereogum, NME,
-  Consequence, The Guardian). Reports are grouped into stories by headline overlap;
-  a story needs two independent publisher groups (Billboard, Rolling Stone and
-  Variety count as one group, PMC), three for deaths and legal news. Reviews,
-  polls, lists and gossip are skipped. Claude (`claude-opus-5`, low effort,
-  JSON schema output) writes the headline and a 2 to 3 sentence summary and can
-  decline. Each story becomes a status post from @news_mod with every outlet's
-  link. Limits: 8 stories a day, 3 per pass, $1 a day and $9 a month
-  (`NEWS_DESK_DAILY_USD`, `NEWS_DESK_MONTHLY_USD`); each call must fit its
-  worst-case price in what is left, and the actual cost is recorded after it. Off unless `NEWS_DESK_ENABLED` and `ANTHROPIC_API_KEY` are
-  set in the Render dashboard. Source links drop tracking parameters.
+  Consequence, The Guardian). Reports are grouped into stories by headline
+  overlap; a story needs two independent publisher groups (Billboard, Rolling
+  Stone and Variety count as one group, PMC), three for deaths and legal news.
+  Reviews, polls, lists and gossip are skipped. For a confirmed story the desk
+  reads the opening paragraphs of up to four of the articles (one per publisher
+  group, only https pages on that outlet's own domain, 3 MB and 15 s caps), and
+  Claude (`claude-opus-5`, low effort, JSON schema output) writes a headline, a
+  one or two sentence lede and a 120 to 200 word story in its own words (a
+  detail only one outlet gives is attributed by name), or declines. Each story
+  becomes a status post from @news_mod with every outlet's link. Source links
+  drop tracking parameters.
+- Cost: about 2 cents a story. Limits: 8 stories a day, 3 per pass, $0.30 a day
+  and $6 a month (`NEWS_DESK_DAILY_USD`, `NEWS_DESK_MONTHLY_USD`), and the shared
+  Claude ceiling (`ANTHROPIC_MONTHLY_USD`, $10, see the next entry). Each call
+  must fit its worst-case price in what is left. Off unless `NEWS_DESK_ENABLED`
+  and `ANTHROPIC_API_KEY` are set in the Render dashboard.
+- Artist matching: headline names are matched to catalogue artists (popularity
+  35+). Short names now count when they contain a digit or are all capitals in
+  exactly that form ("U2", "BTS", "SZA"); "Yes" or "Low" in a headline still do
+  not.
 - Feed: a News segment next to Following, Local and For You; news posts show
-  as story cards (headline, summary, artist photo, "Confirmed by" links); a
-  "Music news" panel in the desktop right rail and a strip on phones. The News
-  screen now has "Music news" and "Your artists" (follow alerts) tabs. The
-  Discover news strip is gone.
+  as story cards with a Share button, artist chips (photo, name, opens the
+  profile), "Read the full story" and "Confirmed by" links; a "Music news" panel
+  in the desktop right rail and a strip on phones (both hidden while there are
+  no stories). Opening a story shows the whole write-up ("Mshpit News / Story").
+  The News screen has "Music news" and "Your artists" (follow alerts) tabs; the
+  Discover news strip is gone. @news_mod's profile shows its posts as news cards.
+- Sharing: the share sheet (Instagram Story, X, Facebook, copy link, download)
+  now takes news posts. The story card is text only (MSHPIT NEWS, category,
+  date, headline, lede, artists, outlets); Deezer photos are never composited
+  into exported images. `GET /api/news-desk/stories/:id/image.png` renders a
+  1200x630 link preview, public and cached for an hour, used as og:image.
+- Story pages (`/post/news_<id>`): title "<headline> | Mshpit News", the lede as
+  description, the link preview image, NewsArticle structured data with
+  citations and the artists (MusicGroup with their page URLs), and the full
+  write-up with artist links and nofollow outlet links in the HTML.
+- Artist pages: "In the news" lists that artist's stories (app and public page,
+  `GET /api/news-desk/stories?artist=<key>`). Catalog research now takes artists
+  from the last 30 days of stories first, so thin pages of artists in the news
+  get a sourced summary sooner.
 - `/news` (crawlable page and sitemap) lists desk stories as NewsArticle items
   with source citations, indexable from 3 stories.
 - Dry run against live feeds (no Claude calls) found 5 confirmed stories on
   2026-09-26: U2 50th anniversary, Pearl Jam's new drummer, the New York
   festival cancellations, Jingle Ball lineups and Ed Sheeran's Gillette shows.
-- Full `npm run check` passed on the branch (5,463 tests, first load 503.2 KiB).
+- Full `npm run check` passed on the branch (5,474 tests, first load 503.9 KiB).
 
 ## 2026-09-26 Claude spending capped at $10 a month
 

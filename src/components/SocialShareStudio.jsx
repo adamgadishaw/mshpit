@@ -24,6 +24,7 @@ const KIND_ACCENTS = Object.freeze({
   going: "#FF8C42",
   interested: "#5B8DEF",
   review: "#ED5B8D",
+  news: "#FF8A3D",
 });
 
 function shareErrorMessage(error) {
@@ -109,7 +110,7 @@ export function SocialShareButton({
       <Pressable
         onPress={() => setOpen(true)}
         accessibilityRole="button"
-        accessibilityLabel={`Share ${model.kind === "review" ? "review" : model.kind + " status"}`}
+        accessibilityLabel={`Share ${model.kind === "review" ? "review" : model.kind === "news" ? "this story" : model.kind + " status"}`}
         accessibilityHint="Preview a branded card and choose where to share it"
         style={({ pressed }) => [styles.shareTrigger, showLabel && styles.shareTriggerLabelled, pressed && styles.pressed, style]}
       >
@@ -314,7 +315,7 @@ export default function SocialShareStudio({ accountId = null, model, onClose }) 
           <View style={[styles.handle, desktop && styles.handleDesktop]} />
           <View style={styles.topbar}>
             <View style={styles.topbarCopy}>
-              <Text style={styles.sheetTitle}>{model.kind === "review" ? "Share your review" : "Share your night"}</Text>
+              <Text style={styles.sheetTitle}>{model.kind === "review" ? "Share your review" : model.kind === "news" ? "Share this story" : "Share your night"}</Text>
               <Text style={styles.sheetIntro}>A Story-sized card with a link back to Mshpit.</Text>
             </View>
             <Pressable accessibilityLabel="Close share preview" accessibilityRole="button" hitSlop={10} onPress={onClose} style={styles.closeButton}>

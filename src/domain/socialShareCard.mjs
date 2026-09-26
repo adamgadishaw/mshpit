@@ -3,7 +3,7 @@ import { buildAttendanceTicketPreview, formatAttendanceTicketDate, normalizeAtte
 import { mediaDisplayItems, mediaDisplayKind, mediaDisplayUri, mediaPosterUri } from "./postMediaDisplay.mjs";
 import { eventPath, postPath } from "./urls.mjs";
 
-const SHARE_KINDS = new Set(["going", "interested", "review"]);
+const SHARE_KINDS = new Set(["going", "interested", "review", "news"]);
 const SHARE_ID_PATTERN = /^[A-Za-z0-9._:-]{1,200}$/u;
 const MAX_TITLE = 120;
 const MAX_META = 120;
@@ -105,12 +105,14 @@ const makeModel = ({
   const safeQuote = cleanText(quote, MAX_QUOTE);
   const safeRating = finiteScore(rating);
   const place = [safeVenue, safeCity].filter(Boolean).join(" · ");
-  const actionLine = kind === "review"
+  const actionLine = kind === "news"
+    ? safeTitle
+    : kind === "review"
     ? `${safeAuthor || "A fan"} reviewed ${safeTitle}`
     : kind === "going"
       ? `${safeAuthor || "A Mshpit fan"} is going to ${safeTitle}`
       : `${safeAuthor || "A Mshpit fan"} is interested in ${safeTitle}`;
-  const shareText = [
+  const shareText = kind === "news" ? `${safeTitle} (Mshpit News)` : [
     actionLine,
     safeContext && safeContext !== safeTitle ? safeContext : "",
     place,
@@ -121,7 +123,7 @@ const makeModel = ({
   return Object.freeze({
     kind,
     id: cleanText(id, 240),
-    eyebrow: kind === "review" ? "REVIEW" : kind.toUpperCase(),
+    eyebrow: kind === "review" ? "REVIEW" : kind === "news" ? "MSHPIT NEWS" : kind.toUpperCase(),
     title: safeTitle,
     contextTitle: safeContext || null,
     venue: safeVenue || null,
@@ -189,6 +191,21 @@ export function buildPostShareModel(log = {}, { author = null } = {}) {
     rating: log.overall,
     quote: reviewText,
     artworkUri: firstPostArtwork(log),
+  });
+}
+
+// A Mshpit News story shares its news card and its own story page.
+export function buildNewsShareModel(story = {}) {
+  const postId = strictShareId(story?.postId);
+  if (!postId || !postId.startsWith("news_")) return null;
+  const canonicalPath = postPath(postId);
+  if (!canonicalPath) return null;
+  return makeModel({
+    kind: "news",
+    id: postId,
+    url: absoluteMshpitUrl(canonicalPath),
+    renderRequest: { kind: "post", postId },
+    title: story.headline,
   });
 }
 

@@ -39,7 +39,7 @@ function bufferView(value) {
 // fetch clients, credentials, database objects, or AbortSignal into the child.
 export function normalizedShareProcessInput(model, { artworkBytes, artworkDataUri = "", artwork = null } = {}) {
   if (!model || typeof model !== "object" || Array.isArray(model)
-    || !["going", "interested", "review"].includes(model.variant)) {
+    || !["going", "interested", "review", "news", "news-link"].includes(model.variant)) {
     throw new SocialShareCardProcessError("renderer_protocol");
   }
   const metadata = boundedJson({ model, artwork }, SHARE_PROCESS_LIMITS.metadataBytes);

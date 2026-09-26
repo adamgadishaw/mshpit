@@ -8,10 +8,14 @@ const directory = mkdtempSync(join(tmpdir(), "pit-news-desk-"));
 process.env.PIT_DATA_DIR = directory;
 const { db, q } = await import("../../db.js");
 const { routes } = await import("../../api.js");
-const { parseNewsFeed } = await import("./newsFeedParser.js");
+const { articleLead, parseNewsFeed } = await import("./newsFeedParser.js");
+const { sourceOwnsUrl, newsSourceById } = await import("./newsSources.js");
+const { binaryApiResponsePayload } = await import("../../binaryApiResponse.js");
+const { createPublicDocumentService } = await import("../seo/publicDocuments.js");
+const { renderPublicDocumentHead, renderPublicDocumentMain } = await import("../seo/publicDocumentRenderer.js");
 const rules = await import("./newsStoryRules.js");
-const { createNewsDesk, createNewsDeskReader, NEWS_DESK_HANDLE } = await import("./newsDeskService.js");
-const { createNewsSummarizer, NEWS_MODEL } = await import("./newsSummarizer.js");
+const { createArtistMatcher, createNewsDesk, createNewsDeskReader, newsDeskBudget, NEWS_DESK_HANDLE } = await import("./newsDeskService.js");
+const { createNewsSummarizer, NEWS_MODEL, storyPrompt } = await import("./newsSummarizer.js");
 after(() => { db.close(); rmSync(directory, { recursive: true, force: true }); });
 
 const NOW = Date.parse("2026-09-26T15:00:00Z");
@@ -120,7 +124,8 @@ test("the summary request uses Claude Opus 5 with fallbacks, a fixed schema and 
   const fake = { beta: { messages: { create: async (body) => {
     requests.push(body);
     return { stop_reason: "end_turn", usage: { input_tokens: 1_000, output_tokens: 200 }, content: [{ type: "text", text: JSON.stringify({
-      publish: true, reason: "", headline: "Band — news", summary: "Two outlets report it.", category: "tour", artists: ["Band"], sourceIndexes: [1, 2, 9],
+      publish: true, reason: "", headline: "Band — news", summary: "Two outlets report it.", body: "First paragraph.\n\nSecond — paragraph.",
+      category: "tour", artists: ["Band"], sourceIndexes: [1, 2, 9],
     }) }] };
   } } } };
   const summarize = createNewsSummarizer({ client: fake });
@@ -135,9 +140,130 @@ test("the summary request uses Claude Opus 5 with fallbacks, a fixed schema and 
   assert.equal(requests[0].output_config.format.type, "json_schema");
   assert.match(requests[0].system, /untrusted/u);
   assert.equal(result.headline, "Band , news", "no em dashes in published copy");
+  assert.equal(result.body, "First paragraph.\n\nSecond , paragraph.", "the write-up keeps its paragraphs");
+  assert.ok(requests[0].output_config.format.schema.required.includes("body"));
+  assert.match(requests[0].system, /120 to 200 words/u);
   assert.equal(result.supporting.length, 2, "only real report numbers are kept");
   assert.equal(result.costUsd.toFixed(3), "0.010");
 
   const refused = createNewsSummarizer({ client: { beta: { messages: { create: async () => ({ stop_reason: "refusal", usage: {}, content: [] }) } } } });
   assert.equal((await refused(reports)).publish, false);
+});
+
+test("article pages add their opening paragraphs, read only from each outlet's own site", () => {
+  const html = `<html><p>Short.</p><p>Sign up for our newsletter to get the best music news every single morning in your inbox.</p>
+    <p>U2 returned to Mount Temple Comprehensive School in Dublin on Friday to mark fifty years since the band first played together there.</p>
+    <p class="x">The band played a short set for about 1,000 students &amp; staff, including early songs they wrote as teenagers.</p></html>`;
+  const lead = articleLead(html);
+  assert.match(lead, /^U2 returned to Mount Temple/u);
+  assert.match(lead, /1,000 students & staff/u);
+  assert.doesNotMatch(lead, /newsletter|Short\./u, "boilerplate and fragments are skipped");
+  assert.ok(articleLead(html, 150).length <= 150);
+
+  const stereogum = newsSourceById("stereogum");
+  assert.equal(sourceOwnsUrl(stereogum, "https://stereogum.com/2512591/u2/news/"), true);
+  assert.equal(sourceOwnsUrl(stereogum, "https://www.stereogum.com/a"), true);
+  for (const url of ["http://stereogum.com/a", "https://stereogum.com.evil.example/a", "https://evil.example/stereogum.com", "https://user@stereogum.com/a"]) {
+    assert.equal(sourceOwnsUrl(stereogum, url), false, url);
+  }
+});
+
+test("short artist names count only when they cannot be an ordinary word", () => {
+  for (const [norm, name] of [["u2", "U2"], ["bts", "BTS"], ["low", "Low"], ["yes", "Yes"]]) {
+    db.prepare(`INSERT INTO artists (norm,name,popularity,created_at,updated_at) VALUES (?,?,80,?,?)
+      ON CONFLICT(norm) DO UPDATE SET name=excluded.name,popularity=80`).run(norm, name, NOW, NOW);
+  }
+  const match = createArtistMatcher(db);
+  assert.deepEqual(match("U2 and BTS Top The Chart"), ["u2", "bts"]);
+  assert.deepEqual(match("Yes, Low Turnout Hits The Festival"), [], "title-case words are not artists");
+  assert.deepEqual(match("Bts fans rally"), [], "short names must match their exact casing");
+});
+
+test("the desk writes a full story from the articles and files it under each artist", async () => {
+  newsAccount();
+  db.prepare(`INSERT INTO artists (norm,name,public_slug,popularity,created_at,updated_at) VALUES ('u2','U2','u2',90,?,?)
+    ON CONFLICT(norm) DO UPDATE SET popularity=90`).run(NOW, NOW);
+  const u2Feeds = {
+    "https://www.stereogum.com/category/news/feed/": rss([["U2 Play Their Old High School On 50th Anniversary", "https://stereogum.com/2512591/u2-school/news/", 3]]),
+    "https://consequence.net/category/music/feed/": rss([["U2 Return to Their Dublin High School for 50th Anniversary Concert", "https://consequence.net/2026/09/u2-school/", 2]]),
+    "https://www.theguardian.com/music/rss": rss([["U2 play surprise 50th anniversary show at Dublin high school", "https://evil.example/u2", 1]]),
+  };
+  const fetched = [];
+  const fetchArticle = async (url) => {
+    fetched.push(url);
+    return `<p>U2 returned to Mount Temple Comprehensive School in Dublin to mark fifty years since the band first formed there.</p>`;
+  };
+  const prompts = [];
+  const summarize = async (reports) => {
+    prompts.push(storyPrompt(reports));
+    return { publish: true, reason: "", headline: "U2 mark 50 years with a show at their old Dublin school", category: "other",
+      summary: "U2 played their old Dublin high school to mark 50 years since they formed.",
+      body: "U2 played Mount Temple Comprehensive School in Dublin on Friday.\n\nThe band formed at the school in 1976, according to Stereogum.",
+      artists: ["U2"], supporting: reports, costUsd: 0.02 };
+  };
+  let sequence = 0;
+  const desk = createNewsDesk({ database: db, fetchText: async (url) => u2Feeds[url] || rss([]), fetchArticle, summarize,
+    now: () => NOW, env: {}, newId: () => `u2-${++sequence}` });
+  await desk.ingest();
+  assert.equal((await desk.publishPass()).published, 1);
+  assert.deepEqual(fetched.sort(), ["https://consequence.net/2026/09/u2-school/", "https://stereogum.com/2512591/u2-school/news/"],
+    "a link off the outlet's own site is never fetched");
+  assert.match(prompts[0], /Opening paragraphs:\nU2 returned to Mount Temple/u);
+
+  const reader = createNewsDeskReader(db);
+  const story = reader.get("u2-1");
+  assert.match(story.body, /\n\nThe band formed at the school in 1976, according to Stereogum\.$/u);
+  assert.deepEqual(reader.list({ artist: "u2" }).stories.map((item) => item.id), ["u2-1"]);
+  assert.deepEqual(reader.list({ artist: "nobody" }).stories, []);
+  const byArtist = routes["GET /api/news-desk/stories"]({ query: { artist: "u2" }, ip: "artist-page", setHeader() {} });
+  assert.equal(byArtist.stories[0].body, story.body);
+
+  // The public link-preview image for the story's page.
+  const image = binaryApiResponsePayload(await routes["GET /api/news-desk/stories/:id/image.png"]({ params: { id: "u2-1" }, query: {}, ip: "crawler", setHeader() {} }));
+  assert.ok(image, "a registered PNG response");
+  assert.equal(image.headers["Cache-Control"], "public, max-age=3600");
+  assert.match(image.headers["Content-Disposition"], /^inline;/u);
+  await assert.rejects(routes["GET /api/news-desk/stories/:id/image.png"]({ params: { id: "missing" }, query: {}, ip: "crawler", setHeader() {} }),
+    (error) => error.status === 404);
+});
+
+test("the desk is cheap by default and stops at the shared Claude ceiling", async () => {
+  assert.deepEqual(newsDeskBudget({}), { dailyUsd: 0.3, monthlyUsd: 6 });
+  const desk = createNewsDesk({ database: db, fetchText: async () => rss([]), now: () => NOW, env: {} });
+  assert.ok(desk.budgetLeft() > 0.1);
+  db.exec(`CREATE TABLE IF NOT EXISTS catalog_research_spend (token TEXT PRIMARY KEY,utc_day TEXT NOT NULL,reserved_micro_usd INTEGER NOT NULL,
+    charged_micro_usd INTEGER NOT NULL,status TEXT NOT NULL,created_at INTEGER NOT NULL,settled_at INTEGER)`);
+  db.prepare("INSERT INTO catalog_research_spend VALUES ('ceiling-test','2026-09-03',0,9990000,'settled',0,0)").run();
+  try {
+    assert.ok(desk.budgetLeft() <= 0.01, "catalog research and the desk share one $10 month");
+  } finally {
+    db.prepare("DELETE FROM catalog_research_spend WHERE token='ceiling-test'").run();
+  }
+});
+
+test("a story's page is a news article with its write-up, artist links, sources and news card preview", () => {
+  const reader = createNewsDeskReader(db);
+  const pages = createPublicDocumentService({
+    database: db, origin: "https://www.mshpit.com",
+    artistHeadlines: ({ artistKey, limit }) => reader.list({ artist: artistKey, limit }).stories,
+  });
+  const document = pages.postDocument({ id: "news_u2-1", canonicalPath: "/post/news_u2-1" });
+  assert.equal(document.title, "U2 mark 50 years with a show at their old Dublin school | Mshpit News");
+  assert.equal(document.image, "https://www.mshpit.com/api/news-desk/stories/u2-1/image.png");
+  const article = document.jsonLd.find((node) => node["@type"] === "NewsArticle");
+  assert.match(article.articleBody, /according to Stereogum/u);
+  assert.ok(article.citation.includes("https://stereogum.com/2512591/u2-school/news/"));
+  assert.equal(article.about[0].url, "https://www.mshpit.com/artist/u2");
+  const head = renderPublicDocumentHead(document);
+  assert.match(head, /og:image" content="https:\/\/www\.mshpit\.com\/api\/news-desk\/stories\/u2-1\/image\.png"/u);
+  assert.match(head, /og:image:width" content="1200"/u);
+  const main = renderPublicDocumentMain(document);
+  assert.match(main, /<h1>U2 mark 50 years/u);
+  assert.match(main, /<p>The band formed at the school in 1976, according to Stereogum\.<\/p>/u);
+  assert.match(main, /About <a href="\/artist\/u2">U2<\/a>/u);
+  assert.match(main, /rel="nofollow noopener noreferrer">Stereogum<\/a>/u);
+
+  const artistPage = pages.artistDocument({ artistKey: "u2" });
+  assert.equal(artistPage.headlines[0].path, "/post/news_u2-1");
+  assert.match(renderPublicDocumentMain(artistPage), /U2 in the news<\/h2>.*href="\/post\/news_u2-1"/su);
 });

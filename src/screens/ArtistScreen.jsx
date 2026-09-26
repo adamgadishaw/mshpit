@@ -299,7 +299,7 @@ function TopReviewCard({ review, rank, artistName, onOpenPost, onOpenShow, onOpe
 
 // Artist page - the rollup of a band's live reputation across every night,
 // plus where to catch them next. Answers "is this band worth seeing?"
-export default function ArtistScreen({ artistName, previewAsFan = false, onClose, onOpenPost, onOpenShow, onOpenArchive, onOpenVenue, onOpenFanClub, onShareMemory, onOpenPhotos, onOpenGallery, onOpenProfile, onManageArtistProfile, onEditArtistProfile, onPlay, onAddToPlaylist, onReport, onRequireAuth }) {
+export default function ArtistScreen({ artistName, previewAsFan = false, onClose, onOpenPost, onOpenNewsStory, onOpenShow, onOpenArchive, onOpenVenue, onOpenFanClub, onShareMemory, onOpenPhotos, onOpenGallery, onOpenProfile, onManageArtistProfile, onEditArtistProfile, onPlay, onAddToPlaylist, onReport, onRequireAuth }) {
   const { session, artistSummary, albumRating, songRating, rateAlbum, rateSong, loadRating,
     isArtistOwner, artistPostsFor, loadArtistPage, artistPageCacheEpoch,
     artistGallery, loadArtistPhotos, removePhoto, artistBadges, remoteArtistMeta,
@@ -1173,7 +1173,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
             demand so artist pages add nothing to the first page load. */}
         {profileServicesAvailable && sectionModel.active === "overview" && !legacyMode ? (
           <Suspense fallback={null}>
-            <ArtistNewsSection artistName={a.name} following={!!session && followed}
+            <ArtistNewsSection artistName={a.name} artistKey={a.profileKey || null} onOpenStory={onOpenNewsStory} following={!!session && followed}
               onFollow={ownsArtistPage ? undefined : session ? followUi.toggleFollow : onRequireAuth} />
           </Suspense>
         ) : null}

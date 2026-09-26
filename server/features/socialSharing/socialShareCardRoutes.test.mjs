@@ -79,6 +79,7 @@ function fixture({
   resolveCurrentArtistProfileImage = null,
   resolveCurrentLicensedArtistPhoto = null,
   resolveCurrentEventProviderImage = null,
+  resolveNewsStory = null,
   assertLiveShareAvailable = null,
   resolvePublicDocument = async (path) => path.startsWith("/post/")
     ? reviewDocument(path.slice("/post/".length))
@@ -105,6 +106,7 @@ function fixture({
     resolveCurrentLicensedArtistPhoto,
     resolveCurrentEventProviderImage,
     resolvePublicDocument,
+    resolveNewsStory,
     artworkEnv,
     renderer: renderer || {
       async render(model) {
@@ -912,4 +914,27 @@ test("temporary authoritative-photo failure reports a retryable artwork failure"
     (error) => error.status === 503 && error.code === "SHARE_RENDER_UNAVAILABLE"
       && error.cause?.code === "artwork_unavailable",
   );
+});
+
+test("a Mshpit News post shares its news card and is withheld once the story changes", async () => {
+  let headline = "Band announce a world tour";
+  const { route, renderedModels } = fixture({
+    postBoundary: () => ({ user_id: "news_account", kind: "status", attendance_ticket: null }),
+    resolvePublicDocument: async () => { throw new Error("news posts do not need the post document"); },
+    resolveNewsStory: (postId) => postId === "news_1" ? {
+      postId, headline, summary: "Two outlets report it.", category: "tour", publishedAt: 1_790_000_000_000,
+      artists: [], sources: [{ name: "NME", url: "https://nme.example/a" }, { name: "Stereogum", url: "https://sg.example/a" }],
+    } : null,
+  });
+  const response = binaryApiResponsePayload(await route(context({ kind: "post", postId: "news_1" })));
+  assert.match(response.headers["Content-Disposition"], /mshpit-news\.png/u);
+  assert.equal(renderedModels[0].variant, "news");
+  assert.equal(renderedModels[0].headline, "Band announce a world tour");
+
+  const { route: changing } = fixture({
+    postBoundary: () => ({ user_id: "news_account", kind: "status", attendance_ticket: null }),
+    resolveNewsStory: (postId) => ({ postId, headline, summary: "", category: "tour", publishedAt: 1_790_000_000_000, artists: [], sources: [] }),
+    renderer: { async render() { headline = "Edited headline"; return { bytes: PNG, etag: '"x"' }; } },
+  });
+  await assert.rejects(changing(context({ kind: "post", postId: "news_1" })), (error) => error.status === 404);
 });

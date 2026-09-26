@@ -927,3 +927,29 @@ test("the event story drops copy Instagram covers or that says nothing to a view
   assert.equal(interested.kicker, "Alex is interested");
   assert.doesNotMatch(JSON.stringify(interested), /\u2014/u);
 });
+
+test("a news story renders as a text-only story card and a landscape link preview", async () => {
+  const { newsShareCardModel, socialShareCardSvg } = await import("./socialShareCardRenderer.js");
+  const { normalizedShareProcessInput } = await import("./socialShareCardProcess.js");
+  const story = {
+    postId: "news_abc", category: "lineup", publishedAt: Date.parse("2026-09-26T06:00:00Z"),
+    headline: "Band <names> new drummer", summary: "The band played a surprise set. https://tracker.example/x",
+    artists: [{ name: "Band" }],
+    sources: ["Rolling Stone", "Stereogum", "NME", "Pitchfork", "Consequence"].map((name) => ({ name, url: `https://${name.length}.example/a` })),
+  };
+  const card = newsShareCardModel(story);
+  assert.equal(card.variant, "news");
+  assert.equal(card.canonicalUrl, "https://www.mshpit.com/post/news_abc");
+  assert.deepEqual(card.artwork, [], "no provider photo is ever composited");
+  assert.doesNotMatch(card.lede, /tracker/u, "links are stripped from the lede");
+  const svg = socialShareCardSvg(card);
+  assert.match(svg, /width="1080" height="1920"/u);
+  assert.match(svg, /Band &lt;names&gt;/u);
+  assert.match(svg, /BAND NEWS/u);
+  assert.doesNotMatch(svg, /<image/u);
+  const link = newsShareCardModel(story, { variant: "news-link" });
+  assert.equal(link.sources, "Confirmed by Rolling Stone, Stereogum and 3 more");
+  assert.match(socialShareCardSvg(link), /width="1200" height="630"/u);
+  assert.equal(normalizedShareProcessInput(link).model.variant, "news-link");
+  assert.equal(newsShareCardModel({ ...story, postId: "p_member_post" }), null, "only news desk posts get a news card");
+});

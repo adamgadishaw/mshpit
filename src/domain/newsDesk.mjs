@@ -17,5 +17,9 @@ export function newsSourceLine(story) {
   return `Confirmed by ${joinNames(names.slice(0, 4))}${names.length > 4 ? ` and ${names.length - 4} more` : ""}`;
 }
 
+// A story's write-up as paragraphs (the desk separates them with a blank line).
+export const newsStoryParagraphs = (body) => String(body || "").split(/\n\s*\n/u)
+  .map((paragraph) => paragraph.replace(/\s+/gu, " ").trim()).filter(Boolean);
+
 // The first artist with a photo that Discover may crop.
 export const newsStoryPhoto = (story) => (Array.isArray(story?.artists) ? story.artists : []).find((artist) => artist?.photo)?.photo || null;

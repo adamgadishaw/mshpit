@@ -50,8 +50,9 @@ test("ShowScreen links to one original post without presenting a second comment 
   assert.match(showScreen, /<Text style=\{styles\.originalPostLabel\}>FAN POST<\/Text>/);
   assert.match(showScreen, /<Text style=\{styles\.originalPostTitle\}>Open the original fan post<\/Text>/);
   assert.doesNotMatch(showScreen, /Comments on this post|Open comments|discussionCount/);
-  assert.match(postScreen, /kicker=\{isOnlineReview \? "Online concert review" : activeLog\.review \? "Review" : "Post"\}/);
-  assert.match(postScreen, /title="Original post"/);
+  // Fan posts stay "Original post"; a Mshpit News story is labelled as a story.
+  assert.match(postScreen, /kicker=\{activeLog\.news \? "Mshpit News" : isOnlineReview \? "Online concert review" : activeLog\.review \? "Review" : "Post"\}/);
+  assert.match(postScreen, /title=\{activeLog\.news \? "Story" : "Original post"\}/);
   assert.match(showScreen, /<NearbyAfterparty\s+log=\{norm\}\s+coord=\{coord\}/);
   assert.doesNotMatch(showScreen, /AfterpartySection|TextInput|addComment|deleteOwnComment|loadComments|commentsFor/);
   assert.equal(existsSync(new URL("../components/AfterpartySection.jsx", import.meta.url)), false);

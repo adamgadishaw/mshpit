@@ -115,6 +115,7 @@ import { showRoutes } from "./features/shows/showRoutes.js";
 import { createShowAttendanceRepository } from "./features/shows/showAttendanceRepository.js";
 import { normalizeShowAliasKey, normalizeTourDateId } from "./features/shows/showIdentity.js";
 import { socialShareCardRoutes } from "./features/socialSharing/socialShareCardRoutes.js";
+import { createSocialShareCardRenderer } from "./features/socialSharing/socialShareCardRenderer.js";
 import { createLoungeLifecycleService } from "./features/lounges/loungeLifecycleService.js";
 import { loungeArchiveRoutes } from "./features/lounges/loungeArchiveRoutes.js";
 import {
@@ -2901,6 +2902,9 @@ function mutedIdSet(userId) {
 }
 
 const newsDeskReader = createNewsDeskReader(db);
+// One renderer for every share card and news preview image, so its memory and
+// concurrency limits hold across both.
+const socialShareCardRenderer = createSocialShareCardRenderer();
 
 function postJson(p, viewerId) {
   const artistPublicSlug = publicArtistSlugForPost(p);
@@ -4716,6 +4720,8 @@ export const routes = {
     resolveCurrentArtistProfileImage: attendanceTicketArtistProfilePhoto,
     resolveCurrentLicensedArtistPhoto: attendanceTicketLicensedArtistPhoto,
     resolveCurrentEventProviderImage: attendanceTicketEventProviderPhotoById,
+    resolveNewsStory: (postId) => newsDeskReader.forPost(postId),
+    renderer: socialShareCardRenderer,
   }),
   ...showRoutes({
     database: db,
@@ -9630,7 +9636,7 @@ export const routes = {
     newId: uid,
     now,
   }) : {}),
-  ...newsDeskRoutes({ rateLimit: limit, reader: newsDeskReader }),
+  ...newsDeskRoutes({ rateLimit: limit, reader: newsDeskReader, renderer: socialShareCardRenderer }),
   ...artistUpdatesRoutes({
     ApiError,
     rateLimit: limit,

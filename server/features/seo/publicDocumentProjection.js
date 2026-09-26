@@ -28,6 +28,8 @@ import { publicVenueFacts } from "../../venueFacts.js";
 import { publicTourDateArtistProjection } from "../../tourDateMetadata.js";
 import { tourYearsLabel } from "../../../src/domain/artistNews.mjs";
 import { publicEventMetadata, publicVenueMetadataName } from "./publicMetadataPresentation.js";
+import { createNewsDeskReader } from "../newsDesk/newsDeskService.js";
+import { newsCategoryLabel } from "../../../src/domain/newsDesk.mjs";
 import {
   isCurrentOrUpcomingPublicMusicEvent,
   isIndexableMusicEventRecord,
@@ -461,6 +463,75 @@ function postCard(row, media, paths, { textLimit = 8_000 } = {}) {
   });
 }
 
+// A Mshpit News story's page: its own headline, the full write-up, the
+// artists it is about (linked to their pages) and every outlet that reported
+// it. The link-preview image is the story's news card.
+function newsStoryPostDocument({ story, card, comments, path, origin, paths }) {
+  const pageUrl = absolute(origin, path);
+  const headline = cleanLine(story.headline, 160);
+  const summaryText = cleanLine(story.summary, 400);
+  const body = String(story.body || "").split(/\n\s*\n/u).map((paragraph) => cleanLine(paragraph, 1200)).filter(Boolean).join("\n\n");
+  const artists = (story.artists || []).map((artist) => {
+    const name = cleanLine(artist?.name, 160);
+    const artistPagePath = name ? canonicalArtistPath(paths, { name, public_slug: artist.publicSlug || null }) : null;
+    return name ? Object.freeze({ name, path: artistPagePath }) : null;
+  }).filter(Boolean);
+  const sources = (story.sources || []).filter((source) => /^https:\/\//u.test(String(source?.url || "")))
+    .map((source) => Object.freeze({ name: cleanLine(source.name, 80), url: source.url, title: cleanLine(source.title, 200) }));
+  const publishedAt = isoTimestamp(story.publishedAt);
+  const image = absolute(origin, `/api/news-desk/stories/${encodeURIComponent(story.id)}/image.png`);
+  const organization = { "@type": "Organization", name: "Mshpit News", url: absolute(origin, "/news") };
+  const breadcrumbs = Object.freeze([
+    Object.freeze({ name: "Mshpit", path: "/" }),
+    Object.freeze({ name: "News", path: "/news" }),
+    Object.freeze({ name: headline, path }),
+  ]);
+  const article = {
+    "@context": "https://schema.org",
+    "@type": "NewsArticle",
+    "@id": `${pageUrl}#article`,
+    headline: headline.slice(0, 110),
+    ...(summaryText ? { description: summaryText } : {}),
+    ...(body ? { articleBody: body } : {}),
+    url: pageUrl,
+    mainEntityOfPage: pageUrl,
+    image: [image],
+    ...(publishedAt ? { datePublished: publishedAt } : {}),
+    author: organization,
+    publisher: organizationReference(origin),
+    articleSection: newsCategoryLabel(story.category),
+    ...(sources.length ? { citation: sources.map((source) => source.url) } : {}),
+    ...(artists.length ? { about: artists.map((artist) => ({ "@type": "MusicGroup", name: artist.name, ...(artist.path ? { url: absolute(origin, artist.path) } : {}) })) } : {}),
+    commentCount: card.comments,
+    isPartOf: siteReference(origin),
+  };
+  return Object.freeze({
+    kind: "post",
+    siteName: SITE_NAME,
+    title: `${headline} | Mshpit News`,
+    description: (summaryText || headline).slice(0, 300),
+    canonicalPath: path,
+    canonicalUrl: pageUrl,
+    image,
+    imageProvenance: "news-card",
+    imageWidth: 1200,
+    imageHeight: 630,
+    imageMimeType: "image/png",
+    imageAlt: headline,
+    video: null,
+    publishedAt: story.publishedAt,
+    modifiedAt: card.modifiedAt,
+    post: card,
+    news: Object.freeze({
+      headline, summary: summaryText, body, category: newsCategoryLabel(story.category),
+      artists: Object.freeze(artists), sources: Object.freeze(sources), publishedAt: story.publishedAt,
+    }),
+    comments,
+    breadcrumbs,
+    jsonLd: [Object.freeze(article), Object.freeze(breadcrumbNode(origin, breadcrumbs))].filter(Boolean),
+  });
+}
+
 function siteReference(origin) {
   return { "@type": "WebSite", "@id": `${origin}/#website`, name: SITE_NAME, url: `${origin}/` };
 }
@@ -791,6 +862,9 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
     }),
     concert: typeof paths.concert === "function" ? paths.concert : (key) => concertPath(key),
   });
+  // Mshpit News posts carry a story record. Read-only here: a database
+  // without the news tables simply has no stories.
+  const newsStories = createNewsDeskReader(database, { ensureSchema: false });
 
   return Object.freeze({
     home(raw = {}, { canonicalPath: requestedPath = "/" } = {}) {
@@ -1035,6 +1109,14 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       // actually fall in, and only when there are upcoming dates.
       const tourYears = tourYearsLabel(events.map((event) => event.date));
       const news = legacyMode || memorial ? [] : (Array.isArray(raw.news) ? raw.news : []).slice(0, 6);
+      const headlines = legacyMode || memorial ? [] : (Array.isArray(raw.headlines) ? raw.headlines : [])
+        .filter((story) => story?.headline && story?.postId).slice(0, 4).map((story) => Object.freeze({
+          headline: cleanLine(story.headline, 160),
+          summary: cleanLine(story.summary, 400),
+          path: showPath(story.postId),
+          publishedAt: story.publishedAt,
+          sources: Object.freeze((story.sources || []).map((source) => cleanLine(source?.name, 80)).filter(Boolean)),
+        }));
       const artistTitle = legacyMode
         ? `${name} legacy: biography and community memories | Mshpit`
         : memorial
@@ -1162,6 +1244,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         reviews,
         updates,
         news,
+        headlines,
         discography,
         musicBrainzUrl,
         events,
@@ -1270,6 +1353,8 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       // can prove only the filtered list it renders, so its visible/schema count
       // is derived from that same list.
       const card = Object.freeze({ ...projectedCard, comments: count(raw.commentCount) });
+      const story = String(source.id || "").startsWith("news_") ? newsStories.forPost(source.id) : null;
+      if (story?.headline) return newsStoryPostDocument({ story, card, comments, path, origin: publicOrigin, paths: publicPaths });
       const isOnlineReview = card.kind === "review" && card.experienceType === "online";
       const isReview = card.kind === "review" && !!card.artist;
       const headline = isOnlineReview

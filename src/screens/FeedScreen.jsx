@@ -27,7 +27,7 @@ const feedKeyExtractor = (item) => String(item.id);
 // header state. The ref-backed handlers always call the latest screen props,
 // while stable row callbacks let React skip cards whose post and visibility did
 // not change.
-const FeedTicketRow = memo(function FeedTicketRow({ item, itemIndex, mediaViewable, surface, actionsRef, capabilities }) {
+const FeedTicketRow = memo(function FeedTicketRow({ item, itemIndex, mediaViewable, surface, actionsRef, capabilities, accountId = null }) {
   const open = useCallback((_unused) => actionsRef.current.onOpen?.(item, { surface, position: itemIndex }), [actionsRef, item, itemIndex, surface]);
   const openShow = useCallback((show) => actionsRef.current.onOpen?.(show, { surface, position: itemIndex }), [actionsRef, itemIndex, surface]);
   const comment = useCallback((...args) => actionsRef.current.onComment?.(...args), [actionsRef]);
@@ -46,7 +46,7 @@ const FeedTicketRow = memo(function FeedTicketRow({ item, itemIndex, mediaViewab
 
   // A Mshpit News story posted from @news_mod.
   if (item.news) {
-    return <NewsStoryCard story={item.news} onOpen={capabilities.comment ? () => comment(item) : undefined} onOpenArtist={capabilities.openArtist ? openArtist : undefined} />;
+    return <NewsStoryCard story={item.news} accountId={accountId} onOpen={capabilities.comment ? () => comment(item) : undefined} onOpenArtist={capabilities.openArtist ? openArtist : undefined} />;
   }
 
   return (
@@ -334,7 +334,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
     requireAuth: canRequireAuth,
   }), [canComment, canEdit, canHideRecommendation, canOpenArtist, canOpenArtistArchive, canOpenPhotos, canOpenProfile, canOpenVenue, canPlay, canPreview, canRemoveMyPostTag, canReport, canRequireAuth]);
   const renderFeedItem = useCallback(({ item, index: itemIndex }) => (newsTab ? (
-    <NewsStoryCard story={item} onOpen={onOpenNewsStory} onOpenArtist={onOpenArtist} />
+    <NewsStoryCard story={item} accountId={accountId} onOpen={onOpenNewsStory} onOpenArtist={onOpenArtist} />
   ) : (
     <FeedTicketRow
       item={item}
@@ -343,8 +343,9 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
       surface={surface}
       actionsRef={rowActionsRef}
       capabilities={rowCapabilities}
+      accountId={accountId}
     />
-  )), [newsTab, onOpenArtist, onOpenNewsStory, rowCapabilities, surface, visibleMediaPostIds]);
+  )), [accountId, newsTab, onOpenArtist, onOpenNewsStory, rowCapabilities, surface, visibleMediaPostIds]);
 
   // Concert cards are tall and media-heavy. Stage them gently on phones so
   // image decoding and comment-preview mounts do not all hit one frame.
