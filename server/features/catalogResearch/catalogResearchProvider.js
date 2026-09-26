@@ -138,7 +138,9 @@ function providerError(status, body) {
     : status === 429 || type === "rate_limit_error" ? "research_rate_limited"
       : status === 529 || type === "overloaded_error" ? "research_overloaded"
         : status >= 500 ? "research_unavailable" : "research_rejected";
-  return Object.assign(new Error(`Research request failed (${status}${type ? ` ${type}` : ""}).`), { code, status });
+  return Object.assign(new Error(`Research request failed (${status}${type ? ` ${type}` : ""}).`), {
+    code, status, anthropicError: body?.error && typeof body.error === "object" ? body.error : null,
+  });
 }
 
 // Runs one research conversation. Returns { findings, searchedUrls, usage,

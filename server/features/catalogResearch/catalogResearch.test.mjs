@@ -399,3 +399,20 @@ test("artists in the news are researched first, for a month", (t) => {
   db.prepare("UPDATE news_stories SET status='declined'").run();
   assert.equal(nextArtistResearchSubject(db, { at: 2_000 }).key, "popular", "only published stories count");
 });
+
+test("a rejected research request stops the pass and logs Anthropic's reason", async (t) => {
+  const db = database(t);
+  db.exec("INSERT INTO artists(norm,name,rank_score) VALUES ('wet leg','Wet Leg',10),('other','Other',5)");
+  let calls = 0;
+  const fetchImpl = async () => {
+    calls += 1;
+    return new Response(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "Unexpected value for the anthropic-beta header." } }),
+      { status: 400, headers: { "content-type": "application/json" } });
+  };
+  const result = await runCatalogResearchPass({ database: db, env: { ANTHROPIC_API_KEY: "fixture" }, now: () => Date.parse("2026-09-24T12:00:00Z"), fetchImpl, maxItems: 4 });
+  assert.equal(result.stopped, "research_rejected");
+  assert.equal(calls, 1, "the next page is not tried after a rejected request");
+  assert.equal(result.failure, 'status=400 type=invalid_request_error detail="Unexpected value for the anthropic-beta header."');
+  assert.equal(collectCatalogResearchStatus(db, { env: { ANTHROPIC_API_KEY: "fixture" }, at: Date.parse("2026-09-24T12:00:00Z") }).today.spentUsd, 0,
+    "a rejected request costs nothing");
+});

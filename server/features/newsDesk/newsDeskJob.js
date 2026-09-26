@@ -1,5 +1,6 @@
 import { backgroundJobEnabled } from "../../backgroundJobs.js";
 import { anthropicMonthlyCeilingMicroUsd } from "../../claudeSpendCeiling.js";
+import { anthropicErrorSummary } from "../../anthropicErrors.js";
 import { privateErrorLabel } from "../../errors.js";
 import { startPeriodicJob } from "../../periodicJobScheduler.js";
 import { createNewsDesk, newsDeskBudget } from "./newsDeskService.js";
@@ -73,8 +74,8 @@ export function startNewsDeskScheduler({ database, env = process.env, now = Date
       }
       return true;
     },
-    // An Anthropic error carries its HTTP status (401: the key was rejected,
-    // 400: often no credit left), which is safe to log and says what to fix.
-    report: (error) => console.error(`[news-desk] pass failed safely: ${privateErrorLabel(error)}${Number.isInteger(error?.status) ? ` status=${error.status}` : ""}`),
+    // An Anthropic error says what to fix (401: the key; 400: the request or
+    // the account); the summary is safe to log.
+    report: (error) => console.error(`[news-desk] pass failed safely: ${privateErrorLabel(error)} ${anthropicErrorSummary(error)}`.trim()),
   });
 }

@@ -4,6 +4,7 @@ import { canonicalVenueKey } from "../../../src/domain/venueIdentity.mjs";
 import { backgroundJobEnabled } from "../../backgroundJobs.js";
 import { readCatalogKnowledgeControl } from "../../catalogKnowledgeControl.js";
 import { claudeCeilingLeftMicroUsd, utcMonthStartDay } from "../../claudeSpendCeiling.js";
+import { anthropicErrorSummary } from "../../anthropicErrors.js";
 import { privateErrorLabel } from "../../errors.js";
 import { startPeriodicJob } from "../../periodicJobScheduler.js";
 import { publicCatalogResearch, validateCatalogResearchFindings } from "./catalogResearchFindings.js";
@@ -341,10 +342,11 @@ export async function runCatalogResearchPass({
       finishSubject(database, subject, token, { status: "failed", reason: code, costMicroUsd: Math.max(0, Number(error?.costMicroUsd) || 0), at: now() });
       budget = readBudget(database, now());
       saveBudget(database, { ...budget, lastRunAt: now(), lastError: { code, at: now() } });
-      // A bad key, a rate limit or an overloaded API will not clear up by
-      // trying the next page straight away.
-      if (["research_auth", "research_rate_limited", "research_overloaded", "research_unavailable", "research_budget"].includes(code) || signal?.aborted) {
-        return { ...outcome, stopped: code };
+      // A bad key, a rejected request, a rate limit or an overloaded API will
+      // not clear up by trying the next page straight away.
+      if (["research_auth", "research_rejected", "research_rate_limited", "research_overloaded", "research_unavailable", "research_budget"].includes(code) || signal?.aborted) {
+        const failure = anthropicErrorSummary(error);
+        return { ...outcome, stopped: code, ...(failure ? { failure } : {}) };
       }
       if (uncertain) return { ...outcome, stopped: "cost_unconfirmed" };
       continue;
@@ -454,7 +456,7 @@ export function startCatalogResearchScheduler({ database, env = process.env, now
     run: async ({ signal }) => {
       const result = await runCatalogResearchPass({ database, env, now, fetchImpl, signal });
       if (result.researched || (result.stopped && !["nothing_due", "daily_budget", "monthly_budget", "paused"].includes(result.stopped))) {
-        console.log(`[catalog-research] researched=${result.researched} published=${result.published} stopped=${result.stopped || "pass_done"}`);
+        console.log(`[catalog-research] researched=${result.researched} published=${result.published} stopped=${result.stopped || "pass_done"}${result.failure ? ` ${result.failure}` : ""}`);
       }
       return true;
     },

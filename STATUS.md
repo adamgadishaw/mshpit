@@ -69,6 +69,12 @@ profiles updated from the news. Built on `feat/news-desk`, merged to master.
   rejects the `ANTHROPIC_API_KEY` value (HTTP 401/403). No stories yet; nothing
   spent. The desk's failure log now includes the HTTP status. Owner to replace
   the key; the jobs retry on their own (desk every 20 minutes, research every 10).
+- Later on 2026-09-26: the owner replaced the key (deploy 0763158 at 14:45 EDT).
+  Anthropic now accepts it but the desk's pass fails with `status=400`. The
+  account has $20.00 credit, $0 spent, a $10 monthly limit and web search
+  allowed, so it is not billing. Both jobs now log Anthropic's error type and a
+  cleaned reason (`server/anthropicErrors.js`), and research stops a pass on a
+  rejected request instead of marking page after page failed.
 
 ## 2026-09-26 Claude spending capped at $10 a month
 
