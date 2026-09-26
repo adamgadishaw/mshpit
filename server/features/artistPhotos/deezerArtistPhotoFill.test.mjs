@@ -86,3 +86,14 @@ test("an artist whose page shows a Spotify photo gets a Discover-only Deezer ima
   assert.equal(data.photoCredit, "Spotify");
   assert.equal(data.spotifyPhoto, spotify.spotifyPhoto);
 });
+
+test("a legacy Spotify URL in the photo column still gets a Discover-only image and is kept", async (t) => {
+  const { db, add } = world(t);
+  const legacy = "https://i.scdn.co/image/ab6761610000e5eb1111";
+  add("coldplay", "Coldplay", { photo: legacy, data: JSON.stringify({ deezerId: 892, photoCredit: "Spotify" }) });
+  const fetchJson = async () => ({ id: 892, name: "Coldplay", nb_fan: 12_000_000, picture_xl: PIC("c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0") });
+  assert.deepEqual(await runDeezerPhotoPass(db, { fetchJson, at: NOW }), { checked: 1, filled: 1, noMatch: 0 });
+  const row = db.prepare("SELECT photo,data FROM artists WHERE norm='coldplay'").get();
+  assert.equal(row.photo, legacy, "the artist page's Spotify image is left alone");
+  assert.deepEqual(JSON.parse(row.data).discoverPhoto, { uri: PIC("c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0"), credit: "Deezer" });
+});

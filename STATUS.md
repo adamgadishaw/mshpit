@@ -34,6 +34,12 @@ looked at the four events shown in the list.
   the artist page alone; otherwise the Deezer image becomes the artist's
   photo as before. An artist with a stored Deezer id is looked up by that id
   (the name must still match) instead of by name search.
+- The filler also skipped every chart artist whose `photo` column still holds
+  a legacy Spotify URL (Drake, Coldplay, Ed Sheeran and most of the top 24),
+  because it only looked at empty photos. Those now count as having no
+  croppable photo, get a `discoverPhoto`, and keep the Spotify URL. Run for
+  real against Deezer on a local catalogue copy: all 24 current chart artists
+  got the right picture (30 checked, 30 filled).
 - Artist photos are square portraits, and cropping one into the wide desktop
   banner cut off faces. On desktop an artist-photo slide now shows the whole
   portrait beside the text over a blurred copy of itself; the phone banner is

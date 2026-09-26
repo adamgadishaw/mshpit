@@ -35,7 +35,8 @@ export function usableDeezerPicture(url) {
 }
 
 const DEEZER_ID = /^[1-9]\d{0,11}$/u;
-const spotifyOwnsPagePhoto = (data) => data.photoSource === "spotify" || typeof data.spotifyPhoto === "string";
+const spotifyOwnsPagePhoto = (data, photo) => data.photoSource === "spotify" || typeof data.spotifyPhoto === "string"
+  || String(photo || "").startsWith("https://i.scdn.co/");
 
 // Deezer often has several exact namesakes ("Drake" has three). Take the one
 // with the most fans only when it clearly dominates the rest and has an
@@ -50,7 +51,9 @@ export function dominantNamesake(candidates, name) {
   return !next || fans >= 20 * Math.max(1, Number(next.nb_fan) || 0) ? top : null;
 }
 
-const eligibleSql = `a.photo IS NULL AND COALESCE(a.source,'')<>'artist-created'
+// A legacy Spotify URL in the photo column is not a croppable photo either:
+// db.publicArtist hides it from the generic photo path.
+const eligibleSql = `(a.photo IS NULL OR a.photo LIKE 'https://i.scdn.co/%') AND COALESCE(a.source,'')<>'artist-created'
   AND NOT EXISTS (SELECT 1 FROM artist_profiles ap WHERE ap.artist_key=a.norm AND (ap.removed=1 OR NULLIF(TRIM(ap.avatar_uri),'') IS NOT NULL))
   AND (a.data IS NULL OR json_valid(a.data)=0 OR COALESCE(CAST(json_extract(a.data,'$.deezerPhotoCheckedAt') AS INTEGER),0)<@before)`;
 
@@ -64,7 +67,7 @@ export function nextArtistsForDeezerPhoto(database, { at = Date.now(), limit = 2
       if (!seen.has(row.norm)) { seen.add(row.norm); picked.push(row); }
     }
   };
-  const columns = "a.norm,a.name,a.data,a.updated_at";
+  const columns = "a.norm,a.name,a.photo,a.data,a.updated_at";
   const priority = discoverArtistPriorityKeys(database, at);
   if (priority.length) {
     take(database.prepare(`SELECT ${columns} FROM artists a WHERE a.norm IN (SELECT value FROM json_each(@keys)) AND ${eligibleSql} LIMIT @limit`)
@@ -86,9 +89,9 @@ function markChecked(database, row, data, at, fields = {}) {
   const next = { ...data, ...fields, deezerPhotoCheckedAt: at };
   const photo = fields.photo || null;
   return database.prepare(`UPDATE artists SET ${photo ? "photo=@photo," : ""}data=@data,updated_at=@at
-    WHERE norm=@norm AND name=@name AND data IS @before AND updated_at IS @updated AND photo IS NULL
+    WHERE norm=@norm AND name=@name AND data IS @before AND updated_at IS @updated AND photo IS @photoBefore
     AND NOT EXISTS (SELECT 1 FROM artist_profiles ap WHERE ap.artist_key=artists.norm AND (ap.removed=1 OR NULLIF(TRIM(ap.avatar_uri),'') IS NOT NULL))`)
-    .run({ ...(photo ? { photo } : {}), data: JSON.stringify(next), at, norm: row.norm, name: row.name, before: row.data, updated: row.updated_at }).changes === 1;
+    .run({ ...(photo ? { photo } : {}), data: JSON.stringify(next), at, norm: row.norm, name: row.name, before: row.data, updated: row.updated_at, photoBefore: row.photo ?? null }).changes === 1;
 }
 
 // One pass: look each artist up once and keep the photo only on a safe match.
@@ -112,7 +115,7 @@ export async function runDeezerPhotoPass(database, { fetchJson, at = Date.now(),
     outcome.checked += 1;
     if (picture) {
       const deezerId = data.deezerId || match.id;
-      const fields = spotifyOwnsPagePhoto(data)
+      const fields = spotifyOwnsPagePhoto(data, row.photo)
         ? { discoverPhoto: { uri: picture, credit: "Deezer" }, deezerId }
         : { photo: picture, photoCredit: "Deezer", photoSource: "deezer", deezerId };
       if (markChecked(database, row, data, at, fields)) outcome.filled += 1;
