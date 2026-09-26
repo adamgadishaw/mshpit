@@ -73,6 +73,8 @@ export function startNewsDeskScheduler({ database, env = process.env, now = Date
       }
       return true;
     },
-    report: (error) => console.error(`[news-desk] pass failed safely: ${privateErrorLabel(error)}`),
+    // An Anthropic error carries its HTTP status (401: the key was rejected,
+    // 400: often no credit left), which is safe to log and says what to fix.
+    report: (error) => console.error(`[news-desk] pass failed safely: ${privateErrorLabel(error)}${Number.isInteger(error?.status) ? ` status=${error.status}` : ""}`),
   });
 }

@@ -62,6 +62,13 @@ profiles updated from the news. Built on `feat/news-desk`, merged to master.
   2026-09-26: U2 50th anniversary, Pearl Jam's new drummer, the New York
   festival cancellations, Jingle Ball lineups and Ed Sheeran's Gillette shows.
 - Full `npm run check` passed on the branch (5,474 tests, first load 503.9 KiB).
+- Production, 2026-09-26: 86f9f1a deployed 14:10 EDT. The owner added
+  `NEWS_DESK_ENABLED` and `CATALOG_RESEARCH_ENABLED` in Render. The log shows
+  `[news-desk] on: $0.3/day, $6/month, shared Claude ceiling $10/month`, but the
+  first pass failed and catalog research stopped with `research_auth`: Anthropic
+  rejects the `ANTHROPIC_API_KEY` value (HTTP 401/403). No stories yet; nothing
+  spent. The desk's failure log now includes the HTTP status. Owner to replace
+  the key; the jobs retry on their own (desk every 20 minutes, research every 10).
 
 ## 2026-09-26 Claude spending capped at $10 a month
 
