@@ -261,6 +261,14 @@ remains a broad context whose changing value can rerender unrelated consumers.
 - **After deploy:** watch `[artist-photos] deezer` log lines (checked, filled,
   noMatch) and spot check a few Discover artists for the right face. If a
   namesake slips through, raise the 20x dominance rule or the 1000 fan floor.
+- **Search Console exports:** get the example URL lists for Not found (404),
+  Server error (5xx), Page with redirect, and Duplicate canonical, and look
+  for patterns (relisted Ticketmaster events, renamed artists, multi-night
+  runs that read as duplicates). Press Validate fix for image metadata after
+  the copyrightNotice deploy.
+- **Crawl budget:** if "Discovered, not indexed" stays near the events
+  sitemap size, consider listing only events with a public artist page, or
+  within the next few months, and let the rest be found through links.
 - **Ticketmaster image credits:** the attribution text Ticketmaster sends is
   sometimes an internal note ("CDD approval in CMG-98768 for image
   bordering") and shows as the slideshow credit. Credit these as

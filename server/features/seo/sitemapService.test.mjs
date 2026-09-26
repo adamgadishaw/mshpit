@@ -41,6 +41,7 @@ const {
   urlsetParts,
 } = await import("./sitemapService.js");
 const { seoHttpPlan } = await import("../../seo.js");
+const { ensureArtistUpdatesSchema } = await import("../artistUpdates/artistUpdatesService.js");
 
 test("a ticket URL alone is not indexable event evidence", () => {
   assert.equal(hasIndexableEventEvidence({
@@ -723,6 +724,17 @@ test("segmented sitemaps contain only substantive canonical public pages", async
   }
   assert.doesNotMatch(pages, /<loc>[^<]*\/search(?:[?<]|$)/, "internal search pages do not belong in the sitemap");
   assert.doesNotMatch(pages, /changefreq|priority/);
+  assert.doesNotMatch(pages, /<loc>https:\/\/www\.example\.com\/news<\/loc>/, "a noindex news page stays out of the sitemap");
+  ensureArtistUpdatesSchema(db);
+  const addUpdate = db.prepare(`INSERT INTO artist_updates
+    (id,artist_key,artist_name,kind,dedupe_key,title,payload,source,occurred_at,created_at,updated_at)
+    VALUES (?,?,?,'release',?,?,?,'deezer',1,?,1)`);
+  for (let index = 0; index < 3; index += 1) {
+    addUpdate.run(`news-${index}`, "news-artist", "News Artist", `news-${index}`, "New album",
+      JSON.stringify({ release: { title: `Record ${index}`, type: "album", releaseDate: "2026-09-01" } }), index + 1);
+  }
+  assert.match(sitemapXmlFor("/sitemaps/pages.xml", { database: db }), /<loc>https:\/\/www\.example\.com\/news<\/loc>/,
+    "news joins the sitemap once the page is indexable");
   const events = sitemapXmlFor("/sitemaps/events.xml", { database: db, now: 1_725_000_000_000 });
   assert.match(events, /\/event\/td_sitemap_public/);
   assert.match(events, /\/event\/td_sitemap_fan_event/);

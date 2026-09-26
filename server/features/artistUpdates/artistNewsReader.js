@@ -10,8 +10,11 @@ import {
 // One reader for every place news appears: the API, artist pages and the
 // public /news page. Each read re-checks tour dates against the public event
 // rules, so nothing hidden, cancelled or past is ever shown as news.
-export function createArtistNewsReader(database, { eventPathFor, artistPathFor, visibilitySql = publicUpcomingTourDateSql() } = {}) {
-  let ready = false;
+//
+// `ensureSchema: false` is for read-only connections such as the sitemap
+// snapshot, which must never write; a missing table just means no news.
+export function createArtistNewsReader(database, { eventPathFor, artistPathFor, visibilitySql = publicUpcomingTourDateSql(), ensureSchema = true } = {}) {
+  let ready = !ensureSchema;
   const prepare = () => {
     if (!ready) { ensureArtistUpdatesSchema(database); ready = true; }
   };

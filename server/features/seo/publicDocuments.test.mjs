@@ -1850,6 +1850,8 @@ test("verified post images are ImageObjects and the public artist directory is s
     const imageDocument = service(database).postDocument({ id: "image-post" });
     assert.equal(imageDocument.jsonLd[0].image[0]["@type"], "ImageObject");
     assert.equal(imageDocument.jsonLd[0].image[0].contentUrl, "https://media.example/public/schema-image.jpg");
+    assert.equal(imageDocument.jsonLd[0].image[0].creditText, "Photo by Image Fan on Mshpit");
+    assert.equal(imageDocument.jsonLd[0].image[0].copyrightNotice, "© Image Fan", "members keep ownership of their photos");
     assert.equal(Object.hasOwn(imageDocument.jsonLd[0], "associatedMedia"), false);
 
     const longBio = "A substantive artist biography covering live history, musical style, recordings, tours, collaborators, and fan context.";
@@ -2544,6 +2546,8 @@ test("venue SEO pages lead with rights-verified structural photography and Image
     assert.equal(venueSchema.image.contentUrl, document.image);
     assert.match(venueSchema.image.license, /^https:\/\/creativecommons\.org\//u);
     assert.match(venueSchema.image.acquireLicensePage, /^https:\/\/commons\.wikimedia\.org\/wiki\/File:/u);
+    assert.equal(venueSchema.image.copyrightNotice, `© ${venueSchema.image.creator.name}`,
+      "Google's image metadata asks for a copyright notice beside the credit and licence");
     assert.match(html, /class="profile-hero venue-hero"/u);
     assert.match(html, /class="venue-hero-photo"/u);
     assert.match(html, /fetchpriority="high"/u);

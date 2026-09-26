@@ -396,6 +396,11 @@ function primaryImageSchema(value, name) {
   });
 }
 
+// Google's image metadata wants a copyright notice beside the credit and
+// licence. Catalogued venue photos are CC BY or CC BY-SA, so the photographer
+// keeps the copyright; fan photos stay their author's under the Terms.
+const copyrightNotice = (holder) => cleanLine(holder, 240) ? `© ${cleanLine(holder, 240)}` : null;
+
 function venuePhotoSchema(photo, venueName) {
   if (!photo?.url) return null;
   return Object.freeze({
@@ -406,6 +411,7 @@ function venuePhotoSchema(photo, venueName) {
     caption: photo.alt,
     creditText: photo.attribution,
     creator: Object.freeze({ "@type": "Person", name: photo.creator }),
+    copyrightNotice: copyrightNotice(photo.creator),
     license: photo.licenseUrl,
     acquireLicensePage: photo.sourcePage,
   });
@@ -543,6 +549,7 @@ function mediaSchema(asset, { origin, pageUrl, context, author, publishedAt, ind
   return {
     "@type": "ImageObject",
     ...common,
+    ...(author?.name ? { creditText: `Photo by ${author.name} on Mshpit`, copyrightNotice: copyrightNotice(author.name) } : {}),
     ...(asset.mimeType ? { encodingFormat: asset.mimeType } : {}),
   };
 }
@@ -960,6 +967,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         contentUrl: fanImage,
         url: fanImage,
         creditText: `Photo by ${fanImageReview.author.name}${fanImageReview.author.handle ? ` (@${fanImageReview.author.handle})` : ""} on Mshpit`,
+        copyrightNotice: copyrightNotice(fanImageReview.author.name),
         creator: Object.freeze({
           "@type": "Person",
           name: fanImageReview.author.name,

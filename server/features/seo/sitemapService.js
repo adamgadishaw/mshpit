@@ -43,6 +43,8 @@ import {
 } from "./publicEntityPolicy.js";
 import { createPublicDocumentRepository } from "./publicDocumentRepository.js";
 import { createCityGuideRepository } from "../cities/cityGuideRepository.js";
+import { createArtistNewsReader } from "../artistUpdates/artistNewsReader.js";
+import { NEWS_INDEX_MIN_ITEMS } from "../artistUpdates/newsDocuments.js";
 import { effectiveTourDateEndSql } from "../../tourDateLifecycle.js";
 import {
   artistHasLegacyMemorial,
@@ -1221,7 +1223,11 @@ export function buildSitemapDatasets(database, { now = Date.now() } = {}) {
     }))
     : [];
   if (guideCities.length) pages.push({ path: "/cities" });
-  pages.push({ path: "/news" });
+  // /news is noindex until it has enough items; listing it earlier only
+  // shows up in Search Console as "Excluded by noindex". Same read as the page.
+  const newsItems = createArtistNewsReader(database, { ensureSchema: false })
+    .read({ limit: 60, at: candidates.generatedAt }).items;
+  if (newsItems.length >= NEWS_INDEX_MIN_ITEMS) pages.push({ path: "/news" });
   const cities = [...citySitemapEntries({ candidates, venueEntries: venues, concerts }), ...guideCities];
   const artistArchives = artistArchiveSitemapEntries({ artistEntries: artists, concerts });
   const datasets = new Map([

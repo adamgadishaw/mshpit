@@ -52,6 +52,9 @@ function albumSchema(item, origin) {
   };
 }
 
+// An empty news page is not worth a search result yet.
+export const NEWS_INDEX_MIN_ITEMS = 3;
+
 export function projectNewsDocument({ origin = "https://www.mshpit.com", items = [], at = Date.now() } = {}) {
   const canonicalPath = "/news";
   const canonicalUrl = new URL(canonicalPath, origin).href;
@@ -70,8 +73,7 @@ export function projectNewsDocument({ origin = "https://www.mshpit.com", items =
     description,
     canonicalPath,
     canonicalUrl,
-    // An empty news page is not worth a search result yet.
-    indexable: items.length >= 3,
+    indexable: items.length >= NEWS_INDEX_MIN_ITEMS,
     news: { releases, shows, day },
     jsonLd: [{
       "@context": "https://schema.org",

@@ -6,6 +6,34 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-09-26 Search Console: image metadata and indexing
+
+Search Console reported "Missing field copyrightNotice" on 10 image items (5
+venue pages, the venue photo appears twice per page) and a page indexing
+summary: 50,556 discovered not indexed, 1,183 crawled not indexed, 836
+noindex, 366 duplicate canonical, 266 not found, 173 redirects, 9 server
+errors.
+
+- Image metadata: venue photo ImageObjects now carry `copyrightNotice`
+  ("© photographer"; every catalogued venue photo is CC BY or CC BY-SA, so
+  the photographer keeps the copyright). Fan photos on posts and the fan
+  photo that represents an artist page carry "© member" and a credit line,
+  since the Terms say members keep ownership. After deploy, press Validate
+  fix in Search Console.
+- Sitemap audit on production: 613 sampled URLs across all eight sitemaps
+  returned 200 with a matching canonical. The one exception was `/news`,
+  listed while it is still noindex (under 3 items); it now joins the sitemap
+  only when the page is indexable, using the same read as the page.
+- Findings, no change needed: missing pages return a real 404 with noindex
+  (not a soft 404), most likely events Ticketmaster removed or relisted under
+  new ids. The noindex bucket is mostly deliberate (directory pages 2 and up,
+  app-only routes). Redirects include `/news`, which redirected until
+  2026-09-25. "Discovered, not indexed" is about the size of the events
+  sitemap (47,703 URLs); that is crawl budget on a young site and improves
+  with page quality and internal links (the 2026-09-25 related-shows pass).
+- Still needed: the example URL exports for 404, 5xx, redirect and duplicate
+  canonical from Search Console, to check for patterns worth fixing.
+
 ## 2026-09-26 Owner-approved: page transitions and Discover Artists redesign
 
 Both review branches were approved by the owner and merged.
