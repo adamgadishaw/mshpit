@@ -323,6 +323,14 @@ remains a broad context whose changing value can rerender unrelated consumers.
 
 ## Test reliability follow-ups (2026-09-25)
 
+- **Flaky video verifier test (2026-09-26):** on CI for b53bd9d,
+  `server/videoVerifierService.test.mjs` "authoritative bounded H.264 job strips
+  metadata by remux..." failed in 10 ms with ENOENT opening the job's
+  `delivery.mp4`; it passed on the commits before and after and locally. The
+  fake runner writes that file only when `args.at(-1)` ends in `delivery.mp4`,
+  so check whether the remux call's last argument can differ, and look for a
+  temp-directory cleanup racing the read. A red CI run blocks Render's
+  auto-deploy.
 - **Flaky schema race:** `server/catalogPhotoIntegrity.test.mjs` failed once in
   `npm run check` with "trigger trg_posts_legacy_author_tombstone already
   exists" from `server/db.js`, then passed alone and on rerun. Test files run

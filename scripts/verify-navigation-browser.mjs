@@ -148,6 +148,7 @@ export function fixtureApiResponse(pathname, { member = false, method = "GET", r
   } };
   if (pathname === "/api/posts/p_navigation_fixture/comments") return { comments: [] };
   if (pathname === "/api/media/reactions") return { reactions: {} };
+  if (pathname === "/api/news-desk/stories") return { stories: [], nextCursor: null };
   if (pathname === "/api/discovery/sidebar") return { upcomingEvents: [], suggestedUsers: [], topArtists: [], trendingVenues: [], popularLounges: [], landingMedia: [], catalogTotals: { artists: 40, venues: 80 } };
   if (pathname === "/api/tourdates") return { tourDates: [] };
   if (pathname === "/api/discover/overview") return {
