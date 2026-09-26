@@ -71,7 +71,9 @@ test("Discover keeps scene controls inside their card and makes genre exploratio
   assert.match(screen, /filterDiscoverSceneRows\(photos/);
   assert.match(screen, /filterDiscoverSceneRows\([\s\S]*projectPopularLounges/);
   assert.match(screen, /<DiscoverVenues region=\{region\}/);
-  assert.match(genres, /<SoundDonut/);
+  assert.doesNotMatch(genres, /<SoundDonut/, "the owner asked for the genre chart to go; genres are chips");
+  assert.match(genres, /<ScrollView horizontal/);
+  assert.match(genres, /rankDiscoverGenres\(genres, fallbackRows\)/);
   assert.match(genres, /From shows you attended/);
   assert.match(genres, /Genre information is not ready/);
   assert.match(genres, /Popular now/);
