@@ -162,6 +162,7 @@ export default function DiscoverEventBanner({
             <Text style={[styles.title, compact && styles.titleCompact]} numberOfLines={2}>{current.title}</Text>
             <Text style={styles.detail} numberOfLines={compact ? 2 : 1}>{detail}</Text>
             {media?.by && media.source === "fan" ? <Text style={styles.credit} numberOfLines={1}>{`Fan photo by ${media.by}`}</Text> : null}
+            {media?.by && media.source === "catalog" ? <Text style={styles.credit} numberOfLines={1}>{`Artist photo · ${media.by}`}</Text> : null}
           </View>
           {onOpenEvent ? (
             <View pointerEvents="none" style={styles.openPill}>

@@ -101,11 +101,28 @@ function providerMediaIsEligible(media) {
     && !isExplicitlyUnavailable(media);
 }
 
+// The performer's own catalogue photo, the one their artist page and the
+// Discover chart already show with the same credit. It stands in only for an
+// event with no picture of its own.
+const CATALOG_CREDITS = new Set(["deezer", "spotify"]);
+function catalogMediaIsEligible(media) {
+  return identity(media?.source) === "catalog"
+    && CATALOG_CREDITS.has(identity(media?.by))
+    && !isExplicitlyUnavailable(media);
+}
+
 export function isDiscoverEventBannerMediaEligible(media) {
   const uri = safeHttpsUrl(media?.uri || media?.url || media?.sourceUrl);
   if (!uri || !isImageMedia(media)) return false;
-  return fanMediaIsEligible(media) || licensedMediaIsEligible(media) || providerMediaIsEligible(media);
+  return fanMediaIsEligible(media) || licensedMediaIsEligible(media) || providerMediaIsEligible(media)
+    || catalogMediaIsEligible(media);
 }
+
+// Fan photos first, then artwork made for the event, then the artist photo.
+const mediaPriority = (media) => {
+  const source = identity(media?.source);
+  return source === "fan" ? 2 : source === "catalog" ? 0 : 1;
+};
 
 function normalizeMedia(media) {
   const source = identity(media.source || media.provenanceSource);
@@ -169,11 +186,8 @@ export function buildDiscoverEventBannerSlides({
       candidateSeen.add(uri);
       return true;
     });
-    const selected = [...candidates].sort((left, right) => {
-      const leftFan = identity(left?.source) === "fan" ? 1 : 0;
-      const rightFan = identity(right?.source) === "fan" ? 1 : 0;
-      return rightFan - leftFan || Math.max(0, Number(right?.likes) || 0) - Math.max(0, Number(left?.likes) || 0);
-    }).find((item) => {
+    const selected = [...candidates].sort((left, right) => mediaPriority(right) - mediaPriority(left)
+      || Math.max(0, Number(right?.likes) || 0) - Math.max(0, Number(left?.likes) || 0)).find((item) => {
       const uri = safeHttpsUrl(item?.uri || item?.url || item?.sourceUrl);
       return uri && !seenUris.has(uri);
     });

@@ -19,6 +19,7 @@ import {
 import { AUDIENCES, audienceSize, campaignProgress, drainCampaign, pauseCampaign, startCampaign } from "./emailQueue.js";
 import { db, DATABASE_PATH, q, emailStmts, badgeStmts, customBadgesFor, publicUser as storedPublicUser, parseJsonArray, parseJsonObject, artistStmts, publicArtist, artistRow, artistSearchKey, normName, pruneMissingArtists, providerCacheStmts } from "./db.js";
 import { publicArtistPhoto } from "./artistPhotoCatalog.js";
+import { createTourDateArtistPhotoReader } from "./tourDateArtistPhotos.js";
 import { resolveReviewedArtistAlias } from "./reviewedArtistIdentities.js";
 import { assessArtistIdentityRisk, assertMemberIdentityAllowed } from "./features/artistAccounts/artistIdentityRisk.js";
 import { createArtistLookupWork } from "./artistLookupWork.js";
@@ -1042,6 +1043,8 @@ function tourDateRangePage(viewer, range, timestamp) {
   const nextCursor = !exhausted && lastScanned ? encodeTourDateCursor(lastScanned) : null;
   return { rows, nextCursor };
 }
+
+const tourDateArtistPhotos = createTourDateArtistPhotoReader(db);
 
 function tourDateJson(row) {
   const projectedArtist = publicTourDateArtistProjection(row);
@@ -6453,7 +6456,8 @@ export const routes = {
     if (range) {
       const result = tourDateRangePage(ctx.user, range, timestamp);
       return {
-        tourDates: result.rows.map(tourDateJson),
+        // Discover's range view feeds the event slideshow, which needs pictures.
+        tourDates: tourDateArtistPhotos(result.rows.map(tourDateJson)),
         nextCursor: result.nextCursor,
         range: {
           days: range.days,

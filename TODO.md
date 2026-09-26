@@ -261,6 +261,11 @@ remains a broad context whose changing value can rerender unrelated consumers.
 - **After deploy:** watch `[artist-photos] deezer` log lines (checked, filled,
   noMatch) and spot check a few Discover artists for the right face. If a
   namesake slips through, raise the 20x dominance rule or the 1000 fan floor.
+- **Ticketmaster image credits:** the attribution text Ticketmaster sends is
+  sometimes an internal note ("CDD approval in CMG-98768 for image
+  bordering") and shows as the slideshow credit. Credit these as
+  "Ticketmaster" with the source link, or drop images whose credit is not a
+  name.
 - **Popular songs on artist pages:** the stored `topTracks` are old Spotify
   data. Refresh from Deezer (`/artist/{id}/top`, keyless) before listing them
   publicly.

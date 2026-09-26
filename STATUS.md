@@ -6,6 +6,27 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-09-25 Discover slideshow uses artist photos when an event has none
+
+After the picture-only change the slideshow was hidden on production: almost
+no upcoming event has a fan photo or credited Ticketmaster artwork, and it only
+looked at the four events shown in the list.
+
+- It now picks from every event loaded for the chosen range and area, and an
+  event with no picture of its own may use its performer's catalogue photo, the
+  same one the artist page and Discover chart show, labelled "Artist photo ·
+  Deezer" (or Spotify). Fan photos of the show come first, then event
+  artwork, then the artist photo; one artist photo is not repeated for a
+  second date. Up to 5 slides.
+- `GET /api/tourdates` range responses (what Discover calls) add
+  `artistPhoto: { uri, credit }` for rows bound to a public catalogue artist
+  with a Deezer or Spotify credited photo; removed profiles and unpublished
+  member-created artists never lend one.
+- Checked with a local build on production data (photos from a local
+  catalogue copy): 69 of the loaded events had an artist photo and the
+  slideshow showed 5 picture slides on desktop and phone. Coverage grows as the
+  Deezer photo filler works through Discover's artists.
+
 ## 2026-09-25 Discover event Back check (no app change)
 
 - Report: a guest who opens /discover, taps the first event card and presses

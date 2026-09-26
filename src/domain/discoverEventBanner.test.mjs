@@ -103,3 +103,28 @@ test("with requireMedia, the slideshow only shows events that have a picture", (
   assert.deepEqual(slides.map((slide) => slide.title), ["Canadian National Exhibition"]);
   assert.deepEqual(buildDiscoverEventBannerSlides({ events, media: [], requireMedia: true }), [], "no pictures, no slideshow");
 });
+
+test("an event with no picture of its own can use the performer's credited catalogue photo", () => {
+  const catalog = (eventId, uri, by = "Deezer") => ({ eventId, uri, source: "catalog", by });
+  assert.equal(isDiscoverEventBannerMediaEligible(catalog("show-2", "https://cdn.test/idles.jpg")), true);
+  assert.equal(isDiscoverEventBannerMediaEligible(catalog("show-2", "https://cdn.test/idles.jpg", "Spotify")), true);
+  assert.equal(isDiscoverEventBannerMediaEligible(catalog("show-2", "https://cdn.test/idles.jpg", "")), false, "uncredited");
+  assert.equal(isDiscoverEventBannerMediaEligible(catalog("show-2", "https://cdn.test/idles.jpg", "Some Blog")), false, "unknown credit");
+  assert.equal(isDiscoverEventBannerMediaEligible(catalog("show-2", "http://cdn.test/idles.jpg")), false, "not https");
+
+  const slides = buildDiscoverEventBannerSlides({
+    events: [...events, { id: "show-3", artist: "IDLES", venue: "Rebel", place: "Toronto, Ontario", date: "2026-09-19" }],
+    media: [
+      catalog("cne-2026", "https://cdn.test/beaches.jpg"),
+      { eventId: "cne-2026", uri: "https://media.test/fan.jpg", source: "fan", photosPublic: true, by: "A Fan" },
+      catalog("show-2", "https://cdn.test/idles.jpg"),
+      catalog("show-3", "https://cdn.test/idles.jpg"),
+    ],
+    requireMedia: true,
+  });
+  assert.deepEqual(slides.map((slide) => slide.event.id), ["cne-2026", "show-2"],
+    "the same artist photo is not repeated for a second date");
+  assert.equal(slides[0].media.uri, "https://media.test/fan.jpg", "a fan photo of the show beats the artist photo");
+  assert.equal(slides[1].media.source, "catalog");
+  assert.equal(slides[1].media.by, "Deezer");
+});

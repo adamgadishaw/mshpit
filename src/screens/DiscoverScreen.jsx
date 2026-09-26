@@ -252,21 +252,27 @@ export default function DiscoverScreen({
     local: liveScope === LIVE_EVENT_SCOPE.LOCAL,
     region,
   });
-  const eventArtwork = useMemo(() => visibleLiveEvents.flatMap((event) => event?.eventImage ? [{
-    ...event.eventImage,
-    eventId: event.id,
-    source: "provider",
-    provider: "ticketmaster",
-    by: event.eventImage.attribution,
-  }] : []), [visibleLiveEvents]);
+  // The slideshow picks from every loaded event in range, not just the few
+  // rows the list shows, so it can find ones with a picture.
+  const bannerEvents = rangeMatchesScene ? rangeEvents : visibleLiveEvents;
+  const eventArtwork = useMemo(() => bannerEvents.flatMap((event) => [
+    ...(event?.eventImage ? [{
+      ...event.eventImage,
+      eventId: event.id,
+      source: "provider",
+      provider: "ticketmaster",
+      by: event.eventImage.attribution,
+    }] : []),
+    ...(event?.artistPhoto?.uri ? [{ uri: event.artistPhoto.uri, eventId: event.id, source: "catalog", by: event.artistPhoto.credit }] : []),
+  ]), [bannerEvents]);
   const eventBannerMedia = useMemo(() => [...photoUris, ...eventArtwork], [eventArtwork, photoUris]);
   const eventBannerSlides = useMemo(() => buildDiscoverEventBannerSlides({
-    events: visibleLiveEvents,
+    events: bannerEvents,
     media: eventBannerMedia,
     blockedIds,
-    limit: 4,
+    limit: 5,
     requireMedia: true,
-  }), [blockedIds, eventBannerMedia, visibleLiveEvents]);
+  }), [bannerEvents, blockedIds, eventBannerMedia]);
   const loungeRows = useMemo(() => filterDiscoverSceneRows(
     projectPopularLounges(discoverySidebar?.popularLounges, { limit: 12 }),
     { region, countryForCity, limit: 4 },
