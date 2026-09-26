@@ -255,6 +255,11 @@ remains a broad context whose changing value can rerender unrelated consumers.
   @news_mod post, which hides it from the feed, `/news` and the sitemap).
 - **More outlets:** HotNewHipHop and Complex for hip-hop coverage if their RSS
   feeds are stable; add them to a new publisher group.
+- **@news_mod account lifecycle:** desk posts are not sign-ins, so the account
+  goes dormant (hidden from For You) a year after its last login and is
+  deleted after two. Before 2027-09, either sign in to @news_mod now and then
+  or add a reviewed service-account exemption to the inactivity policy (and the
+  privacy disclosures).
 
 ## Artist news follow-ups (2026-09-25)
 
