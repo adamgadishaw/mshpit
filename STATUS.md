@@ -53,11 +53,16 @@ errors.
   - The 348 duplicate event pages are nightly runs and two shows on one day
     (ABBA Voyage at ABBA Arena, Putti Plutti Pott twice on Nov 28). Google
     keeping one page per run is expected.
-- Background jobs: `ARTIST_NEWS_ENABLED` and `ARTIST_PHOTO_DEEZER_ENABLED`
-  were never set on the live service, so the news feed and the Deezer photo
-  filler have not run. Render is not applying new `render.yaml` values; the
-  owner needs to add them in the dashboard (and check the 2026-09-24
-  `PROVIDER_PROFILES_ENABLED`).
+- Background jobs: `ARTIST_NEWS_ENABLED`, `ARTIST_PHOTO_DEEZER_ENABLED` and
+  `PROVIDER_PROFILES_ENABLED` had never been set on the live service (Render
+  does not apply new `render.yaml` values), so the news feed, the Deezer photo
+  filler and the Ticketmaster web profiles had not run. The owner added all
+  three in the dashboard on 2026-09-26 (live 13:19 UTC). Within 25 minutes
+  Discover's top 24 had photos for 23 artists (was 7) and `/news` had 8 new
+  releases.
+- Checked on production after deploy: of the 202 reported `/venue/<name>`
+  404s, 169 now redirect to the venue page and 2 load directly (31 remain);
+  `/venues/ca/montreal` and `/venues/mx/ciudad-de-mexico` load.
 
 ## 2026-09-26 Owner-approved: page transitions and Discover Artists redesign
 
