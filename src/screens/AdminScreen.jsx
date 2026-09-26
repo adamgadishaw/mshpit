@@ -394,7 +394,7 @@ export default function AdminScreen({ onClose }) {
   const {
     requests, users, adminMembers, adminMemberDirectory, feed, removedIds, reports, moderationConsole, session,
     comments, fanClubMsgs, lounge,
-    approveArtist, rejectArtist, reviewArtistIdentity, searchArtistIdentities, removeContent, restoreContent,
+    approveArtist, rejectArtist, reviewArtistIdentity, returnArtistPageToCatalogue, searchArtistIdentities, removeContent, restoreContent,
     suspendUser, liftSuspension, banUser, unbanUser, setUserRole, setVerified, markEmailVerified, setSponsor,
     removeComment, removeFanClubMessage, removeLoungeMessage,
     loadAdminMembersStrict, loadMoreAdminMembersStrict, adminStats, adminArtistQueue, enrichArtists, purgeArtist, startCatalogSeed, catalogSeedStatus, stopCatalogSeed, catalogSeedRuns,
@@ -1146,7 +1146,7 @@ export default function AdminScreen({ onClose }) {
         {/* ---- REQUESTS ---- */}
         {activeTab === "requests" && (
           <>
-            <ArtistIdentitySafetyPanel key={`artist-identity-safety:${artistRequestScope}`} searchArtists={searchArtistIdentities} reviewIdentity={reviewArtistIdentity} />
+            <ArtistIdentitySafetyPanel key={`artist-identity-safety:${artistRequestScope}`} searchArtists={searchArtistIdentities} reviewIdentity={reviewArtistIdentity} returnToCatalogue={returnArtistPageToCatalogue} />
             <Text style={styles.policy}>Verify the established official identity and this member's authority before granting a check. A name, follower count, screenshot or supplied URL alone is not proof. Identity holds are separate from ordinary unverified pages. Ownership claims also grant management access.</Text>
             {scopedArtistRequestAction.status === "error" && (
               <View style={styles.requestError} accessibilityRole="alert" accessibilityLiveRegion="assertive">

@@ -1,6 +1,7 @@
 import { artistPageName, pendingArtistSignupIntent } from "./artistAccountPolicy.js";
 import { assessArtistIdentityRisk } from "./artistIdentityRisk.js";
 import { artistIdentityHeld, artistIdentityReview, createArtistVerification, manualIdentityReviewEvidence, verificationReviewReason } from "./artistVerification.js";
+import { enqueueOwnedMediaUrls, unreferencedOwnedMediaUrls } from "../../mediaDeletion.js";
 
 export function artistAccountRoutes({
   db, q, ApiError, clean, LIMITS, normName, artistSearchKey, artistStmts, artistRow,
@@ -283,6 +284,40 @@ export function artistAccountRoutes({
         moderationRecord(ctx, `artist_identity_${action}`, "artist", key, reason,
           { status: prior.status, ownerId: profile.owner_id }, { status: identityReview.status, ownerId: profile.owner_id });
         return { ok: true, identityReview };
+      });
+    },
+    // Undo a claim made by mistake (or by an impostor): the page goes back to
+    // a plain catalogue page. The owner, their bio and feed switch, and the
+    // photos they uploaded are cleared, as account deletion does for one page;
+    // art that someone else seeded stays. Admin only and moderation-logged.
+    "POST /api/admin/artists/:key/return-to-catalogue": (ctx) => {
+      requireAdmin(ctx);
+      const reason = clean(ctx.body?.reason, { max: 300 });
+      if (!reason || reason.length < 8) throw new ApiError(400, "Say why this page is going back to the catalogue.", "VALIDATION_FAILED");
+      let requestedKey;
+      try { requestedKey = normName(decodeURIComponent(ctx.params?.key || "")); }
+      catch { throw new ApiError(400, "Invalid artist link.", "VALIDATION_FAILED"); }
+      const artist = artistStmts.byNorm.get(requestedKey) || artistStmts.byPublicSlug.get(requestedKey);
+      const key = artist?.norm || requestedKey;
+      return atomicWrite(() => {
+        ctx.assertCurrentSession?.();
+        const existing = profileByKey.get(key);
+        if (!existing?.owner_id) throw new ApiError(404, "This artist page has no owner to remove.", "NOT_FOUND");
+        const ownerId = existing.owner_id;
+        const ownedAvatar = !!existing.avatar_uri && (existing.avatar_owner_id || ownerId) === ownerId;
+        const ownedBanner = !!existing.banner && (existing.banner_owner_id || ownerId) === ownerId;
+        const update = db.prepare(`UPDATE artist_profiles SET owner_id=NULL,bio=NULL,bio_staff_curated=0,feed_enabled=0,
+            ${ownedAvatar ? "avatar_uri=NULL,avatar_owner_id=NULL," : ""}${ownedBanner ? "banner=NULL,banner_owner_id=NULL," : ""}updated_at=?
+          WHERE artist_key=? AND owner_id=?`).run(now(), key, ownerId);
+        if (Number(update.changes || 0) !== 1) {
+          throw new ApiError(409, "That artist page changed while it was being updated. Refresh it and try again.", "CONFLICT");
+        }
+        const released = [ownedAvatar ? existing.avatar_uri : null, ownedBanner ? existing.banner : null].filter(Boolean);
+        enqueueOwnedMediaUrls(db, { ownerId, urls: unreferencedOwnedMediaUrls(db, { ownerId, urls: released }), at: now() });
+        moderationRecord(ctx, "artist_return_to_catalogue", "artist", key, reason,
+          { ownerId, avatar: !!existing.avatar_uri, banner: !!existing.banner },
+          { ownerId: null, avatar: !ownedAvatar && !!existing.avatar_uri, banner: !ownedBanner && !!existing.banner });
+        return { ok: true };
       });
     },
     "POST /api/admin/artist-requests/:id/reject": (ctx) => {

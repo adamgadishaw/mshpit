@@ -3881,6 +3881,23 @@ export function StoreProvider({ children }) {
     assertStaffMutation(scope);
     return Array.isArray(response?.artists) ? response.artists : [];
   };
+  // Staff undo for a claim made by mistake: the page becomes a plain catalogue page again.
+  const returnArtistPageToCatalogue = async (artistKey, { reason, signal } = {}) => {
+    const actor = currentMutationActor();
+    const context = "Returning an artist page to the catalogue";
+    if (!actor || actor.role !== "admin") return localCommandError("PIT-AUTH-002", context);
+    const scope = staffScopeFor(actor);
+    const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
+    try {
+      const response = await staffApi(`/api/admin/artists/${encodeURIComponent(artistKey)}/return-to-catalogue`, { method: "POST", body: { reason }, signal, silent: true, context });
+      if (response?.ok !== true) return localCommandError("PIT-API-001", context);
+      if (!accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current) || scope !== staffScopeFor(sessionRef.current)) return localCommandError("PIT-AUTH-004", context);
+      return commandSuccess(response);
+    } catch (error) {
+      if (isLoadCancellation(error, signal)) throw error;
+      return commandError(error, context);
+    }
+  };
   const reviewArtistIdentity = async (artistKey, action, { signal, ...evidence } = {}) => {
     const actor = currentMutationActor();
     const context = "Reviewing artist page identity";
@@ -6959,7 +6976,7 @@ export function StoreProvider({ children }) {
     userById, userByHandle, logsByUser, sharedShows,
     login, signup, logout, switchLinkedAccount, deleteAccount, forgotPassword, resetPassword, confirmEmailVerification, resendEmailVerification, updateProfile, completeSignupOnboarding, setAnalyticsEnabled, setProfileSearchIndexingEnabled, setDirectMessagePolicy, setAgeBandClassification, setProfileAudience, setAnnouncementEmailsEnabled, chooseTheme, syncAccountTheme,
     addLog, editLog, reportContent, actionReport, dismissReport, removeContent, restoreContent,
-    requestArtist, approveArtist, rejectArtist, createArtistPage, loadArtistAccount, createArtistVerificationChallenge, reviewArtistIdentity, searchArtistIdentities,
+    requestArtist, approveArtist, rejectArtist, createArtistPage, loadArtistAccount, createArtistVerificationChallenge, reviewArtistIdentity, returnArtistPageToCatalogue, searchArtistIdentities,
     addTourDatesBatch,
     isFollowing, follow, unfollow, followerCount, followingCount, absorbUsers, searchPeople, loadMembers, memberCount,
     recentSearches, addRecentSearch, removeRecentSearch, clearRecentSearches,

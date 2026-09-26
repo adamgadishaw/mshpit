@@ -60,6 +60,13 @@ errors.
   three in the dashboard on 2026-09-26 (live 13:19 UTC). Within 25 minutes
   Discover's top 24 had photos for 23 artists (was 7) and `/news` had 8 new
   releases.
+- Drake stayed without a Discover photo because the owner's admin account
+  had claimed his page by mistake and uploaded an avatar; the photo filler
+  never overrides an owner's picture. New admin action: Admin > Artist
+  identity safety > find the page > "Return to catalogue page" (tap twice).
+  It removes the owner, bio, feed switch and the photos that owner uploaded
+  (art seeded by someone else stays) and is logged as
+  `artist_return_to_catalogue`. `POST /api/admin/artists/:key/return-to-catalogue`.
 - Checked on production after deploy: of the 202 reported `/venue/<name>`
   404s, 169 now redirect to the venue page and 2 load directly (31 remain);
   `/venues/ca/montreal` and `/venues/mx/ciudad-de-mexico` load.
