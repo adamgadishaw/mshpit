@@ -17,7 +17,7 @@ vulnerabilities exist.
 
 | Priority | Finding | Remediation and proof |
 | --- | --- | --- |
-| High | Returning an artist to the catalogue cleared page ownership but left the account's artist role/name/check, allowing an immediate legacy reclaim. | Revoke matching artist authority, sessions, old claims and active story challenges atomically; preserve staff roles. Reclaim and rollback regressions. |
+| High | Returning an artist to the catalogue cleared page ownership but left the account's artist role/name/check, allowing an immediate legacy reclaim. | Revoke matching artist authority, sessions, old claims and active story challenges atomically; preserve staff roles. Historical moderator removals also block implicit legacy claims until deliberate staff approval. Reclaim, upgrade-state and rollback regressions. |
 | High | A composer opened before video conversion completed could silently remove the newly-ready attachment. | Conversion increments the post edit version in the same transaction; stale edit gets a conflict and the clip remains attached. |
 | High | Sessionless video retries skipped decoder admission and current account restrictions. | Recheck account status and owner/global budgets before work and publication. Network-limit and revoked-session failures require a fresh member request. Deleted/banned/suspended/dormant/unverified and mid-request deletion regressions. |
 | High | Extreme pixel-aspect metadata could allocate an enormous FFmpeg intermediate frame before the final size clamp. | Calculate finite bounded final geometry before encoding and use one scale. Command-level tests cover extreme and normal anamorphic/rotated inputs; no destructive load test was run. |
@@ -82,6 +82,9 @@ persistent disk still has brief deploy downtime; do not represent it as zero-dow
    inert-button affordance. Neither was advertised as a completed redesign.
 4. Removing artist-management authority intentionally does not erase existing
    posts/events; content takedown remains a separate moderation decision.
+   Pre-upgrade moderator removals also warrant an administrative review of any
+   stale account badges/sessions. The legacy-claim guard prevents reacquisition;
+   this release does not blindly bulk-demote historical accounts.
 5. Historical security backlog remains: old repository credential/database
    history remediation and an erasure/suppression journal outside restored
    backups. This review did not rewrite Git history or erase member data.
@@ -92,10 +95,13 @@ Focused regressions passed. The first full suite found one sitemap fixture that
 created news for a nonexistent artist; the corrected regression proves orphaned
 news stays unindexable and real visible artist news enters the sitemap.
 
-The review-branch `npm run check` passed: 5,457 tests, zero known dependency
+The final review-branch `npm run check` passed: 5,458 tests, zero known dependency
 vulnerabilities, syntax/architecture checks and production web export. Initial
 JavaScript is 500.4 KiB gzip against the existing 512 KiB budget. The targeted
 sitemap suite passes 21 tests; the integrity-audit suite passes 8 tests.
+The preceding remediation also passed the full check on master (5,457 tests);
+the historical-revocation upgrade guard adds one regression and requires a final
+post-merge check before pushing.
 Isolated browser checks passed 4/4 posting scenarios (375/1280px, including quota
 recovery) and 10/10 Discover navigation scenarios (390/1280px, artist resolution,
 retry/conflict handling and Back navigation). They used only synthetic local

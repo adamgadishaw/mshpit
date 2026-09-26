@@ -16,6 +16,8 @@ Hardened artist-authority revocation, durable video account/budget checks,
 stale-editor media preservation, bounded decoder geometry, news visibility and
 pagination, draft-safe optional page preloads, video-gallery consent and paid
 research accounting. Research receipts have 35-day retention; Crew remains off.
+Historical moderator ownership removals also block legacy self-reclaims until
+staff approve a new claim. The final review-branch check passes 5,458 tests.
 Local read-only database audit now has 44 checks, all passing. Production backup
 reported structural integrity OK, but a full live relational audit and off-host
 restore proof remain outstanding. Owner requested a new private R2 backup bucket;

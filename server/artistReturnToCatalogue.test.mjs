@@ -103,3 +103,34 @@ test("a failed moderation audit rolls back ownership, privilege and session revo
     assert.equal(db.prepare("SELECT COUNT(*) c FROM sessions WHERE user_id=?").get(owner.id).c, 1);
   } finally { db.exec("DROP TRIGGER revocation_audit_failure"); }
 });
+
+test("pre-upgrade returned pages cannot be implicitly reclaimed but reviewed staff approval still works", async () => {
+  const admin = account("admin");
+  const owner = account("artist");
+  const at = Date.now();
+  const key = "historical returned fixture";
+  db.prepare("UPDATE users SET artist_name='Historical Returned Fixture',verified=1,email_verified_at=? WHERE id=?").run(at, owner.id);
+  db.prepare("INSERT INTO artists(norm,name,public_slug,source,created_at,updated_at) VALUES (?,?,?,'musicbrainz',?,?)")
+    .run(key, "Historical Returned Fixture", "historical-returned-fixture", at, at);
+  db.prepare("INSERT INTO artist_profiles(artist_key,owner_id,updated_at) VALUES (?,NULL,?)").run(key, at);
+  db.prepare(`INSERT INTO moderation_actions(id,actor_id,action,target_type,target_id,reason,created_at)
+    VALUES ('historical-return-audit',?,'artist_return_to_catalogue','artist',?,'Pre-upgrade ownership removal.',?)`).run(admin.id, key, at);
+  const edit = () => routes["PATCH /api/artists/:key/profile"]({ user: q.userById.get(owner.id),
+    body: { bio: "A biography after staff confirms the new claim." }, params: { key }, ip: owner.id });
+  await assert.rejects(async () => edit(), (error) => error.status === 403 && error.code === "FORBIDDEN");
+  assert.equal(db.prepare("SELECT owner_id FROM artist_profiles WHERE artist_key=?").get(key).owner_id, null);
+  assert.equal(q.userById.get(owner.id).role, "artist", "the upgrade guard requires no destructive account migration");
+
+  db.prepare(`INSERT INTO artist_requests(id,user_id,artist_name,status,created_at)
+    VALUES ('historical-new-claim',?,'Historical Returned Fixture','pending',?)`).run(owner.id, at);
+  assert.deepEqual(routes["POST /api/admin/artist-requests/:id/approve"]({ user: admin,
+    params: { id: "historical-new-claim" }, body: { method: "manual",
+      reason: "Reviewed fresh official artist evidence and confirmed the new ownership.",
+      officialAccountConfirmed: true, ownershipConfirmed: true, reviewedUrl: "https://artist.example/official" },
+    ip: admin.id,
+  }), { ok: true });
+  assert.equal(db.prepare("SELECT owner_id FROM artist_profiles WHERE artist_key=?").get(key).owner_id, owner.id);
+  await edit();
+  assert.equal(db.prepare("SELECT bio FROM artist_profiles WHERE artist_key=?").get(key).bio,
+    "A biography after staff confirms the new claim.");
+});

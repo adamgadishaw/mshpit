@@ -821,6 +821,12 @@ function assertArtistManagementCandidate(user, key) {
   if (profile?.removed) throw new ApiError(403, "This artist page is unavailable while moderation reviews it.", "FORBIDDEN");
   const ownerId = profile?.owner_id;
   if (ownerId && ownerId !== user.id) throw new ApiError(403, "Not your page.", "FORBIDDEN");
+  // Explicit revocation is not an unclaimed legacy identity. This audit check
+  // also protects pages returned before account-side revocation was fixed.
+  if (!ownerId && db.prepare(`SELECT 1 FROM moderation_actions
+      WHERE action='artist_return_to_catalogue' AND target_type='artist' AND target_id=? LIMIT 1`).get(key)) {
+    throw new ApiError(403, "An administrator must approve ownership of this artist page before you can edit it.", "FORBIDDEN");
+  }
 }
 
 function assertArtistPublicationAllowed(user) {
