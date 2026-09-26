@@ -210,6 +210,7 @@ function Root() {
     youtubeLookupStatus, mediaReactions, loadMediaReactions, toggleMediaReaction,
     syncAccountTheme,
     removeMyPostTag,
+    loadPostForView,
   } = useStore();
   useFeedImpressionSession(session);
   const staff = isStaff(session?.role);
@@ -1072,6 +1073,12 @@ function Root() {
     });
     go({ post: log });
   };
+  // A story from the news panel, strip or News tab opens its post and comments.
+  const openNewsStory = async (story) => {
+    if (!story?.postId) return;
+    const post = await loadPostForView(story.postId);
+    if (post) openPost(post, { surface: "news" });
+  };
   // Ordinary statuses open their discussion. A Going ticket can instead pass
   // the exact performance projection produced by calendarShowFromPost.
   const openShow = (log, analytics = {}) => {
@@ -1293,7 +1300,7 @@ function Root() {
   else if (nav.openLog) overlay = <ShowScreen log={nav.openLog} onClose={back} onPreview={musicPreviewAction} onReview={reviewShow} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenArchive={openArtistArchive} onOpenVenue={openVenue} onOpenLounge={(log) => go({ lounge: log })} onOpenPost={openPost} onOpenPhotos={openPhotos} onRequireAuth={openSignIn} />;
   else if (nav.post) overlay = <PostScreen key={`${session?.id || "guest"}:${nav.post.id}`} log={nav.post} onClose={back} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenArtistArchive={openArtistArchive} onOpenVenue={openVenue} onOpenShow={openShow} onReport={openReport} onEdit={openPostEditor} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onRemoveMyPostTag={removePostTag} onRequireAuth={openSignIn} />;
   else if (nav.badges) overlay = <BadgeLegendScreen userId={nav.badges.userId} onClose={back} />;
-  else if (nav.news) overlay = <NewsScreen session={session} onClose={back} onOpenArtist={openArtist} onRequireAuth={openSignIn} />;
+  else if (nav.news) overlay = <NewsScreen session={session} onClose={back} onOpenArtist={openArtist} onOpenStory={openNewsStory} onRequireAuth={openSignIn} />;
   else if (ENABLE_CREW && nav.crew) overlay = <CrewScreen key={session?.id || "guest"} initialTab={nav.crew?.tab === "plans" ? "plans" : "shows"} onClose={back} onOpenShow={openShow} onOpenLounge={(log) => go({ lounge: log })} onRequireAuth={openSignIn} />;
   else if (nav.topRated) overlay = <TopRatedScreen initialRegion={nav.discoverRegion} onClose={back} onOpen={openShow} />;
   else if (nav.admin) overlay = <AdminScreen onClose={back} />;
@@ -1385,6 +1392,8 @@ function Root() {
               {activeTab === "feed" && !!session && (
                 <FeedScreen
                   onRequireAuth={openSignIn}
+                  onOpenNewsStory={openNewsStory}
+                  onOpenNews={() => go({ news: true })}
                   feed={feed}
                   followingFeed={following}
                   localFeed={local}
@@ -1514,7 +1523,7 @@ function Root() {
             <ScreenTransition key={screenKey} direction={screenDirection}>{overlay || tabScreens}</ScreenTransition>
           </Suspense>
         </View>
-        {showRightRail && <RightRail railWidth={rightRailLayout.width} topArtists={topArtists} artistsAlphabetical={artistsAlphabetical} upcomingEvents={upcomingEvents} discoverySidebar={discoverySidebar} discoverySidebarStatus={discoverySidebarStatus} accountId={session?.id || null} homeCity={session?.home?.city} countdownPlan={homeCountdown} onOpenCountdown={openShow} onViewAllCountdown={() => go({ calendar: true })} onOpenArtist={openArtist} onOpenProfile={openProfile} onFollowUser={follow} isFollowing={isFollowing} isBlocked={isBlocked} onOpenLounge={(lounge) => go({ lounge })} onOpenDiscover={() => switchTab("discover")} onOpenEvent={openShow} />}
+        {showRightRail && <RightRail railWidth={rightRailLayout.width} topArtists={topArtists} artistsAlphabetical={artistsAlphabetical} upcomingEvents={upcomingEvents} discoverySidebar={discoverySidebar} discoverySidebarStatus={discoverySidebarStatus} accountId={session?.id || null} homeCity={session?.home?.city} countdownPlan={homeCountdown} onOpenCountdown={openShow} onViewAllCountdown={() => go({ calendar: true })} onOpenArtist={openArtist} onOpenProfile={openProfile} onFollowUser={follow} isFollowing={isFollowing} isBlocked={isBlocked} onOpenLounge={(lounge) => go({ lounge })} onOpenDiscover={() => switchTab("discover")} onOpenEvent={openShow} onOpenNewsStory={openNewsStory} onOpenNews={() => go({ news: true })} />}
       </View>
     </View>
   );

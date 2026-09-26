@@ -17,6 +17,7 @@ import {
 import { liveEventTitle, localDiscoveryEvents } from "../domain/liveDiscovery.mjs";
 import { artistPath, eventPath, profilePath } from "../domain/urls.mjs";
 import { visibleSuggestedPitters } from "../domain/suggestedPitters.mjs";
+import NewsRailPanel from "./news/NewsRailPanel";
 
 const NAV = [
   { key: "feed", label: "Feed", icon: "feed" },
@@ -236,6 +237,8 @@ export function RightRail({
   onOpenEvent,
   onOpenCountdown,
   onViewAllCountdown,
+  onOpenNewsStory,
+  onOpenNews,
 }) {
   const [artistMode, setArtistMode] = useState("top"); // 'top' | 'az'
   const eventScopeIdentity = rightRailScopeIdentity({ accountId, homeCity });
@@ -288,6 +291,8 @@ export function RightRail({
       contentContainerStyle={styles.rightContent}
       showsVerticalScrollIndicator={false}
     >
+      <NewsRailPanel onOpenStory={onOpenNewsStory} onOpenAll={onOpenNews} />
+
       {accountId && countdownPlan ? (
         <HomeShowCountdown compact plan={countdownPlan} onOpen={onOpenCountdown || onOpenEvent} onViewAll={onViewAllCountdown} />
       ) : null}

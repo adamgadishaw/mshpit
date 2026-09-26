@@ -96,6 +96,9 @@ import { crewRoutes } from "./features/crew/crewRoutes.js";
 import { artistUpdatesRoutes } from "./features/artistUpdates/artistUpdatesRoutes.js";
 import { createArtistNewsReader } from "./features/artistUpdates/artistNewsReader.js";
 import { startArtistNewsScheduler } from "./features/artistUpdates/artistNewsJob.js";
+import { newsDeskRoutes } from "./features/newsDesk/newsDeskRoutes.js";
+import { createNewsDeskReader } from "./features/newsDesk/newsDeskService.js";
+import { startNewsDeskScheduler } from "./features/newsDesk/newsDeskJob.js";
 import { startDeezerArtistPhotoScheduler } from "./features/artistPhotos/deezerArtistPhotoFill.js";
 import { artistPath as publicArtistPath, eventPath as publicEventPath } from "../src/domain/urls.mjs";
 import { CREW_ENABLED } from "../src/domain/crewAvailability.mjs";
@@ -2891,6 +2894,8 @@ function mutedIdSet(userId) {
   return new Set(mutedIdsStmt.all(userId).map((row) => row.id));
 }
 
+const newsDeskReader = createNewsDeskReader(db);
+
 function postJson(p, viewerId) {
   const artistPublicSlug = publicArtistSlugForPost(p);
   const online = projectedOnlineReviewFields(p);
@@ -2982,6 +2987,8 @@ function postJson(p, viewerId) {
     room: online.experienceType === "online" ? null : p.room,
     dims: online.experienceType === "online" ? {} : parseJsonObject(p.dims),
     review: p.review,
+    // A news desk story: headline and the outlets that confirmed it.
+    news: p.kind === "status" && String(p.id).startsWith("news_") ? newsDeskReader.forPost(p.id) : null,
     // A stable descriptor is the publication authority. If its verified
     // rendition/source becomes unavailable, do not let the denormalized legacy
     // URL column bypass that fail-closed state. Historical URL-only rows are
@@ -3892,6 +3899,11 @@ export function startArtistNews() {
     notify: (userId, update) => addNotif(userId, null, "artist_update", { postId: update.id, artist: update.artist_name, text: update.title }),
     newId: uid,
   });
+}
+
+// Confirmed music news, written up and posted from @news_mod.
+export function startNewsDesk() {
+  return startNewsDeskScheduler({ database: db });
 }
 
 export function startCatalogResearch() {
@@ -9597,6 +9609,7 @@ export const routes = {
     newId: uid,
     now,
   }) : {}),
+  ...newsDeskRoutes({ rateLimit: limit, reader: newsDeskReader }),
   ...artistUpdatesRoutes({
     ApiError,
     rateLimit: limit,

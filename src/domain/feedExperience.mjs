@@ -1,4 +1,4 @@
-const FILTERS = new Set(["following", "local", "everyone"]);
+const FILTERS = new Set(["following", "local", "everyone", "news"]);
 
 export function feedFilterStorageKey(accountId) {
   const scope = typeof accountId === "string" && accountId.trim() ? accountId.trim() : "guest";

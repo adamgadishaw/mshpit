@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { View, Text, StyleSheet, FlatList, Platform, Pressable, useWindowDimensions } from "react-native";
+import { View, Text, StyleSheet, FlatList, Platform, Pressable, ScrollView, useWindowDimensions } from "react-native";
 import { colors, mono, radius, shadow } from "../theme";
 import { load, save } from "../lib/persist";
 import TicketStub from "../components/TicketStub";
@@ -13,6 +13,8 @@ import HomeShowCountdown from "../components/HomeShowCountdown";
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import SuggestedPittersRail from "../components/SuggestedPittersRail";
 import useAppActive from "../lib/useAppActive";
+import NewsStoryCard from "../components/news/NewsStoryCard";
+import useNewsDeskStories from "../components/news/useNewsDeskStories";
 
 const PAGE = 8; // load the feed in pages, like the big apps - never all at once
 const REFRESH_RETRY_HINT = Platform.OS === "web"
@@ -42,6 +44,11 @@ const FeedTicketRow = memo(function FeedTicketRow({ item, itemIndex, mediaViewab
   const removeMyPostTag = useCallback((...args) => actionsRef.current.onRemoveMyPostTag?.(...args), [actionsRef]);
   const hideRecommendation = useCallback((...args) => actionsRef.current.hideRecommendation?.(...args), [actionsRef]);
 
+  // A Mshpit News story posted from @news_mod.
+  if (item.news) {
+    return <NewsStoryCard story={item.news} onOpen={capabilities.comment ? () => comment(item) : undefined} onOpenArtist={capabilities.openArtist ? openArtist : undefined} />;
+  }
+
   return (
     <TicketStub
       log={item}
@@ -67,7 +74,7 @@ const FeedTicketRow = memo(function FeedTicketRow({ item, itemIndex, mediaViewab
   );
 });
 
-export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, accountId = null, homeCity, unread = 0, notifUnread = 0, newUser = false, hideHeaderActions = false, onFinishSetup, onRefresh, onLoadMore, hasMore = false, loadingMore = false, countdownPlan = null, showHomeCountdown = false, suggestedUsers = [], suggestedUsersLoading = false, showSuggestedPitters = false, onFollowUser, isFollowing, isBlocked, onOpenCountdown, onViewAllCountdown, onOpen, onImpression, onDwell, onNotInterested, onUndoNotInterested, onComment, onRequireAuth, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onOpenNearby, onOpenInbox, onOpenNotifications, onOpenMenu, onOpenClips, onReport, onEdit, onOpenPhotos, onPlay, onRemoveMyPostTag, onLogShow, onOpenDiscover }) {
+export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, accountId = null, homeCity, unread = 0, notifUnread = 0, newUser = false, hideHeaderActions = false, onFinishSetup, onRefresh, onLoadMore, hasMore = false, loadingMore = false, countdownPlan = null, showHomeCountdown = false, suggestedUsers = [], suggestedUsersLoading = false, showSuggestedPitters = false, onFollowUser, isFollowing, isBlocked, onOpenCountdown, onViewAllCountdown, onOpen, onImpression, onDwell, onNotInterested, onUndoNotInterested, onComment, onRequireAuth, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onOpenNearby, onOpenInbox, onOpenNotifications, onOpenMenu, onOpenClips, onReport, onEdit, onOpenPhotos, onPlay, onRemoveMyPostTag, onLogShow, onOpenDiscover, onOpenNewsStory, onOpenNews }) {
   const { width } = useWindowDimensions();
   const appActive = useAppActive();
   const phone = width < 700;
@@ -100,10 +107,14 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
     setGuideState({ scope: guideScope, dismissed: true });
     save(guideScope, true);
   };
+  const news = useNewsDeskStories({ limit: 20 });
+  const newsTab = filter === "news";
   const full = filter === "following" ? followingFeed : filter === "local" ? localFeed : feed;
   const data = useMemo(() => full.slice(0, count), [count, full]);
+  const listData = newsTab ? news.stories : data;
+  const openAllNews = () => (loggedIn ? pick("news") : onOpenNews?.());
   const filteredPageLoading = loadingMore && count >= full.length;
-  const surface = filter === "following" ? "following" : filter === "local" ? "local" : "everyone";
+  const surface = filter === "following" ? "following" : filter === "local" ? "local" : filter === "news" ? "news" : "everyone";
   const analyticsRef = useRef({ surface, onImpression, onDwell });
   analyticsRef.current = { surface, onImpression, onDwell };
   activityRef.current = appActive;
@@ -261,7 +272,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
     setRefreshing(true);
     setRefreshError(false);
     try {
-      const result = await onRefresh({ signal: controller.signal });
+      const result = newsTab ? (await news.reload(), true) : await onRefresh({ signal: controller.signal });
       if (controller.signal.aborted || refreshControllerRef.current !== controller) return false;
       const failed = result === false || result == null;
       setRefreshError(failed);
@@ -322,7 +333,9 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
     report: canReport,
     requireAuth: canRequireAuth,
   }), [canComment, canEdit, canHideRecommendation, canOpenArtist, canOpenArtistArchive, canOpenPhotos, canOpenProfile, canOpenVenue, canPlay, canPreview, canRemoveMyPostTag, canReport, canRequireAuth]);
-  const renderFeedItem = useCallback(({ item, index: itemIndex }) => (
+  const renderFeedItem = useCallback(({ item, index: itemIndex }) => (newsTab ? (
+    <NewsStoryCard story={item} onOpen={onOpenNewsStory} onOpenArtist={onOpenArtist} />
+  ) : (
     <FeedTicketRow
       item={item}
       itemIndex={itemIndex}
@@ -331,7 +344,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
       actionsRef={rowActionsRef}
       capabilities={rowCapabilities}
     />
-  ), [rowCapabilities, surface, visibleMediaPostIds]);
+  )), [newsTab, onOpenArtist, onOpenNewsStory, rowCapabilities, surface, visibleMediaPostIds]);
 
   // Concert cards are tall and media-heavy. Stage them gently on phones so
   // image decoding and comment-preview mounts do not all hit one frame.
@@ -343,7 +356,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
       testID="feed-refresh"
     >
     <FlatList
-      data={data}
+      data={listData}
       extraData={visibleMediaPostIds}
       keyExtractor={feedKeyExtractor}
       contentContainerStyle={styles.content}
@@ -430,8 +443,27 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
               <Seg label="Following" on={filter === "following"} onPress={() => pick("following")} />
               <Seg label="Local" on={filter === "local"} onPress={() => pick("local")} />
               <Seg label="For You" on={filter === "everyone"} onPress={() => pick("everyone")} />
+              <Seg label="News" on={filter === "news"} onPress={() => pick("news")} />
             </View>
           )}
+
+          {phone && !newsTab && news.stories.length ? (
+            <View style={styles.newsStrip} accessibilityLabel="Music news">
+              <View style={styles.newsStripHead}>
+                <Text style={styles.newsStripTitle}>MUSIC NEWS</Text>
+                <Pressable onPress={openAllNews} hitSlop={8} accessibilityRole="button" accessibilityLabel="See all music news">
+                  <Text style={styles.newsStripAll}>All news</Text>
+                </Pressable>
+              </View>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.newsStripRow}>
+                {news.stories.slice(0, 6).map((story) => (
+                  <View key={story.id} style={styles.newsStripItem}>
+                    <NewsStoryCard compact story={story} onOpen={onOpenNewsStory} />
+                  </View>
+                ))}
+              </ScrollView>
+            </View>
+          ) : null}
 
           {loggedIn && showSuggestedPitters ? (
             <SuggestedPittersRail
@@ -466,7 +498,15 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
           )}
         </View>
       }
-      ListEmptyComponent={
+      ListEmptyComponent={newsTab ? (
+        <View style={styles.emptyBox} accessibilityLiveRegion="polite">
+          <View style={styles.emptyIcon}><Icon name="music" size={26} color={colors.textFaint} /></View>
+          <Text style={styles.emptyTitle}>{news.status === "error" ? "The news could not load" : news.status === "ready" ? "No stories yet" : "Loading music news..."}</Text>
+          <Text style={styles.emptySub}>{news.status === "error"
+            ? REFRESH_RETRY_HINT
+            : "Mshpit News posts a story once at least two independent music outlets report it."}</Text>
+        </View>
+      ) : (
         <View style={styles.emptyBox}>
           <View style={styles.emptyIcon}>
             <Icon name={filter === "following" ? "you" : filter === "local" ? "pin" : "feed"} size={26} color={colors.textFaint} />
@@ -490,8 +530,13 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
             <HomeAction icon="plus" label="Log a show" onPress={onLogShow} primary />
           </View>
         </View>
-      }
-      ListFooterComponent={(
+      )}
+      ListFooterComponent={newsTab ? (news.nextCursor ? (
+        <Pressable style={[styles.olderBtn, news.status === "loading" && styles.olderBtnOff]} onPress={news.loadMore}
+          disabled={news.status === "loading"} accessibilityRole="button" accessibilityLabel="Load older stories">
+          <Text style={styles.olderTxt}>{news.status === "loading" ? "Loading..." : "Load older stories"}</Text>
+        </Pressable>
+      ) : null) : (
         <View>
           {footer.kind === "reveal" || footer.kind === "fetch" || footer.kind === "loading" ? (
             <Pressable
@@ -610,4 +655,10 @@ const styles = StyleSheet.create({
   undoBtn: { minHeight: 36, justifyContent: "center", paddingHorizontal: 14, borderRadius: radius.pill, backgroundColor: colors.good },
   undoBtnTxt: { color: colors.bg, fontSize: 12.5, fontWeight: "900" },
   empty: { color: colors.textDim, fontSize: 14, lineHeight: 21, fontStyle: "italic", paddingHorizontal: 4 },
+  newsStrip: { marginTop: 14, gap: 8 },
+  newsStripHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  newsStripTitle: { color: colors.text, fontFamily: mono, fontSize: 11, fontWeight: "900", letterSpacing: 1.4 },
+  newsStripAll: { color: colors.amber, fontSize: 13, fontWeight: "800" },
+  newsStripRow: { gap: 10, paddingRight: 4 },
+  newsStripItem: { width: 270 },
 });

@@ -3603,6 +3603,19 @@ export function StoreProvider({ children }) {
     }
   };
 
+  // Loads one post the feed may not hold yet, such as a story opened from the
+  // news panel, in the same shape as feed posts.
+  const loadPostForView = async (id, { signal } = {}) => {
+    if (typeof id !== "string" || !id || id.length > 200) return null;
+    try {
+      const { post } = await api(`/api/posts/${encodeURIComponent(id)}`, { silent: true, signal, context: "Opening a news story" });
+      return post ? normalizeServerPost(post) : null;
+    } catch {
+      // architecture: allow-ambiguous-result -- opening a story is optional; the reader stays where they were
+      return null;
+    }
+  };
+
   const reconcileEditedPost = async (id, body, error, { expectedAccountId, mutation } = {}) => {
     if (!shouldReconcileEditFailure(error)) return null;
     const isCurrent = () => !mutation || accountMutationIsCurrent(
@@ -6976,7 +6989,7 @@ export function StoreProvider({ children }) {
     userById, userByHandle, logsByUser, sharedShows,
     login, signup, logout, switchLinkedAccount, deleteAccount, forgotPassword, resetPassword, confirmEmailVerification, resendEmailVerification, updateProfile, completeSignupOnboarding, setAnalyticsEnabled, setProfileSearchIndexingEnabled, setDirectMessagePolicy, setAgeBandClassification, setProfileAudience, setAnnouncementEmailsEnabled, chooseTheme, syncAccountTheme,
     addLog, editLog, reportContent, actionReport, dismissReport, removeContent, restoreContent,
-    requestArtist, approveArtist, rejectArtist, createArtistPage, loadArtistAccount, createArtistVerificationChallenge, reviewArtistIdentity, returnArtistPageToCatalogue, searchArtistIdentities,
+    requestArtist, approveArtist, rejectArtist, createArtistPage, loadArtistAccount, createArtistVerificationChallenge, reviewArtistIdentity, returnArtistPageToCatalogue, searchArtistIdentities, loadPostForView,
     addTourDatesBatch,
     isFollowing, follow, unfollow, followerCount, followingCount, absorbUsers, searchPeople, loadMembers, memberCount,
     recentSearches, addRecentSearch, removeRecentSearch, clearRecentSearches,
