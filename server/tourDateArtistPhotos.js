@@ -4,14 +4,17 @@ import { publicArtistCatalogSql } from "./artistCatalogVisibility.js";
 // carry credited artwork. An event bound to a catalogue artist may borrow the
 // photo that artist already shows on its own page and on the Discover chart,
 // with the same credit. Removed or unpublished profiles never lend one.
-const CREDITS = new Set(["Deezer", "Spotify"]);
+//
+// Only Deezer images qualify. Spotify artwork must be shown uncropped next to
+// a Spotify link (see db.publicArtist), and the slideshow crops to fill.
 const MAX_KEYS = 500;
 
-const httpsUrl = (value) => {
+const deezerImageUrl = (value) => {
   if (typeof value !== "string" || value.length > 2000) return null;
   try {
     const url = new URL(value);
-    return url.protocol === "https:" && !url.username && !url.password ? url.toString() : null;
+    return url.protocol === "https:" && !url.username && !url.password && !url.port
+      && /(^|\.)dzcdn\.net$/u.test(url.hostname) ? url.toString() : null;
   } catch {
     return null;
   }
@@ -34,9 +37,9 @@ export function createTourDateArtistPhotoReader(database) {
     if (!keys.length) return list;
     const photos = new Map();
     for (const row of statement.all(JSON.stringify(keys))) {
-      const uri = httpsUrl(row.photo);
+      const uri = deezerImageUrl(row.photo);
       const credit = typeof row.credit === "string" ? row.credit.trim() : "";
-      if (uri && CREDITS.has(credit)) photos.set(row.norm, Object.freeze({ uri, credit }));
+      if (uri && credit === "Deezer") photos.set(row.norm, Object.freeze({ uri, credit }));
     }
     return list.map((row) => photos.has(row?.artistKey) ? { ...row, artistPhoto: photos.get(row.artistKey) } : row);
   };

@@ -106,19 +106,22 @@ test("with requireMedia, the slideshow only shows events that have a picture", (
 
 test("an event with no picture of its own can use the performer's credited catalogue photo", () => {
   const catalog = (eventId, uri, by = "Deezer") => ({ eventId, uri, source: "catalog", by });
-  assert.equal(isDiscoverEventBannerMediaEligible(catalog("show-2", "https://cdn.test/idles.jpg")), true);
-  assert.equal(isDiscoverEventBannerMediaEligible(catalog("show-2", "https://cdn.test/idles.jpg", "Spotify")), true);
-  assert.equal(isDiscoverEventBannerMediaEligible(catalog("show-2", "https://cdn.test/idles.jpg", "")), false, "uncredited");
-  assert.equal(isDiscoverEventBannerMediaEligible(catalog("show-2", "https://cdn.test/idles.jpg", "Some Blog")), false, "unknown credit");
-  assert.equal(isDiscoverEventBannerMediaEligible(catalog("show-2", "http://cdn.test/idles.jpg")), false, "not https");
+  const dz = (name) => `https://cdn-images.dzcdn.net/images/artist/${name}/1000x1000-000000-80-0-0.jpg`;
+  assert.equal(isDiscoverEventBannerMediaEligible(catalog("show-2", dz("idles"))), true);
+  assert.equal(isDiscoverEventBannerMediaEligible(catalog("show-2", "https://i.scdn.co/image/ab6761610000e5eb", "Spotify")), false,
+    "Spotify artwork must not be cropped into the slideshow");
+  assert.equal(isDiscoverEventBannerMediaEligible(catalog("show-2", "https://cdn.test/idles.jpg")), false, "not a Deezer image");
+  assert.equal(isDiscoverEventBannerMediaEligible(catalog("show-2", dz("idles"), "")), false, "uncredited");
+  assert.equal(isDiscoverEventBannerMediaEligible(catalog("show-2", dz("idles"), "Some Blog")), false, "unknown credit");
+  assert.equal(isDiscoverEventBannerMediaEligible(catalog("show-2", dz("idles").replace("https:", "http:"))), false, "not https");
 
   const slides = buildDiscoverEventBannerSlides({
     events: [...events, { id: "show-3", artist: "IDLES", venue: "Rebel", place: "Toronto, Ontario", date: "2026-09-19" }],
     media: [
-      catalog("cne-2026", "https://cdn.test/beaches.jpg"),
+      catalog("cne-2026", dz("beaches")),
       { eventId: "cne-2026", uri: "https://media.test/fan.jpg", source: "fan", photosPublic: true, by: "A Fan" },
-      catalog("show-2", "https://cdn.test/idles.jpg"),
-      catalog("show-3", "https://cdn.test/idles.jpg"),
+      catalog("show-2", dz("idles")),
+      catalog("show-3", dz("idles")),
     ],
     requireMedia: true,
   });

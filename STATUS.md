@@ -15,12 +15,14 @@ looked at the four events shown in the list.
 - It now picks from every event loaded for the chosen range and area, and an
   event with no picture of its own may use its performer's catalogue photo, the
   same one the artist page and Discover chart show, labelled "Artist photo ·
-  Deezer" (or Spotify). Fan photos of the show come first, then event
+  Deezer". Only Deezer-hosted images qualify: Spotify artwork has to stay
+  uncropped beside a Spotify link, and the slideshow crops to fill. Fan
+  photos of the show come first, then event
   artwork, then the artist photo; one artist photo is not repeated for a
   second date. Up to 5 slides.
 - `GET /api/tourdates` range responses (what Discover calls) add
   `artistPhoto: { uri, credit }` for rows bound to a public catalogue artist
-  with a Deezer or Spotify credited photo; removed profiles and unpublished
+  with a Deezer-credited, Deezer-hosted photo; removed profiles and unpublished
   member-created artists never lend one.
 - Checked with a local build on production data (photos from a local
   catalogue copy): 69 of the loaded events had an artist photo and the

@@ -103,11 +103,14 @@ function providerMediaIsEligible(media) {
 
 // The performer's own catalogue photo, the one their artist page and the
 // Discover chart already show with the same credit. It stands in only for an
-// event with no picture of its own.
-const CATALOG_CREDITS = new Set(["deezer", "spotify"]);
+// event with no picture of its own. Deezer only: Spotify artwork must stay
+// uncropped beside a Spotify link, and the slideshow crops to fill.
 function catalogMediaIsEligible(media) {
+  let host = "";
+  try { host = new URL(String(media?.uri || media?.url || "")).hostname; } catch { return false; }
   return identity(media?.source) === "catalog"
-    && CATALOG_CREDITS.has(identity(media?.by))
+    && identity(media?.by) === "deezer"
+    && /(^|\.)dzcdn\.net$/u.test(host)
     && !isExplicitlyUnavailable(media);
 }
 

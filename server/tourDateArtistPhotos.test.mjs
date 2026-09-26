@@ -11,20 +11,22 @@ function database() {
     CREATE TABLE artist_profiles (artist_key TEXT PRIMARY KEY,owner_id TEXT,removed INTEGER DEFAULT 0,identity_review_status TEXT DEFAULT 'clear');`);
   const add = db.prepare("INSERT INTO artists (norm,name,photo,data,source) VALUES (?,?,?,?,?)");
   add.run("idles", "IDLES", "https://cdn-images.dzcdn.net/images/artist/a/500x500.jpg", JSON.stringify({ photoCredit: "Deezer" }), null);
-  add.run("hidden", "Hidden", "https://cdn.test/hidden.jpg", JSON.stringify({ photoCredit: "Deezer" }), null);
-  add.run("uncredited", "Uncredited", "https://cdn.test/u.jpg", JSON.stringify({}), null);
-  add.run("broken", "Broken", "https://cdn.test/b.jpg", "{not json", null);
-  add.run("self-made", "Self Made", "https://cdn.test/s.jpg", JSON.stringify({ photoCredit: "Deezer" }), "artist-created");
-  add.run("plain", "Plain", "http://cdn.test/p.jpg", JSON.stringify({ photoCredit: "Spotify" }), null);
+  add.run("hidden", "Hidden", "https://cdn-images.dzcdn.net/images/artist/h/500x500.jpg", JSON.stringify({ photoCredit: "Deezer" }), null);
+  add.run("uncredited", "Uncredited", "https://cdn-images.dzcdn.net/images/artist/u/500x500.jpg", JSON.stringify({}), null);
+  add.run("broken", "Broken", "https://cdn-images.dzcdn.net/images/artist/b/500x500.jpg", "{not json", null);
+  add.run("self-made", "Self Made", "https://cdn-images.dzcdn.net/images/artist/s/500x500.jpg", JSON.stringify({ photoCredit: "Deezer" }), "artist-created");
+  add.run("plain", "Plain", "http://cdn-images.dzcdn.net/images/artist/p/500x500.jpg", JSON.stringify({ photoCredit: "Deezer" }), null);
+  add.run("spotify", "Spotify Hosted", "https://i.scdn.co/image/ab6761610000e5eb", JSON.stringify({ photoCredit: "Spotify" }), null);
+  add.run("elsewhere", "Elsewhere", "https://cdn.test/e.jpg", JSON.stringify({ photoCredit: "Deezer" }), null);
   db.prepare("INSERT INTO artist_profiles (artist_key,removed) VALUES (?,1)").run("hidden");
   return db;
 }
 
-test("Discover range rows borrow only a public, credited catalogue artist photo", () => {
+test("Discover range rows borrow only a public, Deezer-hosted, Deezer-credited artist photo", () => {
   const db = database();
   try {
     const withPhotos = createTourDateArtistPhotoReader(db);
-    const rows = withPhotos(["idles", "hidden", "uncredited", "broken", "self-made", "plain", null]
+    const rows = withPhotos(["idles", "hidden", "uncredited", "broken", "self-made", "plain", "spotify", "elsewhere", null]
       .map((artistKey, index) => ({ id: `e${index}`, artistKey })));
     assert.deepEqual(rows[0].artistPhoto, { uri: "https://cdn-images.dzcdn.net/images/artist/a/500x500.jpg", credit: "Deezer" });
     for (const row of rows.slice(1)) assert.equal(row.artistPhoto, undefined, row.artistKey);
