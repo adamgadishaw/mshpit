@@ -2,8 +2,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchNewsDeskStories } from "../../lib/newsDeskApi";
 
 // Latest news desk stories with paging. `status` is idle | loading | ready | error.
-// `artist` (a catalogue key) narrows them to stories about one artist.
-export default function useNewsDeskStories({ enabled = true, limit = 20, artist = null } = {}) {
+// `artist` (a catalogue key) narrows them to stories about one artist;
+// `sort: "top"` ranks the last three days by score and engagement.
+export default function useNewsDeskStories({ enabled = true, limit = 20, artist = null, sort = "latest" } = {}) {
   const [state, setState] = useState({ stories: [], nextCursor: null, status: "idle" });
   const controllerRef = useRef(null);
   const cursorRef = useRef(null);
@@ -15,7 +16,7 @@ export default function useNewsDeskStories({ enabled = true, limit = 20, artist 
     controllerRef.current = controller;
     setState((current) => ({ ...current, status: "loading" }));
     try {
-      const result = await fetchNewsDeskStories({ cursor: more ? cursorRef.current : null, limit, artist, signal: controller.signal });
+      const result = await fetchNewsDeskStories({ cursor: more ? cursorRef.current : null, limit, artist, sort, signal: controller.signal });
       if (controller.signal.aborted) return;
       const incoming = Array.isArray(result?.stories) ? result.stories : [];
       cursorRef.current = result?.nextCursor || null;
@@ -28,7 +29,7 @@ export default function useNewsDeskStories({ enabled = true, limit = 20, artist 
       // architecture: allow-ambiguous-result -- news is optional; the views show an in-place error with a retry
       if (!controller.signal.aborted) setState((current) => ({ ...current, status: "error" }));
     }
-  }, [artist, limit]);
+  }, [artist, limit, sort]);
 
   useEffect(() => {
     if (enabled) void load();

@@ -5,6 +5,7 @@ import { privateErrorLabel } from "../../errors.js";
 import { startPeriodicJob } from "../../periodicJobScheduler.js";
 import { createNewsDesk, newsDeskBudget, repairStoryArtists } from "./newsDeskService.js";
 import { createNewsSummarizer } from "./newsSummarizer.js";
+import { createWikipediaBuzz } from "./newsBuzz.js";
 
 const MINUTE = 60_000;
 const FEED_MAX_BYTES = 2 * 1024 * 1024;
@@ -46,6 +47,11 @@ export const fetchFeedText = (url, { signal } = {}) => fetchBounded(url, {
   accept: "application/rss+xml, application/atom+xml, application/xml, text/xml",
 });
 
+// Wikipedia and Wikidata JSON for the buzz signal: small, public, keyless.
+export const fetchPublicJson = async (url, { signal } = {}) => JSON.parse(await fetchBounded(url, {
+  signal, timeoutMs: 10_000, maxBytes: 1024 * 1024, accept: "application/json",
+}));
+
 // One article page, only for a story that is about to be written up.
 export const fetchArticleText = (url, { signal } = {}) => fetchBounded(url, {
   signal, timeoutMs: 15_000, maxBytes: ARTICLE_MAX_BYTES, accept: "text/html",
@@ -57,10 +63,11 @@ export const newsDeskConfigured = (env = process.env) => !!String(env.ANTHROPIC_
 // @news_mod posts. Off unless NEWS_DESK_ENABLED is set and an Anthropic key is
 // present; spending stops at NEWS_DESK_DAILY_USD / NEWS_DESK_MONTHLY_USD and
 // at the monthly ceiling all Claude features share (ANTHROPIC_MONTHLY_USD).
-export function startNewsDeskScheduler({ database, env = process.env, now = Date.now, fetchText = fetchFeedText, fetchArticle = fetchArticleText }) {
+export function startNewsDeskScheduler({ database, env = process.env, now = Date.now, fetchText = fetchFeedText, fetchArticle = fetchArticleText, fetchJson = fetchPublicJson }) {
   if (!newsDeskConfigured(env) || !backgroundJobEnabled(env, "NEWS_DESK_ENABLED")) return null;
   const summarize = createNewsSummarizer({ apiKey: String(env.ANTHROPIC_API_KEY).trim() });
-  const desk = createNewsDesk({ database, fetchText, fetchArticle, summarize, now, env });
+  const buzz = createWikipediaBuzz({ database, fetchJson, now });
+  const desk = createNewsDesk({ database, fetchText, fetchArticle, summarize, buzz, now, env });
   const repaired = repairStoryArtists(database);
   if (repaired) console.log(`[news-desk] tidied artist tags on ${repaired} earlier stories`);
   const budget = newsDeskBudget(env);
@@ -71,8 +78,12 @@ export function startNewsDeskScheduler({ database, env = process.env, now = Date
     run: async ({ signal }) => {
       const added = await desk.ingest({ signal });
       const result = await desk.publishPass({ signal });
-      if (added || result.confirmed || result.published || result.declined || result.skippedForBudget) {
+      if (result.published || result.declined || result.skippedForBudget) {
         console.log(`[news-desk] reports=${added} confirmed=${result.confirmed} published=${result.published} declined=${result.declined} budgetStop=${result.skippedForBudget} left=$${desk.budgetLeft().toFixed(2)}`);
+      }
+      for (const pick of result.picked) {
+        const s = pick.signals;
+        console.log(`[news-desk] published "${pick.headline.slice(0, 90)}" score=${pick.score} outlets=${s.groups} wikipedia=x${s.wikiRatio ?? "-"} popularity=${s.popularity} fans=${s.fans}`);
       }
       return true;
     },

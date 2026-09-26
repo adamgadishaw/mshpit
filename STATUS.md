@@ -6,6 +6,48 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-09-26 Mshpit News editorial policy: big news only
+
+The owner asked, before adding backup keys, that the desk stop publishing
+"random things": big news only (to save money and for how the site is seen),
+more outlets means bigger news, and publish what people interact with most.
+Choices made with the owner: up to 5 stories a day; 3+ independent outlets and
+real music news only; ranked by outlets, internet buzz and Mshpit fans.
+
+- `server/features/newsDesk/newsEditorial.js`: the policy. A story needs 3
+  independent outlets (was 2). Score = 10 per independent outlet + 2 per extra
+  same-company outlet + up to 20 for Wikipedia buzz (8 per doubling of readers
+  over a normal day) + up to 10 for artist popularity + up to 15 for Mshpit
+  fans (followers, fan club, reviewers, listeners) - 1 per 6 hours since first
+  reported. Stories older than 36 hours are dropped. The desk writes the best
+  one per pass, one every 3 hours unless the score reaches 55 (breaking), at
+  most 5 a day, spending up to 3 Claude calls per pass to find one Claude
+  agrees to publish.
+- Real music news only: Claude may publish only release, tour, festival,
+  lineup, awards, charts, legal or death stories and must mark gossip, feuds,
+  one artist criticising another, film and TV casting and the music business as
+  `not_music_news` (always declined). Headline filters skip the obvious ones
+  before any Claude call ("ruined", "hits back", "biopic", "cast as", ...).
+- `newsBuzz.js`: Wikipedia readers in the last two days against the median day
+  of the month before, from the free Wikimedia pageviews API. The article comes
+  from the artist's Wikidata id or, by name, only if Wikipedia describes a
+  musician or band (a disambiguation page or "Storm" the weather gives no
+  signal). Titles are cached 30 days in `news_artist_wiki`.
+- Clustering: reports about the same artist merge on a strong headline overlap
+  even when one outlet reads it as a release and another as a tour date (U2's
+  50th anniversary show had split into two 2-outlet stories).
+- Each story stores its `score` and `signals`; the log names every published
+  story with its score, outlets, Wikipedia ratio, popularity and fans.
+- Top stories: `GET /api/news-desk/stories?sort=top` ranks the last 3 days by
+  score plus Mshpit engagement (3 per like, 5 per comment, 0.1 per view),
+  halving every day. The desktop news panel and the phone strip show top
+  stories; the News tab and /news stay newest first.
+- Dry run on 2026-09-26's feeds: 4 of 9 two-outlet stories clear the bar, in
+  this order: U2 50th anniversary (53.5, Wikipedia x8.1), Ed Sheeran's Gillette
+  cancellations (51.2, x2.3), Pearl Jam at Ohana (36.4), New York festival
+  cancellations (25.2). The Taylor Swift feud (4 outlets) and the Sabrina
+  Carpenter biopic casting (3) are filtered out before Claude.
+
 ## 2026-09-26 Mshpit News desk
 
 The owner asked for real music news on the feed, posted by @news_mod, instead
@@ -27,7 +69,8 @@ profiles updated from the news. Built on `feat/news-desk`, merged to master.
   detail only one outlet gives is attributed by name), or declines. Each story
   becomes a status post from @news_mod with every outlet's link. Source links
   drop tracking parameters.
-- Cost: about 2 cents a story. Limits: 8 stories a day, 3 per pass, $0.30 a day
+- Cost: about 2 cents a story. Limits (superseded by the editorial policy
+  above): 8 stories a day, 3 per pass, $0.30 a day
   and $6 a month (`NEWS_DESK_DAILY_USD`, `NEWS_DESK_MONTHLY_USD`), and the shared
   Claude ceiling (`ANTHROPIC_MONTHLY_USD`, $10, see the next entry). Each call
   must fit its worst-case price in what is left. Off unless `NEWS_DESK_ENABLED`

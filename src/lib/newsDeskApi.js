@@ -2,10 +2,12 @@ import { api } from "./api";
 
 // Confirmed music news from the news desk. A read: views show their own empty
 // and error states, so the call stays silent.
-// `artist` narrows the list to stories about one catalogue artist (its key).
-export function fetchNewsDeskStories({ cursor = null, limit = 20, artist = null, signal } = {}) {
+// `artist` narrows the list to stories about one catalogue artist (its key);
+// `sort: "top"` asks for top stories (score plus engagement) instead of newest.
+export function fetchNewsDeskStories({ cursor = null, limit = 20, artist = null, sort = "latest", signal } = {}) {
   const params = new URLSearchParams();
   if (artist) params.set("artist", artist);
+  if (sort === "top") params.set("sort", "top");
   if (cursor) params.set("cursor", cursor);
   if (limit !== 20) params.set("limit", String(limit));
   const query = params.toString();

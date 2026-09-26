@@ -13,7 +13,8 @@ export function newsDeskRoutes({ rateLimit, reader, renderer }) {
     "GET /api/news-desk/stories": (ctx) => {
       rateLimit(ctx, "news-desk", 240, 10 * 60_000);
       const artist = typeof ctx.query?.artist === "string" ? ctx.query.artist.slice(0, 200) : null;
-      const result = reader.list({ limit: Number(ctx.query?.limit) || 20, before: decodeCursor(ctx.query?.cursor), artist });
+      const sort = ctx.query?.sort === "top" ? "top" : "latest";
+      const result = reader.list({ limit: Number(ctx.query?.limit) || 20, before: decodeCursor(ctx.query?.cursor), artist, sort });
       ctx.setHeader?.("Cache-Control", "public, max-age=120");
       return {
         stories: result.stories,

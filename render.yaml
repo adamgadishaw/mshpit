@@ -151,11 +151,13 @@ services:
       - key: CATALOG_RESEARCH_MODEL
         value: "claude-sonnet-5"
       # Mshpit News: every 20 minutes, reads eight music outlets' RSS feeds and
-      # posts a short summary from @news_mod when at least two independent
-      # outlets report the same story (three for deaths and legal news). Uses
-      # the same ANTHROPIC_API_KEY. About 2 cents a story, at most 8 stories a
-      # day; spending stops at NEWS_DESK_DAILY_USD per day, NEWS_DESK_MONTHLY_USD
-      # per month, or when all Claude features reach ANTHROPIC_MONTHLY_USD.
+      # posts from @news_mod only big music news: at least three independent
+      # outlets, ranked by coverage, Wikipedia buzz, artist size and Mshpit
+      # fans; one story every three hours unless breaking, at most five a day
+      # (server/features/newsDesk/newsEditorial.js). Uses the same
+      # ANTHROPIC_API_KEY, about 2 cents a story; spending stops at
+      # NEWS_DESK_DAILY_USD per day, NEWS_DESK_MONTHLY_USD per month, or when
+      # all Claude features reach ANTHROPIC_MONTHLY_USD.
       # Render does not sync these values; add them in the dashboard.
       - key: NEWS_DESK_ENABLED
         value: "true"

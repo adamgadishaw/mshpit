@@ -3,6 +3,7 @@ import { claudeCeilingLeftMicroUsd } from "../../claudeSpendCeiling.js";
 import { NEWS_SOURCES, newsSourceById, sourceOwnsUrl } from "./newsSources.js";
 import { articleLead, parseNewsFeed } from "./newsFeedParser.js";
 import { clusterReports, headlineTokens, independentGroups, isConfirmed, looksLikeNews, newsCategory, similarity, storyCategory } from "./newsStoryRules.js";
+import { EDITORIAL, storyScore, topStoryScore } from "./newsEditorial.js";
 import { storyPrompt, worstCaseCostUsd } from "./newsSummarizer.js";
 import { artistDiscoverPhotoUri, deezerImageUrl } from "../artistPhotos/discoverPhoto.js";
 
@@ -16,9 +17,6 @@ const HOUR = 60 * 60 * 1000;
 const REPORT_WINDOW_MS = 48 * HOUR;
 const KEEP_REPORTS_MS = 14 * 24 * HOUR;
 export const NEWS_DESK_HANDLE = "news_mod";
-// A small community feed should not drown in news; the biggest stories go first.
-export const DAILY_STORY_LIMIT = 8;
-const STORIES_PER_PASS = 3;
 
 // A story costs about 2 cents, so $0.30 a day covers the daily story limit.
 // The desk also stops when all Claude features together reach the shared
@@ -65,10 +63,31 @@ export function ensureNewsDeskSchema(database) {
   CREATE INDEX IF NOT EXISTS idx_news_stories_recent ON news_stories(status, created_at DESC, id DESC);
   CREATE UNIQUE INDEX IF NOT EXISTS idx_news_stories_post ON news_stories(post_id) WHERE post_id IS NOT NULL;
   CREATE TABLE IF NOT EXISTS news_desk_spend (day TEXT PRIMARY KEY, usd REAL NOT NULL DEFAULT 0);`);
-  // The full write-up shown on a story's page, added after the first release.
-  if (!database.prepare("PRAGMA table_info(news_stories)").all().some((column) => column.name === "body")) {
-    database.exec("ALTER TABLE news_stories ADD COLUMN body TEXT NOT NULL DEFAULT ''");
-  }
+  // Columns added after the first release: the full write-up, and the
+  // editorial score with the signals behind it.
+  const columns = new Set(database.prepare("PRAGMA table_info(news_stories)").all().map((column) => column.name));
+  if (!columns.has("body")) database.exec("ALTER TABLE news_stories ADD COLUMN body TEXT NOT NULL DEFAULT ''");
+  if (!columns.has("score")) database.exec("ALTER TABLE news_stories ADD COLUMN score REAL NOT NULL DEFAULT 0");
+  if (!columns.has("signals")) database.exec("ALTER TABLE news_stories ADD COLUMN signals TEXT NOT NULL DEFAULT '{}'");
+}
+
+const ignoreMissingTable = (read) => {
+  try { return read(); }
+  catch (error) { if (/no such (table|column)/iu.test(String(error?.message))) return 0; throw error; }
+};
+
+// How many Mshpit members care about an artist: people who follow them, are in
+// their fan club, reviewed one of their shows in the last six months, or
+// played them in the last three.
+export function mshpitFans(database, artist, at = Date.now()) {
+  const name = String(artist?.name || "").trim();
+  if (!name || !artist?.key) return 0;
+  const count = (sql, ...args) => ignoreMissingTable(() => Number(database.prepare(sql).get(...args)?.n) || 0);
+  return count(`SELECT COUNT(*) AS n FROM users u, json_each(CASE WHEN json_valid(u.favorite_artists) THEN u.favorite_artists ELSE '[]' END) j
+      WHERE u.favorite_artists LIKE ? AND lower(trim(j.value))=lower(?)`, `%${name.replace(/[%_]/gu, "")}%`, name)
+    + count("SELECT COUNT(*) AS n FROM fan_club_members WHERE lower(artist)=lower(?)", name)
+    + count("SELECT COUNT(DISTINCT user_id) AS n FROM posts WHERE artist_key=? AND removed=0 AND created_at>=?", artist.key, at - 180 * 24 * HOUR)
+    + count("SELECT COUNT(DISTINCT user_id) AS n FROM plays WHERE lower(artist)=lower(?) AND created_at>=?", name, at - 90 * 24 * HOUR);
 }
 
 const parseJson = (value, fallback) => { try { const parsed = JSON.parse(value); return parsed ?? fallback; } catch { return fallback; } };
@@ -137,7 +156,10 @@ export function repairStoryArtists(database) {
   return repaired;
 }
 
-export function createNewsDesk({ database, fetchText, fetchArticle = null, summarize = null, now = Date.now, newId = randomUUID, env = process.env, log = console }) {
+// `buzz` (see newsBuzz.js) adds internet buzz to the ranking; without it
+// stories rank on coverage, artist size and Mshpit fans. `editorial` is the
+// policy in newsEditorial.js; tests may relax its spacing.
+export function createNewsDesk({ database, fetchText, fetchArticle = null, summarize = null, buzz = null, editorial = EDITORIAL, now = Date.now, newId = randomUUID, env = process.env, log = console }) {
   ensureNewsDeskSchema(database);
   const budget = newsDeskBudget(env);
 
@@ -235,7 +257,7 @@ export function createNewsDesk({ database, fetchText, fetchArticle = null, summa
     return database.prepare("SELECT id FROM users WHERE lower(handle)=? AND COALESCE(is_banned,0)=0").get(NEWS_DESK_HANDLE) || null;
   }
 
-  function publishStory({ reports, result, at, costUsd }) {
+  function publishStory({ reports, result, at, costUsd, score = 0, signals = {} }) {
     const account = newsAccount();
     if (!account) throw new Error(`The @${NEWS_DESK_HANDLE} account does not exist.`);
     const id = newId();
@@ -255,9 +277,9 @@ export function createNewsDesk({ database, fetchText, fetchArticle = null, summa
     try {
       database.prepare(`INSERT INTO posts (id,user_id,artist,artist_key,venue,city,date,overall,review,kind,created_at)
         VALUES (?,?,?,?,'','','',0,?,'status',?)`).run(postId, account.id, lead?.name || "", lead?.norm || null, result.summary, at);
-      database.prepare(`INSERT INTO news_stories (id,status,headline,summary,body,category,artist_keys,sources,post_id,cost_usd,created_at,updated_at)
-        VALUES (?,'published',?,?,?,?,?,?,?,?,?,?)`).run(id, result.headline, result.summary, result.body || "", result.category, JSON.stringify(artistKeys),
-        JSON.stringify(sources), postId, costUsd, at, at);
+      database.prepare(`INSERT INTO news_stories (id,status,headline,summary,body,category,artist_keys,sources,post_id,cost_usd,score,signals,created_at,updated_at)
+        VALUES (?,'published',?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, result.headline, result.summary, result.body || "", result.category, JSON.stringify(artistKeys),
+        JSON.stringify(sources), postId, costUsd, score, JSON.stringify(signals), at, at);
       const mark = database.prepare("UPDATE news_reports SET story_id=? WHERE url=?");
       for (const report of reports) mark.run(id, report.url);
       database.exec("COMMIT");
@@ -268,42 +290,87 @@ export function createNewsDesk({ database, fetchText, fetchArticle = null, summa
     return { id, postId };
   }
 
-  function declineStory({ reports, result, at }) {
+  function declineStory({ reports, result, at, score = 0, signals = {} }) {
     const id = newId();
-    database.prepare(`INSERT INTO news_stories (id,status,category,reason,cost_usd,created_at,updated_at) VALUES (?,'declined',?,?,?,?,?)`)
-      .run(id, result.category || storyCategory(reports), result.reason || "", result.costUsd || 0, at, at);
+    database.prepare(`INSERT INTO news_stories (id,status,category,reason,cost_usd,score,signals,created_at,updated_at) VALUES (?,'declined',?,?,?,?,?,?,?)`)
+      .run(id, result.category || storyCategory(reports), result.reason || "", result.costUsd || 0, score, JSON.stringify(signals), at, at);
     const mark = database.prepare("UPDATE news_reports SET story_id=? WHERE url=?");
     for (const report of reports) mark.run(id, report.url);
   }
 
-  // 2. Group open reports, and write up to a few newly confirmed stories.
+  // Every confirmed story's editorial score, best first. Coverage, artist size
+  // and Mshpit fans are read for all of them; Wikipedia buzz only for the
+  // leaders, to keep lookups few.
+  async function rankCandidates(candidates, at, signal) {
+    const artistRow = database.prepare("SELECT norm,name,popularity,data FROM artists WHERE norm=?");
+    const ranked = candidates.map((cluster) => {
+      const artists = [...new Set(cluster.flatMap((report) => report.artistKeys))].map((key) => artistRow.get(key)).filter(Boolean)
+        .sort((left, right) => (Number(right.popularity) || 0) - (Number(left.popularity) || 0));
+      const lead = artists[0] ? { key: artists[0].norm, name: artists[0].name, wikidataId: parseJson(artists[0].data, {})?.wikidataId || null } : null;
+      const signals = {
+        groups: independentGroups(cluster),
+        outlets: new Set(cluster.map((report) => report.sourceId)).size,
+        popularity: Number(artists[0]?.popularity) || 0,
+        fans: lead ? mshpitFans(database, lead, at) : 0,
+        ageHours: Math.round((at - Math.min(...cluster.map((report) => report.publishedAt))) / HOUR * 10) / 10,
+        lead: lead?.name || null,
+        wikiRatio: null,
+      };
+      return { cluster, lead, signals, score: storyScore(signals) };
+    }).sort((left, right) => right.score - left.score);
+    if (buzz) {
+      for (const candidate of ranked.slice(0, editorial.buzzLookups)) {
+        if (!candidate.lead || signal?.aborted) continue;
+        const spike = await buzz.spike(candidate.lead, { signal }).catch(() => null);
+        // architecture: allow-ambiguous-result -- buzz only boosts the ranking; a failed lookup ranks on other signals
+        if (!spike) continue;
+        candidate.signals.wikiRatio = spike.ratio;
+        candidate.score = storyScore(candidate.signals);
+      }
+      ranked.sort((left, right) => right.score - left.score);
+    }
+    return ranked;
+  }
+
+  // 2. Rank today's confirmed stories and write the best one, if it is time
+  // for a story (see newsEditorial.js).
   async function publishPass({ signal } = {}) {
     const at = now();
-    const outcome = { confirmed: 0, published: 0, declined: 0, skippedForBudget: 0 };
+    const outcome = { confirmed: 0, published: 0, declined: 0, skippedForBudget: 0, waiting: 0, picked: [] };
     if (!summarize || !newsAccount()) return outcome;
     const open = attachToPublished(database.prepare("SELECT * FROM news_reports WHERE story_id IS NULL AND published_at>=?")
       .all(at - REPORT_WINDOW_MS).map(reportRow), at);
+    const candidates = clusterReports(open).filter(isConfirmed)
+      .filter((cluster) => at - Math.min(...cluster.map((report) => report.publishedAt)) <= editorial.maxAgeMs);
+    outcome.confirmed = candidates.length;
     const publishedToday = Number(database.prepare("SELECT COUNT(*) AS n FROM news_stories WHERE status='published' AND created_at>=?")
       .get(Date.parse(`${dayOf(at)}T00:00:00Z`))?.n) || 0;
-    const confirmed = clusterReports(open).filter(isConfirmed)
-      // Big stories first: more independent outlets, then the most recent.
-      .sort((left, right) => independentGroups(right) - independentGroups(left)
-        || Math.max(...right.map((report) => report.publishedAt)) - Math.max(...left.map((report) => report.publishedAt)));
-    outcome.confirmed = confirmed.length;
-    for (const cluster of confirmed.slice(0, Math.min(STORIES_PER_PASS, Math.max(0, DAILY_STORY_LIMIT - publishedToday)))) {
-      if (signal?.aborted) break;
+    if (!candidates.length || publishedToday >= editorial.dailyLimit) return outcome;
+    const ranked = await rankCandidates(candidates, at, signal);
+    const lastPublishedAt = Number(database.prepare("SELECT MAX(created_at) AS at FROM news_stories WHERE status='published'").get()?.at) || 0;
+    // One story every few hours, so the best of each stretch gets the slot,
+    // unless something big breaks.
+    if (lastPublishedAt && at - lastPublishedAt < editorial.spacingMs && ranked[0].score < editorial.breakingScore) {
+      outcome.waiting = ranked.length;
+      return outcome;
+    }
+    let calls = 0;
+    for (const { cluster, score, signals } of ranked) {
+      if (signal?.aborted || calls >= editorial.callsPerPass) break;
       if (budgetLeft(at) < worstCaseCostUsd(storyPrompt(cluster).length)) { outcome.skippedForBudget += 1; break; }
       const reports = await withArticleLeads(cluster, signal);
       if (budgetLeft(at) < worstCaseCostUsd(storyPrompt(reports).length)) { outcome.skippedForBudget += 1; break; }
+      calls += 1;
       const result = await summarize(reports, { signal });
       recordSpend(at, result.costUsd);
       if (result.publish && result.headline && result.summary) {
-        publishStory({ reports, result, at: now(), costUsd: result.costUsd });
+        publishStory({ reports, result, at: now(), costUsd: result.costUsd, score, signals });
         outcome.published += 1;
-      } else {
-        declineStory({ reports, result, at: now() });
-        outcome.declined += 1;
+        outcome.picked.push({ headline: result.headline, score, signals });
+        break;
       }
+      declineStory({ reports, result, at: now(), score, signals });
+      outcome.declined += 1;
     }
     return outcome;
   }
@@ -341,8 +408,32 @@ export function createNewsDeskReader(database, { ensureSchema = true } = {}) {
   }
 }
 
+// "Top stories": the last three days, ranked by editorial score plus how
+// Mshpit members engage with each post (see topStoryScore).
+function listTopStories(database, { limit = 20, at = Date.now() } = {}) {
+  const bounded = Math.max(1, Math.min(50, Number(limit) || 20));
+  const rows = database.prepare(`SELECT s.id,s.headline,s.summary,s.body,s.category,s.artist_keys,s.sources,s.post_id,s.created_at,s.score
+    FROM news_stories s JOIN posts p ON p.id=s.post_id
+    WHERE s.status='published' AND p.removed=0 AND s.created_at>=?`).all(at - 72 * HOUR);
+  const engagement = (sql, postId) => ignoreMissingTable(() => Number(database.prepare(sql).get(postId)?.n) || 0);
+  const artistLookup = database.prepare("SELECT norm,name,public_slug,photo,data FROM artists WHERE norm=?");
+  return {
+    stories: rows.map((row) => ({ row, top: topStoryScore({
+      score: row.score,
+      likes: engagement("SELECT COUNT(*) AS n FROM likes WHERE post_id=?", row.post_id),
+      comments: engagement("SELECT COUNT(*) AS n FROM comments WHERE post_id=? AND removed=0", row.post_id),
+      views: engagement("SELECT view_count AS n FROM post_impression_totals WHERE post_id=?", row.post_id),
+      ageHours: (at - row.created_at) / HOUR,
+    }) })).sort((left, right) => right.top - left.top || right.row.created_at - left.row.created_at)
+      .slice(0, bounded).map(({ row }) => newsStoryJson(row, artistLookup)),
+    nextCursor: null,
+  };
+}
+
 // `artist` narrows the list to stories about one catalogue artist (its key).
-function listStories(database, { limit = 20, before = null, artist = null } = {}) {
+// `sort: "top"` returns top stories instead of the newest.
+function listStories(database, { limit = 20, before = null, artist = null, sort = "latest", at = Date.now() } = {}) {
+  if (sort === "top" && !artist) return listTopStories(database, { limit, at });
   const bounded = Math.max(1, Math.min(50, Number(limit) || 20));
   const cursor = before && Number.isSafeInteger(before.createdAt) ? before : null;
   const artistKey = typeof artist === "string" && artist.trim() ? artist.trim().slice(0, 200) : null;

@@ -6,7 +6,8 @@ import useNewsDeskStories from "./useNewsDeskStories";
 // The desktop news panel: the latest confirmed stories, always one glance away
 // beside the feed, like a desktop news widget.
 export default function NewsRailPanel({ onOpenStory, onOpenAll }) {
-  const news = useNewsDeskStories({ limit: 5 });
+  // Top stories: the biggest and most engaged-with of the last three days.
+  const news = useNewsDeskStories({ limit: 5, sort: "top" });
   if (news.status !== "loading" && !news.stories.length) return null;
   return (
     <View style={styles.panel} accessibilityLabel="Music news">

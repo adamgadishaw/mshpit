@@ -1,10 +1,15 @@
 // Pure rules for the news desk: what counts as music news, which reports
 // describe the same story, and when a story is confirmed.
 //
-// Confirmation means independent publishers: at least two for ordinary news,
-// three for deaths and legal matters, where a wrong report does real harm.
+// Confirmation means at least three independent publishers (see
+// newsEditorial.js): the more outlets, the bigger the news.
+
+import { EDITORIAL } from "./newsEditorial.js";
 
 export const NEWS_CATEGORIES = Object.freeze(["release", "tour", "festival", "awards", "charts", "industry", "lineup", "death", "legal", "other"]);
+// What Mshpit News publishes: real music news. Industry stories, film and TV,
+// and anything else stay out however widely they are covered.
+export const PUBLISHABLE_CATEGORIES = Object.freeze(["release", "tour", "festival", "lineup", "awards", "charts", "legal", "death"]);
 export const SENSITIVE_CATEGORIES = new Set(["death", "legal"]);
 
 const CATEGORY_RULES = [
@@ -19,8 +24,9 @@ const CATEGORY_RULES = [
   ["industry", /\b(label|signs? (?:to|with)|record deal|catalog|catalogue|rights|royalt(?:y|ies)|streaming|spotify|ticketmaster|live nation|tickets?|ticket prices|venue)\b/iu],
 ];
 
-// Not news: opinion, reviews, lists, gossip and personal life.
-const NOT_NEWS = /\b(review|reviewed|ranked|ranking|best (?:albums?|songs?)|worst|every .* ranked|songs? you need|new music friday|the week in|playlist|quiz|poll|vote|your favou?rite|podcast|op-ed|opinion|interview|in conversation|listen to|watch:|photos?:|gallery|dating|girlfriend|boyfriend|romance|wedding|divorce|pregnan|baby|outfit|red carpet look|fashion|feud|slams|claps back|shades|reacts? to|trolls|tweet|instagram post|tiktok trend|net worth|horoscope)\b/iu;
+// Not news: opinion, reviews, lists, gossip, personal life, one artist
+// criticising another, and film or TV work.
+const NOT_NEWS = /\b(review|reviewed|ranked|ranking|best (?:albums?|songs?)|worst|every .* ranked|songs? you need|new music friday|the week in|playlist|quiz|poll|vote|your favou?rite|podcast|op-ed|opinion|interview|in conversation|listen to|watch:|photos?:|gallery|dating|girlfriend|boyfriend|romance|wedding|divorce|pregnan|baby|outfit|red carpet look|fashion|feud|slams|claps back|shades|reacts? to|trolls|tweet|instagram post|tiktok trend|net worth|horoscope|ruined|disses|beef|blasts|calls out|hits back|criticis(?:es|ed|ing)|criticiz(?:es|ed|ing)|biopic|casting|cast as|actor|actress|box office|tv series|sitcom|trailer)\b/iu;
 
 export function newsCategory(text) {
   const value = String(text || "");
@@ -57,7 +63,10 @@ export function sameStory(left, right) {
   if (left.group === right.group && left.sourceId === right.sourceId) return false;
   const score = similarity(left.tokens, right.tokens);
   const sharedArtist = left.artistKeys.some((key) => right.artistKeys.includes(key));
-  if (sharedArtist) return score >= 0.2 && (left.category === right.category || left.category === "other" || right.category === "other");
+  // Same artist: a loose overlap is enough when the headlines agree on the kind
+  // of story, a strong one when they do not ("U2 play their old school" read as
+  // a release by one outlet and a tour date by another).
+  if (sharedArtist) return score >= 0.35 || (score >= 0.2 && (left.category === right.category || left.category === "other" || right.category === "other"));
   return score >= 0.45;
 }
 
@@ -92,7 +101,4 @@ export function storyCategory(reports) {
   return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || "other";
 }
 
-export function isConfirmed(reports) {
-  const needed = SENSITIVE_CATEGORIES.has(storyCategory(reports)) ? 3 : 2;
-  return independentGroups(reports) >= needed;
-}
+export const isConfirmed = (reports) => independentGroups(reports) >= EDITORIAL.minOutlets;

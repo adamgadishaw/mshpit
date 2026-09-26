@@ -109,6 +109,8 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
   };
   const news = useNewsDeskStories({ limit: 20 });
   const newsTab = filter === "news";
+  // The phone strip shows top stories; the News tab lists the newest.
+  const topNews = useNewsDeskStories({ limit: 6, sort: "top", enabled: phone && !newsTab });
   const full = filter === "following" ? followingFeed : filter === "local" ? localFeed : feed;
   const data = useMemo(() => full.slice(0, count), [count, full]);
   const listData = newsTab ? news.stories : data;
@@ -448,7 +450,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
             </View>
           )}
 
-          {phone && !newsTab && news.stories.length ? (
+          {phone && !newsTab && topNews.stories.length ? (
             <View style={styles.newsStrip} accessibilityLabel="Music news">
               <View style={styles.newsStripHead}>
                 <Text style={styles.newsStripTitle}>MUSIC NEWS</Text>
@@ -457,7 +459,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
                 </Pressable>
               </View>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.newsStripRow}>
-                {news.stories.slice(0, 6).map((story) => (
+                {topNews.stories.slice(0, 6).map((story) => (
                   <View key={story.id} style={styles.newsStripItem}>
                     <NewsStoryCard compact story={story} onOpen={onOpenNewsStory} />
                   </View>
