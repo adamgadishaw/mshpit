@@ -7,6 +7,8 @@ import { publicCatalogResearch, validateCatalogResearchFindings } from "./catalo
 import { catalogResearchCostMicroUsd, catalogResearchModel, researchCatalogSubject } from "./catalogResearchProvider.js";
 import { catalogResearchRoutes } from "./catalogResearchRoutes.js";
 import {
+  catalogResearchDailyBudgetMicroUsd,
+  catalogResearchMonthlyBudgetMicroUsd,
   collectCatalogResearchStatus,
   ensureCatalogResearchSchema,
   nextArtistResearchSubject,
@@ -176,8 +178,8 @@ test("a pass stays inside the daily budget, stores sourced results and serves th
       summarySources: [WIKI], facts: [{ field: "capacity", value: "1315", source: WIKI }] },
     searchedUrls: [WIKI], costMicroUsd: 90_000, model: "claude-sonnet-5" };
   };
-  const tight = { ANTHROPIC_API_KEY: "key", CATALOG_RESEARCH_DAILY_USD: "0.35" };
-  const env = { ANTHROPIC_API_KEY: "key", CATALOG_RESEARCH_DAILY_USD: "0.5" };
+  const tight = { ANTHROPIC_API_KEY: "key", CATALOG_RESEARCH_DAILY_USD: "0.35", CATALOG_RESEARCH_MONTHLY_USD: "10" };
+  const env = { ANTHROPIC_API_KEY: "key", CATALOG_RESEARCH_DAILY_USD: "0.5", CATALOG_RESEARCH_MONTHLY_USD: "10" };
   let clock = Date.parse("2026-09-24T12:00:00Z");
   const now = () => clock;
   assert.deepEqual(await runCatalogResearchPass({ database: db, env: {}, now, research }), { researched: 0, published: 0, stopped: "not_configured" });
@@ -204,6 +206,33 @@ test("a pass stays inside the daily budget, stores sourced results and serves th
   assert.equal(collectCatalogResearchStatus(db, { env, at: now() }).lastError.code, "research_overloaded");
   assert.equal(readCatalogResearch(db, { type: "artist", key: "wet leg" }).summary.startsWith("Wet Leg"), true,
     "a failed refresh keeps the last good result on the page");
+});
+
+test("research is modest by default and stops at its monthly cap and the shared Claude ceiling", async (t) => {
+  const key = { ANTHROPIC_API_KEY: "key" };
+  assert.equal(catalogResearchMonthlyBudgetMicroUsd(key), 4_000_000, "$4 a month unless the owner says otherwise");
+  assert.equal(catalogResearchDailyBudgetMicroUsd(key), 300_000, "$0.30 a day by default");
+  assert.equal(catalogResearchDailyBudgetMicroUsd({ ...key, CATALOG_RESEARCH_DAILY_USD: "5" }), 400_000,
+    "an old $5 daily setting is held to a tenth of the monthly cap");
+
+  const db = database(t);
+  db.exec("INSERT INTO artists(norm,name,rank_score) VALUES ('wet leg','Wet Leg',10),('other','Other',5)");
+  const research = async () => ({ findings: goodFindings(), searchedUrls: [WIKI, SITE], costMicroUsd: 90_000, model: "claude-sonnet-5" });
+  const at = Date.parse("2026-09-24T12:00:00Z");
+  const spent = db.prepare(`INSERT INTO catalog_research_spend(token,utc_day,reserved_micro_usd,charged_micro_usd,status,created_at)
+    VALUES (?,?,0,?,'settled',0)`);
+  spent.run("august", "2026-08-30", 3_900_000);
+  spent.run("september", "2026-09-02", 3_850_000);
+  assert.deepEqual(await runCatalogResearchPass({ database: db, env: key, now: () => at, research }),
+    { researched: 0, published: 0, stopped: "monthly_budget" }, "August's spend does not count; September's $3.85 leaves too little");
+  assert.equal(collectCatalogResearchStatus(db, { env: key, at }).monthSpentUsd, 3.85);
+
+  db.exec("CREATE TABLE news_desk_spend (day TEXT PRIMARY KEY, usd REAL NOT NULL DEFAULT 0)");
+  db.prepare("INSERT INTO news_desk_spend(day,usd) VALUES ('2026-09-10',6.00)").run();
+  const roomy = { ...key, CATALOG_RESEARCH_MONTHLY_USD: "8" };
+  assert.deepEqual(await runCatalogResearchPass({ database: db, env: roomy, now: () => at, research }),
+    { researched: 0, published: 0, stopped: "claude_monthly_ceiling" }, "research and the news desk share one $10 month");
+  assert.equal((await runCatalogResearchPass({ database: db, env: { ...roomy, ANTHROPIC_MONTHLY_USD: "20" }, now: () => at, research })).researched > 0, true);
 });
 
 test("pages read research through the routes and staff can hide a wrong result", (t) => {

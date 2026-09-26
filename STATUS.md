@@ -6,6 +6,24 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-09-26 Claude spending capped at $10 a month
+
+The owner does not want catalog research to use up the Claude budget and asked
+for all Claude spending to stay at or under $10 a month for now, with modest
+catalog filling.
+
+- `server/claudeSpendCeiling.js`: one shared monthly ceiling for every Claude
+  feature, `ANTHROPIC_MONTHLY_USD` (default $10, UTC calendar month), summed
+  from the research and news desk spend ledgers (a missing ledger counts as 0).
+- Catalog research: new `CATALOG_RESEARCH_MONTHLY_USD` (default $4); the daily
+  default drops from $5 to $0.30 and a day can never exceed a tenth of the
+  monthly cap, so an old `CATALOG_RESEARCH_DAILY_USD=5` in Render is held to
+  $0.40. A pass stops with `monthly_budget` or `claude_monthly_ceiling`. The
+  admin catalog screen shows this month's research spend.
+- About 2 to 4 pages a day at 5 to 12 cents each. Research still needs
+  `CATALOG_RESEARCH_ENABLED=true` in the Render dashboard to run at all.
+- The Anthropic console's own $10 monthly limit stays as the backstop.
+
 ## 2026-09-26 independent application/database integrity review
 
 Release `8b24a3a` is live on both `mshpit` and `pit-video-verifier`. Full local
@@ -428,7 +446,8 @@ Wikidata run dry, and asked for an AI agent with web search to fill them.
   "Summarised from" source links; pages without research look as before.
 - Controls: needs `ANTHROPIC_API_KEY` (Render secret, owner to add) and
   `CATALOG_RESEARCH_ENABLED=true` (in render.yaml). Spending stops for the day
-  at `CATALOG_RESEARCH_DAILY_USD` (default $5, about 40 to 100 pages). Pausing
+  at `CATALOG_RESEARCH_DAILY_USD` (default $5 at the time; since 2026-09-26 the
+  default is $0.30 a day and $4 a month, see the entry above). Pausing
   catalog upkeep pauses research. Staff can hide a wrong result with
   `POST /api/moderation/catalog-research/hide` (audited). The admin catalog
   screen shows spend, pages filled and the last error.

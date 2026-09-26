@@ -133,15 +133,21 @@ services:
       # Claude web research for artist and venue pages the other sources leave
       # empty: a short summary and facts, each linked to its source. Idle until
       # the owner adds ANTHROPIC_API_KEY (console.anthropic.com -> API keys).
-      # Spending stops for the day at CATALOG_RESEARCH_DAILY_USD (about 5 to
-      # 12 cents a page with claude-sonnet-5). Pausing catalog upkeep in the
-      # admin screen pauses it too.
+      # About 5 to 12 cents a page with claude-sonnet-5. Spending stops at
+      # CATALOG_RESEARCH_DAILY_USD a day and CATALOG_RESEARCH_MONTHLY_USD a
+      # month (a day is never more than a tenth of the month). All Claude
+      # features together stop at ANTHROPIC_MONTHLY_USD a calendar month.
+      # Pausing catalog upkeep in the admin screen pauses it too.
       - key: ANTHROPIC_API_KEY
         sync: false
       - key: CATALOG_RESEARCH_ENABLED
         value: "true"
       - key: CATALOG_RESEARCH_DAILY_USD
-        value: "5"
+        value: "0.30"
+      - key: CATALOG_RESEARCH_MONTHLY_USD
+        value: "4"
+      - key: ANTHROPIC_MONTHLY_USD
+        value: "10"
       - key: CATALOG_RESEARCH_MODEL
         value: "claude-sonnet-5"
       # Password recovery is disabled gracefully until both values are set. Never

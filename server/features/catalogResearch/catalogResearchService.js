@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { canonicalVenueKey } from "../../../src/domain/venueIdentity.mjs";
 import { backgroundJobEnabled } from "../../backgroundJobs.js";
 import { readCatalogKnowledgeControl } from "../../catalogKnowledgeControl.js";
+import { claudeCeilingLeftMicroUsd, utcMonthStartDay } from "../../claudeSpendCeiling.js";
 import { privateErrorLabel } from "../../errors.js";
 import { startPeriodicJob } from "../../periodicJobScheduler.js";
 import { publicCatalogResearch, validateCatalogResearchFindings } from "./catalogResearchFindings.js";
@@ -10,8 +11,8 @@ import { catalogResearchModel, researchCatalogSubject } from "./catalogResearchP
 
 // The research agent fills the artist and venue pages the catalogue sources
 // leave empty. It works through the pages fans are most likely to open first
-// (acts and rooms with shows on file), one at a time, inside a daily dollar
-// cap, and only ever adds a sourced summary and facts next to what a page
+// (acts and rooms with shows on file), one at a time, inside daily and
+// monthly dollar caps and the shared Claude ceiling, and only ever adds a sourced summary and facts next to what a page
 // already has. It never edits a biography, a claimed artist page or staff
 // facts, and a staff member can hide any result.
 
@@ -33,9 +34,27 @@ export function catalogResearchConfigured(env = process.env) {
   return !!String(env.ANTHROPIC_API_KEY || "").trim();
 }
 
+const usdSetting = (value, fallback, max) => {
+  const raw = String(value ?? "").trim();
+  const usd = raw ? Number(raw) : fallback;
+  return Math.round((Number.isFinite(usd) && usd >= 0 ? Math.min(usd, max) : fallback) * 1_000_000);
+};
+
+// Modest by default: $4 a month, and never more than a tenth of the month's
+// allowance in one day, so research fills pages steadily instead of spending
+// the month on its first day (whatever CATALOG_RESEARCH_DAILY_USD says).
+export function catalogResearchMonthlyBudgetMicroUsd(env = process.env) {
+  return usdSetting(env.CATALOG_RESEARCH_MONTHLY_USD, 4, 1000);
+}
+
 export function catalogResearchDailyBudgetMicroUsd(env = process.env) {
-  const usd = Number(env.CATALOG_RESEARCH_DAILY_USD);
-  return Math.round((Number.isFinite(usd) && usd >= 0 ? Math.min(usd, 500) : 5) * 1_000_000);
+  return Math.min(usdSetting(env.CATALOG_RESEARCH_DAILY_USD, 0.3, 500),
+    Math.floor(catalogResearchMonthlyBudgetMicroUsd(env) / 10));
+}
+
+function monthSpendMicroUsd(database, at) {
+  return Math.ceil(Number(database.prepare(`SELECT COALESCE(SUM(charged_micro_usd),0) AS micro
+    FROM catalog_research_spend WHERE utc_day>=?`).get(utcMonthStartDay(at))?.micro) || 0);
 }
 
 export function ensureCatalogResearchSchema(database) {
@@ -266,6 +285,7 @@ export async function runCatalogResearchPass({
   if (control?.mode === "paused") return { ...outcome, stopped: "paused" };
   pruneSpendReceipts(database, now());
   const cap = catalogResearchDailyBudgetMicroUsd(env);
+  const monthlyCap = catalogResearchMonthlyBudgetMicroUsd(env);
   const model = catalogResearchModel(env);
   for (let index = 0; index < maxItems; index += 1) {
     if (signal?.aborted) return { ...outcome, stopped: "aborted" };
@@ -274,6 +294,10 @@ export async function runCatalogResearchPass({
     const unresolved = unresolvedSpend(database, budget.utcDay);
     if (unresolved) return { ...outcome, stopped: unresolved === "uncertain" ? "cost_unconfirmed" : "reservation_pending" };
     if (budget.spentMicroUsd + RUN_RESERVE_MICRO_USD > cap) return { ...outcome, stopped: "daily_budget" };
+    const monthLeft = monthlyCap - monthSpendMicroUsd(database, at);
+    if (monthLeft < RUN_RESERVE_MICRO_USD) return { ...outcome, stopped: "monthly_budget" };
+    const ceilingLeft = claudeCeilingLeftMicroUsd(database, { env, at });
+    if (ceilingLeft < RUN_RESERVE_MICRO_USD) return { ...outcome, stopped: "claude_monthly_ceiling" };
     // Alternate artists and venues so neither backlog starves the other.
     const order = index % 2 === 0 ? ["artist", "venue"] : ["venue", "artist"];
     let subject = null;
@@ -288,7 +312,8 @@ export async function runCatalogResearchPass({
     let result;
     try {
       result = await research(subject, { apiKey: String(env.ANTHROPIC_API_KEY).trim(), model, fetchImpl, signal,
-        budgetMicroUsd: Math.max(0, cap - budget.spentMicroUsd), requestReserveMicroUsd: RUN_RESERVE_MICRO_USD });
+        budgetMicroUsd: Math.max(0, Math.min(cap - budget.spentMicroUsd, monthLeft, ceilingLeft)),
+        requestReserveMicroUsd: RUN_RESERVE_MICRO_USD });
     } catch (error) {
       const code = typeof error?.code === "string" ? error.code : "research_error";
       const uncertain = error?.accountingUncertain !== false || !Number.isFinite(error?.costMicroUsd);
@@ -384,6 +409,8 @@ export function collectCatalogResearchStatus(database, { env = process.env, at =
     enabled: catalogResearchConfigured(env) && backgroundJobEnabled(env, "CATALOG_RESEARCH_ENABLED"),
     model: catalogResearchModel(env),
     dailyBudgetUsd: catalogResearchDailyBudgetMicroUsd(env) / 1_000_000,
+    monthlyBudgetUsd: catalogResearchMonthlyBudgetMicroUsd(env) / 1_000_000,
+    monthSpentUsd: Math.round(monthSpendMicroUsd(database, at) / 10_000) / 100,
     accountingState: unresolvedSpend(database, budget.utcDay),
     today: {
       spentUsd: Math.round(budget.spentMicroUsd / 10_000) / 100,
@@ -406,7 +433,7 @@ export function startCatalogResearchScheduler({ database, env = process.env, now
     intervalMs: 10 * MINUTE,
     run: async ({ signal }) => {
       const result = await runCatalogResearchPass({ database, env, now, fetchImpl, signal });
-      if (result.researched || (result.stopped && !["nothing_due", "daily_budget", "paused"].includes(result.stopped))) {
+      if (result.researched || (result.stopped && !["nothing_due", "daily_budget", "monthly_budget", "paused"].includes(result.stopped))) {
         console.log(`[catalog-research] researched=${result.researched} published=${result.published} stopped=${result.stopped || "pass_done"}`);
       }
       return true;
