@@ -6,6 +6,23 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-09-26 Owner-approved: page transitions and Discover Artists redesign
+
+Both review branches were approved by the owner and merged.
+
+- Page transitions (`design/page-transitions`): pages slide in 16px from the
+  side you are heading (forward or back, 220ms) and tab switches fade up
+  (180ms), as CSS keyframes that never leave a page invisible. The loading
+  spinner waits 250ms so quick loads do not flash it, and the five most
+  visited screens preload 4 seconds after start. Privacy, Terms and the
+  artist picker now load lazily, which took the first load from 511.8 to
+  about 500 KiB.
+- Discover > Artists (`design/discover-artists`): the donut chart and text
+  rows are gone. Artists are square photo cards (colour wash with initials
+  when there is no photo) in 2 to 4 columns, genres are one scrollable row of
+  chips, most popular first, and "Top rated live" only shows when there are
+  qualifying ratings. Photos come from the Deezer filler.
+
 ## 2026-09-25 Discover slideshow uses artist photos when an event has none
 
 After the picture-only change the slideshow was hidden on production: almost
