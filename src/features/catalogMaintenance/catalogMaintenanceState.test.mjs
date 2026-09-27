@@ -102,3 +102,18 @@ test("figures distinguish zero from unavailable and do not invent dates", () => 
   assert.equal(catalogTime(0), "Not recorded");
   assert.equal(catalogTime("garbage"), "Unavailable");
 });
+
+test("news desk reasons and Claude spending read as plain sentences", async () => {
+  const { newsDeskReasonText, claudeMoney, claudeSpendBreakdown, claudeSpendTotal } = await import("./catalogMaintenanceState.mjs");
+  assert.equal(newsDeskReasonText(null), "No check recorded since this version started.");
+  assert.equal(newsDeskReasonText({ reason: "waiting_for_slot" }), "Waiting for the next publishing slot.");
+  assert.equal(newsDeskReasonText({ reason: "no_qualifying_story" }), "No story is carried by enough independent outlets yet.");
+  assert.equal(newsDeskReasonText({ reason: "something_new" }), "Finished without a recorded reason.");
+  assert.equal(claudeMoney(0.3), "$0.30");
+  assert.equal(claudeMoney(undefined), "Unverified");
+  const entry = { confirmedUsd: 1.2, heldUsd: 0.05, unconfirmedUsd: 0 };
+  assert.equal(claudeSpendBreakdown(entry), "$1.20 confirmed, $0.05 held, $0.00 unconfirmed");
+  assert.equal(claudeSpendBreakdown(null), "Unverified");
+  assert.equal(claudeSpendTotal(entry).toFixed(2), "1.25");
+  assert.equal(claudeSpendTotal(null), null);
+});

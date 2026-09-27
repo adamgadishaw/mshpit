@@ -73,6 +73,13 @@ services:
         sync: false
       - key: BACKUP_S3_SECRET_ACCESS_KEY
         sync: false
+      # Signs the privacy journal (server/privacyJournal.js): account deletions
+      # and email opt-outs copied to privacy-journal/ in the backup bucket so a
+      # restored backup replays them. Add it in the dashboard with Generate
+      # (32+ characters). Never change it except right after a verified backup:
+      # entries signed with an old key are rejected on replay.
+      - key: PRIVACY_JOURNAL_KEY
+        sync: false
       - key: PUBLIC_ORIGIN
         value: https://www.mshpit.com
       # Set this to the same address as ADMIN_EMAIL for the one-way Owner

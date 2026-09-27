@@ -8,6 +8,10 @@ import { readVenuePhotoEnrichmentStatus } from "../../venuePhotoEnrichment.js";
 import { readArtistPhotoSeedStatus } from "../../artistPhotoSeedStatus.js";
 import { collectCatalogResearchStatus, ensureCatalogResearchSchema } from "../catalogResearch/catalogResearchService.js";
 import { collectProviderProfileStatus, ensureProviderProfileSchema } from "../providerProfiles/providerProfileService.js";
+import { ensureNewsDeskSchema } from "../newsDesk/newsDeskService.js";
+import { collectNewsDeskStatus } from "../newsDesk/newsDeskStatus.js";
+import { collectClaudeSpendStatus } from "../../claudeSpendStatus.js";
+import { ensurePrivacyJournalSchema, privacyJournalStatus } from "../../privacyJournal.js";
 
 const sources = Object.freeze({
   artist: Object.freeze({ name: "Wikidata / Wikipedia", scope: "Exact artist identities; missing biography and country fields. Artists recently shown in Discover get priority alongside regular catalogue work, within the same limits. Staff edits and claimed profiles stay protected." }),
@@ -24,6 +28,8 @@ export function createCatalogMaintenanceService({ database, databasePath, env = 
   ensureCatalogKnowledgeControl(database, { env, at: now() });
   ensureCatalogResearchSchema(database);
   ensureProviderProfileSchema(database);
+  ensureNewsDeskSchema(database);
+  ensurePrivacyJournalSchema(database);
   return {
     inspectControl: () => readCatalogKnowledgeControl(database, { env, at: now() }),
     setControl: (mode) => setCatalogKnowledgeMode(database, mode, { env, at: now() }),
@@ -42,6 +48,9 @@ export function createCatalogMaintenanceService({ database, databasePath, env = 
         seo: seoStatus(),
         research: collectCatalogResearchStatus(database, { env, at }),
         webProfiles: collectProviderProfileStatus(database, { env, at }),
+        newsDesk: collectNewsDeskStatus(database, { env, at }),
+        claudeSpend: collectClaudeSpendStatus(database, { env, at }),
+        privacyJournal: privacyJournalStatus(database, env),
       };
     },
   };

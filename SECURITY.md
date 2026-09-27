@@ -203,11 +203,24 @@ consent, and queued email. Automatic production campaign recovery is disabled by
 default so a restore cannot immediately send old queued mail, but that is only a
 containment control.
 
-Before production-scale restore operations, add an append-only erasure and email
-suppression journal stored outside the SQLite backup lifecycle, authenticated or
-signed against tampering. Every restore must replay that journal before traffic,
-workers, email, exports, or media publication are enabled, then record evidence
-that the replay completed.
+Implemented 2026-09-27 in `server/privacyJournal.js`. Account erasure (by the
+member or the inactivity worker) and marketing-consent withdrawal (Settings or
+an unsubscribe link) write a journal entry in the same transaction as the
+change. Entries hold only the opaque account ID, the kind and the time; they are
+signed with HMAC-SHA256 under `PRIVACY_JOURNAL_KEY` (server environment only)
+and copied every 5 minutes to `privacy-journal/v1/` in the private backup
+bucket, after the same anonymous-access proof the backups use. A database
+prepared with `scripts/prepare-db-restore.mjs` refuses to serve until the
+server has listed the journal, verified every entry, re-applied the verified
+erasures and opt-outs (forged or old-key entries are rejected and counted), and
+saved the evidence in `app_meta` (`privacy-journal:replay:v1`). Only an owner
+decision recorded as `PRIVACY_JOURNAL_REPLAY_WAIVER=<incident reference>` lets a
+restore proceed without the journal, and the waiver is saved as evidence.
+
+Limits: an entry is copied off-host within about 5 minutes, so a disk lost in
+that window loses it; journal objects follow the bucket's lifecycle rule, which
+must keep them at least as long as the oldest backup that could be restored;
+individual post, comment and message deletions are not journaled yet (TODO).
 
 ## Remaining defense-in-depth work
 

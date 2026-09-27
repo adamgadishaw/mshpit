@@ -6,6 +6,43 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-09-27 Rest of the Codex audit: worker status, redirects, privacy journal
+
+Codex's ce60742 already closed findings A (per-record failures and a provider
+circuit instead of a global cooldown), G (Like, comment and Report on news),
+the immutable @news_mod publisher binding, bounded news clustering behind the
+shared job coordinator, and the fenced restore preparation. This batch closes
+what was left:
+
+- **Worker status in Moderation (audit step 8 and "why news can look
+  quiet"):** the Catalog Upkeep panel has a News desk section (on/off, stories
+  today of 5, next slot in Toronto time, the last check and why it did or did
+  not publish, spending today and this month, last 7 days, last problem) and a
+  Claude spending section (shared limit used and left; news and research each
+  split into confirmed, held for a call in flight, and unconfirmed). The totals
+  equal what the shared ceiling counts, so the confirmed figure can be compared
+  with the Anthropic console. The news job saves one small record per pass and
+  one per failure in `app_meta` (`news-desk:v1:last-pass`, `:last-error`).
+- **Redirect safety (qualified risk 1):** besides staying on the publisher's
+  own site over https, every hop's hostname must now resolve only to public
+  addresses (private, loopback, link-local, carrier NAT, reserved, IPv4-mapped
+  and NAT64 forms refused). fetch resolves again when it connects, so a
+  publisher whose DNS is hijacked could still race the check; noted in code.
+- **Privacy journal (SECURITY.md section 2, audit "remaining recovery
+  proof"):** account erasures and email opt-outs are journaled in the same
+  transaction, signed with `PRIVACY_JOURNAL_KEY`, and copied every 5 minutes to
+  `privacy-journal/v1/` in the private backup bucket (only account IDs, never
+  emails). A prepared restore refuses to serve until it replays the journal and
+  saves evidence, or the owner records a waiver. Needs the owner to add
+  `PRIVACY_JOURNAL_KEY` in Render; until then entries wait on the server and
+  the panel says so.
+
+Checked: `npm run check` (5,570 tests, 1 skipped), `check:blueprint`, and all
+ten browser suites; the upkeep suite now asserts the new sections at 390 and
+1280 px. Not done: journaling single post, comment and message deletions
+(TODO). Codex's open PR #13 touches `server/api.js`, `server/index.js` and the
+news desk too, so it will need a rebase onto this commit.
+
 ## 2026-09-27 Nine more news outlets (14 independent companies)
 
 At the owner's request the desk now also reads Loudwire and XXL (both

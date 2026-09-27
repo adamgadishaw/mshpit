@@ -45,6 +45,16 @@ export function upkeepFixture(mode = "maintenance") {
     sourceRefresh: { enabled: false, configured: true, state: "failed", at, lastSuccessAt: null, stage: "fetching", category: "provider_network" },
     seo: { state: "ready", lastBuiltAt: at, totalUrls: 43200, nextRefreshMinutes: 15,
       indexingState: "not_measured", sitemapUrl: "https://catalog-fixture.invalid/sitemap.xml" },
+    newsDesk: { configured: true, enabled: true, budget: { dailyUsd: 0.3, monthlyUsd: 6 },
+      spend: { today: { confirmedUsd: 0.02, heldUsd: 0, unconfirmedUsd: 0 }, month: { confirmedUsd: 0.4, heldUsd: 0.05, unconfirmedUsd: 0 } },
+      publisherBound: true, publishedToday: 1, slotsPerDay: 5, nextSlot: { label: "17:00", timeZone: "America/Toronto" },
+      published7d: 6, declined7d: 2, openReports: 41,
+      lastPass: { at, reason: "waiting_for_slot", reportsAdded: 7, confirmed: 0, published: 0, declined: 0, budgetStops: 0, slot: "next_slot", headline: null },
+      lastError: null },
+    claudeSpend: { month: "2026-09", ceilingUsd: 10, totalUsd: 1.29, leftUsd: 8.71,
+      news: { confirmedUsd: 0.4, heldUsd: 0.05, unconfirmedUsd: 0, totalUsd: 0.45 },
+      research: { confirmedUsd: 0.64, heldUsd: 0, unconfirmedUsd: 0.2, totalUsd: 0.84 } },
+    privacyJournal: { signingKey: false, storage: true, pending: 2, oldestPendingAt: at, lastShippedAt: null, lastError: null, lastReplay: null },
   };
 }
 export function staffFixture(url, method = "GET") {
@@ -164,6 +174,14 @@ async function scenario(browser, origin, width, kind) {
     await panel.getByText(/Interrupted work stays queued/).waitFor();
     await panel.getByText(/Show-date refresh \(not venue page enrichment\)/).waitFor();
     await panel.getByText(/Show-date scheduler: Disabled/).waitFor();
+    await panel.getByText("News desk", { exact: true }).first().waitFor();
+    await panel.getByText(/1 of 5 stories today\. Next slot: 17:00, Toronto time\./).waitFor();
+    await panel.getByText(/Waiting for the next publishing slot\. 7 new outlet reports/).waitFor();
+    await panel.getByText("Claude spending this month", { exact: true }).waitFor();
+    await panel.getByText("$1.29 / $10.00", { exact: true }).waitFor();
+    await panel.getByText("$0.64 confirmed, $0.00 held, $0.20 unconfirmed", { exact: true }).waitFor();
+    await panel.getByText(/Privacy journal: 2 waiting to copy off-host/).waitFor();
+    await panel.getByText(/Add PRIVACY_JOURNAL_KEY in Render/).waitFor();
     assert.equal(state.posts, 0, "Opening or refreshing the panel must not start work.");
     const catchUp = panel.getByRole("button", { name: "Start catalog catch-up", exact: true });
     await catchUp.click();

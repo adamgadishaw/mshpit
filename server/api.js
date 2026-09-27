@@ -98,6 +98,7 @@ import { createArtistNewsReader } from "./features/artistUpdates/artistNewsReade
 import { startArtistNewsScheduler } from "./features/artistUpdates/artistNewsJob.js";
 import { newsDeskRoutes } from "./features/newsDesk/newsDeskRoutes.js";
 import { createNewsDeskReader } from "./features/newsDesk/newsDeskService.js";
+import { ensurePrivacyJournalSchema, recordPrivacyEvent, replayPrivacyJournalIfRestored, startPrivacyJournalShipper } from "./privacyJournal.js";
 import { eligibleNewsPosts, isNewsPostId, newsFeedRoutes } from "./features/newsDesk/newsFeedPlacement.js";
 import { startNewsDeskScheduler } from "./features/newsDesk/newsDeskJob.js";
 import { startDeezerArtistPhotoScheduler } from "./features/artistPhotos/deezerArtistPhotoFill.js";
@@ -304,6 +305,7 @@ export const artistDeathWatchService = createArtistDeathWatchService({
   repository: createArtistDeathWatchRepository(db),
 });
 ensureLegacyMediaFinalizeSchema(db);
+ensurePrivacyJournalSchema(db);
 const uid = (prefix) => opaqueId(prefix);
 const PROFILE_EXTRAS_MAX_BYTES = 8000;
 const CURRENT_TERMS_VERSION = LEGAL_ACCEPTANCE_VERSION;
@@ -4366,7 +4368,8 @@ async function searchYouTubeTrack(ctx, input) {
 // Complete erasure shared by explicit account deletion and the fenced inactivity
 // worker. The caller owns the transaction; no email or object-network operations
 // run here. Durable media cleanup is enqueued before user/content cascades.
-function eraseAccountData(u, { at = now() } = {}) {
+// `journal: false` only for replaying the privacy journal itself.
+function eraseAccountData(u, { at = now(), journal = true } = {}) {
   if (!db.isTransaction) throw new TypeError("Account erasure requires an active transaction");
   if (!u?.id) throw new TypeError("Account erasure requires a current account");
   if (isOwnerId(db, u.id)) throw new ApiError(403, "The permanent Owner account cannot be deleted.", "FORBIDDEN");
@@ -4478,7 +4481,48 @@ function eraseAccountData(u, { at = now() } = {}) {
   // Structured post tags are JSON rather than foreign-key rows, so account
   // erasure must explicitly remove this id from posts authored by others.
   scrubTaggedUserFromPosts(u.id);
+  // Off-host record so restoring an older backup cannot bring the account back.
+  if (journal) recordPrivacyEvent(db, { kind: "account_erased", subjectId: u.id, at });
   db.prepare("DELETE FROM users WHERE id=?").run(u.id);
+}
+
+// Marketing consent withdrawn by Settings or an unsubscribe link; journaled in
+// the same transaction so a restored backup cannot quietly resume email.
+function setMarketingPreferenceJournaled(preference) {
+  const write = () => {
+    const before = q.userById.get(preference.id);
+    const result = emailStmts.setMarketingPreference.run(preference);
+    // Only a real withdrawal is journaled, not a repeat unsubscribe click.
+    if (preference.opt_out === 1 && result.changes && before && before.marketing_opt_out !== 1) {
+      recordPrivacyEvent(db, { kind: "marketing_opt_out", subjectId: preference.id, at: preference.at });
+    }
+    return result;
+  };
+  return db.isTransaction ? write() : atomicWrite(write);
+}
+
+// Restore only (server/index.js, before listening): replay erasures and
+// opt-outs recorded after the backup this database came from.
+export function replayPrivacyJournalOnRestore(options = {}) {
+  return replayPrivacyJournalIfRestored(db, {
+    ...options,
+    erase: (userId) => atomicWrite(() => {
+      const user = q.userById.get(userId);
+      if (!user || isOwnerId(db, user.id)) return false;
+      eraseAccountData(user, { at: now(), journal: false });
+      return true;
+    }),
+    optOut: (userId) => {
+      const user = q.userById.get(userId);
+      if (!user || user.marketing_opt_out === 1) return false;
+      emailStmts.setMarketingPreference.run({ id: userId, opt_out: 1, at: now(), version: CURRENT_MARKETING_CONSENT_VERSION, source: "privacy-journal-replay" });
+      return true;
+    },
+  });
+}
+
+export function startPrivacyJournal() {
+  return startPrivacyJournalShipper({ database: db });
 }
 
 // Defense in depth: the maintenance callback repeats the durable Owner,
@@ -4612,7 +4656,7 @@ export const routes = {
     projectSelf: (user) => publicUser(user, { self: true }),
     rateLimit: limit,
     requireSessionUser,
-    setMarketingPreference: (preference) => emailStmts.setMarketingPreference.run(preference),
+    setMarketingPreference: setMarketingPreferenceJournaled,
     verifyPassword,
   }),
   ...artistDiscographyRoutes({
@@ -8899,7 +8943,7 @@ export const routes = {
     // A bearer unsubscribe link may only reduce processing. Re-enabling
     // announcements requires an authenticated account session in Settings;
     // otherwise an old or forwarded link could silently undo consent.
-    emailStmts.setMarketingPreference.run({
+    setMarketingPreferenceJournaled({
       id: user.id,
       opt_out: 1,
       at: now(),

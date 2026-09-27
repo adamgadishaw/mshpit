@@ -2,7 +2,8 @@ import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
 import Button from "../../components/Button";
 import { colors, mono, radius } from "../../theme";
 import useCatalogMaintenance from "./useCatalogMaintenance";
-import { catalogBytes, catalogCount, catalogModeLabel, catalogTime, catalogSourceSchedulerLabel } from "./catalogMaintenanceState.mjs";
+import { catalogBytes, catalogCount, catalogModeLabel, catalogTime, catalogSourceSchedulerLabel,
+  claudeMoney, claudeSpendBreakdown, claudeSpendTotal, newsDeskReasonText } from "./catalogMaintenanceState.mjs";
 
 function Datum({ label, value, detail }) {
   return <View style={styles.datum}>
@@ -30,6 +31,10 @@ export default function CatalogMaintenancePanel({ accountId, role, active = true
   const venuePhotos = data?.venuePhotos;
   const research = data?.research;
   const webProfiles = data?.webProfiles;
+  const news = data?.newsDesk;
+  const newsPass = news?.lastPass;
+  const claude = data?.claudeSpend;
+  const journal = data?.privacyJournal;
   const blocked = !state.confirmed || !catalog || !active || !!state.pendingMode || knowledge?.enabled === false;
   const mode = catalog?.mode;
   if (!state.available) return null;
@@ -131,6 +136,30 @@ export default function CatalogMaintenancePanel({ accountId, role, active = true
         {research?.lastError ? <Text selectable style={styles.error}>Last problem: {String(research.lastError.code || "").replaceAll("_", " ")} at {catalogTime(research.lastError.at)}. The agent retries on its own.</Text> : null}
         <Text selectable style={styles.hint}>Only pages with no biography are researched, busiest shows first. Every fact links to the page it came from, and results the agent was not sure about are never shown. Pausing catalog upkeep above pauses research too.</Text>
       </Section>
+      <Section title="News desk">
+        <View style={styles.grid}>
+          <Datum label="News desk" value={!news ? "Unverified" : !news.configured ? "Waiting for API key" : news.enabled ? "On" : "Off"}
+            detail={news ? `${catalogCount(news.publishedToday)} of ${catalogCount(news.slotsPerDay)} stories today. Next slot: ${news.nextSlot?.label || "unavailable"}, Toronto time.` : ""} />
+          <Datum label="Last check" value={catalogTime(newsPass?.at)}
+            detail={`${newsDeskReasonText(newsPass)}${newsPass?.headline ? ` "${newsPass.headline}"` : ""}${newsPass ? ` ${catalogCount(newsPass.reportsAdded)} new outlet reports; ${catalogCount(newsPass.confirmed)} stories qualified.` : ""}`} />
+          <Datum label="Spent today" value={news ? `${claudeMoney(claudeSpendTotal(news.spend?.today))} / ${claudeMoney(news.budget?.dailyUsd)}` : "Unverified"}
+            detail={news ? `This month ${claudeMoney(claudeSpendTotal(news.spend?.month))} of ${claudeMoney(news.budget?.monthlyUsd)}: ${claudeSpendBreakdown(news.spend?.month)}.` : ""} />
+          <Datum label="Last 7 days" value={news ? `${catalogCount(news.published7d)} published` : "Unverified"}
+            detail={news ? `${catalogCount(news.declined7d)} turned down by Claude. ${catalogCount(news.openReports)} outlet reports from the last two days are not part of a story yet.` : ""} />
+        </View>
+        {news?.lastError ? <Text selectable style={styles.error}>Last problem: {news.lastError.label} {news.lastError.detail} at {catalogTime(news.lastError.at)}. The desk checks again every 20 minutes.</Text> : null}
+        {news && !news.publisherBound ? <Text selectable style={styles.notice}>No news account is bound yet. The first check binds the account that wrote earlier stories.</Text> : null}
+        <Text selectable style={styles.hint}>The desk reads the outlets every 20 minutes and publishes only in its daily slots, when enough independent outlets carry a story. Quiet stretches are normal on slow news days.</Text>
+      </Section>
+      <Section title="Claude spending this month">
+        <View style={styles.grid}>
+          <Datum label="Shared limit" value={claude ? `${claudeMoney(claude.totalUsd)} / ${claudeMoney(claude.ceilingUsd)}` : "Unverified"}
+            detail={claude ? `${claudeMoney(claude.leftUsd)} left for ${claude.month} (UTC).` : ""} />
+          <Datum label="News desk" value={claude ? claudeMoney(claude.news?.totalUsd) : "Unverified"} detail={claudeSpendBreakdown(claude?.news)} />
+          <Datum label="Web research" value={claude ? claudeMoney(claude.research?.totalUsd) : "Unverified"} detail={claudeSpendBreakdown(claude?.research)} />
+        </View>
+        <Text selectable style={styles.hint}>Confirmed amounts come from the usage Anthropic reports on each reply. Held money is reserved for a call still running. Unconfirmed is a call whose reply was lost; it counts at its worst case so the limit is never exceeded. To reconcile, compare the confirmed total with this month's usage at console.anthropic.com.</Text>
+      </Section>
       <Section title="Photo workers">
         <View style={styles.grid}>
           <Datum label="Artist photos" value={artistPhotos?.phase?.replaceAll("_", " ") || "Unverified"}
@@ -157,6 +186,10 @@ export default function CatalogMaintenancePanel({ accountId, role, active = true
         </View>
         <Text selectable style={styles.copy}>Storage: {storage?.status?.replaceAll("_", " ") || "Unavailable"} · measured {catalogTime(storage?.checkedAt)}.</Text>
         {catalog ? <Text selectable style={styles.hint}>Catch-up database growth guard: {catalogCount(limits.maxGrowthMiB)} MiB above the saved baseline. Provider response ceiling: {catalogCount(limits.maxResponseKiB)} KiB; biography ceiling: {catalogCount(limits.maxBiographyCharacters)} characters. No raw page or image archive is retained by this worker.</Text> : null}
+        {journal ? <Text selectable style={styles.copy}>Privacy journal: {catalogCount(journal.pending)} waiting to copy off-host · last copied {catalogTime(journal.lastShippedAt)}.</Text> : null}
+        {journal && !journal.signingKey ? <Text selectable style={styles.notice}>Add PRIVACY_JOURNAL_KEY in Render (Environment, Generate) so account deletions and email opt-outs are copied off-host. Until then they are kept on this server only.</Text> : null}
+        {journal?.lastError ? <Text selectable style={styles.error}>Privacy journal copy paused: {String(journal.lastError).replaceAll("_", " ")}. It retries every 5 minutes.</Text> : null}
+        <Text selectable style={styles.hint}>The privacy journal records account deletions and email opt-outs outside the database, so restoring an older backup cannot bring them back: a restored copy replays it before it serves anyone.</Text>
         {[...(storage?.issues || []), ...(storage?.warnings || [])].length ? <Text selectable style={styles.error}>{[...(storage?.issues || []), ...(storage?.warnings || [])].join(" · ").replaceAll("_", " ")}</Text> : null}
       </Section>
       <Section title="Sources and Google readiness">

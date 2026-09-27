@@ -245,17 +245,26 @@ remains a broad context whose changing value can rerender unrelated consumers.
 
 ## Codex audit follow-ups (2026-09-27)
 
-The first batch (spending receipts, news permissions, redirects, late sources,
-views, story opening, research turn-taking) is in STATUS. Still open:
+All code findings are closed (STATUS, 2026-09-27 entries and Codex's
+ce60742). Still open:
 
-- **News card actions (G):** Like and Report on news cards in the News tab
-  and strip, using the post actions members already have.
-- **Artist knowledge cooldown (A):** split the global cooldown so one busy
-  source cannot hold back all artist refreshes.
-- **@news_mod binding:** bind the desk to the account id recorded at setup,
-  not the handle, so a renamed or recreated handle cannot publish as the desk.
-- **Moderation view:** show worker failure reasons (news desk, catalog
-  research) to staff.
+- **Owner: add `PRIVACY_JOURNAL_KEY`** in Render (Environment, Add, key
+  `PRIVACY_JOURNAL_KEY`, Generate). Until then account deletions and email
+  opt-outs are kept on the server only; the upkeep panel shows how many wait.
+  Never change the key except right after a verified backup.
+- **Journal single deletions:** posts, comments, messages and media removed
+  by their author are not journaled yet, so a restore can bring them back
+  until reviewed by hand. Add a `content_deleted` kind at each delete route.
+- **Bucket lifecycle vs journal:** the backup bucket's lifecycle rule must
+  keep `privacy-journal/` objects at least as long as the oldest backup that
+  could be restored (today both are 14 days).
+- **Owner: Render support ticket** for the 2026-09-26 55-minute silent start
+  (audit step 11); ask what happened between "stopping instance" and the next
+  instance log line.
+- **Monthly: reconcile Claude spending** by comparing the upkeep panel's
+  confirmed total with console.anthropic.com usage (audit step 13).
+- **Before shrinking the video service:** measure real iPhone/HEVC upload
+  peaks first (audit step 14).
 - **@news_mod must stay active:** stories now hide when the author is banned,
   suspended or dormant, so the lifecycle item below also decides whether News
   shows anything at all.

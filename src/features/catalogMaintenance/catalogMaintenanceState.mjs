@@ -87,3 +87,31 @@ export function catalogSourceSchedulerLabel(sourceRefresh) {
   if (sourceRefresh?.enabled === true && sourceRefresh?.configured === true) return "Enabled";
   return "Unverified";
 }
+
+// Why the news desk did or did not publish on its last check (codes from
+// server/features/newsDesk/newsDeskStatus.js).
+const NEWS_DESK_REASONS = Object.freeze({
+  published: "Published a story.",
+  waiting_for_slot: "Waiting for the next publishing slot.",
+  day_full: "Today's publishing slots are used.",
+  too_soon: "Waiting: the last story went out less than two hours ago.",
+  budget: "Stopped at the news spending limit.",
+  declined: "Claude turned the candidates down as not big music news.",
+  no_qualifying_story: "No story is carried by enough independent outlets yet.",
+  publisher_paused: "Paused: the news account needs review before anything else is published.",
+  yielded_for_memory: "Skipped to leave memory for uploads; the next check runs as usual.",
+  time_limit: "Stopped at the check's time limit; the next check picks up where it left off.",
+});
+export function newsDeskReasonText(pass) {
+  if (!pass) return "No check recorded since this version started.";
+  return NEWS_DESK_REASONS[pass.reason] || "Finished without a recorded reason.";
+}
+
+export const claudeMoney = (value) => (Number.isFinite(Number(value)) ? `$${Number(value).toFixed(2)}` : "Unverified");
+// "$1.20 confirmed, $0.05 held, $0.00 unconfirmed"
+export function claudeSpendBreakdown(entry) {
+  if (!entry) return "Unverified";
+  return `${claudeMoney(entry.confirmedUsd)} confirmed, ${claudeMoney(entry.heldUsd)} held, ${claudeMoney(entry.unconfirmedUsd)} unconfirmed`;
+}
+export const claudeSpendTotal = (entry) => (entry
+  ? Number(entry.confirmedUsd || 0) + Number(entry.heldUsd || 0) + Number(entry.unconfirmedUsd || 0) : null);

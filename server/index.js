@@ -12,7 +12,7 @@ import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { join, extname, normalize, dirname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { db, q, publicUser, pruneMissingArtists, DATABASE_DIRECTORY, DATABASE_PATH } from "./db.js";
-import { artistDeathWatchService, eraseAccountForInactivity, routes, startArtistNews, startArtistPhotos, startCatalogResearch, startNewsDesk, startVideoProcessingRetries, startWebProfiles } from "./api.js";
+import { artistDeathWatchService, eraseAccountForInactivity, replayPrivacyJournalOnRestore, routes, startArtistNews, startArtistPhotos, startCatalogResearch, startNewsDesk, startPrivacyJournal, startVideoProcessingRetries, startWebProfiles } from "./api.js";
 import { ApiError, errorEnvelope } from "./errors.js";
 import { readAuthorizedRequest } from "./requestAuthorization.js";
 import { maybeAlert, pruneErrors, recordError } from "./errorLog.js";
@@ -996,7 +996,14 @@ async function startServer() {
   if (!loadedSitemap.ok && loadedSitemap.reason !== "missing") {
     console.error(`[seo] persisted sitemap rejected safely: category=${loadedSitemap.reason}`);
   }
+  // A database restored from a backup replays the privacy journal before it
+  // serves anyone or starts a worker; a live database skips this at once.
+  const privacyReplay = await replayPrivacyJournalOnRestore();
+  if (privacyReplay.needed) {
+    console.log(`[privacy-journal] restored database: ${privacyReplay.waived ? `replay waived (${privacyReplay.waived})` : `replayed ${privacyReplay.verified} entries, ${privacyReplay.erased} accounts erased, ${privacyReplay.optedOut} opt-outs, ${privacyReplay.rejected} rejected`}`);
+  }
   await listenForServer(server, PORT);
+  startBackgroundRuntime("/startup/privacy-journal", () => startPrivacyJournal()); // ships erasure/opt-out records to the private backup bucket
   storageMaintenance = startBackgroundRuntime("/startup/storage-maintenance", () => startStorageMaintenance({
     database: db, databasePath: DATABASE_PATH, pruneProviders: pruneExpiredProviderData, sweepSessions: sweepExpiredSessions,
   }));

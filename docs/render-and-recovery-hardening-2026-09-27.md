@@ -58,6 +58,11 @@ must follow the same offline procedure below.
    or the configured live database. Once preparation starts, a failed review
    leaves the output fenced. Never use an interrupted copy: historical sources
    may lack the marker until the copy has finished and fencing has run.
+   Journaled account erasures and email opt-outs are then replayed
+   automatically: the server refuses to serve a prepared copy until it has read
+   `privacy-journal/v1/` from the backup bucket with `PRIVACY_JOURNAL_KEY` and
+   saved replay evidence (see `SECURITY.md`, section 2). Post, comment and
+   message deletions are not journaled yet and still need manual review.
 4. Check integrity, foreign keys, permissions, content and representative member
    flows on that output. The owner must explicitly authorize production restore.
    Keep `EMAIL_CAMPAIGN_RECOVERY_ENABLED=false` until suppression replay and

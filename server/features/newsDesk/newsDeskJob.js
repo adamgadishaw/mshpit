@@ -1,3 +1,5 @@
+import { lookup } from "node:dns/promises";
+import { BlockList, isIP } from "node:net";
 import { backgroundJobEnabled } from "../../backgroundJobs.js";
 import { anthropicMonthlyCeilingMicroUsd } from "../../claudeSpendCeiling.js";
 import { anthropicErrorSummary } from "../../anthropicErrors.js";
@@ -8,6 +10,7 @@ import { artistKnowledgeMemoryReady } from "../../artistKnowledgeRefresh.js";
 import { applyOnce, createNewsDesk, newsDeskBudget, repairStoryArtists, withdrawNewsStories } from "./newsDeskService.js";
 import { createNewsSummarizer } from "./newsSummarizer.js";
 import { createWikipediaBuzz } from "./newsBuzz.js";
+import { recordNewsDeskFailure, recordNewsDeskPass } from "./newsDeskStatus.js";
 
 const MINUTE = 60_000;
 const FEED_MAX_BYTES = 2 * 1024 * 1024;
@@ -49,11 +52,44 @@ export function allowedRedirect(from, to) {
     && (host === siteOf(from.hostname) || host.endsWith(`.${siteOf(from.hostname)}`));
 }
 
-async function fetchBounded(url, { signal, timeoutMs, accept, maxBytes }) {
+// Addresses a publisher's own hostname must never resolve to: private,
+// loopback, link-local, carrier NAT, multicast, reserved and documentation
+// ranges, and the NAT64 form that could hide one of them.
+const NON_PUBLIC = new BlockList();
+for (const [address, prefix] of [["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8], ["169.254.0.0", 16],
+  ["172.16.0.0", 12], ["192.0.0.0", 24], ["192.0.2.0", 24], ["192.168.0.0", 16], ["198.18.0.0", 15], ["198.51.100.0", 24],
+  ["203.0.113.0", 24], ["224.0.0.0", 4], ["240.0.0.0", 4]]) NON_PUBLIC.addSubnet(address, prefix, "ipv4");
+for (const [address, prefix] of [["::", 128], ["::1", 128], ["64:ff9b::", 96], ["100::", 64], ["2001:db8::", 32],
+  ["fc00::", 7], ["fe80::", 10], ["ff00::", 8]]) NON_PUBLIC.addSubnet(address, prefix, "ipv6");
+
+// BlockList also matches IPv4 addresses against IPv4-mapped IPv6 rules, so a
+// mapped answer (::ffff:10.0.0.1) is unwrapped and checked as IPv4 instead.
+export function publicAddress(address) {
+  const value = String(address || "").toLowerCase();
+  const mapped = value.match(/^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/u)?.[1];
+  if (mapped) return publicAddress(mapped);
+  const family = isIP(value);
+  if (family === 6 && value.startsWith("::ffff:")) return false;
+  return family !== 0 && !NON_PUBLIC.check(value, family === 6 ? "ipv6" : "ipv4");
+}
+
+// Every hop's hostname must resolve only to public addresses. This checks the
+// answer the resolver gives now; fetch resolves again when it connects, so a
+// publisher whose DNS is under an attacker's control could still race it. The
+// same-site redirect rule above limits that to a publisher's own domain.
+export async function assertPublicHost(hostname, { resolve = lookup } = {}) {
+  const answers = await resolve(hostname, { all: true, verbatim: true });
+  if (!answers?.length || !answers.every(({ address }) => publicAddress(address))) {
+    throw new Error("publisher host does not resolve to a public address");
+  }
+}
+
+async function fetchBounded(url, { signal, timeoutMs, accept, maxBytes, resolve = lookup }) {
   const deadline = signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs);
   const first = new URL(url);
   let current = first;
   for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
+    await assertPublicHost(current.hostname, { resolve });
     const response = await fetch(current, { signal: deadline, headers: { "user-agent": USER_AGENT, accept }, redirect: "manual" });
     const location = response.status >= 300 && response.status < 400 ? response.headers.get("location") : null;
     if (location) {
@@ -95,21 +131,32 @@ export const NEWS_DESK_PASS_BUDGET_MS = 3 * MINUTE;
 // Share one maintenance slot with catalogue work. Bound the whole pass (not
 // just individual HTTP calls), and yield before publication if uploads need
 // the memory. Feed rotation and durable receipts make a later pass resumable.
+// `record` saves what the pass did for the Moderation panel (newsDeskStatus.js).
 export function runNewsDeskPass({ desk, signal, coordinate = runBackgroundJob,
-  memoryReady = artistKnowledgeMemoryReady, logger = console, budgetMs = NEWS_DESK_PASS_BUDGET_MS }) {
+  memoryReady = artistKnowledgeMemoryReady, logger = console, budgetMs = NEWS_DESK_PASS_BUDGET_MS,
+  record = () => {}, now = Date.now }) {
   return coordinate(async () => {
-    if (signal?.aborted || !memoryReady()) return false;
+    if (signal?.aborted) return false;
+    if (!memoryReady()) {
+      record({ at: now(), reason: "yielded_for_memory" });
+      return false;
+    }
     const publisher = desk.publisherStatus?.();
     if (publisher && !publisher.ok) {
       logger.warn?.(`[news-desk] publishing paused: ${publisher.reason}. ${publisher.message}`);
+      record({ at: now(), reason: "publisher_paused", publisherReason: publisher.reason });
       return false;
     }
     const timeout = Number.isFinite(budgetMs) ? Math.max(1000, Math.min(NEWS_DESK_PASS_BUDGET_MS, budgetMs)) : NEWS_DESK_PASS_BUDGET_MS;
     const deadline = AbortSignal.timeout(timeout);
     const workSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
     const added = await desk.ingest({ signal: workSignal });
-    if (workSignal.aborted || !memoryReady()) return false;
+    if (workSignal.aborted || !memoryReady()) {
+      record({ at: now(), reason: workSignal.aborted ? "time_limit" : "yielded_for_memory", reportsAdded: added });
+      return false;
+    }
     const result = await desk.publishPass({ signal: workSignal });
+    record({ at: now(), reportsAdded: added, result });
     if (result.publisherReason) {
       logger.warn?.(`[news-desk] publishing paused: ${result.publisherReason}. ${result.publisherMessage}`);
       return false;
@@ -152,9 +199,14 @@ export function startNewsDeskScheduler({ database, env = process.env, now = Date
   return startPeriodicJob({
     initialDelayMs: 4 * MINUTE,
     intervalMs: 20 * MINUTE,
-    run: ({ signal }) => runNewsDeskPass({ desk, signal }),
+    run: ({ signal }) => runNewsDeskPass({ desk, signal, now, record: (entry) => recordNewsDeskPass(database, entry) }),
     // An Anthropic error says what to fix (401: the key; 400: the request or
-    // the account); the summary is safe to log.
-    report: (error) => console.error(`[news-desk] pass failed safely: ${privateErrorLabel(error)} ${anthropicErrorSummary(error)}`.trim()),
+    // the account); the summary is safe to log and to show staff.
+    report: (error) => {
+      const label = privateErrorLabel(error);
+      const detail = anthropicErrorSummary(error);
+      recordNewsDeskFailure(database, { at: now(), label, detail });
+      console.error(`[news-desk] pass failed safely: ${label} ${detail}`.trim());
+    },
   });
 }
