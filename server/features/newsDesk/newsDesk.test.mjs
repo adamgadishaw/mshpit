@@ -34,6 +34,8 @@ test("feeds parse into plain headlines, links and dates, RSS or Atom", () => {
   assert.equal(items[0].title, "Pearl Jam Reveal New Drummer ‘Abe’");
   assert.equal(items[0].description, "Surprise at & Ohana");
   assert.equal(items[0].url, "https://example.test/a");
+  assert.equal(parseNewsFeed(`<rss><item><title>DIY Date</title><link>https://diymag.com/news/a</link><pubDate>Fri, 25 Sept 2026 15:26:00 +0100</pubDate></item></rss>`)[0]?.publishedAt,
+    Date.parse("2026-09-25T14:26:00Z"), "a \"Sept\" date still parses");
   const atom = parseNewsFeed(`<feed><entry><title>U2 Play Old School</title><link href="https://example.test/u2"/><updated>2026-09-26T10:00:00Z</updated><summary>Anniversary</summary></entry></feed>`, { sourceId: "guardian" });
   assert.deepEqual(atom.map((item) => [item.title, item.url]), [["U2 Play Old School", "https://example.test/u2"]]);
   assert.equal(parseNewsFeed(rss([["No link", "javascript:alert(1)", 1]])).length, 0, "only https links");
@@ -605,4 +607,16 @@ test("article and feed redirects stay on the publisher's own site", async () => 
   assert.equal(allowedRedirect(new URL("https://www.bbc.co.uk/music"), new URL("https://news.bbc.co.uk/a")), true);
   assert.equal(allowedRedirect(new URL("https://www.bbc.co.uk/music"), new URL("https://evil.co.uk/a")), false,
     "a country domain never widens to all of co.uk");
+});
+
+test("every outlet has its own https feed on its own site, and shared owners share a group", async () => {
+  const { NEWS_SOURCES } = await import("./newsSources.js");
+  assert.equal(new Set(NEWS_SOURCES.map((source) => source.id)).size, NEWS_SOURCES.length);
+  for (const source of NEWS_SOURCES) {
+    assert.ok(sourceOwnsUrl(source, source.url), `${source.id} feed is on ${source.domain}`);
+  }
+  const groupOf = (id) => newsSourceById(id).group;
+  assert.equal(groupOf("billboard"), groupOf("variety"));
+  assert.equal(groupOf("loudwire"), groupOf("xxl"), "Townsquare Media counts once");
+  assert.ok(new Set(NEWS_SOURCES.map((source) => source.group)).size >= 14);
 });

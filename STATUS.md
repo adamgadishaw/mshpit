@@ -6,7 +6,24 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
-## 2026-09-27 Audit hardening (Codex deep audit, first batch)
+## 2026-09-27 Nine more news outlets (14 independent companies)
+
+At the owner's request the desk now also reads Loudwire and XXL (both
+Townsquare Media, counted once), SPIN (spinmagazine.com since February 2026),
+Clash, DIY, HotNewHipHop, The FADER, Pollstar and JamBase: 17 outlets from 14
+independent companies, up from 8 from 6. Each feed was fetched with the
+production fetcher and parser before it was added; ownership was checked the
+same day. Left out: Alternative Press (owned by Live Nation's Veeps, staff laid
+off August 2026), Kerrang! (one item, articles blocked), NPR Music and Paste
+(features and reviews, not news), Soompi and Taste of Country (mostly TV and
+gossip), and outlets with no working https feed (Exclaim!, Complex,
+BrooklynVegan's is stale, HipHopDX's stopped in April). DIY writes "Sept" in
+its dates; the parser now accepts it. The 3-company rule is unchanged.
+
+Dry run on the live feeds (Sunday 11:05 EDT, Claude stubbed): 108 reports from
+16 outlets in 10 s (DIY posts on weekdays); one story cleared 3 companies,
+the already published Pearl Jam drummer story, now carried by 4.
+
 
 Fixes for the highest-priority findings in the owner's 2026-09-27 audit,
 committed together so they ship in one deploy:

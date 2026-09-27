@@ -40,8 +40,9 @@ const httpsLink = (value) => {
   }
 };
 
+// Some feeds (DIY) write "Sept" where RFC 822 dates use "Sep".
 const timestamp = (value) => {
-  const parsed = Date.parse(plainText(value, 80));
+  const parsed = Date.parse(plainText(value, 80).replace(/\bSept\b/u, "Sep"));
   return Number.isFinite(parsed) ? parsed : null;
 };
 

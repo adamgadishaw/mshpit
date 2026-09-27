@@ -282,10 +282,12 @@ views, story opening, research turn-taking) is in STATUS. Still open:
   confirm the 1200x630 card shows (Cloudflare may cache the image for an hour).
 - **Corrections:** an admin control to unpublish a story (today: delete the
   @news_mod post, which hides it from the feed, `/news` and the sitemap).
-- **More outlets:** only six independent groups exist today (Billboard,
-  Rolling Stone and Variety count as one), which is why quiet days publish
-  nothing. Candidates, each its own group if its feed is stable: HotNewHipHop,
-  Complex, Exclaim!, Loudwire, BrooklynVegan, Spin, DIY, Clash.
+- **Outlets:** 17 outlets from 14 companies since 2026-09-27 (STATUS). Watch
+  `[news-desk] <id> feed unavailable` lines for a week and drop any feed that
+  keeps failing. Pollstar's article pages open with a newsletter prompt, so
+  its lead paragraph is weak; its headline still counts. Possible later:
+  Exclaim! and BrooklynVegan if they publish working feeds, and a country
+  outlet that is not Townsquare-owned.
 - **@news_mod account lifecycle:** desk posts are not sign-ins, so the account
   goes dormant (hidden from For You) a year after its last login and is
   deleted after two. Before 2027-09, either sign in to @news_mod now and then
