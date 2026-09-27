@@ -245,12 +245,16 @@ remains a broad context whose changing value can rerender unrelated consumers.
 
 ## Mshpit News desk follow-ups (2026-09-26)
 
-- **Anthropic key (2026-09-26):** the current key is Organization-scoped, so
-  every call 400s asking for a workspace. Owner creates a key in the Default
-  workspace with no expiry, replaces `ANTHROPIC_API_KEY` in Render, and deletes
-  the two Organization keys (both expire 2026-10-26); then confirm
-  `[news-desk] reports=... published=...` and `[catalog-research]
-  researched=...` lines appear.
+- **Old Anthropic keys:** the working key is in the Default workspace. Delete
+  the two Organization-scoped keys (`mshpit-render`, `mshpit news`; both
+  expire 2026-10-26) in the Claude Console.
+- **Backup restore drill:** off-host backups upload daily since 2026-09-26
+  (`mshpit-backups`, 14-day lifecycle). Download one R2 snapshot, open it
+  locally, run `scripts/backup-db-verification.mjs` checks, and record the
+  result.
+- **Unused R2 tokens:** Cloudflare lists three older "PIT ... media pipeline"
+  tokens and an "R2 Account Token" with media access; keep only the one Render
+  uses and revoke the rest.
 - **After deploy:** add `NEWS_DESK_ENABLED=true` in the Render dashboard (and
   `CATALOG_RESEARCH_ENABLED=true` for modest catalog filling), then watch
   `[news-desk]` and `[catalog-research]` log lines and the Anthropic console.

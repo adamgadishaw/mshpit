@@ -26,6 +26,13 @@ August 4/5 audit/session log are historical journals, not current status.
   handled R2). `backupStorageSecurity.js` now accepts that exact R2 body from
   an R2 account endpoint only; a generic 400, a 404 or a lookalike host still
   fails closed.
+- Deployed afea942 at 23:12 EDT with the owner's go-ahead (about one minute
+  down during the disk swap). Verified: the four withdrawn stories return 404
+  and the feed shows U2, Ed Sheeran, Pearl Jam and one New York festival
+  story; at 23:17:50 the log reads "database backup verified and uploaded
+  off-host", and R2 holds `db/pit-20260927-031736.db` (188.78 MB, 23:17:49
+  EDT) in `mshpit-backups` with public access disabled. Off-host backups are
+  live; a restore drill from R2 is still outstanding.
 
 ## 2026-09-26 Mshpit News publishing slots
 
