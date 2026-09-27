@@ -12,7 +12,7 @@ import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { join, extname, normalize, dirname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { db, q, publicUser, pruneMissingArtists, DATABASE_DIRECTORY, DATABASE_PATH } from "./db.js";
-import { artistDeathWatchService, eraseAccountForInactivity, routes, startArtistNews, startArtistPhotos, startCatalogResearch, startNewsDesk, startVideoProcessingRetries, startWebProfiles } from "./api.js";
+import { artistDeathWatchService, eraseAccountForInactivity, routes, startArtistNews, startArtistPhotos, startCatalogResearch, startNewsDesk, startVideoProcessingRetries, startWebProfiles, startSearchGrowth } from "./api.js";
 import { ApiError, errorEnvelope } from "./errors.js";
 import { readAuthorizedRequest } from "./requestAuthorization.js";
 import { maybeAlert, pruneErrors, recordError } from "./errorLog.js";
@@ -833,6 +833,7 @@ let artistDeathWatchScheduler = null;
 let tourDateScheduler = null;
 let cacheWarmScheduler = null;
 let artistKnowledgeScheduler = null;
+let searchGrowthScheduler = null;
 let venuePhotoScheduler = null;
 let backupScheduler = null;
 let mediaDeletionScheduler = null;
@@ -855,6 +856,7 @@ function shutdown(exitCode = 0) {
   const tourDateStop = tourDateScheduler?.stop({ abortActive: true }) || Promise.resolve();
   const cacheWarmStop = cacheWarmScheduler?.stop({ abortActive: true }) || Promise.resolve();
   const artistKnowledgeStop = artistKnowledgeScheduler?.stop({ abortActive: true }) || Promise.resolve();
+  const searchGrowthStop = searchGrowthScheduler?.stop({ abortActive: true }) || Promise.resolve();
   const venuePhotoStop = venuePhotoScheduler?.stop({ abortActive: true }) || Promise.resolve();
   const backupStop = backupScheduler?.stop({ abortActive: true }) || Promise.resolve();
   const mediaDeletionStop = mediaDeletionScheduler?.stop({ abortActive: true }) || Promise.resolve();
@@ -883,6 +885,8 @@ function shutdown(exitCode = 0) {
     catch (error) { console.error(`[pit] catalogue enrichment shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     try { await artistKnowledgeStop; }
     catch (error) { console.error(`[pit] artist knowledge shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
+    try { await searchGrowthStop; }
+    catch (error) { console.error(`[seo] search growth shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     try { await venuePhotoStop; }
     catch (error) { console.error(`[pit] venue photo shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     try { await backupStop; }
@@ -1021,6 +1025,7 @@ async function startServer() {
       console.log("[mail] automatic campaign recovery disabled; resume only after privacy replay and restore review.");
     }
     tourDateScheduler = startBackgroundRuntime("/startup/tour-dates", () => startTourDateScheduler()); // scrapes tour dates into the DB on a timer (no cron/redeploy)
+    searchGrowthScheduler = startBackgroundRuntime("/startup/search-growth", () => startSearchGrowth()); // opt-in, bounded read-only Google imports; never a request dependency
     startBackgroundRuntime("/startup/artist-tourdate-demand", () => startArtistTourDateDemandRefresh()); // drains durable exact-artist demand without delaying reads
     startBackgroundRuntime("/startup/artist-genres", () => startMusicBrainzGenreRefreshScheduler()); // exact-MBID genre evidence, bounded and never on a foreground read
     startBackgroundRuntime("/startup/artist-photos", () => startArtistPhotoSeedScheduler()); // Spotify artist-page images, bounded and never on a foreground read

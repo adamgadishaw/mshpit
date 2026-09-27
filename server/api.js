@@ -178,6 +178,9 @@ import { collectStorageHealth } from "./storageHealth.js";
 import { collectArtistKnowledgeStatus } from "./artistKnowledgeStatus.js";
 import { createCatalogMaintenanceService } from "./features/catalogMaintenance/catalogMaintenanceService.js";
 import { catalogMaintenanceRoutes } from "./features/catalogMaintenance/catalogMaintenanceRoutes.js";
+import { createSearchGrowthService, startSearchGrowthScheduler } from "./features/searchGrowth/searchGrowthService.js";
+import { searchGrowthRoutes } from "./features/searchGrowth/searchGrowthRoutes.js";
+import { ensureSearchGrowthPrioritySchema, rememberSearchGrowthPriorities } from "./features/searchGrowth/searchGrowthPriorities.js";
 import { requestMetrics } from "./requestMetrics.js";
 import {
   mediaPublishingCapabilitiesForRuntime,
@@ -4167,6 +4170,12 @@ ensureCrewSchema(db);
 ensureShowPlansSchema(db);
 const catalogMaintenanceService = createCatalogMaintenanceService({ database: db, databasePath: DATABASE_PATH,
   now, seoStatus: catalogSeoMaintenanceStatus });
+ensureSearchGrowthPrioritySchema(db);
+const searchGrowthService = createSearchGrowthService({ database: db, now,
+  onPriorities: (batch) => rememberSearchGrowthPriorities(db, batch) });
+export function startSearchGrowth() {
+  return startSearchGrowthScheduler({ service: searchGrowthService });
+}
 const messageRelationshipContextService = createMessageRelationshipContextService(db);
 
 function deploymentReadinessProjection() {
@@ -4581,6 +4590,8 @@ export const routes = {
   ...artistBiographyRoutes({ database: db, ApiError, requireAdmin, rateLimit: limit, now, publicArtist }),
   ...catalogMaintenanceRoutes({ database: db, ApiError, requireAdmin, rateLimit: limit, now,
     ...catalogMaintenanceService }),
+  ...searchGrowthRoutes({ database: db, ApiError, requireAdmin, rateLimit: limit, now,
+    service: searchGrowthService }),
   ...artistRecommendationRoutes({
     service: artistRecommendationService,
     requireUser,
