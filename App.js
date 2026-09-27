@@ -538,10 +538,19 @@ function Root() {
   const publicRouteRequestRef = useRef(null);
   const restoreBrowserPathRef = useRef(null);
   const [publicNavigationNotice, setPublicNavigationNotice] = useState(null);
+  // A news story opens only for the latest tap, and any navigation cancels a
+  // pending one; a story that cannot load says so with a retry.
+  const newsOpenRef = useRef(0);
+  const [newsStoryNotice, setNewsStoryNotice] = useState(null);
+  const cancelNewsStory = () => {
+    newsOpenRef.current += 1;
+    setNewsStoryNotice(null);
+  };
   const cancelPublicRoute = () => {
     publicRouteRequestRef.current?.abort();
     publicRouteRequestRef.current = null;
     setPublicNavigationNotice(null);
+    cancelNewsStory();
   };
   const applyNavigation = (next) => {
     navigationRef.current = next;
@@ -1076,8 +1085,13 @@ function Root() {
   // A story from the news panel, strip or News tab opens its post and comments.
   const openNewsStory = async (story) => {
     if (!story?.postId) return;
+    const ticket = ++newsOpenRef.current;
+    setNewsStoryNotice({ loading: true, story });
     const post = await loadPostForView(story.postId);
-    if (post) openPost(post, { surface: "news" });
+    if (ticket !== newsOpenRef.current) return;
+    if (!post) { setNewsStoryNotice({ loading: false, story }); return; }
+    setNewsStoryNotice(null);
+    openPost(post, { surface: "news" });
   };
   // Ordinary statuses open their discussion. A Going ticket can instead pass
   // the exact performance projection produced by calendarShowFromPost.
@@ -1572,6 +1586,13 @@ function Root() {
             <Text style={{ flex: 1, color: colors.text }}>{publicNavigationNotice.loading ? "Opening page…" : "This artist or profile could not be opened."}</Text>
             {!publicNavigationNotice.loading && <Pressable accessibilityRole="button" onPress={() => runAfterComposerClose(() => navigateCandidate(publicNavigationNotice.candidate, publicNavigationNotice.transition))} style={{ padding: 10 }}><Text style={{ color: colors.amber }}>Try again</Text></Pressable>}
             <Pressable accessibilityRole="button" onPress={cancelPublicRoute} style={{ padding: 10 }}><Text style={{ color: colors.text }}>Cancel</Text></Pressable>
+          </View>
+        )}
+        {newsStoryNotice && (
+          <View accessibilityLiveRegion="polite" style={{ padding: 12, backgroundColor: colors.bgElev, flexDirection: "row", alignItems: "center", gap: 12 }}>
+            <Text style={{ flex: 1, color: colors.text }}>{newsStoryNotice.loading ? "Opening story…" : "This story could not be opened."}</Text>
+            {!newsStoryNotice.loading && <Pressable accessibilityRole="button" onPress={() => openNewsStory(newsStoryNotice.story)} style={{ padding: 10 }}><Text style={{ color: colors.amber }}>Try again</Text></Pressable>}
+            <Pressable accessibilityRole="button" onPress={cancelNewsStory} style={{ padding: 10 }}><Text style={{ color: colors.text }}>Cancel</Text></Pressable>
           </View>
         )}
 

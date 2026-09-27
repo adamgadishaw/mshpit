@@ -9,7 +9,7 @@ import { createBrowserHistory } from "./browserHistory.mjs";
 
 const source = readFileSync(new URL("../../App.js", import.meta.url), "utf8");
 const syntax = parse(source, { sourceType: "module", plugins: ["jsx"] });
-const names = ["cancelPublicRoute", "applyNavigation", "writeNavigation", "runAfterComposerClose", "commitGo", "commitReplace", "popStack", "requestComposerPop", "back", "onPop"];
+const names = ["cancelNewsStory", "cancelPublicRoute", "applyNavigation", "writeNavigation", "runAfterComposerClose", "commitGo", "commitReplace", "popStack", "requestComposerPop", "back", "onPop"];
 const declarations = new Map();
 function visit(node) {
   if (!node || typeof node !== "object") return;
@@ -74,6 +74,7 @@ function appNavigation(initialStack = [{}], { web = true, prepare = (frame) => f
     window: { history, location }, browser, browserHistoryRef: { current: browser },
     publicRouteRequestRef: { current: null },
     setPublicNavigationNotice: () => {},
+    newsOpenRef: { current: 0 }, setNewsStoryNotice: () => {},
     restoreBrowserPathRef: { current: onRestore },
     composerCloseGuardRef: guardRef, bypassNextPopRef: { current: null },
     authNavigationAbortRef: { current: null }, sessionRef,

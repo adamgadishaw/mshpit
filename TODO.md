@@ -243,6 +243,23 @@ remains a broad context whose changing value can rerender unrelated consumers.
 - **Animated story:** an MP4 version of the share card needs a render service
   with ffmpeg.
 
+## Codex audit follow-ups (2026-09-27)
+
+The first batch (spending receipts, news permissions, redirects, late sources,
+views, story opening, research turn-taking) is in STATUS. Still open:
+
+- **News card actions (G):** Like and Report on news cards in the News tab
+  and strip, using the post actions members already have.
+- **Artist knowledge cooldown (A):** split the global cooldown so one busy
+  source cannot hold back all artist refreshes.
+- **@news_mod binding:** bind the desk to the account id recorded at setup,
+  not the handle, so a renamed or recreated handle cannot publish as the desk.
+- **Moderation view:** show worker failure reasons (news desk, catalog
+  research) to staff.
+- **@news_mod must stay active:** stories now hide when the author is banned,
+  suspended or dormant, so the lifecycle item below also decides whether News
+  shows anything at all.
+
 ## Mshpit News desk follow-ups (2026-09-26)
 
 - **Old Anthropic keys:** the working key is in the Default workspace. Delete
@@ -265,8 +282,10 @@ remains a broad context whose changing value can rerender unrelated consumers.
   confirm the 1200x630 card shows (Cloudflare may cache the image for an hour).
 - **Corrections:** an admin control to unpublish a story (today: delete the
   @news_mod post, which hides it from the feed, `/news` and the sitemap).
-- **More outlets:** HotNewHipHop and Complex for hip-hop coverage if their RSS
-  feeds are stable; add them to a new publisher group.
+- **More outlets:** only six independent groups exist today (Billboard,
+  Rolling Stone and Variety count as one), which is why quiet days publish
+  nothing. Candidates, each its own group if its feed is stable: HotNewHipHop,
+  Complex, Exclaim!, Loudwire, BrooklynVegan, Spin, DIY, Clash.
 - **@news_mod account lifecycle:** desk posts are not sign-ins, so the account
   goes dormant (hidden from For You) a year after its last login and is
   deleted after two. Before 2027-09, either sign in to @news_mod now and then

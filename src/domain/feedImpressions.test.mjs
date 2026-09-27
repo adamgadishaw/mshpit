@@ -33,6 +33,7 @@ function fakeTimers() {
 test("feed impression ids and account boundaries reject unsafe input", async () => {
   assert.equal(isFeedImpressionPostId("p_safe_123"), true);
   assert.equal(isFeedImpressionPostId("other"), false);
+  assert.equal(isFeedImpressionPostId("news_2f6c1d"), true, "Mshpit News posts count as views too");
   const timers = fakeTimers();
   const sent = [];
   const queue = createFeedImpressionQueue({

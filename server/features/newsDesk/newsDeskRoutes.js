@@ -3,7 +3,9 @@ import { ApiError } from "../../errors.js";
 import { newsShareCardModel, SocialShareCardArtworkUnavailableError, SocialShareCardBusyError } from "../socialSharing/socialShareCardRenderer.js";
 
 // The news desk's stories are public, like any public post.
-export function newsDeskRoutes({ rateLimit, reader, renderer }) {
+// `blockedFromNews(userId)` is true when that member and the news account
+// have blocked each other, like any other author.
+export function newsDeskRoutes({ rateLimit, reader, renderer, blockedFromNews = () => false }) {
   const decodeCursor = (value) => {
     const [createdAt, id] = String(value || "").split(".");
     const at = Number(createdAt);
@@ -14,8 +16,11 @@ export function newsDeskRoutes({ rateLimit, reader, renderer }) {
       rateLimit(ctx, "news-desk", 240, 10 * 60_000);
       const artist = typeof ctx.query?.artist === "string" ? ctx.query.artist.slice(0, 200) : null;
       const sort = ctx.query?.sort === "top" ? "top" : "latest";
-      const result = reader.list({ limit: Number(ctx.query?.limit) || 20, before: decodeCursor(ctx.query?.cursor), artist, sort });
-      ctx.setHeader?.("Cache-Control", "public, max-age=120");
+      // A signed-in reader's answer depends on their blocks, so it is never
+      // shared through a cache; guests all see the same public list.
+      ctx.setHeader?.("Cache-Control", ctx.user ? "private, no-store" : "public, max-age=120");
+      if (ctx.user?.id && blockedFromNews(ctx.user.id)) return { stories: [], nextCursor: null };
+      const result = reader.list({ limit: ctx.query?.limit, before: decodeCursor(ctx.query?.cursor), artist, sort });
       return {
         stories: result.stories,
         nextCursor: result.nextCursor ? `${result.nextCursor.createdAt}.${result.nextCursor.id}` : null,

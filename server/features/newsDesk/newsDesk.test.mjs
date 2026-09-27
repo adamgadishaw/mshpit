@@ -113,7 +113,8 @@ test("a confirmed story is posted from @news_mod with its sources, within budget
   assert.equal(post.user_id, "news_desk_account");
   assert.equal(post.artist_key, "pearl jam");
   assert.match(post.review, /Abe Laboriel Jr\./u);
-  assert.equal(Number(db.prepare("SELECT usd FROM news_desk_spend").get().usd).toFixed(2), "0.02");
+  assert.deepEqual(db.prepare("SELECT charged_usd,status FROM news_desk_receipts").all().map((row) => ({ ...row })),
+    [{ charged_usd: 0.02, status: "settled" }], "the reserved worst case settles to the real price");
 
   const reader = createNewsDeskReader(db);
   const [story] = reader.list().stories;
@@ -128,7 +129,7 @@ test("a confirmed story is posted from @news_mod with its sources, within budget
   assert.equal(reader.list().stories.length, 0, "a removed post takes its story off the desk");
 });
 
-test("the summary request uses Claude Opus 5 with fallbacks, a fixed schema and untrusted-text rules", async () => {
+test("the summary request uses Claude Opus 5 once, with a fixed schema and untrusted-text rules", async () => {
   const requests = [];
   const fake = { beta: { messages: { create: async (body) => {
     requests.push(body);
@@ -145,8 +146,8 @@ test("the summary request uses Claude Opus 5 with fallbacks, a fixed schema and 
   ];
   const result = await summarize(reports);
   assert.equal(requests[0].model, NEWS_MODEL);
-  assert.equal(requests[0].fallbacks, "default");
-  assert.deepEqual(requests[0].betas, ["server-side-fallback-2026-07-01"]);
+  assert.equal(requests[0].fallbacks, undefined, "no fallback attempts the budget never reserved");
+  assert.equal(requests[0].betas, undefined);
   assert.equal(requests[0].output_config.format.type, "json_schema");
   assert.match(requests[0].system, /untrusted/u);
   assert.equal(result.headline, "Band , news", "no em dashes in published copy");
@@ -495,8 +496,8 @@ test("a later report on a story without an artist joins it instead of becoming a
   feeds = Object.fromEntries(later.map((url, index) => [url, rssAt(clock, [[`Nor'easter Cancels All Things Go, CBGB And Global Citizen Festivals ${index}`, `https://second-${index}.test/f`, 0.2]])]));
   await desk.ingest();
   assert.equal((await desk.publishPass()).published, 0, "the same event is not published twice");
-  assert.equal(JSON.parse(db.prepare("SELECT sources FROM news_stories WHERE id='dupe-1'").get().sources).length >= 4, true,
-    "the later outlets are added to the first story's sources");
+  assert.equal(JSON.parse(db.prepare("SELECT sources FROM news_stories WHERE id='dupe-1'").get().sources).length, 6,
+    "all three later outlets are added to the first story's sources, none overwritten");
 });
 
 test("the owner can take stories down, once, and earlier stories do not use the day's slots", async () => {
@@ -527,4 +528,81 @@ test("the owner can take stories down, once, and earlier stories do not use the 
   const desk = createNewsDesk({ database: db, fetchText: async (url) => feeds[url] || rss([]), summarize, now: () => evening, env: {}, newId: () => "evening-1" });
   await desk.ingest();
   assert.equal((await desk.publishPass()).published, 1, "the count restarts with the editorial policy");
+});
+
+test("each Claude call holds its worst-case price first, and a failed call stays counted", async () => {
+  const { claudeMonthSpendMicroUsd } = await import("../../claudeSpendCeiling.js");
+  newsAccount();
+  const at = Date.parse("2026-10-09T12:00:00-04:00");
+  const feeds = Object.fromEntries(["https://www.stereogum.com/category/news/feed/", "https://www.nme.com/news/music/feed", "https://pitchfork.com/feed/feed-news/rss"]
+    .map((url, index) => [url, rssAt(at, [[`Grammy Nominations Announced For Record Of The Year ${index}`, `https://receipt-${index}.test/r`, 0.5]])]));
+  const ceilingBefore = claudeMonthSpendMicroUsd(db, at);
+  let heldDuringCall = null;
+  const failing = async () => {
+    heldDuringCall = { ...db.prepare("SELECT status,reserved_usd FROM news_desk_receipts WHERE day='2026-10-09'").get() };
+    throw new Error("socket hang up");
+  };
+  const desk = createNewsDesk({ database: db, fetchText: async (url) => feeds[url] || rss([]), summarize: failing, now: () => at, env: {}, editorial: UNSPACED });
+  const budgetBefore = desk.budgetLeft();
+  await desk.ingest();
+  await assert.rejects(desk.publishPass(), /socket hang up/u);
+  assert.equal(heldDuringCall.status, "reserved", "the price is held before the request goes out");
+  assert.ok(heldDuringCall.reserved_usd > 0);
+  const receipt = db.prepare("SELECT status,charged_usd,reserved_usd FROM news_desk_receipts WHERE day='2026-10-09'").get();
+  assert.equal(receipt.status, "uncertain");
+  assert.equal(receipt.charged_usd, receipt.reserved_usd, "an unconfirmed call counts at its worst case");
+  assert.ok(Math.abs(budgetBefore - desk.budgetLeft() - receipt.reserved_usd) < 1e-9);
+  assert.ok(claudeMonthSpendMicroUsd(db, at) - ceilingBefore >= receipt.reserved_usd * 1_000_000 - 1,
+    "catalog research sees the held news price in the shared ceiling");
+});
+
+test("news from a suspended or blocked account is not shown, and page sizes are whole numbers", () => {
+  newsAccount();
+  const reader = createNewsDeskReader(db);
+  const story = reader.list().stories[0];
+  assert.ok(story, "a published story to read");
+  const headers = {};
+  const route = routes["GET /api/news-desk/stories"];
+  const guest = route({ query: { limit: "2.5" }, ip: "news-guest", setHeader: (name, value) => { headers[name] = value; } });
+  assert.ok(guest.stories.length >= 1 && guest.stories.length <= 2, "a fractional limit still returns a page");
+  assert.equal(headers["Cache-Control"], "public, max-age=120");
+
+  if (!q.userById.get("news_reader")) {
+    q.insertUser.run("news_reader", "reader@example.test", "Reader", "news_reader", "fixture-hash", "fan", "Toronto", 43.65, -79.38, "NR", "#654321", NOW);
+  }
+  const reader_ = q.userById.get("news_reader");
+  assert.ok(route({ query: {}, ip: "news-reader", user: reader_, setHeader: (name, value) => { headers[name] = value; } }).stories.length >= 1);
+  assert.equal(headers["Cache-Control"], "private, no-store", "a signed-in answer is never shared through a cache");
+  db.prepare("INSERT INTO blocks (blocker_id,blocked_id,created_at) VALUES ('news_reader','news_desk_account',?)").run(NOW);
+  try {
+    assert.deepEqual(route({ query: {}, ip: "news-reader", user: reader_, setHeader() {} }), { stories: [], nextCursor: null },
+      "a member who blocked the news account sees none of its stories");
+  } finally {
+    db.prepare("DELETE FROM blocks WHERE blocker_id='news_reader'").run();
+  }
+
+  db.prepare("UPDATE users SET is_banned=1 WHERE id='news_desk_account'").run();
+  try {
+    assert.equal(reader.list().stories.length, 0, "a suspended account's stories leave the desk");
+    assert.equal(reader.list({ sort: "top" }).stories.length, 0);
+    assert.equal(reader.forLivePost(story.postId), null, "and cannot be shared");
+    assert.equal(reader.get(story.id), null, "or rendered as a link preview");
+  } finally {
+    db.prepare("UPDATE users SET is_banned=0 WHERE id='news_desk_account'").run();
+  }
+  assert.equal(reader.forLivePost(story.postId).id, story.id);
+});
+
+test("article and feed redirects stay on the publisher's own site", async () => {
+  const { allowedRedirect } = await import("./newsDeskJob.js");
+  const from = new URL("https://www.nme.com/news/music/feed");
+  assert.equal(allowedRedirect(from, new URL("https://nme.com/news/music/feed")), true);
+  assert.equal(allowedRedirect(from, new URL("https://amp.nme.com/news/a")), true);
+  for (const target of ["http://www.nme.com/a", "https://evil.test/a", "https://127.0.0.1/a", "https://[::1]/a", "https://2130706433/a",
+    "https://www.nme.com:8443/a", "https://user:secret@www.nme.com/a", "https://nme.com.evil.test/a", "https://notnme.com/a"]) {
+    assert.equal(allowedRedirect(from, new URL(target)), false, target);
+  }
+  assert.equal(allowedRedirect(new URL("https://www.bbc.co.uk/music"), new URL("https://news.bbc.co.uk/a")), true);
+  assert.equal(allowedRedirect(new URL("https://www.bbc.co.uk/music"), new URL("https://evil.co.uk/a")), false,
+    "a country domain never widens to all of co.uk");
 });

@@ -10,6 +10,8 @@ export const DEFAULT_ANTHROPIC_MONTHLY_USD = 10;
 const LEDGERS = Object.freeze([
   "SELECT COALESCE(SUM(charged_micro_usd),0) AS micro FROM catalog_research_spend WHERE utc_day>=?",
   "SELECT COALESCE(SUM(usd),0)*1000000 AS micro FROM news_desk_spend WHERE day>=?",
+  // Reserved and unconfirmed news calls count at their reserved price.
+  "SELECT COALESCE(SUM(charged_usd),0)*1000000 AS micro FROM news_desk_receipts WHERE day>=?",
 ]);
 
 export const utcMonthStartDay = (at) => `${new Date(at).toISOString().slice(0, 7)}-01`;

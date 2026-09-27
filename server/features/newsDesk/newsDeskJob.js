@@ -28,17 +28,46 @@ async function boundedText(response, maxBytes) {
   return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).subarray(0, maxBytes).toString("utf8");
 }
 
+const MAX_REDIRECTS = 3;
+// The registrable site: the last two labels, or three under a two-letter
+// country domain such as co.uk, so bbc.co.uk never widens to all of co.uk.
+const siteOf = (hostname) => {
+  const labels = hostname.toLowerCase().split(".");
+  const secondLevel = labels.length > 2 && labels.at(-1).length === 2 && labels.at(-2).length <= 3;
+  return labels.slice(secondLevel ? -3 : -2).join(".");
+};
+
+// A redirect may only move within the same site over https (www.nme.com to
+// nme.com, en.wikipedia.org to its mobile host): never to another host, a
+// bare IP address, a port or embedded credentials.
+export function allowedRedirect(from, to) {
+  const host = to.hostname.toLowerCase();
+  return to.protocol === "https:" && !to.username && !to.password && !to.port
+    && !/^[\d.]+$/u.test(host) && !host.includes(":")
+    && (host === siteOf(from.hostname) || host.endsWith(`.${siteOf(from.hostname)}`));
+}
+
 async function fetchBounded(url, { signal, timeoutMs, accept, maxBytes }) {
-  const response = await fetch(url, {
-    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
-    headers: { "user-agent": USER_AGENT, accept },
-    redirect: "follow",
-  });
-  if (!response.ok) {
-    await response.body?.cancel().catch(() => undefined);
-    throw new Error(`HTTP ${response.status}`);
+  const deadline = signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs);
+  const first = new URL(url);
+  let current = first;
+  for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
+    const response = await fetch(current, { signal: deadline, headers: { "user-agent": USER_AGENT, accept }, redirect: "manual" });
+    const location = response.status >= 300 && response.status < 400 ? response.headers.get("location") : null;
+    if (location) {
+      await response.body?.cancel().catch(() => undefined);
+      const next = new URL(location, current);
+      if (!allowedRedirect(first, next)) throw new Error("redirect off the publisher's site refused");
+      current = next;
+      continue;
+    }
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new Error(`HTTP ${response.status}`);
+    }
+    return boundedText(response, maxBytes);
   }
-  return boundedText(response, maxBytes);
+  throw new Error("too many redirects");
 }
 
 // One feed, with a timeout and a size cap; feeds are small XML files.

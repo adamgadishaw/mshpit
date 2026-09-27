@@ -307,7 +307,8 @@ export function socialShareCardRoutes({
           const snapshot = JSON.stringify(newsStory);
           assertShareCurrent = async () => {
             const latestBoundary = postBoundaryById.get(postId);
-            if (!latestBoundary || JSON.stringify(resolveNewsStory(postId)) !== snapshot) {
+            if (!latestBoundary || blockedEitherWay(user.id, latestBoundary.user_id)
+              || JSON.stringify(resolveNewsStory(postId)) !== snapshot) {
               throw new ApiError(404, "That story is not available to share.", "NOT_FOUND");
             }
           };

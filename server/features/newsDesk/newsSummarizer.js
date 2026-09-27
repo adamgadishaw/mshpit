@@ -71,13 +71,14 @@ const cleanParagraphs = (value, max) => String(value || "").split(/\n\s*\n/u)
   .map((paragraph) => clean(paragraph, max)).filter(Boolean).slice(0, 4).join("\n\n").slice(0, max);
 
 export function createNewsSummarizer({ apiKey, client = null } = {}) {
-  const anthropic = client || new Anthropic({ apiKey, maxRetries: 2, timeout: 120_000 });
+  // One attempt per call: the SDK's automatic retries and server-side
+  // fallbacks would bill further attempts the budget never reserved. A failed
+  // pass simply tries again twenty minutes later.
+  const anthropic = client || new Anthropic({ apiKey, maxRetries: 0, timeout: 120_000 });
   return async function summarize(reports, { signal } = {}) {
     const response = await anthropic.beta.messages.create({
       model: NEWS_MODEL,
       max_tokens: MAX_OUTPUT_TOKENS,
-      betas: ["server-side-fallback-2026-07-01"],
-      fallbacks: "default",
       output_config: { effort: "low", format: { type: "json_schema", schema: SCHEMA } },
       system: SYSTEM,
       messages: [{ role: "user", content: storyPrompt(reports) }],

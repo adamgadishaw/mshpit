@@ -938,3 +938,14 @@ test("a Mshpit News post shares its news card and is withheld once the story cha
   });
   await assert.rejects(changing(context({ kind: "post", postId: "news_1" })), (error) => error.status === 404);
 });
+
+test("a news card is withheld when a block lands while it renders", async () => {
+  let blockedNow = false;
+  const { route } = fixture({
+    blocked: () => blockedNow,
+    postBoundary: () => ({ user_id: "news_account", kind: "status", attendance_ticket: null }),
+    resolveNewsStory: (postId) => ({ postId, headline: "Band announce a tour", summary: "", category: "tour", publishedAt: 1_790_000_000_000, artists: [], sources: [] }),
+    renderer: { async render() { blockedNow = true; return { bytes: PNG, etag: '"x"' }; } },
+  });
+  await assert.rejects(route(context({ kind: "post", postId: "news_1" })), (error) => error.status === 404);
+});

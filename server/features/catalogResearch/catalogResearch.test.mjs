@@ -416,3 +416,37 @@ test("a rejected research request stops the pass and logs Anthropic's reason", a
   assert.equal(collectCatalogResearchStatus(db, { env: { ANTHROPIC_API_KEY: "fixture" }, at: Date.parse("2026-09-24T12:00:00Z") }).today.spentUsd, 0,
     "a rejected request costs nothing");
 });
+
+test("artists and venues take turns across passes, and rooms past the first 2,000 are reached", async (t) => {
+  const db = database(t);
+  db.exec(`INSERT INTO artists(norm,name,rank_score) VALUES ('first act','First Act',10),('second act','Second Act',9);
+    INSERT INTO tour_dates(id,artist,artist_key,venue,date,venue_city,venue_country_code) VALUES
+      ('t1','First Act','first act','Massey Hall','2026-10-01','Toronto','CA');`);
+  const seen = [];
+  const research = async (subject) => {
+    seen.push(subject.type);
+    return { findings: goodFindings(), searchedUrls: [WIKI, SITE], costMicroUsd: 90_000, model: "claude-sonnet-5" };
+  };
+  const env = { ANTHROPIC_API_KEY: "key", CATALOG_RESEARCH_DAILY_USD: "1", CATALOG_RESEARCH_MONTHLY_USD: "10" };
+  const at = Date.parse("2026-09-24T12:00:00Z");
+  for (let pass = 0; pass < 3; pass += 1) await runCatalogResearchPass({ database: db, env, now: () => at, research, maxItems: 1 });
+  assert.deepEqual(seen, ["artist", "venue", "artist"], "a one-page pass does not restart with artists every time");
+
+  const busy = new DatabaseSync(":memory:");
+  t.after(() => busy.close());
+  busy.exec(`CREATE TABLE app_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+    CREATE TABLE tour_dates(id TEXT PRIMARY KEY,artist TEXT NOT NULL,artist_key TEXT,venue TEXT,date TEXT,owner_id TEXT,
+      venue_city TEXT,venue_region TEXT,venue_country_code TEXT,venue_address_line1 TEXT);`);
+  ensureCatalogResearchSchema(busy);
+  const show = busy.prepare("INSERT INTO tour_dates(id,artist,venue,date,venue_city,venue_country_code) VALUES (?,?,?,?,?,?)");
+  const done = busy.prepare(`INSERT INTO catalog_research(entity_type,entity_key,identity,status,next_attempt_at) VALUES ('venue',?,'{}','found',?)`);
+  busy.exec("BEGIN");
+  for (let room = 0; room < 2000; room += 1) {
+    show.run(`a${room}`, "Act", `Room ${room}`, "2026-10-01", "Toronto", "CA");
+    show.run(`b${room}`, "Act", `Room ${room}`, "2026-10-02", "Toronto", "CA");
+    done.run(venueResearchKey(`Room ${room}`, "Toronto", "CA"), at + 1_000_000);
+  }
+  show.run("quiet", "Act", "The Quiet Room", "2026-10-03", "Toronto", "CA");
+  busy.exec("COMMIT");
+  assert.equal(nextVenueResearchSubject(busy, { at })?.name, "The Quiet Room", "the 2,001st room is next once the busier ones are done");
+});

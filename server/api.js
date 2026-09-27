@@ -97,7 +97,7 @@ import { artistUpdatesRoutes } from "./features/artistUpdates/artistUpdatesRoute
 import { createArtistNewsReader } from "./features/artistUpdates/artistNewsReader.js";
 import { startArtistNewsScheduler } from "./features/artistUpdates/artistNewsJob.js";
 import { newsDeskRoutes } from "./features/newsDesk/newsDeskRoutes.js";
-import { createNewsDeskReader } from "./features/newsDesk/newsDeskService.js";
+import { createNewsDeskReader, NEWS_DESK_HANDLE } from "./features/newsDesk/newsDeskService.js";
 import { startNewsDeskScheduler } from "./features/newsDesk/newsDeskJob.js";
 import { startDeezerArtistPhotoScheduler } from "./features/artistPhotos/deezerArtistPhotoFill.js";
 import { artistPath as publicArtistPath, eventPath as publicEventPath } from "../src/domain/urls.mjs";
@@ -4720,7 +4720,7 @@ export const routes = {
     resolveCurrentArtistProfileImage: attendanceTicketArtistProfilePhoto,
     resolveCurrentLicensedArtistPhoto: attendanceTicketLicensedArtistPhoto,
     resolveCurrentEventProviderImage: attendanceTicketEventProviderPhotoById,
-    resolveNewsStory: (postId) => newsDeskReader.forPost(postId),
+    resolveNewsStory: (postId) => newsDeskReader.forLivePost(postId),
     renderer: socialShareCardRenderer,
   }),
   ...showRoutes({
@@ -9636,7 +9636,13 @@ export const routes = {
     newId: uid,
     now,
   }) : {}),
-  ...newsDeskRoutes({ rateLimit: limit, reader: newsDeskReader, renderer: socialShareCardRenderer }),
+  ...newsDeskRoutes({
+    rateLimit: limit, reader: newsDeskReader, renderer: socialShareCardRenderer,
+    blockedFromNews: (userId) => {
+      const author = db.prepare("SELECT id FROM users WHERE lower(handle)=?").get(NEWS_DESK_HANDLE);
+      return !!author && blockedEitherWay(userId, author.id);
+    },
+  }),
   ...artistUpdatesRoutes({
     ApiError,
     rateLimit: limit,

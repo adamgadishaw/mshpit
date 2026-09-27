@@ -148,7 +148,8 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
     if (!activityRef.current) return;
     const at = Date.now();
     for (const token of changed || []) {
-      const item = token?.item;
+      // News tab rows are stories; their view belongs to the story's post.
+      const item = token?.item?.postId ? { ...token.item, id: token.item.postId } : token?.item;
       if (!item?.id) continue;
       if (token.isViewable) {
         const viewedSurface = analyticsRef.current.surface;

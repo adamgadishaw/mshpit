@@ -18,6 +18,13 @@ import { catalogResearchModel, researchCatalogSubject } from "./catalogResearchP
 // facts, and a staff member can hide any result.
 
 const BUDGET_KEY = "catalog-research:v1:budget";
+// Whose turn is next, kept across passes and days: with a small daily budget
+// a pass may only afford one page, and restarting with artists every time
+// would starve venues forever.
+const NEXT_TYPE_KEY = "catalog-research:v1:next-type";
+const readNextType = (database) => (database.prepare("SELECT value FROM app_meta WHERE key=?").get(NEXT_TYPE_KEY)?.value === "venue" ? "venue" : "artist");
+const saveNextType = (database, type) => database.prepare("INSERT INTO app_meta(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+  .run(NEXT_TYPE_KEY, type === "venue" ? "venue" : "artist");
 const MINUTE = 60_000;
 const DAY = 24 * 60 * MINUTE;
 const SPEND_RECEIPT_RETENTION_MS = 35 * DAY;
@@ -227,12 +234,25 @@ export function venueResearchKey(name, city, country) {
 
 // Rooms with the most shows on file first. A venue is identified by its name
 // and city together, because many cities have a "Fillmore" or a "Paradise".
+// Pages of 2,000 rooms, busiest first, so a room below the first page is
+// reached once everything above it is done (bounded at 25 pages).
+const VENUE_PAGE = 2000;
+const VENUE_PAGES = 25;
 export function nextVenueResearchSubject(database, { at = Date.now() } = {}) {
-  const rows = database.prepare(`SELECT MIN(venue) venue,MIN(venue_city) city,MIN(venue_region) region,
+  const page = database.prepare(`SELECT MIN(venue) venue,MIN(venue_city) city,MIN(venue_region) region,
       MIN(venue_country_code) country,MAX(venue_address_line1) address,COUNT(*) shows
     FROM tour_dates WHERE venue IS NOT NULL AND trim(venue)<>'' AND owner_id IS NULL
     GROUP BY lower(trim(venue)),lower(coalesce(venue_city,'')),lower(coalesce(venue_country_code,''))
-    ORDER BY shows DESC, lower(trim(MIN(venue))), lower(coalesce(MIN(venue_city),'')) LIMIT 2000`).all();
+    ORDER BY shows DESC, lower(trim(MIN(venue))), lower(coalesce(MIN(venue_city),'')) LIMIT ? OFFSET ?`);
+  for (let index = 0; index < VENUE_PAGES; index += 1) {
+    const rows = page.all(VENUE_PAGE, index * VENUE_PAGE);
+    const subject = firstDueVenue(database, rows, at);
+    if (subject || rows.length < VENUE_PAGE) return subject;
+  }
+  return null;
+}
+
+function firstDueVenue(database, rows, at) {
   for (const row of rows) {
     const key = venueResearchKey(row.venue, row.city, row.country);
     if (!key || !dueRow(database, "venue", key, at)) continue;
@@ -320,7 +340,7 @@ export async function runCatalogResearchPass({
     const ceilingLeft = claudeCeilingLeftMicroUsd(database, { env, at });
     if (ceilingLeft < RUN_RESERVE_MICRO_USD) return { ...outcome, stopped: "claude_monthly_ceiling" };
     // Alternate artists and venues so neither backlog starves the other.
-    const order = index % 2 === 0 ? ["artist", "venue"] : ["venue", "artist"];
+    const order = readNextType(database) === "venue" ? ["venue", "artist"] : ["artist", "venue"];
     let subject = null;
     for (const type of order) {
       subject = type === "artist" ? nextArtistResearchSubject(database, { at }) : nextVenueResearchSubject(database, { at });
@@ -329,6 +349,7 @@ export async function runCatalogResearchPass({
     if (!subject) return { ...outcome, stopped: "nothing_due" };
     const token = claimSubject(database, subject, at);
     if (!token) continue;
+    saveNextType(database, subject.type === "artist" ? "venue" : "artist");
     reserveSpend(database, token, budget, at);
     let result;
     try {

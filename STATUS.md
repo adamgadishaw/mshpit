@@ -6,6 +6,55 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-09-27 Audit hardening (Codex deep audit, first batch)
+
+Fixes for the highest-priority findings in the owner's 2026-09-27 audit,
+committed together so they ship in one deploy:
+
+- **Spending:** every news desk Claude call now reserves its worst-case price
+  in `news_desk_receipts` before it is sent (same synchronous step as the
+  budget check) and settles to the real cost after; a call that fails once it
+  may have been sent stays counted at the reserved price (`uncertain`). The
+  shared $10 ceiling reads these receipts, so catalog research sees a news call
+  in flight. The summarizer makes one attempt: SDK retries off, server-side
+  fallbacks and their beta removed, so no attempt is ever billed that the
+  budget did not reserve. Old `news_desk_spend` totals still count.
+- **News permissions:** the desk list, top stories, share export and link
+  preview image only show stories whose @news_mod author is an active public
+  account (not banned, suspended or dormant). A member who blocked @news_mod,
+  or was blocked by it, gets an empty list; signed-in answers are
+  `private, no-store`, guests keep the 2-minute public cache. The share export
+  rechecks the block after rendering, like member posts.
+- **Feed fetching:** feed and article requests follow at most 3 redirects and
+  only within the publisher's own site over https (no other host, IP address,
+  port or credentials).
+- **Late sources:** outlets that report a story after it is published are
+  gathered per story and written in one transaction, so none overwrites
+  another.
+- **Page size:** fractional `limit` values are floored instead of erroring.
+- **Views:** News tab views count toward the story's post (`news_` ids and the
+  `news` surface are accepted by the client queue and the server).
+- **Opening a story:** only the latest tap opens, any navigation cancels a
+  pending one, and a failure says "This story could not be opened." with Try
+  again.
+- **Catalog research:** whose turn is next (artist or venue) is kept in
+  `app_meta` across passes, so one-page passes no longer always start with
+  artists; venue candidates are read in pages of 2,000 (up to 25) so rooms
+  below the busiest 2,000 are reached.
+
+Checked: `npm run check` (5,492 tests) and the nine CI browser suites pass.
+@news_mod is active in the 2026-09-27 snapshot, so live stories stay visible.
+Deferred to the next batch: see TODO "Codex audit follow-ups".
+
+## 2026-09-27 Why no stories for 15 hours
+
+A dry run on the live feeds found no new story that 3 or more independent
+outlet groups carried; the only such stories were already published. With
+Billboard, Rolling Stone and Variety counted as one company, the desk reads
+only six independent groups, so a quiet Sunday can pass with nothing that
+qualifies. The desk logs only when it publishes or declines, so silence is
+the expected log. More independent outlets would raise the rate (TODO).
+
 ## 2026-09-27 Restore drill from R2: passed
 
 At the owner's request, with explicit approval to download the snapshot:
