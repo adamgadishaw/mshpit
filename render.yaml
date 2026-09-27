@@ -44,6 +44,10 @@ services:
         value: "24"
       - key: NODE_ENV
         value: production
+      # npm otherwise omits development-only validators when Render builds in
+      # production mode. Include build/test tooling without weakening NODE_ENV.
+      - key: NPM_CONFIG_INCLUDE
+        value: dev
       - key: PIT_ENV
         value: production
       # Explicit, non-secret authority for the bounded five-object maintenance

@@ -2,6 +2,14 @@
 
 ## Blueprint diagnosis
 
+The first September 27 release build exposed a separate install-environment
+mismatch: Render's production-mode `npm ci` omitted the development-only `ajv`
+validator, while CI installed it before applying production settings. The
+operational correction is the non-secret `NPM_CONFIG_INCLUDE=dev` setting; keep
+`NODE_ENV=production`. The follow-up Blueprint and CI patch records that same
+clean-install environment, with a regression test. Do not bypass a failed test
+or remove the validator to make a release pass.
+
 The committed Blueprint passed Render's public JSON Schema on September 27.
 This is not proof of a successful live Blueprint sync: missing dashboard-managed
 values, resource ownership, and platform errors require the actual sync error.

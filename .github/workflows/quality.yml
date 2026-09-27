@@ -22,7 +22,11 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      - run: npm ci
+      - name: Install with Render production dependency settings
+        run: npm ci
+        env:
+          NODE_ENV: production
+          NPM_CONFIG_INCLUDE: dev
       - name: Validate Render Blueprint before deployment
         run: npm run check:blueprint
       - run: npm run check
