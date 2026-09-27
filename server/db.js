@@ -34,10 +34,12 @@ import { ensureLoungeSchema } from "./features/lounges/loungeSchema.js";
 import { ensureCitySchema } from "./features/cities/citySchema.js";
 import { ensureSharedEmailSchema } from "./features/accountOnboarding/sharedEmailSchema.js";
 import { ensureAccountLifecycleSchema } from "./features/accountLifecycle/accountLifecycleSchema.js";
+import { ensureMemberBadgeSchema, memberBadgeFor } from "./memberBadges.js";
 import { ensureErrorAlertSchema } from "./errorAlertDelivery.js";
 import { seedReviewedArtistIdentities } from "./reviewedArtistIdentities.js";
 import { ensureProviderArtistRegistrationSchema } from "./providerArtistRegistration.js";
 import { ensureCommentMutationSchema } from "./commentMutationSchema.js";
+import { ensureSocialReactionSchema } from "./features/socialReactions/socialReactions.js";
 import { ensureArtistAccountSchema, pendingArtistSignupIntent } from "./features/artistAccounts/artistAccountPolicy.js";
 
 export const artistSearchKey = (value) => String(value || "")
@@ -2146,6 +2148,7 @@ db.exec(`INSERT OR IGNORE INTO post_create_receipts
     AND (removed=1 OR client_mutation_hash IS NOT NULL)`);
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_dms_client_mutation ON dms(from_id, client_mutation_id) WHERE client_mutation_id IS NOT NULL");
 ensureCommentMutationSchema(db);
+ensureSocialReactionSchema(db);
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_fcm_client_mutation ON fan_club_messages(user_id, client_mutation_id) WHERE client_mutation_id IS NOT NULL");
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_lounge_client_mutation ON lounge_messages(user_id, client_mutation_id) WHERE client_mutation_id IS NOT NULL");
 // Backfill only a single exact normalized display-name match. Ambiguous and
@@ -2439,6 +2442,7 @@ if (!db.prepare("SELECT 1 FROM app_meta WHERE key=?").get(isoDateMigration)) {
 
 ensureSharedEmailSchema(db);
 ensureAccountLifecycleSchema(db);
+ensureMemberBadgeSchema(db);
 
 // Expiry work runs synchronously in the web process. Index the exact predicates
 // and cap each delete so a retention backlog cannot monopolize the event loop.
@@ -3130,6 +3134,7 @@ export function publicUser(u, { self = false, badges = false } = {}) {
     role: hideArtistIdentity ? "fan" : u.role,
     verified: !hideArtistIdentity && !!u.verified,
     sponsor: !!u.sponsor,
+    membershipBadge: memberBadgeFor(db, u),
     artistName: hideArtistIdentity ? undefined : u.artist_name || undefined,
     home: u.home_city ? {
       city: u.home_city,
@@ -3146,10 +3151,8 @@ export function publicUser(u, { self = false, badges = false } = {}) {
     concertMapVisible: concertMapVisibleFor(u),
     genres: parseJsonArray(u.genres),
     favoriteArtists: parseJsonArray(u.favorite_artists),
-    // Email verification is PRIVATE account state, unlike `verified` above which
-    // is the public admin-granted check. Exposing it publicly would leak whether
-    // a stranger has confirmed their address, and invite it being read as a
-    // trust signal it is not.
+    // Only the cosmetic membershipBadge is public. Address, confirmation time,
+    // and the private account flag remain self-only; no identity check implied.
     ...(badges ? { badges: customBadgesFor(u.id) } : {}),
     ...(self ? {
       email: u.email,

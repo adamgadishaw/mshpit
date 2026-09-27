@@ -37,6 +37,7 @@ export const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{1,30}[a-z0-9])$/;
 // admin-made lookalike would quietly devalue it.
 export const RESERVED_SLUGS = new Set([
   "verified", "sponsor", "top100", "rank1", "rank2", "rank3", "staff", "mod", "founder", "artist",
+  "first-wave", "email-confirmed",
 ]);
 
 export function badgeArt({ color, glyph, glyphChar }) {

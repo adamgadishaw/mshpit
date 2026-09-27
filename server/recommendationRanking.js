@@ -1,5 +1,5 @@
-export const RECOMMENDATION_ALGORITHM = "music-affinity-v2";
-export const RECOMMENDATION_ALGORITHM_VERSION = 2;
+export const RECOMMENDATION_ALGORITHM = "music-affinity-v3";
+export const RECOMMENDATION_ALGORITHM_VERSION = 3;
 
 export function recommendationKey(value) {
   return String(value || "")
@@ -34,6 +34,7 @@ function mediaCount(value) {
 function reasonFor(parts) {
   if (parts.affinity >= 8) return { code: "artist_affinity", label: "Matches artists you care about" };
   if (parts.following > 0) return { code: "followed_creator", label: "From someone you follow" };
+  if (parts.networkRepost > 0) return { code: "network_repost", label: "Reposted by someone you follow" };
   if (parts.genre > 0) return { code: "genre_affinity", label: "Matches your music taste" };
   if (parts.local > 0) return { code: "local", label: "From your music community" };
   if (parts.engagement >= 8) return { code: "global_momentum", label: "Fans are talking about this" };
@@ -61,9 +62,10 @@ export function scoreRecommendation(candidate, signals = {}, { snapshotAt = Date
   const affinityPoints = Number(signals.artistWeights?.get?.(artistKey)) || 0;
   const affinity = Math.min(24, Math.max(0, affinityPoints) * 1.5);
   const following = signals.followedUserIds?.has?.(candidate.userId) ? 12 : 0;
+  const networkRepost = Math.min(9, Math.log2(1 + Math.max(0, Number(candidate.networkReposts) || 0)) * 4.5);
   const genre = candidateGenre && signals.genres?.has?.(candidateGenre) ? 7 : 0;
   const local = candidateCity && candidateCity === signals.city ? 3 : 0;
-  const positivePersonal = Math.min(36, affinity + following + genre + local);
+  const positivePersonal = Math.min(36, affinity + following + genre + local + networkRepost);
   const selfPenalty = signals.viewerId && signals.viewerId === candidate.userId ? -18 : 0;
 
   // A recently seen card rotates down, never out. This penalty decays to
@@ -76,7 +78,7 @@ export function scoreRecommendation(candidate, signals = {}, { snapshotAt = Date
 
   const parts = {
     freshness, engagement, completeness, exploration, affinity, following,
-    genre, local, selfPenalty, seenPenalty, viewerSeenCount, viewerLastSeenAt,
+    genre, local, networkRepost, selfPenalty, seenPenalty, viewerSeenCount, viewerLastSeenAt,
   };
   const reason = reasonFor(parts);
   return {
@@ -134,6 +136,23 @@ export function rankRecommendations(candidates, signals = {}, options = {}) {
       if (eligibleIndex >= 0) {
         bestIndex = eligibleIndex;
         bestAdjusted = remaining[eligibleIndex].score;
+      }
+    }
+    // A small deterministic exploration lane works at cold start; no model or
+    // paid inference is needed. When available, each five-card run includes a
+    // fresh, not-yet-seen community creator outside the followed network.
+    // Never force old/empty posts, duplicate cards or news into this lane.
+    const explorationCandidate = (entry) => entry.candidate.userId !== signals.viewerId
+      && !signals.followedUserIds?.has?.(entry.candidate.userId)
+      && !String(entry.candidate.id).startsWith("news_")
+      && !entry.parts.viewerSeenCount && entry.parts.freshness >= 12;
+    if (signals.viewerId && (ranked.length + 1) % 5 === 0
+      && !ranked.slice(-4).some(explorationCandidate)) {
+      const index = remaining.findIndex(entry => openingAllows(entry) && explorationCandidate(entry));
+      if (index >= 0) {
+        bestIndex = index;
+        bestAdjusted = remaining[index].score;
+        remaining[index] = { ...remaining[index], reason: { code: "community_discovery", label: "Discover a new community voice" } };
       }
     }
     const [chosen] = remaining.splice(bestIndex, 1);

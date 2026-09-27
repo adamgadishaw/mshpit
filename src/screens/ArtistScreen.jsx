@@ -303,7 +303,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
   const { session, artistSummary, albumRating, songRating, rateAlbum, rateSong, loadRating,
     isArtistOwner, artistPostsFor, loadArtistPage, artistPageCacheEpoch,
     artistGallery, loadArtistPhotos, removePhoto, artistBadges, remoteArtistMeta,
-    artistDiscography, artistSeenCount, reportTrack, updateProfile, isFanClubMember, joinFanClub,
+    artistDiscography, artistSeenCount, reportTrack, setArtistFollowing, isFanClubMember, joinFanClub,
   } = useStore();
   const a = artistSummary(artistName);
   const artistPageProofScope = refreshScope(session?.id, "artist-page-proof", `${a.profileKey || a.name}:${artistPageCacheEpoch}`);
@@ -478,7 +478,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
     artistKey: a.profileKey,
     artistName: a.name,
     favoriteArtists: session?.favoriteArtists,
-    updateProfile,
+    setArtistFollowing,
     isMember: fanClubMember,
     joinFanClub,
   });
@@ -1000,10 +1000,10 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
                 <Text style={styles.statusTxt}>INACTIVE</Text>
               </View>
             )}
-            {session && !ownsArtistPage ? (
+            {!ownsArtistPage ? (
               <Pressable
                 style={[styles.artistFollowBtn, followed && styles.artistFollowBtnOn, followUi.busy && styles.artistFollowBtnBusy]}
-                onPress={followUi.toggleFollow}
+                onPress={session ? followUi.toggleFollow : onRequireAuth}
                 disabled={followUi.busy || followUi.joining}
                 accessibilityRole="button"
                 accessibilityLabel={`${followed ? "Unfollow" : "Follow"} ${a.name}`}

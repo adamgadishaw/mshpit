@@ -58,6 +58,9 @@ test("actor summaries stay accessible and count distinct people", () => {
 });
 
 test("bundle targets keep conversations separate and malformed post activity isolated", () => {
+  assert.equal(notificationBundleTarget({ id:"r",type:"repost",postId:"post-1" }),"post:post-1");
+  assert.equal(notificationBundleTarget({ id:"c1",type:"comment_like",postId:"post-1",commentId:"c1" }),"comment:c1");
+  assert.notEqual(notificationBundleTarget({id:"one",type:"comment_like",postId:"p",commentId:"one"}),notificationBundleTarget({id:"two",type:"comment_like",postId:"p",commentId:"two"}));
   assert.equal(notificationBundleTarget({ id: "follow-1", type: "follow", actorId: "adam" }), "account");
   assert.equal(notificationBundleTarget({ id: "dm-1", type: "dm", actorId: "adam" }), "thread:adam");
   assert.equal(notificationBundleTarget({ id: "like-1", type: "like", postId: "post-1" }), "post:post-1");

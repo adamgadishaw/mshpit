@@ -3,6 +3,8 @@
 // platform-neutral and shared with the server rewards engine.
 
 export const STATUS_BADGES = Object.freeze({
+  "first-wave": { label: "First Wave", desc: "One of Pit's first 1,000 eligible email-confirmed member accounts. An early-member milestone, not an identity check.", how: "Awarded automatically after email confirmation and account setup. Places are never recycled." },
+  "email-confirmed": { label: "Email confirmed", desc: "This account confirmed its email inbox. This does not verify the person's identity or an artist claim.", how: "Confirm your email and complete account setup." },
   verified: { label: "Verified", desc: "Identity confirmed by the Pit team.", how: "Granted by an admin to real, notable accounts." },
   sponsor: { label: "Sponsor", desc: "An official Pit partner or sponsor.", how: "Granted by the Pit team to partners." },
   top100: { label: "Top 100", desc: "One of the 100 most popular artists on Pit.", how: "Rank in the global Top 100 by popularity." },

@@ -81,3 +81,26 @@ test("opening page enforces an author cap even beyond the rerank window", () => 
   const sameCount = firstPage.filter((entry) => entry.candidate.userId === "u_same").length;
   assert.equal(sameCount, 2);
 });
+
+test("small feeds reserve discovery beyond followed creators without losing posts", () => {
+  const following = Array.from({ length: 18 }, (_, i) => candidate(`followed_${i}`, { likes: 80, comments: 10 }));
+  const strangers = [candidate("new_one"), candidate("new_two")];
+  const signals = { viewerId: "viewer", followedUserIds: new Set(following.map(p => p.userId)) };
+  const ranked = rankRecommendations([...following, ...strangers], signals, { snapshotAt: NOW, seed: "viewer" });
+  for (let start = 0; start < 10; start += 5) assert.ok(ranked.slice(start, start + 5).some(p => !signals.followedUserIds.has(p.candidate.userId)));
+  assert.equal(new Set(ranked.map(p => p.candidate.id)).size, 20);
+  assert.deepEqual(ranked.map(p => p.candidate.id), rankRecommendations([...following,...strangers],signals,{snapshotAt:NOW,seed:"viewer"}).map(p=>p.candidate.id));
+});
+
+test("network repost relevance stays capped and explainable", () => {
+  const score = scoreRecommendation(candidate("repost", { networkReposts: 10000 }), {}, { snapshotAt: NOW });
+  assert.equal(score.parts.networkRepost, 9);
+  assert.equal(score.reason.code, "network_repost");
+});
+
+test("discovery does not force stale seen or news cards above fresh followed posts", () => {
+  const followed = Array.from({length: 5}, (_, i) => candidate(`friend_${i}`, {likes:80}));
+  const stale = candidate("old", {createdAt:NOW-100*86400000,viewerSeenCount:1,viewerLastSeenAt:NOW});
+  const signals = {viewerId:"viewer",followedUserIds:new Set(followed.map(p=>p.userId))};
+  assert.ok(rankRecommendations([...followed,stale],signals,{snapshotAt:NOW}).slice(0,5).every(p=>p.candidate.id!=="old"));
+});

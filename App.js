@@ -1,3 +1,4 @@
+import { publicDiscoveryRailAllowed } from "./src/domain/publicPlacementPolicy.mjs";
 import { useState, useRef, useEffect, useLayoutEffect, Suspense } from "react";
 import { View, Text, StyleSheet, Pressable, SafeAreaView, Platform, StatusBar as RNStatusBar, Animated, ActivityIndicator, useWindowDimensions, BackHandler } from "react-native";
 import { StatusBar } from "expo-status-bar";
@@ -212,7 +213,7 @@ function Root() {
     youtubeLookupStatus, mediaReactions, loadMediaReactions, toggleMediaReaction,
     syncAccountTheme,
     loadPostForView,
-    blockedIds, removedIds, mutedIds, followedArtists, likeInfo, toggleLike, deleteOwnPost,
+    blockedIds, removedIds, mutedIds, followedArtists, likeInfo, toggleLike, deleteOwnPost, setPostRepost,
     removeMyPostTag,
   } = useStore();
   useFeedImpressionSession(session);
@@ -421,7 +422,7 @@ function Root() {
     desktop: wide,
     playerColumnWidth: MUSIC_PLAYER_ENABLED && wide ? playerColumnWidth : 0,
   });
-  const showRightRail = rightRailLayout.visible && !nav.auth;
+  const showRightRail = rightRailLayout.visible && publicDiscoveryRailAllowed(nav, activeTab);
   const homeCountdown = session ? homeShowCountdownPlan({
     attendance: myAttendance,
     going: goingFor(session.id),
@@ -1278,7 +1279,7 @@ function Root() {
   // from inside a venue/show/profile page, and the login sheet has to surface.
   if (nav.photos) overlay = <PhotoViewer photos={nav.photos.images} index={nav.photos.index} postId={nav.photos.postId} returnFocusRef={mediaViewerOpenerRef} session={session} mediaReactions={mediaReactions} loadMediaReactions={loadMediaReactions} toggleMediaReaction={toggleMediaReaction} track={track} onReport={openReport} onClose={back} onRememberIndex={rememberPhotoIndex} onRequireAuth={openSignIn} />;
   else if (MUSIC_PLAYER_ENABLED && nav.addToPlaylist) overlay = <PlaylistPickerScreen track={nav.addToPlaylist} onClose={back} />;
-  else if (nav.followList) overlay = <FollowListScreen userId={nav.followList.userId} mode={nav.followList.mode} onClose={back} onOpenProfile={openProfile} />;
+  else if (nav.followList) overlay = <FollowListScreen userId={nav.followList.userId} mode={nav.followList.mode} onClose={back} onOpenProfile={openProfile} onOpenArtist={openArtist} onRequireAuth={openSignIn} />;
   else if (nav.auth) overlay = <AuthScreen navigationAbortRef={authNavigationAbortRef} initialMode={nav.authMode} onModeChange={(mode) => { const frame = updatedAuthFrame(stackRef.current[stackRef.current.length - 1], mode); if (frame) commitReplace(frame); }} onDone={finishAuthentication} onCancel={back} onOpenCity={(city) => replace({ cityGuide: city })} />;
   else if (nav.signupSetup && session) overlay = <SignupOnboardingScreen key={session.id} session={session} onComplete={(options) => finishSignupOnboarding(options)} onClose={back} closeGuardRef={composerCloseGuardRef} />;
   else if (nav.welcomeGuide && session) overlay = <WelcomeScreen onClose={back} onOpenFanClubs={() => replace({ fanClubs: true })} onOpenNearby={() => replace({ nearby: true, nearbyTab: "shows" })} onOpenArtists={() => replace({ pickArtists: true })} onReview={() => requireVerifiedMutation("review", () => replace({ logging: true }))} />;
@@ -1589,7 +1590,7 @@ function Root() {
 
   return (
     <CityNavigationContext.Provider value={openCity}>
-    <NewsInteractionContext.Provider value={{ session, authReady, blockedIds, removedIds, mutedIds, followedArtists, likeInfo, toggleLike, deleteOwnPost }}>
+    <NewsInteractionContext.Provider value={{ session, authReady, blockedIds, removedIds, mutedIds, followedArtists, likeInfo, toggleLike, deleteOwnPost, setPostRepost }}>
     <View style={styles.root}>
       <SafeAreaView style={styles.safe}>
         <StatusBar style={themeIsDark ? "light" : "dark"} />

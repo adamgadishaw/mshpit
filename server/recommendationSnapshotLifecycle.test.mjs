@@ -11,6 +11,7 @@ import * as visibility from "./accountVisibility.js";
 import * as genre from "../src/domain/genre.mjs";
 import * as genreProjection from "./artistGenreProjection.js";
 import * as newsFeedPlacement from "./features/newsDesk/newsFeedPlacement.js";
+import * as socialReactions from "./features/socialReactions/socialReactions.js";
 import { ensureNewsDeskSchema } from "./features/newsDesk/newsDeskService.js";
 
 const dataDir = mkdtempSync(join(tmpdir(), "pit-recommendation-snapshot-"));
@@ -32,7 +33,8 @@ const code = ast.program.body.flatMap((node) => {
 const modules = { "node:crypto": { randomUUID }, "./db.js": database, "./errors.js": { ApiError },
   "./recommendationRanking.js": ranking, "./accountVisibility.js": visibility,
   "../src/domain/genre.mjs": genre, "./artistGenreProjection.js": genreProjection,
-  "./feedImpressions.js": impressions, "./features/newsDesk/newsFeedPlacement.js": newsFeedPlacement };
+  "./feedImpressions.js": impressions, "./features/newsDesk/newsFeedPlacement.js": newsFeedPlacement,
+  "./features/socialReactions/socialReactions.js": socialReactions };
 const bindings = Object.fromEntries(ast.program.body.filter((node) => node.type === "ImportDeclaration")
   .flatMap((node) => node.specifiers.map((specifier) =>
     [specifier.local.name, modules[node.source.value][specifier.imported.name]])));
@@ -60,6 +62,21 @@ const viewer = (id) => ({ id, favorite_artists: "[]", genres: "[]" });
 const page = (actor, at = START, cursor = null) => service.recommendedFeedPage({ viewer: actor, at, cursor, limit: 1 });
 const expired = (run) => assert.throws(run, (error) => error.code === "RECOMMENDATION_CURSOR_EXPIRED");
 const snapshotId = (cursor) => JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")).snapshotId;
+
+test("muted creators are excluded before candidate pagination and after a snapshot is issued", () => {
+  const actor = viewer("snapshot_block_viewer");
+  const first = page(actor);
+  assert.ok(first.nextCursor);
+  db.prepare("INSERT INTO account_mutes(muter_id,muted_id,created_at) VALUES(?,?,?)")
+    .run(actor.id, "snapshot_author", START);
+  try {
+    assert.equal(service.candidateRows(actor, START).some(row => row.user_id === "snapshot_author"), false);
+    assert.equal(page(actor, START + 1, first.nextCursor).rows.some(row => row.user_id === "snapshot_author"), false);
+    assert.ok(service.candidateRows(null, START).some(row => row.user_id === "snapshot_author"), "a private mute cannot suppress public discovery for everyone else");
+  } finally {
+    db.prepare("DELETE FROM account_mutes WHERE muter_id=?").run(actor.id);
+  }
+});
 
 test("ordinary recommendation snapshots require exact current artist follows for news and recheck unfollow", () => {
   ensureNewsDeskSchema(db);

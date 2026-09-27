@@ -1,4 +1,5 @@
 import { SIGNUP_ONBOARDING_VERSION } from "../../../src/domain/signupOnboarding.mjs";
+import { grantFirstWaveBadge } from "../../memberBadges.js";
 
 const TEN_MINUTES_MS = 10 * 60 * 1000;
 const COMPLETIONS_PER_WINDOW = 20;
@@ -41,7 +42,15 @@ export function accountOnboardingRoutes({
         );
       }
 
-      completeOnboarding.run(version, user.id, version);
+      database.exec("SAVEPOINT onboarding_completion");
+      try {
+        completeOnboarding.run(version, user.id, version);
+        grantFirstWaveBadge(database, user.id);
+        database.exec("RELEASE onboarding_completion");
+      } catch (error) {
+        database.exec("ROLLBACK TO onboarding_completion; RELEASE onboarding_completion");
+        throw error;
+      }
       const updated = getUser(user.id);
       return {
         ok: true,

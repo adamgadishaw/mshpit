@@ -36,7 +36,7 @@ const EMPTY_CALENDAR = Object.freeze({ upcoming: EMPTY_LIST, past: EMPTY_LIST })
 
 function Stat({ value, label, onPress }) {
   return (
-    <Pressable style={styles.stat} onPress={onPress} disabled={!onPress}>
+    <Pressable style={styles.stat} onPress={onPress} disabled={!onPress} accessibilityRole={onPress ? "button" : undefined} accessibilityLabel={`${value} ${label}`}>
       <Text style={styles.statVal}>{value}</Text>
       <Text style={styles.statLabel}>{label}</Text>
     </Pressable>
@@ -515,6 +515,11 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
         {/* The owner's private block (the You tab passes concert memories here). */}
         {isSelf ? children : null}
 
+        <View style={styles.statsRow}>
+          <Stat value={followerCount(user.id)} label="Followers" onPress={() => onOpenFollowList?.(user.id, "followers")} />
+          <Stat value={followingCount(user.id)} label="People following" onPress={() => onOpenFollowList?.(user.id, "following")} />
+          <Stat value={isSelf ? new Set((session?.favoriteArtists || []).map((name) => String(name).trim().toLowerCase())).size : user.artistFollowingCount ?? (user.favoriteArtists || []).length} label="Artists followed" onPress={() => onOpenFollowList?.(user.id, "artists")} />
+        </View>
         {!session ? (
           <AccountSnapshotPrompt
             title={`Meet ${user.name} on Mshpit`}
@@ -526,8 +531,6 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
         <View style={styles.statsRow}>
           <Stat value={historyCount(reviews.length)} label="Reviews" />
           <Stat value={planned.length} label="Upcoming" />
-          <Stat value={followerCount(user.id)} label="Followers" onPress={() => onOpenFollowList?.(user.id, "followers")} />
-          <Stat value={followingCount(user.id)} label="Following" onPress={() => onOpenFollowList?.(user.id, "following")} />
         </View>
 
         {/* Rewards: points + badges earned, tap for the full legend. */}

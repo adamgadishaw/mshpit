@@ -96,6 +96,10 @@ export function accountPrivacyRoutes({
           "This synchronous export includes all current feed preferences plus up to 5,000 recently viewed posts, 300 plays, 1,000 sent and received messages, 200 notifications, 5,000 activity events, 1,000 posts tagging you, and 1,000 tags you removed. A queued archive job is required before production-scale launch.",
         ],
         profile: projectSelf(user),
+        membershipMilestone: (() => {
+          const grant=database.prepare("SELECT slot,granted_at FROM first_wave_grants WHERE user_id=?").get(user.id);
+          return grant ? {kind:"first-wave",number:grant.slot,grantedAt:grant.granted_at} : null;
+        })(),
         posts: database.prepare("SELECT * FROM posts WHERE user_id=? ORDER BY created_at DESC").all(user.id)
           .map((post) => ({ id: post.id, kind: post.kind || "review", experienceType: post.experience_type || "in_person", onlineTitle: post.online_title || null, youtubeUrl: post.youtube_url || null, youtubeVideoId: post.youtube_video_id || null, artist: post.artist, venue: post.venue, city: post.city, eventAddress: post.event_address || null, date: post.date, overall: post.overall, band: post.band, room: post.room, review: post.review, tour: post.tour, setlist: parseJson(post.setlist, []), tags: parseJson(post.tags, []), taggedUserIds: parseJson(post.tagged_user_ids, []), campaign: parseJson(post.campaign, null), photos: parseJson(post.photos, []), photosPublic: !!post.photos_public, landingShowcase: !!post.landing_showcase, song: parseJson(post.song, null), playlist: parseJson(post.playlist, null), removed: !!post.removed, createdAt: post.created_at })),
         taggedInPosts: database.prepare(`SELECT t.post_id,p.user_id AS author_id,p.removed,p.created_at
@@ -112,6 +116,10 @@ export function accountPrivacyRoutes({
         comments: database.prepare("SELECT post_id,text,removed,created_at FROM comments WHERE user_id=? ORDER BY created_at DESC").all(user.id)
           .map((row) => ({ postId: row.post_id, text: row.text, removed: !!row.removed, createdAt: row.created_at })),
         likedPosts: database.prepare("SELECT post_id FROM likes WHERE user_id=?").all(user.id).map((row) => row.post_id),
+        commentLikes: database.prepare("SELECT comment_id,active,created_at,updated_at FROM comment_likes WHERE user_id=? ORDER BY created_at DESC LIMIT 10000").all(user.id)
+          .map((row) => ({ commentId: row.comment_id, liked: !!row.active, createdAt: row.created_at, updatedAt: row.updated_at })),
+        reposts: database.prepare("SELECT post_id,active,created_at,updated_at FROM post_reposts WHERE user_id=? ORDER BY created_at DESC LIMIT 10000").all(user.id)
+          .map((row) => ({ postId: row.post_id, reposted: !!row.active, createdAt: row.created_at, updatedAt: row.updated_at })),
         following: database.prepare("SELECT followee_id id FROM follows WHERE follower_id=?").all(user.id).map((row) => accountReference(row.id)),
         followers: database.prepare("SELECT follower_id id FROM follows WHERE followee_id=?").all(user.id).map((row) => accountReference(row.id)),
         blocked: database.prepare("SELECT blocked_id id FROM blocks WHERE blocker_id=?").all(user.id).map((row) => accountReference(row.id)),

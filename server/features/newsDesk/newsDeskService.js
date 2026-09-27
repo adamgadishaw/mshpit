@@ -548,12 +548,20 @@ export function createNewsDesk({ database, fetchText, fetchArticle = null, summa
 // `ensureSchema: false` is for read-only connections such as the sitemap
 // snapshot; a missing table there simply means no stories yet.
 const missingTable = (error) => /no such (table|column)/iu.test(String(error?.message));
-export function createNewsDeskReader(database, { ensureSchema = true } = {}) {
+export function createNewsDeskReader(database, { ensureSchema = true, projectReposts = null } = {}) {
   let ready = !ensureSchema;
+  const withReposts=(stories,viewerId)=>{
+    if (!projectReposts || !stories.length) return stories;
+    const reactions=projectReposts(stories.map(story=>story.postId),viewerId || null);
+    return stories.map(story=>({...story,...reactions.get(story.postId)}));
+  };
   return {
     list(options = {}) {
       if (!ready) { ensureNewsDeskSchema(database); ready = true; }
-      try { return listStories(database, options); }
+      try {
+        const result=listStories(database, options);
+        return {...result,stories:withReposts(result.stories,options.viewerId)};
+      }
       catch (error) { if (missingTable(error)) return { stories: [], nextCursor: null }; throw error; }
     },
     forPost(postId, options = {}) { return readOne("post_id", postId, options); },
@@ -571,7 +579,7 @@ export function createNewsDeskReader(database, { ensureSchema = true } = {}) {
         WHERE s.${column === "id" ? "id" : "post_id"}=? AND s.status='published'
           ${live ? `AND p.removed=0 AND ${activeAccountSql("u")}` : ""} ${readerBlockSql(viewerId)}`)
         .get(String(value || ""), ...readerBlockParams(viewerId));
-      return row ? newsStoryJson(row, database.prepare("SELECT norm,name,public_slug,photo,data FROM artists WHERE norm=?"), database, viewerId) : null;
+      return row ? withReposts([newsStoryJson(row, database.prepare("SELECT norm,name,public_slug,photo,data FROM artists WHERE norm=?"), database, viewerId)],viewerId)[0] : null;
     } catch (error) {
       if (missingTable(error)) return null;
       throw error;

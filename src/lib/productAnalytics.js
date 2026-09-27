@@ -22,6 +22,7 @@ let timer = null;
 let appStateSubscription = null;
 let visibilityHandler = null;
 let retryMs = FLUSH_INTERVAL_MS;
+let retryNotBefore = 0;
 let sessionNonce = 0;
 let persistTimer = null;
 let pendingPersistOwnerId = null;
@@ -62,8 +63,9 @@ function eventId() {
 
 function schedule(ms = retryMs) {
   if (timer) clearTimeout(timer);
+  timer = null;
   if (!account.enabled || !queue.length) return;
-  timer = setTimeout(() => { timer = null; flushProductAnalytics(); }, ms);
+  timer = setTimeout(() => { timer = null; flushProductAnalytics(); }, Math.max(ms, retryNotBefore - Date.now(), 0));
 }
 
 export function configureProductAnalytics(user) {
@@ -78,7 +80,11 @@ export function configureProductAnalytics(user) {
     persistQueue({ immediate: true, ownerId: account.id, snapshot: queue });
   }
   account = next;
-  if (changedAccount) queue = readQueue(next.id);
+  if (changedAccount) {
+    queue = readQueue(next.id);
+    retryMs = FLUSH_INTERVAL_MS;
+    retryNotBefore = 0;
+  }
   if (!next.enabled) {
     queue = [];
     persistQueue({ immediate: true });
@@ -103,6 +109,11 @@ export function trackProductEvent(name, props = {}, { expectedAccountId } = {}) 
 
 export async function flushProductAnalytics() {
   if (!account.enabled || !account.id || !queue.length) return { stored: 0 };
+  // New events, resume and reconfiguration must not bypass outage backoff.
+  if (Date.now() < retryNotBefore) {
+    schedule(retryNotBefore - Date.now());
+    return { stored: 0, retrying: true };
+  }
   if (inFlight) {
     // A shared-device account switch must not attach B's queue to A's request.
     // The old request owns its promise; its finalizer schedules the current
@@ -123,16 +134,22 @@ export async function flushProductAnalytics() {
     const ids = new Set(batch.map((event) => event.id));
     queue = queue.filter((event) => !ids.has(event.id));
     retryMs = FLUSH_INTERVAL_MS;
+    retryNotBefore = 0;
     persistQueue({ immediate: true });
     schedule(250);
     return result;
   }).catch(() => {
-    retryMs = Math.min(RETRY_MAX_MS, retryMs * 2);
-    if (account.id === ownerId) schedule(retryMs);
+    if (account.id === ownerId && account.enabled) {
+      retryMs = Math.min(RETRY_MAX_MS, retryMs * 2);
+      retryNotBefore = Date.now() + retryMs;
+      schedule(retryMs);
+    }
     return { stored: 0, retrying: true };
   }).finally(() => {
     if (inFlight?.promise === promise) inFlight = null;
-    if (account.enabled && queue.length) schedule(0);
+    // Preserve the failure timer; scheduling zero here used to turn one failed
+    // request into a continuous retry loop while Render was under pressure.
+    if (account.enabled && queue.length && !timer) schedule(250);
   });
   inFlight = { ownerId, promise };
   return promise;
@@ -187,5 +204,9 @@ export function purgeProductAnalyticsAccount(accountId) {
   if (account.id === id) {
     queue = [];
     account = { id: null, enabled: false };
+    if (timer) clearTimeout(timer);
+    timer = null;
+    retryNotBefore = 0;
+    retryMs = FLUSH_INTERVAL_MS;
   }
 }

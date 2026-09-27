@@ -28,12 +28,13 @@ function compareNotifications(left, right) {
 export function notificationBundleTarget(notification) {
   const type = text(notification?.type).toLowerCase() || "activity";
   if (type === "follow") return "account";
+  if (type === "comment_like") return `comment:${text(notification?.commentId) || notificationId(notification)}`;
   if (type === "dm") return text(notification?.actorId)
     ? `thread:${text(notification.actorId)}`
     : `notification:${notificationId(notification)}`;
   // Each person joining a plan is its own row, so nobody is hidden in a bundle.
   if (type === "plan_join") return `plan:${text(notification?.postId)}:${text(notification?.actorId) || notificationId(notification)}`;
-  if (type === "like" || type === "comment" || type === "post_tag") return text(notification?.postId)
+  if (type === "like" || type === "comment" || type === "post_tag" || type === "repost") return text(notification?.postId)
     ? `post:${text(notification.postId)}`
     : `notification:${notificationId(notification)}`;
   if (type === "welcome") return `notification:${notificationId(notification)}`;

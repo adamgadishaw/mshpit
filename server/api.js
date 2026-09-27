@@ -150,6 +150,7 @@ import { pageHeadFor, publicDocumentForPath, resolveEntity, sitemapSnapshotHealt
 import { pageHeadRoutes } from "./features/seo/pageHeadRoutes.js";
 import { userRewards } from "./rewards.js";
 import { prepareVerification, completeVerification, resendVerification, sendWelcomeOnce, verificationEnabled } from "./verification.js";
+import { memberBadgeFor, grantFirstWaveBadge } from "./memberBadges.js";
 import {
   clearYouTubeTrackCache,
   ProviderError,
@@ -220,6 +221,8 @@ import { claimPendingSignupHandle, handleChangeAvailableAt, HANDLE_COOLDOWN_DAYS
 import { artistSignupIntent, pendingArtistSignupIntent } from "./features/artistAccounts/artistAccountPolicy.js";
 import { artistAccountRoutes } from "./features/artistAccounts/artistAccountRoutes.js";
 import { artistCatalogVisibleTo } from "./artistCatalogVisibility.js";
+import { createConnections } from "./features/connections/connectionsRoutes.js";
+import { MAX_FOLLOWED_ARTISTS } from "../src/domain/artistFollowFanClub.mjs";
 import { cityGuideRoutes } from "./features/cities/cityGuideRoutes.js";
 import { artistBiographyRoutes } from "./features/artists/artistBiographyRoutes.js";
 import { musicBrainzBiographyFacts } from "../src/domain/artistBiography.mjs";
@@ -246,6 +249,7 @@ import { canonicalVenueKey, venueLookupKeys } from "../src/domain/venueIdentity.
 import { publicVenueFanPhotos } from "./venueGallery.js";
 import { publicVenuePhotoPool } from "./venuePhotoCatalog.js";
 import { attachViewerLikes } from "./postViewerLikes.js";
+import { socialReactionRoutes, commentLikeInfo, repostInfo, repostInfoPage, followingPostIds, SOCIAL_NOTIFICATION_VISIBLE_SQL } from "./features/socialReactions/socialReactions.js";
 import { attachPostMediaPageProjection, preloadedPostMedia } from "./postMediaPageProjection.js";
 import { accountIsPublic, activeAccountSql, PROFILE_AUDIENCES, profileAudienceAllows } from "./accountVisibility.js";
 import { visibleTourDateRows } from "./tourDateVisibility.js";
@@ -2698,13 +2702,13 @@ function canonicalStoredPost(row) {
   };
 }
 // Insert a notification for a recipient (never notify yourself).
-const notifRow = db.prepare("INSERT INTO notifications (id,user_id,actor_id,type,post_id,artist,text,created_at) VALUES (?,?,?,?,?,?,?,?)");
+const notifRow = db.prepare("INSERT INTO notifications (id,user_id,actor_id,type,post_id,artist,text,created_at,comment_id) VALUES (?,?,?,?,?,?,?,?,?)");
 const postTagNotifRow = db.prepare("INSERT OR IGNORE INTO notifications (id,user_id,actor_id,type,post_id,artist,text,created_at) VALUES (?,?,?,?,?,?,?,?)");
 function addNotif(recipientId, actorId, type, extra = {}) {
   if (!recipientId || recipientId === actorId) return;
   if (actorId && blockedEitherWay(recipientId, actorId)) return; // no pings across a block
   if (actorId && mutedBy(recipientId, actorId)) return; // private, one-way social silence
-  notifRow.run(uid("n"), recipientId, actorId, type, extra.postId ?? null, extra.artist ?? null, extra.text ?? null, now());
+  notifRow.run(uid("n"), recipientId, actorId, type, extra.postId ?? null, extra.artist ?? null, extra.text ?? null, now(), extra.commentId ?? null);
 }
 
 // True when either user has blocked the other (blocks act both ways).
@@ -2902,7 +2906,7 @@ function mutedIdSet(userId) {
   return new Set(mutedIdsStmt.all(userId).map((row) => row.id));
 }
 
-const newsDeskReader = createNewsDeskReader(db);
+const newsDeskReader = createNewsDeskReader(db, { projectReposts:(ids,viewerId)=>repostInfoPage(db,ids,viewerId) });
 // One renderer for every share card and news preview image, so its memory and
 // concurrency limits hold across both.
 const socialShareCardRenderer = createSocialShareCardRenderer();
@@ -2966,7 +2970,7 @@ function postJson(p, viewerId) {
   const campaignAuthorized = !!storedCampaign?.artistKey
     && p.u_role === "artist"
     && normName(p.u_artist_name) === normName(storedCampaign.artistKey)
-    && db.prepare("SELECT 1 FROM artist_profiles WHERE artist_key=? AND owner_id=? AND removed=0")
+    && db.prepare("SELECT 1 FROM artist_profiles WHERE artist_key=? AND owner_id=? AND removed=0 AND COALESCE(identity_review_status,'clear') IN ('clear','approved')")
       .get(normName(storedCampaign.artistKey), p.user_id);
   let campaign = campaignAuthorized ? storedCampaign : null;
   const campaignBackground = campaign?.backgroundAssetId
@@ -2980,7 +2984,7 @@ function postJson(p, viewerId) {
     id: p.id,
     userId: p.user_id,
     kind: p.kind || "review",
-    user: { name: p.u_name, handle: p.u_handle, initials: p.u_initials, avatarUri: safePublicProfileImage(p.user_id, p.u_avatar), avatarColor: p.u_color, profileUpdatedAt: Number(p.u_profile_updated_at) || 0 },
+    user: { name: p.u_name, handle: p.u_handle, initials: p.u_initials, avatarUri: safePublicProfileImage(p.user_id, p.u_avatar), avatarColor: p.u_color, profileUpdatedAt: Number(p.u_profile_updated_at) || 0, membershipBadge: memberBadgeFor(db, { id: p.user_id }) },
     artist: p.artist,
     venue: online.experienceType === "online" ? "" : p.venue,
     city: online.experienceType === "online" ? "" : p.city,
@@ -3042,6 +3046,7 @@ function postJson(p, viewerId) {
     } } : {}),
     ...(p.open_reports != null ? { flags: p.open_reports } : {}),
     likes: p.like_count ?? 0, comments: p.comment_count ?? 0,
+    ...(p.repost_info || repostInfo(db, p.id, viewerId || null)),
     ...(p.comment_preview != null ? { commentPreview: parseJsonArray(p.comment_preview) } : {}),
     liked: p.viewer_liked != null
       ? !!p.viewer_liked
@@ -3053,14 +3058,28 @@ function postJson(p, viewerId) {
 }
 
 function projectPostPage(posts, viewerId) {
+  const reactions = repostInfoPage(db, posts.map(post => post.id), viewerId || null);
   return attachPostMediaPageProjection(db, posts, { ownerId: viewerId || null })
-    .map((post) => postJson(post, viewerId));
+    .map((post) => postJson({ ...post, repost_info: reactions.get(post.id) }, viewerId));
 }
 
 // Feed cards need only the latest two comments. Fetch them for the whole page in
 // one indexed/windowed query instead of mounting N cards that each issue their
 // own HTTP request. Full threads (including ancestor tombstones) remain on the
 // dedicated comments endpoint and load only when somebody opens Afterparty.
+const COMMENT_AUTHOR_IDENTITY_SQL = `u.email_verified_at,
+  CASE WHEN u.role='artist' AND EXISTS (SELECT 1 FROM artist_profiles a
+    WHERE a.owner_id=u.id AND a.artist_key=lower(trim(u.artist_name))
+      AND a.identity_review_status IN ('pending','rejected')) THEN 1 ELSE 0 END AS artist_identity_held`;
+
+function commentAuthorStatus(comment) {
+  return {
+    role: comment.artist_identity_held ? "fan" : comment.role,
+    verified: !comment.artist_identity_held && !!comment.verified,
+    membershipBadge: memberBadgeFor(db, { id: comment.user_id, email_verified_at: comment.email_verified_at }),
+  };
+}
+
 function withCommentPreviews(posts, viewerId) {
   if (!Array.isArray(posts) || !posts.length) return posts || [];
   const ids = posts.map((post) => post.id).filter(Boolean);
@@ -3075,6 +3094,7 @@ function withCommentPreviews(posts, viewerId) {
     SELECT * FROM (
       SELECT c.post_id,c.id,c.user_id,c.text,c.parent_id,c.created_at,
         u.name,u.initials,u.avatar_uri,u.avatar_color,u.role,u.verified,u.profile_updated_at,
+        ${COMMENT_AUTHOR_IDENTITY_SQL},
         ROW_NUMBER() OVER (PARTITION BY c.post_id ORDER BY c.created_at DESC,c.id DESC) AS preview_rank
       FROM comments c JOIN users u ON u.id=c.user_id
       WHERE c.post_id IN (${placeholders}) AND c.removed=0 AND ${activeAccountSql("u")} ${blockSql}
@@ -3091,8 +3111,7 @@ function withCommentPreviews(posts, viewerId) {
       avatarUri: safePublicProfileImage(comment.user_id, comment.avatar_uri),
       avatarColor: comment.avatar_color,
       profileUpdatedAt: Number(comment.profile_updated_at) || 0,
-      role: comment.role,
-      verified: !!comment.verified,
+      ...commentAuthorStatus(comment),
       text: comment.text,
       deleted: false,
       parentId: comment.parent_id || null,
@@ -4502,7 +4521,14 @@ const linkedAccounts = createLinkedAccounts({ database: db, ApiError, requireSes
   verifyPasswordForUser, atomicWrite, createSession, sessionTtlForRole, publicUser, now });
 
 // route table: "METHOD /path" -> handler(ctx) ; :params exposed as ctx.params
+const connections = createConnections({
+  database: db, ApiError, requireUser, rateLimit: limit, visibleProfileOrNull, blockedEitherWay,
+  projectUser: publicUser, projectArtist: publicArtist, resolveArtist: resolveCatalogArtistReference,
+  decodeKey: (ctx) => decodedPathParam(ctx, "key", { max: 200, label: "artist link" }), atomicWrite, now,
+});
+
 export const routes = {
+  ...socialReactionRoutes({ database: db, ApiError, requireUser, rateLimit: limit, atomicWrite, addNotif, now }),
   ...discoverPhotoRoutes({ database: db, rateLimit: limit, ApiError }),
   ...pageHeadRoutes({ ApiError, rateLimit: limit, pageHeadFor }),
   ...capacityHandshakeRoutes({
@@ -6119,7 +6145,7 @@ export const routes = {
       lat: { parse: cleanLatitude },
       lng: { parse: cleanLongitude },
       genres: { parse: () => incomingGenres?.genres },
-      favoriteArtists: { parse: (x) => cleanStringArray(x, { maxItems: 50, maxLen: 80 }) },
+      favoriteArtists: { parse: (x) => cleanStringArray(x, { maxItems: MAX_FOLLOWED_ARTISTS, maxLen: 80 }) },
       directMessagePolicy: { parse: (x) => (DIRECT_MESSAGE_POLICIES.includes(x) ? x : undefined) },
       profileAudience: { parse: (x) => (PROFILE_AUDIENCES.includes(x) ? x : undefined) },
       ageBand: { parse: (x) => (isClassifiedAccountAgeBand(x) ? x : undefined) },
@@ -6327,34 +6353,14 @@ export const routes = {
     if (ctx.user?.id !== ctx.params.id && blockedEitherWay(ctx.user?.id, ctx.params.id)) throw new ApiError(404, "This profile isn't available.", "NOT_FOUND");
     const u = visibleProfileOrNull(ctx.params.id, ctx.user);
     if (!u) throw new ApiError(404, "No such user.");
-    const followers = db.prepare(`SELECT COUNT(*) c FROM follows f JOIN users actor ON actor.id=f.follower_id
-      WHERE f.followee_id=? AND ${activeAccountSql("actor")}`).get(u.id).c;
-    const following = db.prepare(`SELECT COUNT(*) c FROM follows f JOIN users target ON target.id=f.followee_id
-      WHERE f.follower_id=? AND ${activeAccountSql("target")}`).get(u.id).c;
+    const { followers, following, artistFollowing } = connections.counts(ctx, u);
     const isFollowing = ctx.user ? !!db.prepare("SELECT 1 FROM follows WHERE follower_id=? AND followee_id=?").get(ctx.user.id, u.id) : false;
-    return { user: publicUser(u), followers, following, isFollowing };
+    ctx.setHeader?.("Cache-Control", "private, no-store");
+    return { user: { ...publicUser(u), artistFollowingCount: artistFollowing }, followers, following, isFollowing };
   },
 
-  // The real people behind the follower/following numbers, so profiles have a
-  // clickable follow list like any social platform.
-  "GET /api/users/:id/followers": (ctx) => {
-    if (ctx.user?.id !== ctx.params.id && blockedEitherWay(ctx.user?.id, ctx.params.id)) throw new ApiError(404, "This profile isn't available.", "NOT_FOUND");
-    if (!visibleProfileOrNull(ctx.params.id, ctx.user)) throw new ApiError(404, "This profile isn't available.", "NOT_FOUND");
-    const hidden = blockedIdSet(ctx.user?.id);
-    const rows = db.prepare(`
-      SELECT u.* FROM follows f JOIN users u ON u.id = f.follower_id
-      WHERE f.followee_id = ? AND ${activeAccountSql("u")} ORDER BY u.name COLLATE NOCASE LIMIT 500`).all(ctx.params.id);
-    return { users: rows.filter((r) => !hidden.has(r.id) && profileAudienceAllows(r, ctx.user)).map((r) => publicUser(r)) };
-  },
-  "GET /api/users/:id/following": (ctx) => {
-    if (ctx.user?.id !== ctx.params.id && blockedEitherWay(ctx.user?.id, ctx.params.id)) throw new ApiError(404, "This profile isn't available.", "NOT_FOUND");
-    if (!visibleProfileOrNull(ctx.params.id, ctx.user)) throw new ApiError(404, "This profile isn't available.", "NOT_FOUND");
-    const hidden = blockedIdSet(ctx.user?.id);
-    const rows = db.prepare(`
-      SELECT u.* FROM follows f JOIN users u ON u.id = f.followee_id
-      WHERE f.follower_id = ? AND ${activeAccountSql("u")} ORDER BY u.name COLLATE NOCASE LIMIT 500`).all(ctx.params.id);
-    return { users: rows.filter((r) => !hidden.has(r.id) && profileAudienceAllows(r, ctx.user)).map((r) => publicUser(r)) };
-  },
+  // Lists and artist subscriptions share the profile audience/block boundary.
+  ...connections.routes,
 
   "GET /api/users/:id/rewards": (ctx) => {
     if (!visibleProfileOrNull(ctx.params.id, ctx.user)) throw new ApiError(404, "No such user.", "NOT_FOUND");
@@ -6587,6 +6593,20 @@ export const routes = {
     const requestedOffset = Number(ctx.query?.offset);
     const off = !cursor && Number.isSafeInteger(requestedOffset) && requestedOffset > 0 ? Math.min(requestedOffset, 1_000_000) : 0;
     const viewer = user.id;
+    if (ctx.query?.mode === "following") {
+      const found = followingPostIds(db, { viewerId: viewer, cursor, limit: lim });
+      const page = found.slice(0, lim);
+      const rows = page.map((item) => feedPostById.get(item.id)).filter(Boolean);
+      const projected = attachPostImpressionStats(db, attachViewerLikes(db,
+        withTaggedPeople(withCommentPreviews(rows, viewer), viewer), viewer), viewer);
+      const activities = new Map(page.map((item) => [item.id, item.activity_at]));
+      return {
+        posts: projectPostPage(projected, viewer).filter((post) => !isNewsPostId(post.id) || post.news)
+          .map((post) => ({ ...post, followingActivityAt: activities.get(post.id) })),
+        nextCursor: found.length > lim && page.length
+          ? encodeCursor({ id: page.at(-1).id, created_at: page.at(-1).activity_at }) : null,
+      };
+    }
     const blockSql = viewer ? `AND NOT EXISTS (
       SELECT 1 FROM blocks b WHERE (b.blocker_id=? AND b.blocked_id=p.user_id) OR (b.blocker_id=p.user_id AND b.blocked_id=?)
     ) AND NOT EXISTS (SELECT 1 FROM account_mutes mute WHERE mute.muter_id=? AND mute.muted_id=p.user_id)` : "";
@@ -7530,7 +7550,7 @@ export const routes = {
     if (viewerId) args.push(viewerId, viewerId);
     if (cursor) args.push(cursor.createdAt, cursor.createdAt, cursor.id);
     args.push(limit + 1);
-    const found = db.prepare(`SELECT c.*, u.name, u.initials, u.avatar_uri, u.avatar_color, u.role, u.verified, u.profile_updated_at FROM comments c JOIN users u ON u.id=c.user_id
+    const found = db.prepare(`SELECT c.*, u.name, u.initials, u.avatar_uri, u.avatar_color, u.role, u.verified, u.profile_updated_at, ${COMMENT_AUTHOR_IDENTITY_SQL} FROM comments c JOIN users u ON u.id=c.user_id
                              WHERE c.post_id=? AND c.removed=0 AND ${activeAccountSql("u")} ${blockSql} ${cursorSql}
                              ORDER BY c.created_at DESC, c.id DESC LIMIT ?`).all(...args);
     const { rows, nextCursor } = finishPage(found, limit);
@@ -7545,7 +7565,7 @@ export const routes = {
       const ids = [...new Set(pending.filter((id) => !byId.has(id)))].slice(0, 100);
       if (!ids.length) break;
       const placeholders = ids.map(() => "?").join(",");
-      const parents = db.prepare(`SELECT c.*,u.name,u.initials,u.avatar_uri,u.avatar_color,u.role,u.verified,u.profile_updated_at,u.is_banned,u.suspended_until,u.dormant_at
+      const parents = db.prepare(`SELECT c.*,u.name,u.initials,u.avatar_uri,u.avatar_color,u.role,u.verified,u.profile_updated_at,u.is_banned,u.suspended_until,u.dormant_at,${COMMENT_AUTHOR_IDENTITY_SQL}
         FROM comments c JOIN users u ON u.id=c.user_id
         WHERE c.post_id=? AND c.id IN (${placeholders})`).all(ctx.params.id, ...ids);
       pending = [];
@@ -7556,17 +7576,30 @@ export const routes = {
         if (parent.parent_id) pending.push(parent.parent_id);
       }
     }
+    const canLikeFromPage = (comment) => {
+      const seen=new Set();
+      let current=comment;
+      for (let depth=0; current && depth<64; depth++) {
+        if (seen.has(current.id) || hidden.has(current.user_id) || !accountIsPublic(current)) return false;
+        seen.add(current.id);
+        if (!current.parent_id) return true;
+        current=byId.get(current.parent_id);
+      }
+      return false;
+    };
     const comments = [...byId.values()]
       .sort((a, b) => a.created_at - b.created_at || String(a.id).localeCompare(String(b.id)))
       .map((c) => c.removed ? {
         id: c.id, userId: null, name: null, initials: null, avatarUri: null,
-        avatarColor: null, role: null, verified: false, text: "", deleted: true,
+        avatarColor: null, role: null, verified: false, membershipBadge: null, text: "", deleted: true,
         parentId: c.parent_id || null, createdAt: c.created_at,
       } : {
         id: c.id, userId: c.user_id, name: c.name, initials: c.initials,
-        avatarUri: safePublicProfileImage(c.user_id, c.avatar_uri), avatarColor: c.avatar_color, role: c.role,
-        verified: !!c.verified, profileUpdatedAt: Number(c.profile_updated_at) || 0, text: c.text, deleted: false,
+        avatarUri: safePublicProfileImage(c.user_id, c.avatar_uri), avatarColor: c.avatar_color, ...commentAuthorStatus(c),
+        profileUpdatedAt: Number(c.profile_updated_at) || 0, text: c.text, deleted: false,
         parentId: c.parent_id || null, createdAt: c.created_at,
+        ...commentLikeInfo(db, c.id, viewerId),
+        canLike: canLikeFromPage(c),
       });
     const removedIds = db.prepare("SELECT id FROM comments WHERE post_id=? AND removed=1 ORDER BY created_at DESC LIMIT 500")
       .all(ctx.params.id).map((row) => row.id);
@@ -7822,27 +7855,30 @@ export const routes = {
     const hidden = blockedIdSet(u.id);
     const muted = mutedIdSet(u.id);
     const { cursor, limit } = pageRequest(ctx, 100, 100);
-    const cursorSql = cursor ? "AND (n.created_at < ? OR (n.created_at = ? AND n.id < ?))" : "";
-    const args = cursor ? [u.id, cursor.createdAt, cursor.createdAt, cursor.id, limit + 1] : [u.id, limit + 1];
+    const cursorSql = cursor ? "AND (n.created_at < $before OR (n.created_at = $before AND n.id < $id))" : "";
+    const args = { $viewer:u.id, $limit:limit+1, ...(cursor ? {$before:cursor.createdAt,$id:cursor.id} : {}) };
     const found = db.prepare(`
       SELECT n.*, a.name AS actor_name, a.initials AS actor_initials, a.avatar_uri AS actor_uri, a.avatar_color AS actor_color
       FROM notifications n LEFT JOIN users a ON a.id = n.actor_id
-      WHERE n.user_id = ? ${cursorSql} ORDER BY n.created_at DESC, n.id DESC LIMIT ?`).all(...args);
+      WHERE n.user_id = $viewer AND ${SOCIAL_NOTIFICATION_VISIBLE_SQL} ${cursorSql}
+      ORDER BY n.created_at DESC, n.id DESC LIMIT $limit`).all(args);
     const { rows, nextCursor } = finishPage(found, limit);
     return {
-      notifications: rows.filter((n) => !n.actor_id || (!hidden.has(n.actor_id) && !muted.has(n.actor_id))).map((n) => ({
+      notifications: rows.filter((n) => (!n.actor_id || (!hidden.has(n.actor_id) && !muted.has(n.actor_id))))
+        .map((n) => ({
         id: n.id, type: n.type, actorId: n.actor_id,
         actorName: n.actor_name || "Someone", actorInitials: n.actor_initials || "?",
         actorUri: safePublicProfileImage(n.actor_id, n.actor_uri), actorColor: n.actor_color,
-        postId: n.post_id, artist: n.artist, text: n.text,
+        postId: n.post_id, commentId: n.comment_id || null, artist: n.artist, text: n.text,
         ts: n.created_at, read: !!n.read,
       })),
-      unread: db.prepare(`SELECT COUNT(*) c FROM notifications n WHERE n.user_id=? AND n.read=0
+      unread: db.prepare(`SELECT COUNT(*) c FROM notifications n WHERE n.user_id=$viewer AND n.read=0
+        AND ${SOCIAL_NOTIFICATION_VISIBLE_SQL}
         AND (n.actor_id IS NULL OR NOT EXISTS (
           SELECT 1 FROM blocks b WHERE (b.blocker_id=n.user_id AND b.blocked_id=n.actor_id) OR (b.blocker_id=n.actor_id AND b.blocked_id=n.user_id)
         )) AND (n.actor_id IS NULL OR NOT EXISTS (
           SELECT 1 FROM account_mutes mute WHERE mute.muter_id=n.user_id AND mute.muted_id=n.actor_id
-        ))`).get(u.id).c,
+        ))`).get({$viewer:u.id}).c,
       nextCursor,
     };
   },
@@ -8948,7 +8984,8 @@ export const routes = {
   // it survives reload + shows cross-device.
   // Confirm an address on someone's behalf. Distinct from /verified below, which
   // grants the PUBLIC verification check; this one is private account state and
-  // shows no badge. Also releases the welcome mail, exactly once.
+  // earns cosmetic email confirmation, never reviewed artist identity or permissions.
+  // Also releases the welcome mail, exactly once.
   "POST /api/admin/users/:id/verify-email": (ctx) => {
     const actor = requireAdmin(ctx);
     const before = q.userById.get(ctx.params.id);
@@ -8958,6 +8995,7 @@ export const routes = {
         SET email_verified_at=?, email_verify_hash=NULL, email_verify_expires=0
         WHERE id=? AND email_verified_at=0`).run(now(), ctx.params.id).changes === 1;
       if (changed) claimPendingSignupHandle(db, q.userById.get(before.id), now());
+      if (changed) grantFirstWaveBadge(db, before.id, { at: now() });
       if (changed) moderationRecord(ctx, "verify-email", "user", before.id, ctx.body?.reason || "",
         { emailVerified: false }, { emailVerified: true, by: actor.id });
     });

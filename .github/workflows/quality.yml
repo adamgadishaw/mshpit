@@ -82,4 +82,7 @@ jobs:
       - run: npm run verify:catalog-maintenance-browser
       - run: npm run verify:quick-log-browser
       - run: npm run verify:media-upload-browser
+      - run: npm run verify:player-browser
+      - run: npm run verify:connections-browser
+      - run: npm run verify:social-browser
       # verify:crew-browser returns here when Crew is switched back on.

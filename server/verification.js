@@ -12,6 +12,7 @@ import { db, emailStmts, q } from "./db.js";
 import { publicOrigin, sendTemplate, sendTemplateInBackground } from "./emailService.js";
 import { claimPendingSignupHandle } from "./features/accountOnboarding/signupHandle.js";
 import { privateErrorLabel } from "./errors.js";
+import { grantFirstWaveBadge } from "./memberBadges.js";
 
 const TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -32,6 +33,7 @@ function markVerifiedWithSignupPreference(userId, at = Date.now()) {
   return verificationWrite(() => {
     emailStmts.markEmailVerified.run(at, userId);
     claimPendingSignupHandle(db, q.userById.get(userId), at);
+    grantFirstWaveBadge(db, userId, { at });
   });
 }
 
@@ -146,6 +148,7 @@ export function completeVerification(token, now = Date.now()) {
       emailStmts.recordVerificationReceipt.run(tokenHash, user.id, hashToken(user.email), now, user.email_verify_expires);
       emailStmts.markEmailVerified.run(now, user.id);
       claimPendingSignupHandle(db, q.userById.get(user.id), now);
+      grantFirstWaveBadge(db, user.id, { at: now });
       completion = { user: q.userById.get(user.id), replayed: false };
     } else {
       const receipt = emailStmts.verificationReceiptByHash.get(tokenHash, now);
