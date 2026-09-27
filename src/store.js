@@ -1338,7 +1338,7 @@ export function StoreProvider({ children }) {
     const accountId = sessionRef.current?.id || null;
     if (!authReadyRef.current || !accountId || signal?.aborted) return null;
     const allIds = feedRef.current.map((post) => post?.id)
-      .filter((id) => typeof id === "string" && /^p_[A-Za-z0-9_-]{1,77}$/.test(id));
+      .filter((id) => typeof id === "string" && /^(?:p|news)_[A-Za-z0-9_-]{1,77}$/.test(id));
     const start = allIds.length ? feedRevalidationOffsetRef.current % allIds.length : 0;
     const ids = [...allIds.slice(start), ...allIds.slice(0, start)].slice(0, 200);
     feedRevalidationOffsetRef.current = allIds.length ? (start + ids.length) % allIds.length : 0;
@@ -4607,6 +4607,7 @@ export function StoreProvider({ children }) {
       .then(() => {
         if (!isCurrent()) return { ok: false, stale: true };
         track("delete_post", { postId });
+        setRemovedIds((ids) => ids.includes(postId) ? ids : [...ids, postId]);
         return { ok: true };
       })
       .catch((error) => {
@@ -4643,17 +4644,17 @@ export function StoreProvider({ children }) {
       return { ok: false, error };
     }
   };
-  const likeInfo = (id, base = 0) => ({ count: (likes[id] ?? base) + (myLikes[id] ? 1 : 0), liked: !!myLikes[id] });
-  const toggleLike = (id, base = 0) => {
+  const likeInfo = (id, base = 0, initiallyLiked = false) => ({ count: (likes[id] ?? Math.max(0, base - (initiallyLiked ? 1 : 0))) + ((myLikes[id] ?? initiallyLiked) ? 1 : 0), liked: !!(myLikes[id] ?? initiallyLiked) });
+  const toggleLike = (id, base = 0, initiallyLiked = false) => {
     const actor = currentMutationActor();
     if (!actor || !id) return Promise.resolve({ ok: false });
     const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
     const isCurrent = () => accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current);
-    const previous = !!myLikes[id];
+    const previous = !!(myLikes[id] ?? initiallyLiked);
     const liked = !previous;
     feedMutationRevisionRef.current += 1;
     setMyLikes((m) => ({ ...m, [id]: liked }));
-    setLikes((l) => ({ ...l, [id]: l[id] ?? base }));
+    setLikes((l) => ({ ...l, [id]: l[id] ?? Math.max(0, base - (initiallyLiked ? 1 : 0)) }));
     return api(`/api/posts/${id}/like`, { method: "POST", body: { liked }, context: liked ? "Liking this review" : "Removing your like", expectedAccountId: actor.id })
       .then((result) => {
         if (!isCurrent()) return { ok: false, stale: true };
@@ -4765,7 +4766,7 @@ export function StoreProvider({ children }) {
   const followingFeed = (staff) => {
     const ids = new Set([...(follows[session?.id] || []), session?.id]);
     return visibleFeed(staff)
-      .filter((l) => ids.has(l.userId))
+      .filter((l) => !l.news && !String(l.id).startsWith("news_") && ids.has(l.userId))
       .sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0) || String(b.id).localeCompare(String(a.id)));
   };
 
@@ -6878,7 +6879,7 @@ export function StoreProvider({ children }) {
     if (!city) return [];
     const localIds = new Set(users.filter((u) => u.home?.city === city).map((u) => u.id));
     return visibleFeed(staff)
-      .filter((l) => localIds.has(l.userId))
+      .filter((l) => !l.news && !String(l.id).startsWith("news_") && localIds.has(l.userId))
       .sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0) || String(b.id).localeCompare(String(a.id)));
   };
 
@@ -6986,6 +6987,7 @@ export function StoreProvider({ children }) {
   };
 
   const value = {
+    mutedIds, followedArtists: [...(session?.favoriteArtists || []), ...(fanClubs[session?.id] || [])],
     users, adminMembers, adminMemberDirectory, session, authReady, feed, removedIds, blockedIds, requests, tourDates, reports, moderationConsole, follows, discoverySidebar, discoverySidebarStatus,
     userById, userByHandle, logsByUser, sharedShows,
     login, signup, logout, switchLinkedAccount, deleteAccount, forgotPassword, resetPassword, confirmEmailVerification, resendEmailVerification, updateProfile, completeSignupOnboarding, setAnalyticsEnabled, setProfileSearchIndexingEnabled, setDirectMessagePolicy, setAgeBandClassification, setProfileAudience, setAnnouncementEmailsEnabled, chooseTheme, syncAccountTheme,

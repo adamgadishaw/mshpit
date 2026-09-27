@@ -3,6 +3,8 @@ import { anthropicMonthlyCeilingMicroUsd } from "../../claudeSpendCeiling.js";
 import { anthropicErrorSummary } from "../../anthropicErrors.js";
 import { privateErrorLabel } from "../../errors.js";
 import { startPeriodicJob } from "../../periodicJobScheduler.js";
+import { runBackgroundJob } from "../../backgroundJobCoordinator.js";
+import { artistKnowledgeMemoryReady } from "../../artistKnowledgeRefresh.js";
 import { applyOnce, createNewsDesk, newsDeskBudget, repairStoryArtists, withdrawNewsStories } from "./newsDeskService.js";
 import { createNewsSummarizer } from "./newsSummarizer.js";
 import { createWikipediaBuzz } from "./newsBuzz.js";
@@ -88,6 +90,41 @@ export const fetchArticleText = (url, { signal } = {}) => fetchBounded(url, {
 
 export const newsDeskConfigured = (env = process.env) => !!String(env.ANTHROPIC_API_KEY || "").trim();
 
+export const NEWS_DESK_PASS_BUDGET_MS = 3 * MINUTE;
+
+// Share one maintenance slot with catalogue work. Bound the whole pass (not
+// just individual HTTP calls), and yield before publication if uploads need
+// the memory. Feed rotation and durable receipts make a later pass resumable.
+export function runNewsDeskPass({ desk, signal, coordinate = runBackgroundJob,
+  memoryReady = artistKnowledgeMemoryReady, logger = console, budgetMs = NEWS_DESK_PASS_BUDGET_MS }) {
+  return coordinate(async () => {
+    if (signal?.aborted || !memoryReady()) return false;
+    const publisher = desk.publisherStatus?.();
+    if (publisher && !publisher.ok) {
+      logger.warn?.(`[news-desk] publishing paused: ${publisher.reason}. ${publisher.message}`);
+      return false;
+    }
+    const timeout = Number.isFinite(budgetMs) ? Math.max(1000, Math.min(NEWS_DESK_PASS_BUDGET_MS, budgetMs)) : NEWS_DESK_PASS_BUDGET_MS;
+    const deadline = AbortSignal.timeout(timeout);
+    const workSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
+    const added = await desk.ingest({ signal: workSignal });
+    if (workSignal.aborted || !memoryReady()) return false;
+    const result = await desk.publishPass({ signal: workSignal });
+    if (result.publisherReason) {
+      logger.warn?.(`[news-desk] publishing paused: ${result.publisherReason}. ${result.publisherMessage}`);
+      return false;
+    }
+    if (result.published || result.declined || result.skippedForBudget) {
+      logger.log?.(`[news-desk] reports=${added} confirmed=${result.confirmed} published=${result.published} declined=${result.declined} budgetStop=${result.skippedForBudget} left=$${desk.budgetLeft().toFixed(2)}`);
+    }
+    for (const pick of result.picked) {
+      const s = pick.signals;
+      logger.log?.(`[news-desk] published "${pick.headline.slice(0, 90)}" slot=${result.slot} score=${pick.score} outlets=${s.groups} wikipedia=x${s.wikiRatio ?? "-"} popularity=${s.popularity} fans=${s.fans}`);
+    }
+    return true;
+  });
+}
+
 // Every 20 minutes: read the outlets, then publish newly confirmed stories as
 // @news_mod posts. Off unless NEWS_DESK_ENABLED is set and an Anthropic key is
 // present; spending stops at NEWS_DESK_DAILY_USD / NEWS_DESK_MONTHLY_USD and
@@ -115,18 +152,7 @@ export function startNewsDeskScheduler({ database, env = process.env, now = Date
   return startPeriodicJob({
     initialDelayMs: 4 * MINUTE,
     intervalMs: 20 * MINUTE,
-    run: async ({ signal }) => {
-      const added = await desk.ingest({ signal });
-      const result = await desk.publishPass({ signal });
-      if (result.published || result.declined || result.skippedForBudget) {
-        console.log(`[news-desk] reports=${added} confirmed=${result.confirmed} published=${result.published} declined=${result.declined} budgetStop=${result.skippedForBudget} left=$${desk.budgetLeft().toFixed(2)}`);
-      }
-      for (const pick of result.picked) {
-        const s = pick.signals;
-        console.log(`[news-desk] published "${pick.headline.slice(0, 90)}" slot=${result.slot} score=${pick.score} outlets=${s.groups} wikipedia=x${s.wikiRatio ?? "-"} popularity=${s.popularity} fans=${s.fans}`);
-      }
-      return true;
-    },
+    run: ({ signal }) => runNewsDeskPass({ desk, signal }),
     // An Anthropic error says what to fix (401: the key; 400: the request or
     // the account); the summary is safe to log.
     report: (error) => console.error(`[news-desk] pass failed safely: ${privateErrorLabel(error)} ${anthropicErrorSummary(error)}`.trim()),

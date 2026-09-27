@@ -2,10 +2,8 @@ import { createPngApiResponse } from "../../binaryApiResponse.js";
 import { ApiError } from "../../errors.js";
 import { newsShareCardModel, SocialShareCardArtworkUnavailableError, SocialShareCardBusyError } from "../socialSharing/socialShareCardRenderer.js";
 
-// The news desk's stories are public, like any public post.
-// `blockedFromNews(userId)` is true when that member and the news account
-// have blocked each other, like any other author.
-export function newsDeskRoutes({ rateLimit, reader, renderer, blockedFromNews = () => false }) {
+// Readers enforce bilateral blocks against each post's actual author.
+export function newsDeskRoutes({ rateLimit, reader, renderer }) {
   const decodeCursor = (value) => {
     const [createdAt, id] = String(value || "").split(".");
     const at = Number(createdAt);
@@ -19,8 +17,7 @@ export function newsDeskRoutes({ rateLimit, reader, renderer, blockedFromNews = 
       // A signed-in reader's answer depends on their blocks, so it is never
       // shared through a cache; guests all see the same public list.
       ctx.setHeader?.("Cache-Control", ctx.user ? "private, no-store" : "public, max-age=120");
-      if (ctx.user?.id && blockedFromNews(ctx.user.id)) return { stories: [], nextCursor: null };
-      const result = reader.list({ limit: ctx.query?.limit, before: decodeCursor(ctx.query?.cursor), artist, sort });
+      const result = reader.list({ limit: ctx.query?.limit, before: decodeCursor(ctx.query?.cursor), artist, sort, viewerId: ctx.user?.id || null });
       return {
         stories: result.stories,
         nextCursor: result.nextCursor ? `${result.nextCursor.createdAt}.${result.nextCursor.id}` : null,
@@ -30,13 +27,22 @@ export function newsDeskRoutes({ rateLimit, reader, renderer, blockedFromNews = 
     // the renderer also keeps recent cards in memory.
     "GET /api/news-desk/stories/:id/image.png": async (ctx) => {
       rateLimit(ctx, "news-desk-image", 120, 10 * 60_000);
+      ctx.setHeader?.("Cache-Control", "private, no-store");
       const id = String(ctx.params?.id || "");
-      const story = /^[A-Za-z0-9-]{1,80}$/u.test(id) ? reader.get(id) : null;
+      const viewerId = ctx.user?.id || null;
+      const story = /^[A-Za-z0-9-]{1,80}$/u.test(id) ? reader.get(id, { viewerId }) : null;
       const model = story ? newsShareCardModel(story, { variant: "news-link" }) : null;
       if (!model) throw new ApiError(404, "That story is not available.", "NOT_FOUND");
       try {
         const rendered = await renderer.render(model, { signal: ctx.signal || null });
-        return createPngApiResponse(rendered.bytes, { canonicalUrl: model.canonicalUrl, filename: "mshpit-news.png", publicMaxAgeSeconds: 3600 });
+        // Rendering awaits remote artwork. A block, removal, suspension or
+        // edit during that wait must not leak the stale rendered card.
+        const current = reader.get(id, { viewerId });
+        const currentModel = current ? newsShareCardModel(current, { variant: "news-link" }) : null;
+        if (!currentModel || JSON.stringify(currentModel) !== JSON.stringify(model)) {
+          throw new ApiError(404, "That story is not available.", "NOT_FOUND");
+        }
+        return createPngApiResponse(rendered.bytes, { canonicalUrl: model.canonicalUrl, filename: "mshpit-news.png", publicMaxAgeSeconds: viewerId ? null : 120 });
       } catch (error) {
         if (error instanceof SocialShareCardBusyError || error instanceof SocialShareCardArtworkUnavailableError) {
           throw new ApiError(503, "The story image is busy. Try again in a moment.", "SHARE_RENDER_UNAVAILABLE", error);

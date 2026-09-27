@@ -1,7 +1,8 @@
 // Every paid Claude feature (catalog research, the news desk) has its own
 // daily and monthly caps, and on top of those they share one monthly ceiling:
 // ANTHROPIC_MONTHLY_USD, $10 by default. Together they can never spend more
-// than that in a calendar month (UTC), whatever each feature's own settings say.
+// than that in admitted reservations in a calendar month (UTC). Actual bills
+// still need the provider's own cap: a response can cost more than its estimate.
 
 export const DEFAULT_ANTHROPIC_MONTHLY_USD = 10;
 
@@ -38,4 +39,42 @@ export function claudeMonthSpendMicroUsd(database, at = Date.now()) {
 // What is left of the shared ceiling this month, in micro-dollars.
 export function claudeCeilingLeftMicroUsd(database, { env = process.env, at = Date.now() } = {}) {
   return Math.max(0, anthropicMonthlyCeilingMicroUsd(env) - claudeMonthSpendMicroUsd(database, at));
+}
+
+// All paid callers reserve synchronously under the same SQLite transaction.
+// Never await inside reserve(): the network starts only after this returns.
+let admissionSequence = 0;
+export function admitClaudeSpend(database, {
+  env = process.env, at = Date.now(), reserveMicroUsd, dailyCapMicroUsd,
+  monthlyCapMicroUsd, readDailySpendMicroUsd, readMonthlySpendMicroUsd, reserve,
+}) {
+  const amount = (value) => {
+    if (!Number.isFinite(value) || value < 0 || value > Number.MAX_SAFE_INTEGER) throw new TypeError("Invalid Claude budget amount.");
+    return Math.ceil(value);
+  };
+  const held = amount(reserveMicroUsd);
+  const dailyCap = amount(dailyCapMicroUsd);
+  const monthlyCap = amount(monthlyCapMicroUsd);
+  if (!held) throw new TypeError("A paid request requires a positive reservation.");
+  const point = `claude_admit_${++admissionSequence}`;
+  database.exec(`SAVEPOINT ${point}`);
+  try {
+    let reason = null;
+    if (amount(readDailySpendMicroUsd()) + held > dailyCap) reason = "daily_budget";
+    else if (amount(readMonthlySpendMicroUsd()) + held > monthlyCap) reason = "monthly_budget";
+    else if (claudeMonthSpendMicroUsd(database, at) + held > anthropicMonthlyCeilingMicroUsd(env)) reason = "claude_monthly_ceiling";
+    const value = reason ? undefined : reserve();
+    if (value && typeof value.then === "function") throw new TypeError("Claude reservation must be synchronous.");
+    database.exec(`RELEASE ${point}`);
+    return reason ? { ok: false, reason } : { ok: true, value };
+  } catch (error) {
+    database.exec(`ROLLBACK TO ${point}; RELEASE ${point}`);
+    throw error;
+  }
+}
+
+// These explicit HTTP rejections did not admit model work. Lost replies,
+// timeouts and server errors remain uncertain and keep their reservation.
+export function claudeRequestDefinitelyRejected(error) {
+  return [400, 401, 403, 404, 422, 429].includes(Number(error?.status));
 }

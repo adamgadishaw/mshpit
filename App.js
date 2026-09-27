@@ -6,6 +6,8 @@ import "./src/lib/safeArea"; // reserves iOS notch / toolbar safe areas (web)
 import "./src/lib/webInputFix"; // strips the harsh browser focus box from inputs (web)
 import { colors, mono, radius, themeIsDark } from "./src/theme";
 import { StoreProvider, useStore, isMod, isStaff } from "./src/store";
+import { NewsInteractionContext } from "./src/components/news/NewsInteractionContext";
+import { newsFeedSurfaceVisible } from "./src/domain/newsReaderState.mjs";
 import Icon from "./src/components/Icon";
 import ErrorBoundary from "./src/components/ErrorBoundary";
 import RuntimeErrorMonitor from "./src/components/RuntimeErrorMonitor";
@@ -210,6 +212,7 @@ function Root() {
     youtubeLookupStatus, mediaReactions, loadMediaReactions, toggleMediaReaction,
     syncAccountTheme,
     loadPostForView,
+    blockedIds, removedIds, mutedIds, followedArtists, likeInfo, toggleLike, deleteOwnPost,
     removeMyPostTag,
   } = useStore();
   useFeedImpressionSession(session);
@@ -692,6 +695,7 @@ function Root() {
   };
   const popStack = () => {
     authNavigationAbortRef.current?.();
+    cancelPublicRoute();
     const next = stackRef.current.length > 1 ? stackRef.current.slice(0, -1) : stackRef.current;
     applyNavigation({ ...navigationRef.current, stack: next });
   };
@@ -1314,7 +1318,7 @@ function Root() {
   else if (nav.openLog) overlay = <ShowScreen log={nav.openLog} onClose={back} onPreview={musicPreviewAction} onReview={reviewShow} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenArchive={openArtistArchive} onOpenVenue={openVenue} onOpenLounge={(log) => go({ lounge: log })} onOpenPost={openPost} onOpenPhotos={openPhotos} onRequireAuth={openSignIn} />;
   else if (nav.post) overlay = <PostScreen key={`${session?.id || "guest"}:${nav.post.id}`} log={nav.post} onClose={back} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenArtistArchive={openArtistArchive} onOpenVenue={openVenue} onOpenShow={openShow} onReport={openReport} onEdit={openPostEditor} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onRemoveMyPostTag={removePostTag} onRequireAuth={openSignIn} />;
   else if (nav.badges) overlay = <BadgeLegendScreen userId={nav.badges.userId} onClose={back} />;
-  else if (nav.news) overlay = <NewsScreen session={session} onClose={back} onOpenArtist={openArtist} onOpenStory={openNewsStory} onRequireAuth={openSignIn} />;
+  else if (nav.news) overlay = <NewsScreen key={session?.id || "guest"} session={session} onClose={back} onOpenArtist={openArtist} onOpenProfile={openProfile} onReport={openReport} onOpenStory={openNewsStory} onRequireAuth={openSignIn} />;
   else if (ENABLE_CREW && nav.crew) overlay = <CrewScreen key={session?.id || "guest"} initialTab={nav.crew?.tab === "plans" ? "plans" : "shows"} onClose={back} onOpenShow={openShow} onOpenLounge={(log) => go({ lounge: log })} onRequireAuth={openSignIn} />;
   else if (nav.topRated) overlay = <TopRatedScreen initialRegion={nav.discoverRegion} onClose={back} onOpen={openShow} />;
   else if (nav.admin) overlay = <AdminScreen onClose={back} />;
@@ -1400,11 +1404,18 @@ function Root() {
   };
 
   const status = session ? accountStatus(session) : "ok";
+  const feedSurfaceVisible = newsFeedSurfaceVisible({
+    tab: activeTab, hasOverlay: !!overlay, landing,
+    obscured: status !== "ok" || !!acctOpen || !!welcome || !!resetToken || !!unsubToken || !!verifyToken || !!ownerApprovalToken,
+    pendingNavigation: !!publicNavigationNotice || !!newsStoryNotice,
+    web, pathname: web ? window.location.pathname : null,
+  });
 
   const tabScreens = (
             <View style={styles.screen}>
               {activeTab === "feed" && !!session && (
                 <FeedScreen
+                  visible={feedSurfaceVisible}
                   onRequireAuth={openSignIn}
                   onOpenNewsStory={openNewsStory}
                   onOpenNews={() => go({ news: true })}
@@ -1537,7 +1548,7 @@ function Root() {
             <ScreenTransition key={screenKey} direction={screenDirection}>{overlay || tabScreens}</ScreenTransition>
           </Suspense>
         </View>
-        {showRightRail && <RightRail railWidth={rightRailLayout.width} topArtists={topArtists} artistsAlphabetical={artistsAlphabetical} upcomingEvents={upcomingEvents} discoverySidebar={discoverySidebar} discoverySidebarStatus={discoverySidebarStatus} accountId={session?.id || null} homeCity={session?.home?.city} countdownPlan={homeCountdown} onOpenCountdown={openShow} onViewAllCountdown={() => go({ calendar: true })} onOpenArtist={openArtist} onOpenProfile={openProfile} onFollowUser={follow} isFollowing={isFollowing} isBlocked={isBlocked} onOpenLounge={(lounge) => go({ lounge })} onOpenDiscover={() => switchTab("discover")} onOpenEvent={openShow} onOpenNewsStory={openNewsStory} onOpenNews={() => go({ news: true })} />}
+        {showRightRail && <RightRail showNewsStories={!!nav.news} railWidth={rightRailLayout.width} topArtists={topArtists} artistsAlphabetical={artistsAlphabetical} upcomingEvents={upcomingEvents} discoverySidebar={discoverySidebar} discoverySidebarStatus={discoverySidebarStatus} accountId={session?.id || null} homeCity={session?.home?.city} countdownPlan={homeCountdown} onOpenCountdown={openShow} onViewAllCountdown={() => go({ calendar: true })} onOpenArtist={openArtist} onOpenProfile={openProfile} onFollowUser={follow} isFollowing={isFollowing} isBlocked={isBlocked} onOpenLounge={(lounge) => go({ lounge })} onOpenDiscover={() => switchTab("discover")} onOpenEvent={openShow} onOpenNewsStory={openNewsStory} onOpenNews={() => go({ news: true })} />}
       </View>
     </View>
   );
@@ -1578,6 +1589,7 @@ function Root() {
 
   return (
     <CityNavigationContext.Provider value={openCity}>
+    <NewsInteractionContext.Provider value={{ session, authReady, blockedIds, removedIds, mutedIds, followedArtists, likeInfo, toggleLike, deleteOwnPost }}>
     <View style={styles.root}>
       <SafeAreaView style={styles.safe}>
         <StatusBar style={themeIsDark ? "light" : "dark"} />
@@ -1767,6 +1779,7 @@ function Root() {
 
       </SafeAreaView>
     </View>
+    </NewsInteractionContext.Provider>
     </CityNavigationContext.Provider>
   );
 }

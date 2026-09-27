@@ -272,7 +272,7 @@ export default function PostScreen({ log, onClose, onRequireAuth, onOpenProfile,
   };
 
   // Deleting the post you're viewing must also leave this now-empty screen.
-  const removePost = (postId) => { deleteOwnPost(postId); onClose?.(); };
+  const removePost = async (postId) => { const result = await deleteOwnPost(postId); if (result?.ok) onClose?.(); return result; };
 
   return (
     <View style={styles.wrap}>
@@ -290,7 +290,7 @@ export default function PostScreen({ log, onClose, onRequireAuth, onOpenProfile,
       >
       <ScrollView ref={scrollRef} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
         {activeLog.news ? (
-          <NewsStoryCard story={activeLog.news} full accountId={session?.id || null} onOpenArtist={onOpenArtist} />
+          <NewsStoryCard story={activeLog.news} post={activeLog} full accountId={session?.id || null} onOpen={showComments} onOpenArtist={onOpenArtist} onOpenProfile={onOpenProfile} onReport={onReport} onDelete={removePost} onRequireAuth={onRequireAuth} />
         ) : <TicketStub log={activeLog} compactContent={false} showComments={false} onOpen={isOnlineReview ? undefined : () => onOpenShow?.(activeLog)} onOpenShow={isOnlineReview ? undefined : onOpenShow} onOpenProfile={onOpenProfile} onOpenArtist={onOpenArtist} onOpenArtistArchive={isOnlineReview ? undefined : onOpenArtistArchive} onOpenVenue={isOnlineReview ? undefined : onOpenVenue} onReport={onReport} onEdit={onEdit} onDelete={removePost} onOpenPhotos={onOpenPhotos} onPlay={onPlay} onRemoveMyPostTag={onRemoveMyPostTag} onSelfTagRemoved={reconcileSelfTagRemoval} onRequireAuth={onRequireAuth} onComment={showComments} onOpenPost={showComments} />}
 
         <Text style={styles.sectionLabel}>

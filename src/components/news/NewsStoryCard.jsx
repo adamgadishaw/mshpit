@@ -7,6 +7,7 @@ import { SocialShareButton } from "../SocialShareStudio";
 import { relativeTime } from "../../domain/dates.mjs";
 import { newsCategoryLabel, newsSourceLine, newsStoryParagraphs, newsStoryPhoto } from "../../domain/newsDesk.mjs";
 import { buildNewsShareModel } from "../../domain/socialShareCard.mjs";
+import NewsPostActions from "./NewsPostActions";
 
 const openSource = (url) => {
   if (!/^https:\/\//u.test(String(url || ""))) return;
@@ -16,7 +17,7 @@ const openSource = (url) => {
 // A story from the Mshpit News desk. Cards sit in the feed and the News tab;
 // `full` is the story's own page (the whole write-up); compact cards fill the
 // phone strip, the desktop news panel and artist pages.
-function NewsStoryCard({ story, compact = false, full = false, accountId = null, onOpen, onOpenArtist }) {
+function NewsStoryCard({ story, post, compact = false, full = false, accountId = null, onOpen, onOpenArtist, onOpenProfile, onReport, onDelete, onRequireAuth }) {
   const shareModel = useMemo(() => (compact ? null : buildNewsShareModel(story)), [compact, story]);
   if (!story?.headline) return null;
   const photo = newsStoryPhoto(story);
@@ -83,6 +84,7 @@ function NewsStoryCard({ story, compact = false, full = false, accountId = null,
           ))}
         </View>
       ) : null}
+      <NewsPostActions key={`${accountId || "guest"}:${story.postId}`} story={story} post={post} accountId={accountId} onOpen={onOpen} onOpenProfile={onOpenProfile} onReport={onReport} onDelete={onDelete} onRequireAuth={onRequireAuth} />
       {sourceLine ? (
         <View style={styles.sources}>
           <Icon name="check" size={13} color={colors.good} />

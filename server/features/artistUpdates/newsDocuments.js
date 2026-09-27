@@ -56,6 +56,9 @@ function albumSchema(item, origin) {
 // An empty news page is not worth a search result yet.
 export const NEWS_INDEX_MIN_ITEMS = 3;
 
+const newsStoryPath = (story) => /^news_[A-Za-z0-9_-]{1,160}$/.test(String(story?.postId || ""))
+  ? `/post/${encodeURIComponent(story.postId)}` : null;
+
 // /news: stories from the Mshpit News desk, each confirmed by at least two
 // independent music outlets, with links to every outlet's report.
 export function projectNewsDocument({ origin = "https://www.mshpit.com", stories = [], at = Date.now() } = {}) {
@@ -64,8 +67,8 @@ export function projectNewsDocument({ origin = "https://www.mshpit.com", stories
   const shown = (Array.isArray(stories) ? stories : []).filter((story) => story?.headline).slice(0, 40);
   const lead = shown.slice(0, 2).map((story) => story.headline);
   const description = lead.length
-    ? `Confirmed music news: ${lead.join(". ")}. Every story is reported by at least two independent outlets.`
-    : "Confirmed music news on Mshpit: tours, releases, festivals and the music business, each reported by at least two independent outlets.";
+    ? `Music reporting: ${lead.join(". ")}. Read the details and original sources on Mshpit.`
+    : "Source-backed music reporting on Mshpit: tours, releases, festivals and major artist news, with links to the original reports.";
   const organization = { "@type": "Organization", name: "Mshpit News", url: new URL("/", origin).href };
   return {
     kind: "news",
@@ -90,6 +93,8 @@ export function projectNewsDocument({ origin = "https://www.mshpit.com", stories
         numberOfItems: shown.length,
         itemListElement: shown.map((story, index) => ({ "@type": "ListItem", position: index + 1, item: {
           "@type": "NewsArticle",
+          ...(newsStoryPath(story) ? { url: new URL(newsStoryPath(story), origin).href,
+            mainEntityOfPage: new URL(newsStoryPath(story), origin).href } : {}),
           headline: story.headline.slice(0, 110),
           ...(story.summary ? { description: story.summary } : {}),
           datePublished: new Date(story.publishedAt).toISOString(),
@@ -112,6 +117,7 @@ export function projectNewsDocument({ origin = "https://www.mshpit.com", stories
 }
 
 function renderStory(story) {
+  const path = newsStoryPath(story);
   const artists = (story.artists || []).map((artist) => artist.publicSlug && safePath(`/artist/${artist.publicSlug}`)
     ? `<a href="/artist/${esc(artist.publicSlug)}">${esc(artist.name)}</a>` : esc(artist.name)).join(", ");
   const sources = (story.sources || []).filter((source) => safeHttps(source.url))
@@ -119,10 +125,10 @@ function renderStory(story) {
   const published = new Date(story.publishedAt);
   return `<article class="news-story">
     <p class="eyebrow">${esc(String(story.category || "news").replace(/^\w/u, (letter) => letter.toUpperCase()))} · <time datetime="${esc(published.toISOString())}">${esc(published.toISOString().slice(0, 10))}</time></p>
-    <h2>${esc(story.headline)}</h2>
+    <h2>${path ? `<a href="${esc(path)}">${esc(story.headline)}</a>` : esc(story.headline)}</h2>
     ${story.summary ? `<p>${esc(story.summary)}</p>` : ""}
     ${artists ? `<p class="muted">About ${artists}</p>` : ""}
-    ${sources ? `<p class="news-sources">Confirmed by ${sources}</p>` : ""}
+    ${sources ? `<p class="news-sources">Reporting from ${sources}</p>` : ""}
   </article>`;
 }
 
@@ -132,10 +138,10 @@ export function renderNewsMain(document) {
   return `<main id="main" class="news-page">
     <nav class="breadcrumbs" aria-label="Breadcrumb"><ol><li><a href="/">Mshpit</a></li><li><span aria-current="page">News</span></li></ol></nav>
     <section class="hero"><p class="eyebrow">Mshpit News</p><h1>Music news</h1>
-      <p class="hero-copy">Tours, releases, festivals and the music business. Every story here is reported by at least two independent music outlets, with links to each report.</p>
+      <p class="hero-copy">Tours, releases, festivals and major artist news. Clear, factual summaries with links to the original reporting. Publishing slots are every three hours from 8 a.m. to 8 p.m. Toronto time, up to five stories a day when qualifying reports are available.</p>
       <div class="actions"><a class="button primary" href="/signup">Join Mshpit</a><a class="button" href="/events">Browse upcoming shows</a></div></section>
     ${stories.length ? `<section class="section news-stories">${stories.map(renderStory).join("")}</section>`
-      : `<section class="section empty-state"><h2>No confirmed stories yet.</h2><p>A story appears here once at least two independent outlets report it.</p></section>`}
+      : `<section class="section empty-state"><h2>No qualifying stories yet.</h2><p>We wait for independent supporting reports rather than publish unsupported claims.</p></section>`}
   </main>`;
 }
 

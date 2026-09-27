@@ -6,6 +6,7 @@
 // pit.db-wal until a checkpoint, so a bare copy can be torn or stale. Use
 // `npm run backup` (VACUUM INTO), which asks SQLite for a consistent snapshot.
 import { DatabaseSync } from "node:sqlite";
+import { assertDatabaseRecoveryReady } from "./databaseRecovery.js";
 import { createHash } from "node:crypto";
 import { toIsoDate } from "../src/domain/dates.mjs";
 import { projectArtistGenre } from "../src/domain/genre.mjs";
@@ -50,6 +51,7 @@ export const DATABASE_DIRECTORY = prepareDataDirectory({ fallbackDir: join(HERE,
 export const DATABASE_PATH = join(DATABASE_DIRECTORY, "pit.db");
 
 export const db = new DatabaseSync(DATABASE_PATH);
+assertDatabaseRecoveryReady(db);
 registerPitSqliteFunctions(db);
 
 db.exec(`

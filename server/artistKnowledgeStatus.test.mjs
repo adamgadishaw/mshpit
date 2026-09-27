@@ -131,3 +131,14 @@ test("resource, daily budget and owner pause states stay distinct from successfu
   f.set("last-pass", pass({ capPaused: "yes" }));
   assert.equal(collectArtistKnowledgeStatus(f.database, { env, at: AT }).state, "unavailable");
 });
+
+test("provider cause, HTTP status and recovery evidence are sanitized and retained for moderation", t => {
+  const f = fixture(t);
+  f.set("last-pass", pass({ failureCategory: "wikidata_unavailable", failureStatus: 503, cooldownUntil: AT + 60_000, recoveryProbe: true }));
+  const status = collectArtistKnowledgeStatus(f.database, { env, at: AT });
+  assert.equal(status.lastPass.failureCategory, "wikidata_unavailable");
+  assert.equal(status.lastPass.failureStatus, 503); assert.equal(status.lastPass.recoveryProbe, true);
+  assert.equal(status.lastPass.cooldownUntil, AT + 60_000);
+  f.set("last-pass", pass({ failureCategory: "private@example.test", failureStatus: "private", cooldownUntil: "private" }));
+  assert.doesNotMatch(JSON.stringify(collectArtistKnowledgeStatus(f.database, { env, at: AT })), /private/);
+});

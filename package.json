@@ -68,6 +68,7 @@
     "test": "node scripts/run-tests.mjs",
     "check:dependencies": "npm audit --omit=dev --audit-level=high",
     "check:syntax": "node scripts/check-syntax.mjs",
+    "check:blueprint": "node scripts/check-render-blueprint.mjs",
     "check:architecture": "node scripts/check-architecture.mjs",
     "check:web-bundle": "node scripts/check-web-bundle-budget.mjs",
     "verify:seo": "node scripts/verify-public-seo.mjs",
@@ -78,6 +79,7 @@
     "verify:artist-account-browser": "node scripts/verify-artist-account-browser.mjs",
     "verify:artist-identity-moderation-browser": "node scripts/verify-artist-identity-moderation-browser.mjs",
     "verify:navigation-browser": "node scripts/verify-navigation-browser.mjs",
+    "verify:news-browser": "node scripts/verify-news-browser.mjs",
     "verify:discover-photos-browser": "node scripts/verify-discover-photos-browser.mjs",
     "verify:discover-venues-browser": "node scripts/verify-discover-venues-browser.mjs",
     "verify:catalog-maintenance-browser": "node scripts/verify-catalog-maintenance-browser.mjs",
@@ -90,6 +92,10 @@
     "check:deploy": "npm run split:catalog && npm run test && npm run check:syntax && npm run check:architecture && npm run build:web",
     "check": "npm run split:catalog && npm run test && npm run check:dependencies && npm run check:syntax && npm run check:architecture && npm run build:web",
     "split:catalog": "node scripts/split-catalog.mjs"
+  },
+  "devDependencies": {
+    "ajv": "8.20.0",
+    "yaml": "2.9.0"
   },
   "private": true,
   "engines": {

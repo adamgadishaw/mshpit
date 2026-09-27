@@ -239,6 +239,7 @@ export function RightRail({
   onViewAllCountdown,
   onOpenNewsStory,
   onOpenNews,
+  showNewsStories = false,
 }) {
   const [artistMode, setArtistMode] = useState("top"); // 'top' | 'az'
   const eventScopeIdentity = rightRailScopeIdentity({ accountId, homeCity });
@@ -291,7 +292,7 @@ export function RightRail({
       contentContainerStyle={styles.rightContent}
       showsVerticalScrollIndicator={false}
     >
-      <NewsRailPanel onOpenStory={onOpenNewsStory} onOpenAll={onOpenNews} />
+      {showNewsStories ? <NewsRailPanel onOpenStory={onOpenNewsStory} onOpenAll={onOpenNews} /> : null}
 
       {accountId && countdownPlan ? (
         <HomeShowCountdown compact plan={countdownPlan} onOpen={onOpenCountdown || onOpenEvent} onViewAll={onViewAllCountdown} />

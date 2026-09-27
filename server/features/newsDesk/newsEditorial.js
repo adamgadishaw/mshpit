@@ -10,11 +10,11 @@
 // The day's stories are spread over five publishing slots in Toronto time
 // (8am, 11am, 2pm, 5pm, 8pm), so the day is not used up in the morning, at
 // noon or at night: each slot takes the top story available at that moment
-// and later slots stay free for news that breaks later. A slot lasts three
-// hours and takes one story; a slot with nothing good enough passes unused
-// rather than piling up for the evening, and after 11pm only breaking news
-// goes out. Stories are at least two hours apart. Breaking news goes out at
-// once and uses the slot it falls in, or the next one.
+// and later slots stay free for news that breaks later. A slot has a bounded
+// 30-minute grace for the background scheduler and takes one story; unused slots pass
+// rather than piling up for the evening. No story, including breaking news,
+// may bypass the slots. A two-publisher fallback is an explicit policy, never
+// permission to invent corroboration or fill a quota with unsupported claims.
 
 const HOUR = 60 * 60 * 1000;
 
@@ -22,10 +22,11 @@ export const EDITORIAL = Object.freeze({
   minOutlets: 3,
   timeZone: "America/Toronto",
   slotHours: Object.freeze([8, 11, 14, 17, 20]),
-  slotLengthHours: 3,
+  slotLengthHours: 0.5,
   minGapMs: 2 * HOUR,
-  breakingScore: 55,
-  breakingGapMs: 30 * 60 * 1000,
+  // "empty_day": only if no story has gone out today. "empty_slot" permits
+  // one in any otherwise unfilled slot. Both still prefer three publishers.
+  fallbackMode: "empty_day",
   maxAgeMs: 36 * HOUR,
   // Claude calls one pass may spend finding a story Claude agrees to publish.
   callsPerPass: 3,
@@ -61,21 +62,26 @@ function usedSlot(hour, editorial) {
   return next === -1 ? editorial.slotHours.length : next;
 }
 
-// May a story with this score go out now? `published` holds the times of
-// recent published stories. Returns { open, breaking?, reason? }.
-export function publishingSlot({ at, published = [], score = 0, editorial = EDITORIAL } = {}) {
+// `published` includes withdrawn stories: taking a post down must not reopen
+// a consumed slot or silently reset the five-publication daily cap.
+export function publishingSlot({ at, published = [], editorial = EDITORIAL } = {}) {
   const now = localClock(at, editorial.timeZone);
   const used = published.map((time) => localClock(time, editorial.timeZone))
     .filter((clock) => clock.day === now.day).map((clock) => usedSlot(clock.hour, editorial));
   const gap = published.length ? at - Math.max(...published) : Infinity;
   if (used.length >= editorial.slotHours.length) return { open: false, reason: "day_full" };
-  if (score >= editorial.breakingScore) {
-    return gap >= editorial.breakingGapMs ? { open: true, breaking: true } : { open: false, reason: "too_soon" };
-  }
   const slot = openSlot(now.hour, editorial);
   if (slot === null || used.includes(slot)) return { open: false, reason: "next_slot" };
   if (gap < editorial.minGapMs) return { open: false, reason: "too_soon" };
   return { open: true };
+}
+
+export function twoPublisherFallbackAllowed({ at, published = [], editorial = EDITORIAL } = {}) {
+  if (!publishingSlot({ at, published, editorial }).open) return false;
+  if (editorial.fallbackMode === "empty_slot") return true;
+  if (editorial.fallbackMode !== "empty_day") return false;
+  const today = localClock(at, editorial.timeZone).day;
+  return !published.some((time) => localClock(time, editorial.timeZone).day === today);
 }
 
 // Coverage counts most: each independent outlet is worth 10, and extra outlets

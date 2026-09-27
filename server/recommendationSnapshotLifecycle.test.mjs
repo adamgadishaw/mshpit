@@ -10,6 +10,8 @@ import * as ranking from "./recommendationRanking.js";
 import * as visibility from "./accountVisibility.js";
 import * as genre from "../src/domain/genre.mjs";
 import * as genreProjection from "./artistGenreProjection.js";
+import * as newsFeedPlacement from "./features/newsDesk/newsFeedPlacement.js";
+import { ensureNewsDeskSchema } from "./features/newsDesk/newsDeskService.js";
 
 const dataDir = mkdtempSync(join(tmpdir(), "pit-recommendation-snapshot-"));
 process.env.PIT_DATA_DIR = dataDir;
@@ -30,7 +32,7 @@ const code = ast.program.body.flatMap((node) => {
 const modules = { "node:crypto": { randomUUID }, "./db.js": database, "./errors.js": { ApiError },
   "./recommendationRanking.js": ranking, "./accountVisibility.js": visibility,
   "../src/domain/genre.mjs": genre, "./artistGenreProjection.js": genreProjection,
-  "./feedImpressions.js": impressions };
+  "./feedImpressions.js": impressions, "./features/newsDesk/newsFeedPlacement.js": newsFeedPlacement };
 const bindings = Object.fromEntries(ast.program.body.filter((node) => node.type === "ImportDeclaration")
   .flatMap((node) => node.specifiers.map((specifier) =>
     [specifier.local.name, modules[node.source.value][specifier.imported.name]])));
@@ -58,6 +60,24 @@ const viewer = (id) => ({ id, favorite_artists: "[]", genres: "[]" });
 const page = (actor, at = START, cursor = null) => service.recommendedFeedPage({ viewer: actor, at, cursor, limit: 1 });
 const expired = (run) => assert.throws(run, (error) => error.code === "RECOMMENDATION_CURSOR_EXPIRED");
 const snapshotId = (cursor) => JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")).snapshotId;
+
+test("ordinary recommendation snapshots require exact current artist follows for news and recheck unfollow", () => {
+  ensureNewsDeskSchema(db);
+  const artist = db.prepare("SELECT norm,name FROM artists WHERE name GLOB '*[A-Za-z]*' ORDER BY norm LIMIT 1").get();
+  db.prepare("INSERT INTO posts(id,user_id,artist,venue,overall,kind,created_at) VALUES(?,?,?,'',0,'status',?)").run("news_snapshot", "snapshot_author", artist.name, START);
+  db.prepare("INSERT INTO news_stories(id,status,headline,artist_keys,post_id,created_at,updated_at) VALUES(?,'published','News',?,?,?,?)").run("snapshot_story", JSON.stringify([artist.norm]), "news_snapshot", START, START);
+  try {
+    const actor = { ...viewer("snapshot_block_viewer"), favorite_artists: JSON.stringify([artist.name]) };
+    for (const outsider of [null, viewer(actor.id), { ...actor, favorite_artists: JSON.stringify([`${artist.name} unrelated`]) }]) assert.ok(service.candidateRows(outsider, START).every(row => row.id !== "news_snapshot"));
+    const head = service.recommendedFeedPage({ viewer: actor, at: START, limit: 20 });
+    assert.equal(head.rows.filter(row => row.id === "news_snapshot").length, 1);
+    const after = service.recommendedFeedPage({ viewer: viewer(actor.id), at: START, limit: 20 });
+    assert.ok(after.rows.every(row => row.id !== "news_snapshot"), "reusing same snapshot cannot bypass an unfollow");
+  } finally {
+    db.prepare("DELETE FROM news_stories WHERE id='snapshot_story'").run();
+    db.prepare("DELETE FROM posts WHERE id='news_snapshot'").run();
+  }
+});
 
 for (const actor of [null, viewer("snapshot_member")]) {
   test(`expired ${actor ? "member" : "guest"} cursors retire both snapshot and active-viewer index`, () => {

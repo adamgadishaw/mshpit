@@ -149,7 +149,7 @@ test("the public news page lists confirmed stories with their sources, escapes e
   const html = renderNewsMain(document);
   assert.match(html, /Wet &lt;Leg&gt;/u);
   assert.match(html, /Second &lt;story&gt;/u);
-  assert.match(html, /Confirmed by <a href="https:\/\/www\.nme\.com\/news\/wet-leg" rel="nofollow noopener noreferrer">NME<\/a>/u);
+  assert.match(html, /Reporting from <a href="https:\/\/www\.nme\.com\/news\/wet-leg" rel="nofollow noopener noreferrer">NME<\/a>/u);
   assert.doesNotMatch(html, /javascript:/u, "unsafe source links are dropped");
 });
 

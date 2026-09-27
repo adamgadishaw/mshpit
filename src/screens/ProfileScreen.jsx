@@ -93,7 +93,7 @@ const ProfileTicketRow = memo(function ProfileTicketRow({ log, actionsRef, capab
   }, [actionsRef]);
 
   if (log.news) {
-    return <NewsStoryCard story={log.news} accountId={accountId} onOpen={capabilities.openPost ? () => openPost(log) : undefined} onOpenArtist={capabilities.openArtist ? openArtist : undefined} />;
+    return <NewsStoryCard story={log.news} post={log} accountId={accountId} onOpen={capabilities.openPost ? () => openPost(log) : undefined} onOpenArtist={capabilities.openArtist ? openArtist : undefined} onOpenProfile={capabilities.openProfile ? openProfile : undefined} onReport={capabilities.report ? report : undefined} onDelete={deletePost} onRequireAuth={requireAuth} />;
   }
   return (
     <TicketStub

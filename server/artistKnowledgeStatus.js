@@ -2,6 +2,7 @@
 // schema, or return artist/member identities from a health request.
 import { backgroundJobEnabled } from "./backgroundJobs.js";
 import { readCatalogKnowledgeControl } from "./catalogKnowledgeControl.js";
+import { artistKnowledgeFailureCategory } from "./artistKnowledgeCircuit.js";
 
 const MINUTE = 60_000;
 const LAST_PASS = "artist-knowledge:v1:last-pass";
@@ -28,6 +29,10 @@ function parsePass(text, at) {
     ...Object.fromEntries(COUNTS.map((key) => [key, parsed[key]])),
     deferred: parsed.deferred ?? null,
     prioritized: parsed.prioritized ?? null,
+    failureCategory: parsed.failureCategory == null ? null : artistKnowledgeFailureCategory({ code: parsed.failureCategory }),
+    failureStatus: Number.isInteger(parsed.failureStatus) && parsed.failureStatus >= 100 && parsed.failureStatus <= 599 ? parsed.failureStatus : null,
+    cooldownUntil: timestamp(parsed.cooldownUntil),
+    recoveryProbe: parsed.recoveryProbe === true,
     ...Object.fromEntries(FLAGS.map((key) => [key, parsed[key]])),
     ...Object.fromEntries(OPTIONAL_FLAGS.map((key) => [key, parsed[key] === true])),
     lanes: Number.isInteger(parsed.lanes) && parsed.lanes >= 1 && parsed.lanes <= 10 ? parsed.lanes : 1,

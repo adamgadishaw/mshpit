@@ -7,6 +7,7 @@ services:
   - type: web
     name: mshpit
     runtime: node
+    region: oregon
     # The paid Standard-equivalent service is 1 CPU / 2 GiB. Use Render's
     # current resource-shaped ID so the Blueprint cannot silently put a new
     # production service back on the old 0.5 CPU / 512 MiB Starter plan.
@@ -150,16 +151,17 @@ services:
         value: "10"
       - key: CATALOG_RESEARCH_MODEL
         value: "claude-sonnet-5"
-      # Mshpit News: every 20 minutes, reads eight music outlets' RSS feeds and
+      # Mshpit News: every 20 minutes, reads 17 music outlets' RSS feeds and
       # posts from @news_mod only big music news: at least three independent
       # outlets, ranked by coverage, Wikipedia buzz, artist size and Mshpit
       # fans; five 3-hour publishing slots a day in Toronto time (8am, 11am, 2pm,
-      # 5pm, 8pm), one story each, breaking news at once
+      # 5pm, 8pm), at most one story each; no off-slot breaking-news bypass
       # (server/features/newsDesk/newsEditorial.js). Uses the same
       # ANTHROPIC_API_KEY, about 2 cents a story; spending stops at
       # NEWS_DESK_DAILY_USD per day, NEWS_DESK_MONTHLY_USD per month, or when
       # all Claude features reach ANTHROPIC_MONTHLY_USD.
-      # Render does not sync these values; add them in the dashboard.
+      # These non-secret values sync with the Blueprint. The API key remains
+      # dashboard-managed (sync:false); adding it here does not provision it.
       - key: NEWS_DESK_ENABLED
         value: "true"
       - key: NEWS_DESK_DAILY_USD
@@ -330,6 +332,7 @@ services:
         - server/videoVerifierService.js
         - src/domain/mediaMime.mjs
         - src/domain/mediaUploadPolicy.mjs
+      ignoredPaths: []
     maxShutdownDelaySeconds: 60
     envVars:
       - key: PORT

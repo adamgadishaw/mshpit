@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { claudeCeilingLeftMicroUsd } from "../../claudeSpendCeiling.js";
+import { admitClaudeSpend, claudeCeilingLeftMicroUsd, claudeRequestDefinitelyRejected } from "../../claudeSpendCeiling.js";
 import { activeAccountSql } from "../../accountVisibility.js";
+import { resolveNewsPublisher } from "./newsPublisherIdentity.js";
 import { NEWS_SOURCES, newsSourceById, sourceOwnsUrl } from "./newsSources.js";
 import { articleLead, parseNewsFeed } from "./newsFeedParser.js";
-import { clusterReports, headlineTokens, independentGroups, isConfirmed, looksLikeNews, newsCategory, similarity, storyCategory } from "./newsStoryRules.js";
-import { EDITORIAL, publishingSlot, storyScore, topStoryScore } from "./newsEditorial.js";
-import { storyPrompt, worstCaseCostUsd } from "./newsSummarizer.js";
+import { clusterReports, headlineTokens, independentGroups, isConfirmed, looksLikeNews, newsCategory, SENSITIVE_CATEGORIES, similarity, storyCategory, validatedSupportingReports } from "./newsStoryRules.js";
+import { EDITORIAL, publishingSlot, storyScore, topStoryScore, twoPublisherFallbackAllowed } from "./newsEditorial.js";
+import { MAX_REPORTS, storyPrompt, worstCaseCostUsd } from "./newsSummarizer.js";
 import { artistDiscoverPhotoUri, deezerImageUrl } from "../artistPhotos/discoverPhoto.js";
 
 // The news desk: reads established music outlets, groups reports about the
@@ -17,6 +18,9 @@ import { artistDiscoverPhotoUri, deezerImageUrl } from "../artistPhotos/discover
 const HOUR = 60 * 60 * 1000;
 const REPORT_WINDOW_MS = 48 * HOUR;
 const KEEP_REPORTS_MS = 14 * 24 * HOUR;
+const FEED_CURSOR_KEY = "news-desk:feed-cursor:v1";
+// Bound the quadratic grouping pass even if feeds suddenly flood the desk.
+export const MAX_OPEN_REPORTS_PER_PASS = 1200;
 export const NEWS_DESK_HANDLE = "news_mod";
 
 // A story costs about 2 cents, so $0.30 a day covers the daily story limit.
@@ -264,11 +268,20 @@ export function createNewsDesk({ database, fetchText, fetchArticle = null, summa
     const insert = database.prepare(`INSERT OR IGNORE INTO news_reports
       (url,source_id,title,description,category,artist_keys,published_at,fetched_at) VALUES (?,?,?,?,?,?,?,?)`);
     let added = 0;
-    for (const source of NEWS_SOURCES) {
+    const savedCursor = Number(database.prepare("SELECT value FROM app_meta WHERE key=?").get(FEED_CURSOR_KEY)?.value);
+    const start = Number.isSafeInteger(savedCursor) && savedCursor >= 0 ? savedCursor % NEWS_SOURCES.length : 0;
+    const saveCursor = database.prepare("INSERT INTO app_meta(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value");
+    for (let offset = 0; offset < NEWS_SOURCES.length; offset += 1) {
       if (signal?.aborted) break;
+      const index = (start + offset) % NEWS_SOURCES.length;
+      const source = NEWS_SOURCES[index];
+      // Persist before awaiting: a timeout, abort or restart advances to the
+      // next outlet instead of starving the end of the list on every pass.
+      saveCursor.run(FEED_CURSOR_KEY, String((index + 1) % NEWS_SOURCES.length));
       let items = [];
       try { items = parseNewsFeed(await fetchText(source.url, { signal }), { sourceId: source.id }); }
       catch (error) { log.warn?.(`[news-desk] ${source.id} feed unavailable: ${String(error?.message || error).slice(0, 120)}`); continue; }
+      if (signal?.aborted) break;
       for (const item of items) {
         if (at - item.publishedAt > REPORT_WINDOW_MS || item.publishedAt > at + HOUR || !looksLikeNews(item.title)) continue;
         const text = `${item.title} ${item.description}`;
@@ -337,16 +350,24 @@ export function createNewsDesk({ database, fetchText, fetchArticle = null, summa
   }
 
   function newsAccount() {
-    return database.prepare("SELECT id FROM users WHERE lower(handle)=? AND COALESCE(is_banned,0)=0").get(NEWS_DESK_HANDLE) || null;
+    const identity = resolveNewsPublisher(database, { env, at: now() });
+    return identity.ok ? { id: identity.accountId } : null;
   }
 
-  function publishStory({ reports, result, at, costUsd, score = 0, signals = {} }) {
-    const account = newsAccount();
-    if (!account) throw new Error(`The @${NEWS_DESK_HANDLE} account does not exist.`);
+  function publicationTimes(at) {
+    // Withdrawing a post does not undo the fact that a publishing slot was used.
+    return database.prepare("SELECT created_at FROM news_stories WHERE post_id IS NOT NULL AND created_at>=?")
+      .all(at - 36 * HOUR).map((row) => Number(row.created_at));
+  }
+
+  function publishStory({ reports, result, at, costUsd, minPublishers = 3, score = 0, signals = {} }) {
     const id = newId();
     const postId = `news_${id}`;
-    // Keep the independence rule even if Claude cites only same-company outlets.
-    const supporting = isConfirmed(result.supporting) ? result.supporting : reports;
+    // A model may select fewer sources than the cluster contains. Never turn
+    // unselected reports into evidence, or trust a supplied ownership group.
+    const supporting = validatedSupportingReports(reports, result.supporting);
+    const sensitive = SENSITIVE_CATEGORIES.has(result.category) || SENSITIVE_CATEGORIES.has(storyCategory(reports));
+    if (!isConfirmed(supporting, { minPublishers: sensitive ? 3 : minPublishers })) return null;
     // Headline matches, kept only when Claude names them as who the story is
     // about: a headline word can be an unrelated act ("Storm"), and a passing
     // mention ("Paul McCartney's drummer") is not the story.
@@ -355,9 +376,18 @@ export function createNewsDesk({ database, fetchText, fetchArticle = null, summa
     const artistKeys = [...new Set(supporting.flatMap((report) => report.artistKeys))]
       .filter((key) => claimed.has(artistNameKey(artistName.get(key)?.name))).slice(0, 6);
     const lead = artistKeys[0] ? database.prepare("SELECT norm,name FROM artists WHERE norm=?").get(artistKeys[0]) : null;
-    const sources = supporting.map((report) => ({ name: report.sourceName, url: report.url, title: report.title }));
+    const sources = supporting.map((report) => ({ name: report.sourceName, sourceId: report.sourceId, group: report.group, url: report.url, title: report.title }));
     database.exec("BEGIN IMMEDIATE");
     try {
+      // Network work may have crossed a slot boundary, or another publisher
+      // may have won the slot. Recheck current authorization and policy here.
+      const account = newsAccount();
+      const published = publicationTimes(at);
+      if (!account || !publishingSlot({ at, published, editorial }).open
+        || (minPublishers === 2 && !twoPublisherFallbackAllowed({ at, published, editorial }))) {
+        database.exec("ROLLBACK");
+        return null;
+      }
       database.prepare(`INSERT INTO posts (id,user_id,artist,artist_key,venue,city,date,overall,review,kind,created_at)
         VALUES (?,?,?,?,'','','',0,?,'status',?)`).run(postId, account.id, lead?.name || "", lead?.norm || null, result.summary, at);
       database.prepare(`INSERT INTO news_stories (id,status,headline,summary,body,category,artist_keys,sources,post_id,cost_usd,score,signals,created_at,updated_at)
@@ -375,10 +405,17 @@ export function createNewsDesk({ database, fetchText, fetchArticle = null, summa
 
   function declineStory({ reports, result, at, score = 0, signals = {} }) {
     const id = newId();
-    database.prepare(`INSERT INTO news_stories (id,status,category,reason,cost_usd,score,signals,created_at,updated_at) VALUES (?,'declined',?,?,?,?,?,?,?)`)
-      .run(id, result.category || storyCategory(reports), result.reason || "", result.costUsd || 0, score, JSON.stringify(signals), at, at);
-    const mark = database.prepare("UPDATE news_reports SET story_id=? WHERE url=?");
-    for (const report of reports) mark.run(id, report.url);
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      database.prepare(`INSERT INTO news_stories (id,status,category,reason,cost_usd,score,signals,created_at,updated_at) VALUES (?,'declined',?,?,?,?,?,?,?)`)
+        .run(id, result.category || storyCategory(reports), result.reason || "", result.costUsd || 0, score, JSON.stringify(signals), at, at);
+      const mark = database.prepare("UPDATE news_reports SET story_id=? WHERE url=? AND story_id IS NULL");
+      for (const report of reports) mark.run(id, report.url);
+      database.exec("COMMIT");
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   // Every confirmed story's editorial score, best first. Coverage, artist size
@@ -420,63 +457,91 @@ export function createNewsDesk({ database, fetchText, fetchArticle = null, summa
   async function publishPass({ signal } = {}) {
     const at = now();
     const outcome = { confirmed: 0, published: 0, declined: 0, skippedForBudget: 0, waiting: 0, slot: null, picked: [] };
-    if (!summarize || !newsAccount()) return outcome;
-    const open = attachToPublished(database.prepare("SELECT * FROM news_reports WHERE story_id IS NULL AND published_at>=?")
-      .all(at - REPORT_WINDOW_MS).map(reportRow), at);
-    const candidates = clusterReports(open).filter(isConfirmed)
-      .filter((cluster) => at - Math.min(...cluster.map((report) => report.publishedAt)) <= editorial.maxAgeMs);
-    outcome.confirmed = candidates.length;
-    if (!candidates.length) return outcome;
-    // Only stories chosen under the editorial policy count toward the day's
-    // slots (they carry their signals); the owner restarted the count on
-    // 2026-09-26 after the old rules published eight in one evening.
-    const published = database.prepare(`SELECT created_at FROM news_stories
-      WHERE status='published' AND created_at>=? AND signals NOT IN ('','{}')`)
-      .all(at - 36 * HOUR).map((row) => Number(row.created_at));
-    // A full day costs nothing to check; ranking may look up Wikipedia.
-    if (publishingSlot({ at, published, score: -Infinity, editorial }).reason === "day_full") {
-      outcome.waiting = candidates.length;
-      outcome.slot = "day_full";
-      return outcome;
-    }
-    const ranked = await rankCandidates(candidates, at, signal);
-    // The best story decides: if it may not go out now, nothing below it may.
-    const slot = publishingSlot({ at, published, score: ranked[0].score, editorial });
-    outcome.slot = slot.open ? (slot.breaking ? "breaking" : "open") : slot.reason;
+    if (!summarize) return outcome;
+    const identity = resolveNewsPublisher(database, { env, at });
+    if (!identity.ok) return { ...outcome, publisherReason: identity.reason, publisherMessage: identity.message };
+    // Late attribution remains current even when today's publishing slot is full.
+    const open = attachToPublished(database.prepare(`SELECT * FROM news_reports WHERE story_id IS NULL AND published_at>=?
+      ORDER BY published_at DESC,url ASC LIMIT ?`).all(at - REPORT_WINDOW_MS, MAX_OPEN_REPORTS_PER_PASS).map(reportRow), at);
+    const published = publicationTimes(at);
+    const slot = publishingSlot({ at, published, editorial });
+    outcome.slot = slot.open ? "open" : slot.reason;
     if (!slot.open) {
-      outcome.waiting = ranked.length;
+      outcome.waiting = 1;
       return outcome;
     }
+    const clusters = clusterReports(open)
+      .filter((cluster) => at - Math.min(...cluster.map((report) => report.publishedAt)) <= editorial.maxAgeMs);
+    const candidates = clusters.filter((cluster) => isConfirmed(cluster));
+    outcome.confirmed = candidates.length;
+    const fallback = twoPublisherFallbackAllowed({ at, published, editorial })
+      ? clusters.filter((cluster) => !SENSITIVE_CATEGORIES.has(storyCategory(cluster)) && independentGroups(cluster) === 2) : [];
     let calls = 0;
-    for (const { cluster, score, signals } of ranked) {
-      if (signal?.aborted || calls >= editorial.callsPerPass) break;
-      if (budgetLeft(at) < worstCaseCostUsd(storyPrompt(cluster).length)) { outcome.skippedForBudget += 1; break; }
-      const reports = await withArticleLeads(cluster, signal);
-      const worstCase = worstCaseCostUsd(storyPrompt(reports).length);
-      if (budgetLeft(now()) < worstCase) { outcome.skippedForBudget += 1; break; }
-      const receipt = reserveSpend(now(), worstCase);
-      calls += 1;
-      let result;
-      try {
-        result = await summarize(reports, { signal });
-      } catch (error) {
-        markUncertain(receipt, now());
-        throw error;
+    // Try normal confirmation first. If every attempted normal candidate is
+    // declined, a viable fallback may still use the remaining call budget.
+    for (const { tier, minPublishers } of [{ tier: candidates, minPublishers: 3 }, { tier: fallback, minPublishers: 2 }]) {
+      if (signal?.aborted || calls >= editorial.callsPerPass || outcome.published || outcome.waiting || outcome.skippedForBudget) break;
+      if (!tier.length || (minPublishers === 2 && !twoPublisherFallbackAllowed({ at: now(), published: publicationTimes(now()), editorial }))) continue;
+      const ranked = await rankCandidates(tier, now(), signal);
+      for (const { cluster, score, signals } of ranked) {
+        if (signal?.aborted || calls >= editorial.callsPerPass) break;
+        // Present different owners first; a flood from one publisher must not
+        // push independent confirmation beyond the prompt's six-report limit.
+        const groups = new Set();
+        const first = [], rest = [];
+        for (const report of cluster) {
+          if (groups.has(report.group)) rest.push(report);
+          else { first.push(report); groups.add(report.group); }
+        }
+        const shown = [...first, ...rest].slice(0, MAX_REPORTS);
+        const promptOptions = { minIndependentPublishers: minPublishers };
+        if (budgetLeft(at) < worstCaseCostUsd(storyPrompt(shown, promptOptions))) { outcome.skippedForBudget += 1; break; }
+        const reports = await withArticleLeads(shown, signal);
+        if (signal?.aborted) break;
+        const worstCase = worstCaseCostUsd(storyPrompt(reports, promptOptions));
+        const admittedAt = now();
+        const day = dayOf(admittedAt);
+        const admission = admitClaudeSpend(database, {
+          env, at: admittedAt, reserveMicroUsd: Math.ceil(worstCase * 1_000_000),
+          dailyCapMicroUsd: Math.floor(budget.dailyUsd * 1_000_000), monthlyCapMicroUsd: Math.floor(budget.monthlyUsd * 1_000_000),
+          readDailySpendMicroUsd: () => Math.ceil(spentSince(day) * 1_000_000),
+          readMonthlySpendMicroUsd: () => Math.ceil(spentSince(`${day.slice(0, 7)}-01`) * 1_000_000),
+          reserve: () => reserveSpend(admittedAt, worstCase),
+        });
+        if (!admission.ok) { outcome.skippedForBudget += 1; break; }
+        const receipt = admission.value;
+        calls += 1;
+        let result;
+        try {
+          result = await summarize(reports, { signal, ...promptOptions });
+        } catch (error) {
+          if (claudeRequestDefinitelyRejected(error)) settleSpend(receipt, 0, now());
+          else markUncertain(receipt, now());
+          throw error;
+        }
+        settleSpend(receipt, result.costUsd, now());
+        if (result.publish && result.headline && result.summary) {
+          const sensitive = SENSITIVE_CATEGORIES.has(result.category) || SENSITIVE_CATEGORIES.has(storyCategory(cluster));
+          const supporting = validatedSupportingReports(reports, result.supporting);
+          if (isConfirmed(supporting, { minPublishers: sensitive ? 3 : minPublishers })) {
+            const written = publishStory({ reports: cluster, result: { ...result, supporting }, at: now(), minPublishers, costUsd: result.costUsd, score, signals });
+            if (written) {
+              outcome.published += 1;
+              outcome.picked.push({ headline: result.headline, score, signals });
+            } else outcome.waiting += 1;
+            break;
+          }
+          result = { ...result, publish: false, reason: "insufficient_independent_support" };
+        }
+        declineStory({ reports: cluster, result, at: now(), score, signals });
+        outcome.declined += 1;
       }
-      settleSpend(receipt, result.costUsd, now());
-      if (result.publish && result.headline && result.summary) {
-        publishStory({ reports, result, at: now(), costUsd: result.costUsd, score, signals });
-        outcome.published += 1;
-        outcome.picked.push({ headline: result.headline, score, signals });
-        break;
-      }
-      declineStory({ reports, result, at: now(), score, signals });
-      outcome.declined += 1;
     }
     return outcome;
   }
 
-  return { ingest, publishPass, budgetLeft: () => budgetLeft(now()) };
+  return { ingest, publishPass, budgetLeft: () => budgetLeft(now()),
+    publisherStatus: () => resolveNewsPublisher(database, { env, at: now() }) };
 }
 
 // Public reads: newest published stories whose post is still live.
@@ -491,19 +556,22 @@ export function createNewsDeskReader(database, { ensureSchema = true } = {}) {
       try { return listStories(database, options); }
       catch (error) { if (missingTable(error)) return { stories: [], nextCursor: null }; throw error; }
     },
-    forPost(postId) { return readOne("post_id", postId); },
+    forPost(postId, options = {}) { return readOne("post_id", postId, options); },
     // A story whose post is live and whose author is an active public account:
     // the share export and the link-preview image.
-    forLivePost(postId) { return readOne("post_id", postId, { live: true }); },
-    get(id) { return readOne("id", id, { live: true }); },
+    forLivePost(postId, options = {}) { return readOne("post_id", postId, { ...options, live: true }); },
+    get(id, options = {}) { return readOne("id", id, { ...options, live: true }); },
   };
-  function readOne(column, value, { live = false } = {}) {
+  function readOne(column, value, { live = false, viewerId = null } = {}) {
     if (!ready) { ensureNewsDeskSchema(database); ready = true; }
     try {
-      const row = database.prepare(`SELECT s.id,s.headline,s.summary,s.body,s.category,s.artist_keys,s.sources,s.post_id,s.created_at
-        FROM news_stories s ${live ? `JOIN posts p ON p.id=s.post_id AND p.removed=0 JOIN users u ON u.id=p.user_id AND ${activeAccountSql("u")}` : ""}
-        WHERE s.${column === "id" ? "id" : "post_id"}=? AND s.status='published'`).get(String(value || ""));
-      return row ? newsStoryJson(row, database.prepare("SELECT norm,name,public_slug,photo,data FROM artists WHERE norm=?")) : null;
+      const row = database.prepare(`SELECT s.id,s.headline,s.summary,s.body,s.category,s.artist_keys,s.sources,s.post_id,s.created_at,s.updated_at,
+          p.user_id AS author_id,u.name AS author_name,u.handle AS author_handle
+        FROM news_stories s JOIN posts p ON p.id=s.post_id JOIN users u ON u.id=p.user_id
+        WHERE s.${column === "id" ? "id" : "post_id"}=? AND s.status='published'
+          ${live ? `AND p.removed=0 AND ${activeAccountSql("u")}` : ""} ${readerBlockSql(viewerId)}`)
+        .get(String(value || ""), ...readerBlockParams(viewerId));
+      return row ? newsStoryJson(row, database.prepare("SELECT norm,name,public_slug,photo,data FROM artists WHERE norm=?"), database, viewerId) : null;
     } catch (error) {
       if (missingTable(error)) return null;
       throw error;
@@ -515,12 +583,18 @@ export function createNewsDeskReader(database, { ensureSchema = true } = {}) {
 // Mshpit members engage with each post (see topStoryScore).
 // A page size: a whole number from 1 to 50, whatever the query says.
 const pageSize = (limit) => Math.max(1, Math.min(50, Math.floor(Number(limit)) || 20));
+// Author identity comes from the post, never the current holder of @news_mod.
+const readerBlockSql = (viewerId) => viewerId ? `AND NOT EXISTS (SELECT 1 FROM blocks b
+  WHERE (b.blocker_id=? AND b.blocked_id=p.user_id) OR (b.blocker_id=p.user_id AND b.blocked_id=?))` : "";
+const readerBlockParams = (viewerId) => viewerId ? [String(viewerId), String(viewerId)] : [];
 
-function listTopStories(database, { limit = 20, at = Date.now() } = {}) {
+function listTopStories(database, { limit = 20, at = Date.now(), viewerId = null } = {}) {
   const bounded = pageSize(limit);
-  const rows = database.prepare(`SELECT s.id,s.headline,s.summary,s.body,s.category,s.artist_keys,s.sources,s.post_id,s.created_at,s.score
+  const rows = database.prepare(`SELECT s.id,s.headline,s.summary,s.body,s.category,s.artist_keys,s.sources,s.post_id,s.created_at,s.updated_at,s.score,
+      p.user_id AS author_id,u.name AS author_name,u.handle AS author_handle
     FROM news_stories s JOIN posts p ON p.id=s.post_id JOIN users u ON u.id=p.user_id
-    WHERE s.status='published' AND p.removed=0 AND ${activeAccountSql("u")} AND s.created_at>=?`).all(at - 72 * HOUR);
+    WHERE s.status='published' AND p.removed=0 AND ${activeAccountSql("u")} AND s.created_at>=? ${readerBlockSql(viewerId)}
+    ORDER BY s.created_at DESC,s.id DESC LIMIT 150`).all(at - 72 * HOUR, ...readerBlockParams(viewerId));
   const engagement = (sql, postId) => ignoreMissingTable(() => Number(database.prepare(sql).get(postId)?.n) || 0);
   const artistLookup = database.prepare("SELECT norm,name,public_slug,photo,data FROM artists WHERE norm=?");
   return {
@@ -531,32 +605,34 @@ function listTopStories(database, { limit = 20, at = Date.now() } = {}) {
       views: engagement("SELECT view_count AS n FROM post_impression_totals WHERE post_id=?", row.post_id),
       ageHours: (at - row.created_at) / HOUR,
     }) })).sort((left, right) => right.top - left.top || right.row.created_at - left.row.created_at)
-      .slice(0, bounded).map(({ row }) => newsStoryJson(row, artistLookup)),
+      .slice(0, bounded).map(({ row }) => newsStoryJson(row, artistLookup, database, viewerId)),
     nextCursor: null,
   };
 }
 
 // `artist` narrows the list to stories about one catalogue artist (its key).
 // `sort: "top"` returns top stories instead of the newest.
-function listStories(database, { limit = 20, before = null, artist = null, sort = "latest", at = Date.now() } = {}) {
-  if (sort === "top" && !artist) return listTopStories(database, { limit, at });
+function listStories(database, { limit = 20, before = null, artist = null, sort = "latest", at = Date.now(), viewerId = null } = {}) {
+  if (sort === "top" && !artist) return listTopStories(database, { limit, at, viewerId });
   const bounded = pageSize(limit);
   const cursor = before && Number.isSafeInteger(before.createdAt) ? before : null;
   const artistKey = typeof artist === "string" && artist.trim() ? artist.trim().slice(0, 200) : null;
-  const rows = database.prepare(`SELECT s.id,s.headline,s.summary,s.body,s.category,s.artist_keys,s.sources,s.post_id,s.created_at
+  const rows = database.prepare(`SELECT s.id,s.headline,s.summary,s.body,s.category,s.artist_keys,s.sources,s.post_id,s.created_at,s.updated_at,
+      p.user_id AS author_id,u.name AS author_name,u.handle AS author_handle
     FROM news_stories s JOIN posts p ON p.id=s.post_id JOIN users u ON u.id=p.user_id
     WHERE s.status='published' AND p.removed=0 AND ${activeAccountSql("u")}
+      ${readerBlockSql(viewerId)}
       ${artistKey ? "AND EXISTS (SELECT 1 FROM json_each(s.artist_keys) j WHERE j.value=?)" : ""}
       ${cursor ? "AND (s.created_at<? OR (s.created_at=? AND s.id<?))" : ""}
     ORDER BY s.created_at DESC,s.id DESC LIMIT ?`)
-    .all(...(artistKey ? [artistKey] : []), ...(cursor ? [cursor.createdAt, cursor.createdAt, cursor.id] : []), bounded + 1);
+    .all(...readerBlockParams(viewerId), ...(artistKey ? [artistKey] : []), ...(cursor ? [cursor.createdAt, cursor.createdAt, cursor.id] : []), bounded + 1);
   const artistLookup = database.prepare("SELECT norm,name,public_slug,photo,data FROM artists WHERE norm=?");
-  const stories = rows.slice(0, bounded).map((row) => newsStoryJson(row, artistLookup));
+  const stories = rows.slice(0, bounded).map((row) => newsStoryJson(row, artistLookup, database, viewerId));
   const last = rows.length > bounded ? rows[bounded - 1] : null;
   return { stories, nextCursor: last ? { createdAt: last.created_at, id: last.id } : null };
 }
 
-function newsStoryJson(row, artistLookup) {
+function newsStoryJson(row, artistLookup, database, viewerId = null) {
   const artists = parseJson(row.artist_keys, []).map((key) => artistLookup.get(key)).filter(Boolean)
     .map((artist) => ({
       key: artist.norm, name: artist.name, publicSlug: artist.public_slug || null,
@@ -565,9 +641,15 @@ function newsStoryJson(row, artistLookup) {
     }));
   const sources = parseJson(row.sources, []).filter((source) => /^https:\/\//u.test(String(source?.url || "")))
     .map((source) => ({ name: String(source.name || ""), url: source.url }));
+  const count = (sql, ...args) => ignoreMissingTable(() => Number(database.prepare(sql).get(...args)?.n) || 0);
   return {
     id: row.id,
     postId: row.post_id,
+    author: { id: row.author_id, name: row.author_name || "", handle: row.author_handle || "" },
+    likes: count("SELECT COUNT(*) AS n FROM likes WHERE post_id=?", row.post_id),
+    likedByMe: !!viewerId && count("SELECT COUNT(*) AS n FROM likes WHERE post_id=? AND user_id=?", row.post_id, String(viewerId)) > 0,
+    commentCount: count("SELECT COUNT(*) AS n FROM comments WHERE post_id=? AND removed=0", row.post_id),
+    viewCount: count("SELECT view_count AS n FROM post_impression_totals WHERE post_id=?", row.post_id),
     headline: row.headline,
     summary: row.summary,
     body: row.body || "",
@@ -576,5 +658,6 @@ function newsStoryJson(row, artistLookup) {
     sources,
     confirmedBy: new Set(sources.map((source) => source.name)).size,
     publishedAt: row.created_at,
+    updatedAt: row.updated_at,
   };
 }

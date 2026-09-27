@@ -1,5 +1,6 @@
 import { readBoundedJsonResponse } from "./boundedJsonResponse.js";
 import { createArtistKnowledgeMemo } from "./artistKnowledgeMemo.js";
+import { artistKnowledgeProviderOutage } from "./artistKnowledgeCircuit.js";
 
 const WIKIDATA_API = "https://www.wikidata.org/w/api.php";
 const WIKIPEDIA_API = "https://en.wikipedia.org/w/api.php";
@@ -203,7 +204,7 @@ export function createArtistKnowledgeProvider({ clock = Date.now, wait = pause, 
       void dispose(response);
       aborted(signal);
       if (error instanceof ArtistKnowledgeProviderError) {
-        if (error.retryAt) cooldown = { code: error.code, status: error.status, retryAt: error.retryAt };
+        if (error.retryAt && artistKnowledgeProviderOutage(error)) cooldown = { code: error.code, status: error.status, retryAt: error.retryAt };
         throw error;
       }
       throw new ArtistKnowledgeProviderError(`${provider} could not complete the request.`, {
@@ -263,7 +264,7 @@ export function createArtistKnowledgeProvider({ clock = Date.now, wait = pause, 
     if (pending >= capacity) return Promise.reject(new ArtistKnowledgeProviderError("Artist knowledge queue is full.", { code: "knowledge_busy", retryAt: (options?.now || Date.now)() + 60_000 }));
     pending++;
     const result = Promise.resolve().then(() => lookup(options)).catch((error) => {
-      if (error instanceof ArtistKnowledgeProviderError && error.retryAt) cooldown = { code: error.code, status: error.status, retryAt: error.retryAt };
+      if (error instanceof ArtistKnowledgeProviderError && error.retryAt && artistKnowledgeProviderOutage(error)) cooldown = { code: error.code, status: error.status, retryAt: error.retryAt };
       throw error;
     }).finally(() => { pending--; });
     return options?.signal ? awaitWithAbort(result, options.signal) : result;

@@ -15,6 +15,9 @@ import SuggestedPittersRail from "../components/SuggestedPittersRail";
 import useAppActive from "../lib/useAppActive";
 import NewsStoryCard from "../components/news/NewsStoryCard";
 import useNewsDeskStories from "../components/news/useNewsDeskStories";
+import useNewsIntroduction from "../components/news/useNewsIntroduction";
+import { newsAwareFeed } from "../domain/newsReaderState.mjs";
+import { useNewsInteractions } from "../components/news/NewsInteractionContext";
 
 const PAGE = 8; // load the feed in pages, like the big apps - never all at once
 const REFRESH_RETRY_HINT = Platform.OS === "web"
@@ -46,7 +49,7 @@ const FeedTicketRow = memo(function FeedTicketRow({ item, itemIndex, mediaViewab
 
   // A Mshpit News story posted from @news_mod.
   if (item.news) {
-    return <NewsStoryCard story={item.news} accountId={accountId} onOpen={capabilities.comment ? () => comment(item) : undefined} onOpenArtist={capabilities.openArtist ? openArtist : undefined} />;
+    return <NewsStoryCard story={item.news} post={item} accountId={accountId} onOpen={capabilities.comment ? () => comment(item) : undefined} onOpenArtist={capabilities.openArtist ? openArtist : undefined} onOpenProfile={capabilities.openProfile ? openProfile : undefined} onReport={capabilities.report ? report : undefined} onEdit={capabilities.edit ? edit : undefined} onRequireAuth={requireAuth} />;
   }
 
   return (
@@ -74,7 +77,7 @@ const FeedTicketRow = memo(function FeedTicketRow({ item, itemIndex, mediaViewab
   );
 });
 
-export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, accountId = null, homeCity, unread = 0, notifUnread = 0, newUser = false, hideHeaderActions = false, onFinishSetup, onRefresh, onLoadMore, hasMore = false, loadingMore = false, countdownPlan = null, showHomeCountdown = false, suggestedUsers = [], suggestedUsersLoading = false, showSuggestedPitters = false, onFollowUser, isFollowing, isBlocked, onOpenCountdown, onViewAllCountdown, onOpen, onImpression, onDwell, onNotInterested, onUndoNotInterested, onComment, onRequireAuth, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onOpenNearby, onOpenInbox, onOpenNotifications, onOpenMenu, onOpenClips, onReport, onEdit, onOpenPhotos, onPlay, onRemoveMyPostTag, onLogShow, onOpenDiscover, onOpenNewsStory, onOpenNews }) {
+export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, visible = false, accountId = null, homeCity, unread = 0, notifUnread = 0, newUser = false, hideHeaderActions = false, onFinishSetup, onRefresh, onLoadMore, hasMore = false, loadingMore = false, countdownPlan = null, showHomeCountdown = false, suggestedUsers = [], suggestedUsersLoading = false, showSuggestedPitters = false, onFollowUser, isFollowing, isBlocked, onOpenCountdown, onViewAllCountdown, onOpen, onImpression, onDwell, onNotInterested, onUndoNotInterested, onComment, onRequireAuth, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onOpenNearby, onOpenInbox, onOpenNotifications, onOpenMenu, onOpenClips, onReport, onEdit, onOpenPhotos, onPlay, onRemoveMyPostTag, onLogShow, onOpenDiscover, onOpenNewsStory, onOpenNews }) {
   const { width } = useWindowDimensions();
   const appActive = useAppActive();
   const phone = width < 700;
@@ -107,11 +110,14 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
     setGuideState({ scope: guideScope, dismissed: true });
     save(guideScope, true);
   };
-  const news = useNewsDeskStories({ limit: 20 });
   const newsTab = filter === "news";
+  const { followedArtists = [] } = useNewsInteractions();
+  const news = useNewsDeskStories({ limit: 20, enabled: newsTab });
   // The phone strip shows top stories; the News tab lists the newest.
-  const topNews = useNewsDeskStories({ limit: 6, sort: "top", enabled: phone && !newsTab });
-  const full = filter === "following" ? followingFeed : filter === "local" ? localFeed : feed;
+  const topNews = useNewsDeskStories({ limit: 6, sort: "top", enabled: phone && newsTab });
+  const introduction = useNewsIntroduction(visible && filter === "everyone" && loggedIn && appActive);
+  const full = useMemo(() => newsAwareFeed(filter === "following" ? followingFeed : filter === "local" ? localFeed : feed,
+    { filter, accountId, followedArtists, introduction: introduction.post }), [filter, accountId, followedArtists, feed, followingFeed, localFeed, introduction.post]);
   const data = useMemo(() => full.slice(0, count), [count, full]);
   const listData = newsTab ? news.stories : data;
   const openAllNews = () => (loggedIn ? pick("news") : onOpenNews?.());
@@ -270,12 +276,13 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
   };
   const refresh = async () => {
     if (refreshControllerRef.current || !onRefresh) return false;
+    if (filter === "everyone") introduction.dismiss();
     const controller = new AbortController();
     refreshControllerRef.current = controller;
     setRefreshing(true);
     setRefreshError(false);
     try {
-      const result = newsTab ? (await news.reload(), true) : await onRefresh({ signal: controller.signal });
+      const result = newsTab ? await news.reload() : await onRefresh({ signal: controller.signal });
       if (controller.signal.aborted || refreshControllerRef.current !== controller) return false;
       const failed = result === false || result == null;
       setRefreshError(failed);
@@ -337,7 +344,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
     requireAuth: canRequireAuth,
   }), [canComment, canEdit, canHideRecommendation, canOpenArtist, canOpenArtistArchive, canOpenPhotos, canOpenProfile, canOpenVenue, canPlay, canPreview, canRemoveMyPostTag, canReport, canRequireAuth]);
   const renderFeedItem = useCallback(({ item, index: itemIndex }) => (newsTab ? (
-    <NewsStoryCard story={item} accountId={accountId} onOpen={onOpenNewsStory} onOpenArtist={onOpenArtist} />
+    <NewsStoryCard story={item} accountId={accountId} onOpen={onOpenNewsStory} onOpenArtist={onOpenArtist} onOpenProfile={onOpenProfile} onReport={onReport} onEdit={onEdit} onRequireAuth={onRequireAuth} />
   ) : (
     <FeedTicketRow
       item={item}
@@ -348,7 +355,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
       capabilities={rowCapabilities}
       accountId={accountId}
     />
-  )), [accountId, newsTab, onOpenArtist, onOpenNewsStory, rowCapabilities, surface, visibleMediaPostIds]);
+  )), [accountId, newsTab, onOpenArtist, onOpenNewsStory, onOpenProfile, onReport, onEdit, onRequireAuth, rowCapabilities, surface, visibleMediaPostIds]);
 
   // Concert cards are tall and media-heavy. Stage them gently on phones so
   // image decoding and comment-preview mounts do not all hit one frame.
@@ -451,7 +458,8 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
             </View>
           )}
 
-          {phone && !newsTab && topNews.stories.length ? (
+          {introduction.error ? <Pressable onPress={introduction.retry} accessibilityRole="button" style={{ padding: 12 }}><Text style={{ color: colors.textDim }}>News from your artists couldn't load. Try again.</Text></Pressable> : null}
+          {phone && newsTab && topNews.stories.length ? (
             <View style={styles.newsStrip} accessibilityLabel="Music news">
               <View style={styles.newsStripHead}>
                 <Text style={styles.newsStripTitle}>MUSIC NEWS</Text>
@@ -508,7 +516,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
           <Text style={styles.emptyTitle}>{news.status === "error" ? "The news could not load" : news.status === "ready" ? "No stories yet" : "Loading music news..."}</Text>
           <Text style={styles.emptySub}>{news.status === "error"
             ? REFRESH_RETRY_HINT
-            : "Mshpit News posts a story once at least two independent music outlets report it."}</Text>
+            : "Stories are scheduled after three independent publisher groups corroborate them, with a limited two-source fallback on quiet days."}</Text>
         </View>
       ) : (
         <View style={styles.emptyBox}>

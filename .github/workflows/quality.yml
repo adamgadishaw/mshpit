@@ -23,6 +23,8 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - name: Validate Render Blueprint before deployment
+        run: npm run check:blueprint
       - run: npm run check
       # Render passes runtime flags into its build. Exercise that boundary too:
       # a passing local-default suite must not hide a hosted-only failure.
@@ -70,6 +72,7 @@ jobs:
       - run: npm run verify:artist-account-browser
       - run: npm run verify:artist-identity-moderation-browser
       - run: npm run verify:navigation-browser
+      - run: npm run verify:news-browser
       - run: npm run verify:discover-photos-browser
       - run: npm run verify:discover-venues-browser
       - run: npm run verify:catalog-maintenance-browser

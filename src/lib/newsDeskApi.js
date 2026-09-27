@@ -18,3 +18,7 @@ export function fetchNewsDeskStories({ cursor = null, limit = 20, artist = null,
 export function fetchPostById(id, { signal } = {}) {
   return api(`/api/posts/${encodeURIComponent(id)}`, { silent: true, signal, context: "Opening a news story" });
 }
+
+export function requestNewsIntroduction({ accountId, requestId, signal }) {
+  return api("/api/feed/news-introduction", { method: "POST", body: { requestId }, expectedAccountId: accountId, signal, silent: true, context: "Preparing news from artists you follow" });
+}

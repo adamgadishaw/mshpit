@@ -70,7 +70,7 @@ export function NewsCard({ item, onOpenArtist, showArtist = true }) {
 }
 
 // The full News screen: confirmed music news, or updates from your artists.
-export function NewsScreen({ session = null, onClose, onOpenArtist, onOpenStory, onRequireAuth }) {
+export function NewsScreen({ session = null, onClose, onOpenArtist, onOpenProfile, onReport, onOpenStory, onRequireAuth }) {
   const [scope, setScope] = useState("news");
   const news = useNewsDeskStories({ enabled: scope === "news", limit: 20 });
   const [state, setState] = useState({ status: "loading", items: [], cursor: null });
@@ -115,10 +115,10 @@ export function NewsScreen({ session = null, onClose, onOpenArtist, onOpenStory,
           {news.status === "ready" && !news.stories.length ? (
             <View style={styles.panel}>
               <Text style={styles.panelTitle}>No stories yet</Text>
-              <Text style={styles.panelText}>Mshpit News posts a story once at least two independent music outlets report it.</Text>
+              <Text style={styles.panelText}>Stories are scheduled after three independent publisher groups corroborate them, with a limited two-source fallback on quiet days.</Text>
             </View>
           ) : null}
-          {news.stories.map((story) => <NewsStoryCard key={story.id} story={story} accountId={session?.id || null} onOpen={onOpenStory} onOpenArtist={onOpenArtist} />)}
+          {news.stories.map((story) => <NewsStoryCard key={story.id} story={story} accountId={session?.id || null} onOpen={onOpenStory} onOpenArtist={onOpenArtist} onOpenProfile={onOpenProfile} onReport={onReport} onRequireAuth={onRequireAuth} />)}
           {news.nextCursor ? (
             <Button small variant="secondary" title="Show more" loading={news.status === "loading"} onPress={news.loadMore} style={{ alignSelf: "center", marginTop: space(2) }} />
           ) : null}

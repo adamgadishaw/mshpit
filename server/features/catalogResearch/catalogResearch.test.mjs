@@ -3,6 +3,7 @@ import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
 import { ApiError } from "../../errors.js";
+import { admitClaudeSpend, claudeMonthSpendMicroUsd } from "../../claudeSpendCeiling.js";
 import { publicCatalogResearch, validateCatalogResearchFindings } from "./catalogResearchFindings.js";
 import { catalogResearchCostMicroUsd, catalogResearchModel, researchCatalogSubject } from "./catalogResearchProvider.js";
 import { catalogResearchRoutes } from "./catalogResearchRoutes.js";
@@ -282,8 +283,10 @@ test("a timed-out continuation preserves its earlier paid receipt and stops furt
   assert.equal(caught.costMicroUsd, catalogResearchCostMicroUsd("claude-sonnet-5", usage));
   assert.equal(caught.accountingUncertain, true);
   assert.equal(result.stopped, "cost_unconfirmed");
-  assert.equal(db.prepare("SELECT status FROM catalog_research_spend").get().status, "uncertain");
-  assert.equal(collectCatalogResearchStatus(db, { env, at }).today.spentUsd, 0.2);
+  assert.deepEqual(db.prepare("SELECT status,charged_micro_usd FROM catalog_research_spend ORDER BY rowid").all().map((row) => ({ ...row })), [
+    { status: "settled", charged_micro_usd: catalogResearchCostMicroUsd("claude-sonnet-5", usage) }, { status: "uncertain", charged_micro_usd: 200_000 },
+  ], "the first charge and the second unknown request each keep their own receipt");
+  assert.equal(collectCatalogResearchStatus(db, { env, at }).today.spentUsd, 0.21);
   assert.equal((await runCatalogResearchPass({ database: db, env, now: () => at, research })).stopped, "cost_unconfirmed");
   assert.equal(requests, 2, "another scheduler pass cannot make more paid requests");
 });
@@ -449,4 +452,80 @@ test("artists and venues take turns across passes, and rooms past the first 2,00
   show.run("quiet", "Act", "The Quiet Room", "2026-10-03", "Toronto", "CA");
   busy.exec("COMMIT");
   assert.equal(nextVenueResearchSubject(busy, { at })?.name, "The Quiet Room", "the 2,001st room is next once the busier ones are done");
+});
+
+test("research continuations recheck the shared ceiling after a concurrent news reservation", async (t) => {
+  const db = database(t);
+  db.exec(`INSERT INTO artists(norm,name) VALUES ('wet leg','Wet Leg');
+    CREATE TABLE news_desk_receipts(id TEXT PRIMARY KEY,day TEXT,charged_usd REAL);`);
+  const at = Date.parse("2026-09-27T12:00:00Z");
+  const env = { ANTHROPIC_API_KEY: "fixture", ANTHROPIC_MONTHLY_USD: "0.30" };
+  let requests = 0;
+  const result = await runCatalogResearchPass({ database: db, env, now: () => at, maxItems: 1, fetchImpl: async () => {
+    requests += 1;
+    assert.equal(requests, 1, "the second research HTTP request cannot be admitted");
+    const news = admitClaudeSpend(db, { env, at, reserveMicroUsd: 42_040, dailyCapMicroUsd: 300_000, monthlyCapMicroUsd: 6_000_000,
+      readDailySpendMicroUsd: () => 0, readMonthlySpendMicroUsd: () => 0,
+      reserve: () => db.prepare("INSERT INTO news_desk_receipts VALUES ('news','2026-09-27',0.04204)").run(),
+    });
+    assert.equal(news.ok, true);
+    return Response.json({ stop_reason: "pause_turn", usage: { input_tokens: 50_000, output_tokens: 0 }, content: [] });
+  } });
+  assert.equal(result.stopped, "research_budget");
+  assert.equal(requests, 1);
+  assert.equal(claudeMonthSpendMicroUsd(db, at), 142_040, "both features' durable receipts remain counted");
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM catalog_research_spend WHERE status<>'settled'").get().n, 0);
+});
+
+test("each continued request reserves its own UTC day and confirmed rejections release only that request", async (t) => {
+  const db = database(t);
+  db.exec("INSERT INTO artists(norm,name) VALUES ('wet leg','Wet Leg')");
+  let at = Date.parse("2026-09-27T23:59:59Z");
+  const env = { ANTHROPIC_API_KEY: "fixture" };
+  let requests = 0;
+  const result = await runCatalogResearchPass({ database: db, env, now: () => at, maxItems: 1, fetchImpl: async () => {
+    requests += 1;
+    if (requests === 1) {
+      at += 2000;
+      return Response.json({ stop_reason: "pause_turn", usage: { input_tokens: 1000, output_tokens: 0 }, content: [] });
+    }
+    assert.equal(collectCatalogResearchStatus(db, { env, at }).today.spentUsd, 0.2);
+    return Response.json({ error: { type: "authentication_error" } }, { status: 401 });
+  } });
+  assert.equal(result.stopped, "research_auth");
+  assert.deepEqual(db.prepare("SELECT utc_day,charged_micro_usd,status FROM catalog_research_spend ORDER BY rowid").all().map((row) => ({ ...row })), [
+    { utc_day: "2026-09-27", charged_micro_usd: 2000, status: "settled" },
+    { utc_day: "2026-09-28", charged_micro_usd: 0, status: "settled" },
+  ]);
+  assert.equal(collectCatalogResearchStatus(db, { env, at }).today.spentUsd, 0);
+});
+
+test("an ambiguous research server error retains its reservation instead of claiming a free request", async (t) => {
+  const db = database(t);
+  db.exec("INSERT INTO artists(norm,name) VALUES ('wet leg','Wet Leg')");
+  const at = Date.parse("2026-09-27T12:00:00Z");
+  const env = { ANTHROPIC_API_KEY: "fixture" };
+  const value = await runCatalogResearchPass({ database: db, env, now: () => at, maxItems: 1,
+    fetchImpl: async () => Response.json({ error: { type: "api_error" } }, { status: 500 }),
+  });
+  assert.equal(value.stopped, "research_unavailable");
+  assert.deepEqual({ ...db.prepare("SELECT status,charged_micro_usd FROM catalog_research_spend").get() },
+    { status: "uncertain", charged_micro_usd: 200_000 });
+  assert.equal((await runCatalogResearchPass({ database: db, env, now: () => at })).stopped, "cost_unconfirmed");
+});
+
+test("malformed billing usage never settles a paid request as free", async (t) => {
+  for (const usage of [undefined, { input_tokens: -1, output_tokens: 0 },
+    { input_tokens: 10, output_tokens: 0, cache_creation_input_tokens: "Infinity" },
+    { input_tokens: 10, output_tokens: 0, server_tool_use: { web_search_requests: -1 } }]) {
+    const db = database(t);
+    db.exec("INSERT INTO artists(norm,name) VALUES ('wet leg','Wet Leg')");
+    const env = { ANTHROPIC_API_KEY: "fixture" };
+    const value = await runCatalogResearchPass({ database: db, env, now: () => Date.parse("2026-09-27T12:00:00Z"), maxItems: 1,
+      fetchImpl: async () => Response.json({ content: [], stop_reason: "end_turn", usage }),
+    });
+    assert.equal(value.stopped, "cost_unconfirmed");
+    assert.deepEqual({ ...db.prepare("SELECT status,charged_micro_usd FROM catalog_research_spend").get() },
+      { status: "uncertain", charged_micro_usd: 200_000 });
+  }
 });

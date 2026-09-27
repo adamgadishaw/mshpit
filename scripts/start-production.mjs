@@ -10,6 +10,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { backupChildEnvironment } from "../server/backupScheduler.js";
 import { boundedBackupTimeout } from "./backup-db-verification.mjs";
+import { assertDatabaseRecoveryPathReady } from "../server/databaseRecovery.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..");
@@ -91,7 +92,10 @@ export async function startProduction({
         : `The production database is missing at ${plan.databasePath}; refusing to start without an explicit first-boot approval.`,
     );
   }
-  if (plan.backup) runStartupBackup({ env, spawn });
+  if (plan.backup) {
+    assertDatabaseRecoveryPathReady(plan.databasePath);
+    runStartupBackup({ env, spawn });
+  }
   else console.log(`[pit] pre-migration backup skipped (${plan.reason}).`);
   await loadServer();
   return plan;

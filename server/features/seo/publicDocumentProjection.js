@@ -497,6 +497,8 @@ function newsStoryPostDocument({ story, card, comments, path, origin, paths }) {
     mainEntityOfPage: pageUrl,
     image: [image],
     ...(publishedAt ? { datePublished: publishedAt } : {}),
+    ...(isoTimestamp(story.updatedAt || card.modifiedAt || story.publishedAt)
+      ? { dateModified: isoTimestamp(story.updatedAt || card.modifiedAt || story.publishedAt) } : {}),
     author: organization,
     publisher: organizationReference(origin),
     articleSection: newsCategoryLabel(story.category),

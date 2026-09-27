@@ -11,6 +11,7 @@ import { activeAccountSql } from "./accountVisibility.js";
 import { projectArtistGenre } from "../src/domain/genre.mjs";
 import { ARTIST_GENRE_SQL_COLUMNS, projectArtistGenreColumns } from "./artistGenreProjection.js";
 import { viewerPostImpressionMap } from "./feedImpressions.js";
+import { eligibleNewsPosts, isNewsPostId } from "./features/newsDesk/newsFeedPlacement.js";
 
 const CANDIDATE_LIMIT = Math.max(200, Math.min(1200, Number(process.env.RECOMMENDATION_CANDIDATE_LIMIT) || 600));
 const CANDIDATE_SCAN_LIMIT = Math.min(2400, CANDIDATE_LIMIT * 4);
@@ -158,6 +159,7 @@ function candidateGenreMap(rows) {
 }
 
 function candidateRows(viewer, at, hiddenIds = new Set()) {
+  const eligibleNews = new Set(eligibleNewsPosts(db, viewer, at).map((row) => row.post_id));
   const blockSql = viewer?.id ? `AND NOT EXISTS (SELECT 1 FROM blocks b WHERE
     (b.blocker_id=? AND b.blocked_id=p.user_id) OR (b.blocker_id=p.user_id AND b.blocked_id=?))` : "";
   const args = [at, at];
@@ -170,6 +172,7 @@ function candidateRows(viewer, at, hiddenIds = new Set()) {
     ORDER BY p.created_at DESC,p.id DESC LIMIT ?`).all(...args);
   const authorCounts = new Map();
   const candidates = rows.filter((row) => {
+    if (isNewsPostId(row.id) && !eligibleNews.has(row.id)) return false;
     if (hiddenIds.has(row.id)) return false;
     const count = authorCounts.get(row.user_id) || 0;
     if (count >= CANDIDATE_AUTHOR_LIMIT) return false;
@@ -296,7 +299,8 @@ function decodePageCursor(value) {
 }
 
 function liveRows(ids, viewer, at, hiddenIds = new Set()) {
-  const visibleIds = ids.filter((id) => !hiddenIds.has(id));
+  const eligibleNews = new Set(eligibleNewsPosts(db, viewer, at).map((row) => row.post_id));
+  const visibleIds = ids.filter((id) => !hiddenIds.has(id) && (!isNewsPostId(id) || eligibleNews.has(id)));
   if (!visibleIds.length) return [];
   const placeholders = visibleIds.map(() => "?").join(",");
   const blockSql = viewer?.id ? `AND NOT EXISTS (SELECT 1 FROM blocks b WHERE

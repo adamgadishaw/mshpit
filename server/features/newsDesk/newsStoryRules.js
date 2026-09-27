@@ -5,6 +5,7 @@
 // newsEditorial.js): the more outlets, the bigger the news.
 
 import { EDITORIAL } from "./newsEditorial.js";
+import { newsSourceById } from "./newsSources.js";
 
 export const NEWS_CATEGORIES = Object.freeze(["release", "tour", "festival", "awards", "charts", "industry", "lineup", "death", "legal", "other"]);
 // What Mshpit News publishes: real music news. Industry stories, film and TV,
@@ -90,7 +91,22 @@ export function clusterReports(reports) {
   return clusters;
 }
 
-export const independentGroups = (reports) => new Set(reports.map((report) => report.group)).size;
+export const independentGroups = (reports) => new Set((Array.isArray(reports) ? reports : [])
+  .map((report) => report?.group).filter((group) => typeof group === "string" && group)).size;
+
+// Only reports actually supplied to the editor may support its output. Resolve
+// publisher ownership from our registry, never from model-supplied group names.
+export function validatedSupportingReports(reports, supporting) {
+  const allowed = new Map(reports.map((report) => [`${report.sourceId}\n${report.url}`, report]));
+  const seen = new Set();
+  return (Array.isArray(supporting) ? supporting : []).flatMap((claim) => {
+    const report = allowed.get(`${claim?.sourceId}\n${claim?.url}`);
+    const source = report && newsSourceById(report.sourceId);
+    if (!source || seen.has(report.url)) return [];
+    seen.add(report.url);
+    return [{ ...report, group: source.group }];
+  });
+}
 
 export function storyCategory(reports) {
   const counts = new Map();
@@ -101,4 +117,5 @@ export function storyCategory(reports) {
   return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || "other";
 }
 
-export const isConfirmed = (reports) => independentGroups(reports) >= EDITORIAL.minOutlets;
+export const isConfirmed = (reports, { minPublishers = EDITORIAL.minOutlets } = {}) =>
+  independentGroups(reports) >= Math.max(2, Number(minPublishers) || EDITORIAL.minOutlets);

@@ -97,7 +97,8 @@ import { artistUpdatesRoutes } from "./features/artistUpdates/artistUpdatesRoute
 import { createArtistNewsReader } from "./features/artistUpdates/artistNewsReader.js";
 import { startArtistNewsScheduler } from "./features/artistUpdates/artistNewsJob.js";
 import { newsDeskRoutes } from "./features/newsDesk/newsDeskRoutes.js";
-import { createNewsDeskReader, NEWS_DESK_HANDLE } from "./features/newsDesk/newsDeskService.js";
+import { createNewsDeskReader } from "./features/newsDesk/newsDeskService.js";
+import { eligibleNewsPosts, isNewsPostId, newsFeedRoutes } from "./features/newsDesk/newsFeedPlacement.js";
 import { startNewsDeskScheduler } from "./features/newsDesk/newsDeskJob.js";
 import { startDeezerArtistPhotoScheduler } from "./features/artistPhotos/deezerArtistPhotoFill.js";
 import { artistPath as publicArtistPath, eventPath as publicEventPath } from "../src/domain/urls.mjs";
@@ -2998,7 +2999,7 @@ function postJson(p, viewerId) {
     dims: online.experienceType === "online" ? {} : parseJsonObject(p.dims),
     review: p.review,
     // A news desk story: headline and the outlets that confirmed it.
-    news: p.kind === "status" && String(p.id).startsWith("news_") ? newsDeskReader.forPost(p.id) : null,
+    news: p.kind === "status" && String(p.id).startsWith("news_") ? newsDeskReader.forPost(p.id, { viewerId }) : null,
     // A stable descriptor is the publication authority. If its verified
     // rendition/source becomes unavailable, do not let the denormalized legacy
     // URL column bypass that fail-closed state. Historical URL-only rows are
@@ -6608,7 +6609,7 @@ export const routes = {
           WHERE c.post_id=p.id AND c.removed=0 AND ${activeAccountSql("cu")}) AS comment_count,
         ${SEEN_ORDINAL_SQL}${flagSql}
       FROM posts p JOIN users u ON u.id = p.user_id
-      WHERE p.removed=0 AND ${activeAccountSql("u")} ${cursorSql} ${blockSql}
+      WHERE p.removed=0 AND substr(p.id,1,5)<>'news_' AND ${activeAccountSql("u")} ${cursorSql} ${blockSql}
       ORDER BY p.created_at DESC, p.id DESC LIMIT ?${cursor ? "" : " OFFSET ?"}`).all(...args);
     const { rows, nextCursor } = finishPage(found, lim);
     const projectedRows = attachPostImpressionStats(db, attachViewerLikes(
@@ -6661,7 +6662,7 @@ export const routes = {
     limit(ctx, "feed-revalidate", 120, 10 * 60 * 1000);
     const requested = Array.isArray(ctx.body?.postIds) ? ctx.body.postIds : [];
     const postIds = [...new Set(requested
-      .filter((id) => typeof id === "string" && /^p_[A-Za-z0-9_-]{1,77}$/.test(id))
+      .filter((id) => typeof id === "string" && /^(?:p|news)_[A-Za-z0-9_-]{1,77}$/.test(id))
       .slice(0, 200))];
     if (!postIds.length) return { invalidPostIds: [] };
     const placeholders = postIds.map(() => "?").join(",");
@@ -6673,7 +6674,8 @@ export const routes = {
     const live = new Set(db.prepare(`SELECT p.id FROM posts p JOIN users u ON u.id=p.user_id
       WHERE p.id IN (${placeholders}) AND p.removed=0 AND ${activeAccountSql("u")}
         ${blockSql} ${preferenceSql}`).all(...args).map((row) => row.id));
-    return { invalidPostIds: postIds.filter((id) => !live.has(id)) };
+    const eligibleNews = new Set(eligibleNewsPosts(db, user, now()).map((row) => row.post_id));
+    return { invalidPostIds: postIds.filter((id) => !live.has(id) || (isNewsPostId(id) && !eligibleNews.has(id))) };
   },
 
   "POST /api/feed/preferences/:postId": (ctx) => {
@@ -9636,11 +9638,12 @@ export const routes = {
     newId: uid,
     now,
   }) : {}),
-  ...newsDeskRoutes({
-    rateLimit: limit, reader: newsDeskReader, renderer: socialShareCardRenderer,
-    blockedFromNews: (userId) => {
-      const author = db.prepare("SELECT id FROM users WHERE lower(handle)=?").get(NEWS_DESK_HANDLE);
-      return !!author && blockedEitherWay(userId, author.id);
+  ...newsDeskRoutes({ rateLimit: limit, reader: newsDeskReader, renderer: socialShareCardRenderer }),
+  ...newsFeedRoutes({
+    database: db, requireUser, rateLimit: limit, ApiError, now,
+    project: (postId, viewerId) => {
+      const row = feedPostById.get(postId);
+      return row && !row.removed && !blockedEitherWay(viewerId, row.user_id) ? postJsonWithImpressions(row, viewerId) : null;
     },
   }),
   ...artistUpdatesRoutes({

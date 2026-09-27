@@ -66,6 +66,7 @@ function appNavigation(initialStack = [{}], { web = true, prepare = (frame) => f
   for (let i = 1; i < initialStack.length; i++) browser.write({ ...base, stack: initialStack.slice(0, i + 1) }, initialStack[i].path);
   calls.length = 0;
   const guardRef = { current: null };
+  const newsOpenRef = { current: 0 };
   const sessionRef = { current: session };
   functions = runInNewContext(actualFunctions, {
     web, stackRef, navigationRef, replaceNavigationFrame, prepareAvailableNavigationFrame: prepare, navigationFrameForAccount, session,
@@ -74,13 +75,13 @@ function appNavigation(initialStack = [{}], { web = true, prepare = (frame) => f
     window: { history, location }, browser, browserHistoryRef: { current: browser },
     publicRouteRequestRef: { current: null },
     setPublicNavigationNotice: () => {},
-    newsOpenRef: { current: 0 }, setNewsStoryNotice: () => {},
+    newsOpenRef, setNewsStoryNotice: () => {},
     restoreBrowserPathRef: { current: onRestore },
     composerCloseGuardRef: guardRef, bypassNextPopRef: { current: null },
     authNavigationAbortRef: { current: null }, sessionRef,
   });
   return {
-    ...functions, calls, entries, stackRef, guardRef, history, sessionRef,
+    ...functions, calls, entries, stackRef, guardRef, history, sessionRef, newsOpenRef,
     get cursor() { return cursor; },
     get state() { return snapshot(state); },
     flush() {
@@ -248,4 +249,12 @@ test("App account-boundary Back keeps only a public post ID hint and re-resolves
   assert.equal(app.state.at(-1).auth, true, "old guest content is not painted before the fresh resolver completes");
   assert.match(source, /const restoreBrowserPath = async \(path, \{ replace: replaceUrl = false, publicFrameHint = null \}/);
   assert.match(source, /publicBrowserDestination\(path, \{\s*accountId, signal: controller\.signal, publicFrameHint,/);
+});
+
+test("native Back invalidates an in-flight news open before returning to the previous page", () => {
+  const app = appNavigation([{}, { news: true }], { web: false });
+  const request = app.newsOpenRef.current;
+  app.back(); app.flush();
+  assert.ok(app.newsOpenRef.current > request, "late story response cannot push after Back");
+  assert.deepEqual(app.state, [{}]);
 });

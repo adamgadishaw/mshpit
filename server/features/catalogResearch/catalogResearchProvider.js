@@ -1,4 +1,5 @@
 import { CATALOG_RESEARCH_FACTS } from "./catalogResearchFindings.js";
+import { claudeRequestDefinitelyRejected } from "../../claudeSpendCeiling.js";
 
 // One research run: Claude searches the web for a single artist or venue and
 // hands back its findings through the record_findings tool. The API key stays
@@ -50,6 +51,13 @@ function addUsage(total, usage = {}) {
         + (Number(usage.server_tool_use?.web_search_requests) || 0),
     },
   };
+}
+
+function confirmedUsage(usage) {
+  const count = (value) => Number.isSafeInteger(value) && value >= 0;
+  return !!usage && count(usage.input_tokens) && count(usage.output_tokens)
+    && [usage.cache_read_input_tokens, usage.cache_creation_input_tokens, usage.server_tool_use?.web_search_requests]
+      .every(value => value == null || count(value));
 }
 
 const SYSTEM_PROMPT = `You research one music artist or one live music venue for Mshpit, a site where fans log and review concerts. Use web search to find reliable, current, public information, then call record_findings exactly once.
@@ -154,6 +162,8 @@ export async function researchCatalogSubject(subject, {
   maxSearches = CATALOG_RESEARCH_MAX_SEARCHES,
   budgetMicroUsd = Infinity,
   requestReserveMicroUsd = 200_000,
+  admitRequest,
+  settleRequest,
 } = {}) {
   if (!apiKey) throw Object.assign(new Error("Research is not configured."), { code: "research_not_configured" });
   if (!CATALOG_RESEARCH_FACTS[subject?.type]) throw new TypeError("Unknown research subject type.");
@@ -166,6 +176,8 @@ export async function researchCatalogSubject(subject, {
   let usage = {};
   let accountingUncertain = false;
   let previousRequestCostMicroUsd = 0;
+  let receipt = null;
+  let currentRequestCostMicroUsd = 0;
   const allowance = budgetMicroUsd === Infinity ? Infinity
     : Number.isFinite(budgetMicroUsd) ? Math.max(0, Math.floor(budgetMicroUsd)) : 0;
   const requestReserve = Number.isFinite(requestReserveMicroUsd) ? Math.max(200_000, Math.ceil(requestReserveMicroUsd)) : 200_000;
@@ -178,6 +190,10 @@ export async function researchCatalogSubject(subject, {
     if (catalogResearchCostMicroUsd(model, usage) + Math.max(requestReserve, previousRequestCostMicroUsd) > allowance) {
       throw Object.assign(new Error("Research daily allowance cannot cover another request."), { code: "research_budget" });
     }
+    // Recheck shared budgets for every continuation, not only the conversation.
+    // Another feature can reserve money while this request is in flight.
+    receipt = admitRequest?.({ turn, reserveMicroUsd: Math.max(requestReserve, previousRequestCostMicroUsd) }) ?? null;
+    currentRequestCostMicroUsd = 0;
     const requestSignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs);
     accountingUncertain = true;
     const response = await fetchImpl(API_URL, {
@@ -196,13 +212,19 @@ export async function researchCatalogSubject(subject, {
       throw error;
     });
     if (!response.ok) {
-      accountingUncertain = false;
-      throw providerError(response.status, body);
+      const failure = providerError(response.status, body);
+      accountingUncertain = !claudeRequestDefinitelyRejected(failure);
+      throw failure;
     }
-    usage = addUsage(usage, body?.usage);
-    accountingUncertain = !body?.usage || !Number.isFinite(body.usage.input_tokens) || !Number.isFinite(body.usage.output_tokens);
+    accountingUncertain = !confirmedUsage(body?.usage)
+      || !Number.isSafeInteger(catalogResearchCostMicroUsd(model, body?.usage))
+      || !Number.isSafeInteger(catalogResearchCostMicroUsd(model, addUsage(usage, body?.usage)));
     if (accountingUncertain) throw Object.assign(new Error("Research usage could not be confirmed."), { code: "research_cost_unconfirmed" });
+    usage = addUsage(usage, body.usage);
     previousRequestCostMicroUsd = catalogResearchCostMicroUsd(model, body.usage);
+    currentRequestCostMicroUsd = previousRequestCostMicroUsd;
+    if (receipt !== null) settleRequest(receipt, { costMicroUsd: currentRequestCostMicroUsd, uncertain: false });
+    receipt = null;
     const content = Array.isArray(body?.content) ? body.content : [];
     for (const block of content) {
       if (block?.type === "web_search_tool_result" && Array.isArray(block.content)) {
@@ -229,6 +251,10 @@ export async function researchCatalogSubject(subject, {
     // Earlier pause-turn responses can already have incurred a charge. Keep
     // their receipt even when a later request times out or is rejected.
     const failure = error instanceof Error ? error : new Error("Research failed.");
+    if (receipt !== null) {
+      settleRequest(receipt, { costMicroUsd: currentRequestCostMicroUsd, uncertain: accountingUncertain });
+      receipt = null;
+    }
     failure.costMicroUsd = catalogResearchCostMicroUsd(model, usage);
     failure.accountingUncertain = accountingUncertain;
     throw failure;

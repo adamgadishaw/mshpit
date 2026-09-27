@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { canonicalVenueKey } from "../../../src/domain/venueIdentity.mjs";
 import { backgroundJobEnabled } from "../../backgroundJobs.js";
 import { readCatalogKnowledgeControl } from "../../catalogKnowledgeControl.js";
-import { claudeCeilingLeftMicroUsd, utcMonthStartDay } from "../../claudeSpendCeiling.js";
+import { admitClaudeSpend, claudeCeilingLeftMicroUsd, claudeRequestDefinitelyRejected, utcMonthStartDay } from "../../claudeSpendCeiling.js";
 import { anthropicErrorSummary } from "../../anthropicErrors.js";
 import { privateErrorLabel } from "../../errors.js";
 import { startPeriodicJob } from "../../periodicJobScheduler.js";
@@ -129,12 +129,12 @@ function pruneSpendReceipts(database, at) {
 
 // Reserve before sending a paid request. The ledger survives a restart and
 // keeps old-day evidence when a request finishes after midnight.
-function reserveSpend(database, token, budget, at) {
+function reserveSpend(database, token, budget, at, reserveMicroUsd = RUN_RESERVE_MICRO_USD, countRun = true) {
   database.exec("SAVEPOINT catalog_research_reserve");
   try {
     database.prepare(`INSERT INTO catalog_research_spend(token,utc_day,reserved_micro_usd,charged_micro_usd,status,created_at)
-      VALUES (?,?,?,?,'reserved',?)`).run(token, budget.utcDay, RUN_RESERVE_MICRO_USD, RUN_RESERVE_MICRO_USD, at);
-    saveBudget(database, { ...budget, spentMicroUsd: budget.spentMicroUsd + RUN_RESERVE_MICRO_USD, runs: budget.runs + 1 });
+      VALUES (?,?,?,?,'reserved',?)`).run(token, budget.utcDay, reserveMicroUsd, reserveMicroUsd, at);
+    saveBudget(database, { ...budget, spentMicroUsd: budget.spentMicroUsd + reserveMicroUsd, runs: budget.runs + (countRun ? 1 : 0) });
     database.exec("RELEASE catalog_research_reserve");
   } catch (error) {
     database.exec("ROLLBACK TO catalog_research_reserve; RELEASE catalog_research_reserve");
@@ -350,15 +350,39 @@ export async function runCatalogResearchPass({
     const token = claimSubject(database, subject, at);
     if (!token) continue;
     saveNextType(database, subject.type === "artist" ? "venue" : "artist");
-    reserveSpend(database, token, budget, at);
+    const reserveRequest = (receiptToken, reserveMicroUsd, countRun) => {
+      const requestAt = now();
+      return admitClaudeSpend(database, { env, at: requestAt, reserveMicroUsd,
+        dailyCapMicroUsd: cap, monthlyCapMicroUsd: monthlyCap,
+        readDailySpendMicroUsd: () => readBudget(database, requestAt).spentMicroUsd,
+        readMonthlySpendMicroUsd: () => monthSpendMicroUsd(database, requestAt),
+        reserve: () => {
+          reserveSpend(database, receiptToken, readBudget(database, requestAt), requestAt, reserveMicroUsd, countRun);
+          return receiptToken;
+        },
+      });
+    };
+    const initialAdmission = reserveRequest(token, RUN_RESERVE_MICRO_USD, true);
+    if (!initialAdmission.ok) return { ...outcome, stopped: initialAdmission.reason };
     let result;
     try {
       result = await research(subject, { apiKey: String(env.ANTHROPIC_API_KEY).trim(), model, fetchImpl, signal,
         budgetMicroUsd: Math.max(0, Math.min(cap - budget.spentMicroUsd, monthLeft, ceilingLeft)),
-        requestReserveMicroUsd: RUN_RESERVE_MICRO_USD });
+        requestReserveMicroUsd: RUN_RESERVE_MICRO_USD,
+        admitRequest: ({ turn, reserveMicroUsd }) => {
+          if (turn === 0) return token;
+          const admission = reserveRequest(randomUUID(), reserveMicroUsd, false);
+          if (!admission.ok) throw Object.assign(new Error("Research allowance cannot cover another request."), {
+            code: "research_budget", budgetReason: admission.reason, accountingUncertain: false,
+          });
+          return admission.value;
+        },
+        settleRequest: (receipt, settlement) => settleSpend(database, receipt, { ...settlement, at: now() }),
+      });
     } catch (error) {
       const code = typeof error?.code === "string" ? error.code : "research_error";
-      const uncertain = error?.accountingUncertain !== false || !Number.isFinite(error?.costMicroUsd);
+      const uncertain = !claudeRequestDefinitelyRejected(error)
+        && (error?.accountingUncertain !== false || !Number.isFinite(error?.costMicroUsd));
       settleSpend(database, token, { costMicroUsd: error?.costMicroUsd, uncertain, at: now() });
       finishSubject(database, subject, token, { status: "failed", reason: code, costMicroUsd: Math.max(0, Number(error?.costMicroUsd) || 0), at: now() });
       budget = readBudget(database, now());

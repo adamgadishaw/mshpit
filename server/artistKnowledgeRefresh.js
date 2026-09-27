@@ -5,6 +5,7 @@ import { statfsSync, statSync } from "node:fs";
 import { artistBiographyIdentity } from "../src/domain/artistBiography.mjs";
 import { artistKnowledgeFieldIsStale, projectArtistKnowledgeSource } from "../src/domain/artistKnowledge.mjs";
 import { fetchArtistKnowledge, ARTIST_KNOWLEDGE_BIO_LIMIT } from "./artistKnowledgeProvider.js";
+import { artistKnowledgeFailureCategory, artistKnowledgeProviderOutage, createArtistKnowledgeCircuit } from "./artistKnowledgeCircuit.js";
 import { backgroundJobEnabled } from "./backgroundJobs.js";
 import { runBackgroundJob } from "./backgroundJobCoordinator.js";
 import { startPeriodicJob } from "./periodicJobScheduler.js";
@@ -15,14 +16,7 @@ import { ensureCatalogKnowledgeControl, readCatalogKnowledgeControl, reserveCata
   reserveCatalogKnowledgePass, catalogKnowledgeGrowthReady, completeCatalogKnowledgeSweep } from "./catalogKnowledgeControl.js";
 
 const MINUTE = 60_000, DAY = 24 * 60 * MINUTE;
-const COOLDOWN_KEY = "artist-knowledge:v1:cooldown";
 const SUMMARY_KEY = "artist-knowledge:v1:last-pass";
-const providerFailureCategory = (error) => {
-  const code = typeof error?.code === "string" ? error.code : "";
-  return code === "knowledge_busy"
-    || /^(?:wikidata|wikipedia)_(?:rate_limited|unavailable|maxlag|timeout|network|response|rejected|redirect)$/.test(code)
-    ? code : "provider_error";
-};
 const clamp = (value, fallback, min, max) => Number.isFinite(Number(value))
   ? Math.max(min, Math.min(max, Math.floor(Number(value)))) : fallback;
 const blank = (value) => value == null || (typeof value === "string" && !value.trim());
@@ -91,7 +85,7 @@ export function createArtistKnowledgeRefresher({
 } = {}) {
   ensureArtistKnowledgeSchema(database);
   ensureCatalogKnowledgeControl(database, { env, at: now() });
-  const meta = database.prepare("SELECT value FROM app_meta WHERE key=?");
+  const circuit = createArtistKnowledgeCircuit(database, { now });
   const setMeta = database.prepare("INSERT INTO app_meta(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value");
   const read = database.prepare(`SELECT a.*,p.artist_key AS profile_exists
     FROM artists a LEFT JOIN artist_profiles p ON p.artist_key=a.norm WHERE a.norm=?`);
@@ -188,7 +182,7 @@ export function createArtistKnowledgeRefresher({
   async function run({ limit, signal, budgetMs = 45_000, respectCadence = false } = {}) {
     const control = readCatalogKnowledgeControl(database, { env, at: now() });
     const stats = { checked: 0, prioritized: 0, filled: 0, bios: 0, countries: 0, unmatched: 0, failed: 0, stale: 0, deferred: 0,
-      failureCategory: null, cooldownUntil: null,
+      failureCategory: null, failureStatus: null, cooldownUntil: null, recoveryProbe: false,
       coolingDown: false, storagePaused: false, stoppedEarly: false,
       memoryPaused: false, budgetPaused: false, capPaused: false, modePaused: false,
       lanes: control?.limits.lanes || 1 };
@@ -210,15 +204,20 @@ export function createArtistKnowledgeRefresher({
     // time; admin pause/resume and process restarts cannot accelerate the loop.
     if (respectCadence && !reserveCatalogKnowledgePass(database, { env, at: now() })) return { ...stats, waiting: true };
     if (!safeToContinue()) return recordPass(stats);
-    const cooldownUntil = Number(meta.get(COOLDOWN_KEY)?.value);
-    if (Number.isSafeInteger(cooldownUntil) && cooldownUntil > now()) {
-      return recordPass({ ...stats, coolingDown: true, cooldownUntil });
+    const admission = circuit.begin();
+    if (!admission.allowed) {
+      return recordPass({ ...stats, coolingDown: true,
+        failureCategory: artistKnowledgeFailureCategory({ code: admission.state.cause }),
+        failureStatus: admission.state.status ?? null,
+        cooldownUntil: Math.max(admission.state.retryAt, admission.state.probeUntil) });
     }
+    const probeToken = admission.probeToken;
+    if (probeToken) { stats.lanes = 1; stats.recoveryProbe = true; }
     const deadline = AbortSignal.timeout(clamp(budgetMs, 45_000, 1000, 45_000));
     const stop = new AbortController();
     const workSignal = AbortSignal.any([deadline, stop.signal, ...(signal ? [signal] : [])]);
     const selectionAt = now();
-    const passLimit = clamp(limit, control.limits.maxArtistsPerPass, 1, control.limits.maxArtistsPerPass);
+    const passLimit = probeToken ? 1 : clamp(limit, control.limits.maxArtistsPerPass, 1, control.limits.maxArtistsPerPass);
     const priorityKeys = new Set(discoverArtistPriorityKeys(database, selectionAt));
     const priorityJson = JSON.stringify([...priorityKeys]);
     const rows = interleaveDiscoverPriority(
@@ -238,7 +237,7 @@ export function createArtistKnowledgeRefresher({
     };
     const beforeRequest = () => {
       if (!safeToContinue()) throw pauseError();
-      if (Number(meta.get(COOLDOWN_KEY)?.value) > now()) { stats.coolingDown = true; throw pauseError(); }
+      if (!circuit.permits(probeToken)) { stats.coolingDown = true; throw pauseError(); }
       if (!reserveCatalogKnowledgeBudget(database, "requests", { env, at: now() })) {
         stats.budgetPaused = true; throw pauseError();
       }
@@ -290,25 +289,35 @@ export function createArtistKnowledgeRefresher({
             return;
           }
           const failures = Math.min(10, Number(check.get(row.norm)?.failures || 0) + 1);
-          const retryAt = Math.max(now() + Math.min(DAY, 30 * MINUTE * 2 ** (failures - 1)),
-            Number.isFinite(Number(error?.retryAt)) ? Number(error.retryAt) : 0);
+          const outage = artistKnowledgeProviderOutage(error);
+          const providerState = outage ? circuit.fail(error) : null;
+          const retryAt = providerState?.retryAt ?? now() + Math.min(DAY, 30 * MINUTE * 2 ** (failures - 1));
           finish.run("failed", retryAt, failures, row.norm, mbid, token);
-          setMeta.run(COOLDOWN_KEY, String(retryAt)); stats.failed += 1;
-          stats.failureCategory = providerFailureCategory(error);
-          stats.cooldownUntil = retryAt;
-          stop.abort(new DOMException("Provider cooldown", "AbortError"));
-          return;
+          stats.failed += 1;
+          stats.failureCategory = artistKnowledgeFailureCategory(error);
+          stats.failureStatus = Number.isInteger(error?.status) && error.status >= 100 && error.status <= 599 ? error.status : null;
+          if (outage) {
+            stats.cooldownUntil = providerState.retryAt;
+            stop.abort(new DOMException("Provider cooldown", "AbortError"));
+            return;
+          }
+          // Quarantine only this identity. A rejected/malformed record must
+          // not prevent other artists from receiving their missing fields.
+          circuit.finishProbe(probeToken, true);
+          continue;
         }
         // Synchronous, short savepoint: lanes never hold a write transaction
         // across a network await, and current identity/profile edits win.
         const saved = persist(row, result, token, now());
+        circuit.finishProbe(probeToken, true);
         stats.bios += saved.bios; stats.countries += saved.countries;
         if (saved.bios || saved.countries) stats.filled += 1;
         else if (saved.stale) stats.stale += 1;
         else stats.unmatched += 1;
       }
     }
-    const outcomes = await Promise.allSettled(Array.from({ length: control.limits.lanes }, () => lane()));
+    const outcomes = await Promise.allSettled(Array.from({ length: stats.lanes }, () => lane()));
+    circuit.finishProbe(probeToken, false);
     const failedLane = outcomes.find((outcome) => outcome.status === "rejected");
     if (failedLane) throw failedLane.reason;
     if (!stats.failed && !stats.stoppedEarly && safeToContinue()) completeCatalogKnowledgeSweep(database, { at: now() });
