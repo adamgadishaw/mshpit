@@ -248,10 +248,9 @@ remains a broad context whose changing value can rerender unrelated consumers.
 - **Old Anthropic keys:** the working key is in the Default workspace. Delete
   the two Organization-scoped keys (`mshpit-render`, `mshpit news`; both
   expire 2026-10-26) in the Claude Console.
-- **Backup restore drill:** off-host backups upload daily since 2026-09-26
-  (`mshpit-backups`, 14-day lifecycle). Download one R2 snapshot, open it
-  locally, run `scripts/backup-db-verification.mjs` checks, and record the
-  result.
+- **Backup restore drill:** passed 2026-09-27 (see STATUS). Repeat monthly.
+  Still missing: the erasure/email-suppression journal that a restore must
+  replay before traffic (`SECURITY.md`, section 2).
 - **Unused R2 tokens:** Cloudflare lists three older "PIT ... media pipeline"
   tokens and an "R2 Account Token" with media access; keep only the one Render
   uses and revoke the rest.

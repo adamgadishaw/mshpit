@@ -6,6 +6,31 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-09-27 Restore drill from R2: passed
+
+At the owner's request, with explicit approval to download the snapshot:
+
+- Downloaded `db/pit-20260927-031736.db` from `mshpit-backups` through the
+  owner's Cloudflare dashboard session into a private recovery directory on
+  the owner's PC: 188,776,448 bytes, SHA-256 `70ee645c...b07371`, identical to
+  the object's `sha256` metadata written by the uploader.
+- `npm run backup:verify`: ok (page integrity, zero foreign-key violations,
+  core schema and identity); users=21, posts=73, artists=31,908,
+  tour_dates=67,721, artist_profiles=9, app_meta=142.
+- Isolated application restore: the snapshot copied as `pit.db` into an empty
+  data directory and served by the current code (`RENDER=true` so every
+  background job stays off, `BACKUP_ENABLED=false`, no email, media, Anthropic
+  or Ticketmaster credentials). Up in about 6 s; `/api/health` and
+  `/api/readiness` ok; catalogue totals 31,908 artists and 8,262 venues; a
+  member review post (656 characters, 3 media items) and U2's artist page came
+  back; the news desk served the 4 live stories with the withdrawn ones still
+  hidden; a story page returned 200. The production database was never
+  touched.
+- Not covered: the erasure/email-suppression journal replay in `SECURITY.md`
+  does not exist yet, so a real restore could still resurrect data deleted
+  after the snapshot. Campaign email recovery stays off by default for that
+  reason.
+
 ## 2026-09-26 Outage 20:52-21:48 EDT and R2 backup privacy probe
 
 - Outage: the deploy of 0480513 (news takedown) stopped the live instance at
