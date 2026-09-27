@@ -19,7 +19,7 @@ const { createNewsSummarizer, NEWS_MODEL, storyPrompt } = await import("./newsSu
 const { EDITORIAL } = await import("./newsEditorial.js");
 // Tests publish several stories at one fixed moment; the publishing slots are
 // tested on their own below.
-const UNSPACED = { ...EDITORIAL, slotHours: Array.from({ length: 20 }, () => 0), minGapMs: 0 };
+const UNSPACED = { ...EDITORIAL, breakingScore: -Infinity, breakingGapMs: 0, slotHours: Array.from({ length: 20 }, (_, index) => index) };
 // Feeds dated relative to a test's own clock rather than NOW.
 const rssAt = (base, items) => `<?xml version="1.0"?><rss><channel>${items.map(([title, url, hoursAgo]) =>
   `<item><title><![CDATA[${title}]]></title><link>${url}</link><pubDate>${new Date(base - hoursAgo * 3_600_000).toUTCString()}</pubDate></item>`).join("")}</channel></rss>`;
@@ -336,7 +336,12 @@ test("publishing slots spread the day in Toronto time and leave room for later n
   assert.deepEqual(slot("2026-09-27T07:30:00-04:00"), { open: false, reason: "next_slot" }, "nothing before the 8am slot");
   assert.deepEqual(slot("2026-09-27T08:05:00-04:00"), { open: true });
   assert.deepEqual(slot("2026-09-27T09:00:00-04:00", ["2026-09-27T08:05:00-04:00"]), { open: false, reason: "next_slot" }, "the 11am slot is next");
-  assert.deepEqual(slot("2026-09-27T12:30:00-04:00", ["2026-09-27T08:05:00-04:00"]), { open: true }, "an 11am slot left empty is still usable later");
+  assert.deepEqual(slot("2026-09-27T12:30:00-04:00", ["2026-09-27T08:05:00-04:00"]), { open: true }, "the 11am slot takes the top story any time until 2pm");
+  assert.deepEqual(slot("2026-09-27T21:30:00-04:00", ["2026-09-27T08:05:00-04:00"]), { open: true }, "at night only the 8pm slot is open");
+  assert.deepEqual(slot("2026-09-27T22:40:00-04:00", ["2026-09-27T08:05:00-04:00", "2026-09-27T20:10:00-04:00"]), { open: false, reason: "next_slot" },
+    "unused daytime slots do not pile up for the night");
+  assert.deepEqual(slot("2026-09-27T23:30:00-04:00", ["2026-09-27T08:05:00-04:00"]), { open: false, reason: "next_slot" }, "after 11pm only breaking news");
+  assert.deepEqual(slot("2026-09-27T23:30:00-04:00", ["2026-09-27T08:05:00-04:00"], 70), { open: true, breaking: true });
   assert.deepEqual(slot("2026-09-27T14:10:00-04:00", ["2026-09-27T08:05:00-04:00", "2026-09-27T13:00:00-04:00"]), { open: false, reason: "too_soon" },
     "two stories are never bunched, even with a slot due");
   const full = ["08:05", "11:05", "14:05", "17:05", "20:05"].map((time) => `2026-09-27T${time}:00-04:00`);

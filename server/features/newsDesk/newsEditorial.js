@@ -10,9 +10,11 @@
 // The day's stories are spread over five publishing slots in Toronto time
 // (8am, 11am, 2pm, 5pm, 8pm), so the day is not used up in the morning, at
 // noon or at night: each slot takes the top story available at that moment
-// and later slots stay free for news that breaks later. A slot with nothing
-// good enough stays open until something is, but stories are never bunched
-// (two hours apart). Breaking news goes out at once and uses the next slot.
+// and later slots stay free for news that breaks later. A slot lasts three
+// hours and takes one story; a slot with nothing good enough passes unused
+// rather than piling up for the evening, and after 11pm only breaking news
+// goes out. Stories are at least two hours apart. Breaking news goes out at
+// once and uses the slot it falls in, or the next one.
 
 const HOUR = 60 * 60 * 1000;
 
@@ -20,6 +22,7 @@ export const EDITORIAL = Object.freeze({
   minOutlets: 3,
   timeZone: "America/Toronto",
   slotHours: Object.freeze([8, 11, 14, 17, 20]),
+  slotLengthHours: 3,
   minGapMs: 2 * HOUR,
   breakingScore: 55,
   breakingGapMs: 30 * 60 * 1000,
@@ -40,18 +43,37 @@ export function localClock(at, timeZone = EDITORIAL.timeZone) {
   return { day: `${parts.year}-${parts.month}-${parts.day}`, hour: Number(parts.hour) + Number(parts.minute) / 60 };
 }
 
+// The slot open at a local hour, or null between slots.
+function openSlot(hour, editorial) {
+  for (let index = editorial.slotHours.length - 1; index >= 0; index -= 1) {
+    const start = editorial.slotHours[index];
+    if (hour >= start) return hour < start + editorial.slotLengthHours ? index : null;
+  }
+  return null;
+}
+
+// The slot a published story used: the one open when it went out, or for
+// breaking news between slots, the next one.
+function usedSlot(hour, editorial) {
+  const open = openSlot(hour, editorial);
+  if (open !== null) return open;
+  const next = editorial.slotHours.findIndex((start) => start > hour);
+  return next === -1 ? editorial.slotHours.length : next;
+}
+
 // May a story with this score go out now? `published` holds the times of
 // recent published stories. Returns { open, breaking?, reason? }.
 export function publishingSlot({ at, published = [], score = 0, editorial = EDITORIAL } = {}) {
   const now = localClock(at, editorial.timeZone);
-  const today = published.filter((time) => localClock(time, editorial.timeZone).day === now.day).length;
+  const used = published.map((time) => localClock(time, editorial.timeZone))
+    .filter((clock) => clock.day === now.day).map((clock) => usedSlot(clock.hour, editorial));
   const gap = published.length ? at - Math.max(...published) : Infinity;
-  if (today >= editorial.slotHours.length) return { open: false, reason: "day_full" };
+  if (used.length >= editorial.slotHours.length) return { open: false, reason: "day_full" };
   if (score >= editorial.breakingScore) {
     return gap >= editorial.breakingGapMs ? { open: true, breaking: true } : { open: false, reason: "too_soon" };
   }
-  const due = editorial.slotHours.filter((hour) => now.hour >= hour).length;
-  if (today >= due) return { open: false, reason: "next_slot" };
+  const slot = openSlot(now.hour, editorial);
+  if (slot === null || used.includes(slot)) return { open: false, reason: "next_slot" };
   if (gap < editorial.minGapMs) return { open: false, reason: "too_soon" };
   return { open: true };
 }

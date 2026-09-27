@@ -153,8 +153,8 @@ services:
       # Mshpit News: every 20 minutes, reads eight music outlets' RSS feeds and
       # posts from @news_mod only big music news: at least three independent
       # outlets, ranked by coverage, Wikipedia buzz, artist size and Mshpit
-      # fans; five publishing slots a day in Toronto time (8am, 11am, 2pm, 5pm,
-      # 8pm), each taking the top story at that moment, breaking news at once
+      # fans; five 3-hour publishing slots a day in Toronto time (8am, 11am, 2pm,
+      # 5pm, 8pm), one story each, breaking news at once
       # (server/features/newsDesk/newsEditorial.js). Uses the same
       # ANTHROPIC_API_KEY, about 2 cents a story; spending stops at
       # NEWS_DESK_DAILY_USD per day, NEWS_DESK_MONTHLY_USD per month, or when

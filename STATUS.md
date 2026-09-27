@@ -14,13 +14,14 @@ those leaving room for more news later on in the day." The first version
 counted days in UTC and allowed one story every 3 hours from midnight UTC, so
 all five would have gone out between 8pm and 8am Toronto time.
 
-- `publishingSlot` in `newsEditorial.js`: five slots a day in Toronto time
-  (8am, 11am, 2pm, 5pm, 8pm; the day starts at local midnight, clock changes
-  handled). Each slot takes the top story available at that moment; a slot
-  with nothing good enough stays open until something is, but stories are at
-  least 2 hours apart. Breaking news (score 55+) goes out at once, at least 30
-  minutes after the previous story, and uses the next slot. Never more than
-  five a day.
+- `publishingSlot` in `newsEditorial.js`: five 3-hour slots a day in Toronto
+  time (8-11am, 11am-2pm, 2-5pm, 5-8pm, 8-11pm; the day starts at local
+  midnight, clock changes handled). Each slot takes one story, the top one
+  available while it is open; a slot with nothing good enough passes unused
+  instead of piling up for the evening. Stories are at least 2 hours apart.
+  After 11pm and before 8am only breaking news (score 55+) goes out, at least
+  30 minutes after the previous story, using the slot it falls in or the next
+  one. Never more than five a day.
 - The log line for each published story names its slot (`open`/`breaking`).
 
 ## 2026-09-26 Mshpit News editorial policy: big news only
