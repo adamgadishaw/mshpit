@@ -79,7 +79,8 @@ No production snapshot or database was altered by developing these safeguards.
 The news desk checks feeds every 20 minutes but can publish only within the
 five three-hourly Toronto slots described in
 `server/features/newsDesk/README.md`. This is a publication allowance, not a
-promise to invent five stories on a quiet day. The default quiet-day fallback
+promise to invent stories on a quiet day. The owner-approved expansion allows
+up to two supported stories per slot and ten per local day. The default quiet-day fallback
 allows one story backed by two independent publisher groups when nothing has
 been published that day; normal and sensitive-story standards remain stronger.
 

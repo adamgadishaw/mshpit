@@ -19,7 +19,7 @@ const createNewsDesk = options => createUnboundNewsDesk({ ...options,
   env: { NEWS_DESK_ACCOUNT_ID: "news_desk_account", ...options.env } });
 const { createNewsSummarizer, NEWS_MODEL, storyPrompt } = await import("./newsSummarizer.js");
 const { EDITORIAL } = await import("./newsEditorial.js");
-// Most fixtures use the real policy; each published story gets its own slot.
+// Most fixtures use the real policy, including two supported stories per slot.
 const UNSPACED = EDITORIAL;
 // Feeds dated relative to a test's own clock rather than NOW.
 const rssAt = (base, items) => `<?xml version="1.0"?><rss><channel>${items.map(([title, url, hoursAgo]) =>
@@ -253,14 +253,15 @@ test("the desk writes a full story from the articles and files it under each art
 });
 
 test("the desk is cheap by default and stops at the shared Claude ceiling", async () => {
-  assert.deepEqual(newsDeskBudget({}), { dailyUsd: 0.3, monthlyUsd: 6 });
+  assert.deepEqual(newsDeskBudget({}), { dailyUsd: 0.75, monthlyUsd: 15 });
+  assert.deepEqual(newsDeskBudget({ NEWS_DESK_DAILY_USD: "0", NEWS_DESK_MONTHLY_USD: "2" }), { dailyUsd: 0, monthlyUsd: 2 });
   const desk = createNewsDesk({ database: db, fetchText: async () => rss([]), now: () => NOW, env: {} });
   assert.ok(desk.budgetLeft() > 0.1);
   db.exec(`CREATE TABLE IF NOT EXISTS catalog_research_spend (token TEXT PRIMARY KEY,utc_day TEXT NOT NULL,reserved_micro_usd INTEGER NOT NULL,
     charged_micro_usd INTEGER NOT NULL,status TEXT NOT NULL,created_at INTEGER NOT NULL,settled_at INTEGER)`);
-  db.prepare("INSERT INTO catalog_research_spend VALUES ('ceiling-test','2026-09-03',0,9990000,'settled',0,0)").run();
+  db.prepare("INSERT INTO catalog_research_spend VALUES ('ceiling-test','2026-09-03',0,19990000,'settled',0,0)").run();
   try {
-    assert.ok(desk.budgetLeft() <= 0.01, "catalog research and the desk share one $10 month");
+    assert.ok(desk.budgetLeft() <= 0.01, "catalog research and the desk share one $20 month");
   } finally {
     db.prepare("DELETE FROM catalog_research_spend WHERE token='ceiling-test'").run();
   }
@@ -353,20 +354,20 @@ test("publishing slots spread the day in Toronto time and leave room for later n
     "unused daytime slots do not pile up for the night");
   assert.deepEqual(slot("2026-09-27T23:30:00-04:00", ["2026-09-27T08:05:00-04:00"]), { open: false, reason: "next_slot" }, "nothing after the last slot closes");
   assert.deepEqual(slot("2026-09-27T23:30:00-04:00", ["2026-09-27T08:05:00-04:00"], 70), { open: false, reason: "next_slot" });
-  assert.deepEqual(slot("2026-09-27T14:10:00-04:00", ["2026-09-27T08:05:00-04:00", "2026-09-27T13:00:00-04:00"]), { open: false, reason: "next_slot" },
-    "a legacy between-slot story consumes its next slot");
-  const full = ["08:05", "11:05", "14:05", "17:05", "20:05"].map((time) => `2026-09-27T${time}:00-04:00`);
-  assert.deepEqual(slot("2026-09-27T23:00:00-04:00", full, 90), { open: false, reason: "day_full" }, "five a day, breaking or not");
+  assert.deepEqual(slot("2026-09-27T14:10:00-04:00", ["2026-09-27T08:05:00-04:00", "2026-09-27T13:00:00-04:00"]), { open: false, reason: "too_soon" },
+    "a legacy between-slot story consumes one place and retains the interval gap");
+  const full = ["08:05", "11:05", "14:05", "17:05", "20:05"].flatMap((time) => Array(2).fill(`2026-09-27T${time}:00-04:00`));
+  assert.deepEqual(slot("2026-09-27T23:00:00-04:00", full, 90), { open: false, reason: "day_full" }, "ten a day, breaking or not");
   assert.deepEqual(slot("2026-09-28T06:00:00-04:00", full), { open: false, reason: "next_slot" }, "a new Toronto day starts at local midnight");
   assert.deepEqual(slot("2026-09-27T06:00:00-04:00", [], 60), { open: false, reason: "next_slot" }, "breaking scores never bypass cadence");
-  assert.deepEqual(slot("2026-09-27T08:20:00-04:00", ["2026-09-27T06:00:00-04:00"]), { open: false, reason: "next_slot" },
-    "and it used the 8am slot");
+  assert.deepEqual(slot("2026-09-27T08:20:00-04:00", ["2026-09-27T06:00:00-04:00"]), { open: true },
+    "the legacy item uses one 8am place, leaving one after the gap");
   // Clocks change: 8am local is 12:00 UTC in summer and 13:00 UTC in winter.
   assert.deepEqual(slot("2026-11-02T12:30:00Z"), { open: false, reason: "next_slot" });
   assert.deepEqual(slot("2026-11-02T13:05:00Z"), { open: true });
 });
 
-test("the desk publishes the top story when a slot opens", async () => {
+test("the desk publishes the top two supported stories when a slot opens", async () => {
   newsAccount();
   for (const [norm, name, popularity] of [["big star", "Big Star Act", 92], ["small band", "Small Band Act", 40]]) {
     db.prepare(`INSERT INTO artists (norm,name,popularity,created_at,updated_at) VALUES (?,?,?,?,?)
@@ -396,7 +397,7 @@ test("the desk publishes the top story when a slot opens", async () => {
 
   clock = Date.parse("2026-09-29T08:05:00-04:00");
   const first = await desk.publishPass();
-  assert.equal(first.published, 1);
+  assert.equal(first.published, 2);
   assert.match(written[0], /^Big Star Act/u, "five outlets and a Wikipedia spike beat three outlets");
   assert.equal(first.picked[0].signals.wikiRatio, 8);
   assert.ok(first.picked[0].score > 60);
@@ -404,7 +405,7 @@ test("the desk publishes the top story when a slot opens", async () => {
   clock = Date.parse("2026-09-29T10:00:00-04:00");
   assert.equal((await desk.publishPass()).slot, "next_slot", "the next story waits for the 11am slot");
   clock = Date.parse("2026-09-29T11:05:00-04:00");
-  assert.equal((await desk.publishPass()).published, 1, "at 11 the best story left goes out");
+  assert.equal((await desk.publishPass()).published, 0, "the next slot does not repeat either published story");
 
   const stored = db.prepare("SELECT score,signals FROM news_stories WHERE id='rank-1'").get();
   assert.equal(JSON.parse(stored.signals).groups, 5);
@@ -432,12 +433,15 @@ test("breaking news waits for a slot, and consumed slots cannot be reused", asyn
   clock += 10 * 60_000;
   feeds = feedsFor("beta");
   await desk.ingest();
-  assert.equal((await desk.publishPass()).slot, "next_slot", "the current slot is already consumed");
+  assert.equal((await desk.publishPass()).published, 1, "a repeat pass may use the second place only");
+  assert.equal((await desk.publishPass()).slot, "next_slot", "both current places are now consumed");
+  feeds = feedsFor("gamma");
+  await desk.ingest();
   clock = Date.parse("2026-09-30T11:00:00-04:00");
   assert.equal((await desk.publishPass()).published, 1);
 
   const limited = createNewsDesk({ database: db, fetchText: async (url) => feeds[url] || rss([]), summarize, now: () => clock, env: {},
-    editorial: { ...EDITORIAL, breakingScore: 35, slotHours: [8, 11] }, newId: () => `limited-${++sequence}` });
+    editorial: { ...EDITORIAL, breakingScore: 35, slotHours: [8] }, newId: () => `limited-${++sequence}` });
   clock += 60 * 60_000;
   feeds = feedsFor("gamma");
   await limited.ingest();
@@ -529,9 +533,9 @@ test("the owner can take stories down once, without resetting historical publica
   // Published stories count even if they predate the scoring policy or are
   // later withdrawn; metadata changes never reopen the daily allowance.
   const evening = Date.parse("2026-10-07T20:05:00-04:00");
-  for (let index = 0; index < 5; index += 1) {
-    db.prepare(`INSERT INTO news_stories (id,status,headline,summary,post_id,created_at,updated_at) VALUES (?,'published','Old story','s',?,?,?)`)
-      .run(`old-${index}`, `news_old-${index}`, evening - (60 + index) * 60_000, evening - (60 + index) * 60_000);
+  for (let index = 0; index < 10; index += 1) {
+    db.prepare(`INSERT INTO news_stories (id,status,headline,summary,post_id,created_at,updated_at) VALUES (?,?,'Old story','s',?,?,?)`)
+      .run(`old-${index}`, index % 2 ? "declined" : "published", `news_old-${index}`, evening - (60 + index) * 60_000, evening - (60 + index) * 60_000);
   }
   const feeds = Object.fromEntries(["https://www.stereogum.com/category/news/feed/", "https://www.nme.com/news/music/feed", "https://pitchfork.com/feed/feed-news/rss"]
     .map((url, index) => [url, rssAt(evening, [[`Reading Festival Adds Surprise Headliner For Sunday ${index}`, `https://evening-${index}.test/f`, 0.5]])]));
@@ -539,7 +543,9 @@ test("the owner can take stories down once, without resetting historical publica
     artists: [], supporting: reports, costUsd: 0.01 });
   const desk = createNewsDesk({ database: db, fetchText: async (url) => feeds[url] || rss([]), summarize, now: () => evening, env: {}, newId: () => "evening-1" });
   await desk.ingest();
-  assert.equal((await desk.publishPass()).published, 0, "five earlier publications still use the daily allowance");
+  const capped = await desk.publishPass();
+  assert.equal(capped.published, 0, "ten earlier publications still use the daily allowance");
+  assert.equal(capped.slot, "day_full", "withdrawn publications and legacy off-slot publications still count");
 });
 
 test("each Claude call holds its worst-case price first, and a failed call stays counted", async () => {
@@ -715,8 +721,10 @@ test("publication rechecks the consumed slot and account authorization after pai
     seedEditorialReports(`race-${race}`, at);
     const desk = createNewsDesk({ database: db, fetchText, now: () => at, env: {}, newId: () => `race-${race}`,
       summarize: async (reports) => {
-        if (race === "slot") db.prepare("INSERT INTO news_stories(id,status,post_id,created_at,updated_at) VALUES (?,'published',?,?,?)")
-          .run("race-competitor", "news_race-competitor", at, at);
+        if (race === "slot") {
+          for (const index of [1, 2]) db.prepare("INSERT INTO news_stories(id,status,post_id,created_at,updated_at) VALUES (?,'published',?,?,?)")
+            .run(`race-competitor-${index}`, `news_race-competitor-${index}`, at, at);
+        }
         else db.prepare("UPDATE users SET is_banned=1 WHERE id='news_desk_account'").run();
         return acceptedNews(reports);
       } });
@@ -865,6 +873,8 @@ test("five fixed slots enforce the daily cap and fallback never bypasses a used 
     const at = Date.parse(`2027-02-14T${String(hour).padStart(2, "0")}:00:00-05:00`);
     assert.equal(publishingSlot({ at, published: used }).open, true);
     used.push(at);
+    assert.equal(publishingSlot({ at, published: used }).open, true, "second place is available even at the same timestamp");
+    used.push(at);
     assert.equal(publishingSlot({ at: at + 60_000, published: used }).open, false);
     assert.equal(twoPublisherFallbackAllowed({ at: at + 60_000, published: used, editorial: { ...EDITORIAL, fallbackMode: "empty_slot" } }), false);
   }
@@ -929,4 +939,157 @@ test("publication stays with its bound author when the handle is reclaimed durin
     db.prepare("DELETE FROM users WHERE id='news_impostor_fixture'").run();
     db.prepare("UPDATE users SET handle=? WHERE id='news_desk_account'").run(NEWS_DESK_HANDLE);
   }
+});
+
+test("two-place windows retain DST, Toronto dates, legacy spacing and one empty-slot fallback", async () => {
+  const { publishingSlot, twoPublisherFallbackAllowed } = await import("./newsEditorial.js");
+  for (const iso of ["2026-03-08T12:00:00Z", "2026-11-01T13:00:00Z", "2026-10-01T00:00:00Z"]) {
+    const at = Date.parse(iso);
+    assert.equal(publishingSlot({ at, published: [at] }).open, true);
+    assert.equal(publishingSlot({ at, published: [at, at] }).open, false);
+    assert.equal(twoPublisherFallbackAllowed({ at, published: [at], editorial: { ...EDITORIAL, fallbackMode: "empty_slot" } }), false);
+  }
+  const last = Date.parse("2026-09-30T20:29:59-04:00");
+  assert.equal(publishingSlot({ at: last, published: [last - 1000] }).open, true);
+  assert.equal(publishingSlot({ at: last + 1000, published: [last - 1000] }).open, false);
+  const morning = Date.parse("2026-10-01T08:00:00-04:00");
+  assert.equal(publishingSlot({ at: morning, published: [last, last] }).open, true, "UTC October receipts do not consume the next Toronto day");
+});
+
+const twoPlaceHeadlines = [
+  "Aurora Summit Festival Announces Weekend Headliners",
+  "Silver Harbour Orchestra Announces Arena Residency Dates",
+  "Crimson Satellite Unveils Debut Album Tracklist",
+  "Emerald Horizon Singer Wins Grammy Lifetime Achievement Award",
+];
+function seedTwoPlaceCandidates(label, at, count = 3) {
+  for (let index = 0; index < count; index += 1) seedEditorialReports(`${label}-${index}`, at, undefined, twoPlaceHeadlines[index]);
+}
+
+test("one paid decline can be followed by two supported stories within the same three-call pass", async () => {
+  const at = Date.parse("2027-04-01T08:00:00-04:00");
+  seedTwoPlaceCandidates("decline-then-two", at);
+  let calls = 0, ids = 0;
+  const desk = createNewsDesk({ database: db, fetchText, now: () => at, env: {}, newId: () => `decline-two-${++ids}`,
+    summarize: async reports => acceptedNews(reports, { publish: ++calls !== 1, reason: "unconfirmed first candidate", costUsd: 0.01 }) });
+  const result = await desk.publishPass();
+  assert.deepEqual([calls, result.declined, result.published], [3, 1, 2]);
+  assert.equal((await desk.publishPass()).slot, "next_slot");
+  assert.equal(calls, 3, "a full slot starts no extra paid request");
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM news_desk_receipts WHERE day='2027-04-01' AND status='settled'").get().n, 3);
+});
+
+test("declines consume the three-call limit and the configured lower dollar budget", async () => {
+  for (const [index, cap] of ["0.75", "0.10"].entries()) {
+    const day = `2027-04-${String(5 + index * 4).padStart(2, "0")}`;
+    const at = Date.parse(`${day}T08:00:00-04:00`);
+    seedTwoPlaceCandidates(`decline-cap-${index}`, at, 4);
+    let calls = 0, ids = 0;
+    const desk = createNewsDesk({ database: db, fetchText, now: () => at, env: { NEWS_DESK_DAILY_USD: cap },
+      newId: () => `decline-cap-${index}-${++ids}`,
+      summarize: async reports => { calls += 1; return acceptedNews(reports, { publish: false, reason: "sources disagree", costUsd: 0.06 }); } });
+    const result = await desk.publishPass();
+    assert.equal(result.published, 0);
+    assert.equal(calls, index ? 1 : 3);
+    assert.equal(result.skippedForBudget, index ? 1 : 0);
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM news_desk_receipts WHERE day=?").get(day).n, calls);
+    assert.ok(Math.abs(db.prepare("SELECT SUM(charged_usd) n FROM news_desk_receipts WHERE day=?").get(day).n - calls * 0.06) < 1e-8);
+  }
+});
+
+test("overlapping requests for the same cluster publish once and keep both paid receipts", { timeout: 5000 }, async () => {
+  const at = Date.parse("2027-04-13T08:00:00-04:00");
+  seedEditorialReports("same-cluster-race", at);
+  let ready;
+  const admitted = new Promise(resolve => { ready = resolve; });
+  const pending = [];
+  const desks = [0, 1].map(index => createNewsDesk({ database: db, fetchText, now: () => at, env: {}, newId: () => `same-cluster-${index}`,
+    summarize: reports => new Promise(resolve => {
+      pending.push(() => resolve(acceptedNews(reports, { costUsd: 0.01 })));
+      if (pending.length === 2) ready();
+    }) }));
+  const passes = desks.map(desk => desk.publishPass());
+  await admitted;
+  pending[0]();
+  assert.equal((await passes[0]).published, 1);
+  pending[1]();
+  assert.equal((await passes[1]).published, 0);
+  assert.deepEqual(db.prepare("SELECT DISTINCT story_id FROM news_reports WHERE url LIKE '%/same-cluster-race'").all().map(row => row.story_id), ["same-cluster-0"]);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM news_stories WHERE id LIKE 'same-cluster-%'").get().n, 1);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM news_desk_receipts WHERE day='2027-04-13' AND status='settled'").get().n, 2);
+});
+
+test("three different clusters racing for a slot publish at most two without consuming losing evidence", { timeout: 5000 }, async () => {
+  const at = Date.parse("2027-04-17T08:00:00-04:00");
+  seedTwoPlaceCandidates("different-cluster-race", at);
+  let ready;
+  const admitted = new Promise(resolve => { ready = resolve; });
+  const pending = [];
+  const desks = [0, 1, 2].map(index => {
+    // Give each pass its independent snapshot of a different eligible cluster.
+    const snapshot = { exec: (...args) => db.exec(...args), prepare: sql => {
+      const statement = db.prepare(sql);
+      return /SELECT \* FROM news_reports WHERE story_id IS NULL/u.test(sql)
+        ? { all: (...args) => statement.all(...args).filter(row => row.url.endsWith(`/different-cluster-race-${index}`)) } : statement;
+    } };
+    return createNewsDesk({ database: snapshot, fetchText, now: () => at, env: {}, newId: () => `different-cluster-${index}`,
+      summarize: reports => new Promise(resolve => {
+        pending[index] = () => resolve(acceptedNews(reports, { costUsd: 0.01 }));
+        if (pending.filter(Boolean).length === 3) ready();
+      }) });
+  });
+  const passes = desks.map(desk => desk.publishPass());
+  await admitted;
+  for (const index of [0, 1, 2]) {
+    pending[index]();
+    assert.equal((await passes[index]).published, index < 2 ? 1 : 0);
+  }
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM news_stories WHERE id LIKE 'different-cluster-%'").get().n, 2);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM news_reports WHERE url LIKE '%/different-cluster-race-2' AND story_id IS NULL").get().n, 3);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM news_desk_receipts WHERE day='2027-04-17' AND status='settled'").get().n, 3);
+});
+
+test("slot closure during enrichment prevents payment, and closure or cancellation after payment prevents publication", async () => {
+  for (const [index, phase] of ["enrichment", "paid", "abort"].entries()) {
+    const day = `2027-04-${String(21 + index * 4).padStart(2, "0")}`;
+    let at = Date.parse(`${day}T08:29:00-04:00`);
+    seedEditorialReports(`closed-${phase}`, at);
+    const controller = new AbortController();
+    let calls = 0;
+    const desk = createNewsDesk({ database: db, fetchText, now: () => at, env: {}, newId: () => `closed-${phase}`,
+      fetchArticle: async () => { if (phase === "enrichment") at += 60_000; return "<p>Sources describe the announced festival.</p>"; },
+      summarize: async reports => {
+        calls += 1;
+        if (phase === "paid") at += 120_000;
+        if (phase === "abort") controller.abort();
+        return acceptedNews(reports, { costUsd: 0.01 });
+      } });
+    assert.equal((await desk.publishPass({ signal: controller.signal })).published, 0);
+    assert.equal(calls, phase === "enrichment" ? 0 : 1);
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM news_desk_receipts WHERE day=? AND status='settled'").get(day).n, calls);
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM news_reports WHERE url LIKE ? AND story_id IS NULL").get(`%/closed-${phase}`).n, 3);
+  }
+});
+
+test("a late concurrent decline cannot overwrite a published cluster or insert an orphan declined story", { timeout: 5000 }, async () => {
+  const at = Date.parse("2027-05-03T08:00:00-04:00");
+  seedEditorialReports("publish-decline-race", at);
+  let ready;
+  const admitted = new Promise(resolve => { ready = resolve; });
+  const pending = [];
+  const passes = [0, 1].map(index => createNewsDesk({ database: db, fetchText, now: () => at, env: {}, newId: () => `publish-decline-${index}`,
+    summarize: reports => new Promise(resolve => {
+      pending[index] = () => resolve(acceptedNews(reports, { publish: index === 0, reason: "late disagreement", costUsd: 0.01 }));
+      if (pending.filter(Boolean).length === 2) ready();
+    }) }).publishPass());
+  await admitted;
+  pending[0]();
+  assert.equal((await passes[0]).published, 1);
+  pending[1]();
+  const late = await passes[1];
+  assert.deepEqual([late.published, late.declined, late.waiting], [0, 0, 1]);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM news_stories WHERE id LIKE 'publish-decline-%'").get().n, 1);
+  assert.deepEqual(db.prepare("SELECT DISTINCT story_id FROM news_reports WHERE url LIKE '%/publish-decline-race'").all().map(row => row.story_id), ["publish-decline-0"]);
+  assert.equal(db.prepare("SELECT removed FROM posts WHERE id='news_publish-decline-0'").get().removed, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM news_desk_receipts WHERE day='2027-05-03' AND status='settled'").get().n, 2);
 });

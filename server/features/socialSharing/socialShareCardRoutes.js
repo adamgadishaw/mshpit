@@ -268,6 +268,7 @@ export function socialShareCardRoutes({
   resolveCurrentLicensedArtistPhoto = null,
   // Mshpit News posts share their story card: (postId) => story or null.
   resolveNewsStory = null,
+  resolveNewsArtwork = null,
   renderer = createSocialShareCardRenderer(),
   artworkEnv = process.env,
 } = {}) {
@@ -305,14 +306,20 @@ export function socialShareCardRoutes({
           ? resolveNewsStory(postId) : null;
         if (newsStory) {
           const snapshot = JSON.stringify(newsStory);
+          const newsModel = (story) => story ? newsShareCardModel(story, {
+            ...(typeof resolveNewsArtwork === "function" ? resolveNewsArtwork(story) : {}),
+            variant: "news",
+          }) : null;
+          model = newsModel(newsStory);
           assertShareCurrent = async () => {
             const latestBoundary = postBoundaryById.get(postId);
+            const currentStory = resolveNewsStory(postId);
             if (!latestBoundary || blockedEitherWay(user.id, latestBoundary.user_id)
-              || JSON.stringify(resolveNewsStory(postId)) !== snapshot) {
+              || JSON.stringify(currentStory) !== snapshot
+              || JSON.stringify(newsModel(currentStory)) !== JSON.stringify(model)) {
               throw new ApiError(404, "That story is not available to share.", "NOT_FOUND");
             }
           };
-          model = newsShareCardModel(newsStory, { variant: "news" });
           filename = "mshpit-news.png";
         } else {
           const document = await resolvePublicDocument(postPath(postId));

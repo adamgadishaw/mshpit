@@ -152,16 +152,17 @@ services:
       - key: CATALOG_RESEARCH_MONTHLY_USD
         value: "4"
       - key: ANTHROPIC_MONTHLY_USD
-        value: "10"
+        value: "20"
       - key: CATALOG_RESEARCH_MODEL
         value: "claude-sonnet-5"
       # Mshpit News: every 20 minutes, reads 17 music outlets' RSS feeds and
       # posts from @news_mod only big music news: at least three independent
       # outlets, ranked by coverage, Wikipedia buzz, artist size and Mshpit
       # fans; five 3-hour publishing slots a day in Toronto time (8am, 11am, 2pm,
-      # 5pm, 8pm), at most one story each; no off-slot breaking-news bypass
+      # 5pm, 8pm), up to two stories each and ten/day; no off-slot bypass
       # (server/features/newsDesk/newsEditorial.js). Uses the same
-      # ANTHROPIC_API_KEY, about 2 cents a story; spending stops at
+      # ANTHROPIC_API_KEY; declines and uncertain calls also consume budget.
+      # Each call needs reservation headroom; spending stops at
       # NEWS_DESK_DAILY_USD per day, NEWS_DESK_MONTHLY_USD per month, or when
       # all Claude features reach ANTHROPIC_MONTHLY_USD.
       # These non-secret values sync with the Blueprint. The API key remains
@@ -169,9 +170,9 @@ services:
       - key: NEWS_DESK_ENABLED
         value: "true"
       - key: NEWS_DESK_DAILY_USD
-        value: "0.30"
+        value: "0.75"
       - key: NEWS_DESK_MONTHLY_USD
-        value: "6"
+        value: "15"
       # Password recovery is disabled gracefully until both values are set. Never
       # log or expose reset links as a substitute for transactional email.
       - key: RESEND_API_KEY

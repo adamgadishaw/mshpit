@@ -23,12 +23,13 @@ const FEED_CURSOR_KEY = "news-desk:feed-cursor:v1";
 export const MAX_OPEN_REPORTS_PER_PASS = 1200;
 export const NEWS_DESK_HANDLE = "news_mod";
 
-// A story costs about 2 cents, so $0.30 a day covers the daily story limit.
+// Owner-approved allowance for up to two supported stories per slot. Each
+// attempt still needs reservation headroom; published volume is not guaranteed.
 // The desk also stops when all Claude features together reach the shared
 // monthly ceiling (server/claudeSpendCeiling.js).
 export const newsDeskBudget = (env = process.env) => ({
-  dailyUsd: positiveNumber(env.NEWS_DESK_DAILY_USD, 0.3),
-  monthlyUsd: positiveNumber(env.NEWS_DESK_MONTHLY_USD, 6),
+  dailyUsd: positiveNumber(env.NEWS_DESK_DAILY_USD, 0.75),
+  monthlyUsd: positiveNumber(env.NEWS_DESK_MONTHLY_USD, 15),
 });
 // Articles read per story: one per publisher group, so the write-up has more
 // than headlines to go on.
@@ -360,6 +361,12 @@ export function createNewsDesk({ database, fetchText, fetchArticle = null, summa
       .all(at - 36 * HOUR).map((row) => Number(row.created_at));
   }
 
+  function reportsUnclaimed(reports) {
+    const urls = [...new Set(reports.map((report) => report.url))];
+    return urls.length > 0 && database.prepare(`SELECT COUNT(*) AS n FROM news_reports
+      WHERE story_id IS NULL AND url IN (SELECT value FROM json_each(?))`).get(JSON.stringify(urls)).n === urls.length;
+  }
+
   function publishStory({ reports, result, at, costUsd, minPublishers = 3, score = 0, signals = {} }) {
     const id = newId();
     const postId = `news_${id}`;
@@ -379,11 +386,12 @@ export function createNewsDesk({ database, fetchText, fetchArticle = null, summa
     const sources = supporting.map((report) => ({ name: report.sourceName, sourceId: report.sourceId, group: report.group, url: report.url, title: report.title }));
     database.exec("BEGIN IMMEDIATE");
     try {
+      at = now(); // A database lock wait can also cross the end of the slot.
       // Network work may have crossed a slot boundary, or another publisher
       // may have won the slot. Recheck current authorization and policy here.
       const account = newsAccount();
       const published = publicationTimes(at);
-      if (!account || !publishingSlot({ at, published, editorial }).open
+      if (!account || !reportsUnclaimed(reports) || !publishingSlot({ at, published, editorial }).open
         || (minPublishers === 2 && !twoPublisherFallbackAllowed({ at, published, editorial }))) {
         database.exec("ROLLBACK");
         return null;
@@ -393,7 +401,7 @@ export function createNewsDesk({ database, fetchText, fetchArticle = null, summa
       database.prepare(`INSERT INTO news_stories (id,status,headline,summary,body,category,artist_keys,sources,post_id,cost_usd,score,signals,created_at,updated_at)
         VALUES (?,'published',?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, result.headline, result.summary, result.body || "", result.category, JSON.stringify(artistKeys),
         JSON.stringify(sources), postId, costUsd, score, JSON.stringify(signals), at, at);
-      const mark = database.prepare("UPDATE news_reports SET story_id=? WHERE url=?");
+      const mark = database.prepare("UPDATE news_reports SET story_id=? WHERE url=? AND story_id IS NULL");
       for (const report of reports) mark.run(id, report.url);
       database.exec("COMMIT");
     } catch (error) {
@@ -407,6 +415,9 @@ export function createNewsDesk({ database, fetchText, fetchArticle = null, summa
     const id = newId();
     database.exec("BEGIN IMMEDIATE");
     try {
+      // An overlapping pass can already have published or declined this
+      // cluster while this request was in flight. Never steal its reports.
+      if (!reportsUnclaimed(reports)) { database.exec("ROLLBACK"); return false; }
       database.prepare(`INSERT INTO news_stories (id,status,category,reason,cost_usd,score,signals,created_at,updated_at) VALUES (?,'declined',?,?,?,?,?,?,?)`)
         .run(id, result.category || storyCategory(reports), result.reason || "", result.costUsd || 0, score, JSON.stringify(signals), at, at);
       const mark = database.prepare("UPDATE news_reports SET story_id=? WHERE url=? AND story_id IS NULL");
@@ -416,6 +427,7 @@ export function createNewsDesk({ database, fetchText, fetchArticle = null, summa
       database.exec("ROLLBACK");
       throw error;
     }
+    return true;
   }
 
   // Every confirmed story's editorial score, best first. Coverage, artist size
@@ -452,7 +464,7 @@ export function createNewsDesk({ database, fetchText, fetchArticle = null, summa
     return ranked;
   }
 
-  // 2. Rank the confirmed stories and write the best one, if a publishing
+  // 2. Rank confirmed stories and write up to two, if a publishing
   // slot is open (see newsEditorial.js).
   async function publishPass({ signal } = {}) {
     const at = now();
@@ -477,14 +489,21 @@ export function createNewsDesk({ database, fetchText, fetchArticle = null, summa
     const fallback = twoPublisherFallbackAllowed({ at, published, editorial })
       ? clusters.filter((cluster) => !SENSITIVE_CATEGORIES.has(storyCategory(cluster)) && independentGroups(cluster) === 2) : [];
     let calls = 0;
+    const hasPlace = (minPublishers) => {
+      const current = now();
+      const history = publicationTimes(current);
+      return publishingSlot({ at: current, published: history, editorial }).open
+        && (minPublishers !== 2 || twoPublisherFallbackAllowed({ at: current, published: history, editorial }));
+    };
     // Try normal confirmation first. If every attempted normal candidate is
     // declined, a viable fallback may still use the remaining call budget.
     for (const { tier, minPublishers } of [{ tier: candidates, minPublishers: 3 }, { tier: fallback, minPublishers: 2 }]) {
-      if (signal?.aborted || calls >= editorial.callsPerPass || outcome.published || outcome.waiting || outcome.skippedForBudget) break;
+      if (signal?.aborted || calls >= editorial.callsPerPass || outcome.published >= 2 || outcome.waiting || outcome.skippedForBudget) break;
       if (!tier.length || (minPublishers === 2 && !twoPublisherFallbackAllowed({ at: now(), published: publicationTimes(now()), editorial }))) continue;
       const ranked = await rankCandidates(tier, now(), signal);
       for (const { cluster, score, signals } of ranked) {
-        if (signal?.aborted || calls >= editorial.callsPerPass) break;
+        if (signal?.aborted || calls >= editorial.callsPerPass || outcome.published >= 2 || !hasPlace(minPublishers)) break;
+        if (!reportsUnclaimed(cluster)) continue;
         // Present different owners first; a flood from one publisher must not
         // push independent confirmation beyond the prompt's six-report limit.
         const groups = new Set();
@@ -497,7 +516,8 @@ export function createNewsDesk({ database, fetchText, fetchArticle = null, summa
         const promptOptions = { minIndependentPublishers: minPublishers };
         if (budgetLeft(at) < worstCaseCostUsd(storyPrompt(shown, promptOptions))) { outcome.skippedForBudget += 1; break; }
         const reports = await withArticleLeads(shown, signal);
-        if (signal?.aborted) break;
+        if (signal?.aborted || !hasPlace(minPublishers)) break;
+        if (!reportsUnclaimed(cluster)) continue;
         const worstCase = worstCaseCostUsd(storyPrompt(reports, promptOptions));
         const admittedAt = now();
         const day = dayOf(admittedAt);
@@ -520,6 +540,9 @@ export function createNewsDesk({ database, fetchText, fetchArticle = null, summa
           throw error;
         }
         settleSpend(receipt, result.costUsd, now());
+        // Cancellation does not erase paid work, but it must prevent any new
+        // publication or follow-up request after the receipt is settled.
+        if (signal?.aborted) break;
         if (result.publish && result.headline && result.summary) {
           const sensitive = SENSITIVE_CATEGORIES.has(result.category) || SENSITIVE_CATEGORIES.has(storyCategory(cluster));
           const supporting = validatedSupportingReports(reports, result.supporting);
@@ -528,13 +551,13 @@ export function createNewsDesk({ database, fetchText, fetchArticle = null, summa
             if (written) {
               outcome.published += 1;
               outcome.picked.push({ headline: result.headline, score, signals });
-            } else outcome.waiting += 1;
-            break;
+            } else { outcome.waiting += 1; break; }
+            continue;
           }
           result = { ...result, publish: false, reason: "insufficient_independent_support" };
         }
-        declineStory({ reports: cluster, result, at: now(), score, signals });
-        outcome.declined += 1;
+        if (declineStory({ reports: cluster, result, at: now(), score, signals })) outcome.declined += 1;
+        else { outcome.waiting += 1; break; }
       }
     }
     return outcome;

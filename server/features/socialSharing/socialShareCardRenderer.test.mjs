@@ -14,8 +14,11 @@ import {
 import {
   createSocialShareCardRenderer,
   eventShareCardModel,
+  newsShareCardModel,
   renderSocialShareCardPng,
+  renderSocialShareCardResult,
   reviewShareCardModel,
+  socialShareCardEtag,
   socialShareCardConstants,
   socialShareCardSvg,
   SocialShareCardArtworkUnavailableError,
@@ -952,4 +955,213 @@ test("a news story renders as a text-only story card and a landscape link previe
   assert.match(socialShareCardSvg(link), /width="1200" height="630"/u);
   assert.equal(normalizedShareProcessInput(link).model.variant, "news-link");
   assert.equal(newsShareCardModel({ ...story, postId: "p_member_post" }), null, "only news desk posts get a news card");
+});
+function newsDocument(overrides = {}) {
+  return {
+    postId: "news_photo-fixture", category: "lineup", publishedAt: Date.parse("2026-09-27T12:00:00Z"),
+    headline: "The Example announce a new chapter",
+    summary: "The band has shared the first details of its next live shows.",
+    artists: [{ name: "The Example" }],
+    sources: ["Rolling Stone", "NME", "Stereogum"].map((name) => ({ name })),
+    ...overrides,
+  };
+}
+
+test("news accepts bounded trusted artwork only, with context included in the cache identity", () => {
+  const trusted = registeredLicensedArtwork();
+  const story = newsDocument({ photo: "https://rss.example/unlicensed.jpg", image: "https://rss.example/other.jpg" });
+  const model = newsShareCardModel(story, {
+    fallbackArtwork: [trusted, trusted, { source: "rss", url: story.photo }, { ...trusted, creditPath: "/photo-credits/invalid" }],
+    artworkContext: "Artist photo · The Example <not the event>",
+  });
+  assert.equal(model.artwork.length, 1);
+  assert.equal(model.artwork[0].url, trusted.url);
+  assert.doesNotMatch(JSON.stringify(model), /rss.example/u);
+  assert.equal(newsShareCardModel(story).artwork.length, 0);
+  assert.equal(newsShareCardModel(story, { fallbackArtwork: [trusted], artworkContext: "x".repeat(300) }).artworkContext.length, 100);
+  assert.notEqual(socialShareCardEtag(model), socialShareCardEtag({ ...model, artworkContext: "Different context" }));
+  const svg = socialShareCardSvg(model, { artworkDataUri: "data:image/jpeg;base64,AAAA", artwork: trusted });
+  assert.match(svg, /Artist photo · The Example &lt;not the event&gt;/u);
+  assert.doesNotMatch(svg, /<not the event>/u);
+  assert.match(svg, /AtlantaFX/u);
+  assert.match(svg, /xMidYMin slice/u, "known focal point remains part of the actual crop");
+});
+
+test("news photo renders portrait and landscape PNGs with licensed metadata and preserved readable sections", async () => {
+  const artwork = registeredLicensedArtwork();
+  const photo = await sharp({ create: { width: 960, height: 720, channels: 3, background: { r: 235, g: 22, b: 30 } } }).jpeg().toBuffer();
+  for (const variant of ["news", "news-link"]) {
+    const model = newsShareCardModel(newsDocument(), { variant, fallbackArtwork: [artwork], artworkContext: "Artist photo · The Example" });
+    const result = await renderSocialShareCardResult(model, { artworkBytes: photo, artwork });
+    const meta = await sharp(result.bytes).metadata();
+    assert.equal(meta.width, variant === "news" ? 1080 : 1200);
+    assert.equal(meta.height, variant === "news" ? 1920 : 630);
+    assert.ok(result.bytes.length < socialShareCardConstants.maxBytes);
+    assert.equal(result.artworkApplied, true);
+    assert.equal(result.artwork.creator, artwork.creator);
+    assert.match(meta.xmp.toString(), /AtlantaFX/u);
+    const sample = await sharp(result.bytes).extract({ left: variant === "news" ? 500 : 950, top: variant === "news" ? 600 : 250, width: 1, height: 1 }).removeAlpha().raw().toBuffer();
+    assert.ok(sample[0] > sample[1] + 100, "trusted photo is visible, not merely present in metadata");
+    const fallback = await renderSocialShareCardResult(model, { artworkBytes: Buffer.from("corrupt photograph"), artwork });
+    assert.equal(fallback.artworkApplied, false);
+    assert.equal(fallback.artwork, null);
+    assert.equal((await sharp(fallback.bytes).metadata()).width, meta.width);
+  }
+});
+
+test("long news photo headlines and source lines stay separated inside each card's safe area", () => {
+  const artwork = registeredLicensedArtwork();
+  const story = newsDocument({
+    headline: "A spectacular international collaboration brings a brand-new live show and an unforgettable evening of music to a new generation of fans around the world",
+    summary: "A very detailed summary about upcoming live music. ".repeat(10),
+    sources: ["A long music publication name", "Another long music publication", "One more music publication"].map((name) => ({ name })),
+  });
+  for (const variant of ["news", "news-link"]) {
+    const svg = socialShareCardSvg(newsShareCardModel(story, { variant, fallbackArtwork: [artwork] }), { artworkDataUri: "data:image/jpeg;base64,AAAA", artwork });
+    const baselines = (section) => [...svg.match(new RegExp('<g data-section="' + section + '">([\\s\\S]*?)</g>'))[1].matchAll(/<text[^>]* y="(\d+)"/gu)].map((match) => Number(match[1]));
+    const headline = baselines("news-headline");
+    const sources = baselines("news-sources");
+    assert.ok(headline.length > 1);
+    assert.ok(Math.max(...headline) + 60 < Math.min(...sources), "headline never overlaps the citations");
+    if (variant === "news") {
+      const lede = baselines("news-lede");
+      assert.ok(!lede.length || Math.max(...lede) + 50 < Math.min(...sources));
+      assert.ok(Math.min(...headline) > 940 && Math.max(...sources) < 1430);
+    } else {
+      assert.ok(Math.max(...headline) < 470 && Math.max(...sources) < 570);
+    }
+  }
+});
+
+test("news transient artwork fallback is coalesced, briefly cached, and recovers with a distinct photo ETag", async () => {
+  const artwork = registeredLicensedArtwork();
+  const model = newsShareCardModel(newsDocument(), { fallbackArtwork: [artwork], artworkContext: "Artist photo · The Example" });
+  const photo = await sharp({ create: { width: 24, height: 24, channels: 3, background: "#ed5511" } }).jpeg().toBuffer();
+  let clock = 1000, loads = 0, renders = 0;
+  const renderer = createSocialShareCardRenderer({
+    now: () => clock,
+    loadArtwork: async (_candidates, { acceptBytes }) => {
+      loads += 1;
+      if (loads === 1) throw new ShareArtworkTransientError("upstream_http");
+      return acceptBytes(photo, artwork);
+    },
+    renderPng: async (_model, { artworkDataUri, artwork: selected }) => {
+      renders += 1;
+      return { bytes: Buffer.alloc(128, artworkDataUri ? 2 : 1), artworkApplied: !!artworkDataUri, artwork: selected || null };
+    },
+  });
+  const [first, duplicate] = await Promise.all([renderer.render(model), renderer.render(model)]);
+  assert.equal(first.artworkFallback, true);
+  assert.notEqual(first.etag, socialShareCardEtag(model));
+  assert.equal(first.etag, duplicate.etag);
+  assert.equal(loads, 1);
+  clock = 5999;
+  const cached = await renderer.render(model);
+  assert.equal(cached.bytes, first.bytes);
+  assert.equal(cached.artworkFallback, true);
+  assert.equal(cached.etag, first.etag);
+  assert.equal(loads, 1);
+  clock = 6001;
+  const recovered = await renderer.render(model);
+  assert.equal(recovered.artworkFallback, undefined);
+  assert.equal(recovered.etag, socialShareCardEtag(model));
+  assert.notEqual(recovered.etag, first.etag);
+  assert.equal(recovered.artwork.url, artwork.url);
+  assert.equal(loads, 2);
+  assert.equal(renders, 2);
+});
+
+test("news's genuinely absent artwork stays cached without a fetch or temporary-fallback marker", async () => {
+  let loads = 0, renders = 0, clock = 10;
+  const renderer = createSocialShareCardRenderer({
+    now: () => clock,
+    loadArtwork: async () => { loads += 1; return null; },
+    renderPng: async () => { renders += 1; return Buffer.alloc(128, 1); },
+  });
+  const model = newsShareCardModel(newsDocument());
+  const first = await renderer.render(model);
+  clock += 100_000;
+  const second = await renderer.render(model);
+  assert.equal(first.bytes, second.bytes);
+  assert.equal(first.artworkFallback, undefined);
+  assert.equal(loads, 0);
+  assert.equal(renders, 1);
+});
+test("the exact bundled illustration is news-only and never mislabeled as the named artist", async () => {
+  const { NEWS_ILLUSTRATION_ARTWORK: illustration, NEWS_ILLUSTRATION_CONTEXT } = await import("../../newsIllustration.js");
+  const model = newsShareCardModel(newsDocument(), { fallbackArtwork: [illustration], artworkContext: "Artist photo · The Example" });
+  assert.deepEqual(model.artwork, [illustration]);
+  for (const url of ["file:///etc/passwd", illustration.url + "?other=1", "https://www.mshpit.com/images/private.jpg"]) {
+    assert.deepEqual(newsShareCardModel(newsDocument(), { fallbackArtwork: [{ ...illustration, url }] }).artwork, []);
+  }
+  assert.deepEqual(eventShareCardModel(eventDocument(), "going", { fallbackArtwork: [illustration] }).artwork, []);
+  assert.deepEqual(reviewShareCardModel(reviewDocument(), { fallbackArtwork: [illustration] }).artwork, []);
+  for (const variant of ["news", "news-link"]) {
+    const svg = socialShareCardSvg({ ...model, variant }, { artworkDataUri: "data:image/jpeg;base64,AAAA", artwork: illustration });
+    assert.match(svg, /Illustrative live-music photo/u);
+    assert.match(svg, /Melissa Askew \/ CC0/u);
+    assert.doesNotMatch(svg, /Artist photo · The Example/u);
+  }
+  assert.ok(NEWS_ILLUSTRATION_CONTEXT.includes("Illustrative"));
+});
+test("a forged non-news model cannot use the bundled illustration to satisfy mandatory artwork", async () => {
+  const { NEWS_ILLUSTRATION_ARTWORK: illustration } = await import("../../newsIllustration.js");
+  const model = { ...eventShareCardModel(eventDocument(), "going"), artwork: [illustration] };
+  let renders = 0;
+  const renderer = createSocialShareCardRenderer({
+    loadArtwork: async (_candidates, { acceptBytes }) => acceptBytes(Buffer.alloc(128), illustration),
+    renderPng: async () => { renders += 1; return { bytes: Buffer.alloc(128), artworkApplied: true }; },
+  });
+  await assert.rejects(renderer.render(model), SocialShareCardArtworkUnavailableError);
+  assert.equal(renders, 0);
+});
+
+test("falling through a primary artist to the bundled photo is briefly cached with its own ETag", async () => {
+  const { NEWS_ILLUSTRATION_ARTWORK: illustration } = await import("../../newsIllustration.js");
+  const artwork = registeredLicensedArtwork();
+  const model = newsShareCardModel(newsDocument(), { fallbackArtwork: [artwork, illustration], artworkContext: "Artist photo · The Example" });
+  const photo = await sharp({ create: { width: 24, height: 24, channels: 3, background: "#df8822" } }).jpeg().toBuffer();
+  let clock = 1000, loads = 0;
+  const renderer = createSocialShareCardRenderer({
+    now: () => clock,
+    loadArtwork: async (_candidates, { acceptBytes }) => {
+      loads += 1;
+      return acceptBytes(photo, loads === 1 ? illustration : artwork);
+    },
+    renderPng: async (_model, { artworkDataUri, artwork: selected }) => ({
+      bytes: Buffer.alloc(128, selected?.source === "bundled-news" ? 1 : 2),
+      artworkApplied: !!artworkDataUri, artwork: selected,
+    }),
+  });
+  const first = await renderer.render(model);
+  assert.equal(first.artworkFallback, true);
+  assert.equal(first.artwork.source, "bundled-news");
+  assert.notEqual(first.etag, socialShareCardEtag(model));
+  clock = 5999;
+  assert.equal((await renderer.render(model)).bytes, first.bytes);
+  assert.equal(loads, 1);
+  clock = 6001;
+  const recovered = await renderer.render(model);
+  assert.equal(recovered.artworkFallback, undefined);
+  assert.equal(recovered.artwork.source, "licensed-media");
+  assert.equal(recovered.etag, socialShareCardEtag(model));
+});
+
+test("optional news photos do not hide busy, abort, renderer, or mandatory-attendance errors", async () => {
+  const artwork = registeredLicensedArtwork();
+  const model = newsShareCardModel(newsDocument(), { fallbackArtwork: [artwork] });
+  for (const failure of [new SocialShareCardBusyError(), new DOMException("Cancelled", "AbortError"), new Error("renderer failed")]) {
+    let renders = 0;
+    const renderer = createSocialShareCardRenderer({
+      loadArtwork: async () => { throw failure; },
+      renderPng: async () => { renders += 1; return Buffer.alloc(128); },
+    });
+    await assert.rejects(renderer.render(model), (error) => error === failure);
+    assert.equal(renders, 0);
+  }
+  const renderer = createSocialShareCardRenderer({
+    loadArtwork: async () => { throw new ShareArtworkTransientError("upstream_http"); },
+    renderPng: async () => Buffer.alloc(128),
+  });
+  await assert.rejects(renderer.render(eventShareCardModel(eventDocument(), "going", { fallbackArtwork: [artwork] })), SocialShareCardArtworkUnavailableError);
 });

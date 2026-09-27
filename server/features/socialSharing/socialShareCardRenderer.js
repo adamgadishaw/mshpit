@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import sharp from "sharp";
 import { acquireMemoryWork } from "../../memoryAdmission.js";
 import { renderIsolatedSocialShareCard } from "./socialShareCardProcess.js";
+import { isNewsIllustrationArtwork, NEWS_ILLUSTRATION_ARTWORK, NEWS_ILLUSTRATION_CONTEXT } from "../../newsIllustration.js";
 
 import { eventPath, postPath } from "../../../src/domain/urls.mjs";
 import { newsCategoryLabel, newsSourceLine } from "../../../src/domain/newsDesk.mjs";
@@ -20,7 +21,7 @@ import {
 
 const CARD_WIDTH = 1080;
 const CARD_HEIGHT = 1920;
-const CARD_VERSION = "mshpit-social-story-v7";
+const CARD_VERSION = "mshpit-social-story-v8";
 const CANONICAL_ORIGIN = "https://www.mshpit.com";
 const MAX_RENDER_BYTES = 4 * 1024 * 1024;
 const MAX_ARTWORK_INPUT_BYTES = 6 * 1024 * 1024;
@@ -201,6 +202,7 @@ function normalizedFocalPoint(value) {
 function artworkCandidate(candidate) {
   if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return null;
   const source = candidate.source;
+  if (source === "bundled-news") return isNewsIllustrationArtwork(candidate) ? NEWS_ILLUSTRATION_ARTWORK : null;
   if (!["owned-media", "licensed-media"].includes(source)) return null;
   const url = normalizedHttpsUrl(candidate.url);
   if (!url) return null;
@@ -238,10 +240,11 @@ function artworkCandidate(candidate) {
     : null;
 }
 
-function normalizedArtwork(candidates) {
+function normalizedArtwork(candidates, { allowNewsIllustration = false } = {}) {
   const unique = new Map();
   for (const candidate of Array.isArray(candidates) ? candidates : []) {
     const normalized = artworkCandidate(candidate);
+    if (normalized?.source === "bundled-news" && !allowNewsIllustration) continue;
     if (normalized && !unique.has(normalized.url)) unique.set(normalized.url, normalized);
     if (unique.size >= 3) break;
   }
@@ -354,9 +357,9 @@ export function reviewShareCardModel(document, { fallbackArtwork = [] } = {}) {
   });
 }
 
-// A Mshpit News story: headline, lede and the outlets that confirmed it. It
-// never carries a photo; provider artist images are not ours to redistribute.
-export function newsShareCardModel(story, { variant = "news" } = {}) {
+// Only route-admitted owned/licensed catalogue artwork may accompany news.
+// A provider/RSS image or arbitrary story photo is never an export license.
+export function newsShareCardModel(story, { variant = "news", fallbackArtwork = [], artworkContext = "" } = {}) {
   if (!story || !["news", "news-link"].includes(variant)) return null;
   const postId = strictId(story.postId);
   const headline = cleanText(story.headline, 160);
@@ -372,6 +375,7 @@ export function newsShareCardModel(story, { variant = "news" } = {}) {
   const sources = variant === "news-link" && outlets.length > 3
     ? `Confirmed by ${outlets.slice(0, 2).join(", ")} and ${outlets.length - 2} more`
     : newsSourceLine({ sources: outlets.map((name) => ({ name })) });
+  const artwork = normalizedArtwork(fallbackArtwork, { allowNewsIllustration: true });
   return Object.freeze({
     version: CARD_VERSION,
     variant,
@@ -390,7 +394,8 @@ export function newsShareCardModel(story, { variant = "news" } = {}) {
     time: "",
     rating: "",
     quote: "",
-    artwork: Object.freeze([]),
+    artwork,
+    artworkContext: artwork.length ? cleanText(artworkContext, 100) : "",
     canonicalUrl: shareUrl,
   });
 }
@@ -732,39 +737,56 @@ const NEWS_CARD = Object.freeze({ x: 60, y: 250, width: 960, height: 1310, stubT
 // Black-weight headlines render wider than the width estimate assumes.
 const HEAVY_TEXT_WIDTH = 0.86;
 
-function newsShareSvg(model) {
+function newsPhotoCaption(model, artwork, { x, y, width, fontSize = 24, lineHeight = 30 } = {}) {
+  const credit = artworkCandidate(artwork);
+  const isIllustration = credit?.source === "bundled-news";
+  const context = isIllustration ? NEWS_ILLUSTRATION_CONTEXT.split(" · ")[0] : cleanText(model.artworkContext, 100) || "Catalogue photo";
+  const attribution = isIllustration ? NEWS_ILLUSTRATION_CONTEXT.split(" · ").slice(1).join(" · ")
+    : credit?.source === "licensed-media" ? `Photo: ${credit.creator} · ${credit.license}` : "";
+  return `<g data-section="news-photo-caption">${svgTextLines(wrapMeasuredLines(context, { maxWidth: width, fontSize, maxLines: 1 }), { x, y, lineHeight, fontSize, fill: "#e6dfd3", weight: 700 })}${svgTextLines(wrapMeasuredLines(attribution, { maxWidth: width, fontSize: fontSize - 2, maxLines: 1 }), { x, y: y + lineHeight, lineHeight, fontSize: fontSize - 2, fill: "#b9b3c2", weight: 500 })}</g>`;
+}
+
+function newsShareSvg(model, artworkDataUri = "", artwork = null) {
   const palette = paletteFor(model);
   const card = NEWS_CARD;
+  const hasArtwork = !!safeArtworkDataUri(artworkDataUri);
   const left = card.x + 56;
   const right = card.x + card.width - 56;
   const width = right - left;
-  const headlineLines = wrapMeasuredLines(model.headline, { maxWidth: width * HEAVY_TEXT_WIDTH, fontSize: 76, letterSpacing: -1, maxLines: 5 });
-  const headlineTop = card.y + 310;
-  const headlineBottom = headlineTop + (headlineLines.length - 1) * 84;
-  const ledeLines = wrapMeasuredLines(model.lede, { maxWidth: width, fontSize: 36, maxLines: 6 });
-  const ledeTop = headlineBottom + 96;
+  const headlineSize = hasArtwork ? 64 : 76;
+  const headlineHeight = hasArtwork ? 70 : 84;
+  const headlineLines = wrapMeasuredLines(model.headline, { maxWidth: width * HEAVY_TEXT_WIDTH, fontSize: headlineSize, letterSpacing: -1, maxLines: hasArtwork ? 4 : 5 });
+  const headlineTop = hasArtwork ? 995 : card.y + 310;
+  const headlineBottom = headlineTop + (headlineLines.length - 1) * headlineHeight;
+  const sourceLines = wrapMeasuredLines(model.sources, { maxWidth: width - 44, fontSize: 30, maxLines: 2 });
+  const sourceTop = card.stubTop - 72 - Math.max(0, sourceLines.length - 1) * 40;
+  const ledeTop = headlineBottom + (hasArtwork ? 64 : 80);
+  const ledeHeight = hasArtwork ? 42 : 52;
+  const ledeSize = hasArtwork ? 32 : 36;
+  const ledeLimit = Math.max(0, Math.min(hasArtwork ? 2 : 5, Math.floor((sourceTop - 74 - ledeTop) / ledeHeight) + 1));
+  const ledeLines = ledeLimit ? wrapMeasuredLines(model.lede, { maxWidth: width, fontSize: ledeSize, maxLines: ledeLimit }) : [];
   const aboutLines = wrapMeasuredLines(model.about ? `About ${model.about}` : "", { maxWidth: width, fontSize: 30, maxLines: 1 });
   const aboutTop = ledeTop + Math.max(0, ledeLines.length - 1) * 52 + (ledeLines.length ? 72 : 0);
-  const sourceLines = wrapMeasuredLines(model.sources, { maxWidth: width, fontSize: 30, maxLines: 2 });
-  const sourceTop = card.stubTop - 60 - Math.max(0, sourceLines.length - 1) * 40;
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${CARD_WIDTH}" height="${CARD_HEIGHT}" viewBox="0 0 ${CARD_WIDTH} ${CARD_HEIGHT}">
-  ${shareSvgDefs(palette, `<clipPath id="newsCard"><rect x="${card.x}" y="${card.y}" width="${card.width}" height="${card.height}" rx="40"/></clipPath>`)}
+  ${shareSvgDefs(palette, `<clipPath id="newsCard"><rect x="${card.x}" y="${card.y}" width="${card.width}" height="${card.height}" rx="40"/></clipPath><clipPath id="newsHero"><rect x="${card.x}" y="438" width="${card.width}" height="420"/></clipPath>`)}
   <rect width="${CARD_WIDTH}" height="${CARD_HEIGHT}" fill="#0b0815"/>
   <rect x="0" y="0" width="${CARD_WIDTH}" height="12" fill="url(#accent)"/>
-  <g data-layout="news-story" filter="url(#shadow)" clip-path="url(#newsCard)">
+  <g data-layout="news-story" data-artwork="${hasArtwork}" filter="url(#shadow)" clip-path="url(#newsCard)">
     <rect x="${card.x}" y="${card.y}" width="${card.width}" height="${card.height}" rx="40" fill="#121016"/>
     <rect x="${card.x}" y="${card.y}" width="${card.width}" height="12" fill="url(#accent)"/>
     ${communityMarkSvg({ x: card.x + card.width - 150, y: card.y + 190, scale: 0.36, opacity: 0.07 })}
+    ${hasArtwork ? artworkImage(artworkDataUri, { x: card.x, y: 438, width: card.width, height: 420, clipId: "newsHero", preserveAspectRatio: artworkCropAlignment(artwork) }) : ""}
   </g>
   <rect x="${left}" y="${card.y + 72}" width="64" height="64" rx="16" fill="url(#accent)"/>
   <path d="M${left + 24} ${card.y + 120}v-30l22-6v30" fill="none" stroke="${palette.ink}" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
   <circle cx="${left + 19}" cy="${card.y + 120}" r="6" fill="${palette.ink}"/><circle cx="${left + 41}" cy="${card.y + 114}" r="6" fill="${palette.ink}"/>
   <text x="${left + 88}" y="${card.y + 115}" fill="#fff8ee" font-family="Arial, Helvetica, sans-serif" font-size="32" font-weight="900" letter-spacing="6">MSHPIT NEWS</text>
-  <text x="${left}" y="${card.y + 196}" fill="${palette.start}" font-family="Arial, Helvetica, sans-serif" font-size="28" font-weight="800" letter-spacing="3">${escapeXml([model.kicker, model.date].filter(Boolean).join("  ·  "))}</text>
-  <g data-section="news-headline">${svgTextLines(headlineLines, { x: left, y: headlineTop, lineHeight: 84, fontSize: 76, fill: "#fff8ee", weight: 900, letterSpacing: -1 })}</g>
-  <g data-section="news-lede">${svgTextLines(ledeLines, { x: left, y: ledeTop, lineHeight: 52, fontSize: 36, fill: "#d9d4cc", weight: 600 })}</g>
-  ${svgTextLines(aboutLines, { x: left, y: aboutTop, lineHeight: 40, fontSize: 30, fill: palette.end, weight: 800 })}
+  <text x="${left}" y="${hasArtwork ? 412 : card.y + 196}" fill="${palette.start}" font-family="Arial, Helvetica, sans-serif" font-size="28" font-weight="800" letter-spacing="3">${escapeXml([model.kicker, model.date].filter(Boolean).join("  ·  "))}</text>
+  ${hasArtwork ? newsPhotoCaption(model, artwork, { x: left, y: 892, width, lineHeight: 30 }) : ""}
+  <g data-section="news-headline">${svgTextLines(headlineLines, { x: left, y: headlineTop, lineHeight: headlineHeight, fontSize: headlineSize, fill: "#fff8ee", weight: 900, letterSpacing: -1 })}</g>
+  <g data-section="news-lede">${svgTextLines(ledeLines, { x: left, y: ledeTop, lineHeight: ledeHeight, fontSize: ledeSize, fill: "#d9d4cc", weight: 600 })}</g>
+  ${!hasArtwork && aboutTop < sourceTop - 64 ? svgTextLines(aboutLines, { x: left, y: aboutTop, lineHeight: 40, fontSize: 30, fill: palette.end, weight: 800 }) : ""}
   ${sourceLines.length ? `<g data-section="news-sources"><path d="M${left} ${sourceTop - 10}l10 10 20-22" fill="none" stroke="#6fcf97" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>${svgTextLines(sourceLines, { x: left + 44, y: sourceTop, lineHeight: 40, fontSize: 30, fill: "#b9b3c2", weight: 700 })}</g>` : ""}
   <line x1="${card.x + 30}" y1="${card.stubTop}" x2="${card.x + card.width - 30}" y2="${card.stubTop}" stroke="#3d3a46" stroke-width="3" stroke-dasharray="10 12"/>
   <circle cx="${card.x}" cy="${card.stubTop}" r="22" fill="#0b0815"/><circle cx="${card.x + card.width}" cy="${card.stubTop}" r="22" fill="#0b0815"/>
@@ -776,7 +798,36 @@ function newsShareSvg(model) {
 
 // The same story as a 1200x630 link preview for X, Facebook, iMessage and
 // Discord: brand, category, headline and sources, readable at thumbnail size.
-function newsLinkSvg(model) {
+function newsPhotoLinkSvg(model, artworkDataUri, artwork) {
+  const palette = paletteFor(model);
+  const left = 64;
+  const photoX = 740;
+  const width = photoX - left - 48;
+  const headlineLines = wrapMeasuredLines(model.headline, { maxWidth: width * HEAVY_TEXT_WIDTH, fontSize: 44, letterSpacing: -0.5, maxLines: 5 });
+  const sourceLines = wrapMeasuredLines(model.sources, { maxWidth: width - 34, fontSize: 20, maxLines: 2 });
+  const categoryLines = wrapMeasuredLines([model.kicker, model.date].filter(Boolean).join(" · "), { maxWidth: width, fontSize: 20, maxLines: 1, letterSpacing: 1 });
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${LINK_CARD_WIDTH}" height="${LINK_CARD_HEIGHT}" viewBox="0 0 ${LINK_CARD_WIDTH} ${LINK_CARD_HEIGHT}">
+  ${shareSvgDefs(palette, `<clipPath id="newsLinkPhoto"><rect x="${photoX}" y="0" width="${LINK_CARD_WIDTH - photoX}" height="${LINK_CARD_HEIGHT}"/></clipPath>`)}
+  <rect width="${LINK_CARD_WIDTH}" height="${LINK_CARD_HEIGHT}" fill="#0f0d13"/>
+  <g data-layout="news-link-photo">${artworkImage(artworkDataUri, { x: photoX, y: 0, width: LINK_CARD_WIDTH - photoX, height: LINK_CARD_HEIGHT, clipId: "newsLinkPhoto", preserveAspectRatio: artworkCropAlignment(artwork) })}</g>
+  <rect x="${photoX}" y="510" width="${LINK_CARD_WIDTH - photoX}" height="120" fill="#0b0815" fill-opacity="0.92"/>
+  ${newsPhotoCaption(model, artwork, { x: photoX + 28, y: 558, width: LINK_CARD_WIDTH - photoX - 56, fontSize: 18, lineHeight: 26 })}
+  <rect width="${LINK_CARD_WIDTH}" height="10" fill="url(#accent)"/>
+  <rect x="${left}" y="56" width="48" height="48" rx="13" fill="url(#accent)"/>
+  <path d="M${left + 18} 92v-23l18-5v23" fill="none" stroke="${palette.ink}" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="${left + 14}" cy="92" r="5" fill="${palette.ink}"/><circle cx="${left + 32}" cy="87" r="5" fill="${palette.ink}"/>
+  <text x="${left + 66}" y="89" fill="#fff8ee" font-family="Arial, Helvetica, sans-serif" font-size="26" font-weight="900" letter-spacing="4">MSHPIT NEWS</text>
+  ${svgTextLines(categoryLines, { x: left, y: 148, lineHeight: 26, fontSize: 20, fill: palette.start, weight: 800, letterSpacing: 1 })}
+  <g data-section="news-headline">${svgTextLines(headlineLines, { x: left, y: 218, lineHeight: 54, fontSize: 44, fill: "#fff8ee", weight: 900, letterSpacing: -0.5 })}</g>
+  <line x1="${left}" y1="478" x2="${photoX - 48}" y2="478" stroke="#2c2833" stroke-width="2"/>
+  <g data-section="news-sources">${sourceLines.length ? `<path d="M${left} 507l8 8 16-18" fill="none" stroke="#6fcf97" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>${svgTextLines(sourceLines, { x: left + 34, y: 516, lineHeight: 28, fontSize: 20, fill: "#b9b3c2", weight: 700 })}` : ""}</g>
+  <text x="${left}" y="594" fill="${palette.start}" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="800">Read it on mshpit.com</text>
+</svg>`;
+}
+
+function newsLinkSvg(model, artworkDataUri = "", artwork = null) {
+  if (safeArtworkDataUri(artworkDataUri)) return newsPhotoLinkSvg(model, artworkDataUri, artwork);
   const palette = paletteFor(model);
   const left = 72;
   const width = LINK_CARD_WIDTH - left * 2;
@@ -803,8 +854,8 @@ function newsLinkSvg(model) {
 
 export function socialShareCardSvg(model, { artworkDataUri = "", artwork = null } = {}) {
   if (!model || !COPY[model.variant]) throw new TypeError("A valid social share-card model is required");
-  if (model.variant === "news") return newsShareSvg(model);
-  if (model.variant === "news-link") return newsLinkSvg(model);
+  if (model.variant === "news") return newsShareSvg(model, artworkDataUri, artwork);
+  if (model.variant === "news-link") return newsLinkSvg(model, artworkDataUri, artwork);
   return model.variant === "review"
     ? reviewShareSvg(model, artworkDataUri)
     : attendanceShareSvg(model, artworkDataUri, artwork);
@@ -856,8 +907,12 @@ export async function renderSocialShareCardResult(model, options = {}) {
   }
   let acceptedArtwork = artworkDataUri ? artworkCandidate(options?.artwork) : null;
   let xmp = null;
-  if (artworkDataUri && options?.artwork?.source === "licensed-media" && !acceptedArtwork) {
+  if (artworkDataUri && ["licensed-media", "bundled-news"].includes(options?.artwork?.source) && !acceptedArtwork) {
     artworkDataUri = "";
+  }
+  if (acceptedArtwork?.source === "bundled-news" && !["news", "news-link"].includes(model?.variant)) {
+    artworkDataUri = "";
+    acceptedArtwork = null;
   }
   if (acceptedArtwork?.source === "licensed-media") {
     const creditUrl = absolutePhotoCreditUrl(acceptedArtwork.creditPath);
@@ -1091,6 +1146,7 @@ export function createSocialShareCardRenderer({
     if (signal?.aborted) throw requestAbortReason(signal);
     const acceptedArtwork = artworkCandidate(artwork);
     if (!acceptedArtwork) return null;
+    if (acceptedArtwork.source === "bundled-news" && !["news", "news-link"].includes(model?.variant)) return null;
     if (renderPng === renderIsolatedSocialShareCard) {
       let rendered;
       try {
@@ -1147,20 +1203,22 @@ export function createSocialShareCardRenderer({
     async render(model, { signal = null } = {}) {
       if (signal?.aborted) throw requestAbortReason(signal);
       const etag = socialShareCardEtag(model);
+      const sampledTime = Number(now());
+      const currentTime = Number.isFinite(sampledTime) ? sampledTime : Date.now();
       const cached = cache.get(etag);
-      if (cached) {
+      if (cached && (!cached.expiresAt || cached.expiresAt > currentTime)) {
         const bytes = Buffer.isBuffer(cached) ? cached : cached?.bytes;
         const artwork = Buffer.isBuffer(cached) ? null : artworkCandidate(cached?.artwork);
-        if (Buffer.isBuffer(bytes)) return { bytes, etag, artwork };
+        if (Buffer.isBuffer(bytes)) return { bytes, etag: cached.etag || etag, artwork, ...(cached.artworkFallback ? { artworkFallback: true } : {}) };
       }
-      const currentTime = Number(now());
-      if (transientFailureCache.get(etag, Number.isFinite(currentTime) ? currentTime : Date.now())) {
+      if (transientFailureCache.get(etag, currentTime)) {
         throw new SocialShareCardArtworkUnavailableError();
       }
       const existing = inFlight.get(etag);
       if (existing) return waitForSharedOperation(existing, signal);
       const hasArtworkCandidates = Array.isArray(model?.artwork) && model.artwork.length > 0;
       const requiresArtwork = model?.variant === "going" || model?.variant === "interested";
+      const optionalNewsArtwork = model?.variant === "news" || model?.variant === "news-link";
       const workController = new AbortController();
       const timeout = setTimeout(() => {
         workController.abort(new SocialShareCardArtworkUnavailableError());
@@ -1179,7 +1237,14 @@ export function createSocialShareCardRenderer({
                   !(error instanceof SocialShareCardBusyError)
                   && !(error instanceof SocialShareCardRenderError),
                 signal: workController.signal,
-              }))
+              })).catch((error) => {
+                // News is readable without its contextual photo. Only a typed
+                // upstream artwork failure may degrade to text; render/admission
+                // failures and the shared deadline must remain real failures.
+                if (optionalNewsArtwork && error instanceof ShareArtworkTransientError
+                  && !workController.signal.aborted) return null;
+                throw error;
+              })
             : null;
         })
         .then((loaded) => {
@@ -1197,8 +1262,21 @@ export function createSocialShareCardRenderer({
             throw new Error("Invalid social share card render");
           }
           const acceptedArtwork = artworkCandidate(rendered?.artwork) || artworkCandidate(artwork);
-          cache.set(etag, Object.freeze({ bytes, artwork: acceptedArtwork }));
-          return { bytes, etag, artwork: acceptedArtwork };
+          const artworkFallback = optionalNewsArtwork && hasArtworkCandidates
+            && ((!artworkDataUri && rendered?.artworkApplied !== true)
+              || (acceptedArtwork?.source === "bundled-news" && model.artwork[0]?.source !== "bundled-news"));
+          // A temporary text fallback must not pin a missing photo indefinitely
+          // or share the eventual photo's ETag. Reuse the bounded PNG LRU rather
+          // than adding an unbounded second cache for optional artwork failures.
+          const resultEtag = artworkFallback
+            ? socialShareCardEtag({ ...model, artwork: acceptedArtwork ? [acceptedArtwork] : [],
+                artworkContext: acceptedArtwork?.source === "bundled-news" ? NEWS_ILLUSTRATION_CONTEXT : "", artworkFallback: true })
+            : etag;
+          const completedTime = Number(now());
+          const expiresAt = (Number.isFinite(completedTime) ? completedTime : Date.now()) + transientFailureTtl;
+          cache.set(etag, Object.freeze({ bytes, artwork: acceptedArtwork, etag: resultEtag,
+            ...(artworkFallback ? { artworkFallback: true, expiresAt } : {}) }));
+          return { bytes, etag: resultEtag, artwork: acceptedArtwork, ...(artworkFallback ? { artworkFallback: true } : {}) };
         })
         .catch((error) => {
           if (!(error instanceof ShareArtworkTransientError)

@@ -6,6 +6,16 @@ import { readProviderSchema, validateBlueprint } from "./check-render-blueprint.
 
 const schema = await readProviderSchema();
 const source = await readFile(new URL("../render.yaml", import.meta.url), "utf8");
+test("news expansion keeps the owner-approved caps and catalogue allocation", () => {
+  const web = parseDocument(source).toJS().services.find((service) => service.name === "mshpit");
+  const env = Object.fromEntries(web.envVars.map((entry) => [entry.key, entry.value]));
+  assert.equal(env.NEWS_DESK_DAILY_USD, "0.75");
+  assert.equal(env.NEWS_DESK_MONTHLY_USD, "15");
+  assert.equal(env.ANTHROPIC_MONTHLY_USD, "20");
+  assert.equal(env.CATALOG_RESEARCH_DAILY_USD, "0.30");
+  assert.equal(env.CATALOG_RESEARCH_MONTHLY_USD, "4");
+  assert.equal(web.envVars.find((entry) => entry.key === "ANTHROPIC_API_KEY").sync, false);
+});
 test("Render and CI install build validators even in production mode", async () => {
   const blueprint = parseDocument(source).toJS();
   const web = blueprint.services.find((service) => service.name === "mshpit");

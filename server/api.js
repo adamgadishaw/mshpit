@@ -98,6 +98,7 @@ import { createArtistNewsReader } from "./features/artistUpdates/artistNewsReade
 import { startArtistNewsScheduler } from "./features/artistUpdates/artistNewsJob.js";
 import { newsDeskRoutes } from "./features/newsDesk/newsDeskRoutes.js";
 import { createNewsDeskReader } from "./features/newsDesk/newsDeskService.js";
+import { createNewsCardArtworkResolver } from "./features/newsDesk/newsCardArtwork.js";
 import { eligibleNewsPosts, isNewsPostId, newsFeedRoutes } from "./features/newsDesk/newsFeedPlacement.js";
 import { startNewsDeskScheduler } from "./features/newsDesk/newsDeskJob.js";
 import { startDeezerArtistPhotoScheduler } from "./features/artistPhotos/deezerArtistPhotoFill.js";
@@ -2907,6 +2908,7 @@ function mutedIdSet(userId) {
 }
 
 const newsDeskReader = createNewsDeskReader(db, { projectReposts:(ids,viewerId)=>repostInfoPage(db,ids,viewerId) });
+const resolveNewsArtwork = createNewsCardArtworkResolver({ database: db });
 // One renderer for every share card and news preview image, so its memory and
 // concurrency limits hold across both.
 const socialShareCardRenderer = createSocialShareCardRenderer();
@@ -4748,6 +4750,7 @@ export const routes = {
     resolveCurrentLicensedArtistPhoto: attendanceTicketLicensedArtistPhoto,
     resolveCurrentEventProviderImage: attendanceTicketEventProviderPhotoById,
     resolveNewsStory: (postId) => newsDeskReader.forLivePost(postId),
+    resolveNewsArtwork,
     renderer: socialShareCardRenderer,
   }),
   ...showRoutes({
@@ -9676,7 +9679,7 @@ export const routes = {
     newId: uid,
     now,
   }) : {}),
-  ...newsDeskRoutes({ rateLimit: limit, reader: newsDeskReader, renderer: socialShareCardRenderer }),
+  ...newsDeskRoutes({ rateLimit: limit, reader: newsDeskReader, renderer: socialShareCardRenderer, resolveNewsArtwork }),
   ...newsFeedRoutes({
     database: db, requireUser, rateLimit: limit, ApiError, now,
     project: (postId, viewerId) => {
