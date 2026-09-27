@@ -23,6 +23,7 @@ its dates; the parser now accepts it. The 3-company rule is unchanged.
 Dry run on the live feeds (Sunday 11:05 EDT, Claude stubbed): 108 reports from
 16 outlets in 10 s (DIY posts on weekdays); one story cleared 3 companies,
 the already published Pearl Jam drummer story, now carried by 4.
+Live at 11:42 EDT (541e044, CI then about a minute of downtime).
 
 
 Fixes for the highest-priority findings in the owner's 2026-09-27 audit,
@@ -60,6 +61,7 @@ committed together so they ship in one deploy:
   below the busiest 2,000 are reached.
 
 Checked: `npm run check` (5,492 tests) and the nine CI browser suites pass.
+Live at 11:22 EDT (4364489): `?limit=2.5` went from 500 to 200.
 @news_mod is active in the 2026-09-27 snapshot, so live stories stay visible.
 Deferred to the next batch: see TODO "Codex audit follow-ups".
 
@@ -70,7 +72,8 @@ outlet groups carried; the only such stories were already published. With
 Billboard, Rolling Stone and Variety counted as one company, the desk reads
 only six independent groups, so a quiet Sunday can pass with nothing that
 qualifies. The desk logs only when it publishes or declines, so silence is
-the expected log. More independent outlets would raise the rate (TODO).
+the expected log. The drought ended on its own at 10:52 EDT when Stereogum
+became the third company on the GWAR (Chuck Varga) story.
 
 ## 2026-09-27 Restore drill from R2: passed
 
