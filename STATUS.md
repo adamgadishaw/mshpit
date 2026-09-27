@@ -42,6 +42,8 @@ ten browser suites; the upkeep suite now asserts the new sections at 390 and
 1280 px. Not done: journaling single post, comment and message deletions
 (TODO). Codex's open PR #13 touches `server/api.js`, `server/index.js` and the
 news desk too, so it will need a rebase onto this commit.
+Live at 17:40 EDT (e38b589): CI passed 17:29, about a minute of downtime, then
+health, the news list and the home page answered 200.
 
 ## 2026-09-27 Nine more news outlets (14 independent companies)
 
