@@ -405,7 +405,8 @@ test("breaking news does not wait for a slot, and the day stops at five", async 
   let clock = Date.parse("2026-09-30T05:00:00-04:00");
   const feedsFor = (label) => Object.fromEntries(["https://www.stereogum.com/category/news/feed/", "https://www.nme.com/news/music/feed",
     "https://pitchfork.com/feed/feed-news/rss", "https://consequence.net/category/music/feed/"].map((url, index) =>
-    [url, rssAt(clock, [[`Legendary ${label} Festival Canceled Over Weather ${index}`, `https://${label}-${index}.test/f`, 1]])]));
+    [url, rssAt(clock, [[`${{ alpha: "Legendary Alpha Festival Canceled Over Weather", beta: "Glastonbury Reveals 2027 Headliners And Full Lineup",
+      gamma: "Coachella Moves 2027 Dates After Venue Dispute" }[label]} ${index}`, `https://${label}-${index}.test/f`, 1]])]));
   let sequence = 0;
   let feeds = feedsFor("alpha");
   const summarize = async (reports) => ({ publish: true, reason: "", headline: reports[0].title, summary: "s", body: "b", category: "festival",
@@ -474,4 +475,26 @@ test("top stories rank the editorial score plus how members engage", async () =>
   assert.ok(topStoryScore({ score: 40, ageHours: 48 }) < topStoryScore({ score: 40, ageHours: 0 }) / 3, "top stories fade after a day or two");
   const top = routes["GET /api/news-desk/stories"]({ query: { sort: "top" }, ip: "top-reader", setHeader() {} });
   assert.ok(Array.isArray(top.stories) && top.nextCursor === null);
+});
+
+test("a later report on a story without an artist joins it instead of becoming a second story", async () => {
+  newsAccount();
+  // Days after the other tests, so none of their reports are still fresh.
+  let clock = Date.parse("2026-10-05T09:00:00-04:00");
+  const three = ["https://www.stereogum.com/category/news/feed/", "https://pitchfork.com/feed/feed-news/rss", "https://consequence.net/category/music/feed/"];
+  let feeds = Object.fromEntries(three.map((url, index) => [url, rssAt(clock, [[`All Things Go, CBGB, Global Citizen Festivals Canceled ${index}`, `https://first-${index}.test/f`, 1]])]));
+  let sequence = 0;
+  const summarize = async (reports) => ({ publish: true, reason: "", headline: reports[0].title, summary: "s", body: "b", category: "festival",
+    artists: [], supporting: reports, costUsd: 0.01 });
+  const desk = createNewsDesk({ database: db, fetchText: async (url) => feeds[url] || rss([]), summarize, now: () => clock, env: {},
+    editorial: UNSPACED, newId: () => `dupe-${++sequence}` });
+  await desk.ingest();
+  assert.equal((await desk.publishPass()).published, 1);
+  clock += 20 * 60_000;
+  const later = ["https://www.nme.com/news/music/feed", "https://www.theguardian.com/music/rss", "https://www.rollingstone.com/music/music-news/feed/"];
+  feeds = Object.fromEntries(later.map((url, index) => [url, rssAt(clock, [[`Nor'easter Cancels All Things Go, CBGB And Global Citizen Festivals ${index}`, `https://second-${index}.test/f`, 0.2]])]));
+  await desk.ingest();
+  assert.equal((await desk.publishPass()).published, 0, "the same event is not published twice");
+  assert.equal(JSON.parse(db.prepare("SELECT sources FROM news_stories WHERE id='dupe-1'").get().sources).length >= 4, true,
+    "the later outlets are added to the first story's sources");
 });

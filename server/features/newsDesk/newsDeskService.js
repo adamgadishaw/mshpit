@@ -239,8 +239,12 @@ export function createNewsDesk({ database, fetchText, fetchArticle = null, summa
     return open.filter((report) => {
       for (const story of stories) {
         const members = storyReports.get(story.id);
-        if (!members.some((member) => member.url !== report.url && report.artistKeys.some((key) => member.artistKeys.includes(key))
-          && similarity(member.tokens, report.tokens) >= 0.2)) continue;
+        // Same artist and a loose headline overlap; or, for stories about no
+        // catalogue artist (a festival called off), a clear headline overlap,
+        // so a second outlet's take is not published as a new story.
+        if (!members.some((member) => member.url !== report.url && (
+          (report.artistKeys.some((key) => member.artistKeys.includes(key)) && similarity(member.tokens, report.tokens) >= 0.2)
+          || (!report.artistKeys.length && !member.artistKeys.length && similarity(member.tokens, report.tokens) >= 0.3)))) continue;
         database.prepare("UPDATE news_reports SET story_id=? WHERE url=? AND story_id IS NULL").run(story.id, report.url);
         const sources = parseJson(story.sources, []);
         if (!sources.some((item) => item.url === report.url)) {
