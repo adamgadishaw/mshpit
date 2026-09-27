@@ -6,6 +6,23 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-09-26 Mshpit News publishing slots
+
+The owner: "I dont want us burning all our stories first thing in the morning or
+at noon or at night. We need to take the top stories at the time and publish
+those leaving room for more news later on in the day." The first version
+counted days in UTC and allowed one story every 3 hours from midnight UTC, so
+all five would have gone out between 8pm and 8am Toronto time.
+
+- `publishingSlot` in `newsEditorial.js`: five slots a day in Toronto time
+  (8am, 11am, 2pm, 5pm, 8pm; the day starts at local midnight, clock changes
+  handled). Each slot takes the top story available at that moment; a slot
+  with nothing good enough stays open until something is, but stories are at
+  least 2 hours apart. Breaking news (score 55+) goes out at once, at least 30
+  minutes after the previous story, and uses the next slot. Never more than
+  five a day.
+- The log line for each published story names its slot (`open`/`breaking`).
+
 ## 2026-09-26 Mshpit News editorial policy: big news only
 
 The owner asked, before adding backup keys, that the desk stop publishing
@@ -20,9 +37,8 @@ real music news only; ranked by outlets, internet buzz and Mshpit fans.
   over a normal day) + up to 10 for artist popularity + up to 15 for Mshpit
   fans (followers, fan club, reviewers, listeners) - 1 per 6 hours since first
   reported. Stories older than 36 hours are dropped. The desk writes the best
-  one per pass, one every 3 hours unless the score reaches 55 (breaking), at
-  most 5 a day, spending up to 3 Claude calls per pass to find one Claude
-  agrees to publish.
+  one per pass, spending up to 3 Claude calls per pass to find one Claude
+  agrees to publish; when it may publish is set by the slots above.
 - Real music news only: Claude may publish only release, tour, festival,
   lineup, awards, charts, legal or death stories and must mark gossip, feuds,
   one artist criticising another, film and TV casting and the music business as

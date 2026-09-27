@@ -83,7 +83,7 @@ export function startNewsDeskScheduler({ database, env = process.env, now = Date
       }
       for (const pick of result.picked) {
         const s = pick.signals;
-        console.log(`[news-desk] published "${pick.headline.slice(0, 90)}" score=${pick.score} outlets=${s.groups} wikipedia=x${s.wikiRatio ?? "-"} popularity=${s.popularity} fans=${s.fans}`);
+        console.log(`[news-desk] published "${pick.headline.slice(0, 90)}" slot=${result.slot} score=${pick.score} outlets=${s.groups} wikipedia=x${s.wikiRatio ?? "-"} popularity=${s.popularity} fans=${s.fans}`);
       }
       return true;
     },

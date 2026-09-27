@@ -17,9 +17,12 @@ const rules = await import("./newsStoryRules.js");
 const { createArtistMatcher, createNewsDesk, createNewsDeskReader, newsDeskBudget, repairStoryArtists, NEWS_DESK_HANDLE } = await import("./newsDeskService.js");
 const { createNewsSummarizer, NEWS_MODEL, storyPrompt } = await import("./newsSummarizer.js");
 const { EDITORIAL } = await import("./newsEditorial.js");
-// Tests publish several stories at one fixed moment; the three-hour spacing is
-// tested on its own below.
-const UNSPACED = { ...EDITORIAL, spacingMs: 0 };
+// Tests publish several stories at one fixed moment; the publishing slots are
+// tested on their own below.
+const UNSPACED = { ...EDITORIAL, slotHours: Array.from({ length: 20 }, () => 0), minGapMs: 0 };
+// Feeds dated relative to a test's own clock rather than NOW.
+const rssAt = (base, items) => `<?xml version="1.0"?><rss><channel>${items.map(([title, url, hoursAgo]) =>
+  `<item><title><![CDATA[${title}]]></title><link>${url}</link><pubDate>${new Date(base - hoursAgo * 3_600_000).toUTCString()}</pubDate></item>`).join("")}</channel></rss>`;
 after(() => { db.close(); rmSync(directory, { recursive: true, force: true }); });
 
 const NOW = Date.parse("2026-09-26T15:00:00Z");
@@ -325,15 +328,39 @@ test("gossip, feuds and film casting are not news, and a split story about one a
   assert.equal(stories.length, 1, "one U2 story with four outlets, not two with two each");
 });
 
-test("the desk publishes the biggest story first, one every three hours, five a day", async () => {
+test("publishing slots spread the day in Toronto time and leave room for later news", async () => {
+  const { publishingSlot, localClock } = await import("./newsEditorial.js");
+  const toronto = (iso) => Date.parse(iso); // ISO strings below carry their UTC offset
+  const slot = (iso, published = [], score = 40) => publishingSlot({ at: toronto(iso), published: published.map(toronto), score });
+  assert.equal(localClock(toronto("2026-09-27T07:59:00-04:00")).hour < 8, true);
+  assert.deepEqual(slot("2026-09-27T07:30:00-04:00"), { open: false, reason: "next_slot" }, "nothing before the 8am slot");
+  assert.deepEqual(slot("2026-09-27T08:05:00-04:00"), { open: true });
+  assert.deepEqual(slot("2026-09-27T09:00:00-04:00", ["2026-09-27T08:05:00-04:00"]), { open: false, reason: "next_slot" }, "the 11am slot is next");
+  assert.deepEqual(slot("2026-09-27T12:30:00-04:00", ["2026-09-27T08:05:00-04:00"]), { open: true }, "an 11am slot left empty is still usable later");
+  assert.deepEqual(slot("2026-09-27T14:10:00-04:00", ["2026-09-27T08:05:00-04:00", "2026-09-27T13:00:00-04:00"]), { open: false, reason: "too_soon" },
+    "two stories are never bunched, even with a slot due");
+  const full = ["08:05", "11:05", "14:05", "17:05", "20:05"].map((time) => `2026-09-27T${time}:00-04:00`);
+  assert.deepEqual(slot("2026-09-27T23:00:00-04:00", full, 90), { open: false, reason: "day_full" }, "five a day, breaking or not");
+  assert.deepEqual(slot("2026-09-28T06:00:00-04:00", full), { open: false, reason: "next_slot" }, "a new Toronto day starts at local midnight");
+  assert.deepEqual(slot("2026-09-27T06:00:00-04:00", [], 60), { open: true, breaking: true }, "breaking news goes out at once");
+  assert.deepEqual(slot("2026-09-27T08:20:00-04:00", ["2026-09-27T06:00:00-04:00"]), { open: false, reason: "next_slot" },
+    "and it used the 8am slot");
+  // Clocks change: 8am local is 12:00 UTC in summer and 13:00 UTC in winter.
+  assert.deepEqual(slot("2026-11-02T12:30:00Z"), { open: false, reason: "next_slot" });
+  assert.deepEqual(slot("2026-11-02T13:05:00Z"), { open: true });
+});
+
+test("the desk publishes the top story when a slot opens", async () => {
   newsAccount();
   for (const [norm, name, popularity] of [["big star", "Big Star Act", 92], ["small band", "Small Band Act", 40]]) {
     db.prepare(`INSERT INTO artists (norm,name,popularity,created_at,updated_at) VALUES (?,?,?,?,?)
       ON CONFLICT(norm) DO UPDATE SET name=excluded.name,popularity=excluded.popularity`).run(norm, name, popularity, NOW, NOW);
   }
+  // A fresh Toronto day with nothing published yet: 2026-09-29.
+  let clock = Date.parse("2026-09-29T07:30:00-04:00");
   const outlets = ["https://www.stereogum.com/category/news/feed/", "https://www.nme.com/news/music/feed", "https://pitchfork.com/feed/feed-news/rss",
     "https://consequence.net/category/music/feed/", "https://www.theguardian.com/music/rss"];
-  const feeds = Object.fromEntries(outlets.map((url, index) => [url, rss([
+  const feeds = Object.fromEntries(outlets.map((url, index) => [url, rssAt(clock, [
     ...(index < 3 ? [[`Small Band Act Announce Farewell Tour Dates ${index}`, `https://small-${index}.test/tour`, 5]] : []),
     [`Big Star Act Announce Stadium World Tour ${index}`, `https://big-${index}.test/tour`, 1],
   ])]));
@@ -344,35 +371,36 @@ test("the desk publishes the biggest story first, one every three hours, five a 
       artists: [reports[0].title.startsWith("Big") ? "Big Star Act" : "Small Band Act"], supporting: reports, costUsd: 0.02 };
   };
   const buzz = { spike: async (artist) => (artist.key === "big star" ? { recent: 40_000, baseline: 5_000, ratio: 8 } : null) };
-  // Earlier tests published at NOW; start after their three-hour slot.
-  let clock = NOW + 3.5 * 60 * 60_000;
   let sequence = 0;
   const desk = createNewsDesk({ database: db, fetchText: async (url) => feeds[url] || rss([]), summarize, buzz, now: () => clock, env: {},
     editorial: { ...EDITORIAL, breakingScore: 1_000 }, newId: () => `rank-${++sequence}` });
   await desk.ingest();
+  const early = await desk.publishPass();
+  assert.deepEqual({ published: early.published, slot: early.slot }, { published: 0, slot: "next_slot" }, "nothing before 8am");
+
+  clock = Date.parse("2026-09-29T08:05:00-04:00");
   const first = await desk.publishPass();
   assert.equal(first.published, 1);
   assert.match(written[0], /^Big Star Act/u, "five outlets and a Wikipedia spike beat three outlets");
   assert.equal(first.picked[0].signals.wikiRatio, 8);
   assert.ok(first.picked[0].score > 60);
 
-  clock += 60 * 60_000;
-  const waiting = await desk.publishPass();
-  assert.deepEqual({ published: waiting.published, waiting: waiting.waiting > 0 }, { published: 0, waiting: true }, "the next story waits for its slot");
-  clock += 2 * 60 * 60_000 + 60_000;
-  assert.equal((await desk.publishPass()).published, 1, "three hours later the next best story goes out");
+  clock = Date.parse("2026-09-29T10:00:00-04:00");
+  assert.equal((await desk.publishPass()).slot, "next_slot", "the next story waits for the 11am slot");
+  clock = Date.parse("2026-09-29T11:05:00-04:00");
+  assert.equal((await desk.publishPass()).published, 1, "at 11 the best story left goes out");
 
   const stored = db.prepare("SELECT score,signals FROM news_stories WHERE id='rank-1'").get();
   assert.equal(JSON.parse(stored.signals).groups, 5);
   assert.ok(stored.score > 60);
 });
 
-test("breaking news skips the wait, and five stories is the daily limit", async () => {
+test("breaking news does not wait for a slot, and the day stops at five", async () => {
   newsAccount();
+  let clock = Date.parse("2026-09-30T05:00:00-04:00");
   const feedsFor = (label) => Object.fromEntries(["https://www.stereogum.com/category/news/feed/", "https://www.nme.com/news/music/feed",
     "https://pitchfork.com/feed/feed-news/rss", "https://consequence.net/category/music/feed/"].map((url, index) =>
-    [url, rss([[`Legendary ${label} Festival Canceled Over Weather ${index}`, `https://${label}-${index}.test/f`, 1]])]));
-  let clock = Date.parse("2026-09-27T09:00:00Z");
+    [url, rssAt(clock, [[`Legendary ${label} Festival Canceled Over Weather ${index}`, `https://${label}-${index}.test/f`, 1]])]));
   let sequence = 0;
   let feeds = feedsFor("alpha");
   const summarize = async (reports) => ({ publish: true, reason: "", headline: reports[0].title, summary: "s", body: "b", category: "festival",
@@ -380,18 +408,21 @@ test("breaking news skips the wait, and five stories is the daily limit", async 
   const desk = createNewsDesk({ database: db, fetchText: async (url) => feeds[url] || rss([]), summarize, now: () => clock, env: {},
     editorial: { ...EDITORIAL, breakingScore: 35 }, newId: () => `breaking-${++sequence}` });
   await desk.ingest();
-  assert.equal((await desk.publishPass()).published, 1);
-  feeds = feedsFor("beta");
+  const first = await desk.publishPass();
+  assert.deepEqual({ published: first.published, slot: first.slot }, { published: 1, slot: "breaking" }, "four outlets is breaking here, even at 5am");
   clock += 10 * 60_000;
+  feeds = feedsFor("beta");
   await desk.ingest();
-  assert.equal((await desk.publishPass()).published, 1, "four outlets is breaking news here, so it does not wait");
+  assert.equal((await desk.publishPass()).slot, "too_soon", "even breaking stories are half an hour apart");
+  clock += 30 * 60_000;
+  assert.equal((await desk.publishPass()).published, 1);
 
   const limited = createNewsDesk({ database: db, fetchText: async (url) => feeds[url] || rss([]), summarize, now: () => clock, env: {},
-    editorial: { ...EDITORIAL, spacingMs: 0, dailyLimit: 2 }, newId: () => `limited-${++sequence}` });
+    editorial: { ...EDITORIAL, breakingScore: 35, slotHours: [8, 11] }, newId: () => `limited-${++sequence}` });
+  clock += 60 * 60_000;
   feeds = feedsFor("gamma");
-  clock += 10 * 60_000;
   await limited.ingest();
-  assert.equal((await limited.publishPass()).published, 0, "the daily limit holds");
+  assert.equal((await limited.publishPass()).slot, "day_full", "the day's slots are used up");
 });
 
 test("Wikipedia buzz finds the artist's article and compares recent readers with a normal day", async () => {

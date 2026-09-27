@@ -5,17 +5,24 @@
 // A story needs at least three independent outlets. Candidates are ranked by
 // coverage, internet buzz (how many people are reading the artist's Wikipedia
 // article compared with a normal day), the artist's size and how much Mshpit
-// members follow, review and play them. The desk publishes the best one at a
-// time, at most one every three hours unless it is breaking news, and at most
-// five a day.
+// members follow, review and play them.
+//
+// The day's stories are spread over five publishing slots in Toronto time
+// (8am, 11am, 2pm, 5pm, 8pm), so the day is not used up in the morning, at
+// noon or at night: each slot takes the top story available at that moment
+// and later slots stay free for news that breaks later. A slot with nothing
+// good enough stays open until something is, but stories are never bunched
+// (two hours apart). Breaking news goes out at once and uses the next slot.
 
 const HOUR = 60 * 60 * 1000;
 
 export const EDITORIAL = Object.freeze({
   minOutlets: 3,
-  dailyLimit: 5,
-  spacingMs: 3 * HOUR,
+  timeZone: "America/Toronto",
+  slotHours: Object.freeze([8, 11, 14, 17, 20]),
+  minGapMs: 2 * HOUR,
   breakingScore: 55,
+  breakingGapMs: 30 * 60 * 1000,
   maxAgeMs: 36 * HOUR,
   // Claude calls one pass may spend finding a story Claude agrees to publish.
   callsPerPass: 3,
@@ -24,6 +31,30 @@ export const EDITORIAL = Object.freeze({
 });
 
 const round = (value) => Math.round(value * 10) / 10;
+
+// The local calendar day and hour (with minutes as a fraction) of a moment.
+export function localClock(at, timeZone = EDITORIAL.timeZone) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-CA", {
+    timeZone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+  }).formatToParts(new Date(at)).map((part) => [part.type, part.value]));
+  return { day: `${parts.year}-${parts.month}-${parts.day}`, hour: Number(parts.hour) + Number(parts.minute) / 60 };
+}
+
+// May a story with this score go out now? `published` holds the times of
+// recent published stories. Returns { open, breaking?, reason? }.
+export function publishingSlot({ at, published = [], score = 0, editorial = EDITORIAL } = {}) {
+  const now = localClock(at, editorial.timeZone);
+  const today = published.filter((time) => localClock(time, editorial.timeZone).day === now.day).length;
+  const gap = published.length ? at - Math.max(...published) : Infinity;
+  if (today >= editorial.slotHours.length) return { open: false, reason: "day_full" };
+  if (score >= editorial.breakingScore) {
+    return gap >= editorial.breakingGapMs ? { open: true, breaking: true } : { open: false, reason: "too_soon" };
+  }
+  const due = editorial.slotHours.filter((hour) => now.hour >= hour).length;
+  if (today >= due) return { open: false, reason: "next_slot" };
+  if (gap < editorial.minGapMs) return { open: false, reason: "too_soon" };
+  return { open: true };
+}
 
 // Coverage counts most: each independent outlet is worth 10, and extra outlets
 // from the same company 2. Buzz adds up to 20 (8 per doubling of Wikipedia

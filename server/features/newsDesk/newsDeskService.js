@@ -3,7 +3,7 @@ import { claudeCeilingLeftMicroUsd } from "../../claudeSpendCeiling.js";
 import { NEWS_SOURCES, newsSourceById, sourceOwnsUrl } from "./newsSources.js";
 import { articleLead, parseNewsFeed } from "./newsFeedParser.js";
 import { clusterReports, headlineTokens, independentGroups, isConfirmed, looksLikeNews, newsCategory, similarity, storyCategory } from "./newsStoryRules.js";
-import { EDITORIAL, storyScore, topStoryScore } from "./newsEditorial.js";
+import { EDITORIAL, publishingSlot, storyScore, topStoryScore } from "./newsEditorial.js";
 import { storyPrompt, worstCaseCostUsd } from "./newsSummarizer.js";
 import { artistDiscoverPhotoUri, deezerImageUrl } from "../artistPhotos/discoverPhoto.js";
 
@@ -158,7 +158,7 @@ export function repairStoryArtists(database) {
 
 // `buzz` (see newsBuzz.js) adds internet buzz to the ranking; without it
 // stories rank on coverage, artist size and Mshpit fans. `editorial` is the
-// policy in newsEditorial.js; tests may relax its spacing.
+// policy in newsEditorial.js; tests may open its slots.
 export function createNewsDesk({ database, fetchText, fetchArticle = null, summarize = null, buzz = null, editorial = EDITORIAL, now = Date.now, newId = randomUUID, env = process.env, log = console }) {
   ensureNewsDeskSchema(database);
   const budget = newsDeskBudget(env);
@@ -332,25 +332,31 @@ export function createNewsDesk({ database, fetchText, fetchArticle = null, summa
     return ranked;
   }
 
-  // 2. Rank today's confirmed stories and write the best one, if it is time
-  // for a story (see newsEditorial.js).
+  // 2. Rank the confirmed stories and write the best one, if a publishing
+  // slot is open (see newsEditorial.js).
   async function publishPass({ signal } = {}) {
     const at = now();
-    const outcome = { confirmed: 0, published: 0, declined: 0, skippedForBudget: 0, waiting: 0, picked: [] };
+    const outcome = { confirmed: 0, published: 0, declined: 0, skippedForBudget: 0, waiting: 0, slot: null, picked: [] };
     if (!summarize || !newsAccount()) return outcome;
     const open = attachToPublished(database.prepare("SELECT * FROM news_reports WHERE story_id IS NULL AND published_at>=?")
       .all(at - REPORT_WINDOW_MS).map(reportRow), at);
     const candidates = clusterReports(open).filter(isConfirmed)
       .filter((cluster) => at - Math.min(...cluster.map((report) => report.publishedAt)) <= editorial.maxAgeMs);
     outcome.confirmed = candidates.length;
-    const publishedToday = Number(database.prepare("SELECT COUNT(*) AS n FROM news_stories WHERE status='published' AND created_at>=?")
-      .get(Date.parse(`${dayOf(at)}T00:00:00Z`))?.n) || 0;
-    if (!candidates.length || publishedToday >= editorial.dailyLimit) return outcome;
+    if (!candidates.length) return outcome;
+    const published = database.prepare("SELECT created_at FROM news_stories WHERE status='published' AND created_at>=?")
+      .all(at - 36 * HOUR).map((row) => Number(row.created_at));
+    // A full day costs nothing to check; ranking may look up Wikipedia.
+    if (publishingSlot({ at, published, score: -Infinity, editorial }).reason === "day_full") {
+      outcome.waiting = candidates.length;
+      outcome.slot = "day_full";
+      return outcome;
+    }
     const ranked = await rankCandidates(candidates, at, signal);
-    const lastPublishedAt = Number(database.prepare("SELECT MAX(created_at) AS at FROM news_stories WHERE status='published'").get()?.at) || 0;
-    // One story every few hours, so the best of each stretch gets the slot,
-    // unless something big breaks.
-    if (lastPublishedAt && at - lastPublishedAt < editorial.spacingMs && ranked[0].score < editorial.breakingScore) {
+    // The best story decides: if it may not go out now, nothing below it may.
+    const slot = publishingSlot({ at, published, score: ranked[0].score, editorial });
+    outcome.slot = slot.open ? (slot.breaking ? "breaking" : "open") : slot.reason;
+    if (!slot.open) {
       outcome.waiting = ranked.length;
       return outcome;
     }
