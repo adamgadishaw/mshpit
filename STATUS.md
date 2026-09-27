@@ -6,6 +6,27 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-09-26 Outage 20:52-21:48 EDT and R2 backup privacy probe
+
+- Outage: the deploy of 0480513 (news takedown) stopped the live instance at
+  about 20:52 and no new instance produced any log line until 21:47:09: the
+  deploy timed out at 21:12 ("waiting for internal health check"), and a
+  manual restart of e8889be at 21:21 also stayed silent. At 21:47 the
+  instance started normally (pre-migration snapshot verified, 180 MB, up in
+  17 s) and the site returned at 21:48. Render's log store failed at the same
+  time ("too many unhealthy instances in the ring"); Render's status page
+  showed no incident. The same commit boots locally in 4 s, and e8889be had
+  booted at 20:47 with the same settings, so the delay was Render starting
+  the instance (likely the persistent disk moving), not the code. 0480513 is
+  on master but not live.
+- Backups: the owner created the R2 token (scoped to `mshpit-backups`) and
+  added the four `BACKUP_S3_*` values. The first scheduled upload (20:52)
+  failed: R2 answers an unsigned request with 400 InvalidArgument/Authorization,
+  and the backup privacy probe accepted only 401/403 (the media probe already
+  handled R2). `backupStorageSecurity.js` now accepts that exact R2 body from
+  an R2 account endpoint only; a generic 400, a 404 or a lookalike host still
+  fails closed.
+
 ## 2026-09-26 Mshpit News publishing slots
 
 The owner: "I dont want us burning all our stories first thing in the morning or
