@@ -23,6 +23,16 @@ all five would have gone out between 8pm and 8am Toronto time.
   30 minutes after the previous story, using the slot it falls in or the next
   one. Never more than five a day.
 - The log line for each published story names its slot (`open`/`breaking`).
+- Before the policy deployed, the old rules published 8 stories between 18:07
+  and 18:53 EDT, including the New York festival cancellations twice. The
+  owner had four taken down (the duplicate, and three with two independent
+  outlets: Ween's box set, Olivia Rodrigo's tour opener, the Jingle Ball
+  lineups): a one-time change (`news-desk:withdraw:2026-09-26` in app_meta)
+  hides the posts (removed=1, text kept) and marks the stories declined. Live:
+  U2, Ed Sheeran, Pearl Jam, one New York festival story. The owner also
+  restarted the count: only stories chosen under the policy (with signals)
+  use the day's slots. Later reports on a story with no catalogue artist now
+  join the published story (headline overlap 0.3), so it is not written twice.
 
 ## 2026-09-26 Mshpit News editorial policy: big news only
 

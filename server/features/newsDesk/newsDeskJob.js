@@ -3,7 +3,7 @@ import { anthropicMonthlyCeilingMicroUsd } from "../../claudeSpendCeiling.js";
 import { anthropicErrorSummary } from "../../anthropicErrors.js";
 import { privateErrorLabel } from "../../errors.js";
 import { startPeriodicJob } from "../../periodicJobScheduler.js";
-import { createNewsDesk, newsDeskBudget, repairStoryArtists } from "./newsDeskService.js";
+import { applyOnce, createNewsDesk, newsDeskBudget, repairStoryArtists, withdrawNewsStories } from "./newsDeskService.js";
 import { createNewsSummarizer } from "./newsSummarizer.js";
 import { createWikipediaBuzz } from "./newsBuzz.js";
 
@@ -70,6 +70,17 @@ export function startNewsDeskScheduler({ database, env = process.env, now = Date
   const desk = createNewsDesk({ database, fetchText, fetchArticle, summarize, buzz, now, env });
   const repaired = repairStoryArtists(database);
   if (repaired) console.log(`[news-desk] tidied artist tags on ${repaired} earlier stories`);
+  // 2026-09-26: the owner took down four stories the old rules published that
+  // do not meet the editorial bar: a second copy of the New York festival
+  // cancellations, and three with only two independent outlets (Ween's box
+  // set, Olivia Rodrigo's tour opener, the Jingle Ball lineups).
+  const withdrawn = applyOnce(database, "news-desk:withdraw:2026-09-26", () => withdrawNewsStories(database, [
+    "news_bcaff4e2-7076-41dd-b99e-23dc4fba37e0",
+    "news_e65f4c84-932e-49b1-8ec2-bb356a79670b",
+    "news_278bf539-6f3f-485e-85ad-6231fd9e58d8",
+    "news_a88f7651-4fc7-429b-b960-5488ef250e31",
+  ], "withdrawn by the owner: below the editorial bar"));
+  if (withdrawn) console.log(`[news-desk] withdrew ${withdrawn} stories below the editorial bar`);
   const budget = newsDeskBudget(env);
   console.log(`[news-desk] on: $${budget.dailyUsd}/day, $${budget.monthlyUsd}/month, shared Claude ceiling $${anthropicMonthlyCeilingMicroUsd(env) / 1_000_000}/month`);
   return startPeriodicJob({

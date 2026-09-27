@@ -498,3 +498,33 @@ test("a later report on a story without an artist joins it instead of becoming a
   assert.equal(JSON.parse(db.prepare("SELECT sources FROM news_stories WHERE id='dupe-1'").get().sources).length >= 4, true,
     "the later outlets are added to the first story's sources");
 });
+
+test("the owner can take stories down, once, and earlier stories do not use the day's slots", async () => {
+  const { applyOnce, withdrawNewsStories } = await import("./newsDeskService.js");
+  newsAccount();
+  const story = db.prepare("SELECT post_id FROM news_stories WHERE status='published' AND post_id LIKE 'news_%' LIMIT 1").get();
+  db.prepare("INSERT INTO posts (id,user_id,artist,venue,city,date,overall,review,kind,created_at) VALUES ('member_post','news_desk_account','','','','',0,'x','status',1)").run();
+  const change = () => withdrawNewsStories(db, [story.post_id, "member_post", "missing"], "withdrawn by the owner: test");
+  assert.equal(applyOnce(db, "news-desk:withdraw:test", change), 1, "only published news desk stories are withdrawn");
+  assert.equal(db.prepare("SELECT removed FROM posts WHERE id=?").get(story.post_id).removed, 1);
+  assert.ok(db.prepare("SELECT review FROM posts WHERE id=?").get(story.post_id).review, "the text is kept, so it can be restored");
+  assert.equal(db.prepare("SELECT status FROM news_stories WHERE post_id=?").get(story.post_id).status, "declined");
+  assert.equal(db.prepare("SELECT removed FROM posts WHERE id='member_post'").get().removed, 0, "a post without a story is never touched");
+  assert.equal(applyOnce(db, "news-desk:withdraw:test", change), null, "the change runs once");
+  assert.equal(createNewsDeskReader(db).list().stories.some((item) => item.postId === story.post_id), false);
+
+  // Stories from before the editorial policy carry no signals and do not use
+  // today's slots: a fresh day at 8:05pm with five such stories still opens.
+  const evening = Date.parse("2026-10-07T20:05:00-04:00");
+  for (let index = 0; index < 5; index += 1) {
+    db.prepare(`INSERT INTO news_stories (id,status,headline,summary,post_id,created_at,updated_at) VALUES (?,'published','Old story','s',?,?,?)`)
+      .run(`old-${index}`, `news_old-${index}`, evening - (60 + index) * 60_000, evening - (60 + index) * 60_000);
+  }
+  const feeds = Object.fromEntries(["https://www.stereogum.com/category/news/feed/", "https://www.nme.com/news/music/feed", "https://pitchfork.com/feed/feed-news/rss"]
+    .map((url, index) => [url, rssAt(evening, [[`Reading Festival Adds Surprise Headliner For Sunday ${index}`, `https://evening-${index}.test/f`, 0.5]])]));
+  const summarize = async (reports) => ({ publish: true, reason: "", headline: reports[0].title, summary: "s", body: "b", category: "festival",
+    artists: [], supporting: reports, costUsd: 0.01 });
+  const desk = createNewsDesk({ database: db, fetchText: async (url) => feeds[url] || rss([]), summarize, now: () => evening, env: {}, newId: () => "evening-1" });
+  await desk.ingest();
+  assert.equal((await desk.publishPass()).published, 1, "the count restarts with the editorial policy");
+});

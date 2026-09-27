@@ -159,6 +159,38 @@ export function repairStoryArtists(database) {
 // `buzz` (see newsBuzz.js) adds internet buzz to the ranking; without it
 // stories rank on coverage, artist size and Mshpit fans. `editorial` is the
 // policy in newsEditorial.js; tests may open its slots.
+// Takes published stories down: the post is hidden (removed=1, its text kept,
+// so it can be restored) and the story is marked declined with the reason.
+// Only @news_mod posts are touched. Returns how many were withdrawn.
+export function withdrawNewsStories(database, postIds, reason) {
+  ensureNewsDeskSchema(database);
+  let withdrawn = 0;
+  for (const postId of postIds) {
+    const story = database.prepare(`SELECT s.id FROM news_stories s JOIN posts p ON p.id=s.post_id JOIN users u ON u.id=p.user_id
+      WHERE s.post_id=? AND s.status='published' AND lower(u.handle)=?`).get(String(postId), NEWS_DESK_HANDLE);
+    if (!story) continue;
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      database.prepare("UPDATE posts SET removed=1 WHERE id=?").run(String(postId));
+      database.prepare("UPDATE news_stories SET status='declined',reason=?,updated_at=? WHERE id=?").run(String(reason).slice(0, 200), Date.now(), story.id);
+      database.exec("COMMIT");
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
+    withdrawn += 1;
+  }
+  return withdrawn;
+}
+
+// A one-off change the owner asked for, applied once (recorded in app_meta).
+export function applyOnce(database, key, change) {
+  if (database.prepare("SELECT 1 FROM app_meta WHERE key=?").get(key)) return null;
+  const result = change();
+  database.prepare("INSERT INTO app_meta(key,value) VALUES (?,?) ON CONFLICT(key) DO NOTHING").run(key, JSON.stringify({ at: Date.now(), result }));
+  return result;
+}
+
 export function createNewsDesk({ database, fetchText, fetchArticle = null, summarize = null, buzz = null, editorial = EDITORIAL, now = Date.now, newId = randomUUID, env = process.env, log = console }) {
   ensureNewsDeskSchema(database);
   const budget = newsDeskBudget(env);
@@ -348,7 +380,11 @@ export function createNewsDesk({ database, fetchText, fetchArticle = null, summa
       .filter((cluster) => at - Math.min(...cluster.map((report) => report.publishedAt)) <= editorial.maxAgeMs);
     outcome.confirmed = candidates.length;
     if (!candidates.length) return outcome;
-    const published = database.prepare("SELECT created_at FROM news_stories WHERE status='published' AND created_at>=?")
+    // Only stories chosen under the editorial policy count toward the day's
+    // slots (they carry their signals); the owner restarted the count on
+    // 2026-09-26 after the old rules published eight in one evening.
+    const published = database.prepare(`SELECT created_at FROM news_stories
+      WHERE status='published' AND created_at>=? AND signals NOT IN ('','{}')`)
       .all(at - 36 * HOUR).map((row) => Number(row.created_at));
     // A full day costs nothing to check; ranking may look up Wikipedia.
     if (publishingSlot({ at, published, score: -Infinity, editorial }).reason === "day_full") {
