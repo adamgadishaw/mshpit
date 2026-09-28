@@ -80,6 +80,15 @@ export function staffFixture(url, method = "GET") {
     "/api/admin/catalog/seed": { running: false, total: 30161, phase: "idle" },
     "/api/admin/catalog/runs": { runs: [] },
     "/api/moderation/artist-death-watch": { candidates: [], counts: { pending: 0 }, settings: { enabled: false } },
+    "/api/moderation/search-growth": {
+      enabled: false, configured: false, mode: "monitor",
+      connection: { state: "missing_property", property: null },
+      lastSuccessAt: null, nextRunAt: null, lastErrorCode: null, running: false,
+      window: null, previousWindow: null, totals: { current: null, previous: null },
+      truncated: false, opportunities: [],
+      limits: { maxPages: 1000, maxPrioritiesPerDay: 10, retentionDays: 90 },
+      history: [], measurement: { state: "not_connected" },
+    },
   };
   return fixtures[url.pathname] || null;
 }
