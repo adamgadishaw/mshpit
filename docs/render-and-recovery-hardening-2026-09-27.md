@@ -2,6 +2,14 @@
 
 ## Blueprint diagnosis
 
+The first September 27 release build exposed a separate install-environment
+mismatch: Render's production-mode `npm ci` omitted the development-only `ajv`
+validator, while CI installed it before applying production settings. The
+operational correction is the non-secret `NPM_CONFIG_INCLUDE=dev` setting; keep
+`NODE_ENV=production`. The follow-up Blueprint and CI patch records that same
+clean-install environment, with a regression test. Do not bypass a failed test
+or remove the validator to make a release pass.
+
 The committed Blueprint passed Render's public JSON Schema on September 27.
 This is not proof of a successful live Blueprint sync: missing dashboard-managed
 values, resource ownership, and platform errors require the actual sync error.
@@ -76,7 +84,8 @@ No production snapshot or database was altered by developing these safeguards.
 The news desk checks feeds every 20 minutes but can publish only within the
 five three-hourly Toronto slots described in
 `server/features/newsDesk/README.md`. This is a publication allowance, not a
-promise to invent five stories on a quiet day. The default quiet-day fallback
+promise to invent stories on a quiet day. The owner-approved expansion allows
+up to two supported stories per slot and ten per local day. The default quiet-day fallback
 allows one story backed by two independent publisher groups when nothing has
 been published that day; normal and sensitive-story standards remain stronger.
 

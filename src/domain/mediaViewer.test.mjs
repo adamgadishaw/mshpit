@@ -72,7 +72,7 @@ test("an unknown legacy descriptor adopts the decoded web video dimensions", asy
     videoHeight: decoded.height,
   }), { width: 447, height: 794 });
   assert.equal(videoViewerDecodedSize({ videoWidth: 0, videoHeight: 0 }), null);
-  const viewer = await readFile(new URL("../components/PhotoViewer.jsx", import.meta.url), "utf8");
+  const viewer = (await readFile(new URL("../components/PhotoViewer.jsx", import.meta.url), "utf8")) + (await readFile(new URL("../components/media-player/MshpitVideoPlayer.jsx", import.meta.url), "utf8"));
   assert.match(viewer, /ref=\{videoViewRef\}/);
   assert.match(viewer, /publishVideoSize\(videoViewRef\.current\?\.nativeRef\?\.current\)/);
   assert.match(viewer, /flexGrow:\s*0,[\s\S]*flexShrink:\s*0,[\s\S]*flexBasis:\s*viewportSize\.height,[\s\S]*width:\s*viewportSize\.width,[\s\S]*height:\s*viewportSize\.height/);
@@ -88,7 +88,7 @@ test("a paused web video with decoded current-frame data can retire its poster o
 });
 
 test("the video viewer exposes one play affordance instead of stacking two icons", async () => {
-  const viewer = await readFile(new URL("../components/PhotoViewer.jsx", import.meta.url), "utf8");
+  const viewer = (await readFile(new URL("../components/PhotoViewer.jsx", import.meta.url), "utf8")) + (await readFile(new URL("../components/media-player/MshpitVideoPlayer.jsx", import.meta.url), "utf8"));
   assert.match(viewer, /<ClipPoster[^>]*showPlayBadge=\{false\}/);
   assert.equal((viewer.match(/<Text style=\{styles\.videoStartText\}>Play video<\/Text>/g) || []).length, 1);
 });
@@ -125,7 +125,7 @@ test("modal focus wraps in both directions and recovers from an outside target",
 
 test("the viewer captures its opener before RN Web mounts the modal portal", async () => {
   const app = await readFile(new URL("../../App.js", import.meta.url), "utf8");
-  const viewer = await readFile(new URL("../components/PhotoViewer.jsx", import.meta.url), "utf8");
+  const viewer = (await readFile(new URL("../components/PhotoViewer.jsx", import.meta.url), "utf8")) + (await readFile(new URL("../components/media-player/MshpitVideoPlayer.jsx", import.meta.url), "utf8"));
   const grid = await readFile(new URL("../components/PostMediaGrid.jsx", import.meta.url), "utf8");
   const post = await readFile(new URL("../components/TicketStub.jsx", import.meta.url), "utf8");
   assert.match(grid, /ref=\{openerRef\}[\s\S]*onOpen\(index, openerRef\.current\)/);

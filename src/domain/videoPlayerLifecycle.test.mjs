@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { parse } from "@babel/parser";
 import { transformSync } from "@babel/core";
-import { pendingVideoMilestones } from "./mediaAnalytics.mjs";
+import { createPlaybackMeasurement } from "./playbackMeasurement.mjs";
 
 const require = createRequire(import.meta.url);
 const sdkSource = readFileSync(new URL("../../node_modules/expo-video/src/VideoPlayer.web.tsx", import.meta.url), "utf8");
@@ -39,7 +39,7 @@ function measurementEffect(file, bindings) {
     if (!node || typeof node !== "object") return;
     if (node.type === "CallExpression" && node.callee.name === "useEffect") {
       const callback = node.arguments[0];
-      if (source.slice(callback.start, callback.end).includes("player.timeUpdateEventInterval = 1")) effect = callback;
+      if (source.slice(callback.start, callback.end).includes("const measurement = createPlaybackMeasurement()")) effect = callback;
     }
     for (const value of Object.values(node)) if (Array.isArray(value)) value.forEach(visit); else if (value && typeof value === "object") visit(value);
   }
@@ -47,7 +47,7 @@ function measurementEffect(file, bindings) {
   return new Function(...Object.keys(bindings), "return (" + source.slice(effect.start, effect.end) + ");")(...Object.values(bindings))();
 }
 const components = [
-  ["viewer", "../components/PhotoViewer.jsx"],
+  ["viewer", "../components/media-player/MshpitVideoPlayer.jsx"],
   ["clips", "../screens/ClipsScreen.jsx"],
 ];
 for (const [label, file] of components) {
@@ -57,7 +57,7 @@ for (const [label, file] of components) {
       const player = new Player({ uri: "https://media.example.invalid/clip-" + index + ".mp4" });
       const tracked = [];
       const cleanup = measurementEffect(file, { player, active: true, post: { id: "p_test" }, postId: "p_test",
-        activeRef: { current: true }, trackRef: { current: (...args) => tracked.push(args) }, pendingVideoMilestones });
+        activeRef: { current: true }, trackRef: { current: (...args) => tracked.push(args) }, createPlaybackMeasurement });
       assert.equal(timers.size, 1);
       // The SDK's view teardown alone does not cancel this timer.
       player.unmountVideoView({});
@@ -73,11 +73,10 @@ for (const [label, file] of components) {
     const player = { playing: false, addListener: () => ({ remove: () => removed++ }),
       set timeUpdateEventInterval(value) { if (released) throw new Error("Shared object already released"); interval = value; } };
     const cleanup = measurementEffect(file, { player, active: true, post: { id: "p_test" }, postId: "p_test",
-      activeRef: { current: false }, trackRef: { current: () => assert.fail("Hidden playback cannot be tracked") }, pendingVideoMilestones });
+      activeRef: { current: false }, trackRef: { current: () => assert.fail("Hidden playback cannot be tracked") }, createPlaybackMeasurement });
     assert.equal(interval, 1); released = true;
     assert.doesNotThrow(cleanup);
     assert.equal(removed, 3);
   });
 }
-
 

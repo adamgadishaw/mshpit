@@ -54,8 +54,9 @@ export function recordPrivacyEvent(database, { kind, subjectId, at = Date.now(),
 }
 
 // PRIVACY_JOURNAL_KEY signs entries. Keep it only in the server environment,
-// never in the database or the bucket. Replacing it makes earlier entries
-// unverifiable, so replace it only right after a fresh verified backup.
+// never in the database or the bucket. Preserve historical verification while
+// any corresponding journal entry or backup remains recoverable. A fresh backup
+// alone is not a safe key-rotation procedure. See SECURITY.md.
 export function privacyJournalKey(env = process.env) {
   const value = String(env.PRIVACY_JOURNAL_KEY || "").trim();
   return value.length >= 32 ? Buffer.from(value, "utf8") : null;

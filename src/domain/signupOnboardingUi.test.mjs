@@ -44,7 +44,7 @@ test("signup enters real account setup or a password-proven choice, never a fals
   assert.match(auth, /result.needsAccountChoice/);
   assert.match(auth, /Create a second account/);
   assert.match(store, /response\?\.created === true && response.user\?\.id/);
-  assert.match(app, /rightRailLayout.visible && !nav.auth/);
+  assert.match(app, /rightRailLayout.visible && publicDiscoveryRailAllowed\(nav, activeTab\)/);
   assert.doesNotMatch(auth, /radius\.xl/);
 });
 

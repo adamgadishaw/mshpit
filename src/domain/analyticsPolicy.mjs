@@ -8,10 +8,13 @@ import { MEDIA_POST_MAX_ATTACHMENTS } from "./mediaUploadPolicy.mjs";
 
 
 const IDENTIFIER = /^(?:p|evt|post|cursor|log)_[A-Za-z0-9][A-Za-z0-9_-]{1,74}$/;
+// Canonical news posts use news_ IDs. Event receipts retain their narrower
+// namespace, and the API checks that referenced content is visible.
+const CONTENT_IDENTIFIER = /^(?:p|evt|post|cursor|log|news)_[A-Za-z0-9][A-Za-z0-9_-]{1,74}$/;
 const VERSION = /^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$/;
 
 const enums = (...values) => ({ type: "enum", values: new Set(values) });
-const id = { type: "id" };
+const id = { type: "content-id" };
 const version = { type: "version" };
 const bool = { type: "boolean" };
 const integer = (min, max) => ({ type: "integer", min, max });
@@ -30,31 +33,31 @@ export const ANALYTICS_EVENT_SPECS = Object.freeze({
     referrer: analyticsScreen,
   },
   feed_request: {
-    surface: enums("everyone", "following", "local", "clips"),
-    algorithm: enums("music-affinity-v2", "global-personal-v1", "chronological-v1"),
+    surface: enums("everyone", "following", "local", "clips", "news"),
+    algorithm: enums("music-affinity-v3", "music-affinity-v2", "global-personal-v1", "chronological-v1"),
     page: integer(1, 100),
     fallback: bool,
   },
   feed_impression: {
     postId: id,
     position: integer(0, 500),
-    surface: enums("everyone", "following", "local", "clips"),
-    algorithm: enums("music-affinity-v2", "global-personal-v1", "chronological-v1"),
+    surface: enums("everyone", "following", "local", "clips", "news"),
+    algorithm: enums("music-affinity-v3", "music-affinity-v2", "global-personal-v1", "chronological-v1"),
     algorithmVersion: integer(1, 100),
-    reasonCode: enums("followed_creator", "artist_affinity", "genre_affinity", "local", "global_momentum", "fresh_global"),
+    reasonCode: enums("followed_creator", "artist_affinity", "genre_affinity", "local", "global_momentum", "fresh_global", "network_repost", "community_discovery"),
   },
   content_open: {
     postId: id,
     position: integer(0, 500),
-    surface: enums("everyone", "following", "local", "clips", "profile", "search", "discover", "direct"),
+    surface: enums("everyone", "following", "local", "clips", "news", "profile", "search", "discover", "direct"),
   },
   content_dwell: {
     postId: id,
     durationBucket: enums("under_3s", "3_to_10s", "10_to_30s", "30_to_90s", "over_90s"),
-    surface: enums("everyone", "following", "local", "clips", "profile", "search", "discover", "direct"),
+    surface: enums("everyone", "following", "local", "clips", "news", "profile", "search", "discover", "direct"),
   },
-  video_start: { postId: id, surface: enums("everyone", "following", "local", "clips", "media_viewer", "post_detail"), muted: bool },
-  video_progress: { postId: id, surface: enums("everyone", "following", "local", "clips", "media_viewer", "post_detail"), milestone: enums("25", "50", "75", "100") },
+  video_start: { postId: id, surface: enums("everyone", "following", "local", "clips", "news", "media_viewer", "post_detail"), muted: bool },
+  video_progress: { postId: id, surface: enums("everyone", "following", "local", "clips", "news", "media_viewer", "post_detail"), milestone: enums("25", "50", "75", "100"), measurement: enums("watched-v1") },
   recommendation_feedback: {
     postId: id,
     action: enums("not_interested", "hide", "follow", "open", "share"),
@@ -62,8 +65,8 @@ export const ANALYTICS_EVENT_SPECS = Object.freeze({
   },
   interaction: {
     postId: id,
-    action: enums("like", "unlike", "comment", "share", "save", "report"),
-    surface: enums("feed", "afterparty", "media_viewer", "post_detail", "clips"),
+    action: enums("like", "unlike", "comment", "share", "save", "report", "comment_like", "comment_unlike", "repost", "unrepost"),
+    surface: enums("feed", "afterparty", "media_viewer", "post_detail", "clips", "news"),
   },
   search: {
     kind: enums("all", "artists", "venues", "people", "events", "songs"),
@@ -72,11 +75,11 @@ export const ANALYTICS_EVENT_SPECS = Object.freeze({
   performance: {
     metric: enums("feed_load", "feed_next_page", "screen_ready", "video_first_frame", "post_publish"),
     durationBucket: enums("under_250ms", "250_to_750ms", "750ms_to_2s", "2_to_5s", "over_5s"),
-    surface: enums("everyone", "following", "local", "clips", "post_create", "screen"),
+    surface: enums("everyone", "following", "local", "clips", "news", "media_viewer", "post_create", "screen"),
     outcome: enums("ok", "error", "cancelled"),
   },
-  product_error: { code: enums("video_load_failed", "feed_load_failed", "post_publish_failed", "media_upload_failed"), surface: enums("media_viewer", "clips", "feed", "post_create", "screen"), retryable: bool },
-  notification_open: { type: enums("follow", "like", "comment", "mention", "message", "system") },
+  product_error: { code: enums("video_load_failed", "video_play_failed", "feed_load_failed", "post_publish_failed", "media_upload_failed"), surface: enums("media_viewer", "clips", "feed", "post_create", "screen"), retryable: bool },
+  notification_open: { type: enums("follow", "like", "comment", "comment_like", "repost", "mention", "message", "system") },
 
   // Compatibility event names used by existing app actions. Their former
   // artist, venue, title, city, target, and search-text properties are omitted.
@@ -126,7 +129,7 @@ function cleanProperty(rule, value) {
   }
   if (typeof value !== "string") return undefined;
   if (rule.type === "enum") return rule.values.has(value) ? value : undefined;
-  if (rule.type === "id") return IDENTIFIER.test(value) ? value : undefined;
+  if (rule.type === "content-id") return CONTENT_IDENTIFIER.test(value) ? value : undefined;
   if (rule.type === "version") return VERSION.test(value) ? value : undefined;
   return undefined;
 }

@@ -18,6 +18,7 @@ function fixture(id) {
     "react/jsx-runtime":{jsx,jsxs:jsx},
     "react-native":{View:"View",Text:"Text",Pressable:"Pressable",Platform:{OS:"web"},Alert:{},StyleSheet:{create:value=>value}},
     "../../theme":{colors:{}},"../Icon":"Icon","./NewsInteractionContext":{useNewsInteractions:context},
+    "../SocialReactionButtons":{RepostButton:"RepostButton",RepostAttribution:"RepostAttribution"},
   };
   const module={exports:{}};
   new Function("require","module","exports",compiled)(name=>dependencies[name],module,module.exports);

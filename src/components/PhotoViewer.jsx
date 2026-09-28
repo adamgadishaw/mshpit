@@ -1,10 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Animated, Linking, View, Text, StyleSheet, Pressable, PanResponder, Platform, Modal } from "react-native";
-import { useEvent } from "expo";
-import { useVideoPlayer, VideoView } from "expo-video";
 import { colors, focusRing, mono, radius } from "../theme";
 import Icon from "./Icon";
-import ClipPoster from "./ClipPoster";
+import MshpitVideoPlayer from "./media-player/MshpitVideoPlayer";
 import SmartImage from "./SmartImage";
 import { mediaDisplayKind, mediaDisplayUri, mediaPosterUri } from "../domain/postMediaDisplay.mjs";
 import {
@@ -14,14 +12,8 @@ import {
   galleryKeyAction,
   normalizedGalleryIndex,
   trappedGalleryFocusIndex,
-  videoViewerDecodedSize,
-  videoViewerPhase,
-  videoViewerPosterVisible,
   videoViewerViewportSize,
-  videoViewerWebFrameReady,
 } from "../domain/mediaViewer.mjs";
-import { analyticsDurationBucket } from "../domain/analyticsPolicy.mjs";
-import { pendingVideoMilestones } from "../domain/mediaAnalytics.mjs";
 import { venuePhotoAttribution, verifiedHttpsUrl } from "../domain/venuePhotoProvenance.mjs";
 
 const web = Platform.OS === "web";
@@ -33,184 +25,6 @@ function webAttributionLinkProps(value) {
     : {};
 }
 
-function ClipPlayer({ uri, posterUri, postId, onRetry, onTrack, onVideoSize, altText }) {
-  const player = useVideoPlayer(uri);
-  const videoViewRef = useRef(null);
-  const { status, error } = useEvent(player, "statusChange", {
-    status: player.status,
-    error: null,
-  });
-  const [hasFirstFrame, setHasFirstFrame] = useState(false);
-  const [hasStarted, setHasStarted] = useState(false);
-  const mountedAt = useRef(Date.now());
-  const trackedError = useRef(false);
-  const trackedFirstFrame = useRef(false);
-  const trackRef = useRef(onTrack);
-  trackRef.current = onTrack;
-  const phase = videoViewerPhase({ status, error, hasFirstFrame });
-  const posterVisible = videoViewerPosterVisible({ phase });
-  const publishedVideoSizeRef = useRef("");
-  const publishVideoSize = useCallback((size) => {
-    const decoded = videoViewerDecodedSize(size);
-    if (!decoded) return;
-    const key = `${decoded.width}:${decoded.height}`;
-    if (key === publishedVideoSizeRef.current) return;
-    publishedVideoSizeRef.current = key;
-    onVideoSize?.(decoded);
-  }, [onVideoSize]);
-
-  useEffect(() => {
-    // Expo 56's web track metadata APIs are stubs. Web publishes dimensions
-    // from VideoView's HTMLVideoElement in recordFirstFrame below; native keeps
-    // using the supported track events.
-    if (web) return undefined;
-    const currentTrackSize = () => player.videoTrack?.size || null;
-    publishVideoSize(currentTrackSize());
-    const sourceSubscription = player.addListener?.("sourceLoad", ({ availableVideoTracks }) => {
-      publishVideoSize(currentTrackSize() || availableVideoTracks?.find((track) => track?.size)?.size);
-    });
-    const trackSubscription = player.addListener?.("videoTrackChange", ({ videoTrack }) => {
-      publishVideoSize(videoTrack?.size || currentTrackSize());
-    });
-    const statusSubscription = player.addListener?.("statusChange", () => publishVideoSize(currentTrackSize()));
-    return () => {
-      sourceSubscription?.remove?.();
-      trackSubscription?.remove?.();
-      statusSubscription?.remove?.();
-    };
-  }, [player, publishVideoSize]);
-
-  useEffect(() => {
-    const subscription = player.addListener?.("playingChange", ({ isPlaying }) => {
-      if (isPlaying) setHasStarted(true);
-    });
-    return () => subscription?.remove?.();
-  }, [player]);
-
-  useEffect(() => {
-    if (!player || !postId) return;
-    const milestones = new Set();
-    let started = false;
-    try { player.timeUpdateEventInterval = 1; } catch {}
-    const recordStart = (isPlaying) => {
-      if (!isPlaying || started) return;
-      started = true;
-      trackRef.current?.("video_start", { postId, surface: "media_viewer", muted: !!player.muted });
-    };
-    const recordMilestone = (milestone) => {
-      if (milestones.has(milestone)) return;
-      milestones.add(milestone);
-      trackRef.current?.("video_progress", { postId, surface: "media_viewer", milestone });
-    };
-    const playingSubscription = player.addListener?.("playingChange", ({ isPlaying }) => recordStart(isPlaying));
-    const timeSubscription = player.addListener?.("timeUpdate", ({ currentTime }) => {
-      for (const milestone of pendingVideoMilestones({ currentTime, duration: player.duration, seen: milestones })) recordMilestone(milestone);
-    });
-    const endSubscription = player.addListener?.("playToEnd", () => {
-      for (const milestone of pendingVideoMilestones({ seen: milestones, ended: true })) recordMilestone(milestone);
-    });
-    recordStart(player.playing);
-    return () => {
-      // Expo web keeps this timer after its VideoView unmounts. Stop the
-      // interval we own before releasing listeners or replacing the player.
-      try { player.timeUpdateEventInterval = 0; } catch { /* Native player may already be released. */ }
-      playingSubscription?.remove?.();
-      timeSubscription?.remove?.();
-      endSubscription?.remove?.();
-    };
-  }, [player, postId]);
-
-  useEffect(() => {
-    if (phase !== "error" || trackedError.current) return;
-    trackedError.current = true;
-    trackRef.current?.("product_error", { code: "video_load_failed", surface: "media_viewer", retryable: true });
-  }, [phase]);
-
-  const recordFirstFrame = useCallback(() => {
-    if (trackedFirstFrame.current) return;
-    trackedFirstFrame.current = true;
-    if (web) publishVideoSize(videoViewRef.current?.nativeRef?.current);
-    else publishVideoSize(player.videoTrack?.size);
-    setHasFirstFrame(true);
-    trackRef.current?.("performance", {
-      metric: "video_first_frame",
-      durationBucket: analyticsDurationBucket(Date.now() - mountedAt.current),
-      surface: "media_viewer",
-      outcome: "ok",
-    });
-  }, [player, publishVideoSize]);
-
-  useEffect(() => {
-    if (!web || hasFirstFrame || phase === "error") return undefined;
-    const probe = () => {
-      const element = videoViewRef.current?.nativeRef?.current;
-      if (videoViewerWebFrameReady(element)) recordFirstFrame();
-    };
-    probe();
-    const timer = setInterval(probe, 125);
-    return () => clearInterval(timer);
-  }, [hasFirstFrame, phase, recordFirstFrame]);
-
-  const startPlayback = () => {
-    try { player.play(); }
-    catch {
-      trackRef.current?.("product_error", { code: "video_play_failed", surface: "media_viewer", retryable: true });
-    }
-  };
-
-  return (
-    <>
-      <VideoView
-        ref={videoViewRef}
-        player={player}
-        style={web ? styles.webVideo : styles.img}
-        contentFit="contain"
-        nativeControls
-        playsInline
-        useExoShutter={false}
-        onFirstFrameRender={recordFirstFrame}
-        accessibilityLabel={altText || "Video clip player"}
-        accessible={hasFirstFrame}
-        accessibilityElementsHidden={!hasFirstFrame}
-        importantForAccessibility={hasFirstFrame ? "auto" : "no-hide-descendants"}
-      />
-      {posterVisible && (
-        <ClipPoster uri={uri} posterUri={posterUri} viewable style={styles.videoStatus} contain showPlayBadge={false} accessibilityLabel={altText || "Video preview; use the player controls to play"} accessible={false} />
-      )}
-      {phase !== "error" && !hasStarted ? (
-        <Pressable
-          style={({ pressed, focused }) => [styles.videoStart, pressed && styles.videoStartPressed, focused && styles.videoStartFocused]}
-          onPress={startPlayback}
-          accessibilityRole="button"
-          accessibilityLabel={`Play video${altText ? `. ${altText}` : ""}`}
-        >
-          <Icon name="play" size={18} color="#1A1206" />
-          <Text style={styles.videoStartText}>Play video</Text>
-        </Pressable>
-      ) : null}
-      {phase === "error" && (
-        <View style={styles.videoError} accessibilityLiveRegion="assertive">
-          <Text style={styles.videoErrorTitle}>This video could not play</Text>
-          <Text style={styles.videoErrorText}>The browser may not support its format, or the connection was interrupted.</Text>
-          <View style={styles.videoErrorActions}>
-            <Pressable style={styles.videoAction} onPress={onRetry} accessibilityRole="button">
-              <Text style={styles.videoActionText}>Try again</Text>
-            </Pressable>
-            <Pressable style={styles.videoAction} onPress={() => Linking.openURL(uri).catch(() => {})} accessibilityRole="link">
-              <Text style={styles.videoActionText}>Open video</Text>
-            </Pressable>
-          </View>
-        </View>
-      )}
-    </>
-  );
-}
-
-// A clip inside the viewer: expo-video with the platform's own controls (a
-// <video> element on web). The web element must be absolutely bounded: a
-// portrait video's intrinsic height otherwise expands React Native Web's flex
-// child beyond the modal viewport and pushes its picture/controls off-screen.
-// Remounting on retry also releases the failed player cleanly.
 function ClipStage({ uri, posterUri, postId, onTrack, altText, width = 0, height = 0 }) {
   const [attempt, setAttempt] = useState(0);
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
@@ -245,7 +59,7 @@ function ClipStage({ uri, posterUri, postId, onTrack, altText, width = 0, height
           height: viewportSize.height,
         } : null,
       ]}>
-        <ClipPlayer key={`${uri}:${attempt}`} uri={uri} posterUri={posterUri} postId={postId} onTrack={onTrack} onVideoSize={handleVideoSize} altText={altText} onRetry={() => setAttempt((value) => value + 1)} />
+        <MshpitVideoPlayer key={`${uri}:${attempt}`} uri={uri} posterUri={posterUri} postId={postId} onTrack={onTrack} onVideoSize={handleVideoSize} altText={altText} onRetry={() => setAttempt((value) => value + 1)} />
       </View>
     </View>
   );
@@ -591,18 +405,6 @@ const styles = StyleSheet.create({
   clipStageBounds: { flex: 1, width: "100%", height: "100%", minWidth: 0, minHeight: 0, alignItems: "center", justifyContent: "center", overflow: "hidden" },
   clipViewport: { flex: 1, width: "100%", height: "100%", minWidth: 0, minHeight: 0, overflow: "hidden", backgroundColor: "#06070b" },
   clipViewportWeb: { maxWidth: 1280, alignSelf: "center" },
-  webVideo: { ...StyleSheet.absoluteFillObject, width: "100%", height: "100%", maxWidth: "100%", maxHeight: "100%", backgroundColor: "transparent" },
-  videoStatus: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center", gap: 10 },
-  videoStart: { position: "absolute", left: "50%", top: "50%", zIndex: 4, minHeight: 46, transform: [{ translateX: -62 }, { translateY: -23 }], flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingHorizontal: 17, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.amber, backgroundColor: colors.amberStrong },
-  videoStartPressed: { opacity: 0.82, transform: [{ translateX: -62 }, { translateY: -21 }] },
-  videoStartFocused: { boxShadow: "0 0 0 3px rgba(242,166,90,0.42)" },
-  videoStartText: { color: "#1A1206", fontSize: 13, fontWeight: "900" },
-  videoError: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center", gap: 10, paddingHorizontal: 24, backgroundColor: "rgba(6,7,11,0.9)" },
-  videoErrorTitle: { color: "#fff", fontSize: 17, fontWeight: "800", textAlign: "center" },
-  videoErrorText: { color: "rgba(255,255,255,0.72)", fontSize: 13, lineHeight: 19, textAlign: "center", maxWidth: 380 },
-  videoErrorActions: { flexDirection: "row", flexWrap: "wrap", justifyContent: "center", gap: 8, marginTop: 2 },
-  videoAction: { minHeight: 44, justifyContent: "center", borderRadius: radius.pill, paddingHorizontal: 16, backgroundColor: "rgba(255,255,255,0.12)" },
-  videoActionText: { color: "#fff", fontSize: 13, fontWeight: "800" },
   arrow: { position: "absolute", top: "50%", marginTop: -24, width: 48, height: 48, borderRadius: 24, backgroundColor: "rgba(255,255,255,0.12)", alignItems: "center", justifyContent: "center" },
   footer: { alignItems: "center", gap: 8, paddingBottom: 22, paddingTop: 8 },
   by: { color: "rgba(255,255,255,0.7)", fontSize: 13, textAlign: "center" },

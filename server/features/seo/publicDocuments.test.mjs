@@ -1834,6 +1834,43 @@ test("incomplete legacy media does not emit an incomplete posting schema", () =>
   }
 });
 
+test("member image rights stay truthful across two-photo posts and artist reuse without exposing unready media", () => {
+  const database = createDatabase();
+  try {
+    addUser(database, "active", { name: "Sharing Member", handle: "sharing-member" });
+    addArtist(database);
+    addPost(database, { id: "photo-rights-post" });
+    for (const suffix of ["one", "two"]) {
+      addReadyImage(database, { assetId: `rights-${suffix}`, ownerId: "active", postId: "photo-rights-post",
+        url: `https://media.example/public/rights-${suffix}.jpg` });
+    }
+    const documents = service(database);
+    const post = documents.postDocument({ id: "photo-rights-post" });
+    assert.equal(post.jsonLd[0].image.length, 2);
+    for (const image of post.jsonLd[0].image) {
+      assert.equal(image.creditText, "Shared by Sharing Member on Mshpit");
+      assert.equal(image.license, "https://www.example.com/photo-rights");
+      assert.equal(image.acquireLicensePage, "https://www.example.com/photo-rights#request-permission");
+      assert.equal(Object.hasOwn(image, "creator"), false);
+      assert.equal(Object.hasOwn(image, "copyrightNotice"), false);
+    }
+    const artist = documents.artistDocument({ artistKey: "alpha", at: NOW });
+    assert.equal(artist.jsonLd[0].about.image.creditText, "Shared by Sharing Member on Mshpit");
+    assert.equal(artist.jsonLd[0].about.image.license, "https://www.example.com/photo-rights");
+    assert.equal(artist.jsonLd[0].about.image.acquireLicensePage, "https://www.example.com/photo-rights#request-permission");
+    assert.equal(Object.hasOwn(artist.jsonLd[0].about.image, "creator"), false);
+    assert.equal(Object.hasOwn(artist.jsonLd[0].about.image, "copyrightNotice"), false);
+    assert.match(documents.render(artist), /Photos shared by Sharing Member\./);
+    database.prepare("UPDATE media_assets SET status='upload_pending' WHERE owner_id=?").run("active");
+    const unreadyMediaPost = documents.postDocument({ id: "photo-rights-post" });
+    assert.equal(unreadyMediaPost.post.media.length, 0);
+    assert.equal(Object.hasOwn(unreadyMediaPost.jsonLd[0], "image"), false);
+    assert.doesNotMatch(documents.render(unreadyMediaPost), /rights-(one|two)\.jpg|class="micro media-rights"/);
+  } finally {
+    database.close();
+  }
+});
+
 test("verified post images are ImageObjects and the public artist directory is substantive and bounded", () => {
   const database = createDatabase();
   try {
@@ -1851,8 +1888,13 @@ test("verified post images are ImageObjects and the public artist directory is s
     const imageDocument = service(database).postDocument({ id: "image-post" });
     assert.equal(imageDocument.jsonLd[0].image[0]["@type"], "ImageObject");
     assert.equal(imageDocument.jsonLd[0].image[0].contentUrl, "https://media.example/public/schema-image.jpg");
-    assert.equal(imageDocument.jsonLd[0].image[0].creditText, "Photo by Image Fan on Mshpit");
-    assert.equal(imageDocument.jsonLd[0].image[0].copyrightNotice, "© Image Fan", "members keep ownership of their photos");
+    assert.equal(imageDocument.jsonLd[0].image[0].creditText, "Shared by Image Fan on Mshpit");
+    assert.equal(Object.hasOwn(imageDocument.jsonLd[0].image[0], "creator"), false, "upload custody does not prove who took the photo");
+    assert.equal(Object.hasOwn(imageDocument.jsonLd[0].image[0], "copyrightNotice"), false, "upload custody does not prove copyright ownership");
+    assert.equal(imageDocument.jsonLd[0].image[0].license, "https://www.example.com/photo-rights");
+    assert.equal(imageDocument.jsonLd[0].image[0].acquireLicensePage, "https://www.example.com/photo-rights#request-permission");
+    assert.match(service(database).render(imageDocument), /Photos shared by Image Fan\. <a href="\/photo-rights">Photo rights<\/a>/);
+    assert.match(service(database).render(imageDocument), /href="\/photo-rights#request-permission">Request permission<\/a>/);
     assert.equal(Object.hasOwn(imageDocument.jsonLd[0], "associatedMedia"), false);
 
     const longBio = "A substantive artist biography covering live history, musical style, recordings, tours, collaborators, and fan context.";

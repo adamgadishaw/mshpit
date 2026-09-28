@@ -1,3 +1,5 @@
+import { isNewsIllustrationArtwork, loadNewsIllustration } from "../../newsIllustration.js";
+
 const ARTWORK_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 const DEFAULT_MAX_BYTES = 6 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 3_000;
@@ -180,13 +182,40 @@ export async function loadShareArtwork(candidates, {
   signal = null,
   timeoutMs = DEFAULT_TIMEOUT_MS,
 } = {}) {
-  if (!Array.isArray(candidates) || typeof fetchImpl !== "function") return null;
+  if (!Array.isArray(candidates)) return null;
   const boundedMax = Math.max(1_024, Math.min(DEFAULT_MAX_BYTES, Number(maxBytes) || DEFAULT_MAX_BYTES));
   const boundedTimeout = Math.max(100, Math.min(DEFAULT_TIMEOUT_MS, Number(timeoutMs) || DEFAULT_TIMEOUT_MS));
   let transientReason = null;
+  const acceptCandidate = async (bytes, candidate) => {
+    if (signal?.aborted) throw abortReason(signal);
+    if (typeof acceptBytes !== "function") return bytes;
+    try {
+      const accepted = await acceptBytes(bytes, candidate);
+      if (signal?.aborted) throw abortReason(signal);
+      return accepted;
+    } catch (error) {
+      if (signal?.aborted || error?.name === "AbortError") throw error;
+      const terminal = typeof acceptErrorIsTerminal !== "function"
+        || acceptErrorIsTerminal(error, candidate) !== false;
+      if (!terminal) throw error;
+      // architecture: allow-ambiguous-result -- caller-designated optional artwork decode rejection discards only this candidate; cancellation and non-candidate render failures remain thrown.
+      return null;
+    }
+  };
 
   for (const candidate of candidates.slice(0, 3)) {
     if (signal?.aborted) throw signal.reason || new DOMException("Aborted", "AbortError");
+    if (candidate?.source === "bundled-news") {
+      // Exact public identifier selects one fixed hash-pinned local file. A
+      // forged bundled candidate must never fall through to HTTP fetching.
+      if (!isNewsIllustrationArtwork(candidate)) continue;
+      const bytes = await loadNewsIllustration({ signal });
+      if (!bytes || bytes.length > boundedMax) continue;
+      const accepted = await acceptCandidate(bytes, candidate);
+      if (accepted) return accepted;
+      continue;
+    }
+    if (typeof fetchImpl !== "function") continue;
     const url = trustedShareArtworkUrl(candidate, { env });
     if (!url) continue;
     // Give every trusted fallback its own short deadline. A stalled provider
@@ -233,17 +262,7 @@ export async function loadShareArtwork(candidates, {
       }
     }
     if (!bytes) continue;
-    if (typeof acceptBytes !== "function") return bytes;
-    let accepted = null;
-    try {
-      accepted = await acceptBytes(bytes, candidate);
-    } catch (error) {
-      if (signal?.aborted || error?.name === "AbortError") throw error;
-      const terminal = typeof acceptErrorIsTerminal !== "function"
-        || acceptErrorIsTerminal(error, candidate) !== false;
-      if (!terminal) throw error;
-      continue;
-    }
+    const accepted = await acceptCandidate(bytes, candidate);
     if (accepted) return accepted;
   }
   if (transientReason) throw new ShareArtworkTransientError(transientReason);

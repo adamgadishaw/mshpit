@@ -23,12 +23,13 @@ const FEED_CURSOR_KEY = "news-desk:feed-cursor:v1";
 export const MAX_OPEN_REPORTS_PER_PASS = 1200;
 export const NEWS_DESK_HANDLE = "news_mod";
 
-// A story costs about 2 cents, so $0.30 a day covers the daily story limit.
+// Owner-approved allowance for up to two supported stories per slot. Each
+// attempt still needs reservation headroom; published volume is not guaranteed.
 // The desk also stops when all Claude features together reach the shared
 // monthly ceiling (server/claudeSpendCeiling.js).
 export const newsDeskBudget = (env = process.env) => ({
-  dailyUsd: positiveNumber(env.NEWS_DESK_DAILY_USD, 0.3),
-  monthlyUsd: positiveNumber(env.NEWS_DESK_MONTHLY_USD, 6),
+  dailyUsd: positiveNumber(env.NEWS_DESK_DAILY_USD, 0.75),
+  monthlyUsd: positiveNumber(env.NEWS_DESK_MONTHLY_USD, 15),
 });
 // Articles read per story: one per publisher group, so the write-up has more
 // than headlines to go on.
@@ -379,7 +380,7 @@ export function createNewsDesk({ database, fetchText, fetchArticle = null, summa
   // claims its reports. Check ownership while holding the publication lock.
   function reportsAvailable(reports, manual = false) {
     const current = database.prepare("SELECT r.story_id,s.status FROM news_reports r LEFT JOIN news_stories s ON s.id=r.story_id WHERE r.url=?");
-    return reports.every(report => {
+    return reports.length > 0 && reports.every(report => {
       const row = current.get(report.url);
       return row ? row.story_id === null || (manual && row.status === "declined") : manual;
     });
@@ -406,6 +407,7 @@ export function createNewsDesk({ database, fetchText, fetchArticle = null, summa
     const sources = supporting.map((report) => ({ name: report.sourceName, sourceId: report.sourceId, group: report.group, url: report.url, title: report.title }));
     database.exec("BEGIN IMMEDIATE");
     try {
+      at = now(); // A database lock wait can also cross the end of the slot.
       // Network work may have crossed a slot boundary, or another publisher
       // may have won the slot. Recheck current authorization and policy here.
       const account = newsAccount();
@@ -442,6 +444,8 @@ export function createNewsDesk({ database, fetchText, fetchArticle = null, summa
     const id = newId();
     database.exec("BEGIN IMMEDIATE");
     try {
+      // An overlapping pass can already have published or declined this
+      // cluster while this request was in flight. Never steal its reports.
       if (!reportsAvailable(reports)) { database.exec("ROLLBACK"); return false; }
       database.prepare(`INSERT INTO news_stories (id,status,category,reason,cost_usd,score,signals,created_at,updated_at) VALUES (?,'declined',?,?,?,?,?,?,?)`)
         .run(id, result.category || storyCategory(reports), result.reason || "", result.costUsd || 0, score, JSON.stringify(signals), at, at);
@@ -489,7 +493,7 @@ export function createNewsDesk({ database, fetchText, fetchArticle = null, summa
     return ranked;
   }
 
-  // 2. Rank the confirmed stories and write the best one, if a publishing
+  // 2. Rank confirmed stories and write up to two, if a publishing
   // slot is open (see newsEditorial.js).
   async function publishPass({ signal } = {}) {
     const at = now();
@@ -514,14 +518,21 @@ export function createNewsDesk({ database, fetchText, fetchArticle = null, summa
     const fallback = twoPublisherFallbackAllowed({ at, published, editorial })
       ? clusters.filter((cluster) => !SENSITIVE_CATEGORIES.has(storyCategory(cluster)) && independentGroups(cluster) === 2) : [];
     let calls = 0;
+    const hasPlace = (minPublishers) => {
+      const current = now();
+      const history = publicationTimes(current);
+      return publishingSlot({ at: current, published: history, editorial }).open
+        && (minPublishers !== 2 || twoPublisherFallbackAllowed({ at: current, published: history, editorial }));
+    };
     // Try normal confirmation first. If every attempted normal candidate is
     // declined, a viable fallback may still use the remaining call budget.
     for (const { tier, minPublishers } of [{ tier: candidates, minPublishers: 3 }, { tier: fallback, minPublishers: 2 }]) {
-      if (signal?.aborted || calls >= editorial.callsPerPass || outcome.published || outcome.waiting || outcome.skippedForBudget) break;
+      if (signal?.aborted || calls >= editorial.callsPerPass || outcome.published >= 2 || outcome.waiting || outcome.skippedForBudget) break;
       if (!tier.length || (minPublishers === 2 && !twoPublisherFallbackAllowed({ at: now(), published: publicationTimes(now()), editorial }))) continue;
       const ranked = await rankCandidates(tier, now(), signal);
       for (const { cluster, score, signals } of ranked) {
-        if (signal?.aborted || calls >= editorial.callsPerPass) break;
+        if (signal?.aborted || calls >= editorial.callsPerPass || outcome.published >= 2 || !hasPlace(minPublishers)) break;
+        if (!reportsAvailable(cluster)) continue;
         // Present different owners first; a flood from one publisher must not
         // push independent confirmation beyond the prompt's six-report limit.
         const groups = new Set();
@@ -534,7 +545,8 @@ export function createNewsDesk({ database, fetchText, fetchArticle = null, summa
         const promptOptions = { minIndependentPublishers: minPublishers };
         if (budgetLeft(at) < worstCaseCostUsd(storyPrompt(shown, promptOptions))) { outcome.skippedForBudget += 1; break; }
         const reports = await withArticleLeads(shown, signal);
-        if (signal?.aborted) break;
+        if (signal?.aborted || !hasPlace(minPublishers)) break;
+        if (!reportsAvailable(cluster)) continue;
         const worstCase = worstCaseCostUsd(storyPrompt(reports, promptOptions));
         const admittedAt = now();
         const day = dayOf(admittedAt);
@@ -557,6 +569,8 @@ export function createNewsDesk({ database, fetchText, fetchArticle = null, summa
           throw error;
         }
         settleSpend(receipt, result.costUsd, now());
+        // Cancellation does not erase paid work, but it must prevent any new
+        // publication or follow-up request after the receipt is settled.
         if (signal?.aborted) break;
         if (result.publish && result.headline && result.summary) {
           const sensitive = SENSITIVE_CATEGORIES.has(result.category) || SENSITIVE_CATEGORIES.has(storyCategory(cluster));
@@ -566,8 +580,8 @@ export function createNewsDesk({ database, fetchText, fetchArticle = null, summa
             if (written) {
               outcome.published += 1;
               outcome.picked.push({ headline: result.headline, score, signals });
-            } else outcome.waiting += 1;
-            break;
+            } else { outcome.waiting += 1; break; }
+            continue;
           }
           result = { ...result, publish: false, reason: "insufficient_independent_support" };
         }
@@ -589,12 +603,20 @@ export function createNewsDesk({ database, fetchText, fetchArticle = null, summa
 // `ensureSchema: false` is for read-only connections such as the sitemap
 // snapshot; a missing table there simply means no stories yet.
 const missingTable = (error) => /no such (table|column)/iu.test(String(error?.message));
-export function createNewsDeskReader(database, { ensureSchema = true } = {}) {
+export function createNewsDeskReader(database, { ensureSchema = true, projectReposts = null } = {}) {
   let ready = !ensureSchema;
+  const withReposts=(stories,viewerId)=>{
+    if (!projectReposts || !stories.length) return stories;
+    const reactions=projectReposts(stories.map(story=>story.postId),viewerId || null);
+    return stories.map(story=>({...story,...reactions.get(story.postId)}));
+  };
   return {
     list(options = {}) {
       if (!ready) { ensureNewsDeskSchema(database); ready = true; }
-      try { return listStories(database, options); }
+      try {
+        const result=listStories(database, options);
+        return {...result,stories:withReposts(result.stories,options.viewerId)};
+      }
       catch (error) { if (missingTable(error)) return { stories: [], nextCursor: null }; throw error; }
     },
     forPost(postId, options = {}) { return readOne("post_id", postId, options); },
@@ -612,7 +634,7 @@ export function createNewsDeskReader(database, { ensureSchema = true } = {}) {
         WHERE s.${column === "id" ? "id" : "post_id"}=? AND s.status='published'
           ${live ? `AND p.removed=0 AND ${activeAccountSql("u")}` : ""} ${readerBlockSql(viewerId)}`)
         .get(String(value || ""), ...readerBlockParams(viewerId));
-      return row ? newsStoryJson(row, database.prepare("SELECT norm,name,public_slug,photo,data FROM artists WHERE norm=?"), database, viewerId) : null;
+      return row ? withReposts([newsStoryJson(row, database.prepare("SELECT norm,name,public_slug,photo,data FROM artists WHERE norm=?"), database, viewerId)],viewerId)[0] : null;
     } catch (error) {
       if (missingTable(error)) return null;
       throw error;

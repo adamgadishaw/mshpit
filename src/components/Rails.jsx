@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { Platform, View, Text, StyleSheet, Pressable, ScrollView } from "react-native";
 import { colors, displayFont, focusRing, font, mono, radius, roleColor, shadow } from "../theme";
 import Avatar from "./Avatar";
@@ -6,7 +6,7 @@ import Icon from "./Icon";
 import { UpcomingEventCard } from "./VenueDiscoveryCards";
 import { PopularLoungeCard } from "./LiveDiscoveryCards";
 import { PublicPressableLink } from "./PublicWebLinks";
-import HomeShowCountdown from "./HomeShowCountdown";
+import { lazyWithRetry } from "../lib/lazyWithRetry";
 import {
   RIGHT_RAIL_EVENT_SCOPE,
   reconcileRightRailScopeChoice,
@@ -17,7 +17,8 @@ import {
 import { liveEventTitle, localDiscoveryEvents } from "../domain/liveDiscovery.mjs";
 import { artistPath, eventPath, profilePath } from "../domain/urls.mjs";
 import { visibleSuggestedPitters } from "../domain/suggestedPitters.mjs";
-import NewsRailPanel from "./news/NewsRailPanel";
+const HomeShowCountdown = lazyWithRetry(() => import("./HomeShowCountdown"), "HomeShowCountdown");
+const NewsRailPanel = lazyWithRetry(() => import("./news/NewsRailPanel"), "NewsRailPanel");
 
 const NAV = [
   { key: "feed", label: "Feed", icon: "feed" },
@@ -292,10 +293,10 @@ export function RightRail({
       contentContainerStyle={styles.rightContent}
       showsVerticalScrollIndicator={false}
     >
-      {showNewsStories ? <NewsRailPanel onOpenStory={onOpenNewsStory} onOpenAll={onOpenNews} /> : null}
+      {showNewsStories ? <Suspense fallback={<Text style={styles.empty}>Loading music news…</Text>}><NewsRailPanel onOpenStory={onOpenNewsStory} onOpenAll={onOpenNews} /></Suspense> : null}
 
       {accountId && countdownPlan ? (
-        <HomeShowCountdown compact plan={countdownPlan} onOpen={onOpenCountdown || onOpenEvent} onViewAll={onViewAllCountdown} />
+        <Suspense fallback={<Text style={styles.empty}>Loading your next show…</Text>}><HomeShowCountdown compact plan={countdownPlan} onOpen={onOpenCountdown || onOpenEvent} onViewAll={onViewAllCountdown} /></Suspense>
       ) : null}
 
       {accountId && (suggestedUsers.length > 0 || discoverySidebarStatus === "loading") ? (
@@ -451,7 +452,7 @@ export function RightRail({
       </View>
 
       {accountId && !countdownPlan ? (
-        <HomeShowCountdown compact onFindShow={onOpenDiscover} />
+        <Suspense fallback={<Text style={styles.empty}>Loading show suggestions…</Text>}><HomeShowCountdown compact onFindShow={onOpenDiscover} /></Suspense>
       ) : null}
     </ScrollView>
   );

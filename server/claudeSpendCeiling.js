@@ -1,10 +1,10 @@
 // Every paid Claude feature (catalog research, the news desk) has its own
 // daily and monthly caps, and on top of those they share one monthly ceiling:
-// ANTHROPIC_MONTHLY_USD, $10 by default. Together they can never spend more
+// ANTHROPIC_MONTHLY_USD, $20 by default. Together they can never spend more
 // than that in admitted reservations in a calendar month (UTC). Actual bills
 // still need the provider's own cap: a response can cost more than its estimate.
 
-export const DEFAULT_ANTHROPIC_MONTHLY_USD = 10;
+export const DEFAULT_ANTHROPIC_MONTHLY_USD = 20;
 
 // Each feature's spend ledger, summed from the first day of the month. A
 // feature whose table does not exist yet simply has spent nothing.

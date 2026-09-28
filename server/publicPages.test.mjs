@@ -21,6 +21,27 @@ function structuredGraph(html) {
   return JSON.parse(match[1])["@graph"];
 }
 
+test("photo rights explain existing ownership and expose a real permission-request destination", () => {
+  const page = publicPageFor("/photo-rights");
+  assert.ok(page);
+  const html = renderPublicPage("/photo-rights", { PUBLIC_ORIGIN: "https://www.example.com" });
+  assert.match(html, /<link rel="canonical" href="https:\/\/www\.example\.com\/photo-rights"/);
+  assert.match(html, /<section id="request-permission">/);
+  assert.match(html, /does not grant a new licence or offer images for sale/);
+  assert.match(html, /not proof that the member took the photo or owns every right/);
+  assert.match(html, /does not automatically give another person permission/);
+  assert.match(html, /lack of reply is not permission/);
+  assert.match(html, /cannot grant someone else(?:'|&#39;)s rights or guarantee permission/);
+  assert.match(html, /do not publish private member contact details/);
+  assert.match(html, /mailto:support@mshpit\.com\?subject=Photo%20permission%20request/);
+  assert.match(html, /separate creator credit, source link, and licence/);
+  assert.ok(publicPageSitemapEntries().some((entry) => entry.path === "/photo-rights"));
+  assert.match(renderPublicPage("/terms"), /href="\/photo-rights"/);
+  assert.match(renderPublicPage("/support"), /href="\/photo-rights#request-permission"/);
+  assert.equal(structuredGraph(html).find((node) => node["@id"].endsWith("#page")).dateModified, undefined,
+    "an explanatory page must not invent a legal-policy acceptance date");
+});
+
 test("public trust and App Store URLs resolve without accepting near misses", () => {
   for (const path of PUBLIC_PAGE_PATHS) {
     assert.equal(publicPageFor(path)?.path, path);

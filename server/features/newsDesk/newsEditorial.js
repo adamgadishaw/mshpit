@@ -9,9 +9,9 @@
 //
 // The day's stories are spread over five publishing slots in Toronto time
 // (8am, 11am, 2pm, 5pm, 8pm), so the day is not used up in the morning, at
-// noon or at night: each slot takes the top story available at that moment
+// noon or at night: each slot takes up to two supported stories available then
 // and later slots stay free for news that breaks later. A slot has a bounded
-// 30-minute grace for the background scheduler and takes one story; unused slots pass
+// 30-minute grace for the background scheduler; unused places pass
 // rather than piling up for the evening. No story, including breaking news,
 // may bypass the slots. A two-publisher fallback is an explicit policy, never
 // permission to invent corroboration or fill a quota with unsupported claims.
@@ -23,6 +23,7 @@ export const EDITORIAL = Object.freeze({
   timeZone: "America/Toronto",
   slotHours: Object.freeze([8, 11, 14, 17, 20]),
   slotLengthHours: 0.5,
+  storiesPerSlot: 2,
   minGapMs: 2 * HOUR,
   // "empty_day": only if no story has gone out today. "empty_slot" permits
   // one in any otherwise unfilled slot. Both still prefer three publishers.
@@ -63,22 +64,33 @@ function usedSlot(hour, editorial) {
 }
 
 // `published` includes withdrawn stories: taking a post down must not reopen
-// a consumed slot or silently reset the five-publication daily cap.
+// a consumed place or silently reset the ten-publication daily cap.
 export function publishingSlot({ at, published = [], editorial = EDITORIAL } = {}) {
   const now = localClock(at, editorial.timeZone);
-  const used = published.map((time) => localClock(time, editorial.timeZone))
-    .filter((clock) => clock.day === now.day).map((clock) => usedSlot(clock.hour, editorial));
-  const gap = published.length ? at - Math.max(...published) : Infinity;
-  if (used.length >= editorial.slotHours.length) return { open: false, reason: "day_full" };
+  const capacity = Math.max(1, Math.min(2, Math.floor(Number(editorial.storiesPerSlot) || 2)));
+  const history = published.map((time) => ({ time, ...localClock(time, editorial.timeZone) }));
+  const used = history.filter((clock) => clock.day === now.day).map((clock) => usedSlot(clock.hour, editorial));
+  if (used.length >= Math.min(10, editorial.slotHours.length * capacity)) return { open: false, reason: "day_full" };
   const slot = openSlot(now.hour, editorial);
-  if (slot === null || used.includes(slot)) return { open: false, reason: "next_slot" };
+  if (slot === null || used.filter((index) => index === slot).length >= capacity) return { open: false, reason: "next_slot" };
+  // A second item in this actual window is a batch, not a new interval. Old
+  // off-slot publications still consume a place and retain the spacing rule.
+  const previous = history.filter((clock) => clock.time > at || clock.day !== now.day || openSlot(clock.hour, editorial) !== slot);
+  const gap = previous.length ? at - Math.max(...previous.map((clock) => clock.time)) : Infinity;
   if (gap < editorial.minGapMs) return { open: false, reason: "too_soon" };
   return { open: true };
 }
 
 export function twoPublisherFallbackAllowed({ at, published = [], editorial = EDITORIAL } = {}) {
   if (!publishingSlot({ at, published, editorial }).open) return false;
-  if (editorial.fallbackMode === "empty_slot") return true;
+  if (editorial.fallbackMode === "empty_slot") {
+    const now = localClock(at, editorial.timeZone);
+    const slot = openSlot(now.hour, editorial);
+    return !published.some((time) => {
+      const clock = localClock(time, editorial.timeZone);
+      return clock.day === now.day && usedSlot(clock.hour, editorial) === slot;
+    });
+  }
   if (editorial.fallbackMode !== "empty_day") return false;
   const today = localClock(at, editorial.timeZone).day;
   return !published.some((time) => localClock(time, editorial.timeZone).day === today);

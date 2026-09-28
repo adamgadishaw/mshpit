@@ -13,7 +13,7 @@ test("guests see discovery instead of restored Feed or You, while members retain
 });
 
 test("guest community and account frames become sign-in without replay payloads", () => {
-  for (const key of ["logging", "followList", "artistGallery", "fanClub", "lounge", "settings", "calendar", "inbox", "editProfile", "reporting", "clips"]) {
+  for (const key of ["logging", "artistGallery", "fanClub", "lounge", "settings", "calendar", "inbox", "editProfile", "reporting", "clips"]) {
     const frame = { [key]: { id: "private-target" } };
     assert.equal(memberFrameRequiresAccount(frame), true);
     assert.deepEqual(navigationFrameForAccount(frame, null), { auth: true });
@@ -22,6 +22,7 @@ test("guest community and account frames become sign-in without replay payloads"
 });
 
 test("public entity snapshots, search, legal and sign-in routes stay accessible", () => {
+  assert.deepEqual(navigationFrameForAccount({ followList: { userId: "public", mode: "followers" } }, null), { followList: { userId: "public", mode: "followers" } });
   for (const frame of [{}, { artistName: "Example" }, { venueName: "Example Hall" }, { profileId: "member" }, { openLog: { id: "show" } }, { post: { id: "public-post" } }, { cityGuide: {} }, { directory: "events" }, { venues: true }, { privacy: true }, { terms: true }, { auth: true, authMode: "signup" }]) {
     assert.equal(memberFrameRequiresAccount(frame), false);
     assert.equal(navigationFrameForAccount(frame, null), frame);

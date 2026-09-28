@@ -229,11 +229,11 @@ test("research is modest by default and stops at its monthly cap and the shared 
   assert.equal(collectCatalogResearchStatus(db, { env: key, at }).monthSpentUsd, 3.85);
 
   db.exec("CREATE TABLE news_desk_spend (day TEXT PRIMARY KEY, usd REAL NOT NULL DEFAULT 0)");
-  db.prepare("INSERT INTO news_desk_spend(day,usd) VALUES ('2026-09-10',6.00)").run();
+  db.prepare("INSERT INTO news_desk_spend(day,usd) VALUES ('2026-09-10',16.00)").run();
   const roomy = { ...key, CATALOG_RESEARCH_MONTHLY_USD: "8" };
   assert.deepEqual(await runCatalogResearchPass({ database: db, env: roomy, now: () => at, research }),
-    { researched: 0, published: 0, stopped: "claude_monthly_ceiling" }, "research and the news desk share one $10 month");
-  assert.equal((await runCatalogResearchPass({ database: db, env: { ...roomy, ANTHROPIC_MONTHLY_USD: "20" }, now: () => at, research })).researched > 0, true);
+    { researched: 0, published: 0, stopped: "claude_monthly_ceiling" }, "research and the news desk share the approved $20 month");
+  assert.equal((await runCatalogResearchPass({ database: db, env: { ...roomy, ANTHROPIC_MONTHLY_USD: "30" }, now: () => at, research })).researched > 0, true);
 });
 
 test("pages read research through the routes and staff can hide a wrong result", (t) => {

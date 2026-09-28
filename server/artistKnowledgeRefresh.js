@@ -12,6 +12,7 @@ import { startPeriodicJob } from "./periodicJobScheduler.js";
 import { privateErrorLabel } from "./errors.js";
 import { memoryWorkSnapshot } from "./memoryAdmission.js";
 import { discoverArtistPriorityKeys, interleaveDiscoverPriority } from "./discoverArtistPriority.js";
+import { searchGrowthArtistPriorityKeys } from "./features/searchGrowth/searchGrowthPriorities.js";
 import { ensureCatalogKnowledgeControl, readCatalogKnowledgeControl, reserveCatalogKnowledgeBudget,
   reserveCatalogKnowledgePass, catalogKnowledgeGrowthReady, completeCatalogKnowledgeSweep } from "./catalogKnowledgeControl.js";
 
@@ -218,7 +219,8 @@ export function createArtistKnowledgeRefresher({
     const workSignal = AbortSignal.any([deadline, stop.signal, ...(signal ? [signal] : [])]);
     const selectionAt = now();
     const passLimit = probeToken ? 1 : clamp(limit, control.limits.maxArtistsPerPass, 1, control.limits.maxArtistsPerPass);
-    const priorityKeys = new Set(discoverArtistPriorityKeys(database, selectionAt));
+    const priorityKeys = new Set([...discoverArtistPriorityKeys(database, selectionAt),
+      ...searchGrowthArtistPriorityKeys(database, { env, at: selectionAt })]);
     const priorityJson = JSON.stringify([...priorityKeys]);
     const rows = interleaveDiscoverPriority(
       priorityKeys.size ? priorityDue.all(selectionAt, priorityJson, passLimit) : [],

@@ -3,12 +3,22 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const source = (relative) => readFileSync(new URL(relative, import.meta.url), "utf8");
+const studioSource = () => source("../components/SocialShareStudio.jsx") + "\n" + source("../components/SocialShareModal.jsx");
+
+test("the heavy share editor has one on-demand boundary and no eager export", () => {
+  const wrapper = source("../components/SocialShareStudio.jsx");
+  assert.equal((wrapper.match(/import\("\.\/SocialShareModal"\)/g) || []).length, 1);
+  assert.doesNotMatch(wrapper, /from "\.\/SocialShareModal"|from "\.\.\/lib\/socialShare"|createShareCardAsset|ShareCardReveal/);
+  assert.match(wrapper, /name: "SocialShareModal", reload: null/);
+  assert.match(wrapper, /onRequestClose=\{onClose\}/);
+  assert.match(wrapper, /onAccessibilityEscape=\{onClose\}/);
+});
 
 test("posts and exact event attendance share through one reusable studio", () => {
   const ticket = source("../components/TicketStub.jsx");
   const attendance = source("../features/showSocial/ShowAttendanceControls.jsx");
   const show = source("../screens/ShowScreen.jsx");
-  const studio = source("../components/SocialShareStudio.jsx");
+  const studio = studioSource();
 
   assert.match(ticket, /useMemo\([\s\S]*?buildPostShareModel\(log, \{ author \}\)[\s\S]*?\[author, log\]/);
   assert.ok((ticket.match(/<SocialShareButton/g) || []).length >= 2);
@@ -54,7 +64,7 @@ test("posts and exact event attendance share through one reusable studio", () =>
 });
 
 test("share artwork is created only after an explicit share action and stays private", () => {
-  const studio = source("../components/SocialShareStudio.jsx");
+  const studio = studioSource();
   const native = source("../lib/socialShare.native.js");
   const web = source("../lib/socialShare.web.js");
   const api = source("../lib/api.js");
@@ -80,7 +90,7 @@ test("share artwork is created only after an explicit share action and stays pri
 });
 
 test("a missing rights-cleared attendance photo explains the required fix without offering a pointless retry", () => {
-  const studio = source("../components/SocialShareStudio.jsx");
+  const studio = studioSource();
 
   assert.match(studio, /setAssetState\(\{ status: "unavailable", asset: null, error \}\)/,
     "the share modal preserves the typed API failure instead of flattening every failure into one state");
@@ -95,7 +105,7 @@ test("a missing rights-cleared attendance photo explains the required fix withou
 });
 
 test("Instagram uses the Story composer in native builds and an honest browser share fallback", () => {
-  const studio = source("../components/SocialShareStudio.jsx");
+  const studio = studioSource();
   const native = source("../lib/socialShare.native.js");
   const web = source("../lib/socialShare.web.js");
   const app = JSON.parse(source("../../app.json")).expo;
@@ -131,7 +141,7 @@ test("Instagram uses the Story composer in native builds and an honest browser s
 });
 
 test("native preview and Instagram handoff use one immutable prepared PNG", () => {
-  const studio = source("../components/SocialShareStudio.jsx");
+  const studio = studioSource();
   const native = source("../lib/socialShare.native.js");
 
   assert.match(native, /fileUri: file\.uri,[\s\S]*?previewUri: file\.uri,[\s\S]*?photoCreditUrl: response\.photoCreditUrl \|\| null/,
@@ -145,7 +155,7 @@ test("native preview and Instagram handoff use one immutable prepared PNG", () =
 });
 
 test("X and Facebook share the finished card when supported and retain the desktop fallback", () => {
-  const studio = source("../components/SocialShareStudio.jsx");
+  const studio = studioSource();
   const native = source("../lib/socialShare.native.js");
   const web = source("../lib/socialShare.web.js");
 

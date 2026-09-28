@@ -35,6 +35,7 @@ import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import useScopedRefresh from "../hooks/useScopedRefresh";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
 import CatalogMaintenancePanel from "../features/catalogMaintenance/CatalogMaintenancePanel";
+import SearchGrowthPanel from "../features/searchGrowth/SearchGrowthPanel";
 
 const ADMIN_ONLY_TABS = new Set([
   "overview", "analytics", "catalog", "email", "cities", "badges", "suggestions", "memorials", "requests",
@@ -985,6 +986,7 @@ export default function AdminScreen({ onClose }) {
         {activeTab === "catalog" && (
           <>
             {iAmAdmin ? <CatalogMaintenancePanel key={`catalog-upkeep:${session?.id}:${session?.role}`} accountId={session?.id} role={session?.role} active={appActive} refreshRegistry={adminRefreshRegistry} /> : null}
+            {session?.role === "admin" && session?.emailVerified === true ? <SearchGrowthPanel key={`search-growth:${session.id}:${session.role}`} accountId={session.id} role={session.role} emailVerified={session.emailVerified} active={appActive} refreshRegistry={adminRefreshRegistry} /> : null}
             <Text style={styles.policy}>Artists people looked up. Seed them from Deezer (photo, popularity, top songs) on demand, the targeted alternative to a blind bulk dump. Purge dead or typo entries.</Text>
 
             {/* Grow the whole catalog across all genres, in the background */}

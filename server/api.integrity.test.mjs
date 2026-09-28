@@ -4991,9 +4991,9 @@ test("For You is global-first, cursor-stable, and an allegation alone cannot sup
   const ids = [...first.posts, ...second.posts].map((post) => post.id);
   assert.equal(new Set(ids).size, ids.length, "snapshot pages never duplicate a post");
   assert.equal(first.algorithm.candidateSource, "global");
-  assert.equal(first.algorithm.version, 2);
+  assert.equal(first.algorithm.version, 3);
   assert.equal(first.posts.every((post) => post.recommendation?.algorithm === first.algorithm.id), true);
-  assert.equal(first.posts.every((post) => post.recommendation?.algorithmVersion === 2 && post.recommendation?.feedContext?.startsWith("discover:")), true);
+  assert.equal(first.posts.every((post) => post.recommendation?.algorithmVersion === 3 && post.recommendation?.feedContext?.startsWith("discover:")), true);
 
   const repeated = routes["GET /api/feed/for-you"]({ user: reporter, ip: "for-you-test", query: { limit: "3" } });
   assert.deepEqual(repeated.posts.map((post) => post.id), first.posts.map((post) => post.id), "unexpired account snapshot is reused");

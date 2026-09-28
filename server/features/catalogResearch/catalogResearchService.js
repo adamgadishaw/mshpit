@@ -9,6 +9,7 @@ import { privateErrorLabel } from "../../errors.js";
 import { startPeriodicJob } from "../../periodicJobScheduler.js";
 import { publicCatalogResearch, validateCatalogResearchFindings } from "./catalogResearchFindings.js";
 import { catalogResearchModel, researchCatalogSubject } from "./catalogResearchProvider.js";
+import { searchGrowthArtistPriorityKeys, searchGrowthVenuePriorityRows } from "../searchGrowth/searchGrowthPriorities.js";
 
 // The research agent fills the artist and venue pages the catalogue sources
 // leave empty. It works through the pages fans are most likely to open first
@@ -212,7 +213,14 @@ function inTheNewsArtistRow(database, at) {
   }
 }
 
-export function nextArtistResearchSubject(database, { at = Date.now() } = {}) {
+export function nextArtistResearchSubject(database, { at = Date.now(), prioritizeSearch = false, env = process.env } = {}) {
+  if (prioritizeSearch) {
+    for (const key of searchGrowthArtistPriorityKeys(database, { at, env })) {
+      const row = database.prepare(`SELECT a.norm,a.name,a.mbid,a.genre,a.country FROM artists a
+        WHERE ${ARTIST_ELIGIBLE} AND a.norm=? LIMIT 1`).get(at, key);
+      if (row && text(row.name)) return artistSubject(database, row);
+    }
+  }
   const inTheNews = inTheNewsArtistRow(database, at);
   if (inTheNews && text(inTheNews.name)) return artistSubject(database, inTheNews);
   const withShows = database.prepare(`SELECT a.norm,a.name,a.mbid,a.genre,a.country FROM
@@ -238,7 +246,11 @@ export function venueResearchKey(name, city, country) {
 // reached once everything above it is done (bounded at 25 pages).
 const VENUE_PAGE = 2000;
 const VENUE_PAGES = 25;
-export function nextVenueResearchSubject(database, { at = Date.now() } = {}) {
+export function nextVenueResearchSubject(database, { at = Date.now(), prioritizeSearch = false, env = process.env } = {}) {
+  if (prioritizeSearch) {
+    const selected = firstDueVenue(database, searchGrowthVenuePriorityRows(database, { at, env }), at);
+    if (selected) return selected;
+  }
   const page = database.prepare(`SELECT MIN(venue) venue,MIN(venue_city) city,MIN(venue_region) region,
       MIN(venue_country_code) country,MAX(venue_address_line1) address,COUNT(*) shows
     FROM tour_dates WHERE venue IS NOT NULL AND trim(venue)<>'' AND owner_id IS NULL
@@ -341,14 +353,21 @@ export async function runCatalogResearchPass({
     if (ceilingLeft < RUN_RESERVE_MICRO_USD) return { ...outcome, stopped: "claude_monthly_ceiling" };
     // Alternate artists and venues so neither backlog starves the other.
     const order = readNextType(database) === "venue" ? ["venue", "artist"] : ["artist", "venue"];
+    // Keep independent turns per entity type: one global alternating flag
+    // would align with artist/venue alternation and starve one priority queue.
+    const searchTurnFor = type => database.prepare("SELECT value FROM app_meta WHERE key=?")
+      .get(`catalog-research:v1:search-turn:${type}`)?.value !== "regular";
     let subject = null;
     for (const type of order) {
-      subject = type === "artist" ? nextArtistResearchSubject(database, { at }) : nextVenueResearchSubject(database, { at });
+      const selection = { at, env, prioritizeSearch: searchTurnFor(type) };
+      subject = type === "artist" ? nextArtistResearchSubject(database, selection) : nextVenueResearchSubject(database, selection);
       if (subject) break;
     }
     if (!subject) return { ...outcome, stopped: "nothing_due" };
     const token = claimSubject(database, subject, at);
     if (!token) continue;
+    database.prepare("INSERT INTO app_meta(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+      .run(`catalog-research:v1:search-turn:${subject.type}`, searchTurnFor(subject.type) ? "regular" : "priority");
     saveNextType(database, subject.type === "artist" ? "venue" : "artist");
     const reserveRequest = (receiptToken, reserveMicroUsd, countRun) => {
       const requestAt = now();

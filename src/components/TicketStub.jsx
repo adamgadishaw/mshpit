@@ -15,6 +15,7 @@ import PostMediaGrid from "./PostMediaGrid";
 import ConvertingClipNotice from "./ConvertingClipNotice";
 import SongAttachment from "./SongAttachment";
 import { useStore } from "../store";
+import { RepostButton, RepostAttribution } from "./SocialReactionButtons";
 import { BadgeRow } from "./Badge";
 import { formatDate, relativeTime } from "../domain/dates.mjs";
 import { mediaDisplayItems } from "../domain/postMediaDisplay.mjs";
@@ -192,7 +193,7 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
   // Comments are public post navigation, never a fallback to artist/show detail.
   // Leave the callback absent when unavailable so the canonical web href works.
   const openComments = onComment || onOpenPost ? () => (onComment || onOpenPost)(log) : undefined;
-  const { userById, likeInfo, toggleLike, commentsFor, session, userBadges, deleteOwnPost, refreshFeed } = useStore();
+  const { userById, likeInfo, toggleLike, commentsFor, session, userBadges, deleteOwnPost, refreshFeed, setPostRepost } = useStore();
   // The server lists converting clips only to the author; check the id too so
   // a cached card can never show it to someone else on a shared device.
   const convertingClips = Array.isArray(log.convertingMedia) && session?.id && log.userId === session.id
@@ -440,6 +441,7 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
         <RecommendationWhy recommendation={recommendation} expanded={whyOpen} onToggle={() => setWhyOpen((current) => !current)} palette={campaignTreatment} />
 
         <View style={[styles.statusFooter, campaignPresentation && styles.campaignFooter]}>
+          <RepostButton post={log} accountId={session?.id} onRepost={setPostRepost} onRequireAuth={onRequireAuth} />
           <NotForMeButton onPress={onNotInterested ? () => onNotInterested(log) : undefined} palette={campaignTreatment} />
           <Pressable style={({ pressed }) => [styles.fBtn, campaignPresentation && styles.campaignTouchTarget, pressed && (campaignPresentation ? styles.campaignControlPressed : styles.controlPressed)]} onPress={pressLike} hitSlop={8} accessibilityRole="button" accessibilityLabel={`${liked ? "Unlike" : "Like"}, ${likeCount} likes`}>
             <Icon name="heart" size={18} color={campaignPresentation ? (liked ? campaignTreatment.accentColor : campaignTreatment.mutedTextColor) : liked ? colors.magenta : colors.textDim} filled={liked} />
@@ -458,6 +460,7 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
         </View>
 
         {showComments && <CommentPreview log={log} onOpen={openComments} palette={campaignTreatment} />}
+        <RepostAttribution post={log} accountId={session?.id} onOpenProfile={onOpenProfile} />
         </View>
       </View>
     );
@@ -465,6 +468,7 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
 
   return (
     <View style={styles.card}>
+      <RepostAttribution post={log} accountId={session?.id} onOpenProfile={onOpenProfile} />
       {/* who + score */}
       <View style={styles.header}>
         <Avatar user={author} size={38} priority={avatarPriority} onPress={log.userId ? () => onOpenProfile?.(log.userId) : undefined} />
@@ -667,6 +671,7 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
 
       {/* Post reactions and comments. Show-wide conversation lives in Lounge. */}
       <View style={styles.footer}>
+        <RepostButton post={log} accountId={session?.id} onRepost={setPostRepost} onRequireAuth={onRequireAuth} />
         <NotForMeButton onPress={onNotInterested ? () => onNotInterested(log) : undefined} />
         <Pressable style={({ pressed }) => [styles.fBtn, pressed && styles.controlPressed]} onPress={pressLike} hitSlop={8} accessibilityRole="button" accessibilityLabel={`${liked ? "Unlike" : "Like"}, ${likeCount} likes`}>
           <Icon name="heart" size={18} color={liked ? colors.magenta : colors.textDim} filled={liked} />

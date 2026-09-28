@@ -231,6 +231,6 @@ test("a recorded view invalidates only the next head snapshot and rotates the se
   const refreshedIds = refreshed.posts.map((post) => post.id);
   assert.ok(refreshedIds.indexOf("p_rank_other") < refreshedIds.indexOf("p_rank_seen"));
   assert.equal(refreshed.posts.find((post) => post.id === "p_rank_seen").recommendation.rotation.alreadySeen, true);
-  assert.equal(refreshed.algorithm.version, 2);
+  assert.equal(refreshed.algorithm.version, 3);
   assert.match(refreshed.algorithm.seenRotation, /lowered, not hidden/i);
 });

@@ -10,7 +10,7 @@ const artistName = (value) => { const raw = String(value || "").normalize("NFKD"
 export function newsAwareFeed(rows, { filter, accountId, introduction = null, followedArtists = [] } = {}) {
   const seen = new Set();
   const follows = new Set(followedArtists.map(artistName).filter(Boolean));
-  const allowed = (post) => post?.id && (!isNewsPost(post) || (filter === "everyone" && !!accountId
+  const allowed = (post) => post?.id && (!isNewsPost(post) || (!!accountId && filter === "everyone"
     && post.news?.artists?.some((artist) => follows.has(artistName(artist.name)))));
   const candidates = filter === "everyone" && accountId && introduction ? [introduction, ...rows] : rows;
   return candidates.filter((post) => {

@@ -20,11 +20,35 @@ function addUser(id, password = "journal-password") {
 }
 const outbox = (subjectId) => db.prepare("SELECT kind FROM privacy_journal_outbox WHERE subject_id=? ORDER BY at").all(subjectId).map((row) => row.kind);
 
+function seedNewsArtifacts(userId) {
+  const eventId = `live_${userId}`, noteId = `note_${userId}`, draftId = `draft_${userId}`;
+  db.prepare("INSERT INTO news_live_events(id,slug,title,keywords,starts_at,ends_at,created_by,created_at) VALUES (?,?,?,'[]',1,2,?,1)")
+    .run(eventId, eventId, "Preserved coverage", userId);
+  db.prepare("INSERT INTO news_live_notes(id,event_id,text,created_by,created_at) VALUES (?,?,?,?,1)")
+    .run(noteId, eventId, "Preserved timeline update", userId);
+  db.prepare("INSERT INTO news_drafts(id,status,reports,result,cost_usd,created_by,created_at,updated_at) VALUES (?,'draft','[]',?,0.01,?,1,1)")
+    .run(draftId, JSON.stringify({ headline: "Preserved editorial draft" }), userId);
+  return [["news_live_events", eventId], ["news_live_notes", noteId], ["news_drafts", draftId]]
+    .map(([table, id]) => ({ table, id, before: db.prepare(`SELECT * FROM ${table} WHERE id=?`).get(id) }));
+}
+
+function assertNewsAttribution(artifacts, createdBy) {
+  for (const { table, id, before } of artifacts) {
+    assert.deepEqual({ ...db.prepare(`SELECT * FROM ${table} WHERE id=?`).get(id) }, { ...before, created_by: createdBy },
+      `${table}: preserve every content field while applying exactly the intended attribution`);
+  }
+}
+
 test("deleting an account and withdrawing email consent are journaled with the change", async () => {
   const leaving = addUser("u_journal_leaving", "leave-now-please");
+  const leavingNews = seedNewsArtifacts(leaving.id);
+  const otherStaff = addUser("u_journal_other_staff");
+  const otherNews = seedNewsArtifacts(otherStaff.id);
   assert.deepEqual(await routes["DELETE /api/me"]({ user: leaving, ip: "journal-delete", body: { password: "leave-now-please" }, clearSession() {} }), { ok: true });
   assert.equal(q.userById.get("u_journal_leaving"), undefined);
   assert.deepEqual(outbox("u_journal_leaving"), ["account_erased"]);
+  assertNewsAttribution(leavingNews, null);
+  assertNewsAttribution(otherNews, otherStaff.id);
 
   const reader = addUser("u_journal_reader");
   const settings = routes["POST /api/me/email-preferences"];
@@ -50,6 +74,7 @@ test("a restored database erases journaled accounts before it serves anyone", as
     BACKUP_S3_SECRET_ACCESS_KEY: "backup-secret",
   };
   addUser("u_journal_resurrected");
+  const restoredNews = seedNewsArtifacts("u_journal_resurrected");
   const subscriber = addUser("u_journal_subscriber");
   db.prepare("UPDATE users SET marketing_opt_out=0 WHERE id=?").run(subscriber.id);
   const at = Date.now();
@@ -72,6 +97,7 @@ test("a restored database erases journaled accounts before it serves anyone", as
     const result = await replayPrivacyJournalOnRestore({ env, fetchImpl });
     assert.deepEqual({ erased: result.erased, optedOut: result.optedOut, rejected: result.rejected }, { erased: 1, optedOut: 1, rejected: 0 });
     assert.equal(q.userById.get("u_journal_resurrected"), undefined, "the resurrected account is erased again");
+    assertNewsAttribution(restoredNews, null);
     assert.equal(q.userById.get("u_journal_subscriber").marketing_opt_out, 1, "withdrawn consent stays withdrawn");
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM privacy_journal_outbox").get().n, before, "replaying does not journal again");
   } finally {
@@ -81,6 +107,7 @@ test("a restored database erases journaled accounts before it serves anyone", as
 
 test("privacy changes roll back when their durable journal append fails", async () => {
   const leaving = addUser("u_journal_rollback_delete", "rollback-password");
+  const leavingNews = seedNewsArtifacts(leaving.id);
   const subscriber = addUser("u_journal_rollback_consent");
   const settings = routes["POST /api/me/email-preferences"];
   settings({ user: subscriber, ip: "journal-rollback-settings", body: { announcements: true } });
@@ -88,6 +115,7 @@ test("privacy changes roll back when their durable journal append fails", async 
   try {
     await assert.rejects(routes["DELETE /api/me"]({ user: leaving, ip: "journal-rollback-delete", body: { password: "rollback-password" }, clearSession() {} }));
     assert.ok(q.userById.get(leaving.id), "account erasure and journal append commit together or neither commits");
+    assertNewsAttribution(leavingNews, leaving.id);
     assert.throws(() => settings({ user: q.userById.get(subscriber.id), ip: "journal-rollback-settings", body: { announcements: false } }));
     assert.equal(q.userById.get(subscriber.id).marketing_opt_out, 0, "withdrawal cannot succeed without its replay record");
     assert.deepEqual(outbox(leaving.id), []);

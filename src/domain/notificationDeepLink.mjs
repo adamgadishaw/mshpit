@@ -14,7 +14,7 @@ export function notificationDestination(notification) {
   if (notification.type === "dm") return text(notification.actorId)
     ? { kind: "thread", actorId: text(notification.actorId) }
     : { kind: "none" };
-  if (notification.type === "like" || notification.type === "comment" || notification.type === "post_tag") return text(notification.postId)
+  if (["like", "comment", "post_tag", "comment_like", "repost"].includes(notification.type)) return text(notification.postId)
     ? { kind: "post", postId: text(notification.postId) }
     : { kind: "unavailable" };
   return text(notification.actorId)

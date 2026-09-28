@@ -112,7 +112,7 @@ function postalAddress(address) {
     : "";
 }
 
-function mediaGallery(media, label, { primary = false } = {}) {
+function mediaGallery(media, label, { primary = false, sharedBy = null } = {}) {
   const items = (Array.isArray(media) ? media : []).flatMap((asset, index) => {
     const url = publicMediaUrl(asset?.url);
     if (!url) return [];
@@ -125,7 +125,9 @@ function mediaGallery(media, label, { primary = false } = {}) {
     const priority = primary && index === 0;
     return [`<figure class="media-item"><img src="${esc(url)}" alt="${esc(alt)}" loading="${priority ? "eager" : "lazy"}" decoding="async"${priority ? ' fetchpriority="high"' : ""}${asset.width ? ` width="${esc(asset.width)}"` : ""}${asset.height ? ` height="${esc(asset.height)}"` : ""} /><figcaption>${esc(alt)}</figcaption></figure>`];
   });
-  return items.length ? `<div class="media-grid">${items.join("")}</div>` : "";
+  const hasImages = (Array.isArray(media) ? media : []).some((asset) => asset.kind !== "video" && publicMediaUrl(asset?.url));
+  const rights = hasImages ? `<p class="micro media-rights">${sharedBy ? `Photos shared by ${esc(sharedBy)}. ` : ""}<a href="/photo-rights">Photo rights</a> · <a href="/photo-rights#request-permission">Request permission</a></p>` : "";
+  return items.length ? `<div class="media-grid">${items.join("")}</div>${rights}` : "";
 }
 
 function compactPost(post, { full = false, showShowDetails = full, hideRating = false } = {}) {
@@ -163,7 +165,7 @@ function compactPost(post, { full = false, showShowDetails = full, hideRating = 
     <div class="post-copy">${body}</div>
     ${tour}${setlist}
     ${youtube ? `<p><a class="button" href="${esc(youtube.youtubeUrl)}" target="_blank" rel="ugc nofollow noopener noreferrer">Watch on YouTube</a></p>` : ""}
-    ${mediaGallery(post.media, post.artist || "Concert post", { primary: full })}
+    ${mediaGallery(post.media, post.artist || "Concert post", { primary: full, sharedBy: post.author?.name })}
     <footer><span>${esc(post.likes)} likes</span><span>${esc(post.comments)} comments</span>${!full && post.path ? link(post.path, "Read the full post", "text-link") : ""}</footer>
   </article>`;
 }

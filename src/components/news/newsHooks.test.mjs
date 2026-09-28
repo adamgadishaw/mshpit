@@ -3,9 +3,10 @@ import test from "node:test";
 import { readFileSync } from "node:fs";
 import { parse } from "@babel/parser";
 import * as domain from "../../domain/newsReaderState.mjs";
+import { createNewsIntroductionSession } from "../../domain/newsIntroductionSession.mjs";
 
 const settle = () => new Promise(resolve => setImmediate(resolve));
-function fixture(file) {
+function fixture(file, sessionCoordinator=createNewsIntroductionSession()) {
   const source = readFileSync(new URL(file, import.meta.url), "utf8");
   const declaration = parse(source, { sourceType: "module" }).program.body.find(n => n.type === "ExportDefaultDeclaration").declaration;
   const slots = [], pending = [], calls = [];
@@ -13,6 +14,7 @@ function fixture(file) {
   const same = (a,b) => a?.length === b?.length && a.every((v,i) => Object.is(v,b[i]));
   const bindings = {
     ...domain,
+    newsIntroductionSession:sessionCoordinator,
     useNewsInteractions: () => context,
     createChatClientMutationId: () => `request-${++sequence}`,
     useState(initial) { const i=index++; slots[i] ||= { value: typeof initial === "function" ? initial() : initial }; return [slots[i].value, update => { slots[i].value = typeof update === "function" ? update(slots[i].value) : update; }]; },
@@ -57,4 +59,28 @@ test("deep-linked hidden feed and accounts without explicit follows never issue 
   assert.equal(f.calls[0].signal.aborted,true);
   f.calls[0].resolve({post:{id:"hidden-late-story"}});await settle();assert.equal(f.render(false).post,null);
   const empty=fixture("./useNewsIntroduction.js");empty.setContext({followedArtists:[]});empty.render(true);empty.commit();assert.equal(empty.calls.length,0);
+});
+
+test("a completed introduction is once per app runtime, not once per tab entry or component mount",async()=>{
+  const coordinator=createNewsIntroductionSession();
+  const f=fixture("./useNewsIntroduction.js",coordinator);
+  f.render(true);f.commit();f.calls[0].resolve({post:{id:"news_once"}});await settle();
+  assert.equal(f.render(true).post.id,"news_once");
+  f.render(false);f.commit();assert.equal(f.render(false).post,null);
+  f.render(true);f.commit();assert.equal(f.calls.length,1);assert.equal(f.render(true).post,null);
+  f.setContext({followedArtists:["Moon Walker","Russ"]});f.render(true);f.commit();assert.equal(f.calls.length,1);
+  f.setContext({session:{id:"b"}});f.render(true);f.commit();assert.equal(f.calls.length,2);
+  f.calls[1].resolve({post:null});await settle();
+  f.setContext({session:{id:"a"}});f.render(true);f.commit();assert.equal(f.calls.length,2);assert.equal(f.render(true).post,null);
+  f.unmount();
+  const remounted=fixture("./useNewsIntroduction.js",coordinator);remounted.render(true);remounted.commit();assert.equal(remounted.calls.length,0);
+});
+
+test("interrupted introduction retries its same identity; account capacity never evicts consumed identities",async()=>{
+  const coordinator=createNewsIntroductionSession({maximumAccounts:1});
+  const f=fixture("./useNewsIntroduction.js",coordinator);f.render(true);f.commit();const first=f.calls[0];
+  f.render(false);f.commit();f.render(true);f.commit();assert.equal(f.calls[1].requestId,first.requestId);
+  first.resolve({post:{id:"obsolete"}});f.calls[1].resolve({post:{id:"once"}});await settle();assert.equal(f.render(true).post.id,"once");
+  f.setContext({session:{id:"b"}});f.render(true);f.commit();assert.equal(f.calls.length,2);
+  f.setContext({session:{id:"a"}});f.render(true);f.commit();assert.equal(f.calls.length,2);
 });

@@ -7,7 +7,9 @@ import { analyticsDurationBucket } from "../domain/analyticsPolicy.mjs";
 import { shouldWarmClipPoster } from "../domain/clipPoster.mjs";
 import { clipKeyboardTarget, clipPageIndex, clipPageNeedsMore, clipRenderWindow } from "../domain/clipPaging.mjs";
 import { mediaDescriptorForUri, mediaPosterUri } from "../domain/postMediaDisplay.mjs";
-import { claimClipPlaybackFailure, pendingVideoMilestones } from "../domain/mediaAnalytics.mjs";
+import { claimClipPlaybackFailure } from "../domain/mediaAnalytics.mjs";
+import { createPlaybackMeasurement } from "../domain/playbackMeasurement.mjs";
+import { startVideoPlayback } from "../domain/startVideoPlayback.mjs";
 import { videoViewerWebFrameReady } from "../domain/mediaViewer.mjs";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
 import Icon from "../components/Icon";
@@ -25,7 +27,9 @@ const web = Platform.OS === "web";
 // centered vertically, with its own play/pause + mute. Only the ACTIVE page
 // mounts a real player (mounting every video at once would hammer the network
 // and the decoder), so `active` gates the heavy VideoView.
-function ClipPage({ post, uri, posterUri, altText, height, active, posterEnabled, muted, onToggleMute, onLike, onOpenPost, onOpenProfile, onOpenArtist, onTrack, onPlaybackError }) {
+function ClipPage({ post, uri, posterUri, altText, height, active: selected, posterEnabled, muted, onToggleMute, onLike, onOpenPost, onOpenProfile, onOpenArtist, onTrack, onPlaybackError }) {
+  const appActive = useAppActive();
+  const active = selected && appActive;
   const [attempt, setAttempt] = useState(0);
   const source = active
     ? { uri, useCaching: !web, metadata: { title: `PIT clip ${post?.id || "video"} ${attempt}` } }
@@ -40,6 +44,7 @@ function ClipPage({ post, uri, posterUri, altText, height, active, posterEnabled
     error: null,
   });
   const [paused, setPaused] = useState(false);
+  const [playRejected, setPlayRejected] = useState(false);
   const [firstFrameSession, setFirstFrameSession] = useState(null);
   const videoViewRef = useRef(null);
   const activationRef = useRef({ active: false, count: 0 });
@@ -55,11 +60,12 @@ function ClipPage({ post, uri, posterUri, altText, height, active, posterEnabled
   const trackedFirstFrameRef = useRef(false);
   const trackRef = useRef(onTrack);
   trackRef.current = onTrack;
-  const phase = error || status === "error" ? "error" : hasFirstFrame ? "ready" : "loading";
+  const phase = playRejected || error || status === "error" ? "error" : hasFirstFrame ? "ready" : "loading";
 
   useEffect(() => {
     if (!active) return;
     setPaused(false);
+    setPlayRejected(false);
     mountedAtRef.current = Date.now();
     trackedFirstFrameRef.current = false;
   }, [active, attempt, uri]);
@@ -73,26 +79,29 @@ function ClipPage({ post, uri, posterUri, altText, height, active, posterEnabled
   // emitted once per active viewing session and carry only the internal post id.
   useEffect(() => {
     if (!active || !player || !post?.id) return;
-    const milestones = new Set();
+    const measurement = createPlaybackMeasurement();
     let started = false;
-    try { player.timeUpdateEventInterval = 1; } catch {}
+    player.timeUpdateEventInterval = 1;
     const recordStart = (isPlaying) => {
-      if (!isPlaying || started) return;
+      if (!isPlaying || !activeRef.current || started) return;
       started = true;
       trackRef.current?.("video_start", { postId: post.id, surface: "clips", muted: !!player.muted });
     };
-    const recordMilestone = (milestone) => {
-      if (milestones.has(milestone)) return;
-      milestones.add(milestone);
-      trackRef.current?.("video_progress", { postId: post.id, surface: "clips", milestone });
+    const measure = (ended = false) => {
+      for (const milestone of measurement.sample({
+        currentTime: player.currentTime, duration: player.duration,
+        playing: ended || player.playing, visible: activeRef.current,
+        playbackRate: player.playbackRate, ended,
+      })) trackRef.current?.("video_progress", {
+        postId: post.id, surface: "clips", milestone, measurement: "watched-v1",
+      });
     };
-    const playingSubscription = player.addListener?.("playingChange", ({ isPlaying }) => recordStart(isPlaying));
-    const timeSubscription = player.addListener?.("timeUpdate", ({ currentTime }) => {
-      for (const milestone of pendingVideoMilestones({ currentTime, duration: player.duration, seen: milestones })) recordMilestone(milestone);
+    const playingSubscription = player.addListener?.("playingChange", ({ isPlaying }) => {
+      if (!isPlaying) measurement.interrupt();
+      recordStart(isPlaying);
     });
-    const endSubscription = player.addListener?.("playToEnd", () => {
-      for (const milestone of pendingVideoMilestones({ seen: milestones, ended: true })) recordMilestone(milestone);
-    });
+    const timeSubscription = player.addListener?.("timeUpdate", () => measure());
+    const endSubscription = player.addListener?.("playToEnd", () => measure(true));
     recordStart(player.playing);
     return () => {
       // Expo web keeps this timer after its VideoView unmounts. Stop the
@@ -106,11 +115,15 @@ function ClipPage({ post, uri, posterUri, altText, height, active, posterEnabled
 
   useEffect(() => {
     if (!player) return;
-    try {
-      if (active && !paused) player.play();
-      else player.pause();
-    } catch {}
-  }, [active, paused, player]);
+    let cancelled = false;
+    if (active && !paused) {
+      startVideoPlayback({ player, web, element: videoViewRef.current?.nativeRef?.current })
+        .catch(() => { if (!cancelled) setPlayRejected(true); });
+    } else {
+      try { player.pause(); } catch { /* Player may already be released. */ }
+    }
+    return () => { cancelled = true; };
+  }, [active, paused, player, attempt]);
 
   useEffect(() => {
     if (!active || phase !== "error") return;
@@ -149,17 +162,23 @@ function ClipPage({ post, uri, posterUri, altText, height, active, posterEnabled
     return () => clearInterval(timer);
   }, [active, hasFirstFrame, phase, playbackSession, recordFirstFrame]);
 
-  const retry = () => {
+  const retry = (event) => {
+    event?.stopPropagation?.();
+    setPlayRejected(false);
     setPaused(false);
     setAttempt((value) => value + 1);
   };
 
   const tapToggle = () => {
-    setPaused((v) => {
-      const next = !v;
-      try { next ? player?.pause() : player?.play(); } catch {}
-      return next;
-    });
+    const next = !paused;
+    setPaused(next);
+    if (next) {
+      try { player?.pause(); } catch { /* Player may already be released. */ }
+    } else {
+      const session = playbackSessionRef.current;
+      startVideoPlayback({ player, web, element: videoViewRef.current?.nativeRef?.current })
+        .catch(() => { if (activeRef.current && playbackSessionRef.current === session) setPlayRejected(true); });
+    }
   };
 
   const author = post.user || {};

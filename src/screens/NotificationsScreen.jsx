@@ -27,6 +27,8 @@ const planJoinPhrase = (artist) => (artist ? `joined your plan for ${artist}` : 
 const META = {
   follow: { icon: "you", tint: colors.cool, verb: "started following you" },
   like: { icon: "heart", tint: colors.magenta, verb: "liked your review" },
+  comment_like: { icon: "heart", tint: colors.magenta, verb: "liked your comment" },
+  repost: { icon: "repeat", tint: colors.good, verb: "reposted your post" },
   comment: { icon: "comment", tint: colors.amber, verb: "commented on your review" },
   post_tag: { icon: "you", tint: colors.gold, verb: "tagged you in a post" },
   dm: { icon: "mail", tint: colors.good, verb: "sent you a message" },

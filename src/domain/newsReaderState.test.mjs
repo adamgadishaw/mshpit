@@ -18,6 +18,16 @@ test("news never leaks into Following, Local or guest feeds, including raw post 
   for (const filter of ["following", "local"]) assert.deepEqual(newsAwareFeed([story, normal, { id: "news_legacy" }], { filter, accountId: "a", introduction: story }), [normal]);
   assert.deepEqual(newsAwareFeed([story, normal], { filter: "everyone", accountId: null, introduction: story }), [normal]);
 });
+
+test("social reposts never bypass news consent or move it into Following",()=>{
+  const repost={...story,repostedBy:[{userId:"friend",name:"Friend"}]};
+  for (const followedArtists of [[],["Moon Walker"]]) {
+    assert.deepEqual(newsAwareFeed([repost,normal],{filter:"following",accountId:"a",followedArtists}),[normal]);
+    assert.deepEqual(newsAwareFeed([repost,normal],{filter:"local",accountId:"a",followedArtists}),[normal]);
+  }
+  assert.deepEqual(newsAwareFeed([repost,normal],{filter:"everyone",accountId:"a",followedArtists:[]}),[normal]);
+  assert.deepEqual(newsAwareFeed([normal,repost],{filter:"everyone",accountId:"a",followedArtists:["Moon Walker"]}),[normal,repost]);
+});
 test("only introduction changes order; dedupe suppresses ordinary-feed duplicate and restart restores normal ranking", () => {
   assert.deepEqual(newsAwareFeed([normal, story], { filter: "everyone", accountId: "a", followedArtists: ["Moon Walker"], introduction: story }), [story, normal]);
   assert.deepEqual(newsAwareFeed([normal, story], { filter: "everyone", accountId: "a", followedArtists: ["Moon Walker"] }), [normal, story]);

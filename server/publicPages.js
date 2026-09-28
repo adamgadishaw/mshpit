@@ -24,6 +24,7 @@ export const PUBLIC_PAGE_PATHS = Object.freeze([
   "/ratings-methodology",
   "/privacy",
   "/terms",
+  "/photo-rights",
   "/support",
   "/account-deletion",
 ]);
@@ -324,6 +325,7 @@ const PAGES = Object.freeze({
       {
         heading: "Your content and licence",
         paragraphs: ["You keep ownership of the reviews, photos, messages, and other content you create. By posting, you grant Pit a worldwide, non-exclusive, royalty-free licence to host, store, reproduce, adapt, display, and distribute that content to operate and improve the service, consistent with the audience and reuse settings you choose. Artist-page photo reuse and community or homepage spotlights require their separate controls; both stay off unless you turn them on. This licence ends when you delete the content or your account, except for copies retained for backups, legal reasons, or where already shared with others."],
+        links: [link("Photo rights and permission requests", "/photo-rights")],
       },
       {
         heading: "Photo and video upload limits",
@@ -391,6 +393,34 @@ const PAGES = Object.freeze({
       },
     ],
   },
+  "/photo-rights": {
+    title: "Photo rights and permission requests",
+    description: "How member photo rights work on Mshpit and how to ask the rights holder for permission to reuse an image.",
+    intro: "A photo being visible on Mshpit does not give everyone permission to copy or reuse it. This page explains the existing Terms; it does not grant a new licence or offer images for sale.",
+    note: "A sharing credit identifies the member who posted an image. It is not proof that the member took the photo or owns every right in it.",
+    sections: [
+      {
+        heading: "Member photos and permitted use",
+        paragraphs: ["Members keep ownership of the content they create. Under the Terms, posting gives Mshpit a limited, non-exclusive licence to host and display content to operate the service, consistent with the member's audience and reuse settings. That licence does not automatically give another person permission to download, republish, adapt, or use the photo commercially. Public display is not a Creative Commons or public-domain dedication. Any rights or exceptions provided by applicable law remain unaffected."],
+        links: [link("Read the existing Terms", "/terms")],
+      },
+      {
+        id: "request-permission",
+        heading: "Request permission for a specific photo",
+        paragraphs: ["Identify the exact photo and its original Mshpit post. Ask the credited member who owns the relevant rights and whether they can give permission. Explain the proposed use, where it will appear, and whether it is commercial. The member may not be the photographer or rights holder, may decline, or may not respond; a sharing credit or lack of reply is not permission.", "If you cannot identify or contact the rights holder, email Mshpit support with the public post link, a description of the photo, and the proposed use. Support can help with the request but cannot grant someone else's rights or guarantee permission. We do not publish private member contact details. Obtain the rights holder's permission where required before reusing an image, and keep any agreed conditions and attribution."],
+        links: [link("Ask support about a photo", `mailto:${SUPPORT_EMAIL}?subject=Photo%20permission%20request`)],
+      },
+      {
+        heading: "Separately licensed catalogue photos",
+        paragraphs: ["Some artist or venue catalogue photos have a separate creator credit, source link, and licence. Follow that specific image's published licence and conditions; this member-photo page does not replace those terms or grant additional rights. A licence for one photo does not apply to other images on the same page."],
+      },
+      {
+        heading: "Report a rights concern",
+        paragraphs: ["Use the post's Report action or contact support with the public page link and enough information to identify the image and explain your concern. Do not send passwords, verification codes, or unnecessary private information."],
+        links: [link("Contact support", "/support")],
+      },
+    ],
+  },
   "/support": {
     title: "Support",
     description: "Get help with a Mshpit account, technical issue, safety report, privacy request, or account deletion.",
@@ -409,6 +439,7 @@ const PAGES = Object.freeze({
       {
         heading: "Safety and content reports",
         paragraphs: ["When a Report action is available in Pit, use it so the moderation team receives the relevant item and context. For something you cannot report in the app, email support with a link or the public handle involved and a short description. Do not resend harmful content unless support asks for it."],
+        links: [link("Photo rights and permission requests", "/photo-rights#request-permission")],
       },
       {
         heading: "Privacy and account data",
@@ -493,11 +524,12 @@ function renderLinks(links = []) {
 }
 
 function renderSection(section) {
+  const id = typeof section.id === "string" && /^[a-z][a-z0-9-]{0,63}$/.test(section.id) ? section.id : null;
   const paragraphs = (section.paragraphs || []).map((paragraph) => `<p>${esc(paragraph)}</p>`).join("\n        ");
   const ordered = section.ordered?.length
     ? `<ol>${section.ordered.map((item) => `<li>${esc(item)}</li>`).join("")}</ol>`
     : "";
-  return `<section>
+  return `<section${id ? ` id="${esc(id)}"` : ""}>
       <h2>${esc(section.heading)}</h2>
       ${paragraphs}
       ${ordered}

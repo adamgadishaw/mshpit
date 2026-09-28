@@ -1,9 +1,14 @@
 import { createPngApiResponse } from "../../binaryApiResponse.js";
+import { absolutePhotoCreditUrl, photoCreditPathFromArtwork } from "../../photoCredits.js";
 import { ApiError } from "../../errors.js";
 import { newsShareCardModel, SocialShareCardArtworkUnavailableError, SocialShareCardBusyError } from "../socialSharing/socialShareCardRenderer.js";
 
 // Readers enforce bilateral blocks against each post's actual author.
-export function newsDeskRoutes({ rateLimit, reader, renderer }) {
+export function newsDeskRoutes({ rateLimit, reader, renderer, resolveNewsArtwork = null }) {
+  const previewModel = (story) => story ? newsShareCardModel(story, {
+    ...(typeof resolveNewsArtwork === "function" ? resolveNewsArtwork(story) : {}),
+    variant: "news-link",
+  }) : null;
   const decodeCursor = (value) => {
     const [createdAt, id] = String(value || "").split(".");
     const at = Number(createdAt);
@@ -31,18 +36,23 @@ export function newsDeskRoutes({ rateLimit, reader, renderer }) {
       const id = String(ctx.params?.id || "");
       const viewerId = ctx.user?.id || null;
       const story = /^[A-Za-z0-9-]{1,80}$/u.test(id) ? reader.get(id, { viewerId }) : null;
-      const model = story ? newsShareCardModel(story, { variant: "news-link" }) : null;
+      const model = previewModel(story);
       if (!model) throw new ApiError(404, "That story is not available.", "NOT_FOUND");
       try {
         const rendered = await renderer.render(model, { signal: ctx.signal || null });
         // Rendering awaits remote artwork. A block, removal, suspension or
         // edit during that wait must not leak the stale rendered card.
         const current = reader.get(id, { viewerId });
-        const currentModel = current ? newsShareCardModel(current, { variant: "news-link" }) : null;
+        const currentModel = previewModel(current);
         if (!currentModel || JSON.stringify(currentModel) !== JSON.stringify(model)) {
           throw new ApiError(404, "That story is not available.", "NOT_FOUND");
         }
-        return createPngApiResponse(rendered.bytes, { canonicalUrl: model.canonicalUrl, filename: "mshpit-news.png", publicMaxAgeSeconds: viewerId ? null : 120 });
+        return createPngApiResponse(rendered.bytes, {
+          canonicalUrl: model.canonicalUrl,
+          filename: "mshpit-news.png",
+          publicMaxAgeSeconds: viewerId || rendered.artworkFallback ? null : 120,
+          photoCreditUrl: absolutePhotoCreditUrl(photoCreditPathFromArtwork(rendered.artwork)),
+        });
       } catch (error) {
         if (error instanceof SocialShareCardBusyError || error instanceof SocialShareCardArtworkUnavailableError) {
           throw new ApiError(503, "The story image is busy. Try again in a moment.", "SHARE_RENDER_UNAVAILABLE", error);

@@ -5,8 +5,9 @@ import test from "node:test";
 import { prepareShareCardAsset } from "./shareCardPreparation.mjs";
 
 const require = createRequire(import.meta.url);
-const componentSource = require("@babel/core").transformSync(
-  readFileSync(new URL("../components/SocialShareStudio.jsx", import.meta.url), "utf8"), {
+const componentSource = (file) => require("@babel/core").transformSync(
+  readFileSync(new URL(`../components/${file}`, import.meta.url), "utf8")
+    .replace('import("./SocialShareModal")', "loadFixtureModal()"), {
     babelrc: false, configFile: false,
     plugins: [
       [require.resolve("@babel/plugin-transform-react-jsx"), { runtime: "automatic" }],
@@ -35,14 +36,14 @@ const button = (tree, label) => nodes(tree).find((node) => node.props?.accessibi
 // Execute the actual component and handlers. Only hooks, decorative native views,
 // diagnostics storage and the remote asset adapter are seams; deadline/cancel
 // logic uses the production lifecycle with a short, deterministic test deadline.
-function harness({ timeoutMs = 500, entry = "default" } = {}) {
-  const cells = [], effects = [], calls = [], released = [], diagnostics = [];
+function harness({ timeoutMs = 500, entry = "default", wrapper = entry === "SocialShareButton", importTimeoutMs = 500 } = {}) {
+  const cells = [], effects = [], calls = [], released = [], diagnostics = [], chunks = [], updates = [];
   let cursor = 0;
   const react = {
     useState(initial) {
       const index = cursor++;
       if (!(index in cells)) cells[index] = { value: typeof initial === "function" ? initial() : initial };
-      return [cells[index].value, (value) => { cells[index].value = typeof value === "function" ? value(cells[index].value) : value; }];
+      return [cells[index].value, (value) => { updates.push(index); cells[index].value = typeof value === "function" ? value(cells[index].value) : value; }];
     },
     useMemo(factory, deps) {
       const index = cursor++;
@@ -72,6 +73,7 @@ function harness({ timeoutMs = 500, entry = "default" } = {}) {
     "../domain/socialShareCard.mjs": { socialShareIntentUrl: () => "https://fixture.invalid/share" },
     "../domain/shareCardPreparation.mjs": { prepareShareCardAsset: (prepare, options) => prepareShareCardAsset(prepare, { ...options, timeoutMs }) },
     "../lib/diagnostics": { AppError, captureAppError: (error) => diagnostics.push(error) },
+    "../lib/lazyWithRetry": { loadChunk: (factory, options) => { assert.equal(options.reload, null); return factory(); } },
     "../lib/socialShare": {
       instagramStorySharingConfigured: () => false,
       createShareCardAsset: (renderModel, options) => new Promise((resolve, reject) => calls.push({ renderModel, options, resolve, reject })),
@@ -80,13 +82,15 @@ function harness({ timeoutMs = 500, entry = "default" } = {}) {
     },
   };
   const module = { exports: {} };
-  new Function("require", "module", "exports", componentSource)((name) => {
+  new Function("require", "module", "exports", "loadFixtureModal", "setTimeout", "clearTimeout",
+    componentSource(wrapper ? "SocialShareStudio.jsx" : "SocialShareModal.jsx"))((name) => {
     if (!(name in dependencies)) throw new Error(`Unexpected component dependency: ${name}`);
     return dependencies[name];
-  }, module, module.exports);
+  }, module, module.exports, () => new Promise((resolve, reject) => chunks.push({ resolve, reject })),
+  (callback, milliseconds) => setTimeout(callback, milliseconds === 15_000 ? importTimeoutMs : milliseconds), clearTimeout);
   const flushEffects = () => { while (effects.length) effects.shift()(); };
   return {
-    calls, released, diagnostics, flushEffects,
+    calls, released, diagnostics, chunks, updates, flushEffects,
     render(props, { effects: flush = true } = {}) {
       cursor = 0;
       const tree = module.exports[entry]({ accountId: "account-a", model: model(), onClose() {}, ...props });
@@ -200,4 +204,73 @@ test("the share trigger remounts its entire Studio for account or immutable item
     assert.notEqual(studio(h.render({ model: model("event-b") })).key, first);
     assert.notEqual(studio(h.render({ model: { ...model(), renderRequest: { ...model().renderRequest, intent: "interested" } } })).key, first);
   } finally { h.dispose(); }
+});
+
+test("the lightweight trigger and missing model never import the editor or prepare artwork", () => {
+  const trigger = harness({ entry: "SocialShareButton" }), empty = harness({ wrapper: true });
+  try {
+    trigger.render();
+    assert.equal(empty.render({ model: null }), null);
+    assert.equal(trigger.chunks.length, 0); assert.equal(empty.chunks.length, 0);
+    assert.equal(trigger.calls.length, 0); assert.equal(empty.calls.length, 0);
+  } finally { trigger.dispose(); empty.dispose(); }
+});
+
+test("the loading shell supports close and accessibility escape and safely retries an import failure", async () => {
+  const h = harness({ wrapper: true });
+  let closes = 0;
+  const props = { onClose: () => closes++ };
+  try {
+    const loading = h.render(props);
+    assert.equal(h.chunks.length, 1); assert.equal(h.calls.length, 0);
+    assert.equal(loading.type, "Modal");
+    loading.props.onRequestClose();
+    nodes(loading).find(node => node.props?.onAccessibilityEscape).props.onAccessibilityEscape();
+    button(loading, "Close share preview").props.onPress();
+    assert.equal(closes, 3);
+    h.chunks[0].reject(new Error("fixture chunk unavailable")); await settle();
+    const failed = h.render(props);
+    assert.ok(nodes(failed).some(node => node.props?.accessibilityRole === "alert"));
+    button(failed, "Retry loading share preview").props.onPress(); h.render(props);
+    assert.equal(h.chunks.length, 2);
+    function FixtureShareEditor() {}
+    h.chunks[1].resolve({ default: FixtureShareEditor }); await settle();
+    assert.equal(h.render(props).type, FixtureShareEditor);
+  } finally { h.dispose(); }
+});
+
+test("a stalled module load leaves a closable error and ignores its late result until retry", async () => {
+  const h = harness({ wrapper: true, importTimeoutMs: 10 });
+  try {
+    h.render(); await new Promise(resolve => setTimeout(resolve, 25));
+    assert.ok(button(h.render(), "Retry loading share preview"));
+    function FixtureShareEditor() {}
+    h.chunks[0].resolve({ default: FixtureShareEditor }); await settle();
+    assert.equal(h.render().type, "Modal", "the obsolete attempt cannot replace the visible recovery state");
+    button(h.render(), "Retry loading share preview").props.onPress(); h.render(); await settle();
+    assert.equal(h.render().type, FixtureShareEditor);
+    assert.equal(h.chunks.length, 1, "retry may reuse downloaded component code, never a prepared private asset");
+  } finally { h.dispose(); }
+});
+
+test("loaded editor receives only current account/item props and remounts when their identity changes", async () => {
+  const h = harness({ wrapper: true });
+  try {
+    h.render(); h.render({ accountId: "account-b", model: model("event-b") });
+    function FixtureShareEditor() {}
+    h.chunks[0].resolve({ default: FixtureShareEditor }); await settle();
+    const ready = h.render({ accountId: "account-b", model: model("event-b") });
+    assert.equal(ready.props.accountId, "account-b"); assert.equal(ready.props.model.id, "event-b");
+    assert.notEqual(h.render({ accountId: "account-c", model: model("event-b") }).key, ready.key);
+    assert.notEqual(h.render({ accountId: "account-b", model: model("event-c") }).key, ready.key);
+  } finally { h.dispose(); }
+});
+
+test("closing during module load prevents later state adoption", async () => {
+  const h = harness({ wrapper: true });
+  h.render(); h.dispose();
+  const writes = h.updates.length;
+  h.chunks[0].resolve({ default: function FixtureShareEditor() {} }); await settle();
+  assert.equal(h.updates.length, writes);
+  assert.equal(h.calls.length, 0);
 });

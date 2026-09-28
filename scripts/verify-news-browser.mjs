@@ -58,7 +58,7 @@ async function localServer() {
 
 async function until(check, message) {
   const deadline = Date.now() + timeout;
-  while (!check()) { assert.ok(Date.now() < deadline, message); await new Promise(done => setTimeout(done, 25)); }
+  while (!(await check())) { assert.ok(Date.now() < deadline, message); await new Promise(done => setTimeout(done, 25)); }
 }
 
 async function order(page, first, second) {
@@ -106,6 +106,12 @@ async function scenario(browser, origin, item) {
       if (!url.pathname.startsWith("/api/")) return await route.continue();
       const method = request.method(), path = url.pathname;
       state.calls.push({ path, method });
+      if (path === "/api/share-cards/render") {
+        assert.equal(method, "POST");
+        assert.equal(request.headers()["x-pit-expected-account"], reader.id);
+        assert.equal(request.postDataJSON()?.postId, latest.postId);
+        return await route.fulfill({ contentType: "image/png", body: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=", "base64") });
+      }
       let result;
       if (path === "/api/client-errors") { state.diagnostics.push(request.postDataJSON()); result = { ok: true }; }
       else if (path === "/api/me") result = { user: reader };
@@ -192,6 +198,19 @@ async function scenario(browser, origin, item) {
       await fullCard.getByRole("button", { name: "1 like", exact: true }).waitFor();
       assert.equal(await fullCard.getByRole("button", { name: "Report", exact: true }).isVisible(), true);
       assert.equal(await fullCard.getByRole("link", { name: `Open ${author.name} profile`, exact: true }).isVisible(), true);
+      // The share dialog is loaded on demand; the full controls must still work
+      // on the first open and reopen without replacing or navigating the feed.
+      for (let open = 0; open < 2; open += 1) {
+        await fullCard.getByRole("button", { name: "Share this story", exact: true }).click();
+        await page.getByText("Share this story", { exact: true }).waitFor();
+        const download = page.getByRole("button", { name: "Download card", exact: true });
+        await download.waitFor();
+        await until(async () => !await download.isDisabled(), "The deferred share editor did not prepare its image.");
+        assert.equal(await page.getByRole("button", { name: "Copy link", exact: true }).isVisible(), true);
+        await page.getByRole("button", { name: "Close share preview", exact: true }).last().click();
+        await download.waitFor({ state: "hidden" });
+        assert.equal(new URL(page.url()).pathname, "/feed");
+      }
       await fullCard.getByRole("button", { name: `${latestTitle}. Read the full story and comments.`, exact: true }).click();
       await page.waitForURL(url => url.pathname === deepLink);
       await page.getByText("This complete synthetic news article is used only in the isolated browser test.", { exact: true }).waitFor();

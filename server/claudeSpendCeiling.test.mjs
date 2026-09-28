@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
-import { admitClaudeSpend, claudeMonthSpendMicroUsd, claudeRequestDefinitelyRejected } from "./claudeSpendCeiling.js";
+import { admitClaudeSpend, anthropicMonthlyCeilingMicroUsd, claudeMonthSpendMicroUsd, claudeRequestDefinitelyRejected } from "./claudeSpendCeiling.js";
+
+test("the approved shared allowance preserves explicit zero and lower operator limits", () => {
+  assert.equal(anthropicMonthlyCeilingMicroUsd({}), 20_000_000);
+  assert.equal(anthropicMonthlyCeilingMicroUsd({ ANTHROPIC_MONTHLY_USD: "0" }), 0);
+  assert.equal(anthropicMonthlyCeilingMicroUsd({ ANTHROPIC_MONTHLY_USD: "10" }), 10_000_000);
+  assert.equal(anthropicMonthlyCeilingMicroUsd({ ANTHROPIC_MONTHLY_USD: "invalid" }), 20_000_000);
+});
 
 test("shared admission rechecks each feature's receipt and rolls back a failed reservation", (t) => {
   const db = new DatabaseSync(":memory:");

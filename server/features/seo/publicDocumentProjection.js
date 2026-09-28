@@ -398,10 +398,17 @@ function primaryImageSchema(value, name) {
   });
 }
 
-// Google's image metadata wants a copyright notice beside the credit and
-// licence. Catalogued venue photos are CC BY or CC BY-SA, so the photographer
-// keeps the copyright; fan photos stay their author's under the Terms.
+// Catalogue attribution is backed by separately recorded photo provenance.
+// A member upload's owner_id proves account custody, not copyright ownership.
 const copyrightNotice = (holder) => cleanLine(holder, 240) ? `© ${cleanLine(holder, 240)}` : null;
+
+function memberImageRights(origin, author) {
+  return {
+    ...(author?.name ? { creditText: `Shared by ${cleanLine(author.name, 240)} on Mshpit` } : {}),
+    license: absolute(origin, "/photo-rights"),
+    acquireLicensePage: absolute(origin, "/photo-rights#request-permission"),
+  };
+}
 
 function venuePhotoSchema(photo, venueName) {
   if (!photo?.url) return null;
@@ -601,7 +608,6 @@ function mediaSchema(asset, { origin, pageUrl, context, author, publishedAt, ind
     ...(isoTimestamp(asset.createdAt || publishedAt) ? { uploadDate: isoTimestamp(asset.createdAt || publishedAt) } : {}),
     ...(asset.width ? { width: asset.width } : {}),
     ...(asset.height ? { height: asset.height } : {}),
-    ...(author ? { creator: author } : {}),
     isPartOf: siteReference(origin),
   };
   if (asset.kind === "video") {
@@ -613,6 +619,7 @@ function mediaSchema(asset, { origin, pageUrl, context, author, publishedAt, ind
     return {
       "@type": "VideoObject",
       ...common,
+      ...(author ? { creator: author } : {}),
       description: caption,
       thumbnailUrl: [thumbnail],
       duration,
@@ -622,7 +629,7 @@ function mediaSchema(asset, { origin, pageUrl, context, author, publishedAt, ind
   return {
     "@type": "ImageObject",
     ...common,
-    ...(author?.name ? { creditText: `Photo by ${author.name} on Mshpit`, copyrightNotice: copyrightNotice(author.name) } : {}),
+    ...memberImageRights(origin, author),
     ...(asset.mimeType ? { encodingFormat: asset.mimeType } : {}),
   };
 }
@@ -1036,19 +1043,13 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       const fanImage = fanImageReview ? fanImageReview.media
         .map((asset) => asset.kind === "image" ? asset.url : asset.posterUrl)
         .find(Boolean) || null : null;
-      // The fan who took the photo is credited in search results, by name and
-      // with a link to their profile. That credit is part of why fans share.
+      // Credit the member who shared it without claiming they took it or own
+      // the copyright: the upload ledger has no verified rights-holder field.
       const fanImageCredit = fanImage && fanImageReview?.author?.name ? Object.freeze({
         "@type": "ImageObject",
         contentUrl: fanImage,
         url: fanImage,
-        creditText: `Photo by ${fanImageReview.author.name}${fanImageReview.author.handle ? ` (@${fanImageReview.author.handle})` : ""} on Mshpit`,
-        copyrightNotice: copyrightNotice(fanImageReview.author.name),
-        creator: Object.freeze({
-          "@type": "Person",
-          name: fanImageReview.author.name,
-          ...(fanImageReview.author.path ? { url: absolute(publicOrigin, fanImageReview.author.path) } : {}),
-        }),
+        ...memberImageRights(publicOrigin, fanImageReview.author),
       }) : null;
       const name = cleanLine(source.name, 160);
       const staffCuratedBio = Number(raw.profile?.bio_staff_curated) === 1;

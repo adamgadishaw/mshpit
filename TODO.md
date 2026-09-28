@@ -312,11 +312,14 @@ ce60742). Still open:
 - **Unused R2 tokens:** Cloudflare lists three older "PIT ... media pipeline"
   tokens and an "R2 Account Token" with media access; keep only the one Render
   uses and revoke the rest.
-- **After deploy:** add `NEWS_DESK_ENABLED=true` in the Render dashboard (and
-  `CATALOG_RESEARCH_ENABLED=true` for modest catalog filling), then watch
-  `[news-desk]` and `[catalog-research]` log lines and the Anthropic console.
-  Both share `ANTHROPIC_MONTHLY_USD` ($10 by default); news gets up to $6,
-  research up to $4.
+- **After deploy:** verify the Blueprint's `NEWS_DESK_ENABLED=true` and
+  `CATALOG_RESEARCH_ENABLED=true`, then watch `[news-desk]` and
+  `[catalog-research]` log lines and the Anthropic console. The approved
+  expansion allows two supported stories per slot, ten per Toronto day.
+  Verify news allowances of $0.75/day and $15/month, catalogue $0.30/day and
+  $4/month, and the shared `ANTHROPIC_MONTHLY_USD=20` admission ceiling.
+  Configure provider-side spending controls separately. Persist any lower
+  limits in the Blueprint; sync can overwrite dashboard-only reductions.
 - **First real stories:** read the first few write-ups for tone, length and
   attribution; tune the prompt in `newsSummarizer.js` if they drift.
 - **Share preview check:** paste a story link into X, Facebook and iMessage and
