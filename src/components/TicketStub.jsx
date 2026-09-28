@@ -507,7 +507,7 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
           </View>
           <View style={styles.performanceCardBody}>
             <View style={styles.performanceTopline}>
-              <Text style={styles.performanceEyebrow}>{isOnlineReview ? "ONLINE CONCERT" : titledPerformance ? "CONCERT / TOUR" : "LIVE SHOW"}</Text>
+              <Text style={styles.performanceEyebrow}>{isOnlineReview ? "ONLINE CONCERT" : performance.festival ? "FESTIVAL" : titledPerformance ? "CONCERT / TOUR" : "LIVE SHOW"}</Text>
               <Text style={styles.performanceArchiveMark}>{isOnlineReview ? "MSHPIT / ONLINE REVIEW" : "MSHPIT / LIVE MEMORY"}</Text>
             </View>
             <Text style={styles.performanceTitle} numberOfLines={3}>
@@ -533,11 +533,11 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
                   ) : null}
                   {!!log.venue && <PublicTextLink href={venueHref} onNavigate={() => onOpenVenue?.(log.venue)} style={styles.performanceVenue}>{log.venue}</PublicTextLink>}
                   {!!log.city && <Text style={styles.dim}>{log.venue ? " · " : ""}<PublicTextLink href={cityHref} onNavigate={cityIdentity && onOpenCity ? () => onOpenCity(cityIdentity) : undefined} style={styles.dim}>{log.city}</PublicTextLink></Text>}
-                  {!!log.date && <Text style={styles.performanceDate}> · {formatDate(log.date, log.date)}</Text>}
+                  {!!log.date && <Text style={styles.performanceDate}> · {formatDate(log.date, log.date)}{performance.festival && log.endDate && log.endDate > log.date ? ` to ${formatDate(log.endDate, log.endDate)}` : ""}</Text>}
                 </Text>
                 {!!log.eventAddress && <Text selectable style={styles.seenTxt} numberOfLines={2}>Event address: {log.eventAddress}</Text>}
                 {log.seen > 1 ? <Text style={styles.seenTxt}>{ordinal(log.seen)} time in the pit</Text> : null}
-                <SupportingActsLine acts={log.supportingActs} festival={/\bfest(ival)?s?\b/iu.test(log.tour || "")} onOpenArtist={onOpenArtist} />
+                <SupportingActsLine post={log} onOpenArtist={onOpenArtist} />
               </>
             )}
           </View>

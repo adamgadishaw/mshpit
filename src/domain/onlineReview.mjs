@@ -1,3 +1,5 @@
+import { postHeadline } from "./lineup.mjs";
+
 export const IN_PERSON_REVIEW_EXPERIENCE = "in_person";
 export const ONLINE_REVIEW_EXPERIENCE = "online";
 
@@ -83,6 +85,12 @@ export function reviewCardPerformance(value) {
   const review = value && typeof value === "object" ? value : {};
   const online = isOnlineReview(review);
   const artist = text(review.artist);
+  // A festival review leads with the festival; a co-headline show names
+  // every headliner ("Chris Brown & Usher").
+  if (!online && review.showFormat === "festival") {
+    return { festivalSet: false, festival: true, primary: artist || "Festival", primaryIsArtist: false, secondary: "", showArtistInMeta: false };
+  }
+  const headline = !online && review.showFormat === "co_headline" ? postHeadline(review) || artist : artist;
   const tour = text(review.tour);
   const onlineTitle = text(review.onlineTitle ?? review.online_title);
   const normalizedTour = tour.toLowerCase().replace(/\s+/g, " ");
@@ -90,7 +98,7 @@ export function reviewCardPerformance(value) {
   const tourMatchesArtist = !!tour && tour.toLowerCase() === artist.toLowerCase();
   const primaryIsArtist = !!artist && (online || festivalSet || !tour || tourMatchesArtist);
   const primary = primaryIsArtist
-    ? artist
+    ? headline
     : online
       ? onlineTitle || artist || "Online concert"
       : tour || artist || "Live show";
@@ -102,6 +110,7 @@ export function reviewCardPerformance(value) {
 
   return {
     festivalSet,
+    festival: false,
     primary,
     primaryIsArtist,
     secondary,

@@ -1,5 +1,6 @@
 import { MEDIA_POST_MAX_ATTACHMENTS } from "./mediaUploadPolicy.mjs";
-import { parseTimesSeen, supportingActNames } from "./supportingActs.mjs";
+import { parseTimesSeen } from "./supportingActs.mjs";
+import { cleanShowFormat, lineupActs } from "./lineup.mjs";
 import {
   mediaProjectFromLegacyUrls,
   mediaProjectPublishedMedia,
@@ -59,7 +60,13 @@ export function normalizeComposerDraft(value = {}) {
     city: isOnlineReview ? "" : text(value.city),
     eventAddress: postType === "show" && !isOnlineReview ? text(value.eventAddress) : "",
     tour: isOnlineReview ? "" : text(value.tour),
-    supportingActs: postType === "show" && !isOnlineReview ? supportingActNames(value.supportingActs, { mainArtist: value.artist }) : [],
+    showFormat: postType === "show" && !isOnlineReview ? cleanShowFormat(value.showFormat) : "headline",
+    endDate: postType === "show" && !isOnlineReview && cleanShowFormat(value.showFormat) === "festival" ? text(value.endDate) : "",
+    // Drafts from before lineups hold opener names in supportingActs.
+    lineup: postType === "show" && !isOnlineReview
+      ? lineupActs(value.lineup ?? value.supportingActs, { mainArtist: value.artist, showFormat: cleanShowFormat(value.showFormat) })
+        .map(({ name, role, rating, review, day, stage }) => ({ name, role, rating, review, day, stage }))
+      : [],
     timesSeen: postType === "show" && !isOnlineReview ? parseTimesSeen(value.timesSeen) : null,
     date: isOnlineReview ? "" : text(value.date),
     onlineTitle: isOnlineReview ? text(value.onlineTitle ?? value.online_title) : "",

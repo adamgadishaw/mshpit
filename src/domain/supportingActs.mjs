@@ -73,10 +73,12 @@ export function ordinalWord(value) {
   return `${number}${suffix}`;
 }
 
-// "Your 3rd time seeing Radiohead", counting this show.
-export function timesSeenSentence(count, artist) {
+// "Your 3rd time seeing Radiohead", counting this show. At a festival it is
+// the festival itself: "Your 2nd Rolling Loud".
+export function timesSeenSentence(count, artist, { festival = false } = {}) {
   const ordinal = ordinalWord(count);
   if (!ordinal || !collapse(artist)) return "";
+  if (festival) return count === 1 ? `Your first ${collapse(artist)}` : `Your ${ordinal} ${collapse(artist)}`;
   return count === 1 ? `Your first time seeing ${collapse(artist)}` : `Your ${ordinal} time seeing ${collapse(artist)}`;
 }
 

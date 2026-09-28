@@ -28,7 +28,9 @@ test("provider-backed festivals and fairs keep their event identity in the UI", 
 
 test("the in-app event detail preserves event title, lineup, and date range presentation", () => {
   const source = readFileSync(new URL("../screens/ShowScreen.jsx", import.meta.url), "utf8");
-  assert.match(source, /const eventTitle = liveEventTitle\(norm\)/);
+  // Provider events keep their title; a festival review names the festival and
+  // a co-headline review names every headliner (src/domain/lineup.mjs).
+  assert.match(source, /const eventTitle = festivalReview \? artist : reviewFormat === "co_headline" \? postHeadline\(norm\) \|\| liveEventTitle\(norm\) : liveEventTitle\(norm\);/);
   let titleExpression;
   const visit = (node) => {
     if (!node || typeof node !== "object") return;

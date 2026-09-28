@@ -301,6 +301,9 @@ async function scenario(browser, origin, width, kind) {
         }
       }
     }
+    // A composer sheet slides in from the right; let it settle before
+    // measuring, so only a real layout overflow fails.
+    await page.waitForFunction(() => document.documentElement.scrollWidth <= innerWidth + 1, null, { timeout: 3_000 }).catch(() => {});
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false);
     assert.deepEqual(state.reports, []); assert.deepEqual(state.errors, []);
     console.log(JSON.stringify({ name: `artist-${kind}-${width}`, passed: true, simulatedWrites: state.writes.length }));

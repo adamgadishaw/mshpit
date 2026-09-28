@@ -51,6 +51,8 @@ import { settleArtistPageRead } from "../domain/artistPageRead.mjs";
 import { artistInitials } from "../domain/artistInitials.mjs";
 import { lazyWithRetry } from "../lib/lazyWithRetry";
 import Button from "../components/Button";
+import ArtistLiveSets from "../components/ArtistLiveSets";
+import { fetchArtistSets } from "../lib/lineupApi";
 
 const ArtistNewsSection = lazyWithRetry(() => import("../components/news/NewsViews").then((module) => ({ default: module.ArtistNewsSection })), "ArtistNewsSection");
 
@@ -299,7 +301,7 @@ function TopReviewCard({ review, rank, artistName, onOpenPost, onOpenShow, onOpe
 
 // Artist page - the rollup of a band's live reputation across every night,
 // plus where to catch them next. Answers "is this band worth seeing?"
-export default function ArtistScreen({ artistName, previewAsFan = false, onClose, onOpenPost, onOpenNewsStory, onOpenShow, onOpenArchive, onOpenVenue, onOpenFanClub, onShareMemory, onOpenPhotos, onOpenGallery, onOpenProfile, onManageArtistProfile, onEditArtistProfile, onPlay, onAddToPlaylist, onReport, onRequireAuth }) {
+export default function ArtistScreen({ artistName, previewAsFan = false, onClose, onOpenArtist, onOpenPost, onOpenNewsStory, onOpenShow, onOpenArchive, onOpenVenue, onOpenFanClub, onShareMemory, onOpenPhotos, onOpenGallery, onOpenProfile, onManageArtistProfile, onEditArtistProfile, onPlay, onAddToPlaylist, onReport, onRequireAuth }) {
   const { session, artistSummary, albumRating, songRating, rateAlbum, rateSong, loadRating,
     isArtistOwner, artistPostsFor, loadArtistPage, artistPageCacheEpoch,
     artistGallery, loadArtistPhotos, removePhoto, artistBadges, remoteArtistMeta,
@@ -383,6 +385,17 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
     limit: 3,
   });
   const topReviewsPresentation = selectArtistReviewsPresentation(topReviewsResource, a.nights, { limit: 3, memorialMode: deceased });
+  // Sets on other people's bills: opening, co-headline and festival sets.
+  const [liveSets, setLiveSets] = useState(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    setLiveSets(null);
+    fetchArtistSets({ artistKey: a.profileKey || null, name: a.name, signal: controller.signal })
+      .then((result) => { if (!controller.signal.aborted) setLiveSets(result); })
+      // architecture: allow-ambiguous-result -- the section is optional; the rest of the page does not depend on it
+      .catch(() => { if (!controller.signal.aborted) setLiveSets(null); });
+    return () => controller.abort();
+  }, [a.name, a.profileKey, session?.id]);
   const topReviews = topReviewsPresentation.reviews;
   const visibleTopReviews = artistPagePreview(topReviews, { condensed: sectionModel.condensed, limit: ARTIST_OVERVIEW_LIMITS.reviews });
   const { resource: liveArchiveResource, reload: retryLiveArchive, refresh: refreshLiveArchive } = useArtistEventArchive({
@@ -1379,6 +1392,8 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
             ) : null}
           </>
         )}
+
+        {!deceased && liveSets ? <ArtistLiveSets data={liveSets} artistName={a.name} onOpenArtist={onOpenArtist} onOpenProfile={onOpenProfile} /> : null}
 
         {/* The overview stays bounded; the gallery owns the full collection and
             pagination after the schedule and review previews. */}

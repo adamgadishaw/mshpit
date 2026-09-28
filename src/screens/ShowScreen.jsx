@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import SupportingActsLine from "../components/SupportingActsLine";
+import LineupDetails from "../components/LineupDetails";
+import { postHeadline } from "../domain/lineup.mjs";
 import { ordinalWord } from "../domain/supportingActs.mjs";
 import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, useWindowDimensions } from "react-native";
 import { colors, displayFont, mono, radius, shadow, space } from "../theme";
@@ -196,8 +197,12 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
   const artist = trustedShow?.artist || legacyArtist;
   const overall = typeof log.overall === "number" ? log.overall : null;
   const setlist = Array.isArray(log.setlist) ? log.setlist : [];
+  // A festival review names the festival; a co-headline review, every headliner.
+  const reviewFormat = log?.kind === "status" ? null : log?.showFormat || null;
+  const festivalReview = reviewFormat === "festival";
   const norm = {
     ...log,
+    ...(festivalReview && log.endDate ? { eventEndDate: log.endDate } : {}),
     artist,
     artistKey: artistIdentityPending ? null : trustedShow?.artistKey || log.artistKey,
     venue,
@@ -205,7 +210,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
     city,
     date: trustedShow?.localDate || trustedShow?.date || log.date,
   };
-  const eventTitle = liveEventTitle(norm);
+  const eventTitle = festivalReview ? artist : reviewFormat === "co_headline" ? postHeadline(norm) || liveEventTitle(norm) : liveEventTitle(norm);
   const isNamedLiveEvent = isNamedSpecialEvent(norm) || eventTitle !== artist;
   const eventLineup = isNamedLiveEvent ? liveEventLineupLabel(norm, { limit: 5 }) : "";
   const eventEndDate = typeof norm.eventEndDate === "string"
@@ -595,7 +600,12 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
           <View style={[styles.heroTicketColumn, !presentation.showPostEvent && tabletLayout && styles.heroTicketColumnWide]}>
         <View style={styles.ticket}>
           <Text style={styles.ticketKicker}>{presentation.ticketKicker}</Text>
-          {isNamedLiveEvent ? (
+          {festivalReview ? (
+            <View>
+              <Text style={styles.artist}>{eventTitle}</Text>
+              <Text style={styles.eventLineup}>FESTIVAL</Text>
+            </View>
+          ) : isNamedLiveEvent ? (
             <View>
               <Text style={styles.artist}>{eventTitle}</Text>
               {!!eventLineup && <Text style={styles.eventLineup} numberOfLines={2}>LINEUP · {eventLineup}</Text>}
@@ -640,9 +650,9 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
               {log.soldOut ? <Text style={styles.soldOut}>SOLD OUT</Text> : null}
             </View>
           </View>
-          {/* A review's openers (or acts seen at a festival), and how many
+          {/* A review's lineup with each set's rating and note, and how many
               times its author has now seen the headliner. */}
-          <SupportingActsLine acts={log.supportingActs} festival={isNamedLiveEvent} onOpenArtist={onOpenArtist} style={styles.supportingActs} />
+          <LineupDetails post={log} onOpenArtist={onOpenArtist} style={styles.supportingActs} />
           {log.seen > 1 ? <Text style={styles.seenLine}>{ordinalWord(log.seen)} time in the pit</Text> : null}
           {ticketShow?.timing?.length ? (
             <View style={styles.timingRow}>

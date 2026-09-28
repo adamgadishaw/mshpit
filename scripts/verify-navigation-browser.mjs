@@ -151,6 +151,8 @@ export function fixtureApiResponse(pathname, { member = false, method = "GET", r
   if (pathname === "/api/news-desk/stories") return { stories: [], nextCursor: null };
   if (pathname === "/api/news-desk/live") return { events: [] };
   if (pathname === "/api/me/seen-count") return { count: 1 };
+  if (pathname === "/api/lineup/suggestions") return { suggestions: [] };
+  if (pathname === "/api/artists/sets") return { summary: {}, sets: [], openedFor: [], festivals: [] };
   if (pathname === "/api/discovery/sidebar") return { upcomingEvents: [], suggestedUsers: [], topArtists: [], trendingVenues: [], popularLounges: [], landingMedia: [], catalogTotals: { artists: 40, venues: 80 } };
   if (pathname === "/api/tourdates") return { tourDates: [] };
   if (pathname === "/api/discover/overview") return {

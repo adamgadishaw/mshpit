@@ -1263,6 +1263,15 @@ function Root() {
       officialEventName: log.eventName || null,
       officialEventSource: log.source || null,
       tourDateId: log.tourDateId || log.id || null,
+      // A festival listing opens the festival review: its name, its days,
+      // and the billed acts offered as sets (not assumed seen).
+      ...(log.eventKind === "festival" && log.eventName ? {
+        showFormat: "festival",
+        artist: log.eventName,
+        artistKey: null,
+        tour: "",
+        endDate: typeof log.eventEndDate === "string" ? log.eventEndDate : "",
+      } : {}),
     },
   }));
   const openInbox = () => requireAuth(() => go({ inbox: true }));
@@ -1309,7 +1318,7 @@ function Root() {
   else if (nav.editArtist) overlay = <EditArtistProfileScreen artistName={nav.editArtist} onClose={back} />;
   else if (nav.artistArchive) overlay = <ArtistArchiveScreen artistName={nav.artistArchive.name} artistKey={nav.artistArchive.artistKey} onClose={back} onOpenShow={openShow} onOpenTour={(tour, resolvedArtistKey) => openArtistTour(nav.artistArchive.name, resolvedArtistKey || nav.artistArchive.artistKey, tour)} onOpenPhotos={openPhotos} onOpenProfile={openProfile} />;
   else if (nav.artistTour) overlay = <TourArchiveScreen artistName={nav.artistTour.name} artistKey={nav.artistTour.artistKey} tourKey={nav.artistTour.tourKey} tourName={nav.artistTour.tourName} onClose={back} onOpenShow={openShow} onOpenPost={openPost} onOpenPhotos={openPhotos} onOpenProfile={openProfile} />;
-  else if (nav.artistName) overlay = <ArtistScreen artistName={nav.artistName} onClose={back} onOpenPost={openPost} onOpenNewsStory={openNewsStory} onOpenShow={openShow} onOpenArchive={openArtistArchive} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onShareMemory={(name, artistKey, options = {}) => requireVerifiedMutation("post", () => go({ logging: true, postMode: "memory", legacyArtistProfile: options.legacyProfile === true, prefill: { artist: name, artistKey } }))} onOpenPhotos={openPhotos} onOpenGallery={openArtistGallery} onOpenProfile={openProfile} onManageArtistProfile={() => go({ artistHub: true })} onEditArtistProfile={(name) => name && requireVerifiedMutation("artist", () => go({ editArtist: name }))} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} onReport={openReport} onRequireAuth={openSignIn} />;
+  else if (nav.artistName) overlay = <ArtistScreen artistName={nav.artistName} onClose={back} onOpenArtist={openArtist} onOpenPost={openPost} onOpenNewsStory={openNewsStory} onOpenShow={openShow} onOpenArchive={openArtistArchive} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onShareMemory={(name, artistKey, options = {}) => requireVerifiedMutation("post", () => go({ logging: true, postMode: "memory", legacyArtistProfile: options.legacyProfile === true, prefill: { artist: name, artistKey } }))} onOpenPhotos={openPhotos} onOpenGallery={openArtistGallery} onOpenProfile={openProfile} onManageArtistProfile={() => go({ artistHub: true })} onEditArtistProfile={(name) => name && requireVerifiedMutation("artist", () => go({ editArtist: name }))} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} onReport={openReport} onRequireAuth={openSignIn} />;
   else if (nav.venueName) overlay = <VenueScreen venueName={nav.venueName} venueIdentity={nav.venue || null} onClose={back} onOpenShow={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onReviewVenue={openVenueReview} onOpenProfile={openProfile} onOpenPhotos={openPhotos} onReport={openReport} onRequireAuth={openSignIn} />;
   else if (nav.nearby) overlay = <NearbyScreen onClose={back} onOpenVenue={openVenue} onOpenArtist={openArtist} initialTab={nav.nearbyTab} />;
   else if (nav.cityGuide) overlay = <CityScreen city={nav.cityGuide} accountId={session?.id || null} onClose={back} onOpenCity={openCity} onOpenVenue={openVenue} onOpenArtist={openArtist} onOpenShow={openShow} onOpenPhotos={openPhotos} />;

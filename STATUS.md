@@ -6,6 +6,43 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-09-28 Lineups: festivals, co-headliners and rated openers
+
+From the owner: festivals are not regular shows, openers can make or break a
+night, and a show can have several headliners. A concert review now has a
+format, chosen at the top of the form ("What kind of show?"):
+
+- **Concert:** one headliner plus openers.
+- **Co-headliners:** two or more headliners (Chris Brown & Usher), plus
+  openers. The card and show page lead with every headliner.
+- **Festival:** the post's artist is the festival's name (never bound to a
+  catalog artist), with a first and last day (up to two weeks). Each set seen
+  carries its day and stage. The band ratings are replaced by per-set ratings.
+
+Every act (opener, co-headliner, festival set) can have its own half-star
+rating and a note (600 characters). The card shows each act's rating; the show
+page lists every act with its note, grouped by festival day. Each rated set
+reaches that artist's page in a new "Live sets" section: averages for opening,
+co-headline and festival sets, who they opened for, festivals played, and the
+latest notes. The form suggests acts from the show's Ticketmaster billing and
+from openers other fans listed on the same run (150 days either side); a
+festival gets its billing with each act's day. A festival listing's "Review
+this show" opens the form in festival mode.
+
+Data: the lineup stays in `posts.supporting_acts` as richer JSON (`name`,
+`artistKey`, `role`, `rating`, `review`, `day`, `stage`); older name-only rows
+read as unrated openers. New columns `posts.show_format` and `posts.end_date`.
+Table `post_lineup_acts` is an index kept by triggers on every write, filled
+once from older posts (marker `schema:post-lineup-acts:v1`). New routes:
+`GET /api/lineup/suggestions` (signed in) and `GET /api/artists/sets` (public,
+blocks applied). Older app versions still send and receive `supportingActs`;
+a names-only edit keeps saved ratings. Unrated opener lists keep the old retry
+fingerprint. Festival reviews no longer appear in an artist's top reviews.
+
+Checked: `npm run check` (5,850 tests), all eleven browser suites. The
+initial web bundle is 511.4 of 512 KiB (the lineup helpers ship with the feed
+card); the next feed-level change must trim first.
+
 ## 2026-09-28 Staff can follow artists; opener suggestions
 
 **Follow button missing for staff.** The owner could not follow artists.

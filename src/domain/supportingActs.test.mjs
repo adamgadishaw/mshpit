@@ -79,7 +79,7 @@ test("review payloads, drafts and edit reconciliation carry openers and times se
   assert.equal(postMatchesEditIntent({ ...serverPost, seen: 5 }, { timesSeen: 3 }), false);
 
   const draft = normalizeComposerDraft({ postType: "show", artist: "boygenius", supportingActs: ["Muna", "boygenius"], timesSeen: 3 });
-  assert.deepEqual([draft.supportingActs, draft.timesSeen], [["Muna"], 3]);
+  assert.deepEqual([draft.lineup.map((act) => act.name), draft.timesSeen], [["Muna"], 3], "a draft saved before lineups keeps its openers");
   const status = normalizeComposerDraft({ postType: "status", supportingActs: ["Muna"], timesSeen: 3 });
-  assert.deepEqual([status.supportingActs, status.timesSeen], [[], null]);
+  assert.deepEqual([status.lineup, status.timesSeen], [[], null]);
 });

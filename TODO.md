@@ -243,13 +243,20 @@ remains a broad context whose changing value can rerender unrelated consumers.
 - **Animated story:** an MP4 version of the share card needs a render service
   with ffmpeg.
 
+## Lineup follow-ups (2026-09-28)
+
+- **Festivals section (in progress):** festival pages, a Discover tab, lineups
+  by day, going plans with days and must-see sets, share cards.
+- **Artist page "Live sets" paging:** shows the latest 12 sets; add "more".
+- **Initial bundle:** 511.4 of 512 KiB. Move `src/domain/lineup.mjs` card
+  helpers or another feed dependency behind a lazy import before adding more.
+
 ## Openers and times seen follow-ups (2026-09-28)
 
 - **Artist search for openers:** done 2026-09-28 (catalog suggestions only).
   A "search beyond catalogue" option like the headliner field has is not
   offered for openers yet.
-- **Festival lineup chips:** when the review is attached to a festival with a
-  known lineup, offer its acts as one-tap chips.
+- **Festival lineup chips:** done 2026-09-28 (lineup suggestions with days).
 - **Profile stats:** count openers in "artists seen" totals and concert
   history, not only on the review itself.
 - **Web bundle budget:** 508.8 of 512 KiB initial JavaScript; lazy-load or

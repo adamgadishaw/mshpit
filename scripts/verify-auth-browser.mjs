@@ -577,6 +577,8 @@ async function runCase(browser, origin, item) {
       if (url.pathname === "/api/me/threads") return await json({ threads: [] });
       if (url.pathname === "/api/me/following") return await json({ following: [] });
       if (url.pathname === "/api/me/seen-count") return await json({ count: 1 });
+      if (url.pathname === "/api/lineup/suggestions") return await json({ suggestions: [] });
+      if (url.pathname === "/api/artists/sets") return await json({ summary: {}, sets: [], openedFor: [], festivals: [] });
       if (url.pathname === "/api/me/fanclubs") return await json({ fanClubs: [] });
       if (url.pathname === "/api/me/going") return await json({ going: [] });
       if (url.pathname.endsWith("/posts")) return await json({ posts: [], hasMore: false });

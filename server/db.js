@@ -25,6 +25,7 @@ import { handleChangeAvailableAt, pendingSignupHandle } from "./features/account
 import { legacyTrackOverrideIdentityKey, trackOverrideIdentityKey } from "./trackIdentity.js";
 import { normalizeTaggedUserIds } from "../src/domain/postFriendTags.mjs";
 import { privateErrorLabel } from "./errors.js";
+import { ensureLineupSchema } from "./supportingActs.js";
 import { quarantineUnsafeLegacyImages } from "./publicMedia.js";
 import { ensurePostMediaCapacity, POST_MEDIA_MAX_POSITION } from "./postMediaSchema.js";
 import { registerPitSqliteFunctions } from "./sqliteFunctions.js";
@@ -147,6 +148,8 @@ CREATE TABLE IF NOT EXISTS posts (
   tagged_user_ids TEXT NOT NULL DEFAULT '[]',
   setlist       TEXT NOT NULL DEFAULT '[]',
   supporting_acts TEXT NOT NULL DEFAULT '[]',
+  show_format   TEXT NOT NULL DEFAULT 'headline' CHECK (show_format IN ('headline','co_headline','festival')),
+  end_date      TEXT NOT NULL DEFAULT '',
   client_mutation_id TEXT,
   client_mutation_hash TEXT,
   removed       INTEGER NOT NULL DEFAULT 0,
@@ -1706,6 +1709,10 @@ const additiveMigrations = [
   "ALTER TABLE posts ADD COLUMN event_address TEXT CHECK (event_address IS NULL OR length(event_address) <= 240)",
   // Openers or other acts seen that night: [{ name, artistKey }] (server/supportingActs.js).
   "ALTER TABLE posts ADD COLUMN supporting_acts TEXT NOT NULL DEFAULT '[]'",
+  // A headline show, a co-headline show, or a festival (whose name is the
+  // post's artist); end_date is a festival's last day (server/supportingActs.js).
+  "ALTER TABLE posts ADD COLUMN show_format TEXT NOT NULL DEFAULT 'headline' CHECK (show_format IN ('headline','co_headline','festival'))",
+  "ALTER TABLE posts ADD COLUMN end_date TEXT NOT NULL DEFAULT ''",
   // Stable per-composer token. If a write commits but its response is lost,
   // retrying returns that row instead of publishing a duplicate review.
   "ALTER TABLE posts ADD COLUMN client_mutation_id TEXT",
@@ -2162,6 +2169,7 @@ db.exec(`INSERT OR IGNORE INTO post_create_receipts
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_dms_client_mutation ON dms(from_id, client_mutation_id) WHERE client_mutation_id IS NOT NULL");
 ensureCommentMutationSchema(db);
 ensureSocialReactionSchema(db);
+ensureLineupSchema(db);
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_fcm_client_mutation ON fan_club_messages(user_id, client_mutation_id) WHERE client_mutation_id IS NOT NULL");
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_lounge_client_mutation ON lounge_messages(user_id, client_mutation_id) WHERE client_mutation_id IS NOT NULL");
 // Backfill only a single exact normalized display-name match. Ambiguous and

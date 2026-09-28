@@ -17,8 +17,9 @@ import {
   sendTemplate, sendTemplateInBackground, sentToday, templateFor, unsubscribeUrl,
 } from "./emailService.js";
 import { AUDIENCES, audienceSize, campaignProgress, drainCampaign, pauseCampaign, startCampaign } from "./emailQueue.js";
-import { applyTimesSeen, cleanSupportingActNames, cleanTimesSeen, MAX_TIMES_SEEN, projectSupportingActs, resolveSupportingActs,
-  seenArtistKey, seenOrdinalSql, supportingActNames } from "./supportingActs.js";
+import { adaptLineupToFormat, applyTimesSeen, canonicalLineupFields, cleanEndDate, cleanLineup, cleanShowFormat, cleanTimesSeen,
+  MAX_TIMES_SEEN, mergeLegacyLineup, projectLineup, projectSupportingActs, resolveLineup, seenArtistKey, seenOrdinalSql,
+  storedLineup, storedShowFormat } from "./supportingActs.js";
 import { concertLineupRoutes } from "./features/concertLineup/concertLineupRoutes.js";
 import { db, DATABASE_PATH, q, emailStmts, badgeStmts, customBadgesFor, publicUser as storedPublicUser, parseJsonArray, parseJsonObject, artistStmts, publicArtist, artistRow, artistSearchKey, normName, pruneMissingArtists, providerCacheStmts } from "./db.js";
 import { publicArtistPhoto } from "./artistPhotoCatalog.js";
@@ -1279,8 +1280,8 @@ function cleanEventAddress(value) {
   return clean(value, { max: LIMITS.eventAddress }) || null;
 }
 
-const postRow = db.prepare(`INSERT INTO posts (id,user_id,artist,venue,city,date,overall,band,room,dims,review,photos,photos_public,landing_showcase,campaign,setlist,tour,tags,tagged_user_ids,kind,song,playlist,artist_key,artist_mbid,venue_key,experience_type,online_title,youtube_url,youtube_video_id,client_mutation_id,client_mutation_hash,created_at,event_address,supporting_acts)
-                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+const postRow = db.prepare(`INSERT INTO posts (id,user_id,artist,venue,city,date,overall,band,room,dims,review,photos,photos_public,landing_showcase,campaign,setlist,tour,tags,tagged_user_ids,kind,song,playlist,artist_key,artist_mbid,venue_key,experience_type,online_title,youtube_url,youtube_video_id,client_mutation_id,client_mutation_hash,created_at,event_address,supporting_acts,show_format,end_date)
+                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
 const postByClientMutation = db.prepare("SELECT id,removed,client_mutation_hash FROM posts WHERE user_id=? AND client_mutation_id=? LIMIT 1");
 const postReceiptByClientMutation = db.prepare("SELECT post_id AS id,state,client_mutation_hash FROM post_create_receipts WHERE user_id=? AND client_mutation_id=? LIMIT 1");
 const insertPostCreateReceipt = db.prepare(`INSERT OR IGNORE INTO post_create_receipts
@@ -2575,11 +2576,22 @@ function canonicalCreateRequest(user, body, storedPost = null) {
   if (!onlineReview && (v.onlineTitle || onlineLink)) {
     throw new ApiError(400, "YouTube concert details can only be added to an online review.", "VALIDATION_FAILED");
   }
-  const supportingNames = cleanSupportingActNames(source.supportingActs, { mainArtist: v.artist });
-  if (supportingNames === null) throw new ApiError(400, "Openers must be a list of artist names.", "VALIDATION_FAILED");
+  // A headline show, co-headline show or festival, and who played
+  // (server/supportingActs.js). Online reviews are one performance.
+  const showFormat = onlineReview ? "headline" : cleanShowFormat(source.showFormat);
+  if (showFormat === false) throw new ApiError(400, "Choose a concert, a co-headline show or a festival.", "VALIDATION_FAILED");
+  const endDate = cleanEndDate(source.endDate, { showFormat, date: v.date || "" });
+  if (endDate === false) {
+    throw new ApiError(400, "Pick the festival's first day, then a last day up to two weeks later.", "VALIDATION_FAILED");
+  }
+  const lineup = cleanLineup(onlineReview ? undefined : source.lineup, {
+    legacyNames: source.supportingActs, mainArtist: v.artist, showFormat, date: v.date || "", endDate,
+  });
+  if (lineup.error) throw new ApiError(400, lineup.error, "VALIDATION_FAILED");
   const timesSeen = cleanTimesSeen(source.timesSeen);
   if (timesSeen === false) throw new ApiError(400, `Times seen is a whole number from 1 to ${MAX_TIMES_SEEN}.`, "VALIDATION_FAILED");
-  const binding = resolveArtistBinding(v.artist, source.artistKey);
+  // A festival's name is not a catalog artist.
+  const binding = showFormat === "festival" ? { artist_key: null, artist_mbid: null } : resolveArtistBinding(v.artist, source.artistKey);
   if (!stableMedia) rejectNewLegacyMediaUrls(v.photos || [], parseJsonArray(storedPost?.photos));
   const photos = stableMedia ? stableMedia.photos : (v.photos || []);
   const requestedLandingShowcase = v.photosPublic === 0 ? 0 : (v.landingShowcase ?? 0);
@@ -2608,7 +2620,9 @@ function canonicalCreateRequest(user, body, storedPost = null) {
     photosPublic: v.photosPublic === 0 ? 0 : v.landingShowcase ? 1 : (v.photosPublic ?? 0),
     landingShowcase: onlineReview ? 0 : landingShowcase,
     setlist: onlineReview ? [] : (v.setlist || []),
-    supportingActs: onlineReview ? [] : supportingNames,
+    showFormat,
+    endDate,
+    lineup: onlineReview ? [] : lineup.acts,
     // Sets the "seen before logging" number; not part of the post itself.
     timesSeen: onlineReview ? null : (timesSeen ?? null),
     tour: onlineReview ? null : (v.tour || null),
@@ -2627,7 +2641,9 @@ function canonicalCreateRequest(user, body, storedPost = null) {
     "event address": values.eventAddress,
     review: values.review,
     "setlist entry": values.setlist,
-    "opening act": values.supportingActs,
+    "lineup act": values.lineup.map((act) => act.name),
+    "set review": values.lineup.map((act) => act.review).filter(Boolean),
+    stage: values.lineup.map((act) => act.stage).filter(Boolean),
     tour: values.tour,
     "tagged song title": values.song?.title,
     "tagged song artist": values.song?.artist,
@@ -2656,7 +2672,7 @@ function canonicalCreateRequest(user, body, storedPost = null) {
       photosPublic: values.photosPublic,
       landingShowcase: values.landingShowcase,
       setlist: values.setlist,
-      ...(values.supportingActs.length ? { supportingActs: values.supportingActs } : {}),
+      ...canonicalLineupFields({ showFormat: values.showFormat, endDate: values.endDate, acts: values.lineup }),
       tour: values.tour,
       tags: values.tags,
       taggedUserIds,
@@ -2708,8 +2724,8 @@ function canonicalStoredPost(row) {
     photosPublic: row?.photos_public ? 1 : 0,
     landingShowcase: kind === "review" && online.experienceType !== "online" && row?.landing_showcase ? 1 : 0,
     setlist: kind === "status" || online.experienceType === "online" ? [] : cleanStringArray(parseJsonArray(row?.setlist), { maxItems: 40, maxLen: 120 }),
-    ...(kind !== "status" && online.experienceType !== "online" && supportingActNames(row?.supporting_acts).length
-      ? { supportingActs: supportingActNames(row?.supporting_acts) } : {}),
+    ...(kind !== "status" && online.experienceType !== "online"
+      ? canonicalLineupFields({ showFormat: storedShowFormat(row), endDate: row?.end_date || "", acts: storedLineup(row?.supporting_acts) }) : {}),
     tour: kind === "status" || online.experienceType === "online" ? null : clean(row?.tour, { max: 80 }) || null,
     tags: [],
     taggedUserIds: storedPostTaggedUserIds(row?.tagged_user_ids),
@@ -3048,8 +3064,12 @@ function postJson(p, viewerId) {
     // Separate homepage consent is owner-only account state, not social proof.
     ...(viewerId === p.user_id ? { landingShowcase: online.experienceType === "online" ? false : !!p.landing_showcase } : {}),
     setlist: online.experienceType === "online" ? [] : parseJsonArray(p.setlist),
-    // Openers or other acts seen that night, linked to the author's own review
-    // of that act from the same night when there is one.
+    // Who played and how each set was rated, linked to the author's own review
+    // of that act from the same night when there is one. supportingActs is the
+    // older name-only shape for app versions from before lineups.
+    showFormat: (p.kind || "review") === "status" || online.experienceType === "online" ? "headline" : storedShowFormat(p),
+    endDate: (p.kind || "review") === "status" || online.experienceType === "online" ? "" : p.end_date || "",
+    lineup: (p.kind || "review") === "status" || online.experienceType === "online" ? [] : projectLineup(db, p),
     supportingActs: (p.kind || "review") === "status" || online.experienceType === "online" ? [] : projectSupportingActs(db, p),
     tour: online.experienceType === "online" ? null : p.tour || null,
     tags: [],
@@ -7024,7 +7044,7 @@ export const routes = {
           "{}", v.review, JSON.stringify(v.photos), v.photosPublic, 0, v.campaign ? JSON.stringify(v.campaign) : null, "[]", null,
           "[]", JSON.stringify(transactionTaggedUserIds), "status", v.song ? JSON.stringify(v.song) : null, v.playlist ? JSON.stringify(v.playlist) : null,
           v.binding?.artist_key || null, v.binding?.artist_mbid || null, null,
-          "in_person", null, null, null, mutationId, mutationHash, now(), null, "[]");
+          "in_person", null, null, null, mutationId, mutationHash, now(), null, "[]", "headline", "");
         if (mutationId) insertPostCreateReceipt.run(u.id, mutationId, mutationHash, id, now(), now());
         if (v.attendanceTicket) postAttendanceTicket.run(JSON.stringify(v.attendanceTicket), id, u.id);
         markOwnedMediaAssociated(db, { ownerId: u.id, urls: v.photos, at: now() });
@@ -7050,7 +7070,7 @@ export const routes = {
         JSON.stringify(v.tags), JSON.stringify(transactionTaggedUserIds), "review", v.song ? JSON.stringify(v.song) : null, null,
         v.binding.artist_key, v.binding.artist_mbid, v.experienceType === "online" ? null : venueBinding(v.venue),
         v.experienceType, v.onlineTitle, v.youtubeUrl, v.youtubeVideoId, mutationId, mutationHash, now(), v.eventAddress,
-        JSON.stringify(resolveSupportingActs(db, v.supportingActs, { normName })));
+        JSON.stringify(resolveLineup(db, v.lineup, { normName })), v.showFormat, v.endDate);
       if (v.timesSeen) {
         applyTimesSeen(db, { userId: u.id, postId: id, artist: v.artist, artistKey: v.binding.artist_key, timesSeen: v.timesSeen, at: now() });
       }
@@ -7085,7 +7105,7 @@ export const routes = {
     const body = ctx.body && typeof ctx.body === "object" && !Array.isArray(ctx.body) ? ctx.body : {};
     const has = (key) => Object.prototype.hasOwnProperty.call(body, key);
     const editable = ["artist", "artistKey", "venue", "city", "eventAddress", "date", "overall", "band", "room", "dims", "review", "photos", "mediaAssetIds", "photosPublic", "landingShowcase", "setlist", "tour", "tags", "taggedUserIds", "song", "playlistId", "campaign", "experienceType", "onlineTitle", "youtubeUrl", "youtubeVideoId",
-      "supportingActs", "timesSeen"];
+      "supportingActs", "timesSeen", "lineup", "showFormat", "endDate"];
     if (!editable.some(has)) throw new ApiError(400, "Make a change before saving this post.", "VALIDATION_FAILED");
 
     // Optimistic concurrency prevents two devices (or an old open edit sheet)
@@ -7101,14 +7121,14 @@ export const routes = {
     const next = { ...current };
     if (current.kind !== "status") next.tags = "[]";
     const currentMemorialMemory = current.kind === "status" && !!current.artist_key && !!current.artist_mbid && !!current.artist;
-    if (currentMemorialMemory && ["artist", "artistKey", "venue", "city", "eventAddress", "date", "overall", "band", "room", "dims", "setlist", "tour", "tags", "landingShowcase", "experienceType", "onlineTitle", "youtubeUrl", "youtubeVideoId", "supportingActs", "timesSeen"].some(has)) {
+    if (currentMemorialMemory && ["artist", "artistKey", "venue", "city", "eventAddress", "date", "overall", "band", "room", "dims", "setlist", "tour", "tags", "landingShowcase", "experienceType", "onlineTitle", "youtubeUrl", "youtubeVideoId", "supportingActs", "timesSeen", "lineup", "showFormat", "endDate"].some(has)) {
       throw new ApiError(400, "A memorial fan memory can edit its words, people, song, and media, but it cannot become a live rating.", "VALIDATION_FAILED");
     }
     if (current.kind === "status" && ["experienceType", "onlineTitle", "youtubeUrl", "youtubeVideoId"].some(has)) {
       throw new ApiError(400, "Online concert details can only be added to a review.", "VALIDATION_FAILED");
     }
-    if (current.kind === "status" && ["supportingActs", "timesSeen"].some(has)) {
-      throw new ApiError(400, "Openers and times seen belong to a concert review.", "VALIDATION_FAILED");
+    if (current.kind === "status" && ["supportingActs", "timesSeen", "lineup", "showFormat", "endDate"].some(has)) {
+      throw new ApiError(400, "Lineups and times seen belong to a concert review.", "VALIDATION_FAILED");
     }
     const editTimesSeen = cleanTimesSeen(body.timesSeen);
     if (editTimesSeen === false) throw new ApiError(400, `Times seen is a whole number from 1 to ${MAX_TIMES_SEEN}.`, "VALIDATION_FAILED");
@@ -7196,10 +7216,27 @@ export const routes = {
       if (!Array.isArray(body.setlist) || body.setlist.some((item) => typeof item !== "string")) throw new ApiError(400, "setlist is invalid", "VALIDATION_FAILED");
       next.setlist = JSON.stringify(cleanStringArray(body.setlist, { maxItems: 40, maxLen: 120 }));
     }
-    if (has("supportingActs")) {
-      const names = cleanSupportingActNames(body.supportingActs, { mainArtist: next.artist });
-      if (names === null) throw new ApiError(400, "Openers must be a list of artist names.", "VALIDATION_FAILED");
-      next.supporting_acts = JSON.stringify(resolveSupportingActs(db, names, { normName }));
+    next.show_format = storedShowFormat(current);
+    next.end_date = current.end_date || "";
+    const lineupEdited = ["lineup", "supportingActs", "showFormat", "endDate"].some(has);
+    if (current.kind !== "status" && (lineupEdited || (has("date") && next.show_format === "festival"))) {
+      const format = has("showFormat") ? cleanShowFormat(body.showFormat) : next.show_format;
+      if (format === false) throw new ApiError(400, "Choose a concert, a co-headline show or a festival.", "VALIDATION_FAILED");
+      const endDate = cleanEndDate(has("endDate") ? body.endDate : next.end_date, { showFormat: format, date: next.date || "" });
+      if (endDate === false) {
+        throw new ApiError(400, "Pick the festival's first day, then a last day up to two weeks later.", "VALIDATION_FAILED");
+      }
+      const saved = storedLineup(current.supporting_acts);
+      const options = { mainArtist: next.artist, showFormat: format, date: next.date || "", endDate };
+      // Older app versions send only opener names: keep the saved ratings.
+      const result = has("lineup") ? cleanLineup(body.lineup, options)
+        : has("supportingActs") ? cleanLineup(undefined, { ...options, legacyNames: body.supportingActs })
+          : cleanLineup(adaptLineupToFormat(saved, format), options);
+      if (result.error) throw new ApiError(400, result.error, "VALIDATION_FAILED");
+      const acts = !has("lineup") && has("supportingActs") ? mergeLegacyLineup(result.acts, saved) : result.acts;
+      next.show_format = format;
+      next.end_date = endDate;
+      next.supporting_acts = JSON.stringify(resolveLineup(db, acts, { normName }));
     }
     if (has("tour")) {
       if (body.tour !== null && typeof body.tour !== "string") throw new ApiError(400, "tour is invalid", "VALIDATION_FAILED");
@@ -7272,6 +7309,8 @@ export const routes = {
       next.dims = "{}";
       next.setlist = "[]";
       next.supporting_acts = "[]";
+      next.show_format = "headline";
+      next.end_date = "";
       next.tour = null;
       next.tags = "[]";
       next.landing_showcase = 0;
@@ -7326,7 +7365,9 @@ export const routes = {
       "event address": has("eventAddress") ? next.event_address : undefined,
       review: has("review") ? next.review : undefined,
       "setlist entry": has("setlist") ? cleanStringArray(body.setlist, { maxItems: 40, maxLen: 120 }) : undefined,
-      "opening act": has("supportingActs") ? supportingActNames(next.supporting_acts) : undefined,
+      "lineup act": lineupEdited ? storedLineup(next.supporting_acts).map((act) => act.name) : undefined,
+      "set review": lineupEdited ? storedLineup(next.supporting_acts).map((act) => act.review).filter(Boolean) : undefined,
+      stage: lineupEdited ? storedLineup(next.supporting_acts).map((act) => act.stage).filter(Boolean) : undefined,
       tour: has("tour") ? next.tour : undefined,
       "tagged song title": editedSong?.title,
       "tagged song artist": editedSong?.artist,
@@ -7416,7 +7457,9 @@ export const routes = {
       ? currentMemorialMemory
         ? { artist_key: current.artist_key, artist_mbid: current.artist_mbid }
         : { artist_key: editedArtistPage || null, artist_mbid: null }
-      : resolveArtistBinding(next.artist, has("artistKey") ? body.artistKey : current.artist_key);
+      : next.show_format === "festival" && next.experience_type !== "online"
+        ? { artist_key: null, artist_mbid: null }
+        : resolveArtistBinding(next.artist, has("artistKey") ? body.artistKey : current.artist_key);
     // The legacy boundary belongs to the canonical artist identity, not to one
     // post kind. Historical reviews and older clients must not be able to add
     // media after the artist page becomes a protected educational archive.
@@ -7452,6 +7495,9 @@ export const routes = {
       ["dims", next.dims, current.dims],
       ["setlist", next.setlist, current.setlist],
       ["supportingActs", next.supporting_acts, current.supporting_acts],
+      ["lineup", next.supporting_acts, current.supporting_acts],
+      ["showFormat", next.show_format, storedShowFormat(current)],
+      ["endDate", next.end_date, current.end_date || ""],
       ["tour", next.tour, current.tour],
       ["experienceType", next.experience_type, current.experience_type],
     ].some(([field, nextValue, currentValue]) => has(field) && nextValue !== currentValue);
@@ -7505,14 +7551,17 @@ export const routes = {
         addsOnlineVideo: legacyAddsOnlineVideo,
         publishesMedia: legacyPublishesMedia,
       });
-      const updated = db.prepare(`UPDATE posts SET artist=?,venue=?,city=?,date=?,overall=?,band=?,room=?,dims=?,review=?,photos=?,photos_public=?,landing_showcase=?,campaign=?,setlist=?,tour=?,tags=?,tagged_user_ids=?,song=?,playlist=?,artist_key=?,artist_mbid=?,venue_key=?,experience_type=?,online_title=?,youtube_url=?,youtube_video_id=?,updated_at=?,event_address=?,supporting_acts=?
+      const updated = db.prepare(`UPDATE posts SET artist=?,venue=?,city=?,date=?,overall=?,band=?,room=?,dims=?,review=?,photos=?,photos_public=?,landing_showcase=?,campaign=?,setlist=?,tour=?,tags=?,tagged_user_ids=?,song=?,playlist=?,artist_key=?,artist_mbid=?,venue_key=?,experience_type=?,online_title=?,youtube_url=?,youtube_video_id=?,updated_at=?,event_address=?,supporting_acts=?,show_format=?,end_date=?
         WHERE id=? AND user_id=? AND removed=0 AND COALESCE(updated_at,created_at)=?`)
         .run(next.artist, next.venue, next.city, next.date, next.overall, next.band, next.room, next.dims, next.review, next.photos, next.photos_public, next.landing_showcase, next.campaign, next.setlist, next.tour, next.tags, JSON.stringify(transactionTaggedUserIds), next.song, next.playlist,
           editBinding.artist_key, editBinding.artist_mbid, current.kind === "status" || next.experience_type === "online" ? null : venueBinding(next.venue),
           current.kind === "status" ? "in_person" : next.experience_type, current.kind === "status" ? null : next.online_title,
           current.kind === "status" ? null : next.youtube_url, current.kind === "status" ? null : next.youtube_video_id,
           editedAt, current.kind === "status" ? null : next.event_address || null,
-          current.kind === "status" || next.experience_type === "online" ? "[]" : next.supporting_acts || "[]", current.id, u.id, currentVersion);
+          current.kind === "status" || next.experience_type === "online" ? "[]" : next.supporting_acts || "[]",
+          current.kind === "status" || next.experience_type === "online" ? "headline" : next.show_format,
+          current.kind === "status" || next.experience_type === "online" || next.show_format !== "festival" ? "" : next.end_date || "",
+          current.id, u.id, currentVersion);
       if (Number(updated.changes || 0) !== 1) {
         throw new ApiError(409, "This review changed on another screen. Refresh before saving again.", "CONFLICT");
       }
@@ -7612,7 +7661,7 @@ export const routes = {
         // retry can never resurrect this irreversibly deleted post.
         db.prepare(`UPDATE posts SET removed=1,artist='',venue='',city='',event_address=NULL,date='',overall=0,
           band=NULL,room=NULL,dims='{}',review='',photos='[]',photos_public=0,landing_showcase=0,campaign=NULL,
-          setlist='[]',supporting_acts='[]',tour=NULL,tags='[]',tagged_user_ids='[]',song=NULL,playlist=NULL,artist_key=NULL,artist_mbid=NULL,
+          setlist='[]',supporting_acts='[]',show_format='headline',end_date='',tour=NULL,tags='[]',tagged_user_ids='[]',song=NULL,playlist=NULL,artist_key=NULL,artist_mbid=NULL,
           venue_key=NULL,experience_type='in_person',online_title=NULL,youtube_url=NULL,youtube_video_id=NULL,
           client_mutation_hash=NULL${postAttendanceTicketScrubSql},updated_at=?
           WHERE id=? AND user_id=?`).run(now(), post.id, u.id);
@@ -9808,9 +9857,14 @@ export const routes = {
       const artist = resolveCatalogArtistReference(key);
       return artist && artistCatalogVisibleTo(db, artist, ctx?.user) ? artist : null;
     } }),
-  // Openers and "times seen" on concert reviews (server/supportingActs.js).
+  // Lineups, "times seen", and artist pages' sets on other bills (server/supportingActs.js).
   ...concertLineupRoutes({ database: db, ApiError, requireUser, rateLimit: limit, clean, cleanDate, artistLimit: LIMITS.artist,
-    catalogKeyExists: (key) => !!artistStmts.byNorm.get(key) }),
+    catalogKeyExists: (key) => !!artistStmts.byNorm.get(key), normName,
+    artistNameForKey: (key) => artistStmts.byNorm.get(key)?.name || null,
+    projectAuthor: (id) => {
+      const row = q.userById.get(id);
+      return row ? publicUser(row) : null;
+    } }),
   // Owner-chosen news stories: free to browse, one metered Claude call per draft.
   ...newsDeskEditorRoutes({ editor: createNewsDeskEditor({ database: db, now }), database: db, ApiError, requireAdmin, rateLimit: limit, now }),
   // Live coverage for big nights: outlet headlines plus owner updates, no Claude.

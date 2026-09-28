@@ -18,7 +18,8 @@ import SheetHeader from "../components/SheetHeader";
 import DatePicker from "../components/DatePicker";
 import ShowLineupFields from "../components/ShowLineupFields";
 import { fetchSeenCount } from "../lib/seenCountApi";
-import { supportingActNames } from "../domain/supportingActs.mjs";
+import { adaptLineupToFormat, cleanShowFormat, festivalDays, lineupFromPost, SHOW_FORMAT_LABELS, SHOW_FORMATS } from "../domain/lineup.mjs";
+import { fetchLineupSuggestions } from "../lib/lineupApi";
 import ConcertLocationFields from "../components/ConcertLocationFields";
 import { isDurableMediaUrl, reportMediaPickerError } from "../lib/mediaUpload";
 import { api } from "../lib/api";
@@ -100,6 +101,12 @@ import {
 } from "../domain/onlineReview.mjs";
 
 const GROUP_COLOR = { "THE BAND": colors.amber, "THE ROOM": colors.cool, "THE NIGHT": colors.magenta };
+const SHOW_FORMAT_A11Y = { headline: "A concert with one headliner", co_headline: "A co-headline show", festival: "A festival" };
+const SHOW_FORMAT_HINTS = {
+  headline: "One headliner, plus any openers.",
+  co_headline: "Two or more headliners sharing the bill, like a joint tour.",
+  festival: "A festival, one day or several. Add each set you caught, with the day it played.",
+};
 const GROUPS = ["THE BAND", "THE ROOM", "THE NIGHT"];
 const submissionId = () => `post_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 
@@ -273,8 +280,16 @@ export default function LogScreen({
   const [tour, setTour] = useState(initialExperienceType === ONLINE_REVIEW_EXPERIENCE ? "" : editing?.tour || prefill?.tour || "");
   // Openers or other acts seen that night, and "times seen": null while the
   // count is automatic; the server counts the automatic number.
-  const [supportingActs, setSupportingActs] = useState(() => (initialExperienceType === ONLINE_REVIEW_EXPERIENCE ? []
-    : supportingActNames(editing?.supportingActs || prefill?.supportingActs, { mainArtist: editing?.artist || prefill?.artist || "" })));
+  // The show's format and lineup: openers, other headliners or festival sets,
+  // each with the person's own rating and note (src/domain/lineup.mjs).
+  const [showFormat, setShowFormat] = useState(() => cleanShowFormat(editing?.showFormat || prefill?.showFormat));
+  const [endDate, setEndDate] = useState(() => editing?.endDate || prefill?.endDate || "");
+  const [showEndDate, setShowEndDate] = useState(false);
+  const [lineup, setLineup] = useState(() => (initialExperienceType === ONLINE_REVIEW_EXPERIENCE ? [] : lineupFromPost(editing || prefill || {})));
+  const [lineupSuggestions, setLineupSuggestions] = useState([]);
+  const effectiveFormat = isOnlineReview ? "headline" : showFormat;
+  const isFestival = effectiveFormat === "festival";
+  const isCoHeadline = effectiveFormat === "co_headline";
   const [timesSeen, setTimesSeen] = useState(null);
   const [automaticTimesSeen, setAutomaticTimesSeen] = useState(null);
   const [onlineTitle, setOnlineTitle] = useState(editing?.onlineTitle || editing?.online_title || prefill?.onlineTitle || prefill?.online_title || "");
@@ -333,7 +348,8 @@ export default function LogScreen({
     artistDirectoryRef.current.cancel();
     setArtistDirectoryLoading(false);
     setArtistSearchNotice("");
-    if (artistPicked || artistAttaching || q.length < 2) {
+    // A festival's name is not an artist, so it is never searched or linked.
+    if (artistPicked || artistAttaching || q.length < 2 || isFestival) {
       setArtistHits([]);
       setArtistLoading(false);
       setArtistError("");
@@ -366,7 +382,7 @@ export default function LogScreen({
       task.finish();
     }), 320);
     return () => { clearTimeout(id); controller.abort(); task.finish(); };
-  }, [artist, artistAttaching, artistPicked, session?.id]);
+  }, [artist, artistAttaching, artistPicked, session?.id, isFestival]);
   useEffect(() => () => artistAttachRef.current.controller?.abort(), []);
 
   const searchBeyondCatalogue = async () => {
@@ -764,6 +780,16 @@ export default function LogScreen({
     today: todayStr,
   }));
   const [showDate, setShowDate] = useState(false);
+
+  const chooseShowFormat = (nextValue) => {
+    const next = cleanShowFormat(nextValue);
+    if (next === showFormat) return;
+    setShowFormat(next);
+    setLineup((acts) => adaptLineupToFormat(acts, next));
+    setPostError("");
+    // Sets are rated one by one at a festival, so band scores do not apply.
+    if (next === "festival") setDims((current) => ({ ...current, performance: 0, setlist: 0 }));
+  };
 
   const chooseReviewExperience = (nextValue) => {
     const next = normalizeReviewExperienceType(nextValue);
@@ -1194,7 +1220,13 @@ export default function LogScreen({
     : isOnlineReview
       ? artist.trim() && onlineRating > 0 && youtubeUrlValid
       : artist.trim() && (venue.trim() || city.trim()) && (!eventAddress.trim() || city.trim()) && computed.overall > 0;
-  const canPost = !!canPostBase && pendingMediaAssets.length === 0;
+  // The last day of a festival, and the second headliner of a co-headline show.
+  const festivalSpanDays = isFestival && date && endDate ? Math.round((Date.parse(`${endDate}T00:00:00Z`) - Date.parse(`${date}T00:00:00Z`)) / 86_400_000) : 0;
+  const lineupProblem = isStatus || isOnlineReview ? ""
+    : isFestival && endDate && (!date || festivalSpanDays < 0 || festivalSpanDays >= 14) ? "Pick the festival's first day, then a last day up to two weeks later."
+      : isCoHeadline && !lineup.some((act) => act.role === "co_headliner") ? "Add the other headliner, or switch to Concert."
+        : "";
+  const canPost = !!canPostBase && !lineupProblem && pendingMediaAssets.length === 0;
   const submitBusy = pickingMedia || uploadingPhotos || resolvingSong || posting || artistAttaching;
   const engagementPrompt = useMemo(() => protectedLegacyMemory || (!isStatus && !isOnlineReview) ? null : composerEngagementPrompt({
     kind: isStatus ? "status" : "review",
@@ -1231,6 +1263,20 @@ export default function LogScreen({
     }, 400);
     return () => { clearTimeout(timer); controller.abort(); };
   }, [isStatus, isOnlineReview, artist, artistPicked, artistKey, date, editing?.id, editing?.artist]);
+  // Acts to offer for the lineup: the show's billing and openers other fans
+  // listed on the same run; for a festival, its billing with each act's day.
+  useEffect(() => {
+    const name = artist.trim();
+    if (isStatus || isOnlineReview || name.length < 2) { setLineupSuggestions([]); return undefined; }
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      fetchLineupSuggestions({ artist: name, artistKey: artistPicked && !isFestival ? artistKey : null, date, venue: venue.trim(), showFormat: effectiveFormat, signal: controller.signal })
+        .then((result) => { if (!controller.signal.aborted) setLineupSuggestions(Array.isArray(result?.suggestions) ? result.suggestions : []); })
+        // architecture: allow-ambiguous-result -- suggestions are a shortcut; typing an act still works
+        .catch(() => { if (!controller.signal.aborted) setLineupSuggestions([]); });
+    }, 600);
+    return () => { clearTimeout(timer); controller.abort(); };
+  }, [isStatus, isOnlineReview, isFestival, artist, artistPicked, artistKey, date, venue, effectiveFormat]);
   const currentDraft = useMemo(() => normalizeComposerDraft({
     id: draftId,
     submissionId: submissionIdRef.current,
@@ -1243,7 +1289,9 @@ export default function LogScreen({
     city,
     eventAddress,
     tour,
-    supportingActs,
+    showFormat,
+    endDate,
+    lineup,
     timesSeen,
     date,
     onlineTitle,
@@ -1262,7 +1310,7 @@ export default function LogScreen({
     photosPublic,
     landingShowcase: !isOnlineReview && photosPublic && landingShowcase && hasLandingCompatiblePhoto,
     panels: { song: showSong, photos: showPhotos, people: !isStatus && !isOnlineReview && showPeople },
-  }), [draftId, postType, isStatus, isOnlineReview, campaign, experienceType, artist, artistPicked, artistKey, venue, city, eventAddress, tour, supportingActs, timesSeen, date, onlineTitle, youtubeUrl, onlineRating, dims, review, taggedPeople, song, songUrl, preservedPlaylist, photos, draftMediaProject, photosPublic, landingShowcase, hasLandingCompatiblePhoto, showSong, showPhotos, showPeople]);
+  }), [draftId, postType, isStatus, isOnlineReview, campaign, experienceType, artist, artistPicked, artistKey, venue, city, eventAddress, tour, showFormat, endDate, lineup, timesSeen, date, onlineTitle, youtubeUrl, onlineRating, dims, review, taggedPeople, song, songUrl, preservedPlaylist, photos, draftMediaProject, photosPublic, landingShowcase, hasLandingCompatiblePhoto, showSong, showPhotos, showPeople]);
   const draftFingerprint = useMemo(() => composerDraftFingerprint(currentDraft), [currentDraft]);
   const hasContent = useMemo(() => composerDraftHasContent(currentDraft), [currentDraft]);
   const hasPendingMedia = pendingMediaAssets.length > 0;
@@ -1404,7 +1452,8 @@ export default function LogScreen({
       .filter((asset) => asset.status !== "ready" && (asset.durableLocalUri || asset.assetId))
       .map((asset, index) => originalMediaProjectAsset(asset, index));
     const restoredReady = restoredProject.assets.filter((asset) => !!asset.sourceUrl && !restoredPending.some((pending) => pending.id === asset.id));
-    setTour(restored.tour); setSupportingActs(restored.supportingActs); setTimesSeen(restored.timesSeen); setDate(restored.experienceType === ONLINE_REVIEW_EXPERIENCE ? "" : restoredComposerDate(restored.date)); setOnlineTitle(restored.onlineTitle); setYoutubeUrl(restored.youtubeUrl); setOnlineRating(restored.onlineRating); setDims(restored.dims); setReview(restored.review); setTaggedPeople(restored.postType === "show" && restored.experienceType !== ONLINE_REVIEW_EXPERIENCE ? restored.taggedPeople : []); setSong(restored.song); setSongUrl(restored.songUrl); setPreservedPlaylist(restored.playlist); setPhotos(restoredPhotos); setMediaProject(normalizeMediaProject({ assets: restoredReady })); setPendingMediaAssets(restoredPending); setPhotosPublic(restored.photosPublic); setLandingShowcase(restored.landingShowcase && hasLandingCompatibleImage(restoredPhotos));
+    setTour(restored.tour); setShowFormat(restored.showFormat); setEndDate(restored.endDate);
+    setLineup(lineupFromPost({ artist: restored.artist, showFormat: restored.showFormat, lineup: restored.lineup })); setTimesSeen(restored.timesSeen); setDate(restored.experienceType === ONLINE_REVIEW_EXPERIENCE ? "" : restoredComposerDate(restored.date)); setOnlineTitle(restored.onlineTitle); setYoutubeUrl(restored.youtubeUrl); setOnlineRating(restored.onlineRating); setDims(restored.dims); setReview(restored.review); setTaggedPeople(restored.postType === "show" && restored.experienceType !== ONLINE_REVIEW_EXPERIENCE ? restored.taggedPeople : []); setSong(restored.song); setSongUrl(restored.songUrl); setPreservedPlaylist(restored.playlist); setPhotos(restoredPhotos); setMediaProject(normalizeMediaProject({ assets: restoredReady })); setPendingMediaAssets(restoredPending); setPhotosPublic(restored.photosPublic); setLandingShowcase(restored.landingShowcase && hasLandingCompatibleImage(restoredPhotos));
     void recoverRestoredMedia(restoredPending, restored.id);
     setShowSong(restored.panels.song); setShowPhotos(restored.panels.photos); setShowPeople(restored.postType === "show" && restored.experienceType !== ONLINE_REVIEW_EXPERIENCE && (restored.panels.people || restored.taggedPeople.length > 0));
   };
@@ -1612,7 +1661,7 @@ export default function LogScreen({
           : { name: "You", handle: "you", initials: "YOU" }),
         timeAgo: editing?.timeAgo || "now",
         artist: artist.trim(),
-        artistKey: artistPicked ? artistKey : null,
+        artistKey: artistPicked && !isFestival ? artistKey : null,
         ...(isOnlineReview ? {
           experienceType: ONLINE_REVIEW_EXPERIENCE,
           onlineTitle: onlineTitle.trim() || null,
@@ -1622,8 +1671,11 @@ export default function LogScreen({
           venue: venue.trim(),
           city: city.trim(),
           eventAddress: eventAddress.trim(),
-          tour: tour.trim() || null,
-          supportingActs,
+          tour: isFestival ? null : tour.trim() || null,
+          showFormat: effectiveFormat,
+          endDate: isFestival && endDate > date ? endDate : "",
+          // A set's day must fall inside the festival's dates.
+          lineup: lineup.map((act) => (isFestival && !festivalDays(date, endDate).includes(act.day) ? { ...act, day: null } : act)),
           ...(timesSeen ? { timesSeen } : {}),
           date,
           overall: submittedRatings.overall,
@@ -1852,16 +1904,29 @@ export default function LogScreen({
             <Text style={[styles.experienceModeText, isOnlineReview && styles.experienceModeTextOn]}>Watched online</Text>
           </Pressable>
         </View>
-        <Text style={styles.fieldLabel}>{isOnlineReview ? "WHO DID YOU WATCH?" : "WHO DID YOU SEE?"}</Text>
+        {!isOnlineReview ? <>
+          <Text style={styles.fieldLabel}>WHAT KIND OF SHOW?</Text>
+          <View style={styles.experienceModeRow} accessibilityRole="tablist">
+            {SHOW_FORMATS.map((format) => {
+              const on = effectiveFormat === format;
+              return <Pressable key={format} style={[styles.experienceModeButton, on && styles.experienceModeButtonOn]} onPress={() => chooseShowFormat(format)}
+                disabled={submitBusy} accessibilityRole="tab" accessibilityState={{ selected: on, disabled: submitBusy }} accessibilityLabel={SHOW_FORMAT_A11Y[format]}>
+                <Text style={[styles.experienceModeText, on && styles.experienceModeTextOn]} numberOfLines={1}>{SHOW_FORMAT_LABELS[format]}</Text>
+              </Pressable>;
+            })}
+          </View>
+          <Text style={styles.formatHint}>{SHOW_FORMAT_HINTS[effectiveFormat]}</Text>
+        </> : null}
+        <Text style={styles.fieldLabel}>{isOnlineReview ? "WHO DID YOU WATCH?" : isFestival ? "WHICH FESTIVAL?" : isCoHeadline ? "FIRST HEADLINER" : "WHO DID YOU SEE?"}</Text>
         <View>
           <TextInput
             style={styles.input}
-            placeholder="Artist"
+            placeholder={isFestival ? "e.g. Rolling Loud Miami, Lollapalooza" : "Artist"}
             placeholderTextColor={colors.textFaint}
             value={artist}
             onChangeText={changeArtistText}
             autoCapitalize="words"
-            accessibilityLabel="Artist"
+            accessibilityLabel={isFestival ? "Festival name" : "Artist"}
             accessibilityState={{ busy: artistLoading || artistDirectoryLoading || artistAttaching }}
           />
           {artistHits.length > 0 && (
@@ -1885,7 +1950,7 @@ export default function LogScreen({
             </View>
           )}
           {artistLoading && <Text style={styles.lookupStatus} accessibilityLiveRegion="polite">Searching artists...</Text>}
-          {!artistPicked && !artistAttaching && artist.trim().length >= 3 && (
+          {!artistPicked && !artistAttaching && !isFestival && artist.trim().length >= 3 && (
             <Button title={artistDirectoryRetryAt > Date.now() ? "Try directory again shortly" : "Search beyond catalogue"}
               variant="secondary" small loading={artistDirectoryLoading}
               disabled={artistLoading || artistDirectoryRetryAt > Date.now()}
@@ -1896,7 +1961,7 @@ export default function LogScreen({
           {!!artistSearchNotice && <Text style={styles.lookupStatus} accessibilityLiveRegion="polite">{artistSearchNotice}</Text>}
           {artistAttaching && <Text style={styles.lookupStatus} accessibilityLiveRegion="polite">Adding this artist to the post...</Text>}
           {!!artistError && <Text style={styles.lookupError} accessibilityLiveRegion="assertive">{artistError}</Text>}
-          {artistPicked && !!artist.trim() && (
+          {artistPicked && !isFestival && !!artist.trim() && (
             <View style={styles.linked}><Icon name="check" size={12} color={colors.good} /><Text style={styles.linkedTxt}>{artist.trim()} linked. This review can be considered for the artist page.</Text></View>
           )}
         </View>
@@ -1985,6 +2050,7 @@ export default function LogScreen({
           </View>
         ) : null}
 
+        {!isFestival ? <>
         <Text style={styles.fieldLabel}>TOUR OR SPECIAL EVENT <Text style={styles.optional}>optional</Text></Text>
         <TextInput style={styles.input} placeholder="e.g. CHROMAKOPIA Tour, OVO Fest" placeholderTextColor={colors.textFaint} value={tour} onChangeText={setTour} maxLength={80} accessibilityLabel="Tour or special event name" />
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.presets} keyboardShouldPersistTaps="handled">
@@ -1997,7 +2063,8 @@ export default function LogScreen({
             );
           })}
         </ScrollView>
-        <Text style={[styles.fieldLabel, { marginTop: 18 }]}>WHEN? <Text style={styles.optional}>optional</Text></Text>
+        </> : null}
+        <Text style={[styles.fieldLabel, { marginTop: 18 }]}>{isFestival ? "FIRST DAY" : "WHEN?"} <Text style={styles.optional}>optional</Text></Text>
         <Pressable style={styles.dateBtn} onPress={() => setShowDate((s) => !s)} accessibilityRole="button" accessibilityLabel="Choose concert date" accessibilityState={{ expanded: showDate }}>
           <Icon name="calendar" size={16} color={colors.amber} />
           <Text style={styles.dateTxt}>{!date ? "Date not remembered" : date === todayStr ? "Today" : formatDate(date, date)}</Text>
@@ -2016,12 +2083,32 @@ export default function LogScreen({
           </View>
         )}
 
-        <ShowLineupFields artist={artist} acts={supportingActs} onActsChange={setSupportingActs}
-          timesSeen={timesSeen} automaticTimesSeen={automaticTimesSeen} onTimesSeenChange={setTimesSeen} searchArtists={searchOpenerArtists}
-          festival={/\bfest(ival)?s?\b/iu.test(`${tour} ${officialEventName || ""}`)} />
+        {isFestival && date ? <>
+          <Text style={[styles.fieldLabel, { marginTop: 14 }]}>LAST DAY <Text style={styles.optional}>for a multi-day festival</Text></Text>
+          <Pressable style={styles.dateBtn} onPress={() => setShowEndDate((open) => !open)} accessibilityRole="button" accessibilityLabel="Choose the festival's last day" accessibilityState={{ expanded: showEndDate }}>
+            <Icon name="calendar" size={16} color={colors.amber} />
+            <Text style={styles.dateTxt}>{endDate && endDate > date ? formatDate(endDate, endDate) : "Same day"}</Text>
+            <Icon name={showEndDate ? "chevron-down" : "chevron-right"} size={16} color={colors.textDim} />
+          </Pressable>
+          {endDate && endDate > date ? <View style={styles.dateActions}>
+            <Pressable style={styles.optionalAction} onPress={() => { setEndDate(""); setShowEndDate(false); }} accessibilityRole="button" accessibilityLabel="The festival was one day">
+              <Text style={styles.optionalActionText}>One day only</Text>
+            </Pressable>
+          </View> : null}
+          {showEndDate && (
+            <View style={styles.datePickerWrap}>
+              <DatePicker value={endDate || date} years={PAST_YEARS} defaultYear={Number(date.slice(0, 4)) || today.getFullYear()} newestFirst onChange={setEndDate} />
+            </View>
+          )}
+        </> : null}
+        {lineupProblem ? <Text style={styles.lookupError} accessibilityLiveRegion="polite">{lineupProblem}</Text> : null}
+
+        <ShowLineupFields artist={artist} showFormat={effectiveFormat} date={date} endDate={isFestival ? endDate : ""} acts={lineup} onActsChange={setLineup}
+          mainRating={dims.performance || 0} onMainRatingChange={(value) => setDim("performance", value)} suggestions={lineupSuggestions}
+          timesSeen={timesSeen} automaticTimesSeen={automaticTimesSeen} onTimesSeenChange={setTimesSeen} searchArtists={searchOpenerArtists} />
 
         <View style={styles.quickRatingCard}>
-          <Text style={styles.onlineRatingLabel}>HOW WAS THE SHOW?</Text>
+          <Text style={styles.onlineRatingLabel}>{isFestival ? "HOW WAS THE FESTIVAL?" : "HOW WAS THE SHOW?"}</Text>
           <View style={styles.quickRatingRow}>
             <TapStars value={dims.experience} onChange={(value) => setDim("experience", value)} size={32} gap={5} color={colors.amber} />
             <Text style={styles.onlineRatingValue}>{dims.experience ? dims.experience.toFixed(1) : "—"}</Text>
@@ -2031,10 +2118,12 @@ export default function LogScreen({
         </View>
 
         <Text style={[styles.fieldLabel, { marginTop: 18 }]}>BAND, ROOM & CROWD <Text style={styles.optional}>optional</Text></Text>
-        {GROUPS.map((g) => (
+        {/* A festival rates each set in the lineup; a co-headline show rates
+            the first headliner there too. */}
+        {GROUPS.filter((g) => !(isFestival && g === "THE BAND")).map((g) => (
           <View key={g} style={styles.group}>
             <Text style={[styles.groupLabel, { color: GROUP_COLOR[g] }]}>{g}</Text>
-            {RATING_DIMS.filter((d) => d.group === g && d.key !== "experience").map((d) => (
+            {RATING_DIMS.filter((d) => d.group === g && d.key !== "experience" && !(isCoHeadline && d.key === "performance")).map((d) => (
               <View key={d.key} style={styles.factorRow}>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.factorLabel}>{d.label}</Text>
@@ -2371,6 +2460,7 @@ export default function LogScreen({
 
 const styles = StyleSheet.create({
   quickLogHint: { color: colors.textDim, fontSize: 13, lineHeight: 20, marginBottom: 18 },
+  formatHint: { color: colors.textFaint, fontSize: 12, lineHeight: 17, marginTop: -6, marginBottom: 14 },
   detailHint: { color: colors.textDim, fontSize: 12, lineHeight: 18, marginTop: 6 },
   optionalAction: { minHeight: 44, justifyContent: "center", paddingVertical: 8 },
   optionalActionText: { color: colors.textDim, fontSize: 12, lineHeight: 18, textDecorationLine: "underline" },

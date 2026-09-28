@@ -6,6 +6,7 @@ import { composerDraftFingerprint, normalizeComposerDraft } from "../domain/comp
 import { hasDetailedComposerRatings, restoredComposerDate } from "../domain/composerLogDetails.mjs";
 import { normalizeMediaProject, originalMediaProjectAsset } from "../domain/mediaProject.mjs";
 import { normalizeReviewExperienceType, ONLINE_REVIEW_EXPERIENCE } from "../domain/onlineReview.mjs";
+import { festivalDays, lineupFromPost } from "../domain/lineup.mjs";
 
 const source = readFileSync(new URL("./LogScreen.jsx", import.meta.url), "utf8");
 const ast = parse(source, { sourceType: "module", plugins: ["jsx"] });
@@ -28,10 +29,10 @@ function callback(name, bindings) {
 
 test("real draft restoration preserves unknown date, city-only location, sparse ratings, friends and media", () => {
   const values = {};
-  const setters = ["DraftId", "SavedDraftFingerprint", "PostType", "Campaign", "ExperienceType", "Artist", "ArtistPicked", "ArtistKey", "Venue", "VenuePicked", "City", "EventAddress", "Tour", "SupportingActs", "TimesSeen", "Date", "OnlineTitle", "YoutubeUrl", "OnlineRating", "Dims", "Review", "TaggedPeople", "Song", "SongUrl", "PreservedPlaylist", "Photos", "MediaProject", "PendingMediaAssets", "PhotosPublic", "LandingShowcase", "ShowDetailedRatings", "ShowTour", "ShowSong", "ShowPhotos", "ShowPeople"];
+  const setters = ["DraftId", "SavedDraftFingerprint", "PostType", "Campaign", "ExperienceType", "Artist", "ArtistPicked", "ArtistKey", "Venue", "VenuePicked", "City", "EventAddress", "Tour", "ShowFormat", "EndDate", "Lineup", "TimesSeen", "Date", "OnlineTitle", "YoutubeUrl", "OnlineRating", "Dims", "Review", "TaggedPeople", "Song", "SongUrl", "PreservedPlaylist", "Photos", "MediaProject", "PendingMediaAssets", "PhotosPublic", "LandingShowcase", "ShowDetailedRatings", "ShowTour", "ShowSong", "ShowPhotos", "ShowPeople"];
   const bindings = {
     normalizeComposerDraft, composerDraftFingerprint, restoredComposerDate, hasDetailedComposerRatings,
-    normalizeMediaProject, originalMediaProjectAsset, ONLINE_REVIEW_EXPERIENCE,
+    normalizeMediaProject, originalMediaProjectAsset, ONLINE_REVIEW_EXPERIENCE, lineupFromPost,
     draftIdRef: { current: null }, initialFingerprintRef: { current: null }, submissionIdRef: { current: "new" },
     composerId: "composer", onDraftIdentity: () => {}, isDurableMediaUrl: () => true,
     hasLandingCompatibleImage: () => false, recoverRestoredMedia: (assets) => { values.recovered = assets; },
@@ -44,7 +45,8 @@ test("real draft restoration preserves unknown date, city-only location, sparse 
     photos: ["https://media.example.test/photo.webp"], photosPublic: false,
     supportingActs: ["Muna", "Artist"], timesSeen: 3,
   });
-  assert.deepEqual(values.SupportingActs, ["Muna"], "openers come back without the headliner");
+  assert.deepEqual(values.Lineup.map((act) => [act.name, act.role]), [["Muna", "opener"]], "a draft from before lineups keeps its openers, not the headliner");
+  assert.equal(values.ShowFormat, "headline");
   assert.equal(values.TimesSeen, 3);
   assert.equal(values.Date, "");
   assert.equal(values.Venue, "");
@@ -85,7 +87,9 @@ test("real submission sends unknown details honestly and failed saves keep the d
     submissionIdRef: { current: "same-request" }, photos: [], isDurableMediaUrl: () => true,
     mediaProject: { assets: [] }, mediaProjectSubmissionAssetIds: () => [], mediaProjectPublishedMedia: () => [],
     isStatus: false, isOnlineReview: false, editing: null, artist: "Artist", artistPicked: true, artistKey: "saved-artist",
-    venue: "", city: "Toronto", eventAddress: "", tour: "", supportingActs: ["Muna"], timesSeen: null, date: "", submittedRatings: { overall: 4, band: 0, room: 0 },
+    venue: "", city: "Toronto", eventAddress: "", tour: "", timesSeen: null, date: "", submittedRatings: { overall: 4, band: 0, room: 0 },
+    lineup: [{ name: "Muna", role: "opener", rating: 4, review: "", day: null, stage: null }], showFormat: "headline", endDate: "",
+    effectiveFormat: "headline", isFestival: false, festivalDays,
     dims: { experience: 4, performance: 0 }, photosPublic: false, landingShowcase: false, review: "", taggedPeople: [], song: null,
     onPost: async (post) => { posted.push(post); return posted.length === 1 ? { ok: false, error: new Error("Try again") } : { ok: true }; },
     showPostFailure: (error) => errors.push(error.message),
@@ -101,7 +105,8 @@ test("real submission sends unknown details honestly and failed saves keep the d
   assert.equal(posted[0].room, null);
   assert.equal(posted[0].overall, 4);
   assert.equal(posted[0].artistKey, "saved-artist");
-  assert.deepEqual(posted[0].supportingActs, ["Muna"]);
+  assert.deepEqual(posted[0].lineup.map((act) => [act.name, act.rating]), [["Muna", 4]]);
+  assert.deepEqual([posted[0].showFormat, posted[0].endDate], ["headline", ""]);
   assert.equal(Object.hasOwn(posted[0], "timesSeen"), false, "times seen stays automatic unless changed");
   assert.equal(checkpoints[0].date, "");
   assert.deepEqual(deleted, []);
@@ -112,7 +117,7 @@ test("real submission sends unknown details honestly and failed saves keep the d
 });
 
 test("optional details stay visible without disclosures and retain clear-to-unknown controls", () => {
-  assert.match(source, /\{GROUPS\.map/);
+  assert.match(source, /\{GROUPS\.filter\(\(g\) => !\(isFestival && g === "THE BAND"\)\)\.map/);
   assert.doesNotMatch(source, /showDetailedRatings|showTour|detailDisclosure/);
   assert.match(source, /TOUR OR SPECIAL EVENT/);
   assert.doesNotMatch(source, /<ConcertLocationFields[^>]*\bcompact\b/);
