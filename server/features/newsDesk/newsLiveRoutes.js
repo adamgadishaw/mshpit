@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { addLiveNote, endLiveEvent, NewsLiveError, publicLiveCoverage, removeLiveNote, startLiveEvent } from "./newsLive.js";
+import { addLiveNote, endLiveEvent, liveEventBySlug, markLiveWinner, NewsLiveError, publicLiveCoverage, removeLiveNote, setLiveCategories, staffLiveCoverage, startLiveEvent } from "./newsLive.js";
 
 // Live coverage (newsLive.js): a public timeline, and owner/admin controls to
 // start it, post short updates, remove one, and end it. No Claude calls.
@@ -35,7 +35,7 @@ export function newsLiveRoutes({ database, ApiError, requireAdmin, rateLimit, no
       }
     }
   };
-  const staffView = () => ({ live: publicLiveCoverage(database, { at: now() }).events });
+  const staffView = () => ({ live: staffLiveCoverage(database, { at: now() }) });
 
   return {
     "GET /api/news-desk/live": (ctx) => {
@@ -43,10 +43,18 @@ export function newsLiveRoutes({ database, ApiError, requireAdmin, rateLimit, no
       ctx.setHeader?.("Cache-Control", "public, max-age=30");
       return publicLiveCoverage(database, { at: now() });
     },
+    // One event's full page in the app (/news/live/<slug>), live or not.
+    "GET /api/news-desk/live/:slug": (ctx) => {
+      rateLimit(ctx, "news-live", 240, 600_000);
+      ctx.setHeader?.("Cache-Control", "public, max-age=30");
+      const event = liveEventBySlug(database, String(ctx.params?.slug || "").toLowerCase(), { at: now() });
+      if (!event) throw new ApiError(404, "That coverage is not available.", "NOT_FOUND");
+      return { event };
+    },
     "POST /api/moderation/news-desk/live": (ctx) => run(() => {
       const actor = writer(ctx);
-      const { title, keywords, hours } = body(ctx, ["title", "keywords", "hours"]);
-      const event = startLiveEvent(database, { title, keywords, hours, actorId: actor.id, at: now() });
+      const { title, keywords, hours, startsAt } = body(ctx, ["title", "keywords", "hours", "startsAt"]);
+      const event = startLiveEvent(database, { title, keywords, hours, startsAt: startsAt ?? null, actorId: actor.id, at: now() });
       record(ctx, actor, "news_live_started", event.id, event.title);
       console.log(`[news-desk] live coverage started: "${event.title}" until ${new Date(event.ends_at).toISOString()}`);
       return staffView();
@@ -56,6 +64,24 @@ export function newsLiveRoutes({ database, ApiError, requireAdmin, rateLimit, no
       const { text, url } = body(ctx, ["text", "url"]);
       const noteId = addLiveNote(database, String(ctx.params?.id || ""), { text, url: url || null, actorId: actor.id, at: now() });
       record(ctx, actor, "news_live_update", noteId, text);
+      return staffView();
+    }),
+    "POST /api/moderation/news-desk/live/:id/categories": (ctx) => run(() => {
+      const actor = writer(ctx);
+      const { text } = body(ctx, ["text"]);
+      if (typeof text !== "string" || text.length > 20_000) throw new ApiError(400, "Paste the categories as text, up to 20,000 characters.", "VALIDATION_FAILED");
+      const count = setLiveCategories(database, String(ctx.params?.id || ""), text, { at: now() });
+      record(ctx, actor, "news_live_categories", String(ctx.params?.id || ""), `${count} categories`);
+      return staffView();
+    }),
+    "POST /api/moderation/news-desk/live/:id/categories/:categoryId/winner": (ctx) => run(() => {
+      const actor = writer(ctx);
+      const { nominee } = body(ctx, ["nominee"]);
+      if (nominee !== null && (typeof nominee !== "string" || !nominee.trim() || nominee.length > 160)) {
+        throw new ApiError(400, "Pick a nominee, or clear the winner.", "VALIDATION_FAILED");
+      }
+      const winner = markLiveWinner(database, String(ctx.params?.id || ""), String(ctx.params?.categoryId || ""), nominee, { actorId: actor.id, at: now() });
+      record(ctx, actor, winner ? "news_live_winner" : "news_live_winner_cleared", String(ctx.params?.categoryId || ""), winner || "cleared");
       return staffView();
     }),
     "POST /api/moderation/news-desk/live/:id/end": (ctx) => run(() => {

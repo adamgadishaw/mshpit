@@ -1228,6 +1228,14 @@ export function buildSitemapDatasets(database, { now = Date.now() } = {}) {
   // shows up in Search Console as "Excluded by noindex". Same read as the page.
   const newsStories = createNewsDeskReader(database, { ensureSchema: false }).list({ limit: 40 }).stories;
   if (newsStories.length >= NEWS_INDEX_MIN_ITEMS) pages.push({ path: "/news" });
+  // Live coverage pages with a winners list (award shows): indexable, and
+  // worth a crawl while the night and the morning-after searches are on.
+  if (database.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='news_live_categories'").get()) {
+    for (const row of database.prepare(`SELECT e.slug, MAX(COALESCE(c.announced_at,c.updated_at)) AS lastmod FROM news_live_events e
+      JOIN news_live_categories c ON c.event_id=e.id WHERE e.starts_at<=? GROUP BY e.id ORDER BY e.starts_at DESC LIMIT 200`).all(candidates.generatedAt)) {
+      if (/^[a-z0-9-]{1,80}$/u.test(row.slug)) pages.push({ path: `/news/live/${row.slug}`, lastmod: row.lastmod });
+    }
+  }
   const cities = [...citySitemapEntries({ candidates, venueEntries: venues, concerts }), ...guideCities];
   const artistArchives = artistArchiveSitemapEntries({ artistEntries: artists, concerts });
   const datasets = new Map([

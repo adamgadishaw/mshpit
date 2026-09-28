@@ -11,6 +11,8 @@ import { localCalendarIso } from "../../domain/dates.mjs";
 import { colors, displayFont, radius, space } from "../../theme";
 import NewsStoryCard from "./NewsStoryCard";
 import useNewsDeskStories from "./useNewsDeskStories";
+import LiveEventPanel from "./LiveEventPanel";
+import LiveCoverageCard from "./LiveCoverageCard";
 
 // The News screen and the artist-page update rows share this lazy chunk.
 // "Music news" is the Mshpit News desk: stories independent outlets confirmed.
@@ -70,7 +72,8 @@ export function NewsCard({ item, onOpenArtist, showArtist = true }) {
 }
 
 // The full News screen: confirmed music news, or updates from your artists.
-export function NewsScreen({ session = null, onClose, onOpenArtist, onOpenProfile, onReport, onOpenStory, onRequireAuth }) {
+// `liveSlug` (from /news/live/<slug>) opens with that event's full coverage.
+export function NewsScreen({ session = null, liveSlug = null, onClose, onOpenArtist, onOpenProfile, onReport, onOpenStory, onRequireAuth }) {
   const [scope, setScope] = useState("news");
   const news = useNewsDeskStories({ enabled: scope === "news", limit: 20 });
   const [state, setState] = useState({ status: "loading", items: [], cursor: null });
@@ -105,6 +108,7 @@ export function NewsScreen({ session = null, onClose, onOpenArtist, onOpenProfil
       </View>
       {scope === "news" ? (
         <ScrollView contentContainerStyle={styles.content}>
+          {liveSlug ? <LiveEventPanel slug={liveSlug} /> : <View style={{ marginBottom: space(3) }}><LiveCoverageCard /></View>}
           {news.status === "loading" && !news.stories.length ? <ActivityIndicator color={colors.amber} style={{ marginTop: space(10) }} /> : null}
           {news.status === "error" ? (
             <View style={styles.panel}>

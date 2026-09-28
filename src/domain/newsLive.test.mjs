@@ -32,3 +32,18 @@ test("the card says whether it is live and how fresh it is", () => {
   assert.equal(sinceText(NOW - 20_000, NOW), "just now");
   assert.equal(sinceText(NOW - 90 * 60_000, NOW), "2 hours ago");
 });
+
+test("winners arrive cleaned, with the latest first on the card", async () => {
+  const { liveEventFrom, latestWinners, winnersProgressText } = await import("./newsLive.mjs");
+  const event = liveEventFrom({ id: "e1", slug: "2026-mtv-vmas", title: "2026 MTV VMAs", live: true, items: [], winners: { categories: [
+    { id: "c1", name: "Video of the Year", nominees: ["A", "B", 3], winner: "A", announcedAt: 10 },
+    { id: "c2", name: "Best Pop", nominees: ["C"], winner: "C", announcedAt: 30 },
+    { id: "c3", name: "Best Rock", nominees: ["D"], winner: null },
+    { name: "No id" },
+  ] } });
+  assert.equal(event.slug, "2026-mtv-vmas");
+  assert.deepEqual(event.winners.categories[0].nominees, ["A", "B"]);
+  assert.equal(winnersProgressText(event), "2 of 3 categories announced");
+  assert.deepEqual(latestWinners(event).map((category) => category.name), ["Best Pop", "Video of the Year"]);
+  assert.equal(liveEventFrom({ id: "x", title: "Bad slug", slug: "../x" }).slug, null);
+});

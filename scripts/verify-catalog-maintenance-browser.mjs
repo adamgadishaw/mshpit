@@ -126,6 +126,19 @@ async function scenario(browser, origin, width, kind) {
           startsAt: 1789488000000, endsAt: 1789488000000 + 4 * 3600000, updatedAt: 1789488000000, count: 0, items: [] }];
         return await route.fulfill({ contentType: "application/json", body: JSON.stringify({ live: state.newsLive }) });
       }
+      if (url.pathname === "/api/moderation/news-desk/live/live-1/categories") {
+        assert.equal(method, "POST");
+        assert.match(request.postDataJSON().text, /^Video of the Year: Sabrina Carpenter - Manchild; Taylor Swift - Fortnight$/u);
+        state.newsLive[0].winners = { total: 1, announced: 0, categories: [
+          { id: "c1", name: "Video of the Year", nominees: ["Sabrina Carpenter - Manchild", "Taylor Swift - Fortnight"], winner: null, announcedAt: null }] };
+        return await route.fulfill({ contentType: "application/json", body: JSON.stringify({ live: state.newsLive }) });
+      }
+      if (url.pathname === "/api/moderation/news-desk/live/live-1/categories/c1/winner") {
+        assert.deepEqual(request.postDataJSON(), { nominee: "Sabrina Carpenter - Manchild" });
+        Object.assign(state.newsLive[0].winners.categories[0], { winner: "Sabrina Carpenter - Manchild", announcedAt: 1789488000000 });
+        state.newsLive[0].winners.announced = 1;
+        return await route.fulfill({ contentType: "application/json", body: JSON.stringify({ live: state.newsLive }) });
+      }
       if (url.pathname.startsWith("/api/moderation/news-desk/editor")) {
         if (method === "POST" && url.pathname.endsWith("/drafts")) {
           assert.deepEqual(request.postDataJSON(), { reportUrls: ["https://www.nme.com/news/tour", "https://www.stereogum.com/tour"], links: [] });
@@ -249,6 +262,13 @@ async function scenario(browser, origin, width, kind) {
       await editor.getByText("Live coverage started. It is at the top of the news now.", { exact: true }).waitFor();
       await editor.getByRole("button", { name: "Post the live update", exact: true }).waitFor();
       await editor.getByRole("button", { name: "End live coverage of 2026 MTV VMAs", exact: true }).waitFor();
+      await editor.getByText("Public page: https://www.mshpit.com/news/live/2026-mtv-vmas", { exact: true }).waitFor();
+      await editor.getByLabel("Award categories and nominees", { exact: true }).fill("Video of the Year: Sabrina Carpenter - Manchild; Taylor Swift - Fortnight");
+      await editor.getByRole("button", { name: "Save the award categories", exact: true }).click();
+      await editor.getByText("WINNERS · 0 OF 1 ANNOUNCED", { exact: true }).waitFor();
+      await editor.getByRole("button", { name: "Sabrina Carpenter - Manchild won Video of the Year", exact: true }).click();
+      await editor.getByText("Winner: Sabrina Carpenter - Manchild", { exact: true }).waitFor();
+      await editor.getByRole("button", { name: "Clear the winner of Video of the Year", exact: true }).waitFor();
       // No element screenshot here: capturing an element taller than the
       // window resizes the page in Chromium and remounts Moderation.
     }

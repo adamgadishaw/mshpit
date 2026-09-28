@@ -56,3 +56,24 @@ test("live coverage controls post to the moderation live routes", async () => {
   assert.equal(newsLiveStatus({ live: true, count: 14, endsAt: 1 }, { formatTime }), "Live until 11:30 PM · 14 updates");
   assert.equal(newsLiveStatus({ live: false, count: 1 }), "Ended · 1 update");
 });
+
+test("award categories, winners and scheduled starts go to the live routes", async () => {
+  const { setNewsLiveCategories, markNewsLiveWinner, startNewsLive, categoriesText, parseStartTime, livePageUrl } = await import("./newsDeskEditorApi.mjs");
+  const calls = [];
+  const apiCall = async (path, options) => { calls.push({ path, body: options.body }); return { live: [] }; };
+  await setNewsLiveCategories({ accountId: "admin_1", id: "e1", text: "Video of the Year: A; B" }, { apiCall });
+  await markNewsLiveWinner({ accountId: "admin_1", id: "e1", categoryId: "c1", nominee: "A" }, { apiCall });
+  await markNewsLiveWinner({ accountId: "admin_1", id: "e1", categoryId: "c1", nominee: null }, { apiCall });
+  await startNewsLive({ accountId: "admin_1", title: "2027 Grammys", keywords: "Grammys", hours: "5", startsAt: 1_800_000_000_000 }, { apiCall });
+  assert.deepEqual(calls.map((call) => [call.path, call.body]), [
+    ["/api/moderation/news-desk/live/e1/categories", { text: "Video of the Year: A; B" }],
+    ["/api/moderation/news-desk/live/e1/categories/c1/winner", { nominee: "A" }],
+    ["/api/moderation/news-desk/live/e1/categories/c1/winner", { nominee: null }],
+    ["/api/moderation/news-desk/live", { title: "2027 Grammys", keywords: "Grammys", hours: 5, startsAt: 1_800_000_000_000 }],
+  ]);
+  assert.equal(categoriesText({ winners: { categories: [{ name: "Best Pop", nominees: ["Lorde", "Addison Rae"] }] } }), "Best Pop: Lorde; Addison Rae");
+  assert.equal(parseStartTime(""), null);
+  assert.equal(parseStartTime("2027-02-01 20:00"), new Date(2027, 1, 1, 20, 0).getTime());
+  assert.ok(Number.isNaN(parseStartTime("next friday")));
+  assert.equal(livePageUrl("2026-mtv-vmas"), "https://www.mshpit.com/news/live/2026-mtv-vmas");
+});

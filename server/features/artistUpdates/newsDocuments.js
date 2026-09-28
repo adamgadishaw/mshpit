@@ -61,7 +61,8 @@ const newsStoryPath = (story) => /^news_[A-Za-z0-9_-]{1,160}$/.test(String(story
 
 // /news: stories from the Mshpit News desk, each confirmed by at least two
 // independent music outlets, with links to every outlet's report.
-export function projectNewsDocument({ origin = "https://www.mshpit.com", stories = [], at = Date.now() } = {}) {
+// `live` lists live coverage pages (award shows), newest first.
+export function projectNewsDocument({ origin = "https://www.mshpit.com", stories = [], live = [], at = Date.now() } = {}) {
   const canonicalPath = "/news";
   const canonicalUrl = new URL(canonicalPath, origin).href;
   const shown = (Array.isArray(stories) ? stories : []).filter((story) => story?.headline).slice(0, 40);
@@ -79,7 +80,7 @@ export function projectNewsDocument({ origin = "https://www.mshpit.com", stories
     canonicalPath,
     canonicalUrl,
     indexable: shown.length >= NEWS_INDEX_MIN_ITEMS,
-    news: { stories: shown, at },
+    news: { stories: shown, live: (Array.isArray(live) ? live : []).filter((page) => /^[a-z0-9-]{1,80}$/u.test(String(page?.slug || ""))), at },
     jsonLd: [{
       "@context": "https://schema.org",
       "@type": "CollectionPage",
@@ -140,6 +141,8 @@ export function renderNewsMain(document) {
     <section class="hero"><p class="eyebrow">Mshpit News</p><h1>Music news</h1>
       <p class="hero-copy">Tours, releases, festivals and major artist news. Clear, factual summaries with links to the original reporting. Publishing slots are every three hours from 8 a.m. to 8 p.m. Toronto time, up to five stories a day when qualifying reports are available.</p>
       <div class="actions"><a class="button primary" href="/signup">Join Mshpit</a><a class="button" href="/events">Browse upcoming shows</a></div></section>
+    ${document.news?.live?.length ? `<section class="section news-live-links" aria-labelledby="live-coverage-heading"><h2 id="live-coverage-heading">Live coverage</h2><ul>${document.news.live
+      .map((page) => `<li><a href="/news/live/${esc(page.slug)}">${esc(page.title)}${page.live ? " (live now)" : " winners and updates"}</a></li>`).join("")}</ul></section>` : ""}
     ${stories.length ? `<section class="section news-stories">${stories.map(renderStory).join("")}</section>`
       : `<section class="section empty-state"><h2>No qualifying stories yet.</h2><p>We wait for independent supporting reports rather than publish unsupported claims.</p></section>`}
   </main>`;

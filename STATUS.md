@@ -6,6 +6,41 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-09-27 Award show winners tracker and live coverage pages (SEO)
+
+Built for any award show, not only the VMAs (which ended 21:30 ET, before the
+first version of live coverage went live at 21:08 EDT).
+
+- **Schedule ahead:** live coverage can start now or at a set time up to 60
+  days out ("2027-02-01 20:00", the owner's time zone). A scheduled show is
+  private until it starts, so its categories can be set up in advance.
+- **Categories:** paste once, one category per line ("Video of the Year: A;
+  B; C") or a category line followed by one nominee per line. Pasting again
+  keeps winners already marked.
+- **Winners:** tap the nominee who won; it becomes the category's winner and
+  posts "X wins Y" to the timeline (Clear undoes both). Outlet headlines that
+  name a nominee, a win verb and a word from the category show as "NME
+  reports X won" with a Confirm button. Nothing is marked automatically.
+- **Readers:** the LIVE card shows "Winners: 2 of 5 categories announced",
+  the latest winners and "Full winners list", which opens
+  `/news/live/<slug>` in the app: a Category | Winner | Nominees table (rows
+  stack on phones) and the updates.
+- **Search:** `/news/live/<slug>` is server rendered like an outlet's winners
+  list: title "<Show> Winners List (Updating Live) | Mshpit" while live and
+  "<Show> Winners: Full List | Mshpit" after, a description naming the first
+  winners, the whole table in the HTML, a LiveBlogPosting (coverage start
+  and end, every update with its time, the winners in articleBody) and
+  breadcrumbs, a modified time that moves with each winner, and the same
+  60-second CDN cache as other public pages. Pages with categories are in
+  the sitemap and linked from `/news` ("Live coverage"). An empty page stays
+  noindex.
+
+Checked: `npm run check` (5,591 tests), the ten CI browser suites (the news
+suite opens `/news/live/2026-mtv-vmas`; the Moderation suite pastes
+categories and taps a winner), and a local boot with a seeded show: the
+crawler HTML has the title, canonical, LiveBlogPosting and all five rows;
+the app shows three columns at 1280 px and stacked rows at 390 px.
+
 ## 2026-09-27 Live coverage for big nights (VMAs)
 
 The owner asked for a live page during the 2026 VMAs. Moderation, Catalog

@@ -2,6 +2,7 @@ import { LANDING_IDENTITY_COPY, LANDING_BROWSE_LINKS } from "../../../src/domain
 import { canonicalYouTubeReviewLink } from "../../onlineReviews.js";
 import { renderCityGuideMain, renderCityDirectoryMain } from "./cityGuideDocument.js";
 import { NEWS_STYLES, renderArtistHeadlinesSection, renderArtistNewsSection, renderNewsMain } from "../artistUpdates/newsDocuments.js";
+import { LIVE_STYLES, renderLiveMain } from "../newsDesk/newsLiveDocument.js";
 import { CITY_GUIDE_STYLES } from "./cityGuideStyles.js";
 import { artistBiographyRows } from "../../../src/domain/artistBiography.mjs";
 import { validateArtistKnowledgeSource } from "../../../src/domain/artistKnowledge.mjs";
@@ -506,6 +507,7 @@ function directoryMain(document) {
 
 export function renderPublicDocumentMain(document) {
   if (document?.kind === "news") return renderNewsMain(document);
+  if (document?.kind === "news-live") return renderLiveMain(document);
   if (document?.kind === "city-directory") return renderCityDirectoryMain(document);
   if (document?.kind === "city") return renderCityGuideMain(document);
   if (!document || !["home", "discover", "search", "artist", "member", "post", "event", "concert", "venue", "directory"].includes(document.kind)) return null;
@@ -595,7 +597,7 @@ export function renderPublicDocumentShell(document) {
   // Keep the style element inside #root. React's createRoot replaces both the
   // semantic preview and these temporary styles when the interactive client
   // mounts, so crawler-first CSS cannot leak into the signed-in application.
-  return `<style data-mshpit-public-document>${STYLES}${["city", "city-directory"].includes(document.kind) ? CITY_GUIDE_STYLES : ""}${["news", "artist"].includes(document.kind) ? NEWS_STYLES : ""}
+  return `<style data-mshpit-public-document>${STYLES}${["city", "city-directory"].includes(document.kind) ? CITY_GUIDE_STYLES : ""}${["news", "artist", "news-live"].includes(document.kind) ? NEWS_STYLES : ""}${document.kind === "news-live" ? LIVE_STYLES : ""}
     .landing-browse a{display:inline-flex;align-items:center;min-height:44px;padding:0 .35rem;font-weight:700}
     @media(max-width:760px){.site-header>div{flex-wrap:wrap;gap:.5rem}.site-header nav{width:100%;max-width:100%;overflow-x:auto;flex-wrap:nowrap;padding-bottom:.2rem}.site-header nav a,.site-header nav a:not(:last-child){display:inline-flex;flex-shrink:0;align-items:center;min-height:44px}.landing-browse{gap:1rem;justify-content:center}}
     </style>

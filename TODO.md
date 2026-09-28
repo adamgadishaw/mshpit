@@ -245,13 +245,16 @@ remains a broad context whose changing value can rerender unrelated consumers.
 
 ## Live coverage follow-ups (2026-09-27)
 
-- **Shareable page:** live coverage lives in the app's News tab and rail; add
-  a server-rendered `/news/live/<slug>` page with a share card so a link can
-  be posted during the show.
+- **Share image:** `/news/live/<slug>` uses the site's default preview image;
+  a card with the show name and "Winners" would share better.
+- **Search Console:** after the next big show, check the page is indexed and
+  whether it earns clicks for "<show> winners"; Google favours established
+  publishers in Top stories, so long-tail and next-year searches are the
+  realistic win at first.
 - **Web bundle budget:** initial JavaScript is 508.2 of 512 KiB gzip; the next
   feed-level feature should lazy-load or trim something first.
-- **Schedule ahead:** events start when created; let the owner schedule the
-  Grammys or a festival headliner in advance.
+- **Nominee import:** categories are pasted by hand; importing an outlet's
+  nominations list would save typing (a Claude call, so metered).
 
 ## News desk editor follow-ups (2026-09-27)
 

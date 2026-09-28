@@ -61,6 +61,8 @@ import { CREW_ENABLED } from "../src/domain/crewAvailability.mjs";
 import { createArtistNewsReader } from "./features/artistUpdates/artistNewsReader.js";
 import { projectNewsDocument } from "./features/artistUpdates/newsDocuments.js";
 import { createNewsDeskReader } from "./features/newsDesk/newsDeskService.js";
+import { liveEventBySlug, liveEventPages } from "./features/newsDesk/newsLive.js";
+import { livePagePath, projectLiveDocument } from "./features/newsDesk/newsLiveDocument.js";
 
 const SITE_NAME = "Mshpit";
 const DEFAULT_TITLE = "Mshpit: concert reviews, photos and live music discovery";
@@ -453,11 +455,26 @@ const APP_SCREENS = new Set([
   ...(CREW_ENABLED ? ["/crew"] : []),
 ]);
 
+// Live coverage pages: /news/live/<slug>, one per award show or big night.
+function newsLiveRoute(path) {
+  const match = path.match(/^\/news\/live\/([A-Za-z0-9-]{1,80})\/*$/u);
+  if (!match) return null;
+  const canonicalPath = livePagePath(match[1].toLowerCase());
+  if (path !== canonicalPath) return { type: "redirect", status: 301, location: canonicalPath, canonicalPath };
+  const document = safePublicDocument(() => projectLiveDocument({ origin: origin(), event: liveEventBySlug(db, match[1]) }));
+  if (document === PUBLIC_DOCUMENT_UNAVAILABLE) return { type: "unavailable", status: 503 };
+  if (!document) return { type: "not-found", status: 404 };
+  return { type: "document", status: 200, canonicalPath, indexable: document.indexable, document };
+}
+
 function newsRoute(path) {
+  const live = newsLiveRoute(path);
+  if (live) return live;
   if (!/^\/news\/*$/iu.test(path)) return null;
   if (path !== "/news") return { type: "redirect", status: 301, location: "/news", canonicalPath: "/news" };
   const at = Date.now();
-  const document = safePublicDocument(() => projectNewsDocument({ origin: origin(), stories: newsDesk.list({ limit: 40 }).stories, at }));
+  const document = safePublicDocument(() => projectNewsDocument({ origin: origin(), stories: newsDesk.list({ limit: 40 }).stories,
+    live: liveEventPages(db, { at, limit: 6 }), at }));
   if (document === PUBLIC_DOCUMENT_UNAVAILABLE) return { type: "unavailable", status: 503 };
   if (!document) return { type: "not-found", status: 404 };
   return { type: "document", status: 200, canonicalPath: "/news", indexable: document.indexable, document };

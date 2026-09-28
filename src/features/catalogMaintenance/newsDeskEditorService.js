@@ -1,5 +1,5 @@
 import { api } from "../../lib/api";
-import { discardNewsDraft, endNewsLive, postNewsLiveUpdate, publishNewsDraft, readNewsEditor, removeNewsLiveUpdate, startNewsLive, writeNewsDraft } from "./newsDeskEditorApi.mjs";
+import { discardNewsDraft, endNewsLive, markNewsLiveWinner, postNewsLiveUpdate, publishNewsDraft, readNewsEditor, removeNewsLiveUpdate, setNewsLiveCategories, startNewsLive, writeNewsDraft } from "./newsDeskEditorApi.mjs";
 
 export const loadNewsEditor = (options) => readNewsEditor(options, { apiCall: api });
 export const writeDraft = (options) => writeNewsDraft(options, { apiCall: api });
@@ -9,3 +9,5 @@ export const startLive = (options) => startNewsLive(options, { apiCall: api });
 export const postLiveUpdate = (options) => postNewsLiveUpdate(options, { apiCall: api });
 export const endLive = (options) => endNewsLive(options, { apiCall: api });
 export const removeLiveUpdate = (options) => removeNewsLiveUpdate(options, { apiCall: api });
+export const setLiveCategories = (options) => setNewsLiveCategories(options, { apiCall: api });
+export const markLiveWinner = (options) => markNewsLiveWinner(options, { apiCall: api });

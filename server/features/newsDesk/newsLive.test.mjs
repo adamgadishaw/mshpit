@@ -85,3 +85,58 @@ test("only a verified admin runs live coverage; everyone can read it", (t) => {
   assert.deepEqual(db.prepare("SELECT action FROM moderation_actions ORDER BY created_at,action").all().map((row) => row.action).sort(),
     ["news_live_ended", "news_live_started", "news_live_update"]);
 });
+
+test("categories paste in either format and winners post their own update", async (t) => {
+  const { parseLiveCategories, setLiveCategories, markLiveWinner, staffLiveCoverage, liveEventBySlug, liveEventPages } = await import("./newsLive.js");
+  const parsed = parseLiveCategories(`Video of the Year: Sabrina Carpenter - Manchild; Taylor Swift - Fortnight | Doja Cat - Jealous Type
+
+Best New Artist:
+- Alex Warren
+• Gracie Abrams
+Lola Young`);
+  assert.deepEqual(parsed, [
+    { name: "Video of the Year", nominees: ["Sabrina Carpenter - Manchild", "Taylor Swift - Fortnight", "Doja Cat - Jealous Type"] },
+    { name: "Best New Artist", nominees: ["Alex Warren", "Gracie Abrams", "Lola Young"] },
+  ]);
+  assert.throws(() => parseLiveCategories("just some text"), (error) => error.code === "VALIDATION_FAILED");
+
+  const db = database(t);
+  const event = startLiveEvent(db, { title: "2026 MTV VMAs", keywords: "VMAs", hours: 4, at: AT });
+  db.prepare(`INSERT INTO news_reports (url,source_id,title,description,category,artist_keys,published_at,fetched_at) VALUES (?,?,?,?,?,?,?,?)`)
+    .run("https://www.nme.com/new-artist", "nme", "Lola Young Wins Best New Artist At The 2026 VMAs", "", "awards", "[]", AT + 30 * 60_000, AT);
+  assert.equal(setLiveCategories(db, event.id, parsed.map((category) => `${category.name}: ${category.nominees.join("; ")}`).join("\n"), { at: AT }), 2);
+  let [staff] = staffLiveCoverage(db, { at: AT + HOUR });
+  assert.deepEqual(staff.winners.total, 2);
+  assert.deepEqual(staff.suggestions.map((item) => [item.nominee, item.source]), [["Lola Young", "NME"]], "the outlet headline suggests the winner");
+
+  const video = staff.winners.categories.find((category) => category.name === "Video of the Year");
+  assert.throws(() => markLiveWinner(db, event.id, video.id, "Nobody", { at: AT + HOUR }), (error) => error.code === "VALIDATION_FAILED");
+  assert.equal(markLiveWinner(db, event.id, video.id, "sabrina carpenter - manchild", { at: AT + HOUR }), "Sabrina Carpenter - Manchild");
+  [staff] = staffLiveCoverage(db, { at: AT + HOUR });
+  assert.equal(staff.winners.announced, 1);
+  assert.equal(staff.items[0].text, "Sabrina Carpenter - Manchild wins Video of the Year", "a winner is also a timeline update");
+
+  markLiveWinner(db, event.id, video.id, null, { at: AT + HOUR + 60_000 });
+  [staff] = staffLiveCoverage(db, { at: AT + HOUR + 60_000 });
+  assert.equal(staff.winners.announced, 0);
+  assert.equal(staff.items.some((item) => item.kind === "note"), false, "clearing a winner removes its update");
+
+  markLiveWinner(db, event.id, video.id, "Taylor Swift - Fortnight", { at: AT + HOUR });
+  setLiveCategories(db, event.id, "Video of the Year: Taylor Swift - Fortnight; Bad Bunny - DtMF\nBest Pop: Lorde; Addison Rae", { at: AT + 2 * HOUR });
+  const kept = liveEventBySlug(db, "2026-mtv-vmas", { at: AT + 30 * 24 * HOUR });
+  assert.deepEqual(kept.winners.categories.map((category) => [category.name, category.winner]),
+    [["Video of the Year", "Taylor Swift - Fortnight"], ["Best Pop", null]], "a pasted update keeps winners already marked");
+  assert.equal(kept.live, false, "the page stays up as a winners list after the show");
+  assert.equal(liveEventBySlug(db, "../etc", { at: AT }), null);
+  assert.deepEqual(liveEventPages(db, { at: AT + HOUR }).map((page) => page.slug), ["2026-mtv-vmas"]);
+});
+
+test("a future show can be set up ahead and goes public when it starts", (t) => {
+  const db = database(t);
+  const grammys = startLiveEvent(db, { title: "2027 Grammys", keywords: "Grammys, Grammy Awards", hours: 5, startsAt: AT + 3 * 24 * HOUR, at: AT });
+  assert.equal(grammys.starts_at, AT + 3 * 24 * HOUR);
+  assert.throws(() => startLiveEvent(db, { title: "Too far", keywords: "x y", hours: 2, startsAt: AT + 90 * 24 * HOUR, at: AT }), (error) => error.code === "VALIDATION_FAILED");
+  assert.equal(publicLiveCoverage(db, { at: AT }).events.length, 0, "not public before it starts");
+  assert.equal(liveEventRunning(db, AT), false);
+  assert.equal(publicLiveCoverage(db, { at: AT + 3 * 24 * HOUR + HOUR }).events[0].title, "2027 Grammys");
+});

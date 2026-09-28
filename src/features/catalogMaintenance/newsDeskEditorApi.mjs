@@ -94,8 +94,10 @@ async function liveCall(apiCall, path, { accountId, body = {}, context }) {
   if (!Array.isArray(payload?.live)) throw new TypeError("Live coverage could not be confirmed. Refresh to check it.");
   return payload.live;
 }
-export const startNewsLive = ({ accountId, title, keywords, hours } = {}, { apiCall } = {}) =>
-  liveCall(apiCall, NEWS_LIVE_PATH, { accountId, body: { title, keywords, hours: Number(hours) }, context: "Starting live coverage" });
+// `startsAt` (epoch ms) schedules a future show; left out, it starts now.
+export const startNewsLive = ({ accountId, title, keywords, hours, startsAt = null } = {}, { apiCall } = {}) =>
+  liveCall(apiCall, NEWS_LIVE_PATH, { accountId, body: { title, keywords, hours: Number(hours), ...(startsAt ? { startsAt } : {}) },
+    context: startsAt ? "Scheduling live coverage" : "Starting live coverage" });
 export const postNewsLiveUpdate = ({ accountId, id, text, url = "" } = {}, { apiCall } = {}) =>
   liveCall(apiCall, `${NEWS_LIVE_PATH}/${encodeURIComponent(id)}/notes`, { accountId, body: { text, ...(url.trim() ? { url: url.trim() } : {}) }, context: "Posting a live update" });
 export const endNewsLive = ({ accountId, id } = {}, { apiCall } = {}) =>
@@ -109,3 +111,27 @@ export function newsLiveStatus(event, { formatTime = (at) => new Date(at).toLoca
   const updates = event.count === 1 ? "1 update" : `${event.count || 0} updates`;
   return event.live ? `Live until ${formatTime(event.endsAt)} · ${updates}` : `Ended · ${updates}`;
 }
+
+// Award show winners: paste categories once, then mark winners as they land.
+export const setNewsLiveCategories = ({ accountId, id, text } = {}, { apiCall } = {}) =>
+  liveCall(apiCall, `${NEWS_LIVE_PATH}/${encodeURIComponent(id)}/categories`, { accountId, body: { text }, context: "Saving award categories" });
+export const markNewsLiveWinner = ({ accountId, id, categoryId, nominee } = {}, { apiCall } = {}) =>
+  liveCall(apiCall, `${NEWS_LIVE_PATH}/${encodeURIComponent(id)}/categories/${encodeURIComponent(categoryId)}/winner`,
+    { accountId, body: { nominee: nominee ?? null }, context: nominee ? "Marking an award winner" : "Clearing an award winner" });
+
+// The categories back as pasteable text, for editing.
+export const categoriesText = (event) => (event?.winners?.categories || [])
+  .map((category) => `${category.name}: ${category.nominees.join("; ")}`).join("\n");
+
+// "2027-02-01 20:00" in the person's own time zone, or null for "now".
+export function parseStartTime(value) {
+  const text = String(value || "").trim();
+  if (!text) return null;
+  const match = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{1,2}):(\d{2})$/u.exec(text);
+  if (!match) return Number.NaN;
+  const [, year, month, day, hour, minute] = match.map(Number);
+  const at = new Date(year, month - 1, day, hour, minute).getTime();
+  return Number.isFinite(at) ? at : Number.NaN;
+}
+
+export const livePageUrl = (slug, origin = "https://www.mshpit.com") => `${origin}/news/live/${slug}`;

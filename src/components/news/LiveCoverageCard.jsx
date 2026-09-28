@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { Linking, Pressable, StyleSheet, Text, View } from "react-native";
 import { colors, focusRing, font, mono, radius } from "../../theme";
-import { liveHeaderText, sinceText } from "../../domain/newsLive.mjs";
+import { latestWinners, liveHeaderText, sinceText, winnersProgressText } from "../../domain/newsLive.mjs";
+import { useNewsInteractions } from "./NewsInteractionContext";
 import useLiveCoverage from "./useLiveCoverage";
 
 function LiveItem({ item, now }) {
@@ -15,6 +16,7 @@ function LiveItem({ item, now }) {
 }
 
 function LiveEvent({ event, compact }) {
+  const { openLiveCoverage } = useNewsInteractions();
   const [expanded, setExpanded] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -31,7 +33,18 @@ function LiveEvent({ event, compact }) {
       <Text style={styles.title} numberOfLines={2}>{event.title}</Text>
     </View>
     <Text style={styles.meta}>{liveHeaderText(event, now)}</Text>
+    {event.winners.total ? <View style={styles.winners}>
+      <Text style={styles.winnersHead}>WINNERS · {winnersProgressText(event).toUpperCase()}</Text>
+      {latestWinners(event, compact ? 2 : 3).map((category) => <Text key={category.id} style={styles.winnerLine}>
+        <Text style={styles.winnerCategory}>{category.name}: </Text>{category.winner}</Text>)}
+    </View> : null}
     {shown.length ? <View style={styles.list}>{shown.map((item) => <LiveItem key={item.id} item={item} now={now} />)}</View> : null}
+    {event.slug && openLiveCoverage ? (
+      <Pressable onPress={() => openLiveCoverage(event.slug)} accessibilityRole="button" hitSlop={6}
+        style={({ focused }) => [focused && focusRing]} accessibilityLabel={`Open full coverage of ${event.title}`}>
+        <Text style={styles.more}>{event.winners.total ? "Full winners list" : "Full coverage"}</Text>
+      </Pressable>
+    ) : null}
     {event.items.length > shown.length ? (
       <Pressable onPress={() => setExpanded(true)} accessibilityRole="button" hitSlop={6}
         style={({ focused }) => [focused && focusRing]} accessibilityLabel={`Show all updates for ${event.title}`}>
@@ -64,5 +77,9 @@ const styles = StyleSheet.create({
   itemMeta: { color: colors.textFaint, fontFamily: mono, fontSize: 10.5, letterSpacing: 0.4 },
   itemText: { color: colors.text, fontFamily: font, fontSize: 13.5, lineHeight: 19 },
   noteText: { fontWeight: "700" },
+  winners: { gap: 3, paddingTop: 2 },
+  winnersHead: { color: colors.textFaint, fontFamily: mono, fontSize: 10.5, letterSpacing: 1 },
+  winnerLine: { color: colors.gold, fontFamily: font, fontSize: 13.5, fontWeight: "700" },
+  winnerCategory: { color: colors.textDim, fontWeight: "400" },
   more: { color: colors.amber, fontFamily: font, fontSize: 12.5, fontWeight: "800", paddingTop: 4 },
 });

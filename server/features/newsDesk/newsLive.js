@@ -45,7 +45,19 @@ export function ensureNewsLiveSchema(database) {
     created_at INTEGER NOT NULL,
     removed_at INTEGER
   );
-  CREATE INDEX IF NOT EXISTS idx_news_live_notes_event ON news_live_notes(event_id,created_at);`);
+  CREATE INDEX IF NOT EXISTS idx_news_live_notes_event ON news_live_notes(event_id,created_at);
+  CREATE TABLE IF NOT EXISTS news_live_categories (
+    id TEXT PRIMARY KEY,
+    event_id TEXT NOT NULL REFERENCES news_live_events(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    nominees TEXT NOT NULL,
+    winner TEXT,
+    announced_at INTEGER,
+    note_id TEXT,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_news_live_categories_event ON news_live_categories(event_id,position);`);
 }
 
 // Lower case, no accents, words separated by single spaces and padded, so a
@@ -78,7 +90,9 @@ function readEvent(database, id) {
   return event;
 }
 
-export function startLiveEvent(database, { title, keywords, hours, actorId = null, at = Date.now() } = {}) {
+// `startsAt` (optional) schedules a future show, up to 60 days ahead, so its
+// categories can be set up before the night; it goes public when it starts.
+export function startLiveEvent(database, { title, keywords, hours, startsAt = null, actorId = null, at = Date.now() } = {}) {
   const name = String(title || "").replace(/\s+/gu, " ").trim();
   if (name.length < 3 || name.length > 80) fail("VALIDATION_FAILED", "Give the live coverage a title of 3 to 80 characters.");
   const words = [...new Set((Array.isArray(keywords) ? keywords : String(keywords || "").split(","))
@@ -88,11 +102,14 @@ export function startLiveEvent(database, { title, keywords, hours, actorId = nul
   }
   const length = Number(hours);
   if (!Number.isFinite(length) || length < 1 || length > MAX_LIVE_HOURS) fail("VALIDATION_FAILED", `Live coverage runs 1 to ${MAX_LIVE_HOURS} hours.`);
-  const running = database.prepare("SELECT COUNT(*) AS n FROM news_live_events WHERE ended_at IS NULL AND ends_at>?").get(at).n;
-  if (running >= 2) fail("CONFLICT", "Two live events are already running. End one first.");
+  const start = startsAt === null || startsAt === undefined || startsAt === "" ? at : Number(startsAt);
+  if (!Number.isSafeInteger(start) || start < at - HOUR || start > at + 60 * 24 * HOUR) fail("VALIDATION_FAILED", "Pick a start time from now up to 60 days ahead.");
+  const end = start + Math.round(length * HOUR);
+  const overlapping = database.prepare("SELECT COUNT(*) AS n FROM news_live_events WHERE COALESCE(ended_at,ends_at)>? AND starts_at<?").get(start, end).n;
+  if (overlapping >= 2) fail("CONFLICT", "Two live events already cover that time. End or move one first.");
   const id = randomUUID();
   database.prepare(`INSERT INTO news_live_events (id,slug,title,keywords,starts_at,ends_at,created_by,created_at) VALUES (?,?,?,?,?,?,?,?)`)
-    .run(id, slugFor(database, name, at), name, JSON.stringify(words), at, at + Math.round(length * HOUR), actorId, at);
+    .run(id, slugFor(database, name, start), name, JSON.stringify(words), start, end, actorId, at);
   return readEvent(database, id);
 }
 
@@ -141,27 +158,164 @@ function timeline(database, event, at) {
   return [...notes, ...reports].sort((left, right) => right.at - left.at || (left.id < right.id ? -1 : 1)).slice(0, MAX_ITEMS);
 }
 
-function eventJson(database, event, at) {
+// ---- Award show winners -------------------------------------------------
+// The owner pastes the categories and nominees once, then taps each winner as
+// it is announced. A category is "Video of the Year: A; B; C" on one line, or
+// a line ending in ":" followed by one nominee per line ("- " or "• " fine).
+const MAX_CATEGORIES = 40;
+const MAX_NOMINEES = 12;
+const clean = (value, max) => String(value || "").replace(/^[\s\-•*·]+/u, "").replace(/\s+/gu, " ").trim().slice(0, max);
+
+export function parseLiveCategories(text) {
+  const categories = [];
+  let open = null;
+  for (const raw of String(text || "").split(/\r?\n/u)) {
+    const line = raw.trim();
+    if (!line) { open = null; continue; }
+    const colon = line.indexOf(":");
+    if (colon > 0 && colon === line.length - 1) {
+      open = { name: clean(line.slice(0, -1), 120), nominees: [] };
+      categories.push(open);
+    } else if (colon > 0 && /[;|]/u.test(line.slice(colon + 1))) {
+      categories.push({ name: clean(line.slice(0, colon), 120), nominees: line.slice(colon + 1).split(/[;|]/u).map((item) => clean(item, 160)).filter(Boolean) });
+      open = null;
+    } else if (open) {
+      open.nominees.push(clean(line, 160));
+    } else if (colon > 0) {
+      // One nominee after the colon, more may follow on the next lines.
+      open = { name: clean(line.slice(0, colon), 120), nominees: [clean(line.slice(colon + 1), 160)].filter(Boolean) };
+      categories.push(open);
+    }
+  }
+  const usable = categories.map((category) => ({ ...category, nominees: [...new Set(category.nominees.filter(Boolean))] }))
+    .filter((category) => category.name && category.nominees.length);
+  if (!usable.length) fail("VALIDATION_FAILED", "Paste each category with its nominees, like: Video of the Year: Artist A; Artist B; Artist C");
+  if (usable.length > MAX_CATEGORIES) fail("VALIDATION_FAILED", `Up to ${MAX_CATEGORIES} categories.`);
+  if (usable.some((category) => category.nominees.length > MAX_NOMINEES)) fail("VALIDATION_FAILED", `Up to ${MAX_NOMINEES} nominees a category.`);
+  return usable;
+}
+
+const sameName = (left, right) => normalize(left) === normalize(right);
+
+// Replaces the category list. A winner already marked survives when its
+// category and nominee are still there.
+export function setLiveCategories(database, eventId, text, { at = Date.now() } = {}) {
+  const event = readEvent(database, eventId);
+  const parsed = parseLiveCategories(text);
+  const before = database.prepare("SELECT name,winner,announced_at,note_id FROM news_live_categories WHERE event_id=?").all(event.id);
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    database.prepare("DELETE FROM news_live_categories WHERE event_id=?").run(event.id);
+    const insert = database.prepare(`INSERT INTO news_live_categories (id,event_id,position,name,nominees,winner,announced_at,note_id,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?)`);
+    parsed.forEach((category, position) => {
+      const kept = before.find((old) => sameName(old.name, category.name) && old.winner && category.nominees.some((name) => sameName(name, old.winner)));
+      insert.run(randomUUID(), event.id, position, category.name, JSON.stringify(category.nominees), kept?.winner ?? null,
+        kept?.announced_at ?? null, kept?.note_id ?? null, at);
+    });
+    database.exec("COMMIT");
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
+  return parsed.length;
+}
+
+// Marks (or with `nominee: null` clears) a category's winner, and posts or
+// removes the matching "X wins Y" update on the timeline.
+export function markLiveWinner(database, eventId, categoryId, nominee, { actorId = null, at = Date.now() } = {}) {
+  const event = readEvent(database, eventId);
+  const category = typeof categoryId === "string"
+    ? database.prepare("SELECT * FROM news_live_categories WHERE id=? AND event_id=?").get(categoryId, event.id) : null;
+  if (!category) fail("NOT_FOUND", "That category no longer exists. Refresh and try again.");
+  if (category.note_id) database.prepare("UPDATE news_live_notes SET removed_at=? WHERE id=? AND removed_at IS NULL").run(at, category.note_id);
+  if (nominee === null) {
+    database.prepare("UPDATE news_live_categories SET winner=NULL,announced_at=NULL,note_id=NULL,updated_at=? WHERE id=?").run(at, category.id);
+    return null;
+  }
+  const winner = JSON.parse(category.nominees).find((name) => sameName(name, nominee));
+  if (!winner) fail("VALIDATION_FAILED", "Pick one of the category's nominees.");
+  let noteId = null;
+  if (isLive(event, at)) {
+    noteId = randomUUID();
+    database.prepare("INSERT INTO news_live_notes (id,event_id,text,url,created_by,created_at) VALUES (?,?,?,?,?,?)")
+      .run(noteId, event.id, `${winner} wins ${category.name}`.slice(0, 280), null, actorId, at);
+  }
+  database.prepare("UPDATE news_live_categories SET winner=?,announced_at=?,note_id=?,updated_at=? WHERE id=?")
+    .run(winner, at, noteId, at, category.id);
+  return winner;
+}
+
+// The act a nominee names: "Sabrina Carpenter - Espresso" is Sabrina Carpenter.
+const nomineeAct = (name) => String(name).split(/\s[-–—]\s|,\s(?:feat|ft)\.?\s/u)[0].trim();
+const CATEGORY_FILLER = new Set(["best", "the", "of", "and", "for", "award", "awards", "video", "song", "artist"]);
+
+// Unannounced categories whose winner an outlet headline already names:
+// the act, a win verb, and a telling word from the category. Staff confirm.
+function winnerSuggestions(categories, reports) {
+  const headlines = reports.map((report) => ({ ...report, text: normalize(report.title) }));
+  return categories.filter((category) => !category.winner).flatMap((category) => {
+    const words = normalize(category.name).trim().split(" ").filter((word) => word.length >= 3 && !CATEGORY_FILLER.has(word));
+    for (const report of headlines) {
+      if (!/ (wins|won|win|takes home|nabs|scores) /u.test(report.text)) continue;
+      if (words.length && !words.some((word) => report.text.includes(` ${word} `))) continue;
+      const nominee = category.nominees.find((name) => {
+        const act = normalize(nomineeAct(name)).trim();
+        return act.length >= 3 && report.text.includes(` ${act} `);
+      });
+      if (nominee) return [{ categoryId: category.id, nominee, source: report.source, url: report.url, at: report.at }];
+    }
+    return [];
+  });
+}
+
+function categoriesFor(database, event) {
+  return database.prepare("SELECT * FROM news_live_categories WHERE event_id=? ORDER BY position").all(event.id)
+    .map((row) => ({ id: row.id, name: row.name, nominees: JSON.parse(row.nominees), winner: row.winner || null, announcedAt: row.announced_at || null }));
+}
+
+function eventJson(database, event, at, { staff = false } = {}) {
   const items = timeline(database, event, at);
+  const categories = categoriesFor(database, event);
+  const lastWinnerAt = Math.max(0, ...categories.map((category) => category.announcedAt || 0));
   return {
     id: event.id, slug: event.slug, title: event.title, keywords: JSON.parse(event.keywords),
     live: isLive(event, at), startsAt: event.starts_at, endsAt: endOf(event),
-    updatedAt: items[0]?.at ?? event.starts_at, count: items.length, items,
+    updatedAt: Math.max(items[0]?.at ?? event.starts_at, lastWinnerAt), count: items.length, items,
+    winners: { total: categories.length, announced: categories.filter((category) => category.winner).length, categories },
+    ...(staff ? { suggestions: winnerSuggestions(categories, items.filter((item) => item.kind === "report")) } : {}),
   };
 }
 
 // Public: events live now, or ended in the last 18 hours (the morning recap).
-export function publicLiveCoverage(database, { at = Date.now() } = {}) {
+export function publicLiveCoverage(database, { at = Date.now(), staff = false } = {}) {
   const events = database.prepare(`SELECT * FROM news_live_events WHERE starts_at<=? AND COALESCE(ended_at,ends_at)>?
     ORDER BY starts_at DESC LIMIT 3`).all(at, at - SHOWN_AFTER_END_MS);
-  return { events: events.map((event) => eventJson(database, event, at)) };
+  return { events: events.map((event) => eventJson(database, event, at, { staff })) };
+}
+
+// The permanent public page of one event (/news/live/<slug>): a winners list
+// stays useful long after the night itself.
+export function liveEventBySlug(database, slug, { at = Date.now() } = {}) {
+  if (typeof slug !== "string" || !/^[a-z0-9-]{1,80}$/u.test(slug)) return null;
+  const event = database.prepare("SELECT * FROM news_live_events WHERE slug=? AND starts_at<=?").get(slug, at);
+  return event ? eventJson(database, event, at) : null;
+}
+
+// Every event page, newest first, for the sitemap and the /news hub.
+export function liveEventPages(database, { at = Date.now(), limit = 50 } = {}) {
+  return database.prepare(`SELECT slug,title,starts_at,COALESCE(ended_at,ends_at) AS ends FROM news_live_events
+    WHERE starts_at<=? ORDER BY starts_at DESC LIMIT ?`).all(at, limit)
+    .map((row) => ({ slug: row.slug, title: row.title, startsAt: row.starts_at, endsAt: row.ends, live: row.starts_at <= at && at < row.ends }));
 }
 
 export const liveEventRunning = (database, at = Date.now()) =>
   !!database.prepare("SELECT 1 FROM news_live_events WHERE starts_at<=? AND COALESCE(ended_at,ends_at)>? LIMIT 1").get(at, at);
 
-// Staff view: current and recent events with every update, including the note
-// IDs needed to remove one.
+// Staff view: current and recent events with every update (note IDs for
+// removal) and suggested winners from outlet headlines.
 export function staffLiveCoverage(database, { at = Date.now() } = {}) {
-  return publicLiveCoverage(database, { at }).events;
+  const events = database.prepare(`SELECT * FROM news_live_events WHERE COALESCE(ended_at,ends_at)>?
+    ORDER BY starts_at ASC LIMIT 5`).all(at - SHOWN_AFTER_END_MS);
+  return events.map((event) => ({ ...eventJson(database, event, at, { staff: true }), scheduled: event.starts_at > at }));
 }

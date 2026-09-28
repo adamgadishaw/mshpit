@@ -2,50 +2,122 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { StyleSheet, Text, TextInput, View } from "react-native";
 import Button from "../../components/Button";
 import { colors, radius } from "../../theme";
-import { MAX_NEWS_LINKS, newsCandidateLine, newsCandidateNeed, newsDraftStatus, newsEditorCostLine, newsLiveStatus, parseNewsLinks } from "./newsDeskEditorApi.mjs";
-import { discardDraft, endLive, loadNewsEditor, postLiveUpdate, publishDraft, removeLiveUpdate, startLive, writeDraft } from "./newsDeskEditorService";
+import { MAX_NEWS_LINKS, categoriesText, livePageUrl, newsCandidateLine, newsCandidateNeed, newsDraftStatus, newsEditorCostLine, newsLiveStatus,
+  parseNewsLinks, parseStartTime } from "./newsDeskEditorApi.mjs";
+import { discardDraft, endLive, loadNewsEditor, markLiveWinner, postLiveUpdate, publishDraft, removeLiveUpdate, setLiveCategories, startLive, writeDraft } from "./newsDeskEditorService";
 
-// Live coverage of a big night: start it, post short updates, end it. The
-// timeline also pulls in every outlet headline matching the keywords.
+// Live coverage of a big night: schedule or start it, paste the award
+// categories, tap each winner as it is announced, post short updates, end
+// it. The timeline also pulls in every outlet headline matching the keywords.
+function WinnersControls({ accountId, event, busy, pending, act }) {
+  const [editing, setEditing] = useState(false);
+  const [text, setText] = useState("");
+  const categories = event.winners?.categories || [];
+  const suggestions = new Map((event.suggestions || []).map((item) => [item.categoryId, item]));
+  if (!categories.length || editing) {
+    return <View style={styles.group}>
+      <Text style={styles.label}>AWARD CATEGORIES</Text>
+      <Text selectable style={styles.hint}>One category per line with its nominees, like "Video of the Year: Artist A; Artist B; Artist C". A category name on its own line followed by one nominee per line works too.</Text>
+      <TextInput accessibilityLabel="Award categories and nominees" style={[styles.input, styles.categories]} multiline value={text} onChangeText={setText}
+        placeholder={"Video of the Year: Sabrina Carpenter - Manchild; Taylor Swift - Fortnight\nBest New Artist: Alex Warren; Lola Young"}
+        placeholderTextColor={colors.textFaint} autoCorrect={false} />
+      <View style={styles.actions}>
+        <Button small title="Save categories" accessibilityLabel="Save the award categories" disabled={busy || !text.trim()} loading={pending === "live:categories"}
+          onPress={() => act("live:categories", async () => { await setLiveCategories({ accountId, id: event.id, text }); setEditing(false); }, "Categories saved. Tap each winner as it is announced.")} />
+        {editing ? <Button small title="Cancel" variant="secondary" accessibilityLabel="Stop editing categories" disabled={busy} onPress={() => setEditing(false)} /> : null}
+      </View>
+    </View>;
+  }
+  return <View style={styles.group}>
+    <Text style={styles.label}>WINNERS · {event.winners.announced} OF {event.winners.total} ANNOUNCED</Text>
+    {categories.map((category) => {
+      const suggestion = suggestions.get(category.id);
+      return <View key={category.id} style={styles.categoryBlock}>
+        <Text selectable style={styles.headline}>{category.name}</Text>
+        {category.winner ? <View style={styles.searchRow}>
+          <Text selectable style={[styles.copy, styles.winnerText]}>Winner: {category.winner}</Text>
+          <Button small title="Clear" variant="secondary" accessibilityLabel={`Clear the winner of ${category.name}`} disabled={busy}
+            loading={pending === `live:winner:${category.id}`}
+            onPress={() => act(`live:winner:${category.id}`, () => markLiveWinner({ accountId, id: event.id, categoryId: category.id, nominee: null }), "Winner cleared.")} />
+        </View> : <>
+          {suggestion ? <View style={styles.searchRow}>
+            <Text selectable style={[styles.hint, styles.rowCopy]}>{suggestion.source} reports {suggestion.nominee} won.</Text>
+            <Button small title="Confirm" accessibilityLabel={`Confirm ${suggestion.nominee} won ${category.name}`} disabled={busy}
+              loading={pending === `live:winner:${category.id}`}
+              onPress={() => act(`live:winner:${category.id}`, () => markLiveWinner({ accountId, id: event.id, categoryId: category.id, nominee: suggestion.nominee }), `${suggestion.nominee} marked as the winner.`)} />
+          </View> : null}
+          <View style={styles.nominees}>
+            {category.nominees.map((name) => <Button key={name} small variant="secondary" title={name} accessibilityLabel={`${name} won ${category.name}`}
+              disabled={busy} onPress={() => act(`live:winner:${category.id}`, () => markLiveWinner({ accountId, id: event.id, categoryId: category.id, nominee: name }), `${name} marked as the winner.`)} />)}
+          </View>
+        </>}
+      </View>;
+    })}
+    <View style={styles.actions}>
+      <Button small title="Edit categories" variant="secondary" accessibilityLabel="Edit the award categories" disabled={busy}
+        onPress={() => { setText(categoriesText(event)); setEditing(true); }} />
+    </View>
+  </View>;
+}
+
 function LiveControls({ accountId, live, busy, pending, act }) {
   const [title, setTitle] = useState("");
   const [keywords, setKeywords] = useState("");
   const [hours, setHours] = useState("4");
+  const [startsAt, setStartsAt] = useState("");
   const [update, setUpdate] = useState("");
   const [link, setLink] = useState("");
   const running = live.find((event) => event.live);
-  if (!running) {
+  const scheduled = live.filter((event) => event.scheduled);
+  const managed = running || scheduled[0] || null;
+  const start = parseStartTime(startsAt);
+  const header = <>
+    <Text style={styles.label}>LIVE COVERAGE</Text>
+    <Text selectable style={styles.hint}>For a big night like an award show. Readers see a LIVE card at the top of the news with every outlet headline matching your keywords, the winners as you mark them, and your updates. Its page, /news/live/..., is built for search. No Claude cost.</Text>
+  </>;
+  if (!managed) {
     return <View style={styles.group}>
-      <Text style={styles.label}>LIVE COVERAGE</Text>
-      <Text selectable style={styles.hint}>For a big night like an award show. Readers see a LIVE card at the top of the news with every outlet headline matching your keywords, plus the updates you post here. No Claude cost.</Text>
+      {header}
       <TextInput accessibilityLabel="Live coverage title" style={styles.input} value={title} onChangeText={setTitle}
         placeholder="2026 MTV VMAs" placeholderTextColor={colors.textFaint} maxLength={80} />
       <TextInput accessibilityLabel="Keywords the outlets will use, separated by commas" style={styles.input} value={keywords} onChangeText={setKeywords}
         placeholder="VMAs, Video Music Awards" placeholderTextColor={colors.textFaint} autoCapitalize="none" autoCorrect={false} />
+      <TextInput accessibilityLabel="Start time, optional, like 2027-02-01 20:00 in your time zone" style={styles.input} value={startsAt} onChangeText={setStartsAt}
+        placeholder="Starts: now, or 2027-02-01 20:00 (your time)" placeholderTextColor={colors.textFaint} autoCapitalize="none" autoCorrect={false} />
+      {Number.isNaN(start) ? <Text style={styles.error}>Write the start as 2027-02-01 20:00, or leave it empty to start now.</Text> : null}
       <View style={styles.searchRow}>
         <TextInput accessibilityLabel="How many hours it runs" style={[styles.input, styles.hours]} value={hours} onChangeText={setHours}
           keyboardType="number-pad" maxLength={2} />
         <Text style={styles.hint}>hours</Text>
-        <Button small title="Start live coverage" accessibilityLabel="Start live coverage"
-          disabled={busy || title.trim().length < 3 || !keywords.trim()} loading={pending === "live:start"}
-          onPress={() => act("live:start", () => startLive({ accountId, title, keywords, hours }), "Live coverage started. It is at the top of the news now.")} />
+        <Button small title={start ? "Schedule live coverage" : "Start live coverage"} accessibilityLabel={start ? "Schedule live coverage" : "Start live coverage"}
+          disabled={busy || title.trim().length < 3 || !keywords.trim() || Number.isNaN(start)} loading={pending === "live:start"}
+          onPress={() => act("live:start", () => startLive({ accountId, title, keywords, hours, startsAt: start }),
+            start ? "Scheduled. Paste the categories now; it goes public when it starts." : "Live coverage started. It is at the top of the news now.")} />
       </View>
     </View>;
   }
-  const notes = running.items.filter((item) => item.kind === "note");
+  const notes = managed.items.filter((item) => item.kind === "note");
   return <View style={styles.group}>
-    <Text style={styles.label}>LIVE COVERAGE</Text>
-    <Text selectable style={styles.headline}>{running.title}</Text>
-    <Text selectable style={styles.hint}>{newsLiveStatus(running)}</Text>
-    <TextInput accessibilityLabel="Live update text" style={[styles.input, styles.links]} multiline value={update} onChangeText={setUpdate}
-      placeholder="Sabrina Carpenter wins Video of the Year" placeholderTextColor={colors.textFaint} maxLength={280} />
-    <TextInput accessibilityLabel="Optional link for the update" style={styles.input} value={link} onChangeText={setLink}
-      placeholder="Optional https:// link" placeholderTextColor={colors.textFaint} autoCapitalize="none" autoCorrect={false} />
+    {header}
+    <Text selectable style={styles.headline}>{managed.title}</Text>
+    <Text selectable style={styles.hint}>{managed.scheduled
+      ? `Scheduled: starts ${new Date(managed.startsAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}`
+      : newsLiveStatus(managed)}</Text>
+    {managed.slug ? <Text selectable style={styles.hint}>Public page: {livePageUrl(managed.slug)}</Text> : null}
+    <WinnersControls accountId={accountId} event={managed} busy={busy} pending={pending} act={act} />
+    {managed.live ? <>
+      <TextInput accessibilityLabel="Live update text" style={[styles.input, styles.links]} multiline value={update} onChangeText={setUpdate}
+        placeholder="Snoop Dogg opens the show" placeholderTextColor={colors.textFaint} maxLength={280} />
+      <TextInput accessibilityLabel="Optional link for the update" style={styles.input} value={link} onChangeText={setLink}
+        placeholder="Optional https:// link" placeholderTextColor={colors.textFaint} autoCapitalize="none" autoCorrect={false} />
+    </> : null}
     <View style={styles.actions}>
-      <Button small title="Post update" accessibilityLabel="Post the live update" disabled={busy || !update.trim()} loading={pending === "live:note"}
-        onPress={() => act("live:note", async () => { await postLiveUpdate({ accountId, id: running.id, text: update, url: link }); setUpdate(""); setLink(""); }, "Update posted.")} />
-      <Button small title="End live coverage" variant="secondary" accessibilityLabel={`End live coverage of ${running.title}`} disabled={busy}
-        loading={pending === "live:end"} onPress={() => act("live:end", () => endLive({ accountId, id: running.id }), "Live coverage ended. The recap stays up until tomorrow evening.")} />
+      {managed.live ? <Button small title="Post update" accessibilityLabel="Post the live update" disabled={busy || !update.trim()} loading={pending === "live:note"}
+        onPress={() => act("live:note", async () => { await postLiveUpdate({ accountId, id: managed.id, text: update, url: link }); setUpdate(""); setLink(""); }, "Update posted.")} /> : null}
+      <Button small title={managed.live ? "End live coverage" : "Cancel this show"} variant="secondary"
+        accessibilityLabel={managed.live ? `End live coverage of ${managed.title}` : `Cancel the scheduled coverage of ${managed.title}`} disabled={busy}
+        loading={pending === "live:end"} onPress={() => act("live:end", () => endLive({ accountId, id: managed.id }),
+          managed.live ? "Live coverage ended. The recap stays up until tomorrow evening, and the page stays as the winners list." : "Scheduled coverage cancelled.")} />
     </View>
     {notes.map((note) => <View key={note.id} style={styles.row}>
       <Text selectable style={[styles.copy, styles.rowCopy]}>{note.text}</Text>
@@ -215,4 +287,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12, paddingVertical: 9, fontSize: 14 },
   links: { minHeight: 72, textAlignVertical: "top" },
   hours: { flexGrow: 0, flexBasis: 64, width: 64 },
+  categories: { minHeight: 140, textAlignVertical: "top" },
+  categoryBlock: { gap: 6, paddingVertical: 8, borderTopWidth: 1, borderTopColor: colors.lineSoft },
+  nominees: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
+  winnerText: { color: colors.gold, fontWeight: "700", flexGrow: 1, flexShrink: 1 },
 });

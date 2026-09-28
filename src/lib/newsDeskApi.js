@@ -28,3 +28,8 @@ export function requestNewsIntroduction({ accountId, requestId, signal }) {
 export function fetchLiveCoverage({ signal } = {}) {
   return api("/api/news-desk/live", { silent: true, signal, context: "Loading live coverage" });
 }
+
+// One event's full coverage and winners list (/news/live/<slug>).
+export function fetchLiveEvent(slug, { signal } = {}) {
+  return api(`/api/news-desk/live/${encodeURIComponent(slug)}`, { silent: true, signal, context: "Loading live coverage" });
+}
