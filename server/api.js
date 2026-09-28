@@ -98,6 +98,7 @@ import { catalogResearchRoutes } from "./features/catalogResearch/catalogResearc
 import { createNewsDeskEditor } from "./features/newsDesk/newsDeskEditor.js";
 import { newsDeskEditorRoutes } from "./features/newsDesk/newsDeskEditorRoutes.js";
 import { ensureNewsLiveSchema } from "./features/newsDesk/newsLive.js";
+import { ensureNewsCardPhotoSchema } from "./features/newsDesk/newsCardPhotos.js";
 import { festivalRoutes } from "./features/festivals/festivalRoutes.js";
 import { ensureFestivalSchema } from "./features/festivals/festivalStore.js";
 import { startFestivalScheduler } from "./features/festivals/festivalScan.js";
@@ -461,6 +462,12 @@ function publicAccountOrNull(id) {
 function requireAdmin(ctx) {
   const u = requireUser(ctx);
   if (u.role !== "admin") throw new ApiError(403, "Admins only.", "FORBIDDEN");
+  return u;
+}
+// The newsroom: admins and editors, the news team role with no other access.
+function requireNewsEditor(ctx) {
+  const u = requireUser(ctx);
+  if (u.role !== "admin" && u.role !== "editor") throw new ApiError(403, "The newsroom is for admins and editors.", "FORBIDDEN");
   return u;
 }
 function requireModerator(ctx) {
@@ -1437,8 +1444,9 @@ function cleanPlaybackSource(providerValue, sourceIdValue) {
   return { provider: null, sourceId: null };
 }
 
+// Every staff role, the news team's editor included, needs the Owner's approval.
 function roleChangeTouchesHead(currentRole, nextRole) {
-  return [currentRole, nextRole].some((role) => role === "admin" || role === "moderator");
+  return [currentRole, nextRole].some((role) => role === "admin" || role === "moderator" || role === "editor");
 }
 
 function selectedRoleHandle(target, role, requestedHandle = null) {
@@ -2949,7 +2957,8 @@ function mutedIdSet(userId) {
 }
 
 const newsDeskReader = createNewsDeskReader(db, { projectReposts:(ids,viewerId)=>repostInfoPage(db,ids,viewerId) });
-const resolveNewsArtwork = createNewsCardArtworkResolver({ database: db });
+ensureNewsCardPhotoSchema(db);
+const resolveNewsArtwork = createNewsCardArtworkResolver({ database: db, resolveProfilePhoto: (input) => attendanceTicketArtistProfilePhoto(input) });
 // One renderer for every share card and news preview image, so its memory and
 // concurrency limits hold across both.
 const socialShareCardRenderer = createSocialShareCardRenderer();
@@ -9359,7 +9368,7 @@ export const routes = {
     const query = clean(ctx.query?.q, { max: 80 }).toLowerCase();
     const role = clean(ctx.query?.role, { max: 16 }).toLowerCase();
     const status = clean(ctx.query?.status, { max: 16 }).toLowerCase();
-    if (role && !["fan", "artist", "moderator", "admin"].includes(role)) {
+    if (role && !["fan", "artist", "editor", "moderator", "admin"].includes(role)) {
       throw new ApiError(400, "That member role filter is invalid.", "VALIDATION_FAILED");
     }
     if (status && !["active", "banned", "suspended"].includes(status)) {
@@ -9429,7 +9438,7 @@ export const routes = {
   "POST /api/admin/users/:id/role": (ctx) => {
     const actor = requireAdmin(ctx);
     limit(ctx, "role-change-request", 20, 60 * 60 * 1000);
-    const role = ["fan", "artist", "moderator", "admin"].includes(ctx.body?.role) ? ctx.body.role : null;
+    const role = ["fan", "artist", "editor", "moderator", "admin"].includes(ctx.body?.role) ? ctx.body.role : null;
     if (!role) throw new ApiError(400, "Bad role.");
     if (ctx.params.id === ctx.user.id) throw new ApiError(400, "You can't change your own role.");
     const handle = ctx.body?.handle ? cleanHandle(ctx.body.handle) : null;
@@ -9877,9 +9886,10 @@ export const routes = {
       return row ? publicUser(row) : null;
     } }),
   // Owner-chosen news stories: free to browse, one metered Claude call per draft.
-  ...newsDeskEditorRoutes({ editor: createNewsDeskEditor({ database: db, now }), database: db, ApiError, requireAdmin, rateLimit: limit, now }),
+  ...newsDeskEditorRoutes({ editor: createNewsDeskEditor({ database: db, now }), database: db, ApiError, requireAdmin: requireNewsEditor, rateLimit: limit, now,
+    photoResolver: resolveNewsArtwork, readStory: (postId) => newsDeskReader.forLivePost(postId), listStories: () => newsDeskReader.list({ limit: 10 }).stories || [] }),
   // Live coverage for big nights: outlet headlines plus owner updates, no Claude.
-  ...newsLiveRoutes({ database: db, ApiError, requireAdmin, rateLimit: limit, now }),
+  ...newsLiveRoutes({ database: db, ApiError, requireAdmin: requireNewsEditor, rateLimit: limit, now }),
   // Festivals: editions, lineups by day, and members' plans.
   ...festivalRoutes({ database: db, ApiError, requireVerifiedUser, rateLimit: limit, clean, decodedPathParam, now }),
   ...catalogResearchRoutes({ database: db, ApiError, rateLimit: limit, decodedPathParam, canonicalVenueKey, requireAdmin, now,

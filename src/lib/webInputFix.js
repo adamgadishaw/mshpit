@@ -52,6 +52,9 @@ if (Platform.OS === "web" && typeof document !== "undefined") {
     *::-webkit-scrollbar-track { background: transparent; }
     *::-webkit-scrollbar-thumb { background: rgba(100,107,130,0.35); border-radius: 99px; }
     *::-webkit-scrollbar-thumb:hover { background: rgba(100,107,130,0.6); }
+    /* Our video view draws its own start button; hide the browser's centre circle. */
+    video::-webkit-media-controls-overlay-play-button { display: none !important; }
+    video::-webkit-media-controls-start-playback-button { display: none !important; }
   `;
     document.head.appendChild(el);
   }

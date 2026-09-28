@@ -6,6 +6,33 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-09-28 Newsroom, news card photos, player and link safety
+
+From the owner's list:
+- **Newsroom** is its own place: a Moderation tab for admins and a Newsroom
+  screen (menu) for the new **editor** role, the news team, which has no
+  other staff access. Editor changes need the Owner's approval like other
+  staff roles. The news editor and live coverage routes accept admins and
+  editors (`requireNewsEditor`). The forms were rebuilt: each input has a
+  label, an example and one line of help, inputs are one line tall (a flex
+  basis had made them 220 px), start time is a Now/Later choice and the run
+  length is a set of chips. Files moved to `src/features/newsroom/`.
+- **News share cards** no longer use the generic illustration. The photo is
+  the first artist in the story with a usable photo: their own profile photo,
+  then a licensed catalog photo; otherwise a clean headline card. The news
+  team can pick another artist from the story or no photo ("Share card
+  photos" in the Newsroom; table `news_card_photos`). Google Images are not
+  used: the photos are copyrighted and Google's terms forbid reuse.
+- **Video player:** the browser's own centre play circle no longer shows
+  behind "Play video" (hidden by CSS; the native control bar stays for
+  keyboard and screen reader users).
+- **External links:** a shared YouTube video that opens YouTube now says
+  "Watch on YouTube" with the external-link icon instead of a play triangle.
+  Live coverage update links are limited to the outlets the desk reads, the
+  award shows' official sites, YouTube and major social sites. Ticket links
+  already accept only known ticket sellers and ask before opening an artist's
+  own link.
+
 ## 2026-09-28 Search snippets, plain copy, startup bundle
 
 From the owner's Search Console numbers (19k impressions, 0.45% clicks):

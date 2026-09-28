@@ -5,7 +5,7 @@
 // come from the feeds the desk already reads (every 5 minutes while an event
 // is live) and the updates are typed by hand.
 import { randomUUID } from "node:crypto";
-import { newsSourceById } from "./newsSources.js";
+import { NEWS_SOURCES, newsSourceById } from "./newsSources.js";
 
 const HOUR = 60 * 60 * 1000;
 const BEFORE_START_MS = 3 * HOUR;
@@ -119,6 +119,20 @@ export function endLiveEvent(database, id, { at = Date.now() } = {}) {
   return readEvent(database, event.id);
 }
 
+// Update links go only to places readers can trust: the outlets the desk
+// reads, the award show's own channels, and the big video and social sites.
+// Anything else (a lookalike domain, a link shortener, a scam page) is refused.
+const LIVE_LINK_HOSTS = Object.freeze([
+  ...NEWS_SOURCES.map((source) => source.domain),
+  "youtube.com", "youtu.be", "instagram.com", "tiktok.com", "x.com", "twitter.com", "threads.net", "facebook.com",
+  "apnews.com", "reuters.com", "bbc.co.uk", "bbc.com", "nytimes.com", "cnn.com", "cbc.ca", "latimes.com",
+  "grammy.com", "mtv.com", "cbs.com", "cbsnews.com", "nbc.com", "abc.com", "bet.com", "billboardmusicawards.com",
+]);
+export function trustedLiveLinkHost(hostname) {
+  const host = String(hostname || "").toLowerCase().replace(/\.$/u, "");
+  return LIVE_LINK_HOSTS.some((allowed) => host === allowed || host.endsWith(`.${allowed}`));
+}
+
 export function addLiveNote(database, eventId, { text, url = null, actorId = null, at = Date.now() } = {}) {
   const event = readEvent(database, eventId);
   if (!isLive(event, at)) fail("CONFLICT", "That live coverage has ended.");
@@ -128,7 +142,10 @@ export function addLiveNote(database, eventId, { text, url = null, actorId = nul
   if (url) {
     try { link = new URL(String(url).trim()); }
     catch { fail("VALIDATION_FAILED", "The link is not a web address."); }
-    if (link.protocol !== "https:" || link.username || link.password) fail("VALIDATION_FAILED", "Links must start with https://.");
+    if (link.protocol !== "https:" || link.username || link.password || link.port) fail("VALIDATION_FAILED", "Links must start with https://.");
+    if (!trustedLiveLinkHost(link.hostname)) {
+      fail("VALIDATION_FAILED", "Link to a music outlet the desk reads, the show's official site, YouTube or a major social site.");
+    }
   }
   const id = randomUUID();
   database.prepare("INSERT INTO news_live_notes (id,event_id,text,url,created_by,created_at) VALUES (?,?,?,?,?,?)")

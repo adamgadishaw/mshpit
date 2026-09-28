@@ -2,7 +2,6 @@ import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
 import Button from "../../components/Button";
 import { colors, mono, radius } from "../../theme";
 import useCatalogMaintenance from "./useCatalogMaintenance";
-import NewsDeskEditor from "./NewsDeskEditor";
 import { catalogBytes, catalogCount, catalogModeLabel, catalogTime, catalogSourceSchedulerLabel,
   claudeMoney, claudeSpendBreakdown, claudeSpendTotal, newsDeskReasonText } from "./catalogMaintenanceState.mjs";
 
@@ -151,7 +150,7 @@ export default function CatalogMaintenancePanel({ accountId, role, active = true
         {news?.lastError ? <Text selectable style={styles.error}>Last problem: {news.lastError.label} {news.lastError.detail} at {catalogTime(news.lastError.at)}. The desk checks again every 20 minutes.</Text> : null}
         {news && !news.publisherBound ? <Text selectable style={styles.notice}>No news account is bound yet. The first check binds the account that wrote earlier stories.</Text> : null}
         <Text selectable style={styles.hint}>The desk reads the outlets every 20 minutes and publishes only in its daily slots, when enough independent outlets carry a story. Quiet stretches are normal on slow news days.</Text>
-        <NewsDeskEditor accountId={accountId} role={role} active={active} />
+        <Text selectable style={styles.hint}>Write stories and run live coverage in the Newsroom tab.</Text>
       </Section>
       <Section title="Claude spending this month">
         <View style={styles.grid}>

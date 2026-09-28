@@ -2,7 +2,7 @@
 // moderation console (moderationConsole.mjs) loads only with the staff screens.
 
 const safeText = (value) => (typeof value === "string" ? value.trim() : "");
-const ACCOUNT_ROLES = new Set(["fan", "artist", "moderator", "admin"]);
+const ACCOUNT_ROLES = new Set(["fan", "artist", "editor", "moderator", "admin"]);
 
 // A successful request is not necessarily an applied mutation: privileged
 // transitions return `pending: true` until the Founder acts. Only the exact

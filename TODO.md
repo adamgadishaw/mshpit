@@ -243,6 +243,20 @@ remains a broad context whose changing value can rerender unrelated consumers.
 - **Animated story:** an MP4 version of the share card needs a render service
   with ffmpeg.
 
+## Newsroom and owner list follow-ups (2026-09-28)
+
+- **Share card photos beyond the catalog:** a Wikimedia Commons picker for
+  the news team (free licences, author credit, mirrored to our media store
+  first). Google Images stays out: the photos are copyrighted.
+- **Editor accounts:** the role exists; no one holds it yet. Grant it from
+  Members once a news hire is named (Owner approval applies).
+- **External links elsewhere:** feed posts, comments and bios still link out
+  without the "leaving Mshpit" step that ticket links use. Apply the same
+  allowlist and confirm step.
+- **Owner list still open:** festival page animation and polish, Discover
+  list view in place of "load more", regional news by member city,
+  step-by-step signup and review logging, more profile customization.
+
 ## Lineup follow-ups (2026-09-28)
 
 - **Festivals section:** shipped 2026-09-28. Follow-ups: past lineups from

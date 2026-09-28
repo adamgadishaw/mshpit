@@ -22,7 +22,8 @@ import {
   summarizeModerationReports,
 } from "../../domain/moderationConsole.mjs";
 
-const ROLES = ["fan", "artist", "moderator", "admin"];
+// "editor" is the news team: the newsroom and nothing else.
+const ROLES = ["fan", "artist", "editor", "moderator", "admin"];
 const MEMBER_PAGE_SIZE = 40;
 const REPORT_PAGE_SIZE = 30;
 const IRREVERSIBLE_MEDIA_TARGETS = new Set(["post", "venue_review", "artist_profile"]);

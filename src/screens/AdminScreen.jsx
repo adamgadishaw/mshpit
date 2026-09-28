@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import { Suspense, useState, useEffect, useMemo, useRef } from "react";
 import { ActivityIndicator, View, Text, StyleSheet, ScrollView, Pressable, TextInput } from "react-native";
 import { colors, mono, radius, space } from "../theme";
 import { useStore, isStaff, isMod } from "../store";
@@ -35,10 +35,14 @@ import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import useScopedRefresh from "../hooks/useScopedRefresh";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
 import CatalogMaintenancePanel from "../features/catalogMaintenance/CatalogMaintenancePanel";
+import { lazyWithRetry } from "../lib/lazyWithRetry";
+
+// The newsroom loads with its own chunk (shared with the Newsroom screen).
+const NewsDeskEditor = lazyWithRetry(() => import("../features/newsroom/newsroomEntry").then((module) => ({ default: module.NewsDeskEditor })), "NewsDeskEditor");
 import SearchGrowthPanel from "../features/searchGrowth/SearchGrowthPanel";
 
 const ADMIN_ONLY_TABS = new Set([
-  "overview", "analytics", "catalog", "email", "cities", "badges", "suggestions", "memorials", "requests",
+  "overview", "analytics", "catalog", "newsroom", "email", "cities", "badges", "suggestions", "memorials", "requests",
 ]);
 
 // Privacy-bounded first-party product analytics for operator diagnosis. Public
@@ -734,6 +738,7 @@ export default function AdminScreen({ onClose }) {
     { key: "members", label: "Members", icon: "you", badge: bannedCount || undefined },
     { key: "content", label: "Content", icon: "feed" },
     { key: "catalog", label: "Catalog", icon: "music", admin: true },
+    { key: "newsroom", label: "Newsroom", icon: "feed", admin: true },
     { key: "email", label: "Email", icon: "feed", admin: true },
     { key: "cities", label: "City pages", icon: "map", admin: true },
     { key: "badges", label: "Badges", icon: "star", admin: true },
@@ -981,6 +986,13 @@ export default function AdminScreen({ onClose }) {
             ))}
           </>
         )}
+
+        {/* ---- NEWSROOM ---- */}
+        {activeTab === "newsroom" && iAmAdmin ? (
+          <Suspense fallback={<Text style={styles.empty}>Opening the newsroom...</Text>}>
+            <NewsDeskEditor key={`newsroom:${session?.id}:${session?.role}`} accountId={session?.id} role={session?.role} active={appActive} />
+          </Suspense>
+        ) : null}
 
         {/* ---- CATALOG ---- */}
         {activeTab === "catalog" && (

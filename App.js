@@ -73,6 +73,7 @@ const OwnerApprovalScreen = lazyWithRetry(() => import("./src/screens/OwnerAppro
 const BadgeLegendScreen = lazyWithRetry(() => import("./src/screens/BadgeLegendScreen"), "BadgeLegendScreen");
 const CrewScreen = lazyWithRetry(() => import("./src/screens/CrewScreen"), "CrewScreen");
 const NewsScreen = lazyWithRetry(() => import("./src/components/news/NewsViews").then((module) => ({ default: module.NewsScreen })), "NewsScreen");
+const NewsroomScreen = lazyWithRetry(() => import("./src/features/newsroom/newsroomEntry").then((module) => ({ default: module.NewsroomScreen })), "NewsroomScreen");
 const FestivalScreen = lazyWithRetry(() => import("./src/features/festivals/festivalsEntry").then((module) => ({ default: module.FestivalScreen })), "FestivalScreen");
 const FestivalsHubScreen = lazyWithRetry(() => import("./src/features/festivals/festivalsEntry").then((module) => ({ default: module.FestivalsHubScreen })), "FestivalsHubScreen");
 const WelcomeScreen = lazyWithRetry(() => import("./src/screens/WelcomeScreen"), "WelcomeScreen");
@@ -1342,6 +1343,7 @@ function Root() {
   else if (nav.festival?.slug) overlay = <FestivalScreen key={`${session?.id || "guest"}:${nav.festival.slug}`} slug={nav.festival.slug} editionId={nav.festival.editionId || null}
     signedIn={!!session} accountId={session?.id || null} author={session ? { name: session.name } : null} onClose={back} onOpenArtist={openArtist} onRequireAuth={openSignIn}
     onReviewFestival={(prefill) => requireVerifiedMutation("review", () => go({ logging: true, prefill }))} />;
+  else if (nav.newsroom) overlay = <NewsroomScreen key={`${session?.id || "guest"}:newsroom`} accountId={session?.id || null} role={session?.role || null} active={appActive} onClose={back} />;
   else if (nav.festivals) overlay = <FestivalsHubScreen onClose={back} onOpenFestival={openFestival} />;
   else if (nav.news) overlay = <NewsScreen key={`${session?.id || "guest"}:${nav.liveSlug || ""}`} liveSlug={nav.liveSlug || null} session={session} onClose={back} onOpenArtist={openArtist} onOpenProfile={openProfile} onReport={openReport} onOpenStory={openNewsStory} onRequireAuth={openSignIn} />;
   else if (ENABLE_CREW && nav.crew) overlay = <CrewScreen key={session?.id || "guest"} initialTab={nav.crew?.tab === "plans" ? "plans" : "shows"} onClose={back} onOpenShow={openShow} onOpenLounge={(log) => go({ lounge: log })} onRequireAuth={openSignIn} />;
@@ -1365,6 +1367,7 @@ function Root() {
       onManageProfile={replaceProfileManagement}
       onSettings={() => replace({ settings: true })}
       onAdmin={() => replace({ admin: true })}
+      onNewsroom={() => replace({ newsroom: true })}
       onTourDates={() => requireVerifiedMutation("artist", () => replace({ bulk: true }))}
       onRequestArtist={() => requireVerifiedMutation("artist", () => replace({ reqArtist: true }))}
       onHowItWorks={() => go({ welcomeGuide: true })}

@@ -27,6 +27,16 @@ export async function readNewsEditor({ accountId, query = "", signal } = {}, { a
   }));
 }
 
+// Which photo a story's share card uses: "auto", "artist" (with its key) or "none".
+export async function setNewsStoryPhoto({ accountId, postId, choice, artistKey = null } = {}, { apiCall } = {}) {
+  const expectedAccountId = actor(accountId);
+  const payload = await transport(apiCall)(`${NEWS_EDITOR_PATH}/stories/${encodeURIComponent(String(postId || ""))}/photo`, {
+    method: "PUT", body: { choice, artistKey }, expectedAccountId, silent: true, context: "Choosing a news card photo",
+  });
+  if (!payload?.photo || typeof payload.photo.choice !== "string") throw new TypeError("The photo choice was not confirmed. Refresh and try again.");
+  return payload.photo;
+}
+
 export async function writeNewsDraft({ accountId, reportUrls = [], links = [], signal } = {}, { apiCall } = {}) {
   const expectedAccountId = actor(accountId);
   const payload = await transport(apiCall)(`${NEWS_EDITOR_PATH}/drafts`, {

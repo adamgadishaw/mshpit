@@ -3,13 +3,14 @@ import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { publicArtistPhoto } from "../../artistPhotoCatalog.js";
 import { photoCreditPathFromArtwork } from "../../photoCredits.js";
-import { NEWS_ILLUSTRATION_ARTWORK, NEWS_ILLUSTRATION_CONTEXT } from "../../newsIllustration.js";
-import { createNewsCardArtworkResolver } from "./newsCardArtwork.js";
+import { createNewsCardArtworkResolver, newsCardPhotoOptions } from "./newsCardArtwork.js";
+import { ensureNewsCardPhotoSchema, setNewsCardPhotoChoice } from "./newsCardPhotos.js";
 
 const MBID = "d8fd8d9b-473b-4f06-83c8-869b1bb9de89";
 const ENV = { MEDIA_PUBLIC_BASE_URL: "https://media.mshpit.test/public" };
 const EMPTY = { fallbackArtwork: [], artworkContext: "" };
-const ILLUSTRATED = { fallbackArtwork: [NEWS_ILLUSTRATION_ARTWORK], artworkContext: NEWS_ILLUSTRATION_CONTEXT };
+// No usable photo means a clean headline card; the old generic illustration is gone.
+const ILLUSTRATED = EMPTY;
 const STORY = { artists: [{ key: "bryson tiller", name: "Untrusted stale name", photo: "https://i.scdn.co/image/not-exportable" }] };
 function fixture(t) {
   const database = new DatabaseSync(":memory:");
@@ -33,8 +34,7 @@ test("news artwork uses a fresh exact database identity and a registered license
   } });
   const result = resolve(STORY);
   assert.equal(result.artworkContext, "Artist photo: Bryson Tiller");
-  assert.equal(result.fallbackArtwork.length, 2);
-  assert.deepEqual(result.fallbackArtwork[1], NEWS_ILLUSTRATION_ARTWORK);
+  assert.equal(result.fallbackArtwork.length, 1, "only this artist's photo, never an unrelated illustration");
   const photo = registeredPhoto(), art = result.fallbackArtwork[0];
   assert.equal(art.url, photo.uri);
   assert.equal(art.source, "licensed-media");
@@ -47,13 +47,13 @@ test("news artwork uses a fresh exact database identity and a registered license
 test("news artwork rechecks canonical identity and never keeps stale artwork after identity removal or reassignment", t => {
   const database = fixture(t);
   const resolve = createNewsCardArtworkResolver({ database, env: ENV });
-  assert.equal(resolve(STORY).fallbackArtwork.length, 2);
+  assert.equal(resolve(STORY).fallbackArtwork.length, 1);
   for (const mbid of ["11111111-1111-4111-8111-111111111111", null, "bad-id"]) {
     database.prepare("UPDATE artists SET mbid=?").run(mbid);
     assert.deepEqual(resolve(STORY), ILLUSTRATED);
   }
   database.prepare("UPDATE artists SET mbid=?").run(MBID);
-  assert.equal(resolve(STORY).fallbackArtwork.length, 2);
+  assert.equal(resolve(STORY).fallbackArtwork.length, 1);
   database.exec("DELETE FROM artists");
   assert.deepEqual(resolve(STORY), ILLUSTRATED);
 });
@@ -69,7 +69,7 @@ test("news artwork scans at most three exact keys and labels only the first vali
   lookups = 0;
   const result = resolve({ artists: [{ key: "first" }, ...STORY.artists, { key: "third" }] });
   assert.equal(lookups, 2);
-  assert.equal(result.fallbackArtwork.length, 2);
+  assert.equal(result.fallbackArtwork.length, 1);
   assert.equal(result.artworkContext, "Artist photo: Bryson Tiller");
   assert.deepEqual(createNewsCardArtworkResolver({ database, env: ENV, resolvePhoto: registeredPhoto })({ artists: [{ key: "first" }] }), ILLUSTRATED,
     "another artist cannot borrow a real registered portrait");
@@ -84,9 +84,31 @@ test("news artwork rejects untrusted delivery, incomplete or conflicting credits
     { uri: photo.uri.replace("https:", "http:") }, { uri: "https://media.mshpit.test/private/image.webp" },
     { title: "" }, { licenseUrl: "" }, { creator: "Someone else" }, { sourcePage: "https://evil.test/forged-credit" },
   ]) assert.deepEqual(createNewsCardArtworkResolver({ database, env: ENV, resolvePhoto: () => ({ ...photo, ...override }) })(STORY), ILLUSTRATED);
-  assert.deepEqual(createNewsCardArtworkResolver({ database, env: {} })(STORY), ILLUSTRATED, "no trusted public media base means only the bundled illustration");
+  assert.deepEqual(createNewsCardArtworkResolver({ database, env: {} })(STORY), ILLUSTRATED, "no trusted public media base means a headline card");
   assert.deepEqual(createNewsCardArtworkResolver({ database, env: ENV })({ artists: [], image: photo.uri, fallbackArtwork: [photo] }), ILLUSTRATED);
   assert.deepEqual(createNewsCardArtworkResolver({ database, env: ENV, resolvePhoto: () => { throw new Error("private detail"); } })(STORY), ILLUSTRATED);
   assert.deepEqual(createNewsCardArtworkResolver()({ artists: STORY.artists }), ILLUSTRATED);
   for (const invalid of [null, undefined, [], "news", 1]) assert.deepEqual(createNewsCardArtworkResolver({ database, env: ENV })(invalid), EMPTY);
+});
+
+test("an artist's own profile photo comes first, and the news team can pick an artist or no photo", t => {
+  const database = fixture(t);
+  database.prepare("INSERT INTO artists VALUES (?,?,?)").run("sza", "SZA", null);
+  ensureNewsCardPhotoSchema(database);
+  const profile = `${ENV.MEDIA_PUBLIC_BASE_URL}/users/u_sza/avatar/sza.webp`;
+  const resolve = createNewsCardArtworkResolver({ database, env: ENV,
+    resolveProfilePhoto: ({ artistKey }) => (artistKey === "sza" ? profile : "https://evil.test/not-ours.webp") });
+  const story = { postId: "news_1", artists: [{ key: "sza", name: "SZA" }, { key: "bryson tiller", name: "Bryson Tiller" }] };
+  assert.deepEqual(resolve(story), { fallbackArtwork: [{ url: profile, source: "owned-media" }], artworkContext: "Artist photo: SZA" });
+
+  assert.deepEqual(setNewsCardPhotoChoice(database, { postId: "news_1", choice: "artist", artistKey: "bryson tiller", story }), { choice: "artist", artistKey: "bryson tiller" });
+  assert.equal(resolve(story).fallbackArtwork[0].source, "licensed-media", "the picked artist's licensed photo");
+  assert.equal(resolve(story).artworkContext, "Artist photo: Bryson Tiller");
+  assert.deepEqual(setNewsCardPhotoChoice(database, { postId: "news_1", choice: "artist", artistKey: "someone else", story }), { error: "VALIDATION_FAILED" });
+  setNewsCardPhotoChoice(database, { postId: "news_1", choice: "none", story });
+  assert.deepEqual(resolve(story), EMPTY, "no photo: a clean headline card");
+  setNewsCardPhotoChoice(database, { postId: "news_1", choice: "auto", story });
+  assert.equal(resolve(story).artworkContext, "Artist photo: SZA");
+  assert.deepEqual(newsCardPhotoOptions(story, resolve).map((option) => option.artistKey), ["sza", "bryson tiller"]);
+  assert.deepEqual(setNewsCardPhotoChoice(database, { postId: "news_2", choice: "none", story }), { error: "NOT_FOUND" });
 });

@@ -261,7 +261,10 @@ async function scenario(browser, origin, width, kind) {
       assert.equal(state.posts, kind === "action-retry" ? 4 : 3);
     }
     if (kind === "actions") {
-      const editor = panel.getByTestId("news-desk-editor");
+      // The newsroom is its own Moderation tab, apart from catalog upkeep.
+      assert.equal(await panel.getByTestId("news-desk-editor").count(), 0, "the news editor no longer sits inside Catalog");
+      await page.getByRole("tab", { name: "Newsroom", exact: true }).click();
+      const editor = page.getByTestId("news-desk-editor");
       await editor.getByText("Radiohead Announce 2027 World Tour", { exact: true }).waitFor();
       await editor.getByText(/about 2 cents, from the news budget: \$0\.28 left today\. 0 of 10 drafts/).waitFor();
       await editor.getByRole("button", { name: "Write a draft about Radiohead Announce 2027 World Tour", exact: true }).click();
@@ -270,8 +273,12 @@ async function scenario(browser, origin, width, kind) {
       await editor.getByRole("button", { name: "Publish Radiohead announce a 2027 world tour", exact: true }).click();
       await editor.getByText("Published. It is on the News tab now.", { exact: true }).waitFor();
       await editor.getByText("PUBLISHED", { exact: true }).waitFor();
-      await editor.getByLabel("Live coverage title", { exact: true }).fill("2026 MTV VMAs");
-      await editor.getByLabel("Keywords the outlets will use, separated by commas", { exact: true }).fill("VMAs, Video Music Awards");
+      await editor.getByLabel("Event name", { exact: true }).fill("2026 MTV VMAs");
+      await editor.getByLabel("Headline keywords", { exact: true }).fill("VMAs, Video Music Awards");
+      // Inputs are one line tall, not the old 220 pixel boxes.
+      assert.ok((await editor.getByLabel("Event name", { exact: true }).boundingBox()).height < 60);
+      mkdirSync(join(root, ".tmp", "catalog-maintenance-browser"), { recursive: true });
+      await page.screenshot({ path: join(root, ".tmp", "catalog-maintenance-browser", `newsroom-${width}.png`), fullPage: false });
       await editor.getByRole("button", { name: "Start live coverage", exact: true }).click();
       await editor.getByText("Live coverage started. It is at the top of the news now.", { exact: true }).waitFor();
       await editor.getByRole("button", { name: "Post the live update", exact: true }).waitFor();
@@ -289,6 +296,8 @@ async function scenario(browser, origin, width, kind) {
       await editor.getByRole("button", { name: "Clear the winner of Video of the Year", exact: true }).waitFor();
       await editor.getByRole("button", { name: "Start live coverage", exact: true }).waitFor();
       assert.equal(await editor.getByRole("button", { name: "Post the live update", exact: true }).count(), 0, "no updates after the show");
+      await page.getByRole("tab", { name: "Catalog", exact: true }).click();
+      await panel.waitFor();
       // No element screenshot here: capturing an element taller than the
       // window resizes the page in Chromium and remounts Moderation.
     }

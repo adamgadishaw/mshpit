@@ -29,7 +29,8 @@ const DIRECTLY_REMOVABLE_TARGETS = new Set([
 
 const safeText = (value) => (typeof value === "string" ? value.trim() : "");
 const lower = (value) => safeText(value).toLowerCase();
-const HEAD_ROLES = new Set(["moderator", "admin"]);
+// Staff roles, including the news team's editor, need the Owner's approval.
+const HEAD_ROLES = new Set(["editor", "moderator", "admin"]);
 
 export function moderationMemberIsLockedOwner(member) {
   return member?.owner === true;

@@ -12,7 +12,7 @@ import {
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
-const PRIVILEGED_ROLES = new Set(["fan", "artist", "moderator", "admin"]);
+const PRIVILEGED_ROLES = new Set(["fan", "artist", "editor", "moderator", "admin"]);
 const SECURITY_CATEGORIES = new Set(["security_update", "security_audit"]);
 const SECURITY_CHECKS = new Set([
   "tests",
