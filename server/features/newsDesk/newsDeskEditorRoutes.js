@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { NewsEditorError } from "./newsDeskEditor.js";
+import { ensureNewsLiveSchema, publicLiveCoverage } from "./newsLive.js";
 
 // Owner/admin controls for writing a story on demand (newsDeskEditor.js).
 // Reading and searching never call Claude; a draft is one metered call.
 export function newsDeskEditorRoutes({ editor, database, ApiError, requireAdmin, rateLimit, now = Date.now }) {
+  ensureNewsLiveSchema(database);
   const audit = database.prepare(`INSERT INTO moderation_actions
     (id,actor_id,action,target_type,target_id,reason,prior_state,next_state,request_id,created_at)
     VALUES (?,?,?,?,?,?,?,?,?,?)`);
@@ -45,7 +47,7 @@ export function newsDeskEditorRoutes({ editor, database, ApiError, requireAdmin,
       noStore(ctx);
       const query = typeof ctx.query?.q === "string" && ctx.query.q.trim() ? ctx.query.q : null;
       rateLimit(ctx, query ? "news-editor-search" : "news-editor-read", query ? 60 : 120, 600_000);
-      return editor.overview({ query });
+      return editor.overview({ query }).then((overview) => ({ ...overview, live: publicLiveCoverage(database, { at: now() }).events }));
     }),
     "POST /api/moderation/news-desk/editor/drafts": (ctx) => run(async () => {
       const actor = writer(ctx);

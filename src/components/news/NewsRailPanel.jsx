@@ -1,6 +1,7 @@
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { colors, focusRing, font, mono, radius } from "../../theme";
 import NewsStoryCard from "./NewsStoryCard";
+import LiveCoverageCard from "./LiveCoverageCard";
 import useNewsDeskStories from "./useNewsDeskStories";
 
 // The desktop news panel: the latest confirmed stories, always one glance away
@@ -8,8 +9,11 @@ import useNewsDeskStories from "./useNewsDeskStories";
 export default function NewsRailPanel({ onOpenStory, onOpenAll }) {
   // Top stories: the biggest and most engaged-with of the last three days.
   const news = useNewsDeskStories({ limit: 5, sort: "top" });
-  if (news.status !== "loading" && !news.stories.length) return null;
+  // Live coverage of a big night sits above the stories, even on a quiet day.
+  if (news.status !== "loading" && !news.stories.length) return <LiveCoverageCard compact />;
   return (
+    <View style={styles.stack}>
+    <LiveCoverageCard compact />
     <View style={styles.panel} accessibilityLabel="Music news">
       <View style={styles.head}>
         <View>
@@ -30,10 +34,12 @@ export default function NewsRailPanel({ onOpenStory, onOpenAll }) {
         <Text style={styles.sub}>Loading the latest stories...</Text>
       )}
     </View>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  stack: { gap: 10 },
   panel: { borderRadius: radius.lg, borderCurve: "continuous", borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surface, padding: 14, gap: 10 },
   head: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 8 },
   title: { color: colors.text, fontFamily: mono, fontSize: 11, fontWeight: "900", letterSpacing: 1.4 },

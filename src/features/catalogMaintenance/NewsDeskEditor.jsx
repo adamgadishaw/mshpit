@@ -2,8 +2,58 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { StyleSheet, Text, TextInput, View } from "react-native";
 import Button from "../../components/Button";
 import { colors, radius } from "../../theme";
-import { MAX_NEWS_LINKS, newsCandidateLine, newsCandidateNeed, newsDraftStatus, newsEditorCostLine, parseNewsLinks } from "./newsDeskEditorApi.mjs";
-import { discardDraft, loadNewsEditor, publishDraft, writeDraft } from "./newsDeskEditorService";
+import { MAX_NEWS_LINKS, newsCandidateLine, newsCandidateNeed, newsDraftStatus, newsEditorCostLine, newsLiveStatus, parseNewsLinks } from "./newsDeskEditorApi.mjs";
+import { discardDraft, endLive, loadNewsEditor, postLiveUpdate, publishDraft, removeLiveUpdate, startLive, writeDraft } from "./newsDeskEditorService";
+
+// Live coverage of a big night: start it, post short updates, end it. The
+// timeline also pulls in every outlet headline matching the keywords.
+function LiveControls({ accountId, live, busy, pending, act }) {
+  const [title, setTitle] = useState("");
+  const [keywords, setKeywords] = useState("");
+  const [hours, setHours] = useState("4");
+  const [update, setUpdate] = useState("");
+  const [link, setLink] = useState("");
+  const running = live.find((event) => event.live);
+  if (!running) {
+    return <View style={styles.group}>
+      <Text style={styles.label}>LIVE COVERAGE</Text>
+      <Text selectable style={styles.hint}>For a big night like an award show. Readers see a LIVE card at the top of the news with every outlet headline matching your keywords, plus the updates you post here. No Claude cost.</Text>
+      <TextInput accessibilityLabel="Live coverage title" style={styles.input} value={title} onChangeText={setTitle}
+        placeholder="2026 MTV VMAs" placeholderTextColor={colors.textFaint} maxLength={80} />
+      <TextInput accessibilityLabel="Keywords the outlets will use, separated by commas" style={styles.input} value={keywords} onChangeText={setKeywords}
+        placeholder="VMAs, Video Music Awards" placeholderTextColor={colors.textFaint} autoCapitalize="none" autoCorrect={false} />
+      <View style={styles.searchRow}>
+        <TextInput accessibilityLabel="How many hours it runs" style={[styles.input, styles.hours]} value={hours} onChangeText={setHours}
+          keyboardType="number-pad" maxLength={2} />
+        <Text style={styles.hint}>hours</Text>
+        <Button small title="Start live coverage" accessibilityLabel="Start live coverage"
+          disabled={busy || title.trim().length < 3 || !keywords.trim()} loading={pending === "live:start"}
+          onPress={() => act("live:start", () => startLive({ accountId, title, keywords, hours }), "Live coverage started. It is at the top of the news now.")} />
+      </View>
+    </View>;
+  }
+  const notes = running.items.filter((item) => item.kind === "note");
+  return <View style={styles.group}>
+    <Text style={styles.label}>LIVE COVERAGE</Text>
+    <Text selectable style={styles.headline}>{running.title}</Text>
+    <Text selectable style={styles.hint}>{newsLiveStatus(running)}</Text>
+    <TextInput accessibilityLabel="Live update text" style={[styles.input, styles.links]} multiline value={update} onChangeText={setUpdate}
+      placeholder="Sabrina Carpenter wins Video of the Year" placeholderTextColor={colors.textFaint} maxLength={280} />
+    <TextInput accessibilityLabel="Optional link for the update" style={styles.input} value={link} onChangeText={setLink}
+      placeholder="Optional https:// link" placeholderTextColor={colors.textFaint} autoCapitalize="none" autoCorrect={false} />
+    <View style={styles.actions}>
+      <Button small title="Post update" accessibilityLabel="Post the live update" disabled={busy || !update.trim()} loading={pending === "live:note"}
+        onPress={() => act("live:note", async () => { await postLiveUpdate({ accountId, id: running.id, text: update, url: link }); setUpdate(""); setLink(""); }, "Update posted.")} />
+      <Button small title="End live coverage" variant="secondary" accessibilityLabel={`End live coverage of ${running.title}`} disabled={busy}
+        loading={pending === "live:end"} onPress={() => act("live:end", () => endLive({ accountId, id: running.id }), "Live coverage ended. The recap stays up until tomorrow evening.")} />
+    </View>
+    {notes.map((note) => <View key={note.id} style={styles.row}>
+      <Text selectable style={[styles.copy, styles.rowCopy]}>{note.text}</Text>
+      <Button small title="Remove" variant="secondary" accessibilityLabel={`Remove the update ${note.text}`} disabled={busy}
+        loading={pending === `live:remove:${note.id}`} onPress={() => act(`live:remove:${note.id}`, () => removeLiveUpdate({ accountId, noteId: note.id }), "Update removed.")} />
+    </View>)}
+  </View>;
+}
 
 const failure = (error, fallback) => (typeof error?.message === "string" && error.message.trim() ? error.message : fallback);
 
@@ -101,6 +151,8 @@ export default function NewsDeskEditor({ accountId, role, active = true }) {
     {error ? <Text selectable accessibilityRole="alert" style={styles.error}>{error}</Text> : null}
     {notice ? <Text selectable accessibilityLiveRegion="polite" style={styles.notice}>{notice}</Text> : null}
 
+    {overview ? <LiveControls accountId={accountId} live={Array.isArray(overview.live) ? overview.live : []} busy={busy} pending={pending} act={act} /> : null}
+
     {(overview?.drafts?.recent || []).length ? <View style={styles.group}>
       <Text style={styles.label}>RECENT DRAFTS</Text>
       {overview.drafts.recent.map((draft) => <Draft key={draft.id} draft={draft} pending={pending} disabled={busy}
@@ -162,4 +214,5 @@ const styles = StyleSheet.create({
   input: { flexGrow: 1, flexBasis: 220, minWidth: 0, color: colors.text, borderWidth: 1, borderColor: colors.line, borderRadius: radius.md,
     paddingHorizontal: 12, paddingVertical: 9, fontSize: 14 },
   links: { minHeight: 72, textAlignVertical: "top" },
+  hours: { flexGrow: 0, flexBasis: 64, width: 64 },
 });

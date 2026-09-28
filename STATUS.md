@@ -6,6 +6,26 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-09-27 Live coverage for big nights (VMAs)
+
+The owner asked for a live page during the 2026 VMAs. Moderation, Catalog
+Upkeep, News desk, "Live coverage": title, keywords the outlets will use
+("VMAs, Video Music Awards") and hours (1 to 12) start an event. Readers see a
+LIVE card at the top of the News tab and the desktop news rail: every outlet
+headline matching a keyword (from 3 hours before the start), linking to the
+outlet, plus the owner's own short updates (280 characters, optional https
+link), newest first, refreshed every minute. While an event is live the desk
+reads the 17 outlets every 5 minutes instead of 20. "End live coverage" turns
+it into a RECAP card that stays until the next evening. No Claude calls; all
+starts, updates, removals and ends are audited.
+
+Code: `server/features/newsDesk/newsLive.js` (+ routes, tests),
+`src/components/news/LiveCoverageCard.jsx`, `src/domain/newsLive.mjs`, live
+controls in `src/features/catalogMaintenance/NewsDeskEditor.jsx`. Checked by
+unit tests and the news and upkeep browser suites (LIVE card on the News tab
+at 390 and 1280 px; starting coverage from Moderation). The initial web
+bundle is now 508.2 of its 512 KiB budget.
+
 ## 2026-09-27 Write a news story on demand (owner)
 
 Moderation, Catalog Upkeep, News desk, "Write a story now". The owner (any

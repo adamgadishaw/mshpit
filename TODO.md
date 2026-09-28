@@ -243,6 +243,16 @@ remains a broad context whose changing value can rerender unrelated consumers.
 - **Animated story:** an MP4 version of the share card needs a render service
   with ffmpeg.
 
+## Live coverage follow-ups (2026-09-27)
+
+- **Shareable page:** live coverage lives in the app's News tab and rail; add
+  a server-rendered `/news/live/<slug>` page with a share card so a link can
+  be posted during the show.
+- **Web bundle budget:** initial JavaScript is 508.2 of 512 KiB gzip; the next
+  feed-level feature should lazy-load or trim something first.
+- **Schedule ahead:** events start when created; let the owner schedule the
+  Grammys or a festival headliner in advance.
+
 ## News desk editor follow-ups (2026-09-27)
 
 - **Edit before publishing:** drafts are publish-or-discard; add a small

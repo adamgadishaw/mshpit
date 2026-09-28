@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
-import { readFileSync, statSync } from "node:fs";
+import { mkdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, extname, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { fixtureApiResponse, navigationUser } from "./verify-navigation-browser.mjs";
@@ -112,6 +112,11 @@ async function scenario(browser, origin, item) {
       else if (path === "/api/me/following") result = { following: [author.id] };
       else if (path === "/api/me/fanclubs") result = { artists: [] };
       else if (path === "/api/news-desk/stories") result = { stories: stories.map(news => news.id === latest.id ? { ...news, likes: state.liked ? 1 : 0, likedByMe: state.liked } : news), nextCursor: null };
+      else if (path === "/api/news-desk/live") result = { events: [{ id: "live-vmas", slug: "2026-mtv-vmas", title: "2026 MTV VMAs", live: true,
+        startsAt: Date.now() - 3_600_000, endsAt: Date.now() + 3_600_000, updatedAt: Date.now() - 120_000, count: 2, items: [
+          { kind: "note", id: "note-1", at: Date.now() - 120_000, text: "Sabrina Carpenter wins Video of the Year", source: "Mshpit", url: null },
+          { kind: "report", id: "https://www.billboard.com/vmas-winners", at: Date.now() - 900_000, title: "2026 MTV VMAs Winners List (Updating Live)", source: "Billboard", url: "https://www.billboard.com/vmas-winners" },
+        ] }] };
       else if (path === "/api/feed/news-introduction") {
         assert.equal(method, "POST");
         assert.equal(request.headers()["x-pit-expected-account"], reader.id);
@@ -173,6 +178,13 @@ async function scenario(browser, origin, item) {
       assert.equal(await page.getByText(latestTitle, { exact: true }).count(), 0, "Following the author is not consent to put news in Following.");
       assert.equal(await page.getByText(earlierTitle, { exact: true }).count(), 0);
       await page.getByRole("tab", { name: "News feed", exact: true }).click();
+      await page.getByText("2026 MTV VMAs", { exact: true }).first().waitFor();
+      await page.getByText("Sabrina Carpenter wins Video of the Year", { exact: true }).first().waitFor();
+      await page.getByText(/Live now · 2 updates · latest 2 min ago/u).first().waitFor();
+      assert.equal(await page.getByRole("link", { name: "2026 MTV VMAs Winners List (Updating Live), Billboard", exact: true }).first().isVisible(), true,
+        "Outlet headlines in live coverage link to the outlet.");
+      mkdirSync(join(root, ".tmp", "news-browser"), { recursive: true });
+      await page.screenshot({ path: join(root, ".tmp", "news-browser", `news-live-${item.width}.png`) });
       const fullCard = page.getByRole("article").filter({ has: page.getByText(latestTitle, { exact: true }) }).last();
       await fullCard.waitFor();
       await fullCard.getByRole("button", { name: "0 likes", exact: true }).click();

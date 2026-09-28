@@ -22,3 +22,9 @@ export function fetchPostById(id, { signal } = {}) {
 export function requestNewsIntroduction({ accountId, requestId, signal }) {
   return api("/api/feed/news-introduction", { method: "POST", body: { requestId }, expectedAccountId: accountId, signal, silent: true, context: "Preparing news from artists you follow" });
 }
+
+// Live coverage of a big night (an award show): outlet headlines and the
+// owner's updates. A read with its own quiet failure, like the stories.
+export function fetchLiveCoverage({ signal } = {}) {
+  return api("/api/news-desk/live", { silent: true, signal, context: "Loading live coverage" });
+}

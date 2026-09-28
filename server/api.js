@@ -93,6 +93,8 @@ import { artistLiveSummaryRoutes } from "./features/artistArchive/artistLiveSumm
 import { catalogResearchRoutes } from "./features/catalogResearch/catalogResearchRoutes.js";
 import { createNewsDeskEditor } from "./features/newsDesk/newsDeskEditor.js";
 import { newsDeskEditorRoutes } from "./features/newsDesk/newsDeskEditorRoutes.js";
+import { ensureNewsLiveSchema } from "./features/newsDesk/newsLive.js";
+import { newsLiveRoutes } from "./features/newsDesk/newsLiveRoutes.js";
 import { providerProfileRoutes } from "./features/providerProfiles/providerProfileRoutes.js";
 import { crewRoutes } from "./features/crew/crewRoutes.js";
 import { artistUpdatesRoutes } from "./features/artistUpdates/artistUpdatesRoutes.js";
@@ -308,6 +310,7 @@ export const artistDeathWatchService = createArtistDeathWatchService({
 });
 ensureLegacyMediaFinalizeSchema(db);
 ensurePrivacyJournalSchema(db);
+ensureNewsLiveSchema(db);
 const uid = (prefix) => opaqueId(prefix);
 const PROFILE_EXTRAS_MAX_BYTES = 8000;
 const CURRENT_TERMS_VERSION = LEGAL_ACCEPTANCE_VERSION;
@@ -9709,6 +9712,8 @@ export const routes = {
     } }),
   // Owner-chosen news stories: free to browse, one metered Claude call per draft.
   ...newsDeskEditorRoutes({ editor: createNewsDeskEditor({ database: db, now }), database: db, ApiError, requireAdmin, rateLimit: limit, now }),
+  // Live coverage for big nights: outlet headlines plus owner updates, no Claude.
+  ...newsLiveRoutes({ database: db, ApiError, requireAdmin, rateLimit: limit, now }),
   ...catalogResearchRoutes({ database: db, ApiError, rateLimit: limit, decodedPathParam, canonicalVenueKey, requireAdmin, now,
     resolveArtist: (key, ctx) => {
       const artist = resolveCatalogArtistReference(key);

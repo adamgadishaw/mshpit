@@ -86,3 +86,26 @@ export function newsEditorCostLine(overview) {
   const cents = Math.max(1, Math.round(Number(overview.budget.typicalDraftUsd || 0.02) * 100));
   return `Finding stories is free. A draft is one Claude call, about ${cents} cent${cents === 1 ? "" : "s"}, from the news budget: ${money(overview.budget.leftTodayUsd)} left today. ${overview.drafts?.last24h || 0} of ${overview.drafts?.limit || 0} drafts used in the last 24 hours.`;
 }
+
+// Live coverage of a big night: outlet headlines plus the owner's updates.
+export const NEWS_LIVE_PATH = "/api/moderation/news-desk/live";
+async function liveCall(apiCall, path, { accountId, body = {}, context }) {
+  const payload = await transport(apiCall)(path, { method: "POST", body, expectedAccountId: actor(accountId), silent: true, context });
+  if (!Array.isArray(payload?.live)) throw new TypeError("Live coverage could not be confirmed. Refresh to check it.");
+  return payload.live;
+}
+export const startNewsLive = ({ accountId, title, keywords, hours } = {}, { apiCall } = {}) =>
+  liveCall(apiCall, NEWS_LIVE_PATH, { accountId, body: { title, keywords, hours: Number(hours) }, context: "Starting live coverage" });
+export const postNewsLiveUpdate = ({ accountId, id, text, url = "" } = {}, { apiCall } = {}) =>
+  liveCall(apiCall, `${NEWS_LIVE_PATH}/${encodeURIComponent(id)}/notes`, { accountId, body: { text, ...(url.trim() ? { url: url.trim() } : {}) }, context: "Posting a live update" });
+export const endNewsLive = ({ accountId, id } = {}, { apiCall } = {}) =>
+  liveCall(apiCall, `${NEWS_LIVE_PATH}/${encodeURIComponent(id)}/end`, { accountId, context: "Ending live coverage" });
+export const removeNewsLiveUpdate = ({ accountId, noteId } = {}, { apiCall } = {}) =>
+  liveCall(apiCall, `${NEWS_LIVE_PATH}/notes/${encodeURIComponent(noteId)}/remove`, { accountId, context: "Removing a live update" });
+
+// "Live until 11:30 PM · 14 updates" (local time)
+export function newsLiveStatus(event, { formatTime = (at) => new Date(at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) } = {}) {
+  if (!event) return "";
+  const updates = event.count === 1 ? "1 update" : `${event.count || 0} updates`;
+  return event.live ? `Live until ${formatTime(event.endsAt)} · ${updates}` : `Ended · ${updates}`;
+}

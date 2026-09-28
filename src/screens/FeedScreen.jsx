@@ -14,6 +14,7 @@ import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import SuggestedPittersRail from "../components/SuggestedPittersRail";
 import useAppActive from "../lib/useAppActive";
 import NewsStoryCard from "../components/news/NewsStoryCard";
+import LiveCoverageCard from "../components/news/LiveCoverageCard";
 import useNewsDeskStories from "../components/news/useNewsDeskStories";
 import useNewsIntroduction from "../components/news/useNewsIntroduction";
 import { newsAwareFeed } from "../domain/newsReaderState.mjs";
@@ -459,6 +460,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
           )}
 
           {introduction.error ? <Pressable onPress={introduction.retry} accessibilityRole="button" style={{ padding: 12 }}><Text style={{ color: colors.textDim }}>News from your artists couldn't load. Try again.</Text></Pressable> : null}
+          {newsTab ? <View style={styles.liveCoverage}><LiveCoverageCard /></View> : null}
           {phone && newsTab && topNews.stories.length ? (
             <View style={styles.newsStrip} accessibilityLabel="Music news">
               <View style={styles.newsStripHead}>
@@ -667,6 +669,7 @@ const styles = StyleSheet.create({
   undoBtn: { minHeight: 36, justifyContent: "center", paddingHorizontal: 14, borderRadius: radius.pill, backgroundColor: colors.good },
   undoBtnTxt: { color: colors.bg, fontSize: 12.5, fontWeight: "900" },
   empty: { color: colors.textDim, fontSize: 14, lineHeight: 21, fontStyle: "italic", paddingHorizontal: 4 },
+  liveCoverage: { paddingTop: 10 },
   newsStrip: { marginTop: 14, gap: 8 },
   newsStripHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   newsStripTitle: { color: colors.text, fontFamily: mono, fontSize: 11, fontWeight: "900", letterSpacing: 1.4 },

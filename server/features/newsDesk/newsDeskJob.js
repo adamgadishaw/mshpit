@@ -11,6 +11,7 @@ import { applyOnce, createNewsDesk, newsDeskBudget, repairStoryArtists, withdraw
 import { createNewsSummarizer } from "./newsSummarizer.js";
 import { createWikipediaBuzz } from "./newsBuzz.js";
 import { recordNewsDeskFailure, recordNewsDeskPass } from "./newsDeskStatus.js";
+import { ensureNewsLiveSchema, liveEventRunning } from "./newsLive.js";
 
 const MINUTE = 60_000;
 const FEED_MAX_BYTES = 2 * 1024 * 1024;
@@ -194,6 +195,19 @@ export function startNewsDeskScheduler({ database, env = process.env, now = Date
     "news_a88f7651-4fc7-429b-b960-5488ef250e31",
   ], "withdrawn by the owner: below the editorial bar"));
   if (withdrawn) console.log(`[news-desk] withdrew ${withdrawn} stories below the editorial bar`);
+  // While live coverage runs (newsLive.js), read the outlets every 5 minutes
+  // so its timeline keeps up; reading feeds costs nothing.
+  ensureNewsLiveSchema(database);
+  startPeriodicJob({
+    initialDelayMs: 5 * MINUTE,
+    intervalMs: 5 * MINUTE,
+    run: async ({ signal }) => {
+      if (!liveEventRunning(database, now())) return true;
+      await runBackgroundJob(() => desk.ingest({ signal }));
+      return true;
+    },
+    report: (error) => console.error(`[news-desk] live refresh failed safely: ${privateErrorLabel(error)}`),
+  });
   const budget = newsDeskBudget(env);
   console.log(`[news-desk] on: $${budget.dailyUsd}/day, $${budget.monthlyUsd}/month, shared Claude ceiling $${anthropicMonthlyCeilingMicroUsd(env) / 1_000_000}/month`);
   return startPeriodicJob({

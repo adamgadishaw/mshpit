@@ -64,9 +64,9 @@ export const newsDraftFixture = (status = "draft") => ({ id: "draft-fixture-1", 
   summary: "Radiohead will tour the world in 2027, NME and Stereogum report.", body: "First paragraph. Second paragraph.", category: "tour",
   reason: null, costUsd: 0.018, sources: [{ name: "NME", url: "https://www.nme.com/news/tour", used: true }, { name: "Stereogum", url: "https://www.stereogum.com/tour", used: true }],
   postId: status === "published" ? "news_fixture" : null, createdAt: 1789488000000 });
-export function newsEditorFixture(drafts = []) {
+export function newsEditorFixture(drafts = [], live = []) {
   return { configured: true, publisherReady: true, budget: { leftTodayUsd: 0.28, dailyUsd: 0.3, monthlyUsd: 6, typicalDraftUsd: 0.02 },
-    drafts: { last24h: drafts.length, limit: 10, recent: drafts }, candidates: [newsCandidate] };
+    drafts: { last24h: drafts.length, limit: 10, recent: drafts }, candidates: [newsCandidate], live };
 }
 export function staffFixture(url, method = "GET") {
   assert.equal(method, "GET", "Only an explicit upkeep button may mutate a fixture.");
@@ -119,13 +119,20 @@ async function scenario(browser, origin, width, kind) {
       const method = request.method();
       state.calls.push({ path: url.pathname, method });
       if (url.pathname === "/api/client-errors") state.reports.push(request.postDataJSON());
+      if (url.pathname === "/api/moderation/news-desk/live") {
+        assert.equal(method, "POST");
+        assert.deepEqual(request.postDataJSON(), { title: "2026 MTV VMAs", keywords: "VMAs, Video Music Awards", hours: 4 });
+        state.newsLive = [{ id: "live-1", slug: "2026-mtv-vmas", title: "2026 MTV VMAs", keywords: ["VMAs", "Video Music Awards"], live: true,
+          startsAt: 1789488000000, endsAt: 1789488000000 + 4 * 3600000, updatedAt: 1789488000000, count: 0, items: [] }];
+        return await route.fulfill({ contentType: "application/json", body: JSON.stringify({ live: state.newsLive }) });
+      }
       if (url.pathname.startsWith("/api/moderation/news-desk/editor")) {
         if (method === "POST" && url.pathname.endsWith("/drafts")) {
           assert.deepEqual(request.postDataJSON(), { reportUrls: ["https://www.nme.com/news/tour", "https://www.stereogum.com/tour"], links: [] });
           state.newsDraft = newsDraftFixture("draft");
         } else if (method === "POST" && url.pathname.endsWith("/draft-fixture-1/publish")) state.newsDraft = newsDraftFixture("published");
         else assert.equal(method, "GET");
-        const body = method === "GET" ? newsEditorFixture(state.newsDraft ? [state.newsDraft] : [])
+        const body = method === "GET" ? newsEditorFixture(state.newsDraft ? [state.newsDraft] : [], state.newsLive || [])
           : url.pathname.endsWith("/publish") ? { draft: state.newsDraft, postId: "news_fixture" } : { draft: state.newsDraft };
         return await route.fulfill({ contentType: "application/json", body: JSON.stringify(body) });
       }
@@ -236,6 +243,12 @@ async function scenario(browser, origin, width, kind) {
       await editor.getByRole("button", { name: "Publish Radiohead announce a 2027 world tour", exact: true }).click();
       await editor.getByText("Published. It is on the News tab now.", { exact: true }).waitFor();
       await editor.getByText("PUBLISHED", { exact: true }).waitFor();
+      await editor.getByLabel("Live coverage title", { exact: true }).fill("2026 MTV VMAs");
+      await editor.getByLabel("Keywords the outlets will use, separated by commas", { exact: true }).fill("VMAs, Video Music Awards");
+      await editor.getByRole("button", { name: "Start live coverage", exact: true }).click();
+      await editor.getByText("Live coverage started. It is at the top of the news now.", { exact: true }).waitFor();
+      await editor.getByRole("button", { name: "Post the live update", exact: true }).waitFor();
+      await editor.getByRole("button", { name: "End live coverage of 2026 MTV VMAs", exact: true }).waitFor();
       mkdirSync(join(root, ".tmp", "catalog-maintenance-browser"), { recursive: true });
       await editor.screenshot({ path: join(root, ".tmp", "catalog-maintenance-browser", `news-editor-${width}.png`) });
     }

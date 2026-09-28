@@ -35,3 +35,24 @@ test("links, candidates, drafts and cost read as plain sentences", () => {
   assert.equal(newsEditorCostLine(overview),
     "Finding stories is free. A draft is one Claude call, about 2 cents, from the news budget: $0.28 left today. 3 of 10 drafts used in the last 24 hours.");
 });
+
+test("live coverage controls post to the moderation live routes", async () => {
+  const { startNewsLive, postNewsLiveUpdate, endNewsLive, removeNewsLiveUpdate, newsLiveStatus } = await import("./newsDeskEditorApi.mjs");
+  const calls = [];
+  const apiCall = async (path, options) => { calls.push({ path, body: options.body, account: options.expectedAccountId }); return { live: [] }; };
+  await startNewsLive({ accountId: "admin_1", title: "2026 MTV VMAs", keywords: "VMAs", hours: "4" }, { apiCall });
+  await postNewsLiveUpdate({ accountId: "admin_1", id: "e1", text: "Big win", url: "  " }, { apiCall });
+  await endNewsLive({ accountId: "admin_1", id: "e1" }, { apiCall });
+  await removeNewsLiveUpdate({ accountId: "admin_1", noteId: "n1" }, { apiCall });
+  assert.deepEqual(calls.map((call) => [call.path, call.body]), [
+    ["/api/moderation/news-desk/live", { title: "2026 MTV VMAs", keywords: "VMAs", hours: 4 }],
+    ["/api/moderation/news-desk/live/e1/notes", { text: "Big win" }],
+    ["/api/moderation/news-desk/live/e1/end", {}],
+    ["/api/moderation/news-desk/live/notes/n1/remove", {}],
+  ]);
+  assert.ok(calls.every((call) => call.account === "admin_1"));
+  await assert.rejects(endNewsLive({ accountId: "admin_1", id: "e1" }, { apiCall: async () => ({}) }), /could not be confirmed/u);
+  const formatTime = () => "11:30 PM";
+  assert.equal(newsLiveStatus({ live: true, count: 14, endsAt: 1 }, { formatTime }), "Live until 11:30 PM · 14 updates");
+  assert.equal(newsLiveStatus({ live: false, count: 1 }), "Ended · 1 update");
+});
