@@ -24,6 +24,9 @@ first version of live coverage went live at 21:08 EDT).
 - **After the show:** ending coverage keeps the show editable as a recap, so
   winners can still be filled in for its winners-list page; a new show can be
   started alongside it.
+
+Live: the winners tracker and pages at 21:43 EDT (a941b1f); the editable recap
+at 22:04 EDT (0c4a13f), about a minute of downtime each.
 - **Readers:** the LIVE card shows "Winners: 2 of 5 categories announced",
   the latest winners and "Full winners list", which opens
   `/news/live/<slug>` in the app: a Category | Winner | Nominees table (rows
