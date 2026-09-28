@@ -249,8 +249,8 @@ async function scenario(browser, origin, width, kind) {
       await editor.getByText("Live coverage started. It is at the top of the news now.", { exact: true }).waitFor();
       await editor.getByRole("button", { name: "Post the live update", exact: true }).waitFor();
       await editor.getByRole("button", { name: "End live coverage of 2026 MTV VMAs", exact: true }).waitFor();
-      mkdirSync(join(root, ".tmp", "catalog-maintenance-browser"), { recursive: true });
-      await editor.screenshot({ path: join(root, ".tmp", "catalog-maintenance-browser", `news-editor-${width}.png`) });
+      // No element screenshot here: capturing an element taller than the
+      // window resizes the page in Chromium and remounts Moderation.
     }
     assert.deepEqual(state.reports, [], "No client crash reports may be emitted.");
     assert.deepEqual(state.errors, [], "Unhandled errors or missing fixtures fail verification.");
