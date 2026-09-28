@@ -245,13 +245,14 @@ remains a broad context whose changing value can rerender unrelated consumers.
 
 ## Openers and times seen follow-ups (2026-09-28)
 
-- **Artist search for openers:** names are typed; suggesting catalog artists
-  as you type (like the headliner field) would link more of them to pages.
+- **Artist search for openers:** done 2026-09-28 (catalog suggestions only).
+  A "search beyond catalogue" option like the headliner field has is not
+  offered for openers yet.
 - **Festival lineup chips:** when the review is attached to a festival with a
   known lineup, offer its acts as one-tap chips.
 - **Profile stats:** count openers in "artists seen" totals and concert
   history, not only on the review itself.
-- **Web bundle budget:** 510.1 of 512 KiB initial JavaScript; lazy-load or
+- **Web bundle budget:** 508.8 of 512 KiB initial JavaScript; lazy-load or
   trim before the next feed-level feature.
 
 ## Live coverage follow-ups (2026-09-27)

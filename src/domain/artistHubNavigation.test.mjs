@@ -127,6 +127,15 @@ test("fan preview hides ownership affordances and unreleased dates", () => {
   assert.match(artist, /!ownsArtistPage && onReport/);
 });
 
+test("staff can follow artists; only the artist's own account has no Follow button", () => {
+  // Regression: isArtistOwner() is true for every staff account, so hiding
+  // Follow on ownsArtistPage hid it from the site owner on every artist page.
+  assert.match(artist, /const followHidden = ownsNamedArtistPage;/);
+  assert.match(artist, /\{!followHidden \? \(\s*<Pressable\s+style=\{\[styles\.artistFollowBtn/);
+  assert.match(artist, /onFollow=\{followHidden \? undefined : session \? followUi\.toggleFollow : onRequireAuth\}/);
+  assert.doesNotMatch(artist, /!ownsArtistPage \? \(\s*<Pressable\s+style=\{\[styles\.artistFollowBtn/);
+});
+
 test("artist publishing reports authoritative outcomes and preserves failed drafts", () => {
   assert.match(store, /const addArtistPost = async/);
   assert.match(store, /captureAccountMutation\(actor\.id, accountMutationEpochRef\.current\)/);

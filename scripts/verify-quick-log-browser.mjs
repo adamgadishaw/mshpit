@@ -38,6 +38,7 @@ export function assertQuickLogPayload(body) {
   for (const key of ["performance", "setlist", "sound", "venue", "crowd"]) assert.equal(body.dims[key], 0);
   assert.equal(body.review, review);
   assert.equal(body.tour, "A remembered tour");
+  assert.deepEqual(body.supportingActs, ["MUNA"], "A picked opener suggestion is saved by its catalog name.");
 }
 
 async function localServer() {
@@ -83,6 +84,11 @@ async function scenario(browser, origin, width) {
       state.calls.push({ path: url.pathname, method: request.method() });
       if (url.pathname === "/api/client-errors") { state.reports.push(request.postDataJSON()); return await json({ ok: true }); }
       if (url.pathname === "/api/health") return await json({ ok: true, capabilities: { mediaPublishing: { photos: true, videos: true } } });
+      // Opener search: the headliner comes back too and must not be offered.
+      if (url.pathname === "/api/artists" && /^mu/i.test(url.searchParams.get("q") || "")) return await json({ artists: [
+        { key: "a_fixture_muna", name: "MUNA", genre: "Pop", country: "US" },
+        { key: "fixture-artist", name: "Fixture Artist" },
+      ] });
       if (url.pathname === "/api/posts" && request.method() === "POST") {
         assert.equal(request.headers()["x-pit-expected-account"], navigationUser.id);
         const body = request.postDataJSON(); assertQuickLogPayload(body); state.writes.push(body);
@@ -131,6 +137,17 @@ async function scenario(browser, origin, width) {
     await page.getByLabel("Rating", { exact: true }).nth(1).press("End");
     await page.getByRole("button", { name: "Leave performance unrated", exact: true }).click();
     await tour.fill("A remembered tour");
+    const opener = page.getByLabel("Add an opener", { exact: true });
+    await opener.fill("Mu");
+    const munaSuggestion = page.getByRole("button", { name: "Add MUNA as an opener", exact: true });
+    await munaSuggestion.waitFor();
+    assert.equal(await page.getByRole("button", { name: "Add Fixture Artist as an opener", exact: true }).count(), 0, "The headliner is never suggested as its own opener.");
+    await opener.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: join(shots, `quick-log-${width}-opener-suggestions.png`) });
+    await munaSuggestion.click();
+    await page.getByRole("button", { name: "Remove MUNA", exact: true }).waitFor();
+    assert.equal(await opener.inputValue(), "", "Picking a suggestion clears the opener input.");
+    assert.equal(await munaSuggestion.count(), 0);
     await tour.scrollIntoViewIfNeeded();
     await page.screenshot({ path: join(shots, `quick-log-${width}-details.png`) });
     const reviewInput = page.getByPlaceholder("What made the night? Be honest - this is what people read.", { exact: true });

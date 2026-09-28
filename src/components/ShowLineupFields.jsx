@@ -1,17 +1,41 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
-import { colors, radius } from "../theme";
+import { colors, mono, radius } from "../theme";
 import Icon from "./Icon";
-import { addSupportingActs, MAX_SUPPORTING_ACTS, MAX_TIMES_SEEN, parseTimesSeen, timesSeenSentence } from "../domain/supportingActs.mjs";
+import { addSupportingActs, MAX_SUPPORTING_ACTS, MAX_TIMES_SEEN, openerSearchTerm, openerSuggestions, parseTimesSeen, pickSupportingAct, timesSeenSentence } from "../domain/supportingActs.mjs";
 
 // Openers (or festival acts seen) and "times seen" on the concert review form.
 // `timesSeen` is null while the number is automatic; `automaticTimesSeen` is
-// the server's count for this show.
-export default function ShowLineupFields({ artist, acts, onActsChange, timesSeen, automaticTimesSeen, onTimesSeenChange, festival = false }) {
+// the server's count for this show. `searchArtists(term, { signal })` is the
+// composer's catalog search; its results are offered under the opener input.
+export default function ShowLineupFields({ artist, acts, onActsChange, timesSeen, automaticTimesSeen, onTimesSeenChange, festival = false, searchArtists }) {
   const [typed, setTyped] = useState("");
+  const [results, setResults] = useState([]);
+  const [searching, setSearching] = useState(false);
+  const term = openerSearchTerm(typed);
+  useEffect(() => {
+    setResults([]);
+    if (typeof searchArtists !== "function" || term.length < 2) { setSearching(false); return undefined; }
+    const controller = new AbortController();
+    let current = true;
+    setSearching(true);
+    const timer = setTimeout(() => {
+      Promise.resolve(searchArtists(term, { signal: controller.signal }))
+        .then((list) => { if (current) setResults(Array.isArray(list) ? list : []); })
+        // Suggestions are a shortcut; typing the name and pressing Add still works.
+        .catch(() => { if (current) setResults([]); })
+        .finally(() => { if (current) setSearching(false); });
+    }, 280);
+    return () => { current = false; clearTimeout(timer); controller.abort(); };
+  }, [term, searchArtists]);
+  const suggestions = term.length >= 2 ? openerSuggestions(results, { acts, mainArtist: artist }) : [];
   const add = () => {
     const next = addSupportingActs(acts, typed, { mainArtist: artist });
     onActsChange(next);
+    setTyped("");
+  };
+  const pick = (name) => {
+    onActsChange(pickSupportingAct(acts, typed, name, { mainArtist: artist }));
     setTyped("");
   };
   const shown = timesSeen ?? automaticTimesSeen ?? null;
@@ -40,6 +64,15 @@ export default function ShowLineupFields({ artist, acts, onActsChange, timesSeen
         <Text style={styles.addText}>Add</Text>
       </Pressable>
     </View> : <Text style={styles.hint}>That's the most acts one review can list.</Text>}
+    {!full && suggestions.length ? <View style={styles.hits}>
+      {suggestions.map((hit) => <Pressable key={hit.key} style={styles.hit} onPress={() => pick(hit.name)} accessibilityRole="button"
+        accessibilityLabel={festival ? `Add ${hit.name} to the acts you saw` : `Add ${hit.name} as an opener`}>
+        <Icon name="music" size={13} color={colors.amber} />
+        <Text style={styles.hitName} numberOfLines={1}>{hit.name}</Text>
+        {hit.detail ? <Text style={styles.hitDetail} numberOfLines={1}>{hit.detail}</Text> : null}
+      </Pressable>)}
+    </View> : null}
+    {!full && searching && !suggestions.length ? <Text style={styles.hint} accessibilityLiveRegion="polite">Searching artists...</Text> : null}
 
     {artist.trim() ? <View style={styles.seen}>
       <Text style={styles.label}>TIMES SEEN</Text>
@@ -78,6 +111,10 @@ const styles = StyleSheet.create({
   add: { borderRadius: radius.pill, backgroundColor: colors.amber, paddingHorizontal: 14, paddingVertical: 9 },
   addOff: { opacity: 0.45 },
   addText: { color: colors.bg, fontSize: 13, fontWeight: "800" },
+  hits: { backgroundColor: colors.surface, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.line, overflow: "hidden" },
+  hit: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12, paddingVertical: 10, borderTopWidth: 1, borderTopColor: colors.lineSoft },
+  hitName: { color: colors.text, fontSize: 14, fontWeight: "700", flexShrink: 1 },
+  hitDetail: { color: colors.textDim, fontSize: 11, fontFamily: mono, marginLeft: "auto", flexShrink: 1 },
   seen: { marginTop: 10, gap: 6 },
   seenText: { color: colors.gold, fontSize: 14, fontWeight: "800", flexShrink: 1 },
   change: { color: colors.amber, fontSize: 13, fontWeight: "800" },

@@ -426,6 +426,9 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
   // this public profile directly, but never enter an artist-only workspace.
   const ownsArtistPage = isArtistOwner(a.name);
   const ownsNamedArtistPage = artistWorkspaceOwnsArtist(session, a.name);
+  // Following is for everyone except the artist's own account. Staff can
+  // manage every page (ownsArtistPage) and must still be able to follow.
+  const followHidden = ownsNamedArtistPage;
   const canManagePublicPage = profileServicesAvailable && ownsArtistPage && !previewAsFan;
   const highlights = artistPageHighlights({
     upcomingCount: liveAvailable ? overviewResource.data?.schedule?.total : 0,
@@ -1000,7 +1003,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
                 <Text style={styles.statusTxt}>INACTIVE</Text>
               </View>
             )}
-            {!ownsArtistPage ? (
+            {!followHidden ? (
               <Pressable
                 style={[styles.artistFollowBtn, followed && styles.artistFollowBtnOn, followUi.busy && styles.artistFollowBtnBusy]}
                 onPress={session ? followUi.toggleFollow : onRequireAuth}
@@ -1118,21 +1121,21 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
         {!session ? <AccountSnapshotPrompt title={`More with ${a.name}`} body="Follow this artist, share your concert memories, and join the conversation. Artist details and show dates are open to browse." onRequireAuth={onRequireAuth} /> : null}
 
 
-        {session && !ownsArtistPage && followUi.error ? (
+        {session && !followHidden && followUi.error ? (
           <View style={styles.followFeedbackError} accessibilityLiveRegion="assertive">
             <Icon name="flag" size={14} color={colors.danger} />
             <Text style={styles.followFeedbackErrorText} selectable>{followUi.error}</Text>
           </View>
         ) : null}
 
-        {session && !ownsArtistPage && followUi.notice ? (
+        {session && !followHidden && followUi.notice ? (
           <View style={styles.followFeedback} accessibilityLiveRegion="polite">
             <Icon name="check" size={14} color={colors.good} />
             <Text style={styles.followFeedbackText}>{followUi.notice}</Text>
           </View>
         ) : null}
 
-        {profileServicesAvailable && session && !ownsArtistPage && followUi.invite && followed && !fanClubMember ? (
+        {profileServicesAvailable && session && !followHidden && followUi.invite && followed && !fanClubMember ? (
           <View style={styles.fanClubInvite} accessibilityLiveRegion="polite">
             <View style={styles.fanClubInviteIcon}>
               <Icon name="comment" size={17} color={colors.amber} />
@@ -1174,7 +1177,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
         {profileServicesAvailable && sectionModel.active === "overview" && !legacyMode ? (
           <Suspense fallback={null}>
             <ArtistNewsSection artistName={a.name} artistKey={a.profileKey || null} onOpenStory={onOpenNewsStory} following={!!session && followed}
-              onFollow={ownsArtistPage ? undefined : session ? followUi.toggleFollow : onRequireAuth} />
+              onFollow={followHidden ? undefined : session ? followUi.toggleFollow : onRequireAuth} />
           </Suspense>
         ) : null}
 

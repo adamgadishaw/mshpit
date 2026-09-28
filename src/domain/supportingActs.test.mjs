@@ -1,6 +1,32 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { addSupportingActs, ordinalWord, parseTimesSeen, supportingActNames, supportingActsForDisplay, supportingActsHeading, timesSeenSentence } from "./supportingActs.mjs";
+import { addSupportingActs, openerSearchTerm, openerSuggestions, ordinalWord, parseTimesSeen, pickSupportingAct, supportingActNames, supportingActsForDisplay, supportingActsHeading, timesSeenSentence } from "./supportingActs.mjs";
+
+test("opener search looks up the name being typed and keeps earlier typed names on a pick", () => {
+  assert.equal(openerSearchTerm("  Muna,  phoebe   bri "), "phoebe bri");
+  assert.equal(openerSearchTerm("Muna,"), "");
+  assert.equal(openerSearchTerm(null), "");
+  assert.deepEqual(pickSupportingAct(["Lucy Dacus"], "Muna, phoe", "Phoebe Bridgers", { mainArtist: "boygenius" }), ["Lucy Dacus", "Muna", "Phoebe Bridgers"]);
+  assert.deepEqual(pickSupportingAct([], "boyg", "boygenius", { mainArtist: "boygenius" }), [], "the headliner is never its own opener");
+});
+
+test("opener suggestions skip the headliner, names already added, and duplicates", () => {
+  const results = [
+    { key: "a_boygenius", name: "boygenius", genre: "Indie" },
+    { key: "a_muna", name: "MUNA", genre: "Pop", country: "US" },
+    { key: "a_phoebe", name: "Phoebe Bridgers", genre: "Indie", country: "US" },
+    { key: "a_phoebe_2", name: "phoebe bridgers" },
+    { name: "  " },
+    null,
+    { key: "a_lucy", name: "Lucy Dacus", genre: 7 },
+  ];
+  assert.deepEqual(openerSuggestions(results, { acts: ["Muna"], mainArtist: "boygenius" }), [
+    { key: "a_phoebe", name: "Phoebe Bridgers", detail: "Indie · US" },
+    { key: "a_lucy", name: "Lucy Dacus", detail: "" },
+  ]);
+  assert.equal(openerSuggestions(results, { limit: 1 }).length, 1);
+  assert.deepEqual(openerSuggestions(undefined), []);
+});
 
 test("openers are added from typed text without repeats or the headliner", () => {
   assert.deepEqual(addSupportingActs(["Muna"], "phoebe bridgers, MUNA,\nboygenius", { mainArtist: "boygenius" }), ["Muna", "phoebe bridgers"]);

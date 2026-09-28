@@ -27,10 +27,11 @@ async function serverForBuild() {
   await new Promise((done, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", done); });
   return { server, origin: "http://127.0.0.1:" + server.address().port };
 }
-async function scenario(browser, origin, width, member) {
+// role "admin": staff can manage every artist page and must still see Follow.
+async function scenario(browser, origin, width, member, role = navigationUser.role) {
   const context = await browser.newContext({ viewport: { width, height: 1100 }, isMobile: width < 620, hasTouch: width < 620, serviceWorkers: "block", reducedMotion: "reduce" });
   const state = { favorites: [], writes: [], requests: [], errors: [], external: [], expectedFailure: 0, retries: 0, closing: false };
-  const user = () => ({ ...navigationUser, favoriteArtists: state.favorites, artistFollowingCount: state.favorites.length, profileUpdatedAt: 1000 + state.writes.length });
+  const user = () => ({ ...navigationUser, role, favoriteArtists: state.favorites, artistFollowingCount: state.favorites.length, profileUpdatedAt: 1000 + state.writes.length });
   await context.addInitScript(({ origin, user }) => {
     if (location.origin !== origin || localStorage.getItem("connections-fixture")) return;
     localStorage.setItem("connections-fixture", "1"); localStorage.setItem("pit_theme", "stage");
@@ -59,6 +60,8 @@ async function scenario(browser, origin, width, member) {
         assert.equal(method, "GET", "Only exact fixture mutations are permitted: " + method + " " + path);
         if (path === "/api/me") result = { user: member ? user() : null };
         else if (path === "/api/artists/reviews") result = { reviews: [] };
+        else if (path === "/api/admin/moderation") { assert.equal(role, "admin"); result = { reports: [], recentActions: [], nextCursor: null }; }
+        else if (path === "/api/admin/artist-requests") { assert.equal(role, "admin"); result = { requests: [] }; }
         else if (path === "/api/artists/seen") { assert.ok(member); result = { count: 0, last: null }; }
         else if (path === "/api/me/following") { assert.ok(member); result = { following: ["alice", "blake", "casey"] }; }
         else if (path === "/api/resolve" && url.searchParams.get("path") === "/u/navigationfixture") result = { entity: { kind: "profile", id: navigationUser.id, handle: navigationUser.handle, path: "/u/navigationfixture" } };
@@ -127,7 +130,7 @@ async function scenario(browser, origin, width, member) {
   } catch (error) { failure = { message: error.message, errors: state.errors, external: state.external, requests: state.requests.slice(-18) }; }
   finally { state.closing = true; await context.close(); }
   if (failure) throw new Error(JSON.stringify({ width, member, ...failure }, null, 2));
-  return { width, member, followWrites: state.writes.length, retryRecovered: state.expectedFailure === 1 };
+  return { width, member, role, followWrites: state.writes.length, retryRecovered: state.expectedFailure === 1 };
 }
 const require = createRequire(import.meta.url);
 const { chromium } = require(process.env.PIT_PLAYWRIGHT_MODULE || "playwright");
@@ -135,4 +138,5 @@ const { server, origin } = await serverForBuild();
 const browser = await chromium.launch({ headless: true, ...(process.env.PIT_BROWSER_EXECUTABLE ? { executablePath: process.env.PIT_BROWSER_EXECUTABLE } : {}) });
 try {
   for (const width of [390, 1280]) for (const member of [true, false]) console.log(JSON.stringify(await scenario(browser, origin, width, member)));
+  console.log(JSON.stringify(await scenario(browser, origin, 1280, true, "admin")));
 } finally { await browser.close(); await new Promise(done => server.close(done)); }

@@ -6,6 +6,28 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-09-28 Staff can follow artists; opener suggestions
+
+**Follow button missing for staff.** The owner could not follow artists.
+Cause: `ArtistScreen` hid Follow when `isArtistOwner(name)` was true, and that
+store helper returns true for every staff account (staff can manage any artist
+page), so admins never saw Follow anywhere. The button, its notices and the
+news section's follow action now hide only for the artist's own account
+(`artistWorkspaceOwnsArtist`); report buttons keep the old rule. The follow
+API itself was fine. `verify:connections-browser` gained an admin run, and a
+build with the old line fails it (Follow never appears).
+
+**Opener suggestions.** The "Who opened?" field suggests catalog artists as
+you type, from the same catalog search as the headliner field (no remote
+lookups). It searches the name after the last comma, leaves out the headliner
+and acts already added, and a pick keeps any earlier typed names. Picked names
+match the catalog exactly, so they link to artist pages. Typing a name and
+pressing Add still works.
+
+Checked: `npm run check` (5,837 tests; initial web JS 508.8 of 512 KiB), the
+connections suite with the new admin run, and the other ten browser suites
+(quick-log now picks an opener suggestion at 375 and 1280 px).
+
 ## 2026-09-28 Openers, festival acts and times seen on concert reviews
 
 From the owner's site feedback. A concert review can list who opened ("Who

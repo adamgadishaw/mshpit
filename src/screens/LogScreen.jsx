@@ -295,6 +295,15 @@ export default function LogScreen({
   const [artistDirectoryRetryAt, setArtistDirectoryRetryAt] = useState(0);
   const [artistSearchNotice, setArtistSearchNotice] = useState("");
   const [artistPicked, setArtistPicked] = useState(!!editing?.artistKey || !!prefill?.artistKey);
+  // Opener suggestions use the same catalog search. The store rebuilds its
+  // functions every render, so the field gets one stable wrapper instead.
+  const searchArtistsApiRef = useRef(searchArtistsApi);
+  searchArtistsApiRef.current = searchArtistsApi;
+  const searchOpenerArtists = useCallback((term, { signal } = {}) => searchArtistsApiRef.current(term, {
+    signal,
+    limit: COMPOSER_ARTIST_SEARCH_LIMIT,
+    remoteFallback: false,
+  }), []);
   // The identity behind the name. Picking a suggestion binds the review to that
   // catalog entity; typing over it drops the binding, so free text can never
   // inherit the last artist's page. The server re-checks this before storing.
@@ -2008,7 +2017,7 @@ export default function LogScreen({
         )}
 
         <ShowLineupFields artist={artist} acts={supportingActs} onActsChange={setSupportingActs}
-          timesSeen={timesSeen} automaticTimesSeen={automaticTimesSeen} onTimesSeenChange={setTimesSeen}
+          timesSeen={timesSeen} automaticTimesSeen={automaticTimesSeen} onTimesSeenChange={setTimesSeen} searchArtists={searchOpenerArtists}
           festival={/\bfest(ival)?s?\b/iu.test(`${tour} ${officialEventName || ""}`)} />
 
         <View style={styles.quickRatingCard}>

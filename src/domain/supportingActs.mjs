@@ -27,6 +27,32 @@ export function addSupportingActs(current, typed, { mainArtist = "" } = {}) {
   return supportingActNames([...supportingActNames(current), ...extra], { mainArtist });
 }
 
+// Artist search runs on the name being typed now, the part after the last comma.
+export function openerSearchTerm(typed) {
+  return collapse(String(typed ?? "").split(/[,\n]/u).pop()).slice(0, 80);
+}
+
+// Picking a suggestion keeps any names typed before it: "Muna, phoe" + a pick
+// of "Phoebe Bridgers" adds both.
+export function pickSupportingAct(current, typed, name, { mainArtist = "" } = {}) {
+  const earlier = String(typed ?? "").split(/[,\n]/u).slice(0, -1);
+  return supportingActNames([...supportingActNames(current), ...earlier, name], { mainArtist });
+}
+
+// Search results worth offering: named, not the headliner, not already added.
+export function openerSuggestions(results, { acts = [], mainArtist = "", limit = 5 } = {}) {
+  const taken = new Set([...supportingActNames(acts), collapse(mainArtist)].map((name) => name.toLowerCase()));
+  const offered = [];
+  for (const artist of Array.isArray(results) ? results : []) {
+    const name = collapse(artist?.name).slice(0, 120);
+    if (!name || taken.has(name.toLowerCase())) continue;
+    taken.add(name.toLowerCase());
+    offered.push({ key: String(artist.key || name), name, detail: [artist.genre, artist.country].filter((part) => typeof part === "string" && part.trim()).join(" · ") });
+    if (offered.length >= limit) break;
+  }
+  return offered;
+}
+
 // The server's projection: [{ name, artistKey, artistPublicSlug, reviewPostId }].
 export function supportingActsForDisplay(value) {
   return (Array.isArray(value) ? value : []).filter((act) => act && typeof act.name === "string" && collapse(act.name)).map((act) => ({
