@@ -197,7 +197,7 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
           <View style={styles.gateIcon}><Icon name="comment" size={30} color={colors.amber} /></View>
           <Text style={styles.gateTitle}>Concert Lounge</Text>
           <Text style={styles.gateSub}>
-            One room for this exact show — before, during, and after.{"\n"}
+            One room for this exact show: before, during, and after.{"\n"}
             <Text style={{ color: colors.text, fontWeight: "700" }}>{log.artist}</Text> · {log.venue}
           </Text>
           {currentGateMeta?.status === "error" ? (
@@ -208,7 +208,7 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
             <>
               <Text style={styles.gateMeta}>{currentGateMeta?.messageCount ?? messages.length} messages · {currentGateMeta?.attendeeCount ?? attendees.length} going</Text>
               <Pressable style={[styles.enterBtn, entryDisabled && { opacity: 0.65 }]} onPress={enter} disabled={entryDisabled} accessibilityRole="button" accessibilityState={{ disabled: entryDisabled, busy: entering }}>
-                <Text style={styles.enterTxt}>{!session ? "Log in to enter the Lounge" : !loungeOpen ? "Checking this Lounge…" : entering ? "Saving your spot…" : "I'm going — enter this show's Lounge"}</Text>
+                <Text style={styles.enterTxt}>{!session ? "Log in to enter the Lounge" : !loungeOpen ? "Checking this Lounge…" : entering ? "Saving your spot…" : "I'm going. Enter this show's Lounge"}</Text>
               </Pressable>
             </>
           )}

@@ -245,8 +245,13 @@ remains a broad context whose changing value can rerender unrelated consumers.
 
 ## Lineup follow-ups (2026-09-28)
 
-- **Festivals section (in progress):** festival pages, a Discover tab, lineups
-  by day, going plans with days and must-see sets, share cards.
+- **Festivals section:** shipped 2026-09-28. Follow-ups: past lineups from
+  MusicBrainz festival series, a festival picker in the review form (today it
+  is free text matched by name), notifications when a followed festival's
+  lineup drops, friends going, and festival pages linked from artist pages.
+- **Em-dashes in app copy:** the lounge sheet, a playback message and the
+  archive date range still use them; replace with plain punctuation.
+- **Startup bundle:** 511.8 of 512 KiB. Trim before any other feed change.
 - **Artist page "Live sets" paging:** shows the latest 12 sets; add "more".
 - **Initial bundle:** 511.4 of 512 KiB. Move `src/domain/lineup.mjs` card
   helpers or another feed dependency behind a lazy import before adding more.

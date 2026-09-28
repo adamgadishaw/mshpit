@@ -1,4 +1,4 @@
-import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import { colors, displayFont, focusRing, font, mono, radius, shadow } from "../theme";
 import { useStore } from "../store";
@@ -8,6 +8,10 @@ import DiscoverChart from "../components/discover/DiscoverChart";
 import DiscoverGenres from "../components/discover/DiscoverGenres";
 import DiscoverVenues from "../components/discover/DiscoverVenues";
 import DiscoverPhotoPanel from "../features/discoverPhotos/DiscoverPhotoPanel";
+import { lazyWithRetry } from "../lib/lazyWithRetry";
+
+// Loaded on demand with the rest of the festivals feature (festivalsEntry).
+const FestivalsPanel = lazyWithRetry(() => import("../features/festivals/festivalsEntry").then((module) => ({ default: module.FestivalsPanel })), "FestivalsPanel");
 import DiscoverEventBanner from "../components/discover/DiscoverEventBanner";
 import CrewBanner from "../components/discover/CrewBanner";
 import DiscoverProgrammeNav from "../components/discover/DiscoverProgrammeNav";
@@ -97,6 +101,7 @@ export default function DiscoverScreen({
   onOpenPhotos,
   onOpenProfile,
   onManageTaste,
+  onOpenFestival,
 }) {
   const {
     session,
@@ -132,6 +137,8 @@ export default function DiscoverScreen({
   const dateDisclosureRef = useRef(null);
   const cityRefreshRef = useRef(null);
   const registerCityRefresh = useCallback((refresh) => { cityRefreshRef.current = refresh; }, []);
+  const festivalRefreshRef = useRef(null);
+  const registerFestivalRefresh = useCallback((refresh) => { festivalRefreshRef.current = refresh; }, []);
 
   const accountId = session?.id || null;
   const homeCity = session?.home?.city || discoverySidebar?.location?.city || "";
@@ -515,6 +522,7 @@ export default function DiscoverScreen({
       refreshDiscoverySidebar?.({ signal: controller.signal }),
       refreshLoadedRange,
       programme === "cities" && cityRefreshRef.current ? cityRefreshRef.current({ signal: controller.signal }) : Promise.resolve(true),
+      programme === "festivals" && festivalRefreshRef.current ? festivalRefreshRef.current({ signal: controller.signal }) : Promise.resolve(true),
       session ? artistRecommendations.refresh({ signal: controller.signal }) : Promise.resolve(true),
     ]);
     if (controller.signal.aborted || pullRefreshControllerRef.current !== controller) return false;
@@ -862,6 +870,13 @@ export default function DiscoverScreen({
           onRetry={retryGenre}
         />
       ) : null}</View>}
+      {/* Festivals are their own section: multi-day events are never mixed
+          into the regular show lists. */}
+      {programme === "festivals" && <View nativeID="discover-panel-festivals" accessibilityRole="tabpanel" aria-labelledby="discover-tab-festivals" style={styles.programmePanel}>
+        <Suspense fallback={<ActivityIndicator color={colors.amber} style={{ marginVertical: 40 }} />}>
+          <FestivalsPanel region={region} onOpenFestival={onOpenFestival} registerRefresh={registerFestivalRefresh} />
+        </Suspense>
+      </View>}
       {programme === "photos" && <View nativeID="discover-panel-photos" accessibilityRole="tabpanel" aria-labelledby="discover-tab-photos">
         <DiscoverPhotoPanel region={region} accountId={session?.id || "guest"} compact={compact} width={width} onOpenPhotos={openPhotos} removedIds={removedIds} blockedIds={blockedIds} />
       </View>}

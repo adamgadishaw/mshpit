@@ -6,6 +6,67 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-09-28 Search snippets, plain copy, startup bundle
+
+From the owner's Search Console numbers (19k impressions, 0.45% clicks):
+- Artist pages with upcoming dates and no reviews now read "Odd Mob tour
+  2026: 6 upcoming shows, next in Perth (Sep 27), Sydney (Oct 3). Dates,
+  venues and tickets on Mshpit." Artists with no dates or reviews get
+  "<Name>: Albums, Biography & Live Shows" (or "Albums & EPs", "Biography &
+  Live Music") instead of "music artist profile", only when the page has them.
+- Event pages end with "Tickets, venue details and who's going." (only when a
+  ticket link exists) instead of "View the date, venue and event details."
+- City titles drop numeric or cryptic region codes outside the US, Canada and
+  Australia ("Hem, 59" becomes "Hem, France") and say "United States".
+- Prose em-dashes are gone from app copy (posting errors, upload errors, the
+  Lounge sheet, the player's preview notice, onboarding, artist setup, venue
+  reputation, share text, a staff campaign error). A lone dash still marks a
+  missing score.
+- The store now imports two small moderation helpers from
+  `src/domain/moderationPatches.mjs` instead of the whole staff console.
+
+## 2026-09-28 Festivals section
+
+From the owner: festivals are multi-day events and should be showcased on
+their own, never mixed into regular shows, with lineups by day, histories,
+expected dates, "going" plans and share cards.
+
+- **Discover > Festivals** (new tab): upcoming editions month by month, with
+  a "Lineups just announced" rail. Festival listings no longer appear in the
+  regular show lists (`upcomingEventsForScope` skips `eventKind: festival`).
+- **Festival page** (`/festival/<slug>`, hub at `/festivals`): the next
+  edition's dates, place, ticket link and lineup as a poster, filterable by
+  day; members going per day and the most wanted sets; the member's own plan
+  (days going, must-see sets); fan reviews and public fan photos from past
+  years; past editions; an "Expected late July 2027" estimate from the last
+  edition when none is listed (labelled as not announced); history from
+  Wikipedia with attribution, first year and official site from Wikidata.
+- **Share cards:** a lineup poster and an "I'm going" card (days and
+  must-see sets), rendered as type-only story images. Ticketmaster festival
+  art is not licensed for derivative share images, so it is never used.
+- **SEO:** each festival page is a server-rendered document titled
+  "<Name> <year> Lineup, Dates & Tickets" with the lineup by day in the HTML
+  and `Festival` structured data (dates, place, performers, ticket offer);
+  festival pages and the hub are in the pages sitemap once they have content.
+
+Data: `server/features/festivals/`. A catalog of about 60 major festivals
+(identity only: name, match phrases, usual city, Wikipedia title). Tables
+`festivals`, `festival_listings` (every ticket listing seen, kept for
+history), `festival_editions` (listings grouped into runs; the two weekends of
+a festival stay separate), `festival_plans`. A job every three hours reuses
+festival rows the tour-date ingest already stored, then asks Ticketmaster
+about six festivals (the whole list about once a day) and refreshes up to
+four Wikipedia histories. It runs whenever `TICKETMASTER_KEY` is set (no new
+Render variable needed); `FESTIVAL_SCAN_ENABLED=false` stops it. Lineups
+found in the first 30 hours are not flagged as "just announced". Routes:
+`GET /api/festivals`, `GET /api/festivals/:slug`, `PUT|DELETE
+/api/festivals/:slug/plan` (verified members), share-card kind `festival`.
+
+The whole client feature loads through one lazy entry
+(`src/features/festivals/festivalsEntry.js`) so it stays out of the startup
+bundle, which is 511.8 of 512 KiB. New browser suite:
+`verify:festivals-browser` (in CI).
+
 ## 2026-09-28 Lineups: festivals, co-headliners and rated openers
 
 From the owner: festivals are not regular shows, openers can make or break a

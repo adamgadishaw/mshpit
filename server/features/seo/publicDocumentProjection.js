@@ -668,6 +668,8 @@ function eventAllowsTicketOffer(event, today = null) {
   return !currentDate || !event.date || event.date >= currentDate;
 }
 
+const SHORT_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
 function eventCard(row, paths) {
   if (!row?.id || !isIndexableMusicEventRecord(row)) return null;
   const projectedArtist = publicTourDateArtistProjection(row);
@@ -1120,6 +1122,15 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
           publishedAt: story.publishedAt,
           sources: Object.freeze((story.sources || []).map((source) => cleanLine(source?.name, 80)).filter(Boolean)),
         }));
+      const hasDiscography = !legacyMode && !memorial && artistDiscography(knowledgeData, source.mbid).length > 0;
+      // "next in Perth (Sep 27), Sydney (Oct 3)": the cities people search
+      // "<artist> <city>" for, straight from the upcoming dates.
+      const nextStops = [...new Map(events.slice(0, 6).map((event) => {
+        const city = cleanLine(String(event.place || "").split(",")[0], 60);
+        const day = validDate(event.date);
+        return city && day ? [city.toLocaleLowerCase("en"), `${city} (${SHORT_MONTHS[Number(day.slice(5, 7)) - 1]} ${Number(day.slice(8, 10))})`] : null;
+      }).filter(Boolean)).values()].slice(0, 3);
+      const nextLine = nextStops.length ? `, next in ${nextStops.join(", ")}` : "";
       const artistTitle = legacyMode
         ? `${name} legacy: biography and community memories | Mshpit`
         : memorial
@@ -1140,11 +1151,17 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         ? `${name} Tour ${tourYears}: Concert Dates & Tickets | Mshpit`
         : hasUpcomingShows
         ? `${name} upcoming concerts & artist profile | Mshpit`
+        : hasDiscography && bio
+        ? `${name}: Albums, Biography & Live Shows | Mshpit`
+        : hasDiscography
+        ? `${name} Albums & EPs | Mshpit`
+        : bio
+        ? `${name} Biography & Live Music | Mshpit`
         : `${name} music artist profile | Mshpit`;
       const description = summary(memorial?.summary || (hasReviews
         ? `${name} on Mshpit: ${reviewSignal}${upcomingSignal ? ` and ${upcomingSignal}` : ""}. ${bio ? `${bio} ` : ""}Read firsthand concert reviews${hasFanPhotos ? " and browse fan-shared photos" : ""}${hasUpcomingShows ? ", then see upcoming show details" : ""}.`
         : hasUpcomingShows
-        ? `${name} on Mshpit: ${upcomingSignal}. See upcoming concert dates${bio ? " and artist details" : ""}.`
+        ? `${name}${tourYears ? ` tour ${tourYears}` : ""}: ${upcomingSignal}${nextLine}. Dates, venues and tickets on Mshpit.`
         : bio
         ? `${name} artist profile on Mshpit. ${bio}`
         : updates.length

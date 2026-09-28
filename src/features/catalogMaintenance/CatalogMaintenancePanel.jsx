@@ -196,7 +196,7 @@ export default function CatalogMaintenancePanel({ accountId, role, active = true
       </Section>
       <Section title="Sources and Google readiness">
         {["artist", "venues", "events", "profiles", "research"].map(key => <Text selectable key={key} style={styles.copy}>
-          {key === "artist" ? "Artists" : key === "venues" ? "Venues" : key === "events" ? "Events" : key === "profiles" ? "Web profiles" : "Research"}: {data.sources?.[key]?.name || "Source status unavailable."}{data.sources?.[key]?.scope ? ` — ${data.sources[key].scope}` : ""}
+          {key === "artist" ? "Artists" : key === "venues" ? "Venues" : key === "events" ? "Events" : key === "profiles" ? "Web profiles" : "Research"}: {data.sources?.[key]?.name || "Source status unavailable."}{data.sources?.[key]?.scope ? ` (${data.sources[key].scope})` : ""}
         </Text>)}
         <Text selectable style={styles.copy}>Show-date scheduler: {catalogSourceSchedulerLabel(data.sourceRefresh)}. Separate from artist upkeep controls.</Text>
         <Text selectable style={data.sourceRefresh?.state === "failed" ? styles.error : styles.copy}>Show-date refresh (not venue page enrichment): saved result {data.sourceRefresh?.state || "Unverified"} at {catalogTime(data.sourceRefresh?.at)}. Last success: {catalogTime(data.sourceRefresh?.lastSuccessAt)}. Historical evidence, not a live running indicator.</Text>

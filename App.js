@@ -73,6 +73,8 @@ const OwnerApprovalScreen = lazyWithRetry(() => import("./src/screens/OwnerAppro
 const BadgeLegendScreen = lazyWithRetry(() => import("./src/screens/BadgeLegendScreen"), "BadgeLegendScreen");
 const CrewScreen = lazyWithRetry(() => import("./src/screens/CrewScreen"), "CrewScreen");
 const NewsScreen = lazyWithRetry(() => import("./src/components/news/NewsViews").then((module) => ({ default: module.NewsScreen })), "NewsScreen");
+const FestivalScreen = lazyWithRetry(() => import("./src/features/festivals/festivalsEntry").then((module) => ({ default: module.FestivalScreen })), "FestivalScreen");
+const FestivalsHubScreen = lazyWithRetry(() => import("./src/features/festivals/festivalsEntry").then((module) => ({ default: module.FestivalsHubScreen })), "FestivalsHubScreen");
 const WelcomeScreen = lazyWithRetry(() => import("./src/screens/WelcomeScreen"), "WelcomeScreen");
 const SignupOnboardingScreen = lazyWithRetry(() => import("./src/screens/SignupOnboardingScreen"), "SignupOnboardingScreen");
 const FollowListScreen = lazyWithRetry(() => import("./src/screens/FollowListScreen"), "FollowListScreen");
@@ -1128,6 +1130,9 @@ function Root() {
   };
   const openPostEditor = (log) => requireVerifiedMutation("post", () => { if (log?.id) go({ editingPost: log }); });
   const openBadges = (userId) => go({ badges: { userId } });
+  const openFestival = (slug, editionId = null) => {
+    if (typeof slug === "string" && slug) go({ festival: { slug, editionId: editionId || null } });
+  };
   const openArtist = (artist) => {
     const payload = artist && typeof artist === "object" ? artist : null;
     const name = String(payload?.name || artist || "").trim();
@@ -1334,6 +1339,10 @@ function Root() {
   else if (nav.openLog) overlay = <ShowScreen log={nav.openLog} onClose={back} onPreview={musicPreviewAction} onReview={reviewShow} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenArchive={openArtistArchive} onOpenVenue={openVenue} onOpenLounge={(log) => go({ lounge: log })} onOpenPost={openPost} onOpenPhotos={openPhotos} onRequireAuth={openSignIn} />;
   else if (nav.post) overlay = <PostScreen key={`${session?.id || "guest"}:${nav.post.id}`} log={nav.post} onClose={back} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenArtistArchive={openArtistArchive} onOpenVenue={openVenue} onOpenShow={openShow} onReport={openReport} onEdit={openPostEditor} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onRemoveMyPostTag={removePostTag} onRequireAuth={openSignIn} />;
   else if (nav.badges) overlay = <BadgeLegendScreen userId={nav.badges.userId} onClose={back} />;
+  else if (nav.festival?.slug) overlay = <FestivalScreen key={`${session?.id || "guest"}:${nav.festival.slug}`} slug={nav.festival.slug} editionId={nav.festival.editionId || null}
+    signedIn={!!session} accountId={session?.id || null} author={session ? { name: session.name } : null} onClose={back} onOpenArtist={openArtist} onRequireAuth={openSignIn}
+    onReviewFestival={(prefill) => requireVerifiedMutation("review", () => go({ logging: true, prefill }))} />;
+  else if (nav.festivals) overlay = <FestivalsHubScreen onClose={back} onOpenFestival={openFestival} />;
   else if (nav.news) overlay = <NewsScreen key={`${session?.id || "guest"}:${nav.liveSlug || ""}`} liveSlug={nav.liveSlug || null} session={session} onClose={back} onOpenArtist={openArtist} onOpenProfile={openProfile} onReport={openReport} onOpenStory={openNewsStory} onRequireAuth={openSignIn} />;
   else if (ENABLE_CREW && nav.crew) overlay = <CrewScreen key={session?.id || "guest"} initialTab={nav.crew?.tab === "plans" ? "plans" : "shows"} onClose={back} onOpenShow={openShow} onOpenLounge={(log) => go({ lounge: log })} onRequireAuth={openSignIn} />;
   else if (nav.topRated) overlay = <TopRatedScreen initialRegion={nav.discoverRegion} onClose={back} onOpen={openShow} />;
@@ -1503,7 +1512,7 @@ function Root() {
                 />
               )}
               {activeTab === "search" && <SearchScreen onOpen={openShow} onOpenArtist={openArtist} onOpenCity={openCity} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenProfile={openProfile} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} />}
-              {activeTab === "discover" && <DiscoverScreen key={session?.id || "guest"} initialProgramme={publicDirectoryProgramme(nav)} rememberedProgramme={rememberedDiscoverProgramme} onProgrammeChange={(programme) => setDiscoverDestination({ accountId: session?.id || null, programme })} onOpenTopRated={(discoverRegion) => go({ topRated: true, discoverRegion })} onOpenEvents={(discoverRegion) => openPublicDirectory("events", { region: discoverRegion })} onOpen={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenCrew={ENABLE_CREW ? () => go({ crew: true }) : undefined} onOpenNearby={() => go({ nearby: true })} onOpenFanClubs={() => go({ fanClubs: true })} onOpenVenues={(discoverRegion) => go({ venues: true, discoverRegion })} onOpenLounge={(lounge) => go({ lounge })} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} onOpenProfile={openProfile} onManageTaste={openProfileManagement} />}
+              {activeTab === "discover" && <DiscoverScreen key={session?.id || "guest"} initialProgramme={publicDirectoryProgramme(nav)} rememberedProgramme={rememberedDiscoverProgramme} onProgrammeChange={(programme) => setDiscoverDestination({ accountId: session?.id || null, programme })} onOpenTopRated={(discoverRegion) => go({ topRated: true, discoverRegion })} onOpenEvents={(discoverRegion) => openPublicDirectory("events", { region: discoverRegion })} onOpen={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenCrew={ENABLE_CREW ? () => go({ crew: true }) : undefined} onOpenNearby={() => go({ nearby: true })} onOpenFanClubs={() => go({ fanClubs: true })} onOpenVenues={(discoverRegion) => go({ venues: true, discoverRegion })} onOpenLounge={(lounge) => go({ lounge })} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} onOpenProfile={openProfile} onManageTaste={openProfileManagement} onOpenFestival={openFestival} />}
               {activeTab === "you" && !!session && (
                 <YouScreen
                   onLogin={() => go({ auth: true })}

@@ -75,6 +75,8 @@ export function upcomingEventsForScope({
   const rows = [];
   for (const event of source) {
     if (!event || typeof event !== "object") continue;
+    // Festivals have their own Discover section; regular show lists skip them.
+    if (event.eventKind === "festival") continue;
     const identity = eventIdentity(event);
     if (!identity || seen.has(identity)) continue;
     seen.add(identity);

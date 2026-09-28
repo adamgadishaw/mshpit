@@ -77,7 +77,7 @@ function assertMediaSourceIdentity(value, assetId, message) {
 }
 
 function deadlineFailure(lastError) {
-  const error = new Error("PIT is still processing this clip. Your upload is saved—try again to resume it.",
+  const error = new Error("PIT is still processing this clip. Your upload is saved. Try again to resume it.",
     lastError ? { cause: lastError } : undefined);
   error.code = "MEDIA_STORAGE_UNAVAILABLE";
   error.status = 503;
@@ -86,7 +86,7 @@ function deadlineFailure(lastError) {
 }
 
 function startFailure(lastError) {
-  const error = new Error("PIT could not start processing this media. Your upload is saved—try again to resume it.",
+  const error = new Error("PIT could not start processing this media. Your upload is saved. Try again to resume it.",
     lastError ? { cause: lastError } : undefined);
   error.code = "MEDIA_STORAGE_UNAVAILABLE";
   error.status = 503;

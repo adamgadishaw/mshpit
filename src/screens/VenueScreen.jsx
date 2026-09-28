@@ -216,7 +216,7 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
             </View>
             <View style={styles.reputationCopy}>
               <Text style={styles.reputationTitle}>{venue.totalShows > 0 ? `Built from ${venue.totalShows} logged ${venue.totalShows === 1 ? "show" : "shows"}` : "This room is waiting for its first concert log"}</Text>
-              <Text style={styles.reputationBody}>Sound, sightlines and crowd energy stay with the venue—separate from the artist’s performance.</Text>
+              <Text style={styles.reputationBody}>Sound, sightlines and crowd energy stay with the venue, separate from the artist’s performance.</Text>
               <View style={styles.reviewSignal}>
                 <Icon name="star" size={13} color={colors.gold} />
                 <Text style={styles.reviewSignalText}>{reviews.length ? `${reviews.length} written ${reviews.length === 1 ? "review" : "reviews"} · ${fanRating.toFixed(1)} average` : "No written reviews yet"}</Text>

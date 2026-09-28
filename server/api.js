@@ -98,6 +98,9 @@ import { catalogResearchRoutes } from "./features/catalogResearch/catalogResearc
 import { createNewsDeskEditor } from "./features/newsDesk/newsDeskEditor.js";
 import { newsDeskEditorRoutes } from "./features/newsDesk/newsDeskEditorRoutes.js";
 import { ensureNewsLiveSchema } from "./features/newsDesk/newsLive.js";
+import { festivalRoutes } from "./features/festivals/festivalRoutes.js";
+import { ensureFestivalSchema } from "./features/festivals/festivalStore.js";
+import { startFestivalScheduler } from "./features/festivals/festivalScan.js";
 import { newsLiveRoutes } from "./features/newsDesk/newsLiveRoutes.js";
 import { providerProfileRoutes } from "./features/providerProfiles/providerProfileRoutes.js";
 import { crewRoutes } from "./features/crew/crewRoutes.js";
@@ -323,6 +326,7 @@ export const artistDeathWatchService = createArtistDeathWatchService({
 ensureLegacyMediaFinalizeSchema(db);
 ensurePrivacyJournalSchema(db);
 ensureNewsLiveSchema(db);
+ensureFestivalSchema(db);
 const uid = (prefix) => opaqueId(prefix);
 const PROFILE_EXTRAS_MAX_BYTES = 8000;
 const CURRENT_TERMS_VERSION = LEGAL_ACCEPTANCE_VERSION;
@@ -3983,6 +3987,13 @@ export function startArtistNews() {
     notify: (userId, update) => addNotif(userId, null, "artist_update", { postId: update.id, artist: update.artist_name, text: update.title }),
     newId: uid,
   });
+}
+
+// Festival editions and lineups from Ticketmaster, histories from Wikipedia.
+// On whenever a Ticketmaster key is set (a few requests an hour); set
+// FESTIVAL_SCAN_ENABLED=false to stop it.
+export function startFestivals() {
+  return startFestivalScheduler({ database: db, now });
 }
 
 // Confirmed music news, written up and posted from @news_mod.
@@ -8988,7 +8999,7 @@ export const routes = {
     const started = startCampaign(campaign.id);
     if (!started.ok) {
       if (started.reason === "test-required") {
-        throw new ApiError(422, "Send yourself a test first—or retest the current campaign version—before broadcasting it.", "ACTION_REQUIRED");
+        throw new ApiError(422, "Send yourself a test first, or retest the current campaign version, before broadcasting it.", "ACTION_REQUIRED");
       }
       if (started.reason === "revision-conflict") {
         throw new ApiError(409, "This campaign changed while the broadcast was starting. Refresh it and send a fresh test.", "CONFLICT");
@@ -9869,6 +9880,8 @@ export const routes = {
   ...newsDeskEditorRoutes({ editor: createNewsDeskEditor({ database: db, now }), database: db, ApiError, requireAdmin, rateLimit: limit, now }),
   // Live coverage for big nights: outlet headlines plus owner updates, no Claude.
   ...newsLiveRoutes({ database: db, ApiError, requireAdmin, rateLimit: limit, now }),
+  // Festivals: editions, lineups by day, and members' plans.
+  ...festivalRoutes({ database: db, ApiError, requireVerifiedUser, rateLimit: limit, clean, decodedPathParam, now }),
   ...catalogResearchRoutes({ database: db, ApiError, rateLimit: limit, decodedPathParam, canonicalVenueKey, requireAdmin, now,
     resolveArtist: (key, ctx) => {
       const artist = resolveCatalogArtistReference(key);

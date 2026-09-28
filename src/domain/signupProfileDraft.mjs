@@ -12,7 +12,7 @@ export function signupProfilePatch(draft, saved) {
 }
 
 export function confirmSignupProfile(result, accountId, patch) {
-  if (result?.ok !== true) throw result?.error || new Error("Your changes could not be saved. They are still here—try again.");
+  if (result?.ok !== true) throw result?.error || new Error("Your changes could not be saved. They are still here. Try again.");
   if (result.user?.id !== accountId) throw new Error("Mshpit could not confirm your profile. Try saving again.");
   const saved = signupProfileSnapshot(result.user);
   for (const key of Object.keys(patch)) {

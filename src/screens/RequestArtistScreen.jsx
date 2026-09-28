@@ -171,7 +171,7 @@ function ArtistPageSetup({ onClose, onCreated }) {
           <Icon name={verificationScreen ? "shield" : "music"} size={24} color={colors.amber} />
           <Text style={styles.h1}>{verificationScreen ? "Your artist identity" : "Your music. Your page."}</Text>
         </View>
-        <Text style={styles.intro}>Free artist pages, live photos and videos, promotion, and upcoming concerts. All with this account—no separate login or subscription.</Text>
+        <Text style={styles.intro}>Free artist pages, live photos and videos, promotion, and upcoming concerts. All with this account, with no separate login or subscription.</Text>
         <Text style={styles.noticeText}>Your artist page can be public. Your account privacy settings still apply; choose photo and video visibility when posting.</Text>
 
         {done ? (

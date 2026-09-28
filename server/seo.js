@@ -63,6 +63,8 @@ import { projectNewsDocument } from "./features/artistUpdates/newsDocuments.js";
 import { createNewsDeskReader } from "./features/newsDesk/newsDeskService.js";
 import { liveEventBySlug, liveEventPages } from "./features/newsDesk/newsLive.js";
 import { livePagePath, projectLiveDocument } from "./features/newsDesk/newsLiveDocument.js";
+import { createFestivalReader } from "./features/festivals/festivalStore.js";
+import { FESTIVALS_HUB_PATH, festivalPagePath, projectFestivalDocument, projectFestivalsHubDocument } from "./features/festivals/festivalDocument.js";
 
 const SITE_NAME = "Mshpit";
 const DEFAULT_TITLE = "Mshpit: concert reviews, photos and live music discovery";
@@ -467,6 +469,25 @@ function newsLiveRoute(path) {
   return { type: "document", status: 200, canonicalPath, indexable: document.indexable, document };
 }
 
+// Festivals: /festival/<slug> for one festival, /festivals for all of them.
+function festivalRoute(path) {
+  if (/^\/festivals\/*$/iu.test(path)) {
+    if (path !== FESTIVALS_HUB_PATH) return { type: "redirect", status: 301, location: FESTIVALS_HUB_PATH, canonicalPath: FESTIVALS_HUB_PATH };
+    const reader = createFestivalReader(db);
+    const document = safePublicDocument(() => projectFestivalsHubDocument({ origin: origin(), upcoming: reader.upcoming({ limit: 100 }), festivals: reader.festivals() }));
+    if (document === PUBLIC_DOCUMENT_UNAVAILABLE) return { type: "unavailable", status: 503 };
+    return { type: "document", status: 200, canonicalPath: FESTIVALS_HUB_PATH, indexable: document.indexable, document };
+  }
+  const match = path.match(/^\/festival\/([A-Za-z0-9-]{1,80})\/*$/u);
+  if (!match) return null;
+  const canonicalPath = festivalPagePath(match[1].toLowerCase());
+  if (path !== canonicalPath) return { type: "redirect", status: 301, location: canonicalPath, canonicalPath };
+  const document = safePublicDocument(() => projectFestivalDocument({ origin: origin(), page: createFestivalReader(db).festival(match[1].toLowerCase()) }));
+  if (document === PUBLIC_DOCUMENT_UNAVAILABLE) return { type: "unavailable", status: 503 };
+  if (!document) return { type: "not-found", status: 404 };
+  return { type: "document", status: 200, canonicalPath, indexable: document.indexable, document };
+}
+
 function newsRoute(path) {
   const live = newsLiveRoute(path);
   if (live) return live;
@@ -485,6 +506,8 @@ function publicRoute(pathname) {
   if (!path) return { type: "not-found", status: 404 };
   const news = newsRoute(path);
   if (news) return news;
+  const festival = festivalRoute(path);
+  if (festival) return festival;
   if (/^\/cities\/*$/iu.test(path)) {
     const document = safePublicDocument(() => publicDocuments.citiesDocument({ at: Date.now() }));
     if (document === PUBLIC_DOCUMENT_UNAVAILABLE) return { type: "unavailable", status: 503 };

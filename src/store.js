@@ -61,7 +61,7 @@ import {
   withoutChatOutboxItem,
 } from "./domain/chatDelivery.mjs";
 import { createStaffReadCoordinator, staffScopeFor } from "./domain/staffReadCoordinator.mjs";
-import { confirmedRoleMutationPatch, patchModerationMemberContext } from "./domain/moderationConsole.mjs";
+import { confirmedRoleMutationPatch, patchModerationMemberContext } from "./domain/moderationPatches.mjs";
 import {
   deleteAccountDraft,
   draftsForAccount,
@@ -336,6 +336,9 @@ const normalizeServerPost = (post) => ({
   mediaAssetIds: Array.isArray(post?.mediaAssetIds) ? post.mediaAssetIds : [],
   setlist: Array.isArray(post?.setlist) ? post.setlist : [],
   supportingActs: Array.isArray(post?.supportingActs) ? post.supportingActs : [],
+  lineup: Array.isArray(post?.lineup) ? post.lineup : [],
+  showFormat: typeof post?.showFormat === "string" ? post.showFormat : "headline",
+  endDate: typeof post?.endDate === "string" ? post.endDate : "",
   taggedPeople: normalizeTaggedPeople(post?.taggedPeople),
   timeAgo: ago(post?.createdAt),
 });

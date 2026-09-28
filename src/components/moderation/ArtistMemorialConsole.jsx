@@ -507,7 +507,7 @@ export default function ArtistMemorialConsole({
               <View style={styles.autofillHeadingCopy}>
                 <Text style={styles.autofillKicker}>SAFE AUTO-FILL</Text>
                 <Text style={styles.autofillTitle}>Start from an exact Pit artist</Text>
-                <Text style={styles.autofillHint}>Search the catalog and choose one result. Pit fills a neutral private draft from catalog facts, but never guesses a death date, source, award, or cause of death—and never publishes automatically.</Text>
+                <Text style={styles.autofillHint}>Search the catalog and choose one result. Pit fills a neutral private draft from catalog facts, but never guesses a death date, source, award, or cause of death, and never publishes automatically.</Text>
               </View>
               {catalogArtist ? <Button title="Clear draft & choose another" variant="secondary" small disabled={busy} onPress={changeCatalogArtist} /> : null}
             </View>

@@ -214,8 +214,8 @@ function postErrorMessage(error) {
   if (code === "POST_REMOVED") return "That post was removed on another device. Close this composer and start a new post.";
   if (status === 409) return "That post changed on another device. Close this composer, reopen the latest version, and apply your changes again.";
   if (code === "ARTIST_CAMPAIGN_LIMIT") return "You've used today's two Featured posts. Turn off Featured to publish this as a regular post, or try Featured again after the daily quota resets.";
-  if (code === "RATE_LIMITED" || status === 429) return "You're posting quickly. Wait a moment and try again — your post is still here.";
-  if (error?.offline || status === 0 || (!status && error?.message)) return "Couldn't reach Pit. Check your connection and try again — nothing was lost.";
+  if (code === "RATE_LIMITED" || status === 429) return "You're posting quickly. Wait a moment and try again. Your post is still here.";
+  if (error?.offline || status === 0 || (!status && error?.message)) return "Couldn't reach Pit. Check your connection and try again. Nothing was lost.";
   return "That didn't post. Your review is still here, give it another try.";
 }
 

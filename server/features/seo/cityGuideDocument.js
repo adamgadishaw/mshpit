@@ -1,6 +1,6 @@
 import { cityPath } from "../../../src/domain/urls.mjs";
 import { DEFAULT_CITY_COPY } from "../cities/cityCopy.js";
-import { publicCityMetadata, publicEventTimeLabel } from "./publicMetadataPresentation.js";
+import { publicCityMetadata, publicEventTimeLabel, readableCountryName, readableRegion } from "./publicMetadataPresentation.js";
 
 const text = (value, max = 8000) => String(value ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, max);
 const path = (value) => typeof value === "string" && value.startsWith("/") && !value.startsWith("//") && !/[\\\u0000-\u001f]/.test(value) ? value : null;
@@ -31,7 +31,8 @@ export function projectCityGuideDocument(guide, { origin = "https://www.mshpit.c
   // long editorial introductions retain their existing precedence and limits.
   // Sparse provider city records often have no region. Keep same-named cities
   // in different countries distinguishable without overriding managed copy.
-  const defaultLocationLabel = [city, text(guide.city.region || guide.city.country || guide.city.countryCode, 100)].filter(Boolean).join(", ");
+  const region = readableRegion(guide.city.region, guide.city.countryCode || guide.city.country);
+  const defaultLocationLabel = [city, text(region || readableCountryName(guide.city.country) || guide.city.countryCode, 100)].filter(Boolean).join(", ");
   const defaults = publicCityMetadata(defaultLocationLabel, guide, photos);
   const searchTitle = text(editorial.seoTitle, 80)
     || (copy.citySeoTitle === DEFAULT_CITY_COPY.citySeoTitle ? defaults.title : format(copy.citySeoTitle, locationLabel)) || heading;

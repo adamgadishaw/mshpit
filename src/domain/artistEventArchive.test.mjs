@@ -21,7 +21,7 @@ test("artist event identities prefer stable artist keys and normalize name fallb
 test("archive date copy handles provider years without changing canonical storage", () => {
   assert.equal(archiveDateLabel("2030-03-01"), "2030 · 03 · 01");
   assert.equal(archiveDateLabel("2030-02-31", "Unknown"), "Unknown");
-  assert.equal(archiveDateRangeLabel("2024-01-01", "2024-02-02"), "2024 · 01 · 01 — 2024 · 02 · 02");
+  assert.equal(archiveDateRangeLabel("2024-01-01", "2024-02-02"), "2024 · 01 · 01 to 2024 · 02 · 02");
   assert.equal(archiveDateRangeLabel("2024-01-01", "2024-01-01"), "2024 · 01 · 01");
   assert.equal(archiveRatingLabel(4.76, 12), "4.8");
   assert.equal(archiveRatingLabel(0, 0), "New");

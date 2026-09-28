@@ -9,6 +9,7 @@ import {
 import { archiveShowKey } from "../artistArchive/artistArchiveKeys.js";
 import { publicVenuePhotoPool } from "../../venuePhotoCatalog.js";
 import { isStrictCalendarDate } from "./publicEntityPolicy.js";
+import { readableCountryName } from "./publicMetadataPresentation.js";
 import { createPublicCollectionRepository } from "./publicCollectionRepository.js";
 import { cityIdentity } from "../../../src/domain/cityIdentity.mjs";
 
@@ -268,7 +269,7 @@ export function createPublicCollectionDocumentService({ database,origin = DEFAUL
       const pathFor = (targetPage) => cityVenuesPath(raw,targetPage);
       const path = pathFor(page);
       const city = cleanLine(raw.city,120);
-      const country = cleanLine(raw.country,120) || cleanLine(raw.countryCode,2);
+      const country = readableCountryName(cleanLine(raw.country,120)) || cleanLine(raw.countryCode,2);
       if (!path || !city || !country) return null;
       const venues = freezeRows((raw.venues || []).slice(0,12).map((row) => venueItem(row,{ city,country })).filter(Boolean));
       if (!venues.length) return null;
@@ -298,7 +299,7 @@ export function createPublicCollectionDocumentService({ database,origin = DEFAUL
       const pathFor = (targetPage) => cityConcertsPath(raw,targetPage);
       const path = pathFor(page);
       const city = cleanLine(raw.city,120);
-      const country = cleanLine(raw.country,120) || cleanLine(raw.countryCode,2);
+      const country = readableCountryName(cleanLine(raw.country,120)) || cleanLine(raw.countryCode,2);
       if (!path || !city || !country) return null;
       const concerts = freezeRows((raw.concerts || []).slice(0,12)
         .map((row) => concertItem(row,{ city })).filter(Boolean));

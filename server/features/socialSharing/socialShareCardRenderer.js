@@ -41,6 +41,8 @@ const COPY = Object.freeze({
   review: Object.freeze({ label: "REVIEW", kicker: "RATED LIVE BY AN MSHPIT MEMBER" }),
   news: Object.freeze({ label: "NEWS", kicker: "MSHPIT NEWS" }),
   "news-link": Object.freeze({ label: "NEWS", kicker: "MSHPIT NEWS" }),
+  festival: Object.freeze({ label: "LINEUP", kicker: "FESTIVAL LINEUP" }),
+  "festival-going": Object.freeze({ label: "GOING", kicker: "Going to this festival" }),
 });
 
 // Link previews (og:image) are landscape; every other card is a 9:16 story.
@@ -65,6 +67,14 @@ const PALETTES = Object.freeze({
   ]),
   "news-link": Object.freeze([
     Object.freeze({ start: "#ff8a3d", end: "#ffb347", ink: "#1a1206" }),
+  ]),
+  festival: Object.freeze([
+    Object.freeze({ start: "#ffb347", end: "#e0457b", ink: "#1a1206" }),
+    Object.freeze({ start: "#ff8a3d", end: "#7b3fe4", ink: "#1a1206" }),
+  ]),
+  "festival-going": Object.freeze([
+    Object.freeze({ start: "#ff5a3d", end: "#7b3fe4", ink: "#20111a" }),
+    Object.freeze({ start: "#f97837", end: "#d82d67", ink: "#20110e" }),
   ]),
 });
 
@@ -317,6 +327,51 @@ export function eventShareCardModel(document, intent, {
     rating: "",
     quote: "",
     artwork,
+    canonicalUrl: shareUrl,
+  });
+}
+
+const FESTIVAL_WEEKDAYS = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
+const festivalWeekday = (day) => (normalizedDate(day) ? FESTIVAL_WEEKDAYS[new Date(`${day}T00:00:00Z`).getUTCDay()] : "");
+
+// A festival edition as a lineup poster, or a member's plan for it: the days
+// they are going and the sets they won't miss. Type only: a provider's
+// festival image is not licensed for a derivative story card.
+export function festivalShareCardModel({ festival, edition, intent = "lineup", plan = null, authorName = null } = {}) {
+  if (!/^[a-z0-9-]{1,80}$/u.test(String(festival?.slug || "")) || !edition?.id || !["lineup", "going"].includes(intent)) return null;
+  const name = cleanText(edition.name || festival.name, 160);
+  const start = normalizedDate(edition.startDate);
+  if (!name || !start) return null;
+  const shareUrl = canonicalUrl(`/festival/${festival.slug}`);
+  if (!shareUrl) return null;
+  const end = normalizedDate(edition.endDate) && edition.endDate > edition.startDate ? edition.endDate : null;
+  const lineup = (Array.isArray(edition.lineup) ? edition.lineup : []).map((act) => cleanText(act?.name, 80)).filter(Boolean).slice(0, 40);
+  const author = cleanText(authorName, 100);
+  const going = intent === "going";
+  const days = going ? (Array.isArray(plan?.days) ? plan.days : []).map(festivalWeekday).filter(Boolean) : [];
+  const mustSee = going ? (Array.isArray(plan?.mustSee) ? plan.mustSee : []).map((act) => cleanText(act, 80)).filter(Boolean).slice(0, 8) : [];
+  if (going && !days.length) return null;
+  const variant = going ? "festival-going" : "festival";
+  return Object.freeze({
+    version: CARD_VERSION,
+    variant,
+    label: COPY[variant].label,
+    kicker: going ? `${author || "A Mshpit fan"} is going` : COPY.festival.kicker,
+    statement: going ? `${author || "A Mshpit fan"} is going to ${name}.` : `The ${name} lineup.`,
+    artist: name,
+    subtitle: end
+      ? `${start.slice(0, 4) === end.slice(0, 4) ? formatDate(start).replace(/,\s*\d{4}$/u, "") : formatDate(start)} to ${formatDate(end)}`
+      : formatDate(start),
+    venue: cleanText(edition.venue, 180),
+    place: cleanText([edition.city, edition.region].filter(Boolean).join(", "), 180),
+    date: formatDate(start),
+    time: "",
+    rating: "",
+    quote: "",
+    lineup,
+    days,
+    mustSee,
+    artwork: Object.freeze([]),
     canonicalUrl: shareUrl,
   });
 }
@@ -852,8 +907,103 @@ function newsLinkSvg(model, artworkDataUri = "", artwork = null) {
 </svg>`;
 }
 
+// A festival story card: the name, dates and place, then the lineup set like
+// a poster (the first names biggest), or the member's days and must-see sets.
+const FESTIVAL_CARD = Object.freeze({ x: 60, y: 250, width: 960, height: 1310, stubTop: 1430 });
+
+function centeredLines(lines, { x, y, lineHeight, fontSize, fill, weight = 900, letterSpacing = 0 }) {
+  return lines.map((line, index) => `<text x="${x}" y="${y + index * lineHeight}" text-anchor="middle" fill="${fill}" font-family="Arial, Helvetica, sans-serif" font-size="${fontSize}" font-weight="${weight}" letter-spacing="${letterSpacing}">${escapeXml(line)}</text>`).join("");
+}
+
+function festivalShareSvg(model) {
+  const palette = paletteFor(model);
+  const card = FESTIVAL_CARD;
+  const left = card.x + 48;
+  const right = card.x + card.width - 48;
+  const middle = card.x + card.width / 2;
+  const width = card.width - 96;
+  const going = model.variant === "festival-going";
+  const kickerLines = wrapMeasuredLines(model.kicker, { maxWidth: width, fontSize: 32, maxLines: 1 });
+  const nameLines = wrapMeasuredLines(model.artist, { maxWidth: width, fontSize: 88, letterSpacing: -1.5, maxLines: 2 });
+  const whenLines = wrapMeasuredLines(model.subtitle, { maxWidth: width, fontSize: 40, maxLines: 1 });
+  const whereLines = wrapMeasuredLines([model.venue, model.place].filter(Boolean).join(" · "), { maxWidth: width, fontSize: 30, maxLines: 2 });
+  let y = card.y + 110;
+  const top = [];
+  top.push(svgTextLines(kickerLines, { x: left, y, lineHeight: 40, fontSize: 32, fill: palette.start, weight: 900, letterSpacing: 2 }));
+  y += 100;
+  top.push(svgTextLines(nameLines, { x: left, y, lineHeight: 92, fontSize: 88, fill: "#fff8ee", weight: 900, letterSpacing: -1.5 }));
+  y += (nameLines.length - 1) * 92 + 70;
+  top.push(svgTextLines(whenLines, { x: left, y, lineHeight: 48, fontSize: 40, fill: palette.start, weight: 900 }));
+  y += 48;
+  top.push(svgTextLines(whereLines, { x: left, y, lineHeight: 38, fontSize: 30, fill: "#cfc6de", weight: 700 }));
+  y += whereLines.length * 38 + 34;
+  const dividerY = y;
+  y += 70;
+  const body = [];
+  const bottom = card.stubTop - 60;
+  if (going) {
+    const dayText = model.days.join("  ·  ");
+    body.push(`<text x="${left}" y="${y}" fill="#a79fb8" font-family="Arial, Helvetica, sans-serif" font-size="26" font-weight="700">Days</text>`);
+    y += 62;
+    body.push(svgTextLines(wrapMeasuredLines(dayText, { maxWidth: width, fontSize: 56, maxLines: 1 }), { x: left, y, lineHeight: 60, fontSize: 56, fill: "#fff8ee", weight: 900, letterSpacing: 2 }));
+    y += 80;
+    if (model.mustSee.length) {
+      body.push(`<text x="${left}" y="${y}" fill="#a79fb8" font-family="Arial, Helvetica, sans-serif" font-size="26" font-weight="700">Won't miss</text>`);
+      y += 58;
+      for (const act of model.mustSee) {
+        if (y > bottom) break;
+        body.push(svgTextLines(wrapMeasuredLines(act, { maxWidth: width, fontSize: 46, maxLines: 1 }), { x: left, y, lineHeight: 54, fontSize: 46, fill: "#fff8ee", weight: 900 }));
+        y += 58;
+      }
+    }
+  } else if (model.lineup.length) {
+    // Poster tiers: headliners, then the next rows, then everyone else.
+    const tiers = [
+      { acts: model.lineup.slice(0, 3), fontSize: 60, lineHeight: 70, fill: "#fff8ee" },
+      { acts: model.lineup.slice(3, 9), fontSize: 40, lineHeight: 50, fill: "#f3ead9" },
+      { acts: model.lineup.slice(9, 30), fontSize: 28, lineHeight: 38, fill: "#b9b2c6" },
+    ];
+    for (const tier of tiers) {
+      if (!tier.acts.length || y > bottom) continue;
+      const lines = wrapMeasuredLines(tier.acts.join(" · "), { maxWidth: width, fontSize: tier.fontSize, maxLines: Math.max(1, Math.floor((bottom - y) / tier.lineHeight) + 1) });
+      body.push(centeredLines(lines, { x: middle, y, lineHeight: tier.lineHeight, fontSize: tier.fontSize, fill: tier.fill }));
+      y += lines.length * tier.lineHeight + 20;
+    }
+    if (model.lineup.length > 30 && y <= bottom) body.push(centeredLines([`and ${model.lineup.length - 30} more`], { x: middle, y, lineHeight: 36, fontSize: 26, fill: "#8f86a3", weight: 700 }));
+  } else {
+    body.push(svgTextLines(["Lineup to be announced"], { x: left, y, lineHeight: 50, fontSize: 44, fill: "#cfc6de", weight: 800 }));
+  }
+  const stamp = going ? `<g transform="rotate(-6 ${right - 110} ${card.stubTop - 60})" opacity="0.92">
+    <rect x="${right - 230}" y="${card.stubTop - 112}" width="240" height="104" rx="22" fill="#1d1434" fill-opacity="0.55" stroke="${palette.start}" stroke-width="6"/>
+    <text x="${right - 110}" y="${card.stubTop - 45}" text-anchor="middle" fill="${palette.start}" font-family="Arial, Helvetica, sans-serif" font-size="40" font-weight="900" letter-spacing="5">GOING</text>
+  </g>` : "";
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${CARD_WIDTH}" height="${CARD_HEIGHT}" viewBox="0 0 ${CARD_WIDTH} ${CARD_HEIGHT}">
+  ${shareSvgDefs(palette, `<clipPath id="festivalCard"><rect x="${card.x}" y="${card.y}" width="${card.width}" height="${card.height}" rx="40"/></clipPath><clipPath id="festivalBody"><rect x="${card.x}" y="${card.y}" width="${card.width}" height="${card.stubTop - card.y - 20}"/></clipPath>`)}
+  <rect width="${CARD_WIDTH}" height="${CARD_HEIGHT}" fill="#0b0715"/>
+  <rect x="0" y="0" width="${CARD_WIDTH}" height="12" fill="url(#accent)"/>
+  <g data-layout="${model.variant}" filter="url(#shadow)" clip-path="url(#festivalCard)">
+    <rect x="${card.x}" y="${card.y}" width="${card.width}" height="${card.height}" rx="40" fill="#1d1434"/>
+    <rect x="${card.x}" y="${card.y}" width="${card.width}" height="14" fill="url(#accent)"/>
+    <rect x="${card.x}" y="${card.stubTop}" width="${card.width}" height="${card.y + card.height - card.stubTop}" fill="#251940"/>
+  </g>
+  <g data-section="festival-copy" clip-path="url(#festivalBody)">
+    ${top.join("")}
+    <line x1="${left}" y1="${dividerY}" x2="${right}" y2="${dividerY}" stroke="#3b2f52" stroke-width="2"/>
+    ${body.join("")}
+  </g>
+  ${stamp}
+  <line x1="${card.x + 30}" y1="${card.stubTop}" x2="${card.x + card.width - 30}" y2="${card.stubTop}" stroke="#6a5a86" stroke-width="3" stroke-dasharray="10 12"/>
+  <circle cx="${card.x}" cy="${card.stubTop}" r="22" fill="#0b0715"/><circle cx="${card.x + card.width}" cy="${card.stubTop}" r="22" fill="#0b0715"/>
+  ${communityMarkSvg({ x: left + 22, y: card.stubTop + 66, scale: 0.07, opacity: 1 })}
+  <text x="${left + 64}" y="${card.stubTop + 77}" fill="#fff8ee" font-family="Arial, Helvetica, sans-serif" font-size="30" font-weight="900" letter-spacing="7">MSHPIT</text>
+  <text x="${left}" y="${card.stubTop + 124}" fill="${palette.start}" font-family="Arial, Helvetica, sans-serif" font-size="28" font-weight="800">${going ? "Plan yours on mshpit.com" : "Full lineup on mshpit.com"}</text>
+</svg>`;
+}
+
 export function socialShareCardSvg(model, { artworkDataUri = "", artwork = null } = {}) {
   if (!model || !COPY[model.variant]) throw new TypeError("A valid social share-card model is required");
+  if (model.variant === "festival" || model.variant === "festival-going") return festivalShareSvg(model);
   if (model.variant === "news") return newsShareSvg(model, artworkDataUri, artwork);
   if (model.variant === "news-link") return newsLinkSvg(model, artworkDataUri, artwork);
   return model.variant === "review"

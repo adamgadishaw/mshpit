@@ -30,6 +30,7 @@ export const RESERVED_SLUGS = new Set([
   // called "Artist" builds "/artist", which parsePath reads as a prefix with no
   // value and rejects. That put a dead link in the sitemap.
   "artist", "artists", "venue", "u", "post", "show", "event", "events", "concert", "concerts", "city", "cities",
+  "festival", "festivals",
   "about", "admin", "api", "assets", "auth", "badges", "calendar", "clips", "crew", "news",
   "contact", "discover", "download", "edit", "explore", "favicon.ico", "feed",
   "help", "home", "inbox", "legal", "login", "logout", "menu", "messages",
@@ -52,6 +53,9 @@ export const artistPath = (artistOrName, publicSlug = null) => {
   const slug = slugify(stableSlug || name);
   return slug ? `/artist/${slug}` : null;
 };
+
+// A festival's page: /festival/<catalog slug>.
+export const festivalPath = (slug) => (/^[a-z0-9-]{1,80}$/u.test(String(slug || "")) ? `/festival/${slug}` : null);
 
 export const postPath = (id) => {
   const value = String(id ?? "");

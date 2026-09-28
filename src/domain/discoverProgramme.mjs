@@ -1,6 +1,7 @@
 // One bounded set of destinations: changing sections never changes the area.
 export const DISCOVER_PROGRAMME_SECTIONS = Object.freeze([
   Object.freeze({ key: "shows", label: "Shows", icon: "ticket" }),
+  Object.freeze({ key: "festivals", label: "Festivals", icon: "calendar" }),
   Object.freeze({ key: "artists", label: "Artists", icon: "music" }),
   Object.freeze({ key: "venues", label: "Venues", icon: "pin" }),
   Object.freeze({ key: "cities", label: "Cities", icon: "globe" }),

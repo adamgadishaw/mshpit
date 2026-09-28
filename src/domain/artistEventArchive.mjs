@@ -23,7 +23,7 @@ export function archiveDateRangeLabel(firstDate, lastDate) {
   const last = archiveDateLabel(lastDate, "");
   if (!first && !last) return "Dates unavailable";
   if (!first || first === last) return first || last;
-  return `${first} — ${last}`;
+  return `${first} to ${last}`;
 }
 
 export function compactArchiveCount(value) {

@@ -3,8 +3,9 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { DISCOVER_PROGRAMME_SECTIONS, discoverProgrammeKey, discoverProgrammeKeyboardTarget, restoredDiscoverProgramme } from "./discoverProgramme.mjs";
 
-test("Discover keeps all five destinations without inventing routes or changing area", () => {
-  assert.deepEqual(DISCOVER_PROGRAMME_SECTIONS.map(({ key }) => key), ["shows", "artists", "venues", "cities", "photos"]);
+test("Discover keeps all six destinations without inventing routes or changing area", () => {
+  // Festivals sit beside shows: multi-day events are never mixed into show lists.
+  assert.deepEqual(DISCOVER_PROGRAMME_SECTIONS.map(({ key }) => key), ["shows", "festivals", "artists", "venues", "cities", "photos"]);
   for (const { key } of DISCOVER_PROGRAMME_SECTIONS) assert.equal(discoverProgrammeKey(key), key);
   for (const key of [null, undefined, "", "admin", {}, "__proto__"]) assert.equal(discoverProgrammeKey(key), "shows");
 });
@@ -13,6 +14,7 @@ test("Discover keyboard navigation wraps and supports Home and End", () => {
   assert.equal(discoverProgrammeKeyboardTarget("shows", "ArrowLeft"), "photos");
   assert.equal(discoverProgrammeKeyboardTarget("photos", "ArrowRight"), "shows");
   assert.equal(discoverProgrammeKeyboardTarget("artists", "ArrowRight"), "venues");
+  assert.equal(discoverProgrammeKeyboardTarget("shows", "ArrowRight"), "festivals");
   assert.equal(discoverProgrammeKeyboardTarget("venues", "Home"), "shows");
   assert.equal(discoverProgrammeKeyboardTarget("cities", "End"), "photos");
   for (const key of ["Tab", "Enter", "Escape", "a"]) assert.equal(discoverProgrammeKeyboardTarget("shows", key), null);

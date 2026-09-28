@@ -3,6 +3,7 @@ import { canonicalYouTubeReviewLink } from "../../onlineReviews.js";
 import { renderCityGuideMain, renderCityDirectoryMain } from "./cityGuideDocument.js";
 import { NEWS_STYLES, renderArtistHeadlinesSection, renderArtistNewsSection, renderNewsMain } from "../artistUpdates/newsDocuments.js";
 import { LIVE_STYLES, renderLiveMain } from "../newsDesk/newsLiveDocument.js";
+import { FESTIVAL_STYLES, renderFestivalMain } from "../festivals/festivalDocument.js";
 import { CITY_GUIDE_STYLES } from "./cityGuideStyles.js";
 import { artistBiographyRows } from "../../../src/domain/artistBiography.mjs";
 import { validateArtistKnowledgeSource } from "../../../src/domain/artistKnowledge.mjs";
@@ -510,6 +511,7 @@ function directoryMain(document) {
 export function renderPublicDocumentMain(document) {
   if (document?.kind === "news") return renderNewsMain(document);
   if (document?.kind === "news-live") return renderLiveMain(document);
+  if (document?.kind === "festival" || document?.kind === "festivals") return renderFestivalMain(document);
   if (document?.kind === "city-directory") return renderCityDirectoryMain(document);
   if (document?.kind === "city") return renderCityGuideMain(document);
   if (!document || !["home", "discover", "search", "artist", "member", "post", "event", "concert", "venue", "directory"].includes(document.kind)) return null;
@@ -599,13 +601,13 @@ export function renderPublicDocumentShell(document) {
   // Keep the style element inside #root. React's createRoot replaces both the
   // semantic preview and these temporary styles when the interactive client
   // mounts, so crawler-first CSS cannot leak into the signed-in application.
-  return `<style data-mshpit-public-document>${STYLES}${["city", "city-directory"].includes(document.kind) ? CITY_GUIDE_STYLES : ""}${["news", "artist", "news-live"].includes(document.kind) ? NEWS_STYLES : ""}${document.kind === "news-live" ? LIVE_STYLES : ""}
+  return `<style data-mshpit-public-document>${STYLES}${["city", "city-directory"].includes(document.kind) ? CITY_GUIDE_STYLES : ""}${["news", "artist", "news-live", "festival", "festivals"].includes(document.kind) ? NEWS_STYLES : ""}${document.kind === "news-live" ? LIVE_STYLES : ""}${["festival", "festivals"].includes(document.kind) ? FESTIVAL_STYLES : ""}
     .landing-browse a{display:inline-flex;align-items:center;min-height:44px;padding:0 .35rem;font-weight:700}
     @media(max-width:760px){.site-header>div{flex-wrap:wrap;gap:.5rem}.site-header nav{width:100%;max-width:100%;overflow-x:auto;flex-wrap:nowrap;padding-bottom:.2rem}.site-header nav a,.site-header nav a:not(:last-child){display:inline-flex;flex-shrink:0;align-items:center;min-height:44px}.landing-browse{gap:1rem;justify-content:center}}
     </style>
     <div class="seo-document">
       <a class="skip" href="#main">Skip to content</a>
-      <header class="site-header"><div data-nosnippet><a class="brand" href="/" aria-label="Mshpit home">MSHPIT</a><nav aria-label="Main navigation"><a href="/artists">Artists</a><a href="/events">Upcoming shows</a><a href="/news">News</a><a href="/venues">Venues</a><a href="/cities">Music cities</a><a href="/concerts">Concert archive</a><a href="/search">Search</a><a href="/login">Log in</a></nav></div></header>
+      <header class="site-header"><div data-nosnippet><a class="brand" href="/" aria-label="Mshpit home">MSHPIT</a><nav aria-label="Main navigation"><a href="/artists">Artists</a><a href="/events">Upcoming shows</a><a href="/news">News</a><a href="/festivals">Festivals</a><a href="/venues">Venues</a><a href="/cities">Music cities</a><a href="/concerts">Concert archive</a><a href="/search">Search</a><a href="/login">Log in</a></nav></div></header>
       ${main}
       <footer class="site-footer"><span data-nosnippet>© ${new Date().getUTCFullYear()} Mshpit</span><div data-nosnippet><a href="/about">About</a><a href="/contact">Contact</a><a href="/community-guidelines">Guidelines</a><a href="/ratings-methodology">Ratings</a><a href="/privacy">Privacy</a><a href="/terms">Terms</a><a href="/support">Support</a></div></footer>
     </div>`;

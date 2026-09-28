@@ -105,7 +105,7 @@ function fallbackHead(path, origin, nofollow) {
     title, canonical: null, jsonLd: [],
     meta: [
       { name: "robots", content: nofollow ? "noindex,nofollow" : "noindex,follow" },
-      { name: "description", content: "Mshpit — concert reviews, photos and live music discovery." },
+      { name: "description", content: "Mshpit: concert reviews, photos and live music discovery." },
       { property: "og:title", content: title },
       { property: "og:type", content: "website" },
       { property: "og:site_name", content: "Mshpit" },

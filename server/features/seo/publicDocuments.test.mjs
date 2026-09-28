@@ -668,7 +668,7 @@ test("artist document uses only active UGC and references Event leaf pages witho
     assert.deepEqual(document.jsonLd[0].mainEntity, { "@id": "https://www.example.com/artist/alpha#artist" });
     assert.deepEqual(document.jsonLd[0].about.sameAs, [`https://musicbrainz.org/artist/${ARTIST_MBID}`]);
     assert.equal(Object.hasOwn(invalidMbidDocument.jsonLd[0].about, "sameAs"), false);
-    assert.equal(invalidMbidDocument.title, "Bad MBID music artist profile | Mshpit");
+    assert.equal(invalidMbidDocument.title, "Bad MBID Biography & Live Music | Mshpit");
     assert.doesNotMatch(`${invalidMbidDocument.title} ${invalidMbidDocument.description}`, /reviews|photos|tour dates|upcoming/iu);
     assert.deepEqual(document.reviews.map((review) => review.id), ["visible", "private-gallery"]);
     assert.deepEqual(document.events.map((event) => event.id), ["event-public"]);

@@ -109,6 +109,8 @@ export default function SocialShareModal({ accountId = null, model, onClose }) {
   const renderPostId = model?.renderRequest?.postId || null;
   const renderEventId = model?.renderRequest?.eventId || null;
   const renderIntent = model?.renderRequest?.intent || null;
+  const renderSlug = model?.renderRequest?.slug || null;
+  const renderEditionId = model?.renderRequest?.editionId || null;
   const renderModel = useMemo(() => {
     if (!model || !renderKind) return null;
     return {
@@ -116,9 +118,11 @@ export default function SocialShareModal({ accountId = null, model, onClose }) {
       kind: model.kind,
       renderRequest: renderKind === "post"
         ? { kind: "post", postId: renderPostId }
-        : { kind: "event", eventId: renderEventId, intent: renderIntent },
+        : renderKind === "festival"
+          ? { kind: "festival", slug: renderSlug, editionId: renderEditionId, intent: renderIntent }
+          : { kind: "event", eventId: renderEventId, intent: renderIntent },
     };
-  }, [model?.id, model?.kind, renderEventId, renderIntent, renderKind, renderPostId]);
+  }, [model?.id, model?.kind, renderEditionId, renderEventId, renderIntent, renderKind, renderPostId, renderSlug]);
   const preparationScope = useMemo(() => ({ accountId, renderModel, renderAttempt }), [accountId, renderModel, renderAttempt]);
   // Project the new identity during render, before the old effect cleans up.
   // A prior account/model's private PNG must never be offered by a new card.

@@ -790,7 +790,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
           ? social.loungeCutoffSource === "show_start"
             ? "Doors time was unavailable, so the Lounge closed 24 hours after show start."
             : "The Lounge closed 24 hours after doors opened."
-          : "One Lounge for this exact show — available before, during, and until 24 hours after doors open."}</Text> : null}
+          : "One Lounge for this exact show, open before, during, and until 24 hours after doors open."}</Text> : null}
         {liveActionsAvailable && goingTicketPrompt && tourDateId ? (
           <GoingTicketComposer
             event={ticketEvent}

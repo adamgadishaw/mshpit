@@ -456,7 +456,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
                 </View>
                 <Pressable onPress={dismissGuide} hitSlop={10} accessibilityRole="button" accessibilityLabel="Dismiss getting started guide"><Icon name="x" size={16} color={colors.textDim} /></Pressable>
               </View>
-              <Text style={styles.gsSub}>{onFinishSetup ? "Have a look around. Your profile photo, banner and city welcome can wait—find them in Settings anytime." : "Find a show, save the night, then come back to rate it, share the memory, and meet other fans."}</Text>
+              <Text style={styles.gsSub}>{onFinishSetup ? "Have a look around. Your profile photo, banner and city welcome can wait. Find them in Settings anytime." : "Find a show, save the night, then come back to rate it, share the memory, and meet other fans."}</Text>
               <View style={styles.gsActions}>
                 <HomeAction icon="discover" label="Find a show" onPress={onOpenDiscover} />
                 {onFinishSetup ? <HomeAction icon="you" label="Finish profile setup" onPress={onFinishSetup} /> : <HomeAction icon="plus" label="Log a show" onPress={onLogShow} primary />}

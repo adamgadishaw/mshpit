@@ -127,7 +127,7 @@ for (const name of ["LoungeScreen", "FanClubScreen"]) {
   });
   test(`${name} signed-in entry still performs only its existing member action`, async () => {
     const { calls, tree } = screenFixture(name, { id: "member" });
-    const pattern = name === "LoungeScreen" ? /I'm going.*enter/ : /Join the fan club/;
+    const pattern = name === "LoungeScreen" ? /I'm going.*enter/i : /Join the fan club/;
     const button = nodes(tree).find((node) => node.type === "Pressable" && pattern.test(text(node)));
     assert.ok(button);
     assert.ok(!button.props.disabled);

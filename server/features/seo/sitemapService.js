@@ -1236,6 +1236,18 @@ export function buildSitemapDatasets(database, { now = Date.now() } = {}) {
       if (/^[a-z0-9-]{1,80}$/u.test(row.slug)) pages.push({ path: `/news/live/${row.slug}`, lastmod: row.lastmod });
     }
   }
+  // Festivals: the hub once it lists a few, and every festival with dates,
+  // a history or past editions (the same test the page uses to be indexable).
+  if (database.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='festival_editions'").get()) {
+    const today = new Date(candidates.generatedAt).toISOString().slice(0, 10);
+    const upcomingFestivals = database.prepare("SELECT COUNT(DISTINCT festival_slug) AS n FROM festival_editions WHERE end_date >= ?").get(today)?.n || 0;
+    if (upcomingFestivals >= 3) pages.push({ path: "/festivals" });
+    for (const row of database.prepare(`SELECT f.slug, MAX(COALESCE(e.updated_at, f.updated_at)) AS lastmod FROM festivals f
+      LEFT JOIN festival_editions e ON e.festival_slug=f.slug
+      WHERE e.id IS NOT NULL OR (f.about IS NOT NULL AND f.about<>'') GROUP BY f.slug ORDER BY f.slug LIMIT 500`).all()) {
+      if (/^[a-z0-9-]{1,80}$/u.test(row.slug)) pages.push({ path: `/festival/${row.slug}`, lastmod: row.lastmod });
+    }
+  }
   const cities = [...citySitemapEntries({ candidates, venueEntries: venues, concerts }), ...guideCities];
   const artistArchives = artistArchiveSitemapEntries({ artistEntries: artists, concerts });
   const datasets = new Map([

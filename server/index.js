@@ -12,7 +12,7 @@ import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { join, extname, normalize, dirname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { db, q, publicUser, pruneMissingArtists, DATABASE_DIRECTORY, DATABASE_PATH } from "./db.js";
-import { artistDeathWatchService, eraseAccountForInactivity, replayPrivacyJournalOnRestore, routes, startArtistNews, startArtistPhotos, startCatalogResearch, startNewsDesk, startPrivacyJournal, startVideoProcessingRetries, startWebProfiles, startSearchGrowth } from "./api.js";
+import { artistDeathWatchService, eraseAccountForInactivity, replayPrivacyJournalOnRestore, routes, startArtistNews, startArtistPhotos, startCatalogResearch, startFestivals, startNewsDesk, startPrivacyJournal, startVideoProcessingRetries, startWebProfiles, startSearchGrowth } from "./api.js";
 import { ApiError, errorEnvelope } from "./errors.js";
 import { readAuthorizedRequest } from "./requestAuthorization.js";
 import { maybeAlert, pruneErrors, recordError } from "./errorLog.js";
@@ -1075,6 +1075,7 @@ async function startServer() {
     additionalSchedulers.set("web-profiles", startBackgroundRuntime("/startup/web-profiles", () => startWebProfiles())); // Ticketmaster performer/venue records + Wikidata ID check; uses TICKETMASTER_KEY
     additionalSchedulers.set("artist-news", startBackgroundRuntime("/startup/artist-news", () => startArtistNews())); // new releases (Deezer, keyless) + new tour dates for followers
     additionalSchedulers.set("news-desk", startBackgroundRuntime("/startup/news-desk", () => startNewsDesk())); // confirmed music news from @news_mod; existing news/Claude caps remain authoritative
+    additionalSchedulers.set("festivals", startBackgroundRuntime("/startup/festivals", () => startFestivals())); // festival editions and lineups (Ticketmaster), histories (Wikipedia); needs TICKETMASTER_KEY
     additionalSchedulers.set("artist-photos", startBackgroundRuntime("/startup/artist-photos", () => startArtistPhotos())); // Deezer artist photos, Discover first, when Spotify is not configured
     // Sitemap reads serve only the validated persisted/current LKG. Reuse a
     // fresh current-revision snapshot across deploys; missing, stale, future,

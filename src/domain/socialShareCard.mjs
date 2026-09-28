@@ -118,7 +118,7 @@ const makeModel = ({
     place,
     safeDate,
     safeRating ? `${safeRating.toFixed(1)} out of 5` : "",
-  ].filter(Boolean).join(" — ");
+  ].filter(Boolean).join(" · ");
 
   return Object.freeze({
     kind,

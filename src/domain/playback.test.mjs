@@ -234,7 +234,7 @@ test("preview status copy reports actual playback state", () => {
   );
   assert.equal(
     playerYouTubeStatusMessage(verification, { preview: true, previewState: "requires_gesture" }),
-    "Verify your email for full-track YouTube lookup. Preview ready — press Play.",
+    "Verify your email for full-track YouTube lookup. Preview ready. Press Play.",
   );
   assert.equal(
     playerYouTubeStatusMessage(playerYouTubeLookupNotice("search_deferred"), { preview: true, previewState: "playing" }),
