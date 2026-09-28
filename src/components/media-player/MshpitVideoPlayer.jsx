@@ -111,6 +111,9 @@ export default function MshpitVideoPlayer({ uri, posterUri, postId, onRetry, onT
     const endSubscription = player.addListener?.("playToEnd", () => measure(true));
     recordStart(player.playing);
     return () => {
+      // Expo web keeps this timer after its VideoView unmounts. Stop the
+      // interval we own before releasing listeners or replacing the player.
+      try { player.timeUpdateEventInterval = 0; } catch { /* Native player may already be released. */ }
       playingSubscription?.remove?.();
       timeSubscription?.remove?.();
       endSubscription?.remove?.();
