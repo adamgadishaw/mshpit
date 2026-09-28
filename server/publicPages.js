@@ -8,6 +8,8 @@ import {
   MEDIA_AND_SESSION_SECURITY_DISCLOSURE,
   PRIVACY_POLICY_UPDATED,
   PROFILE_SEARCH_INDEXING_DISCLOSURE,
+  PROMOTIONAL_CONTENT_TERMS,
+  PROMOTIONAL_CONTENT_PRIVACY,
   TERMS_POLICY_UPDATED,
 } from "../src/domain/privacyDisclosures.mjs";
 import { SUPPORT_EMAIL } from "../src/domain/contact.mjs";
@@ -25,6 +27,7 @@ export const PUBLIC_PAGE_PATHS = Object.freeze([
   "/privacy",
   "/terms",
   "/photo-rights",
+  "/promotion-sources",
   "/support",
   "/account-deletion",
 ]);
@@ -217,6 +220,11 @@ const PAGES = Object.freeze({
         ],
       },
       {
+        heading: PROMOTIONAL_CONTENT_PRIVACY.heading,
+        paragraphs: [...PROMOTIONAL_CONTENT_PRIVACY.paragraphs],
+        links: [link("Promotion sources and credits", "/promotion-sources"), link("Arrange or withdraw permission", "/support")],
+      },
+      {
         heading: "Advertising and profiling",
         paragraphs: [
           "Pit is designed to support an advertising-funded service, but the current first-party product analytics system is not an ad-network integration and does not send your event history or searches to advertisers. If Pit later adds third-party advertising or materially changes profiling, this policy and the relevant choices will be updated before that use begins.",
@@ -328,6 +336,11 @@ const PAGES = Object.freeze({
         links: [link("Photo rights and permission requests", "/photo-rights")],
       },
       {
+        heading: PROMOTIONAL_CONTENT_TERMS.heading,
+        paragraphs: [...PROMOTIONAL_CONTENT_TERMS.paragraphs],
+        links: [link("Promotion sources and credits", "/promotion-sources"), link("Arrange or withdraw permission", "/support")],
+      },
+      {
         heading: "Photo and video upload limits",
         paragraphs: ["To keep posting reliable for everyone, an account can start up to 120 original photo or video uploads selected from its device and upload up to 6 GiB of those original files during any rolling 24-hour period. Pit-generated safe copies, video covers, and delivery versions do not count again toward that account allowance. A photo can be up to 30 MiB. A video can be up to 500 MiB and 10 minutes long. One post can include up to 20 attachments. Failed or retried original uploads can count because the service still has to receive or process them. These limits move with the previous 24 hours instead of resetting at midnight. Pit may apply a lower temporary limit when needed to protect members or keep the service working."],
       },
@@ -393,6 +406,24 @@ const PAGES = Object.freeze({
       },
     ],
   },
+  "/promotion-sources": {
+    title: "Promotion sources and credits",
+    description: "How Mshpit credits separately approved member content used to promote the app, and how to request a correction or withdraw permission.",
+    intro: "Mshpit promotion must credit the people whose content it uses. Social-media posts and paid ads require separate permission for the specific content and intended use; a public upload or community spotlight setting is not that permission.",
+    note: "No promotional source entries have been published on this page. This page does not itself grant permission to reuse anyone's content.",
+    sections: [
+      {
+        id: "credits",
+        heading: "Credit for each promotion",
+        paragraphs: ["Before a promotion relies on this page for attribution, a corresponding source entry must be published and the promotion must visibly link directly to it. Each entry must identify the promotion, the approved public name or handle, the source content and original public post where available and appropriate, and any required third-party attribution. A generic link to this page without a corresponding entry is not enough.", "We do not publish permission correspondence, private names, email addresses, or other private contact details as credits. A sharing credit is not proof of copyright ownership or permission for other people to reuse the content. Separate catalogue-image licences remain subject to their own attribution conditions."],
+      },
+      {
+        heading: "Permission and withdrawal",
+        paragraphs: ["Mshpit must record express permission before using member content in social-media promotion or paid ads. Until a dedicated permission control is available, the content, uses, channels, period, and public credit are agreed in writing through Support. Permission is optional and does not affect your ability to use Mshpit.", "To withdraw permission, correct a credit, or report a promotion with a missing source entry, contact Support with the public post or promotion link and the relevant credit. Do not send passwords, verification codes, or unnecessary private information. The Terms explain how withdrawal, deletion, and private-content changes affect promotional use."],
+        links: [link("Contact Support", "/support"), link("Promotional permission terms", "/terms"), link("Privacy policy", "/privacy")],
+      },
+    ],
+  },
   "/photo-rights": {
     title: "Photo rights and permission requests",
     description: "How member photo rights work on Mshpit and how to ask the rights holder for permission to reuse an image.",
@@ -413,6 +444,11 @@ const PAGES = Object.freeze({
       {
         heading: "Separately licensed catalogue photos",
         paragraphs: ["Some artist or venue catalogue photos have a separate creator credit, source link, and licence. Follow that specific image's published licence and conditions; this member-photo page does not replace those terms or grant additional rights. A licence for one photo does not apply to other images on the same page."],
+      },
+      {
+        heading: "Mshpit promotional use is separate",
+        paragraphs: ["Mshpit's social-media posts and paid ads require separate express permission for the specific member content, channels, period, and public credit. Uploading or enabling an artist-page or community spotlight does not grant that permission. Each approved promotional use must include credit or visibly link to its corresponding source entry. This does not give other people permission to reuse the content."],
+        links: [link("Promotional permission terms", "/terms"), link("Promotion sources and credits", "/promotion-sources")],
       },
       {
         heading: "Report a rights concern",

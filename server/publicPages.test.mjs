@@ -5,6 +5,8 @@ import test from "node:test";
 import {
   LEGAL_ACCEPTANCE_VERSION,
   PRIVACY_POLICY_UPDATED,
+  PROMOTIONAL_CONTENT_PRIVACY,
+  PROMOTIONAL_CONTENT_TERMS,
   TERMS_POLICY_UPDATED,
 } from "../src/domain/privacyDisclosures.mjs";
 import {
@@ -35,11 +37,42 @@ test("photo rights explain existing ownership and expose a real permission-reque
   assert.match(html, /do not publish private member contact details/);
   assert.match(html, /mailto:support@mshpit\.com\?subject=Photo%20permission%20request/);
   assert.match(html, /separate creator credit, source link, and licence/);
+  assert.match(html, /social-media posts and paid ads require separate express permission/);
+  assert.match(html, /Uploading or enabling an artist-page or community spotlight does not grant that permission/);
+  assert.match(html, /href="\/promotion-sources"/);
   assert.ok(publicPageSitemapEntries().some((entry) => entry.path === "/photo-rights"));
   assert.match(renderPublicPage("/terms"), /href="\/photo-rights"/);
   assert.match(renderPublicPage("/support"), /href="\/photo-rights#request-permission"/);
   assert.equal(structuredGraph(html).find((node) => node["@id"].endsWith("#page")).dateModified, undefined,
     "an explanatory page must not invent a legal-policy acceptance date");
+});
+
+test("promotion sources are a standalone explanation, not fabricated campaign credits or automatic consent", () => {
+  const page = publicPageFor("/promotion-sources");
+  assert.ok(page);
+  const html = renderPublicPage("/promotion-sources", { PUBLIC_ORIGIN: "https://www.example.com" });
+  assert.match(html, /<link rel="canonical" href="https:\/\/www\.example\.com\/promotion-sources"/);
+  assert.match(html, /<h1>Promotion sources and credits<\/h1>/);
+  assert.match(html, /<section id="credits">/);
+  assert.match(html, /No promotional source entries have been published on this page/);
+  assert.match(html, /does not itself grant permission to reuse anyone(?:'|&#39;)s content/);
+  assert.match(html, /a corresponding source entry must be published and the promotion must visibly link directly to it/);
+  assert.match(html, /A generic link to this page without a corresponding entry is not enough/);
+  assert.match(html, /We do not publish permission correspondence, private names, email addresses/);
+  assert.match(html, /A sharing credit is not proof of copyright ownership/);
+  assert.match(html, /Until a dedicated permission control is available/);
+  assert.match(html, /agreed in writing through Support/);
+  assert.match(html, /Do not send passwords, verification codes, or unnecessary private information/);
+  assert.match(html, /href="\/support"/);
+  assert.match(html, /href="\/terms"/);
+  assert.match(html, /href="\/privacy"/);
+  assert.doesNotMatch(html, /<form\b|<img\b|<video\b/i,
+    "a policy-only landing page must not publish member media or collect implied consent");
+  assert.equal(structuredGraph(html).find((node) => node["@id"].endsWith("#page")).dateModified, undefined,
+    "an explanatory page does not invent an acceptance date or campaign publication timestamp");
+  assert.equal(publicPageSitemapEntries().filter((entry) => entry.path === "/promotion-sources").length, 1);
+  assert.equal(publicPageFor("/promotion-sources/not-an-approved-campaign"), null,
+    "nonexistent source records must not be represented as valid campaign credit entries");
 });
 
 test("public trust and App Store URLs resolve without accepting near misses", () => {
@@ -113,7 +146,7 @@ test("trust-page metadata is canonical, brand-consistent, and does not invent po
 
   const privacyPage = structuredGraph(renderPublicPage("/privacy"))
     .find((node) => node["@id"].endsWith("#page"));
-  assert.equal(privacyPage.dateModified, "2026-09-11", "an exact published policy day is safe to expose");
+  assert.equal(privacyPage.dateModified, "2026-09-28", "an exact published policy day is safe to expose");
 
   for (const path of ["/community-guidelines", "/ratings-methodology"]) {
     const html = renderPublicPage(path);
@@ -125,13 +158,13 @@ test("trust-page metadata is canonical, brand-consistent, and does not invent po
   }
   const terms = renderPublicPage("/terms");
   const termsPage = structuredGraph(terms).find((node) => node["@id"].endsWith("#page"));
-  assert.match(terms, /Last updated September 11, 2026/);
-  assert.equal(termsPage.dateModified, "2026-09-11");
+  assert.match(terms, /Last updated September 28, 2026/);
+  assert.equal(termsPage.dateModified, "2026-09-28");
 });
 
 test("privacy and terms mirror the dated in-app policies and expose support", () => {
   const privacy = renderPublicPage("/privacy");
-  assert.match(privacy, /Last updated September 11, 2026/);
+  assert.match(privacy, /Last updated September 28, 2026/);
   assert.match(privacy, /rolling 30-day period/);
   assert.match(privacy, /rolling 180-day period/);
   assert.match(privacy, /Unused server-side staged photo and video uploads are normally deleted after about 48 hours/);
@@ -172,7 +205,7 @@ test("privacy and terms mirror the dated in-app policies and expose support", ()
   assert.match(privacy, new RegExp(`mailto:${SUPPORT_EMAIL.replace(".", "\\.")}`));
 
   const terms = renderPublicPage("/terms");
-  assert.match(terms, /Last updated September 11, 2026/);
+  assert.match(terms, /Last updated September 28, 2026/);
   assert.match(terms, /Your content and licence/);
   assert.match(terms, /120 original photo or video uploads/);
   assert.match(terms, /6 GiB/);
@@ -229,6 +262,7 @@ test("public account terms exactly match the approved in-app eligibility, setup,
 
 test("legal acceptance version stays aligned with both material policy dates", () => {
   assert.equal(PRIVACY_POLICY_UPDATED, TERMS_POLICY_UPDATED);
+  assert.equal(LEGAL_ACCEPTANCE_VERSION, "2026-09-28", "the new optional promotional licence has a distinct policy version");
   assert.match(LEGAL_ACCEPTANCE_VERSION, /^\d{4}-\d{2}-\d{2}(?:\.[1-9]\d*)?$/);
   const policyDate = new Date(`${PRIVACY_POLICY_UPDATED} 00:00:00 UTC`).toISOString().slice(0, 10);
   assert.equal(LEGAL_ACCEPTANCE_VERSION.slice(0, 10), policyDate);
@@ -237,6 +271,62 @@ test("legal acceptance version stays aligned with both material policy dates", (
       .find((node) => node["@id"].endsWith("#page"));
     assert.equal(page.dateModified, policyDate, "SEO dates stay valid calendar dates even when acceptance has a same-day revision");
   }
+});
+
+test("promotional permissions have one shared public and in-app policy without enrolling existing content", async () => {
+  for (const [path, disclosure, symbol, screen] of [
+    ["/terms", PROMOTIONAL_CONTENT_TERMS, "PROMOTIONAL_CONTENT_TERMS", "TermsScreen.jsx"],
+    ["/privacy", PROMOTIONAL_CONTENT_PRIVACY, "PROMOTIONAL_CONTENT_PRIVACY", "PrivacyScreen.jsx"],
+  ]) {
+    const sections = publicPageFor(path).sections.filter((section) => section.heading === disclosure.heading);
+    assert.equal(sections.length, 1, `${path} must include the shared promotional policy exactly once`);
+    assert.deepEqual(sections[0].paragraphs, [...disclosure.paragraphs]);
+    assert.ok(sections[0].links.some((entry) => entry.href === "/promotion-sources"),
+      `${path} must link the public source-credit explanation`);
+    const source = await readFile(new URL(`../src/screens/${screen}`, import.meta.url), "utf8");
+    assert.match(source, new RegExp(`h:\\s*${symbol}\\.heading`));
+    assert.match(source, new RegExp(`p:\\s*${symbol}\\.paragraphs\\.join\\(" "\\)`));
+    assert.match(source, /https:\/\/www\.mshpit\.com\/promotion-sources/);
+    assert.match(renderPublicPage(path), new RegExp(`<h2>${disclosure.heading}</h2>`),
+      "members must be able to read the permission requirements without running the app");
+  }
+
+  const terms = PROMOTIONAL_CONTENT_TERMS.paragraphs.join(" ");
+  assert.match(terms, /Only if you separately and expressly approve a promotional use/);
+  assert.match(terms, /social-media posts and paid advertisements/);
+  assert.match(terms, /only in the channels and for the period described in your permission/);
+  assert.match(terms, /not a condition of having an account or posting/);
+  assert.match(terms, /Uploading, accepting these Terms, continuing to use Mshpit/);
+  assert.match(terms, /spotlights, announcement emails, or analytics does not grant this separate permission/);
+  assert.match(terms, /Existing content and existing permissions are not automatically enrolled/);
+  assert.match(terms, /Private posts, drafts, messages, and non-public account information are excluded/);
+  assert.match(terms, /must obtain and record your express permission for the identified content, uses, channels, period, and public credit before a campaign uses it/);
+  assert.match(terms, /until a dedicated permission control is available, this is arranged in writing through Support/);
+
+  const privacy = PROMOTIONAL_CONTENT_PRIVACY.paragraphs.join(" ");
+  assert.match(privacy, /only after you separately approve the content, channels, period, and public credit/);
+  assert.match(privacy, /spotlight, email, or analytics permissions are not automatically included/);
+  assert.match(privacy, /Permission and withdrawal records are kept privately, not on the credits page/);
+  assert.match(privacy, /Those services may process the published material under their own policies/);
+});
+
+test("promotional credit requires a visible source link and permission remains revocable", () => {
+  const terms = PROMOTIONAL_CONTENT_TERMS.paragraphs.join(" ");
+  assert.match(terms, /always give credit for each approved promotional use/);
+  assert.match(terms, /public name or handle you approve/);
+  assert.match(terms, /each promotion must visibly link directly to that entry/);
+  assert.match(terms, /a generic homepage link is not enough/);
+  assert.match(terms, /Where the format cannot carry that link, credit must appear with the promotion/);
+  assert.match(terms, /Private names, email addresses, and other private contact details will not be used as credit/);
+  assert.match(terms, /A posting credit does not establish copyright ownership/);
+  assert.match(terms, /separately clear any additional rights needed/);
+  assert.match(terms, /does not transfer copyright or waive moral rights/);
+  assert.match(terms, /withdraw promotional permission through Support at any time without losing your account/);
+  assert.match(terms, /Making the approved content private, deleting it, or deleting your account also ends permission for new promotional use/);
+  assert.match(terms, /promptly pause or remove promotional copies it controls, including active paid ads/);
+  assert.match(terms, /remove or revise the corresponding public credit entry as needed to respect your privacy/);
+  assert.match(terms, /does not authorize Mshpit to keep publishing or running ads/);
+  assert.match(terms, /they do not authorize further promotion/);
 });
 
 test("in-app legal copy matches the public provider disclosure and support route", async () => {
