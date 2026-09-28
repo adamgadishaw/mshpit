@@ -837,6 +837,9 @@ let venuePhotoScheduler = null;
 let backupScheduler = null;
 let mediaDeletionScheduler = null;
 let accountLifecycleScheduler = null;
+// These workers also use SQLite after asynchronous provider calls. Keep their
+// handles so shutdown cannot close the connection while they still run.
+const additionalSchedulers = new Map();
 let privateMediaIsolationMonitor = null;
 let sitemapRefreshTimer = null;
 let sitemapRetryTimer = null;
@@ -859,6 +862,10 @@ function shutdown(exitCode = 0) {
   const backupStop = backupScheduler?.stop({ abortActive: true }) || Promise.resolve();
   const mediaDeletionStop = mediaDeletionScheduler?.stop({ abortActive: true }) || Promise.resolve();
   const accountLifecycleStop = accountLifecycleScheduler?.stop() || Promise.resolve();
+  const additionalStops = Promise.all([...additionalSchedulers].map(async ([name, scheduler]) => {
+    try { await scheduler?.stop?.({ abortActive: true }); }
+    catch (error) { console.error(`[pit] ${name} shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
+  }));
   const artistTourDateRefreshStop = stopArtistTourDateDemandRefresh({ abortActive: true });
   const artistGenreRefreshStop = stopMusicBrainzGenreRefreshScheduler({ abortActive: true });
   const artistPhotoSeedStop = stopArtistPhotoSeedScheduler({ abortActive: true });
@@ -901,6 +908,7 @@ function shutdown(exitCode = 0) {
     catch (error) { console.error(`[seo] sitemap refresh shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     try { await privateMediaIsolationStop; }
     catch (error) { console.error(`[media] privacy recovery shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
+    await additionalStops;
     try { db.close(); }
     catch (error) { console.error(`[pit] database close failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     process.exit(exitCode);
@@ -1003,7 +1011,7 @@ async function startServer() {
     console.log(`[privacy-journal] restored database: ${privacyReplay.waived ? `replay waived (${privacyReplay.waived})` : `replayed ${privacyReplay.verified} entries, ${privacyReplay.erased} accounts erased, ${privacyReplay.optedOut} opt-outs, ${privacyReplay.rejected} rejected`}`);
   }
   await listenForServer(server, PORT);
-  startBackgroundRuntime("/startup/privacy-journal", () => startPrivacyJournal()); // ships erasure/opt-out records to the private backup bucket
+  additionalSchedulers.set("privacy-journal", startBackgroundRuntime("/startup/privacy-journal", () => startPrivacyJournal())); // ships erasure/opt-out records to the private backup bucket
   storageMaintenance = startBackgroundRuntime("/startup/storage-maintenance", () => startStorageMaintenance({
     database: db, databasePath: DATABASE_PATH, pruneProviders: pruneExpiredProviderData, sweepSessions: sweepExpiredSessions,
   }));
@@ -1057,12 +1065,12 @@ async function startServer() {
     }));
     legacyVideoPosterScheduler = startBackgroundRuntime("/startup/legacy-video-posters", () => startLegacyVideoPosterVerificationScheduler({ database: db }));
     startBackgroundRuntime("/startup/video-verifier-health", () => startVideoVerifierHealthScheduler());
-    startBackgroundRuntime("/startup/video-processing", () => startVideoProcessingRetries()); // resumes clip conversions after a restart and retries failed attempts
-    startBackgroundRuntime("/startup/catalog-research", () => startCatalogResearch()); // Claude web research for empty artist/venue pages; needs ANTHROPIC_API_KEY
-    startBackgroundRuntime("/startup/web-profiles", () => startWebProfiles()); // Ticketmaster performer/venue records + Wikidata ID check; uses TICKETMASTER_KEY
-    startBackgroundRuntime("/startup/artist-news", () => startArtistNews()); // new releases (Deezer, keyless) + new tour dates for followers
-    startBackgroundRuntime("/startup/news-desk", () => startNewsDesk()); // confirmed music news from @news_mod; NEWS_DESK_ENABLED + ANTHROPIC_API_KEY, $1/day cap
-    startBackgroundRuntime("/startup/artist-photos", () => startArtistPhotos()); // Deezer artist photos, Discover first, when Spotify is not configured
+    additionalSchedulers.set("video-processing", startBackgroundRuntime("/startup/video-processing", () => startVideoProcessingRetries())); // resumes clip conversions after a restart and retries failed attempts
+    additionalSchedulers.set("catalog-research", startBackgroundRuntime("/startup/catalog-research", () => startCatalogResearch())); // Claude web research for empty artist/venue pages; needs ANTHROPIC_API_KEY
+    additionalSchedulers.set("web-profiles", startBackgroundRuntime("/startup/web-profiles", () => startWebProfiles())); // Ticketmaster performer/venue records + Wikidata ID check; uses TICKETMASTER_KEY
+    additionalSchedulers.set("artist-news", startBackgroundRuntime("/startup/artist-news", () => startArtistNews())); // new releases (Deezer, keyless) + new tour dates for followers
+    additionalSchedulers.set("news-desk", startBackgroundRuntime("/startup/news-desk", () => startNewsDesk())); // confirmed music news from @news_mod; existing news/Claude caps remain authoritative
+    additionalSchedulers.set("artist-photos", startBackgroundRuntime("/startup/artist-photos", () => startArtistPhotos())); // Deezer artist photos, Discover first, when Spotify is not configured
     // Sitemap reads serve only the validated persisted/current LKG. Reuse a
     // fresh current-revision snapshot across deploys; missing, stale, future,
     // or incompatible snapshots still rebuild after readiness. HTTP reads never

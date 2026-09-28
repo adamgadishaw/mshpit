@@ -121,6 +121,20 @@ export function createNewsDeskEditor({ database, env = process.env, now = Date.n
   const tools = desk.editorTools;
   let writing = false;
 
+  // Synchronous persistence only. Paid work/receipt settlement happens before
+  // this boundary so a failed moderation audit cannot erase a real charge.
+  const saveMutation = (work) => {
+    database.exec("SAVEPOINT news_editor_mutation");
+    try {
+      const result = work();
+      database.exec("RELEASE news_editor_mutation");
+      return result;
+    } catch (error) {
+      database.exec("ROLLBACK TO news_editor_mutation; RELEASE news_editor_mutation");
+      throw error;
+    }
+  };
+
   const draftsToday = (at) => Number(database.prepare("SELECT COUNT(*) AS n FROM news_drafts WHERE created_at>=?").get(at - 24 * HOUR).n) || 0;
 
   async function ranked(reports, at) {
@@ -185,7 +199,7 @@ export function createNewsDeskEditor({ database, env = process.env, now = Date.n
 
   // One Claude call. The draft is saved whether Claude writes it up or turns
   // it down, so the owner sees what was spent and why.
-  async function draft({ reportUrls, links, actorId = null, signal } = {}) {
+  async function draft({ reportUrls, links, actorId = null, signal, onSaved } = {}) {
     if (!summarize) fail("ACTION_REQUIRED", "Add ANTHROPIC_API_KEY in Render before writing drafts.");
     const chosen = urlList(reportUrls, MAX_REPORTS, "reports");
     const pasted = urlList(links, MAX_LINKS, "links").filter((url) => !chosen.includes(url));
@@ -206,6 +220,7 @@ export function createNewsDeskEditor({ database, env = process.env, now = Date.n
       const fromFeeds = await tools.withArticleLeads(rows.map(tools.reportRow), signal);
       const seen = new Set();
       const reports = differentOwnersFirst([...fromFeeds, ...linked].filter((report) => !seen.has(report.url) && seen.add(report.url)));
+      signal?.throwIfAborted();
       const needed = outletsNeeded(reports);
       const groups = independentGroups(reports);
       if (groups < needed) {
@@ -235,9 +250,13 @@ export function createNewsDeskEditor({ database, env = process.env, now = Date.n
         supporting: (result.supporting || []).map((report) => ({ sourceId: report.sourceId, url: report.url })),
       };
       const saved = reports.map(({ tokens: _tokens, storyId: _storyId, ...report }) => report);
-      database.prepare(`INSERT INTO news_drafts (id,status,reports,result,cost_usd,created_by,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)`)
-        .run(id, written ? "draft" : "declined", JSON.stringify(saved), JSON.stringify(stored), Number(result.costUsd) || 0, actorId, at, now());
-      return draftJson(database.prepare("SELECT * FROM news_drafts WHERE id=?").get(id), now());
+      return saveMutation(() => {
+        database.prepare(`INSERT INTO news_drafts (id,status,reports,result,cost_usd,created_by,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)`)
+          .run(id, written ? "draft" : "declined", JSON.stringify(saved), JSON.stringify(stored), Number(result.costUsd) || 0, actorId, at, now());
+        const savedDraft = draftJson(database.prepare("SELECT * FROM news_drafts WHERE id=?").get(id), now());
+        onSaved?.(savedDraft);
+        return savedDraft;
+      });
     } finally {
       writing = false;
     }
@@ -250,24 +269,32 @@ export function createNewsDeskEditor({ database, env = process.env, now = Date.n
   }
 
   // Synchronous from start to finish, so one draft can never publish twice.
-  function publish(id) {
+  function publish(id, { onPublished } = {}) {
     const row = readDraft(id);
     if (row.status !== "draft") fail("CONFLICT", row.status === "published" ? "That draft is already published." : "That draft cannot be published.");
     if (now() - row.created_at > DRAFT_TTL_MS) fail("CONFLICT", "That draft is more than a day old. Write a fresh one so the facts are current.");
     const reports = JSON.parse(row.reports).map((report) => ({ ...report, tokens: headlineTokens(report.title) }));
     const result = JSON.parse(row.result);
     const written = tools.publishStory({ reports, result, at: now(), costUsd: result.costUsd, minPublishers: 2, manual: true,
-      signals: { manual: true } });
-    if (!written) fail("CONFLICT", "It could not be published: the news account needs review, or the draft's sources no longer qualify.");
-    database.prepare("UPDATE news_drafts SET status='published',story_post_id=?,updated_at=? WHERE id=? AND status='draft'").run(written.postId, now(), row.id);
+      signals: { manual: true }, onPublished: ({ postId }) => {
+        const changed = database.prepare("UPDATE news_drafts SET status='published',story_post_id=?,updated_at=? WHERE id=? AND status='draft'")
+          .run(postId, now(), row.id);
+        if (!changed.changes) fail("CONFLICT", "That draft has changed. Refresh before publishing.");
+        onPublished?.({ draft: draftJson(readDraft(row.id), now()), postId });
+      } });
+    if (!written) fail("CONFLICT", "It could not be published: the news account needs review, or the sources were already used or no longer qualify.");
     return { draft: draftJson(readDraft(row.id), now()), postId: written.postId };
   }
 
-  function discard(id) {
-    const row = readDraft(id);
-    if (row.status === "published") fail("CONFLICT", "A published story is taken down from its post, not from the draft.");
-    database.prepare("UPDATE news_drafts SET status='discarded',updated_at=? WHERE id=? AND status IN ('draft','declined')").run(now(), row.id);
-    return draftJson(readDraft(row.id), now());
+  function discard(id, { onDiscarded } = {}) {
+    return saveMutation(() => {
+      const row = readDraft(id);
+      if (row.status === "published") fail("CONFLICT", "A published story is taken down from its post, not from the draft.");
+      database.prepare("UPDATE news_drafts SET status='discarded',updated_at=? WHERE id=? AND status IN ('draft','declined')").run(now(), row.id);
+      const discarded = draftJson(readDraft(row.id), now());
+      onDiscarded?.(discarded);
+      return discarded;
+    });
   }
 
   async function overview({ query = null } = {}) {

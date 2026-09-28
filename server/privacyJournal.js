@@ -25,6 +25,11 @@ const DAY = 24 * 60 * MINUTE;
 const SHIPPED_RETENTION_MS = 30 * DAY;
 const MAX_OBJECTS = 20_000;
 const MAX_OBJECT_BYTES = 4096;
+const MAX_LIST_PAGES = 1000;
+
+function journalError(code = "PRIVACY_JOURNAL_INVALID") {
+  return Object.assign(new Error("Privacy journal verification did not complete."), { code });
+}
 
 export function ensurePrivacyJournalSchema(database) {
   database.exec(`CREATE TABLE IF NOT EXISTS privacy_journal_outbox (
@@ -65,8 +70,11 @@ export function signPrivacyEntry(entry, key) {
 }
 
 export function verifyPrivacyEntry(entry, key) {
-  if (!key || entry?.v !== 1 || !KINDS.has(entry?.kind) || !SUBJECT.test(String(entry?.subjectId || ""))
-    || !ENTRY_ID.test(String(entry?.id || "")) || !Number.isSafeInteger(entry?.at) || typeof entry?.mac !== "string") return false;
+  if (!key || entry?.v !== 1 || !KINDS.has(entry?.kind)
+    || typeof entry?.subjectId !== "string" || !SUBJECT.test(entry.subjectId)
+    || typeof entry?.id !== "string" || !ENTRY_ID.test(entry.id)
+    || !Number.isSafeInteger(entry?.at) || entry.at < 1 || entry.at > 8_640_000_000_000_000
+    || typeof entry?.mac !== "string" || !/^[a-f0-9]{64}$/u.test(entry.mac)) return false;
   const expected = Buffer.from(mac(entry, key), "hex");
   const actual = Buffer.from(entry.mac, "hex");
   return actual.length === expected.length && timingSafeEqual(actual, expected);
@@ -99,15 +107,37 @@ async function discard(response) {
 }
 
 async function limitedText(response, maxBytes) {
-  const text = await response.text();
-  if (Buffer.byteLength(text) > maxBytes) throw new Error("privacy journal object too large");
-  return text;
+  const reader = response.body?.getReader?.();
+  if (!reader) throw journalError();
+  const chunks = [];
+  let bytes = 0;
+  try {
+    const declared = response.headers?.get?.("content-length");
+    if (declared !== null && declared !== undefined && Number(declared) > maxBytes) throw journalError();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > maxBytes) throw journalError();
+      chunks.push(Buffer.from(value));
+    }
+    return Buffer.concat(chunks, bytes).toString("utf8");
+  } finally {
+    try { await reader.cancel(); }
+    catch { /* architecture: allow-empty-catch -- bounded response cleanup must not replace the verification failure */ }
+    reader.releaseLock();
+  }
 }
 
 // Ships pending entries, oldest first, stopping at the first failure so the
 // order is kept. Without a key or private storage nothing leaves the server,
 // and the entries wait in the outbox.
-export async function shipPrivacyJournal(database, { env = process.env, fetchImpl = fetch, now = Date.now, limit = 50 } = {}) {
+export async function shipPrivacyJournal(database, { env = process.env, fetchImpl = fetch, now = Date.now, limit = 50, signal } = {}) {
+  signal?.throwIfAborted();
+  const request = (url, options) => fetchImpl(url, {
+    ...options,
+    signal: signal ? AbortSignal.any([signal, options.signal].filter(Boolean)) : options.signal,
+  });
   const pending = Number(database.prepare("SELECT COUNT(*) AS n FROM privacy_journal_outbox WHERE shipped_at IS NULL").get().n) || 0;
   const key = privacyJournalKey(env);
   const config = privateBackupStorageConfig(env);
@@ -122,28 +152,32 @@ export async function shipPrivacyJournal(database, { env = process.env, fetchImp
   let shipped = 0;
   try {
     // The same anonymous-access proof the database backups use.
-    await verifyPrivateBackupBucket({ env, fetchImpl, objectKey: `${PRIVACY_JOURNAL_PREFIX}privacy-probe-${randomUUID()}` });
+    await verifyPrivateBackupBucket({ env, fetchImpl: request, objectKey: `${PRIVACY_JOURNAL_PREFIX}privacy-probe-${randomUUID()}` });
   } catch {
+    signal?.throwIfAborted();
     markFailed.run("storage_not_private", rows[0].id);
     return { shipped: 0, pending, waiting: null, error: "storage_not_private" };
   }
   for (const row of rows) {
+    signal?.throwIfAborted();
     const entry = signPrivacyEntry({ id: row.id, kind: row.kind, subjectId: row.subject_id, at: row.at }, key);
     const body = JSON.stringify(entry);
     const headers = { "Content-Type": "application/json", "Content-Length": String(Buffer.byteLength(body)) };
     let response;
     try {
-      response = await fetchImpl(sign("PUT", bucketUrl(config, privacyObjectKey(entry)), headers), {
+      response = await request(sign("PUT", bucketUrl(config, privacyObjectKey(entry)), headers), {
         method: "PUT", headers, body, redirect: "manual", signal: AbortSignal.timeout(15_000),
       });
       if (!response.ok) throw new Error(`HTTP_${Number(response.status) || 0}`);
     } catch (error) {
+      signal?.throwIfAborted();
       const code = /^HTTP_\d+$/u.test(error?.message) ? error.message : "network_error";
       markFailed.run(code, row.id);
       return { shipped, pending: pending - shipped, waiting: null, error: code };
     } finally {
       await discard(response);
     }
+    signal?.throwIfAborted();
     markShipped.run(now(), row.id);
     shipped += 1;
   }
@@ -154,15 +188,18 @@ export async function shipPrivacyJournal(database, { env = process.env, fetchImp
 const xmlText = (value) => value.replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&quot;", "\"")
   .replaceAll("&apos;", "'").replaceAll("&amp;", "&");
 
-// Every journal object in the bucket, parsed. Unreadable objects are counted,
-// not skipped silently: the replay evidence reports them.
+// Every journal object in the bucket, parsed. Unreadable objects are counted
+// for diagnostics; the restore boundary refuses any incomplete journal.
 export async function listPrivacyJournal({ env = process.env, fetchImpl = fetch } = {}) {
   const config = privateBackupStorageConfig(env);
   if (!config) throw Object.assign(new Error("Private backup storage is not configured."), { code: "PRIVACY_JOURNAL_UNAVAILABLE" });
   const sign = signer(env);
   const keys = [];
+  const seenTokens = new Set();
+  let pages = 0;
   let token = null;
   do {
+    if (++pages > MAX_LIST_PAGES) throw journalError();
     const url = new URL(bucketUrl(config));
     url.searchParams.set("list-type", "2");
     url.searchParams.set("prefix", PRIVACY_JOURNAL_PREFIX);
@@ -173,10 +210,27 @@ export async function listPrivacyJournal({ env = process.env, fetchImpl = fetch 
       throw Object.assign(new Error(`Privacy journal listing failed: HTTP ${response.status}`), { code: "PRIVACY_JOURNAL_UNAVAILABLE" });
     }
     const xml = await limitedText(response, 4 * 1024 * 1024);
-    for (const match of xml.matchAll(/<Key>([^<]+)<\/Key>/gu)) keys.push(xmlText(match[1]));
+    // A 200 error page or a truncated XML response is not an empty bucket.
+    // Require the S3 envelope and complete Contents/Key pairs before trusting
+    // the listing. The configured S3 endpoint is the only XML producer.
+    if (!/^(?:<\?xml[^?]*\?>\s*)?<ListBucketResult(?:\s[^>]*)?>[\s\S]*<\/ListBucketResult>$/u.test(xml.trim())
+      || [...xml.matchAll(/<IsTruncated>(?:true|false)<\/IsTruncated>/gu)].length !== 1
+      || /<!DOCTYPE|<!ENTITY/iu.test(xml)) throw journalError();
+    const contents = [...xml.matchAll(/<Contents>([\s\S]*?)<\/Contents>/gu)];
+    if (contents.length !== [...xml.matchAll(/<Contents(?:\s|>)/gu)].length
+      || contents.length !== [...xml.matchAll(/<Key(?:\s|>)/gu)].length) throw journalError();
+    for (const content of contents) {
+      const matches = [...content[1].matchAll(/<Key>([^<]+)<\/Key>/gu)];
+      if (matches.length !== 1) throw journalError();
+      const objectKey = xmlText(matches[0][1]);
+      if (!objectKey.startsWith(PRIVACY_JOURNAL_PREFIX) || !objectKey.endsWith(".json") || objectKey.length > 1024) throw journalError();
+      keys.push(objectKey);
+    }
     const truncated = /<IsTruncated>true<\/IsTruncated>/u.test(xml);
     token = truncated ? xmlText(xml.match(/<NextContinuationToken>([^<]+)<\/NextContinuationToken>/u)?.[1] || "") || null : null;
     if (truncated && !token) throw Object.assign(new Error("Privacy journal listing lost its place."), { code: "PRIVACY_JOURNAL_UNAVAILABLE" });
+    if (token && (token.length > 4096 || seenTokens.has(token))) throw journalError();
+    if (token) seenTokens.add(token);
     if (keys.length > MAX_OBJECTS) throw Object.assign(new Error("Privacy journal is larger than expected."), { code: "PRIVACY_JOURNAL_UNAVAILABLE" });
   } while (token);
   const entries = [];
@@ -193,18 +247,23 @@ export async function listPrivacyJournal({ env = process.env, fetchImpl = fetch 
   return { entries, unreadable };
 }
 
+// Validate the complete journal BEFORE any mutation. A damaged or old-key
+// entry may be the only evidence of an erasure, so skipping it is not recovery.
 // Applies verified entries, oldest first, once each. `erase(accountId)` and
 // `optOut(accountId)` return true when they changed something and false when
 // the account is not in this database (already gone, or created later).
 export function replayPrivacyEntries({ entries, key, erase, optOut }) {
   const counts = { entries: entries.length, verified: 0, rejected: 0, erased: 0, optedOut: 0, absent: 0, newestAt: null };
-  const seen = new Set();
+  const seen = new Map();
   const verified = [];
   for (const entry of entries) {
-    // A wrong signature is a forged, damaged or old-key entry: never applied.
-    if (!verifyPrivacyEntry(entry, key)) { counts.rejected += 1; continue; }
-    if (seen.has(entry.id)) continue;
-    seen.add(entry.id);
+    if (!verifyPrivacyEntry(entry, key)) throw journalError();
+    const previous = seen.get(entry.id);
+    if (previous !== undefined) {
+      if (previous !== canonical(entry)) throw journalError();
+      continue;
+    }
+    seen.set(entry.id, canonical(entry));
     verified.push(entry);
   }
   verified.sort((left, right) => left.at - right.at || (left.id < right.id ? -1 : 1));
@@ -230,7 +289,18 @@ export function restoredDatabaseNeedsReplay(database) {
   const gate = readJson(database, RESTORE_GATE_KEY);
   if (gate?.state !== "reviewed" || !Number.isSafeInteger(gate.preparedAt)) return null;
   const evidence = readJson(database, PRIVACY_REPLAY_EVIDENCE_KEY);
-  return evidence?.preparedAt === gate.preparedAt ? null : gate;
+  if (evidence?.version !== 1 || evidence.preparedAt !== gate.preparedAt
+    || !Number.isSafeInteger(evidence.replayedAt) || evidence.replayedAt < gate.preparedAt) return gate;
+  if (typeof evidence.waived === "string" && REFERENCE.test(evidence.waived)) return null;
+  // Older releases recorded success even when some entries could not be read
+  // or verified. Such receipts must not bypass the repaired startup gate.
+  const counts = ["entries", "verified", "erased", "optedOut", "absent"];
+  if (evidence.verificationVersion !== 2 || evidence.rejected !== 0 || evidence.unreadable !== 0
+    || !counts.every((field) => Number.isSafeInteger(evidence[field]) && evidence[field] >= 0)
+    || evidence.entries < evidence.verified
+    || evidence.verified !== evidence.erased + evidence.optedOut + evidence.absent
+    || (evidence.verified === 0 ? evidence.newestAt !== null : !Number.isSafeInteger(evidence.newestAt) || evidence.newestAt < 1)) return gate;
+  return null;
 }
 
 function saveEvidence(database, evidence) {
@@ -245,11 +315,12 @@ function saveEvidence(database, evidence) {
 export async function replayPrivacyJournalIfRestored(database, { env = process.env, fetchImpl = fetch, erase, optOut, now = Date.now } = {}) {
   const gate = restoredDatabaseNeedsReplay(database);
   if (!gate) return { needed: false };
-  const base = { version: 1, preparedAt: gate.preparedAt, replayedAt: now() };
+  const base = { version: 1, verificationVersion: 2, preparedAt: gate.preparedAt, replayedAt: now() };
   try {
     const key = privacyJournalKey(env);
     if (!key) throw Object.assign(new Error("PRIVACY_JOURNAL_KEY is not set."), { code: "PRIVACY_JOURNAL_UNAVAILABLE" });
     const { entries, unreadable } = await listPrivacyJournal({ env, fetchImpl });
+    if (unreadable !== 0) throw journalError();
     const counts = replayPrivacyEntries({ entries, key, erase, optOut });
     const evidence = { ...base, ...counts, unreadable };
     saveEvidence(database, evidence);
@@ -289,8 +360,8 @@ export function startPrivacyJournalShipper({ database, env = process.env, fetchI
   return startPeriodicJob({
     initialDelayMs: MINUTE,
     intervalMs: 5 * MINUTE,
-    run: async () => {
-      const result = await shipPrivacyJournal(database, { env, fetchImpl });
+    run: async ({ signal }) => {
+      const result = await shipPrivacyJournal(database, { env, fetchImpl, signal });
       if (result.error) logger.error?.(`[privacy-journal] shipping paused: ${result.error}; ${result.pending} entries waiting`);
       return true;
     },

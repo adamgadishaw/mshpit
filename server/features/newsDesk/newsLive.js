@@ -203,7 +203,7 @@ export function setLiveCategories(database, eventId, text, { at = Date.now() } =
   const event = readEvent(database, eventId);
   const parsed = parseLiveCategories(text);
   const before = database.prepare("SELECT name,winner,announced_at,note_id FROM news_live_categories WHERE event_id=?").all(event.id);
-  database.exec("BEGIN IMMEDIATE");
+  database.exec("SAVEPOINT news_live_categories");
   try {
     database.prepare("DELETE FROM news_live_categories WHERE event_id=?").run(event.id);
     const insert = database.prepare(`INSERT INTO news_live_categories (id,event_id,position,name,nominees,winner,announced_at,note_id,updated_at)
@@ -213,9 +213,9 @@ export function setLiveCategories(database, eventId, text, { at = Date.now() } =
       insert.run(randomUUID(), event.id, position, category.name, JSON.stringify(category.nominees), kept?.winner ?? null,
         kept?.announced_at ?? null, kept?.note_id ?? null, at);
     });
-    database.exec("COMMIT");
+    database.exec("RELEASE news_live_categories");
   } catch (error) {
-    database.exec("ROLLBACK");
+    database.exec("ROLLBACK TO news_live_categories; RELEASE news_live_categories");
     throw error;
   }
   return parsed.length;
@@ -228,21 +228,24 @@ export function markLiveWinner(database, eventId, categoryId, nominee, { actorId
   const category = typeof categoryId === "string"
     ? database.prepare("SELECT * FROM news_live_categories WHERE id=? AND event_id=?").get(categoryId, event.id) : null;
   if (!category) fail("NOT_FOUND", "That category no longer exists. Refresh and try again.");
-  if (category.note_id) database.prepare("UPDATE news_live_notes SET removed_at=? WHERE id=? AND removed_at IS NULL").run(at, category.note_id);
-  if (nominee === null) {
-    database.prepare("UPDATE news_live_categories SET winner=NULL,announced_at=NULL,note_id=NULL,updated_at=? WHERE id=?").run(at, category.id);
-    return null;
+  const winner = nominee === null ? null : JSON.parse(category.nominees).find((name) => sameName(name, nominee));
+  if (nominee !== null && !winner) fail("VALIDATION_FAILED", "Pick one of the category's nominees.");
+  database.exec("SAVEPOINT news_live_winner");
+  try {
+    if (category.note_id) database.prepare("UPDATE news_live_notes SET removed_at=? WHERE id=? AND removed_at IS NULL").run(at, category.note_id);
+    let noteId = null;
+    if (winner && isLive(event, at)) {
+      noteId = randomUUID();
+      database.prepare("INSERT INTO news_live_notes (id,event_id,text,url,created_by,created_at) VALUES (?,?,?,?,?,?)")
+        .run(noteId, event.id, `${winner} wins ${category.name}`.slice(0, 280), null, actorId, at);
+    }
+    database.prepare("UPDATE news_live_categories SET winner=?,announced_at=?,note_id=?,updated_at=? WHERE id=?")
+      .run(winner, winner ? at : null, noteId, at, category.id);
+    database.exec("RELEASE news_live_winner");
+  } catch (error) {
+    database.exec("ROLLBACK TO news_live_winner; RELEASE news_live_winner");
+    throw error;
   }
-  const winner = JSON.parse(category.nominees).find((name) => sameName(name, nominee));
-  if (!winner) fail("VALIDATION_FAILED", "Pick one of the category's nominees.");
-  let noteId = null;
-  if (isLive(event, at)) {
-    noteId = randomUUID();
-    database.prepare("INSERT INTO news_live_notes (id,event_id,text,url,created_by,created_at) VALUES (?,?,?,?,?,?)")
-      .run(noteId, event.id, `${winner} wins ${category.name}`.slice(0, 280), null, actorId, at);
-  }
-  database.prepare("UPDATE news_live_categories SET winner=?,announced_at=?,note_id=?,updated_at=? WHERE id=?")
-    .run(winner, at, noteId, at, category.id);
   return winner;
 }
 

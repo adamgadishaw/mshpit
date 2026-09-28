@@ -95,6 +95,9 @@ function ClipPage({ post, uri, posterUri, altText, height, active, posterEnabled
     });
     recordStart(player.playing);
     return () => {
+      // Expo web keeps this timer after its VideoView unmounts. Stop the
+      // interval we own before releasing listeners or replacing the player.
+      try { player.timeUpdateEventInterval = 0; } catch { /* Native player may already be released. */ }
       playingSubscription?.remove?.();
       timeSubscription?.remove?.();
       endSubscription?.remove?.();

@@ -42,6 +42,7 @@ export function cleanSupportingActNames(value, { mainArtist = "" } = {}) {
 export function cleanTimesSeen(value) {
   if (value === undefined) return undefined;
   if (value === null || value === "") return null;
+  if (typeof value !== "number" && typeof value !== "string") return false;
   const number = Number(value);
   return Number.isSafeInteger(number) && number >= 1 && number <= MAX_TIMES_SEEN ? number : false;
 }
@@ -92,7 +93,12 @@ const earlierNight = (o, p) => `(
   (${o}.date<>'' AND ${p}.date<>'' AND ${o}.date<${p}.date)
   OR ((${o}.date='' OR ${p}.date='') AND (${o}.created_at<${p}.created_at OR (${o}.created_at=${p}.created_at AND ${o}.id<${p}.id))))`;
 
-const sameArtist = (s, p) => `((${s}.artist_key IS NOT NULL AND ${s}.artist_key=${p}.artist_key) OR LOWER(TRIM(${s}.artist))=LOWER(TRIM(${p}.artist)))`;
+// Known catalog identities outrank display text. Two different acts can share
+// a name; only an unbound side may use the legacy name fallback.
+const artistMatch = (leftKey, rightKey, leftName, rightName) => `(CASE
+  WHEN NULLIF(${leftKey},'') IS NOT NULL AND NULLIF(${rightKey},'') IS NOT NULL
+  THEN ${leftKey}=${rightKey} ELSE LOWER(TRIM(${leftName}))=LOWER(TRIM(${rightName})) END)`;
+const sameArtist = (s, p) => artistMatch(`${s}.artist_key`, `${p}.artist_key`, `${s}.artist`, `${p}.artist`);
 const inPersonReview = (s) => `${s}.removed=0 AND COALESCE(${s}.kind,'review')='review' AND COALESCE(${s}.experience_type,'in_person')='in_person'`;
 
 // The "Nth time seeing them" number for post `p`, as an SQL expression: the
@@ -101,10 +107,10 @@ const inPersonReview = (s) => `${s}.removed=0 AND COALESCE(${s}.kind,'review')='
 export function seenOrdinalSql(p = "p") {
   return `(CASE WHEN COALESCE(${p}.kind,'review')='review' AND COALESCE(${p}.experience_type,'in_person')='in_person' THEN
     (SELECT COUNT(*) FROM posts s WHERE s.user_id=${p}.user_id AND ${inPersonReview("s")} AND ${sameArtist("s", p)} AND ${atOrBefore("s", p)})
-    + (SELECT COUNT(*) FROM posts o, json_each(CASE WHEN json_valid(o.supporting_acts) THEN o.supporting_acts ELSE '[]' END) act
+    + (SELECT COUNT(DISTINCT CASE WHEN o.date<>'' THEN 'date:' || o.date ELSE 'post:' || o.id END)
+        FROM posts o, json_each(CASE WHEN json_valid(o.supporting_acts) THEN o.supporting_acts ELSE '[]' END) act
         WHERE o.user_id=${p}.user_id AND o.id<>${p}.id AND ${inPersonReview("o")} AND ${earlierNight("o", p)}
-          AND ((${p}.artist_key IS NOT NULL AND json_extract(act.value,'$.artistKey')=${p}.artist_key)
-            OR LOWER(TRIM(json_extract(act.value,'$.name')))=LOWER(TRIM(${p}.artist)))
+          AND ${artistMatch("json_extract(act.value,'$.artistKey')", `${p}.artist_key`, "json_extract(act.value,'$.name')", `${p}.artist`)}
           -- Seen open for someone and reviewed the same night is one sighting.
           AND NOT EXISTS (SELECT 1 FROM posts r WHERE r.user_id=o.user_id AND ${inPersonReview("r")} AND r.date<>'' AND r.date=o.date
             AND ${sameArtist("r", p)}))
@@ -147,12 +153,12 @@ export function projectSupportingActs(database, post) {
   if (!acts.length) return [];
   const slug = database.prepare("SELECT public_slug FROM artists WHERE norm=?");
   const review = database.prepare(`SELECT id FROM posts WHERE user_id=? AND id<>? AND removed=0 AND COALESCE(kind,'review')='review'
-    AND date=? AND date<>'' AND ((artist_key IS NOT NULL AND artist_key=?) OR LOWER(TRIM(artist))=LOWER(TRIM(?)))
+    AND date=? AND date<>'' AND ${artistMatch("artist_key", "?", "artist", "?")}
     ORDER BY created_at LIMIT 1`);
   return acts.map((act) => ({
     name: act.name,
     artistKey: act.artistKey,
     artistPublicSlug: act.artistKey ? slug.get(act.artistKey)?.public_slug || null : null,
-    reviewPostId: review.get(post.user_id, post.id, post.date || "", act.artistKey, act.name)?.id || null,
+    reviewPostId: review.get(post.user_id, post.id, post.date || "", act.artistKey, act.artistKey, act.name)?.id || null,
   }));
 }

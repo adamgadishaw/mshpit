@@ -78,3 +78,21 @@ test("a restored database erases journaled accounts before it serves anyone", as
     db.prepare("DELETE FROM app_meta WHERE key IN (?,?)").run(RESTORE_GATE_KEY, PRIVACY_REPLAY_EVIDENCE_KEY);
   }
 });
+
+test("privacy changes roll back when their durable journal append fails", async () => {
+  const leaving = addUser("u_journal_rollback_delete", "rollback-password");
+  const subscriber = addUser("u_journal_rollback_consent");
+  const settings = routes["POST /api/me/email-preferences"];
+  settings({ user: subscriber, ip: "journal-rollback-settings", body: { announcements: true } });
+  db.exec("CREATE TRIGGER fail_privacy_journal_append BEFORE INSERT ON privacy_journal_outbox BEGIN SELECT RAISE(ABORT,'synthetic journal failure'); END");
+  try {
+    await assert.rejects(routes["DELETE /api/me"]({ user: leaving, ip: "journal-rollback-delete", body: { password: "rollback-password" }, clearSession() {} }));
+    assert.ok(q.userById.get(leaving.id), "account erasure and journal append commit together or neither commits");
+    assert.throws(() => settings({ user: q.userById.get(subscriber.id), ip: "journal-rollback-settings", body: { announcements: false } }));
+    assert.equal(q.userById.get(subscriber.id).marketing_opt_out, 0, "withdrawal cannot succeed without its replay record");
+    assert.deepEqual(outbox(leaving.id), []);
+    assert.deepEqual(outbox(subscriber.id), []);
+  } finally {
+    db.exec("DROP TRIGGER fail_privacy_journal_append");
+  }
+});

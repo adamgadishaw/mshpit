@@ -36,6 +36,20 @@ export function newsLiveRoutes({ database, ApiError, requireAdmin, rateLimit, no
     }
   };
   const staffView = () => ({ live: staffLiveCoverage(database, { at: now() }) });
+  // These callbacks are synchronous DB-only work. Never hold this savepoint
+  // across network calls: the mutation, audit receipt and response read agree.
+  const write = (ctx, work) => run(() => {
+    const actor = writer(ctx);
+    database.exec("SAVEPOINT news_live_route");
+    try {
+      const result = work(actor);
+      database.exec("RELEASE news_live_route");
+      return result;
+    } catch (error) {
+      database.exec("ROLLBACK TO news_live_route; RELEASE news_live_route");
+      throw error;
+    }
+  });
 
   return {
     "GET /api/news-desk/live": (ctx) => {
@@ -51,31 +65,26 @@ export function newsLiveRoutes({ database, ApiError, requireAdmin, rateLimit, no
       if (!event) throw new ApiError(404, "That coverage is not available.", "NOT_FOUND");
       return { event };
     },
-    "POST /api/moderation/news-desk/live": (ctx) => run(() => {
-      const actor = writer(ctx);
+    "POST /api/moderation/news-desk/live": (ctx) => write(ctx, (actor) => {
       const { title, keywords, hours, startsAt } = body(ctx, ["title", "keywords", "hours", "startsAt"]);
       const event = startLiveEvent(database, { title, keywords, hours, startsAt: startsAt ?? null, actorId: actor.id, at: now() });
       record(ctx, actor, "news_live_started", event.id, event.title);
-      console.log(`[news-desk] live coverage started: "${event.title}" until ${new Date(event.ends_at).toISOString()}`);
       return staffView();
     }),
-    "POST /api/moderation/news-desk/live/:id/notes": (ctx) => run(() => {
-      const actor = writer(ctx);
+    "POST /api/moderation/news-desk/live/:id/notes": (ctx) => write(ctx, (actor) => {
       const { text, url } = body(ctx, ["text", "url"]);
       const noteId = addLiveNote(database, String(ctx.params?.id || ""), { text, url: url || null, actorId: actor.id, at: now() });
       record(ctx, actor, "news_live_update", noteId, text);
       return staffView();
     }),
-    "POST /api/moderation/news-desk/live/:id/categories": (ctx) => run(() => {
-      const actor = writer(ctx);
+    "POST /api/moderation/news-desk/live/:id/categories": (ctx) => write(ctx, (actor) => {
       const { text } = body(ctx, ["text"]);
       if (typeof text !== "string" || text.length > 20_000) throw new ApiError(400, "Paste the categories as text, up to 20,000 characters.", "VALIDATION_FAILED");
       const count = setLiveCategories(database, String(ctx.params?.id || ""), text, { at: now() });
       record(ctx, actor, "news_live_categories", String(ctx.params?.id || ""), `${count} categories`);
       return staffView();
     }),
-    "POST /api/moderation/news-desk/live/:id/categories/:categoryId/winner": (ctx) => run(() => {
-      const actor = writer(ctx);
+    "POST /api/moderation/news-desk/live/:id/categories/:categoryId/winner": (ctx) => write(ctx, (actor) => {
       const { nominee } = body(ctx, ["nominee"]);
       if (nominee !== null && (typeof nominee !== "string" || !nominee.trim() || nominee.length > 160)) {
         throw new ApiError(400, "Pick a nominee, or clear the winner.", "VALIDATION_FAILED");
@@ -84,14 +93,12 @@ export function newsLiveRoutes({ database, ApiError, requireAdmin, rateLimit, no
       record(ctx, actor, winner ? "news_live_winner" : "news_live_winner_cleared", String(ctx.params?.categoryId || ""), winner || "cleared");
       return staffView();
     }),
-    "POST /api/moderation/news-desk/live/:id/end": (ctx) => run(() => {
-      const actor = writer(ctx);
+    "POST /api/moderation/news-desk/live/:id/end": (ctx) => write(ctx, (actor) => {
       const event = endLiveEvent(database, String(ctx.params?.id || ""), { at: now() });
       record(ctx, actor, "news_live_ended", event.id, event.title);
       return staffView();
     }),
-    "POST /api/moderation/news-desk/live/notes/:id/remove": (ctx) => run(() => {
-      const actor = writer(ctx);
+    "POST /api/moderation/news-desk/live/notes/:id/remove": (ctx) => write(ctx, (actor) => {
       removeLiveNote(database, String(ctx.params?.id || ""), { at: now() });
       record(ctx, actor, "news_live_update_removed", String(ctx.params?.id || ""), "removed a live update");
       return staffView();

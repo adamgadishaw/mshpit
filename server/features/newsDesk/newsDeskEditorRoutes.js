@@ -53,23 +53,25 @@ export function newsDeskEditorRoutes({ editor, database, ApiError, requireAdmin,
       const actor = writer(ctx);
       rateLimit(ctx, "news-editor-draft", 12, 3_600_000);
       const { reportUrls, links } = body(ctx, ["reportUrls", "links"]);
-      const draft = await editor.draft({ reportUrls, links, actorId: actor.id, signal: ctx.signal || null });
-      record(ctx, actor, "news_draft_written", draft);
+      const draft = await editor.draft({ reportUrls, links, actorId: actor.id, signal: ctx.signal || null,
+        onSaved: (saved) => record(ctx, actor, "news_draft_written", saved) });
       return { draft };
     }),
     "POST /api/moderation/news-desk/editor/drafts/:id/publish": (ctx) => run(() => {
       const actor = writer(ctx);
       rateLimit(ctx, "news-editor-publish", 20, 3_600_000);
-      const result = editor.publish(String(ctx.params?.id || ""));
-      record(ctx, actor, "news_draft_published", result.draft);
+      const result = editor.publish(String(ctx.params?.id || ""), {
+        onPublished: (published) => record(ctx, actor, "news_draft_published", published.draft),
+      });
       console.log(`[news-desk] owner published "${result.draft.headline.slice(0, 90)}" post=${result.postId}`);
       return result;
     }),
     "POST /api/moderation/news-desk/editor/drafts/:id/discard": (ctx) => run(() => {
       const actor = writer(ctx);
       rateLimit(ctx, "news-editor-discard", 60, 3_600_000);
-      const draft = editor.discard(String(ctx.params?.id || ""));
-      record(ctx, actor, "news_draft_discarded", draft);
+      const draft = editor.discard(String(ctx.params?.id || ""), {
+        onDiscarded: (discarded) => record(ctx, actor, "news_draft_discarded", discarded),
+      });
       return { draft };
     }),
   };

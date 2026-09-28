@@ -375,9 +375,19 @@ export function createNewsDesk({ database, fetchText, fetchArticle = null, summa
       .all(at - 36 * HOUR).map((row) => Number(row.created_at));
   }
 
+  // A paid result may finish after another automatic pass or reviewed draft
+  // claims its reports. Check ownership while holding the publication lock.
+  function reportsAvailable(reports, manual = false) {
+    const current = database.prepare("SELECT r.story_id,s.status FROM news_reports r LEFT JOIN news_stories s ON s.id=r.story_id WHERE r.url=?");
+    return reports.every(report => {
+      const row = current.get(report.url);
+      return row ? row.story_id === null || (manual && row.status === "declined") : manual;
+    });
+  }
+
   // `manual`: the owner reviewed this draft and chose to publish it now, so
   // the publishing slots do not apply. Everything else still does.
-  function publishStory({ reports, result, at, costUsd, minPublishers = 3, score = 0, signals = {}, manual = false }) {
+  function publishStory({ reports, result, at, costUsd, minPublishers = 3, score = 0, signals = {}, manual = false, onPublished = null }) {
     const id = newId();
     const postId = `news_${id}`;
     // A model may select fewer sources than the cluster contains. Never turn
@@ -400,7 +410,7 @@ export function createNewsDesk({ database, fetchText, fetchArticle = null, summa
       // may have won the slot. Recheck current authorization and policy here.
       const account = newsAccount();
       const published = publicationTimes(at);
-      if (!account || (!manual && (!publishingSlot({ at, published, editorial }).open
+      if (!account || !reportsAvailable(reports, manual) || (!manual && (!publishingSlot({ at, published, editorial }).open
         || (minPublishers === 2 && !twoPublisherFallbackAllowed({ at, published, editorial }))))) {
         database.exec("ROLLBACK");
         return null;
@@ -411,7 +421,15 @@ export function createNewsDesk({ database, fetchText, fetchArticle = null, summa
         VALUES (?,'published',?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, result.headline, result.summary, result.body || "", result.category, JSON.stringify(artistKeys),
         JSON.stringify(sources), postId, costUsd, score, JSON.stringify(signals), at, at);
       const mark = database.prepare("UPDATE news_reports SET story_id=? WHERE url=?");
+      // Pasted reports need the same durable ownership as feed reports, or a
+      // second saved draft could publish the exact same links again.
+      if (manual) {
+        const remember = database.prepare("INSERT OR IGNORE INTO news_reports(url,source_id,title,description,category,artist_keys,published_at,fetched_at) VALUES (?,?,?,?,?,?,?,?)");
+        for (const report of reports) remember.run(report.url, report.sourceId, report.title, report.description || "", report.category || "other",
+          JSON.stringify(report.artistKeys || []), report.publishedAt, at);
+      }
       for (const report of reports) mark.run(id, report.url);
+      onPublished?.({ id, postId });
       database.exec("COMMIT");
     } catch (error) {
       database.exec("ROLLBACK");
@@ -424,6 +442,7 @@ export function createNewsDesk({ database, fetchText, fetchArticle = null, summa
     const id = newId();
     database.exec("BEGIN IMMEDIATE");
     try {
+      if (!reportsAvailable(reports)) { database.exec("ROLLBACK"); return false; }
       database.prepare(`INSERT INTO news_stories (id,status,category,reason,cost_usd,score,signals,created_at,updated_at) VALUES (?,'declined',?,?,?,?,?,?,?)`)
         .run(id, result.category || storyCategory(reports), result.reason || "", result.costUsd || 0, score, JSON.stringify(signals), at, at);
       const mark = database.prepare("UPDATE news_reports SET story_id=? WHERE url=? AND story_id IS NULL");
@@ -433,6 +452,7 @@ export function createNewsDesk({ database, fetchText, fetchArticle = null, summa
       database.exec("ROLLBACK");
       throw error;
     }
+    return true;
   }
 
   // Every confirmed story's editorial score, best first. Coverage, artist size
@@ -537,6 +557,7 @@ export function createNewsDesk({ database, fetchText, fetchArticle = null, summa
           throw error;
         }
         settleSpend(receipt, result.costUsd, now());
+        if (signal?.aborted) break;
         if (result.publish && result.headline && result.summary) {
           const sensitive = SENSITIVE_CATEGORIES.has(result.category) || SENSITIVE_CATEGORIES.has(storyCategory(cluster));
           const supporting = validatedSupportingReports(reports, result.supporting);
@@ -550,8 +571,8 @@ export function createNewsDesk({ database, fetchText, fetchArticle = null, summa
           }
           result = { ...result, publish: false, reason: "insufficient_independent_support" };
         }
-        declineStory({ reports: cluster, result, at: now(), score, signals });
-        outcome.declined += 1;
+        if (declineStory({ reports: cluster, result, at: now(), score, signals })) outcome.declined += 1;
+        else { outcome.waiting += 1; break; }
       }
     }
     return outcome;

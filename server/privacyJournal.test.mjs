@@ -14,6 +14,7 @@ import {
   restoredDatabaseNeedsReplay,
   shipPrivacyJournal,
   signPrivacyEntry,
+  startPrivacyJournalShipper,
   verifyPrivacyEntry,
 } from "./privacyJournal.js";
 
@@ -105,7 +106,7 @@ test("events wait without a key or storage, then ship oldest first and stop at a
     { pending: 0, lastShippedAt: AT + 20, signingKey: true, storage: true });
 });
 
-test("replay applies verified entries once, oldest first, and rejects forged ones", () => {
+test("replay validates all entries before mutation, then applies valid entries once in time order", () => {
   const entry = (id, kind, subjectId, at, key = KEY) => signPrivacyEntry({ id, kind, subjectId, at }, key);
   const entries = [
     entry("00000000-0000-4000-8000-00000000000b", "marketing_opt_out", "u_keep", AT + 5),
@@ -115,11 +116,14 @@ test("replay applies verified entries once, oldest first, and rejects forged one
     entry("00000000-0000-4000-8000-00000000000d", "account_erased", "u_never_restored", AT + 7),
   ];
   const applied = [];
-  const counts = replayPrivacyEntries({ entries, key: KEY,
+  const callbacks = {
     erase: (id) => { applied.push(`erase:${id}`); return id !== "u_never_restored"; },
-    optOut: (id) => { applied.push(`opt-out:${id}`); return true; } });
-  assert.deepEqual(applied, ["erase:u_gone", "opt-out:u_keep", "erase:u_never_restored"], "time order; the forged entry is never applied");
-  assert.deepEqual(counts, { entries: 5, verified: 3, rejected: 1, erased: 1, optedOut: 1, absent: 1, newestAt: AT + 7 });
+    optOut: (id) => { applied.push(`opt-out:${id}`); return true; } };
+  assert.throws(() => replayPrivacyEntries({ entries, key: KEY, ...callbacks }), { code: "PRIVACY_JOURNAL_INVALID" });
+  assert.deepEqual(applied, [], "a bad last entry prevents every earlier mutation");
+  const counts = replayPrivacyEntries({ entries: entries.filter((_, index) => index !== 3), key: KEY, ...callbacks });
+  assert.deepEqual(applied, ["erase:u_gone", "opt-out:u_keep", "erase:u_never_restored"]);
+  assert.deepEqual(counts, { entries: 4, verified: 3, rejected: 0, erased: 1, optedOut: 1, absent: 1, newestAt: AT + 7 });
 });
 
 test("a restored database must replay the journal before serving, once", async (t) => {
@@ -143,11 +147,19 @@ test("a restored database must replay the journal before serving, once", async (
   assert.ok(restoredDatabaseNeedsReplay(db), "a failed replay leaves the requirement in place");
 
   const erased = [];
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    await assert.rejects(replayPrivacyJournalIfRestored(db, { env: ENV, fetchImpl: store.fetchImpl,
+      erase: (id) => { erased.push(id); return true; }, optOut: () => false }), { code: "PRIVACY_JOURNAL_REPLAY_REQUIRED" });
+    assert.deepEqual(erased, [], "an unreadable entry prevents partial erasure");
+    assert.ok(restoredDatabaseNeedsReplay(db), "a later startup must retry rather than serve an incomplete restore");
+    assert.equal(db.prepare("SELECT value FROM app_meta WHERE key=?").get(PRIVACY_REPLAY_EVIDENCE_KEY), undefined);
+  }
+  store.objects.delete("privacy-journal/v1/2026/09/27/broken.json");
   const result = await replayPrivacyJournalIfRestored(db, { env: ENV, fetchImpl: store.fetchImpl, now: () => AT + 1,
     erase: (id) => { erased.push(id); return true; }, optOut: () => false });
   assert.deepEqual(erased, ["u_a", "u_b", "u_c"]);
   assert.deepEqual({ needed: result.needed, erased: result.erased, unreadable: result.unreadable, preparedAt: result.preparedAt },
-    { needed: true, erased: 3, unreadable: 1, preparedAt: AT });
+    { needed: true, erased: 3, unreadable: 0, preparedAt: AT });
   assert.equal(JSON.parse(db.prepare("SELECT value FROM app_meta WHERE key=?").get(PRIVACY_REPLAY_EVIDENCE_KEY).value).erased, 3);
   assert.deepEqual(await replayPrivacyJournalIfRestored(db, { env: ENV, fetchImpl: store.fetchImpl }), { needed: false }, "evidence ends the requirement");
 
@@ -156,4 +168,106 @@ test("a restored database must replay the journal before serving, once", async (
   const waived = await replayPrivacyJournalIfRestored(db, { env: { PRIVACY_JOURNAL_REPLAY_WAIVER: "incident-2026-10/privacy" }, now: () => AT + 60 });
   assert.deepEqual({ waived: waived.waived, reason: waived.reason }, { waived: "incident-2026-10/privacy", reason: "PRIVACY_JOURNAL_UNAVAILABLE" });
   assert.equal(restoredDatabaseNeedsReplay(db), null);
+});
+
+test("wrong-key erasure entries block every startup until repaired or explicitly waived", async (t) => {
+  const db = database(t);
+  db.exec("CREATE TABLE users(id TEXT PRIMARY KEY)");
+  db.prepare("INSERT INTO users VALUES (?)").run("u_restored");
+  db.prepare("INSERT INTO app_meta VALUES (?,?)").run(RESTORE_GATE_KEY, JSON.stringify({ version: 1, state: "reviewed", preparedAt: AT }));
+  const store = bucket();
+  const entry = signPrivacyEntry({ id: "00000000-0000-4000-8000-000000000099", kind: "account_erased", subjectId: "u_restored", at: AT + 1 }, Buffer.from("old-key".repeat(8)));
+  store.objects.set(privacyObjectKey(entry), JSON.stringify(entry));
+  const erase = (id) => db.prepare("DELETE FROM users WHERE id=?").run(id).changes > 0;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    await assert.rejects(replayPrivacyJournalIfRestored(db, { env: ENV, fetchImpl: store.fetchImpl, erase, optOut: () => false }), { code: "PRIVACY_JOURNAL_REPLAY_REQUIRED" });
+    assert.ok(restoredDatabaseNeedsReplay(db));
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM users").get().n, 1, "verification failure does not mutate the recovery copy");
+  }
+  const waived = await replayPrivacyJournalIfRestored(db, { env: { ...ENV, PRIVACY_JOURNAL_REPLAY_WAIVER: "incident-2026-09/manual-privacy-review" }, fetchImpl: store.fetchImpl, erase, optOut: () => false });
+  assert.equal(waived.reason, "PRIVACY_JOURNAL_INVALID");
+  assert.equal(restoredDatabaseNeedsReplay(db), null, "only the existing explicit waiver can accept incomplete evidence");
+});
+
+test("conflicting duplicate signed IDs and invalid dates fail before mutations", () => {
+  const base = { id: "00000000-0000-4000-8000-000000000001", kind: "marketing_opt_out", subjectId: "u_a", at: AT };
+  let mutations = 0;
+  const callbacks = { erase: () => { mutations += 1; }, optOut: () => { mutations += 1; } };
+  assert.throws(() => replayPrivacyEntries({ key: KEY, entries: [signPrivacyEntry(base, KEY), signPrivacyEntry({ ...base, kind: "account_erased", subjectId: "u_b" }, KEY)], ...callbacks }), { code: "PRIVACY_JOURNAL_INVALID" });
+  assert.equal(mutations, 0);
+  for (const at of [0, -1, 8_640_000_000_000_001]) assert.equal(verifyPrivacyEntry(signPrivacyEntry({ ...base, at }, KEY), KEY), false);
+  assert.equal(verifyPrivacyEntry({ ...signPrivacyEntry(base, KEY), mac: `${signPrivacyEntry(base, KEY).mac}garbage` }, KEY), false);
+});
+
+test("legacy, incomplete and malformed replay receipts never grant restore readiness", (t) => {
+  const db = database(t);
+  db.prepare("INSERT INTO app_meta VALUES (?,?)").run(RESTORE_GATE_KEY, JSON.stringify({ version: 1, state: "reviewed", preparedAt: AT }));
+  const put = db.prepare("INSERT INTO app_meta VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value");
+  const good = { version: 1, verificationVersion: 2, preparedAt: AT, replayedAt: AT + 1, entries: 0, verified: 0, rejected: 0, erased: 0, optedOut: 0, absent: 0, unreadable: 0, newestAt: null };
+  for (const bad of [{ preparedAt: AT }, { ...good, verificationVersion: undefined }, { ...good, rejected: 1 }, { ...good, unreadable: 1 }, { ...good, verified: 1 }, { ...good, replayedAt: AT - 1 }, { ...good, entries: -1 }]) {
+    put.run(PRIVACY_REPLAY_EVIDENCE_KEY, JSON.stringify(bad));
+    assert.ok(restoredDatabaseNeedsReplay(db));
+  }
+  put.run(PRIVACY_REPLAY_EVIDENCE_KEY, JSON.stringify(good));
+  assert.equal(restoredDatabaseNeedsReplay(db), null);
+  put.run(PRIVACY_REPLAY_EVIDENCE_KEY, JSON.stringify({ version: 1, preparedAt: AT, replayedAt: AT + 1, waived: "incident/prior-owner-review", reason: "PRIVACY_JOURNAL_UNAVAILABLE" }));
+  assert.equal(restoredDatabaseNeedsReplay(db), null, "an existing explicit owner waiver is preserved");
+});
+
+test("listing rejects HTTP 200 error pages, incomplete XML and repeated pagination", async () => {
+  for (const xml of ["<html>error</html>", "<ListBucketResult><IsTruncated>false</IsTruncated>", "<ListBucketResult><Contents><IsTruncated>false</IsTruncated></ListBucketResult>", "<ListBucketResult><IsTruncated>false</IsTruncated><IsTruncated>true</IsTruncated></ListBucketResult>"]) {
+    await assert.rejects(listPrivacyJournal({ env: ENV, fetchImpl: async () => new Response(xml) }), { code: "PRIVACY_JOURNAL_INVALID" });
+  }
+  let calls = 0;
+  await assert.rejects(listPrivacyJournal({ env: ENV, fetchImpl: async () => {
+    calls += 1;
+    return new Response("<ListBucketResult><IsTruncated>true</IsTruncated><NextContinuationToken>same-token</NextContinuationToken></ListBucketResult>");
+  } }), { code: "PRIVACY_JOURNAL_INVALID" });
+  assert.equal(calls, 2);
+  const empty = await listPrivacyJournal({ env: ENV, fetchImpl: async () => new Response('<?xml version="1.0" encoding="UTF-8"?><ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><IsTruncated>false</IsTruncated></ListBucketResult>') });
+  assert.deepEqual(empty, { entries: [], unreadable: 0 }, "a valid empty S3 listing remains valid");
+});
+
+test("journal response byte limits stop reading and cancel oversized bodies", async () => {
+  let pulled = 0;
+  let cancelled = 0;
+  const oversized = (chunkBytes) => new Response(new ReadableStream({
+    pull(controller) { pulled += 1; controller.enqueue(new Uint8Array(chunkBytes)); },
+    cancel() { cancelled += 1; },
+  }, { highWaterMark: 0 }));
+  await assert.rejects(listPrivacyJournal({ env: ENV, fetchImpl: async () => oversized(1024 * 1024) }), { code: "PRIVACY_JOURNAL_INVALID" });
+  assert.equal(pulled, 5, "listing stops at the first chunk over 4MiB");
+  assert.equal(cancelled, 1);
+  pulled = 0;
+  const listed = await listPrivacyJournal({ env: ENV, fetchImpl: async (url) => new URL(url).searchParams.has("list-type")
+    ? new Response("<ListBucketResult><Contents><Key>privacy-journal/v1/oversized.json</Key></Contents><IsTruncated>false</IsTruncated></ListBucketResult>")
+    : oversized(1024) });
+  assert.equal(listed.unreadable, 1);
+  assert.equal(pulled, 5, "objects stop at the first chunk over 4KiB");
+  assert.equal(cancelled, 2);
+});
+
+test("privacy shipper shutdown aborts active transport and preserves pending work", async (t) => {
+  const db = database(t);
+  recordPrivacyEvent(db, { kind: "account_erased", subjectId: "u_shutdown", at: AT });
+  let entered;
+  const uploading = new Promise((resolve) => { entered = resolve; });
+  let putCalls = 0;
+  const job = startPrivacyJournalShipper({ database: db, env: ENV, logger: { error() {} }, fetchImpl: async (_, init) => {
+    if (init.method !== "PUT") return new Response("", { status: 403 });
+    putCalls += 1;
+    entered();
+    return new Promise((_, reject) => {
+      if (init.signal.aborted) reject(init.signal.reason);
+      else init.signal.addEventListener("abort", () => reject(init.signal.reason), { once: true });
+    });
+  } });
+  t.after(() => job.stop({ abortActive: true }));
+  const active = job.trigger();
+  await uploading;
+  await job.stop({ abortActive: true });
+  assert.equal(await active, false);
+  assert.equal(putCalls, 1);
+  assert.equal(privacyJournalStatus(db, ENV).pending, 1);
+  assert.equal(privacyJournalStatus(db, ENV).lastError, null, "shutdown is not misreported as a provider failure");
 });

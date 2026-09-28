@@ -208,19 +208,35 @@ member or the inactivity worker) and marketing-consent withdrawal (Settings or
 an unsubscribe link) write a journal entry in the same transaction as the
 change. Entries hold only the opaque account ID, the kind and the time; they are
 signed with HMAC-SHA256 under `PRIVACY_JOURNAL_KEY` (server environment only)
-and copied every 5 minutes to `privacy-journal/v1/` in the private backup
-bucket, after the same anonymous-access proof the backups use. A database
+and queued for copying to `privacy-journal/v1/` in the private backup bucket,
+after the same anonymous-access proof the backups use. Shipping is attempted
+every 5 minutes in batches of 50; backlog, configuration errors and outages can
+extend that delay. This is not a five-minute durability guarantee. A database
 prepared with `scripts/prepare-db-restore.mjs` refuses to serve until the
 server has listed the journal, verified every entry, re-applied the verified
-erasures and opt-outs (forged or old-key entries are rejected and counted), and
+erasures and opt-outs, and
 saved the evidence in `app_meta` (`privacy-journal:replay:v1`). Only an owner
 decision recorded as `PRIVACY_JOURNAL_REPLAY_WAIVER=<incident reference>` lets a
 restore proceed without the journal, and the waiver is saved as evidence.
 
-Limits: an entry is copied off-host within about 5 minutes, so a disk lost in
-that window loses it; journal objects follow the bucket's lifecycle rule, which
-must keep them at least as long as the oldest backup that could be restored;
-individual post, comment and message deletions are not journaled yet (TODO).
+Hardened 2026-09-28: all entries are validated before replay changes anything.
+Malformed listings, unreadable objects, invalid signatures and conflicting
+duplicate entry IDs fail verification; they cannot produce a successful replay
+receipt. Receipts now require `verificationVersion: 2`; an older success receipt
+requires a fresh verified replay. Existing explicit owner waivers remain valid.
+Reads are bounded to 4 KiB per object, 4 MiB per listing, 20,000 objects and 1,000
+listing pages, with repeated pagination tokens refused. These are resource
+ceilings, not a whole-run restore deadline; larger recoveries need an offline
+reconciliation plan.
+
+Limits: a disk lost before successful journal shipping can lose recent privacy
+changes. Journal retention must cover every recoverable older snapshot,
+including local copies and pre-replay startup snapshots, not just the remote
+backup lifecycle. Preserve historical HMAC verification capability while any
+corresponding journal entries or backups remain recoverable; simply changing
+the key after a fresh backup is not a safe rotation procedure. Individual post,
+comment and message deletions and block/restriction changes are not journaled
+yet and require separate reconciliation. A live restore drill remains required.
 
 ## Remaining defense-in-depth work
 

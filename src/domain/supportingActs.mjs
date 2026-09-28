@@ -56,6 +56,7 @@ export function timesSeenSentence(count, artist) {
 
 // A whole number from 1 to 999 typed by the person, or null.
 export function parseTimesSeen(value) {
+  if (typeof value !== "number" && typeof value !== "string") return null;
   const number = Number(String(value ?? "").trim());
   return Number.isSafeInteger(number) && number >= 1 && number <= MAX_TIMES_SEEN ? number : null;
 }
