@@ -10,11 +10,11 @@ const { db, q } = await import("../../db.js");
 const { routes } = await import("../../api.js");
 const { hashPassword } = await import("../../auth.js");
 const { FESTIVAL_CATALOG } = await import("./festivalCatalog.js");
-const { editionDays, expectedEdition, festivalActs, groupFestivalEditions, matchFestival } = await import("./festivalEditions.js");
+const { editionDays, expectedEdition, festivalActs, festivalEditionName, groupFestivalEditions, matchFestival } = await import("./festivalEditions.js");
 const { createFestivalReader, createFestivalStore } = await import("./festivalStore.js");
 const { festivalListingsFromTicketmaster, festivalScanEnabled, runFestivalScan } = await import("./festivalScan.js");
 const { parseFestivalWikidata, parseFestivalWikipedia } = await import("./festivalKnowledge.js");
-const { projectFestivalDocument, projectFestivalsHubDocument, renderFestivalMain } = await import("./festivalDocument.js");
+const { festivalYears, projectFestivalDocument, projectFestivalsHubDocument, renderFestivalMain } = await import("./festivalDocument.js");
 after(() => { db.close(); rmSync(dataDir, { recursive: true, force: true }); });
 
 const entry = (slug) => FESTIVAL_CATALOG.find((item) => item.slug === slug);
@@ -44,7 +44,7 @@ test("ticket listings are matched to festivals and grouped into editions with a 
     ["coachella", "2026-04-10", "2026-04-12"], ["coachella", "2026-04-17", "2026-04-19"], ["lollapalooza", "2026-07-30", "2026-08-02"],
   ], "a festival's two weekends stay separate editions");
   const lolla = editions[2];
-  assert.equal(lolla.name, "Lollapalooza 2026 4-Day");
+  assert.equal(lolla.name, "Lollapalooza 2026", "the public name drops the ticket product");
   assert.deepEqual(lolla.lineup, [
     { name: "Sabrina Carpenter", days: ["2026-07-30"] }, { name: "Tyler, The Creator", days: ["2026-08-02"] }, { name: "Muna", days: ["2026-07-30"] },
   ]);
@@ -188,9 +188,32 @@ test("search engines get the lineup, dates and Festival structured data", () => 
   assert.match(html, /<h1>Lollapalooza 2027 Lineup, Dates &amp; Tickets<\/h1>/u);
   assert.match(html, /<h3>Thursday, Jul 29<\/h3><p class="festival-lineup">Sabrina Carpenter · Muna<\/p>/u, "the lineup by day is in the HTML");
   assert.match(html, /Source: <a href="https:\/\/en\.wikipedia\.org\/wiki\/Lollapalooza"/u);
+  assert.match(html, /<h2 id="festival-facts">Lollapalooza 2027 at a glance<\/h2>/u, "a day ticket's name is not the festival's name");
+  assert.match(html, /<dt>Dates<\/dt><dd>Jul 29 to 30, 2027<\/dd>/u);
+  assert.equal(festival.offers?.availability, undefined, "no claim that tickets are in stock");
 
   const hub = projectFestivalsHubDocument({ upcoming: createFestivalReader(db).upcoming() });
   assert.equal(hub.canonicalPath, "/festivals");
   assert.equal(hub.indexable, false, "the hub waits until it lists a few festivals");
   assert.match(renderFestivalMain(hub), /href="\/festival\/lollapalooza"/u);
+  assert.match(renderFestivalMain(hub), /<h2 id="festivals-2027-07">July 2027<\/h2>/u, "the hub lists festivals under month headings");
+  assert.equal(hub.heading, "Music Festivals 2027: Dates, Lineups & Tickets");
+  assert.equal(festivalYears([{ startDate: "2027-01-02" }, { startDate: "2026-12-30" }, { startDate: "2028-06-01" }]), "2026 and 2027");
+  assert.equal(festivalYears([]), "");
+});
+
+test("edition names drop the ticket product and carry the year", () => {
+  const name = (raw) => festivalEditionName(raw, { year: "2027", fallback: "festival" });
+  assert.equal(name("Lollapalooza 2027 - Thursday"), "Lollapalooza 2027");
+  assert.equal(name("Rolling Loud Miami | 3 Day GA"), "Rolling Loud Miami 2027");
+  assert.equal(name("Outside Lands (3-Day Pass)"), "Outside Lands 2027");
+  assert.equal(name("Governors Ball Music Festival: Friday"), "Governors Ball Music Festival 2027");
+  assert.equal(name("Rolling Loud Miami 2027 3-Day GA"), "Rolling Loud Miami 2027");
+  assert.equal(name("Lollapalooza Thursday"), "Lollapalooza 2027");
+  assert.equal(name("Coachella Valley Music and Arts Festival - Weekend 1"), "Coachella Valley Music and Arts Festival 2027 - Weekend 1");
+  assert.equal(name("Coachella - Weekend 2 - 3 Day GA Pass"), "Coachella 2027 - Weekend 2");
+  assert.equal(name("Day N Vegas 2027 - Saturday"), "Day N Vegas 2027", "a festival named Day keeps its name");
+  assert.equal(name("Lovers & Friends: The Reunion"), "Lovers & Friends: The Reunion 2027", "a subtitle that is not a ticket stays");
+  assert.equal(name(""), "festival 2027");
+  assert.equal(festivalEditionName("Primavera Sound 2026", { year: "2026" }), "Primavera Sound 2026");
 });

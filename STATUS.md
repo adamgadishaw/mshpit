@@ -6,6 +6,34 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-09-28 Festival pages: look, order and accuracy
+
+- **Look:** the Festivals tab and `/festivals` open on a lit stage: the next
+  festival's two-colour gel, drifting spotlights and two sweeping beams,
+  with the count of festivals ahead, new lineups, countries and a "Next up"
+  card with a countdown. Cards are posters with a calendar tile, a countdown
+  ("In 3 weeks", "Happening now") and the length. A festival page opens on a
+  poster hero with the same stage and its lineup in a poster frame. Content
+  rises in one piece after another. The motion is CSS on the web only; with
+  reduced motion (or on native) the page is still. Each festival keeps its
+  own colours (`festivalAccent`).
+- **Order:** a month filter above the list ("All dates", "Jul 2027 3"),
+  sentence-case section headings with counts, even grid columns so a lone
+  card no longer stretches across the page, and the day chart only shows
+  when members have picked days (it used to draw empty bars).
+- **Accuracy:** an edition was named after one ticket listing, so pages read
+  "Lollapalooza 2027 - Thursday" or "Lollapalooza 2026 4-Day". Names now drop
+  the ticket product and carry the year ("Lollapalooza 2027"; "Weekend 1"
+  stays). Applied when editions are built and when they are read, so stored
+  editions are fixed without a rescan. The structured data no longer claims
+  tickets are in stock; we only know the link.
+- **Search:** the hub title carries the years ("Music Festivals 2027:
+  Dates, Lineups & Tickets") and lists festivals under month headings; each
+  festival page has an "at a glance" list (dates, where, length, lineup
+  size, first held, official site).
+- Browser suite: the phone pass runs with reduced motion; both passes check
+  for no sideways scroll with the beams.
+
 ## 2026-09-28 Newsroom, news card photos, player and link safety
 
 From the owner's list:

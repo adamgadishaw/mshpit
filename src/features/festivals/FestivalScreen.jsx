@@ -7,9 +7,11 @@ import Button from "../../components/Button";
 import Stars from "../../components/Stars";
 import { PostNavigationContext } from "../../components/PostNavigationContext";
 import SocialShareStudio from "../../components/SocialShareStudio";
+import FestivalBackdrop from "./FestivalBackdrop";
+import Rise from "./Rise";
 import { buildFestivalShareModel } from "./festivalShare.mjs";
 import { readFestival, removeFestivalPlan, saveFestivalPlan } from "./festivalApi.mjs";
-import { festivalDateRange, festivalDayLabel, festivalLength, festivalPlace, lineupHasDays, lineupTiers } from "./festivalFormat.mjs";
+import { festivalAccent, festivalCountdown, festivalDateRange, festivalDayLabel, festivalLength, festivalPlace, lineupHasDays, lineupTiers } from "./festivalFormat.mjs";
 import useFestivalResource from "./useFestivalResource";
 
 const openLink = (url) => { if (url) void Linking.openURL(url).catch(() => {}); }; // architecture: allow-empty-catch -- an unopenable link leaves the page as it was
@@ -50,6 +52,10 @@ export default function FestivalScreen({ slug, editionId = null, signedIn = fals
   const plan = edition?.plan || null;
   const mustSeeSet = new Set((plan?.mustSee || []).map((name) => name.toLowerCase()));
   const wanted = new Map((edition?.mustSee || []).map((act) => [act.name.toLowerCase(), act.fans]));
+  const accent = festivalAccent(festival.slug);
+  const countdown = edition ? festivalCountdown(edition) : null;
+  const dayCounts = days.map((item) => Number(edition?.goingByDay?.[item]) || 0);
+  const busiestDay = Math.max(0, ...dayCounts);
   const replacePlan = (nextPlan) => resource.replace((current) => ({
     ...current,
     upcoming: current.upcoming.map((item) => item.id !== edition.id ? item : {
@@ -69,34 +75,42 @@ export default function FestivalScreen({ slug, editionId = null, signedIn = fals
         </Pressable>)}
       </View> : null}
 
-      {edition ? <View style={styles.hero}>
-        {edition.imageUrl ? <View style={styles.heroArt}>
+      {edition ? <View style={[styles.hero, wide && styles.heroWide]}>
+        {edition.imageUrl ? <>
           <ExpoImage source={{ uri: edition.imageUrl }} style={StyleSheet.absoluteFill} contentFit="cover" accessibilityIgnoresInvertColors />
           <View style={styles.heroShade} />
-        </View> : <View style={styles.heroBar} />}
+        </> : <FestivalBackdrop accent={accent} beams />}
         <View style={styles.heroBody}>
-          <Text style={styles.kicker}>FESTIVAL</Text>
-          <Text style={styles.heroTitle} accessibilityRole="header">{edition.name}</Text>
-          <Text style={styles.heroWhen}>{festivalDateRange(edition.startDate, edition.endDate)}</Text>
-          {festivalPlace(edition) ? <Text style={styles.heroWhere}>{festivalPlace(edition)}</Text> : null}
-          <View style={styles.stats}>
+          <Rise index={0} style={styles.heroTop}>
+            <Text style={styles.kicker}>Festival</Text>
+            {countdown ? <View style={[styles.countPill, countdown.live && styles.countPillLive]}>
+              <Text style={[styles.countText, countdown.live && styles.countTextLive]}>{countdown.label}</Text>
+            </View> : null}
+          </Rise>
+          <Rise index={1}><Text style={[styles.heroTitle, wide && styles.heroTitleWide]} accessibilityRole="header">{edition.name}</Text></Rise>
+          <Rise index={2} style={styles.heroPlace}>
+            <Text style={styles.heroWhen}>{festivalDateRange(edition.startDate, edition.endDate)}</Text>
+            {festivalPlace(edition) ? <Text style={styles.heroWhere}>{festivalPlace(edition)}</Text> : null}
+          </Rise>
+          <Rise index={3} style={styles.stats}>
             {festivalLength(edition) ? <Stat label="Length" value={festivalLength(edition)} /> : null}
             {edition.lineupCount ? <Stat label="Lineup" value={`${edition.lineupCount} acts`} /> : null}
             <Stat label="Going" value={edition.going ? Number(edition.going).toLocaleString("en-US") : "Be the first"} />
-          </View>
-          <View style={styles.actions}>
+          </Rise>
+          <Rise index={4} style={styles.actions}>
             <Button title={plan ? `Going · ${plan.days.map((item) => festivalDayLabel(item)).join(", ")}` : "I'm going"} small
               onPress={() => (signedIn ? setEditing((open) => !open) : onRequireAuth?.())} accessibilityLabel={plan ? "Edit your festival plan" : "Say you're going"} />
             {edition.ticketUrl ? <Button title="Tickets" variant="secondary" small onPress={() => openLink(edition.ticketUrl)} accessibilityLabel="Open tickets" /> : null}
             <Button title="Share lineup" variant="secondary" small onPress={() => setShareModel(buildFestivalShareModel({ festival, edition, intent: "lineup" }))} accessibilityLabel="Share this festival's lineup" />
             {plan ? <Button title="Share my plan" variant="secondary" small onPress={() => setShareModel(buildFestivalShareModel({ festival, edition, plan, intent: "going", author }))} accessibilityLabel="Share the days you're going" /> : null}
-          </View>
+          </Rise>
           {edition.imageAttribution ? <Text style={styles.attribution}>{`Image: ${edition.imageAttribution}`}</Text> : null}
         </View>
-      </View> : <View style={styles.hero}>
+      </View> : <View style={[styles.hero, wide && styles.heroWide]}>
+        <FestivalBackdrop accent={accent} beams />
         <View style={styles.heroBody}>
-          <Text style={styles.kicker}>FESTIVAL</Text>
-          <Text style={styles.heroTitle} accessibilityRole="header">{festival.name}</Text>
+          <Rise index={0}><Text style={styles.kicker}>Festival</Text></Rise>
+          <Rise index={1}><Text style={[styles.heroTitle, wide && styles.heroTitleWide]} accessibilityRole="header">{festival.name}</Text></Rise>
           {page.expected ? <>
             <Text style={styles.heroWhen}>{page.expected.label}</Text>
             <Text style={styles.heroWhere}>{`Not announced yet. Estimated from the last edition: ${festivalDateRange(page.expected.basis.startDate, page.expected.basis.endDate)}${page.expected.basis.city ? `, ${page.expected.basis.city}` : ""}.`}</Text>
@@ -107,14 +121,14 @@ export default function FestivalScreen({ slug, editionId = null, signedIn = fals
       {edition && editing ? <PlanEditor key={edition.id} slug={festival.slug} edition={edition} plan={plan}
         onSaved={(next) => { replacePlan(next); setEditing(false); }} onCancel={() => setEditing(false)} /> : null}
 
-      {edition ? <Section title={lineup.length ? "Lineup" : "Lineup not announced yet"}>
+      {edition ? <Section title={lineup.length ? "Lineup" : "Lineup not announced yet"} detail={lineup.length && edition.lineupCount > lineup.length ? `${lineup.length} of ${edition.lineupCount} acts listed so far` : null}>
         {showDayTabs ? <View style={styles.editionChips} accessibilityRole="tablist">
           {[null, ...days].map((item) => <Pressable key={item || "all"} onPress={() => setDay(item)} style={[styles.chip, activeDay === item && styles.chipOn]}
             accessibilityRole="tab" accessibilityState={{ selected: activeDay === item }}>
             <Text style={[styles.chipText, activeDay === item && styles.chipTextOn]}>{item ? festivalDayLabel(item, { long: true }) : "All days"}</Text>
           </Pressable>)}
         </View> : null}
-        {lineup.length ? lineupTiers(lineup, { day: activeDay }).map((tier) => <View key={tier.key} style={styles.tier}>
+        {lineup.length ? <View style={[styles.poster, { borderColor: accent[0] }]}>{lineupTiers(lineup, { day: activeDay }).map((tier, tierIndex) => <Rise key={`${activeDay || "all"}:${tier.key}`} index={tierIndex} style={styles.tier}>
           {tier.acts.map((act, index) => <View key={act.name} style={styles.tierItem}>
             <Pressable onPress={() => onOpenArtist?.(act.name)} accessibilityRole="link"
               accessibilityLabel={`Open ${act.name}${mustSeeSet.has(act.name.toLowerCase()) ? ", on your must-see list" : ""}${wanted.get(act.name.toLowerCase()) ? `, ${wanted.get(act.name.toLowerCase())} members want to see them` : ""}`}>
@@ -122,22 +136,18 @@ export default function FestivalScreen({ slug, editionId = null, signedIn = fals
             </Pressable>
             {index < tier.acts.length - 1 ? <Text style={[styles.tierDot, styles[`tier_${tier.key}`]]}> · </Text> : null}
           </View>)}
-        </View>) : <Text style={styles.muted}>Acts appear here as soon as the lineup is listed with tickets.</Text>}
+        </Rise>)}</View> : <Text style={styles.muted}>Acts appear here as soon as the lineup is listed with tickets.</Text>}
         {lineup.length && !showDayTabs && days.length > 1 ? <Text style={styles.muted}>Day-by-day times are not listed yet.</Text> : null}
       </Section> : null}
 
-      {edition && edition.going ? <Section title="Who's going">
-        <View style={styles.dayBars}>
-          {days.map((item) => {
-            const count = Number(edition.goingByDay?.[item]) || 0;
-            const max = Math.max(1, ...days.map((other) => Number(edition.goingByDay?.[other]) || 0));
-            return <View key={item} style={styles.dayBar} accessibilityLabel={`${festivalDayLabel(item, { long: true })}: ${count} going`}>
-              <View style={styles.dayBarTrack}><View style={[styles.dayBarFill, { height: `${Math.round((count / max) * 100)}%` }]} /></View>
-              <Text style={styles.dayBarCount}>{count}</Text>
-              <Text style={styles.dayBarLabel}>{festivalDayLabel(item)}</Text>
-            </View>;
-          })}
-        </View>
+      {edition && edition.going ? <Section title="Who's going" detail={edition.going === 1 ? "1 member is going" : `${Number(edition.going).toLocaleString("en-US")} members are going`}>
+        {days.length > 1 && busiestDay > 0 ? <View style={styles.dayBars}>
+          {days.map((item, index) => <View key={item} style={styles.dayBar} accessibilityLabel={`${festivalDayLabel(item, { long: true })}: ${dayCounts[index]} going`}>
+            <View style={styles.dayBarTrack}><View style={[styles.dayBarFill, { backgroundColor: accent[index % 2], height: `${Math.round((dayCounts[index] / busiestDay) * 100)}%` }]} /></View>
+            <Text style={styles.dayBarCount}>{dayCounts[index]}</Text>
+            <Text style={styles.dayBarLabel}>{festivalDayLabel(item)}</Text>
+          </View>)}
+        </View> : null}
         {edition.mustSee?.length ? <Text style={styles.muted}>{`Most wanted: ${edition.mustSee.slice(0, 6).map((act) => `${act.name} (${act.fans})`).join(", ")}`}</Text> : null}
       </Section> : null}
 
@@ -201,15 +211,18 @@ function Header({ title, onClose }) {
   </View>;
 }
 
-function Section({ title, children }) {
+function Section({ title, detail = null, children }) {
   return <View style={styles.section}>
-    <Text style={styles.sectionTitle} accessibilityRole="header">{title.toUpperCase()}</Text>
+    <View style={styles.sectionHead}>
+      <Text style={styles.sectionTitle} accessibilityRole="header">{title}</Text>
+      {detail ? <Text style={styles.sectionDetail}>{detail}</Text> : null}
+    </View>
     {children}
   </View>;
 }
 
 function Stat({ label, value }) {
-  return <View style={styles.stat}><Text style={styles.statLabel}>{label.toUpperCase()}</Text><Text style={styles.statValue}>{value}</Text></View>;
+  return <View style={styles.stat}><Text style={styles.statLabel}>{label}</Text><Text style={styles.statValue}>{value}</Text></View>;
 }
 
 // Going: pick the days and the sets you don't want to miss.
@@ -242,7 +255,7 @@ function PlanEditor({ slug, edition, plan, onSaved, onCancel }) {
     finally { setBusy(false); }
   };
   return <View style={styles.plan}>
-    <Text style={styles.sectionTitle}>WHICH DAYS ARE YOU GOING?</Text>
+    <Text style={styles.planTitle}>Which days are you going?</Text>
     <View style={styles.editionChips}>
       {edition.days.map((item) => <Pressable key={item} onPress={() => toggle(days, setDays, item)} style={[styles.chip, days.includes(item) && styles.chipOn]}
         accessibilityRole="checkbox" accessibilityState={{ checked: days.includes(item) }} accessibilityLabel={festivalDayLabel(item, { long: true })}>
@@ -250,7 +263,7 @@ function PlanEditor({ slug, edition, plan, onSaved, onCancel }) {
       </Pressable>)}
     </View>
     {edition.lineup?.length ? <>
-      <Text style={styles.sectionTitle}>{`MUST-SEE SETS${mustSee.length ? ` · ${mustSee.length}` : ""}`}</Text>
+      <Text style={styles.planTitle}>{`Sets you can't miss${mustSee.length ? ` · ${mustSee.length}` : ""}`}</Text>
       <TextInput style={styles.input} value={query} onChangeText={setQuery} placeholder="Find an act on the lineup" placeholderTextColor={colors.textFaint}
         accessibilityLabel="Find an act on the lineup" autoCorrect={false} />
       <View style={styles.editionChips}>
@@ -282,28 +295,39 @@ const styles = StyleSheet.create({
   chipOn: { backgroundColor: colors.amber, borderColor: colors.amber },
   chipText: { color: colors.textDim, fontFamily: font, fontSize: 13, fontWeight: "800" },
   chipTextOn: { color: colors.bg },
-  hero: { borderRadius: radius.lg, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface, overflow: "hidden" },
-  heroArt: { height: 240, backgroundColor: colors.bgElev },
-  heroBar: { height: 8, backgroundColor: colors.amber },
-  heroShade: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(0,0,0,0.15)" },
-  heroBody: { padding: space(4), gap: 6 },
-  kicker: { color: colors.amber, fontFamily: mono, fontSize: 11, fontWeight: "900", letterSpacing: 1.4 },
-  heroTitle: { color: colors.text, fontFamily: displayFont, fontSize: 30, fontWeight: "900", lineHeight: 34 },
-  heroWhen: { color: colors.amber, fontFamily: font, fontSize: 16, fontWeight: "900" },
-  heroWhere: { color: colors.textDim, fontFamily: font, fontSize: 14, lineHeight: 20 },
-  stats: { flexDirection: "row", flexWrap: "wrap", gap: space(2), marginTop: space(2) },
-  stat: { flexGrow: 1, flexBasis: 90, gap: 2, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, paddingHorizontal: 12, paddingVertical: 8 },
-  statLabel: { color: colors.textFaint, fontFamily: mono, fontSize: 10, fontWeight: "900", letterSpacing: 1 },
-  statValue: { color: colors.text, fontFamily: font, fontSize: 14, fontWeight: "900" },
+  // The hero is a poster: always a dark stage with white type, in every theme.
+  hero: { minHeight: 300, justifyContent: "flex-end", borderRadius: radius.lg, overflow: "hidden", backgroundColor: "#0B0A10" },
+  heroWide: { minHeight: 360 },
+  heroShade: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(6,6,10,0.62)" },
+  heroBody: { padding: space(5), gap: space(2) },
+  heroTop: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space(2) },
+  kicker: { color: "rgba(255,255,255,0.86)", fontFamily: mono, fontSize: 12, fontWeight: "900", letterSpacing: 1.2 },
+  countPill: { borderRadius: radius.pill, backgroundColor: "#FFFFFF", paddingHorizontal: 10, paddingVertical: 4 },
+  countPillLive: { backgroundColor: "#FF3D6E" },
+  countText: { color: "#111114", fontFamily: font, fontSize: 12, fontWeight: "900" },
+  countTextLive: { color: "#FFFFFF" },
+  heroTitle: { color: "#FFFFFF", fontFamily: displayFont, fontSize: 36, fontWeight: "900", lineHeight: 40, textShadowColor: "rgba(0,0,0,0.35)", textShadowOffset: { width: 0, height: 2 }, textShadowRadius: 12 },
+  heroTitleWide: { fontSize: 52, lineHeight: 56 },
+  heroPlace: { gap: 2 },
+  heroWhen: { color: "#FFFFFF", fontFamily: font, fontSize: 17, fontWeight: "900" },
+  heroWhere: { color: "rgba(255,255,255,0.84)", fontFamily: font, fontSize: 14, lineHeight: 20 },
+  stats: { flexDirection: "row", flexWrap: "wrap", gap: space(2), marginTop: space(1) },
+  stat: { flexGrow: 1, flexBasis: 90, maxWidth: 200, gap: 2, borderRadius: radius.md, borderWidth: 1, borderColor: "rgba(255,255,255,0.2)", backgroundColor: "rgba(8,8,12,0.4)", paddingHorizontal: 12, paddingVertical: 8 },
+  statLabel: { color: "rgba(255,255,255,0.72)", fontFamily: font, fontSize: 11.5, fontWeight: "800" },
+  statValue: { color: "#FFFFFF", fontFamily: font, fontSize: 15, fontWeight: "900" },
   actions: { flexDirection: "row", flexWrap: "wrap", gap: space(2), marginTop: space(2) },
-  attribution: { color: colors.textFaint, fontFamily: font, fontSize: 11 },
+  attribution: { color: "rgba(255,255,255,0.7)", fontFamily: font, fontSize: 11 },
   section: { gap: space(3) },
-  sectionTitle: { color: colors.textDim, fontFamily: mono, fontSize: 11, fontWeight: "900", letterSpacing: 1.2 },
+  sectionHead: { gap: 2 },
+  sectionTitle: { color: colors.text, fontFamily: displayFont, fontSize: 20, fontWeight: "900" },
+  sectionDetail: { color: colors.textFaint, fontFamily: font, fontSize: 12.5, fontWeight: "700" },
+  planTitle: { color: colors.text, fontFamily: font, fontSize: 14, fontWeight: "900" },
+  poster: { gap: space(2), borderRadius: radius.lg, borderWidth: 1, backgroundColor: colors.surface, paddingHorizontal: space(4), paddingVertical: space(5) },
   tier: { flexDirection: "row", flexWrap: "wrap", alignItems: "baseline", justifyContent: "center" },
   tierItem: { flexDirection: "row", alignItems: "baseline" },
   tierName: { color: colors.text, fontFamily: displayFont, fontWeight: "900", textAlign: "center" },
   tierDot: { color: colors.textFaint },
-  tier_top: { fontSize: 26, lineHeight: 34 },
+  tier_top: { fontSize: 28, lineHeight: 36 },
   tier_middle: { fontSize: 18, lineHeight: 26 },
   tier_rest: { fontSize: 14, lineHeight: 21, fontWeight: "700", color: colors.textDim },
   mustSeeName: { color: colors.amber },

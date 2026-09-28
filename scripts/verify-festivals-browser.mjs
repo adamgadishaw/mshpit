@@ -42,7 +42,9 @@ async function serverForBuild() {
 }
 
 async function scenario(browser, origin, width) {
-  const context = await browser.newContext({ viewport: { width, height: 1200 }, isMobile: width < 620, hasTouch: width < 620, serviceWorkers: "block" });
+  // The phone pass also covers reduced motion: the page must be complete with no entrance animation.
+  const context = await browser.newContext({ viewport: { width, height: 1200 }, isMobile: width < 620, hasTouch: width < 620, serviceWorkers: "block",
+    reducedMotion: width < 620 ? "reduce" : "no-preference" });
   const state = { plan: null, writes: [], errors: [], external: [], closing: false };
   await context.addInitScript((user) => {
     localStorage.setItem("pit_theme", "stage");
@@ -110,6 +112,10 @@ async function scenario(browser, origin, width) {
     await page.goto(origin + "/discover", { waitUntil: "domcontentloaded" });
     await page.getByRole("tab", { name: "Festivals", exact: true }).click();
     await page.getByRole("link", { name: /^Lollapalooza 2027, Jul 29 to Aug 1, 2027/u }).waitFor();
+    await page.getByRole("link", { name: /^Next up: Lollapalooza 2027/u }).waitFor();
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false, "the lit marquee stays inside the page");
+    // Let the cards finish rising in before the picture.
+    await page.waitForTimeout(width < 620 ? 0 : 1000);
     await page.screenshot({ path: join(shots, `discover-${width}.png`) });
     assert.deepEqual(state.errors, []);
     assert.deepEqual(state.external, []);

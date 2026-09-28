@@ -1,5 +1,5 @@
 import { FESTIVAL_CATALOG } from "./festivalCatalog.js";
-import { editionDays, expectedEdition, groupFestivalEditions } from "./festivalEditions.js";
+import { editionDays, expectedEdition, festivalEditionName, groupFestivalEditions } from "./festivalEditions.js";
 
 // Festivals, their editions (one dated run in one place), the ticket
 // listings each edition was built from, and members' plans for an edition:
@@ -202,7 +202,8 @@ export function createFestivalReader(database, { now = Date.now } = {}) {
     return {
       id: row.id,
       festivalSlug: row.festival_slug,
-      name: row.name,
+      // Cleaned on read too, so editions saved before the rule read the same.
+      name: festivalEditionName(row.name, { year: String(row.start_date || "").slice(0, 4), fallback: row.festival_slug }),
       startDate: row.start_date,
       endDate: row.end_date,
       days: editionDays(row.start_date, row.end_date),

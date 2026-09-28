@@ -10,6 +10,7 @@ const esc = (value) => String(value ?? "").replace(/&/g, "&amp;").replace(/</g, 
   .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 const safeHttps = (value) => (typeof value === "string" && /^https:\/\/[^\s"'<>]+$/u.test(value) ? value : null);
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const LONG_MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const at = (value) => new Date(`${value}T00:00:00Z`);
 
@@ -84,7 +85,8 @@ export function projectFestivalDocument({ origin = "https://www.mshpit.com", pag
           ...(item.countryCode ? { addressCountry: item.countryCode } : {}) },
       },
       ...(item.lineup?.length ? { performer: item.lineup.slice(0, 30).map((act) => ({ "@type": "PerformingGroup", name: act.name })) } : {}),
-      ...(safeHttps(item.ticketUrl) ? { offers: { "@type": "Offer", url: item.ticketUrl, availability: "https://schema.org/InStock" } } : {}),
+      // Only the ticket link: we do not know whether tickets are still on sale.
+      ...(safeHttps(item.ticketUrl) ? { offers: { "@type": "Offer", url: item.ticketUrl } } : {}),
       ...(safeHttps(page.festival.website) ? { sameAs: [page.festival.website] } : {}),
     });
   }
@@ -113,14 +115,23 @@ export function projectFestivalDocument({ origin = "https://www.mshpit.com", pag
   };
 }
 
+// "2026", "2026 and 2027": the years the listed festivals start in, which is
+// how people search for them ("music festivals 2027").
+export function festivalYears(upcoming) {
+  const years = [...new Set((Array.isArray(upcoming) ? upcoming : []).map((edition) => String(edition?.startDate || "").slice(0, 4)).filter((year) => /^\d{4}$/u.test(year)))].sort().slice(0, 2);
+  return years.join(" and ");
+}
+
 export function projectFestivalsHubDocument({ origin = "https://www.mshpit.com", upcoming = [], festivals = [] } = {}) {
   const canonicalUrl = new URL(FESTIVALS_HUB_PATH, origin).href;
   const lead = upcoming.slice(0, 3).map((edition) => edition.festivalName || edition.name).join(", ");
+  const years = festivalYears(upcoming);
+  const heading = `Music Festivals${years ? ` ${years}` : ""}: Dates, Lineups & Tickets`;
   return {
     kind: "festivals",
     siteName: "Mshpit",
-    heading: "Music Festivals: Dates, Lineups & Tickets",
-    title: "Music Festivals: Dates, Lineups & Tickets | Mshpit",
+    heading,
+    title: `${heading} | Mshpit`,
     description: `Upcoming music festivals with dates, lineups by day and tickets${lead ? `, including ${lead}` : ""}. See who's going and what fans said about past years.`.slice(0, 300),
     canonicalPath: FESTIVALS_HUB_PATH,
     canonicalUrl,
@@ -159,19 +170,39 @@ function lineupHtml(edition) {
 export function renderFestivalMain(document) {
   if (document?.kind === "festivals") {
     const { upcoming } = document.festivalsHub;
-    const items = upcoming.map((edition) => `<li><a href="${esc(festivalPagePath(edition.festivalSlug))}">${esc(edition.name)}</a>
+    const item = (edition) => `<li><a href="${esc(festivalPagePath(edition.festivalSlug))}">${esc(edition.name)}</a>
       <span class="muted">${esc([festivalDateRange(edition.startDate, edition.endDate), place(edition)].filter(Boolean).join(" · "))}</span>
-      ${edition.headliners?.length ? `<br><span>${esc(edition.headliners.join(" · "))}</span>` : ""}</li>`).join("");
+      ${edition.headliners?.length ? `<br><span>${esc(edition.headliners.join(" · "))}</span>` : ""}</li>`;
+    // One section per month, so "festivals in July" has a heading to find.
+    const months = [];
+    for (const edition of upcoming) {
+      const key = String(edition.startDate || "").slice(0, 7);
+      if (!/^\d{4}-\d{2}$/u.test(key)) continue;
+      if (months[months.length - 1]?.key === key) months[months.length - 1].editions.push(edition);
+      else months.push({ key, editions: [edition] });
+    }
+    const sections = months.map((month) => `<section class="section" aria-labelledby="festivals-${esc(month.key)}">
+      <h2 id="festivals-${esc(month.key)}">${esc(`${LONG_MONTHS[Number(month.key.slice(5, 7)) - 1]} ${month.key.slice(0, 4)}`)}</h2>
+      <ol class="event-list">${month.editions.map(item).join("")}</ol></section>`).join("");
     return `<main id="main">
       <nav class="breadcrumbs" aria-label="Breadcrumb"><ol><li><a href="/">Mshpit</a></li><li><span aria-current="page">Festivals</span></li></ol></nav>
       <section class="hero"><p class="eyebrow">Festivals</p><h1>${esc(document.heading)}</h1><p>${esc(document.description)}</p></section>
-      <section class="section" aria-label="Upcoming festivals"><ol class="event-list">${items || "<li>No upcoming festivals are listed yet.</li>"}</ol></section>
+      ${sections || '<section class="section"><p>No upcoming festivals are listed yet.</p></section>'}
     </main>`;
   }
   if (document?.kind !== "festival") return null;
   const page = document.festivalPage;
   const festival = page.festival;
   const edition = page.upcoming[0];
+  const factsHtml = edition ? `<section class="section" aria-labelledby="festival-facts"><h2 id="festival-facts">${esc(edition.name)} at a glance</h2>
+      <dl class="facts">
+        <dt>Dates</dt><dd>${esc(festivalDateRange(edition.startDate, edition.endDate))}</dd>
+        ${place(edition) ? `<dt>Where</dt><dd>${esc(place(edition))}</dd>` : ""}
+        <dt>Length</dt><dd>${esc(edition.days?.length > 1 ? `${edition.days.length} days` : "1 day")}</dd>
+        <dt>Lineup</dt><dd>${esc(edition.lineupCount ? `${edition.lineupCount} acts listed so far` : "Not announced yet")}</dd>
+        ${festival.foundedYear ? `<dt>First held</dt><dd>${esc(festival.foundedYear)}</dd>` : ""}
+        ${safeHttps(festival.website) ? `<dt>Official site</dt><dd><a href="${esc(festival.website)}" rel="noopener">${esc(new URL(festival.website).hostname.replace(/^www\./u, ""))}</a></dd>` : ""}
+      </dl></section>` : "";
   const upcomingHtml = page.upcoming.map((item) => `<section class="section" aria-label="${esc(item.name)}">
       <h2>${esc(item.name)}</h2>
       <p><strong>${esc(festivalDateRange(item.startDate, item.endDate))}</strong>${place(item) ? ` · ${esc(place(item))}` : ""}</p>
@@ -188,10 +219,11 @@ export function renderFestivalMain(document) {
   return `<main id="main">
     <nav class="breadcrumbs" aria-label="Breadcrumb"><ol><li><a href="/">Mshpit</a></li><li><a href="${FESTIVALS_HUB_PATH}">Festivals</a></li><li><span aria-current="page">${esc(festival.name)}</span></li></ol></nav>
     <section class="hero"><p class="eyebrow">Festival</p><h1>${esc(document.heading)}</h1><p>${esc(document.description)}</p></section>
-    ${upcomingHtml}${expectedHtml}${aboutHtml}${pastHtml}${reviewsHtml}
+    ${factsHtml}${upcomingHtml}${expectedHtml}${aboutHtml}${pastHtml}${reviewsHtml}
     <p class="muted"><a href="${FESTIVALS_HUB_PATH}">More festivals</a></p>
   </main>`;
 }
 
 export const FESTIVAL_STYLES = `.festival-lineup{font-size:1.05rem;line-height:1.7;font-weight:700}
-  .section h3{margin:.9rem 0 .2rem;font-size:.95rem;color:var(--gold)}`;
+  .section h3{margin:.9rem 0 .2rem;font-size:.95rem;color:var(--gold)}
+  .facts{display:grid;grid-template-columns:max-content 1fr;gap:.35rem 1.2rem;margin:1rem 0 0}.facts dt{color:var(--muted)}.facts dd{margin:0;font-weight:700}`;

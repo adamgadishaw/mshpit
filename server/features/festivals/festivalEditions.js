@@ -17,6 +17,29 @@ const isDate = (value) => typeof value === "string" && DATE.test(value) && !Numb
 const daysBetween = (a, b) => Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / DAY_MS);
 const addDays = (value, days) => new Date(Date.parse(`${value}T00:00:00Z`) + days * DAY_MS).toISOString().slice(0, 10);
 
+// Ticket listings name the product, not the festival: "Lollapalooza 2027 -
+// Thursday", "Rolling Loud Miami | 3 Day GA", "Outside Lands (3-Day Pass)".
+// The public name drops the ticket part and carries the year:
+// "Lollapalooza 2027". "Weekend 1" stays, since it tells two weekends apart.
+const TICKET_WORDS = /\b(\d+\s*-?\s*days?|single\s*-?\s*day|day\s*\d+|pass|passes|ticket|tickets|ga|vip|general admission|admission|camping|package|packages|platinum|upgrade|monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|wed|thu|fri|sat|sun)\b/iu;
+const SEPARATOR = /\s+[-|\u2013\u2014]\s+|:\s+/gu;
+export function festivalEditionName(raw, { year = "", fallback = "" } = {}) {
+  let name = collapse(raw);
+  name = name.replace(/\s*[([][^)\]]*[)\]]\s*$/u, (part) => (TICKET_WORDS.test(part) ? "" : part)).trim();
+  for (const match of name.matchAll(SEPARATOR)) {
+    const rest = name.slice(match.index + match[0].length).split(SEPARATOR)[0];
+    if (/^(weekend|wknd)\s*\d+$/iu.test(rest)) continue;
+    if (TICKET_WORDS.test(rest)) { name = name.slice(0, match.index).trim(); break; }
+  }
+  name = name.replace(/\s+\d+\s*-?\s*days?\b.*$/iu, "").replace(/\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/iu, "").trim();
+  if (name.length < 2) name = collapse(fallback);
+  if (name && /^\d{4}$/u.test(String(year)) && !/\b(19|20)\d{2}\b/u.test(name)) {
+    const weekend = name.match(/\s+[-|\u2013\u2014]\s+(weekend|wknd)\s*\d+$/iu);
+    name = weekend ? `${name.slice(0, weekend.index)} ${year}${weekend[0]}` : `${name} ${year}`;
+  }
+  return name;
+}
+
 // The catalog festival an event name belongs to, or null.
 export function matchFestival(catalog, eventName) {
   const name = fold(eventName);
@@ -93,7 +116,7 @@ function finishEdition(edition) {
   return {
     id: `${edition.festivalSlug}:${edition.startDate}:${slugPart(lead.city || lead.venue || "")}`,
     festivalSlug: edition.festivalSlug,
-    name: collapse(lead.name) || `${edition.festivalSlug} ${year}`,
+    name: festivalEditionName(lead.name, { year, fallback: edition.festivalSlug }),
     startDate: edition.startDate,
     endDate: edition.endDate,
     venue: collapse(lead.venue) || null,

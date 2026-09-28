@@ -253,9 +253,12 @@ remains a broad context whose changing value can rerender unrelated consumers.
 - **External links elsewhere:** feed posts, comments and bios still link out
   without the "leaving Mshpit" step that ticket links use. Apply the same
   allowlist and confirm step.
-- **Owner list still open:** festival page animation and polish, Discover
-  list view in place of "load more", regional news by member city,
-  step-by-step signup and review logging, more profile customization.
+- **Owner list still open:** Discover list view in place of "load more",
+  regional news by member city, step-by-step signup and review logging, more
+  profile customization. (Festival page look and order: done 2026-09-28.)
+- **Festival photos:** most editions have no image, so the page uses the
+  festival's colours. A licensed photo per festival (Wikimedia Commons, with
+  credit) would help the hero and share cards.
 
 ## Lineup follow-ups (2026-09-28)
 
