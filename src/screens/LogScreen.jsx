@@ -1977,7 +1977,7 @@ export default function LogScreen({
         {!date && <Text style={styles.detailHint}>No date will be guessed. Add it later to place this show in dated concert history.</Text>}
         {showDate && (
           <View style={styles.datePickerWrap}>
-            <DatePicker value={date} years={PAST_YEARS} defaultYear={today.getFullYear()} onChange={setDate} />
+            <DatePicker value={date} years={PAST_YEARS} defaultYear={today.getFullYear()} newestFirst onChange={setDate} />
           </View>
         )}
 

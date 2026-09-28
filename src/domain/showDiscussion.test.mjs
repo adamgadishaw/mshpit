@@ -100,7 +100,8 @@ test("comment projections rotate synchronously at every account identity boundar
 });
 
 test("nearby post-show spots stay a Maps-only discovery surface", () => {
-  assert.match(nearbyAfterparty, /nearbyShowSearches\(coord\)/);
+  // Searches are anchored on the venue by name and coordinates.
+  assert.match(nearbyAfterparty, /nearbyShowSearches\(coord, \[log\?\.venue, log\?\.city\]/);
   assert.match(nearbyAfterparty, /Google Maps/);
   assert.match(nearbyAfterparty, /Verify hours, distance, age rules, and accessibility/);
   assert.doesNotMatch(nearbyAfterparty, /useStore|TextInput|addComment|deleteOwnComment|loadComments|toggleLike/);
