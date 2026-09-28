@@ -1,4 +1,5 @@
 import { MEDIA_POST_MAX_ATTACHMENTS } from "./mediaUploadPolicy.mjs";
+import { parseTimesSeen, supportingActNames } from "./supportingActs.mjs";
 import { clean, clampRating, LIMITS } from "./validation.mjs";
 import { taggedUserIdsFromPeople } from "./postFriendTags.mjs";
 import {
@@ -50,6 +51,10 @@ export function buildReviewCreateBody(post) {
     photosPublic: post.photosPublic ? 1 : 0,
     landingShowcase: !online && post.photosPublic && post.landingShowcase ? 1 : 0,
     setlist: online ? [] : post.setlist,
+    // Openers or other acts seen that night; each counts as seen live.
+    supportingActs: online ? [] : supportingActNames(post.supportingActs, { mainArtist: post.artist }),
+    // Only when the person set it: "this was my Nth time".
+    ...(!online && parseTimesSeen(post.timesSeen) ? { timesSeen: parseTimesSeen(post.timesSeen) } : {}),
     tour: online ? null : post.tour || null,
     // Descriptive post tags are retired. Concert companion tagging remains a
     // separate, structured user relationship in taggedUserIds.
@@ -81,6 +86,9 @@ export function buildReviewEditBody(changes) {
     photosPublic: !!changes.photosPublic,
     landingShowcase: !online && !!changes.photosPublic && !!changes.landingShowcase,
     setlist: !online && Array.isArray(changes.setlist) ? changes.setlist.filter((item) => typeof item === "string").slice(0, 40) : [],
+    // Sent only when the form holds the list, so a partial edit never wipes it.
+    ...(Array.isArray(changes.supportingActs) ? { supportingActs: online ? [] : supportingActNames(changes.supportingActs, { mainArtist: changes.artist }) } : {}),
+    ...(!online && parseTimesSeen(changes.timesSeen) ? { timesSeen: parseTimesSeen(changes.timesSeen) } : {}),
     tour: online ? null : clean(changes.tour, { max: 80 }) || null,
     tags: [],
     song: !online && changes.song?.videoId ? changes.song : null,

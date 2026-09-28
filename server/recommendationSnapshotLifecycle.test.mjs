@@ -11,6 +11,7 @@ import * as visibility from "./accountVisibility.js";
 import * as genre from "../src/domain/genre.mjs";
 import * as genreProjection from "./artistGenreProjection.js";
 import * as newsFeedPlacement from "./features/newsDesk/newsFeedPlacement.js";
+import * as supportingActs from "./supportingActs.js";
 import { ensureNewsDeskSchema } from "./features/newsDesk/newsDeskService.js";
 
 const dataDir = mkdtempSync(join(tmpdir(), "pit-recommendation-snapshot-"));
@@ -32,7 +33,8 @@ const code = ast.program.body.flatMap((node) => {
 const modules = { "node:crypto": { randomUUID }, "./db.js": database, "./errors.js": { ApiError },
   "./recommendationRanking.js": ranking, "./accountVisibility.js": visibility,
   "../src/domain/genre.mjs": genre, "./artistGenreProjection.js": genreProjection,
-  "./feedImpressions.js": impressions, "./features/newsDesk/newsFeedPlacement.js": newsFeedPlacement };
+  "./feedImpressions.js": impressions, "./features/newsDesk/newsFeedPlacement.js": newsFeedPlacement,
+  "./supportingActs.js": supportingActs };
 const bindings = Object.fromEntries(ast.program.body.filter((node) => node.type === "ImportDeclaration")
   .flatMap((node) => node.specifiers.map((specifier) =>
     [specifier.local.name, modules[node.source.value][specifier.imported.name]])));

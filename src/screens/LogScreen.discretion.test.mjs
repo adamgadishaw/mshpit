@@ -28,7 +28,7 @@ function callback(name, bindings) {
 
 test("real draft restoration preserves unknown date, city-only location, sparse ratings, friends and media", () => {
   const values = {};
-  const setters = ["DraftId", "SavedDraftFingerprint", "PostType", "Campaign", "ExperienceType", "Artist", "ArtistPicked", "ArtistKey", "Venue", "VenuePicked", "City", "EventAddress", "Tour", "Date", "OnlineTitle", "YoutubeUrl", "OnlineRating", "Dims", "Review", "TaggedPeople", "Song", "SongUrl", "PreservedPlaylist", "Photos", "MediaProject", "PendingMediaAssets", "PhotosPublic", "LandingShowcase", "ShowDetailedRatings", "ShowTour", "ShowSong", "ShowPhotos", "ShowPeople"];
+  const setters = ["DraftId", "SavedDraftFingerprint", "PostType", "Campaign", "ExperienceType", "Artist", "ArtistPicked", "ArtistKey", "Venue", "VenuePicked", "City", "EventAddress", "Tour", "SupportingActs", "TimesSeen", "Date", "OnlineTitle", "YoutubeUrl", "OnlineRating", "Dims", "Review", "TaggedPeople", "Song", "SongUrl", "PreservedPlaylist", "Photos", "MediaProject", "PendingMediaAssets", "PhotosPublic", "LandingShowcase", "ShowDetailedRatings", "ShowTour", "ShowSong", "ShowPhotos", "ShowPeople"];
   const bindings = {
     normalizeComposerDraft, composerDraftFingerprint, restoredComposerDate, hasDetailedComposerRatings,
     normalizeMediaProject, originalMediaProjectAsset, ONLINE_REVIEW_EXPERIENCE,
@@ -42,7 +42,10 @@ test("real draft restoration preserves unknown date, city-only location, sparse 
     venue: "", city: "Toronto, Ontario, Canada", date: "", dims: { experience: 4 }, review: "Good night",
     taggedPeople: [{ id: "friend", name: "Friend", handle: "friend" }],
     photos: ["https://media.example.test/photo.webp"], photosPublic: false,
+    supportingActs: ["Muna", "Artist"], timesSeen: 3,
   });
+  assert.deepEqual(values.SupportingActs, ["Muna"], "openers come back without the headliner");
+  assert.equal(values.TimesSeen, 3);
   assert.equal(values.Date, "");
   assert.equal(values.Venue, "");
   assert.equal(values.City, "Toronto, Ontario, Canada");
@@ -82,7 +85,7 @@ test("real submission sends unknown details honestly and failed saves keep the d
     submissionIdRef: { current: "same-request" }, photos: [], isDurableMediaUrl: () => true,
     mediaProject: { assets: [] }, mediaProjectSubmissionAssetIds: () => [], mediaProjectPublishedMedia: () => [],
     isStatus: false, isOnlineReview: false, editing: null, artist: "Artist", artistPicked: true, artistKey: "saved-artist",
-    venue: "", city: "Toronto", eventAddress: "", tour: "", date: "", submittedRatings: { overall: 4, band: 0, room: 0 },
+    venue: "", city: "Toronto", eventAddress: "", tour: "", supportingActs: ["Muna"], timesSeen: null, date: "", submittedRatings: { overall: 4, band: 0, room: 0 },
     dims: { experience: 4, performance: 0 }, photosPublic: false, landingShowcase: false, review: "", taggedPeople: [], song: null,
     onPost: async (post) => { posted.push(post); return posted.length === 1 ? { ok: false, error: new Error("Try again") } : { ok: true }; },
     showPostFailure: (error) => errors.push(error.message),
@@ -98,6 +101,8 @@ test("real submission sends unknown details honestly and failed saves keep the d
   assert.equal(posted[0].room, null);
   assert.equal(posted[0].overall, 4);
   assert.equal(posted[0].artistKey, "saved-artist");
+  assert.deepEqual(posted[0].supportingActs, ["Muna"]);
+  assert.equal(Object.hasOwn(posted[0], "timesSeen"), false, "times seen stays automatic unless changed");
   assert.equal(checkpoints[0].date, "");
   assert.deepEqual(deleted, []);
   assert.equal(errors.at(-1), "Try again");

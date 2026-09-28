@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import SupportingActsLine from "../components/SupportingActsLine";
+import { ordinalWord } from "../domain/supportingActs.mjs";
 import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, useWindowDimensions } from "react-native";
 import { colors, displayFont, mono, radius, shadow, space } from "../theme";
 import Stars from "../components/Stars";
@@ -638,6 +640,10 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
               {log.soldOut ? <Text style={styles.soldOut}>SOLD OUT</Text> : null}
             </View>
           </View>
+          {/* A review's openers (or acts seen at a festival), and how many
+              times its author has now seen the headliner. */}
+          <SupportingActsLine acts={log.supportingActs} festival={isNamedLiveEvent} onOpenArtist={onOpenArtist} style={styles.supportingActs} />
+          {log.seen > 1 ? <Text style={styles.seenLine}>{ordinalWord(log.seen)} time in the pit</Text> : null}
           {ticketShow?.timing?.length ? (
             <View style={styles.timingRow}>
               {ticketShow.timing.map((timing) => (
@@ -1125,6 +1131,8 @@ const styles = StyleSheet.create({
   noScoreTitle: { color: colors.text, fontFamily: displayFont, fontSize: 16, fontWeight: "800" },
 
   artist: { color: colors.text, fontFamily: displayFont, fontSize: 26, fontWeight: "900", letterSpacing: -0.4 },
+  supportingActs: { marginTop: 10 },
+  seenLine: { color: colors.gold, fontSize: 12.5, fontWeight: "800", marginTop: 4 },
   eventLineup: { color: colors.textDim, fontFamily: mono, fontSize: 10, lineHeight: 16, letterSpacing: 0.7, marginTop: 6 },
   artistLink: { color: colors.amber, fontSize: 12, marginTop: 4, fontWeight: "600" },
   seeRow: { flexDirection: "row", gap: 10, marginTop: 16 },

@@ -330,6 +330,7 @@ const normalizeServerPost = (post) => ({
   media: Array.isArray(post?.media) ? post.media : [],
   mediaAssetIds: Array.isArray(post?.mediaAssetIds) ? post.mediaAssetIds : [],
   setlist: Array.isArray(post?.setlist) ? post.setlist : [],
+  supportingActs: Array.isArray(post?.supportingActs) ? post.supportingActs : [],
   taggedPeople: normalizeTaggedPeople(post?.taggedPeople),
   timeAgo: ago(post?.createdAt),
 });

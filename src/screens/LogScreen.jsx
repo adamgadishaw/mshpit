@@ -16,6 +16,9 @@ import TapStars from "../components/TapStars";
 import Button from "../components/Button";
 import SheetHeader from "../components/SheetHeader";
 import DatePicker from "../components/DatePicker";
+import ShowLineupFields from "../components/ShowLineupFields";
+import { fetchSeenCount } from "../lib/seenCountApi";
+import { supportingActNames } from "../domain/supportingActs.mjs";
 import ConcertLocationFields from "../components/ConcertLocationFields";
 import { isDurableMediaUrl, reportMediaPickerError } from "../lib/mediaUpload";
 import { api } from "../lib/api";
@@ -268,6 +271,12 @@ export default function LogScreen({
   const [city, setCity] = useState(initialExperienceType === ONLINE_REVIEW_EXPERIENCE ? "" : editing?.city || prefill?.city || "");
   const [eventAddress, setEventAddress] = useState(initialExperienceType === ONLINE_REVIEW_EXPERIENCE ? "" : editing?.eventAddress || editing?.event_address || prefill?.eventAddress || "");
   const [tour, setTour] = useState(initialExperienceType === ONLINE_REVIEW_EXPERIENCE ? "" : editing?.tour || prefill?.tour || "");
+  // Openers or other acts seen that night, and "times seen": null while the
+  // count is automatic; the server counts the automatic number.
+  const [supportingActs, setSupportingActs] = useState(() => (initialExperienceType === ONLINE_REVIEW_EXPERIENCE ? []
+    : supportingActNames(editing?.supportingActs || prefill?.supportingActs, { mainArtist: editing?.artist || prefill?.artist || "" })));
+  const [timesSeen, setTimesSeen] = useState(null);
+  const [automaticTimesSeen, setAutomaticTimesSeen] = useState(null);
   const [onlineTitle, setOnlineTitle] = useState(editing?.onlineTitle || editing?.online_title || prefill?.onlineTitle || prefill?.online_title || "");
   const [youtubeUrl, setYoutubeUrl] = useState(editing?.youtubeUrl || editing?.youtube_url || prefill?.youtubeUrl || prefill?.youtube_url || "");
   const [onlineRating, setOnlineRating] = useState(() => normalizeOnlineRating(
@@ -1200,6 +1209,19 @@ export default function LogScreen({
       ...pendingMediaAssets,
     ],
   }), [mediaProject, pendingMediaAssets]);
+  useEffect(() => {
+    const name = artist.trim();
+    if (isStatus || isOnlineReview || !name) { setAutomaticTimesSeen(null); return undefined; }
+    const controller = new AbortController();
+    const sameReview = editing?.id && String(editing.artist || "").trim() === name;
+    const timer = setTimeout(() => {
+      fetchSeenCount({ artist: name, artistKey: artistPicked ? artistKey : null, date, postId: sameReview ? editing.id : null, signal: controller.signal })
+        .then((result) => { if (!controller.signal.aborted) setAutomaticTimesSeen(Number(result?.count) || null); })
+        // architecture: allow-ambiguous-result -- the count is a hint; without it the field says it is still counting
+        .catch(() => { if (!controller.signal.aborted) setAutomaticTimesSeen(null); });
+    }, 400);
+    return () => { clearTimeout(timer); controller.abort(); };
+  }, [isStatus, isOnlineReview, artist, artistPicked, artistKey, date, editing?.id, editing?.artist]);
   const currentDraft = useMemo(() => normalizeComposerDraft({
     id: draftId,
     submissionId: submissionIdRef.current,
@@ -1212,6 +1234,8 @@ export default function LogScreen({
     city,
     eventAddress,
     tour,
+    supportingActs,
+    timesSeen,
     date,
     onlineTitle,
     youtubeUrl,
@@ -1229,7 +1253,7 @@ export default function LogScreen({
     photosPublic,
     landingShowcase: !isOnlineReview && photosPublic && landingShowcase && hasLandingCompatiblePhoto,
     panels: { song: showSong, photos: showPhotos, people: !isStatus && !isOnlineReview && showPeople },
-  }), [draftId, postType, isStatus, isOnlineReview, campaign, experienceType, artist, artistPicked, artistKey, venue, city, eventAddress, tour, date, onlineTitle, youtubeUrl, onlineRating, dims, review, taggedPeople, song, songUrl, preservedPlaylist, photos, draftMediaProject, photosPublic, landingShowcase, hasLandingCompatiblePhoto, showSong, showPhotos, showPeople]);
+  }), [draftId, postType, isStatus, isOnlineReview, campaign, experienceType, artist, artistPicked, artistKey, venue, city, eventAddress, tour, supportingActs, timesSeen, date, onlineTitle, youtubeUrl, onlineRating, dims, review, taggedPeople, song, songUrl, preservedPlaylist, photos, draftMediaProject, photosPublic, landingShowcase, hasLandingCompatiblePhoto, showSong, showPhotos, showPeople]);
   const draftFingerprint = useMemo(() => composerDraftFingerprint(currentDraft), [currentDraft]);
   const hasContent = useMemo(() => composerDraftHasContent(currentDraft), [currentDraft]);
   const hasPendingMedia = pendingMediaAssets.length > 0;
@@ -1371,7 +1395,7 @@ export default function LogScreen({
       .filter((asset) => asset.status !== "ready" && (asset.durableLocalUri || asset.assetId))
       .map((asset, index) => originalMediaProjectAsset(asset, index));
     const restoredReady = restoredProject.assets.filter((asset) => !!asset.sourceUrl && !restoredPending.some((pending) => pending.id === asset.id));
-    setTour(restored.tour); setDate(restored.experienceType === ONLINE_REVIEW_EXPERIENCE ? "" : restoredComposerDate(restored.date)); setOnlineTitle(restored.onlineTitle); setYoutubeUrl(restored.youtubeUrl); setOnlineRating(restored.onlineRating); setDims(restored.dims); setReview(restored.review); setTaggedPeople(restored.postType === "show" && restored.experienceType !== ONLINE_REVIEW_EXPERIENCE ? restored.taggedPeople : []); setSong(restored.song); setSongUrl(restored.songUrl); setPreservedPlaylist(restored.playlist); setPhotos(restoredPhotos); setMediaProject(normalizeMediaProject({ assets: restoredReady })); setPendingMediaAssets(restoredPending); setPhotosPublic(restored.photosPublic); setLandingShowcase(restored.landingShowcase && hasLandingCompatibleImage(restoredPhotos));
+    setTour(restored.tour); setSupportingActs(restored.supportingActs); setTimesSeen(restored.timesSeen); setDate(restored.experienceType === ONLINE_REVIEW_EXPERIENCE ? "" : restoredComposerDate(restored.date)); setOnlineTitle(restored.onlineTitle); setYoutubeUrl(restored.youtubeUrl); setOnlineRating(restored.onlineRating); setDims(restored.dims); setReview(restored.review); setTaggedPeople(restored.postType === "show" && restored.experienceType !== ONLINE_REVIEW_EXPERIENCE ? restored.taggedPeople : []); setSong(restored.song); setSongUrl(restored.songUrl); setPreservedPlaylist(restored.playlist); setPhotos(restoredPhotos); setMediaProject(normalizeMediaProject({ assets: restoredReady })); setPendingMediaAssets(restoredPending); setPhotosPublic(restored.photosPublic); setLandingShowcase(restored.landingShowcase && hasLandingCompatibleImage(restoredPhotos));
     void recoverRestoredMedia(restoredPending, restored.id);
     setShowSong(restored.panels.song); setShowPhotos(restored.panels.photos); setShowPeople(restored.postType === "show" && restored.experienceType !== ONLINE_REVIEW_EXPERIENCE && (restored.panels.people || restored.taggedPeople.length > 0));
   };
@@ -1590,6 +1614,8 @@ export default function LogScreen({
           city: city.trim(),
           eventAddress: eventAddress.trim(),
           tour: tour.trim() || null,
+          supportingActs,
+          ...(timesSeen ? { timesSeen } : {}),
           date,
           overall: submittedRatings.overall,
           band: submittedRatings.band || null,
@@ -1980,6 +2006,10 @@ export default function LogScreen({
             <DatePicker value={date} years={PAST_YEARS} defaultYear={today.getFullYear()} newestFirst onChange={setDate} />
           </View>
         )}
+
+        <ShowLineupFields artist={artist} acts={supportingActs} onActsChange={setSupportingActs}
+          timesSeen={timesSeen} automaticTimesSeen={automaticTimesSeen} onTimesSeenChange={setTimesSeen}
+          festival={/\bfest(ival)?s?\b/iu.test(`${tour} ${officialEventName || ""}`)} />
 
         <View style={styles.quickRatingCard}>
           <Text style={styles.onlineRatingLabel}>HOW WAS THE SHOW?</Text>

@@ -6,6 +6,36 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-09-28 Openers, festival acts and times seen on concert reviews
+
+From the owner's site feedback. A concert review can list who opened ("Who
+opened?"), or at a festival the acts seen ("Who else did you see?", shown
+when the tour or event name says fest/festival). Each act counts as an artist
+seen live. When the author also reviewed one of those acts on the same night,
+the main review links to it ("(review)"), which is how a festival review
+connects its per-artist reviews. The card and the show page show
+"Openers: Muna · Phoebe Bridgers (review)".
+
+"Times seen" ("2nd time in the pit"): now counted by show date instead of
+posting order (logging an older show later no longer mislabels it), including
+times the artist opened a show the author reviewed on an earlier night (the
+same night counts once), plus a per-artist "seen before logging" number. The
+form shows "Your 3rd time seeing boygenius" with Change; a changed number is
+stored as unlogged earlier shows, so later reviews keep counting from it.
+
+Data: `posts.supporting_acts` ([{name, artistKey}], catalog keys only on an
+exact normalized match), table `artist_seen_baselines`. Both are in the
+account export; deleting a review scrubs its openers; online reviews have
+none. Openers enter the retry hash only when present (existing hashes are
+unchanged); times seen stays out of it. Server: `server/supportingActs.js`,
+`GET /api/me/seen-count` in `server/features/concertLineup/`. App:
+`ShowLineupFields`, `SupportingActsLine`, `PostNavigationContext` (opens a
+linked review by id).
+
+Checked: `npm run check` (5,599 tests), all ten browser suites, and a local
+boot with seeded reviews (card, show page and form at 390 px). The initial web
+bundle is 510.1 of its 512 KiB budget.
+
 ## 2026-09-27 Award show winners tracker and live coverage pages (SEO)
 
 Built for any award show, not only the VMAs (which ended 21:30 ET, before the

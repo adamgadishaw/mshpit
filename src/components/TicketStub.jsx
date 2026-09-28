@@ -1,4 +1,5 @@
 import { useContext, useMemo, useState } from "react";
+import SupportingActsLine from "./SupportingActsLine";
 import { View, Text, StyleSheet, Pressable, Alert, Linking, Platform } from "react-native";
 import { Image as ExpoImage } from "expo-image";
 import { colors, displayFont, font, glow, mono, radius, shadow, roleColor, space } from "../theme";
@@ -532,6 +533,7 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
                 </Text>
                 {!!log.eventAddress && <Text selectable style={styles.seenTxt} numberOfLines={2}>Event address: {log.eventAddress}</Text>}
                 {log.seen > 1 ? <Text style={styles.seenTxt}>{ordinal(log.seen)} time in the pit</Text> : null}
+                <SupportingActsLine acts={log.supportingActs} festival={/\bfest(ival)?s?\b/iu.test(log.tour || "")} onOpenArtist={onOpenArtist} />
               </>
             )}
           </View>

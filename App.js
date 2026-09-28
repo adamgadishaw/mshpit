@@ -7,6 +7,7 @@ import "./src/lib/webInputFix"; // strips the harsh browser focus box from input
 import { colors, mono, radius, themeIsDark } from "./src/theme";
 import { StoreProvider, useStore, isMod, isStaff } from "./src/store";
 import { NewsInteractionContext } from "./src/components/news/NewsInteractionContext";
+import { PostNavigationContext } from "./src/components/PostNavigationContext";
 import { newsFeedSurfaceVisible } from "./src/domain/newsReaderState.mjs";
 import Icon from "./src/components/Icon";
 import ErrorBoundary from "./src/components/ErrorBoundary";
@@ -1086,6 +1087,11 @@ function Root() {
     });
     go({ post: log });
   };
+  // An opener's review linked from the main review: load it, then open it.
+  const openPostById = async (postId) => {
+    const post = postId ? await loadPostForView(postId) : null;
+    if (post) openPost(post, { surface: "linked-review" });
+  };
   // A story from the news panel, strip or News tab opens its post and comments.
   const openNewsStory = async (story) => {
     if (!story?.postId) return;
@@ -1589,6 +1595,7 @@ function Root() {
 
   return (
     <CityNavigationContext.Provider value={openCity}>
+    <PostNavigationContext.Provider value={openPostById}>
     <NewsInteractionContext.Provider value={{ session, authReady, blockedIds, removedIds, mutedIds, followedArtists, likeInfo, toggleLike, deleteOwnPost,
       openLiveCoverage: (slug) => go({ news: true, liveSlug: slug }) }}>
     <View style={styles.root}>
@@ -1781,6 +1788,7 @@ function Root() {
       </SafeAreaView>
     </View>
     </NewsInteractionContext.Provider>
+    </PostNavigationContext.Provider>
     </CityNavigationContext.Provider>
   );
 }

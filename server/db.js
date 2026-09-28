@@ -144,6 +144,7 @@ CREATE TABLE IF NOT EXISTS posts (
   youtube_video_id TEXT CHECK (youtube_video_id IS NULL OR length(youtube_video_id) = 11),
   tagged_user_ids TEXT NOT NULL DEFAULT '[]',
   setlist       TEXT NOT NULL DEFAULT '[]',
+  supporting_acts TEXT NOT NULL DEFAULT '[]',
   client_mutation_id TEXT,
   client_mutation_hash TEXT,
   removed       INTEGER NOT NULL DEFAULT 0,
@@ -151,6 +152,16 @@ CREATE TABLE IF NOT EXISTS posts (
   created_at    INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_posts_user ON posts(user_id);
+
+-- Earlier shows a person saw an artist at but never logged, so "times seen"
+-- keeps counting from the number they gave (server/supportingActs.js).
+CREATE TABLE IF NOT EXISTS artist_seen_baselines (
+  user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  artist_ref TEXT NOT NULL,
+  count      INTEGER NOT NULL CHECK (count BETWEEN 0 AND 999),
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (user_id, artist_ref)
+);
 CREATE INDEX IF NOT EXISTS idx_posts_created ON posts(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_posts_cursor ON posts(created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_posts_user_history ON posts(user_id, removed, created_at DESC, id DESC);
@@ -1691,6 +1702,8 @@ const additiveMigrations = [
   "ALTER TABLE posts ADD COLUMN artist_mbid TEXT",
   "ALTER TABLE posts ADD COLUMN venue_key TEXT",
   "ALTER TABLE posts ADD COLUMN event_address TEXT CHECK (event_address IS NULL OR length(event_address) <= 240)",
+  // Openers or other acts seen that night: [{ name, artistKey }] (server/supportingActs.js).
+  "ALTER TABLE posts ADD COLUMN supporting_acts TEXT NOT NULL DEFAULT '[]'",
   // Stable per-composer token. If a write commits but its response is lost,
   // retrying returns that row instead of publishing a duplicate review.
   "ALTER TABLE posts ADD COLUMN client_mutation_id TEXT",

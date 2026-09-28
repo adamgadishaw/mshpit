@@ -1,4 +1,5 @@
 import { MEDIA_POST_MAX_ATTACHMENTS } from "./mediaUploadPolicy.mjs";
+import { parseTimesSeen, supportingActNames } from "./supportingActs.mjs";
 import {
   mediaProjectFromLegacyUrls,
   mediaProjectPublishedMedia,
@@ -58,6 +59,8 @@ export function normalizeComposerDraft(value = {}) {
     city: isOnlineReview ? "" : text(value.city),
     eventAddress: postType === "show" && !isOnlineReview ? text(value.eventAddress) : "",
     tour: isOnlineReview ? "" : text(value.tour),
+    supportingActs: postType === "show" && !isOnlineReview ? supportingActNames(value.supportingActs, { mainArtist: value.artist }) : [],
+    timesSeen: postType === "show" && !isOnlineReview ? parseTimesSeen(value.timesSeen) : null,
     date: isOnlineReview ? "" : text(value.date),
     onlineTitle: isOnlineReview ? text(value.onlineTitle ?? value.online_title) : "",
     youtubeUrl: isOnlineReview ? text(value.youtubeUrl ?? value.youtube_url) : "",
