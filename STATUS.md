@@ -21,6 +21,9 @@ first version of live coverage went live at 21:08 EDT).
   posts "X wins Y" to the timeline (Clear undoes both). Outlet headlines that
   name a nominee, a win verb and a word from the category show as "NME
   reports X won" with a Confirm button. Nothing is marked automatically.
+- **After the show:** ending coverage keeps the show editable as a recap, so
+  winners can still be filled in for its winners-list page; a new show can be
+  started alongside it.
 - **Readers:** the LIVE card shows "Winners: 2 of 5 categories announced",
   the latest winners and "Full winners list", which opens
   `/news/live/<slug>` in the app: a Category | Winner | Nominees table (rows

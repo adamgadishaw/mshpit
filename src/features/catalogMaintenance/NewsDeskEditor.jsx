@@ -69,15 +69,16 @@ function LiveControls({ accountId, live, busy, pending, act }) {
   const [link, setLink] = useState("");
   const running = live.find((event) => event.live);
   const scheduled = live.filter((event) => event.scheduled);
-  const managed = running || scheduled[0] || null;
+  // A show that just ended stays editable, so winners can still be filled in
+  // for the recap and its winners-list page.
+  const recap = live.find((event) => !event.live && !event.scheduled);
+  const managed = running || scheduled[0] || recap || null;
   const start = parseStartTime(startsAt);
   const header = <>
     <Text style={styles.label}>LIVE COVERAGE</Text>
     <Text selectable style={styles.hint}>For a big night like an award show. Readers see a LIVE card at the top of the news with every outlet headline matching your keywords, the winners as you mark them, and your updates. Its page, /news/live/..., is built for search. No Claude cost.</Text>
   </>;
-  if (!managed) {
-    return <View style={styles.group}>
-      {header}
+  const startForm = <>
       <TextInput accessibilityLabel="Live coverage title" style={styles.input} value={title} onChangeText={setTitle}
         placeholder="2026 MTV VMAs" placeholderTextColor={colors.textFaint} maxLength={80} />
       <TextInput accessibilityLabel="Keywords the outlets will use, separated by commas" style={styles.input} value={keywords} onChangeText={setKeywords}
@@ -94,12 +95,14 @@ function LiveControls({ accountId, live, busy, pending, act }) {
           onPress={() => act("live:start", () => startLive({ accountId, title, keywords, hours, startsAt: start }),
             start ? "Scheduled. Paste the categories now; it goes public when it starts." : "Live coverage started. It is at the top of the news now.")} />
       </View>
-    </View>;
-  }
+  </>;
+  if (!managed) return <View style={styles.group}>{header}{startForm}</View>;
   const notes = managed.items.filter((item) => item.kind === "note");
+  const ended = !managed.live && !managed.scheduled;
   return <View style={styles.group}>
     {header}
-    <Text selectable style={styles.headline}>{managed.title}</Text>
+    {ended ? startForm : null}
+    <Text selectable style={styles.headline}>{ended ? `Recap: ${managed.title}` : managed.title}</Text>
     <Text selectable style={styles.hint}>{managed.scheduled
       ? `Scheduled: starts ${new Date(managed.startsAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}`
       : newsLiveStatus(managed)}</Text>
@@ -111,14 +114,14 @@ function LiveControls({ accountId, live, busy, pending, act }) {
       <TextInput accessibilityLabel="Optional link for the update" style={styles.input} value={link} onChangeText={setLink}
         placeholder="Optional https:// link" placeholderTextColor={colors.textFaint} autoCapitalize="none" autoCorrect={false} />
     </> : null}
-    <View style={styles.actions}>
+    {ended ? null : <View style={styles.actions}>
       {managed.live ? <Button small title="Post update" accessibilityLabel="Post the live update" disabled={busy || !update.trim()} loading={pending === "live:note"}
         onPress={() => act("live:note", async () => { await postLiveUpdate({ accountId, id: managed.id, text: update, url: link }); setUpdate(""); setLink(""); }, "Update posted.")} /> : null}
       <Button small title={managed.live ? "End live coverage" : "Cancel this show"} variant="secondary"
         accessibilityLabel={managed.live ? `End live coverage of ${managed.title}` : `Cancel the scheduled coverage of ${managed.title}`} disabled={busy}
         loading={pending === "live:end"} onPress={() => act("live:end", () => endLive({ accountId, id: managed.id }),
-          managed.live ? "Live coverage ended. The recap stays up until tomorrow evening, and the page stays as the winners list." : "Scheduled coverage cancelled.")} />
-    </View>
+          managed.live ? "Live coverage ended. You can still mark winners below; the page stays as the winners list." : "Scheduled coverage cancelled.")} />
+    </View>}
     {notes.map((note) => <View key={note.id} style={styles.row}>
       <Text selectable style={[styles.copy, styles.rowCopy]}>{note.text}</Text>
       <Button small title="Remove" variant="secondary" accessibilityLabel={`Remove the update ${note.text}`} disabled={busy}

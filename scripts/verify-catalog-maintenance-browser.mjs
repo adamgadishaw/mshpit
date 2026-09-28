@@ -139,6 +139,11 @@ async function scenario(browser, origin, width, kind) {
         state.newsLive[0].winners.announced = 1;
         return await route.fulfill({ contentType: "application/json", body: JSON.stringify({ live: state.newsLive }) });
       }
+      if (url.pathname === "/api/moderation/news-desk/live/live-1/end") {
+        assert.equal(method, "POST");
+        state.newsLive[0].live = false;
+        return await route.fulfill({ contentType: "application/json", body: JSON.stringify({ live: state.newsLive }) });
+      }
       if (url.pathname.startsWith("/api/moderation/news-desk/editor")) {
         if (method === "POST" && url.pathname.endsWith("/drafts")) {
           assert.deepEqual(request.postDataJSON(), { reportUrls: ["https://www.nme.com/news/tour", "https://www.stereogum.com/tour"], links: [] });
@@ -269,6 +274,12 @@ async function scenario(browser, origin, width, kind) {
       await editor.getByRole("button", { name: "Sabrina Carpenter - Manchild won Video of the Year", exact: true }).click();
       await editor.getByText("Winner: Sabrina Carpenter - Manchild", { exact: true }).waitFor();
       await editor.getByRole("button", { name: "Clear the winner of Video of the Year", exact: true }).waitFor();
+      // After the show: the recap keeps its winners controls, and a new show can start.
+      await editor.getByRole("button", { name: "End live coverage of 2026 MTV VMAs", exact: true }).click();
+      await editor.getByText("Recap: 2026 MTV VMAs", { exact: true }).waitFor();
+      await editor.getByRole("button", { name: "Clear the winner of Video of the Year", exact: true }).waitFor();
+      await editor.getByRole("button", { name: "Start live coverage", exact: true }).waitFor();
+      assert.equal(await editor.getByRole("button", { name: "Post the live update", exact: true }).count(), 0, "no updates after the show");
       // No element screenshot here: capturing an element taller than the
       // window resizes the page in Chromium and remounts Moderation.
     }
