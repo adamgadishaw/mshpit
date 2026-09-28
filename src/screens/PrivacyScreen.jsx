@@ -5,6 +5,7 @@ import {
   MEDIA_AND_SESSION_SECURITY_DISCLOSURE,
   PRIVACY_POLICY_UPDATED,
   PROFILE_SEARCH_INDEXING_DISCLOSURE,
+  PROMOTIONAL_CONTENT_PRIVACY,
 } from "../domain/privacyDisclosures.mjs";
 
 // Plain-language product disclosure. This reflects the controls and retention
@@ -31,6 +32,14 @@ export default function PrivacyScreen({ onClose }) {
         { h: "How we use your data", p: "To provide and secure the service; deliver your feed, messages, local discovery, recommendations, search, and account support; understand aggregate feature health; develop new features; detect abuse and enforce our Terms; and communicate with you when needed." },
         { h: "Direct-message safety", p: "You can choose whether new direct messages may come from nobody, people you follow, or mutual follows. Pit stores only the age group you choose, not your birth date, and requires that choice before you send. Teen accounts, and conversations involving an account that has not chosen yet, require mutual follows before either person can send. Existing message history stays readable unless it is removed or an account is blocked, but sending in an existing chat can pause when those safety requirements are not met. Pit limits how many new people one account can contact in a short period. When you report a message, the selected reason and optional context are sent to moderators; you can also block the account immediately." },
         { h: ANNOUNCEMENT_EMAIL_DISCLOSURE.heading, p: ANNOUNCEMENT_EMAIL_DISCLOSURE.paragraphs.join(" ") },
+        {
+          h: PROMOTIONAL_CONTENT_PRIVACY.heading,
+          p: PROMOTIONAL_CONTENT_PRIVACY.paragraphs.join(" "),
+          links: [
+            { label: "Promotion sources and credits", url: "https://www.mshpit.com/promotion-sources" },
+            { label: "Arrange or withdraw permission through Support", url: "https://www.mshpit.com/support" },
+          ],
+        },
         { h: "Artist pages & community photo spotlights", p: "Photos from a concert review, online review, or artist memorial post can be reused on that artist's page only when you turn on the separate artist-page sharing control. It is off by default. A second, default-off control lets you make one eligible in-person concert photo available for Pit community spotlights, including the logged-out homepage. A spotlight may show your public handle plus the artist and venue. You can turn either permission off by editing the post, make the photos private, or delete the post. Pit applies account and safety checks and may remove featured content." },
         { h: "Advertising & profiling", p: "Pit is designed to support an advertising-funded service, but the current first-party product analytics system is not an ad-network integration and does not send your event history or searches to advertisers. If Pit later adds third-party advertising or materially changes profiling, this policy and the relevant choices will be updated before that use begins." },
         { h: "How we share data", p: "With service providers that host, secure, deliver email for, and operate Pit on our behalf; with YouTube when a signed-in member asks Pit to validate a YouTube link for a post; with Deezer when Pit resolves public music-catalogue metadata; with other users according to the feature you use (for example, a public review is public while a direct message is shown to its participants); and when required by law or reasonably necessary to protect people and the service. A business transfer may include data subject to appropriate safeguards." },
