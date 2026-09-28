@@ -57,6 +57,17 @@ export function upkeepFixture(mode = "maintenance") {
     privacyJournal: { signingKey: false, storage: true, pending: 2, oldestPendingAt: at, lastShippedAt: null, lastError: null, lastReplay: null },
   };
 }
+const newsCandidate = { headline: "Radiohead Announce 2027 World Tour", reportUrls: ["https://www.nme.com/news/tour", "https://www.stereogum.com/tour"],
+  outlets: [{ name: "NME", url: "https://www.nme.com/news/tour" }, { name: "Stereogum", url: "https://www.stereogum.com/tour" }],
+  groups: 2, needed: 2, ready: true, category: "tour", ageHours: 5, lead: "Radiohead", score: 20 };
+export const newsDraftFixture = (status = "draft") => ({ id: "draft-fixture-1", status, expired: false, headline: "Radiohead announce a 2027 world tour",
+  summary: "Radiohead will tour the world in 2027, NME and Stereogum report.", body: "First paragraph. Second paragraph.", category: "tour",
+  reason: null, costUsd: 0.018, sources: [{ name: "NME", url: "https://www.nme.com/news/tour", used: true }, { name: "Stereogum", url: "https://www.stereogum.com/tour", used: true }],
+  postId: status === "published" ? "news_fixture" : null, createdAt: 1789488000000 });
+export function newsEditorFixture(drafts = []) {
+  return { configured: true, publisherReady: true, budget: { leftTodayUsd: 0.28, dailyUsd: 0.3, monthlyUsd: 6, typicalDraftUsd: 0.02 },
+    drafts: { last24h: drafts.length, limit: 10, recent: drafts }, candidates: [newsCandidate] };
+}
 export function staffFixture(url, method = "GET") {
   assert.equal(method, "GET", "Only an explicit upkeep button may mutate a fixture.");
   const fixtures = {
@@ -108,6 +119,16 @@ async function scenario(browser, origin, width, kind) {
       const method = request.method();
       state.calls.push({ path: url.pathname, method });
       if (url.pathname === "/api/client-errors") state.reports.push(request.postDataJSON());
+      if (url.pathname.startsWith("/api/moderation/news-desk/editor")) {
+        if (method === "POST" && url.pathname.endsWith("/drafts")) {
+          assert.deepEqual(request.postDataJSON(), { reportUrls: ["https://www.nme.com/news/tour", "https://www.stereogum.com/tour"], links: [] });
+          state.newsDraft = newsDraftFixture("draft");
+        } else if (method === "POST" && url.pathname.endsWith("/draft-fixture-1/publish")) state.newsDraft = newsDraftFixture("published");
+        else assert.equal(method, "GET");
+        const body = method === "GET" ? newsEditorFixture(state.newsDraft ? [state.newsDraft] : [])
+          : url.pathname.endsWith("/publish") ? { draft: state.newsDraft, postId: "news_fixture" } : { draft: state.newsDraft };
+        return await route.fulfill({ contentType: "application/json", body: JSON.stringify(body) });
+      }
       if (url.pathname === path) {
         if (method === "GET") {
           state.gets += 1;
@@ -204,6 +225,19 @@ async function scenario(browser, origin, width, kind) {
       await panel.getByRole("button", { name: "Use catalog maintenance mode", exact: true }).click();
       await panel.getByText("Maintenance", { exact: true }).waitFor();
       assert.equal(state.posts, kind === "action-retry" ? 4 : 3);
+    }
+    if (kind === "actions") {
+      const editor = panel.getByTestId("news-desk-editor");
+      await editor.getByText("Radiohead Announce 2027 World Tour", { exact: true }).waitFor();
+      await editor.getByText(/about 2 cents, from the news budget: \$0\.28 left today\. 0 of 10 drafts/).waitFor();
+      await editor.getByRole("button", { name: "Write a draft about Radiohead Announce 2027 World Tour", exact: true }).click();
+      await editor.getByText("READY TO PUBLISH", { exact: true }).waitFor();
+      await editor.getByText("Radiohead announce a 2027 world tour", { exact: true }).waitFor();
+      await editor.getByRole("button", { name: "Publish Radiohead announce a 2027 world tour", exact: true }).click();
+      await editor.getByText("Published. It is on the News tab now.", { exact: true }).waitFor();
+      await editor.getByText("PUBLISHED", { exact: true }).waitFor();
+      mkdirSync(join(root, ".tmp", "catalog-maintenance-browser"), { recursive: true });
+      await editor.screenshot({ path: join(root, ".tmp", "catalog-maintenance-browser", `news-editor-${width}.png`) });
     }
     assert.deepEqual(state.reports, [], "No client crash reports may be emitted.");
     assert.deepEqual(state.errors, [], "Unhandled errors or missing fixtures fail verification.");

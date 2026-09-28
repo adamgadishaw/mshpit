@@ -240,6 +240,21 @@ export function createNewsDesk({ database, fetchText, fetchArticle = null, summa
     return Math.min(budget.dailyUsd - spentSince(day), budget.monthlyUsd - spentSince(`${day.slice(0, 7)}-01`),
       claudeCeilingLeftMicroUsd(database, { env, at }) / 1_000_000);
   }
+  // Reserves one call's worst case against the news budgets and the shared
+  // ceiling in one synchronous step; the receipt token, or null when it
+  // does not fit. Used by owner-chosen drafts (newsDeskEditor.js).
+  function admitCall(worstCase) {
+    const admittedAt = now();
+    const day = dayOf(admittedAt);
+    const admission = admitClaudeSpend(database, {
+      env, at: admittedAt, reserveMicroUsd: Math.ceil(worstCase * 1_000_000),
+      dailyCapMicroUsd: Math.floor(budget.dailyUsd * 1_000_000), monthlyCapMicroUsd: Math.floor(budget.monthlyUsd * 1_000_000),
+      readDailySpendMicroUsd: () => Math.ceil(spentSince(day) * 1_000_000),
+      readMonthlySpendMicroUsd: () => Math.ceil(spentSince(`${day.slice(0, 7)}-01`) * 1_000_000),
+      reserve: () => reserveSpend(admittedAt, worstCase),
+    });
+    return admission.ok ? admission.value : null;
+  }
 
   // The opening paragraphs of up to four articles, one per publisher group,
   // fetched only from each outlet's own site. A page that fails to load just
@@ -360,7 +375,9 @@ export function createNewsDesk({ database, fetchText, fetchArticle = null, summa
       .all(at - 36 * HOUR).map((row) => Number(row.created_at));
   }
 
-  function publishStory({ reports, result, at, costUsd, minPublishers = 3, score = 0, signals = {} }) {
+  // `manual`: the owner reviewed this draft and chose to publish it now, so
+  // the publishing slots do not apply. Everything else still does.
+  function publishStory({ reports, result, at, costUsd, minPublishers = 3, score = 0, signals = {}, manual = false }) {
     const id = newId();
     const postId = `news_${id}`;
     // A model may select fewer sources than the cluster contains. Never turn
@@ -383,8 +400,8 @@ export function createNewsDesk({ database, fetchText, fetchArticle = null, summa
       // may have won the slot. Recheck current authorization and policy here.
       const account = newsAccount();
       const published = publicationTimes(at);
-      if (!account || !publishingSlot({ at, published, editorial }).open
-        || (minPublishers === 2 && !twoPublisherFallbackAllowed({ at, published, editorial }))) {
+      if (!account || (!manual && (!publishingSlot({ at, published, editorial }).open
+        || (minPublishers === 2 && !twoPublisherFallbackAllowed({ at, published, editorial }))))) {
         database.exec("ROLLBACK");
         return null;
       }
@@ -421,7 +438,7 @@ export function createNewsDesk({ database, fetchText, fetchArticle = null, summa
   // Every confirmed story's editorial score, best first. Coverage, artist size
   // and Mshpit fans are read for all of them; Wikipedia buzz only for the
   // leaders, to keep lookups few.
-  async function rankCandidates(candidates, at, signal) {
+  async function rankCandidates(candidates, at, signal, { lookups = editorial.buzzLookups } = {}) {
     const artistRow = database.prepare("SELECT norm,name,popularity,data FROM artists WHERE norm=?");
     const ranked = candidates.map((cluster) => {
       const artists = [...new Set(cluster.flatMap((report) => report.artistKeys))].map((key) => artistRow.get(key)).filter(Boolean)
@@ -439,7 +456,7 @@ export function createNewsDesk({ database, fetchText, fetchArticle = null, summa
       return { cluster, lead, signals, score: storyScore(signals) };
     }).sort((left, right) => right.score - left.score);
     if (buzz) {
-      for (const candidate of ranked.slice(0, editorial.buzzLookups)) {
+      for (const candidate of ranked.slice(0, lookups)) {
         if (!candidate.lead || signal?.aborted) continue;
         const spike = await buzz.spike(candidate.lead, { signal }).catch(() => null);
         // architecture: allow-ambiguous-result -- buzz only boosts the ranking; a failed lookup ranks on other signals
@@ -541,7 +558,10 @@ export function createNewsDesk({ database, fetchText, fetchArticle = null, summa
   }
 
   return { ingest, publishPass, budgetLeft: () => budgetLeft(now()),
-    publisherStatus: () => resolveNewsPublisher(database, { env, at: now() }) };
+    publisherStatus: () => resolveNewsPublisher(database, { env, at: now() }),
+    // For owner-chosen stories (newsDeskEditor.js): the same report shape,
+    // article leads, spending receipts and publication rules as the desk.
+    editorTools: { reportRow, withArticleLeads, admitCall, settleSpend, markUncertain, publishStory, rankCandidates, budget } };
 }
 
 // Public reads: newest published stories whose post is still live.

@@ -243,6 +243,14 @@ remains a broad context whose changing value can rerender unrelated consumers.
 - **Animated story:** an MP4 version of the share card needs a render service
   with ffmpeg.
 
+## News desk editor follow-ups (2026-09-27)
+
+- **Edit before publishing:** drafts are publish-or-discard; add a small
+  editor for the headline and summary if Claude's wording needs a touch.
+- **Draft from any outlet:** pasted links must come from the 17 outlets the
+  desk reads (ownership is known only for those). Adding an outlet to
+  `newsSources.js` is how to widen it.
+
 ## Codex audit follow-ups (2026-09-27)
 
 All code findings are closed (STATUS, 2026-09-27 entries and Codex's

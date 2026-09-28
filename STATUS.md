@@ -6,6 +6,32 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-09-27 Write a news story on demand (owner)
+
+Moderation, Catalog Upkeep, News desk, "Write a story now". The owner (any
+verified admin) can pick one of the stories the outlets are covering (ready
+ones first; ones one outlet short say so), search the last week of outlet
+coverage for an artist or topic, or paste up to 3 links from the 17 outlets
+the desk reads. "Write it" makes one Claude call and saves a draft (headline,
+summary, body, sources, cost) to review; "Publish now" posts it from the news
+account right away, outside the time slots; "Discard" drops it. Claude still
+turns down gossip and non-music items, and the sourcing rule is unchanged: two
+independent outlets, three for deaths and legal news; the check runs before
+any money is spent.
+
+Spending: listing and searching read saved reports only (free). Each draft is
+reserved against the same news daily/monthly budgets and the shared Claude
+ceiling as the automatic desk (about 2 cents), with at most 10 drafts in any
+24 hours and one at a time. A published draft counts toward the day's slots,
+so the automatic desk publishes correspondingly less that day. Every draft,
+publish and discard is written to the moderation audit trail.
+
+Code: `server/features/newsDesk/newsDeskEditor.js` (+ routes and tests),
+`src/features/catalogMaintenance/NewsDeskEditor.jsx`; the desk exposes
+`editorTools` and a `manual` publish flag. Checked: `npm run check` and the
+browser suites; the upkeep suite clicks Write it, reviews and publishes at 390
+and 1280 px.
+
 ## 2026-09-27 Rest of the Codex audit: worker status, redirects, privacy journal
 
 Codex's ce60742 already closed findings A (per-record failures and a provider
