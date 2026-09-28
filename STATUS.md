@@ -35,6 +35,8 @@ linked review by id).
 Checked: `npm run check` (5,599 tests), all ten browser suites, and a local
 boot with seeded reviews (card, show page and form at 390 px). The initial web
 bundle is 510.1 of its 512 KiB budget.
+Live at 23:10 EDT (56444f1): the additive migration ran on start, and
+`/api/me/seen-count` answers 401 for guests.
 
 ## 2026-09-27 Award show winners tracker and live coverage pages (SEO)
 
