@@ -6,6 +6,25 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-09-28 Discover shows: list view instead of "load more"
+
+- Discover's Shows tab showed four events and a "Load 4 more events" button
+  over a range of up to 500 loaded shows. The button is gone. Cards show the
+  first four and "See all N shows as a list". A Cards/List switch sits above
+  the dates (the choice lasts while the app is open, no browser storage).
+- **List view:** every show in the range, a week at a time: week tabs with
+  counts ("This week 8", "Next week 11", "Oct 12 to 18 11"), each day as a
+  heading ("Today", "Tomorrow", "Fri, Oct 2") with compact rows (artist,
+  venue, city; "Sold out" when the provider says so), and previous/next week
+  buttons. Later pages load on their own, once each, up to 500 shows.
+- **Festivals out of Shows:** listings whose kind is festival or multi-day
+  no longer appear in the Shows list, its slideshow, or the side rail's
+  "Upcoming events"; they belong to the Festivals tab. `isFestivalListing`
+  lives in `src/domain/liveDiscovery.mjs`.
+- New browser suite `verify:discover-events-browser` (in CI): cards, list,
+  week paging, page two fetched once, festival kept out, no sideways scroll.
+  Week and festival day tabs now expose `aria-selected`.
+
 ## 2026-09-28 Festival pages: look, order and accuracy
 
 - **Look:** the Festivals tab and `/festivals` open on a lit stage: the next

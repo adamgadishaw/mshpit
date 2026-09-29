@@ -13,6 +13,8 @@ import { lazyWithRetry } from "../lib/lazyWithRetry";
 // Loaded on demand with the rest of the festivals feature (festivalsEntry).
 const FestivalsPanel = lazyWithRetry(() => import("../features/festivals/festivalsEntry").then((module) => ({ default: module.FestivalsPanel })), "FestivalsPanel");
 import DiscoverEventBanner from "../components/discover/DiscoverEventBanner";
+import DiscoverEventList from "../components/discover/DiscoverEventList";
+import { isFestivalListing } from "../domain/discoverEventWeeks.mjs";
 import CrewBanner from "../components/discover/CrewBanner";
 import DiscoverProgrammeNav from "../components/discover/DiscoverProgrammeNav";
 import { discoverEventRecovery } from "../components/discover/discovery-recovery.mjs";
@@ -77,6 +79,9 @@ import {
 
 const EMPTY_OVERVIEW = normalizeDiscoverOverview({});
 const EMPTY_EVENT_RANGE = Object.freeze({ scopeKey: "", days: null, through: null, rows: [], nextCursor: null, status: "idle" });
+// Cards or list: kept while the app is open, so coming back to Discover keeps
+// the member's choice. No browser storage.
+let rememberedEventView = "cards";
 
 function useLatestCallback(callback) {
   const callbackRef = useRef(callback);
@@ -163,7 +168,10 @@ export default function DiscoverScreen({
   const genreRows = selectedGenre ? genreResults[genreScopeKey] || [] : [];
   const [genreRequestState, setGenreRequestState] = useState({ scopeKey: null, status: "idle" });
   const [eventRange, setEventRange] = useState(EMPTY_EVENT_RANGE);
-  const [visibleEventCount, setVisibleEventCount] = useState(DISCOVER_RANGE_BATCH);
+  const [eventView, setEventViewState] = useState(() => rememberedEventView);
+  const setEventView = useCallback((view) => { rememberedEventView = view; setEventViewState(view); }, []);
+  const [eventWeek, setEventWeek] = useState(null);
+  const requestedCursorRef = useRef(null);
   const [pullRefreshing, setPullRefreshing] = useState(false);
   const [pullRefreshError, setPullRefreshError] = useState(false);
   const overviewLoaderRef = useRef(loadDiscoverOverview);
@@ -213,6 +221,7 @@ export default function DiscoverScreen({
     () => localDiscoveryEvents(discoverySidebar?.upcomingEvents, { limit: 12 }),
     [discoverySidebar?.upcomingEvents],
   );
+  // Festivals have their own tab; the Shows list never mixes them in.
   const initialRangeEvents = useMemo(() => selectDiscoverRangeEvents(
     liveScope === LIVE_EVENT_SCOPE.LOCAL ? localEvents : sceneProjection.events,
     {
@@ -220,7 +229,7 @@ export default function DiscoverScreen({
       region: liveScope === LIVE_EVENT_SCOPE.LOCAL ? "Worldwide" : region,
       countryForCity,
     },
-  ), [liveScope, localEvents, region, sceneProjection.events]);
+  ).filter((event) => !isFestivalListing(event)), [liveScope, localEvents, region, sceneProjection.events]);
   const liveEvents = useMemo(() => upcomingEventsForScope({
     scope: LIVE_EVENT_SCOPE.WORLDWIDE,
     worldwideEvents: initialRangeEvents,
@@ -236,19 +245,20 @@ export default function DiscoverScreen({
       through: eventRange.through,
       region: liveScope === LIVE_EVENT_SCOPE.LOCAL ? "Worldwide" : region,
       countryForCity,
-    });
+    }).filter((event) => !isFestivalListing(event));
   }, [eventRange.days, eventRange.rows, eventRange.through, liveScope, rangeMatchesScene, region]);
   const visibleLiveEvents = useMemo(() => rangeMatchesScene ? upcomingEventsForScope({
     scope: LIVE_EVENT_SCOPE.WORLDWIDE,
     worldwideEvents: rangeEvents,
-    limit: visibleEventCount,
-  }) : liveEvents, [liveEvents, rangeEvents, rangeMatchesScene, visibleEventCount]);
+    limit: DISCOVER_RANGE_BATCH,
+  }) : liveEvents, [liveEvents, rangeEvents, rangeMatchesScene]);
   const selectedRangeDays = eventRange.scopeKey === rangeScopeKey && eventRange.days
     ? eventRange.days
     : DISCOVER_RANGE_DAYS[0];
-  const rangeHasMore = !rangeMatchesScene
-    || rangeEvents.length > visibleEventCount
-    || (!!eventRange.nextCursor && eventRange.rows.length < DISCOVER_RANGE_MAX_EVENTS);
+  // Cards show the first few; the list shows every show in range a week at a time.
+  const rangeHasMore = !rangeMatchesScene || rangeEvents.length > visibleLiveEvents.length;
+  const rangeLoadingMore = rangeMatchesScene && !!eventRange.nextCursor && eventRange.rows.length < DISCOVER_RANGE_MAX_EVENTS;
+  const listView = eventView === "list" && rangeMatchesScene && rangeEvents.length > 0;
   const eventRecovery = discoverEventRecovery({
     status: eventRange.scopeKey === rangeScopeKey ? eventRange.status : "idle",
     count: visibleLiveEvents.length,
@@ -357,6 +367,8 @@ export default function DiscoverScreen({
     const controller = new AbortController();
     const sequence = rangeRequestRef.current.sequence + 1;
     rangeRequestRef.current = { sequence, controller };
+    // A fresh first page (a new range, a retry) may hand back a cursor the list already tried.
+    if (!append) requestedCursorRef.current = null;
     const previous = eventRangeRef.current;
     const sameScope = previous.scopeKey === rangeScopeKey && previous.days === days;
     const loadingState = {
@@ -416,26 +428,29 @@ export default function DiscoverScreen({
   }, [liveScope, rangeScopeKey, region]);
 
   const selectEventRange = useCallback((days) => {
-    setVisibleEventCount(DISCOVER_RANGE_BATCH);
+    setEventWeek(null);
     requestEventRange(days);
   }, [requestEventRange]);
 
-  const loadMoreEvents = useCallback(() => {
+  const openEventList = useCallback(() => {
+    setEventView("list");
     if (eventRange.status === "loading" || eventRange.status === "refreshing") return;
-    const nextVisibleCount = visibleEventCount + DISCOVER_RANGE_BATCH;
-    setVisibleEventCount(nextVisibleCount);
-    if (!rangeMatchesScene) {
-      requestEventRange(selectedRangeDays);
-      return;
-    }
-    if (rangeEvents.length < nextVisibleCount && eventRange.nextCursor
-      && eventRange.rows.length < DISCOVER_RANGE_MAX_EVENTS) {
-      requestEventRange(eventRange.days, { after: eventRange.nextCursor, append: true });
-    }
-  }, [eventRange.days, eventRange.nextCursor, eventRange.rows.length, eventRange.status, rangeEvents.length, rangeMatchesScene, requestEventRange, selectedRangeDays, visibleEventCount]);
+    if (!rangeMatchesScene) requestEventRange(selectedRangeDays);
+  }, [eventRange.status, rangeMatchesScene, requestEventRange, selectedRangeDays, setEventView]);
+
+  // The list pages by week, so it needs every show in range: fetch the later
+  // pages one after another (at most DISCOVER_RANGE_MAX_EVENTS rows), never
+  // the same cursor twice.
+  useEffect(() => {
+    if (eventView !== "list" || !rangeMatchesScene || eventRange.status !== "ready") return;
+    if (!eventRange.nextCursor || eventRange.rows.length >= DISCOVER_RANGE_MAX_EVENTS) return;
+    if (requestedCursorRef.current === eventRange.nextCursor) return;
+    requestedCursorRef.current = eventRange.nextCursor;
+    requestEventRange(eventRange.days, { after: eventRange.nextCursor, append: true });
+  }, [eventRange.days, eventRange.nextCursor, eventRange.rows.length, eventRange.status, eventView, rangeMatchesScene, requestEventRange]);
 
   useEffect(() => {
-    setVisibleEventCount(DISCOVER_RANGE_BATCH);
+    setEventWeek(null);
     requestEventRange(DISCOVER_RANGE_DAYS[0]);
     return () => {
       rangeRequestRef.current.controller?.abort();
@@ -678,6 +693,25 @@ export default function DiscoverScreen({
               compact={compact}
               onChange={pickLiveScope}
             />
+            <View style={styles.viewToggle} accessibilityRole="radiogroup" accessibilityLabel="Show events as">
+              {[["cards", "Cards", "ticket"], ["list", "List", "menu"]].map(([key, label, icon]) => {
+                const on = eventView === key;
+                return (
+                  <Pressable
+                    key={key}
+                    style={({ focused, pressed }) => [styles.viewOption, on && styles.viewOptionOn, pressed && styles.cardPressed, focused && focusRing]}
+                    onPress={() => (key === "list" ? openEventList() : setEventView("cards"))}
+                    accessibilityRole="radio"
+                    accessibilityState={{ checked: on }}
+                    aria-checked={on}
+                    accessibilityLabel={`Show events as ${label.toLowerCase()}`}
+                  >
+                    <Icon name={icon} size={14} color={on ? colors.bg : colors.textDim} />
+                    <Text style={[styles.viewOptionText, on && styles.viewOptionTextOn]}>{label}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
             <View style={styles.rangeControl}>
               <Pressable
                 ref={dateDisclosureRef}
@@ -735,13 +769,13 @@ export default function DiscoverScreen({
               ) : null}
             </View>
           </View>
-          <DiscoverEventBanner
+          {listView ? null : <DiscoverEventBanner
             key={`events:${liveScope}:${discoverCountryIdentity(region)}`}
             slides={eventBannerSlides}
             compact={compact}
             active
             onOpenEvent={onOpen}
-          />
+          />}
           {eventRecovery ? (
             <View style={[styles.liveEmpty, styles.eventRecovery]} accessibilityLiveRegion="polite">
               <View style={styles.eventRecoveryMessage}>
@@ -763,6 +797,8 @@ export default function DiscoverScreen({
                 </Pressable>}
               </View>}
             </View>
+          ) : listView ? (
+            <DiscoverEventList events={rangeEvents} weekKey={eventWeek} onWeekChange={setEventWeek} loadingMore={rangeLoadingMore} onOpen={onOpen} />
           ) : (
             <View style={styles.liveRows}>
               {visibleLiveEvents.map((event) => (
@@ -778,22 +814,24 @@ export default function DiscoverScreen({
               ))}
             </View>
           )}
-          {rangeMatchesScene && eventRange.status === "ready" ? (
+          {rangeMatchesScene && eventRange.status === "ready" && rangeEvents.length ? (
             <Text style={styles.rangeSummary} accessibilityLiveRegion="polite">
-              {"Showing " + visibleLiveEvents.length + " event" + (visibleLiveEvents.length === 1 ? "" : "s") + " over the next " + selectedRangeDays + " days."}
+              {listView
+                ? `${rangeEvents.length} ${rangeEvents.length === 1 ? "show" : "shows"} over the next ${selectedRangeDays} days.`
+                : `Showing ${visibleLiveEvents.length} of ${rangeEvents.length} ${rangeEvents.length === 1 ? "show" : "shows"} over the next ${selectedRangeDays} days.`}
             </Text>
           ) : null}
-          {rangeHasMore && !eventRecovery ? (
+          {rangeHasMore && !listView && !eventRecovery ? (
             <Pressable
-              style={({ focused, pressed }) => [styles.loadMoreEvents, pressed && styles.cardPressed, focused && focusRing, (eventRange.status === "loading" || eventRange.status === "refreshing") && styles.loadMoreEventsDisabled]}
-              onPress={loadMoreEvents}
-              disabled={eventRange.status === "loading" || eventRange.status === "refreshing"}
+              style={({ focused, pressed }) => [styles.seeAllEvents, pressed && styles.cardPressed, focused && focusRing, eventRange.status === "loading" && styles.seeAllEventsDisabled]}
+              onPress={openEventList}
+              disabled={eventRange.status === "loading"}
               accessibilityRole="button"
-              accessibilityState={{ disabled: eventRange.status === "loading" || eventRange.status === "refreshing" }}
-              accessibilityLabel={`Load ${DISCOVER_RANGE_BATCH} more upcoming events`}
+              accessibilityState={{ disabled: eventRange.status === "loading" }}
+              accessibilityLabel={rangeMatchesScene ? `See all ${rangeEvents.length} shows as a list, a week at a time` : "See all shows as a list, a week at a time"}
             >
-              {eventRange.status === "loading" ? <ActivityIndicator size="small" color={colors.amber} /> : null}
-              <Text style={styles.loadMoreEventsText}>{eventRange.status === "loading" ? "Finding more events..." : `Load ${DISCOVER_RANGE_BATCH} more events`}</Text>
+              {eventRange.status === "loading" ? <ActivityIndicator size="small" color={colors.amber} /> : <Icon name="menu" size={15} color={colors.amber} />}
+              <Text style={styles.seeAllEventsText}>{eventRange.status === "loading" ? "Finding more shows..." : rangeMatchesScene ? `See all ${rangeEvents.length} shows as a list` : "See all shows as a list"}</Text>
             </Pressable>
           ) : null}
         </View>
@@ -960,9 +998,14 @@ const styles = StyleSheet.create({
   rangeSummary: { color: colors.textFaint, fontFamily: font, fontSize: 11, lineHeight: 16, textAlign: "center" },
   liveRows: { gap: 8 },
   liveLink: { borderRadius: radius.md },
-  loadMoreEvents: { minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, borderRadius: radius.md, borderWidth: 1, borderColor: `${colors.amber}66`, backgroundColor: `${colors.amber}0F` },
-  loadMoreEventsDisabled: { opacity: 0.72 },
-  loadMoreEventsText: { color: colors.amber, fontFamily: font, fontSize: 12, fontWeight: "900" },
+  seeAllEvents: { minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, borderRadius: radius.md, borderWidth: 1, borderColor: `${colors.amber}66`, backgroundColor: `${colors.amber}0F` },
+  seeAllEventsDisabled: { opacity: 0.72 },
+  seeAllEventsText: { color: colors.amber, fontFamily: font, fontSize: 12.5, fontWeight: "900" },
+  viewToggle: { flexDirection: "row", alignSelf: "flex-start", gap: 4, padding: 3, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.bgElev },
+  viewOption: { flexDirection: "row", alignItems: "center", gap: 6, minHeight: 34, borderRadius: radius.pill, paddingHorizontal: 12 },
+  viewOptionOn: { backgroundColor: colors.amber },
+  viewOptionText: { color: colors.textDim, fontFamily: font, fontSize: 12.5, fontWeight: "900" },
+  viewOptionTextOn: { color: colors.bg },
   liveEmpty: { minHeight: 82, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 9, padding: 14, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surface },
   liveEmptyText: { flex: 1, color: colors.textDim, fontFamily: font, fontSize: 12, lineHeight: 17 },
   eventRecovery: { alignItems: "stretch", flexDirection: "column", gap: 12 },

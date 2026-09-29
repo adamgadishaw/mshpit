@@ -46,7 +46,7 @@ export default function FestivalsPanel({ region = "Worldwide", onOpenFestival, r
       {[{ key: null, short: "All dates", editions: upcoming }, ...months].map((month) => {
         const on = activeMonth === month.key;
         return <Pressable key={month.key || "all"} onPress={() => setMonthKey(month.key)} style={[styles.monthChip, on && styles.monthChipOn]}
-          accessibilityRole="button" accessibilityState={{ selected: on }} accessibilityLabel={`${month.key ? month.title : "All dates"}, ${month.editions.length} ${month.editions.length === 1 ? "festival" : "festivals"}`}>
+          accessibilityRole="button" accessibilityState={{ selected: on }} aria-pressed={on} accessibilityLabel={`${month.key ? month.title : "All dates"}, ${month.editions.length} ${month.editions.length === 1 ? "festival" : "festivals"}`}>
           <Text style={[styles.monthChipText, on && styles.monthChipTextOn]}>{month.short}</Text>
           <Text style={[styles.monthChipCount, on && styles.monthChipTextOn]}>{month.editions.length}</Text>
         </Pressable>;

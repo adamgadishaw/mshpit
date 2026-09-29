@@ -253,9 +253,12 @@ remains a broad context whose changing value can rerender unrelated consumers.
 - **External links elsewhere:** feed posts, comments and bios still link out
   without the "leaving Mshpit" step that ticket links use. Apply the same
   allowlist and confirm step.
-- **Owner list still open:** Discover list view in place of "load more",
-  regional news by member city, step-by-step signup and review logging, more
-  profile customization. (Festival page look and order: done 2026-09-28.)
+- **Owner list still open:** regional news by member city, step-by-step
+  signup and review logging, more profile customization. (Festival page look
+  and order, and the Discover list view: done 2026-09-28.)
+- **Discover list:** small festivals that are not in the festival catalog
+  now only show on event, city and venue pages. Consider listing them in the
+  Festivals tab as "More festivals" from tour dates.
 - **Festival photos:** most editions have no image, so the page uses the
   festival's colours. A licensed photo per festival (Wikimedia Commons, with
   credit) would help the hero and share cards.

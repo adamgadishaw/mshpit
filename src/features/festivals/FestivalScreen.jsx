@@ -70,7 +70,7 @@ export default function FestivalScreen({ slug, editionId = null, signedIn = fals
     <ScrollView contentContainerStyle={[styles.content, wide && styles.contentWide]} keyboardShouldPersistTaps="handled">
       {page.upcoming.length > 1 ? <View style={styles.editionChips} accessibilityRole="tablist">
         {page.upcoming.map((item) => <Pressable key={item.id} onPress={() => { setSelectedId(item.id); setDay(null); setEditing(false); }}
-          style={[styles.chip, item.id === edition?.id && styles.chipOn]} accessibilityRole="tab" accessibilityState={{ selected: item.id === edition?.id }}>
+          style={[styles.chip, item.id === edition?.id && styles.chipOn]} accessibilityRole="tab" accessibilityState={{ selected: item.id === edition?.id }} aria-selected={item.id === edition?.id}>
           <Text style={[styles.chipText, item.id === edition?.id && styles.chipTextOn]}>{`${item.city || item.name} · ${festivalDateRange(item.startDate, item.endDate)}`}</Text>
         </Pressable>)}
       </View> : null}
@@ -124,7 +124,7 @@ export default function FestivalScreen({ slug, editionId = null, signedIn = fals
       {edition ? <Section title={lineup.length ? "Lineup" : "Lineup not announced yet"} detail={lineup.length && edition.lineupCount > lineup.length ? `${lineup.length} of ${edition.lineupCount} acts listed so far` : null}>
         {showDayTabs ? <View style={styles.editionChips} accessibilityRole="tablist">
           {[null, ...days].map((item) => <Pressable key={item || "all"} onPress={() => setDay(item)} style={[styles.chip, activeDay === item && styles.chipOn]}
-            accessibilityRole="tab" accessibilityState={{ selected: activeDay === item }}>
+            accessibilityRole="tab" accessibilityState={{ selected: activeDay === item }} aria-selected={activeDay === item}>
             <Text style={[styles.chipText, activeDay === item && styles.chipTextOn]}>{item ? festivalDayLabel(item, { long: true }) : "All days"}</Text>
           </Pressable>)}
         </View> : null}

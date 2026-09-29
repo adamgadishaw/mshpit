@@ -14,7 +14,7 @@ import {
   rightRailEventsForScope,
   rightRailScopeIdentity,
 } from "../domain/rightRailEvents.mjs";
-import { liveEventTitle, localDiscoveryEvents } from "../domain/liveDiscovery.mjs";
+import { isFestivalListing, liveEventTitle, localDiscoveryEvents } from "../domain/liveDiscovery.mjs";
 import { artistPath, eventPath, profilePath } from "../domain/urls.mjs";
 import { visibleSuggestedPitters } from "../domain/suggestedPitters.mjs";
 const HomeShowCountdown = lazyWithRetry(() => import("./HomeShowCountdown"), "HomeShowCountdown");
@@ -264,10 +264,11 @@ export function RightRail({
     : artistsAlphabetical(10);
   const lounges = Array.isArray(discoverySidebar.popularLounges) ? discoverySidebar.popularLounges.slice(0, 5) : [];
   const suggestedUsers = visibleSuggestedPitters(discoverySidebar.suggestedUsers, { isFollowing, isBlocked });
+  // Regular shows only: festivals are showcased in their own tab.
   const events = rightRailEventsForScope({
     scope: eventScope,
-    nearEvents: localDiscoveryEvents(discoverySidebar.upcomingEvents, { limit: 6 }),
-    worldEvents: eventScope === RIGHT_RAIL_EVENT_SCOPE.WORLD ? upcomingEvents?.(6) : [],
+    nearEvents: localDiscoveryEvents(discoverySidebar.upcomingEvents, { limit: 12 }).filter((event) => !isFestivalListing(event)),
+    worldEvents: eventScope === RIGHT_RAIL_EVENT_SCOPE.WORLD ? (upcomingEvents?.(12) || []).filter((event) => !isFestivalListing(event)) : [],
     limit: 6,
   });
   const localLabel = discoverySidebar.location?.city ? ` near ${discoverySidebar.location.city}` : "";
