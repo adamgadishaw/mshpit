@@ -253,8 +253,8 @@ remains a broad context whose changing value can rerender unrelated consumers.
 - **External links elsewhere:** feed posts, comments and bios still link out
   without the "leaving Mshpit" step that ticket links use. Apply the same
   allowlist and confirm step.
-- **Owner list still open:** step-by-step signup and review logging, more
-  profile customization. (Festival page look and order, the Discover list
+- **Owner list still open:** step-by-step review logging, more profile
+  customization. (Step-by-step signup: done 2026-09-30.) (Festival page look and order, the Discover list
   view: done 2026-09-28. Regional news: done 2026-09-30.)
 - **Regional news follow-ups:** "Your artists" tour-date updates still list
   cities anywhere; put dates near the member first. Guests could pick a

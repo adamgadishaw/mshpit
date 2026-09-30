@@ -162,10 +162,12 @@ async function scenario(browser, origin, width, kind) {
       await page.getByLabel("Artist or band name", { exact: true }).fill(navigationArtist.name);
       await page.getByLabel("Name", { exact: true }).fill(navigationUser.name);
       await page.getByLabel("Username", { exact: true }).fill(navigationUser.handle);
+      await page.getByRole("button", { name: "Continue to sign-in", exact: true }).click();
       await page.getByLabel("Email", { exact: true }).fill(navigationUser.email);
       await page.getByLabel("Password", { exact: true }).fill("fixture-password1");
       await page.getByRole("button", { name: "Continue to music", exact: true }).click();
       await page.getByRole("checkbox", { name: "Rock", exact: true }).click();
+      await page.getByRole("button", { name: "Continue to the last step", exact: true }).click();
       await page.getByRole("radio", { name: "18+", exact: true }).click();
       await page.getByRole("checkbox", { name: "I agree to the Terms and Privacy policy", exact: true }).click();
       await page.getByRole("button", { name: "Create account", exact: true }).click();

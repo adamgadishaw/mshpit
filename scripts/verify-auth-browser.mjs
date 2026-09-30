@@ -273,25 +273,34 @@ async function semanticFormCase(page, origin, item, state, { landing, feed, you 
     await page.getByRole("heading", { name: "Make it your night.", exact: true }).waitFor();
     const before = await credentialFields(page, [["Name", "name"], ["Username", "off"], ["Email", "username"], ["Password", "new-password"]]);
     await screenshot();
+    // Four short steps with a progress bar; nothing is created until the last.
+    assert.equal(await page.getByRole("progressbar", { name: "Account creation progress" }).getAttribute("aria-valuetext"), "Step 1 of 4: You");
     await page.getByLabel("Name", { exact: true }).fill(alice.name);
     await page.getByLabel("Username", { exact: true }).fill(alice.handle);
+    await page.getByLabel("Username", { exact: true }).press("Enter");
+    await page.getByRole("heading", { name: "Your sign-in.", exact: true }).waitFor();
+    assert.equal(count("/api/signup"), 0, "Step one created an account instead of advancing.");
+    assert.equal(await before.submissions(), 1, "Step-one Enter must submit the existing form exactly once.");
     await page.getByLabel("Email", { exact: true }).fill(alice.email);
     await page.getByLabel("Password", { exact: true }).fill(fixturePassword);
     await page.getByLabel("Password", { exact: true }).press("Enter");
     await page.getByRole("heading", { name: "Find your kind of show.", exact: true }).waitFor();
-    assert.equal(count("/api/signup"), 0, "Step one created an account instead of advancing.");
-    assert.equal(await before.submissions(), 1, "Step-one Enter must submit the existing form exactly once.");
+    assert.equal(count("/api/signup"), 0, "Step two created an account instead of advancing.");
+    assert.equal(await before.submissions(), 2);
     const after = await credentialFields(page, [["Name", "name"], ["Username", "off"], ["Email", "username"], ["Password", "new-password"]]);
     await screenshot("-music");
     assert.deepEqual(after.fields.map(field => [field.id, field.form]), before.fields.map(field => [field.id, field.form]), "Signup lost its credential inputs/form between steps.");
     assert.equal(await page.getByLabel("Password", { exact: true }).inputValue(), fixturePassword);
-    await page.getByRole("button", { name: "Back to account details", exact: true }).click();
-    await page.getByRole("heading", { name: "Make it your night.", exact: true }).waitFor();
+    await page.getByRole("button", { name: "Back to sign-in", exact: true }).click();
+    await page.getByRole("heading", { name: "Your sign-in.", exact: true }).waitFor();
     assert.equal(count("/api/signup"), 0, "Signup Back submitted the account.");
-    assert.equal(await before.submissions(), 1, "Signup Back emitted a submit event.");
+    assert.equal(await before.submissions(), 2, "Signup Back emitted a submit event.");
     await page.getByLabel("Password", { exact: true }).press("Enter");
     await page.getByRole("heading", { name: "Find your kind of show.", exact: true }).waitFor();
     await page.getByRole("checkbox", { name: "Rock", exact: true }).click();
+    await page.getByRole("button", { name: "Continue to the last step", exact: true }).click();
+    await page.getByRole("heading", { name: "One last thing.", exact: true }).waitFor();
+    await screenshot("-finish");
     await page.getByRole("radio", { name: "18+", exact: true }).click();
     await page.getByRole("checkbox", { name: "I agree to the Terms and Privacy policy", exact: true }).click();
     assert.equal(count("/api/signup"), 0, "Signup choices submitted before the user confirmed.");
@@ -299,7 +308,7 @@ async function semanticFormCase(page, origin, item, state, { landing, feed, you 
     await waitFor(() => count("/api/signup") > 0, "Final signup submission was not sent.");
     await feed();
     assert.equal(count("/api/signup"), 1, "Signup was submitted more than once.");
-    assert.equal(await before.submissions(), 3, "Two step-one advances and final confirmation must use exactly three native form submissions.");
+    assert.equal(await before.submissions(), 5, "Three advances, one after Back, and the final confirmation must use exactly five native form submissions.");
   } else if (item.kind === "forms-reset") {
     await credentialFields(page, [["New password", "new-password"], ["Confirm new password", "new-password"]]);
     await page.getByLabel("New password", { exact: true }).fill(replacementPassword);

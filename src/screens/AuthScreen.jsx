@@ -16,7 +16,17 @@ const PrivacyScreen = lazyWithRetry(() => import("./PrivacyScreen"), "PrivacyScr
 const TermsScreen = lazyWithRetry(() => import("./TermsScreen"), "TermsScreen");
 import { PROFILE_GENRE_MAX, PROFILE_GENRE_OPTIONS } from "../domain/genrePreferences.mjs";
 import { cleanHandle, isEmail } from "../domain/validation.mjs";
-import { signupAccountError, signupAriaProps, signupFormPayload, signupHandlePresentation, signupMusicError } from "../domain/signupForm.mjs";
+import { SIGNUP_STEPS, signupAccountError, signupAriaProps, signupFormPayload, signupHandlePresentation, signupMusicError, signupStepError, signupStepForField } from "../domain/signupForm.mjs";
+
+// Signup, one short step at a time. The words for each step's heading.
+const SIGNUP_STEP_COPY = [
+  ["Make it your night.", "Start with who you are."],
+  ["Your sign-in.", "The email and password you’ll log in with."],
+  ["Find your kind of show.", "Pick your music and your city. We’ll take it from there."],
+  ["One last thing.", "Confirm your age group and our terms, then you’re in."],
+];
+const SIGNUP_NEXT = ["Continue to sign-in", "Continue to music", "Continue to the last step", "Create account"];
+const SIGNUP_BACK = ["Back to your details", "Back to sign-in", "Back to music"];
 import { useSignupHandleAvailability } from "../features/signupHandle/useSignupHandleAvailability";
 
 const readableError = (error, fallback) => String(typeof error === "string" ? error : error?.userMessage || error?.message || fallback).slice(0, 280);
@@ -111,25 +121,26 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, navigationA
     onModeChange?.(next);
   };
   const accountValues = () => ({ name, handle, email, password, ...(artistSignup ? { artistIntent: { artistName } } : {}) });
-  const accountFailure = () => signupAccountError(accountValues(), currentAvailability)
-    || (availability.resource.scope === cleanHandle(handle) && availability.resource.status === "error"
-      && Number(availability.resource.error?.status) === 400 ? { field: "handle", message: handleStatus.message } : null);
+  const serverHandleFailure = () => (availability.resource.scope === cleanHandle(handle) && availability.resource.status === "error"
+    && Number(availability.resource.error?.status) === 400 ? { field: "handle", message: handleStatus.message } : null);
+  const accountFailure = () => signupAccountError(accountValues(), currentAvailability) || serverHandleFailure();
+  // Each step checks its own answers; a problem goes back to the step that asks.
   const advance = () => {
-    if (addAccount && !currentPassword) { showError({ field: "currentPassword", message: "Enter the current account’s password to add another account." }); return; }
-    const failure = accountFailure();
-    if (failure) { showError(failure); return; }
-    clearError(); setStep(2);
+    if (step === 2 && addAccount && !currentPassword) { showError({ field: "currentPassword", message: "Enter the current account’s password to add another account." }); return; }
+    const failure = signupStepError(step, { ...accountValues(), genres, ageBand, agreed }, currentAvailability) || serverHandleFailure();
+    if (failure) { setStep(signupStepForField(failure.field)); showError(failure); return; }
+    clearError(); setStep(Math.min(SIGNUP_STEPS.length, step + 1));
   };
   const submit = async (accountId, { createAdditional = false, useExisting = false } = {}) => {
     if (typeof accountId !== "string") accountId = undefined;
     if (busyRef.current) return;
     const creating = signupMode && !useExisting;
-    if (creating && step === 1) { advance(); return; }
+    if (creating && step < SIGNUP_STEPS.length) { advance(); return; }
     if (creating) {
       const accountError = accountFailure();
-      if (accountError) { setStep(1); showError(accountError); return; }
+      if (accountError) { setStep(signupStepForField(accountError.field)); showError(accountError); return; }
       const musicFailure = signupMusicError({ genres, ageBand, agreed });
-      if (musicFailure) { showError(musicFailure); return; }
+      if (musicFailure) { setStep(signupStepForField(musicFailure.field)); showError(musicFailure); return; }
     } else if (!isEmail(email) || !password) {
       showError({ field: !isEmail(email) ? "email" : "password", message: !isEmail(email) ? "Enter a valid email address." : "Enter your password." });
       return;
@@ -246,10 +257,10 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, navigationA
     return submit();
   };
   const headingText = signupChoice || accounts ? "Choose your account." : mode === "forgot" ? sentTo ? "Check your email." : "Back to your account."
-    : signupMode ? step === 1 ? "Make it your night." : "Find your kind of show." : "Good to see you.";
+    : signupMode ? SIGNUP_STEP_COPY[step - 1][0] : "Good to see you.";
   const subheading = signupChoice || accounts ? "Choose which profile to open." : mode === "forgot" ? "A reset link gets you back in."
-    : signupMode ? step === 1 ? "Start with your account details." : "Pick your music. We’ll take it from there." : "Your shows, photos and people are waiting.";
-  const progress = { min: 1, max: 2, now: step, text: `Step ${step} of 2: ${step === 1 ? "Account" : "Music"}` };
+    : signupMode ? SIGNUP_STEP_COPY[step - 1][1] : "Your shows, photos and people are waiting.";
+  const progress = { min: 1, max: SIGNUP_STEPS.length, now: step, text: `Step ${step} of ${SIGNUP_STEPS.length}: ${SIGNUP_STEPS[step - 1]}` };
 
   return <KeyboardAvoidingView style={[styles.wrap, { paddingTop: insets.top }]} behavior={Platform.OS === "ios" ? "padding" : undefined}>
     <SheetHeader title={mode === "forgot" ? "Reset password" : signupMode ? addAccount ? "Add account" : "Sign up" : "Log in"} onClose={close} leadDisabled={busy} />
@@ -259,14 +270,18 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, navigationA
         <View style={styles.trim} />
         <CredentialForm busy={busy} id={`pit-${mode}${addAccount ? "-additional" : ""}`} onSubmit={submitForm} disabled={busy} style={styles.cardBody}>
           {signupMode && !signupChoice ? <View style={styles.stepper} accessibilityRole="progressbar" accessibilityLabel="Account creation progress" accessibilityValue={progress} {...signupAriaProps(Platform.OS, {}, progress)}>
-            <Text style={styles.stepKicker}>STEP {step} OF 2</Text><Text style={styles.stepName}>{step === 1 ? "Account / Music next" : "Music / Almost there"}</Text>
+            <View style={styles.stepHead}><Text style={styles.stepKicker}>{`Step ${step} of ${SIGNUP_STEPS.length}`}</Text><Text style={styles.stepName}>{SIGNUP_STEPS[step - 1]}</Text></View>
+            <View style={styles.stepTrack}><View style={[styles.stepFill, { width: `${(step / SIGNUP_STEPS.length) * 100}%` }]} /></View>
+            <View style={styles.stepLabels}>{SIGNUP_STEPS.map((name, index) => <Text key={name} numberOfLines={1} style={[styles.stepLabel, index < step && styles.stepLabelDone]}>{name}</Text>)}</View>
           </View> : null}
           <Text ref={heading} tabIndex={-1} style={styles.title} accessibilityRole="header">{headingText}</Text>
           <Text style={styles.subtitle}>{subheading}</Text>
           {!!error ? <Text ref={errorRef} tabIndex={-1} style={styles.error} accessibilityRole="alert" accessibilityLiveRegion="assertive" selectable>{error}</Text> : null}
 
           {/* Keep credentials associated through music/account selection; never persist them. */}
-          {mode !== "forgot" ? <View style={[styles.credentials, (signupChoice || accounts || (signupMode && step === 2)) && styles.hiddenCredentials]}>
+          {mode !== "forgot" ? <View style={[styles.credentials, (signupChoice || accounts || (signupMode && step > 2)) && styles.hiddenCredentials]}>
+              {/* Step 1, who you are. Hidden, not unmounted, on later steps. */}
+              {signupMode ? <View style={[styles.credentials, step !== 1 && styles.hiddenCredentials]}>
               {signupMode && <View style={styles.section}>
                 <Text style={styles.fieldLabel}>How will you use Mshpit?</Text>
                 <View style={styles.fieldPair} accessibilityRole="radiogroup" accessibilityLabel="Account purpose">
@@ -275,26 +290,29 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, navigationA
                 <Text style={styles.hint}>One free account. Artists can publish a page, live photos and videos, promotions, and upcoming concerts. No separate login.</Text>
                 {artistSignup && field("artistName", "Artist or band name", artistName, setArtistName, { maxLength: 60, hint: "After confirming your email, create a new page or claim an existing one. The artist check requires Mshpit approval." })}
               </View>}
-              {signupMode && addAccount ? <>{field("currentPassword", "Current account password", currentPassword, setCurrentPassword, { maxLength: 100, autoComplete: "current-password" })}<Text style={styles.hint}>Up to two accounts can use a verified email. Use the same password for a choice at login, or different passwords to sign straight into the matching account.</Text></> : null}
               {signupMode ? <View style={styles.fieldPair}>
                 {field("name", "Name", name, setName, { paired: true, maxLength: 40, autoComplete: "name", textContentType: "name", onSubmit: () => inputs.current.handle?.focus?.() })}
-                {field("handle", "Username", handle, (value) => setHandle(cleanHandle(value)), { paired: true, maxLength: 20, autoComplete: "off", onSubmit: () => inputs.current.email?.focus?.() })}
+                {field("handle", "Username", handle, (value) => setHandle(cleanHandle(value)), { paired: true, maxLength: 20, autoComplete: "off" })}
               </View> : null}
               {signupMode ? <View style={styles.availability} accessibilityLiveRegion="polite">
                 <Text style={[styles.hint, handleStatus.tone === "good" && styles.availableText, handleStatus.tone === "error" && styles.errorText]}>{handleStatus.message}</Text>
                 {availability.resource.status === "error" ? <AuthPressable onPress={availability.retry} style={controlStyle(styles.retry, busy)} disabled={busy} accessibilityRole="button" accessibilityLabel="Check username again" accessibilityState={{ disabled: busy }}><Text style={styles.link}>Try again</Text></AuthPressable> : null}
               </View> : null}
+              </View> : null}
+              {/* Step 2, sign-in details (and the whole login form). */}
+              <View style={[styles.credentials, signupMode && step !== 2 && styles.hiddenCredentials]}>
+              {signupMode && addAccount ? <>{field("currentPassword", "Current account password", currentPassword, setCurrentPassword, { maxLength: 100, autoComplete: "current-password" })}<Text style={styles.hint}>Up to two accounts can use a verified email. Use the same password for a choice at login, or different passwords to sign straight into the matching account.</Text></> : null}
               {field("email", "Email", email, setEmail, { autoComplete: "username", textContentType: "emailAddress", onSubmit: () => inputs.current.password?.focus?.() })}
               {field("password", "Password", password, setPassword, { maxLength: 100, autoComplete: signupMode ? "new-password" : "current-password", textContentType: signupMode ? "newPassword" : "password", returnKeyType: signupMode ? "next" : "go", hint: signupMode ? "8+ characters, with a letter and a number." : null })}
               {signupMode ? <View style={styles.nextStep}><Icon name="you" size={18} color={colors.amber} /><Text style={styles.noteText}>Explore as soon as you sign up. Add a profile photo and banner whenever you’re ready, after email confirmation.</Text></View>
                 : <AuthPressable style={controlStyle(styles.forgotButton, busy)} onPress={() => changeMode("forgot")} disabled={busy} accessibilityRole="button"><Text style={styles.link}>Forgot password?</Text></AuthPressable>}
-
+              </View>
           </View> : null}
           {signupChoice ? <>
             <Text style={styles.subtitle}>{signupChoice.canCreate ? "An account already uses this email and password. Continue with it, or create your second account. Nothing has been changed." : "These credentials already belong to an account. Choose a profile below. Nothing has been changed."}</Text>
             {signupChoice.accounts.map((account) => <View key={account.id}>{primary(`Log in: ${account.name} · @${account.handle}`, null, false, { name: "account", value: account.id })}</View>)}
             {signupChoice.canCreate ? primary("Create a second account", null, false, { name: "create-additional" }) : <Text style={styles.hint}>This email has reached its two-account limit.</Text>}
-            {primary("Use a different email", () => { setSignupChoice(null); setPassword(""); setStep(1); })}
+            {primary("Use a different email", () => { setSignupChoice(null); setPassword(""); setStep(2); })}
           </> : accounts ? <>
             <Text style={styles.subtitle}>This password matches two accounts. Which one would you like to use?</Text>
             {accounts.map((account) => <View key={account.id}>{primary(`${account.name} · @${account.handle}`, null, false, { name: "account", value: account.id })}</View>)}
@@ -307,7 +325,7 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, navigationA
             {primary(resetBusy ? "Sending…" : "Send reset link", sendReset, resetBusy, { name: "reset" })}
             <AuthPressable style={controlStyle(styles.textButton, busy)} onPress={() => changeMode("login")} disabled={busy} accessibilityRole="button"><Text style={styles.link}>Back to log in</Text></AuthPressable>
           </> : <>
-            {signupMode && step === 2 ? <>
+            {signupMode && step === 3 ? <>
               <View ref={(node) => { inputs.current.genres = node; }} tabIndex={-1} style={styles.section}>
                 <View style={styles.sectionHeading}><Text style={styles.fieldLabel}>Music you like</Text><Text style={styles.count}>{genres.length}/3</Text></View>
                 <Text style={styles.hint}>Choose 1–3 genres for your first recommendations.</Text>
@@ -319,11 +337,14 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, navigationA
                 })}</View>
               </View>
               <View style={styles.section}><View style={styles.sectionHeading}><Text style={styles.fieldLabel}>Your city</Text><Text style={styles.optional}>Optional</Text></View>
-                <AuthPressable style={controlStyle(styles.cityPick, busy)} onPress={() => setPickingCity(true)} disabled={busy} accessibilityRole="button" accessibilityLabel={city ? `City, ${city.label}` : "Choose your city"} accessibilityHint="Shows nearby concerts and local posts" accessibilityState={{ disabled: busy }}>
+                <Text style={styles.hint}>Your city sets the shows near you and the news for your part of the world.</Text>
+                <AuthPressable style={controlStyle(styles.cityPick, busy)} onPress={() => setPickingCity(true)} disabled={busy} accessibilityRole="button" accessibilityLabel={city ? `City, ${city.label}` : "Choose your city"} accessibilityHint="Sets nearby shows and news for your region" accessibilityState={{ disabled: busy }}>
                   <Icon name="pin" size={18} color={colors.amber} /><Text style={styles.cityText}>{city?.label || "Find shows near you"}</Text><Icon name="chevron-right" size={16} color={colors.textDim} />
                 </AuthPressable>
                 {city ? <AuthPressable style={controlStyle(styles.retry, busy)} onPress={() => setCity(null)} disabled={busy} accessibilityRole="button" accessibilityLabel="Remove selected city"><Text style={styles.link}>Not now</Text></AuthPressable> : null}
               </View>
+            </> : null}
+            {signupMode && step === 4 ? <>
               <View ref={(node) => { inputs.current.ageBand = node; }} tabIndex={-1} style={styles.section} accessibilityRole="radiogroup" accessibilityLabel="Age group">
                 <Text style={styles.fieldLabel}>Age group</Text><Text style={styles.hint}>For account safety. No birth date needed.</Text>
                 <View style={styles.ageChoices}>{[["13_17", "13–17"], ["18_plus", "18+"]].map(([value, label]) => <AuthPressable key={value} style={({ focused, pressed }) => [styles.ageChoice, ageBand === value && styles.selectedChip, pressed && styles.pressed, focused && focusRing]} onPress={() => { setAgeBand(value); clearError(); }} disabled={busy} accessibilityRole="radio" accessibilityState={{ checked: ageBand === value, disabled: busy }} accessibilityLabel={label}><Text style={[styles.genreText, ageBand === value && styles.selectedText]}>{label}</Text></AuthPressable>)}</View>
@@ -338,8 +359,8 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, navigationA
                 {analyticsDetails ? <Text style={styles.hint}>We record limited usage events linked to your account. They do not include the contents of authored posts or reviews, search terms, messages, or uploaded media. IP addresses are not stored with these analytics events. Change your choice any time in Settings; opting out deletes your raw product events.</Text> : null}
               </View>
             </> : null}
-            {primary(authBusy ? signupMode ? "Creating account…" : "Logging in…" : signupMode ? step === 1 ? "Continue to music" : "Create account" : "Log in", submit, authBusy, { name: "continue" })}
-            {signupMode && step === 2 ? <AuthPressable style={controlStyle(styles.textButton, busy)} onPress={() => { clearError(); setStep(1); }} disabled={busy} accessibilityRole="button"><Text style={styles.link}>Back to account details</Text></AuthPressable> : null}
+            {primary(authBusy ? signupMode ? "Creating account…" : "Logging in…" : signupMode ? SIGNUP_NEXT[step - 1] : "Log in", submit, authBusy, { name: "continue" })}
+            {signupMode && step > 1 ? <AuthPressable style={controlStyle(styles.textButton, busy)} onPress={() => { clearError(); setStep(step - 1); }} disabled={busy} accessibilityRole="button"><Text style={styles.link}>{SIGNUP_BACK[step - 2]}</Text></AuthPressable> : null}
             <AuthPressable style={controlStyle(styles.textButton, busy)} onPress={() => changeMode(signupMode ? "login" : "signup")} disabled={busy} accessibilityRole="button"><Text style={styles.link}>{signupMode ? "Have an account? Log in" : "No account? Sign up"}</Text></AuthPressable>
           </>}
         </CredentialForm>
@@ -360,9 +381,16 @@ const styles = StyleSheet.create({
   slogan: { color: colors.textFaint, fontFamily: mono, fontSize: 8, fontWeight: "700", letterSpacing: 1.3, marginTop: 4 },
   trim: { height: 3, width: 56, marginLeft: 22, borderBottomLeftRadius: 3, borderBottomRightRadius: 3, backgroundColor: colors.amberStrong },
   cardBody: { padding: space(4), gap: 10, minWidth: 0 },
-  stepper: { flexDirection: "row", justifyContent: "space-between", flexWrap: "wrap", gap: 6, paddingBottom: 8, borderBottomWidth: 1, borderBottomColor: colors.lineSoft, borderStyle: "dashed" },
-  stepKicker: { color: colors.amber, fontFamily: mono, fontSize: 10, fontWeight: "800", letterSpacing: 1 },
-  stepName: { color: colors.textFaint, fontSize: 11 },
+  stepper: { gap: 7, paddingBottom: 10, borderBottomWidth: 1, borderBottomColor: colors.lineSoft, borderStyle: "dashed" },
+  stepHead: { flexDirection: "row", justifyContent: "space-between", alignItems: "baseline", gap: 6 },
+  stepKicker: { color: colors.amber, fontFamily: mono, fontSize: 11, fontWeight: "800", letterSpacing: 1 },
+  stepName: { color: colors.text, fontSize: 13, fontWeight: "800" },
+  stepTrack: { height: 8, borderRadius: 4, backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.lineSoft, overflow: "hidden" },
+  stepFill: { height: "100%", borderRadius: 4, backgroundColor: colors.amberStrong,
+    ...(Platform.OS === "web" ? { transitionProperty: "width", transitionDuration: "280ms", transitionTimingFunction: "ease-out" } : {}) },
+  stepLabels: { flexDirection: "row", justifyContent: "space-between", gap: 4 },
+  stepLabel: { flex: 1, minWidth: 0, color: colors.textFaint, fontSize: 11, fontWeight: "700", textAlign: "center" },
+  stepLabelDone: { color: colors.amber },
   title: { color: colors.text, fontFamily: displayFont, fontWeight: "900", fontSize: 29, lineHeight: 35, letterSpacing: -0.7, marginTop: 3 },
   subtitle: { color: colors.textDim, fontSize: 14, lineHeight: 20, marginBottom: 5 },
   fieldPair: { flexDirection: "row", flexWrap: "wrap", gap: 12 }, pairedField: { flexGrow: 1, flexBasis: 220, minWidth: 0 },

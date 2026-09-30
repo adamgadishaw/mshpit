@@ -6,6 +6,22 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-09-30 Signup in four short steps
+
+- Signup was two dense pages (purpose, name, username, email and password
+  together, then music, city, age and terms). It is now four steps with a
+  progress bar and step names: You (fan or artist, name, username), Sign-in
+  (email, password), Music (genres and city, which now says it sets nearby
+  shows and regional news), Finish (age group, terms, optional analytics).
+- Each step checks only its own answers (`signupStepError`), a problem sends
+  the member back to the step that asks for it, and Back keeps everything
+  typed. All credential inputs stay in one form across steps so password
+  managers work.
+- Nothing is saved until "Create account" on the last step, so leaving part
+  way leaves no account behind (unchanged, now stated).
+- Browser suites updated: auth (five native form submissions for the full
+  path, progress value checked) and artist account.
+
 ## 2026-09-30 Regional news
 
 - A member's news follows where they live. Each News desk story gets its
