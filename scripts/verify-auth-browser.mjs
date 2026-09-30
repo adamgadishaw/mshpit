@@ -706,6 +706,8 @@ async function runCase(browser, origin, item) {
       const cityInput = page.getByLabel("Concert city, region and country", { exact: true });
       const addressInput = page.getByLabel("Public event address, optional", { exact: true });
       await page.getByLabel("Artist", { exact: true }).fill("Fixture Artist");
+      // A new review goes step by step; editing it later shows every field.
+      await page.getByRole("button", { name: "Next: Where and when", exact: true }).click();
       await cityInput.fill("Tor");
       await page.getByRole("button", { name: "Use Toronto, Ontario, Canada", exact: true }).click();
       // A completed click does not guarantee the controlled input's React commit
@@ -721,7 +723,9 @@ async function runCase(browser, origin, item) {
       mkdirSync(join(root, ".tmp"), { recursive: true });
       await page.getByLabel("Concert venue, optional with a city", { exact: true }).scrollIntoViewIfNeeded();
       await page.screenshot({ path: join(root, ".tmp", `location-composer-${item.width}.png`) });
+      await page.getByRole("button", { name: "Next: The music", exact: true }).click();
       await page.getByLabel("Rating", { exact: true }).first().press("End");
+      await page.getByRole("button", { name: "Next: Your story", exact: true }).click();
       const postButton = page.getByRole("button", { name: "Post to feed", exact: true });
       assert.equal(await postButton.isEnabled(), true, "A rated city-only concert must be publishable.");
       await postButton.click();

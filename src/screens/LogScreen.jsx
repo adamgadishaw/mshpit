@@ -8,6 +8,9 @@ import { RATING_DIMS, computeReview } from "../data";
 
 // Tour presets: pick one to attach the show to the artist without an album/tour.
 const TOUR_PRESETS = ["One-off show", "Reunion tour", "Festival set", "Anniversary tour", "Surprise show"];
+// A new review, one short step at a time.
+const LOG_STEPS_IN_PERSON = ["The show", "Where and when", "The music", "Your story"];
+const LOG_STEPS_ONLINE = ["The show", "The video", "Your story"];
 import Icon from "../components/Icon";
 import Avatar from "../components/Avatar";
 import SmartImage from "../components/SmartImage";
@@ -187,6 +190,31 @@ function PendingMediaPreview({ asset, accessibilityLabel }) {
   );
 }
 
+// Where a new review is: a filled bar, then the step names to jump between.
+function LogStepProgress({ steps, step, onJump }) {
+  const progress = { min: 1, max: steps.length, now: step, text: `Step ${step} of ${steps.length}: ${steps[step - 1]}` };
+  return (
+    <View style={styles.logProgress}>
+      <View accessibilityRole="progressbar" accessibilityLabel="Review progress" accessibilityValue={progress}
+        {...(Platform.OS === "web" ? { "aria-valuemin": progress.min, "aria-valuemax": progress.max, "aria-valuenow": progress.now, "aria-valuetext": progress.text } : {})}>
+        <View style={styles.logProgressHead}>
+          <Text style={styles.logProgressCount}>{`Step ${step} of ${steps.length}`}</Text>
+          <Text style={styles.logProgressName}>{steps[step - 1]}</Text>
+        </View>
+        <View style={styles.logProgressTrack}><View style={[styles.logProgressFill, { width: `${(step / steps.length) * 100}%` }]} /></View>
+      </View>
+      <View style={styles.logProgressSteps}>
+        {steps.map((name, index) => (
+          <Pressable key={name} onPress={() => onJump(index + 1)} hitSlop={6} style={styles.logProgressStep}
+            accessibilityRole="button" accessibilityLabel={`Go to ${name}`} accessibilityState={{ selected: index + 1 === step }}>
+            <Text style={[styles.logProgressLabel, index < step && styles.logProgressLabelDone]} numberOfLines={2}>{name}</Text>
+          </Pressable>
+        ))}
+      </View>
+    </View>
+  );
+}
+
 function Stepper({ label, value, onChange, color }) {
   const step = (d) => onChange(Math.max(0, Math.min(5, Math.round((value + d) * 2) / 2)));
   return (
@@ -289,6 +317,19 @@ export default function LogScreen({
   const [lineupSuggestions, setLineupSuggestions] = useState([]);
   const effectiveFormat = isOnlineReview ? "headline" : showFormat;
   const isFestival = effectiveFormat === "festival";
+  // A new review goes one short step at a time; editing shows every field.
+  // Steps only hide sections, so drafts, uploads and typed text stay put, and
+  // Post in the header works from any step once there is enough to post.
+  const [logStep, setLogStep] = useState(1);
+  const logSteps = isOnlineReview ? LOG_STEPS_ONLINE : LOG_STEPS_IN_PERSON;
+  const stepped = !editing && !isStatus;
+  const currentLogStep = Math.min(logStep, logSteps.length);
+  const stepStyle = (step) => (stepped && currentLogStep !== step ? styles.stepHidden : null);
+  const storyStep = logSteps.length;
+  const goToLogStep = (step) => {
+    setLogStep(Math.max(1, Math.min(step, logSteps.length)));
+    requestAnimationFrame(() => composerScrollRef.current?.scrollTo?.({ y: 0, animated: true }));
+  };
   const isCoHeadline = effectiveFormat === "co_headline";
   const [timesSeen, setTimesSeen] = useState(null);
   const [automaticTimesSeen, setAutomaticTimesSeen] = useState(null);
@@ -1878,7 +1919,9 @@ export default function LogScreen({
             </Pressable>
           </View>
         )}
-        <Text style={styles.quickLogHint}>Start with what you remember. One rating is enough; extra details are optional.</Text>
+        {stepped ? <LogStepProgress steps={logSteps} step={currentLogStep} onJump={goToLogStep} /> : null}
+        {!stepped || currentLogStep === 1 ? <Text style={styles.quickLogHint}>Start with what you remember. One rating is enough; extra details are optional.</Text> : null}
+        <View style={stepStyle(1)}>
         <Text style={styles.fieldLabel}>HOW DID YOU EXPERIENCE IT?</Text>
         <View style={styles.experienceModeRow} accessibilityRole="tablist">
           <Pressable
@@ -1965,8 +2008,9 @@ export default function LogScreen({
             <View style={styles.linked}><Icon name="check" size={12} color={colors.good} /><Text style={styles.linkedTxt}>{artist.trim()} linked. This review can be considered for the artist page.</Text></View>
           )}
         </View>
+        </View>
         {isOnlineReview ? (
-          <>
+          <View style={stepStyle(2)}>
             <Text style={styles.fieldLabel}>CONCERT OR VIDEO TITLE <Text style={styles.optional}>optional</Text></Text>
             <TextInput
               style={styles.input}
@@ -2002,9 +2046,10 @@ export default function LogScreen({
               </View>
               <Text style={styles.onlineRatingValue}>{onlineRating ? onlineRating.toFixed(1) : "-"}</Text>
             </View>
-          </>
+          </View>
         ) : (
           <>
+        <View style={stepStyle(2)}>
         <View>
           <Text style={styles.fieldLabel}>VENUE <Text style={styles.optional}>optional with a city</Text></Text>
           <View>
@@ -2101,6 +2146,8 @@ export default function LogScreen({
             </View>
           )}
         </> : null}
+        </View>
+        <View style={stepStyle(3)}>
         {lineupProblem ? <Text style={styles.lookupError} accessibilityLiveRegion="polite">{lineupProblem}</Text> : null}
 
         <ShowLineupFields artist={artist} showFormat={effectiveFormat} date={date} endDate={isFestival ? endDate : ""} acts={lineup} onActsChange={setLineup}
@@ -2135,9 +2182,11 @@ export default function LogScreen({
           </View>
         ))}
         {hasDetailedComposerRatings(dims) && <View style={styles.overallCard}><Text style={styles.overallNum}>{computed.overall.toFixed(1)}</Text><View><Stars value={computed.overall} size={18} /><Text style={styles.overallSub}>Combined score · only the factors you rated</Text></View></View>}
+        </View>
           </>
         )}
 
+        <View style={stepStyle(storyStep)}>
         <Text style={[styles.fieldLabel, { marginTop: 22 }]}>YOUR REVIEW <Text style={styles.optional}>· optional</Text></Text>
         <TextInput
           style={[styles.input, styles.multiline]}
@@ -2147,10 +2196,12 @@ export default function LogScreen({
           onChangeText={setReview}
           multiline
         />
+        </View>
 
           </>
         )}
 
+        <View style={stepStyle(storyStep)}>
         {!memoryTextOnly ? <>
         <Text style={styles.attachLabel}>ADD TO YOUR POST</Text>
         <View style={styles.attachBar}>
@@ -2434,6 +2485,21 @@ export default function LogScreen({
         )}
         </View>
         )}
+        </View>
+
+        {stepped && currentLogStep < storyStep ? (
+          <View style={styles.stepNav}>
+            {currentLogStep > 1 ? <Pressable style={({ pressed }) => [styles.stepBack, pressed && styles.addShowPressed]} onPress={() => goToLogStep(currentLogStep - 1)} accessibilityRole="button" accessibilityLabel={`Back to ${logSteps[currentLogStep - 2]}`}>
+              <Icon name="chevron-left" size={16} color={colors.amber} /><Text style={styles.stepBackText}>Back</Text>
+            </Pressable> : null}
+            <Button title={`Next: ${logSteps[currentLogStep]}`} onPress={() => goToLogStep(currentLogStep + 1)} style={styles.stepNext} accessibilityLabel={`Next: ${logSteps[currentLogStep]}`} />
+          </View>
+        ) : null}
+        {stepped && currentLogStep === storyStep && currentLogStep > 1 ? (
+          <Pressable style={styles.stepBackInline} onPress={() => goToLogStep(currentLogStep - 1)} accessibilityRole="button" accessibilityLabel={`Back to ${logSteps[currentLogStep - 2]}`}>
+            <Icon name="chevron-left" size={16} color={colors.amber} /><Text style={styles.stepBackText}>{`Back to ${logSteps[currentLogStep - 2].toLowerCase()}`}</Text>
+          </Pressable>
+        ) : null}
 
         {engagementPrompt ? (
           <View style={styles.engagementPrompt} accessible accessibilityRole="summary" accessibilityLabel={`${engagementPrompt.title}. ${engagementPrompt.body}`}>
@@ -2446,7 +2512,7 @@ export default function LogScreen({
           </View>
         ) : null}
         {!isStatus && !isOnlineReview && <Text style={styles.submitHint} accessibilityLiveRegion="polite">{composerLogRequirement({ artist, venue, city, eventAddress, overall: computed.overall })}</Text>}
-        <Button title={posting ? (editing ? "Saving changes..." : "Posting...") : uploadingPhotos ? "Uploading media..." : resolvingSong ? "Checking video..." : editing ? "Save changes" : isStatus ? "Post" : "Post to feed"} icon="check" onPress={submit} disabled={!canPost || submitBusy || postCoolingDown || featuredPostingBlocked} style={{ marginTop: engagementPrompt ? 14 : 28 }} />
+        {!stepped || currentLogStep === storyStep ? <Button title={posting ? (editing ? "Saving changes..." : "Posting...") : uploadingPhotos ? "Uploading media..." : resolvingSong ? "Checking video..." : editing ? "Save changes" : isStatus ? "Post" : "Post to feed"} icon="check" onPress={submit} disabled={!canPost || submitBusy || postCoolingDown || featuredPostingBlocked} style={{ marginTop: engagementPrompt ? 14 : 28 }} /> : null}
         {!editing && hasContent && (
           <Pressable style={styles.saveDraft} onPress={stash} disabled={submitBusy}>
             <Icon name="edit" size={14} color={colors.textDim} />
@@ -2459,6 +2525,23 @@ export default function LogScreen({
 }
 
 const styles = StyleSheet.create({
+  stepHidden: { display: "none" },
+  logProgress: { gap: 8, marginBottom: 16, paddingBottom: 12, borderBottomWidth: 1, borderBottomColor: colors.lineSoft },
+  logProgressHead: { flexDirection: "row", justifyContent: "space-between", alignItems: "baseline", gap: 8, marginBottom: 7 },
+  logProgressCount: { color: colors.amber, fontFamily: mono, fontSize: 11, fontWeight: "800", letterSpacing: 1 },
+  logProgressName: { color: colors.text, fontSize: 14, fontWeight: "900" },
+  logProgressTrack: { height: 8, borderRadius: 4, backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.lineSoft, overflow: "hidden" },
+  logProgressFill: { height: "100%", borderRadius: 4, backgroundColor: colors.amberStrong,
+    ...(Platform.OS === "web" ? { transitionProperty: "width", transitionDuration: "280ms", transitionTimingFunction: "ease-out" } : {}) },
+  logProgressSteps: { flexDirection: "row", gap: 4 },
+  logProgressStep: { flex: 1, minWidth: 0, minHeight: 28, justifyContent: "center" },
+  logProgressLabel: { color: colors.textFaint, fontSize: 11.5, fontWeight: "700", textAlign: "center" },
+  logProgressLabelDone: { color: colors.amber },
+  stepNav: { flexDirection: "row", alignItems: "center", gap: 10, marginTop: 26 },
+  stepNext: { flex: 1 },
+  stepBack: { flexDirection: "row", alignItems: "center", gap: 4, minHeight: 48, paddingHorizontal: 14, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line },
+  stepBackInline: { flexDirection: "row", alignItems: "center", gap: 4, alignSelf: "flex-start", minHeight: 44, marginTop: 18 },
+  stepBackText: { color: colors.amber, fontSize: 13.5, fontWeight: "800" },
   quickLogHint: { color: colors.textDim, fontSize: 13, lineHeight: 20, marginBottom: 18 },
   formatHint: { color: colors.textFaint, fontSize: 12, lineHeight: 17, marginTop: -6, marginBottom: 14 },
   detailHint: { color: colors.textDim, fontSize: 12, lineHeight: 18, marginTop: 6 },

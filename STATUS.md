@@ -6,6 +6,24 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-09-30 Reviewing a show in steps
+
+- A new show or festival review is no longer one long form. It goes The
+  show (in person or online, kind of show, artist or festival), Where and
+  when (venue, city, address, tour, dates), The music (openers, co-headliner
+  or festival sets, the overall rating, band, room and crowd), Your story
+  (review, photos and video, YouTube, people). Online reviews have three
+  steps (The show, The video, Your story).
+- A progress bar with step names you can tap to jump, Next and Back at the
+  bottom, "Post to feed" on the last step. Post in the header still works
+  from any step, so one rating is still enough to post.
+- Steps only hide sections, so typed text, drafts, uploads and ratings stay
+  put between steps and after a failed save. Editing a post and plain posts
+  show everything at once, as before.
+- Quick-log browser suite walks the steps: each step shows all of its own
+  fields without an extra tap, Post works from the ratings step, and every
+  step keeps its values after a failed save.
+
 ## 2026-09-30 Signup in four short steps
 
 - Signup was two dense pages (purpose, name, username, email and password

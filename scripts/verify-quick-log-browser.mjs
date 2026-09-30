@@ -116,27 +116,42 @@ async function scenario(browser, origin, width) {
     const city = page.getByLabel("Concert city, region and country", { exact: true });
     const tour = page.getByLabel("Tour or special event name", { exact: true });
     const post = page.getByRole("button", { name: "Post to feed", exact: true });
+    const headerPost = page.getByRole("button", { name: "Post", exact: true });
     await artist.waitFor();
-    const assertVisibleDetails = async () => {
+    // A new review goes one short step at a time; each step shows all of its
+    // own fields without an expansion tap.
+    const progress = () => page.getByRole("progressbar", { name: "Review progress", exact: true }).getAttribute("aria-valuetext");
+    const next = (name) => page.getByRole("button", { name: `Next: ${name}`, exact: true }).click();
+    const jump = (name) => page.getByRole("button", { name: `Go to ${name}`, exact: true }).click();
+    const assertPlaceDetails = async () => {
+      assert.equal(await tour.isVisible(), true);
+      assert.equal(await city.isVisible(), true);
+      assert.equal(await page.getByLabel("Public event address, optional", { exact: true }).isVisible(), true);
+    };
+    const assertRatings = async () => {
       const ratings = page.getByLabel("Rating", { exact: true });
       assert.equal(await ratings.count(), 6, "Overall, band, room and crowd ratings must all appear without an expansion tap.");
       for (const rating of await ratings.all()) assert.equal(await rating.isVisible(), true);
-      assert.equal(await tour.isVisible(), true);
-      assert.equal(await page.getByLabel("Public event address, optional", { exact: true }).isVisible(), true);
     };
-    await assertVisibleDetails();
-    await artist.fill("Fixture Artist"); await city.fill("Toronto, Ontario, Canada");
+    assert.equal(await progress(), "Step 1 of 4: The show");
+    await artist.fill("Fixture Artist");
+    await page.getByRole("tab", { name: "Online concert review", exact: true }).click();
+    assert.equal(await progress(), "Step 1 of 3: The show", "an online review has three steps");
+    await page.getByRole("tab", { name: "In person concert review", exact: true }).click();
+    await next("Where and when");
+    assert.equal(await progress(), "Step 2 of 4: Where and when");
+    await assertPlaceDetails();
+    await city.fill("Toronto, Ontario, Canada");
     await page.getByRole("button", { name: "I don't remember the concert date", exact: true }).click();
     await page.getByText("Date not remembered", { exact: true }).waitFor();
-    await page.getByRole("tab", { name: "Online concert review", exact: true }).click();
-    await page.getByRole("tab", { name: "In person concert review", exact: true }).click();
-    await page.getByText("Date not remembered", { exact: true }).waitFor();
-    await assertVisibleDetails();
+    await tour.fill("A remembered tour");
+    await page.screenshot({ path: join(shots, `quick-log-${width}-where.png`) });
+    await next("The music");
+    await assertRatings();
     await page.getByLabel("Rating", { exact: true }).first().press("End");
-    assert.equal(await post.isEnabled(), true, "A city-only show with an unknown date and one rating must be publishable.");
+    assert.equal(await headerPost.isEnabled(), true, "A city-only show with an unknown date and one rating must be publishable from any step.");
     await page.getByLabel("Rating", { exact: true }).nth(1).press("End");
     await page.getByRole("button", { name: "Leave performance unrated", exact: true }).click();
-    await tour.fill("A remembered tour");
     const opener = page.getByLabel("Add an opener", { exact: true });
     await opener.fill("Mu");
     const munaSuggestion = page.getByRole("button", { name: "Add MUNA as an opener", exact: true });
@@ -148,12 +163,13 @@ async function scenario(browser, origin, width) {
     await page.getByRole("button", { name: "Remove MUNA", exact: true }).waitFor();
     assert.equal(await opener.inputValue(), "", "Picking a suggestion clears the opener input.");
     assert.equal(await munaSuggestion.count(), 0);
-    await tour.scrollIntoViewIfNeeded();
-    await page.screenshot({ path: join(shots, `quick-log-${width}-details.png`) });
-    const reviewInput = page.getByPlaceholder("What made the night? Be honest - this is what people read.", { exact: true });
-    await reviewInput.fill(review);
     await page.getByText("BAND, ROOM & CROWD", { exact: false }).scrollIntoViewIfNeeded();
     await page.screenshot({ path: join(shots, `quick-log-${width}-ratings.png`) });
+    await next("Your story");
+    assert.equal(await progress(), "Step 4 of 4: Your story");
+    const reviewInput = page.getByPlaceholder("What made the night? Be honest - this is what people read.", { exact: true });
+    await reviewInput.fill(review);
+    await page.screenshot({ path: join(shots, `quick-log-${width}-details.png`) });
     await post.click();
     await page.getByText(/Posting is paused for \d+ second.*Your post is still here\./).waitFor();
     const rateLimitedAttempts = state.writes.length;
@@ -173,10 +189,16 @@ async function scenario(browser, origin, width) {
     const failedAttempts = state.writes.length;
     assert.ok(failedAttempts >= 1); assert.equal(await artist.inputValue(), "Fixture Artist");
     assert.equal(await city.inputValue(), "Toronto, Ontario, Canada"); assert.equal(await reviewInput.inputValue(), review);
-    await assertVisibleDetails();
+    // Every step still holds what was entered after a failed save.
+    await jump("Where and when");
+    await assertPlaceDetails();
     assert.equal(await tour.inputValue(), "A remembered tour");
-    await page.getByText("5.0", { exact: true }).waitFor();
     await page.getByText("Date not remembered", { exact: true }).waitFor();
+    await jump("The music");
+    await assertRatings();
+    await page.getByText("5.0", { exact: true }).waitFor();
+    await jump("Your story");
+    assert.equal(await reviewInput.inputValue(), review);
     assert.equal(await post.isEnabled(), true);
     await page.getByText(failureCopy, { exact: true }).scrollIntoViewIfNeeded();
     await page.screenshot({ path: join(shots, `quick-log-${width}-failed-save.png`) });

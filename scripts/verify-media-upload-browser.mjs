@@ -115,6 +115,8 @@ async function scenario(browser, origin, width) {
   try {
     await page.goto(origin + "/feed", { waitUntil: "domcontentloaded" });
     await page.getByRole("button", { name: "Log a show", exact: true }).last().click();
+    // Photos and the review are on the last step; the step names jump there.
+    await page.getByRole("button", { name: "Go to Your story", exact: true }).click();
     const review = page.getByPlaceholder("What made the night? Be honest - this is what people read.", { exact: true });
     await review.fill("Keep this concert memory during interrupted uploads.");
     await page.getByRole("button", { name: "Photo / video", exact: true }).click();
