@@ -13,6 +13,7 @@ import { newsFeedSurfaceVisible } from "./src/domain/newsReaderState.mjs";
 import Icon from "./src/components/Icon";
 import ErrorBoundary from "./src/components/ErrorBoundary";
 import RuntimeErrorMonitor from "./src/components/RuntimeErrorMonitor";
+import useAppActive from "./src/lib/useAppActive";
 import { configureClientCrashSurface } from "./src/lib/clientCrashReporter";
 import FeedbackHost from "./src/components/FeedbackHost";
 import VerifyEmailBanner from "./src/components/VerifyEmailBanner";
@@ -221,6 +222,7 @@ function Root() {
     removeMyPostTag,
   } = useStore();
   useFeedImpressionSession(session);
+  const appActive = useAppActive();
   const staff = isStaff(session?.role);
   const canViewDiagnostics = isMod(session?.role);
   const feed = visibleFeed(staff);

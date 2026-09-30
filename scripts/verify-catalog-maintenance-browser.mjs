@@ -207,6 +207,12 @@ async function scenario(browser, origin, width, kind) {
   try {
     await page.goto(origin + "/feed", { waitUntil: "domcontentloaded" });
     await page.getByRole("button", { name: "Menu", exact: true }).click();
+    await page.getByRole("button", { name: "Newsroom. Write stories and run live coverage", exact: true }).click();
+    await page.getByText("Newsroom", { exact: true }).first().waitFor();
+    assert.equal(state.errors.some((error) => /appActive is not defined/i.test(error)), false,
+      "opening Newsroom from Feed must not reference an undeclared appActive");
+    await page.getByRole("button", { name: "Back", exact: true }).click();
+    await page.getByRole("button", { name: "Menu", exact: true }).click();
     await page.getByRole("button", { name: "Moderation. Reports, members, and content", exact: true }).click();
     await page.setViewportSize({ width, height: 900 });
     await page.getByRole("tab", { name: "Catalog", exact: true }).click();

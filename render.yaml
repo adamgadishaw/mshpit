@@ -176,7 +176,7 @@ services:
       # These non-secret values sync with the Blueprint. The API key remains
       # dashboard-managed (sync:false); adding it here does not provision it.
       - key: NEWS_DESK_ENABLED
-        value: "true"
+        value: "false"
       - key: NEWS_DESK_DAILY_USD
         value: "0.75"
       - key: NEWS_DESK_MONTHLY_USD
