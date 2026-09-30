@@ -6,6 +6,33 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-09-30 Regional news
+
+- A member's news follows where they live. Each News desk story gets its
+  regions from its own words, with no model cost (`newsRegions.js`): only
+  things happening in a place count ("UK and Ireland stadium dates", "shows
+  in Glasgow", "Official Albums Chart", "Glastonbury", "Juno Awards",
+  "Billboard Hot 100"). Where an artist is from, lives, recorded or died
+  never counts. A story naming two regions, a world tour or a worldwide night
+  (Grammys, Oscars, Super Bowl, VMAs), and every death or court story, is
+  shown everywhere.
+- The reader's region comes from their home city's country (London, Ontario
+  stays in Canada). They can pick another region or Everywhere from the new
+  bar at the top of News ("News for US and Canada. Picked from your city,
+  Toronto. Change"). Table `news_region_prefs` (automatic stores nothing),
+  `GET/PUT /api/me/news-region`, included in the account export and removed
+  with the account.
+- Applied to the News list (paging reads on past hidden stories), top
+  stories (the reader's own city, then their region, rise), the desktop news
+  panel and the For You news slot. An artist's page still shows all of that
+  artist's news. Guests see everything.
+- Stories naming the reader's city get an "In Toronto" marker.
+- Account deletion now also clears who picked a news card photo
+  (`news_card_photos.chosen_by`), like other newsroom attribution.
+- Tests: `newsRegions.test.mjs` (tagging traps: nationality, birthplace,
+  deaths, "us" the pronoun, lists), `newsRegionReader.test.mjs` (paging and
+  top stories), For You regional case, and a `news-region` browser case.
+
 ## 2026-09-28 Discover shows: list view instead of "load more"
 
 - Discover's Shows tab showed four events and a "Load 4 more events" button

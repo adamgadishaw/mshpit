@@ -23,6 +23,8 @@ function NewsStoryCard({ story, post, compact = false, full = false, accountId =
   const photo = newsStoryPhoto(story);
   const sourceLine = newsSourceLine(story);
   const meta = `${newsCategoryLabel(story.category).toUpperCase()} · ${relativeTime(story.publishedAt)}`;
+  // The reader's own city is named in the story (set by the server per reader).
+  const local = typeof story.localTo === "string" && story.localTo ? `In ${story.localTo}` : "";
   const paragraphs = full ? newsStoryParagraphs(story.body) : [];
 
   if (compact) {
@@ -32,7 +34,7 @@ function NewsStoryCard({ story, post, compact = false, full = false, accountId =
         accessibilityLabel={`${story.headline}. ${sourceLine}`}>
         {photo ? <Image source={{ uri: photo }} style={styles.compactPhoto} contentFit="cover" contentPosition="top center" cachePolicy="memory-disk" accessible={false} /> : null}
         <View style={styles.compactCopy}>
-          <Text style={styles.kicker} numberOfLines={1}>{meta}</Text>
+          <Text style={styles.kicker} numberOfLines={1}>{local ? `${local.toUpperCase()} · ${meta}` : meta}</Text>
           <Text style={styles.compactHeadline} numberOfLines={3}>{story.headline}</Text>
           {story.confirmedBy > 1 ? <Text style={styles.compactSources} numberOfLines={1}>{`${story.confirmedBy} outlets`}</Text> : null}
         </View>
@@ -43,6 +45,7 @@ function NewsStoryCard({ story, post, compact = false, full = false, accountId =
   const copy = (
     <>
       <View style={styles.bodyCopy}>
+        {local ? <View style={styles.local}><Icon name="pin" size={11} color={colors.amber} /><Text style={styles.localText}>{local}</Text></View> : null}
         <Text style={full ? styles.headlineFull : styles.headline} accessibilityRole={full ? "header" : undefined}>{story.headline}</Text>
         {story.summary ? <Text style={full ? styles.lede : styles.summary}>{story.summary}</Text> : null}
         {!full && story.body && onOpen ? <Text style={styles.readMore}>Read the full story</Text> : null}
@@ -110,6 +113,8 @@ const styles = StyleSheet.create({
   card: { borderRadius: radius.lg, borderCurve: "continuous", borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surface, padding: 16, gap: 12, marginBottom: 14 },
   head: { flexDirection: "row", alignItems: "center", gap: 8, minHeight: 28 },
   headSpacer: { flex: 1 },
+  local: { alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 4, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, paddingHorizontal: 8, paddingVertical: 2 },
+  localText: { color: colors.text, fontFamily: font, fontSize: 11, fontWeight: "800" },
   badge: { width: 22, height: 22, borderRadius: 11, backgroundColor: colors.amberStrong, alignItems: "center", justifyContent: "center" },
   brand: { color: colors.text, fontFamily: mono, fontSize: 11, fontWeight: "900", letterSpacing: 1.4 },
   kicker: { flexShrink: 1, color: colors.amber, fontFamily: mono, fontSize: 9.5, fontWeight: "800", letterSpacing: 1 },

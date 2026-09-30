@@ -13,6 +13,7 @@ import NewsStoryCard from "./NewsStoryCard";
 import useNewsDeskStories from "./useNewsDeskStories";
 import LiveEventPanel from "./LiveEventPanel";
 import LiveCoverageCard from "./LiveCoverageCard";
+import NewsRegionBar from "./NewsRegionBar";
 
 // The News screen and the artist-page update rows share this lazy chunk.
 // "Music news" is the Mshpit News desk: stories independent outlets confirmed.
@@ -108,6 +109,7 @@ export function NewsScreen({ session = null, liveSlug = null, onClose, onOpenArt
       </View>
       {scope === "news" ? (
         <ScrollView contentContainerStyle={styles.content}>
+          <NewsRegionBar accountId={session?.id || null} onChanged={news.reload} />
           {liveSlug ? <LiveEventPanel slug={liveSlug} /> : <View style={{ marginBottom: space(3) }}><LiveCoverageCard /></View>}
           {news.status === "loading" && !news.stories.length ? <ActivityIndicator color={colors.amber} style={{ marginTop: space(10) }} /> : null}
           {news.status === "error" ? (

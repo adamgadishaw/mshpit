@@ -253,9 +253,15 @@ remains a broad context whose changing value can rerender unrelated consumers.
 - **External links elsewhere:** feed posts, comments and bios still link out
   without the "leaving Mshpit" step that ticket links use. Apply the same
   allowlist and confirm step.
-- **Owner list still open:** regional news by member city, step-by-step
-  signup and review logging, more profile customization. (Festival page look
-  and order, and the Discover list view: done 2026-09-28.)
+- **Owner list still open:** step-by-step signup and review logging, more
+  profile customization. (Festival page look and order, the Discover list
+  view: done 2026-09-28. Regional news: done 2026-09-30.)
+- **Regional news follow-ups:** "Your artists" tour-date updates still list
+  cities anywhere; put dates near the member first. Guests could pick a
+  region too (today they see everything). Watch real stories for tagging
+  misses and add places to `newsRegions.js`.
+- **Festival plans export:** `festival_plans` rows are not in the account
+  export yet; add them.
 - **Discover list:** small festivals that are not in the festival catalog
   now only show on event, city and venue pages. Consider listing them in the
   Festivals tab as "More festivals" from tour dates.

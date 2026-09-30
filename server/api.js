@@ -109,6 +109,7 @@ import { artistUpdatesRoutes } from "./features/artistUpdates/artistUpdatesRoute
 import { createArtistNewsReader } from "./features/artistUpdates/artistNewsReader.js";
 import { startArtistNewsScheduler } from "./features/artistUpdates/artistNewsJob.js";
 import { newsDeskRoutes } from "./features/newsDesk/newsDeskRoutes.js";
+import { newsRegionRoutes, viewerNewsRegion } from "./features/newsDesk/newsRegions.js";
 import { createNewsDeskReader } from "./features/newsDesk/newsDeskService.js";
 import { ensurePrivacyJournalSchema, recordPrivacyEvent, replayPrivacyJournalIfRestored, startPrivacyJournalShipper } from "./privacyJournal.js";
 import { createNewsCardArtworkResolver } from "./features/newsDesk/newsCardArtwork.js";
@@ -4552,6 +4553,7 @@ function eraseAccountData(u, { at = now(), journal = true } = {}) {
   db.prepare("UPDATE news_live_events SET created_by=NULL WHERE created_by=?").run(u.id);
   db.prepare("UPDATE news_live_notes SET created_by=NULL WHERE created_by=?").run(u.id);
   db.prepare("UPDATE news_drafts SET created_by=NULL WHERE created_by=?").run(u.id);
+  db.prepare("UPDATE news_card_photos SET chosen_by=NULL WHERE chosen_by=?").run(u.id);
 
   // These relationships use ON DELETE SET NULL so shared rows can normally
   // survive account changes. Deletion is a privacy erasure, so remove the
@@ -9854,7 +9856,9 @@ export const routes = {
     newId: uid,
     now,
   }) : {}),
-  ...newsDeskRoutes({ rateLimit: limit, reader: newsDeskReader, renderer: socialShareCardRenderer, resolveNewsArtwork }),
+  ...newsDeskRoutes({ rateLimit: limit, reader: newsDeskReader, renderer: socialShareCardRenderer, resolveNewsArtwork,
+    newsRegionFor: (user) => viewerNewsRegion(db, user) }),
+  ...newsRegionRoutes({ database: db, requireUser, rateLimit: limit, ApiError, now }),
   ...newsFeedRoutes({
     database: db, requireUser, rateLimit: limit, ApiError, now,
     project: (postId, viewerId) => {

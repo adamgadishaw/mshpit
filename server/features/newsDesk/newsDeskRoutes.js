@@ -4,7 +4,7 @@ import { ApiError } from "../../errors.js";
 import { newsShareCardModel, SocialShareCardArtworkUnavailableError, SocialShareCardBusyError } from "../socialSharing/socialShareCardRenderer.js";
 
 // Readers enforce bilateral blocks against each post's actual author.
-export function newsDeskRoutes({ rateLimit, reader, renderer, resolveNewsArtwork = null }) {
+export function newsDeskRoutes({ rateLimit, reader, renderer, resolveNewsArtwork = null, newsRegionFor = () => null }) {
   const previewModel = (story) => story ? newsShareCardModel(story, {
     ...(typeof resolveNewsArtwork === "function" ? resolveNewsArtwork(story) : {}),
     variant: "news-link",
@@ -22,7 +22,10 @@ export function newsDeskRoutes({ rateLimit, reader, renderer, resolveNewsArtwork
       // A signed-in reader's answer depends on their blocks, so it is never
       // shared through a cache; guests all see the same public list.
       ctx.setHeader?.("Cache-Control", ctx.user ? "private, no-store" : "public, max-age=120");
-      const result = reader.list({ limit: ctx.query?.limit, before: decodeCursor(ctx.query?.cursor), artist, sort, viewerId: ctx.user?.id || null });
+      // A signed-in reader's news follows their region (newsRegions.js).
+      const place = ctx.user ? newsRegionFor(ctx.user) : null;
+      const result = reader.list({ limit: ctx.query?.limit, before: decodeCursor(ctx.query?.cursor), artist, sort, viewerId: ctx.user?.id || null,
+        region: place?.region || null, city: place?.city || null });
       return {
         stories: result.stories,
         nextCursor: result.nextCursor ? `${result.nextCursor.createdAt}.${result.nextCursor.id}` : null,

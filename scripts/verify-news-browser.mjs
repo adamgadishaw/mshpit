@@ -35,7 +35,12 @@ const deepLink = `/post/${latest.postId}`;
 export const newsBrowserCases = [390, 1280].flatMap(width => [
   { name: `news-feed-${width}`, width, kind: "feed" },
   { name: `news-hidden-deep-link-${width}`, width, kind: "deep-link" },
+  { name: `news-region-${width}`, width, kind: "region" },
 ]);
+const REGION_OPTIONS = [{ id: "us-canada", label: "US and Canada" }, { id: "uk-ireland", label: "UK and Ireland" }, { id: "europe", label: "Europe" }];
+const regionView = (choice) => ({ choice, region: choice === "everywhere" ? null : choice === "auto" ? "us-canada" : choice,
+  label: choice === "everywhere" ? "Everywhere" : REGION_OPTIONS.find((option) => option.id === (choice === "auto" ? "us-canada" : choice))?.label,
+  city: "Toronto", home: "us-canada", homeLabel: "US and Canada", options: REGION_OPTIONS });
 
 async function localServer() {
   const directory = resolve(root, process.env.PIT_NEWS_BROWSER_DIST || process.env.PIT_NAVIGATION_BROWSER_DIST || "dist");
@@ -88,7 +93,8 @@ async function pullToRefresh(page, context) {
 async function scenario(browser, origin, item) {
   const context = await browser.newContext({ viewport: { width: item.width, height: 1100 }, screen: { width: item.width, height: 1100 },
     isMobile: item.width < 620, hasTouch: item.width < 620, reducedMotion: "reduce", serviceWorkers: "block" });
-  const state = { calls: [], errors: [], diagnostics: [], external: [], introductions: 0, receipts: new Map(), liked: false, closing: false };
+  const state = { calls: [], errors: [], diagnostics: [], external: [], introductions: 0, receipts: new Map(), liked: false, closing: false,
+    regionChoice: "auto", regionWrites: [] };
   await context.addInitScript(({ user, origin }) => {
     if (location.origin !== origin) return;
     localStorage.setItem("pit_theme", "stage");
@@ -117,7 +123,16 @@ async function scenario(browser, origin, item) {
       else if (path === "/api/me") result = { user: reader };
       else if (path === "/api/me/following") result = { following: [author.id] };
       else if (path === "/api/me/fanclubs") result = { artists: [] };
-      else if (path === "/api/news-desk/stories") result = { stories: stories.map(news => news.id === latest.id ? { ...news, likes: state.liked ? 1 : 0, likedByMe: state.liked } : news), nextCursor: null };
+      else if (path === "/api/news-desk/stories") result = { stories: stories.map(news => news.id === latest.id ? { ...news, likes: state.liked ? 1 : 0, likedByMe: state.liked,
+        // The server marks a story naming the reader's city while their news follows their region.
+        ...(item.kind === "region" && state.regionChoice === "auto" ? { localTo: "Toronto" } : {}) } : news), nextCursor: null };
+      else if (path === "/api/me/news-region" && method === "GET") result = { newsRegion: regionView(state.regionChoice) };
+      else if (path === "/api/me/news-region" && method === "PUT") {
+        assert.equal(request.headers()["x-pit-expected-account"], reader.id);
+        state.regionChoice = request.postDataJSON()?.choice;
+        state.regionWrites.push(state.regionChoice);
+        result = { newsRegion: regionView(state.regionChoice) };
+      }
       else if (path === "/api/news-desk/live") result = { events: [liveEvent()] };
       else if (path === "/api/news-desk/live/2026-mtv-vmas") result = { event: liveEvent() };
       else if (path === "/api/feed/news-introduction") {
@@ -157,8 +172,24 @@ async function scenario(browser, origin, item) {
   });
   let failure = null;
   try {
-    await page.goto(origin + (item.kind === "deep-link" ? deepLink : "/feed"), { waitUntil: "networkidle" });
-    if (item.kind === "deep-link") {
+    await page.goto(origin + (item.kind === "deep-link" ? deepLink : item.kind === "region" ? "/news" : "/feed"), { waitUntil: "networkidle" });
+    if (item.kind === "region") {
+      // Where the news comes from: the member's home city picks the region.
+      await page.getByText("News for US and Canada", { exact: true }).waitFor();
+      await page.getByText("Picked from your city, Toronto.", { exact: true }).waitFor();
+      await page.getByText("In Toronto", { exact: true }).first().waitFor();
+      await page.getByRole("button", { name: "Change where your news comes from", exact: true }).click();
+      mkdirSync(join(root, ".tmp", "news-browser"), { recursive: true });
+      await page.screenshot({ path: join(root, ".tmp", "news-browser", `news-region-${item.width}.png`) });
+      const reads = state.calls.filter(call => call.path === "/api/news-desk/stories").length;
+      await page.getByRole("radio", { name: "Everywhere", exact: true }).click();
+      await page.getByText("News from everywhere", { exact: true }).waitFor();
+      assert.deepEqual(state.regionWrites, ["everywhere"]);
+      await until(() => state.calls.filter(call => call.path === "/api/news-desk/stories").length > reads, "Changing the region did not reload the stories.");
+      await until(async () => await page.getByText("In Toronto", { exact: true }).count() === 0, "The local marker follows the new region.");
+      assert.equal(await page.getByRole("radio", { name: "Everywhere", exact: true }).count(), 0, "the picker closes after a choice");
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false);
+    } else if (item.kind === "deep-link") {
       await page.getByText(latestTitle, { exact: true }).last().waitFor();
       assert.equal(state.calls.filter(call => call.path === "/api/feed/news-introduction").length, 0,
         "A For You screen mounted underneath a deep-link overlay must not consume an introduction.");

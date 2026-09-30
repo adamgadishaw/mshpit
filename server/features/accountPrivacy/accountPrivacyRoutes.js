@@ -1,4 +1,5 @@
 import { exportArtistVerification } from "../artistAccounts/artistVerificationExport.js";
+import { readNewsRegionChoice } from "../newsDesk/newsRegions.js";
 
 const EXPORT_LIMIT_WINDOW_MS = 10 * 60 * 1000;
 const EMAIL_PREFERENCE_WINDOW_MS = 60 * 60 * 1000;
@@ -96,6 +97,8 @@ export function accountPrivacyRoutes({
           "This synchronous export includes all current feed preferences plus up to 5,000 recently viewed posts, 300 plays, 1,000 sent and received messages, 200 notifications, 5,000 activity events, 1,000 posts tagging you, and 1,000 tags you removed. A queued archive job is required before production-scale launch.",
         ],
         profile: projectSelf(user),
+        // Where this account's news comes from: "auto" follows the home city.
+        newsRegion: { choice: readNewsRegionChoice(database, user.id) },
         // Earlier shows you told Mshpit you saw an artist at, before logging them.
         seenBeforeLogging: database.prepare("SELECT artist_ref AS artist, count, updated_at AS updatedAt FROM artist_seen_baselines WHERE user_id=? ORDER BY artist_ref").all(user.id),
         membershipMilestone: (() => {

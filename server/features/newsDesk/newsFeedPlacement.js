@@ -1,4 +1,5 @@
 import { activeAccountSql } from "../../accountVisibility.js";
+import { newsStoryVisibleIn, viewerNewsRegion } from "./newsRegions.js";
 
 const RECENT_MS = 3 * 24 * 60 * 60_000;
 const key = (value) => { const raw = String(value || "").normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase().trim(); return raw.replace(/[^\p{L}\p{N}]+/gu, " ").trim() || raw; };
@@ -23,7 +24,7 @@ export function eligibleNewsPosts(database, viewer, at = Date.now()) {
   const followed = new Set(json(viewer.favorite_artists).map(key).filter(Boolean));
   for (const row of database.prepare("SELECT artist FROM fan_club_members WHERE user_id=? LIMIT 200").all(viewer.id)) followed.add(key(row.artist));
   if (!followed.size || !database.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='news_stories'").get()) return [];
-  const rows = database.prepare(`SELECT s.post_id,s.created_at,s.artist_keys FROM news_stories s
+  const rows = database.prepare(`SELECT s.post_id,s.created_at,s.artist_keys,s.headline,s.summary,s.body,s.category FROM news_stories s
     JOIN posts p ON p.id=s.post_id JOIN users u ON u.id=p.user_id
     WHERE s.status='published' AND p.removed=0 AND ${activeAccountSql("u")}
       AND s.created_at>=? AND s.created_at<=?
@@ -32,7 +33,9 @@ export function eligibleNewsPosts(database, viewer, at = Date.now()) {
       AND NOT EXISTS(SELECT 1 FROM recommendation_preferences r WHERE r.user_id=? AND r.post_id=p.id)
     ORDER BY s.created_at DESC,s.id DESC LIMIT 200`).all(at - RECENT_MS, at, viewer.id, viewer.id, viewer.id, viewer.id);
   const artist = database.prepare("SELECT name FROM artists WHERE norm=?");
-  return rows.filter((row) => json(row.artist_keys).some((id) => followed.has(key(artist.get(id)?.name))));
+  // Pushed into the feed, so it follows the reader's region like News does.
+  const { region } = viewerNewsRegion(database, viewer);
+  return rows.filter((row) => newsStoryVisibleIn(row, region) && json(row.artist_keys).some((id) => followed.has(key(artist.get(id)?.name))));
 }
 
 // A user command, never an impression or a side effect of prefetching. The

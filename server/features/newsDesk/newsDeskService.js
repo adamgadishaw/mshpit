@@ -8,6 +8,7 @@ import { clusterReports, headlineTokens, independentGroups, isConfirmed, looksLi
 import { EDITORIAL, publishingSlot, storyScore, topStoryScore, twoPublisherFallbackAllowed } from "./newsEditorial.js";
 import { MAX_REPORTS, storyPrompt, worstCaseCostUsd } from "./newsSummarizer.js";
 import { artistDiscoverPhotoUri, deezerImageUrl } from "../artistPhotos/discoverPhoto.js";
+import { newsStoryMentionsCity, newsStoryRegions, newsStoryVisibleIn } from "./newsRegions.js";
 
 // The news desk: reads established music outlets, groups reports about the
 // same event, and publishes a story from the news account only when
@@ -651,48 +652,71 @@ const readerBlockSql = (viewerId) => viewerId ? `AND NOT EXISTS (SELECT 1 FROM b
   WHERE (b.blocker_id=? AND b.blocked_id=p.user_id) OR (b.blocker_id=p.user_id AND b.blocked_id=?))` : "";
 const readerBlockParams = (viewerId) => viewerId ? [String(viewerId), String(viewerId)] : [];
 
-function listTopStories(database, { limit = 20, at = Date.now(), viewerId = null } = {}) {
+// A reader's region (newsRegions.js) hides stories that only matter somewhere
+// else. Their own city named in a story marks it local.
+const withLocal = (story, row, city) => (city && newsStoryMentionsCity(row, city) ? { ...story, localTo: city } : story);
+
+function listTopStories(database, { limit = 20, at = Date.now(), viewerId = null, region = null, city = null } = {}) {
   const bounded = pageSize(limit);
   const rows = database.prepare(`SELECT s.id,s.headline,s.summary,s.body,s.category,s.artist_keys,s.sources,s.post_id,s.created_at,s.updated_at,s.score,
       p.user_id AS author_id,u.name AS author_name,u.handle AS author_handle
     FROM news_stories s JOIN posts p ON p.id=s.post_id JOIN users u ON u.id=p.user_id
     WHERE s.status='published' AND p.removed=0 AND ${activeAccountSql("u")} AND s.created_at>=? ${readerBlockSql(viewerId)}
-    ORDER BY s.created_at DESC,s.id DESC LIMIT 150`).all(at - 72 * HOUR, ...readerBlockParams(viewerId));
+    ORDER BY s.created_at DESC,s.id DESC LIMIT 150`).all(at - 72 * HOUR, ...readerBlockParams(viewerId))
+    .filter((row) => newsStoryVisibleIn(row, region));
   const engagement = (sql, postId) => ignoreMissingTable(() => Number(database.prepare(sql).get(postId)?.n) || 0);
   const artistLookup = database.prepare("SELECT norm,name,public_slug,photo,data FROM artists WHERE norm=?");
+  // News from the reader's own city, then their region, rises in top stories.
+  const lift = (row) => (city && newsStoryMentionsCity(row, city) ? 1.5 : region && newsStoryRegions(row).includes(region) ? 1.2 : 1);
   return {
-    stories: rows.map((row) => ({ row, top: topStoryScore({
+    stories: rows.map((row) => ({ row, top: lift(row) * topStoryScore({
       score: row.score,
       likes: engagement("SELECT COUNT(*) AS n FROM likes WHERE post_id=?", row.post_id),
       comments: engagement("SELECT COUNT(*) AS n FROM comments WHERE post_id=? AND removed=0", row.post_id),
       views: engagement("SELECT view_count AS n FROM post_impression_totals WHERE post_id=?", row.post_id),
       ageHours: (at - row.created_at) / HOUR,
     }) })).sort((left, right) => right.top - left.top || right.row.created_at - left.row.created_at)
-      .slice(0, bounded).map(({ row }) => newsStoryJson(row, artistLookup, database, viewerId)),
+      .slice(0, bounded).map(({ row }) => withLocal(newsStoryJson(row, artistLookup, database, viewerId), row, city)),
     nextCursor: null,
   };
 }
 
 // `artist` narrows the list to stories about one catalogue artist (its key).
 // `sort: "top"` returns top stories instead of the newest.
-function listStories(database, { limit = 20, before = null, artist = null, sort = "latest", at = Date.now(), viewerId = null } = {}) {
-  if (sort === "top" && !artist) return listTopStories(database, { limit, at, viewerId });
-  const bounded = pageSize(limit);
-  const cursor = before && Number.isSafeInteger(before.createdAt) ? before : null;
+// A story about one artist is shown wherever it happened: the reader asked for
+// that artist. Otherwise `region` hides stories that only matter elsewhere.
+function listStories(database, { limit = 20, before = null, artist = null, sort = "latest", at = Date.now(), viewerId = null, region = null, city = null } = {}) {
   const artistKey = typeof artist === "string" && artist.trim() ? artist.trim().slice(0, 200) : null;
-  const rows = database.prepare(`SELECT s.id,s.headline,s.summary,s.body,s.category,s.artist_keys,s.sources,s.post_id,s.created_at,s.updated_at,
+  const readerRegion = artistKey ? null : region;
+  const readerCity = artistKey ? null : city;
+  if (sort === "top" && !artistKey) return listTopStories(database, { limit, at, viewerId, region: readerRegion, city: readerCity });
+  const bounded = pageSize(limit);
+  let cursor = before && Number.isSafeInteger(before.createdAt) ? before : null;
+  const page = (after, size) => database.prepare(`SELECT s.id,s.headline,s.summary,s.body,s.category,s.artist_keys,s.sources,s.post_id,s.created_at,s.updated_at,
       p.user_id AS author_id,u.name AS author_name,u.handle AS author_handle
     FROM news_stories s JOIN posts p ON p.id=s.post_id JOIN users u ON u.id=p.user_id
     WHERE s.status='published' AND p.removed=0 AND ${activeAccountSql("u")}
       ${readerBlockSql(viewerId)}
       ${artistKey ? "AND EXISTS (SELECT 1 FROM json_each(s.artist_keys) j WHERE j.value=?)" : ""}
-      ${cursor ? "AND (s.created_at<? OR (s.created_at=? AND s.id<?))" : ""}
+      ${after ? "AND (s.created_at<? OR (s.created_at=? AND s.id<?))" : ""}
     ORDER BY s.created_at DESC,s.id DESC LIMIT ?`)
-    .all(...readerBlockParams(viewerId), ...(artistKey ? [artistKey] : []), ...(cursor ? [cursor.createdAt, cursor.createdAt, cursor.id] : []), bounded + 1);
+    .all(...readerBlockParams(viewerId), ...(artistKey ? [artistKey] : []), ...(after ? [after.createdAt, after.createdAt, after.id] : []), size);
+  // Filtering can empty a page, so read on in bounded batches until the page
+  // is full or the stories run out.
+  const rows = [];
+  let exhausted = false;
+  for (let scan = 0; scan < (readerRegion ? 8 : 1) && rows.length <= bounded && !exhausted; scan += 1) {
+    const size = readerRegion ? 100 : bounded + 1;
+    const batch = page(cursor, size);
+    exhausted = batch.length < size;
+    rows.push(...batch.filter((row) => newsStoryVisibleIn(row, readerRegion)));
+    if (batch.length) cursor = { createdAt: batch[batch.length - 1].created_at, id: batch[batch.length - 1].id };
+  }
   const artistLookup = database.prepare("SELECT norm,name,public_slug,photo,data FROM artists WHERE norm=?");
-  const stories = rows.slice(0, bounded).map((row) => newsStoryJson(row, artistLookup, database, viewerId));
+  const stories = rows.slice(0, bounded).map((row) => withLocal(newsStoryJson(row, artistLookup, database, viewerId), row, readerCity));
   const last = rows.length > bounded ? rows[bounded - 1] : null;
-  return { stories, nextCursor: last ? { createdAt: last.created_at, id: last.id } : null };
+  const nextCursor = last ? { createdAt: last.created_at, id: last.id } : !exhausted && readerRegion ? cursor : null;
+  return { stories, nextCursor };
 }
 
 function newsStoryJson(row, artistLookup, database, viewerId = null) {

@@ -14,7 +14,8 @@ function fixture(path = ":memory:") {
     CREATE TABLE users(id TEXT PRIMARY KEY,is_banned INTEGER DEFAULT 0,dormant_at INTEGER,suspended_until INTEGER);
     CREATE TABLE posts(id TEXT PRIMARY KEY,user_id TEXT REFERENCES users(id),removed INTEGER DEFAULT 0);
     CREATE TABLE artists(norm TEXT PRIMARY KEY,name TEXT);
-    CREATE TABLE news_stories(id TEXT PRIMARY KEY,post_id TEXT,status TEXT,created_at INTEGER,artist_keys TEXT);
+    CREATE TABLE news_stories(id TEXT PRIMARY KEY,post_id TEXT,status TEXT,created_at INTEGER,artist_keys TEXT,
+      headline TEXT NOT NULL DEFAULT '',summary TEXT NOT NULL DEFAULT '',body TEXT NOT NULL DEFAULT '',category TEXT NOT NULL DEFAULT 'other');
     CREATE TABLE fan_club_members(user_id TEXT,artist TEXT);
     CREATE TABLE blocks(blocker_id TEXT,blocked_id TEXT);
     CREATE TABLE account_mutes(muter_id TEXT,muted_id TEXT);
@@ -24,7 +25,7 @@ function fixture(path = ":memory:") {
     INSERT INTO artists VALUES('moon-walker','Moon Walker'),('russ','Russ');`);
   const add = (id, artist, age = 0, author = "author") => {
     db.prepare("INSERT INTO posts(id,user_id) VALUES(?,?)").run(`news_${id}`, author);
-    db.prepare("INSERT INTO news_stories VALUES(?,?,?,?,?)").run(id, `news_${id}`, "published", NOW - age, JSON.stringify([artist]));
+    db.prepare("INSERT INTO news_stories(id,post_id,status,created_at,artist_keys) VALUES(?,?,?,?,?)").run(id, `news_${id}`, "published", NOW - age, JSON.stringify([artist]));
   };
   add("latest", "moon-walker"); add("earlier", "moon-walker", 1000); add("unrelated", "russ");
   ensureNewsFeedSchema(db);
@@ -40,6 +41,16 @@ test("guests and unrelated listeners receive no news; explicit favorite and fan-
     assert.deepEqual(eligibleNewsPosts(db, viewer, NOW).map(r => r.post_id), ["news_latest", "news_earlier"]);
     db.exec("INSERT INTO fan_club_members VALUES('other','moon walker')");
     assert.equal(eligibleNewsPosts(db, { id: "other" }, NOW).length, 2);
+  } finally { db.close(); }
+});
+test("news pushed into For You follows the reader's region", () => {
+  const db = fixture();
+  try {
+    db.prepare("UPDATE news_stories SET headline=? WHERE id='latest'").run("Moon Walker adds UK and Ireland stadium dates");
+    const toronto = { ...viewer, home_city: "Toronto, Ontario, Canada" };
+    assert.deepEqual(eligibleNewsPosts(db, toronto, NOW).map((row) => row.post_id), ["news_earlier"], "UK-only dates are not pushed to Toronto");
+    assert.deepEqual(eligibleNewsPosts(db, { ...viewer, home_city: "Glasgow, Scotland, United Kingdom" }, NOW).map((row) => row.post_id), ["news_latest", "news_earlier"]);
+    assert.deepEqual(eligibleNewsPosts(db, viewer, NOW).map((row) => row.post_id), ["news_latest", "news_earlier"], "no home city means everything");
   } finally { db.close(); }
 });
 test("newest introduction is durable, idempotent, per-account, and not a synthetic view", () => {
