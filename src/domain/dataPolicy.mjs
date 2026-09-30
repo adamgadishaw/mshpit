@@ -20,7 +20,7 @@ export function publicProfileCacheEntry(user) {
   if (!isObject(user) || !user.id) return null;
   const keys = [
     "id", "name", "handle", "role", "verified", "sponsor", "artistName",
-    "bio", "avatarUri", "avatarColor", "banner", "initials", "profileUpdatedAt",
+    "bio", "avatarUri", "avatarColor", "banner", "initials", "profileUpdatedAt", "accent", "pronouns",
     ...(MUSIC_PLAYER_ENABLED ? ["nowPlaying"] : []),
   ];
   const projected = Object.fromEntries(keys.filter((key) => user[key] !== undefined).map((key) => [key, user[key]]));
@@ -29,6 +29,7 @@ export function publicProfileCacheEntry(user) {
   if (Number.isSafeInteger(user.artistFollowingCount) && user.artistFollowingCount >= 0) projected.artistFollowingCount = user.artistFollowingCount;
   if (Array.isArray(user.genres)) projected.genres = user.genres.filter((value) => typeof value === "string").slice(0, 12);
   if (Array.isArray(user.favoriteArtists)) projected.favoriteArtists = user.favoriteArtists.filter((value) => typeof value === "string").slice(0, 50);
+  if (Array.isArray(user.favoriteShows)) projected.favoriteShows = user.favoriteShows.filter((value) => typeof value === "string").slice(0, 4);
   if (typeof user.home?.city === "string" && user.home.city) projected.home = { city: user.home.city };
   return projected;
 }

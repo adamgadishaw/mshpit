@@ -3134,7 +3134,10 @@ export function publicUser(u, { self = false, badges = false } = {}) {
   if (extras.nowPlaying && (!contentSafetyDecision(extras.nowPlaying.title).safe || !contentSafetyDecision(extras.nowPlaying.artist).safe)) {
     delete extras.nowPlaying;
   }
-  const publicExtraKeys = MUSIC_PLAYER_ENABLED ? ["theme", "nowPlaying"] : ["theme"];
+  if (extras.pronouns && !contentSafetyDecision(extras.pronouns).safe) delete extras.pronouns;
+  // Accent, pronouns and pinned favorite shows are the member's own public
+  // personalisation (the pinned ids are resolved to cards by the profile route).
+  const publicExtraKeys = [...(MUSIC_PLAYER_ENABLED ? ["theme", "nowPlaying"] : ["theme"]), "accent", "pronouns", "favoriteShows"];
   const selfExtraKeys = [
     "consentAt", "analyticsConsentAt", "termsAcceptedAt", "termsVersion",
     "analyticsOptOut", "searchIndexingOptOut",

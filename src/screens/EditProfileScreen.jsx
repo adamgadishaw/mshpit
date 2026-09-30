@@ -24,6 +24,9 @@ import {
   profileGenreSelection,
 } from "../domain/genrePreferences.mjs";
 import { cleanHandle, isHandle } from "../domain/validation.mjs";
+import { PROFILE_ACCENT_OPTIONS, PROFILE_FAVORITE_SHOWS_MAX, PROFILE_PRONOUNS_MAX, pinnableShow, profileAccentColor, toggleFavoriteShow } from "../domain/profileAccents.mjs";
+import { formatDate } from "../domain/dates.mjs";
+import { useProfileHistory } from "../features/profileHistory/useProfileHistory";
 
 const AVATAR_IMAGE_HINT = profileImageSelectionHint("avatar");
 const BANNER_IMAGE_HINT = profileImageSelectionHint("banner");
@@ -47,6 +50,13 @@ export default function EditProfileScreen({ onClose }) {
   const [uploadingBanner, setUploadingBanner] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
+  // Make it yours: pronouns, an accent colour and up to four favorite shows.
+  const [pronouns, setPronouns] = useState(session?.pronouns || "");
+  const [accent, setAccent] = useState(session?.accent || null);
+  const [favoriteShows, setFavoriteShows] = useState(() => (Array.isArray(session?.favoriteShows) ? session.favoriteShows : []));
+  const history = useProfileHistory({ accountId: session?.id, targetId: session?.id, enabled: !!session?.id });
+  const myShows = (Array.isArray(history.posts) ? history.posts : []).filter(pinnableShow);
+  const historyLoading = ["idle", "loading", "refreshing"].includes(history.status);
 
   if (pickingCity) {
     return (
@@ -157,6 +167,9 @@ export default function EditProfileScreen({ onClose }) {
       const result = await Promise.resolve(updateProfile({
         name: name.trim() || session.name, bio: bio.trim(), avatarUri, banner, genres: genreSelection.genres, initials, home,
         ...(handleChanged ? { handle } : {}),
+        pronouns: pronouns.trim() || null, accent: accent || null,
+        // Pins whose review is gone are dropped rather than failing the save.
+        favoriteShows: history.status === "ready" && !history.nextCursor ? favoriteShows.filter((id) => myShows.some((post) => post.id === id)) : favoriteShows,
       }, { expectedAccountId: task.accountId, signal: task.controller.signal }));
       if (!task.isCurrent()) return;
       if (result?.ok !== false) onClose?.();
@@ -279,6 +292,57 @@ export default function EditProfileScreen({ onClose }) {
         </View>
         {!!genreError && <Text style={styles.genreError} accessibilityRole="alert" accessibilityLiveRegion="assertive">{genreError}</Text>}
 
+        <Text style={styles.sectionTitle} accessibilityRole="header">Make it yours</Text>
+        <Text style={styles.genreHint}>Everything here shows on your public profile.</Text>
+
+        <Text style={styles.label}>PRONOUNS</Text>
+        <TextInput style={styles.input} value={pronouns} onChangeText={setPronouns} placeholder="e.g. she/her, he/him, they/them" placeholderTextColor={colors.textFaint}
+          maxLength={PROFILE_PRONOUNS_MAX} autoCapitalize="none" autoCorrect={false} accessibilityLabel="Pronouns, optional" />
+
+        <Text style={styles.label}>ACCENT COLOR</Text>
+        <View style={[styles.accentPreview, { backgroundColor: profileAccentColor(accent) || colors.surfaceAlt }]} accessible={false}>
+          {banner ? <Image source={{ uri: banner }} style={StyleSheet.absoluteFill} resizeMode="cover" /> : null}
+          <View style={[styles.accentPreviewStripe, { backgroundColor: profileAccentColor(accent) || colors.line }]} />
+        </View>
+        <View style={styles.accentRow} accessibilityRole="radiogroup" accessibilityLabel="Profile accent color">
+          <Pressable style={[styles.accentSwatch, styles.accentNone, !accent && styles.accentOn]} onPress={() => setAccent(null)}
+            accessibilityRole="radio" accessibilityState={{ checked: !accent }} accessibilityLabel="No accent color">
+            <Icon name="x" size={14} color={colors.textDim} />
+          </Pressable>
+          {PROFILE_ACCENT_OPTIONS.map((option) => (
+            <Pressable key={option.id} style={[styles.accentSwatch, { backgroundColor: option.color }, accent === option.id && styles.accentOn]} onPress={() => setAccent(option.id)}
+              accessibilityRole="radio" accessibilityState={{ checked: accent === option.id }} accessibilityLabel={`${option.label} accent`}>
+              {accent === option.id ? <Icon name="check" size={15} color="#1A1206" /> : null}
+            </Pressable>
+          ))}
+        </View>
+
+        <View style={styles.genreHeading}>
+          <Text style={styles.label}>FAVORITE SHOWS</Text>
+          <Text style={styles.genreCount}>{favoriteShows.length}/{PROFILE_FAVORITE_SHOWS_MAX} pinned</Text>
+        </View>
+        <Text style={styles.genreHint}>Pin up to four of your reviews to the top of your profile, in the order you pick them.</Text>
+        {historyLoading && !myShows.length ? <Text style={styles.genreHint}>Loading your reviews...</Text> : null}
+        {!historyLoading && !myShows.length ? <Text style={styles.genreHint}>Review a show and it can be pinned here.</Text> : null}
+        <View style={styles.showList}>
+          {myShows.slice(0, 30).map((post) => {
+            const order = favoriteShows.indexOf(post.id);
+            const on = order >= 0;
+            const full = !on && favoriteShows.length >= PROFILE_FAVORITE_SHOWS_MAX;
+            return (
+              <Pressable key={post.id} style={[styles.showRow, on && styles.showRowOn, full && styles.showRowFull]} onPress={() => setFavoriteShows((current) => toggleFavoriteShow(current, post.id))}
+                disabled={full} accessibilityRole="checkbox" accessibilityState={{ checked: on, disabled: full }}
+                accessibilityLabel={`${on ? `Pinned ${order + 1}. ` : ""}${post.artist || post.onlineTitle}${post.venue ? ` at ${post.venue}` : ""}`}>
+                <View style={[styles.showPin, on && styles.showPinOn]}><Text style={[styles.showPinText, on && styles.showPinTextOn]}>{on ? order + 1 : ""}</Text></View>
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={styles.showArtist} numberOfLines={1}>{post.artist || post.onlineTitle}</Text>
+                  <Text style={styles.showMeta} numberOfLines={1}>{[post.venue || post.city, post.date ? formatDate(post.date, post.date) : ""].filter(Boolean).join(" · ")}</Text>
+                </View>
+              </Pressable>
+            );
+          })}
+        </View>
+
         {!!saveError && <Text style={styles.saveError} accessibilityRole="alert" accessibilityLiveRegion="assertive">{saveError}</Text>}
 
         <Button title={saving ? "Saving profile..." : mediaBusy ? "Uploading photo..." : "Save profile"} icon="check" onPress={save} disabled={mediaBusy || saving || !genreSelection.valid || handleInvalid} style={{ marginTop: 28 }} />
@@ -336,6 +400,23 @@ const styles = StyleSheet.create({
   chipOn: { borderColor: colors.amber, backgroundColor: colors.bgElev },
   chipTxt: { color: colors.textDim, fontSize: 13 },
   chipTxtOn: { color: colors.amber, fontWeight: "700" },
+  sectionTitle: { color: colors.text, fontSize: 18, fontWeight: "900", marginTop: 30, marginBottom: 4 },
+  accentPreview: { height: 56, borderRadius: radius.md, overflow: "hidden", borderWidth: 1, borderColor: colors.line, justifyContent: "flex-end", marginBottom: 10 },
+  accentPreviewStripe: { height: 6 },
+  accentRow: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
+  accentSwatch: { width: 38, height: 38, borderRadius: 19, alignItems: "center", justifyContent: "center", borderWidth: 2, borderColor: "transparent" },
+  accentNone: { backgroundColor: colors.surface, borderColor: colors.line },
+  accentOn: { borderColor: colors.text },
+  showList: { gap: 8 },
+  showRow: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: colors.surface, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.line, paddingHorizontal: 12, paddingVertical: 10 },
+  showRowOn: { borderColor: colors.amber },
+  showRowFull: { opacity: 0.5 },
+  showPin: { width: 26, height: 26, borderRadius: 13, borderWidth: 1.5, borderColor: colors.line, alignItems: "center", justifyContent: "center" },
+  showPinOn: { backgroundColor: colors.amberStrong, borderColor: colors.amberStrong },
+  showPinText: { color: colors.textDim, fontSize: 12, fontWeight: "900" },
+  showPinTextOn: { color: "#1A1206" },
+  showArtist: { color: colors.text, fontSize: 14, fontWeight: "800" },
+  showMeta: { color: colors.textDim, fontSize: 12, marginTop: 1 },
   primary: { backgroundColor: colors.amberStrong, borderRadius: radius.md, paddingVertical: 15, alignItems: "center", marginTop: 28 },
   primaryTxt: { color: "#1A1206", fontSize: 15, fontWeight: "800", letterSpacing: 1 },
 });

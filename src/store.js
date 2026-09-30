@@ -1623,8 +1623,9 @@ export function StoreProvider({ children }) {
     let followers;
     let following;
     let fol;
+    let favoriteShows;
     try {
-      ({ user: su, followers, following, isFollowing: fol } = await api(`/api/users/${encodeURIComponent(id)}`, {
+      ({ user: su, followers, following, isFollowing: fol, favoriteShows } = await api(`/api/users/${encodeURIComponent(id)}`, {
         signal,
         silent: true,
         context: "Loading this profile",
@@ -1652,7 +1653,8 @@ export function StoreProvider({ children }) {
     // loader metadata-only prevents ProfileScreen from issuing two identical
     // head reads and lets history failures retry without downgrading valid
     // profile identity/follower metadata.
-    return { status: "ready", reason: "confirmed", evict: false, user: su, error: "" };
+    // The member's pinned favorite shows travel with the profile read, not the user cache.
+    return { status: "ready", reason: "confirmed", evict: false, user: su, error: "", favoriteShows: Array.isArray(favoriteShows) ? favoriteShows.slice(0, 4) : [] };
   };
   // Recent searches are device-local but identity-scoped. The old global key is
   // eligible to seed the guest bucket only; a signed-in account must never see
@@ -3390,7 +3392,7 @@ export function StoreProvider({ children }) {
     const accountMutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
     // General profile edits cannot optimistically adopt permissions or replay a
     // whole privacy/consent snapshot. Those choices have dedicated mutations.
-    const editableFields = ["name", "bio", "handle", "avatarUri", "banner", "concertMapVisible", "home", "genres", "favoriteArtists", "nowPlaying", "treble", "bass", "playlists"];
+    const editableFields = ["name", "bio", "handle", "avatarUri", "banner", "concertMapVisible", "home", "genres", "favoriteArtists", "nowPlaying", "treble", "bass", "playlists", "accent", "pronouns", "favoriteShows"];
     const safe = Object.fromEntries(editableFields.filter((key) => Object.hasOwn(patch || {}, key)).map((key) => [key, patch[key]]));
     if (Object.prototype.hasOwnProperty.call(safe, "genres")) {
       const genreSelection = profileGenreSelection(safe.genres);
@@ -3420,7 +3422,7 @@ export function StoreProvider({ children }) {
 
     // The server merges this bounded envelope. Send changed music fields only;
     // never replay older theme, consent, privacy, or unrelated music choices.
-    const changedExtras = ["nowPlaying", "treble", "bass", "playlists"].filter((key) => key in safe);
+    const changedExtras = ["nowPlaying", "treble", "bass", "playlists", "accent", "pronouns", "favoriteShows"].filter((key) => key in safe);
     if (changedExtras.length) body.extras = Object.fromEntries(changedExtras.map((key) => [key, safe[key]]));
     if (!Object.keys(body).length) return Promise.resolve({ ok: true, patch: safe });
 

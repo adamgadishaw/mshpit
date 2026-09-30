@@ -253,8 +253,13 @@ remains a broad context whose changing value can rerender unrelated consumers.
 - **External links elsewhere:** feed posts, comments and bios still link out
   without the "leaving Mshpit" step that ticket links use. Apply the same
   allowlist and confirm step.
-- **Owner list still open:** more profile customization. (Step-by-step
-  signup and review logging: done 2026-09-30.) (Festival page look and order, the Discover list
+- **Owner list:** all items from the 2026-09-28 list are done (profile
+  customization 2026-09-30). Next ideas: pin from a review's own menu, a
+  profile theme song from YouTube, and favorite venues.
+- **Startup bundle:** 509.1 of 512 KiB after the profile fields in the store.
+  Move something out of the startup path before the next store change.
+- **Profile browser suite:** no committed browser case covers Edit profile
+  and the favorite shows cards yet; add one. (Festival page look and order, the Discover list
   view: done 2026-09-28. Regional news: done 2026-09-30.)
 - **Regional news follow-ups:** "Your artists" tour-date updates still list
   cities anywhere; put dates near the member first. Guests could pick a

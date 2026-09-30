@@ -6,6 +6,23 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-09-30 Profiles: favorite shows, accent colour, pronouns
+
+- Edit profile has a "Make it yours" section: pronouns (24 characters,
+  shown after the @username), an accent colour from eight (the banner when
+  there is no photo, a stripe under the banner, the favorite show cards),
+  and Favorite shows: up to four of the member's own reviews pinned to the
+  top of their profile, in the order picked.
+- Stored in the existing validated profile extras (`accent`, `pronouns`,
+  `favoriteShows`); no schema change. The server checks that pins are the
+  member's own live show reviews (not plain posts, not someone else's) and
+  screens pronouns like other authored text. `GET /api/users/:id` returns
+  small cards for the pins; a pin whose review is removed drops out. null or
+  an empty list clears. All three are public and in the account export.
+- Tests: `server/profileCustomization.test.mjs` (save, ownership, order,
+  removal, clearing), `src/domain/profileAccents.test.mjs` (client palette
+  and limits match the server).
+
 ## 2026-09-30 Reviewing a show in steps
 
 - A new show or festival review is no longer one long form. It goes The

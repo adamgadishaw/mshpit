@@ -110,6 +110,7 @@ import { createArtistNewsReader } from "./features/artistUpdates/artistNewsReade
 import { startArtistNewsScheduler } from "./features/artistUpdates/artistNewsJob.js";
 import { newsDeskRoutes } from "./features/newsDesk/newsDeskRoutes.js";
 import { newsRegionRoutes, viewerNewsRegion } from "./features/newsDesk/newsRegions.js";
+import { favoriteShowCards } from "./features/profileCustomization/favoriteShows.js";
 import { createNewsDeskReader } from "./features/newsDesk/newsDeskService.js";
 import { ensurePrivacyJournalSchema, recordPrivacyEvent, replayPrivacyJournalIfRestored, startPrivacyJournalShipper } from "./privacyJournal.js";
 import { createNewsCardArtworkResolver } from "./features/newsDesk/newsCardArtwork.js";
@@ -6257,7 +6258,16 @@ export const routes = {
       assertSafeAuthoredFields({
         "now-playing title": incomingExtras.value.nowPlaying?.title,
         "now-playing artist": incomingExtras.value.nowPlaying?.artist,
+        pronouns: incomingExtras.value.pronouns || undefined,
       });
+      // Favorite shows are the member's own live show reviews, never someone
+      // else's post or a plain status.
+      const pinned = incomingExtras.value.favoriteShows;
+      if (Array.isArray(pinned) && pinned.length) {
+        const owned = db.prepare(`SELECT COUNT(*) AS n FROM posts WHERE user_id=? AND removed=0 AND COALESCE(kind,'review')<>'status'
+          AND id IN (${pinned.map(() => "?").join(",")})`).get(u.id, ...pinned).n;
+        if (owned !== pinned.length) throw new ApiError(400, "Pick up to four of your own show reviews.", "VALIDATION_FAILED");
+      }
     }
 
     const [profileErrors, v] = shape(ctx.body, {
@@ -6366,6 +6376,13 @@ export const routes = {
           // playlists array are explicit clears, while omission retains data.
           for (const key of ["theme", "nowPlaying", "treble", "bass", "playlists"]) {
             if (Object.hasOwn(incomingExtras.value, key)) next[key] = incomingExtras.value[key];
+          }
+          // Profile personalisation: null or an empty list removes it.
+          for (const key of ["accent", "pronouns", "favoriteShows"]) {
+            if (!Object.hasOwn(incomingExtras.value, key)) continue;
+            const value = incomingExtras.value[key];
+            if (value === null || (Array.isArray(value) && !value.length)) delete next[key];
+            else next[key] = value;
           }
           const pendingHandle = pendingSignupHandle(stored);
           if (pendingHandle) next.pendingSignupHandle = pendingHandle;
@@ -6481,7 +6498,9 @@ export const routes = {
     const { followers, following, artistFollowing } = connections.counts(ctx, u);
     const isFollowing = ctx.user ? !!db.prepare("SELECT 1 FROM follows WHERE follower_id=? AND followee_id=?").get(ctx.user.id, u.id) : false;
     ctx.setHeader?.("Cache-Control", "private, no-store");
-    return { user: { ...publicUser(u), artistFollowingCount: artistFollowing }, followers, following, isFollowing };
+    const profile = publicUser(u);
+    return { user: { ...profile, artistFollowingCount: artistFollowing }, followers, following, isFollowing,
+      favoriteShows: favoriteShowCards(db, { userId: u.id, ids: profile.favoriteShows, parseArray: parseJsonArray }) };
   },
 
   // Lists and artist subscriptions share the profile audience/block boundary.
