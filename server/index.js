@@ -645,6 +645,13 @@ async function handleRequest(req, res) {
       const capacityChallengeHeader = req.headers["x-pit-capacity-challenge"];
       const capacityChallenge = Array.isArray(capacityChallengeHeader)
         ? capacityChallengeHeader[0] : capacityChallengeHeader;
+      // The disabled-by-default Media API receives its bearer credential only
+      // in the route context. It is never copied into logs, cookies, or the
+      // ordinary session user identity.
+      const mediaApiAuthorization = typeof req.headers.authorization === "string"
+        ? req.headers.authorization : "";
+      const mediaApiIdempotencyKey = typeof req.headers["idempotency-key"] === "string"
+        ? req.headers["idempotency-key"] : "";
 
       const setCookies = [];
       const responseHeaders = createApiResponseHeaders();
@@ -661,6 +668,8 @@ async function handleRequest(req, res) {
         query, params: match.params, ip, ua: req.headers["user-agent"], token, user,
         host: req.headers.host, proto, origin: `${proto}://${req.headers.host}`, requestId,
         capacityChallenge,
+        mediaApiAuthorization,
+        mediaApiIdempotencyKey,
         signal: requestAbort.signal,
         setCookie: (c) => setCookies.push(c),
         setSession: (s) => setCookies.push(...sessionCookieHeaders(s.token, s.expiresAt, PROD)),

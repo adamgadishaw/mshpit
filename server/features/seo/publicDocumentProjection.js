@@ -473,20 +473,34 @@ function postCard(row, media, paths, { textLimit = 8_000 } = {}) {
 // A Mshpit News story's page: its own headline, the full write-up, the
 // artists it is about (linked to their pages) and every outlet that reported
 // it. The link-preview image is the story's news card.
-function newsStoryPostDocument({ story, card, comments, path, origin, paths }) {
+export function newsStoryPostDocument({ story, card, comments, path, origin, paths }) {
   const pageUrl = absolute(origin, path);
   const headline = cleanLine(story.headline, 160);
   const summaryText = cleanLine(story.summary, 400);
-  const body = String(story.body || "").split(/\n\s*\n/u).map((paragraph) => cleanLine(paragraph, 1200)).filter(Boolean).join("\n\n");
+  const body = story.origin === "self_written"
+    ? cleanBody(story.body, 60_000)
+    : String(story.body || "").split(/\n\s*\n/u).map((paragraph) => cleanLine(paragraph, 1200)).filter(Boolean).join("\n\n");
   const artists = (story.artists || []).map((artist) => {
     const name = cleanLine(artist?.name, 160);
     const artistPagePath = name ? canonicalArtistPath(paths, { name, public_slug: artist.publicSlug || null }) : null;
     return name ? Object.freeze({ name, path: artistPagePath }) : null;
   }).filter(Boolean);
   const sources = (story.sources || []).filter((source) => /^https:\/\//u.test(String(source?.url || "")))
-    .map((source) => Object.freeze({ name: cleanLine(source.name, 80), url: source.url, title: cleanLine(source.title, 200) }));
+    .map((source) => Object.freeze({
+      kind: source.kind === "photo" ? "photo" : "article",
+      name: cleanLine(source.name, 80), url: source.url, title: cleanLine(source.title, 200),
+      ...(source.credit ? { credit: cleanLine(source.credit, 240) } : {}),
+    }));
   const publishedAt = isoTimestamp(story.publishedAt);
-  const image = absolute(origin, `/api/news-desk/stories/${encodeURIComponent(story.id)}/image.png`);
+  // The news reader's media projection has already proved that this exact
+  // post attachment is ready and publicly deliverable. Do not reuse the
+  // ordinary post-owner projection here: a self-written photo is uploaded by
+  // the editor and then deliberately attached to the news publisher's post.
+  const selectedPhoto = story.origin === "self_written"
+    ? (story.media || []).find((asset) => asset?.kind === "image" && publicHttpsUrl(asset.url))
+    : null;
+  const selectedPhotoUrl = publicHttpsUrl(selectedPhoto?.url);
+  const image = selectedPhotoUrl || absolute(origin, `/api/news-desk/stories/${encodeURIComponent(story.id)}/image.png`);
   const organization = { "@type": "Organization", name: "Mshpit News", url: absolute(origin, "/news") };
   const breadcrumbs = Object.freeze([
     Object.freeze({ name: "Mshpit", path: "/" }),
@@ -509,7 +523,7 @@ function newsStoryPostDocument({ story, card, comments, path, origin, paths }) {
     author: organization,
     publisher: organizationReference(origin),
     articleSection: newsCategoryLabel(story.category),
-    ...(sources.length ? { citation: sources.map((source) => source.url) } : {}),
+    ...(sources.some((source) => source.kind === "article") ? { citation: sources.filter((source) => source.kind === "article").map((source) => source.url) } : {}),
     ...(artists.length ? { about: artists.map((artist) => ({ "@type": "MusicGroup", name: artist.name, ...(artist.path ? { url: absolute(origin, artist.path) } : {}) })) } : {}),
     commentCount: card.comments,
     isPartOf: siteReference(origin),
@@ -522,10 +536,10 @@ function newsStoryPostDocument({ story, card, comments, path, origin, paths }) {
     canonicalPath: path,
     canonicalUrl: pageUrl,
     image,
-    imageProvenance: "news-card",
-    imageWidth: 1200,
-    imageHeight: 630,
-    imageMimeType: "image/png",
+    imageProvenance: selectedPhotoUrl ? "self-written-article-photo" : "news-card",
+    imageWidth: Number(selectedPhoto?.width) || 1200,
+    imageHeight: Number(selectedPhoto?.height) || 630,
+    imageMimeType: selectedPhoto?.mimeType || "image/png",
     imageAlt: headline,
     video: null,
     publishedAt: story.publishedAt,
@@ -533,7 +547,9 @@ function newsStoryPostDocument({ story, card, comments, path, origin, paths }) {
     post: card,
     news: Object.freeze({
       headline, summary: summaryText, body, category: newsCategoryLabel(story.category),
-      artists: Object.freeze(artists), sources: Object.freeze(sources), publishedAt: story.publishedAt,
+      artists: Object.freeze(artists), sources: Object.freeze(sources),
+      image: selectedPhotoUrl ? Object.freeze({ url: selectedPhotoUrl, alt: cleanLine(selectedPhoto.altText || headline, 180) }) : null,
+      publishedAt: story.publishedAt,
     }),
     comments,
     breadcrumbs,

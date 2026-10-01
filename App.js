@@ -1345,7 +1345,7 @@ function Root() {
   else if (nav.festival?.slug) overlay = <FestivalScreen key={`${session?.id || "guest"}:${nav.festival.slug}`} slug={nav.festival.slug} editionId={nav.festival.editionId || null}
     signedIn={!!session} accountId={session?.id || null} author={session ? { name: session.name } : null} onClose={back} onOpenArtist={openArtist} onRequireAuth={openSignIn}
     onReviewFestival={(prefill) => requireVerifiedMutation("review", () => go({ logging: true, prefill }))} />;
-  else if (nav.newsroom) overlay = <NewsroomScreen key={`${session?.id || "guest"}:newsroom`} accountId={session?.id || null} role={session?.role || null} active={appActive} onClose={back} />;
+  else if (nav.newsroom) overlay = <NewsroomScreen closeGuardRef={composerCloseGuardRef} key={`${session?.id || "guest"}:newsroom`} accountId={session?.id || null} role={session?.role || null} active={appActive} onClose={back} />;
   else if (nav.festivals) overlay = <FestivalsHubScreen onClose={back} onOpenFestival={openFestival} />;
   else if (nav.news) overlay = <NewsScreen key={`${session?.id || "guest"}:${nav.liveSlug || ""}`} liveSlug={nav.liveSlug || null} session={session} onClose={back} onOpenArtist={openArtist} onOpenProfile={openProfile} onReport={openReport} onOpenStory={openNewsStory} onRequireAuth={openSignIn} />;
   else if (ENABLE_CREW && nav.crew) overlay = <CrewScreen key={session?.id || "guest"} initialTab={nav.crew?.tab === "plans" ? "plans" : "shows"} onClose={back} onOpenShow={openShow} onOpenLounge={(log) => go({ lounge: log })} onRequireAuth={openSignIn} />;

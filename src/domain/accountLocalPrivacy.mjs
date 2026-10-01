@@ -1,3 +1,4 @@
+import { newsroomDraftStorageKey } from "./newsroomComposition.mjs";
 import { venueReviewStorageKey } from "./accountMediaCache.mjs";
 import { artistPageCacheStorageKeys } from "./artistPageCache.mjs";
 import { commentCacheStorageKey } from "./commentCache.mjs";
@@ -69,6 +70,7 @@ export function accountScopedPrivateStorageKeys(accountId) {
     youtubeVideoRejectionStorageKey(id),
     productAnalyticsStorageKey(id),
     diagnosticsStorageKey(id),
+    newsroomDraftStorageKey(id),
   ].filter(Boolean);
 }
 

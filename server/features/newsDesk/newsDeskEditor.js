@@ -8,9 +8,10 @@
 // day. Publishing a reviewed draft costs nothing and skips the publishing
 // slots; the sourcing rules do not change: two independent outlets, three for
 // deaths and legal news, each from the outlets the desk reads.
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { verifiedOwnedReadyMedia } from "../../publicMedia.js";
 import { claudeRequestDefinitelyRejected } from "../../claudeSpendCeiling.js";
-import { createArtistMatcher, createNewsDesk } from "./newsDeskService.js";
+import { createArtistMatcher, createNewsDesk, normalizeSelfWrittenStory } from "./newsDeskService.js";
 import { fetchArticleText, newsDeskConfigured } from "./newsDeskJob.js";
 import { articleLead, plainText } from "./newsFeedParser.js";
 import { NEWS_SOURCES, sourceOwnsUrl } from "./newsSources.js";
@@ -24,6 +25,7 @@ const DRAFT_TTL_MS = 24 * HOUR;
 export const DRAFTS_PER_DAY = 10;
 const MAX_LINKS = 3;
 const CANDIDATES = 8;
+const MANUAL_SAVE_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/u;
 
 // `code` is an existing ERROR_CATALOG code; the message is shown to the owner.
 export class NewsEditorError extends Error {
@@ -43,11 +45,32 @@ export function ensureNewsDraftSchema(database) {
     result TEXT NOT NULL,
     cost_usd REAL NOT NULL DEFAULT 0,
     created_by TEXT,
+    created_actor_type TEXT,
+    created_actor_label TEXT,
+    created_grant_id TEXT,
+    revision INTEGER NOT NULL DEFAULT 0 CHECK(revision >= 0),
     story_post_id TEXT,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
   );
-  CREATE INDEX IF NOT EXISTS idx_news_drafts_created ON news_drafts(created_at);`);
+  CREATE INDEX IF NOT EXISTS idx_news_drafts_created ON news_drafts(created_at);
+  CREATE TABLE IF NOT EXISTS news_editor_save_receipts (
+    actor_id TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    payload_hash TEXT NOT NULL,
+    draft_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    PRIMARY KEY(actor_id,idempotency_key)
+  );
+  CREATE INDEX IF NOT EXISTS idx_news_editor_save_receipts_expiry
+    ON news_editor_save_receipts(expires_at);`);
+  const columns = new Set(database.prepare("PRAGMA table_info(news_drafts)").all().map((column) => column.name));
+  if (!columns.has("origin")) database.exec("ALTER TABLE news_drafts ADD COLUMN origin TEXT NOT NULL DEFAULT 'generated'");
+  if (!columns.has("created_actor_type")) database.exec("ALTER TABLE news_drafts ADD COLUMN created_actor_type TEXT");
+  if (!columns.has("created_actor_label")) database.exec("ALTER TABLE news_drafts ADD COLUMN created_actor_label TEXT");
+  if (!columns.has("created_grant_id")) database.exec("ALTER TABLE news_drafts ADD COLUMN created_grant_id TEXT");
+  if (!columns.has("revision")) database.exec("ALTER TABLE news_drafts ADD COLUMN revision INTEGER NOT NULL DEFAULT 0");
 }
 
 // Different owners first, so a flood from one publisher cannot push
@@ -93,10 +116,28 @@ export function articleTitle(html) {
   return plainText(title, 300).replace(/\s+/gu, " ").trim();
 }
 
-function draftJson(row, at) {
+function draftPhoto(database, row, photo) {
+  if (!photo) return null;
+  // Preview only the saved writer's image. Do not sign or expose its private
+  // original, or accept a URL supplied by the article/rights source.
+  const ownerId = photo.assetOwnerId;
+  const candidate = ownerId && ownerId === row.created_by
+    ? database.prepare("SELECT v.public_url FROM media_assets a JOIN media_variants v "
+      + "ON v.id=a.render_variant_id AND v.asset_id=a.id AND v.role='render' "
+      + "WHERE a.id=? AND a.owner_id=? AND a.kind='image' AND a.purpose='post'").get(photo.assetId, ownerId)?.public_url : null;
+  const verified = candidate ? verifiedOwnedReadyMedia(database, { ownerId, url: candidate, kind: "image" }) : null;
+  const url = verified?.id === photo.assetId ? candidate : null;
+  return { assetId: photo.assetId, source: photo.source || null, url, status: url ? "ready" : "unavailable" };
+}
+
+function draftJson(database, row, at) {
   const result = JSON.parse(row.result);
   const reports = JSON.parse(row.reports);
   const supporting = new Set((result.supporting || []).map((item) => item.url));
+  const origin = row.origin === "self_written" ? "self_written" : "generated";
+  const sources = origin === "self_written"
+    ? (Array.isArray(result.sources) ? result.sources : [])
+    : reports.map((report) => ({ kind: "article", name: report.sourceName, url: report.url, used: supporting.has(report.url) }));
   return {
     id: row.id,
     status: row.status,
@@ -105,10 +146,19 @@ function draftJson(row, at) {
     summary: result.summary || "",
     body: result.body || "",
     category: result.category || null,
+    origin,
     reason: row.status === "declined" ? result.reason || "not publishable" : null,
     costUsd: Number(row.cost_usd) || 0,
-    sources: reports.map((report) => ({ name: report.sourceName, url: report.url, used: supporting.has(report.url) })),
+    revision: Number.isSafeInteger(Number(row.revision)) ? Number(row.revision) : 0,
+    sources,
+    photo: origin === "self_written" ? draftPhoto(database, row, result.photo) : null,
+    wordCount: origin === "self_written" ? Number(result.wordCount) || 0 : null,
     postId: row.story_post_id || null,
+    writer: row.created_actor_type && row.created_actor_label ? {
+      actorType: row.created_actor_type,
+      actorLabel: row.created_actor_label,
+      grantId: row.created_grant_id || null,
+    } : null,
     createdAt: row.created_at,
   };
 }
@@ -135,7 +185,7 @@ export function createNewsDeskEditor({ database, env = process.env, now = Date.n
     }
   };
 
-  const draftsToday = (at) => Number(database.prepare("SELECT COUNT(*) AS n FROM news_drafts WHERE created_at>=?").get(at - 24 * HOUR).n) || 0;
+  const draftsToday = (at) => Number(database.prepare("SELECT COUNT(*) AS n FROM news_drafts WHERE origin='generated' AND created_at>=?").get(at - 24 * HOUR).n) || 0;
 
   async function ranked(reports, at) {
     if (!reports.length) return [];
@@ -251,15 +301,52 @@ export function createNewsDeskEditor({ database, env = process.env, now = Date.n
       };
       const saved = reports.map(({ tokens: _tokens, storyId: _storyId, ...report }) => report);
       return saveMutation(() => {
-        database.prepare(`INSERT INTO news_drafts (id,status,reports,result,cost_usd,created_by,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)`)
+        database.prepare(`INSERT INTO news_drafts (id,status,reports,result,cost_usd,created_by,origin,created_at,updated_at) VALUES (?,?,?,?,?,?,'generated',?,?)`)
           .run(id, written ? "draft" : "declined", JSON.stringify(saved), JSON.stringify(stored), Number(result.costUsd) || 0, actorId, at, now());
-        const savedDraft = draftJson(database.prepare("SELECT * FROM news_drafts WHERE id=?").get(id), now());
+        const savedDraft = draftJson(database, database.prepare("SELECT * FROM news_drafts WHERE id=?").get(id), now());
         onSaved?.(savedDraft);
         return savedDraft;
       });
     } finally {
       writing = false;
     }
+  }
+
+  function writeSelfWritten({ headline, summary, body, category, sources, photo, actorId = null,
+    actorType = null, actorLabel = null, grantId = null, idempotencyKey = null, onSaved } = {}) {
+    if (typeof actorId !== "string" || !actorId.trim()) fail("VALIDATION_FAILED", "A verified editor account is required.");
+    let story;
+    try { story = normalizeSelfWrittenStory({ headline, summary, body, category, sources, photo }, { assetOwnerId: actorId }); }
+    catch (error) { fail("VALIDATION_FAILED", error.message || "The self-written story is not valid."); }
+    const key = typeof idempotencyKey === "string" && idempotencyKey.trim() ? idempotencyKey.trim() : null;
+    if (key && !MANUAL_SAVE_KEY.test(key)) fail("VALIDATION_FAILED", "The save key is invalid.");
+    const payloadHash = key ? createHash("sha256").update(JSON.stringify(story), "utf8").digest("hex") : null;
+    const id = newId();
+    const at = now();
+    return saveMutation(() => {
+      if (key) {
+        database.prepare("DELETE FROM news_editor_save_receipts WHERE expires_at<=?").run(at);
+        const existing = database.prepare(`SELECT payload_hash,draft_id FROM news_editor_save_receipts
+          WHERE actor_id=? AND idempotency_key=?`).get(actorId, key);
+        if (existing) {
+          if (existing.payload_hash !== payloadHash) fail("CONFLICT", "That save key belongs to a different article.");
+          const existingRow = database.prepare("SELECT * FROM news_drafts WHERE id=?").get(existing.draft_id);
+          if (!existingRow) fail("CONFLICT", "That saved draft is no longer available. Start a fresh draft.");
+          return draftJson(database, existingRow, now());
+        }
+      }
+      const result = { ...story, photo: story.photo, reason: "", costUsd: 0 };
+      database.prepare(`INSERT INTO news_drafts
+        (id,status,reports,result,cost_usd,created_by,created_actor_type,created_actor_label,created_grant_id,origin,revision,created_at,updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,'self_written',0,?,?)`)
+        .run(id, "draft", "[]", JSON.stringify(result), 0, actorId, actorType, actorLabel, grantId, at, now());
+      if (key) database.prepare(`INSERT INTO news_editor_save_receipts
+        (actor_id,idempotency_key,payload_hash,draft_id,created_at,expires_at) VALUES (?,?,?,?,?,?)`)
+        .run(actorId, key, payloadHash, id, at, at + DRAFT_TTL_MS);
+      const savedDraft = draftJson(database, database.prepare("SELECT * FROM news_drafts WHERE id=?").get(id), now());
+      onSaved?.(savedDraft);
+      return savedDraft;
+    });
   }
 
   function readDraft(id) {
@@ -269,21 +356,35 @@ export function createNewsDeskEditor({ database, env = process.env, now = Date.n
   }
 
   // Synchronous from start to finish, so one draft can never publish twice.
-  function publish(id, { onPublished } = {}) {
+  function publish(id, { expectedRevision = null, onPublished } = {}) {
     const row = readDraft(id);
     if (row.status !== "draft") fail("CONFLICT", row.status === "published" ? "That draft is already published." : "That draft cannot be published.");
     if (now() - row.created_at > DRAFT_TTL_MS) fail("CONFLICT", "That draft is more than a day old. Write a fresh one so the facts are current.");
+    if (expectedRevision !== null && (!Number.isSafeInteger(Number(expectedRevision)) || Number(expectedRevision) !== Number(row.revision || 0))) {
+      fail("CONFLICT", "That draft has changed. Refresh before publishing.");
+    }
+    if (row.origin === "self_written") {
+      const result = JSON.parse(row.result);
+      const written = tools.publishSelfWrittenStory({ result, at: now(), onPublished: ({ postId }) => {
+        const changed = database.prepare("UPDATE news_drafts SET status='published',story_post_id=?,revision=revision+1,updated_at=? WHERE id=? AND status='draft' AND revision=?")
+          .run(postId, now(), row.id, Number(row.revision || 0));
+        if (!changed.changes) fail("CONFLICT", "That draft has changed. Refresh before publishing.");
+        onPublished?.({ draft: draftJson(database, readDraft(row.id), now()), postId });
+      } });
+      if (!written) fail("CONFLICT", "The news publisher is not ready for a self-written story.");
+      return { draft: draftJson(database, readDraft(row.id), now()), postId: written.postId };
+    }
     const reports = JSON.parse(row.reports).map((report) => ({ ...report, tokens: headlineTokens(report.title) }));
     const result = JSON.parse(row.result);
     const written = tools.publishStory({ reports, result, at: now(), costUsd: result.costUsd, minPublishers: 2, manual: true,
       signals: { manual: true }, onPublished: ({ postId }) => {
-        const changed = database.prepare("UPDATE news_drafts SET status='published',story_post_id=?,updated_at=? WHERE id=? AND status='draft'")
-          .run(postId, now(), row.id);
+        const changed = database.prepare("UPDATE news_drafts SET status='published',story_post_id=?,revision=revision+1,updated_at=? WHERE id=? AND status='draft' AND revision=?")
+          .run(postId, now(), row.id, Number(row.revision || 0));
         if (!changed.changes) fail("CONFLICT", "That draft has changed. Refresh before publishing.");
-        onPublished?.({ draft: draftJson(readDraft(row.id), now()), postId });
+        onPublished?.({ draft: draftJson(database, readDraft(row.id), now()), postId });
       } });
     if (!written) fail("CONFLICT", "It could not be published: the news account needs review, or the sources were already used or no longer qualify.");
-    return { draft: draftJson(readDraft(row.id), now()), postId: written.postId };
+    return { draft: draftJson(database, readDraft(row.id), now()), postId: written.postId };
   }
 
   function discard(id, { onDiscarded } = {}) {
@@ -291,7 +392,7 @@ export function createNewsDeskEditor({ database, env = process.env, now = Date.n
       const row = readDraft(id);
       if (row.status === "published") fail("CONFLICT", "A published story is taken down from its post, not from the draft.");
       database.prepare("UPDATE news_drafts SET status='discarded',updated_at=? WHERE id=? AND status IN ('draft','declined')").run(now(), row.id);
-      const discarded = draftJson(readDraft(row.id), now());
+      const discarded = draftJson(database, readDraft(row.id), now());
       onDiscarded?.(discarded);
       return discarded;
     });
@@ -302,17 +403,18 @@ export function createNewsDeskEditor({ database, env = process.env, now = Date.n
     const recent = database.prepare(`SELECT * FROM news_drafts WHERE status<>'discarded' AND created_at>=?
       ORDER BY created_at DESC,id DESC LIMIT 10`).all(at - 3 * 24 * HOUR);
     const typical = Number(database.prepare(`SELECT AVG(cost_usd) AS usd FROM (SELECT cost_usd FROM news_drafts
-      WHERE cost_usd>0 ORDER BY created_at DESC LIMIT 10)`).get()?.usd) || 0.02;
+      WHERE origin='generated' AND cost_usd>0 ORDER BY created_at DESC LIMIT 10)`).get()?.usd) || 0.02;
     return {
       configured: !!summarize,
+      manualEnabled: true,
       publisherReady: desk.publisherStatus().ok === true,
       budget: { leftTodayUsd: Math.max(0, Math.round(desk.budgetLeft() * 100) / 100), dailyUsd: tools.budget.dailyUsd,
         monthlyUsd: tools.budget.monthlyUsd, typicalDraftUsd: Math.round(typical * 1000) / 1000 },
-      drafts: { last24h: draftsToday(at), limit: draftsPerDay, recent: recent.map((row) => draftJson(row, at)) },
+      drafts: { last24h: draftsToday(at), limit: draftsPerDay, recent: recent.map((row) => draftJson(database, row, at)) },
       candidates: await candidates(at),
       ...(query ? { query: String(query).slice(0, 120), matches: await search(query, at) } : {}),
     };
   }
 
-  return { overview, candidates, search, draft, publish, discard };
+  return { overview, candidates, search, draft, writeSelfWritten, publish, discard };
 }

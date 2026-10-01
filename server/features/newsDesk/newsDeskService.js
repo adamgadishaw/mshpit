@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { admitClaudeSpend, claudeCeilingLeftMicroUsd, claudeRequestDefinitelyRejected } from "../../claudeSpendCeiling.js";
 import { activeAccountSql } from "../../accountVisibility.js";
+import { assertSafeAuthoredText } from "../../contentSafety.js";
+import { attachNewsPostMedia, postMediaProjection } from "../../mediaAssets.js";
 import { resolveNewsPublisher } from "./newsPublisherIdentity.js";
 import { NEWS_SOURCES, newsSourceById, sourceOwnsUrl } from "./newsSources.js";
 import { articleLead, parseNewsFeed } from "./newsFeedParser.js";
-import { clusterReports, headlineTokens, independentGroups, isConfirmed, looksLikeNews, newsCategory, SENSITIVE_CATEGORIES, similarity, storyCategory, validatedSupportingReports } from "./newsStoryRules.js";
+import { clusterReports, headlineTokens, independentGroups, isConfirmed, looksLikeNews, newsCategory, PUBLISHABLE_CATEGORIES, SENSITIVE_CATEGORIES, similarity, storyCategory, validatedSupportingReports } from "./newsStoryRules.js";
 import { EDITORIAL, publishingSlot, storyScore, topStoryScore, twoPublisherFallbackAllowed } from "./newsEditorial.js";
 import { MAX_REPORTS, storyPrompt, worstCaseCostUsd } from "./newsSummarizer.js";
 import { artistDiscoverPhotoUri, deezerImageUrl } from "../artistPhotos/discoverPhoto.js";
@@ -35,6 +37,11 @@ export const newsDeskBudget = (env = process.env) => ({
 // Articles read per story: one per publisher group, so the write-up has more
 // than headlines to go on.
 const ARTICLES_PER_STORY = 4;
+const MANUAL_HEADLINE_MAX = 180;
+const MANUAL_SUMMARY_MAX = 700;
+const MANUAL_BODY_MAX = 60_000;
+const MANUAL_SOURCE_MAX = 10;
+const MANUAL_WORD_MINIMUM = 1_000;
 function positiveNumber(value, fallback) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
@@ -108,6 +115,77 @@ export function mshpitFans(database, artist, at = Date.now()) {
 }
 
 const parseJson = (value, fallback) => { try { const parsed = JSON.parse(value); return parsed ?? fallback; } catch { return fallback; } };
+const wordCount = (value) => String(value || "").trim().split(/\s+/u).filter(Boolean).length;
+
+function safeSourceUrl(value) {
+  try {
+    const url = new URL(String(value || "").trim());
+    if (url.protocol !== "https:" || url.username || url.password || url.port || !url.hostname) return null;
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+export function normalizeSelfWrittenSources(value) {
+  if (!Array.isArray(value) || value.length < EDITORIAL.minOutlets || value.length > MANUAL_SOURCE_MAX) {
+    throw new TypeError(`Add at least ${EDITORIAL.minOutlets} independent article sources.`);
+  }
+  const seen = new Set();
+  const articleSources = value.map((source) => {
+    if (!source || typeof source !== "object" || source.kind !== "article") throw new TypeError("Article sources must be marked as article sources.");
+    const name = String(source.name || "").trim().slice(0, 160);
+    const url = safeSourceUrl(source.url);
+    const configured = NEWS_SOURCES.find((candidate) => sourceOwnsUrl(candidate, url));
+    const title = String(source.title || "").trim().slice(0, 240);
+    if (name.length < 2 || !url || !configured || seen.has(url)) throw new TypeError("Every article source must be a distinct URL from a configured music publisher.");
+    if (name.toLocaleLowerCase() !== configured.name.toLocaleLowerCase()) throw new TypeError("Use the configured publisher name for each article source.");
+    assertSafeAuthoredText(name, { field: "source name" });
+    if (title) assertSafeAuthoredText(title, { field: "source title" });
+    seen.add(url);
+    return { kind: "article", sourceId: configured.id, group: configured.group, name: configured.name, url, ...(title ? { title } : {}) };
+  });
+  if (!isConfirmed(articleSources, { minPublishers: EDITORIAL.minOutlets })) {
+    throw new TypeError(`Use at least ${EDITORIAL.minOutlets} independent music-publisher groups; photo sources do not count.`);
+  }
+  return articleSources;
+}
+
+export function normalizeSelfWrittenPhoto(value, assetOwnerId) {
+  if (!value || typeof value !== "object" || typeof value.assetId !== "string" || !value.assetId.trim()) {
+    throw new TypeError("Choose a verified photo before saving the story.");
+  }
+  const provenance = value.source && typeof value.source === "object" ? value.source : value;
+  const name = String(provenance.name || "").trim().slice(0, 160);
+  const url = safeSourceUrl(provenance.url);
+  const credit = String(provenance.credit || "").trim().slice(0, 240);
+  if (name.length < 2 || !url) throw new TypeError("Add the photo source name and secure URL.");
+  assertSafeAuthoredText(name, { field: "photo source name" });
+  if (credit) assertSafeAuthoredText(credit, { field: "photo credit" });
+  return { assetId: value.assetId.trim(), assetOwnerId: String(assetOwnerId || ""), source: {
+    kind: "photo", name, url, ...(credit ? { credit } : {}),
+  } };
+}
+
+export function normalizeSelfWrittenStory({ headline, summary, body, category, sources, photo } = {}, { assetOwnerId } = {}) {
+  const cleanHeadline = String(headline || "").replace(/\s+/gu, " ").trim().slice(0, MANUAL_HEADLINE_MAX);
+  const cleanSummary = String(summary || "").replace(/\s+/gu, " ").trim().slice(0, MANUAL_SUMMARY_MAX);
+  const cleanBody = String(body || "").replace(/\r\n?/gu, "\n").trim().slice(0, MANUAL_BODY_MAX);
+  if (cleanHeadline.length < 8 || cleanSummary.length < 20 || wordCount(cleanBody) < MANUAL_WORD_MINIMUM) {
+    throw new TypeError(`A self-written story needs a headline, summary, and at least ${MANUAL_WORD_MINIMUM} words.`);
+  }
+  assertSafeAuthoredText(cleanHeadline, { field: "headline" });
+  assertSafeAuthoredText(cleanSummary, { field: "summary" });
+  assertSafeAuthoredText(cleanBody, { field: "article" });
+  if (!looksLikeNews(cleanHeadline)) throw new TypeError("Use a factual music-news headline, not a review, opinion, or gossip headline.");
+  const derivedCategory = newsCategory(`${cleanHeadline}\n${cleanSummary}\n${cleanBody.slice(0, 4_000)}`);
+  if (!PUBLISHABLE_CATEGORIES.includes(derivedCategory)) throw new TypeError("The story must describe a publishable music-news event such as a release, tour, festival, award, chart, legal or death news.");
+  const cleanCategory = derivedCategory;
+  const articleSources = normalizeSelfWrittenSources(sources);
+  const cleanPhoto = normalizeSelfWrittenPhoto(photo, assetOwnerId);
+  return { headline: cleanHeadline, summary: cleanSummary, body: cleanBody, category: cleanCategory,
+    artists: [], sources: [...articleSources, cleanPhoto.source], photo: cleanPhoto, wordCount: wordCount(cleanBody) };
+}
 const dayOf = (at) => new Date(at).toISOString().slice(0, 10);
 
 // Catalogue artists a headline names. Only artists with an audience take part,
@@ -441,6 +519,37 @@ export function createNewsDesk({ database, fetchText, fetchArticle = null, summa
     return { id, postId };
   }
 
+  // Self-written stories have no generated report cluster and must never use a
+  // photo as evidence. They still use the bound news publisher and the same
+  // short publication transaction as generated news.
+  function publishSelfWrittenStory({ result, at, onPublished = null }) {
+    const story = normalizeSelfWrittenStory({ ...result,
+      sources: (Array.isArray(result?.sources) ? result.sources : []).filter((source) => source?.kind === "article"),
+    }, { assetOwnerId: result?.photo?.assetOwnerId });
+    const id = newId();
+    const postId = `news_${id}`;
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      at = now();
+      const account = newsAccount();
+      if (!account) { database.exec("ROLLBACK"); return null; }
+      database.prepare(`INSERT INTO posts (id,user_id,artist,artist_key,venue,city,date,overall,review,kind,created_at)
+        VALUES (?,?,?,?,'','','',0,?,'status',?)`).run(postId, account.id, "", null, story.summary, at);
+      const sources = story.sources.map((source) => ({ ...source }));
+      database.prepare(`INSERT INTO news_stories (id,status,headline,summary,body,category,artist_keys,sources,post_id,cost_usd,score,signals,created_at,updated_at)
+        VALUES (?,'published',?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, story.headline, story.summary, story.body, story.category, "[]",
+        JSON.stringify(sources), postId, 0, 0, JSON.stringify({ manual: true, origin: "self_written", wordCount: story.wordCount }), at, at);
+      attachNewsPostMedia(database, { postId, publisherId: account.id, assetOwnerId: story.photo.assetOwnerId,
+        assetId: story.photo.assetId, at });
+      onPublished?.({ id, postId });
+      database.exec("COMMIT");
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
+    return { id, postId };
+  }
+
   function declineStory({ reports, result, at, score = 0, signals = {} }) {
     const id = newId();
     database.exec("BEGIN IMMEDIATE");
@@ -597,13 +706,22 @@ export function createNewsDesk({ database, fetchText, fetchArticle = null, summa
     publisherStatus: () => resolveNewsPublisher(database, { env, at: now() }),
     // For owner-chosen stories (newsDeskEditor.js): the same report shape,
     // article leads, spending receipts and publication rules as the desk.
-    editorTools: { reportRow, withArticleLeads, admitCall, settleSpend, markUncertain, publishStory, rankCandidates, budget } };
+    editorTools: { reportRow, withArticleLeads, admitCall, settleSpend, markUncertain, publishStory, publishSelfWrittenStory, rankCandidates, budget } };
 }
 
 // Public reads: newest published stories whose post is still live.
 // `ensureSchema: false` is for read-only connections such as the sitemap
 // snapshot; a missing table there simply means no stories yet.
 const missingTable = (error) => /no such (table|column)/iu.test(String(error?.message));
+const newsSignalsSelect = (database) => {
+  try {
+    database.prepare("SELECT signals FROM news_stories LIMIT 0");
+    return "s.signals";
+  } catch (error) {
+    if (missingTable(error)) return "NULL AS signals";
+    throw error;
+  }
+};
 export function createNewsDeskReader(database, { ensureSchema = true, projectReposts = null } = {}) {
   let ready = !ensureSchema;
   const withReposts=(stories,viewerId)=>{
@@ -626,10 +744,10 @@ export function createNewsDeskReader(database, { ensureSchema = true, projectRep
     forLivePost(postId, options = {}) { return readOne("post_id", postId, { ...options, live: true }); },
     get(id, options = {}) { return readOne("id", id, { ...options, live: true }); },
   };
-  function readOne(column, value, { live = false, viewerId = null } = {}) {
+function readOne(column, value, { live = false, viewerId = null } = {}) {
     if (!ready) { ensureNewsDeskSchema(database); ready = true; }
     try {
-      const row = database.prepare(`SELECT s.id,s.headline,s.summary,s.body,s.category,s.artist_keys,s.sources,s.post_id,s.created_at,s.updated_at,
+      const row = database.prepare(`SELECT s.id,s.headline,s.summary,s.body,s.category,s.artist_keys,s.sources,${newsSignalsSelect(database)},s.post_id,s.created_at,s.updated_at,
           p.user_id AS author_id,u.name AS author_name,u.handle AS author_handle
         FROM news_stories s JOIN posts p ON p.id=s.post_id JOIN users u ON u.id=p.user_id
         WHERE s.${column === "id" ? "id" : "post_id"}=? AND s.status='published'
@@ -658,7 +776,7 @@ const withLocal = (story, row, city) => (city && newsStoryMentionsCity(row, city
 
 function listTopStories(database, { limit = 20, at = Date.now(), viewerId = null, region = null, city = null } = {}) {
   const bounded = pageSize(limit);
-  const rows = database.prepare(`SELECT s.id,s.headline,s.summary,s.body,s.category,s.artist_keys,s.sources,s.post_id,s.created_at,s.updated_at,s.score,
+  const rows = database.prepare(`SELECT s.id,s.headline,s.summary,s.body,s.category,s.artist_keys,s.sources,${newsSignalsSelect(database)},s.post_id,s.created_at,s.updated_at,s.score,
       p.user_id AS author_id,u.name AS author_name,u.handle AS author_handle
     FROM news_stories s JOIN posts p ON p.id=s.post_id JOIN users u ON u.id=p.user_id
     WHERE s.status='published' AND p.removed=0 AND ${activeAccountSql("u")} AND s.created_at>=? ${readerBlockSql(viewerId)}
@@ -692,7 +810,7 @@ function listStories(database, { limit = 20, before = null, artist = null, sort 
   if (sort === "top" && !artistKey) return listTopStories(database, { limit, at, viewerId, region: readerRegion, city: readerCity });
   const bounded = pageSize(limit);
   let cursor = before && Number.isSafeInteger(before.createdAt) ? before : null;
-  const page = (after, size) => database.prepare(`SELECT s.id,s.headline,s.summary,s.body,s.category,s.artist_keys,s.sources,s.post_id,s.created_at,s.updated_at,
+  const page = (after, size) => database.prepare(`SELECT s.id,s.headline,s.summary,s.body,s.category,s.artist_keys,s.sources,${newsSignalsSelect(database)},s.post_id,s.created_at,s.updated_at,
       p.user_id AS author_id,u.name AS author_name,u.handle AS author_handle
     FROM news_stories s JOIN posts p ON p.id=s.post_id JOIN users u ON u.id=p.user_id
     WHERE s.status='published' AND p.removed=0 AND ${activeAccountSql("u")}
@@ -727,8 +845,17 @@ function newsStoryJson(row, artistLookup, database, viewerId = null) {
       photo: deezerImageUrl(artist.photo) || artistDiscoverPhotoUri(parseJson(artist.data, {})) || null,
     }));
   const sources = parseJson(row.sources, []).filter((source) => /^https:\/\//u.test(String(source?.url || "")))
-    .map((source) => ({ name: String(source.name || ""), url: source.url }));
+    .map((source) => ({
+      kind: source.kind === "photo" ? "photo" : "article",
+      name: String(source.name || ""), url: source.url,
+      ...(source.title ? { title: String(source.title) } : {}),
+      ...(source.credit ? { credit: String(source.credit) } : {}),
+    }));
+  let media = [];
+  try { media = postMediaProjection(database, row.post_id).filter((asset) => asset.kind === "image"); }
+  catch (error) { if (!/no such (table|column)/iu.test(String(error?.message))) throw error; }
   const count = (sql, ...args) => ignoreMissingTable(() => Number(database.prepare(sql).get(...args)?.n) || 0);
+  const origin = parseJson(row.signals, {})?.origin === "self_written" ? "self_written" : "generated";
   return {
     id: row.id,
     postId: row.post_id,
@@ -740,10 +867,12 @@ function newsStoryJson(row, artistLookup, database, viewerId = null) {
     headline: row.headline,
     summary: row.summary,
     body: row.body || "",
+    origin,
     category: row.category,
     artists,
     sources,
-    confirmedBy: new Set(sources.map((source) => source.name)).size,
+    media,
+    confirmedBy: new Set(sources.filter((source) => source.kind === "article").map((source) => source.name)).size,
     publishedAt: row.created_at,
     updatedAt: row.updated_at,
   };

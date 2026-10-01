@@ -11,3 +11,12 @@ test("news stories read as labelled, sourced paragraphs", () => {
   assert.deepEqual(newsStoryParagraphs(""), []);
   assert.equal(newsStoryPhoto({ artists: [{ name: "A" }, { name: "B", photo: "https://cdn-images.dzcdn.net/x.jpg" }] }), "https://cdn-images.dzcdn.net/x.jpg");
 });
+
+test("uploaded article photos lead public cards and photo rights never confirm a story", () => {
+  const story = { media: [{ kind: "image", url: "https://media.example.com/verified.jpg" }],
+    artists: [{ photo: "https://example.com/artist.jpg" }], sources: [{ kind: "article", name: "NME" }, { kind: "photo", name: "Photographer" }] };
+  assert.equal(newsStoryPhoto(story), "https://media.example.com/verified.jpg");
+  assert.equal(newsSourceLine(story), "Confirmed by NME");
+  assert.equal(newsStoryPhoto({ media: {}, artists: [] }), null);
+  assert.equal(newsStoryPhoto({ photo: { url: "https://example.com/unverified.jpg" } }), null);
+});

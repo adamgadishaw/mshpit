@@ -250,11 +250,15 @@ export function createMediaAsset(database, {
   assetId = newId("ma"),
   sourceObjectId = newId("ms"),
   suppressDuplicateUpload = false,
+  photosOnly = false,
 } = {}) {
   const owner = String(ownerId || "");
   if (!owner) throw new ApiError(401, "Log in first.", "AUTH_REQUIRED");
   if (!ASSET_ID.test(assetId)) throw new ApiError(500, "Media could not be prepared.", "INTERNAL_ERROR");
   const input = assetCreateInput(body);
+  if (photosOnly && input.canonical.kind !== "image") {
+    throw new ApiError(415, "This editorial API accepts photos only.", "MEDIA_TYPE_UNSUPPORTED");
+  }
 
   return withWrite(database, () => {
     let row = database.prepare("SELECT * FROM media_assets WHERE owner_id=? AND client_asset_id=?")
@@ -1576,10 +1580,15 @@ export async function finalizeMediaAsset(database, {
   imageFinalizationStage = null,
   imageStoredObject = null,
   imageExpectedFingerprint = null,
+  photosOnly = false,
+  deferCommit = false,
 } = {}) {
   assertAuthorized?.();
   const row = database.prepare("SELECT * FROM media_assets WHERE id=? AND owner_id=?").get(assetId, ownerId);
   if (!row) throw new ApiError(404, "That media item was not found.", "NOT_FOUND");
+  if (photosOnly && row.kind !== "image") {
+    throw new ApiError(415, "This editorial API accepts photos only.", "MEDIA_TYPE_UNSUPPORTED");
+  }
   let input = normalizedAssetFinalize(row, body);
   const needsCodecVerification = row.kind === "video" && row.codec_status !== "verified";
   const authoritativePosterReady = row.kind === "video" && !!row.poster_variant_id && !!database.prepare(`SELECT 1
@@ -1611,9 +1620,18 @@ export async function finalizeMediaAsset(database, {
   if (row.finalize_hash && !needsCodecVerification && !needsAuthoritativePoster && authoritativeDeliveryReady) {
     // A lost-response retry is also an authenticated signal that this draft is
     // still in use. Renew the lease instead of merely observing the ledger so a
-    // cleanup pass cannot retire it while the owner resumes the workflow.
-    touchLiveLedger(database, ownerId, row.source_key, at);
-    return { asset: assetProjection(loadAsset(database, row.id), { owner: true }), duplicate: true };
+    // cleanup pass cannot retire it while the owner resumes the workflow. A
+    // deferred caller must perform that renewal in its caller-owned transaction;
+    // otherwise a later audit/idempotency failure would leave the ledger touch
+    // committed even though the operation itself rolled back.
+    const commitAlreadyReady = () => withWrite(database, () => {
+      assertAuthorized?.();
+      touchLiveLedger(database, ownerId, row.source_key, at);
+      return { asset: assetProjection(loadAsset(database, row.id), { owner: true }), duplicate: true };
+    });
+    return deferCommit
+      ? { deferredCommit: true, commit: commitAlreadyReady }
+      : commitAlreadyReady();
   }
   if (!row.finalize_hash && row.status !== "upload_pending") {
     throw new ApiError(409, "That media item cannot be finalized again.", "CONFLICT");
@@ -1632,6 +1650,11 @@ export async function finalizeMediaAsset(database, {
     renderState: input.renderState,
     status: input.status,
   }) : null;
+  // A deferred Media API finalization has a different completion contract from
+  // an ordinary caller: it must return a commit closure, never an already
+  // committed asset. Keep those flights separate even when their source and
+  // edit fingerprint match.
+  const finalizationMode = deferCommit ? "deferred" : "ordinary";
   if (row.kind === "image"
       && imageFinalizationStage !== IMAGE_FINALIZATION_PREFLIGHT_TOKEN
       && imageFinalizationStage !== IMAGE_FINALIZATION_GENERATION_TOKEN) {
@@ -1639,7 +1662,7 @@ export async function finalizeMediaAsset(database, {
     return runImageFinalizationPreflight({
       scope: database,
       ownerId,
-      baseKey: `asset:${row.id}:${row.source_key}`,
+      baseKey: `asset:${row.id}:${row.source_key}:${finalizationMode}`,
       fingerprint: admissionFingerprint,
       byteSize: Number(row.byte_size),
       signal,
@@ -1659,6 +1682,8 @@ export async function finalizeMediaAsset(database, {
         signal: sharedSignal,
         imageFinalizationStage: IMAGE_FINALIZATION_PREFLIGHT_TOKEN,
         imageExpectedFingerprint: admissionFingerprint,
+        photosOnly,
+        deferCommit,
       }),
     });
   }
@@ -1688,7 +1713,7 @@ export async function finalizeMediaAsset(database, {
     return runImageFinalizationGeneration({
       scope: database,
       ownerId,
-      baseKey: `asset:${row.id}:${row.source_key}:${stored.etag}`,
+      baseKey: `asset:${row.id}:${row.source_key}:${stored.etag}:${finalizationMode}`,
       fingerprint: admissionFingerprint,
       byteSize: Number(row.byte_size),
       signal,
@@ -1709,6 +1734,8 @@ export async function finalizeMediaAsset(database, {
         imageFinalizationStage: IMAGE_FINALIZATION_GENERATION_TOKEN,
         imageStoredObject: stored,
         imageExpectedFingerprint: admissionFingerprint,
+        photosOnly,
+        deferCommit,
       }),
     });
   }
@@ -1893,7 +1920,7 @@ export async function finalizeMediaAsset(database, {
     }
   }
 
-  return withWrite(database, () => {
+  const commit = () => withWrite(database, () => {
     assertAuthorized?.();
     const current = database.prepare("SELECT * FROM media_assets WHERE id=? AND owner_id=?").get(row.id, ownerId);
     if (current?.finalize_hash) {
@@ -1964,6 +1991,7 @@ export async function finalizeMediaAsset(database, {
     if (row.kind === "video") syncConvertedClipIntoPost(database, { assetId: row.id, ownerId, at });
     return { asset: assetProjection(loadAsset(database, row.id), { owner: true }), duplicate: false };
   });
+  return deferCommit ? { deferredCommit: true, commit } : commit();
 }
 
 function pendingPhotoRevision(database, assetId) {
@@ -3129,6 +3157,40 @@ export function attachPostMedia(database, { postId, ownerId, selection, at = Dat
       }
     }
   }
+}
+
+// Newsroom uploads belong to the verified editor who supplied them, while the
+// published post belongs to the bound news publisher. Keep that identity split
+// narrow: only a news post, one editor-owned ready image, and the exact
+// publisher account may cross this boundary.
+export function attachNewsPostMedia(database, { postId, assetOwnerId, publisherId, assetId, at = Date.now() } = {}) {
+  if (typeof postId !== "string" || !/^news_[A-Za-z0-9-]{8,80}$/u.test(postId)
+      || typeof assetOwnerId !== "string" || !assetOwnerId
+      || typeof publisherId !== "string" || !publisherId
+      || typeof assetId !== "string") {
+    throw new ApiError(400, "That news photo selection is invalid.", "VALIDATION_FAILED");
+  }
+  const post = database.prepare("SELECT user_id FROM posts WHERE id=? AND kind='status'").get(postId);
+  if (!post || post.user_id !== publisherId) {
+    throw new ApiError(403, "That news photo cannot be attached to this publisher.", "FORBIDDEN");
+  }
+  const selected = mediaSelection(database, { ownerId: assetOwnerId, assetIds: [assetId], currentPostId: postId });
+  const entry = selected.rows[0];
+  if (!entry || entry.converting || entry.row.kind !== "image" || !entry.url) {
+    throw new ApiError(409, "Finish the photo upload before publishing this story.", "CONFLICT");
+  }
+  database.prepare("INSERT INTO post_media (post_id,asset_id,position,created_at) VALUES (?,?,0,?)")
+    .run(postId, entry.row.id, at);
+  if (!markObjectAssociated(database, assetOwnerId, entry.row.source_key, at)) {
+    throw new ApiError(409, "That photo upload is no longer available. Start it again.", "CONFLICT");
+  }
+  const variants = database.prepare("SELECT object_key FROM media_variants WHERE asset_id=? AND status='verified'").all(entry.row.id);
+  for (const variant of variants) {
+    if (!markObjectAssociated(database, assetOwnerId, variant.object_key, at)) {
+      throw new ApiError(409, "That photo rendition is no longer available. Finish the upload again.", "CONFLICT");
+    }
+  }
+  return { assetId: entry.row.id, url: entry.url };
 }
 
 function postMediaRowsForPosts(database, postIds) {

@@ -1,11 +1,15 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { Linking, Platform, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { Image as ExpoImage } from "expo-image";
 import Button from "../../components/Button";
+import { commandFailure, commandSuccess } from "../../domain/commandResult.mjs";
+import { toAppError } from "../../lib/diagnostics";
 import { colors, radius } from "../../theme";
 import { MAX_NEWS_LINKS, categoriesText, livePageUrl, newsCandidateLine, newsCandidateNeed, newsDraftStatus, newsEditorCostLine, newsLiveStatus,
   parseNewsLinks, parseStartTime } from "./newsDeskEditorApi.mjs";
-import { chooseStoryPhoto, discardDraft, endLive, loadNewsEditor, markLiveWinner, postLiveUpdate, publishDraft, removeLiveUpdate, setLiveCategories, startLive, writeDraft } from "./newsDeskEditorService";
+import { chooseStoryPhoto, discardDraft, endLive, loadNewsEditor, markLiveWinner, postLiveUpdate, publishDraft, removeLiveUpdate, setLiveCategories, startLive, writeDraft, writeSelfWrittenDraft } from "./newsDeskEditorService";
+
+const SelfWrittenComposer = lazy(() => import("./SelfWrittenNewsComposer"));
 
 // The newsroom: write a story on demand, or run live coverage of a big night.
 // Every input has a label that says what goes in it, a one-line example, and
@@ -229,14 +233,32 @@ function Candidate({ candidate, busy, disabled, onWrite }) {
   </View>;
 }
 
+function SourceLink({ source, prefix = "" }) {
+  if (!/^https:\/\//u.test(String(source?.url || ""))) return null;
+  return <Text style={styles.help}>{prefix}<Text style={styles.reviewLink} accessibilityRole="link"
+    onPress={Platform.OS === "web" ? undefined : () => { void Linking.openURL(source.url).catch(() => undefined); }}
+    {...(Platform.OS === "web" ? { href: source.url, hrefAttrs: { target: "_blank", rel: "noopener noreferrer" } } : {})}>
+    {source.name || "Source"}</Text>{source.credit ? " - " + source.credit : ""}</Text>;
+}
+
 function Draft({ draft, pending, disabled, onPublish, onDiscard }) {
   const open = draft.status === "draft" && !draft.expired;
+  const sources = Array.isArray(draft.sources) ? draft.sources : [];
+  const articleSources = sources.filter((source) => source.kind !== "photo");
+  const photoSource = sources.find((source) => source.kind === "photo") || draft.photo?.source;
   return <View style={styles.draft} testID={`news-draft-${draft.id}`}>
     <Text selectable style={draft.status === "declined" ? styles.error : styles.step}>{newsDraftStatus(draft).toUpperCase()}</Text>
     {draft.headline ? <Text selectable style={styles.draftHeadline}>{draft.headline}</Text> : null}
     {draft.summary ? <Text selectable style={styles.copy}>{draft.summary}</Text> : null}
     {draft.body ? <Text selectable style={styles.help}>{draft.body}</Text> : null}
-    <Text selectable style={styles.help}>Sources: {draft.sources.map((source) => source.name).join(", ")} · cost ${draft.costUsd.toFixed(3)}</Text>
+    {draft.origin === "self_written" ? <View style={styles.sourceReview}>
+      {draft.photo?.status === "ready" && draft.photo?.url
+        ? <ExpoImage source={{ uri: draft.photo.url }} style={styles.draftPhoto} contentFit="contain" accessibilityLabel="Verified article photo" />
+        : <Text selectable style={styles.error}>The article photo is unavailable. Choose a verified photo before publishing.</Text>}
+      {photoSource ? <SourceLink source={photoSource} prefix="Photo rights: " /> : null}
+      <Text style={styles.help}>Article sources</Text>
+      {articleSources.map((source) => <SourceLink key={source.url} source={source} />)}
+    </View> : <Text selectable style={styles.help}>Sources: {sources.map((source) => source.name).join(", ")} · cost ${draft.costUsd.toFixed(3)}</Text>}
     {open || draft.status === "declined" ? <View style={styles.actions}>
       {open ? <Button small title="Publish now" accessibilityLabel={`Publish ${draft.headline}`}
         disabled={disabled} loading={pending === `publish:${draft.id}`} onPress={() => onPublish(draft)} /> : null}
@@ -249,7 +271,7 @@ function Draft({ draft, pending, disabled, onPublish, onDiscard }) {
 // Admins and editors (the news team) only.
 export const canUseNewsroom = (role) => role === "admin" || role === "editor";
 
-export default function NewsDeskEditor({ accountId, role, active = true }) {
+export default function NewsDeskEditor({ accountId, role, active = true, onCompositionStateChange }) {
   const allowed = canUseNewsroom(role) && !!accountId;
   const [overview, setOverview] = useState(null);
   const [error, setError] = useState("");
@@ -288,14 +310,19 @@ export default function NewsDeskEditor({ accountId, role, active = true }) {
       await work();
       setNotice(done);
       await load(overview?.query || "");
+      return commandSuccess(true);
     } catch (reason) {
-      setError(failure(reason, "That did not go through. Refresh and try again."));
+      const error = toAppError(reason, { source: "newsroom", context: "Running a newsroom action" });
+      setError(failure(error, "That did not go through. Refresh and try again."));
       setPending(null);
+      return commandFailure(error);
     }
   };
   const write = (candidate) => act(`write:${candidate?.headline || "links"}`,
     () => writeDraft({ accountId, reportUrls: candidate?.reportUrls || [], links: pasted }),
     "Draft written. Review it below before publishing.");
+  const writeSelf = (payload) => act("write:self", () => writeSelfWrittenDraft({ accountId, ...payload }),
+    "Self-written draft saved. Review it below before publishing.");
   const publish = (draft) => act(`publish:${draft.id}`, () => publishDraft({ accountId, id: draft.id }),
     "Published. It is on the News tab now.");
   const discard = (draft) => act(`discard:${draft.id}`, () => discardDraft({ accountId, id: draft.id }), "Draft discarded.");
@@ -320,6 +347,11 @@ export default function NewsDeskEditor({ accountId, role, active = true }) {
         {overview.drafts.recent.map((draft) => <Draft key={draft.id} draft={draft} pending={pending} disabled={busy}
           onPublish={publish} onDiscard={discard} />)}
       </View> : null}
+
+      <Suspense fallback={null}>
+        <SelfWrittenComposer key={accountId} accountId={accountId} saving={pending === "write:self"} busy={busy} disabled={busy || !overview}
+          onSubmit={writeSelf} onCompositionStateChange={onCompositionStateChange} />
+      </Suspense>
 
       <View style={styles.card}>
         <Text style={styles.step}>1. PICK A STORY BEING COVERED NOW</Text>
@@ -366,6 +398,8 @@ export default function NewsDeskEditor({ accountId, role, active = true }) {
 }
 
 const styles = StyleSheet.create({
+  reviewLink: { color: colors.amber, textDecorationLine: "underline" },
+  draftPhoto: { width: "100%", height: 240, borderRadius: radius.sm, backgroundColor: colors.bgElev },
   editor: { gap: 22, paddingTop: 6 },
   section: { gap: 12 },
   sectionHead: { gap: 6 },
@@ -383,6 +417,7 @@ const styles = StyleSheet.create({
   rowCopy: { flexGrow: 1, flexShrink: 1, flexBasis: 260, minWidth: 0, gap: 3 },
   headline: { color: colors.text, fontSize: 14, lineHeight: 20, fontWeight: "700" },
   draft: { gap: 6, paddingTop: 10, borderTopWidth: 1, borderTopColor: colors.lineSoft },
+  sourceReview: { gap: 4 },
   draftHeadline: { color: colors.text, fontSize: 16, lineHeight: 22, fontWeight: "800" },
   actions: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   searchRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, alignItems: "center" },

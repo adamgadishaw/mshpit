@@ -34,7 +34,8 @@ export function isDisposableDeviceCacheKey(value) {
 }
 
 export function isDurableAuthoredDeviceStateKey(value) {
-  return DURABLE_AUTHORED_KEYS.has(String(value || ""));
+  const key = String(value || "");
+  return DURABLE_AUTHORED_KEYS.has(key) || key.startsWith("pit.newsroom.draft.v1.");
 }
 
 export function shouldToastDeviceStorageFailure({ operation, key } = {}) {

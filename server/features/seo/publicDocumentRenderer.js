@@ -312,14 +312,18 @@ function newsStoryMain(document) {
   const story = document.news;
   const date = dateTimeLabel(story.publishedAt);
   const artists = story.artists.map((artist) => link(artist.path, artist.name)).join(", ");
-  const sources = story.sources.map((source) => `<a href="${esc(source.url)}" rel="nofollow noopener noreferrer">${esc(source.name)}</a>`).join(", ");
+  const sources = story.sources.map((source) => `<li><strong>${esc(source.kind === "photo" ? "Photo" : "Article")}:</strong> <a href="${esc(source.url)}" rel="nofollow noopener noreferrer">${esc(source.name)}</a>${source.title ? ` <span>${esc(source.title)}</span>` : ""}${source.credit ? ` <span>(${esc(source.credit)})</span>` : ""}</li>`).join("");
+  const sourceControl = sources ? `<details class="news-sources"><summary>Sources</summary><ul>${sources}</ul></details>` : "";
+  const image = publicMediaUrl(document.image);
   return `<article class="news-story">
       <p class="eyebrow">Mshpit News · ${esc(story.category)}${date ? ` · <time datetime="${esc(date.iso)}">${esc(date.label)}</time>` : ""}</p>
       <h1>${esc(story.headline)}</h1>
       ${story.summary ? `<p class="hero-copy"><strong>${esc(story.summary)}</strong></p>` : ""}
+      ${image ? `<figure class="news-photo"><img src="${esc(image)}" alt="${esc(document.imageAlt || story.headline)}" loading="eager" decoding="async"${document.imageWidth ? ` width="${esc(document.imageWidth)}"` : ""}${document.imageHeight ? ` height="${esc(document.imageHeight)}"` : ""} /><figcaption>${esc(document.imageProvenance === "self-written-article-photo" ? "Article photo" : "News image")}</figcaption></figure>` : ""}
       ${paragraphs(story.body)}
       ${artists ? `<p>About ${artists}</p>` : ""}
-      ${sources ? `<p class="news-sources">Confirmed by ${sources}</p>` : ""}
+      ${sourceControl}
+      <p class="news-more"><a class="button secondary" href="/news">Read more music news</a></p>
     </article>`;
 }
 

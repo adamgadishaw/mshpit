@@ -2,6 +2,7 @@
 // are free; each draft is one metered Claude call on the server.
 export const NEWS_EDITOR_PATH = "/api/moderation/news-desk/editor";
 export const MAX_NEWS_LINKS = 3;
+export const NEWS_SELF_WRITTEN_PATH = `${NEWS_EDITOR_PATH}/drafts/self-written`;
 
 function actor(accountId) {
   if (typeof accountId !== "string" || !accountId.trim()) throw new TypeError("The news editor requires an administrator account.");
@@ -46,6 +47,16 @@ export async function writeNewsDraft({ accountId, reportUrls = [], links = [], s
   return payload.draft;
 }
 
+export async function writeSelfWrittenNewsDraft({ accountId, headline, summary, body, category = "other", sources = [], photo, idempotencyKey, signal } = {}, { apiCall } = {}) {
+  const expectedAccountId = actor(accountId);
+  const payload = await transport(apiCall)(NEWS_SELF_WRITTEN_PATH, {
+    method: "POST", body: { headline, summary, body, category, sources, photo, idempotencyKey }, expectedAccountId, signal, silent: true,
+    context: "Saving a self-written news draft",
+  });
+  if (!payload?.draft?.id || payload.draft.origin !== "self_written") throw new TypeError("The self-written draft could not be confirmed. Refresh before trying again.");
+  return payload.draft;
+}
+
 export async function publishNewsDraft({ accountId, id } = {}, { apiCall } = {}) {
   const expectedAccountId = actor(accountId);
   const payload = await transport(apiCall)(`${NEWS_EDITOR_PATH}/drafts/${encodeURIComponent(id)}/publish`, {
@@ -85,6 +96,7 @@ export function newsCandidateNeed(candidate) {
 export function newsDraftStatus(draft) {
   if (!draft) return "";
   if (draft.status === "published") return "Published";
+  if (draft.origin === "self_written" && draft.status === "draft") return "Self-written draft";
   if (draft.status === "declined") return `Claude turned it down: ${draft.reason || "not publishable"}`;
   if (draft.expired) return "More than a day old: write a fresh one";
   return "Ready to publish";

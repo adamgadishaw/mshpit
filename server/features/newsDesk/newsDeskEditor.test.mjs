@@ -131,3 +131,54 @@ test("a pasted page's headline comes from its og:title or title", () => {
   assert.equal(articleTitle("<title>\n  Tour Announced | NME\n</title>"), "Tour Announced | NME");
   assert.equal(articleTitle("<p>no title</p>"), "");
 });
+
+test("self-written drafts persist delegated actor provenance and publish with revision CAS", () => {
+  const { instance } = editor();
+  const longBody = Array.from({ length: 180 }, (_, index) => `Radiohead tour update paragraph ${index + 1} confirms the announced dates and release plans.`).join(" ");
+  const draft = instance.writeSelfWritten({
+    headline: "Radiohead announce 2027 world tour dates",
+    summary: "Radiohead have announced a new world tour with dates that will bring the band back to major venues.",
+    body: longBody,
+    sources: [
+      { kind: "article", name: "NME", url: "https://www.nme.com/news/tour-1" },
+      { kind: "article", name: "Stereogum", url: "https://www.stereogum.com/tour-2" },
+      { kind: "article", name: "Pitchfork", url: "https://pitchfork.com/news/tour-3" },
+    ],
+    photo: { assetId: "ma_editor_test_photo", source: { name: "Synthetic photographer", url: "https://example.com/editor-photo" } },
+    actorId: "news_editor_account",
+    actorType: "assistant",
+    actorLabel: "Jeeves",
+    grantId: "mag_editor_test_grant",
+  });
+  assert.equal(draft.revision, 0);
+  assert.deepEqual(draft.writer, { actorType: "assistant", actorLabel: "Jeeves", grantId: "mag_editor_test_grant" });
+  const stored = db.prepare("SELECT created_by,created_actor_type,created_actor_label,created_grant_id,revision FROM news_drafts WHERE id=?").get(draft.id);
+  assert.deepEqual({ ...stored }, { created_by: "news_editor_account", created_actor_type: "assistant", created_actor_label: "Jeeves", created_grant_id: "mag_editor_test_grant", revision: 0 });
+  assert.throws(() => instance.publish(draft.id, { expectedRevision: 999999 }), codeOf("CONFLICT"));
+  assert.equal(db.prepare("SELECT status,revision FROM news_drafts WHERE id=?").get(draft.id).status, "draft");
+});
+
+test("self-written save keys replay one draft and reject a different payload", () => {
+  const { instance } = editor();
+  const body = Array.from({ length: 180 }, (_, index) => `Idempotent tour report paragraph ${index + 1} confirms the announced dates and music release plans.`).join(" ");
+  const input = {
+    headline: "A stable self-written news draft",
+    summary: "This synthetic article proves a lost response can be retried without creating a second draft.",
+    body,
+    category: "tour",
+    sources: [
+      { kind: "article", name: "NME", url: "https://www.nme.com/news/tour-1" },
+      { kind: "article", name: "Stereogum", url: "https://www.stereogum.com/tour-2" },
+      { kind: "article", name: "Pitchfork", url: "https://pitchfork.com/news/tour-3" },
+    ],
+    photo: { assetId: "ma_idempotent_photo", source: { name: "Synthetic photographer", url: "https://example.com/idempotent-photo" } },
+    actorId: "news_editor_account",
+    idempotencyKey: "manual-save-retry-0001",
+  };
+  const first = instance.writeSelfWritten(input);
+  const replay = instance.writeSelfWritten(input);
+  assert.equal(replay.id, first.id);
+  const receipt = db.prepare("SELECT draft_id FROM news_editor_save_receipts WHERE actor_id=? AND idempotency_key=?").get("news_editor_account", input.idempotencyKey);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM news_drafts WHERE id=?").get(receipt.draft_id).n, 1);
+  assert.throws(() => instance.writeSelfWritten({ ...input, summary: "A different article under the same stable key." }), codeOf("CONFLICT"));
+});

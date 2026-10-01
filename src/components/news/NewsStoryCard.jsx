@@ -5,7 +5,7 @@ import { colors, displayFont, focusRing, font, mono, radius } from "../../theme"
 import Icon from "../Icon";
 import { SocialShareButton } from "../SocialShareStudio";
 import { relativeTime } from "../../domain/dates.mjs";
-import { newsCategoryLabel, newsSourceLine, newsStoryParagraphs, newsStoryPhoto } from "../../domain/newsDesk.mjs";
+import { newsCategoryLabel, newsSourceLine, newsStoryParagraphs, newsStoryPhoto, newsStorySources } from "../../domain/newsDesk.mjs";
 import { buildNewsShareModel } from "../../domain/socialShareCard.mjs";
 import NewsPostActions from "./NewsPostActions";
 
@@ -13,6 +13,7 @@ const openSource = (url) => {
   if (!/^https:\/\//u.test(String(url || ""))) return;
   void Linking.openURL(url).catch(() => undefined);
 };
+const openNews = () => { void Linking.openURL("https://www.mshpit.com/news").catch(() => undefined); };
 
 // A story from the Mshpit News desk. Cards sit in the feed and the News tab;
 // `full` is the story's own page (the whole write-up); compact cards fill the
@@ -22,6 +23,8 @@ function NewsStoryCard({ story, post, compact = false, full = false, accountId =
   if (!story?.headline) return null;
   const photo = newsStoryPhoto(story);
   const sourceLine = newsSourceLine(story);
+  const articleSources = newsStorySources(story);
+  const allSources = newsStorySources(story, { includePhoto: true });
   const meta = `${newsCategoryLabel(story.category).toUpperCase()} · ${relativeTime(story.publishedAt)}`;
   // The reader's own city is named in the story (set by the server per reader).
   const local = typeof story.localTo === "string" && story.localTo ? `In ${story.localTo}` : "";
@@ -88,14 +91,27 @@ function NewsStoryCard({ story, post, compact = false, full = false, accountId =
         </View>
       ) : null}
       <NewsPostActions key={`${accountId || "guest"}:${story.postId}`} story={story} post={post} accountId={accountId} onOpen={onOpen} onOpenProfile={onOpenProfile} onReport={onReport} onDelete={onDelete} onRequireAuth={onRequireAuth} />
-      {sourceLine ? (
+      {full && allSources.length ? (
+        <View style={styles.sources}>
+          <Icon name="check" size={13} color={colors.good} />
+          <View style={styles.sourceText}>
+            <Text style={styles.sourcesLabel}>Sources</Text>
+            {allSources.map((source) => <Text key={`${source.kind || "article"}:${source.url}`} style={styles.sourceRow}>
+              <Text style={styles.sourceLink} onPress={Platform.OS === "web" ? undefined : () => openSource(source.url)} accessibilityRole="link"
+                {...(Platform.OS === "web" ? { href: source.url, hrefAttrs: { target: "_blank", rel: "noopener noreferrer" } } : {})}>{source.name}</Text>
+              {source.kind === "photo" ? " (photo)" : ""}{source.credit ? ` — ${source.credit}` : ""}
+            </Text>)}
+          </View>
+        </View>
+      ) : null}
+      {!full && sourceLine && articleSources.length ? (
         <View style={styles.sources}>
           <Icon name="check" size={13} color={colors.good} />
           <Text style={styles.sourceText}>
             {"Confirmed by "}
-            {story.sources.slice(0, full ? 10 : 4).map((source, index, list) => (
+            {articleSources.slice(0, 4).map((source, index, list) => (
               <Text key={source.url}>
-                <Text style={styles.sourceLink} onPress={() => openSource(source.url)} accessibilityRole="link"
+                <Text style={styles.sourceLink} onPress={Platform.OS === "web" ? undefined : () => openSource(source.url)} accessibilityRole="link"
                   {...(Platform.OS === "web" ? { href: source.url, hrefAttrs: { target: "_blank", rel: "noopener noreferrer" } } : {})}>{source.name}</Text>
                 {index < list.length - 2 ? ", " : index === list.length - 2 ? " and " : ""}
               </Text>
@@ -103,6 +119,8 @@ function NewsStoryCard({ story, post, compact = false, full = false, accountId =
           </Text>
         </View>
       ) : null}
+      {full ? <Text style={styles.musicNewsLink} onPress={Platform.OS === "web" ? undefined : openNews} accessibilityRole="link"
+        {...(Platform.OS === "web" ? { href: "/news" } : {})}>Read more music news</Text> : null}
     </View>
   );
 }
@@ -136,7 +154,10 @@ const styles = StyleSheet.create({
   artistName: { flexShrink: 1, color: colors.text, fontFamily: font, fontSize: 12.5, fontWeight: "800", paddingLeft: 2 },
   sources: { flexDirection: "row", alignItems: "flex-start", gap: 6, paddingTop: 10, borderTopWidth: 1, borderTopColor: colors.lineSoft },
   sourceText: { flex: 1, color: colors.textDim, fontFamily: font, fontSize: 12, lineHeight: 17 },
+  sourcesLabel: { color: colors.text, fontFamily: font, fontSize: 12, fontWeight: "900", marginBottom: 3 },
+  sourceRow: { color: colors.textDim, fontFamily: font, fontSize: 12, lineHeight: 17 },
   sourceLink: { color: colors.text, fontWeight: "800", textDecorationLine: "underline" },
+  musicNewsLink: { color: colors.amber, fontFamily: font, fontSize: 13, fontWeight: "800", textDecorationLine: "underline" },
   compact: { flexDirection: "row", gap: 10, padding: 10, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.bgElev },
   compactPhoto: { width: 56, height: 56, borderRadius: radius.sm, backgroundColor: colors.surfaceAlt },
   compactCopy: { flex: 1, minWidth: 0, gap: 3 },

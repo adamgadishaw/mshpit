@@ -91,6 +91,8 @@ test("only failed device-authored recovery state warrants an interruption", () =
   assert.equal(shouldToastDeviceStorageFailure({ operation: "write", key: "pit.feed.v2.user-a" }), false);
   assert.equal(shouldToastDeviceStorageFailure({ operation: "read", key: "pit.drafts" }), false);
   assert.equal(shouldToastDeviceStorageFailure({ operation: "write", key: "pit.drafts" }), true);
+  assert.equal(shouldToastDeviceStorageFailure({ operation: "write", key: "pit.newsroom.draft.v1.owner-a" }), true);
+  assert.equal(isDisposableDeviceCacheKey("pit.newsroom.draft.v1.owner-a"), false);
   assert.equal(shouldToastDeviceStorageFailure({ operation: "remove", key: "pit.activeComposer" }), true);
 });
 

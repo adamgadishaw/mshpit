@@ -101,7 +101,8 @@ export function projectNewsDocument({ origin = "https://www.mshpit.com", stories
           datePublished: new Date(story.publishedAt).toISOString(),
           author: organization,
           publisher: organization,
-          ...(story.sources?.length ? { citation: story.sources.map((source) => source.url) } : {}),
+          ...(story.sources?.filter((source) => source?.kind !== "photo").length
+            ? { citation: story.sources.filter((source) => source?.kind !== "photo").map((source) => source.url) } : {}),
           ...(story.artists?.length ? { about: story.artists.map((artist) => ({ "@type": "MusicGroup", name: artist.name,
             ...(safePath(artist.publicSlug ? `/artist/${artist.publicSlug}` : null) ? { url: new URL(`/artist/${artist.publicSlug}`, origin).href } : {}) })) } : {}),
         } })),
@@ -121,7 +122,7 @@ function renderStory(story) {
   const path = newsStoryPath(story);
   const artists = (story.artists || []).map((artist) => artist.publicSlug && safePath(`/artist/${artist.publicSlug}`)
     ? `<a href="/artist/${esc(artist.publicSlug)}">${esc(artist.name)}</a>` : esc(artist.name)).join(", ");
-  const sources = (story.sources || []).filter((source) => safeHttps(source.url))
+  const sources = (story.sources || []).filter((source) => source?.kind !== "photo" && safeHttps(source.url))
     .map((source) => `<a href="${esc(source.url)}" rel="nofollow noopener noreferrer">${esc(source.name)}</a>`).join(", ");
   const published = new Date(story.publishedAt);
   return `<article class="news-story">

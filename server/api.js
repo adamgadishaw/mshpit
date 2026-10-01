@@ -97,6 +97,8 @@ import { artistLiveSummaryRoutes } from "./features/artistArchive/artistLiveSumm
 import { catalogResearchRoutes } from "./features/catalogResearch/catalogResearchRoutes.js";
 import { createNewsDeskEditor } from "./features/newsDesk/newsDeskEditor.js";
 import { newsDeskEditorRoutes } from "./features/newsDesk/newsDeskEditorRoutes.js";
+import { createMediaApiService } from "./features/mediaApi/mediaApiService.js";
+import { mediaApiRoutes } from "./features/mediaApi/mediaApiRoutes.js";
 import { ensureNewsLiveSchema } from "./features/newsDesk/newsLive.js";
 import { ensureNewsCardPhotoSchema } from "./features/newsDesk/newsCardPhotos.js";
 import { festivalRoutes } from "./features/festivals/festivalRoutes.js";
@@ -2959,6 +2961,8 @@ function mutedIdSet(userId) {
 }
 
 const newsDeskReader = createNewsDeskReader(db, { projectReposts:(ids,viewerId)=>repostInfoPage(db,ids,viewerId) });
+const newsDeskEditor = createNewsDeskEditor({ database: db, now });
+const mediaApiService = createMediaApiService({ database: db, now, editor: newsDeskEditor });
 ensureNewsCardPhotoSchema(db);
 const resolveNewsArtwork = createNewsCardArtworkResolver({ database: db, resolveProfilePhoto: (input) => attendanceTicketArtistProfilePhoto(input) });
 // One renderer for every share card and news preview image, so its memory and
@@ -9909,8 +9913,9 @@ export const routes = {
       return row ? publicUser(row) : null;
     } }),
   // Owner-chosen news stories: free to browse, one metered Claude call per draft.
-  ...newsDeskEditorRoutes({ editor: createNewsDeskEditor({ database: db, now }), database: db, ApiError, requireAdmin: requireNewsEditor, rateLimit: limit, now,
+  ...newsDeskEditorRoutes({ editor: newsDeskEditor, database: db, ApiError, requireAdmin: requireNewsEditor, rateLimit: limit, now,
     photoResolver: resolveNewsArtwork, readStory: (postId) => newsDeskReader.forLivePost(postId), listStories: () => newsDeskReader.list({ limit: 10 }).stories || [] }),
+  ...mediaApiRoutes({ service: mediaApiService, requireOwner, rateLimit: limit, ApiError }),
   // Live coverage for big nights: outlet headlines plus owner updates, no Claude.
   ...newsLiveRoutes({ database: db, ApiError, requireAdmin: requireNewsEditor, rateLimit: limit, now }),
   // Festivals: editions, lineups by day, and members' plans.
