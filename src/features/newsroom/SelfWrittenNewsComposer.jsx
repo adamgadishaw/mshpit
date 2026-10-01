@@ -4,7 +4,7 @@ import { Image as ExpoImage } from "expo-image";
 import Button from "../../components/Button";
 import { colors, radius } from "../../theme";
 import { load, save as saveLocal } from "../../lib/persist";
-import { emptyNewsroomForm, newsroomArticlePayload, newsroomDraftEnvelope, newsroomDraftStorageKey, newsroomSaveAttempt, restoreNewsroomDraft } from "../../domain/newsroomComposition.mjs";
+import { emptyNewsroomForm, MAX_NEWSROOM_ARTICLE_SOURCES, newsroomArticlePayload, newsroomDraftEnvelope, newsroomDraftStorageKey, newsroomSaveAttempt, restoreNewsroomDraft } from "../../domain/newsroomComposition.mjs";
 import { loadSelfWrittenPhoto, uploadSelfWrittenPhoto } from "./newsDeskEditorMediaService";
 
 function Field({ label, help, children }) {
@@ -76,7 +76,11 @@ export default function SelfWrittenNewsComposer({ accountId, busy, saving = fals
 
   const updateSource = (index, field, value) => setForm((current) => ({ ...current,
     sources: current.sources.map((source, sourceIndex) => sourceIndex === index ? { ...source, [field]: value } : source) }));
-  const sourcesReady = sources.every((source) => source.name.trim() && source.url.trim());
+  const sourcesReady = sources.slice(0, 3).every((source) => source.name.trim() && source.url.trim())
+    && sources.slice(3).every((source) => (!source.name.trim() && !source.url.trim()) || (source.name.trim() && source.url.trim()));
+  const addSource = () => setForm((current) => current.sources.length >= MAX_NEWSROOM_ARTICLE_SOURCES ? current : {
+    ...current, sources: [...current.sources, { name: "", url: "" }],
+  });
   const choosePhoto = async () => {
     if (uploading || busy || disabled) return;
     let result;
@@ -136,6 +140,9 @@ export default function SelfWrittenNewsComposer({ accountId, busy, saving = fals
         <TextInput accessibilityLabel={`Self-written article source ${index + 1} name`} style={styles.input} maxLength={160} value={source.name} onChangeText={(value) => updateSource(index, "name", value)} placeholder="Configured publisher name" placeholderTextColor={colors.textFaint} />
         <TextInput accessibilityLabel={`Self-written article source ${index + 1} URL`} style={styles.input} maxLength={2048} value={source.url} onChangeText={(value) => updateSource(index, "url", value)} placeholder="https://publisher.example/report" placeholderTextColor={colors.textFaint} autoCapitalize="none" autoCorrect={false} />
       </View>)}
+      {sources.length < MAX_NEWSROOM_ARTICLE_SOURCES
+        ? <Button small title="Add another source" variant="secondary" accessibilityLabel="Add another article source" disabled={disabled || busy || uploading} onPress={addSource} />
+        : <Text style={styles.help}>Up to {MAX_NEWSROOM_ARTICLE_SOURCES} article sources.</Text>}
     </View>
     <View style={styles.categoryBlock}>
       <Text style={styles.fieldLabel}>Selected article photo</Text>
