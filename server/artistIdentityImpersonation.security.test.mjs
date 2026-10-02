@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test, { after, beforeEach } from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -12,7 +13,7 @@ delete process.env.MAIL_FROM;
 const { db, q, artistStmts, artistRow } = await import("./db.js");
 const { routes } = await import("./api.js");
 const { resetRateLimitsForTests } = await import("./auth.js");
-const { completeVerification, mintVerifyToken } = await import("./verification.js");
+const { completeVerification } = await import("./verification.js");
 let sequence = 0;
 after(() => { db.close(); rmSync(directory, { recursive: true, force: true }); });
 beforeEach(() => resetRateLimitsForTests());
@@ -37,15 +38,23 @@ async function signup(body = {}) {
   const result = await routes["POST /api/signup"](context(null, {
     name: "Independent Listener", email, password: "account-password123", genres: ["Rock"],
     ageBand: "18_plus", termsVersion: LEGAL_ACCEPTANCE_VERSION, ...body,
-  }, { setSession() {} }));
-  return { result, user: q.userByEmail.get(email) };
+  }, { setSession() { assert.fail("pending signup must not issue a session"); } }));
+  assert.equal(result.pending, true);
+  assert.equal(result.user, undefined);
+  assert.equal(q.userByEmail.get(email), undefined);
+  const reservation = db.prepare("SELECT * FROM signup_reservations WHERE email=? AND status='pending'").get(email);
+  assert.ok(reservation);
+  const token = "identity-reservation-" + sequence;
+  db.prepare("UPDATE signup_reservations SET token_hash=? WHERE token_hash=?")
+    .run(createHash("sha256").update(token).digest("hex"), reservation.token_hash);
+  return { result, reservation, token };
 }
 
 test("ordinary fans may share a personal display name without gaining artist ownership", async () => {
   catalogue("Russ");
-  const { result, user } = await signup({ name: "Russ", handle: `listener_${++sequence}`, role: "artist", verified: true,
+  const { token } = await signup({ name: "Russ", handle: `listener_${++sequence}`, role: "artist", verified: true,
     artistName: "Russ", ownerId: "forged" });
-  assert.equal(result.created, true);
+  const user = completeVerification(token).user;
   assert.equal(user.name, "Russ");
   assert.equal(user.role, "fan");
   assert.equal(user.verified, 0);
@@ -82,10 +91,10 @@ test("profile edits cannot bypass artist screening with forged ownership or veri
 test("email confirmation rechecks a pending handle against identities added after signup", async () => {
   const name = `Late Identity ${++sequence}`;
   const handle = name.toLowerCase().replaceAll(" ", "");
-  const { user } = await signup({ handle });
-  assert.equal(JSON.parse(user.extras).pendingSignupHandle, handle);
+  const { reservation, token } = await signup({ handle });
+  assert.equal(JSON.parse(reservation.payload).extras.pendingSignupHandle, handle);
   catalogue(name);
-  const verified = completeVerification(mintVerifyToken(user.id)).user;
+  const verified = completeVerification(token).user;
   assert.ok(verified.email_verified_at > 0, "reserved handle must not break mailbox confirmation");
   assert.notEqual(verified.handle, handle, "a stale preference is not ownership of a newly protected artist handle");
   assert.equal(verified.role, "fan");

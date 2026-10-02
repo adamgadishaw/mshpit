@@ -65,6 +65,7 @@ test("an exact eligible event without a catalogue artist resolves to a read-only
   assert.equal(entity.path, path);
   assert.equal(entity.publicEventSnapshot, true);
   assert.equal(entity.artistKey, null);
+  assert.equal(entity.artistPublicSlug, null);
   assert.equal(entity.artistIdentityPending, false);
   assert.equal(entity.artist, "Club 1BD");
   assert.equal(entity.eventName, "Club 1BD: Toronto");
@@ -93,6 +94,7 @@ test("pending or conflicting event identities keep exact show details without a 
     assert.equal(entity?.publicEventSnapshot, true);
     assert.equal(entity.artistIdentityPending, true);
     assert.equal(entity.artistKey, null);
+    assert.equal(entity.artistPublicSlug, null);
     assert.equal(entity.artist, name);
     assert.equal(entity.venue, "History");
     assert.equal(entity.ticketUrl, "https://www.ticketmaster.ca/event/fixture");
@@ -125,10 +127,12 @@ test("snapshot artist display cannot retain a contradictory provider artist bind
   assert.equal(entity.publicEventSnapshot, true);
   assert.equal(entity.artist, "Jungle");
   assert.equal(entity.artistKey, null);
+  assert.equal(entity.artistPublicSlug, null);
   const valid = resolveEntity(addEvent("snapshot-correct-billing", {
     artist: "sports.", artistKey: "snapshot-sports-punk", billedArtists: ["sports."],
   }));
   assert.equal(valid.artistKey, "snapshot-sports-punk");
+  assert.equal(valid.artistPublicSlug, "snapshot-sports-punk");
   assert.equal(valid.artist, "sports.");
 });
 

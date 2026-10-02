@@ -1,6 +1,6 @@
 # Pit security and privacy readiness
 
-Last scoped review: 2026-09-26
+Last scoped review: 2026-10-02 (local integration candidate)
 
 The application/media/research follow-up is recorded in
 `APPLICATION_INTEGRITY_AUDIT_2026-09-26.md`. It supplements, rather than replaces,
@@ -8,6 +8,54 @@ the broader September 1 review and its unresolved operational requirements.
 
 The detailed evidence, fixes, residual risk, and release gates for this review are
 recorded in `SECURITY_PRIVACY_TECHNICAL_AUDIT_2026-09-01.md`.
+
+## October 2 local integration scope and limits
+
+The local candidate on `fd8b1d09` combines the separately reviewed availability,
+public-identity, mailbox-first signup, owner-approved monthly-budget and manual
+news-category patches.
+These source changes are not evidence of deployed controls or live configuration.
+The earlier reports remain historical records; this scoped follow-up does not
+close their unresolved operational requirements.
+
+- Public-read admission precedes expensive HTML/selected GET projections, including
+  HEAD. Initial per-process ceilings are 30 requests per second and 600 per minute;
+  each real account or guest IP also has 300 per minute. Fixed-window boundary
+  bursts remain possible. Shared guest addresses share a budget, and IPv6 addresses
+  are not grouped into prefixes. No crawler user-agent string bypasses admission.
+  These are request ceilings, not measured production capacity, fair-share
+  scheduling, cross-process coordination, or a timeout for synchronous SQLite work.
+- Indexed artist-directory probes remove the repeated broad post search tested
+  in the synthetic fixture. The query still scans/counts/orders the artist catalog.
+  Production index-build time, storage cost and production load have not been tested.
+- Signup reservations contain hashed capabilities and a password hash, expire after
+  24 hours, and grant no session or durable account before confirmation. Duplicate
+  submissions have separate capabilities. Confirmation rechecks mailbox capacity
+  and any sibling-account authority inside the creation transaction; replay has one
+  effect. No claim of statistically indistinguishable timing is made. Existing
+  per-target/IP mail controls remain; this change adds no global transactional-mail
+  spending cap. New reservations require confirmation even when
+  `EMAIL_VERIFICATION_ENABLED=false` is used for legacy local accounts; local
+  testing needs synthetic mail fixtures.
+- The signup-specific mail explains that confirmation creates the requested
+  account with the submitted password and should only be completed for a signup
+  the recipient initiated. Existing-account mail and recovery remain available.
+- Manual news keeps the editor's allowlisted category. Category-only correction
+  requires current verified editor authority and a matching category/timestamp;
+  correction and audit are one transaction. Generated classification and article
+  content are unchanged. No real article is corrected by this local candidate.
+- The Blueprint's two proposed monthly values are 10 USD each: the shared
+  Anthropic ceiling and the catalogue allowance. Catalogue daily pacing stays
+  0.30 USD; existing current-month settled and reserved spending still counts.
+  No budget ledger, activation flag, credential, disk or live setting is changed.
+
+Remaining availability findings include A2 (unbounded clips candidate scanning)
+and A3 (legacy `server/auth.js` limiter-map cleanup at saturation). Feed offset
+behavior is unchanged. None of this establishes immunity to denial of service.
+Combined tests use isolated synthetic data and loopback traffic; browser fixtures
+with mocked APIs are distinguished from actual-server HTTP/browser checks.
+Native-device, real-mail, provider, production-data and production-load acceptance
+remain outside this local review.
 
 ## Current status
 

@@ -23,11 +23,12 @@ const SIGNUP_STEP_COPY = [
   ["Make it your night.", "Start with who you are."],
   ["Your sign-in.", "The email and password you’ll log in with."],
   ["Find your kind of show.", "Pick your music and your city. We’ll take it from there."],
-  ["One last thing.", "Confirm your age group and our terms, then you’re in."],
+  ["One last thing.", "Confirm your age group and our terms. Email confirmation comes next."],
 ];
 const SIGNUP_NEXT = ["Continue to sign-in", "Continue to music", "Continue to the last step", "Create account"];
 const SIGNUP_BACK = ["Back to your details", "Back to sign-in", "Back to music"];
 import { useSignupHandleAvailability } from "../features/signupHandle/useSignupHandleAvailability";
+import { cancelSignupRequest } from "../features/signupOnboarding/accountSecurityService";
 
 const readableError = (error, fallback) => String(typeof error === "string" ? error : error?.userMessage || error?.message || fallback).slice(0, 280);
 const controlStyle = (base, disabled = false) => ({ pressed, focused }) => [base, disabled && styles.disabled, pressed && !disabled && styles.pressed, focused && focusRing];
@@ -61,6 +62,7 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, navigationA
   const [pickingCity, setPickingCity] = useState(false);
   const [viewing, setViewing] = useState(null);
   const [sentTo, setSentTo] = useState(null);
+  const [pendingSignup, setPendingSignup] = useState(null);
   const [busyAction, setBusyAction] = useState(null);
   const [error, setError] = useState("");
   const [errorField, setErrorField] = useState(null);
@@ -117,7 +119,7 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, navigationA
   const changeMode = (next) => {
     if (busyRef.current) return;
     setAccounts(null); setSignupChoice(null); setPassword(""); setCurrentPassword("");
-    setMode(next); setStep(1); setSentTo(null); setShowPassword(false); clearError();
+    setMode(next); setStep(1); setSentTo(null); setPendingSignup(null); setShowPassword(false); clearError();
     onModeChange?.(next);
   };
   const accountValues = () => ({ name, handle, email, password, ...(artistSignup ? { artistIntent: { artistName } } : {}) });
@@ -154,6 +156,12 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, navigationA
         : await login(email.trim(), password, accountId, { signal: attempt.signal });
       if (!mounted.current || attempt.signal.aborted || authAttempt.current !== attempt) return;
       if (result?.ok) {
+        if (result.pending) {
+          setPendingSignup({ email: email.trim(), cancelToken: result.cancelToken });
+          setPassword(""); setCurrentPassword(""); setShowPassword(false);
+          setMode("pending");
+          return;
+        }
         if (result.needsAccountChoice) { setSignupChoice(result); return; }
         if (result.chooseAccount) { setSignupChoice(null); setAccounts(result.accounts); return; }
         setPassword(""); setShowPassword(false);
@@ -183,6 +191,19 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, navigationA
   const close = () => {
     if (busyRef.current) return;
     setPassword(""); setCurrentPassword(""); setAccounts(null); onCancel?.();
+  };
+  const cancelPendingSignup = async () => {
+    if (busyRef.current || !pendingSignup?.cancelToken) return;
+    busyRef.current = true; setBusyAction("cancel"); clearError();
+    try {
+      await cancelSignupRequest(pendingSignup.cancelToken);
+      if (mounted.current) { setPendingSignup(null); setMode("signup"); setStep(1); }
+    } catch (failure) {
+      if (mounted.current) showError({ message: readableError(failure, "Cancellation could not be confirmed. Try again.") });
+    } finally {
+      busyRef.current = false;
+      if (mounted.current) setBusyAction(null);
+    }
   };
   const sendReset = async () => {
     if (busyRef.current) return;
@@ -247,6 +268,7 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, navigationA
   </Control>;
   };
   const submitForm = (action) => {
+    if (mode === "pending") return;
     if (signupChoice || accounts) {
       const choices = signupChoice?.accounts || accounts || [];
       if (action?.name === "account" && choices.some(account => account.id === action.value)) return submit(action.value, { useExisting: true });
@@ -256,14 +278,14 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, navigationA
     if (mode === "forgot") return sentTo ? undefined : sendReset();
     return submit();
   };
-  const headingText = signupChoice || accounts ? "Choose your account." : mode === "forgot" ? sentTo ? "Check your email." : "Back to your account."
+  const headingText = mode === "pending" ? "Check your email." : signupChoice || accounts ? "Choose your account." : mode === "forgot" ? sentTo ? "Check your email." : "Back to your account."
     : signupMode ? SIGNUP_STEP_COPY[step - 1][0] : "Good to see you.";
-  const subheading = signupChoice || accounts ? "Choose which profile to open." : mode === "forgot" ? "A reset link gets you back in."
+  const subheading = mode === "pending" ? "Confirm your address before your account is created." : signupChoice || accounts ? "Choose which profile to open." : mode === "forgot" ? "A reset link gets you back in."
     : signupMode ? SIGNUP_STEP_COPY[step - 1][1] : "Your shows, photos and people are waiting.";
   const progress = { min: 1, max: SIGNUP_STEPS.length, now: step, text: `Step ${step} of ${SIGNUP_STEPS.length}: ${SIGNUP_STEPS[step - 1]}` };
 
   return <KeyboardAvoidingView style={[styles.wrap, { paddingTop: insets.top }]} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-    <SheetHeader title={mode === "forgot" ? "Reset password" : signupMode ? addAccount ? "Add account" : "Sign up" : "Log in"} onClose={close} leadDisabled={busy} />
+    <SheetHeader title={mode === "pending" ? "Check your email" : mode === "forgot" ? "Reset password" : signupMode ? addAccount ? "Add account" : "Sign up" : "Log in"} onClose={close} leadDisabled={busy} />
     <ScrollView ref={scroll} contentContainerStyle={[styles.content, { paddingBottom: Math.max(insets.bottom, 16) + 24 }]} contentInsetAdjustmentBehavior="automatic" keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag" automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}>
       <View style={styles.ticket}>
         <View style={styles.brandRow}><BrandMark size={30} color={colors.amber} /><View><Text style={styles.wordmark}>MSHPIT</Text><Text style={styles.slogan}>LIVE MUSIC, REMEMBERED</Text></View></View>
@@ -279,7 +301,7 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, navigationA
           {!!error ? <Text ref={errorRef} tabIndex={-1} style={styles.error} accessibilityRole="alert" accessibilityLiveRegion="assertive" selectable>{error}</Text> : null}
 
           {/* Keep credentials associated through music/account selection; never persist them. */}
-          {mode !== "forgot" ? <View style={[styles.credentials, (signupChoice || accounts || (signupMode && step > 2)) && styles.hiddenCredentials]}>
+          {mode !== "forgot" && mode !== "pending" ? <View style={[styles.credentials, (signupChoice || accounts || (signupMode && step > 2)) && styles.hiddenCredentials]}>
               {/* Step 1, who you are. Hidden, not unmounted, on later steps. */}
               {signupMode ? <View style={[styles.credentials, step !== 1 && styles.hiddenCredentials]}>
               {signupMode && <View style={styles.section}>
@@ -308,7 +330,13 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, navigationA
                 : <AuthPressable style={controlStyle(styles.forgotButton, busy)} onPress={() => changeMode("forgot")} disabled={busy} accessibilityRole="button"><Text style={styles.link}>Forgot password?</Text></AuthPressable>}
               </View>
           </View> : null}
-          {signupChoice ? <>
+          {mode === "pending" ? <>
+            <View style={styles.note}><Icon name="mail" size={19} color={colors.amber} /><Text style={styles.noteText} accessibilityLiveRegion="polite" role="status">If signup is available for {pendingSignup?.email}, a confirmation link will arrive shortly. Links last 24 hours. Check spam, or sign up again for a new link. If you already have an account, log in or reset your password. To add a second account, log in first and use Add account in Settings.</Text></View>
+            {primary("Continue to log in", () => changeMode("login"))}
+            {primary("Reset password", () => changeMode("forgot"))}
+            {primary("Start signup again", () => changeMode("signup"))}
+            <AuthPressable style={controlStyle(styles.textButton, busy)} onPress={cancelPendingSignup} disabled={busy} accessibilityRole="button"><Text style={styles.link}>{busyAction === "cancel" ? "Cancelling..." : "Cancel signup"}</Text></AuthPressable>
+          </> : signupChoice ? <>
             <Text style={styles.subtitle}>{signupChoice.canCreate ? "An account already uses this email and password. Continue with it, or create your second account. Nothing has been changed." : "These credentials already belong to an account. Choose a profile below. Nothing has been changed."}</Text>
             {signupChoice.accounts.map((account) => <View key={account.id}>{primary(`Log in: ${account.name} · @${account.handle}`, null, false, { name: "account", value: account.id })}</View>)}
             {signupChoice.canCreate ? primary("Create a second account", null, false, { name: "create-additional" }) : <Text style={styles.hint}>This email has reached its two-account limit.</Text>}

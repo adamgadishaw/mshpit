@@ -167,7 +167,8 @@ import { discoverySidebar } from "./discovery.js";
 import { pageHeadFor, publicDocumentForPath, resolveEntity, sitemapSnapshotHealth, catalogSeoMaintenanceStatus } from "./seo.js";
 import { pageHeadRoutes } from "./features/seo/pageHeadRoutes.js";
 import { userRewards } from "./rewards.js";
-import { prepareVerification, completeVerification, resendVerification, sendWelcomeOnce, verificationEnabled } from "./verification.js";
+import { completeVerification, resendVerification, sendWelcomeOnce, verificationEnabled, sendSignupReservation } from "./verification.js";
+import { prepareSignupReservation } from "./features/accountOnboarding/signupReservations.js";
 import { memberBadgeFor, grantFirstWaveBadge } from "./memberBadges.js";
 import {
   clearYouTubeTrackCache,
@@ -1604,12 +1605,6 @@ const feedPostById = db.prepare(`
     ${SEEN_ORDINAL_SQL}
   FROM posts p JOIN users u ON u.id = p.user_id
   WHERE p.id = ? AND ${activeAccountSql("u")}`);
-function privateSignupHandle() {
-  // An email local-part is private identity data, not a public username. Use a
-  // neutral random base and let the user choose a meaningful handle later.
-  return uniqueHandle(`pitfan_${randomBytes(4).toString("hex")}`);
-}
-
 function validateSignupHandle(value) {
   const handle = normalizedProfileHandle(value);
   if (!handle) throw new ApiError(400, "Use 3 to 20 letters, numbers, or underscores for your @username.", "VALIDATION_FAILED");
@@ -5254,7 +5249,11 @@ export const routes = {
   // surface first (rank_score); exact name matches float to the top.
   "GET /api/artists": (ctx) => {
     const term = clean(ctx.query.q, { max: 80 }).toLowerCase();
-    const lim = Math.min(40, Math.max(1, Number(ctx.query.limit) || 20));
+    const requestedLimit = ctx.query.limit == null || ctx.query.limit === "" ? 20 : Number(ctx.query.limit);
+    if (!Number.isSafeInteger(requestedLimit) || requestedLimit < 1) {
+      throw new ApiError(400, "Choose a valid number of artists to load.", "VALIDATION_FAILED");
+    }
+    const lim = Math.min(40, requestedLimit);
     const literal = term.replace(/[%_\\]/g, "");
     const folded = artistSearchKey(term);
     if (term) limit(ctx, "artist-search", 240, 10 * 60 * 1000);
@@ -5930,96 +5929,52 @@ export const routes = {
     if (v.termsVersion !== CURRENT_TERMS_VERSION) {
       throw new ApiError(400, "Accept the current Terms & Conditions and Privacy policy to create an account.", "VALIDATION_FAILED");
     }
-    // Report the actual signup outcome. Account identities are disclosed only
-    // after the submitted password authenticates them, never by email alone.
+    // Mailbox-first signup never issues an authenticated cookie or discloses
+    // whether this email already owns one or two accounts.
     ctx.setHeader?.("Cache-Control", "no-store");
-    const passwordHash = await hashPassword(v.password);
-    ctx.signal?.throwIfAborted();
-    const cancelToken = randomBytes(32).toString("base64url");
-    const cancelHash = createHash("sha256").update(cancelToken).digest("hex");
-    const addingAccount = ctx.body?.addAccount === true;
-    if (addingAccount) {
-      const actor = requireVerifiedUser(ctx);
-      if (cleanEmail(actor.email) !== v.email || typeof ctx.body?.currentPassword !== "string"
-        || ctx.body.currentPassword.length > 100 || !await verifyPassword(ctx.body.currentPassword, actor.pass_hash)) {
-        throw new ApiError(401, "Confirm the current account's password to add an account with this email.", "AUTH_INVALID");
+    const responseFloor = createRecoveryResponseFloor();
+    try {
+      const passwordHash = await hashPassword(v.password);
+      ctx.signal?.throwIfAborted();
+      const cancelToken = randomBytes(32).toString("base64url");
+      const addingAccount = ctx.body?.addAccount === true;
+      let actor = null;
+      if (addingAccount) {
+        actor = requireVerifiedUser(ctx);
+        if (cleanEmail(actor.email) !== v.email || typeof ctx.body?.currentPassword !== "string"
+          || ctx.body.currentPassword.length > 100 || !await verifyPassword(ctx.body.currentPassword, actor.pass_hash)) {
+          throw new ApiError(401, "Confirm the current account's password to add an account with this email.", "AUTH_INVALID");
+        }
       }
-    }
-    const existingAccounts = q.usersByEmail.all(v.email);
-    const matching = [];
-    for (let slot = 0; slot < 2; slot++) {
-      if (await verifyPasswordForUser(v.password, existingAccounts[slot]?.pass_hash)) matching.push(existingAccounts[slot]);
-    }
-    // A password reset or deletion may finish while a worker is checking the
-    // other slot. Never disclose choices backed only by an outdated proof.
-    for (let i = matching.length - 1; i >= 0; i--) {
-      const fresh = q.userById.get(matching[i].id);
-      if (!fresh || fresh.pass_hash !== matching[i].pass_hash || cleanEmail(fresh.email) !== v.email) matching.splice(i, 1);
-    }
-    const createAdditional = ctx.body?.createAdditional === true;
-    ctx.signal?.throwIfAborted();
-    if (!addingAccount && matching.length && !createAdditional) {
-      return { ok: true, needsAccountChoice: true, canCreate: existingAccounts.length < 2,
-        accounts: matching.map((user) => ({ id: user.id, name: user.name, handle: user.handle,
-          setupIncomplete: user.onboarding_version === 0, emailVerified: !!user.email_verified_at })) };
-    }
-    if (createAdditional && !addingAccount && !matching.length) throw new ApiError(401, "Log in before adding an account with these credentials.", "AUTH_INVALID");
-    const id = uid("u");
-    const initials = (v.name.match(/\p{L}|\p{N}/gu) || ["?"]).slice(0, 2).join("").toUpperCase();
-    const colors = ["#F2A65A", "#E0457B", "#5B8DEF", "#6FCF97", "#B98AE0", "#E8B65A"];
-    const createdAt = now();
-    const signup = atomicWrite(() => {
-          // A disconnected form cannot receive its cancellation capability.
-          // Stop before committing; a later disconnect cannot undo this commit.
-          ctx.signal?.throwIfAborted();
-          const accounts = q.usersByEmail.all(v.email);
-          const accountSnapshotUnchanged = accounts.length === existingAccounts.length
-            && accounts.every((account) => existingAccounts.some((proof) => (
-              proof.id === account.id && proof.pass_hash === account.pass_hash
-            )));
-          // An ordinary signup may intentionally create the second account when
-          // its password differs, but only from the exact account set that was
-          // inspected before hashing. Without this in-transaction fence, two
-          // simultaneous first signups can both observe an empty address and the
-          // second request silently becomes an unintended sibling account.
-          if (!addingAccount && !createAdditional && !accountSnapshotUnchanged) {
-            throw new ApiError(409, "Accounts for this email changed while signup was finishing. Try again.", "CONFLICT");
+      const submittedAt = now();
+      const reservation = atomicWrite(() => {
+        ctx.signal?.throwIfAborted();
+        if (actor) {
+          ctx.assertCurrentSession?.();
+          const current = q.userById.get(actor.id);
+          if (!current?.email_verified_at || current.pass_hash !== actor.pass_hash || current.role !== actor.role
+            || cleanEmail(current.email) !== v.email || !ctx.token) {
+            throw new ApiError(409, "Your account changed. Log in again before adding an account.", "CONFLICT");
           }
-          if (createAdditional && !addingAccount && !accounts.some((user) => matching.some((proof) => proof.id === user.id && proof.pass_hash === user.pass_hash))) throw new ApiError(409, "Your account changed. Try signing up again.", "CONFLICT");
-          if (addingAccount) {
-            ctx.assertCurrentSession?.();
-            const actor = q.userById.get(ctx.user.id);
-            if (!actor?.email_verified_at || actor.pass_hash !== ctx.user.pass_hash || cleanEmail(actor.email) !== v.email) throw new ApiError(409, "Your account changed. Log in again before adding an account.", "CONFLICT");
+          if (q.usersByEmail.all(v.email).length >= 2) {
+            throw new ApiError(409, "This email already has two accounts. Use Switch account or another email.", "CONFLICT");
           }
-          if (accounts.length >= 2) throw new ApiError(409, "This email already has two accounts. Log in, reset your password, or use another email.", "CONFLICT");
-          // Catalogue protection may change while password hashing is running.
-          assertMemberIdentityAllowed(db, { name: v.name, handle: preferredHandle });
-          q.insertUser.run(id, v.email, v.name, privateSignupHandle(), passwordHash,
-            "fan", v.city ?? null, v.lat ?? null, v.lng ?? null, initials, colors[Math.floor(Math.random() * colors.length)], createdAt);
-          db.prepare("UPDATE users SET extras=? WHERE id=?").run(JSON.stringify({
-            termsAcceptedAt: createdAt,
-            termsVersion: CURRENT_TERMS_VERSION,
-            ...(v.analyticsConsent ? { analyticsConsentAt: createdAt } : {}),
-            ...(preferredHandle ? { pendingSignupHandle: preferredHandle } : {}),
-            ...(pendingArtistIntent ? { pendingArtistIntent } : {}),
-          }), id);
-          db.prepare("UPDATE users SET genres=? WHERE id=?").run(JSON.stringify(v.genres), id);
-          // Only accounts created through signup enter the first-run flow.
-          // Migrated and staff-provisioned accounts keep NULL and stay exempt.
-          db.prepare("UPDATE users SET age_band=?, dm_policy='mutuals', onboarding_version=0 WHERE id=?").run(v.ageBand, id);
-          db.prepare("UPDATE users SET signup_cancel_hash=? WHERE id=?").run(cancelHash, id);
-          const created = q.userById.get(id);
-          const verification = prepareVerification(created);
-          const issued = createSession(id, ctx.ip, ctx.ua);
-          linkedAccounts.grantVerifiedAccounts({ userId: id, users: [q.userById.get(id), ...matching], token: issued.token });
-          return { session: issued, verification };
-    });
-    void signup.verification.sendAfterCommit();
-    // Only the new, unverified fan account receives this limited session.
-    // The verification gate blocks all public/social mutations until confirmed.
-    ctx.setSession(signup.session);
-    return { ok: true, created: true, verificationRequired: true, cancelToken,
-      user: publicUser(q.userById.get(id), { self: true }) };
+        }
+        return prepareSignupReservation(db, { cancelToken, actor, sessionToken: ctx.token, at: submittedAt,
+          payload: { email: v.email, name: v.name, passwordHash, city: v.city, lat: v.lat, lng: v.lng,
+            genres: v.genres, ageBand: v.ageBand, extras: {
+              termsAcceptedAt: submittedAt, termsVersion: CURRENT_TERMS_VERSION,
+              ...(v.analyticsConsent ? { analyticsConsentAt: submittedAt } : {}),
+              ...(preferredHandle ? { pendingSignupHandle: preferredHandle } : {}),
+              ...(pendingArtistIntent ? { pendingArtistIntent } : {}),
+            } },
+        });
+      });
+      void sendSignupReservation(reservation);
+      return { ok: true, pending: true, verificationRequired: true, cancelToken };
+    } finally {
+      await responseFloor.settle();
+    }
   },
 
   "POST /api/login": async (ctx) => {
@@ -9091,6 +9046,7 @@ export const routes = {
     const token = clean(ctx.body?.token, { max: 100 });
     const completion = completeVerification(token);
     if (!completion) return { ok: true, verified: false };
+    if (completion.blocked) return { ok: true, verified: false, outcome: completion.blocked };
     const response = { ok: true, verified: true, alreadyVerified: completion.replayed };
     // Possession of an email token authorizes confirming that address, not
     // reading the account's private self projection. Only the matching active

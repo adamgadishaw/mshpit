@@ -155,9 +155,9 @@ services:
       - key: CATALOG_RESEARCH_DAILY_USD
         value: "0.30"
       - key: CATALOG_RESEARCH_MONTHLY_USD
-        value: "4"
+        value: "10"
       - key: ANTHROPIC_MONTHLY_USD
-        value: "20"
+        value: "10"
       - key: CATALOG_RESEARCH_MODEL
         value: "claude-sonnet-5"
       # Mshpit News: every 20 minutes, reads 17 music outlets' RSS feeds and

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { ApiError } from "../../errors.js";
 import { admitClaudeSpend, claudeCeilingLeftMicroUsd, claudeRequestDefinitelyRejected } from "../../claudeSpendCeiling.js";
 import { activeAccountSql } from "../../accountVisibility.js";
 import { assertSafeAuthoredText } from "../../contentSafety.js";
@@ -171,11 +172,66 @@ export function normalizeSelfWrittenStory({ headline, summary, body, category, s
   if (!looksLikeNews(cleanHeadline)) throw new TypeError("Use a factual music-news headline, not a review, opinion, or gossip headline.");
   const derivedCategory = newsCategory(`${cleanHeadline}\n${cleanSummary}\n${cleanBody.slice(0, 4_000)}`);
   if (!PUBLISHABLE_CATEGORIES.includes(derivedCategory)) throw new TypeError("The story must describe a publishable music-news event such as a release, tour, festival, award, chart, legal or death news.");
-  const cleanCategory = derivedCategory;
+  // Classification still checks editorial eligibility, but incidental career
+  // history must not replace an editor's explicit article category. Older
+  // drafts without a selection retain the previous classification fallback.
+  if (category !== undefined && !PUBLISHABLE_CATEGORIES.includes(category)) throw new TypeError("Choose a valid article category.");
+  const cleanCategory = category === undefined ? derivedCategory : category;
   const articleSources = normalizeSelfWrittenSources(sources);
   const cleanPhoto = normalizeSelfWrittenPhoto(photo, assetOwnerId);
   return { headline: cleanHeadline, summary: cleanSummary, body: cleanBody, category: cleanCategory,
     artists: [], sources: [...articleSources, cleanPhoto.source], photo: cleanPhoto, wordCount: wordCount(cleanBody) };
+}
+
+// Correct a published self-written label without replacing the post or touching
+// its editorial evidence, media, draft snapshot or engagement. Authentication
+// and audit callbacks are mandatory and synchronous inside the transaction.
+export function correctSelfWrittenNewsCategory(database, {
+  postId, category, expectedCategory, expectedUpdatedAt, authorize, onCorrected,
+  env = process.env, now = Date.now,
+} = {}) {
+  if (typeof postId !== "string" || !/^news_[A-Za-z0-9_-]{1,160}$/u.test(postId)
+      || !PUBLISHABLE_CATEGORIES.includes(category) || !PUBLISHABLE_CATEGORIES.includes(expectedCategory)
+      || !Number.isSafeInteger(expectedUpdatedAt) || expectedUpdatedAt < 1) {
+    throw new ApiError(400, "Supply valid categories and the article's current modification time.", "VALIDATION_FAILED");
+  }
+  if (typeof authorize !== "function" || typeof onCorrected !== "function") throw new TypeError("Category corrections require authorization and audit.");
+  const sync = (callback, value) => {
+    const result = callback(value);
+    if (result && typeof result.then === "function") throw new TypeError("Category correction callbacks must be synchronous.");
+  };
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    sync(authorize);
+    const story = database.prepare(`SELECT s.id,s.category,s.updated_at,s.signals,p.user_id FROM news_stories s
+      JOIN posts p ON p.id=s.post_id WHERE s.post_id=? AND s.status='published' AND p.removed=0 AND p.kind='status'`).get(postId);
+    if (!story || parseJson(story.signals, {})?.origin !== "self_written") {
+      throw new ApiError(404, "That published self-written story is unavailable.", "NOT_FOUND");
+    }
+    const at = now();
+    const publisher = resolveNewsPublisher(database, { env, at });
+    if (!publisher.ok || publisher.accountId !== story.user_id) throw new ApiError(409, "The news publisher needs review before this correction.", "CONFLICT");
+    if (story.category !== expectedCategory || story.updated_at !== expectedUpdatedAt) {
+      throw new ApiError(409, "The article has changed. Read its current category and modification time before retrying.", "CONFLICT");
+    }
+    const prior = { category: story.category, updatedAt: story.updated_at };
+    const changed = story.category !== category;
+    const next = { category, updatedAt: changed ? Math.max(at, story.updated_at + 1) : story.updated_at };
+    if (!Number.isSafeInteger(next.updatedAt)) throw new TypeError("A valid category correction timestamp is required.");
+    if (changed) {
+      const updated = database.prepare(`UPDATE news_stories SET category=?,updated_at=?
+        WHERE id=? AND status='published' AND category=? AND updated_at=?`)
+        .run(category, next.updatedAt, story.id, expectedCategory, expectedUpdatedAt);
+      if (updated.changes !== 1) throw new ApiError(409, "The article changed before the correction was saved.", "CONFLICT");
+      sync(onCorrected, { postId, storyId: story.id, prior, next });
+    }
+    sync(authorize);
+    database.exec("COMMIT");
+    return { postId, ...next, changed };
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
 }
 const dayOf = (at) => new Date(at).toISOString().slice(0, 10);
 

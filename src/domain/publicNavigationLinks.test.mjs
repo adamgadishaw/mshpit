@@ -57,6 +57,29 @@ test("post navigation links its public author, artist, venue, and canonical post
   assert.ok(links.some((link) => link.href === "/post/p_1" && link.current));
 });
 
+test("event artist links keep the stored slug and never infer an unresolved artist from its name", () => {
+  const event = { id: "identity-event", kind: "event", performanceEvent: true,
+    artist: "Same Name", artistKey: "same-name-ca", artistPublicSlug: "same-name-ca" };
+  const artistLink = (log) => publicNavigationLinks({ openLog: log }).find((link) => link.label === "Same Name");
+  const linked = artistLink(event);
+  assert.equal(linked.href, "/artist/same-name-ca");
+  assert.equal(linked.target.value.publicSlug, "same-name-ca");
+  for (const patch of [
+    { artistIdentityPending: true }, { artistPublicSlug: null }, { artistPublicSlug: "" },
+    { artistPublicSlug: "../same-name" }, { artistPublicSlug: "Same Name" },
+    { artistPublicSlug: "x".repeat(81) },
+  ]) {
+    const link = artistLink({ ...event, ...patch });
+    assert.equal(link.label, "Same Name", "an unresolved display name remains readable");
+    assert.equal(link.href, null, JSON.stringify(patch));
+    assert.equal(link.target, null, "ordinary clicks must not bypass href suppression");
+  }
+  assert.equal(artistLink({ ...event, kind: undefined, artistPublicSlug: null }).href, null,
+    "calendar/discovery event rows without kind obey the same rule");
+  assert.equal(artistLink({ ...event, kind: "concert", archiveShowKey: "archive", artistPublicSlug: null }).href, "/artist/same-name",
+    "archive behavior is outside the provider event restriction");
+});
+
 test("modified and non-primary clicks retain normal browser link behavior", () => {
   assert.equal(shouldUseSpaLinkNavigation({ nativeEvent: { button: 0 } }), true);
   assert.equal(shouldUseSpaLinkNavigation({ nativeEvent: { button: 0, metaKey: true } }), false);

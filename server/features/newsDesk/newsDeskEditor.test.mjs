@@ -10,7 +10,7 @@ const { db, q } = await import("../../db.js");
 const { ApiError } = await import("../../errors.js");
 const { createNewsDeskEditor, articleTitle } = await import("./newsDeskEditor.js");
 const { newsDeskEditorRoutes } = await import("./newsDeskEditorRoutes.js");
-const { ensureNewsDeskSchema } = await import("./newsDeskService.js");
+const { ensureNewsDeskSchema, normalizeSelfWrittenStory } = await import("./newsDeskService.js");
 ensureNewsDeskSchema(db);
 after(() => { db.close(); rmSync(directory, { recursive: true, force: true }); });
 
@@ -181,4 +181,39 @@ test("self-written save keys replay one draft and reject a different payload", (
   const receipt = db.prepare("SELECT draft_id FROM news_editor_save_receipts WHERE actor_id=? AND idempotency_key=?").get("news_editor_account", input.idempotencyKey);
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM news_drafts WHERE id=?").get(receipt.draft_id).n, 1);
   assert.throws(() => instance.writeSelfWritten({ ...input, summary: "A different article under the same stable key." }), codeOf("CONFLICT"));
+});
+
+test("manual release selection survives background charts, awards and tours without provider calls", () => {
+  const { instance, calls } = editor();
+  const input = {
+    headline: "Fixture artist releases a new studio album",
+    summary: "The artist has released a new album before an upcoming world tour.",
+    body: "An earlier single reached No. 1 on the chart and won a Grammy award during a previous tour. "
+      + "The new album brings together the reported music and its documented creative context. ".repeat(100),
+    category: "release",
+    sources: [
+      { kind: "article", name: "NME", url: "https://www.nme.com/news/category-album" },
+      { kind: "article", name: "Stereogum", url: "https://www.stereogum.com/category-album" },
+      { kind: "article", name: "Pitchfork", url: "https://pitchfork.com/news/category-album" },
+    ],
+    photo: { assetId: "ma_category_fixture", name: "Fixture photographer", url: "https://example.com/category-photo" },
+    actorId: "news_editor_account",
+  };
+  const draft = instance.writeSelfWritten(input);
+  assert.equal(draft.category, "release");
+  const stored = JSON.parse(db.prepare("SELECT result FROM news_drafts WHERE id=?").get(draft.id).result);
+  assert.equal(stored.category, "release");
+  assert.equal(normalizeSelfWrittenStory({ ...stored, sources: input.sources }, { assetOwnerId: input.actorId }).category, "release",
+    "publication revalidation must preserve the saved selection");
+  assert.equal(instance.writeSelfWritten({ ...input, category: undefined }).category, "awards",
+    "legacy callers without a selection retain existing classification");
+  for (const category of ["other", "industry", "RELEASE", "", null, {}, ["release"]]) {
+    assert.throws(() => instance.writeSelfWritten({ ...input, category }), codeOf("VALIDATION_FAILED"));
+  }
+  assert.throws(() => instance.writeSelfWritten({ ...input, sources: input.sources.slice(0, 2) }), codeOf("VALIDATION_FAILED"));
+  assert.throws(() => instance.writeSelfWritten({ ...input, headline: "The best albums ranked for this year" }), codeOf("VALIDATION_FAILED"));
+  assert.throws(() => instance.writeSelfWritten({ ...input, headline: "Ordinary context for this account", summary: "Ordinary background for this account and its participants.",
+    body: "Ordinary background for this account and its participants. ".repeat(130) }), codeOf("VALIDATION_FAILED"));
+  assert.throws(() => instance.writeSelfWritten({ ...input, photo: null }), codeOf("VALIDATION_FAILED"));
+  assert.equal(calls.length, 0);
 });

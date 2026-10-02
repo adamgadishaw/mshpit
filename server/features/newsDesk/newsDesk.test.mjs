@@ -290,6 +290,8 @@ test("a story's page is a news article with its write-up, artist links, sources 
   assert.equal(document.title, "U2 mark 50 years with a show at their old Dublin school | Mshpit News");
   assert.equal(document.image, "https://www.mshpit.com/api/news-desk/stories/u2-1/image.png");
   const article = document.jsonLd.find((node) => node["@type"] === "NewsArticle");
+  assert.equal(article.articleSection, "Tours", "generated-story categories retain their existing projection");
+  assert.equal(document.news.category, "Tours");
   assert.match(article.articleBody, /according to Stereogum/u);
   assert.ok(article.citation.includes("https://stereogum.com/2512591/u2-school/news/"));
   assert.equal(article.about[0].url, "https://www.mshpit.com/artist/u2");

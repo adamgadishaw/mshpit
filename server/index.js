@@ -102,6 +102,7 @@ import { healthRateLimitPolicy } from "./healthAvailability.js";
 import { shouldRecordGeneralRequestFailure } from "./requestFailureObservability.js";
 import { crawlerFileRateLimitPolicy } from "./crawlerFileRateLimit.js";
 import { enforceRateLimit } from "./rateLimitEnforcement.js";
+import { createPublicReadAdmission, isExpensiveApiRead } from "./publicReadAdmission.js";
 import {
   allowedUnsafeRequestOrigins,
   assertProductionRequestHost,
@@ -146,6 +147,7 @@ const UNSAFE_REQUEST_ORIGINS = allowedUnsafeRequestOrigins({
 const TRUSTED_PROXY_CIDRS = trustedProxyCidrs(process.env.PIT_TRUSTED_PROXY_CIDRS);
 const RENDER_PROXY_HEADERS = process.env.RENDER === "true";
 const ACTIVE_SESSION_COOKIE = sessionCookieName(PROD);
+const publicReadAdmission = createPublicReadAdmission();
 // Disk-backed Render services cannot configure a longer shutdown delay. Leave
 // five seconds before Render's documented general 30-second cutoff while
 // cooperative job cancellation and SQLite close drain normally.
@@ -383,6 +385,7 @@ function serveStatic(req, res, pathname) {
   // titled "Pit", and a crawler that does not run JavaScript sees nothing at
   // all. Only the HTML entry point is rewritten; assets stream untouched.
   if (ext === ".html") {
+    admitExpensiveRead(req);
     let html = readFileSync(file, "utf8");
     try { html = injectHead(html, pathname); } catch { /* never fail the page over metadata */ }
     if (!isProduction()) html = enforceHtmlRobotsMeta(html);
@@ -508,6 +511,14 @@ function clientIp(req) {
   });
 }
 
+function admitExpensiveRead(req) {
+  publicReadAdmission.admit(() => {
+    const token = parseCookies(req.headers.cookie)[ACTIVE_SESSION_COOKIE];
+    const accountId = getSession(token)?.user_id;
+    return accountId ? `user:${accountId}` : `ip:${clientIp(req)}`;
+  });
+}
+
 async function handleRequest(req, res) {
   const started = Date.now();
   const requestId = randomUUID();
@@ -608,6 +619,8 @@ async function handleRequest(req, res) {
       // Native clients omit Origin/Fetch Metadata and remain supported; browser
       // writes must originate from the configured first-party app.
       assertUnsafeRequestOrigin(req.method, req.headers, UNSAFE_REQUEST_ORIGINS);
+      const expensiveRead = isExpensiveApiRead(req.method, pathname);
+      if (expensiveRead) publicReadAdmission.precheck();
 
       // Global flood guard on top of per-route limits.
       //
@@ -634,6 +647,8 @@ async function handleRequest(req, res) {
         const flooder = getSession(sessionToken)?.user_id || `ip:${ip}`;
         enforceRateLimit(`global:${flooder}`, 300, 60 * 1000, { message: "Too many requests." });
       }
+      // Only admitted API identities consume shared projection capacity.
+      if (expensiveRead) admitExpensiveRead(req);
 
       const match = matchRoute(req.method, pathname);
       if (!match) return sendApiError(res, new ApiError(404, "Not found.", "NOT_FOUND"), requestId, cors);
@@ -713,6 +728,7 @@ async function handleRequest(req, res) {
       return res.end();
     }
     if (serveStatic(req, res, pathname)) return;
+    admitExpensiveRead(req);
     return serveSeoRoute(req, res, pathname, { search });
   } catch (e) {
     // A client disconnect is an expected cancellation boundary, not an

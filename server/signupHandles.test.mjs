@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,8 +13,8 @@ delete process.env.RESEND_API_KEY;
 delete process.env.MAIL_FROM;
 const { db, q, publicUser } = await import("./db.js");
 const { routes } = await import("./api.js");
-const { getSession, resetRateLimitsForTests } = await import("./auth.js");
-const { completeVerification, forceVerify, mintVerifyToken } = await import("./verification.js");
+const { resetRateLimitsForTests } = await import("./auth.js");
+const { beginVerification, completeVerification, forceVerify, mintVerifyToken } = await import("./verification.js");
 
 after(() => {
   db.close();
@@ -39,7 +40,28 @@ async function signup(handle, overrides = {}) {
   let session = null;
   const result = (await routes["POST /api/signup"]({ body, ip: `signup-handle-ip-${sequence}`, ua: "test",
     setSession(value) { session = value; } }));
-  return { result, session, user: result.user?.id ? q.userById.get(result.user.id) : q.userByEmail.get(body.email), body };
+  assert.equal(result.pending, true);
+  assert.equal(result.verificationRequired, true);
+  assert.equal(result.user, undefined);
+  assert.equal(result.accounts, undefined);
+  assert.equal(session, null);
+  const reservation = db.prepare("SELECT * FROM signup_reservations WHERE email=? AND status='pending' ORDER BY rowid DESC LIMIT 1").get(body.email);
+  let token;
+  if (reservation) {
+    assert.equal(q.userByEmail.get(body.email), undefined);
+    token = "handle-reservation-" + sequence;
+    db.prepare("UPDATE signup_reservations SET token_hash=? WHERE token_hash=?")
+      .run(createHash("sha256").update(token).digest("hex"), reservation.token_hash);
+  }
+  return { result, session, reservation, token, body };
+}
+// Historical unfinished users remain supported, but new signup no longer
+// creates one. Seed that legacy shape explicitly for profile/admin regressions.
+function legacySignup(handle) {
+  const user = addUser("pitfan_" + (++sequence).toString(16).padStart(8, "0"));
+  db.prepare("UPDATE users SET onboarding_version=0,email_verified_at=0,extras=? WHERE id=?")
+    .run(JSON.stringify({ pendingSignupHandle: handle, termsAcceptedAt: Date.now(), termsVersion: LEGAL_ACCEPTANCE_VERSION }), user.id);
+  return { user: q.userById.get(user.id) };
 }
 function availability(handle, extra = {}) {
   const headers = new Map();
@@ -75,54 +97,47 @@ test("claimed staff and member handles cannot be chosen regardless of target ema
   (await apiError(async () => (await signup("ab", { email: existing.email })), 400, "VALIDATION_FAILED"));
 });
 
-test("signup keeps preferred handles private and never overwrites a sibling", async () => {
+test("signup keeps preferred handles private without creating or overwriting a sibling", async () => {
   const existing = addUser("privacy_existing");
   const old = { ...existing };
-  const first = (await signup("private_preference"));
-  const duplicate = (await signup("private_preference", { email: existing.email }));
+  const first = await signup("private_preference");
+  const duplicate = await signup("private_preference", { email: existing.email });
   for (const created of [first, duplicate]) {
-    assert.equal(created.result.created, true);
-    assert.equal(created.result.verificationRequired, true);
-    assert.equal(created.result.user.emailVerified, false);
-    assert.equal(created.result.user.id, created.user.id);
     assert.match(created.result.cancelToken, /^[A-Za-z0-9_-]{43}$/);
-    assert.equal(getSession(created.session.token).user_id, created.user.id);
+    assert.equal(JSON.stringify(created.result).includes("private_preference"), false);
   }
-  assert.notEqual(duplicate.user.id, existing.id);
-  assert.match(first.user.handle, /^pitfan_[a-f0-9]{8}/u);
-  assert.equal(JSON.parse(first.user.extras).pendingSignupHandle, "private_preference");
+  assert.equal(q.userByEmail.get(first.body.email), undefined);
+  assert.equal(duplicate.reservation, undefined, "anonymous signup cannot reserve an occupied mailbox's sibling slot");
+  assert.equal(JSON.parse(first.reservation.payload).extras.pendingSignupHandle, "private_preference");
   assert.deepEqual(availability("private_preference"), { handle: "private_preference", available: true });
-  assert.equal(q.userById.get(existing.id).extras, old.extras);
-  assert.equal(q.userById.get(existing.id).pass_hash, old.pass_hash);
-  assert.equal(q.userById.get(existing.id).handle, old.handle);
-  assert.equal(JSON.stringify(publicUser(first.user)).includes("private_preference"), false);
-  assert.equal(publicUser(first.user, { self: true }).pendingSignupHandle, "private_preference");
-  assert.equal(publicUser(first.user).pendingSignupHandle, undefined);
-  const repeated = (await signup("another_preference", { email: first.user.email }));
-  assert.equal(repeated.result.needsAccountChoice, true);
-  assert.equal(repeated.result.accounts[0].id, first.user.id);
-  assert.equal(repeated.result.cancelToken, undefined);
-  assert.equal(repeated.session, null);
-  assert.equal(q.usersByEmail.all(first.user.email).length, 1);
-  assert.equal(JSON.parse(repeated.user.extras).pendingSignupHandle, "private_preference");
+  assert.deepEqual({ ...q.userById.get(existing.id) }, old);
+  assert.deepEqual({ ...first.result, cancelToken: null }, { ...duplicate.result, cancelToken: null });
+  const confirmed = completeVerification(first.token).user;
+  assert.equal(confirmed.handle, "private_preference");
+  const repeated = await signup("another_preference", { email: confirmed.email });
+  assert.equal(repeated.reservation, undefined);
+  assert.equal(q.usersByEmail.all(confirmed.email).length, 1);
+  assert.equal(q.userById.get(confirmed.id).handle, "private_preference");
+  const legacy = legacySignup("legacy_private_name").user;
+  assert.equal(JSON.stringify(publicUser(legacy)).includes("legacy_private_name"), false);
+  assert.equal(publicUser(legacy, { self: true }).pendingSignupHandle, "legacy_private_name");
+  assert.equal(publicUser(legacy).pendingSignupHandle, undefined);
 });
 
 test("signup remains compatible without a handle or city and does not store invented coordinates", async () => {
-  const created = (await signup(undefined));
-  assert.equal(created.result.created, true);
-  assert.equal(created.result.verificationRequired, true);
-  assert.equal(created.result.user.emailVerified, false);
-  assert.equal(getSession(created.session.token).user_id, created.user.id);
-  assert.match(created.user.handle, /^pitfan_[a-f0-9]{8}/u);
-  assert.equal(created.user.home_city, null);
-  assert.equal(created.user.home_lat, null);
-  assert.equal(created.user.home_lng, null);
-  assert.equal(JSON.parse(created.user.extras).pendingSignupHandle, undefined);
+  const staged = await signup(undefined);
+  const user = completeVerification(staged.token).user;
+  assert.ok(user.email_verified_at > 0);
+  assert.match(user.handle, /^pitfan_[a-f0-9]{8}/u);
+  assert.equal(user.home_city, null);
+  assert.equal(user.home_lat, null);
+  assert.equal(user.home_lng, null);
+  assert.equal(JSON.parse(user.extras).pendingSignupHandle, undefined);
 });
 
 test("verification atomically claims a preference once and keeps initial edit free of cooldown", async () => {
   const created = (await signup(" @My_New_Handle "));
-  const token = mintVerifyToken(created.user.id);
+  const token = created.token;
   const completed = completeVerification(token);
   assert.equal(completed.user.handle, "my_new_handle");
   assert.equal(completed.user.handle_changed_at, 0);
@@ -138,11 +153,12 @@ test("two concurrent preferences may coexist, but only the first verified accoun
   const first = (await signup("shared_preference"));
   const second = (await signup("shared_preference"));
   assert.equal(availability("shared_preference").available, true);
-  const firstToken = mintVerifyToken(first.user.id);
-  const secondToken = mintVerifyToken(second.user.id);
+  const firstToken = first.token;
+  const secondToken = second.token;
   assert.equal(completeVerification(firstToken).user.handle, "shared_preference");
   const loser = completeVerification(secondToken);
-  assert.equal(loser.user.handle, second.user.handle);
+  assert.match(loser.user.handle, /^pitfan_[a-f0-9]{8}/u);
+  assert.notEqual(loser.user.handle, "shared_preference");
   assert.ok(loser.user.email_verified_at > 0);
   assert.equal(JSON.parse(loser.user.extras).pendingSignupHandle, undefined);
   assert.equal(db.prepare("SELECT COUNT(*) n FROM users WHERE handle='shared_preference'").get().n, 1);
@@ -151,8 +167,8 @@ test("two concurrent preferences may coexist, but only the first verified accoun
 test("an intervening handle claim or manual profile choice never breaks email verification", async () => {
   const taken = (await signup("later_claimed"));
   addUser("later_claimed");
-  assert.equal(completeVerification(mintVerifyToken(taken.user.id)).user.handle, taken.user.handle);
-  const manual = (await signup("earlier_preference"));
+  assert.match(completeVerification(taken.token).user.handle, /^pitfan_[a-f0-9]{8}/u);
+  const manual = legacySignup("earlier_preference");
   routes["PATCH /api/me"]({ user: manual.user, body: { handle: "manual_choice" }, ip: "manual-handle" });
   const verified = completeVerification(mintVerifyToken(manual.user.id)).user;
   assert.equal(verified.handle, "manual_choice");
@@ -160,7 +176,7 @@ test("an intervening handle claim or manual profile choice never breaks email ve
 });
 
 test("verification write failure rolls back preference, confirmation, token and receipt together", async () => {
-  const created = (await signup("rollback_preference"));
+  const created = legacySignup("rollback_preference");
   const token = mintVerifyToken(created.user.id);
   const before = q.userById.get(created.user.id);
   db.exec(`CREATE TEMP TRIGGER fail_signup_handle_claim BEFORE UPDATE OF handle ON users
@@ -177,7 +193,7 @@ test("verification write failure rolls back preference, confirmation, token and 
 });
 
 test("private preference survives profile extras edits but cannot be forged through them", async () => {
-  const created = (await signup("keep_preference"));
+  const created = legacySignup("keep_preference");
   const saved = routes["PATCH /api/me"]({ user: created.user, body: { extras: { theme: "neon" } }, ip: "pending-extras" });
   assert.equal(JSON.parse(q.userById.get(created.user.id).extras).pendingSignupHandle, "keep_preference");
   assert.equal(saved.user.pendingSignupHandle, "keep_preference");
@@ -189,9 +205,15 @@ test("private preference survives profile extras edits but cannot be forged thro
 
 test("local auto-verification and audited admin verification also claim the private preference", async () => {
   process.env.EMAIL_VERIFICATION_ENABLED = "false";
-  try { assert.equal((await signup("local_auto_choice")).user.handle, "local_auto_choice"); }
+  try {
+    const pending = await signup("mailbox_first_choice");
+    assert.equal(q.userByEmail.get(pending.body.email), undefined, "the legacy flag cannot bypass mailbox-first signup");
+    const local = legacySignup("local_auto_choice").user;
+    assert.equal(beginVerification(local).autoVerified, true);
+    assert.equal(q.userById.get(local.id).handle, "local_auto_choice");
+  }
   finally { delete process.env.EMAIL_VERIFICATION_ENABLED; }
-  const created = (await signup("staff_verified_name"));
+  const created = legacySignup("staff_verified_name");
   const admin = addUser("handle_verifier_admin", "admin");
   routes["POST /api/admin/users/:id/verify-email"]({ user: admin, params: { id: created.user.id },
     body: { reason: "Verified fixture" }, ip: "staff-handle-verify" });
@@ -199,7 +221,7 @@ test("local auto-verification and audited admin verification also claim the priv
 });
 
 test("profile metadata size is rechecked after restoring private signup and consent fields", async () => {
-  const created = (await signup("extras_size_guard"));
+  const created = legacySignup("extras_size_guard");
   const tracks = Array.from({ length: 24 }, () => ({ title: "t".repeat(200), artist: "a".repeat(100) }));
   let extras;
   for (let size = 1; size <= 200; size += 1) {
@@ -234,7 +256,7 @@ test("availability is rate limited by IP even when the caller rotates cookies", 
 });
 
 test("setup completion is independent from verification and does not grant media permission", async () => {
-  const created = (await signup("still_unverified"));
+  const created = legacySignup("still_unverified");
   (await apiError(() => routes["POST /api/media/assets"]({ user: created.user, body: {}, ip: "unverified-media" }),
     403, "MEDIA_EMAIL_VERIFICATION_REQUIRED"));
   assert.equal(routes["POST /api/me/onboarding/complete"]({ user: created.user, body: { version: 1 }, ip: "unverified-complete" }).onboardingVersion, 1);

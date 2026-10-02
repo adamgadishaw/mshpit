@@ -3,6 +3,7 @@ import { NewsEditorError } from "./newsDeskEditor.js";
 import { ensureNewsLiveSchema, staffLiveCoverage } from "./newsLive.js";
 import { ensureNewsCardPhotoSchema, readNewsCardPhotoChoice, setNewsCardPhotoChoice } from "./newsCardPhotos.js";
 import { newsCardPhotoOptions } from "./newsCardArtwork.js";
+import { correctSelfWrittenNewsCategory } from "./newsDeskService.js";
 
 // Owner/admin controls for writing a story on demand (newsDeskEditor.js).
 // Reading and searching never call Claude; a draft is one metered call.
@@ -55,6 +56,20 @@ export function newsDeskEditorRoutes({ editor, database, ApiError, requireAdmin,
   };
 
   return {
+    "PATCH /api/moderation/news-desk/editor/stories/:postId/category": (ctx) => run(() => {
+      const actor = writer(ctx);
+      rateLimit(ctx, "news-editor-category", 20, 3_600_000);
+      const input = body(ctx, ["category", "expectedCategory", "expectedUpdatedAt"]);
+      return correctSelfWrittenNewsCategory(database, {
+        ...input, postId: String(ctx.params?.postId || ""), now,
+        authorize: () => {
+          if (writer(ctx).id !== actor.id) throw new ApiError(409, "The signed-in editor changed. Refresh before retrying.", "CONFLICT");
+        },
+        onCorrected: ({ postId, prior, next }) => audit.run(randomUUID(), actor.id,
+          "news_story_category_corrected", "news_post", postId, "Editor category correction",
+          JSON.stringify(prior), JSON.stringify(next), ctx.requestId || null, next.updatedAt),
+      });
+    }),
     "GET /api/moderation/news-desk/editor": (ctx) => run(() => {
       requireAdmin(ctx);
       noStore(ctx);

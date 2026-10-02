@@ -99,6 +99,16 @@ This is a digest, not one mail per error, so an outage sends one message per coo
     cta_label: "Open moderation",
     cta_url: "{{origin}}",
   },
+  signup_verify: {
+    subject: "Confirm your Pit signup",
+    body: `Confirm only if you started this signup. Opening the link lets you review and confirm; it does not create an account by itself.
+
+Confirming creates the requested account using the password entered during signup. Then log in to finish your profile. This link lasts 24 hours.
+
+If you did not start this signup, ignore this email. No account will be created from this request.`,
+    cta_label: "Review signup",
+    cta_url: "{{link}}",
+  },
   verify_email: {
     subject: "Confirm your email for Pit",
     body: `Hey {{name}}, one quick thing before you get going.
@@ -144,6 +154,7 @@ If this wasn't you, ignore this email and nothing will change.`,
 export const CODE_OWNED_TEMPLATE_KEYS = Object.freeze(new Set([
   "error_alert",
   "verify_email",
+  "signup_verify",
   "password_reset",
   "owner_approval_requested",
   "owner_approval_receipt",

@@ -84,6 +84,7 @@ async function scenario(browser, origin, width, mode = "same") {
       }
       if (url.pathname === "/api/moderation/news-desk/editor/drafts/self-written" && request.method() === "POST") {
         const body = request.postDataJSON();
+        assert.equal(body.category, "release", "New music must be sent despite chart, tour and award background");
         assert.match(body.idempotencyKey, /^self-written-/u);
         state.saveKeys.push(body.idempotencyKey);
         const { idempotencyKey, ...payload } = body;
@@ -137,9 +138,16 @@ async function scenario(browser, origin, width, mode = "same") {
     await page.getByRole("button", { name: "Newsroom. Write stories and run live coverage", exact: true }).click();
     const composer = page.getByTestId("self-written-news-composer");
     await composer.waitFor();
-    await composer.getByLabel("Self-written news headline", { exact: true }).fill("Synthetic band announce an ambitious 2027 world tour");
+    await composer.getByLabel("Self-written news headline", { exact: true }).fill("Synthetic band release their new album");
     await composer.getByLabel("Self-written news summary", { exact: true }).fill("A synthetic but engaging hook for the local editor flow.");
-    await composer.getByLabel("Self-written news article", { exact: true }).fill(Array.from({ length: 1_020 }, (_, index) => `Reported music news word ${index + 1}`).join(" "));
+    await composer.getByLabel("Self-written news article", { exact: true }).fill("Their earlier single topped the chart, won a Grammy award and featured on their world tour. "
+      + Array.from({ length: 1_020 }, (_, index) => `Reported music news word ${index + 1}`).join(" "));
+    const newMusic = composer.getByRole("radio", { name: "New music", exact: true });
+    const tours = composer.getByRole("radio", { name: "Tours", exact: true });
+    const selectedFill = await tours.evaluate(element => getComputedStyle(element).backgroundColor);
+    await newMusic.click();
+    assert.equal(await newMusic.evaluate(element => getComputedStyle(element).backgroundColor), selectedFill);
+    assert.notEqual(await tours.evaluate(element => getComputedStyle(element).backgroundColor), selectedFill);
     for (let index = 1; index <= 3; index += 1) {
       await composer.getByLabel(`Self-written article source ${index} name`, { exact: true }).fill(["NME", "Stereogum", "Pitchfork"][index - 1]);
       await composer.getByLabel(`Self-written article source ${index} URL`, { exact: true }).fill(["https://www.nme.com/news/synthetic", "https://www.stereogum.com/synthetic", "https://pitchfork.com/news/synthetic"][index - 1]);
@@ -164,6 +172,7 @@ async function scenario(browser, origin, width, mode = "same") {
     await page.goBack();
     await page.getByRole("button", { name: "Keep editing", exact: true }).click();
     assert.equal(await composer.getByLabel("Self-written news article", { exact: true }).inputValue(), originalBody);
+    assert.equal(await newMusic.evaluate(element => getComputedStyle(element).backgroundColor), selectedFill);
     await page.getByRole("button", { name: "Back", exact: true }).click();
     await page.getByRole("button", { name: "Leave", exact: true }).click();
     await page.getByRole("button", { name: "Menu", exact: true }).click();
@@ -182,13 +191,15 @@ async function scenario(browser, origin, width, mode = "same") {
     assert.equal(state.creates.length, 1);
     assert.equal(state.finalizes.length, 1);
     assert.equal(state.puts.length, 1);
-    await composer.screenshot({ path: join(shots, `composer-${width}-${mode}.png`), animations: "disabled" });
+    await newMusic.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: join(shots, `composer-${width}-${mode}.png`), fullPage: false, animations: "disabled" });
     await composer.getByLabel("Self-written news summary", { exact: true }).fill("Unsaved local adjustment before testing the close guard.");
     await page.getByRole("button", { name: "Back", exact: true }).click();
     await page.getByRole("button", { name: "Keep editing", exact: true }).click();
     assert.equal(await page.getByTestId("self-written-news-composer").count(), 1, "Back must not discard an unsaved composer without confirmation");
     await page.getByRole("button", { name: `Publish ${state.draft.headline}`, exact: true }).click();
     await page.getByText("PUBLISHED", { exact: true }).waitFor();
+    assert.equal(state.draft.category, "release");
     assert.deepEqual(state.reports, []);
     const expectedLostResponseError = "Failed to load resource: the server responded with a status of 503 (Service Unavailable)";
     assert.equal(state.errors.filter((message) => message === expectedLostResponseError).length, 1);

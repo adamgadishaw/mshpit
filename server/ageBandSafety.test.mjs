@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -78,11 +79,16 @@ test("signup rejects omitted or unknown age bands and persists a classified band
     ua: "test",
     setSession(value) { session = value; },
   });
-  assert.equal(response.created, true);
+  assert.equal(response.pending, true);
   assert.equal(response.verificationRequired, true);
-  assert.equal(response.user.emailVerified, false);
-  assert.equal(response.user.id, q.userByEmail.get(email).id);
-  assert.ok(session?.token);
+  assert.equal(response.user, undefined);
+  assert.equal(session, undefined);
+  assert.equal(q.userByEmail.get(email), undefined);
+  const token = "age-band-reservation-confirmation";
+  assert.equal(db.prepare("UPDATE signup_reservations SET token_hash=? WHERE email=? AND status='pending'")
+    .run(createHash("sha256").update(token).digest("hex"), email).changes, 1);
+  assert.equal(routes["POST /api/verify-email"]({ body: { token } }).verified, true);
+  assert.ok(q.userByEmail.get(email).email_verified_at);
   assert.equal(q.userByEmail.get(email).age_band, "18_plus");
 });
 

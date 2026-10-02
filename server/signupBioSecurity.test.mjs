@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test, { after, beforeEach } from "node:test";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -42,6 +43,13 @@ function member({ role = "fan", verified = true } = {}) {
 function signupBody(email, extra = {}) {
   return { name: "Fixture New Member", email, password: "fixture-password2", genres: ["Rock"],
     ageBand: "18_plus", termsVersion: LEGAL_ACCEPTANCE_VERSION, ...extra };
+}
+
+function reservationToken(email) {
+  const token = "bio-reservation-" + (++sequence);
+  assert.equal(db.prepare("UPDATE signup_reservations SET token_hash=? WHERE email=? AND status='pending'")
+    .run(createHash("sha256").update(token).digest("hex"), email).changes, 1);
+  return token;
 }
 
 test("profile SQL-looking text stays literal and cannot forge privileged account fields", () => {
@@ -107,36 +115,65 @@ test("signup ignores forged authority and cannot use Owner as the new account", 
   const email = `fresh-bio-security-${++sequence}@example.test`;
   const ctx = context(signupBody(email, { role: "admin", id: owner.id, emailVerified: true,
     email_verified_at: Date.now(), onboardingVersion: 1, isOwner: true }), owner);
-  (await routes["POST /api/signup"](ctx));
+  const staged = await routes["POST /api/signup"](ctx);
+  assert.equal(staged.pending, true);
+  assert.equal(staged.user, undefined);
+  assert.equal(ctx.session, undefined);
+  assert.equal(q.userByEmail.get(email), undefined);
+  assert.equal(routes["POST /api/verify-email"](context({ token: reservationToken(email) }, owner)).verified, true);
   const created = q.userByEmail.get(email);
   assert.ok(created);
   assert.notEqual(created.id, owner.id);
   assert.equal(created.role, "fan");
-  assert.equal(created.email_verified_at, 0);
+  assert.ok(created.email_verified_at > 0);
   assert.equal(created.onboarding_version, 0);
   assert.deepEqual({ ...q.userById.get(owner.id) }, ownerBefore);
   assert.equal(getSession(ownerSession.token).user_id, owner.id);
-  if (ctx.session) assert.equal(getSession(ctx.session.token).user_id, created.id);
+  assert.equal(ctx.session, undefined);
 });
 
-test("a second account's verification and cancellation cannot change or delete Owner", async () => {
+test("a second account's confirmation and obsolete cancellation preserve both accounts and Owner's session", async () => {
   const owner = member({ role: "admin" });
   const ownerSession = createSession(owner.id), ownerBefore = { ...q.userById.get(owner.id) };
   const creation = context(signupBody(owner.email, { addAccount: true, currentPassword: "fixture-password1" }), owner);
+  creation.token = ownerSession.token;
   const result = (await routes["POST /api/signup"](creation));
+  assert.equal(result.pending, true);
+  assert.equal(result.user, undefined);
+  assert.equal(creation.session, undefined);
+  assert.equal(q.usersByEmail.all(owner.email).length, 1);
+  const verification = context({ token: reservationToken(owner.email) }, owner);
+  assert.equal(routes["POST /api/verify-email"](verification).verified, true);
   const second = q.usersByEmail.all(owner.email).find((user) => user.id !== owner.id);
   assert.ok(second);
   assert.equal(second.role, "fan");
-  assert.equal(second.email_verified_at, 0);
-  const verification = context({ token: mintVerifyToken(second.id) }, owner);
-  assert.equal(routes["POST /api/verify-email"](verification).verified, true);
+  assert.ok(second.email_verified_at > 0);
   assert.equal(verification.session, undefined, "email confirmation must not replace Owner's session");
   assert.ok(q.userById.get(second.id).email_verified_at > 0);
   assert.equal(q.userById.get(second.id).onboarding_version, 0, "verification is not setup completion");
   (await routes["POST /api/signup/cancel"](context({ cancelToken: result.cancelToken }, owner)));
-  assert.equal(q.userById.get(second.id), undefined);
+  assert.deepEqual(q.userById.get(second.id), second, "an obsolete reservation cancellation cannot delete a confirmed account");
   assert.deepEqual({ ...q.userById.get(owner.id) }, ownerBefore);
   assert.equal(getSession(ownerSession.token).user_id, owner.id);
+});
+
+test("cancelling a still-pending sibling preserves Owner and the existing session", async () => {
+  const owner = member({ role: "admin" });
+  const ownerSession = createSession(owner.id), before = { ...q.userById.get(owner.id) };
+  const creation = context(signupBody(owner.email, { addAccount: true, currentPassword: "fixture-password1" }), owner);
+  creation.token = ownerSession.token;
+  const result = await routes["POST /api/signup"](creation);
+  assert.equal(result.pending, true);
+  assert.equal(creation.session, undefined);
+  assert.equal(q.usersByEmail.all(owner.email).length, 1);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM signup_reservations WHERE email=?").get(owner.email).n, 1);
+  const cancellation = context({ cancelToken: result.cancelToken }, owner);
+  assert.deepEqual(await routes["POST /api/signup/cancel"](cancellation), { ok: true });
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM signup_reservations WHERE email=?").get(owner.email).n, 0);
+  assert.equal(q.usersByEmail.all(owner.email).length, 1);
+  assert.deepEqual({ ...q.userById.get(owner.id) }, before);
+  assert.equal(getSession(ownerSession.token).user_id, owner.id);
+  assert.equal(cancellation.cleared, undefined);
 });
 
 test("every registered write route is verification-gated unless it is an explicit account-rights or read-only exception", () => {

@@ -4,9 +4,11 @@ import {
   eventPath,
   postPath,
   profilePath,
+  slugify,
   venuePath,
 } from "./urls.mjs";
 import { liveEventTitle } from "./liveDiscovery.mjs";
+import { publicEventCandidateId } from "./publicEventSnapshot.mjs";
 
 const text = (value) => String(value ?? "").trim();
 
@@ -139,11 +141,17 @@ export function publicNavigationLinks(frame = {}, { resolveUser } = {}) {
       name: artistName,
       publicSlug: log.artistPublicSlug || log.artist_public_slug || null,
     };
+    // Provider event names are display labels, not artist identities. Keep an
+    // unresolved name readable without recreating a binding SSR withheld.
+    const event = !frame.post && !!publicEventCandidateId(log);
+    const canLink = !event || (log.artistIdentityPending !== true
+      && typeof artist.publicSlug === "string" && !!artist.publicSlug
+      && slugify(artist.publicSlug) === artist.publicSlug);
     append(links, {
       key: `artist:${artist.publicSlug || artistName}`,
       label: artistName,
-      href: artistPath(artist),
-      target: { type: "artist", value: artist },
+      href: canLink ? artistPath(artist) : null,
+      target: canLink ? { type: "artist", value: artist } : null,
     });
   }
 

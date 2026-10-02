@@ -26,7 +26,7 @@ export default function VerifyEmailScreen({ token, onConsumed, onDone, onLogin }
         onConsumed?.();
         setState(result.sessionUpdated ? "done" : "doneExternal");
       } else {
-        setState("expired");
+        setState(result?.outcome === "account_exists" ? "occupied" : result?.outcome === "authorization_changed" ? "changed" : "expired");
       }
     } catch {
       if (!controller.signal.aborted) setState("failed");
@@ -42,7 +42,7 @@ export default function VerifyEmailScreen({ token, onConsumed, onDone, onLogin }
           <>
             <Text style={styles.h}>Confirm your email</Text>
             <Text style={styles.p}>
-              Tap below to confirm this address belongs to you. You can browse without confirming, but posting, messaging, following, reacting, and public edits require it.
+              Confirm only if you requested this email. For a new signup, this creates your account using the password you chose. You can browse without confirming, but posting, messaging, following, reacting, and public edits require it.
             </Text>
             <Pressable style={[styles.btn, styles.btnPrimary]} onPress={submit} accessibilityRole="button">
               <Text style={styles.btnTxtPrimary}>Confirm my email</Text>
@@ -79,10 +79,22 @@ export default function VerifyEmailScreen({ token, onConsumed, onDone, onLogin }
           <>
             <Text style={styles.h}>That link has expired.</Text>
             <Text style={styles.p}>
-              Verification links last 24 hours. Sign in and you can send yourself a fresh one.
+              This link has expired. Start signup again for a new link. If you already have an account, log in to resend verification.
             </Text>
             <Pressable style={[styles.btn, styles.btnPrimary]} onPress={onLogin || onDone} accessibilityRole="button">
-              <Text style={styles.btnTxtPrimary}>Log in to get a new link</Text>
+              <Text style={styles.btnTxtPrimary}>Continue to log in or sign up</Text>
+            </Pressable>
+          </>
+        )}
+
+        {(state === "occupied" || state === "changed") && (
+          <>
+            <Text style={styles.h}>{state === "occupied" ? "An account already uses this email." : "Start this signup again."}</Text>
+            <Text style={styles.p}>{state === "occupied"
+              ? "Log in or reset your password to access your existing account. To add a second account, log in first and use Add account in Settings."
+              : "The account or session used to request this additional account changed. Log in again, then use Add account in Settings."}</Text>
+            <Pressable style={[styles.btn, styles.btnPrimary]} onPress={onLogin || onDone} accessibilityRole="button">
+              <Text style={styles.btnTxtPrimary}>Continue to log in</Text>
             </Pressable>
           </>
         )}

@@ -1,3 +1,5 @@
+import { pruneExpiredSignupReservations } from "./features/accountOnboarding/signupReservations.js";
+
 /** Remove expired capability hashes even when no later verification/reset arrives. */
 export function pruneExpiredAccountSecrets(database, at = Date.now()) {
   const verificationTokens = database.prepare(`UPDATE users
@@ -11,5 +13,6 @@ export function pruneExpiredAccountSecrets(database, at = Date.now()) {
     verificationTokens: Number(verificationTokens?.changes) || 0,
     resetTokens: Number(resetTokens?.changes) || 0,
     verificationReceipts: Number(verificationReceipts?.changes) || 0,
+    signupReservations: pruneExpiredSignupReservations(database, at),
   };
 }

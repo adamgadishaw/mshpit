@@ -29,6 +29,18 @@ test("wrong identity, unsigned caller flags, non-events, malformed dates and inc
   assert.equal(normalizePublicEventSnapshot({ ...entity, date: "2036-06-14" }, id).date, "2036-06-14", "public listings must not inherit the diary input's moving two-year limit");
 });
 
+test("normalized event snapshots retain only a canonical slug attached to an allowed artist identity", () => {
+  const resolved = { ...entity, artistKey: "club-ca", artistPublicSlug: "club-ca", artistIdentityPending: false };
+  assert.equal(normalizePublicEventSnapshot(resolved, id).artistPublicSlug, "club-ca");
+  for (const patch of [
+    { artistIdentityPending: true }, { artistKey: null }, { artistPublicSlug: null },
+    { artistPublicSlug: "../club-ca" }, { artistPublicSlug: "Club CA" },
+    { artistPublicSlug: "x".repeat(81) },
+  ]) assert.equal(normalizePublicEventSnapshot({ ...resolved, ...patch }, id).artistPublicSlug, null);
+  assert.equal(normalizePublicEventSnapshot(entity, id).artistPublicSlug, null,
+    "older responses do not manufacture a display-name slug");
+});
+
 test("pending event artist identities stay restricted until an explicit fresh server confirmation", () => {
   const pending = { artistIdentityPending: true };
   assert.equal(publicEventArtistIdentityPending(pending), true);

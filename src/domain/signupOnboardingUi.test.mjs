@@ -36,11 +36,17 @@ test("unfinished accounts can browse; setup opens only through an explicit navig
   assert.match(feed, /Dismiss getting started guide/);
 });
 
-test("signup enters real account setup or a password-proven choice, never a false confirmation", () => {
+test("signup presents mailbox-first guidance without treating a pending submission as a session", () => {
   assert.match(auth, /handle/);
   assert.match(auth, /profile photo/i);
   assert.match(auth, /banner/);
-  assert.doesNotMatch(auth, /same message either way|signupSubmitted|result.pending/);
+  assert.match(auth, /if \(result.pending\)/);
+  assert.match(auth, /If signup is available/);
+  assert.match(auth, /log in or reset your password/);
+  assert.match(auth, /cancelSignupRequest\(pendingSignup.cancelToken\)/);
+  assert.match(store, /response\?\.pending === true && response.verificationRequired === true/);
+  const pendingBranch = store.slice(store.indexOf('if (response?.pending === true'), store.indexOf('if (response?.needsAccountChoice'));
+  assert.doesNotMatch(pendingBranch, /absorbServerUser|logout\(/);
   assert.match(auth, /result.needsAccountChoice/);
   assert.match(auth, /Create a second account/);
   assert.match(store, /response\?\.created === true && response.user\?\.id/);

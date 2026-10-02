@@ -152,3 +152,15 @@ test("resend UI distinguishes delivery, stale-session healing, and failures", ()
   assert.equal(verificationResendState({ sent: false, reason: "recently-sent" }), "recent");
   assert.equal(verificationResendState({ sent: false, reason: "verification-disabled" }), "unavailable");
 });
+
+test("mailbox-proven signup outcomes stay explicit without granting a private user or reconciling another account", async () => {
+  for (const outcome of ["account_exists", "authorization_changed", "unknown-private-detail"]) {
+    const result = await confirmEmailWithReconciliation({ token: "fixture", accountIdAtStart: "u_owner",
+      requestConfirmation: async () => ({ verified: false, outcome, user: verifiedUser() }),
+      readCurrentSession: async () => assert.fail("a rejected signup is not session verification"),
+    });
+    assert.equal(result.verified, false);
+    assert.equal(result.user, null);
+    assert.equal(result.outcome, outcome === "unknown-private-detail" ? undefined : outcome);
+  }
+});

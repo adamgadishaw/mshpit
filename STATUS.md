@@ -1,10 +1,49 @@
 # Pit current status
 
 Last production reconciliation: **2026-08-13**. Local working-tree review:
-**2026-09-02**. This is the source of truth for current code, release, and
+**2026-10-02**. This is the source of truth for current code, release, and
 production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
+
+## 2026-10-02 Local security integration candidate
+
+This candidate combines reviewed local commits `a2ae0cf` (availability),
+`635dba2` (public identity), `ecfc801` (signup), `eb9e3d2` (monthly budgets),
+and `34d59af` (manual news categories)
+on `fd8b1d09`. It has not been pushed, deployed, or reconciled against live
+settings. The existing source branches remain separate. Unreleased
+media/audio/catalog API work is not included.
+
+- Public HTML, including HEAD, and selected expensive GET APIs have shared
+  admission before projection work. Accounts use their real session identity;
+  guests share an IP allowance. Crawler user agents receive no bypass. The
+  artist-directory evidence query uses separate canonical/legacy probes and two
+  matching indexes; whole-catalog counting and ordering still remain.
+- New signup submits an expiring, private reservation. Email confirmation creates
+  the account; signup itself issues no authenticated session. Anonymous occupied
+  addresses receive the same pending response. Adding a sibling requires the
+  existing verified account's session/password and subsequent email confirmation.
+  Existing users retain their verification, cancellation and recovery paths.
+- Provider-specific venue identity survives navigation, and event artist links
+  require authoritative identity rather than a guessed name.
+- Manual news publishing preserves the editor's allowlisted category. A narrow
+  editor route can correct only the category, with category/timestamp comparison,
+  current-authority checks, transactional audit and rollback. Generated-news
+  classification is unchanged. No correction UI or real article correction is
+  included in this local preparation.
+- The local Blueprint changes only `ANTHROPIC_MONTHLY_USD` from 20 to 10 and
+  `CATALOG_RESEARCH_MONTHLY_USD` from 4 to 10. The catalogue daily value remains
+  0.30. Prior spend and reservations still count; no ledger is reset, no feature
+  is activated, and no live budget setting is changed by this preparation.
+
+Combined validation uses synthetic SQLite, loopback HTTP and browser fixtures,
+blocked provider traffic, full repository checks, parsed Blueprint comparison,
+and independent review. It does not establish production capacity or replace
+production acceptance. No production data, real mail or paid providers are used.
+The original incident's traffic/restart causation is not proved by these tests.
+Clips candidate scanning (A2) and the legacy auth limiter-map saturation cleanup
+(A3) remain open. See `SECURITY.md` for the remaining limits and operational work.
 
 ## 2026-09-30 Profiles: favorite shows, accent colour, pronouns
 

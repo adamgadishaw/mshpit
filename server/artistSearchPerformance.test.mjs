@@ -8,10 +8,25 @@ const dataDir = mkdtempSync(join(tmpdir(), "pit-artist-search-"));
 process.env.PIT_DATA_DIR = dataDir;
 
 const { artistRow, artistStmts, db } = await import("./db.js");
+const { routes } = await import("./api.js");
 
 after(() => {
   db.close();
   rmSync(dataDir, { recursive: true, force: true });
+});
+
+test("artist search rejects noninteger and invalid limits before every SQLite search branch", () => {
+  for (const q of ["", "earl", "no-match-for-this-synthetic-query"]) {
+    for (const limit of ["1.5", "NaN", "Infinity", "-Infinity", "-1", "0", "9007199254740992"]) {
+      assert.throws(() => routes["GET /api/artists"]({ query: { q, limit }, ip: "127.0.0.1" }),
+        error => error.status === 400 && error.code === "VALIDATION_FAILED", `${q}: ${limit}`);
+    }
+    for (const limit of [undefined, "", "1", "40", "41"]) {
+      const result = routes["GET /api/artists"]({ query: { q, limit }, ip: "127.0.0.1" });
+      assert.ok(Array.isArray(result.artists));
+      assert.ok(result.artists.length <= (limit === "1" ? 1 : 40));
+    }
+  }
 });
 
 test("artist type-ahead uses indexed canonical and punctuation-folded prefixes", () => {
