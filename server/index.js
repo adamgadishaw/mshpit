@@ -12,6 +12,7 @@ import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { join, extname, normalize, dirname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { db, q, publicUser, pruneMissingArtists, DATABASE_DIRECTORY, DATABASE_PATH } from "./db.js";
+import { assertClipIndexReady } from "./features/clips/clipIndex.js";
 import { artistDeathWatchService, eraseAccountForInactivity, replayPrivacyJournalOnRestore, routes, startArtistNews, startArtistPhotos, startCatalogResearch, startFestivals, startNewsDesk, startPrivacyJournal, startVideoProcessingRetries, startWebProfiles, startSearchGrowth } from "./api.js";
 import { ApiError, errorEnvelope } from "./errors.js";
 import { readAuthorizedRequest } from "./requestAuthorization.js";
@@ -1027,6 +1028,9 @@ function startSitemapRefreshScheduler() {
 }
 
 async function startServer() {
+  // Preparation is an explicit pre-release operation for an existing database.
+  // Never bind a listener serving partial clip membership or scan on a request.
+  assertClipIndexReady(db);
   memoryMonitor = startMemoryMonitor();
   const loadedSitemap = await loadSitemapSnapshot();
   const startupSitemapRefresh = sitemapStartupRefreshDecision(loadedSitemap, {

@@ -1,6 +1,10 @@
-# Targeted robustness follow-up, October 2, 2026
+# Targeted robustness and Clips follow-up, October 2, 2026
 
-Base: held integration `a7d48903016a3bf5d7da62240c91992a761e7133`, tree
+Latest local follow-up: branch `codex/clips-eligibility-index-20261002`, based on
+`ee9e2df3f7304de7103f57467250a7fe12c5ba44`. Its approved A2 implementation and
+validation are recorded below. Production preparation and release remain held.
+
+Earlier robustness base: held integration `a7d48903016a3bf5d7da62240c91992a761e7133`, tree
 `c17e78e8b9036795409721bd339f0d4d91b6d9a6`. Branch:
 `codex/robustness-hardening-20261002`. This is a local candidate; deployment is
 held. Production state was not queried in this follow-up. The earlier source
@@ -16,15 +20,15 @@ The prior reports in `SECURITY.md` remain applicable within their recorded scope
 
 ## Findings and resulting behavior
 
-### A2: clips candidate scanning remains open
+### A2: original finding and compatibility decision
 
-`server/api.js:6872` still implements the clips endpoint with repeated batches of
+At `ee9e2df`, `server/api.js:6872` implemented the clips endpoint with repeated batches of
 candidate posts until it finds sufficient usable clips or exhausts the candidates.
 An output page size does not bound candidate hydration and validation. Sparse or
 invalid historical media can therefore make a permitted read expensive. Admission
 limits help with request volume but do not preempt its synchronous database work.
 
-No A2 runtime/client change is included. A proposed 256-candidate budget would
+That earlier candidate included no A2 runtime/client change. A proposed 256-candidate budget would
 need an explicit continuation contract: an eligible clip might be further ahead
 even when a bounded response has no clips. Updated clients could request that
 contract and offer a deliberate continuation action. Older clients need a clear
@@ -32,7 +36,136 @@ failure at an ambiguous scan ceiling rather than a false end-of-feed or silent
 empty-page regression. Retrying the same legacy cursor against unchanged data
 does not guarantee progress. A durable eligibility index is a broader alternative
 requiring schema, backfill, media-write and privacy invalidation work. The owner
-decision remains pending; neither option has been silently implemented.
+subsequently approved the broader persisted index approach described below,
+conditioned on preserving user experience. No client-update requirement or extra
+continuation action was accepted.
+
+#### Approved local index follow-up (release held)
+
+Base `ee9e2df3f7304de7103f57467250a7fe12c5ba44`, tree
+`6b12dfe29616ae8b0531bd935536850db18a6aeb`; branch
+`codex/clips-eligibility-index-20261002`. The exact 16-file scope was relayed at
+20:26 UTC before source edits. Other active worktrees were excluded.
+
+`server/features/clips/clipIndex.js` stores one ordered candidate per post and
+normalized string photo references. Native SQL triggers keep insertion, deletion,
+photo/order changes and attachment changes transactional, including older direct
+SQL writers. Persistent schema objects do not depend on a registered JavaScript
+function. Exact URL helpers are registered only for live selection.
+
+The selector preserves both the old raw candidate/plausibility gates and the
+canonical publication rules. Linked stable media and stricter URL-only fallback
+retain their distinct checks; descriptor precedence, extensionless attached
+videos and current trusted legacy release sources remain relevant. Asset, variant
+and object-ledger changes are checked at read time, without invalidation fanout.
+Active-account state, public/removed state and bilateral blocks are also live.
+This does not add profile-audience, mute or recommendation policy to Clips.
+
+Eligibility precedes the post limit. `server/api.js` projects only selected posts
+within the same SQLite read snapshot, at most `limit + 1` (maximum 31). It retains
+the existing response shape, page fill/lookahead and `(created_at,id)` cursor.
+There is no request-time preparation drain or unbounded rejected-post hydration
+loop. Cursor pages use a tuple range to seek past the newer index prefix.
+Filtered SQL/reference visits and URL-helper calls remain data-dependent;
+this does not impose a whole-query CPU bound or promise DoS immunity.
+
+#### Existing-database preparation and release hold
+
+`scripts/prepare-clips-index.mjs` is an explicit preparation utility. Empty new
+databases start ready. An existing database captures its initial maximum post ID;
+preparation advances a durable keyset cursor through that finite horizon in small
+transactions, yielding between them. Native triggers preserve later inserts and
+changes behind or ahead of the cursor. Completion is atomic, and
+`server/index.js` refuses to listen while preparation is incomplete. Ordinary
+post/media/privacy changes do not reset readiness or disrupt other readers.
+
+Preparation rejects a historical photos value over 512 KiB UTF-8 before JSON
+expansion, an array over 4,096 elements, or a valid JavaScript array beyond native
+SQLite JSON parser support. Reference writes in one transaction cover at most 64
+posts, 1 MiB of photos JSON and 4,096 total array elements; bounded preflight may
+inspect the next row before stopping. No post is truncated. On a
+rejected payload the batch and cursor roll back; diagnostics include aggregate
+counts/sizes rather than stored content. Such data requires a separately reviewed
+reconciliation before rollout. These are preparation guards, not new public
+attachment caps. Existing application writes retain their established limits;
+pathological direct SQL writes can still impose JSON parsing/trigger work.
+
+**Do not deploy this release onto an unprepared existing database.** The current
+single persistent-disk service cannot rely on an overlapping zero-downtime deploy;
+startup refusal can cause downtime. The utility imports `server/db.js`, including
+ordinary initialization/additive migrations, and does not pass through
+`scripts/start-production.mjs`'s pre-migration backup gate. Before any production
+preparation, the owner must review a concrete plan with a verified recoverable
+backup, disk/WAL headroom, preparation duration and write-contention estimates,
+traffic/downtime handling, readiness verification, and rollback/recovery steps.
+Restoring a snapshot can lose subsequent writes and is not an automatic rollback.
+No production database was read, prepared, migrated or restored here; all release
+and production preparation actions remain held.
+
+The shipping client has `ENABLE_CLIPS = false`; that source flag stays unchanged.
+The browser fixture exercises ordinary navigation on the shipping export and
+Clips on an isolated source copy/export with only that flag enabled. Source hashes
+and a build manifest distinguish that test instrumentation from release state.
+
+#### A2 validation and remaining limits
+
+The final `check:deploy` passed 6,033 tests, zero failures and two Windows symlink
+skips, plus 834-file syntax, architecture and the shipping web export/budget.
+The initial JavaScript remains 510.9 KiB against a 512 KiB gzip budget. After
+browser-harness-only corrections, both final harness files passed direct syntax
+checks and the architecture check passed again. Runtime, client and dependency
+files stayed unchanged during those fixture corrections. The earlier production
+dependency audit reported zero advisories; reuse was bound to unchanged package
+and lockfile hashes, rather than represented as a fresh advisory lookup.
+
+Focused tests cover linked versus URL-only authority, descriptor collisions,
+legacy release configuration, escaped historical JSON, direct SQL writers,
+transaction rollback, live privacy/media changes, simultaneous WAL writers,
+preparation restart and oversize refusal. The cursor regression additionally
+requires a composite-index `SEARCH` and exact ordering across timestamp ties.
+
+An isolated copy of exact base `ee9e2df` and the final candidate received the same
+18 eligible posts, 900 newer rejected rows, and private/removed/blocked exclusions.
+Both complete response pages and cursors were exactly equal. The first page's
+selected full-post rows fell from 918 to 13, projection batches from 29 to one,
+and observed statement `all()` calls from 2,029 to 34. Local observed time fell
+from about 2.44 seconds to 43 milliseconds. These count selected rows/calls, not
+SQLite instructions; small synthetic timings are not capacity benchmarks.
+
+The actual server/CLI check stopped synthetic preparation at 64 of 150 posts.
+With readiness still false, the unmodified server exited with code 1 and never
+bound a listener. The actual preparation CLI resumed the remaining 86 posts,
+processed zero on a repeat run, retained 150 references with integrity `ok` and
+no foreign-key violations, and the same server then bound loopback. No production
+database, migration, backup or restore was exercised.
+
+`scripts/verify-clips-browser.mjs` passed seven actual-server/browser checks.
+Desktop and mobile shipping navigation retained the disabled Clips gate. The
+separate enabled fixture used unchanged App, Store and ClipsScreen code and real
+API responses; 2,137 copied input files and all 170 exported artifacts were bound
+by hashes. It verified three pages of 12, 12 and two clips, terminal pagination,
+decoded synthetic VP8 playback, real privacy/block writes, live media-state
+changes, cancellation of initial and continuation requests, and recovery through
+the existing retry control after a genuine response body was interrupted.
+Database/account integrity survived. Both servers stayed on loopback with zero
+outbound attempts; one optional helper per server was deliberately denied and
+owned synthetic data directories were removed.
+
+Initial failed harness runs are retained. Corrections used the existing signed-in
+landing link, ordinary reel arrow-key navigation instead of an incompatible
+React Native Web `scrollTo` argument, and a post-header transport interruption
+to avoid ambiguous transparent GET retries. No application code was changed for
+those harness assumptions. Cancellation checks concern client response handling;
+they do not establish cancellation or a deadline for synchronous SQLite work.
+
+Evidence is in `remediation-evidence/clips-index/`: final gate/browser logs,
+source/build manifests, sparse comparison, startup/preparation proof and final
+handoff. Independent Astra review found no blocking source/evidence issue within
+this scope. This is a targeted follow-up, not a replacement comprehensive audit.
+Production traffic/capacity, native devices, external targets, real user data,
+mail/providers, remote storage, Linux operation and the production rollout were
+not tested. Data-dependent SQL filtering, existing per-post aggregate costs,
+synchronous waits and abuse spread across accounts/IPs remain relevant.
 
 ### A3: saturated limiter cleanup and rollback accounting fixed locally
 
@@ -184,6 +317,7 @@ confidentiality remain owner decisions. Editor's 30-day TTL versus admin/moderat
 Limits remain process-local and do not assure fairness under many accounts/IPs.
 Shared-IP users share guest allowances; legitimate crawlers receive the same
 resource protections without a spoofable user-agent exemption. Whole-catalog
-count/order work, deep feed offsets, synchronous SQLite waits and A2 remain
+count/order work, deep feed offsets, synchronous SQLite waits and data-dependent
+Clips filtering remain
 relevant constraints. These fixes reduce specific failure modes and do not
 establish immunity to denial of service.

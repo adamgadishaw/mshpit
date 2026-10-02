@@ -21,6 +21,7 @@ const { db, q } = await import("./db.js");
 const { hashPassword } = await import("./auth.js");
 const { routes } = await import("./api.js");
 const {
+  legacyVideoPosterAllowedSources,
   legacyVideoPosterDescriptors,
   legacyVideoPosterDescriptorsByPost,
   reconcileLegacyVideoPosters,
@@ -328,6 +329,10 @@ test("an exact trusted release restores its verified owned clip without minting 
     entries: [entry], env: process.env, at: 1_000, allowNonProduction: true,
   });
   assert.deepEqual(first, { active: true, registered: 1, retained: 0, retired: 0 });
+  assert.ok(legacyVideoPosterAllowedSources(db).some(([id, url]) => id === entry.postId && url === entry.sourceUrl));
+  const isolatedConnection = {};
+  assert.equal(legacyVideoPosterAllowedSources(isolatedConnection).some(([id, url]) => id === entry.postId && url === entry.sourceUrl), false,
+    "a persisted release registration does not grant another connection its runtime trust");
   assert.equal(db.prepare("SELECT status FROM media_objects WHERE object_key=?").get(entry.posterKey).status, "associated");
   assert.deepEqual(legacyVideoPosterDescriptors(db, { postId: entry.postId, photos: [entry.sourceUrl] }), [],
     "a manifest claim alone never makes bytes public");
@@ -366,6 +371,10 @@ test("an exact trusted release restores its verified owned clip without minting 
   assert.deepEqual(projected.photos, [entry.sourceUrl],
     "the immutable release restores only its exact owned source slot");
   assert.deepEqual(projected.media, [descriptor]);
+  const reel = routes["GET /api/clips"]({ user, query: { limit: "30" } });
+  const reelPost = reel.clips.find(post => post.id === entry.postId);
+  assert.deepEqual(reelPost?.clips, [entry.sourceUrl], "indexed reel preserves exact verified release membership");
+  assert.deepEqual(reelPost?.media, [descriptor]);
   assert.deepEqual(projected.mediaAssetIds, [], "a release-only cover cannot masquerade as a stable composer asset");
   const gallery = routes["GET /api/artists/photos"]({
     user,

@@ -6,7 +6,45 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
-## 2026-10-02 Targeted robustness follow-up (local; deployment held)
+## 2026-10-02 Clips index follow-up (local; deployment held)
+
+The owner approved the persisted clips reference/index approach after robustness
+commit `ee9e2df3f7304de7103f57467250a7fe12c5ba44`, with unchanged user experience
+as a release requirement. Branch `codex/clips-eligibility-index-20261002` replaces
+A2's repeated full-post hydration with current eligibility checked in SQL before
+selecting at most `limit + 1` posts (maximum 31). Responses and cursors retain the
+existing contract; clients need no update or extra continuation action.
+
+Native SQLite triggers maintain ordered post candidates and normalized photo
+references. Media authority, active-account state, privacy and bilateral blocks
+are checked live. Selection and canonical projection share one read snapshot.
+Filtered SQL row visits remain data-dependent; this bounds full post projection,
+not total SQLite CPU, lock waits or request duration.
+
+Fresh empty databases are ready immediately. Existing databases require explicit,
+resumable preparation before this release may serve traffic. Startup refuses an
+incomplete index. On the current single persistent-disk service, deploying first
+can therefore cause downtime. The preparation utility imports ordinary database
+initialization and additive migrations, and bypasses the production launcher's
+pre-migration backup step. A verified pre-preparation backup and owner-reviewed
+preparation, downtime and rollback plan are prerequisites; none has been run or
+approved for production in this local task. Keep deployment on hold.
+
+The shipping client still has `ENABLE_CLIPS = false`. Browser validation uses the
+unchanged shipping export for ordinary navigation and a separate, verified
+temporary export with only that flag enabled for Clips-screen coverage. It does
+not activate Clips in the released app. Evidence and remaining limits are in
+`ROBUSTNESS_AUDIT_2026-10-02.md`.
+
+Final local validation: 6,033 tests passed with two Windows symlink skips,
+834-file syntax, architecture and shipping web export/budget passed. Seven
+actual-server/browser checks passed, including 12/12/2-page scrolling, playback,
+privacy/media changes, cancellation and interrupted-response retry. The actual
+preparation command resumed a synthetic 64/150-post checkpoint, completed the
+remaining 86, and allowed the previously refusing server to listen. These are
+isolated correctness checks, not production capacity or migration evidence.
+
+## 2026-10-02 Prior targeted robustness follow-up (local; deployment held)
 
 This follow-up starts from held integration `a7d48903016a3bf5d7da62240c91992a761e7133`.
 It changes limiter expiry maintenance/health isolation (A3), interrupted backup
@@ -15,11 +53,9 @@ fresh authorization across async editor draft generation (CB-01). None is
 evidence of a deployed protection. It excludes the separate category UI,
 catalogue API, audio and video worktrees.
 
-The clips scan finding (A2) remains unchanged pending an explicit compatibility
-decision. A per-request candidate ceiling can require continuation through an
-empty page; older clients cannot silently be assumed to handle that correctly.
-The smaller proposal needs an explicit legacy-client failure when the scan
-budget is exhausted; a durable eligibility index would require broader work.
+At that commit, the clips scan finding (A2) remained unchanged pending the owner's
+compatibility decision. The approved index follow-up above supersedes that hold
+on local implementation, while keeping release and production migration held.
 
 `ROBUSTNESS_AUDIT_2026-10-02.md` records this narrow follow-up, synthetic proofs,
 remaining limits and validation. No production load, provider, mail or real-user

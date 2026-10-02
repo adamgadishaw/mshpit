@@ -55,6 +55,17 @@ function guardedSources(database, postId) {
   return exact.length || registered.length ? new Set([...exact, ...registered]) : null;
 }
 
+// Read-only per-connection trust snapshot for SQL clip selection. Persisted
+// verification rows alone never activate a release; retain the runtime gates.
+export function legacyVideoPosterAllowedSources(database) {
+  const ids = new Set([
+    ...(PROCESS_DEFAULT_RELEASE_ACTIVE ? EXACT_RELEASE_SOURCES.keys() : []),
+    ...(REGISTERED_RELEASE_SOURCES.get(database)?.keys() || []),
+  ]);
+  return [...ids].flatMap((postId) => [...(guardedSources(database, postId) || [])]
+    .map((url) => [postId, url]));
+}
+
 function guardedReleasePost(database, postId, photos = null) {
   if (typeof postId !== "string" || !postId) return false;
   const sources = guardedSources(database, postId);

@@ -331,6 +331,32 @@ the key after a fresh backup is not a safe rotation procedure. Individual post,
 comment and message deletions and block/restriction changes are not journaled
 yet and require separate reconciliation. A live restore drill remains required.
 
+## Local clips projection hardening, 2026-10-02 (deployment held)
+
+The follow-up from `ee9e2df3f7304de7103f57467250a7fe12c5ba44` uses native SQLite
+triggers to maintain ordered candidate posts and exact stored photo references.
+The clips query checks current linked-media and URL-only publication rules,
+trusted legacy release sources, active accounts, public/removed state and
+bilateral blocks before its post limit. Selection and canonical post projection
+share a read snapshot. Full projection is limited to `limit + 1` posts, at most
+31; ordinary media or privacy changes do not create a global dirty queue or
+request-time catch-up loop. Existing admission limits still apply.
+
+This is not a hard SQL execution budget: sparse matches may require many indexed
+candidate/reference visits and exact URL checks. SQLite waits, shared-IP fairness
+and distributed-account/IP abuse remain separate limits. No crawler-user-agent
+exemption or shipping client change is introduced.
+
+Existing databases require explicit preparation; incomplete preparation blocks
+server startup. The resumable utility captures a finite initial post-ID horizon,
+commits small batches and leaves its cursor unchanged on invalid oversized
+historical data. It never truncates attachments to mark an index complete.
+Preparation imports ordinary database initialization/migrations and does not run
+the production launcher's backup gate. A verified pre-preparation backup and an
+owner-approved single-disk preparation/downtime/rollback plan are required before
+release. Neither production preparation nor deployment occurred in this task.
+See `ROBUSTNESS_AUDIT_2026-10-02.md` for validation and operational limits.
+
 ## Remaining defense-in-depth work
 
 - Move login, signup, request, and expensive-route limits from process memory to

@@ -1,4 +1,6 @@
 import { MEDIA_POST_MAX_ATTACHMENTS } from "../src/domain/mediaUploadPolicy.mjs";
+import { isLegacyVideoUrl, readClipPage } from "./features/clips/clipIndex.js";
+import { legacyVideoPosterAllowedSources } from "./legacyVideoPosters.js";
 import { LEGACY_ARTIST_DEATH_DATE_CUTOFF, isLegacyArtistMemorial } from "../src/domain/artistLegacy.mjs";
 import { LEGAL_ACCEPTANCE_VERSION } from "../src/domain/privacyDisclosures.mjs";
 import { MUSIC_PLAYER_ENABLED } from "../src/domain/musicPlayerAvailability.mjs";
@@ -1781,19 +1783,6 @@ function requestedPostMediaSelection(user, source, storedPost = null) {
     assertPhotosMatchSelection(supplied, selection);
   }
   return selection;
-}
-
-function isLegacyVideoUrl(value) {
-  if (typeof value !== "string" || !/^https?:\/\//i.test(value)) return false;
-  try {
-    // Match the same full-URI boundary used by feed/Clips display. Looking only
-    // at pathname lets `?format=.mp4` publish as a legacy image server-side and
-    // then mount as a video client-side without a durable poster.
-    new URL(value);
-    return /\.(mp4|webm|mov|m4v)(?:[?#]|$)/i.test(value);
-  } catch {
-    return false;
-  }
 }
 
 function rejectNewLegacyMediaUrls(nextPhotos, previousPhotos = []) {
@@ -6874,74 +6863,45 @@ export const routes = {
     const user = requireUser(ctx);
     const { cursor, limit: lim } = pageRequest(ctx, 12, 30);
     const viewer = user.id;
-    const blockSql = viewer ? `AND NOT EXISTS (
-      SELECT 1 FROM blocks b WHERE (b.blocker_id=? AND b.blocked_id=p.user_id) OR (b.blocker_id=p.user_id AND b.blocked_id=?)
-    )` : "";
-    // A cheap prefilter in SQL (photos JSON mentions a video extension); the
-    // authoritative per-URL check happens in JS below. Because the prefilter can
-    // deliberately over-match (for example `photo.jpg?campaign=.mp4-bait`), it
-    // must never define the public page boundary. Continue through raw candidate
-    // batches until we have one extra real clip or have exhausted the reel.
-    const findCandidates = (before, batchLimit) => {
-      const cursorSql = before ? "AND (p.created_at < ? OR (p.created_at = ? AND p.id < ?))" : "";
-      const args = [];
-      if (before) args.push(before.createdAt, before.createdAt, before.id);
-      if (viewer) args.push(viewer, viewer);
-      args.push(batchLimit);
-      return db.prepare(`
+    return readClipPage(db, {
+      activeAccount: activeAccountSql("u"), cursor, viewer, limit: lim,
+      legacySources: legacyVideoPosterAllowedSources(db),
+    }, (selected) => {
+      // Eligibility and visibility have already run before LIMIT. Only these
+      // <=31 posts incur social/media projection, within the same read snapshot.
+      const found = selected.length ? db.prepare(`
         SELECT p.*, u.name AS u_name, u.handle AS u_handle, u.initials AS u_initials, u.avatar_uri AS u_avatar, u.avatar_color AS u_color,
           u.profile_updated_at AS u_profile_updated_at,
           u.role AS u_role,u.artist_name AS u_artist_name,
-          EXISTS (SELECT 1 FROM post_media pm JOIN media_assets ma ON ma.id=pm.asset_id
-            WHERE pm.post_id=p.id AND ma.kind='video') AS has_stable_video,
           (SELECT COUNT(*) FROM likes l JOIN users lu ON lu.id=l.user_id WHERE l.post_id=p.id AND ${activeAccountSql("lu")}) AS like_count,
           (SELECT COUNT(*) FROM comments c JOIN users cu ON cu.id=c.user_id
             WHERE c.post_id=p.id AND c.removed=0 AND ${activeAccountSql("cu")}) AS comment_count,
           ${SEEN_ORDINAL_SQL}
-        FROM posts p JOIN users u ON u.id = p.user_id
-        WHERE p.removed=0 AND p.photos_public=1 AND ${activeAccountSql("u")}
-          AND (p.photos LIKE '%.mp4%' OR p.photos LIKE '%.webm%' OR p.photos LIKE '%.mov%' OR p.photos LIKE '%.m4v%'
-            OR EXISTS (SELECT 1 FROM post_media pm JOIN media_assets ma ON ma.id=pm.asset_id
-              WHERE pm.post_id=p.id AND ma.kind='video'))
-          ${cursorSql} ${blockSql}
-        ORDER BY p.created_at DESC, p.id DESC LIMIT ?`).all(...args);
-    };
-    const candidatesPerScan = Math.max(lim + 1, 32);
-    const authoritative = [];
-    let scanCursor = cursor;
-    while (authoritative.length <= lim) {
-      const found = findCandidates(scanCursor, candidatesPerScan);
-      if (!found.length) break;
-      // Reject cheap SQL false positives before running comment/media/reaction
-      // projection. Otherwise a page of bait URLs can force several synchronous
-      // DB lookups per row even though none can ever enter the reel.
-      const plausible = found.filter((row) => row.has_stable_video
-        || parseJsonArray(row.photos).some((uri) => isLegacyVideoUrl(uri)));
+        FROM posts p JOIN users u ON u.id=p.user_id
+        WHERE p.id IN (${selected.map(() => "?").join(",")})
+        ORDER BY p.created_at DESC,p.id DESC`).all(...selected.map((row) => row.id)) : [];
       const projectedCandidates = attachPostMediaPageProjection(db, attachPostImpressionStats(db, attachViewerLikes(
-        db,
-        withTaggedPeople(withCommentPreviews(plausible, viewer), viewer),
-        viewer,
-      ), viewer), { ownerId: viewer || null });
-      for (const p of projectedCandidates) {
-        const projected = postJson(p, viewer); // photos already parsed here
+        db, withTaggedPeople(withCommentPreviews(found, viewer), viewer), viewer,
+      ), viewer), { ownerId: viewer });
+      const authoritative = projectedCandidates.map((p) => {
+        const projected = postJson(p, viewer);
         const descriptorClips = new Set((projected.media || [])
           .filter((asset) => asset?.kind === "video" && typeof asset.url === "string")
           .map((asset) => asset.url));
         const clips = (projected.photos || []).filter((uri) => descriptorClips.has(uri) || isLegacyVideoUrl(uri));
-        if (clips.length) authoritative.push({ row: p, clip: { ...projected, clips } });
-        if (authoritative.length > lim) break;
-      }
-      if (authoritative.length > lim || found.length < candidatesPerScan) break;
-      const last = found.at(-1);
-      scanCursor = { createdAt: last.created_at, id: last.id };
-    }
-    const hasMore = authoritative.length > lim;
-    const page = hasMore ? authoritative.slice(0, lim) : authoritative;
-    const clips = page.map(({ clip }) => clip);
-    const nextCursor = hasMore && page.length ? encodeCursor(page.at(-1).row) : null;
-    return { clips, nextCursor };
+        // A mismatch is an invariant failure, never a false end-of-reel or a
+        // reason to resume an unbounded hydration scan.
+        if (!clips.length) throw new Error("Clips index eligibility disagrees with canonical projection");
+        return { row: p, clip: { ...projected, clips } };
+      });
+      const hasMore = authoritative.length > lim;
+      const page = hasMore ? authoritative.slice(0, lim) : authoritative;
+      return {
+        clips: page.map(({ clip }) => clip),
+        nextCursor: hasMore && page.length ? encodeCursor(page.at(-1).row) : null,
+      };
+    });
   },
-
   "GET /api/users/:id/posts": (ctx) => {
     ctx.setHeader?.("Cache-Control", "private, no-store");
     const viewer = requireUser(ctx);
