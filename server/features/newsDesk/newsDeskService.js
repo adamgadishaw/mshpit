@@ -11,6 +11,7 @@ import { EDITORIAL, publishingSlot, storyScore, topStoryScore, twoPublisherFallb
 import { MAX_REPORTS, storyPrompt, worstCaseCostUsd } from "./newsSummarizer.js";
 import { artistDiscoverPhotoUri, deezerImageUrl } from "../artistPhotos/discoverPhoto.js";
 import { newsStoryMentionsCity, newsStoryRegions, newsStoryVisibleIn } from "./newsRegions.js";
+import { canonicalEditorialUrl, editorialSourceForUrl, editorialSourceNameMatches } from "./newsEditorialSources.js";
 
 // The news desk: reads established music outlets, groups reports about the
 // same event, and publishes a story from the news account only when
@@ -117,16 +118,6 @@ export function mshpitFans(database, artist, at = Date.now()) {
 const parseJson = (value, fallback) => { try { const parsed = JSON.parse(value); return parsed ?? fallback; } catch { return fallback; } };
 const wordCount = (value) => String(value || "").trim().split(/\s+/u).filter(Boolean).length;
 
-function safeSourceUrl(value) {
-  try {
-    const url = new URL(String(value || "").trim());
-    if (url.protocol !== "https:" || url.username || url.password || url.port || !url.hostname) return null;
-    return url.toString();
-  } catch {
-    return null;
-  }
-}
-
 export function normalizeSelfWrittenSources(value) {
   if (!Array.isArray(value) || value.length < EDITORIAL.minOutlets || value.length > MANUAL_SOURCE_MAX) {
     throw new TypeError(`Add at least ${EDITORIAL.minOutlets} independent article sources.`);
@@ -135,11 +126,11 @@ export function normalizeSelfWrittenSources(value) {
   const articleSources = value.map((source) => {
     if (!source || typeof source !== "object" || source.kind !== "article") throw new TypeError("Article sources must be marked as article sources.");
     const name = String(source.name || "").trim().slice(0, 160);
-    const url = safeSourceUrl(source.url);
-    const configured = NEWS_SOURCES.find((candidate) => sourceOwnsUrl(candidate, url));
+    const url = canonicalEditorialUrl(source.url);
+    const configured = editorialSourceForUrl(url);
     const title = String(source.title || "").trim().slice(0, 240);
     if (name.length < 2 || !url || !configured || seen.has(url)) throw new TypeError("Every article source must be a distinct URL from a configured music publisher.");
-    if (name.toLocaleLowerCase() !== configured.name.toLocaleLowerCase()) throw new TypeError("Use the configured publisher name for each article source.");
+    if (!editorialSourceNameMatches(configured, name)) throw new TypeError("Use the configured publisher name for each article source.");
     assertSafeAuthoredText(name, { field: "source name" });
     if (title) assertSafeAuthoredText(title, { field: "source title" });
     seen.add(url);
@@ -157,7 +148,7 @@ export function normalizeSelfWrittenPhoto(value, assetOwnerId) {
   }
   const provenance = value.source && typeof value.source === "object" ? value.source : value;
   const name = String(provenance.name || "").trim().slice(0, 160);
-  const url = safeSourceUrl(provenance.url);
+  const url = canonicalEditorialUrl(provenance.url);
   const credit = String(provenance.credit || "").trim().slice(0, 240);
   if (name.length < 2 || !url) throw new TypeError("Add the photo source name and secure URL.");
   assertSafeAuthoredText(name, { field: "photo source name" });
@@ -844,7 +835,8 @@ function newsStoryJson(row, artistLookup, database, viewerId = null) {
       // Only an image Discover may crop: Deezer, never Spotify artwork.
       photo: deezerImageUrl(artist.photo) || artistDiscoverPhotoUri(parseJson(artist.data, {})) || null,
     }));
-  const sources = parseJson(row.sources, []).filter((source) => /^https:\/\//u.test(String(source?.url || "")))
+  const storedSources = parseJson(row.sources, []).filter((source) => /^https:\/\//u.test(String(source?.url || "")));
+  const sources = storedSources
     .map((source) => ({
       kind: source.kind === "photo" ? "photo" : "article",
       name: String(source.name || ""), url: source.url,
@@ -872,7 +864,7 @@ function newsStoryJson(row, artistLookup, database, viewerId = null) {
     artists,
     sources,
     media,
-    confirmedBy: new Set(sources.filter((source) => source.kind === "article").map((source) => source.name)).size,
+    confirmedBy: new Set(storedSources.filter((source) => source.kind !== "photo").map((source) => source.group || source.sourceId || source.name)).size,
     publishedAt: row.created_at,
     updatedAt: row.updated_at,
   };

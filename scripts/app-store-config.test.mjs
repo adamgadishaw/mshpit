@@ -9,6 +9,7 @@ const readJson = (name) => JSON.parse(readFileSync(join(ROOT, name), "utf8"));
 const app = readJson("app.json").expo;
 const eas = readJson("eas.json");
 const pkg = readJson("package.json");
+const lockRoot = readJson("package-lock.json").packages[""];
 const settingsSource = readFileSync(join(ROOT, "src", "screens", "SettingsScreen.jsx"), "utf8");
 const contactSource = readFileSync(join(ROOT, "src", "domain", "contact.mjs"), "utf8");
 const playerSource = readFileSync(join(ROOT, "src", "components", "PlayerBar.jsx"), "utf8");
@@ -19,6 +20,44 @@ const brandMarkSource = readFileSync(join(ROOT, "src", "components", "BrandMark.
 const brandGeneratorSource = readFileSync(join(ROOT, "scripts", "generate-brand-assets.mjs"), "utf8");
 const brandMasterSource = readFileSync(join(ROOT, "assets", "mshpit-community-mark-v2.svg"), "utf8");
 const publicLogoSource = readFileSync(join(ROOT, "public", "logo.svg"), "utf8");
+
+const productionDependencies = Object.freeze({
+  "@anthropic-ai/sdk": "^0.128.0",
+  "heic-decode": "2.1.0",
+  sharp: "0.35.4",
+});
+
+const expoBuildDependencyConstraints = Object.freeze({
+  "@expo/metro-runtime": "~57.0.15",
+  "@react-native-community/slider": "5.2.0",
+  "@shopify/react-native-skia": "2.6.2",
+  expo: "~57.0.20",
+  "expo-asset": "~57.0.16",
+  "expo-audio": "~57.0.4",
+  "expo-build-properties": "~57.0.17",
+  "expo-clipboard": "~57.0.1",
+  "expo-constants": "~57.0.17",
+  "expo-file-system": "~57.0.6",
+  "expo-image": "~57.0.4",
+  "expo-image-manipulator": "~57.0.16",
+  "expo-image-picker": "~57.0.16",
+  "expo-sharing": "~57.0.18",
+  "expo-splash-screen": "~57.0.8",
+  "expo-sqlite": "~57.0.2",
+  "expo-status-bar": "~57.0.1",
+  "expo-system-ui": "~57.0.3",
+  "expo-video": "~57.0.3",
+  react: "19.2.3",
+  "react-dom": "19.2.3",
+  "react-native": "0.86.3",
+  "react-native-gesture-handler": "~2.32.0",
+  "react-native-reanimated": "4.5.1",
+  "react-native-safe-area-context": "~5.7.0",
+  "react-native-share": "12.3.1",
+  "react-native-svg": "15.15.4",
+  "react-native-web": "^0.21.2",
+  "react-native-worklets": "0.10.1",
+});
 
 function pngHeader(relativePath) {
   const absolutePath = join(ROOT, relativePath.replace(/^\.\//, ""));
@@ -101,9 +140,25 @@ test("every active logo size comes from the requested full two-ring community ma
   assert.match(brandGeneratorSource, /svg:\s*fullMark,[\s\S]*output:\s*"pit-favicon-v2\.png"/);
 });
 
+test("production keeps server dependencies when build tooling is pruned", () => {
+  assert.deepEqual(Object.keys(pkg.dependencies).sort(), Object.keys(productionDependencies).sort());
+  assert.deepEqual(Object.keys(lockRoot.dependencies).sort(), Object.keys(productionDependencies).sort());
+  for (const [name, version] of Object.entries(productionDependencies)) {
+    assert.equal(pkg.dependencies[name], version, `${name} must remain a production dependency`);
+    assert.equal(pkg.devDependencies?.[name], undefined, `${name} must not be pruned as development-only`);
+    assert.equal(lockRoot.dependencies[name], version, `${name} must remain in the lockfile production root`);
+    assert.equal(lockRoot.devDependencies?.[name], undefined, `${name} must not be marked dev-only in the lockfile root`);
+  }
+  for (const [name, version] of Object.entries(expoBuildDependencyConstraints)) {
+    assert.equal(pkg.devDependencies[name], version, `${name} must retain its pinned build constraint`);
+    assert.equal(lockRoot.devDependencies[name], version, `${name} must retain its pinned lockfile build constraint`);
+    assert.equal(pkg.dependencies?.[name], undefined, `${name} must be pruned from production`);
+  }
+});
+
 test("the forced-dark SDK 57 splash and native root are explicitly branded", () => {
-  assert.match(pkg.dependencies["expo-splash-screen"], /^~57\.0\./);
-  assert.match(pkg.dependencies["expo-system-ui"], /^~57\.0\./);
+  assert.match(pkg.devDependencies["expo-splash-screen"], /^~57\.0\./);
+  assert.match(pkg.devDependencies["expo-system-ui"], /^~57\.0\./);
   assert.equal(app.plugins.includes("expo-system-ui"), true,
     "expo-system-ui must run as a config plugin so introspection writes the requested native appearance");
   assert.equal(app.userInterfaceStyle, "dark");
@@ -127,7 +182,7 @@ test("media permission copy is scoped to features the app actually exposes", () 
   assert.equal(imagePicker[1].microphonePermission, false);
 
   const audio = app.plugins.find((entry) => Array.isArray(entry) && entry[0] === "expo-audio");
-  assert.match(pkg.dependencies["expo-audio"], /^~57\.0\./);
+  assert.match(pkg.devDependencies["expo-audio"], /^~57\.0\./);
   assert.ok(audio, "expo-audio must have explicit playback-only configuration");
   assert.equal(audio[1].microphonePermission, false);
   assert.equal(audio[1].recordAudioAndroid, false);

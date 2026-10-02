@@ -93,7 +93,10 @@ async function scenario(browser, origin, width, mode = "same") {
         if (!previous) receipts.set(idempotencyKey, { payload: snapshot, draft: selfWrittenDraft(body) });
         state.draft = receipts.get(idempotencyKey).draft;
         state.saveAttempts += 1;
-        if (state.saveAttempts === 1) return await json({ error: "Synthetic lost response", code: "SERVICE_UNAVAILABLE" }, 503);
+        if (state.saveAttempts === 1) {
+          await new Promise((resolve) => setTimeout(resolve, 250));
+          return await json({ error: "Synthetic lost response", code: "SERVICE_UNAVAILABLE" }, 503);
+        }
         return await json({ draft: state.draft });
       }
       if (url.pathname === "/api/moderation/news-desk/editor/drafts/self-written-fixture/publish" && request.method() === "POST") {
@@ -141,6 +144,11 @@ async function scenario(browser, origin, width, mode = "same") {
       await composer.getByLabel(`Self-written article source ${index} name`, { exact: true }).fill(["NME", "Stereogum", "Pitchfork"][index - 1]);
       await composer.getByLabel(`Self-written article source ${index} URL`, { exact: true }).fill(["https://www.nme.com/news/synthetic", "https://www.stereogum.com/synthetic", "https://pitchfork.com/news/synthetic"][index - 1]);
     }
+    await composer.getByRole("button", { name: "Add another article source", exact: true }).click();
+    await composer.getByRole("button", { name: "Add another article source", exact: true }).click();
+    await composer.getByLabel("Self-written article source 4 name", { exact: true }).fill("Yonhap");
+    await composer.getByLabel("Self-written article source 4 URL", { exact: true }).fill("https://en.yna.co.kr/view/synthetic");
+    assert.equal(await composer.getByLabel("Self-written article source 5 name", { exact: true }).inputValue(), "", "an empty optional source row is retained without blocking save");
     const choosing = page.waitForEvent("filechooser");
     await composer.getByRole("button", { name: "Choose and upload an article photo", exact: true }).click();
     await (await choosing).setFiles([{ name: "synthetic.png", mimeType: "image/png", buffer: png }]);
@@ -149,8 +157,9 @@ async function scenario(browser, origin, width, mode = "same") {
     await composer.getByLabel("Photo source URL", { exact: true }).fill("https://example.com/synthetic-photo-rights");
     await composer.getByLabel("Photo credit", { exact: true }).fill("CC0 synthetic fixture");
     const save = composer.getByRole("button", { name: "Save self-written news draft", exact: true });
-    await save.click();
+    await save.dblclick();
     await page.getByRole("alert").waitFor();
+    assert.equal(state.saveAttempts, 1, "Duplicate save clicks are fenced while the first request is in flight");
     const originalBody = await composer.getByLabel("Self-written news article", { exact: true }).inputValue();
     await page.goBack();
     await page.getByRole("button", { name: "Keep editing", exact: true }).click();
@@ -166,13 +175,14 @@ async function scenario(browser, origin, width, mode = "same") {
     await page.getByText("SELF-WRITTEN DRAFT", { exact: true }).waitFor();
     const draft = page.getByTestId("news-draft-self-written-fixture");
     await draft.locator("img").waitFor({ state: "attached" });
-    assert.equal(await draft.locator("a").count(), 4);
+    assert.equal(await draft.locator("a").count(), 5);
     assert.equal(await draft.getByRole("link", { name: "Synthetic photographer", exact: true }).getAttribute("href"), "https://example.com/synthetic-photo-rights");
+    assert.equal(state.saveAttempts, 2, "The uncertain save is retried once after the duplicate-click fence");
     assert.equal(new Set(state.saveKeys).size, mode === "edited" ? 2 : 1, "Identical retry preserves the key; edited intent rotates it");
     assert.equal(state.creates.length, 1);
     assert.equal(state.finalizes.length, 1);
     assert.equal(state.puts.length, 1);
-    await page.screenshot({ path: join(shots, `composer-${width}-${mode}.png`), fullPage: false });
+    await composer.screenshot({ path: join(shots, `composer-${width}-${mode}.png`), animations: "disabled" });
     await composer.getByLabel("Self-written news summary", { exact: true }).fill("Unsaved local adjustment before testing the close guard.");
     await page.getByRole("button", { name: "Back", exact: true }).click();
     await page.getByRole("button", { name: "Keep editing", exact: true }).click();

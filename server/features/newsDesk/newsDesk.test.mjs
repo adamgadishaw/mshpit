@@ -124,6 +124,19 @@ test("a confirmed story is posted from @news_mod with its sources, within budget
   assert.equal(story.headline, "Pearl Jam reveal new drummer at Ohana Festival");
   assert.equal(story.artists[0].photo, "https://cdn-images.dzcdn.net/images/artist/abc/500x500.jpg");
   assert.ok(story.sources.length >= 2 && story.sources.every((source) => source.url.startsWith("https://")));
+  const originalSources = JSON.parse(db.prepare("SELECT sources FROM news_stories WHERE id='story-1'").get().sources);
+  const sameOwnerSources = [
+    { kind: "article", sourceId: "billboard", group: "pmc", name: "Billboard", url: "https://www.billboard.com/music/music-news/same-owner" },
+    { kind: "article", sourceId: "billboard-substack", group: "pmc", name: "Billboard Substack", url: "https://billboard.substack.com/p/same-owner" },
+    { kind: "article", sourceId: "nme", group: "nme", name: "NME", url: "https://www.nme.com/news/same-owner" },
+    { kind: "photo", name: "Photo credit", url: "https://example.test/photo" },
+  ];
+  db.prepare("UPDATE news_stories SET sources=? WHERE id='story-1'").run(JSON.stringify(sameOwnerSources));
+  try {
+    assert.equal(reader.get("story-1").confirmedBy, 2, "same-owner article names count as one confirmation");
+  } finally {
+    db.prepare("UPDATE news_stories SET sources=? WHERE id='story-1'").run(JSON.stringify(originalSources));
+  }
   assert.equal((await desk.publishPass()).published, 0, "a story is written once");
   const listed = routes["GET /api/news-desk/stories"]({ query: {}, ip: "reader", setHeader() {} });
   assert.equal(listed.stories[0].postId, "news_story-1");
