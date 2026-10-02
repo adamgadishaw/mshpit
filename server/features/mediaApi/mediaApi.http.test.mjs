@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
+import { createServer as createHttpServer, request as httpRequest } from "node:http";
+import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test, { after } from "node:test";
+import { mediaApiRoutes } from "./mediaApiRoutes.js";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const DATA_DIR = mkdtempSync(join(tmpdir(), "pit-media-api-real-"));
@@ -455,4 +459,320 @@ test("real HTTP namespace is disabled before session auth and never echoes beare
     await new Promise((resolve) => child.once("exit", resolve));
     rmSync(dataDir, { recursive: true, force: true });
   }
+});
+
+// Only fixed, public synthetic fixtures are inserted here; no pairing endpoint
+// or live credential is used. The subprocess imports the actual HTTP dispatcher.
+const SYNTHETIC_BEARER = "stage1_synthetic_fixture_token_not_a_live_credential";
+const digest = value => createHash("sha256").update(value).digest("hex");
+function deferred() {
+  let resolve;
+  const promise = new Promise(done => { resolve = done; });
+  return { promise, resolve };
+}
+
+test("real same-asset finalization shared by two API keys completes each caller's own receipt", async () => {
+  const actor = user("stage1_shared_finalize_owner", "admin");
+  const authorization = seedHttpGrant("stage1_shared_finalize_grant", actor.id, ["media:write"]);
+  const gate = deferred(), started = deferred(), fetchStorage = storage();
+  let held = false;
+  const api = service({ fetchImpl: async (url, options = {}) => {
+    if (!held && options.method === "HEAD") {
+      held = true; started.resolve(); await gate.promise;
+    }
+    return fetchStorage(url, options);
+  } });
+  const { asset } = api.createMedia({ authorization, body: photoBody("stage1-shared-finalize-photo"),
+    idempotencyKey: "stage1-shared-create" });
+  const finalize = key => api.finalizeMedia({ authorization, assetId: asset.id,
+    body: { deliveryMode: "server", editRecipe: {} }, idempotencyKey: key });
+  const first = finalize("stage1-shared-finalize-first");
+  await started.promise;
+  const second = finalize("stage1-shared-finalize-second");
+  gate.resolve();
+  const results = await Promise.all([first, second]);
+  assert.ok(results.every(result => result.asset.id === asset.id && result.finalize.state === "completed"));
+  const receipts = db.prepare("SELECT status,lease_nonce FROM media_api_idempotency WHERE grant_id=? AND operation='media.finalize'")
+    .all("stage1_shared_finalize_grant");
+  assert.equal(receipts.length, 2);
+  assert.ok(receipts.every(receipt => receipt.status === "completed"));
+  assert.notEqual(receipts[0].lease_nonce, receipts[1].lease_nonce);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM media_api_audit WHERE action='media_finalized' AND target_id=?").get(asset.id).n, 2);
+  db.prepare("DELETE FROM media_api_grants WHERE id='stage1_shared_finalize_grant'").run();
+});
+function seedHttpGrant(id, ownerId, scopes = ["news:write", "media:write"], token = SYNTHETIC_BEARER) {
+  db.prepare(`INSERT INTO media_api_grants
+    (id,owner_id,actor_type,actor_label,scopes,status,token_hash,issued_at,expires_at,updated_at)
+    VALUES (?,?,'assistant','SyntheticStage1',?,'active',?,?,?,?)`)
+    .run(id, ownerId, JSON.stringify(scopes), digest(token), clock, clock + 7 * 86_400_000, clock);
+  return `Bearer ${token}`;
+}
+
+async function startEnabledHttp(t) {
+  const port = await freePort();
+  const childEnv = { ...ENV, NODE_ENV: "development", PORT: String(port), RENDER: "true" };
+  for (const key of Object.keys(childEnv)) {
+    if (/_ENABLED$/u.test(key)) childEnv[key] = "false";
+    if (/(?:API_KEY|PASSWORD|TOKEN|SECRET|CREDENTIAL)/u.test(key) && !key.startsWith("MEDIA_")) delete childEnv[key];
+  }
+  childEnv.PIT_MEDIA_API_ENABLED = "true";
+  const script = `
+    let clock = ${clock};
+    Date.now = () => clock;
+    let outbound = 0;
+    globalThis.fetch = async () => { outbound += 1; throw new Error("outbound network disabled"); };
+    process.on("message", message => {
+      if (message.clock !== undefined) clock = message.clock;
+      process.send({ id: message.id, outbound });
+    });
+    await import("./server/index.js");
+  `;
+  const child = spawn(process.execPath, ["--input-type=module", "--eval", script],
+    { cwd: ROOT, env: childEnv, stdio: ["ignore", "pipe", "pipe", "ipc"] });
+  const exited = new Promise(resolve => child.once("exit", resolve));
+  let output = "";
+  t.after(async () => { child.kill(); await exited; });
+  await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error(`HTTP startup failed: ${output.slice(-1500)}`)), 20_000);
+    const read = chunk => {
+      output += chunk.toString();
+      if (output.includes(`up on http://localhost:${port}`)) { clearTimeout(timeout); resolve(); }
+    };
+    child.stdout.on("data", read); child.stderr.on("data", read);
+    child.once("error", error => { clearTimeout(timeout); reject(error); });
+    child.once("exit", () => { clearTimeout(timeout); reject(new Error("HTTP fixture exited")); });
+  });
+  let commandId = 0;
+  const command = body => new Promise((resolve, reject) => {
+    const id = ++commandId;
+    const timer = setTimeout(() => { child.off("message", receive); reject(new Error("Fixture command timed out")); }, 3000);
+    function receive(message) {
+      if (message.id !== id) return;
+      clearTimeout(timer); child.off("message", receive); resolve(message);
+    }
+    child.on("message", receive); child.send({ id, ...body });
+  });
+  return {
+    advance: async milliseconds => { clock += milliseconds; await command({ clock }); },
+    outbound: async () => (await command({})).outbound,
+    request(path, { body = {}, key = "stage1-http-fixture-key", cookie, localAddress = "127.0.0.1",
+      authorization = `Bearer ${SYNTHETIC_BEARER}` } = {}) {
+      return new Promise((resolve, reject) => {
+        const request = httpRequest(`http://127.0.0.1:${port}/api/media/v1/${path}`, {
+          method: "POST", localAddress, headers: { "content-type": "application/json", authorization, "idempotency-key": key,
+            ...(cookie ? { cookie } : {}) },
+        }, response => {
+          const chunks = [];
+          response.on("data", chunk => chunks.push(chunk));
+          response.on("error", reject);
+          response.on("end", () => {
+            try { resolve({ status: response.statusCode, body: JSON.parse(Buffer.concat(chunks).toString()) }); }
+            catch (error) { reject(error); }
+          });
+        });
+        request.on("error", reject);
+        request.end(JSON.stringify(body));
+      });
+    },
+  };
+}
+
+test("two HTTP workers on separate SQLite connections fence stale lease completion and cleanup", async t => {
+  const actor = user("stage1_lease_owner", "admin");
+  const authorization = seedHttpGrant("stage1_lease_grant", actor.id, ["media:write"]);
+  db.exec("CREATE TABLE stage1_lease_effects (id TEXT PRIMARY KEY, worker TEXT NOT NULL)");
+  for (const mode of ["stale_failure", "stale_completion", "late_completion", "expired_without_takeover"]) {
+    await t.test(mode, async () => {
+      let at = clock;
+      const gates = [deferred(), deferred()], started = [deferred(), deferred()];
+      const connections = [new DatabaseSync(join(DATA_DIR, "pit.db")), new DatabaseSync(join(DATA_DIR, "pit.db"))];
+      let commits = 0;
+      const servers = connections.map((database, worker) => {
+        database.exec("PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON");
+        const api = createMediaApiService({ database, env: ENV, now: () => at,
+          media: { finalize: async () => {
+            started[worker].resolve();
+            await gates[worker].promise;
+            if (worker === 0 && mode === "stale_failure") throw new ApiError(503, "Synthetic storage failure", "MEDIA_STORAGE_UNAVAILABLE");
+            return { deferredCommit: true, commit() {
+              commits += 1;
+              database.prepare("INSERT INTO stage1_lease_effects(id,worker) VALUES (?,?)").run(mode, String(worker));
+              return { asset: { id: mode, status: "ready" } };
+            } };
+          } },
+        });
+        const routes = mediaApiRoutes({ service: api, ApiError, requireOwner: () => { throw new Error("Owner route not used"); }, rateLimit() {} });
+        return createHttpServer(async (request, response) => {
+          try {
+            const chunks = [];
+            for await (const chunk of request) chunks.push(chunk);
+            const result = await routes["POST /api/media/v1/media/assets/:id/finalize"]({
+              body: JSON.parse(Buffer.concat(chunks).toString()), params: { id: mode },
+              mediaApiAuthorization: request.headers.authorization, mediaApiIdempotencyKey: request.headers["idempotency-key"],
+            });
+            response.writeHead(200, { "content-type": "application/json" }); response.end(JSON.stringify(result));
+          } catch (error) {
+            response.writeHead(error.status || 500, { "content-type": "application/json" });
+            response.end(JSON.stringify({ code: error.code }));
+          }
+        });
+      });
+      try {
+        for (const server of servers) await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+        const request = async worker => {
+          const response = await fetch(`http://127.0.0.1:${servers[worker].address().port}/finalize`, {
+            method: "POST", headers: { authorization, "idempotency-key": `stage1-lease-${mode}` }, body: "{}",
+          });
+          return { status: response.status, body: await response.json() };
+        };
+        const read = () => db.prepare("SELECT * FROM media_api_idempotency WHERE grant_id='stage1_lease_grant' AND idempotency_key=?")
+          .get(`stage1-lease-${mode}`);
+        const first = request(0);
+        await started[0].promise;
+        const firstNonce = read().lease_nonce;
+        at += 15 * 60_000 + 1;
+        if (mode === "expired_without_takeover") {
+          gates[0].resolve();
+          assert.equal((await first).status, 409);
+          assert.equal(read(), undefined);
+          assert.equal(commits, 0);
+          return;
+        }
+        const second = request(1);
+        await started[1].promise;
+        const secondNonce = read().lease_nonce;
+        assert.notEqual(secondNonce, firstNonce);
+        if (mode === "late_completion") {
+          gates[1].resolve();
+          assert.equal((await second).status, 200);
+        }
+        gates[0].resolve();
+        assert.equal((await first).status, mode === "stale_failure" ? 503 : 409);
+        assert.equal(read().lease_nonce, secondNonce);
+        assert.equal(read().status, mode === "late_completion" ? "completed" : "reserved");
+        if (mode !== "late_completion") {
+          gates[1].resolve();
+          assert.equal((await second).status, 200);
+        }
+        assert.equal(commits, 1, "only the live lease may invoke the durable commit");
+        assert.equal(db.prepare("SELECT worker FROM stage1_lease_effects WHERE id=?").get(mode).worker, "1");
+        assert.equal(db.prepare("SELECT COUNT(*) n FROM media_api_audit WHERE action='media_finalized' AND target_id=?").get(mode).n, 1);
+      } finally {
+        gates.forEach(gate => gate.resolve());
+        await Promise.all(servers.map(server => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); })));
+        connections.forEach(database => database.close());
+      }
+    });
+  }
+  db.prepare("DELETE FROM media_api_grants WHERE id='stage1_lease_grant'").run();
+});
+
+test("actual HTTP quotas follow the bearer grant and owner across cookie changes and simultaneous requests", async t => {
+  const actor = user("stage1_quota_owner", "admin");
+  seedHttpGrant("stage1_quota_grant", actor.id);
+  const cookies = ["stage1_quota_fan1", "stage1_quota_fan2"].map(id => {
+    user(id, "fan");
+    const token = `${id}_synthetic_session_fixture`;
+    q.insertSession.run(digest(token), id, clock, clock + 86_400_000, "", "");
+    return `pit_session=${token}`;
+  });
+  const http = await startEnabledHttp(t);
+  const body = photoBody("stage1-http-quota-photo");
+  const responses = await Promise.all(Array.from({ length: 24 }, (_, i) =>
+    http.request("media/assets", { body, cookie: i % 3 === 0 ? undefined : cookies[i % 2],
+      localAddress: i % 2 ? "127.0.0.2" : "127.0.0.1" })));
+  assert.equal(responses.filter(result => result.status === 200).length, 20);
+  assert.equal(responses.filter(result => result.status === 429).length, 4);
+  const secondToken = "stage1_another_synthetic_fixture_token_same_owner";
+  const authorization = seedHttpGrant("stage1_quota_grant2", actor.id, ["media:write"], secondToken);
+  assert.equal((await http.request("media/assets", { authorization, body, key: "stage1-second-grant", localAddress: "127.0.0.3" })).status, 429);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM media_assets WHERE owner_id=?").get(actor.id).n, 1);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM media_api_audit WHERE grant_id=? AND action='media_created'").get("stage1_quota_grant").n, 1);
+  assert.equal(await http.outbound(), 0);
+  db.prepare("DELETE FROM media_api_grants WHERE id IN ('stage1_quota_grant','stage1_quota_grant2')").run();
+});
+
+test("actual HTTP upload ticket renewal keeps asset, object, hash, receipt retention and audit atomic", async t => {
+  const actor = user("stage1_ticket_owner", "admin");
+  seedHttpGrant("stage1_ticket_grant", actor.id, ["media:write"]);
+  const http = await startEnabledHttp(t);
+  const body = photoBody(" stage1-http-ticket-photo "), key = "stage1-http-ticket-key";
+  const first = await http.request("media/assets", { body, key });
+  assert.equal(first.status, 200);
+  const readReceipt = () => db.prepare("SELECT * FROM media_api_idempotency WHERE grant_id='stage1_ticket_grant' AND idempotency_key=?").get(key);
+  const before = readReceipt();
+  const immediate = await http.request("media/assets", { body, key });
+  assert.equal(immediate.status, 200);
+  assert.equal(immediate.body.asset.id, first.body.asset.id);
+  assert.equal(immediate.body.upload.uploadUrl, first.body.upload.uploadUrl);
+  await http.advance(600_001);
+  const renewed = await http.request("media/assets", { body, key });
+  assert.equal(renewed.status, 200);
+  assert.equal(renewed.body.asset.id, first.body.asset.id);
+  assert.equal(renewed.body.upload.key, first.body.upload.key);
+  assert.notEqual(renewed.body.upload.uploadUrl, first.body.upload.uploadUrl);
+  assert.ok(renewed.body.upload.expiresAt > clock);
+  assert.deepEqual(renewed.body.upload.requiredHeaders, first.body.upload.requiredHeaders);
+  assert.equal(renewed.body.upload.requiredHeaders["If-None-Match"], "*");
+  assert.equal(readReceipt().expires_at, before.expires_at);
+  assert.equal(readReceipt().created_at, before.created_at);
+  assert.equal(readReceipt().payload_hash, before.payload_hash);
+  assert.equal(readReceipt().lease_nonce, before.lease_nonce);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM media_assets WHERE owner_id=?").get(actor.id).n, 1);
+  assert.equal((await http.request("media/assets", { body: { ...body, fileSize: 4097 }, key })).status, 409);
+
+  await http.advance(600_001);
+  const savedReceipt = readReceipt().response_json;
+  const ledger = db.prepare("SELECT updated_at FROM media_objects WHERE owner_id=? AND object_key=?").get(actor.id, first.body.upload.key);
+  db.exec("CREATE TRIGGER stage1_reject_refresh BEFORE INSERT ON media_api_audit WHEN NEW.action='media_upload_refreshed' BEGIN SELECT RAISE(ABORT,'synthetic refresh audit failure'); END");
+  try { assert.equal((await http.request("media/assets", { body, key })).status, 500); }
+  finally { db.exec("DROP TRIGGER stage1_reject_refresh"); }
+  assert.equal(readReceipt().response_json, savedReceipt);
+  assert.equal(db.prepare("SELECT updated_at FROM media_objects WHERE owner_id=? AND object_key=?").get(actor.id, first.body.upload.key).updated_at, ledger.updated_at);
+  assert.equal((await http.request("media/assets", { body, key })).status, 200);
+  db.prepare("UPDATE media_api_grants SET status='revoked' WHERE id='stage1_ticket_grant'").run();
+  assert.equal((await http.request("media/assets", { body, key })).status, 401);
+  assert.equal(await http.outbound(), 0);
+  db.prepare("DELETE FROM media_api_grants WHERE id='stage1_ticket_grant'").run();
+});
+
+test("actual HTTP accepts and publishes maximum-length multilingual text with replay and rollback", async t => {
+  const actor = user("stage1_article_owner", "admin");
+  const authorization = seedHttpGrant("stage1_article_grant", actor.id);
+  const api = service();
+  const { asset } = api.createMedia({ authorization, body: photoBody("stage1-article-photo"), idempotencyKey: "stage1-article-photo-create" });
+  await api.finalizeMedia({ authorization, assetId: asset.id, body: { deliveryMode: "server", editRecipe: {} }, idempotencyKey: "stage1-article-photo-finalize" });
+  const http = await startEnabledHttp(t);
+  const article = "新歌 公演 音楽 ".repeat(6_666) + "新作品 音楽";
+  assert.equal(article.length, 60_000);
+  const body = { headline: "Synthetic band announce new album and world tour",
+    summary: "The band announced a new album and a world tour, with dates confirmed by independent music publishers.",
+    body: article,
+    sources: [{ kind: "article", name: "NME", url: "https://www.nme.com/news/synthetic-stage1" },
+      { kind: "article", name: "Stereogum", url: "https://www.stereogum.com/synthetic-stage1" },
+      { kind: "article", name: "Pitchfork", url: "https://pitchfork.com/news/synthetic-stage1" }],
+    photo: { assetId: asset.id, name: "Synthetic photographer", url: "https://example.com/synthetic-stage1" } };
+  const key = "stage1-maximum-article";
+  const created = await http.request("news/drafts", { body, key });
+  assert.equal(created.status, 200, JSON.stringify(created.body));
+  assert.equal(created.body.draft.body, article);
+  assert.ok(Buffer.byteLength(JSON.stringify(created.body)) > 64 * 1024);
+  assert.deepEqual((await http.request("news/drafts", { body, key })).body.draft, created.body.draft);
+  const published = await http.request(`news/drafts/${created.body.draft.id}/publish`,
+    { body: { expectedRevision: 0 }, key: "stage1-maximum-publish" });
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  assert.equal(db.prepare("SELECT body FROM news_stories WHERE post_id=?").get(published.body.postId).body, article);
+  const replay = await http.request(`news/drafts/${created.body.draft.id}/publish`,
+    { body: { expectedRevision: 0 }, key: "stage1-maximum-publish" });
+  assert.deepEqual(replay.body.draft, published.body.draft);
+  assert.equal(replay.body.postId, published.body.postId);
+  const count = db.prepare("SELECT COUNT(*) n FROM news_drafts WHERE created_grant_id='stage1_article_grant'").get().n;
+  db.exec("CREATE TRIGGER stage1_reject_article BEFORE INSERT ON media_api_audit WHEN NEW.action='news_draft_created' BEGIN SELECT RAISE(ABORT,'synthetic article audit failure'); END");
+  try { assert.equal((await http.request("news/drafts", { body, key: "stage1-maximum-rollback" })).status, 500); }
+  finally { db.exec("DROP TRIGGER stage1_reject_article"); }
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM news_drafts WHERE created_grant_id='stage1_article_grant'").get().n, count);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM media_api_idempotency WHERE idempotency_key='stage1-maximum-rollback'").get().n, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM news_desk_receipts").get().n, 0);
+  assert.equal(await http.outbound(), 0);
+  db.prepare("DELETE FROM media_api_grants WHERE id='stage1_article_grant'").run();
 });

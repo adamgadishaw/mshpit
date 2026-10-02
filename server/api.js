@@ -503,6 +503,13 @@ function limit(ctx, name, max, windowMs, options) {
   enforceRateLimit(`${name}:${actor}`, max, windowMs, options);
 }
 
+function mediaApiLimit(ctx, name, max, windowMs, { grantId, ownerId } = {}) {
+  const requests = [{ key: `${name}:ip:${ctx.ip}`, max, windowMs }];
+  if (ownerId) requests.push({ key: `${name}:owner:${ownerId}`, max, windowMs });
+  if (grantId) requests.push({ key: `${name}:grant:${grantId}`, max, windowMs });
+  enforceRateLimitGroup(requests);
+}
+
 function postWriteLimits(ctx, { edit = false, campaign = false } = {}) {
   const actor = ctx.user?.id ? `user:${ctx.user.id}` : `ip:${ctx.ip}`;
   const requests = [];
@@ -9915,7 +9922,7 @@ export const routes = {
   // Owner-chosen news stories: free to browse, one metered Claude call per draft.
   ...newsDeskEditorRoutes({ editor: newsDeskEditor, database: db, ApiError, requireAdmin: requireNewsEditor, rateLimit: limit, now,
     photoResolver: resolveNewsArtwork, readStory: (postId) => newsDeskReader.forLivePost(postId), listStories: () => newsDeskReader.list({ limit: 10 }).stories || [] }),
-  ...mediaApiRoutes({ service: mediaApiService, requireOwner, rateLimit: limit, ApiError }),
+  ...mediaApiRoutes({ service: mediaApiService, requireOwner, rateLimit: mediaApiLimit, ApiError }),
   // Live coverage for big nights: outlet headlines plus owner updates, no Claude.
   ...newsLiveRoutes({ database: db, ApiError, requireAdmin: requireNewsEditor, rateLimit: limit, now }),
   // Festivals: editions, lineups by day, and members' plans.

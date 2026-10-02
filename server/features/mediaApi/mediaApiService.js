@@ -23,7 +23,10 @@ import {
 } from "./mediaApiPolicy.js";
 
 const WRITER_ROLES = new Set(["admin", "editor"]);
-const MAX_RESPONSE_BYTES = 64 * 1024;
+// The editor accepts 60,000 UTF-16 code units. JSON escaping can use six bytes
+// per unit; allow room for headline and ordinary source/photo metadata while
+// retaining a hard bound on the complete serialized receipt.
+const MAX_RESPONSE_BYTES = 512 * 1024;
 
 function json(value) {
   try { return JSON.parse(value || "{}"); }
@@ -133,6 +136,7 @@ export function createMediaApiService({
     try { key = normalizeIdempotencyKey(idempotencyKey); }
     catch (error) { throw new ApiError(400, error.message, "VALIDATION_FAILED"); }
     const hash = payloadDigest(input);
+    const nonce = randomUUID();
     return withImmediateWrite(database, () => {
       const current = assertGrantActive(grant.id, operation.startsWith("news") ? "news:write" : "media:write", at);
       database.prepare("DELETE FROM media_api_idempotency WHERE expires_at<=?").run(at);
@@ -144,38 +148,48 @@ export function createMediaApiService({
         if (Number(existing.updated_at) + MEDIA_API_IDEMPOTENCY_LEASE_MS > at) {
           throw new ApiError(409, "That request is already in progress.", "CONFLICT");
         }
-        database.prepare(`UPDATE media_api_idempotency SET payload_hash=?,status='reserved',response_json=NULL,updated_at=?,expires_at=?
+        database.prepare(`UPDATE media_api_idempotency SET payload_hash=?,status='reserved',response_json=NULL,lease_nonce=?,updated_at=?,expires_at=?
           WHERE grant_id=? AND operation=? AND idempotency_key=?`)
-          .run(hash, at, at + MEDIA_API_IDEMPOTENCY_TTL_MS, grant.id, operation, key);
+          .run(hash, nonce, at, at + MEDIA_API_IDEMPOTENCY_TTL_MS, grant.id, operation, key);
       } else {
         database.prepare(`INSERT INTO media_api_idempotency
-          (grant_id,operation,idempotency_key,payload_hash,status,response_json,created_at,updated_at,expires_at)
-          VALUES (?,?,?,?,'reserved',NULL,?,?,?)`)
-          .run(grant.id, operation, key, hash, at, at, at + MEDIA_API_IDEMPOTENCY_TTL_MS);
+          (grant_id,operation,idempotency_key,payload_hash,status,response_json,lease_nonce,created_at,updated_at,expires_at)
+          VALUES (?,?,?,?,'reserved',NULL,?,?,?,?)`)
+          .run(grant.id, operation, key, hash, nonce, at, at, at + MEDIA_API_IDEMPOTENCY_TTL_MS);
       }
-      return { key, hash, replay: null, owner: current.owner };
+      return { key, hash, nonce, replay: null, owner: current.owner };
     });
   }
 
-  function completeIdempotency({ grant, operation, key, hash, response, requestId, action, targetType, targetId, result = "completed" }) {
+  function assertReservation(grantId, operation, { key, hash, nonce }, at = now()) {
+    const row = database.prepare(`SELECT 1 FROM media_api_idempotency
+      WHERE grant_id=? AND operation=? AND idempotency_key=? AND payload_hash=? AND lease_nonce=?
+        AND status='reserved' AND expires_at>? AND updated_at>?`)
+      .get(grantId, operation, key, hash, nonce, at, at - MEDIA_API_IDEMPOTENCY_LEASE_MS);
+    if (!row) throw new ApiError(409, "That request is no longer available for completion.", "CONFLICT");
+  }
+
+  function completeIdempotency({ grant, operation, key, hash, nonce, response, requestId, action, targetType, targetId, result = "completed" }) {
     const encoded = JSON.stringify(response);
     if (Buffer.byteLength(encoded, "utf8") > MAX_RESPONSE_BYTES) {
       throw new ApiError(500, "The editorial response was too large.", "INTERNAL_ERROR");
     }
     const current = assertGrantActive(grant.id, operation.startsWith("news") ? "news:write" : "media:write", now());
+    const at = now();
     const changed = database.prepare(`UPDATE media_api_idempotency SET status='completed',response_json=?,updated_at=?
-      WHERE grant_id=? AND operation=? AND idempotency_key=? AND payload_hash=? AND status='reserved'`)
-      .run(encoded, now(), grant.id, operation, key, hash);
+      WHERE grant_id=? AND operation=? AND idempotency_key=? AND payload_hash=? AND lease_nonce=?
+        AND status='reserved' AND expires_at>? AND updated_at>?`)
+      .run(encoded, at, grant.id, operation, key, hash, nonce, at, at - MEDIA_API_IDEMPOTENCY_LEASE_MS);
     if (!changed.changes) throw new ApiError(409, "That request is no longer available for completion.", "CONFLICT");
     audit({ grantId: current.id, ownerId: current.owner_id, actorType: current.actor_type, actorLabel: current.actor_label,
       requestId, action, targetType, targetId, payloadHash: hash, result });
     return response;
   }
 
-  function clearReservation(grantId, operation, key) {
+  function clearReservation(grantId, operation, { key, nonce }) {
     try {
-      database.prepare("DELETE FROM media_api_idempotency WHERE grant_id=? AND operation=? AND idempotency_key=? AND status='reserved'")
-        .run(grantId, operation, key);
+      database.prepare("DELETE FROM media_api_idempotency WHERE grant_id=? AND operation=? AND idempotency_key=? AND lease_nonce=? AND status='reserved'")
+        .run(grantId, operation, key, nonce);
     } catch { /* the original operation owns the useful failure */ }
   }
 
@@ -280,7 +294,7 @@ export function createMediaApiService({
         grantId: grant.id, onSaved: (draft) => {
         assertGrantActive(grant.id, "news:write");
         const response = { draft };
-        completeIdempotency({ grant, operation, key: reservation.key, hash: reservation.hash, response, requestId,
+        completeIdempotency({ grant, operation, key: reservation.key, hash: reservation.hash, nonce: reservation.nonce, response, requestId,
           action: "news_draft_created", targetType: "news_draft", targetId: draft.id });
         completed = true;
       } });
@@ -288,7 +302,7 @@ export function createMediaApiService({
       return database.prepare("SELECT response_json FROM media_api_idempotency WHERE grant_id=? AND operation=? AND idempotency_key=?")
         .get(grant.id, operation, reservation.key)?.response_json ? json(database.prepare("SELECT response_json FROM media_api_idempotency WHERE grant_id=? AND operation=? AND idempotency_key=?").get(grant.id, operation, reservation.key).response_json) : null;
     } catch (error) {
-      clearReservation(grant.id, operation, reservation.key);
+      clearReservation(grant.id, operation, reservation);
       throw mapNewsEditorError(error);
     }
   }
@@ -311,14 +325,14 @@ export function createMediaApiService({
       const result = editor.publish(draftId, { expectedRevision: revision, onPublished: ({ draft, postId }) => {
         assertGrantActive(grant.id, "news:write");
         const response = { draft, postId };
-        completeIdempotency({ grant, operation, key: reservation.key, hash: reservation.hash, response, requestId,
+        completeIdempotency({ grant, operation, key: reservation.key, hash: reservation.hash, nonce: reservation.nonce, response, requestId,
           action: "news_published", targetType: "news_post", targetId: postId });
         completed = true;
       } });
       if (!completed) throw new ApiError(500, "The editorial publication was not recorded.", "INTERNAL_ERROR");
       return result;
     } catch (error) {
-      clearReservation(grant.id, operation, reservation.key);
+      clearReservation(grant.id, operation, reservation);
       throw mapNewsEditorError(error);
     }
   }
@@ -328,20 +342,41 @@ export function createMediaApiService({
     assertPhotoBody(body);
     const operation = "media.create";
     const reservation = reserveIdempotency(grant, operation, idempotencyKey, body);
-    if (reservation.replay) return reservation.replay;
+    if (reservation.replay) {
+      if (!reservation.replay.upload) return reservation.replay;
+      return withImmediateWrite(database, () => {
+        const current = assertGrantActive(grant.id, "media:write");
+        const row = database.prepare("SELECT id,status FROM media_assets WHERE id=? AND owner_id=? AND client_asset_id=?")
+          .get(reservation.replay.asset?.id, current.owner_id, body.clientAssetId.trim());
+        if (!row) throw new ApiError(409, "That media reservation is no longer available.", "CONFLICT");
+        if (row.status === "upload_pending" && Number(reservation.replay.upload.expiresAt) > now()) return reservation.replay;
+        // Re-sign through the owned-asset adapter. It preserves the existing
+        // source key, checksum contract and create-only PUT headers.
+        const response = mediaCreate(database, { ownerId: current.owner_id, body, at: now(), env, photosOnly: true });
+        if (response?.asset?.id !== row.id) throw new ApiError(409, "That media reservation changed.", "CONFLICT");
+        const changed = database.prepare(`UPDATE media_api_idempotency SET response_json=?
+          WHERE grant_id=? AND operation=? AND idempotency_key=? AND payload_hash=? AND status='completed' AND expires_at>?`)
+          .run(JSON.stringify(response), grant.id, operation, reservation.key, reservation.hash, now());
+        if (!changed.changes) throw new ApiError(409, "That media receipt expired.", "CONFLICT");
+        audit({ grantId: current.id, ownerId: current.owner_id, actorType: current.actor_type, actorLabel: current.actor_label,
+          requestId, action: "media_upload_refreshed", targetType: "media_asset", targetId: row.id,
+          payloadHash: reservation.hash, result: "completed" });
+        return response;
+      });
+    }
     try {
       const response = withImmediateWrite(database, () => {
         const current = assertGrantActive(grant.id, "media:write");
         const result = mediaCreate(database, { ownerId: current.owner_id, body, at: now(), env, photosOnly: true });
         assertGrantActive(grant.id, "media:write");
         const assetId = result?.asset?.id || "unknown";
-        completeIdempotency({ grant, operation, key: reservation.key, hash: reservation.hash, response: result, requestId,
+        completeIdempotency({ grant, operation, key: reservation.key, hash: reservation.hash, nonce: reservation.nonce, response: result, requestId,
           action: "media_created", targetType: "media_asset", targetId: assetId });
         return result;
       });
       return response;
     } catch (error) {
-      clearReservation(grant.id, operation, reservation.key);
+      clearReservation(grant.id, operation, reservation);
       throw error;
     }
   }
@@ -363,16 +398,19 @@ export function createMediaApiService({
     try {
       const prepared = await mediaFinalize(database, { ownerId: grant.owner_id, assetId, body, at: now(), env, signal,
         photosOnly: true, deferCommit: true,
+        // The adapter may share preparation/commit closures across same-asset
+        // callers. Fence each receipt below, outside that shared callback.
         assertAuthorized: () => assertGrantActive(grant.id, "media:write") });
       finalizationPrepared = true;
       const commit = prepared?.deferredCommit === true && typeof prepared.commit === "function" ? prepared.commit : null;
       ownsDurableCommit = !!commit;
       return withImmediateWrite(database, () => {
         assertGrantActive(grant.id, "media:write");
+        assertReservation(grant.id, operation, reservation);
         const result = commit ? commit() : prepared;
         assertGrantActive(grant.id, "media:write");
         const response = { ...result, finalize: { state: result?.asset?.status === "ready" ? "completed" : "idle" } };
-        completeIdempotency({ grant, operation, key: reservation.key, hash: reservation.hash,
+        completeIdempotency({ grant, operation, key: reservation.key, hash: reservation.hash, nonce: reservation.nonce,
           response, requestId, action: "media_finalized", targetType: "media_asset", targetId: assetId });
         return response;
       });
@@ -382,7 +420,7 @@ export function createMediaApiService({
       // adapters that already returned a durable result retain reconciliation
       // state after a later completion failure.
       if (!finalizationPrepared || ownsDurableCommit || error?.code === "MEDIA_STORAGE_UNAVAILABLE") {
-        clearReservation(grant.id, operation, reservation.key);
+        clearReservation(grant.id, operation, reservation);
       }
       throw error;
     }

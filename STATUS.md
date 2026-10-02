@@ -1,5 +1,20 @@
 # Pit current status
 
+## 2026-10-02 Media API stage 1 (local review branch)
+
+- `codex/catalog-api-pilot-20261002` starts at `fd8b1d09` and fixes
+  bearer/cookie quota drift, expired upload-ticket replay, multilingual
+  receipt overflow and stale reservation ownership.
+- Additive migration: nullable `media_api_idempotency.lease_nonce`.
+  Existing completed receipts and grant permissions are preserved.
+- See `MEDIA_API_STAGE1_2026-10-02.md` for behavior, migration compatibility,
+  local test evidence and independent review. Production Media API remains
+  off. Catalog endpoints/queue, MCP/OAuth and live pilot writes are not enabled.
+- Validation: 33 focused tests; full suite 5,940 passed, zero failed, one skip.
+  Independent Astra review found no remaining blocking findings after two
+  corrections. Syntax, architecture, Blueprint and web export passed.
+  The aggregate check stopped at the unavailable npm advisory endpoint.
+
 Last production reconciliation: **2026-08-13**. Local working-tree review:
 **2026-09-02**. This is the source of truth for current code, release, and
 production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed

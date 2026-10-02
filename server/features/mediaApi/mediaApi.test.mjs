@@ -51,6 +51,28 @@ function service(db, extra = {}) {
   });
 }
 
+test("nonce migration preserves existing completed receipts, lease timestamps and grant scopes", () => {
+  const db = database();
+  db.exec("ALTER TABLE media_api_idempotency DROP COLUMN lease_nonce");
+  db.prepare(`INSERT INTO media_api_grants
+    (id,owner_id,actor_type,actor_label,scopes,status,issued_at,expires_at,updated_at)
+    VALUES ('migration_grant','owner_1','assistant','SyntheticMigration','["news:write"]','active',?,?,?)`)
+    .run(at, at + 86_400_000, at);
+  const insert = db.prepare(`INSERT INTO media_api_idempotency
+    (grant_id,operation,idempotency_key,payload_hash,status,response_json,created_at,updated_at,expires_at)
+    VALUES ('migration_grant','news.create',?,'synthetic-hash',?,?,?,?,?)`);
+  insert.run("legacy-completed", "completed", '{"draft":{"id":"existing"}}', at, at, at + 72 * 3_600_000);
+  insert.run("legacy-reserved", "reserved", null, at, at, at + 72 * 3_600_000);
+  const before = db.prepare("SELECT * FROM media_api_idempotency ORDER BY idempotency_key").all();
+  ensureMediaApiSchema(db);
+  ensureMediaApiSchema(db);
+  const after = db.prepare("SELECT * FROM media_api_idempotency ORDER BY idempotency_key").all();
+  assert.deepEqual(after.map(({ lease_nonce, ...row }) => ({ ...row })), before.map(row => ({ ...row })));
+  assert.ok(after.every(row => row.lease_nonce === null));
+  assert.equal(db.prepare("SELECT scopes FROM media_api_grants WHERE id='migration_grant'").get().scopes, '["news:write"]');
+  db.close();
+});
+
 function issue(serviceInstance, scopes = ["news:write", "media:write"]) {
   return serviceInstance.issuePairing({
     ownerId: "owner_1",
