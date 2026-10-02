@@ -161,5 +161,5 @@ test("server startup owns its listener and starts core schedulers through the op
     assert.match(source, new RegExp(`${scheduler}\\?\\.stop\\(\\{ abortActive: true \\}\\)`),
       `${scheduler} must cooperatively abort and settle before the shared SQLite connection closes`);
   }
-  assert.match(source, /const SHUTDOWN_FORCE_EXIT_MS = 55_000;/);
+  assert.match(source, /const SHUTDOWN_FORCE_EXIT_MS = 25_000;/);
 });
