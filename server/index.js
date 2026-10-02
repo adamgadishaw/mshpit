@@ -146,10 +146,10 @@ const UNSAFE_REQUEST_ORIGINS = allowedUnsafeRequestOrigins({
 const TRUSTED_PROXY_CIDRS = trustedProxyCidrs(process.env.PIT_TRUSTED_PROXY_CIDRS);
 const RENDER_PROXY_HEADERS = process.env.RENDER === "true";
 const ACTIVE_SESSION_COOKIE = sessionCookieName(PROD);
-// Render gives this service 60 seconds to stop. Keep the process-level guard
-// just inside that window so cooperative job cancellation and SQLite close get
-// a real chance to finish without letting a wedged provider hang deployment.
-const SHUTDOWN_FORCE_EXIT_MS = 55_000;
+// Disk-backed Render services cannot configure a longer shutdown delay. Leave
+// five seconds before Render's documented general 30-second cutoff while
+// cooperative job cancellation and SQLite close drain normally.
+const SHUTDOWN_FORCE_EXIT_MS = 25_000;
 
 function mediaConnectOrigin() {
   try {
