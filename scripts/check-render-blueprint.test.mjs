@@ -21,8 +21,14 @@ test("Render and CI install build validators even in production mode", async () 
   const web = blueprint.services.find((service) => service.name === "mshpit");
   const env = Object.fromEntries(web.envVars.map((entry) => [entry.key, entry.value]));
   assert.equal(env.NODE_ENV, "production");
-  assert.equal(env.NPM_CONFIG_INCLUDE, "dev");
-  assert.match(web.buildCommand, /^npm ci\b/);
+  assert.equal(env.NPM_CONFIG_INCLUDE, undefined,
+    "Render must not keep development packages in the runtime environment");
+  const installAt = web.buildCommand.indexOf("npm ci --include=dev");
+  const checkAt = web.buildCommand.indexOf("npm run check:deploy");
+  const pruneAt = web.buildCommand.indexOf("npm prune --omit=dev");
+  assert.ok(installAt >= 0, "Render must install development build inputs explicitly");
+  assert.ok(checkAt > installAt, "Render must run the complete build/check gate after installing build inputs");
+  assert.ok(pruneAt > checkAt, "Render must prune development packages only after the build/check gate");
   const workflow = parseDocument(await readFile(new URL("../.github/workflows/quality.yml", import.meta.url), "utf8")).toJS();
   const install = workflow.jobs["test-and-build"].steps.find((step) => step.run === "npm ci");
   assert.equal(install.env.NODE_ENV, "production");
