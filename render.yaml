@@ -20,7 +20,7 @@ services:
     # already-audited production artifact undeployable.
     # Build/export needs Expo and the validators; remove those dev-only packages
     # only after the complete production artifact and checks have succeeded.
-    buildCommand: npm ci --include=dev && mkdir -p /tmp/pit-build-data && PIT_DATA_DIR=/tmp/pit-build-data PIT_ALLOW_EMPTY_DB_BOOTSTRAP=true npm run check:deploy && npm prune --omit=dev
+    buildCommand: npm ci --include=dev && mkdir -p /tmp/pit-build-data && PIT_DATA_DIR=/tmp/pit-build-data PIT_ALLOW_EMPTY_DB_BOOTSTRAP=true npm run check:deploy && env -u NPM_CONFIG_INCLUDE -u npm_config_include npm prune --omit=dev --no-audit --no-fund && node -e "const resolve=(name)=>{try{return require.resolve(name,{paths:[process.cwd()]})}catch{return null}}; const required=['@anthropic-ai/sdk','heic-decode','sharp']; const forbidden=['expo','@expo/cli','react','metro','node-forge','ajv','yaml']; const missing=required.filter((name)=>!resolve(name)); const retained=forbidden.filter((name)=>resolve(name)); if(missing.length||retained.length) throw new Error('Production dependency guard failed; missing='+missing.join(',')+' retained='+retained.join(','));"
     # The runtime disk is finally mounted here. Snapshot + verify the existing
     # database before importing db.js applies this release's migrations; a
     # failed snapshot stops startup before migration (persistent-disk deploys
