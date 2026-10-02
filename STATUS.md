@@ -6,13 +6,38 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
-## 2026-10-02 Local security integration candidate
+## 2026-10-02 Targeted robustness follow-up (local; deployment held)
+
+This follow-up starts from held integration `a7d48903016a3bf5d7da62240c91992a761e7133`.
+It changes limiter expiry maintenance/health isolation (A3), interrupted backup
+ownership and cleanup (REC-1), legacy poster shutdown draining (REC-2), and
+fresh authorization across async editor draft generation (CB-01). None is
+evidence of a deployed protection. It excludes the separate category UI,
+catalogue API, audio and video worktrees.
+
+The clips scan finding (A2) remains unchanged pending an explicit compatibility
+decision. A per-request candidate ceiling can require continuation through an
+empty page; older clients cannot silently be assumed to handle that correctly.
+The smaller proposal needs an explicit legacy-client failure when the scan
+budget is exhausted; a durable eligibility index would require broader work.
+
+`ROBUSTNESS_AUDIT_2026-10-02.md` records this narrow follow-up, synthetic proofs,
+remaining limits and validation. No production load, provider, mail or real-user
+data tests are authorized here. Deployment remains on hold.
+
+The final local deployment check passed 6,018 tests (two Windows symlink skips),
+827-file syntax, architecture and web export/budget. Five actual-loopback-server
+checks passed for browsing, repeated actions, rate-limit recovery, queue bounds
+and short SQLite contention. These are correctness proofs, not capacity claims.
+
+## 2026-10-02 Prior security integration candidate
 
 This candidate combines reviewed local commits `a2ae0cf` (availability),
 `635dba2` (public identity), `ecfc801` (signup), `eb9e3d2` (monthly budgets),
 and `34d59af` (manual news categories)
-on `fd8b1d09`. It has not been pushed, deployed, or reconciled against live
-settings. The existing source branches remain separate. Unreleased
+on `fd8b1d09`. The resulting held commit is `a7d4890`; this follow-up does not
+reconcile it against live settings or establish its deployment. The existing
+source branches remain separate. Unreleased
 media/audio/catalog API work is not included.
 
 - Public HTML, including HEAD, and selected expensive GET APIs have shared
@@ -42,8 +67,8 @@ blocked provider traffic, full repository checks, parsed Blueprint comparison,
 and independent review. It does not establish production capacity or replace
 production acceptance. No production data, real mail or paid providers are used.
 The original incident's traffic/restart causation is not proved by these tests.
-Clips candidate scanning (A2) and the legacy auth limiter-map saturation cleanup
-(A3) remain open. See `SECURITY.md` for the remaining limits and operational work.
+Clips candidate scanning (A2) remains open. The local follow-up above addresses
+legacy limiter-map cleanup (A3). See `SECURITY.md` for limits and operational work.
 
 ## 2026-09-30 Profiles: favorite shows, accent colour, pronouns
 

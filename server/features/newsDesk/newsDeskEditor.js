@@ -249,7 +249,12 @@ export function createNewsDeskEditor({ database, env = process.env, now = Date.n
 
   // One Claude call. The draft is saved whether Claude writes it up or turns
   // it down, so the owner sees what was spent and why.
-  async function draft({ reportUrls, links, actorId = null, signal, onSaved } = {}) {
+  async function draft({ reportUrls, links, actorId = null, signal, assertAuthorized, onSaved } = {}) {
+    const assertActive = () => {
+      signal?.throwIfAborted();
+      assertAuthorized?.();
+    };
+    assertActive();
     if (!summarize) fail("ACTION_REQUIRED", "Add ANTHROPIC_API_KEY in Render before writing drafts.");
     const chosen = urlList(reportUrls, MAX_REPORTS, "reports");
     const pasted = urlList(links, MAX_LINKS, "links").filter((url) => !chosen.includes(url));
@@ -266,11 +271,14 @@ export function createNewsDeskEditor({ database, env = process.env, now = Date.n
       if (rows.some((row) => row.story_status === "published")) fail("CONFLICT", "That story has already been published.");
       const matchArtists = pasted.length ? createArtistMatcher(database) : () => [];
       const linked = [];
-      for (const url of pasted) linked.push(await linkReport(url, at, matchArtists, signal));
+      for (const url of pasted) {
+        try { linked.push(await linkReport(url, at, matchArtists, signal)); }
+        finally { assertActive(); }
+      }
       const fromFeeds = await tools.withArticleLeads(rows.map(tools.reportRow), signal);
+      assertActive();
       const seen = new Set();
       const reports = differentOwnersFirst([...fromFeeds, ...linked].filter((report) => !seen.has(report.url) && seen.add(report.url)));
-      signal?.throwIfAborted();
       const needed = outletsNeeded(reports);
       const groups = independentGroups(reports);
       if (groups < needed) {
@@ -279,6 +287,7 @@ export function createNewsDeskEditor({ database, env = process.env, now = Date.n
           : `A story needs two independent outlets; this has ${groups}. Paste a link from another outlet that covers it.`);
       }
       const worstCase = worstCaseCostUsd(storyPrompt(reports, { minIndependentPublishers: 2 }));
+      assertActive();
       const receipt = tools.admitCall(worstCase);
       if (!receipt) {
         fail("RATE_LIMITED", `The news budget cannot cover a draft right now (up to $${worstCase.toFixed(2)}; $${Math.max(0, desk.budgetLeft()).toFixed(2)} left today). It resets tomorrow, or raise NEWS_DESK_DAILY_USD in Render.`);
@@ -289,8 +298,12 @@ export function createNewsDeskEditor({ database, env = process.env, now = Date.n
       } catch (error) {
         if (claudeRequestDefinitelyRejected(error)) tools.settleSpend(receipt, 0, now());
         else tools.markUncertain(receipt, now());
+        assertActive();
         throw Object.assign(new NewsEditorError("PROVIDER_UNAVAILABLE", "Claude could not write the draft. Try again in a few minutes."), { cause: error });
       }
+      // A completed provider call remains charged even if authority or the
+      // request was revoked while it was running. Never roll this back with
+      // the draft or its moderation audit.
       tools.settleSpend(receipt, result.costUsd, now());
       const id = newId();
       const written = result.publish && result.headline && result.summary;
@@ -301,10 +314,12 @@ export function createNewsDeskEditor({ database, env = process.env, now = Date.n
       };
       const saved = reports.map(({ tokens: _tokens, storyId: _storyId, ...report }) => report);
       return saveMutation(() => {
+        assertActive();
         database.prepare(`INSERT INTO news_drafts (id,status,reports,result,cost_usd,created_by,origin,created_at,updated_at) VALUES (?,?,?,?,?,?,'generated',?,?)`)
           .run(id, written ? "draft" : "declined", JSON.stringify(saved), JSON.stringify(stored), Number(result.costUsd) || 0, actorId, at, now());
         const savedDraft = draftJson(database, database.prepare("SELECT * FROM news_drafts WHERE id=?").get(id), now());
         onSaved?.(savedDraft);
+        assertActive();
         return savedDraft;
       });
     } finally {

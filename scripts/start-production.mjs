@@ -11,6 +11,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { backupChildEnvironment } from "../server/backupScheduler.js";
 import { boundedBackupTimeout } from "./backup-db-verification.mjs";
 import { assertDatabaseRecoveryPathReady } from "../server/databaseRecovery.js";
+import { cleanupClosedBackup } from "./backup-db-ownership.mjs";
+import { privateErrorLabel } from "../server/errors.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..");
@@ -64,6 +66,11 @@ export function runStartupBackup({ env = process.env, spawn = spawnSync } = {}) 
     timeout: timeoutMs,
     killSignal: "SIGKILL",
   });
+  // spawnSync returns only after termination, including its timeout kill.
+  try { cleanupClosedBackup(localBackupEnv.BACKUP_DIR, result.pid); }
+  catch (error) {
+    console.error(`[pit] startup backup partial cleanup deferred cause=${privateErrorLabel(error)}`);
+  }
   if (result.error?.code === "ETIMEDOUT") {
     throw new Error(`The pre-migration backup timed out after ${timeoutMs}ms; refusing to start.`, {
       cause: result.error,

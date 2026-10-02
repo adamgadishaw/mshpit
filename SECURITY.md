@@ -1,6 +1,6 @@
 # Pit security and privacy readiness
 
-Last scoped review: 2026-10-02 (local integration candidate)
+Last scoped review: 2026-10-02 (local robustness follow-up; deployment held)
 
 The application/media/research follow-up is recorded in
 `APPLICATION_INTEGRITY_AUDIT_2026-09-26.md`. It supplements, rather than replaces,
@@ -9,7 +9,51 @@ the broader September 1 review and its unresolved operational requirements.
 The detailed evidence, fixes, residual risk, and release gates for this review are
 recorded in `SECURITY_PRIVACY_TECHNICAL_AUDIT_2026-09-01.md`.
 
-## October 2 local integration scope and limits
+## October 2 targeted robustness follow-up
+
+The follow-up on held integration `a7d4890` is recorded in
+`ROBUSTNESS_AUDIT_2026-10-02.md`. It addresses four specific remaining findings;
+it is not another comprehensive review or evidence of production configuration.
+
+- A3: limiter expiry uses an indexed heap with one entry per live key. An
+  admission removes at most 64 expired entries; saturated live-key denial
+  inspects the earliest expiry once. Reservation rollback cannot erase a later
+  admission. The existing 50,000-key application limit remains. Health/readiness
+  retain their 120/IP/min allowance in a separate 1,024-key pool. That pool can
+  itself saturate. Limits remain process-local, with existing account/IP keys
+  and fixed-window behavior; there is no crawler user-agent bypass.
+- REC-1: backup execution, cleanup and retention share a permanent SQLite
+  ownership lock in the private backup directory. Child closure precedes parent
+  cleanup. Only matching partial/sidecar names for demonstrably dead PIDs are
+  reclaimed; ambiguous, live or reused PIDs are retained. Process death releases
+  the kernel lock without deleting its file. This does not protect against loss
+  of the storage disk, and overlapping older backup scripts are unsupported.
+- REC-2: legacy poster work receives cancellation and drains before SQLite
+  closes. The existing 25-second shutdown deadline remains the fallback for
+  uncooperative work. The earlier closed-database exception required keeping a
+  synthetic process alive after shutdown; normal shutdown exits immediately.
+  Neither corruption nor permanent loss was demonstrated.
+- CB-01: async editor drafting checks current session, role, verification,
+  restrictions and actor identity before paid work, around persistence and
+  before response delivery. The draft and audit roll back together on revoked
+  authority; incurred provider spending remains recorded. Editor session TTL is
+  unchanged (30 days, versus 12 hours for admin/moderator); that remains an
+  explicit policy observation, not an established exploit.
+
+A2 remains open: a clips request can keep scanning stored candidates until it
+finds eligible items. The proposed bounded continuation contract requires an
+explicit compatibility decision for older clients. No clips runtime or client
+change is included in this follow-up while that decision is pending.
+
+The local robustness exercise uses actual loopback server routes and synthetic
+SQLite records for normal browsing, repeated actions and lock contention. Its
+queue check uses the real coordinator with a deterministic private memory lease;
+it does not simulate host memory pressure. SQLite's existing synchronous
+5,000 ms busy timeout remains, and neither request admission nor a JavaScript
+timer preempts synchronous SQL. These checks establish specific behavior, not
+production capacity, fair sharing or immunity to denial of service.
+
+## October 2 prior integration scope and limits
 
 The local candidate on `fd8b1d09` combines the separately reviewed availability,
 public-identity, mailbox-first signup, owner-approved monthly-budget and manual
@@ -49,8 +93,8 @@ close their unresolved operational requirements.
   0.30 USD; existing current-month settled and reserved spending still counts.
   No budget ledger, activation flag, credential, disk or live setting is changed.
 
-Remaining availability findings include A2 (unbounded clips candidate scanning)
-and A3 (legacy `server/auth.js` limiter-map cleanup at saturation). Feed offset
+Remaining availability findings include A2 (unbounded clips candidate scanning).
+The local follow-up above addresses A3 limiter-map cleanup. Feed offset
 behavior is unchanged. None of this establishes immunity to denial of service.
 Combined tests use isolated synthetic data and loopback traffic; browser fixtures
 with mocked APIs are distinguished from actual-server HTTP/browser checks.
@@ -84,7 +128,8 @@ to be completed.
   account content, email ownership, and ordinary password recovery remain intact.
   Other administrators retain their role. Password or authority repair revokes
   every session belonging to the selected root.
-- Staff sessions expire after 12 hours. Production cookies use the host-only
+- Admin and moderator sessions expire after 12 hours; editors currently retain
+  the ordinary 30-day session policy. Production cookies use the host-only
   `__Host-pit_session` name with `Secure`, `HttpOnly`, `SameSite=Lax`, and high
   priority; legacy cookies are cleared but not accepted as active credentials.
 - Browser writes require the exact first-party origin and JSON content type.

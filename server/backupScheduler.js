@@ -6,6 +6,7 @@ import { runBackgroundJob } from "./backgroundJobCoordinator.js";
 import { privateErrorLabel } from "./errors.js";
 import { isProduction } from "./environment.js";
 import { boundedBackupTimeout } from "../scripts/backup-db-verification.mjs";
+import { cleanupClosedBackup } from "../scripts/backup-db-ownership.mjs";
 import { privateBackupStorageConfig } from "./backupStorageSecurity.js";
 import { startPeriodicJob } from "./periodicJobScheduler.js";
 
@@ -220,6 +221,7 @@ export function runScheduledBackup({ env = process.env, spawnProcess = spawn, pr
     let stderr = "";
     let settled = false;
     let abortListener = null;
+    let timeoutError = null;
     const append = (current, chunk) => (current + String(chunk || "")).slice(-12_000);
     child.stdout?.on?.("data", (chunk) => { stdout = append(stdout, chunk); });
     child.stderr?.on?.("data", (chunk) => { stderr = append(stderr, chunk); });
@@ -238,11 +240,15 @@ export function runScheduledBackup({ env = process.env, spawnProcess = spawn, pr
       })
       : Math.max(1, Math.round(Number(processTimeoutMs) || 1));
     const timeout = setTimeout(() => {
-      // A wedged VACUUM/upload must not own the global maintenance coordinator
-      // forever. SIGKILL is deliberate: the unpublished .partial file is ignored
-      // and cleaned on the next run, while a graceful signal could hang too.
-      try { child.kill?.("SIGKILL"); } catch {}
-      finish(new Error(`backup process timed out after ${timeoutMs}ms`));
+      // Do not release the coordinator or remove files until the child closes.
+      // The process shutdown deadline bounds a child that cannot be terminated.
+      timeoutError = new Error(`backup process timed out after ${timeoutMs}ms`);
+      try { child.kill?.("SIGKILL"); }
+      catch (error) {
+        // A signaling error does not prove child death: retain ownership until
+        // close, and report only the safe cause while the deadline stays active.
+        console.error(`[pit] backup timeout termination failed cause=${privateErrorLabel(error)}`);
+      }
     }, timeoutMs);
     timeout.unref?.();
     abortListener = () => {
@@ -251,11 +257,20 @@ export function runScheduledBackup({ env = process.env, spawnProcess = spawn, pr
       // ignored and cleaned by the next run. Wait for `close` before allowing
       // the web process to close SQLite.
       try { child.kill?.("SIGKILL"); }
-      catch { /* architecture: allow-empty-catch -- the 55s process guard remains the final shutdown boundary if child signaling itself fails */ }
+      catch { /* architecture: allow-empty-catch -- the 25s process guard remains the final shutdown boundary if child signaling itself fails */ }
     };
     signal?.addEventListener("abort", abortListener, { once: true });
-    child.once("error", (error) => finish(error));
+    child.once("error", (error) => {
+      // A failed spawn has no child ownership. Errors signaling a running child
+      // do not prove it exited; retain ownership until its close event.
+      if (!child.pid) finish(error);
+    });
     child.once("close", (code) => {
+      try { cleanupClosedBackup(childEnv.BACKUP_DIR, child.pid); }
+      catch (error) {
+        console.error(`[pit] backup partial cleanup deferred cause=${privateErrorLabel(error)}`);
+      }
+      if (timeoutError) { finish(timeoutError); return; }
       if (signal?.aborted) {
         finish(backupAbortError(signal));
         return;

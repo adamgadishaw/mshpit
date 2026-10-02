@@ -95,8 +95,14 @@ export function newsDeskEditorRoutes({ editor, database, ApiError, requireAdmin,
       const actor = writer(ctx);
       rateLimit(ctx, "news-editor-draft", 12, 3_600_000);
       const { reportUrls, links } = body(ctx, ["reportUrls", "links"]);
+      const assertAuthorized = () => {
+        ctx.signal?.throwIfAborted();
+        if (writer(ctx).id !== actor.id) throw new ApiError(409, "The signed-in editor changed. Refresh before retrying.", "CONFLICT");
+      };
       const draft = await editor.draft({ reportUrls, links, actorId: actor.id, signal: ctx.signal || null,
+        assertAuthorized,
         onSaved: (saved) => record(ctx, actor, "news_draft_written", saved) });
+      assertAuthorized();
       return { draft };
     }),
     "POST /api/moderation/news-desk/editor/drafts/self-written": (ctx) => run(() => {

@@ -25,6 +25,8 @@ const {
   hashPassword,
   parseCookies,
   rateLimit,
+  rateLimitAvailable,
+  rateLimitRetryAfterMs,
   resetRateLimitsForTests,
   reserveRateLimits,
   sessionCookie,
@@ -923,6 +925,54 @@ test("rate-limit capacity rejects new identities without clearing live limits", 
   } finally {
     resetRateLimitsForTests();
   }
+});
+
+test("a later admission cannot be erased by an older reservation rollback", () => {
+  resetRateLimitsForTests();
+  try {
+    assert.equal(rateLimit("rollback-later", 3, 60_000), true);
+    const reservation = reserveRateLimits([{ key: "rollback-later", max: 3, windowMs: 60_000 }]);
+    assert.ok(reservation);
+    assert.equal(rateLimit("rollback-later", 3, 60_000), true);
+    assert.equal(reservation.rollback(), true);
+    assert.equal(reservation.rollback(), false);
+    assert.equal(rateLimitAvailable("rollback-later", 3, 60_000), false);
+    assert.ok(rateLimitRetryAfterMs("rollback-later") > 0);
+  } finally { resetRateLimitsForTests(); }
+});
+
+test("rolling back an unchanged reservation restores its counter and expiry", () => {
+  resetRateLimitsForTests();
+  const realNow = Date.now;
+  let at = realNow();
+  Date.now = () => at;
+  try {
+    assert.equal(rateLimit("rollback-owned", 3, 60_000), true);
+    at += 1_000;
+    const reservation = reserveRateLimits([{ key: "rollback-owned", max: 3, windowMs: 60_000 }]);
+    assert.equal(reservation.rollback(), true);
+    assert.equal(rateLimitRetryAfterMs("rollback-owned"), 59_000);
+    assert.equal(rateLimit("rollback-owned", 3, 60_000), true);
+    assert.equal(rateLimit("rollback-owned", 3, 60_000), true);
+    assert.equal(rateLimit("rollback-owned", 3, 60_000), false);
+  } finally { Date.now = realNow; resetRateLimitsForTests(); }
+});
+
+test("an expired late short window is reusable behind a full pool of long windows", () => {
+  resetRateLimitsForTests();
+  const realNow = Date.now;
+  let at = realNow();
+  Date.now = () => at;
+  try {
+    fillRateLimitBuckets("capacity-long-first", RATE_LIMIT_BUCKET_CAPACITY - 1);
+    assert.equal(rateLimit("capacity-short-last", 1, 1_000), true);
+    at += 1_001;
+    assert.equal(rateLimitAvailable("capacity-reclaimed-late", 1, 60_000), true);
+    const reservation = reserveRateLimits([{ key: "capacity-reclaimed-late", max: 1, windowMs: 60_000 }]);
+    assert.ok(reservation); assert.equal(reservation.commit(), true);
+    for (let i = 0; i < 100; i += 1) assert.equal(rateLimit(`capacity-still-full:${i}`, 1, 60_000), false);
+    assert.equal(rateLimit("capacity-long-first:0", 1, RATE_LIMIT_TEST_WINDOW_MS), false);
+  } finally { Date.now = realNow; resetRateLimitsForTests(); }
 });
 
 test("rate-limit capacity prunes expired identities before rejecting a new one", () => {

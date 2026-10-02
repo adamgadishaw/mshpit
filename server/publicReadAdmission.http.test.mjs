@@ -38,7 +38,7 @@ source = `let fixtureTime=0; const projections={head:0,plan:0};
   const setTime=value=>{fixtureTime=value};
   export {server,db,projections,setTime};`;
 const { server, db, projections, setTime } = await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
-const { rateLimit, createSession, COOKIE } = await import("./auth.js");
+const { rateLimit, createSession, COOKIE, resetRateLimitsForTests } = await import("./auth.js");
 const { q } = await import("./db.js");
 await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
 const origin = `http://127.0.0.1:${server.address().port}`;
@@ -54,6 +54,17 @@ const request = async (path, options) => {
   const body = await response.text();
   return { status: response.status, headers: response.headers, body };
 };
+
+test("health and readiness retain admission when the application identity map is full", async () => {
+  resetRateLimitsForTests();
+  try {
+    for (let i = 0; i < 50_000; i += 1) assert.equal(rateLimit(`saturated:${i}`, 1, 3_600_000), true);
+    assert.equal((await request("/api/time")).status, 429);
+    assert.equal((await request("/api/health")).status, 200);
+    assert.equal((await request("/api/readiness")).status, 200);
+    assert.equal(rateLimit("saturated:0", 1, 3_600_000), false, "health requests must not clear application counters");
+  } finally { resetRateLimitsForTests(); }
+});
 
 test("HTML GET/HEAD and selected APIs reject before projection, without charging legacy-denied API reads", async () => {
   assert.equal((await request("/artists")).status, 200);

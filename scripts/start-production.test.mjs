@@ -1,8 +1,39 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { resolve } from "node:path";
 import test from "node:test";
 
 import { runStartupBackup, startProduction, startupBackupPlan } from "./start-production.mjs";
+
+test("startup timeout cleans its actual dead child's partial and sidecars before refusing startup", () => {
+  const directory = mkdtempSync(join(tmpdir(), "pit-startup-killed-backup-"));
+  const ownershipModule = new URL("./backup-db-ownership.mjs", import.meta.url).href;
+  let result;
+  try {
+    assert.throws(() => runStartupBackup({ env: { ...process.env, BACKUP_DIR: directory },
+      spawn: (command, _args, options) => {
+        result = spawnSync(command, ["--input-type=module", "-e", `
+          import { writeFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          import { acquireBackupOwnership } from ${JSON.stringify(ownershipModule)};
+          const owned = acquireBackupOwnership(process.env.BACKUP_DIR);
+          const file = join(process.env.BACKUP_DIR, 'pit-20261002-010203.db.partial-' + process.pid);
+          writeFileSync(file, 'synthetic partial'); writeFileSync(file + '-journal', 'synthetic journal');
+          process.stdout.write('partial-ready');
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30000);
+        `], { ...options, stdio: "pipe", timeout: 1_000 });
+        return result;
+      },
+    }), /backup timed out/);
+    assert.equal(result.error?.code, "ETIMEDOUT");
+    assert.match(String(result.stdout), /partial-ready/, "prove the killed child created files while holding ownership");
+    assert.ok(result.pid > 0);
+    assert.equal(readdirSync(directory).some(name => name.includes(".partial-")), false);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
 
 test("production startup backs up an existing persistent database", () => {
   const plan = startupBackupPlan({

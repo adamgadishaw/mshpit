@@ -7,6 +7,7 @@ import {
   HEALTH_RATE_LIMIT_WINDOW_MS,
   RUNTIME_READINESS_CACHE_MS,
   createSuccessfulReadinessCache,
+  createHealthRateLimiter,
   healthRateLimitPolicy,
 } from "./healthAvailability.js";
 
@@ -21,7 +22,20 @@ test("public liveness and deployment-readiness probes use a dedicated per-IP all
   assert.equal(HEALTH_RATE_LIMIT_WINDOW_MS, 60_000);
 
   const source = readFileSync(new URL("./index.js", import.meta.url), "utf8");
-  assert.match(source, /if \(pathname === "\/api\/health" \|\| pathname === "\/api\/readiness"\) \{\s*const healthLimit = healthRateLimitPolicy\(ip\);\s*if \(!rateLimit\(healthLimit\.key, healthLimit\.max, healthLimit\.windowMs\)\)/);
+  assert.match(source, /if \(pathname === "\/api\/health" \|\| pathname === "\/api\/readiness"\) \{\s*const healthLimit = healthRateLimitPolicy\(ip\);\s*if \(!healthRateLimit\(healthLimit\.key, healthLimit\.max, healthLimit\.windowMs\)\)/);
+});
+
+test("health pool keeps live address counters at capacity and recovers after expiry", () => {
+  let at = 0;
+  const admit = createHealthRateLimiter({ clock: () => at, maxIdentities: 2 });
+  assert.equal(admit("probe-a", 2, 60_000), true);
+  assert.equal(admit("probe-b", 2, 60_000), true);
+  assert.equal(admit("overflow", 2, 60_000), false);
+  assert.equal(admit("probe-a", 2, 60_000), true);
+  assert.equal(admit("probe-a", 2, 60_000), false);
+  at = 60_000;
+  assert.equal(admit("overflow", 2, 60_000), true);
+  assert.equal(admit("probe-a", 2, 60_000), true);
 });
 
 test("private media probes degrade publishing without preventing core startup", () => {

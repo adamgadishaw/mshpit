@@ -464,21 +464,25 @@ test("scheduled backup process is hidden, bounded, and reports success", async (
   assert.match(result.output, /integrity_check ok/);
 });
 
-test("a wedged backup child is killed and cannot deadlock the maintenance queue", async () => {
+test("a timed-out backup keeps ownership until the killed child actually closes", async () => {
   let killedWith = null;
+  let child;
   const fakeSpawn = () => {
-    const child = new EventEmitter();
+    child = new EventEmitter();
     child.stdout = new EventEmitter();
     child.stderr = new EventEmitter();
     child.kill = (signal) => { killedWith = signal; return true; };
     return child;
   };
 
-  await assert.rejects(
-    runScheduledBackup({ env: {}, spawnProcess: fakeSpawn, processTimeoutMs: 5 }),
-    /backup process timed out after 5ms/,
-  );
+  let settled = false;
+  const pending = runScheduledBackup({ env: {}, spawnProcess: fakeSpawn, processTimeoutMs: 5 });
+  const checked = assert.rejects(pending, /backup process timed out after 5ms/).then(() => { settled = true; });
+  await new Promise(resolve => setTimeout(resolve, 15));
   assert.equal(killedWith, "SIGKILL");
+  assert.equal(settled, false);
+  child.emit("close", 137);
+  await checked;
 });
 
 test("cooperative shutdown kills the backup child and waits for close", async () => {

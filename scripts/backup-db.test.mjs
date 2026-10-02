@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -21,6 +21,8 @@ import {
 import { registerPitSqliteFunctions } from "../server/sqliteFunctions.js";
 import { PIT_SQLITE_APPLICATION_ID } from "../server/dataDirectory.js";
 import { assertDatabaseRecoveryPathReady } from "../server/databaseRecovery.js";
+import { BACKUP_OWNERSHIP_FILE } from "./backup-db-ownership.mjs";
+import { prepareOfflineRestore } from "./prepare-db-restore.mjs";
 
 const BACKUP_SCRIPT = fileURLToPath(new URL("./backup-db.mjs", import.meta.url));
 const snapshotCounts = (overrides = {}) => ({
@@ -60,6 +62,68 @@ function createSnapshot(directory, name = "snapshot.db") {
   db.close();
   return path;
 }
+
+test("killed VACUUM releases ownership and the next backup reclaims partials and restores offline", { timeout: 60_000 }, async t => {
+  const root = mkdtempSync(join(tmpdir(), "pit-backup-kill-"));
+  const dataDirectory = join(root, "data"), backupDirectory = join(root, "backups");
+  mkdirSync(dataDirectory); mkdirSync(backupDirectory);
+  let child, closed, watcher;
+  try {
+    const sourcePath = createSnapshot(dataDirectory, "pit.db");
+    const source = new DatabaseSync(sourcePath);
+    source.exec("CREATE TABLE padding(payload BLOB); INSERT INTO padding VALUES(zeroblob(134217728));"
+      + "CREATE TABLE sessions(id TEXT); INSERT INTO sessions VALUES('synthetic-session');");
+    source.close();
+    const previous = createSnapshot(backupDirectory, "pit-20260801-010203.db");
+    const env = { ...process.env, NODE_ENV: "test", PIT_DATA_DIR: dataDirectory, BACKUP_DIR: backupDirectory };
+    child = spawn(process.execPath, [BACKUP_SCRIPT], { env, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+    let output = "", killedBytes = 0;
+    child.stdout.on("data", value => { output += value; });
+    child.stderr.on("data", value => { output += value; });
+    closed = new Promise((resolve, reject) => { child.once("close", (code, signal) => resolve({ code, signal })); child.once("error", reject); });
+    watcher = setInterval(() => {
+      const name = readdirSync(backupDirectory).find(value => value.endsWith(`.partial-${child.pid}`));
+      if (!name) return;
+      const bytes = statSync(join(backupDirectory, name)).size;
+      if (bytes < 4 * 1024 * 1024) return;
+      killedBytes = bytes;
+      child.kill("SIGKILL");
+      clearInterval(watcher);
+    }, 1);
+    const status = await closed;
+    clearInterval(watcher);
+    assert.ok(killedBytes >= 4 * 1024 * 1024, output);
+    assert.notEqual(status.code, 0);
+    const leftovers = readdirSync(backupDirectory).filter(name => name.includes(".partial-"));
+    assert.ok(leftovers.some(name => name.endsWith(`.partial-${child.pid}`)));
+    assert.ok(leftovers.some(name => name.endsWith("-journal")), "actual killed VACUUM must leave its journal");
+    const next = spawnSync(process.execPath, [BACKUP_SCRIPT], { env, encoding: "utf8", windowsHide: true, timeout: 30_000 });
+    assert.equal(next.status, 0, next.stderr || next.stdout);
+    assert.equal(readdirSync(backupDirectory).some(name => name.includes(".partial-")), false);
+    assert.deepEqual(verifyBackupSnapshot(previous), snapshotCounts());
+    const snapshot = readdirSync(backupDirectory).find(name => /^pit-\d{8}-\d{6}\.db$/.test(name) && !previous.endsWith(name));
+    const snapshotPath = join(backupDirectory, snapshot);
+    assert.deepEqual(verifyBackupSnapshot(snapshotPath), snapshotCounts({ app_meta: 2 }));
+    assert.throws(() => assertDatabaseRecoveryPathReady(snapshotPath), /restore|review/i);
+    const restored = join(root, "restored.db");
+    const cleared = prepareOfflineRestore({ source: snapshotPath, output: restored, env,
+      privacyReplayReference: "synthetic-no-private-data", credentialReviewReference: "synthetic-only-credentials" });
+    assert.equal(cleared.sessions, 1);
+    assertDatabaseRecoveryPathReady(restored);
+    const restoredDb = new DatabaseSync(restored, { readOnly: true });
+    try {
+      assert.equal(restoredDb.prepare("SELECT COUNT(*) count FROM posts").get().count, 1);
+      assert.equal(restoredDb.prepare("SELECT COUNT(*) count FROM sessions").get().count, 0);
+      assert.equal(restoredDb.prepare("SELECT length(payload) bytes FROM padding").get().bytes, 134217728);
+    } finally { restoredDb.close(); }
+    t.diagnostic(JSON.stringify({ killedBytes, leftovers, nextBackupSucceeded: true, previousSnapshotPreserved: true, offlineRestore: true }));
+  } finally {
+    clearInterval(watcher);
+    if (child && child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    if (closed) await closed;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("backup verification opens a real snapshot and reports critical row counts", () => {
   const directory = mkdtempSync(join(tmpdir(), "pit-backup-verify-"));
@@ -287,7 +351,7 @@ test("failed off-host configuration keeps the verified local recovery point but 
     });
     assert.notEqual(result.status, 0, "remote failure must remain a failed job for retry/reporting");
     assert.match(result.stderr, /BACKUP_CONFIG_INVALID/);
-    const snapshots = readdirSync(backupDirectory);
+    const snapshots = readdirSync(backupDirectory).filter(name => name !== BACKUP_OWNERSHIP_FILE);
     assert.equal(snapshots.length, 1);
     assert.match(snapshots[0], /^pit-\d{8}-\d{6}\.db$/);
     assert.deepEqual(verifyBackupSnapshot(join(backupDirectory, snapshots[0])), snapshotCounts({ app_meta: 2 }));
@@ -419,7 +483,7 @@ test("a disk-full copy with no older snapshot to prune still refuses and leaves 
     });
     assert.notEqual(result.status, 0, "a backup that cannot be written must still refuse");
     assert.match(result.stderr, /database or disk is full/);
-    assert.deepEqual(readdirSync(backupDirectory), []);
+    assert.deepEqual(readdirSync(backupDirectory), [BACKUP_OWNERSHIP_FILE]);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -463,7 +527,7 @@ test("insufficient or unknown space refuses before retention or snapshot writes"
       });
       assert.notEqual(result.status, 0);
       assert.match(result.stderr, /BACKUP_DISK_SPACE/);
-      assert.deepEqual(readdirSync(backupDirectory).sort(), names);
+      assert.deepEqual(readdirSync(backupDirectory).filter(name => name !== BACKUP_OWNERSHIP_FILE).sort(), names);
       for (const name of names) assert.deepEqual(verifyBackupSnapshot(join(backupDirectory, name)), snapshotCounts());
     } finally { rmSync(root, { recursive: true, force: true }); }
   }

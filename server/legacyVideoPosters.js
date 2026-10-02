@@ -303,7 +303,8 @@ function cleanContentType(value) {
   return String(value || "").split(";", 1)[0].trim().toLowerCase();
 }
 
-async function inspectPosterObject(row, { env, fetchImpl }) {
+async function inspectPosterObject(row, { env, fetchImpl, signal }) {
+  signal?.throwIfAborted();
   const config = getMediaConfig(env);
   if (!config.configured) return { ok: false, code: "STORAGE_UNAVAILABLE", retry: true };
   const objectKey = trustedMediaQueueKey(row.poster_key, row.owner_id);
@@ -326,7 +327,7 @@ async function inspectPosterObject(row, { env, fetchImpl }) {
     response = await fetchImpl(signed, {
       method: "HEAD",
       redirect: "error",
-      signal: AbortSignal.timeout(8_000),
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(8_000)]) : AbortSignal.timeout(8_000),
     });
   } catch {
     return { ok: false, code: "STORAGE_UNAVAILABLE", retry: true };
@@ -353,7 +354,9 @@ export async function verifyLegacyVideoPosterBatch(database, {
   at = Date.now(),
   limit = 5,
   allowNonProduction = false,
+  signal,
 } = {}) {
+  signal?.throwIfAborted();
   if (!defaultReleaseRuntime(env) && allowNonProduction !== true) {
     return { processed: 0, verified: 0, failed: 0, retrying: 0 };
   }
@@ -368,6 +371,7 @@ export async function verifyLegacyVideoPosterBatch(database, {
     ORDER BY p.next_attempt_at,p.post_id,p.position LIMIT ?`).all(verificationAt, boundedLimit);
   const outcome = { processed: 0, verified: 0, failed: 0, retrying: 0 };
   for (const row of rows) {
+    signal?.throwIfAborted();
     // Claim through a compare-and-swap before awaiting the network. The lease
     // is stored in the existing due timestamp, so it is additive for deployed
     // databases and a crashed worker becomes eligible again without consuming
@@ -382,8 +386,11 @@ export async function verifyLegacyVideoPosterBatch(database, {
     if (!claimed) continue;
     outcome.processed += 1;
     const inspection = LIVE_OBJECT_STATUSES.has(row.object_status)
-      ? await inspectPosterObject(row, { env, fetchImpl })
+      ? await inspectPosterObject(row, { env, fetchImpl, signal })
       : { ok: false, code: "OBJECT_RETIRED", retry: false };
+    // Cancellation consumes no attempt; the durable 30s claim expires normally.
+    // This check also fences a transport that returns after ignoring abort.
+    signal?.throwIfAborted();
     const finalState = withWrite(database, () => {
       if (inspection.ok) {
         const verified = database.prepare(`UPDATE legacy_video_posters
@@ -497,42 +504,55 @@ export function startLegacyVideoPosterVerificationScheduler({
   setTimerFn = setTimeout,
   clearTimerFn = clearTimeout,
 } = {}) {
-  if (!defaultReleaseRuntime(env)) return { stop() {} };
+  if (!defaultReleaseRuntime(env)) return { stop() { return Promise.resolve(); } };
   if (typeof reconcile !== "function" || typeof verify !== "function" || typeof now !== "function"
       || typeof setTimerFn !== "function" || typeof clearTimerFn !== "function") {
     throw new TypeError("Legacy video poster scheduler requires bounded runtime dependencies.");
   }
   let stopped = false;
   let timer = null;
+  let active = null;
+  let controller = null;
   const schedule = (delay) => {
     if (stopped) return;
     timer = setTimerFn(run, Math.max(1_000, Math.min(15 * 60_000, delay)));
     timer.unref?.();
   };
-  const run = async () => {
-    if (stopped) return;
-    try {
-      reconcile(database);
-      await verify(database, { env, fetchImpl });
-    } catch (error) {
-      console.error(`[media] legacy poster verification failed safely: ${String(error?.name || "Error")}`);
-    }
-    if (stopped) return;
-    const due = database.prepare(`SELECT MIN(next_attempt_at) next_at FROM legacy_video_posters
-      WHERE status IN ('pending','retry')`).get()?.next_at;
-    // Even a due backlog is a migration/repair lane, never an interactive one.
-    // Five remote HEADs every second can amplify a storage incident and retain
-    // pooled response state. One bounded batch per minute still completes the
-    // eight-entry release promptly without competing with member uploads.
-    const untilDue = due == null ? RECONCILE_INTERVAL_MS
-      : Math.max(RECONCILE_INTERVAL_MS, Number(due) - Number(now()));
-    schedule(Math.min(RECONCILE_INTERVAL_MS, untilDue));
+  const run = () => {
+    if (stopped) return Promise.resolve();
+    if (active) return active;
+    controller = new AbortController();
+    const signal = controller.signal;
+    active = Promise.resolve().then(async () => {
+      if (stopped) return;
+      try {
+        reconcile(database);
+        await verify(database, { env, fetchImpl, signal });
+        if (stopped) return;
+        const due = database.prepare(`SELECT MIN(next_attempt_at) next_at FROM legacy_video_posters
+          WHERE status IN ('pending','retry')`).get()?.next_at;
+        // Even a due backlog is a migration/repair lane, never an interactive one.
+        // Five remote HEADs every second can amplify a storage incident and retain
+        // pooled response state. One bounded batch per minute still completes the
+        // eight-entry release promptly without competing with member uploads.
+        const untilDue = due == null ? RECONCILE_INTERVAL_MS
+          : Math.max(RECONCILE_INTERVAL_MS, Number(due) - Number(now()));
+        schedule(Math.min(RECONCILE_INTERVAL_MS, untilDue));
+      } catch (error) {
+        if (stopped && signal.aborted) return;
+        console.error(`[media] legacy poster verification failed safely: ${String(error?.name || "Error")}`);
+        schedule(RECONCILE_INTERVAL_MS);
+      }
+    }).finally(() => { active = null; controller = null; });
+    return active;
   };
   schedule(1_000);
   return {
-    stop() {
+    stop({ abortActive = false } = {}) {
       stopped = true;
       if (timer) clearTimerFn(timer);
+      if (abortActive) controller?.abort(new DOMException("Legacy poster verification stopped.", "AbortError"));
+      return active || Promise.resolve();
     },
   };
 }

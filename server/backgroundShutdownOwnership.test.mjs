@@ -17,7 +17,7 @@ const deadline = ast.program.body.find(node => node.type === "VariableDeclaratio
 // Execute the production shutdown function without starting the app, opening
 // SQLite, or contacting providers. HTTP drain and worker settlement are
 // independently controlled; the clock runs the actual registered fallback.
-function shutdownFixture({ workerStop = () => Promise.resolve() } = {}) {
+function shutdownFixture({ workerStop = () => Promise.resolve(), posterStop = () => Promise.resolve() } = {}) {
   const events = [], errors = [], stops = [], exits = [], timers = [];
   let closeCallback, elapsed = 0;
   const schedulerNames = [
@@ -27,7 +27,7 @@ function shutdownFixture({ workerStop = () => Promise.resolve() } = {}) {
     "mediaDeletionScheduler", "accountLifecycleScheduler", "privateMediaIsolationMonitor", "legacyVideoPosterScheduler",
   ];
   const dependencies = Object.fromEntries(schedulerNames.map(name => [name, {
-    stop: options => { stops.push({ name, options }); return Promise.resolve(); },
+    stop: options => { stops.push({ name, options }); return name === "legacyVideoPosterScheduler" ? posterStop() : Promise.resolve(); },
   }]));
   for (const name of ["stopArtistTourDateDemandRefresh", "stopMusicBrainzGenreRefreshScheduler",
     "stopArtistPhotoSeedScheduler", "stopVideoVerifierHealthScheduler", "drainSitemapSnapshotRefresh"]) {
@@ -67,6 +67,29 @@ function shutdownFixture({ workerStop = () => Promise.resolve() } = {}) {
 }
 
 const flushShutdownPromises = () => new Promise(resolve => setImmediate(resolve));
+
+test("shutdown cancels and drains the legacy poster lane before database close", async () => {
+  let finish;
+  const fixture = shutdownFixture({ posterStop: () => new Promise(resolve => { finish = resolve; }) });
+  fixture.run();
+  const pending = fixture.finishHttp();
+  await flushShutdownPromises();
+  assert.equal(fixture.stops.find(entry => entry.name === "legacyVideoPosterScheduler").options.abortActive, true);
+  assert.equal(fixture.events.includes("db:closed"), false);
+  finish();
+  await pending;
+  assert.deepEqual(fixture.events.slice(-2), ["db:closed", "process:exit"]);
+});
+
+test("uncooperative legacy poster work reaches the existing process deadline with SQLite still open", async () => {
+  const fixture = shutdownFixture({ posterStop: () => new Promise(() => {}) });
+  fixture.run();
+  void fixture.finishHttp();
+  await flushShutdownPromises();
+  fixture.advance(25_000);
+  assert.deepEqual(fixture.exits, [0]);
+  assert.equal(fixture.events.includes("db:closed"), false);
+});
 
 test("all newly introduced database workers retain a shutdown handle", () => {
   for (const name of ["privacy-journal", "video-processing", "catalog-research", "web-profiles", "artist-news", "news-desk", "artist-photos"]) {

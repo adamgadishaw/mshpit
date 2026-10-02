@@ -98,7 +98,7 @@ import {
   startOptionalBackgroundRuntime,
 } from "./backgroundRuntime.js";
 import { safeRequestFailureContext } from "./safeLogging.js";
-import { healthRateLimitPolicy } from "./healthAvailability.js";
+import { healthRateLimit, healthRateLimitPolicy } from "./healthAvailability.js";
 import { shouldRecordGeneralRequestFailure } from "./requestFailureObservability.js";
 import { crawlerFileRateLimitPolicy } from "./crawlerFileRateLimit.js";
 import { enforceRateLimit } from "./rateLimitEnforcement.js";
@@ -636,7 +636,7 @@ async function handleRequest(req, res) {
       // cannot be used as an unbounded readiness/SQLite polling surface.
       if (pathname === "/api/health" || pathname === "/api/readiness") {
         const healthLimit = healthRateLimitPolicy(ip);
-        if (!rateLimit(healthLimit.key, healthLimit.max, healthLimit.windowMs)) {
+        if (!healthRateLimit(healthLimit.key, healthLimit.max, healthLimit.windowMs)) {
           return sendApiError(res, new ApiError(429, "Too many requests.", "RATE_LIMITED"), requestId, cors);
         }
       } else {
@@ -901,7 +901,7 @@ function shutdown(exitCode = 0) {
   if (sitemapRefreshTimer) clearInterval(sitemapRefreshTimer);
   if (sitemapRetryTimer) clearTimeout(sitemapRetryTimer);
   const sitemapRefreshStop = drainSitemapSnapshotRefresh();
-  legacyVideoPosterScheduler?.stop();
+  const legacyVideoPosterStop = legacyVideoPosterScheduler?.stop({ abortActive: true }) || Promise.resolve();
   server.close(async () => {
     try { await campaignStop; }
     catch (error) { console.error(`[mail] campaign recovery shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
@@ -938,6 +938,8 @@ function shutdown(exitCode = 0) {
     try { await privateMediaIsolationStop; }
     catch (error) { console.error(`[media] privacy recovery shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     await additionalStops;
+    try { await legacyVideoPosterStop; }
+    catch (error) { console.error(`[media] legacy poster shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     try { db.close(); }
     catch (error) { console.error(`[pit] database close failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     process.exit(exitCode);
