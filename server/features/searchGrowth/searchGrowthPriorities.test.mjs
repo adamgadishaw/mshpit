@@ -117,6 +117,8 @@ test("search priority keeps existing claimed/staff/due-date eligibility checks",
 test("artist and venue priority turns are independent, persist between passes and preserve paid budget admission", async t => {
   const f = fixture(t); f.artist("priority"); f.artist("regular", { rank: 100 });
   f.event("one", "regular", "Regular Room"); f.event("two", "regular", "Regular Room"); f.event("three", "priority", "Priority Room");
+  // Two shows at one room share its stable provider venue identity.
+  f.database.exec("UPDATE tour_dates SET venue_provider_id='regular-room' WHERE id IN ('one','two')");
   f.remember(["/artist/priority", "/venue/ticketmaster-id-three"]);
   assert.equal(nextVenueResearchSubject(f.database, { ...f.options, prioritizeSearch: true }).name, "Priority Room");
   const calls = [], env = { ...f.env, ANTHROPIC_API_KEY: "fixture", CATALOG_RESEARCH_DAILY_USD: "1" };

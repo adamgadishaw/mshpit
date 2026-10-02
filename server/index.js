@@ -645,7 +645,7 @@ async function handleRequest(req, res) {
       const capacityChallengeHeader = req.headers["x-pit-capacity-challenge"];
       const capacityChallenge = Array.isArray(capacityChallengeHeader)
         ? capacityChallengeHeader[0] : capacityChallengeHeader;
-      // The disabled-by-default Media API receives its bearer credential only
+      // The disabled-by-default scoped APIs receive their bearer credential only
       // in the route context. It is never copied into logs, cookies, or the
       // ordinary session user identity.
       const mediaApiAuthorization = typeof req.headers.authorization === "string"
@@ -670,6 +670,8 @@ async function handleRequest(req, res) {
         capacityChallenge,
         mediaApiAuthorization,
         mediaApiIdempotencyKey,
+        catalogApiAuthorization: mediaApiAuthorization,
+        catalogApiIdempotencyKey: mediaApiIdempotencyKey,
         signal: requestAbort.signal,
         setCookie: (c) => setCookies.push(c),
         setSession: (s) => setCookies.push(...sessionCookieHeaders(s.token, s.expiresAt, PROD)),

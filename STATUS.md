@@ -1,5 +1,25 @@
 # Pit current status
 
+## 2026-10-02 Catalog API stage 2 (local review branch)
+
+- Adds separate catalog-audience assistant grants and scoped artist/venue/event
+  inventory, claims, proposals, owner review, commits and status. Both catalog
+  flags default off; existing Media API grant scopes are unchanged.
+- Claude and dot share durable exclusive claims with revision/current-value/
+  identity/protection checks. Writes, idempotency receipts, counters and audit
+  are atomic. Events enrich a separate table; provider facts stay read-only.
+- Independent Astra review reproduced and verified fixes for selector starvation
+  and untracked legacy leases; final independent focused run: 66 passed, zero
+  failed. Full suite: 5,978 passed, zero failed, one Windows symlink skip.
+- Syntax (819 Node files), architecture, Blueprint, web export and diff checks
+  passed. Web entry remains 521,916 / 524,288 gzip bytes. A concurrent test
+  startup hit an existing SQLite-lock race; serial and two-worker reruns passed.
+  npm's advisory endpoint was unavailable, so dependency advisories remain
+  unverified and the aggregate `npm run check` is not fully green.
+- See `CATALOG_API_STAGE2_2026-10-02.md` for endpoints, boundaries, limits,
+  migration/rollback and evidence. No production activation, real grants,
+  provider calls, MCP/OAuth, pilot UI, push, merge or deployment performed.
+
 ## 2026-10-02 Media API stage 1 (local review branch)
 
 - `codex/catalog-api-pilot-20261002` starts at `fd8b1d09` and fixes

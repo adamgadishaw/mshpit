@@ -43,6 +43,8 @@ import { ensureCommentMutationSchema } from "./commentMutationSchema.js";
 import { ensureSocialReactionSchema } from "./features/socialReactions/socialReactions.js";
 import { ensureArtistAccountSchema, pendingArtistSignupIntent } from "./features/artistAccounts/artistAccountPolicy.js";
 import { ensureMediaApiSchema } from "./features/mediaApi/mediaApiPolicy.js";
+import { ensureApiGrantSchema } from "./features/apiGrants/apiGrantService.js";
+import { ensureCatalogWorkSchema } from "./features/catalogResearch/catalogWorkQueue.js";
 
 export const artistSearchKey = (value) => String(value || "")
   .normalize("NFKD")
@@ -2172,6 +2174,8 @@ ensureCommentMutationSchema(db);
 ensureSocialReactionSchema(db);
 ensureLineupSchema(db);
 ensureMediaApiSchema(db);
+ensureApiGrantSchema(db);
+ensureCatalogWorkSchema(db);
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_fcm_client_mutation ON fan_club_messages(user_id, client_mutation_id) WHERE client_mutation_id IS NOT NULL");
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_lounge_client_mutation ON lounge_messages(user_id, client_mutation_id) WHERE client_mutation_id IS NOT NULL");
 // Backfill only a single exact normalized display-name match. Ambiguous and
