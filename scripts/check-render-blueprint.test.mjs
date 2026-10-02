@@ -56,6 +56,21 @@ test("news expansion keeps the owner-approved caps and catalogue allocation", ()
   assert.equal(env.CATALOG_RESEARCH_MONTHLY_USD, "4");
   assert.equal(web.envVars.find((entry) => entry.key === "ANTHROPIC_API_KEY").sync, false);
 });
+
+test("disk-backed services omit unsupported custom shutdown delays", () => {
+  const blueprint = parseDocument(source).toJS();
+  const web = blueprint.services.find((service) => service.name === "mshpit");
+  assert.deepEqual(web.disk, { name: "pit-data", mountPath: "/data", sizeGB: 5 });
+  for (const service of blueprint.services.filter((entry) => entry.disk)) {
+    assert.equal(Object.hasOwn(service, "maxShutdownDelaySeconds"), false,
+      `${service.name}: Render rejects maxShutdownDelaySeconds when a persistent disk is attached`);
+  }
+  const verifier = blueprint.services.find((service) => service.name === "pit-video-verifier");
+  assert.equal(verifier.disk, undefined);
+  assert.equal(verifier.maxShutdownDelaySeconds, 60,
+    "the disk-free verifier keeps its separately supported shutdown delay");
+});
+
 test("Render and CI install build validators even in production mode", async () => {
   const blueprint = parseDocument(source).toJS();
   const web = blueprint.services.find((service) => service.name === "mshpit");
