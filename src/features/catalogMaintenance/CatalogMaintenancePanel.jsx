@@ -1,9 +1,12 @@
+import { lazy, Suspense } from "react";
 import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
 import Button from "../../components/Button";
 import { colors, mono, radius } from "../../theme";
 import useCatalogMaintenance from "./useCatalogMaintenance";
 import { catalogBytes, catalogCount, catalogModeLabel, catalogTime, catalogSourceSchedulerLabel,
-  claudeMoney, claudeSpendBreakdown, claudeSpendTotal, newsDeskReasonText } from "./catalogMaintenanceState.mjs";
+  claudeMoney, claudeSpendBreakdown, claudeSpendTotal, newsDeskReasonText, catalogPilotViewAllowed } from "./catalogMaintenanceState.mjs";
+
+const CatalogPilotPanel = lazy(() => import("./CatalogPilotPanel"));
 
 function Datum({ label, value, detail }) {
   return <View style={styles.datum}>
@@ -55,6 +58,9 @@ export default function CatalogMaintenancePanel({ accountId, role, active = true
       {!state.error && active ? <ActivityIndicator color={colors.amber} accessibilityLabel="Loading catalog upkeep" /> : null}
       <Text style={styles.copy}>{state.error ? "Live upkeep status is unavailable." : active ? "Loading catalog upkeep…" : "Status checks resume when this tab is active."}</Text>
     </View> : <>
+      {catalogPilotViewAllowed(state, role) ? <Suspense fallback={<Text style={styles.hint}>Loading local pilot review.</Text>}>
+        <CatalogPilotPanel key={accountId} />
+      </Suspense> : null}
       {!catalog ? <Text selectable style={styles.error}>The upkeep controller is not initialized. No controls are enabled; server setup needs to finish first.</Text> : <>
         <View style={styles.modeRow}>
           <View style={styles.modeCopy}>

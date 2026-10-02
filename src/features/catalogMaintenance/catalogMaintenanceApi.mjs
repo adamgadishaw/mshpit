@@ -12,6 +12,10 @@ export function validateCatalogMaintenance(payload) {
       && (!CATALOG_MODES.includes(payload.catalog.mode) || !payload.catalog.limits || !payload.catalog.progress))) {
     throw new TypeError("Catalog upkeep returned an invalid status. Refresh before changing its mode.");
   }
+  if (payload.localPilot !== undefined && (!payload.localPilot || typeof payload.localPilot.canReview !== "boolean"
+    || payload.localPilot.mode !== "offline-only" || payload.localPilot.maxRecords !== 100)) {
+    throw new TypeError("Catalog pilot access could not be confirmed. Refresh its status.");
+  }
   return payload;
 }
 

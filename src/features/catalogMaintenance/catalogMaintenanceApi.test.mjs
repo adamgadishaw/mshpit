@@ -47,3 +47,10 @@ test("unavailable control is explicit and malformed success is rejected", () => 
     assert.throws(() => validateCatalogMaintenance(value), /invalid status/);
   }
 });
+test("local pilot metadata is explicit, bounded and fails closed on malformed capability", () => {
+  assert.equal(validateCatalogMaintenance({ ...payload(), localPilot: { canReview: true, mode: "offline-only", maxRecords: 100 } }).localPilot.canReview, true);
+  for (const localPilot of [null, {}, { canReview: "true", mode: "offline-only", maxRecords: 100 },
+    { canReview: true, mode: "live", maxRecords: 100 }, { canReview: true, mode: "offline-only", maxRecords: 60000 }]) {
+    assert.throws(() => validateCatalogMaintenance({ ...payload(), localPilot }), /access could not be confirmed/);
+  }
+});

@@ -1,5 +1,31 @@
 # Pit current status
 
+## 2026-10-02 Catalog pilot stage 3 (local review branch)
+
+- Adds owner-visible local pilot inspection to the existing Catalog panel and
+  `scripts/catalog-pilot-dry-run.mjs`. Default input is synthetic; real catalog
+  snapshots require explicit authorized local input. Selection is fixed at up
+  to 100 existing eligible records, stratified across artists, venues and events.
+- Checkpoints preserve exact identities, proposals and latest observations;
+  pause/revocation/conflict checks and truthful counters survive local resume.
+  The preview records no live claims, catalog commits, provider calls or human
+  approval. Candidate images remain unattached; event rendering is still absent.
+- This is an initial review pilot, not a permanent manual-approval requirement
+  for the entire catalog. Automatic commit policy, connection/credentials and
+  production activation need separate owner approval. Stage 1 repairs and the
+  stage 2 catalog commit policy are preserved.
+- Full suite: 6,000 passed, zero failed, one known Windows symlink skip. All 42
+  focused tests passed. Independent Astra review verified both fixes and found
+  no remaining material issues within the offline scope. All 12 local browser
+  scenarios passed at 390px and 1280px. Syntax (821 Node files),
+  architecture, Blueprint and web export passed. Web entry is 524,037 / 524,288
+  gzip bytes, with only 251 bytes of headroom. npm's advisory endpoint remains
+  unavailable, so dependency advisories and the aggregate check are not green.
+- See `CATALOG_API_STAGE3_2026-10-02.md` for usage, snapshot limits and rollout
+  gates, including draining older research writers before activation.
+- Release hold remains: no PR 19 merge/sync, push, deploy, activation or real
+  pilot writes. Production remains last-reported `fd8b1d09`, unqueried here.
+
 ## 2026-10-02 Catalog API stage 2 (local review branch)
 
 - Adds separate catalog-audience assistant grants and scoped artist/venue/event

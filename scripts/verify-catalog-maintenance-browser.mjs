@@ -8,14 +8,16 @@ import { readFileSync, statSync, mkdirSync } from "node:fs";
 import { dirname, extname, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { fixtureApiResponse, navigationUser } from "./verify-navigation-browser.mjs";
+import { syntheticPilotSnapshot } from "../src/features/catalogMaintenance/catalogPilot.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const path = "/api/moderation/catalog-maintenance";
 export const upkeepAdmin = Object.freeze({ ...navigationUser, role: "admin" });
-export function upkeepFixture(mode = "maintenance") {
+export function upkeepFixture(mode = "maintenance", { pilotOwner = false } = {}) {
   assert.ok(["maintenance", "catch_up", "paused"].includes(mode));
   const at = 1789488000000;
   return {
+    localPilot: { canReview: pilotOwner, mode: "offline-only", maxRecords: 100 },
     catalog: { mode, nextPassAt: at + 120000, updatedAt: at, initialSweepFinishedAt: null,
       limits: { lanes: mode === "catch_up" ? 10 : 1, maxArtistsPerPass: mode === "catch_up" ? 40 : 10,
         intervalMinutes: mode === "catch_up" ? 2 : 15, maxPassSeconds: 45,
@@ -113,7 +115,7 @@ async function localServer() {
 }
 async function scenario(browser, origin, width, kind) {
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, serviceWorkers: "block" });
-  const state = { mode: "maintenance", calls: [], errors: [], reports: [], gets: 0, posts: 0, release: null, closing: false };
+  const state = { mode: "maintenance", calls: [], errors: [], reports: [], gets: 0, posts: 0, release: null, closing: false, pilotOwner: kind === "pilot" };
   await context.addInitScript(({ origin, user }) => {
     if (location.origin !== origin) return;
     localStorage.setItem("pit_theme", "stage");
@@ -185,7 +187,7 @@ async function scenario(browser, origin, width, kind) {
           });
           state.mode = body.mode;
         }
-        return await route.fulfill({ contentType: "application/json", body: JSON.stringify(upkeepFixture(state.mode)) });
+        return await route.fulfill({ contentType: "application/json", body: JSON.stringify(upkeepFixture(state.mode, { pilotOwner: state.pilotOwner })) });
       }
       const body = url.pathname === "/api/me" ? { user: upkeepAdmin }
         : staffFixture(url, method) || fixtureApiResponse(url.pathname, { member: true, method, resolvedPath: url.searchParams.get("path") || undefined });
@@ -244,6 +246,52 @@ async function scenario(browser, origin, width, kind) {
     await panel.getByText(/Privacy journal: 2 waiting to copy off-host/).waitFor();
     await panel.getByText(/Add PRIVACY_JOURNAL_KEY in Render/).waitFor();
     assert.equal(state.posts, 0, "Opening or refreshing the panel must not start work.");
+    if (kind.startsWith("pilot")) {
+      const pilot = panel.getByTestId("catalog-pilot-panel");
+      if (kind === "pilot-admin") assert.equal(await pilot.count(), 0, "ordinary admins cannot see owner pilot review");
+      else {
+        await pilot.getByText("Catalog pilot review", { exact: true }).waitFor();
+        await pilot.getByRole("button", { name: "Use synthetic fixture", exact: true }).click();
+        await pilot.getByText("100 selected · 0 checked locally · 100 pending · 0 live writes", { exact: true }).waitFor();
+        const snapshot = syntheticPilotSnapshot(Date.now());
+        const input = pilot.getByLabel("Authorized catalog snapshot or checkpoint", { exact: true });
+        await input.fill(JSON.stringify(snapshot));
+        await pilot.getByRole("button", { name: "Load local preview", exact: true }).click();
+        await pilot.getByRole("button", { name: "Check next 25 locally", exact: true }).click();
+        await pilot.getByText("100 selected · 25 checked locally · 75 pending · 0 live writes", { exact: true }).waitFor();
+        await pilot.getByRole("button", { name: "Pause preview", exact: true }).click();
+        assert.equal(await pilot.getByRole("button", { name: "Check next 25 locally", exact: true }).isDisabled(), true);
+        await pilot.getByRole("button", { name: "Resume preview", exact: true }).click();
+        await pilot.getByRole("button", { name: "Compare proposal for Synthetic artist 0", exact: true }).click();
+        await pilot.getByText("Current findings", { exact: true }).waitFor();
+        await pilot.getByText("Proposed findings", { exact: true }).waitFor();
+        await pilot.getByText(/Assistant submission; human approval not recorded/).waitFor();
+        await pilot.getByText(/Candidates only; no photos attached/).waitFor();
+        const shots = join(root, ".tmp", "catalog-maintenance-browser"); mkdirSync(shots, { recursive: true });
+        await pilot.evaluate(element => element.scrollIntoView({ block: "start", behavior: "instant" }));
+        await page.screenshot({ path: join(shots, `catalog-pilot-${width}.png`), fullPage: false });
+        snapshot.capturedAt++; snapshot.records[0].protected = true;
+        await input.fill(JSON.stringify(snapshot));
+        await pilot.getByRole("button", { name: "Recheck with newer snapshot", exact: true }).click();
+        await pilot.getByText(/Protected or quarantined: 1/).waitFor();
+        snapshot.capturedAt++; snapshot.control.grantStatus = "revoked"; snapshot.control.revision++;
+        await input.fill(JSON.stringify(snapshot));
+        await pilot.getByRole("button", { name: "Recheck with newer snapshot", exact: true }).click();
+        await pilot.getByText(/Snapshot grant revoked or expired: 25/).waitFor();
+        state.pilotOwner = false;
+        await panel.getByRole("button", { name: "Refresh catalog upkeep status", exact: true }).click();
+        await pilot.waitFor({ state: "detached" });
+        state.pilotOwner = true;
+        await panel.getByRole("button", { name: "Refresh catalog upkeep status", exact: true }).click();
+        await pilot.waitFor();
+        assert.equal(await pilot.getByText(/100 selected/).count(), 0, "lost owner access must discard local preview state");
+      }
+      assert.equal(state.posts, 0);
+      assert.equal(state.calls.some(call => call.path.startsWith("/api/catalog/")), false);
+      assert.deepEqual(state.errors, []); assert.deepEqual(state.reports, []);
+      console.log(JSON.stringify({ name: `catalog-${kind}-${width}`, passed: true, liveClaims: 0, liveWrites: 0, providerCalls: 0 }));
+      return;
+    }
     const catchUp = panel.getByRole("button", { name: "Start catalog catch-up", exact: true });
     await catchUp.click();
     if (kind === "access-loss") {
@@ -329,8 +377,10 @@ export async function main() {
   let browser;
   try {
     browser = await chromium.launch({ headless: true, ...(process.env.PIT_BROWSER_EXECUTABLE ? { executablePath: process.env.PIT_BROWSER_EXECUTABLE } : {}) });
-    for (const width of [390, 1280]) for (const kind of ["actions", "load-retry", "action-retry", "access-loss"]) await scenario(browser, origin, width, kind);
-    console.log(JSON.stringify({ passed: 8, failed: 0, network: "isolated fixtures only" }));
+    const kinds = process.env.PIT_CATALOG_PILOT_ONLY === "true" ? ["pilot", "pilot-admin"]
+      : ["actions", "load-retry", "action-retry", "access-loss", "pilot", "pilot-admin"];
+    for (const width of [390, 1280]) for (const kind of kinds) await scenario(browser, origin, width, kind);
+    console.log(JSON.stringify({ passed: kinds.length * 2, failed: 0, network: "isolated fixtures only" }));
   } finally { await browser?.close(); await new Promise(done => server.close(done)); }
 }
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) main().catch(error => { console.error(error.message); process.exitCode = 1; });
