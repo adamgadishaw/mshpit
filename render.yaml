@@ -18,7 +18,9 @@ services:
     # not reach the runtime process or weaken the /data startup guard. The live
     # npm advisory query remains in GitHub CI; a registry outage must not make an
     # already-audited production artifact undeployable.
-    buildCommand: npm ci && mkdir -p /tmp/pit-build-data && PIT_DATA_DIR=/tmp/pit-build-data PIT_ALLOW_EMPTY_DB_BOOTSTRAP=true npm run check:deploy
+    # Build/export needs Expo and the validators; remove those dev-only packages
+    # only after the complete production artifact and checks have succeeded.
+    buildCommand: npm ci --include=dev && mkdir -p /tmp/pit-build-data && PIT_DATA_DIR=/tmp/pit-build-data PIT_ALLOW_EMPTY_DB_BOOTSTRAP=true npm run check:deploy && npm prune --omit=dev
     # The runtime disk is finally mounted here. Snapshot + verify the existing
     # database before importing db.js applies this release's migrations; a
     # failed snapshot stops startup before migration (persistent-disk deploys
@@ -44,10 +46,6 @@ services:
         value: "24"
       - key: NODE_ENV
         value: production
-      # npm otherwise omits development-only validators when Render builds in
-      # production mode. Include build/test tooling without weakening NODE_ENV.
-      - key: NPM_CONFIG_INCLUDE
-        value: dev
       - key: PIT_ENV
         value: production
       # Explicit, non-secret authority for the bounded five-object maintenance
