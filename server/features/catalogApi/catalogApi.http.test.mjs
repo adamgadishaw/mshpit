@@ -128,6 +128,17 @@ test("real HTTP headers, two competing processes, owner review, commit replay an
   assert.equal(await first.outbound(), 0); assert.equal(await second.outbound(), 0);
 });
 
+test("public event and venue research share the origin projection ceiling", async t => {
+  const http = await start(t);
+  const paths = ["/api/events/synthetic-missing/research", "/api/venues/synthetic-missing/research"];
+  for (let index = 0; index < 30; index++) {
+    const result = await http.request(paths[index % 2], { authorization: "" });
+    assert.equal(result.status, 200); assert.equal(result.body.research, null);
+  }
+  for (const path of paths) assert.equal((await http.request(path, { authorization: "" })).status, 429);
+  assert.equal(await http.outbound(), 0);
+});
+
 test("supervised HTTPS client runs over actual loopback HTTP with lost-response replay, public display and correction", async t => {
   const key = "synthetic pilot artist", type = "artist";
   db.prepare("INSERT INTO artists(norm,name,source,created_at,updated_at) VALUES (?,?,'musicbrainz',?,?)")

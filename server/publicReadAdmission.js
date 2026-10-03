@@ -13,7 +13,7 @@ export const PUBLIC_READ_LIMITS = Object.freeze({
 // Provider adapters have their own admission. These local projection families
 // also need an aggregate origin ceiling, including the HTML-equivalent APIs.
 export function isExpensiveApiRead(method, pathname) {
-  return method === "GET" && /^\/api\/(?:page-head|resolve|artists(?:\/.*)?|discover\/.*|discovery\/sidebar|tourdates|feed(?:\/for-you)?|clips|cities(?:\/.*)?|venues\/[^/]+\/(?:photos|reviews)|shows\/[^/]+|landing\/media|news|news-desk\/(?:stories|live(?:\/[^/]+)?)|festivals(?:\/[^/]+)?)$/.test(pathname);
+  return method === "GET" && /^\/api\/(?:page-head|resolve|artists(?:\/.*)?|discover\/.*|discovery\/sidebar|tourdates|feed(?:\/for-you)?|clips|cities(?:\/.*)?|venues\/[^/]+\/(?:photos|reviews|research)|events\/[^/]+\/research|shows\/[^/]+|landing\/media|news|news-desk\/(?:stories|live(?:\/[^/]+)?)|festivals(?:\/[^/]+)?)$/.test(pathname);
 }
 
 export function createPublicReadAdmission({ clock = Date.now, ...overrides } = {}) {

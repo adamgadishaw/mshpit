@@ -181,7 +181,7 @@ export function fixtureApiResponse(pathname, { member = false, method = "GET", r
   if (pathname === "/api/cities") return { cities: [] };
   if (["/api/artists/fixture-artist/memorial", "/api/artists/fixture%20artist/memorial"].includes(pathname)) return { memorial: null };
   // Researched page summaries: none in these fixtures, so pages look as before.
-  if (/^\/api\/(?:artists|venues)\/[^/]+\/research$/u.test(pathname)) return { research: null };
+  if (/^\/api\/(?:artists|venues|events)\/[^/]+\/research$/u.test(pathname)) return { research: null };
   if (/^\/api\/artists\/[^/]+\/links$/u.test(pathname) || /^\/api\/venues\/[^/]+\/details$/u.test(pathname)) return { profile: null };
   // Artist news: nothing new in these fixtures, so pages look as before.
   if (pathname === "/api/news" || /^\/api\/artists\/[^/]+\/news$/u.test(pathname)) return { items: [], nextCursor: null };

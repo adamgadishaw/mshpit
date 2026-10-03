@@ -54,6 +54,7 @@ test("classification protects projection APIs and leaves control-plane and unrel
   for (const path of ["/api/page-head", "/api/resolve", "/api/artists", "/api/artists/a/profile",
     "/api/artists/archive", "/api/discover/chart", "/api/discovery/sidebar", "/api/tourdates",
     "/api/feed", "/api/feed/for-you", "/api/clips", "/api/cities/us/boston",
+    "/api/artists/a/research", "/api/venues/a/research", "/api/events/a/research",
     "/api/venues/a/reviews", "/api/shows/a", "/api/landing/media", "/api/news",
     "/api/news-desk/stories", "/api/news-desk/live/a", "/api/festivals/a"]) {
     assert.equal(isExpensiveApiRead("GET", path), true, path);
@@ -61,7 +62,8 @@ test("classification protects projection APIs and leaves control-plane and unrel
   }
   for (const path of ["/api/health", "/api/readiness", "/robots.txt", "/sitemap.xml",
     "/sitemaps/artists-1.xml", "/.well-known/security.txt", "/_expo/static/a.js",
-    "/api/time", "/api/login", "/api/news-desk/stories/id/image.png"]) {
+    "/api/time", "/api/login", "/api/events/a", "/api/events/a/research/extra",
+    "/api/venues/a/research/extra", "/api/news-desk/stories/id/image.png"]) {
     assert.equal(isExpensiveApiRead("GET", path), false, path);
   }
 });
