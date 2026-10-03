@@ -46,7 +46,7 @@ if (process.env.PIT_NEWS_MINIMUM_FIXTURE === "1") {
     users[name] = { id, cookie: `${COOKIE}=${session.token}` };
     if (name === "revoked") destroySession(session.token);
   }
-  for (const count of [499, 500, 750, 1001]) {
+  for (const count of [1, 74, 199, 499, 1001]) {
   const sourceKey = `users/workspace_editor/post/minimum-source-${count}.jpg`;
   const renderKey = `users/workspace_editor/post/minimum-safe-${count}.jpg`;
   const photoUrl = `https://media.example.test/${renderKey}`;
@@ -83,7 +83,7 @@ if (process.env.PIT_NEWS_MINIMUM_FIXTURE === "1") {
   process.send({ kind: "fixture", users });
   await import("../../index.js");
 } else {
-  test("real isolated HTTP save/publish enforces 500 words without a 750-word maximum", { timeout: 45000 }, async t => {
+  test("real isolated HTTP saves and publishes concise articles with relevant citations without word or publisher quotas", { timeout: 45000 }, async t => {
     const root = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
     const directory = mkdtempSync(join(tmpdir(), "pit-news-minimum-http-"));
     const env = Object.fromEntries(["PATH", "SystemRoot", "WINDIR", "TEMP", "TMP", "LOCALAPPDATA"].filter(k => process.env[k]).map(k => [k, process.env[k]]));
@@ -121,24 +121,34 @@ if (process.env.PIT_NEWS_MINIMUM_FIXTURE === "1") {
       assert.equal(response.status, expected, `${path}: ${JSON.stringify(data)} ${response.status === 500 ? output : ""}`);
       return data;
     };
+    const official = { kind: "article", name: "Fixture Artist", url: "https://artist.example.com/album" };
+    const publisher = { kind: "article", name: "NME", url: "https://www.nme.com/news/album" };
     const article = count => ({ headline: "Synthetic band announces a new studio album",
       summary: "Independent music reports confirm the new album and its release plans.",
       body: Array.from({ length: count }, (_, index) => `album${index + 1}`).join(" "), idempotencyKey: `minimum-fixture-${count}`,
-      sources: [{ kind: "article", name: "NME", url: "https://www.nme.com/news/minimum-fixture" },
-        { kind: "article", name: "Stereogum", url: "https://www.stereogum.com/minimum-fixture" },
-        { kind: "article", name: "Pitchfork", url: "https://pitchfork.com/news/minimum-fixture" }],
+      sources: count === 1001 ? Array.from({ length: 10 }, (_, i) => ({ ...official, url: official.url + i }))
+        : count === 499 ? [publisher, { ...publisher, url: publisher.url + "-follow-up" }]
+        : count === 199 ? [official, publisher] : [official],
       photo: { assetId: `ma_workspace_photo_${count}`, name: "Synthetic photographer", url: "https://example.test/photo-rights", credit: "Synthetic attribution" } });
-    const denied = await request(base + "/self-written", article(499), 400);
-    assert.match(denied.error?.message || denied.message || JSON.stringify(denied), /at least 500 words/u);
-    for (const count of [500, 750, 1001]) {
+    for (const body of ["", " \t\r\n\u00a0\u2003 "]) {
+      const denied = await request(base + "/self-written", { ...article(1), body }, 400);
+      assert.match(denied.error?.message || denied.message || JSON.stringify(denied), /article body/u);
+    }
+    for (const sources of [[], [{ ...official, kind: "photo" }], [official, { ...official, url: official.url + "#same-document" }],
+      [{ ...official, name: "NME" }], [{ ...official, url: "http://artist.example.com/album" }],
+      [{ ...official, url: "https://user:pass@artist.example.com/album" }], [{ ...official, url: "https://artist.example.com:443/album" }],
+      [{ ...official, url: "https://127.0.0.1/album" }], Array.from({ length: 11 }, (_, i) => ({ ...official, url: official.url + i })),
+    ]) await request(base + "/self-written", { ...article(1), sources }, 400);
+    for (const count of [1, 74, 199, 499, 1001]) {
       const value = article(count), saved = (await request(base + "/self-written", value)).draft;
       assert.equal(saved.wordCount, count);
-      assert.equal((await request(base + "/self-written", value)).draft.id, saved.id, "retry keeps one draft");
+      if (count === 74) assert.equal((await request(base + "/self-written", value)).draft.id, saved.id, "retry keeps one draft within the real editor rate allowance");
       const published = await request(`${base}/${saved.id}/publish`, {});
       assert.equal(published.draft.status, "published");
       assert.equal(published.draft.body, value.body);
       assert.equal(published.draft.photo.assetId, value.photo.assetId);
-      assert.equal(published.draft.sources.filter(source => source.kind === "article").length, 3);
+      assert.deepEqual(published.draft.sources.filter(source => source.kind === "article").map(({ name, url }) => ({ name, url })),
+        value.sources.map(({ name, url }) => ({ name, url })));
       assert.equal(published.draft.sources.find(source => source.kind === "photo").credit, value.photo.credit);
     }
     const snapshot = await new Promise((done, reject) => {
@@ -146,10 +156,10 @@ if (process.env.PIT_NEWS_MINIMUM_FIXTURE === "1") {
       pending.set("snapshot", message => { clearTimeout(timer); message.error ? reject(new Error(message.error)) : done(message.result); });
       child.send({ id: "snapshot", operation: "snapshot" });
     });
-    assert.equal(snapshot.drafts.length, 3); assert.equal(snapshot.posts.length, 3); assert.equal(snapshot.stories.length, 3);
-    assert.deepEqual(snapshot.stories.map(story => story.body.split(/\s+/u).length).sort((a,b) => a-b), [500,750,1001]);
-    assert.equal(snapshot.audits.filter(audit => audit.action === "news_draft_written").length, 3);
-    assert.equal(snapshot.audits.filter(audit => audit.action === "news_draft_published").length, 3);
+    assert.equal(snapshot.drafts.length, 5); assert.equal(snapshot.posts.length, 5); assert.equal(snapshot.stories.length, 5);
+    assert.deepEqual(snapshot.stories.map(story => story.body.split(/\s+/u).length).sort((a,b) => a-b), [1,74,199,499,1001]);
+    assert.equal(snapshot.audits.filter(audit => audit.action === "news_draft_written").length, 5);
+    assert.equal(snapshot.audits.filter(audit => audit.action === "news_draft_published").length, 5);
     assert.equal(snapshot.paid, 0); assert.equal(outbound, 0);
   });
 }

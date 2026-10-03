@@ -140,15 +140,18 @@ async function scenario(browser, origin, width, mode = "same") {
     await composer.getByLabel("Self-written news headline", { exact: true }).fill("Synthetic band announce an ambitious 2027 world tour");
     await composer.getByLabel("Self-written news summary", { exact: true }).fill("A synthetic but engaging hook for the local editor flow.");
     await composer.getByLabel("Self-written news article", { exact: true }).fill(Array.from({ length: 1_020 }, (_, index) => `Reported music news word ${index + 1}`).join(" "));
-    for (let index = 1; index <= 3; index += 1) {
-      await composer.getByLabel(`Self-written article source ${index} name`, { exact: true }).fill(["NME", "Stereogum", "Pitchfork"][index - 1]);
-      await composer.getByLabel(`Self-written article source ${index} URL`, { exact: true }).fill(["https://www.nme.com/news/synthetic", "https://www.stereogum.com/synthetic", "https://pitchfork.com/news/synthetic"][index - 1]);
+    assert.equal(await composer.getByLabel(/Self-written article source \d+ name/u).count(), 1);
+    await composer.getByLabel("Self-written article source 1 name", { exact: true }).fill("Fixture Artist");
+    await composer.getByLabel("Self-written article source 1 URL", { exact: true }).fill("https://artist.example.com/tour");
+    await composer.getByRole("button", { name: "Add another article source", exact: true }).click();
+    if (mode === "edited") {
+      await composer.getByLabel("Self-written article source 2 name", { exact: true }).fill("NME");
+      await composer.getByLabel("Self-written article source 2 URL", { exact: true }).fill("https://www.nme.com/news/synthetic");
+      await composer.getByRole("button", { name: "Add another article source", exact: true }).click();
     }
-    await composer.getByRole("button", { name: "Add another article source", exact: true }).click();
-    await composer.getByRole("button", { name: "Add another article source", exact: true }).click();
-    await composer.getByLabel("Self-written article source 4 name", { exact: true }).fill("Yonhap");
-    await composer.getByLabel("Self-written article source 4 URL", { exact: true }).fill("https://en.yna.co.kr/view/synthetic");
-    assert.equal(await composer.getByLabel("Self-written article source 5 name", { exact: true }).inputValue(), "", "an empty optional source row is retained without blocking save");
+    const sourceCount = mode === "edited" ? 2 : 1;
+    const optionalSourceName = composer.getByLabel(`Self-written article source ${sourceCount + 1} name`, { exact: true });
+    assert.equal(await optionalSourceName.inputValue(), "", "an empty optional source row is retained without blocking save");
     const choosing = page.waitForEvent("filechooser");
     await composer.getByRole("button", { name: "Choose and upload an article photo", exact: true }).click();
     await (await choosing).setFiles([{ name: "synthetic.png", mimeType: "image/png", buffer: png }]);
@@ -159,11 +162,23 @@ async function scenario(browser, origin, width, mode = "same") {
     const save = composer.getByRole("button", { name: "Save self-written news draft", exact: true });
     const article = composer.getByLabel("Self-written news article", { exact: true });
     await save.click({ trial: true });
-    for (const count of [499, 500, 750, 1001]) {
-      await article.fill(Array.from({ length: count }, (_, index) => `album${index + 1}`).join(" "));
-      assert.equal(await save.isDisabled(), count < 500, `${count}-word UI boundary`);
+    await optionalSourceName.fill("Incomplete citation");
+    assert.equal(await save.isDisabled(), true, "a partially filled citation must be completed or cleared");
+    await optionalSourceName.fill("");
+    assert.equal(await save.isDisabled(), false);
+    assert.doesNotMatch(await composer.innerText(), /Three independent configured|Configured publisher name/u);
+    for (const body of ["", " \t\n\u00a0\u2003 "]) {
+      await article.fill(body);
+      assert.equal(await save.isDisabled(), true, "an empty or whitespace-only body cannot be saved");
     }
-    await article.fill(Array.from({ length: 500 }, (_, index) => `album${index + 1}`).join(" "));
+    for (const count of [1, 74, 199, 499, 500, 750, 1001]) {
+      await article.fill(Array.from({ length: count }, (_, index) => `album${index + 1}`).join(" "));
+      assert.equal(await save.isDisabled(), false, `${count}-word body has no minimum-word gate`);
+    }
+    const conciseBody = "The fictional band has announced a new album. The cited reports confirm its release plans. Further details have not been announced.";
+    await article.fill(conciseBody);
+    assert.match(await composer.innerText(), /Report the facts without padding/u);
+    assert.doesNotMatch(await composer.innerText(), /At least \d[\d,]* words|Aim for \d/u);
     await save.dblclick();
     await page.getByRole("alert").waitFor();
     assert.equal(state.saveAttempts, 1, "Duplicate save clicks are fenced while the first request is in flight");
@@ -177,12 +192,15 @@ async function scenario(browser, origin, width, mode = "same") {
     await page.getByRole("button", { name: "Newsroom. Write stories and run live coverage", exact: true }).click();
     await composer.waitFor();
     assert.equal(await composer.getByLabel("Self-written news article", { exact: true }).inputValue(), originalBody);
+    assert.equal(await composer.getByLabel("Self-written article source 1 name", { exact: true }).inputValue(), "Fixture Artist");
+    assert.equal(await composer.getByLabel(`Self-written article source ${sourceCount + 1} name`, { exact: true }).inputValue(), "");
     if (mode === "edited") await composer.getByLabel("Self-written news summary", { exact: true }).fill("A revised hook after an uncertain save response.");
     await save.click();
     await page.getByText("SELF-WRITTEN DRAFT", { exact: true }).waitFor();
     const draft = page.getByTestId("news-draft-self-written-fixture");
     await draft.locator("img").waitFor({ state: "attached" });
-    assert.equal(await draft.locator("a").count(), 5);
+    assert.equal(await draft.locator("a").count(), sourceCount + 1);
+    assert.equal(await draft.getByRole("link", { name: "Fixture Artist", exact: true }).getAttribute("href"), "https://artist.example.com/tour");
     assert.equal(await draft.getByRole("link", { name: "Synthetic photographer", exact: true }).getAttribute("href"), "https://example.com/synthetic-photo-rights");
     assert.equal(state.saveAttempts, 2, "The uncertain save is retried once after the duplicate-click fence");
     assert.equal(new Set(state.saveKeys).size, mode === "edited" ? 2 : 1, "Identical retry preserves the key; edited intent rotates it");
@@ -196,12 +214,12 @@ async function scenario(browser, origin, width, mode = "same") {
     assert.equal(await page.getByTestId("self-written-news-composer").count(), 1, "Back must not discard an unsaved composer without confirmation");
     await page.getByRole("button", { name: `Publish ${state.draft.headline}`, exact: true }).click();
     await page.getByText("PUBLISHED", { exact: true }).waitFor();
-    assert.equal(state.draft.wordCount, 500, "the UI publishes a minimum-length synthetic article");
+    assert.equal(state.draft.body, conciseBody, "the UI preserves and publishes a concise synthetic article without padding");
     assert.deepEqual(state.reports, []);
     const expectedLostResponseError = "Failed to load resource: the server responded with a status of 503 (Service Unavailable)";
     assert.equal(state.errors.filter((message) => message === expectedLostResponseError).length, 1);
     assert.deepEqual(state.errors.filter((message) => message !== expectedLostResponseError), []);
-    console.log(JSON.stringify({ name: `newsroom-composer-${width}-${mode}`, passed: true, saveRetries: state.saveAttempts, distinctKeys: new Set(state.saveKeys).size, retainedAfterNavigation: true, draftPhoto: true, provenanceLinks: 4, wordCount: state.draft.wordCount }));
+    console.log(JSON.stringify({ name: `newsroom-composer-${width}-${mode}`, passed: true, saveRetries: state.saveAttempts, distinctKeys: new Set(state.saveKeys).size, retainedAfterNavigation: true, draftPhoto: true, articleSources: sourceCount, provenanceLinks: sourceCount + 1, wordCount: state.draft.wordCount }));
   } catch (error) {
     await page.screenshot({ path: join(shots, `composer-${width}-failed.png`), fullPage: false }).catch(() => {});
     console.error(JSON.stringify({ name: `newsroom-composer-${width}`, error: error.message, state, body: (await page.locator("body").innerText()).slice(-6000) }));

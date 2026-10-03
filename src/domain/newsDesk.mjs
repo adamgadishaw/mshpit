@@ -16,7 +16,8 @@ export function newsSourceLine(story) {
     .filter((source) => source?.kind !== "photo")
     .map((source) => String(source?.name || "").trim()).filter(Boolean))];
   if (!names.length) return "";
-  return `Confirmed by ${joinNames(names.slice(0, 4))}${names.length > 4 ? ` and ${names.length - 4} more` : ""}`;
+  const prefix = story?.origin === "self_written" ? "Sources:" : "Confirmed by";
+  return `${prefix} ${joinNames(names.slice(0, 4))}${names.length > 4 ? ` and ${names.length - 4} more` : ""}`;
 }
 
 // A story's write-up as paragraphs (the desk separates them with a blank line).

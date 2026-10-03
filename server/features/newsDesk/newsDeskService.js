@@ -11,7 +11,7 @@ import { EDITORIAL, publishingSlot, storyScore, topStoryScore, twoPublisherFallb
 import { MAX_REPORTS, storyPrompt, worstCaseCostUsd } from "./newsSummarizer.js";
 import { artistDiscoverPhotoUri, deezerImageUrl } from "../artistPhotos/discoverPhoto.js";
 import { newsStoryMentionsCity, newsStoryRegions, newsStoryVisibleIn } from "./newsRegions.js";
-import { canonicalEditorialUrl, editorialSourceForUrl, editorialSourceNameMatches } from "./newsEditorialSources.js";
+import { canonicalEditorialUrl, canonicalManualCitationUrl, editorialSourceForUrl, editorialSourceNameMatches, isKnownEditorialSourceName } from "./newsEditorialSources.js";
 
 // The news desk: reads established music outlets, groups reports about the
 // same event, and publishes a story from the news account only when
@@ -42,7 +42,6 @@ const MANUAL_HEADLINE_MAX = 180;
 const MANUAL_SUMMARY_MAX = 700;
 const MANUAL_BODY_MAX = 60_000;
 const MANUAL_SOURCE_MAX = 10;
-const MANUAL_WORD_MINIMUM = 500;
 function positiveNumber(value, fallback) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
@@ -119,26 +118,26 @@ const parseJson = (value, fallback) => { try { const parsed = JSON.parse(value);
 const wordCount = (value) => String(value || "").trim().split(/\s+/u).filter(Boolean).length;
 
 export function normalizeSelfWrittenSources(value) {
-  if (!Array.isArray(value) || value.length < EDITORIAL.minOutlets || value.length > MANUAL_SOURCE_MAX) {
-    throw new TypeError(`Add at least ${EDITORIAL.minOutlets} independent article sources.`);
+  if (!Array.isArray(value) || value.length < 1 || value.length > MANUAL_SOURCE_MAX) {
+    throw new TypeError(`Add 1–${MANUAL_SOURCE_MAX} named article sources that support the story.`);
   }
   const seen = new Set();
   const articleSources = value.map((source) => {
     if (!source || typeof source !== "object" || source.kind !== "article") throw new TypeError("Article sources must be marked as article sources.");
     const name = String(source.name || "").trim().slice(0, 160);
-    const url = canonicalEditorialUrl(source.url);
+    const url = canonicalManualCitationUrl(source.url);
     const configured = editorialSourceForUrl(url);
     const title = String(source.title || "").trim().slice(0, 240);
-    if (name.length < 2 || !url || !configured || seen.has(url)) throw new TypeError("Every article source must be a distinct URL from a configured music publisher.");
-    if (!editorialSourceNameMatches(configured, name)) throw new TypeError("Use the configured publisher name for each article source.");
+    if (name.length < 2 || !url || seen.has(url)) throw new TypeError("Every article source needs a name and a distinct URL using secure HTTPS.");
+    if (configured ? !editorialSourceNameMatches(configured, name) : isKnownEditorialSourceName(name)) {
+      throw new TypeError("The publisher name must match the source URL.");
+    }
     assertSafeAuthoredText(name, { field: "source name" });
     if (title) assertSafeAuthoredText(title, { field: "source title" });
     seen.add(url);
-    return { kind: "article", sourceId: configured.id, group: configured.group, name: configured.name, url, ...(title ? { title } : {}) };
+    return { kind: "article", ...(configured ? { sourceId: configured.id, group: configured.group } : {}),
+      name: configured?.name || name, url, ...(title ? { title } : {}) };
   });
-  if (!isConfirmed(articleSources, { minPublishers: EDITORIAL.minOutlets })) {
-    throw new TypeError(`Use at least ${EDITORIAL.minOutlets} independent music-publisher groups; photo sources do not count.`);
-  }
   return articleSources;
 }
 
@@ -162,8 +161,8 @@ export function normalizeSelfWrittenStory({ headline, summary, body, category, s
   const cleanHeadline = String(headline || "").replace(/\s+/gu, " ").trim().slice(0, MANUAL_HEADLINE_MAX);
   const cleanSummary = String(summary || "").replace(/\s+/gu, " ").trim().slice(0, MANUAL_SUMMARY_MAX);
   const cleanBody = String(body || "").replace(/\r\n?/gu, "\n").trim().slice(0, MANUAL_BODY_MAX);
-  if (cleanHeadline.length < 8 || cleanSummary.length < 20 || wordCount(cleanBody) < MANUAL_WORD_MINIMUM) {
-    throw new TypeError(`A self-written story needs a headline, summary, and at least ${MANUAL_WORD_MINIMUM} words.`);
+  if (cleanHeadline.length < 8 || cleanSummary.length < 20 || !cleanBody) {
+    throw new TypeError("A self-written story needs a headline, summary, and article body.");
   }
   assertSafeAuthoredText(cleanHeadline, { field: "headline" });
   assertSafeAuthoredText(cleanSummary, { field: "summary" });

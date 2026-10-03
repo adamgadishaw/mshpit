@@ -12,6 +12,17 @@ test("news stories read as labelled, sourced paragraphs", () => {
   assert.equal(newsStoryPhoto({ artists: [{ name: "A" }, { name: "B", photo: "https://cdn-images.dzcdn.net/x.jpg" }] }), "https://cdn-images.dzcdn.net/x.jpg");
 });
 
+test("manual source attribution names evidence without claiming independent confirmation", () => {
+  const story = { origin: "self_written", sources: [
+    { kind: "article", name: "Fixture Artist", url: "https://artist.example.com/news" },
+    { kind: "article", name: "Fixture Venue", url: "https://venue.example.com/news" },
+    { kind: "photo", name: "Fixture Photographer" },
+  ] };
+  assert.equal(newsSourceLine(story), "Sources: Fixture Artist and Fixture Venue");
+  assert.equal(newsSourceLine({ ...story, sources: story.sources.slice(0, 1) }), "Sources: Fixture Artist");
+  assert.equal(newsSourceLine({ ...story, origin: "generated" }), "Confirmed by Fixture Artist and Fixture Venue");
+});
+
 test("uploaded article photos lead public cards and photo rights never confirm a story", () => {
   const story = { media: [{ kind: "image", url: "https://media.example.com/verified.jpg" }],
     artists: [{ photo: "https://example.com/artist.jpg" }], sources: [{ kind: "article", name: "NME" }, { kind: "photo", name: "Photographer" }] };

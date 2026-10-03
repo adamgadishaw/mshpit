@@ -46,3 +46,20 @@ test("client source retention is bounded at the server's ten-source maximum", ()
   assert.equal(retained.form.sources.length, MAX_NEWSROOM_ARTICLE_SOURCES);
   assert.equal(newsroomArticlePayload(form).sources.length, MAX_NEWSROOM_ARTICLE_SOURCES);
 });
+
+test("one citation is enough and previously retained three-row drafts keep their content and retry identity", () => {
+  assert.equal(emptyNewsroomForm().sources.length, 1);
+  const form = { ...emptyNewsroomForm(), body: "The artist announced new tour dates.", sources: [
+    { name: "Fixture Artist", url: "https://artist.example.com/tour" }, { name: "", url: "" }, { name: "", url: "" },
+  ] };
+  const payload = newsroomArticlePayload(form);
+  assert.equal(payload.sources.length, 1);
+  const attempt = newsroomSaveAttempt(null, payload, () => "retained-citation-retry");
+  const retained = restoreNewsroomDraft("editor", newsroomDraftEnvelope("editor", form, attempt, null, 100), 101);
+  assert.deepEqual(retained.form.sources, form.sources);
+  assert.equal(retained.form.body, form.body);
+  assert.deepEqual(newsroomArticlePayload(retained.form), payload);
+  assert.equal(newsroomSaveAttempt(retained.attempt, payload, () => assert.fail("unchanged intent must retain its key")).key, attempt.key);
+  const partial = newsroomArticlePayload({ ...form, sources: [{ name: "Fixture Artist", url: "" }] });
+  assert.equal(partial.sources.length, 1, "incomplete citations are not silently discarded");
+});

@@ -2,9 +2,9 @@ import { NEWS_SOURCES } from "./newsSources.js";
 
 const MONEY_TODAY_KOREAN = String.fromCodePoint(0xBA38, 0xB2C8, 0xD22C, 0xB370, 0xC774);
 
-// Self-written articles may cite a small, owner-vetted set of editorial
-// publishers in addition to the outlets used by the automated RSS desk. Keep
-// this registry separate: adding a manual source must never make it an
+// Known publisher identities for self-written citations. Other named sources
+// may be cited without being added to this registry. Keep this separate:
+// accepting a manual citation must never make its URL an
 // automated feed, and a source hosted on a publishing platform must be bound
 // to the exact publication host rather than the platform's whole domain.
 const existingSources = NEWS_SOURCES.map((source) => Object.freeze({
@@ -45,7 +45,8 @@ const additionalSources = [
 
 export const NEWS_EDITORIAL_SOURCES = Object.freeze([...existingSources, ...additionalSources]);
 
-const lower = (value) => String(value || "").trim().toLocaleLowerCase();
+const lower = (value) => String(value || "").normalize("NFKC")
+  .replace(/\p{Default_Ignorable_Code_Point}/gu, "").replace(/\s+/gu, " ").trim().toLocaleLowerCase("en-US");
 
 function safeHttpsUrl(value) {
   try {
@@ -68,6 +69,21 @@ export function canonicalEditorialUrl(value) {
   return url?.toString() || null;
 }
 
+// Validate a stored citation, without resolving or fetching its URL. This is
+// not evidence of ownership or accuracy and never grants network access.
+export function canonicalManualCitationUrl(value) {
+  if (typeof value !== "string" || value.length > 2048 || /[\u0000-\u001f\u007f]/u.test(value)
+    || /^https:\/\/[^/?#]*:/u.test(value)) return null;
+  const url = safeHttpsUrl(value);
+  if (!url || url.toString().length > 2048) return null;
+  const host = url.hostname;
+  const labels = host.split(".");
+  if (host.length > 253 || labels.length < 2 || !/[a-z]/u.test(labels.at(-1))
+    || labels.some(label => !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u.test(label))
+    || /(?:^|\.)(?:localhost|local|internal|home|lan|onion|invalid|test|example)$/u.test(host)) return null;
+  return url.toString();
+}
+
 function hostMatches(source, hostname) {
   return source.hosts.some((host) => source.allowSubdomains
     ? hostname === host || hostname.endsWith(`.${host}`)
@@ -84,4 +100,8 @@ export function editorialSourceForUrl(value) {
 export function editorialSourceNameMatches(source, value) {
   const name = lower(value);
   return !!source && source.aliases.some((alias) => lower(alias) === name);
+}
+
+export function isKnownEditorialSourceName(value) {
+  return NEWS_EDITORIAL_SOURCES.some(source => editorialSourceNameMatches(source, value));
 }
