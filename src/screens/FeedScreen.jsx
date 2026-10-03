@@ -10,6 +10,7 @@ import { nextVisibleMediaPostIds } from "../domain/posterVisibility.mjs";
 import { JOURNEY_TAGLINE } from "../domain/menuJourney.mjs";
 import { HOME_JOURNEY_LINE, homeGuideStorageKey } from "../domain/homeJourney.mjs";
 import { lazyWithRetry } from "../lib/lazyWithRetry";
+import OptionalHomeShowCountdown from "../components/OptionalHomeShowCountdown";
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import SuggestedPittersRail from "../components/SuggestedPittersRail";
 import useAppActive from "../lib/useAppActive";
@@ -22,7 +23,6 @@ import useFollowingFeed from "../features/socialReactions/useFollowingFeed";
 
 // Optional panels load inside their own boundary so opening News or a countdown
 // cannot make the primary feed disappear while its module loads.
-const HomeShowCountdown = lazyWithRetry(() => import("../components/HomeShowCountdown"), "HomeShowCountdown");
 const LiveCoverageCard = lazyWithRetry(() => import("../components/news/LiveCoverageCard"), "LiveCoverageCard");
 
 const PAGE = 8; // load the feed in pages, like the big apps - never all at once
@@ -432,7 +432,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
 
           {loggedIn && showHomeCountdown && countdownPlan ? (
             <View style={styles.countdownTop}>
-              <Suspense fallback={<Text style={styles.tag}>Loading your next show…</Text>}><HomeShowCountdown plan={countdownPlan} onOpen={onOpenCountdown} onViewAll={onViewAllCountdown} /></Suspense>
+              <OptionalHomeShowCountdown fallback={<Text style={styles.tag}>Loading your next show…</Text>} plan={countdownPlan} onOpen={onOpenCountdown} onViewAll={onViewAllCountdown} />
             </View>
           ) : null}
 
@@ -590,7 +590,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
           ) : null}
           {loggedIn && showHomeCountdown && !countdownPlan ? (
             <View style={styles.countdownBottom}>
-              <Suspense fallback={<Text style={styles.tag}>Loading show suggestions…</Text>}><HomeShowCountdown compact onFindShow={onOpenDiscover} /></Suspense>
+              <OptionalHomeShowCountdown fallback={<Text style={styles.tag}>Loading show suggestions…</Text>} compact onFindShow={onOpenDiscover} />
             </View>
           ) : null}
         </View>

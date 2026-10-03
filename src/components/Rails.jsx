@@ -7,6 +7,7 @@ import { UpcomingEventCard } from "./VenueDiscoveryCards";
 import { PopularLoungeCard } from "./LiveDiscoveryCards";
 import { PublicPressableLink } from "./PublicWebLinks";
 import { lazyWithRetry } from "../lib/lazyWithRetry";
+import OptionalHomeShowCountdown from "./OptionalHomeShowCountdown";
 import {
   RIGHT_RAIL_EVENT_SCOPE,
   reconcileRightRailScopeChoice,
@@ -17,7 +18,6 @@ import {
 import { isFestivalListing, liveEventTitle, localDiscoveryEvents } from "../domain/liveDiscovery.mjs";
 import { artistPath, eventPath, profilePath } from "../domain/urls.mjs";
 import { visibleSuggestedPitters } from "../domain/suggestedPitters.mjs";
-const HomeShowCountdown = lazyWithRetry(() => import("./HomeShowCountdown"), "HomeShowCountdown");
 const NewsRailPanel = lazyWithRetry(() => import("./news/NewsRailPanel"), "NewsRailPanel");
 
 const NAV = [
@@ -297,7 +297,7 @@ export function RightRail({
       {showNewsStories ? <Suspense fallback={<Text style={styles.empty}>Loading music news…</Text>}><NewsRailPanel onOpenStory={onOpenNewsStory} onOpenAll={onOpenNews} /></Suspense> : null}
 
       {accountId && countdownPlan ? (
-        <Suspense fallback={<Text style={styles.empty}>Loading your next show…</Text>}><HomeShowCountdown compact plan={countdownPlan} onOpen={onOpenCountdown || onOpenEvent} onViewAll={onViewAllCountdown} /></Suspense>
+        <OptionalHomeShowCountdown fallback={<Text style={styles.empty}>Loading your next show…</Text>} compact plan={countdownPlan} onOpen={onOpenCountdown || onOpenEvent} onViewAll={onViewAllCountdown} />
       ) : null}
 
       {accountId && (suggestedUsers.length > 0 || discoverySidebarStatus === "loading") ? (
@@ -453,7 +453,7 @@ export function RightRail({
       </View>
 
       {accountId && !countdownPlan ? (
-        <Suspense fallback={<Text style={styles.empty}>Loading show suggestions…</Text>}><HomeShowCountdown compact onFindShow={onOpenDiscover} /></Suspense>
+        <OptionalHomeShowCountdown fallback={<Text style={styles.empty}>Loading show suggestions…</Text>} compact onFindShow={onOpenDiscover} />
       ) : null}
     </ScrollView>
   );
