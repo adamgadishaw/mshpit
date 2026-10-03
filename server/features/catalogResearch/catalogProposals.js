@@ -45,7 +45,10 @@ export function validateCatalogProposal(input, snapshot, at, photoOptions) {
   if (snapshot.type === "venue" && patch.facts?.some(fact => fact.field === "address")) {
     throw new ApiError(400, "Provider venue addresses cannot be patched.", "VALIDATION_FAILED");
   }
-  const existing = catalogFindings(snapshot.type, snapshot.findings) || { version: 1, summary: "", summarySources: [], facts: [], images: [] };
+  // A new patch cannot adopt legacy/unbound text or content from another
+  // identity. Fresh summary evidence is then required; old facts stay absent.
+  const bound = (snapshot.findings?.provenance?.identityHash || snapshot.findings?.identityHash) === snapshot.identityHash;
+  const existing = (bound && catalogFindings(snapshot.type, snapshot.findings)) || { version: 1, summary: "", summarySources: [], facts: [], images: [] };
   const attachments = Object.hasOwn(patch, "attachments") ? resolveCatalogAttachments(snapshot, patch.attachments, photoOptions) : null;
   const merged = { ...existing, ...patch, match: "confident" };
   const urls = [...sources.map(entry => entry.url), ...(existing.summarySources || []), ...(existing.facts || []).map(fact => fact.source)];
@@ -64,6 +67,6 @@ export function validateCatalogProposal(input, snapshot, at, photoOptions) {
   for (const fact of checked.record.facts) assertSafeAuthoredText(fact.value, { field: "catalog fact" });
   const record = { ...existing };
   for (const field of Object.keys(patch)) record[field] = field === "attachments" ? attachments : checked.record[field];
-  if (!attachments && snapshot.findings?.attachments) record.attachments = snapshot.findings.attachments;
+  if (!attachments && bound && snapshot.findings?.attachments) record.attachments = snapshot.findings.attachments;
   return { patch, evidence: sources, record };
 }

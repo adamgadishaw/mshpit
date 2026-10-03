@@ -115,6 +115,26 @@ test("correction restores prior research bytes and dormant owners cannot pair or
   rejects(() => pairPilot(f), 403);
 });
 
+test("partial patches cannot rebind legacy or mismatched research; fresh summaries discard stale fields", t => {
+  for (const identityHash of [undefined, "stale-identity"]) {
+    const f = fixture(t);
+    const old = { version: 1, ...proposalInput().patch, identityHash,
+      facts: [{ field: "origin", value: "Stale inherited origin", source: SOURCE }],
+      images: ["https://commons.wikimedia.org/wiki/File:Stale_legacy_photo.jpg"],
+      attachments: [{ assetHash: "stale", sourcePage: SOURCE }] };
+    f.db.prepare("INSERT INTO catalog_research(entity_type,entity_key,identity,status,next_attempt_at,findings) VALUES ('artist','wet leg','{}','found',0,?)")
+      .run(JSON.stringify(old));
+    const lease = f.claim();
+    rejects(() => f.propose(lease, { facts: [{ field: "origin", value: "New origin", source: SOURCE }] }, "narrow-facts-0001"), 400);
+    rejects(() => f.propose(lease, { attachments: [] }, "narrow-photo-0001"), 400);
+    const patch = { summary: "Wet Leg has a freshly sourced synthetic description that independently replaces stale research for this identity.", summarySources: [SOURCE] };
+    const proposal = f.propose(lease, patch, "fresh-summary-0001"); f.approve(proposal); f.api.commit(f.commitInput(lease, proposal));
+    const saved = JSON.parse(f.db.prepare("SELECT findings FROM catalog_research").get().findings);
+    assert.equal(saved.summary, patch.summary); assert.deepEqual(saved.facts, []); assert.deepEqual(saved.images, []);
+    assert.equal(saved.attachments, undefined); assert.notEqual(saved.provenance.identityHash, identityHash);
+  }
+});
+
 test("catalog defaults off; audience, entity scopes, current owner status and exact bearer are enforced", t => {
   const f = fixture(t), read = () => f.api.read({ authorization: AUTH, type: "artist", key: "wet leg" });
   delete f.env.PIT_CATALOG_API_ENABLED;
