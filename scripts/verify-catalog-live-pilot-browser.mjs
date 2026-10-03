@@ -83,14 +83,15 @@ async function main() {
     const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, serviceWorkers: "block" });
     const errors = [], reports = [], requests = [];
     await context.addCookies([{ name: fixture.cookieName, value: fixture.cookie.slice(fixture.cookie.indexOf("=") + 1), url: origin, httpOnly: true, sameSite: "Lax" }]);
-    await context.route("**/*", async route => {
+    const routeLocally = async route => {
       const url = new URL(route.request().url());
       if (url.href === fixture.photo.uri) return route.fulfill({ contentType: "image/png", body: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a0ioAAAAASUVORK5CYII=", "base64") });
       if (url.origin !== origin) return route.abort();
       if (url.pathname === "/api/client-errors") reports.push(route.request().postData());
       requests.push({ method: route.request().method(), path: url.pathname });
       return route.continue(); // No API fixtures or response interception.
-    });
+    };
+    await context.route("**/*", routeLocally);
     const page = await context.newPage(); page.setDefaultTimeout(timeout);
     page.on("pageerror", error => errors.push(error.message));
     stage = "owner-navigation";
@@ -141,7 +142,9 @@ async function main() {
     }
     assert.equal(server.outbound(), 0, "Catalog pairing/review/commit must not attempt provider calls");
     stage = "public-app-and-html";
-    const publicPage = await context.newPage(); publicPage.setDefaultTimeout(timeout);
+    const publicContext = await browser.newContext({ serviceWorkers: "block" });
+    await publicContext.route("**/*", routeLocally);
+    const publicPage = await publicContext.newPage(); publicPage.setDefaultTimeout(timeout);
     publicPage.on("pageerror", error => errors.push(error.message));
     for (const width of [390, 1280]) for (const record of records) {
       await publicPage.setViewportSize({ width, height: 900 });
