@@ -59,11 +59,12 @@ export const DATABASE_DIRECTORY = prepareDataDirectory({ fallbackDir: join(HERE,
 export const DATABASE_PATH = join(DATABASE_DIRECTORY, "pit.db");
 
 export const db = new DatabaseSync(DATABASE_PATH);
+// The recovery read can contend too; configure waiting before the first query.
+db.exec("PRAGMA busy_timeout = 5000;");
 assertDatabaseRecoveryReady(db);
 registerPitSqliteFunctions(db);
 
 db.exec(`
-  PRAGMA busy_timeout = 5000;
   PRAGMA journal_mode = WAL;
   PRAGMA foreign_keys = ON;
 `);

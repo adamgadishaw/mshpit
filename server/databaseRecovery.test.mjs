@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { spawn } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -272,6 +273,76 @@ test("quarantined restore cannot start a production server or run startup work",
     assert.equal(started, false);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+for (const quarantined of [false, true]) {
+  test(`database startup waits for the recovery read lock and ${quarantined ? "still rejects quarantine before mutations" : "then initializes normally"}`, { timeout: 20_000 }, async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pit-startup-lock-"));
+    const database = new DatabaseSync(join(dir, "pit.db"));
+    let child, releaseTimer, watchdog, locked = false, released = false, queried = false, result, stderr = "";
+    try {
+      database.exec("CREATE TABLE app_meta (key TEXT PRIMARY KEY,value TEXT NOT NULL)");
+      if (quarantined) fenceBackupSnapshot(database, 4000);
+      const before = database.prepare("SELECT * FROM app_meta").all();
+      database.exec("BEGIN EXCLUSIVE"); locked = true;
+      child = spawn(process.execPath, ["--input-type=module", "--eval", `
+        import { DatabaseSync } from "node:sqlite";
+        const prepare = DatabaseSync.prototype.prepare;
+        DatabaseSync.prototype.prepare = function (sql, ...args) {
+          if (sql === "SELECT name FROM sqlite_schema WHERE type='table'") {
+            DatabaseSync.prototype.prepare = prepare;
+            process.send({ kind: "recovery-query" });
+          }
+          return prepare.call(this, sql, ...args);
+        };
+        globalThis.fetch = () => { throw new Error("Startup fixture forbids outbound requests"); };
+        try {
+          const { db } = await import(${JSON.stringify(new URL("./db.js", import.meta.url).href)});
+          process.send({ kind: "result", ready: true,
+            timeout: db.prepare("PRAGMA busy_timeout").get().timeout,
+            journal: db.prepare("PRAGMA journal_mode").get().journal_mode,
+            foreignKeys: db.prepare("PRAGMA foreign_keys").get().foreign_keys });
+          db.close();
+        } catch (error) {
+          process.send({ kind: "result", ready: false, code: error.code, message: error.message });
+        }
+        process.disconnect();
+      `], { stdio: ["ignore", "ignore", "pipe", "ipc"], env: {
+        ...process.env, NODE_ENV: "test", PIT_DATA_DIR: dir, PIT_ALLOW_EMPTY_DB_BOOTSTRAP: "false",
+      } });
+      child.stderr.setEncoding("utf8"); child.stderr.on("data", chunk => { stderr += chunk; });
+      const completion = new Promise((resolve, reject) => {
+        child.once("error", reject);
+        child.once("close", (code, signal) => resolve({ code, signal }));
+        child.on("message", message => {
+          if (message.kind === "recovery-query") {
+            queried = true;
+            // Synchronize with the actual schema read, not module import timing.
+            releaseTimer = setTimeout(() => {
+              database.exec("ROLLBACK"); locked = false; released = true;
+            }, 250);
+          } else if (message.kind === "result") result = message;
+        });
+      });
+      watchdog = setTimeout(() => child.kill(), 15_000);
+      assert.deepEqual(await completion, { code: 0, signal: null }, stderr);
+      assert.equal(queried, true, "the actual recovery query ran");
+      assert.equal(released, true, JSON.stringify(result));
+      if (quarantined) {
+        assert.equal(result?.code, "DATABASE_RESTORE_REVIEW_REQUIRED");
+        assert.deepEqual(database.prepare("SELECT * FROM app_meta").all(), before);
+        assert.deepEqual(database.prepare("SELECT name FROM sqlite_schema WHERE type='table'").all().map(row => row.name), ["app_meta"]);
+        assert.equal(database.prepare("PRAGMA journal_mode").get().journal_mode, "delete");
+      } else {
+        assert.deepEqual(result, { kind: "result", ready: true, timeout: 5000, journal: "wal", foreignKeys: 1 });
+        assert.ok(database.prepare("SELECT count(*) AS count FROM artists").get().count > 0);
+      }
+    } finally {
+      clearTimeout(releaseTimer); clearTimeout(watchdog);
+      if (locked) database.exec("ROLLBACK");
+      child?.kill(); database.close(); rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}
 
 test("offline restore creates only a new sanitized copy and preserves source", () => {
   const dir = mkdtempSync(join(tmpdir(), "pit-restore-copy-"));
