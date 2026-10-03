@@ -2,11 +2,13 @@ import { randomUUID } from "node:crypto";
 import { ApiError } from "../../errors.js";
 import { withImmediateWrite } from "../../databaseTransaction.js";
 import { isOwnerId } from "../../ownerIdentity.js";
-import { createApiGrantService } from "../apiGrants/apiGrantService.js";
+import { assertCatalogGrantEntity, createApiGrantService } from "../apiGrants/apiGrantService.js";
+import { createCatalogGrantIssuance } from "../apiGrants/catalogGrantIssuance.js";
 import { normalizeIdempotencyKey, payloadDigest } from "../mediaApi/mediaApiPolicy.js";
 import { assertCatalogClaim, assertCatalogRunning, bumpCatalogRevision, catalogAudit, catalogControl,
   claimCatalogWork, finishCatalogWork, pauseCatalogWork } from "../catalogResearch/catalogWorkQueue.js";
 import { validateCatalogProposal } from "../catalogResearch/catalogProposals.js";
+import { catalogPhotoOptions, publicCatalogAttachments } from "../catalogResearch/catalogPhotoAttachments.js";
 import { listCatalogInventory, publicCatalogEntity, readCatalogEntity } from "./catalogApiInventory.js";
 import { CATALOG_LIMITS, catalogApiEnabled, catalogCommitEnabled, catalogConflict, catalogKey,
   catalogObject, catalogType } from "./catalogApiPolicy.js";
@@ -14,7 +16,7 @@ import { CATALOG_LIMITS, catalogApiEnabled, catalogCommitEnabled, catalogConflic
 // Deliberately synchronous. Claims, current-value checks, writes, receipts and
 // audit records share one SQLite IMMEDIATE transaction. No provider adapter or
 // network callback can run inside this service.
-export function createCatalogApiService({ database, env = process.env, now = Date.now }) {
+export function createCatalogApiService({ database, env = process.env, now = Date.now, photoOptions }) {
   const grants = createApiGrantService({ database, now });
   const assertEnabled = () => {
     if (!catalogApiEnabled(env)) throw new ApiError(404, "This API is unavailable.", "NOT_FOUND");
@@ -23,9 +25,9 @@ export function createCatalogApiService({ database, env = process.env, now = Dat
   const authorize = (authorization, required) => { assertEnabled(); return grants.authorize(authorization, required); };
   const assertOwner = ownerId => {
     assertEnabled();
-    const owner = database.prepare("SELECT role,email_verified_at,is_banned,suspended_until FROM users WHERE id=?").get(ownerId);
+    const owner = database.prepare("SELECT * FROM users WHERE id=?").get(ownerId);
     if (!owner || !isOwnerId(database, ownerId) || owner.role !== "admin" || !(owner.email_verified_at > 0)
-      || owner.is_banned || owner.suspended_until > now()) throw new ApiError(403, "Only the owner can review catalog work.", "FORBIDDEN");
+      || owner.is_banned || owner.dormant_at || owner.suspended_until > now()) throw new ApiError(403, "Only the owner can review catalog work.", "FORBIDDEN");
   };
   const snapshot = (type, key, at) => {
     const result = readCatalogEntity(database, { type, key: catalogKey(key), at });
@@ -33,6 +35,7 @@ export function createCatalogApiService({ database, env = process.env, now = Dat
     return result;
   };
   const claim = (body, grant, at) => {
+    assertCatalogGrantEntity(grant, body.type, body.key);
     const page = snapshot(body.type, body.key, at);
     const row = assertCatalogClaim(database, { type: body.type, key: body.key, nonce: body.nonce,
       grantId: grant.id, worker: "assistant", authorizationHash: payloadDigest(grant), snapshot: page, at });
@@ -56,9 +59,10 @@ export function createCatalogApiService({ database, env = process.env, now = Dat
     try { receiptKey = normalizeIdempotencyKey(idempotencyKey); }
     catch { throw new ApiError(400, "Use an idempotency key for catalog writes.", "VALIDATION_FAILED"); }
     const required = scope(body.type, action);
-    authorize(authorization, required);
+    assertCatalogGrantEntity(authorize(authorization, required), body.type, body.key);
     return withImmediateWrite(database, () => {
       const at = now(), grant = authorize(authorization, required);
+      assertCatalogGrantEntity(grant, body.type, body.key);
       assertCatalogRunning(database);
       if (action === "commit") {
         if (!catalogCommitEnabled(env)) throw new ApiError(403, "Catalog commits are disabled.", "FORBIDDEN");
@@ -90,16 +94,34 @@ export function createCatalogApiService({ database, env = process.env, now = Dat
       return response;
     });
   }
+  const pageView = page => ({ ...publicCatalogEntity(page),
+    photoOptions: page.eligible ? catalogPhotoOptions(page, photoOptions) : [],
+    attachments: page.eligible ? publicCatalogAttachments(page, photoOptions) : [] });
+  const storedResearch = (type, key) => type === "event"
+    ? database.prepare("SELECT * FROM catalog_event_enrichment WHERE event_id=?").get(key)
+    : database.prepare("SELECT * FROM catalog_research WHERE entity_type=? AND entity_key=?").get(type, key);
+  const issuance = createCatalogGrantIssuance({ database, now, assertOwner, assertEnabled, snapshot });
   const baseKeys = ["type", "key", "nonce"];
   return {
-    assertEnabled, authorize,
-    inventory({ authorization, type, cursor, limit }) {
-      authorize(authorization, scope(type, "read"));
+    assertEnabled, authorize, ...issuance,
+    ownerInventory({ ownerId, type, cursor, limit }) {
+      assertOwner(ownerId);
       return listCatalogInventory(database, { type, cursor, limit, at: now() });
     },
+    ownerRead({ ownerId, type, key }) {
+      assertOwner(ownerId);
+      const page = snapshot(type, key, now());
+      const changes = database.prepare(`SELECT id,revision,created_at createdAt,restored_at restoredAt
+        FROM catalog_research_changes WHERE entity_type=? AND entity_key=? ORDER BY revision DESC LIMIT 10`).all(type, key);
+      return { ...pageView(page), changes };
+    },
+    inventory({ authorization, type, cursor, limit }) {
+      const grant = authorize(authorization, scope(type, "read"));
+      return listCatalogInventory(database, { type, cursor, limit, at: now(), entities: grant.entities });
+    },
     read({ authorization, type, key }) {
-      authorize(authorization, scope(type, "read"));
-      return publicCatalogEntity(snapshot(type, key, now()));
+      assertCatalogGrantEntity(authorize(authorization, scope(type, "read")), type, key);
+      return pageView(snapshot(type, key, now()));
     },
     claim(input) {
       return write(input, "claim", "propose", ["type", "key", "revision", "valueHash", "identityHash"], (grant, at) => {
@@ -125,7 +147,7 @@ export function createCatalogApiService({ database, env = process.env, now = Dat
       return write(input, "propose", "propose", [...baseKeys, "patch", "evidence"], (grant, at) => {
         const { page, row } = claim(input.body, grant, at);
         if (row.status !== "leased") throw catalogConflict();
-        const checked = validateCatalogProposal({ patch: input.body.patch, evidence: input.body.evidence }, page, at);
+        const checked = validateCatalogProposal({ patch: input.body.patch, evidence: input.body.evidence }, page, at, photoOptions);
         database.prepare(`DELETE FROM catalog_proposals WHERE rowid IN
           (SELECT rowid FROM catalog_proposals WHERE updated_at<? LIMIT 100)`).run(at - CATALOG_LIMITS.retentionMs);
         if (database.prepare("SELECT COUNT(*) n FROM catalog_proposals").get().n >= CATALOG_LIMITS.proposalRows) {
@@ -152,12 +174,20 @@ export function createCatalogApiService({ database, env = process.env, now = Dat
           || proposal.base_revision !== page.revision || proposal.base_hash !== page.valueHash
           || proposal.identity_hash !== page.identityHash) throw catalogConflict();
         const evidence = JSON.parse(proposal.evidence_json).map(({ verification: _verification, ...source }) => source);
-        const checked = validateCatalogProposal({ patch: JSON.parse(proposal.patch_json), evidence }, page, at);
+        const checked = validateCatalogProposal({ patch: JSON.parse(proposal.patch_json), evidence }, page, at, photoOptions);
         if (payloadDigest({ patch: checked.patch, evidence: checked.evidence }) !== proposal.payload_hash) throw catalogConflict();
         const record = { ...checked.record, provenance: { actorType: "assistant", actorLabel: grant.actorLabel,
-          method: "owner-reviewed-submission", proposalId: proposal.id, evidence: checked.evidence, at } };
+          method: "owner-reviewed-submission", proposalId: proposal.id, evidence: checked.evidence,
+          identityHash: page.identityHash, at } };
         const serialized = JSON.stringify(record);
         if (Buffer.byteLength(serialized) > CATALOG_LIMITS.proposalBytes) throw catalogConflict();
+        if (database.prepare("SELECT COUNT(*) n FROM catalog_research_changes").get().n >= CATALOG_LIMITS.proposalRows) {
+          throw new ApiError(429, "Catalog correction history needs review.", "RATE_LIMITED");
+        }
+        const prior = JSON.stringify(storedResearch(page.type, page.key) || null);
+        if (Buffer.byteLength(prior) > 40000) throw catalogConflict();
+        if (database.prepare("UPDATE catalog_grant_limits SET commits=commits+1 WHERE grant_id=? AND commits<commit_limit")
+          .run(grant.id).changes !== 1) throw new ApiError(429, "This pilot has reached its approved commit limit.", "RATE_LIMITED");
         if (page.type === "event") {
           database.prepare(`INSERT INTO catalog_event_enrichment(event_id,findings,updated_at) VALUES (?,?,?)
             ON CONFLICT(event_id) DO UPDATE SET findings=excluded.findings,updated_at=excluded.updated_at`)
@@ -171,6 +201,10 @@ export function createCatalogApiService({ database, env = process.env, now = Dat
             .run(page.type, page.key, JSON.stringify(page.identity), at + 180 * 86_400_000, at, serialized);
         }
         const revision = bumpCatalogRevision(database, page.type, page.key);
+        database.prepare(`INSERT INTO catalog_research_changes
+          (id,entity_type,entity_key,identity_hash,revision,prior_json,next_hash,created_at) VALUES (?,?,?,?,?,?,?,?)`)
+          .run(proposal.id, page.type, page.key, page.identityHash, revision, prior,
+            snapshot(page.type, page.key, at).valueHash, at);
         finishCatalogWork(database, { type: page.type, key: page.key, nonce: row.nonce, at });
         database.prepare("UPDATE catalog_proposals SET status='committed',updated_at=? WHERE id=?").run(at, proposal.id);
         audit(grant, "committed", input.body, at, { proposalId: proposal.id, priorHash: page.valueHash,
@@ -195,21 +229,27 @@ export function createCatalogApiService({ database, env = process.env, now = Dat
       }
       if (after !== "") catalogKey(after);
       const rows = database.prepare(`SELECT entity_key key,status,nonce,lease_until leaseUntil,attempts,updated_at updatedAt
-        FROM catalog_work_items WHERE grant_id=? AND entity_type=? AND entity_key>? ORDER BY entity_key LIMIT ?`)
-        .all(grant.id, type, after, limit + 1);
+        FROM catalog_work_items WHERE grant_id=? AND entity_type=? AND entity_key>?
+        AND entity_key IN (SELECT json_extract(value,'$.key') FROM json_each(?) WHERE json_extract(value,'$.type')=?)
+        ORDER BY entity_key LIMIT ?`).all(grant.id, type, after, JSON.stringify(grant.entities), type, limit + 1);
       const control = catalogControl(database);
       const counts = database.prepare(`SELECT status,COUNT(*) count FROM catalog_work_items
-        WHERE grant_id=? AND entity_type=? GROUP BY status`).all(grant.id, type);
+        WHERE grant_id=? AND entity_type=?
+        AND entity_key IN (SELECT json_extract(value,'$.key') FROM json_each(?) WHERE json_extract(value,'$.type')=?)
+        GROUP BY status`).all(grant.id, type, JSON.stringify(grant.entities), type);
       const today = new Date(now()).toISOString().slice(0, 10);
       return { items: rows.slice(0, limit), nextAfter: rows.length > limit ? rows[limit - 1].key : null, counts,
         control: { paused: control.paused, revision: control.revision, utcDay: control.utc_day,
           claims: control.utc_day < today ? 0 : control.claims, commits: control.utc_day < today ? 0 : control.commits },
+        grant: { id: grant.id, expiresAt: grant.expiresAt, commitLimit: grant.commitLimit,
+          commits: database.prepare("SELECT commits FROM catalog_grant_limits WHERE grant_id=?").get(grant.id).commits },
         limits: { active: CATALOG_LIMITS.active, dailyClaims: CATALOG_LIMITS.dailyClaims, dailyCommits: CATALOG_LIMITS.dailyCommits } };
     },
     proposal({ authorization, type, id }) {
       const grant = authorize(authorization, scope(type, "read"));
       const row = getProposal(id, grant.id);
       if (row.entity_type !== type) throw new ApiError(404, "This proposal is unavailable.", "NOT_FOUND");
+      assertCatalogGrantEntity(grant, type, row.entity_key);
       return proposalView(row);
     },
     review({ ownerId, proposalId, payloadHash, approved }) {
@@ -233,7 +273,48 @@ export function createCatalogApiService({ database, env = process.env, now = Dat
       assertOwner(ownerId);
       const row = database.prepare("SELECT * FROM catalog_proposals WHERE id=?").get(catalogKey(proposalId));
       if (!row) throw new ApiError(404, "This proposal is unavailable.", "NOT_FOUND");
-      return { ...proposalView(row), patch: JSON.parse(row.patch_json), evidence: JSON.parse(row.evidence_json) };
+      const current = snapshot(row.entity_type, row.entity_key, now());
+      const patch = JSON.parse(row.patch_json), evidence = JSON.parse(row.evidence_json);
+      return { ...proposalView(row), patch, evidence, current: pageView(current),
+        proposedAttachments: patch.attachments ? catalogPhotoOptions(current, photoOptions)
+          .filter(photo => patch.attachments.some(ref => ref.assetHash === photo.assetHash && ref.sourcePage === photo.sourcePage)) : [] };
+    },
+    correct({ ownerId, type, key, revision, valueHash, identityHash, action, changeId }) {
+      assertOwner(ownerId);
+      if (!["hide", "restore"].includes(action)) throw new ApiError(400, "Choose hide or restore.", "VALIDATION_FAILED");
+      return withImmediateWrite(database, () => {
+        assertOwner(ownerId);
+        const at = now(), page = snapshot(type, key, at);
+        if (page.revision !== revision || page.valueHash !== valueHash || page.identityHash !== identityHash) throw catalogConflict();
+        const table = type === "event" ? "catalog_event_enrichment" : "catalog_research";
+        const where = type === "event" ? "event_id=?" : "entity_type=? AND entity_key=?";
+        const params = type === "event" ? [key] : [type, key];
+        if (action === "hide") {
+          if (page.hidden) return { revision: page.revision, hidden: true };
+          if (!storedResearch(type, key)) throw new ApiError(404, "This record has no research.", "NOT_FOUND");
+          database.prepare(`UPDATE ${table} SET ${type === "event" ? "hidden=1" : "status='hidden',claim_token=NULL"} WHERE ${where}`).run(...params);
+        } else {
+          const change = database.prepare("SELECT * FROM catalog_research_changes WHERE id=? AND entity_type=? AND entity_key=?")
+            .get(catalogKey(changeId), type, key);
+          if (!change || change.restored_at != null || change.identity_hash !== identityHash || page.protected
+            || (change.revision !== revision && !(page.hidden && change.revision + 1 === revision))) throw catalogConflict();
+          const prior = JSON.parse(change.prior_json);
+          database.prepare(`DELETE FROM ${table} WHERE ${where}`).run(...params);
+          if (prior) {
+            const columns = database.prepare(`PRAGMA table_info(${table})`).all().map(row => row.name);
+            if (type !== "event") prior.claim_token = null;
+            database.prepare(`INSERT INTO ${table} (${columns.join(",")}) VALUES (${columns.map(() => "?").join(",")})`)
+              .run(...columns.map(column => prior[column] ?? null));
+          }
+          database.prepare("UPDATE catalog_research_changes SET restored_at=? WHERE id=?").run(at, change.id);
+        }
+        const nextRevision = bumpCatalogRevision(database, type, key);
+        database.prepare("UPDATE catalog_work_items SET status='quarantined',lease_until=0,updated_at=? WHERE entity_type=? AND entity_key=?")
+          .run(at, type, key);
+        catalogAudit(database, { actorType: "owner", actorLabel: "owner", action, type, key,
+          priorHash: page.valueHash, nextHash: snapshot(type, key, at).valueHash, at, disablingControl: action === "hide" });
+        return { revision: nextRevision, hidden: action === "hide" };
+      });
     },
     control({ ownerId, paused, expectedRevision }) {
       assertOwner(ownerId);
@@ -248,6 +329,7 @@ export function createCatalogApiService({ database, env = process.env, now = Dat
         if (!row) throw new ApiError(404, "This grant is unavailable.", "NOT_FOUND");
         if (row.status === "revoked") return { id: grantId, status: "revoked" };
         database.prepare("UPDATE api_grants SET status='revoked',revoked_at=? WHERE id=?").run(now(), grantId);
+        database.prepare("UPDATE catalog_pairings SET status='revoked' WHERE owner_id=? AND status='pending'").run(ownerId);
         database.prepare(`UPDATE catalog_work_items SET status='failed',lease_until=0,updated_at=?
           WHERE grant_id=? AND status IN ('leased','proposed')`).run(now(), grantId);
         catalogAudit(database, { actorType: "owner", actorLabel: "owner", grantId, action: "revoked", at: now(), disablingControl: true });

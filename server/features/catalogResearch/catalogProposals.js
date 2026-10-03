@@ -3,10 +3,11 @@ import { assertSafeAuthoredText } from "../../contentSafety.js";
 import { CATALOG_LIMITS, catalogObject } from "../catalogApi/catalogApiPolicy.js";
 import { CATALOG_RESEARCH_FACTS, httpsUrl, sourceKey, validateCatalogResearchFindings } from "./catalogResearchFindings.js";
 import { catalogFindings } from "../catalogApi/catalogApiInventory.js";
+import { resolveCatalogAttachments } from "./catalogPhotoAttachments.js";
 
-export function validateCatalogProposal(input, snapshot, at) {
+export function validateCatalogProposal(input, snapshot, at, photoOptions) {
   catalogObject(input, ["patch", "evidence"]);
-  const patch = catalogObject(input.patch, ["summary", "summarySources", "facts", "images"]);
+  const patch = catalogObject(input.patch, ["summary", "summarySources", "facts", "images", "attachments"]);
   const evidence = input.evidence;
   if (!Array.isArray(evidence) || evidence.length < 1 || evidence.length > 12
     || Buffer.byteLength(JSON.stringify(input), "utf8") > CATALOG_LIMITS.proposalBytes) {
@@ -45,6 +46,7 @@ export function validateCatalogProposal(input, snapshot, at) {
     throw new ApiError(400, "Provider venue addresses cannot be patched.", "VALIDATION_FAILED");
   }
   const existing = catalogFindings(snapshot.type, snapshot.findings) || { version: 1, summary: "", summarySources: [], facts: [], images: [] };
+  const attachments = Object.hasOwn(patch, "attachments") ? resolveCatalogAttachments(snapshot, patch.attachments, photoOptions) : null;
   const merged = { ...existing, ...patch, match: "confident" };
   const urls = [...sources.map(entry => entry.url), ...(existing.summarySources || []), ...(existing.facts || []).map(fact => fact.source)];
   const checked = validateCatalogResearchFindings(merged, { type: snapshot.type, name: snapshot.identity.name, searchedUrls: urls });
@@ -53,13 +55,15 @@ export function validateCatalogProposal(input, snapshot, at) {
     throw new ApiError(400, "The catalog proposal needs valid, cited fields.", "VALIDATION_FAILED");
   }
   const supplied = new Set(sources.map(source => sourceKey(source.url)));
-  const newlyCited = [...(patch.summarySources || []), ...(patch.facts || []).map(fact => fact.source), ...(patch.images || [])];
+  const newlyCited = [...(patch.summarySources || []), ...(patch.facts || []).map(fact => fact.source), ...(patch.images || []),
+    ...(attachments || []).map(photo => photo.sourcePage)];
   if (newlyCited.some(url => !supplied.has(sourceKey(url)))) {
     throw new ApiError(400, "Every changed field needs submitted source evidence.", "VALIDATION_FAILED");
   }
   assertSafeAuthoredText(checked.record.summary, { field: "catalog summary" });
   for (const fact of checked.record.facts) assertSafeAuthoredText(fact.value, { field: "catalog fact" });
   const record = { ...existing };
-  for (const field of Object.keys(patch)) record[field] = checked.record[field];
+  for (const field of Object.keys(patch)) record[field] = field === "attachments" ? attachments : checked.record[field];
+  if (!attachments && snapshot.findings?.attachments) record.attachments = snapshot.findings.attachments;
   return { patch, evidence: sources, record };
 }

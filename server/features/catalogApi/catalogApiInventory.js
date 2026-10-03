@@ -78,7 +78,8 @@ export function readCatalogEntity(database, { type, key, at = Date.now(), venueR
     if (!row || row.owner_id != null || !row.provider_event_id || !row.source || row.release_at > at
       || row.provider_active === 0 || row.music_qualified === 0 || ["pending","conflict"].includes(row.artist_identity_status)) return null;
     identity = { type, key, name: text(row.event_name || row.artist, 160), source: row.source,
-      providerEventId: row.provider_event_id, artistKey: row.artist_key, venueProviderId: row.venue_provider_id || null };
+      providerEventId: row.provider_event_id, artistKey: row.artist_key, venueProviderId: row.venue_provider_id || null,
+      date: row.date, venue: row.venue };
     canonical = { artist: row.artist, venue: row.venue, date: row.date, startDateTime: row.start_date_time,
       status: row.event_status, ticketUrl: row.ticket_url, soldOut: row.sold_out, eventKind: row.event_kind };
     protectedFields = false;
@@ -121,12 +122,19 @@ function decodeCursor(cursor, type) {
     return catalogKey(value.after);
   } catch { throw new ApiError(400, "The catalog cursor is invalid.", "VALIDATION_FAILED"); }
 }
-export function listCatalogInventory(database, { type, cursor, limit = 25, at = Date.now() }) {
+export function listCatalogInventory(database, { type, cursor, limit = 25, at = Date.now(), entities = null }) {
   catalogType(type);
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > CATALOG_LIMITS.page) {
     throw new ApiError(400, "Choose a catalog page size from 1 to 50.", "VALIDATION_FAILED");
   }
   const after = decodeCursor(cursor, type), columns = schema(database);
+  if (entities) {
+    const selected = entities.filter(entry => entry.type === type && entry.key > after)
+      .sort((a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
+    const page = selected.slice(0, limit);
+    return { items: page.map(entry => publicCatalogEntity(readCatalogEntity(database, { type, key: entry.key, at }))).filter(Boolean),
+      nextCursor: selected.length > limit ? Buffer.from(JSON.stringify({ v: 1, type, after: page.at(-1).key })).toString("base64url") : null };
+  }
   let rows;
   if (type === "artist") {
     rows = database.prepare("SELECT norm k FROM artists WHERE norm>? AND COALESCE(source,'')<>'artist-created' ORDER BY norm LIMIT ?")

@@ -216,6 +216,17 @@ function searchMain(document) {
   </main>`;
 }
 
+function researchedAbout(research) {
+  if (!research?.summary) return "";
+  const sourceLink = (url, label) => publicHttpsUrl(url)
+    ? `<a href="${esc(url)}" rel="noopener noreferrer">${esc(label)}</a>` : "";
+  const facts = (research.facts || []).map(fact => `<div><dt>${esc(fact.label)}</dt><dd>${fact.field === "website"
+    ? sourceLink(fact.value, fact.value) : esc(fact.value)}</dd></div>`).join("");
+  const photos = (research.attachments || []).flatMap(photo => publicMediaUrl(photo.uri)
+    ? [`<figure><img src="${esc(photo.uri)}" alt="${esc(photo.label)}" loading="lazy" decoding="async" referrerpolicy="no-referrer" style="max-width:100%;height:auto" /><figcaption>${esc(photo.title || photo.label)} · ${esc(photo.creator)} · ${esc(photo.license)} · ${sourceLink(photo.sourcePage, "Photo source")} · ${sourceLink(photo.licenseUrl, "License")} · ${esc(photo.modificationNotice)}</figcaption></figure>`] : []).join("");
+  return `<section class="section" data-catalog-research="true"><h2>About</h2><p>${esc(research.summary)}</p>${facts ? `<dl class="event-facts">${facts}</dl>` : ""}${photos}<p class="micro">Summarised from ${(research.sources || []).map(source => sourceLink(source.url, source.site)).filter(Boolean).join(" · ")}</p></section>`;
+}
+
 function artistMain(document) {
   const { artist, stats } = document;
   const memorialMode = !!document.memorial;
@@ -277,6 +288,7 @@ function artistMain(document) {
       ${nextShow}
     </section>
     ${memorial}
+    ${researchedAbout(document.research)}
     ${!memorialMode ? renderArtistHeadlinesSection(document) : ""}
     ${!memorialMode ? renderArtistNewsSection(document) : ""}
     ${biography ? `<section class="section"><h2>About ${esc(artist.name)}</h2><dl class="stats">${biography}</dl></section>` : ""}
@@ -400,6 +412,7 @@ function eventMain(document) {
       ${providerImage}
       ${eventDetails(event)}
     </section>
+    ${researchedAbout(document.research)}
     ${posts ? `<section class="section" data-mshpit-fan-backed="true"><div class="section-heading"><div><p class="eyebrow">People who were there</p><h2>Fan memories from this show</h2></div></div><div class="post-list">${posts}</div></section>` : `<section class="section empty-state"><p class="eyebrow">The archive starts here</p><h2>No fan memories have been shared for this date yet.</h2><p>After the show, fans can log a review and choose which photos appear in public galleries.</p></section>`}
     ${relatedEventSections(document)}
   </main>`;
@@ -459,6 +472,7 @@ function venueMain(document) {
   return `<main id="main">
     ${breadcrumbs(document)}
     <section class="profile-hero venue-hero">${heroPhoto}<div class="venue-hero-copy"><p class="eyebrow">Concert venue guide</p><h1>${esc(venue.name)}</h1>${venue.place ? `<p class="hero-copy">${esc(venue.place)}</p>` : ""}${address}<p class="hero-copy venue-rating">${rating} · ${publicReviewCount}</p><dl class="venue-facts">${venueFacts}</dl></div></section>
+    ${researchedAbout(document.research)}
     <section class="section venue-guide"><div class="section-heading"><div><p class="eyebrow">Before the show</p><h2>Seating, parking and transport</h2></div></div><div class="venue-guide-grid"><article><p class="eyebrow">Seating &amp; layout</p><h3>${guide.capacityLabel ? `${esc(guide.capacityLabel)} listed capacity` : "Check the event layout"}</h3><p>${esc(guide.seatingSummary)}</p></article><div class="venue-guide-actions">${guideActions || "<p>Parking and transit links will appear when this venue has a verified location.</p>"}</div></div></section>
     ${events ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">On the calendar</p><h2>Upcoming concerts</h2>${document.eventsHasMore ? `<p class="micro">Showing the next ${esc(document.events.length)} listed concerts.</p>` : ""}</div></div><ol class="event-list">${events}</ol></section>` : ""}
     ${venueReviews ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">About the room</p><h2>Recent venue reviews</h2></div><span>${publicReviewCount}</span></div><div class="post-list">${venueReviews}</div></section>` : `<section class="section empty-state"><p class="eyebrow">About the room</p><h2>No public venue reviews yet.</h2><p>Be the first to share what the sound, sightlines and atmosphere were like.</p></section>`}

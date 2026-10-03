@@ -80,6 +80,8 @@ jobs:
       - run: npm run verify:discover-photos-browser
       - run: npm run verify:discover-venues-browser
       - run: npm run verify:catalog-maintenance-browser
+      # Real server + throwaway synthetic database. No API response fixtures.
+      - run: npm run verify:catalog-live-pilot-browser
       - run: npm run verify:quick-log-browser
       - run: npm run verify:festivals-browser
       - run: npm run verify:discover-events-browser

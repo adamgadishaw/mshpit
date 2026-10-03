@@ -7,7 +7,8 @@ import { admitClaudeSpend, claudeCeilingLeftMicroUsd, claudeRequestDefinitelyRej
 import { anthropicErrorSummary } from "../../anthropicErrors.js";
 import { privateErrorLabel } from "../../errors.js";
 import { startPeriodicJob } from "../../periodicJobScheduler.js";
-import { publicCatalogResearch, validateCatalogResearchFindings } from "./catalogResearchFindings.js";
+import { validateCatalogResearchFindings } from "./catalogResearchFindings.js";
+import { readPublicCatalogResearch } from "./catalogPublicResearch.js";
 import { catalogResearchModel, researchCatalogSubject } from "./catalogResearchProvider.js";
 import { searchGrowthArtistPriorityKeys, searchGrowthVenuePriorityRows } from "../searchGrowth/searchGrowthPriorities.js";
 import { withImmediateWrite } from "../../databaseTransaction.js";
@@ -348,7 +349,8 @@ function finishSubject(database, subject, token, { status, findings = null, mode
           findings=CASE WHEN ? THEN ? ELSE findings END,last_reason=?,claim_token=NULL
         WHERE entity_type=? AND entity_key=? AND claim_token=?`)
         .run(keepsPrevious ? "found" : status, failures, replaces || !keepsPrevious ? 1 : 0, at, nextAt, model,
-          Math.max(0, Math.round(costMicroUsd)), replaces ? 1 : 0, replaces ? JSON.stringify(findings) : null,
+          Math.max(0, Math.round(costMicroUsd)), replaces ? 1 : 0,
+          replaces ? JSON.stringify({ ...findings, identityHash: snapshot.identityHash }) : null,
           reason ? String(reason).slice(0, 120) : null, subject.type, subject.key, token).changes;
       if (!changed) return false;
       if (replaces) bumpCatalogRevision(database, subject.type, subject.key);
@@ -498,24 +500,8 @@ export async function runCatalogResearchPass({
   return outcome;
 }
 
-export function readCatalogResearch(database, { type, key, city = null }) {
-  if (type === "artist") {
-    const row = database.prepare(`SELECT findings,researched_at FROM catalog_research
-      WHERE entity_type='artist' AND entity_key=? AND status='found'`).get(String(key || ""));
-    return row ? publicCatalogResearch("artist", safeJson(row.findings), { researchedAt: row.researched_at }) : null;
-  }
-  const venue = canonicalVenueKey(key);
-  if (!venue) return null;
-  const rows = database.prepare(`SELECT entity_key,findings,researched_at FROM catalog_research
-    WHERE entity_type='venue' AND status='found' AND entity_key>=? AND entity_key<? LIMIT 20`)
-    .all(`${venue}|`, `${venue}|￿`);
-  const wantedCity = text(city, 80).toLowerCase();
-  // With a city, only that room's research. Without one, only when the name
-  // is unambiguous.
-  const row = wantedCity
-    ? rows.find((entry) => entry.entity_key.split("|")[1] === wantedCity)
-    : rows.length === 1 ? rows[0] : null;
-  return row ? publicCatalogResearch("venue", safeJson(row.findings), { researchedAt: row.researched_at }) : null;
+export function readCatalogResearch(database, options) {
+  return readPublicCatalogResearch(database, options);
 }
 
 function safeJson(value) {

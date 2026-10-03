@@ -60,6 +60,11 @@ function apiCapabilityFixture() {
   db.prepare(`INSERT INTO api_grants(id,audience,owner_id,actor_type,actor_label,scopes,token_hash,status,issued_at,expires_at)
     VALUES ('restore-catalog','pit-catalog-v1','member','assistant','Synthetic restore',?,?,'active',1000,9000)`)
     .run(JSON.stringify(CATALOG_SCOPES), secretHash(catalogToken));
+  db.prepare("INSERT INTO catalog_grant_limits(grant_id,entities_json,commit_limit) VALUES ('restore-catalog',?,1)")
+    .run(JSON.stringify([{ type: "artist", key: "synthetic-restore-artist" }]));
+  db.prepare(`INSERT INTO catalog_pairings(id,owner_id,code_hash,actor_label,scopes,entities_json,commit_limit,issued_at,expires_at,status)
+    VALUES ('restore-pairing','member',?,'Synthetic pending restore',?,?,1,1000,9000,'pending')`)
+    .run(secretHash("synthetic-restore-pairing"), JSON.stringify(CATALOG_SCOPES), JSON.stringify([{ type: "artist", key: "synthetic-restore-artist" }]));
   db.prepare(`INSERT INTO media_api_idempotency
     (grant_id,operation,idempotency_key,payload_hash,status,response_json,created_at,updated_at,expires_at)
     VALUES (?,'news.create','synthetic-history','synthetic-hash','completed','{"ok":true}',1000,1000,9000)`).run(grant.grantId);
@@ -82,6 +87,8 @@ test("restore preparation revokes every scoped API capability while preserving a
     fenceBackupSnapshot(f.db);
     const counts = prepareRecoveryDatabase(f.db, reviews);
     assert.equal(counts.mediaApiGrants, 1); assert.equal(counts.apiGrants, 1); assert.equal(counts.mediaApiPairings, 1);
+    assert.equal(counts.catalogPairings, 1);
+    assert.equal(f.db.prepare("SELECT status FROM catalog_pairings WHERE id='restore-pairing'").get().status, "revoked");
     assert.doesNotThrow(() => assertDatabaseRecoveryReady(f.db));
     for (const scope of MEDIA_API_SCOPES) assert.throws(() => f.media.authorize(f.mediaAuthorization, scope), { code: "AUTH_INVALID" });
     for (const scope of CATALOG_SCOPES) assert.throws(() => f.catalog.authorize(f.catalogAuthorization, scope), { code: "AUTH_INVALID" });
@@ -98,12 +105,13 @@ test("repeated recovery leaves terminal API state and prior revocation timestamp
   const f = apiCapabilityFixture();
   try {
     f.db.prepare("UPDATE media_api_grants SET status='revoked',token_hash=NULL,revoked_at=2000,updated_at=2000 WHERE id=?").run(f.grant.grantId);
-    f.db.exec("UPDATE api_grants SET status='revoked',revoked_at=2000; UPDATE media_api_pairings SET status='expired' WHERE status='pending';");
-    const state = () => ["media_api_grants", "api_grants", "media_api_pairings"].map(table => f.db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all());
+    f.db.exec("UPDATE api_grants SET status='revoked',revoked_at=2000; UPDATE media_api_pairings SET status='expired' WHERE status='pending'; UPDATE catalog_pairings SET status='revoked';");
+    const state = () => ["media_api_grants", "api_grants", "media_api_pairings", "catalog_pairings"].map(table => f.db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all());
     const before = state(), history = f.history();
     for (const at of [5000, 6000]) {
       const counts = prepareRecoveryDatabase(f.db, { ...reviews, at });
       assert.equal(counts.mediaApiGrants, 0); assert.equal(counts.apiGrants, 0); assert.equal(counts.mediaApiPairings, 0);
+      assert.equal(counts.catalogPairings, 0);
       assert.deepEqual(state(), before); assert.deepEqual(f.history(), history);
     }
   } finally { f.db.close(); }
@@ -118,6 +126,7 @@ test("a later recovery failure rolls back API revocation, session cleanup and th
     assert.throws(() => prepareRecoveryDatabase(f.db, reviews), /synthetic restore failure/);
     assert.equal(f.db.prepare("SELECT count(*) n FROM sessions").get().n, 1);
     assert.equal(f.db.prepare("SELECT status FROM media_api_pairings WHERE id=?").get(f.pending.pairingId).status, "pending");
+    assert.equal(f.db.prepare("SELECT status FROM catalog_pairings WHERE id='restore-pairing'").get().status, "pending");
     for (const scope of MEDIA_API_SCOPES) assert.doesNotThrow(() => f.media.authorize(f.mediaAuthorization, scope));
     for (const scope of CATALOG_SCOPES) assert.doesNotThrow(() => f.catalog.authorize(f.catalogAuthorization, scope));
     assert.deepEqual(f.history(), history);

@@ -6,12 +6,12 @@ import { withImmediateWrite } from "../../databaseTransaction.js";
 // Public reads of the research agent's sourced summaries, and the staff switch
 // that takes a wrong one down. Reads never start research.
 export function catalogResearchRoutes({ database, ApiError, rateLimit, decodedPathParam, resolveArtist, canonicalVenueKey,
-  requireAdmin, now = Date.now }) {
+  requireAdmin, resolveEventResearch = () => null, now = Date.now }) {
   const audit = database.prepare(`INSERT INTO moderation_actions
     (id,actor_id,action,target_type,target_id,reason,prior_state,next_state,request_id,created_at)
     VALUES (?,?,?,?,?,?,?,?,?,?)`);
   // Private: some artist pages are visible only to certain accounts.
-  const cache = (ctx) => ctx.setHeader?.("Cache-Control", "private, max-age=300");
+  const cache = (ctx) => ctx.setHeader?.("Cache-Control", "private, no-store");
   return {
     "GET /api/artists/:key/research": (ctx) => {
       rateLimit(ctx, "catalog-research-read", 120, 60_000);
@@ -19,7 +19,7 @@ export function catalogResearchRoutes({ database, ApiError, rateLimit, decodedPa
       const artist = resolveArtist(key, ctx);
       if (!artist) throw new ApiError(404, "This artist page is unavailable.", "NOT_FOUND");
       cache(ctx);
-      return { research: readCatalogResearch(database, { type: "artist", key: artist.norm }) };
+      return { research: readCatalogResearch(database, { type: "artist", key: artist.norm, at: now() }) };
     },
     "GET /api/venues/:key/research": (ctx) => {
       rateLimit(ctx, "catalog-research-read", 120, 60_000);
@@ -27,7 +27,14 @@ export function catalogResearchRoutes({ database, ApiError, rateLimit, decodedPa
       if (!key) throw new ApiError(400, "Choose a venue first.", "VALIDATION_FAILED");
       const city = typeof ctx.query?.city === "string" ? ctx.query.city.slice(0, 80) : null;
       cache(ctx);
-      return { research: readCatalogResearch(database, { type: "venue", key, city }) };
+      return { research: readCatalogResearch(database, { type: "venue", key, city, at: now() }) };
+    },
+    "GET /api/events/:key/research": (ctx) => {
+      rateLimit(ctx, "catalog-research-read", 120, 60_000);
+      const key = decodedPathParam(ctx, "key", { max: 180, label: "event link" });
+      cache(ctx);
+      // The public document owns event visibility, including memorial policy.
+      return { research: resolveEventResearch(key) };
     },
     "POST /api/moderation/catalog-research/hide": (ctx) => {
       const actor = requireAdmin(ctx);

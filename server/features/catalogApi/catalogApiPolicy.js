@@ -9,6 +9,7 @@ export const CATALOG_LIMITS = Object.freeze({
   active: 2, dailyClaims: 100, dailyCommits: 100,
   workRows: 10_000, proposalRows: 10_000, receiptRows: 20_000, auditRows: 100_000,
   proposalBytes: 20_000, receiptBytes: 32_768, retentionMs: 72 * 3_600_000,
+  pilotEntities: 6, pairingMs: 5 * 60_000, grantMs: 30 * 60_000, grantRows: 1000,
 });
 const on = value => /^(1|true|yes|on)$/iu.test(String(value || "").trim());
 export const catalogApiEnabled = env => on(env?.PIT_CATALOG_API_ENABLED);

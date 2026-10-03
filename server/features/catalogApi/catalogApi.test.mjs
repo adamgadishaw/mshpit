@@ -16,6 +16,105 @@ import { ApiError } from "../../errors.js";
 import { CATALOG_KNOWLEDGE_KEY, ensureCatalogKnowledgeControl, setCatalogKnowledgeMode } from "../../catalogKnowledgeControl.js";
 const rejects = (fn, status) => assert.throws(fn, error => error.status === status);
 
+const pilotSelection = [{ type: "artist", key: "wet leg" }, { type: "event", key: "event-one" }];
+function pairPilot(f, changes = {}) {
+  const pairing = f.api.issuePairing({ ownerId: "owner", input: { actorLabel: "Synthetic pilot",
+    entities: pilotSelection, scopes: ["artist", "event"].flatMap(type => ["read", "propose", "commit"].map(action => `catalog:${type}:${action}`)),
+    commitLimit: 1, ...changes } });
+  const grant = f.api.exchangePairing({ pairingCode: pairing.pairingCode });
+  return { pairing, grant, authorization: `Bearer ${grant.accessToken}` };
+}
+
+test("issued pilot access is hash-only, single-use, limited by record, audience, quota and expiry", t => {
+  const f = fixture(t), { pairing, grant, authorization } = pairPilot(f);
+  assert.equal(grant.expiresAt - f.now(), 30 * 60_000);
+  assert.equal(pairing.expiresAt - f.now(), 5 * 60_000);
+  assert.ok(!JSON.stringify(f.db.prepare("SELECT * FROM catalog_pairings").all()).includes(pairing.pairingCode));
+  assert.ok(!JSON.stringify(f.db.prepare("SELECT * FROM api_grants").all()).includes(grant.accessToken));
+  rejects(() => f.api.exchangePairing({ pairingCode: pairing.pairingCode }), 401);
+  const read = key => f.api.read({ authorization, type: "artist", key });
+  rejects(() => read("private"), 403);
+  assert.deepEqual(f.api.inventory({ authorization, type: "artist" }).items.map(row => row.key), ["wet leg"]);
+  rejects(() => f.api.inventory({ authorization, type: "venue" }), 403);
+  const page = read("wet leg");
+  const request = (body, idempotencyKey) => ({ authorization, body, idempotencyKey });
+  const lease = f.api.claim(request({ type: "artist", key: page.key, revision: page.revision,
+    valueHash: page.valueHash, identityHash: page.identityHash }, "pilot-claim"));
+  const proposal = f.api.propose(request({ type: "artist", key: page.key, nonce: lease.nonce, ...proposalInput() }, "pilot-propose"));
+  rejects(() => f.api.review({ ownerId: "owner", proposalId: proposal.id, payloadHash: "wrong", approved: true }), 409);
+  f.approve(proposal);
+  const commit = request({ type: "artist", key: page.key, nonce: lease.nonce, proposalId: proposal.id, payloadHash: proposal.payloadHash }, "pilot-commit");
+  const saved = f.api.commit(commit);
+  assert.deepEqual(f.api.commit(commit), saved);
+  assert.equal(f.api.status({ authorization, type: "artist" }).grant.commits, 1);
+  const secondPage = f.api.read({ authorization, type: "event", key: "event-one" });
+  const secondLease = f.api.claim(request({ type: "event", key: secondPage.key, revision: secondPage.revision,
+    valueHash: secondPage.valueHash, identityHash: secondPage.identityHash }, "pilot-event-claim"));
+  const secondProposal = f.api.propose(request({ type: "event", key: secondPage.key, nonce: secondLease.nonce,
+    ...proposalInput("event") }, "pilot-event-propose")); f.approve(secondProposal);
+  rejects(() => f.api.commit(request({ type: "event", key: secondPage.key, nonce: secondLease.nonce,
+    proposalId: secondProposal.id, payloadHash: secondProposal.payloadHash }, "pilot-event-commit")), 429);
+  assert.equal(f.db.prepare("SELECT COUNT(*) n FROM catalog_event_enrichment").get().n, 0);
+  f.advance(CATALOG_LIMITS.grantMs);
+  rejects(() => read("wet leg"), 401); rejects(() => f.api.commit(commit), 401);
+});
+
+test("pairing and grant limits fail closed; revocation cancels pending owner pairings", t => {
+  const f = fixture(t);
+  const input = { actorLabel: "Synthetic", scopes: ["catalog:artist:read"], entities: [{ type: "artist", key: "wet leg" }], commitLimit: 0 };
+  for (const changes of [{ entities: [...input.entities, ...input.entities] }, { entities: Array(7).fill(input.entities[0]) },
+    { commitLimit: 7 }, { scopes: ["news:write"] }, { scopes: ["catalog:artist:commit"] }]) {
+    rejects(() => f.api.issuePairing({ ownerId: "owner", input: { ...input, ...changes } }), 400);
+  }
+  rejects(() => f.api.issuePairing({ ownerId: "other", input }), 403);
+  const expired = f.api.issuePairing({ ownerId: "owner", input });
+  f.advance(CATALOG_LIMITS.pairingMs); rejects(() => f.api.exchangePairing({ pairingCode: expired.pairingCode }), 401);
+  const active = f.api.issuePairing({ ownerId: "owner", input });
+  f.api.revoke({ ownerId: "owner", grantId: "catalog-grant" });
+  rejects(() => f.api.exchangePairing({ pairingCode: active.pairingCode }), 401);
+  const fresh = f.api.issuePairing({ ownerId: "owner", input });
+  f.db.exec("UPDATE users SET role='fan' WHERE id='owner'");
+  rejects(() => f.api.exchangePairing({ pairingCode: fresh.pairingCode }), 403);
+  assert.equal(f.db.prepare("SELECT status FROM catalog_pairings WHERE id=?").get(fresh.pairingId).status, "pending");
+});
+
+test("owner correction restores an absent prior record atomically and fences stale or changed identities", t => {
+  const f = fixture(t), lease = f.claim("event", "event-one"), proposal = f.propose(lease);
+  f.approve(proposal); f.api.commit(f.commitInput(lease, proposal));
+  const read = () => f.api.ownerRead({ ownerId: "owner", type: "event", key: "event-one" });
+  const page = read();
+  const correction = { ownerId: "owner", type: page.type, key: page.key, revision: page.revision,
+    valueHash: page.valueHash, identityHash: page.identityHash, action: "hide" };
+  f.api.correct(correction);
+  rejects(() => f.api.correct(correction), 409);
+  const hidden = read(); assert.equal(hidden.hidden, true);
+  const restore = { ...correction, revision: hidden.revision, valueHash: hidden.valueHash, action: "restore", changeId: proposal.id };
+  f.db.exec("CREATE TEMP TRIGGER reject_restore BEFORE INSERT ON catalog_work_audit WHEN NEW.action='restore' BEGIN SELECT RAISE(ABORT,'restore failure'); END");
+  assert.throws(() => f.api.correct(restore), /restore failure/);
+  assert.equal(read().hidden, true);
+  f.db.exec("DROP TRIGGER reject_restore"); f.api.correct(restore);
+  assert.equal(f.db.prepare("SELECT COUNT(*) n FROM catalog_event_enrichment").get().n, 0);
+  rejects(() => f.api.correct(restore), 409);
+  assert.equal(f.db.prepare("SELECT status FROM catalog_work_items").get().status, "quarantined");
+});
+
+test("correction restores prior research bytes and dormant owners cannot pair or use grants", t => {
+  const f = fixture(t), firstLease = f.claim(), firstProposal = f.propose(firstLease);
+  f.approve(firstProposal); f.api.commit(f.commitInput(firstLease, firstProposal));
+  const prior = f.db.prepare("SELECT * FROM catalog_research WHERE entity_key='wet leg'").get();
+  const lease = f.claim("artist", "wet leg", "second-claim-0001");
+  const patch = { ...proposalInput().patch, summary: "Wet Leg has this updated synthetic description for a reversible local correction test only." };
+  const proposal = f.propose(lease, patch, "second-propose-0001"); f.approve(proposal);
+  f.api.commit(f.commitInput(lease, proposal, "second-commit-0001"));
+  const page = f.api.ownerRead({ ownerId: "owner", type: "artist", key: "wet leg" });
+  f.api.correct({ ownerId: "owner", ...page, action: "restore", changeId: proposal.id });
+  const restored = f.db.prepare("SELECT * FROM catalog_research WHERE entity_key='wet leg'").get();
+  assert.deepEqual({ ...restored }, { ...prior, claim_token: null });
+  f.db.exec("ALTER TABLE users ADD COLUMN dormant_at INTEGER; UPDATE users SET dormant_at=1 WHERE id='owner'");
+  rejects(() => f.api.read({ authorization: AUTH, type: "artist", key: "wet leg" }), 403);
+  rejects(() => pairPilot(f), 403);
+});
+
 test("catalog defaults off; audience, entity scopes, current owner status and exact bearer are enforced", t => {
   const f = fixture(t), read = () => f.api.read({ authorization: AUTH, type: "artist", key: "wet leg" });
   delete f.env.PIT_CATALOG_API_ENABLED;
@@ -48,24 +147,24 @@ test("inventory cursor is complete, bounded and excludes private rows and raw pr
   f.db.exec("INSERT INTO artists(norm,name,source) VALUES ('private','Private','artist-created')");
   let cursor = null; const keys = [];
   do {
-    const page = f.api.inventory({ authorization: AUTH, type: "artist", cursor, limit: 7 });
+    const page = f.api.ownerInventory({ ownerId: "owner", type: "artist", cursor, limit: 7 });
     assert.ok(page.items.length <= 7); assert.ok(!JSON.stringify(page).includes("DO-NOT-LEAK"));
     keys.push(...page.items.map(row => row.key)); cursor = page.nextCursor;
   } while (cursor);
   assert.equal(keys.length, 122); assert.equal(new Set(keys).size, 122); assert.deepEqual(keys, [...keys].sort());
-  for (const limit of [0, 51, Infinity, 2.5]) rejects(() => f.api.inventory({ authorization: AUTH, type: "artist", limit }), 400);
-  rejects(() => f.api.inventory({ authorization: AUTH, type: "artist", cursor: "garbage" }), 400);
-  const otherCursor = f.api.inventory({ authorization: AUTH, type: "artist", limit: 1 }).nextCursor;
-  rejects(() => f.api.inventory({ authorization: AUTH, type: "venue", cursor: otherCursor }), 400);
+  for (const limit of [0, 51, Infinity, 2.5]) rejects(() => f.api.ownerInventory({ ownerId: "owner", type: "artist", limit }), 400);
+  rejects(() => f.api.ownerInventory({ ownerId: "owner", type: "artist", cursor: "garbage" }), 400);
+  const otherCursor = f.api.ownerInventory({ ownerId: "owner", type: "artist", limit: 1 }).nextCursor;
+  rejects(() => f.api.ownerInventory({ ownerId: "owner", type: "venue", cursor: otherCursor }), 400);
   for (const key of ["字".repeat(600), "界".repeat(600)]) f.db.prepare("INSERT INTO artists(norm,name,source) VALUES (?,?,?)")
     .run(key, key, "musicbrainz");
   const afterAscii = Buffer.from(JSON.stringify({ v: 1, type: "artist", after: "wet leg" })).toString("base64url");
-  const unicodePage = f.api.inventory({ authorization: AUTH, type: "artist", cursor: afterAscii, limit: 1 });
+  const unicodePage = f.api.ownerInventory({ ownerId: "owner", type: "artist", cursor: afterAscii, limit: 1 });
   assert.ok(unicodePage.nextCursor.length > 2400, "maximum Unicode keys need their full encoded cursor");
-  assert.equal(f.api.inventory({ authorization: AUTH, type: "artist", cursor: unicodePage.nextCursor, limit: 1 }).items.length, 1);
+  assert.equal(f.api.ownerInventory({ ownerId: "owner", type: "artist", cursor: unicodePage.nextCursor, limit: 1 }).items.length, 1);
   f.db.exec("UPDATE tour_dates SET owner_id='private-owner'");
-  assert.equal(f.api.inventory({ authorization: AUTH, type: "event" }).items.length, 0);
-  assert.equal(f.api.inventory({ authorization: AUTH, type: "venue" }).items.length, 0);
+  assert.equal(f.api.ownerInventory({ ownerId: "owner", type: "event" }).items.length, 0);
+  assert.equal(f.api.ownerInventory({ ownerId: "owner", type: "venue" }).items.length, 0);
 });
 
 test("approved commit writes research and distinct attribution with atomic replay", t => {

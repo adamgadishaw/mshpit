@@ -87,6 +87,9 @@ export function prepareRecoveryDatabase(database, { privacyReplayReference, cred
     if (present.has("media_api_pairings")) {
       changes.mediaApiPairings = database.prepare("UPDATE media_api_pairings SET status='revoked' WHERE status='pending'").run().changes;
     }
+    if (present.has("catalog_pairings")) {
+      changes.catalogPairings = database.prepare("UPDATE catalog_pairings SET status='revoked' WHERE status='pending'").run().changes;
+    }
     // A restore can resurrect links that were already decided after the
     // snapshot. Retain request/receipt history but require fresh approval.
     if (present.has("owner_approval_requests")) {

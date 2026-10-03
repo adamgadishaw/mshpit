@@ -7,6 +7,7 @@ import { catalogBytes, catalogCount, catalogModeLabel, catalogTime, catalogSourc
   claudeMoney, claudeSpendBreakdown, claudeSpendTotal, newsDeskReasonText, catalogPilotViewAllowed } from "./catalogMaintenanceState.mjs";
 
 const CatalogPilotPanel = lazy(() => import("./CatalogPilotPanel"));
+const CatalogLivePilotPanel = lazy(() => import("./CatalogLivePilotPanel"));
 
 function Datum({ label, value, detail }) {
   return <View style={styles.datum}>
@@ -60,6 +61,7 @@ export default function CatalogMaintenancePanel({ accountId, role, active = true
     </View> : <>
       {catalogPilotViewAllowed(state, role) ? <Suspense fallback={<Text style={styles.hint}>Loading local pilot review.</Text>}>
         <CatalogPilotPanel key={accountId} />
+        <CatalogLivePilotPanel key={`live-${accountId}`} accountId={accountId} />
       </Suspense> : null}
       {!catalog ? <Text selectable style={styles.error}>The upkeep controller is not initialized. No controls are enabled; server setup needs to finish first.</Text> : <>
         <View style={styles.modeRow}>

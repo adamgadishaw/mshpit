@@ -27,6 +27,23 @@ export function catalogApiRoutes({ service, requireOwner, rateLimit, decodedPath
     return actor.id;
   };
   return {
+    "POST /api/moderation/catalog-grants/pairing": ctx => {
+      const ownerId = owner(ctx);
+      rateLimit(ctx, "catalog-pairing", 5, 15 * 60_000, { ownerId });
+      return service.issuePairing({ ownerId, input: ctx.body });
+    },
+    "POST /api/catalog/v1/grants/exchange": ctx => {
+      service.assertEnabled();
+      ctx.setHeader?.("Cache-Control", "private, no-store");
+      rateLimit(ctx, "catalog-exchange", 5, 15 * 60_000);
+      return service.exchangePairing({ pairingCode: ctx.body?.pairingCode });
+    },
+    "GET /api/moderation/catalog-inventory/:type": ctx => service.ownerInventory({ ownerId: owner(ctx),
+      type: type(ctx), cursor: ctx.query?.cursor, limit: size(ctx) }),
+    "GET /api/moderation/catalog-entities/:type/:key": ctx => service.ownerRead({ ownerId: owner(ctx), type: type(ctx), key: key(ctx) }),
+    "POST /api/moderation/catalog-entities/:type/:key/correct": ctx => service.correct({ ownerId: owner(ctx),
+      type: type(ctx), key: key(ctx), revision: ctx.body?.revision, valueHash: ctx.body?.valueHash,
+      identityHash: ctx.body?.identityHash, action: ctx.body?.action, changeId: ctx.body?.changeId }),
     "GET /api/catalog/v1/:type/inventory": ctx => {
       prepare(ctx, "read");
       return service.inventory({ authorization: authorization(ctx), type: type(ctx), cursor: ctx.query?.cursor, limit: size(ctx) });

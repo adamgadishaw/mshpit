@@ -56,6 +56,11 @@ export function seedGrant(db, { id = "catalog-grant", token = TOKEN, scopes = CA
   db.prepare(`INSERT INTO api_grants(id,audience,owner_id,actor_type,actor_label,scopes,token_hash,status,issued_at,expires_at)
     VALUES (?,'pit-catalog-v1',?,'assistant','Synthetic dot',?,?,'active',?,?)`)
     .run(id, ownerId, JSON.stringify(scopes), secretHash(token), AT - 1, AT + 7 * 86_400_000);
+  db.prepare("INSERT INTO catalog_grant_limits(grant_id,entities_json,commit_limit) VALUES (?,?,6)").run(id, JSON.stringify([
+    { type: "artist", key: "wet leg" }, { type: "venue", key: "test hall|toronto|ca" },
+    { type: "event", key: "event-one" }, { type: "event", key: "nonexistent" },
+    { type: "venue", key: "next room|toronto|ca" }, { type: "artist", key: "private" },
+  ]));
 }
 export function proposalInput(type = "artist", patch, at = AT) {
   const name = type === "artist" ? "Wet Leg" : type === "venue" ? "Test Hall" : "Wet Leg Night";

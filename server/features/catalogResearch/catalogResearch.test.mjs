@@ -3,6 +3,7 @@ import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
 import { ApiError } from "../../errors.js";
+import { readCatalogEntity } from "../catalogApi/catalogApiInventory.js";
 import { admitClaudeSpend, claudeMonthSpendMicroUsd } from "../../claudeSpendCeiling.js";
 import { publicCatalogResearch, validateCatalogResearchFindings } from "./catalogResearchFindings.js";
 import { catalogResearchCostMicroUsd, catalogResearchModel, researchCatalogSubject } from "./catalogResearchProvider.js";
@@ -238,9 +239,11 @@ test("research is modest by default and stops at its monthly cap and the shared 
 
 test("pages read research through the routes and staff can hide a wrong result", (t) => {
   const db = database(t);
+  db.exec("INSERT INTO artists(norm,name) VALUES ('wet leg','Wet Leg')");
   db.prepare(`INSERT INTO catalog_research(entity_type,entity_key,identity,status,next_attempt_at,findings,researched_at)
     VALUES ('artist','wet leg','{}','found',0,?,5)`).run(JSON.stringify(
-    validateCatalogResearchFindings(goodFindings(), { type: "artist", name: "Wet Leg", searchedUrls: [WIKI, SITE] }).record));
+    { ...validateCatalogResearchFindings(goodFindings(), { type: "artist", name: "Wet Leg", searchedUrls: [WIKI, SITE] }).record,
+      identityHash: readCatalogEntity(db, { type: "artist", key: "wet leg" }).identityHash }));
   const routes = catalogResearchRoutes({
     database: db, ApiError, rateLimit() {}, now: () => 7,
     decodedPathParam: (ctx, name) => ctx.params[name],

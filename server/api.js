@@ -9848,6 +9848,7 @@ export const routes = {
   // Festivals: editions, lineups by day, and members' plans.
   ...festivalRoutes({ database: db, ApiError, requireVerifiedUser, rateLimit: limit, clean, decodedPathParam, now }),
   ...catalogResearchRoutes({ database: db, ApiError, rateLimit: limit, decodedPathParam, canonicalVenueKey, requireAdmin, now,
+    resolveEventResearch: key => publicDocumentForPath(`/event/${encodeURIComponent(key)}`)?.research || null,
     resolveArtist: (key, ctx) => {
       const artist = resolveCatalogArtistReference(key);
       return artist && artistCatalogVisibleTo(db, artist, ctx?.user) ? artist : null;

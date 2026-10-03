@@ -11,10 +11,44 @@ import { ensureCitySchema } from "../cities/citySchema.js";
 import { musicBrainzBiographyFacts, validateStaffArtistBiography } from "../../../src/domain/artistBiography.mjs";
 import { createArtistLiveSummaryService } from "../artistArchive/artistLiveSummaryService.js";
 import { ensureArtistScheduleRevisionSchema } from "../artistArchive/artistScheduleCandidateIndex.js";
+import { ensureCatalogResearchSchema } from "../catalogResearch/catalogResearchService.js";
+import { readCatalogEntity } from "../catalogApi/catalogApiInventory.js";
 
 const ARTIST_MBID = "12345678-1234-4234-8234-123456789abc";
 const OTHER_MBID = "22345678-1234-4234-8234-123456789abc";
 const NOW = Date.parse("2026-08-25T12:00:00.000Z");
+
+test("artist, venue and event HTML share identity-bound research, escaped text and immediate hiding", t => {
+  const database = createDatabase(); t.after(() => database.close());
+  ensureCatalogResearchSchema(database); addArtist(database, { bio: null });
+  database.prepare(`INSERT INTO tour_dates(id,artist,artist_key,venue,date,venue_city,venue_country_code,venue_provider_id,
+    source,provider_event_id,event_name,event_status) VALUES ('research-event','Alpha','alpha','Research Hall','2027-01-01',
+    'Toronto','CA','research-venue','ticketmaster','research-provider','Alpha Live','onsale')`).run();
+  const records = [{ type: "artist", key: "alpha" }, { type: "venue", key: "research hall|toronto|ca" }, { type: "event", key: "research-event" }];
+  for (const record of records) {
+    const page = readCatalogEntity(database, { ...record, at: NOW });
+    const findings = JSON.stringify({ version: 1, summary: `Research for ${record.type}: <script>alert(1)</script> & safe text.`,
+      summarySources: ["https://example.test/source"], facts: [], images: [], identityHash: page.identityHash });
+    if (record.type === "event") database.prepare("INSERT INTO catalog_event_enrichment(event_id,findings,updated_at) VALUES (?,?,?)").run(record.key, findings, NOW);
+    else database.prepare("INSERT INTO catalog_research(entity_type,entity_key,identity,status,next_attempt_at,findings,researched_at) VALUES (?,?,'{}','found',0,?,?)")
+      .run(record.type, record.key, findings, NOW);
+  }
+  const documents = service(database);
+  const read = type => type === "artist" ? documents.artistDocument({ artistKey: "alpha", at: NOW })
+    : type === "venue" ? documents.venueDocument({ name: "Research Hall", providerVenueId: "research-venue", source: "ticketmaster", at: NOW })
+      : documents.eventDocument({ id: "research-event", at: NOW });
+  for (const { type } of records) {
+    const document = read(type); assert.ok(document?.research, `${type} research is public`);
+    const html = documents.render(document);
+    assert.ok(html.includes("data-catalog-research")); assert.ok(html.includes("&lt;script&gt;alert(1)&lt;/script&gt; &amp; safe text."));
+    assert.ok(!html.includes("<script>alert(1)</script>")); assert.ok(html.includes("https://example.test/source"));
+  }
+  database.exec("UPDATE catalog_research SET status='hidden'; UPDATE catalog_event_enrichment SET hidden=1");
+  for (const { type } of records) assert.equal(read(type).research, null);
+  database.exec("UPDATE catalog_research SET status='found'; UPDATE catalog_event_enrichment SET hidden=0; UPDATE tour_dates SET date='2027-02-02'");
+  assert.equal(read("event").research, null, "provider date changes invalidate prior context");
+  database.exec("UPDATE artists SET bio='Existing biography is protected'"); assert.equal(read("artist").research, null);
+});
 
 function createDatabase() {
   const database = new DatabaseSync(":memory:");

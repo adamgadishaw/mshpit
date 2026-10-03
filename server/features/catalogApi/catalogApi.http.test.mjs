@@ -10,6 +10,7 @@ import { AT, AUTH, TOKEN, proposalInput } from "./catalogApiFixture.mjs";
 import { CATALOG_SCOPES } from "./catalogApiPolicy.js";
 import { secretHash } from "../mediaApi/mediaApiPolicy.js";
 import { ownerIdentity, storeOwnerIdentity } from "../../ownerIdentity.js";
+import { createCatalogPilotClient } from "../../../scripts/catalog-api-pilot.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const DATA_DIR = mkdtempSync(join(tmpdir(), "pit-catalog-http-"));
@@ -34,6 +35,8 @@ storeOwnerIdentity(db, ownerIdentity("catalog_owner@example.test", "catalog_owne
 db.prepare(`INSERT INTO api_grants(id,audience,owner_id,actor_type,actor_label,scopes,token_hash,status,issued_at,expires_at)
   VALUES ('http-grant','pit-catalog-v1','catalog_owner','assistant','Synthetic dot',?,?,'active',?,?)`)
   .run(JSON.stringify(CATALOG_SCOPES), secretHash(TOKEN), AT - 1, AT + 86_400_000);
+db.prepare("INSERT INTO catalog_grant_limits(grant_id,entities_json,commit_limit) VALUES ('http-grant',?,6)")
+  .run(JSON.stringify([{ type: "artist", key: "synthetic wet leg" }]));
 db.prepare("INSERT INTO artists(norm,name,source,created_at,updated_at) VALUES ('synthetic wet leg','Synthetic Wet Leg','musicbrainz',?,?)").run(AT, AT);
 
 async function freePort() {
@@ -61,9 +64,10 @@ async function start(t, enabled = true) {
     child.once("exit", () => { clearTimeout(timer); reject(new Error(`HTTP fixture exited: ${output.slice(-1200)}`)); });
   });
   return {
-    async request(path, { method = "GET", body, key = "http-idempotency-key", authorization = AUTH, cookie } = {}) {
+    baseUrl: `http://127.0.0.1:${port}`,
+    async request(path, { method = "GET", body, key = "http-idempotency-key", authorization = AUTH, cookie, origin } = {}) {
       const response = await fetch(`http://127.0.0.1:${port}${path}`, { method, headers: {
-        "content-type": "application/json", authorization, "idempotency-key": key, ...(cookie ? { cookie } : {}),
+        "content-type": "application/json", authorization, "idempotency-key": key, ...(cookie ? { cookie } : {}), ...(origin ? { origin } : {}),
       }, ...(body == null ? {} : { body: JSON.stringify(body) }) });
       return { status: response.status, headers: response.headers, body: await response.json() };
     },
@@ -122,4 +126,64 @@ test("real HTTP headers, two competing processes, owner review, commit replay an
   assert.equal((await first.request("/api/moderation/catalog-grants/http-grant", { method: "DELETE", cookie: OWNER_COOKIE })).status, 200);
   assert.equal((await second.request(`${entityPath}/commit`, { method: "POST", body: commitBody })).status, 401);
   assert.equal(await first.outbound(), 0); assert.equal(await second.outbound(), 0);
+});
+
+test("supervised HTTPS client runs over actual loopback HTTP with lost-response replay, public display and correction", async t => {
+  const key = "synthetic pilot artist", type = "artist";
+  db.prepare("INSERT INTO artists(norm,name,source,created_at,updated_at) VALUES (?,?,'musicbrainz',?,?)")
+    .run(key, "Synthetic Pilot Artist", AT, AT);
+  const http = await start(t);
+  const owner = (path, options = {}) => http.request(path, { cookie: OWNER_COOKIE, authorization: "", ...options });
+  const pairingInput = { actorLabel: "Synthetic supervised client", entities: [{ type, key }],
+    scopes: ["catalog:artist:read", "catalog:artist:propose", "catalog:artist:commit"], commitLimit: 1 };
+  assert.equal((await owner("/api/moderation/catalog-grants/pairing", {
+    method: "POST", origin: "https://foreign.example.test", body: pairingInput })).status, 403);
+  const pairing = await owner("/api/moderation/catalog-grants/pairing", { method: "POST", body: pairingInput });
+  assert.equal(pairing.status, 200);
+  let dropCommitResponse = false;
+  const client = createCatalogPilotClient({ baseUrl: http.baseUrl, allowLoopback: true, fetchImpl: async (url, options) => {
+    const response = await fetch(url, options);
+    if (dropCommitResponse && url.pathname.endsWith("/commit")) {
+      dropCommitResponse = false; await response.arrayBuffer(); throw new Error("Synthetic interrupted response");
+    }
+    return response;
+  } });
+  t.after(() => client.close());
+  const grant = await client.pair(pairing.body.pairingCode);
+  assert.equal(grant.accessToken, undefined); assert.equal(grant.commitLimit, 1);
+  const repeated = createCatalogPilotClient({ baseUrl: http.baseUrl, allowLoopback: true });
+  await assert.rejects(() => repeated.pair(pairing.body.pairingCode), { status: 401 });
+  assert.equal((await client.execute({ operation: "inventory", type })).items.length, 1);
+  await assert.rejects(() => client.execute({ operation: "read", type, key: "synthetic wet leg" }), { status: 403 });
+  const read = await client.execute({ operation: "read", type, key });
+  const run = (operation, body, idempotencyKey) => client.execute({ operation, type, key, body, idempotencyKey, confirmWrite: true });
+  const lease = await run("claim", { revision: read.revision, identityHash: read.identityHash, valueHash: read.valueHash }, "pilot-claim-0001");
+  const submitted = proposalInput(); submitted.patch.summary = "Synthetic Pilot Artist has this deliberately synthetic sourced description for an isolated integration check.";
+  const proposal = await run("propose", { nonce: lease.nonce, ...submitted }, "pilot-propose-0001");
+  const commit = { nonce: lease.nonce, proposalId: proposal.id, payloadHash: proposal.payloadHash };
+  await assert.rejects(() => run("commit", commit, "pilot-commit-0001"), { status: 409 });
+  assert.equal((await owner(`/api/moderation/catalog-proposals/${proposal.id}/review`, { method: "POST",
+    body: { approved: true, payloadHash: proposal.payloadHash } })).status, 200);
+  dropCommitResponse = true;
+  await assert.rejects(() => run("commit", commit, "pilot-commit-0001"), /interrupted response/u);
+  const replay = await run("commit", commit, "pilot-commit-0001");
+  assert.equal(replay.revision, 1);
+  assert.equal((await client.execute({ operation: "status", type })).grant.commits, 1);
+  const publicPath = `/api/artists/${encodeURIComponent(key)}/research`;
+  const published = await http.request(publicPath, { authorization: "" });
+  assert.equal(published.status, 200); assert.equal(published.body.research.summary, submitted.patch.summary);
+  assert.equal(published.headers.get("cache-control"), "private, no-store");
+  const ownerPath = `/api/moderation/catalog-entities/${type}/${encodeURIComponent(key)}`;
+  const current = (await owner(ownerPath)).body;
+  const expected = { revision: current.revision, valueHash: current.valueHash, identityHash: current.identityHash };
+  assert.equal((await owner(`${ownerPath}/correct`, { method: "POST", body: { ...expected, action: "hide" } })).status, 200);
+  assert.equal((await http.request(publicPath, { authorization: "" })).body.research, null);
+  assert.equal((await owner(`${ownerPath}/correct`, { method: "POST", body: { ...expected, action: "restore", changeId: proposal.id } })).status, 409);
+  const hidden = (await owner(ownerPath)).body;
+  assert.equal((await owner(`${ownerPath}/correct`, { method: "POST", body: { action: "restore", changeId: proposal.id,
+    revision: hidden.revision, valueHash: hidden.valueHash, identityHash: hidden.identityHash } })).status, 200);
+  assert.equal((await http.request(publicPath, { authorization: "" })).body.research, null);
+  assert.equal((await owner(`/api/moderation/catalog-grants/${grant.grantId}`, { method: "DELETE" })).status, 200);
+  await assert.rejects(() => client.execute({ operation: "read", type, key }), { status: 401 });
+  assert.equal(await http.outbound(), 0);
 });

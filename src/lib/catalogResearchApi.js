@@ -1,25 +1,13 @@
 import { api } from "./api";
 
-// Reads the sourced summary the research agent wrote for a page. Resolves to
-// the research object, or null when the page has none yet; request failures
-// throw like any other API read.
-export async function fetchArtistResearch(artistKey, { signal } = {}) {
-  const result = await api(`/api/artists/${encodeURIComponent(artistKey)}/research`, {
-    context: "Loading the artist summary",
-    silent: true,
-    signal,
-  });
-  // architecture: allow-ambiguous-result -- most pages have no research yet; null is that answer, not a failure
-  return result?.research || null;
-}
-
-export async function fetchVenueResearch(venueName, { city = null, signal } = {}) {
+async function read(kind, key, { signal, city } = {}) {
   const query = city ? `?city=${encodeURIComponent(city)}` : "";
-  const result = await api(`/api/venues/${encodeURIComponent(venueName)}/research${query}`, {
-    context: "Loading the venue summary",
-    silent: true,
-    signal,
+  const result = await api(`/api/${kind}/${encodeURIComponent(key)}/research${query}`, {
+    context: "Loading researched context", silent: true, signal,
   });
-  // architecture: allow-ambiguous-result -- most pages have no research yet; null is that answer, not a failure
+  // architecture: allow-ambiguous-result -- absent optional research is a valid public result.
   return result?.research || null;
 }
+export const fetchArtistResearch = (key, options) => read("artists", key, options);
+export const fetchVenueResearch = (key, options) => read("venues", key, options);
+export const fetchEventResearch = (key, options) => read("events", key, options);

@@ -38,6 +38,12 @@ export function ensureCatalogWorkSchema(database) {
     payload_hash TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('pending','approved','rejected','committed')),
     reviewed_by TEXT,reviewed_at INTEGER,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL);
   CREATE INDEX IF NOT EXISTS idx_catalog_proposals_grant ON catalog_proposals(grant_id,created_at,id);
+  CREATE TABLE IF NOT EXISTS catalog_research_changes (
+    id TEXT PRIMARY KEY, entity_type TEXT NOT NULL, entity_key TEXT NOT NULL,
+    identity_hash TEXT NOT NULL, revision INTEGER NOT NULL,
+    prior_json TEXT NOT NULL CHECK(length(prior_json)<=40000), next_hash TEXT NOT NULL,
+    created_at INTEGER NOT NULL, restored_at INTEGER);
+  CREATE INDEX IF NOT EXISTS idx_catalog_changes_entity ON catalog_research_changes(entity_type,entity_key,revision);
   CREATE TABLE IF NOT EXISTS catalog_event_enrichment (
     event_id TEXT PRIMARY KEY,findings TEXT NOT NULL CHECK(length(findings)<=20000),updated_at INTEGER NOT NULL,
     hidden INTEGER NOT NULL DEFAULT 0 CHECK(hidden IN (0,1)));
@@ -90,7 +96,7 @@ export function catalogAudit(database, { actorType, actorLabel, grantId = null, 
   // Exhaustion must not retain a grant or prevent the owner from stopping work.
   // Callers permit this exception only for an actual disabling transition;
   // repeated controls are no-ops and enabling transitions still obey the cap.
-  const canDisable = disablingControl && actorType === "owner" && ["paused", "revoked"].includes(action);
+  const canDisable = disablingControl && actorType === "owner" && ["paused", "revoked", "hide"].includes(action);
   if (!canDisable && database.prepare("SELECT COUNT(*) n FROM catalog_work_audit").get().n >= CATALOG_LIMITS.auditRows) {
     throw new ApiError(429, "Catalog audit capacity needs review.", "RATE_LIMITED");
   }

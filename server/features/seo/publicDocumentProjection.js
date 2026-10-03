@@ -21,6 +21,7 @@ import { verifiedFinalizedLegacyMedia } from "../../mediaLegacyFinalize.js";
 import { safeOwnedReadyMediaUrl } from "../../publicMedia.js";
 import { publicTicketmasterEventImage } from "../../providerEventImage.js";
 import { publicVenuePhotoPool } from "../../venuePhotoCatalog.js";
+import { readPublicCatalogResearch } from "../catalogResearch/catalogPublicResearch.js";
 import { projectedOnlineReviewFields } from "../../onlineReviews.js";
 import { archiveShowKey } from "../artistArchive/artistArchiveKeys.js";
 import { venueCoordinates, venueGuideModel } from "../../../src/domain/venueGuide.mjs";
@@ -1261,6 +1262,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       };
       return Object.freeze({
         kind: "artist",
+        research: readPublicCatalogResearch(database, { type: "artist", key: source.norm }),
         siteName: SITE_NAME,
         title: artistTitle,
         description,
@@ -1524,6 +1526,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       };
       return Object.freeze({
         kind: "event",
+        research: readPublicCatalogResearch(database, { type: "event", key: raw.event.id, at: instant }),
         siteName: SITE_NAME,
         title: metadata.title,
         heading: metadata.heading,
@@ -1860,6 +1863,9 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       };
       return Object.freeze({
         kind: "venue",
+        research: readPublicCatalogResearch(database, { type: "venue", key: name,
+          city: raw.venue.location?.venue_city || null, country: raw.venue.location?.venue_country_code || null,
+          providerId: raw.venue.providerVenueId || null }),
         siteName: SITE_NAME,
         title: venueTitle,
         heading: venueTitleName,
