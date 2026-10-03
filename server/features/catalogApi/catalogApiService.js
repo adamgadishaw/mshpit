@@ -95,6 +95,7 @@ export function createCatalogApiService({ database, env = process.env, now = Dat
     });
   }
   const pageView = page => ({ ...publicCatalogEntity(page),
+    researchIdentityCurrent: (page.findings?.provenance?.identityHash || page.findings?.identityHash) === page.identityHash,
     photoOptions: page.eligible ? catalogPhotoOptions(page, photoOptions) : [],
     attachments: page.eligible ? publicCatalogAttachments(page, photoOptions) : [] });
   const storedResearch = (type, key) => type === "event"

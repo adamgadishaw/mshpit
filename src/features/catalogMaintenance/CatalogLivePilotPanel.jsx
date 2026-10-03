@@ -4,6 +4,11 @@ import Button from "../../components/Button";
 import { colors, space } from "../../theme";
 import { createCatalogLivePilotApi } from "./catalogLivePilotApi.mjs";
 
+const reviewFields = [["summarySources", "Summary sources"], ["facts", "Facts"], ["images", "Image candidates"], ["attachments", "Attached photos"]];
+const describe = values => !values?.length ? "None" : values.map(value => typeof value === "string" ? value
+  : value.field ? `${value.field}: ${value.value} (${value.source})`
+    : `${value.title || value.label} - ${value.creator} - ${value.license} - ${value.sourcePage} - ${value.modificationNotice}`).join("\n");
+
 export default function CatalogLivePilotPanel({ accountId }) {
   const service = useMemo(() => createCatalogLivePilotApi({ accountId }), [accountId]);
   const [rows, setRows] = useState([]), [selected, setSelected] = useState([]), [pairing, setPairing] = useState(null);
@@ -43,9 +48,18 @@ export default function CatalogLivePilotPanel({ accountId }) {
       <Text style={styles.title}>{proposal.current.identity.name}</Text>
       <Text selectable style={styles.copy}>Current: {proposal.current.findings?.summary || "No researched summary"}</Text>
       <Text selectable style={styles.copy}>Proposed: {proposal.patch.summary || proposal.current.findings?.summary}</Text>
-      {(proposal.patch.facts || []).map(fact => <Text selectable key={fact.field} style={styles.copy}>{fact.field}: {fact.value} — {fact.source}</Text>)}
+      {reviewFields.map(([field, label]) => {
+        const before = field === "attachments" ? proposal.current.attachments : proposal.current.findings?.[field];
+        const changed = Object.hasOwn(proposal.patch, field);
+        const after = field === "attachments" ? proposal.proposedAttachments : proposal.patch[field];
+        return <View key={field}>
+          <Text selectable style={styles.copy}>Before {label}: {describe(before)}</Text>
+          <Text selectable style={styles.copy}>After {label}: {changed ? after?.length ? describe(after)
+            : before?.length ? "None (removes all current items)" : "None"
+            : proposal.current.researchIdentityCurrent ? "Unchanged" : "None (prior research identity is unverified)"}</Text>
+        </View>;
+      })}
       {proposal.evidence.map(source => <Text selectable key={source.url} style={styles.copy}>{source.title}: {source.url}</Text>)}
-      {proposal.proposedAttachments.map(photo => <Text selectable key={photo.assetHash} style={styles.copy}>{photo.label} · {photo.creator} · {photo.license} · {photo.sourcePage} · {photo.modificationNotice}</Text>)}
       <Text style={styles.copy}>Submitted evidence needs source review. Approval covers this exact proposal.</Text>
       <View style={styles.row}><Button title="Approve this proposal" disabled={busy || proposal.status !== "pending"} onPress={() => run(async () => { await service.review(proposal, true); setProposal(await service.detail(proposal.id)); })} />
         <Button title="Reject this proposal" variant="secondary" disabled={busy || proposal.status !== "pending"} onPress={() => run(async () => { await service.review(proposal, false); setProposal(await service.detail(proposal.id)); })} /></View>

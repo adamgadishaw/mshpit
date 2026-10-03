@@ -127,6 +127,7 @@ async function main() {
       const patch = { summary: record.summary, summarySources: [source], facts: [], images: [] };
       if (record.type === "venue") {
         assert.equal(current.photoOptions.length, 1);
+        patch.facts = [{ field: "capacity", value: "500", source }];
         const { sourcePage, assetHash } = current.photoOptions[0]; patch.attachments = [{ sourcePage, assetHash }];
         evidence.push({ url: sourcePage, title: "Synthetic photo provenance", accessedAt: Date.now(), evidenceHash: "c".repeat(64) });
       }
@@ -160,6 +161,33 @@ async function main() {
       }
     }
     check(stage);
+    stage = "review-explicit-removals";
+    const nextPairingResponse = page.waitForResponse(response => response.url().endsWith("/api/moderation/catalog-grants/pairing") && response.request().method() === "POST");
+    await page.getByRole("button", { name: "Create temporary pilot pairing", exact: true }).click();
+    const nextPairing = await (await nextPairingResponse).json();
+    const nextClient = createCatalogPilotClient({ baseUrl: origin, allowLoopback: true });
+    const nextGrant = await nextClient.pair(nextPairing.pairingCode);
+    try {
+      const selected = fixture.venue;
+      const run = (operation, body) => nextClient.execute({ operation, type: selected.type, key: selected.key,
+        ...(body ? { body, confirmWrite: true, idempotencyKey: `removal-${operation}-0001` } : {}) });
+      const current = await run("read");
+      const lease = await run("claim", { revision: current.revision, valueHash: current.valueHash, identityHash: current.identityHash });
+      const proposal = await run("propose", { nonce: lease.nonce, patch: { facts: [], attachments: [] },
+        evidence: [{ url: "https://example.test/correction", title: "Synthetic correction", accessedAt: Date.now(), evidenceHash: "d".repeat(64) }] });
+      await page.getByLabel("Catalog proposal ID", { exact: true }).fill(proposal.id);
+      await page.getByRole("button", { name: "Load proposed change", exact: true }).click();
+      await page.getByText(/Before Facts: capacity: 500/u).waitFor();
+      await page.getByText("After Facts: None (removes all current items)", { exact: true }).waitFor();
+      await page.getByText(/Before Attached photos:.*Synthetic Fixture Creator/u).waitFor();
+      await page.getByText("After Attached photos: None (removes all current items)", { exact: true }).waitFor();
+      await page.getByRole("button", { name: "Approve this proposal", exact: true }).click();
+      await page.getByText("Status: approved", { exact: true }).waitFor();
+      assert.equal((await run("commit", { nonce: lease.nonce, proposalId: proposal.id, payloadHash: proposal.payloadHash })).revision, 2);
+      const changed = await run("read"); assert.deepEqual(changed.attachments, []); assert.deepEqual(changed.findings.facts, []);
+      assert.equal((await server.request(`/api/moderation/catalog-grants/${nextGrant.grantId}`, { method: "DELETE" })).status, 200);
+    } finally { nextClient.close(); }
+    check(stage);
     stage = "owner-hide-and-restore";
     await page.getByRole("button", { name: "Browse venue records", exact: true }).click();
     await page.getByRole("button", { name: `Inspect ${fixture.venue.name}`, exact: true }).click();
@@ -172,13 +200,15 @@ async function main() {
     const restored = page.waitForResponse(response => response.url().endsWith("/correct") && response.request().method() === "POST");
     await page.getByRole("button", { name: "Restore content before latest pilot change", exact: true }).click();
     assert.equal((await restored).status(), 200);
+    const restoredHtml = (await server.request(fixture.venue.path, { owner: false })).text;
+    assert.ok(restoredHtml.includes(fixture.venue.summary)); assert.ok(restoredHtml.includes(fixture.photo.sourcePage));
     await page.getByLabel("Catalog grant ID", { exact: true }).fill(grant.grantId);
     await page.getByRole("button", { name: "Revoke pilot access", exact: true }).click();
     await page.getByText("Pilot access revoked.", { exact: true }).waitFor();
     await assert.rejects(() => client.execute({ operation: "read", type: "artist", key: fixture.artist.key }), { status: 401 });
     check(stage);
     const state = await server.inspect(); assert.equal(state.integrity, "ok"); assert.equal(state.foreignKeyViolations, 0);
-    assert.equal(state.commits, 3); assert.equal(state.preservedBiography, "Synthetic existing biography must remain unchanged.");
+    assert.equal(state.commits, 4); assert.equal(state.preservedBiography, "Synthetic existing biography must remain unchanged.");
     // Existing About tabs may attempt music-provider reads; the preload blocks
     // every socket/fetch. None can leave this disposable local fixture.
     assert.deepEqual(errors, []); assert.deepEqual(reports, []);
