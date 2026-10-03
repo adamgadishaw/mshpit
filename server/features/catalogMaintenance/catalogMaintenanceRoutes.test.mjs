@@ -77,3 +77,17 @@ test("an audit failure rolls back the mode change", (t) => {
   assert.throws(() => f.write(f.context({ mode: "catch_up" })), /audit unavailable/);
   assert.equal(f.inspectControl().mode, "maintenance");
 });
+
+test("only the currently locked verified owner receives offline pilot review visibility", (t) => {
+  const f = fixture(t), ctx = f.context();
+  const save = (userId, version = 2) => f.database.prepare("INSERT OR REPLACE INTO app_meta(key,value) VALUES (?,?)")
+    .run("security.bootstrap_admin_identity.v1", JSON.stringify({ version, userId, email: "owner@example.test", lockedAt: 1 }));
+  assert.equal(f.read(ctx).localPilot.canReview, false);
+  save("other-admin"); assert.equal(f.read(ctx).localPilot.canReview, false);
+  save("admin", 1); assert.equal(f.read(ctx).localPilot.canReview, false);
+  save("admin"); assert.deepEqual(f.read(ctx).localPilot, { canReview: true, mode: "offline-only", maxRecords: 100 });
+  ctx.user.email_verified_at = 0; assert.equal(f.read(ctx).localPilot.canReview, false);
+  ctx.user.email_verified_at = 1; ctx.user.dormant_at = 1; assert.equal(f.read(ctx).localPilot.canReview, false);
+  ctx.user.dormant_at = null; ctx.user.suspended_until = 999999; assert.equal(f.read(ctx).localPilot.canReview, false);
+  assert.equal(f.database.prepare("SELECT COUNT(*) n FROM moderation_actions").get().n, 0);
+});

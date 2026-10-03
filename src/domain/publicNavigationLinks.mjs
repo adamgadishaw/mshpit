@@ -8,9 +8,18 @@ import {
   venuePath,
 } from "./urls.mjs";
 import { liveEventTitle } from "./liveDiscovery.mjs";
-import { publicEventCandidateId } from "./publicEventSnapshot.mjs";
+import { hasPostDiscussion } from "./showDiscussion.mjs";
 
 const text = (value) => String(value ?? "").trim();
+
+// Classify the navigation hint without eagerly loading event snapshot handling.
+// Review posts and archive aggregates retain their own read policies.
+export function publicEventCandidateId(log) {
+  if (!log || log.archiveShowKey || hasPostDiscussion(log)
+    || (log.kind && log.kind !== "event")) return null;
+  const id = log.tourDateId || log.id;
+  return typeof id === "string" && id.trim().length <= 180 ? id.trim() || null : null;
+}
 
 const publicUser = (log, resolveUser) => {
   const embedded = log?.user && typeof log.user === "object" ? log.user : null;

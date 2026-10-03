@@ -1,8 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createCatalogMaintenanceController, catalogBytes, catalogCount, catalogTime, catalogSourceSchedulerLabel } from "./catalogMaintenanceState.mjs";
+import { createCatalogMaintenanceController, catalogBytes, catalogCount, catalogTime, catalogSourceSchedulerLabel, catalogPilotViewAllowed } from "./catalogMaintenanceState.mjs";
 const payload = (mode = "maintenance") => ({ catalog: { mode, limits: {}, progress: {} } });
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
+test("pilot visibility requires a confirmed current owner response and clears on inactive or denied state", () => {
+  const state = { confirmed: true, active: true, data: { localPilot: { canReview: true, mode: "offline-only", maxRecords: 100 } } };
+  assert.equal(catalogPilotViewAllowed(state, "admin"), true);
+  for (const role of ["fan", "editor", "moderator", null]) assert.equal(catalogPilotViewAllowed(state, role), false);
+  for (const patch of [{ confirmed: false }, { active: false }, { data: null }, { data: { localPilot: { canReview: false } } }]) {
+    assert.equal(catalogPilotViewAllowed({ ...state, ...patch }, "admin"), false);
+  }
+});
 
 test("historical provider success cannot hide a disabled or unconfigured scheduler", () => {
   assert.equal(catalogSourceSchedulerLabel({ state: "succeeded", enabled: false, configured: true }), "Disabled");

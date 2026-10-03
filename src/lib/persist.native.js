@@ -23,6 +23,9 @@ const DURABLE_KEYS = new Set([
 ]);
 const volatile = new Map();
 const isDurableKey = (key) => DURABLE_KEYS.has(key)
+  // Account-scoped article text and the save receipt key must survive process
+  // death together. The existing account privacy boundary removes this key.
+  || key.startsWith("pit.newsroom.draft.v1.")
   || key.startsWith("pit.analytics.v2.")
   || key.startsWith("pit.youtubeRejected.v1.");
 const persistence = createJsonPersistence({

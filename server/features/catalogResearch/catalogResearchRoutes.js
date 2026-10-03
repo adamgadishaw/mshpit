@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { hideCatalogResearch, readCatalogResearch } from "./catalogResearchService.js";
+import { withImmediateWrite } from "../../databaseTransaction.js";
 
 // Public reads of the research agent's sourced summaries, and the staff switch
 // that takes a wrong one down. Reads never start research.
@@ -38,13 +39,15 @@ export function catalogResearchRoutes({ database, ApiError, rateLimit, decodedPa
       if (!["artist", "venue"].includes(type) || !key) {
         throw new ApiError(400, "Choose the artist or venue research to hide.", "VALIDATION_FAILED");
       }
-      if (!hideCatalogResearch(database, { type, key, at: now() })) {
-        throw new ApiError(404, "That research was not found.", "NOT_FOUND");
-      }
-      audit.run(randomUUID(), actor.id, "catalog_research_hide", "catalog", `${type}:${key}`.slice(0, 200),
-        "staff hid researched page text", JSON.stringify({ visible: true }), JSON.stringify({ visible: false }),
-        typeof ctx.requestId === "string" ? ctx.requestId : null, now());
-      return { ok: true };
+      return withImmediateWrite(database, () => {
+        if (!hideCatalogResearch(database, { type, key, at: now() })) {
+          throw new ApiError(404, "That research was not found.", "NOT_FOUND");
+        }
+        audit.run(randomUUID(), actor.id, "catalog_research_hide", "catalog", `${type}:${key}`.slice(0, 200),
+          "staff hid researched page text", JSON.stringify({ visible: true }), JSON.stringify({ visible: false }),
+          typeof ctx.requestId === "string" ? ctx.requestId : null, now());
+        return { ok: true };
+      });
     },
   };
 }

@@ -4,6 +4,44 @@ Code readiness is not off-host coverage. A configured private destination, a
 successful scheduled upload, and a restore drill are required. Until then,
 `offhost_backup_unconfigured` must remain visible in the health readout.
 
+## Combined batch preparation and rollback hold
+
+Commit/push and protected draft-PR checks are authorized; production preparation,
+cutover, deployment and API activation remain separate owner decisions.
+
+Before `node scripts/prepare-clips-index.mjs`, create and verify a protected
+pre-preparation snapshot. That CLI imports the complete ordinary database
+initializer and bypasses `scripts/start-production.mjs` and its backup gate.
+Keep the baseline outside routine rotation and budget space for the live DB/WAL,
+baseline, additional startup snapshot, growing index and offline recovery copy.
+An incomplete index stops the replacement server before it listens.
+
+Native Clips triggers keep references current between bounded preparation
+batches, but that is not proof of production online-preparation latency. On the
+configured single runtime disk, agree and rehearse a maintenance window and
+foreground/background writer controls. Blocking incoming HTTP alone does not
+stop startup retention, account lifecycle, media or catalogue jobs.
+
+The combined schema also adds Media API reservation nonces and shared catalog
+work leases. Older binaries can read additive columns/tables but cannot enforce
+these newer fences. Drain old media/catalog/backup writers before cutover or
+binary rollback; do not overlap old and new workers. Keep catalog APIs and
+commits off until separately approved, and leave additive tables/audits intact
+on a compatible code-only rollback.
+
+A snapshot restore loses later writes unless they are preserved and reconciled.
+Account erasure and marketing withdrawal journals do not cover individual
+content deletions, blocks/restrictions, changed passwords or all newly accepted
+content. Recovery references attest to actual offline work; they do not perform
+it. Reconcile privacy and credentials, invalidate restored sessions/tokens/queued
+mail with the offline restore utility, and pass verified journal replay before
+serving. Preserve current state and external-media evidence before a restore.
+
+Local synthetic rehearsal does not close Linux permissions/signals, production
+duration/capacity, private off-host retrieval or general post-snapshot replay
+gaps. Those, the exact final artifacts and acceptance/abort policy remain release
+gates. No live preparation, restore or privacy waiver has been performed here.
+
 ## Guarantees and boundaries
 
 - The startup gate makes a verified local, pre-migration SQLite snapshot. It does

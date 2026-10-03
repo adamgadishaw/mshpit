@@ -55,6 +55,7 @@ export function ensureMediaApiSchema(database) {
       payload_hash TEXT NOT NULL,
       status TEXT NOT NULL CHECK(status IN ('reserved','completed')),
       response_json TEXT,
+      lease_nonce TEXT,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
       expires_at INTEGER NOT NULL,
@@ -90,6 +91,14 @@ export function ensureMediaApiSchema(database) {
         SELECT RAISE(ABORT, 'media api audit is append-only');
       END;
     `);
+
+  // Existing completed receipts remain replayable. Legacy reservations have no
+  // nonce and can only be replaced after their original lease expires.
+  withImmediateWrite(database, () => {
+    if (!database.prepare("PRAGMA table_info(media_api_idempotency)").all().some((column) => column.name === "lease_nonce")) {
+      database.exec("ALTER TABLE media_api_idempotency ADD COLUMN lease_nonce TEXT");
+    }
+  });
 
   // Older local/production-shaped databases were created with ON DELETE
   // SET NULL on the immutable audit table. SQLite implements that action as

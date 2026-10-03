@@ -1,6 +1,6 @@
-import { hasPostDiscussion } from "./showDiscussion.mjs";
 import { accountTargetScope } from "./screenScope.mjs";
 import { eventPath, slugify } from "./urls.mjs";
+export { publicEventCandidateId } from "./publicNavigationLinks.mjs";
 
 const text = (value, max = 300) => typeof value === "string" && value.trim().length <= max
   ? value.trim() : "";
@@ -9,14 +9,6 @@ const calendarDate = (value) => {
   const instant = Date.parse(`${value}T00:00:00Z`);
   return Number.isFinite(instant) && new Date(instant).toISOString().slice(0, 10) === value;
 };
-
-// A caller's event flag is only a lookup hint, never permission. Review posts
-// and artist-archive aggregates must continue through their existing policies.
-export function publicEventCandidateId(log) {
-  if (!log || log.archiveShowKey || hasPostDiscussion(log)
-    || (log.kind && log.kind !== "event")) return null;
-  return text(log.tourDateId || log.id, 180) || null;
-}
 
 export const publicEventSnapshotScope = (eventId, accountId) => accountTargetScope(accountId, `public-event:${eventId || ""}`);
 

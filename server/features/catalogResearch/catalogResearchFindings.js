@@ -19,6 +19,11 @@ export const CATALOG_RESEARCH_FACTS = Object.freeze({
     also_known_as: "Also known as",
     website: "Official site",
   }),
+  // Event enrichment never writes provider dates, venue, lineup, tickets or
+  // availability. It is a separate sourced context record.
+  event: Object.freeze({
+    context: "Context",
+  }),
 });
 
 const SUMMARY_MIN = 60;

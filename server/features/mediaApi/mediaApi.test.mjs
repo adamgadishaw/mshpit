@@ -17,7 +17,8 @@ function database() {
       role TEXT NOT NULL,
       email_verified_at INTEGER,
       is_banned INTEGER NOT NULL DEFAULT 0,
-      suspended_until INTEGER
+      suspended_until INTEGER,
+      dormant_at INTEGER
     );
     CREATE TABLE news_drafts (
       id TEXT PRIMARY KEY,
@@ -50,6 +51,28 @@ function service(db, extra = {}) {
     ...extra,
   });
 }
+
+test("nonce migration preserves existing completed receipts, lease timestamps and grant scopes", () => {
+  const db = database();
+  db.exec("ALTER TABLE media_api_idempotency DROP COLUMN lease_nonce");
+  db.prepare(`INSERT INTO media_api_grants
+    (id,owner_id,actor_type,actor_label,scopes,status,issued_at,expires_at,updated_at)
+    VALUES ('migration_grant','owner_1','assistant','SyntheticMigration','["news:write"]','active',?,?,?)`)
+    .run(at, at + 86_400_000, at);
+  const insert = db.prepare(`INSERT INTO media_api_idempotency
+    (grant_id,operation,idempotency_key,payload_hash,status,response_json,created_at,updated_at,expires_at)
+    VALUES ('migration_grant','news.create',?,'synthetic-hash',?,?,?,?,?)`);
+  insert.run("legacy-completed", "completed", '{"draft":{"id":"existing"}}', at, at, at + 72 * 3_600_000);
+  insert.run("legacy-reserved", "reserved", null, at, at, at + 72 * 3_600_000);
+  const before = db.prepare("SELECT * FROM media_api_idempotency ORDER BY idempotency_key").all();
+  ensureMediaApiSchema(db);
+  ensureMediaApiSchema(db);
+  const after = db.prepare("SELECT * FROM media_api_idempotency ORDER BY idempotency_key").all();
+  assert.deepEqual(after.map(({ lease_nonce, ...row }) => ({ ...row })), before.map(row => ({ ...row })));
+  assert.ok(after.every(row => row.lease_nonce === null));
+  assert.equal(db.prepare("SELECT scopes FROM media_api_grants WHERE id='migration_grant'").get().scopes, '["news:write"]');
+  db.close();
+});
 
 function issue(serviceInstance, scopes = ["news:write", "media:write"]) {
   return serviceInstance.issuePairing({
@@ -202,6 +225,51 @@ test("expired and revoked grants cannot be reused, and owner role changes fail c
   db.prepare("UPDATE users SET role='admin' WHERE id='owner_1'").run();
   api.revokeGrant({ ownerId: "owner_1", grantId: grant.grantId });
   expectApiError(() => api.authorize(`Bearer ${grant.accessToken}`, "news:write"), "AUTH_INVALID");
+});
+
+test("dormant editorial accounts cannot exchange, authorize or replay grants until account reactivation", async t => {
+  for (const role of ["admin", "editor"]) await t.test(role, t => {
+    const db = database(); t.after(() => db.close());
+    db.prepare("UPDATE users SET role=? WHERE id='owner_1'").run(role);
+    let creates = 0;
+    const api = service(db, { media: { create: () => { creates++; return { asset: { id: "dormancy-fixture", status: "ready" } }; } } });
+    const grant = api.exchangePairing({ pairingCode: issue(api).pairingCode });
+    const pending = issue(api), authorization = `Bearer ${grant.accessToken}`;
+    const request = { authorization, body: { contentType: "image/jpeg" }, idempotencyKey: "dormancy-replay-key" };
+    const response = api.createMedia(request);
+    db.prepare("UPDATE users SET dormant_at=? WHERE id='owner_1'").run(at);
+    for (const scope of ["news:write", "media:write"]) expectApiError(() => api.authorize(authorization, scope), "FORBIDDEN");
+    expectApiError(() => api.createMedia(request), "FORBIDDEN");
+    expectApiError(() => api.exchangePairing({ pairingCode: pending.pairingCode }), "FORBIDDEN");
+    expectApiError(() => issue(api), "FORBIDDEN");
+    assert.equal(creates, 1);
+    assert.equal(db.prepare("SELECT dormant_at FROM users WHERE id='owner_1'").get().dormant_at, at);
+    assert.equal(db.prepare("SELECT status FROM media_api_pairings WHERE id=?").get(pending.pairingId).status, "pending");
+    assert.equal(db.prepare("SELECT status FROM media_api_grants WHERE id=?").get(grant.grantId).status, "active");
+    // Interactive account reactivation clears dormancy elsewhere; a bearer
+    // request never clears it or permanently revokes a still-current grant.
+    db.exec("UPDATE users SET dormant_at=NULL WHERE id='owner_1'");
+    assert.equal(api.authorize(authorization, "news:write").id, grant.grantId);
+    assert.deepEqual(api.createMedia(request), response); assert.equal(creates, 1);
+    api.revokeGrant({ ownerId: "owner_1", grantId: grant.grantId });
+    expectApiError(() => api.authorize(authorization, "media:write"), "AUTH_INVALID");
+  });
+});
+
+test("dormancy during asynchronous media preparation fences the durable commit and releases its receipt", async t => {
+  const db = database(); t.after(() => db.close());
+  let commits = 0;
+  const api = service(db, { media: { finalize: async () => {
+    await Promise.resolve();
+    db.prepare("UPDATE users SET dormant_at=? WHERE id='owner_1'").run(at);
+    return { deferredCommit: true, commit: () => { commits++; return { asset: { id: "dormancy-fixture", status: "ready" } }; } };
+  } } });
+  const grant = api.exchangePairing({ pairingCode: issue(api).pairingCode });
+  await assert.rejects(api.finalizeMedia({ authorization: `Bearer ${grant.accessToken}`, assetId: "dormancy-fixture",
+    body: {}, idempotencyKey: "dormancy-finalize-key" }), error => error instanceof ApiError && error.code === "FORBIDDEN");
+  assert.equal(commits, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM media_api_idempotency").get().n, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM media_api_audit WHERE action='media_finalized'").get().n, 0);
 });
 
 test("revoking an owner grant cancels all pending owner pairings but preserves other owners and future issuance", () => {

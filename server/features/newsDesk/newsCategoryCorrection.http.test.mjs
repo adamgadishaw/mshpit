@@ -82,7 +82,7 @@ test("real HTTP preserves the manual category and corrects only the existing art
   const saved = await request(`${base}/drafts/self-written`, { method: "POST", body: story });
   assert.equal(saved.status, 200, JSON.stringify(saved.data));
   assert.equal(saved.data.draft.category, "release");
-  const published = await request(`${base}/drafts/${saved.data.draft.id}/publish`, { method: "POST", body: {} });
+  const published = await request(`${base}/drafts/${saved.data.draft.id}/publish`, { method: "POST", body: { expectedRevision: saved.data.draft.revision } });
   assert.equal(published.status, 200, JSON.stringify(published.data));
   const postId = published.data.postId;
   const snapshot = () => ipc("snapshot", postId);

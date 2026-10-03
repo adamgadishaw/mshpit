@@ -5,9 +5,10 @@ import Button from "../../components/Button";
 import { commandFailure, commandSuccess } from "../../domain/commandResult.mjs";
 import { toAppError } from "../../lib/diagnostics";
 import { colors, radius } from "../../theme";
-import { MAX_NEWS_LINKS, categoriesText, livePageUrl, newsCandidateLine, newsCandidateNeed, newsDraftStatus, newsEditorCostLine, newsLiveStatus,
+import { MAX_NEWS_LINKS, NEWS_CATEGORY_CHOICES, categoriesText, livePageUrl, newsCandidateLine, newsCandidateNeed, newsDraftStatus, newsEditorCostLine, newsLiveStatus,
   parseNewsLinks, parseStartTime } from "./newsDeskEditorApi.mjs";
 import { chooseStoryPhoto, discardDraft, endLive, loadNewsEditor, markLiveWinner, postLiveUpdate, publishDraft, removeLiveUpdate, setLiveCategories, startLive, writeDraft, writeSelfWrittenDraft } from "./newsDeskEditorService";
+import { correctPublishedNewsCategory, loadPublishedNewsCategory } from "./newsDeskEditorService";
 
 const SelfWrittenComposer = lazy(() => import("./SelfWrittenNewsComposer"));
 
@@ -220,6 +221,85 @@ function PhotoChoice({ label, uri = null, on, disabled, onPress }) {
 
 const failure = (error, fallback) => (typeof error?.message === "string" && error.message.trim() ? error.message : fallback);
 
+function PublishedCategory({ accountId, active, busy }) {
+  const [open, setOpen] = useState(false);
+  const [value, setValue] = useState("");
+  const [story, setStory] = useState(null);
+  const [category, setCategory] = useState("");
+  const [pending, setPending] = useState(null);
+  const [needsReload, setNeedsReload] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const flight = useRef(null);
+  useEffect(() => {
+    setPending(null);
+    return () => { flight.current?.abort(); flight.current = null; };
+  }, [active]);
+  const disabled = busy || !!pending || !active;
+  const run = async (saving) => {
+    if (flight.current || busy || !active || (saving && (!story || needsReload))) return;
+    const controller = new AbortController();
+    flight.current = controller;
+    setPending(saving ? "save" : "load"); setError(""); setNotice("");
+    try {
+      if (saving) {
+        // A lost/aborted response is uncertain even when cleanup skips catch.
+        setNeedsReload(true);
+        const result = await correctPublishedNewsCategory({ accountId, postId: story.postId, category,
+          expectedCategory: story.category, expectedUpdatedAt: story.updatedAt, signal: controller.signal });
+        if (controller.signal.aborted) return;
+        setStory({ ...story, category: result.category, updatedAt: result.updatedAt });
+        setNeedsReload(false);
+        setNotice(result.changed ? "Category updated." : "This story already has that category.");
+      } else {
+        const current = await loadPublishedNewsCategory({ accountId, value, signal: controller.signal });
+        if (controller.signal.aborted) return;
+        setStory(current); setCategory(current.category); setNeedsReload(false);
+      }
+    } catch (reason) {
+      if (controller.signal.aborted) return;
+      const problem = toAppError(reason, { source: "newsroom", context: saving ? "Correcting a news category" : "Reading a news category" });
+      if (saving) setNeedsReload(true); else setStory(null);
+      setError(problem.status === 409
+        ? "The story or your editing access changed. Reload its current category before trying again."
+        : failure(problem, "The category could not be confirmed. Reload before trying again."));
+    } finally {
+      if (flight.current === controller) { flight.current = null; setPending(null); }
+    }
+  };
+  return <View style={styles.section} testID="published-news-category">
+    <Button small title={open ? "Close category correction" : "Correct a published category"} variant="secondary"
+      disabled={disabled} onPress={() => setOpen(!open)} />
+    {open ? <View style={styles.card}>
+      <Text accessibilityRole="header" style={styles.title}>Published story category</Text>
+      <Text style={styles.copy}>Change the label on a self-written story. Its text, photo, sources and replies stay the same.</Text>
+      <Field label="Published story link or ID">
+        <TextInput accessibilityLabel="Published story link or ID" style={styles.input} value={value} editable={!disabled}
+          autoCapitalize="none" autoCorrect={false} placeholder="https://www.mshpit.com/post/news_..." placeholderTextColor={colors.textFaint}
+          onChangeText={(text) => { setValue(text); setStory(null); setError(""); setNotice(""); }} />
+      </Field>
+      <Button small title={story ? "Reload current category" : "Load story"} variant="secondary"
+        disabled={disabled || !value.trim()} loading={pending === "load"} onPress={() => run(false)} />
+      {error ? <Text selectable accessibilityRole="alert" style={styles.error}>{error}</Text> : null}
+      {notice ? <Text selectable accessibilityLiveRegion="polite" style={styles.notice}>{notice}</Text> : null}
+      {story ? <>
+        <Text selectable style={styles.headline}>{story.headline}</Text>
+        <View style={styles.choices} accessibilityRole="radiogroup" accessibilityLabel="Published story category">
+          {NEWS_CATEGORY_CHOICES.map((option) => <Pressable key={option.value} disabled={disabled || needsReload}
+            onPress={() => { setCategory(option.value); setNotice(""); }} accessibilityRole="radio"
+            accessibilityLabel={option.label} accessibilityState={{ checked: category === option.value, disabled: disabled || needsReload }}
+            {...(Platform.OS === "web" ? { "aria-checked": category === option.value } : {})}
+            style={[styles.choice, category === option.value && styles.choiceOn]}>
+            <Text style={[styles.choiceText, category === option.value && styles.choiceTextOn]}>{option.label}</Text>
+          </Pressable>)}
+        </View>
+        {needsReload ? <Text style={styles.help}>Reload to check what is saved, then choose the category again.</Text> : null}
+        <Button small title="Save category" disabled={disabled || needsReload} loading={pending === "save"} onPress={() => run(true)} />
+      </> : null}
+    </View> : null}
+  </View>;
+}
+
 function Candidate({ candidate, busy, disabled, onWrite }) {
   return <View style={styles.row}>
     <View style={styles.rowCopy}>
@@ -241,7 +321,7 @@ function SourceLink({ source, prefix = "" }) {
     {source.name || "Source"}</Text>{source.credit ? " - " + source.credit : ""}</Text>;
 }
 
-function Draft({ draft, pending, disabled, onPublish, onDiscard }) {
+function Draft({ draft, pending, disabled, needsReview, onRefresh, onPublish, onDiscard }) {
   const open = draft.status === "draft" && !draft.expired;
   const sources = Array.isArray(draft.sources) ? draft.sources : [];
   const articleSources = sources.filter((source) => source.kind !== "photo");
@@ -259,9 +339,11 @@ function Draft({ draft, pending, disabled, onPublish, onDiscard }) {
       <Text style={styles.help}>Article sources</Text>
       {articleSources.map((source) => <SourceLink key={source.url} source={source} />)}
     </View> : <Text selectable style={styles.help}>Sources: {sources.map((source) => source.name).join(", ")} · cost ${draft.costUsd.toFixed(3)}</Text>}
+    {needsReview ? <><Text selectable style={styles.error}>Publishing could not be confirmed. Refresh and review the current draft. Your unsaved article is retained.</Text>
+      <Button small title="Refresh latest draft" variant="secondary" disabled={disabled} onPress={onRefresh} /></> : null}
     {open || draft.status === "declined" ? <View style={styles.actions}>
       {open ? <Button small title="Publish now" accessibilityLabel={`Publish ${draft.headline}`}
-        disabled={disabled} loading={pending === `publish:${draft.id}`} onPress={() => onPublish(draft)} /> : null}
+        disabled={disabled || needsReview || !Number.isSafeInteger(draft.revision)} loading={pending === `publish:${draft.id}`} onPress={() => onPublish(draft)} /> : null}
       <Button small title="Discard" variant="secondary" accessibilityLabel={`Discard the draft ${draft.headline || ""}`.trim()}
         disabled={disabled} loading={pending === `discard:${draft.id}`} onPress={() => onDiscard(draft)} />
     </View> : null}
@@ -279,6 +361,7 @@ export default function NewsDeskEditor({ accountId, role, active = true, onCompo
   const [query, setQuery] = useState("");
   const [links, setLinks] = useState("");
   const [pending, setPending] = useState(null);
+  const [reviewDraftId, setReviewDraftId] = useState(null);
   const request = useRef(0);
 
   const load = useCallback(async (search = "") => {
@@ -286,7 +369,7 @@ export default function NewsDeskEditor({ accountId, role, active = true, onCompo
     setPending(search ? "search" : "load");
     try {
       const next = await loadNewsEditor({ accountId, query: search });
-      if (ticket === request.current) { setOverview(next); setError(""); }
+      if (ticket === request.current) { setOverview(next); setError(""); setReviewDraftId(null); }
     } catch (reason) {
       if (ticket === request.current) setError(failure(reason, "The newsroom could not load. Try again in a moment."));
     } finally {
@@ -313,6 +396,7 @@ export default function NewsDeskEditor({ accountId, role, active = true, onCompo
       return commandSuccess(true);
     } catch (reason) {
       const error = toAppError(reason, { source: "newsroom", context: "Running a newsroom action" });
+      if (key.startsWith("publish:")) setReviewDraftId(key.slice("publish:".length));
       setError(failure(error, "That did not go through. Refresh and try again."));
       setPending(null);
       return commandFailure(error);
@@ -323,7 +407,7 @@ export default function NewsDeskEditor({ accountId, role, active = true, onCompo
     "Draft written. Review it below before publishing.");
   const writeSelf = (payload) => act("write:self", () => writeSelfWrittenDraft({ accountId, ...payload }),
     "Self-written draft saved. Review it below before publishing.");
-  const publish = (draft) => act(`publish:${draft.id}`, () => publishDraft({ accountId, id: draft.id }),
+  const publish = (draft) => act(`publish:${draft.id}`, () => publishDraft({ accountId, id: draft.id, expectedRevision: draft.revision }),
     "Published. It is on the News tab now.");
   const discard = (draft) => act(`discard:${draft.id}`, () => discardDraft({ accountId, id: draft.id }), "Draft discarded.");
   const writing = typeof pending === "string" && pending.startsWith("write:") ? pending : null;
@@ -332,6 +416,8 @@ export default function NewsDeskEditor({ accountId, role, active = true, onCompo
   return <View style={styles.editor} testID="news-desk-editor">
     {error ? <Text selectable accessibilityRole="alert" style={styles.error}>{error}</Text> : null}
     {notice ? <Text selectable accessibilityLiveRegion="polite" style={styles.notice}>{notice}</Text> : null}
+
+    <PublishedCategory key={accountId} accountId={accountId} active={active} busy={busy} />
 
     <View style={styles.section}>
       <View style={styles.sectionHead}>
@@ -345,6 +431,7 @@ export default function NewsDeskEditor({ accountId, role, active = true, onCompo
       {(overview?.drafts?.recent || []).length ? <View style={styles.card}>
         <Text style={styles.step}>YOUR DRAFTS</Text>
         {overview.drafts.recent.map((draft) => <Draft key={draft.id} draft={draft} pending={pending} disabled={busy}
+          needsReview={reviewDraftId === draft.id} onRefresh={() => load(overview.query || "")}
           onPublish={publish} onDiscard={discard} />)}
       </View> : null}
 

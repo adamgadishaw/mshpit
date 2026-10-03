@@ -30,8 +30,18 @@ export function newsDeskEditorRoutes({ editor, database, ApiError, requireAdmin,
     if (!(actor.email_verified_at > 0)) throw new ApiError(403, "Confirm your email before writing news.", "EMAIL_VERIFICATION_REQUIRED");
     return actor;
   };
-  const record = (ctx, actor, action, draft) => audit.run(randomUUID(), actor.id, action, "news_draft", draft.id,
-    draft.headline ? draft.headline.slice(0, 200) : action, "{}", JSON.stringify({ status: draft.status, costUsd: draft.costUsd }), ctx.requestId || null, now());
+  const assertWriter = (ctx, actor) => {
+    ctx.signal?.throwIfAborted();
+    if (writer(ctx).id !== actor.id) throw new ApiError(409, "The signed-in editor changed. Refresh before retrying.", "CONFLICT");
+  };
+  // Each callback runs inside its mutation transaction. Recheck after any lock
+  // wait and after audit, so revoked access cannot commit content or its audit.
+  const record = (ctx, actor, action, draft) => {
+    assertWriter(ctx, actor);
+    audit.run(randomUUID(), actor.id, action, "news_draft", draft.id,
+      draft.headline ? draft.headline.slice(0, 200) : action, "{}", JSON.stringify({ status: draft.status, costUsd: draft.costUsd }), ctx.requestId || null, now());
+    assertWriter(ctx, actor);
+  };
   const run = async (work) => {
     try { return await work(); }
     catch (error) {
@@ -119,7 +129,12 @@ export function newsDeskEditorRoutes({ editor, database, ApiError, requireAdmin,
     "POST /api/moderation/news-desk/editor/drafts/:id/publish": (ctx) => run(() => {
       const actor = writer(ctx);
       rateLimit(ctx, "news-editor-publish", 20, 3_600_000);
+      const { expectedRevision } = body(ctx, ["expectedRevision"]);
+      if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
+        throw new ApiError(400, "Update or reload Newsroom, then review the current draft before publishing.", "VALIDATION_FAILED");
+      }
       const result = editor.publish(String(ctx.params?.id || ""), {
+        expectedRevision,
         onPublished: (published) => record(ctx, actor, "news_draft_published", published.draft),
       });
       console.log(`[news-desk] owner published "${result.draft.headline.slice(0, 90)}" post=${result.postId}`);

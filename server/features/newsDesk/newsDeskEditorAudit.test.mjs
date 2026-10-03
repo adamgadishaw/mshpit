@@ -49,7 +49,7 @@ function fixture(t, { publish = true } = {}) {
     calls: () => ({ providerCalls, articleCalls }),
     setAuthorityGuard: guard => { authorityGuard = guard; },
     draft: () => routes[`POST ${BASE}`](context()),
-    publish: id => routes[`POST ${BASE}/:id/publish`](context(id)),
+    publish: id => routes[`POST ${BASE}/:id/publish`]({ ...context(id), body: { expectedRevision: 0 } }),
     discard: id => routes[`POST ${BASE}/:id/discard`](context(id)),
     refuseAudit: action => database.exec(`CREATE TRIGGER refuse_editor_audit BEFORE INSERT ON moderation_actions
       WHEN NEW.action='${action}' BEGIN SELECT RAISE(ABORT,'synthetic audit failure'); END`),

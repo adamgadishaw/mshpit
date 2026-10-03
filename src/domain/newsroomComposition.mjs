@@ -1,15 +1,26 @@
 // Local article continuity. The account privacy boundary removes this key on
 // logout/handoff. Media descriptors retain IDs only, never private URLs/files.
-export const newsroomDraftStorageKey = (accountId) => accountId
-  ? `pit.newsroom.draft.v1.${encodeURIComponent(String(accountId))}` : null;
+export { newsroomDraftStorageKey } from "./accountLocalPrivacy.mjs";
 export const NEWSROOM_DRAFT_TTL_MS = 24 * 60 * 60 * 1000;
 export const MAX_NEWSROOM_ARTICLE_SOURCES = 10;
+// All capped form strings total under 87,000 UTF-16 units. JSON can expand a
+// unit to six characters; this also leaves room for property names/punctuation.
+// A receipt comparison must retain its complete snapshot, never a sliced one.
+const MAX_PAYLOAD_SNAPSHOT_LENGTH = 524288;
+const LEGACY_SNAPSHOT_LENGTH = 100000;
 
 export const emptyNewsroomForm = () => ({ headline: "", summary: "", body: "", category: "tour",
   sources: Array.from({ length: 3 }, () => ({ name: "", url: "" })), photo: null,
   photoName: "", photoUrl: "", photoCredit: "" });
 const text = (value, limit) => typeof value === "string" ? value.slice(0, limit) : "";
+const retainSnapshot = (value) => typeof value === "string" && value.length <= MAX_PAYLOAD_SNAPSHOT_LENGTH ? value : null;
+const legacyTruncatedSnapshot = (value) => {
+  if (typeof value !== "string" || value.length !== LEGACY_SNAPSHOT_LENGTH) return false;
+  try { JSON.parse(value); return false; } catch { return true; }
+};
 export function newsroomDraftEnvelope(accountId, form, attempt, savedPayload = null, at = Date.now()) {
+  const attemptPayload = retainSnapshot(attempt?.payload);
+  const confirmedPayload = retainSnapshot(savedPayload);
   return { version: 1, accountId: String(accountId), updatedAt: at,
     form: { headline: text(form.headline, 300), summary: text(form.summary, 1200), body: text(form.body, 60000),
       category: text(form.category, 40) || "tour",
@@ -18,9 +29,9 @@ export function newsroomDraftEnvelope(accountId, form, attempt, savedPayload = n
       })),
       photo: /^ma_[A-Za-z0-9_-]{1,160}$/u.test(form.photo?.assetId || "") ? { assetId: form.photo.assetId } : null,
       photoName: text(form.photoName, 160), photoUrl: text(form.photoUrl, 2048), photoCredit: text(form.photoCredit, 240) },
-    attempt: attempt && typeof attempt.key === "string" && typeof attempt.payload === "string"
-      ? { key: text(attempt.key, 128), payload: text(attempt.payload, 100000) } : null,
-    savedPayload: typeof savedPayload === "string" ? text(savedPayload, 100000) : null };
+    attempt: attempt && typeof attempt.key === "string" && attemptPayload !== null
+      ? { key: text(attempt.key, 128), payload: attemptPayload } : null,
+    savedPayload: legacyTruncatedSnapshot(confirmedPayload) ? null : confirmedPayload };
 }
 export function restoreNewsroomDraft(accountId, envelope, at = Date.now()) {
   if (!accountId || envelope?.version !== 1 || envelope.accountId !== String(accountId)
@@ -39,5 +50,13 @@ export function newsroomArticlePayload(form) {
 // starts a new intent. Keep confirmed keys too, so repeated clicks replay safely.
 export function newsroomSaveAttempt(previous, payload, newKey) {
   const snapshot = JSON.stringify(payload);
-  return previous?.payload === snapshot ? previous : { key: newKey(), payload: snapshot };
+  if (previous?.payload === snapshot) return previous;
+  // Old versions sliced snapshots at 100,000 characters. A matching prefix is
+  // uncertain, not evidence of equal articles: send the full payload with the
+  // old key and let the server replay or reject it. Persist the full attempt so
+  // a subsequent deliberate edit can start a new intent after any conflict.
+  if (legacyTruncatedSnapshot(previous?.payload) && snapshot.startsWith(previous.payload)) {
+    return { key: previous.key, payload: snapshot };
+  }
+  return { key: newKey(), payload: snapshot };
 }

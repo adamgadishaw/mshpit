@@ -1,6 +1,9 @@
 export const emptyCatalogMaintenanceState = () => ({
   data: null, loading: false, pendingMode: null, error: "", confirmed: false, notice: "",
 });
+export const catalogPilotViewAllowed = (state, role) => role === "admin" && state.active === true
+  && state.confirmed === true && state.data?.localPilot?.canReview === true
+  && state.data.localPilot.mode === "offline-only" && state.data.localPilot.maxRecords === 100;
 
 const permissionError = (error) => [401, 403].includes(Number(error?.status ?? error?.statusCode))
   || ["AUTH_REQUIRED", "UNAUTHORIZED", "FORBIDDEN", "ACCOUNT_CHANGED"].includes(error?.code);

@@ -101,6 +101,8 @@ import { createNewsDeskEditor } from "./features/newsDesk/newsDeskEditor.js";
 import { newsDeskEditorRoutes } from "./features/newsDesk/newsDeskEditorRoutes.js";
 import { createMediaApiService } from "./features/mediaApi/mediaApiService.js";
 import { mediaApiRoutes } from "./features/mediaApi/mediaApiRoutes.js";
+import { createCatalogApiService } from "./features/catalogApi/catalogApiService.js";
+import { catalogApiRoutes } from "./features/catalogApi/catalogApiRoutes.js";
 import { ensureNewsLiveSchema } from "./features/newsDesk/newsLive.js";
 import { ensureNewsCardPhotoSchema } from "./features/newsDesk/newsCardPhotos.js";
 import { festivalRoutes } from "./features/festivals/festivalRoutes.js";
@@ -504,6 +506,13 @@ function limit(ctx, name, max, windowMs, options) {
   // same carrier/proxy do not consume one shared posting or messaging bucket.
   const actor = ctx.user?.id ? `user:${ctx.user.id}` : `ip:${ctx.ip}`;
   enforceRateLimit(`${name}:${actor}`, max, windowMs, options);
+}
+
+function mediaApiLimit(ctx, name, max, windowMs, { grantId, ownerId } = {}) {
+  const requests = [{ key: `${name}:ip:${ctx.ip}`, max, windowMs }];
+  if (ownerId) requests.push({ key: `${name}:owner:${ownerId}`, max, windowMs });
+  if (grantId) requests.push({ key: `${name}:grant:${grantId}`, max, windowMs });
+  enforceRateLimitGroup(requests);
 }
 
 function postWriteLimits(ctx, { edit = false, campaign = false } = {}) {
@@ -4221,6 +4230,7 @@ ensureCrewSchema(db);
 ensureShowPlansSchema(db);
 const catalogMaintenanceService = createCatalogMaintenanceService({ database: db, databasePath: DATABASE_PATH,
   now, seoStatus: catalogSeoMaintenanceStatus });
+const catalogApiService = createCatalogApiService({ database: db, now });
 ensureSearchGrowthPrioritySchema(db);
 const searchGrowthService = createSearchGrowthService({ database: db, now,
   onPriorities: (batch) => rememberSearchGrowthPriorities(db, batch) });
@@ -9831,7 +9841,8 @@ export const routes = {
   // Owner-chosen news stories: free to browse, one metered Claude call per draft.
   ...newsDeskEditorRoutes({ editor: newsDeskEditor, database: db, ApiError, requireAdmin: requireNewsEditor, rateLimit: limit, now,
     photoResolver: resolveNewsArtwork, readStory: (postId) => newsDeskReader.forLivePost(postId), listStories: () => newsDeskReader.list({ limit: 10 }).stories || [] }),
-  ...mediaApiRoutes({ service: mediaApiService, requireOwner, rateLimit: limit, ApiError }),
+  ...mediaApiRoutes({ service: mediaApiService, requireOwner, rateLimit: mediaApiLimit, ApiError }),
+  ...catalogApiRoutes({ service: catalogApiService, requireOwner, rateLimit: mediaApiLimit, decodedPathParam }),
   // Live coverage for big nights: outlet headlines plus owner updates, no Claude.
   ...newsLiveRoutes({ database: db, ApiError, requireAdmin: requireNewsEditor, rateLimit: limit, now }),
   // Festivals: editions, lineups by day, and members' plans.
