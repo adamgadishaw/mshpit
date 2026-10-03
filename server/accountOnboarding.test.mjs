@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -71,12 +72,17 @@ test("only canonical signup marks a new account as onboarding-incomplete", async
     setSession() { issuedSession = true; },
   }));
 
-  assert.equal(response.created, true);
+  assert.equal(response.pending, true);
   assert.equal(response.verificationRequired, true);
-  assert.equal(response.user.emailVerified, false);
-  assert.equal(response.user.onboardingVersion, 0);
+  assert.equal(response.user, undefined);
   assert.match(response.cancelToken, /^[A-Za-z0-9_-]{43}$/);
-  assert.equal(issuedSession, true, "signup issues only the new restricted account session");
+  assert.equal(issuedSession, false, "a pending signup has no authenticated account");
+  assert.equal(q.userByEmail.get(email), undefined);
+  const token = "onboarding-reservation-confirmation";
+  assert.equal(db.prepare("UPDATE signup_reservations SET token_hash=? WHERE email=? AND status='pending'")
+    .run(createHash("sha256").update(token).digest("hex"), email).changes, 1);
+  assert.equal(routes["POST /api/verify-email"]({ body: { token } }).verified, true);
+  assert.ok(q.userByEmail.get(email).email_verified_at);
   assert.equal(q.userByEmail.get(email).onboarding_version, 0);
 
   db.prepare("UPDATE users SET onboarding_version=1 WHERE email=?").run(email);
@@ -95,10 +101,12 @@ test("only canonical signup marks a new account as onboarding-incomplete", async
     ua: "test",
     setSession() { issuedSession = true; },
   }));
-  assert.equal(retry.needsAccountChoice, true, "matching credentials require an explicit account choice");
-  assert.equal(retry.accounts[0].id, response.user.id);
-  assert.equal(retry.cancelToken, undefined, "an existing account gets no new cancellation capability");
-  assert.equal(issuedSession, false, "a credential match alone does not silently switch accounts");
+  assert.equal(retry.pending, true, "occupied emails retain the same generic response");
+  assert.equal(retry.accounts, undefined);
+  assert.equal(retry.user, undefined);
+  assert.match(retry.cancelToken, /^[A-Za-z0-9_-]{43}$/);
+  assert.equal(issuedSession, false, "signup cannot silently switch accounts");
+  await routes["POST /api/signup/cancel"]({ body: { cancelToken: retry.cancelToken }, ip: "onboarding-retry-cancel" });
   assert.equal(q.usersByEmail.all(email).length, 1);
   assert.equal(q.userByEmail.get(email).onboarding_version, 1, "a duplicate signup cannot reset completion");
 });

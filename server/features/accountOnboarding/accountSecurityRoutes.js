@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { isPassword } from "../../../src/domain/validation.mjs";
+import { cancelSignupReservation } from "./signupReservations.js";
 
 export function accountSecurityRoutes({ database, ApiError, requireSessionUser, limit, verifyPassword,
   hashPassword, atomicWrite, createSession, cancelSignup,
@@ -41,6 +42,7 @@ export function accountSecurityRoutes({ database, ApiError, requireSessionUser, 
       const token = ctx.body?.cancelToken;
       if (typeof token !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(token)) throw new ApiError(400, "Reopen signup to cancel it.", "VALIDATION_FAILED");
       const hash = createHash("sha256").update(token).digest("hex");
+      cancelSignupReservation(database, hash);
       const user = database.prepare("SELECT * FROM users WHERE signup_cancel_hash=? AND onboarding_version=0").get(hash);
       if (user) await cancelSignup(user, ctx, hash);
       return { ok: true };

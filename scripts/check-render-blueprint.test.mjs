@@ -3,9 +3,12 @@ import { spawnSync } from "node:child_process";
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { parseDocument } from "yaml";
 import { readProviderSchema, validateBlueprint } from "./check-render-blueprint.mjs";
+import { admitClaudeSpend, anthropicMonthlyCeilingMicroUsd, claudeCeilingLeftMicroUsd, claudeMonthSpendMicroUsd } from "../server/claudeSpendCeiling.js";
+import { catalogResearchDailyBudgetMicroUsd, catalogResearchMonthlyBudgetMicroUsd } from "../server/features/catalogResearch/catalogResearchService.js";
 
 const schema = await readProviderSchema();
 const source = await readFile(new URL("../render.yaml", import.meta.url), "utf8");
@@ -46,15 +49,77 @@ function runNodeChain(commands, marker) {
     encoding: "utf8",
   });
 }
-test("news expansion keeps the owner-approved caps and catalogue allocation", () => {
+test("the Blueprint caps shared Claude spending at $10 monthly while keeping news off and catalogue daily pacing", () => {
   const web = parseDocument(source).toJS().services.find((service) => service.name === "mshpit");
   const env = Object.fromEntries(web.envVars.map((entry) => [entry.key, entry.value]));
   assert.equal(env.NEWS_DESK_DAILY_USD, "0.75");
   assert.equal(env.NEWS_DESK_MONTHLY_USD, "15");
-  assert.equal(env.ANTHROPIC_MONTHLY_USD, "20");
+  assert.equal(env.ANTHROPIC_MONTHLY_USD, "10");
   assert.equal(env.CATALOG_RESEARCH_DAILY_USD, "0.30");
-  assert.equal(env.CATALOG_RESEARCH_MONTHLY_USD, "4");
+  assert.equal(env.CATALOG_RESEARCH_MONTHLY_USD, "10");
+  assert.equal(env.NEWS_DESK_ENABLED, "false");
   assert.equal(web.envVars.find((entry) => entry.key === "ANTHROPIC_API_KEY").sync, false);
+});
+
+test("the configured monthly allocation retains the daily clamp and honors smaller limits", () => {
+  const env = Object.fromEntries(webService().envVars.map((entry) => [entry.key, entry.value]));
+  assert.equal(anthropicMonthlyCeilingMicroUsd(env), 10_000_000);
+  assert.equal(catalogResearchMonthlyBudgetMicroUsd(env), 10_000_000);
+  assert.equal(catalogResearchDailyBudgetMicroUsd(env), 300_000);
+  assert.equal(catalogResearchDailyBudgetMicroUsd({ ...env, CATALOG_RESEARCH_DAILY_USD: "10" }), 1_000_000,
+    "even an increased daily setting cannot exceed one tenth of the monthly allowance");
+  assert.equal(catalogResearchDailyBudgetMicroUsd({ ...env, CATALOG_RESEARCH_MONTHLY_USD: "2" }), 200_000);
+  assert.equal(catalogResearchDailyBudgetMicroUsd({ ...env, CATALOG_RESEARCH_MONTHLY_USD: "0" }), 0);
+});
+
+test("the $10 Blueprint ceiling includes prior current-month news and catalogue usage without resetting ledgers", (t) => {
+  const env = Object.fromEntries(webService().envVars.map((entry) => [entry.key, entry.value]));
+  const database = new DatabaseSync(":memory:");
+  t.after(() => database.close());
+  database.exec(`CREATE TABLE catalog_research_spend(token TEXT PRIMARY KEY, utc_day TEXT, charged_micro_usd INTEGER);
+    CREATE TABLE news_desk_spend(day TEXT PRIMARY KEY, usd REAL);
+    CREATE TABLE news_desk_receipts(token TEXT PRIMARY KEY, day TEXT, charged_usd REAL);
+    INSERT INTO catalog_research_spend VALUES ('previous-month','2026-09-30',50000000),('earlier-research','2026-10-01',6000000);
+    INSERT INTO news_desk_spend VALUES ('2026-10-02',3.5);
+    INSERT INTO news_desk_receipts VALUES ('pending-news','2026-10-15',0.25);`);
+  const at = Date.parse("2026-10-15T12:00:00Z");
+  assert.equal(claudeMonthSpendMicroUsd(database, at), 9_750_000,
+    "current-month settled spending and pending reservations count; last month does not");
+  assert.equal(claudeCeilingLeftMicroUsd(database, { env: { ...env, ANTHROPIC_MONTHLY_USD: "20" }, at }), 10_250_000);
+  assert.equal(claudeCeilingLeftMicroUsd(database, { env, at }), 250_000,
+    "changing the cap leaves $0.25, not a fresh $10 allowance");
+  const read = (sql) => Number(database.prepare(sql).get().spent);
+  const research = {
+    env, at, reserveMicroUsd: 200_000,
+    dailyCapMicroUsd: catalogResearchDailyBudgetMicroUsd(env),
+    monthlyCapMicroUsd: catalogResearchMonthlyBudgetMicroUsd(env),
+    readDailySpendMicroUsd: () => read("SELECT COALESCE(SUM(charged_micro_usd),0) spent FROM catalog_research_spend WHERE utc_day='2026-10-15'"),
+    readMonthlySpendMicroUsd: () => read("SELECT SUM(charged_micro_usd) spent FROM catalog_research_spend WHERE utc_day>='2026-10-01'"),
+    reserve: () => {
+      database.prepare("INSERT INTO catalog_research_spend VALUES ('new-research','2026-10-15',200000)").run();
+      return "new-research";
+    },
+  };
+  assert.deepEqual(admitClaudeSpend(database, research), { ok: true, value: "new-research" });
+  assert.equal(claudeMonthSpendMicroUsd(database, at), 9_950_000);
+  const denied = () => assert.fail("exhausted shared headroom must prevent a new reservation");
+  assert.deepEqual(admitClaudeSpend(database, { ...research, reserveMicroUsd: 100_000, reserve: denied }),
+    { ok: false, reason: "claude_monthly_ceiling" });
+  assert.deepEqual(admitClaudeSpend(database, {
+    env, at, reserveMicroUsd: 100_000,
+    dailyCapMicroUsd: Number(env.NEWS_DESK_DAILY_USD) * 1_000_000,
+    monthlyCapMicroUsd: Number(env.NEWS_DESK_MONTHLY_USD) * 1_000_000,
+    readDailySpendMicroUsd: () => 250_000, readMonthlySpendMicroUsd: () => 3_750_000, reserve: denied,
+  }), { ok: false, reason: "claude_monthly_ceiling" },
+  "the larger unchanged news feature allowance cannot bypass the shared ceiling");
+  database.prepare("INSERT INTO news_desk_receipts VALUES ('earlier-uncertain-news','2026-10-14',0.10)").run();
+  assert.equal(claudeCeilingLeftMicroUsd(database, { env, at }), 0);
+  assert.deepEqual(admitClaudeSpend(database, { ...research, reserveMicroUsd: 1, reserve: denied }),
+    { ok: false, reason: "claude_monthly_ceiling" });
+  assert.equal(claudeMonthSpendMicroUsd(database, at), 10_050_000,
+    "existing usage above the new cap is preserved and stops further reservations");
+  assert.equal(read("SELECT SUM(charged_micro_usd) spent FROM catalog_research_spend WHERE token='previous-month'"), 50_000_000,
+    "older ledger entries also remain intact");
 });
 
 test("disk-backed services omit unsupported custom shutdown delays", () => {

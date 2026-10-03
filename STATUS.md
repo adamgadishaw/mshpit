@@ -1,10 +1,228 @@
 # Pit current status
 
+## 2026-10-03 Combined integration (draft PR; release held)
+
+The owner authorized assembling, reviewing, committing and pushing the held batch
+to draft PR 19 on `codex/security-integration-20261002`, with protected CI. Merge,
+production preparation/migrations, downtime, deployment, API activation and live
+pilot writes remain unauthorized. Earlier release-approval wording and local-only
+push holds in the historical entries below are superseded only by this scope.
+
+The batch combines the reviewed account/availability/identity/category/budget
+changes, robustness and recovery hardening, resumable Clips references, category
+correction UI, Media API fixes, disabled catalog API/shared work queue and offline
+owner pilot. The separate Newsroom audio/video feature branch is excluded.
+`PIT_MEDIA_API_ENABLED`, `PIT_CATALOG_API_ENABLED` and
+`PIT_CATALOG_API_COMMIT_ENABLED` remain off by default; no live grants or credentials
+are introduced. The shipping Clips gate remains off.
+
+Local Windows validation of the combined batch passed 6,130 tests with zero
+failures and two filesystem-symlink skips. That full run began before the final
+continuity edits; final affected reruns passed 35 continuity/native/privacy/API
+tests, five real-HTTP publishing tests and 48 recovery/startup/backup tests
+(one Windows symlink skip). Independent Astra reproduced the long-article defect
+before the fix and verified exact retry preservation afterward. Native and
+browser fixtures are synthetic; these counts are not production or device proof.
+
+The final shipping export passes the unchanged 512 KiB initial-JavaScript budget:
+523,733 of 524,288 gzip bytes (555 bytes headroom). Newsroom composer (4), category
+correction (12) and offline catalog pilot (12) browser scenarios pass at 390/1280px.
+Syntax, architecture and Blueprint checks pass. A fresh production dependency
+audit on 2026-10-03 reported zero advisories without changing dependencies.
+Final staged-tree review and required remote CI are recorded with draft PR 19;
+the earlier historical branch counts below do not certify this combined tree.
+
+Publishing a Newsroom draft now requires the revision the editor reviewed.
+Older installed staff clients submit no revision and are safely rejected; staff
+publishing needs a matching client update before this server change is released.
+This is not a claim of backward compatibility for old staff publishing clients.
+The required client is the matching combined PR 19 build whose publish request
+includes `expectedRevision`; pre-batch `fd8b1d09` clients do not. The missing-field
+response is HTTP 400 with "Update or reload Newsroom, then review the current
+draft before publishing." The existing staff error display shows that message.
+Reload the updated web client or update the installed staff app, reopen the saved
+draft, review it and publish. Public browsing and self-written draft saves keep
+their existing contracts. A draft ID alone cannot establish the revision an old
+client reviewed, so accepting its revision-less request would weaken protection;
+there is no legacy bypass. Record the matching native release before deployment.
+Native draft-continuity proof uses the actual adapter with synthetic storage;
+no physical device or native SQLite runtime has been exercised here.
+
+Media grant authorization now rejects dormant staff accounts, including replay
+and completion after asynchronous work. Interactive account reactivation remains
+separate; this API never reactivates an account. No API has been activated here.
+
+The remote repository's `master` was verified at `fd8b1d09` on 2026-10-03. The
+running production service was not queried. Linux/runtime, realistic preparation
+timing/storage, off-host restore, all-writer controls and complete rollback
+reconciliation remain release gates; see `BACKUP_OPERATIONS.md`.
+
+## 2026-10-02 Catalog pilot stage 3 (local review branch)
+
+- Adds owner-visible local pilot inspection to the existing Catalog panel and
+  `scripts/catalog-pilot-dry-run.mjs`. Default input is synthetic; real catalog
+  snapshots require explicit authorized local input. Selection is fixed at up
+  to 100 existing eligible records, stratified across artists, venues and events.
+- Checkpoints preserve exact identities, proposals and latest observations;
+  pause/revocation/conflict checks and truthful counters survive local resume.
+  The preview records no live claims, catalog commits, provider calls or human
+  approval. Candidate images remain unattached; event rendering is still absent.
+- This is an initial review pilot, not a permanent manual-approval requirement
+  for the entire catalog. Automatic commit policy, connection/credentials and
+  production activation need separate owner approval. Stage 1 repairs and the
+  stage 2 catalog commit policy are preserved.
+- Full suite: 6,000 passed, zero failed, one known Windows symlink skip. All 42
+  focused tests passed. Independent Astra review verified both fixes and found
+  no remaining material issues within the offline scope. All 12 local browser
+  scenarios passed at 390px and 1280px. Syntax (821 Node files),
+  architecture, Blueprint and web export passed. Web entry is 524,037 / 524,288
+  gzip bytes, with only 251 bytes of headroom. npm's advisory endpoint remains
+  unavailable, so dependency advisories and the aggregate check are not green.
+- See `CATALOG_API_STAGE3_2026-10-02.md` for usage, snapshot limits and rollout
+  gates, including draining older research writers before activation.
+- Release hold remains: no PR 19 merge/sync, push, deploy, activation or real
+  pilot writes. Production remains last-reported `fd8b1d09`, unqueried here.
+
+## 2026-10-02 Catalog API stage 2 (local review branch)
+
+- Adds separate catalog-audience assistant grants and scoped artist/venue/event
+  inventory, claims, proposals, owner review, commits and status. Both catalog
+  flags default off; existing Media API grant scopes are unchanged.
+- Claude and dot share durable exclusive claims with revision/current-value/
+  identity/protection checks. Writes, idempotency receipts, counters and audit
+  are atomic. Events enrich a separate table; provider facts stay read-only.
+- Independent Astra review reproduced and verified fixes for selector starvation
+  and untracked legacy leases; final independent focused run: 66 passed, zero
+  failed. Full suite: 5,978 passed, zero failed, one Windows symlink skip.
+- Syntax (819 Node files), architecture, Blueprint, web export and diff checks
+  passed. Web entry remains 521,916 / 524,288 gzip bytes. A concurrent test
+  startup hit an existing SQLite-lock race; serial and two-worker reruns passed.
+  npm's advisory endpoint was unavailable, so dependency advisories remain
+  unverified and the aggregate `npm run check` is not fully green.
+- See `CATALOG_API_STAGE2_2026-10-02.md` for endpoints, boundaries, limits,
+  migration/rollback and evidence. No production activation, real grants,
+  provider calls, MCP/OAuth, pilot UI, push, merge or deployment performed.
+
+## 2026-10-02 Media API stage 1 (local review branch)
+
+- `codex/catalog-api-pilot-20261002` starts at `fd8b1d09` and fixes
+  bearer/cookie quota drift, expired upload-ticket replay, multilingual
+  receipt overflow and stale reservation ownership.
+- Additive migration: nullable `media_api_idempotency.lease_nonce`.
+  Existing completed receipts and grant permissions are preserved.
+- See `MEDIA_API_STAGE1_2026-10-02.md` for behavior, migration compatibility,
+  local test evidence and independent review. Production Media API remains
+  off. Catalog endpoints/queue, MCP/OAuth and live pilot writes are not enabled.
+- Validation: 33 focused tests; full suite 5,940 passed, zero failed, one skip.
+  Independent Astra review found no remaining blocking findings after two
+  corrections. Syntax, architecture, Blueprint and web export passed.
+  The aggregate check stopped at the unavailable npm advisory endpoint.
+
 Last production reconciliation: **2026-08-13**. Local working-tree review:
-**2026-09-02**. This is the source of truth for current code, release, and
+**2026-10-02**. This is the source of truth for current code, release, and
 production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
+
+## 2026-10-02 Clips index follow-up (local; deployment held)
+
+The owner approved the persisted clips reference/index approach after robustness
+commit `ee9e2df3f7304de7103f57467250a7fe12c5ba44`, with unchanged user experience
+as a release requirement. Branch `codex/clips-eligibility-index-20261002` replaces
+A2's repeated full-post hydration with current eligibility checked in SQL before
+selecting at most `limit + 1` posts (maximum 31). Responses and cursors retain the
+existing contract; clients need no update or extra continuation action.
+
+Native SQLite triggers maintain ordered post candidates and normalized photo
+references. Media authority, active-account state, privacy and bilateral blocks
+are checked live. Selection and canonical projection share one read snapshot.
+Filtered SQL row visits remain data-dependent; this bounds full post projection,
+not total SQLite CPU, lock waits or request duration.
+
+Fresh empty databases are ready immediately. Existing databases require explicit,
+resumable preparation before this release may serve traffic. Startup refuses an
+incomplete index. On the current single persistent-disk service, deploying first
+can therefore cause downtime. The preparation utility imports ordinary database
+initialization and additive migrations, and bypasses the production launcher's
+pre-migration backup step. A verified pre-preparation backup and owner-reviewed
+preparation, downtime and rollback plan are prerequisites; none has been run or
+approved for production in this local task. Keep deployment on hold.
+
+The shipping client still has `ENABLE_CLIPS = false`. Browser validation uses the
+unchanged shipping export for ordinary navigation and a separate, verified
+temporary export with only that flag enabled for Clips-screen coverage. It does
+not activate Clips in the released app. Evidence and remaining limits are in
+`ROBUSTNESS_AUDIT_2026-10-02.md`.
+
+Final local validation: 6,033 tests passed with two Windows symlink skips,
+834-file syntax, architecture and shipping web export/budget passed. Seven
+actual-server/browser checks passed, including 12/12/2-page scrolling, playback,
+privacy/media changes, cancellation and interrupted-response retry. The actual
+preparation command resumed a synthetic 64/150-post checkpoint, completed the
+remaining 86, and allowed the previously refusing server to listen. These are
+isolated correctness checks, not production capacity or migration evidence.
+
+## 2026-10-02 Prior targeted robustness follow-up (local; deployment held)
+
+This follow-up starts from held integration `a7d48903016a3bf5d7da62240c91992a761e7133`.
+It changes limiter expiry maintenance/health isolation (A3), interrupted backup
+ownership and cleanup (REC-1), legacy poster shutdown draining (REC-2), and
+fresh authorization across async editor draft generation (CB-01). None is
+evidence of a deployed protection. It excludes the separate category UI,
+catalogue API, audio and video worktrees.
+
+At that commit, the clips scan finding (A2) remained unchanged pending the owner's
+compatibility decision. The approved index follow-up above supersedes that hold
+on local implementation, while keeping release and production migration held.
+
+`ROBUSTNESS_AUDIT_2026-10-02.md` records this narrow follow-up, synthetic proofs,
+remaining limits and validation. No production load, provider, mail or real-user
+data tests are authorized here. Deployment remains on hold.
+
+The final local deployment check passed 6,018 tests (two Windows symlink skips),
+827-file syntax, architecture and web export/budget. Five actual-loopback-server
+checks passed for browsing, repeated actions, rate-limit recovery, queue bounds
+and short SQLite contention. These are correctness proofs, not capacity claims.
+
+## 2026-10-02 Prior security integration candidate
+
+This candidate combines reviewed local commits `a2ae0cf` (availability),
+`635dba2` (public identity), `ecfc801` (signup), `eb9e3d2` (monthly budgets),
+and `34d59af` (manual news categories)
+on `fd8b1d09`. The resulting held commit is `a7d4890`; this follow-up does not
+reconcile it against live settings or establish its deployment. The existing
+source branches remain separate. Unreleased
+media/audio/catalog API work is not included.
+
+- Public HTML, including HEAD, and selected expensive GET APIs have shared
+  admission before projection work. Accounts use their real session identity;
+  guests share an IP allowance. Crawler user agents receive no bypass. The
+  artist-directory evidence query uses separate canonical/legacy probes and two
+  matching indexes; whole-catalog counting and ordering still remain.
+- New signup submits an expiring, private reservation. Email confirmation creates
+  the account; signup itself issues no authenticated session. Anonymous occupied
+  addresses receive the same pending response. Adding a sibling requires the
+  existing verified account's session/password and subsequent email confirmation.
+  Existing users retain their verification, cancellation and recovery paths.
+- Provider-specific venue identity survives navigation, and event artist links
+  require authoritative identity rather than a guessed name.
+- Manual news publishing preserves the editor's allowlisted category. A narrow
+  editor route can correct only the category, with category/timestamp comparison,
+  current-authority checks, transactional audit and rollback. Generated-news
+  classification is unchanged. No correction UI or real article correction is
+  included in this local preparation.
+- The local Blueprint changes only `ANTHROPIC_MONTHLY_USD` from 20 to 10 and
+  `CATALOG_RESEARCH_MONTHLY_USD` from 4 to 10. The catalogue daily value remains
+  0.30. Prior spend and reservations still count; no ledger is reset, no feature
+  is activated, and no live budget setting is changed by this preparation.
+
+Combined validation uses synthetic SQLite, loopback HTTP and browser fixtures,
+blocked provider traffic, full repository checks, parsed Blueprint comparison,
+and independent review. It does not establish production capacity or replace
+production acceptance. No production data, real mail or paid providers are used.
+The original incident's traffic/restart causation is not proved by these tests.
+Clips candidate scanning (A2) remains open. The local follow-up above addresses
+legacy limiter-map cleanup (A3). See `SECURITY.md` for limits and operational work.
 
 ## 2026-09-30 Profiles: favorite shows, accent colour, pronouns
 

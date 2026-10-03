@@ -36,6 +36,13 @@ test("public post artist links avoid a per-card catalog scan", () => {
   assert.equal(postPlan.some((detail) => /SCAN (canonical|legacy)/i.test(detail)), false, postPlan.join(" | "));
 });
 
+test("public artist evidence indexes include media-only canonical and legacy posts", () => {
+  const canonical = plan("SELECT id FROM posts WHERE removed=0 AND artist_key=?", "test-artist");
+  const legacy = plan("SELECT id FROM posts WHERE removed=0 AND artist_key IS NULL AND lower(artist)=lower(?)", "Test Artist");
+  assert.ok(canonical.some(detail => detail.includes("idx_posts_public_artist_evidence")), canonical.join(" | "));
+  assert.ok(legacy.some(detail => detail.includes("idx_posts_public_artist_name_evidence")), legacy.join(" | "));
+});
+
 test("sitemap tour keyset uses date/id ordering without a temporary sort", () => {
   const tourPlan = plan(`SELECT td.id,td.artist,td.artist_key,td.venue,td.place,td.source,
       td.venue_provider_id,td.date,td.updated_at,td.owner_id,COALESCE(td.provider_active,1) AS provider_active,

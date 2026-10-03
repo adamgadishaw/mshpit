@@ -3063,6 +3063,9 @@ export function StoreProvider({ children }) {
           skipIdentityCheck: !addAccount,
           ...(addAccount ? { expectedAccountId: sessionRef.current?.id } : {}),
         }), (response) => {
+          if (response?.pending === true && response.verificationRequired === true) {
+            return { ok: true, pending: true, cancelToken: response.cancelToken };
+          }
           if (response?.needsAccountChoice && Array.isArray(response.accounts) && response.accounts.length > 0 && response.accounts.length <= 2) return { ok: true, needsAccountChoice: true, accounts: response.accounts, canCreate: response.canCreate === true };
           if (response?.created === true && response.user?.id) {
             absorbServerUser(response.user, { announce: true });

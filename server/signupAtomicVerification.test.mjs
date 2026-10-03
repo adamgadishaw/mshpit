@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -32,41 +33,41 @@ function addExisting(email) {
   return q.userById.get(id);
 }
 
-test("verification, session, and linked-grant write failures roll back every new signup row", async () => {
-  for (const phase of ["verification", "session", "grant"]) {
-    await flush();
-    const ctx = signupContext(phase === "grant" ? { createAdditional: true } : {});
-    const existing = phase === "grant" ? addExisting(ctx.body.email) : null;
-    const existingSession = existing ? createSession(existing.id) : null;
-    const existingBefore = existing ? q.userById.get(existing.id) : null;
-    const beforeUsers = db.prepare("SELECT COUNT(*) n FROM users").get().n;
-    const beforeSessions = db.prepare("SELECT COUNT(*) n FROM sessions").get().n;
-    const beforeMail = db.prepare("SELECT COUNT(*) n FROM email_log").get().n;
-    const trigger = phase === "verification"
-      ? `BEFORE UPDATE OF email_verify_hash ON users WHEN NEW.email='${ctx.body.email}' AND NEW.email_verify_hash IS NOT NULL`
-      : phase === "session"
-        ? `BEFORE INSERT ON sessions WHEN NEW.user_id IN (SELECT id FROM users WHERE email='${ctx.body.email}')`
-        : "BEFORE INSERT ON linked_account_session_grants";
-    db.exec(`CREATE TRIGGER atomic_signup_injected_failure ${trigger}
-      BEGIN SELECT RAISE(ABORT, 'injected atomic signup failure'); END`);
-    try {
-      await assert.rejects(routes["POST /api/signup"](ctx), /injected atomic signup failure/);
-    } finally { db.exec("DROP TRIGGER atomic_signup_injected_failure"); }
-    await flush();
-    assert.equal(ctx.session, undefined, phase);
-    assert.equal(db.prepare("SELECT COUNT(*) n FROM users").get().n, beforeUsers, phase);
-    assert.equal(db.prepare("SELECT COUNT(*) n FROM sessions").get().n, beforeSessions, phase);
-    assert.equal(db.prepare("SELECT COUNT(*) n FROM email_log").get().n, beforeMail, "rollback cannot queue mail");
-    assert.equal(db.prepare("SELECT COUNT(*) n FROM linked_account_pairs WHERE user_a_id=? OR user_b_id=?")
-      .get(existing?.id || "absent", existing?.id || "absent").n, 0);
-    if (existing) {
-      assert.deepEqual(q.userById.get(existing.id), existingBefore);
-      assert.ok(getSession(existingSession.token));
-    }
-    assert.equal(db.isTransaction, false);
-  }
+test("reservation insertion failure leaves accounts, sessions and mail untouched", async () => {
+  const ctx = signupContext();
+  const beforeUsers = db.prepare("SELECT COUNT(*) n FROM users").get().n;
+  const beforeMail = db.prepare("SELECT COUNT(*) n FROM email_log").get().n;
+  db.exec(`CREATE TRIGGER atomic_signup_injected_failure BEFORE INSERT ON signup_reservations
+    BEGIN SELECT RAISE(ABORT, 'injected atomic signup failure'); END`);
+  try { await assert.rejects(routes["POST /api/signup"](ctx), /injected atomic signup failure/); }
+  finally { db.exec("DROP TRIGGER atomic_signup_injected_failure"); }
+  await flush();
+  assert.equal(ctx.session, undefined);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM users").get().n, beforeUsers);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM email_log").get().n, beforeMail);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM signup_reservations WHERE email=?").get(ctx.body.email).n, 0);
 });
 
+test("verification account and receipt write failures roll back creation and preserve the original capability for retry", async () => {
+  for (const phase of ["account", "receipt"]) {
+    const ctx = signupContext();
+    assert.equal((await routes["POST /api/signup"](ctx)).pending, true);
+    const token = `synthetic-${++sequence}`;
+    db.prepare("UPDATE signup_reservations SET token_hash=? WHERE email=?")
+      .run(createHash("sha256").update(token).digest("hex"), ctx.body.email);
+    const table = phase === "account" ? "users" : "email_verification_receipts";
+    db.exec(`CREATE TRIGGER atomic_signup_injected_failure BEFORE INSERT ON ${table}
+      BEGIN SELECT RAISE(ABORT, 'injected atomic signup failure'); END`);
+    try { assert.throws(() => routes["POST /api/verify-email"]({ body: { token }, ip: `verify-${sequence}`, setHeader() {} }), /injected atomic signup failure/); }
+    finally { db.exec("DROP TRIGGER atomic_signup_injected_failure"); }
+    assert.equal(q.usersByEmail.all(ctx.body.email).length, 0);
+    assert.equal(db.prepare("SELECT status FROM signup_reservations WHERE email=?").get(ctx.body.email).status, "pending");
+    assert.equal(db.isTransaction, false);
+    assert.equal(routes["POST /api/verify-email"]({ body: { token }, ip: `retry-${sequence}`, setHeader() {} }).verified, true);
+    assert.equal(q.usersByEmail.all(ctx.body.email).length, 1);
+    assert.equal(ctx.session, undefined);
+  }
+});
 test("verification preparation cannot send before commit or after its token was rolled back", async () => {
   const user = addExisting(`prepare-${++sequence}@example.test`);
   assert.throws(() => prepareVerification(user), /requires a transaction/);
@@ -95,22 +96,20 @@ test("mail starts only after signup is committed and provider failure never auto
     calls += 1;
     assert.equal(String(url), "https://api.resend.com/emails");
     assert.equal(db.isTransaction, false);
-    const user = q.userByEmail.get(ctx.body.email);
-    assert.ok(user?.email_verify_hash);
-    assert.equal(db.prepare("SELECT COUNT(*) n FROM sessions WHERE user_id=?").get(user.id).n, 1);
+    assert.equal(q.userByEmail.get(ctx.body.email), undefined);
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM signup_reservations WHERE email=?").get(ctx.body.email).n, 1);
     return new Response(null, { status: 503 });
   };
   try {
     const result = await routes["POST /api/signup"](ctx);
     await flush();
-    assert.equal(result.created, true);
+    assert.equal(result.pending, true);
     assert.equal(result.verificationRequired, true);
-    assert.equal(result.user.emailVerified, false);
-    assert.ok(getSession(ctx.session.token));
-    assert.equal(q.userById.get(result.user.id).email_verified_at, 0);
+    assert.equal(result.user, undefined);
+    assert.equal(ctx.session, undefined);
     assert.equal(calls, 1);
-    assert.equal(db.prepare("SELECT status FROM email_log WHERE user_id=? AND template_key='verify_email'")
-      .get(result.user.id).status, "failed");
+    assert.equal(db.prepare("SELECT status FROM email_log WHERE to_email=? AND template_key='signup_verify'")
+      .get(ctx.body.email).status, "failed");
   } finally {
     globalThis.fetch = fetchBefore;
     for (const [key, value] of Object.entries(envBefore)) {
@@ -119,14 +118,13 @@ test("mail starts only after signup is committed and provider failure never auto
   }
 });
 
-test("local verification-off signup claims its handle and session in the same transaction", async () => {
+test("mailbox-first signup stays pending even when the legacy local verification switch is off", async () => {
   process.env.EMAIL_VERIFICATION_ENABLED = "false";
   const ctx = signupContext({ handle: "atomic_local_handle" });
   const result = await routes["POST /api/signup"](ctx);
-  assert.equal(result.user.emailVerified, true);
-  assert.equal(result.user.handle, "atomic_local_handle");
-  assert.ok(getSession(ctx.session.token));
-  assert.equal(q.userById.get(result.user.id).email_verify_hash, null);
+  assert.equal(result.pending, true);
+  assert.equal(ctx.session, undefined);
+  assert.equal(q.userByEmail.get(ctx.body.email), undefined);
   await flush();
-  assert.equal(db.prepare("SELECT COUNT(*) n FROM email_log WHERE user_id=? AND template_key='welcome'").get(result.user.id).n, 1);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM email_log WHERE to_email=? AND template_key='welcome'").get(ctx.body.email).n, 0);
 });

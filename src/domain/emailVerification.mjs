@@ -47,6 +47,7 @@ export async function confirmEmailWithReconciliation({
       verified,
       alreadyVerified: result?.alreadyVerified === true,
       reconciled: false,
+      ...(!verified && ["account_exists", "authorization_changed"].includes(result?.outcome) ? { outcome: result.outcome } : {}),
       user: verified ? matchingEmailVerifiedSessionUser(result?.user, currentAccountId) : null,
     };
   } catch (error) {

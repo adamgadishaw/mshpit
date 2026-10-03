@@ -23,6 +23,7 @@ import { fileURLToPath } from "node:url";
 import { registerPitSqliteFunctions } from "../server/sqliteFunctions.js";
 import { uploadPrivateBackup } from "../server/backupTransfer.js";
 import { fenceBackupSnapshot } from "../server/databaseRecovery.js";
+import { acquireBackupOwnership } from "./backup-db-ownership.mjs";
 import {
   backupRetentionCount,
   backupSourceManifest,
@@ -145,6 +146,10 @@ if (verifyAt !== -1) {
 
 if (!existsSync(SOURCE)) { console.error(`No database at ${SOURCE}. Set PIT_DATA_DIR.`); process.exit(1); }
 mkdirSync(BACKUP_DIR, { recursive: true });
+const ownership = acquireBackupOwnership(BACKUP_DIR);
+try {
+// Reclaim only demonstrably dead copies before measuring available headroom.
+ownership.cleanup();
 
 const walPath = `${SOURCE}-wal`;
 // An impossible copy must not destroy history during retention rotation.
@@ -167,6 +172,7 @@ try {
 } finally { live.close(); }
 
 const dest = join(BACKUP_DIR, `pit-${stamp()}.db`);
+if (existsSync(dest)) throw new Error("A completed backup already uses this timestamp; retry later.");
 // A crash or failed integrity check must not leave a filename the scheduler
 // considers successful. Only the atomic rename publishes a completed snapshot.
 const partial = `${dest}.partial-${process.pid}`;
@@ -181,7 +187,7 @@ try {
     // On a full disk keep only the newest verified snapshot and retry once; a
     // second failure still refuses, as before.
     if (!isDiskFullError(error)) throw error;
-    if (existsSync(partial)) unlinkSync(partial);
+    ownership.removeOwnPartial(basename(partial));
     // Recheck after the failed copy: concurrent writes may have consumed the
     // initial margin. Never delete additional recovery history if a retry still
     // cannot fit with write headroom, or if disk metrics are now unavailable.
@@ -210,7 +216,7 @@ try {
     publishedName: basename(dest), timeoutMs: UPLOAD_TIMEOUT_MS,
   });
 } catch (error) {
-  try { if (existsSync(partial)) unlinkSync(partial); } catch {}
+  ownership.removeOwnPartial(basename(partial));
   throw error;
 }
 
@@ -222,3 +228,4 @@ else console.log("offhost   skipped (pass --upload with BACKUP_S3_* set)");
 
 const { kept, dropped } = prune();
 console.log(`retention ${kept} kept, ${dropped} pruned (BACKUP_KEEP=${KEEP})`);
+} finally { ownership.close(); }

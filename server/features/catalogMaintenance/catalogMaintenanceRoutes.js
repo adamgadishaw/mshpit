@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isOwnerId } from "../../ownerIdentity.js";
 
 const MODES = new Set(["paused", "catch_up", "maintenance"]);
 
@@ -10,12 +11,17 @@ export function catalogMaintenanceRoutes({ database, ApiError, requireAdmin, rat
     (id,actor_id,action,target_type,target_id,reason,prior_state,next_state,request_id,created_at)
     VALUES (?,?,?,?,?,?,?,?,?,?)`);
   const headers = (ctx) => ctx.setHeader?.("Cache-Control", "private, no-store");
+  const status = (actor) => ({ ...collectStatus(), localPilot: {
+    canReview: actor.role === "admin" && actor.email_verified_at > 0 && !actor.is_banned
+      && !actor.dormant_at && !(actor.suspended_until > now()) && isOwnerId(database, actor.id),
+    mode: "offline-only", maxRecords: 100,
+  } });
   return {
     "GET /api/moderation/catalog-maintenance": (ctx) => {
-      requireAdmin(ctx);
+      const actor = requireAdmin(ctx);
       headers(ctx);
       rateLimit(ctx, "catalog-maintenance-read", 120, 600_000);
-      return collectStatus();
+      return status(actor);
     },
     "POST /api/moderation/catalog-maintenance": (ctx) => {
       const actor = requireAdmin(ctx);
@@ -46,7 +52,7 @@ export function catalogMaintenanceRoutes({ database, ApiError, requireAdmin, rat
         database.exec("ROLLBACK TO catalog_maintenance_control; RELEASE catalog_maintenance_control");
         throw error;
       }
-      return collectStatus();
+      return status(actor);
     },
   };
 }

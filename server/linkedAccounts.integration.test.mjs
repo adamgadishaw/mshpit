@@ -243,48 +243,42 @@ test("another browser requires its own password proof despite a persisted pair",
   assert.equal((await request("/api/me/accounts/switch", { method: "POST", cookie, body: { accountId: second.id } })).status, 200);
 });
 
-test("signup same-password proof stays restricted until both email confirmations", async () => {
+test("mailbox-first additional signup links only after verification and a fresh password-authenticated login", async () => {
   const original = member();
-  const signup = await request("/api/signup", { method: "POST", body: {
-    name: "New Linked Member", email: original.email, password: "Same-password1", createAdditional: true,
+  const originalLogin = await login(original);
+  const signup = await request("/api/signup", { method: "POST", cookie: originalLogin.cookie, body: {
+    name: "New Linked Member", email: original.email, password: "Same-password1", addAccount: true, currentPassword: "Same-password1",
     genres: ["Rock"], ageBand: "18_plus", termsVersion: LEGAL_ACCEPTANCE_VERSION,
   } });
-  assert.equal(signup.status, 200);
-  assert.equal(signup.body.created, true);
-  const createdId = signup.body.user.id;
-  assert.notEqual(createdId, original.id);
-  assert.deepEqual(ids(await request("/api/me/accounts", { cookie: signup.cookie })), [createdId]);
-  assert.equal((await request("/api/me/accounts/switch", { method: "POST", cookie: signup.cookie,
-    body: { accountId: original.id } })).status, 403);
-  assert.equal((await request("/api/posts", { method: "POST", cookie: signup.cookie, body: { text: "Must not publish" } })).status, 403);
-  const verified = await request("/api/verify-email", { method: "POST", cookie: signup.cookie,
-    body: { token: mintVerifyToken(createdId) } });
-  assert.equal(verified.status, 200);
-  assert.equal(verified.body.verified, true);
-  assert.deepEqual(ids(await request("/api/me/accounts", { cookie: signup.cookie })), [createdId, original.id]);
-  const result = await request("/api/me/accounts/switch", { method: "POST", cookie: signup.cookie,
-    expectedAccount: createdId, body: { accountId: original.id } });
-  assert.equal(result.status, 200);
-  assert.equal(result.body.user.id, original.id);
+  assert.equal(signup.status, 200); assert.equal(signup.body.pending, true); assert.equal(signup.cookie, undefined);
+  assert.deepEqual(ids(await request("/api/me/accounts", { cookie: originalLogin.cookie })), [original.id]);
+  assert.equal(q.usersByEmail.all(original.email).length, 1);
+  const token = randomBytes(32).toString("base64url");
+  db.prepare("UPDATE signup_reservations SET token_hash=? WHERE email=?")
+    .run(createHash("sha256").update(token).digest("hex"), original.email);
+  assert.equal((await request("/api/verify-email", { method: "POST", body: { token } })).body.verified, true);
+  const created = q.usersByEmail.all(original.email).find(user => user.id !== original.id);
+  assert.ok(created.email_verified_at);
+  assert.deepEqual(ids(await request("/api/me/accounts", { cookie: originalLogin.cookie })), [original.id], "old session did not prove new credentials");
+  const authenticated = await login(created);
+  assert.deepEqual(ids(await request("/api/me/accounts", { cookie: authenticated.cookie })), [created.id, original.id]);
+  const result = await request("/api/me/accounts/switch", { method: "POST", cookie: authenticated.cookie,
+    expectedAccount: created.id, body: { accountId: original.id } });
+  assert.equal(result.status, 200); assert.equal(result.body.user.id, original.id);
 });
-
-test("HTTP signup cookie blocks public and social writes until verification while retaining privacy and cancellation", async () => {
+test("legacy unverified accounts retain their verification gate and rights; pending cancellation leaves existing accounts intact", async () => {
   const original = member({ role: "admin" }), recipient = member();
   db.prepare("UPDATE users SET age_band='18_plus',dm_policy='people_i_follow' WHERE id=?").run(recipient.id);
   const originalLogin = await login(original);
   const originalHash = q.userById.get(original.id).pass_hash;
-  const signup = await request("/api/signup", { method: "POST", cookie: originalLogin.cookie, body: {
-    name: "Restricted HTTP Member", email: original.email, password: "Separate-password2",
-    genres: ["Rock"], ageBand: "18_plus", termsVersion: LEGAL_ACCEPTANCE_VERSION,
-    role: "admin", id: original.id, emailVerified: true,
-  } });
+  const unverified = member({ email: original.email, password: "Separate-password2", verified: false });
+  db.prepare("UPDATE users SET age_band='18_plus' WHERE id=?").run(unverified.id);
+  const signup = await login(unverified, "Separate-password2");
   assert.equal(signup.status, 200);
-  assert.equal(signup.body.created, true);
-  assert.equal(signup.body.verificationRequired, true);
   assert.equal(signup.body.user.emailVerified, false);
   assert.equal(signup.body.user.role, "fan");
   assert.match(signup.serializedCookie, /HttpOnly/);
-  const accountId = signup.body.user.id;
+  const accountId = unverified.id;
   const originalBio = q.userById.get(accountId).bio;
   assert.notEqual(accountId, original.id);
   db.prepare("INSERT INTO follows (follower_id,followee_id) VALUES (?,?)").run(recipient.id, accountId);
@@ -331,8 +325,8 @@ test("HTTP signup cookie blocks public and social writes until verification whil
   const cancelled = await request("/api/signup/cancel", { method: "POST", cookie: unfinished.cookie,
     body: { cancelToken: unfinished.body.cancelToken } });
   assert.equal(cancelled.status, 200);
-  assert.equal(q.userById.get(unfinished.body.user.id), undefined);
-  assert.equal(getSession(parseCookies(unfinished.cookie)[COOKIE]), null);
+  assert.equal(unfinished.cookie, undefined);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM signup_reservations WHERE cancel_hash=?").get(createHash("sha256").update(unfinished.body.cancelToken).digest("hex")).n, 0);
   assert.ok(q.userById.get(accountId));
   assert.ok(q.userById.get(original.id));
 });

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test, { after, beforeEach } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -21,7 +22,7 @@ after(() => { db.close(); rmSync(directory, { recursive: true, force: true }); }
 beforeEach(() => resetRateLimitsForTests());
 let sequence = 0;
 function context(body = {}, user) {
-  const result = { body, user, ip: `shared-email-${++sequence}`, ua: "test", setHeader() {},
+  const result = { body, user, ...(user ? { token: createSession(user.id).token } : {}), ip: `shared-email-${++sequence}`, ua: "test", setHeader() {},
     setSession(value) { result.session = value; }, clearSession() { result.cleared = true; } };
   return result;
 }
@@ -104,117 +105,89 @@ test("different passwords sign directly into only the matching account", async (
   (await rejects(async () => (await login("missing@example.test", "first-password1")), 401));
 });
 
-test("Settings add-account requires a verified current account and reauthentication; third account rejected", async () => {
-  const first = member();
-  (await rejects(async () => (await signup(first.email, { addAccount: true, currentPassword: "first-password1" })), 401));
-  (await rejects(async () => (await signup(first.email, { addAccount: true, currentPassword: "wrong-password1" }, first)), 401));
-  (await rejects(async () => (await signup("someone-else@example.test", { addAccount: true, currentPassword: "first-password1" }, first)), 401));
-  (await rejects(async () => (await signup(first.email, { addAccount: true, currentPassword: "first-password1" }, { ...first, email_verified_at: 0 })), 403));
-  (await signup(first.email, { addAccount: true, currentPassword: "first-password1" }, first));
-  assert.equal(q.usersByEmail.all(first.email).length, 2);
-  assert.equal(q.userById.get(first.id).pass_hash, first.pass_hash);
-  (await rejects(async () => (await signup(first.email, { addAccount: true, currentPassword: "first-password1" }, first)), 409));
-  assert.equal(q.usersByEmail.all(first.email).length, 2);
-});
+function confirmPending(email) {
+  const token = `shared-reservation-${++sequence}`;
+  db.prepare("UPDATE signup_reservations SET token_hash=? WHERE rowid=(SELECT rowid FROM signup_reservations WHERE email=? AND status='pending' ORDER BY created_at DESC,rowid DESC LIMIT 1)")
+    .run(createHash("sha256").update(token).digest("hex"), email);
+  return routes["POST /api/verify-email"](context({ token }));
+}
 
-test("different-password public signup creates a restricted sibling and cancellation cannot erase the existing account", async () => {
+test("Settings add-account requires verified password/session proof and creates its second user only at verification", async () => {
   const first = member();
-  const firstCookie = createSession(first.id);
-  const { result, ctx } = (await signup(first.email));
-  assert.equal(result.created, true);
-  assert.equal(result.verificationRequired, true);
-  assert.equal(result.user.emailVerified, false);
-  assert.equal(result.user.role, "fan");
-  assert.notEqual(result.user.id, first.id);
-  assert.equal(getSession(ctx.session.token).user_id, result.user.id);
-  assert.equal(getSession(firstCookie.token).user_id, first.id);
-  assert.equal(q.usersByEmail.all(first.email).length, 2);
-  (await rejects(async () => (await signup(first.email, { password: "third-password3" })), 409));
-  assert.equal(q.usersByEmail.all(first.email).length, 2);
-  (await routes["POST /api/signup/cancel"](context({ cancelToken: result.cancelToken })));
-  assert.equal(q.userById.get(first.id).pass_hash, first.pass_hash);
-  assert.equal(getSession(firstCookie.token).user_id, first.id);
-  assert.equal(getSession(ctx.session.token), null);
+  await rejects(() => signup(first.email, { addAccount: true, currentPassword: "first-password1" }), 401);
+  await rejects(() => signup(first.email, { addAccount: true, currentPassword: "wrong-password1" }, first), 401);
+  await rejects(() => signup("other@example.test", { addAccount: true, currentPassword: "first-password1" }, first), 401);
+  await rejects(() => signup(first.email, { addAccount: true, currentPassword: "first-password1" }, { ...first, email_verified_at: 0 }), 403);
+  const staged = await signup(first.email, { addAccount: true, currentPassword: "first-password1" }, first);
+  assert.equal(staged.result.pending, true); assert.equal(staged.ctx.session, undefined);
   assert.equal(q.usersByEmail.all(first.email).length, 1);
+  assert.equal(confirmPending(first.email).verified, true);
+  assert.equal(q.usersByEmail.all(first.email).length, 2);
+  assert.equal(q.userById.get(first.id).pass_hash, first.pass_hash);
+  await rejects(() => signup(first.email, { addAccount: true, currentPassword: "first-password1" }, first), 409);
 });
 
-test("concurrent ordinary first signups cannot create an unintended sibling account", async () => {
-  const email = `concurrent-first-${++sequence}@example.test`;
-  const attempts = Array.from({ length: 5 }, (_, index) => {
-    const ctx = context({
-      name: `Concurrent Member ${index}`,
-      email,
-      password: "concurrent-password1",
-      genres: ["Rock"],
-      ageBand: "18_plus",
-      termsVersion: LEGAL_ACCEPTANCE_VERSION,
-    });
-    return routes["POST /api/signup"](ctx);
-  });
-  const settled = await Promise.allSettled(attempts);
-  assert.equal(q.usersByEmail.all(email).length, 1);
-  assert.equal(settled.filter((entry) => entry.status === "fulfilled" && entry.value?.created).length, 1);
-  for (const entry of settled.filter((result) => result.status === "rejected")) {
-    assert.equal(entry.reason?.status, 409);
-    assert.equal(entry.reason?.code, "CONFLICT");
+test("public signup cannot disclose or reserve an existing account's sibling slot", async () => {
+  const first = member(); const firstCookie = createSession(first.id);
+  for (const extra of [{}, { password: "first-password1" }, { createAdditional: true, password: "first-password1" }]) {
+    const { result, ctx } = await signup(first.email, extra);
+    assert.equal(result.pending, true); assert.equal(result.user, undefined); assert.equal(result.accounts, undefined);
+    assert.equal(ctx.session, undefined);
+    await routes["POST /api/signup/cancel"](context({ cancelToken: result.cancelToken }));
+    assert.equal(q.usersByEmail.all(first.email).length, 1);
+    assert.equal(q.userById.get(first.id).pass_hash, first.pass_hash);
+    assert.equal(getSession(firstCookie.token).user_id, first.id);
   }
 });
 
-test("matching signup credentials require an explicit choice before creating a same-password sibling", async () => {
-  const first = member();
-  const choice = (await signup(first.email, { password: "first-password1" }));
-  assert.equal(choice.result.needsAccountChoice, true);
-  assert.equal(choice.result.canCreate, true);
-  assert.equal(choice.result.accounts.length, 1);
-  assert.equal(choice.result.accounts[0].id, first.id);
-  assert.equal(choice.result.cancelToken, undefined);
-  assert.equal(choice.ctx.session, undefined);
-  assert.equal(q.usersByEmail.all(first.email).length, 1);
-  (await rejects(async () => (await signup(first.email, { createAdditional: true, password: "wrong-password4" })), 401));
-  assert.equal(q.usersByEmail.all(first.email).length, 1);
-  const created = (await signup(first.email, { createAdditional: true, password: "first-password1" }));
-  assert.equal(created.result.created, true);
-  assert.equal(created.result.verificationRequired, true);
-  assert.equal(created.result.user.emailVerified, false);
-  assert.notEqual(created.result.user.id, first.id);
-  assert.equal(getSession(created.ctx.session.token).user_id, created.result.user.id);
-  const fullChoice = (await signup(first.email, { password: "first-password1" }));
-  assert.equal(fullChoice.result.needsAccountChoice, true);
-  assert.equal(fullChoice.result.canCreate, false);
-  assert.equal(fullChoice.result.accounts.length, 2);
-  assert.equal(fullChoice.ctx.session, undefined);
-  (await rejects(async () => (await signup(first.email, { createAdditional: true, password: "first-password1" })), 409));
-  assert.equal(q.usersByEmail.all(first.email).length, 2);
-  assert.equal(q.userById.get(first.id).pass_hash, first.pass_hash);
+test("concurrent ordinary submissions reserve no user rows and create only one account after confirmation", async () => {
+  const email = `concurrent-first-${++sequence}@example.test`;
+  const results = await Promise.all(Array.from({ length: 5 }, (_, n) => signup(email, { name: `Concurrent Member ${n}` })));
+  assert.ok(results.every(entry => entry.result.pending && !entry.ctx.session));
+  assert.equal(q.usersByEmail.all(email).length, 0);
+  assert.equal(confirmPending(email).verified, true);
+  assert.equal(q.usersByEmail.all(email).length, 1);
 });
 
-test("explicit signup cancellation deletes only the unfinished account and is retry-safe", async () => {
-  const first = member();
-  const { result } = (await signup(first.email, { addAccount: true, currentPassword: "first-password1" }, first));
-  const second = q.usersByEmail.all(first.email).find((entry) => entry.id !== first.id);
-  const cookie = createSession(second.id);
-  db.prepare("UPDATE users SET created_at=1 WHERE id=?").run(second.id);
-  assert.ok(q.userById.get(second.id), "unfinished accounts have no age cutoff");
+test("reservation cancellation is retry-safe and never borrows or clears another account's session", async () => {
+  const first = member(); const before = q.userById.get(first.id);
+  const { result } = await signup(first.email, { addAccount: true, currentPassword: "first-password1" }, first);
   const cancel = context({ cancelToken: result.cancelToken }, first);
-  assert.deepEqual((await routes["POST /api/signup/cancel"](cancel)), { ok: true });
-  assert.equal(cancel.cleared, undefined, "sibling session remains intact");
-  assert.equal(q.userById.get(second.id), undefined);
-  assert.equal(getSession(cookie.token), null);
-  assert.ok(db.prepare("SELECT 1 FROM media_owner_sweeps WHERE owner_id=?").get(second.id), "all uploaded objects remain queued for cleanup after the user row is erased");
-  assert.ok(q.userById.get(first.id));
-  assert.deepEqual((await routes["POST /api/signup/cancel"](context({ cancelToken: result.cancelToken }))), { ok: true });
+  assert.deepEqual(await routes["POST /api/signup/cancel"](cancel), { ok: true });
+  assert.equal(cancel.cleared, undefined);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM signup_reservations WHERE email=?").get(first.email).n, 0);
+  // Session issuance updates activity, not the existing credential/content.
+  assert.equal(q.userById.get(first.id).pass_hash, before.pass_hash);
+  assert.equal(q.usersByEmail.all(first.email).length, 1);
+  assert.deepEqual(await routes["POST /api/signup/cancel"](context({ cancelToken: result.cancelToken })), { ok: true });
 });
 
-test("Finish setup prevents later cancellation even before verification", async () => {
-  const email = `finish-${++sequence}@example.test`, { result } = (await signup(email));
+test("confirmed accounts retain setup and password-confirmed deletion; obsolete reservation cancellation cannot erase them", async () => {
+  const email = `finish-${++sequence}@example.test`; const { result } = await signup(email);
+  assert.equal(confirmPending(email).verified, true);
   const user = q.userByEmail.get(email);
-  assert.equal(user.email_verified_at, 0);
+  assert.ok(user.email_verified_at);
   routes["POST /api/me/onboarding/complete"](context({ version: 1 }, user));
-  (await routes["POST /api/signup/cancel"](context({ cancelToken: result.cancelToken })));
+  await routes["POST /api/signup/cancel"](context({ cancelToken: result.cancelToken }));
   assert.ok(q.userById.get(user.id));
-  (await rejects(async () => (await routes["DELETE /api/me"](context({ password: "second-password2", onboardingOnly: true }, user))), 409));
+  await rejects(() => routes["DELETE /api/me"](context({ password: "second-password2", onboardingOnly: true }, user)), 409);
   assert.equal(q.userById.get(user.id).signup_cancel_hash, null);
-  assert.equal(q.userById.get(user.id).email_verified_at, 0);
+});
+test("legacy unfinished signup cancellation still erases only its account, sessions and owned-media cleanup", async () => {
+  const first = member(); const legacy = member(first.email, "legacy-password2");
+  const firstSession = createSession(first.id), legacySession = createSession(legacy.id);
+  const cancelToken = "L".repeat(43);
+  db.prepare("UPDATE users SET onboarding_version=0,email_verified_at=0,signup_cancel_hash=? WHERE id=?")
+    .run(createHash("sha256").update(cancelToken).digest("hex"), legacy.id);
+  const cancellation = context({ cancelToken }, first);
+  assert.deepEqual(await routes["POST /api/signup/cancel"](cancellation), { ok: true });
+  assert.equal(q.userById.get(legacy.id), undefined);
+  assert.equal(getSession(legacySession.token), null);
+  assert.ok(db.prepare("SELECT 1 FROM media_owner_sweeps WHERE owner_id=?").get(legacy.id));
+  assert.equal(getSession(firstSession.token).user_id, first.id);
+  assert.equal(q.userById.get(first.id).pass_hash, first.pass_hash);
+  assert.equal(cancellation.cleared, undefined);
+  assert.deepEqual(await routes["POST /api/signup/cancel"](context({ cancelToken })), { ok: true });
 });
 
 test("authenticated cancellation cannot erase legacy or completed accounts", async () => {

@@ -4,6 +4,51 @@ export const NEWS_EDITOR_PATH = "/api/moderation/news-desk/editor";
 export const MAX_NEWS_LINKS = 3;
 export const NEWS_SELF_WRITTEN_PATH = `${NEWS_EDITOR_PATH}/drafts/self-written`;
 
+export const NEWS_CATEGORY_CHOICES = Object.freeze([
+  { value: "release", label: "New music" }, { value: "tour", label: "Tours" }, { value: "festival", label: "Festivals" },
+  { value: "lineup", label: "Lineups" }, { value: "awards", label: "Awards" }, { value: "charts", label: "Charts" },
+  { value: "legal", label: "Legal" }, { value: "death", label: "Memorial" },
+]);
+const validCategory = (value) => NEWS_CATEGORY_CHOICES.some((option) => option.value === value);
+
+// Accept an article link or its opaque post ID; never fetch a supplied URL.
+export function publishedNewsPostId(value) {
+  const text = String(value || "").trim();
+  if (/^news_[A-Za-z0-9_-]{1,160}$/u.test(text)) return text;
+  return /^(?:https:\/\/(?:www\.)?mshpit\.com)?\/post\/(news_[A-Za-z0-9_-]{1,160})\/?(?:[?#][^\s]*)?$/u.exec(text)?.[1] || null;
+}
+
+export async function readSelfWrittenNewsStory({ accountId, value, signal } = {}, { apiCall } = {}) {
+  const expectedAccountId = actor(accountId);
+  const postId = publishedNewsPostId(value);
+  if (!postId) throw new TypeError("Enter a published Mshpit story link or news post ID.");
+  const payload = await transport(apiCall)(`/api/posts/${encodeURIComponent(postId)}`, {
+    expectedAccountId, signal, cache: "no-store", silent: true, context: "Reading the current news category",
+  });
+  const story = payload?.post?.news;
+  if (payload?.post?.id !== postId || story?.postId !== postId || story?.origin !== "self_written"
+      || !validCategory(story.category) || !Number.isSafeInteger(story.updatedAt) || story.updatedAt < 1) {
+    throw new TypeError("That published self-written story is unavailable for category correction.");
+  }
+  return { postId, headline: String(story.headline || ""), category: story.category, updatedAt: story.updatedAt };
+}
+
+export async function correctNewsStoryCategory({ accountId, postId, category, expectedCategory, expectedUpdatedAt, signal } = {}, { apiCall } = {}) {
+  const expectedAccountId = actor(accountId);
+  if (publishedNewsPostId(postId) !== postId || !validCategory(category) || !validCategory(expectedCategory)
+      || !Number.isSafeInteger(expectedUpdatedAt) || expectedUpdatedAt < 1) throw new TypeError("Reload the story's current category before saving.");
+  const payload = await transport(apiCall)(`${NEWS_EDITOR_PATH}/stories/${encodeURIComponent(postId)}/category`, {
+    method: "PATCH", body: { category, expectedCategory, expectedUpdatedAt }, expectedAccountId, signal,
+    silent: true, context: "Correcting a published news category",
+  });
+  const changed = category !== expectedCategory;
+  if (payload?.postId !== postId || payload.category !== category || payload.changed !== changed
+      || !Number.isSafeInteger(payload.updatedAt) || (changed ? payload.updatedAt <= expectedUpdatedAt : payload.updatedAt !== expectedUpdatedAt)) {
+    throw new TypeError("The correction could not be confirmed. Reload the story before retrying.");
+  }
+  return payload;
+}
+
 function actor(accountId) {
   if (typeof accountId !== "string" || !accountId.trim()) throw new TypeError("The news editor requires an administrator account.");
   return accountId.trim();
@@ -57,10 +102,11 @@ export async function writeSelfWrittenNewsDraft({ accountId, headline, summary, 
   return payload.draft;
 }
 
-export async function publishNewsDraft({ accountId, id } = {}, { apiCall } = {}) {
+export async function publishNewsDraft({ accountId, id, expectedRevision } = {}, { apiCall } = {}) {
   const expectedAccountId = actor(accountId);
+  if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) throw new TypeError("Refresh and review the current draft before publishing.");
   const payload = await transport(apiCall)(`${NEWS_EDITOR_PATH}/drafts/${encodeURIComponent(id)}/publish`, {
-    method: "POST", body: {}, expectedAccountId, silent: true, context: "Publishing a news draft",
+    method: "POST", body: { expectedRevision }, expectedAccountId, silent: true, context: "Publishing a news draft",
   });
   if (payload?.draft?.status !== "published") throw new TypeError("Publishing could not be confirmed. Refresh to check the story.");
   return payload;

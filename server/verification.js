@@ -13,6 +13,10 @@ import { publicOrigin, sendTemplate, sendTemplateInBackground } from "./emailSer
 import { claimPendingSignupHandle } from "./features/accountOnboarding/signupHandle.js";
 import { privateErrorLabel } from "./errors.js";
 import { grantFirstWaveBadge } from "./memberBadges.js";
+import { consumeSignupReservation } from "./features/accountOnboarding/signupReservations.js";
+import { assertMemberIdentityAllowed } from "./features/artistAccounts/artistIdentityRisk.js";
+import { opaqueId } from "./ids.js";
+import { sessionTtlForRole } from "./auth.js";
 
 const TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -131,6 +135,43 @@ export function beginVerification(user, { background = true } = {}) {
   return { verificationSent: !prepared.autoVerified, autoVerified: prepared.autoVerified };
 }
 
+// A reservation has no user id, session or public profile. The mail still uses
+// the shared transactional delivery policy and keeps the token in its fragment.
+export function sendSignupReservation(reservation, { background = true } = {}) {
+  if (!reservation) return Promise.resolve({ sent: false, reason: "signup-pending" });
+  if (db.isTransaction) throw new Error("Signup reservation mail must follow commit");
+  const failedDelivery = (error) => {
+    console.warn(`[mail] signup verification scheduling failed cause=${privateErrorLabel(error)}`);
+    return { sent: false, reason: "delivery-failed" };
+  };
+  try {
+    const current = db.prepare("SELECT 1 FROM signup_reservations WHERE token_hash=? AND status='pending' AND expires_at>?")
+      .get(reservation.tokenHash, Date.now());
+    if (!current) return Promise.resolve({ sent: false, reason: "verification-changed" });
+    const options = { to: reservation.email, vars: { name: "there", link: verifyLink(reservation.token) },
+      idempotencyKey: `signup-verify-${reservation.tokenHash.slice(0, 32)}` };
+    if (background) { sendTemplateInBackground("signup_verify", options); return Promise.resolve({ queued: true }); }
+    return sendTemplate("signup_verify", options).catch(failedDelivery);
+  } catch (error) { return Promise.resolve(failedDelivery(error)); }
+}
+
+function createVerifiedSignupAccount(payload, at) {
+  // Protected names may have changed since this submission was staged.
+  assertMemberIdentityAllowed(db, { name: payload.name });
+  const id = opaqueId("u");
+  let handle;
+  do { handle = `pitfan_${randomBytes(4).toString("hex")}`; } while (q.userByHandle.get(handle));
+  const initials = (payload.name.match(/\p{L}|\p{N}/gu) || ["?"]).slice(0, 2).join("").toUpperCase();
+  const colors = ["#F2A65A", "#E0457B", "#5B8DEF", "#6FCF97", "#B98AE0", "#E8B65A"];
+  q.insertUser.run(id, payload.email, payload.name, handle, payload.passwordHash, "fan",
+    payload.city ?? null, payload.lat ?? null, payload.lng ?? null, initials, colors[Math.floor(Math.random() * colors.length)], at);
+  db.prepare(`UPDATE users SET extras=?,genres=?,age_band=?,dm_policy='mutuals',onboarding_version=0,
+    email_verified_at=? WHERE id=?`).run(JSON.stringify(payload.extras), JSON.stringify(payload.genres), payload.ageBand, at, id);
+  claimPendingSignupHandle(db, q.userById.get(id), at);
+  grantFirstWaveBadge(db, id, { at });
+  return q.userById.get(id);
+}
+
 /**
  * Complete verification from a token. A short-lived hashed receipt makes the
  * operation idempotent when the write commits but its response is lost. Returns
@@ -143,8 +184,14 @@ export function completeVerification(token, now = Date.now()) {
   db.exec("BEGIN IMMEDIATE");
   try {
     emailStmts.pruneVerificationReceipts.run(now);
+    const signup = consumeSignupReservation(db, { tokenHash, at: now, sessionTtlForRole, createAccount: createVerifiedSignupAccount });
     const user = emailStmts.userByVerifyHash.get(tokenHash, now);
-    if (user) {
+    if (signup?.blocked) {
+      completion = signup;
+    } else if (signup?.user) {
+      emailStmts.recordVerificationReceipt.run(tokenHash, signup.user.id, hashToken(signup.user.email), now, signup.expiresAt);
+      completion = { user: signup.user, replayed: false };
+    } else if (user) {
       emailStmts.recordVerificationReceipt.run(tokenHash, user.id, hashToken(user.email), now, user.email_verify_expires);
       emailStmts.markEmailVerified.run(now, user.id);
       claimPendingSignupHandle(db, q.userById.get(user.id), now);
@@ -170,7 +217,7 @@ export function completeVerification(token, now = Date.now()) {
   if (!completion) return null;
   // Also run for a replay: if the process stopped after committing verification
   // but before claiming the welcome, the retry finishes that one-time side effect.
-  sendWelcomeOnce(completion.user, { background: true });
+  if (completion.user) sendWelcomeOnce(completion.user, { background: true });
   return completion;
 }
 

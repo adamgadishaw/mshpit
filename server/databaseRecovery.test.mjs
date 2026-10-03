@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { spawn } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -8,6 +9,14 @@ import { assertDatabaseRecoveryReady, fenceBackupSnapshot, prepareRecoveryDataba
 import { prepareOfflineRestore } from "../scripts/prepare-db-restore.mjs";
 import { startProduction } from "../scripts/start-production.mjs";
 import { PIT_SQLITE_APPLICATION_ID } from "./dataDirectory.js";
+import { createMediaApiService } from "./features/mediaApi/mediaApiService.js";
+import { MEDIA_API_SCOPES, secretHash } from "./features/mediaApi/mediaApiPolicy.js";
+import { createApiGrantService, ensureApiGrantSchema } from "./features/apiGrants/apiGrantService.js";
+import { CATALOG_SCOPES } from "./features/catalogApi/catalogApiPolicy.js";
+import { catalogAudit, ensureCatalogWorkSchema } from "./features/catalogResearch/catalogWorkQueue.js";
+import { ownerIdentity, storeOwnerIdentity } from "./ownerIdentity.js";
+import { ensureSignupReservationsSchema, prepareSignupReservation, consumeSignupReservation,
+  cancelSignupReservation } from "./features/accountOnboarding/signupReservations.js";
 
 function fixture(path = ":memory:") {
   const db = new DatabaseSync(path);
@@ -32,6 +41,162 @@ function fixture(path = ":memory:") {
   return db;
 }
 const reviews = { privacyReplayReference: "incident-2026-09/privacy", credentialReviewReference: "incident-2026-09/auth", at: 5000 };
+
+function apiCapabilityFixture() {
+  const db = fixture();
+  db.exec(`ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'admin';
+    ALTER TABLE users ADD COLUMN email_verified_at INTEGER DEFAULT 1000;
+    ALTER TABLE users ADD COLUMN is_banned INTEGER DEFAULT 0;
+    ALTER TABLE users ADD COLUMN suspended_until INTEGER;
+    ALTER TABLE users ADD COLUMN dormant_at INTEGER;`);
+  storeOwnerIdentity(db, ownerIdentity("member@example.test", "member", 1000));
+  const media = createMediaApiService({ database: db, now: () => reviews.at, env: { PIT_MEDIA_API_ENABLED: "true" } });
+  const paired = media.issuePairing({ ownerId: "member", actorType: "assistant", actorLabel: "Synthetic restore",
+    scopes: [...MEDIA_API_SCOPES] });
+  const grant = media.exchangePairing({ pairingCode: paired.pairingCode });
+  const pending = media.issuePairing({ ownerId: "member", actorType: "human", actorLabel: "Synthetic pending restore",
+    scopes: [...MEDIA_API_SCOPES] });
+  ensureApiGrantSchema(db); ensureCatalogWorkSchema(db);
+  const catalogToken = "synthetic_restore_catalog_not_a_real_credential";
+  db.prepare(`INSERT INTO api_grants(id,audience,owner_id,actor_type,actor_label,scopes,token_hash,status,issued_at,expires_at)
+    VALUES ('restore-catalog','pit-catalog-v1','member','assistant','Synthetic restore',?,?,'active',1000,9000)`)
+    .run(JSON.stringify(CATALOG_SCOPES), secretHash(catalogToken));
+  db.prepare("INSERT INTO catalog_grant_limits(grant_id,entities_json,commit_limit) VALUES ('restore-catalog',?,1)")
+    .run(JSON.stringify([{ type: "artist", key: "synthetic-restore-artist" }]));
+  db.prepare(`INSERT INTO catalog_pairings(id,owner_id,code_hash,actor_label,scopes,entities_json,commit_limit,issued_at,expires_at,status)
+    VALUES ('restore-pairing','member',?,'Synthetic pending restore',?,?,1,1000,9000,'pending')`)
+    .run(secretHash("synthetic-restore-pairing"), JSON.stringify(CATALOG_SCOPES), JSON.stringify([{ type: "artist", key: "synthetic-restore-artist" }]));
+  db.prepare(`INSERT INTO media_api_idempotency
+    (grant_id,operation,idempotency_key,payload_hash,status,response_json,created_at,updated_at,expires_at)
+    VALUES (?,'news.create','synthetic-history','synthetic-hash','completed','{"ok":true}',1000,1000,9000)`).run(grant.grantId);
+  db.exec(`INSERT INTO catalog_api_receipts VALUES
+    ('restore-catalog','claim','synthetic-history','synthetic-hash','{"ok":true}',1000,9000);`);
+  catalogAudit(db, { actorType: "owner", actorLabel: "owner", action: "synthetic-history", at: 1000 });
+  const catalog = createApiGrantService({ database: db, now: () => reviews.at });
+  const history = () => Object.fromEntries(["media_api_audit", "media_api_idempotency", "catalog_work_audit", "catalog_api_receipts"]
+    .map(table => [table, db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()]));
+  return { db, media, catalog, grant, pending, history,
+    mediaAuthorization: `Bearer ${grant.accessToken}`, catalogAuthorization: `Bearer ${catalogToken}` };
+}
+
+test("restore preparation revokes every scoped API capability while preserving audit and receipt history", () => {
+  const f = apiCapabilityFixture();
+  try {
+    for (const scope of MEDIA_API_SCOPES) assert.doesNotThrow(() => f.media.authorize(f.mediaAuthorization, scope));
+    for (const scope of CATALOG_SCOPES) assert.doesNotThrow(() => f.catalog.authorize(f.catalogAuthorization, scope));
+    const history = f.history();
+    fenceBackupSnapshot(f.db);
+    const counts = prepareRecoveryDatabase(f.db, reviews);
+    assert.equal(counts.mediaApiGrants, 1); assert.equal(counts.apiGrants, 1); assert.equal(counts.mediaApiPairings, 1);
+    assert.equal(counts.catalogPairings, 1);
+    assert.equal(f.db.prepare("SELECT status FROM catalog_pairings WHERE id='restore-pairing'").get().status, "revoked");
+    assert.doesNotThrow(() => assertDatabaseRecoveryReady(f.db));
+    for (const scope of MEDIA_API_SCOPES) assert.throws(() => f.media.authorize(f.mediaAuthorization, scope), { code: "AUTH_INVALID" });
+    for (const scope of CATALOG_SCOPES) assert.throws(() => f.catalog.authorize(f.catalogAuthorization, scope), { code: "AUTH_INVALID" });
+    assert.throws(() => f.media.exchangePairing({ pairingCode: f.pending.pairingCode }), { code: "AUTH_INVALID" });
+    assert.equal(f.db.prepare("SELECT token_hash FROM media_api_grants WHERE id=?").get(f.grant.grantId).token_hash, null);
+    assert.equal(f.db.prepare("SELECT status FROM media_api_pairings WHERE id=?").get(f.pending.pairingId).status, "revoked");
+    assert.deepEqual(f.history(), history);
+    assert.equal(f.db.prepare("SELECT count(*) n FROM posts").get().n, 1);
+    assert.equal(f.db.prepare("SELECT count(*) n FROM sessions").get().n, 0);
+  } finally { f.db.close(); }
+});
+
+test("repeated recovery leaves terminal API state and prior revocation timestamps intact", () => {
+  const f = apiCapabilityFixture();
+  try {
+    f.db.prepare("UPDATE media_api_grants SET status='revoked',token_hash=NULL,revoked_at=2000,updated_at=2000 WHERE id=?").run(f.grant.grantId);
+    f.db.exec("UPDATE api_grants SET status='revoked',revoked_at=2000; UPDATE media_api_pairings SET status='expired' WHERE status='pending'; UPDATE catalog_pairings SET status='revoked';");
+    const state = () => ["media_api_grants", "api_grants", "media_api_pairings", "catalog_pairings"].map(table => f.db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all());
+    const before = state(), history = f.history();
+    for (const at of [5000, 6000]) {
+      const counts = prepareRecoveryDatabase(f.db, { ...reviews, at });
+      assert.equal(counts.mediaApiGrants, 0); assert.equal(counts.apiGrants, 0); assert.equal(counts.mediaApiPairings, 0);
+      assert.equal(counts.catalogPairings, 0);
+      assert.deepEqual(state(), before); assert.deepEqual(f.history(), history);
+    }
+  } finally { f.db.close(); }
+});
+
+test("a later recovery failure rolls back API revocation, session cleanup and the reviewed gate together", () => {
+  const f = apiCapabilityFixture();
+  try {
+    fenceBackupSnapshot(f.db);
+    const history = f.history();
+    f.db.exec("CREATE TRIGGER fail_restore_mail BEFORE DELETE ON email_queue BEGIN SELECT RAISE(ABORT,'synthetic restore failure'); END;");
+    assert.throws(() => prepareRecoveryDatabase(f.db, reviews), /synthetic restore failure/);
+    assert.equal(f.db.prepare("SELECT count(*) n FROM sessions").get().n, 1);
+    assert.equal(f.db.prepare("SELECT status FROM media_api_pairings WHERE id=?").get(f.pending.pairingId).status, "pending");
+    assert.equal(f.db.prepare("SELECT status FROM catalog_pairings WHERE id='restore-pairing'").get().status, "pending");
+    for (const scope of MEDIA_API_SCOPES) assert.doesNotThrow(() => f.media.authorize(f.mediaAuthorization, scope));
+    for (const scope of CATALOG_SCOPES) assert.doesNotThrow(() => f.catalog.authorize(f.catalogAuthorization, scope));
+    assert.deepEqual(f.history(), history);
+    assert.throws(() => assertDatabaseRecoveryReady(f.db), { code: "DATABASE_RESTORE_REVIEW_REQUIRED" });
+  } finally { f.db.close(); }
+});
+
+function signupRecoveryFixture() {
+  const db = fixture();
+  db.exec("ALTER TABLE users ADD COLUMN email TEXT;");
+  ensureSignupReservationsSchema(db);
+  const reservations = {};
+  db.exec("BEGIN IMMEDIATE");
+  for (const status of ["pending", "occupied", "revoked"]) {
+    reservations[status] = prepareSignupReservation(db, {
+      payload: { email: `${status}@example.test`, passwordHash: "synthetic-staged-password" },
+      cancelToken: `synthetic-cancel-${status}`, at: 1000,
+    });
+    if (status !== "pending") db.prepare("UPDATE signup_reservations SET status=?,payload='{}' WHERE token_hash=?")
+      .run(status, reservations[status].tokenHash);
+  }
+  db.exec("COMMIT");
+  return { db, reservations, terminalRows: () => db.prepare("SELECT * FROM signup_reservations WHERE status<>'pending' ORDER BY token_hash").all() };
+}
+
+test("recovery removes guest signup capabilities before account creation and preserves terminal outcomes", () => {
+  const f = signupRecoveryFixture();
+  try {
+    const pending = f.db.prepare("SELECT * FROM signup_reservations WHERE token_hash=?").get(f.reservations.pending.tokenHash);
+    assert.equal(pending.actor_id, null); assert.equal(pending.session_hash, null);
+    const consume = () => consumeSignupReservation(f.db, {
+      tokenHash: f.reservations.pending.tokenHash, at: reviews.at, sessionTtlForRole: () => 10000,
+      createAccount(payload) {
+        f.db.prepare("INSERT INTO users(id,email,pass_hash) VALUES ('restored-signup',?,?)").run(payload.email, payload.passwordHash);
+        return { id: "restored-signup" };
+      },
+    });
+    // Prove this exact guest token can create an account, then roll back the
+    // control operation so recovery receives the original pending snapshot.
+    f.db.exec("BEGIN IMMEDIATE");
+    assert.equal(consume().user.id, "restored-signup");
+    f.db.exec("ROLLBACK");
+    const terminalRows = f.terminalRows();
+    fenceBackupSnapshot(f.db);
+    assert.equal(prepareRecoveryDatabase(f.db, reviews).signupReservations, 1);
+    assert.doesNotThrow(() => assertDatabaseRecoveryReady(f.db));
+    f.db.exec("BEGIN IMMEDIATE");
+    assert.equal(consume(), null);
+    f.db.exec("COMMIT");
+    assert.equal(cancelSignupReservation(f.db, secretHash("synthetic-cancel-pending")), false);
+    assert.equal(f.db.prepare("SELECT count(*) n FROM users WHERE id='restored-signup'").get().n, 0);
+    assert.deepEqual(f.terminalRows(), terminalRows);
+    assert.equal(prepareRecoveryDatabase(f.db, { ...reviews, at: 6000 }).signupReservations, 0);
+    assert.deepEqual(f.terminalRows(), terminalRows);
+  } finally { f.db.close(); }
+});
+
+test("failed recovery restores pending guest signup capabilities and leaves the snapshot quarantined", () => {
+  const f = signupRecoveryFixture();
+  try {
+    fenceBackupSnapshot(f.db);
+    const before = f.db.prepare("SELECT * FROM signup_reservations ORDER BY token_hash").all();
+    f.db.exec("CREATE TRIGGER fail_signup_restore BEFORE DELETE ON email_queue BEGIN SELECT RAISE(ABORT,'synthetic signup restore failure'); END;");
+    assert.throws(() => prepareRecoveryDatabase(f.db, reviews), /synthetic signup restore failure/);
+    assert.deepEqual(f.db.prepare("SELECT * FROM signup_reservations ORDER BY token_hash").all(), before);
+    assert.equal(f.db.prepare("SELECT count(*) n FROM sessions").get().n, 1);
+    assert.throws(() => assertDatabaseRecoveryReady(f.db), { code: "DATABASE_RESTORE_REVIEW_REQUIRED" });
+  } finally { f.db.close(); }
+});
 
 test("live database remains ready; new snapshot is fenced until reviewed", () => {
   const db = fixture();
@@ -108,6 +273,76 @@ test("quarantined restore cannot start a production server or run startup work",
     assert.equal(started, false);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+for (const quarantined of [false, true]) {
+  test(`database startup waits for the recovery read lock and ${quarantined ? "still rejects quarantine before mutations" : "then initializes normally"}`, { timeout: 20_000 }, async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pit-startup-lock-"));
+    const database = new DatabaseSync(join(dir, "pit.db"));
+    let child, releaseTimer, watchdog, locked = false, released = false, queried = false, result, stderr = "";
+    try {
+      database.exec("CREATE TABLE app_meta (key TEXT PRIMARY KEY,value TEXT NOT NULL)");
+      if (quarantined) fenceBackupSnapshot(database, 4000);
+      const before = database.prepare("SELECT * FROM app_meta").all();
+      database.exec("BEGIN EXCLUSIVE"); locked = true;
+      child = spawn(process.execPath, ["--input-type=module", "--eval", `
+        import { DatabaseSync } from "node:sqlite";
+        const prepare = DatabaseSync.prototype.prepare;
+        DatabaseSync.prototype.prepare = function (sql, ...args) {
+          if (sql === "SELECT name FROM sqlite_schema WHERE type='table'") {
+            DatabaseSync.prototype.prepare = prepare;
+            process.send({ kind: "recovery-query" });
+          }
+          return prepare.call(this, sql, ...args);
+        };
+        globalThis.fetch = () => { throw new Error("Startup fixture forbids outbound requests"); };
+        try {
+          const { db } = await import(${JSON.stringify(new URL("./db.js", import.meta.url).href)});
+          process.send({ kind: "result", ready: true,
+            timeout: db.prepare("PRAGMA busy_timeout").get().timeout,
+            journal: db.prepare("PRAGMA journal_mode").get().journal_mode,
+            foreignKeys: db.prepare("PRAGMA foreign_keys").get().foreign_keys });
+          db.close();
+        } catch (error) {
+          process.send({ kind: "result", ready: false, code: error.code, message: error.message });
+        }
+        process.disconnect();
+      `], { stdio: ["ignore", "ignore", "pipe", "ipc"], env: {
+        ...process.env, NODE_ENV: "test", PIT_DATA_DIR: dir, PIT_ALLOW_EMPTY_DB_BOOTSTRAP: "false",
+      } });
+      child.stderr.setEncoding("utf8"); child.stderr.on("data", chunk => { stderr += chunk; });
+      const completion = new Promise((resolve, reject) => {
+        child.once("error", reject);
+        child.once("close", (code, signal) => resolve({ code, signal }));
+        child.on("message", message => {
+          if (message.kind === "recovery-query") {
+            queried = true;
+            // Synchronize with the actual schema read, not module import timing.
+            releaseTimer = setTimeout(() => {
+              database.exec("ROLLBACK"); locked = false; released = true;
+            }, 250);
+          } else if (message.kind === "result") result = message;
+        });
+      });
+      watchdog = setTimeout(() => child.kill(), 15_000);
+      assert.deepEqual(await completion, { code: 0, signal: null }, stderr);
+      assert.equal(queried, true, "the actual recovery query ran");
+      assert.equal(released, true, JSON.stringify(result));
+      if (quarantined) {
+        assert.equal(result?.code, "DATABASE_RESTORE_REVIEW_REQUIRED");
+        assert.deepEqual(database.prepare("SELECT * FROM app_meta").all(), before);
+        assert.deepEqual(database.prepare("SELECT name FROM sqlite_schema WHERE type='table'").all().map(row => row.name), ["app_meta"]);
+        assert.equal(database.prepare("PRAGMA journal_mode").get().journal_mode, "delete");
+      } else {
+        assert.deepEqual(result, { kind: "result", ready: true, timeout: 5000, journal: "wal", foreignKeys: 1 });
+        assert.ok(database.prepare("SELECT count(*) AS count FROM artists").get().count > 0);
+      }
+    } finally {
+      clearTimeout(releaseTimer); clearTimeout(watchdog);
+      if (locked) database.exec("ROLLBACK");
+      child?.kill(); database.close(); rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}
 
 test("offline restore creates only a new sanitized copy and preserves source", () => {
   const dir = mkdtempSync(join(tmpdir(), "pit-restore-copy-"));

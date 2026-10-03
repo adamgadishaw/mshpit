@@ -48,7 +48,8 @@ function selfWrittenDraft(body, status = "draft") {
 
 async function scenario(browser, origin, width, mode = "same") {
   const context = await browser.newContext({ viewport: { width, height: 900 }, isMobile: width < 620, hasTouch: width < 620, serviceWorkers: "block" });
-  const state = { draft: null, saveAttempts: 0, saveKeys: [], creates: [], puts: [], finalizes: [], reports: [], errors: [], closing: false };
+  const state = { draft: null, saveAttempts: 0, saveKeys: [], creates: [], puts: [], finalizes: [], reports: [], errors: [], closing: false,
+    publishRevisions: [], publications: 0 };
   const receipts = new Map();
   await context.addInitScript(({ origin, user }) => {
     if (location.origin !== origin) return;
@@ -84,6 +85,7 @@ async function scenario(browser, origin, width, mode = "same") {
       }
       if (url.pathname === "/api/moderation/news-desk/editor/drafts/self-written" && request.method() === "POST") {
         const body = request.postDataJSON();
+        assert.equal(body.category, "release", "New music must be sent despite chart, tour and award background");
         assert.match(body.idempotencyKey, /^self-written-/u);
         state.saveKeys.push(body.idempotencyKey);
         const { idempotencyKey, ...payload } = body;
@@ -100,7 +102,14 @@ async function scenario(browser, origin, width, mode = "same") {
         return await json({ draft: state.draft });
       }
       if (url.pathname === "/api/moderation/news-desk/editor/drafts/self-written-fixture/publish" && request.method() === "POST") {
-        state.draft = selfWrittenDraft({ ...state.draft, photo: state.draft.photo.source }, "published");
+        const body = request.postDataJSON();
+        assert.deepEqual(Object.keys(body), ["expectedRevision"]);
+        state.publishRevisions.push(body.expectedRevision);
+        if (state.draft.status !== "draft" || body.expectedRevision !== state.draft.revision)
+          return await json({ error: "Synthetic concurrent edit", code: "CONFLICT" }, 409);
+        state.draft = { ...selfWrittenDraft({ ...state.draft, photo: state.draft.photo.source }, "published"), revision: state.draft.revision + 1 };
+        state.publications++;
+        if (mode === "edited") return await json({ error: "Synthetic lost publish response", code: "SERVICE_UNAVAILABLE" }, 503);
         return await json({ draft: state.draft, postId: "news-self-fixture" });
       }
       if (url.pathname === "/api/media/assets" && request.method() === "POST") {
@@ -137,9 +146,16 @@ async function scenario(browser, origin, width, mode = "same") {
     await page.getByRole("button", { name: "Newsroom. Write stories and run live coverage", exact: true }).click();
     const composer = page.getByTestId("self-written-news-composer");
     await composer.waitFor();
-    await composer.getByLabel("Self-written news headline", { exact: true }).fill("Synthetic band announce an ambitious 2027 world tour");
+    await composer.getByLabel("Self-written news headline", { exact: true }).fill("Synthetic band release their new album");
     await composer.getByLabel("Self-written news summary", { exact: true }).fill("A synthetic but engaging hook for the local editor flow.");
-    await composer.getByLabel("Self-written news article", { exact: true }).fill(Array.from({ length: 1_020 }, (_, index) => `Reported music news word ${index + 1}`).join(" "));
+    await composer.getByLabel("Self-written news article", { exact: true }).fill("Their earlier single topped the chart, won a Grammy award and featured on their world tour. "
+      + Array.from({ length: 1_020 }, (_, index) => `Reported music news word ${index + 1}`).join(" "));
+    const newMusic = composer.getByRole("radio", { name: "New music", exact: true });
+    const tours = composer.getByRole("radio", { name: "Tours", exact: true });
+    const selectedFill = await tours.evaluate(element => getComputedStyle(element).backgroundColor);
+    await newMusic.click();
+    assert.equal(await newMusic.evaluate(element => getComputedStyle(element).backgroundColor), selectedFill);
+    assert.notEqual(await tours.evaluate(element => getComputedStyle(element).backgroundColor), selectedFill);
     for (let index = 1; index <= 3; index += 1) {
       await composer.getByLabel(`Self-written article source ${index} name`, { exact: true }).fill(["NME", "Stereogum", "Pitchfork"][index - 1]);
       await composer.getByLabel(`Self-written article source ${index} URL`, { exact: true }).fill(["https://www.nme.com/news/synthetic", "https://www.stereogum.com/synthetic", "https://pitchfork.com/news/synthetic"][index - 1]);
@@ -164,12 +180,16 @@ async function scenario(browser, origin, width, mode = "same") {
     await page.goBack();
     await page.getByRole("button", { name: "Keep editing", exact: true }).click();
     assert.equal(await composer.getByLabel("Self-written news article", { exact: true }).inputValue(), originalBody);
+    assert.equal(await newMusic.evaluate(element => getComputedStyle(element).backgroundColor), selectedFill);
     await page.getByRole("button", { name: "Back", exact: true }).click();
     await page.getByRole("button", { name: "Leave", exact: true }).click();
     await page.getByRole("button", { name: "Menu", exact: true }).click();
     await page.getByRole("button", { name: "Newsroom. Write stories and run live coverage", exact: true }).click();
     await composer.waitFor();
     assert.equal(await composer.getByLabel("Self-written news article", { exact: true }).inputValue(), originalBody);
+    assert.equal(await composer.getByLabel("Self-written article source 4 name", { exact: true }).inputValue(), "Yonhap");
+    assert.equal(await composer.getByLabel("Self-written article source 5 name", { exact: true }).inputValue(), "");
+    assert.equal(await newMusic.evaluate(element => getComputedStyle(element).backgroundColor), selectedFill);
     if (mode === "edited") await composer.getByLabel("Self-written news summary", { exact: true }).fill("A revised hook after an uncertain save response.");
     await save.click();
     await page.getByText("SELF-WRITTEN DRAFT", { exact: true }).waitFor();
@@ -182,17 +202,39 @@ async function scenario(browser, origin, width, mode = "same") {
     assert.equal(state.creates.length, 1);
     assert.equal(state.finalizes.length, 1);
     assert.equal(state.puts.length, 1);
-    await composer.screenshot({ path: join(shots, `composer-${width}-${mode}.png`), animations: "disabled" });
+    await newMusic.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: join(shots, `composer-${width}-${mode}.png`), fullPage: false, animations: "disabled" });
     await composer.getByLabel("Self-written news summary", { exact: true }).fill("Unsaved local adjustment before testing the close guard.");
     await page.getByRole("button", { name: "Back", exact: true }).click();
     await page.getByRole("button", { name: "Keep editing", exact: true }).click();
     assert.equal(await page.getByTestId("self-written-news-composer").count(), 1, "Back must not discard an unsaved composer without confirmation");
-    await page.getByRole("button", { name: `Publish ${state.draft.headline}`, exact: true }).click();
+    // The displayed revision must not publish another writer's unseen update.
+    state.draft = { ...state.draft, revision: 1, summary: "Another editor's current reviewed hook." };
+    const publish = page.getByRole("button", { name: `Publish ${state.draft.headline}`, exact: true });
+    await publish.click();
+    const refresh = page.getByRole("button", { name: "Refresh latest draft", exact: true });
+    await refresh.waitFor();
+    assert.equal(await publish.isDisabled(), true);
+    assert.equal(state.publications, 0);
+    assert.equal(await composer.getByLabel("Self-written news summary", { exact: true }).inputValue(), "Unsaved local adjustment before testing the close guard.");
+    await refresh.click();
+    await draft.getByText("Another editor's current reviewed hook.", { exact: true }).waitFor();
+    await publish.click();
+    if (mode === "edited") {
+      await refresh.waitFor();
+      assert.equal(await publish.isDisabled(), true, "uncertain publishing must reconcile before a second attempt");
+      await refresh.click();
+    }
     await page.getByText("PUBLISHED", { exact: true }).waitFor();
+    assert.deepEqual(state.publishRevisions, [0, 1]);
+    assert.equal(state.publications, 1);
+    assert.equal(state.draft.category, "release");
     assert.deepEqual(state.reports, []);
     const expectedLostResponseError = "Failed to load resource: the server responded with a status of 503 (Service Unavailable)";
-    assert.equal(state.errors.filter((message) => message === expectedLostResponseError).length, 1);
-    assert.deepEqual(state.errors.filter((message) => message !== expectedLostResponseError), []);
+    const expectedConflictError = "Failed to load resource: the server responded with a status of 409 (Conflict)";
+    assert.equal(state.errors.filter((message) => message === expectedLostResponseError).length, mode === "edited" ? 2 : 1);
+    assert.equal(state.errors.filter((message) => message === expectedConflictError).length, 1);
+    assert.deepEqual(state.errors.filter((message) => message !== expectedLostResponseError && message !== expectedConflictError), []);
     console.log(JSON.stringify({ name: `newsroom-composer-${width}-${mode}`, passed: true, saveRetries: state.saveAttempts, distinctKeys: new Set(state.saveKeys).size, retainedAfterNavigation: true, draftPhoto: true, provenanceLinks: 4, wordCount: state.draft.wordCount }));
   } catch (error) {
     await page.screenshot({ path: join(shots, `composer-${width}-failed.png`), fullPage: false }).catch(() => {});

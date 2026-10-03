@@ -47,6 +47,7 @@ function fixture({ login, onDone = () => {} }) {
     };
     if (name === "react-native-safe-area-context") return { useSafeAreaInsets: () => ({ top: 0, bottom: 0 }) };
     if (name === "../store") return { useStore: () => ({ login, signup: () => assert.fail("Unexpected signup"), session: null }) };
+    if (name === "../features/signupOnboarding/accountSecurityService") return { cancelSignupRequest: () => assert.fail("Unexpected signup cancellation") };
     if (name === "../theme") return { colors: {}, radius: {}, shadow: {}, space: (value) => value * 4 };
     if (name === "../domain/signupForm.mjs") return signupForm;
     if (name === "../domain/validation.mjs") return validation;

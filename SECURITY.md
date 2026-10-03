@@ -1,6 +1,6 @@
 # Pit security and privacy readiness
 
-Last scoped review: 2026-09-26
+Last scoped review: 2026-10-02 (local robustness follow-up; deployment held)
 
 The application/media/research follow-up is recorded in
 `APPLICATION_INTEGRITY_AUDIT_2026-09-26.md`. It supplements, rather than replaces,
@@ -8,6 +8,98 @@ the broader September 1 review and its unresolved operational requirements.
 
 The detailed evidence, fixes, residual risk, and release gates for this review are
 recorded in `SECURITY_PRIVACY_TECHNICAL_AUDIT_2026-09-01.md`.
+
+## October 2 targeted robustness follow-up
+
+The follow-up on held integration `a7d4890` is recorded in
+`ROBUSTNESS_AUDIT_2026-10-02.md`. It addresses four specific remaining findings;
+it is not another comprehensive review or evidence of production configuration.
+
+- A3: limiter expiry uses an indexed heap with one entry per live key. An
+  admission removes at most 64 expired entries; saturated live-key denial
+  inspects the earliest expiry once. Reservation rollback cannot erase a later
+  admission. The existing 50,000-key application limit remains. Health/readiness
+  retain their 120/IP/min allowance in a separate 1,024-key pool. That pool can
+  itself saturate. Limits remain process-local, with existing account/IP keys
+  and fixed-window behavior; there is no crawler user-agent bypass.
+- REC-1: backup execution, cleanup and retention share a permanent SQLite
+  ownership lock in the private backup directory. Child closure precedes parent
+  cleanup. Only matching partial/sidecar names for demonstrably dead PIDs are
+  reclaimed; ambiguous, live or reused PIDs are retained. Process death releases
+  the kernel lock without deleting its file. This does not protect against loss
+  of the storage disk, and overlapping older backup scripts are unsupported.
+- REC-2: legacy poster work receives cancellation and drains before SQLite
+  closes. The existing 25-second shutdown deadline remains the fallback for
+  uncooperative work. The earlier closed-database exception required keeping a
+  synthetic process alive after shutdown; normal shutdown exits immediately.
+  Neither corruption nor permanent loss was demonstrated.
+- CB-01: async editor drafting checks current session, role, verification,
+  restrictions and actor identity before paid work, around persistence and
+  before response delivery. The draft and audit roll back together on revoked
+  authority; incurred provider spending remains recorded. Editor session TTL is
+  unchanged (30 days, versus 12 hours for admin/moderator); that remains an
+  explicit policy observation, not an established exploit.
+
+A2 remains open: a clips request can keep scanning stored candidates until it
+finds eligible items. The proposed bounded continuation contract requires an
+explicit compatibility decision for older clients. No clips runtime or client
+change is included in this follow-up while that decision is pending.
+
+The local robustness exercise uses actual loopback server routes and synthetic
+SQLite records for normal browsing, repeated actions and lock contention. Its
+queue check uses the real coordinator with a deterministic private memory lease;
+it does not simulate host memory pressure. SQLite's existing synchronous
+5,000 ms busy timeout remains, and neither request admission nor a JavaScript
+timer preempts synchronous SQL. These checks establish specific behavior, not
+production capacity, fair sharing or immunity to denial of service.
+
+## October 2 prior integration scope and limits
+
+The local candidate on `fd8b1d09` combines the separately reviewed availability,
+public-identity, mailbox-first signup, owner-approved monthly-budget and manual
+news-category patches.
+These source changes are not evidence of deployed controls or live configuration.
+The earlier reports remain historical records; this scoped follow-up does not
+close their unresolved operational requirements.
+
+- Public-read admission precedes expensive HTML/selected GET projections, including
+  HEAD. Initial per-process ceilings are 30 requests per second and 600 per minute;
+  each real account or guest IP also has 300 per minute. Fixed-window boundary
+  bursts remain possible. Shared guest addresses share a budget, and IPv6 addresses
+  are not grouped into prefixes. No crawler user-agent string bypasses admission.
+  These are request ceilings, not measured production capacity, fair-share
+  scheduling, cross-process coordination, or a timeout for synchronous SQLite work.
+- Indexed artist-directory probes remove the repeated broad post search tested
+  in the synthetic fixture. The query still scans/counts/orders the artist catalog.
+  Production index-build time, storage cost and production load have not been tested.
+- Signup reservations contain hashed capabilities and a password hash, expire after
+  24 hours, and grant no session or durable account before confirmation. Duplicate
+  submissions have separate capabilities. Confirmation rechecks mailbox capacity
+  and any sibling-account authority inside the creation transaction; replay has one
+  effect. No claim of statistically indistinguishable timing is made. Existing
+  per-target/IP mail controls remain; this change adds no global transactional-mail
+  spending cap. New reservations require confirmation even when
+  `EMAIL_VERIFICATION_ENABLED=false` is used for legacy local accounts; local
+  testing needs synthetic mail fixtures.
+- The signup-specific mail explains that confirmation creates the requested
+  account with the submitted password and should only be completed for a signup
+  the recipient initiated. Existing-account mail and recovery remain available.
+- Manual news keeps the editor's allowlisted category. Category-only correction
+  requires current verified editor authority and a matching category/timestamp;
+  correction and audit are one transaction. Generated classification and article
+  content are unchanged. No real article is corrected by this local candidate.
+- The Blueprint's two proposed monthly values are 10 USD each: the shared
+  Anthropic ceiling and the catalogue allowance. Catalogue daily pacing stays
+  0.30 USD; existing current-month settled and reserved spending still counts.
+  No budget ledger, activation flag, credential, disk or live setting is changed.
+
+Remaining availability findings include A2 (unbounded clips candidate scanning).
+The local follow-up above addresses A3 limiter-map cleanup. Feed offset
+behavior is unchanged. None of this establishes immunity to denial of service.
+Combined tests use isolated synthetic data and loopback traffic; browser fixtures
+with mocked APIs are distinguished from actual-server HTTP/browser checks.
+Native-device, real-mail, provider, production-data and production-load acceptance
+remain outside this local review.
 
 ## Current status
 
@@ -36,7 +128,8 @@ to be completed.
   account content, email ownership, and ordinary password recovery remain intact.
   Other administrators retain their role. Password or authority repair revokes
   every session belonging to the selected root.
-- Staff sessions expire after 12 hours. Production cookies use the host-only
+- Admin and moderator sessions expire after 12 hours; editors currently retain
+  the ordinary 30-day session policy. Production cookies use the host-only
   `__Host-pit_session` name with `Secure`, `HttpOnly`, `SameSite=Lax`, and high
   priority; legacy cookies are cleared but not accepted as active credentials.
 - Browser writes require the exact first-party origin and JSON content type.
@@ -237,6 +330,32 @@ corresponding journal entries or backups remain recoverable; simply changing
 the key after a fresh backup is not a safe rotation procedure. Individual post,
 comment and message deletions and block/restriction changes are not journaled
 yet and require separate reconciliation. A live restore drill remains required.
+
+## Local clips projection hardening, 2026-10-02 (deployment held)
+
+The follow-up from `ee9e2df3f7304de7103f57467250a7fe12c5ba44` uses native SQLite
+triggers to maintain ordered candidate posts and exact stored photo references.
+The clips query checks current linked-media and URL-only publication rules,
+trusted legacy release sources, active accounts, public/removed state and
+bilateral blocks before its post limit. Selection and canonical post projection
+share a read snapshot. Full projection is limited to `limit + 1` posts, at most
+31; ordinary media or privacy changes do not create a global dirty queue or
+request-time catch-up loop. Existing admission limits still apply.
+
+This is not a hard SQL execution budget: sparse matches may require many indexed
+candidate/reference visits and exact URL checks. SQLite waits, shared-IP fairness
+and distributed-account/IP abuse remain separate limits. No crawler-user-agent
+exemption or shipping client change is introduced.
+
+Existing databases require explicit preparation; incomplete preparation blocks
+server startup. The resumable utility captures a finite initial post-ID horizon,
+commits small batches and leaves its cursor unchanged on invalid oversized
+historical data. It never truncates attachments to mark an index complete.
+Preparation imports ordinary database initialization/migrations and does not run
+the production launcher's backup gate. A verified pre-preparation backup and an
+owner-approved single-disk preparation/downtime/rollback plan are required before
+release. Neither production preparation nor deployment occurred in this task.
+See `ROBUSTNESS_AUDIT_2026-10-02.md` for validation and operational limits.
 
 ## Remaining defense-in-depth work
 

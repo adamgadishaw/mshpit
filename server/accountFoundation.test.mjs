@@ -33,7 +33,7 @@ function context(body = {}, extra = {}) {
     setSession(session) { this.session = session; }, ...extra };
 }
 function snapshot() {
-  return Object.fromEntries(["users", "sessions", "linked_account_pairs", "linked_account_session_grants", "email_log"]
+  return Object.fromEntries(["users", "sessions", "signup_reservations", "linked_account_pairs", "linked_account_session_grants", "email_log"]
     .map((table) => [table, db.prepare(`SELECT COUNT(*) n FROM ${table}`).get().n]));
 }
 const flush = () => new Promise((resolve) => setImmediate(resolve));
@@ -113,25 +113,35 @@ test("self hydration returns fresh account restrictions without removing recover
   assert.equal(getSession(session.token)?.user_id, user.id);
 });
 
-test("a signup disconnect after commit preserves its account, session, and verification delivery", async () => {
+test("a signup disconnect after reservation commit preserves pending state and verification delivery without an account or session", async () => {
   const controller = new AbortController();
-  const ctx = context({ name: "Committed Signup", email: `committed-${++sequence}@example.test`, password,
-    genres: ["Rock"], ageBand: "18_plus", termsVersion: LEGAL_ACCEPTANCE_VERSION }, {
-    signal: controller.signal,
-    setSession(session) {
-      assert.equal(db.isTransaction, false);
-      this.session = session;
+  const email = "committed-" + (++sequence) + "@example.test";
+  const ctx = context({ name: "Committed Signup", email, password,
+    genres: ["Rock"], ageBand: "18_plus", termsVersion: LEGAL_ACCEPTANCE_VERSION });
+  let abortQueued = false, committedAtAbort = false;
+  Object.defineProperty(ctx, "signal", { get() {
+    if (db.isTransaction && !abortQueued) {
+      abortQueued = true;
+      // Queue during the synchronous write; observe its commit before aborting
+      // while the response floor waits.
+      queueMicrotask(() => {
+      committedAtAbort = !db.isTransaction && !!db.prepare("SELECT 1 FROM signup_reservations WHERE email=?").get(email);
       controller.abort();
-    },
-  });
+      });
+    }
+    return controller.signal;
+  } });
   const result = await routes["POST /api/signup"](ctx);
   await flush();
-  assert.equal(result.created, true);
-  assert.equal(result.user.emailVerified, false);
-  assert.equal(getSession(ctx.session.token)?.user_id, result.user.id);
-  assert.ok(q.userById.get(result.user.id).signup_cancel_hash);
-  assert.equal(db.prepare("SELECT COUNT(*) n FROM email_log WHERE user_id=? AND template_key='verify_email'")
-    .get(result.user.id).n, 1);
+  assert.equal(controller.signal.aborted, true);
+  assert.equal(committedAtAbort, true, "disconnect follows the durable reservation commit");
+  assert.equal(result.pending, true);
+  assert.equal(result.user, undefined);
+  assert.equal(ctx.session, undefined);
+  assert.equal(q.userByEmail.get(email), undefined);
+  assert.ok(db.prepare("SELECT cancel_hash FROM signup_reservations WHERE email=? AND status='pending'").get(email)?.cancel_hash);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM email_log WHERE to_email=? AND template_key='signup_verify'")
+    .get(email).n, 1);
 });
 
 test("live cancellation-aware authentication still chooses, signs in, links, and switches exactly one account", async () => {

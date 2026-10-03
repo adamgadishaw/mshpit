@@ -1,6 +1,29 @@
+import { createRateLimitBuckets } from "./rateLimitBuckets.js";
+
 export const HEALTH_RATE_LIMIT_MAX = 120;
 export const HEALTH_RATE_LIMIT_WINDOW_MS = 60 * 1000;
+export const HEALTH_RATE_LIMIT_IDENTITIES = 1_024;
 export const RUNTIME_READINESS_CACHE_MS = 1000;
+
+// Application bucket saturation must not consume the liveness pool. This is
+// still bounded, per-address admission, not an exemption for arbitrary probes.
+export function createHealthRateLimiter({ clock = Date.now, maxIdentities = HEALTH_RATE_LIMIT_IDENTITIES } = {}) {
+  const buckets = createRateLimitBuckets({ maxEntries: maxIdentities });
+  return (key, max, windowMs) => {
+    const now = clock();
+    let bucket = buckets.get(key);
+    if (!bucket || bucket.resetAt <= now) {
+      if (!buckets.hasCapacity([key], now)) return false;
+      bucket = { count: 0, resetAt: now + windowMs };
+      buckets.set(key, bucket);
+    }
+    if (bucket.count >= max) return false;
+    bucket.count += 1;
+    return true;
+  };
+}
+
+export const healthRateLimit = createHealthRateLimiter();
 
 export function healthRateLimitPolicy(ip) {
   const address = String(ip || "?").trim() || "?";

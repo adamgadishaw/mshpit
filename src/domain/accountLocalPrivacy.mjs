@@ -1,4 +1,3 @@
-import { newsroomDraftStorageKey } from "./newsroomComposition.mjs";
 import { venueReviewStorageKey } from "./accountMediaCache.mjs";
 import { artistPageCacheStorageKeys } from "./artistPageCache.mjs";
 import { commentCacheStorageKey } from "./commentCache.mjs";
@@ -11,6 +10,9 @@ export const PLAYER_STATE_STORAGE_KEY = "pit.player.v2";
 export const PLAYER_POSITION_STORAGE_KEY = "pit.playpos.v2";
 export const LEGACY_PRODUCT_ANALYTICS_STORAGE_KEY = "pit.analytics.v2";
 export const LEGACY_DIAGNOSTICS_STORAGE_KEY = "pit.diagnostics.v1";
+
+export const newsroomDraftStorageKey = (accountId) => accountId
+  ? `pit.newsroom.draft.v1.${encodeURIComponent(String(accountId))}` : null;
 
 export const diagnosticsStorageKey = (accountId) => {
   const id = accountId == null || accountId === "" ? null : String(accountId);

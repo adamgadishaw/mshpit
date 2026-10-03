@@ -4,6 +4,44 @@ Code readiness is not off-host coverage. A configured private destination, a
 successful scheduled upload, and a restore drill are required. Until then,
 `offhost_backup_unconfigured` must remain visible in the health readout.
 
+## Combined batch preparation and rollback hold
+
+Commit/push and protected draft-PR checks are authorized; production preparation,
+cutover, deployment and API activation remain separate owner decisions.
+
+Before `node scripts/prepare-clips-index.mjs`, create and verify a protected
+pre-preparation snapshot. That CLI imports the complete ordinary database
+initializer and bypasses `scripts/start-production.mjs` and its backup gate.
+Keep the baseline outside routine rotation and budget space for the live DB/WAL,
+baseline, additional startup snapshot, growing index and offline recovery copy.
+An incomplete index stops the replacement server before it listens.
+
+Native Clips triggers keep references current between bounded preparation
+batches, but that is not proof of production online-preparation latency. On the
+configured single runtime disk, agree and rehearse a maintenance window and
+foreground/background writer controls. Blocking incoming HTTP alone does not
+stop startup retention, account lifecycle, media or catalogue jobs.
+
+The combined schema also adds Media API reservation nonces and shared catalog
+work leases. Older binaries can read additive columns/tables but cannot enforce
+these newer fences. Drain old media/catalog/backup writers before cutover or
+binary rollback; do not overlap old and new workers. Keep catalog APIs and
+commits off until separately approved, and leave additive tables/audits intact
+on a compatible code-only rollback.
+
+A snapshot restore loses later writes unless they are preserved and reconciled.
+Account erasure and marketing withdrawal journals do not cover individual
+content deletions, blocks/restrictions, changed passwords or all newly accepted
+content. Recovery references attest to actual offline work; they do not perform
+it. Reconcile privacy and credentials, invalidate restored sessions/tokens/queued
+mail with the offline restore utility, and pass verified journal replay before
+serving. Preserve current state and external-media evidence before a restore.
+
+Local synthetic rehearsal does not close Linux permissions/signals, production
+duration/capacity, private off-host retrieval or general post-snapshot replay
+gaps. Those, the exact final artifacts and acceptance/abort policy remain release
+gates. No live preparation, restore or privacy waiver has been performed here.
+
 ## Guarantees and boundaries
 
 - The startup gate makes a verified local, pre-migration SQLite snapshot. It does
@@ -21,6 +59,25 @@ successful scheduled upload, and a restore drill are required. Until then,
 - Local retention remains `BACKUP_KEEP=7` unless explicitly configured otherwise.
   The newest completed snapshot is never selected for preflight pruning. If
   pruning all older copies cannot safely admit the backup, history is preserved.
+- Startup, scheduled and manual backups serialize cleanup, retention, copying,
+  publication and upload with `BEGIN IMMEDIATE` on `.backup-ownership-v1.sqlite`
+  in `BACKUP_DIR`. This is private local coordination metadata, excluded from
+  snapshot discovery, retention and upload; it contains no application tables.
+  Never delete or replace it while any backup might be active. Process death
+  releases the SQLite lock automatically; contention fails immediately for the
+  existing retry/startup policy, rather than waiting on a stale filesystem lock.
+- Before disk preflight, the lock owner removes only regular, service-owned
+  `pit-YYYYMMDD-HHMMSS.db.partial-PID` files and their exact `-journal`, `-wal`
+  and `-shm` sidecars when PID probing reports that the process does not exist.
+  Active or reused PIDs, permission-ambiguous probes, unknown names, links and
+  directories are retained. The backup directory must be owned by the service
+  and, on POSIX, not writable by other users. Lock files and sidecars must be
+  owned regular files with one link. Existing backups from an older binary do
+  not participate in locking; deploys must not run old/new backup CLIs together.
+- Scheduled timeout/shutdown cleanup waits for actual child closure; synchronous
+  startup cleanup waits for `spawnSync` to return. Parent cleanup is restricted
+  to that child PID and takes the same lock. If cleanup is blocked, the next CLI
+  run retries it. A failed or killed copy never counts as a completed snapshot.
 - SQLite page integrity, foreign keys, schema and member-row baselines are checked
   in an independent snapshot. A concurrent legitimate deletion may safely fail
   the row-floor check and require a retry; it never silently approves lost rows.

@@ -4,11 +4,22 @@ import {
   eventPath,
   postPath,
   profilePath,
+  slugify,
   venuePath,
 } from "./urls.mjs";
 import { liveEventTitle } from "./liveDiscovery.mjs";
+import { hasPostDiscussion } from "./showDiscussion.mjs";
 
 const text = (value) => String(value ?? "").trim();
+
+// Classify the navigation hint without eagerly loading event snapshot handling.
+// Review posts and archive aggregates retain their own read policies.
+export function publicEventCandidateId(log) {
+  if (!log || log.archiveShowKey || hasPostDiscussion(log)
+    || (log.kind && log.kind !== "event")) return null;
+  const id = log.tourDateId || log.id;
+  return typeof id === "string" && id.trim().length <= 180 ? id.trim() || null : null;
+}
 
 const publicUser = (log, resolveUser) => {
   const embedded = log?.user && typeof log.user === "object" ? log.user : null;
@@ -139,11 +150,17 @@ export function publicNavigationLinks(frame = {}, { resolveUser } = {}) {
       name: artistName,
       publicSlug: log.artistPublicSlug || log.artist_public_slug || null,
     };
+    // Provider event names are display labels, not artist identities. Keep an
+    // unresolved name readable without recreating a binding SSR withheld.
+    const event = !frame.post && !!publicEventCandidateId(log);
+    const canLink = !event || (log.artistIdentityPending !== true
+      && typeof artist.publicSlug === "string" && !!artist.publicSlug
+      && slugify(artist.publicSlug) === artist.publicSlug);
     append(links, {
       key: `artist:${artist.publicSlug || artistName}`,
       label: artistName,
-      href: artistPath(artist),
-      target: { type: "artist", value: artist },
+      href: canLink ? artistPath(artist) : null,
+      target: canLink ? { type: "artist", value: artist } : null,
     });
   }
 

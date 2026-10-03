@@ -25,6 +25,8 @@ const {
   hashPassword,
   parseCookies,
   rateLimit,
+  rateLimitAvailable,
+  rateLimitRetryAfterMs,
   resetRateLimitsForTests,
   reserveRateLimits,
   sessionCookie,
@@ -893,16 +895,22 @@ test("signup never derives the public handle from a private email local-part", a
     ua: "test",
     setSession(value) { session = value; },
   });
-  const created = q.userByEmail.get(email);
-  assert.equal(result.created, true);
+  assert.equal(result.pending, true);
   assert.equal(result.verificationRequired, true);
-  assert.equal(result.user.id, created.id);
-  assert.equal(result.user.emailVerified, false);
+  assert.equal(result.user, undefined);
+  assert.equal(session, null);
+  assert.equal(q.userByEmail.get(email), undefined);
+  const token = "private-handle-reservation-confirmation";
+  assert.equal(db.prepare("UPDATE signup_reservations SET token_hash=? WHERE email=? AND status='pending'")
+    .run(createHash("sha256").update(token).digest("hex"), email).changes, 1);
+  assert.equal(routes["POST /api/verify-email"]({ body: { token } }).verified, true);
+  const created = q.userByEmail.get(email);
+  assert.ok(created.email_verified_at);
   assert.match(result.cancelToken, /^[A-Za-z0-9_-]{43}$/);
   assert.equal(created.handle.includes("legal"), false);
   assert.equal(created.handle.includes("work"), false);
   assert.match(created.handle, /^pitfan_[a-f0-9]{8}/u);
-  assert.equal(getSession(session.token).user_id, created.id, "only the newly created account is authenticated");
+  assert.equal(session, null, "email confirmation alone does not authenticate an account");
 });
 
 test("rate-limit capacity rejects new identities without clearing live limits", () => {
@@ -917,6 +925,54 @@ test("rate-limit capacity rejects new identities without clearing live limits", 
   } finally {
     resetRateLimitsForTests();
   }
+});
+
+test("a later admission cannot be erased by an older reservation rollback", () => {
+  resetRateLimitsForTests();
+  try {
+    assert.equal(rateLimit("rollback-later", 3, 60_000), true);
+    const reservation = reserveRateLimits([{ key: "rollback-later", max: 3, windowMs: 60_000 }]);
+    assert.ok(reservation);
+    assert.equal(rateLimit("rollback-later", 3, 60_000), true);
+    assert.equal(reservation.rollback(), true);
+    assert.equal(reservation.rollback(), false);
+    assert.equal(rateLimitAvailable("rollback-later", 3, 60_000), false);
+    assert.ok(rateLimitRetryAfterMs("rollback-later") > 0);
+  } finally { resetRateLimitsForTests(); }
+});
+
+test("rolling back an unchanged reservation restores its counter and expiry", () => {
+  resetRateLimitsForTests();
+  const realNow = Date.now;
+  let at = realNow();
+  Date.now = () => at;
+  try {
+    assert.equal(rateLimit("rollback-owned", 3, 60_000), true);
+    at += 1_000;
+    const reservation = reserveRateLimits([{ key: "rollback-owned", max: 3, windowMs: 60_000 }]);
+    assert.equal(reservation.rollback(), true);
+    assert.equal(rateLimitRetryAfterMs("rollback-owned"), 59_000);
+    assert.equal(rateLimit("rollback-owned", 3, 60_000), true);
+    assert.equal(rateLimit("rollback-owned", 3, 60_000), true);
+    assert.equal(rateLimit("rollback-owned", 3, 60_000), false);
+  } finally { Date.now = realNow; resetRateLimitsForTests(); }
+});
+
+test("an expired late short window is reusable behind a full pool of long windows", () => {
+  resetRateLimitsForTests();
+  const realNow = Date.now;
+  let at = realNow();
+  Date.now = () => at;
+  try {
+    fillRateLimitBuckets("capacity-long-first", RATE_LIMIT_BUCKET_CAPACITY - 1);
+    assert.equal(rateLimit("capacity-short-last", 1, 1_000), true);
+    at += 1_001;
+    assert.equal(rateLimitAvailable("capacity-reclaimed-late", 1, 60_000), true);
+    const reservation = reserveRateLimits([{ key: "capacity-reclaimed-late", max: 1, windowMs: 60_000 }]);
+    assert.ok(reservation); assert.equal(reservation.commit(), true);
+    for (let i = 0; i < 100; i += 1) assert.equal(rateLimit(`capacity-still-full:${i}`, 1, 60_000), false);
+    assert.equal(rateLimit("capacity-long-first:0", 1, RATE_LIMIT_TEST_WINDOW_MS), false);
+  } finally { Date.now = realNow; resetRateLimitsForTests(); }
 });
 
 test("rate-limit capacity prunes expired identities before rejecting a new one", () => {
@@ -981,11 +1037,12 @@ test("auth limits stay bound to the IP even when the caller supplies rotating ac
       },
       ip: sharedIp,
       ua: "test",
-      setSession(value) { assert.ok(value.token); },
+      setSession() { assert.fail("pending signup must not issue a session"); },
     });
-    assert.equal(result.created, true);
-    assert.equal(result.user.emailVerified, false);
-    currentUser = q.userByEmail.get(email);
+    assert.equal(result.pending, true);
+    assert.equal(result.user, undefined);
+    assert.equal(q.userByEmail.get(email), undefined);
+    currentUser = addUser();
   }
   await assert.rejects(
     () => routes["POST /api/signup"]({
@@ -1006,7 +1063,7 @@ test("auth limits stay bound to the IP even when the caller supplies rotating ac
   );
 });
 
-test("different-password signup creates distinct restricted accounts without replacing existing credentials", async () => {
+test("different-password public signup stays generic without replacing credentials or creating a sibling", async () => {
   resetRateLimitsForTests();
   const email = `signup-enumeration-${Date.now()}@example.test`;
   const body = {
@@ -1019,20 +1076,30 @@ test("different-password signup creates distinct restricted accounts without rep
   };
   let newSession = null;
   const first = await routes["POST /api/signup"]({ body, ip: `signup-enumeration-new-${Date.now()}`, ua: "test", setSession(value) { newSession = value; } });
-  const originalHash = q.userByEmail.get(email).pass_hash;
+  assert.equal(first.pending, true);
+  assert.equal(first.user, undefined);
+  assert.equal(newSession, null);
+  assert.equal(q.userByEmail.get(email), undefined);
+  const token = "enumeration-reservation-confirmation";
+  assert.equal(db.prepare("UPDATE signup_reservations SET token_hash=? WHERE email=? AND status='pending'")
+    .run(createHash("sha256").update(token).digest("hex"), email).changes, 1);
+  assert.equal(routes["POST /api/verify-email"]({ body: { token } }).verified, true);
+  const original = q.userByEmail.get(email);
+  const originalSession = createSession(original.id);
   let existingSession = null;
-  const second = await routes["POST /api/signup"]({ body: { ...body, password: "different-password1" }, ip: `signup-enumeration-existing-${Date.now()}`, ua: "test", setSession(value) { existingSession = value; } });
-  assert.equal(first.created, true);
-  assert.equal(second.created, true);
-  assert.equal(first.user.emailVerified, false);
-  assert.equal(second.user.emailVerified, false);
+  const second = await routes["POST /api/signup"]({ body: { ...body, password: "different-password1" }, ip: "signup-enumeration-existing", ua: "test", setSession(value) { existingSession = value; } });
+  assert.equal(second.pending, true);
+  assert.equal(second.user, undefined);
+  assert.equal(second.accounts, undefined);
   assert.match(first.cancelToken, /^[A-Za-z0-9_-]{43}$/);
   assert.match(second.cancelToken, /^[A-Za-z0-9_-]{43}$/);
-  assert.notEqual(first.user.id, second.user.id);
-  assert.equal(getSession(newSession.token).user_id, first.user.id);
-  assert.equal(getSession(existingSession.token).user_id, second.user.id);
-  assert.equal(q.usersByEmail.all(email).length, 2);
-  assert.equal(q.userById.get(first.user.id).pass_hash, originalHash, "a second signup cannot replace the existing credential");
+  assert.deepEqual({ ...first, cancelToken: null }, { ...second, cancelToken: null });
+  assert.equal(existingSession, null);
+  assert.equal(q.usersByEmail.all(email).length, 1);
+  assert.equal(q.userById.get(original.id).pass_hash, original.pass_hash, "a second signup cannot replace the existing credential");
+  assert.equal(getSession(originalSession.token).user_id, original.id);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM signup_reservations WHERE email=?").get(email).n, 0);
+
 });
 
 test("promotion cannot turn an existing long member cookie into a long-lived staff cookie", () => {

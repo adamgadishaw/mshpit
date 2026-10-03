@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import LineupDetails from "../components/LineupDetails";
+import ResearchedAbout from "../components/ResearchedAbout";
 import { postHeadline } from "../domain/lineup.mjs";
 import { ordinalWord } from "../domain/supportingActs.mjs";
 import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, useWindowDimensions } from "react-native";
@@ -748,6 +749,8 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
             <Text style={styles.ticketsTxt}>Get tickets</Text>
           </Pressable>
         ) : null}
+
+        {publicEventId && eventIdentitySnapshot ? <ResearchedAbout kind="event" entityKey={publicEventId} label="ABOUT THIS EVENT" /> : null}
 
         {/* Typed attendance is available only when the canonical provider
             lifecycle makes each state safe. Legacy/member-created Shows keep

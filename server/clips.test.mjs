@@ -188,3 +188,34 @@ test("false-positive photo URLs cannot consume a clips page before a real video"
   assert.equal(result.clips[0].id, real.id, "the first authoritative clip is not hidden below bait rows");
   assert.ok(result.clips.every((clip) => !clip.artist.startsWith("Photo bait")), "photo bait never enters the reel");
 });
+
+test("indexed sparse reel keeps full successive pages, ties, and authoritative end for existing clients", () => {
+  const user = addUser("clipper_index_pages");
+  const at = 2_400_000_000_000;
+  const expected = [];
+  db.exec("SAVEPOINT indexed_pages");
+  try {
+    for (let i = 0; i < 7; i++) expected.push(stableClipPost(user, { createdAt: at, artist: `Index ${i}` }).id);
+    for (let i = 0; i < 100; i++) {
+      const bait = post(user, { photos: [`https://untrusted.example/${i}.mp4`] });
+      db.prepare("UPDATE posts SET created_at=? WHERE id=?").run(at + i + 1, bait.id);
+    }
+    expected.sort().reverse();
+    let before;
+    const received = [];
+    for (let pageNumber = 0; pageNumber < 3; pageNumber++) {
+      const page = routes["GET /api/clips"]({ user, query: { limit: "3", ...(before ? { before } : {}) } });
+      assert.deepEqual(Object.keys(page).sort(), ["clips", "nextCursor"]);
+      received.push(...page.clips.filter(p => expected.includes(p.id)).map(p => p.id));
+      if (pageNumber < 2) { assert.equal(page.clips.length, 3); assert.ok(page.nextCursor); }
+      before = page.nextCursor;
+    }
+    assert.deepEqual(received, expected);
+    assert.equal(new Set(received).size, expected.length);
+    // Isolate the last page from earlier tests by retiring their older rows.
+    db.prepare("UPDATE posts SET removed=1 WHERE created_at<?").run(at);
+    const finalPage = routes["GET /api/clips"]({ user, query: { limit: "30" } });
+    assert.deepEqual(finalPage.clips.map(p => p.id), expected);
+    assert.equal(finalPage.nextCursor, null);
+  } finally { db.exec("ROLLBACK TO indexed_pages; RELEASE indexed_pages"); }
+});

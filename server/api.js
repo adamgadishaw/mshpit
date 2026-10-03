@@ -1,4 +1,6 @@
 import { MEDIA_POST_MAX_ATTACHMENTS } from "../src/domain/mediaUploadPolicy.mjs";
+import { isLegacyVideoUrl, readClipPage } from "./features/clips/clipIndex.js";
+import { legacyVideoPosterAllowedSources } from "./legacyVideoPosters.js";
 import { LEGACY_ARTIST_DEATH_DATE_CUTOFF, isLegacyArtistMemorial } from "../src/domain/artistLegacy.mjs";
 import { LEGAL_ACCEPTANCE_VERSION } from "../src/domain/privacyDisclosures.mjs";
 import { MUSIC_PLAYER_ENABLED } from "../src/domain/musicPlayerAvailability.mjs";
@@ -99,6 +101,8 @@ import { createNewsDeskEditor } from "./features/newsDesk/newsDeskEditor.js";
 import { newsDeskEditorRoutes } from "./features/newsDesk/newsDeskEditorRoutes.js";
 import { createMediaApiService } from "./features/mediaApi/mediaApiService.js";
 import { mediaApiRoutes } from "./features/mediaApi/mediaApiRoutes.js";
+import { createCatalogApiService } from "./features/catalogApi/catalogApiService.js";
+import { catalogApiRoutes } from "./features/catalogApi/catalogApiRoutes.js";
 import { ensureNewsLiveSchema } from "./features/newsDesk/newsLive.js";
 import { ensureNewsCardPhotoSchema } from "./features/newsDesk/newsCardPhotos.js";
 import { festivalRoutes } from "./features/festivals/festivalRoutes.js";
@@ -167,7 +171,8 @@ import { discoverySidebar } from "./discovery.js";
 import { pageHeadFor, publicDocumentForPath, resolveEntity, sitemapSnapshotHealth, catalogSeoMaintenanceStatus } from "./seo.js";
 import { pageHeadRoutes } from "./features/seo/pageHeadRoutes.js";
 import { userRewards } from "./rewards.js";
-import { prepareVerification, completeVerification, resendVerification, sendWelcomeOnce, verificationEnabled } from "./verification.js";
+import { completeVerification, resendVerification, sendWelcomeOnce, verificationEnabled, sendSignupReservation } from "./verification.js";
+import { prepareSignupReservation } from "./features/accountOnboarding/signupReservations.js";
 import { memberBadgeFor, grantFirstWaveBadge } from "./memberBadges.js";
 import {
   clearYouTubeTrackCache,
@@ -501,6 +506,13 @@ function limit(ctx, name, max, windowMs, options) {
   // same carrier/proxy do not consume one shared posting or messaging bucket.
   const actor = ctx.user?.id ? `user:${ctx.user.id}` : `ip:${ctx.ip}`;
   enforceRateLimit(`${name}:${actor}`, max, windowMs, options);
+}
+
+function mediaApiLimit(ctx, name, max, windowMs, { grantId, ownerId } = {}) {
+  const requests = [{ key: `${name}:ip:${ctx.ip}`, max, windowMs }];
+  if (ownerId) requests.push({ key: `${name}:owner:${ownerId}`, max, windowMs });
+  if (grantId) requests.push({ key: `${name}:grant:${grantId}`, max, windowMs });
+  enforceRateLimitGroup(requests);
 }
 
 function postWriteLimits(ctx, { edit = false, campaign = false } = {}) {
@@ -1604,12 +1616,6 @@ const feedPostById = db.prepare(`
     ${SEEN_ORDINAL_SQL}
   FROM posts p JOIN users u ON u.id = p.user_id
   WHERE p.id = ? AND ${activeAccountSql("u")}`);
-function privateSignupHandle() {
-  // An email local-part is private identity data, not a public username. Use a
-  // neutral random base and let the user choose a meaningful handle later.
-  return uniqueHandle(`pitfan_${randomBytes(4).toString("hex")}`);
-}
-
 function validateSignupHandle(value) {
   const handle = normalizedProfileHandle(value);
   if (!handle) throw new ApiError(400, "Use 3 to 20 letters, numbers, or underscores for your @username.", "VALIDATION_FAILED");
@@ -1786,19 +1792,6 @@ function requestedPostMediaSelection(user, source, storedPost = null) {
     assertPhotosMatchSelection(supplied, selection);
   }
   return selection;
-}
-
-function isLegacyVideoUrl(value) {
-  if (typeof value !== "string" || !/^https?:\/\//i.test(value)) return false;
-  try {
-    // Match the same full-URI boundary used by feed/Clips display. Looking only
-    // at pathname lets `?format=.mp4` publish as a legacy image server-side and
-    // then mount as a video client-side without a durable poster.
-    new URL(value);
-    return /\.(mp4|webm|mov|m4v)(?:[?#]|$)/i.test(value);
-  } catch {
-    return false;
-  }
 }
 
 function rejectNewLegacyMediaUrls(nextPhotos, previousPhotos = []) {
@@ -4237,6 +4230,7 @@ ensureCrewSchema(db);
 ensureShowPlansSchema(db);
 const catalogMaintenanceService = createCatalogMaintenanceService({ database: db, databasePath: DATABASE_PATH,
   now, seoStatus: catalogSeoMaintenanceStatus });
+const catalogApiService = createCatalogApiService({ database: db, now });
 ensureSearchGrowthPrioritySchema(db);
 const searchGrowthService = createSearchGrowthService({ database: db, now,
   onPriorities: (batch) => rememberSearchGrowthPriorities(db, batch) });
@@ -5254,7 +5248,11 @@ export const routes = {
   // surface first (rank_score); exact name matches float to the top.
   "GET /api/artists": (ctx) => {
     const term = clean(ctx.query.q, { max: 80 }).toLowerCase();
-    const lim = Math.min(40, Math.max(1, Number(ctx.query.limit) || 20));
+    const requestedLimit = ctx.query.limit == null || ctx.query.limit === "" ? 20 : Number(ctx.query.limit);
+    if (!Number.isSafeInteger(requestedLimit) || requestedLimit < 1) {
+      throw new ApiError(400, "Choose a valid number of artists to load.", "VALIDATION_FAILED");
+    }
+    const lim = Math.min(40, requestedLimit);
     const literal = term.replace(/[%_\\]/g, "");
     const folded = artistSearchKey(term);
     if (term) limit(ctx, "artist-search", 240, 10 * 60 * 1000);
@@ -5930,96 +5928,52 @@ export const routes = {
     if (v.termsVersion !== CURRENT_TERMS_VERSION) {
       throw new ApiError(400, "Accept the current Terms & Conditions and Privacy policy to create an account.", "VALIDATION_FAILED");
     }
-    // Report the actual signup outcome. Account identities are disclosed only
-    // after the submitted password authenticates them, never by email alone.
+    // Mailbox-first signup never issues an authenticated cookie or discloses
+    // whether this email already owns one or two accounts.
     ctx.setHeader?.("Cache-Control", "no-store");
-    const passwordHash = await hashPassword(v.password);
-    ctx.signal?.throwIfAborted();
-    const cancelToken = randomBytes(32).toString("base64url");
-    const cancelHash = createHash("sha256").update(cancelToken).digest("hex");
-    const addingAccount = ctx.body?.addAccount === true;
-    if (addingAccount) {
-      const actor = requireVerifiedUser(ctx);
-      if (cleanEmail(actor.email) !== v.email || typeof ctx.body?.currentPassword !== "string"
-        || ctx.body.currentPassword.length > 100 || !await verifyPassword(ctx.body.currentPassword, actor.pass_hash)) {
-        throw new ApiError(401, "Confirm the current account's password to add an account with this email.", "AUTH_INVALID");
+    const responseFloor = createRecoveryResponseFloor();
+    try {
+      const passwordHash = await hashPassword(v.password);
+      ctx.signal?.throwIfAborted();
+      const cancelToken = randomBytes(32).toString("base64url");
+      const addingAccount = ctx.body?.addAccount === true;
+      let actor = null;
+      if (addingAccount) {
+        actor = requireVerifiedUser(ctx);
+        if (cleanEmail(actor.email) !== v.email || typeof ctx.body?.currentPassword !== "string"
+          || ctx.body.currentPassword.length > 100 || !await verifyPassword(ctx.body.currentPassword, actor.pass_hash)) {
+          throw new ApiError(401, "Confirm the current account's password to add an account with this email.", "AUTH_INVALID");
+        }
       }
-    }
-    const existingAccounts = q.usersByEmail.all(v.email);
-    const matching = [];
-    for (let slot = 0; slot < 2; slot++) {
-      if (await verifyPasswordForUser(v.password, existingAccounts[slot]?.pass_hash)) matching.push(existingAccounts[slot]);
-    }
-    // A password reset or deletion may finish while a worker is checking the
-    // other slot. Never disclose choices backed only by an outdated proof.
-    for (let i = matching.length - 1; i >= 0; i--) {
-      const fresh = q.userById.get(matching[i].id);
-      if (!fresh || fresh.pass_hash !== matching[i].pass_hash || cleanEmail(fresh.email) !== v.email) matching.splice(i, 1);
-    }
-    const createAdditional = ctx.body?.createAdditional === true;
-    ctx.signal?.throwIfAborted();
-    if (!addingAccount && matching.length && !createAdditional) {
-      return { ok: true, needsAccountChoice: true, canCreate: existingAccounts.length < 2,
-        accounts: matching.map((user) => ({ id: user.id, name: user.name, handle: user.handle,
-          setupIncomplete: user.onboarding_version === 0, emailVerified: !!user.email_verified_at })) };
-    }
-    if (createAdditional && !addingAccount && !matching.length) throw new ApiError(401, "Log in before adding an account with these credentials.", "AUTH_INVALID");
-    const id = uid("u");
-    const initials = (v.name.match(/\p{L}|\p{N}/gu) || ["?"]).slice(0, 2).join("").toUpperCase();
-    const colors = ["#F2A65A", "#E0457B", "#5B8DEF", "#6FCF97", "#B98AE0", "#E8B65A"];
-    const createdAt = now();
-    const signup = atomicWrite(() => {
-          // A disconnected form cannot receive its cancellation capability.
-          // Stop before committing; a later disconnect cannot undo this commit.
-          ctx.signal?.throwIfAborted();
-          const accounts = q.usersByEmail.all(v.email);
-          const accountSnapshotUnchanged = accounts.length === existingAccounts.length
-            && accounts.every((account) => existingAccounts.some((proof) => (
-              proof.id === account.id && proof.pass_hash === account.pass_hash
-            )));
-          // An ordinary signup may intentionally create the second account when
-          // its password differs, but only from the exact account set that was
-          // inspected before hashing. Without this in-transaction fence, two
-          // simultaneous first signups can both observe an empty address and the
-          // second request silently becomes an unintended sibling account.
-          if (!addingAccount && !createAdditional && !accountSnapshotUnchanged) {
-            throw new ApiError(409, "Accounts for this email changed while signup was finishing. Try again.", "CONFLICT");
+      const submittedAt = now();
+      const reservation = atomicWrite(() => {
+        ctx.signal?.throwIfAborted();
+        if (actor) {
+          ctx.assertCurrentSession?.();
+          const current = q.userById.get(actor.id);
+          if (!current?.email_verified_at || current.pass_hash !== actor.pass_hash || current.role !== actor.role
+            || cleanEmail(current.email) !== v.email || !ctx.token) {
+            throw new ApiError(409, "Your account changed. Log in again before adding an account.", "CONFLICT");
           }
-          if (createAdditional && !addingAccount && !accounts.some((user) => matching.some((proof) => proof.id === user.id && proof.pass_hash === user.pass_hash))) throw new ApiError(409, "Your account changed. Try signing up again.", "CONFLICT");
-          if (addingAccount) {
-            ctx.assertCurrentSession?.();
-            const actor = q.userById.get(ctx.user.id);
-            if (!actor?.email_verified_at || actor.pass_hash !== ctx.user.pass_hash || cleanEmail(actor.email) !== v.email) throw new ApiError(409, "Your account changed. Log in again before adding an account.", "CONFLICT");
+          if (q.usersByEmail.all(v.email).length >= 2) {
+            throw new ApiError(409, "This email already has two accounts. Use Switch account or another email.", "CONFLICT");
           }
-          if (accounts.length >= 2) throw new ApiError(409, "This email already has two accounts. Log in, reset your password, or use another email.", "CONFLICT");
-          // Catalogue protection may change while password hashing is running.
-          assertMemberIdentityAllowed(db, { name: v.name, handle: preferredHandle });
-          q.insertUser.run(id, v.email, v.name, privateSignupHandle(), passwordHash,
-            "fan", v.city ?? null, v.lat ?? null, v.lng ?? null, initials, colors[Math.floor(Math.random() * colors.length)], createdAt);
-          db.prepare("UPDATE users SET extras=? WHERE id=?").run(JSON.stringify({
-            termsAcceptedAt: createdAt,
-            termsVersion: CURRENT_TERMS_VERSION,
-            ...(v.analyticsConsent ? { analyticsConsentAt: createdAt } : {}),
-            ...(preferredHandle ? { pendingSignupHandle: preferredHandle } : {}),
-            ...(pendingArtistIntent ? { pendingArtistIntent } : {}),
-          }), id);
-          db.prepare("UPDATE users SET genres=? WHERE id=?").run(JSON.stringify(v.genres), id);
-          // Only accounts created through signup enter the first-run flow.
-          // Migrated and staff-provisioned accounts keep NULL and stay exempt.
-          db.prepare("UPDATE users SET age_band=?, dm_policy='mutuals', onboarding_version=0 WHERE id=?").run(v.ageBand, id);
-          db.prepare("UPDATE users SET signup_cancel_hash=? WHERE id=?").run(cancelHash, id);
-          const created = q.userById.get(id);
-          const verification = prepareVerification(created);
-          const issued = createSession(id, ctx.ip, ctx.ua);
-          linkedAccounts.grantVerifiedAccounts({ userId: id, users: [q.userById.get(id), ...matching], token: issued.token });
-          return { session: issued, verification };
-    });
-    void signup.verification.sendAfterCommit();
-    // Only the new, unverified fan account receives this limited session.
-    // The verification gate blocks all public/social mutations until confirmed.
-    ctx.setSession(signup.session);
-    return { ok: true, created: true, verificationRequired: true, cancelToken,
-      user: publicUser(q.userById.get(id), { self: true }) };
+        }
+        return prepareSignupReservation(db, { cancelToken, actor, sessionToken: ctx.token, at: submittedAt,
+          payload: { email: v.email, name: v.name, passwordHash, city: v.city, lat: v.lat, lng: v.lng,
+            genres: v.genres, ageBand: v.ageBand, extras: {
+              termsAcceptedAt: submittedAt, termsVersion: CURRENT_TERMS_VERSION,
+              ...(v.analyticsConsent ? { analyticsConsentAt: submittedAt } : {}),
+              ...(preferredHandle ? { pendingSignupHandle: preferredHandle } : {}),
+              ...(pendingArtistIntent ? { pendingArtistIntent } : {}),
+            } },
+        });
+      });
+      void sendSignupReservation(reservation);
+      return { ok: true, pending: true, verificationRequired: true, cancelToken };
+    } finally {
+      await responseFloor.settle();
+    }
   },
 
   "POST /api/login": async (ctx) => {
@@ -6919,74 +6873,45 @@ export const routes = {
     const user = requireUser(ctx);
     const { cursor, limit: lim } = pageRequest(ctx, 12, 30);
     const viewer = user.id;
-    const blockSql = viewer ? `AND NOT EXISTS (
-      SELECT 1 FROM blocks b WHERE (b.blocker_id=? AND b.blocked_id=p.user_id) OR (b.blocker_id=p.user_id AND b.blocked_id=?)
-    )` : "";
-    // A cheap prefilter in SQL (photos JSON mentions a video extension); the
-    // authoritative per-URL check happens in JS below. Because the prefilter can
-    // deliberately over-match (for example `photo.jpg?campaign=.mp4-bait`), it
-    // must never define the public page boundary. Continue through raw candidate
-    // batches until we have one extra real clip or have exhausted the reel.
-    const findCandidates = (before, batchLimit) => {
-      const cursorSql = before ? "AND (p.created_at < ? OR (p.created_at = ? AND p.id < ?))" : "";
-      const args = [];
-      if (before) args.push(before.createdAt, before.createdAt, before.id);
-      if (viewer) args.push(viewer, viewer);
-      args.push(batchLimit);
-      return db.prepare(`
+    return readClipPage(db, {
+      activeAccount: activeAccountSql("u"), cursor, viewer, limit: lim,
+      legacySources: legacyVideoPosterAllowedSources(db),
+    }, (selected) => {
+      // Eligibility and visibility have already run before LIMIT. Only these
+      // <=31 posts incur social/media projection, within the same read snapshot.
+      const found = selected.length ? db.prepare(`
         SELECT p.*, u.name AS u_name, u.handle AS u_handle, u.initials AS u_initials, u.avatar_uri AS u_avatar, u.avatar_color AS u_color,
           u.profile_updated_at AS u_profile_updated_at,
           u.role AS u_role,u.artist_name AS u_artist_name,
-          EXISTS (SELECT 1 FROM post_media pm JOIN media_assets ma ON ma.id=pm.asset_id
-            WHERE pm.post_id=p.id AND ma.kind='video') AS has_stable_video,
           (SELECT COUNT(*) FROM likes l JOIN users lu ON lu.id=l.user_id WHERE l.post_id=p.id AND ${activeAccountSql("lu")}) AS like_count,
           (SELECT COUNT(*) FROM comments c JOIN users cu ON cu.id=c.user_id
             WHERE c.post_id=p.id AND c.removed=0 AND ${activeAccountSql("cu")}) AS comment_count,
           ${SEEN_ORDINAL_SQL}
-        FROM posts p JOIN users u ON u.id = p.user_id
-        WHERE p.removed=0 AND p.photos_public=1 AND ${activeAccountSql("u")}
-          AND (p.photos LIKE '%.mp4%' OR p.photos LIKE '%.webm%' OR p.photos LIKE '%.mov%' OR p.photos LIKE '%.m4v%'
-            OR EXISTS (SELECT 1 FROM post_media pm JOIN media_assets ma ON ma.id=pm.asset_id
-              WHERE pm.post_id=p.id AND ma.kind='video'))
-          ${cursorSql} ${blockSql}
-        ORDER BY p.created_at DESC, p.id DESC LIMIT ?`).all(...args);
-    };
-    const candidatesPerScan = Math.max(lim + 1, 32);
-    const authoritative = [];
-    let scanCursor = cursor;
-    while (authoritative.length <= lim) {
-      const found = findCandidates(scanCursor, candidatesPerScan);
-      if (!found.length) break;
-      // Reject cheap SQL false positives before running comment/media/reaction
-      // projection. Otherwise a page of bait URLs can force several synchronous
-      // DB lookups per row even though none can ever enter the reel.
-      const plausible = found.filter((row) => row.has_stable_video
-        || parseJsonArray(row.photos).some((uri) => isLegacyVideoUrl(uri)));
+        FROM posts p JOIN users u ON u.id=p.user_id
+        WHERE p.id IN (${selected.map(() => "?").join(",")})
+        ORDER BY p.created_at DESC,p.id DESC`).all(...selected.map((row) => row.id)) : [];
       const projectedCandidates = attachPostMediaPageProjection(db, attachPostImpressionStats(db, attachViewerLikes(
-        db,
-        withTaggedPeople(withCommentPreviews(plausible, viewer), viewer),
-        viewer,
-      ), viewer), { ownerId: viewer || null });
-      for (const p of projectedCandidates) {
-        const projected = postJson(p, viewer); // photos already parsed here
+        db, withTaggedPeople(withCommentPreviews(found, viewer), viewer), viewer,
+      ), viewer), { ownerId: viewer });
+      const authoritative = projectedCandidates.map((p) => {
+        const projected = postJson(p, viewer);
         const descriptorClips = new Set((projected.media || [])
           .filter((asset) => asset?.kind === "video" && typeof asset.url === "string")
           .map((asset) => asset.url));
         const clips = (projected.photos || []).filter((uri) => descriptorClips.has(uri) || isLegacyVideoUrl(uri));
-        if (clips.length) authoritative.push({ row: p, clip: { ...projected, clips } });
-        if (authoritative.length > lim) break;
-      }
-      if (authoritative.length > lim || found.length < candidatesPerScan) break;
-      const last = found.at(-1);
-      scanCursor = { createdAt: last.created_at, id: last.id };
-    }
-    const hasMore = authoritative.length > lim;
-    const page = hasMore ? authoritative.slice(0, lim) : authoritative;
-    const clips = page.map(({ clip }) => clip);
-    const nextCursor = hasMore && page.length ? encodeCursor(page.at(-1).row) : null;
-    return { clips, nextCursor };
+        // A mismatch is an invariant failure, never a false end-of-reel or a
+        // reason to resume an unbounded hydration scan.
+        if (!clips.length) throw new Error("Clips index eligibility disagrees with canonical projection");
+        return { row: p, clip: { ...projected, clips } };
+      });
+      const hasMore = authoritative.length > lim;
+      const page = hasMore ? authoritative.slice(0, lim) : authoritative;
+      return {
+        clips: page.map(({ clip }) => clip),
+        nextCursor: hasMore && page.length ? encodeCursor(page.at(-1).row) : null,
+      };
+    });
   },
-
   "GET /api/users/:id/posts": (ctx) => {
     ctx.setHeader?.("Cache-Control", "private, no-store");
     const viewer = requireUser(ctx);
@@ -9091,6 +9016,7 @@ export const routes = {
     const token = clean(ctx.body?.token, { max: 100 });
     const completion = completeVerification(token);
     if (!completion) return { ok: true, verified: false };
+    if (completion.blocked) return { ok: true, verified: false, outcome: completion.blocked };
     const response = { ok: true, verified: true, alreadyVerified: completion.replayed };
     // Possession of an email token authorizes confirming that address, not
     // reading the account's private self projection. Only the matching active
@@ -9915,12 +9841,14 @@ export const routes = {
   // Owner-chosen news stories: free to browse, one metered Claude call per draft.
   ...newsDeskEditorRoutes({ editor: newsDeskEditor, database: db, ApiError, requireAdmin: requireNewsEditor, rateLimit: limit, now,
     photoResolver: resolveNewsArtwork, readStory: (postId) => newsDeskReader.forLivePost(postId), listStories: () => newsDeskReader.list({ limit: 10 }).stories || [] }),
-  ...mediaApiRoutes({ service: mediaApiService, requireOwner, rateLimit: limit, ApiError }),
+  ...mediaApiRoutes({ service: mediaApiService, requireOwner, rateLimit: mediaApiLimit, ApiError }),
+  ...catalogApiRoutes({ service: catalogApiService, requireOwner, rateLimit: mediaApiLimit, decodedPathParam }),
   // Live coverage for big nights: outlet headlines plus owner updates, no Claude.
   ...newsLiveRoutes({ database: db, ApiError, requireAdmin: requireNewsEditor, rateLimit: limit, now }),
   // Festivals: editions, lineups by day, and members' plans.
   ...festivalRoutes({ database: db, ApiError, requireVerifiedUser, rateLimit: limit, clean, decodedPathParam, now }),
   ...catalogResearchRoutes({ database: db, ApiError, rateLimit: limit, decodedPathParam, canonicalVenueKey, requireAdmin, now,
+    resolveEventResearch: key => publicDocumentForPath(`/event/${encodeURIComponent(key)}`)?.research || null,
     resolveArtist: (key, ctx) => {
       const artist = resolveCatalogArtistReference(key);
       return artist && artistCatalogVisibleTo(db, artist, ctx?.user) ? artist : null;

@@ -17,7 +17,7 @@ function fixture(t, { publish = true } = {}) {
     CREATE TABLE artists(norm TEXT PRIMARY KEY,name TEXT,popularity REAL,data TEXT);
     CREATE TABLE posts(id TEXT PRIMARY KEY,user_id TEXT,artist TEXT,artist_key TEXT,venue TEXT,city TEXT,date TEXT,overall REAL,review TEXT,kind TEXT,created_at INTEGER);
     CREATE TABLE moderation_actions(id TEXT PRIMARY KEY,actor_id TEXT,action TEXT,target_type TEXT,target_id TEXT,reason TEXT,prior_state TEXT,next_state TEXT,request_id TEXT,created_at INTEGER);`);
-  let providerCalls = 0, articleCalls = 0;
+  let providerCalls = 0, articleCalls = 0, authorityGuard = () => {};
   const editor = createNewsDeskEditor({ database, env: { NEWS_DESK_ACCOUNT_ID: "fixture-news" }, now: () => AT,
     fetchArticle: async () => {
       articleCalls += 1;
@@ -42,13 +42,14 @@ function fixture(t, { publish = true } = {}) {
     constructor(status, message, code) { super(message); this.status = status; this.code = code; }
   }
   const routes = newsDeskEditorRoutes({ database, editor, ApiError, now: () => AT, rateLimit() {},
-    requireAdmin: () => ({ id: "fixture-admin", email_verified_at: AT }) });
+    requireAdmin: () => { authorityGuard(); return { id: "fixture-admin", email_verified_at: AT }; } });
   const context = (id) => ({ body: { reportUrls: URLS }, params: { id }, requestId: "fixture-request", setHeader() {} });
   return {
     database, editor,
     calls: () => ({ providerCalls, articleCalls }),
+    setAuthorityGuard: guard => { authorityGuard = guard; },
     draft: () => routes[`POST ${BASE}`](context()),
-    publish: id => routes[`POST ${BASE}/:id/publish`](context(id)),
+    publish: id => routes[`POST ${BASE}/:id/publish`]({ ...context(id), body: { expectedRevision: 0 } }),
     discard: id => routes[`POST ${BASE}/:id/discard`](context(id)),
     refuseAudit: action => database.exec(`CREATE TRIGGER refuse_editor_audit BEFORE INSERT ON moderation_actions
       WHEN NEW.action='${action}' BEGIN SELECT RAISE(ABORT,'synthetic audit failure'); END`),
@@ -95,6 +96,31 @@ test("publication audit failure rolls back post, story, report ownership and dra
   await assert.rejects(f.publish(draft.id), error => error.code === "CONFLICT");
   assert.equal(f.calls().providerCalls, 1, "publication retries are not paid requests");
 });
+
+for (const boundary of ["before insert", "after audit"]) {
+  test(`authority loss ${boundary} rolls back draft and audit while retaining settled spend`, async t => {
+    const f = fixture(t);
+    let observed = false;
+    f.setAuthorityGuard(() => {
+      if (!f.database.isTransaction) return;
+      const audited = f.database.prepare("SELECT COUNT(*) n FROM moderation_actions").get().n > 0;
+      if ((boundary === "before insert" && !audited) || (boundary === "after audit" && audited)) {
+        observed = true;
+        throw Object.assign(new Error("Synthetic authority withdrawal"), { code: "AUTH_REQUIRED" });
+      }
+    });
+    await assert.rejects(f.draft(), error => error.code === "AUTH_REQUIRED");
+    assert.equal(observed, true, "the fresh guard runs inside the requested transaction boundary");
+    assert.equal(f.database.prepare("SELECT COUNT(*) n FROM news_drafts").get().n, 0);
+    assert.equal(f.database.prepare("SELECT COUNT(*) n FROM moderation_actions").get().n, 0);
+    assert.deepEqual({ ...f.database.prepare("SELECT status,charged_usd FROM news_desk_receipts").get() }, { status: "settled", charged_usd: 0.01 });
+    assert.equal(f.database.isTransaction, false);
+    f.setAuthorityGuard(() => {});
+    const retry = await f.draft();
+    assert.equal(retry.draft.status, "draft", "failed authorization releases the in-flight guard for an explicit authorized retry");
+    assert.equal(f.database.prepare("SELECT COUNT(*) n FROM news_desk_receipts").get().n, 2);
+  });
+}
 
 test("discard audit failure preserves the saved draft and succeeds atomically on retry", async t => {
   const f = fixture(t);

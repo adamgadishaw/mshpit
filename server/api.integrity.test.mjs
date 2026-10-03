@@ -3066,14 +3066,19 @@ test("signup records Terms separately and keeps artist setup private while optio
     },
     setSession: (value) => { sessionCookie = value; },
   });
-  const created = publicUser(q.userByEmail.get(email), { self: true });
-  assert.ok(sessionCookie?.token);
-  assert.equal(result.created, true);
+  assert.equal(result.pending, true);
   assert.equal(result.verificationRequired, true);
-  assert.equal(result.user.id, created.id);
-  assert.equal(result.user.emailVerified, false);
-  assert.equal(result.user.role, "fan", "artist intent cannot grant public artist authority before email confirmation");
-  assert.deepEqual(result.user.pendingArtistIntent, { artistName: "Private Signup Artist" });
+  assert.equal(result.user, undefined);
+  assert.equal(sessionCookie, undefined);
+  assert.equal(q.userByEmail.get(email), undefined);
+  const token = "consent-reservation-confirmation";
+  assert.equal(db.prepare("UPDATE signup_reservations SET token_hash=? WHERE email=? AND status='pending'")
+    .run(createHash("sha256").update(token).digest("hex"), email).changes, 1);
+  assert.equal(routes["POST /api/verify-email"]({ body: { token } }).verified, true);
+  const created = publicUser(q.userByEmail.get(email), { self: true });
+  assert.equal(created.emailVerified, true);
+  assert.equal(created.role, "fan", "artist intent cannot grant public artist authority through mailbox confirmation");
+  assert.deepEqual(created.pendingArtistIntent, { artistName: "Private Signup Artist" });
   assert.equal(publicUser(q.userByEmail.get(email)).pendingArtistIntent, undefined);
   assert.equal(artistStmts.byNorm.get("private signup artist"), undefined, "signup intent never reserves a public catalog identity");
   assert.ok(created.termsAcceptedAt);

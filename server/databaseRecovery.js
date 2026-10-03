@@ -66,6 +66,30 @@ export function prepareRecoveryDatabase(database, { privacyReplayReference, cred
     for (const table of ["linked_account_session_grants", "email_verification_receipts", "sessions"]) {
       if (present.has(table)) changes[table] = database.prepare(`DELETE FROM ${table}`).run().changes;
     }
+    // Guest reservations have no session to cascade from. Remove their pending
+    // confirmation/cancellation capabilities and staged password data; retain
+    // terminal outcomes, which cannot create an account.
+    if (present.has("signup_reservations")) {
+      changes.signupReservations = database.prepare("DELETE FROM signup_reservations WHERE status='pending'").run().changes;
+    }
+    // A snapshot can predate API revocation too. Invalidate every restored
+    // audience even when its runtime flag is off, and retain grant/receipt and
+    // append-only audit history. Historical snapshots may lack these tables.
+    if (present.has("media_api_grants")) {
+      changes.mediaApiGrants = database.prepare(`UPDATE media_api_grants
+        SET status='revoked',token_hash=NULL,revoked_at=?,updated_at=?
+        WHERE status='active'`).run(at, at).changes;
+    }
+    if (present.has("api_grants")) {
+      changes.apiGrants = database.prepare(`UPDATE api_grants SET status='revoked',revoked_at=?
+        WHERE status='active'`).run(at).changes;
+    }
+    if (present.has("media_api_pairings")) {
+      changes.mediaApiPairings = database.prepare("UPDATE media_api_pairings SET status='revoked' WHERE status='pending'").run().changes;
+    }
+    if (present.has("catalog_pairings")) {
+      changes.catalogPairings = database.prepare("UPDATE catalog_pairings SET status='revoked' WHERE status='pending'").run().changes;
+    }
     // A restore can resurrect links that were already decided after the
     // snapshot. Retain request/receipt history but require fresh approval.
     if (present.has("owner_approval_requests")) {

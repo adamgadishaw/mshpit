@@ -21,6 +21,7 @@ const { db, q } = await import("./db.js");
 const { hashPassword } = await import("./auth.js");
 const { routes } = await import("./api.js");
 const {
+  legacyVideoPosterAllowedSources,
   legacyVideoPosterDescriptors,
   legacyVideoPosterDescriptorsByPost,
   reconcileLegacyVideoPosters,
@@ -90,6 +91,49 @@ function posterHead(entry, overrides = {}) {
     }),
   });
 }
+
+for (const ignoresAbort of [false, true]) test(`poster stop owns real SQLite verification through ${ignoresAbort ? "late" : "cancelled"} HEAD settlement`, async () => {
+  const suffix = ignoresAbort ? "late" : "abort";
+  const entry = releaseEntry({ postId: `p_shutdown_${suffix}`, ownerId: `u_shutdown_${suffix}` });
+  addUser(entry.ownerId);
+  addPost({ id: entry.postId, ownerId: entry.ownerId, photos: [entry.sourceUrl] });
+  registerLegacyVideoPosterRelease(db, { entries: [entry], env: process.env, allowNonProduction: true });
+  let tick, release, started, requestSignal;
+  const inFlight = new Promise(resolve => { started = resolve; });
+  const scheduler = startLegacyVideoPosterVerificationScheduler({
+    database: db,
+    env: { ...process.env, NODE_ENV: "production", PIT_ENV: "production",
+      MEDIA_PUBLIC_BASE_URL: LEGACY_VIDEO_POSTER_PUBLIC_BASE, PIT_LEGACY_VIDEO_POSTER_RELEASE: LEGACY_VIDEO_POSTER_RELEASE_ID },
+    reconcile: () => {},
+    verify: (database, { signal }) => verifyLegacyVideoPosterBatch(database, {
+      env: process.env, allowNonProduction: true, signal, at: 10_000,
+      fetchImpl: (_url, options) => new Promise((resolve, reject) => {
+        requestSignal = options.signal;
+        release = () => resolve(posterHead(entry)());
+        if (!ignoresAbort) requestSignal.addEventListener("abort", () => reject(requestSignal.reason), { once: true });
+        started();
+      }),
+    }),
+    setTimerFn: callback => { tick = callback; return { unref() {} }; },
+    clearTimerFn() {},
+  });
+  const active = tick();
+  await inFlight;
+  let stopped = false;
+  const drain = scheduler.stop({ abortActive: true }).then(() => { stopped = true; });
+  assert.equal(requestSignal.aborted, true);
+  if (ignoresAbort) {
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(stopped, false, "a transport that can resume database work remains owned");
+    release();
+  }
+  await drain;
+  await active;
+  const row = db.prepare("SELECT status,attempts,next_attempt_at FROM legacy_video_posters WHERE post_id=?").get(entry.postId);
+  assert.deepEqual({ ...row }, { status: "pending", attempts: 0, next_attempt_at: 40_000 });
+  assert.equal(await scheduler.stop(), undefined);
+  db.prepare("DELETE FROM posts WHERE id=?").run(entry.postId);
+});
 
 test("the default release requires the one-time production identity before any database or storage work", async () => {
   const before = {
@@ -285,6 +329,10 @@ test("an exact trusted release restores its verified owned clip without minting 
     entries: [entry], env: process.env, at: 1_000, allowNonProduction: true,
   });
   assert.deepEqual(first, { active: true, registered: 1, retained: 0, retired: 0 });
+  assert.ok(legacyVideoPosterAllowedSources(db).some(([id, url]) => id === entry.postId && url === entry.sourceUrl));
+  const isolatedConnection = {};
+  assert.equal(legacyVideoPosterAllowedSources(isolatedConnection).some(([id, url]) => id === entry.postId && url === entry.sourceUrl), false,
+    "a persisted release registration does not grant another connection its runtime trust");
   assert.equal(db.prepare("SELECT status FROM media_objects WHERE object_key=?").get(entry.posterKey).status, "associated");
   assert.deepEqual(legacyVideoPosterDescriptors(db, { postId: entry.postId, photos: [entry.sourceUrl] }), [],
     "a manifest claim alone never makes bytes public");
@@ -323,6 +371,10 @@ test("an exact trusted release restores its verified owned clip without minting 
   assert.deepEqual(projected.photos, [entry.sourceUrl],
     "the immutable release restores only its exact owned source slot");
   assert.deepEqual(projected.media, [descriptor]);
+  const reel = routes["GET /api/clips"]({ user, query: { limit: "30" } });
+  const reelPost = reel.clips.find(post => post.id === entry.postId);
+  assert.deepEqual(reelPost?.clips, [entry.sourceUrl], "indexed reel preserves exact verified release membership");
+  assert.deepEqual(reelPost?.media, [descriptor]);
   assert.deepEqual(projected.mediaAssetIds, [], "a release-only cover cannot masquerade as a stable composer asset");
   const gallery = routes["GET /api/artists/photos"]({
     user,

@@ -12,6 +12,7 @@ import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { join, extname, normalize, dirname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { db, q, publicUser, pruneMissingArtists, DATABASE_DIRECTORY, DATABASE_PATH } from "./db.js";
+import { assertClipIndexReady } from "./features/clips/clipIndex.js";
 import { artistDeathWatchService, eraseAccountForInactivity, replayPrivacyJournalOnRestore, routes, startArtistNews, startArtistPhotos, startCatalogResearch, startFestivals, startNewsDesk, startPrivacyJournal, startVideoProcessingRetries, startWebProfiles, startSearchGrowth } from "./api.js";
 import { ApiError, errorEnvelope } from "./errors.js";
 import { readAuthorizedRequest } from "./requestAuthorization.js";
@@ -98,10 +99,11 @@ import {
   startOptionalBackgroundRuntime,
 } from "./backgroundRuntime.js";
 import { safeRequestFailureContext } from "./safeLogging.js";
-import { healthRateLimitPolicy } from "./healthAvailability.js";
+import { healthRateLimit, healthRateLimitPolicy } from "./healthAvailability.js";
 import { shouldRecordGeneralRequestFailure } from "./requestFailureObservability.js";
 import { crawlerFileRateLimitPolicy } from "./crawlerFileRateLimit.js";
 import { enforceRateLimit } from "./rateLimitEnforcement.js";
+import { createPublicReadAdmission, isExpensiveApiRead } from "./publicReadAdmission.js";
 import {
   allowedUnsafeRequestOrigins,
   assertProductionRequestHost,
@@ -146,6 +148,7 @@ const UNSAFE_REQUEST_ORIGINS = allowedUnsafeRequestOrigins({
 const TRUSTED_PROXY_CIDRS = trustedProxyCidrs(process.env.PIT_TRUSTED_PROXY_CIDRS);
 const RENDER_PROXY_HEADERS = process.env.RENDER === "true";
 const ACTIVE_SESSION_COOKIE = sessionCookieName(PROD);
+const publicReadAdmission = createPublicReadAdmission();
 // Disk-backed Render services cannot configure a longer shutdown delay. Leave
 // five seconds before Render's documented general 30-second cutoff while
 // cooperative job cancellation and SQLite close drain normally.
@@ -383,6 +386,7 @@ function serveStatic(req, res, pathname) {
   // titled "Pit", and a crawler that does not run JavaScript sees nothing at
   // all. Only the HTML entry point is rewritten; assets stream untouched.
   if (ext === ".html") {
+    admitExpensiveRead(req);
     let html = readFileSync(file, "utf8");
     try { html = injectHead(html, pathname); } catch { /* never fail the page over metadata */ }
     if (!isProduction()) html = enforceHtmlRobotsMeta(html);
@@ -508,6 +512,14 @@ function clientIp(req) {
   });
 }
 
+function admitExpensiveRead(req) {
+  publicReadAdmission.admit(() => {
+    const token = parseCookies(req.headers.cookie)[ACTIVE_SESSION_COOKIE];
+    const accountId = getSession(token)?.user_id;
+    return accountId ? `user:${accountId}` : `ip:${clientIp(req)}`;
+  });
+}
+
 async function handleRequest(req, res) {
   const started = Date.now();
   const requestId = randomUUID();
@@ -608,6 +620,8 @@ async function handleRequest(req, res) {
       // Native clients omit Origin/Fetch Metadata and remain supported; browser
       // writes must originate from the configured first-party app.
       assertUnsafeRequestOrigin(req.method, req.headers, UNSAFE_REQUEST_ORIGINS);
+      const expensiveRead = isExpensiveApiRead(req.method, pathname);
+      if (expensiveRead) publicReadAdmission.precheck();
 
       // Global flood guard on top of per-route limits.
       //
@@ -623,7 +637,7 @@ async function handleRequest(req, res) {
       // cannot be used as an unbounded readiness/SQLite polling surface.
       if (pathname === "/api/health" || pathname === "/api/readiness") {
         const healthLimit = healthRateLimitPolicy(ip);
-        if (!rateLimit(healthLimit.key, healthLimit.max, healthLimit.windowMs)) {
+        if (!healthRateLimit(healthLimit.key, healthLimit.max, healthLimit.windowMs)) {
           return sendApiError(res, new ApiError(429, "Too many requests.", "RATE_LIMITED"), requestId, cors);
         }
       } else {
@@ -634,6 +648,8 @@ async function handleRequest(req, res) {
         const flooder = getSession(sessionToken)?.user_id || `ip:${ip}`;
         enforceRateLimit(`global:${flooder}`, 300, 60 * 1000, { message: "Too many requests." });
       }
+      // Only admitted API identities consume shared projection capacity.
+      if (expensiveRead) admitExpensiveRead(req);
 
       const match = matchRoute(req.method, pathname);
       if (!match) return sendApiError(res, new ApiError(404, "Not found.", "NOT_FOUND"), requestId, cors);
@@ -645,7 +661,7 @@ async function handleRequest(req, res) {
       const capacityChallengeHeader = req.headers["x-pit-capacity-challenge"];
       const capacityChallenge = Array.isArray(capacityChallengeHeader)
         ? capacityChallengeHeader[0] : capacityChallengeHeader;
-      // The disabled-by-default Media API receives its bearer credential only
+      // The disabled-by-default scoped APIs receive their bearer credential only
       // in the route context. It is never copied into logs, cookies, or the
       // ordinary session user identity.
       const mediaApiAuthorization = typeof req.headers.authorization === "string"
@@ -670,6 +686,8 @@ async function handleRequest(req, res) {
         capacityChallenge,
         mediaApiAuthorization,
         mediaApiIdempotencyKey,
+        catalogApiAuthorization: mediaApiAuthorization,
+        catalogApiIdempotencyKey: mediaApiIdempotencyKey,
         signal: requestAbort.signal,
         setCookie: (c) => setCookies.push(c),
         setSession: (s) => setCookies.push(...sessionCookieHeaders(s.token, s.expiresAt, PROD)),
@@ -713,6 +731,7 @@ async function handleRequest(req, res) {
       return res.end();
     }
     if (serveStatic(req, res, pathname)) return;
+    admitExpensiveRead(req);
     return serveSeoRoute(req, res, pathname, { search });
   } catch (e) {
     // A client disconnect is an expected cancellation boundary, not an
@@ -885,7 +904,7 @@ function shutdown(exitCode = 0) {
   if (sitemapRefreshTimer) clearInterval(sitemapRefreshTimer);
   if (sitemapRetryTimer) clearTimeout(sitemapRetryTimer);
   const sitemapRefreshStop = drainSitemapSnapshotRefresh();
-  legacyVideoPosterScheduler?.stop();
+  const legacyVideoPosterStop = legacyVideoPosterScheduler?.stop({ abortActive: true }) || Promise.resolve();
   server.close(async () => {
     try { await campaignStop; }
     catch (error) { console.error(`[mail] campaign recovery shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
@@ -922,6 +941,8 @@ function shutdown(exitCode = 0) {
     try { await privateMediaIsolationStop; }
     catch (error) { console.error(`[media] privacy recovery shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     await additionalStops;
+    try { await legacyVideoPosterStop; }
+    catch (error) { console.error(`[media] legacy poster shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     try { db.close(); }
     catch (error) { console.error(`[pit] database close failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     process.exit(exitCode);
@@ -1009,6 +1030,9 @@ function startSitemapRefreshScheduler() {
 }
 
 async function startServer() {
+  // Preparation is an explicit pre-release operation for an existing database.
+  // Never bind a listener serving partial clip membership or scan on a request.
+  assertClipIndexReady(db);
   memoryMonitor = startMemoryMonitor();
   const loadedSitemap = await loadSitemapSnapshot();
   const startupSitemapRefresh = sitemapStartupRefreshDecision(loadedSitemap, {

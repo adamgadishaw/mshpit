@@ -13,6 +13,7 @@
 //   without discarding live limits.
 import { scrypt, scryptSync, randomBytes, timingSafeEqual, createHash } from "node:crypto";
 import { passwordWork } from "./passwordWork.js";
+import { createRateLimitBuckets } from "./rateLimitBuckets.js";
 import { db, q } from "./db.js";
 import { recordInteractiveAccountActivity } from "./features/accountLifecycle/accountLifecycle.js";
 
@@ -141,32 +142,17 @@ export function sweepExpiredSessions() {
 }
 
 // --- rate limiting -----------------------------------------------------------
-const buckets = new Map(); // key -> { count, resetAt }
 const MAX_RATE_LIMIT_BUCKETS = 50_000;
+const buckets = createRateLimitBuckets({ maxEntries: MAX_RATE_LIMIT_BUCKETS });
 const MAX_RATE_LIMIT_RETRY_AFTER_MS = 60 * 60 * 1000;
 
 function pruneExpiredRateLimitBuckets(now) {
-  for (const [key, bucket] of buckets) {
-    if (bucket.resetAt <= now) buckets.delete(key);
-  }
+  return buckets.pruneExpired(now);
 }
 
 function hasRateLimitBucketCapacity(keys, now) {
-  const candidateKeys = [...keys];
-  const newKeys = new Set();
-  for (const key of candidateKeys) {
-    if (!buckets.has(key)) newKeys.add(key);
-  }
-  if (buckets.size + newKeys.size <= MAX_RATE_LIMIT_BUCKETS) return true;
-
-  // Only an apparent overflow requires the O(n) sweep. Expired identities must
-  // not deny capacity, but live identities must never be cleared to make room.
-  pruneExpiredRateLimitBuckets(now);
-  newKeys.clear();
-  for (const key of candidateKeys) {
-    if (!buckets.has(key)) newKeys.add(key);
-  }
-  return buckets.size + newKeys.size <= MAX_RATE_LIMIT_BUCKETS;
+  // Bounded expiry work even at saturation; never discard a live limit.
+  return buckets.hasCapacity(keys, now);
 }
 
 export function rateLimit(key, max, windowMs) {
@@ -179,10 +165,12 @@ export function rateLimit(key, max, windowMs) {
   if (!b) {
     if (!hasRateLimitBucketCapacity([key], now)) return false;
     b = { count: 0, resetAt: now + windowMs };
-    buckets.set(key, b);
   }
-  b.count++;
-  return b.count <= max;
+  // Preserve reservation ownership: a later admission must replace the value
+  // so an earlier rollback cannot erase that request's accounting.
+  const next = { count: b.count + 1, resetAt: b.resetAt };
+  buckets.set(key, next);
+  return next.count <= max;
 }
 
 export function rateLimitAvailable(key, max, windowMs, cost = 1) {
@@ -282,10 +270,10 @@ export function resetRateLimitsForTests() {
   buckets.clear();
 }
 
-// Bound the bucket map so it can't grow without limit (memory-safety).
+// Reclaim idle expiry records in bounded batches as well as during admission.
 setInterval(() => {
   pruneExpiredRateLimitBuckets(Date.now());
-}, 60000).unref();
+}, 1000).unref();
 
 // --- cookie helpers ----------------------------------------------------------
 export const COOKIE = "pit_session"; // local-development and legacy name

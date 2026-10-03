@@ -7,9 +7,15 @@ import { admitClaudeSpend, claudeCeilingLeftMicroUsd, claudeRequestDefinitelyRej
 import { anthropicErrorSummary } from "../../anthropicErrors.js";
 import { privateErrorLabel } from "../../errors.js";
 import { startPeriodicJob } from "../../periodicJobScheduler.js";
-import { publicCatalogResearch, validateCatalogResearchFindings } from "./catalogResearchFindings.js";
+import { validateCatalogResearchFindings } from "./catalogResearchFindings.js";
+import { readPublicCatalogResearch } from "./catalogPublicResearch.js";
 import { catalogResearchModel, researchCatalogSubject } from "./catalogResearchProvider.js";
 import { searchGrowthArtistPriorityKeys, searchGrowthVenuePriorityRows } from "../searchGrowth/searchGrowthPriorities.js";
+import { withImmediateWrite } from "../../databaseTransaction.js";
+import { catalogVenueResearchRows, readCatalogEntity, venueResearchKey } from "../catalogApi/catalogApiInventory.js";
+import { assertCatalogClaim, bumpCatalogRevision, catalogAudit, catalogControl, claimCatalogWork,
+  ensureCatalogWorkSchema, finishCatalogWork } from "./catalogWorkQueue.js";
+export { venueResearchKey } from "../catalogApi/catalogApiInventory.js";
 
 // The research agent fills the artist and venue pages the catalogue sources
 // leave empty. It works through the pages fans are most likely to open first
@@ -67,6 +73,7 @@ function monthSpendMicroUsd(database, at) {
 }
 
 export function ensureCatalogResearchSchema(database) {
+  ensureCatalogWorkSchema(database);
   database.exec(`CREATE TABLE IF NOT EXISTS catalog_research (
     entity_type TEXT NOT NULL CHECK(entity_type IN ('artist','venue')),
     entity_key TEXT NOT NULL CHECK(length(entity_key) BETWEEN 1 AND 600),
@@ -165,7 +172,10 @@ function settleSpend(database, token, { costMicroUsd, uncertain = false, at }) {
 
 function dueRow(database, type, key, at) {
   const row = database.prepare("SELECT status,next_attempt_at FROM catalog_research WHERE entity_type=? AND entity_key=?").get(type, key);
-  return !row || (row.status !== "hidden" && Number(row.next_attempt_at) <= at);
+  if (row && (row.status === "hidden" || Number(row.next_attempt_at) > at)) return false;
+  const work = database.prepare("SELECT status,next_attempt_at,lease_until FROM catalog_work_items WHERE entity_type=? AND entity_key=?").get(type, key);
+  return !work || (work.status !== "quarantined" && work.next_attempt_at <= at
+    && (!["leased", "proposed"].includes(work.status) || work.lease_until <= at));
 }
 
 function artistShows(database, artistKey) {
@@ -194,7 +204,28 @@ const ARTIST_ELIGIBLE = `(a.bio IS NULL OR trim(a.bio)='')
   AND NOT EXISTS (SELECT 1 FROM artist_profiles p WHERE p.artist_key=a.norm AND p.removed=0
     AND (p.owner_id IS NOT NULL OR (p.bio IS NOT NULL AND trim(p.bio)<>'')))
   AND NOT EXISTS (SELECT 1 FROM catalog_research r WHERE r.entity_type='artist' AND r.entity_key=a.norm
-    AND (r.status='hidden' OR r.next_attempt_at>?))`;
+    AND (r.status='hidden' OR r.next_attempt_at>?))
+  AND NOT EXISTS (SELECT 1 FROM catalog_work_items w WHERE w.entity_type='artist' AND w.entity_key=a.norm
+    AND (w.status='quarantined' OR w.next_attempt_at>? OR (w.status IN ('leased','proposed') AND w.lease_until>?)))`;
+
+// Keep selection aligned with the shared claim gate. Filtering before LIMIT
+// prevents one protected or occupied high-priority page starving the backlog.
+const eligibilitySql = new WeakMap();
+function artistEligibility(database) {
+  if (!eligibilitySql.has(database)) {
+    const columns = table => new Set(database.prepare(`PRAGMA table_info(${table})`).all().map(row => row.name));
+    const artists = columns("artists"), profiles = columns("artist_profiles");
+    const conditions = [ARTIST_ELIGIBLE, "NOT EXISTS (SELECT 1 FROM artist_profiles p WHERE p.artist_key=a.norm AND p.removed<>0)"];
+    if (artists.has("source")) conditions.push("COALESCE(a.source,'')<>'artist-created'");
+    if (artists.has("data")) conditions.push(`CASE WHEN json_valid(a.data) THEN
+      (json_type(a.data,'$.biographyStaff') IS NOT NULL OR COALESCE(json_extract(a.data,'$.genreRecord.source'),'')='staff') ELSE 0 END=0`);
+    if (profiles.has("bio_staff_curated")) conditions.push("NOT EXISTS (SELECT 1 FROM artist_profiles p WHERE p.artist_key=a.norm AND p.bio_staff_curated<>0)");
+    if (profiles.has("identity_review_status")) conditions.push(`NOT EXISTS (SELECT 1 FROM artist_profiles p WHERE p.artist_key=a.norm
+      AND COALESCE(p.identity_review_status,'') NOT IN ('','clear','approved'))`);
+    eligibilitySql.set(database, conditions.join(" AND "));
+  }
+  return eligibilitySql.get(database);
+}
 
 // Artists in a Mshpit News story from the last 30 days go first: fans reading
 // the story are about to open their pages. Before the news desk has run there
@@ -205,8 +236,8 @@ function inTheNewsArtistRow(database, at) {
         (SELECT j.value AS artist_key,MAX(s.created_at) latest FROM news_stories s, json_each(s.artist_keys) j
           WHERE s.status='published' AND s.created_at>=? GROUP BY j.value) n
         JOIN artists a ON a.norm=n.artist_key
-        WHERE ${ARTIST_ELIGIBLE}
-        ORDER BY n.latest DESC, a.norm LIMIT 1`).get(at - 30 * DAY, at);
+        WHERE ${artistEligibility(database)}
+        ORDER BY n.latest DESC, a.norm LIMIT 1`).get(at - 30 * DAY, at, at, at);
   } catch (error) {
     if (/no such table/iu.test(String(error?.message))) return null;
     throw error;
@@ -217,7 +248,7 @@ export function nextArtistResearchSubject(database, { at = Date.now(), prioritiz
   if (prioritizeSearch) {
     for (const key of searchGrowthArtistPriorityKeys(database, { at, env })) {
       const row = database.prepare(`SELECT a.norm,a.name,a.mbid,a.genre,a.country FROM artists a
-        WHERE ${ARTIST_ELIGIBLE} AND a.norm=? LIMIT 1`).get(at, key);
+        WHERE ${artistEligibility(database)} AND a.norm=? LIMIT 1`).get(at, at, at, key);
       if (row && text(row.name)) return artistSubject(database, row);
     }
   }
@@ -227,17 +258,11 @@ export function nextArtistResearchSubject(database, { at = Date.now(), prioritiz
       (SELECT artist_key,COUNT(*) shows FROM tour_dates WHERE artist_key IS NOT NULL AND owner_id IS NULL
         GROUP BY artist_key ORDER BY shows DESC LIMIT 2000) t
       JOIN artists a ON a.norm=t.artist_key
-      WHERE ${ARTIST_ELIGIBLE}
-      ORDER BY t.shows DESC, a.rank_score DESC, a.norm LIMIT 1`).get(at);
+      WHERE ${artistEligibility(database)}
+      ORDER BY t.shows DESC, a.rank_score DESC, a.norm LIMIT 1`).get(at, at, at);
   const row = withShows || database.prepare(`SELECT a.norm,a.name,a.mbid,a.genre,a.country FROM artists a
-      WHERE ${ARTIST_ELIGIBLE} ORDER BY a.rank_score DESC, a.norm LIMIT 1`).get(at);
+      WHERE ${artistEligibility(database)} ORDER BY a.rank_score DESC, a.norm LIMIT 1`).get(at, at, at);
   return row && text(row.name) ? artistSubject(database, row) : null;
-}
-
-export function venueResearchKey(name, city, country) {
-  const venue = canonicalVenueKey(name);
-  if (!venue) return null;
-  return [venue, text(city, 80).toLowerCase(), text(country, 8).toLowerCase()].join("|");
 }
 
 // Rooms with the most shows on file first. A venue is identified by its name
@@ -251,13 +276,8 @@ export function nextVenueResearchSubject(database, { at = Date.now(), prioritize
     const selected = firstDueVenue(database, searchGrowthVenuePriorityRows(database, { at, env }), at);
     if (selected) return selected;
   }
-  const page = database.prepare(`SELECT MIN(venue) venue,MIN(venue_city) city,MIN(venue_region) region,
-      MIN(venue_country_code) country,MAX(venue_address_line1) address,COUNT(*) shows
-    FROM tour_dates WHERE venue IS NOT NULL AND trim(venue)<>'' AND owner_id IS NULL
-    GROUP BY lower(trim(venue)),lower(coalesce(venue_city,'')),lower(coalesce(venue_country_code,''))
-    ORDER BY shows DESC, lower(trim(MIN(venue))), lower(coalesce(MIN(venue_city),'')) LIMIT ? OFFSET ?`);
   for (let index = 0; index < VENUE_PAGES; index += 1) {
-    const rows = page.all(VENUE_PAGE, index * VENUE_PAGE);
+    const rows = catalogVenueResearchRows(database, { at, limit: VENUE_PAGE, offset: index * VENUE_PAGE });
     const subject = firstDueVenue(database, rows, at);
     if (subject || rows.length < VENUE_PAGE) return subject;
   }
@@ -267,7 +287,8 @@ export function nextVenueResearchSubject(database, { at = Date.now(), prioritize
 function firstDueVenue(database, rows, at) {
   for (const row of rows) {
     const key = venueResearchKey(row.venue, row.city, row.country);
-    if (!key || !dueRow(database, "venue", key, at)) continue;
+    if (!key || !dueRow(database, "venue", key, at)
+      || !readCatalogEntity(database, { type: "venue", key, at, venueRow: row.catalogSnapshot })?.eligible) continue;
     const shows = database.prepare(`SELECT artist FROM tour_dates WHERE lower(trim(venue))=lower(trim(?))
         AND lower(coalesce(venue_city,''))=lower(coalesce(?,'')) AND owner_id IS NULL ORDER BY date LIMIT 3`)
       .all(row.venue, row.city).map((show) => text(show.artist, 80)).filter(Boolean);
@@ -286,40 +307,63 @@ function firstDueVenue(database, rows, at) {
 }
 
 function claimSubject(database, subject, at) {
-  const token = randomUUID();
-  const identity = JSON.stringify(Object.fromEntries(Object.entries(subject).filter(([key]) => key !== "shows")));
-  database.prepare(`INSERT INTO catalog_research (entity_type,entity_key,identity,status,attempts,next_attempt_at,claim_token)
-      VALUES (?,?,?,'leased',1,?,?)
-    ON CONFLICT(entity_type,entity_key) DO UPDATE SET identity=excluded.identity,status='leased',
-      attempts=catalog_research.attempts+1,next_attempt_at=excluded.next_attempt_at,claim_token=excluded.claim_token
-    WHERE catalog_research.status<>'hidden'`)
-    .run(subject.type, subject.key, identity.slice(0, 4000), at + LEASE_MS, token);
-  const row = database.prepare("SELECT claim_token FROM catalog_research WHERE entity_type=? AND entity_key=?").get(subject.type, subject.key);
-  return row?.claim_token === token ? token : null;
+  try { return withImmediateWrite(database, () => {
+      const snapshot = readCatalogEntity(database, { type: subject.type, key: subject.key, at });
+      const token = claimCatalogWork(database, { snapshot, worker: "claude", actorLabel: "Claude research", at }).nonce;
+      const identity = JSON.stringify(Object.fromEntries(Object.entries(subject).filter(([key]) => key !== "shows")));
+      database.prepare(`INSERT INTO catalog_research (entity_type,entity_key,identity,status,attempts,next_attempt_at,claim_token)
+          VALUES (?,?,?,'leased',1,?,?)
+        ON CONFLICT(entity_type,entity_key) DO UPDATE SET identity=excluded.identity,status='leased',
+          attempts=catalog_research.attempts+1,next_attempt_at=excluded.next_attempt_at,claim_token=excluded.claim_token
+        WHERE catalog_research.status<>'hidden' AND catalog_research.next_attempt_at<=?`)
+        .run(subject.type, subject.key, identity.slice(0, 4000), at + LEASE_MS, token, at);
+      const row = database.prepare("SELECT claim_token FROM catalog_research WHERE entity_type=? AND entity_key=?").get(subject.type, subject.key);
+      if (row?.claim_token !== token) throw Object.assign(new Error("Catalog claim changed."), { status: 409 });
+      return token;
+  }); } catch (error) {
+    if ([409, 429].includes(error?.status)) return null;
+    throw error;
+  }
 }
 
 function finishSubject(database, subject, token, { status, findings = null, model = null, costMicroUsd = 0, reason = null, at }) {
   if (!STATUSES.has(status)) throw new TypeError("Unknown research status.");
-  const row = database.prepare(`SELECT failures,findings FROM catalog_research
-    WHERE entity_type=? AND entity_key=? AND claim_token=?`).get(subject.type, subject.key, token);
-  if (!row) return false;
-  const failed = status === "failed";
-  const failures = failed ? (Number(row.failures) || 0) + 1 : 0;
-  const nextAt = failed
-    ? at + FAILURE_BACKOFF_MS[Math.min(FAILURE_BACKOFF_MS.length - 1, failures - 1)]
-    : at + (REFRESH_MS[status] || REFRESH_MS.not_found);
-  // Only a new sourced result replaces the page's research. A failed, unsure
-  // or empty refresh keeps the last good result on the page.
-  const replaces = status === "found" && !!findings;
-  const keepsPrevious = !replaces && !!row.findings;
-  database.prepare(`UPDATE catalog_research SET status=?,failures=?,researched_at=CASE WHEN ? THEN ? ELSE researched_at END,
-      next_attempt_at=?,model=COALESCE(?,model),cost_micro_usd=cost_micro_usd+?,
-      findings=CASE WHEN ? THEN ? ELSE findings END,last_reason=?,claim_token=NULL
-    WHERE entity_type=? AND entity_key=? AND claim_token=?`)
-    .run(keepsPrevious ? "found" : status, failures, replaces || !keepsPrevious ? 1 : 0, at, nextAt, model,
-      Math.max(0, Math.round(costMicroUsd)), replaces ? 1 : 0, replaces ? JSON.stringify(findings) : null,
-      reason ? String(reason).slice(0, 120) : null, subject.type, subject.key, token);
-  return true;
+  try { return withImmediateWrite(database, () => {
+      const snapshot = readCatalogEntity(database, { type: subject.type, key: subject.key, at });
+      if (!snapshot) return false;
+      assertCatalogClaim(database, { type: subject.type, key: subject.key, nonce: token, worker: "claude", snapshot, at });
+      const row = database.prepare(`SELECT failures,findings FROM catalog_research
+        WHERE entity_type=? AND entity_key=? AND claim_token=?`).get(subject.type, subject.key, token);
+      if (!row) return false;
+      const failed = status === "failed";
+      const failures = failed ? (Number(row.failures) || 0) + 1 : 0;
+      const nextAt = failed
+        ? at + FAILURE_BACKOFF_MS[Math.min(FAILURE_BACKOFF_MS.length - 1, failures - 1)]
+        : at + (REFRESH_MS[status] || REFRESH_MS.not_found);
+      // Only a new sourced result replaces the page's research. A failed, unsure
+      // or empty refresh keeps the last good result on the page.
+      const replaces = status === "found" && !!findings;
+      const keepsPrevious = !replaces && !!row.findings;
+      const changed = database.prepare(`UPDATE catalog_research SET status=?,failures=?,researched_at=CASE WHEN ? THEN ? ELSE researched_at END,
+          next_attempt_at=?,model=COALESCE(?,model),cost_micro_usd=cost_micro_usd+?,
+          findings=CASE WHEN ? THEN ? ELSE findings END,last_reason=?,claim_token=NULL
+        WHERE entity_type=? AND entity_key=? AND claim_token=?`)
+        .run(keepsPrevious ? "found" : status, failures, replaces || !keepsPrevious ? 1 : 0, at, nextAt, model,
+          Math.max(0, Math.round(costMicroUsd)), replaces ? 1 : 0,
+          replaces ? JSON.stringify({ ...findings, identityHash: snapshot.identityHash }) : null,
+          reason ? String(reason).slice(0, 120) : null, subject.type, subject.key, token).changes;
+      if (!changed) return false;
+      if (replaces) bumpCatalogRevision(database, subject.type, subject.key);
+      finishCatalogWork(database, { type: subject.type, key: subject.key, nonce: token,
+        status: failed ? "failed" : "completed", committed: replaces, at, nextAttemptAt: nextAt });
+      catalogAudit(database, { actorType: "claude", actorLabel: "Claude research", action: replaces ? "committed" : status,
+        type: subject.type, key: subject.key, priorHash: snapshot.valueHash,
+        nextHash: readCatalogEntity(database, { type: subject.type, key: subject.key, at }).valueHash, at });
+      return true;
+  }); } catch (error) {
+    if (error?.status === 409) return false;
+    throw error;
+  }
 }
 
 // Researches up to `maxItems` pages. Returns what happened, for logs and tests.
@@ -335,7 +379,7 @@ export async function runCatalogResearchPass({
   const outcome = { researched: 0, published: 0, stopped: null };
   if (!catalogResearchConfigured(env)) return { ...outcome, stopped: "not_configured" };
   const control = readCatalogKnowledgeControl(database, { env, at: now() });
-  if (control?.mode === "paused") return { ...outcome, stopped: "paused" };
+  if (control?.mode === "paused" || catalogControl(database).paused) return { ...outcome, stopped: "paused" };
   pruneSpendReceipts(database, now());
   const cap = catalogResearchDailyBudgetMicroUsd(env);
   const monthlyCap = catalogResearchMonthlyBudgetMicroUsd(env);
@@ -371,6 +415,8 @@ export async function runCatalogResearchPass({
     saveNextType(database, subject.type === "artist" ? "venue" : "artist");
     const reserveRequest = (receiptToken, reserveMicroUsd, countRun) => {
       const requestAt = now();
+      assertCatalogClaim(database, { type: subject.type, key: subject.key, nonce: token, worker: "claude",
+        snapshot: readCatalogEntity(database, { type: subject.type, key: subject.key, at: requestAt }), at: requestAt });
       return admitClaudeSpend(database, { env, at: requestAt, reserveMicroUsd,
         dailyCapMicroUsd: cap, monthlyCapMicroUsd: monthlyCap,
         readDailySpendMicroUsd: () => readBudget(database, requestAt).spentMicroUsd,
@@ -382,14 +428,21 @@ export async function runCatalogResearchPass({
       });
     };
     const initialAdmission = reserveRequest(token, RUN_RESERVE_MICRO_USD, true);
-    if (!initialAdmission.ok) return { ...outcome, stopped: initialAdmission.reason };
+    if (!initialAdmission.ok) {
+      finishSubject(database, subject, token, { status: "failed", reason: "research_budget", at: now() });
+      return { ...outcome, stopped: initialAdmission.reason };
+    }
     let result;
     try {
       result = await research(subject, { apiKey: String(env.ANTHROPIC_API_KEY).trim(), model, fetchImpl, signal,
         budgetMicroUsd: Math.max(0, Math.min(cap - budget.spentMicroUsd, monthLeft, ceilingLeft)),
         requestReserveMicroUsd: RUN_RESERVE_MICRO_USD,
         admitRequest: ({ turn, reserveMicroUsd }) => {
-          if (turn === 0) return token;
+          if (turn === 0) {
+            assertCatalogClaim(database, { type: subject.type, key: subject.key, nonce: token, worker: "claude",
+              snapshot: readCatalogEntity(database, { type: subject.type, key: subject.key, at: now() }), at: now() });
+            return token;
+          }
           const admission = reserveRequest(randomUUID(), reserveMicroUsd, false);
           if (!admission.ok) throw Object.assign(new Error("Research allowance cannot cover another request."), {
             code: "research_budget", budgetReason: admission.reason, accountingUncertain: false,
@@ -428,7 +481,7 @@ export async function runCatalogResearchPass({
       searchedUrls: result.searchedUrls,
     });
     const status = checked.ok ? "found" : checked.reason === "not_found" ? "not_found" : "unsure";
-    finishSubject(database, subject, token, {
+    const committed = finishSubject(database, subject, token, {
       status,
       findings: checked.ok ? checked.record : null,
       model: result.model,
@@ -436,35 +489,19 @@ export async function runCatalogResearchPass({
       reason: checked.ok ? null : checked.reason,
       at: now(),
     });
-    if (checked.ok) outcome.published += 1;
+    if (checked.ok && committed) outcome.published += 1;
     budget = readBudget(database, now());
     saveBudget(database, {
       ...budget,
-      published: budget.published + (checked.ok && budget.utcDay === utcDay(at) ? 1 : 0),
+      published: budget.published + (checked.ok && committed && budget.utcDay === utcDay(at) ? 1 : 0),
       lastRunAt: now(),
     });
   }
   return outcome;
 }
 
-export function readCatalogResearch(database, { type, key, city = null }) {
-  if (type === "artist") {
-    const row = database.prepare(`SELECT findings,researched_at FROM catalog_research
-      WHERE entity_type='artist' AND entity_key=? AND status='found'`).get(String(key || ""));
-    return row ? publicCatalogResearch("artist", safeJson(row.findings), { researchedAt: row.researched_at }) : null;
-  }
-  const venue = canonicalVenueKey(key);
-  if (!venue) return null;
-  const rows = database.prepare(`SELECT entity_key,findings,researched_at FROM catalog_research
-    WHERE entity_type='venue' AND status='found' AND entity_key>=? AND entity_key<? LIMIT 20`)
-    .all(`${venue}|`, `${venue}|￿`);
-  const wantedCity = text(city, 80).toLowerCase();
-  // With a city, only that room's research. Without one, only when the name
-  // is unambiguous.
-  const row = wantedCity
-    ? rows.find((entry) => entry.entity_key.split("|")[1] === wantedCity)
-    : rows.length === 1 ? rows[0] : null;
-  return row ? publicCatalogResearch("venue", safeJson(row.findings), { researchedAt: row.researched_at }) : null;
+export function readCatalogResearch(database, options) {
+  return readPublicCatalogResearch(database, options);
 }
 
 function safeJson(value) {
@@ -473,9 +510,16 @@ function safeJson(value) {
 }
 
 export function hideCatalogResearch(database, { type, key, at = Date.now() }) {
-  const changed = database.prepare(`UPDATE catalog_research SET status='hidden',claim_token=NULL,next_attempt_at=?
-    WHERE entity_type=? AND entity_key=?`).run(at, type, key).changes;
-  return Number(changed || 0) > 0;
+  return withImmediateWrite(database, () => {
+    const changed = database.prepare(`UPDATE catalog_research SET status='hidden',claim_token=NULL,next_attempt_at=?
+      WHERE entity_type=? AND entity_key=?`).run(at, type, key).changes;
+    if (changed) {
+      bumpCatalogRevision(database, type, key);
+      database.prepare("UPDATE catalog_work_items SET status='quarantined',lease_until=0,updated_at=? WHERE entity_type=? AND entity_key=?")
+        .run(at, type, key);
+    }
+    return Number(changed || 0) > 0;
+  });
 }
 
 export function collectCatalogResearchStatus(database, { env = process.env, at = Date.now() } = {}) {

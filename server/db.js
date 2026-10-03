@@ -34,6 +34,7 @@ import { ensureShowSchema } from "./features/shows/showSchema.js";
 import { ensureLoungeSchema } from "./features/lounges/loungeSchema.js";
 import { ensureCitySchema } from "./features/cities/citySchema.js";
 import { ensureSharedEmailSchema } from "./features/accountOnboarding/sharedEmailSchema.js";
+import { ensureSignupReservationsSchema } from "./features/accountOnboarding/signupReservations.js";
 import { ensureAccountLifecycleSchema } from "./features/accountLifecycle/accountLifecycleSchema.js";
 import { ensureMemberBadgeSchema, memberBadgeFor } from "./memberBadges.js";
 import { ensureErrorAlertSchema } from "./errorAlertDelivery.js";
@@ -43,6 +44,9 @@ import { ensureCommentMutationSchema } from "./commentMutationSchema.js";
 import { ensureSocialReactionSchema } from "./features/socialReactions/socialReactions.js";
 import { ensureArtistAccountSchema, pendingArtistSignupIntent } from "./features/artistAccounts/artistAccountPolicy.js";
 import { ensureMediaApiSchema } from "./features/mediaApi/mediaApiPolicy.js";
+import { ensureClipIndexSchema } from "./features/clips/clipIndex.js";
+import { ensureApiGrantSchema } from "./features/apiGrants/apiGrantService.js";
+import { ensureCatalogWorkSchema } from "./features/catalogResearch/catalogWorkQueue.js";
 
 export const artistSearchKey = (value) => String(value || "")
   .normalize("NFKD")
@@ -55,11 +59,12 @@ export const DATABASE_DIRECTORY = prepareDataDirectory({ fallbackDir: join(HERE,
 export const DATABASE_PATH = join(DATABASE_DIRECTORY, "pit.db");
 
 export const db = new DatabaseSync(DATABASE_PATH);
+// The recovery read can contend too; configure waiting before the first query.
+db.exec("PRAGMA busy_timeout = 5000;");
 assertDatabaseRecoveryReady(db);
 registerPitSqliteFunctions(db);
 
 db.exec(`
-  PRAGMA busy_timeout = 5000;
   PRAGMA journal_mode = WAL;
   PRAGMA foreign_keys = ON;
 `);
@@ -2172,6 +2177,11 @@ ensureCommentMutationSchema(db);
 ensureSocialReactionSchema(db);
 ensureLineupSchema(db);
 ensureMediaApiSchema(db);
+// Install after post_media capacity migrations, which may rebuild that table.
+// Existing catalogs are prepared explicitly, never scanned during startup.
+ensureClipIndexSchema(db);
+ensureApiGrantSchema(db);
+ensureCatalogWorkSchema(db);
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_fcm_client_mutation ON fan_club_messages(user_id, client_mutation_id) WHERE client_mutation_id IS NOT NULL");
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_lounge_client_mutation ON lounge_messages(user_id, client_mutation_id) WHERE client_mutation_id IS NOT NULL");
 // Backfill only a single exact normalized display-name match. Ambiguous and
@@ -2232,6 +2242,11 @@ db.exec("CREATE INDEX IF NOT EXISTS idx_follows_followee_follower ON follows(fol
 db.exec("CREATE INDEX IF NOT EXISTS idx_posts_landing_media ON posts(landing_showcase, photos_public, removed, kind, created_at DESC, id DESC)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_posts_discover_photos ON posts(created_at DESC, id DESC) WHERE removed=0 AND photos_public=1");
 db.exec("CREATE INDEX IF NOT EXISTS idx_posts_venue_visibility ON posts(venue_key, removed, created_at DESC) WHERE venue_key IS NOT NULL");
+// Directory evidence includes both substantive text and ready media. The
+// narrower review/archive indexes below exclude some of that evidence and
+// cannot support its two independent canonical/legacy identity probes.
+db.exec("CREATE INDEX IF NOT EXISTS idx_posts_public_artist_evidence ON posts(artist_key) WHERE removed=0");
+db.exec("CREATE INDEX IF NOT EXISTS idx_posts_public_artist_name_evidence ON posts(lower(artist)) WHERE removed=0 AND artist_key IS NULL");
 // Artist profile Top Reviews scans only substantive, live review posts. Keep
 // both canonical-key and legacy-name reads bounded without bloating the general
 // feed indexes with rows this projection can never return.
@@ -2464,6 +2479,7 @@ if (!db.prepare("SELECT 1 FROM app_meta WHERE key=?").get(isoDateMigration)) {
 }
 
 ensureSharedEmailSchema(db);
+ensureSignupReservationsSchema(db);
 ensureAccountLifecycleSchema(db);
 ensureMemberBadgeSchema(db);
 
