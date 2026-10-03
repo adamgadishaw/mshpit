@@ -157,6 +157,13 @@ async function scenario(browser, origin, width, mode = "same") {
     await composer.getByLabel("Photo source URL", { exact: true }).fill("https://example.com/synthetic-photo-rights");
     await composer.getByLabel("Photo credit", { exact: true }).fill("CC0 synthetic fixture");
     const save = composer.getByRole("button", { name: "Save self-written news draft", exact: true });
+    const article = composer.getByLabel("Self-written news article", { exact: true });
+    await save.click({ trial: true });
+    for (const count of [499, 500, 750, 1001]) {
+      await article.fill(Array.from({ length: count }, (_, index) => `album${index + 1}`).join(" "));
+      assert.equal(await save.isDisabled(), count < 500, `${count}-word UI boundary`);
+    }
+    await article.fill(Array.from({ length: 500 }, (_, index) => `album${index + 1}`).join(" "));
     await save.dblclick();
     await page.getByRole("alert").waitFor();
     assert.equal(state.saveAttempts, 1, "Duplicate save clicks are fenced while the first request is in flight");
@@ -189,6 +196,7 @@ async function scenario(browser, origin, width, mode = "same") {
     assert.equal(await page.getByTestId("self-written-news-composer").count(), 1, "Back must not discard an unsaved composer without confirmation");
     await page.getByRole("button", { name: `Publish ${state.draft.headline}`, exact: true }).click();
     await page.getByText("PUBLISHED", { exact: true }).waitFor();
+    assert.equal(state.draft.wordCount, 500, "the UI publishes a minimum-length synthetic article");
     assert.deepEqual(state.reports, []);
     const expectedLostResponseError = "Failed to load resource: the server responded with a status of 503 (Service Unavailable)";
     assert.equal(state.errors.filter((message) => message === expectedLostResponseError).length, 1);
