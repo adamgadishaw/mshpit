@@ -104,6 +104,8 @@ async function main() {
     stage = "owner-selection-and-pairing";
     for (const record of records) {
       await page.getByRole("button", { name: `Browse ${record.type} records`, exact: true }).click();
+      await page.getByLabel("Exact catalog key", { exact: true }).fill(record.key);
+      await page.getByRole("button", { name: `Load exact ${record.type} record`, exact: true }).click();
       await page.getByRole("button", { name: `Select ${record.name}`, exact: true }).click();
     }
     const pairResponse = page.waitForResponse(response => response.url().endsWith("/api/moderation/catalog-grants/pairing") && response.request().method() === "POST");

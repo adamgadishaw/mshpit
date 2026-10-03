@@ -15,6 +15,7 @@ export default function CatalogLivePilotPanel({ accountId }) {
   const [proposalId, setProposalId] = useState(""), [proposal, setProposal] = useState(null), [page, setPage] = useState(null);
   const [grantId, setGrantId] = useState(""), [busy, setBusy] = useState(false), [message, setMessage] = useState("");
   const [browse, setBrowse] = useState(null);
+  const [lookupKey, setLookupKey] = useState("");
   const load = async (type, cursor) => { const result = await service.inventory(type, cursor); setRows(result.items); setBrowse({ type, cursor: result.nextCursor }); };
   const run = async work => { if (busy) return; setBusy(true); setMessage(""); try { await work(); } catch (error) { setMessage(error.message); } finally { setBusy(false); } };
   const choose = row => setSelected(current => current.some(item => item.type === row.type && item.key === row.key)
@@ -31,6 +32,9 @@ export default function CatalogLivePilotPanel({ accountId }) {
     <Text style={styles.copy}>Select up to six records for this trial. Review each proposed change before its first publication.</Text>
     <View style={styles.row}>{["artist", "venue", "event"].map(type => <Button key={type} small title={`Browse ${type} records`} disabled={busy}
       onPress={() => run(() => load(type))} />)}</View>
+    <TextInput accessibilityLabel="Exact catalog key" value={lookupKey} onChangeText={setLookupKey} placeholder={`Exact ${browse?.type || "artist"} key`} style={styles.input} />
+    <Button small title={`Load exact ${browse?.type || "artist"} record`} disabled={busy || !lookupKey.trim()}
+      onPress={() => run(async () => { const type = browse?.type || "artist"; setRows([await service.read(type, lookupKey.trim())]); setBrowse({ type, cursor: null }); })} />
     {rows.map(row => <View key={`${row.type}:${row.key}`} style={styles.row}>
       <Text selectable style={styles.copy}>{row.identity.name}{row.eligible ? "" : " · Preserve existing content"}</Text>
       <Button small variant="secondary" title={selected.some(item => item.type === row.type && item.key === row.key) ? `Remove ${row.identity.name}` : `Select ${row.identity.name}`} onPress={() => choose(row)} />
