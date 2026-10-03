@@ -42,7 +42,7 @@ const MANUAL_HEADLINE_MAX = 180;
 const MANUAL_SUMMARY_MAX = 700;
 const MANUAL_BODY_MAX = 60_000;
 const MANUAL_SOURCE_MAX = 10;
-const MANUAL_WORD_MINIMUM = 1_000;
+const MANUAL_WORD_MINIMUM = 500;
 function positiveNumber(value, fallback) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;

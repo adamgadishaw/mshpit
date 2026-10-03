@@ -126,7 +126,7 @@ export default function SelfWrittenNewsComposer({ accountId, busy, saving = fals
     <Text selectable style={styles.help}>Write the article yourself. This route does not call Anthropic, is kept separate from generated-story limits, and requires a verified photo and provenance.</Text>
     <Field label="Headline"><TextInput accessibilityLabel="Self-written news headline" style={styles.input} maxLength={300} value={headline} onChangeText={update("headline")} placeholder="A clear, specific headline" placeholderTextColor={colors.textFaint} /></Field>
     <Field label="Summary" help="The short hook shown on cards and in search previews."><TextInput accessibilityLabel="Self-written news summary" style={styles.input} maxLength={1200} value={summary} onChangeText={update("summary")} placeholder="Why this matters now" placeholderTextColor={colors.textFaint} /></Field>
-    <Field label="Article" help={`${words} words. At least 1,000 words are required.`}><TextInput accessibilityLabel="Self-written news article" style={[styles.input, styles.articleInput]} multiline maxLength={60000} value={body} onChangeText={update("body")} placeholder="Write the reported story here..." placeholderTextColor={colors.textFaint} /></Field>
+    <Field label="Article" help={`${words} words. At least 500 words are required. Aim for 500–750 for routine news; histories and deep breakdowns can be 1,000 words or more.`}><TextInput accessibilityLabel="Self-written news article" style={[styles.input, styles.articleInput]} multiline maxLength={60000} value={body} onChangeText={update("body")} placeholder="Write the reported story here..." placeholderTextColor={colors.textFaint} /></Field>
     <Field label="Category"><Choice label="Article category" value={category} onChange={update("category")} options={[
       { value: "release", label: "New music" }, { value: "tour", label: "Tours" }, { value: "festival", label: "Festivals" },
       { value: "lineup", label: "Lineups" }, { value: "awards", label: "Awards" }, { value: "charts", label: "Charts" },
@@ -153,7 +153,7 @@ export default function SelfWrittenNewsComposer({ accountId, busy, saving = fals
       <TextInput accessibilityLabel="Photo credit" style={styles.input} maxLength={240} value={photoCredit} onChangeText={update("photoCredit")} placeholder="Optional credit or license" placeholderTextColor={colors.textFaint} />
       {photoError ? <Text selectable style={styles.error}>{photoError}</Text> : null}
     </View>
-    <Button small title="Save self-written draft" disabled={disabled || uploading || words < 1000 || !photo?.assetId || !headline.trim() || !summary.trim() || !sourcesReady || !photoName.trim() || !photoUrl.trim()} onPress={save} accessibilityLabel="Save self-written news draft" />
+    <Button small title="Save self-written draft" disabled={disabled || uploading || words < 500 || !photo?.assetId || !headline.trim() || !summary.trim() || !sourcesReady || !photoName.trim() || !photoUrl.trim()} onPress={save} accessibilityLabel="Save self-written news draft" />
   </View>;
 }
 

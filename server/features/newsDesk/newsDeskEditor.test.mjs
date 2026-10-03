@@ -10,7 +10,7 @@ const { db, q } = await import("../../db.js");
 const { ApiError } = await import("../../errors.js");
 const { createNewsDeskEditor, articleTitle } = await import("./newsDeskEditor.js");
 const { newsDeskEditorRoutes } = await import("./newsDeskEditorRoutes.js");
-const { ensureNewsDeskSchema } = await import("./newsDeskService.js");
+const { ensureNewsDeskSchema, normalizeSelfWrittenStory } = await import("./newsDeskService.js");
 ensureNewsDeskSchema(db);
 after(() => { db.close(); rmSync(directory, { recursive: true, force: true }); });
 
@@ -181,4 +181,24 @@ test("self-written save keys replay one draft and reject a different payload", (
   const receipt = db.prepare("SELECT draft_id FROM news_editor_save_receipts WHERE actor_id=? AND idempotency_key=?").get("news_editor_account", input.idempotencyKey);
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM news_drafts WHERE id=?").get(receipt.draft_id).n, 1);
   assert.throws(() => instance.writeSelfWritten({ ...input, summary: "A different article under the same stable key." }), codeOf("CONFLICT"));
+});
+
+
+test("self-written minimum is 500 words; routine guidance is not an upper bound", () => {
+  const value = { headline: "Synthetic band announces a new studio album",
+    summary: "Independent music reports confirm the new album and its release plans.",
+    sources: [{ kind: "article", name: "NME", url: "https://www.nme.com/news/minimum-fixture" },
+      { kind: "article", name: "Stereogum", url: "https://www.stereogum.com/minimum-fixture" },
+      { kind: "article", name: "Pitchfork", url: "https://pitchfork.com/news/minimum-fixture" }],
+    photo: { assetId: "ma_minimum_fixture", name: "Synthetic photographer", url: "https://example.test/photo-rights" } };
+  const withWords = count => ({ ...value, body: Array.from({ length: count }, (_, index) => `album${index + 1}`).join(" ") });
+  assert.throws(() => normalizeSelfWrittenStory(withWords(499)), /at least 500 words/u);
+  const { instance, calls } = editor();
+  for (const count of [500, 750, 1001]) {
+    assert.equal(normalizeSelfWrittenStory(withWords(count)).wordCount, count);
+    assert.equal(instance.writeSelfWritten({ ...withWords(count), actorId: "news_editor_account" }).wordCount, count);
+  }
+  assert.throws(() => normalizeSelfWrittenStory({ ...withWords(500), sources: value.sources.slice(0, 2) }), /at least 3/u);
+  assert.throws(() => normalizeSelfWrittenStory({ ...withWords(500), sources: Array.from({ length: 11 }, (_, index) => ({ ...value.sources[index % 3], url: value.sources[index % 3].url + index })) }), /article sources/u);
+  assert.equal(calls.length, 0, "manual word limits do not invoke generation");
 });
