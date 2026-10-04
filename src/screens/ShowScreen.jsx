@@ -1,3 +1,4 @@
+import CatalogText from "../features/catalogEditor/CatalogText";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import LineupDetails from "../components/LineupDetails";
 import { postHeadline } from "../domain/lineup.mjs";
@@ -94,6 +95,7 @@ function PublicEventSnapshotPanel({ event, status, onRetry, onOpenVenue, artistI
           </View>
         </View>
       </View>
+      <CatalogText type="event" entityKey={event.id} />
       {!cancelled && event.ticketUrl ? <Pressable style={styles.ticketsBtn} onPress={() => { void openTicketLink(event.ticketUrl); }} accessibilityRole="link" accessibilityLabel={`Get tickets for ${event.name} at ${event.venue}`}>
         <Text style={styles.ticketsTxt}>Get tickets</Text>
       </Pressable> : null}
@@ -587,6 +589,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
         accessibilityLabel={`Refresh ${eventTitle} show page`}
       >
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+        <CatalogText type="event" entityKey={publicEventId || tourDateId} />
         {/* Ticket-style hero: this is what makes a NIGHT read differently from
             a venue. Artist headline, then a perforated stub strip carrying the
             room + the date, like the ticket you'd have kept. */}

@@ -14,6 +14,7 @@ import { archiveShowKey } from "../artistArchive/artistArchiveKeys.js";
 import { createArtistMemorialRepository } from "../artistMemorials/artistMemorialRepository.js";
 import { createArtistMemorialService } from "../artistMemorials/artistMemorialService.js";
 import { ensureLegacyMediaFinalizeSchema } from "../../mediaLegacyFinalize.js";
+import { createCatalogEditorService } from "../catalogEditor/catalogEditorService.js";
 
 const MEMORIAL_MBID = "42345678-1234-4234-8234-123456789abc";
 
@@ -42,6 +43,37 @@ const {
 } = await import("./sitemapService.js");
 const { seoHttpPlan } = await import("../../seo.js");
 const { ensureNewsDeskSchema } = await import("../newsDesk/newsDeskService.js");
+
+test("sourced catalog text qualifies empty artists at the existing threshold and tracks identity, hide and lastmod", () => {
+  const key = "sitemap catalog editorial fixture", at = Date.parse("2026-10-04T02:00:00Z");
+  db.prepare(`INSERT INTO artists(norm,name,public_slug,bio,mbid,source,created_at,updated_at)
+    VALUES(?,?,?,NULL,?,'musicbrainz',?,?)`).run(key, "Sitemap Catalog Editorial Fixture", "sitemap-catalog-editorial-fixture", MEMORIAL_MBID, at - 1000, at - 1000);
+  const editor = createCatalogEditorService({ database: db, now: () => at });
+  const entry = () => artistSitemapEntries(db, { now: at }).find(row => row.artistKey === key);
+  const write = (summary, hidden = false) => {
+    const current = editor.read({ type: "artist", key });
+    return editor.save({ actorId: "synthetic-editor", idempotencyKey: `seo-catalog-save-${current.revision}`, draft: {
+      type: "artist", key, expectedRevision: current.revision, expectedHash: current.expectedHash,
+      summary, hidden, sources: [{ label: "Official source", url: "https://www.mshpit.com/about" }], reason: "Synthetic sitemap evidence",
+    } });
+  };
+  // The audit actor must be a real fixture user under the production FK schema.
+  addUser("synthetic-editor", "syntheticeditor");
+  assert.equal(entry(), undefined);
+  write("Brief context."); assert.equal(entry(), undefined, "short text does not lower existing SEO thresholds");
+  const summary = "This sourced artist context explains the public catalog identity and its music history for readers, with an explicit source citation.";
+  write(summary); assert.equal(entry().lastmod, at);
+  const docs = createPublicDocumentService({ database: db, origin: "https://www.example.com" });
+  const page = docs.artistDocument({ artistKey: key, at });
+  assert.equal(page.artist.bio, "", "the existing empty biography display is retained");
+  assert.equal(db.prepare("SELECT bio FROM artists WHERE norm=?").get(key).bio, null, "provider biography is not overwritten");
+  assert.match(page.description, /sourced artist context/);
+  assert.match(docs.render(page), /data-catalog-text="true"/);
+  assert.ok(page.jsonLd.some(node => node.dateModified === new Date(at).toISOString()));
+  write(summary, true); assert.equal(entry(), undefined);
+  write(summary); db.prepare("UPDATE artists SET mbid=? WHERE norm=?").run("52345678-1234-4234-8234-123456789abc", key);
+  assert.equal(entry(), undefined, "replacement identity cannot inherit prior text");
+});
 
 test("a ticket URL alone is not indexable event evidence", () => {
   assert.equal(hasIndexableEventEvidence({

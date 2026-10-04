@@ -92,6 +92,18 @@ export function staffFixture(url, method = "GET") {
   };
   return fixtures[url.pathname] || null;
 }
+const bootstrapStaffPaths = ["/api/admin/moderation", "/api/admin/artist-requests"];
+const unrelatedCatalogStaffRead = call => /^\/api\/(?:admin|moderation)(?:\/|$)/.test(call.path)
+  && !call.path.startsWith("/api/admin/catalog-editor/");
+export function assertCatalogEditorRequestIsolation(calls) {
+  const unrelated = calls.filter(unrelatedCatalogStaffRead);
+  // absorbServerUser already loads these two queues at sign-in. Retain the
+  // complete ledger and account for them explicitly; do not reset it at entry.
+  assert.deepEqual(unrelated.filter(call => call.phase === "bootstrap").map(call => `${call.method} ${call.path}`).sort(),
+    bootstrapStaffPaths.map(path => `GET ${path}`).sort(), "Only the two existing sign-in queue reads may precede editor entry.");
+  assert.deepEqual(unrelated.filter(call => call.phase !== "bootstrap"), [],
+    "Opening and using the standalone catalog editor must not load unrelated private staff data.");
+}
 async function localServer() {
   const directory = resolve(root, process.env.PIT_NAVIGATION_BROWSER_DIST || "dist");
   const htmlPath = join(directory, "index.html");
@@ -111,9 +123,15 @@ async function localServer() {
   await new Promise((done, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", done); });
   return { server, origin: `http://127.0.0.1:${server.address().port}` };
 }
+function catalogEditorFixture(type) {
+  return { type, key: `${type}-fixture`, identity: { name: `Fixture ${type}`, city: "Toronto", country: "CA" },
+    protectedFacts: { venue: "Provider hall", date: "2027-05-01" }, protectedReason: null, revision: 0,
+    identityHash: "a".repeat(64), expectedHash: "b".repeat(64), content: null, identityCurrent: true,
+    missingFields: ["sourced summary"] };
+}
 async function scenario(browser, origin, width, kind) {
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, serviceWorkers: "block" });
-  const state = { mode: "maintenance", calls: [], errors: [], reports: [], gets: 0, posts: 0, release: null, closing: false };
+  const state = { mode: "maintenance", phase: "bootstrap", calls: [], errors: [], reports: [], gets: 0, posts: 0, release: null, closing: false };
   await context.addInitScript(({ origin, user }) => {
     if (location.origin !== origin) return;
     localStorage.setItem("pit_theme", "stage");
@@ -126,8 +144,34 @@ async function scenario(browser, origin, width, kind) {
       if (url.origin !== origin) return await route.abort();
       if (!url.pathname.startsWith("/api/")) return await route.continue();
       const method = request.method();
-      state.calls.push({ path: url.pathname, method });
+      const call = { path: url.pathname, method, phase: state.phase };
+      state.calls.push(call);
+      if (kind === "catalog-editor" && state.phase === "catalog-editor") {
+        assert.equal(unrelatedCatalogStaffRead(call), false, `Unexpected private staff request after editor entry: ${url.pathname}`);
+      }
       if (url.pathname === "/api/client-errors") state.reports.push(request.postDataJSON());
+      if (url.pathname.startsWith("/api/admin/catalog-editor/")) {
+        let body;
+        if (url.pathname.endsWith("/prepare")) {
+          assert.equal(method, "POST");
+          body = { results: request.postDataJSON().entries.map((draft, index) => ({ index, ok: true, draft,
+            current: catalogEditorFixture(draft.type), payloadHash: `fixture-payload-${index}` })) };
+        } else if (url.pathname.endsWith("/save")) {
+          assert.equal(method, "POST");
+          const { draft, idempotencyKey } = request.postDataJSON();
+          assert.ok(idempotencyKey.length >= 16); assert.equal(draft.expectedRevision, 0);
+          state.posts++;
+          body = { ok: true, revision: 1, auditId: `fixture-receipt-${draft.type}`, replayed: false,
+            saved: { ...catalogEditorFixture(draft.type), revision: 1, content: { summary: draft.summary, sources: draft.sources } } };
+        } else {
+          assert.equal(method, "GET");
+          const parts = url.pathname.split("/");
+          const row = catalogEditorFixture(parts[4]);
+          body = parts.length === 5 ? { items: [row], nextCursor: null } : row;
+        }
+        return await route.fulfill({ contentType: "application/json", body: JSON.stringify(body) });
+      }
+
       if (url.pathname === "/api/moderation/news-desk/live") {
         assert.equal(method, "POST");
         assert.deepEqual(request.postDataJSON(), { title: "2026 MTV VMAs", keywords: "VMAs, Video Music Awards", hours: 4 });
@@ -205,8 +249,40 @@ async function scenario(browser, origin, width, kind) {
     state.errors.push(`${message.text()} (${message.location().url})`);
   });
   try {
+    const bootstrapStaffResponses = kind === "catalog-editor" ? Promise.all(bootstrapStaffPaths.map(path =>
+      page.waitForResponse(response => new URL(response.url()).pathname === path && response.request().method() === "GET" && response.status() === 200))) : null;
     await page.goto(origin + "/feed", { waitUntil: "domcontentloaded" });
     await page.getByRole("button", { name: "Menu", exact: true }).click();
+    if (kind === "catalog-editor") {
+      await page.getByRole("button", { name: "Settings. Appearance, privacy, data, and account controls", exact: true }).click();
+      await bootstrapStaffResponses;
+      // Start before the click so lazy mounting and all editor requests count.
+      state.phase = "catalog-editor";
+      await page.getByRole("button", { name: /Catalog editor/ }).click();
+      await page.setViewportSize({ width, height: 900 });
+      await page.getByText("Fill missing page text", { exact: true }).waitFor();
+      for (const type of ["artist", "venue", "event"]) {
+        await page.getByRole("button", { name: `${type[0].toUpperCase()}${type.slice(1)}s`, exact: true }).click();
+        await page.getByRole("button", { name: "Find pages", exact: true }).click();
+        await page.getByRole("button", { name: "Edit text", exact: true }).click();
+        await page.getByLabel("Sourced page text", { exact: true }).fill(`Sourced ${type} context for this isolated browser fixture.`);
+        await page.getByLabel("Named source URLs", { exact: true }).fill("Official | https://official.example.com/context");
+        await page.getByLabel("Reason for catalog change", { exact: true }).fill("Fill missing context");
+        await page.getByRole("button", { name: "Add to batch", exact: true }).click();
+      }
+      await page.getByRole("button", { name: "Review prepared batch", exact: true }).click();
+      assert.equal(state.posts, 0, "Preparation must not publish any page.");
+      await page.getByRole("button", { name: "Confirm sources and publish", exact: true }).first().waitFor();
+      for (const type of ["artist", "venue", "event"]) {
+        await page.getByRole("button", { name: "Confirm sources and publish", exact: true }).first().click();
+        await page.getByText(`Saved revision 1 · receipt fixture-receipt-${type}`, { exact: true }).waitFor();
+      }
+      assert.equal(state.posts, 3);
+      assertCatalogEditorRequestIsolation(state.calls);
+      assert.deepEqual(state.errors, []); assert.deepEqual(state.reports, []);
+      console.log(JSON.stringify({ name: `catalog-editor-${width}`, passed: true, posts: state.posts }));
+      return;
+    }
     await page.getByRole("button", { name: "Newsroom. Write stories and run live coverage", exact: true }).click();
     await page.getByText("Newsroom", { exact: true }).first().waitFor();
     assert.equal(state.errors.some((error) => /appActive is not defined/i.test(error)), false,
@@ -329,8 +405,8 @@ export async function main() {
   let browser;
   try {
     browser = await chromium.launch({ headless: true, ...(process.env.PIT_BROWSER_EXECUTABLE ? { executablePath: process.env.PIT_BROWSER_EXECUTABLE } : {}) });
-    for (const width of [390, 1280]) for (const kind of ["actions", "load-retry", "action-retry", "access-loss"]) await scenario(browser, origin, width, kind);
-    console.log(JSON.stringify({ passed: 8, failed: 0, network: "isolated fixtures only" }));
+    for (const width of [390, 1280]) for (const kind of ["actions", "load-retry", "action-retry", "access-loss", "catalog-editor"]) await scenario(browser, origin, width, kind);
+    console.log(JSON.stringify({ passed: 10, failed: 0, network: "isolated fixtures only" }));
   } finally { await browser?.close(); await new Promise(done => server.close(done)); }
 }
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) main().catch(error => { console.error(error.message); process.exitCode = 1; });
