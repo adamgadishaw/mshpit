@@ -14,7 +14,7 @@ const path = "/api/moderation/catalog-maintenance";
 export const upkeepAdmin = Object.freeze({ ...navigationUser, role: "admin" });
 export const catalogExactVenueKey = "ticketmaster:rZ7HnEZaeot";
 export const catalogBrowserCases = [390, 1280].flatMap(width =>
-  ["actions", "load-retry", "action-retry", "access-loss", "catalog-editor", "catalog-exact-key", "catalog-queue"].map(kind => ({ width, kind })));
+  ["actions", "load-retry", "action-retry", "access-loss", "catalog-editor", "catalog-exact-key", "catalog-queue", "catalog-completion"].map(kind => ({ width, kind })));
 export function upkeepFixture(mode = "maintenance") {
   assert.ok(["maintenance", "catch_up", "paused"].includes(mode));
   const at = 1789488000000;
@@ -98,12 +98,12 @@ export function staffFixture(url, method = "GET") {
 const bootstrapStaffPaths = ["/api/admin/moderation", "/api/admin/artist-requests"];
 const unrelatedCatalogStaffRead = call => /^\/api\/(?:admin|moderation)(?:\/|$)/.test(call.path)
   && !call.path.startsWith("/api/admin/catalog-editor/");
-export function assertCatalogEditorRequestIsolation(calls) {
+export function assertCatalogEditorRequestIsolation(calls, { bootstrapCount = 1 } = {}) {
   const unrelated = calls.filter(unrelatedCatalogStaffRead);
   // absorbServerUser already loads these two queues at sign-in. Retain the
   // complete ledger and account for them explicitly; do not reset it at entry.
   assert.deepEqual(unrelated.filter(call => call.phase === "bootstrap").map(call => `${call.method} ${call.path}`).sort(),
-    bootstrapStaffPaths.map(path => `GET ${path}`).sort(), "Only the two existing sign-in queue reads may precede editor entry.");
+    Array.from({ length: bootstrapCount }, () => bootstrapStaffPaths.map(path => `GET ${path}`)).flat().sort(), "Only the two existing sign-in queue reads per bootstrap may precede editor entry.");
   assert.deepEqual(unrelated.filter(call => call.phase !== "bootstrap"), [],
     "Opening and using the standalone catalog editor must not load unrelated private staff data.");
 }
@@ -131,6 +131,12 @@ function catalogEditorFixture(type) {
     protectedFacts: { venue: "Provider hall", date: "2027-05-01" }, protectedReason: null, revision: 0,
     identityHash: "a".repeat(64), expectedHash: "b".repeat(64), content: null, identityCurrent: true,
     missingFields: ["sourced summary"] };
+}
+export function catalogCompletionFixture(type) {
+  assert.ok(["artist", "venue"].includes(type));
+  return { ...catalogEditorFixture(type), completion: { hash: (type === "artist" ? "c" : "d").repeat(64), identityStatus: "confirmed", textStatus: "draft_ready", photoStatus: "accepted", canDraft: true,
+    photo: { uri: "/fixture-catalog-photo.svg", creator: "Synthetic fixture", license: "CC0", sourcePage: "https://official.example.com/source" },
+    suggested: { summary: `Fixture ${type} has documented music history.`, sources: [{ label: "Official fixture", url: "https://official.example.com/source" }] }, note: "Synthetic accepted photo and sourced text." } };
 }
 export function catalogQueueFixture(type, cursor, query = "") {
   assert.ok(["artist", "venue", "event"].includes(type));
@@ -239,9 +245,9 @@ async function verifyExactCatalogSelection(page, state, width) {
 }
 
 async function scenario(browser, origin, width, kind) {
-  const catalogCase = ["catalog-editor", "catalog-exact-key", "catalog-queue"].includes(kind);
+  const catalogCase = ["catalog-editor", "catalog-exact-key", "catalog-queue", "catalog-completion"].includes(kind);
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, serviceWorkers: "block" });
-  const state = { mode: "maintenance", phase: "bootstrap", account: upkeepAdmin, calls: [], errors: [], reports: [], expected404: [], gets: 0, posts: 0, release: null, closing: false };
+  const state = { mode: "maintenance", phase: "bootstrap", account: upkeepAdmin, calls: [], errors: [], reports: [], expected404: [], gets: 0, posts: 0, release: null, closing: false, publicText: {} };
   await context.addInitScript(({ origin, user }) => {
     if (location.origin !== origin) return;
     localStorage.setItem("pit_theme", "stage");
@@ -252,6 +258,7 @@ async function scenario(browser, origin, width, kind) {
     const request = route.request(), url = new URL(request.url());
     try {
       if (url.origin !== origin) return await route.abort();
+      if (url.pathname === "/fixture-catalog-photo.svg") return await route.fulfill({ contentType: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="160" height="100"><rect width="160" height="100" fill="#369"/></svg>' });
       if (!url.pathname.startsWith("/api/")) return await route.continue();
       const method = request.method();
       const call = { path: url.pathname, method, phase: state.phase, expectedAccount: request.headers()["x-pit-expected-account"] };
@@ -260,7 +267,13 @@ async function scenario(browser, origin, width, kind) {
         assert.equal(unrelatedCatalogStaffRead(call), false, `Unexpected private staff request after editor entry: ${url.pathname}`);
       }
       if (url.pathname === "/api/client-errors") state.reports.push(request.postDataJSON());
+      if (url.pathname.startsWith("/api/catalog-text/")) {
+        assert.equal(method, "GET"); assert.equal(call.expectedAccount, state.account?.id);
+        const type = url.pathname.split("/")[3];
+        return await route.fulfill({ contentType: "application/json", body: JSON.stringify({ text: state.publicText[type] || null }) });
+      }
       if (url.pathname.startsWith("/api/admin/catalog-editor/")) {
+        assert.equal(call.expectedAccount, state.account?.id);
         if (kind === "catalog-queue") {
           assert.equal(method, "GET", "Queue browsing must not prepare or save text");
           assert.equal(call.expectedAccount, state.account?.id);
@@ -297,10 +310,11 @@ async function scenario(browser, origin, width, kind) {
           state.posts++;
           body = { ok: true, revision: 1, auditId: `fixture-receipt-${draft.type}`, replayed: false,
             saved: { ...catalogEditorFixture(draft.type), revision: 1, content: { summary: draft.summary, sources: draft.sources } } };
+          state.publicText[draft.type] = { summary: draft.summary, sources: draft.sources, revision: 1 };
         } else {
           assert.equal(method, "GET");
           const parts = url.pathname.split("/");
-          const row = catalogEditorFixture(parts[4]);
+          const row = url.searchParams.get("completion") === "true" ? catalogCompletionFixture(parts[4]) : catalogEditorFixture(parts[4]);
           body = parts.length === 5 ? { items: [row], nextCursor: null } : row;
         }
         return await route.fulfill({ contentType: "application/json", body: JSON.stringify(body) });
@@ -423,6 +437,40 @@ async function scenario(browser, origin, width, kind) {
         console.log(JSON.stringify({ name: `catalog-exact-key-${width}`, passed: true, posts: state.posts }));
         return;
       }
+      if (kind === "catalog-completion") {
+        for (const type of ["artist", "venue"]) {
+          await page.getByRole("button", { name: `${type[0].toUpperCase()}${type.slice(1)}s`, exact: true }).click();
+          if (type === "artist") await page.getByRole("button", { name: "Plan text and photo completion", exact: true }).click();
+          await page.getByRole("button", { name: "Find pages", exact: true }).click();
+          await page.getByRole("button", { name: "Edit text", exact: true }).click();
+          await page.getByText("Accepted photo displayed in this preview; verify the public page after publication.", { exact: true }).waitFor();
+          assert.equal(await page.getByLabel("Sourced page text", { exact: true }).inputValue(), `Fixture ${type} has documented music history.`);
+          await page.getByLabel("Reason for catalog change", { exact: true }).fill("Synthetic completion review");
+          await page.getByRole("button", { name: "Add to batch", exact: true }).click();
+        }
+        // Reload from persisted local storage without adopting another account.
+        await page.getByRole("button", { name: "Close", exact: true }).click();
+        state.phase = "bootstrap";
+        const reloadBootstrap = Promise.all(bootstrapStaffPaths.map(path => page.waitForResponse(response => new URL(response.url()).pathname === path && response.status() === 200)));
+        await page.reload({ waitUntil: "domcontentloaded" });
+        await page.getByRole("button", { name: "Menu", exact: true }).click();
+        await reloadBootstrap;
+        state.phase = "catalog-editor";
+        await page.getByRole("button", { name: /Catalog editor/ }).click();
+        await page.getByText("Draft batch · 2", { exact: true }).waitFor();
+        await page.getByRole("button", { name: "Edit saved draft", exact: true }).first().click();
+        await page.getByText("Accepted photo displayed in this preview; verify the public page after publication.", { exact: true }).waitFor();
+        await page.getByLabel("Sourced page text", { exact: true }).fill("Fixture artist has reviewed music history.");
+        await page.getByRole("button", { name: "Add to batch", exact: true }).click();
+        await page.getByRole("button", { name: "Review prepared batch", exact: true }).click();
+        await page.getByRole("button", { name: "Confirm all sources and publish sequentially", exact: true }).click();
+        await page.getByText("Draft batch · 0", { exact: true }).waitFor();
+        await page.getByText(/Saved receipts were recorded and public text was checked/).waitFor();
+        assert.equal(state.posts, 2); assertCatalogEditorRequestIsolation(state.calls, { bootstrapCount: 2 });
+        assert.deepEqual(state.errors, []); assert.deepEqual(state.reports, []);
+        console.log(JSON.stringify({ name: `catalog-completion-${width}`, passed: true, posts: state.posts }));
+        return;
+      }
       for (const type of ["artist", "venue", "event"]) {
         await page.getByRole("button", { name: `${type[0].toUpperCase()}${type.slice(1)}s`, exact: true }).click();
         await page.getByRole("button", { name: "Find pages", exact: true }).click();
@@ -437,7 +485,7 @@ async function scenario(browser, origin, width, kind) {
       await page.getByRole("button", { name: "Confirm sources and publish", exact: true }).first().waitFor();
       for (const type of ["artist", "venue", "event"]) {
         await page.getByRole("button", { name: "Confirm sources and publish", exact: true }).first().click();
-        await page.getByText(`Saved revision 1 · receipt fixture-receipt-${type}`, { exact: true }).waitFor();
+        await page.getByText(`${type}-fixture: saved revision 1 · receipt fixture-receipt-${type}`, { exact: true }).waitFor();
       }
       assert.equal(state.posts, 3);
       assertCatalogEditorRequestIsolation(state.calls);

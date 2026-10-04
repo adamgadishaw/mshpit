@@ -45,3 +45,16 @@ test("API requests bind account, preserve retry key and never load unrelated adm
   assert.match(calls[0][0], /q=A%26B/);
   assert.deepEqual(calls[3][1].body, calls[4][1].body);
 });
+
+test("completion and fresh public verification use existing routes, cancellation and account binding", async () => {
+  const calls = [], controller = new AbortController(), service = createCatalogEditorApi({ accountId: "reviewer", apiCall: async (...args) => { calls.push(args); return {}; } });
+  const options = { type: "venue", key: "ticketmaster:CaseID", signal: controller.signal };
+  await service.plan({ ...options, query: "A&B", cursor: "ticketmaster:before" });
+  await service.completion(options); await service.publicText(options);
+  assert.equal(calls[0][0], "/api/admin/catalog-editor/venue?completion=true&q=A%26B&cursor=ticketmaster%3Abefore");
+  assert.equal(calls[1][0], "/api/admin/catalog-editor/venue/ticketmaster%3ACaseID?completion=true");
+  assert.equal(calls[2][0], "/api/catalog-text/venue/ticketmaster%3ACaseID");
+  assert.ok(calls.every(([, options]) => options.expectedAccountId === "reviewer" && options.signal === controller.signal));
+  const value = catalogDraftFromText({ ...options, revision: 0, expectedHash: "current", completion: { hash: "evidence" } }, { summary: "A sentence.", sourceLines: "Source | https://mshpit.com/source", reason: "Fill" });
+  assert.equal(value.completionHash, "evidence");
+});

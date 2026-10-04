@@ -178,6 +178,14 @@ if (process.env.PIT_CATALOG_EDITOR_FIXTURE === "1") {
     await request(`${base}/artist`, { actor: null, expected: 401 });
     assert.equal((await request(`${base}/artist`, { actor: "revoked", expected: 409 })).code, "IDENTITY_CHANGED");
     for (const actor of ["fan", "moderator", "editor"]) await request(`${base}/artist`, { actor, expected: 403 });
+    await t.test("completion reads retain administrator permissions and cannot start event or provider work", async () => {
+      for (const actor of ["fan", "moderator", "editor"]) await request(`${base}/artist?completion=true`, { actor, expected: 403 });
+      const plan = await request(`${base}/artist?completion=true&q=Queue%20acceptance`);
+      assert.equal(plan.items.length, 10); assert.ok(plan.items.every(row => row.completion.textStatus === "existing_text"));
+      const artist = await request(`${base}/artist/catalog%20fixture?completion=true`);
+      assert.equal(artist.completion.textStatus, "needs_source"); assert.equal(artist.completion.photoStatus, "missing_photo");
+      await request(`${base}/event?completion=true`, { expected: 400 });
+    });
     await t.test("authenticated empty queue advances a bounded cursor to the remaining gap", async () => {
       const first = await request(`${base}/artist?q=Queue%20acceptance&missing=true`);
       assert.deepEqual(first.items, []);

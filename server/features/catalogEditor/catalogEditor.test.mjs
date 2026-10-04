@@ -5,6 +5,7 @@ import { ApiError } from "../../errors.js";
 import { createCatalogEditorService } from "./catalogEditorService.js";
 import { listCatalogEditorEntities, readPublicCatalogEditorText } from "./catalogEditorRepository.js";
 import { catalogEditorRoutes } from "./catalogEditorRoutes.js";
+import { shortCatalogSummary } from "./catalogCompletion.js";
 
 const AT = 1800000000000;
 function fixture(t) {
@@ -31,6 +32,77 @@ function draft(service, type = "artist", key = "sample artist") {
     summary: "Source-backed context for this public catalog page.", sources: [{ label: "Official source", url: "https://www.mshpit.com/about" }], reason: "Fill missing sourced context" };
 }
 const save = (service, value, key = "operation_0000000001") => service.save({ actorId: "admin", draft: value, idempotencyKey: key, requestId: "request-1" });
+
+function completionFixture(t) {
+  const { db } = fixture(t), mbid = "12345678-1234-4234-8234-123456789abc";
+  db.exec(`ALTER TABLE artists ADD photo TEXT; ALTER TABLE artist_profiles ADD avatar_uri TEXT;
+    CREATE TABLE provider_profiles(provider TEXT,kind TEXT,provider_id TEXT,status TEXT,profile TEXT,identity_status TEXT);
+    CREATE TABLE provider_artist_identities(provider TEXT,provider_id TEXT,artist_key TEXT);
+    CREATE TABLE catalog_research(entity_type TEXT,entity_key TEXT,status TEXT);
+    INSERT INTO provider_artist_identities VALUES('ticketmaster','AttractionA','sample artist');`);
+  db.prepare("UPDATE artists SET mbid=? WHERE norm='sample artist'").run(mbid);
+  const profile = { id: "AttractionA", name: "Sample Artist", mbid, genre: "Rock", pageUrl: "https://www.ticketmaster.com/artist/AttractionA" };
+  db.prepare("INSERT INTO provider_profiles VALUES('ticketmaster','attraction',?,'found',?,'applied')").run(profile.id, JSON.stringify(profile));
+  db.prepare("INSERT INTO provider_profiles VALUES('ticketmaster','venue','p-venue','found',?,NULL)").run(JSON.stringify({ id: "p-venue", name: "Example Hall", address: "1 Main Street", pageUrl: "https://www.ticketmaster.com/venue/p-venue" }));
+  let photo = { uri: "https://media.mshpit.com/accepted.webp", creator: "Fixture creator", license: "CC BY 4.0", sourcePage: "https://commons.wikimedia.org/wiki/File:Fixture" };
+  const service = createCatalogEditorService({ database: db, now: () => AT, photoReaders: { artistPhoto: () => photo, venuePhotos: () => photo ? [photo] : [] } });
+  const read = (type = "artist", key = "sample artist") => service.read({ type, key, completion: true });
+  const input = (type, key) => { const entity = read(type, key); return { ...draft(service, entity.type, entity.key), ...entity.completion.suggested, completionHash: entity.completion.hash }; };
+  return { db, service, read, input, profile, photo: value => { photo = value; } };
+}
+
+test("completion plans generate short sourced facts for exact artist and venue identities without writes", t => {
+  const f = completionFixture(t);
+  for (const [type, key] of [["artist", "sample artist"], ["venue", "ticketmaster:p-venue"]]) {
+    const entity = f.read(type, key);
+    assert.equal(entity.completion.textStatus, "draft_ready"); assert.equal(entity.completion.photoStatus, "accepted");
+    assert.equal(shortCatalogSummary(entity.completion.suggested.summary), true);
+    assert.equal(f.service.prepare([f.input(type, key)]).results[0].ok, true);
+  }
+  assert.equal(f.db.prepare("SELECT COUNT(*) n FROM moderation_actions").get().n, 0);
+  f.db.prepare("UPDATE provider_profiles SET profile=? WHERE kind='attraction'").run(JSON.stringify({ ...f.profile, mbid: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }));
+  assert.equal(f.read().completion.textStatus, "needs_source");
+  f.db.exec("UPDATE artists SET mbid=NULL WHERE norm='sample artist'");
+  assert.equal(f.read().completion.identityStatus, "needs_identity"); assert.equal(f.read().completion.canDraft, false);
+});
+
+test("completion fences protect new research, existing text, source changes and revoked photos at save time", t => {
+  const f = completionFixture(t), original = f.input();
+  f.db.exec("INSERT INTO catalog_research VALUES('artist','sample artist','found')");
+  assert.equal(f.read().completion.textStatus, "protected"); assert.throws(() => save(f.service, original), { code: "CONFLICT" });
+  f.db.exec("DELETE FROM catalog_research");
+  f.db.prepare("UPDATE provider_profiles SET profile=? WHERE kind='attraction'").run(JSON.stringify({ ...f.profile, genre: "Jazz" }));
+  assert.throws(() => save(f.service, original), { code: "CONFLICT" });
+  const changed = f.input(); f.photo(null);
+  assert.equal(f.read().completion.photoStatus, "missing_photo"); assert.throws(() => save(f.service, changed), { code: "CONFLICT" });
+  f.db.exec("UPDATE artists SET photo='https://example.com/raw.jpg' WHERE norm='sample artist'");
+  assert.equal(f.read().completion.photoStatus, "needs_photo_review");
+  assert.equal(f.read("artist", "existing artist").completion.textStatus, "existing_text");
+  assert.equal(f.db.prepare("SELECT COUNT(*) n FROM moderation_actions").get().n, 0);
+});
+
+test("completion publication keeps event limits and rejects long or incomplete pilot drafts", t => {
+  const f = completionFixture(t), value = f.input();
+  for (const summary of ["Incomplete fragment", "One. Two. Three.", `${"x".repeat(701)}.`]) {
+    assert.equal(f.service.prepare([{ ...value, summary }]).results[0].ok, false);
+  }
+  assert.equal(f.service.prepare([{ ...draft(f.service, "event", "event-1"), summary: "Event context. ".repeat(100) }]).results[0].ok, true);
+  const first = save(f.service, value); assert.equal(first.revision, 1);
+  assert.equal(f.read().completion.canDraft, false);
+  const repeated = save(f.service, value); assert.equal(repeated.replayed, true); assert.equal(repeated.auditId, first.auditId);
+});
+
+test("completion pagination returns at most ten without skipping later eligible keys", t => {
+  const f = completionFixture(t);
+  const insert = f.db.prepare("INSERT INTO artists(norm,name,source) VALUES(?,?,'musicbrainz')");
+  for (let i = 0; i < 22; i++) insert.run(`bounded-${String(i).padStart(2, '0')}`, `Bounded ${i}`);
+  const keys = []; let after = "";
+  do {
+    const page = f.service.list({ type: "artist", completion: true, after });
+    assert.ok(page.items.length <= 10); keys.push(...page.items.map(row => row.key)); after = page.nextCursor;
+  } while (after);
+  assert.equal(keys.length, 24); assert.equal(new Set(keys).size, 24);
+});
 
 test("artist, venue and event saves preserve source records and produce public text plus audit", t => {
   const { db, service } = fixture(t);

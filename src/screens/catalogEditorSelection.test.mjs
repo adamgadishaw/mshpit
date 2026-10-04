@@ -5,6 +5,7 @@ import test from "node:test";
 import vm from "node:vm";
 import { parse } from "@babel/parser";
 import { addCatalogBatchDraft, catalogDraftFromText, catalogExactSelection } from "../features/catalogEditor/catalogEditorApi.mjs";
+import { createCatalogBatch } from "../features/catalogEditor/catalogBatchState.mjs";
 
 const require = createRequire(import.meta.url);
 const source = readFileSync(new URL("./CatalogEditorScreen.jsx", import.meta.url), "utf8");
@@ -21,7 +22,7 @@ function nodes(tree) {
   if (!tree || typeof tree !== "object") return [];
   return [tree, ...nodes(tree.props?.children)];
 }
-function fixture(session = { id: "admin-a", role: "admin", emailVerified: true }, allowQueue = false) {
+function fixture(session = { id: "admin-a", role: "admin", emailVerified: true }, allowQueue = false, storage = new Map(), actions = {}) {
   const states = [], refs = [], calls = [], module = { exports: {} };
   let stateIndex = 0, refIndex = 0, effect, cleanup;
   const jsx = (type, props) => ({ type, props });
@@ -40,9 +41,11 @@ function fixture(session = { id: "admin-a", role: "admin", emailVerified: true }
       },
       prepare: () => assert.fail("Opening a key must not prepare a write"),
       save: () => assert.fail("Opening a key must not publish"),
+      ...actions,
     }),
-    addCatalogBatchDraft, catalogDraftFromText, catalogExactSelection,
-    View: "View", Text: "Text", TextInput: "TextInput", ScrollView: "ScrollView", SheetHeader: "SheetHeader", Button: "Button", styles: {}, colors: {},
+    addCatalogBatchDraft, catalogDraftFromText, catalogExactSelection, createCatalogBatch,
+    catalogBatchStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
+    Image: "Image", View: "View", Text: "Text", TextInput: "TextInput", ScrollView: "ScrollView", SheetHeader: "SheetHeader", Button: "Button", styles: {}, colors: {},
   });
   const render = () => { stateIndex = 0; refIndex = 0; return module.exports({ onClose() {} }); };
   const find = (type, prop, value) => nodes(render()).find(node => node.type === type && node.props[prop] === value);
@@ -68,6 +71,41 @@ test("real editor opens a provider key directly, serializes repeat clicks, and p
   assert.equal(f.alert(), undefined);
   assert.ok(nodes(f.render()).some(node => node.type === "Text" && node.props.children === "Fixture Toronto Venue"));
   assert.equal(f.button("Open by catalog key").props.disabled, false);
+});
+
+test("real editor restores saved drafts after remount, permits removal and clears a saved page's stale revision", async () => {
+  const storage = new Map(), actions = {
+    prepare: async entries => ({ results: entries.map((draft, index) => ({ ok: true, index, draft, current: row() })) }),
+    save: async draft => ({ ok: true, revision: 1, auditId: "fixture-audit", saved: { ...row(), revision: 1, content: { summary: draft.summary, sources: draft.sources } } }),
+    publicText: async draft => ({ text: { summary: draft.summary, sources: draft.sources, revision: 1 } }),
+  };
+  const f = fixture(undefined, false, storage, actions), opened = f.open(); f.calls[0].resolve(row()); await opened;
+  f.input("Sourced page text").props.onChangeText("A sourced fixture sentence.");
+  f.input("Named source URLs").props.onChangeText("Fixture | https://mshpit.com/source");
+  f.input("Reason for catalog change").props.onChangeText("Fixture fill");
+  f.button("Add to batch").props.onPress(); f.unmount();
+  const restored = fixture(undefined, false, storage, actions);
+  assert.ok(restored.button("Edit saved draft"));
+  const edit = restored.button("Edit saved draft").props.onPress(); restored.calls[0].resolve(row()); await edit;
+  assert.equal(restored.input("Sourced page text").props.value, "A sourced fixture sentence.");
+  restored.button("Add to batch").props.onPress();
+  await restored.button("Review prepared batch").props.onPress();
+  await restored.button("Confirm sources and publish").props.onPress();
+  assert.equal(restored.input("Sourced page text"), undefined, "Saved form must not retain its old revision");
+  assert.equal(restored.button("Remove saved draft"), undefined);
+  const next = restored.open(); restored.calls[1].resolve({ ...row(), revision: 1 }); await next;
+  restored.input("Sourced page text").props.onChangeText("A correction."); restored.button("Add to batch").props.onPress();
+  restored.button("Remove saved draft").props.onPress(); assert.equal(restored.button("Edit saved draft"), undefined);
+});
+
+test("editing a saved hide preserves its publication intent and explicitly labels the action", async () => {
+  const storage = new Map(), controller = createCatalogBatch({ accountId: "admin-a", storage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) } });
+  controller.stage(catalogDraftFromText(row(), { summary: "Text to hide.", sourceLines: "Source | https://mshpit.com/source", reason: "Hide obsolete text", hidden: true }));
+  const f = fixture(undefined, false, storage), pending = f.button("Edit saved draft").props.onPress();
+  f.calls[0].resolve({ ...row(), content: { summary: "Text to hide.", sources: [] } }); await pending;
+  assert.equal(f.button("Add to batch"), undefined); assert.ok(f.button("Add hide to batch"));
+  f.input("Reason for catalog change").props.onChangeText("Reviewed hide reason"); f.button("Add hide to batch").props.onPress();
+  const saved = JSON.parse([...storage.values()][0]); assert.equal(saved.entries[0].draft.hidden, true);
 });
 
 test("invalid, wrong-type and unavailable exact keys report actionable errors without falling back to name search", async () => {

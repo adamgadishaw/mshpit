@@ -2,7 +2,17 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { createSearchGrowthService } from "../server/features/searchGrowth/searchGrowthService.js";
-import { assertCatalogEditorRequestIsolation, catalogBrowserCases, catalogExactVenueKey, catalogQueueFixture, exactCatalogFixture, upkeepAdmin, upkeepFixture, staffFixture } from "./verify-catalog-maintenance-browser.mjs";
+import { assertCatalogEditorRequestIsolation, catalogBrowserCases, catalogCompletionFixture, catalogExactVenueKey, catalogQueueFixture, exactCatalogFixture, upkeepAdmin, upkeepFixture, staffFixture } from "./verify-catalog-maintenance-browser.mjs";
+
+test("completion browser cases use local accepted-photo fixtures for both catalog types and viewport sizes", () => {
+  assert.deepEqual(catalogBrowserCases.filter(row => row.kind === "catalog-completion").map(row => row.width), [390, 1280]);
+  for (const type of ["artist", "venue"]) {
+    const row = catalogCompletionFixture(type);
+    assert.equal(row.type, type); assert.equal(row.completion.photo.uri, "/fixture-catalog-photo.svg");
+    assert.equal(row.completion.textStatus, "draft_ready"); assert.equal(row.completion.canDraft, true);
+  }
+  assert.throws(() => catalogCompletionFixture("event"));
+});
 
 test("queue browser cases cover mobile and desktop continuation without reusing cursors across queries", () => {
   assert.deepEqual(catalogBrowserCases.filter(item => item.kind === "catalog-queue").map(item => item.width), [390, 1280]);

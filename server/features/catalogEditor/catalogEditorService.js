@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { isIP } from "node:net";
 import { ApiError } from "../../errors.js";
 import { catalogDigest, ensureCatalogEditorSchema, listCatalogEditorEntities, readCatalogEditorEntity } from "./catalogEditorRepository.js";
+import { catalogCompletion, shortCatalogSummary } from "./catalogCompletion.js";
 
 const fail = message => { throw new ApiError(400, message, "VALIDATION_FAILED"); };
 const object = value => value && typeof value === "object" && !Array.isArray(value);
@@ -18,15 +19,15 @@ export function catalogEditorSource(value) {
   return { label: value.label.trim(), url: url.href };
 }
 
-export function createCatalogEditorService({ database, now = Date.now }) {
+export function createCatalogEditorService({ database, now = Date.now, photoReaders }) {
   ensureCatalogEditorSchema(database);
-  const read = ({ type, key }) => {
+  const read = ({ type, key, completion = false }) => {
     const entity = readCatalogEditorEntity(database, { type, key, at: now() });
     if (!entity) throw new ApiError(404, "This public catalog identity is unavailable or ambiguous.", "NOT_FOUND");
-    return entity;
+    return completion ? { ...entity, completion: catalogCompletion(database, entity, photoReaders) } : entity;
   };
   const normalize = input => {
-    if (!fields(input, ["type", "key", "expectedRevision", "expectedHash", "summary", "sources", "reason", "hidden"])) fail("Choose supported catalog text fields only.");
+    if (!fields(input, ["type", "key", "expectedRevision", "expectedHash", "summary", "sources", "reason", "hidden", "completionHash"])) fail("Choose supported catalog text fields only.");
     if (!["artist", "venue", "event"].includes(input.type) || typeof input.key !== "string" || !input.key || input.key.length > 450
       || !Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 0 || !/^[a-f0-9]{64}$/.test(input.expectedHash || "")) fail("Reload the current catalog record before preparing a change.");
     if (typeof input.summary !== "string" || !input.summary.trim() || input.summary.length > 2400
@@ -34,16 +35,25 @@ export function createCatalogEditorService({ database, now = Date.now }) {
     if (!Array.isArray(input.sources) || !input.sources.length || input.sources.length > 12) fail("Attach named sources within the source payload limit.");
     if (typeof input.reason !== "string" || !input.reason.trim() || input.reason.length > 300) fail("Enter a short reason for the change.");
     if (input.hidden !== undefined && typeof input.hidden !== "boolean") fail("Choose a valid publication state.");
+    if (input.completionHash !== undefined && (!["artist", "venue"].includes(input.type) || !/^[a-f0-9]{64}$/u.test(input.completionHash)
+      || input.hidden || !shortCatalogSummary(input.summary))) fail("Completion drafts need one or two complete sourced sentences within 700 characters.");
     const sources = input.sources.map(catalogEditorSource);
     if (new Set(sources.map(source => source.url)).size !== sources.length) fail("Remove duplicate source links.");
     return { type: input.type, key: input.key, expectedRevision: input.expectedRevision, expectedHash: input.expectedHash,
-      summary: input.summary.trim(), sources, reason: input.reason.trim(), hidden: input.hidden === true };
+      summary: input.summary.trim(), sources, reason: input.reason.trim(), hidden: input.hidden === true,
+      ...(input.completionHash ? { completionHash: input.completionHash } : {}) };
   };
   const check = draft => {
     const current = read(draft);
     if (current.protectedReason) throw new ApiError(409, current.protectedReason, "CONFLICT");
     if (current.revision !== draft.expectedRevision || current.expectedHash !== draft.expectedHash) {
       throw new ApiError(409, "The page or its saved text changed. Reload and review your draft again.", "CONFLICT");
+    }
+    if (draft.completionHash) {
+      const plan = catalogCompletion(database, current, photoReaders);
+      if (!plan.canDraft || plan.hash !== draft.completionHash || plan.photoStatus !== "accepted") {
+        throw new ApiError(409, "Completion evidence changed or an accepted photo is missing. Reload and review this page.", "CONFLICT");
+      }
     }
     return current;
   };
@@ -97,5 +107,8 @@ export function createCatalogEditorService({ database, now = Date.now }) {
       throw error;
     }
   };
-  return { read, prepare, save, list: options => listCatalogEditorEntities(database, { ...options, at: now() }) };
+  return { read, prepare, save, list: options => {
+    const page = listCatalogEditorEntities(database, { ...options, at: now(), ...(options.completion ? { missingOnly: false, limit: 10 } : {}) });
+    return options.completion ? { ...page, items: page.items.map(entity => ({ ...entity, completion: catalogCompletion(database, entity, photoReaders) })) } : page;
+  } };
 }

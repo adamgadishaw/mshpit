@@ -6,7 +6,26 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
-## 2026-10-04 Catalog empty-page queue (reviewed branch; not released)
+## 2026-10-04 Completion plan and saved catalog batches (local review)
+
+- Branch `codex/catalog-completion-review-20261004` starts at released master
+  `d82b7ee47e2e524c83fd129c5a31e74e8a390cab` (including the queue work below).
+  The completion patch is reviewed for a draft PR and has not been deployed.
+- Existing admin reads can return a bounded artist/venue completion plan with
+  exact identity, protected text, source and accepted-photo status. New short
+  drafts use stored matching provider facts; no worker/provider is activated.
+- Batches persist by account on the current device, support edit/remove and
+  publish sequentially with durable per-entry retry keys. Uncertain saves stop
+  publication and remain locked; receipts are distinct from public verification.
+- No dependency, schema, worker-limit, grant, event-length or public UI change.
+  Focused tests and independent review passed. Cloud validation confirmed all
+  2,143 exported files, 72 tests, architecture and a 508.5-KiB gzip web build
+  below the unchanged 512-KiB budget. Eight browser cases remain unexecuted in
+  that restricted runner; existing PR CI runs all eight. Native administrator
+  UI/storage validation remains pending before a native rollout. See
+  `docs/CATALOG_COMPLETION_REVIEW_2026-10-04.md` for scope and evidence.
+
+## 2026-10-04 Catalog empty-page queue (historical pre-release checkpoint)
 
 - The editor's default fill queue skips existing biographies and staff text,
   found or intentionally hidden research, intentional biography clears, hidden
