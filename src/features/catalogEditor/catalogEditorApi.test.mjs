@@ -1,6 +1,26 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { addCatalogBatchDraft, catalogDraftFromText, createCatalogEditorApi } from "./catalogEditorApi.mjs";
+import { addCatalogBatchDraft, catalogDraftFromText, catalogExactSelection, createCatalogEditorApi } from "./catalogEditorApi.mjs";
+
+test("exact catalog selection validates explicit types and keys without guessing or changing provider case", () => {
+  assert.deepEqual(catalogExactSelection("venue", " ticketmaster:rZ7HnEZaeot "), { type: "venue", key: "ticketmaster:rZ7HnEZaeot" });
+  assert.deepEqual(catalogExactSelection("artist", "ac/dc"), { type: "artist", key: "ac/dc" });
+  assert.deepEqual(catalogExactSelection("event", "tm_fixture"), { type: "event", key: "tm_fixture" });
+  for (const type of ["venues", "admin", null]) assert.throws(() => catalogExactSelection(type, "key"), /Choose Artists/);
+  for (const key of [null, "", " ", "x".repeat(451), "x\ny", "x\u0000y"]) assert.throws(() => catalogExactSelection("artist", key), /1 and 450/);
+  for (const key of [".", "..", "https://www.mshpit.com/venue/example", "/venue/example"]) assert.throws(() => catalogExactSelection("venue", key), /not a public page URL/);
+  for (const key of ["rZ7HnEZaeot", "ticketmaster:", ":rZ7HnEZaeot", "ticketmaster:bad id"]) assert.throws(() => catalogExactSelection("venue", key), /source and exact provider ID/);
+});
+
+test("direct venue read encodes the exact key once and retains cancellation and account binding", async () => {
+  const calls = [], controller = new AbortController();
+  const service = createCatalogEditorApi({ accountId: "admin-exact", apiCall: async (...args) => { calls.push(args); return {}; } });
+  await service.read({ ...catalogExactSelection("venue", "ticketmaster:rZ7HnEZaeot"), signal: controller.signal });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], "/api/admin/catalog-editor/venue/ticketmaster%3ArZ7HnEZaeot");
+  assert.equal(calls[0][1].expectedAccountId, "admin-exact");
+  assert.equal(calls[0][1].signal, controller.signal);
+});
 
 test("catalog batch preserves mixed entities and replaces only the matching draft", () => {
   const artist = { type: "artist", key: "a", summary: "first" }, venue = { type: "venue", key: "a" };

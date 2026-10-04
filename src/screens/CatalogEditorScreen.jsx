@@ -6,7 +6,7 @@ const randomId = () => `${Date.now().toString(36)}_${Math.random().toString(36).
 import SheetHeader from "../components/SheetHeader";
 import Button from "../components/Button";
 import { colors, radius, space } from "../theme";
-import { addCatalogBatchDraft, catalogDraftFromText } from "../features/catalogEditor/catalogEditorApi.mjs";
+import { addCatalogBatchDraft, catalogDraftFromText, catalogExactSelection } from "../features/catalogEditor/catalogEditorApi.mjs";
 
 // Keyed by account and role at the navigation boundary. No moderation store loads.
 export default function CatalogEditorScreen({ onClose }) {
@@ -14,6 +14,7 @@ export default function CatalogEditorScreen({ onClose }) {
   const allowed = session?.role === "admin";
   const service = useMemo(() => allowed ? catalogEditorForAccount(session.id) : null, [allowed, session?.id]);
   const [type, setType] = useState("artist"), [query, setQuery] = useState(""), [missingOnly, setMissingOnly] = useState(true);
+  const [exactKey, setExactKey] = useState("");
   const [page, setPage] = useState(null), [entity, setEntity] = useState(null), [summary, setSummary] = useState("");
   const [sourceLines, setSourceLines] = useState(""), [reason, setReason] = useState("");
   const [batch, setBatch] = useState([]), [prepared, setPrepared] = useState(null), [receipts, setReceipts] = useState({});
@@ -37,12 +38,23 @@ export default function CatalogEditorScreen({ onClose }) {
     if (dirty && !discard) { setPendingSelection(row); return; }
     setPendingSelection(null);
     return run(async signal => {
-    const current = await service.read({ type: row.type, key: row.key, signal });
-    if (signal.aborted) return;
+    let current;
+    try { current = await service.read({ type: row.type, key: row.key, signal }); }
+    catch (failure) {
+      if (failure.status === 404) throw new Error(`No eligible ${row.type} matches this exact key. Check the page type, source and letter case.`);
+      throw failure;
+    }
+    if (signal.aborted || !mounted.current) return;
+    if (current?.type !== row.type || current?.key !== row.key) throw new Error("The returned catalog identity did not match. Your current draft was kept; try opening the exact key again.");
     setEntity(current); setSummary(current.content?.summary || "");
     setSourceLines((current.content?.sources || []).map(source => `${source.label} | ${source.url}`).join("\n"));
     setReason(""); setDirty(false);
     });
+  };
+  const openExact = () => {
+    if (busy || request.current || !service) return;
+    try { return select(catalogExactSelection(type, exactKey)); }
+    catch (failure) { setError(failure.message); setNotice(""); }
   };
   const stage = hidden => {
     try {
@@ -76,7 +88,14 @@ export default function CatalogEditorScreen({ onClose }) {
       <View style={styles.row}>{["artist", "venue", "event"].map(value => <Button key={value} small title={`${value[0].toUpperCase()}${value.slice(1)}s`} disabled={busy} variant={type === value ? "primary" : "secondary"}
         onPress={() => { setType(value); setPage(null); }} />)}</View>
       <TextInput accessibilityLabel="Find catalog pages by name" placeholder="Artist, venue or event name" placeholderTextColor={colors.textFaint} value={query} onChangeText={setQuery} editable={!busy} style={styles.input} maxLength={100} />
+      {type === "venue" ? <Text style={styles.copy}>Venue name search filters one queue page at a time. Continue with Next page, or open a known catalog key below.</Text> : null}
       <View style={styles.row}><Button title="Find pages" onPress={() => load("")} disabled={busy} loading={busy} /><Button title={missingOnly ? "Showing missing text" : "Showing all eligible pages"} variant="secondary" disabled={busy} onPress={() => { setMissingOnly(!missingOnly); setPage(null); }} /></View>
+      <View style={styles.panel}>
+        <Text style={styles.heading}>Open by catalog key</Text>
+        <Text style={styles.copy}>Choose the page type above and enter its exact key. For venues, use source:provider ID with the original letter case. This opens one eligible page, including pages that already have text.</Text>
+        <TextInput accessibilityLabel="Exact catalog key" placeholder={type === "venue" ? "source:provider ID" : "Exact catalog key"} placeholderTextColor={colors.textFaint} value={exactKey} onChangeText={setExactKey} autoCapitalize="none" autoCorrect={false} editable={!busy} maxLength={450} style={styles.input} />
+        <Button title="Open by catalog key" disabled={busy} onPress={openExact} />
+      </View>
       {error ? <Text accessibilityRole="alert" accessibilityLiveRegion="assertive" style={styles.error}>{error}</Text> : null}
       {notice ? <Text accessibilityLiveRegion="polite" style={styles.notice}>{notice}</Text> : null}
       {pendingSelection ? <View style={styles.panel}><Text style={styles.copy}>This page has an unstaged draft. Add it to the batch to keep it, or discard it before opening another page.</Text><View style={styles.row}><Button title="Keep editing" onPress={() => setPendingSelection(null)} /><Button title="Discard and open page" variant="secondary" onPress={() => select(pendingSelection, true)} /></View></View> : null}
