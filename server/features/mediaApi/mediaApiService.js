@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { ApiError } from "../../errors.js";
 import { withImmediateWrite } from "../../databaseTransaction.js";
+import { readGrantedNewsDraft } from "../newsDesk/newsDeskEditor.js";
 import {
   createMediaAsset,
   finalizeMediaAsset,
@@ -266,6 +267,18 @@ export function createMediaApiService({
     });
   }
 
+  function readNewsDraft({ authorization, draftId } = {}) {
+    const grant = authorize(authorization, "news:write");
+    if (typeof draftId !== "string" || !draftId || draftId.length > 100) {
+      throw new ApiError(404, "That editorial draft was not found.", "NOT_FOUND");
+    }
+    const draft = readGrantedNewsDraft(database, { draftId, ownerId: grant.owner_id, grantId: grant.id, at: now() });
+    if (!draft) throw new ApiError(404, "That editorial draft was not found.", "NOT_FOUND");
+    // Database waits can cross expiry or a revocation by another process.
+    assertGrantActive(grant.id, "news:write");
+    return { draft };
+  }
+
   function createNewsDraft({ authorization, body, idempotencyKey, requestId } = {}) {
     const grant = authorize(authorization, "news:write");
     const operation = "news.create";
@@ -392,6 +405,7 @@ export function createMediaApiService({
     issuePairing,
     exchangePairing,
     revokeGrant,
+    readNewsDraft,
     createNewsDraft,
     publishNewsDraft,
     createMedia,

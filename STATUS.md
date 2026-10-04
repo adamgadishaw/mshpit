@@ -6,6 +6,17 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-10-04 Same-grant draft recovery (review branch)
+
+- The Owner approved one additional `news:write` operation: exact GET of an
+  unpublished self-written draft created by the same grant and owner. Branch
+  `codex/media-draft-recovery-20261004` starts at released master `a74c002`.
+- The new route returns safe editorial fields, revision and verified photo
+  metadata. It adds no list/update operation, scope, credential or activation.
+  Other-grant/staff, legacy-unbound and non-draft records return the same 404.
+- Validation and remaining cloud/release gates are recorded in
+  `docs/MEDIA_DRAFT_RECOVERY_2026-10-04.md`. No merge or deployment yet.
+
 ## 2026-10-04 Newsroom entry from Settings (review branch)
 
 - Branch `codex/newsroom-settings-entry-20261004` starts at `15c4cb44`.

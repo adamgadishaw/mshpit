@@ -5,6 +5,7 @@ import test from "node:test";
 import { ApiError } from "../../errors.js";
 import { createMediaApiService } from "./mediaApiService.js";
 import { ensureMediaApiSchema } from "./mediaApiPolicy.js";
+import { mediaApiRoutes } from "./mediaApiRoutes.js";
 
 const at = 1_700_000_000_000;
 
@@ -29,6 +30,9 @@ function database() {
       created_actor_label TEXT,
       created_grant_id TEXT,
       revision INTEGER NOT NULL DEFAULT 0,
+      reports TEXT NOT NULL DEFAULT '[]',
+      result TEXT NOT NULL DEFAULT '{}',
+      cost_usd REAL NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL DEFAULT 0,
       updated_at INTEGER NOT NULL DEFAULT 0
     );
@@ -66,6 +70,89 @@ test("Media API is disabled unless explicitly activated", () => {
   const disabled = createMediaApiService({ database: db, env: {}, now: () => at });
   expectApiError(() => disabled.issuePairing({ ownerId: "owner_1", actorType: "assistant", actorLabel: "Jeeves", scopes: ["news:write"] }), "NOT_FOUND");
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM media_api_pairings").get().n, 0);
+});
+
+test("draft recovery reads only an exact unpublished self-written owner/grant match without writes", () => {
+  const db = database();
+  const api = service(db);
+  const issued = api.exchangePairing({ pairingCode: issue(api, ["news:write"]).pairingCode });
+  const authorization = `Bearer ${issued.accessToken}`;
+  const result = { headline: "A saved announcement", summary: "A summary saved before an interruption.",
+    body: "The exact saved body.", category: "release", sources: [{ kind: "article", name: "Artist", url: "https://artist.example.com/news" }],
+    photo: null, internalField: "private-result-detail" };
+  const insert = db.prepare(`INSERT INTO news_drafts
+    (id,status,origin,created_by,created_grant_id,result,reports,revision,created_at,story_post_id)
+    VALUES (?,?,?,?,?,?,'[{"internalReport":"private-report-detail"}]',3,?,?)`);
+  insert.run("draft_owned", "draft", "self_written", "owner_1", issued.grantId, JSON.stringify(result), at, null);
+  for (const [id, status, origin, ownerId, grantId, postId] of [
+    ["other_owner", "draft", "self_written", "owner_2", issued.grantId, null],
+    ["other_grant", "draft", "self_written", "owner_1", "another_grant", null],
+    ["legacy", "draft", "self_written", "owner_1", null, null],
+    ["legacy_empty", "draft", "self_written", "owner_1", "", null],
+    ["generated", "draft", "generated", "owner_1", issued.grantId, null],
+    ["published", "published", "self_written", "owner_1", issued.grantId, "news_post"],
+    ["discarded", "discarded", "self_written", "owner_1", issued.grantId, null],
+    ["declined", "declined", "self_written", "owner_1", issued.grantId, null],
+    ["linked_post", "draft", "self_written", "owner_1", issued.grantId, "news_post"],
+  ]) insert.run(id, status, origin, ownerId, grantId, JSON.stringify(result), at, postId);
+  const before = db.prepare("SELECT total_changes() AS n").get().n;
+  const recovered = api.readNewsDraft({ authorization, draftId: "draft_owned" });
+  assert.deepEqual(recovered, { draft: { id: "draft_owned", status: "draft", origin: "self_written",
+    headline: result.headline, summary: result.summary, body: result.body, category: result.category,
+    sources: result.sources, photo: null, revision: 3, expired: false, createdAt: at } });
+  assert.deepEqual(api.readNewsDraft({ authorization, draftId: "draft_owned" }), recovered, "reads need no idempotency key");
+  for (const draftId of ["missing", "other_owner", "other_grant", "legacy", "legacy_empty", "generated", "published", "discarded", "declined", "linked_post", "", "x".repeat(101)]) {
+    assert.throws(() => api.readNewsDraft({ authorization, draftId }), error =>
+      error instanceof ApiError && error.status === 404 && error.code === "NOT_FOUND" && error.message === "That editorial draft was not found.");
+  }
+  assert.equal(db.prepare("SELECT total_changes() AS n").get().n, before, "no draft, receipt, audit, quota or grant write");
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM media_api_idempotency").get().n, 0);
+  const later = service(db, { now: () => at + 25 * 3_600_000 });
+  assert.equal(later.readNewsDraft({ authorization, draftId: "draft_owned" }).draft.expired, true, "recovery does not refresh publication eligibility");
+  db.close();
+});
+
+test("draft recovery preserves scope, expiry, revocation and current-owner checks", () => {
+  const db = database();
+  const api = service(db);
+  const issued = api.exchangePairing({ pairingCode: issue(api, ["news:write"]).pairingCode });
+  const authorization = `Bearer ${issued.accessToken}`;
+  db.prepare("INSERT INTO news_drafts(id,status,origin,created_by,created_grant_id,created_at) VALUES (?,'draft','self_written','owner_1',?,?)")
+    .run("owned", issued.grantId, at);
+  const photoGrant = api.exchangePairing({ pairingCode: issue(api, ["media:write"]).pairingCode });
+  expectApiError(() => api.readNewsDraft({ authorization: `Bearer ${photoGrant.accessToken}`, draftId: "owned" }), "FORBIDDEN");
+  for (const invalid of ["", "Bearer invalid", `Bearer ${"X".repeat(40)}`]) {
+    expectApiError(() => api.readNewsDraft({ authorization: invalid, draftId: "owned" }), "AUTH_INVALID");
+  }
+  const expired = service(db, { now: () => issued.expiresAt });
+  expectApiError(() => expired.readNewsDraft({ authorization, draftId: "owned" }), "AUTH_INVALID");
+  let clockReads = 0;
+  const expiresDuringRead = service(db, { now: () => ++clockReads === 1 ? at : issued.expiresAt });
+  expectApiError(() => expiresDuringRead.readNewsDraft({ authorization, draftId: "owned" }), "AUTH_INVALID");
+  const disabled = service(db, { env: {} });
+  expectApiError(() => disabled.readNewsDraft({ authorization, draftId: "owned" }), "NOT_FOUND");
+  for (const update of ["role='fan'", "is_banned=1", `suspended_until=${at + 1000}`, "email_verified_at=0"]) {
+    db.exec(`UPDATE users SET ${update} WHERE id='owner_1'`);
+    expectApiError(() => api.readNewsDraft({ authorization, draftId: "owned" }), "FORBIDDEN");
+    db.prepare("UPDATE users SET role='admin',is_banned=0,suspended_until=NULL,email_verified_at=? WHERE id='owner_1'").run(at);
+  }
+  api.revokeGrant({ ownerId: "owner_1", grantId: issued.grantId });
+  expectApiError(() => api.readNewsDraft({ authorization, draftId: "owned" }), "AUTH_INVALID");
+  db.close();
+});
+
+test("draft recovery route is a bounded private exact read with no list or update", () => {
+  const headers = {}, calls = [];
+  const routes = mediaApiRoutes({ service: {
+    assertEnabled() {}, readNewsDraft(input) { calls.push(input); return { draft: { id: input.draftId } }; },
+  }, requireOwner() { throw new Error("not a session route"); }, rateLimit(...args) { calls.push(args.slice(1)); }, ApiError });
+  const ctx = { params: { id: "exact-draft" }, mediaApiAuthorization: "synthetic-authorization", setHeader: (key, value) => { headers[key] = value; } };
+  assert.deepEqual(routes["GET /api/media/v1/news/drafts/:id"](ctx), { draft: { id: "exact-draft" } });
+  assert.equal(headers["Cache-Control"], "private, no-store");
+  assert.deepEqual(calls, [["media-api-news-read", 60, 60_000], { authorization: "synthetic-authorization", draftId: "exact-draft" }]);
+  for (const route of ["GET /api/media/v1/news/drafts", "PATCH /api/media/v1/news/drafts/:id", "PUT /api/media/v1/news/drafts/:id"]) {
+    assert.equal(routes[route], undefined);
+  }
 });
 
 test("audit migration removes legacy foreign keys without weakening append-only history", () => {
