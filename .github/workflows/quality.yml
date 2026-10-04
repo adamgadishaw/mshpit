@@ -79,7 +79,8 @@ jobs:
       - run: npm run verify:news-browser
       - run: npm run verify:discover-photos-browser
       - run: npm run verify:discover-venues-browser
-      - run: npm run verify:catalog-maintenance-browser
+      - name: Catalog upkeep and editor (mobile and desktop)
+        run: npm run verify:catalog-maintenance-browser
       - run: npm run verify:quick-log-browser
       - run: npm run verify:festivals-browser
       - run: npm run verify:discover-events-browser
