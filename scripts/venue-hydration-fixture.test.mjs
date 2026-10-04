@@ -67,3 +67,36 @@ test("cold venue browser fixture renders concert artist titles and event links t
   ]);
   assert.deepEqual(opened, Array.from({ length: 10 }, (_, index) => `venue-hydration-${index + 1}`));
 });
+
+test("venue expansion and paging controls expose exact button names and forward activation", () => {
+  const venueSource = readFileSync(new URL("../src/screens/VenueScreen.jsx", import.meta.url), "utf8");
+  const declarations = parse(venueSource, { sourceType: "module", plugins: ["jsx"] }).program.body;
+  const functions = ["MoreButton", "SectionSwitchButton"].map(name => {
+    const node = declarations.find(item => item.type === "FunctionDeclaration" && item.id?.name === name);
+    assert.ok(node, `Missing venue control ${name}`);
+    return venueSource.slice(node.start, node.end);
+  });
+  const controlsCode = require("@babel/core").transformSync(`${functions.join("\n")}\nmodule.exports = { MoreButton, SectionSwitchButton };`, {
+    babelrc: false, configFile: false,
+    plugins: [[require("@babel/plugin-transform-react-jsx"), { runtime: "automatic" }], require("@babel/plugin-transform-modules-commonjs")],
+  }).code;
+  const controls = { exports: {} };
+  new vm.Script(controlsCode).runInNewContext({
+    module: controls, exports: controls.exports, require: () => ({ jsx, jsxs: jsx }),
+    Text: "Text", Pressable: "Pressable", Icon: "Icon", styles: {}, colors: {}, focusRing: {},
+  });
+  const pressed = [];
+  for (const [component, label, accessibleName, remaining] of [
+    ["MoreButton", "Show 2 more upcoming shows", "Show 2 more upcoming shows. 2 remaining.", 2],
+    ["SectionSwitchButton", "Next upcoming shows", "Next upcoming shows"],
+    ["SectionSwitchButton", "First upcoming shows", "First upcoming shows"],
+  ]) {
+    const button = controls.exports[component]({ label, remaining, onPress: () => pressed.push(label) });
+    assert.equal(button.type, "Pressable");
+    assert.equal(button.props.accessibilityRole, "button");
+    assert.equal(button.props.accessibilityLabel, accessibleName);
+    assert.ok(nodes(button).some(node => node.type === "Text" && node.props.children === label));
+    button.props.onPress();
+  }
+  assert.deepEqual(pressed, ["Show 2 more upcoming shows", "Next upcoming shows", "First upcoming shows"]);
+});

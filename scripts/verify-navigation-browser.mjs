@@ -435,7 +435,8 @@ async function runCase(browser, origin, item) {
       };
       await assertVenue();
       await page.getByRole("tab", { name: "Shows venue page section", exact: true }).click();
-      await page.getByRole("button", { name: "Show 2 more upcoming shows", exact: true }).click();
+      await page.getByRole("button", { name: "Show 2 more upcoming shows. 2 remaining.", exact: true }).click();
+      await page.getByText("Fixture Band 8", { exact: true }).waitFor();
       await page.getByRole("button", { name: "Next upcoming shows", exact: true }).click();
       await page.getByText("Fixture Band 9", { exact: true }).waitFor();
       assert.equal(await page.getByRole("link", { name: "Open event details for Fixture Band 9", exact: true }).getAttribute("href"), "/event/venue-hydration-9");
@@ -443,6 +444,7 @@ async function runCase(browser, origin, item) {
       await page.getByText("UPCOMING PREVIEW", { exact: true }).waitFor();
       await page.getByRole("button", { name: "First upcoming shows", exact: true }).click();
       await page.getByText("Fixture Band 1", { exact: true }).waitFor();
+      assert.equal(await page.getByText("Fixture Band 9", { exact: true }).count(), 0, "Returning to the first page replaces the next window");
       await page.reload({ waitUntil: "networkidle" }); await assertVenue();
       assert.equal(state.calls.some(call => call.path.startsWith("/api/feed")), false);
       assert.ok(state.calls.some(call => call.path === "/api/venue-snapshot" && call.query.includes("after=fixture-next")));
