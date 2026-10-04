@@ -73,6 +73,34 @@ test("real editor opens a provider key directly, serializes repeat clicks, and p
   assert.equal(f.button("Open by catalog key").props.disabled, false);
 });
 
+test("completion selection preserves the old page while pending then adopts the exact venue and requires its photo", async () => {
+  const reads = [], storage = new Map();
+  const f = fixture(undefined, false, storage, {
+    completion: options => new Promise(resolve => reads.push({ ...options, resolve })),
+  });
+  const entity = type => ({ ...row(type === "artist" ? "artist-fixture" : key), type, identity: { name: `Fixture ${type}` },
+    completion: { hash: (type === "artist" ? "c" : "d").repeat(64), canDraft: true, identityStatus: "confirmed", textStatus: "draft_ready", photoStatus: "accepted", photo: { uri: "/fixture-catalog-photo.svg" },
+      suggested: { summary: `Fixture ${type} has documented music history.`, sources: [{ label: "Fixture", url: "https://mshpit.com/source" }] } } });
+  const ready = "Accepted photo displayed in this preview; verify the public page after publication.";
+  const photo = () => nodes(f.render()).find(node => node.type === "Image");
+  const acknowledged = () => nodes(f.render()).some(node => node.type === "Text" && node.props.children === ready);
+  f.button("Plan text and photo completion").props.onPress();
+  const artist = f.open("artist-fixture", "Artists"); reads[0].resolve(entity("artist")); await artist;
+  photo().props.onLoad(); f.input("Reason for catalog change").props.onChangeText("Fixture review");
+  f.button("Add to batch").props.onPress();
+  const venue = f.open(); assert.equal(reads[1].type, "venue"); assert.equal(reads[1].key, key);
+  assert.equal(acknowledged(), true, "This old artist marker explains why a generic browser wait raced");
+  assert.equal(f.input("Sourced page text").props.value, "Fixture artist has documented music history.");
+  assert.equal(f.button("Add to batch").props.disabled, true, "Pending selection cannot stage the old page");
+  reads[1].resolve(entity("venue")); await venue;
+  assert.equal(f.input("Sourced page text").props.value, "Fixture venue has documented music history.");
+  assert.equal(photo().props.accessibilityLabel, "Accepted catalog photo of Fixture venue");
+  assert.equal(acknowledged(), false); assert.equal(f.button("Add to batch").props.disabled, true);
+  photo().props.onLoad(); assert.equal(acknowledged(), true); assert.equal(f.button("Add to batch").props.disabled, false);
+  f.input("Reason for catalog change").props.onChangeText("Venue review"); f.button("Add to batch").props.onPress();
+  assert.deepEqual(JSON.parse([...storage.values()][0]).entries.map(entry => entry.draft.type), ["artist", "venue"]);
+});
+
 test("real editor restores saved drafts after remount, permits removal and clears a saved page's stale revision", async () => {
   const storage = new Map(), actions = {
     prepare: async entries => ({ results: entries.map((draft, index) => ({ ok: true, index, draft, current: row() })) }),

@@ -138,6 +138,13 @@ export function catalogCompletionFixture(type) {
     photo: { uri: "/fixture-catalog-photo.svg", creator: "Synthetic fixture", license: "CC0", sourcePage: "https://official.example.com/source" },
     suggested: { summary: `Fixture ${type} has documented music history.`, sources: [{ label: "Official fixture", url: "https://official.example.com/source" }] }, note: "Synthetic accepted photo and sourced text." } };
 }
+export async function waitForCatalogCompletionSelection(page, entity) {
+  // The previous page remains visible while the next exact read is pending.
+  // Its generic photo acknowledgement cannot prove that this selection loaded.
+  await page.getByText(`${entity.type} · ${entity.key} · revision ${entity.revision}`, { exact: true }).waitFor();
+  await page.getByLabel(`Accepted catalog photo of ${entity.identity.name}`, { exact: true }).waitFor();
+  await page.getByText("Accepted photo displayed in this preview; verify the public page after publication.", { exact: true }).waitFor();
+}
 export function catalogQueueFixture(type, cursor, query = "") {
   assert.ok(["artist", "venue", "event"].includes(type));
   assert.ok(["", "Fixture"].includes(query), "Unexpected queue query");
@@ -443,7 +450,7 @@ async function scenario(browser, origin, width, kind) {
           if (type === "artist") await page.getByRole("button", { name: "Plan text and photo completion", exact: true }).click();
           await page.getByRole("button", { name: "Find pages", exact: true }).click();
           await page.getByRole("button", { name: "Edit text", exact: true }).click();
-          await page.getByText("Accepted photo displayed in this preview; verify the public page after publication.", { exact: true }).waitFor();
+          await waitForCatalogCompletionSelection(page, catalogCompletionFixture(type));
           assert.equal(await page.getByLabel("Sourced page text", { exact: true }).inputValue(), `Fixture ${type} has documented music history.`);
           await page.getByLabel("Reason for catalog change", { exact: true }).fill("Synthetic completion review");
           await page.getByRole("button", { name: "Add to batch", exact: true }).click();
@@ -459,7 +466,7 @@ async function scenario(browser, origin, width, kind) {
         await page.getByRole("button", { name: /Catalog editor/ }).click();
         await page.getByText("Draft batch · 2", { exact: true }).waitFor();
         await page.getByRole("button", { name: "Edit saved draft", exact: true }).first().click();
-        await page.getByText("Accepted photo displayed in this preview; verify the public page after publication.", { exact: true }).waitFor();
+        await waitForCatalogCompletionSelection(page, catalogCompletionFixture("artist"));
         await page.getByLabel("Sourced page text", { exact: true }).fill("Fixture artist has reviewed music history.");
         await page.getByRole("button", { name: "Add to batch", exact: true }).click();
         await page.getByRole("button", { name: "Review prepared batch", exact: true }).click();

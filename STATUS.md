@@ -6,11 +6,11 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
-## 2026-10-04 Completion plan and saved catalog batches (local review)
+## 2026-10-04 Completion plan and saved catalog batches (draft PR 29)
 
 - Branch `codex/catalog-completion-review-20261004` starts at released master
   `d82b7ee47e2e524c83fd129c5a31e74e8a390cab` (including the queue work below).
-  The completion patch is reviewed for a draft PR and has not been deployed.
+  Draft PR 29 is open; the completion patch has not been merged or deployed.
 - Existing admin reads can return a bounded artist/venue completion plan with
   exact identity, protected text, source and accepted-photo status. New short
   drafts use stored matching provider facts; no worker/provider is activated.
@@ -20,8 +20,13 @@ August 4/5 audit/session log are historical journals, not current status.
 - No dependency, schema, worker-limit, grant, event-length or public UI change.
   Focused tests and independent review passed. Cloud validation confirmed all
   2,143 exported files, 72 tests, architecture and a 508.5-KiB gzip web build
-  below the unchanged 512-KiB budget. Eight browser cases remain unexecuted in
-  that restricted runner; existing PR CI runs all eight. Native administrator
+  below the unchanged 512-KiB budget. PR CI run 37217330043 passed test/build and
+  the three existing 390px catalog cases, then exposed a completion test race:
+  its generic photo acknowledgement was still showing the previous artist
+  while the venue read was pending. The runner now waits for the requested
+  exact identity and photo before checking text, with unchanged assertions and
+  timeouts. Updated CI must pass all eight cases; the four 1280px cases did not
+  run on that failed attempt. Native administrator
   UI/storage validation remains pending before a native rollout. See
   `docs/CATALOG_COMPLETION_REVIEW_2026-10-04.md` for scope and evidence.
 

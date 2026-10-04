@@ -100,6 +100,28 @@ before this work; no concurrent implementation was authorized in these files.
 
 ## Limits and follow-up
 
+### PR 29 browser synchronization correction
+
+Run `37217330043`, browser job `111480391801`, passed editor/exact-key/queue at
+390px, then failed the completion venue text assertion because the previous
+artist's generic photo acknowledgement was still visible while the correct
+venue read was pending. No client error or draft corruption was reported.
+All four 1280px catalog cases were not reached. Test/build passed separately.
+
+The narrow follow-up changes only the browser readiness helper, its unit test,
+the actual editor JSX regression and these review/status documents. It waits
+for the requested type/key/revision and named photo before checking the loaded
+photo acknowledgement; original text assertions and timeouts remain intact.
+A delayed-read regression confirms the old form is disabled during the request,
+the exact venue replaces it on success, and the venue's distinct photo hash
+requires its own load event even when fixture image bytes are shared. No
+production runtime, permission or provider behavior changes in this follow-up.
+All 18 targeted editor/browser-fixture tests passed locally and independently;
+the syntax, architecture and whitespace checks passed. Independent review found
+no blocking issue and confirmed that assertions and timeouts were preserved.
+Updated-head browser CI remains required before merge; the failed head was not
+blindly rerun.
+
 This phase plans and reviews completion. Existing image workers own acquisition;
 no new provider work is activated. Plans are not a traffic-ranked or scheduled
 job queue. The editor can only suggest from sufficiently bound stored evidence.
