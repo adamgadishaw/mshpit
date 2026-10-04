@@ -165,8 +165,9 @@ import {
   legacyImageRecoveryHealth,
 } from "./legacyPostImageRecovery.js";
 import { discoverySidebar } from "./discovery.js";
-import { pageHeadFor, publicDocumentForPath, resolveEntity, sitemapSnapshotHealth, catalogSeoMaintenanceStatus } from "./seo.js";
+import { pageHeadFor, publicDocumentForPath, publicVenueSnapshotForPath, resolveEntity, sitemapSnapshotHealth, catalogSeoMaintenanceStatus } from "./seo.js";
 import { pageHeadRoutes } from "./features/seo/pageHeadRoutes.js";
+import { publicVenueSnapshotRoutes } from "./features/seo/publicVenueSnapshot.js";
 import { userRewards } from "./rewards.js";
 import { prepareVerification, completeVerification, resendVerification, sendWelcomeOnce, verificationEnabled } from "./verification.js";
 import { memberBadgeFor, grantFirstWaveBadge } from "./memberBadges.js";
@@ -4660,6 +4661,7 @@ export const routes = {
   ...socialReactionRoutes({ database: db, ApiError, requireUser, rateLimit: limit, atomicWrite, addNotif, now }),
   ...discoverPhotoRoutes({ database: db, rateLimit: limit, ApiError }),
   ...pageHeadRoutes({ ApiError, rateLimit: limit, pageHeadFor }),
+  ...publicVenueSnapshotRoutes({ rateLimit: limit, readSnapshot: publicVenueSnapshotForPath }),
   ...capacityHandshakeRoutes({
     ApiError,
     databasePath: DATABASE_PATH,

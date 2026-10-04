@@ -53,6 +53,7 @@ for (const [name, privateSection] of [["ArtistScreen", "community"], ["VenueScre
       const calls = { auth: [], select: [], scroll: [] };
       const action = evaluate(source, node, {
         session, a: { profileKey: "artist" }, venue: { name: "Room" },
+        publicVenue: { resource: { scope: "public-venue:fixture" } },
         onRequireAuth: (...args) => calls.auth.push(args),
         setSectionSelection: (...args) => calls.select.push(args),
         pageScroll: { current: { scrollTo: (...args) => calls.scroll.push(args) } },

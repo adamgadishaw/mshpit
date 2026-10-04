@@ -8,6 +8,7 @@ import { createRequire } from "node:module";
 import { readFileSync, readdirSync } from "node:fs";
 import { dirname, extname, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { venueHydrationAlias, venueHydrationPath, venueHydrationResponse, venueHydrationText } from "./venue-hydration-fixture.mjs";
 
 const require = createRequire(import.meta.url);
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -69,6 +70,7 @@ export const serverCollectionPaths = Object.freeze([
 export const clientCollectionPaths = Object.freeze(["/artists", "/events", "/venues"]);
 export const navigationCases = Object.freeze([
   ...[390, 1280].flatMap(width => [
+    ...[venueHydrationAlias, venueHydrationPath].map(path => ({ name: `cold-guest-venue-${path.split("/").at(-1)}-${width}`, kind: "venue-hydration", path, width })),
     ...[postPath, eventPath].map(path => ({ name: `deep-link-${width < 620 ? "home" : "intro"}-${path.startsWith("/post") ? "post" : "event"}-${width}`, kind: "deep-link", path, width })),
     ...["canonical-404", "stale-upcoming", "artist-fallback"].map(mode => ({
       name: `cancelled-event-${mode}-${width}`, kind: "cancelled-event", mode, path: eventPath, width, member: mode === "stale-upcoming",
@@ -115,9 +117,13 @@ function injectQueryMetadataFixture(html, url) {
     .replace("</head>", head + "</head>");
 }
 
-export function fixtureApiResponse(pathname, { member = false, method = "GET", resolvedPath = postPath, artistBioMode = "imported", discoverArtist = false, discoverShow = false, discoverArtwork = false, artistLookupTransient = false, artistIdentityPending = false, cancelledEvent = false } = {}) {
+export function fixtureApiResponse(pathname, { member = false, method = "GET", resolvedPath = postPath, artistBioMode = "imported", discoverArtist = false, discoverShow = false, discoverArtwork = false, artistLookupTransient = false, artistIdentityPending = false, cancelledEvent = false, venueHydration = false, after = null } = {}) {
   if (pathname === "/api/client-errors" && method === "POST") return { ok: true };
   assert.equal(method, "GET", `Navigation must not mutate data: ${method} ${pathname}`);
+  if (venueHydration) {
+    const result = venueHydrationResponse(pathname, { resolvedPath, after });
+    if (result) return result;
+  }
   if (cancelledEvent && pathname === "/api/resolve" && resolvedPath === eventPath) {
     return { entity: { ...cancelledEventFixture, artistIdentityPending } };
   }
@@ -391,6 +397,7 @@ async function runCase(browser, origin, item) {
         state.lookupAttempts += 1;
       }
       const body = fixtureApiResponse(url.pathname, { member: state.member, method: request.method(), resolvedPath: url.searchParams.get("path") || undefined, artistBioMode: state.artistBioMode, discoverArtist: item.kind === "discover-canonical-artist", discoverShow, discoverArtwork: item.kind === "discover-event-back",
+        venueHydration: item.kind === "venue-hydration", after: url.searchParams.get("after"),
         cancelledEvent: item.kind === "cancelled-event",
         artistIdentityPending: (item.kind === "discover-show-artist-conflict" && !state.identityConfirmed) || (item.kind === "cancelled-event" && item.mode === "artist-fallback"),
         artistLookupTransient: item.kind === "discover-show-artist-recovery" && !state.catalogRepaired });
@@ -413,7 +420,31 @@ async function runCase(browser, origin, item) {
       await page.goto(origin + "/", { waitUntil: "networkidle" }); await landing(page);
     }
     await page.goto(origin + start, { waitUntil: item.kind === "delayed" ? "domcontentloaded" : "networkidle", timeout: timeoutMs });
-    if (item.kind === "cancelled-event") {
+    if (item.kind === "venue-hydration") {
+      const assertVenue = async () => {
+        await page.getByRole("heading", { name: "Lee's Palace", exact: true }).waitFor();
+        await assertPath(page, venueHydrationPath);
+        await page.getByText("Toronto, Ontario, Canada", { exact: true }).last().waitFor();
+        await page.getByText("529 Bloor Street West · M5S 1Y5", { exact: true }).waitFor();
+        await page.getByText(venueHydrationText, { exact: true }).waitFor();
+        await page.getByText("Hydration concert 1", { exact: true }).waitFor();
+        await page.getByText("UPCOMING PREVIEW", { exact: true }).waitFor();
+        assert.equal(await page.getByText("No announced shows yet", { exact: true }).count(), 0);
+      };
+      await assertVenue();
+      await page.getByRole("tab", { name: "Shows venue page section", exact: true }).click();
+      await page.getByRole("button", { name: "Show 2 more upcoming shows", exact: true }).click();
+      await page.getByRole("button", { name: "Next upcoming shows", exact: true }).click();
+      await page.getByText("Hydration concert 9", { exact: true }).waitFor();
+      assert.equal(await page.getByText("Hydration concert 1", { exact: true }).count(), 0, "Paging replaces the bounded window");
+      await page.getByText("UPCOMING PREVIEW", { exact: true }).waitFor();
+      await page.getByRole("button", { name: "First upcoming shows", exact: true }).click();
+      await page.getByText("Hydration concert 1", { exact: true }).waitFor();
+      await page.reload({ waitUntil: "networkidle" }); await assertVenue();
+      assert.equal(state.calls.some(call => call.path.startsWith("/api/feed")), false);
+      assert.ok(state.calls.some(call => call.path === "/api/venue-snapshot" && call.query.includes("after=fixture-next")));
+      await snapshot("cold guest venue canonical identity, public facts and paging");
+    } else if (item.kind === "cancelled-event") {
       const assertCancelled = async () => {
         await page.getByText("THIS SHOW WAS CANCELLED", { exact: true }).waitFor();
         if (item.mode !== "artist-fallback") {
