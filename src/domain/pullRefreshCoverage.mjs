@@ -36,6 +36,7 @@ export const PULL_REFRESH_COVERAGE = Object.freeze([
   coverage("ArtistHubScreen.jsx", "form", "Artist management is a command workspace; refresh must not interrupt unsaved work."),
   coverage("AuthScreen.jsx", "form", "Authentication form has no refreshable remote collection."),
   coverage("BulkTourDatesScreen.jsx", "form", "Bulk date composer must preserve unsaved work."),
+  coverage("CatalogEditorScreen.jsx", "form", "Catalog text batches preserve unsaved drafts; Find pages explicitly reloads the queue."),
   coverage("DeleteAccountScreen.jsx", "form", "Destructive confirmation flow has no refreshable collection."),
   coverage("EditArtistProfileScreen.jsx", "form", "Profile editor must preserve unsaved work."),
   coverage("EditProfileScreen.jsx", "form", "Profile editor must preserve unsaved work."),
