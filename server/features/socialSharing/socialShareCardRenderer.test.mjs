@@ -967,6 +967,31 @@ function newsDocument(overrides = {}) {
   };
 }
 
+test("manual news share cards attribute citations without photo evidence or confirmation marks", async () => {
+  const { normalizedShareProcessInput } = await import("./socialShareCardProcess.js");
+  const artwork = registeredLicensedArtwork();
+  const articles = ["Fixture Artist", "Fixture Venue", "Fixture Label", "Fixture Reporter", "Fixture Ticket Office"]
+    .map(name => ({ kind: "article", name }));
+  const photo = { kind: "photo", name: "Fixture Photographer" };
+  for (const variant of ["news", "news-link"]) {
+    const model = newsShareCardModel(newsDocument({ origin: "self_written", sources: [articles[0], photo] }), { variant });
+    assert.equal(model.sources, "Sources: Fixture Artist");
+    assert.equal(normalizedShareProcessInput(model).model.origin, "self_written");
+    for (const options of [{}, { artworkDataUri: "data:image/jpeg;base64,AAAA", artwork }]) {
+      const svg = socialShareCardSvg(model, options);
+      assert.match(svg, /Sources: Fixture Artist/u);
+      assert.doesNotMatch(svg, /Confirmed by|Fixture Photographer|stroke="#6fcf97"/u);
+      const generated = newsShareCardModel(newsDocument({ sources: [articles[0]] }), { variant });
+      assert.match(socialShareCardSvg(generated, options), /Confirmed by Fixture Artist/u);
+      assert.match(socialShareCardSvg(generated, options), /stroke="#6fcf97"/u);
+    }
+    const many = newsShareCardModel(newsDocument({ origin: "self_written", sources: [...articles, photo] }), { variant });
+    assert.equal(many.sources, variant === "news-link" ? "Sources: Fixture Artist, Fixture Venue and 3 more"
+      : "Sources: Fixture Artist, Fixture Venue, Fixture Label and Fixture Reporter and 1 more");
+    assert.doesNotMatch(many.sources, /Fixture Photographer/u);
+  }
+});
+
 test("news accepts bounded trusted artwork only, with context included in the cache identity", () => {
   const trusted = registeredLicensedArtwork();
   const story = newsDocument({ photo: "https://rss.example/unlicensed.jpg", image: "https://rss.example/other.jpg" });

@@ -206,6 +206,9 @@ async function scenario(browser, origin, width) {
     await post.click();
     await artist.waitFor({ state: "hidden" });
     await page.getByText(review, { exact: true }).waitFor();
+    await page.getByRole("button", {
+      name: "Overall 5.0 out of 5. Show the rating breakdown.", exact: true,
+    }).waitFor();
     const publishedText = await page.locator("body").innerText();
     assert.doesNotMatch(publishedText, /Band 0\.0|Room 0\.0|Night 2\.5/, "Unrated dimensions must not become zero scores or halve the remembered experience.");
     assert.match(publishedText, /5\.0/, "The published card must retain the member's overall experience score.");

@@ -25,6 +25,10 @@ function NewsStoryCard({ story, post, compact = false, full = false, accountId =
   const sourceLine = newsSourceLine(story);
   const articleSources = newsStorySources(story);
   const allSources = newsStorySources(story, { includePhoto: true });
+  const manual = story.origin === "self_written";
+  const compactSourceLabel = manual
+    ? articleSources.length ? `${articleSources.length} ${articleSources.length === 1 ? "source" : "sources"}` : ""
+    : story.confirmedBy > 1 ? `${story.confirmedBy} outlets` : "";
   const meta = `${newsCategoryLabel(story.category).toUpperCase()} · ${relativeTime(story.publishedAt)}`;
   // The reader's own city is named in the story (set by the server per reader).
   const local = typeof story.localTo === "string" && story.localTo ? `In ${story.localTo}` : "";
@@ -39,7 +43,7 @@ function NewsStoryCard({ story, post, compact = false, full = false, accountId =
         <View style={styles.compactCopy}>
           <Text style={styles.kicker} numberOfLines={1}>{local ? `${local.toUpperCase()} · ${meta}` : meta}</Text>
           <Text style={styles.compactHeadline} numberOfLines={3}>{story.headline}</Text>
-          {story.confirmedBy > 1 ? <Text style={styles.compactSources} numberOfLines={1}>{`${story.confirmedBy} outlets`}</Text> : null}
+          {compactSourceLabel ? <Text style={styles.compactSources} numberOfLines={1}>{compactSourceLabel}</Text> : null}
         </View>
       </Pressable>
     );
@@ -93,7 +97,7 @@ function NewsStoryCard({ story, post, compact = false, full = false, accountId =
       <NewsPostActions key={`${accountId || "guest"}:${story.postId}`} story={story} post={post} accountId={accountId} onOpen={onOpen} onOpenProfile={onOpenProfile} onReport={onReport} onDelete={onDelete} onRequireAuth={onRequireAuth} />
       {full && allSources.length ? (
         <View style={styles.sources}>
-          <Icon name="check" size={13} color={colors.good} />
+          {!manual ? <Icon name="check" size={13} color={colors.good} /> : null}
           <View style={styles.sourceText}>
             <Text style={styles.sourcesLabel}>Sources</Text>
             {allSources.map((source) => <Text key={`${source.kind || "article"}:${source.url}`} style={styles.sourceRow}>
@@ -106,9 +110,9 @@ function NewsStoryCard({ story, post, compact = false, full = false, accountId =
       ) : null}
       {!full && sourceLine && articleSources.length ? (
         <View style={styles.sources}>
-          <Icon name="check" size={13} color={colors.good} />
+          {!manual ? <Icon name="check" size={13} color={colors.good} /> : null}
           <Text style={styles.sourceText}>
-            {"Confirmed by "}
+            {manual ? "Sources: " : "Confirmed by "}
             {articleSources.slice(0, 4).map((source, index, list) => (
               <Text key={source.url}>
                 <Text style={styles.sourceLink} onPress={Platform.OS === "web" ? undefined : () => openSource(source.url)} accessibilityRole="link"

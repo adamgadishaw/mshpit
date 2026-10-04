@@ -18,7 +18,7 @@ export default function NewsRailPanel({ onOpenStory, onOpenAll }) {
       <View style={styles.head}>
         <View>
           <Text style={styles.title}>MUSIC NEWS</Text>
-          <Text style={styles.sub}>Confirmed by at least two outlets</Text>
+          <Text style={styles.sub}>{news.stories.some(story => story.origin === "self_written") ? "The latest music stories" : "Confirmed by at least two outlets"}</Text>
         </View>
         {onOpenAll ? (
           <Pressable onPress={onOpenAll} hitSlop={8} style={({ focused }) => [focused && focusRing]} accessibilityRole="button" accessibilityLabel="See all music news">

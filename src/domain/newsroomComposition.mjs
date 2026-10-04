@@ -6,14 +6,14 @@ export const NEWSROOM_DRAFT_TTL_MS = 24 * 60 * 60 * 1000;
 export const MAX_NEWSROOM_ARTICLE_SOURCES = 10;
 
 export const emptyNewsroomForm = () => ({ headline: "", summary: "", body: "", category: "tour",
-  sources: Array.from({ length: 3 }, () => ({ name: "", url: "" })), photo: null,
+  sources: [{ name: "", url: "" }], photo: null,
   photoName: "", photoUrl: "", photoCredit: "" });
 const text = (value, limit) => typeof value === "string" ? value.slice(0, limit) : "";
 export function newsroomDraftEnvelope(accountId, form, attempt, savedPayload = null, at = Date.now()) {
   return { version: 1, accountId: String(accountId), updatedAt: at,
     form: { headline: text(form.headline, 300), summary: text(form.summary, 1200), body: text(form.body, 60000),
       category: text(form.category, 40) || "tour",
-      sources: Array.from({ length: Math.min(MAX_NEWSROOM_ARTICLE_SOURCES, Math.max(3, form.sources?.length || 0)) }, (_, index) => ({
+      sources: Array.from({ length: Math.min(MAX_NEWSROOM_ARTICLE_SOURCES, Math.max(1, form.sources?.length || 0)) }, (_, index) => ({
         name: text(form.sources?.[index]?.name, 160), url: text(form.sources?.[index]?.url, 2048),
       })),
       photo: /^ma_[A-Za-z0-9_-]{1,160}$/u.test(form.photo?.assetId || "") ? { assetId: form.photo.assetId } : null,

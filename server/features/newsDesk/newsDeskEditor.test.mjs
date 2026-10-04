@@ -184,7 +184,7 @@ test("self-written save keys replay one draft and reject a different payload", (
 });
 
 
-test("self-written minimum is 500 words; routine guidance is not an upper bound", () => {
+test("self-written stories require a body without a word minimum and retain source and photo guards", () => {
   const value = { headline: "Synthetic band announces a new studio album",
     summary: "Independent music reports confirm the new album and its release plans.",
     sources: [{ kind: "article", name: "NME", url: "https://www.nme.com/news/minimum-fixture" },
@@ -192,13 +192,26 @@ test("self-written minimum is 500 words; routine guidance is not an upper bound"
       { kind: "article", name: "Pitchfork", url: "https://pitchfork.com/news/minimum-fixture" }],
     photo: { assetId: "ma_minimum_fixture", name: "Synthetic photographer", url: "https://example.test/photo-rights" } };
   const withWords = count => ({ ...value, body: Array.from({ length: count }, (_, index) => `album${index + 1}`).join(" ") });
-  assert.throws(() => normalizeSelfWrittenStory(withWords(499)), /at least 500 words/u);
   const { instance, calls } = editor();
-  for (const count of [500, 750, 1001]) {
+  for (const body of [undefined, null, "", " \t\r\n\u00a0\u2003 "]) {
+    assert.throws(() => normalizeSelfWrittenStory({ ...value, body }), /article body/u);
+    assert.throws(() => instance.writeSelfWritten({ ...value, body, actorId: "news_editor_account" }), /article body/u);
+  }
+  for (const count of [1, 74, 199, 499, 500, 750, 1001]) {
     assert.equal(normalizeSelfWrittenStory(withWords(count)).wordCount, count);
     assert.equal(instance.writeSelfWritten({ ...withWords(count), actorId: "news_editor_account" }).wordCount, count);
   }
-  assert.throws(() => normalizeSelfWrittenStory({ ...withWords(500), sources: value.sources.slice(0, 2) }), /at least 3/u);
-  assert.throws(() => normalizeSelfWrittenStory({ ...withWords(500), sources: Array.from({ length: 11 }, (_, index) => ({ ...value.sources[index % 3], url: value.sources[index % 3].url + index })) }), /article sources/u);
-  assert.equal(calls.length, 0, "manual word limits do not invoke generation");
+  assert.equal(normalizeSelfWrittenStory({ ...value, body: "x" }).body, "x", "no replacement character quota");
+  assert.equal(normalizeSelfWrittenStory({ ...value, body: "album report ".repeat(5_001) }).body.length, 60_000, "existing body size bound remains");
+  assert.equal(normalizeSelfWrittenStory({ ...withWords(1), sources: value.sources.slice(0, 1) }).sources.filter(source => source.kind === "article").length, 1);
+  assert.throws(() => normalizeSelfWrittenStory({ ...withWords(1), sources: [] }), /named article sources/u);
+  assert.throws(() => normalizeSelfWrittenStory({ ...withWords(1), sources: Array.from({ length: 11 }, (_, index) => ({ ...value.sources[index % 3], url: value.sources[index % 3].url + index })) }), /article sources/u);
+  assert.throws(() => normalizeSelfWrittenStory({ ...withWords(1), sources: value.sources.map(source => ({ ...source, url: "https://unrelated.example.com/report" })) }), /publisher name must match/u);
+  assert.throws(() => normalizeSelfWrittenStory({ ...withWords(1), photo: null }), /verified photo/u);
+  assert.throws(() => normalizeSelfWrittenStory({ ...withWords(1), photo: { assetId: value.photo.assetId } }), /photo source/u);
+  const invalidDraft = instance.writeSelfWritten({ ...withWords(1), actorId: "news_editor_account" });
+  db.prepare("UPDATE news_drafts SET result=json_set(result,'$.body',?) WHERE id=?").run(" \t\n ", invalidDraft.id);
+  assert.throws(() => instance.publish(invalidDraft.id), /article body/u, "publication rechecks the stored body");
+  assert.equal(db.prepare("SELECT status FROM news_drafts WHERE id=?").get(invalidDraft.id).status, "draft");
+  assert.equal(calls.length, 0, "manual articles do not invoke generation");
 });

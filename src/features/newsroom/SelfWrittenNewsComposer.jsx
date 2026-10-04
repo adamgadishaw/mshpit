@@ -76,8 +76,8 @@ export default function SelfWrittenNewsComposer({ accountId, busy, saving = fals
 
   const updateSource = (index, field, value) => setForm((current) => ({ ...current,
     sources: current.sources.map((source, sourceIndex) => sourceIndex === index ? { ...source, [field]: value } : source) }));
-  const sourcesReady = sources.slice(0, 3).every((source) => source.name.trim() && source.url.trim())
-    && sources.slice(3).every((source) => (!source.name.trim() && !source.url.trim()) || (source.name.trim() && source.url.trim()));
+  const sourcesReady = sources.some((source) => source.name.trim() && source.url.trim())
+    && sources.every((source) => (!source.name.trim() && !source.url.trim()) || (source.name.trim() && source.url.trim()));
   const addSource = () => setForm((current) => current.sources.length >= MAX_NEWSROOM_ARTICLE_SOURCES ? current : {
     ...current, sources: [...current.sources, { name: "", url: "" }],
   });
@@ -126,7 +126,7 @@ export default function SelfWrittenNewsComposer({ accountId, busy, saving = fals
     <Text selectable style={styles.help}>Write the article yourself. This route does not call Anthropic, is kept separate from generated-story limits, and requires a verified photo and provenance.</Text>
     <Field label="Headline"><TextInput accessibilityLabel="Self-written news headline" style={styles.input} maxLength={300} value={headline} onChangeText={update("headline")} placeholder="A clear, specific headline" placeholderTextColor={colors.textFaint} /></Field>
     <Field label="Summary" help="The short hook shown on cards and in search previews."><TextInput accessibilityLabel="Self-written news summary" style={styles.input} maxLength={1200} value={summary} onChangeText={update("summary")} placeholder="Why this matters now" placeholderTextColor={colors.textFaint} /></Field>
-    <Field label="Article" help={`${words} words. At least 500 words are required. Aim for 500–750 for routine news; histories and deep breakdowns can be 1,000 words or more.`}><TextInput accessibilityLabel="Self-written news article" style={[styles.input, styles.articleInput]} multiline maxLength={60000} value={body} onChangeText={update("body")} placeholder="Write the reported story here..." placeholderTextColor={colors.textFaint} /></Field>
+    <Field label="Article" help={`${words} words. Report the facts without padding. Attribute quotes and reporting to their sources.`}><TextInput accessibilityLabel="Self-written news article" style={[styles.input, styles.articleInput]} multiline maxLength={60000} value={body} onChangeText={update("body")} placeholder="Write the reported story here..." placeholderTextColor={colors.textFaint} /></Field>
     <Field label="Category"><Choice label="Article category" value={category} onChange={update("category")} options={[
       { value: "release", label: "New music" }, { value: "tour", label: "Tours" }, { value: "festival", label: "Festivals" },
       { value: "lineup", label: "Lineups" }, { value: "awards", label: "Awards" }, { value: "charts", label: "Charts" },
@@ -134,11 +134,11 @@ export default function SelfWrittenNewsComposer({ accountId, busy, saving = fals
     ]} /></Field>
     <View style={styles.categoryBlock}>
       <Text style={styles.fieldLabel}>Article sources</Text>
-      <Text style={styles.help}>Three independent configured music publishers are required. Photo attribution is recorded separately and never counts here.</Text>
+      <Text style={styles.help}>Cite sources that directly support the story, including official statements and independent reporting where relevant. Name each source accurately. Photo attribution is separate.</Text>
       {sources.map((source, index) => <View key={`article-source-${index + 1}`} style={styles.sourceBlock}>
         <Text style={styles.sourceLabel}>Source {index + 1}</Text>
-        <TextInput accessibilityLabel={`Self-written article source ${index + 1} name`} style={styles.input} maxLength={160} value={source.name} onChangeText={(value) => updateSource(index, "name", value)} placeholder="Configured publisher name" placeholderTextColor={colors.textFaint} />
-        <TextInput accessibilityLabel={`Self-written article source ${index + 1} URL`} style={styles.input} maxLength={2048} value={source.url} onChangeText={(value) => updateSource(index, "url", value)} placeholder="https://publisher.example/report" placeholderTextColor={colors.textFaint} autoCapitalize="none" autoCorrect={false} />
+        <TextInput accessibilityLabel={`Self-written article source ${index + 1} name`} style={styles.input} maxLength={160} value={source.name} onChangeText={(value) => updateSource(index, "name", value)} placeholder="Source or organization name" placeholderTextColor={colors.textFaint} />
+        <TextInput accessibilityLabel={`Self-written article source ${index + 1} URL`} style={styles.input} maxLength={2048} value={source.url} onChangeText={(value) => updateSource(index, "url", value)} placeholder="https://source.example/report" placeholderTextColor={colors.textFaint} autoCapitalize="none" autoCorrect={false} />
       </View>)}
       {sources.length < MAX_NEWSROOM_ARTICLE_SOURCES
         ? <Button small title="Add another source" variant="secondary" accessibilityLabel="Add another article source" disabled={disabled || busy || uploading} onPress={addSource} />
@@ -153,7 +153,7 @@ export default function SelfWrittenNewsComposer({ accountId, busy, saving = fals
       <TextInput accessibilityLabel="Photo credit" style={styles.input} maxLength={240} value={photoCredit} onChangeText={update("photoCredit")} placeholder="Optional credit or license" placeholderTextColor={colors.textFaint} />
       {photoError ? <Text selectable style={styles.error}>{photoError}</Text> : null}
     </View>
-    <Button small title="Save self-written draft" disabled={disabled || uploading || words < 500 || !photo?.assetId || !headline.trim() || !summary.trim() || !sourcesReady || !photoName.trim() || !photoUrl.trim()} onPress={save} accessibilityLabel="Save self-written news draft" />
+    <Button small title="Save self-written draft" disabled={disabled || uploading || !body.trim() || !photo?.assetId || !headline.trim() || !summary.trim() || !sourcesReady || !photoName.trim() || !photoUrl.trim()} onPress={save} accessibilityLabel="Save self-written news draft" />
   </View>;
 }
 

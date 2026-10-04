@@ -322,7 +322,7 @@ test("real media adapter rejects a grant revoked during storage work before dura
   assert.equal(db.prepare("SELECT result FROM media_api_audit WHERE action='grant_revoked' AND grant_id=?").get(issued.value.grantId).result, "revoked");
 });
 
-test("real editor path persists actor provenance, rejects stale revision, and publishes without a provider", async () => {
+test("real assistant editor publishes a concise officially sourced article with provenance and revision guards", async () => {
   const api = service();
   const issued = grant(api);
   const authorization = `Bearer ${issued.accessToken}`;
@@ -331,15 +331,13 @@ test("real editor path persists actor provenance, rejects stale revision, and pu
   assert.deepEqual({
     ...db.prepare("SELECT owner_id,kind,status FROM media_assets WHERE id=?").get(asset.id),
   }, { owner_id: owner.id, kind: "image", status: "ready" });
-  const body = Array.from({ length: 180 }, (_, index) => `Synthetic tour report paragraph ${index + 1} confirms the announced dates and music release plans.`).join(" ");
+  const body = "The fictional band announced new tour dates on its website. Tickets go on sale Friday, according to the announcement.";
   const created = api.createNewsDraft({ authorization, body: {
     headline: "Synthetic band announce 2027 world tour dates",
     summary: "The synthetic band has announced a new world tour with dates that will bring the group back to major venues.",
     body,
     sources: [
-      { kind: "article", name: "NME", url: "https://www.nme.com/news/tour-1" },
-      { kind: "article", name: "Stereogum", url: "https://www.stereogum.com/tour-2" },
-      { kind: "article", name: "Pitchfork", url: "https://pitchfork.com/news/tour-3" },
+      { kind: "article", name: "Fixture Artist", url: "https://artist.example.com/tour" },
     ],
     photo: { assetId: asset.id, source: { name: "Synthetic photographer", url: "https://example.com/synthetic-photo" } },
   }, idempotencyKey: "editor-draft-0001" });
@@ -360,6 +358,10 @@ test("real editor path persists actor provenance, rejects stale revision, and pu
     (error) => error instanceof ApiError && error.code === "CONFLICT");
   const published = api.publishNewsDraft({ authorization, draftId: created.draft.id, expectedRevision: 0, idempotencyKey: "editor-publish-0001" });
   assert.equal(published.draft.revision, 1);
+  assert.equal(published.draft.body, body);
+  assert.deepEqual(published.draft.sources.filter(source => source.kind === "article"), [
+    { kind: "article", name: "Fixture Artist", url: "https://artist.example.com/tour" },
+  ]);
   assert.equal(db.prepare("SELECT user_id FROM posts WHERE id=?").get(published.postId).user_id, "media_http_publisher");
   assert.equal(db.prepare("SELECT asset_id FROM post_media WHERE post_id=?").get(published.postId).asset_id, asset.id);
   assert.deepEqual({

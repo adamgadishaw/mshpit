@@ -25,6 +25,9 @@ function story(id, headline, age) {
     author, likes: 0, likedByMe: false, commentCount: 0, viewCount: 1, confirmedBy: 3, publishedAt: now - age, updatedAt: now - age };
 }
 const latest = story("browser-latest", latestTitle, 60_000);
+latest.origin = "self_written";
+latest.sources = [{ kind: "article", name: "Fixture Artist", url: "https://artist.example.com/tour" }];
+latest.confirmedBy = 1;
 const earlier = story("browser-earlier", earlierTitle, 3_600_000);
 const toPost = (news) => ({ id: news.postId, userId: author.id, user: author, kind: "status", artist: "Fixture Artist", artistKey: "fixture-artist",
   venue: "", city: "Toronto", date: "", at: news.publishedAt, createdAt: news.publishedAt, review: news.summary, text: news.summary,
@@ -178,6 +181,13 @@ async function scenario(browser, origin, item) {
       await page.getByText("News for US and Canada", { exact: true }).waitFor();
       await page.getByText("Picked from your city, Toronto.", { exact: true }).waitFor();
       await page.getByText("In Toronto", { exact: true }).first().waitFor();
+      if (item.width >= 1280) {
+        const rail = page.getByLabel("Music news", { exact: true });
+        await rail.getByText("The latest music stories", { exact: true }).waitFor();
+        assert.equal(await rail.getByText("Confirmed by at least two outlets", { exact: true }).count(), 0);
+        await rail.getByText("1 source", { exact: true }).waitFor();
+        await rail.getByText("3 outlets", { exact: true }).waitFor();
+      }
       await page.getByRole("button", { name: "Change where your news comes from", exact: true }).click();
       mkdirSync(join(root, ".tmp", "news-browser"), { recursive: true });
       await page.screenshot({ path: join(root, ".tmp", "news-browser", `news-region-${item.width}.png`) });
@@ -191,6 +201,9 @@ async function scenario(browser, origin, item) {
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false);
     } else if (item.kind === "deep-link") {
       await page.getByText(latestTitle, { exact: true }).last().waitFor();
+      await page.getByText("Sources", { exact: true }).last().waitFor();
+      assert.equal(await page.getByRole("link", { name: "Fixture Artist", exact: true }).last().getAttribute("href"), "https://artist.example.com/tour");
+      assert.equal(await page.getByText("Confirmed by Fixture Artist", { exact: true }).count(), 0);
       assert.equal(state.calls.filter(call => call.path === "/api/feed/news-introduction").length, 0,
         "A For You screen mounted underneath a deep-link overlay must not consume an introduction.");
     } else {
@@ -224,6 +237,9 @@ async function scenario(browser, origin, item) {
       await page.screenshot({ path: join(root, ".tmp", "news-browser", `news-live-${item.width}.png`) });
       const fullCard = page.getByRole("article").filter({ has: page.getByText(latestTitle, { exact: true }) }).last();
       await fullCard.waitFor();
+      await fullCard.getByText("Sources: Fixture Artist", { exact: true }).waitFor();
+      assert.equal(await fullCard.getByRole("link", { name: "Fixture Artist", exact: true }).getAttribute("href"), "https://artist.example.com/tour");
+      await page.getByText("Confirmed by Fixture Press One, Fixture Press Two and Fixture Press Three", { exact: true }).first().waitFor();
       await fullCard.getByRole("button", { name: "0 likes", exact: true }).click();
       await until(() => state.liked, "The news Like control did not use the normal post mutation.");
       await fullCard.getByRole("button", { name: "1 like", exact: true }).waitFor();

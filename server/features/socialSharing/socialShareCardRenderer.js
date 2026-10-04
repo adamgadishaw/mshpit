@@ -424,12 +424,14 @@ export function newsShareCardModel(story, { variant = "news", fallbackArtwork = 
   if (!shareUrl || !Number.isFinite(published)) return null;
   const artists = (Array.isArray(story.artists) ? story.artists : [])
     .map((artist) => cleanText(artist?.name, 80)).filter(Boolean).slice(0, 3);
+  const manual = story.origin === "self_written";
   const outlets = [...new Set((Array.isArray(story.sources) ? story.sources : [])
+    .filter((source) => !manual || source?.kind !== "photo")
     .map((source) => cleanText(source?.name, 60)).filter(Boolean))];
   // The link preview has one short line for its sources.
   const sources = variant === "news-link" && outlets.length > 3
-    ? `Confirmed by ${outlets.slice(0, 2).join(", ")} and ${outlets.length - 2} more`
-    : newsSourceLine({ sources: outlets.map((name) => ({ name })) });
+    ? `${manual ? "Sources:" : "Confirmed by"} ${outlets.slice(0, 2).join(", ")} and ${outlets.length - 2} more`
+    : newsSourceLine({ origin: story.origin, sources: outlets.map((name) => ({ name })) });
   const artwork = normalizedArtwork(fallbackArtwork, { allowNewsIllustration: true });
   return Object.freeze({
     version: CARD_VERSION,
@@ -442,6 +444,7 @@ export function newsShareCardModel(story, { variant = "news", fallbackArtwork = 
     lede: cleanReview(story.summary, 320),
     about: artists.join(", "),
     sources: cleanText(sources, 200),
+    ...(manual ? { origin: "self_written" } : {}),
     subtitle: "",
     venue: "",
     place: "",
@@ -813,7 +816,8 @@ function newsShareSvg(model, artworkDataUri = "", artwork = null) {
   const headlineLines = wrapMeasuredLines(model.headline, { maxWidth: width * HEAVY_TEXT_WIDTH, fontSize: headlineSize, letterSpacing: -1, maxLines: hasArtwork ? 4 : 5 });
   const headlineTop = hasArtwork ? 995 : card.y + 310;
   const headlineBottom = headlineTop + (headlineLines.length - 1) * headlineHeight;
-  const sourceLines = wrapMeasuredLines(model.sources, { maxWidth: width - 44, fontSize: 30, maxLines: 2 });
+  const sourceOffset = model.origin === "self_written" ? 0 : 44;
+  const sourceLines = wrapMeasuredLines(model.sources, { maxWidth: width - sourceOffset, fontSize: 30, maxLines: 2 });
   const sourceTop = card.stubTop - 72 - Math.max(0, sourceLines.length - 1) * 40;
   const ledeTop = headlineBottom + (hasArtwork ? 64 : 80);
   const ledeHeight = hasArtwork ? 42 : 52;
@@ -842,7 +846,7 @@ function newsShareSvg(model, artworkDataUri = "", artwork = null) {
   <g data-section="news-headline">${svgTextLines(headlineLines, { x: left, y: headlineTop, lineHeight: headlineHeight, fontSize: headlineSize, fill: "#fff8ee", weight: 900, letterSpacing: -1 })}</g>
   <g data-section="news-lede">${svgTextLines(ledeLines, { x: left, y: ledeTop, lineHeight: ledeHeight, fontSize: ledeSize, fill: "#d9d4cc", weight: 600 })}</g>
   ${!hasArtwork && aboutTop < sourceTop - 64 ? svgTextLines(aboutLines, { x: left, y: aboutTop, lineHeight: 40, fontSize: 30, fill: palette.end, weight: 800 }) : ""}
-  ${sourceLines.length ? `<g data-section="news-sources"><path d="M${left} ${sourceTop - 10}l10 10 20-22" fill="none" stroke="#6fcf97" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>${svgTextLines(sourceLines, { x: left + 44, y: sourceTop, lineHeight: 40, fontSize: 30, fill: "#b9b3c2", weight: 700 })}</g>` : ""}
+  ${sourceLines.length ? `<g data-section="news-sources">${sourceOffset ? `<path d="M${left} ${sourceTop - 10}l10 10 20-22" fill="none" stroke="#6fcf97" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>` : ""}${svgTextLines(sourceLines, { x: left + sourceOffset, y: sourceTop, lineHeight: 40, fontSize: 30, fill: "#b9b3c2", weight: 700 })}</g>` : ""}
   <line x1="${card.x + 30}" y1="${card.stubTop}" x2="${card.x + card.width - 30}" y2="${card.stubTop}" stroke="#3d3a46" stroke-width="3" stroke-dasharray="10 12"/>
   <circle cx="${card.x}" cy="${card.stubTop}" r="22" fill="#0b0815"/><circle cx="${card.x + card.width}" cy="${card.stubTop}" r="22" fill="#0b0815"/>
   ${communityMarkSvg({ x: left + 22, y: card.stubTop + 66, scale: 0.07, opacity: 1 })}
@@ -859,7 +863,8 @@ function newsPhotoLinkSvg(model, artworkDataUri, artwork) {
   const photoX = 740;
   const width = photoX - left - 48;
   const headlineLines = wrapMeasuredLines(model.headline, { maxWidth: width * HEAVY_TEXT_WIDTH, fontSize: 44, letterSpacing: -0.5, maxLines: 5 });
-  const sourceLines = wrapMeasuredLines(model.sources, { maxWidth: width - 34, fontSize: 20, maxLines: 2 });
+  const sourceOffset = model.origin === "self_written" ? 0 : 34;
+  const sourceLines = wrapMeasuredLines(model.sources, { maxWidth: width - sourceOffset, fontSize: 20, maxLines: 2 });
   const categoryLines = wrapMeasuredLines([model.kicker, model.date].filter(Boolean).join(" · "), { maxWidth: width, fontSize: 20, maxLines: 1, letterSpacing: 1 });
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${LINK_CARD_WIDTH}" height="${LINK_CARD_HEIGHT}" viewBox="0 0 ${LINK_CARD_WIDTH} ${LINK_CARD_HEIGHT}">
@@ -876,7 +881,7 @@ function newsPhotoLinkSvg(model, artworkDataUri, artwork) {
   ${svgTextLines(categoryLines, { x: left, y: 148, lineHeight: 26, fontSize: 20, fill: palette.start, weight: 800, letterSpacing: 1 })}
   <g data-section="news-headline">${svgTextLines(headlineLines, { x: left, y: 218, lineHeight: 54, fontSize: 44, fill: "#fff8ee", weight: 900, letterSpacing: -0.5 })}</g>
   <line x1="${left}" y1="478" x2="${photoX - 48}" y2="478" stroke="#2c2833" stroke-width="2"/>
-  <g data-section="news-sources">${sourceLines.length ? `<path d="M${left} 507l8 8 16-18" fill="none" stroke="#6fcf97" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>${svgTextLines(sourceLines, { x: left + 34, y: 516, lineHeight: 28, fontSize: 20, fill: "#b9b3c2", weight: 700 })}` : ""}</g>
+  <g data-section="news-sources">${sourceLines.length ? `${sourceOffset ? `<path d="M${left} 507l8 8 16-18" fill="none" stroke="#6fcf97" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>` : ""}${svgTextLines(sourceLines, { x: left + sourceOffset, y: 516, lineHeight: 28, fontSize: 20, fill: "#b9b3c2", weight: 700 })}` : ""}</g>
   <text x="${left}" y="594" fill="${palette.start}" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="800">Read it on mshpit.com</text>
 </svg>`;
 }
@@ -888,6 +893,7 @@ function newsLinkSvg(model, artworkDataUri = "", artwork = null) {
   const width = LINK_CARD_WIDTH - left * 2;
   const headlineLines = wrapMeasuredLines(model.headline, { maxWidth: width * HEAVY_TEXT_WIDTH, fontSize: 60, letterSpacing: -0.5, maxLines: 3 });
   const sourceLines = wrapMeasuredLines(model.sources, { maxWidth: width - 260, fontSize: 26, maxLines: 1 });
+  const sourceOffset = model.origin === "self_written" ? 0 : 36;
   const headlineTop = headlineLines.length >= 3 ? 262 : 300;
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${LINK_CARD_WIDTH}" height="${LINK_CARD_HEIGHT}" viewBox="0 0 ${LINK_CARD_WIDTH} ${LINK_CARD_HEIGHT}">
@@ -902,7 +908,7 @@ function newsLinkSvg(model, artworkDataUri = "", artwork = null) {
   <text x="${left}" y="172" fill="${palette.start}" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="800" letter-spacing="2">${escapeXml([model.kicker, model.date].filter(Boolean).join("  ·  "))}</text>
   <g data-section="news-headline">${svgTextLines(headlineLines, { x: left, y: headlineTop, lineHeight: 70, fontSize: 60, fill: "#fff8ee", weight: 900, letterSpacing: -0.5 })}</g>
   <line x1="${left}" y1="530" x2="${LINK_CARD_WIDTH - left}" y2="530" stroke="#2c2833" stroke-width="2"/>
-  ${sourceLines.length ? `<path d="M${left} 571l8 8 16-18" fill="none" stroke="#6fcf97" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>${svgTextLines(sourceLines, { x: left + 36, y: 580, lineHeight: 32, fontSize: 26, fill: "#b9b3c2", weight: 700 })}` : ""}
+  ${sourceLines.length ? `${sourceOffset ? `<path d="M${left} 571l8 8 16-18" fill="none" stroke="#6fcf97" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>` : ""}${svgTextLines(sourceLines, { x: left + sourceOffset, y: 580, lineHeight: 32, fontSize: 26, fill: "#b9b3c2", weight: 700 })}` : ""}
   <text x="${LINK_CARD_WIDTH - left}" y="580" text-anchor="end" fill="${palette.start}" font-family="Arial, Helvetica, sans-serif" font-size="26" font-weight="800">mshpit.com</text>
 </svg>`;
 }
