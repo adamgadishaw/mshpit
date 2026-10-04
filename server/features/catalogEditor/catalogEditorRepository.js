@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { canonicalVenueKey } from "../../../src/domain/venueIdentity.mjs";
 import { isIndexableMusicEventRecord } from "../seo/publicEntityPolicy.js";
 
 export const catalogDigest = value => createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -67,13 +68,16 @@ export function readCatalogEditorEntity(database, { type, key, at = Date.now() }
 
 export function listCatalogEditorEntities(database, { type, after = "", query = "", missingOnly = true, at = Date.now() }) {
   const like = `%${query.replace(/[\\%_]/g, value => `\\${value}`)}%`;
+  // At most 150 candidate reads per request, plus one key to prove continuation.
+  // The cursor follows the last inspected candidate, never the lookahead key.
+  const scanLimit = 150, pageLimit = 30;
   let rows;
   if (type === "artist") {
     rows = database.prepare(`SELECT norm k FROM artists WHERE norm>? AND COALESCE(source,'')<>'artist-created'
-      AND name LIKE ? ESCAPE '\\' ORDER BY norm LIMIT 31`).all(after, like);
+      AND name LIKE ? ESCAPE '\\' ORDER BY norm LIMIT ?`).all(after, like, scanLimit + 1);
   } else if (type === "event") {
     rows = database.prepare(`SELECT id k FROM tour_dates WHERE ${visibleProvider} AND id>?
-      AND COALESCE(event_name,artist) LIKE ? ESCAPE '\\' ORDER BY id LIMIT 31`).all(at, after, like);
+      AND COALESCE(event_name,artist) LIKE ? ESCAPE '\\' ORDER BY id LIMIT ?`).all(at, after, like, scanLimit + 1);
   } else {
     const separator = after.indexOf(":");
     const afterSource = separator < 0 ? "" : after.slice(0, separator), afterId = separator < 0 ? "" : after.slice(separator + 1);
@@ -83,13 +87,35 @@ export function listCatalogEditorEntities(database, { type, after = "", query = 
     rows = database.prepare(`SELECT source||':'||venue_provider_id k FROM tour_dates
       WHERE owner_id IS NULL AND venue_provider_id IS NOT NULL
       AND (source,venue_provider_id)>(?,?)
-      GROUP BY source,venue_provider_id ORDER BY source,venue_provider_id LIMIT 31`).all(afterSource, afterId);
+      GROUP BY source,venue_provider_id ORDER BY source,venue_provider_id LIMIT ?`).all(afterSource, afterId, scanLimit + 1);
   }
-  const page = rows.slice(0, 30);
-  return { items: page.map(row => readCatalogEditorEntity(database, { type, key: row.k, at }))
-    .filter(row => row && (type !== "venue" || row.identity.name.toLowerCase().includes(query.toLowerCase()))
-      && (!missingOnly || row.missingFields.length > 0)),
-  nextCursor: rows.length > 30 ? page.at(-1).k : null };
+  // Read only existing research. Found (including malformed/stale findings) and
+  // intentionally hidden records need review, not another empty-page draft.
+  // Do not import the research worker or start provider work from this queue.
+  const research = missingOnly && type !== "event"
+    && database.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='catalog_research'").get()
+    ? database.prepare(type === "artist"
+      ? "SELECT 1 FROM catalog_research WHERE entity_type='artist' AND entity_key=? AND status IN ('found','hidden') LIMIT 1"
+      : "SELECT 1 FROM catalog_research WHERE entity_type='venue' AND entity_key>=? AND entity_key<? AND status IN ('found','hidden') LIMIT 1")
+    : null;
+  const items = [];
+  let scanned = 0;
+  for (const candidate of rows.slice(0, scanLimit)) {
+    scanned++;
+    const row = readCatalogEditorEntity(database, { type, key: candidate.k, at });
+    if (!row || (type === "venue" && !row.identity.name.toLowerCase().includes(query.toLowerCase()))) continue;
+    if (missingOnly) {
+      if (row.protectedReason || !row.identityCurrent || row.content?.hidden || !row.missingFields.length) continue;
+      // Public venue research uses canonical name + city; preserve it even if
+      // another country's same-name record also exists. Never guess its owner.
+      const venuePrefix = type === "venue" ? `${canonicalVenueKey(row.identity.name)}|${text(row.identity.city).slice(0, 80).toLowerCase()}|` : null;
+      if (research && (type === "artist" ? research.get(row.key) : research.get(venuePrefix, `${venuePrefix}\uffff`))) continue;
+    }
+    items.push(row);
+    if (items.length === pageLimit) break;
+  }
+  const nextCursor = scanned < rows.length ? rows[scanned - 1].k : null;
+  return { items, nextCursor, scanLimitReached: scanned === scanLimit && !!nextCursor && items.length < pageLimit };
 }
 
 export function readPublicCatalogEditorText(database, { type, key, at = Date.now() }) {

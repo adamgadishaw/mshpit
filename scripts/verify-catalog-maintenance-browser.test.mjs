@@ -2,7 +2,20 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { createSearchGrowthService } from "../server/features/searchGrowth/searchGrowthService.js";
-import { assertCatalogEditorRequestIsolation, catalogBrowserCases, catalogExactVenueKey, exactCatalogFixture, upkeepAdmin, upkeepFixture, staffFixture } from "./verify-catalog-maintenance-browser.mjs";
+import { assertCatalogEditorRequestIsolation, catalogBrowserCases, catalogExactVenueKey, catalogQueueFixture, exactCatalogFixture, upkeepAdmin, upkeepFixture, staffFixture } from "./verify-catalog-maintenance-browser.mjs";
+
+test("queue browser cases cover mobile and desktop continuation without reusing cursors across queries", () => {
+  assert.deepEqual(catalogBrowserCases.filter(item => item.kind === "catalog-queue").map(item => item.width), [390, 1280]);
+  for (const type of ["artist", "venue", "event"]) {
+    const first = catalogQueueFixture(type, "");
+    assert.deepEqual(first.items, []); assert.equal(first.scanLimitReached, true);
+    const second = catalogQueueFixture(type, first.nextCursor);
+    assert.equal(second.items[0].type, type); assert.equal(second.nextCursor, null);
+    assert.equal(catalogQueueFixture(type, "", "Fixture").items.length, 1);
+    assert.throws(() => catalogQueueFixture(type, first.nextCursor, "Fixture"), /changed name filter/);
+    assert.throws(() => catalogQueueFixture(type, "unknown"), /Unexpected queue cursor/);
+  }
+});
 
 test("exact-key browser cases cover mobile and desktop with strict synthetic identity/error fixtures", () => {
   assert.deepEqual(catalogBrowserCases.filter(item => item.kind === "catalog-exact-key").map(item => item.width), [390, 1280]);

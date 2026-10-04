@@ -87,9 +87,10 @@ export default function CatalogEditorScreen({ onClose }) {
       {session.emailVerified !== true ? <Text style={styles.error}>Confirm your account email before preparing or saving changes.</Text> : null}
       <View style={styles.row}>{["artist", "venue", "event"].map(value => <Button key={value} small title={`${value[0].toUpperCase()}${value.slice(1)}s`} disabled={busy} variant={type === value ? "primary" : "secondary"}
         onPress={() => { setType(value); setPage(null); }} />)}</View>
-      <TextInput accessibilityLabel="Find catalog pages by name" placeholder="Artist, venue or event name" placeholderTextColor={colors.textFaint} value={query} onChangeText={setQuery} editable={!busy} style={styles.input} maxLength={100} />
-      {type === "venue" ? <Text style={styles.copy}>Venue name search filters one queue page at a time. Continue with Next page, or open a known catalog key below.</Text> : null}
+      <TextInput accessibilityLabel="Find catalog pages by name" placeholder="Artist, venue or event name" placeholderTextColor={colors.textFaint} value={query} onChangeText={value => { setQuery(value); setPage(null); }} editable={!busy} style={styles.input} maxLength={100} />
+      {type === "venue" ? <Text style={styles.copy}>Venue name search checks part of the catalog at a time. Continue searching when more pages are available, or open a known catalog key below.</Text> : null}
       <View style={styles.row}><Button title="Find pages" onPress={() => load("")} disabled={busy} loading={busy} /><Button title={missingOnly ? "Showing missing text" : "Showing all eligible pages"} variant="secondary" disabled={busy} onPress={() => { setMissingOnly(!missingOnly); setPage(null); }} /></View>
+      {missingOnly ? <Text style={styles.copy}>The fill queue skips existing biographies, researched and saved text, and pages needing identity or staff review. Use all eligible pages or an exact key to review an existing record.</Text> : null}
       <View style={styles.panel}>
         <Text style={styles.heading}>Open by catalog key</Text>
         <Text style={styles.copy}>Choose the page type above and enter its exact key. For venues, use source:provider ID with the original letter case. This opens one eligible page, including pages that already have text.</Text>
@@ -101,9 +102,10 @@ export default function CatalogEditorScreen({ onClose }) {
       {pendingSelection ? <View style={styles.panel}><Text style={styles.copy}>This page has an unstaged draft. Add it to the batch to keep it, or discard it before opening another page.</Text><View style={styles.row}><Button title="Keep editing" onPress={() => setPendingSelection(null)} /><Button title="Discard and open page" variant="secondary" onPress={() => select(pendingSelection, true)} /></View></View> : null}
       {confirmClose ? <View style={styles.panel}><Text style={styles.copy}>Unpublished drafts will be discarded when this editor closes.</Text><View style={styles.row}><Button title="Keep editor open" onPress={() => setConfirmClose(false)} /><Button title="Discard drafts and close" variant="secondary" onPress={onClose} /></View></View> : null}
       {page ? <View style={styles.panel}><Text style={styles.heading}>Page queue</Text>
-        {!page.items.length ? <Text style={styles.copy}>{page.nextCursor ? "No matching gaps in this slice. Continue to the next page." : "No matching eligible pages in this slice."}</Text> : null}
+        {!page.items.length ? <Text style={styles.copy}>{page.nextCursor ? "No matching pages found yet. Continue searching." : "No more matching pages for these filters."}</Text> : null}
+        {page.items.length > 0 && page.scanLimitReached ? <Text style={styles.copy}>More matching pages may be available. Continue searching.</Text> : null}
         {page.items.map(row => <View key={`${row.type}:${row.key}`} style={styles.queueItem}><View style={styles.grow}><Text style={styles.heading}>{row.identity.name}</Text><Text style={styles.copy}>{[row.identity.city, row.identity.country, row.identity.date].filter(Boolean).join(" · ")}</Text><Text style={styles.small}>{row.missingFields.join(", ") || "Existing content retained"}</Text></View><Button small title="Edit text" disabled={busy} onPress={() => select(row)} /></View>)}
-        {page.nextCursor ? <Button title="Next page" variant="secondary" disabled={busy} onPress={() => load(page.nextCursor)} /> : null}
+        {page.nextCursor ? <Button title={page.scanLimitReached ? "Continue search" : "Next page"} variant="secondary" disabled={busy} onPress={() => load(page.nextCursor)} /> : null}
       </View> : null}
       {entity ? <View style={styles.panel}><Text style={styles.heading}>{entity.identity.name}</Text><Text selectable style={styles.small}>{entity.type} · {entity.key} · revision {entity.revision}</Text>
         {!entity.identityCurrent ? <Text style={styles.error}>The catalog identity changed. Existing staff text is hidden; review its sources before publishing again.</Text> : null}
