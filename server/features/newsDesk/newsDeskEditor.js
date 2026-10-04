@@ -163,6 +163,22 @@ function draftJson(database, row, at) {
   };
 }
 
+// Recovery is narrower than the session newsroom: only this grant's own
+// unpublished self-written draft. Reuse verified photo delivery, not storage URLs.
+export function readGrantedNewsDraft(database, { draftId, ownerId, grantId, at = Date.now() }) {
+  const row = database.prepare(`SELECT * FROM news_drafts WHERE id=? AND status='draft'
+    AND origin='self_written' AND created_by=? AND created_grant_id=? AND story_post_id IS NULL`)
+    .get(draftId, ownerId, grantId);
+  if (!row) return null;
+  const draft = draftJson(database, row, at);
+  return {
+    id: draft.id, status: draft.status, origin: draft.origin,
+    headline: draft.headline, summary: draft.summary, body: draft.body,
+    category: draft.category, sources: draft.sources, photo: draft.photo,
+    revision: draft.revision, expired: draft.expired, createdAt: draft.createdAt,
+  };
+}
+
 export function createNewsDeskEditor({ database, env = process.env, now = Date.now, newId = randomUUID,
   summarize = newsDeskConfigured(env) ? createNewsSummarizer({ apiKey: String(env.ANTHROPIC_API_KEY).trim() }) : null,
   fetchArticle = fetchArticleText, draftsPerDay = DRAFTS_PER_DAY } = {}) {

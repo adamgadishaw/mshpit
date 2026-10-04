@@ -32,6 +32,12 @@ export function mediaApiRoutes({ service, requireOwner, rateLimit, ApiError }) {
       rateLimit(ctx, "media-api-revoke", 20, 60 * 60 * 1000);
       return service.revokeGrant({ ownerId: owner.id, grantId: ctx.params.id, requestId: ctx.requestId });
     },
+    "GET /api/media/v1/news/drafts/:id": (ctx) => {
+      ctx.setHeader?.("Cache-Control", "private, no-store");
+      ensureEnabled();
+      rateLimit(ctx, "media-api-news-read", 60, 60_000);
+      return service.readNewsDraft({ authorization: authorization(ctx), draftId: ctx.params.id });
+    },
     "POST /api/media/v1/news/drafts": (ctx) => {
       ensureEnabled();
       rateLimit(ctx, "media-api-news-create", 20, 60 * 60 * 1000);

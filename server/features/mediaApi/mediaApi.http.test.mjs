@@ -146,6 +146,18 @@ test("API body keys stay grant-scoped across revocation and separate from human 
   assert.equal(first.draft.photo.url, finalized.asset.url);
   assert.equal(first.draft.photo.status, "ready");
   assert.equal(Object.hasOwn(first.draft.photo, "sourceUrl"), false);
+  const beforeRead = db.prepare("SELECT total_changes() AS n").get().n;
+  const recovered = api.readNewsDraft({ authorization, draftId: first.draft.id }).draft;
+  assert.equal(recovered.body, first.draft.body);
+  assert.equal(recovered.revision, first.draft.revision);
+  assert.deepEqual(recovered.photo, first.draft.photo, "only the existing verified public render and attribution are returned");
+  assert.deepEqual(Object.keys(recovered).sort(), ["id", "status", "origin", "headline", "summary", "body", "category", "sources", "photo", "revision", "expired", "createdAt"].sort());
+  assert.deepEqual(Object.keys(recovered.photo).sort(), ["assetId", "source", "url", "status"].sort());
+  assert.equal(JSON.stringify(recovered).includes("assetOwnerId"), false);
+  assert.equal(JSON.stringify(recovered).includes("source_key"), false);
+  assert.equal(JSON.stringify(recovered).includes(firstGrant.accessToken), false);
+  assert.equal(db.prepare("SELECT total_changes() AS n").get().n, beforeRead);
+  assert.deepEqual(api.createNewsDraft({ authorization, body, idempotencyKey: body.idempotencyKey }), first, "GET does not alter the original create receipt");
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM news_editor_save_receipts WHERE actor_id=? AND idempotency_key=?").get(owner.id, body.idempotencyKey).n, 0);
   api.revokeGrant({ ownerId: owner.id, grantId: firstGrant.grantId });
   const secondGrant = grant(api);
@@ -153,15 +165,18 @@ test("API body keys stay grant-scoped across revocation and separate from human 
   const second = api.createNewsDraft({ authorization: secondAuth, body, idempotencyKey: body.idempotencyKey });
   assert.notEqual(first.draft.id, second.draft.id);
   assert.equal(second.draft.writer.grantId, secondGrant.grantId);
+  assert.throws(() => api.readNewsDraft({ authorization: secondAuth, draftId: first.draft.id }), error => error.code === "NOT_FOUND");
   assert.equal(api.createNewsDraft({ authorization: secondAuth, body, idempotencyKey: body.idempotencyKey }).draft.id, second.draft.id);
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM media_api_audit WHERE action='news_draft_created' AND target_id IN (?,?)").get(first.draft.id, second.draft.id).n, 2);
   const human = editor.writeSelfWritten({ ...body, actorId: owner.id });
   assert.notEqual(human.id, second.draft.id);
+  assert.throws(() => api.readNewsDraft({ authorization: secondAuth, draftId: human.id }), error => error.code === "NOT_FOUND", "owner session drafts do not become grant-readable");
   const foreign = user("receipt_preview_foreign", "editor");
   const foreignDraft = editor.writeSelfWritten({ ...body, idempotencyKey: null, actorId: foreign.id });
   assert.equal(foreignDraft.photo.url, null);
   assert.equal(foreignDraft.photo.status, "unavailable");
   db.prepare("UPDATE media_objects SET status='delete_queued' WHERE owner_id=? AND storage_scope='public'").run(owner.id);
+  assert.equal(api.readNewsDraft({ authorization: secondAuth, draftId: second.draft.id }).draft.photo.url, null, "GET rechecks current media safety");
   assert.equal(editor.writeSelfWritten({ ...body, actorId: owner.id }).photo.url, null, "human receipt replay rechecks media readiness");
 });
 
@@ -342,6 +357,7 @@ test("real assistant editor publishes a concise officially sourced article with 
     photo: { assetId: asset.id, source: { name: "Synthetic photographer", url: "https://example.com/synthetic-photo" } },
   }, idempotencyKey: "editor-draft-0001" });
   assert.equal(created.draft.revision, 0);
+  assert.equal(api.readNewsDraft({ authorization, draftId: created.draft.id }).draft.revision, 0);
   assert.deepEqual({ ...db.prepare("SELECT created_by,created_actor_type,created_actor_label,created_grant_id,revision FROM news_drafts WHERE id=?").get(created.draft.id) }, {
     created_by: owner.id, created_actor_type: "assistant", created_actor_label: "SyntheticHTTP", created_grant_id: issued.grantId, revision: 0,
   });
@@ -357,6 +373,8 @@ test("real assistant editor publishes a concise officially sourced article with 
   assert.throws(() => api.publishNewsDraft({ authorization, draftId: created.draft.id, expectedRevision: 999999, idempotencyKey: "editor-publish-stale" }),
     (error) => error instanceof ApiError && error.code === "CONFLICT");
   const published = api.publishNewsDraft({ authorization, draftId: created.draft.id, expectedRevision: 0, idempotencyKey: "editor-publish-0001" });
+  assert.throws(() => api.readNewsDraft({ authorization, draftId: created.draft.id }), error => error.code === "NOT_FOUND");
+  assert.deepEqual(api.publishNewsDraft({ authorization, draftId: created.draft.id, expectedRevision: 0, idempotencyKey: "editor-publish-0001" }), published, "publication receipt replay stays unchanged");
   assert.equal(published.draft.revision, 1);
   assert.equal(published.draft.body, body);
   assert.deepEqual(published.draft.sources.filter(source => source.kind === "article"), [
@@ -415,14 +433,13 @@ async function freePort() {
   return port;
 }
 
-test("real HTTP namespace is disabled before session auth and never echoes bearer input", async () => {
+async function withHttpServer({ enabled, dataDir }, work) {
   const port = await freePort();
-  const dataDir = mkdtempSync(join(tmpdir(), "pit-media-api-http-disabled-"));
   const childEnv = {
     ...process.env,
     NODE_ENV: "development",
     PIT_DATA_DIR: dataDir,
-    PIT_MEDIA_API_ENABLED: "",
+    PIT_MEDIA_API_ENABLED: enabled ? "true" : "",
     PORT: String(port),
     ANTHROPIC_API_KEY: "",
     OPENAI_API_KEY: "",
@@ -443,18 +460,72 @@ test("real HTTP namespace is disabled before session auth and never echoes beare
   });
   try {
     await ready;
-    const bearer = `Bearer ${"S".repeat(40)}`;
-    const response = await fetch(`http://127.0.0.1:${port}/api/media/v1/grants/pairing`, {
-      method: "POST",
-      headers: { authorization: bearer, "content-type": "application/json" },
-      body: "{}",
-    });
-    const text = await response.text();
-    assert.equal(response.status, 404);
-    assert.equal(text.includes(bearer), false);
+    await work(`http://127.0.0.1:${port}`);
   } finally {
     child.kill();
     await new Promise((resolve) => child.once("exit", resolve));
+  }
+}
+
+test("real HTTP draft recovery uses bearer authority, private responses and no list/update routes", async () => {
+  // The child uses the real clock; its synthetic grant must not age out of CI.
+  clock = Date.now();
+  const api = service();
+  const issued = grant(api, ["news:write"]);
+  const authorization = `Bearer ${issued.accessToken}`;
+  const created = api.createNewsDraft({ authorization, idempotencyKey: "http-recovery-create", body: {
+    headline: "Synthetic artist announces a new single",
+    summary: "A synthetic announcement saved for the exact draft recovery test.",
+    body: "The artist announced a new single for Friday.", category: "release",
+    sources: [{ kind: "article", name: "Fixture artist", url: "https://artist.example.com/recovery" }],
+    photo: { assetId: "synthetic-unavailable-photo", source: { name: "Fixture photographer", url: "https://artist.example.com/photo" } },
+  } });
+  await withHttpServer({ enabled: true, dataDir: DATA_DIR }, async base => {
+    const path = `/api/media/v1/news/drafts/${created.draft.id}`;
+    const response = await fetch(`${base}${path}`, { headers: { authorization } });
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get("cache-control"), /private.*no-store/u);
+    const value = await response.json();
+    assert.equal(value.draft.id, created.draft.id);
+    assert.equal(value.draft.body, created.draft.body);
+    assert.equal(value.draft.revision, 0);
+    assert.ok(value.requestId);
+    assert.equal(Object.hasOwn(value.draft, "writer"), false);
+    const unauthenticated = await fetch(`${base}${path}`);
+    assert.equal(unauthenticated.status, 401);
+    for (const [method, route] of [["GET", "/api/media/v1/news/drafts"], ["PATCH", path], ["PUT", path]]) {
+      const absent = await fetch(`${base}${route}`, { method, headers: { authorization } });
+      assert.equal(absent.status, 404);
+    }
+    const other = grant(api, ["news:write"]);
+    const foreign = await fetch(`${base}${path}`, { headers: { authorization: `Bearer ${other.accessToken}` } });
+    assert.equal(foreign.status, 404);
+    assert.equal(foreign.headers.get("cache-control"), "no-store", "the shared error envelope is also non-cacheable");
+    api.revokeGrant({ ownerId: owner.id, grantId: issued.grantId });
+    const revoked = await fetch(`${base}${path}`, { headers: { authorization } });
+    assert.equal(revoked.status, 401);
+    assert.equal((await revoked.text()).includes(issued.accessToken), false);
+  });
+});
+
+test("real HTTP namespace is disabled before session auth and never echoes bearer input", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "pit-media-api-http-disabled-"));
+  try {
+    await withHttpServer({ enabled: false, dataDir }, async base => {
+      const bearer = `Bearer ${"S".repeat(40)}`;
+      const response = await fetch(`${base}/api/media/v1/grants/pairing`, {
+        method: "POST",
+        headers: { authorization: bearer, "content-type": "application/json" },
+        body: "{}",
+      });
+      const text = await response.text();
+      assert.equal(response.status, 404);
+      assert.equal(text.includes(bearer), false);
+      const draftRead = await fetch(`${base}/api/media/v1/news/drafts/unknown`, { headers: { authorization: bearer } });
+      assert.equal(draftRead.status, 404);
+      assert.equal((await draftRead.text()).includes(bearer), false);
+    });
+  } finally {
     rmSync(dataDir, { recursive: true, force: true });
   }
 });
