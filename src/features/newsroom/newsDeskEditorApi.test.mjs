@@ -1,9 +1,75 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  correctNewsStoryCategory, publishedNewsPostId, readSelfWrittenNewsStory,
   newsCandidateLine, newsCandidateNeed, newsDraftStatus, newsEditorCostLine, parseNewsLinks,
   publishNewsDraft, readNewsEditor, writeNewsDraft,
 } from "./newsDeskEditorApi.mjs";
+
+const categoryStory = { postId: "news_category-test", headline: "Synthetic release", origin: "self_written", category: "charts", updatedAt: 1000 };
+const correction = { accountId: "editor_1", postId: categoryStory.postId, category: "release", expectedCategory: "charts", expectedUpdatedAt: 1000 };
+
+test("published story lookup accepts only Mshpit post links and reads fresh account-bound metadata", async () => {
+  for (const value of [categoryStory.postId, `/post/${categoryStory.postId}`, `https://www.mshpit.com/post/${categoryStory.postId}?share=1`, `https://mshpit.com/post/${categoryStory.postId}/`]) {
+    assert.equal(publishedNewsPostId(value), categoryStory.postId);
+  }
+  for (const value of ["https://elsewhere.test/post/news_category-test", "https://www.mshpit.com@elsewhere.test/post/news_category-test", "//elsewhere.test/post/news_category-test", "http://mshpit.com/post/news_category-test", "https://user@mshpit.com/post/news_category-test", "https://mshpit.com:123/post/news_category-test", "news_../../api/me", "/artist/name", ""]) {
+    assert.equal(publishedNewsPostId(value), null);
+  }
+  let calls = 0;
+  const result = await readSelfWrittenNewsStory({ accountId: "editor_1", value: categoryStory.postId }, { apiCall: async (path, options) => {
+    calls += 1;
+    assert.equal(path, `/api/posts/${categoryStory.postId}`);
+    assert.equal(options.cache, "no-store");
+    assert.equal(options.expectedAccountId, "editor_1");
+    assert.equal(options.body, undefined);
+    return { post: { id: categoryStory.postId, news: { ...categoryStory, body: "Never part of a correction", sources: [] } } };
+  } });
+  assert.deepEqual(result, { postId: categoryStory.postId, headline: categoryStory.headline, category: "charts", updatedAt: 1000 });
+  assert.equal(calls, 1);
+});
+
+test("lookup refuses generated, missing, mismatched or unversioned stories", async () => {
+  for (const patch of [{ origin: "generated" }, { updatedAt: undefined }, { updatedAt: 1.5 }, { updatedAt: 0 }, { category: "other" }, { postId: "news_other" }]) {
+    await assert.rejects(readSelfWrittenNewsStory({ accountId: "editor_1", value: categoryStory.postId }, {
+      apiCall: async () => ({ post: { id: categoryStory.postId, news: { ...categoryStory, ...patch } } }),
+    }), /unavailable/u);
+  }
+  await assert.rejects(readSelfWrittenNewsStory({ accountId: "editor_1", value: categoryStory.postId }, { apiCall: async () => ({ post: {} }) }), /unavailable/u);
+});
+
+test("category correction carries only the narrow CAS fields and accepts a confirmed same-category no-op", async () => {
+  const calls = [];
+  const apiCall = async (path, options) => {
+    calls.push({ path, options });
+    return { postId: categoryStory.postId, category: options.body.category, changed: options.body.category !== "charts", updatedAt: options.body.category === "charts" ? 1000 : 1001 };
+  };
+  await correctNewsStoryCategory({ ...correction, body: "ignored", title: "ignored", sources: ["ignored"], photo: "ignored" }, { apiCall });
+  assert.equal(calls[0].path, `/api/moderation/news-desk/editor/stories/${categoryStory.postId}/category`);
+  assert.equal(calls[0].options.method, "PATCH");
+  assert.equal(calls[0].options.expectedAccountId, "editor_1");
+  assert.deepEqual(calls[0].options.body, { category: "release", expectedCategory: "charts", expectedUpdatedAt: 1000 });
+  const noop = await correctNewsStoryCategory({ ...correction, category: "charts" }, { apiCall });
+  assert.equal(noop.changed, false);
+  for (const patch of [{ changed: false }, { updatedAt: 1000 }, { postId: "news_wrong" }, { category: "tour" }]) {
+    await assert.rejects(correctNewsStoryCategory(correction, { apiCall: async () => ({ postId: categoryStory.postId, category: "release", changed: true, updatedAt: 1001, ...patch }) }), /not be confirmed/u);
+  }
+});
+
+test("category requests preserve authorization/conflict failures and never retry or call draft generation", async () => {
+  for (const status of [401, 403, 409, 503]) {
+    const reason = Object.assign(new Error("Synthetic rejection"), { status });
+    let calls = 0;
+    await assert.rejects(correctNewsStoryCategory(correction, { apiCall: async (path) => {
+      calls += 1; assert.ok(path.endsWith("/category")); throw reason;
+    } }), error => error === reason);
+    assert.equal(calls, 1);
+  }
+  const noCall = async () => assert.fail("Invalid input must not invoke transport");
+  for (const patch of [{ accountId: "" }, { expectedUpdatedAt: undefined }, { category: "other" }, { postId: null }, { postId: "/post/news_category-test" }]) {
+    await assert.rejects(correctNewsStoryCategory({ ...correction, ...patch }, { apiCall: noCall }), TypeError);
+  }
+});
 
 const overview = { candidates: [], budget: { leftTodayUsd: 0.284, typicalDraftUsd: 0.018 }, drafts: { last24h: 3, limit: 10, recent: [] } };
 

@@ -215,3 +215,65 @@ test("self-written stories require a body without a word minimum and retain sour
   assert.equal(db.prepare("SELECT status FROM news_drafts WHERE id=?").get(invalidDraft.id).status, "draft");
   assert.equal(calls.length, 0, "manual articles do not invoke generation");
 });
+
+test("manual release selection survives background charts, awards and tours without provider calls", () => {
+  const { instance, calls } = editor();
+  const input = {
+    headline: "Fixture artist releases a new studio album",
+    summary: "The artist has released a new album before an upcoming world tour.",
+    body: "An earlier single reached No. 1 on the chart and won a Grammy award during a previous tour. "
+      + "The new album brings together the reported music and its documented creative context.",
+    category: "release",
+    sources: [
+      { kind: "article", name: "NME", url: "https://www.nme.com/news/category-album" },
+      { kind: "article", name: "Stereogum", url: "https://www.stereogum.com/category-album" },
+      { kind: "article", name: "Pitchfork", url: "https://pitchfork.com/news/category-album" },
+    ],
+    photo: { assetId: "ma_category_fixture", name: "Fixture photographer", url: "https://example.com/category-photo" },
+    actorId: "news_editor_account",
+  };
+  const draft = instance.writeSelfWritten(input);
+  assert.equal(draft.category, "release");
+  const stored = JSON.parse(db.prepare("SELECT result FROM news_drafts WHERE id=?").get(draft.id).result);
+  assert.equal(stored.category, "release");
+  assert.equal(normalizeSelfWrittenStory({ ...stored, sources: input.sources }, { assetOwnerId: input.actorId }).category, "release",
+    "publication revalidation must preserve the saved selection");
+  assert.equal(instance.writeSelfWritten({ ...input, category: undefined }).category, "awards",
+    "legacy callers without a selection retain existing classification");
+  for (const [background, derived] of [
+    ["An earlier single reached No. 1 on the chart.", "charts"],
+    ["The artist's family settled a lawsuit over an earlier recording.", "legal"],
+    ["The artist died before the album was completed.", "death"],
+  ]) {
+    const concise = { ...input, summary: "The artist's new studio album has been released today.", body: background,
+      sources: [{ kind: "article", name: "Fixture Artist", url: "https://artist.example.com/new-album" }] };
+    assert.equal(normalizeSelfWrittenStory(concise).category, "release", "background must not overwrite the selected label");
+    assert.equal(normalizeSelfWrittenStory({ ...concise, category: undefined }).category, derived, "the classifier itself remains unchanged");
+    assert.equal(normalizeSelfWrittenStory(concise).sources.filter(source => source.kind === "article").length, 1);
+  }
+  for (const category of ["other", "industry", "RELEASE", "", null, {}, ["release"]]) {
+    assert.throws(() => instance.writeSelfWritten({ ...input, category }), codeOf("VALIDATION_FAILED"));
+  }
+  assert.throws(() => instance.writeSelfWritten({ ...input, sources: [] }), codeOf("VALIDATION_FAILED"));
+  assert.throws(() => instance.writeSelfWritten({ ...input, headline: "The best albums ranked for this year" }), codeOf("VALIDATION_FAILED"));
+  assert.throws(() => instance.writeSelfWritten({ ...input, headline: "Ordinary context for this account", summary: "Ordinary background for this account and its participants.",
+    body: "Ordinary background for this account and its participants. ".repeat(130) }), codeOf("VALIDATION_FAILED"));
+  assert.throws(() => instance.writeSelfWritten({ ...input, photo: null }), codeOf("VALIDATION_FAILED"));
+  assert.equal(calls.length, 0);
+});
+
+test("category correction admission enforces the dedicated rate limit before a write", async () => {
+  const { instance } = editor();
+  const limited = new ApiError(429, "Synthetic category limit", "RATE_LIMITED");
+  const routes = newsDeskEditorRoutes({ editor: instance, database: db, ApiError,
+    requireAdmin: () => ({ id: "news_editor_account", role: "editor", email_verified_at: NOW }),
+    rateLimit: (_ctx, key, count, window) => {
+      assert.deepEqual([key, count, window], ["news-editor-category", 20, 3_600_000]);
+      throw limited;
+    }, now: () => NOW });
+  const before = db.prepare("SELECT COUNT(*) count FROM moderation_actions").get().count;
+  await assert.rejects(routes["PATCH /api/moderation/news-desk/editor/stories/:postId/category"]({
+    params: { postId: "news_no_write" }, body: { category: "release", expectedCategory: "charts", expectedUpdatedAt: NOW },
+  }), error => error === limited);
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM moderation_actions").get().count, before);
+});
