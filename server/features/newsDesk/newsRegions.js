@@ -71,9 +71,9 @@ const PLACES = {
 };
 
 const EVENT_AFTER = "(?:tour|tours|tour dates|dates|shows|show|concerts|concert|leg|run|arena tour|stadium tour|headline tour|headlining tour|festival|festivals|chart|charts|singles chart|albums chart|album chart|number one|no\\. 1|no 1|premiere|residency|gigs|gig)";
-const EVENT_BEFORE = "(?:in|at|across|around|throughout|to|tour of|tour through|dates in|shows in|concerts in|gigs in|coming to|comes to|heads to|headed to|returns to|return to)";
-// Where someone is from, lives or recorded is not where the news happens.
-const NOT_AN_EVENT = "(?<!(?:born|raised|based|grew up|formed|lives|living|native|residing|recorded|filmed|shot|written|made|died|dies|passed away|arrested|hospitalized|hospitalised|home|studio)\\s)";
+// A bare "in Toronto" can be a timezone conversion, birthplace or recording
+// credit. Require an event/place relationship, not just a nearby place word.
+const EVENT_BEFORE = `(?:(?:${EVENT_AFTER}|nights?)\\s+(?:in|at|across|around|throughout)|tour of|tour through|coming to|comes to|heads to|headed to|returns to|return to|(?:play|plays|played|perform|performs|performed|performing|touring)\\s+(?:in|at|across)|(?:takes|took|taking) place in)`;
 const alternation = (list) => [...new Set(list)].map((word) => escape(word)).sort((left, right) => right.length - left.length).join("|");
 
 // Lists name several places at once: "UK and Ireland stadium dates", "shows in
@@ -84,6 +84,15 @@ const ANY_COUNTRY = alternation(Object.values(PLACES).flatMap((places) => [...pl
 const LEADING_PLACES = `(?:(?:the\\s+)?(?:${ANY_PLACE})${SEPARATOR}){0,6}`;
 // A word or two may sit between the place and the event: "UK stadium dates", "US 2027 tour".
 const QUALIFIER = "(?:\\s+(?:stadium|arena|summer|autumn|fall|winter|spring|headline|headlining|farewell|reunion|anniversary|more|new|extra|additional|\\d{4})){0,2}";
+// "Chicago tours Europe" names an artist doing something, not a city event.
+// Keep city-first evidence to event nouns; "shows off/support" is a verb too.
+const CITY_EVENT_AFTER = "(?:shows?(?!\\s+(?:off|support|how|why|that|us|their|its)\\b)|concerts?|dates?|gigs?|residency|festivals?)";
+const NOT_TIMEZONE = "(?!(?:['’]s)?\\s+(?:(?:local|standard|daylight|summer)\\s+)?(?:time|timezone|time zone)\\b)";
+
+const eventPlacePatterns = (places) => [
+  new RegExp(`(?<![\\p{L}\\p{N}])${EVENT_BEFORE}\\s+${LEADING_PLACES}(?:the\\s+)?(?:${places})(?![\\p{L}\\p{N}])${NOT_TIMEZONE}`, "u"),
+  new RegExp(`(?<![\\p{L}\\p{N}])(?:${places})(?:${SEPARATOR}(?:${ANY_PLACE}))*${QUALIFIER}\\s+${CITY_EVENT_AFTER}(?![\\p{L}\\p{N}])`, "u"),
+];
 
 const MATCHERS = Object.entries(PLACES).map(([id, places]) => {
   const countries = alternation(places.countries);
@@ -93,9 +102,7 @@ const MATCHERS = Object.entries(PLACES).map(([id, places]) => {
     id,
     patterns: [
       new RegExp(`(?<![\\p{L}\\p{N}])(?:${countries}|${adjectives})(?:${SEPARATOR}(?:${ANY_COUNTRY}))*${QUALIFIER}\\s+${EVENT_AFTER}(?![\\p{L}\\p{N}])`, "u"),
-      new RegExp(`${NOT_AN_EVENT}(?<![\\p{L}\\p{N}])${EVENT_BEFORE}\\s+${LEADING_PLACES}(?:the\\s+)?(?:${countries})(?![\\p{L}\\p{N}])`, "u"),
-      new RegExp(`${NOT_AN_EVENT}(?<![\\p{L}\\p{N}])(?:in|at|to|across)\\s+${LEADING_PLACES}(?:${cities})(?![\\p{L}\\p{N}])`, "u"),
-      new RegExp(`(?<![\\p{L}\\p{N}])(?:${cities})\\s+(?:show|shows|concert|concerts|date|dates|gig|gigs|residency|stadium show|arena show)(?![\\p{L}\\p{N}])`, "u"),
+      ...eventPlacePatterns(`${countries}|${cities}`),
       new RegExp(`(?<![\\p{L}\\p{N}])(?:${alternation(places.named)})(?![\\p{L}\\p{N}])`, "u"),
     ],
   };
@@ -109,7 +116,7 @@ const ALWAYS_WORLDWIDE = new Set(["death", "legal"]);
 
 // Case matters for "US" and "UK" (not "us"), so they become words first.
 function storyText(story) {
-  const raw = [story?.headline, story?.summary, story?.body].filter(Boolean).join(" \n ");
+  const raw = [story?.headline, story?.summary, story?.body].filter(Boolean).join(" . \n ");
   return fold(raw.replace(/(?<![A-Za-z])U\.?S\.?A?\.?(?![A-Za-z])/gu, " united_states ").replace(/(?<![A-Za-z])U\.?K\.?(?![A-Za-z])/gu, " united_kingdom "));
 }
 
@@ -130,12 +137,13 @@ export function newsStoryVisibleIn(story, region) {
   return !regions.length || regions.includes(region);
 }
 
-// The reader's own city named in the story ("Toronto"), for a small badge and
-// a lift in top stories.
+// Actual story/event geography in the reader's city, for local metadata and
+// the same lift in top stories. A worldwide tour can still have a local stop.
 export function newsStoryMentionsCity(story, city) {
   const name = fold(city);
   if (name.length < 3) return false;
-  return new RegExp(`(?<![\\p{L}\\p{N}])${escape(name)}(?![\\p{L}\\p{N}])`, "u").test(storyText(story));
+  const text = storyText(story);
+  return eventPlacePatterns(escape(name)).some((pattern) => pattern.test(text));
 }
 
 // "Toronto, Ontario, Canada" -> { city: "Toronto", region: "us-canada" }.

@@ -53,6 +53,59 @@ test("worldwide stories reach everyone; a regional story reaches its region", ()
   assert.equal(newsStoryMentionsCity(story("Toronto"), "To"), false, "too short to match safely");
 });
 
+test("incidental geography never makes global news local or regional", () => {
+  const examples = [
+    ["Toronto", "A preview begins at midnight in Japan, equivalent to October 4 in Toronto."],
+    ["Toronto", "The single arrives at 6 p.m. in Toronto."],
+    ["Toronto", "The single arrives at 6 p.m. Toronto time."],
+    ["Toronto", "The show in Toronto time starts at 6 p.m."],
+    ["Toronto", "The show in Toronto's local time starts at 6 p.m."],
+    ["Toronto", "The singer, born in Toronto, announced a new album."],
+    ["Toronto", "Recorded in Toronto, the album arrives Friday."],
+    ["Chicago", "Chicago announce a new album."],
+    ["Chicago", "Chicago tours Europe this summer."],
+    ["Chicago", "Chicago shows off a new single."],
+    ["Chicago", "Chicago shows support for a new charity."],
+    ["Paris", "Paris Hilton releases a new single."],
+    ["Toronto", "The singer was born in Toronto. Shows are planned for next year."],
+  ];
+  for (const [city, text] of examples) {
+    for (const field of ["headline", "summary", "body"]) {
+      const item = { category: "release", [field]: text };
+      assert.equal(newsStoryMentionsCity(item, city), false, `${field}: ${text}`);
+      assert.deepEqual(newsStoryRegions(item), [], `${field}: ${text}`);
+      for (const { id } of NEWS_REGIONS) assert.equal(newsStoryVisibleIn(item, id), true, `${id}: ${text}`);
+    }
+  }
+  assert.equal(newsStoryMentionsCity(story("An artist remembers Toronto", "Shows will follow next year"), "Toronto"), false,
+    "separate fields cannot invent an event/place relationship");
+});
+
+test("explicit event geography survives timezone references and worldwide tours", () => {
+  for (const headline of [
+    "Drake adds three more Toronto shows",
+    "Drake announces Toronto arena shows",
+    "Drake plays two nights in Toronto",
+    "Drake performs in Toronto",
+    "Drake returns to Toronto",
+    "Drake confirms shows in Montreal and Toronto",
+  ]) {
+    assert.equal(newsStoryMentionsCity(story(headline), "Toronto"), true, headline);
+    assert.deepEqual(regions(headline), ["us-canada"], headline);
+  }
+  const ukShow = story("A singer announces shows in London", "The livestream starts at 6 p.m. in Toronto.");
+  assert.deepEqual(newsStoryRegions(ukShow), ["uk-ireland"], "timezone mentions do not erase actual regional geography");
+  assert.equal(newsStoryMentionsCity(ukShow, "London"), true);
+  assert.equal(newsStoryMentionsCity(ukShow, "Toronto"), false);
+  for (const headline of ["Beyonce adds shows in London and Toronto", "Beyonce's world tour adds Toronto shows"]) {
+    assert.deepEqual(regions(headline), [], headline);
+    assert.equal(newsStoryMentionsCity(story(headline), "Toronto"), true, headline);
+  }
+  assert.equal(newsStoryMentionsCity(story("Shows in São Paulo"), "Sao Paulo"), true);
+  assert.equal(newsStoryMentionsCity(story("Shows in New York"), "York"), false);
+  assert.equal(newsStoryMentionsCity(story("Torontonian shows announced"), "Toronto"), false);
+});
+
 test("a home city picks the region, and a member can choose another or everywhere", () => {
   assert.deepEqual(newsRegionForHomeCity("Toronto, Ontario, Canada"), { city: "Toronto", region: "us-canada" });
   assert.deepEqual(newsRegionForHomeCity("London, Ontario, Canada"), { city: "London", region: "us-canada" }, "London, Ontario stays in Canada");
